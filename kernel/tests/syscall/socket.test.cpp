@@ -22,12 +22,15 @@
 #include "fs/fstypes.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "sync/mutex.h"
 #include "dynpriv/dynpriv.h"
 #include "common/string.h"
 
 using test_helpers::user_page;
 using test_helpers::user_space_scope;
 using test_helpers::spin_wait;
+using test_helpers::unpin;
+using test_helpers::blocks_before_deadline;
 using namespace net;
 
 TEST_SUITE(socket_syscall);
@@ -302,6 +305,7 @@ enum class stream_call : uint8_t {
     send    = 0,
     write   = 1,
     receive = 2,
+    discard = 3,
 };
 
 // The client side runs in an elevated task of its own, since its system calls
@@ -347,7 +351,12 @@ static void run_stream_client(void*) {
             } else if (run.result == 0 && run.call == stream_call::write) {
                 run.result = sys_write(static_cast<uint64_t>(fd), run.buf, STREAM_BYTES, 0, 0, 0);
             } else if (run.result == 0) {
-                run.result = sys_recvfrom(static_cast<uint64_t>(fd), run.buf, STREAM_BYTES, inet::MSG_WAITALL, 0, 0);
+                uint64_t flags = inet::MSG_WAITALL;
+                if (run.call == stream_call::discard) {
+                    flags |= inet::MSG_TRUNC;
+                }
+
+                run.result = sys_recvfrom(static_cast<uint64_t>(fd), run.buf, STREAM_BYTES, flags, 0, 0);
             }
         }
 
@@ -689,7 +698,7 @@ static void run_stream_case(stream_call call) {
     loopback_listener listener(task);
     ASSERT_TRUE(listener.fd >= 0);
 
-    bool client_sends = call != stream_call::receive;
+    bool client_sends = call == stream_call::send || call == stream_call::write;
     for (size_t i = 0; i < STREAM_BYTES; i++) {
         region.byte(i) = client_sends ? stream_pattern(i) : 0;
     }
@@ -715,7 +724,7 @@ static void run_stream_case(stream_call call) {
     EXPECT_TRUE(spin_wait(g_stream_client.done));
     EXPECT_EQ(g_stream_client.result, static_cast<int64_t>(STREAM_BYTES));
 
-    if (!client_sends) {
+    if (call == stream_call::receive) {
         bool intact = true;
         for (size_t i = 0; i < STREAM_BYTES; i++) {
             intact = intact && region.byte(i) == stream_pattern(i);
@@ -741,6 +750,10 @@ TEST(socket_syscall, a_stream_receive_with_waitall_gathers_past_one_staging_roun
     run_stream_case(stream_call::receive);
 }
 
+TEST(socket_syscall, a_stream_discard_with_waitall_drops_past_one_staging_round) {
+    run_stream_case(stream_call::discard);
+}
+
 TEST(socket_syscall, sendmsg_refuses_ancillary_data) {
     int64_t fd = sys_socket(inet::AF_INET, inet::SOCK_DGRAM, 0, 0, 0, 0);
     ASSERT_TRUE(fd >= 0);
@@ -760,12 +773,14 @@ TEST(socket_syscall, sendmsg_refuses_ancillary_data) {
     EXPECT_EQ(resource::close(sched::current(), static_cast<resource::handle_t>(fd)), resource::OK);
 }
 
-// Unix stream sends
+// Unix stream sends and receives
 
 constexpr uint64_t AF_UNIX = 1;
 
-// Where the unix stream tests keep a pair's handles and the bytes they send
+// Where the unix stream tests keep a pair's handles and the bytes they receive, peek at and send
 constexpr size_t UNIX_PAIR_AT = 1024;
+constexpr size_t UNIX_RECV_AT = 1536;
+constexpr size_t UNIX_PEEK_AT = 1792;
 constexpr size_t UNIX_SEND_AT = 2048;
 constexpr size_t UNIX_SEND_MAX = pmm::PAGE_SIZE - UNIX_SEND_AT;
 
@@ -800,6 +815,11 @@ static int64_t unix_send(user_page& page, int32_t fd, size_t len, uint64_t flags
     user_space_scope scope(page.ctx);
     uint64_t addr = addrlen ? page.addr + MSG_NAME : 0;
     return sys_sendto(static_cast<uint64_t>(fd), page.addr + UNIX_SEND_AT, len, flags, addr, addrlen);
+}
+
+static int64_t unix_receive(user_page& page, int32_t fd, size_t len, uint64_t flags) {
+    user_space_scope scope(page.ctx);
+    return sys_recvfrom(static_cast<uint64_t>(fd), page.addr + UNIX_RECV_AT, len, flags, 0, 0);
 }
 
 TEST(socket_syscall, a_unix_stream_send_reaches_the_peer) {
@@ -906,7 +926,7 @@ TEST(socket_syscall, a_unix_stream_send_to_a_closed_peer_reports_epipe) {
     EXPECT_EQ(resource::close(task, pair.a), resource::OK);
 }
 
-TEST(socket_syscall, unix_stream_receive_calls_still_refuse) {
+TEST(socket_syscall, a_unix_stream_receive_takes_what_the_peer_sent) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);
 
@@ -915,12 +935,410 @@ TEST(socket_syscall, unix_stream_receive_calls_still_refuse) {
     unix_pair pair;
     ASSERT_TRUE(make_unix_pair(page, &pair));
 
-    int64_t rc = 0;
-    {
-        user_space_scope scope(page.ctx);
-        rc = sys_recvfrom(static_cast<uint64_t>(pair.b), page.addr + UNIX_SEND_AT, 16, 0, 0, 0);
-    }
-    EXPECT_EQ(rc, syscall::EOPNOTSUPP);
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "hello", 5);
+    ASSERT_EQ(unix_send(page, pair.a, 5, 0), static_cast<int64_t>(5));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, 0), static_cast<int64_t>(5));
+    EXPECT_EQ(string::memcmp(page.at<char>(UNIX_RECV_AT), "hello", 5), 0);
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), syscall::EAGAIN);
 
     close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_unix_stream_peek_leaves_the_bytes_queued) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "abc", 3);
+    ASSERT_EQ(unix_send(page, pair.a, 3, 0), static_cast<int64_t>(3));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_PEEK), static_cast<int64_t>(3));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(3));
+    EXPECT_EQ(string::memcmp(page.at<char>(UNIX_RECV_AT), "abc", 3), 0);
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), syscall::EAGAIN);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_truncating_unix_stream_receive_discards_the_bytes_unless_it_peeks) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "abcdef", 6);
+    ASSERT_EQ(unix_send(page, pair.a, 6, 0), static_cast<int64_t>(6));
+    EXPECT_EQ(unix_receive(page, pair.b, 4, inet::MSG_TRUNC | inet::MSG_PEEK), static_cast<int64_t>(4));
+    EXPECT_EQ(unix_receive(page, pair.b, 4, inet::MSG_TRUNC), static_cast<int64_t>(4));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(2));
+    EXPECT_EQ(string::memcmp(page.at<char>(UNIX_RECV_AT), "ef", 2), 0);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_unix_stream_recvmsg_scatters_across_its_vector) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "unixpair", 8);
+    ASSERT_EQ(unix_send(page, pair.a, 8, 0), static_cast<int64_t>(8));
+    lay_out_message(page, 16, 4, 4);
+
+    int64_t received = 0;
+    {
+        user_space_scope scope(page.ctx);
+        received = sys_recvmsg(static_cast<uint64_t>(pair.b), page.addr + MSG_HDR, inet::MSG_DONTWAIT, 0, 0, 0);
+    }
+    EXPECT_EQ(received, static_cast<int64_t>(8));
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_A), "unix", 4), 0);
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_B), "pair", 4), 0);
+    EXPECT_EQ(page.at<user_msghdr>(MSG_HDR)->namelen, 0u);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_unix_stream_recvmsg_drains_what_a_closed_peer_left) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "unixpair", 8);
+    ASSERT_EQ(unix_send(page, pair.a, 8, 0), static_cast<int64_t>(8));
+    EXPECT_EQ(resource::close(task, pair.a), resource::OK);
+
+    // A closed peer ends the stream after what it sent instead of cutting a receive short
+    lay_out_message(page, 0, 4, 4);
+    int64_t received = 0;
+    {
+        user_space_scope scope(page.ctx);
+        received = sys_recvmsg(static_cast<uint64_t>(pair.b), page.addr + MSG_HDR, inet::MSG_DONTWAIT, 0, 0, 0);
+    }
+    EXPECT_EQ(received, static_cast<int64_t>(8));
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_B), "pair", 4), 0);
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(0));
+
+    EXPECT_EQ(resource::close(task, pair.b), resource::OK);
+}
+
+// A receive that waits runs in an elevated task of its own, through a handle of
+// its own, since the runner is the idle task and cannot block
+struct unix_receive_run {
+    mm::mm_context*            ctx;
+    uintptr_t                  buf;
+    resource::resource_object* reader;
+    size_t                     len;
+    uint64_t                   flags;
+    int64_t                    result;
+    sync::atomic<uint32_t>     done;
+};
+
+static unix_receive_run g_unix_receive;
+static unix_receive_run g_unix_peek;
+
+static void run_unix_receive(void* arg) {
+    unix_receive_run& run = *static_cast<unix_receive_run*>(arg);
+    sched::task* self = sched::current();
+    resource::handle_t h = -1;
+    run.result = syscall::EBADF;
+
+    if (resource::alloc_handle(self->handles, run.reader, resource::resource_type::SOCKET,
+                               resource::RIGHT_READ, &h) == resource::HANDLE_OK) {
+        {
+            user_space_scope scope(run.ctx);
+            run.result = sys_recvfrom(static_cast<uint64_t>(h), run.buf, run.len, run.flags, 0, 0);
+        }
+
+        (void)resource::close(self, h);
+    }
+
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+static void prepare_unix_receive(user_page& page, resource::resource_object* reader, size_t len, uint64_t flags,
+                                 unix_receive_run& run = g_unix_receive, size_t at = UNIX_RECV_AT) {
+    run.ctx = page.ctx;
+    run.buf = page.addr + at;
+    run.reader = reader;
+    run.len = len;
+    run.flags = flags;
+    run.result = 0;
+    run.done.store_relaxed(0);
+}
+
+static sched::task* start_unix_receive(unix_receive_run& run = g_unix_receive) {
+    return test_helpers::start_pinned_task(run_unix_receive, &run, "unix_receive");
+}
+
+static bool unix_stream_drains(resource::resource_object* reader) {
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    uint8_t probe = 0;
+    while (clock::now_ns() < deadline) {
+        if (reader->ops->socket->recvfrom(reader, &probe, 1, inet::MSG_PEEK | inet::MSG_DONTWAIT,
+                                          nullptr, nullptr) == resource::ERR_AGAIN) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The second half goes out only after the call has taken the first, so it must wait for it
+static void expect_waitall_across_two_sends(uint64_t flags) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    resource::resource_object* reader = nullptr;
+    ASSERT_EQ(resource::get_handle_object(task->handles, pair.b, resource::RIGHT_READ, &reader),
+              resource::HANDLE_OK);
+
+    prepare_unix_receive(page, reader, 6, flags);
+    sched::task* t = start_unix_receive();
+    ASSERT_NOT_NULL(t);
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "abc", 3);
+    EXPECT_EQ(unix_send(page, pair.a, 3, 0), static_cast<int64_t>(3));
+    EXPECT_TRUE(unix_stream_drains(reader));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "def", 3);
+    EXPECT_EQ(unix_send(page, pair.a, 3, 0), static_cast<int64_t>(3));
+
+    EXPECT_TRUE(spin_wait(g_unix_receive.done));
+    EXPECT_EQ(g_unix_receive.result, static_cast<int64_t>(6));
+    EXPECT_TRUE(unix_stream_drains(reader));
+    if (!(flags & inet::MSG_TRUNC)) {
+        EXPECT_EQ(string::memcmp(page.at<char>(UNIX_RECV_AT), "abcdef", 6), 0);
+    }
+
+    unpin(t);
+    resource::resource_release(reader);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_waitall_unix_stream_receive_waits_for_every_byte) {
+    expect_waitall_across_two_sends(inet::MSG_WAITALL);
+}
+
+TEST(socket_syscall, a_waitall_unix_stream_discard_drops_every_byte) {
+    expect_waitall_across_two_sends(inet::MSG_WAITALL | inet::MSG_TRUNC);
+}
+
+TEST(socket_syscall, a_waiting_unix_stream_receive_leaves_the_receive_lock_free) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    resource::resource_object* reader = nullptr;
+    ASSERT_EQ(resource::get_handle_object(task->handles, pair.b, resource::RIGHT_READ, &reader),
+              resource::HANDLE_OK);
+    sync::mutex* lock = reader->ops->socket->receive_lock(reader);
+    ASSERT_NOT_NULL(lock);
+
+    prepare_unix_receive(page, reader, 16, 0);
+    sched::task* t = start_unix_receive();
+    ASSERT_NOT_NULL(t);
+
+    // Asleep until bytes arrive, the receive holds up no other receiver
+    EXPECT_TRUE(blocks_before_deadline(t));
+    EXPECT_FALSE(sync::mutex_is_locked(*lock));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "hi", 2);
+    EXPECT_EQ(unix_send(page, pair.a, 2, 0), static_cast<int64_t>(2));
+    EXPECT_TRUE(spin_wait(g_unix_receive.done));
+    EXPECT_EQ(g_unix_receive.result, static_cast<int64_t>(2));
+
+    unpin(t);
+    resource::resource_release(reader);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_waiting_unix_stream_peek_leaves_the_wakeup_to_other_receivers) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    resource::resource_object* reader = nullptr;
+    ASSERT_EQ(resource::get_handle_object(task->handles, pair.b, resource::RIGHT_READ, &reader),
+              resource::HANDLE_OK);
+
+    // A peek falls asleep first and a receive behind it, and the send must still reach the receive
+    prepare_unix_receive(page, reader, 16, inet::MSG_PEEK, g_unix_peek, UNIX_PEEK_AT);
+    sched::task* peeker = start_unix_receive(g_unix_peek);
+    ASSERT_NOT_NULL(peeker);
+    EXPECT_TRUE(blocks_before_deadline(peeker));
+
+    prepare_unix_receive(page, reader, 16, 0);
+    sched::task* receiver = start_unix_receive();
+    ASSERT_NOT_NULL(receiver);
+    EXPECT_TRUE(blocks_before_deadline(receiver));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "hi", 2);
+    EXPECT_EQ(unix_send(page, pair.a, 2, 0), static_cast<int64_t>(2));
+    EXPECT_TRUE(spin_wait(g_unix_receive.done));
+    EXPECT_EQ(g_unix_receive.result, static_cast<int64_t>(2));
+
+    // Closing the sender ends the stream for the peek, whether or not it saw the bytes first
+    EXPECT_EQ(resource::close(task, pair.a), resource::OK);
+    EXPECT_TRUE(spin_wait(g_unix_peek.done));
+    EXPECT_TRUE(g_unix_peek.result == 2 || g_unix_peek.result == 0);
+
+    unpin(receiver);
+    unpin(peeker);
+    resource::resource_release(reader);
+    EXPECT_EQ(resource::close(task, pair.b), resource::OK);
+}
+
+// Two receivers drain one stream at once, one through read and one through recv
+constexpr size_t SHARED_STREAM_BYTES = 65536;
+constexpr size_t SHARED_READ_SIZE    = 97;
+
+struct shared_read_run {
+    mm::mm_context*            ctx;
+    uintptr_t                  buf;
+    const uint8_t*             view;
+    resource::resource_object* reader;
+    bool                       use_read;
+    uint64_t                   total;
+    uint64_t                   sum;
+    int64_t                    last;
+    sync::atomic<uint32_t>     done;
+};
+
+static shared_read_run g_shared_reads[2];
+
+static void run_shared_read(void* arg) {
+    shared_read_run& run = *static_cast<shared_read_run*>(arg);
+    sched::task* self = sched::current();
+    resource::handle_t h = -1;
+    run.last = syscall::EBADF;
+
+    if (resource::alloc_handle(self->handles, run.reader, resource::resource_type::SOCKET,
+                               resource::RIGHT_READ, &h) == resource::HANDLE_OK) {
+        {
+            user_space_scope scope(run.ctx);
+            int64_t n = 1;
+            while (n > 0) {
+                n = run.use_read ? sys_read(static_cast<uint64_t>(h), run.buf, SHARED_READ_SIZE, 0, 0, 0)
+                                 : sys_recvfrom(static_cast<uint64_t>(h), run.buf, SHARED_READ_SIZE, 0, 0, 0);
+                for (int64_t i = 0; i < n; i++) {
+                    run.sum += run.view[i];
+                }
+
+                run.total += n > 0 ? static_cast<uint64_t>(n) : 0;
+            }
+
+            run.last = n;
+        }
+
+        (void)resource::close(self, h);
+    }
+
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+static void start_shared_reads(user_page& page, resource::resource_object* reader) {
+    for (uint32_t i = 0; i < 2; i++) {
+        shared_read_run& run = g_shared_reads[i];
+        size_t at = i == 0 ? MSG_BUF_A : MSG_BUF_B;
+        run.ctx = page.ctx;
+        run.buf = page.addr + at;
+        run.view = page.at<uint8_t>(at);
+        run.reader = reader;
+        run.use_read = i == 0;
+        run.total = 0;
+        run.sum = 0;
+        run.last = 0;
+        run.done.store_relaxed(0);
+        RUN_ELEVATED({
+            sched::task* t = sched::create_kernel_task(run_shared_read, &run, "shared_read", sched::TASK_FLAG_ELEVATED);
+            if (t) {
+                sched::enqueue(t);
+            }
+        });
+    }
+}
+
+// Both receivers reach the end of the stream, having taken every byte between them exactly once
+static void expect_shared_reads_took(size_t bytes, uint64_t sum) {
+    EXPECT_TRUE(spin_wait(g_shared_reads[0].done));
+    EXPECT_TRUE(spin_wait(g_shared_reads[1].done));
+    EXPECT_EQ(g_shared_reads[0].total + g_shared_reads[1].total, static_cast<uint64_t>(bytes));
+    EXPECT_EQ(g_shared_reads[0].sum + g_shared_reads[1].sum, sum);
+    EXPECT_EQ(g_shared_reads[0].last, static_cast<int64_t>(0));
+    EXPECT_EQ(g_shared_reads[1].last, static_cast<int64_t>(0));
+}
+
+TEST(socket_syscall, concurrent_unix_stream_receivers_take_each_byte_exactly_once) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    resource::resource_object* writer = nullptr;
+    resource::resource_object* reader = nullptr;
+    ASSERT_EQ(resource::get_handle_object(task->handles, pair.a, resource::RIGHT_WRITE, &writer),
+              resource::HANDLE_OK);
+    ASSERT_EQ(resource::get_handle_object(task->handles, pair.b, resource::RIGHT_READ, &reader),
+              resource::HANDLE_OK);
+    start_shared_reads(page, reader);
+
+    // The runner cannot block, so it feeds the stream without waiting for room
+    uint8_t piece[512];
+    size_t sent = 0;
+    uint64_t sent_sum = 0;
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (sent < SHARED_STREAM_BYTES && clock::now_ns() < deadline) {
+        size_t len = SHARED_STREAM_BYTES - sent < sizeof(piece) ? SHARED_STREAM_BYTES - sent : sizeof(piece);
+        for (size_t i = 0; i < len; i++) {
+            piece[i] = stream_pattern(sent + i);
+        }
+
+        ssize_t n = writer->ops->socket->sendto(writer, piece, len, inet::MSG_DONTWAIT, nullptr, 0);
+        for (ssize_t i = 0; i < n; i++) {
+            sent_sum += piece[i];
+        }
+
+        sent += n > 0 ? static_cast<size_t>(n) : 0;
+    }
+    EXPECT_EQ(sent, SHARED_STREAM_BYTES);
+
+    // Closing the writing end ends the stream for both receivers
+    resource::resource_release(writer);
+    EXPECT_EQ(resource::close(task, pair.a), resource::OK);
+    expect_shared_reads_took(SHARED_STREAM_BYTES, sent_sum);
+
+    resource::resource_release(reader);
+    EXPECT_EQ(resource::close(task, pair.b), resource::OK);
 }

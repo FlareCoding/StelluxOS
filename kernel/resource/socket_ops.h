@@ -3,6 +3,8 @@
 
 #include "resource/resource.h"
 
+namespace sync { struct mutex; }
+
 namespace resource {
 
 constexpr int32_t SHUT_RD   = 0;
@@ -24,25 +26,28 @@ using setsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
 using getsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
                                   int32_t optname, void* optval, size_t* optlen);
 using shutdown_fn = int32_t (*)(resource_object* obj, int32_t how);
+using receive_lock_fn = sync::mutex* (*)(resource_object* obj);
 
 /**
  * Operations only sockets have. Every entry is nullable, the syscall layer
  * reports EOPNOTSUPP for a missing one. `getname` returns the local address,
  * or the peer's when `peer` is set. `stream` marks a byte stream, whose
- * requests the syscall layer may hand over in pieces.
+ * requests the syscall layer may hand over in pieces, holding the stream's
+ * `receive_lock`, when it has one, across all the pieces of one receive.
  */
 struct socket_ops {
-    bool          stream = false;
-    bind_fn       bind = nullptr;
-    listen_fn     listen = nullptr;
-    accept_fn     accept = nullptr;
-    connect_fn    connect = nullptr;
-    sendto_fn     sendto = nullptr;
-    recvfrom_fn   recvfrom = nullptr;
-    getname_fn    getname = nullptr;
-    setsockopt_fn setsockopt = nullptr;
-    getsockopt_fn getsockopt = nullptr;
-    shutdown_fn   shutdown = nullptr;
+    bool            stream = false;
+    bind_fn         bind = nullptr;
+    listen_fn       listen = nullptr;
+    accept_fn       accept = nullptr;
+    connect_fn      connect = nullptr;
+    sendto_fn       sendto = nullptr;
+    recvfrom_fn     recvfrom = nullptr;
+    getname_fn      getname = nullptr;
+    setsockopt_fn   setsockopt = nullptr;
+    getsockopt_fn   getsockopt = nullptr;
+    shutdown_fn     shutdown = nullptr;
+    receive_lock_fn receive_lock = nullptr;
 };
 
 // The socket operations of `obj`, or nullptr when it is not a socket

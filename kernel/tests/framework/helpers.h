@@ -11,6 +11,7 @@
 #include "mm/vma.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
+#include "dynpriv/dynpriv.h"
 
 namespace test_helpers {
 
@@ -97,6 +98,39 @@ inline void brief_delay() {
         asm volatile("" : "+r"(i));
         i++;
     }
+}
+
+// Starts an elevated kernel task pinned by a reference, so its state can be watched until unpin
+inline sched::task* start_pinned_task(void (*entry)(void*), void* arg, const char* name) {
+    sched::task* t = nullptr;
+    RUN_ELEVATED({
+        t = sched::create_kernel_task(entry, arg, name, sched::TASK_FLAG_ELEVATED);
+        if (t) {
+            t->add_ref();
+            sched::enqueue(t);
+        }
+    });
+
+    return t;
+}
+
+inline void unpin(sched::task* t) {
+    RUN_ELEVATED({
+        if (t->release()) {
+            sched::task::ref_destroy(t);
+        }
+    });
+}
+
+inline bool blocks_before_deadline(sched::task* t) {
+    uint64_t deadline = clock::now_ns() + SPIN_TIMEOUT_NS;
+    while (t->state.load_acquire() != sched::TASK_STATE_BLOCKED) {
+        if (clock::now_ns() > deadline) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 } // namespace test_helpers

@@ -6,6 +6,9 @@
 #include "sched/sched.h"
 #include "signals/signal.h"
 
+// Wakes go to every waiter, since one that only peeks, or takes part of what it
+// waited for, leaves the rest to the others
+
 static inline size_t readable_bytes(const ring_buffer* rb) {
     return (rb->head - rb->tail) & (rb->capacity - 1);
 }
@@ -114,7 +117,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t
     rb->tail += to_read;
 
     sync::spin_unlock_irqrestore(rb->lock, irq);
-    sync::wake_one(rb->write_wq);
+    sync::wake_all(rb->write_wq);
 
     return static_cast<ssize_t>(to_read);
 }
@@ -185,7 +188,7 @@ __PRIVILEGED_CODE size_t ring_buffer_skip(ring_buffer* rb, size_t len) {
     sync::spin_unlock_irqrestore(rb->lock, irq);
 
     if (to_skip > 0) {
-        sync::wake_one(rb->write_wq);
+        sync::wake_all(rb->write_wq);
     }
 
     return to_skip;
@@ -239,7 +242,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
     rb->head += to_write;
 
     sync::spin_unlock_irqrestore(rb->lock, irq);
-    sync::wake_one(rb->read_wq);
+    sync::wake_all(rb->read_wq);
 
     return static_cast<ssize_t>(to_write);
 }
@@ -299,7 +302,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* 
     rb->head += len;
 
     sync::spin_unlock_irqrestore(rb->lock, irq);
-    sync::wake_one(rb->read_wq);
+    sync::wake_all(rb->read_wq);
 
     return static_cast<ssize_t>(len);
 }
