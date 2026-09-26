@@ -84,13 +84,19 @@ void record::ref_destroy(record* self) {
     case record_kind::request:
         heap::ufree_delete(static_cast<tcp_request*>(self));
         break;
-    case record_kind::connection:
-        clear_out_of_order_locked(static_cast<tcp_conn*>(self));
-        static_cast<tcp_conn*>(self)->rcv_queue.clear();
-        static_cast<tcp_conn*>(self)->snd_queue.clear();
-        static_cast<tcp_conn*>(self)->sent.clear();
-        heap::ufree_delete(static_cast<tcp_conn*>(self));
+    case record_kind::connection: {
+        tcp_conn* conn = static_cast<tcp_conn*>(self);
+        if (conn->congestion->release) {
+            conn->congestion->release(conn);
+        }
+
+        clear_out_of_order_locked(conn);
+        conn->rcv_queue.clear();
+        conn->snd_queue.clear();
+        conn->sent.clear();
+        heap::ufree_delete(conn);
         break;
+    }
     case record_kind::timewait:
         heap::ufree_delete(static_cast<tcp_timewait*>(self));
         break;
@@ -157,11 +163,21 @@ void update_receive_window_locked(tcp_conn* conn) {
 }
 
 void configure_send_path_locked(tcp_conn* conn) {
-    uint32_t floor = 2u * conn->snd_mss > INITIAL_WINDOW_CAP ? 2u * conn->snd_mss : INITIAL_WINDOW_CAP;
-    uint32_t window = INITIAL_WINDOW_SEGMENTS * conn->snd_mss;
-    conn->cwnd = window < floor ? window : floor;
+    conn->cwnd = initial_window(conn->snd_mss);
+    conn->ssthresh = SSTHRESH_INFINITE;
+    conn->bytes_acked = 0;
+    conn->max_in_flight = 0;
+    conn->in_flight_window_end = conn->snd_nxt;
+    conn->last_data_sent_ns = now_ns();
+    conn->cwnd_limited = false;
+    conn->recovery = recovery_state::open;
+    conn->high_seq = conn->iss;
+    conn->frto_step = 0;
     conn->snd_sml = conn->iss;
     conn->sent.set_cap(conn->snd_queue.limit() * CHUNK_PAYLOAD / conn->snd_mss + SENT_SEGMENT_MARGIN);
+    if (conn->congestion->init) {
+        conn->congestion->init(conn);
+    }
 }
 
 void mark_ack_sent_locked(tcp_conn* conn) {
@@ -207,8 +223,10 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     conn->quick_acks = MAX_QUICKACKS;
     conn->rto_ns = TIMEOUT_INIT_NS;
     conn->peer_acked_ns = now_ns();
+    conn->congestion = default_congestion_ops();
     timer::init_deadline_timer(&conn->send_timer, on_send_timer);
     timer::init_deadline_timer(&conn->ack_timer, on_ack_timer);
+    timer::init_deadline_timer(&conn->keepalive_timer, on_keepalive_timer);
 
     return conn;
 }
@@ -267,6 +285,7 @@ void fail_connection(tcp_conn* conn, int32_t error) {
 void retire_connection(tcp_conn* conn) {
     disarm_timer(conn, &conn->send_timer);
     disarm_timer(conn, &conn->ack_timer);
+    disarm_timer(conn, &conn->keepalive_timer);
     (void)remove(conn);
 
     RUN_ELEVATED({

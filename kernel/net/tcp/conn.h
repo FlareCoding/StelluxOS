@@ -4,6 +4,7 @@
 #include "net/tcp/record.h"
 #include "net/tcp/byte_queue.h"
 #include "net/tcp/sent_segment.h"
+#include "net/tcp/congestion.h"
 #include "net/tcp/wire.h"
 #include "net/packet.h"
 #include "common/list.h"
@@ -38,11 +39,15 @@ constexpr uint64_t DELACK_NS          = 40000000ULL; // RFC 1122 4.2.3.2 allows 
 constexpr uint8_t  MAX_QUICKACKS      = 16;
 constexpr size_t   SND_CHUNKS_INITIAL = MIN_BUF / CHUNK_PAYLOAD;
 constexpr size_t   SENT_SEGMENT_MARGIN = 8;
-constexpr uint32_t INITIAL_WINDOW_SEGMENTS = 10; // RFC 6928
-constexpr uint32_t INITIAL_WINDOW_CAP  = 14600;  // RFC 6928
+constexpr uint8_t  DELIVERY_PROBLEM_RETRIES = 3; // RFC 1122 4.2.3.5 R1
 constexpr uint8_t  DATA_RETRIES       = 15;      // RFC 1122 4.2.3.5 R2
 constexpr size_t   MAX_BURST          = 16;
 constexpr size_t   MAX_OOO_PACKETS    = 64;
+constexpr uint16_t KEEPALIVE_IDLE_S     = 7200; // RFC 9293 3.8.4, no less than two hours
+constexpr uint16_t KEEPALIVE_INTERVAL_S = 75;
+constexpr uint8_t  KEEPALIVE_PROBES     = 9;
+constexpr int32_t  MAX_KEEPALIVE_S      = 32767;
+constexpr int32_t  MAX_KEEPALIVE_PROBES = 127;
 
 /**
  * Connection states of RFC 9293 3.3.2. `listen` belongs to a listener and
@@ -77,6 +82,10 @@ enum class timer_kind : uint8_t {
 struct conn_options {
     bool     nodelay;
     uint16_t snd_mss_cap; // Zero for none
+    bool     keepalive;
+    uint16_t keepalive_idle_s     = KEEPALIVE_IDLE_S;
+    uint16_t keepalive_interval_s = KEEPALIVE_INTERVAL_S;
+    uint8_t  keepalive_probes     = KEEPALIVE_PROBES;
 };
 
 /**
@@ -142,6 +151,15 @@ struct tcp_conn : record {
     timer::deadline_timer ack_timer;
     bool                  ack_timer_armed;
     uint64_t              ack_timer_deadline_ns;
+
+    // Keepalive (RFC 9293 3.8.4), off unless the socket asked
+    timer::deadline_timer keepalive_timer;
+    bool                  keepalive_armed;
+    uint64_t              keepalive_deadline_ns;
+    bool                  keepalive;
+    uint16_t              keepalive_idle_s;
+    uint16_t              keepalive_interval_s;
+    uint8_t               keepalive_probes;
     bool                  ack_pending;
     uint8_t               quick_acks;   // Immediate ACKs left before delaying begins
     uint32_t              rcv_acked;    // rcv_nxt as of the last ACK sent
@@ -160,14 +178,31 @@ struct tcp_conn : record {
     byte_queue       snd_queue;
     sent_segments    sent;
     sync::wait_queue tx_wq; // writers
-    uint32_t         cwnd;
     uint32_t         snd_sml; // End of the last partial segment sent
     bool             nodelay;
     bool             fin_pending;
 
+    // Congestion control (RFC 5681), windows in bytes
+    uint32_t              cwnd;
+    uint32_t              ssthresh;
+    uint32_t              prior_cwnd;
+    uint32_t              prior_ssthresh;
+    uint32_t              high_seq;    // RFC 6582 recover
+    uint32_t              bytes_acked; // RFC 3465, toward the next increase
+    uint32_t              max_in_flight;
+    uint32_t              in_flight_window_end;
+    uint64_t              last_data_sent_ns;
+    bool                  cwnd_limited;
+    uint8_t               dupacks;
+    uint8_t               frto_step;   // RFC 5682 2.2, zero when not in use
+    recovery_state        recovery;
+    const congestion_ops* congestion;
+    alignas(8) uint8_t    congestion_state[CONGESTION_STATE_SIZE];
+
     resource::resource_object* owner;
     sync::wait_queue           conn_wq; // connect and close waiters
     int32_t                    pending_error;
+    int32_t                    soft_error;
     list::node                 accept_link;
 };
 
@@ -267,6 +302,10 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface);
 inline void apply_options(tcp_conn* conn, const conn_options& options) {
     conn->nodelay = options.nodelay;
     conn->snd_mss_cap = options.snd_mss_cap;
+    conn->keepalive = options.keepalive;
+    conn->keepalive_idle_s = options.keepalive_idle_s;
+    conn->keepalive_interval_s = options.keepalive_interval_s;
+    conn->keepalive_probes = options.keepalive_probes;
 }
 
 /**

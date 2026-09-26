@@ -37,6 +37,19 @@ void delay_ack_locked(tcp_conn* conn);
 void on_ack_timer(timer::deadline_timer* timer);
 
 /**
+ * @brief Arms the keepalive timer for the end of the idle time, counted from
+ * the peer's last acknowledgment, when the socket asked for keepalives and
+ * the connection is synchronized. Caller holds the lock.
+ */
+void arm_keepalive_locked(tcp_conn* conn);
+
+/**
+ * @brief The keepalive timer's callback (RFC 9293 3.8.4): probes an idle
+ * connection at each interval and resets it once the probes go unanswered.
+ */
+void on_keepalive_timer(timer::deadline_timer* timer);
+
+/**
  * @brief Schedules `timer` for `deadline_ns`, holding one reference on `rec`
  * for as long as the timer is scheduled, however often it is moved. The caller
  * records the deadline in `rec` so the callback can tell a live arming from a

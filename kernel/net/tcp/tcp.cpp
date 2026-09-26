@@ -6,10 +6,15 @@
 #include "net/tcp/output.h"
 #include "net/tcp/timewait.h"
 #include "net/tcp/info.h"
+#include "net/tcp/seq.h"
+#include "net/icmp.h"
 #include "net/net.h"
 #include "net/interface.h"
 #include "net/eth.h"
 #include "net/byteorder.h"
+#include "resource/resource.h"
+#include "sync/spinlock.h"
+#include "dynpriv/dynpriv.h"
 #include "common/logging.h"
 
 namespace net {
@@ -54,12 +59,71 @@ static int32_t send_reset(interface* iface, const tuple& key, const tcp_header* 
 }
 
 int32_t init() {
+    init_congestion();
+
     int32_t rc = init_tables();
     if (rc != OK) {
         return rc;
     }
 
     return init_sequence_numbers();
+}
+
+// RFC 1122 4.2.3.9 as RFC 5927 4.2 narrows it, OK for an error TCP ignores
+static int32_t icmp_error_code(uint8_t type, uint8_t code) {
+    switch (type) {
+    case icmp::TYPE_DEST_UNREACHABLE:
+        switch (code) {
+        case icmp::CODE_NET_UNREACHABLE:
+            return resource::ERR_NETUNREACH;
+        case icmp::CODE_PROTOCOL_UNREACHABLE:
+        case icmp::CODE_PORT_UNREACHABLE:
+            return resource::ERR_CONNREFUSED;
+        case icmp::CODE_FRAGMENTATION_NEEDED:
+            return resource::OK;
+        default:
+            return resource::ERR_HOSTUNREACH;
+        }
+    case icmp::TYPE_TIME_EXCEEDED:
+        return resource::ERR_HOSTUNREACH;
+    case icmp::TYPE_PARAMETER_PROBLEM:
+        return resource::ERR_PROTO;
+    default:
+        return resource::OK;
+    }
+}
+
+void icmp_error(uint8_t type, uint8_t code, const ipv4::ipv4_header* inner, const uint8_t* segment,
+                size_t segment_len) {
+    int32_t error = icmp_error_code(type, code);
+    if (error == resource::OK || segment_len < icmp::ERROR_PAYLOAD_LEN) {
+        return;
+    }
+
+    const tcp_header* hdr = reinterpret_cast<const tcp_header*>(segment);
+    tuple key = {inner->src, inner->dst, ntohs(hdr->src_port), ntohs(hdr->dst_port)};
+    rc::strong_ref<record> rec = lookup(key);
+    if (!rec || rec->kind != record_kind::connection) {
+        return;
+    }
+
+    tcp_conn* conn = static_cast<tcp_conn*>(rec.ptr());
+    uint32_t seq = ntohl(hdr->seq);
+    bool handshake = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        bool outstanding = seq_geq(seq, conn->snd_una) && seq_lt(seq, conn->snd_nxt);
+        if (outstanding) {
+            handshake = conn->state == tcp_state::syn_sent || conn->state == tcp_state::syn_rcvd;
+            if (is_synchronized(conn->state)) {
+                conn->soft_error = error;
+            }
+        }
+    });
+
+    if (handshake) {
+        fail_connection(conn, error);
+    }
 }
 
 int32_t input(packet* pkt) {
