@@ -5,6 +5,7 @@
 #include "net/tcp/tcp.h"
 #include "net/tcp/wire.h"
 #include "net/arp.h"
+#include "net/icmp.h"
 #include "net/checksum.h"
 #include "net/byteorder.h"
 
@@ -22,6 +23,8 @@ struct peer {
     net::packet* segment(uint8_t flags, uint32_t seq, uint32_t ack,
                          const net::tcp::tcp_options& opts = {},
                          const void* payload = nullptr, size_t payload_len = 0) const;
+
+    net::packet* icmp_error(uint8_t type, uint8_t code, uint32_t offending_seq, uint16_t next_hop_mtu = 0) const;
 
     net::packet* syn(uint32_t seq) const { return segment(net::tcp::FLAG_SYN, seq, 0); }
     net::packet* ack(uint32_t seq, uint32_t ack_num) const { return segment(net::tcp::FLAG_ACK, seq, ack_num); }
@@ -106,6 +109,68 @@ inline net::packet* peer::segment(uint8_t flags, uint32_t seq, uint32_t ack,
     }
 
     hdr->checksum = htons(tcp::compute_checksum(addr, host, bytes, segment_len));
+
+    return pkt;
+}
+
+inline net::packet* peer::icmp_error(uint8_t type, uint8_t code, uint32_t offending_seq, uint16_t next_hop_mtu) const {
+    using namespace net;
+
+    packet* pkt = packet::alloc();
+    if (!pkt) {
+        return nullptr;
+    }
+
+    pkt->set_iface(link);
+
+    eth::eth_header* link_hdr = reinterpret_cast<eth::eth_header*>(pkt->put(eth::HEADER_LEN));
+    link_hdr->dest = link->mac();
+    link_hdr->src = mac;
+    link_hdr->type = htons(eth::TYPE_IPV4);
+    
+    pkt->mark_link_header();
+    (void)pkt->pull(eth::HEADER_LEN);
+
+    size_t offending_len = ipv4::HEADER_LEN + icmp::ERROR_PAYLOAD_LEN;
+    size_t message_len = icmp::HEADER_LEN + offending_len;
+
+    ipv4::ipv4_header* ip = reinterpret_cast<ipv4::ipv4_header*>(pkt->put(ipv4::HEADER_LEN));
+    ip->set_version_ihl(ipv4::VERSION, ipv4::MIN_IHL);
+    ip->tos = 0;
+    ip->total_len = htons(static_cast<uint16_t>(ipv4::HEADER_LEN + message_len));
+    ip->id = 0;
+    ip->fl_frag_off = htons(ipv4::FLAG_DF);
+    ip->ttl = ipv4::DEFAULT_TTL;
+    ip->proto = ipv4::PROTO_ICMP;
+    ip->src = addr;
+    ip->dst = host;
+    ip->checksum = 0;
+    ip->checksum = htons(checksum(ip, ipv4::HEADER_LEN));
+
+    pkt->mark_network_header();
+    (void)pkt->pull(ipv4::HEADER_LEN);
+
+    uint8_t* bytes = pkt->put(message_len);
+    icmp::icmp_header* hdr = reinterpret_cast<icmp::icmp_header*>(bytes);
+    *hdr = {};
+    hdr->type = type;
+    hdr->code = code;
+    hdr->frag.next_hop_mtu = htons(next_hop_mtu);
+
+    ipv4::ipv4_header* offending = reinterpret_cast<ipv4::ipv4_header*>(bytes + icmp::HEADER_LEN);
+    *offending = {};
+    offending->set_version_ihl(ipv4::VERSION, ipv4::MIN_IHL);
+    offending->total_len = htons(static_cast<uint16_t>(ipv4::HEADER_LEN + tcp::HEADER_LEN));
+    offending->proto = ipv4::PROTO_TCP;
+    offending->src = host;
+    offending->dst = addr;
+
+    tcp::tcp_header* offending_tcp = reinterpret_cast<tcp::tcp_header*>(bytes + icmp::HEADER_LEN + ipv4::HEADER_LEN);
+    offending_tcp->src_port = htons(host_port);
+    offending_tcp->dst_port = htons(port);
+    offending_tcp->seq = htonl(offending_seq);
+
+    hdr->checksum = htons(checksum(bytes, message_len));
 
     return pkt;
 }

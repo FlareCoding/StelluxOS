@@ -1,4 +1,5 @@
 #include "net/icmp.h"
+#include "net/tcp/tcp.h"
 #include "net/icmp_socket.h"
 #include "net/interface.h"
 #include "net/route.h"
@@ -20,6 +21,25 @@ static int32_t reject(interface* iface, packet* pkt, int32_t rc) {
     iface->record_iface_error();
     packet::free(pkt);
     return rc;
+}
+
+// RFC 792: the error carries the offending datagram's IP header and the start of its segment
+static void deliver_error(const packet* pkt, const icmp_header* hdr) {
+    const uint8_t* body = pkt->data() + HEADER_LEN;
+    size_t body_len = pkt->length() - HEADER_LEN;
+    if (body_len < ipv4::HEADER_LEN) {
+        return;
+    }
+
+    const ipv4::ipv4_header* inner = reinterpret_cast<const ipv4::ipv4_header*>(body);
+    size_t inner_len = inner->header_len();
+    if (inner->version() != ipv4::VERSION || inner_len < ipv4::HEADER_LEN || body_len < inner_len) {
+        return;
+    }
+
+    if (inner->proto == ipv4::PROTO_TCP) {
+        tcp::icmp_error(hdr->type, hdr->code, inner, body + inner_len, body_len - inner_len);
+    }
 }
 
 int32_t input(packet* pkt) {
@@ -72,6 +92,7 @@ int32_t input(packet* pkt) {
     case TYPE_PARAMETER_PROBLEM:
         log::debug("icmp: error type %u code %u from %u.%u.%u.%u",
                   hdr->type, hdr->code, src[0], src[1], src[2], src[3]);
+        deliver_error(pkt, hdr);
         packet::free(pkt);
         return OK;
     default:
