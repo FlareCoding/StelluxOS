@@ -7,6 +7,7 @@
 #include "net/tcp/recovery.h"
 #include "net/tcp/output.h"
 #include "net/net.h"
+#include "resource/resource.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
 #include "dynpriv/dynpriv.h"
@@ -236,6 +237,37 @@ TEST(tcp_recovery_rto, duplicates_during_loss_recovery_start_no_fast_retransmit)
     EXPECT_EQ(t.conn->dupacks, 4);
     EXPECT_EQ(t.conn->cwnd, PEER_MSS);
     EXPECT_EQ(lp.link.frames_sent(), 0u);
+}
+
+TEST(tcp_recovery_rto, three_timeouts_record_a_delivery_problem_that_the_next_acknowledgment_clears) {
+    linked_peer lp;
+    timing_out t(lp, 10);
+
+    t.fire_rto();
+    t.fire_rto();
+    EXPECT_EQ(t.conn->soft_error, OK);
+    t.fire_rto();
+    EXPECT_EQ(t.conn->soft_error, resource::ERR_TIMEDOUT);
+    EXPECT_EQ(t.conn->state, tcp_state::established);
+    EXPECT_EQ(t.conn->pending_error, OK);
+
+    EXPECT_EQ(t.ack(PEER_MSS), OK);
+    EXPECT_EQ(t.conn->soft_error, OK);
+}
+
+TEST(tcp_recovery_rto, the_connection_dies_of_the_problem_it_recorded) {
+    linked_peer lp;
+    timing_out t(lp, 10);
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(t.conn->lock);
+        t.conn->soft_error = resource::ERR_HOSTUNREACH;
+    });
+
+    for (int i = 0; i <= DATA_RETRIES; i++) {
+        t.fire_rto();
+    }
+    EXPECT_EQ(t.conn->state, tcp_state::closed);
+    EXPECT_EQ(t.conn->pending_error, resource::ERR_HOSTUNREACH);
 }
 
 TEST(tcp_recovery_rto, a_timeout_during_fast_recovery_ends_it_and_moves_the_recovery_point) {

@@ -198,6 +198,10 @@ void on_send_timer(timer::deadline_timer* timer) {
                 action = exhausted;
             } else {
                 conn->retransmits++;
+                if (conn->retransmits >= DELIVERY_PROBLEM_RETRIES && conn->soft_error == resource::OK) {
+                    conn->soft_error = resource::ERR_TIMEDOUT;
+                }
+
                 back_off_locked(conn);
                 rebuilt = retransmit_oldest_locked(conn);
                 arm_send_timer_locked(conn, timer_kind::rto);
@@ -208,7 +212,7 @@ void on_send_timer(timer::deadline_timer* timer) {
                 conn->total_retransmits++;
             } else if (action == send_action::reset || action == send_action::give_up) {
                 conn->state = tcp_state::closed;
-                conn->pending_error = resource::ERR_TIMEDOUT;
+                conn->pending_error = conn->soft_error != resource::OK ? conn->soft_error : resource::ERR_TIMEDOUT;
             }
         }
     });
