@@ -3,6 +3,7 @@
 #include "stlx_unit_test.h"
 #include "harness.h"
 #include "net/tcp/conn.h"
+#include "net/tcp/listen.h"
 #include "net/tcp/output.h"
 #include "net/icmp.h"
 #include "net/net.h"
@@ -51,6 +52,46 @@ struct informed {
             (void)conn->snd_queue.append(g_bytes, len);
         });
         (void)output(conn.ptr());
+    }
+
+    int32_t error(uint8_t type, uint8_t code, uint32_t offending_seq) {
+        return icmp::input(lp.remote.icmp_error(type, code, offending_seq));
+    }
+};
+
+// A listener with one request whose SYN-ACK is outstanding
+struct answering {
+    tcp_listener* listener;
+    linked_peer&  lp;
+
+    explicit answering(linked_peer& link) : lp(link) {
+        listener = alloc_listener(endpoint{ipv4::UNSPECIFIED_ADDR, lp.remote.host_port, nullptr, false});
+        listener->backlog = 8;
+        listener_insert(listener);
+        input(lp.remote.segment(FLAG_SYN, PEER_ISS, 0, tcp_options{}));
+        lp.link.clear_frames();
+    }
+
+    ~answering() {
+        listener_close(listener);
+        if (listener->release()) {
+            tcp_listener::ref_destroy(listener);
+        }
+    }
+
+    uint16_t request_count() const {
+        uint16_t count = 0;
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(listener->lock);
+            count = listener->request_count;
+        });
+
+        return count;
+    }
+
+    uint32_t iss() const {
+        rc::strong_ref<record> rec = lookup(key_of(lp.remote));
+        return rec && rec->kind == record_kind::request ? static_cast<const tcp_request*>(rec.ptr())->iss : 0;
     }
 
     int32_t error(uint8_t type, uint8_t code, uint32_t offending_seq) {
@@ -126,6 +167,27 @@ TEST(tcp_icmp, an_error_with_nothing_outstanding_or_about_another_port_is_ignore
     EXPECT_EQ(icmp::input(other.icmp_error(icmp::TYPE_DEST_UNREACHABLE, icmp::CODE_HOST_UNREACHABLE, c.conn->snd_una)), OK);
     EXPECT_EQ(c.conn->soft_error, OK);
     EXPECT_EQ(c.conn->state, tcp_state::established);
+}
+
+TEST(tcp_icmp, an_unreachable_client_during_a_listen_handshake_drops_the_request) {
+    linked_peer lp;
+    answering a(lp);
+    ASSERT_EQ(a.request_count(), 1);
+
+    EXPECT_EQ(a.error(icmp::TYPE_DEST_UNREACHABLE, icmp::CODE_HOST_UNREACHABLE, a.iss()), OK);
+    EXPECT_EQ(a.request_count(), 0);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+}
+
+TEST(tcp_icmp, an_error_not_about_the_synack_leaves_the_request) {
+    linked_peer lp;
+    answering a(lp);
+
+    EXPECT_EQ(a.error(icmp::TYPE_DEST_UNREACHABLE, icmp::CODE_HOST_UNREACHABLE, a.iss() + 1), OK);
+    EXPECT_EQ(a.error(icmp::TYPE_DEST_UNREACHABLE, icmp::CODE_FRAGMENTATION_NEEDED, a.iss()), OK);
+    EXPECT_EQ(a.request_count(), 1);
+    EXPECT_TRUE(lookup(key_of(lp.remote)));
 }
 
 TEST(tcp_icmp, fragmentation_needed_is_about_the_path_and_not_an_error) {

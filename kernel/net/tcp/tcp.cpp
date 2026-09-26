@@ -104,13 +104,17 @@ void icmp_error(uint8_t type, uint8_t code, uint16_t next_hop_mtu, const ipv4::i
 
     const tcp_header* hdr = reinterpret_cast<const tcp_header*>(segment);
     tuple key = {inner->src, inner->dst, ntohs(hdr->src_port), ntohs(hdr->dst_port)};
+    uint32_t seq = ntohl(hdr->seq);
     rc::strong_ref<record> rec = lookup(key);
+    if (rec && rec->kind == record_kind::request && !fragmentation) {
+        request_error(static_cast<tcp_request*>(rec.ptr()), seq);
+        return;
+    }
     if (!rec || rec->kind != record_kind::connection) {
         return;
     }
 
     tcp_conn* conn = static_cast<tcp_conn*>(rec.ptr());
-    uint32_t seq = ntohl(hdr->seq);
     bool handshake = false;
     bool resend = false;
     RUN_ELEVATED({

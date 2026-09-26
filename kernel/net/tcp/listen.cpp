@@ -654,6 +654,19 @@ static int32_t request_reset(tcp_request* request, packet* pkt, const tcp_header
     return OK;
 }
 
+void request_error(tcp_request* request, uint32_t offending_seq) {
+    uint32_t iss = 0;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(request->lock);
+        iss = request->iss;
+    });
+
+    if (offending_seq == iss) {
+        retire_request(request);
+        discard_request(request);
+    }
+}
+
 int32_t request_input(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {
     if (hdr->flags & FLAG_RST) {
         return request_reset(request, pkt, hdr);

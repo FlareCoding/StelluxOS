@@ -150,6 +150,13 @@ int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr,
 int32_t request_input(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts);
 
 /**
+ * @brief Drops `request` when an ICMP error names its SYN-ACK by
+ * `offending_seq`, silently, since accept has no way to report the error
+ * (RFC 1122 4.2.3.9).
+ */
+void request_error(tcp_request* request, uint32_t offending_seq);
+
+/**
  * @brief Takes the oldest connection waiting on `listener`, with the reference
  * the queue held.
  * @return The connection, or an empty reference when none is waiting.
