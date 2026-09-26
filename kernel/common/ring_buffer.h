@@ -47,6 +47,28 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t len, bool nonblock = false);
 
 /**
+ * Wait until the buffer holds data or its writer has closed, without reading.
+ * @return Readable bytes, 0 at end of stream, RB_ERR_AGAIN when nonblock finds
+ *   nothing, or RB_ERR_INTR when a signal interrupted the wait.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_wait_readable(ring_buffer* rb, bool nonblock);
+
+/**
+ * Copy up to `len` queued bytes without consuming them. Never blocks.
+ * @return Bytes copied.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE size_t ring_buffer_peek(ring_buffer* rb, uint8_t* buf, size_t len);
+
+/**
+ * Consume up to `len` queued bytes without copying them. Never blocks.
+ * @return Bytes consumed.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE size_t ring_buffer_skip(ring_buffer* rb, size_t len);
+
+/**
  * Write to ring buffer. Blocks when full unless nonblock is true.
  * @return Bytes written (> 0), RB_ERR_AGAIN if nonblock and full, RB_ERR_PIPE if reader closed.
  * @note Privilege: **required**
