@@ -14,6 +14,21 @@ static inline size_t writable_bytes(const ring_buffer* rb) {
     return rb->capacity - 1 - readable_bytes(rb);
 }
 
+// Copies `len` bytes from the read position without consuming them. The caller must
+// hold the lock and know that `len` bytes are queued.
+static void copy_queued(const ring_buffer* rb, uint8_t* buf, size_t len) {
+    size_t tail_idx = rb->tail & (rb->capacity - 1);
+    size_t first = rb->capacity - tail_idx;
+    if (first > len) {
+        first = len;
+    }
+
+    string::memcpy(buf, rb->data + tail_idx, first);
+    if (first < len) {
+        string::memcpy(buf + first, rb->data, len - first);
+    }
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -95,23 +110,85 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t
     }
 
     size_t to_read = avail < len ? avail : len;
-    size_t tail_idx = rb->tail & (rb->capacity - 1);
-    size_t first = rb->capacity - tail_idx;
-    if (first > to_read) {
-        first = to_read;
-    }
-
-    string::memcpy(buf, rb->data + tail_idx, first);
-    if (first < to_read) {
-        string::memcpy(buf + first, rb->data, to_read - first);
-    }
-
+    copy_queued(rb, buf, to_read);
     rb->tail += to_read;
 
     sync::spin_unlock_irqrestore(rb->lock, irq);
     sync::wake_one(rb->write_wq);
 
     return static_cast<ssize_t>(to_read);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t ring_buffer_wait_readable(ring_buffer* rb, bool nonblock) {
+    if (!rb) {
+        return RB_ERR_INVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+
+    ssize_t result = 0;
+    while (readable_bytes(rb) == 0 && !rb->writer_closed) {
+        if (nonblock) {
+            result = RB_ERR_AGAIN;
+            break;
+        }
+
+        if (signals::interrupt_pending(sched::current())) {
+            result = RB_ERR_INTR;
+            break;
+        }
+
+        irq = sync::wait(rb->read_wq, rb->lock, irq);
+    }
+
+    if (result == 0) {
+        result = static_cast<ssize_t>(readable_bytes(rb));
+    }
+
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+
+    return result;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE size_t ring_buffer_peek(ring_buffer* rb, uint8_t* buf, size_t len) {
+    if (!rb || !buf) {
+        return 0;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+    size_t avail = readable_bytes(rb);
+    size_t to_copy = avail < len ? avail : len;
+    copy_queued(rb, buf, to_copy);
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+
+    return to_copy;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE size_t ring_buffer_skip(ring_buffer* rb, size_t len) {
+    if (!rb) {
+        return 0;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+    size_t avail = readable_bytes(rb);
+    size_t to_skip = avail < len ? avail : len;
+    rb->tail += to_skip;
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+
+    if (to_skip > 0) {
+        sync::wake_one(rb->write_wq);
+    }
+
+    return to_skip;
 }
 
 /**

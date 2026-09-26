@@ -192,6 +192,77 @@ TEST(socket_test, ring_buffer_null_args_returns_inval) {
     ring_buffer_destroy(rb);
 }
 
+TEST(socket_test, ring_buffer_peek_leaves_the_bytes_queued) {
+    auto* rb = ring_buffer_create(64);
+    ASSERT_NOT_NULL(rb);
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("abcdef"), 6), static_cast<ssize_t>(6));
+
+    uint8_t buf[8] = {};
+    EXPECT_EQ(ring_buffer_peek(rb, buf, 4), static_cast<size_t>(4));
+    EXPECT_EQ(string::memcmp(buf, "abcd", 4), 0);
+
+    EXPECT_EQ(ring_buffer_read(rb, buf, sizeof(buf)), static_cast<ssize_t>(6));
+    EXPECT_EQ(string::memcmp(buf, "abcdef", 6), 0);
+
+    ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_peek_joins_bytes_that_wrap_around) {
+    auto* rb = ring_buffer_create(8);
+    ASSERT_NOT_NULL(rb);
+
+    // Moving the read position near the end makes the next write wrap
+    uint8_t fill[12] = {};
+    ASSERT_EQ(ring_buffer_write(rb, fill, sizeof(fill)), static_cast<ssize_t>(sizeof(fill)));
+    ASSERT_EQ(ring_buffer_read(rb, fill, sizeof(fill)), static_cast<ssize_t>(sizeof(fill)));
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("abcdefgh"), 8), static_cast<ssize_t>(8));
+
+    uint8_t buf[8] = {};
+    EXPECT_EQ(ring_buffer_peek(rb, buf, sizeof(buf)), sizeof(buf));
+    EXPECT_EQ(string::memcmp(buf, "abcdefgh", 8), 0);
+
+    ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_skip_drops_bytes_and_frees_room) {
+    auto* rb = ring_buffer_create(8);
+    ASSERT_NOT_NULL(rb);
+
+    uint8_t fill[15];
+    for (size_t i = 0; i < sizeof(fill); i++) {
+        fill[i] = static_cast<uint8_t>(i);
+    }
+    ASSERT_EQ(ring_buffer_write(rb, fill, sizeof(fill)), static_cast<ssize_t>(sizeof(fill)));
+    EXPECT_EQ(ring_buffer_write(rb, fill, 1, true), static_cast<ssize_t>(RB_ERR_AGAIN));
+
+    EXPECT_EQ(ring_buffer_skip(rb, 5), static_cast<size_t>(5));
+    EXPECT_EQ(ring_buffer_write(rb, fill, 5, true), static_cast<ssize_t>(5));
+
+    uint8_t first = 0;
+    EXPECT_EQ(ring_buffer_read(rb, &first, 1), static_cast<ssize_t>(1));
+    EXPECT_EQ(first, static_cast<uint8_t>(5));
+    EXPECT_EQ(ring_buffer_skip(rb, 64), static_cast<size_t>(14));
+
+    ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_wait_readable_reports_what_is_queued) {
+    auto* rb = ring_buffer_create(64);
+    ASSERT_NOT_NULL(rb);
+    EXPECT_EQ(ring_buffer_wait_readable(rb, true), static_cast<ssize_t>(RB_ERR_AGAIN));
+
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("xyz"), 3), static_cast<ssize_t>(3));
+    EXPECT_EQ(ring_buffer_wait_readable(rb, false), static_cast<ssize_t>(3));
+
+    uint8_t buf[4] = {};
+    EXPECT_EQ(ring_buffer_read(rb, buf, sizeof(buf)), static_cast<ssize_t>(3));
+
+    ring_buffer_close_write(rb);
+    EXPECT_EQ(ring_buffer_wait_readable(rb, false), static_cast<ssize_t>(0));
+
+    ring_buffer_destroy(rb);
+}
+
 // Socket pair creation and data flow
 
 TEST(socket_test, create_socket_pair_succeeds) {
