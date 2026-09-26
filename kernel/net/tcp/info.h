@@ -2,6 +2,7 @@
 #define STELLUX_NET_TCP_INFO_H
 
 #include "net/tcp/record.h"
+#include "net/tcp/congestion.h"
 #include "net/tcp/listen.h"
 #include "net/tcp/timewait.h"
 #include "net/interface.h"
@@ -12,7 +13,8 @@ namespace tcp {
 constexpr size_t MAX_INFO_RECORDS = MAX_LISTENERS + MAX_REQUESTS + MAX_CONNECTIONS + MAX_TIMEWAIT;
 
 // Values of tcp_record::kind, timer_kind, and flags, mirrored by stlx/net.h.
-// tcp_record::state carries tcp_state values, a listener reports listen.
+// tcp_record::state carries tcp_state values, a listener reports listen, and
+// tcp_record::recovery_state carries recovery_state values.
 constexpr uint8_t INFO_KIND_LISTENER   = 0;
 constexpr uint8_t INFO_KIND_REQUEST    = 1;
 constexpr uint8_t INFO_KIND_CONNECTION = 2;
@@ -73,8 +75,14 @@ struct tcp_record {
     uint32_t total_retransmits;
     uint16_t ooo_packets;
     uint16_t unacked;
+    uint32_t ssthresh;
+    int32_t  soft_error;
+    uint16_t path_mtu;
+    uint8_t  recovery_state;
+    uint8_t  dupacks;
+    char     cong_name[CONGESTION_NAME_MAX];
 };
-static_assert(sizeof(tcp_record) == 116);
+static_assert(sizeof(tcp_record) == 144);
 
 /**
  * Stack-wide counts since boot and the current table occupancy, mirrored by

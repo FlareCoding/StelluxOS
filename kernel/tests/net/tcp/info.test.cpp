@@ -7,6 +7,8 @@
 #include "net/tcp/listen.h"
 #include "net/tcp/timewait.h"
 #include "net/tcp/output.h"
+#include "net/tcp/congestion.h"
+#include "net/icmp.h"
 #include "resource/resource.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
@@ -155,6 +157,12 @@ TEST(tcp_info, an_established_connection_is_described) {
     EXPECT_EQ(entry.rto_ms, c.conn->rto_ns / 1000000);
     EXPECT_EQ(entry.total_retransmits, 0u);
     EXPECT_EQ(entry.backoff, 0);
+    EXPECT_EQ(entry.ssthresh, SSTHRESH_INFINITE);
+    EXPECT_EQ(entry.recovery_state, static_cast<uint8_t>(recovery_state::open));
+    EXPECT_EQ(entry.dupacks, 0);
+    EXPECT_EQ(entry.soft_error, 0);
+    EXPECT_EQ(entry.path_mtu, 0);
+    EXPECT_TRUE(string::strcmp(entry.cong_name, "newreno") == 0);
 }
 
 static const uint8_t* bytes_of(size_t len) {
@@ -215,6 +223,35 @@ TEST(tcp_info, queues_the_estimate_and_retransmissions_are_described) {
     EXPECT_EQ(entry.retransmits, 0);
     EXPECT_EQ(entry.total_retransmits, 1u);
     EXPECT_EQ(entry.backoff, 0);
+}
+
+TEST(tcp_info, the_congestion_state_the_path_and_the_soft_error_are_described) {
+    linked_peer lp;
+    inspected c(lp);
+    uint32_t first = c.conn->iss + 1;
+    write_bytes(c, 3000);
+
+    // The first ACK after the SYN-ACK scales the window, so it is an update, not a duplicate
+    input(lp.remote.ack(PEER_ISS + 1, first));
+    input(lp.remote.ack(PEER_ISS + 1, first));
+    input(lp.remote.ack(PEER_ISS + 1, first));
+    tcp_record entry;
+    describe_record(c.conn.ptr(), &entry);
+    EXPECT_EQ(entry.dupacks, 2);
+    EXPECT_EQ(entry.recovery_state, static_cast<uint8_t>(recovery_state::disorder));
+
+    advance_and_fire(c.conn->rto_ns);
+    describe_record(c.conn.ptr(), &entry);
+    EXPECT_EQ(entry.recovery_state, static_cast<uint8_t>(recovery_state::loss));
+    EXPECT_EQ(entry.ssthresh, 7000u);
+    EXPECT_EQ(entry.dupacks, 0);
+
+    icmp::input(lp.remote.icmp_error(icmp::TYPE_DEST_UNREACHABLE, icmp::CODE_HOST_UNREACHABLE, first));
+    icmp::input(lp.remote.icmp_error(icmp::TYPE_DEST_UNREACHABLE, icmp::CODE_FRAGMENTATION_NEEDED, first, 1000));
+    describe_record(c.conn.ptr(), &entry);
+    EXPECT_EQ(entry.soft_error, resource::ERR_HOSTUNREACH);
+    EXPECT_EQ(entry.path_mtu, 1000);
+    EXPECT_EQ(entry.snd_mss, 960);
 }
 
 TEST(tcp_info, a_request_and_a_time_wait_record_are_described_with_their_timers) {

@@ -134,6 +134,14 @@ static inline int stlx_net_set_config(const struct stlx_ifconf* conf) {
 #define STLX_TCP_LAST_ACK     9
 #define STLX_TCP_TIME_WAIT    10
 
+#define STLX_TCP_RECOVERY_OPEN      0
+#define STLX_TCP_RECOVERY_DISORDER  1
+#define STLX_TCP_RECOVERY_CWR       2
+#define STLX_TCP_RECOVERY_RECOVERY  3
+#define STLX_TCP_RECOVERY_LOSS      4
+
+#define STLX_TCP_SSTHRESH_INFINITE  0x7FFFFFFF
+
 #define STLX_TCP_TIMER_NONE      0
 #define STLX_TCP_TIMER_RTO       1
 #define STLX_TCP_TIMER_ORPHAN    2
@@ -187,9 +195,15 @@ struct stlx_tcp_record {
     uint32_t total_retransmits;
     uint16_t ooo_packets;
     uint16_t unacked;
+    uint32_t ssthresh;
+    int32_t  soft_error;
+    uint16_t path_mtu;
+    uint8_t  recovery_state;
+    uint8_t  dupacks;
+    char     cong_name[16];
 };
 
-_Static_assert(sizeof(struct stlx_tcp_record) == 116, "stlx_tcp_record ABI size mismatch");
+_Static_assert(sizeof(struct stlx_tcp_record) == 144, "stlx_tcp_record ABI size mismatch");
 
 struct stlx_tcp_counters {
     uint64_t segments_in;

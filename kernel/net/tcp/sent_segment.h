@@ -13,6 +13,7 @@ constexpr uint8_t MARK_SACKED        = 1u << 0;
 constexpr uint8_t MARK_LOST          = 1u << 1;
 constexpr uint8_t MARK_RETRANSMITTED = 1u << 2;
 constexpr uint8_t MARK_TLP           = 1u << 3;
+constexpr uint8_t MARK_SPLIT_TAIL    = 1u << 4;
 
 /**
  * One segment as it was last sent, alive until the peer acknowledges its end.
@@ -42,7 +43,8 @@ struct acknowledged {
 /**
  * The records of one connection's unacknowledged segments, in sequence order.
  * Records are charged to the global budget one at a time and freed as the
- * acknowledged edge passes them. The owner serializes every call.
+ * acknowledged edge passes them. The cap bounds the records the sender makes,
+ * the tails its splits leave stay outside it. The owner serializes every call.
  */
 class sent_segments {
 public:
@@ -91,7 +93,7 @@ public:
     /**
      * @brief Cuts a record at `at_seq`, the tail becoming a record of its own
      * with the same marks, so the head can go again on a narrower path. The
-     * cap does not apply, since no bytes are added, only the budget.
+     * tail is charged to the budget alone.
      * @return The tail, or nullptr when the budget refuses, in which case the
      *         record is left whole.
      */
@@ -119,6 +121,7 @@ private:
     list::head<sent_segment, &sent_segment::link> m_records;
     size_t                                        m_cap;
     size_t                                        m_lost_bytes;
+    size_t                                        m_split_tails;
 };
 
 } // namespace tcp

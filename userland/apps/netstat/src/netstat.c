@@ -44,6 +44,17 @@ static const char* timer_name(uint8_t kind) {
     }
 }
 
+static const char* recovery_name(uint8_t state) {
+    switch (state) {
+    case STLX_TCP_RECOVERY_OPEN:     return "open";
+    case STLX_TCP_RECOVERY_DISORDER: return "disorder";
+    case STLX_TCP_RECOVERY_CWR:      return "cwr";
+    case STLX_TCP_RECOVERY_RECOVERY: return "recovery";
+    case STLX_TCP_RECOVERY_LOSS:     return "loss";
+    default:                         return "unknown";
+    }
+}
+
 static void format_endpoint(uint32_t addr, uint16_t port, char* buf, size_t size) {
     if (addr == 0 && port == 0) {
         snprintf(buf, size, "*:*");
@@ -99,6 +110,18 @@ static void print_record(const struct stlx_tcp_record* r, const struct options* 
     printf("      cwnd %u unacked %u rtt %u.%03u/%u.%03u ms rto %u ms backoff %u rcvbuf %u sndbuf %u ooo %u/%u\r\n",
            r->cwnd, r->unacked, r->srtt_us / 1000, r->srtt_us % 1000, r->rttvar_us / 1000, r->rttvar_us % 1000,
            r->rto_ms, r->backoff, r->rcv_buf, r->snd_buf, r->ooo_packets, r->ooo_bytes);
+    printf("      %s %s dupacks %u", r->cong_name, recovery_name(r->recovery_state), r->dupacks);
+    if (r->ssthresh && r->ssthresh != STLX_TCP_SSTHRESH_INFINITE) {
+        printf(" ssthresh %u", r->ssthresh);
+    }
+    if (r->path_mtu) {
+        printf(" pmtu %u", r->path_mtu);
+    }
+    if (r->soft_error) {
+        printf(" soft_error %d", r->soft_error);
+    }
+
+    printf("\r\n");
 }
 
 static void print_counters(const struct stlx_tcp_counters* c) {
