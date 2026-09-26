@@ -7,6 +7,7 @@
 #include "syscall/handlers/sys_error_map.h"
 #include "syscall/handlers/sys_fd.h"
 #include "syscall/handlers/sys_io.h"
+#include "syscall/handlers/sys_shutdown.h"
 #include "resource/resource.h"
 #include "resource/socket_ops.h"
 #include "net/inet.h"
@@ -1082,6 +1083,130 @@ TEST(socket_syscall, a_waitall_unix_stream_receive_waits_for_every_byte) {
     EXPECT_EQ(g_unix_receive.result, static_cast<int64_t>(6));
     EXPECT_EQ(string::memcmp(page.at<char>(UNIX_RECV_AT), "abcdef", 6), 0);
 
+    resource::resource_release(reader);
+    close_unix_pair(task, pair);
+}
+
+// Unix stream shutdown
+
+static int64_t unix_shut_down(int32_t fd, uint64_t how) {
+    return sys_shutdown(static_cast<uint64_t>(fd), how, 0, 0, 0, 0);
+}
+
+TEST(socket_syscall, shutting_a_unix_stream_for_writing_ends_the_peers_stream) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "hi", 2);
+    ASSERT_EQ(unix_send(page, pair.a, 2, 0), static_cast<int64_t>(2));
+    EXPECT_EQ(unix_shut_down(pair.a, resource::SHUT_WR), static_cast<int64_t>(0));
+
+    // The peer drains what was sent before the end, and this end may send no more
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(2));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(0));
+    EXPECT_EQ(unix_send(page, pair.a, 2, inet::MSG_NOSIGNAL), syscall::EPIPE);
+
+    // The other direction stays open
+    EXPECT_EQ(unix_send(page, pair.b, 2, 0), static_cast<int64_t>(2));
+    EXPECT_EQ(unix_receive(page, pair.a, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(2));
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, shutting_a_unix_stream_for_reading_refuses_the_peers_sends) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "hi", 2);
+    ASSERT_EQ(unix_send(page, pair.b, 2, 0), static_cast<int64_t>(2));
+    EXPECT_EQ(unix_shut_down(pair.a, resource::SHUT_RD), static_cast<int64_t>(0));
+
+    // What arrived before the shutdown still reads, then the stream ends
+    EXPECT_EQ(unix_receive(page, pair.a, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(2));
+    EXPECT_EQ(unix_receive(page, pair.a, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(0));
+    EXPECT_EQ(unix_send(page, pair.b, 2, inet::MSG_NOSIGNAL), syscall::EPIPE);
+
+    // The other direction stays open
+    EXPECT_EQ(unix_send(page, pair.a, 2, 0), static_cast<int64_t>(2));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(2));
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_unix_stream_shutdown_needs_a_connection_and_a_direction) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+    EXPECT_EQ(unix_shut_down(pair.a, 3), syscall::EINVAL);
+
+    int64_t lone = sys_socket(AF_UNIX, inet::SOCK_STREAM, 0, 0, 0, 0);
+    ASSERT_TRUE(lone >= 0);
+    EXPECT_EQ(unix_shut_down(static_cast<int32_t>(lone), resource::SHUT_RDWR), syscall::ENOTCONN);
+
+    EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(lone)), resource::OK);
+    close_unix_pair(task, pair);
+}
+
+static bool blocks_before_deadline(sched::task* t) {
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (t->state.load_acquire() != sched::TASK_STATE_BLOCKED) {
+        if (clock::now_ns() > deadline) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+TEST(socket_syscall, shutting_a_unix_stream_for_reading_wakes_a_waiting_receive) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    resource::resource_object* reader = nullptr;
+    ASSERT_EQ(resource::get_handle_object(task->handles, pair.b, resource::RIGHT_READ, &reader),
+              resource::HANDLE_OK);
+
+    // Pinned by a reference so the runner can watch it block without racing its exit
+    prepare_unix_receive(page, reader, 16, 0);
+    sched::task* t = nullptr;
+    RUN_ELEVATED({
+        t = sched::create_kernel_task(run_unix_receive, nullptr, "unix_receive", sched::TASK_FLAG_ELEVATED);
+        if (t) {
+            t->add_ref();
+            sched::enqueue(t);
+        }
+    });
+    ASSERT_NOT_NULL(t);
+
+    EXPECT_TRUE(blocks_before_deadline(t));
+    EXPECT_EQ(unix_shut_down(pair.b, resource::SHUT_RD), static_cast<int64_t>(0));
+    EXPECT_TRUE(spin_wait(g_unix_receive.done));
+    EXPECT_EQ(g_unix_receive.result, static_cast<int64_t>(0));
+
+    RUN_ELEVATED({
+        if (t->release()) {
+            sched::task::ref_destroy(t);
+        }
+    });
     resource::resource_release(reader);
     close_unix_pair(task, pair);
 }

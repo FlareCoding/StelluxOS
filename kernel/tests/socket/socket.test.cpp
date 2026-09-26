@@ -267,6 +267,32 @@ TEST(socket_test, ring_buffer_wait_readable_reports_what_is_queued) {
     ring_buffer_destroy(rb);
 }
 
+TEST(socket_test, ring_buffer_refuses_writes_once_its_writer_closes) {
+    auto* rb = ring_buffer_create(64);
+    ASSERT_NOT_NULL(rb);
+
+    ring_buffer_close_write(rb);
+    EXPECT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("x"), 1), static_cast<ssize_t>(RB_ERR_PIPE));
+    EXPECT_EQ(ring_buffer_write_all(rb, reinterpret_cast<const uint8_t*>("x"), 1), static_cast<ssize_t>(RB_ERR_PIPE));
+
+    ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_drains_then_ends_once_its_reader_closes) {
+    auto* rb = ring_buffer_create(64);
+    ASSERT_NOT_NULL(rb);
+
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ab"), 2), static_cast<ssize_t>(2));
+    ring_buffer_close_read(rb);
+
+    uint8_t buf[4] = {};
+    EXPECT_EQ(ring_buffer_read(rb, buf, sizeof(buf), true), static_cast<ssize_t>(2));
+    EXPECT_EQ(ring_buffer_read(rb, buf, sizeof(buf), true), static_cast<ssize_t>(0));
+    EXPECT_EQ(ring_buffer_wait_readable(rb, true), static_cast<ssize_t>(0));
+
+    ring_buffer_destroy(rb);
+}
+
 // Socket pair creation and data flow
 
 TEST(socket_test, create_socket_pair_succeeds) {

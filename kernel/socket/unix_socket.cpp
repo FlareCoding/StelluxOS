@@ -547,6 +547,32 @@ __PRIVILEGED_CODE static ssize_t unix_recvfrom(
     return static_cast<ssize_t>(ring_buffer_peek(rb, static_cast<uint8_t*>(kdst), count));
 }
 
+/**
+ * Shutting the read side ends this end's stream and refuses the peer's sends. Shutting
+ * the write side lets the peer drain what was sent and then see the end of the stream.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int32_t unix_shutdown(resource::resource_object* obj, int32_t how) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<unix_socket*>(obj->impl);
+    if (sock->state != SOCK_STATE_CONNECTED) {
+        return resource::ERR_NOTCONN;
+    }
+
+    if (how == resource::SHUT_RD || how == resource::SHUT_RDWR) {
+        ring_buffer_close_read(inbound(sock).buf);
+    }
+
+    if (how == resource::SHUT_WR || how == resource::SHUT_RDWR) {
+        ring_buffer_close_write(outbound(sock).buf);
+    }
+
+    return resource::OK;
+}
+
 __PRIVILEGED_CODE static uint32_t socket_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
@@ -584,6 +610,7 @@ static const resource::socket_ops g_unix_socket_ops = {
     .connect = unix_connect,
     .sendto = unix_sendto,
     .recvfrom = unix_recvfrom,
+    .shutdown = unix_shutdown,
 };
 
 static const resource::resource_ops g_socket_ops = {
