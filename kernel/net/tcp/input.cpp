@@ -143,7 +143,9 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
             conn->congestion->acked(conn, covered.bytes, rtt_ns != 0 ? static_cast<int64_t>(rtt_ns / 1000) : -1);
         }
 
-        bool may_grow = action != recovery_action::recovered && conn->recovery == recovery_state::open;
+        bool growing_state = conn->recovery == recovery_state::open || conn->recovery == recovery_state::loss;
+        bool may_grow = action != recovery_action::recovered && growing_state;
+        
         if (may_grow && is_cwnd_limited(conn)) {
             conn->congestion->grow(conn, covered.bytes);
         }

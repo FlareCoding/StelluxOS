@@ -238,6 +238,7 @@ TEST(tcp_newreno, a_retransmission_counts_as_sending_for_the_idle_restart) {
     linked_peer lp;
     growing g(lp);
     grow_and_drain(g);
+    g.adjust([](tcp_conn* conn) { conn->congestion = &RECORDING; });
 
     g.write(PEER_MSS);
     g_fake_now += g.conn->rto_ns;
@@ -247,8 +248,11 @@ TEST(tcp_newreno, a_retransmission_counts_as_sending_for_the_idle_restart) {
     g_fake_now += g.conn->rto_ns / 2;
     EXPECT_EQ(g.ack(13 * PEER_MSS), OK);
     ASSERT_EQ(g.conn->snd_nxt, g.conn->snd_una);
+
+    g_event_count = 0;
     g.write(PEER_MSS);
-    EXPECT_EQ(g.conn->cwnd, 16u * PEER_MSS);
+    ASSERT_EQ(g_event_count, 1u);
+    EXPECT_EQ(g_events[0], congestion_event::tx_start);
 }
 
 TEST(tcp_newreno, a_pause_within_the_timeout_keeps_the_window) {

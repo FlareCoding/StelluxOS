@@ -194,27 +194,25 @@ packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, uint8
     return pkt;
 }
 
-packet* rebuild_oldest_locked(tcp_conn* conn) {
-    sent_segment* oldest = conn->sent.oldest();
-    if (!oldest) {
-        return nullptr;
-    }
-
-    size_t len = oldest->end_seq - oldest->start_seq;
-    bool last = oldest->end_seq == conn->snd_una + conn->snd_queue.size();
-    bool carries_fin = conn->fin_sent && oldest->end_seq + 1 == conn->snd_nxt;
-
+packet* rebuild_locked(tcp_conn* conn, sent_segment* segment) {
+    size_t len = segment->end_seq - segment->start_seq;
+    bool last = segment->end_seq == conn->snd_una + conn->snd_queue.size();
+    bool carries_fin = conn->fin_sent && segment->end_seq + 1 == conn->snd_nxt;
     uint8_t flags = FLAG_ACK | (last ? FLAG_PSH : 0) | (carries_fin ? FLAG_FIN : 0);
-
-    packet* pkt = build_data_segment(conn, oldest->start_seq, len, flags);
+    packet* pkt = build_data_segment(conn, segment->start_seq, len, flags);
     if (pkt) {
         uint64_t now = now_ns();
-        conn->sent.mark_retransmitted(oldest, now);
+        conn->sent.mark_retransmitted(segment, now);
         conn->last_data_sent_ns = now;
         conn->total_retransmits++;
     }
 
     return pkt;
+}
+
+packet* rebuild_oldest_locked(tcp_conn* conn) {
+    sent_segment* oldest = conn->sent.oldest();
+    return oldest ? rebuild_locked(conn, oldest) : nullptr;
 }
 
 // Caller holds the lock. RFC 6691: the MSS less the option bytes in use
@@ -251,6 +249,22 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
     uint64_t now = now_ns();
     size_t mss = payload_mss(conn);
 
+    // RFC 6675 4 NextSeg rule 1: what was lost goes again before anything new,
+    // unless F-RTO is sending new data to test the timeout (RFC 5682 2.2)
+    while (count < max && conn->frto_step != FRTO_SECOND_ACK) {
+        sent_segment* lost = conn->sent.oldest_lost();
+        if (!lost || pipe_bytes(conn) + (lost->end_seq - lost->start_seq) > conn->cwnd) {
+            break;
+        }
+
+        packet* pkt = rebuild_locked(conn, lost);
+        if (!pkt) {
+            break;
+        }
+
+        burst[count++] = pkt;
+    }
+
     while (count < max) {
         size_t available = unsent_bytes(conn);
         if (available == 0) {
@@ -261,12 +275,13 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
             begin_transmission_locked(conn, now);
         }
 
-        uint32_t in_flight = conn->snd_nxt - conn->snd_una;
+        uint32_t pipe = pipe_bytes(conn);
         uint32_t window_end = conn->snd_una + conn->snd_wnd;
         uint32_t usable = seq_lt(conn->snd_nxt, window_end) ? window_end - conn->snd_nxt : 0;
         uint32_t allowance = conn->cwnd + limited_transmit_bytes(conn);
-        uint32_t cwnd_room = allowance > in_flight ? allowance - in_flight : 0;
+        uint32_t cwnd_room = allowance > pipe ? allowance - pipe : 0;
         uint32_t allowed = usable < cwnd_room ? usable : cwnd_room;
+
         size_t len = available < allowed ? available : allowed;
         if (len > mss) {
             len = mss;
@@ -335,9 +350,7 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
         arm_send_timer_locked(conn, timer_kind::probe);
     }
 
-    uint32_t in_flight = conn->snd_nxt - conn->snd_una;
-    bool cwnd_limited = unsent_bytes(conn) > 0 && in_flight + mss > conn->cwnd;
-
+    bool cwnd_limited = unsent_bytes(conn) > 0 && pipe_bytes(conn) + mss > conn->cwnd;
     if (count > 0 || cwnd_limited) {
         note_cwnd_usage_locked(conn, cwnd_limited);
     }

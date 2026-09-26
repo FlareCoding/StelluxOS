@@ -96,9 +96,14 @@ int32_t send_probe(const segment_source& src);
 packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, uint8_t flags);
 
 /**
- * @brief Builds the oldest unacknowledged segment again from the queue and
- * marks its record retransmitted. Caller holds the lock. nullptr when
- * nothing is outstanding or no packet is free.
+ * @brief Builds a record's segment again from the queue and marks the record
+ * retransmitted. Caller holds the lock. nullptr when no packet is free.
+ */
+packet* rebuild_locked(tcp_conn* conn, sent_segment* segment);
+
+/**
+ * @brief `rebuild_locked` for the oldest unacknowledged record, nullptr when
+ * nothing is outstanding.
  */
 packet* rebuild_oldest_locked(tcp_conn* conn);
 
