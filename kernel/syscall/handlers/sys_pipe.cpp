@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_pipe.h"
+#include "syscall/handlers/sys_error_map.h"
 #include "syscall/syscall_table.h"
 #include "resource/resource.h"
 #include "pipe/pipe.h"
@@ -32,7 +33,7 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(read_obj);
         resource::resource_release(write_obj);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     resource::resource_release(read_obj);
@@ -44,7 +45,7 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
     if (rc != resource::HANDLE_OK) {
         resource::close(task, h_read);
         resource::resource_release(write_obj);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     resource::resource_release(write_obj);

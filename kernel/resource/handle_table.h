@@ -11,6 +11,9 @@ struct resource_object;
 
 constexpr uint32_t MAX_TASK_HANDLES = 128;
 
+// Slots a table starts with, doubling on demand up to MAX_TASK_HANDLES
+constexpr uint32_t INITIAL_TASK_HANDLES = 16;
+
 // Private high bit in handle_entry::flags reserved for FD_CLOEXEC state
 constexpr uint32_t RESOURCE_HANDLE_CLOEXEC = 0x80000000;
 
@@ -124,15 +127,15 @@ __PRIVILEGED_CODE void inherit_standard_handles(handle_table* parent, handle_tab
 
 /**
  * @brief Copy every handle of `src` into the same slot of the empty table `dst`.
+ * @return HANDLE_OK on success, HANDLE_ERR_NOMEM when `dst` cannot grow to hold them.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void copy_handle_table(handle_table* src, handle_table* dst);
+__PRIVILEGED_CODE int32_t copy_handle_table(handle_table* src, handle_table* dst);
 
 /**
- * @brief Whether `table` has a slot numbered `slot`.
- * @note Privilege: **required**
+ * @brief Whether `table` can hold a handle in slot `slot`, growing to reach it.
  */
-__PRIVILEGED_CODE bool handle_slot_in_range(const handle_table* table, handle_t slot);
+bool handle_slot_in_range(const handle_table* table, handle_t slot);
 
 /**
  * @brief Remove handle entry and return held object reference.

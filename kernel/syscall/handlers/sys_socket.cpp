@@ -88,7 +88,7 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
     );
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     apply_cloexec(task, h, creation_flags);
@@ -137,7 +137,7 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(obj_a);
         resource::resource_release(obj_b);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     resource::resource_release(obj_a);
@@ -150,7 +150,7 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
     if (rc != resource::HANDLE_OK) {
         resource::close(task, h0);
         resource::resource_release(obj_b);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     resource::resource_release(obj_b);
@@ -320,7 +320,7 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(new_obj);
         resource::resource_release(listen_obj);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     resource::resource_release(new_obj);

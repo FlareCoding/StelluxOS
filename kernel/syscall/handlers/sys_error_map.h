@@ -71,6 +71,10 @@ inline int64_t map_fs_error(int32_t rc) {
     }
 }
 
+inline int64_t map_handle_alloc_error(int32_t rc) {
+    return (rc == resource::HANDLE_ERR_NOMEM) ? syscall::ENOMEM : syscall::EMFILE;
+}
+
 } // namespace syscall::error_map
 
 #endif // STELLUX_SYSCALL_HANDLERS_SYS_ERROR_MAP_H

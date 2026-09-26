@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_memfd.h"
+#include "syscall/handlers/sys_error_map.h"
 #include "resource/providers/shmem_provider.h"
 #include "resource/providers/file_provider.h"
 #include "resource/handle_table.h"
@@ -65,7 +66,7 @@ DEFINE_SYSCALL2(memfd_create, u_name, u_flags) {
         task->handles, obj, resource::resource_type::SHMEM, rights, &handle);
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     resource::resource_release(obj);

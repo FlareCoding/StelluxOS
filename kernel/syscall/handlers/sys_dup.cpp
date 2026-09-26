@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_dup.h"
+#include "syscall/handlers/sys_error_map.h"
 #include "resource/resource.h"
 #include "fs/fstypes.h"
 #include "sched/sched.h"
@@ -24,7 +25,7 @@ static int64_t dup_to_slot(
         task->handles, new_h, obj, obj->type, rights);
     resource::resource_release(obj);
     if (rc != resource::HANDLE_OK) {
-        return syscall::EBADF;
+        return (rc == resource::HANDLE_ERR_NOMEM) ? syscall::ENOMEM : syscall::EBADF;
     }
 
     if (set_cloexec) {
@@ -53,12 +54,8 @@ DEFINE_SYSCALL1(dup, u_oldfd) {
     resource::handle_t new_h = -1;
     rc = resource::alloc_handle(task->handles, obj, obj->type, rights, &new_h);
     resource::resource_release(obj);
-    if (rc == resource::HANDLE_ERR_NOSPC) {
-        return syscall::EMFILE;
-    }
-
     if (rc != resource::HANDLE_OK) {
-        return syscall::EBADF;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     return static_cast<int64_t>(new_h);
