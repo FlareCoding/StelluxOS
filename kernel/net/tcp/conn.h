@@ -39,6 +39,7 @@ constexpr uint64_t DELACK_NS          = 40000000ULL; // RFC 1122 4.2.3.2 allows 
 constexpr uint8_t  MAX_QUICKACKS      = 16;
 constexpr size_t   SND_CHUNKS_INITIAL = MIN_BUF / CHUNK_PAYLOAD;
 constexpr size_t   SENT_SEGMENT_MARGIN = 8;
+constexpr uint8_t  DELIVERY_PROBLEM_RETRIES = 3; // RFC 1122 4.2.3.5 R1
 constexpr uint8_t  DATA_RETRIES       = 15;      // RFC 1122 4.2.3.5 R2
 constexpr size_t   MAX_BURST          = 16;
 constexpr size_t   MAX_OOO_PACKETS    = 64;
@@ -183,6 +184,7 @@ struct tcp_conn : record {
     resource::resource_object* owner;
     sync::wait_queue           conn_wq; // connect and close waiters
     int32_t                    pending_error;
+    int32_t                    soft_error;
     list::node                 accept_link;
 };
 

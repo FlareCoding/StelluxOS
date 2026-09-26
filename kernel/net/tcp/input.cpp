@@ -118,6 +118,7 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
     recovery_action action = recovery_action::none;
     conn->unanswered_probes = 0;
     conn->peer_acked_ns = now_ns();
+    conn->soft_error = resource::OK;
 
     if (duplicate) {
         action = take_duplicate_ack_locked(conn);
