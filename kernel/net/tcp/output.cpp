@@ -1,6 +1,7 @@
 #include "net/tcp/output.h"
 #include "net/tcp/info.h"
 #include "net/tcp/reassembly.h"
+#include "net/tcp/recovery.h"
 #include "net/tcp/timers.h"
 #include "net/tcp/seq.h"
 #include "net/net.h"
@@ -240,7 +241,8 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
         uint32_t in_flight = conn->snd_nxt - conn->snd_una;
         uint32_t window_end = conn->snd_una + conn->snd_wnd;
         uint32_t usable = seq_lt(conn->snd_nxt, window_end) ? window_end - conn->snd_nxt : 0;
-        uint32_t cwnd_room = conn->cwnd > in_flight ? conn->cwnd - in_flight : 0;
+        uint32_t allowance = conn->cwnd + limited_transmit_bytes(conn);
+        uint32_t cwnd_room = allowance > in_flight ? allowance - in_flight : 0;
         uint32_t allowed = usable < cwnd_room ? usable : cwnd_room;
         size_t len = available < allowed ? available : allowed;
         if (len > mss) {
