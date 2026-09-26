@@ -73,8 +73,8 @@ __PRIVILEGED_CODE void unix_channel::ref_destroy(unix_channel* self) {
         return;
     }
 
-    ring_buffer_destroy(self->buf_a_to_b);
-    ring_buffer_destroy(self->buf_b_to_a);
+    ring_buffer_destroy(self->a_to_b.buf);
+    ring_buffer_destroy(self->b_to_a.buf);
     heap::kfree_delete(self);
 }
 
@@ -88,17 +88,33 @@ __PRIVILEGED_CODE static rc::strong_ref<unix_channel> create_channel() {
         return rc::strong_ref<unix_channel>();
     }
 
-    chan->buf_a_to_b = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
-    if (!chan->buf_a_to_b) {
+    chan->a_to_b.buf = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
+    if (!chan->a_to_b.buf) {
         return rc::strong_ref<unix_channel>();
     }
 
-    chan->buf_b_to_a = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
-    if (!chan->buf_b_to_a) {
+    chan->b_to_a.buf = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
+    if (!chan->b_to_a.buf) {
         return rc::strong_ref<unix_channel>();
     }
 
     return chan;
+}
+
+/**
+ * The direction `sock` reads from.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static unix_direction& inbound(const unix_socket* sock) {
+    return sock->is_side_a ? sock->channel->b_to_a : sock->channel->a_to_b;
+}
+
+/**
+ * The direction `sock` writes to.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static unix_direction& outbound(const unix_socket* sock) {
+    return sock->is_side_a ? sock->channel->a_to_b : sock->channel->b_to_a;
 }
 
 __PRIVILEGED_CODE static ssize_t socket_read(
@@ -113,11 +129,8 @@ __PRIVILEGED_CODE static ssize_t socket_read(
         return resource::ERR_NOTCONN;
     }
 
-    ring_buffer* rb = sock->is_side_a
-        ? sock->channel->buf_b_to_a
-        : sock->channel->buf_a_to_b;
     bool nonblock = (flags & fs::O_NONBLOCK) != 0;
-    return ring_buffer_read(rb, static_cast<uint8_t*>(kdst), count, nonblock);
+    return ring_buffer_read(inbound(sock).buf, static_cast<uint8_t*>(kdst), count, nonblock);
 }
 
 __PRIVILEGED_CODE static ssize_t socket_write(
@@ -132,11 +145,8 @@ __PRIVILEGED_CODE static ssize_t socket_write(
         return resource::ERR_NOTCONN;
     }
 
-    ring_buffer* rb = sock->is_side_a
-        ? sock->channel->buf_a_to_b
-        : sock->channel->buf_b_to_a;
     bool nonblock = (flags & fs::O_NONBLOCK) != 0;
-    return ring_buffer_write(rb, static_cast<const uint8_t*>(ksrc), count, nonblock);
+    return ring_buffer_write(outbound(sock).buf, static_cast<const uint8_t*>(ksrc), count, nonblock);
 }
 
 __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
@@ -171,15 +181,9 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
     }
 
     case SOCK_STATE_CONNECTED: {
-        rc::strong_ref<unix_channel> chan = sock->channel;
-        if (chan) {
-            if (sock->is_side_a) {
-                ring_buffer_close_write(chan->buf_a_to_b);
-                ring_buffer_close_read(chan->buf_b_to_a);
-            } else {
-                ring_buffer_close_write(chan->buf_b_to_a);
-                ring_buffer_close_read(chan->buf_a_to_b);
-            }
+        if (sock->channel) {
+            ring_buffer_close_write(outbound(sock).buf);
+            ring_buffer_close_read(inbound(sock).buf);
         }
         break;
     }
@@ -445,19 +449,15 @@ __PRIVILEGED_CODE static int32_t unix_connect(
 __PRIVILEGED_CODE static uint32_t socket_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
-    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    if (!obj || !obj->impl) {
+        return sync::POLL_NVAL;
+    }
 
     auto* sock = static_cast<unix_socket*>(obj->impl);
 
     if (sock->state == SOCK_STATE_CONNECTED) {
-        ring_buffer* rx = sock->is_side_a
-            ? sock->channel->buf_b_to_a
-            : sock->channel->buf_a_to_b;
-        ring_buffer* tx = sock->is_side_a
-            ? sock->channel->buf_a_to_b
-            : sock->channel->buf_b_to_a;
-        return ring_buffer_poll_read(rx, pt)
-             | ring_buffer_poll_write(tx, pt);
+        return ring_buffer_poll_read(inbound(sock).buf, pt)
+             | ring_buffer_poll_write(outbound(sock).buf, pt);
     }
 
     if (sock->state == SOCK_STATE_LISTENING && sock->listener) {

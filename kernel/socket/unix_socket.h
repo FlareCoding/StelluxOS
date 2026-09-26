@@ -19,9 +19,14 @@ constexpr uint32_t SOCK_STATE_CONNECTED = 3;
 
 constexpr size_t UNIX_PATH_MAX = 108;
 
+// One direction of a connected pair, carrying what one side writes to the other
+struct unix_direction {
+    ring_buffer* buf = nullptr;
+};
+
 struct unix_channel : rc::ref_counted<unix_channel> {
-    ring_buffer* buf_a_to_b = nullptr;
-    ring_buffer* buf_b_to_a = nullptr;
+    unix_direction a_to_b;
+    unix_direction b_to_a;
 
     /**
      * @note Privilege: **required**
