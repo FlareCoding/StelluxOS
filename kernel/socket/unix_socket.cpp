@@ -1,5 +1,6 @@
 #include "socket/unix_socket.h"
 #include "resource/socket_ops.h"
+#include "net/inet.h"
 #include "mm/heap.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
@@ -117,6 +118,36 @@ __PRIVILEGED_CODE static unix_direction& outbound(const unix_socket* sock) {
     return sock->is_side_a ? sock->channel->a_to_b : sock->channel->b_to_a;
 }
 
+/**
+ * Writes every byte, waiting for room unless MSG_DONTWAIT, and reports a partial count on a later
+ * error. A reader gone before any byte went out raises SIGPIPE unless MSG_NOSIGNAL.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static ssize_t write_stream(unix_direction& dir, const uint8_t* bytes, size_t count,
+                                              uint32_t msg_flags) {
+    bool nonblock = (msg_flags & net::inet::MSG_DONTWAIT) != 0;
+    size_t sent = 0;
+    ssize_t n = 0;
+    while (sent < count) {
+        n = ring_buffer_write(dir.buf, bytes + sent, count - sent, nonblock);
+        if (n < 0) {
+            break;
+        }
+
+        sent += static_cast<size_t>(n);
+    }
+
+    if (sent > 0) {
+        return static_cast<ssize_t>(sent);
+    }
+
+    if (n == RB_ERR_PIPE && !(msg_flags & net::inet::MSG_NOSIGNAL)) {
+        (void)signals::send_to_task(sched::current(), signals::SIGPIPE);
+    }
+
+    return n;
+}
+
 __PRIVILEGED_CODE static ssize_t socket_read(
     resource::resource_object* obj, void* kdst, size_t count, uint32_t flags
 ) {
@@ -145,8 +176,8 @@ __PRIVILEGED_CODE static ssize_t socket_write(
         return resource::ERR_NOTCONN;
     }
 
-    bool nonblock = (flags & fs::O_NONBLOCK) != 0;
-    return ring_buffer_write(outbound(sock).buf, static_cast<const uint8_t*>(ksrc), count, nonblock);
+    uint32_t msg_flags = (flags & fs::O_NONBLOCK) ? net::inet::MSG_DONTWAIT : 0;
+    return write_stream(outbound(sock), static_cast<const uint8_t*>(ksrc), count, msg_flags);
 }
 
 __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
@@ -446,6 +477,33 @@ __PRIVILEGED_CODE static int32_t unix_connect(
     return resource::OK;
 }
 
+/**
+ * A connected stream takes no destination, and out of band data is not supported.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static ssize_t unix_sendto(
+    resource::resource_object* obj, const void* ksrc, size_t count, uint32_t flags, const void*, size_t addrlen
+) {
+    if (!obj || !obj->impl || !ksrc) {
+        return resource::ERR_INVAL;
+    }
+
+    if (flags & net::inet::MSG_OOB) {
+        return resource::ERR_UNSUP;
+    }
+
+    auto* sock = static_cast<unix_socket*>(obj->impl);
+    if (addrlen != 0) {
+        return sock->state == SOCK_STATE_CONNECTED ? resource::ERR_ISCONN : resource::ERR_UNSUP;
+    }
+
+    if (sock->state != SOCK_STATE_CONNECTED) {
+        return resource::ERR_NOTCONN;
+    }
+
+    return write_stream(outbound(sock), static_cast<const uint8_t*>(ksrc), count, flags);
+}
+
 __PRIVILEGED_CODE static uint32_t socket_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
@@ -476,10 +534,12 @@ __PRIVILEGED_CODE static uint32_t socket_poll(
 }
 
 static const resource::socket_ops g_unix_socket_ops = {
+    .stream = true,
     .bind = unix_bind,
     .listen = unix_listen,
     .accept = unix_accept,
     .connect = unix_connect,
+    .sendto = unix_sendto,
 };
 
 static const resource::resource_ops g_socket_ops = {
