@@ -5,6 +5,11 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 
+// A target slot must be below the soft descriptor limit, as for every handle allocation
+static bool below_handle_limit(sched::task* task, resource::handle_t slot) {
+    return slot >= 0 && static_cast<uint32_t>(slot) < resource::handle_limit(task);
+}
+
 // Installs the object behind old_h at slot new_h, replacing any occupant.
 // The duplicate shares the object's status flags, and CLOEXEC is set only when set_cloexec.
 static int64_t dup_to_slot(
@@ -52,7 +57,7 @@ DEFINE_SYSCALL1(dup, u_oldfd) {
 
     // alloc_handle scans from slot zero, giving the POSIX lowest-free fd
     resource::handle_t new_h = -1;
-    rc = resource::alloc_handle(task->handles, obj, obj->type, rights, &new_h);
+    rc = resource::alloc_task_handle(task, obj, obj->type, rights, &new_h);
     resource::resource_release(obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::error_map::map_handle_alloc_error(rc);
@@ -69,11 +74,8 @@ DEFINE_SYSCALL2(dup2, u_oldfd, u_newfd) {
 
     auto old_h = static_cast<resource::handle_t>(u_oldfd);
     auto new_h = static_cast<resource::handle_t>(u_newfd);
-    if (!resource::handle_slot_in_range(task->handles, new_h)) {
-        return syscall::EBADF;
-    }
 
-    // Equal descriptors are a no-op, but oldfd must still be valid
+    // Equal descriptors are a no-op, even past the limit, but oldfd must still be valid
     if (old_h == new_h) {
         resource::resource_object* obj = nullptr;
         int32_t rc = resource::get_handle_object(task->handles, old_h, 0, &obj);
@@ -83,6 +85,10 @@ DEFINE_SYSCALL2(dup2, u_oldfd, u_newfd) {
 
         resource::resource_release(obj);
         return static_cast<int64_t>(new_h);
+    }
+
+    if (!below_handle_limit(task, new_h)) {
+        return syscall::EBADF;
     }
 
     return dup_to_slot(task, old_h, new_h, false);
@@ -100,7 +106,7 @@ DEFINE_SYSCALL3(dup3, u_oldfd, u_newfd, u_flags) {
         return syscall::EINVAL;
     }
 
-    if (!resource::handle_slot_in_range(task->handles, new_h)) {
+    if (!below_handle_limit(task, new_h)) {
         return syscall::EBADF;
     }
 

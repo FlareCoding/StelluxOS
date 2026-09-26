@@ -193,8 +193,8 @@ DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
     }
 
     resource::handle_t handle = -1;
-    int32_t h_rc = resource::alloc_handle(
-        caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);
+    int32_t h_rc = resource::alloc_task_handle(
+        caller, obj, resource::resource_type::PROCESS, 0, &handle);
     if (h_rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
         return syscall::error_map::map_handle_alloc_error(h_rc);
@@ -522,8 +522,8 @@ DEFINE_SYSCALL4(proc_create_thread, u_entry, u_arg, u_stack_top, u_name) {
     }
 
     resource::handle_t handle = -1;
-    int32_t h_rc = resource::alloc_handle(
-        caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);
+    int32_t h_rc = resource::alloc_task_handle(
+        caller, obj, resource::resource_type::PROCESS, 0, &handle);
     if (h_rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
         return syscall::error_map::map_handle_alloc_error(h_rc);

@@ -408,7 +408,6 @@ TEST(resource_test, dup3_validates_flags_and_fds) {
 
     ASSERT_EQ(resource::close(task, f), resource::OK);
 }
-
 constexpr uint64_t F_GETFL = 3;
 constexpr uint64_t F_SETFL = 4;
 
@@ -706,4 +705,26 @@ TEST(resource_test, copy_handle_table_grows_the_copy_to_match) {
 
     resource::handle_table::ref_destroy(dst);
     resource::handle_table::ref_destroy(src);
+}
+
+TEST(resource_test, alloc_handle_stays_below_its_limit) {
+    resource::handle_table* table = make_handle_table();
+    resource::resource_object* obj = make_object();
+    ASSERT_NOT_NULL(table);
+    ASSERT_NOT_NULL(obj);
+
+    constexpr uint32_t limit = 2;
+    resource::handle_t h = -1;
+    EXPECT_EQ(resource::alloc_handle(table, obj, obj->type, resource::RIGHT_READ, &h, limit), resource::HANDLE_OK);
+    EXPECT_EQ(resource::alloc_handle(table, obj, obj->type, resource::RIGHT_READ, &h, limit), resource::HANDLE_OK);
+
+    int32_t rc = resource::alloc_handle(table, obj, obj->type, resource::RIGHT_READ, &h, limit);
+    EXPECT_EQ(rc, resource::HANDLE_ERR_NOSPC);
+
+    // A handle already past the limit keeps its slot
+    ASSERT_EQ(resource::install_handle_at(table, 5, obj, obj->type, resource::RIGHT_READ), resource::HANDLE_OK);
+    EXPECT_EQ(object_at(table, 5), obj);
+
+    resource::resource_release(obj);
+    resource::handle_table::ref_destroy(table);
 }
