@@ -9,6 +9,7 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sync/poll.h"
+#include "sync/mutex.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
 #include "common/string.h"
@@ -558,7 +559,49 @@ __PRIVILEGED_CODE static bool stream_has_more(const socket_ref& sock, uint32_t f
     return (ready & sync::POLL_IN) || (flags & net::inet::MSG_WAITALL);
 }
 
-// A discard stages nothing, the socket drops the bytes itself
+// The lock a stream's receives hold across all their rounds, or nullptr when it has none
+__PRIVILEGED_CODE static sync::mutex* receive_lock_of(const socket_ref& sock) {
+    return sock.ops->receive_lock ? sock.ops->receive_lock(sock.obj) : nullptr;
+}
+
+__PRIVILEGED_CODE static void lock_receives(sync::mutex* lock) {
+    if (lock) {
+        sync::mutex_lock(*lock);
+    }
+}
+
+__PRIVILEGED_CODE static void unlock_receives(sync::mutex* lock) {
+    if (lock) {
+        sync::mutex_unlock(*lock);
+    }
+}
+
+// A round never waits under the receive lock. When nothing is queued and the caller may
+// wait, it lets go of the lock while waiting, so a sleeping receive never holds up the others.
+__PRIVILEGED_CODE static ssize_t take_round(const socket_ref& sock, sync::mutex* lock, void* kbuf, size_t len,
+                                            uint32_t round_flags, uint8_t* kaddr, size_t* addr_len) {
+    while (true) {
+        ssize_t n = sock.ops->recvfrom(sock.obj, kbuf, len, round_flags | net::inet::MSG_DONTWAIT, kaddr, addr_len);
+        if (n != resource::ERR_AGAIN || (round_flags & net::inet::MSG_DONTWAIT)) {
+            return n;
+        }
+
+        // A blocking one-byte peek is how any stream waits for bytes without taking them
+        uint8_t probe = 0;
+        uint32_t wait_flags = (round_flags & ~net::inet::MSG_TRUNC) | net::inet::MSG_PEEK;
+
+        unlock_receives(lock);
+        ssize_t ready = sock.ops->recvfrom(sock.obj, &probe, 1, wait_flags, nullptr, nullptr);
+        lock_receives(lock);
+
+        if (ready <= 0) {
+            return ready;
+        }
+    }
+}
+
+// A discard stages nothing, the socket drops the bytes itself. Under MSG_WAITALL it
+// keeps dropping until the whole length is gone or the stream ends.
 __PRIVILEGED_CODE static int64_t discard_stream(const socket_ref& sock, const syscall::iovec* iovs, uint64_t iovcnt,
                                                 uint32_t flags, uint8_t* kaddr, size_t* kaddr_len) {
     size_t count = 0;
@@ -566,13 +609,32 @@ __PRIVILEGED_CODE static int64_t discard_stream(const socket_ref& sock, const sy
         count += iovs[i].len;
     }
 
-    ssize_t n = sock.ops->recvfrom(sock.obj, nullptr, count, flags, kaddr, kaddr_len);
-    return n < 0 ? syscall::error_map::map_socket_op_error(static_cast<int32_t>(n)) : n;
+    bool whole = (flags & net::inet::MSG_WAITALL) != 0 && !(flags & net::inet::MSG_PEEK);
+    uint32_t round_flags = flags & ~net::inet::MSG_WAITALL;
+
+    sync::mutex* lock = receive_lock_of(sock);
+    lock_receives(lock);
+
+    ssize_t n = take_round(sock, lock, nullptr, count, round_flags, kaddr, kaddr_len);
+    size_t dropped = n > 0 ? static_cast<size_t>(n) : 0;
+
+    while (whole && n > 0 && dropped < count) {
+        n = take_round(sock, lock, nullptr, count - dropped, round_flags, nullptr, nullptr);
+        dropped += n > 0 ? static_cast<size_t>(n) : 0;
+    }
+
+    unlock_receives(lock);
+
+    if (dropped > 0) {
+        return static_cast<int64_t>(dropped);
+    }
+
+    return n < 0 ? syscall::error_map::map_socket_op_error(static_cast<int32_t>(n)) : 0;
 }
 
-// Each round peeks, copies to the caller, then discards what was copied unless
-// the caller itself peeked, so a fault leaves the bytes queued. A peek is one
-// round; otherwise later rounds take only what is queued unless MSG_WAITALL.
+// Each round peeks, copies to the caller, then discards what was copied unless the caller
+// peeked, so a fault leaves the bytes queued, all under the stream's receive lock. A peek is
+// one round, and otherwise later rounds take only what is queued unless MSG_WAITALL.
 __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const syscall::iovec* iovs, uint64_t iovcnt,
                                                 uint32_t flags, uint8_t* kaddr, size_t* kaddr_len) {
     if (flags & net::inet::MSG_TRUNC) {
@@ -591,6 +653,10 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
     int64_t total = 0;
     int64_t err = 0;
     bool done = false;
+
+    sync::mutex* lock = receive_lock_of(sock);
+    lock_receives(lock);
+
     for (uint64_t i = 0; i < iovcnt && !done; i++) {
         size_t remaining = iovs[i].len;
         uint8_t* user_ptr = reinterpret_cast<uint8_t*>(iovs[i].base);
@@ -603,7 +669,7 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
 
             size_t chunk = remaining > syscall::STREAM_CHUNK_SIZE ? syscall::STREAM_CHUNK_SIZE : remaining;
             size_t addr_len = addr_capacity;
-            ssize_t n = sock.ops->recvfrom(sock.obj, kbuf, chunk, round_flags, kaddr, &addr_len);
+            ssize_t n = take_round(sock, lock, kbuf, chunk, round_flags, kaddr, &addr_len);
             if (n < 0) {
                 if (total == 0) {
                     err = syscall::error_map::map_socket_op_error(static_cast<int32_t>(n));
@@ -653,6 +719,8 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
             }
         }
     }
+
+    unlock_receives(lock);
 
     heap::kfree(kbuf);
     return total > 0 ? total : err;

@@ -729,42 +729,53 @@ TEST(socket_test, get_handle_object_returns_flags) {
 
 struct blocking_send_run {
     resource::resource_object* obj;
+    size_t len;
     ssize_t result;
     sync::atomic<uint32_t> done;
 };
 
-static blocking_send_run g_blocking_send;
+static blocking_send_run g_blocking_sends[2];
 static uint8_t g_blocking_send_bytes[4096];
 
-static void run_blocking_send(void*) {
-    blocking_send_run& run = g_blocking_send;
-    run.result = run.obj->ops->socket->sendto(run.obj, g_blocking_send_bytes, sizeof(g_blocking_send_bytes),
-                                              0, nullptr, 0);
+static void run_blocking_send(void* arg) {
+    blocking_send_run& run = *static_cast<blocking_send_run*>(arg);
+    run.result = run.obj->ops->socket->sendto(run.obj, g_blocking_send_bytes, run.len, 0, nullptr, 0);
     run.done.store_release(1);
     sched::exit(0);
+}
+
+static void prepare_blocking_send(blocking_send_run& run, resource::resource_object* obj, size_t len) {
+    run.obj = obj;
+    run.len = len;
+    run.result = 0;
+    run.done.store_relaxed(0);
+}
+
+// Fills the stream `obj` sends into, so the next blocking send finds no room at all
+static size_t fill_stream(resource::resource_object* obj) {
+    size_t queued = 0;
+    ssize_t n = 0;
+    while ((n = obj->ops->socket->sendto(obj, g_blocking_send_bytes, sizeof(g_blocking_send_bytes),
+                                         net::inet::MSG_DONTWAIT, nullptr, 0)) > 0) {
+        queued += static_cast<size_t>(n);
+    }
+
+    return n == resource::ERR_AGAIN ? queued : 0;
 }
 
 TEST(socket_test, a_blocking_stream_send_waits_for_room_and_sends_everything) {
     resource::resource_object* obj_a = nullptr;
     resource::resource_object* obj_b = nullptr;
     ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
-    const resource::socket_ops* ops = obj_a->ops->socket;
 
-    // The stream starts full, so the send finds no room at all
-    size_t queued = 0;
-    ssize_t n = 0;
-    while ((n = ops->sendto(obj_a, g_blocking_send_bytes, sizeof(g_blocking_send_bytes), net::inet::MSG_DONTWAIT,
-                            nullptr, 0)) > 0) {
-        queued += static_cast<size_t>(n);
-    }
-    ASSERT_EQ(n, static_cast<ssize_t>(resource::ERR_AGAIN));
+    size_t queued = fill_stream(obj_a);
+    ASSERT_TRUE(queued > 0);
 
-    g_blocking_send.obj = obj_a;
-    g_blocking_send.result = 0;
-    g_blocking_send.done.store_relaxed(0);
+    blocking_send_run& send = g_blocking_sends[0];
+    prepare_blocking_send(send, obj_a, sizeof(g_blocking_send_bytes));
     sched::task* sender = nullptr;
     RUN_ELEVATED({
-        sender = sched::create_kernel_task(run_blocking_send, nullptr, "blocking_send", sched::TASK_FLAG_ELEVATED);
+        sender = sched::create_kernel_task(run_blocking_send, &send, "blocking_send", sched::TASK_FLAG_ELEVATED);
         if (sender) {
             sched::enqueue(sender);
         }
@@ -784,12 +795,44 @@ TEST(socket_test, a_blocking_stream_send_waits_for_room_and_sends_everything) {
     }
 
     EXPECT_EQ(drained, expected);
-    EXPECT_TRUE(test_helpers::spin_wait(g_blocking_send.done));
-    EXPECT_EQ(g_blocking_send.result, static_cast<ssize_t>(sizeof(g_blocking_send_bytes)));
+    EXPECT_TRUE(test_helpers::spin_wait(send.done));
+    EXPECT_EQ(send.result, static_cast<ssize_t>(sizeof(g_blocking_send_bytes)));
 
     // Closing the reader first lets a sender still waiting give up before its socket goes away
     resource::resource_release(obj_b);
-    (void)test_helpers::spin_wait(g_blocking_send.done);
+    (void)test_helpers::spin_wait(send.done);
+    resource::resource_release(obj_a);
+}
+
+TEST(socket_test, one_read_wakes_every_send_waiting_for_the_room_it_frees) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    ASSERT_TRUE(fill_stream(obj_a) > 0);
+
+    // Both senders fall asleep on the full stream, then one read frees room for the two of them
+    constexpr size_t SEND_LEN = 100;
+    sched::task* senders[2] = {};
+    for (uint32_t i = 0; i < 2; i++) {
+        prepare_blocking_send(g_blocking_sends[i], obj_a, SEND_LEN);
+        senders[i] = test_helpers::start_pinned_task(run_blocking_send, &g_blocking_sends[i], "blocking_send");
+        ASSERT_NOT_NULL(senders[i]);
+        EXPECT_TRUE(test_helpers::blocks_before_deadline(senders[i]));
+    }
+
+    uint8_t room[2 * SEND_LEN];
+    EXPECT_EQ(obj_b->ops->read(obj_b, room, sizeof(room), fs::O_NONBLOCK), static_cast<ssize_t>(sizeof(room)));
+    EXPECT_TRUE(test_helpers::spin_wait(g_blocking_sends[0].done));
+    EXPECT_TRUE(test_helpers::spin_wait(g_blocking_sends[1].done));
+    EXPECT_EQ(g_blocking_sends[0].result, static_cast<ssize_t>(SEND_LEN));
+    EXPECT_EQ(g_blocking_sends[1].result, static_cast<ssize_t>(SEND_LEN));
+
+    // Closing the reader first lets a sender still waiting give up before its socket goes away
+    resource::resource_release(obj_b);
+    for (sched::task* t : senders) {
+        test_helpers::unpin(t);
+    }
+
     resource::resource_release(obj_a);
 }
 
