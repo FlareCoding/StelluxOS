@@ -1352,15 +1352,15 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
 
     if (cmd == F_GETFL) {
         resource::resource_object* obj = nullptr;
-        uint32_t flags = 0;
         uint32_t rights = 0;
         int32_t rc = resource::get_handle_object(
             task->handles, static_cast<resource::handle_t>(fd), 0,
-            &obj, &flags, &rights);
+            &obj, nullptr, &rights);
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
 
+        uint32_t status = resource::get_status_flags(obj);
         resource::resource_release(obj);
 
         // The access mode lives in the handle rights rather than the
@@ -1372,15 +1372,19 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
             accmode = fs::O_WRONLY;
         }
 
-        return static_cast<int64_t>(accmode | (flags & fs::STATUS_FLAG_MASK));
+        return static_cast<int64_t>(accmode | status);
     }
 
     if (cmd == F_SETFL) {
-        int32_t rc = resource::set_status_flags(
-            task->handles, static_cast<resource::handle_t>(fd), static_cast<uint32_t>(arg));
+        resource::resource_object* obj = nullptr;
+        int32_t rc = resource::get_handle_object(
+            task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
+
+        resource::set_status_flags(obj, static_cast<uint32_t>(arg));
+        resource::resource_release(obj);
 
         return 0;
     }

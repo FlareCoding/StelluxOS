@@ -37,15 +37,10 @@ static_assert(sizeof(msghdr) == 56);
 struct socket_ref {
     resource::resource_object* obj = nullptr;
     const resource::socket_ops* ops = nullptr;
-    uint32_t handle_flags = 0;
+    uint32_t status_flags = 0;
 };
 
-__PRIVILEGED_CODE static void apply_creation_flags(sched::task* task, resource::handle_t h,
-                                                   uint64_t creation_flags) {
-    if (creation_flags & fs::O_NONBLOCK) {
-        resource::set_status_flags(task->handles, h, fs::O_NONBLOCK);
-    }
-
+__PRIVILEGED_CODE static void apply_cloexec(sched::task* task, resource::handle_t h, uint64_t creation_flags) {
     if (creation_flags & fs::O_CLOEXEC) {
         resource::set_handle_flags(task->handles, h, resource::RESOURCE_HANDLE_CLOEXEC);
     }
@@ -84,6 +79,8 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
         return syscall::ENOMEM;
     }
 
+    resource::set_status_flags(obj, static_cast<uint32_t>(creation_flags));
+
     resource::handle_t h = -1;
     rc = resource::alloc_handle(
         task->handles, obj, resource::resource_type::SOCKET,
@@ -94,7 +91,7 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
         return syscall::EMFILE;
     }
 
-    apply_creation_flags(task, h, creation_flags);
+    apply_cloexec(task, h, creation_flags);
     resource::resource_release(obj);
     return h;
 }
@@ -129,6 +126,9 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
         return syscall::ENOMEM;
     }
 
+    resource::set_status_flags(obj_a, static_cast<uint32_t>(creation_flags));
+    resource::set_status_flags(obj_b, static_cast<uint32_t>(creation_flags));
+
     resource::handle_t h0 = -1;
     rc = resource::alloc_handle(
         task->handles, obj_a, resource::resource_type::SOCKET,
@@ -155,8 +155,8 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
 
     resource::resource_release(obj_b);
 
-    apply_creation_flags(task, h0, creation_flags);
-    apply_creation_flags(task, h1, creation_flags);
+    apply_cloexec(task, h0, creation_flags);
+    apply_cloexec(task, h1, creation_flags);
 
     int32_t kbuf[2] = {h0, h1};
     int32_t copy_rc = mm::uaccess::copy_to_user(
@@ -246,10 +246,9 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
     if (!task) return syscall::EIO;
 
     resource::resource_object* obj = nullptr;
-    uint32_t handle_flags = 0;
     int32_t rc = resource::get_handle_object(
         task->handles, static_cast<resource::handle_t>(fd),
-        resource::RIGHT_READ, &obj, &handle_flags);
+        resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
 
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
@@ -273,7 +272,7 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
         return syscall::EFAULT;
     }
 
-    bool nonblock = (handle_flags & fs::O_NONBLOCK) != 0;
+    bool nonblock = (resource::get_status_flags(obj) & fs::O_NONBLOCK) != 0;
     int32_t result = sockops->connect(obj, kaddr, klen, nonblock);
     resource::resource_release(obj);
     return (result == resource::OK) ? 0 : syscall::error_map::map_socket_op_error(result);
@@ -284,10 +283,9 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     if (!task) return syscall::EIO;
 
     resource::resource_object* listen_obj = nullptr;
-    uint32_t handle_flags = 0;
     int32_t rc = resource::get_handle_object(
         task->handles, static_cast<resource::handle_t>(fd),
-        resource::RIGHT_READ, &listen_obj, &handle_flags);
+        resource::RIGHT_READ, &listen_obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
 
     if (listen_obj->type != resource::resource_type::SOCKET || !listen_obj->impl) {
@@ -301,7 +299,7 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
         return syscall::EOPNOTSUPP;
     }
 
-    bool nonblock = (handle_flags & fs::O_NONBLOCK) != 0;
+    bool nonblock = (resource::get_status_flags(listen_obj) & fs::O_NONBLOCK) != 0;
 
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t kaddr_len = sizeof(kaddr);
@@ -353,7 +351,7 @@ __PRIVILEGED_CODE static int64_t lookup_socket(sched::task* task, uint64_t fd, u
                                                socket_ref* out) {
     int32_t rc = resource::get_handle_object(
         task->handles, static_cast<resource::handle_t>(fd),
-        rights, &out->obj, &out->handle_flags
+        rights, &out->obj
     );
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
@@ -366,6 +364,7 @@ __PRIVILEGED_CODE static int64_t lookup_socket(sched::task* task, uint64_t fd, u
         return syscall::EOPNOTSUPP;
     }
 
+    out->status_flags = resource::get_status_flags(out->obj);
     return 0;
 }
 
@@ -441,7 +440,7 @@ __PRIVILEGED_CODE static int64_t scatter_to_user(const syscall::iovec* iovs, uin
 // A nonblocking descriptor never waits, whatever the call asked for
 static uint32_t message_flags(const socket_ref& sock, uint64_t flags) {
     uint32_t msg_flags = static_cast<uint32_t>(flags);
-    if (sock.handle_flags & fs::O_NONBLOCK) {
+    if (sock.status_flags & fs::O_NONBLOCK) {
         msg_flags |= net::inet::MSG_DONTWAIT;
     }
 

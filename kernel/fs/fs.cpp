@@ -139,7 +139,7 @@ __PRIVILEGED_CODE void node::ref_destroy(node* n) {
 file::file(rc::strong_ref<node>&& n, uint32_t flags)
     : m_node(static_cast<rc::strong_ref<node>&&>(n))
     , m_offset(0)
-    , m_flags(flags)
+    , m_access_mode(flags & ACCESS_MODE_MASK)
     , m_private(nullptr)
     , m_opened(false) {
 }
@@ -924,8 +924,7 @@ ssize_t read(file* f, void* buf, size_t count, uint32_t flags) {
         return 0;
     }
 
-    uint32_t mode = f->flags() & ACCESS_MODE_MASK;
-    if (mode == O_WRONLY) {
+    if (f->access_mode() == O_WRONLY) {
         return ERR_BADF;
     }
 
@@ -946,8 +945,7 @@ ssize_t write(file* f, const void* buf, size_t count, uint32_t flags) {
         return 0;
     }
 
-    uint32_t mode = f->flags() & ACCESS_MODE_MASK;
-    if (mode == O_RDONLY) {
+    if (f->access_mode() == O_RDONLY) {
         return ERR_BADF;
     }
 

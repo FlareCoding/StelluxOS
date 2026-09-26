@@ -188,7 +188,7 @@ TEST(pty_test, raw_mode_no_echo) {
     ASSERT_EQ(resource::write(task, hm, "abc", 3), static_cast<ssize_t>(3));
 
     // Set master to non-blocking so we can check for no echo without hanging
-    ASSERT_EQ(resource::set_status_flags(task->handles, hm, fs::O_NONBLOCK), resource::HANDLE_OK);
+    resource::set_status_flags(master, fs::O_NONBLOCK);
 
     // Master read should have nothing (no echo in raw mode)
     char echo_buf[16] = {};

@@ -91,30 +91,10 @@ __PRIVILEGED_CODE int32_t get_handle_flags(
 );
 
 /**
- * @brief Set the flags that belong to the handle itself, leaving its status flags alone.
+ * @brief Set the flags that belong to the handle itself, such as close-on-exec.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t set_handle_flags(
-    handle_table* table,
-    handle_t handle,
-    uint32_t flags
-);
-
-/**
- * @brief Get the file status flags, O_NONBLOCK and O_APPEND, that a handle's I/O follows.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE int32_t get_status_flags(
-    handle_table* table,
-    handle_t handle,
-    uint32_t* out_flags
-);
-
-/**
- * @brief Set the file status flags of a handle, leaving its own flags alone.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE int32_t set_status_flags(
     handle_table* table,
     handle_t handle,
     uint32_t flags

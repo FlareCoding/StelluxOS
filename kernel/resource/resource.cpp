@@ -49,6 +49,20 @@ __PRIVILEGED_CODE void resource_release(resource_object* obj) {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE uint32_t get_status_flags(const resource_object* obj) {
+    return obj->status_flags.load_relaxed();
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_status_flags(resource_object* obj, uint32_t flags) {
+    obj->status_flags.store_relaxed(flags & fs::STATUS_FLAG_MASK);
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE int32_t init_task_handles(sched::task* task) {
     if (!task) {
         return ERR_INVAL;
@@ -124,6 +138,8 @@ __PRIVILEGED_CODE int32_t open(
         return rc;
     }
 
+    set_status_flags(obj, fs_flags);
+
     uint32_t rights = rights_from_open_flags(fs_flags);
     rc = alloc_handle(owner->handles, obj, rtype, rights, out_handle);
     if (rc != HANDLE_OK) {
@@ -154,15 +170,14 @@ __PRIVILEGED_CODE ssize_t read(
     }
 
     resource_object* obj = nullptr;
-    uint32_t handle_flags = 0;
-    int32_t rc = get_handle_object(owner->handles, handle, RIGHT_READ, &obj, &handle_flags);
+    int32_t rc = get_handle_object(owner->handles, handle, RIGHT_READ, &obj);
     if (rc != HANDLE_OK) {
         return (rc == HANDLE_ERR_ACCESS) ? ERR_ACCESS : ERR_BADF;
     }
 
     ssize_t result = ERR_UNSUP;
     if (obj->ops && obj->ops->read) {
-        result = obj->ops->read(obj, kdst, count, handle_flags);
+        result = obj->ops->read(obj, kdst, count, get_status_flags(obj));
     }
 
     resource_release(obj);
@@ -183,15 +198,14 @@ __PRIVILEGED_CODE ssize_t write(
     }
 
     resource_object* obj = nullptr;
-    uint32_t handle_flags = 0;
-    int32_t rc = get_handle_object(owner->handles, handle, RIGHT_WRITE, &obj, &handle_flags);
+    int32_t rc = get_handle_object(owner->handles, handle, RIGHT_WRITE, &obj);
     if (rc != HANDLE_OK) {
         return (rc == HANDLE_ERR_ACCESS) ? ERR_ACCESS : ERR_BADF;
     }
 
     ssize_t result = ERR_UNSUP;
     if (obj->ops && obj->ops->write) {
-        result = obj->ops->write(obj, ksrc, count, handle_flags);
+        result = obj->ops->write(obj, ksrc, count, get_status_flags(obj));
     }
 
     resource_release(obj);

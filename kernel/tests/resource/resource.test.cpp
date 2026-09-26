@@ -409,25 +409,37 @@ TEST(resource_test, dup3_validates_flags_and_fds) {
     ASSERT_EQ(resource::close(task, f), resource::OK);
 }
 
-TEST(resource_test, dup_flag_inheritance_and_dup3_cloexec) {
+constexpr uint64_t F_GETFL = 3;
+constexpr uint64_t F_SETFL = 4;
+
+static int64_t call_fcntl(resource::handle_t h, uint64_t cmd, uint64_t arg) {
+    return sys_fcntl(static_cast<uint64_t>(h), cmd, arg, 0, 0, 0);
+}
+
+static int64_t status_flags_of(resource::handle_t h) {
+    return call_fcntl(h, F_GETFL, 0) & fs::STATUS_FLAG_MASK;
+}
+
+TEST(resource_test, dups_share_status_flags_and_dup3_sets_cloexec) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);
 
     resource::handle_t f = -1;
     ASSERT_EQ(resource::open(task, "/dup_flags", fs::O_CREAT | fs::O_RDWR, &f), resource::OK);
     ASSERT_EQ(resource::set_handle_flags(task->handles, f, resource::RESOURCE_HANDLE_CLOEXEC), resource::HANDLE_OK);
-    ASSERT_EQ(resource::set_status_flags(task->handles, f, fs::O_NONBLOCK), resource::HANDLE_OK);
+    ASSERT_EQ(call_fcntl(f, F_SETFL, fs::O_NONBLOCK), 0);
 
     int64_t d = call_dup(f);
     ASSERT_TRUE(d >= 0);
 
     auto dh = static_cast<resource::handle_t>(d);
     uint32_t dflags = 0;
-    uint32_t dstatus = 0;
     ASSERT_EQ(resource::get_handle_flags(task->handles, dh, &dflags), resource::HANDLE_OK);
-    ASSERT_EQ(resource::get_status_flags(task->handles, dh, &dstatus), resource::HANDLE_OK);
     EXPECT_EQ(dflags, 0u);
-    EXPECT_EQ(dstatus, static_cast<uint32_t>(fs::O_NONBLOCK));
+    EXPECT_EQ(status_flags_of(dh), static_cast<int64_t>(fs::O_NONBLOCK));
+
+    ASSERT_EQ(call_fcntl(dh, F_SETFL, 0), 0);
+    EXPECT_EQ(status_flags_of(f), 0);
 
     ASSERT_EQ(resource::close(task, dh), resource::OK);
 
@@ -435,21 +447,11 @@ TEST(resource_test, dup_flag_inheritance_and_dup3_cloexec) {
     EXPECT_EQ(t, d);
 
     uint32_t tflags = 0;
-    uint32_t tstatus = 0;
     ASSERT_EQ(resource::get_handle_flags(task->handles, dh, &tflags), resource::HANDLE_OK);
-    ASSERT_EQ(resource::get_status_flags(task->handles, dh, &tstatus), resource::HANDLE_OK);
     EXPECT_EQ(tflags, resource::RESOURCE_HANDLE_CLOEXEC);
-    EXPECT_EQ(tstatus, static_cast<uint32_t>(fs::O_NONBLOCK));
 
     ASSERT_EQ(resource::close(task, f), resource::OK);
     ASSERT_EQ(resource::close(task, static_cast<resource::handle_t>(t)), resource::OK);
-}
-
-constexpr uint64_t F_GETFL = 3;
-constexpr uint64_t F_SETFL = 4;
-
-static int64_t call_fcntl(resource::handle_t h, uint64_t cmd, uint64_t arg) {
-    return sys_fcntl(static_cast<uint64_t>(h), cmd, arg, 0, 0, 0);
 }
 
 TEST(resource_test, getfl_reports_access_mode_and_status_flags) {
@@ -461,6 +463,76 @@ TEST(resource_test, getfl_reports_access_mode_and_status_flags) {
     ASSERT_EQ(call_fcntl(h, F_SETFL, fs::O_NONBLOCK), 0);
 
     EXPECT_EQ(call_fcntl(h, F_GETFL, 0), static_cast<int64_t>(fs::O_WRONLY | fs::O_NONBLOCK));
+    EXPECT_EQ(resource::close(task, h), resource::OK);
+}
+
+TEST(resource_test, getfl_reports_the_status_flags_given_to_open) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    uint32_t status = fs::O_APPEND | fs::O_NONBLOCK;
+    ASSERT_EQ(resource::open(task, "/getfl_open", fs::O_CREAT | fs::O_WRONLY | status, &h), resource::OK);
+
+    EXPECT_EQ(status_flags_of(h), static_cast<int64_t>(status));
+    EXPECT_EQ(resource::close(task, h), resource::OK);
+}
+
+TEST(resource_test, setfl_append_reaches_file_writes) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::open(task, "/setfl_append", fs::O_CREAT | fs::O_TRUNC | fs::O_WRONLY, &h), resource::OK);
+    ASSERT_EQ(resource::write(task, h, "AAA", 3), static_cast<ssize_t>(3));
+    ASSERT_EQ(resource::close(task, h), resource::OK);
+
+    ASSERT_EQ(resource::open(task, "/setfl_append", fs::O_WRONLY, &h), resource::OK);
+    ASSERT_EQ(call_fcntl(h, F_SETFL, fs::O_APPEND), 0);
+    ASSERT_EQ(resource::write(task, h, "B", 1), static_cast<ssize_t>(1));
+    ASSERT_EQ(resource::close(task, h), resource::OK);
+
+    char buf[8] = {};
+    ASSERT_EQ(resource::open(task, "/setfl_append", fs::O_RDONLY, &h), resource::OK);
+    EXPECT_EQ(resource::read(task, h, buf, sizeof(buf)), static_cast<ssize_t>(4));
+    EXPECT_STREQ(buf, "AAAB");
+    EXPECT_EQ(resource::close(task, h), resource::OK);
+}
+
+TEST(resource_test, setfl_nonblock_reaches_device_reads) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::open(task, "/dev/input/kbd", fs::O_RDONLY, &h), resource::OK);
+    ASSERT_EQ(call_fcntl(h, F_SETFL, fs::O_NONBLOCK), 0);
+
+    // Drains any queued events, then must report EAGAIN rather than block
+    input::kbd_event event = {};
+    ssize_t n = 0;
+    do {
+        n = resource::read(task, h, &event, sizeof(event));
+    } while (n > 0);
+
+    EXPECT_EQ(n, static_cast<ssize_t>(resource::ERR_AGAIN));
+    EXPECT_EQ(resource::close(task, h), resource::OK);
+}
+
+TEST(resource_test, setfl_nonblock_reaches_console_reads) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::open(task, "/dev/console", fs::O_RDONLY, &h), resource::OK);
+    ASSERT_EQ(call_fcntl(h, F_SETFL, fs::O_NONBLOCK), 0);
+
+    char buf[16] = {};
+    ssize_t n = 0;
+    do {
+        n = resource::read(task, h, buf, sizeof(buf));
+    } while (n > 0);
+
+    EXPECT_EQ(n, static_cast<ssize_t>(resource::ERR_AGAIN));
     EXPECT_EQ(resource::close(task, h), resource::OK);
 }
 
@@ -534,6 +606,31 @@ TEST(resource_test, standard_handles_keep_their_slots_and_leave_cloexec_behind) 
     EXPECT_EQ(rights, resource::RIGHT_READ);
     EXPECT_EQ(object_at(child, 2), objs[2]);
     EXPECT_NULL(object_at(child, resource::STANDARD_HANDLE_COUNT));
+
+    resource::handle_table::ref_destroy(child);
+    resource::handle_table::ref_destroy(parent);
+}
+
+TEST(resource_test, inherited_standard_handles_share_status_flags) {
+    resource::handle_table* parent = make_handle_table();
+    resource::handle_table* child = make_handle_table();
+    ASSERT_NOT_NULL(parent);
+    ASSERT_NOT_NULL(child);
+
+    auto* obj = heap::kalloc_new<resource::resource_object>();
+    ASSERT_NOT_NULL(obj);
+    obj->type = resource::resource_type::FILE;
+    obj->ops = nullptr;
+    obj->impl = nullptr;
+    ASSERT_EQ(resource::install_handle_at(parent, 1, obj, obj->type, resource::RIGHT_WRITE), resource::HANDLE_OK);
+
+    resource::inherit_standard_handles(parent, child);
+    resource::set_status_flags(obj, fs::O_APPEND);
+    resource::resource_release(obj);
+
+    resource::resource_object* inherited = object_at(child, 1);
+    ASSERT_NOT_NULL(inherited);
+    EXPECT_EQ(resource::get_status_flags(inherited), static_cast<uint32_t>(fs::O_APPEND));
 
     resource::handle_table::ref_destroy(child);
     resource::handle_table::ref_destroy(parent);

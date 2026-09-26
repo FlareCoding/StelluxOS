@@ -13,12 +13,17 @@ using test_helpers::user_space_scope;
 
 TEST_SUITE(pipe_syscall);
 
+// Close-on-exec from the handle together with its object's status flags
 static uint32_t handle_flags_of(sched::task* task, int32_t h) {
+    resource::resource_object* obj = nullptr;
     uint32_t flags = 0;
-    uint32_t status = 0;
-    resource::get_handle_flags(task->handles, h, &flags);
-    resource::get_status_flags(task->handles, h, &status);
-    return flags | status;
+    if (resource::get_handle_object(task->handles, h, 0, &obj, &flags) != resource::HANDLE_OK) {
+        return 0;
+    }
+
+    flags |= resource::get_status_flags(obj);
+    resource::resource_release(obj);
+    return flags;
 }
 
 // Creates a pipe the way userland does, with the two handles landing in the page

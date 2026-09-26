@@ -68,11 +68,13 @@ struct user_msghdr {
     uint32_t pad1;
 };
 
+// Close-on-exec from the handle together with its object's status flags
 static uint32_t handle_flags_of(sched::task* task, int64_t h) {
     resource::resource_object* obj = nullptr;
     uint32_t flags = 0;
     if (resource::get_handle_object(task->handles, static_cast<resource::handle_t>(h),
                                     resource::RIGHT_READ, &obj, &flags) == resource::HANDLE_OK) {
+        flags |= resource::get_status_flags(obj);
         resource::resource_release(obj);
     }
 
@@ -133,7 +135,7 @@ static void lay_out_message(user_page& page, uint32_t namelen, size_t len_a, siz
     hdr->iovlen = 3;
 }
 
-TEST(socket_syscall, creation_flags_land_on_the_handle) {
+TEST(socket_syscall, creation_flags_reach_the_new_socket) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);
 
