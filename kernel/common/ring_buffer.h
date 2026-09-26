@@ -103,14 +103,14 @@ namespace sync { struct poll_table; }
 
 /**
  * Check read-direction readiness and optionally subscribe for wakeup.
- * @return Bitmask: POLL_IN if data available, POLL_HUP if writer closed and empty.
+ * @return Bitmask: POLL_IN if data available, POLL_HUP once either side has closed.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t ring_buffer_poll_read(ring_buffer* rb, sync::poll_table* pt);
 
 /**
  * Check write-direction readiness and optionally subscribe for wakeup.
- * @return Bitmask: POLL_OUT if space available, POLL_ERR if reader closed.
+ * @return Bitmask: POLL_OUT if space available, POLL_ERR once either side has closed.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t ring_buffer_poll_write(ring_buffer* rb, sync::poll_table* pt);

@@ -573,6 +573,30 @@ __PRIVILEGED_CODE static int32_t unix_shutdown(resource::resource_object* obj, i
     return resource::OK;
 }
 
+/**
+ * A shut direction never makes a caller wait: a shut read side polls readable with POLL_RDHUP,
+ * a shut write side polls writable, and the stream hangs up only once both are shut.
+ */
+static uint32_t stream_events(uint32_t in, uint32_t out) {
+    bool reads_over = (in & sync::POLL_HUP) != 0;
+    bool writes_over = (out & sync::POLL_ERR) != 0;
+    uint32_t events = (in & sync::POLL_IN) | (out & sync::POLL_OUT);
+
+    if (reads_over) {
+        events |= sync::POLL_IN | sync::POLL_RDHUP;
+    }
+
+    if (writes_over) {
+        events |= sync::POLL_OUT;
+    }
+
+    if (reads_over && writes_over) {
+        events |= sync::POLL_HUP;
+    }
+
+    return events;
+}
+
 __PRIVILEGED_CODE static uint32_t socket_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
@@ -583,8 +607,8 @@ __PRIVILEGED_CODE static uint32_t socket_poll(
     auto* sock = static_cast<unix_socket*>(obj->impl);
 
     if (sock->state == SOCK_STATE_CONNECTED) {
-        return ring_buffer_poll_read(inbound(sock).buf, pt)
-             | ring_buffer_poll_write(outbound(sock).buf, pt);
+        return stream_events(ring_buffer_poll_read(inbound(sock).buf, pt),
+                             ring_buffer_poll_write(outbound(sock).buf, pt));
     }
 
     if (sock->state == SOCK_STATE_LISTENING && sock->listener) {

@@ -353,7 +353,7 @@ __PRIVILEGED_CODE uint32_t ring_buffer_poll_read(ring_buffer* rb, sync::poll_tab
     if (readable_bytes(rb) > 0) {
         mask |= sync::POLL_IN;
     }
-    if (rb->writer_closed) {
+    if (is_shut(rb)) {
         mask |= sync::POLL_HUP;
     }
     sync::spin_unlock_irqrestore(rb->lock, irq);
@@ -372,7 +372,7 @@ __PRIVILEGED_CODE uint32_t ring_buffer_poll_write(ring_buffer* rb, sync::poll_ta
     if (writable_bytes(rb) > 0) {
         mask |= sync::POLL_OUT;
     }
-    if (rb->reader_closed) {
+    if (is_shut(rb)) {
         mask |= sync::POLL_ERR;
     }
     sync::spin_unlock_irqrestore(rb->lock, irq);
