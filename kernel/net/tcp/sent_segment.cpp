@@ -94,7 +94,7 @@ size_t sent_segments::mark_lost_longer_than(size_t len) {
 }
 
 sent_segment* sent_segments::split(sent_segment* segment, uint32_t at_seq) {
-    if (m_records.size() >= m_cap || !reserve_budget(SENT_SEGMENT_COST)) {
+    if (!reserve_budget(SENT_SEGMENT_COST)) {
         return nullptr;
     }
 
