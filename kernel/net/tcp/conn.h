@@ -43,6 +43,11 @@ constexpr uint8_t  DELIVERY_PROBLEM_RETRIES = 3; // RFC 1122 4.2.3.5 R1
 constexpr uint8_t  DATA_RETRIES       = 15;      // RFC 1122 4.2.3.5 R2
 constexpr size_t   MAX_BURST          = 16;
 constexpr size_t   MAX_OOO_PACKETS    = 64;
+constexpr uint16_t KEEPALIVE_IDLE_S     = 7200; // RFC 9293 3.8.4, no less than two hours
+constexpr uint16_t KEEPALIVE_INTERVAL_S = 75;
+constexpr uint8_t  KEEPALIVE_PROBES     = 9;
+constexpr int32_t  MAX_KEEPALIVE_S      = 32767;
+constexpr int32_t  MAX_KEEPALIVE_PROBES = 127;
 
 /**
  * Connection states of RFC 9293 3.3.2. `listen` belongs to a listener and
@@ -77,6 +82,10 @@ enum class timer_kind : uint8_t {
 struct conn_options {
     bool     nodelay;
     uint16_t snd_mss_cap; // Zero for none
+    bool     keepalive;
+    uint16_t keepalive_idle_s     = KEEPALIVE_IDLE_S;
+    uint16_t keepalive_interval_s = KEEPALIVE_INTERVAL_S;
+    uint8_t  keepalive_probes     = KEEPALIVE_PROBES;
 };
 
 /**
@@ -142,6 +151,15 @@ struct tcp_conn : record {
     timer::deadline_timer ack_timer;
     bool                  ack_timer_armed;
     uint64_t              ack_timer_deadline_ns;
+
+    // Keepalive (RFC 9293 3.8.4), off unless the socket asked
+    timer::deadline_timer keepalive_timer;
+    bool                  keepalive_armed;
+    uint64_t              keepalive_deadline_ns;
+    bool                  keepalive;
+    uint16_t              keepalive_idle_s;
+    uint16_t              keepalive_interval_s;
+    uint8_t               keepalive_probes;
     bool                  ack_pending;
     uint8_t               quick_acks;   // Immediate ACKs left before delaying begins
     uint32_t              rcv_acked;    // rcv_nxt as of the last ACK sent
@@ -284,6 +302,10 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface);
 inline void apply_options(tcp_conn* conn, const conn_options& options) {
     conn->nodelay = options.nodelay;
     conn->snd_mss_cap = options.snd_mss_cap;
+    conn->keepalive = options.keepalive;
+    conn->keepalive_idle_s = options.keepalive_idle_s;
+    conn->keepalive_interval_s = options.keepalive_interval_s;
+    conn->keepalive_probes = options.keepalive_probes;
 }
 
 /**

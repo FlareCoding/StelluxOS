@@ -226,6 +226,7 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     conn->congestion = default_congestion_ops();
     timer::init_deadline_timer(&conn->send_timer, on_send_timer);
     timer::init_deadline_timer(&conn->ack_timer, on_ack_timer);
+    timer::init_deadline_timer(&conn->keepalive_timer, on_keepalive_timer);
 
     return conn;
 }
@@ -284,6 +285,7 @@ void fail_connection(tcp_conn* conn, int32_t error) {
 void retire_connection(tcp_conn* conn) {
     disarm_timer(conn, &conn->send_timer);
     disarm_timer(conn, &conn->ack_timer);
+    disarm_timer(conn, &conn->keepalive_timer);
     (void)remove(conn);
 
     RUN_ELEVATED({

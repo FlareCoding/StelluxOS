@@ -2,6 +2,7 @@
 #include "net/tcp/conn.h"
 #include "net/tcp/info.h"
 #include "net/tcp/output.h"
+#include "net/tcp/timers.h"
 #include "net/net.h"
 #include "net/inet.h"
 #include "net/interface.h"
@@ -300,7 +301,8 @@ __PRIVILEGED_CODE static int32_t socket_accept(resource::resource_object* obj, r
 
     {
         sync::irq_lock_guard guard(conn->lock);
-        child->options = {conn->nodelay, conn->snd_mss_cap};
+        child->options = {conn->nodelay, conn->snd_mss_cap, conn->keepalive, conn->keepalive_idle_s,
+                          conn->keepalive_interval_s, conn->keepalive_probes};
         conn->owner = child_obj;
     }
 
@@ -502,6 +504,7 @@ static size_t option_size(int32_t level, int32_t optname) {
         case inet::SO_REUSEADDR:
         case inet::SO_ERROR:
         case inet::SO_TYPE:
+        case inet::SO_KEEPALIVE:
         case inet::SO_ACCEPTCONN:
             return sizeof(int32_t);
         case inet::SO_LINGER:
@@ -515,6 +518,9 @@ static size_t option_size(int32_t level, int32_t optname) {
         switch (optname) {
         case inet::TCP_NODELAY:
         case inet::TCP_MAXSEG:
+        case inet::TCP_KEEPIDLE:
+        case inet::TCP_KEEPINTVL:
+        case inet::TCP_KEEPCNT:
         case inet::TCP_QUICKACK:
             return sizeof(int32_t);
         case inet::TCP_INFO:
@@ -535,6 +541,17 @@ __PRIVILEGED_CODE static int32_t take_pending_error(tcp_conn* conn) {
     return error;
 }
 
+// Caller holds the socket lock, and the connection lock when there is one
+static conn_options options_in_force_locked(const tcp_socket* sock) {
+    const tcp_conn* conn = sock->conn.ptr();
+    if (!conn) {
+        return sock->options;
+    }
+
+    return {conn->nodelay, conn->snd_mss_cap, conn->keepalive, conn->keepalive_idle_s, conn->keepalive_interval_s,
+            conn->keepalive_probes};
+}
+
 // Caller holds the socket lock
 __PRIVILEGED_CODE static int32_t option_value_locked(tcp_socket* sock, int32_t level, int32_t optname) {
     tcp_conn* conn = sock->conn.ptr();
@@ -546,9 +563,32 @@ __PRIVILEGED_CODE static int32_t option_value_locked(tcp_socket* sock, int32_t l
             return static_cast<int32_t>(inet::SOCK_STREAM);
         case inet::SO_ACCEPTCONN:
             return sock->listener ? 1 : 0;
+        case inet::SO_KEEPALIVE:
+            if (conn) {
+                sync::irq_lock_guard guard(conn->lock);
+                return conn->keepalive ? 1 : 0;
+            }
+
+            return sock->options.keepalive ? 1 : 0;
         default:
             return conn ? take_pending_error(conn) : 0;
         }
+    }
+
+    if (optname == inet::TCP_KEEPIDLE || optname == inet::TCP_KEEPINTVL || optname == inet::TCP_KEEPCNT) {
+        conn_options in_force;
+        if (conn) {
+            sync::irq_lock_guard guard(conn->lock);
+            in_force = options_in_force_locked(sock);
+        } else {
+            in_force = sock->options;
+        }
+
+        if (optname == inet::TCP_KEEPIDLE) {
+            return in_force.keepalive_idle_s;
+        }
+
+        return optname == inet::TCP_KEEPINTVL ? in_force.keepalive_interval_s : in_force.keepalive_probes;
     }
 
     switch (optname) {
@@ -645,6 +685,43 @@ __PRIVILEGED_CODE static void set_nodelay_locked(tcp_socket* sock, bool nodelay)
     }
 }
 
+static void apply_keepalive_option(conn_options* options, int32_t optname, int32_t value) {
+    switch (optname) {
+    case inet::SO_KEEPALIVE:
+        options->keepalive = value != 0;
+        break;
+    case inet::TCP_KEEPIDLE:
+        options->keepalive_idle_s = static_cast<uint16_t>(value);
+        break;
+    case inet::TCP_KEEPINTVL:
+        options->keepalive_interval_s = static_cast<uint16_t>(value);
+        break;
+    default:
+        options->keepalive_probes = static_cast<uint8_t>(value);
+        break;
+    }
+}
+
+// Caller holds the socket lock. A keepalive setting reaches the listener's
+// future connections and the connection at hand, whose timer follows it
+__PRIVILEGED_CODE static void set_keepalive_locked(tcp_socket* sock, int32_t optname, int32_t value) {
+    apply_keepalive_option(&sock->options, optname, value);
+    if (sock->listener) {
+        sync::irq_lock_guard guard(sock->listener->lock);
+        apply_keepalive_option(&sock->listener->options, optname, value);
+    }
+
+    if (sock->conn) {
+        sync::irq_lock_guard guard(sock->conn->lock);
+        conn_options in_force = options_in_force_locked(sock);
+        apply_keepalive_option(&in_force, optname, value);
+        apply_options(sock->conn.ptr(), in_force);
+        if (sock->conn->keepalive) {
+            arm_keepalive_locked(sock->conn.ptr());
+        }
+    }
+}
+
 // Caller holds the connection lock
 __PRIVILEGED_CODE static bool set_quickack_locked(tcp_conn* conn, bool on, segment_source* src) {
     conn->quick_acks = on ? MAX_QUICKACKS : 0;
@@ -660,7 +737,8 @@ __PRIVILEGED_CODE static bool set_quickack_locked(tcp_conn* conn, bool on, segme
 
 __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* obj, int32_t level,
                                                    int32_t optname, const void* optval, size_t optlen) {
-    bool settable = (level == inet::SOL_SOCKET && (optname == inet::SO_REUSEADDR || optname == inet::SO_LINGER)) ||
+    bool settable = (level == inet::SOL_SOCKET && (optname == inet::SO_REUSEADDR || optname == inet::SO_LINGER ||
+                                                   optname == inet::SO_KEEPALIVE)) ||
                     (level == inet::IPPROTO_TCP && optname != inet::TCP_INFO);
     size_t size = option_size(level, optname);
     if (size == 0 || !settable) {
@@ -683,6 +761,13 @@ __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* ob
         return resource::ERR_INVAL;
     }
 
+    bool keepalive_time = level == inet::IPPROTO_TCP && (optname == inet::TCP_KEEPIDLE || optname == inet::TCP_KEEPINTVL);
+    bool keepalive_count = level == inet::IPPROTO_TCP && optname == inet::TCP_KEEPCNT;
+    if ((keepalive_time && (value < 1 || value > MAX_KEEPALIVE_S)) ||
+        (keepalive_count && (value < 1 || value > MAX_KEEPALIVE_PROBES))) {
+        return resource::ERR_INVAL;
+    }
+
     tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
     rc::strong_ref<tcp_conn> conn;
     bool send_ack = false;
@@ -695,8 +780,12 @@ __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* ob
         if (level == inet::SOL_SOCKET && optname == inet::SO_LINGER) {
             sock->linger = linger.on != 0;
             sock->linger_seconds = linger.seconds < 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(linger.seconds);
+        } else if (level == inet::SOL_SOCKET && optname == inet::SO_KEEPALIVE) {
+            set_keepalive_locked(sock, optname, value);
         } else if (level == inet::SOL_SOCKET) {
             sock->local.reuseaddr = value != 0;
+        } else if (keepalive_time || keepalive_count) {
+            set_keepalive_locked(sock, optname, value);
         } else if (optname == inet::TCP_NODELAY) {
             set_nodelay_locked(sock, value != 0);
             push = value != 0 && conn;
