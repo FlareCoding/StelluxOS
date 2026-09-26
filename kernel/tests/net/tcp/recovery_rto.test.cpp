@@ -27,12 +27,12 @@ static uint64_t fake_clock() {
     return g_fake_now;
 }
 
-// A connection this host opened, its send queue full and 10 segments in flight
+// A connection this host opened with `segments` written, 10 of them in flight
 struct timing_out {
     rc::strong_ref<tcp_conn> conn;
     linked_peer&             lp;
 
-    explicit timing_out(linked_peer& link) : lp(link) {
+    explicit timing_out(linked_peer& link, size_t segments = 20) : lp(link) {
         g_fake_now = clock::now_ns();
         __dbg_test_set_clock(fake_clock);
 
@@ -44,10 +44,9 @@ struct timing_out {
         input(segment_with_window(FLAG_SYN | FLAG_ACK, PEER_ISS, conn->iss + 1, opts, PEER_WINDOW));
         lp.link.clear_frames();
 
-        write(6 * PEER_MSS);
-        write(6 * PEER_MSS);
-        write(6 * PEER_MSS);
-        write(2 * PEER_MSS);
+        for (size_t left = segments; left > 0; left -= left < 6 ? left : 6) {
+            write((left < 6 ? left : 6) * PEER_MSS);
+        }
         lp.link.clear_frames();
     }
 
@@ -150,6 +149,23 @@ TEST(tcp_recovery_rto, after_a_genuine_timeout_the_lost_segments_go_again_ahead_
     EXPECT_EQ(sent_seq(lp.link, 2), t.first_seq() + 3 * PEER_MSS);
     EXPECT_EQ(sent_seq(lp.link, 5), t.first_seq() + 6 * PEER_MSS);
     EXPECT_EQ(t.conn->sent.lost_bytes(), 3u * PEER_MSS);
+}
+
+TEST(tcp_recovery_rto, lost_segments_go_again_even_when_nothing_new_is_left_to_send) {
+    linked_peer lp;
+    timing_out t(lp, 10);
+    ASSERT_EQ(unsent_bytes(t.conn.ptr()), 0u);
+    t.fire_rto();
+    EXPECT_EQ(t.conn->frto_step, FRTO_FIRST_ACK);
+    lp.link.clear_frames();
+
+    EXPECT_EQ(t.ack(PEER_MSS), OK);
+    EXPECT_EQ(t.conn->frto_step, 0);
+    EXPECT_EQ(t.conn->cwnd, 2u * PEER_MSS);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_seq(lp.link, 0), t.first_seq() + PEER_MSS);
+    EXPECT_EQ(sent_seq(lp.link, 1), t.first_seq() + 2 * PEER_MSS);
+    EXPECT_EQ(t.conn->sent.lost_bytes(), 7u * PEER_MSS);
 }
 
 TEST(tcp_recovery_rto, loss_recovery_ends_once_everything_sent_at_the_timeout_is_acknowledged) {
