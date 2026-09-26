@@ -7,6 +7,7 @@
 #include "net/inet.h"
 #include "dynpriv/dynpriv.h"
 #include "common/ring_buffer.h"
+#include "sync/poll.h"
 #include "socket/listener.h"
 #include "resource/resource.h"
 #include "resource/handle_table.h"
@@ -265,6 +266,47 @@ TEST(socket_test, ring_buffer_wait_readable_reports_what_is_queued) {
     EXPECT_EQ(ring_buffer_wait_readable(rb, false), static_cast<ssize_t>(0));
 
     ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_refuses_writes_once_its_writer_closes) {
+    auto* rb = ring_buffer_create(64);
+    ASSERT_NOT_NULL(rb);
+
+    ring_buffer_close_write(rb);
+    EXPECT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("x"), 1), static_cast<ssize_t>(RB_ERR_PIPE));
+    EXPECT_EQ(ring_buffer_write_all(rb, reinterpret_cast<const uint8_t*>("x"), 1), static_cast<ssize_t>(RB_ERR_PIPE));
+
+    ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_drains_then_ends_once_its_reader_closes) {
+    auto* rb = ring_buffer_create(64);
+    ASSERT_NOT_NULL(rb);
+
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ab"), 2), static_cast<ssize_t>(2));
+    ring_buffer_close_read(rb);
+
+    uint8_t buf[4] = {};
+    EXPECT_EQ(ring_buffer_read(rb, buf, sizeof(buf), true), static_cast<ssize_t>(2));
+    EXPECT_EQ(ring_buffer_read(rb, buf, sizeof(buf), true), static_cast<ssize_t>(0));
+    EXPECT_EQ(ring_buffer_wait_readable(rb, true), static_cast<ssize_t>(0));
+
+    ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_polls_shut_once_either_side_closes) {
+    auto* reader_gone = ring_buffer_create(64);
+    auto* writer_gone = ring_buffer_create(64);
+    ASSERT_NOT_NULL(reader_gone);
+    ASSERT_NOT_NULL(writer_gone);
+
+    ring_buffer_close_read(reader_gone);
+    ring_buffer_close_write(writer_gone);
+    EXPECT_EQ(ring_buffer_poll_read(reader_gone, nullptr), sync::POLL_HUP);
+    EXPECT_EQ(ring_buffer_poll_write(writer_gone, nullptr), sync::POLL_OUT | sync::POLL_ERR);
+
+    ring_buffer_destroy(reader_gone);
+    ring_buffer_destroy(writer_gone);
 }
 
 // Socket pair creation and data flow
@@ -805,4 +847,62 @@ TEST(socket_test, stream_writes_to_a_closed_peer_break_with_or_without_the_signa
     EXPECT_EQ(obj_a->ops->write(obj_a, "x", 1, 0), resource::ERR_PIPE);
 
     resource::resource_release(obj_a);
+}
+
+// Half-close polling
+
+constexpr uint32_t STREAM_DOWN = sync::POLL_IN | sync::POLL_RDHUP | sync::POLL_OUT | sync::POLL_HUP;
+
+TEST(socket_test, a_unix_stream_polls_half_closed_until_both_directions_shut) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    const resource::socket_ops* ops = obj_a->ops->socket;
+    EXPECT_EQ(obj_a->ops->poll(obj_a, nullptr), sync::POLL_OUT);
+
+    // One shut direction ends that stream at the peer without hanging up
+    EXPECT_EQ(ops->shutdown(obj_a, resource::SHUT_WR), resource::OK);
+    EXPECT_EQ(obj_a->ops->poll(obj_a, nullptr), sync::POLL_OUT);
+    EXPECT_EQ(obj_b->ops->poll(obj_b, nullptr), sync::POLL_IN | sync::POLL_RDHUP | sync::POLL_OUT);
+
+    EXPECT_EQ(ops->shutdown(obj_a, resource::SHUT_RD), resource::OK);
+    EXPECT_EQ(obj_a->ops->poll(obj_a, nullptr), STREAM_DOWN);
+    EXPECT_EQ(obj_b->ops->poll(obj_b, nullptr), STREAM_DOWN);
+
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, a_full_unix_stream_polls_writable_once_its_peer_stops_reading) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    const resource::socket_ops* ops = obj_a->ops->socket;
+
+    const uint8_t chunk[256] = {};
+    ssize_t n = 1;
+    while (n > 0) {
+        n = ops->sendto(obj_b, chunk, sizeof(chunk), net::inet::MSG_DONTWAIT, nullptr, 0);
+    }
+    EXPECT_EQ(n, static_cast<ssize_t>(resource::ERR_AGAIN));
+    EXPECT_EQ(obj_b->ops->poll(obj_b, nullptr), 0u);
+
+    // Sends fail at once after the peer stops reading, so a poller waiting for room must not keep waiting
+    EXPECT_EQ(ops->shutdown(obj_a, resource::SHUT_RD), resource::OK);
+    EXPECT_EQ(obj_b->ops->poll(obj_b, nullptr), sync::POLL_OUT);
+    EXPECT_EQ(obj_a->ops->poll(obj_a, nullptr), sync::POLL_IN | sync::POLL_RDHUP | sync::POLL_OUT);
+
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, a_unix_stream_hangs_up_when_its_peer_closes) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    resource::resource_release(obj_a);
+    EXPECT_EQ(obj_b->ops->poll(obj_b, nullptr), STREAM_DOWN);
+
+    resource::resource_release(obj_b);
 }
