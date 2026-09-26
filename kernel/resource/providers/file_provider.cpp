@@ -39,13 +39,12 @@ static int32_t map_fs_error_to_resource(int32_t fs_err) {
 }
 
 __PRIVILEGED_CODE static ssize_t file_read(resource_object* obj, void* kdst, size_t count, uint32_t flags) {
-    (void)flags;
     if (!obj || !obj->impl || !kdst) {
         return ERR_INVAL;
     }
 
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
-    ssize_t rc = fs::read(impl->file, kdst, count, impl->file->flags() & fs::STATUS_FLAG_MASK);
+    ssize_t rc = fs::read(impl->file, kdst, count, flags);
     if (rc < 0) {
         return map_fs_error_to_resource(static_cast<int32_t>(rc));
     }
@@ -54,13 +53,12 @@ __PRIVILEGED_CODE static ssize_t file_read(resource_object* obj, void* kdst, siz
 }
 
 __PRIVILEGED_CODE static ssize_t file_write(resource_object* obj, const void* ksrc, size_t count, uint32_t flags) {
-    (void)flags;
     if (!obj || !obj->impl || !ksrc) {
         return ERR_INVAL;
     }
 
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
-    ssize_t rc = fs::write(impl->file, ksrc, count, impl->file->flags() & fs::STATUS_FLAG_MASK);
+    ssize_t rc = fs::write(impl->file, ksrc, count, flags);
     if (rc < 0) {
         return map_fs_error_to_resource(static_cast<int32_t>(rc));
     }

@@ -4,6 +4,7 @@
 #include "resource/resource_types.h"
 #include "resource/handle_table.h"
 #include "rc/ref_counted.h"
+#include "sync/atomic.h"
 
 namespace sched { struct task; }
 namespace mm { struct mm_context; }
@@ -42,6 +43,7 @@ struct resource_object : rc::ref_counted<resource_object> {
     resource_type type;
     const resource_ops* ops;
     void* impl;
+    sync::atomic<uint32_t> status_flags; // O_NONBLOCK and O_APPEND, shared by every handle to the object
 
     /**
      * @brief Finalize and free a resource object at terminal release.
@@ -159,6 +161,18 @@ __PRIVILEGED_CODE void resource_add_ref(resource_object* obj);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void resource_release(resource_object* obj);
+
+/**
+ * @brief Get the file status flags that every handle to `obj` shares.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t get_status_flags(const resource_object* obj);
+
+/**
+ * @brief Set the file status flags of `obj`, ignoring bits outside fs::STATUS_FLAG_MASK.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_status_flags(resource_object* obj, uint32_t flags);
 
 } // namespace resource
 

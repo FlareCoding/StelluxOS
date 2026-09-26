@@ -22,6 +22,9 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
         return syscall::ENOMEM;
     }
 
+    resource::set_status_flags(read_obj, flags);
+    resource::set_status_flags(write_obj, flags);
+
     resource::handle_t h_read = -1;
     rc = resource::alloc_handle(
         task->handles, read_obj, resource::resource_type::PIPE,
@@ -46,12 +49,9 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
 
     resource::resource_release(write_obj);
 
-    resource::handle_t ends[] = {h_read, h_write};
-    for (resource::handle_t end : ends) {
-        resource::set_status_flags(task->handles, end, flags);
-        if (flags & fs::O_CLOEXEC) {
-            resource::set_handle_flags(task->handles, end, resource::RESOURCE_HANDLE_CLOEXEC);
-        }
+    if (flags & fs::O_CLOEXEC) {
+        resource::set_handle_flags(task->handles, h_read, resource::RESOURCE_HANDLE_CLOEXEC);
+        resource::set_handle_flags(task->handles, h_write, resource::RESOURCE_HANDLE_CLOEXEC);
     }
 
     int32_t kbuf[2] = {h_read, h_write};

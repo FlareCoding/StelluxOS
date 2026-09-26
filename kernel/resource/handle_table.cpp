@@ -1,6 +1,5 @@
 #include "resource/handle_table.h"
 #include "resource/resource.h"
-#include "fs/fstypes.h"
 #include "mm/heap.h"
 
 namespace resource {
@@ -138,11 +137,13 @@ __PRIVILEGED_CODE int32_t get_handle_object(
 }
 
 /**
- * Reads the bits of `mask` from a handle's flag word.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static int32_t read_flags(handle_table* table, handle_t handle, uint32_t mask,
-                                            uint32_t* out_flags) {
+__PRIVILEGED_CODE int32_t get_handle_flags(
+    handle_table* table,
+    handle_t handle,
+    uint32_t* out_flags
+) {
     if (!table || !out_flags) {
         return HANDLE_ERR_INVAL;
     }
@@ -157,16 +158,18 @@ __PRIVILEGED_CODE static int32_t read_flags(handle_table* table, handle_t handle
         return HANDLE_ERR_NOENT;
     }
 
-    *out_flags = entry.flags & mask;
+    *out_flags = entry.flags;
     return HANDLE_OK;
 }
 
 /**
- * Replaces the bits of `mask` in a handle's flag word.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static int32_t write_flags(handle_table* table, handle_t handle, uint32_t mask,
-                                             uint32_t flags) {
+__PRIVILEGED_CODE int32_t set_handle_flags(
+    handle_table* table,
+    handle_t handle,
+    uint32_t flags
+) {
     if (!table) {
         return HANDLE_ERR_INVAL;
     }
@@ -181,52 +184,8 @@ __PRIVILEGED_CODE static int32_t write_flags(handle_table* table, handle_t handl
         return HANDLE_ERR_NOENT;
     }
 
-    entry.flags = (entry.flags & ~mask) | (flags & mask);
+    entry.flags = flags;
     return HANDLE_OK;
-}
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE int32_t get_handle_flags(
-    handle_table* table,
-    handle_t handle,
-    uint32_t* out_flags
-) {
-    return read_flags(table, handle, ~fs::STATUS_FLAG_MASK, out_flags);
-}
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE int32_t set_handle_flags(
-    handle_table* table,
-    handle_t handle,
-    uint32_t flags
-) {
-    return write_flags(table, handle, ~fs::STATUS_FLAG_MASK, flags);
-}
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE int32_t get_status_flags(
-    handle_table* table,
-    handle_t handle,
-    uint32_t* out_flags
-) {
-    return read_flags(table, handle, fs::STATUS_FLAG_MASK, out_flags);
-}
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE int32_t set_status_flags(
-    handle_table* table,
-    handle_t handle,
-    uint32_t flags
-) {
-    return write_flags(table, handle, fs::STATUS_FLAG_MASK, flags);
 }
 
 /**
