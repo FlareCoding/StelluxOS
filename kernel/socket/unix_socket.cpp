@@ -504,6 +504,49 @@ __PRIVILEGED_CODE static ssize_t unix_sendto(
     return write_stream(outbound(sock), static_cast<const uint8_t*>(ksrc), count, flags);
 }
 
+/**
+ * A null destination discards the bytes instead of copying them, and a peek leaves them
+ * queued. The peer of a pair has no address to report.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static ssize_t unix_recvfrom(
+    resource::resource_object* obj, void* kdst, size_t count, uint32_t flags, void*, size_t* addrlen
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+
+    if (flags & net::inet::MSG_OOB) {
+        return resource::ERR_UNSUP;
+    }
+
+    auto* sock = static_cast<unix_socket*>(obj->impl);
+    if (sock->state != SOCK_STATE_CONNECTED) {
+        return resource::ERR_NOTCONN;
+    }
+
+    if (addrlen) {
+        *addrlen = 0;
+    }
+
+    ring_buffer* rb = inbound(sock).buf;
+    bool nonblock = (flags & net::inet::MSG_DONTWAIT) != 0;
+    if (kdst && !(flags & net::inet::MSG_PEEK)) {
+        return ring_buffer_read(rb, static_cast<uint8_t*>(kdst), count, nonblock);
+    }
+
+    ssize_t queued = ring_buffer_wait_readable(rb, nonblock);
+    if (queued <= 0) {
+        return queued;
+    }
+
+    if (!kdst) {
+        return static_cast<ssize_t>(ring_buffer_skip(rb, count));
+    }
+
+    return static_cast<ssize_t>(ring_buffer_peek(rb, static_cast<uint8_t*>(kdst), count));
+}
+
 __PRIVILEGED_CODE static uint32_t socket_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
@@ -540,6 +583,7 @@ static const resource::socket_ops g_unix_socket_ops = {
     .accept = unix_accept,
     .connect = unix_connect,
     .sendto = unix_sendto,
+    .recvfrom = unix_recvfrom,
 };
 
 static const resource::resource_ops g_socket_ops = {
