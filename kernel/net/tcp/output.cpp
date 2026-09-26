@@ -305,6 +305,13 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
         arm_send_timer_locked(conn, timer_kind::probe);
     }
 
+    uint32_t in_flight = conn->snd_nxt - conn->snd_una;
+    bool cwnd_limited = unsent_bytes(conn) > 0 && conn->cwnd - in_flight < mss;
+
+    if (count > 0 || cwnd_limited) {
+        note_cwnd_usage_locked(conn, cwnd_limited);
+    }
+
     return count;
 }
 

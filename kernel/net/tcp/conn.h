@@ -168,7 +168,11 @@ struct tcp_conn : record {
     uint32_t              ssthresh;
     uint32_t              prior_cwnd;
     uint32_t              prior_ssthresh;
-    uint32_t              high_seq; // RFC 6582 recover
+    uint32_t              high_seq;    // RFC 6582 recover
+    uint32_t              bytes_acked; // RFC 3465, toward the next increase
+    uint32_t              max_in_flight;
+    uint32_t              in_flight_window_end;
+    bool                  cwnd_limited;
     uint8_t               dupacks;
     recovery_state        recovery;
     const congestion_ops* congestion;
