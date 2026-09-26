@@ -61,7 +61,7 @@ void init_default_rlimits(rlimit_pair* limits) {
 
     uint64_t stack_bytes = mm::USER_STACK_MAX_PAGES * pmm::PAGE_SIZE;
     limits[RLIMIT_STACK]  = { stack_bytes, stack_bytes };
-    limits[RLIMIT_NOFILE] = { resource::DEFAULT_HANDLE_LIMIT, resource::DEFAULT_HANDLE_LIMIT };
+    limits[RLIMIT_NOFILE] = { resource::DEFAULT_HANDLE_LIMIT, resource::DEFAULT_HANDLE_HARD_LIMIT };
 }
 
 __PRIVILEGED_CODE void task::ref_destroy(task* self) {

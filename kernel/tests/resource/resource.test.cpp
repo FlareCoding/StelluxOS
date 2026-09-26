@@ -267,21 +267,23 @@ TEST(resource_test, open_relative_path_returns_inval) {
     EXPECT_EQ(resource::open(task, "relative/path", fs::O_RDONLY, &h), resource::ERR_INVAL);
 }
 
+// Too large for the runner's stack
+static resource::handle_t g_full_table[resource::DEFAULT_HANDLE_LIMIT];
+
 TEST(resource_test, open_returns_tablefull_when_handle_space_exhausted) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);
 
-    resource::handle_t handles[resource::DEFAULT_HANDLE_LIMIT];
     for (uint32_t i = 0; i < resource::DEFAULT_HANDLE_LIMIT; i++) {
-        handles[i] = -1;
-        ASSERT_EQ(resource::open(task, "/resource_full", fs::O_CREAT | fs::O_RDWR, &handles[i]), resource::OK);
+        g_full_table[i] = -1;
+        ASSERT_EQ(resource::open(task, "/resource_full", fs::O_CREAT | fs::O_RDWR, &g_full_table[i]), resource::OK);
     }
 
     resource::handle_t extra = -1;
     EXPECT_EQ(resource::open(task, "/resource_full", fs::O_CREAT | fs::O_RDWR, &extra), resource::ERR_TABLEFULL);
 
     for (uint32_t i = 0; i < resource::DEFAULT_HANDLE_LIMIT; i++) {
-        EXPECT_EQ(resource::close(task, handles[i]), resource::OK);
+        EXPECT_EQ(resource::close(task, g_full_table[i]), resource::OK);
     }
 }
 
