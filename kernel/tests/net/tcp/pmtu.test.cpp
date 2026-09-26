@@ -22,7 +22,7 @@ constexpr uint16_t PEER_MSS  = 1460;
 constexpr uint16_t LINK_MTU  = 1500;
 constexpr uint16_t HEADERS   = ipv4::HEADER_LEN + HEADER_LEN;
 
-static uint8_t  g_bytes[2 * PEER_MSS];
+static uint8_t  g_bytes[10 * PEER_MSS];
 static uint64_t g_fake_now;
 
 static uint64_t fake_clock() {
@@ -116,6 +116,44 @@ TEST(tcp_pmtu, records_too_long_for_the_path_go_again_in_pieces_that_fit) {
     EXPECT_EQ(n.conn->sent.count(), 4u);
     EXPECT_EQ(n.conn->sent.lost_bytes(), 0u);
     EXPECT_EQ(n.conn->total_retransmits, 4u);
+}
+
+TEST(tcp_pmtu, the_record_cap_follows_the_mss) {
+    linked_peer lp;
+    narrowed n(lp);
+    n.write(PEER_MSS);
+    size_t queue_bytes = n.conn->snd_queue.limit() * CHUNK_PAYLOAD;
+    ASSERT_EQ(n.conn->sent.cap(), queue_bytes / PEER_MSS + SENT_SEGMENT_MARGIN);
+
+    EXPECT_EQ(n.fragmentation_needed(1000, n.conn->snd_una), OK);
+    EXPECT_EQ(n.conn->sent.cap(), queue_bytes / (1000 - HEADERS) + SENT_SEGMENT_MARGIN);
+}
+
+TEST(tcp_pmtu, a_full_window_splits_past_the_record_cap) {
+    linked_peer lp;
+    narrowed n(lp);
+    n.write(10 * PEER_MSS);
+    ASSERT_EQ(lp.link.frames_sent(), 10u);
+    ASSERT_EQ(n.conn->sent.cap(), 19u);
+    lp.link.clear_frames();
+    uint32_t mss = 1492 - HEADERS;
+
+    EXPECT_EQ(n.fragmentation_needed(1492, n.conn->snd_una), OK);
+    EXPECT_EQ(lp.link.frames_sent(), MAX_BURST);
+    EXPECT_EQ(n.conn->sent.count(), 18u);
+    EXPECT_EQ(n.conn->sent.lost_bytes(), 2u * PEER_MSS);
+    for (size_t frame = 0; frame < stub_interface::MAX_FRAMES; frame++) {
+        EXPECT_EQ(sent_payload_len(lp.link, frame), frame % 2 == 0 ? mss : PEER_MSS - mss);
+    }
+
+    lp.link.clear_frames();
+    EXPECT_EQ(output(n.conn.ptr()), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 4u);
+    EXPECT_EQ(n.conn->sent.count(), 20u);
+    EXPECT_EQ(n.conn->sent.lost_bytes(), 0u);
+    for (size_t frame = 0; frame < 4; frame++) {
+        EXPECT_EQ(sent_payload_len(lp.link, frame), frame % 2 == 0 ? mss : PEER_MSS - mss);
+    }
 }
 
 TEST(tcp_pmtu, a_narrower_path_is_not_congestion_so_the_window_stays) {

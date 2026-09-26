@@ -90,9 +90,10 @@ public:
 
     /**
      * @brief Cuts a record at `at_seq`, the tail becoming a record of its own
-     * with the same marks, so the head can go again on a narrower path.
-     * @return The tail, or nullptr when the cap or the budget refuses, in which
-     *         case the record is left whole.
+     * with the same marks, so the head can go again on a narrower path. The
+     * cap does not apply, since no bytes are added, only the budget.
+     * @return The tail, or nullptr when the budget refuses, in which case the
+     *         record is left whole.
      */
     sent_segment* split(sent_segment* segment, uint32_t at_seq);
 

@@ -253,10 +253,16 @@ void update_receive_window_locked(tcp_conn* conn);
 void mark_ack_sent_locked(tcp_conn* conn);
 
 /**
- * @brief Sets the initial congestion window (RFC 6928) and the record cap
- * from `snd_mss`. Caller holds the lock.
+ * @brief Sets the initial congestion window (RFC 6928) from `snd_mss`.
+ * Caller holds the lock.
  */
 void configure_send_path_locked(tcp_conn* conn);
+
+/**
+ * @brief Sets the MSS and sizes the record cap for a queue full of segments
+ * of it. Caller holds the lock.
+ */
+void set_send_mss_locked(tcp_conn* conn, uint16_t mss);
 
 /**
  * @brief Queued bytes not yet sent. An unacknowledged SYN or FIN holds a

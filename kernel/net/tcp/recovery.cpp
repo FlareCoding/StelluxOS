@@ -194,7 +194,7 @@ bool lower_path_mtu_locked(tcp_conn* conn, uint16_t next_hop_mtu) {
     }
 
     conn->path_mtu = mtu;
-    conn->snd_mss = send_mss(conn->iface, conn->rcv_mss, conn->snd_mss_cap, mtu);
+    set_send_mss_locked(conn, send_mss(conn->iface, conn->rcv_mss, conn->snd_mss_cap, mtu));
     if (conn->sent.mark_lost_longer_than(payload_mss(conn)) == 0) {
         return false;
     }

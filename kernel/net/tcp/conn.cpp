@@ -174,10 +174,14 @@ void configure_send_path_locked(tcp_conn* conn) {
     conn->high_seq = conn->iss;
     conn->frto_step = 0;
     conn->snd_sml = conn->iss;
-    conn->sent.set_cap(conn->snd_queue.limit() * CHUNK_PAYLOAD / conn->snd_mss + SENT_SEGMENT_MARGIN);
     if (conn->congestion->init) {
         conn->congestion->init(conn);
     }
+}
+
+void set_send_mss_locked(tcp_conn* conn, uint16_t mss) {
+    conn->snd_mss = mss;
+    conn->sent.set_cap(conn->snd_queue.limit() * CHUNK_PAYLOAD / mss + SENT_SEGMENT_MARGIN);
 }
 
 void mark_ack_sent_locked(tcp_conn* conn) {

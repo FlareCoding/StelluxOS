@@ -859,6 +859,7 @@ TEST(tcp_socket, tcp_options_are_kept_and_reach_the_connection) {
     value = 300;
     EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_MAXSEG, &value, sizeof(value)), resource::OK);
     EXPECT_EQ(conn->snd_mss, 300);
+    EXPECT_EQ(conn->sent.cap(), conn->snd_queue.limit() * CHUNK_PAYLOAD / 300 + SENT_SEGMENT_MARGIN);
     EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_MAXSEG, &value, &len), resource::OK);
     EXPECT_EQ(value, 300);
 
