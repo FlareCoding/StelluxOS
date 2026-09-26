@@ -82,8 +82,8 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
     resource::set_status_flags(obj, static_cast<uint32_t>(creation_flags));
 
     resource::handle_t h = -1;
-    rc = resource::alloc_handle(
-        task->handles, obj, resource::resource_type::SOCKET,
+    rc = resource::alloc_task_handle(
+        task, obj, resource::resource_type::SOCKET,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h
     );
     if (rc != resource::HANDLE_OK) {
@@ -130,8 +130,8 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
     resource::set_status_flags(obj_b, static_cast<uint32_t>(creation_flags));
 
     resource::handle_t h0 = -1;
-    rc = resource::alloc_handle(
-        task->handles, obj_a, resource::resource_type::SOCKET,
+    rc = resource::alloc_task_handle(
+        task, obj_a, resource::resource_type::SOCKET,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h0
     );
     if (rc != resource::HANDLE_OK) {
@@ -143,8 +143,8 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
     resource::resource_release(obj_a);
 
     resource::handle_t h1 = -1;
-    rc = resource::alloc_handle(
-        task->handles, obj_b, resource::resource_type::SOCKET,
+    rc = resource::alloc_task_handle(
+        task, obj_b, resource::resource_type::SOCKET,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h1
     );
     if (rc != resource::HANDLE_OK) {
@@ -314,8 +314,8 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     }
 
     resource::handle_t new_handle = -1;
-    rc = resource::alloc_handle(
-        task->handles, new_obj, resource::resource_type::SOCKET,
+    rc = resource::alloc_task_handle(
+        task, new_obj, resource::resource_type::SOCKET,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &new_handle);
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(new_obj);

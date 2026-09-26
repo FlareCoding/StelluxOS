@@ -27,8 +27,8 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
     resource::set_status_flags(write_obj, flags);
 
     resource::handle_t h_read = -1;
-    rc = resource::alloc_handle(
-        task->handles, read_obj, resource::resource_type::PIPE,
+    rc = resource::alloc_task_handle(
+        task, read_obj, resource::resource_type::PIPE,
         resource::RIGHT_READ, &h_read);
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(read_obj);
@@ -39,8 +39,8 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
     resource::resource_release(read_obj);
 
     resource::handle_t h_write = -1;
-    rc = resource::alloc_handle(
-        task->handles, write_obj, resource::resource_type::PIPE,
+    rc = resource::alloc_task_handle(
+        task, write_obj, resource::resource_type::PIPE,
         resource::RIGHT_WRITE, &h_write);
     if (rc != resource::HANDLE_OK) {
         resource::close(task, h_read);

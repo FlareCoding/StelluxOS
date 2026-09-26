@@ -62,8 +62,8 @@ DEFINE_SYSCALL2(memfd_create, u_name, u_flags) {
 
     resource::handle_t handle = -1;
     uint32_t rights = resource::RIGHT_READ | resource::RIGHT_WRITE;
-    rc = resource::alloc_handle(
-        task->handles, obj, resource::resource_type::SHMEM, rights, &handle);
+    rc = resource::alloc_task_handle(
+        task, obj, resource::resource_type::SHMEM, rights, &handle);
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
         return syscall::error_map::map_handle_alloc_error(rc);

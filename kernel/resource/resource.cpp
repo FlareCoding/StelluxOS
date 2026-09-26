@@ -83,6 +83,32 @@ __PRIVILEGED_CODE int32_t init_task_handles(sched::task* task) {
     return OK;
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t handle_limit(sched::task* task) {
+    if (!task->group) {
+        return MAX_TASK_HANDLES;
+    }
+
+    sync::irq_lock_guard guard(task->group->lock);
+    uint64_t soft = task->group->rlimits[sched::RLIMIT_NOFILE].soft;
+    return soft < MAX_TASK_HANDLES ? static_cast<uint32_t>(soft) : MAX_TASK_HANDLES;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t alloc_task_handle(
+    sched::task* task,
+    resource_object* obj,
+    resource_type type,
+    uint32_t rights,
+    handle_t* out_handle
+) {
+    return alloc_handle(task->handles, obj, type, rights, out_handle, handle_limit(task));
+}
+
 static int32_t map_handle_error_to_resource(int32_t handle_err) {
     switch (handle_err) {
         case HANDLE_ERR_NOSPC:
@@ -152,7 +178,7 @@ __PRIVILEGED_CODE int32_t open(
     set_status_flags(obj, fs_flags);
 
     uint32_t rights = rights_from_open_flags(fs_flags);
-    rc = alloc_handle(owner->handles, obj, rtype, rights, out_handle);
+    rc = alloc_task_handle(owner, obj, rtype, rights, out_handle);
     if (rc != HANDLE_OK) {
         resource_release(obj);
         return map_handle_error_to_resource(rc);

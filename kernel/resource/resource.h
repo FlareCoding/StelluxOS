@@ -91,6 +91,25 @@ constexpr int32_t ERR_CONNRESET   = -29;
 __PRIVILEGED_CODE int32_t init_task_handles(sched::task* task);
 
 /**
+ * @brief The slots a task's process may fill, its soft descriptor limit capped at MAX_TASK_HANDLES.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t handle_limit(sched::task* task);
+
+/**
+ * @brief Install a resource object in the lowest free slot of the task's table below its handle_limit.
+ * Increments object refcount on success.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t alloc_task_handle(
+    sched::task* task,
+    resource_object* obj,
+    resource_type type,
+    uint32_t rights,
+    handle_t* out_handle
+);
+
+/**
  * @brief Open path-backed resource and install a handle in task table.
  * @note Privilege: **required**
  */

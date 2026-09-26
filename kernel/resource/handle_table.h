@@ -57,7 +57,7 @@ constexpr int32_t HANDLE_ERR_NOMEM  = -5;
 __PRIVILEGED_CODE int32_t init_handle_table(handle_table* table);
 
 /**
- * @brief Install a resource object and return new handle.
+ * @brief Install a resource object in the lowest free slot below `limit` and return its handle.
  * Increments object refcount on success.
  * @note Privilege: **required**
  */
@@ -66,7 +66,8 @@ __PRIVILEGED_CODE int32_t alloc_handle(
     resource_object* obj,
     resource_type type,
     uint32_t rights,
-    handle_t* out_handle
+    handle_t* out_handle,
+    uint32_t limit = MAX_TASK_HANDLES
 );
 
 /**

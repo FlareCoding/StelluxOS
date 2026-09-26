@@ -97,7 +97,8 @@ __PRIVILEGED_CODE int32_t alloc_handle(
     resource_object* obj,
     resource_type type,
     uint32_t rights,
-    handle_t* out_handle
+    handle_t* out_handle,
+    uint32_t limit
 ) {
     if (!table || !obj || !out_handle) {
         return HANDLE_ERR_INVAL;
@@ -119,7 +120,7 @@ __PRIVILEGED_CODE int32_t alloc_handle(
         slot++;
     }
 
-    if (slot >= MAX_TASK_HANDLES) {
+    if (slot >= limit || slot >= MAX_TASK_HANDLES) {
         return HANDLE_ERR_NOSPC;
     }
 
