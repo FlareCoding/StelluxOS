@@ -3,6 +3,7 @@
 #include "net/tcp/timers.h"
 #include "net/tcp/timewait.h"
 #include "net/tcp/reassembly.h"
+#include "net/tcp/recovery.h"
 #include "net/tcp/rtt.h"
 #include "net/tcp/info.h"
 #include "net/tcp/seq.h"
@@ -106,15 +107,19 @@ static bool paws_rejects_locked(const tcp_conn* conn, const tcp_options& opts) {
 // RFC 9293 3.10.7.4 for an acceptable ACK: one below SND.UNA is a duplicate
 // that changes nothing, otherwise the send window follows the newest segment
 // (RFC 7323 4.3 for the timestamp). Caller holds the lock.
-static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_options& opts) {
+static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_options& opts, size_t payload_len) {
     uint32_t seq = ntohl(hdr->seq);
     uint32_t ack = ntohl(hdr->ack);
+    uint32_t window = uint32_t{ntohs(hdr->window)} << conn->snd_wscale;
     bool current = seq_geq(ack, conn->snd_una);
+    bool duplicate = is_duplicate_ack_locked(conn, hdr->flags, payload_len, ack, window);
     bool freed_room = false;
     conn->unanswered_probes = 0;
     conn->peer_acked_ns = now_ns();
 
-    if (seq_gt(ack, conn->snd_una)) {
+    if (duplicate) {
+        take_duplicate_ack_locked(conn);
+    } else if (seq_gt(ack, conn->snd_una)) {
         uint32_t advance = ack - conn->snd_una;
         size_t queued = conn->snd_queue.size();
 
@@ -130,6 +135,7 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
         conn->snd_una = ack;
         conn->retransmits = 0;
         conn->backoff = 0;
+        leave_disorder_locked(conn);
 
         if (conn->congestion->acked) {
             conn->congestion->acked(conn, covered.bytes, rtt_ns != 0 ? static_cast<int64_t>(rtt_ns / 1000) : -1);
@@ -147,7 +153,7 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
     }
 
     if (current && (seq_lt(conn->snd_wl1, seq) || (conn->snd_wl1 == seq && seq_leq(conn->snd_wl2, ack)))) {
-        conn->snd_wnd = uint32_t{ntohs(hdr->window)} << conn->snd_wscale;
+        conn->snd_wnd = window;
         conn->snd_wl1 = seq;
         conn->snd_wl2 = ack;
         if (conn->snd_wnd > conn->max_snd_wnd) {
@@ -292,7 +298,7 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
         } else if (!seq_geq(ack, conn->snd_una - conn->max_snd_wnd) || !seq_leq(ack, conn->snd_nxt)) {
             action = segment_action::challenge;
         } else {
-            wake_writers = take_ack_locked(conn, hdr, opts);
+            wake_writers = take_ack_locked(conn, hdr, opts, payload_len);
             take_fin_ack_locked(conn, ack);
 
             if (refuses_data_locked(conn, seq, payload_len)) {
