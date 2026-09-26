@@ -131,6 +131,14 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
         conn->retransmits = 0;
         conn->backoff = 0;
 
+        if (conn->congestion->acked) {
+            conn->congestion->acked(conn, covered.bytes, rtt_ns != 0 ? static_cast<int64_t>(rtt_ns / 1000) : -1);
+        }
+
+        if (conn->recovery == recovery_state::open && is_cwnd_limited(conn)) {
+            conn->congestion->grow(conn, covered.bytes);
+        }
+
         if (conn->snd_una == conn->snd_nxt) {
             conn->send_timer_kind = timer_kind::none;
         } else {

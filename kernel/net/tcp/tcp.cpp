@@ -54,6 +54,8 @@ static int32_t send_reset(interface* iface, const tuple& key, const tcp_header* 
 }
 
 int32_t init() {
+    init_congestion();
+
     int32_t rc = init_tables();
     if (rc != OK) {
         return rc;
