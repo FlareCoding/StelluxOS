@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_pty.h"
+#include "syscall/handlers/sys_error_map.h"
 #include "syscall/syscall_table.h"
 #include "resource/resource.h"
 #include "pty/pty.h"
@@ -26,7 +27,7 @@ DEFINE_SYSCALL1(pty_create, u_fds) {
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(master_obj);
         resource::resource_release(slave_obj);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     resource::resource_release(master_obj);
@@ -38,7 +39,7 @@ DEFINE_SYSCALL1(pty_create, u_fds) {
     if (rc != resource::HANDLE_OK) {
         resource::close(task, h0);
         resource::resource_release(slave_obj);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(rc);
     }
 
     resource::resource_release(slave_obj);

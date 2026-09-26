@@ -635,3 +635,75 @@ TEST(resource_test, inherited_standard_handles_share_status_flags) {
     resource::handle_table::ref_destroy(child);
     resource::handle_table::ref_destroy(parent);
 }
+
+// A bare object with no operations, owned by the caller
+static resource::resource_object* make_object() {
+    auto* obj = heap::kalloc_new<resource::resource_object>();
+    if (obj) {
+        obj->type = resource::resource_type::FILE;
+        obj->ops = nullptr;
+        obj->impl = nullptr;
+    }
+
+    return obj;
+}
+
+TEST(resource_test, handle_table_starts_small_and_doubles_when_full) {
+    resource::handle_table* table = make_handle_table();
+    resource::resource_object* obj = make_object();
+    ASSERT_NOT_NULL(table);
+    ASSERT_NOT_NULL(obj);
+    EXPECT_EQ(table->capacity, resource::INITIAL_TASK_HANDLES);
+
+    resource::handle_t h = -1;
+    for (uint32_t i = 0; i <= resource::INITIAL_TASK_HANDLES; i++) {
+        ASSERT_EQ(resource::alloc_handle(table, obj, obj->type, resource::RIGHT_READ, &h), resource::HANDLE_OK);
+        EXPECT_EQ(h, static_cast<resource::handle_t>(i));
+    }
+
+    EXPECT_EQ(table->capacity, 2 * resource::INITIAL_TASK_HANDLES);
+    EXPECT_EQ(object_at(table, 0), obj);
+
+    resource::resource_release(obj);
+    resource::handle_table::ref_destroy(table);
+}
+
+TEST(resource_test, install_handle_at_grows_the_table_to_reach_the_slot) {
+    resource::handle_table* table = make_handle_table();
+    resource::resource_object* obj = make_object();
+    ASSERT_NOT_NULL(table);
+    ASSERT_NOT_NULL(obj);
+
+    auto last = static_cast<resource::handle_t>(resource::MAX_TASK_HANDLES - 1);
+    ASSERT_EQ(resource::install_handle_at(table, last, obj, obj->type, resource::RIGHT_READ), resource::HANDLE_OK);
+    EXPECT_EQ(table->capacity, resource::MAX_TASK_HANDLES);
+    EXPECT_EQ(object_at(table, last), obj);
+    EXPECT_NULL(object_at(table, last - 1));
+
+    auto beyond = static_cast<resource::handle_t>(resource::MAX_TASK_HANDLES);
+    int32_t rc = resource::install_handle_at(table, beyond, obj, obj->type, resource::RIGHT_READ);
+    EXPECT_EQ(rc, resource::HANDLE_ERR_INVAL);
+
+    resource::resource_release(obj);
+    resource::handle_table::ref_destroy(table);
+}
+
+TEST(resource_test, copy_handle_table_grows_the_copy_to_match) {
+    resource::handle_table* src = make_handle_table();
+    resource::handle_table* dst = make_handle_table();
+    resource::resource_object* obj = make_object();
+    ASSERT_NOT_NULL(src);
+    ASSERT_NOT_NULL(dst);
+    ASSERT_NOT_NULL(obj);
+
+    auto last = static_cast<resource::handle_t>(resource::MAX_TASK_HANDLES - 1);
+    ASSERT_EQ(resource::install_handle_at(src, last, obj, obj->type, resource::RIGHT_READ), resource::HANDLE_OK);
+    resource::resource_release(obj);
+
+    ASSERT_EQ(resource::copy_handle_table(src, dst), resource::HANDLE_OK);
+    EXPECT_EQ(dst->capacity, src->capacity);
+    EXPECT_EQ(object_at(dst, last), obj);
+
+    resource::handle_table::ref_destroy(dst);
+    resource::handle_table::ref_destroy(src);
+}

@@ -83,6 +83,17 @@ __PRIVILEGED_CODE int32_t init_task_handles(sched::task* task) {
     return OK;
 }
 
+static int32_t map_handle_error_to_resource(int32_t handle_err) {
+    switch (handle_err) {
+        case HANDLE_ERR_NOSPC:
+            return ERR_TABLEFULL;
+        case HANDLE_ERR_NOMEM:
+            return ERR_NOMEM;
+        default:
+            return ERR_IO;
+    }
+}
+
 static bool valid_open_flags(uint32_t flags) {
     uint32_t mode = flags & fs::ACCESS_MODE_MASK;
     return mode == fs::O_RDONLY || mode == fs::O_WRONLY || mode == fs::O_RDWR;
@@ -144,7 +155,7 @@ __PRIVILEGED_CODE int32_t open(
     rc = alloc_handle(owner->handles, obj, rtype, rights, out_handle);
     if (rc != HANDLE_OK) {
         resource_release(obj);
-        return (rc == HANDLE_ERR_NOSPC) ? ERR_TABLEFULL : ERR_IO;
+        return map_handle_error_to_resource(rc);
     }
 
     if (flags & fs::O_CLOEXEC) {

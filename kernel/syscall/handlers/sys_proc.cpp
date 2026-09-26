@@ -197,7 +197,7 @@ DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
         caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);
     if (h_rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(h_rc);
     }
 
     resource::resource_release(obj);
@@ -429,7 +429,7 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
     resource::resource_release(proc_obj);
 
     if (rc != resource::HANDLE_OK) {
-        return syscall::EINVAL;
+        return (rc == resource::HANDLE_ERR_NOMEM) ? syscall::ENOMEM : syscall::EINVAL;
     }
 
     return 0;
@@ -526,7 +526,7 @@ DEFINE_SYSCALL4(proc_create_thread, u_entry, u_arg, u_stack_top, u_name) {
         caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);
     if (h_rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
-        return syscall::EMFILE;
+        return syscall::error_map::map_handle_alloc_error(h_rc);
     }
 
     resource::resource_release(obj);

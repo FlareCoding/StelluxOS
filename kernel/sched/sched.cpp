@@ -1235,7 +1235,13 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
             return nullptr;
         }
 
-        resource::copy_handle_table(creator->handles, t->handles);
+        if (resource::copy_handle_table(creator->handles, t->handles) != resource::HANDLE_OK) {
+            log::error("sched: failed to copy thread handle table");
+            resource::release_task_handles(t);
+            vmm::free(sys_stack_base);
+            heap::kfree_delete(t);
+            return nullptr;
+        }
     }
 
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
