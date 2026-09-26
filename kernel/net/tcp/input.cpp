@@ -314,7 +314,7 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
             if (refuses_data_locked(conn, seq, payload_len)) {
                 action = segment_action::abort;
             } else {
-                try_send = unsent_bytes(conn) > 0 || conn->fin_pending;
+                try_send = unsent_bytes(conn) > 0 || conn->fin_pending || conn->sent.lost_bytes() > 0;
 
                 payload_result got = take_payload_locked(conn, pkt, hdr, seq, payload_len);
                 packet_taken = got.packet_taken;
