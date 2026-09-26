@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_prlimit.h"
+#include "resource/handle_table.h"
 #include "mm/uaccess.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -35,6 +36,11 @@ DEFINE_SYSCALL4(prlimit64, u_pid, u_resource, u_new, u_old) {
 
         if (knew.rlim_cur > knew.rlim_max) {
             return syscall::EINVAL;
+        }
+
+        // No table grows past MAX_TASK_HANDLES, so no descriptor limit may either
+        if (u_resource == sched::RLIMIT_NOFILE && knew.rlim_max > resource::MAX_TASK_HANDLES) {
+            return syscall::EPERM;
         }
     }
 

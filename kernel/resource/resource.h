@@ -92,9 +92,17 @@ __PRIVILEGED_CODE int32_t init_task_handles(sched::task* task);
 
 /**
  * @brief The slots a task's process may fill, its soft descriptor limit capped at MAX_TASK_HANDLES.
+ * A task outside any process gets DEFAULT_HANDLE_LIMIT.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t handle_limit(sched::task* task);
+
+/**
+ * @brief handle_limit without taking the group lock, for a caller that holds it or whose
+ * target process cannot change its limits, such as one that has not started.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t handle_limit_unlocked(sched::task* task);
 
 /**
  * @brief Install a resource object in the lowest free slot of the task's table below its handle_limit.

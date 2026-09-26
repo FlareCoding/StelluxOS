@@ -9,7 +9,11 @@ namespace resource {
 
 struct resource_object;
 
-constexpr uint32_t MAX_TASK_HANDLES = 128;
+// The most slots a table may grow to, and so the ceiling for any descriptor limit
+constexpr uint32_t MAX_TASK_HANDLES = 1u << 20;
+
+// The descriptor limit a process starts with
+constexpr uint32_t DEFAULT_HANDLE_LIMIT = 128;
 
 // Slots a table starts with, doubling on demand up to MAX_TASK_HANDLES
 constexpr uint32_t INITIAL_TASK_HANDLES = 16;
@@ -137,6 +141,12 @@ __PRIVILEGED_CODE int32_t copy_handle_table(handle_table* src, handle_table* dst
  * @brief Whether `table` can hold a handle in slot `slot`, growing to reach it.
  */
 bool handle_slot_in_range(const handle_table* table, handle_t slot);
+
+/**
+ * @brief How many slots `table` has grown to, a number that never shrinks.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t handle_table_capacity(handle_table* table);
 
 /**
  * @brief Remove handle entry and return held object reference.

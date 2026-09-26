@@ -409,6 +409,13 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
         return syscall::EINVAL;
     }
 
+    // The child's own limit bounds its table, and a child that has not started cannot change it
+    if (u_slot >= resource::handle_limit_unlocked(pr->child)) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        resource::resource_release(proc_obj);
+        return syscall::EINVAL;
+    }
+
     resource::resource_object* res_obj = nullptr;
     uint32_t res_rights = 0;
     rc = resource::get_handle_object(
