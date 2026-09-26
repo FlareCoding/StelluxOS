@@ -7,6 +7,7 @@
 #include "net/tcp/output.h"
 #include "net/net.h"
 #include "clock/clock.h"
+#include "timer/timer.h"
 #include "dynpriv/dynpriv.h"
 
 TEST_SUITE(tcp_newreno);
@@ -231,6 +232,23 @@ TEST(tcp_newreno, a_send_after_an_idle_longer_than_the_timeout_restarts_from_the
     EXPECT_EQ(g.conn->cwnd, 10u * PEER_MSS);
     EXPECT_EQ(g.conn->ssthresh, SSTHRESH_INFINITE);
     EXPECT_EQ(g.conn->snd_nxt - g.first_seq(), 13u * PEER_MSS);
+}
+
+TEST(tcp_newreno, a_retransmission_counts_as_sending_for_the_idle_restart) {
+    linked_peer lp;
+    growing g(lp);
+    grow_and_drain(g);
+
+    g.write(PEER_MSS);
+    g_fake_now += g.conn->rto_ns;
+    RUN_ELEVATED(timer::__dbg_test_fire_expired(g_fake_now));
+    ASSERT_EQ(g.conn->sent.oldest()->retrans, 1);
+
+    g_fake_now += g.conn->rto_ns / 2;
+    EXPECT_EQ(g.ack(13 * PEER_MSS), OK);
+    ASSERT_EQ(g.conn->snd_nxt, g.conn->snd_una);
+    g.write(PEER_MSS);
+    EXPECT_EQ(g.conn->cwnd, 16u * PEER_MSS);
 }
 
 TEST(tcp_newreno, a_pause_within_the_timeout_keeps_the_window) {

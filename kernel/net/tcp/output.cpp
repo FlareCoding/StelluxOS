@@ -208,7 +208,9 @@ packet* rebuild_oldest_locked(tcp_conn* conn) {
 
     packet* pkt = build_data_segment(conn, oldest->start_seq, len, flags);
     if (pkt) {
-        conn->sent.mark_retransmitted(oldest, now_ns());
+        uint64_t now = now_ns();
+        conn->sent.mark_retransmitted(oldest, now);
+        conn->last_data_sent_ns = now;
         conn->total_retransmits++;
     }
 
@@ -334,7 +336,7 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
     }
 
     uint32_t in_flight = conn->snd_nxt - conn->snd_una;
-    bool cwnd_limited = unsent_bytes(conn) > 0 && conn->cwnd - in_flight < mss;
+    bool cwnd_limited = unsent_bytes(conn) > 0 && in_flight + mss > conn->cwnd;
 
     if (count > 0 || cwnd_limited) {
         note_cwnd_usage_locked(conn, cwnd_limited);

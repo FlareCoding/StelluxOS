@@ -252,6 +252,24 @@ TEST(tcp_recovery_dupack, a_repeated_acknowledgment_with_nothing_outstanding_is_
     EXPECT_EQ(r.conn->recovery, recovery_state::open);
 }
 
+TEST(tcp_recovery_dupack, limited_transmit_does_not_hide_that_the_window_was_the_limit) {
+    linked_peer lp;
+    reordering r(lp);
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(r.conn->lock);
+        r.conn->ssthresh = r.conn->cwnd;
+    });
+
+    EXPECT_EQ(r.ack(0), OK);
+    EXPECT_EQ(r.ack(0), OK);
+    ASSERT_EQ(r.in_flight(), 12u * PEER_MSS);
+    EXPECT_TRUE(is_cwnd_limited(r.conn.ptr()));
+
+    EXPECT_EQ(r.ack(12 * PEER_MSS), OK);
+    EXPECT_EQ(r.conn->recovery, recovery_state::open);
+    EXPECT_EQ(r.conn->cwnd, 11u * PEER_MSS);
+}
+
 TEST(tcp_recovery_dupack, an_acknowledgment_that_moves_forward_ends_disorder) {
     linked_peer lp;
     reordering r(lp);
