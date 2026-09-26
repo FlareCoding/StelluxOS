@@ -4,6 +4,7 @@
 #include "net/tcp/record.h"
 #include "net/tcp/byte_queue.h"
 #include "net/tcp/sent_segment.h"
+#include "net/tcp/congestion.h"
 #include "net/tcp/wire.h"
 #include "net/packet.h"
 #include "common/list.h"
@@ -38,8 +39,6 @@ constexpr uint64_t DELACK_NS          = 40000000ULL; // RFC 1122 4.2.3.2 allows 
 constexpr uint8_t  MAX_QUICKACKS      = 16;
 constexpr size_t   SND_CHUNKS_INITIAL = MIN_BUF / CHUNK_PAYLOAD;
 constexpr size_t   SENT_SEGMENT_MARGIN = 8;
-constexpr uint32_t INITIAL_WINDOW_SEGMENTS = 10; // RFC 6928
-constexpr uint32_t INITIAL_WINDOW_CAP  = 14600;  // RFC 6928
 constexpr uint8_t  DATA_RETRIES       = 15;      // RFC 1122 4.2.3.5 R2
 constexpr size_t   MAX_BURST          = 16;
 constexpr size_t   MAX_OOO_PACKETS    = 64;
@@ -160,10 +159,20 @@ struct tcp_conn : record {
     byte_queue       snd_queue;
     sent_segments    sent;
     sync::wait_queue tx_wq; // writers
-    uint32_t         cwnd;
     uint32_t         snd_sml; // End of the last partial segment sent
     bool             nodelay;
     bool             fin_pending;
+
+    // Congestion control (RFC 5681), windows in bytes
+    uint32_t              cwnd;
+    uint32_t              ssthresh;
+    uint32_t              prior_cwnd;
+    uint32_t              prior_ssthresh;
+    uint32_t              high_seq; // RFC 6582 recover
+    uint8_t               dupacks;
+    recovery_state        recovery;
+    const congestion_ops* congestion;
+    alignas(8) uint8_t    congestion_state[CONGESTION_STATE_SIZE];
 
     resource::resource_object* owner;
     sync::wait_queue           conn_wq; // connect and close waiters
