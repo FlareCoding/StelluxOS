@@ -7,6 +7,7 @@
 #include "signals/signal.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
+#include "clock/clock.h"
 
 constexpr size_t BITS_PER_LONG = sizeof(uint64_t) * 8;
 constexpr size_t FD_SETSIZE_MAX = 1024;
@@ -25,6 +26,37 @@ static bool fd_is_set(const uint64_t* set, int fd) {
 
 static void fd_set_bit(uint64_t* set, int fd) {
     set[fd / BITS_PER_LONG] |= (1ULL << (fd % BITS_PER_LONG));
+}
+
+// One readiness pass over the polled fds, subscribing them to `pt` when given
+__PRIVILEGED_CODE static int64_t poll_round(sched::task* task, select_pollfd* pollfds, uint32_t npoll,
+                                            sync::poll_table* pt) {
+    int64_t ready = 0;
+    for (uint32_t i = 0; i < npoll; i++) {
+        resource::resource_object* obj = nullptr;
+        int32_t rc = resource::get_handle_object(
+            task->handles, static_cast<resource::handle_t>(pollfds[i].fd), 0, &obj);
+        if (rc != resource::HANDLE_OK) {
+            pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
+            ready++;
+            continue;
+        }
+
+        if (!obj->ops || !obj->ops->poll) {
+            pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
+            resource::resource_release(obj);
+            ready++;
+            continue;
+        }
+
+        uint32_t mask = obj->ops->poll(obj, pt);
+        resource::resource_release(obj);
+        pollfds[i].revents = static_cast<int16_t>(mask) &
+                             (pollfds[i].events | static_cast<int16_t>(sync::POLL_ERR | sync::POLL_HUP | sync::POLL_NVAL));
+        if (pollfds[i].revents) ready++;
+    }
+
+    return ready;
 }
 
 __PRIVILEGED_CODE static int64_t do_select(
@@ -69,71 +101,61 @@ __PRIVILEGED_CODE static int64_t do_select(
         }
     }
 
-    sync::poll_table pt;
-    pt.init(task);
+    uint64_t deadline_ns = 0;
+    if (!infinite && !immediate) {
+        deadline_ns = clock::now_ns() + timeout_ns;
+    }
 
     int64_t ready = 0;
+    while (true) {
+        sync::poll_table pt;
+        pt.init(task);
 
-    // The readiness check also subscribes to every fd's wait queue
-    for (uint32_t i = 0; i < npoll; i++) {
-        resource::resource_object* obj = nullptr;
-        int32_t rc = resource::get_handle_object(
-            task->handles, static_cast<resource::handle_t>(pollfds[i].fd), 0, &obj);
-        if (rc != resource::HANDLE_OK) {
-            pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
-            ready++;
-            continue;
+        // The readiness check also subscribes to every fd's wait queue
+        // unless the caller asked for an immediate probe
+        ready = poll_round(task, pollfds, npoll, immediate ? nullptr : &pt);
+        if (pt.error.load_acquire()) {
+            sync::poll_cleanup(pt);
+            heap::kfree(fdmap);
+            heap::kfree(pollfds);
+            return syscall::ENOMEM;
         }
 
-        if (!obj->ops || !obj->ops->poll) {
-            pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
-            resource::resource_release(obj);
-            ready++;
-            continue;
+        if (ready > 0 || immediate) {
+            sync::poll_cleanup(pt);
+            break;
         }
 
-        uint32_t mask = obj->ops->poll(obj, immediate ? nullptr : &pt);
-        resource::resource_release(obj);
-        pollfds[i].revents = static_cast<int16_t>(mask) & (pollfds[i].events | static_cast<int16_t>(sync::POLL_ERR | sync::POLL_HUP | sync::POLL_NVAL));
-        if (pollfds[i].revents) ready++;
-    }
+        uint64_t wait_ns = 0;
+        if (!infinite) {
+            uint64_t now = clock::now_ns();
+            if (now >= deadline_ns) {
+                sync::poll_cleanup(pt);
+                break;
+            }
 
-    if (pt.error.load_acquire()) {
+            wait_ns = deadline_ns - now;
+        }
+
+        sync::poll_wait(pt, wait_ns);
+
+        // A wake that left nothing ready is not a timeout, the next round waits again
+        ready = poll_round(task, pollfds, npoll, nullptr);
         sync::poll_cleanup(pt);
-        heap::kfree(fdmap);
-        heap::kfree(pollfds);
-        return syscall::ENOMEM;
-    }
+        if (ready > 0) {
+            break;
+        }
 
-    if (ready == 0 && !immediate) {
-        sync::poll_wait(pt, infinite ? 0 : timeout_ns);
+        if (signals::interrupt_pending(task)) {
+            heap::kfree(fdmap);
+            heap::kfree(pollfds);
+            return syscall::EINTR;
+        }
 
-        ready = 0;
-        for (uint32_t i = 0; i < npoll; i++) {
-            resource::resource_object* obj = nullptr;
-            int32_t rc = resource::get_handle_object(
-                task->handles, static_cast<resource::handle_t>(pollfds[i].fd), 0, &obj);
-            if (rc != resource::HANDLE_OK) {
-                pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
-                ready++;
-                continue;
-            }
-
-            if (!obj->ops || !obj->ops->poll) {
-                pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
-                resource::resource_release(obj);
-                ready++;
-                continue;
-            }
-
-            uint32_t mask = obj->ops->poll(obj, nullptr);
-            resource::resource_release(obj);
-            pollfds[i].revents = static_cast<int16_t>(mask) & (pollfds[i].events | static_cast<int16_t>(sync::POLL_ERR | sync::POLL_HUP | sync::POLL_NVAL));
-            if (pollfds[i].revents) ready++;
+        if (!infinite && clock::now_ns() >= deadline_ns) {
+            break;
         }
     }
-
-    sync::poll_cleanup(pt);
 
     if (kread) {
         for (size_t w = 0; w < nwords; w++) kread[w] = 0;
@@ -162,12 +184,6 @@ __PRIVILEGED_CODE static int64_t do_select(
 
     heap::kfree(fdmap);
     heap::kfree(pollfds);
-
-    // An interrupted wait with nothing ready is EINTR, not a timeout.
-    // Zero-timeout probes never slept and keep reporting 0.
-    if (ready == 0 && !immediate && signals::interrupt_pending(task)) {
-        return syscall::EINTR;
-    }
 
     return ready;
 }
