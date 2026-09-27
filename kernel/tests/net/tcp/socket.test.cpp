@@ -895,6 +895,29 @@ TEST(tcp_socket, tcp_options_are_kept_and_reach_the_connection) {
     abort_connection(conn);
 }
 
+TEST(tcp_socket, the_buffer_sizes_are_reported_and_not_yet_settable) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    int32_t value = 0;
+    size_t len = sizeof(value);
+    EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_SNDBUF, &value, &len), resource::OK);
+    EXPECT_EQ(value, SND_CHUNKS_INITIAL * CHUNK_PAYLOAD);
+    EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_RCVBUF, &value, &len), resource::OK);
+    EXPECT_EQ(value, RCV_CHUNKS_INITIAL * CHUNK_PAYLOAD);
+
+    uint32_t iss = 0;
+    (void)sock.establish(lp, &iss);
+    EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_SNDBUF, &value, &len), resource::OK);
+    EXPECT_EQ(value, sock.impl()->conn->snd_queue.limit() * CHUNK_PAYLOAD);
+
+    value = 1 << 20;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_SNDBUF, &value, sizeof(value)),
+              resource::ERR_NOPROTOOPT);
+    abort_connection(sock.impl()->conn.ptr());
+}
+
 TEST(tcp_socket, keepalive_options_are_kept_bounded_and_reach_the_connection) {
     linked_peer lp;
     stream_socket sock;
