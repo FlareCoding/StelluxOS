@@ -41,13 +41,14 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
 
 /**
  * Read from ring buffer. Blocks when empty unless nonblock is true.
- * @return Bytes read (> 0), 0 on EOF, RB_ERR_AGAIN if nonblock and empty, or negative error.
+ * @return Bytes read (> 0), 0 on EOF once drained after either side closed,
+ *   RB_ERR_AGAIN if nonblock and empty, or negative error.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t len, bool nonblock = false);
 
 /**
- * Wait until the buffer holds data or its writer has closed, without reading.
+ * Wait until the buffer holds data or either side has closed, without reading.
  * @return Readable bytes, 0 at end of stream, RB_ERR_AGAIN when nonblock finds
  *   nothing, or RB_ERR_INTR when a signal interrupted the wait.
  * @note Privilege: **required**
@@ -70,7 +71,7 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
 
 /**
  * Write to ring buffer. Blocks when full unless nonblock is true.
- * @return Bytes written (> 0), RB_ERR_AGAIN if nonblock and full, RB_ERR_PIPE if reader closed.
+ * @return Bytes written (> 0), RB_ERR_AGAIN if nonblock and full, RB_ERR_PIPE if either side closed.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock = false);
@@ -85,13 +86,15 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock = false);
 
 /**
- * Mark the write side as closed. Wakes all blocked readers so they can see EOF.
+ * Mark the write side as closed. Wakes all blocked readers and writers, so readers
+ * see EOF once drained and writers get RB_ERR_PIPE.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void ring_buffer_close_write(ring_buffer* rb);
 
 /**
- * Mark the read side as closed. Wakes all blocked writers so they get RB_ERR_PIPE.
+ * Mark the read side as closed. Wakes all blocked readers and writers, so readers
+ * see EOF once drained and writers get RB_ERR_PIPE.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb);
@@ -100,14 +103,14 @@ namespace sync { struct poll_table; }
 
 /**
  * Check read-direction readiness and optionally subscribe for wakeup.
- * @return Bitmask: POLL_IN if data available, POLL_HUP if writer closed and empty.
+ * @return Bitmask: POLL_IN if data available, POLL_HUP once either side has closed.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t ring_buffer_poll_read(ring_buffer* rb, sync::poll_table* pt);
 
 /**
  * Check write-direction readiness and optionally subscribe for wakeup.
- * @return Bitmask: POLL_OUT if space available, POLL_ERR if reader closed.
+ * @return Bitmask: POLL_OUT if space available, POLL_ERR once either side has closed.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t ring_buffer_poll_write(ring_buffer* rb, sync::poll_table* pt);
