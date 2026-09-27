@@ -38,7 +38,7 @@ struct unix_channel : rc::ref_counted<unix_channel> {
 struct unix_socket {
     uint32_t state;
     sync::spinlock lock;
-    sync::mutex readers; // Held by each receive for its whole call, so a byte reaches one receiver
+    sync::mutex receive_lock;
 
     // CONNECTED state
     rc::strong_ref<unix_channel> channel;

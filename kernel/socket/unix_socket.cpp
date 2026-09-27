@@ -149,25 +149,24 @@ __PRIVILEGED_CODE static ssize_t write_stream(unix_direction& dir, const uint8_t
 }
 
 /**
- * Reads under the socket's receive lock, letting go of it only while waiting for bytes,
- * so a sleeping reader never holds up the others.
+ * Never waits holding receive_lock, so a sleeping reader holds up no other.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static ssize_t read_stream(unix_socket* sock, uint8_t* bytes, size_t count, bool nonblock) {
     ring_buffer* rb = inbound(sock).buf;
 
-    sync::mutex_lock(sock->readers);
+    sync::mutex_lock(sock->receive_lock);
     ssize_t n = ring_buffer_read(rb, bytes, count, true);
 
     while (n == RB_ERR_AGAIN && !nonblock) {
-        sync::mutex_unlock(sock->readers);
+        sync::mutex_unlock(sock->receive_lock);
         ssize_t queued = ring_buffer_wait_readable(rb, false);
-        sync::mutex_lock(sock->readers);
+        sync::mutex_lock(sock->receive_lock);
 
         n = queued > 0 ? ring_buffer_read(rb, bytes, count, true) : queued;
     }
 
-    sync::mutex_unlock(sock->readers);
+    sync::mutex_unlock(sock->receive_lock);
     return n;
 }
 
@@ -456,7 +455,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
 
     server_sock->state = SOCK_STATE_CONNECTED;
     server_sock->lock = sync::SPINLOCK_INIT;
-    server_sock->readers.init();
+    server_sock->receive_lock.init();
     server_sock->is_side_a = true;
     server_sock->channel = chan;
 
@@ -588,8 +587,7 @@ __PRIVILEGED_CODE static ssize_t unix_recvfrom(
 }
 
 /**
- * The lock a receive on `obj` holds across all its pieces, which exists from the socket's
- * creation so a receive racing a connect still takes it.
+ * Lives on the socket rather than its connection, so a receive racing a connect still takes it.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static sync::mutex* unix_receive_lock(resource::resource_object* obj) {
@@ -597,7 +595,7 @@ __PRIVILEGED_CODE static sync::mutex* unix_receive_lock(resource::resource_objec
         return nullptr;
     }
 
-    return &static_cast<unix_socket*>(obj->impl)->readers;
+    return &static_cast<unix_socket*>(obj->impl)->receive_lock;
 }
 
 /**
@@ -720,7 +718,7 @@ __PRIVILEGED_CODE int32_t create_unbound_socket(
 
     sock->state = SOCK_STATE_UNBOUND;
     sock->lock = sync::SPINLOCK_INIT;
-    sock->readers.init();
+    sock->receive_lock.init();
     sock->is_side_a = false;
 
     auto* obj = heap::kalloc_new<resource::resource_object>();
@@ -760,7 +758,7 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
 
     sock_a->state = SOCK_STATE_CONNECTED;
     sock_a->lock = sync::SPINLOCK_INIT;
-    sock_a->readers.init();
+    sock_a->receive_lock.init();
     sock_a->is_side_a = true;
     sock_a->channel = chan;
 
@@ -772,7 +770,7 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
 
     sock_b->state = SOCK_STATE_CONNECTED;
     sock_b->lock = sync::SPINLOCK_INIT;
-    sock_b->readers.init();
+    sock_b->receive_lock.init();
     sock_b->is_side_a = false;
     sock_b->channel = static_cast<rc::strong_ref<unix_channel>&&>(chan);
 

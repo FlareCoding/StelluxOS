@@ -48,6 +48,7 @@ __PRIVILEGED_CODE tcp_socket* socket_open() {
     }
 
     sock->lock = sync::SPINLOCK_INIT;
+    sock->receive_lock.init();
 
     sync::irq_lock_guard guard(g_sockets_lock);
     for (size_t i = 0; i < MAX_SOCKETS; i++) {
@@ -1009,13 +1010,38 @@ __PRIVILEGED_CODE static ssize_t transmit(tcp_conn* conn, const void* ksrc, size
     return refusal;
 }
 
+__PRIVILEGED_CODE static ssize_t wait_readable(tcp_conn* conn) {
+    uint8_t peeked = 0;
+    return receive(conn, &peeked, 1, inet::MSG_PEEK);
+}
+
+// Never waits holding receive_lock, so a sleeping reader holds up no other
 __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void* kdst, size_t count, uint32_t flags) {
-    rc::strong_ref<tcp_conn> conn = connection_of(static_cast<tcp_socket*>(obj->impl));
+    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+    rc::strong_ref<tcp_conn> conn = connection_of(sock);
     if (!conn) {
         return resource::ERR_NOTCONN;
     }
 
-    return receive(conn.ptr(), kdst, count, (flags & fs::O_NONBLOCK) ? inet::MSG_DONTWAIT : 0);
+    if (count == 0) {
+        return 0;
+    }
+
+    bool nonblock = (flags & fs::O_NONBLOCK) != 0;
+
+    sync::mutex_lock(sock->receive_lock);
+    ssize_t n = receive(conn.ptr(), kdst, count, inet::MSG_DONTWAIT);
+
+    while (n == resource::ERR_AGAIN && !nonblock) {
+        sync::mutex_unlock(sock->receive_lock);
+        ssize_t ready = wait_readable(conn.ptr());
+        sync::mutex_lock(sock->receive_lock);
+
+        n = ready > 0 ? receive(conn.ptr(), kdst, count, inet::MSG_DONTWAIT) : ready;
+    }
+
+    sync::mutex_unlock(sock->receive_lock);
+    return n;
 }
 
 __PRIVILEGED_CODE static ssize_t socket_write(resource::resource_object* obj, const void* ksrc, size_t count, uint32_t flags) {
@@ -1045,6 +1071,10 @@ __PRIVILEGED_CODE static ssize_t socket_recvfrom(resource::resource_object* obj,
     }
 
     return result;
+}
+
+__PRIVILEGED_CODE static sync::mutex* socket_receive_lock(resource::resource_object* obj) {
+    return &static_cast<tcp_socket*>(obj->impl)->receive_lock;
 }
 
 __PRIVILEGED_CODE static ssize_t socket_sendto(resource::resource_object* obj, const void* ksrc, size_t count,
@@ -1193,6 +1223,7 @@ static const resource::socket_ops g_tcp_socket_ops = {
     .setsockopt = socket_setsockopt,
     .getsockopt = socket_getsockopt,
     .shutdown = socket_shutdown,
+    .receive_lock = socket_receive_lock,
 };
 
 static const resource::resource_ops g_socket_ops = {
