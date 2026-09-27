@@ -506,6 +506,8 @@ static size_t option_size(int32_t level, int32_t optname) {
         case inet::SO_TYPE:
         case inet::SO_KEEPALIVE:
         case inet::SO_ACCEPTCONN:
+        case inet::SO_SNDBUF:
+        case inet::SO_RCVBUF:
             return sizeof(int32_t);
         case inet::SO_LINGER:
             return sizeof(inet::linger);
@@ -570,6 +572,16 @@ __PRIVILEGED_CODE static int32_t option_value_locked(tcp_socket* sock, int32_t l
             }
 
             return sock->options.keepalive ? 1 : 0;
+        case inet::SO_SNDBUF:
+        case inet::SO_RCVBUF: {
+            size_t chunks = optname == inet::SO_SNDBUF ? SND_CHUNKS_INITIAL : RCV_CHUNKS_INITIAL;
+            if (conn) {
+                sync::irq_lock_guard guard(conn->lock);
+                chunks = optname == inet::SO_SNDBUF ? conn->snd_queue.limit() : conn->rcv_queue.limit();
+            }
+
+            return static_cast<int32_t>(chunks * CHUNK_PAYLOAD);
+        }
         default:
             return conn ? take_pending_error(conn) : 0;
         }
