@@ -1444,3 +1444,53 @@ TEST(socket_syscall, shutting_a_unix_stream_for_reading_wakes_a_waiting_receive)
     resource::resource_release(reader);
     close_unix_pair(task, pair);
 }
+
+// Concurrent TCP receives
+
+TEST(socket_syscall, concurrent_tcp_stream_receivers_take_each_byte_exactly_once) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_region region;
+    ASSERT_TRUE(region.ready());
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    loopback_listener listener(task);
+    ASSERT_TRUE(listener.fd >= 0);
+
+    uint64_t sent_sum = 0;
+    for (size_t i = 0; i < STREAM_BYTES; i++) {
+        region.byte(i) = stream_pattern(i);
+        sent_sum += region.byte(i);
+    }
+
+    inet::sockaddr_in addr = {inet::AF_INET, htons(STREAM_PORT), g_loopback, {}};
+    string::memcpy(&region.byte(STREAM_BYTES), &addr, sizeof(addr));
+
+    g_stream_client.ctx = region.ctx;
+    g_stream_client.buf = region.addr;
+    g_stream_client.addr = region.addr + STREAM_BYTES;
+    g_stream_client.call = stream_call::send;
+    g_stream_client.result = 0;
+    g_stream_client.done.store_relaxed(0);
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(run_stream_client, nullptr, "stream_client",
+                                                   sched::TASK_FLAG_ELEVATED);
+        if (t) {
+            sched::enqueue(t);
+        }
+    });
+
+    resource::resource_object* server = listener.accept();
+    EXPECT_TRUE(server != nullptr);
+    if (server) {
+        start_shared_reads(page, server);
+    }
+
+    EXPECT_TRUE(spin_wait(g_stream_client.done));
+    EXPECT_EQ(g_stream_client.result, static_cast<int64_t>(STREAM_BYTES));
+    if (server) {
+        expect_shared_reads_took(STREAM_BYTES, sent_sum);
+        resource::resource_release(server);
+    }
+}

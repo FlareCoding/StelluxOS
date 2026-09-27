@@ -3,6 +3,7 @@
 
 #include "net/tcp/listen.h"
 #include "resource/resource.h"
+#include "sync/mutex.h"
 
 namespace net {
 namespace tcp {
@@ -13,7 +14,7 @@ constexpr size_t EPHEMERAL_BIND_ATTEMPTS = 8; // ports lost to a racing bind bef
 /**
  * A stream socket as userland holds it, from creation through bind to the
  * listener or connection it comes to stand for, each held by reference.
- * The lock guards every field.
+ * The lock guards every field but `receive_lock`, which serializes receives.
  */
 struct tcp_socket {
     endpoint                     local;
@@ -25,6 +26,7 @@ struct tcp_socket {
     rc::strong_ref<tcp_listener> listener;
     rc::strong_ref<tcp_conn>     conn;
     sync::spinlock               lock;
+    sync::mutex                  receive_lock;
 };
 
 /**
