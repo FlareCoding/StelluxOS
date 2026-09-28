@@ -2,6 +2,7 @@
 #define STELLUX_RESOURCE_SOCKET_OPS_H
 
 #include "resource/resource.h"
+#include "resource/handle_batch.h"
 
 namespace sync { struct mutex; }
 
@@ -27,6 +28,10 @@ using getsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
                                   int32_t optname, void* optval, size_t* optlen);
 using shutdown_fn = int32_t (*)(resource_object* obj, int32_t how);
 using receive_lock_fn = sync::mutex* (*)(resource_object* obj);
+using sendmsg_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint32_t flags,
+                               const void* kaddr, size_t addrlen, handle_batch* batch);
+using recvmsg_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint32_t flags,
+                               void* kaddr, size_t* addrlen, handle_batch** out_batch);
 
 /**
  * Operations only sockets have. Every entry is nullable, the syscall layer
@@ -34,6 +39,11 @@ using receive_lock_fn = sync::mutex* (*)(resource_object* obj);
  * or the peer's when `peer` is set. `stream` marks a byte stream, whose
  * requests the syscall layer may hand over in pieces, holding the stream's
  * `receive_lock`, when it has one, across all the pieces of one receive.
+ *
+ * `sendmsg` sends `batch` with the first bytes it writes and owns the batch
+ * only when it returns a positive count. Any receive reaching those bytes
+ * stops where they end, and the one consuming their first byte takes the
+ * batch, which `recvmsg` hands to its caller and every other receive drops.
  */
 struct socket_ops {
     bool            stream = false;
@@ -48,6 +58,8 @@ struct socket_ops {
     getsockopt_fn   getsockopt = nullptr;
     shutdown_fn     shutdown = nullptr;
     receive_lock_fn receive_lock = nullptr;
+    sendmsg_fn      sendmsg = nullptr;
+    recvmsg_fn      recvmsg = nullptr;
 };
 
 // The socket operations of `obj`, or nullptr when it is not a socket

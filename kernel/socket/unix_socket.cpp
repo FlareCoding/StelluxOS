@@ -69,11 +69,34 @@ static int32_t parse_unix_addr(const void* kaddr, size_t addrlen,
     return resource::OK;
 }
 
+static unix_record* record_of(ring_buffer_mark* mark) {
+    uintptr_t offset = __builtin_offsetof(unix_record, mark);
+    return reinterpret_cast<unix_record*>(reinterpret_cast<uintptr_t>(mark) - offset);
+}
+
+/**
+ * Frees every record still queued on `rb` and drops the batches they carry.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void drop_records(ring_buffer* rb) {
+    ring_buffer_mark_list marks;
+    marks.init();
+    ring_buffer_take_marks(rb, marks);
+
+    while (ring_buffer_mark* mark = marks.pop_front()) {
+        unix_record* record = record_of(mark);
+        resource::release_handle_batch(record->batch);
+        heap::kfree(record);
+    }
+}
+
 __PRIVILEGED_CODE void unix_channel::ref_destroy(unix_channel* self) {
     if (!self) {
         return;
     }
 
+    drop_records(self->a_to_b.buf);
+    drop_records(self->b_to_a.buf);
     ring_buffer_destroy(self->a_to_b.buf);
     ring_buffer_destroy(self->b_to_a.buf);
     heap::kfree_delete(self);
@@ -119,22 +142,42 @@ __PRIVILEGED_CODE static unix_direction& outbound(const unix_socket* sock) {
 }
 
 /**
- * Writes every byte, waiting for room unless MSG_DONTWAIT, and reports a partial count on a later
- * error. A reader gone before any byte went out raises SIGPIPE unless MSG_NOSIGNAL.
+ * Writes every byte with `batch` on the first stretch, waiting for room unless MSG_DONTWAIT. A later error
+ * reports the partial count, and a reader gone before any byte went out raises SIGPIPE unless MSG_NOSIGNAL.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static ssize_t write_stream(unix_direction& dir, const uint8_t* bytes, size_t count,
-                                              uint32_t msg_flags) {
+                                              uint32_t msg_flags, resource::handle_batch* batch) {
+    if (count == 0) {
+        return 0;
+    }
+
+    unix_record* unsent_record = nullptr;
+    if (batch) {
+        unsent_record = static_cast<unix_record*>(heap::kzalloc(sizeof(unix_record)));
+        if (!unsent_record) {
+            return resource::ERR_NOMEM;
+        }
+
+        unsent_record->batch = batch;
+    }
+
     bool nonblock = (msg_flags & net::inet::MSG_DONTWAIT) != 0;
     size_t sent = 0;
     ssize_t n = 0;
     while (sent < count) {
-        n = ring_buffer_write(dir.buf, bytes + sent, count - sent, nonblock);
+        ring_buffer_mark* mark = unsent_record ? &unsent_record->mark : nullptr;
+        n = ring_buffer_write_marked(dir.buf, bytes + sent, count - sent, mark, nonblock);
         if (n < 0) {
             break;
         }
 
+        unsent_record = nullptr;
         sent += static_cast<size_t>(n);
+    }
+
+    if (unsent_record) {
+        heap::kfree(unsent_record);
     }
 
     if (sent > 0) {
@@ -149,24 +192,74 @@ __PRIVILEGED_CODE static ssize_t write_stream(unix_direction& dir, const uint8_t
 }
 
 /**
- * Never waits holding receive_lock, so a sleeping reader holds up no other.
+ * Receives what is queued without waiting, stopping where a stretch that carries a batch ends. The
+ * receive consuming the stretch's first byte takes the batch into `out_batch`, and a peek takes none.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static ssize_t receive_queued(unix_socket* sock, uint8_t* dst, size_t count, bool peek,
+                                                resource::handle_batch** out_batch) {
+    ring_buffer_mark* taken = nullptr;
+    ssize_t n = ring_buffer_read_marked(inbound(sock).buf, dst, count, peek, &taken);
+    if (taken) {
+        unix_record* record = record_of(taken);
+        *out_batch = record->batch;
+        heap::kfree(record);
+    }
+
+    return n;
+}
+
+/**
+ * Receives like receive_queued, waiting for bytes unless MSG_DONTWAIT.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static ssize_t receive_or_wait(unix_socket* sock, uint8_t* dst, size_t count, uint32_t flags,
+                                                 resource::handle_batch** out_batch) {
+    if (count == 0) {
+        return 0;
+    }
+
+    bool nonblock = (flags & net::inet::MSG_DONTWAIT) != 0;
+    bool peek = (flags & net::inet::MSG_PEEK) != 0;
+
+    while (true) {
+        ssize_t n = receive_queued(sock, dst, count, peek, out_batch);
+        if (n != RB_ERR_AGAIN || nonblock) {
+            return n;
+        }
+
+        ssize_t queued = ring_buffer_wait_readable(inbound(sock).buf, false);
+        if (queued <= 0) {
+            return queued;
+        }
+    }
+}
+
+/**
+ * Never waits holding receive_lock, so a sleeping reader holds up no other. A read takes no
+ * handles, so it drops the batch of a stretch it starts.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static ssize_t read_stream(unix_socket* sock, uint8_t* bytes, size_t count, bool nonblock) {
-    ring_buffer* rb = inbound(sock).buf;
+    if (count == 0) {
+        return 0;
+    }
 
+    resource::handle_batch* batch = nullptr;
     sync::mutex_lock(sock->receive_lock);
-    ssize_t n = ring_buffer_read(rb, bytes, count, true);
+    ssize_t n = receive_queued(sock, bytes, count, false, &batch);
 
     while (n == RB_ERR_AGAIN && !nonblock) {
         sync::mutex_unlock(sock->receive_lock);
-        ssize_t queued = ring_buffer_wait_readable(rb, false);
+        ssize_t queued = ring_buffer_wait_readable(inbound(sock).buf, false);
         sync::mutex_lock(sock->receive_lock);
 
-        n = queued > 0 ? ring_buffer_read(rb, bytes, count, true) : queued;
+        n = queued > 0 ? receive_queued(sock, bytes, count, false, &batch) : queued;
     }
 
     sync::mutex_unlock(sock->receive_lock);
+    resource::release_handle_batch(batch);
+
     return n;
 }
 
@@ -199,7 +292,17 @@ __PRIVILEGED_CODE static ssize_t socket_write(
     }
 
     uint32_t msg_flags = (flags & fs::O_NONBLOCK) ? net::inet::MSG_DONTWAIT : 0;
-    return write_stream(outbound(sock), static_cast<const uint8_t*>(ksrc), count, msg_flags);
+    return write_stream(outbound(sock), static_cast<const uint8_t*>(ksrc), count, msg_flags, nullptr);
+}
+
+/**
+ * Closes the reading end of `dir` for good and drops the batches no receive can reach anymore.
+ * Closing first leaves no write that could still add one.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void close_reading_end(unix_direction& dir) {
+    ring_buffer_close_read(dir.buf);
+    drop_records(dir.buf);
 }
 
 __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
@@ -219,15 +322,23 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
 
     case SOCK_STATE_LISTENING: {
         if (sock->listener) {
+            list::head<pending_conn, &pending_conn::link> refused;
+            refused.init();
+
             sync::irq_state irq = sync::spin_lock_irqsave(sock->listener->lock);
             sock->listener->closed = true;
             while (pending_conn* pc = sock->listener->accept_queue.pop_front()) {
                 sock->listener->pending_count--;
-                resource::resource_release(pc->server_obj);
-                heap::kfree(pc);
+                refused.push_back(pc);
             }
             sync::spin_unlock_irqrestore(sock->listener->lock, irq);
             sync::wake_all(sock->listener->accept_wq);
+
+            // Released outside the spinlock, since a connection's queued handles may sleep while closing
+            while (pending_conn* pc = refused.pop_front()) {
+                resource::resource_release(pc->server_obj);
+                heap::kfree(pc);
+            }
         }
         // bound_node and listener strong_refs drop via ~unix_socket
         break;
@@ -236,7 +347,7 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
     case SOCK_STATE_CONNECTED: {
         if (sock->channel) {
             ring_buffer_close_write(outbound(sock).buf);
-            ring_buffer_close_read(inbound(sock).buf);
+            close_reading_end(inbound(sock));
         }
         break;
     }
@@ -501,11 +612,36 @@ __PRIVILEGED_CODE static int32_t unix_connect(
 }
 
 /**
+ * One to MAX_PASSED_HANDLES filled entries and no unix socket, since one in flight could end up
+ * queued on itself with nothing left to free it until sockets in flight are collected.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int32_t check_batch(const resource::handle_batch* batch) {
+    if (!batch || batch->count == 0 || batch->count > resource::MAX_PASSED_HANDLES) {
+        return resource::ERR_INVAL;
+    }
+
+    for (uint32_t i = 0; i < batch->count; i++) {
+        const resource::resource_object* obj = batch->entries[i].obj;
+        if (!obj) {
+            return resource::ERR_INVAL;
+        }
+
+        if (obj->ops == get_socket_ops()) {
+            return resource::ERR_UNSUP;
+        }
+    }
+
+    return resource::OK;
+}
+
+/**
  * A connected stream takes no destination, and out of band data is not supported.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static ssize_t unix_sendto(
-    resource::resource_object* obj, const void* ksrc, size_t count, uint32_t flags, const void*, size_t addrlen
+__PRIVILEGED_CODE static ssize_t unix_sendmsg(
+    resource::resource_object* obj, const void* ksrc, size_t count, uint32_t flags, const void*, size_t addrlen,
+    resource::handle_batch* batch
 ) {
     if (!obj || !obj->impl || !ksrc) {
         return resource::ERR_INVAL;
@@ -524,7 +660,21 @@ __PRIVILEGED_CODE static ssize_t unix_sendto(
         return resource::ERR_NOTCONN;
     }
 
-    return write_stream(outbound(sock), static_cast<const uint8_t*>(ksrc), count, flags);
+    int32_t rc = batch ? check_batch(batch) : resource::OK;
+    if (rc != resource::OK) {
+        return rc;
+    }
+
+    return write_stream(outbound(sock), static_cast<const uint8_t*>(ksrc), count, flags, batch);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static ssize_t unix_sendto(
+    resource::resource_object* obj, const void* ksrc, size_t count, uint32_t flags, const void* kaddr, size_t addrlen
+) {
+    return unix_sendmsg(obj, ksrc, count, flags, kaddr, addrlen, nullptr);
 }
 
 /**
@@ -532,12 +682,15 @@ __PRIVILEGED_CODE static ssize_t unix_sendto(
  * queued, even a discarding one. The peer of a pair has no address to report.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static ssize_t unix_recvfrom(
-    resource::resource_object* obj, void* kdst, size_t count, uint32_t flags, void*, size_t* addrlen
+__PRIVILEGED_CODE static ssize_t unix_recvmsg(
+    resource::resource_object* obj, void* kdst, size_t count, uint32_t flags, void*, size_t* addrlen,
+    resource::handle_batch** out_batch
 ) {
-    if (!obj || !obj->impl) {
+    if (!obj || !obj->impl || !out_batch) {
         return resource::ERR_INVAL;
     }
+
+    *out_batch = nullptr;
 
     if (flags & net::inet::MSG_OOB) {
         return resource::ERR_UNSUP;
@@ -552,38 +705,21 @@ __PRIVILEGED_CODE static ssize_t unix_recvfrom(
         *addrlen = 0;
     }
 
-    ring_buffer* rb = inbound(sock).buf;
-    bool nonblock = (flags & net::inet::MSG_DONTWAIT) != 0;
-    bool peek = (flags & net::inet::MSG_PEEK) != 0;
+    return receive_or_wait(sock, static_cast<uint8_t*>(kdst), count, flags, out_batch);
+}
 
-    if (kdst && !peek) {
-        return ring_buffer_read(rb, static_cast<uint8_t*>(kdst), count, nonblock);
-    }
+/**
+ * A plain receive takes no handles, so it drops the batch of a stretch it starts.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static ssize_t unix_recvfrom(
+    resource::resource_object* obj, void* kdst, size_t count, uint32_t flags, void* kaddr, size_t* addrlen
+) {
+    resource::handle_batch* batch = nullptr;
+    ssize_t n = unix_recvmsg(obj, kdst, count, flags, kaddr, addrlen, &batch);
+    resource::release_handle_batch(batch);
 
-    if (count == 0) {
-        return 0;
-    }
-
-    // Outside the receive lock, another receiver can drain what the wait found
-    while (true) {
-        ssize_t queued = ring_buffer_wait_readable(rb, nonblock);
-        if (queued <= 0) {
-            return queued;
-        }
-
-        size_t n = 0;
-        if (kdst) {
-            n = ring_buffer_peek(rb, static_cast<uint8_t*>(kdst), count);
-        } else if (peek) {
-            n = static_cast<size_t>(queued) < count ? static_cast<size_t>(queued) : count;
-        } else {
-            n = ring_buffer_skip(rb, count);
-        }
-
-        if (n > 0) {
-            return static_cast<ssize_t>(n);
-        }
-    }
+    return n;
 }
 
 /**
@@ -687,6 +823,8 @@ static const resource::socket_ops g_unix_socket_ops = {
     .recvfrom = unix_recvfrom,
     .shutdown = unix_shutdown,
     .receive_lock = unix_receive_lock,
+    .sendmsg = unix_sendmsg,
+    .recvmsg = unix_recvmsg,
 };
 
 static const resource::resource_ops g_socket_ops = {

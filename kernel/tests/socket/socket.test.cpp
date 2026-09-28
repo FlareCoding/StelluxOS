@@ -16,6 +16,10 @@
 #include "common/string.h"
 #include "fs/fstypes.h"
 #include "fs/socket_node.h"
+#include "mm/heap.h"
+#include "syscall/handlers/sys_socket.h"
+#include "hw/cpu.h"
+#include "fs/fs.h"
 
 TEST_SUITE(socket_test);
 
@@ -307,6 +311,97 @@ TEST(socket_test, ring_buffer_polls_shut_once_either_side_closes) {
 
     ring_buffer_destroy(reader_gone);
     ring_buffer_destroy(writer_gone);
+}
+
+TEST(socket_test, ring_buffer_marks_exactly_the_bytes_one_write_takes) {
+    auto* rb = ring_buffer_create(8);
+    ASSERT_NOT_NULL(rb);
+
+    // Ten queued bytes leave room for five, so the marked write takes five
+    uint8_t bytes[16] = {};
+    ring_buffer_mark mark = {};
+    ASSERT_EQ(ring_buffer_write(rb, bytes, 10), static_cast<ssize_t>(10));
+    EXPECT_EQ(ring_buffer_write_marked(rb, bytes, sizeof(bytes), &mark, true), static_cast<ssize_t>(5));
+    EXPECT_EQ(mark.position, static_cast<size_t>(10));
+    EXPECT_EQ(mark.length, static_cast<size_t>(5));
+
+    ring_buffer_mark_list marks;
+    marks.init();
+    ring_buffer_take_marks(rb, marks);
+    EXPECT_EQ(marks.pop_front(), &mark);
+
+    ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_marked_reads_stop_where_the_marked_bytes_end) {
+    auto* rb = ring_buffer_create(64);
+    ASSERT_NOT_NULL(rb);
+
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>("abcdefg");
+    ring_buffer_mark mark = {};
+    ASSERT_EQ(ring_buffer_write(rb, bytes, 3), static_cast<ssize_t>(3));
+    ASSERT_EQ(ring_buffer_write_marked(rb, bytes + 3, 2, &mark, true), static_cast<ssize_t>(2));
+    ASSERT_EQ(ring_buffer_write(rb, bytes + 5, 2), static_cast<ssize_t>(2));
+
+    // A peek stops at the same place but leaves the mark queued
+    uint8_t buf[16] = {};
+    ring_buffer_mark* taken = nullptr;
+    EXPECT_EQ(ring_buffer_read_marked(rb, buf, sizeof(buf), true, &taken), static_cast<ssize_t>(5));
+    EXPECT_NULL(taken);
+
+    EXPECT_EQ(ring_buffer_read_marked(rb, buf, sizeof(buf), false, &taken), static_cast<ssize_t>(5));
+    EXPECT_EQ(string::memcmp(buf, "abcde", 5), 0);
+    EXPECT_EQ(taken, &mark);
+
+    EXPECT_EQ(ring_buffer_read_marked(rb, buf, sizeof(buf), false, &taken), static_cast<ssize_t>(2));
+    EXPECT_EQ(string::memcmp(buf, "fg", 2), 0);
+    EXPECT_NULL(taken);
+    EXPECT_EQ(ring_buffer_read_marked(rb, buf, sizeof(buf), false, &taken), static_cast<ssize_t>(RB_ERR_AGAIN));
+
+    ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_leaves_the_mark_alone_when_a_write_writes_nothing) {
+    auto* rb = ring_buffer_create(8);
+    ASSERT_NOT_NULL(rb);
+
+    uint8_t fill[15] = {};
+    ring_buffer_mark mark = {};
+    ASSERT_EQ(ring_buffer_write(rb, fill, sizeof(fill)), static_cast<ssize_t>(sizeof(fill)));
+    EXPECT_EQ(ring_buffer_write_marked(rb, fill, 1, &mark, true), static_cast<ssize_t>(RB_ERR_AGAIN));
+    EXPECT_FALSE(mark.link.is_linked());
+
+    ring_buffer_close_read(rb);
+    EXPECT_EQ(ring_buffer_write_marked(rb, fill, 1, &mark, false), static_cast<ssize_t>(RB_ERR_PIPE));
+    EXPECT_FALSE(mark.link.is_linked());
+
+    ring_buffer_destroy(rb);
+}
+
+TEST(socket_test, ring_buffer_hands_every_mark_to_its_owner) {
+    auto* rb = ring_buffer_create(64);
+    ASSERT_NOT_NULL(rb);
+
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>("ab");
+    ring_buffer_mark first = {};
+    ring_buffer_mark second = {};
+    ASSERT_EQ(ring_buffer_write_marked(rb, bytes, 1, &first, true), static_cast<ssize_t>(1));
+    ASSERT_EQ(ring_buffer_write_marked(rb, bytes + 1, 1, &second, true), static_cast<ssize_t>(1));
+
+    ring_buffer_mark_list marks;
+    marks.init();
+    ring_buffer_take_marks(rb, marks);
+    EXPECT_EQ(marks.pop_front(), &first);
+    EXPECT_EQ(marks.pop_front(), &second);
+    EXPECT_NULL(marks.pop_front());
+
+    // Taken marks no longer stop a read
+    uint8_t buf[4] = {};
+    ring_buffer_mark* taken = nullptr;
+    EXPECT_EQ(ring_buffer_read_marked(rb, buf, sizeof(buf), false, &taken), static_cast<ssize_t>(2));
+    EXPECT_NULL(taken);
+
+    ring_buffer_destroy(rb);
 }
 
 // Socket pair creation and data flow
@@ -948,4 +1043,668 @@ TEST(socket_test, a_full_unix_stream_polls_writable_once_its_peer_stops_reading)
 
     resource::resource_release(obj_a);
     resource::resource_release(obj_b);
+}
+
+// Handle batches
+
+static sync::atomic<uint32_t> g_passenger_closes;
+static sync::atomic<uint32_t> g_passenger_closes_under_spinlock;
+
+// A spinlock holder runs with interrupts off, where a closing object must never be torn down
+static void close_passenger(resource::resource_object*) {
+    g_passenger_closes.fetch_add_relaxed(1);
+    if (!cpu::irqs_enabled()) {
+        g_passenger_closes_under_spinlock.fetch_add_relaxed(1);
+    }
+}
+
+static const resource::resource_ops g_passenger_ops = {
+    .close = close_passenger,
+};
+
+// An object to pass around, whose teardown counts in g_passenger_closes
+static resource::resource_object* make_passenger() {
+    auto* obj = heap::kalloc_new<resource::resource_object>();
+    if (obj) {
+        obj->type = resource::resource_type::FILE;
+        obj->ops = &g_passenger_ops;
+    }
+
+    return obj;
+}
+
+// A batch holding one more reference to `obj`
+static resource::handle_batch* batch_of(resource::resource_object* obj) {
+    resource::handle_batch* batch = resource::create_handle_batch(1);
+    if (batch) {
+        resource::resource_add_ref(obj);
+        batch->entries[0] = {obj, obj->type, resource::RIGHT_READ};
+    }
+
+    return batch;
+}
+
+static ssize_t send_with(resource::resource_object* obj, const char* bytes, size_t len, resource::handle_batch* batch,
+                         uint32_t flags = net::inet::MSG_DONTWAIT) {
+    return obj->ops->socket->sendmsg(obj, bytes, len, flags, nullptr, 0, batch);
+}
+
+static ssize_t receive_with(resource::resource_object* obj, char* buf, size_t len, resource::handle_batch** batch,
+                            uint32_t flags = net::inet::MSG_DONTWAIT) {
+    return obj->ops->socket->recvmsg(obj, buf, len, flags, nullptr, nullptr, batch);
+}
+
+TEST(socket_test, a_read_runs_into_the_bytes_handles_came_with_and_takes_them) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    EXPECT_EQ(send_with(obj_a, "hello", 5, nullptr), static_cast<ssize_t>(5));
+    EXPECT_EQ(send_with(obj_a, "world", 5, batch_of(passenger)), static_cast<ssize_t>(5));
+
+    char buf[16] = {};
+    resource::handle_batch* batch = nullptr;
+    EXPECT_EQ(receive_with(obj_b, buf, sizeof(buf), &batch), static_cast<ssize_t>(10));
+    EXPECT_EQ(string::memcmp(buf, "helloworld", 10), 0);
+
+    ASSERT_NOT_NULL(batch);
+    EXPECT_EQ(batch->count, 1u);
+    EXPECT_EQ(batch->entries[0].obj, passenger);
+    EXPECT_EQ(batch->entries[0].rights, resource::RIGHT_READ);
+
+    resource::release_handle_batch(batch);
+    resource::resource_release(passenger);
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, a_read_takes_at_most_one_batch) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    resource::resource_object* first = make_passenger();
+    resource::resource_object* second = make_passenger();
+    ASSERT_NOT_NULL(first);
+    ASSERT_NOT_NULL(second);
+
+    EXPECT_EQ(send_with(obj_a, "ab", 2, batch_of(first)), static_cast<ssize_t>(2));
+    EXPECT_EQ(send_with(obj_a, "cd", 2, batch_of(second)), static_cast<ssize_t>(2));
+
+    char buf[16] = {};
+    resource::handle_batch* batch = nullptr;
+    EXPECT_EQ(receive_with(obj_b, buf, sizeof(buf), &batch), static_cast<ssize_t>(2));
+    EXPECT_EQ(string::memcmp(buf, "ab", 2), 0);
+    EXPECT_TRUE(batch && batch->entries[0].obj == first);
+    resource::release_handle_batch(batch);
+
+    EXPECT_EQ(receive_with(obj_b, buf, sizeof(buf), &batch), static_cast<ssize_t>(2));
+    EXPECT_EQ(string::memcmp(buf, "cd", 2), 0);
+    EXPECT_TRUE(batch && batch->entries[0].obj == second);
+    resource::release_handle_batch(batch);
+
+    resource::resource_release(first);
+    resource::resource_release(second);
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, only_the_read_that_consumes_the_first_handle_byte_takes_the_batch) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    EXPECT_EQ(send_with(obj_a, "hello", 5, nullptr), static_cast<ssize_t>(5));
+    EXPECT_EQ(send_with(obj_a, "world", 5, batch_of(passenger)), static_cast<ssize_t>(5));
+
+    // Short of the handle bytes nothing is taken, and the read reaching them takes the batch
+    char buf[16] = {};
+    resource::handle_batch* batch = nullptr;
+    EXPECT_EQ(receive_with(obj_b, buf, 3, &batch), static_cast<ssize_t>(3));
+    EXPECT_NULL(batch);
+
+    EXPECT_EQ(receive_with(obj_b, buf, 4, &batch), static_cast<ssize_t>(4));
+    EXPECT_EQ(string::memcmp(buf, "lowo", 4), 0);
+    EXPECT_TRUE(batch && batch->entries[0].obj == passenger);
+    resource::release_handle_batch(batch);
+
+    EXPECT_EQ(receive_with(obj_b, buf, sizeof(buf), &batch), static_cast<ssize_t>(3));
+    EXPECT_EQ(string::memcmp(buf, "rld", 3), 0);
+    EXPECT_NULL(batch);
+
+    resource::resource_release(passenger);
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, a_peek_stops_where_the_handle_bytes_end_and_takes_nothing) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    EXPECT_EQ(send_with(obj_a, "ab", 2, batch_of(passenger)), static_cast<ssize_t>(2));
+    EXPECT_EQ(send_with(obj_a, "cd", 2, nullptr), static_cast<ssize_t>(2));
+
+    char buf[16] = {};
+    resource::handle_batch* batch = nullptr;
+    uint32_t peek = net::inet::MSG_PEEK | net::inet::MSG_DONTWAIT;
+    EXPECT_EQ(receive_with(obj_b, buf, sizeof(buf), &batch, peek), static_cast<ssize_t>(2));
+    EXPECT_NULL(batch);
+
+    EXPECT_EQ(receive_with(obj_b, buf, sizeof(buf), &batch), static_cast<ssize_t>(2));
+    EXPECT_TRUE(batch && batch->entries[0].obj == passenger);
+    resource::release_handle_batch(batch);
+
+    resource::resource_release(passenger);
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, plain_reads_and_receives_drop_the_handles_they_pass) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    resource::resource_object* read_past = make_passenger();
+    resource::resource_object* received_past = make_passenger();
+    ASSERT_NOT_NULL(read_past);
+    ASSERT_NOT_NULL(received_past);
+
+    EXPECT_EQ(send_with(obj_a, "x", 1, batch_of(read_past)), static_cast<ssize_t>(1));
+    EXPECT_EQ(send_with(obj_a, "y", 1, batch_of(received_past)), static_cast<ssize_t>(1));
+    resource::resource_release(read_past);
+    resource::resource_release(received_past);
+
+    // The queued batches hold the last references, so dropping one tears its object down
+    uint32_t closes = g_passenger_closes.load_relaxed();
+    char c = 0;
+    EXPECT_EQ(obj_b->ops->read(obj_b, &c, 1, fs::O_NONBLOCK), static_cast<ssize_t>(1));
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes + 1);
+
+    EXPECT_EQ(obj_b->ops->socket->recvfrom(obj_b, &c, 1, net::inet::MSG_DONTWAIT, nullptr, nullptr),
+              static_cast<ssize_t>(1));
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes + 2);
+
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, a_send_that_sends_nothing_leaves_the_batch_with_the_caller) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    ASSERT_TRUE(fill_stream(obj_a) > 0);
+    resource::handle_batch* batch = batch_of(passenger);
+    EXPECT_EQ(send_with(obj_a, "x", 1, batch), static_cast<ssize_t>(resource::ERR_AGAIN));
+    EXPECT_EQ(send_with(obj_a, "x", 0, batch), static_cast<ssize_t>(0));
+
+    resource::resource_release(obj_b);
+    EXPECT_EQ(send_with(obj_a, "x", 1, batch, net::inet::MSG_NOSIGNAL), static_cast<ssize_t>(resource::ERR_PIPE));
+
+    // Still the caller's, so releasing it here is the only release
+    uint32_t closes = g_passenger_closes.load_relaxed();
+    resource::release_handle_batch(batch);
+    resource::resource_release(passenger);
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes + 1);
+
+    resource::resource_release(obj_a);
+}
+
+TEST(socket_test, batches_with_unix_sockets_or_empty_entries_are_refused) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    resource::handle_batch* carrying_socket = batch_of(obj_b);
+    ASSERT_NOT_NULL(carrying_socket);
+    EXPECT_EQ(send_with(obj_a, "x", 1, carrying_socket), static_cast<ssize_t>(resource::ERR_UNSUP));
+    resource::release_handle_batch(carrying_socket);
+
+    resource::handle_batch* empty = resource::create_handle_batch(1);
+    ASSERT_NOT_NULL(empty);
+    EXPECT_EQ(send_with(obj_a, "x", 1, empty), static_cast<ssize_t>(resource::ERR_INVAL));
+    resource::release_handle_batch(empty);
+
+    EXPECT_NULL(resource::create_handle_batch(0));
+    EXPECT_NULL(resource::create_handle_batch(resource::MAX_PASSED_HANDLES + 1));
+
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, handles_queued_to_a_socket_go_when_that_socket_closes) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    EXPECT_EQ(send_with(obj_a, "x", 1, batch_of(passenger)), static_cast<ssize_t>(1));
+    resource::resource_release(passenger);
+
+    // Nothing can receive the handles once their socket is gone, however long the sender stays
+    uint32_t closes = g_passenger_closes.load_relaxed();
+    resource::resource_release(obj_b);
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes + 1);
+
+    resource::resource_release(obj_a);
+}
+
+TEST(socket_test, handles_outlive_the_socket_that_sent_them) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    EXPECT_EQ(send_with(obj_a, "x", 1, batch_of(passenger)), static_cast<ssize_t>(1));
+    resource::resource_release(obj_a);
+
+    char c = 0;
+    resource::handle_batch* batch = nullptr;
+    EXPECT_EQ(receive_with(obj_b, &c, 1, &batch), static_cast<ssize_t>(1));
+    EXPECT_TRUE(batch && batch->entries[0].obj == passenger);
+    resource::release_handle_batch(batch);
+
+    resource::resource_release(passenger);
+    resource::resource_release(obj_b);
+}
+
+// A sender keeps passing batches while its receiver closes, and each batch must be dropped exactly once
+constexpr uint32_t SENDS_BEFORE_CLOSE = 64;
+
+struct closing_race_run {
+    resource::resource_object* obj;
+    resource::resource_object* passenger;
+    ssize_t result;
+    sync::atomic<uint32_t> sends;
+    sync::atomic<uint32_t> done;
+};
+
+static closing_race_run g_closing_race;
+
+static void run_sender_until_broken(void* arg) {
+    closing_race_run& run = *static_cast<closing_race_run*>(arg);
+
+    while (true) {
+        resource::handle_batch* batch = batch_of(run.passenger);
+        run.result = send_with(run.obj, "x", 1, batch, net::inet::MSG_NOSIGNAL);
+        if (run.result <= 0) {
+            resource::release_handle_batch(batch);
+            break;
+        }
+
+        run.sends.fetch_add_relaxed(1);
+    }
+
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(socket_test, a_receiver_closing_under_a_busy_sender_drops_every_batch_once) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    closing_race_run& run = g_closing_race;
+    run.obj = obj_a;
+    run.passenger = passenger;
+    run.result = 0;
+    run.sends.store_relaxed(0);
+    run.done.store_relaxed(0);
+
+    uint32_t closes = g_passenger_closes.load_relaxed();
+    sched::task* sender = test_helpers::start_pinned_task(run_sender_until_broken, &run, "sender_until_broken");
+    ASSERT_NOT_NULL(sender);
+    EXPECT_TRUE(test_helpers::spin_wait_ge(run.sends, SENDS_BEFORE_CLOSE));
+
+    resource::resource_release(obj_b);
+    EXPECT_TRUE(test_helpers::spin_wait(run.done));
+    EXPECT_EQ(run.result, static_cast<ssize_t>(resource::ERR_PIPE));
+
+    // Queued or refused, every batch let go of its reference once, so only the test's is left
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes);
+    resource::resource_release(passenger);
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes + 1);
+
+    test_helpers::unpin(sender);
+    resource::resource_release(obj_a);
+}
+
+struct unix_address {
+    uint16_t family;
+    char path[socket::UNIX_PATH_MAX];
+};
+
+constexpr uint16_t UNIX_ADDRESS_FAMILY = 1;
+constexpr int32_t LISTEN_BACKLOG = 1;
+static const char PENDING_HANDLES_PATH[] = "/pending_handles.sock";
+
+TEST(socket_test, closing_a_listener_frees_the_handles_of_its_pending_connections) {
+    ASSERT_TRUE(cpu::irqs_enabled());
+
+    resource::resource_object* listening = nullptr;
+    resource::resource_object* client = nullptr;
+    ASSERT_EQ(socket::create_unbound_socket(&listening), resource::OK);
+    ASSERT_EQ(socket::create_unbound_socket(&client), resource::OK);
+
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    unix_address address = {};
+    address.family = UNIX_ADDRESS_FAMILY;
+    string::memcpy(address.path, PENDING_HANDLES_PATH, sizeof(PENDING_HANDLES_PATH));
+
+    const resource::socket_ops* ops = listening->ops->socket;
+    ASSERT_EQ(ops->bind(listening, &address, sizeof(address)), resource::OK);
+    ASSERT_EQ(ops->listen(listening, LISTEN_BACKLOG), resource::OK);
+    ASSERT_EQ(ops->connect(client, &address, sizeof(address), false), resource::OK);
+
+    // Once the client is gone, only the connection waiting in the accept queue holds the batch
+    EXPECT_EQ(send_with(client, "x", 1, batch_of(passenger)), static_cast<ssize_t>(1));
+    resource::resource_release(passenger);
+    resource::resource_release(client);
+
+    uint32_t closes = g_passenger_closes.load_relaxed();
+    uint32_t closes_under_spinlock = g_passenger_closes_under_spinlock.load_relaxed();
+    resource::resource_release(listening);
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes + 1);
+    EXPECT_EQ(g_passenger_closes_under_spinlock.load_relaxed(), closes_under_spinlock);
+
+    EXPECT_EQ(fs::unlink(PENDING_HANDLES_PATH), fs::OK);
+}
+
+TEST(socket_test, a_batch_rides_on_the_first_stretch_that_fits) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    // The room one read frees takes the start of the send and the batch with it
+    size_t filled = fill_stream(obj_a);
+    char freed[10];
+    ASSERT_TRUE(filled > sizeof(freed));
+    EXPECT_EQ(obj_b->ops->read(obj_b, freed, sizeof(freed), fs::O_NONBLOCK), static_cast<ssize_t>(sizeof(freed)));
+    EXPECT_EQ(send_with(obj_a, "0123456789abcdef", 16, batch_of(passenger)), static_cast<ssize_t>(sizeof(freed)));
+
+    char* buf = reinterpret_cast<char*>(g_blocking_send_bytes);
+    size_t received = 0;
+    ssize_t n = 0;
+    resource::handle_batch* batch = nullptr;
+    while (!batch) {
+        n = receive_with(obj_b, buf, sizeof(g_blocking_send_bytes), &batch);
+        if (n <= 0) {
+            break;
+        }
+
+        received += static_cast<size_t>(n);
+    }
+
+    // The receive that took the batch ended with exactly the bytes it rode on
+    EXPECT_EQ(received, filled);
+    EXPECT_TRUE(batch && batch->entries[0].obj == passenger);
+    ASSERT_TRUE(n >= static_cast<ssize_t>(sizeof(freed)));
+    EXPECT_EQ(string::memcmp(buf + n - sizeof(freed), "0123456789", sizeof(freed)), 0);
+    resource::release_handle_batch(batch);
+
+    resource::handle_batch* none = nullptr;
+    EXPECT_EQ(receive_with(obj_b, buf, 16, &none), static_cast<ssize_t>(resource::ERR_AGAIN));
+    EXPECT_NULL(none);
+
+    resource::resource_release(passenger);
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+// Two senders pass their own object with every send, and each batch must arrive with its own bytes
+constexpr uint32_t BATCH_SENDS = 200;
+constexpr size_t BATCH_SEND_LEN = 8;
+
+struct batch_sender_run {
+    resource::resource_object* obj;
+    resource::resource_object* passenger;
+    char letter;
+    uint32_t failures;
+    sync::atomic<uint32_t> done;
+};
+
+static batch_sender_run g_batch_senders[2];
+
+static void run_batch_sender(void* arg) {
+    batch_sender_run& run = *static_cast<batch_sender_run*>(arg);
+    char bytes[BATCH_SEND_LEN];
+    string::memset(bytes, run.letter, sizeof(bytes));
+
+    for (uint32_t i = 0; i < BATCH_SENDS; i++) {
+        resource::handle_batch* batch = batch_of(run.passenger);
+        ssize_t n = send_with(run.obj, bytes, sizeof(bytes), batch, 0);
+        if (n <= 0) {
+            resource::release_handle_batch(batch);
+        }
+
+        if (n != static_cast<ssize_t>(sizeof(bytes))) {
+            run.failures++;
+        }
+    }
+
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(socket_test, concurrent_senders_keep_each_batch_on_its_own_bytes) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    sched::task* senders[2] = {};
+    for (uint32_t i = 0; i < 2; i++) {
+        batch_sender_run& run = g_batch_senders[i];
+        run.passenger = make_passenger();
+        ASSERT_NOT_NULL(run.passenger);
+
+        run.obj = obj_a;
+        run.letter = static_cast<char>('A' + i);
+        run.failures = 0;
+        run.done.store_relaxed(0);
+        senders[i] = test_helpers::start_pinned_task(run_batch_sender, &run, "batch_sender");
+        ASSERT_NOT_NULL(senders[i]);
+    }
+
+    EXPECT_TRUE(test_helpers::spin_wait(g_batch_senders[0].done));
+    EXPECT_TRUE(test_helpers::spin_wait(g_batch_senders[1].done));
+    EXPECT_EQ(g_batch_senders[0].failures + g_batch_senders[1].failures, 0u);
+
+    uint32_t matched = 0;
+    uint32_t mismatched = 0;
+    char buf[64];
+    while (true) {
+        resource::handle_batch* batch = nullptr;
+        ssize_t n = receive_with(obj_b, buf, sizeof(buf), &batch);
+        if (n <= 0) {
+            break;
+        }
+
+        uint32_t sender = static_cast<uint32_t>(buf[0] - 'A');
+        bool intact = n == static_cast<ssize_t>(BATCH_SEND_LEN) && sender < 2 && batch &&
+                      batch->entries[0].obj == g_batch_senders[sender].passenger;
+        for (ssize_t i = 0; intact && i < n; i++) {
+            intact = buf[i] == buf[0];
+        }
+
+        if (intact) {
+            matched++;
+        } else {
+            mismatched++;
+        }
+
+        resource::release_handle_batch(batch);
+    }
+
+    EXPECT_EQ(matched, 2 * BATCH_SENDS);
+    EXPECT_EQ(mismatched, 0u);
+
+    for (uint32_t i = 0; i < 2; i++) {
+        test_helpers::unpin(senders[i]);
+        resource::resource_release(g_batch_senders[i].passenger);
+    }
+
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+// Two receivers outside the receive lock race over stretches that each carry a batch, taking each exactly once
+constexpr uint32_t RACED_SENDS = 300;
+
+struct batch_receiver_run {
+    resource::resource_object* obj;
+    resource::resource_object* passenger;
+    uint32_t taken;
+    uint32_t foreign;
+    sync::atomic<uint32_t> done;
+};
+
+static batch_receiver_run g_batch_receivers[2];
+
+static void run_batch_receiver(void* arg) {
+    batch_receiver_run& run = *static_cast<batch_receiver_run*>(arg);
+    char buf[3];
+
+    while (true) {
+        resource::handle_batch* batch = nullptr;
+        ssize_t n = receive_with(run.obj, buf, sizeof(buf), &batch, 0);
+        if (n <= 0) {
+            break;
+        }
+
+        if (batch) {
+            run.taken++;
+            if (batch->entries[0].obj != run.passenger) {
+                run.foreign++;
+            }
+        }
+
+        resource::release_handle_batch(batch);
+    }
+
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(socket_test, receivers_outside_the_receive_lock_take_each_batch_once) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* passenger = make_passenger();
+    ASSERT_NOT_NULL(passenger);
+
+    sched::task* receivers[2] = {};
+    for (uint32_t i = 0; i < 2; i++) {
+        batch_receiver_run& run = g_batch_receivers[i];
+        run.obj = obj_b;
+        run.passenger = passenger;
+        run.taken = 0;
+        run.foreign = 0;
+        run.done.store_relaxed(0);
+
+        receivers[i] = test_helpers::start_pinned_task(run_batch_receiver, &run, "batch_receiver");
+        ASSERT_NOT_NULL(receivers[i]);
+    }
+
+    uint32_t sent = 0;
+    for (uint32_t i = 0; i < RACED_SENDS; i++) {
+        resource::handle_batch* batch = batch_of(passenger);
+        if (send_with(obj_a, "abcd", 4, batch) == 4) {
+            sent++;
+        } else {
+            resource::release_handle_batch(batch);
+        }
+    }
+
+    // Closing the sending side ends both receivers once they drain the stream
+    resource::resource_release(obj_a);
+    EXPECT_TRUE(test_helpers::spin_wait(g_batch_receivers[0].done));
+    EXPECT_TRUE(test_helpers::spin_wait(g_batch_receivers[1].done));
+
+    EXPECT_EQ(sent, RACED_SENDS);
+    EXPECT_EQ(g_batch_receivers[0].taken + g_batch_receivers[1].taken, RACED_SENDS);
+    EXPECT_EQ(g_batch_receivers[0].foreign + g_batch_receivers[1].foreign, 0u);
+
+    // Every batch let go of its reference, so the test's is the last
+    uint32_t closes = g_passenger_closes.load_relaxed();
+    resource::resource_release(passenger);
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes + 1);
+
+    for (uint32_t i = 0; i < 2; i++) {
+        test_helpers::unpin(receivers[i]);
+    }
+
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, a_plain_receive_call_ends_where_handles_came_and_drops_them) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::handle_t reader = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, obj_b, resource::resource_type::SOCKET, resource::RIGHT_READ,
+                                     &reader), resource::HANDLE_OK);
+    resource::resource_release(obj_b);
+
+    resource::resource_object* dropped = make_passenger();
+    resource::resource_object* discarded = make_passenger();
+    ASSERT_NOT_NULL(dropped);
+    ASSERT_NOT_NULL(discarded);
+
+    EXPECT_EQ(send_with(obj_a, "ab", 2, batch_of(dropped)), static_cast<ssize_t>(2));
+    EXPECT_EQ(send_with(obj_a, "cd", 2, batch_of(discarded)), static_cast<ssize_t>(2));
+    EXPECT_EQ(send_with(obj_a, "ef", 2, nullptr), static_cast<ssize_t>(2));
+    resource::resource_release(dropped);
+    resource::resource_release(discarded);
+
+    test_helpers::user_page page;
+    ASSERT_TRUE(page.ready());
+    uint64_t wait_all = net::inet::MSG_WAITALL | net::inet::MSG_DONTWAIT;
+    uint32_t closes = g_passenger_closes.load_relaxed();
+    int64_t got = 0;
+
+    // Even a receive told to wait for all 16 bytes ends where the handles came, dropping them
+    {
+        test_helpers::user_space_scope scope(page.ctx);
+        got = sys_recvfrom(static_cast<uint64_t>(reader), page.addr, 16, wait_all, 0, 0);
+    }
+    EXPECT_EQ(got, static_cast<int64_t>(2));
+    EXPECT_EQ(string::memcmp(page.at<char>(0), "ab", 2), 0);
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes + 1);
+
+    {
+        test_helpers::user_space_scope scope(page.ctx);
+        got = sys_recvfrom(static_cast<uint64_t>(reader), page.addr, 16, wait_all | net::inet::MSG_TRUNC, 0, 0);
+    }
+    EXPECT_EQ(got, static_cast<int64_t>(2));
+    EXPECT_EQ(g_passenger_closes.load_relaxed(), closes + 2);
+
+    {
+        test_helpers::user_space_scope scope(page.ctx);
+        got = sys_recvfrom(static_cast<uint64_t>(reader), page.addr, 16, net::inet::MSG_DONTWAIT, 0, 0);
+    }
+    EXPECT_EQ(got, static_cast<int64_t>(2));
+    EXPECT_EQ(string::memcmp(page.at<char>(0), "ef", 2), 0);
+
+    EXPECT_EQ(resource::close(task, reader), resource::OK);
+    resource::resource_release(obj_a);
 }
