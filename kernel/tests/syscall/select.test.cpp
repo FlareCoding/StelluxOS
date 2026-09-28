@@ -8,8 +8,10 @@
 #include "resource/handle_table.h"
 #include "pipe/pipe.h"
 #include "common/ring_buffer.h"
+#include "sync/poll.h"
 #include "sync/wait_queue.h"
 #include "sync/atomic.h"
+#include "mm/heap.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "clock/clock.h"
@@ -25,6 +27,7 @@ constexpr uint64_t MS          = 1000000ULL;
 constexpr uint64_t WAIT_NS     = 200 * MS;
 constexpr uint32_t STRAY_WAKES = 3;
 constexpr size_t   FDSET_BYTES = 128;
+constexpr size_t   WORD_BITS   = 64;
 constexpr size_t   TIMEVAL_AT  = FDSET_BYTES;
 constexpr size_t   PIPE_FDS_AT = TIMEVAL_AT + 64;
 
@@ -100,7 +103,7 @@ static void run_select(void* arg) {
         for (size_t i = 0; i < FDSET_BYTES / sizeof(uint64_t); i++) {
             set[i] = 0;
         }
-        set[h / 64] |= 1ULL << (h % 64);
+        set[h / WORD_BITS] |= 1ULL << (h % WORD_BITS);
         *run.page->at<select_timeval>(TIMEVAL_AT) = {0, static_cast<int64_t>(WAIT_NS / 1000)};
 
         uint64_t before = clock::now_ns();
@@ -110,7 +113,7 @@ static void run_select(void* arg) {
                                     run.page->addr + TIMEVAL_AT, 0);
         }
         run.elapsed_ns = clock::now_ns() - before;
-        run.readable = (set[h / 64] >> (h % 64)) & 1;
+        run.readable = (set[h / WORD_BITS] >> (h % WORD_BITS)) & 1;
         (void)resource::close(self, h);
     }
 
@@ -180,4 +183,95 @@ TEST(select_syscall, data_after_stray_wakes_still_ends_the_wait_early) {
     EXPECT_EQ(g_select.result, 1);
     EXPECT_LT(g_select.elapsed_ns, WAIT_NS);
     EXPECT_TRUE(g_select.readable);
+}
+
+// A probe whose queue outlives it, so an early close is counted rather than crashing
+static sync::wait_queue       g_probe_queue;
+static sync::atomic<uint32_t> g_probe_readable;
+static sync::atomic<uint32_t> g_probe_closes;
+
+static uint32_t probe_poll(resource::resource_object*, sync::poll_table* pt) {
+    if (pt) {
+        sync::poll_subscribe(*pt, g_probe_queue);
+    }
+
+    return g_probe_readable.load_acquire() ? sync::POLL_IN : 0;
+}
+
+static void probe_close(resource::resource_object*) {
+    g_probe_closes.fetch_add_relaxed(1);
+}
+
+static const resource::resource_ops g_probe_ops = {
+    .close = probe_close,
+    .poll = probe_poll,
+};
+
+// A select on the probe with no timeout, through a handle the test closes under it
+struct probe_select_run {
+    user_page*                 page;
+    resource::resource_object* probe;
+    resource::handle_t         handle;
+    sync::atomic<uint32_t>     done;
+};
+
+static probe_select_run g_probe_select;
+
+static void run_probe_select(void* arg) {
+    probe_select_run& run = *static_cast<probe_select_run*>(arg);
+    sched::task* self = sched::current();
+
+    if (resource::alloc_handle(self->handles, run.probe, resource::resource_type::PIPE, resource::RIGHT_READ,
+                               &run.handle) == resource::HANDLE_OK) {
+        uint64_t* set = run.page->at<uint64_t>(0);
+        for (size_t i = 0; i < FDSET_BYTES / sizeof(uint64_t); i++) {
+            set[i] = 0;
+        }
+
+        set[run.handle / WORD_BITS] |= 1ULL << (run.handle % WORD_BITS);
+
+        user_space_scope scope(run.page->ctx);
+        (void)sys_select(static_cast<uint64_t>(run.handle + 1), run.page->addr, 0, 0, 0, 0);
+    }
+
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(select_syscall, a_select_keeps_its_objects_until_it_stops_watching_them) {
+    g_probe_queue.init();
+    g_probe_readable.store_relaxed(0);
+    g_probe_closes.store_relaxed(0);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    resource::resource_object* probe = heap::kalloc_new<resource::resource_object>();
+    ASSERT_NOT_NULL(probe);
+
+    probe->type = resource::resource_type::PIPE;
+    probe->ops = &g_probe_ops;
+
+    g_probe_select.page = &page;
+    g_probe_select.probe = probe;
+    g_probe_select.done.store_relaxed(0);
+
+    sched::task* t = test_helpers::start_pinned_task(run_probe_select, &g_probe_select, "probe_select");
+    ASSERT_NOT_NULL(t);
+
+    EXPECT_TRUE(test_helpers::blocks_before_deadline(t));
+
+    // Drop every other reference while the select waits
+    (void)resource::close(t, g_probe_select.handle);
+    resource::resource_release(probe);
+
+    EXPECT_EQ(g_probe_closes.load_acquire(), 0u);
+
+    g_probe_readable.store_release(1);
+    sync::wake_all(g_probe_queue);
+
+    EXPECT_TRUE(spin_wait(g_probe_select.done));
+    unpin(t);
+
+    EXPECT_EQ(g_probe_closes.load_acquire(), 1u);
 }
