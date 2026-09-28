@@ -235,13 +235,15 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     return conn;
 }
 
-int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>* out, const conn_options& options) {
+int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>* out, const conn_options& options,
+                    tcp_socket* owner) {
     tcp_conn* conn = alloc_conn(key, iface);
     if (!conn) {
         return ERR_NO_MEMORY;
     }
 
     apply_options(conn, options);
+    conn->owner = owner;
     conn->state = tcp_state::syn_sent;
     conn->iss = initial_sequence(key);
     conn->snd_una = conn->iss;
@@ -296,6 +298,7 @@ void retire_connection(tcp_conn* conn) {
         sync::wake_all(conn->conn_wq);
         sync::wake_all(conn->rx_wq);
         sync::wake_all(conn->tx_wq);
+        wake_socket_pollers(conn);
     });
 }
 
@@ -350,6 +353,7 @@ void shutdown_send(tcp_conn* conn) {
         }
 
         sync::wake_all(conn->tx_wq);
+        wake_socket_pollers(conn);
     });
 
     if (send) {
@@ -365,6 +369,7 @@ void shutdown_receive(tcp_conn* conn) {
         }
 
         sync::wake_all(conn->rx_wq);
+        wake_socket_pollers(conn);
     });
 }
 

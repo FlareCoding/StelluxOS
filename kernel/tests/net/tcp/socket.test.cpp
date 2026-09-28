@@ -1058,3 +1058,74 @@ TEST(tcp_socket, a_reset_from_the_peer_is_reported_once_then_reads_end_and_write
     EXPECT_EQ(sock.pending_error(), resource::OK);
     EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_IN | sync::POLL_RDHUP | sync::POLL_HUP);
 }
+
+TEST(tcp_socket, a_poll_begun_before_connecting_is_woken_when_the_handshake_completes) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    sync::poll_table pt;
+    pt.init(sched::current());
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, &pt), sync::POLL_HUP);
+    EXPECT_EQ(pt.triggered.load_acquire(), 0u);
+
+    uint32_t iss = 0;
+    (void)sock.establish(lp, &iss);
+    EXPECT_EQ(pt.triggered.load_acquire(), 1u);
+
+    sync::poll_cleanup(pt);
+    abort_connection(sock.impl()->conn.ptr());
+}
+
+TEST(tcp_socket, a_poll_begun_before_listening_is_woken_by_a_connection_to_accept) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+    ASSERT_EQ(socket_bind(sock.impl(), ipv4::UNSPECIFIED_ADDR, lp.remote.host_port), OK);
+
+    sync::poll_table pt;
+    pt.init(sched::current());
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, &pt), sync::POLL_HUP);
+
+    ASSERT_EQ(sock.ops()->listen(sock.obj, 5), resource::OK);
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(pt.triggered.load_acquire(), 0u);
+
+    // The handshake completing puts the connection where accept takes it
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+    EXPECT_EQ(input(lp.remote.ack(1001, iss + 1)), OK);
+    EXPECT_EQ(pt.triggered.load_acquire(), 1u);
+
+    sync::poll_cleanup(pt);
+}
+
+TEST(tcp_socket, a_poll_stays_on_the_socket_across_a_failed_connect) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+
+    sync::poll_table pt;
+    pt.init(sched::current());
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, &pt), 0u);
+    EXPECT_EQ(sock.impl()->poll_wq.observers.size(), 1u);
+
+    // The refusal wakes the poll, and reporting it lets go of the failed connection
+    EXPECT_EQ(input(stream_socket::replying_to(lp, 0).segment(FLAG_RST | FLAG_ACK, 0, iss + 1)), OK);
+    EXPECT_EQ(pt.triggered.load_acquire(), 1u);
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_CONNREFUSED);
+
+    // The next attempt's handshake reaches the same poll
+    pt.triggered.store_release(0);
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    uint32_t next_iss = ntohl(sent_tcp(lp.link, 1)->seq);
+    EXPECT_EQ(input(stream_socket::replying_to(lp, 1).segment(FLAG_SYN | FLAG_ACK, 7000, next_iss + 1)), OK);
+    EXPECT_EQ(pt.triggered.load_acquire(), 1u);
+
+    sync::poll_cleanup(pt);
+    EXPECT_TRUE(sock.impl()->poll_wq.observers.empty());
+    abort_connection(sock.impl()->conn.ptr());
+}
