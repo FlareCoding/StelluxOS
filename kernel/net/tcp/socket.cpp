@@ -49,6 +49,7 @@ __PRIVILEGED_CODE tcp_socket* socket_open() {
 
     sock->lock = sync::SPINLOCK_INIT;
     sock->receive_lock.init();
+    sock->poll_wq.init();
 
     sync::irq_lock_guard guard(g_sockets_lock);
     for (size_t i = 0; i < MAX_SOCKETS; i++) {
@@ -66,6 +67,17 @@ __PRIVILEGED_CODE tcp_socket* socket_open() {
 __PRIVILEGED_CODE static bool closing_task_may_linger() {
     sched::task* task = sched::current();
     return task && task->group && task->cleanup_stage.load_acquire() == sched::TASK_CLEANUP_STAGE_ACTIVE;
+}
+
+// What the socket lets go of must never wake its pollers again, since the socket may be freed first
+__PRIVILEGED_CODE static void disown_connection(tcp_conn* conn) {
+    sync::irq_lock_guard guard(conn->lock);
+    conn->owner = nullptr;
+}
+
+__PRIVILEGED_CODE static void disown_listener(tcp_listener* listener) {
+    sync::irq_lock_guard guard(listener->lock);
+    listener->owner = nullptr;
 }
 
 __PRIVILEGED_CODE static bool fin_acknowledged_locked(const tcp_conn* conn) {
@@ -116,7 +128,12 @@ __PRIVILEGED_CODE void socket_close(tcp_socket* sock) {
     }
 
     if (sock->listener) {
+        disown_listener(sock->listener.ptr());
         listener_close(sock->listener.ptr());
+    }
+
+    if (sock->conn) {
+        disown_connection(sock->conn.ptr());
     }
 
     if (sock->conn && sock->linger && sock->linger_seconds == 0) {
@@ -129,6 +146,20 @@ __PRIVILEGED_CODE void socket_close(tcp_socket* sock) {
     }
 
     heap::ufree_delete(sock);
+}
+
+__PRIVILEGED_CODE void wake_socket_pollers(tcp_conn* conn) {
+    sync::irq_lock_guard guard(conn->lock);
+
+    if (conn->owner) {
+        sync::wake_all(conn->owner->poll_wq);
+    }
+}
+
+__PRIVILEGED_CODE void wake_socket_pollers_locked(tcp_listener* listener) {
+    if (listener->owner) {
+        sync::wake_all(listener->owner->poll_wq);
+    }
 }
 
 __PRIVILEGED_CODE int32_t socket_listen(tcp_socket* sock, uint16_t backlog) {
@@ -157,6 +188,7 @@ __PRIVILEGED_CODE int32_t socket_listen(tcp_socket* sock, uint16_t backlog) {
 
     listener->options = sock->options;
     listener->backlog = backlog;
+    listener->owner = sock;
     int32_t rc = listener_insert(listener);
     if (rc != OK) {
         if (listener->release()) {
@@ -304,7 +336,7 @@ __PRIVILEGED_CODE static int32_t socket_accept(resource::resource_object* obj, r
         sync::irq_lock_guard guard(conn->lock);
         child->options = {conn->nodelay, conn->snd_mss_cap, conn->keepalive, conn->keepalive_idle_s,
                           conn->keepalive_interval_s, conn->keepalive_probes};
-        conn->owner = child_obj;
+        conn->owner = child;
     }
 
     if (kaddr && addrlen &&
@@ -380,14 +412,15 @@ static int32_t connect_precondition_locked(tcp_socket* sock) {
         return resource::ERR_ISCONN;
     }
 
+    disown_connection(sock->conn.ptr());
     sock->conn.reset();
     return error != resource::OK ? error : resource::ERR_CONNREFUSED;
 }
 
 // Routes the destination, fills in the local half of `key` the socket left
-// open, and opens the connection. Resource codes, since the socket reports them.
+// open, and opens the connection owned by `owner`. Resource codes, since the socket reports them.
 __PRIVILEGED_CODE static int32_t begin_active_open(interface* pinned, tuple* key, const conn_options& options,
-                                                   rc::strong_ref<tcp_conn>* out) {
+                                                   tcp_socket* owner, rc::strong_ref<tcp_conn>* out) {
     route::route_result route;
     int32_t rc = pinned ? route::lookup_on(pinned, key->remote_addr, &route)
                         : route::lookup(key->remote_addr, &route);
@@ -403,7 +436,7 @@ __PRIVILEGED_CODE static int32_t begin_active_open(interface* pinned, tuple* key
         return resource::ERR_ADDRNOTAVAIL;
     }
 
-    rc = open_active(*key, route.iface, out, options);
+    rc = open_active(*key, route.iface, out, options, owner);
     if (rc == ERR_FULL) {
         return resource::ERR_NOBUFS;
     }
@@ -443,7 +476,7 @@ __PRIVILEGED_CODE static int32_t socket_connect(resource::resource_object* obj, 
     }
 
     rc::strong_ref<tcp_conn> conn;
-    int32_t rc = begin_active_open(pinned, &key, options, &conn);
+    int32_t rc = begin_active_open(pinned, &key, options, sock, &conn);
 
     {
         sync::irq_lock_guard guard(sock->lock);
@@ -457,11 +490,6 @@ __PRIVILEGED_CODE static int32_t socket_connect(resource::resource_object* obj, 
 
     if (rc != resource::OK) {
         return rc;
-    }
-
-    {
-        sync::irq_lock_guard guard(conn->lock);
-        conn->owner = obj;
     }
 
     if (nonblock) {
@@ -488,6 +516,7 @@ __PRIVILEGED_CODE static int32_t socket_connect(resource::resource_object* obj, 
     }
 
     // The failure is reported here and the socket is free for another attempt
+    disown_connection(conn.ptr());
     {
         sync::irq_lock_guard guard(sock->lock);
         if (sock->conn.ptr() == conn.ptr()) {
@@ -1109,6 +1138,10 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
     }
 
     tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+    if (pt) {
+        sync::poll_subscribe(*pt, sock->poll_wq);
+    }
+
     rc::strong_ref<tcp_listener> listener;
     rc::strong_ref<tcp_conn> conn;
     {
@@ -1118,21 +1151,11 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
     }
 
     if (listener) {
-        if (pt) {
-            sync::poll_subscribe(*pt, listener->accept_wq);
-        }
-
         sync::irq_lock_guard guard(listener->lock);
         return listener->accept_queue.empty() ? 0 : sync::POLL_IN;
     }
 
     if (conn) {
-        if (pt) {
-            sync::poll_subscribe(*pt, conn->conn_wq);
-            sync::poll_subscribe(*pt, conn->rx_wq);
-            sync::poll_subscribe(*pt, conn->tx_wq);
-        }
-
         sync::irq_lock_guard guard(conn->lock);
         bool reads_over = reads_are_over_locked(conn.ptr());
         bool writes_over = conn->fin_pending || conn->fin_sent;

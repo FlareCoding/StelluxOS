@@ -7,6 +7,7 @@
 #include "net/tcp/rtt.h"
 #include "net/tcp/info.h"
 #include "net/tcp/seq.h"
+#include "net/tcp/socket.h"
 #include "net/net.h"
 #include "net/byteorder.h"
 #include "resource/resource.h"
@@ -371,6 +372,10 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
         RUN_ELEVATED(sync::wake_all(conn->tx_wq));
     }
 
+    if (wake_readers || wake_writers) {
+        RUN_ELEVATED(wake_socket_pollers(conn));
+    }
+
     if (retransmission) {
         increment(counter::retransmits);
         (void)transmit_segment(retransmission, src.iface, src.key);
@@ -385,7 +390,10 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
     } else if (after == tcp_state::closed) {
         retire_connection(conn);
     } else if (after != before) {
-        RUN_ELEVATED(sync::wake_all(conn->conn_wq));
+        RUN_ELEVATED({
+            sync::wake_all(conn->conn_wq);
+            wake_socket_pollers(conn);
+        });
     }
 
     return rc;
@@ -471,6 +479,7 @@ static int32_t syn_sent_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
         RUN_ELEVATED({
             sync::wake_all(conn->conn_wq);
             sync::wake_all(conn->tx_wq);
+            wake_socket_pollers(conn);
         });
         return send_control(src, FLAG_ACK);
     case handshake_action::simultaneous:
@@ -520,6 +529,7 @@ static int32_t syn_rcvd_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
         RUN_ELEVATED({
             sync::wake_all(conn->conn_wq);
             sync::wake_all(conn->tx_wq);
+            wake_socket_pollers(conn);
         });
     }
 

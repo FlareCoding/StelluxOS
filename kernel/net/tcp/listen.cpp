@@ -1,4 +1,5 @@
 #include "net/tcp/listen.h"
+#include "net/tcp/socket.h"
 #include "net/tcp/input.h"
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
@@ -544,7 +545,10 @@ static int32_t promote(tcp_request* request, packet* pkt, const tcp_header* hdr,
             listener->accept_count++;
             conn->add_ref();
             listener->accept_queue.push_back(conn);
+
             sync::wake_all(listener->accept_wq);
+            wake_socket_pollers_locked(listener);
+            
             queued = true;
         }
     });

@@ -12,12 +12,11 @@
 #include "sync/wait_queue.h"
 #include "timer/timer.h"
 
-namespace resource { struct resource_object; }
-
 namespace net {
 namespace tcp {
 
 struct tcp_listener;
+struct tcp_socket;
 
 constexpr size_t   MAX_CONNECTIONS    = 256;
 constexpr size_t   TABLE_BUCKETS      = 1024;
@@ -201,7 +200,7 @@ struct tcp_conn : record {
     const congestion_ops* congestion;
     alignas(8) uint8_t    congestion_state[CONGESTION_STATE_SIZE];
 
-    resource::resource_object* owner;
+    tcp_socket*                owner;
     sync::wait_queue           conn_wq; // connect and close waiters
     int32_t                    pending_error;
     int32_t                    soft_error;
@@ -319,12 +318,13 @@ inline void apply_options(tcp_conn* conn, const conn_options& options) {
 /**
  * @brief Begins an active open (RFC 9293 3.10.1): a connection for `key` on
  * `iface` with `options` enters SYN_SENT, joins the table, sends its SYN, and
- * arms the retransmission timer.
+ * arms the retransmission timer. `owner` is set before the connection joins
+ * the table, so no step of the handshake misses the socket's pollers.
  * @return OK with `out` holding the connection, ERR_IN_USE when the key is
  *         taken, ERR_FULL at capacity, ERR_NO_MEMORY.
  */
 int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>* out,
-                    const conn_options& options = {});
+                    const conn_options& options = {}, tcp_socket* owner = nullptr);
 
 /**
  * @brief Ends the connection at once: a reset goes to the peer, the record

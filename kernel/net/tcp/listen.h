@@ -56,6 +56,7 @@ struct tcp_request : record {
  * A listening endpoint. Requests are counted against `backlog` and completed
  * connections wait in `accept_queue` until accept takes them. Held by
  * reference from its socket and from every request that points back to it.
+ * `owner` is that socket, cleared under the lock when it closes.
  */
 struct tcp_listener : rc::ref_counted<tcp_listener> {
     endpoint     local;
@@ -69,6 +70,7 @@ struct tcp_listener : rc::ref_counted<tcp_listener> {
     list::head<tcp_conn, &tcp_conn::accept_link> accept_queue;
     sync::wait_queue                             accept_wq;
     sync::spinlock                               lock;
+    tcp_socket*                                  owner;
 
     /**
      * @brief Frees the listener once the last reference is gone.

@@ -14,7 +14,8 @@ constexpr size_t EPHEMERAL_BIND_ATTEMPTS = 8; // ports lost to a racing bind bef
 /**
  * A stream socket as userland holds it, from creation through bind to the
  * listener or connection it comes to stand for, each held by reference.
- * The lock guards every field but `receive_lock`, which serializes receives.
+ * The lock guards every field but `receive_lock`, which serializes receives,
+ * and `poll_wq`, the one queue pollers wait on, since it lives as long as the socket.
  */
 struct tcp_socket {
     endpoint                     local;
@@ -27,6 +28,7 @@ struct tcp_socket {
     rc::strong_ref<tcp_conn>     conn;
     sync::spinlock               lock;
     sync::mutex                  receive_lock;
+    sync::wait_queue             poll_wq;
 };
 
 /**
@@ -42,6 +44,19 @@ __PRIVILEGED_CODE tcp_socket* socket_open();
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void socket_close(tcp_socket* sock);
+
+/**
+ * @brief Wakes whoever polls the socket standing for `conn`, if a socket still does.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void wake_socket_pollers(tcp_conn* conn);
+
+/**
+ * @brief Wakes whoever polls the socket listening through `listener`, if a socket still does.
+ * Caller holds the listener's lock.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void wake_socket_pollers_locked(tcp_listener* listener);
 
 /**
  * @brief Blocks the calling task until the connection's FIN is acknowledged,
