@@ -1722,3 +1722,110 @@ TEST(socket_test, a_plain_receive_call_ends_where_handles_came_and_drops_them) {
     EXPECT_EQ(resource::close(task, reader), resource::OK);
     resource::resource_release(obj_a);
 }
+
+static const char POLL_BEFORE_CONNECT_PATH[] = "/poll_before_connect.sock";
+
+TEST(socket_test, a_poll_begun_before_connecting_is_woken_by_the_connection) {
+    resource::resource_object* listening = nullptr;
+    resource::resource_object* client = nullptr;
+    ASSERT_EQ(socket::create_unbound_socket(&listening), resource::OK);
+    ASSERT_EQ(socket::create_unbound_socket(&client), resource::OK);
+
+    unix_address address = {};
+    address.family = UNIX_ADDRESS_FAMILY;
+    string::memcpy(address.path, POLL_BEFORE_CONNECT_PATH, sizeof(POLL_BEFORE_CONNECT_PATH));
+
+    const resource::socket_ops* ops = listening->ops->socket;
+    ASSERT_EQ(ops->bind(listening, &address, sizeof(address)), resource::OK);
+    ASSERT_EQ(ops->listen(listening, LISTEN_BACKLOG), resource::OK);
+
+    sync::poll_table pt;
+    pt.init(sched::current());
+    EXPECT_EQ(client->ops->poll(client, &pt), 0u);
+
+    ASSERT_EQ(ops->connect(client, &address, sizeof(address), false), resource::OK);
+    EXPECT_EQ(pt.triggered.load_acquire(), 1u);
+
+    sync::poll_cleanup(pt);
+    resource::resource_release(client);
+    resource::resource_release(listening);
+}
+
+static const char POLL_BEFORE_LISTEN_PATH[] = "/poll_before_listen.sock";
+
+TEST(socket_test, a_poll_begun_before_listening_is_woken_by_an_incoming_connection) {
+    resource::resource_object* listening = nullptr;
+    resource::resource_object* client = nullptr;
+    ASSERT_EQ(socket::create_unbound_socket(&listening), resource::OK);
+    ASSERT_EQ(socket::create_unbound_socket(&client), resource::OK);
+
+    unix_address address = {};
+    address.family = UNIX_ADDRESS_FAMILY;
+    string::memcpy(address.path, POLL_BEFORE_LISTEN_PATH, sizeof(POLL_BEFORE_LISTEN_PATH));
+
+    const resource::socket_ops* ops = listening->ops->socket;
+    ASSERT_EQ(ops->bind(listening, &address, sizeof(address)), resource::OK);
+
+    sync::poll_table pt;
+    pt.init(sched::current());
+    EXPECT_EQ(listening->ops->poll(listening, &pt), 0u);
+
+    ASSERT_EQ(ops->listen(listening, LISTEN_BACKLOG), resource::OK);
+    EXPECT_EQ(pt.triggered.load_acquire(), 0u);
+
+    ASSERT_EQ(ops->connect(client, &address, sizeof(address), false), resource::OK);
+    EXPECT_EQ(pt.triggered.load_acquire(), 1u);
+
+    sync::poll_cleanup(pt);
+    resource::resource_release(client);
+    resource::resource_release(listening);
+}
+
+TEST(socket_test, a_connected_socket_is_woken_by_its_peer_writing_reading_and_closing) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    sync::poll_table pt;
+    pt.init(sched::current());
+    EXPECT_EQ(obj_a->ops->poll(obj_a, &pt), sync::POLL_OUT);
+
+    uint8_t byte = 'x';
+    EXPECT_EQ(obj_b->ops->write(obj_b, &byte, 1, 0), static_cast<ssize_t>(1));
+    EXPECT_EQ(pt.triggered.load_acquire(), 1u);
+
+    // Writing wakes only the reading side, then the peer draining it makes room for us
+    pt.triggered.store_release(0);
+    EXPECT_EQ(obj_a->ops->write(obj_a, &byte, 1, 0), static_cast<ssize_t>(1));
+    EXPECT_EQ(pt.triggered.load_acquire(), 0u);
+    EXPECT_EQ(obj_b->ops->read(obj_b, &byte, 1, 0), static_cast<ssize_t>(1));
+    EXPECT_EQ(pt.triggered.load_acquire(), 1u);
+
+    pt.triggered.store_release(0);
+    resource::resource_release(obj_b);
+    EXPECT_EQ(pt.triggered.load_acquire(), 1u);
+
+    sync::poll_cleanup(pt);
+    resource::resource_release(obj_a);
+}
+
+TEST(socket_test, a_closed_socket_leaves_no_poll_queue_on_its_channel) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    auto* sock_a = static_cast<socket::unix_socket*>(obj_a->impl);
+    auto* sock_b = static_cast<socket::unix_socket*>(obj_b->impl);
+    ring_buffer* to_b = sock_b->channel->a_to_b.buf;
+    ring_buffer* to_a = sock_b->channel->b_to_a.buf;
+    EXPECT_TRUE(to_b->writer_poll_wq == &sock_a->poll_wq);
+    EXPECT_TRUE(to_a->reader_poll_wq == &sock_a->poll_wq);
+
+    resource::resource_release(obj_a);
+    EXPECT_TRUE(to_b->writer_poll_wq == nullptr);
+    EXPECT_TRUE(to_a->reader_poll_wq == nullptr);
+    EXPECT_TRUE(to_b->reader_poll_wq == &sock_b->poll_wq);
+    EXPECT_TRUE(to_a->writer_poll_wq == &sock_b->poll_wq);
+
+    resource::resource_release(obj_b);
+}

@@ -38,6 +38,27 @@ static void copy_queued(const ring_buffer* rb, uint8_t* buf, size_t len) {
 }
 
 /**
+ * Wakes whoever polls the reading side. The caller holds the lock, which keeps the queue from being
+ * cleared and freed mid-wake.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void wake_reader_pollers_locked(ring_buffer* rb) {
+    if (rb->reader_poll_wq) {
+        sync::wake_all(*rb->reader_poll_wq);
+    }
+}
+
+/**
+ * Wakes whoever polls the writing side, under the lock as for readers.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void wake_writer_pollers_locked(ring_buffer* rb) {
+    if (rb->writer_poll_wq) {
+        sync::wake_all(*rb->writer_poll_wq);
+    }
+}
+
+/**
  * How many of `len` queued bytes one marked read or peek covers, stopping where a marked stretch ends,
  * with the mark whose stretch it reaches in `reached`. The caller must hold the lock.
  * @return The byte count (> 0), 0 at end of stream, or RB_ERR_AGAIN when nothing is queued.
@@ -94,6 +115,8 @@ __PRIVILEGED_CODE ring_buffer* ring_buffer_create(size_t capacity) {
     rb->read_wq.init();
     rb->write_wq.init();
     rb->marks.init();
+    rb->reader_poll_wq = nullptr;
+    rb->writer_poll_wq = nullptr;
 
     return rb;
 }
@@ -111,6 +134,22 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb) {
         rb->data = nullptr;
     }
     heap::kfree(rb);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void ring_buffer_set_reader_poll_queue(ring_buffer* rb, sync::wait_queue* wq) {
+    sync::irq_lock_guard guard(rb->lock);
+    rb->reader_poll_wq = wq;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void ring_buffer_set_writer_poll_queue(ring_buffer* rb, sync::wait_queue* wq) {
+    sync::irq_lock_guard guard(rb->lock);
+    rb->writer_poll_wq = wq;
 }
 
 /**
@@ -146,6 +185,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t
     copy_queued(rb, buf, to_read);
     rb->tail += to_read;
 
+    wake_writer_pollers_locked(rb);
     sync::spin_unlock_irqrestore(rb->lock, irq);
     sync::wake_all(rb->write_wq);
 
@@ -215,6 +255,11 @@ __PRIVILEGED_CODE size_t ring_buffer_skip(ring_buffer* rb, size_t len) {
     size_t avail = readable_bytes(rb);
     size_t to_skip = avail < len ? avail : len;
     rb->tail += to_skip;
+
+    if (to_skip > 0) {
+        wake_writer_pollers_locked(rb);
+    }
+
     sync::spin_unlock_irqrestore(rb->lock, irq);
 
     if (to_skip > 0) {
@@ -255,6 +300,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read_marked(ring_buffer* rb, uint8_t* buf,
 
     rb->tail += static_cast<size_t>(span);
 
+    wake_writer_pollers_locked(rb);
     sync::spin_unlock_irqrestore(rb->lock, irq);
     sync::wake_all(rb->write_wq);
 
@@ -342,6 +388,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_marked(ring_buffer* rb, const uint8_
 
     rb->head += to_write;
 
+    wake_reader_pollers_locked(rb);
     sync::spin_unlock_irqrestore(rb->lock, irq);
     sync::wake_all(rb->read_wq);
 
@@ -409,6 +456,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* 
 
     rb->head += len;
 
+    wake_reader_pollers_locked(rb);
     sync::spin_unlock_irqrestore(rb->lock, irq);
     sync::wake_all(rb->read_wq);
 
@@ -425,6 +473,8 @@ __PRIVILEGED_CODE void ring_buffer_close_write(ring_buffer* rb) {
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
     rb->writer_closed = true;
+    wake_reader_pollers_locked(rb);
+    wake_writer_pollers_locked(rb);
     sync::spin_unlock_irqrestore(rb->lock, irq);
 
     sync::wake_all(rb->read_wq);
@@ -441,6 +491,8 @@ __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb) {
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
     rb->reader_closed = true;
+    wake_writer_pollers_locked(rb);
+    wake_reader_pollers_locked(rb);
     sync::spin_unlock_irqrestore(rb->lock, irq);
 
     sync::wake_all(rb->write_wq);
