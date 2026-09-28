@@ -20,13 +20,18 @@ constexpr uint32_t IPPROTO_IP   = 0;
 constexpr uint32_t IPPROTO_ICMP = ipv4::PROTO_ICMP;
 constexpr uint32_t IPPROTO_TCP  = ipv4::PROTO_TCP;
 constexpr uint32_t IPPROTO_UDP  = ipv4::PROTO_UDP;
-constexpr uint32_t MSG_OOB      = 0x01;
-constexpr uint32_t MSG_PEEK     = 0x02;
-constexpr uint32_t MSG_TRUNC    = 0x20;
-constexpr uint32_t MSG_DONTWAIT = 0x40;
-constexpr uint32_t MSG_WAITALL  = 0x100;
-constexpr uint32_t MSG_NOSIGNAL = 0x4000;
-constexpr uint32_t MSG_MORE     = 0x8000;
+constexpr uint32_t MSG_OOB          = 0x01;
+constexpr uint32_t MSG_PEEK         = 0x02;
+constexpr uint32_t MSG_CTRUNC       = 0x08;
+constexpr uint32_t MSG_TRUNC        = 0x20;
+constexpr uint32_t MSG_DONTWAIT     = 0x40;
+constexpr uint32_t MSG_WAITALL      = 0x100;
+constexpr uint32_t MSG_NOSIGNAL     = 0x4000;
+constexpr uint32_t MSG_MORE         = 0x8000;
+constexpr uint32_t MSG_CMSG_CLOEXEC = 0x40000000;
+
+constexpr int32_t SCM_RIGHTS      = 1;
+constexpr int32_t SCM_CREDENTIALS = 2;
 
 constexpr int32_t SOL_SOCKET      = 1;
 constexpr int32_t SO_REUSEADDR    = 2;

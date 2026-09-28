@@ -22,6 +22,7 @@ struct ring_buffer_mark {
 };
 
 using ring_buffer_mark_list = list::head<ring_buffer_mark, &ring_buffer_mark::link>;
+using ring_buffer_mark_fn = void (*)(ring_buffer_mark* mark, void* context);
 
 struct ring_buffer {
     uint8_t* data;
@@ -81,14 +82,23 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
 [[nodiscard]] __PRIVILEGED_CODE size_t ring_buffer_skip(ring_buffer* rb, size_t len);
 
 /**
- * Take up to `len` queued bytes without blocking, stopping where a marked stretch ends. Copies into
- * `buf` unless it is null and consumes unless `peek`. The call consuming a marked stretch's first byte
- * takes its mark into `taken`. A buffer holding marks must be consumed only through this function.
+ * Take up to `len` queued bytes without blocking, stopping where a marked stretch ends, and copy them
+ * into `buf` unless it is null. The call consuming a marked stretch's first byte takes its mark into
+ * `taken`. A buffer holding marks must be consumed only through this function.
  * @return Bytes taken (> 0), 0 at end of stream, or RB_ERR_AGAIN when nothing is queued.
  * @note Privilege: **required**
  */
-[[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_read_marked(ring_buffer* rb, uint8_t* buf, size_t len, bool peek,
+[[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_read_marked(ring_buffer* rb, uint8_t* buf, size_t len,
                                                                 ring_buffer_mark** taken);
+
+/**
+ * Look at queued bytes like ring_buffer_read_marked, without consuming them. When they reach a marked
+ * stretch, `on_mark`, if given, runs with its mark under the buffer's lock, so it must not sleep.
+ * @return Bytes seen (> 0), 0 at end of stream, or RB_ERR_AGAIN when nothing is queued.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_peek_marked(ring_buffer* rb, uint8_t* buf, size_t len,
+                                                                ring_buffer_mark_fn on_mark, void* context);
 
 /**
  * Write to ring buffer. Blocks when full unless nonblock is true.

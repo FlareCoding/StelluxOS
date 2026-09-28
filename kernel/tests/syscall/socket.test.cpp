@@ -8,6 +8,7 @@
 #include "syscall/handlers/sys_fd.h"
 #include "syscall/handlers/sys_io.h"
 #include "syscall/handlers/sys_shutdown.h"
+#include "syscall/handlers/sys_pipe.h"
 #include "resource/resource.h"
 #include "resource/socket_ops.h"
 #include "net/inet.h"
@@ -48,6 +49,7 @@ constexpr size_t MSG_IOVS  = 64;
 constexpr size_t MSG_NAME  = 128;
 constexpr size_t MSG_BUF_A = 256;
 constexpr size_t MSG_BUF_B = 512;
+constexpr size_t MSG_CONTROL = 2560;
 
 constexpr uint16_t TEST_PORT = 50010;
 constexpr uint16_t PEER_PORT = 40000;
@@ -71,6 +73,12 @@ struct user_msghdr {
     uint64_t controllen;
     uint32_t flags;
     uint32_t pad1;
+};
+
+struct user_cmsghdr {
+    uint64_t len;
+    int32_t level;
+    int32_t type;
 };
 
 // Close-on-exec from the handle together with its object's status flags
@@ -755,23 +763,63 @@ TEST(socket_syscall, a_stream_discard_with_waitall_drops_past_one_staging_round)
     run_stream_case(stream_call::discard);
 }
 
-TEST(socket_syscall, sendmsg_refuses_ancillary_data) {
+// Writes an SCM_RIGHTS message naming `count` handles at MSG_CONTROL, returning its length
+static size_t write_rights_message(user_page& page, const int32_t* handles, size_t count) {
+    auto* head = page.at<user_cmsghdr>(MSG_CONTROL);
+    head->len = sizeof(user_cmsghdr) + count * sizeof(int32_t);
+    head->level = inet::SOL_SOCKET;
+    head->type = inet::SCM_RIGHTS;
+    string::memcpy(head + 1, handles, count * sizeof(int32_t));
+
+    return head->len;
+}
+
+// Points the message header at `len` bytes of control data at MSG_CONTROL
+static void set_control(user_page& page, uint64_t len) {
+    user_msghdr* hdr = page.at<user_msghdr>(MSG_HDR);
+    hdr->control = page.addr + MSG_CONTROL;
+    hdr->controllen = len;
+}
+
+static int64_t send_message(user_page& page, int64_t fd) {
+    user_space_scope scope(page.ctx);
+    return sys_sendmsg(static_cast<uint64_t>(fd), page.addr + MSG_HDR, 0, 0, 0, 0);
+}
+
+static int64_t receive_message(user_page& page, int64_t fd, uint64_t flags) {
+    user_space_scope scope(page.ctx);
+    return sys_recvmsg(static_cast<uint64_t>(fd), page.addr + MSG_HDR, flags, 0, 0, 0);
+}
+
+TEST(socket_syscall, a_socket_that_cannot_pass_handles_ignores_them_and_refuses_other_control_data) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    stub_interface link;
     int64_t fd = sys_socket(inet::AF_INET, inet::SOCK_DGRAM, 0, 0, 0, 0);
     ASSERT_TRUE(fd >= 0);
 
+    udp::udp_socket* sock = udp_socket_of(task, fd);
+    ASSERT_NOT_NULL(sock);
+    sock->iface = &link;
+    sock->broadcast_allowed = true;
+
     user_page page;
     ASSERT_TRUE(page.ready());
-    lay_out_message(page, 0, 4, 4);
-    page.at<user_msghdr>(MSG_HDR)->controllen = 16;
 
-    int64_t rc = 0;
-    {
-        user_space_scope scope(page.ctx);
-        rc = sys_sendmsg(static_cast<uint64_t>(fd), page.addr + MSG_HDR, 0, 0, 0, 0);
-    }
-    EXPECT_EQ(rc, syscall::EOPNOTSUPP);
+    lay_out_message(page, inet::SOCKADDR_IN_LEN, 4, 4);
+    *page.at<inet::sockaddr_in>(MSG_NAME) = {inet::AF_INET, htons(67), ipv4::BROADCAST_ADDR, {}};
 
-    EXPECT_EQ(resource::close(sched::current(), static_cast<resource::handle_t>(fd)), resource::OK);
+    int32_t own_handle = static_cast<int32_t>(fd);
+    set_control(page, write_rights_message(page, &own_handle, 1));
+    EXPECT_EQ(send_message(page, fd), static_cast<int64_t>(8));
+    EXPECT_EQ(link.frames_sent(), static_cast<size_t>(1));
+
+    page.at<user_cmsghdr>(MSG_CONTROL)->level = static_cast<int32_t>(inet::IPPROTO_IP);
+    EXPECT_EQ(send_message(page, fd), syscall::EOPNOTSUPP);
+    EXPECT_EQ(link.frames_sent(), static_cast<size_t>(1));
+
+    EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(fd)), resource::OK);
 }
 
 // Unix stream sends and receives
@@ -1034,6 +1082,448 @@ TEST(socket_syscall, a_unix_stream_recvmsg_drains_what_a_closed_peer_left) {
     EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(0));
 
     EXPECT_EQ(resource::close(task, pair.b), resource::OK);
+}
+
+// Handle passing
+
+constexpr size_t PIPE_FDS_AT = 1040;
+constexpr uint64_t CONTROL_ROOM = 64;
+constexpr uint64_t CMSG_ALIGNMENT = 8;
+constexpr uint64_t MAX_CONTROL_BYTES = 20480;
+constexpr uint64_t ONE_HANDLE_LEN = sizeof(user_cmsghdr) + sizeof(int32_t);
+constexpr uint64_t ONE_HANDLE_SPACE = (ONE_HANDLE_LEN + CMSG_ALIGNMENT - 1) & ~(CMSG_ALIGNMENT - 1);
+
+struct pipe_ends {
+    int32_t read;
+    int32_t write;
+};
+
+static bool make_pipe(user_page& page, pipe_ends* out, uint32_t flags = 0) {
+    int64_t rc = 0;
+    {
+        user_space_scope scope(page.ctx);
+        rc = sys_pipe2(page.addr + PIPE_FDS_AT, flags, 0, 0, 0, 0);
+    }
+    if (rc != 0) {
+        return false;
+    }
+
+    out->read = page.at<int32_t>(PIPE_FDS_AT)[0];
+    out->write = page.at<int32_t>(PIPE_FDS_AT)[1];
+
+    return true;
+}
+
+static void close_pipe(sched::task* task, const pipe_ends& pipe) {
+    (void)resource::close(task, pipe.read);
+    (void)resource::close(task, pipe.write);
+}
+
+// The object behind an open handle, for comparing identities and counting references
+static resource::resource_object* object_of(sched::task* task, int32_t handle) {
+    resource::resource_object* obj = nullptr;
+    if (resource::get_handle_object(task->handles, handle, 0, &obj) != resource::HANDLE_OK) {
+        return nullptr;
+    }
+
+    resource::resource_release(obj);
+
+    return obj;
+}
+
+// Sends one byte with an SCM_RIGHTS message naming `count` handles
+static int64_t send_with_rights(user_page& page, int32_t fd, const int32_t* handles, size_t count) {
+    *page.at<char>(MSG_BUF_A) = 'x';
+    lay_out_message(page, 0, 1, 0);
+    set_control(page, write_rights_message(page, handles, count));
+
+    return send_message(page, fd);
+}
+
+// Receives without waiting into a zeroed control buffer of `room` bytes, or none when `room` is 0
+static int64_t receive_with_control(user_page& page, int32_t fd, uint64_t room, uint64_t flags) {
+    lay_out_message(page, 0, 4, 4);
+    string::memset(page.at<char>(MSG_CONTROL), 0, CONTROL_ROOM);
+    if (room > 0) {
+        set_control(page, room);
+    }
+
+    return receive_message(page, fd, flags | inet::MSG_DONTWAIT);
+}
+
+// The first handle the SCM_RIGHTS message at MSG_CONTROL names
+static int32_t first_received_handle(user_page& page) {
+    return *reinterpret_cast<int32_t*>(page.at<user_cmsghdr>(MSG_CONTROL) + 1);
+}
+
+TEST(socket_syscall, sendmsg_passes_a_handle_that_recvmsg_installs) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe, fs::O_NONBLOCK | fs::O_CLOEXEC));
+
+    resource::resource_object* reader = object_of(task, pipe.read);
+    ASSERT_NOT_NULL(reader);
+
+    EXPECT_EQ(send_with_rights(page, pair.a, &pipe.read, 1), static_cast<int64_t>(1));
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), static_cast<int64_t>(1));
+
+    const user_msghdr* hdr = page.at<user_msghdr>(MSG_HDR);
+    EXPECT_EQ(hdr->controllen, ONE_HANDLE_SPACE);
+    EXPECT_EQ(hdr->flags, 0u);
+
+    const user_cmsghdr* head = page.at<user_cmsghdr>(MSG_CONTROL);
+    EXPECT_EQ(head->len, ONE_HANDLE_LEN);
+    EXPECT_EQ(head->level, inet::SOL_SOCKET);
+    EXPECT_EQ(head->type, inet::SCM_RIGHTS);
+
+    // The received handle shares the object's status flags but not the sender's close-on-exec
+    int32_t received = first_received_handle(page);
+    EXPECT_EQ(object_of(task, received), reader);
+    EXPECT_EQ(handle_flags_of(task, received), fs::O_NONBLOCK);
+
+    char buf[4] = {};
+    EXPECT_EQ(resource::write(task, pipe.write, "hi", 2), static_cast<ssize_t>(2));
+    EXPECT_EQ(resource::read(task, received, buf, sizeof(buf)), static_cast<ssize_t>(2));
+    EXPECT_EQ(string::memcmp(buf, "hi", 2), 0);
+
+    (void)resource::close(task, received);
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, recvmsg_drops_the_handles_it_has_no_room_for) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    resource::resource_object* reader = object_of(task, pipe.read);
+    ASSERT_NOT_NULL(reader);
+    uint32_t refs_before = reader->ref_count();
+
+    int32_t three_handles[3] = {pipe.read, pipe.read, pipe.read};
+    EXPECT_EQ(send_with_rights(page, pair.a, three_handles, 3), static_cast<int64_t>(1));
+    EXPECT_EQ(send_with_rights(page, pair.a, three_handles, 1), static_cast<int64_t>(1));
+
+    // Room for one handle installs the first and drops the rest
+    const user_msghdr* hdr = page.at<user_msghdr>(MSG_HDR);
+    EXPECT_EQ(receive_with_control(page, pair.b, ONE_HANDLE_LEN, 0), static_cast<int64_t>(1));
+    EXPECT_EQ(hdr->flags, inet::MSG_CTRUNC);
+    EXPECT_EQ(hdr->controllen, ONE_HANDLE_LEN);
+
+    int32_t installed = first_received_handle(page);
+    EXPECT_EQ(object_of(task, installed), reader);
+
+    // No room at all drops every handle
+    EXPECT_EQ(receive_with_control(page, pair.b, 0, 0), static_cast<int64_t>(1));
+    EXPECT_EQ(hdr->flags, inet::MSG_CTRUNC);
+    EXPECT_EQ(hdr->controllen, 0u);
+
+    // Only the installed handle kept a reference
+    EXPECT_EQ(reader->ref_count(), refs_before + 1);
+
+    (void)resource::close(task, installed);
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+// Handles filling the rest of the runner's table
+static resource::handle_t g_fillers[resource::DEFAULT_HANDLE_LIMIT];
+
+TEST(socket_syscall, recvmsg_drops_the_handles_its_table_has_no_room_for) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    resource::resource_object* reader = object_of(task, pipe.read);
+    ASSERT_NOT_NULL(reader);
+
+    int32_t two_handles[2] = {pipe.read, pipe.read};
+    EXPECT_EQ(send_with_rights(page, pair.a, two_handles, 2), static_cast<int64_t>(1));
+
+    // Fill every free slot below the descriptor limit, then free one so only the first handle fits
+    size_t fillers = 0;
+    while (fillers < resource::DEFAULT_HANDLE_LIMIT) {
+        int32_t rc = resource::alloc_task_handle(task, reader, reader->type, resource::RIGHT_READ, &g_fillers[fillers]);
+        if (rc != resource::HANDLE_OK) {
+            break;
+        }
+
+        fillers++;
+    }
+
+    ASSERT_TRUE(fillers > 0);
+    fillers--;
+    (void)resource::close(task, g_fillers[fillers]);
+
+    const user_msghdr* hdr = page.at<user_msghdr>(MSG_HDR);
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), static_cast<int64_t>(1));
+    EXPECT_EQ(hdr->flags, inet::MSG_CTRUNC);
+    EXPECT_EQ(hdr->controllen, ONE_HANDLE_SPACE);
+
+    (void)resource::close(task, first_received_handle(page));
+    for (size_t i = 0; i < fillers; i++) {
+        (void)resource::close(task, g_fillers[i]);
+    }
+
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, recvmsg_marks_the_handles_it_installs_close_on_exec_when_asked) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    EXPECT_EQ(send_with_rights(page, pair.a, &pipe.read, 1), static_cast<int64_t>(1));
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, inet::MSG_CMSG_CLOEXEC), static_cast<int64_t>(1));
+
+    int32_t received = first_received_handle(page);
+    EXPECT_EQ(handle_flags_of(task, received), resource::RESOURCE_HANDLE_CLOEXEC);
+
+    (void)resource::close(task, received);
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+// A copy of the page's message header on a page of its own that the receive can read but not write
+static uintptr_t read_only_header(user_page& page) {
+    uintptr_t addr = 0;
+    uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
+    uint32_t flags = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS;
+    if (mm::mm_context_map_anonymous(page.ctx, 0, pmm::PAGE_SIZE, prot, flags, &addr) != mm::MM_CTX_OK) {
+        return 0;
+    }
+
+    pmm::phys_addr_t phys = paging::get_physical(addr, page.ctx->pt_root);
+    if (!phys) {
+        return 0;
+    }
+
+    string::memcpy(paging::phys_to_virt(phys), page.at<user_msghdr>(MSG_HDR), sizeof(user_msghdr));
+
+    return mm::mm_context_mprotect(page.ctx, addr, pmm::PAGE_SIZE, mm::MM_PROT_READ) == mm::MM_CTX_OK ? addr : 0;
+}
+
+TEST(socket_syscall, a_recvmsg_that_cannot_write_its_header_or_control_leaves_the_message_queued) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    resource::resource_object* reader = object_of(task, pipe.read);
+    ASSERT_NOT_NULL(reader);
+    uint32_t refs_before = reader->ref_count();
+
+    EXPECT_EQ(send_with_rights(page, pair.a, &pipe.read, 1), static_cast<int64_t>(1));
+
+    lay_out_message(page, 0, 4, 4);
+    set_control(page, CONTROL_ROOM);
+    uintptr_t read_only = read_only_header(page);
+    ASSERT_TRUE(read_only != 0);
+
+    int64_t header_rc = 0;
+    {
+        user_space_scope scope(page.ctx);
+        header_rc = sys_recvmsg(static_cast<uint64_t>(pair.b), read_only, inet::MSG_DONTWAIT, 0, 0, 0);
+    }
+
+    // The same read-only page as the control buffer
+    page.at<user_msghdr>(MSG_HDR)->control = read_only;
+    int64_t control_rc = receive_message(page, pair.b, inet::MSG_DONTWAIT);
+
+    EXPECT_EQ(header_rc, syscall::EFAULT);
+    EXPECT_EQ(control_rc, syscall::EFAULT);
+    EXPECT_EQ(reader->ref_count(), refs_before + 1);
+
+    // A receive that can report takes the byte and the handle it still finds queued
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), static_cast<int64_t>(1));
+    int32_t received = first_received_handle(page);
+    EXPECT_EQ(object_of(task, received), reader);
+
+    (void)resource::close(task, received);
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_peek_installs_copies_and_leaves_the_handles_queued) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    resource::resource_object* writer = object_of(task, pipe.write);
+    ASSERT_NOT_NULL(writer);
+
+    EXPECT_EQ(send_with_rights(page, pair.a, &pipe.write, 1), static_cast<int64_t>(1));
+
+    // A peek without a control buffer reports the handles it could not install
+    EXPECT_EQ(receive_with_control(page, pair.b, 0, inet::MSG_PEEK), static_cast<int64_t>(1));
+    EXPECT_EQ(page.at<user_msghdr>(MSG_HDR)->flags, inet::MSG_CTRUNC);
+
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, inet::MSG_PEEK), static_cast<int64_t>(1));
+    int32_t copy = first_received_handle(page);
+
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), static_cast<int64_t>(1));
+    int32_t original = first_received_handle(page);
+
+    EXPECT_NE(copy, original);
+    EXPECT_EQ(object_of(task, copy), writer);
+    EXPECT_EQ(object_of(task, original), writer);
+
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), syscall::EAGAIN);
+
+    (void)resource::close(task, copy);
+    (void)resource::close(task, original);
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, sendmsg_refuses_control_data_it_cannot_carry) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    resource::resource_object* reader = object_of(task, pipe.read);
+    ASSERT_NOT_NULL(reader);
+    uint32_t refs_before = reader->ref_count();
+
+    *page.at<char>(MSG_BUF_A) = 'x';
+    lay_out_message(page, 0, 1, 0);
+    user_cmsghdr* head = page.at<user_cmsghdr>(MSG_CONTROL);
+
+    set_control(page, write_rights_message(page, &pipe.read, 1));
+    head->len = sizeof(user_cmsghdr) - 1;
+    EXPECT_EQ(send_message(page, pair.a), syscall::EINVAL);
+
+    set_control(page, write_rights_message(page, &pipe.read, 1));
+    head->type = inet::SCM_CREDENTIALS;
+    EXPECT_EQ(send_message(page, pair.a), syscall::EINVAL);
+
+    int32_t stale = static_cast<int32_t>(sys_socket(inet::AF_INET, inet::SOCK_DGRAM, 0, 0, 0, 0));
+    ASSERT_TRUE(stale >= 0);
+    EXPECT_EQ(resource::close(task, stale), resource::OK);
+
+    set_control(page, write_rights_message(page, &stale, 1));
+    EXPECT_EQ(send_message(page, pair.a), syscall::EBADF);
+
+    int32_t too_many_handles[resource::MAX_PASSED_HANDLES + 1];
+    for (int32_t& handle : too_many_handles) {
+        handle = pipe.read;
+    }
+
+    set_control(page, write_rights_message(page, too_many_handles, resource::MAX_PASSED_HANDLES + 1));
+    EXPECT_EQ(send_message(page, pair.a), syscall::EINVAL);
+
+    // A unix socket in flight could end up queued on itself
+    set_control(page, write_rights_message(page, &pair.b, 1));
+    EXPECT_EQ(send_message(page, pair.a), syscall::EOPNOTSUPP);
+
+    set_control(page, MAX_CONTROL_BYTES + 1);
+    EXPECT_EQ(send_message(page, pair.a), syscall::ENOBUFS);
+
+    // Messages for other protocols are skipped and the byte still goes out
+    set_control(page, write_rights_message(page, &pipe.read, 1));
+    head->level = static_cast<int32_t>(inet::IPPROTO_IP);
+    EXPECT_EQ(send_message(page, pair.a), static_cast<int64_t>(1));
+
+    // Nothing refused was queued or kept a reference
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), static_cast<int64_t>(1));
+    EXPECT_EQ(page.at<user_msghdr>(MSG_HDR)->controllen, 0u);
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), syscall::EAGAIN);
+    EXPECT_EQ(reader->ref_count(), refs_before);
+
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_zero_byte_sendmsg_drops_the_handles_it_names) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    resource::resource_object* reader = object_of(task, pipe.read);
+    ASSERT_NOT_NULL(reader);
+    uint32_t refs_before = reader->ref_count();
+
+    lay_out_message(page, 0, 0, 0);
+    set_control(page, write_rights_message(page, &pipe.read, 1));
+
+    EXPECT_EQ(send_message(page, pair.a), static_cast<int64_t>(0));
+    EXPECT_EQ(reader->ref_count(), refs_before);
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), syscall::EAGAIN);
+
+    // A send of no bytes still reports a socket with no connection
+    int64_t lone = sys_socket(AF_UNIX, inet::SOCK_STREAM, 0, 0, 0, 0);
+    ASSERT_TRUE(lone >= 0);
+
+    EXPECT_EQ(send_message(page, lone), syscall::ENOTCONN);
+    EXPECT_EQ(reader->ref_count(), refs_before);
+
+    EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(lone)), resource::OK);
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
 }
 
 // A receive that waits runs in an elevated task of its own, through a handle of

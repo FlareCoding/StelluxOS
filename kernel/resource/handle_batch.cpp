@@ -17,6 +17,7 @@ __PRIVILEGED_CODE handle_batch* create_handle_batch(uint32_t count) {
         return nullptr;
     }
 
+    batch->ref_count.store_relaxed(1);
     batch->count = count;
 
     return batch;
@@ -25,8 +26,15 @@ __PRIVILEGED_CODE handle_batch* create_handle_batch(uint32_t count) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void release_handle_batch(handle_batch* batch) {
-    if (!batch) {
+__PRIVILEGED_CODE void handle_batch_add_ref(handle_batch* batch) {
+    batch->ref_count.fetch_add_relaxed(1);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void handle_batch_release(handle_batch* batch) {
+    if (!batch || batch->ref_count.fetch_sub_acq_rel(1) != 1) {
         return;
     }
 

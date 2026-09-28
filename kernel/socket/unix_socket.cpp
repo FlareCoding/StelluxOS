@@ -85,7 +85,7 @@ __PRIVILEGED_CODE static void drop_records(ring_buffer* rb) {
 
     while (ring_buffer_mark* mark = marks.pop_front()) {
         unix_record* record = record_of(mark);
-        resource::release_handle_batch(record->batch);
+        resource::handle_batch_release(record->batch);
         heap::kfree(record);
     }
 }
@@ -148,12 +148,8 @@ __PRIVILEGED_CODE static unix_direction& outbound(const unix_socket* sock) {
  */
 __PRIVILEGED_CODE static ssize_t write_stream(unix_direction& dir, const uint8_t* bytes, size_t count,
                                               uint32_t msg_flags, resource::handle_batch* batch) {
-    if (count == 0) {
-        return 0;
-    }
-
     unix_record* unsent_record = nullptr;
-    if (batch) {
+    if (batch && count > 0) {
         unsent_record = static_cast<unix_record*>(heap::kzalloc(sizeof(unix_record)));
         if (!unsent_record) {
             return resource::ERR_NOMEM;
@@ -165,6 +161,11 @@ __PRIVILEGED_CODE static ssize_t write_stream(unix_direction& dir, const uint8_t
     bool nonblock = (msg_flags & net::inet::MSG_DONTWAIT) != 0;
     size_t sent = 0;
     ssize_t n = 0;
+
+    if (count == 0 && (ring_buffer_poll_write(dir.buf, nullptr) & sync::POLL_ERR)) {
+        n = RB_ERR_PIPE;
+    }
+
     while (sent < count) {
         ring_buffer_mark* mark = unsent_record ? &unsent_record->mark : nullptr;
         n = ring_buffer_write_marked(dir.buf, bytes + sent, count - sent, mark, nonblock);
@@ -192,17 +193,40 @@ __PRIVILEGED_CODE static ssize_t write_stream(unix_direction& dir, const uint8_t
 }
 
 /**
- * Receives what is queued without waiting, stopping where a stretch that carries a batch ends. The
- * receive consuming the stretch's first byte takes the batch into `out_batch`, and a peek takes none.
+ * Shares the batch of the stretch a peek reached, running under the buffer's lock.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void share_batch(ring_buffer_mark* mark, void* out_batch) {
+    resource::handle_batch* batch = record_of(mark)->batch;
+    resource::handle_batch_add_ref(batch);
+    *static_cast<resource::handle_batch**>(out_batch) = batch;
+}
+
+/**
+ * Receives what is queued without waiting, stopping where a stretch that carries a batch ends. Given
+ * `out_batch`, the receive consuming the stretch's first byte takes its batch and a peek shares it.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static ssize_t receive_queued(unix_socket* sock, uint8_t* dst, size_t count, bool peek,
                                                 resource::handle_batch** out_batch) {
+    ring_buffer* rb = inbound(sock).buf;
+
+    if (peek) {
+        return ring_buffer_peek_marked(rb, dst, count, out_batch ? share_batch : nullptr, out_batch);
+    }
+
     ring_buffer_mark* taken = nullptr;
-    ssize_t n = ring_buffer_read_marked(inbound(sock).buf, dst, count, peek, &taken);
+    ssize_t n = ring_buffer_read_marked(rb, dst, count, &taken);
+
     if (taken) {
         unix_record* record = record_of(taken);
-        *out_batch = record->batch;
+
+        if (out_batch) {
+            *out_batch = record->batch;
+        } else {
+            resource::handle_batch_release(record->batch);
+        }
+
         heap::kfree(record);
     }
 
@@ -258,7 +282,7 @@ __PRIVILEGED_CODE static ssize_t read_stream(unix_socket* sock, uint8_t* bytes, 
     }
 
     sync::mutex_unlock(sock->receive_lock);
-    resource::release_handle_batch(batch);
+    resource::handle_batch_release(batch);
 
     return n;
 }
@@ -686,11 +710,13 @@ __PRIVILEGED_CODE static ssize_t unix_recvmsg(
     resource::resource_object* obj, void* kdst, size_t count, uint32_t flags, void*, size_t* addrlen,
     resource::handle_batch** out_batch
 ) {
-    if (!obj || !obj->impl || !out_batch) {
+    if (!obj || !obj->impl) {
         return resource::ERR_INVAL;
     }
 
-    *out_batch = nullptr;
+    if (out_batch) {
+        *out_batch = nullptr;
+    }
 
     if (flags & net::inet::MSG_OOB) {
         return resource::ERR_UNSUP;
@@ -709,17 +735,13 @@ __PRIVILEGED_CODE static ssize_t unix_recvmsg(
 }
 
 /**
- * A plain receive takes no handles, so it drops the batch of a stretch it starts.
+ * A plain receive takes no handles, so it drops the batch of a stretch it consumes.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static ssize_t unix_recvfrom(
     resource::resource_object* obj, void* kdst, size_t count, uint32_t flags, void* kaddr, size_t* addrlen
 ) {
-    resource::handle_batch* batch = nullptr;
-    ssize_t n = unix_recvmsg(obj, kdst, count, flags, kaddr, addrlen, &batch);
-    resource::release_handle_batch(batch);
-
-    return n;
+    return unix_recvmsg(obj, kdst, count, flags, kaddr, addrlen, nullptr);
 }
 
 /**
