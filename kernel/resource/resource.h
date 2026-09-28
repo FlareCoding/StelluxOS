@@ -4,11 +4,12 @@
 #include "resource/resource_types.h"
 #include "resource/handle_table.h"
 #include "rc/ref_counted.h"
+#include "common/list.h"
 #include "sync/atomic.h"
 
 namespace sched { struct task; }
 namespace mm { struct mm_context; }
-namespace sync { struct poll_table; }
+namespace sync { struct poll_table; struct spinlock; }
 
 namespace resource {
 
@@ -39,11 +40,28 @@ struct resource_ops {
     const socket_ops* socket = nullptr;
 };
 
+struct resource_watch;
+
+// Runs under watch_lock() when the watched object is being destroyed, and must unlink the watch
+using detach_fn = void (*)(resource_watch& watch);
+
+// Follows an object without holding a reference to it, so the object ends each watch before it is
+// destroyed. Every watch list changes only under watch_lock().
+struct resource_watch {
+    list::node link;
+    detach_fn  detach;
+};
+
 struct resource_object : rc::ref_counted<resource_object> {
     resource_type type;
     const resource_ops* ops;
     void* impl;
     sync::atomic<uint32_t> status_flags; // O_NONBLOCK and O_APPEND, shared by every handle to the object
+    list::head<resource_watch, &resource_watch::link> watches;
+
+    resource_object() : type(resource_type::UNKNOWN), ops(nullptr), impl(nullptr), status_flags(0) {
+        watches.init();
+    }
 
     /**
      * @brief Finalize and free a resource object at terminal release.
@@ -189,6 +207,12 @@ __PRIVILEGED_CODE void resource_add_ref(resource_object* obj);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void resource_release(resource_object* obj);
+
+/**
+ * @brief The lock that guards every object's watch list, and each watcher's own records of its watches.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE sync::spinlock& watch_lock();
 
 /**
  * @brief Get the file status flags that every handle to `obj` shares.
