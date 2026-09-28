@@ -99,6 +99,7 @@ constexpr uint64_t READLINKAT       = 267;
 constexpr uint64_t FACCESSAT        = 269;
 constexpr uint64_t PSELECT6         = 270;
 constexpr uint64_t PPOLL            = 271;
+constexpr uint64_t EVENTFD2         = 290;
 constexpr uint64_t DUP3             = 292;
 constexpr uint64_t PIPE2            = 293;
 constexpr uint64_t GETRANDOM        = 318;
