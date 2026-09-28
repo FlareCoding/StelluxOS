@@ -165,14 +165,14 @@ __PRIVILEGED_CODE static int64_t do_poll(
     resource::resource_object** held = nullptr;
     if (nfds > 0) {
         held = static_cast<resource::resource_object**>(
-            heap::kzalloc(nfds * sizeof(resource::resource_object*)));
+            heap::uzalloc(nfds * sizeof(resource::resource_object*)));
         if (!held) {
             return syscall::ENOMEM;
         }
     }
 
     int64_t result = poll_rounds(task, kfds, held, nfds, timeout_ns, infinite, immediate);
-    heap::kfree(held);
+    heap::ufree(held);
 
     return result;
 }
@@ -182,23 +182,31 @@ DEFINE_SYSCALL5(ppoll, u_fds, nfds_val, u_timeout, u_sigmask, sigsetsize) {
     (void)sigsetsize;
 
     sched::task* task = sched::current();
-    if (!task) return syscall::EIO;
+    if (!task) {
+        return syscall::EIO;
+    }
 
     uint32_t nfds = static_cast<uint32_t>(nfds_val);
-    if (nfds > MAX_POLL_FDS) return syscall::EINVAL;
+    if (nfds > MAX_POLL_FDS) {
+        return syscall::EINVAL;
+    }
 
-    if (nfds > 0 && u_fds == 0) return syscall::EFAULT;
+    if (nfds > 0 && u_fds == 0) {
+        return syscall::EFAULT;
+    }
 
     size_t buf_size = nfds * sizeof(kernel_pollfd);
     kernel_pollfd* kfds = nullptr;
     if (nfds > 0) {
-        kfds = static_cast<kernel_pollfd*>(heap::kzalloc(buf_size));
-        if (!kfds) return syscall::ENOMEM;
+        kfds = static_cast<kernel_pollfd*>(heap::uzalloc(buf_size));
+        if (!kfds) {
+            return syscall::ENOMEM;
+        }
 
         int32_t rc = mm::uaccess::copy_from_user(
             kfds, reinterpret_cast<const void*>(u_fds), buf_size);
         if (rc != mm::uaccess::OK) {
-            heap::kfree(kfds);
+            heap::ufree(kfds);
             return syscall::EFAULT;
         }
     }
@@ -212,12 +220,12 @@ DEFINE_SYSCALL5(ppoll, u_fds, nfds_val, u_timeout, u_sigmask, sigsetsize) {
         int32_t rc = mm::uaccess::copy_from_user(
             &ts, reinterpret_cast<const void*>(u_timeout), sizeof(ts));
         if (rc != mm::uaccess::OK) {
-            heap::kfree(kfds);
+            heap::ufree(kfds);
             return syscall::EFAULT;
         }
 
-        if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec > 999999999) {
-            heap::kfree(kfds);
+        if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= NS_PER_SEC) {
+            heap::ufree(kfds);
             return syscall::EINVAL;
         }
 
@@ -229,15 +237,18 @@ DEFINE_SYSCALL5(ppoll, u_fds, nfds_val, u_timeout, u_sigmask, sigsetsize) {
 
     int64_t result = do_poll(task, kfds, nfds, timeout_ns, infinite, immediate);
     if (result < 0) {
-        heap::kfree(kfds);
+        heap::ufree(kfds);
         return result;
     }
 
     if (nfds > 0) {
         int32_t rc = mm::uaccess::copy_to_user(
             reinterpret_cast<void*>(u_fds), kfds, buf_size);
-        heap::kfree(kfds);
-        if (rc != mm::uaccess::OK) return syscall::EFAULT;
+        heap::ufree(kfds);
+
+        if (rc != mm::uaccess::OK) {
+            return syscall::EFAULT;
+        }
     }
 
     return result;
@@ -245,23 +256,31 @@ DEFINE_SYSCALL5(ppoll, u_fds, nfds_val, u_timeout, u_sigmask, sigsetsize) {
 
 DEFINE_SYSCALL3(poll, u_fds, nfds_val, timeout_ms) {
     sched::task* task = sched::current();
-    if (!task) return syscall::EIO;
+    if (!task) {
+        return syscall::EIO;
+    }
 
     uint32_t nfds = static_cast<uint32_t>(nfds_val);
-    if (nfds > MAX_POLL_FDS) return syscall::EINVAL;
+    if (nfds > MAX_POLL_FDS) {
+        return syscall::EINVAL;
+    }
 
-    if (nfds > 0 && u_fds == 0) return syscall::EFAULT;
+    if (nfds > 0 && u_fds == 0) {
+        return syscall::EFAULT;
+    }
 
     size_t buf_size = nfds * sizeof(kernel_pollfd);
     kernel_pollfd* kfds = nullptr;
     if (nfds > 0) {
-        kfds = static_cast<kernel_pollfd*>(heap::kzalloc(buf_size));
-        if (!kfds) return syscall::ENOMEM;
+        kfds = static_cast<kernel_pollfd*>(heap::uzalloc(buf_size));
+        if (!kfds) {
+            return syscall::ENOMEM;
+        }
 
         int32_t rc = mm::uaccess::copy_from_user(
             kfds, reinterpret_cast<const void*>(u_fds), buf_size);
         if (rc != mm::uaccess::OK) {
-            heap::kfree(kfds);
+            heap::ufree(kfds);
             return syscall::EFAULT;
         }
     }
@@ -270,21 +289,25 @@ DEFINE_SYSCALL3(poll, u_fds, nfds_val, timeout_ms) {
     bool infinite = (ms < 0);
     bool immediate = (ms == 0);
     uint64_t timeout_ns = 0;
+
     if (ms > 0) {
         timeout_ns = static_cast<uint64_t>(ms) * NS_PER_MS;
     }
 
     int64_t result = do_poll(task, kfds, nfds, timeout_ns, infinite, immediate);
     if (result < 0) {
-        heap::kfree(kfds);
+        heap::ufree(kfds);
         return result;
     }
 
     if (nfds > 0) {
         int32_t rc = mm::uaccess::copy_to_user(
             reinterpret_cast<void*>(u_fds), kfds, buf_size);
-        heap::kfree(kfds);
-        if (rc != mm::uaccess::OK) return syscall::EFAULT;
+        heap::ufree(kfds);
+
+        if (rc != mm::uaccess::OK) {
+            return syscall::EFAULT;
+        }
     }
 
     return result;
