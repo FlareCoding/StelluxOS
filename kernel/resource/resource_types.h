@@ -15,6 +15,7 @@ enum class resource_type : uint16_t {
     PTY      = 6,
     PIPE     = 7,
     EVENTFD  = 8,
+    EPOLL    = 9,
 };
 
 using handle_t = int32_t;
