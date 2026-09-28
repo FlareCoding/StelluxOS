@@ -576,12 +576,23 @@ __PRIVILEGED_CODE static void unlock_receives(sync::mutex* lock) {
     }
 }
 
+// Receives through the handle-carrying operation when the caller wants the batch it may pass
+__PRIVILEGED_CODE static ssize_t receive_attempt(const socket_ref& sock, void* kbuf, size_t len, uint32_t flags,
+                                                 uint8_t* kaddr, size_t* addr_len, resource::handle_batch** batch) {
+    if (batch && sock.ops->recvmsg) {
+        return sock.ops->recvmsg(sock.obj, kbuf, len, flags, kaddr, addr_len, batch);
+    }
+
+    return sock.ops->recvfrom(sock.obj, kbuf, len, flags, kaddr, addr_len);
+}
+
 // A round never waits under the receive lock. When nothing is queued and the caller may
 // wait, it lets go of the lock while waiting, so a sleeping receive never holds up the others.
 __PRIVILEGED_CODE static ssize_t take_round(const socket_ref& sock, sync::mutex* lock, void* kbuf, size_t len,
-                                            uint32_t round_flags, uint8_t* kaddr, size_t* addr_len) {
+                                            uint32_t round_flags, uint8_t* kaddr, size_t* addr_len,
+                                            resource::handle_batch** batch) {
     while (true) {
-        ssize_t n = sock.ops->recvfrom(sock.obj, kbuf, len, round_flags | net::inet::MSG_DONTWAIT, kaddr, addr_len);
+        ssize_t n = receive_attempt(sock, kbuf, len, round_flags | net::inet::MSG_DONTWAIT, kaddr, addr_len, batch);
         if (n != resource::ERR_AGAIN || (round_flags & net::inet::MSG_DONTWAIT)) {
             return n;
         }
@@ -615,21 +626,34 @@ __PRIVILEGED_CODE static int64_t discard_stream(const socket_ref& sock, const sy
     sync::mutex* lock = receive_lock_of(sock);
     lock_receives(lock);
 
-    ssize_t n = take_round(sock, lock, nullptr, count, round_flags, kaddr, kaddr_len);
+    resource::handle_batch* batch = nullptr;
+    ssize_t n = take_round(sock, lock, nullptr, count, round_flags, kaddr, kaddr_len, &batch);
     size_t dropped = n > 0 ? static_cast<size_t>(n) : 0;
 
-    while (whole && n > 0 && dropped < count) {
-        n = take_round(sock, lock, nullptr, count - dropped, round_flags, nullptr, nullptr);
+    // The bytes a batch came with end the receive, even under MSG_WAITALL
+    while (whole && n > 0 && !batch && dropped < count) {
+        n = take_round(sock, lock, nullptr, count - dropped, round_flags, nullptr, nullptr, &batch);
         dropped += n > 0 ? static_cast<size_t>(n) : 0;
     }
 
     unlock_receives(lock);
+
+    // A plain receive takes no handles
+    resource::release_handle_batch(batch);
 
     if (dropped > 0) {
         return static_cast<int64_t>(dropped);
     }
 
     return n < 0 ? syscall::error_map::map_socket_op_error(static_cast<int32_t>(n)) : 0;
+}
+
+// Consumes what a round copied out, returning the batch those bytes came with, if any
+[[nodiscard]] __PRIVILEGED_CODE static resource::handle_batch* consume_round(const socket_ref& sock, size_t len) {
+    resource::handle_batch* batch = nullptr;
+    (void)receive_attempt(sock, nullptr, len, net::inet::MSG_TRUNC | net::inet::MSG_DONTWAIT, nullptr, nullptr,
+                          &batch);
+    return batch;
 }
 
 // Each round peeks, copies to the caller, then discards what was copied unless the caller
@@ -653,6 +677,7 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
     int64_t total = 0;
     int64_t err = 0;
     bool done = false;
+    resource::handle_batch* batch = nullptr;
 
     sync::mutex* lock = receive_lock_of(sock);
     lock_receives(lock);
@@ -669,7 +694,7 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
 
             size_t chunk = remaining > syscall::STREAM_CHUNK_SIZE ? syscall::STREAM_CHUNK_SIZE : remaining;
             size_t addr_len = addr_capacity;
-            ssize_t n = take_round(sock, lock, kbuf, chunk, round_flags, kaddr, &addr_len);
+            ssize_t n = take_round(sock, lock, kbuf, chunk, round_flags, kaddr, &addr_len, nullptr);
             if (n < 0) {
                 if (total == 0) {
                     err = syscall::error_map::map_socket_op_error(static_cast<int32_t>(n));
@@ -698,14 +723,15 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
             }
 
             if (!peek) {
-                (void)sock.ops->recvfrom(sock.obj, nullptr, static_cast<size_t>(n),
-                                         net::inet::MSG_TRUNC | net::inet::MSG_DONTWAIT, nullptr, nullptr);
+                batch = consume_round(sock, static_cast<size_t>(n));
             }
 
             total += n;
             user_ptr += n;
             remaining -= static_cast<size_t>(n);
-            if (peek) {
+
+            // The bytes a batch came with end the receive
+            if (peek || batch) {
                 done = true;
                 break;
             }
@@ -722,7 +748,10 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
 
     unlock_receives(lock);
 
+    // A plain receive takes no handles
+    resource::release_handle_batch(batch);
     heap::kfree(kbuf);
+
     return total > 0 ? total : err;
 }
 

@@ -9,6 +9,7 @@
 #include "common/ring_buffer.h"
 #include "socket/listener.h"
 #include "resource/resource.h"
+#include "resource/handle_batch.h"
 #include "fs/node.h"
 
 namespace socket {
@@ -19,6 +20,12 @@ constexpr uint32_t SOCK_STATE_LISTENING = 2;
 constexpr uint32_t SOCK_STATE_CONNECTED = 3;
 
 constexpr size_t UNIX_PATH_MAX = 108;
+
+// Handles sent with a stretch of the stream, taken by the receive that consumes its first byte
+struct unix_record {
+    ring_buffer_mark mark;
+    resource::handle_batch* batch;
+};
 
 // One direction of a connected pair, carrying what one side writes to the other
 struct unix_direction {

@@ -69,6 +69,7 @@ __PRIVILEGED_CODE ring_buffer* ring_buffer_create(size_t capacity) {
     rb->lock = sync::SPINLOCK_INIT;
     rb->read_wq.init();
     rb->write_wq.init();
+    rb->marks.init();
 
     return rb;
 }
@@ -202,7 +203,57 @@ __PRIVILEGED_CODE size_t ring_buffer_skip(ring_buffer* rb, size_t len) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock) {
+__PRIVILEGED_CODE ssize_t ring_buffer_read_marked(ring_buffer* rb, uint8_t* buf, size_t len, bool peek,
+                                                  ring_buffer_mark** taken) {
+    if (!rb || len == 0 || !taken) {
+        return RB_ERR_INVAL;
+    }
+
+    *taken = nullptr;
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+
+    size_t avail = readable_bytes(rb);
+    if (avail == 0) {
+        bool ended = is_shut(rb);
+        sync::spin_unlock_irqrestore(rb->lock, irq);
+        return ended ? 0 : RB_ERR_AGAIN;
+    }
+
+    size_t to_take = avail < len ? avail : len;
+    ring_buffer_mark* mark = rb->marks.front();
+    bool reaches_mark = mark && mark->position < rb->tail + to_take;
+    if (reaches_mark) {
+        size_t to_stretch_end = mark->position + mark->length - rb->tail;
+        to_take = to_stretch_end < to_take ? to_stretch_end : to_take;
+    }
+
+    if (buf) {
+        copy_queued(rb, buf, to_take);
+    }
+
+    if (!peek) {
+        if (reaches_mark) {
+            rb->marks.remove(mark);
+            *taken = mark;
+        }
+
+        rb->tail += to_take;
+    }
+
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+
+    if (!peek) {
+        sync::wake_all(rb->write_wq);
+    }
+
+    return static_cast<ssize_t>(to_take);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t ring_buffer_write_marked(ring_buffer* rb, const uint8_t* buf, size_t len,
+                                                   ring_buffer_mark* mark, bool nonblock) {
     if (!rb || !buf || len == 0) {
         return RB_ERR_INVAL;
     }
@@ -233,6 +284,12 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
     }
 
     size_t to_write = space < len ? space : len;
+    if (mark) {
+        mark->position = rb->head;
+        mark->length = to_write;
+        rb->marks.push_back(mark);
+    }
+
     size_t head_idx = rb->head & (rb->capacity - 1);
     size_t first = rb->capacity - head_idx;
     if (first > to_write) {
@@ -250,6 +307,13 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
     sync::wake_all(rb->read_wq);
 
     return static_cast<ssize_t>(to_write);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock) {
+    return ring_buffer_write_marked(rb, buf, len, nullptr, nonblock);
 }
 
 /**
@@ -342,6 +406,21 @@ __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb) {
 
     sync::wake_all(rb->write_wq);
     sync::wake_all(rb->read_wq);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void ring_buffer_take_marks(ring_buffer* rb, ring_buffer_mark_list& marks) {
+    if (!rb) {
+        return;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+    while (ring_buffer_mark* mark = rb->marks.pop_front()) {
+        marks.push_back(mark);
+    }
+    sync::spin_unlock_irqrestore(rb->lock, irq);
 }
 
 __PRIVILEGED_CODE uint32_t ring_buffer_poll_read(ring_buffer* rb, sync::poll_table* pt) {

@@ -2,6 +2,7 @@
 #define STELLUX_COMMON_RING_BUFFER_H
 
 #include "common/types.h"
+#include "common/list.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 
@@ -13,6 +14,15 @@ constexpr ssize_t RB_ERR_AGAIN = -16;
 constexpr ssize_t RB_ERR_PIPE  = -11;
 constexpr ssize_t RB_ERR_INTR  = -18;
 
+// A stretch of written bytes carrying something for the read that reaches it
+struct ring_buffer_mark {
+    list::node link;
+    size_t position;
+    size_t length;
+};
+
+using ring_buffer_mark_list = list::head<ring_buffer_mark, &ring_buffer_mark::link>;
+
 struct ring_buffer {
     uint8_t* data;
     size_t capacity;
@@ -23,6 +33,7 @@ struct ring_buffer {
     sync::spinlock lock;
     sync::wait_queue read_wq;
     sync::wait_queue write_wq;
+    ring_buffer_mark_list marks;
 };
 
 /**
@@ -34,7 +45,7 @@ struct ring_buffer {
 [[nodiscard]] __PRIVILEGED_CODE ring_buffer* ring_buffer_create(size_t capacity);
 
 /**
- * Free a ring buffer and its data. Must only be called when no waiters remain.
+ * Free a ring buffer and its data. Must only be called when no waiters and no marks remain.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
@@ -70,11 +81,31 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
 [[nodiscard]] __PRIVILEGED_CODE size_t ring_buffer_skip(ring_buffer* rb, size_t len);
 
 /**
+ * Take up to `len` queued bytes without blocking, stopping where a marked stretch ends. Copies into
+ * `buf` unless it is null and consumes unless `peek`. The call consuming a marked stretch's first byte
+ * takes its mark into `taken`. A buffer holding marks must be consumed only through this function.
+ * @return Bytes taken (> 0), 0 at end of stream, or RB_ERR_AGAIN when nothing is queued.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_read_marked(ring_buffer* rb, uint8_t* buf, size_t len, bool peek,
+                                                                ring_buffer_mark** taken);
+
+/**
  * Write to ring buffer. Blocks when full unless nonblock is true.
  * @return Bytes written (> 0), RB_ERR_AGAIN if nonblock and full, RB_ERR_PIPE if either side closed.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock = false);
+
+/**
+ * Write like ring_buffer_write, attaching `mark`, when given, to exactly the bytes this call writes.
+ * A call that writes nothing leaves the mark untouched.
+ * @return Bytes written (> 0), RB_ERR_AGAIN if nonblock and full, RB_ERR_PIPE if either side closed,
+ *   or RB_ERR_INTR when a signal interrupted the wait.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_write_marked(ring_buffer* rb, const uint8_t* buf, size_t len,
+                                                                 ring_buffer_mark* mark, bool nonblock);
 
 /**
  * All-or-nothing write: writes all `len` bytes atomically or none.
@@ -98,6 +129,12 @@ __PRIVILEGED_CODE void ring_buffer_close_write(ring_buffer* rb);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb);
+
+/**
+ * Move every mark into `marks`, for an owner releasing what no read will take.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void ring_buffer_take_marks(ring_buffer* rb, ring_buffer_mark_list& marks);
 
 namespace sync { struct poll_table; }
 
