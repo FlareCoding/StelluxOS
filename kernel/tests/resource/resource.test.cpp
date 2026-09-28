@@ -7,6 +7,7 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "mm/heap.h"
+#include "sync/spinlock.h"
 #include "common/string.h"
 #include "fs/fstypes.h"
 #include "drivers/input/input.h"
@@ -748,4 +749,45 @@ TEST(resource_test, a_table_grows_past_the_default_limit_when_its_limit_allows) 
 
     resource::resource_release(obj);
     resource::handle_table::ref_destroy(table);
+}
+
+// Counts watch detaches, and how many had run when the watched object closed
+static resource::resource_object* g_watched;
+static uint32_t g_detaches;
+static uint32_t g_detaches_at_close;
+
+static void count_detach(resource::resource_watch& watch) {
+    g_watched->watches.remove(&watch);
+    g_detaches++;
+}
+
+static void note_close(resource::resource_object*) {
+    g_detaches_at_close = g_detaches;
+}
+
+static const resource::resource_ops g_watched_ops = {
+    .close = note_close,
+};
+
+TEST(resource_test, an_object_ends_its_watches_before_it_closes) {
+    g_watched = make_object();
+    ASSERT_NOT_NULL(g_watched);
+
+    g_watched->ops = &g_watched_ops;
+    g_detaches = 0;
+    g_detaches_at_close = 0;
+
+    resource::resource_watch first = {.link = {}, .detach = count_detach};
+    resource::resource_watch second = {.link = {}, .detach = count_detach};
+
+    {
+        sync::irq_lock_guard guard(resource::watch_lock());
+        g_watched->watches.push_back(&first);
+        g_watched->watches.push_back(&second);
+    }
+
+    resource::resource_release(g_watched);
+
+    EXPECT_EQ(g_detaches, 2u);
+    EXPECT_EQ(g_detaches_at_close, 2u);
 }

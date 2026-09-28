@@ -4,8 +4,24 @@
 #include "sched/task.h"
 #include "fs/fstypes.h"
 #include "mm/heap.h"
+#include "sync/spinlock.h"
 
 namespace resource {
+
+__PRIVILEGED_DATA static sync::spinlock g_watch_lock = sync::SPINLOCK_INIT;
+
+/**
+ * Ends every watch on an object being destroyed. It always locks, because a watcher ending one of its
+ * own watches may still be writing to this list.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void end_watches(resource_object* self) {
+    sync::irq_lock_guard guard(g_watch_lock);
+
+    while (resource_watch* watch = self->watches.front()) {
+        watch->detach(*watch);
+    }
+}
 
 /**
  * @note Privilege: **required**
@@ -14,6 +30,8 @@ __PRIVILEGED_CODE void resource_object::ref_destroy(resource_object* self) {
     if (!self) {
         return;
     }
+
+    end_watches(self);
 
     if (self->ops && self->ops->close) {
         self->ops->close(self);
@@ -44,6 +62,13 @@ __PRIVILEGED_CODE void resource_release(resource_object* obj) {
     if (obj->release()) {
         resource_object::ref_destroy(obj);
     }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE sync::spinlock& watch_lock() {
+    return g_watch_lock;
 }
 
 /**
