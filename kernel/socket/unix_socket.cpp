@@ -142,6 +142,24 @@ __PRIVILEGED_CODE static unix_direction& outbound(const unix_socket* sock) {
 }
 
 /**
+ * Lets the channel's buffers wake whoever polls `sock`.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void attach_poll_queue(unix_socket* sock) {
+    ring_buffer_set_reader_poll_queue(inbound(sock).buf, &sock->poll_wq);
+    ring_buffer_set_writer_poll_queue(outbound(sock).buf, &sock->poll_wq);
+}
+
+/**
+ * Keeps the channel's buffers, which the peer may hold on to, from reaching a socket about to be freed.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void detach_poll_queue(unix_socket* sock) {
+    ring_buffer_set_reader_poll_queue(inbound(sock).buf, nullptr);
+    ring_buffer_set_writer_poll_queue(outbound(sock).buf, nullptr);
+}
+
+/**
  * Writes every byte with `batch` on the first stretch, waiting for room unless MSG_DONTWAIT. A later error
  * reports the partial count, and a reader gone before any byte went out raises SIGPIPE unless MSG_NOSIGNAL.
  * @note Privilege: **required**
@@ -351,6 +369,7 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
 
             sync::irq_state irq = sync::spin_lock_irqsave(sock->listener->lock);
             sock->listener->closed = true;
+            sock->listener->poll_wq = nullptr;
             while (pending_conn* pc = sock->listener->accept_queue.pop_front()) {
                 sock->listener->pending_count--;
                 refused.push_back(pc);
@@ -370,6 +389,7 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
 
     case SOCK_STATE_CONNECTED: {
         if (sock->channel) {
+            detach_poll_queue(sock);
             ring_buffer_close_write(outbound(sock).buf);
             close_reading_end(inbound(sock));
         }
@@ -448,7 +468,10 @@ __PRIVILEGED_CODE static int32_t unix_listen(
     }
     ls->backlog = bl;
     ls->pending_count = 0;
+    ls->poll_wq = &sock->poll_wq;
 
+    // A connect on another CPU finds the listener through the node, so every field must be visible first
+    barrier::smp_write();
     sock->listener = ls;
 
     if (sock->bound_node) {
@@ -557,6 +580,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
         if (target_node->release()) {
             fs::node::ref_destroy(target_node);
         }
+
         return resource::ERR_CONNREFUSED;
     }
 
@@ -574,6 +598,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
     if (target_node->release()) {
         fs::node::ref_destroy(target_node);
     }
+
     if (!ls_ref) {
         return resource::ERR_CONNREFUSED;
     }
@@ -591,8 +616,10 @@ __PRIVILEGED_CODE static int32_t unix_connect(
     server_sock->state = SOCK_STATE_CONNECTED;
     server_sock->lock = sync::SPINLOCK_INIT;
     server_sock->receive_lock.init();
+    server_sock->poll_wq.init();
     server_sock->is_side_a = true;
     server_sock->channel = chan;
+    attach_poll_queue(server_sock);
 
     auto* server_obj = heap::kalloc_new<resource::resource_object>();
     if (!server_obj) {
@@ -621,16 +648,27 @@ __PRIVILEGED_CODE static int32_t unix_connect(
         return resource::ERR_CONNREFUSED;
     }
 
+    // Attached before the server end can be accepted, so none of its writes goes unannounced
     client_sock->channel = static_cast<rc::strong_ref<unix_channel>&&>(chan);
     client_sock->is_side_a = false;
+
+    attach_poll_queue(client_sock);
     barrier::smp_write();
     client_sock->state = SOCK_STATE_CONNECTED;
 
     pc->server_obj = server_obj;
     ls_ref->accept_queue.push_back(pc);
     ls_ref->pending_count++;
+
+    if (ls_ref->poll_wq) {
+        sync::wake_all(*ls_ref->poll_wq);
+    }
+
     sync::spin_unlock_irqrestore(ls_ref->lock, irq);
     sync::wake_one(ls_ref->accept_wq);
+
+    // Pollers that began before the connect see the socket connected
+    sync::wake_all(client_sock->poll_wq);
 
     return resource::OK;
 }
@@ -814,17 +852,16 @@ __PRIVILEGED_CODE static uint32_t socket_poll(
     }
 
     auto* sock = static_cast<unix_socket*>(obj->impl);
+    if (pt) {
+        sync::poll_subscribe(*pt, sock->poll_wq);
+    }
 
     if (sock->state == SOCK_STATE_CONNECTED) {
-        return stream_events(ring_buffer_poll_read(inbound(sock).buf, pt),
-                             ring_buffer_poll_write(outbound(sock).buf, pt));
+        return stream_events(ring_buffer_poll_read(inbound(sock).buf, nullptr),
+                             ring_buffer_poll_write(outbound(sock).buf, nullptr));
     }
 
     if (sock->state == SOCK_STATE_LISTENING && sock->listener) {
-        if (pt) {
-            sync::poll_subscribe(*pt, sock->listener->accept_wq);
-        }
-
         sync::irq_state irq = sync::spin_lock_irqsave(sock->listener->lock);
         uint32_t mask = sock->listener->accept_queue.empty() ? 0 : sync::POLL_IN;
         sync::spin_unlock_irqrestore(sock->listener->lock, irq);
@@ -879,6 +916,7 @@ __PRIVILEGED_CODE int32_t create_unbound_socket(
     sock->state = SOCK_STATE_UNBOUND;
     sock->lock = sync::SPINLOCK_INIT;
     sock->receive_lock.init();
+    sock->poll_wq.init();
     sock->is_side_a = false;
 
     auto* obj = heap::kalloc_new<resource::resource_object>();
@@ -919,6 +957,7 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
     sock_a->state = SOCK_STATE_CONNECTED;
     sock_a->lock = sync::SPINLOCK_INIT;
     sock_a->receive_lock.init();
+    sock_a->poll_wq.init();
     sock_a->is_side_a = true;
     sock_a->channel = chan;
 
@@ -931,6 +970,7 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
     sock_b->state = SOCK_STATE_CONNECTED;
     sock_b->lock = sync::SPINLOCK_INIT;
     sock_b->receive_lock.init();
+    sock_b->poll_wq.init();
     sock_b->is_side_a = false;
     sock_b->channel = static_cast<rc::strong_ref<unix_channel>&&>(chan);
 
@@ -956,6 +996,9 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
     obj_b->type = resource::resource_type::SOCKET;
     obj_b->ops = &g_socket_ops;
     obj_b->impl = sock_b;
+
+    attach_poll_queue(sock_a);
+    attach_poll_queue(sock_b);
 
     *out_a = obj_a;
     *out_b = obj_b;

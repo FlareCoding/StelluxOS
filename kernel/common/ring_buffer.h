@@ -27,14 +27,21 @@ using ring_buffer_mark_fn = void (*)(ring_buffer_mark* mark, void* context);
 struct ring_buffer {
     uint8_t* data;
     size_t capacity;
-    size_t head; // write position
-    size_t tail; // read position
+
+    size_t head;
+    size_t tail;
+
     bool writer_closed;
     bool reader_closed;
+
     sync::spinlock lock;
     sync::wait_queue read_wq;
     sync::wait_queue write_wq;
+
     ring_buffer_mark_list marks;
+
+    sync::wait_queue* reader_poll_wq;
+    sync::wait_queue* writer_poll_wq;
 };
 
 /**
@@ -50,6 +57,19 @@ struct ring_buffer {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
+
+/**
+ * Registers the poll queue to wake alongside readers, or clears it with nullptr. The buffer wakes it only
+ * under its lock, so once cleared the queue may be freed.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void ring_buffer_set_reader_poll_queue(ring_buffer* rb, sync::wait_queue* wq);
+
+/**
+ * Registers the poll queue to wake alongside writers, or clears it with nullptr, as for readers.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void ring_buffer_set_writer_poll_queue(ring_buffer* rb, sync::wait_queue* wq);
 
 /**
  * Read from ring buffer. Blocks when empty unless nonblock is true.

@@ -28,7 +28,9 @@ using poll_fn = uint32_t (*)(resource_object* obj, sync::poll_table* pt);
 /**
  * Operations every resource may provide. Tables list only the entries they
  * implement, the rest are null. `socket` is set exactly for sockets and holds
- * the operations only they have.
+ * the operations only they have. `poll` subscribes only to wait queues that
+ * live as long as the object, and every change in the object's readiness wakes
+ * one of them, so a subscription can neither outlive its queue nor miss a change.
  */
 struct resource_ops {
     read_fn  read = nullptr;

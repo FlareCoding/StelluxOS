@@ -47,6 +47,9 @@ struct unix_socket {
     sync::spinlock lock;
     sync::mutex receive_lock;
 
+    // The one queue pollers wait on in every state, since it lives as long as the socket
+    sync::wait_queue poll_wq;
+
     // CONNECTED state
     rc::strong_ref<unix_channel> channel;
     bool is_side_a;

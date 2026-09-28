@@ -22,10 +22,15 @@ struct pending_conn {
 struct listener_state : rc::ref_counted<listener_state> {
     sync::spinlock lock;
     bool closed;
+
     list::head<pending_conn, &pending_conn::link> accept_queue;
     sync::wait_queue accept_wq;
+
     uint32_t backlog;
     uint32_t pending_count;
+
+    // The listening socket's poll queue, woken with accept_wq and cleared under the lock when it closes
+    sync::wait_queue* poll_wq;
 
     /**
      * Drains accept_queue, releases all pending server objects, frees self.
