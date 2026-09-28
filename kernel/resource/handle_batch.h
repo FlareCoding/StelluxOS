@@ -2,6 +2,7 @@
 #define STELLUX_RESOURCE_HANDLE_BATCH_H
 
 #include "resource/resource.h"
+#include "sync/atomic.h"
 
 namespace resource {
 
@@ -15,24 +16,31 @@ struct passed_handle {
     uint32_t rights;
 };
 
-// Handles sent together, holding their objects until a receiver installs them or they are dropped
+// Handles sent together, holding their objects until every holder of the batch has released it
 struct handle_batch {
+    sync::atomic<uint32_t> ref_count;
     uint32_t count;
     passed_handle entries[];
 };
 
 /**
- * @brief Allocates a batch of `count` empty entries.
+ * @brief Allocates a batch of `count` empty entries, with one reference owned by the caller.
  * @return The batch, or nullptr when `count` is zero, above MAX_PASSED_HANDLES, or memory runs out.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE handle_batch* create_handle_batch(uint32_t count);
 
 /**
- * @brief Drops the reference each filled entry holds and frees the batch.
+ * @brief Adds a reference to the batch, so a receive that only peeks can share a batch still queued.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void release_handle_batch(handle_batch* batch);
+__PRIVILEGED_CODE void handle_batch_add_ref(handle_batch* batch);
+
+/**
+ * @brief Drops a reference to the batch. The last one releases each entry's object and frees the batch.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void handle_batch_release(handle_batch* batch);
 
 } // namespace resource
 

@@ -38,6 +38,30 @@ static void copy_queued(const ring_buffer* rb, uint8_t* buf, size_t len) {
 }
 
 /**
+ * How many of `len` queued bytes one marked read or peek covers, stopping where a marked stretch ends,
+ * with the mark whose stretch it reaches in `reached`. The caller must hold the lock.
+ * @return The byte count (> 0), 0 at end of stream, or RB_ERR_AGAIN when nothing is queued.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static ssize_t marked_read_span(ring_buffer* rb, size_t len, ring_buffer_mark** reached) {
+    size_t avail = readable_bytes(rb);
+    if (avail == 0) {
+        return is_shut(rb) ? 0 : RB_ERR_AGAIN;
+    }
+
+    size_t span = avail < len ? avail : len;
+
+    ring_buffer_mark* mark = rb->marks.front();
+    if (mark && mark->position < rb->tail + span) {
+        size_t to_stretch_end = mark->position + mark->length - rb->tail;
+        span = to_stretch_end < span ? to_stretch_end : span;
+        *reached = mark;
+    }
+
+    return static_cast<ssize_t>(span);
+}
+
+/**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE ring_buffer* ring_buffer_create(size_t capacity) {
@@ -203,50 +227,65 @@ __PRIVILEGED_CODE size_t ring_buffer_skip(ring_buffer* rb, size_t len) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE ssize_t ring_buffer_read_marked(ring_buffer* rb, uint8_t* buf, size_t len, bool peek,
+__PRIVILEGED_CODE ssize_t ring_buffer_read_marked(ring_buffer* rb, uint8_t* buf, size_t len,
                                                   ring_buffer_mark** taken) {
     if (!rb || len == 0 || !taken) {
         return RB_ERR_INVAL;
     }
 
     *taken = nullptr;
+
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
 
-    size_t avail = readable_bytes(rb);
-    if (avail == 0) {
-        bool ended = is_shut(rb);
+    ring_buffer_mark* reached = nullptr;
+    ssize_t span = marked_read_span(rb, len, &reached);
+    if (span <= 0) {
         sync::spin_unlock_irqrestore(rb->lock, irq);
-        return ended ? 0 : RB_ERR_AGAIN;
-    }
-
-    size_t to_take = avail < len ? avail : len;
-    ring_buffer_mark* mark = rb->marks.front();
-    bool reaches_mark = mark && mark->position < rb->tail + to_take;
-    if (reaches_mark) {
-        size_t to_stretch_end = mark->position + mark->length - rb->tail;
-        to_take = to_stretch_end < to_take ? to_stretch_end : to_take;
+        return span;
     }
 
     if (buf) {
-        copy_queued(rb, buf, to_take);
+        copy_queued(rb, buf, static_cast<size_t>(span));
     }
 
-    if (!peek) {
-        if (reaches_mark) {
-            rb->marks.remove(mark);
-            *taken = mark;
-        }
+    if (reached) {
+        rb->marks.remove(reached);
+        *taken = reached;
+    }
 
-        rb->tail += to_take;
+    rb->tail += static_cast<size_t>(span);
+
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+    sync::wake_all(rb->write_wq);
+
+    return span;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t ring_buffer_peek_marked(ring_buffer* rb, uint8_t* buf, size_t len,
+                                                  ring_buffer_mark_fn on_mark, void* context) {
+    if (!rb || len == 0) {
+        return RB_ERR_INVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+
+    ring_buffer_mark* reached = nullptr;
+    ssize_t span = marked_read_span(rb, len, &reached);
+
+    if (span > 0 && buf) {
+        copy_queued(rb, buf, static_cast<size_t>(span));
+    }
+
+    if (reached && on_mark) {
+        on_mark(reached, context);
     }
 
     sync::spin_unlock_irqrestore(rb->lock, irq);
 
-    if (!peek) {
-        sync::wake_all(rb->write_wq);
-    }
-
-    return static_cast<ssize_t>(to_take);
+    return span;
 }
 
 /**
