@@ -30,7 +30,7 @@ __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
         return;
     }
 
-    entry->notify = trigger_table;
+    entry->notify = pt.notify ? pt.notify : trigger_table;
     entry->table = &pt;
     entry->source = &wq;
 

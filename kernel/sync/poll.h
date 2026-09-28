@@ -35,19 +35,23 @@ struct poll_table {
     spinlock lock;
     list::head<poll_entry, &poll_entry::table_link> entries;
 
+    // When set, runs on each wake of a subscribed queue in place of triggering the table
+    observer_notify_fn notify;
+
     void init(sched::task* t) {
         task = t;
         triggered.store_relaxed(0);
         error.store_relaxed(0);
         lock = SPINLOCK_INIT;
         entries.init();
+        notify = nullptr;
     }
 };
 
 /**
  * Register an observer on a wait queue. Allocates a poll_entry
  * internally, the entry lives until poll_cleanup frees it.
- * After this call, any wake_one/wake_all on wq will also wake pt.task.
+ * After this call, any wake_one/wake_all on wq also runs pt.notify, or wakes pt.task when it is unset.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq);

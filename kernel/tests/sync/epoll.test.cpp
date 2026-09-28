@@ -38,6 +38,14 @@ struct destroy_race {
     sync::atomic<uint32_t>     targets_done;
 };
 
+// One task keeps waking a target while another adds interests in it and ends them
+struct wake_race {
+    resource::resource_object* target;
+    sync::atomic<uint32_t>     waker_started;
+    sync::atomic<uint32_t>     adder_done;
+    sync::atomic<uint32_t>     waker_done;
+};
+
 static uint32_t never_ready(resource::resource_object*, sync::poll_table*) {
     return 0;
 }
@@ -263,4 +271,195 @@ TEST(epoll_interests, destroying_an_epoll_and_its_target_together_is_safe) {
 
     EXPECT_TRUE(spin_wait(g_race.epolls_done));
     EXPECT_TRUE(spin_wait(g_race.targets_done));
+}
+
+// A target whose readiness the test sets, subscribed through one queue the test wakes
+static sync::wait_queue g_probe_queue;
+static uint32_t g_probe_events;
+
+static uint32_t probe_poll(resource::resource_object*, sync::poll_table* pt) {
+    if (pt) {
+        sync::poll_subscribe(*pt, g_probe_queue);
+    }
+
+    return g_probe_events;
+}
+
+static const resource::resource_ops g_probe_ops = {
+    .poll = probe_poll,
+};
+
+static void reset_probe(uint32_t events) {
+    g_probe_queue.init();
+    g_probe_events = events;
+}
+
+TEST(epoll_interests, an_interest_added_while_ready_is_queued) {
+    reset_probe(sync::POLL_IN);
+    resource::resource_object* ep = create_epoll();
+    resource::resource_object* target = create_target(&g_probe_ops);
+    ASSERT_NOT_NULL(ep);
+    ASSERT_NOT_NULL(target);
+
+    EXPECT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN, DATA), epoll::OK);
+    EXPECT_EQ(epoll::ready_count(ep), 1u);
+
+    // Readiness for events the interest did not ask for leaves it off the list, unless it is a hangup
+    EXPECT_EQ(epoll::add_interest(ep, OTHER_HANDLE, target, sync::POLL_OUT, DATA), epoll::OK);
+    EXPECT_EQ(epoll::ready_count(ep), 1u);
+
+    g_probe_events = sync::POLL_HUP;
+    EXPECT_EQ(epoll::remove_interest(ep, OTHER_HANDLE, target), epoll::OK);
+    EXPECT_EQ(epoll::add_interest(ep, OTHER_HANDLE, target, sync::POLL_OUT, DATA), epoll::OK);
+    EXPECT_EQ(epoll::ready_count(ep), 2u);
+
+    resource::resource_release(target);
+    resource::resource_release(ep);
+}
+
+TEST(epoll_interests, a_wake_queues_its_interest_once) {
+    reset_probe(0);
+    resource::resource_object* ep = create_epoll();
+    resource::resource_object* target = create_target(&g_probe_ops);
+    ASSERT_NOT_NULL(ep);
+    ASSERT_NOT_NULL(target);
+
+    EXPECT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN, DATA), epoll::OK);
+    EXPECT_EQ(epoll::ready_count(ep), 0u);
+
+    sync::wake_one(g_probe_queue);
+    EXPECT_EQ(epoll::ready_count(ep), 1u);
+
+    sync::wake_all(g_probe_queue);
+    EXPECT_EQ(epoll::ready_count(ep), 1u);
+
+    resource::resource_release(target);
+    resource::resource_release(ep);
+}
+
+TEST(epoll_interests, a_modified_interest_is_queued_to_be_checked_again) {
+    reset_probe(0);
+    resource::resource_object* ep = create_epoll();
+    resource::resource_object* target = create_target(&g_probe_ops);
+    ASSERT_NOT_NULL(ep);
+    ASSERT_NOT_NULL(target);
+
+    EXPECT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN, DATA), epoll::OK);
+    EXPECT_EQ(epoll::ready_count(ep), 0u);
+
+    EXPECT_EQ(epoll::modify_interest(ep, HANDLE, target, sync::POLL_OUT, DATA), epoll::OK);
+    EXPECT_EQ(epoll::ready_count(ep), 1u);
+
+    resource::resource_release(target);
+    resource::resource_release(ep);
+}
+
+TEST(epoll_interests, removing_an_interest_unsubscribes_and_unqueues_it) {
+    reset_probe(0);
+    resource::resource_object* ep = create_epoll();
+    resource::resource_object* target = create_target(&g_probe_ops);
+    ASSERT_NOT_NULL(ep);
+    ASSERT_NOT_NULL(target);
+
+    EXPECT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN, DATA), epoll::OK);
+    EXPECT_FALSE(g_probe_queue.observers.empty());
+
+    sync::wake_all(g_probe_queue);
+    EXPECT_EQ(epoll::ready_count(ep), 1u);
+
+    EXPECT_EQ(epoll::remove_interest(ep, HANDLE, target), epoll::OK);
+    EXPECT_TRUE(g_probe_queue.observers.empty());
+    EXPECT_EQ(epoll::ready_count(ep), 0u);
+
+    sync::wake_all(g_probe_queue);
+    EXPECT_EQ(epoll::ready_count(ep), 0u);
+
+    resource::resource_release(target);
+    resource::resource_release(ep);
+}
+
+TEST(epoll_interests, destroying_the_epoll_or_the_target_unsubscribes_its_interests) {
+    reset_probe(0);
+    resource::resource_object* ep = create_epoll();
+    resource::resource_object* other_ep = create_epoll();
+    resource::resource_object* target = create_target(&g_probe_ops);
+    ASSERT_NOT_NULL(ep);
+    ASSERT_NOT_NULL(other_ep);
+    ASSERT_NOT_NULL(target);
+
+    EXPECT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN, DATA), epoll::OK);
+    EXPECT_EQ(epoll::add_interest(other_ep, HANDLE, target, sync::POLL_IN, DATA), epoll::OK);
+    EXPECT_EQ(g_probe_queue.observers.size(), 2u);
+
+    resource::resource_release(ep);
+    EXPECT_EQ(g_probe_queue.observers.size(), 1u);
+
+    sync::wake_all(g_probe_queue);
+    EXPECT_EQ(epoll::ready_count(other_ep), 1u);
+
+    resource::resource_release(target);
+    EXPECT_TRUE(g_probe_queue.observers.empty());
+    EXPECT_EQ(epoll::ready_count(other_ep), 0u);
+
+    resource::resource_release(other_ep);
+}
+
+static wake_race g_wake_race;
+
+static void add_and_end_interests(void*) {
+    (void)spin_wait(g_wake_race.waker_started);
+
+    for (uint32_t i = 0; i < RACE_ROUNDS; i++) {
+        resource::resource_object* ep = create_epoll();
+        if (!ep) {
+            break;
+        }
+
+        (void)epoll::add_interest(ep, HANDLE, g_wake_race.target, sync::POLL_IN, DATA);
+
+        // Alternates between ending the interest directly and through its epoll's destruction
+        if (i % 2 == 0) {
+            (void)epoll::remove_interest(ep, HANDLE, g_wake_race.target);
+        }
+
+        resource::resource_release(ep);
+    }
+
+    g_wake_race.adder_done.store_release(1);
+    sched::exit(0);
+}
+
+static void wake_target_until_adder_is_done(void*) {
+    g_wake_race.waker_started.store_release(1);
+
+    while (!g_wake_race.adder_done.load_acquire()) {
+        sync::wake_all(g_probe_queue);
+    }
+
+    g_wake_race.waker_done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(epoll_interests, a_wake_racing_the_end_of_its_interest_is_safe) {
+    if (smp::cpu_count() < RACE_CPUS) {
+        return;
+    }
+
+    reset_probe(0);
+    g_wake_race.target = create_target(&g_probe_ops);
+    ASSERT_NOT_NULL(g_wake_race.target);
+
+    g_wake_race.waker_started.store_relaxed(0);
+    g_wake_race.adder_done.store_relaxed(0);
+    g_wake_race.waker_done.store_relaxed(0);
+
+    // The adder starts first, so a waker that fails to start leaves nothing spinning forever
+    ASSERT_TRUE(start_racer(add_and_end_interests, "interest_adder", EPOLL_RACER_CPU));
+    ASSERT_TRUE(start_racer(wake_target_until_adder_is_done, "target_waker", TARGET_RACER_CPU));
+
+    EXPECT_TRUE(spin_wait(g_wake_race.adder_done));
+    EXPECT_TRUE(spin_wait(g_wake_race.waker_done));
+    EXPECT_TRUE(g_probe_queue.observers.empty());
+
+    resource::resource_release(g_wake_race.target);
 }
