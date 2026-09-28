@@ -10,7 +10,8 @@ namespace resource { struct resource_object; }
 /**
  * An epoll is a resource holding interests. Each interest asks to hear about some events on one object,
  * reached through one handle, and names a value to report with them. An interest holds no reference on
- * its object, and ends when it is removed or when the epoll or the object is destroyed.
+ * its object, and ends when it is removed or when the epoll or the object is destroyed. An interest whose
+ * object may have become ready waits on its epoll's ready list, to be checked again before it is reported.
  */
 namespace epoll {
 
@@ -69,6 +70,12 @@ __PRIVILEGED_CODE int32_t remove_interest(resource::resource_object* ep, resourc
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t interest_count(resource::resource_object* ep);
+
+/**
+ * @brief The number of interests on `ep`'s ready list, or 0 when it is not an epoll.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t ready_count(resource::resource_object* ep);
 
 } // namespace epoll
 
