@@ -409,9 +409,9 @@ TEST(wait_queue, wake_with_condition_recheck) {
 static sync::wait_queue g_obs_wq;
 static sync::atomic<uint32_t> g_obs_calls;
 
-static sched::task* count_notification(sync::wait_observer&) {
+static rc::strong_ref<sched::task> count_notification(sync::wait_observer&) {
     g_obs_calls.fetch_add_acq_rel(1);
-    return nullptr;
+    return {};
 }
 
 TEST(wait_queue, observers_run_on_each_wake_until_detached) {
@@ -455,10 +455,10 @@ static void owed_waiter_fn(void*) {
 }
 
 // Owes the waiter one wake, the first time the observed queue wakes
-static sched::task* owe_waiter(sync::wait_observer&) {
+static rc::strong_ref<sched::task> owe_waiter(sync::wait_observer&) {
     sched::task* owed = g_owed_task;
     g_owed_task = nullptr;
-    return owed;
+    return sched::task_ref(owed);
 }
 
 // The waiter sleeps on a queue nothing wakes, so only the wake its observer owes can finish it

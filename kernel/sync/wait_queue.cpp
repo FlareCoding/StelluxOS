@@ -26,9 +26,9 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
                 break;
             }
 
-            sched::task* owed = obs.notify(obs);
-            if (owed) {
-                batch[n++] = sched::task_ref(owed);
+            batch[n] = obs.notify(obs);
+            if (batch[n]) {
+                n++;
             }
         }
 

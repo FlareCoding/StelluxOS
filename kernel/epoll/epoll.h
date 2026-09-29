@@ -12,6 +12,7 @@ namespace resource { struct resource_object; }
  * reached through one handle, and names a value to report with them. An interest holds no reference on
  * its object, and ends when it is removed or when the epoll or the object is destroyed. An interest whose
  * object may have become ready waits on its epoll's ready list, to be checked again before it is reported.
+ * A wait reports ready interests, and each stays listed while its object stays ready.
  */
 namespace epoll {
 
@@ -22,12 +23,19 @@ constexpr int32_t ERR_EXIST = -3;
 constexpr int32_t ERR_NOMEM = -4;
 constexpr int32_t ERR_PERM  = -5;
 constexpr int32_t ERR_NOSPC = -6;
+constexpr int32_t ERR_INTR  = -7;
 
 // The events an interest may ask for, which share their values with the poll layer
 constexpr uint32_t INTEREST_EVENTS =
     sync::POLL_IN | sync::POLL_PRI | sync::POLL_OUT | sync::POLL_ERR | sync::POLL_HUP | sync::POLL_RDHUP;
 
-constexpr uint32_t MAX_INTERESTS = 4096;
+constexpr uint32_t MAX_INTERESTS   = 4096;
+constexpr uint32_t MAX_WAIT_EVENTS = 64;
+
+struct ready_event {
+    uint32_t events;
+    uint64_t data;
+};
 
 /**
  * @brief Creates an epoll with no interests.
@@ -76,6 +84,17 @@ __PRIVILEGED_CODE uint32_t interest_count(resource::resource_object* ep);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t ready_count(resource::resource_object* ep);
+
+/**
+ * @brief Waits for ready interests of `ep` and reports up to `max_events` of them in `out`. The caller holds
+ * a reference on `ep` for the call.
+ * @param timeout_ns 0 to report without waiting, or negative to wait without a limit.
+ * @return The number reported, at most MAX_WAIT_EVENTS, ERR_INTR when a wait finds a signal pending and nothing
+ *   ready, 0 on timeout, or ERR_INVAL when `ep` is not an epoll, `out` is null or `max_events` is 0.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t wait(resource::resource_object* ep, ready_event* out, uint32_t max_events,
+                               int64_t timeout_ns);
 
 } // namespace epoll
 

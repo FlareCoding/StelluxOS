@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "common/list.h"
+#include "rc/strong_ref.h"
 #include "sync/spinlock.h"
 #include "sched/task.h"
 
@@ -10,9 +11,9 @@ namespace sync {
 
 struct wait_observer;
 
-// Runs under the queue's lock on every wake and returns a task to wake once the lock drops, or null.
-// It must not block or wake tasks itself, and must return a task only when it newly owes that task a wake.
-using observer_notify_fn = sched::task* (*)(wait_observer& observer);
+// Runs under the queue's lock on every wake and returns a counted reference to a task to wake once the lock drops,
+// or null. It must not block or wake tasks itself, and must return a task only when it newly owes that task a wake.
+using observer_notify_fn = rc::strong_ref<sched::task> (*)(wait_observer& observer);
 
 // Reacts to a wait queue's wakes without sleeping on the queue
 struct wait_observer {
