@@ -1,7 +1,6 @@
 #include "net/interface.h"
 #include "net/packet.h"
 #include "net/eth.h"
-#include "net/arp.h"
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "sync/poll.h"
@@ -89,7 +88,7 @@ __PRIVILEGED_CODE int32_t interface::configure_ipv4(const ipv4::ipv4_config& con
     }
 
     set_ipv4_conf(conf);
-    arp::forget(this);
+    m_neighbors.forget();
 
     return OK;
 }
@@ -99,7 +98,7 @@ __PRIVILEGED_CODE int32_t interface::configure_ipv4(const ipv4::ipv4_config& con
  */
 __PRIVILEGED_CODE void interface::unconfigure_ipv4() {
     set_ipv4_conf({});
-    arp::forget(this);
+    m_neighbors.forget();
 }
 
 __PRIVILEGED_CODE void interface::set_ipv4_conf(const ipv4::ipv4_config& conf) {

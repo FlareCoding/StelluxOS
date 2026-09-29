@@ -2,6 +2,7 @@
 #define STELLUX_NET_INTERFACE_H
 
 #include "net/net.h"
+#include "net/arp.h"
 #include "net/eth.h"
 #include "net/ipv4.h"
 #include "sync/atomic.h"
@@ -51,6 +52,7 @@ __PRIVILEGED_CODE void watch_status(sync::poll_table& pt);
  * network stack to the driver.
  * `receive` is already implemented by the interface and serves as the driver's
  * entry point into the network stack and lets the driver push packets into it.
+ * The interface owns the ARP entries learned on it, so they go away with it.
  */
 class interface {
 public:
@@ -89,6 +91,7 @@ public:
     const eth::mac_addr& mac() const { return m_mac; }
     uint16_t mtu() const { return m_mtu; }
     ipv4::ipv4_config ipv4_conf() const { return m_ipv4_conf.read(); }
+    arp::arp_table& neighbors() { return m_neighbors; }
 
     /**
      * @brief Gives the interface a new IPv4 identity and forgets the neighbors
@@ -136,6 +139,9 @@ protected:
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void set_ipv4_conf(const ipv4::ipv4_config& conf);
+
+private:
+    arp::arp_table m_neighbors;
 };
 
 /*

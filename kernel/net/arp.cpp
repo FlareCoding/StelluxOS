@@ -7,8 +7,6 @@
 namespace net {
 namespace arp {
 
-static arp_table g_table;
-
 static int32_t drop(interface* iface, packet* pkt, int32_t rc) {
     iface->record_packet_dropped();
     packet::free(pkt);
@@ -64,7 +62,7 @@ static int32_t send_arp_request(interface* iface, const ipv4::ipv4_addr& ip) {
     return output(pkt, eth::BROADCAST_ADDR);
 }
 
-void arp_table::init() {
+arp_table::arp_table() {
     m_lock = sync::SPINLOCK_INIT;
     for (size_t i = 0; i < TABLE_SIZE; i++) {
         m_entries[i].queue.init();
@@ -72,9 +70,16 @@ void arp_table::init() {
     }
 }
 
+arp_table::~arp_table() {
+    for (size_t i = 0; i < TABLE_SIZE; i++) {
+        while (packet* pkt = m_entries[i].queue.pop_front()) {
+            packet::free(pkt);
+        }
+    }
+}
+
 void arp_table::clear_entry(arp_entry& entry) {
     entry.state = arp_entry_state::empty;
-    entry.iface = nullptr;
     entry.attempts = 0;
     entry.draining = false;
     entry.ip = {};
@@ -82,10 +87,10 @@ void arp_table::clear_entry(arp_entry& entry) {
     entry.timestamp = 0;
 }
 
-arp_entry* arp_table::find_entry(interface* iface, const ipv4::ipv4_addr& ip) {
+arp_entry* arp_table::find_entry(const ipv4::ipv4_addr& ip) {
     for (size_t i = 0; i < TABLE_SIZE; i++) {
         arp_entry& entry = m_entries[i];
-        if (entry.state != arp_entry_state::empty && entry.iface == iface && entry.ip == ip) {
+        if (entry.state != arp_entry_state::empty && entry.ip == ip) {
             return &entry;
         }
     }
@@ -136,7 +141,6 @@ arp_entry* arp_table::allocate_entry(packet_list& dropped) {
 }
 
 arp_send_action arp_table::resolve(
-    interface* iface,
     const ipv4::ipv4_addr& ip,
     packet* pkt,
     uint64_t timestamp,
@@ -148,7 +152,7 @@ arp_send_action arp_table::resolve(
     *send_request = false;
 
     // If we have a resolved entry for this IP, we can use it to send the packet.
-    arp_entry* entry = find_entry(iface, ip);
+    arp_entry* entry = find_entry(ip);
     if (entry && entry->state == arp_entry_state::resolved) {
         *out_mac = entry->mac;
         return arp_send_action::transmit;
@@ -159,7 +163,6 @@ arp_send_action arp_table::resolve(
     if (!entry) {
         entry = allocate_entry(dropped);
         entry->state = arp_entry_state::pending;
-        entry->iface = iface;
         entry->ip = ip;
         entry->attempts = 1;
         entry->timestamp = timestamp;
@@ -181,7 +184,7 @@ arp_send_action arp_table::resolve(
 void arp_table::sweep(
     uint64_t timestamp,
     packet_list& dropped,
-    arp_retry* retries,
+    ipv4::ipv4_addr* retries,
     size_t* retry_count
 ) {
     sync::lock_guard guard(m_lock);
@@ -216,14 +219,12 @@ void arp_table::sweep(
 
         entry.attempts++;
         entry.timestamp = timestamp;
-        retries[*retry_count] = { entry.iface, entry.ip };
-        
+        retries[*retry_count] = entry.ip;
         (*retry_count)++;
     }
 }
 
 bool arp_table::update_entry(
-    interface* iface,
     const ipv4::ipv4_addr& ip,
     const eth::mac_addr& mac,
     uint64_t timestamp,
@@ -232,7 +233,7 @@ bool arp_table::update_entry(
 ) {
     sync::lock_guard guard(m_lock);
 
-    arp_entry* entry = find_entry(iface, ip);
+    arp_entry* entry = find_entry(ip);
     if (!entry) {
         if (!create) {
             return false;
@@ -243,7 +244,6 @@ bool arp_table::update_entry(
             return false;
         }
 
-        entry->iface = iface;
         entry->ip = ip;
     }
 
@@ -271,18 +271,18 @@ size_t arp_table::snapshot(arp_snapshot_entry* out, size_t max, uint64_t timesta
             continue;
         }
 
-        out[count++] = { entry.iface, entry.ip, entry.mac, entry.state, timestamp - entry.timestamp };
+        out[count++] = { nullptr, entry.ip, entry.mac, entry.state, timestamp - entry.timestamp };
     }
 
     return count;
 }
 
-void arp_table::forget(interface* iface) {
+void arp_table::forget() {
     sync::lock_guard guard(m_lock);
 
     for (size_t i = 0; i < TABLE_SIZE; i++) {
         arp_entry& entry = m_entries[i];
-        if (entry.state == arp_entry_state::empty || entry.iface != iface) {
+        if (entry.state == arp_entry_state::empty) {
             continue;
         }
 
@@ -292,11 +292,6 @@ void arp_table::forget(interface* iface) {
             clear_entry(entry);
         }
     }
-}
-
-int32_t init() {
-    g_table.init();
-    return OK;
 }
 
 int32_t input(packet* pkt) {
@@ -343,8 +338,7 @@ int32_t input(packet* pkt) {
         flushed.init();
 
         // Only requests addressed to this host may create entries
-        bool completed = g_table.update_entry(
-            iface,
+        bool completed = iface->neighbors().update_entry(
             hdr->sender_proto_addr,
             hdr->sender_hw_addr,
             clock::now_ns(),
@@ -398,8 +392,7 @@ int32_t resolve(interface* iface, const ipv4::ipv4_addr& ip, eth::mac_addr* out)
 
     bool request = false;
 
-    arp_send_action action = g_table.resolve(
-        iface,
+    arp_send_action action = iface->neighbors().resolve(
         ip,
         nullptr,
         clock::now_ns(),
@@ -437,8 +430,7 @@ int32_t resolve_and_send(packet* pkt, const ipv4::ipv4_addr& next_hop) {
     eth::mac_addr mac;
     bool request = false;
 
-    arp_send_action action = g_table.resolve(
-        iface,
+    arp_send_action action = iface->neighbors().resolve(
         next_hop,
         pkt,
         clock::now_ns(),
@@ -461,17 +453,24 @@ int32_t resolve_and_send(packet* pkt, const ipv4::ipv4_addr& next_hop) {
     return eth::output(pkt, mac, eth::TYPE_IPV4);
 }
 
+// Requests go out after the table lock is released, which is safe only because the
+// registry keeps every interface it lists for the life of the kernel
 void sweep(uint64_t ts) {
-    packet_list dropped;
-    dropped.init();
-    arp_retry retries[TABLE_SIZE];
-    size_t retry_count = 0;
+    size_t iface_count = interface_count();
+    for (size_t i = 0; i < iface_count; i++) {
+        interface* iface = interface_at(i);
 
-    g_table.sweep(ts, dropped, retries, &retry_count);
-    drop_all(dropped);
+        packet_list dropped;
+        dropped.init();
+        ipv4::ipv4_addr retries[TABLE_SIZE];
+        size_t retry_count = 0;
 
-    for (size_t i = 0; i < retry_count; i++) {
-        send_arp_request(retries[i].iface, retries[i].ip);
+        iface->neighbors().sweep(ts, dropped, retries, &retry_count);
+        drop_all(dropped);
+
+        for (size_t j = 0; j < retry_count; j++) {
+            send_arp_request(iface, retries[j]);
+        }
     }
 }
 
@@ -480,15 +479,20 @@ size_t snapshot(arp_snapshot_entry* out, size_t max) {
         return 0;
     }
 
-    return g_table.snapshot(out, max, clock::now_ns());
-}
+    uint64_t now = clock::now_ns();
+    size_t count = 0;
+    size_t iface_count = interface_count();
+    for (size_t i = 0; i < iface_count && count < max; i++) {
+        interface* iface = interface_at(i);
+        size_t copied = iface->neighbors().snapshot(out + count, max - count, now);
+        for (size_t j = count; j < count + copied; j++) {
+            out[j].iface = iface;
+        }
 
-void forget(interface* iface) {
-    if (!iface) {
-        return;
+        count += copied;
     }
 
-    g_table.forget(iface);
+    return count;
 }
 
 } // namespace arp

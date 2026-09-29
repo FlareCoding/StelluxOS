@@ -7,6 +7,7 @@
 #include "net/ipv4.h"
 #include "net/eth.h"
 #include "net/net.h"
+#include "clock/clock.h"
 
 TEST_SUITE(interface);
 
@@ -14,17 +15,9 @@ using namespace net;
 
 static const ipv4::ipv4_config g_lan = {{{10, 0, 2, 15}}, {{255, 255, 255, 0}}, {{10, 0, 2, 2}}};
 
-static size_t neighbors_learned_on(const interface* iface) {
+static size_t neighbors_learned_on(interface* iface) {
     arp::arp_snapshot_entry entries[arp::TABLE_SIZE];
-    size_t count = arp::snapshot(entries, arp::TABLE_SIZE);
-
-    size_t owned = 0;
-    for (size_t i = 0; i < count; i++) {
-        if (entries[i].iface == iface) {
-            owned++;
-        }
-    }
-    return owned;
+    return iface->neighbors().snapshot(entries, arp::TABLE_SIZE, clock::now_ns());
 }
 
 // --- lookup_by_name_finds_registered_interfaces_only ---
@@ -177,4 +170,64 @@ TEST(interface, reconfigure_lets_accepted_packets_leave) {
     EXPECT_TRUE(frame->dest == gateway_mac);
     EXPECT_EQ(ntohs(frame->type), eth::TYPE_IPV4);
     EXPECT_EQ(neighbors_learned_on(&link), 0u);
+}
+
+TEST(interface, each_interface_keeps_its_own_neighbors) {
+    stub_interface first(false);
+    stub_interface second(false);
+    EXPECT_EQ(first.configure_ipv4(g_lan), OK);
+    EXPECT_EQ(second.configure_ipv4(g_lan), OK);
+
+    eth::mac_addr mac = {};
+    EXPECT_EQ(arp::resolve(&first, g_lan.gateway, &mac), ERR_PENDING);
+    EXPECT_EQ(neighbors_learned_on(&first), 1u);
+    EXPECT_EQ(neighbors_learned_on(&second), 0u);
+
+    second.unconfigure_ipv4();
+    EXPECT_EQ(neighbors_learned_on(&first), 1u);
+
+    first.unconfigure_ipv4();
+}
+
+TEST(interface, the_daemon_sweep_never_reaches_unregistered_interfaces) {
+    stub_interface link(false);
+    EXPECT_EQ(link.configure_ipv4(g_lan), OK);
+
+    eth::mac_addr mac = {};
+    EXPECT_EQ(arp::resolve(&link, g_lan.gateway, &mac), ERR_PENDING);
+    EXPECT_EQ(link.frames_sent(), static_cast<size_t>(1));
+
+    // Long past every retry, a sweep of the registered interfaces still leaves this one alone
+    arp::sweep(clock::now_ns() + 10 * arp::NS_PER_SEC);
+    EXPECT_EQ(link.frames_sent(), static_cast<size_t>(1));
+    EXPECT_EQ(neighbors_learned_on(&link), 1u);
+
+    link.unconfigure_ipv4();
+}
+
+TEST(interface, neighbor_table_retries_a_request_then_gives_up) {
+    arp::arp_table table;
+    packet* waiting = packet::alloc();
+    ASSERT_NOT_NULL(waiting);
+
+    eth::mac_addr mac = {};
+    bool send_request = false;
+    packet_list dropped;
+    dropped.init();
+    EXPECT_TRUE(table.resolve(g_lan.gateway, waiting, 0, &mac, &send_request, dropped) ==
+                arp::arp_send_action::queued);
+    EXPECT_TRUE(send_request);
+
+    ipv4::ipv4_addr retries[arp::TABLE_SIZE];
+    size_t retry_count = 0;
+    for (uint64_t attempt = 1; attempt < arp::MAX_REQUEST_ATTEMPTS; attempt++) {
+        table.sweep(attempt * arp::REQUEST_RETRY_NS, dropped, retries, &retry_count);
+        EXPECT_EQ(retry_count, 1u);
+        EXPECT_TRUE(retries[0] == g_lan.gateway);
+    }
+
+    table.sweep(arp::MAX_REQUEST_ATTEMPTS * arp::REQUEST_RETRY_NS, dropped, retries, &retry_count);
+    EXPECT_EQ(retry_count, 0u);
+    EXPECT_EQ(dropped.size(), 1u);
+    packet::free(dropped.pop_front());
 }
