@@ -2,6 +2,8 @@
 #include "exec/elf64.h"
 #include "exec/elf_arch.h"
 #include "fs/fs.h"
+#include "fs/file.h"
+#include "fs/node.h"
 #include "mm/heap.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
@@ -407,6 +409,8 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
 
     out->mm_ctx = nullptr;
     out->pt_root = 0;
+    out->program = nullptr;
+    out->program_path = nullptr;
 
     elf_image img;
     int32_t rc = parse_elf(buffer, size, &img);
@@ -417,6 +421,42 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
     return load_image(segment_source{static_cast<const uint8_t*>(buffer), nullptr}, img, out);
 }
 
+// The path /proc/self/exe reports, found before opening because an unlinked file has none
+static int32_t record_program_path(const char* path, fs::node* base_dir, loaded_image* out) {
+    auto* absolute = static_cast<char*>(heap::ualloc(fs::PATH_MAX));
+    if (!absolute) {
+        return ERR_NO_MEM;
+    }
+
+    int32_t rc = OK;
+    RUN_ELEVATED({
+        fs::node* program = nullptr;
+        int32_t path_rc = fs::lookup_at(base_dir, path, &program);
+        if (path_rc == fs::OK) {
+            path_rc = fs::path_from_node(program, absolute, fs::PATH_MAX);
+            if (program->release()) {
+                fs::node::ref_destroy(program);
+            }
+        }
+
+        if (path_rc == fs::OK) {
+            size_t len = string::strlen(absolute);
+            out->program_path = static_cast<char*>(heap::ualloc(len + 1));
+            if (out->program_path) {
+                string::memcpy(out->program_path, absolute, len + 1);
+            } else {
+                rc = ERR_NO_MEM;
+            }
+        } else if (path_rc == fs::ERR_NOMEM) {
+            rc = ERR_NO_MEM;
+        }
+    });
+
+    heap::ufree(absolute);
+
+    return rc;
+}
+
 int32_t load_elf(const char* path, loaded_image* out, fs::node* base_dir) {
     if (!out) {
         return ERR_INVALID_PHDR;
@@ -424,15 +464,32 @@ int32_t load_elf(const char* path, loaded_image* out, fs::node* base_dir) {
 
     out->mm_ctx = nullptr;
     out->pt_root = 0;
+    out->program = nullptr;
+    out->program_path = nullptr;
 
-    elf_image img;
-    fs::file* f = nullptr;
-    int32_t rc = open_and_parse(path, base_dir, &f, &img);
+    int32_t rc = record_program_path(path, base_dir, out);
     if (rc != OK) {
         return rc;
     }
 
+    elf_image img;
+    fs::file* f = nullptr;
+    rc = open_and_parse(path, base_dir, &f, &img);
+    if (rc != OK) {
+        unload_elf(out);
+        return rc;
+    }
+
+    RUN_ELEVATED({
+        out->program = f->get_node();
+        out->program->add_ref();
+    });
+
     rc = load_image(segment_source{nullptr, f}, img, out);
+    if (rc != OK) {
+        unload_elf(out);
+    }
+
     fs::close(f);
 
     return rc;
@@ -443,13 +500,24 @@ void unload_elf(loaded_image* img) {
         return;
     }
 
-    if (img->mm_ctx) {
-        RUN_ELEVATED({
+    RUN_ELEVATED({
+        if (img->mm_ctx) {
             mm::mm_context_release(img->mm_ctx);
-        });
+        }
+
+        if (img->program && img->program->release()) {
+            fs::node::ref_destroy(img->program);
+        }
+    });
+
+    if (img->program_path) {
+        heap::ufree(img->program_path);
     }
+
     img->mm_ctx = nullptr;
     img->pt_root = 0;
+    img->program = nullptr;
+    img->program_path = nullptr;
 }
 
 } // namespace exec

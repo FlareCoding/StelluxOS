@@ -16,6 +16,7 @@
 
 extern "C" __PRIVILEGED_CODE int32_t ramfs_init_driver();
 extern "C" __PRIVILEGED_CODE int32_t devfs_init_driver();
+extern "C" __PRIVILEGED_CODE int32_t procfs_init_driver();
 
 namespace fs {
 
@@ -1194,6 +1195,20 @@ ssize_t readdir(file* f, dirent* entries, size_t count) {
     return result;
 }
 
+__PRIVILEGED_CODE static int32_t mount_procfs() {
+    int32_t err = ::procfs_init_driver();
+    if (err != OK) {
+        return err;
+    }
+
+    err = mkdir("/proc", 0);
+    if (err != OK && err != ERR_EXIST) {
+        return err;
+    }
+
+    return mount(nullptr, "/proc", "procfs", 0);
+}
+
 __PRIVILEGED_CODE int32_t init() {
     g_root_mount = nullptr;
     g_root_instance = nullptr;
@@ -1247,6 +1262,12 @@ __PRIVILEGED_CODE int32_t init() {
 
     // Best-effort, userland expects /tmp to exist at boot
     mkdir("/tmp", 0);
+
+    // Best-effort as well, since only ported programs look in /proc
+    err = mount_procfs();
+    if (err != OK) {
+        log::warn("fs: procfs unavailable (err=%d)", err);
+    }
 
     return OK;
 }

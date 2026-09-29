@@ -51,6 +51,14 @@ __PRIVILEGED_DATA static smp::ipi::message g_resched_kick = {0};
 namespace sched {
 
 __PRIVILEGED_CODE void thread_group::ref_destroy(thread_group* self) {
+    if (self->program && self->program->release()) {
+        fs::node::ref_destroy(self->program);
+    }
+
+    if (self->program_path) {
+        heap::ufree(self->program_path);
+    }
+
     heap::kfree_delete(self);
 }
 
@@ -1262,6 +1270,10 @@ __PRIVILEGED_CODE task* create_user_task(
     t->group = tg; // task takes ownership of the initial ref (refcount=1)
     t->group_link = {};
 
+    tg->program = image->program;
+    tg->program_path = image->program_path;
+    image->program = nullptr;
+    image->program_path = nullptr;
     image->mm_ctx = nullptr;
     image->pt_root = 0;
 
