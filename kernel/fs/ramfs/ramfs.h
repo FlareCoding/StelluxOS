@@ -5,6 +5,8 @@
 #include "fs/file.h"
 #include "fs/mount.h"
 #include "fs/fs.h"
+#include "mm/shmem.h"
+#include "rc/strong_ref.h"
 
 namespace ramfs {
 
@@ -44,19 +46,26 @@ private:
 class file_node : public fs::node {
 public:
     file_node(fs::instance* fs, const char* name);
-    ~file_node() override;
+
+    /**
+     * @brief Allocate the file's backing. Must succeed before the node is attached.
+     * @return fs::OK or fs::ERR_NOMEM.
+     */
+    int32_t init();
 
     ssize_t read(fs::file* f, void* buf, size_t count, uint32_t flags) override;
     ssize_t write(fs::file* f, const void* buf, size_t count, uint32_t flags) override;
     int64_t seek(fs::file* f, int64_t offset, int whence) override;
     int32_t truncate(size_t size) override;
+    int32_t mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
+                 size_t length, uint32_t prot, uint32_t map_flags,
+                 uint64_t offset, uintptr_t* out_addr) override;
 
 private:
-    int32_t ensure_capacity(uint32_t needed_pages);
+    ssize_t write_at_locked(size_t offset, const void* buf, size_t count);
+    void update_size_from_backing_locked();
 
-    uint8_t** m_pages;
-    uint32_t  m_page_count;
-    uint32_t  m_capacity;
+    rc::strong_ref<mm::shmem> m_backing;
 };
 
 } // namespace ramfs

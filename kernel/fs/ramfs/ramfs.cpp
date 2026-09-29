@@ -3,9 +3,7 @@
 #include "fs/fs.h"
 #include "common/string.h"
 #include "mm/heap.h"
-#include "mm/pmm.h"
-#include "mm/paging.h"
-#include "boot/boot_services.h"
+#include "mm/mm.h"
 
 namespace ramfs {
 
@@ -86,6 +84,12 @@ int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node**
     }
 
     auto* child = new (mem) file_node(m_fs, name_buf);
+    int32_t rc = child->init();
+    if (rc != fs::OK) {
+        fs::node::ref_destroy(child);
+        return rc;
+    }
+
     attach_child(child);
 
     *out = child;
@@ -268,54 +272,52 @@ int32_t symlink_node::readlink(char* buf, size_t size, size_t* out_len) {
     return fs::OK;
 }
 
+static int32_t map_shmem_error_to_fs(int32_t shmem_err) {
+    return shmem_err == mm::SHMEM_ERR_NO_MEM ? fs::ERR_NOMEM : fs::ERR_INVAL;
+}
+
 file_node::file_node(fs::instance* fs, const char* name)
-    : fs::node(fs::node_type::regular, fs, name)
-    , m_pages(nullptr)
-    , m_page_count(0)
-    , m_capacity(0) {
+    : fs::node(fs::node_type::regular, fs, name) {
 }
 
-file_node::~file_node() {
-    if (m_pages) {
-        for (uint32_t i = 0; i < m_page_count; i++) {
-            if (m_pages[i]) {
-                pmm::phys_addr_t phys =
-                    reinterpret_cast<uintptr_t>(m_pages[i]) - g_boot_info.hhdm_offset;
-                pmm::free_page(phys);
-            }
-        }
-        heap::kfree(m_pages);
-        m_pages = nullptr;
-    }
-    m_page_count = 0;
-    m_capacity = 0;
-}
-
-int32_t file_node::ensure_capacity(uint32_t needed_pages) {
-    if (needed_pages <= m_capacity) return fs::OK;
-
-    uint32_t new_cap = m_capacity ? m_capacity : 4;
-    while (new_cap < needed_pages) {
-        if (new_cap > 0x80000000u) {
-            return fs::ERR_NOMEM;
-        }
-
-        new_cap *= 2;
-    }
-
-    auto* new_pages = static_cast<uint8_t**>(heap::kzalloc(new_cap * sizeof(uint8_t*)));
-    if (!new_pages) {
+int32_t file_node::init() {
+    mm::shmem* backing = mm::shmem_create(0);
+    if (!backing) {
         return fs::ERR_NOMEM;
     }
 
-    if (m_pages) {
-        string::memcpy(new_pages, m_pages, m_page_count * sizeof(uint8_t*));
-        heap::kfree(m_pages);
+    m_backing = rc::strong_ref<mm::shmem>::adopt(backing);
+    return fs::OK;
+}
+
+// stat reads the node's size, so it mirrors the backing's
+void file_node::update_size_from_backing_locked() {
+    m_size = m_backing->m_size;
+}
+
+ssize_t file_node::write_at_locked(size_t offset, const void* buf, size_t count) {
+    if (count == 0) {
+        return 0;
     }
 
-    m_pages = new_pages;
-    m_capacity = new_cap;
-    return fs::OK;
+    size_t end = offset + count;
+    if (end < offset) {
+        return fs::ERR_INVAL;
+    }
+
+    if (end > m_backing->m_size) {
+        int32_t rc = mm::shmem_resize_locked(m_backing.ptr(), end);
+        if (rc != mm::SHMEM_OK) {
+            return map_shmem_error_to_fs(rc);
+        }
+
+        update_size_from_backing_locked();
+    }
+
+    ssize_t written = mm::shmem_write_locked(m_backing.ptr(), offset, buf, count);
+    mark_modified();
+
+    return written;
 }
 
 ssize_t file_node::read(fs::file* f, void* buf, size_t count, uint32_t) {
@@ -323,47 +325,21 @@ ssize_t file_node::read(fs::file* f, void* buf, size_t count, uint32_t) {
         return fs::ERR_BADF;
     }
 
-    sync::irq_lock_guard guard(m_lock);
+    sync::mutex_lock(m_backing->lock);
 
-    int64_t off = f->offset();
-    if (off < 0) {
-        return fs::ERR_INVAL;
+    int64_t offset = f->offset();
+    ssize_t result = fs::ERR_INVAL;
+    if (offset >= 0) {
+        result = mm::shmem_read_locked(m_backing.ptr(), static_cast<size_t>(offset), buf, count);
     }
 
-    size_t offset = static_cast<size_t>(off);
-    if (offset >= m_size) {
-        return 0;
+    if (result > 0) {
+        f->set_offset(offset + result);
     }
 
-    if (offset + count > m_size) {
-        count = m_size - offset;
-    }
+    sync::mutex_unlock(m_backing->lock);
 
-    auto* dst = static_cast<uint8_t*>(buf);
-    size_t remaining = count;
-    size_t pos = offset;
-
-    while (remaining > 0) {
-        uint32_t page_idx = static_cast<uint32_t>(pos / pmm::PAGE_SIZE);
-        size_t page_off = pos % pmm::PAGE_SIZE;
-        size_t chunk = pmm::PAGE_SIZE - page_off;
-        if (chunk > remaining) {
-            chunk = remaining;
-        }
-
-        if (page_idx < m_page_count && m_pages[page_idx]) {
-            string::memcpy(dst, m_pages[page_idx] + page_off, chunk);
-        } else {
-            string::memset(dst, 0, chunk);
-        }
-
-        dst += chunk;
-        pos += chunk;
-        remaining -= chunk;
-    }
-
-    f->set_offset(static_cast<int64_t>(offset + count));
-    return static_cast<ssize_t>(count);
+    return result;
 }
 
 ssize_t file_node::write(fs::file* f, const void* buf, size_t count, uint32_t flags) {
@@ -371,73 +347,33 @@ ssize_t file_node::write(fs::file* f, const void* buf, size_t count, uint32_t fl
         return fs::ERR_BADF;
     }
 
-    sync::irq_lock_guard guard(m_lock);
+    sync::mutex_lock(m_backing->lock);
 
-    int64_t off = f->offset();
+    int64_t offset = f->offset();
     if (flags & fs::O_APPEND) {
-        off = static_cast<int64_t>(m_size);
+        offset = static_cast<int64_t>(m_backing->m_size);
     }
 
-    if (off < 0) {
-        return fs::ERR_INVAL;
+    ssize_t result = fs::ERR_INVAL;
+    if (offset >= 0) {
+        result = write_at_locked(static_cast<size_t>(offset), buf, count);
     }
 
-    size_t offset = static_cast<size_t>(off);
-    size_t end_pos = offset + count;
-    uint32_t needed_pages = static_cast<uint32_t>((end_pos + pmm::PAGE_SIZE - 1) / pmm::PAGE_SIZE);
-
-    int32_t err = ensure_capacity(needed_pages);
-    if (err != fs::OK) {
-        return err;
+    if (result > 0) {
+        f->set_offset(offset + result);
     }
 
-    const auto* src = static_cast<const uint8_t*>(buf);
-    size_t remaining = count;
-    size_t pos = offset;
+    sync::mutex_unlock(m_backing->lock);
 
-    while (remaining > 0) {
-        uint32_t page_idx = static_cast<uint32_t>(pos / pmm::PAGE_SIZE);
-        size_t page_off = pos % pmm::PAGE_SIZE;
-        size_t chunk = pmm::PAGE_SIZE - page_off;
-        if (chunk > remaining) {
-            chunk = remaining;
-        }
-
-        while (m_page_count <= page_idx) {
-            pmm::phys_addr_t phys = pmm::alloc_page();
-            if (phys == 0) {
-                return fs::ERR_NOMEM;
-            }
-
-            auto* virt = static_cast<uint8_t*>(paging::phys_to_virt(phys));
-            string::memset(virt, 0, pmm::PAGE_SIZE);
-            m_pages[m_page_count] = virt;
-            m_page_count++;
-        }
-
-        string::memcpy(m_pages[page_idx] + page_off, src, chunk);
-
-        src += chunk;
-        pos += chunk;
-        remaining -= chunk;
-    }
-
-    if (end_pos > m_size) {
-        m_size = end_pos;
-    }
-
-    mark_modified();
-    f->set_offset(static_cast<int64_t>(end_pos));
-
-    return static_cast<ssize_t>(count);
+    return result;
 }
 
 int64_t file_node::seek(fs::file* f, int64_t offset, int whence) {
     if (!f) return fs::ERR_BADF;
 
-    sync::irq_lock_guard guard(m_lock);
+    sync::mutex_lock(m_backing->lock);
 
-    int64_t new_off;
+    int64_t new_off = fs::ERR_INVAL;
     switch (whence) {
         case fs::SEEK_SET:
             new_off = offset;
@@ -446,72 +382,42 @@ int64_t file_node::seek(fs::file* f, int64_t offset, int whence) {
             new_off = f->offset() + offset;
             break;
         case fs::SEEK_END:
-            new_off = static_cast<int64_t>(m_size) + offset;
+            new_off = static_cast<int64_t>(m_backing->m_size) + offset;
             break;
         default:
-            return fs::ERR_INVAL;
+            break;
     }
 
-    if (new_off < 0) {
-        return fs::ERR_INVAL;
+    if (new_off >= 0) {
+        f->set_offset(new_off);
+    } else {
+        new_off = fs::ERR_INVAL;
     }
 
-    f->set_offset(new_off);
+    sync::mutex_unlock(m_backing->lock);
+
     return new_off;
 }
 
 int32_t file_node::truncate(size_t size) {
-    size_t max_alignable = ~(pmm::PAGE_SIZE - 1);
-    if (size > max_alignable) {
-        return fs::ERR_INVAL;
+    sync::mutex_lock(m_backing->lock);
+
+    int32_t rc = mm::shmem_resize_locked(m_backing.ptr(), size);
+    if (rc == mm::SHMEM_OK) {
+        update_size_from_backing_locked();
+        mark_modified();
     }
 
-    sync::irq_lock_guard guard(m_lock);
+    sync::mutex_unlock(m_backing->lock);
 
-    uint32_t needed = static_cast<uint32_t>(
-        pmm::page_align_up(size) / pmm::PAGE_SIZE);
+    return rc == mm::SHMEM_OK ? fs::OK : map_shmem_error_to_fs(rc);
+}
 
-    if (needed > m_page_count) {
-        int32_t rc = ensure_capacity(needed);
-        if (rc != fs::OK) {
-            return rc;
-        }
-
-        for (uint32_t i = m_page_count; i < needed; i++) {
-            pmm::phys_addr_t phys = pmm::alloc_page();
-            if (phys == 0) {
-                m_size = static_cast<size_t>(i) * pmm::PAGE_SIZE;
-                m_page_count = i;
-                return fs::ERR_NOMEM;
-            }
-
-            m_pages[i] = static_cast<uint8_t*>(paging::phys_to_virt(phys));
-            string::memset(m_pages[i], 0, pmm::PAGE_SIZE);
-        }
-        m_page_count = needed;
-    } else if (needed < m_page_count) {
-        for (uint32_t i = needed; i < m_page_count; i++) {
-            if (m_pages[i]) {
-                pmm::phys_addr_t phys =
-                    reinterpret_cast<uintptr_t>(m_pages[i]) - g_boot_info.hhdm_offset;
-                pmm::free_page(phys);
-                m_pages[i] = nullptr;
-            }
-        }
-        m_page_count = needed;
-    }
-
-    if (size < m_size && needed > 0) {
-        size_t tail_off = size % pmm::PAGE_SIZE;
-        if (tail_off != 0 && m_pages[needed - 1]) {
-            string::memset(m_pages[needed - 1] + tail_off, 0, pmm::PAGE_SIZE - tail_off);
-        }
-    }
-
-    m_size = size;
-    mark_modified();
-
-    return fs::OK;
+int32_t file_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
+                        size_t length, uint32_t prot, uint32_t map_flags,
+                        uint64_t offset, uintptr_t* out_addr) {
+    return mm::mm_context_map_shared(mm_ctx, m_backing.ptr(), offset, length, prot,
+                                     map_flags, addr, out_addr);
 }
 
 } // namespace ramfs

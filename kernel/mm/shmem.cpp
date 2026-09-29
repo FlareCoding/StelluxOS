@@ -127,10 +127,6 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size) {
 
                     pmm::phys_addr_t phys = pmm::alloc_page();
                     if (phys == 0) {
-                        if (i > old_page_count) {
-                            s->m_page_count = i;
-                            s->m_size = i * pmm::PAGE_SIZE;
-                        }
                         result = SHMEM_ERR_NO_MEM;
                         break;
                     }
@@ -153,9 +149,10 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size) {
 
             s->m_page_count = new_page_count;
             s->m_size = new_size;
-            if (s->m_mapping_count == 0) {
-                free_pages_past_size_locked(s);
-            }
+        }
+
+        if (s->m_mapping_count == 0) {
+            free_pages_past_size_locked(s);
         }
     });
     return result;
@@ -251,7 +248,19 @@ ssize_t shmem_read(shmem* s, size_t offset, void* dst, size_t count) {
     ssize_t result = 0;
     RUN_ELEVATED({
         sync::mutex_lock(s->lock);
+        result = shmem_read_locked(s, offset, dst, count);
+        sync::mutex_unlock(s->lock);
+    });
+    return result;
+}
 
+ssize_t shmem_read_locked(shmem* s, size_t offset, void* dst, size_t count) {
+    if (!s || !dst) {
+        return SHMEM_ERR_INVAL;
+    }
+
+    ssize_t result = 0;
+    RUN_ELEVATED({
         if (offset >= s->m_size) {
             result = 0;
         } else {
@@ -286,8 +295,6 @@ ssize_t shmem_read(shmem* s, size_t offset, void* dst, size_t count) {
 
             result = static_cast<ssize_t>(count);
         }
-
-        sync::mutex_unlock(s->lock);
     });
     return result;
 }
@@ -300,7 +307,19 @@ ssize_t shmem_write(shmem* s, size_t offset, const void* src, size_t count) {
     ssize_t result = 0;
     RUN_ELEVATED({
         sync::mutex_lock(s->lock);
+        result = shmem_write_locked(s, offset, src, count);
+        sync::mutex_unlock(s->lock);
+    });
+    return result;
+}
 
+ssize_t shmem_write_locked(shmem* s, size_t offset, const void* src, size_t count) {
+    if (!s || !src) {
+        return SHMEM_ERR_INVAL;
+    }
+
+    ssize_t result = 0;
+    RUN_ELEVATED({
         if (offset >= s->m_size) {
             result = 0;
         } else {
@@ -335,8 +354,6 @@ ssize_t shmem_write(shmem* s, size_t offset, const void* src, size_t count) {
 
             result = static_cast<ssize_t>(count - remaining);
         }
-
-        sync::mutex_unlock(s->lock);
     });
     return result;
 }
