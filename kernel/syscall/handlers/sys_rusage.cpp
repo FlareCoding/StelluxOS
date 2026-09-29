@@ -65,8 +65,7 @@ DEFINE_SYSCALL2(getrusage, u_who, u_usage) {
     if (who == RUSAGE_THREAD) {
         cpu_time_ns = sched::read_task_cpu_time_ns(current);
     } else if (who == RUSAGE_SELF) {
-        cpu_time_ns = current->group ? sched::read_group_cpu_time_ns(current->group)
-                                     : sched::read_task_cpu_time_ns(current);
+        cpu_time_ns = sched::read_process_cpu_time_ns(current);
     }
 
     ns_to_timeval(cpu_time_ns, &kusage.ru_utime);
