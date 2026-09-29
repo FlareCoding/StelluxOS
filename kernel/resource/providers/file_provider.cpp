@@ -33,6 +33,8 @@ static int32_t map_fs_error_to_resource(int32_t fs_err) {
             return ERR_AGAIN;
         case fs::ERR_LOOP:
             return ERR_LOOP;
+        case fs::ERR_SPIPE:
+            return ERR_SPIPE;
         default:
             return ERR_IO;
     }
@@ -59,6 +61,20 @@ __PRIVILEGED_CODE static ssize_t file_write(resource_object* obj, const void* ks
 
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
     ssize_t rc = fs::write(impl->file, ksrc, count, flags);
+    if (rc < 0) {
+        return map_fs_error_to_resource(static_cast<int32_t>(rc));
+    }
+
+    return rc;
+}
+
+__PRIVILEGED_CODE static ssize_t file_read_at(resource_object* obj, void* kdst, size_t count, uint64_t offset) {
+    if (!obj || !obj->impl || !kdst) {
+        return ERR_INVAL;
+    }
+
+    auto* impl = static_cast<file_resource_impl*>(obj->impl);
+    ssize_t rc = fs::read_at(impl->file, kdst, count, offset);
     if (rc < 0) {
         return map_fs_error_to_resource(static_cast<int32_t>(rc));
     }
@@ -141,6 +157,7 @@ __PRIVILEGED_CODE static uint32_t file_poll(
 static const resource_ops g_file_ops = {
     .read = file_read,
     .write = file_write,
+    .read_at = file_read_at,
     .close = file_close,
     .ioctl = file_ioctl,
     .mmap = file_mmap,

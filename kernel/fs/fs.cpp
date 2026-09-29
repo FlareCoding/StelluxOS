@@ -68,6 +68,7 @@ int32_t node::symlink(const char*, size_t, const char*, node**) { return ERR_NOS
 ssize_t node::read(file*, void*, size_t, uint32_t)  { return ERR_NOSYS; }
 ssize_t node::write(file*, const void*, size_t, uint32_t) { return ERR_NOSYS; }
 int64_t node::seek(file*, int64_t, int)             { return ERR_NOSYS; }
+ssize_t node::read_at(file*, void*, size_t, uint64_t) { return ERR_SPIPE; }
 ssize_t node::readdir(file*, dirent*, size_t)       { return ERR_NOSYS; }
 int32_t node::ioctl(file*, uint32_t, uint64_t)      { return ERR_NOSYS; }
 int32_t node::mmap(file*, mm::mm_context*, uintptr_t, size_t, uint32_t, uint32_t, uint64_t, uintptr_t*) { return ERR_NOSYS; }
@@ -953,6 +954,27 @@ ssize_t write(file* f, const void* buf, size_t count, uint32_t flags) {
     ssize_t result;
     RUN_ELEVATED({
         result = f->get_node()->write(f, buf, count, flags);
+    });
+
+    return result;
+}
+
+ssize_t read_at(file* f, void* buf, size_t count, uint64_t offset) {
+    if (!f || !buf) {
+        return ERR_BADF;
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (f->access_mode() == O_WRONLY) {
+        return ERR_BADF;
+    }
+
+    ssize_t result;
+    RUN_ELEVATED({
+        result = f->get_node()->read_at(f, buf, count, offset);
     });
 
     return result;

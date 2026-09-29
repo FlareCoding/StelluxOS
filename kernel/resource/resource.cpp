@@ -288,6 +288,35 @@ __PRIVILEGED_CODE ssize_t write(
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE ssize_t read_at(
+    sched::task* owner,
+    handle_t handle,
+    void* kdst,
+    size_t count,
+    uint64_t offset
+) {
+    if (!owner || !kdst) {
+        return ERR_INVAL;
+    }
+
+    resource_object* obj = nullptr;
+    int32_t rc = get_handle_object(owner->handles, handle, RIGHT_READ, &obj);
+    if (rc != HANDLE_OK) {
+        return (rc == HANDLE_ERR_ACCESS) ? ERR_ACCESS : ERR_BADF;
+    }
+
+    ssize_t result = ERR_SPIPE;
+    if (obj->ops && obj->ops->read_at) {
+        result = obj->ops->read_at(obj, kdst, count, offset);
+    }
+
+    resource_release(obj);
+    return result;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE int32_t ioctl(
     sched::task* owner,
     handle_t handle,

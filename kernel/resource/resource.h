@@ -18,6 +18,7 @@ struct socket_ops;
 
 using read_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint32_t flags);
 using write_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint32_t flags);
+using read_at_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint64_t offset);
 using close_fn = void (*)(resource_object* obj);
 using ioctl_fn = int32_t (*)(resource_object* obj, uint32_t cmd, uint64_t arg);
 using mmap_fn = int32_t (*)(resource_object* obj, mm::mm_context* mm_ctx,
@@ -35,6 +36,7 @@ using poll_fn = uint32_t (*)(resource_object* obj, sync::poll_table* pt);
 struct resource_ops {
     read_fn  read = nullptr;
     write_fn write = nullptr;
+    read_at_fn read_at = nullptr;
     close_fn close = nullptr;
     ioctl_fn ioctl = nullptr;
     mmap_fn  mmap = nullptr;
@@ -103,6 +105,7 @@ constexpr int32_t ERR_TIMEDOUT    = -27;
 constexpr int32_t ERR_NOBUFS      = -28;
 constexpr int32_t ERR_CONNRESET   = -29;
 constexpr int32_t ERR_PROTO       = -30;
+constexpr int32_t ERR_SPIPE       = -31;
 
 /**
  * @brief Allocate a private handle table and attach it to the task.
@@ -169,6 +172,20 @@ __PRIVILEGED_CODE ssize_t write(
     handle_t handle,
     const void* ksrc,
     size_t count
+);
+
+/**
+ * @brief Read from handle at `offset` into kernel buffer, leaving the file
+ * offset unchanged.
+ * @return Bytes read, ERR_SPIPE when the object cannot seek, or another error.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t read_at(
+    sched::task* owner,
+    handle_t handle,
+    void* kdst,
+    size_t count,
+    uint64_t offset
 );
 
 /**

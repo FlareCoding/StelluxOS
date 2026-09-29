@@ -23,6 +23,9 @@ constexpr uint32_t AT_REMOVEDIR = 0x200;
 constexpr uint64_t AT_NO_AUTOMOUNT = 0x800;
 constexpr uint64_t AT_EMPTY_PATH = 0x1000;
 
+// Staged transfers given this offset use and advance the file's own offset
+constexpr int64_t CURRENT_FILE_OFFSET = -1;
+
 // utimensat tv_nsec values that pick the current time or leave a stamp alone
 constexpr int64_t UTIME_NOW  = 0x3fffffff;
 constexpr int64_t UTIME_OMIT = 0x3ffffffe;
@@ -150,6 +153,8 @@ static inline int64_t map_resource_error(int64_t rc) {
             return syscall::EEXIST;
         case resource::ERR_LOOP:
             return syscall::ELOOP;
+        case resource::ERR_SPIPE:
+            return syscall::ESPIPE;
         case resource::ERR_IO:
         default:
             return syscall::EIO;
@@ -929,20 +934,15 @@ DEFINE_SYSCALL3(lseek, fd, offset, whence) {
     return result;
 }
 
-DEFINE_SYSCALL3(read, fd, buf, count) {
-    if (count == 0) {
-        return 0;
-    }
+// A positional transfer needs a non-negative offset and must end within the largest offset
+static bool is_valid_file_range(uint64_t offset, uint64_t count) {
+    return static_cast<int64_t>(offset) >= 0 && static_cast<int64_t>(count) >= 0 &&
+           static_cast<int64_t>(offset + count) >= 0;
+}
 
-    if (buf == 0) {
-        return syscall::EFAULT;
-    }
-
-    sched::task* task = sched::current();
-    if (!task) {
-        return syscall::EIO;
-    }
-
+__PRIVILEGED_CODE static int64_t read_to_user(
+    sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset
+) {
     size_t remaining = static_cast<size_t>(count);
     uint8_t* user_ptr = reinterpret_cast<uint8_t*>(buf);
     int64_t total = 0;
@@ -955,7 +955,14 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
 
     while (remaining > 0) {
         size_t chunk = remaining > stage ? stage : remaining;
-        ssize_t n = resource::read(task, static_cast<resource::handle_t>(fd), kbuf, chunk);
+        ssize_t n = 0;
+        if (offset == CURRENT_FILE_OFFSET) {
+            n = resource::read(task, static_cast<resource::handle_t>(fd), kbuf, chunk);
+        } else {
+            n = resource::read_at(task, static_cast<resource::handle_t>(fd), kbuf, chunk,
+                                  static_cast<uint64_t>(offset + total));
+        }
+
         if (n < 0) {
             heap::ufree(kbuf);
             if (total > 0) {
@@ -990,6 +997,44 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
 
     heap::ufree(kbuf);
     return total;
+}
+
+DEFINE_SYSCALL3(read, fd, buf, count) {
+    if (count == 0) {
+        return 0;
+    }
+
+    if (buf == 0) {
+        return syscall::EFAULT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    return read_to_user(task, fd, buf, count, CURRENT_FILE_OFFSET);
+}
+
+DEFINE_SYSCALL4(pread64, fd, buf, count, offset) {
+    if (!is_valid_file_range(offset, count)) {
+        return syscall::EINVAL;
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (buf == 0) {
+        return syscall::EFAULT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    return read_to_user(task, fd, buf, count, static_cast<int64_t>(offset));
 }
 
 DEFINE_SYSCALL3(write, fd, buf, count) {
