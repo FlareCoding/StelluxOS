@@ -140,9 +140,10 @@ __PRIVILEGED_CODE int32_t alloc_task_handle(
     resource_object* obj,
     resource_type type,
     uint32_t rights,
-    handle_t* out_handle
+    handle_t* out_handle,
+    uint32_t min_handle
 ) {
-    return alloc_handle(task->handles, obj, type, rights, out_handle, handle_limit(task));
+    return alloc_handle(task->handles, obj, type, rights, out_handle, handle_limit(task), min_handle);
 }
 
 static int32_t map_handle_error_to_resource(int32_t handle_err) {

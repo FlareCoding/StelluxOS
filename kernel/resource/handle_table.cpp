@@ -98,7 +98,8 @@ __PRIVILEGED_CODE int32_t alloc_handle(
     resource_type type,
     uint32_t rights,
     handle_t* out_handle,
-    uint32_t limit
+    uint32_t limit,
+    uint32_t min_handle
 ) {
     if (!table || !obj || !out_handle) {
         return HANDLE_ERR_INVAL;
@@ -114,8 +115,8 @@ __PRIVILEGED_CODE int32_t alloc_handle(
 
     sync::irq_lock_guard guard(table->lock);
 
-    // The lowest free slot, which is the first one past the end when every slot is taken
-    uint32_t slot = 0;
+    // The lowest free slot from min_handle up, which lies past the end when every one is taken
+    uint32_t slot = min_handle;
     while (slot < table->capacity && table->entries[slot].used) {
         slot++;
     }
