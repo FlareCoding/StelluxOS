@@ -373,3 +373,183 @@ TEST(lazy_anon, discard_rejects_device_mappings) {
     mm::mm_context_release(mm_ctx);
     pmm::free_page(frame);
 }
+
+TEST(lazy_anon, remap_grows_in_place_into_free_space) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx, 0, 4 * PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
+    ), mm::MM_CTX_OK);
+    ASSERT_EQ(mm::mm_context_unmap(mm_ctx, addr + PAGE, 3 * PAGE), mm::MM_CTX_OK);
+
+    uintptr_t grown = 0;
+    EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, PAGE, 4 * PAGE, 0, 0, &grown), mm::MM_CTX_OK);
+    EXPECT_EQ(grown, addr);
+    EXPECT_TRUE(mm::handle_user_pf(mm_ctx, addr + 3 * PAGE, mm::PF_FLAG_WRITE));
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(lazy_anon, remap_moves_frames_only_when_allowed) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    // Top-down placement puts the first mapping against the end of the window
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx, 0, PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
+    ), mm::MM_CTX_OK);
+    ASSERT_TRUE(mm::handle_user_pf(mm_ctx, addr, mm::PF_FLAG_WRITE));
+    mapped_page_bytes(mm_ctx, addr)[5] = 0x5a;
+    pmm::phys_addr_t frame = paging::get_physical(addr, mm_ctx->pt_root);
+
+    uintptr_t moved = 0;
+    EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, PAGE, 4 * PAGE, 0, 0, &moved),
+              mm::MM_CTX_ERR_NO_VIRT);
+
+    ASSERT_EQ(mm::mm_context_remap(mm_ctx, addr, PAGE, 4 * PAGE, mm::MM_REMAP_MAYMOVE, 0, &moved),
+              mm::MM_CTX_OK);
+    EXPECT_NE(moved, addr);
+    EXPECT_EQ(paging::get_physical(moved, mm_ctx->pt_root), frame);
+    EXPECT_EQ(mapped_page_bytes(mm_ctx, moved)[5], 0x5a);
+    EXPECT_FALSE(mm::handle_user_pf(mm_ctx, addr, 0));
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(lazy_anon, remap_shrinks_by_releasing_the_tail) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx, 0, 4 * PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
+    ), mm::MM_CTX_OK);
+    for (size_t i = 0; i < 4; i++) {
+        ASSERT_TRUE(mm::handle_user_pf(mm_ctx, addr + i * PAGE, mm::PF_FLAG_WRITE));
+    }
+
+    uintptr_t shrunk = 0;
+    EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, 4 * PAGE, PAGE, 0, 0, &shrunk), mm::MM_CTX_OK);
+    EXPECT_EQ(shrunk, addr);
+    EXPECT_NOT_NULL(mapped_page_bytes(mm_ctx, addr));
+    EXPECT_NULL(mapped_page_bytes(mm_ctx, addr + PAGE));
+    EXPECT_FALSE(mm::handle_user_pf(mm_ctx, addr + PAGE, 0));
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(lazy_anon, remap_moves_to_a_fixed_address_replacing_its_mapping) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    uintptr_t target = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx, 0, 2 * PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
+    ), mm::MM_CTX_OK);
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx, 0, 2 * PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &target
+    ), mm::MM_CTX_OK);
+    ASSERT_TRUE(mm::handle_user_pf(mm_ctx, addr, mm::PF_FLAG_WRITE));
+    ASSERT_TRUE(mm::handle_user_pf(mm_ctx, target, mm::PF_FLAG_WRITE));
+    mapped_page_bytes(mm_ctx, addr)[9] = 0x44;
+    pmm::phys_addr_t frame = paging::get_physical(addr, mm_ctx->pt_root);
+
+    uintptr_t moved = 0;
+    ASSERT_EQ(mm::mm_context_remap(mm_ctx, addr, 2 * PAGE, 2 * PAGE,
+                                   mm::MM_REMAP_MAYMOVE | mm::MM_REMAP_FIXED, target, &moved),
+              mm::MM_CTX_OK);
+    EXPECT_EQ(moved, target);
+    EXPECT_EQ(paging::get_physical(target, mm_ctx->pt_root), frame);
+    EXPECT_EQ(mapped_page_bytes(mm_ctx, target)[9], 0x44);
+    EXPECT_FALSE(mm::handle_user_pf(mm_ctx, addr, 0));
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(lazy_anon, remap_fixed_shrink_moves_the_head_and_drops_the_tail) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx, 0, 3 * PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
+    ), mm::MM_CTX_OK);
+    for (size_t i = 0; i < 3; i++) {
+        ASSERT_TRUE(mm::handle_user_pf(mm_ctx, addr + i * PAGE, mm::PF_FLAG_WRITE));
+    }
+
+    pmm::phys_addr_t head = paging::get_physical(addr, mm_ctx->pt_root);
+
+    uintptr_t target = addr - 16 * PAGE;
+    uintptr_t moved = 0;
+    ASSERT_EQ(mm::mm_context_remap(mm_ctx, addr, 3 * PAGE, PAGE,
+                                   mm::MM_REMAP_MAYMOVE | mm::MM_REMAP_FIXED, target, &moved),
+              mm::MM_CTX_OK);
+    EXPECT_EQ(moved, target);
+    EXPECT_EQ(paging::get_physical(target, mm_ctx->pt_root), head);
+    EXPECT_FALSE(paging::is_mapped(addr, mm_ctx->pt_root));
+    EXPECT_FALSE(paging::is_mapped(addr + PAGE, mm_ctx->pt_root));
+    EXPECT_FALSE(mm::handle_user_pf(mm_ctx, addr + 2 * PAGE, 0));
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(lazy_anon, remap_rejects_bad_requests) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx, 0, 2 * PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
+    ), mm::MM_CTX_OK);
+
+    uintptr_t result = 0;
+    uintptr_t elsewhere = addr - 16 * PAGE;
+    EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, PAGE, PAGE, mm::MM_REMAP_FIXED, elsewhere, &result),
+              mm::MM_CTX_ERR_INVALID_ARG);
+    EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, 2 * PAGE, 2 * PAGE,
+                                   mm::MM_REMAP_MAYMOVE | mm::MM_REMAP_FIXED, addr + PAGE, &result),
+              mm::MM_CTX_ERR_INVALID_ARG);
+    EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, 3 * PAGE, 4 * PAGE, mm::MM_REMAP_MAYMOVE, 0, &result),
+              mm::MM_CTX_ERR_NOT_MAPPED);
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(lazy_anon, remap_keeps_shared_mappings_in_place) {
+    mm::shmem* s = mm::shmem_create(2 * PAGE);
+    ASSERT_NOT_NULL(s);
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_shared(mm_ctx, s, 0, 2 * PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+                                        mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
+
+    uintptr_t result = 0;
+    EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, 2 * PAGE, 3 * PAGE, mm::MM_REMAP_MAYMOVE, 0, &result),
+              mm::MM_CTX_ERR_CANNOT_GROW);
+    EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, 2 * PAGE, 2 * PAGE,
+                                   mm::MM_REMAP_MAYMOVE | mm::MM_REMAP_FIXED, addr - 16 * PAGE,
+                                   &result),
+              mm::MM_CTX_ERR_INVALID_ARG);
+
+    EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, 2 * PAGE, PAGE, 0, 0, &result), mm::MM_CTX_OK);
+    EXPECT_EQ(result, addr);
+    EXPECT_TRUE(paging::is_mapped(addr, mm_ctx->pt_root));
+    EXPECT_FALSE(paging::is_mapped(addr + PAGE, mm_ctx->pt_root));
+
+    mm::mm_context_release(mm_ctx);
+    mm::shmem::ref_destroy(s);
+}

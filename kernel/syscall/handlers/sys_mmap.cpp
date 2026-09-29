@@ -45,6 +45,10 @@ constexpr uint64_t LINUX_MADV_KEEPONFORK = 19;
 constexpr uint64_t LINUX_MADV_COLD       = 20;
 constexpr uint64_t LINUX_MADV_PAGEOUT    = 21;
 
+constexpr uint64_t LINUX_MREMAP_MAYMOVE      = 1;
+constexpr uint64_t LINUX_MREMAP_FIXED        = 2;
+constexpr uint64_t LINUX_MREMAP_ALLOWED_MASK = LINUX_MREMAP_MAYMOVE | LINUX_MREMAP_FIXED;
+
 static inline uint32_t linux_prot_to_mm(uint64_t prot) {
     uint32_t mm_prot = 0;
     if (prot & LINUX_PROT_READ) mm_prot |= mm::MM_PROT_READ;
@@ -73,6 +77,8 @@ static inline int64_t mm_status_to_errno(int32_t status) {
             return syscall::EINVAL;
         case mm::MM_CTX_ERR_NOT_MAPPED:
             return syscall::ENOMEM;
+        case mm::MM_CTX_ERR_CANNOT_GROW:
+            return syscall::EFAULT;
         case mm::MM_CTX_ERR_NO_MEM:
         case mm::MM_CTX_ERR_NO_VIRT:
         case mm::MM_CTX_ERR_MAP_FAILED:
@@ -328,4 +334,46 @@ DEFINE_SYSCALL3(madvise, addr, length, advice) {
         static_cast<size_t>(length)
     );
     return mm_status_to_errno(rc);
+}
+
+DEFINE_SYSCALL5(mremap, old_addr, old_len, new_len, flags, new_addr) {
+    if ((flags & ~LINUX_MREMAP_ALLOWED_MASK) != 0) {
+        return syscall::EINVAL;
+    }
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return syscall::ENOMEM;
+    }
+
+    uint32_t mm_flags = 0;
+    if (flags & LINUX_MREMAP_MAYMOVE) {
+        mm_flags |= mm::MM_REMAP_MAYMOVE;
+    }
+
+    if (flags & LINUX_MREMAP_FIXED) {
+        mm_flags |= mm::MM_REMAP_FIXED;
+    }
+
+    uintptr_t remapped_addr = 0;
+    int32_t rc = mm::mm_context_remap(
+        task->exec.mm_ctx,
+        static_cast<uintptr_t>(old_addr),
+        static_cast<size_t>(old_len),
+        static_cast<size_t>(new_len),
+        mm_flags,
+        static_cast<uintptr_t>(new_addr),
+        &remapped_addr
+    );
+
+    // Unlike munmap and mprotect, mremap reports an unmapped old range as EFAULT
+    if (rc == mm::MM_CTX_ERR_NOT_MAPPED) {
+        return syscall::EFAULT;
+    }
+
+    if (rc != mm::MM_CTX_OK) {
+        return mm_status_to_errno(rc);
+    }
+
+    return static_cast<int64_t>(remapped_addr);
 }

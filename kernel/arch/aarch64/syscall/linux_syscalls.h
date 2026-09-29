@@ -87,6 +87,7 @@ constexpr uint64_t SENDMSG          = 211;
 constexpr uint64_t RECVMSG          = 212;
 constexpr uint64_t BRK              = 214;
 constexpr uint64_t MUNMAP           = 215;
+constexpr uint64_t MREMAP           = 216;
 constexpr uint64_t CLONE            = 220;
 constexpr uint64_t MMAP             = 222;
 constexpr uint64_t MPROTECT         = 226;

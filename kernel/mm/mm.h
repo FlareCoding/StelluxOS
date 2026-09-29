@@ -13,6 +13,9 @@ constexpr uint64_t PF_FLAG_PRESENT     = (1u << 0); // page was present, so must
 constexpr uint64_t PF_FLAG_WRITE       = (1u << 1); // write access violation
 constexpr uint64_t PF_FLAG_INSTRUCTION = (1u << 2); // instruction fetch (NX violation)
 
+constexpr uint32_t MM_REMAP_MAYMOVE = (1u << 0);
+constexpr uint32_t MM_REMAP_FIXED   = (1u << 1);
+
 struct mm_context final : rc::ref_counted<mm_context> {
     pmm::phys_addr_t pt_root;
     uintptr_t        mmap_base;
@@ -145,6 +148,30 @@ __PRIVILEGED_CODE int32_t mm_context_discard(
     mm_context* mm_ctx,
     uintptr_t addr,
     size_t length
+);
+
+/**
+ * @brief Resize the mapping at [old_addr, old_addr+old_len) to `new_len`.
+ * Shrinking unmaps the tail. Private anonymous memory grows in place when the
+ * addresses after it are free and otherwise, with MM_REMAP_MAYMOVE, moves to
+ * a new range, keeping its frames. MM_REMAP_FIXED (which requires
+ * MM_REMAP_MAYMOVE) moves it to `new_addr`, replacing whatever is mapped
+ * there. Shared and device mappings can shrink but not grow or move.
+ * @param out_addr Receives the start of the resized mapping.
+ * @return MM_CTX_OK, ERR_NOT_MAPPED when the old range is not inside one
+ * mapping, ERR_CANNOT_GROW when a shared or device mapping would grow,
+ * ERR_NO_VIRT when growing in place is impossible and moving is not allowed,
+ * ERR_INVALID_ARG, or ERR_NO_MEM.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mm_context_remap(
+    mm_context* mm_ctx,
+    uintptr_t old_addr,
+    size_t old_len,
+    size_t new_len,
+    uint32_t flags,
+    uintptr_t new_addr,
+    uintptr_t* out_addr
 );
 
 /**
