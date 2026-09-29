@@ -65,11 +65,8 @@ __PRIVILEGED_CODE static int32_t query_net_status(uint64_t arg) {
 }
 
 __PRIVILEGED_CODE static int32_t query_arp_table(uint64_t arg) {
-    arp::arp_snapshot_entry entries[arp::TABLE_SIZE];
-    size_t count = arp::snapshot(entries, arp::TABLE_SIZE);
-    if (count > MAX_ARPINFO) {
-        count = MAX_ARPINFO;
-    }
+    arp::arp_snapshot_entry entries[MAX_ARPINFO];
+    size_t count = arp::snapshot(entries, MAX_ARPINFO);
 
     arp_info info = {};
     for (size_t i = 0; i < count; i++) {

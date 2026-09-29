@@ -61,7 +61,6 @@ enum class arp_entry_state : uint8_t {
 };
 
 struct arp_entry {
-    interface*      iface;
     arp_entry_state state;
     uint8_t         attempts;  // Requests sent while pending
     bool            draining;  // Forgotten while pending, gone once its queue can leave
@@ -78,11 +77,6 @@ enum class arp_send_action : uint8_t {
     queued   = 1,
 };
 
-struct arp_retry {
-    interface*      iface;
-    ipv4::ipv4_addr ip;
-};
-
 // Copy of one occupied entry for reporting
 struct arp_snapshot_entry {
     interface*      iface;
@@ -92,19 +86,23 @@ struct arp_snapshot_entry {
     uint64_t        age_ns; // Since the last request while pending, since confirmation while resolved
 };
 
+/**
+ * The neighbors learned on one interface. Each interface owns its table, so an
+ * entry and the packets waiting on it never outlive the interface they belong to.
+ */
 class arp_table {
 public:
-    arp_table() = default;
-    ~arp_table() = default;
+    arp_table();
+    ~arp_table();
 
-    void init();
+    arp_table(const arp_table&) = delete;
+    arp_table& operator=(const arp_table&) = delete;
 
     /*
      * Fills `out_mac` when `ip` is known, otherwise holds `pkt` on a pending entry and
      * sets `send_request` when one must go out. Packets evicted for room return in `dropped`.
      */
     arp_send_action resolve(
-        interface* iface,
         const ipv4::ipv4_addr& ip,
         packet* pkt,
         uint64_t timestamp,
@@ -118,7 +116,6 @@ public:
      * waited on it return in `flushed` for sending. True when a pending entry resolved.
      */
     bool update_entry(
-        interface* iface,
         const ipv4::ipv4_addr& ip,
         const eth::mac_addr& mac,
         uint64_t timestamp,
@@ -127,30 +124,30 @@ public:
     );
 
     /*
-     * Expires resolved entries past their lifetime and retries or fails pending ones.
-     * Failed entries return their packets in `dropped`, ones to retry are listed in `retries`.
+     * Expires stale resolved entries and retries or fails pending ones. Failed entries return
+     * their packets in `dropped`, and `retries`, with room for TABLE_SIZE, lists addresses to ask again.
      */
     void sweep(
         uint64_t timestamp,
         packet_list& dropped,
-        arp_retry* retries,
+        ipv4::ipv4_addr* retries,
         size_t* retry_count
     );
 
     /*
      * Copies the occupied entries into `out`, at most `max` of them, with ages
-     * measured from `timestamp`. Returns how many were copied.
+     * measured from `timestamp` and no interface set. Returns how many were copied.
      */
     size_t snapshot(arp_snapshot_entry* out, size_t max, uint64_t timestamp);
 
     /*
-     * Drops every entry learned on `iface`. A pending entry stays only to send the
-     * packets that wait on it, and leaves the table the moment it resolves.
+     * Drops every entry. A pending entry stays only to send the packets that
+     * wait on it, and leaves the table the moment it resolves.
      */
-    void forget(interface* iface);
+    void forget();
 
 private:
-    arp_entry* find_entry(interface* iface, const ipv4::ipv4_addr& ip);
+    arp_entry* find_entry(const ipv4::ipv4_addr& ip);
     arp_entry* take_free_entry();
     arp_entry* allocate_entry(packet_list& dropped);
     void clear_entry(arp_entry& entry);
@@ -158,11 +155,6 @@ private:
     sync::spinlock m_lock;
     arp_entry      m_entries[TABLE_SIZE];
 };
-
-/*
- * Sets up the ARP table
- */
-int32_t init();
 
 /*
  * Consumes an ARP packet.
@@ -188,20 +180,16 @@ int32_t resolve(interface* iface, const ipv4::ipv4_addr& ip, eth::mac_addr* out)
 int32_t resolve_and_send(packet* pkt, const ipv4::ipv4_addr& next_hop);
 
 /*
- * Ages the table on every netstkd daemon pass. `ts` is the current monotonic time.
+ * Ages the table of every registered interface on each netstkd daemon pass.
+ * `ts` is the current monotonic time.
  */
 void sweep(uint64_t ts);
 
 /*
- * Copies the occupied table entries into `out`, at most `max`. Returns how many.
+ * Copies the occupied entries of every registered interface into `out`, at most
+ * `max`. Returns how many.
  */
 size_t snapshot(arp_snapshot_entry* out, size_t max);
-
-/*
- * Drops everything learned on `iface`, for when its addressing changes. Packets
- * already accepted for sending still leave once their address resolves.
- */
-void forget(interface* iface);
 
 } // namespace arp
 } // namespace net

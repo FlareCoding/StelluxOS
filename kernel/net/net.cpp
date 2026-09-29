@@ -31,12 +31,6 @@ __PRIVILEGED_CODE int32_t init() {
         return rc;
     }
 
-    rc = arp::init();
-    if (rc != OK) {
-        log::error("net: arp::init failed: %d", rc);
-        return rc;
-    }
-
     rc = tcp::init();
     if (rc != OK) {
         log::error("net: tcp::init failed: %d", rc);

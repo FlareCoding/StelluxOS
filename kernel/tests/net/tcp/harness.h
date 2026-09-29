@@ -42,7 +42,6 @@ struct linked_peer {
     peer           remote;
 
     linked_peer();
-    ~linked_peer() { net::arp::forget(&link); }
 };
 
 inline const net::ipv4::ipv4_header* sent_ip(const stub_interface& link, size_t index) {
