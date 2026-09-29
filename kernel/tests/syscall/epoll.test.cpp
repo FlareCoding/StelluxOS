@@ -28,6 +28,7 @@ constexpr uint64_t EPOLL_CTL_DEL  = 2;
 constexpr uint64_t EPOLL_CTL_MOD  = 3;
 constexpr uint64_t UNDEFINED_OP   = 4;
 constexpr uint32_t EPOLLONESHOT   = 1u << 30;
+constexpr uint32_t EPOLLET        = 1u << 31;
 constexpr int64_t  MISSING_FD     = 999;
 constexpr uint64_t READ_DATA      = 0xC0FFEE;
 constexpr uint64_t WRITE_DATA     = 0xBEEF;
@@ -77,16 +78,24 @@ struct watched_pipe {
 
     bool ready() const { return write_fd >= 0; }
 
-    int64_t ctl(uint64_t op, int64_t fd, uint32_t events, uint64_t data, int64_t on_epfd = -1) {
+    int64_t ctl_on(int64_t epoll_fd, uint64_t op, int64_t fd, uint32_t events, uint64_t data) {
         *page.at<syscall::epoll_event>(EVENT_AT) = {events, data};
 
         user_space_scope scope(page.ctx);
-        return sys_epoll_ctl(on_epfd >= 0 ? on_epfd : epfd, op, fd, page.addr + EVENT_AT, 0, 0);
+        return sys_epoll_ctl(epoll_fd, op, fd, page.addr + EVENT_AT, 0, 0);
     }
 
-    int64_t wait(uint64_t max_events, uint64_t events_at = 0) {
+    int64_t ctl(uint64_t op, int64_t fd, uint32_t events, uint64_t data) {
+        return ctl_on(epfd, op, fd, events, data);
+    }
+
+    int64_t wait_into(uint64_t events_at, uint64_t max_events) {
         user_space_scope scope(page.ctx);
-        return sys_epoll_pwait(epfd, events_at ? events_at : page.addr + EVENTS_AT, max_events, 0, 0, 0);
+        return sys_epoll_pwait(epfd, events_at, max_events, 0, 0, 0);
+    }
+
+    int64_t wait(uint64_t max_events) {
+        return wait_into(page.addr + EVENTS_AT, max_events);
     }
 
     // Copied out of the packed record, whose fields the test macros cannot bind references to
@@ -142,12 +151,12 @@ TEST(epoll_syscall, bad_handles_ops_modes_and_targets_are_refused) {
     resource::handle_t directory = -1;
     ASSERT_EQ(resource::open(pipe.task, "/", fs::O_RDONLY, &directory), resource::OK);
 
-    EXPECT_EQ(pipe.ctl(EPOLL_CTL_ADD, pipe.read_fd, sync::POLL_IN, READ_DATA, MISSING_FD), syscall::EBADF);
+    EXPECT_EQ(pipe.ctl_on(MISSING_FD, EPOLL_CTL_ADD, pipe.read_fd, sync::POLL_IN, READ_DATA), syscall::EBADF);
     EXPECT_EQ(pipe.ctl(EPOLL_CTL_ADD, MISSING_FD, sync::POLL_IN, READ_DATA), syscall::EBADF);
     EXPECT_EQ(pipe.ctl(UNDEFINED_OP, pipe.read_fd, sync::POLL_IN, READ_DATA), syscall::EINVAL);
     EXPECT_EQ(pipe.ctl(EPOLL_CTL_ADD, pipe.epfd, sync::POLL_IN, READ_DATA), syscall::EINVAL);
-    EXPECT_EQ(pipe.ctl(EPOLL_CTL_ADD, pipe.write_fd, sync::POLL_OUT, WRITE_DATA, pipe.read_fd), syscall::EINVAL);
-    EXPECT_EQ(pipe.ctl(EPOLL_CTL_ADD, pipe.read_fd, sync::POLL_IN | EPOLLONESHOT, READ_DATA), syscall::EINVAL);
+    EXPECT_EQ(pipe.ctl_on(pipe.read_fd, EPOLL_CTL_ADD, pipe.write_fd, sync::POLL_OUT, WRITE_DATA), syscall::EINVAL);
+    EXPECT_EQ(pipe.ctl(EPOLL_CTL_ADD, pipe.read_fd, sync::POLL_IN | EPOLLET, READ_DATA), syscall::EINVAL);
     EXPECT_EQ(pipe.ctl(EPOLL_CTL_ADD, directory, sync::POLL_IN, READ_DATA), syscall::EPERM);
 
     // A removal never reads the event, so an unmapped one only faults for an add
@@ -208,8 +217,21 @@ TEST(epoll_syscall, a_wait_refuses_bad_counts_and_handles_and_faults_on_an_unmap
     EXPECT_EQ(not_epoll, syscall::EINVAL);
 
     ASSERT_EQ(pipe.ctl(EPOLL_CTL_ADD, pipe.read_fd, sync::POLL_IN, READ_DATA), 0);
-    EXPECT_EQ(pipe.wait(WAIT_EVENTS, pipe.page.addr + pmm::PAGE_SIZE - sizeof(syscall::epoll_event) / 2),
+    EXPECT_EQ(pipe.wait_into(pipe.page.addr + pmm::PAGE_SIZE - sizeof(syscall::epoll_event) / 2, WAIT_EVENTS),
               syscall::EFAULT);
+}
+
+TEST(epoll_syscall, a_one_shot_interest_outlives_a_wait_whose_buffer_faults) {
+    watched_pipe pipe;
+    ASSERT_TRUE(pipe.ready());
+
+    ASSERT_EQ(pipe.ctl(EPOLL_CTL_ADD, pipe.read_fd, sync::POLL_IN | EPOLLONESHOT, READ_DATA), 0);
+
+    EXPECT_EQ(pipe.wait_into(pipe.page.addr + pmm::PAGE_SIZE - sizeof(syscall::epoll_event) / 2, WAIT_EVENTS),
+              syscall::EFAULT);
+    EXPECT_EQ(pipe.wait(WAIT_EVENTS), 1);
+    EXPECT_EQ(pipe.reported(0).data, READ_DATA);
+    EXPECT_EQ(pipe.wait(WAIT_EVENTS), 0);
 }
 
 TEST(epoll_syscall, epoll_pwait_blocks_its_signal_mask_until_the_syscall_returns) {

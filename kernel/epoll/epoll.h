@@ -12,7 +12,8 @@ namespace resource { struct resource_object; }
  * reached through one handle, and names a value to report with them. An interest holds no reference on
  * its object, and ends when it is removed or when the epoll or the object is destroyed. An interest whose
  * object may have become ready waits on its epoll's ready list, to be checked again before it is reported.
- * A wait reports ready interests, and each stays listed while its object stays ready.
+ * A wait reports ready interests, and each stays listed while its object stays ready. A one-shot interest
+ * is reported once, then stays quiet until it is changed.
  */
 namespace epoll {
 
@@ -28,6 +29,9 @@ constexpr int32_t ERR_INTR  = -7;
 // The events an interest may ask for, which share their values with the poll layer
 constexpr uint32_t INTEREST_EVENTS =
     sync::POLL_IN | sync::POLL_PRI | sync::POLL_OUT | sync::POLL_ERR | sync::POLL_HUP | sync::POLL_RDHUP;
+
+// The one-shot mode, whose value matches the ABI's flag
+constexpr uint32_t ONE_SHOT = 1u << 30;
 
 constexpr uint32_t MAX_INTERESTS   = 4096;
 constexpr uint32_t MAX_WAIT_EVENTS = 64;
@@ -49,17 +53,18 @@ __PRIVILEGED_CODE int32_t create(resource::resource_object** out);
  * @brief Registers interest in `events` on `target`, reached through `handle`, to be reported with `data`.
  * The caller holds a reference on `target` for the call.
  * @return OK, ERR_INVAL when `ep` is not an epoll, `target` is one, or `events` has bits outside
- *   INTEREST_EVENTS, ERR_PERM for a target that cannot be polled, ERR_EXIST for an existing interest,
- *   ERR_NOSPC once `ep` holds MAX_INTERESTS, or ERR_NOMEM.
+ *   INTEREST_EVENTS and ONE_SHOT, ERR_PERM for a target that cannot be polled, ERR_EXIST for an existing
+ *   interest, ERR_NOSPC once `ep` holds MAX_INTERESTS, or ERR_NOMEM.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t add_interest(resource::resource_object* ep, resource::handle_t handle,
                                        resource::resource_object* target, uint32_t events, uint64_t data);
 
 /**
- * @brief Replaces the events and data of the interest in `target` through `handle`.
- * @return OK, ERR_INVAL when `ep` is not an epoll or `events` has bits outside INTEREST_EVENTS, or
- *   ERR_NOENT when no such interest exists.
+ * @brief Replaces the events and data of the interest in `target` through `handle`, and re-arms it if a
+ * one-shot report left it quiet.
+ * @return OK, ERR_INVAL when `ep` is not an epoll or `events` has bits outside INTEREST_EVENTS and ONE_SHOT,
+ *   or ERR_NOENT when no such interest exists.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t modify_interest(resource::resource_object* ep, resource::handle_t handle,

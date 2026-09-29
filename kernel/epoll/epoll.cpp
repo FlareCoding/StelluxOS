@@ -15,6 +15,8 @@ namespace epoll {
 // Reported whether or not the interest asked for them
 constexpr uint32_t ALWAYS_EVENTS = sync::POLL_ERR | sync::POLL_HUP;
 
+constexpr uint32_t INTEREST_BITS = INTEREST_EVENTS | ONE_SHOT;
+
 namespace {
 
 struct epoll_instance;
@@ -25,10 +27,12 @@ struct interest_table : sync::poll_table {
     interest* owner;
 };
 
-// A wake before an interest goes live is held until it does, so a refused add is never reported
+// A wake before an interest goes live is held until it does, so a refused add is never reported. A one-shot
+// interest's report disarms it until a change makes it live again.
 enum class interest_state : uint8_t {
     ADDING,
     LIVE,
+    DISARMED,
     ENDED,
 };
 
@@ -109,7 +113,7 @@ static bool queue_ready_locked(interest& entry) {
         return false;
     }
 
-    if (entry.state == interest_state::ENDED || entry.ready_link.is_linked()) {
+    if (entry.state != interest_state::LIVE || entry.ready_link.is_linked()) {
         return false;
     }
 
@@ -258,6 +262,7 @@ __PRIVILEGED_CODE static int32_t change_interest(epoll_instance* instance, resou
 
     entry->events = events;
     entry->data = data;
+    entry->state = interest_state::LIVE;
     queue_ready_locked(*entry);
 
     return OK;
@@ -321,7 +326,17 @@ __PRIVILEGED_CODE static bool report_interest(interest& entry, uint32_t mask, re
     }
 
     event = {.events = events, .data = entry.data};
-    queue_ready_locked(entry);
+
+    if (entry.events & ONE_SHOT) {
+        entry.state = interest_state::DISARMED;
+
+        // A change made while the wait checked the interest may have queued it again
+        if (entry.ready_link.is_linked()) {
+            entry.owner->ready.remove(&entry);
+        }
+    } else {
+        queue_ready_locked(entry);
+    }
 
     return true;
 }
@@ -457,7 +472,7 @@ __PRIVILEGED_CODE int32_t create(resource::resource_object** out) {
 __PRIVILEGED_CODE int32_t add_interest(resource::resource_object* ep, resource::handle_t handle,
                                        resource::resource_object* target, uint32_t events, uint64_t data) {
     epoll_instance* instance = instance_of(ep);
-    if (!instance || !target || target->type == resource::resource_type::EPOLL || (events & ~INTEREST_EVENTS)) {
+    if (!instance || !target || target->type == resource::resource_type::EPOLL || (events & ~INTEREST_BITS)) {
         return ERR_INVAL;
     }
 
@@ -503,7 +518,7 @@ __PRIVILEGED_CODE int32_t add_interest(resource::resource_object* ep, resource::
 __PRIVILEGED_CODE int32_t modify_interest(resource::resource_object* ep, resource::handle_t handle,
                                           resource::resource_object* target, uint32_t events, uint64_t data) {
     epoll_instance* instance = instance_of(ep);
-    if (!instance || (events & ~INTEREST_EVENTS)) {
+    if (!instance || (events & ~INTEREST_BITS)) {
         return ERR_INVAL;
     }
 

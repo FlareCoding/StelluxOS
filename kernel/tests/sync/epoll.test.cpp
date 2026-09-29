@@ -25,7 +25,6 @@ constexpr uint64_t           DATA           = 0xC0FFEE;
 constexpr uint64_t           OTHER_DATA     = 0xBEEF;
 constexpr uint32_t           EXCLUSIVE      = 1u << 28;
 constexpr uint32_t           WAKE_UP        = 1u << 29;
-constexpr uint32_t           ONE_SHOT       = 1u << 30;
 constexpr uint32_t           EDGE_TRIGGERED = 1u << 31;
 constexpr uint32_t           RACE_ROUNDS    = 256;
 constexpr uint32_t           WAIT_EVENTS    = 4;
@@ -36,6 +35,9 @@ constexpr int64_t SHORT_TIMEOUT_NS = 50 * MS;
 
 // Passed by the time a wait first checks it
 constexpr int64_t INSTANT_TIMEOUT_NS = 1;
+
+// Long enough that both waiters are blocked before the wake, and it ends the wait of the one never woken
+constexpr int64_t UNWOKEN_TIMEOUT_NS = 500 * MS;
 
 // Under a spin_wait's limit, so a wait that is never woken still ends first
 constexpr int64_t LONG_TIMEOUT_NS = 5000 * MS;
@@ -166,7 +168,6 @@ TEST(epoll_interests, unsupported_events_and_targets_are_refused) {
     ASSERT_NOT_NULL(unpollable);
 
     EXPECT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN | EDGE_TRIGGERED, DATA), epoll::ERR_INVAL);
-    EXPECT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN | ONE_SHOT, DATA), epoll::ERR_INVAL);
     EXPECT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN | EXCLUSIVE, DATA), epoll::ERR_INVAL);
     EXPECT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN | WAKE_UP, DATA), epoll::ERR_INVAL);
 
@@ -627,6 +628,50 @@ TEST(epoll_wait, a_ready_interest_is_reported_by_every_wait_until_it_is_not_read
     resource::resource_release(ep);
 }
 
+TEST(epoll_wait, a_one_shot_interest_is_reported_once_until_it_is_changed) {
+    reset_probe(sync::POLL_IN);
+    resource::resource_object* ep = create_epoll();
+    resource::resource_object* target = create_target(&g_probe_ops);
+    ASSERT_NOT_NULL(ep);
+    ASSERT_NOT_NULL(target);
+
+    ASSERT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN | epoll::ONE_SHOT, DATA), epoll::OK);
+
+    epoll::ready_event events[WAIT_EVENTS] = {};
+    EXPECT_EQ(epoll::wait(ep, events, WAIT_EVENTS, 0), 1);
+    EXPECT_EQ(events[0].events, sync::POLL_IN);
+
+    sync::wake_all(g_probe_queue);
+    EXPECT_EQ(epoll::ready_count(ep), 0u);
+    EXPECT_EQ(epoll::wait(ep, events, WAIT_EVENTS, 0), 0);
+
+    EXPECT_EQ(epoll::modify_interest(ep, HANDLE, target, sync::POLL_IN | epoll::ONE_SHOT, OTHER_DATA), epoll::OK);
+    EXPECT_EQ(epoll::wait(ep, events, WAIT_EVENTS, 0), 1);
+    EXPECT_EQ(events[0].data, OTHER_DATA);
+    EXPECT_EQ(epoll::wait(ep, events, WAIT_EVENTS, 0), 0);
+
+    resource::resource_release(target);
+    resource::resource_release(ep);
+}
+
+TEST(epoll_wait, a_disarmed_one_shot_interest_reports_no_hangup) {
+    reset_probe(sync::POLL_HUP);
+    resource::resource_object* ep = create_epoll();
+    resource::resource_object* target = create_target(&g_probe_ops);
+    ASSERT_NOT_NULL(ep);
+    ASSERT_NOT_NULL(target);
+
+    ASSERT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN | epoll::ONE_SHOT, DATA), epoll::OK);
+
+    epoll::ready_event events[WAIT_EVENTS] = {};
+    EXPECT_EQ(epoll::wait(ep, events, WAIT_EVENTS, 0), 1);
+    EXPECT_EQ(events[0].events, sync::POLL_HUP);
+    EXPECT_EQ(epoll::wait(ep, events, WAIT_EVENTS, 0), 0);
+
+    resource::resource_release(target);
+    resource::resource_release(ep);
+}
+
 TEST(epoll_wait, a_wait_reports_at_most_max_events_and_ready_interests_take_turns) {
     reset_probe(sync::POLL_IN);
     resource::resource_object* ep = create_epoll();
@@ -857,6 +902,36 @@ TEST(epoll_wait, a_wake_is_passed_on_to_every_waiter_while_the_interest_stays_re
     resource::resource_release(ep);
 }
 
+TEST(epoll_wait, a_one_shot_wake_reaches_a_single_waiter) {
+    reset_probe(0);
+    resource::resource_object* ep = create_epoll();
+    resource::resource_object* target = create_target(&g_probe_ops);
+    ASSERT_NOT_NULL(ep);
+    ASSERT_NOT_NULL(target);
+
+    ASSERT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN | epoll::ONE_SHOT, DATA), epoll::OK);
+
+    sched::task* first = start_wait(g_wait, ep, UNWOKEN_TIMEOUT_NS);
+    sched::task* second = start_wait(g_other_wait, ep, UNWOKEN_TIMEOUT_NS);
+    ASSERT_NOT_NULL(first);
+    ASSERT_NOT_NULL(second);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(first));
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(second));
+
+    g_probe_events = sync::POLL_IN;
+    sync::wake_all(g_probe_queue);
+
+    EXPECT_TRUE(spin_wait(g_wait.done));
+    EXPECT_TRUE(spin_wait(g_other_wait.done));
+    unpin(first);
+    unpin(second);
+
+    EXPECT_EQ(g_wait.result + g_other_wait.result, 1);
+
+    resource::resource_release(target);
+    resource::resource_release(ep);
+}
+
 TEST(epoll_wait, a_kill_interrupts_a_blocked_wait) {
     reset_probe(0);
     resource::resource_object* ep = create_epoll();
@@ -997,6 +1072,33 @@ TEST(epoll_wait, a_target_released_while_a_wait_checks_it_lives_until_the_check_
     EXPECT_EQ(epoll::interest_count(ep), 0u);
     EXPECT_EQ(epoll::ready_count(ep), 0u);
 
+    resource::resource_release(ep);
+}
+
+TEST(epoll_wait, a_one_shot_interest_changed_while_a_wait_checks_it_is_not_left_queued) {
+    if (smp::cpu_count() < RACE_CPUS) {
+        return;
+    }
+
+    resource::resource_object* ep = create_epoll();
+    resource::resource_object* target = create_target(&g_held_ops);
+    ASSERT_NOT_NULL(ep);
+    ASSERT_NOT_NULL(target);
+
+    ASSERT_EQ(epoll::add_interest(ep, HANDLE, target, sync::POLL_IN | epoll::ONE_SHOT, DATA), epoll::OK);
+    ASSERT_TRUE(start_held_wait(ep));
+    ASSERT_TRUE(spin_wait(g_check_started));
+
+    EXPECT_EQ(epoll::modify_interest(ep, HANDLE, target, sync::POLL_IN | epoll::ONE_SHOT, OTHER_DATA), epoll::OK);
+    EXPECT_EQ(epoll::ready_count(ep), 1u);
+    g_check_released.store_release(1);
+
+    ASSERT_TRUE(spin_wait(g_held_wait.done));
+    EXPECT_EQ(g_held_wait.result, 1);
+    EXPECT_EQ(g_held_wait.events[0].data, OTHER_DATA);
+    EXPECT_EQ(epoll::ready_count(ep), 0u);
+
+    resource::resource_release(target);
     resource::resource_release(ep);
 }
 
