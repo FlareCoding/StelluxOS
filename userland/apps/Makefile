@@ -4,7 +4,7 @@
 
 APP_DIRS := init hello shell ls cat rm cp mv stat touch sleep true false clear ptytest date \
 			clockbench stlxdm ping ifconfig nslookup arp dhcpc udpecho tcpecho netstat iperf3 \
-			fetch polltest sigtest dropbear blackjack wordle hangman snake tetris \
+			fetch polltest epolltest sigtest dropbear blackjack wordle hangman snake tetris \
 			grep wc head threadtest pthreadtest mmstress uname kill cxxtest synctest isoprobe vim tcc stlxtop \
 			reboot shutdown gfxbench windemo stlxterm doom uidemo \
 			stlxsettings file-manager

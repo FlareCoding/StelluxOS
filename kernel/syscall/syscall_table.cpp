@@ -20,6 +20,7 @@
 #include "syscall/handlers/sys_select.h"
 #include "syscall/handlers/sys_pipe.h"
 #include "syscall/handlers/sys_eventfd.h"
+#include "syscall/handlers/sys_epoll.h"
 #include "syscall/handlers/sys_uname.h"
 #include "syscall/handlers/sys_sysinfo.h"
 #include "syscall/handlers/sys_rusage.h"
@@ -61,6 +62,8 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::STAT,            stat);
     REGISTER_SYSCALL(linux_nr::LSTAT,           lstat);
     REGISTER_SYSCALL(linux_nr::DUP2,            dup2);
+    REGISTER_SYSCALL(linux_nr::EPOLL_CREATE,    epoll_create);
+    REGISTER_SYSCALL(linux_nr::EPOLL_WAIT,      epoll_wait);
 #endif
     REGISTER_SYSCALL(linux_nr::BRK,             brk);
     REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
@@ -122,6 +125,9 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::PPOLL,       ppoll);
     REGISTER_SYSCALL(linux_nr::PIPE2,      pipe2);
     REGISTER_SYSCALL(linux_nr::EVENTFD2,   eventfd2);
+    REGISTER_SYSCALL(linux_nr::EPOLL_CREATE1, epoll_create1);
+    REGISTER_SYSCALL(linux_nr::EPOLL_CTL,     epoll_ctl);
+    REGISTER_SYSCALL(linux_nr::EPOLL_PWAIT,   epoll_pwait);
 
     REGISTER_SYSCALL(linux_nr::MEMFD_CREATE, memfd_create);
     REGISTER_SYSCALL(linux_nr::FSYNC,       fsync);
