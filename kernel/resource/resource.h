@@ -131,8 +131,8 @@ __PRIVILEGED_CODE uint32_t handle_limit(sched::task* task);
 __PRIVILEGED_CODE uint32_t handle_limit_unlocked(sched::task* task);
 
 /**
- * @brief Install a resource object in the lowest free slot of the task's table below its handle_limit.
- * Increments object refcount on success.
+ * @brief Install a resource object in the lowest free slot of the task's table at or
+ * above `min_handle` and below its handle_limit. Increments object refcount on success.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t alloc_task_handle(
@@ -140,7 +140,8 @@ __PRIVILEGED_CODE int32_t alloc_task_handle(
     resource_object* obj,
     resource_type type,
     uint32_t rights,
-    handle_t* out_handle
+    handle_t* out_handle,
+    uint32_t min_handle = 0
 );
 
 /**

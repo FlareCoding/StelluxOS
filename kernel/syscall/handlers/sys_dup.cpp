@@ -40,6 +40,41 @@ static int64_t dup_to_slot(
     return static_cast<int64_t>(new_h);
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int64_t syscall::duplicate_handle(
+    sched::task* task,
+    resource::handle_t old_h,
+    uint64_t min_handle,
+    bool cloexec
+) {
+    resource::resource_object* obj = nullptr;
+    uint32_t rights = 0;
+    int32_t rc = resource::get_handle_object(task->handles, old_h, 0, &obj, nullptr, &rights);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+
+    if (min_handle >= resource::handle_limit(task)) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+
+    resource::handle_t new_h = -1;
+    rc = resource::alloc_task_handle(task, obj, obj->type, rights, &new_h, static_cast<uint32_t>(min_handle));
+    resource::resource_release(obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::error_map::map_handle_alloc_error(rc);
+    }
+
+    if (cloexec) {
+        resource::set_handle_flags(task->handles, new_h, resource::RESOURCE_HANDLE_CLOEXEC);
+    }
+
+    return static_cast<int64_t>(new_h);
+}
+
 DEFINE_SYSCALL1(dup, u_oldfd) {
     sched::task* task = sched::current();
     if (!task) {

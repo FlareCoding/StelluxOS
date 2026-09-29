@@ -4,6 +4,7 @@
 #include "resource/providers/file_provider.h"
 #include "resource/providers/shmem_provider.h"
 #include "resource/providers/shm_provider.h"
+#include "syscall/handlers/sys_dup.h"
 #include "syscall/handlers/sys_error_map.h"
 #include "syscall/handlers/sys_io.h"
 #include "sched/sched.h"
@@ -1383,10 +1384,12 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
     return static_cast<int64_t>(bytes_written);
 }
 
+constexpr uint64_t F_DUPFD = 0;
 constexpr uint64_t F_GETFD = 1;
 constexpr uint64_t F_SETFD = 2;
 constexpr uint64_t F_GETFL = 3;
 constexpr uint64_t F_SETFL = 4;
+constexpr uint64_t F_DUPFD_CLOEXEC = 1030;
 
 constexpr int64_t FD_CLOEXEC = 1;
 
@@ -1394,6 +1397,11 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     sched::task* task = sched::current();
     if (!task) {
         return syscall::EIO;
+    }
+
+    if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC) {
+        return syscall::duplicate_handle(task, static_cast<resource::handle_t>(fd), arg,
+                                         cmd == F_DUPFD_CLOEXEC);
     }
 
     if (cmd == F_GETFD) {
