@@ -36,6 +36,11 @@ constexpr uint64_t ENTRY_PRESENT    = 1ULL << 0;
 constexpr uint64_t ENTRY_KEPT_FRAME = 1ULL << 9;
 constexpr uint64_t ENTRY_ADDR_MASK  = 0x000FFFFFFFFFF000ULL;
 
+constexpr virt_addr_t PML4_ENTRY_SPAN = 1ULL << 39;
+constexpr virt_addr_t PDPT_ENTRY_SPAN = 1ULL << 30;
+constexpr virt_addr_t PD_ENTRY_SPAN   = 1ULL << 21;
+constexpr uint32_t    TABLE_ENTRIES   = 512;
+
 __PRIVILEGED_CODE pmm::phys_addr_t get_kernel_pt_root() {
     if (g_kernel_pt_root == 0) {
         return current_pt_root();
@@ -902,6 +907,65 @@ __PRIVILEGED_CODE bool is_mapped(virt_addr_t virt, pmm::phys_addr_t root_pt) {
 
     page_table_t* pt = static_cast<page_table_t*>(phys_to_virt(pde->phys_addr << 12));
     return pt->entries[parts.pt_idx].present;
+}
+
+__PRIVILEGED_CODE static virt_addr_t start_of_next_block(virt_addr_t virt, virt_addr_t span) {
+    return (virt | (span - 1)) + 1;
+}
+
+__PRIVILEGED_CODE virt_addr_t find_next_populated_page(virt_addr_t virt, virt_addr_t end,
+                                                       pmm::phys_addr_t root_pt) {
+    if (!g_initialized) {
+        return end;
+    }
+
+    sync::irq_lock_guard guard(g_pt_lock);
+
+    pml4_t* pml4 = static_cast<pml4_t*>(phys_to_virt(root_pt));
+    while (virt < end) {
+        auto parts = split_virt_addr(virt);
+
+        pml4e_t* pml4e = &pml4->entries[parts.pml4_idx];
+        if (!pml4e->present) {
+            virt = start_of_next_block(virt, PML4_ENTRY_SPAN);
+            continue;
+        }
+
+        pdpt_t* pdpt = static_cast<pdpt_t*>(phys_to_virt(pml4e->phys_addr << 12));
+        pdpte_t* pdpte = &pdpt->entries[parts.pdpt_idx];
+        if (pdpte->value == 0) {
+            virt = start_of_next_block(virt, PDPT_ENTRY_SPAN);
+            continue;
+        }
+
+        // A large page, or the frame one left behind, is handled page by page
+        if (!pdpte->present || pdpte->page_size) {
+            return virt;
+        }
+
+        page_directory_t* pd = static_cast<page_directory_t*>(phys_to_virt(pdpte->phys_addr << 12));
+        pde_t* pde = &pd->entries[parts.pd_idx];
+        if (pde->value == 0) {
+            virt = start_of_next_block(virt, PD_ENTRY_SPAN);
+            continue;
+        }
+
+        if (!pde->present || pde->page_size) {
+            return virt;
+        }
+
+        page_table_t* pt = static_cast<page_table_t*>(phys_to_virt(pde->phys_addr << 12));
+        for (uint32_t i = parts.pt_idx; i < TABLE_ENTRIES; i++) {
+            if (pt->entries[i].value != 0) {
+                virt_addr_t found = (virt & ~(PD_ENTRY_SPAN - 1)) | (static_cast<virt_addr_t>(i) << 12);
+                return found < end ? found : end;
+            }
+        }
+
+        virt = start_of_next_block(virt, PD_ENTRY_SPAN);
+    }
+
+    return end;
 }
 
 __PRIVILEGED_CODE void flush_tlb_page_local(virt_addr_t virt) {

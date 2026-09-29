@@ -44,6 +44,11 @@ constexpr uint64_t DESC_VALID      = 1ULL << 0;
 constexpr uint64_t DESC_KEPT_FRAME = 1ULL << 55;
 constexpr uint64_t DESC_ADDR_MASK  = 0x0000FFFFFFFFF000ULL;
 
+constexpr virt_addr_t L0_ENTRY_SPAN = 1ULL << 39;
+constexpr virt_addr_t L1_ENTRY_SPAN = 1ULL << 30;
+constexpr virt_addr_t L2_ENTRY_SPAN = 1ULL << 21;
+constexpr uint32_t    TABLE_ENTRIES = 512;
+
 __PRIVILEGED_CODE pmm::phys_addr_t get_kernel_pt_root() {
     if (g_kernel_pt_root == 0) {
         return current_pt_root();
@@ -1058,6 +1063,68 @@ __PRIVILEGED_CODE bool is_mapped(virt_addr_t virt, pmm::phys_addr_t root_pt) {
         phys_to_virt(l2_entry->next_table_addr << 12));
 
     return l3->as_page[parts.l3_idx].valid;
+}
+
+__PRIVILEGED_CODE static virt_addr_t start_of_next_block(virt_addr_t virt, virt_addr_t span) {
+    return (virt | (span - 1)) + 1;
+}
+
+__PRIVILEGED_CODE virt_addr_t find_next_populated_page(virt_addr_t virt, virt_addr_t end,
+                                                       pmm::phys_addr_t root_pt) {
+    if (!g_initialized) {
+        return end;
+    }
+
+    sync::irq_lock_guard guard(g_pt_lock);
+
+    translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
+    while (virt < end) {
+        auto parts = split_virt_addr(virt);
+
+        table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
+        if (!l0_entry->valid) {
+            virt = start_of_next_block(virt, L0_ENTRY_SPAN);
+            continue;
+        }
+
+        translation_table_t* l1 = static_cast<translation_table_t*>(
+            phys_to_virt(l0_entry->next_table_addr << 12));
+        if (l1->raw[parts.l1_idx] == 0) {
+            virt = start_of_next_block(virt, L1_ENTRY_SPAN);
+            continue;
+        }
+
+        // A block, or the frame one left behind, is handled page by page
+        table_desc_t* l1_entry = &l1->as_table[parts.l1_idx];
+        if (!l1_entry->valid || l1_entry->type == 0) {
+            return virt;
+        }
+
+        translation_table_t* l2 = static_cast<translation_table_t*>(
+            phys_to_virt(l1_entry->next_table_addr << 12));
+        if (l2->raw[parts.l2_idx] == 0) {
+            virt = start_of_next_block(virt, L2_ENTRY_SPAN);
+            continue;
+        }
+
+        table_desc_t* l2_entry = &l2->as_table[parts.l2_idx];
+        if (!l2_entry->valid || l2_entry->type == 0) {
+            return virt;
+        }
+
+        translation_table_t* l3 = static_cast<translation_table_t*>(
+            phys_to_virt(l2_entry->next_table_addr << 12));
+        for (uint32_t i = parts.l3_idx; i < TABLE_ENTRIES; i++) {
+            if (l3->raw[i] != 0) {
+                virt_addr_t found = (virt & ~(L2_ENTRY_SPAN - 1)) | (static_cast<virt_addr_t>(i) << 12);
+                return found < end ? found : end;
+            }
+        }
+
+        virt = start_of_next_block(virt, L2_ENTRY_SPAN);
+    }
+
+    return end;
 }
 
 __PRIVILEGED_CODE void flush_tlb_page(virt_addr_t virt) {

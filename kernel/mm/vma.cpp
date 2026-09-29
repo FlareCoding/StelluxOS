@@ -208,27 +208,33 @@ __PRIVILEGED_CODE uintptr_t vma_find_gap_topdown_locked(mm_context* mm_ctx, size
 }
 
 __PRIVILEGED_CODE void unmap_and_free_pages(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
+    pmm::phys_addr_t root = mm_ctx->pt_root;
+
     // Frames stay owned until every CPU has dropped its translation, so a
     // sibling thread still using a stale one touches memory that is still ours.
-    for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
-        paging::unmap_page_keep_frame(vaddr, mm_ctx->pt_root);
+    for (uintptr_t vaddr = paging::find_next_populated_page(start, end, root); vaddr < end;
+         vaddr = paging::find_next_populated_page(vaddr + pmm::PAGE_SIZE, end, root)) {
+        paging::unmap_page_keep_frame(vaddr, root);
     }
 
     paging::flush_tlb_range(start, end);
 
-    for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
+    for (uintptr_t vaddr = paging::find_next_populated_page(start, end, root); vaddr < end;
+         vaddr = paging::find_next_populated_page(vaddr + pmm::PAGE_SIZE, end, root)) {
         pmm::phys_addr_t phys = 0;
         size_t size = 0;
 
-        if (paging::take_kept_frame(vaddr, mm_ctx->pt_root, &phys, &size) == paging::OK) {
+        if (paging::take_kept_frame(vaddr, root, &phys, &size) == paging::OK) {
             pmm::free_page(phys);
         }
     }
 }
 
 __PRIVILEGED_CODE void unmap_pages_only(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
-    for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
-        paging::unmap_page(vaddr, mm_ctx->pt_root);
+    pmm::phys_addr_t root = mm_ctx->pt_root;
+    for (uintptr_t vaddr = paging::find_next_populated_page(start, end, root); vaddr < end;
+         vaddr = paging::find_next_populated_page(vaddr + pmm::PAGE_SIZE, end, root)) {
+        paging::unmap_page(vaddr, root);
     }
 
     // The range can be mapped again as soon as the caller returns
@@ -336,13 +342,15 @@ __PRIVILEGED_CODE int32_t apply_page_protection(
     paging::page_flags_t page_flags = prot_to_page_flags(prot);
     int32_t rc = MM_CTX_OK;
 
-    for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
+    pmm::phys_addr_t root = mm_ctx->pt_root;
+    for (uintptr_t vaddr = paging::find_next_populated_page(start, end, root); vaddr < end;
+         vaddr = paging::find_next_populated_page(vaddr + pmm::PAGE_SIZE, end, root)) {
         // Absent pages take the VMA's protection when they fault in
-        if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
+        if (!paging::is_mapped(vaddr, root)) {
             continue;
         }
 
-        if (paging::set_page_flags(vaddr, page_flags, mm_ctx->pt_root) != paging::OK) {
+        if (paging::set_page_flags(vaddr, page_flags, root) != paging::OK) {
             rc = MM_CTX_ERR_MAP_FAILED;
             break;
         }
