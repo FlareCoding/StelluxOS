@@ -309,6 +309,13 @@ __PRIVILEGED_CODE static void add_cpu_time_to_group(task* leaving, thread_group*
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE uint64_t read_process_cpu_time_ns(const task* t) {
+    return t->group ? read_group_cpu_time_ns(t->group) : read_task_cpu_time_ns(t);
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
     uint32_t online = smp::online_count();
     if (online <= 1) return 0;

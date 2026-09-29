@@ -265,6 +265,14 @@ __PRIVILEGED_CODE uint64_t read_task_cpu_time_ns(const task* t);
 __PRIVILEGED_CODE uint64_t read_group_cpu_time_ns(thread_group* group);
 
 /**
+ * @brief Read the CPU time of the process a task belongs to, in nanoseconds:
+ * its thread group's total, or the task's own time when it has no group.
+ * @param t Task the caller keeps alive for the call.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t read_process_cpu_time_ns(const task* t);
+
+/**
  * @brief Block the current task for at least ns nanoseconds.
  * The task is placed on the per-CPU sleep queue and woken by the
  * timer interrupt when the deadline expires.
