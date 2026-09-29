@@ -133,6 +133,21 @@ __PRIVILEGED_CODE int32_t mm_context_mprotect(
 );
 
 /**
+ * @brief Drop the pages of private anonymous memory and stacks in
+ * [addr, addr+length), so each reads as zero on its next touch. Shared memory
+ * and program images keep their pages, since nothing could refill them.
+ * @return MM_CTX_OK, ERR_NOT_MAPPED when part of the range is unmapped (the
+ * mapped parts are still discarded), or ERR_INVALID_ARG for bad arguments or a
+ * range that includes a device mapping.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mm_context_discard(
+    mm_context* mm_ctx,
+    uintptr_t addr,
+    size_t length
+);
+
+/**
  * @brief Map a shmem backing into a user mm_context with MAP_SHARED semantics.
  * Pages come from the backing; they are not allocated per-mapping.
  * @param backing Shmem backing. Must have sufficient size for offset+length.

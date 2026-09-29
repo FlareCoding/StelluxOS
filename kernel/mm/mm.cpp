@@ -476,6 +476,53 @@ __PRIVILEGED_CODE int32_t mm_context_mprotect(
     return MM_CTX_OK;
 }
 
+// Demand faults refill private anonymous memory and stacks with zeros
+static bool refills_with_zeros(const vma& node) {
+    return (node.flags & (VMA_FLAG_ANONYMOUS | VMA_FLAG_STACK)) &&
+           !(node.flags & (VMA_FLAG_SHARED | VMA_FLAG_DEVICE));
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mm_context_discard(
+    mm_context* mm_ctx,
+    uintptr_t addr,
+    size_t length
+) {
+    if (!mm_ctx || !is_page_aligned(addr)) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    uintptr_t end = 0;
+    if (!range_from_len(addr, pmm::page_align_up(length), end)) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    sync::mutex_lock(mm_ctx->lock);
+
+    vma* first = vma_find_overlap_locked(mm_ctx, addr, end);
+    for (vma* node = first; node && node->start < end; node = mm_ctx->vmas.next(*node)) {
+        if (node->flags & VMA_FLAG_DEVICE) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return MM_CTX_ERR_INVALID_ARG;
+        }
+    }
+
+    for (vma* node = first; node && node->start < end; node = mm_ctx->vmas.next(*node)) {
+        if (refills_with_zeros(*node)) {
+            uintptr_t range_start = (node->start > addr) ? node->start : addr;
+            uintptr_t range_end = (node->end < end) ? node->end : end;
+            unmap_and_free_pages(mm_ctx, range_start, range_end);
+        }
+    }
+
+    bool fully_mapped = range_fully_mapped_locked(mm_ctx, addr, end);
+    sync::mutex_unlock(mm_ctx->lock);
+
+    return fully_mapped ? MM_CTX_OK : MM_CTX_ERR_NOT_MAPPED;
+}
+
 /**
  * @note Privilege: **required**
  */
