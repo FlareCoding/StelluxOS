@@ -2,6 +2,8 @@
 
 #include "stlx_unit_test.h"
 #include "resource/resource.h"
+#include "resource/providers/shmem_provider.h"
+#include "mm/shmem.h"
 #include "syscall/handlers/sys_dup.h"
 #include "syscall/handlers/sys_fd.h"
 #include "sched/sched.h"
@@ -125,6 +127,55 @@ TEST(resource_test, rights_enforced_for_read_and_write) {
     ASSERT_EQ(resource::open(task, "/resource_rights", fs::O_RDONLY, &r), resource::OK);
     EXPECT_EQ(resource::write(task, r, "x", 1), static_cast<ssize_t>(resource::ERR_ACCESS));
     EXPECT_EQ(resource::close(task, r), resource::OK);
+}
+
+TEST(resource_test, read_at_needs_read_rights_and_an_object_that_can_seek) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    char buf[4] = {};
+    resource::handle_t w = -1;
+    ASSERT_EQ(resource::open(task, "/resource_read_at_rights", fs::O_CREAT | fs::O_WRONLY, &w),
+              resource::OK);
+    EXPECT_EQ(resource::read_at(task, w, buf, 1, 0), static_cast<ssize_t>(resource::ERR_ACCESS));
+    EXPECT_EQ(resource::close(task, w), resource::OK);
+
+    resource::handle_t null_device = -1;
+    ASSERT_EQ(resource::open(task, "/dev/null", fs::O_RDONLY, &null_device), resource::OK);
+    EXPECT_EQ(resource::read_at(task, null_device, buf, 1, 0),
+              static_cast<ssize_t>(resource::ERR_SPIPE));
+    EXPECT_EQ(resource::close(task, null_device), resource::OK);
+}
+
+TEST(resource_test, read_at_reads_memory_files_without_moving_their_offset) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* obj = nullptr;
+    ASSERT_EQ(resource::shmem_provider::create_shmem_resource(0, &obj), resource::OK);
+    mm::shmem* backing = resource::shmem_provider::get_shmem_backing(obj);
+    ASSERT_NOT_NULL(backing);
+
+    sync::mutex_lock(backing->lock);
+    ASSERT_EQ(mm::shmem_resize_locked(backing, 8), mm::SHMEM_OK);
+    sync::mutex_unlock(backing->lock);
+    ASSERT_EQ(mm::shmem_write(backing, 0, "abcdefgh", 8), static_cast<ssize_t>(8));
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::alloc_task_handle(task, obj, resource::resource_type::SHMEM,
+                                          resource::RIGHT_READ | resource::RIGHT_WRITE, &h),
+              resource::HANDLE_OK);
+    resource::resource_release(obj);
+
+    char at[4] = {};
+    EXPECT_EQ(resource::read_at(task, h, at, 3, 2), static_cast<ssize_t>(3));
+    EXPECT_STREQ(at, "cde");
+
+    char next[4] = {};
+    EXPECT_EQ(resource::read(task, h, next, 2), static_cast<ssize_t>(2));
+    EXPECT_STREQ(next, "ab");
+
+    EXPECT_EQ(resource::close(task, h), resource::OK);
 }
 
 TEST(resource_test, releasing_task_handles_invalidates_existing_handles) {

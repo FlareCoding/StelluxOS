@@ -399,6 +399,16 @@ int64_t file_node::seek(fs::file* f, int64_t offset, int whence) {
     return new_off;
 }
 
+ssize_t file_node::read_at(fs::file*, void* buf, size_t count, uint64_t offset) {
+    sync::mutex_lock(m_backing->lock);
+
+    ssize_t result = mm::shmem_read_locked(m_backing.ptr(), static_cast<size_t>(offset), buf, count);
+
+    sync::mutex_unlock(m_backing->lock);
+
+    return result;
+}
+
 int32_t file_node::truncate(size_t size) {
     sync::mutex_lock(m_backing->lock);
 

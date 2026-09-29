@@ -90,6 +90,39 @@ TEST(fs_test, seek_set_cur_end) {
     fs::unlink("/test_seek");
 }
 
+TEST(fs_test, read_at_leaves_the_file_offset_unchanged) {
+    fs::file* f = fs::open("/test_read_at", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::write(f, "0123456789", 10);
+    fs::seek(f, 2, fs::SEEK_SET);
+
+    char at[8] = {};
+    EXPECT_EQ(fs::read_at(f, at, 4, 5), static_cast<ssize_t>(4));
+    EXPECT_STREQ(at, "5678");
+
+    char next[4] = {};
+    EXPECT_EQ(fs::read(f, next, 3), static_cast<ssize_t>(3));
+    EXPECT_STREQ(next, "234");
+
+    fs::close(f);
+    fs::unlink("/test_read_at");
+}
+
+TEST(fs_test, read_at_stops_at_the_end_of_the_file) {
+    fs::file* f = fs::open("/test_read_at_end", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::write(f, "abcdef", 6);
+
+    char buf[8] = {};
+    EXPECT_EQ(fs::read_at(f, buf, sizeof(buf), 4), static_cast<ssize_t>(2));
+    EXPECT_STREQ(buf, "ef");
+    EXPECT_EQ(fs::read_at(f, buf, sizeof(buf), 6), static_cast<ssize_t>(0));
+    EXPECT_EQ(fs::read_at(f, buf, sizeof(buf), 100), static_cast<ssize_t>(0));
+
+    fs::close(f);
+    fs::unlink("/test_read_at_end");
+}
+
 TEST(fs_test, mkdir_and_stat) {
     int32_t err = fs::mkdir("/test_dir", 0);
     EXPECT_EQ(err, fs::OK);
