@@ -439,3 +439,57 @@ TEST(signal_state, take_deliverable_skips_blocked_and_unhandled) {
     EXPECT_FALSE(taken);
     EXPECT_EQ(g_leader->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGUSR1));
 }
+
+TEST(signal_state, a_temporary_mask_holds_until_it_ends) {
+    const signals::sig_set_t saved = signals::sig_bit(signals::SIGUSR1);
+    const signals::sig_set_t temporary = signals::sig_bit(signals::SIGUSR2) | signals::sig_bit(signals::SIGKILL);
+    g_leader->sig.blocked.store_relaxed(saved);
+
+    signals::sig_set_t during = 0;
+    RUN_ELEVATED({
+        signals::set_temporary_blocked(g_leader, temporary);
+        during = g_leader->sig.blocked.load_relaxed();
+        signals::end_temporary_blocked(g_leader);
+    });
+
+    EXPECT_EQ(during, signals::sig_bit(signals::SIGUSR2));
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), saved);
+    EXPECT_FALSE(g_leader->sig.restore_mask);
+}
+
+TEST(signal_state, replacing_a_temporary_mask_keeps_the_saved_one) {
+    const signals::sig_set_t saved = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.blocked.store_relaxed(saved);
+
+    RUN_ELEVATED({
+        signals::set_temporary_blocked(g_leader, signals::sig_bit(signals::SIGUSR2));
+        signals::set_temporary_blocked(g_leader, signals::sig_bit(signals::SIGTERM));
+        signals::end_temporary_blocked(g_leader);
+    });
+
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), saved);
+}
+
+TEST(signal_state, a_signal_taken_under_a_temporary_mask_returns_to_the_saved_one) {
+    const signals::sig_set_t saved = signals::sig_bit(signals::SIGUSR1) | signals::sig_bit(signals::SIGTERM);
+    const signals::sig_set_t temporary = signals::sig_bit(signals::SIGUSR2);
+    install_handler(signals::SIGUSR1, 0, 0);
+    g_leader->sig.pending.store_relaxed(signals::sig_bit(signals::SIGUSR1));
+    g_leader->sig.blocked.store_relaxed(saved);
+
+    uint32_t sig = 0;
+    signals::k_sigaction act = {};
+    signals::sig_set_t old_blocked = 0;
+    bool taken = false;
+    RUN_ELEVATED({
+        signals::set_temporary_blocked(g_leader, temporary);
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+        signals::end_temporary_blocked(g_leader);
+    });
+
+    // The handler runs under the temporary mask, and its frame returns to the saved one
+    EXPECT_TRUE(taken);
+    EXPECT_EQ(old_blocked, saved);
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), temporary | signals::sig_bit(signals::SIGUSR1));
+    EXPECT_FALSE(g_leader->sig.restore_mask);
+}

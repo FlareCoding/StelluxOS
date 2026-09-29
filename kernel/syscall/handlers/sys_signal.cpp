@@ -44,6 +44,29 @@ static int64_t send_to_thread(uint32_t tgid, uint32_t tid, uint32_t sig) {
     return map_send_error(signals::send_to_task(t.ptr(), sig));
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int64_t syscall::set_temporary_sigmask(sched::task* task, uint64_t u_set, uint64_t size) {
+    if (u_set == 0) {
+        return 0;
+    }
+
+    if (size != SIGSET_SIZE) {
+        return syscall::EINVAL;
+    }
+
+    signals::sig_set_t mask = 0;
+    int32_t rc = mm::uaccess::copy_from_user(&mask, reinterpret_cast<const void*>(u_set), sizeof(mask));
+    if (rc != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
+    signals::set_temporary_blocked(task, mask);
+
+    return 0;
+}
+
 DEFINE_SYSCALL4(rt_sigaction, signum, u_act, u_oldact, sigsetsize) {
     if (sigsetsize != SIGSET_SIZE) {
         return syscall::EINVAL;

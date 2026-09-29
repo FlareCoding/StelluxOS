@@ -14,6 +14,7 @@
 #include "mm/heap.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "clock/clock.h"
 
 using test_helpers::spin_wait;
@@ -30,10 +31,24 @@ constexpr size_t   FDSET_BYTES = 128;
 constexpr size_t   WORD_BITS   = 64;
 constexpr size_t   TIMEVAL_AT  = FDSET_BYTES;
 constexpr size_t   PIPE_FDS_AT = TIMEVAL_AT + 64;
+constexpr size_t   SIGSET_AT   = PIPE_FDS_AT + 64;
+constexpr size_t   SIGMASK_AT  = SIGSET_AT + 64;
+constexpr size_t   TIMESPEC_AT = SIGMASK_AT + 64;
+constexpr uint64_t SIGSET_SIZE = sizeof(signals::sig_set_t);
 
 struct select_timeval {
     int64_t tv_sec;
     int64_t tv_usec;
+};
+
+struct select_timespec {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+};
+
+struct pselect_sigmask {
+    uint64_t set;
+    uint64_t size;
 };
 
 // A select run in a task of its own, since the test body runs on CPU 0's
@@ -274,4 +289,50 @@ TEST(select_syscall, a_select_keeps_its_objects_until_it_stops_watching_them) {
     unpin(t);
 
     EXPECT_EQ(g_probe_closes.load_acquire(), 1u);
+}
+
+TEST(select_syscall, pselect6_blocks_its_signal_mask_until_the_syscall_returns) {
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    sched::task* self = sched::current();
+    signals::sig_set_t before = self->sig.blocked.load_acquire();
+    *page.at<signals::sig_set_t>(SIGSET_AT) = signals::sig_bit(signals::SIGUSR1);
+    *page.at<pselect_sigmask>(SIGMASK_AT) = {page.addr + SIGSET_AT, SIGSET_SIZE};
+    *page.at<select_timespec>(TIMESPEC_AT) = {0, 0};
+
+    int64_t selected = 0;
+    {
+        user_space_scope scope(page.ctx);
+        selected = sys_pselect6(0, 0, 0, 0, page.addr + TIMESPEC_AT, page.addr + SIGMASK_AT);
+    }
+
+    // A direct call skips the syscall return, so the test restores the mask itself
+    signals::sig_set_t during = self->sig.blocked.load_acquire();
+    signals::end_temporary_blocked(self);
+
+    EXPECT_EQ(selected, 0);
+    EXPECT_EQ(during, signals::sig_bit(signals::SIGUSR1));
+    EXPECT_EQ(self->sig.blocked.load_acquire(), before);
+}
+
+TEST(select_syscall, pselect6_refuses_a_malformed_signal_mask) {
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    *page.at<pselect_sigmask>(SIGMASK_AT) = {page.addr + SIGSET_AT, SIGSET_SIZE / 2};
+    *page.at<select_timespec>(TIMESPEC_AT) = {0, 0};
+    uintptr_t torn = page.addr + pmm::PAGE_SIZE - sizeof(pselect_sigmask) / 2;
+
+    int64_t wrong_size = 0;
+    int64_t unmapped = 0;
+    {
+        user_space_scope scope(page.ctx);
+        wrong_size = sys_pselect6(0, 0, 0, 0, page.addr + TIMESPEC_AT, page.addr + SIGMASK_AT);
+        unmapped = sys_pselect6(0, 0, 0, 0, page.addr + TIMESPEC_AT, torn);
+    }
+
+    EXPECT_EQ(wrong_size, syscall::EINVAL);
+    EXPECT_EQ(unmapped, syscall::EFAULT);
+    EXPECT_FALSE(sched::current()->sig.restore_mask);
 }

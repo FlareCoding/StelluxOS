@@ -8,6 +8,7 @@
 #include "sync/poll.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "mm/pmm.h"
 
 using test_helpers::user_page;
@@ -15,10 +16,12 @@ using test_helpers::user_space_scope;
 
 TEST_SUITE(poll_syscall);
 
-constexpr int64_t NS_PER_SEC  = 1000000000LL;
-constexpr size_t  PIPE_FDS_AT = 0;
-constexpr size_t  POLL_FD_AT  = 64;
-constexpr size_t  TIMEOUT_AT  = 128;
+constexpr int64_t  NS_PER_SEC  = 1000000000LL;
+constexpr size_t   PIPE_FDS_AT = 0;
+constexpr size_t   POLL_FD_AT  = 64;
+constexpr size_t   TIMEOUT_AT  = 128;
+constexpr size_t   SIGSET_AT   = 192;
+constexpr uint64_t SIGSET_SIZE = sizeof(signals::sig_set_t);
 
 // Long enough that each round subscribes, although the polled end is always ready
 constexpr uint64_t WAIT_MS = 1000;
@@ -123,4 +126,49 @@ TEST(poll_syscall, a_descriptor_array_past_mapped_memory_faults) {
 
     EXPECT_EQ(polled, syscall::EFAULT);
     EXPECT_EQ(ppolled, syscall::EFAULT);
+}
+
+TEST(poll_syscall, ppoll_blocks_its_signal_mask_until_the_syscall_returns) {
+    polled_pipe pipe;
+    ASSERT_TRUE(pipe.ready());
+
+    signals::sig_set_t before = pipe.task->sig.blocked.load_acquire();
+    *pipe.page.at<signals::sig_set_t>(SIGSET_AT) = signals::sig_bit(signals::SIGUSR1);
+    *pipe.page.at<user_timespec>(TIMEOUT_AT) = {0, 0};
+
+    int64_t ready = 0;
+    {
+        user_space_scope scope(pipe.page.ctx);
+        ready = sys_ppoll(pipe.page.addr + POLL_FD_AT, 1, pipe.page.addr + TIMEOUT_AT, pipe.page.addr + SIGSET_AT,
+                          SIGSET_SIZE, 0);
+    }
+
+    // A direct call skips the syscall return, so the test restores the mask itself
+    signals::sig_set_t during = pipe.task->sig.blocked.load_acquire();
+    signals::end_temporary_blocked(pipe.task);
+
+    EXPECT_EQ(ready, 1);
+    EXPECT_EQ(during, signals::sig_bit(signals::SIGUSR1));
+    EXPECT_EQ(pipe.task->sig.blocked.load_acquire(), before);
+}
+
+TEST(poll_syscall, ppoll_refuses_a_malformed_signal_mask) {
+    polled_pipe pipe;
+    ASSERT_TRUE(pipe.ready());
+
+    *pipe.page.at<user_timespec>(TIMEOUT_AT) = {0, 0};
+    uintptr_t torn = pipe.page.addr + pmm::PAGE_SIZE - SIGSET_SIZE / 2;
+
+    int64_t wrong_size = 0;
+    int64_t unmapped = 0;
+    {
+        user_space_scope scope(pipe.page.ctx);
+        wrong_size = sys_ppoll(pipe.page.addr + POLL_FD_AT, 1, pipe.page.addr + TIMEOUT_AT,
+                               pipe.page.addr + SIGSET_AT, SIGSET_SIZE / 2, 0);
+        unmapped = sys_ppoll(pipe.page.addr + POLL_FD_AT, 1, pipe.page.addr + TIMEOUT_AT, torn, SIGSET_SIZE, 0);
+    }
+
+    EXPECT_EQ(wrong_size, syscall::EINVAL);
+    EXPECT_EQ(unmapped, syscall::EFAULT);
+    EXPECT_FALSE(pipe.task->sig.restore_mask);
 }

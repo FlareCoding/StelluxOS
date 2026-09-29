@@ -22,6 +22,16 @@ __PRIVILEGED_CODE static inline void restore_post_syscall_elevation_state() {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE static void deliver_fatal_signal(sched::task* self) {
+    uint32_t fsig = signals::fatal_pending(self);
+    if (fsig) {
+        signals::die_from_signal(fsig);
+    }
+}
+
+/**
+ * @note Privilege: **required**
+ */
 extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     uint64_t syscall_num,
     uint64_t arg1,
@@ -50,14 +60,19 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
 
     sched::task* self = sched::current();
     if (self && !(self->exec.flags & sched::TASK_FLAG_KERNEL)) {
-        uint32_t fsig = signals::fatal_pending(self);
-        if (fsig) {
-            signals::die_from_signal(fsig);
+        if (result != syscall::EINTR) {
+            signals::end_temporary_blocked(self);
         }
+
+        deliver_fatal_signal(self);
 
         // Delivers one pending handled signal and resolves interrupted-wait
         // restarts, the internal ERESTARTSYS marker never reaches userspace
         result = arch::deliver_pending_signal(self, result, syscall_num);
+
+        if (signals::end_temporary_blocked(self)) {
+            deliver_fatal_signal(self);
+        }
     }
 
     // Return-boundary restore: dynamic runtime elevation follows the selected

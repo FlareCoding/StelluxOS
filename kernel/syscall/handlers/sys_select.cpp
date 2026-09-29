@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_select.h"
+#include "syscall/handlers/sys_signal.h"
 
 #include "sync/poll.h"
 #include "resource/resource.h"
@@ -21,6 +22,12 @@ struct select_pollfd {
     int32_t fd;
     int16_t events;
     int16_t revents;
+};
+
+// pselect6 receives its signal mask as the set's address and size
+struct pselect_sigmask {
+    uint64_t set;
+    uint64_t size;
 };
 
 static bool fd_is_set(const uint64_t* set, int fd) {
@@ -362,13 +369,33 @@ DEFINE_SYSCALL5(select, nfds_val, u_readfds, u_writefds, u_exceptfds, u_timeout)
     return result;
 }
 
-// Linux pselect6: (int nfds, fd_set*, fd_set*, fd_set*, struct timespec*, void *sigmask)
-DEFINE_SYSCALL6(pselect6, nfds_val, u_readfds, u_writefds, u_exceptfds, u_timeout, u_sigmask) {
-    (void)u_sigmask;
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int64_t set_pselect_sigmask(sched::task* task, uint64_t u_sigmask) {
+    if (u_sigmask == 0) {
+        return 0;
+    }
 
+    pselect_sigmask sigmask = {};
+    int32_t rc = mm::uaccess::copy_from_user(&sigmask, reinterpret_cast<const void*>(u_sigmask), sizeof(sigmask));
+    if (rc != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
+    return syscall::set_temporary_sigmask(task, sigmask.set, sigmask.size);
+}
+
+// Linux pselect6: (int nfds, fd_set*, fd_set*, fd_set*, struct timespec*, pselect_sigmask*)
+DEFINE_SYSCALL6(pselect6, nfds_val, u_readfds, u_writefds, u_exceptfds, u_timeout, u_sigmask) {
     sched::task* task = sched::current();
     if (!task) {
         return syscall::EIO;
+    }
+
+    int64_t mask_result = set_pselect_sigmask(task, u_sigmask);
+    if (mask_result != 0) {
+        return mask_result;
     }
 
     int32_t nfds = static_cast<int32_t>(nfds_val);
