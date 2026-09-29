@@ -153,6 +153,9 @@ struct thread_group : rc::ref_counted<thread_group> {
     // Per-process file creation mask
     uint32_t umask;
 
+    fs::node* program;      // owning reference, dropped with the group
+    char*     program_path; // owned, freed with the group
+
     // Whether the process allows a core dump, as PR_SET_DUMPABLE records it
     bool dumpable = true;
 

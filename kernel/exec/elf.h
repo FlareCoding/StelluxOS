@@ -49,6 +49,8 @@ struct loaded_image {
     uint64_t entry_point;
     uint64_t pt_root; // convenience mirror of mm_ctx->pt_root
     mm::mm_context* mm_ctx; // owning reference, transferred to task on success
+    fs::node* program; // owning reference, transferred to task on success
+    char* program_path; // owned, transferred to task on success
     uint32_t segment_count;
     uint64_t phdr_vaddr;
     uint16_t phentsize;
@@ -69,6 +71,7 @@ int32_t parse_elf(const char* path, elf_image* out, fs::node* base_dir = nullptr
 
 /**
  * Load an ELF64 binary from a memory buffer into a new user address space.
+ * The image has no program file.
  */
 int32_t load_elf(const void* buffer, size_t size, loaded_image* out);
 
@@ -79,9 +82,7 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out);
 int32_t load_elf(const char* path, loaded_image* out, fs::node* base_dir = nullptr);
 
 /**
- * Unload a previously loaded ELF image.
- * Unmaps and frees all user-space pages, then destroys the page table.
- * Elevates internally for privileged operations.
+ * Unload a loaded ELF image, releasing its address space and program file.
  */
 void unload_elf(loaded_image* img);
 
