@@ -17,7 +17,7 @@ constexpr int32_t EPOLL_CTL_MOD = 3;
 
 constexpr int64_t NS_PER_MS = 1000000;
 
-// Linux bounds a wait's count so that its records fit in an int's worth of bytes
+// The ABI bounds a wait's count so that its records fit in an int's worth of bytes
 constexpr int64_t MAX_EVENT_BYTES = 0x7FFFFFFF;
 constexpr int64_t MAX_EVENTS      = MAX_EVENT_BYTES / static_cast<int64_t>(sizeof(syscall::epoll_event));
 
@@ -39,10 +39,10 @@ static int64_t map_epoll_error(int32_t rc) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static resource::resource_object* object_of(sched::task* task, uint64_t handle) {
-    resource::resource_object* obj = nullptr;
-    int32_t rc = resource::get_handle_object(task->handles, static_cast<resource::handle_t>(handle), 0, &obj);
+    resource::resource_object* object = nullptr;
+    int32_t rc = resource::get_handle_object(task->handles, static_cast<resource::handle_t>(handle), 0, &object);
 
-    return rc == resource::HANDLE_OK ? obj : nullptr;
+    return rc == resource::HANDLE_OK ? object : nullptr;
 }
 
 /**
@@ -54,15 +54,15 @@ __PRIVILEGED_CODE static int64_t create_epoll_handle(uint32_t flags) {
         return syscall::EIO;
     }
 
-    resource::resource_object* obj = nullptr;
-    if (epoll::create(&obj) != epoll::OK) {
+    resource::resource_object* ep = nullptr;
+    if (epoll::create(&ep) != epoll::OK) {
         return syscall::ENOMEM;
     }
 
     resource::handle_t handle = -1;
-    int32_t rc = resource::alloc_task_handle(task, obj, resource::resource_type::EPOLL,
+    int32_t rc = resource::alloc_task_handle(task, ep, resource::resource_type::EPOLL,
                                              resource::RIGHT_READ | resource::RIGHT_WRITE, &handle);
-    resource::resource_release(obj);
+    resource::resource_release(ep);
 
     if (rc != resource::HANDLE_OK) {
         return syscall::error_map::map_handle_alloc_error(rc);
@@ -80,7 +80,7 @@ __PRIVILEGED_CODE static int64_t create_epoll_handle(uint32_t flags) {
  */
 __PRIVILEGED_CODE static int64_t apply_ctl(resource::resource_object* ep, int32_t op, resource::handle_t handle,
                                            resource::resource_object* target, const syscall::epoll_event& event) {
-    // Regular files and directories are always ready, which Linux refuses to watch
+    // Regular files and directories are always ready, so the ABI refuses to watch them
     if (target->type == resource::resource_type::FILE) {
         return syscall::EPERM;
     }
@@ -106,6 +106,18 @@ __PRIVILEGED_CODE static int64_t wait_and_report(sched::task* task, uint64_t epf
         return syscall::EINVAL;
     }
 
+    uint32_t capacity = static_cast<uint32_t>(max_events);
+    if (capacity > epoll::MAX_WAIT_EVENTS) {
+        capacity = epoll::MAX_WAIT_EVENTS;
+    }
+
+    // Writing the buffer first refuses a bad one before the wait disarms a one-shot interest it reports
+    syscall::epoll_event events[epoll::MAX_WAIT_EVENTS] = {};
+    size_t capacity_bytes = capacity * sizeof(syscall::epoll_event);
+    if (mm::uaccess::copy_to_user(reinterpret_cast<void*>(u_events), events, capacity_bytes) != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
     resource::resource_object* ep = object_of(task, epfd);
     if (!ep) {
         return syscall::EBADF;
@@ -113,14 +125,13 @@ __PRIVILEGED_CODE static int64_t wait_and_report(sched::task* task, uint64_t epf
 
     epoll::ready_event ready[epoll::MAX_WAIT_EVENTS];
     int64_t timeout_ns = static_cast<int64_t>(timeout_ms) * NS_PER_MS;
-    int32_t reported = epoll::wait(ep, ready, static_cast<uint32_t>(max_events), timeout_ns);
+    int32_t reported = epoll::wait(ep, ready, capacity, timeout_ns);
     resource::resource_release(ep);
 
     if (reported <= 0) {
         return map_epoll_error(reported);
     }
 
-    syscall::epoll_event events[epoll::MAX_WAIT_EVENTS];
     for (int32_t i = 0; i < reported; i++) {
         events[i].events = ready[i].events;
         events[i].data = ready[i].data;
