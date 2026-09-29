@@ -409,6 +409,16 @@ ssize_t file_node::read_at(fs::file*, void* buf, size_t count, uint64_t offset) 
     return result;
 }
 
+ssize_t file_node::write_at(fs::file*, const void* buf, size_t count, uint64_t offset) {
+    sync::mutex_lock(m_backing->lock);
+
+    ssize_t result = write_at_locked(static_cast<size_t>(offset), buf, count);
+
+    sync::mutex_unlock(m_backing->lock);
+
+    return result;
+}
+
 int32_t file_node::truncate(size_t size) {
     sync::mutex_lock(m_backing->lock);
 

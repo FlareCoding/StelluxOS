@@ -123,6 +123,39 @@ TEST(fs_test, read_at_stops_at_the_end_of_the_file) {
     fs::unlink("/test_read_at_end");
 }
 
+TEST(fs_test, write_at_leaves_the_file_offset_unchanged) {
+    fs::file* f = fs::open("/test_write_at", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::write(f, "0123456789", 10);
+    fs::seek(f, 2, fs::SEEK_SET);
+
+    EXPECT_EQ(fs::write_at(f, "xy", 2, 6), static_cast<ssize_t>(2));
+
+    char rest[16] = {};
+    EXPECT_EQ(fs::read(f, rest, sizeof(rest)), static_cast<ssize_t>(8));
+    EXPECT_STREQ(rest, "2345xy89");
+
+    fs::close(f);
+    fs::unlink("/test_write_at");
+}
+
+TEST(fs_test, write_at_past_the_end_grows_the_file_with_zeros) {
+    fs::file* f = fs::open("/test_write_at_grow", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::write(f, "ab", 2);
+
+    EXPECT_EQ(fs::write_at(f, "z", 1, 5), static_cast<ssize_t>(1));
+    EXPECT_EQ(f->get_node()->size(), static_cast<size_t>(6));
+
+    const char expected[6] = {'a', 'b', 0, 0, 0, 'z'};
+    char buf[8] = {};
+    EXPECT_EQ(fs::read_at(f, buf, sizeof(buf), 0), static_cast<ssize_t>(6));
+    EXPECT_EQ(string::memcmp(buf, expected, sizeof(expected)), 0);
+
+    fs::close(f);
+    fs::unlink("/test_write_at_grow");
+}
+
 TEST(fs_test, mkdir_and_stat) {
     int32_t err = fs::mkdir("/test_dir", 0);
     EXPECT_EQ(err, fs::OK);

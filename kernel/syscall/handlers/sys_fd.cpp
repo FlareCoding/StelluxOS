@@ -1037,20 +1037,9 @@ DEFINE_SYSCALL4(pread64, fd, buf, count, offset) {
     return read_to_user(task, fd, buf, count, static_cast<int64_t>(offset));
 }
 
-DEFINE_SYSCALL3(write, fd, buf, count) {
-    if (count == 0) {
-        return 0;
-    }
-
-    if (buf == 0) {
-        return syscall::EFAULT;
-    }
-
-    sched::task* task = sched::current();
-    if (!task) {
-        return syscall::EIO;
-    }
-
+__PRIVILEGED_CODE static int64_t write_from_user(
+    sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset
+) {
     size_t remaining = static_cast<size_t>(count);
     const uint8_t* user_ptr = reinterpret_cast<const uint8_t*>(buf);
     int64_t total = 0;
@@ -1073,7 +1062,14 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
             return syscall::EFAULT;
         }
 
-        ssize_t n = resource::write(task, static_cast<resource::handle_t>(fd), kbuf, chunk);
+        ssize_t n = 0;
+        if (offset == CURRENT_FILE_OFFSET) {
+            n = resource::write(task, static_cast<resource::handle_t>(fd), kbuf, chunk);
+        } else {
+            n = resource::write_at(task, static_cast<resource::handle_t>(fd), kbuf, chunk,
+                                   static_cast<uint64_t>(offset + total));
+        }
+
         if (n < 0) {
             heap::ufree(kbuf);
             if (total > 0) {
@@ -1098,6 +1094,44 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
 
     heap::ufree(kbuf);
     return total;
+}
+
+DEFINE_SYSCALL3(write, fd, buf, count) {
+    if (count == 0) {
+        return 0;
+    }
+
+    if (buf == 0) {
+        return syscall::EFAULT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    return write_from_user(task, fd, buf, count, CURRENT_FILE_OFFSET);
+}
+
+DEFINE_SYSCALL4(pwrite64, fd, buf, count, offset) {
+    if (!is_valid_file_range(offset, count)) {
+        return syscall::EINVAL;
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (buf == 0) {
+        return syscall::EFAULT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    return write_from_user(task, fd, buf, count, static_cast<int64_t>(offset));
 }
 
 DEFINE_SYSCALL1(close, fd) {

@@ -64,8 +64,9 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
 // `flags` carries the caller's O_NONBLOCK and O_APPEND
 ssize_t read(file* f, void* buf, size_t count, uint32_t flags = 0);
 ssize_t write(file* f, const void* buf, size_t count, uint32_t flags = 0);
-// Reads at `offset` and leaves the file offset where it was
+// Positional I/O leaves the file offset where it was, and its writes ignore O_APPEND
 ssize_t read_at(file* f, void* buf, size_t count, uint64_t offset);
+ssize_t write_at(file* f, const void* buf, size_t count, uint64_t offset);
 int64_t seek(file* f, int64_t offset, int whence);
 int32_t close(file* f);
 int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);

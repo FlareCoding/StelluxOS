@@ -82,6 +82,20 @@ __PRIVILEGED_CODE static ssize_t file_read_at(resource_object* obj, void* kdst, 
     return rc;
 }
 
+__PRIVILEGED_CODE static ssize_t file_write_at(resource_object* obj, const void* ksrc, size_t count, uint64_t offset) {
+    if (!obj || !obj->impl || !ksrc) {
+        return ERR_INVAL;
+    }
+
+    auto* impl = static_cast<file_resource_impl*>(obj->impl);
+    ssize_t rc = fs::write_at(impl->file, ksrc, count, offset);
+    if (rc < 0) {
+        return map_fs_error_to_resource(static_cast<int32_t>(rc));
+    }
+
+    return rc;
+}
+
 __PRIVILEGED_CODE static void file_close(resource_object* obj) {
     if (!obj || !obj->impl) {
         return;
@@ -158,6 +172,7 @@ static const resource_ops g_file_ops = {
     .read = file_read,
     .write = file_write,
     .read_at = file_read_at,
+    .write_at = file_write_at,
     .close = file_close,
     .ioctl = file_ioctl,
     .mmap = file_mmap,

@@ -178,6 +178,70 @@ TEST(resource_test, read_at_reads_memory_files_without_moving_their_offset) {
     EXPECT_EQ(resource::close(task, h), resource::OK);
 }
 
+TEST(resource_test, write_at_needs_write_rights_and_an_object_that_can_seek) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t r = -1;
+    ASSERT_EQ(resource::open(task, "/resource_write_at_rights", fs::O_CREAT | fs::O_RDONLY, &r),
+              resource::OK);
+    EXPECT_EQ(resource::write_at(task, r, "x", 1, 0), static_cast<ssize_t>(resource::ERR_ACCESS));
+    EXPECT_EQ(resource::close(task, r), resource::OK);
+
+    resource::handle_t null_device = -1;
+    ASSERT_EQ(resource::open(task, "/dev/null", fs::O_WRONLY, &null_device), resource::OK);
+    EXPECT_EQ(resource::write_at(task, null_device, "x", 1, 0),
+              static_cast<ssize_t>(resource::ERR_SPIPE));
+    EXPECT_EQ(resource::close(task, null_device), resource::OK);
+}
+
+TEST(resource_test, write_at_ignores_append_mode) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    uint32_t flags = fs::O_CREAT | fs::O_TRUNC | fs::O_RDWR | fs::O_APPEND;
+    ASSERT_EQ(resource::open(task, "/resource_write_at_append", flags, &h), resource::OK);
+    ASSERT_EQ(resource::write(task, h, "abc", 3), static_cast<ssize_t>(3));
+
+    EXPECT_EQ(resource::write_at(task, h, "X", 1, 0), static_cast<ssize_t>(1));
+    EXPECT_EQ(resource::write(task, h, "Z", 1), static_cast<ssize_t>(1));
+
+    char buf[8] = {};
+    EXPECT_EQ(resource::read_at(task, h, buf, sizeof(buf), 0), static_cast<ssize_t>(4));
+    EXPECT_STREQ(buf, "XbcZ");
+    EXPECT_EQ(resource::close(task, h), resource::OK);
+}
+
+TEST(resource_test, write_at_writes_memory_files_without_moving_their_offset) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* obj = nullptr;
+    ASSERT_EQ(resource::shmem_provider::create_shmem_resource(0, &obj), resource::OK);
+    mm::shmem* backing = resource::shmem_provider::get_shmem_backing(obj);
+    ASSERT_NOT_NULL(backing);
+
+    sync::mutex_lock(backing->lock);
+    ASSERT_EQ(mm::shmem_resize_locked(backing, 8), mm::SHMEM_OK);
+    sync::mutex_unlock(backing->lock);
+    ASSERT_EQ(mm::shmem_write(backing, 0, "abcdefgh", 8), static_cast<ssize_t>(8));
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::alloc_task_handle(task, obj, resource::resource_type::SHMEM,
+                                          resource::RIGHT_READ | resource::RIGHT_WRITE, &h),
+              resource::HANDLE_OK);
+    resource::resource_release(obj);
+
+    EXPECT_EQ(resource::write_at(task, h, "XY", 2, 3), static_cast<ssize_t>(2));
+
+    char all[12] = {};
+    EXPECT_EQ(resource::read(task, h, all, 8), static_cast<ssize_t>(8));
+    EXPECT_STREQ(all, "abcXYfgh");
+
+    EXPECT_EQ(resource::close(task, h), resource::OK);
+}
+
 TEST(resource_test, releasing_task_handles_invalidates_existing_handles) {
     // A scratch task exercises table teardown without touching the
     // test runner's own live handle table
