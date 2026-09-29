@@ -13,14 +13,14 @@ namespace sync {
  * Triggers the entry's table. Only the notify that flips `triggered` owes the table's task a wake.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static sched::task* trigger_table(wait_observer& observer) {
+__PRIVILEGED_CODE static rc::strong_ref<sched::task> trigger_table(wait_observer& observer) {
     poll_table* table = static_cast<poll_entry&>(observer).table;
     uint32_t idle = 0;
     if (!table->triggered.cmpxchg_strong_acq_rel(idle, 1)) {
-        return nullptr;
+        return {};
     }
 
-    return table->task;
+    return sched::task_ref(table->task);
 }
 
 __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
