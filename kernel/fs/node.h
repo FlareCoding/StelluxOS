@@ -45,8 +45,9 @@ public:
     virtual ssize_t read(file* f, void* buf, size_t count, uint32_t flags);
     virtual ssize_t write(file* f, const void* buf, size_t count, uint32_t flags);
     virtual int64_t seek(file* f, int64_t offset, int whence);
-    // Reads at `offset` without moving the file offset, nodes that cannot seek refuse it
+    // Positional I/O leaves the file offset alone and ignores O_APPEND, nodes that cannot seek refuse it
     virtual ssize_t read_at(file* f, void* buf, size_t count, uint64_t offset);
+    virtual ssize_t write_at(file* f, const void* buf, size_t count, uint64_t offset);
     virtual ssize_t readdir(file* f, dirent* entries, size_t count);
     virtual int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);
     virtual int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr,

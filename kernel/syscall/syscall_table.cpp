@@ -44,6 +44,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::READ,            read);
     REGISTER_SYSCALL(linux_nr::WRITE,           write);
     REGISTER_SYSCALL(linux_nr::PREAD64,         pread64);
+    REGISTER_SYSCALL(linux_nr::PWRITE64,        pwrite64);
     REGISTER_SYSCALL(linux_nr::CLOSE,           close);
     REGISTER_SYSCALL(linux_nr::LSEEK,           lseek);
     REGISTER_SYSCALL(linux_nr::FSTAT,           fstat);

@@ -19,6 +19,7 @@ struct socket_ops;
 using read_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint32_t flags);
 using write_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint32_t flags);
 using read_at_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint64_t offset);
+using write_at_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint64_t offset);
 using close_fn = void (*)(resource_object* obj);
 using ioctl_fn = int32_t (*)(resource_object* obj, uint32_t cmd, uint64_t arg);
 using mmap_fn = int32_t (*)(resource_object* obj, mm::mm_context* mm_ctx,
@@ -37,6 +38,7 @@ struct resource_ops {
     read_fn  read = nullptr;
     write_fn write = nullptr;
     read_at_fn read_at = nullptr;
+    write_at_fn write_at = nullptr;
     close_fn close = nullptr;
     ioctl_fn ioctl = nullptr;
     mmap_fn  mmap = nullptr;
@@ -184,6 +186,20 @@ __PRIVILEGED_CODE ssize_t read_at(
     sched::task* owner,
     handle_t handle,
     void* kdst,
+    size_t count,
+    uint64_t offset
+);
+
+/**
+ * @brief Write to handle at `offset` from kernel buffer, leaving the file
+ * offset unchanged. O_APPEND does not apply to positional writes.
+ * @return Bytes written, ERR_SPIPE when the object cannot seek, or another error.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t write_at(
+    sched::task* owner,
+    handle_t handle,
+    const void* ksrc,
     size_t count,
     uint64_t offset
 );

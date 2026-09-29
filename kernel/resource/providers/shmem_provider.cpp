@@ -84,6 +84,24 @@ static ssize_t shmem_resource_read_at(
     return result;
 }
 
+static ssize_t shmem_resource_write_at(
+    resource_object* obj, const void* ksrc, size_t count, uint64_t offset
+) {
+    if (!obj || !ksrc) {
+        return ERR_INVAL;
+    }
+
+    ssize_t result = ERR_INVAL;
+    RUN_ELEVATED({
+        auto* impl = static_cast<shmem_resource_impl*>(obj->impl);
+        if (impl && impl->backing) {
+            result = mm::shmem_write(impl->backing.ptr(), static_cast<size_t>(offset), ksrc, count);
+        }
+    });
+
+    return result;
+}
+
 static void shmem_resource_close(resource_object* obj) {
     if (!obj) {
         return;
@@ -108,6 +126,7 @@ static const resource_ops g_shmem_resource_ops = {
     .read = shmem_resource_read,
     .write = shmem_resource_write,
     .read_at = shmem_resource_read_at,
+    .write_at = shmem_resource_write_at,
     .close = shmem_resource_close,
     .poll = shmem_resource_poll,
 };

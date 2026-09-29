@@ -57,6 +57,7 @@ public:
     ssize_t write(fs::file* f, const void* buf, size_t count, uint32_t flags) override;
     int64_t seek(fs::file* f, int64_t offset, int whence) override;
     ssize_t read_at(fs::file* f, void* buf, size_t count, uint64_t offset) override;
+    ssize_t write_at(fs::file* f, const void* buf, size_t count, uint64_t offset) override;
     int32_t truncate(size_t size) override;
     int32_t mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
                  size_t length, uint32_t prot, uint32_t map_flags,
