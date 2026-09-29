@@ -7,6 +7,7 @@
 #include "mm/pmm.h"
 #include "mm/page_quarantine.h"
 #include "common/string.h"
+#include "clock/clock.h"
 
 TEST_SUITE(lazy_anon);
 
@@ -257,6 +258,31 @@ TEST(lazy_anon, present_fault_is_fatal) {
 
     EXPECT_TRUE(mm::handle_user_pf(mm_ctx, addr, 0));
     EXPECT_FALSE(mm::handle_user_pf(mm_ctx, addr, mm::PF_FLAG_PRESENT));
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(lazy_anon, sparse_terabyte_reservation_releases_quickly) {
+    constexpr size_t TERABYTE = 1ULL << 40;
+    constexpr uint64_t TIME_LIMIT_NS = 2000000000ULL;
+
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uint64_t started_ns = clock::now_ns();
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(mm_ctx, 0, TERABYTE, 0, LAZY_ANON, &addr),
+              mm::MM_CTX_OK);
+
+    uintptr_t touched = addr + TERABYTE / 2;
+    ASSERT_EQ(mm::mm_context_mprotect(mm_ctx, touched, PAGE,
+                                      mm::MM_PROT_READ | mm::MM_PROT_WRITE), mm::MM_CTX_OK);
+    ASSERT_TRUE(mm::handle_user_pf(mm_ctx, touched, mm::PF_FLAG_WRITE));
+
+    EXPECT_EQ(mm::mm_context_mprotect(mm_ctx, addr, TERABYTE, mm::MM_PROT_READ), mm::MM_CTX_OK);
+    EXPECT_EQ(mm::mm_context_unmap(mm_ctx, addr, TERABYTE), mm::MM_CTX_OK);
+    EXPECT_FALSE(paging::is_mapped(touched, mm_ctx->pt_root));
+    EXPECT_LT(clock::now_ns() - started_ns, TIME_LIMIT_NS);
 
     mm::mm_context_release(mm_ctx);
 }

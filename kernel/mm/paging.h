@@ -151,6 +151,16 @@ __PRIVILEGED_CODE page_flags_t get_page_flags(virt_addr_t virt, pmm::phys_addr_t
 __PRIVILEGED_CODE bool is_mapped(virt_addr_t virt, pmm::phys_addr_t root_pt);
 
 /**
+ * @brief Find the first page in [virt, end) whose entry is in use, mapping a
+ * frame or holding one that `unmap_page_keep_frame` kept. Blocks whose table
+ * entry is empty are skipped whole, so the cost follows what is mapped.
+ * @return The page's address, or `end` when no page in the range is in use.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE virt_addr_t find_next_populated_page(virt_addr_t virt, virt_addr_t end,
+                                                       pmm::phys_addr_t root_pt);
+
+/**
  * TLB invalidation comes in two forms. The system-wide form guarantees that
  * on return no CPU holds a translation for the range, so a page may be
  * reused. It may block until every other CPU has acknowledged, so the caller
