@@ -1,0 +1,12 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_EPOLL_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_EPOLL_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(epoll_create);
+DECLARE_SYSCALL(epoll_create1);
+DECLARE_SYSCALL(epoll_ctl);
+DECLARE_SYSCALL(epoll_wait);
+DECLARE_SYSCALL(epoll_pwait);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_EPOLL_H

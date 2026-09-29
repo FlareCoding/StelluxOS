@@ -7,6 +7,9 @@ namespace syscall::linux_nr {
 
 constexpr uint64_t GETCWD           = 17;
 constexpr uint64_t EVENTFD2         = 19;
+constexpr uint64_t EPOLL_CREATE1    = 20;
+constexpr uint64_t EPOLL_CTL        = 21;
+constexpr uint64_t EPOLL_PWAIT      = 22;
 constexpr uint64_t DUP              = 23;
 constexpr uint64_t DUP3             = 24;
 constexpr uint64_t FCNTL            = 25;
