@@ -13,61 +13,70 @@
 
 namespace exec {
 
-int32_t parse_elf(const void* buffer, size_t size, elf_image* out) {
-    if (size < sizeof(elf64::Ehdr)) {
+// Where segment bytes come from: an image already in memory, or a file read in place
+struct segment_source {
+    const uint8_t* buffer;
+    fs::file*      file;
+};
+
+static int32_t check_elf_header(const elf64::Ehdr& ehdr) {
+    if (ehdr.e_ident[0] != elf64::ELFMAG0 ||
+        ehdr.e_ident[1] != elf64::ELFMAG1 ||
+        ehdr.e_ident[2] != elf64::ELFMAG2 ||
+        ehdr.e_ident[3] != elf64::ELFMAG3) {
         return ERR_INVALID_MAGIC;
     }
 
-    auto* ehdr = static_cast<const elf64::Ehdr*>(buffer);
-
-    if (ehdr->e_ident[0] != elf64::ELFMAG0 ||
-        ehdr->e_ident[1] != elf64::ELFMAG1 ||
-        ehdr->e_ident[2] != elf64::ELFMAG2 ||
-        ehdr->e_ident[3] != elf64::ELFMAG3) {
-        return ERR_INVALID_MAGIC;
-    }
-
-    if (ehdr->e_ident[elf64::EI_CLASS] != elf64::ELFCLASS64) {
+    if (ehdr.e_ident[elf64::EI_CLASS] != elf64::ELFCLASS64) {
         return ERR_INVALID_CLASS;
     }
 
-    if (ehdr->e_ident[elf64::EI_DATA] != elf64::ELFDATA2LSB) {
+    if (ehdr.e_ident[elf64::EI_DATA] != elf64::ELFDATA2LSB) {
         return ERR_INVALID_DATA;
     }
 
-    if (ehdr->e_ident[elf64::EI_VERSION] != elf64::EV_CURRENT) {
+    if (ehdr.e_ident[elf64::EI_VERSION] != elf64::EV_CURRENT) {
         return ERR_INVALID_VERSION;
     }
 
-    if (ehdr->e_type != elf64::ET_EXEC) {
+    if (ehdr.e_type != elf64::ET_EXEC) {
         return ERR_INVALID_TYPE;
     }
 
-    if (ehdr->e_machine != ELF_EXPECTED_MACHINE) {
+    if (ehdr.e_machine != ELF_EXPECTED_MACHINE) {
         return ERR_INVALID_ARCH;
     }
 
-    if (ehdr->e_phentsize != sizeof(elf64::Phdr)) {
+    if (ehdr.e_phentsize != sizeof(elf64::Phdr)) {
         return ERR_INVALID_PHDR;
     }
 
-    uint64_t ph_end = ehdr->e_phoff +
-        static_cast<uint64_t>(ehdr->e_phnum) * sizeof(elf64::Phdr);
-    if (ph_end > size) {
-        return ERR_INVALID_PHDR;
-    }
+    return OK;
+}
 
-    auto* phdrs = reinterpret_cast<const elf64::Phdr*>(
-        static_cast<const uint8_t*>(buffer) + ehdr->e_phoff);
+static uint64_t program_header_bytes(const elf64::Ehdr& ehdr) {
+    return static_cast<uint64_t>(ehdr.e_phnum) * sizeof(elf64::Phdr);
+}
 
+static bool range_fits(uint64_t offset, uint64_t len, uint64_t size) {
+    return offset <= size && len <= size - offset;
+}
+
+static int32_t collect_segments(const elf64::Ehdr& ehdr, const elf64::Phdr* phdrs, uint64_t image_size,
+                                elf_image* out) {
     out->segment_count = 0;
-    for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+    for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
         const auto& ph = phdrs[i];
         if (ph.p_type != elf64::PT_LOAD) {
             continue;
         }
 
         if (ph.p_filesz > ph.p_memsz) {
+            return ERR_INVALID_PHDR;
+        }
+
+        // File bytes past the end of the image would load as zeroed code or data
+        if (ph.p_filesz > 0 && !range_fits(ph.p_offset, ph.p_filesz, image_size)) {
             return ERR_INVALID_PHDR;
         }
 
@@ -88,43 +97,129 @@ int32_t parse_elf(const void* buffer, size_t size, elf_image* out) {
         return ERR_NO_LOADABLE;
     }
 
-    out->entry_point = ehdr->e_entry;
-    out->e_phoff   = ehdr->e_phoff;
-    out->phentsize = ehdr->e_phentsize;
-    out->phnum     = ehdr->e_phnum;
+    out->entry_point = ehdr.e_entry;
+    out->e_phoff   = ehdr.e_phoff;
+    out->phentsize = ehdr.e_phentsize;
+    out->phnum     = ehdr.e_phnum;
     return OK;
 }
 
-int32_t parse_elf(const char* path, elf_image* out, fs::node* base_dir) {
+static bool read_file_range(fs::file* f, uint64_t offset, void* dst, size_t len) {
+    int64_t pos = static_cast<int64_t>(offset);
+    if (fs::seek(f, pos, fs::SEEK_SET) != pos) {
+        return false;
+    }
+
+    auto* bytes = static_cast<uint8_t*>(dst);
+    size_t done = 0;
+    while (done < len) {
+        ssize_t n = fs::read(f, bytes + done, len - done);
+        if (n <= 0) {
+            return false;
+        }
+
+        done += static_cast<size_t>(n);
+    }
+
+    return true;
+}
+
+static bool read_segment_bytes(const segment_source& src, uint64_t offset, void* dst, size_t len) {
+    if (src.buffer) {
+        string::memcpy(dst, src.buffer + offset, len);
+        return true;
+    }
+
+    return read_file_range(src.file, offset, dst, len);
+}
+
+int32_t parse_elf(const void* buffer, size_t size, elf_image* out) {
+    if (size < sizeof(elf64::Ehdr)) {
+        return ERR_INVALID_MAGIC;
+    }
+
+    auto* ehdr = static_cast<const elf64::Ehdr*>(buffer);
+    int32_t rc = check_elf_header(*ehdr);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (!range_fits(ehdr->e_phoff, program_header_bytes(*ehdr), size)) {
+        return ERR_INVALID_PHDR;
+    }
+
+    auto* phdrs = reinterpret_cast<const elf64::Phdr*>(static_cast<const uint8_t*>(buffer) + ehdr->e_phoff);
+    return collect_segments(*ehdr, phdrs, size, out);
+}
+
+// Reads only the ELF header and the program header table, wherever the table sits
+static int32_t parse_file_headers(fs::file* f, elf_image* out) {
+    fs::vattr attr;
+    if (fs::fstat(f, &attr) != fs::OK) {
+        return ERR_FILE_READ;
+    }
+
+    if (attr.size < sizeof(elf64::Ehdr)) {
+        return ERR_INVALID_MAGIC;
+    }
+
+    elf64::Ehdr ehdr;
+    if (!read_file_range(f, 0, &ehdr, sizeof(ehdr))) {
+        return ERR_FILE_READ;
+    }
+
+    int32_t rc = check_elf_header(ehdr);
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint64_t table_bytes = program_header_bytes(ehdr);
+    if (!range_fits(ehdr.e_phoff, table_bytes, attr.size)) {
+        return ERR_INVALID_PHDR;
+    }
+
+    if (table_bytes == 0) {
+        return ERR_NO_LOADABLE;
+    }
+
+    auto* phdrs = static_cast<elf64::Phdr*>(heap::ualloc(table_bytes));
+    if (!phdrs) {
+        return ERR_NO_MEM;
+    }
+
+    rc = read_file_range(f, ehdr.e_phoff, phdrs, table_bytes)
+        ? collect_segments(ehdr, phdrs, attr.size, out)
+        : ERR_FILE_READ;
+    heap::ufree(phdrs);
+
+    return rc;
+}
+
+// On success the file stays open so the caller can read segments from it
+static int32_t open_and_parse(const char* path, fs::node* base_dir, fs::file** out_file, elf_image* out) {
     fs::file* f = fs::open_at(base_dir, path, fs::O_RDONLY);
     if (!f) {
         return ERR_FILE_OPEN;
     }
 
-    fs::vattr attr;
-    if (fs::fstat(f, &attr) != fs::OK) {
+    int32_t rc = parse_file_headers(f, out);
+    if (rc != OK) {
         fs::close(f);
-        return ERR_FILE_READ;
+        return rc;
     }
 
-    void* buffer = heap::ualloc(attr.size);
-    if (!buffer) {
+    *out_file = f;
+    return OK;
+}
+
+int32_t parse_elf(const char* path, elf_image* out, fs::node* base_dir) {
+    fs::file* f = nullptr;
+    int32_t rc = open_and_parse(path, base_dir, &f, out);
+    if (rc == OK) {
         fs::close(f);
-        return ERR_NO_MEM;
     }
 
-    ssize_t n = fs::read(f, buffer, attr.size);
-    if (n < 0 || static_cast<size_t>(n) != attr.size) {
-        heap::ufree(buffer);
-        fs::close(f);
-        return ERR_FILE_READ;
-    }
-
-    int32_t result = parse_elf(buffer, attr.size, out);
-
-    heap::ufree(buffer);
-    fs::close(f);
-    return result;
+    return rc;
 }
 
 static paging::page_flags_t elf_flags_to_page_flags(uint32_t elf_flags) {
@@ -144,13 +239,10 @@ static uint32_t elf_flags_to_vma_prot(uint32_t elf_flags) {
 }
 
 __PRIVILEGED_CODE static int32_t load_segments(
-    const void* buffer,
-    size_t buffer_size,
+    const segment_source& src,
     const elf_image& img,
     uint64_t pt_root
 ) {
-    auto* base = static_cast<const uint8_t*>(buffer);
-
     for (uint32_t i = 0; i < img.segment_count; i++) {
         const auto& seg = img.segments[i];
 
@@ -199,8 +291,8 @@ __PRIVILEGED_CODE static int32_t load_segments(
                 size_t copy_len = copy_end - copy_start;
                 size_t page_offset = copy_start - page_vaddr;
 
-                if (file_offset + copy_len <= buffer_size) {
-                    string::memcpy(page_ptr + page_offset, base + file_offset, copy_len);
+                if (!read_segment_bytes(src, file_offset, page_ptr + page_offset, copy_len)) {
+                    return ERR_FILE_READ;
                 }
             }
 
@@ -243,20 +335,7 @@ __PRIVILEGED_CODE static void cleanup_mapped_segment_pages(
     }
 }
 
-int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
-    if (!out) {
-        return ERR_INVALID_PHDR;
-    }
-
-    out->mm_ctx = nullptr;
-    out->pt_root = 0;
-
-    elf_image img;
-    int32_t rc = parse_elf(buffer, size, &img);
-    if (rc != OK) {
-        return rc;
-    }
-
+static int32_t load_image(const segment_source& src, const elf_image& img, loaded_image* out) {
     mm::mm_context* mm_ctx = nullptr;
     int32_t load_rc = OK;
 
@@ -265,7 +344,7 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
         if (!mm_ctx) {
             load_rc = ERR_PT_CREATE;
         } else {
-            load_rc = load_segments(buffer, size, img, mm_ctx->pt_root);
+            load_rc = load_segments(src, img, mm_ctx->pt_root);
             if (load_rc != OK) {
                 cleanup_mapped_segment_pages(mm_ctx, img);
                 mm::mm_context_release(mm_ctx);
@@ -321,36 +400,42 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
     return OK;
 }
 
+int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
+    if (!out) {
+        return ERR_INVALID_PHDR;
+    }
+
+    out->mm_ctx = nullptr;
+    out->pt_root = 0;
+
+    elf_image img;
+    int32_t rc = parse_elf(buffer, size, &img);
+    if (rc != OK) {
+        return rc;
+    }
+
+    return load_image(segment_source{static_cast<const uint8_t*>(buffer), nullptr}, img, out);
+}
+
 int32_t load_elf(const char* path, loaded_image* out, fs::node* base_dir) {
-    fs::file* f = fs::open_at(base_dir, path, fs::O_RDONLY);
-    if (!f) {
-        return ERR_FILE_OPEN;
+    if (!out) {
+        return ERR_INVALID_PHDR;
     }
 
-    fs::vattr attr;
-    if (fs::fstat(f, &attr) != fs::OK) {
-        fs::close(f);
-        return ERR_FILE_READ;
+    out->mm_ctx = nullptr;
+    out->pt_root = 0;
+
+    elf_image img;
+    fs::file* f = nullptr;
+    int32_t rc = open_and_parse(path, base_dir, &f, &img);
+    if (rc != OK) {
+        return rc;
     }
 
-    void* buffer = heap::ualloc(attr.size);
-    if (!buffer) {
-        fs::close(f);
-        return ERR_NO_MEM;
-    }
-
-    ssize_t n = fs::read(f, buffer, attr.size);
-    if (n < 0 || static_cast<size_t>(n) != attr.size) {
-        heap::ufree(buffer);
-        fs::close(f);
-        return ERR_FILE_READ;
-    }
-
-    int32_t result = load_elf(buffer, attr.size, out);
-
-    heap::ufree(buffer);
+    rc = load_image(segment_source{nullptr, f}, img, out);
     fs::close(f);
-    return result;
+
+    return rc;
 }
 
 void unload_elf(loaded_image* img) {
