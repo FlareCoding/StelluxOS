@@ -43,10 +43,6 @@ static const char* task_state_name(uint32_t state) {
 
 static size_t generate_cpu(char* buf, size_t cap) {
     size_t pos = 0;
-    pos = append_str(buf, cap, pos, "tick_hz ");
-    pos = append_u64(buf, cap, pos,
-                     sched::read_cpu_accounting_stats(0).tick_hz);
-    pos = append_str(buf, cap, pos, "\n");
 
     uint32_t cpu_count = smp::cpu_count();
     for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
@@ -57,9 +53,9 @@ static size_t generate_cpu(char* buf, size_t cap) {
         pos = append_u64(buf, cap, pos, cpu);
         pos = append_str(buf, cap, pos, " ");
 
-        pos = append_u64(buf, cap, pos, stats.busy_ticks);
+        pos = append_u64(buf, cap, pos, stats.busy_ns);
         pos = append_str(buf, cap, pos, " ");
-        pos = append_u64(buf, cap, pos, stats.idle_ticks);
+        pos = append_u64(buf, cap, pos, stats.idle_ns);
         pos = append_str(buf, cap, pos, "\n");
     }
 
@@ -105,7 +101,7 @@ static size_t generate_tasks(char* buf, size_t cap) {
 
         pos = append_u64(buf, cap, pos, t.exec.cpu);
         pos = append_str(buf, cap, pos, " ");
-        pos = append_u64(buf, cap, pos, t.run_ticks.load_relaxed());
+        pos = append_u64(buf, cap, pos, sched::read_task_cpu_time_ns(&t));
         pos = append_str(buf, cap, pos, " ");
         pos = append_str(buf, cap, pos, t.name);
         pos = append_str(buf, cap, pos, "\n");

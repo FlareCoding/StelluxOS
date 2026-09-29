@@ -220,18 +220,25 @@ __PRIVILEGED_CODE void cancel_block_task() {
 }
 
 /**
+ * Only the CPU running the task calls this, with interrupts off.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void charge_cpu_time(task* running, uint64_t now_ns) {
+    uint64_t elapsed_ns = now_ns - running->cpu_time_updated_at_ns;
+    running->cpu_time_updated_at_ns = now_ns;
+    running->cpu_time_ns.store_relaxed(running->cpu_time_ns.load_relaxed() + elapsed_ns);
+
+    // Only this CPU writes these counters, remote readers use relaxed atomic loads
+    cpu_accounting_stats& stats = this_cpu(cpu_accounting);
+    uint64_t* counter = (running == this_cpu(cpu_rq).idle_task) ? &stats.idle_ns : &stats.busy_ns;
+    sync::atomic_ref<uint64_t>{*counter}.store_relaxed(*counter + elapsed_ns);
+}
+
+/**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void record_cpu_tick(task* prev) {
-    cpu_accounting_stats& stats = this_cpu(cpu_accounting);
-    runqueue& rq = this_cpu(cpu_rq);
-
-    // Only this CPU's tick path writes these counters, remote readers
-    // use relaxed atomic loads
-    uint64_t* counter = (prev == rq.idle_task) ? &stats.idle_ticks
-                                               : &stats.busy_ticks;
-    sync::atomic_ref<uint64_t>{*counter}.store_relaxed(*counter + 1);
-    prev->run_ticks.store_relaxed(prev->run_ticks.load_relaxed() + 1);
+    charge_cpu_time(prev, clock::now_ns());
 }
 
 /**
@@ -240,11 +247,65 @@ __PRIVILEGED_CODE void record_cpu_tick(task* prev) {
 __PRIVILEGED_CODE cpu_accounting_stats read_cpu_accounting_stats(uint32_t cpu_id) {
     cpu_accounting_stats& stats = per_cpu_on(cpu_accounting, cpu_id);
     cpu_accounting_stats out;
-    out.busy_ticks = sync::atomic_ref<uint64_t>{stats.busy_ticks}.load_relaxed();
-    out.idle_ticks = sync::atomic_ref<uint64_t>{stats.idle_ticks}.load_relaxed();
-    out.tick_hz = timer::tick_hz();
+    out.busy_ns = sync::atomic_ref<uint64_t>{stats.busy_ns}.load_relaxed();
+    out.idle_ns = sync::atomic_ref<uint64_t>{stats.idle_ns}.load_relaxed();
     return out;
 }
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void start_cpu_accounting() {
+    current()->cpu_time_updated_at_ns = clock::now_ns();
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t read_task_cpu_time_ns(const task* t) {
+    if (t != current()) {
+        return t->cpu_time_ns.load_relaxed();
+    }
+
+    // Interrupts stay off so no tick charges between the two reads
+    uint64_t irq_flags = cpu::irq_save();
+    uint64_t cpu_time_ns = t->cpu_time_ns.load_relaxed() + (clock::now_ns() - t->cpu_time_updated_at_ns);
+    cpu::irq_restore(irq_flags);
+
+    return cpu_time_ns;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t read_group_cpu_time_ns(thread_group* group) {
+    sync::irq_state irq = sync::spin_lock_irqsave(group->lock);
+
+    uint64_t cpu_time_ns = group->exited_cpu_time_ns.load_relaxed();
+    if (group->leader) {
+        cpu_time_ns += read_task_cpu_time_ns(group->leader);
+    }
+
+    for (task& thread : group->threads) {
+        cpu_time_ns += read_task_cpu_time_ns(&thread);
+    }
+
+    sync::spin_unlock_irqrestore(group->lock, irq);
+
+    return cpu_time_ns;
+}
+
+/**
+ * The caller holds the group's lock and unlinks the task in the same critical
+ * section, so the group's total never drops. The task's final context switch
+ * adds the rest.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void add_cpu_time_to_group(task* leaving, thread_group* group) {
+    leaving->cpu_time_at_group_exit_ns = read_task_cpu_time_ns(leaving);
+    group->exited_cpu_time_ns.fetch_add_relaxed(leaving->cpu_time_at_group_exit_ns);
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -326,6 +387,17 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
     // A task resuming its wait entry stays BLOCKED
     if (next->state.load_relaxed() != TASK_STATE_BLOCKED) {
         next->state.store_relaxed(TASK_STATE_RUNNING);
+    }
+
+    // One timestamp ends prev's charge and starts next's, so no time goes uncharged
+    uint64_t now_ns = clock::now_ns();
+    charge_cpu_time(prev, now_ns);
+    next->cpu_time_updated_at_ns = now_ns;
+
+    // A dead task adds the time it ran after leaving its group
+    if (prev_dead && prev->group) {
+        uint64_t used_after_leaving_ns = prev->cpu_time_ns.load_relaxed() - prev->cpu_time_at_group_exit_ns;
+        prev->group->exited_cpu_time_ns.fetch_add_relaxed(used_after_leaving_ns);
     }
 
     next->exec.cpu = percpu::current_cpu_id();
@@ -622,6 +694,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                     }
 
                     if (!rescan) {
+                        add_cpu_time_to_group(task, tg);
                         tg->leader = nullptr;
                     }
                     sync::spin_unlock_irqrestore(tg->lock, irq);
@@ -644,6 +717,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                 sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
                 tg->threads.remove(task);
                 tg->thread_count--;
+                add_cpu_time_to_group(task, tg);
                 sync::spin_unlock_irqrestore(tg->lock, irq);
             }
         }
@@ -1146,6 +1220,7 @@ __PRIVILEGED_CODE task* create_user_task(
     tg->pid = t->tid;
     tg->threads.init();
     tg->thread_count = 0;
+    tg->exited_cpu_time_ns.store_relaxed(0);
     tg->group_exit_status.store_relaxed(0);
 
     // POSIX inheritance: a new process joins its creator's process group
@@ -1493,6 +1568,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
     this_cpu(percpu_is_elevated) = true;
+    start_cpu_accounting();
 
     runqueue& rq = this_cpu(cpu_rq);
     rq.lock = sync::SPINLOCK_INIT;

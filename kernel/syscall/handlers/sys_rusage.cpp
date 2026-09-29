@@ -2,8 +2,6 @@
 #include "mm/uaccess.h"
 #include "sched/sched.h"
 #include "sched/task.h"
-#include "sched/task_registry.h"
-#include "timer/timer.h"
 #include "common/string.h"
 
 // Layout matches the Linux uapi struct that musl passes through verbatim.
@@ -35,12 +33,12 @@ constexpr int64_t RUSAGE_SELF     = 0;
 constexpr int64_t RUSAGE_CHILDREN = -1;
 constexpr int64_t RUSAGE_THREAD   = 1;
 
-constexpr uint64_t USEC_PER_SEC = 1000000ULL;
+constexpr uint64_t NS_PER_SEC  = 1000000000ULL;
+constexpr uint64_t NS_PER_USEC = 1000ULL;
 
-static void ticks_to_timeval(uint64_t ticks, uint32_t hz, linux_timeval* tv) {
-    uint64_t usec = ticks * (USEC_PER_SEC / hz);
-    tv->tv_sec = static_cast<int64_t>(usec / USEC_PER_SEC);
-    tv->tv_usec = static_cast<int64_t>(usec % USEC_PER_SEC);
+static void ns_to_timeval(uint64_t ns, linux_timeval* tv) {
+    tv->tv_sec = static_cast<int64_t>(ns / NS_PER_SEC);
+    tv->tv_usec = static_cast<int64_t>((ns % NS_PER_SEC) / NS_PER_USEC);
 }
 
 DEFINE_SYSCALL2(getrusage, u_who, u_usage) {
@@ -61,22 +59,17 @@ DEFINE_SYSCALL2(getrusage, u_who, u_usage) {
     linux_rusage kusage;
     string::memset(&kusage, 0, sizeof(kusage));
 
-    // Ticks accumulate while a task is current, with no user/kernel time
-    // split, so all CPU time reports as user time. Children report zero
-    // since no accounting survives a child's exit.
-    uint64_t ticks = 0;
+    // CPU time has no user/kernel split, so all of it reports as user time.
+    // Children report zero since no accounting survives a child's exit.
+    uint64_t cpu_time_ns = 0;
     if (who == RUSAGE_THREAD) {
-        ticks = current->run_ticks.load_relaxed();
+        cpu_time_ns = sched::read_task_cpu_time_ns(current);
     } else if (who == RUSAGE_SELF) {
-        sync::irq_state irq = sched::g_task_registry.lock();
-        sched::g_task_registry.for_each_locked([&](sched::task& t) {
-            if (t.group && current->group && t.group->pid == current->group->pid) {
-                ticks += t.run_ticks.load_relaxed();
-            }
-        });
-        sched::g_task_registry.unlock(irq);
+        cpu_time_ns = current->group ? sched::read_group_cpu_time_ns(current->group)
+                                     : sched::read_task_cpu_time_ns(current);
     }
-    ticks_to_timeval(ticks, timer::tick_hz(), &kusage.ru_utime);
+
+    ns_to_timeval(cpu_time_ns, &kusage.ru_utime);
 
     int32_t rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(u_usage), &kusage, sizeof(kusage));
