@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_poll.h"
+#include "syscall/handlers/sys_signal.h"
 
 #include "sync/poll.h"
 #include "resource/resource.h"
@@ -178,12 +179,14 @@ __PRIVILEGED_CODE static int64_t do_poll(
 }
 
 DEFINE_SYSCALL5(ppoll, u_fds, nfds_val, u_timeout, u_sigmask, sigsetsize) {
-    (void)u_sigmask;
-    (void)sigsetsize;
-
     sched::task* task = sched::current();
     if (!task) {
         return syscall::EIO;
+    }
+
+    int64_t mask_result = syscall::set_temporary_sigmask(task, u_sigmask, sigsetsize);
+    if (mask_result != 0) {
+        return mask_result;
     }
 
     uint32_t nfds = static_cast<uint32_t>(nfds_val);

@@ -6,9 +6,13 @@
 #include <errno.h>
 #include <poll.h>
 #include <sys/mman.h>
+#include <sys/select.h>
 #include <stlx/proc.h>
 
-#define HELPER_STACK_SIZE (64 * 1024)
+#define HELPER_STACK_SIZE   (64 * 1024)
+#define MASKED_WAIT_SECONDS 5
+#define VICTIM_WAIT_SECONDS 1
+#define VICTIM_SETTLE_US    (200 * 1000)
 
 static int passed = 0;
 static int failed = 0;
@@ -130,6 +134,17 @@ static int pipe_victim_child(void) {
     char b = 'x';
     write(fds[1], &b, 1);
     return 1; /* only reached if the signal never fired */
+}
+
+/* Child mode: SIGTERM blocked only by a wait's mask must kill as soon as the wait ends */
+static int wait_mask_victim_child(void) {
+    sigset_t term;
+    sigemptyset(&term);
+    sigaddset(&term, SIGTERM);
+
+    struct timespec wait = { .tv_sec = VICTIM_WAIT_SECONDS, .tv_nsec = 0 };
+    ppoll(NULL, 0, &wait, &term);
+    _exit(1); /* only reached if the signal outlived the wait */
 }
 
 /* Child mode: a breakpoint trap must die by default SIGTRAP */
@@ -331,6 +346,75 @@ static void test_poll_eintr_despite_restart(void) {
     close(fds[1]);
 }
 
+static void test_wait_masks(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = usr1_handler;
+    sigaction(SIGUSR1, &sa, NULL);
+
+    sigset_t usr1;
+    sigemptyset(&usr1);
+    sigaddset(&usr1, SIGUSR1);
+    sigprocmask(SIG_BLOCK, &usr1, NULL);
+
+    sigset_t open_mask;
+    sigset_t now;
+    sigemptyset(&open_mask);
+    struct timespec long_wait = { .tv_sec = MASKED_WAIT_SECONDS, .tv_nsec = 0 };
+
+    usr1_count = 0;
+    raise(SIGUSR1);
+    int ret = ppoll(NULL, 0, &long_wait, &open_mask);
+    int saved_errno = errno;
+    sigprocmask(SIG_SETMASK, NULL, &now);
+
+    check("ppoll mask lets a pending signal interrupt", ret == -1 && saved_errno == EINTR);
+    check("ppoll mask runs the handler", usr1_count == 1);
+    check("ppoll mask ends with the handler", sigismember(&now, SIGUSR1) == 1);
+
+    usr1_count = 0;
+    raise(SIGUSR1);
+    ret = pselect(0, NULL, NULL, NULL, &long_wait, &open_mask);
+    saved_errno = errno;
+    sigprocmask(SIG_SETMASK, NULL, &now);
+
+    check("pselect mask lets a pending signal interrupt", ret == -1 && saved_errno == EINTR);
+    check("pselect mask runs the handler", usr1_count == 1);
+    check("pselect mask ends with the handler", sigismember(&now, SIGUSR1) == 1);
+
+    sigset_t usr2;
+    sigemptyset(&usr2);
+    sigaddset(&usr2, SIGUSR2);
+    struct timespec no_wait = { .tv_sec = 0, .tv_nsec = 0 };
+    ret = ppoll(NULL, 0, &no_wait, &usr2);
+    sigprocmask(SIG_SETMASK, NULL, &now);
+
+    check("ppoll timeout restores the mask",
+          ret == 0 && sigismember(&now, SIGUSR2) == 0 && sigismember(&now, SIGUSR1) == 1);
+
+    sigprocmask(SIG_UNBLOCK, &usr1, NULL);
+}
+
+static void test_wait_mask_fatal_signal(void) {
+    static const char* args[] = { "--wait-mask-victim", NULL };
+    int h = proc_create("/bin/sigtest", args);
+    if (h < 0) {
+        printf("  SKIP: self exec unavailable\n");
+        return;
+    }
+
+    process_info info;
+    proc_start(h);
+    proc_info(h, &info);
+    usleep(VICTIM_SETTLE_US);
+    kill(info.pid, SIGTERM);
+
+    int status = 0;
+    proc_wait(h, &status);
+    check("a signal blocked only for a wait kills as the wait returns",
+          STLX_WIFSIGNALED(status) && STLX_WTERMSIG(status) == SIGTERM);
+}
+
 static volatile sig_atomic_t async_handler_ran = 0;
 
 static void async_handler(int sig) {
@@ -479,6 +563,10 @@ int main(int argc, char** argv) {
         return trap_victim_child();
     }
 
+    if (argc >= 2 && strcmp(argv[1], "--wait-mask-victim") == 0) {
+        return wait_mask_victim_child();
+    }
+
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("sigtest: running signal delivery tests\n");
 
@@ -489,6 +577,8 @@ int main(int argc, char** argv) {
     test_read_eintr();
     test_read_restart();
     test_poll_eintr_despite_restart();
+    test_wait_masks();
+    test_wait_mask_fatal_signal();
     test_async_compute_delivery();
     test_sigpipe_dispositions();
     test_trap_default_kills();

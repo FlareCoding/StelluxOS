@@ -68,10 +68,12 @@ struct k_sigaction {
 static_assert(sizeof(k_sigaction) == 32, "k_sigaction must match musl rt_sigaction layout");
 
 // Per-task signal state. pending is set by senders,
-// blocked is written only by the owning task.
+// the masks are written only by the owning task.
 struct task_signals {
     sync::atomic<sig_set_t> blocked;
     sync::atomic<sig_set_t> pending;
+    sig_set_t               saved_mask = 0;
+    bool                    restore_mask = false;
 };
 
 // Per-process signal state shared by all threads in a thread group.

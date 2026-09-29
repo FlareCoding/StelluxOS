@@ -94,6 +94,26 @@ __PRIVILEGED_CODE int32_t set_blocked(sched::task* t, uint32_t how,
     return OK;
 }
 
+__PRIVILEGED_CODE void set_temporary_blocked(sched::task* t, sig_set_t mask) {
+    if (!t->sig.restore_mask) {
+        t->sig.saved_mask = t->sig.blocked.load_acquire();
+        t->sig.restore_mask = true;
+    }
+
+    set_blocked(t, SIG_SETMASK, &mask, nullptr);
+}
+
+__PRIVILEGED_CODE bool end_temporary_blocked(sched::task* t) {
+    if (!t->sig.restore_mask) {
+        return false;
+    }
+
+    t->sig.restore_mask = false;
+    set_blocked(t, SIG_SETMASK, &t->sig.saved_mask, nullptr);
+
+    return true;
+}
+
 __PRIVILEGED_CODE sig_set_t pending_blocked_set(sched::task* t) {
     sig_set_t pend = t->sig.pending.load_acquire();
     if (t->group) {
@@ -474,8 +494,10 @@ __PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
     }
     set_blocked(t, SIG_SETMASK, &next, nullptr);
 
+    // The handler of a signal that interrupted a temporary mask returns to the mask it replaced
     *sig = selected;
-    *old_blocked = blocked;
+    *old_blocked = t->sig.restore_mask ? t->sig.saved_mask : blocked;
+    t->sig.restore_mask = false;
     return true;
 }
 

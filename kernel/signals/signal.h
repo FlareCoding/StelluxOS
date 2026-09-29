@@ -42,6 +42,21 @@ __PRIVILEGED_CODE int32_t set_blocked(sched::task* t, uint32_t how,
                                       const sig_set_t* set, sig_set_t* old);
 
 /**
+ * @brief Block exactly `mask` until the task's current syscall returns.
+ * The mask it replaces comes back at that return, or, for a syscall a
+ * signal interrupts, when that signal's handler returns.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_temporary_blocked(sched::task* t, sig_set_t mask);
+
+/**
+ * @brief Restore the mask a temporary one replaced, if one is in effect.
+ * @return true when a temporary mask was in effect.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool end_temporary_blocked(sched::task* t);
+
+/**
  * @brief Signals pending for the task (thread + process sets) that are
  * currently blocked. Matches rt_sigpending semantics.
  * @note Privilege: **required**
