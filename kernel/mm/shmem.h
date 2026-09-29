@@ -69,7 +69,7 @@ private:
 [[nodiscard]] shmem* shmem_create(size_t initial_size);
 
 /**
- * @brief Resize the shmem backing.
+ * @brief Resize the shmem backing. On failure the size is unchanged.
  * Grow: allocate and zero new pages.
  * Shrink: free the pages past the new size unless a mapping may still reach
  * them, in which case they are freed when the last mapping goes away.
@@ -92,10 +92,23 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size);
 ssize_t shmem_read(shmem* s, size_t offset, void* dst, size_t count);
 
 /**
+ * @brief Read from shmem at the given byte offset. Caller must hold s->lock.
+ * @return Number of bytes read, or negative error.
+ */
+ssize_t shmem_read_locked(shmem* s, size_t offset, void* dst, size_t count);
+
+/**
  * @brief Write to shmem at the given byte offset.
  * @return Number of bytes written, or negative error.
  */
 ssize_t shmem_write(shmem* s, size_t offset, const void* src, size_t count);
+
+/**
+ * @brief Write to shmem at the given byte offset, stopping at the current size.
+ * Caller must hold s->lock.
+ * @return Number of bytes written, or negative error.
+ */
+ssize_t shmem_write_locked(shmem* s, size_t offset, const void* src, size_t count);
 
 } // namespace mm
 
