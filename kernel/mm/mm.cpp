@@ -524,6 +524,207 @@ __PRIVILEGED_CODE int32_t mm_context_discard(
 }
 
 /**
+ * Moves the pages `node` covers to a new mapping of `new_len` bytes at
+ * `new_start`, carrying their frames over without copying. A failure leaves
+ * `node` and its pages untouched.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int32_t move_vma_locked(
+    mm_context* mm_ctx,
+    vma* node,
+    uintptr_t new_start,
+    size_t new_len
+) {
+    vma* moved = alloc_vma(new_start, new_start + new_len, node->prot, node->flags);
+    if (!moved) {
+        return MM_CTX_ERR_NO_MEM;
+    }
+
+    if (!vma_insert_locked(mm_ctx, moved)) {
+        free_vma(moved);
+        return MM_CTX_ERR_EXISTS;
+    }
+
+    pmm::phys_addr_t root = mm_ctx->pt_root;
+    paging::page_flags_t page_flags = prot_to_page_flags(node->prot);
+    for (uintptr_t vaddr = paging::find_next_populated_page(node->start, node->end, root);
+         vaddr < node->end;
+         vaddr = paging::find_next_populated_page(vaddr + pmm::PAGE_SIZE, node->end, root)) {
+        uintptr_t target = new_start + (vaddr - node->start);
+        pmm::phys_addr_t frame = paging::get_physical(vaddr, root);
+        if (paging::map_page(target, frame, page_flags, root) != paging::OK) {
+            unmap_pages_only(mm_ctx, new_start, target);
+            mm_ctx->vmas.remove(*moved);
+            free_vma(moved);
+            return MM_CTX_ERR_NO_MEM;
+        }
+    }
+
+    unmap_pages_only(mm_ctx, node->start, node->end);
+    mm_ctx->vmas.remove(*node);
+    free_vma(node);
+
+    return MM_CTX_OK;
+}
+
+/**
+ * Splits the VMA holding [start, end) so that one VMA covers exactly that range.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int32_t isolate_range_locked(
+    mm_context* mm_ctx,
+    uintptr_t start,
+    uintptr_t end
+) {
+    vma* node = vma_find_locked(mm_ctx, start);
+    if (node->start < start) {
+        node = split_vma_locked(mm_ctx, node, start);
+        if (!node) {
+            return MM_CTX_ERR_NO_MEM;
+        }
+    }
+
+    if (node->end > end && !split_vma_locked(mm_ctx, node, end)) {
+        return MM_CTX_ERR_NO_MEM;
+    }
+
+    return MM_CTX_OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int32_t remap_locked(
+    mm_context* mm_ctx,
+    uintptr_t old_addr,
+    uintptr_t old_end,
+    uintptr_t new_start,
+    uintptr_t new_end,
+    uint32_t flags,
+    uintptr_t* out_addr
+) {
+    vma* node = vma_find_locked(mm_ctx, old_addr);
+    if (!node || node->start > old_addr || node->end < old_end) {
+        return MM_CTX_ERR_NOT_MAPPED;
+    }
+
+    size_t old_len = old_end - old_addr;
+    size_t new_len = new_end - new_start;
+    bool fixed = (flags & MM_REMAP_FIXED) != 0;
+
+    // Shared and device mappings have their pages installed at map time, so
+    // they can shrink but not grow or move
+    bool fills_on_demand = refills_with_zeros(*node);
+    if (!fills_on_demand && new_len > old_len) {
+        return MM_CTX_ERR_CANNOT_GROW;
+    }
+
+    if (!fills_on_demand && fixed) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    if (!fixed && new_len <= old_len) {
+        *out_addr = old_addr;
+        if (new_len == old_len) {
+            return MM_CTX_OK;
+        }
+
+        return unmap_range_locked(mm_ctx, old_addr + new_len, old_end);
+    }
+
+    if (fixed) {
+        int32_t rc = unmap_range_locked(mm_ctx, new_start, new_end);
+        if (rc != MM_CTX_OK) {
+            return rc;
+        }
+    } else if (node->end == old_end && new_end <= mm_ctx->mmap_end &&
+               !vma_find_overlap_locked(mm_ctx, old_end, new_end)) {
+        node->end = new_end;
+        *out_addr = old_addr;
+        return MM_CTX_OK;
+    } else if (!(flags & MM_REMAP_MAYMOVE)) {
+        return MM_CTX_ERR_NO_VIRT;
+    } else {
+        new_start = vma_find_gap_topdown_locked(mm_ctx, new_len);
+        if (new_start == 0) {
+            return MM_CTX_ERR_NO_VIRT;
+        }
+    }
+
+    // The part that moves and the tail a shrink leaves behind get VMAs of
+    // their own, so nothing is dropped before the move has succeeded
+    uintptr_t move_end = (new_len < old_len) ? old_addr + new_len : old_end;
+    int32_t rc = isolate_range_locked(mm_ctx, old_addr, move_end);
+    if (rc == MM_CTX_OK && move_end < old_end) {
+        rc = isolate_range_locked(mm_ctx, move_end, old_end);
+    }
+
+    if (rc != MM_CTX_OK) {
+        return rc;
+    }
+
+    rc = move_vma_locked(mm_ctx, vma_find_locked(mm_ctx, old_addr), new_start, new_len);
+    if (rc != MM_CTX_OK) {
+        return rc;
+    }
+
+    *out_addr = new_start;
+    if (move_end == old_end) {
+        return MM_CTX_OK;
+    }
+
+    return unmap_range_locked(mm_ctx, move_end, old_end);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mm_context_remap(
+    mm_context* mm_ctx,
+    uintptr_t old_addr,
+    size_t old_len,
+    size_t new_len,
+    uint32_t flags,
+    uintptr_t new_addr,
+    uintptr_t* out_addr
+) {
+    if (!mm_ctx || !out_addr || !is_page_aligned(old_addr) ||
+        (flags & ~(MM_REMAP_MAYMOVE | MM_REMAP_FIXED)) != 0) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    bool fixed = (flags & MM_REMAP_FIXED) != 0;
+    if (fixed && (!(flags & MM_REMAP_MAYMOVE) || !is_page_aligned(new_addr))) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    uintptr_t new_start = fixed ? new_addr : old_addr;
+    uintptr_t old_end = 0;
+    uintptr_t new_end = 0;
+    if (!range_from_len(old_addr, pmm::page_align_up(old_len), old_end) ||
+        !range_from_len(new_start, pmm::page_align_up(new_len), new_end)) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    if (fixed && new_start < old_end && old_addr < new_end) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    if (fixed && (new_start < mm_ctx->mmap_base || new_end > mm_ctx->mmap_end)) {
+        return MM_CTX_ERR_NO_VIRT;
+    }
+
+    sync::mutex_lock(mm_ctx->lock);
+
+    int32_t rc = remap_locked(mm_ctx, old_addr, old_end, new_start, new_end, flags, out_addr);
+    coalesce_all_locked(mm_ctx);
+
+    sync::mutex_unlock(mm_ctx->lock);
+
+    return rc;
+}
+
+/**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t mm_context_map_shared(

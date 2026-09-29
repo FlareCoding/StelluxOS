@@ -28,6 +28,7 @@ constexpr uint64_t ACCESS           = 21;
 constexpr uint64_t PIPE             = 22;
 constexpr uint64_t SELECT           = 23;
 constexpr uint64_t SCHED_YIELD      = 24;
+constexpr uint64_t MREMAP           = 25;
 constexpr uint64_t MADVISE          = 28;
 constexpr uint64_t DUP              = 32;
 constexpr uint64_t DUP2             = 33;

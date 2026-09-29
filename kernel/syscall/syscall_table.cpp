@@ -77,6 +77,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::GETTID,          gettid);
     REGISTER_SYSCALL(linux_nr::MPROTECT,        mprotect);
     REGISTER_SYSCALL(linux_nr::MUNMAP,          munmap);
+    REGISTER_SYSCALL(linux_nr::MREMAP,          mremap);
     REGISTER_SYSCALL(linux_nr::EXIT,            exit);
     REGISTER_SYSCALL(linux_nr::EXIT_GROUP,      exit_group);
     REGISTER_SYSCALL(linux_nr::GETPID,          getpid);
