@@ -106,7 +106,9 @@ struct task : rc::ref_counted<task> {
     list::node              sched_link;
     list::node              wait_link;
     timer::deadline_timer   sleep_timer;
-    sync::atomic<uint64_t>  run_ticks; // timer ticks observed while current
+    sync::atomic<uint64_t>  cpu_time_ns; // written only by the CPU running the task
+    uint64_t                cpu_time_updated_at_ns;
+    uint64_t                cpu_time_at_group_exit_ns;
     rc::reaper::dead_node   reaper_node;
 
     // Resources, the handle table is private by default and shared
@@ -136,6 +138,7 @@ struct thread_group : rc::ref_counted<thread_group> {
     sync::atomic<uint32_t> group_id; // process group this process belongs to
     list::head<task, &task::group_link> threads; // non-leader threads only
     uint32_t       thread_count; // number of live non-leader threads
+    sync::atomic<uint64_t> exited_cpu_time_ns;
 
     // Group exit status recorded by exit_group: zero means unset, otherwise bit
     // 31 is set and bits 8 to 15 hold the exit code as a normal wait status

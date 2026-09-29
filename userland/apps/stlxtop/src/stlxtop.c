@@ -26,6 +26,9 @@
 #define STATE_MAX_LEN 12
 #define FRAME_MAX     32768
 
+#define NS_PER_SEC       1000000000ULL
+#define NS_PER_HUNDREDTH 10000000ULL
+
 typedef struct {
     uint64_t busy;
     uint64_t idle;
@@ -35,13 +38,12 @@ typedef struct {
     uint32_t tid;
     uint32_t pid;
     uint32_t cpu;
-    uint64_t ticks;
+    uint64_t cpu_time_ns;
     char     state[STATE_MAX_LEN];
     char     name[NAME_MAX_LEN];
 } task_sample_t;
 
 typedef struct {
-    uint64_t      tick_hz;
     uint32_t      cpu_count;
     cpu_sample_t  cpus[MAX_CPUS];
     uint64_t      mem_page_size;
@@ -54,7 +56,7 @@ typedef struct {
 
 typedef struct {
     uint32_t tid;
-    uint64_t ticks;
+    uint64_t cpu_time_ns;
     unsigned pct;
 } task_delta_t;
 
@@ -112,7 +114,6 @@ static int parse_cpu(sample_t* s) {
         return -1;
     }
 
-    s->tick_hz = labeled_field(buf, "tick_hz ");
     s->cpu_count = 0;
 
     const char* p = buf;
@@ -184,7 +185,7 @@ static int parse_tasks(sample_t* s) {
         t->state[i] = '\0';
 
         t->cpu = (uint32_t)strtoul(end, &end, 10);
-        t->ticks = strtoull(end, &end, 10);
+        t->cpu_time_ns = strtoull(end, &end, 10);
 
         while (*end == ' ') {
             end++;
@@ -322,18 +323,18 @@ static int delta_compare(const void* a, const void* b) {
         return ta->pct > tb->pct ? -1 : 1;
     }
 
-    if (ta->ticks != tb->ticks) {
-        return ta->ticks > tb->ticks ? -1 : 1;
+    if (ta->cpu_time_ns != tb->cpu_time_ns) {
+        return ta->cpu_time_ns > tb->cpu_time_ns ? -1 : 1;
     }
 
     return ta->tid < tb->tid ? -1 : 1;
 }
 
-static uint64_t prev_task_ticks(uint32_t tid, int* found) {
+static uint64_t prev_task_cpu_time_ns(uint32_t tid, int* found) {
     for (int i = 0; i < g_prev.task_count; i++) {
         if (g_prev.tasks[i].tid == tid) {
             *found = 1;
-            return g_prev.tasks[i].ticks;
+            return g_prev.tasks[i].cpu_time_ns;
         }
     }
 
@@ -359,15 +360,16 @@ static void render(void) {
     g_frame_len = 0;
     emit("\033[H");
 
-    /* Ticks one CPU accrued over the sample interval, the base for
+    /* Time one CPU accounted over the sample interval, the base for
      * per-task and per-CPU percentages */
-    uint64_t interval_ticks = 0;
+    uint64_t interval_ns = 0;
     if (g_have_prev) {
         for (uint32_t i = 0; i < g_cur.cpu_count; i++) {
-            interval_ticks += (g_cur.cpus[i].busy - g_prev.cpus[i].busy)
-                            + (g_cur.cpus[i].idle - g_prev.cpus[i].idle);
+            interval_ns += (g_cur.cpus[i].busy - g_prev.cpus[i].busy)
+                         + (g_cur.cpus[i].idle - g_prev.cpus[i].idle);
         }
-        interval_ticks /= g_cur.cpu_count;
+
+        interval_ns /= g_cur.cpu_count;
     }
 
     uint64_t up_s = g_cur.uptime_ns / 1000000000ULL;
@@ -422,15 +424,15 @@ static void render(void) {
         const task_sample_t* t = &g_cur.tasks[i];
         task_delta_t* d = &deltas[delta_count++];
         d->tid = t->tid;
-        d->ticks = t->ticks;
+        d->cpu_time_ns = t->cpu_time_ns;
         d->pct = 0;
-        if (g_have_prev && interval_ticks > 0) {
+        if (g_have_prev && interval_ns > 0) {
             int found = 0;
-            uint64_t prev_ticks = prev_task_ticks(t->tid, &found);
-            if (found && t->ticks >= prev_ticks) {
-                uint64_t d_ticks = t->ticks - prev_ticks;
-                d->pct = (unsigned)((d_ticks * 100 + interval_ticks / 2)
-                                    / interval_ticks);
+            uint64_t prev_cpu_time_ns = prev_task_cpu_time_ns(t->tid, &found);
+            if (found && t->cpu_time_ns >= prev_cpu_time_ns) {
+                uint64_t d_cpu_time_ns = t->cpu_time_ns - prev_cpu_time_ns;
+                d->pct = (unsigned)((d_cpu_time_ns * 100 + interval_ns / 2)
+                                    / interval_ns);
             }
         }
     }
@@ -446,14 +448,12 @@ static void render(void) {
             continue;
         }
 
-        uint64_t secs = g_cur.tick_hz > 0 ? t->ticks / g_cur.tick_hz : 0;
+        uint64_t secs = t->cpu_time_ns / NS_PER_SEC;
         char time_str[16];
         snprintf(time_str, sizeof(time_str), "%llu:%02llu.%02llu",
                  (unsigned long long)(secs / 60),
                  (unsigned long long)(secs % 60),
-                 g_cur.tick_hz > 0
-                     ? (unsigned long long)(t->ticks % g_cur.tick_hz)
-                     : 0ULL);
+                 (unsigned long long)((t->cpu_time_ns / NS_PER_HUNDREDTH) % 100));
 
         int name_width = cols - 42;
         if (name_width < 8) {

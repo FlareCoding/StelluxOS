@@ -149,6 +149,8 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("clock::init failed");
     }
 
+    sched::start_cpu_accounting();
+
     if (timer::init(100) != timer::OK) {
         log::fatal("timer::init failed");
     }

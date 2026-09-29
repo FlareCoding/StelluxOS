@@ -9,6 +9,7 @@ namespace exec { struct loaded_image; }
 namespace sched {
 
 struct task;
+struct thread_group;
 
 constexpr int32_t OK         = 0;
 constexpr int32_t ERR_NO_MEM = -1;
@@ -18,15 +19,12 @@ constexpr size_t MAX_ARG_STRLEN  = 4096; // bytes per argv/envp string, includin
 constexpr size_t MAX_ARG_STRINGS = 512; // strings per argv/envp array
 
 /**
- * One CPU's timer tick counters. A tick is charged as idle when it
- * interrupts the CPU's idle task and as busy otherwise. Snapshots
- * carry the scheduler tick frequency so readers can convert tick
- * counts into wall time.
+ * One CPU's accounted time in nanoseconds. Time spent in the CPU's idle
+ * task is idle and all other time is busy.
  */
 struct cpu_accounting_stats {
-    uint64_t busy_ticks;
-    uint64_t idle_ticks;
-    uint32_t tick_hz;
+    uint64_t busy_ns;
+    uint64_t idle_ns;
 };
 
 /**
@@ -240,6 +238,31 @@ task* current();
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE cpu_accounting_stats read_cpu_accounting_stats(uint32_t cpu_id);
+
+/**
+ * @brief Start accounting the calling CPU's time at the moment of the call.
+ * Every CPU must call this once its clock can be read: the boot CPU right
+ * after calibrating the clock, since its first task runs from before then,
+ * and every other CPU as it comes online.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void start_cpu_accounting();
+
+/**
+ * @brief Read the CPU time a task has used, in nanoseconds. Exact for the
+ * current task and for a task off its CPU, at most one timer tick behind
+ * for a task running on another CPU.
+ * @param t Task the caller keeps alive for the call.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t read_task_cpu_time_ns(const task* t);
+
+/**
+ * @brief Read the CPU time used by every task of a thread group, including
+ * tasks that have left it, in nanoseconds. Takes the group's lock.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t read_group_cpu_time_ns(thread_group* group);
 
 /**
  * @brief Block the current task for at least ns nanoseconds.
