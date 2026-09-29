@@ -3,6 +3,7 @@
 #include "stlx_unit_test.h"
 #include "mm/mm.h"
 #include "mm/vma.h"
+#include "mm/shmem.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
 #include "mm/page_quarantine.h"
@@ -285,4 +286,90 @@ TEST(lazy_anon, sparse_terabyte_reservation_releases_quickly) {
     EXPECT_LT(clock::now_ns() - started_ns, TIME_LIMIT_NS);
 
     mm::mm_context_release(mm_ctx);
+}
+
+static uint8_t* mapped_page_bytes(mm::mm_context* mm_ctx, uintptr_t addr) {
+    pmm::phys_addr_t phys = paging::get_physical(addr, mm_ctx->pt_root);
+    return phys ? static_cast<uint8_t*>(paging::phys_to_virt(phys)) : nullptr;
+}
+
+TEST(lazy_anon, discard_refaults_zero_and_spares_neighbors) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx, 0, 2 * PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
+    ), mm::MM_CTX_OK);
+    ASSERT_TRUE(mm::handle_user_pf(mm_ctx, addr, mm::PF_FLAG_WRITE));
+    ASSERT_TRUE(mm::handle_user_pf(mm_ctx, addr + PAGE, mm::PF_FLAG_WRITE));
+    mapped_page_bytes(mm_ctx, addr)[0] = 0x11;
+    mapped_page_bytes(mm_ctx, addr + PAGE)[0] = 0x22;
+
+    EXPECT_EQ(mm::mm_context_discard(mm_ctx, addr, PAGE), mm::MM_CTX_OK);
+    EXPECT_NULL(mapped_page_bytes(mm_ctx, addr));
+    ASSERT_NOT_NULL(mapped_page_bytes(mm_ctx, addr + PAGE));
+    EXPECT_EQ(mapped_page_bytes(mm_ctx, addr + PAGE)[0], 0x22);
+
+    ASSERT_TRUE(mm::handle_user_pf(mm_ctx, addr, 0));
+    EXPECT_EQ(mapped_page_bytes(mm_ctx, addr)[0], 0);
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(lazy_anon, discard_drops_the_mapped_parts_of_a_range_with_holes) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx, 0, 3 * PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
+    ), mm::MM_CTX_OK);
+    ASSERT_TRUE(mm::handle_user_pf(mm_ctx, addr, mm::PF_FLAG_WRITE));
+    ASSERT_TRUE(mm::handle_user_pf(mm_ctx, addr + 2 * PAGE, mm::PF_FLAG_WRITE));
+    ASSERT_EQ(mm::mm_context_unmap(mm_ctx, addr + PAGE, PAGE), mm::MM_CTX_OK);
+
+    EXPECT_EQ(mm::mm_context_discard(mm_ctx, addr, 3 * PAGE), mm::MM_CTX_ERR_NOT_MAPPED);
+    EXPECT_NULL(mapped_page_bytes(mm_ctx, addr));
+    EXPECT_NULL(mapped_page_bytes(mm_ctx, addr + 2 * PAGE));
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(lazy_anon, discard_keeps_shared_pages) {
+    mm::shmem* s = mm::shmem_create(PAGE);
+    ASSERT_NOT_NULL(s);
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_shared(mm_ctx, s, 0, PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+                                        mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
+    mapped_page_bytes(mm_ctx, addr)[0] = 0x33;
+
+    EXPECT_EQ(mm::mm_context_discard(mm_ctx, addr, PAGE), mm::MM_CTX_OK);
+    ASSERT_NOT_NULL(mapped_page_bytes(mm_ctx, addr));
+    EXPECT_EQ(mapped_page_bytes(mm_ctx, addr)[0], 0x33);
+
+    mm::mm_context_release(mm_ctx);
+    mm::shmem::ref_destroy(s);
+}
+
+TEST(lazy_anon, discard_rejects_device_mappings) {
+    pmm::phys_addr_t frame = pmm::alloc_page();
+    ASSERT_NE(frame, static_cast<pmm::phys_addr_t>(0));
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(mm::mm_context_map_device(mm_ctx, frame, PAGE, mm::MM_PROT_READ, paging::PAGE_DEVICE,
+                                        mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
+
+    EXPECT_EQ(mm::mm_context_discard(mm_ctx, addr, PAGE), mm::MM_CTX_ERR_INVALID_ARG);
+    EXPECT_EQ(paging::get_physical(addr, mm_ctx->pt_root), frame);
+
+    mm::mm_context_release(mm_ctx);
+    pmm::free_page(frame);
 }

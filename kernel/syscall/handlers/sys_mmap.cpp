@@ -28,6 +28,23 @@ constexpr uint64_t LINUX_MAP_ALLOWED_MASK =
     LINUX_MAP_ANONYMOUS | LINUX_MAP_STACK | LINUX_MAP_FIXED_NOREPLACE |
     LINUX_MAP_NORESERVE;
 
+constexpr uint64_t LINUX_MADV_NORMAL     = 0;
+constexpr uint64_t LINUX_MADV_RANDOM     = 1;
+constexpr uint64_t LINUX_MADV_SEQUENTIAL = 2;
+constexpr uint64_t LINUX_MADV_WILLNEED   = 3;
+constexpr uint64_t LINUX_MADV_DONTNEED   = 4;
+constexpr uint64_t LINUX_MADV_FREE       = 8;
+constexpr uint64_t LINUX_MADV_DONTFORK   = 10;
+constexpr uint64_t LINUX_MADV_DOFORK     = 11;
+constexpr uint64_t LINUX_MADV_HUGEPAGE   = 14;
+constexpr uint64_t LINUX_MADV_NOHUGEPAGE = 15;
+constexpr uint64_t LINUX_MADV_DONTDUMP   = 16;
+constexpr uint64_t LINUX_MADV_DODUMP     = 17;
+constexpr uint64_t LINUX_MADV_WIPEONFORK = 18;
+constexpr uint64_t LINUX_MADV_KEEPONFORK = 19;
+constexpr uint64_t LINUX_MADV_COLD       = 20;
+constexpr uint64_t LINUX_MADV_PAGEOUT    = 21;
+
 static inline uint32_t linux_prot_to_mm(uint64_t prot) {
     uint32_t mm_prot = 0;
     if (prot & LINUX_PROT_READ) mm_prot |= mm::MM_PROT_READ;
@@ -267,14 +284,48 @@ DEFINE_SYSCALL1(brk, addr) {
 }
 
 DEFINE_SYSCALL3(madvise, addr, length, advice) {
-    (void)length;
-    (void)advice;
-
     if (!is_page_aligned(addr)) {
         return syscall::EINVAL;
     }
 
-    // Advice is accepted without action, anonymous mappings are already
-    // lazily populated so there is no commit accounting to adjust
-    return 0;
+    switch (advice) {
+        // A deferred free may happen at once, so both drop the pages immediately
+        case LINUX_MADV_DONTNEED:
+        case LINUX_MADV_FREE:
+            break;
+        // The remaining advice are hints with nothing to act on
+        case LINUX_MADV_NORMAL:
+        case LINUX_MADV_RANDOM:
+        case LINUX_MADV_SEQUENTIAL:
+        case LINUX_MADV_WILLNEED:
+        case LINUX_MADV_DONTFORK:
+        case LINUX_MADV_DOFORK:
+        case LINUX_MADV_HUGEPAGE:
+        case LINUX_MADV_NOHUGEPAGE:
+        case LINUX_MADV_DONTDUMP:
+        case LINUX_MADV_DODUMP:
+        case LINUX_MADV_WIPEONFORK:
+        case LINUX_MADV_KEEPONFORK:
+        case LINUX_MADV_COLD:
+        case LINUX_MADV_PAGEOUT:
+            return 0;
+        default:
+            return syscall::EINVAL;
+    }
+
+    if (length == 0) {
+        return 0;
+    }
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return syscall::ENOMEM;
+    }
+
+    int32_t rc = mm::mm_context_discard(
+        task->exec.mm_ctx,
+        static_cast<uintptr_t>(addr),
+        static_cast<size_t>(length)
+    );
+    return mm_status_to_errno(rc);
 }
