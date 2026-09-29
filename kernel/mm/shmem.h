@@ -16,8 +16,8 @@ constexpr int32_t SHMEM_ERR_NO_MEM     = -2;
  * Ref-counted shared memory backing object.
  *
  * Holds an array of physical pages that can be mapped into multiple
- * mm_contexts simultaneously. Pages are freed only in ref_destroy
- * when the last reference is released.
+ * mm_contexts simultaneously. Pages past the size are freed once no
+ * mapping can reach them, and the rest when the last reference goes.
  *
  * Lock order: when holding both mm_ctx->lock and shmem->lock,
  * always acquire mm_ctx->lock first.
@@ -27,9 +27,38 @@ struct shmem final : rc::ref_counted<shmem> {
     size_t             m_page_count;
     size_t             m_capacity;
     size_t             m_size;
+    size_t             m_mapping_count;
     sync::mutex        lock;
 
     static void ref_destroy(shmem* self);
+};
+
+/**
+ * A mapping's reference to a shmem. While any exists, pages past the size
+ * stay allocated, since a mapping may still reach them. The shmem's lock
+ * must not be held when one is copied or destroyed.
+ */
+class shmem_mapping {
+public:
+    shmem_mapping() = default;
+    shmem_mapping(const shmem_mapping& other);
+    shmem_mapping(shmem_mapping&& other);
+    shmem_mapping& operator=(const shmem_mapping& other);
+    shmem_mapping& operator=(shmem_mapping&& other);
+    ~shmem_mapping();
+
+    /**
+     * @brief Start a mapping of `s`. Caller must hold s->lock across installing
+     * the mapping's page table entries, so no shrink can free their pages first.
+     */
+    static shmem_mapping start_locked(shmem* s);
+
+    shmem* ptr() const { return m_shmem; }
+
+private:
+    void release();
+
+    shmem* m_shmem = nullptr;
 };
 
 /**
@@ -42,8 +71,8 @@ struct shmem final : rc::ref_counted<shmem> {
 /**
  * @brief Resize the shmem backing.
  * Grow: allocate and zero new pages.
- * Shrink: update m_size and m_page_count only, do NOT free tail pages
- * (they may still be mapped). Tail pages are freed in ref_destroy.
+ * Shrink: free the pages past the new size unless a mapping may still reach
+ * them, in which case they are freed when the last mapping goes away.
  * Caller must hold s->lock.
  */
 int32_t shmem_resize_locked(shmem* s, size_t new_size);

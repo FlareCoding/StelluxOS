@@ -58,8 +58,8 @@ struct vma {
     uint32_t  prot;
     uint32_t  flags;
     rbt::node addr_link;
-    rc::strong_ref<shmem> shmem_backing;
-    uint64_t              backing_offset;
+    shmem_mapping shmem_backing;
+    uint64_t      backing_offset;
 };
 
 struct vma_addr_cmp {

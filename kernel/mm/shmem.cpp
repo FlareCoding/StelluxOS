@@ -38,6 +38,15 @@ static bool ensure_capacity(shmem* s, size_t needed) {
     return true;
 }
 
+static void free_pages_past_size_locked(shmem* s) {
+    for (size_t i = s->m_page_count; i < s->m_capacity; i++) {
+        if (s->m_pages[i] != 0) {
+            pmm::free_page(s->m_pages[i]);
+            s->m_pages[i] = 0;
+        }
+    }
+}
+
 void shmem::ref_destroy(shmem* self) {
     if (!self) {
         return;
@@ -71,6 +80,7 @@ shmem* shmem_create(size_t initial_size) {
         s->m_page_count = 0;
         s->m_capacity = 0;
         s->m_size = 0;
+        s->m_mapping_count = 0;
         s->lock.init();
     });
 
@@ -143,9 +153,84 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size) {
 
             s->m_page_count = new_page_count;
             s->m_size = new_size;
+            if (s->m_mapping_count == 0) {
+                free_pages_past_size_locked(s);
+            }
         }
     });
     return result;
+}
+
+shmem_mapping shmem_mapping::start_locked(shmem* s) {
+    shmem_mapping mapping;
+    RUN_ELEVATED({
+        s->add_ref();
+        s->m_mapping_count++;
+    });
+    mapping.m_shmem = s;
+    return mapping;
+}
+
+shmem_mapping::shmem_mapping(const shmem_mapping& other) : m_shmem(other.m_shmem) {
+    if (m_shmem) {
+        RUN_ELEVATED({
+            m_shmem->add_ref();
+            sync::mutex_lock(m_shmem->lock);
+            m_shmem->m_mapping_count++;
+            sync::mutex_unlock(m_shmem->lock);
+        });
+    }
+}
+
+shmem_mapping::shmem_mapping(shmem_mapping&& other) : m_shmem(other.m_shmem) {
+    other.m_shmem = nullptr;
+}
+
+shmem_mapping& shmem_mapping::operator=(const shmem_mapping& other) {
+    if (this != &other) {
+        shmem_mapping copy(other);
+        release();
+        m_shmem = copy.m_shmem;
+        copy.m_shmem = nullptr;
+    }
+
+    return *this;
+}
+
+shmem_mapping& shmem_mapping::operator=(shmem_mapping&& other) {
+    if (this != &other) {
+        release();
+        m_shmem = other.m_shmem;
+        other.m_shmem = nullptr;
+    }
+
+    return *this;
+}
+
+shmem_mapping::~shmem_mapping() {
+    release();
+}
+
+void shmem_mapping::release() {
+    if (!m_shmem) {
+        return;
+    }
+
+    shmem* s = m_shmem;
+    m_shmem = nullptr;
+    RUN_ELEVATED({
+        sync::mutex_lock(s->lock);
+        s->m_mapping_count--;
+        if (s->m_mapping_count == 0) {
+            free_pages_past_size_locked(s);
+        }
+
+        sync::mutex_unlock(s->lock);
+
+        if (s->release()) {
+            shmem::ref_destroy(s);
+        }
+    });
 }
 
 pmm::phys_addr_t shmem_get_page_locked(shmem* s, size_t page_index) {

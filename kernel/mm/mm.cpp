@@ -588,6 +588,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
         }
     }
 
+    shmem_mapping mapping = shmem_mapping::start_locked(backing);
     sync::mutex_unlock(backing->lock);
 
     vma* node = alloc_vma(start, end, prot, VMA_FLAG_SHARED);
@@ -597,8 +598,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
         return MM_CTX_ERR_NO_MEM;
     }
 
-    backing->add_ref();
-    node->shmem_backing = rc::strong_ref<shmem>::adopt(backing);
+    node->shmem_backing = static_cast<shmem_mapping&&>(mapping);
     node->backing_offset = offset;
 
     if (!vma_insert_locked(mm_ctx, node)) {

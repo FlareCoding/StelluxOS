@@ -192,6 +192,84 @@ TEST(shmem_test, unmap_shared_does_not_free_pages) {
     EXPECT_EQ(pmm::free_page_count(), before);
 }
 
+static bool page_allocated(mm::shmem* s, size_t index) {
+    sync::mutex_lock(s->lock);
+    bool allocated = index < s->m_capacity && s->m_pages[index] != 0;
+    sync::mutex_unlock(s->lock);
+    return allocated;
+}
+
+static int32_t shrink(mm::shmem* s, size_t size) {
+    sync::mutex_lock(s->lock);
+    int32_t rc = mm::shmem_resize_locked(s, size);
+    sync::mutex_unlock(s->lock);
+    return rc;
+}
+
+static int32_t map_whole(mm::mm_context* ctx, mm::shmem* s, size_t length, uintptr_t* addr) {
+    return mm::mm_context_map_shared(ctx, s, 0, length, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+                                     mm::MM_MAP_SHARED, 0, addr);
+}
+
+TEST(shmem_test, shrinking_an_unmapped_object_frees_its_tail_pages) {
+    mm::shmem* s = mm::shmem_create(3 * PAGE);
+    ASSERT_NOT_NULL(s);
+
+    page_quarantine::drain();
+    uint64_t before = pmm::free_page_count();
+    ASSERT_EQ(shrink(s, PAGE), mm::SHMEM_OK);
+
+    page_quarantine::drain();
+    EXPECT_EQ(pmm::free_page_count(), before + 2);
+    EXPECT_FALSE(page_allocated(s, 1));
+    EXPECT_FALSE(page_allocated(s, 2));
+
+    mm::shmem::ref_destroy(s);
+}
+
+TEST(shmem_test, a_mapping_keeps_tail_pages_until_it_goes_away) {
+    mm::shmem* s = mm::shmem_create(3 * PAGE);
+    ASSERT_NOT_NULL(s);
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(map_whole(ctx, s, 3 * PAGE, &addr), mm::MM_CTX_OK);
+    pmm::phys_addr_t tail = paging::get_physical(addr + 2 * PAGE, ctx->pt_root);
+
+    ASSERT_EQ(shrink(s, PAGE), mm::SHMEM_OK);
+    EXPECT_TRUE(page_allocated(s, 2));
+    EXPECT_EQ(paging::get_physical(addr + 2 * PAGE, ctx->pt_root), tail);
+
+    ASSERT_EQ(mm::mm_context_unmap(ctx, addr, 3 * PAGE), mm::MM_CTX_OK);
+    EXPECT_FALSE(page_allocated(s, 1));
+    EXPECT_FALSE(page_allocated(s, 2));
+
+    mm::mm_context_release(ctx);
+    mm::shmem::ref_destroy(s);
+}
+
+TEST(shmem_test, every_piece_of_a_split_mapping_keeps_tail_pages) {
+    mm::shmem* s = mm::shmem_create(3 * PAGE);
+    ASSERT_NOT_NULL(s);
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+
+    uintptr_t addr = 0;
+    ASSERT_EQ(map_whole(ctx, s, 3 * PAGE, &addr), mm::MM_CTX_OK);
+    ASSERT_EQ(mm::mm_context_unmap(ctx, addr + PAGE, PAGE), mm::MM_CTX_OK);
+    ASSERT_EQ(shrink(s, PAGE), mm::SHMEM_OK);
+
+    ASSERT_EQ(mm::mm_context_unmap(ctx, addr, PAGE), mm::MM_CTX_OK);
+    EXPECT_TRUE(page_allocated(s, 2));
+
+    ASSERT_EQ(mm::mm_context_unmap(ctx, addr + 2 * PAGE, PAGE), mm::MM_CTX_OK);
+    EXPECT_FALSE(page_allocated(s, 2));
+
+    mm::mm_context_release(ctx);
+    mm::shmem::ref_destroy(s);
+}
+
 TEST(shmem_test, map_shared_rejects_hole) {
     mm::shmem* s = mm::shmem_create(0);
     ASSERT_NOT_NULL(s);
