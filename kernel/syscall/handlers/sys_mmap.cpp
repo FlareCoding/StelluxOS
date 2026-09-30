@@ -49,6 +49,12 @@ constexpr uint64_t LINUX_MREMAP_MAYMOVE      = 1;
 constexpr uint64_t LINUX_MREMAP_FIXED        = 2;
 constexpr uint64_t LINUX_MREMAP_ALLOWED_MASK = LINUX_MREMAP_MAYMOVE | LINUX_MREMAP_FIXED;
 
+// The object a private mapping copies from, and where the copy starts in it
+struct private_copy_source {
+    resource::resource_object* obj;
+    uint64_t                   offset;
+};
+
 static inline uint32_t linux_prot_to_mm(uint64_t prot) {
     uint32_t mm_prot = 0;
     if (prot & LINUX_PROT_READ) mm_prot |= mm::MM_PROT_READ;
@@ -91,6 +97,65 @@ static inline bool is_page_aligned(uint64_t value) {
     return (value & (pmm::PAGE_SIZE - 1)) == 0;
 }
 
+// Bytes past the end of the object stay zero
+__PRIVILEGED_CODE static int64_t fill_page_from_object(void* source, uint64_t offset, uint8_t* page) {
+    auto* copy_source = static_cast<private_copy_source*>(source);
+    resource::resource_object* obj = copy_source->obj;
+    ssize_t n = obj->ops->read_at(obj, page, pmm::PAGE_SIZE, copy_source->offset + offset);
+
+    return n < 0 ? mm::MM_CTX_ERR_MAP_FAILED : n;
+}
+
+// A private mapping holds a copy of the object taken when it is created, so its writes
+// stay private and later changes to the object are not seen through it
+__PRIVILEGED_CODE static int64_t map_private_copy(
+    sched::task* task,
+    resource::resource_object* obj,
+    uint64_t addr,
+    uint64_t length,
+    uint64_t prot,
+    uint64_t flags,
+    uint64_t offset
+) {
+    if (!obj->ops || !obj->ops->read_at) {
+        return syscall::ENODEV;
+    }
+
+    size_t aligned_len = pmm::page_align_up(length);
+    if (aligned_len == 0 || offset + aligned_len < offset) {
+        return syscall::EINVAL;
+    }
+
+    // Objects that cannot read at an offset fail here, before any page is taken
+    uint8_t byte = 0;
+    ssize_t n = obj->ops->read_at(obj, &byte, 1, offset);
+    if (n == resource::ERR_SPIPE) {
+        return syscall::ENODEV;
+    }
+
+    if (n < 0) {
+        return syscall::EIO;
+    }
+
+    private_copy_source source = {obj, offset};
+    uintptr_t mapped_addr = 0;
+    int32_t rc = mm::mm_context_map_private_copy(
+        task->exec.mm_ctx,
+        static_cast<uintptr_t>(addr),
+        static_cast<size_t>(length),
+        linux_prot_to_mm(prot),
+        linux_map_to_mm(flags),
+        fill_page_from_object,
+        &source,
+        &mapped_addr
+    );
+    if (rc != mm::MM_CTX_OK) {
+        return mm_status_to_errno(rc);
+    }
+
+    return static_cast<int64_t>(mapped_addr);
+}
+
 DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
     if (length == 0) {
         return syscall::EINVAL;
@@ -119,10 +184,6 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
     }
 
     if (fd_val != -1 && !has_anon) {
-        if (!has_shared) {
-            return syscall::EINVAL;
-        }
-
         if (!is_page_aligned(offset)) {
             return syscall::EINVAL;
         }
@@ -131,9 +192,15 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
             return syscall::EINVAL;
         }
 
+        // A private mapping never writes back, so it needs read access alone
         uint32_t required_rights = 0;
-        if (prot & LINUX_PROT_READ) required_rights |= resource::RIGHT_READ;
-        if (prot & LINUX_PROT_WRITE) required_rights |= resource::RIGHT_WRITE;
+        if ((prot & LINUX_PROT_READ) || has_private) {
+            required_rights |= resource::RIGHT_READ;
+        }
+
+        if ((prot & LINUX_PROT_WRITE) && has_shared) {
+            required_rights |= resource::RIGHT_WRITE;
+        }
 
         resource::resource_object* obj = nullptr;
         int32_t rc = resource::get_handle_object(
@@ -142,6 +209,12 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
         if (rc != resource::HANDLE_OK) {
             return (rc == resource::HANDLE_ERR_ACCESS) ?
                    syscall::EACCES : syscall::EBADF;
+        }
+
+        if (has_private) {
+            int64_t result = map_private_copy(task, obj, addr, length, prot, flags, offset);
+            resource::resource_release(obj);
+            return result;
         }
 
         uintptr_t mapped_addr = 0;

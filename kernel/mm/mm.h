@@ -16,6 +16,14 @@ constexpr uint64_t PF_FLAG_INSTRUCTION = (1u << 2); // instruction fetch (NX vio
 constexpr uint32_t MM_REMAP_MAYMOVE = (1u << 0);
 constexpr uint32_t MM_REMAP_FIXED   = (1u << 1);
 
+/**
+ * Fills one page of a private copy. `page` is the kernel view of a zeroed frame and `offset`
+ * its position in the mapping. It runs with `mm_context::lock` held, so it must not take that
+ * lock or touch user memory. Returns the bytes filled, zero once the source has ended, or an
+ * MM_CTX_ERR_* status that undoes the mapping.
+ */
+using page_fill_fn = int64_t (*)(void* source, uint64_t offset, uint8_t* page);
+
 struct mm_context final : rc::ref_counted<mm_context> {
     pmm::phys_addr_t pt_root;
     uintptr_t        mmap_base;
@@ -109,6 +117,25 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
     size_t length,
     uint32_t prot,
     uint32_t map_flags,
+    uintptr_t* out_addr
+);
+
+/**
+ * @brief Map `length` bytes privately, with each page filled by `fill` before the mapping
+ * becomes visible. Pages from the first one past the end of the source stay unmapped, so
+ * touching them faults. The mapping owns its pages, but nothing can refill them, so they
+ * are never discarded and the mapping cannot grow.
+ * @param map_flags MM_MAP_PRIVATE, plus MM_MAP_FIXED or MM_MAP_FIXED_NOREPLACE to map at `addr`.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mm_context_map_private_copy(
+    mm_context* mm_ctx,
+    uintptr_t addr,
+    size_t length,
+    uint32_t prot,
+    uint32_t map_flags,
+    page_fill_fn fill,
+    void* source,
     uintptr_t* out_addr
 );
 
