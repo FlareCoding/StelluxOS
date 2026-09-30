@@ -21,6 +21,18 @@ constexpr uint32_t SOCK_STATE_CONNECTED = 3;
 
 constexpr size_t UNIX_PATH_MAX = 108;
 
+// The largest seqpacket message, sized so each direction's buffer takes exactly 64 KiB
+constexpr size_t SEQPACKET_MAX_MESSAGE = 65535;
+
+// Bounds the records that queued messages hold in each direction
+constexpr size_t SEQPACKET_MAX_QUEUED_MESSAGES = 256;
+
+// A unix socket carries a stream of bytes, or whole messages kept apart and in order over a connection
+enum class unix_socket_type : uint8_t {
+    stream,
+    seqpacket,
+};
+
 // Handles sent with a stretch of the stream, taken by the receive that consumes its first byte
 struct unix_record {
     ring_buffer_mark mark;
@@ -44,6 +56,7 @@ struct unix_channel : rc::ref_counted<unix_channel> {
 
 struct unix_socket {
     uint32_t state;
+    unix_socket_type type = unix_socket_type::stream;
     sync::spinlock lock;
     sync::mutex receive_lock;
 
@@ -63,14 +76,15 @@ struct unix_socket {
 };
 
 /**
- * Create a connected socket pair.
+ * Create a connected socket pair of `type`.
  * On success, *out_a and *out_b each have refcount 1.
  * Caller must install handles and release the creation refs.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t create_socket_pair(
     resource::resource_object** out_a,
-    resource::resource_object** out_b
+    resource::resource_object** out_b,
+    unix_socket_type type = unix_socket_type::stream
 );
 
 /**
@@ -82,9 +96,9 @@ __PRIVILEGED_CODE int32_t create_unbound_socket(
 );
 
 /**
- * Access the global socket ops table (for connect server-side object creation).
+ * The ops table of unix sockets of `type`.
  */
-const resource::resource_ops* get_socket_ops();
+const resource::resource_ops* get_socket_ops(unix_socket_type type);
 
 } // namespace socket
 

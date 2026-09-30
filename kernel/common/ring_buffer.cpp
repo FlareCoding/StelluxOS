@@ -17,6 +17,11 @@ static inline size_t writable_bytes(const ring_buffer* rb) {
     return rb->capacity - 1 - readable_bytes(rb);
 }
 
+// Whether `len` more bytes fit, along with a mark when the write carries one
+static inline bool has_room(const ring_buffer* rb, size_t len, bool marked) {
+    return writable_bytes(rb) >= len && (!marked || rb->marks.size() < rb->max_marks);
+}
+
 // Once either side closes, a drained buffer reads as the end of the stream and refuses writes
 static inline bool is_shut(const ring_buffer* rb) {
     return rb->writer_closed || rb->reader_closed;
@@ -85,7 +90,7 @@ __PRIVILEGED_CODE static ssize_t marked_read_span(ring_buffer* rb, size_t len, r
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE ring_buffer* ring_buffer_create(size_t capacity) {
+__PRIVILEGED_CODE ring_buffer* ring_buffer_create(size_t capacity, size_t max_marks) {
     if (capacity == 0) {
         return nullptr;
     }
@@ -115,6 +120,7 @@ __PRIVILEGED_CODE ring_buffer* ring_buffer_create(size_t capacity) {
     rb->read_wq.init();
     rb->write_wq.init();
     rb->marks.init();
+    rb->max_marks = max_marks;
     rb->reader_poll_wq = nullptr;
     rb->writer_poll_wq = nullptr;
 
@@ -345,12 +351,13 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_marked(ring_buffer* rb, const uint8_
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
 
-    if (writable_bytes(rb) == 0 && !is_shut(rb)) {
+    bool marked = mark != nullptr;
+    if (!has_room(rb, 1, marked) && !is_shut(rb)) {
         if (nonblock) {
             sync::spin_unlock_irqrestore(rb->lock, irq);
             return RB_ERR_AGAIN;
         }
-        while (writable_bytes(rb) == 0 && !is_shut(rb) && !signals::interrupt_pending(sched::current())) {
+        while (!has_room(rb, 1, marked) && !is_shut(rb) && !signals::interrupt_pending(sched::current())) {
             irq = sync::wait(rb->write_wq, rb->lock, irq);
         }
     }
@@ -361,13 +368,13 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_marked(ring_buffer* rb, const uint8_
     }
 
     // Progress wins over interruption: only a waited-out interruption
-    // leaves no space here while neither side is closed
-    size_t space = writable_bytes(rb);
-    if (space == 0) {
+    // leaves no room here while neither side is closed
+    if (!has_room(rb, 1, marked)) {
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return RB_ERR_INTR;
     }
 
+    size_t space = writable_bytes(rb);
     size_t to_write = space < len ? space : len;
     if (mark) {
         mark->position = rb->head;
@@ -403,12 +410,17 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
 }
 
 /**
- * All-or-nothing write: either writes all `len` bytes atomically or
- * writes nothing. In nonblock mode returns RB_ERR_AGAIN when
- * insufficient space, in blocking mode waits until space is available.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock) {
+    return ring_buffer_write_all_marked(rb, buf, len, nullptr, nonblock);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t ring_buffer_write_all_marked(ring_buffer* rb, const uint8_t* buf, size_t len,
+                                                       ring_buffer_mark* mark, bool nonblock) {
     if (!rb || !buf || len == 0) {
         return RB_ERR_INVAL;
     }
@@ -420,12 +432,13 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* 
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
 
-    if (writable_bytes(rb) < len && !is_shut(rb)) {
+    bool marked = mark != nullptr;
+    if (!has_room(rb, len, marked) && !is_shut(rb)) {
         if (nonblock) {
             sync::spin_unlock_irqrestore(rb->lock, irq);
             return RB_ERR_AGAIN;
         }
-        while (writable_bytes(rb) < len && !is_shut(rb) && !signals::interrupt_pending(sched::current())) {
+        while (!has_room(rb, len, marked) && !is_shut(rb) && !signals::interrupt_pending(sched::current())) {
             irq = sync::wait(rb->write_wq, rb->lock, irq);
         }
     }
@@ -436,11 +449,16 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* 
     }
 
     // Progress wins over interruption, AGAIN covers spurious exits
-    size_t space = writable_bytes(rb);
-    if (space < len) {
+    if (!has_room(rb, len, marked)) {
         bool intr = signals::interrupt_pending(sched::current());
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return intr ? RB_ERR_INTR : RB_ERR_AGAIN;
+    }
+
+    if (mark) {
+        mark->position = rb->head;
+        mark->length = len;
+        rb->marks.push_back(mark);
     }
 
     size_t head_idx = rb->head & (rb->capacity - 1);
@@ -542,7 +560,7 @@ __PRIVILEGED_CODE uint32_t ring_buffer_poll_write(ring_buffer* rb, sync::poll_ta
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
     uint32_t mask = 0;
-    if (writable_bytes(rb) > 0) {
+    if (has_room(rb, 1, true)) {
         mask |= sync::POLL_OUT;
     }
     if (is_shut(rb)) {

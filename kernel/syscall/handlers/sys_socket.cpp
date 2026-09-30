@@ -17,6 +17,7 @@
 
 constexpr uint64_t AF_UNIX     = 1;
 constexpr uint64_t SOCK_STREAM = 1;
+constexpr uint64_t SOCK_SEQPACKET = 5;
 constexpr size_t   SENDTO_MAX_ADDR = 128;
 constexpr uint64_t MAX_CONTROL_BYTES = 20480;
 constexpr size_t   CMSG_ALIGNMENT    = 8;
@@ -64,6 +65,21 @@ __PRIVILEGED_CODE static void apply_cloexec(sched::task* task, resource::handle_
     if (creation_flags & fs::O_CLOEXEC) {
         resource::set_handle_flags(task->handles, h, resource::RESOURCE_HANDLE_CLOEXEC);
     }
+}
+
+// The kernel's unix socket type for a type named in a system call, or false when unix sockets have none
+static bool translate_unix_socket_type(uint64_t type, socket::unix_socket_type* out) {
+    if (type == SOCK_STREAM) {
+        *out = socket::unix_socket_type::stream;
+        return true;
+    }
+
+    if (type == SOCK_SEQPACKET) {
+        *out = socket::unix_socket_type::seqpacket;
+        return true;
+    }
+
+    return false;
 }
 
 DEFINE_SYSCALL3(socket, domain, type, protocol) {
@@ -122,7 +138,8 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
     }
 
     uint64_t creation_flags = type & SOCK_CREATION_FLAGS;
-    if ((type & ~SOCK_CREATION_FLAGS) != SOCK_STREAM) {
+    socket::unix_socket_type unix_type = socket::unix_socket_type::stream;
+    if (!translate_unix_socket_type(type & ~SOCK_CREATION_FLAGS, &unix_type)) {
         return syscall::EINVAL;
     }
 
@@ -141,7 +158,7 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
 
     resource::resource_object* obj_a = nullptr;
     resource::resource_object* obj_b = nullptr;
-    int32_t rc = socket::create_socket_pair(&obj_a, &obj_b);
+    int32_t rc = socket::create_socket_pair(&obj_a, &obj_b, unix_type);
     if (rc != resource::OK) {
         return syscall::ENOMEM;
     }
@@ -678,9 +695,10 @@ __PRIVILEGED_CODE static void hand_over_batch(resource::handle_batch* batch, res
     }
 }
 
-// Sends kernel-resident data on the socket, to the named destination when there is one
+// Sends kernel-resident data on the socket with `batch`, to the named destination when there is one
 __PRIVILEGED_CODE static int64_t send_on_socket(const socket_ref& sock, const uint8_t* data, size_t len,
-                                                uint32_t flags, uint64_t dest_addr, uint64_t addrlen) {
+                                                uint32_t flags, uint64_t dest_addr, uint64_t addrlen,
+                                                resource::handle_batch* batch) {
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t addr_len = 0;
     int64_t rc = copy_destination(dest_addr, addrlen, kaddr, &addr_len);
@@ -688,7 +706,8 @@ __PRIVILEGED_CODE static int64_t send_on_socket(const socket_ref& sock, const ui
         return rc;
     }
 
-    ssize_t result = sock.ops->sendto(sock.obj, data, len, flags, kaddr, addr_len);
+    ssize_t result = batch ? sock.ops->sendmsg(sock.obj, data, len, flags, kaddr, addr_len, batch)
+                           : sock.ops->sendto(sock.obj, data, len, flags, kaddr, addr_len);
     if (result < 0) {
         return syscall::error_map::map_socket_op_error(static_cast<int32_t>(result));
     }
@@ -758,8 +777,10 @@ __PRIVILEGED_CODE static int64_t send_stream(const socket_ref& sock, const sysca
 }
 
 __PRIVILEGED_CODE static int64_t receive_on_socket(const socket_ref& sock, uint8_t* data, size_t len,
-                                                   uint32_t flags, uint8_t* kaddr, size_t* kaddr_len) {
-    ssize_t result = sock.ops->recvfrom(sock.obj, data, len, flags, kaddr, kaddr_len);
+                                                   uint32_t flags, uint8_t* kaddr, size_t* kaddr_len,
+                                                   resource::handle_batch** out_batch) {
+    ssize_t result = out_batch ? sock.ops->recvmsg(sock.obj, data, len, flags, kaddr, kaddr_len, out_batch)
+                               : sock.ops->recvfrom(sock.obj, data, len, flags, kaddr, kaddr_len);
     if (result < 0) {
         return syscall::error_map::map_socket_op_error(static_cast<int32_t>(result));
     }
@@ -991,11 +1012,12 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
     return total > 0 ? total : err;
 }
 
-// Receives one message into the user buffers `iovs` describe, copying what fits. Returns the bytes copied, or
-// the full length when MSG_TRUNC asks for it, and reports through `truncated` a message that lost its tail.
+// Receives one message and, given `out_batch`, its handles. Returns the bytes copied into `iovs`, or the
+// full length when MSG_TRUNC asks for it, and reports through `truncated` a message that lost its tail.
 __PRIVILEGED_CODE static int64_t receive_whole_message(const socket_ref& sock, const syscall::iovec* iovs,
                                                        uint64_t iovcnt, size_t len, uint32_t flags,
-                                                       uint8_t* kaddr, size_t* kaddr_len, bool* truncated) {
+                                                       uint8_t* kaddr, size_t* kaddr_len, bool* truncated,
+                                                       resource::handle_batch** out_batch) {
     size_t staged = len < sock.ops->max_message ? len : sock.ops->max_message;
 
     // Never empty, since the heap refuses empty requests and a receive with no room must still take its message
@@ -1004,7 +1026,7 @@ __PRIVILEGED_CODE static int64_t receive_whole_message(const socket_ref& sock, c
         return syscall::ENOMEM;
     }
 
-    int64_t result = receive_on_socket(sock, kbuf, staged, flags, kaddr, kaddr_len);
+    int64_t result = receive_on_socket(sock, kbuf, staged, flags, kaddr, kaddr_len, out_batch);
     if (result >= 0) {
         size_t copied = static_cast<size_t>(result) < staged ? static_cast<size_t>(result) : staged;
         *truncated = static_cast<size_t>(result) > staged;
@@ -1032,25 +1054,33 @@ __PRIVILEGED_CODE static int64_t copy_source_address(uint64_t user_addr, uint32_
     return 0;
 }
 
-// Sends the user buffers `iovs` describe as one message, to the named destination when there is one
+// Sends the user buffers `iovs` describe as one message carrying `batch`, to the named destination when there
+// is one. The socket owns the batch once the message is sent, and it is dropped otherwise.
 __PRIVILEGED_CODE static int64_t send_whole_message(const socket_ref& sock, const syscall::iovec* iovs,
                                                     uint64_t iovcnt, size_t len, uint32_t flags,
-                                                    uint64_t dest_addr, uint64_t addrlen) {
+                                                    uint64_t dest_addr, uint64_t addrlen,
+                                                    resource::handle_batch* batch) {
     if (len > sock.ops->max_message) {
+        resource::handle_batch_release(batch);
         return syscall::EMSGSIZE;
     }
 
     auto* kbuf = static_cast<uint8_t*>(heap::uzalloc(len));
     if (!kbuf) {
+        resource::handle_batch_release(batch);
         return syscall::ENOMEM;
     }
 
     int64_t result = syscall::gather_from_user(iovs, iovcnt, kbuf);
     if (result == 0) {
-        result = send_on_socket(sock, kbuf, len, flags, dest_addr, addrlen);
+        result = send_on_socket(sock, kbuf, len, flags, dest_addr, addrlen, batch);
     }
 
     heap::ufree(kbuf);
+
+    if (result <= 0) {
+        resource::handle_batch_release(batch);
+    }
 
     return result;
 }
@@ -1096,7 +1126,8 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
     if (len == 0) {
         result = send_zero_bytes(sock, send_flags, dest_addr, addrlen, nullptr);
     } else if (!sock.ops->stream) {
-        result = send_whole_message(sock, &whole, 1, static_cast<size_t>(len), send_flags, dest_addr, addrlen);
+        result = send_whole_message(sock, &whole, 1, static_cast<size_t>(len), send_flags, dest_addr,
+                                    addrlen, nullptr);
     } else {
         result = send_stream(sock, &whole, 1, send_flags, dest_addr, addrlen, nullptr);
     }
@@ -1143,7 +1174,8 @@ DEFINE_SYSCALL3(sendmsg, fd, msg, flags) {
         if (data_len == 0) {
             result = send_zero_bytes(sock, send_flags, hdr.name, hdr.namelen, batch);
         } else if (!sock.ops->stream) {
-            result = send_whole_message(sock, iovs, hdr.iovlen, data_len, send_flags, hdr.name, hdr.namelen);
+            result = send_whole_message(sock, iovs, hdr.iovlen, data_len, send_flags, hdr.name,
+                                        hdr.namelen, batch);
         } else {
             result = send_stream(sock, iovs, hdr.iovlen, send_flags, hdr.name, hdr.namelen, batch);
         }
@@ -1179,7 +1211,7 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
     } else {
         bool truncated = false;
         result = receive_whole_message(sock, &whole, 1, static_cast<size_t>(len), message_flags(sock, flags),
-                                       kaddr, &kaddr_len, &truncated);
+                                       kaddr, &kaddr_len, &truncated, nullptr);
     }
 
     resource::resource_release(sock.obj);
@@ -1247,14 +1279,14 @@ DEFINE_SYSCALL3(recvmsg, fd, msg, flags) {
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t kaddr_len = sizeof(kaddr);
     resource::handle_batch* batch = nullptr;
+    resource::handle_batch** out_batch = sock.ops->recvmsg ? &batch : nullptr;
     bool truncated = false;
 
     if (sock.ops->stream) {
-        resource::handle_batch** out_batch = sock.ops->recvmsg ? &batch : nullptr;
         result = receive_stream(sock, iovs, hdr.iovlen, receive_flags, kaddr, &kaddr_len, out_batch);
     } else {
         result = receive_whole_message(sock, iovs, hdr.iovlen, data_len, receive_flags, kaddr, &kaddr_len,
-                                       &truncated);
+                                       &truncated, out_batch);
     }
 
     resource::resource_release(sock.obj);

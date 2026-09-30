@@ -11,6 +11,7 @@
 #include "syscall/handlers/sys_pipe.h"
 #include "resource/resource.h"
 #include "resource/socket_ops.h"
+#include "socket/unix_socket.h"
 #include "net/inet.h"
 #include "net/udp_socket.h"
 #include "net/tcp/socket.h"
@@ -25,6 +26,7 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sync/mutex.h"
+#include "sync/poll.h"
 #include "dynpriv/dynpriv.h"
 #include "common/string.h"
 
@@ -982,6 +984,7 @@ TEST(socket_syscall, a_socket_that_cannot_pass_handles_ignores_them_and_refuses_
 // Unix stream sends and receives
 
 constexpr uint64_t AF_UNIX = 1;
+constexpr uint64_t SOCK_SEQPACKET = 5;
 
 // Where the unix stream tests keep a pair's handles and the bytes they receive, peek at and send
 constexpr size_t UNIX_PAIR_AT = 1024;
@@ -996,11 +999,11 @@ struct unix_pair {
 };
 
 // A connected pair made the way userland makes one, with both handles landing in the page
-static bool make_unix_pair(user_page& page, unix_pair* out) {
+static bool make_unix_pair(user_page& page, unix_pair* out, uint64_t type = inet::SOCK_STREAM) {
     int64_t rc = 0;
     {
         user_space_scope scope(page.ctx);
-        rc = sys_socketpair(AF_UNIX, inet::SOCK_STREAM, 0, page.addr + UNIX_PAIR_AT, 0, 0);
+        rc = sys_socketpair(AF_UNIX, type, 0, page.addr + UNIX_PAIR_AT, 0, 0);
     }
     if (rc != 0) {
         return false;
@@ -1722,6 +1725,258 @@ TEST(socket_syscall, a_zero_byte_sendto_reaches_the_socket) {
 
     EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(lone)), resource::OK);
     close_unix_pair(task, pair);
+}
+
+// Seqpacket pairs
+
+TEST(socket_syscall, a_seqpacket_pair_keeps_each_message_whole) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair, SOCK_SEQPACKET));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "AB", 2);
+    ASSERT_EQ(unix_send(page, pair.a, 2, 0), static_cast<int64_t>(2));
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "CDE", 3);
+    ASSERT_EQ(unix_send(page, pair.a, 3, 0), static_cast<int64_t>(3));
+
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(2));
+    EXPECT_EQ(string::memcmp(page.at<char>(UNIX_RECV_AT), "AB", 2), 0);
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(3));
+    EXPECT_EQ(string::memcmp(page.at<char>(UNIX_RECV_AT), "CDE", 3), 0);
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), syscall::EAGAIN);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_seqpacket_receive_that_does_not_fit_drops_the_rest_of_the_message) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair, SOCK_SEQPACKET));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "hello world", 11);
+    ASSERT_EQ(unix_send(page, pair.a, 11, 0), static_cast<int64_t>(11));
+    ASSERT_EQ(unix_send(page, pair.a, 5, 0), static_cast<int64_t>(5));
+
+    lay_out_message(page, 0, 2, 3);
+    EXPECT_EQ(receive_message(page, pair.b, inet::MSG_DONTWAIT), static_cast<int64_t>(5));
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_A), "he", 2), 0);
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_B), "llo", 3), 0);
+    EXPECT_EQ(page.at<user_msghdr>(MSG_HDR)->flags, inet::MSG_TRUNC);
+
+    // The next receive starts at the next message rather than at the dropped tail
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(5));
+    EXPECT_EQ(string::memcmp(page.at<char>(UNIX_RECV_AT), "hello", 5), 0);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_seqpacket_peek_leaves_the_message_queued) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair, SOCK_SEQPACKET));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "hello", 5);
+    ASSERT_EQ(unix_send(page, pair.a, 5, 0), static_cast<int64_t>(5));
+
+    uint64_t peek = inet::MSG_PEEK | inet::MSG_DONTWAIT;
+    EXPECT_EQ(unix_receive(page, pair.b, 2, peek | inet::MSG_TRUNC), static_cast<int64_t>(5));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, peek), static_cast<int64_t>(5));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(5));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), syscall::EAGAIN);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_seqpacket_writev_sends_one_message_that_one_readv_takes) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair, SOCK_SEQPACKET));
+
+    string::memcpy(page.at<char>(MSG_BUF_A), "unix", 4);
+    string::memcpy(page.at<char>(MSG_BUF_B), "pair", 4);
+    lay_out_message(page, 0, 4, 4);
+
+    int64_t first_write = 0;
+    int64_t second_write = 0;
+    {
+        user_space_scope scope(page.ctx);
+        first_write = sys_writev(static_cast<uint64_t>(pair.a), page.addr + MSG_IOVS, 3, 0, 0, 0);
+        second_write = sys_writev(static_cast<uint64_t>(pair.a), page.addr + MSG_IOVS, 3, 0, 0, 0);
+    }
+
+    EXPECT_EQ(first_write, static_cast<int64_t>(8));
+    EXPECT_EQ(second_write, static_cast<int64_t>(8));
+
+    lay_out_message(page, 0, 3, 16);
+    int64_t read_back = 0;
+    {
+        user_space_scope scope(page.ctx);
+        read_back = sys_readv(static_cast<uint64_t>(pair.b), page.addr + MSG_IOVS, 3, 0, 0, 0);
+    }
+
+    EXPECT_EQ(read_back, static_cast<int64_t>(8));
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_A), "uni", 3), 0);
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_B), "xpair", 5), 0);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_seqpacket_message_carries_the_handles_sent_with_it) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair, SOCK_SEQPACKET));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    resource::resource_object* reader = object_of(task, pipe.read);
+    ASSERT_NOT_NULL(reader);
+
+    EXPECT_EQ(send_with_rights(page, pair.a, &pipe.read, 1), static_cast<int64_t>(1));
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "y", 1);
+    EXPECT_EQ(unix_send(page, pair.a, 1, 0), static_cast<int64_t>(1));
+
+    // A peek installs copies of the handles and leaves the message queued
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, inet::MSG_PEEK), static_cast<int64_t>(1));
+    int32_t peeked = first_received_handle(page);
+    EXPECT_EQ(object_of(task, peeked), reader);
+
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), static_cast<int64_t>(1));
+    int32_t received = first_received_handle(page);
+    EXPECT_EQ(object_of(task, received), reader);
+
+    // The next message was sent without handles, so neither a peek nor a receive finds any
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, inet::MSG_PEEK), static_cast<int64_t>(1));
+    EXPECT_EQ(page.at<user_msghdr>(MSG_HDR)->controllen, static_cast<uint64_t>(0));
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), static_cast<int64_t>(1));
+    EXPECT_EQ(page.at<user_msghdr>(MSG_HDR)->controllen, static_cast<uint64_t>(0));
+    EXPECT_EQ(*page.at<char>(MSG_BUF_A), 'y');
+
+    (void)resource::close(task, peeked);
+    (void)resource::close(task, received);
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_seqpacket_message_can_fill_the_whole_buffer_but_no_more) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair, SOCK_SEQPACKET));
+
+    // The page repeated as many times as the largest message takes, with the last piece cut short
+    size_t pieces = (socket::SEQPACKET_MAX_MESSAGE + pmm::PAGE_SIZE - 1) / pmm::PAGE_SIZE;
+    user_iovec* iovs = page.at<user_iovec>(UNIX_SEND_AT);
+    for (size_t i = 0; i < pieces; i++) {
+        iovs[i] = {page.addr, pmm::PAGE_SIZE};
+    }
+
+    iovs[pieces - 1].len = socket::SEQPACKET_MAX_MESSAGE - (pieces - 1) * pmm::PAGE_SIZE;
+
+    int64_t largest = 0;
+    {
+        user_space_scope scope(page.ctx);
+        largest = sys_writev(static_cast<uint64_t>(pair.a), page.addr + UNIX_SEND_AT, pieces, 0, 0, 0);
+    }
+
+    EXPECT_EQ(largest, static_cast<int64_t>(socket::SEQPACKET_MAX_MESSAGE));
+
+    uint64_t length_only = inet::MSG_TRUNC | inet::MSG_DONTWAIT;
+    EXPECT_EQ(unix_receive(page, pair.b, 16, length_only), static_cast<int64_t>(socket::SEQPACKET_MAX_MESSAGE));
+    EXPECT_EQ(unix_send(page, pair.a, socket::SEQPACKET_MAX_MESSAGE + 1, 0), syscall::EMSGSIZE);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_zero_byte_seqpacket_send_queues_no_message) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair, SOCK_SEQPACKET));
+
+    EXPECT_EQ(unix_send(page, pair.a, 0, 0), static_cast<int64_t>(0));
+
+    lay_out_message(page, 0, 0, 0);
+    EXPECT_EQ(send_message(page, pair.a), static_cast<int64_t>(0));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), syscall::EAGAIN);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_seqpacket_direction_queues_at_most_its_message_limit) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair, SOCK_SEQPACKET));
+
+    resource::resource_object* sender = object_of(task, pair.a);
+    ASSERT_NOT_NULL(sender);
+
+    *page.at<char>(UNIX_SEND_AT) = 'm';
+    size_t queued = 0;
+    while (queued < socket::SEQPACKET_MAX_QUEUED_MESSAGES &&
+           unix_send(page, pair.a, 1, inet::MSG_DONTWAIT) == static_cast<int64_t>(1)) {
+        queued++;
+    }
+
+    EXPECT_EQ(queued, socket::SEQPACKET_MAX_QUEUED_MESSAGES);
+    EXPECT_EQ(unix_send(page, pair.a, 1, inet::MSG_DONTWAIT), syscall::EAGAIN);
+    EXPECT_EQ(sender->ops->poll(sender, nullptr) & sync::POLL_OUT, 0u);
+
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(1));
+    EXPECT_NE(sender->ops->poll(sender, nullptr) & sync::POLL_OUT, 0u);
+    EXPECT_EQ(unix_send(page, pair.a, 1, inet::MSG_DONTWAIT), static_cast<int64_t>(1));
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_seqpacket_peer_that_closes_ends_the_messages) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair, SOCK_SEQPACKET));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "bye", 3);
+    ASSERT_EQ(unix_send(page, pair.a, 3, 0), static_cast<int64_t>(3));
+    EXPECT_EQ(resource::close(task, pair.a), resource::OK);
+
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(3));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(0));
+    EXPECT_EQ(unix_send(page, pair.b, 3, inet::MSG_NOSIGNAL), syscall::EPIPE);
+
+    EXPECT_EQ(resource::close(task, pair.b), resource::OK);
 }
 
 // A receive that waits runs in an elevated task of its own, through a handle of
