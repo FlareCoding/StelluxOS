@@ -169,13 +169,26 @@ __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
         t->proc_res = nullptr;
     }
 
+    // Released before leaving the group, which an exiting leader waits on
+    resource::release_task_handles(t);
+
     // Unlink from the group list here, reap_task releases the group
     // reference but never touches the thread list
     if (t->group && t->group->leader != t && t->group_link.is_linked()) {
+        rc::strong_ref<sched::task> leader_to_wake;
         sync::irq_state irq = sync::spin_lock_irqsave(t->group->lock);
+
         t->group->threads.remove(t);
         t->group->thread_count--;
+        if (t->group->thread_count == 0 && t->group->leader_waiting_for_threads) {
+            leader_to_wake = sched::task_ref(t->group->leader_waiting_for_threads);
+        }
+
         sync::spin_unlock_irqrestore(t->group->lock, irq);
+
+        if (leader_to_wake) {
+            sched::wake(leader_to_wake.ptr());
+        }
     }
 
     // Never started means already off-CPU, so the task goes straight to

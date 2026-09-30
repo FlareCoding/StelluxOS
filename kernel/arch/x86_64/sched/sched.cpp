@@ -188,7 +188,7 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
 
     // A task inside a syscall still owns kernel state such as a linked wait
     // node, so it dies at the syscall exit fatal check instead of here
-    if (!(prev->exec.flags & (TASK_FLAG_KERNEL | TASK_FLAG_IN_SYSCALL)) &&
+    if (!(prev->exec.flags & (TASK_FLAG_KERNEL | TASK_FLAG_IN_SYSCALL | TASK_FLAG_EXITING)) &&
         prev->state.load_relaxed() != TASK_STATE_DEAD) {
         uint32_t fsig = signals::fatal_pending(prev);
         if (fsig) {
@@ -230,7 +230,7 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
 
     // A task inside a syscall still owns kernel state such as a linked wait
     // node, so it dies at the syscall exit fatal check instead of here
-    if (!(prev->exec.flags & (TASK_FLAG_KERNEL | TASK_FLAG_IN_SYSCALL)) &&
+    if (!(prev->exec.flags & (TASK_FLAG_KERNEL | TASK_FLAG_IN_SYSCALL | TASK_FLAG_EXITING)) &&
         prev->state.load_relaxed() != TASK_STATE_DEAD) {
         uint32_t fsig = signals::fatal_pending(prev);
         if (fsig) {

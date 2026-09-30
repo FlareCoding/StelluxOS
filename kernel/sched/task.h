@@ -138,6 +138,7 @@ struct thread_group : rc::ref_counted<thread_group> {
     sync::atomic<uint32_t> group_id; // process group this process belongs to
     list::head<task, &task::group_link> threads; // non-leader threads only
     uint32_t       thread_count; // number of live non-leader threads
+    task*          leader_waiting_for_threads; // set while the exiting leader waits for thread_count to reach zero
     sync::atomic<uint64_t> exited_cpu_time_ns;
 
     // Group exit status recorded by exit_group: zero means unset, otherwise bit
