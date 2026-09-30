@@ -5,5 +5,6 @@
 
 DECLARE_SYSCALL(memfd_create);
 DECLARE_SYSCALL(ftruncate);
+DECLARE_SYSCALL(fallocate);
 
 #endif // STELLUX_SYSCALL_HANDLERS_SYS_MEMFD_H

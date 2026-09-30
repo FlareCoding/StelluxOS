@@ -140,6 +140,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::FSYNC,       fsync);
     REGISTER_SYSCALL(linux_nr::FDATASYNC,   fdatasync);
     REGISTER_SYSCALL(linux_nr::FTRUNCATE,   ftruncate);
+    REGISTER_SYSCALL(linux_nr::FALLOCATE,   fallocate);
     REGISTER_SYSCALL(linux_nr::MKDIRAT,     mkdirat);
     REGISTER_SYSCALL(linux_nr::UNLINKAT,    unlinkat);
     REGISTER_SYSCALL(linux_nr::FACCESSAT,   faccessat);

@@ -64,6 +64,7 @@ public:
     virtual int32_t getattr(vattr* attr);
     virtual int32_t setattr(const vattr& attr, uint32_t mask);
     virtual int32_t truncate(size_t size);
+    virtual int32_t allocate(uint64_t offset, uint64_t length);
 
     // --- Symlink ---
     virtual int32_t readlink(char* buf, size_t size, size_t* out_len);
