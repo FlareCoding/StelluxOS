@@ -989,6 +989,13 @@ int32_t xhci_hcd::_set_tr_dequeue_ptr(xhci_device* device, uint8_t dci,
     return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
 }
 
+bool xhci_hcd::_control_error_halts_endpoint(uint32_t completion_code) {
+    // xHCI 4.10.2: these errors transition the endpoint to Halted.
+    return completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR ||
+           completion_code == XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR ||
+           completion_code == XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR;
+}
+
 int32_t xhci_hcd::_recover_stalled_control_endpoint(xhci_device* device) {
     if (!device || !device->ctrl_ring()) {
         return -1;
@@ -2734,6 +2741,34 @@ int32_t xhci_hcd::_send_control_transfer(
     xhci_device_request_packet& request,
     void* buffer, uint32_t length
 ) {
+    // Babble and transaction errors on FS/LS devices behind a TT are
+    // transient; the endpoint is repaired after each one, so retry.
+    constexpr int MAX_ATTEMPTS = 3;
+    int32_t rc = -1;
+    for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        rc = _send_control_transfer_once(device, request, buffer, length);
+        if (rc == 0) {
+            return 0;
+        }
+        uint32_t cc = device->ctrl_result().completion_code;
+        if (cc != XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR &&
+            cc != XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR) {
+            return rc;
+        }
+        if (attempt < MAX_ATTEMPTS) {
+            log::info("xhci: slot %u control request %02x/%02x retry %d after %s",
+                      device->slot_id(), request.bRequestType, request.bRequest, attempt,
+                      trb_completion_code_to_string(static_cast<uint8_t>(cc)));
+        }
+    }
+    return rc;
+}
+
+int32_t xhci_hcd::_send_control_transfer_once(
+    xhci_device* device,
+    xhci_device_request_packet& request,
+    void* buffer, uint32_t length
+) {
     xhci_transfer_ring* ring = device->ctrl_ring();
 
     // Use the device's persistent DMA buffer
@@ -2834,7 +2869,7 @@ int32_t xhci_hcd::_send_control_transfer(
     }
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+        if (_control_error_halts_endpoint(device->ctrl_result().completion_code)) {
             (void)_recover_stalled_control_endpoint(device);
         }
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
@@ -3083,7 +3118,7 @@ int32_t xhci_hcd::usb_control_transfer(
     });
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+        if (_control_error_halts_endpoint(device->ctrl_result().completion_code)) {
             (void)_recover_stalled_control_endpoint(device);
         }
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));

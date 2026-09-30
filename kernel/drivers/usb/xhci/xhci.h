@@ -282,6 +282,10 @@ private:
     int32_t _send_control_transfer(xhci::xhci_device* device,
                                    xhci::xhci_device_request_packet& request,
                                    void* buffer, uint32_t length);
+    int32_t _send_control_transfer_once(xhci::xhci_device* device,
+                                   xhci::xhci_device_request_packet& request,
+                                   void* buffer, uint32_t length);
+    static bool _control_error_halts_endpoint(uint32_t completion_code);
     int32_t _get_device_descriptor(xhci::xhci_device* device, void* out, uint16_t length);
     int32_t _get_configuration_descriptor(xhci::xhci_device* device,
                                            usb::usb_configuration_descriptor* out,
