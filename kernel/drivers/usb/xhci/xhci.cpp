@@ -727,8 +727,10 @@ int32_t xhci_hcd::_send_command(xhci_trb_t* trb, xhci_command_completion_trb_t* 
         constexpr uint64_t CMD_TIMEOUT_MS = 5000;
         uint64_t deadline = clock::now_ns() + CMD_TIMEOUT_MS * 1000000ULL;
 
+        // Poll rather than block on the IRQ: a command that never completes
+        // raises no interrupt, so a blocking wait would never reach the deadline.
         while (!m_cmd_state.completed && clock::now_ns() < deadline) {
-            wait_for_event();
+            RUN_ELEVATED(sched::sleep_ms(1));
             _process_event_ring();
             m_event_ring->finish_processing();
         }
@@ -2857,7 +2859,7 @@ int32_t xhci_hcd::_send_control_transfer_once(
     m_event_ring->finish_processing();
 
     while (!device->ctrl_completed() && clock::now_ns() < deadline) {
-        wait_for_event();
+        RUN_ELEVATED(sched::sleep_ms(1));
         _process_event_ring();
         m_event_ring->finish_processing();
     }
