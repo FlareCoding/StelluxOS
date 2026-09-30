@@ -170,8 +170,8 @@ TEST(proc_handles_syscall, racing_installs_that_would_form_a_loop_refuse_exactly
     }
 }
 
-// Random sends of processes over sockets, installs into processes, and receives, after which closing
-// everything the test holds must free every process and socket
+// Random sends of processes and sockets over sockets, installs into processes, and receives, after which
+// closing everything the test holds must free every process and socket
 constexpr uint32_t STRESS_PROCESSES = 12;
 constexpr uint32_t STRESS_SOCKETS = 16;
 constexpr uint32_t STRESS_SLOTS = 8;
@@ -259,7 +259,9 @@ static void stress_round() {
 
     resource::resource_object* sock = g_stress_sockets[stress_pick(STRESS_SOCKETS)];
     if (kind == 1) {
-        ssize_t n = send_passenger(sock, g_stress_processes[stress_pick(STRESS_PROCESSES)]);
+        resource::resource_object* passenger = stress_pick(2) == 0 ? g_stress_processes[stress_pick(STRESS_PROCESSES)]
+                                                                   : g_stress_sockets[stress_pick(STRESS_SOCKETS)];
+        ssize_t n = send_passenger(sock, passenger);
         EXPECT_TRUE(n == 1 || n == resource::ERR_LOOP || n == resource::ERR_AGAIN);
         return;
     }

@@ -951,8 +951,7 @@ __PRIVILEGED_CODE static ssize_t write_checked(unix_socket* sock, const uint8_t*
 }
 
 /**
- * One to MAX_PASSED_HANDLES filled entries and no unix socket, since one in flight could end up
- * queued on itself with nothing left to free it until sockets in flight are collected.
+ * One to MAX_PASSED_HANDLES filled entries.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static int32_t check_batch(const resource::handle_batch* batch) {
@@ -961,13 +960,8 @@ __PRIVILEGED_CODE static int32_t check_batch(const resource::handle_batch* batch
     }
 
     for (uint32_t i = 0; i < batch->count; i++) {
-        const resource::resource_object* obj = batch->entries[i].obj;
-        if (!obj) {
+        if (!batch->entries[i].obj) {
             return resource::ERR_INVAL;
-        }
-
-        if (is_unix_socket(obj)) {
-            return resource::ERR_UNSUP;
         }
     }
 

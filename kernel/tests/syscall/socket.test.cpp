@@ -1599,6 +1599,49 @@ TEST(socket_syscall, a_sendmsg_that_would_queue_a_process_holding_the_reader_rep
     close_unix_pair(task, pair);
 }
 
+TEST(socket_syscall, sendmsg_passes_a_unix_socket_that_recvmsg_installs) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair carrier;
+    ASSERT_TRUE(make_unix_pair(page, &carrier));
+    unix_pair cargo;
+    ASSERT_TRUE(make_unix_pair(page, &cargo, SOCK_SEQPACKET));
+
+    EXPECT_EQ(send_with_rights(page, carrier.a, &cargo.a, 1), static_cast<int64_t>(1));
+    EXPECT_EQ(receive_with_control(page, carrier.b, CONTROL_ROOM, 0), static_cast<int64_t>(1));
+
+    // The installed handle is a second handle to the passed socket, usable like the first
+    int32_t received = first_received_handle(page);
+    EXPECT_EQ(object_of(task, received), object_of(task, cargo.a));
+
+    char buf[4] = {};
+    EXPECT_EQ(resource::write(task, received, "hi", 2), static_cast<ssize_t>(2));
+    EXPECT_EQ(resource::read(task, cargo.b, buf, sizeof(buf)), static_cast<ssize_t>(2));
+    EXPECT_EQ(string::memcmp(buf, "hi", 2), 0);
+
+    (void)resource::close(task, received);
+    close_unix_pair(task, cargo);
+    close_unix_pair(task, carrier);
+}
+
+TEST(socket_syscall, a_sendmsg_of_the_reading_socket_into_its_own_queue_reports_eloop) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    EXPECT_EQ(send_with_rights(page, pair.a, &pair.b, 1), syscall::ELOOP);
+    EXPECT_EQ(send_with_rights(page, pair.a, &pair.a, 1), static_cast<int64_t>(1));
+
+    close_unix_pair(task, pair);
+}
+
 TEST(socket_syscall, recvmsg_marks_the_handles_it_installs_close_on_exec_when_asked) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);
@@ -1773,10 +1816,6 @@ TEST(socket_syscall, sendmsg_refuses_control_data_it_cannot_carry) {
 
     set_control(page, write_rights_message(page, too_many_handles, resource::MAX_PASSED_HANDLES + 1));
     EXPECT_EQ(send_message(page, pair.a), syscall::EINVAL);
-
-    // A unix socket in flight could end up queued on itself
-    set_control(page, write_rights_message(page, &pair.b, 1));
-    EXPECT_EQ(send_message(page, pair.a), syscall::EOPNOTSUPP);
 
     set_control(page, MAX_CONTROL_BYTES + 1);
     EXPECT_EQ(send_message(page, pair.a), syscall::ENOBUFS);

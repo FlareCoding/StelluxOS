@@ -1275,15 +1275,10 @@ TEST(socket_test, a_send_that_sends_nothing_leaves_the_batch_with_the_caller) {
     resource::resource_release(obj_a);
 }
 
-TEST(socket_test, batches_with_unix_sockets_or_empty_entries_are_refused) {
+TEST(socket_test, batches_with_empty_entries_are_refused) {
     resource::resource_object* obj_a = nullptr;
     resource::resource_object* obj_b = nullptr;
     ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
-
-    resource::handle_batch* carrying_socket = batch_of(obj_b);
-    ASSERT_NOT_NULL(carrying_socket);
-    EXPECT_EQ(send_with(obj_a, "x", 1, carrying_socket), static_cast<ssize_t>(resource::ERR_UNSUP));
-    resource::handle_batch_release(carrying_socket);
 
     resource::handle_batch* empty = resource::create_handle_batch(1);
     ASSERT_NOT_NULL(empty);
@@ -2038,4 +2033,247 @@ TEST(socket_test, a_send_refuses_a_process_that_holds_more_than_a_walk_can_visit
     resource::resource_release(process);
     resource::resource_release(obj_a);
     resource::resource_release(obj_b);
+}
+
+// Unix sockets passed over unix sockets
+
+// Receives the one byte a passenger came with and returns the passenger, or null
+static resource::resource_object* receive_passenger(resource::resource_object* obj) {
+    char byte = 0;
+    resource::handle_batch* batch = nullptr;
+    if (receive_with(obj, &byte, 1, &batch) != 1 || !batch || batch->count != 1) {
+        resource::handle_batch_release(batch);
+        return nullptr;
+    }
+
+    resource::resource_object* passenger = batch->entries[0].obj;
+    resource::resource_add_ref(passenger);
+    resource::handle_batch_release(batch);
+
+    return passenger;
+}
+
+// Whether two bytes sent on `from` arrive on `to`
+static bool carries_traffic(resource::resource_object* from, resource::resource_object* to) {
+    char buf[2] = {};
+    if (send_with(from, "hi", 2, nullptr) != 2 || receive_with(to, buf, sizeof(buf), nullptr) != 2) {
+        return false;
+    }
+
+    return string::memcmp(buf, "hi", 2) == 0;
+}
+
+static void expect_passed_socket_carries_traffic(socket::unix_socket_type carrier_type,
+                                                 socket::unix_socket_type cargo_type) {
+    resource::resource_object* carrier_a = nullptr;
+    resource::resource_object* carrier_b = nullptr;
+    resource::resource_object* cargo_a = nullptr;
+    resource::resource_object* cargo_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&carrier_a, &carrier_b, carrier_type), resource::OK);
+    ASSERT_EQ(socket::create_socket_pair(&cargo_a, &cargo_b, cargo_type), resource::OK);
+
+    EXPECT_EQ(send_passenger(carrier_a, cargo_a), static_cast<ssize_t>(1));
+    resource::resource_object* received = receive_passenger(carrier_b);
+    ASSERT_NOT_NULL(received);
+    EXPECT_EQ(received, cargo_a);
+    EXPECT_TRUE(carries_traffic(received, cargo_b));
+    EXPECT_TRUE(carries_traffic(cargo_b, received));
+
+    resource::resource_release(received);
+    resource::resource_release(cargo_a);
+    resource::resource_release(cargo_b);
+    resource::resource_release(carrier_a);
+    resource::resource_release(carrier_b);
+}
+
+TEST(socket_test, a_stream_socket_passed_over_a_stream_carries_traffic_afterwards) {
+    expect_passed_socket_carries_traffic(socket::unix_socket_type::stream, socket::unix_socket_type::stream);
+}
+
+TEST(socket_test, a_seqpacket_socket_passed_over_a_stream_carries_traffic_afterwards) {
+    expect_passed_socket_carries_traffic(socket::unix_socket_type::stream, socket::unix_socket_type::seqpacket);
+}
+
+TEST(socket_test, a_stream_socket_passed_over_a_seqpacket_carries_traffic_afterwards) {
+    expect_passed_socket_carries_traffic(socket::unix_socket_type::seqpacket, socket::unix_socket_type::stream);
+}
+
+TEST(socket_test, a_socket_arrives_with_its_queued_messages_intact) {
+    resource::resource_object* carrier_a = nullptr;
+    resource::resource_object* carrier_b = nullptr;
+    resource::resource_object* cargo_a = nullptr;
+    resource::resource_object* cargo_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&carrier_a, &carrier_b), resource::OK);
+    ASSERT_EQ(socket::create_socket_pair(&cargo_a, &cargo_b), resource::OK);
+
+    EXPECT_EQ(send_with(cargo_b, "hi", 2, nullptr), static_cast<ssize_t>(2));
+    EXPECT_EQ(send_passenger(carrier_a, cargo_a), static_cast<ssize_t>(1));
+    resource::resource_release(cargo_a);
+
+    resource::resource_object* received = receive_passenger(carrier_b);
+    ASSERT_NOT_NULL(received);
+
+    char buf[2] = {};
+    EXPECT_EQ(receive_with(received, buf, sizeof(buf), nullptr), static_cast<ssize_t>(2));
+    EXPECT_EQ(string::memcmp(buf, "hi", 2), 0);
+
+    resource::resource_release(received);
+    resource::resource_release(cargo_b);
+    resource::resource_release(carrier_a);
+    resource::resource_release(carrier_b);
+}
+
+static const char PASSED_LISTENER_PATH[] = "/passed_listener.sock";
+
+TEST(socket_test, a_listening_socket_passed_over_a_pair_accepts_through_the_received_object) {
+    resource::resource_object* carrier_a = nullptr;
+    resource::resource_object* carrier_b = nullptr;
+    resource::resource_object* listening = nullptr;
+    resource::resource_object* client = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&carrier_a, &carrier_b), resource::OK);
+    ASSERT_EQ(socket::create_unbound_socket(&listening), resource::OK);
+    ASSERT_EQ(socket::create_unbound_socket(&client), resource::OK);
+
+    unix_address address = {};
+    address.family = UNIX_ADDRESS_FAMILY;
+    string::memcpy(address.path, PASSED_LISTENER_PATH, sizeof(PASSED_LISTENER_PATH));
+
+    const resource::socket_ops* ops = listening->ops->socket;
+    ASSERT_EQ(ops->bind(listening, &address, sizeof(address)), resource::OK);
+    ASSERT_EQ(ops->listen(listening, LISTEN_BACKLOG), resource::OK);
+
+    EXPECT_EQ(send_passenger(carrier_a, listening), static_cast<ssize_t>(1));
+    resource::resource_release(listening);
+    resource::resource_object* received = receive_passenger(carrier_b);
+    ASSERT_NOT_NULL(received);
+
+    ASSERT_EQ(ops->connect(client, &address, sizeof(address), false), resource::OK);
+    resource::resource_object* server = nullptr;
+    ASSERT_EQ(ops->accept(received, &server, nullptr, nullptr, true), resource::OK);
+    EXPECT_TRUE(carries_traffic(client, server));
+
+    resource::resource_release(server);
+    resource::resource_release(client);
+    resource::resource_release(received);
+    resource::resource_release(carrier_a);
+    resource::resource_release(carrier_b);
+    EXPECT_EQ(fs::unlink(PASSED_LISTENER_PATH), fs::OK);
+}
+
+TEST(socket_test, a_socket_is_refused_a_place_in_its_own_queue) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    EXPECT_EQ(send_passenger(obj_a, obj_b), static_cast<ssize_t>(resource::ERR_LOOP));
+    EXPECT_EQ(obj_b->ref_count(), 1u);
+
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, a_socket_may_ride_its_own_pair) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    // The reader holds the sender, and the reader closing lets go of it
+    EXPECT_EQ(send_passenger(obj_a, obj_a), static_cast<ssize_t>(1));
+    EXPECT_EQ(obj_a->ref_count(), 2u);
+    resource::resource_release(obj_b);
+    EXPECT_EQ(obj_a->ref_count(), 1u);
+
+    resource::resource_release(obj_a);
+}
+
+TEST(socket_test, a_loop_through_both_queues_of_a_pair_is_refused) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+    // Once one end is queued for the other to read, the other may not be queued back
+    EXPECT_EQ(send_passenger(obj_b, obj_b), static_cast<ssize_t>(1));
+    EXPECT_EQ(send_passenger(obj_a, obj_a), static_cast<ssize_t>(resource::ERR_LOOP));
+
+    resource::resource_release(obj_a);
+    EXPECT_EQ(obj_b->ref_count(), 1u);
+    resource::resource_release(obj_b);
+}
+
+static const char PENDING_LOOP_PATH[] = "/pending_loop.sock";
+
+TEST(socket_test, a_listener_is_refused_a_place_in_the_queue_of_its_own_pending_connection) {
+    resource::resource_object* listening = nullptr;
+    resource::resource_object* client = nullptr;
+    ASSERT_EQ(socket::create_unbound_socket(&listening), resource::OK);
+    ASSERT_EQ(socket::create_unbound_socket(&client), resource::OK);
+
+    unix_address address = {};
+    address.family = UNIX_ADDRESS_FAMILY;
+    string::memcpy(address.path, PENDING_LOOP_PATH, sizeof(PENDING_LOOP_PATH));
+
+    const resource::socket_ops* ops = listening->ops->socket;
+    ASSERT_EQ(ops->bind(listening, &address, sizeof(address)), resource::OK);
+    ASSERT_EQ(ops->listen(listening, LISTEN_BACKLOG), resource::OK);
+    ASSERT_EQ(ops->connect(client, &address, sizeof(address), false), resource::OK);
+
+    EXPECT_EQ(send_passenger(client, listening), static_cast<ssize_t>(resource::ERR_LOOP));
+    EXPECT_EQ(listening->ref_count(), 1u);
+
+    resource::resource_release(client);
+    resource::resource_release(listening);
+    EXPECT_EQ(fs::unlink(PENDING_LOOP_PATH), fs::OK);
+}
+
+// Two tasks each queuing one end of a pair for the other to read, where only the first may succeed
+constexpr uint32_t RACING_SEND_ROUNDS = 32;
+
+struct racing_send_run {
+    resource::resource_object* over;
+    resource::resource_object* passenger;
+    ssize_t result;
+    sync::atomic<uint32_t> done;
+};
+
+static racing_send_run g_racing_sends[2];
+
+static void run_racing_send(void* arg) {
+    auto& run = *static_cast<racing_send_run*>(arg);
+    run.result = send_passenger(run.over, run.passenger);
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+static sched::task* start_racing_send(racing_send_run& run, resource::resource_object* over,
+                                      resource::resource_object* passenger) {
+    run.over = over;
+    run.passenger = passenger;
+    run.result = 0;
+    run.done.store_relaxed(0);
+
+    return test_helpers::start_pinned_task(run_racing_send, &run, "racing_send");
+}
+
+TEST(socket_test, racing_sends_that_would_form_a_loop_refuse_exactly_one) {
+    for (uint32_t round = 0; round < RACING_SEND_ROUNDS; round++) {
+        resource::resource_object* obj_a = nullptr;
+        resource::resource_object* obj_b = nullptr;
+        ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+
+        sched::task* over_a = start_racing_send(g_racing_sends[0], obj_a, obj_a);
+        sched::task* over_b = start_racing_send(g_racing_sends[1], obj_b, obj_b);
+        ASSERT_NOT_NULL(over_a);
+        ASSERT_NOT_NULL(over_b);
+        EXPECT_TRUE(test_helpers::spin_wait(g_racing_sends[0].done));
+        EXPECT_TRUE(test_helpers::spin_wait(g_racing_sends[1].done));
+
+        ssize_t results[2] = {g_racing_sends[0].result, g_racing_sends[1].result};
+        EXPECT_TRUE((results[0] == 1 && results[1] == resource::ERR_LOOP) ||
+                    (results[0] == resource::ERR_LOOP && results[1] == 1));
+
+        test_helpers::unpin(over_a);
+        test_helpers::unpin(over_b);
+        resource::resource_release(obj_a);
+        resource::resource_release(obj_b);
+    }
 }
