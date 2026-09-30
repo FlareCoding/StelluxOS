@@ -59,6 +59,25 @@ public:
         m_hub_event_done_wq.init();
     }
 
+    using start_hook_fn = void (*)(void* context);
+
+    /**
+     * Platform (non-PCI) controller at a fixed MMIO address with a wired,
+     * level-triggered GIC interrupt, e.g. an on-SoC xHCI described by the
+     * device tree. `on_started`, when set, runs once the controller is
+     * running, before the first port scan.
+     */
+    xhci_hcd(uint64_t mmio_phys, size_t mmio_size, uint32_t irq,
+             start_hook_fn on_started = nullptr, void* hook_context = nullptr)
+        : pci_driver("xhci_hcd", nullptr)
+        , m_plat_phys(mmio_phys)
+        , m_plat_size(mmio_size)
+        , m_plat_irq(irq)
+        , m_on_started(on_started)
+        , m_on_started_ctx(hook_context) {
+        m_hub_event_lock = sync::SPINLOCK_INIT;
+    }
+
     int32_t attach() override;
     int32_t detach() override;
     void run() override;
@@ -105,6 +124,22 @@ private:
     // Host controller MMIO virtual base address and mapped size
     uintptr_t m_xhc_base = 0;
     size_t    m_xhc_bar_size = 0;
+
+    // Platform mode (m_dev == nullptr): fixed MMIO window and wired IRQ
+    uint64_t      m_plat_phys = 0;
+    size_t        m_plat_size = 0;
+    uint32_t      m_plat_irq = 0;
+    uintptr_t     m_plat_map_base = 0;
+    bool          m_plat_irq_registered = false;
+    start_hook_fn m_on_started = nullptr;
+    void*         m_on_started_ctx = nullptr;
+
+    bool is_platform() const { return m_dev == nullptr; }
+    int32_t _map_platform_regs();
+    int32_t _setup_platform_irq();
+
+    /** @note Privilege: **required** */
+    __PRIVILEGED_CODE static void platform_isr(uint32_t irq, void* context);
 
     // xHCI register sets
     volatile xhci::xhci_capability_registers*   m_xhc_cap_regs = nullptr;

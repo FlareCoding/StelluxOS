@@ -12,25 +12,84 @@
 #include "sync/wait_queue.h"
 #include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
+#include "irq/irq.h"
+#include "mm/vmm.h"
+#if defined(__aarch64__)
+#include "irq/irq_arch.h"
+#endif
 
 using namespace drivers::xhci;
 
 namespace drivers {
 
-int32_t xhci_hcd::attach() {
-    // Enable PCI memory space + bus mastering before any MMIO access
+int32_t xhci_hcd::_map_platform_regs() {
+    int32_t rc = vmm::ERR_INVALID_ARG;
     RUN_ELEVATED({
-        dev().enable();
-        dev().enable_bus_mastering();
+        rc = vmm::map_device(static_cast<pmm::phys_addr_t>(m_plat_phys), m_plat_size,
+                             paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER,
+                             m_plat_map_base, m_xhc_base);
     });
-
-    int32_t rc = map_bar(0, m_xhc_base, paging::PAGE_USER);
-    if (rc != 0) {
-        log::error("xhci: failed to map BAR: %d", rc);
+    if (rc != vmm::OK) {
+        log::error("xhci: failed to map registers at 0x%lx: %d", m_plat_phys, rc);
         return rc;
     }
+    m_xhc_bar_size = m_plat_size;
+    return drivers::OK;
+}
 
-    m_xhc_bar_size = dev().get_bar(0).size;
+__PRIVILEGED_CODE void xhci_hcd::platform_isr(uint32_t, void* context) {
+    auto* self = static_cast<xhci_hcd*>(context);
+    self->on_interrupt(0);
+
+    sync::irq_state irq = sync::spin_lock_irqsave(self->m_irq_lock);
+    self->m_event_pending = true;
+    sync::wake_one(self->m_irq_wq);
+    sync::spin_unlock_irqrestore(self->m_irq_lock, irq);
+}
+
+int32_t xhci_hcd::_setup_platform_irq() {
+#if defined(__aarch64__)
+    int32_t rc = irq::ERR_INVAL;
+    RUN_ELEVATED({
+        rc = irq::register_handler(m_plat_irq, platform_isr, this);
+        if (rc == irq::OK) {
+            irq::set_level_triggered(m_plat_irq);
+            irq::set_spi_target(m_plat_irq, 0x01);
+            irq::set_group1(m_plat_irq);
+            irq::unmask(m_plat_irq);
+        }
+    });
+    if (rc != irq::OK) {
+        return rc;
+    }
+    m_plat_irq_registered = true;
+    return drivers::OK;
+#else
+    return irq::ERR_INVAL;
+#endif
+}
+
+int32_t xhci_hcd::attach() {
+    if (is_platform()) {
+        int32_t rc = _map_platform_regs();
+        if (rc != drivers::OK) {
+            return rc;
+        }
+    } else {
+        // Enable PCI memory space + bus mastering before any MMIO access
+        RUN_ELEVATED({
+            dev().enable();
+            dev().enable_bus_mastering();
+        });
+
+        int32_t rc = map_bar(0, m_xhc_base, paging::PAGE_USER);
+        if (rc != 0) {
+            log::error("xhci: failed to map BAR: %d", rc);
+            return rc;
+        }
+
+        m_xhc_bar_size = dev().get_bar(0).size;
+    }
 
     m_xhc_cap_regs = reinterpret_cast<volatile xhci_capability_registers*>(m_xhc_base);
 
@@ -59,6 +118,13 @@ int32_t xhci_hcd::attach() {
     m_hc_params.csz = XHCI_CSZ(m_xhc_cap_regs);
     m_hc_params.ppc = XHCI_PPC(m_xhc_cap_regs);
 
+    set_xhci_dma32_only(!m_hc_params.ac64);
+    if (is_platform()) {
+        log::info("xhci: platform controller at 0x%lx: %u ports, %u slots, ac64=%u, csz=%u",
+                  m_plat_phys, m_hc_params.max_ports, m_hc_params.max_device_slots,
+                  m_hc_params.ac64 ? 1u : 0u, m_hc_params.csz ? 1u : 0u);
+    }
+
     _parse_extended_capabilities();
 
     int32_t reset_rc = _reset_host_controller();
@@ -85,6 +151,14 @@ int32_t xhci_hcd::attach() {
     if (!m_port_devices) {
         log::error("xhci: failed to allocate port device tracking array");
         return -1;
+    }
+
+    if (is_platform()) {
+        if (_setup_platform_irq() != drivers::OK) {
+            log::warn("xhci: IRQ %u registration failed, interrupts unavailable",
+                      m_plat_irq);
+        }
+        return drivers::OK;
     }
 
     // Setup MSI/MSI-X interrupts
@@ -161,6 +235,24 @@ int32_t xhci_hcd::detach() {
         m_dcbaa = nullptr;
     }
 
+    if (is_platform()) {
+        RUN_ELEVATED({
+            if (m_plat_irq_registered) {
+#if defined(__aarch64__)
+                irq::mask(m_plat_irq);
+#endif
+                irq::unregister_handler(m_plat_irq);
+            }
+            if (m_plat_map_base) {
+                (void)vmm::free(m_plat_map_base);
+            }
+        });
+        m_plat_irq_registered = false;
+        m_plat_map_base = 0;
+        m_xhc_base = 0;
+        return drivers::OK;
+    }
+
     // Base class tears down MSI and unmaps BARs
     return pci_driver::detach();
 }
@@ -169,6 +261,10 @@ void xhci_hcd::run() {
     if (_start_host_controller() != 0) {
         log::error("xhci: failed to start controller");
         return;
+    }
+
+    if (m_on_started) {
+        m_on_started(m_on_started_ctx);
     }
 
     // Let ports stabilize after the controller transitions to running.
