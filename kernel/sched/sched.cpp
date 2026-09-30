@@ -23,6 +23,7 @@
 #include "timer/timer.h"
 #include "rc/reaper.h"
 #include "exec/elf.h"
+#include "random/random.h"
 #include "mm/pmm.h"
 #include "mm/vma.h"
 #include "common/string.h"
@@ -92,9 +93,13 @@ constexpr uint64_t AT_PHDR   = 3;
 constexpr uint64_t AT_PHENT  = 4;
 constexpr uint64_t AT_PHNUM  = 5;
 constexpr uint64_t AT_PAGESZ = 6;
+constexpr uint64_t AT_RANDOM = 25;
 
-constexpr size_t AUXV_ENTRIES = 5;
+constexpr size_t AUXV_ENTRIES = 6;
 constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
+
+// AT_RANDOM points at this many random bytes, which seed the program's stack protector
+constexpr size_t RANDOM_SEED_BYTES = 16;
 
 static uint32_t load_cleanup_stage(const task* t) {
     return t->cleanup_stage.load_acquire();
@@ -885,15 +890,15 @@ static const char* path_basename(const char* path) {
     return base;
 }
 
-// Total bytes the initial stack layout needs: argv[0], the
-// user args, the environment, the pointer block, and auxv.
+// Total bytes the initial stack layout needs: argv[0], the user args,
+// the environment, the random seed, the pointer block, and auxv.
 static size_t measure_needed_user_stack_bytes(
     const char* path,
     int user_argc, const char* const* user_argv,
     int user_envc, const char* const* user_envp
 ) {
     size_t struct_words = 1 + (1 + user_argc) + 1 + user_envc + 1 + AUXV_WORDS;
-    size_t bytes = struct_words * sizeof(uint64_t);
+    size_t bytes = struct_words * sizeof(uint64_t) + RANDOM_SEED_BYTES;
 
     bytes += (string::strnlen(path, MAX_ARG_STRLEN - 1) + 1 + 7) & ~7ULL;
     for (int i = 0; i < user_argc; i++) {
@@ -965,9 +970,9 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
                         + static_cast<size_t>(user_envc) + 1 + AUXV_WORDS;
     size_t struct_bytes = struct_words * sizeof(uint64_t);
 
-    // Pre-compute total string space needed (8-byte aligned per arg)
+    // Pre-compute the space for the random seed and the strings, each 8-byte aligned
     size_t path_len = string::strnlen(path, MAX_ARG_STRLEN - 1) + 1;
-    size_t total_string_bytes = (path_len + 7) & ~7ULL;
+    size_t total_string_bytes = RANDOM_SEED_BYTES + ((path_len + 7) & ~7ULL);
     for (int i = 0; i < user_argc; i++) {
         size_t arg_len = string::strnlen(user_argv[i], MAX_ARG_STRLEN - 1) + 1;
         total_string_bytes += (arg_len + 7) & ~7ULL;
@@ -982,6 +987,11 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
         return 0;
     }
 
+    uint8_t random_seed[RANDOM_SEED_BYTES];
+    if (random::fill(random_seed, sizeof(random_seed)) != random::OK) {
+        return 0;
+    }
+
     // Strings sit at the top of the window and the pointer block below
     // them, so both regions are known before anything is written
     uintptr_t str_bottom = stack_top - total_string_bytes;
@@ -992,6 +1002,10 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
 
     uintptr_t str_cursor = stack_top;
     uintptr_t slot = sp + sizeof(uint64_t);
+
+    str_cursor -= RANDOM_SEED_BYTES;
+    write(str_cursor, random_seed, sizeof(random_seed));
+    uint64_t random_seed_va = str_cursor;
 
     // argv[0] = the path the program was invoked with
     str_cursor -= (path_len + 7) & ~7ULL;
@@ -1035,6 +1049,7 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
         AT_PHDR,   image.phdr_vaddr,
         AT_PHENT,  image.phentsize,
         AT_PHNUM,  static_cast<uint64_t>(image.phdr_vaddr ? image.phnum : 0),
+        AT_RANDOM, random_seed_va,
         AT_NULL,   0
     };
     write(slot, auxv, sizeof(auxv));
@@ -1146,7 +1161,7 @@ __PRIVILEGED_CODE task* create_user_task(
         mm_ctx->pt_root, mm::USER_STACK_TOP, eager_bytes, *image, path,
         argc, argv, envc, envp);
     if (user_sp == 0) {
-        log::error("sched: user stack setup failed (argv/envp did not fit)");
+        log::error("sched: user stack setup failed (arguments did not fit or no random seed)");
         mm::mm_context_unmap(mm_ctx, stack_max_base, total_bytes);
         vmm::free(sys_stack_base);
         heap::kfree_delete(t);
