@@ -44,6 +44,7 @@ public:
 
     const char* name() const { return m_name; }
     sched::task* task() const { return m_task; }
+    void set_task(sched::task* t) { m_task = t; }
 
 protected:
     const char* m_name;
