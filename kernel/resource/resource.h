@@ -68,13 +68,16 @@ struct resource_object : rc::ref_counted<resource_object> {
     void* impl;
     sync::atomic<uint32_t> status_flags; // O_NONBLOCK and O_APPEND, shared by every handle to the object
     list::head<resource_watch, &resource_watch::link> watches;
+    resource_object* next_to_destroy;
 
-    resource_object() : type(resource_type::UNKNOWN), ops(nullptr), impl(nullptr), status_flags(0) {
+    resource_object()
+        : type(resource_type::UNKNOWN), ops(nullptr), impl(nullptr), status_flags(0), next_to_destroy(nullptr) {
         watches.init();
     }
 
     /**
-     * @brief Finalize and free a resource object at terminal release.
+     * @brief Finalize and free a resource object at terminal release. A release from inside another
+     * object's close is deferred until that close returns, so chains free in a loop and never nest.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE static void ref_destroy(resource_object* self);

@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "clock/clock.h"
+#include "exec/elf.h"
 #include "sync/atomic.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -131,6 +132,16 @@ inline bool blocks_before_deadline(sched::task* t) {
     }
 
     return true;
+}
+
+// A process loaded from the program at `path` and not yet started, or null when it cannot be loaded
+inline sched::task* create_unstarted_process(const char* path) {
+    exec::loaded_image loaded;
+    if (exec::load_elf(path, &loaded) != exec::OK) {
+        return nullptr;
+    }
+
+    return sched::create_user_task(&loaded, path);
 }
 
 } // namespace test_helpers
