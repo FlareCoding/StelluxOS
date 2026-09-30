@@ -4,6 +4,7 @@
 #include "common/types.h"
 #include "clock/clock.h"
 #include "exec/elf.h"
+#include "resource/providers/proc_provider.h"
 #include "sync/atomic.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -142,6 +143,22 @@ inline sched::task* create_unstarted_process(const char* path) {
     }
 
     return sched::create_user_task(&loaded, path);
+}
+
+// The handle object of such a process, owned by the caller, or null
+inline resource::resource_object* create_unstarted_process_object(const char* path) {
+    sched::task* process = create_unstarted_process(path);
+    if (!process) {
+        return nullptr;
+    }
+
+    resource::resource_object* obj = nullptr;
+    if (resource::proc_provider::create_proc_resource(process, &obj) != resource::OK) {
+        resource::proc_provider::destroy_unstarted_task(process);
+        return nullptr;
+    }
+
+    return obj;
 }
 
 } // namespace test_helpers

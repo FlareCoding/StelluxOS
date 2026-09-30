@@ -3,6 +3,7 @@
 #include "resource/providers/proc_provider.h"
 #include "resource/resource.h"
 #include "resource/handle_table.h"
+#include "resource/in_flight.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sched/task_registry.h"
@@ -378,6 +379,38 @@ DEFINE_SYSCALL2(proc_info, u_handle, u_info_ptr) {
     return 0;
 }
 
+static bool is_same_object(resource::resource_object* obj, void* target) {
+    return obj == target;
+}
+
+/**
+ * Installs `installed` at `slot` of the child's table while the child has not started. The child's own
+ * limit bounds its table, and a child that has not started cannot change it.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int64_t install_in_unstarted_child(resource::proc_provider::proc_resource* pr,
+                                                            uint64_t slot,
+                                                            const resource::passed_handle& installed) {
+    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+
+    int64_t result = 0;
+    if (!pr->child || pr->child->state.load_relaxed() != sched::TASK_STATE_CREATED) {
+        result = syscall::EINVAL;
+    } else if (slot >= resource::handle_limit_unlocked(pr->child)) {
+        result = syscall::EINVAL;
+    } else {
+        int32_t rc = resource::install_handle_at(pr->child->handles, static_cast<resource::handle_t>(slot),
+                                                 installed.obj, installed.type, installed.rights);
+        if (rc != resource::HANDLE_OK) {
+            result = rc == resource::HANDLE_ERR_NOMEM ? syscall::ENOMEM : syscall::EINVAL;
+        }
+    }
+
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+
+    return result;
+}
+
 DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
     sched::task* caller = sched::current();
     if (!caller) {
@@ -402,44 +435,30 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
         return syscall::EINVAL;
     }
 
-    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
-    if (!pr->child || pr->child->state.load_relaxed() != sched::TASK_STATE_CREATED) {
-        sync::spin_unlock_irqrestore(pr->lock, irq);
-        resource::resource_release(proc_obj);
-        return syscall::EINVAL;
-    }
-
-    // The child's own limit bounds its table, and a child that has not started cannot change it
-    if (u_slot >= resource::handle_limit_unlocked(pr->child)) {
-        sync::spin_unlock_irqrestore(pr->lock, irq);
-        resource::resource_release(proc_obj);
-        return syscall::EINVAL;
-    }
-
-    resource::resource_object* res_obj = nullptr;
-    uint32_t res_rights = 0;
+    resource::passed_handle installed = {};
     rc = resource::get_handle_object(
         caller->handles, static_cast<resource::handle_t>(u_resource_handle), 0,
-        &res_obj, nullptr, &res_rights);
+        &installed.obj, nullptr, &installed.rights);
     if (rc != resource::HANDLE_OK) {
-        sync::spin_unlock_irqrestore(pr->lock, irq);
         resource::resource_release(proc_obj);
         return syscall::EBADF;
     }
 
-    rc = resource::install_handle_at(
-        pr->child->handles, static_cast<resource::handle_t>(u_slot),
-        res_obj, res_obj->type, res_rights);
+    installed.type = installed.obj->type;
 
-    sync::spin_unlock_irqrestore(pr->lock, irq);
-    resource::resource_release(res_obj);
-    resource::resource_release(proc_obj);
+    // Held across the check and the install, so no other operation can add the other half of a loop
+    sync::mutex_lock(resource::in_flight_lock());
+    int64_t result = resource::in_flight_reaches(&installed, 1, is_same_object, proc_obj) ? syscall::ELOOP : 0;
 
-    if (rc != resource::HANDLE_OK) {
-        return (rc == resource::HANDLE_ERR_NOMEM) ? syscall::ENOMEM : syscall::EINVAL;
+    if (result == 0) {
+        result = install_in_unstarted_child(pr, u_slot, installed);
     }
 
-    return 0;
+    sync::mutex_unlock(resource::in_flight_lock());
+    resource::resource_release(installed.obj);
+    resource::resource_release(proc_obj);
+
+    return result;
 }
 
 DEFINE_SYSCALL1(proc_kill, u_handle) {

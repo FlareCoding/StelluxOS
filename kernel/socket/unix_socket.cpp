@@ -1,5 +1,6 @@
 #include "socket/unix_socket.h"
 #include "resource/socket_ops.h"
+#include "resource/in_flight.h"
 #include "net/inet.h"
 #include "mm/heap.h"
 #include "sync/spinlock.h"
@@ -837,6 +838,118 @@ __PRIVILEGED_CODE static int32_t unix_connect(
     return resource::OK;
 }
 
+static bool is_unix_socket(const resource::resource_object* obj) {
+    return obj->ops == get_socket_ops(unix_socket_type::stream) ||
+           obj->ops == get_socket_ops(unix_socket_type::seqpacket);
+}
+
+/**
+ * Whether `obj` is the connected socket that reads from the buffer `context` names.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static bool reads_from(resource::resource_object* obj, void* context) {
+    if (!is_unix_socket(obj) || !obj->impl) {
+        return false;
+    }
+
+    auto* sock = static_cast<unix_socket*>(obj->impl);
+
+    return sock->state == SOCK_STATE_CONNECTED && inbound(sock).buf == context;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void visit_record_batch(ring_buffer_mark* mark, void* walk) {
+    resource::handle_batch* batch = record_of(mark)->batch;
+    if (!batch) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < batch->count; i++) {
+        resource::in_flight_visit(*static_cast<resource::in_flight_walk*>(walk), batch->entries[i].obj);
+    }
+}
+
+/**
+ * Reports what is queued for `obj` to read and, while it listens, the connections waiting to be accepted.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void unix_visit_held(resource::resource_object* obj, resource::in_flight_walk& walk) {
+    auto* sock = static_cast<unix_socket*>(obj->impl);
+    if (!sock) {
+        return;
+    }
+
+    if (sock->state == SOCK_STATE_CONNECTED) {
+        ring_buffer_for_each_mark(inbound(sock).buf, visit_record_batch, &walk);
+        return;
+    }
+
+    if (sock->state == SOCK_STATE_LISTENING && sock->listener) {
+        listener_state* ls = sock->listener.ptr();
+
+        sync::irq_state irq = sync::spin_lock_irqsave(ls->lock);
+        for (pending_conn& pc : ls->accept_queue) {
+            resource::in_flight_visit(walk, pc.server_obj);
+        }
+
+        sync::spin_unlock_irqrestore(ls->lock, irq);
+    }
+}
+
+static bool carries_holder(const resource::handle_batch* batch) {
+    for (uint32_t i = 0; i < batch->count; i++) {
+        if (batch->entries[i].obj->ops->visit_held) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Writes like write_to_peer for a batch that carries holders, queuing it only after checking under the
+ * in-flight lock that nothing in it holds the reading socket, so no reference loop can form. Room is
+ * waited for with the lock dropped, and the check is redone after each wait.
+ * @return Bytes written, ERR_LOOP when the batch holds the reader, or another write error.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static ssize_t write_checked(unix_socket* sock, const uint8_t* bytes, size_t count,
+                                               uint32_t msg_flags, resource::handle_batch* batch) {
+    unix_direction& dir = outbound(sock);
+    bool nonblock = (msg_flags & net::inet::MSG_DONTWAIT) != 0;
+    size_t first_write = sock->type == unix_socket_type::seqpacket ? count : 1;
+    ssize_t n = 0;
+
+    while (true) {
+        sync::mutex_lock(resource::in_flight_lock());
+        bool loops = resource::in_flight_reaches(batch->entries, batch->count, reads_from, dir.buf);
+        n = loops ? resource::ERR_LOOP
+                  : write_to_peer(sock, bytes, count, msg_flags | net::inet::MSG_DONTWAIT, batch);
+        sync::mutex_unlock(resource::in_flight_lock());
+
+        if (n != resource::ERR_AGAIN || nonblock) {
+            break;
+        }
+
+        // A closed reader is reported by the write itself, along with its signal
+        if (ring_buffer_wait_writable(dir.buf, first_write, true, false) == RB_ERR_INTR) {
+            return resource::ERR_INTR;
+        }
+    }
+
+    if (n <= 0 || nonblock || static_cast<size_t>(n) == count) {
+        return n;
+    }
+
+    // The batch went with the first stretch, the rest of the stream follows at the caller's pace
+    size_t sent = static_cast<size_t>(n);
+    ssize_t more = write_stream(dir, bytes + sent, count - sent, msg_flags, nullptr);
+
+    return static_cast<ssize_t>(more > 0 ? sent + static_cast<size_t>(more) : sent);
+}
+
 /**
  * One to MAX_PASSED_HANDLES filled entries and no unix socket, since one in flight could end up
  * queued on itself with nothing left to free it until sockets in flight are collected.
@@ -853,8 +966,7 @@ __PRIVILEGED_CODE static int32_t check_batch(const resource::handle_batch* batch
             return resource::ERR_INVAL;
         }
 
-        if (obj->ops == get_socket_ops(unix_socket_type::stream) ||
-            obj->ops == get_socket_ops(unix_socket_type::seqpacket)) {
+        if (is_unix_socket(obj)) {
             return resource::ERR_UNSUP;
         }
     }
@@ -890,6 +1002,10 @@ __PRIVILEGED_CODE static ssize_t unix_sendmsg(
     int32_t rc = batch ? check_batch(batch) : resource::OK;
     if (rc != resource::OK) {
         return rc;
+    }
+
+    if (batch && count > 0 && carries_holder(batch)) {
+        return write_checked(sock, static_cast<const uint8_t*>(ksrc), count, flags, batch);
     }
 
     return write_to_peer(sock, static_cast<const uint8_t*>(ksrc), count, flags, batch);
@@ -1073,6 +1189,7 @@ static const resource::resource_ops g_socket_ops = {
     .write = socket_write,
     .close = socket_close,
     .poll = socket_poll,
+    .visit_held = unix_visit_held,
     .socket = &g_unix_socket_ops,
 };
 
@@ -1081,6 +1198,7 @@ static const resource::resource_ops g_seqpacket_ops = {
     .write = socket_write,
     .close = socket_close,
     .poll = socket_poll,
+    .visit_held = unix_visit_held,
     .socket = &g_unix_seqpacket_ops,
 };
 

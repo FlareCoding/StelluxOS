@@ -1,5 +1,6 @@
 #include "resource/handle_table.h"
 #include "resource/resource.h"
+#include "resource/in_flight.h"
 #include "common/string.h"
 #include "mm/heap.h"
 
@@ -378,6 +379,19 @@ __PRIVILEGED_CODE int32_t remove_handle(
 
     *out_obj = obj;
     return HANDLE_OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void visit_handle_objects(handle_table* table, in_flight_walk& walk) {
+    sync::irq_lock_guard guard(table->lock);
+
+    for (uint32_t i = 0; i < table->capacity; i++) {
+        if (table->entries[i].used) {
+            in_flight_visit(walk, table->entries[i].obj);
+        }
+    }
 }
 
 } // namespace resource

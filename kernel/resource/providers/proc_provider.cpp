@@ -84,11 +84,32 @@ __PRIVILEGED_CODE static uint32_t proc_poll(
     return mask;
 }
 
+/**
+ * Reports the handle table of a child that has not started, which nothing but this object keeps alive.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void proc_visit_held(resource_object* obj, in_flight_walk& walk) {
+    auto* impl = static_cast<proc_resource_impl*>(obj->impl);
+    if (!impl) {
+        return;
+    }
+
+    proc_resource* pr = impl->proc.ptr();
+
+    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+    if (pr->child && pr->child->state.load_relaxed() == sched::TASK_STATE_CREATED) {
+        visit_handle_objects(pr->child->handles, walk);
+    }
+
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+}
+
 static const resource_ops g_proc_ops = {
     .read = proc_read,
     .write = proc_write,
     .close = proc_close,
     .poll = proc_poll,
+    .visit_held = proc_visit_held,
 };
 
 __PRIVILEGED_CODE int32_t create_proc_resource(

@@ -11,6 +11,8 @@
 #include "socket/listener.h"
 #include "resource/resource.h"
 #include "resource/handle_table.h"
+#include "resource/in_flight.h"
+#include "resource/providers/proc_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "common/string.h"
@@ -1887,5 +1889,153 @@ TEST(socket_test, a_closed_socket_leaves_no_poll_queue_on_its_channel) {
     EXPECT_TRUE(to_b->reader_poll_wq == &sock_b->poll_wq);
     EXPECT_TRUE(to_a->writer_poll_wq == &sock_b->poll_wq);
 
+    resource::resource_release(obj_b);
+}
+
+// Reference loops through objects in flight
+
+static const char LOOP_PROGRAM[] = "/bin/hello";
+constexpr resource::handle_t HELD_SLOT = 3;
+
+static resource::resource_object* make_unstarted_process() {
+    return test_helpers::create_unstarted_process_object(LOOP_PROGRAM);
+}
+
+// Makes the process behind `process` hold `held` through its table, at `slot`
+static bool give_to_process(resource::resource_object* process, resource::resource_object* held,
+                            resource::handle_t slot = HELD_SLOT) {
+    auto* pr = resource::proc_provider::get_proc_resource(process);
+    if (!pr) {
+        return false;
+    }
+
+    return resource::install_handle_at(pr->child->handles, slot, held, held->type, 0) == resource::HANDLE_OK;
+}
+
+// Sends `passenger` on `obj` and reports the result, letting the batch go when the send did not take it
+static ssize_t send_passenger(resource::resource_object* obj, resource::resource_object* passenger) {
+    resource::handle_batch* batch = batch_of(passenger);
+    ssize_t n = send_with(obj, "x", 1, batch);
+    if (n <= 0) {
+        resource::handle_batch_release(batch);
+    }
+
+    return n;
+}
+
+TEST(socket_test, a_send_refuses_a_process_that_holds_the_reading_socket) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* process = make_unstarted_process();
+    ASSERT_NOT_NULL(process);
+    ASSERT_TRUE(give_to_process(process, obj_b));
+
+    EXPECT_EQ(send_passenger(obj_a, process), static_cast<ssize_t>(resource::ERR_LOOP));
+
+    // Refused, so the process is freed with the caller's reference and lets go of the socket
+    resource::resource_release(process);
+    EXPECT_EQ(obj_b->ref_count(), 1u);
+
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+TEST(socket_test, a_send_allows_a_process_that_holds_the_sending_socket) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* process = make_unstarted_process();
+    ASSERT_NOT_NULL(process);
+    ASSERT_TRUE(give_to_process(process, obj_a));
+
+    EXPECT_EQ(send_passenger(obj_a, process), static_cast<ssize_t>(1));
+    resource::resource_release(process);
+
+    // The reading socket alone keeps the process alive, so closing it frees everything
+    resource::resource_release(obj_b);
+    EXPECT_EQ(obj_a->ref_count(), 1u);
+
+    resource::resource_release(obj_a);
+}
+
+TEST(socket_test, a_send_refuses_a_process_that_reaches_the_reading_socket_through_another) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* first = make_unstarted_process();
+    resource::resource_object* second = make_unstarted_process();
+    ASSERT_NOT_NULL(first);
+    ASSERT_NOT_NULL(second);
+    ASSERT_TRUE(give_to_process(first, second));
+    ASSERT_TRUE(give_to_process(second, obj_b));
+
+    EXPECT_EQ(send_passenger(obj_a, first), static_cast<ssize_t>(resource::ERR_LOOP));
+
+    resource::resource_release(second);
+    resource::resource_release(first);
+    EXPECT_EQ(obj_b->ref_count(), 1u);
+
+    resource::resource_release(obj_a);
+    resource::resource_release(obj_b);
+}
+
+static const char HELD_LISTENER_PATH[] = "/held_listener.sock";
+
+TEST(socket_test, a_send_refuses_a_process_that_holds_the_listener_of_the_unaccepted_reader) {
+    resource::resource_object* listening = nullptr;
+    resource::resource_object* client = nullptr;
+    ASSERT_EQ(socket::create_unbound_socket(&listening), resource::OK);
+    ASSERT_EQ(socket::create_unbound_socket(&client), resource::OK);
+    resource::resource_object* process = make_unstarted_process();
+    ASSERT_NOT_NULL(process);
+    ASSERT_TRUE(give_to_process(process, listening));
+
+    unix_address address = {};
+    address.family = UNIX_ADDRESS_FAMILY;
+    string::memcpy(address.path, HELD_LISTENER_PATH, sizeof(HELD_LISTENER_PATH));
+
+    const resource::socket_ops* ops = listening->ops->socket;
+    ASSERT_EQ(ops->bind(listening, &address, sizeof(address)), resource::OK);
+    ASSERT_EQ(ops->listen(listening, LISTEN_BACKLOG), resource::OK);
+    ASSERT_EQ(ops->connect(client, &address, sizeof(address), false), resource::OK);
+
+    // The connection waiting to be accepted would read the process, which holds the listener holding it
+    EXPECT_EQ(send_passenger(client, process), static_cast<ssize_t>(resource::ERR_LOOP));
+
+    resource::resource_release(process);
+    EXPECT_EQ(listening->ref_count(), 1u);
+
+    resource::resource_release(client);
+    resource::resource_release(listening);
+    EXPECT_EQ(fs::unlink(HELD_LISTENER_PATH), fs::OK);
+}
+
+// Enough sockets held by one process to take a walk past its limit
+static resource::resource_object* g_many_sockets_a[resource::MAX_IN_FLIGHT_VISITS];
+static resource::resource_object* g_many_sockets_b[resource::MAX_IN_FLIGHT_VISITS];
+
+TEST(socket_test, a_send_refuses_a_process_that_holds_more_than_a_walk_can_visit) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_object* process = make_unstarted_process();
+    ASSERT_NOT_NULL(process);
+
+    for (uint32_t i = 0; i < resource::MAX_IN_FLIGHT_VISITS; i++) {
+        ASSERT_EQ(socket::create_socket_pair(&g_many_sockets_a[i], &g_many_sockets_b[i]), resource::OK);
+        ASSERT_TRUE(give_to_process(process, g_many_sockets_a[i], static_cast<resource::handle_t>(i)));
+    }
+
+    // None of them holds the reader, but the walk cannot tell before it gives up
+    EXPECT_EQ(send_passenger(obj_a, process), static_cast<ssize_t>(resource::ERR_LOOP));
+
+    for (uint32_t i = 0; i < resource::MAX_IN_FLIGHT_VISITS; i++) {
+        resource::resource_release(g_many_sockets_a[i]);
+        resource::resource_release(g_many_sockets_b[i]);
+    }
+
+    resource::resource_release(process);
+    resource::resource_release(obj_a);
     resource::resource_release(obj_b);
 }
