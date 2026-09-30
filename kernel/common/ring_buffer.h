@@ -8,6 +8,9 @@
 
 constexpr size_t RING_BUFFER_DEFAULT_CAPACITY = 8192;
 
+// A buffer whose marks are bounded only by its bytes
+constexpr size_t RING_BUFFER_UNLIMITED_MARKS = static_cast<size_t>(-1);
+
 // Values mirror the resource layer error codes and flow untranslated
 constexpr ssize_t RB_ERR_INVAL = -1;
 constexpr ssize_t RB_ERR_AGAIN = -16;
@@ -39,18 +42,20 @@ struct ring_buffer {
     sync::wait_queue write_wq;
 
     ring_buffer_mark_list marks;
+    size_t max_marks; // Marked writes wait while this many marks are queued
 
     sync::wait_queue* reader_poll_wq;
     sync::wait_queue* writer_poll_wq;
 };
 
 /**
- * Allocate and initialize a ring buffer.
+ * Allocate and initialize a ring buffer holding at least `capacity` bytes and at most `max_marks` marks.
  * Control struct from privileged heap, data from unprivileged heap.
  * @return Ring buffer pointer on success, nullptr on allocation failure.
  * @note Privilege: **required**
  */
-[[nodiscard]] __PRIVILEGED_CODE ring_buffer* ring_buffer_create(size_t capacity);
+[[nodiscard]] __PRIVILEGED_CODE ring_buffer* ring_buffer_create(size_t capacity,
+                                                                size_t max_marks = RING_BUFFER_UNLIMITED_MARKS);
 
 /**
  * Free a ring buffer and its data. Must only be called when no waiters and no marks remain.
@@ -129,7 +134,8 @@ __PRIVILEGED_CODE void ring_buffer_set_writer_poll_queue(ring_buffer* rb, sync::
 
 /**
  * Write like ring_buffer_write, attaching `mark`, when given, to exactly the bytes this call writes.
- * A call that writes nothing leaves the mark untouched.
+ * A call that writes nothing leaves the mark untouched, and a marked write finds no room while
+ * `max_marks` marks are queued.
  * @return Bytes written (> 0), RB_ERR_AGAIN if nonblock and full, RB_ERR_PIPE if either side closed,
  *   or RB_ERR_INTR when a signal interrupted the wait.
  * @note Privilege: **required**
@@ -145,6 +151,16 @@ __PRIVILEGED_CODE void ring_buffer_set_writer_poll_queue(ring_buffer* rb, sync::
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock = false);
+
+/**
+ * All-or-nothing write like ring_buffer_write_all, attaching `mark`, when given, to exactly the bytes
+ * written. A marked write finds no room while `max_marks` marks are queued.
+ * @return len on success, RB_ERR_AGAIN if nonblock and there is no room, RB_ERR_PIPE if either side
+ *   closed, RB_ERR_INTR when a signal interrupted the wait, or RB_ERR_INVAL when `len` can never fit.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_write_all_marked(ring_buffer* rb, const uint8_t* buf, size_t len,
+                                                                     ring_buffer_mark* mark, bool nonblock);
 
 /**
  * Mark the write side as closed. Wakes all blocked readers and writers, so readers
@@ -177,7 +193,7 @@ __PRIVILEGED_CODE uint32_t ring_buffer_poll_read(ring_buffer* rb, sync::poll_tab
 
 /**
  * Check write-direction readiness and optionally subscribe for wakeup.
- * @return Bitmask: POLL_OUT if space available, POLL_ERR once either side has closed.
+ * @return Bitmask: POLL_OUT while a marked byte still fits, POLL_ERR once either side has closed.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t ring_buffer_poll_write(ring_buffer* rb, sync::poll_table* pt);
