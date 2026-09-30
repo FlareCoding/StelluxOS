@@ -1631,6 +1631,7 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
     }
 
     xhci_interface_info* current_iface = nullptr;
+    bool in_alt_setting = false;
 
     while (offset + sizeof(usb::usb_descriptor_header) <= data_length) {
         auto* hdr = reinterpret_cast<usb::usb_descriptor_header*>(&config.data[offset]);
@@ -1648,7 +1649,15 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
         }
 
         if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_INTERFACE) {
+            in_alt_setting = false;
             if (hdr->bLength >= sizeof(usb::usb_interface_descriptor) &&
+                reinterpret_cast<usb::usb_interface_descriptor*>(hdr)->bAlternateSetting != 0) {
+                // Only alternate setting 0 is active after SET_CONFIGURATION.
+                // Hubs list their multi-TT mode this way under the same
+                // interface number, so binding it would attach a second driver.
+                in_alt_setting = true;
+                current_iface = nullptr;
+            } else if (hdr->bLength >= sizeof(usb::usb_interface_descriptor) &&
                 device->num_interfaces() < xhci_device::MAX_INTERFACES) {
                 auto* iface_desc = reinterpret_cast<usb::usb_interface_descriptor*>(hdr);
                 uint8_t idx = device->num_interfaces();
@@ -1686,7 +1695,7 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
                 }
             }
         } else if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_ENDPOINT) {
-            if (hdr->bLength >= sizeof(usb::usb_endpoint_descriptor)) {
+            if (!in_alt_setting && hdr->bLength >= sizeof(usb::usb_endpoint_descriptor)) {
                 auto* ep_desc = reinterpret_cast<usb::usb_endpoint_descriptor*>(hdr);
                 auto* ep = _create_endpoint(device, ep_desc);
                 if (ep) {
