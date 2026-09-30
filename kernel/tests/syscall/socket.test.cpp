@@ -9,6 +9,7 @@
 #include "syscall/handlers/sys_io.h"
 #include "syscall/handlers/sys_shutdown.h"
 #include "syscall/handlers/sys_pipe.h"
+#include "syscall/handlers/sys_proc.h"
 #include "resource/resource.h"
 #include "resource/socket_ops.h"
 #include "socket/unix_socket.h"
@@ -1570,6 +1571,31 @@ TEST(socket_syscall, a_peek_charges_nothing_for_the_copies_it_installs) {
 
     (void)resource::close(task, copy);
     close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_sendmsg_that_would_queue_a_process_holding_the_reader_reports_eloop) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    resource::resource_object* process = test_helpers::create_unstarted_process_object("/bin/hello");
+    ASSERT_NOT_NULL(process);
+    int32_t process_handle = -1;
+    ASSERT_EQ(resource::alloc_task_handle(task, process, process->type, 0, &process_handle), resource::HANDLE_OK);
+    resource::resource_release(process);
+
+    // The process holds the reading end, so it may go the other way only
+    int64_t rc = sys_proc_set_handle(static_cast<uint64_t>(process_handle), 3, static_cast<uint64_t>(pair.b), 0, 0, 0);
+    ASSERT_EQ(rc, 0);
+    EXPECT_EQ(send_with_rights(page, pair.a, &process_handle, 1), syscall::ELOOP);
+    EXPECT_EQ(send_with_rights(page, pair.b, &process_handle, 1), static_cast<int64_t>(1));
+
+    (void)resource::close(task, process_handle);
     close_unix_pair(task, pair);
 }
 

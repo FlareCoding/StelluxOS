@@ -235,6 +235,40 @@ __PRIVILEGED_CODE ssize_t ring_buffer_wait_readable(ring_buffer* rb, bool nonblo
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE ssize_t ring_buffer_wait_writable(ring_buffer* rb, size_t len, bool marked, bool nonblock) {
+    if (!rb || len == 0 || len > rb->capacity - 1) {
+        return RB_ERR_INVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+
+    ssize_t result = 0;
+    while (!has_room(rb, len, marked) && !is_shut(rb)) {
+        if (nonblock) {
+            result = RB_ERR_AGAIN;
+            break;
+        }
+
+        if (signals::interrupt_pending(sched::current())) {
+            result = RB_ERR_INTR;
+            break;
+        }
+
+        irq = sync::wait(rb->write_wq, rb->lock, irq);
+    }
+
+    if (result == 0) {
+        result = is_shut(rb) ? RB_ERR_PIPE : static_cast<ssize_t>(writable_bytes(rb));
+    }
+
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+
+    return result;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE size_t ring_buffer_peek(ring_buffer* rb, uint8_t* buf, size_t len) {
     if (!rb || !buf) {
         return 0;
@@ -529,6 +563,22 @@ __PRIVILEGED_CODE void ring_buffer_take_marks(ring_buffer* rb, ring_buffer_mark_
     while (ring_buffer_mark* mark = rb->marks.pop_front()) {
         marks.push_back(mark);
     }
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void ring_buffer_for_each_mark(ring_buffer* rb, ring_buffer_mark_fn on_mark, void* context) {
+    if (!rb) {
+        return;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+    for (ring_buffer_mark& mark : rb->marks) {
+        on_mark(&mark, context);
+    }
+
     sync::spin_unlock_irqrestore(rb->lock, irq);
 }
 

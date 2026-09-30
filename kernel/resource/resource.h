@@ -15,6 +15,7 @@ namespace resource {
 
 struct resource_object;
 struct socket_ops;
+struct in_flight_walk;
 
 using read_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint32_t flags);
 using write_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint32_t flags);
@@ -27,6 +28,7 @@ using mmap_fn = int32_t (*)(resource_object* obj, mm::mm_context* mm_ctx,
                             uintptr_t addr, size_t length, uint32_t prot,
                             uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
 using poll_fn = uint32_t (*)(resource_object* obj, sync::poll_table* pt);
+using visit_held_fn = void (*)(resource_object* holder, in_flight_walk& walk);
 
 /**
  * Operations every resource may provide. Tables list only the entries they
@@ -36,6 +38,11 @@ using poll_fn = uint32_t (*)(resource_object* obj, sync::poll_table* pt);
  * one of them, so a subscription can neither outlive its queue nor miss a change.
  * `handle_closed` runs each time a handle table closes a handle to the object, so
  * the object can end what the table held through it, such as record locks.
+ * `visit_held` reports, through in_flight_visit, every object this one keeps alive
+ * for a receiver that has not taken it yet, such as handles queued on a socket or
+ * the table of a process that has not started. It runs under the object's own
+ * locks and must not sleep. Only objects with it can take part in a reference
+ * loop, and the operations that could close one refuse to.
  */
 struct resource_ops {
     read_fn  read = nullptr;
@@ -47,6 +54,7 @@ struct resource_ops {
     ioctl_fn ioctl = nullptr;
     mmap_fn  mmap = nullptr;
     poll_fn  poll = nullptr;
+    visit_held_fn visit_held = nullptr;
     const socket_ops* socket = nullptr;
 };
 
@@ -69,9 +77,11 @@ struct resource_object : rc::ref_counted<resource_object> {
     sync::atomic<uint32_t> status_flags; // O_NONBLOCK and O_APPEND, shared by every handle to the object
     list::head<resource_watch, &resource_watch::link> watches;
     resource_object* next_to_destroy;
+    uint64_t in_flight_generation; // The last in-flight walk that visited the object
 
     resource_object()
-        : type(resource_type::UNKNOWN), ops(nullptr), impl(nullptr), status_flags(0), next_to_destroy(nullptr) {
+        : type(resource_type::UNKNOWN), ops(nullptr), impl(nullptr), status_flags(0), next_to_destroy(nullptr),
+          in_flight_generation(0) {
         watches.init();
     }
 

@@ -93,6 +93,15 @@ __PRIVILEGED_CODE void ring_buffer_set_writer_poll_queue(ring_buffer* rb, sync::
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_wait_readable(ring_buffer* rb, bool nonblock);
 
 /**
+ * Wait until `len` bytes fit, along with a mark when `marked`, or either side has closed, without writing.
+ * @return The writable bytes, RB_ERR_PIPE once either side closed, RB_ERR_AGAIN when nonblock finds no
+ *   room, RB_ERR_INTR when a signal interrupted the wait, or RB_ERR_INVAL when `len` can never fit.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_wait_writable(ring_buffer* rb, size_t len, bool marked,
+                                                                  bool nonblock);
+
+/**
  * Copy up to `len` queued bytes without consuming them. Never blocks.
  * @return Bytes copied.
  * @note Privilege: **required**
@@ -181,6 +190,12 @@ __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void ring_buffer_take_marks(ring_buffer* rb, ring_buffer_mark_list& marks);
+
+/**
+ * Run `on_mark` for every queued mark, in order, under the buffer's lock, so it must not sleep.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void ring_buffer_for_each_mark(ring_buffer* rb, ring_buffer_mark_fn on_mark, void* context);
 
 namespace sync { struct poll_table; }
 

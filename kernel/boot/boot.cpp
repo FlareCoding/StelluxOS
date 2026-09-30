@@ -31,6 +31,7 @@
 #include "random/random.h"
 #include "sysstat/sysstat.h"
 #include "sync/futex.h"
+#include "resource/in_flight.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -120,6 +121,7 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 
     sync::futex_init();
+    resource::in_flight_init();
 
     if (fs::init() != fs::OK) {
         log::fatal("fs::init failed");

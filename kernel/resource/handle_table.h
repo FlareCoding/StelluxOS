@@ -10,6 +10,7 @@
 namespace resource {
 
 struct resource_object;
+struct in_flight_walk;
 
 // The most slots a table may grow to, and so the ceiling for any descriptor limit
 constexpr uint32_t MAX_TASK_HANDLES = 1u << 20;
@@ -176,6 +177,12 @@ __PRIVILEGED_CODE int32_t remove_handle(
     handle_t handle,
     resource_object** out_obj
 );
+
+/**
+ * @brief Reports every object the table holds to an in-flight walk, under the table's lock.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void visit_handle_objects(handle_table* table, in_flight_walk& walk);
 
 } // namespace resource
 
