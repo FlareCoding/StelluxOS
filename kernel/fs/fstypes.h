@@ -37,6 +37,9 @@ constexpr int32_t SEEK_SET = 0;
 constexpr int32_t SEEK_CUR = 1;
 constexpr int32_t SEEK_END = 2;
 
+// The largest offset a file position can hold, the maximum of the signed 64-bit off_t
+constexpr int64_t MAX_FILE_OFFSET = 0x7FFFFFFFFFFFFFFF;
+
 struct vattr {
     node_type type;
     size_t size;

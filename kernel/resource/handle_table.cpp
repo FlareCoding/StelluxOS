@@ -60,7 +60,7 @@ __PRIVILEGED_CODE void handle_table::ref_destroy(handle_table* self) {
         resource_object* obj = nullptr;
 
         if (remove_handle(self, static_cast<handle_t>(i), &obj) == HANDLE_OK) {
-            resource_release(obj);
+            release_closed_handle(self, obj);
         }
     }
 
@@ -276,7 +276,7 @@ __PRIVILEGED_CODE int32_t install_handle_at(
     }
 
     if (old_obj) {
-        resource_release(old_obj);
+        release_closed_handle(table, old_obj);
     }
 
     return HANDLE_OK;

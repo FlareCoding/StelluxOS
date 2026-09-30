@@ -21,6 +21,7 @@ using write_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t coun
 using read_at_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint64_t offset);
 using write_at_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint64_t offset);
 using close_fn = void (*)(resource_object* obj);
+using handle_closed_fn = void (*)(resource_object* obj, const handle_table* table);
 using ioctl_fn = int32_t (*)(resource_object* obj, uint32_t cmd, uint64_t arg);
 using mmap_fn = int32_t (*)(resource_object* obj, mm::mm_context* mm_ctx,
                             uintptr_t addr, size_t length, uint32_t prot,
@@ -33,6 +34,8 @@ using poll_fn = uint32_t (*)(resource_object* obj, sync::poll_table* pt);
  * the operations only they have. `poll` subscribes only to wait queues that
  * live as long as the object, and every change in the object's readiness wakes
  * one of them, so a subscription can neither outlive its queue nor miss a change.
+ * `handle_closed` runs each time a handle table closes a handle to the object, so
+ * the object can end what the table held through it, such as record locks.
  */
 struct resource_ops {
     read_fn  read = nullptr;
@@ -40,6 +43,7 @@ struct resource_ops {
     read_at_fn read_at = nullptr;
     write_at_fn write_at = nullptr;
     close_fn close = nullptr;
+    handle_closed_fn handle_closed = nullptr;
     ioctl_fn ioctl = nullptr;
     mmap_fn  mmap = nullptr;
     poll_fn  poll = nullptr;
@@ -243,6 +247,13 @@ __PRIVILEGED_CODE void resource_add_ref(resource_object* obj);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void resource_release(resource_object* obj);
+
+/**
+ * @brief Drops the reference a closed handle held on `obj`, first letting the object end
+ * what `table` held through that handle.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void release_closed_handle(const handle_table* table, resource_object* obj);
 
 /**
  * @brief The lock that guards every object's watch list, and each watcher's own records of its watches.

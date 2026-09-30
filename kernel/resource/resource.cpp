@@ -67,6 +67,17 @@ __PRIVILEGED_CODE void resource_release(resource_object* obj) {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE void release_closed_handle(const handle_table* table, resource_object* obj) {
+    if (obj && obj->ops && obj->ops->handle_closed) {
+        obj->ops->handle_closed(obj, table);
+    }
+
+    resource_release(obj);
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE sync::spinlock& watch_lock() {
     return g_watch_lock;
 }
@@ -390,7 +401,7 @@ __PRIVILEGED_CODE int32_t close(
         return ERR_BADF;
     }
 
-    resource_release(obj);
+    release_closed_handle(owner->handles, obj);
     return OK;
 }
 
