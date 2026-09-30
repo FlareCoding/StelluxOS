@@ -78,6 +78,12 @@ private:
 int32_t shmem_resize_locked(shmem* s, size_t new_size);
 
 /**
+ * @brief Grow the shmem backing to at least `min_size` bytes. A larger
+ * backing keeps its size. Caller must hold s->lock.
+ */
+int32_t shmem_grow_locked(shmem* s, size_t min_size);
+
+/**
  * @brief Get the physical address of a page in the shmem.
  * Returns 0 if page_index >= m_page_count (hole).
  * Caller must hold s->lock.

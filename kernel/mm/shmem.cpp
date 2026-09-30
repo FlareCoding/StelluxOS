@@ -158,6 +158,18 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size) {
     return result;
 }
 
+int32_t shmem_grow_locked(shmem* s, size_t min_size) {
+    if (!s) {
+        return SHMEM_ERR_INVAL;
+    }
+
+    if (min_size <= s->m_size) {
+        return SHMEM_OK;
+    }
+
+    return shmem_resize_locked(s, min_size);
+}
+
 shmem_mapping shmem_mapping::start_locked(shmem* s) {
     shmem_mapping mapping;
     RUN_ELEVATED({

@@ -433,6 +433,25 @@ int32_t file_node::truncate(size_t size) {
     return rc == mm::SHMEM_OK ? fs::OK : map_shmem_error_to_fs(rc);
 }
 
+int32_t file_node::allocate(uint64_t offset, uint64_t length) {
+    uint64_t end = offset + length;
+    if (end < offset) {
+        return fs::ERR_INVAL;
+    }
+
+    sync::mutex_lock(m_backing->lock);
+
+    int32_t rc = mm::shmem_grow_locked(m_backing.ptr(), end);
+    if (rc == mm::SHMEM_OK) {
+        update_size_from_backing_locked();
+        mark_modified();
+    }
+
+    sync::mutex_unlock(m_backing->lock);
+
+    return rc == mm::SHMEM_OK ? fs::OK : map_shmem_error_to_fs(rc);
+}
+
 int32_t file_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
                         size_t length, uint32_t prot, uint32_t map_flags,
                         uint64_t offset, uintptr_t* out_addr) {

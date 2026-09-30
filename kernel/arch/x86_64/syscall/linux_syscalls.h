@@ -107,6 +107,7 @@ constexpr uint64_t FACCESSAT        = 269;
 constexpr uint64_t PSELECT6         = 270;
 constexpr uint64_t PPOLL            = 271;
 constexpr uint64_t EPOLL_PWAIT      = 281;
+constexpr uint64_t FALLOCATE        = 285;
 constexpr uint64_t EVENTFD2         = 290;
 constexpr uint64_t EPOLL_CREATE1    = 291;
 constexpr uint64_t DUP3             = 292;

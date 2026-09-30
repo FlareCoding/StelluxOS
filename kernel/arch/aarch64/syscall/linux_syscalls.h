@@ -19,6 +19,7 @@ constexpr uint64_t UNLINKAT         = 35;
 constexpr uint64_t SYMLINKAT        = 36;
 constexpr uint64_t RENAMEAT         = 38;
 constexpr uint64_t FTRUNCATE        = 46;
+constexpr uint64_t FALLOCATE        = 47;
 constexpr uint64_t FACCESSAT        = 48;
 constexpr uint64_t CHDIR            = 49;
 constexpr uint64_t FCHDIR           = 50;

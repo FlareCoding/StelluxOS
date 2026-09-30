@@ -34,6 +34,7 @@ constexpr int64_t ELOOP     = -40;
 constexpr int64_t EAGAIN    = -11;
 constexpr int64_t EBUSY     = -16;
 constexpr int64_t EXDEV     = -18;
+constexpr int64_t EFBIG  = -27;
 constexpr int64_t ENOSPC = -28;
 constexpr int64_t ESPIPE = -29;
 constexpr int64_t EPIPE  = -32;
