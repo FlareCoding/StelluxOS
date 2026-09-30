@@ -40,6 +40,11 @@ using recvmsg_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, u
  * requests the syscall layer may hand over in pieces, holding the stream's
  * `receive_lock`, when it has one, across all the pieces of one receive.
  *
+ * Any other socket carries whole messages of at most `max_message` bytes,
+ * which the syscall layer hands over one per call. Its `recvfrom` and
+ * `recvmsg` return the full length of the message they took, which exceeds
+ * `count` when the message did not fit and lost its tail.
+ *
  * `sendmsg` sends `batch` with the first bytes it writes and owns the batch
  * only when it returns a positive count. Any receive reaching those bytes
  * stops where they end, and the one consuming their first byte takes the
@@ -47,6 +52,7 @@ using recvmsg_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, u
  */
 struct socket_ops {
     bool            stream = false;
+    size_t          max_message = 0;
     bind_fn         bind = nullptr;
     listen_fn       listen = nullptr;
     accept_fn       accept = nullptr;
