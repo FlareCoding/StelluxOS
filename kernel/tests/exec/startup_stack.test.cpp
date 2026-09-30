@@ -10,12 +10,15 @@
 #include "sched/task.h"
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
+#include "hw/cpu_features.h"
 
 TEST_SUITE(startup_stack);
 
 static constexpr const char* PROGRAM_PATH = "/bin/hello";
 static constexpr uint64_t AT_NULL = 0;
+static constexpr uint64_t AT_HWCAP = 16;
 static constexpr uint64_t AT_RANDOM = 25;
+static constexpr uint64_t AT_HWCAP2 = 26;
 static constexpr size_t RANDOM_SEED_BYTES = 16;
 
 // Bounds each walk, so a malformed layout fails the test instead of looping
@@ -97,4 +100,15 @@ TEST(startup_stack, every_program_gets_its_own_random_seed) {
 
     resource::proc_provider::destroy_unstarted_task(first);
     resource::proc_provider::destroy_unstarted_task(second);
+}
+
+TEST(startup_stack, every_program_gets_the_hardware_capability_words) {
+    sched::task* program = create_unstarted_program();
+    ASSERT_NOT_NULL(program);
+
+    EXPECT_NE(cpu::elf_hwcap(), static_cast<uint64_t>(0));
+    EXPECT_EQ(find_auxv_value(program, AT_HWCAP), cpu::elf_hwcap());
+    EXPECT_EQ(find_auxv_value(program, AT_HWCAP2), cpu::elf_hwcap2());
+
+    resource::proc_provider::destroy_unstarted_task(program);
 }

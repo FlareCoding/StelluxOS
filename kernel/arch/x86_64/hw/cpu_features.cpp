@@ -82,6 +82,7 @@ __PRIVILEGED_CODE static void detect() {
     }
 
     // Leaf 1 EDX features
+    g_features.cpuid_1_edx = edx;
     if (edx & CPUID_1_EDX_TSC)  g_features.flags |= TSC;
     if (edx & CPUID_1_EDX_APIC) g_features.flags |= APIC;
     if (edx & CPUID_1_EDX_PGE)  g_features.flags |= PGE;
