@@ -28,6 +28,8 @@ constexpr uint64_t AT_EMPTY_PATH = 0x1000;
 // Staged transfers given this offset use and advance the file's own offset
 constexpr int64_t CURRENT_FILE_OFFSET = -1;
 
+using staged_transfer_fn = int64_t (*)(sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset);
+
 // utimensat tv_nsec values that pick the current time or leave a stamp alone
 constexpr int64_t UTIME_NOW  = 0x3fffffff;
 constexpr int64_t UTIME_OMIT = 0x3ffffffe;
@@ -1142,6 +1144,115 @@ DEFINE_SYSCALL4(pwrite64, fd, buf, count, offset) {
     }
 
     return write_from_user(task, fd, buf, count, static_cast<int64_t>(offset));
+}
+
+/**
+ * Copies the buffer list of a vectored transfer into memory the caller frees with heap::ufree.
+ * The lengths must add up to a total the transfer can report.
+ */
+__PRIVILEGED_CODE static int64_t copy_iovecs_from_user(
+    uint64_t u_iov,
+    uint64_t iovcnt,
+    syscall::iovec** out_iovs,
+    uint64_t* out_total_len
+) {
+    if (iovcnt > syscall::MAX_IOVCNT) {
+        return syscall::EINVAL;
+    }
+
+    size_t size = static_cast<size_t>(iovcnt) * sizeof(syscall::iovec);
+    auto* iovs = static_cast<syscall::iovec*>(heap::uzalloc(size));
+    if (!iovs) {
+        return syscall::ENOMEM;
+    }
+
+    if (mm::uaccess::copy_from_user(iovs, reinterpret_cast<const void*>(u_iov), size) != mm::uaccess::OK) {
+        heap::ufree(iovs);
+        return syscall::EFAULT;
+    }
+
+    uint64_t total_len = 0;
+    for (uint64_t i = 0; i < iovcnt; i++) {
+        bool overflows = __builtin_add_overflow(total_len, iovs[i].len, &total_len);
+        if (overflows || static_cast<int64_t>(total_len) < 0) {
+            heap::ufree(iovs);
+            return syscall::EINVAL;
+        }
+    }
+
+    *out_iovs = iovs;
+    *out_total_len = total_len;
+
+    return 0;
+}
+
+__PRIVILEGED_CODE static int64_t transfer_buffers(
+    sched::task* task,
+    uint64_t fd,
+    const syscall::iovec* iovs,
+    uint64_t iovcnt,
+    int64_t offset,
+    staged_transfer_fn transfer
+) {
+    int64_t total = 0;
+    for (uint64_t i = 0; i < iovcnt; i++) {
+        int64_t n = transfer(task, fd, iovs[i].base, iovs[i].len, offset + total);
+        if (n < 0) {
+            return total > 0 ? total : n;
+        }
+
+        total += n;
+        if (static_cast<uint64_t>(n) < iovs[i].len) {
+            break;
+        }
+    }
+
+    return total;
+}
+
+__PRIVILEGED_CODE static int64_t run_vectored_transfer(
+    uint64_t fd,
+    uint64_t u_iov,
+    uint64_t iovcnt,
+    uint64_t offset,
+    staged_transfer_fn transfer
+) {
+    if (static_cast<int64_t>(offset) < 0) {
+        return syscall::EINVAL;
+    }
+
+    if (iovcnt == 0) {
+        return 0;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    syscall::iovec* iovs = nullptr;
+    uint64_t total_len = 0;
+    int64_t rc = copy_iovecs_from_user(u_iov, iovcnt, &iovs, &total_len);
+    if (rc != 0) {
+        return rc;
+    }
+
+    int64_t result = syscall::EINVAL;
+    if (is_valid_file_range(offset, total_len)) {
+        result = transfer_buffers(task, fd, iovs, iovcnt, static_cast<int64_t>(offset), transfer);
+    }
+
+    heap::ufree(iovs);
+
+    return result;
+}
+
+DEFINE_SYSCALL4(preadv, fd, iov, iovcnt, offset) {
+    return run_vectored_transfer(fd, iov, iovcnt, offset, read_to_user);
+}
+
+DEFINE_SYSCALL4(pwritev, fd, iov, iovcnt, offset) {
+    return run_vectored_transfer(fd, iov, iovcnt, offset, write_from_user);
 }
 
 DEFINE_SYSCALL1(close, fd) {
