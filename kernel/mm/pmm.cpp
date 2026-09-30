@@ -6,6 +6,9 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
+#if defined(STLX_PLATFORM_JETSON_NANO)
+#include "drivers/graphics/tegra_dc.h"
+#endif
 
 // Linker symbols for kernel boundaries
 extern "C" {
@@ -566,6 +569,23 @@ __PRIVILEGED_CODE int32_t init() {
         log::debug("PMM: reserved %lu bootstrap pages at 0x%lx",
                    bs_end_pfn - bs_start_pfn, bootstrap_allocator::get_region_start());
     }
+
+#if defined(STLX_PLATFORM_JETSON_NANO)
+    // The boot logo framebuffer is still being scanned out but arrives as
+    // usable RAM; keep it out of the allocator so it can be adopted later.
+    uint64_t fb_base = 0;
+    uint64_t fb_size = 0;
+    if (tegra_dc::boot_fbmem(&fb_base, &fb_size)) {
+        pfn_t fb_start_pfn = phys_to_pfn(page_align_down(fb_base));
+        pfn_t fb_end_pfn = phys_to_pfn(page_align_up(fb_base + fb_size));
+        if (fb_end_pfn > g_pmm.max_pfn) fb_end_pfn = g_pmm.max_pfn;
+        if (fb_start_pfn < fb_end_pfn) {
+            mark_pages(fb_start_pfn, fb_end_pfn, PAGE_FLAG_RESERVED);
+        }
+        log::info("PMM: reserved boot framebuffer 0x%lx-0x%lx (tegra_fbmem)",
+                  fb_base, fb_base + fb_size);
+    }
+#endif
 
     // Build freelists and coalesce
     build_freelists();
