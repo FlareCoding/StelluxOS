@@ -105,6 +105,20 @@ struct madt_info {
  */
 __PRIVILEGED_CODE const madt_info& get_madt_info();
 
+#if defined(STLX_PLATFORM_JETSON_NANO)
+namespace madt {
+/**
+ * @brief Populate MADT info from fixed Tegra210 SoC values.
+ *
+ * The Jetson Nano boots via U-Boot's EFI implementation, which provides no
+ * ACPI tables. GIC and CPU topology are invariant for the SoC, so they are
+ * filled in from constants instead.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void populate_tegra210();
+} // namespace madt
+#endif
+
 } // namespace acpi
 
 #endif // STELLUX_ARCH_AARCH64_ACPI_MADT_ARCH_H

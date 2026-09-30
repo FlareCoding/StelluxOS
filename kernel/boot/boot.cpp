@@ -6,6 +6,9 @@
 #include "mm/mm.h"
 #include "mm/page_quarantine.h"
 #include "acpi/acpi.h"
+#if defined(STLX_PLATFORM_JETSON_NANO)
+#include "acpi/madt_arch.h"
+#endif
 #include "irq/irq.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
@@ -68,7 +71,14 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 
     if (acpi::init() != acpi::OK) {
+#if defined(STLX_PLATFORM_JETSON_NANO)
+        // U-Boot's EFI implementation provides no ACPI tables; GIC and CPU
+        // topology come from fixed Tegra210 SoC values instead.
+        log::warn("acpi: unavailable, using Tegra210 platform tables");
+        acpi::madt::populate_tegra210();
+#else
         log::fatal("acpi::init failed");
+#endif
     }
 
     if (pci::init() != pci::OK) {
