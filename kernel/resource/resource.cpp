@@ -248,7 +248,8 @@ __PRIVILEGED_CODE ssize_t read(
     sched::task* owner,
     handle_t handle,
     void* kdst,
-    size_t count
+    size_t count,
+    uint32_t call_flags
 ) {
     if (!owner || !kdst) {
         return ERR_INVAL;
@@ -262,7 +263,7 @@ __PRIVILEGED_CODE ssize_t read(
 
     ssize_t result = ERR_UNSUP;
     if (obj->ops && obj->ops->read) {
-        result = obj->ops->read(obj, kdst, count, get_status_flags(obj));
+        result = obj->ops->read(obj, kdst, count, get_status_flags(obj) | call_flags);
     }
 
     resource_release(obj);
@@ -276,7 +277,8 @@ __PRIVILEGED_CODE ssize_t write(
     sched::task* owner,
     handle_t handle,
     const void* ksrc,
-    size_t count
+    size_t count,
+    uint32_t call_flags
 ) {
     if (!owner || !ksrc) {
         return ERR_INVAL;
@@ -290,7 +292,7 @@ __PRIVILEGED_CODE ssize_t write(
 
     ssize_t result = ERR_UNSUP;
     if (obj->ops && obj->ops->write) {
-        result = obj->ops->write(obj, ksrc, count, get_status_flags(obj));
+        result = obj->ops->write(obj, ksrc, count, get_status_flags(obj) | call_flags);
     }
 
     resource_release(obj);

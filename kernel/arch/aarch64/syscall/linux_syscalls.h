@@ -99,6 +99,8 @@ constexpr uint64_t MADVISE          = 233;
 constexpr uint64_t GETRANDOM        = 278;
 constexpr uint64_t PRLIMIT64        = 261;
 constexpr uint64_t MEMFD_CREATE     = 279;
+constexpr uint64_t PREADV2          = 286;
+constexpr uint64_t PWRITEV2         = 287;
 
 } // namespace syscall::linux_nr
 

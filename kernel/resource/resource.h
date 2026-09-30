@@ -160,25 +160,29 @@ __PRIVILEGED_CODE int32_t open(
 );
 
 /**
- * @brief Read from handle into kernel buffer.
+ * @brief Read from handle into kernel buffer. `call_flags` adds status flags, such as
+ * O_NONBLOCK, to this call alone.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE ssize_t read(
     sched::task* owner,
     handle_t handle,
     void* kdst,
-    size_t count
+    size_t count,
+    uint32_t call_flags = 0
 );
 
 /**
- * @brief Write to handle from kernel buffer.
+ * @brief Write to handle from kernel buffer. `call_flags` adds status flags, such as
+ * O_NONBLOCK, to this call alone.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE ssize_t write(
     sched::task* owner,
     handle_t handle,
     const void* ksrc,
-    size_t count
+    size_t count,
+    uint32_t call_flags = 0
 );
 
 /**
