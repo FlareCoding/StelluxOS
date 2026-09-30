@@ -13,6 +13,7 @@
 #include "timer/timer.h"
 #include "resource/handle_table.h"
 
+namespace resource { struct resource_object; }
 namespace resource::proc_provider { struct proc_resource; }
 namespace fs { class node; }
 
@@ -115,6 +116,10 @@ struct task : rc::ref_counted<task> {
     // when a thread is created with POSIX file table semantics
     resource::handle_table* handles;
     resource::proc_provider::proc_resource* proc_res;
+
+    // Released during a close this task is running, freed once it returns
+    resource::resource_object* resources_to_destroy;
+    bool destroying_resource;
 
     /**
      * Defers reclamation to the reaper, which owns the staged teardown

@@ -1,6 +1,7 @@
 #include "resource/resource.h"
 #include "resource/providers/file_provider.h"
 #include "resource/providers/shm_provider.h"
+#include "sched/sched.h"
 #include "sched/task.h"
 #include "fs/fstypes.h"
 #include "mm/heap.h"
@@ -26,11 +27,7 @@ __PRIVILEGED_CODE static void end_watches(resource_object* self) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void resource_object::ref_destroy(resource_object* self) {
-    if (!self) {
-        return;
-    }
-
+__PRIVILEGED_CODE static void destroy_object(resource_object* self) {
     end_watches(self);
 
     if (self->ops && self->ops->close) {
@@ -38,6 +35,32 @@ __PRIVILEGED_CODE void resource_object::ref_destroy(resource_object* self) {
     }
 
     heap::kfree_delete(self);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void resource_object::ref_destroy(resource_object* self) {
+    if (!self) {
+        return;
+    }
+
+    sched::task* task = sched::current();
+    if (task->destroying_resource) {
+        self->next_to_destroy = task->resources_to_destroy;
+        task->resources_to_destroy = self;
+        return;
+    }
+
+    task->destroying_resource = true;
+    destroy_object(self);
+
+    while (resource_object* queued = task->resources_to_destroy) {
+        task->resources_to_destroy = queued->next_to_destroy;
+        destroy_object(queued);
+    }
+
+    task->destroying_resource = false;
 }
 
 /**

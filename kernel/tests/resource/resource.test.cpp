@@ -1,8 +1,10 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "resource/resource.h"
 #include "resource/handle_batch.h"
+#include "resource/providers/proc_provider.h"
 #include "resource/providers/shmem_provider.h"
 #include "mm/shmem.h"
 #include "syscall/handlers/sys_dup.h"
@@ -934,4 +936,77 @@ TEST(resource_test, a_batch_refunds_its_handles_after_the_table_that_sent_them_i
     if (account->release()) {
         resource::in_flight_account::ref_destroy(account);
     }
+}
+
+// Closes seen while releasing a chain of objects, and how deeply they nested
+static uint32_t g_chain_closes;
+static uint32_t g_chain_depth;
+static uint32_t g_chain_max_depth;
+
+static void close_next_in_chain(resource::resource_object* obj) {
+    g_chain_closes++;
+    g_chain_depth++;
+    if (g_chain_depth > g_chain_max_depth) {
+        g_chain_max_depth = g_chain_depth;
+    }
+
+    resource::resource_release(static_cast<resource::resource_object*>(obj->impl));
+    g_chain_depth--;
+}
+
+static const resource::resource_ops g_chain_ops = {
+    .close = close_next_in_chain,
+};
+
+TEST(resource_test, a_chain_of_objects_closes_one_at_a_time_before_the_release_returns) {
+    constexpr uint32_t length = 1000;
+
+    resource::resource_object* head = nullptr;
+    for (uint32_t i = 0; i < length; i++) {
+        resource::resource_object* obj = make_object();
+        ASSERT_NOT_NULL(obj);
+        obj->ops = &g_chain_ops;
+        obj->impl = head;
+        head = obj;
+    }
+
+    g_chain_closes = 0;
+    g_chain_depth = 0;
+    g_chain_max_depth = 0;
+    resource::resource_release(head);
+
+    EXPECT_EQ(g_chain_closes, length);
+    EXPECT_EQ(g_chain_max_depth, 1u);
+}
+
+// Deep enough that closing the chain by nesting would overrun a kernel stack
+constexpr uint32_t PROCESS_CHAIN_LENGTH = 256;
+constexpr resource::handle_t PROCESS_CHAIN_SLOT = 3;
+static constexpr const char* PROCESS_CHAIN_PROGRAM = "/bin/hello";
+
+TEST(resource_test, closing_a_chain_of_unstarted_processes_closes_what_the_last_one_holds) {
+    static const resource::resource_ops close_counter_ops = {
+        .close = close_counter_close,
+    };
+
+    resource_close_counter counter{0};
+    resource::resource_object* held = make_object();
+    ASSERT_NOT_NULL(held);
+    held->ops = &close_counter_ops;
+    held->impl = &counter;
+
+    // Each process holds what was made before it, so the first one holds the counter
+    for (uint32_t i = 0; i < PROCESS_CHAIN_LENGTH; i++) {
+        sched::task* process = test_helpers::create_unstarted_process(PROCESS_CHAIN_PROGRAM);
+        ASSERT_NOT_NULL(process);
+
+        int32_t rc = resource::install_handle_at(process->handles, PROCESS_CHAIN_SLOT, held, held->type, 0);
+        ASSERT_EQ(rc, resource::HANDLE_OK);
+        resource::resource_release(held);
+
+        ASSERT_EQ(resource::proc_provider::create_proc_resource(process, &held), resource::OK);
+    }
+
+    resource::resource_release(held);
+    EXPECT_EQ(counter.closes, 1u);
 }
