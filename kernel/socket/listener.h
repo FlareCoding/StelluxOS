@@ -11,6 +11,8 @@ namespace resource { struct resource_object; }
 
 namespace socket {
 
+enum class unix_socket_type : uint8_t;
+
 constexpr uint32_t DEFAULT_BACKLOG = 16;
 constexpr uint32_t MAX_BACKLOG     = 32;
 
@@ -22,6 +24,7 @@ struct pending_conn {
 struct listener_state : rc::ref_counted<listener_state> {
     sync::spinlock lock;
     bool closed;
+    unix_socket_type type; // Only sockets of this type may connect
 
     list::head<pending_conn, &pending_conn::link> accept_queue;
     sync::wait_queue accept_wq;

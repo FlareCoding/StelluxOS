@@ -617,6 +617,7 @@ __PRIVILEGED_CODE static int32_t unix_listen(
 
     ls->lock = sync::SPINLOCK_INIT;
     ls->closed = false;
+    ls->type = sock->type;
     ls->accept_queue.init();
     ls->accept_wq.init();
 
@@ -761,7 +762,11 @@ __PRIVILEGED_CODE static int32_t unix_connect(
         return resource::ERR_CONNREFUSED;
     }
 
-    auto chan = create_channel(unix_socket_type::stream);
+    if (ls_ref->type != client_sock->type) {
+        return resource::ERR_PROTOTYPE;
+    }
+
+    auto chan = create_channel(client_sock->type);
     if (!chan) {
         return resource::ERR_NOMEM;
     }
@@ -772,6 +777,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
     }
 
     server_sock->state = SOCK_STATE_CONNECTED;
+    server_sock->type = client_sock->type;
     server_sock->lock = sync::SPINLOCK_INIT;
     server_sock->receive_lock.init();
     server_sock->poll_wq.init();
@@ -786,7 +792,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
     }
 
     server_obj->type = resource::resource_type::SOCKET;
-    server_obj->ops = get_socket_ops(unix_socket_type::stream);
+    server_obj->ops = get_socket_ops(client_sock->type);
     server_obj->impl = server_sock;
 
     auto* pc = static_cast<pending_conn*>(
@@ -1086,7 +1092,8 @@ const resource::resource_ops* get_socket_ops(unix_socket_type type) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t create_unbound_socket(
-    resource::resource_object** out
+    resource::resource_object** out,
+    unix_socket_type type
 ) {
     if (!out) {
         return resource::ERR_INVAL;
@@ -1098,6 +1105,7 @@ __PRIVILEGED_CODE int32_t create_unbound_socket(
     }
 
     sock->state = SOCK_STATE_UNBOUND;
+    sock->type = type;
     sock->lock = sync::SPINLOCK_INIT;
     sock->receive_lock.init();
     sock->poll_wq.init();
@@ -1110,7 +1118,7 @@ __PRIVILEGED_CODE int32_t create_unbound_socket(
     }
 
     obj->type = resource::resource_type::SOCKET;
-    obj->ops = &g_socket_ops;
+    obj->ops = get_socket_ops(type);
     obj->impl = sock;
 
     *out = obj;

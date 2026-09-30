@@ -40,6 +40,7 @@ constexpr int64_t ESPIPE = -29;
 constexpr int64_t EPIPE  = -32;
 constexpr int64_t ENOTSOCK = -88;
 constexpr int64_t EMSGSIZE         = -90;
+constexpr int64_t EPROTOTYPE       = -91;
 constexpr int64_t ENOPROTOOPT      = -92;
 constexpr int64_t EPROTO           = -71;
 constexpr int64_t EOVERFLOW        = -75;

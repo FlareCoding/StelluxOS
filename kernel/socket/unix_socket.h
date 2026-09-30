@@ -88,11 +88,12 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
 );
 
 /**
- * Create an unbound socket. Returns a resource_object with refcount 1.
+ * Create an unbound socket of `type`. Returns a resource_object with refcount 1.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t create_unbound_socket(
-    resource::resource_object** out
+    resource::resource_object** out,
+    unix_socket_type type = unix_socket_type::stream
 );
 
 /**
