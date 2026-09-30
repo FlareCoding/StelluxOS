@@ -117,6 +117,8 @@ constexpr uint64_t FCHMODAT         = 268;
 constexpr uint64_t UTIMENSAT        = 280;
 constexpr uint64_t PRLIMIT64        = 302;
 constexpr uint64_t MEMFD_CREATE     = 319;
+constexpr uint64_t PREADV2          = 327;
+constexpr uint64_t PWRITEV2         = 328;
 
 } // namespace syscall::linux_nr
 
