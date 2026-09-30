@@ -2,6 +2,7 @@
 
 #include "stlx_unit_test.h"
 #include "resource/resource.h"
+#include "resource/handle_batch.h"
 #include "resource/providers/shmem_provider.h"
 #include "mm/shmem.h"
 #include "syscall/handlers/sys_dup.h"
@@ -905,4 +906,32 @@ TEST(resource_test, an_object_ends_its_watches_before_it_closes) {
 
     EXPECT_EQ(g_detaches, 2u);
     EXPECT_EQ(g_detaches_at_close, 2u);
+}
+
+TEST(resource_test, a_batch_refunds_its_handles_after_the_table_that_sent_them_is_gone) {
+    auto* table = heap::kalloc_new<resource::handle_table>();
+    ASSERT_NOT_NULL(table);
+    ASSERT_EQ(resource::init_handle_table(table), resource::HANDLE_OK);
+
+    resource::handle_batch* charged = resource::create_handle_batch(3);
+    resource::handle_batch* refused = resource::create_handle_batch(1);
+    ASSERT_NOT_NULL(charged);
+    ASSERT_NOT_NULL(refused);
+    EXPECT_TRUE(resource::charge_handle_batch(charged, table, 3));
+    EXPECT_FALSE(resource::charge_handle_batch(refused, table, 3));
+
+    resource::in_flight_account* account = table->in_flight.ptr();
+    account->add_ref();
+    if (table->release()) {
+        resource::handle_table::ref_destroy(table);
+    }
+
+    EXPECT_EQ(account->handles.load_relaxed(), 3u);
+    resource::handle_batch_release(charged);
+    EXPECT_EQ(account->handles.load_relaxed(), 0u);
+
+    resource::handle_batch_release(refused);
+    if (account->release()) {
+        resource::in_flight_account::ref_destroy(account);
+    }
 }

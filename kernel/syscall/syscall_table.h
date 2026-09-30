@@ -56,6 +56,7 @@ constexpr int64_t EALREADY         = -114;
 constexpr int64_t EINPROGRESS      = -115;
 constexpr int64_t EISCONN          = -106;
 constexpr int64_t ENOTCONN         = -107;
+constexpr int64_t ETOOMANYREFS     = -109;
 constexpr int64_t ETIMEDOUT        = -110;
 constexpr int64_t ECONNREFUSED     = -111;
 constexpr int64_t EHOSTUNREACH     = -113;

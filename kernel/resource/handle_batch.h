@@ -20,6 +20,7 @@ struct passed_handle {
 struct handle_batch {
     sync::atomic<uint32_t> ref_count;
     uint32_t count;
+    in_flight_account* account; // Charged for the entries until the batch is freed, or null
     passed_handle entries[];
 };
 
@@ -29,6 +30,14 @@ struct handle_batch {
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE handle_batch* create_handle_batch(uint32_t count);
+
+/**
+ * @brief Charges the batch's entries to the handles `table` has in flight, unless that would pass `limit`.
+ * The batch refunds them when it is freed.
+ * @return true when charged, false when the batch would take the table past its limit.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE bool charge_handle_batch(handle_batch* batch, handle_table* table, uint32_t limit);
 
 /**
  * @brief Adds a reference to the batch, so a receive that only peeks can share a batch still queued.

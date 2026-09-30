@@ -545,6 +545,11 @@ __PRIVILEGED_CODE static int64_t lookup_passed_handles(sched::task* task, const 
         return syscall::ENOMEM;
     }
 
+    if (!resource::charge_handle_batch(batch, task->handles, resource::handle_limit(task))) {
+        resource::handle_batch_release(batch);
+        return syscall::ETOOMANYREFS;
+    }
+
     uint32_t filled = 0;
     size_t offset = 0;
 
