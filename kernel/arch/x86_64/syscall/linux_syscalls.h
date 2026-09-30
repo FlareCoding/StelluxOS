@@ -57,6 +57,7 @@ constexpr uint64_t KILL             = 62;
 constexpr uint64_t UNAME            = 63;
 constexpr uint64_t FCNTL            = 72;
 constexpr uint64_t FSYNC            = 74;
+constexpr uint64_t FDATASYNC        = 75;
 constexpr uint64_t FTRUNCATE        = 77;
 constexpr uint64_t GETCWD           = 79;
 constexpr uint64_t CHDIR            = 80;

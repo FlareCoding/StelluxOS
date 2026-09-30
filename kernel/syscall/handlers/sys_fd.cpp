@@ -2357,8 +2357,44 @@ DEFINE_SYSCALL2(symlink, target, linkpath) {
     return sys_symlinkat(target, static_cast<uint64_t>(-100), linkpath, 0, 0, 0);
 }
 
-// fsync is a no-op on ramfs, data is always in memory
+// Regular files, directories, and memory files live in memory, so syncing them has nothing to write back
+__PRIVILEGED_CODE static bool can_sync(resource::resource_object* obj) {
+    if (obj->type == resource::resource_type::SHMEM) {
+        return true;
+    }
+
+    fs::file* f = resource::file_provider::get_file(obj);
+    if (!f) {
+        return false;
+    }
+
+    fs::node_type type = f->get_node()->type();
+
+    return type == fs::node_type::regular || type == fs::node_type::directory;
+}
+
+__PRIVILEGED_CODE static int64_t sync_handle(uint64_t fd) {
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+
+    bool syncable = can_sync(obj);
+    resource::resource_release(obj);
+
+    return syncable ? 0 : syscall::EINVAL;
+}
+
 DEFINE_SYSCALL1(fsync, fd) {
-    (void)fd;
-    return 0;
+    return sync_handle(fd);
+}
+
+DEFINE_SYSCALL1(fdatasync, fd) {
+    return sync_handle(fd);
 }
