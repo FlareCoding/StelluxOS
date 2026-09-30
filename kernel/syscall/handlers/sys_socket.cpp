@@ -95,11 +95,12 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
     int32_t rc;
 
     if (domain == AF_UNIX) {
-        if (type != SOCK_STREAM || protocol != 0) {
+        socket::unix_socket_type unix_type = socket::unix_socket_type::stream;
+        if (!translate_unix_socket_type(type, &unix_type) || protocol != 0) {
             return syscall::EINVAL;
         }
 
-        rc = socket::create_unbound_socket(&obj);
+        rc = socket::create_unbound_socket(&obj, unix_type);
     } else if (domain == net::inet::AF_INET) {
         rc = net::inet::create_socket(static_cast<uint32_t>(type),
                                       static_cast<uint32_t>(protocol), &obj);

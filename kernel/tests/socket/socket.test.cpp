@@ -1439,6 +1439,66 @@ TEST(socket_test, closing_a_listener_frees_the_handles_of_its_pending_connection
     EXPECT_EQ(fs::unlink(PENDING_HANDLES_PATH), fs::OK);
 }
 
+static const char SEQPACKET_LISTENER_PATH[] = "/seqpacket_listener.sock";
+
+TEST(socket_test, a_seqpacket_listener_accepts_connections_that_keep_messages_whole) {
+    resource::resource_object* listening = nullptr;
+    resource::resource_object* client = nullptr;
+    ASSERT_EQ(socket::create_unbound_socket(&listening, socket::unix_socket_type::seqpacket), resource::OK);
+    ASSERT_EQ(socket::create_unbound_socket(&client, socket::unix_socket_type::seqpacket), resource::OK);
+
+    unix_address address = {};
+    address.family = UNIX_ADDRESS_FAMILY;
+    string::memcpy(address.path, SEQPACKET_LISTENER_PATH, sizeof(SEQPACKET_LISTENER_PATH));
+
+    const resource::socket_ops* ops = listening->ops->socket;
+    ASSERT_EQ(ops->bind(listening, &address, sizeof(address)), resource::OK);
+    ASSERT_EQ(ops->listen(listening, LISTEN_BACKLOG), resource::OK);
+    ASSERT_EQ(ops->connect(client, &address, sizeof(address), false), resource::OK);
+
+    resource::resource_object* server = nullptr;
+    ASSERT_EQ(ops->accept(listening, &server, nullptr, nullptr, true), resource::OK);
+    EXPECT_EQ(server->ops, socket::get_socket_ops(socket::unix_socket_type::seqpacket));
+
+    EXPECT_EQ(ops->sendto(client, "AB", 2, 0, nullptr, 0), static_cast<ssize_t>(2));
+    EXPECT_EQ(ops->sendto(client, "CDE", 3, 0, nullptr, 0), static_cast<ssize_t>(3));
+
+    char buf[16] = {};
+    uint32_t flags = net::inet::MSG_DONTWAIT;
+    EXPECT_EQ(ops->recvfrom(server, buf, sizeof(buf), flags, nullptr, nullptr), static_cast<ssize_t>(2));
+    EXPECT_EQ(ops->recvfrom(server, buf, sizeof(buf), flags, nullptr, nullptr), static_cast<ssize_t>(3));
+    EXPECT_EQ(string::memcmp(buf, "CDE", 3), 0);
+
+    resource::resource_release(server);
+    resource::resource_release(client);
+    resource::resource_release(listening);
+    EXPECT_EQ(fs::unlink(SEQPACKET_LISTENER_PATH), fs::OK);
+}
+
+static const char TYPED_LISTENER_PATH[] = "/typed_listener.sock";
+
+TEST(socket_test, a_socket_connects_only_to_a_listener_of_its_own_type) {
+    resource::resource_object* listening = nullptr;
+    resource::resource_object* stream_client = nullptr;
+    ASSERT_EQ(socket::create_unbound_socket(&listening, socket::unix_socket_type::seqpacket), resource::OK);
+    ASSERT_EQ(socket::create_unbound_socket(&stream_client), resource::OK);
+
+    unix_address address = {};
+    address.family = UNIX_ADDRESS_FAMILY;
+    string::memcpy(address.path, TYPED_LISTENER_PATH, sizeof(TYPED_LISTENER_PATH));
+
+    const resource::socket_ops* ops = listening->ops->socket;
+    ASSERT_EQ(ops->bind(listening, &address, sizeof(address)), resource::OK);
+    ASSERT_EQ(ops->listen(listening, LISTEN_BACKLOG), resource::OK);
+
+    const resource::socket_ops* stream_ops = stream_client->ops->socket;
+    EXPECT_EQ(stream_ops->connect(stream_client, &address, sizeof(address), false), resource::ERR_PROTOTYPE);
+
+    resource::resource_release(stream_client);
+    resource::resource_release(listening);
+    EXPECT_EQ(fs::unlink(TYPED_LISTENER_PATH), fs::OK);
+}
+
 TEST(socket_test, a_batch_rides_on_the_first_stretch_that_fits) {
     resource::resource_object* obj_a = nullptr;
     resource::resource_object* obj_b = nullptr;

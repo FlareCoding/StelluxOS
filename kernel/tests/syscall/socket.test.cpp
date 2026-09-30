@@ -176,6 +176,10 @@ TEST(socket_syscall, a_send_on_a_broken_connection_reports_epipe) {
     EXPECT_EQ(syscall::error_map::map_socket_op_error(resource::ERR_PIPE), syscall::EPIPE);
 }
 
+TEST(socket_syscall, a_connect_to_a_listener_of_another_type_reports_eprototype) {
+    EXPECT_EQ(syscall::error_map::map_socket_op_error(resource::ERR_PROTOTYPE), syscall::EPROTOTYPE);
+}
+
 // --- sendmsg_gathers_the_vector_into_one_datagram ---
 // Proves: the pieces of an iovec leave as a single datagram, addressed by msg_name.
 
@@ -1977,6 +1981,20 @@ TEST(socket_syscall, a_seqpacket_peer_that_closes_ends_the_messages) {
     EXPECT_EQ(unix_send(page, pair.b, 3, inet::MSG_NOSIGNAL), syscall::EPIPE);
 
     EXPECT_EQ(resource::close(task, pair.b), resource::OK);
+}
+
+TEST(socket_syscall, socket_makes_a_unix_seqpacket_socket) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    int64_t fd = sys_socket(AF_UNIX, SOCK_SEQPACKET, 0, 0, 0, 0);
+    ASSERT_TRUE(fd >= 0);
+
+    resource::resource_object* obj = object_of(task, static_cast<int32_t>(fd));
+    ASSERT_NOT_NULL(obj);
+    EXPECT_EQ(resource::socket_ops_of(obj)->max_message, socket::SEQPACKET_MAX_MESSAGE);
+
+    EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(fd)), resource::OK);
 }
 
 // A receive that waits runs in an elevated task of its own, through a handle of
