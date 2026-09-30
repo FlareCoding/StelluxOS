@@ -3,7 +3,9 @@
 
 #include "resource/resource_types.h"
 #include "sync/spinlock.h"
+#include "sync/atomic.h"
 #include "rc/ref_counted.h"
+#include "rc/strong_ref.h"
 
 namespace resource {
 
@@ -36,12 +38,24 @@ struct handle_entry {
     resource_object* obj;
 };
 
+// The handles sent from one table that no receiver has taken yet. It outlives the table, so a batch
+// freed after its sender has exited still refunds it.
+struct in_flight_account : rc::ref_counted<in_flight_account> {
+    sync::atomic<uint32_t> handles;
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static void ref_destroy(in_flight_account* self);
+};
+
 // Refcounted so a task can own a private table or share the creator's
 // table, the last reference closes all entries when it drops.
 struct handle_table : rc::ref_counted<handle_table> {
     sync::spinlock lock;
     handle_entry* entries;
     uint32_t capacity;
+    rc::strong_ref<in_flight_account> in_flight; // Charged for every handle sent from this table
 
     /**
      * @note Privilege: **required**

@@ -1477,6 +1477,102 @@ TEST(socket_syscall, recvmsg_drops_the_handles_its_table_has_no_room_for) {
     close_unix_pair(task, pair);
 }
 
+// One handle named as many times as a single send may carry
+static int32_t g_full_batch[resource::MAX_PASSED_HANDLES];
+
+static int64_t send_full_batch(user_page& page, int32_t fd, int32_t handle) {
+    for (size_t i = 0; i < resource::MAX_PASSED_HANDLES; i++) {
+        g_full_batch[i] = handle;
+    }
+
+    return send_with_rights(page, fd, g_full_batch, resource::MAX_PASSED_HANDLES);
+}
+
+TEST(socket_syscall, a_process_keeps_at_most_its_handle_limit_in_flight) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    // As many full batches as fit under the limit go out, and the next one is refused
+    size_t batches_under_limit = resource::DEFAULT_HANDLE_LIMIT / resource::MAX_PASSED_HANDLES;
+    for (size_t i = 0; i < batches_under_limit; i++) {
+        ASSERT_EQ(send_full_batch(page, pair.a, pipe.read), static_cast<int64_t>(1));
+    }
+
+    EXPECT_EQ(send_full_batch(page, pair.a, pipe.read), syscall::ETOOMANYREFS);
+
+    // Taking one batch refunds it, even when the receiver has no room for its handles
+    EXPECT_EQ(receive_with_control(page, pair.b, 0, 0), static_cast<int64_t>(1));
+    EXPECT_EQ(send_full_batch(page, pair.a, pipe.read), static_cast<int64_t>(1));
+
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, closing_a_socket_refunds_the_handles_queued_for_it) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair first;
+    ASSERT_TRUE(make_unix_pair(page, &first));
+    unix_pair second;
+    ASSERT_TRUE(make_unix_pair(page, &second));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    size_t batches_under_limit = resource::DEFAULT_HANDLE_LIMIT / resource::MAX_PASSED_HANDLES;
+    for (size_t i = 0; i < batches_under_limit; i++) {
+        ASSERT_EQ(send_full_batch(page, first.a, pipe.read), static_cast<int64_t>(1));
+    }
+
+    EXPECT_EQ(send_full_batch(page, second.a, pipe.read), syscall::ETOOMANYREFS);
+
+    close_unix_pair(task, first);
+    EXPECT_EQ(send_full_batch(page, second.a, pipe.read), static_cast<int64_t>(1));
+
+    close_pipe(task, pipe);
+    close_unix_pair(task, second);
+}
+
+TEST(socket_syscall, a_peek_charges_nothing_for_the_copies_it_installs) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    pipe_ends pipe;
+    ASSERT_TRUE(make_pipe(page, &pipe));
+
+    size_t batches_under_limit = resource::DEFAULT_HANDLE_LIMIT / resource::MAX_PASSED_HANDLES;
+    for (size_t i = 0; i < batches_under_limit - 1; i++) {
+        ASSERT_EQ(send_full_batch(page, pair.a, pipe.read), static_cast<int64_t>(1));
+    }
+
+    EXPECT_EQ(receive_with_control(page, pair.b, ONE_HANDLE_SPACE, inet::MSG_PEEK), static_cast<int64_t>(1));
+    int32_t copy = first_received_handle(page);
+
+    // The peeked batch stays queued and charged once, so exactly one more full batch fits
+    EXPECT_EQ(send_full_batch(page, pair.a, pipe.read), static_cast<int64_t>(1));
+    EXPECT_EQ(send_full_batch(page, pair.a, pipe.read), syscall::ETOOMANYREFS);
+
+    (void)resource::close(task, copy);
+    close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
 TEST(socket_syscall, recvmsg_marks_the_handles_it_installs_close_on_exec_when_asked) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);

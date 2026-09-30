@@ -82,11 +82,25 @@ __PRIVILEGED_CODE int32_t init_handle_table(handle_table* table) {
         return HANDLE_ERR_NOMEM;
     }
 
+    rc::strong_ref<in_flight_account> in_flight = rc::make_kref<in_flight_account>();
+    if (!in_flight) {
+        heap::kfree(entries);
+        return HANDLE_ERR_NOMEM;
+    }
+
     table->lock = sync::SPINLOCK_INIT;
     table->entries = entries;
     table->capacity = INITIAL_TASK_HANDLES;
+    table->in_flight = static_cast<rc::strong_ref<in_flight_account>&&>(in_flight);
 
     return HANDLE_OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void in_flight_account::ref_destroy(in_flight_account* self) {
+    heap::kfree_delete(self);
 }
 
 /**
