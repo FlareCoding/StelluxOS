@@ -69,10 +69,13 @@ The design and motivation behind StelluxOS are described in my SOSP 2024 poster:
 | x86_64 | Generic UEFI | Fully supported | Yes (RTL8168 NIC, PCIe serial, xHCI USB) |
 | AArch64 | QEMU virt | Fully supported | QEMU |
 | AArch64 | Raspberry Pi 4 (BCM2711) | Supported | Yes |
+| AArch64 | Jetson Nano (Tegra210) | Experimental | Yes (P3450 devkit: display, USB 2.0 keyboard and mouse) |
 
 The kernel boots via the [Limine](https://github.com/limine-bootloader/limine)
 UEFI boot protocol on all platforms. The RPi4 target uses UEFI firmware from
-the [pftf/RPi4](https://github.com/pftf/RPi4) project.
+the [pftf/RPi4](https://github.com/pftf/RPi4) project. The Jetson Nano target
+boots Limine through U-Boot's EFI implementation (see
+[Jetson Nano](#jetson-nano) below).
 
 ## Getting Started
 
@@ -180,6 +183,46 @@ make usb ARCH=x86_64
 
 This builds the image and prints instructions for writing it to a USB drive
 with `dd`.
+
+### Jetson Nano
+
+The Jetson Nano (Tegra210) target is experimental. It reuses the standard
+UEFI/Limine disk image; the Nano's U-Boot loads Limine as an EFI application
+via its distro-boot EFI path.
+
+What works: serial console, all four CPUs, the HDMI display, and USB 2.0
+devices on the carrier's USB-A ports (tested with a keyboard and mouse).
+Not supported yet: USB 3.0, Ethernet (behind the Tegra PCIe controller),
+and GPU acceleration.
+
+Build the SD card image and flash it (same `dd` flow as USB boot).
+`make image-jetson-nano` first downloads NVIDIA's XUSB controller firmware
+from linux-firmware (`make jetson-firmware`, checksum-pinned):
+
+```
+make image-jetson-nano
+make usb ARCH=aarch64 PLATFORM=jetson-nano   # prints dd instructions
+```
+
+Requirements and notes:
+
+- The Nano's boot firmware (including U-Boot) must live in the module's
+  QSPI flash, which is the case for any devkit that has booted an L4T
+  32.4+ SD image at least once. On older firmware, boot a recent stock
+  JetPack SD image once to migrate the boot chain to QSPI, then flash
+  the Stellux image.
+- Serial console is UARTA on the debug header (J44 on the A02 carrier,
+  J50 on B01), 115200 8N1, 3.3V. All boot stages (TegraBoot, cboot,
+  U-Boot, Stellux) print there, so a failed boot shows which stage died.
+- Without ACPI tables from firmware, GIC and CPU topology come from fixed
+  Tegra210 SoC values (`acpi::madt::populate_tegra210`); PSCI SMP works
+  via TF-A at EL3.
+- The display is the framebuffer cboot sets up for its boot logo, so the
+  HDMI monitor must be connected at power-on. Stellux takes it over from
+  the display controller's registers and reserves it via `tegra_fbmem`.
+- If U-Boot does not pick up the image automatically, run
+  `load mmc 1:1 ${kernel_addr_r} /EFI/BOOT/BOOTAA64.EFI` followed by
+  `bootefi ${kernel_addr_r}` from the U-Boot prompt.
 
 ### Build Options
 
