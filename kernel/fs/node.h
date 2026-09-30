@@ -2,6 +2,7 @@
 #define STELLUX_FS_NODE_H
 
 #include "fs/fstypes.h"
+#include "fs/record_lock_table.h"
 #include "rc/ref_counted.h"
 #include "sync/spinlock.h"
 #include "common/list.h"
@@ -84,6 +85,7 @@ public:
     size_t size() const { return m_size; }
     uint64_t ino() const { return m_ino; }
     instance* mounted_here() const { return m_mounted_here; }
+    record_lock_table& record_locks() { return m_record_locks; }
 
     void set_parent(node* p) { m_parent = p; }
     void set_filesystem(instance* fs) { m_fs = fs; }
@@ -110,6 +112,8 @@ protected:
     uint64_t       m_ctime_ns;
     sync::spinlock m_lock;
     instance*      m_mounted_here;
+
+    record_lock_table m_record_locks;
 };
 
 } // namespace fs

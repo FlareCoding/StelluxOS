@@ -15,6 +15,7 @@
 #include "fs/fs.h"
 #include "fs/file.h"
 #include "fs/fstypes.h"
+#include "fs/record_lock_table.h"
 #include "clock/clock.h"
 #include "common/string.h"
 
@@ -60,6 +61,14 @@ struct linux_dirent64_hdr {
 struct kernel_timespec {
     int64_t tv_sec;
     int64_t tv_nsec;
+};
+
+struct linux_flock {
+    int16_t l_type;
+    int16_t l_whence;
+    int64_t l_start;
+    int64_t l_len;
+    int32_t l_pid;
 };
 
 #if defined(__x86_64__)
@@ -1389,9 +1398,186 @@ constexpr uint64_t F_GETFD = 1;
 constexpr uint64_t F_SETFD = 2;
 constexpr uint64_t F_GETFL = 3;
 constexpr uint64_t F_SETFL = 4;
+constexpr uint64_t F_GETLK = 5;
+constexpr uint64_t F_SETLK = 6;
+constexpr uint64_t F_SETLKW = 7;
 constexpr uint64_t F_DUPFD_CLOEXEC = 1030;
 
+constexpr int16_t F_RDLCK = 0;
+constexpr int16_t F_WRLCK = 1;
+constexpr int16_t F_UNLCK = 2;
+
 constexpr int64_t FD_CLOEXEC = 1;
+
+/**
+ * Resolves the bytes an flock covers. They count from the start, the file offset, or the end,
+ * a zero length reaches the end of the file however far it grows, and a negative length covers
+ * the bytes before the starting point.
+ */
+static int64_t resolve_record_lock_range(
+    fs::file* f,
+    const linux_flock& flock,
+    uint64_t* out_start,
+    uint64_t* out_end
+) {
+    int64_t base = 0;
+    if (flock.l_whence == fs::SEEK_CUR) {
+        base = f->offset();
+    } else if (flock.l_whence == fs::SEEK_END) {
+        fs::vattr attr = {};
+        int32_t rc = fs::fstat(f, &attr);
+        if (rc != fs::OK) {
+            return syscall::error_map::map_fs_error(rc);
+        }
+
+        base = static_cast<int64_t>(attr.size);
+    } else if (flock.l_whence != fs::SEEK_SET) {
+        return syscall::EINVAL;
+    }
+
+    if (flock.l_start > fs::MAX_FILE_OFFSET - base) {
+        return syscall::EOVERFLOW;
+    }
+
+    int64_t start = base + flock.l_start;
+    if (start < 0) {
+        return syscall::EINVAL;
+    }
+
+    int64_t end = fs::MAX_FILE_OFFSET;
+    if (flock.l_len > 0) {
+        if (flock.l_len - 1 > fs::MAX_FILE_OFFSET - start) {
+            return syscall::EOVERFLOW;
+        }
+
+        end = start + (flock.l_len - 1);
+    } else if (flock.l_len < 0) {
+        if (start + flock.l_len < 0) {
+            return syscall::EINVAL;
+        }
+
+        end = start - 1;
+        start += flock.l_len;
+    }
+
+    *out_start = static_cast<uint64_t>(start);
+    *out_end = static_cast<uint64_t>(end);
+
+    return 0;
+}
+
+static int64_t map_record_lock_error(int32_t fs_result) {
+    switch (fs_result) {
+        case fs::OK:        return 0;
+        case fs::ERR_AGAIN: return syscall::EAGAIN;
+        case fs::ERR_INTR:  return syscall::ERESTARTSYS;
+        case fs::ERR_NOMEM: return syscall::ENOLCK;
+        default:            return syscall::EIO;
+    }
+}
+
+/**
+ * Fills `flock` with the first lock of another owner that would block `request`, or sets only its
+ * type to F_UNLCK when none would.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void describe_conflicting_lock(
+    fs::file* f,
+    const fs::record_lock& request,
+    linux_flock& flock
+) {
+    fs::record_lock conflict = {};
+    if (!f->get_node()->record_locks().find_conflict(request, &conflict)) {
+        flock.l_type = F_UNLCK;
+        return;
+    }
+
+    bool reaches_end_of_file = conflict.end == static_cast<uint64_t>(fs::MAX_FILE_OFFSET);
+    int64_t length = reaches_end_of_file ? 0 : static_cast<int64_t>(conflict.end - conflict.start + 1);
+
+    flock.l_type = conflict.type == fs::record_lock_type::shared ? F_RDLCK : F_WRLCK;
+    flock.l_whence = static_cast<int16_t>(fs::SEEK_SET);
+    flock.l_start = static_cast<int64_t>(conflict.start);
+    flock.l_len = length;
+    flock.l_pid = conflict.pid;
+}
+
+/**
+ * Takes a shared lock, which needs read access through the handle, or an exclusive lock, which
+ * needs write access, waiting for conflicting locks to be released when `wait` is set.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int64_t take_record_lock(
+    fs::file* f,
+    const fs::record_lock& request,
+    uint32_t rights,
+    bool wait
+) {
+    bool is_shared = request.type == fs::record_lock_type::shared;
+    uint32_t guarded_access = is_shared ? resource::RIGHT_READ : resource::RIGHT_WRITE;
+    if (!(rights & guarded_access)) {
+        return syscall::EBADF;
+    }
+
+    fs::record_lock_table& locks = f->get_node()->record_locks();
+    int32_t result = wait ? locks.lock(request) : locks.try_lock(request);
+
+    return map_record_lock_error(result);
+}
+
+/**
+ * Runs F_GETLK, F_SETLK, or F_SETLKW with the flock at `u_flock`. The locks belong to the caller's
+ * handle table, so closing any of its handles to the file releases them.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int64_t run_record_lock_command(
+    sched::task* task,
+    resource::resource_object* obj,
+    uint32_t rights,
+    uint64_t cmd,
+    uint64_t u_flock
+) {
+    linux_flock flock = {};
+    int32_t copy_rc = mm::uaccess::copy_from_user(&flock, reinterpret_cast<const void*>(u_flock), sizeof(flock));
+    if (copy_rc != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
+    // Only files carry record locks
+    fs::file* f = obj->type == resource::resource_type::FILE ? resource::file_provider::get_file(obj) : nullptr;
+    if (!f) {
+        return syscall::EINVAL;
+    }
+
+    bool is_lock = flock.l_type == F_RDLCK || flock.l_type == F_WRLCK;
+    bool is_unlock = cmd != F_GETLK && flock.l_type == F_UNLCK;
+    if (!is_lock && !is_unlock) {
+        return syscall::EINVAL;
+    }
+
+    fs::record_lock request = {};
+    int64_t range_rc = resolve_record_lock_range(f, flock, &request.start, &request.end);
+    if (range_rc != 0) {
+        return range_rc;
+    }
+
+    request.owner = task->handles;
+    request.type = flock.l_type == F_WRLCK ? fs::record_lock_type::exclusive : fs::record_lock_type::shared;
+    request.pid = static_cast<int32_t>(task->group ? task->group->pid : task->tid);
+
+    if (cmd == F_GETLK) {
+        describe_conflicting_lock(f, request, flock);
+        copy_rc = mm::uaccess::copy_to_user(reinterpret_cast<void*>(u_flock), &flock, sizeof(flock));
+        return copy_rc == mm::uaccess::OK ? 0 : syscall::EFAULT;
+    }
+
+    if (is_unlock) {
+        fs::record_lock_table& locks = f->get_node()->record_locks();
+        return map_record_lock_error(locks.unlock(request.owner, request.start, request.end));
+    }
+
+    return take_record_lock(f, request, rights, cmd == F_SETLKW);
+}
 
 DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     sched::task* task = sched::current();
@@ -1474,6 +1660,22 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         resource::resource_release(obj);
 
         return 0;
+    }
+
+    if (cmd == F_GETLK || cmd == F_SETLK || cmd == F_SETLKW) {
+        resource::resource_object* obj = nullptr;
+        uint32_t rights = 0;
+        int32_t rc = resource::get_handle_object(
+            task->handles, static_cast<resource::handle_t>(fd), 0,
+            &obj, nullptr, &rights);
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+
+        int64_t result = run_record_lock_command(task, obj, rights, cmd, arg);
+        resource::resource_release(obj);
+
+        return result;
     }
 
     return syscall::EINVAL;

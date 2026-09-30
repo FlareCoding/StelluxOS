@@ -111,6 +111,18 @@ __PRIVILEGED_CODE static void file_close(resource_object* obj) {
     obj->impl = nullptr;
 }
 
+// Closing any handle to a file releases every record lock the handle's table holds on it, as POSIX requires
+__PRIVILEGED_CODE static void file_handle_closed(resource_object* obj, const handle_table* table) {
+    if (!obj || !obj->impl) {
+        return;
+    }
+
+    auto* impl = static_cast<file_resource_impl*>(obj->impl);
+    if (impl->file && impl->file->get_node()) {
+        impl->file->get_node()->record_locks().unlock_all(table);
+    }
+}
+
 __PRIVILEGED_CODE static int32_t file_ioctl(resource_object* obj, uint32_t cmd, uint64_t arg) {
     if (!obj || !obj->impl) {
         return ERR_INVAL;
@@ -174,6 +186,7 @@ static const resource_ops g_file_ops = {
     .read_at = file_read_at,
     .write_at = file_write_at,
     .close = file_close,
+    .handle_closed = file_handle_closed,
     .ioctl = file_ioctl,
     .mmap = file_mmap,
     .poll = file_poll,
