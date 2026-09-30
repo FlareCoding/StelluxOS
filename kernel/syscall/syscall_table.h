@@ -19,6 +19,7 @@ constexpr int64_t ENOMEM = -12;
 constexpr int64_t EACCES = -13;
 constexpr int64_t EFAULT = -14;
 constexpr int64_t EEXIST  = -17;
+constexpr int64_t ENODEV  = -19;
 constexpr int64_t ENOTDIR = -20;
 constexpr int64_t EISDIR  = -21;
 constexpr int64_t EINVAL  = -22;

@@ -8,6 +8,7 @@
 #include "mm/shmem.h"
 #include "common/string.h"
 #include "common/logging.h"
+#include "hw/cache.h"
 
 namespace mm {
 
@@ -245,14 +246,18 @@ __PRIVILEGED_CODE int32_t mm_context_add_vma(
 }
 
 /**
+ * Maps pages that belong to the mapping, zeroed and then filled by `fill` when one is given.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t mm_context_map_anonymous(
+__PRIVILEGED_CODE static int32_t map_private_pages(
     mm_context* mm_ctx,
     uintptr_t addr,
     size_t length,
     uint32_t prot,
     uint32_t map_flags,
+    uint32_t vma_flags,
+    page_fill_fn fill,
+    void* source,
     uintptr_t* out_addr
 ) {
     if (!mm_ctx || !out_addr) {
@@ -264,10 +269,6 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
     }
 
     if ((map_flags & ~MM_MAP_ALLOWED_FLAGS) != 0) {
-        return MM_CTX_ERR_INVALID_ARG;
-    }
-
-    if (!(map_flags & MM_MAP_PRIVATE) || !(map_flags & MM_MAP_ANONYMOUS)) {
         return MM_CTX_ERR_INVALID_ARG;
     }
 
@@ -335,7 +336,28 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
                 return MM_CTX_ERR_NO_MEM;
             }
 
-            string::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
+            auto* page = static_cast<uint8_t*>(paging::phys_to_virt(phys));
+            string::memset(page, 0, pmm::PAGE_SIZE);
+
+            if (fill) {
+                int64_t filled = fill(source, vaddr - start, page);
+                if (filled < 0) {
+                    pmm::free_page(phys);
+                    rollback_new_pages(mm_ctx, start, mapped_end);
+                    sync::mutex_unlock(mm_ctx->lock);
+                    return static_cast<int32_t>(filled);
+                }
+
+                if (filled == 0) {
+                    pmm::free_page(phys);
+                    break;
+                }
+
+                if (prot & MM_PROT_EXEC) {
+                    cache::flush_icache_range(reinterpret_cast<uintptr_t>(page), pmm::PAGE_SIZE);
+                }
+            }
+
             if (paging::map_page(vaddr, phys, page_flags, mm_ctx->pt_root) != paging::OK) {
                 pmm::free_page(phys);
                 rollback_new_pages(mm_ctx, start, mapped_end);
@@ -345,11 +367,6 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
 
             mapped_end = vaddr + pmm::PAGE_SIZE;
         }
-    }
-
-    uint32_t vma_flags = VMA_FLAG_PRIVATE | VMA_FLAG_ANONYMOUS;
-    if (stack_map) {
-        vma_flags |= VMA_FLAG_STACK;
     }
 
     vma* node = alloc_vma(start, end, prot, vma_flags);
@@ -371,6 +388,50 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
 
     *out_addr = start;
     return MM_CTX_OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mm_context_map_anonymous(
+    mm_context* mm_ctx,
+    uintptr_t addr,
+    size_t length,
+    uint32_t prot,
+    uint32_t map_flags,
+    uintptr_t* out_addr
+) {
+    if (!(map_flags & MM_MAP_PRIVATE) || !(map_flags & MM_MAP_ANONYMOUS)) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    uint32_t vma_flags = VMA_FLAG_PRIVATE | VMA_FLAG_ANONYMOUS;
+    if (map_flags & MM_MAP_STACK) {
+        vma_flags |= VMA_FLAG_STACK;
+    }
+
+    return map_private_pages(mm_ctx, addr, length, prot, map_flags, vma_flags, nullptr, nullptr, out_addr);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mm_context_map_private_copy(
+    mm_context* mm_ctx,
+    uintptr_t addr,
+    size_t length,
+    uint32_t prot,
+    uint32_t map_flags,
+    page_fill_fn fill,
+    void* source,
+    uintptr_t* out_addr
+) {
+    constexpr uint32_t REFUSED_FLAGS = MM_MAP_SHARED | MM_MAP_ANONYMOUS | MM_MAP_STACK | MM_MAP_LAZY;
+    if (!fill || !(map_flags & MM_MAP_PRIVATE) || (map_flags & REFUSED_FLAGS)) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    return map_private_pages(mm_ctx, addr, length, prot, map_flags, VMA_FLAG_PRIVATE, fill, source, out_addr);
 }
 
 /**
