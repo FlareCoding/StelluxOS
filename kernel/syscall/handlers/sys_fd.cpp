@@ -31,6 +31,11 @@ constexpr int64_t CURRENT_FILE_OFFSET = -1;
 using staged_transfer_fn = int64_t (*)(
     sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset, uint32_t call_flags);
 
+enum class transfer_direction {
+    read,
+    write,
+};
+
 // utimensat tv_nsec values that pick the current time or leave a stamp alone
 constexpr int64_t UTIME_NOW  = 0x3fffffff;
 constexpr int64_t UTIME_OMIT = 0x3ffffffe;
@@ -956,6 +961,15 @@ static bool is_valid_file_range(uint64_t offset, uint64_t count) {
 __PRIVILEGED_CODE static int64_t read_to_user(
     sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset, uint32_t call_flags = 0
 ) {
+    if (offset == CURRENT_FILE_OFFSET) {
+        size_t max_message = syscall::message_limit(task, static_cast<resource::handle_t>(fd));
+        if (max_message > 0) {
+            syscall::iovec whole = {buf, count};
+            return syscall::read_message(task, static_cast<resource::handle_t>(fd), &whole, 1,
+                                         max_message, call_flags);
+        }
+    }
+
     size_t remaining = static_cast<size_t>(count);
     uint8_t* user_ptr = reinterpret_cast<uint8_t*>(buf);
     int64_t total = 0;
@@ -1053,6 +1067,15 @@ DEFINE_SYSCALL4(pread64, fd, buf, count, offset) {
 __PRIVILEGED_CODE static int64_t write_from_user(
     sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset, uint32_t call_flags = 0
 ) {
+    if (offset == CURRENT_FILE_OFFSET) {
+        size_t max_message = syscall::message_limit(task, static_cast<resource::handle_t>(fd));
+        if (max_message > 0) {
+            syscall::iovec whole = {buf, count};
+            return syscall::write_message(task, static_cast<resource::handle_t>(fd), &whole, 1,
+                                          max_message, call_flags);
+        }
+    }
+
     size_t remaining = static_cast<size_t>(count);
     const uint8_t* user_ptr = reinterpret_cast<const uint8_t*>(buf);
     int64_t total = 0;
@@ -1194,8 +1217,20 @@ __PRIVILEGED_CODE static int64_t transfer_buffers(
     uint64_t iovcnt,
     int64_t offset,
     uint32_t call_flags,
-    staged_transfer_fn transfer
+    transfer_direction direction
 ) {
+    // A message socket moves one whole message for the entire vector
+    if (offset == CURRENT_FILE_OFFSET) {
+        auto handle = static_cast<resource::handle_t>(fd);
+        size_t max_message = syscall::message_limit(task, handle);
+        if (max_message > 0) {
+            return direction == transfer_direction::read
+                ? syscall::read_message(task, handle, iovs, iovcnt, max_message, call_flags)
+                : syscall::write_message(task, handle, iovs, iovcnt, max_message, call_flags);
+        }
+    }
+
+    staged_transfer_fn transfer = direction == transfer_direction::read ? read_to_user : write_from_user;
     int64_t total = 0;
     for (uint64_t i = 0; i < iovcnt; i++) {
         int64_t buffer_offset = offset == CURRENT_FILE_OFFSET ? CURRENT_FILE_OFFSET : offset + total;
@@ -1219,7 +1254,7 @@ __PRIVILEGED_CODE static int64_t run_vectored_transfer(
     uint64_t iovcnt,
     int64_t offset,
     uint32_t call_flags,
-    staged_transfer_fn transfer
+    transfer_direction direction
 ) {
     if (iovcnt == 0) {
         return 0;
@@ -1239,7 +1274,7 @@ __PRIVILEGED_CODE static int64_t run_vectored_transfer(
 
     int64_t result = syscall::EINVAL;
     if (offset == CURRENT_FILE_OFFSET || is_valid_file_range(static_cast<uint64_t>(offset), total_len)) {
-        result = transfer_buffers(task, fd, iovs, iovcnt, offset, call_flags, transfer);
+        result = transfer_buffers(task, fd, iovs, iovcnt, offset, call_flags, direction);
     }
 
     heap::ufree(iovs);
@@ -1252,7 +1287,7 @@ DEFINE_SYSCALL4(preadv, fd, iov, iovcnt, offset) {
         return syscall::EINVAL;
     }
 
-    return run_vectored_transfer(fd, iov, iovcnt, static_cast<int64_t>(offset), 0, read_to_user);
+    return run_vectored_transfer(fd, iov, iovcnt, static_cast<int64_t>(offset), 0, transfer_direction::read);
 }
 
 DEFINE_SYSCALL4(pwritev, fd, iov, iovcnt, offset) {
@@ -1260,7 +1295,7 @@ DEFINE_SYSCALL4(pwritev, fd, iov, iovcnt, offset) {
         return syscall::EINVAL;
     }
 
-    return run_vectored_transfer(fd, iov, iovcnt, static_cast<int64_t>(offset), 0, write_from_user);
+    return run_vectored_transfer(fd, iov, iovcnt, static_cast<int64_t>(offset), 0, transfer_direction::write);
 }
 
 constexpr uint64_t RWF_HIPRI  = 0x01;
@@ -1278,7 +1313,7 @@ __PRIVILEGED_CODE static int64_t run_vectored_transfer_v2(
     uint64_t iovcnt,
     uint64_t offset,
     uint64_t flags,
-    staged_transfer_fn transfer
+    transfer_direction direction
 ) {
     if (static_cast<int64_t>(offset) < CURRENT_FILE_OFFSET) {
         return syscall::EINVAL;
@@ -1291,18 +1326,18 @@ __PRIVILEGED_CODE static int64_t run_vectored_transfer_v2(
     // Only transfers at the file position can wait, since explicit offsets reach only files in memory
     uint32_t call_flags = (flags & RWF_NOWAIT) ? fs::O_NONBLOCK : 0;
 
-    return run_vectored_transfer(fd, u_iov, iovcnt, static_cast<int64_t>(offset), call_flags, transfer);
+    return run_vectored_transfer(fd, u_iov, iovcnt, static_cast<int64_t>(offset), call_flags, direction);
 }
 
 // 64-bit callers pass the whole offset in `offset`, and `offset_high` exists for 32-bit ones
 DEFINE_SYSCALL6(preadv2, fd, iov, iovcnt, offset, offset_high, flags) {
     (void)offset_high;
-    return run_vectored_transfer_v2(fd, iov, iovcnt, offset, flags, read_to_user);
+    return run_vectored_transfer_v2(fd, iov, iovcnt, offset, flags, transfer_direction::read);
 }
 
 DEFINE_SYSCALL6(pwritev2, fd, iov, iovcnt, offset, offset_high, flags) {
     (void)offset_high;
-    return run_vectored_transfer_v2(fd, iov, iovcnt, offset, flags, write_from_user);
+    return run_vectored_transfer_v2(fd, iov, iovcnt, offset, flags, transfer_direction::write);
 }
 
 DEFINE_SYSCALL1(close, fd) {

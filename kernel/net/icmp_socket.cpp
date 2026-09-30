@@ -15,6 +15,9 @@
 namespace net {
 namespace icmp {
 
+// The echo message that fits in one packet behind the Ethernet and IPv4 headers
+constexpr size_t MAX_ECHO_MESSAGE = PACKET_CAPACITY - eth::HEADER_LEN - ipv4::HEADER_LEN;
+
 static sync::spinlock g_sockets_lock = sync::SPINLOCK_INIT;
 static icmp_socket* g_sockets[MAX_SOCKETS];
 static uint16_t g_next_id = 1;
@@ -198,7 +201,8 @@ __PRIVILEGED_CODE static ssize_t socket_recvfrom(resource::resource_object* obj,
         return nonblock ? resource::ERR_AGAIN : resource::ERR_INTR;
     }
 
-    size_t copied = pkt->length() < count ? pkt->length() : count;
+    size_t length = pkt->length();
+    size_t copied = length < count ? length : count;
     string::memcpy(kdst, pkt->data(), copied);
 
     if (kaddr && addrlen) {
@@ -209,7 +213,7 @@ __PRIVILEGED_CODE static ssize_t socket_recvfrom(resource::resource_object* obj,
     }
 
     packet::free(pkt);
-    return static_cast<ssize_t>(copied);
+    return static_cast<ssize_t>(length);
 }
 
 // Reports the socket as unbound with its identifier in the port field
@@ -235,12 +239,14 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
     obj->impl = nullptr;
 }
 
-// A plain read is a receive that does not ask where the reply came from. The
-// descriptor's nonblocking flag maps onto the receive flag with the same meaning.
+// A plain read is a receive that does not ask where the reply came from, reporting only the
+// bytes it copied. The descriptor's nonblocking flag maps onto the receive flag with the same meaning.
 __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void* kdst, size_t count,
                                              uint32_t flags) {
     uint32_t msg_flags = (flags & fs::O_NONBLOCK) ? inet::MSG_DONTWAIT : 0;
-    return socket_recvfrom(obj, kdst, count, msg_flags, nullptr, nullptr);
+    ssize_t length = socket_recvfrom(obj, kdst, count, msg_flags, nullptr, nullptr);
+
+    return length > static_cast<ssize_t>(count) ? static_cast<ssize_t>(count) : length;
 }
 
 static ssize_t socket_write(resource::resource_object*, const void*, size_t, uint32_t) {
@@ -267,6 +273,7 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
 }
 
 static const resource::socket_ops g_icmp_socket_ops = {
+    .max_message = MAX_ECHO_MESSAGE,
     .sendto = socket_sendto,
     .recvfrom = socket_recvfrom,
     .getname = socket_getname,

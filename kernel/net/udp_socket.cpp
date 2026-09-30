@@ -17,6 +17,9 @@
 namespace net {
 namespace udp {
 
+// The payload that fits in one packet behind the Ethernet, IPv4 and UDP headers
+constexpr size_t MAX_DATAGRAM_PAYLOAD = PACKET_CAPACITY - eth::HEADER_LEN - ipv4::HEADER_LEN - HEADER_LEN;
+
 static sync::spinlock g_sockets_lock = sync::SPINLOCK_INIT;
 static udp_socket* g_sockets[MAX_SOCKETS];
 static uint16_t g_next_ephemeral_port = EPHEMERAL_PORT_MIN;
@@ -239,6 +242,10 @@ __PRIVILEGED_CODE static int32_t socket_bind(resource::resource_object* obj, con
 __PRIVILEGED_CODE static ssize_t socket_sendto(resource::resource_object* obj, const void* ksrc,
                                                size_t count, uint32_t, const void* kaddr,
                                                size_t addrlen) {
+    if (count == 0) {
+        return resource::ERR_INVAL;
+    }
+
     udp_socket* sock = static_cast<udp_socket*>(obj->impl);
 
     ipv4::ipv4_addr dest;
@@ -301,7 +308,8 @@ __PRIVILEGED_CODE static ssize_t socket_recvfrom(resource::resource_object* obj,
     }
 
     // A datagram longer than the buffer loses its tail, it is never split across reads
-    size_t copied = pkt->length() < count ? pkt->length() : count;
+    size_t length = pkt->length();
+    size_t copied = length < count ? length : count;
     string::memcpy(kdst, pkt->data(), copied);
 
     if (kaddr && addrlen) {
@@ -313,7 +321,7 @@ __PRIVILEGED_CODE static ssize_t socket_recvfrom(resource::resource_object* obj,
     }
 
     packet::free(pkt);
-    return static_cast<ssize_t>(copied);
+    return static_cast<ssize_t>(length);
 }
 
 // SO_BROADCAST opts into broadcast destinations, SO_BINDTODEVICE names the
@@ -377,12 +385,14 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
     obj->impl = nullptr;
 }
 
-// A plain read is a receive that does not ask where the datagram came from. The
-// descriptor's nonblocking flag maps onto the receive flag with the same meaning.
+// A plain read is a receive that does not ask where the datagram came from, reporting only the
+// bytes it copied. The descriptor's nonblocking flag maps onto the receive flag with the same meaning.
 __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void* kdst, size_t count,
                                              uint32_t flags) {
     uint32_t msg_flags = (flags & fs::O_NONBLOCK) ? inet::MSG_DONTWAIT : 0;
-    return socket_recvfrom(obj, kdst, count, msg_flags, nullptr, nullptr);
+    ssize_t length = socket_recvfrom(obj, kdst, count, msg_flags, nullptr, nullptr);
+
+    return length > static_cast<ssize_t>(count) ? static_cast<ssize_t>(count) : length;
 }
 
 // Readable while a datagram waits. Sending never blocks, a datagram is queued on
@@ -405,6 +415,7 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
 }
 
 static const resource::socket_ops g_udp_socket_ops = {
+    .max_message = MAX_DATAGRAM_PAYLOAD,
     .bind = socket_bind,
     .sendto = socket_sendto,
     .recvfrom = socket_recvfrom,

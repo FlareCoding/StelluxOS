@@ -18,7 +18,6 @@
 constexpr uint64_t AF_UNIX     = 1;
 constexpr uint64_t SOCK_STREAM = 1;
 constexpr size_t   SENDTO_MAX_ADDR = 128;
-constexpr size_t   SENDTO_MAX_BUF  = 4096;
 constexpr uint64_t MAX_CONTROL_BYTES = 20480;
 constexpr size_t   CMSG_ALIGNMENT    = 8;
 
@@ -420,41 +419,6 @@ __PRIVILEGED_CODE static int64_t copy_iovecs(uint64_t user_iov, uint64_t iovcnt,
 
     *out_iovs = iovs;
     *out_total = total;
-    return 0;
-}
-
-__PRIVILEGED_CODE static int64_t gather_from_user(const syscall::iovec* iovs, uint64_t iovcnt, uint8_t* data) {
-    for (uint64_t i = 0; i < iovcnt; i++) {
-        if (iovs[i].len == 0) {
-            continue;
-        }
-
-        if (mm::uaccess::copy_from_user(data, reinterpret_cast<const void*>(iovs[i].base), iovs[i].len) != mm::uaccess::OK) {
-            return syscall::EFAULT;
-        }
-
-        data += iovs[i].len;
-    }
-
-    return 0;
-}
-
-__PRIVILEGED_CODE static int64_t scatter_to_user(const syscall::iovec* iovs, uint64_t iovcnt,
-                                                 const uint8_t* data, size_t len) {
-    for (uint64_t i = 0; i < iovcnt && len > 0; i++) {
-        size_t chunk = iovs[i].len < len ? iovs[i].len : len;
-        if (chunk == 0) {
-            continue;
-        }
-
-        if (mm::uaccess::copy_to_user(reinterpret_cast<void*>(iovs[i].base), data, chunk) != mm::uaccess::OK) {
-            return syscall::EFAULT;
-        }
-
-        data += chunk;
-        len -= chunk;
-    }
-
     return 0;
 }
 
@@ -880,6 +844,11 @@ __PRIVILEGED_CODE static int64_t discard_stream(const socket_ref& sock, const sy
         count += iovs[i].len;
     }
 
+    // A stream asked for no bytes may answer as if nothing were queued, so a receive with no room returns here
+    if (count == 0) {
+        return 0;
+    }
+
     bool peek = (flags & net::inet::MSG_PEEK) != 0;
     bool whole = (flags & net::inet::MSG_WAITALL) != 0 && !peek;
     uint32_t round_flags = flags & ~net::inet::MSG_WAITALL;
@@ -1022,21 +991,33 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
     return total > 0 ? total : err;
 }
 
-__PRIVILEGED_CODE static int64_t receive_datagram(const socket_ref& sock, uint64_t buf, size_t len, uint32_t flags,
-                                                  uint8_t* kaddr, size_t* kaddr_len) {
-    size_t staged = len < SENDTO_MAX_BUF ? len : SENDTO_MAX_BUF;
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(staged));
+// Receives one message into the user buffers `iovs` describe, copying what fits. Returns the bytes copied, or
+// the full length when MSG_TRUNC asks for it, and reports through `truncated` a message that lost its tail.
+__PRIVILEGED_CODE static int64_t receive_whole_message(const socket_ref& sock, const syscall::iovec* iovs,
+                                                       uint64_t iovcnt, size_t len, uint32_t flags,
+                                                       uint8_t* kaddr, size_t* kaddr_len, bool* truncated) {
+    size_t staged = len < sock.ops->max_message ? len : sock.ops->max_message;
+
+    // Never empty, since the heap refuses empty requests and a receive with no room must still take its message
+    auto* kbuf = static_cast<uint8_t*>(heap::uzalloc(staged > 0 ? staged : 1));
     if (!kbuf) {
         return syscall::ENOMEM;
     }
 
     int64_t result = receive_on_socket(sock, kbuf, staged, flags, kaddr, kaddr_len);
-    if (result >= 0 &&
-        mm::uaccess::copy_to_user(reinterpret_cast<void*>(buf), kbuf, static_cast<size_t>(result)) != mm::uaccess::OK) {
-        result = syscall::EFAULT;
+    if (result >= 0) {
+        size_t copied = static_cast<size_t>(result) < staged ? static_cast<size_t>(result) : staged;
+        *truncated = static_cast<size_t>(result) > staged;
+
+        if (syscall::scatter_to_user(iovs, iovcnt, kbuf, copied) != 0) {
+            result = syscall::EFAULT;
+        } else if (!(flags & net::inet::MSG_TRUNC)) {
+            result = static_cast<int64_t>(copied);
+        }
     }
 
-    heap::kfree(kbuf);
+    heap::ufree(kbuf);
+
     return result;
 }
 
@@ -1051,33 +1032,36 @@ __PRIVILEGED_CODE static int64_t copy_source_address(uint64_t user_addr, uint32_
     return 0;
 }
 
-__PRIVILEGED_CODE static int64_t send_datagram(const socket_ref& sock, uint64_t buf, size_t len, uint32_t flags,
-                                               uint64_t dest_addr, uint64_t addrlen) {
-    if (len > SENDTO_MAX_BUF) {
+// Sends the user buffers `iovs` describe as one message, to the named destination when there is one
+__PRIVILEGED_CODE static int64_t send_whole_message(const socket_ref& sock, const syscall::iovec* iovs,
+                                                    uint64_t iovcnt, size_t len, uint32_t flags,
+                                                    uint64_t dest_addr, uint64_t addrlen) {
+    if (len > sock.ops->max_message) {
         return syscall::EMSGSIZE;
     }
 
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(len));
+    auto* kbuf = static_cast<uint8_t*>(heap::uzalloc(len));
     if (!kbuf) {
         return syscall::ENOMEM;
     }
 
-    int64_t result = syscall::EFAULT;
-    if (mm::uaccess::copy_from_user(kbuf, reinterpret_cast<const void*>(buf), len) == mm::uaccess::OK) {
+    int64_t result = syscall::gather_from_user(iovs, iovcnt, kbuf);
+    if (result == 0) {
         result = send_on_socket(sock, kbuf, len, flags, dest_addr, addrlen);
     }
 
-    heap::kfree(kbuf);
+    heap::ufree(kbuf);
+
     return result;
 }
 
-// A stream send of no bytes still lets the socket report a missing or broken connection, and the
-// handles it names are dropped, since no byte carries them
-__PRIVILEGED_CODE static int64_t send_zero_bytes(const socket_ref& sock, uint32_t flags, const msghdr& hdr,
-                                                 resource::handle_batch* batch) {
+// A send of no bytes lets the socket decide what it means, reporting a broken connection or refusing
+// an empty message, and the handles it names are dropped, since no byte carries them
+__PRIVILEGED_CODE static int64_t send_zero_bytes(const socket_ref& sock, uint32_t flags, uint64_t dest_addr,
+                                                 uint64_t addrlen, resource::handle_batch* batch) {
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t addr_len = 0;
-    int64_t err = copy_destination(hdr.name, hdr.namelen, kaddr, &addr_len);
+    int64_t err = copy_destination(dest_addr, addrlen, kaddr, &addr_len);
 
     if (err == 0) {
         uint8_t unused_byte = 0;
@@ -1091,34 +1075,8 @@ __PRIVILEGED_CODE static int64_t send_zero_bytes(const socket_ref& sock, uint32_
     return err;
 }
 
-// Sends the whole vector as one datagram, to the destination the header names
-__PRIVILEGED_CODE static int64_t send_gathered_datagram(const socket_ref& sock, const syscall::iovec* iovs,
-                                                        const msghdr& hdr, size_t data_len, uint32_t flags) {
-    if (data_len == 0) {
-        return syscall::EINVAL;
-    }
-
-    if (data_len > SENDTO_MAX_BUF) {
-        return syscall::EMSGSIZE;
-    }
-
-    auto* kbuf = static_cast<uint8_t*>(heap::kzalloc(data_len));
-    if (!kbuf) {
-        return syscall::ENOMEM;
-    }
-
-    int64_t result = gather_from_user(iovs, hdr.iovlen, kbuf);
-    if (result == 0) {
-        result = send_on_socket(sock, kbuf, data_len, flags, hdr.name, hdr.namelen);
-    }
-
-    heap::kfree(kbuf);
-
-    return result;
-}
-
 DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
-    if (buf == 0 || len == 0) {
+    if (buf == 0 && len != 0) {
         return syscall::EINVAL;
     }
 
@@ -1133,11 +1091,14 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
         return result;
     }
 
-    if (sock.ops->stream) {
-        syscall::iovec whole = {buf, len};
-        result = send_stream(sock, &whole, 1, message_flags(sock, flags), dest_addr, addrlen, nullptr);
+    uint32_t send_flags = message_flags(sock, flags);
+    syscall::iovec whole = {buf, len};
+    if (len == 0) {
+        result = send_zero_bytes(sock, send_flags, dest_addr, addrlen, nullptr);
+    } else if (!sock.ops->stream) {
+        result = send_whole_message(sock, &whole, 1, static_cast<size_t>(len), send_flags, dest_addr, addrlen);
     } else {
-        result = send_datagram(sock, buf, static_cast<size_t>(len), message_flags(sock, flags), dest_addr, addrlen);
+        result = send_stream(sock, &whole, 1, send_flags, dest_addr, addrlen, nullptr);
     }
 
     resource::resource_release(sock.obj);
@@ -1179,10 +1140,10 @@ DEFINE_SYSCALL3(sendmsg, fd, msg, flags) {
     if (result == 0) {
         uint32_t send_flags = message_flags(sock, flags);
 
-        if (!sock.ops->stream) {
-            result = send_gathered_datagram(sock, iovs, hdr, data_len, send_flags);
-        } else if (data_len == 0) {
-            result = send_zero_bytes(sock, send_flags, hdr, batch);
+        if (data_len == 0) {
+            result = send_zero_bytes(sock, send_flags, hdr.name, hdr.namelen, batch);
+        } else if (!sock.ops->stream) {
+            result = send_whole_message(sock, iovs, hdr.iovlen, data_len, send_flags, hdr.name, hdr.namelen);
         } else {
             result = send_stream(sock, iovs, hdr.iovlen, send_flags, hdr.name, hdr.namelen, batch);
         }
@@ -1195,7 +1156,7 @@ DEFINE_SYSCALL3(sendmsg, fd, msg, flags) {
 }
 
 DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
-    if (buf == 0 || len == 0) {
+    if (buf == 0 && len != 0) {
         return syscall::EINVAL;
     }
 
@@ -1212,11 +1173,13 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
 
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t kaddr_len = sizeof(kaddr);
+    syscall::iovec whole = {buf, len};
     if (sock.ops->stream) {
-        syscall::iovec whole = {buf, len};
         result = receive_stream(sock, &whole, 1, message_flags(sock, flags), kaddr, &kaddr_len, nullptr);
     } else {
-        result = receive_datagram(sock, buf, static_cast<size_t>(len), message_flags(sock, flags), kaddr, &kaddr_len);
+        bool truncated = false;
+        result = receive_whole_message(sock, &whole, 1, static_cast<size_t>(len), message_flags(sock, flags),
+                                       kaddr, &kaddr_len, &truncated);
     }
 
     resource::resource_release(sock.obj);
@@ -1264,11 +1227,6 @@ DEFINE_SYSCALL3(recvmsg, fd, msg, flags) {
         return result;
     }
 
-    if (data_len == 0) {
-        heap::kfree(iovs);
-        return syscall::EINVAL;
-    }
-
     socket_ref sock;
     result = lookup_socket(task, fd, resource::RIGHT_READ, &sock);
     if (result != 0) {
@@ -1288,24 +1246,15 @@ DEFINE_SYSCALL3(recvmsg, fd, msg, flags) {
 
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t kaddr_len = sizeof(kaddr);
-    size_t staged = data_len < SENDTO_MAX_BUF ? data_len : SENDTO_MAX_BUF;
     resource::handle_batch* batch = nullptr;
+    bool truncated = false;
 
     if (sock.ops->stream) {
         resource::handle_batch** out_batch = sock.ops->recvmsg ? &batch : nullptr;
         result = receive_stream(sock, iovs, hdr.iovlen, receive_flags, kaddr, &kaddr_len, out_batch);
-    } else if (uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(staged))) {
-        result = receive_on_socket(sock, kbuf, staged, receive_flags, kaddr, &kaddr_len);
-        if (result >= 0) {
-            int64_t scatter_rc = scatter_to_user(iovs, hdr.iovlen, kbuf, static_cast<size_t>(result));
-            if (scatter_rc != 0) {
-                result = scatter_rc;
-            }
-        }
-
-        heap::kfree(kbuf);
     } else {
-        result = syscall::ENOMEM;
+        result = receive_whole_message(sock, iovs, hdr.iovlen, data_len, receive_flags, kaddr, &kaddr_len,
+                                       &truncated);
     }
 
     resource::resource_release(sock.obj);
@@ -1328,6 +1277,10 @@ DEFINE_SYSCALL3(recvmsg, fd, msg, flags) {
     rights_message message;
     uint32_t installed = deliver_handles(task, batch, cloexec, &message, &hdr);
     hdr.namelen = hdr.name != 0 ? static_cast<uint32_t>(kaddr_len) : 0;
+
+    if (truncated) {
+        hdr.flags |= net::inet::MSG_TRUNC;
+    }
 
     bool reported = copy_rights_message(hdr, message, installed) &&
                     mm::uaccess::copy_to_user(reinterpret_cast<void*>(msg), &hdr, sizeof(hdr)) == mm::uaccess::OK;

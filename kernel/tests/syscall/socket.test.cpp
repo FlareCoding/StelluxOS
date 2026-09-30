@@ -262,6 +262,138 @@ TEST(socket_syscall, recvmsg_scatters_a_datagram_and_reports_its_source) {
     EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(fd)), resource::OK);
 }
 
+// A UDP socket bound to TEST_PORT, nonblocking since the test runner can never wait
+static int64_t make_bound_udp_socket(sched::task* task) {
+    int64_t fd = sys_socket(inet::AF_INET, inet::SOCK_DGRAM | fs::O_NONBLOCK, 0, 0, 0, 0);
+    if (fd < 0) {
+        return fd;
+    }
+
+    udp::udp_socket* sock = udp_socket_of(task, fd);
+    if (!sock || udp::socket_bind(sock, ipv4::UNSPECIFIED_ADDR, TEST_PORT) != OK) {
+        (void)resource::close(task, static_cast<resource::handle_t>(fd));
+        return -1;
+    }
+
+    return fd;
+}
+
+static bool deliver_datagram(uint16_t dst_port, const char* payload, size_t payload_len) {
+    packet* pkt = make_datagram(dst_port, payload, payload_len);
+    return pkt && udp::socket_deliver(pkt) == OK;
+}
+
+TEST(socket_syscall, a_readv_takes_exactly_one_datagram) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    int64_t fd = make_bound_udp_socket(task);
+    ASSERT_TRUE(fd >= 0);
+    ASSERT_TRUE(deliver_datagram(TEST_PORT, "hello", 5));
+    ASSERT_TRUE(deliver_datagram(TEST_PORT, "world", 5));
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    lay_out_message(page, 0, 3, 16);
+
+    int64_t first = 0;
+    {
+        user_space_scope scope(page.ctx);
+        first = sys_readv(static_cast<uint64_t>(fd), page.addr + MSG_IOVS, 3, 0, 0, 0);
+    }
+
+    EXPECT_EQ(first, static_cast<int64_t>(5));
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_A), "hel", 3), 0);
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_B), "lo", 2), 0);
+
+    int64_t second = 0;
+    {
+        user_space_scope scope(page.ctx);
+        second = sys_readv(static_cast<uint64_t>(fd), page.addr + MSG_IOVS, 3, 0, 0, 0);
+    }
+
+    EXPECT_EQ(second, static_cast<int64_t>(5));
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_A), "wor", 3), 0);
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_B), "ld", 2), 0);
+
+    EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(fd)), resource::OK);
+}
+
+TEST(socket_syscall, recvmsg_reports_a_datagram_that_lost_its_tail) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    int64_t fd = make_bound_udp_socket(task);
+    ASSERT_TRUE(fd >= 0);
+    ASSERT_TRUE(deliver_datagram(TEST_PORT, "hello world", 11));
+    ASSERT_TRUE(deliver_datagram(TEST_PORT, "hello world", 11));
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    lay_out_message(page, inet::SOCKADDR_IN_LEN, 2, 3);
+    const user_msghdr* hdr = page.at<user_msghdr>(MSG_HDR);
+
+    int64_t copied = 0;
+    {
+        user_space_scope scope(page.ctx);
+        copied = sys_recvmsg(static_cast<uint64_t>(fd), page.addr + MSG_HDR, 0, 0, 0, 0);
+    }
+
+    EXPECT_EQ(copied, static_cast<int64_t>(5));
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_A), "he", 2), 0);
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_B), "llo", 3), 0);
+    EXPECT_EQ(hdr->flags, inet::MSG_TRUNC);
+
+    // With MSG_TRUNC the receive reports the length the datagram had
+    int64_t full_length = 0;
+    {
+        user_space_scope scope(page.ctx);
+        full_length = sys_recvmsg(static_cast<uint64_t>(fd), page.addr + MSG_HDR, inet::MSG_TRUNC, 0, 0, 0);
+    }
+
+    EXPECT_EQ(full_length, static_cast<int64_t>(11));
+    EXPECT_EQ(hdr->flags, inet::MSG_TRUNC);
+
+    EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(fd)), resource::OK);
+}
+
+TEST(socket_syscall, a_zero_byte_receive_takes_a_datagram_that_a_zero_byte_read_leaves) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    int64_t fd = make_bound_udp_socket(task);
+    ASSERT_TRUE(fd >= 0);
+    ASSERT_TRUE(deliver_datagram(TEST_PORT, "hello", 5));
+    ASSERT_TRUE(deliver_datagram(TEST_PORT, "world!", 6));
+    ASSERT_TRUE(deliver_datagram(TEST_PORT, "again", 5));
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    lay_out_message(page, inet::SOCKADDR_IN_LEN, 0, 0);
+    uint64_t buf = page.addr + MSG_BUF_A;
+
+    int64_t zero_byte_read = 0;
+    int64_t zero_byte_recvfrom = 0;
+    int64_t zero_byte_recvmsg = 0;
+    int64_t next_receive = 0;
+    {
+        user_space_scope scope(page.ctx);
+        zero_byte_read = sys_read(static_cast<uint64_t>(fd), buf, 0, 0, 0, 0);
+        zero_byte_recvfrom = sys_recvfrom(static_cast<uint64_t>(fd), buf, 0, inet::MSG_TRUNC, 0, 0);
+        zero_byte_recvmsg = sys_recvmsg(static_cast<uint64_t>(fd), page.addr + MSG_HDR, 0, 0, 0, 0);
+        next_receive = sys_recvfrom(static_cast<uint64_t>(fd), buf, 16, 0, 0, 0);
+    }
+
+    EXPECT_EQ(zero_byte_read, static_cast<int64_t>(0));
+    EXPECT_EQ(zero_byte_recvfrom, static_cast<int64_t>(5));
+    EXPECT_EQ(zero_byte_recvmsg, static_cast<int64_t>(0));
+    EXPECT_EQ(page.at<user_msghdr>(MSG_HDR)->flags, inet::MSG_TRUNC);
+    EXPECT_EQ(next_receive, static_cast<int64_t>(5));
+    EXPECT_EQ(string::memcmp(page.at<char>(MSG_BUF_A), "again", 5), 0);
+
+    EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(fd)), resource::OK);
+}
+
 // Several eager user pages, each reachable from the kernel through its frame
 struct user_region {
     mm::mm_context* ctx = nullptr;
@@ -696,6 +828,31 @@ TEST(socket_syscall, a_discarding_receive_drops_the_bytes_without_writing_the_bu
     resource::resource_release(server);
 }
 
+TEST(socket_syscall, a_zero_byte_discarding_receive_leaves_the_stream_untouched) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    loopback_listener listener(task);
+    ASSERT_TRUE(listener.fd >= 0);
+    loopback_client client(task);
+    ASSERT_TRUE(client.ready());
+    resource::resource_object* server = listener.accept();
+    ASSERT_NOT_NULL(server);
+
+    EXPECT_EQ(server->ops->socket->sendto(server, "hello", 5, inet::MSG_DONTWAIT, nullptr, 0), 5);
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (client.queued() < 5 && clock::now_ns() < deadline) {
+    }
+
+    ASSERT_EQ(client.queued(), 5u);
+
+    uint32_t flags = inet::MSG_TRUNC | inet::MSG_DONTWAIT;
+    EXPECT_EQ(sys_recvfrom(static_cast<uint64_t>(client.fd), 0, 0, flags, 0, 0), static_cast<int64_t>(0));
+    EXPECT_EQ(client.queued(), 5u);
+
+    resource::resource_release(server);
+}
+
 // The client connects and moves STREAM_BYTES in one system call while the
 // runner serves the other end
 static void run_stream_case(stream_call call) {
@@ -989,6 +1146,26 @@ TEST(socket_syscall, a_unix_stream_receive_takes_what_the_peer_sent) {
     EXPECT_EQ(unix_receive(page, pair.b, 16, 0), static_cast<int64_t>(5));
     EXPECT_EQ(string::memcmp(page.at<char>(UNIX_RECV_AT), "hello", 5), 0);
     EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), syscall::EAGAIN);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_zero_byte_unix_stream_receive_leaves_the_bytes_queued) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "hello", 5);
+    ASSERT_EQ(unix_send(page, pair.a, 5, 0), static_cast<int64_t>(5));
+    EXPECT_EQ(unix_receive(page, pair.b, 0, inet::MSG_DONTWAIT), static_cast<int64_t>(0));
+
+    lay_out_message(page, 0, 0, 0);
+    EXPECT_EQ(receive_message(page, pair.b, inet::MSG_DONTWAIT), static_cast<int64_t>(0));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), static_cast<int64_t>(5));
 
     close_unix_pair(task, pair);
 }
@@ -1523,6 +1700,27 @@ TEST(socket_syscall, a_zero_byte_sendmsg_drops_the_handles_it_names) {
 
     EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(lone)), resource::OK);
     close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_zero_byte_sendto_reaches_the_socket) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    EXPECT_EQ(unix_send(page, pair.a, 0, 0), static_cast<int64_t>(0));
+    EXPECT_EQ(unix_receive(page, pair.b, 16, inet::MSG_DONTWAIT), syscall::EAGAIN);
+
+    // A send of no bytes needs no buffer, and still reports a socket with no connection
+    int64_t lone = sys_socket(AF_UNIX, inet::SOCK_STREAM, 0, 0, 0, 0);
+    ASSERT_TRUE(lone >= 0);
+    EXPECT_EQ(sys_sendto(static_cast<uint64_t>(lone), 0, 0, 0, 0, 0), syscall::ENOTCONN);
+
+    EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(lone)), resource::OK);
     close_unix_pair(task, pair);
 }
 
