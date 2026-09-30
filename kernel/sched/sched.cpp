@@ -621,6 +621,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
 [[noreturn]] void exit(int exit_code) {
     RUN_ELEVATED({
         sched::task* task = current();
+        task->exec.flags |= TASK_FLAG_EXITING;
 
         // Zero the registered thread id address and wake one joiner
         // while the address space is still mapped
@@ -659,8 +660,10 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                 // it drops, keeping the off-CPU spin in wake outside the lock
                 for (;;) {
                     rc::strong_ref<sched::task> kill_batch[TEARDOWN_BATCH_SIZE];
+                    rc::strong_ref<sched::task> unstarted_batch[TEARDOWN_BATCH_SIZE];
                     rc::strong_ref<resource::proc_provider::proc_resource> pr_batch[TEARDOWN_BATCH_SIZE];
                     uint32_t kills = 0;
+                    uint32_t unstarted = 0;
                     uint32_t prs = 0;
                     bool rescan = false;
 
@@ -672,7 +675,8 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                         sched::task& thread = *it;
                         ++it; // advance before potential removal
 
-                        if (kills == TEARDOWN_BATCH_SIZE || prs == TEARDOWN_BATCH_SIZE) {
+                        if (kills == TEARDOWN_BATCH_SIZE || unstarted == TEARDOWN_BATCH_SIZE ||
+                            prs == TEARDOWN_BATCH_SIZE) {
                             rescan = true;
                             break;
                         }
@@ -698,6 +702,9 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                                 pr_batch[prs++] = rc::strong_ref<resource::proc_provider::proc_resource>::adopt(pr);
                             }
 
+                            // Its handles close after tg->lock drops, since closing can block
+                            unstarted_batch[unstarted++] = task_ref(&thread);
+
                             store_cleanup_stage(&thread, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
                             if (thread.release()) {
                                 task::ref_destroy(&thread);
@@ -719,6 +726,10 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                     }
                     sync::spin_unlock_irqrestore(tg->lock, irq);
 
+                    for (uint32_t i = 0; i < unstarted; i++) {
+                        resource::release_task_handles(unstarted_batch[i].ptr());
+                    }
+
                     for (uint32_t i = 0; i < prs; i++) {
                         sync::wake_all(pr_batch[i]->wait_queue);
                     }
@@ -733,14 +744,46 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                         break;
                     }
                 }
-            } else if (task->group_link.is_linked()) {
+
+                // The exit is reported only after every other thread has released its handles
                 sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+
+                while (tg->thread_count > 0) {
+                    tg->leader_waiting_for_threads = task;
+                    prepare_to_block_task();
+                    sync::spin_unlock_irqrestore(tg->lock, irq);
+
+                    yield();
+
+                    irq = sync::spin_lock_irqsave(tg->lock);
+                }
+
+                tg->leader_waiting_for_threads = nullptr;
+                sync::spin_unlock_irqrestore(tg->lock, irq);
+            } else if (task->group_link.is_linked()) {
+                // Released before leaving the group, which an exiting leader waits on
+                resource::release_task_handles(task);
+
+                rc::strong_ref<sched::task> leader_to_wake;
+                sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+
                 tg->threads.remove(task);
                 tg->thread_count--;
                 add_cpu_time_to_group(task, tg);
+                if (tg->thread_count == 0 && tg->leader_waiting_for_threads) {
+                    leader_to_wake = task_ref(tg->leader_waiting_for_threads);
+                }
+
                 sync::spin_unlock_irqrestore(tg->lock, irq);
+
+                if (leader_to_wake) {
+                    wake(leader_to_wake.ptr());
+                }
             }
         }
+
+        // A parent must never see the exit while the process still holds handles
+        resource::release_task_handles(task);
 
         if (task->proc_res) {
             auto* pr = task->proc_res;
@@ -1250,6 +1293,7 @@ __PRIVILEGED_CODE task* create_user_task(
     tg->pid = t->tid;
     tg->threads.init();
     tg->thread_count = 0;
+    tg->leader_waiting_for_threads = nullptr;
     tg->exited_cpu_time_ns.store_relaxed(0);
     tg->group_exit_status.store_relaxed(0);
 
@@ -1407,10 +1451,28 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
     t->group = tg;
     t->group_link = {};
 
+    // A leader that has exited already killed every thread it could see, so its group takes no more
     sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
-    tg->threads.push_back(t);
-    tg->thread_count++;
+
+    bool group_is_exiting = tg->leader == nullptr;
+    if (!group_is_exiting) {
+        tg->threads.push_back(t);
+        tg->thread_count++;
+    }
+
     sync::spin_unlock_irqrestore(tg->lock, irq);
+
+    if (group_is_exiting) {
+        if (tg->release()) {
+            thread_group::ref_destroy(tg);
+        }
+
+        mm::mm_context_release(t->exec.mm_ctx);
+        resource::release_task_handles(t);
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
 
     t->proc_res = nullptr;
 
