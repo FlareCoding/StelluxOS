@@ -51,6 +51,14 @@ inline bool has(uint64_t mask) {
     return (g_features.flags & mask) == mask;
 }
 
+/**
+ * Hardware capability words each program receives at startup as `AT_HWCAP`
+ * and `AT_HWCAP2`, using the bit positions arm64 programs expect. Only
+ * features user mode can use without further kernel support are reported.
+ */
+uint64_t elf_hwcap();
+uint64_t elf_hwcap2();
+
 } // namespace cpu
 
 #endif // STELLUX_ARCH_AARCH64_HW_CPU_FEATURES_H

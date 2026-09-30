@@ -3,6 +3,33 @@
 
 namespace cpu {
 
+struct hwcap_mapping {
+    uint64_t feature;
+    uint64_t hwcap_bit;
+};
+
+// Bit positions arm64 programs expect in AT_HWCAP and AT_HWCAP2
+constexpr uint64_t HWCAP_FP      = 1ULL << 0;
+constexpr uint64_t HWCAP_ASIMD   = 1ULL << 1;
+constexpr uint64_t HWCAP_AES     = 1ULL << 3;
+constexpr uint64_t HWCAP_PMULL   = 1ULL << 4;
+constexpr uint64_t HWCAP_SHA1    = 1ULL << 5;
+constexpr uint64_t HWCAP_SHA2    = 1ULL << 6;
+constexpr uint64_t HWCAP_CRC32   = 1ULL << 7;
+constexpr uint64_t HWCAP_ATOMICS = 1ULL << 8;
+constexpr uint64_t HWCAP2_RNG    = 1ULL << 16;
+
+constexpr hwcap_mapping HWCAP_MAPPINGS[] = {
+    {FP,      HWCAP_FP},
+    {ASIMD,   HWCAP_ASIMD},
+    {AES,     HWCAP_AES},
+    {PMULL,   HWCAP_PMULL},
+    {SHA1,    HWCAP_SHA1},
+    {SHA256,  HWCAP_SHA2},
+    {CRC32,   HWCAP_CRC32},
+    {ATOMICS, HWCAP_ATOMICS},
+};
+
 features g_features = {};
 
 // Read MIDR_EL1: Main ID Register
@@ -137,6 +164,21 @@ __PRIVILEGED_CODE int32_t init() {
     detect();
     enable_fp_simd();
     return OK;
+}
+
+uint64_t elf_hwcap() {
+    uint64_t hwcap = 0;
+    for (const hwcap_mapping& mapping : HWCAP_MAPPINGS) {
+        if (has(mapping.feature)) {
+            hwcap |= mapping.hwcap_bit;
+        }
+    }
+
+    return hwcap;
+}
+
+uint64_t elf_hwcap2() {
+    return has(RNG) ? HWCAP2_RNG : 0;
 }
 
 } // namespace cpu

@@ -19,6 +19,7 @@
 #include "smp/smp.h"
 #include "smp/ipi.h"
 #include "hw/cpu.h"
+#include "hw/cpu_features.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
 #include "rc/reaper.h"
@@ -93,9 +94,11 @@ constexpr uint64_t AT_PHDR   = 3;
 constexpr uint64_t AT_PHENT  = 4;
 constexpr uint64_t AT_PHNUM  = 5;
 constexpr uint64_t AT_PAGESZ = 6;
+constexpr uint64_t AT_HWCAP  = 16;
 constexpr uint64_t AT_RANDOM = 25;
+constexpr uint64_t AT_HWCAP2 = 26;
 
-constexpr size_t AUXV_ENTRIES = 6;
+constexpr size_t AUXV_ENTRIES = 8;
 constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
 
 // AT_RANDOM points at this many random bytes, which seed the program's stack protector
@@ -1049,6 +1052,8 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
         AT_PHDR,   image.phdr_vaddr,
         AT_PHENT,  image.phentsize,
         AT_PHNUM,  static_cast<uint64_t>(image.phdr_vaddr ? image.phnum : 0),
+        AT_HWCAP,  cpu::elf_hwcap(),
+        AT_HWCAP2, cpu::elf_hwcap2(),
         AT_RANDOM, random_seed_va,
         AT_NULL,   0
     };

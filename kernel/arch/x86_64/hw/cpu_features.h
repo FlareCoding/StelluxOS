@@ -34,6 +34,7 @@ constexpr uint64_t REQUIRED = FSGSBASE | NX | APIC | PAT;
 
 struct features {
     uint64_t flags;
+    uint32_t cpuid_1_edx;
     uint8_t family;
     uint8_t model;
     uint8_t stepping;
@@ -53,6 +54,19 @@ __PRIVILEGED_CODE int32_t init();
 // Check if CPU has all features in mask
 inline bool has(uint64_t mask) {
     return (g_features.flags & mask) == mask;
+}
+
+/**
+ * Hardware capability words each program receives at startup as `AT_HWCAP`
+ * and `AT_HWCAP2`. The x86_64 ABI defines `AT_HWCAP` as CPUID leaf 1 EDX.
+ */
+inline uint64_t elf_hwcap() {
+    return g_features.cpuid_1_edx;
+}
+
+// FSGSBASE is not reported, since only the FS base is saved per task
+inline uint64_t elf_hwcap2() {
+    return 0;
 }
 
 } // namespace cpu
