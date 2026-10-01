@@ -1,17 +1,21 @@
 #
 # Stellux Developer Packages
 #
-# Builds the prebuilt Stellux programs the image build can fetch (the GCC
-# toolchain, binutils, etc.) for both architectures and publishes them as a
-# GitHub release. Runs on demand, since each architecture takes about an
-# hour, and packages/packages.lock pins the result.
+# Publishes a release of the prebuilt Stellux programs the image build can
+# fetch. The selected packages are built where packages.lock does not pin
+# their version yet and reused from the pinned release otherwise, one job per
+# recipe and architecture, on the runner the registry names for them. The
+# release always holds the complete set, and a pull request pins it.
 #
 # Job graph:
 #
-#   build  (2 jobs: arch)
+#   plan
 #     |
 #     v
-#   publish
+#   build  (one job per recipe and architecture)
+#     |
+#     v
+#   publish  (release, then the pin pull request)
 #
 name: Stellux Developer Packages
 
@@ -22,23 +26,50 @@ on:
         description: "Release tag, for example packages-2026.09.03"
         required: true
         type: string
+      packages:
+        description: "Packages to build, a PACKAGES selection (empty for the default tier)"
+        required: false
+        default: ""
+        type: string
+      arches:
+        description: "Architectures to build for"
+        required: false
+        default: "x86_64 aarch64"
+        type: string
 
 permissions:
   contents: write
+  pull-requests: write
 
 defaults:
   run:
     shell: bash
 
 jobs:
-  build:
-    name: build (${{ matrix.arch }})
+  plan:
+    name: plan
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve the selection into jobs
+        id: plan
+        run: |
+          matrix="$(make -s packages-plan ARCHES="${{ inputs.arches }}" PACKAGES="${{ inputs.packages }}")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ matrix.recipe }} (${{ matrix.arch }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
     strategy:
       fail-fast: true
-      matrix:
-        arch: [x86_64, aarch64]
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,13 +78,15 @@ jobs:
           # shallow clone cannot see
           fetch-depth: 0
 
-      - name: Build packages
-        run: make packages-build ARCHES=${{ matrix.arch }}
+      - name: Build or reuse ${{ matrix.packages }}
+        run: |
+          make packages-build ARCHES=${{ matrix.arch }} PACKAGES="none ${{ matrix.packages }}" 2>&1 | tee build.log
+          sed -n '/=== packages: done ===/,$p' build.log | grep -E 'reused|built' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload archives
         uses: actions/upload-artifact@v4
         with:
-          name: packages-${{ matrix.arch }}
+          name: packages-${{ matrix.recipe }}-${{ matrix.arch }}
           path: userland/toolchain/packages/*.tar.zst
           if-no-files-found: error
 
@@ -72,7 +105,21 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Create release
+      - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./packages/publish.sh "${{ inputs.release }}" dist
+
+      - name: Open the pin pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./packages/pin.sh "${{ inputs.release }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "pin/${{ inputs.release }}"
+          git commit -am "chore(packages): pinned ${{ inputs.release }}"
+          git push origin "pin/${{ inputs.release }}"
+          gh pr create --base "${{ github.ref_name }}" --head "pin/${{ inputs.release }}" \
+            --title "chore(packages): pinned ${{ inputs.release }}" \
+            --body "Points packages.lock at the ${{ inputs.release }} package release. Boot an image before merging."

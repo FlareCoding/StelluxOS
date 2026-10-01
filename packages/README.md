@@ -80,8 +80,17 @@ complete set: every registry package for every architecture it is built
 for. Archives in the cache are uploaded as they are and the rest are
 taken from the pinned release, so building one package is enough for a
 release the lock can point at. `DRY_RUN=1` shows the set without
-creating the release. The `packages` workflow does the same on GitHub
-runners and is the normal way to publish.
+creating the release.
+
+The `packages` workflow is the normal way to publish: dispatched by hand
+with a release tag, a `PACKAGES` selection (empty for the default tier)
+and the architectures, it plans one job per recipe and architecture on
+the runner the registry names, builds or reuses, publishes the complete
+release, and opens a pull request that pins it. A package built on a
+developer machine can be published from there with
+`make packages-publish` instead, and the next workflow run reuses it. For
+the pull request step, the repository must allow Actions to create pull
+requests.
 
 ## Working on a recipe
 
