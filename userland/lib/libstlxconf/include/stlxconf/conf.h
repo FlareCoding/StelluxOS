@@ -1,6 +1,7 @@
 #ifndef STLXCONF_CONF_H
 #define STLXCONF_CONF_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -8,6 +9,7 @@ extern "C" {
 #endif
 
 #define STLXCONF_PATH          "/etc/stlxdm/stlxdm.conf"
+#define STLXCONF_DROP_IN_DIR   "/etc/stlxdm/conf.d"
 #define STLXCONF_DEFAULT_ICON  "/etc/res/icons/icon_unknown_32x32.bmp"
 #define STLXCONF_MAX_TASKBAR   16
 #define STLXCONF_MAX_SHORTCUTS 8
@@ -21,6 +23,7 @@ typedef struct {
     char path[256];
     char args[256];
     char icon_path[256];
+    bool from_drop_in; /* owned by a drop-in file, never written back */
 } stlxconf_pin_t;
 
 /* One global key binding. The key string is a plus-separated chord
@@ -30,6 +33,7 @@ typedef struct {
     char key[64];
     char action[32];
     char path[256];
+    bool from_drop_in;
 } stlxconf_shortcut_t;
 
 /* One program spawned at startup, args space separated */
@@ -37,6 +41,7 @@ typedef struct {
     char name[64];
     char path[256];
     char args[256];
+    bool from_drop_in;
 } stlxconf_autostart_t;
 
 /**
@@ -86,6 +91,16 @@ void stlxconf_defaults(stlxconf_t* conf);
  *         holds the defaults either way).
  */
 int stlxconf_load(stlxconf_t* conf, const char* path);
+
+/**
+ * @brief Adds the launchers, shortcuts and autostart entries of every
+ * .conf file in `dir`, in name order, to the loaded configuration. They
+ * stay out of stlxconf_save, since their files own them, and any other
+ * section of a drop-in file is ignored.
+ * @return 0 on success, also when the directory does not exist, -1 when
+ *         it or one of its files cannot be read.
+ */
+int stlxconf_load_drop_ins(stlxconf_t* conf, const char* dir);
 
 /**
  * @brief Writes the configuration back as canonical INI text.

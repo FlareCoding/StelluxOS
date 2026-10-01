@@ -39,6 +39,17 @@ static void write_pidfile() {
     fclose(f);
 }
 
+/* The main file over the defaults, then the drop-in files over that */
+static void load_config(stlxconf_t& config) {
+    if (stlxconf_load(&config, STLXCONF_PATH) != 0) {
+        printf("stlxdm: no config file, using defaults\r\n");
+    }
+
+    if (stlxconf_load_drop_ins(&config, STLXCONF_DROP_IN_DIR) != 0) {
+        printf("stlxdm: could not read %s\r\n", STLXCONF_DROP_IN_DIR);
+    }
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -49,9 +60,7 @@ int main() {
     }
 
     static stlxconf_t config;
-    if (stlxconf_load(&config, STLXCONF_PATH) != 0) {
-        printf("stlxdm: no config file, using defaults\r\n");
-    }
+    load_config(config);
 
     if (decor::init() != 0) {
         printf("stlxdm: chrome font unavailable\r\n");
@@ -140,7 +149,7 @@ int main() {
         /* A reload signal may be the very interruption poll saw */
         if (g_reload) {
             g_reload = 0;
-            stlxconf_load(&config, STLXCONF_PATH);
+            load_config(config);
             srv.reload_config();
             inp.set_repeat_rates(
                 static_cast<uint64_t>(config.key_repeat_delay_ms) * 1000000ull,

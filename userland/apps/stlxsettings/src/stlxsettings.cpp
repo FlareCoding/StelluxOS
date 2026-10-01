@@ -166,6 +166,29 @@ static void put_str(char* dst, size_t cap, const std::string& src) {
     dst[len] = '\0';
 }
 
+/* Drop-in entries follow the user's own in every list, so edits, moves and
+ * additions stay within the first `owned` rows */
+template <typename item_t>
+static uint32_t owned_count(const item_t* items, uint32_t count) {
+    uint32_t owned = 0;
+    while (owned < count && !items[owned].from_drop_in) {
+        owned++;
+    }
+
+    return owned;
+}
+
+/* Opens a slot at `at` by shifting the entries after it up by one */
+template <typename item_t>
+static item_t* insert_slot(item_t* items, uint32_t count, uint32_t at) {
+    for (uint32_t i = count; i > at; i--) {
+        items[i] = items[i - 1];
+    }
+
+    memset(&items[at], 0, sizeof(items[at]));
+    return &items[at];
+}
+
 static uint32_t parse_u32(const std::string& s, int base) {
     return static_cast<uint32_t>(strtoul(s.c_str(), nullptr, base));
 }
@@ -202,6 +225,18 @@ static void add_caption(ui::box* header, const char* text,
     cap->set_color(ui::theme::active().text_dim);
     cap->s().main = main;
     cap->s().padding.left = 4;
+}
+
+/* One column of a row the user cannot edit */
+static void add_value(ui::box* row, const char* text, ui::length main) {
+    ui::label* value = row->add<ui::label>(text);
+    value->s().main = main;
+    value->s().padding.left = 4;
+}
+
+/* Takes the menu slot of a row that a drop-in file owns */
+static void mark_drop_in_row(ui::box* row) {
+    add_caption(row, "drop-in", ui::length::content());
 }
 
 static card* make_card(ui::box* parent, const char* title) {
@@ -349,6 +384,15 @@ static void build_dock(ui::box* page) {
         stlxconf_pin_t* pin = &g_st.conf.pins[i];
 
         ui::box* row = make_list_row(pins);
+        if (pin->from_drop_in) {
+            add_value(row, pin->label, ui::length::fixed(110));
+            add_value(row, pin->path, ui::length::flex());
+            add_value(row, pin->args, ui::length::fixed(130));
+            add_value(row, pin->icon_path, ui::length::flex());
+            mark_drop_in_row(row);
+            continue;
+        }
+
         ui::text_input* label = row->add<ui::text_input>();
         label->s().main = ui::length::fixed(110);
         label->set_text(pin->label);
@@ -381,7 +425,7 @@ static void build_dock(ui::box* page) {
             mark_dirty();
         };
 
-        make_row_menu(row, i, g_st.conf.pin_count, move_pin, remove_pin);
+        make_row_menu(row, i, owned_count(g_st.conf.pins, g_st.conf.pin_count), move_pin, remove_pin);
     }
 
     ui::button* add = pins->add<ui::button>("Add launcher");
@@ -393,10 +437,9 @@ static void build_dock(ui::box* page) {
             return;
         }
 
-        stlxconf_pin_t* pin = &g_st.conf.pins[g_st.conf.pin_count];
-        memset(pin, 0, sizeof(*pin));
-        snprintf(pin->name, sizeof(pin->name), "pin%u",
-                 g_st.conf.pin_count);
+        uint32_t owned = owned_count(g_st.conf.pins, g_st.conf.pin_count);
+        stlxconf_pin_t* pin = insert_slot(g_st.conf.pins, g_st.conf.pin_count, owned);
+        snprintf(pin->name, sizeof(pin->name), "pin%u", owned);
         put_str(pin->label, sizeof(pin->label), "New app");
         g_st.conf.pin_count++;
 
@@ -449,6 +492,13 @@ static void build_startup(ui::box* page) {
         stlxconf_autostart_t* as = &g_st.conf.autostart[i];
 
         ui::box* row = make_list_row(autos);
+        if (as->from_drop_in) {
+            add_value(row, as->path, ui::length::flex());
+            add_value(row, as->args, ui::length::fixed(130));
+            mark_drop_in_row(row);
+            continue;
+        }
+
         ui::text_input* path = row->add<ui::text_input>();
         path->s().main = ui::length::flex();
         path->set_text(as->path);
@@ -465,7 +515,7 @@ static void build_startup(ui::box* page) {
             mark_dirty();
         };
 
-        make_row_menu(row, i, g_st.conf.autostart_count, move_auto,
+        make_row_menu(row, i, owned_count(g_st.conf.autostart, g_st.conf.autostart_count), move_auto,
                       remove_auto);
     }
 
@@ -478,11 +528,9 @@ static void build_startup(ui::box* page) {
             return;
         }
 
-        stlxconf_autostart_t* as =
-            &g_st.conf.autostart[g_st.conf.autostart_count];
-        memset(as, 0, sizeof(*as));
-        snprintf(as->name, sizeof(as->name), "entry%u",
-                 g_st.conf.autostart_count);
+        uint32_t owned = owned_count(g_st.conf.autostart, g_st.conf.autostart_count);
+        stlxconf_autostart_t* as = insert_slot(g_st.conf.autostart, g_st.conf.autostart_count, owned);
+        snprintf(as->name, sizeof(as->name), "entry%u", owned);
         g_st.conf.autostart_count++;
 
         build_page(g_st.active_page);
@@ -499,6 +547,13 @@ static void build_startup(ui::box* page) {
         stlxconf_shortcut_t* sc = &g_st.conf.shortcuts[i];
 
         ui::box* row = make_list_row(keys);
+        if (sc->from_drop_in) {
+            add_value(row, sc->key, ui::length::fixed(130));
+            add_value(row, sc->path, ui::length::flex());
+            mark_drop_in_row(row);
+            continue;
+        }
+
         ui::text_input* chord = row->add<ui::text_input>();
         chord->s().main = ui::length::fixed(130);
         chord->set_text(sc->key);
@@ -576,6 +631,11 @@ static void notify_dm() {
     }
 }
 
+static void load_conf() {
+    stlxconf_load(&g_st.conf, STLXCONF_PATH);
+    stlxconf_load_drop_ins(&g_st.conf, STLXCONF_DROP_IN_DIR);
+}
+
 static void save_conf() {
     sanitize_conf();
 
@@ -585,13 +645,16 @@ static void save_conf() {
     }
 
     notify_dm();
+
+    /* Reloading shows the entries in the order the desktop loaded them, drop-ins last */
+    load_conf();
     g_st.dirty = false;
     set_status("saved, desktop updated");
     build_page(g_st.active_page);
 }
 
 static void revert_conf() {
-    stlxconf_load(&g_st.conf, STLXCONF_PATH);
+    load_conf();
     g_st.dirty = false;
     set_status("reverted to the file on disk");
     build_page(g_st.active_page);
@@ -600,7 +663,7 @@ static void revert_conf() {
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
-    stlxconf_load(&g_st.conf, STLXCONF_PATH);
+    load_conf();
 
     ui::app app("settings");
     if (!app.ok()) {
