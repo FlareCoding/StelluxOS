@@ -472,7 +472,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                     send_event(parent, rec);
                 }
 
-                destroy_window_tree(*owner, popup->win_id);
+                dismiss_window_tree(*owner, popup->win_id);
             }
 
             set_focus(restore);
