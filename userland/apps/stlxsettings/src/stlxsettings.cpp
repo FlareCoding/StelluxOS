@@ -341,6 +341,7 @@ static void build_dock(ui::box* page) {
     ui::box* header = make_list_row(pins);
     add_caption(header, "LABEL", ui::length::fixed(110));
     add_caption(header, "PROGRAM", ui::length::flex());
+    add_caption(header, "ARGUMENTS", ui::length::fixed(130));
     add_caption(header, "ICON", ui::length::flex());
     header->add<ui::box>()->s().main = ui::length::fixed(36);
 
@@ -361,6 +362,14 @@ static void build_dock(ui::box* page) {
         path->set_text(pin->path);
         path->on_change = [pin](const std::string& s) {
             put_str(pin->path, sizeof(pin->path), s);
+            mark_dirty();
+        };
+
+        ui::text_input* args = row->add<ui::text_input>();
+        args->s().main = ui::length::fixed(130);
+        args->set_text(pin->args);
+        args->on_change = [pin](const std::string& s) {
+            put_str(pin->args, sizeof(pin->args), s);
             mark_dirty();
         };
 

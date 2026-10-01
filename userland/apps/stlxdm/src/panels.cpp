@@ -74,7 +74,7 @@ public:
         : m_icon(icon), m_pin(&pin), m_index(index), m_accent(accent),
           m_icon_px(icon_px) {}
 
-    std::function<void(const char*)> on_launch;
+    std::function<void(const stlxconf_pin_t&)> on_launch;
     std::function<void(int32_t, bool)> on_hover;
 
     ui::size measure(ui::size) override {
@@ -148,7 +148,7 @@ public:
         invalidate();
 
         if (fire && on_launch && m_pin->path[0]) {
-            on_launch(m_pin->path);
+            on_launch(*m_pin);
         }
 
         return true;
@@ -428,9 +428,9 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
             icon, pin, static_cast<int32_t>(i), accent, icon_px);
         btn->s().main = ui::length::fixed(icon_px + 2);
         btn->s().cross = ui::length::fixed(icon_px + 2);
-        btn->on_launch = [this](const char* path) {
+        btn->on_launch = [this](const stlxconf_pin_t& launched) {
             if (on_launch) {
-                on_launch(path);
+                on_launch(launched);
             }
         };
         btn->on_hover = [this](int32_t index, bool entered) {

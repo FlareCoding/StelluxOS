@@ -225,8 +225,8 @@ int server::build_conf_state(dm_conf_state& out) {
         return -1;
     }
 
-    out.panels->on_launch = [](const char* path) {
-        spawn_app(path, nullptr);
+    out.panels->on_launch = [](const stlxconf_pin_t& pin) {
+        spawn_app(pin.path, pin.args);
     };
 
     /* Exec shortcuts with parseable chords become live hotkeys */
