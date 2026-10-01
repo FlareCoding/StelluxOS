@@ -83,6 +83,15 @@ release the lock can point at. `DRY_RUN=1` shows the set without
 creating the release. The `packages` workflow does the same on GitHub
 runners and is the normal way to publish.
 
+## Working on a recipe
+
+Bump the package's release number, build it, and `make image` uses the
+new archive from the cache: a package whose recipe names a version the
+lock does not pin, and whose archive for that version is in the cache, is
+staged as it is, with a line saying it is an unpublished local build.
+Nothing pinned changes, and the first build of a new package works the
+same way. Once published and pinned, the checksum check applies again.
+
 A release also records the committed tree of each recipe it was built
 from, which `make packages-pin RELEASE=<tag>` copies into `packages.lock`
 along with the checksums. A build then refuses to reuse a published

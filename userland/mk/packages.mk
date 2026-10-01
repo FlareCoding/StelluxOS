@@ -7,16 +7,17 @@ PACKAGES_STATE := $(USERLAND_ROOT)/build/$(ARCH)/packages
 PACKAGES_ROOTFS := $(USERLAND_ROOT)/build/$(ARCH)/rootfs
 
 pkg_archive = $(PACKAGES_CACHE)/$(call pkg_file,$(1))
-pkg_stamp   = $(PACKAGES_STATE)/$(1).stamp
+pkg_stamp   = $(PACKAGES_STATE)/$(1)-$(call pkg_version,$(1)).stamp
 pkg_list    = $(PACKAGES_STATE)/$(1).files
 
-# Removes what a staged package installed, then the directories it left empty
+# Removes what a staged package installed, then the directories it left empty, and
+# every stamp of the package, since a switch to another version must stage again
 define pkg_unstage
 if [ -f $(call pkg_list,$(1)) ]; then \
 	(cd $(PACKAGES_ROOTFS) && \
 		grep -v '/$$' $(call pkg_list,$(1)) | xargs rm -f && \
 		grep '/$$' $(call pkg_list,$(1)) | sort -r | xargs rmdir 2>/dev/null; true); \
-	rm -f $(call pkg_list,$(1)) $(call pkg_stamp,$(1)); \
+	rm -f $(call pkg_list,$(1)) $(PACKAGES_STATE)/$(1)-*.stamp; \
 fi
 endef
 
@@ -34,11 +35,14 @@ $(call pkg_archive,$(1)):
 	$(UQ)mv $$@.tmp $$@
 endef
 
-# Unpack into the overlay after removing what an earlier version installed
+# Unpack into the overlay after removing what an earlier version installed. A pinned
+# archive must match the lock, a local build is taken as is and said so.
 define package_stage_rule
 $(call pkg_stamp,$(1)): $(call pkg_archive,$(1))
-	$(UQ)echo "$(call pkg_sha256,$(1))  $$<" | shasum -a 256 -c - > /dev/null || \
-		{ echo "packages: cached $(call pkg_file,$(1)) does not match packages.lock, delete it to refetch"; exit 1; }
+	$(UQ)$(if $(call pkg_is_local,$(1)),\
+		echo "[PKG] $(1) $(call pkg_version,$(1)) ($(ARCH)) is an unpublished local build",\
+		echo "$(call pkg_sha256,$(1))  $$<" | shasum -a 256 -c - > /dev/null || \
+		{ echo "packages: cached $(call pkg_file,$(1)) does not match packages.lock, delete it to refetch"; exit 1; })
 	$(UQ)mkdir -p $(PACKAGES_STATE) $(PACKAGES_ROOTFS)
 	$(UQ)$$(call pkg_unstage,$(1))
 	$(UQ)zstd -dc $$< | tar -xf - -C $(PACKAGES_ROOTFS)
