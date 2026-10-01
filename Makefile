@@ -495,6 +495,10 @@ usb: image
 clean:
 	@echo "Cleaning build artifacts..."
 	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
+	$(Q)if [ -f userland/build/overlay.installed ]; then \
+		(cd initrd && grep -v '/$$' ../userland/build/overlay.installed | xargs rm -f && \
+			grep '/$$' ../userland/build/overlay.installed | sort -r | xargs rmdir 2>/dev/null; true); \
+	fi
 	$(Q)rm -rf userland/build userland/apps/*/build userland/lib/*/build
 	$(Q)find initrd/bin -mindepth 1 ! -name '.gitkeep' -delete 2>/dev/null || true
 	$(Q)rm -rf initrd/usr

@@ -32,6 +32,23 @@ BIN_DIR   := $(USERLAND_ROOT)/build/$(ARCH)/bin
 INITRD_BIN := $(USERLAND_ROOT)/../initrd/bin
 ROOTFS_DIR := $(USERLAND_ROOT)/build/$(ARCH)/rootfs
 INITRD_ROOT := $(USERLAND_ROOT)/../initrd
+OVERLAY_LIST := $(USERLAND_ROOT)/build/overlay.installed
+
+# The overlay's files outside /usr sit among the tracked initrd files, so the
+# last overlay is removed by its list before another one is copied in
+define remove_overlay
+if [ -f $(OVERLAY_LIST) ]; then \
+	(cd $(INITRD_ROOT) && grep -v '/$$' $(OVERLAY_LIST) | xargs rm -f && \
+		grep '/$$' $(OVERLAY_LIST) | sort -r | xargs rmdir 2>/dev/null; true); \
+	rm -f $(OVERLAY_LIST); \
+fi
+endef
+
+define install_overlay
+cp -a $(ROOTFS_DIR)/. $(INITRD_ROOT)/ && \
+(cd $(ROOTFS_DIR) && find . -mindepth 1 ! -type d | sed 's|^\./||' && \
+	find . -mindepth 1 -type d | sed 's|^\./||; s|$$|/|') > $(OVERLAY_LIST)
+endef
 
 # Verbosity
 ifeq ($(V),1)
@@ -62,6 +79,7 @@ endif
 # accumulating files from earlier builds and other architectures
 install-summary: build packages
 	@mkdir -p $(INITRD_BIN)
+	@$(call remove_overlay)
 	@rm -rf $(INITRD_ROOT)/usr
 ifeq ($(V),1)
 	@echo "Installing userland binaries/rootfs to initrd..."
@@ -72,7 +90,7 @@ ifeq ($(V),1)
 		echo "No binaries to install"; \
 	fi
 	@if [ -d "$(ROOTFS_DIR)" ] && [ -n "$$(ls -A $(ROOTFS_DIR) 2>/dev/null)" ]; then \
-		cp -a $(ROOTFS_DIR)/. $(INITRD_ROOT)/; \
+		$(call install_overlay); \
 		echo "Installed rootfs overlay from $(ROOTFS_DIR)"; \
 	else \
 		echo "No rootfs overlay to install"; \
@@ -85,7 +103,7 @@ else
 		bincount=0; \
 	fi; \
 	if [ -d "$(ROOTFS_DIR)" ] && [ -n "$$(ls -A $(ROOTFS_DIR) 2>/dev/null)" ]; then \
-		cp -a $(ROOTFS_DIR)/. $(INITRD_ROOT)/; \
+		$(call install_overlay); \
 		rootfsword=", rootfs overlay installed"; \
 	else \
 		rootfsword=""; \
@@ -99,6 +117,7 @@ clean:
 	@echo "Cleaning userland build artifacts..."
 	@$(MAKE) -C lib clean ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
 	@$(MAKE) -C apps clean ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
+	@$(call remove_overlay)
 	@rm -rf build
 
 include mk/toolchain.mk
