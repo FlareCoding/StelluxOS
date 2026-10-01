@@ -8,10 +8,13 @@
 
 source https://github.com/FlareCoding/StelluxOS/releases/download
 
-release packages-2026.09.03.1
+release packages-2026.10.01.1
 binutils 2.45-1 aarch64 675fffaaf7fdc88b48fc9fa386703beb4b71a0472fe2c0613aa90692fab4792b
 binutils 2.45-1 x86_64 dc63ca5ee9a8812814c7d9b504ecf42cc8b7d8f5b31fbf9a44dca37115fc3339
+chromium 151.0.7922.137-1 aarch64 f376e1c3f07e03abfa775239d5ba056015c7ff08bed57ae2e47e9c1b78e074d7
 gcc 14.3.0-1 aarch64 db675605a8bda46ce0958c0377b8c2ab84d4f9b0fe071376751f8368028b1359
 gcc 14.3.0-1 x86_64 13744f4caa32b9353d16e9c0c4f153a32efb3f701e3ae12578693129b0d9aa11
 python 3.12.8-1 aarch64 28c31549416f02bafc000c9a280ff34459179c26bd9a5f2db49ee30d55cdcbec
 python 3.12.8-1 x86_64 0c3eaeedad05d2347d08d1db31ca00acb2ba445f41675f62d8b7f22b949d2201
+recipe toolchain cec0806f9588eaab89d64f7cc51805be050769b6
+recipe chromium d9eabefde648f200129fb0adbded9ef88a731531
