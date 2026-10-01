@@ -137,7 +137,7 @@ endif
         run-qemu-x86_64-debug-headless run-qemu-aarch64-debug-headless \
         connect-gdb-x86_64 connect-gdb-aarch64 \
         deps limine musl libcxx rpi4-firmware toolchain-check \
-        packages-list packages-build packages-publish packages-pin help
+        packages-list packages-build packages-plan packages-publish packages-pin help
 
 # Default target
 all: help
@@ -567,6 +567,11 @@ ARCHES ?= x86_64 aarch64
 packages-build:
 	$(Q)[ -n "$(PACKAGES_SELECTED)" ] || { echo "no packages selected"; exit 1; }
 	$(Q)./packages/build.sh "$(ARCHES)" $(PACKAGES_SELECTED)
+
+# Prints the publish workflow's build matrix for the selected packages
+packages-plan:
+	$(Q)[ -n "$(PACKAGES_SELECTED)" ] || { echo "no packages selected"; exit 1; }
+	$(Q)./packages/plan.sh "$(ARCHES)" $(PACKAGES_SELECTED)
 
 # Publishes a complete package release, normally done by the
 # Developer Packages workflow instead
