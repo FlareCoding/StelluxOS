@@ -122,10 +122,8 @@ mcopy -i "$IMG"@@1M "$LIMINE_DIR/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$IMG"@@1M "$KERNEL" ::/kernel.elf
 mcopy -i "$IMG"@@1M "$LIMINE_DIR/limine.conf" ::/limine.conf
 
-INITRD_CPIO="$PROJECT_DIR/build/initrd.cpio"
-info "Creating initrd.cpio..."
-mkdir -p "$PROJECT_DIR/build"
-(cd "$PROJECT_DIR/initrd" && find . -mindepth 1 | cpio -o -H newc > "$INITRD_CPIO" 2>/dev/null)
+INITRD_CPIO="$PROJECT_DIR/build/initrd/x86_64/initrd.cpio"
+make -C "$PROJECT_DIR" initrd ARCH=x86_64 RELEASE=1 PACKAGES="$PACKAGES"
 mcopy -i "$IMG"@@1M "$INITRD_CPIO" ::/initrd.cpio
 
 # --- Step 3: Unmount & flash ---
