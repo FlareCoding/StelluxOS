@@ -1,0 +1,51 @@
+# Applied in order with patch -p1 from the root of the Chromium tree.
+#
+# alpine/ and copium/ are Alpine's musl packaging of this release, taken
+# verbatim. Left out on purpose: patches that only serve Alpine's system
+# copies of ffmpeg, simdutf, and minizip (Stellux links the bundled ones),
+# plus test and debugger patches. stellux/ holds this port's own changes,
+# each explained above its first hunk.
+
+alpine/0001-hotfix-ignore-a-new-warning-in-rust-1.89.patch
+alpine/compiler.patch
+alpine/disable-dns_config_service.patch
+alpine/fstatat-32bit.patch
+alpine/generic-sensor-include.patch
+alpine/musl-sandbox.patch
+alpine/musl-tid-caching.patch
+alpine/no-execinfo.patch
+alpine/no-mallinfo.patch
+alpine/no-res-ninit-nclose.patch
+alpine/no-sandbox-settls.patch
+alpine/partalloc-no-tagging-arm64.patch
+alpine/pvalloc.patch
+alpine/temp-failure-retry.patch
+
+copium/cr138-node-version-check.patch
+copium/cr140-musl-prctl.patch
+copium/cr143-libsync-__BEGIN_DECLS.patch
+copium/cr145-iwyu-dev_t.patch
+copium/cr145-musl-unfortify-SkDescriptor.patch
+copium/cr146-swiftshader-unfortify-memset-memcpy.patch
+copium/cr146-unfortify-blink-display_item_list.patch
+copium/cr147-is-musl-libcxx.patch
+copium/cr148-rust-1.95-bytemuck.patch
+copium/cr148-v8-no-san-trap.patch
+copium/cr149-musl-alloc-shim-dispatch.patch
+copium/cr149-rust-toolchain-var.patch
+copium/cr151-dawn-armv7-is-real.patch
+copium/cr151-dawn-cgo_enabled.patch
+copium/cr151-metrics-metadata-histograms.patch
+
+stellux/0001-static-executables.patch
+stellux/0002-dri-without-pkg-config.patch
+stellux/0003-stack-traces-without-execinfo.patch
+stellux/0004-fontconfig-without-random-r.patch
+stellux/0005-close-without-dlsym.patch
+stellux/0006-bundled-expat-for-static.patch
+stellux/0007-trust-store-without-nss.patch
+stellux/0008-libc-interceptor-for-static.patch
+stellux/0009-sandbox-host-single-process.patch
+stellux/0010-ozone-platform-stellux.patch
+stellux/0011-fontconfig-cache-generator-deps.patch
+stellux/0012-test-support-without-trace-processor.patch

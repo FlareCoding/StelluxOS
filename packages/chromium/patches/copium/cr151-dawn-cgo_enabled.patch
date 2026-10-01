@@ -1,0 +1,36 @@
+From 903927f79b4b545839082f5688a99c8e672b54ad Mon Sep 17 00:00:00 2001
+From: LN Liberda <lauren@selfisekai.rocks>
+Date: Thu, 30 Jul 2026 14:28:48 +0200
+Subject: [PATCH] CGO_ENABLED=1
+
+---
+ tools/generate-sources-gn.py | 2 +-
+ tools/run.py                 | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/third_party/dawn/tools/generate-sources-gn.py b/third_party/dawn/tools/generate-sources-gn.py
+index 85d11bbd84..2db41707a4 100644
+--- a/third_party/dawn/tools/generate-sources-gn.py
++++ b/third_party/dawn/tools/generate-sources-gn.py
+@@ -67,7 +67,7 @@ def main() -> int:
+     # See https://crbug.com/519743871
+     os.environ['GO111MODULE'] = 'on'
+     # Disable CGO since it causes problems when cross-compiling (see https://crbug.com/516926043).
+-    os.environ['CGO_ENABLED'] = '0'
++    os.environ['CGO_ENABLED'] = '1'
+ 
+     proc = subprocess.run(cmd, check=False, cwd=DAWN_ROOT)
+     return proc.returncode
+diff --git a/third_party/dawn/tools/run.py b/third_party/dawn/tools/run.py
+index f5ce75ed59..222bca6aaf 100644
+--- a/third_party/dawn/tools/run.py
++++ b/third_party/dawn/tools/run.py
+@@ -76,7 +76,7 @@ def main() -> int:
+     cmd.extend(unknown_args)
+ 
+     # Disable CGO since it causes problems when cross-compiling (see https://crbug.com/516926043).
+-    os.environ['CGO_ENABLED'] = '0'
++    os.environ['CGO_ENABLED'] = '1'
+     # Force Go modules to be ON so package imports within the dawn module
+     # resolve correctly, overriding any potential system-wide or user-wide
+     # environment settings like GO111MODULE=off.

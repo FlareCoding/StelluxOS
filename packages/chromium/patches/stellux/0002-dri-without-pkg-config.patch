@@ -1,0 +1,41 @@
+A static build loads no DRI drivers, so it names a fixed driver directory
+instead of asking pkg-config for Mesa's.
+
+--- a/build/config/linux/dri/BUILD.gn
++++ b/build/config/linux/dri/BUILD.gn
+@@ -2,17 +2,26 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/gcc/static.gni")
+ import("//build/config/linux/pkg_config.gni")
+ 
+ assert(is_linux, "This file should only be referenced on Linux")
+ 
+-pkg_config("dri") {
+-  packages = [ "dri" ]
+-  dri_driver_dir = exec_script(pkg_config_script,
+-                               common_pkg_config_args + pkg_config_args + [
+-                                     "--dridriverdir",
+-                                     "dri",
+-                                   ],
+-                               "string")
+-  defines = [ "DRI_DRIVER_DIR=\"$dri_driver_dir\"" ]
++if (static_executables) {
++  # The directory only names DRI drivers for the GPU sandbox allowlist, and a
++  # static build loads no drivers, so pkg-config and Mesa are not needed.
++  config("dri") {
++    defines = [ "DRI_DRIVER_DIR=\"/usr/lib/xorg/modules/dri\"" ]
++  }
++} else {
++  pkg_config("dri") {
++    packages = [ "dri" ]
++    dri_driver_dir = exec_script(pkg_config_script,
++                                 common_pkg_config_args + pkg_config_args + [
++                                       "--dridriverdir",
++                                       "dri",
++                                     ],
++                                 "string")
++    defines = [ "DRI_DRIVER_DIR=\"$dri_driver_dir\"" ]
++  }
+ }

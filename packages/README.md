@@ -62,6 +62,20 @@ several packages: `toolchain` builds the GCC toolchain and CPython in one
 container run and can emit gcc, binutils and python, leaving in the cache
 only the ones it was asked for.
 
+## The chromium recipe
+
+`chromium` is an `extra` package: Chromium's `content_shell` built for
+Stellux with an Ozone platform for the display manager. It is built
+natively, never cross: `make packages-build PACKAGES="none chromium"
+ARCHES=<arch>` on a machine of that architecture with Docker, about 60 GB
+of disk and the memory `BUILD_MEMORY` in `packages/chromium/versions.sh`
+names. The source tree is 10 GB and a clean build takes hours, so the
+recipe keeps its container and volume between runs. `STEPS` and `DETACH`
+are described in `packages/chromium/build.sh`. The package brings its own
+dock launcher through the desktop's drop-in directory. A version bump
+means refreshing `patches/alpine` and `patches/copium` from the aports
+commit that packages the same release.
+
 ## Building and publishing
 
     make packages-build [PACKAGES=...] [ARCHES=x86_64]

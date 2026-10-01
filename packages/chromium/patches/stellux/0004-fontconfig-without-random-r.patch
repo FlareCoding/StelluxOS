@@ -1,0 +1,13 @@
+musl has no random_r, so the bundled fontconfig uses random instead.
+
+--- a/third_party/fontconfig/include/meson-config.h
++++ b/third_party/fontconfig/include/meson-config.h
+@@ -96,7 +96,7 @@
+ 
+ #define HAVE_RANDOM 1
+ 
+-#define HAVE_RANDOM_R 1
++/* musl has no random_r, fontconfig falls back to random */
+ 
+ #define HAVE_RAND_R 1
+ 
