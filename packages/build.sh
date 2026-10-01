@@ -1,100 +1,100 @@
 #!/bin/sh
-# Builds the Stellux developer packages in Docker and drops the archives
-# into userland/toolchain/packages/, which make clean leaves alone. Runs
-# on developer machines and on the publish workflow alike.
+# Builds the packages whose version-release packages.lock does not pin yet and
+# fetches the pinned archives of the rest, running each recipe once per architecture.
 #
-# Usage: packages/build.sh [x86_64] [aarch64]
-# With no arguments both architectures are built.
+# Usage: packages/build.sh "<arch ...>" <package ...>
+# Called by make packages-build with the packages PACKAGES selects.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-. "$SCRIPT_DIR/versions.sh"
+REGISTRY="$SCRIPT_DIR/packages.conf"
+LOCK="$SCRIPT_DIR/packages.lock"
+CACHE="$SCRIPT_DIR/../userland/toolchain/packages"
 
-ARCHES="${*:-x86_64 aarch64}"
-TOP="$REPO_ROOT/userland/toolchain/packages"
-SOURCES_CACHE="$TOP/sources"
-IMAGE_TAG="stellux-packages"
+arches="${1:?usage: build.sh \"<arch ...>\" <package ...>}"
+shift
+[ $# -gt 0 ] || { echo "packages: no packages selected" >&2; exit 1; }
 
-if ! docker info > /dev/null 2>&1; then
-    echo "packages: docker daemon unavailable, start Docker first" >&2
-    exit 1
-fi
+source="$(awk '$1 == "source" { print $2 }' "$LOCK")"
+release="$(awk '$1 == "release" { print $2 }' "$LOCK")"
 
-mkdir -p "$TOP" "$SOURCES_CACHE"
-
-# Archive timestamps come from the recipe's last change so identical
-# inputs produce identical bytes on every machine. The lock and the docs
-# are not inputs, so pinning a release cannot alter the next build.
-SOURCE_DATE_EPOCH="$(git -C "$REPO_ROOT" log -1 --format=%ct -- packages \
-    ':(exclude)packages/packages.lock' ':(exclude)packages/README.md' 2>/dev/null || echo 0)"
-
-docker build -q -t "$IMAGE_TAG" \
-    --build-arg "ALPINE_IMAGE=$ALPINE_IMAGE" \
-    --build-arg "ALPINE_PKGS=$ALPINE_PKGS" \
-    "$SCRIPT_DIR" > /dev/null
-
-# One pristine clone at the pinned commit, local-cloned per stage so
-# every build tree gets consistent file timestamps from extraction
-if [ ! -d "$TOP/mcm" ]; then
-    git clone "$MCM_REPO" "$TOP/mcm"
-fi
-git -C "$TOP/mcm" fetch -q origin "$MCM_COMMIT" 2>/dev/null || true
-git -C "$TOP/mcm" checkout -q "$MCM_COMMIT"
-
-# Sources built outside musl-cross-make are fetched and verified here,
-# once, and shared with every architecture through the cache
-python_tarball="$SOURCES_CACHE/Python-$PYTHON_VER.tar.xz"
-if [ ! -f "$python_tarball" ]; then
-    curl -fsSL --retry 3 -o "$python_tarball.tmp" "$PYTHON_URL"
-    mv "$python_tarball.tmp" "$python_tarball"
-fi
-echo "$PYTHON_SHA256  $python_tarball" | shasum -a 256 -c - > /dev/null || {
-    echo "packages: $python_tarball does not match its pinned checksum" >&2
-    exit 1
+recipe_of() {
+    awk -v n="$1" '$1 == n { print $3 }' "$REGISTRY"
 }
 
-for arch in $ARCHES; do
-    work="$TOP/work/$arch"
-    echo "=== packages: building $arch ==="
+# The version-release the recipe would build for a package today
+current_version() {
+    (. "$SCRIPT_DIR/$(recipe_of "$1")/versions.sh" && package_version "$1")
+}
 
-    rm -rf "$work"
-    mkdir -p "$work"
-    cp "$SCRIPT_DIR/versions.sh" "$work/versions.sh"
-    cp "$SCRIPT_DIR/container/build.sh" "$work/build.sh"
+# The version-release the lock pins for a package and architecture, if any
+pinned_version() {
+    awk -v n="$1" -v a="$2" '$1 == n && $3 == a { print $2 }' "$LOCK"
+}
 
-    for stage in mcm-stage1 mcm-stage2; do
-        git clone -q "$TOP/mcm" "$work/$stage"
-        patch -s -d "$work/$stage" -p1 < "$SCRIPT_DIR/patches/mcm-prefix.patch"
-        cp "$SCRIPT_DIR"/hashes/* "$work/$stage/hashes/"
-        mkdir -p "$work/$stage/sources"
-        find "$SOURCES_CACHE" -maxdepth 1 -type f \
-            -exec cp {} "$work/$stage/sources/" \;
-    done
+pinned_sha256() {
+    awk -v n="$1" -v a="$2" '$1 == n && $3 == a { print $4 }' "$LOCK"
+}
 
-    # Stellux patches apply only to the native stage, since stage 1
-    # tools run on the build host, not on the target
-    for d in "$SCRIPT_DIR"/patches/*/; do
-        name="$(basename "$d")"
-        mkdir -p "$work/mcm-stage2/patches/$name"
-        cp "$d"/* "$work/mcm-stage2/patches/$name/"
-    done
+# Downloads the pinned archive unless the cache already holds it
+fetch_pinned() {
+    file="$1-$(pinned_version "$1" "$2")-$2.tar.zst"
+    if [ -f "$CACHE/$file" ]; then
+        return 0
+    fi
 
-    mkdir -p "$work/python"
-    cp "$python_tarball" "$SCRIPT_DIR"/python/* "$work/python/"
-    cp "$SCRIPT_DIR"/patches/python-"$PYTHON_VER"/*.patch "$work/python/"
+    mkdir -p "$CACHE"
+    echo "=== packages: fetching $file from $release ==="
+    curl -fsSL --retry 3 -o "$CACHE/$file.tmp" "$source/$release/$file"
+    echo "$(pinned_sha256 "$1" "$2")  $CACHE/$file.tmp" | shasum -a 256 -c - > /dev/null || {
+        rm -f "$CACHE/$file.tmp"
+        echo "packages: downloaded $file does not match packages.lock" >&2
+        exit 1
+    }
+    mv "$CACHE/$file.tmp" "$CACHE/$file"
+}
 
-    docker run --rm -v "$work:/host" \
-        -e "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
-        "$IMAGE_TAG" "$arch"
-
-    # Keep downloaded tarballs so later builds skip the mirrors
-    find "$work/mcm-stage1/sources" -maxdepth 1 -type f \
-        -exec cp {} "$SOURCES_CACHE/" \;
-
-    cp "$work"/dist/*.tar.zst "$TOP/"
-    echo "=== packages: $arch done ==="
+for package in "$@"; do
+    [ -n "$(recipe_of "$package")" ] || { echo "packages: $package is not in $REGISTRY" >&2; exit 1; }
 done
 
-echo "packages: archives in userland/toolchain/packages/"
-(cd "$TOP" && shasum -a 256 *.tar.zst)
+# The selected packages of one recipe that the lock does not pin at their current version
+unpublished_for() {
+    for package in "$@"; do
+        if [ "$(recipe_of "$package")" = "$recipe" ] &&
+           [ "$(current_version "$package")" != "$(pinned_version "$package" "$arch")" ]; then
+            printf '%s ' "$package"
+        fi
+    done
+}
+
+summary=""
+for arch in $arches; do
+    recipes=""
+    for package in "$@"; do
+        current="$(current_version "$package")"
+        if [ "$current" = "$(pinned_version "$package" "$arch")" ]; then
+            fetch_pinned "$package" "$arch"
+            summary="$summary
+$package $arch: $current reused from $release"
+            continue
+        fi
+
+        recipe="$(recipe_of "$package")"
+        case " $recipes " in *" $recipe "*) ;; *) recipes="$recipes $recipe" ;; esac
+        summary="$summary
+$package $arch: $current built"
+    done
+
+    for recipe in $recipes; do
+        # shellcheck disable=SC2046
+        "$SCRIPT_DIR/$recipe/build.sh" "$arch" $(unpublished_for "$@")
+        for package in $(unpublished_for "$@"); do
+            [ -f "$CACHE/$package-$(current_version "$package")-$arch.tar.zst" ] ||
+                { echo "packages: the $recipe recipe did not emit $package for $arch" >&2; exit 1; }
+        done
+    done
+done
+
+echo "=== packages: done ===$summary"
+(cd "$CACHE" && shasum -a 256 *.tar.zst)

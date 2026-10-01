@@ -561,10 +561,12 @@ musl:
 	@echo ""
 	@echo "musl $(MUSL_VERSION) ready for both architectures."
 
-# Builds the Stellux developer packages, programs that run on the target,
-# in Docker. See packages/README.md.
+# Builds the packages PACKAGES selects whose version packages.lock does not
+# pin yet, for ARCHES, and fetches the rest. See packages/README.md.
+ARCHES ?= x86_64 aarch64
 packages-build:
-	$(Q)./packages/build.sh $(ARCHES)
+	$(Q)[ -n "$(PACKAGES_SELECTED)" ] || { echo "no packages selected"; exit 1; }
+	$(Q)./packages/build.sh "$(ARCHES)" $(PACKAGES_SELECTED)
 
 # Publishes the built packages as a GitHub release, normally done by the
 # Developer Packages workflow instead
@@ -913,7 +915,7 @@ help:
 	@echo "  make image PACKAGES=\"-python\"  Select the prebuilt developer packages in the image: the default tier"
 	@echo "                               plus the names given, minus -names, or none/all (see packages/README.md)"
 	@echo "  make packages-list ARCH=<arch> PACKAGES=\"...\" Show the packages and archives PACKAGES selects"
-	@echo "  make packages-build [ARCHES=x86_64] Build the Stellux developer packages in Docker (slow, publishers only)"
+	@echo "  make packages-build [PACKAGES=...] [ARCHES=x86_64] Build the selected packages the lock does not pin (slow)"
 	@echo "  make packages-publish RELEASE=<tag> Publish built packages as a GitHub release"
 	@echo "  make packages-pin RELEASE=<tag>  Point packages.lock at a published release"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
