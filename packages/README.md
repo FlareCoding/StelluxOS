@@ -75,8 +75,17 @@ recipe's `versions.sh` whenever the recipe changes, otherwise the next
 build reuses the published archive. Both architectures are built unless
 `ARCHES` says otherwise.
 
-`make packages-publish` uploads the archives from the cache to a new
-GitHub release. The `packages` workflow does the same on GitHub runners
-and is the normal way to publish. After a release,
-`make packages-pin RELEASE=<tag>` rewrites `packages.lock` from the
-release's checksums; review the diff, boot the result once, and commit it.
+`make packages-publish RELEASE=<tag>` creates a GitHub release holding a
+complete set: every registry package for every architecture it is built
+for. Archives in the cache are uploaded as they are and the rest are
+taken from the pinned release, so building one package is enough for a
+release the lock can point at. `DRY_RUN=1` shows the set without
+creating the release. The `packages` workflow does the same on GitHub
+runners and is the normal way to publish.
+
+A release also records the committed tree of each recipe it was built
+from, which `make packages-pin RELEASE=<tag>` copies into `packages.lock`
+along with the checksums. A build then refuses to reuse a published
+archive whose recipe changed since, so a recipe change without a release
+bump is caught instead of shipping a stale archive. After pinning, review
+the diff, boot the result once, and commit it.

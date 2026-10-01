@@ -15,11 +15,15 @@ SOURCE="$(awk '$1 == "source" { print $2 }' "$LOCK")"
 [ -n "$SOURCE" ] || { echo "pin: no source line in $LOCK" >&2; exit 1; }
 
 sums="$(mktemp)"
-trap 'rm -f "$sums" "$sums.lock"' EXIT
+trap 'rm -f "$sums" "$sums.recipes" "$sums.lock"' EXIT
 if ! curl -fsSL -o "$sums" "$SOURCE/$TAG/SHA256SUMS"; then
     echo "pin: no SHA256SUMS at $SOURCE/$TAG, is the release published?" >&2
     exit 1
 fi
+
+# Releases record the tree each recipe was built from, which the build uses to
+# refuse reusing an archive after its recipe changed without a release bump
+curl -fsSL -o "$sums.recipes" "$SOURCE/$TAG/RECIPES" 2>/dev/null || : > "$sums.recipes"
 
 # Archive names are <name>-<version>-<release>-<arch>.tar.zst, read from
 # the right so package names may themselves contain dashes
@@ -34,6 +38,9 @@ fi
         ver="${stem##*-}"; name="${stem%-*}"
         echo "$name $ver-$rel $arch $sum"
     done < "$sums" | sort -k1,1 -k3,3
+    while read -r recipe hash; do
+        echo "recipe $recipe $hash"
+    done < "$sums.recipes"
 } > "$sums.lock"
 mv "$sums.lock" "$LOCK"
 
