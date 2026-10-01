@@ -129,7 +129,7 @@ jobs:
             ${{ matrix.mode == 'release' && 'RELEASE=1' || '' }}
 
       - name: Build userland
-        run: make userland ARCH=${{ matrix.arch }}
+        run: make userland ARCH=${{ matrix.arch }} PACKAGES=none
 
       - name: Verify kernel ELF exists
         run: |
@@ -215,7 +215,7 @@ jobs:
         run: make compiler-rt
 
       - name: Build kernel, userland, and disk image
-        run: make image ARCH=${{ matrix.arch }}
+        run: make image ARCH=${{ matrix.arch }} PACKAGES=none
 
       - name: Verify build artifacts
         run: |
@@ -306,7 +306,7 @@ jobs:
 
       - name: Run unit tests
         # binutils is small, so fetching it here keeps the package path exercised
-        run: make test ARCH=${{ matrix.arch }} PACKAGES=binutils 2>&1 | tee test-log-${{ matrix.arch }}.txt
+        run: make test ARCH=${{ matrix.arch }} PACKAGES="none binutils" 2>&1 | tee test-log-${{ matrix.arch }}.txt
 
       - name: Upload test log
         if: always()

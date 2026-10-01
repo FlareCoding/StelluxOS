@@ -1,6 +1,5 @@
-# Fetches the Stellux developer packages named in PACKAGES and unpacks them
-# into the rootfs overlay. Archives are cached in userland/toolchain/packages
-# and verified against packages.lock, see packages/README.md.
+# Fetches the packages PACKAGES selects and unpacks them into the rootfs overlay.
+# Archives are cached in userland/toolchain/packages, see packages/README.md.
 
 include $(USERLAND_ROOT)/../packages/packages.mk
 
@@ -28,7 +27,8 @@ $(call pkg_archive,$(1)):
 		{ echo "packages: $(1) is not cached and packages.lock pins no release"; exit 1; }
 	$(UQ)mkdir -p $(PACKAGES_CACHE)
 	$(UQ)echo "[PKG] fetching $(call pkg_file,$(1))"
-	$(UQ)curl -fsSL --retry 3 -o $$@.tmp $(call pkg_url,$(1)) || { rm -f $$@.tmp; exit 1; }
+	$(UQ)curl -fsSL --retry 3 -o $$@.tmp $(call pkg_url,$(1)) || { rm -f $$@.tmp; \
+		echo "packages: could not download $(call pkg_file,$(1)), PACKAGES=none builds without packages"; exit 1; }
 	$(UQ)echo "$(call pkg_sha256,$(1))  $$@.tmp" | shasum -a 256 -c - > /dev/null || \
 		{ rm -f $$@.tmp; echo "packages: downloaded $(call pkg_file,$(1)) does not match packages.lock"; exit 1; }
 	$(UQ)mv $$@.tmp $$@
@@ -47,17 +47,17 @@ $(call pkg_stamp,$(1)): $(call pkg_archive,$(1))
 	@echo "[PKG] $(1) $(call pkg_version,$(1)) ($(ARCH))"
 endef
 
-$(foreach p,$(PACKAGES),$(eval $(call check_package,$(p))))
-$(foreach p,$(PACKAGES),$(eval $(call package_fetch_rule,$(p))))
-$(foreach p,$(PACKAGES),$(eval $(call package_stage_rule,$(p))))
+$(foreach p,$(PACKAGES_SELECTED),$(eval $(call check_package,$(p))))
+$(foreach p,$(PACKAGES_SELECTED),$(eval $(call package_fetch_rule,$(p))))
+$(foreach p,$(PACKAGES_SELECTED),$(eval $(call package_stage_rule,$(p))))
 
-# PACKAGES alone decides what is staged, so packages left by an earlier
-# build that this one does not name are removed from the overlay again
-packages: $(foreach p,$(PACKAGES),$(call pkg_stamp,$(p)))
+# The selection alone decides what is staged, so packages left by an earlier
+# build that this one does not select are removed from the overlay again
+packages: $(foreach p,$(PACKAGES_SELECTED),$(call pkg_stamp,$(p)))
 	$(UQ)for list in $(PACKAGES_STATE)/*.files; do \
 		[ -f "$$list" ] || continue; \
 		name=$$(basename $$list .files); \
-		case " $(PACKAGES) " in *" $$name "*) continue ;; esac; \
+		case " $(PACKAGES_SELECTED) " in *" $$name "*) continue ;; esac; \
 		$(call pkg_unstage,$$name); \
 		echo "[PKG] removed $$name ($(ARCH))"; \
 	done

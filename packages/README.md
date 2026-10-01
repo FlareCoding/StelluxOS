@@ -2,16 +2,32 @@
 
 Stellux programs too heavy to build on every clone, such as the GCC
 toolchain and CPython, ship as packages: static binaries built for Stellux once in a
-container, published on a GitHub release, and pulled into the image on
-request. A plain `make image` stays lean and needs none of them.
+container, published on a GitHub release, and pulled into the image.
 
-## Using packages
+## The registry
 
-    make image PACKAGES="gcc binutils python"
+`packages.conf` lists every package and its tier. Packages in the
+`default` tier are part of every image unless left out, packages in the
+`extra` tier are included only by name.
 
-Fetches any archive missing from `userland/toolchain/packages/`, checks
-it against the pinned sha256, and unpacks it into the rootfs overlay
-that the userland install step copies onto the initrd. The cache
+## Selecting packages
+
+`PACKAGES` selects packages the same way everywhere: it starts from the
+default tier, a name adds a package, `-name` removes one, and `none` or
+`all` replaces the default tier as the starting point.
+
+    make image                          the default tier
+    make image PACKAGES="-python"       the default tier without python
+    make image PACKAGES="none gcc"      gcc alone
+    make image PACKAGES=none            no packages at all
+    make packages-list PACKAGES="all"   what every package resolves to
+
+A name the registry does not know fails the build at once. `make test`
+builds its images with `PACKAGES=none` unless told otherwise.
+
+Fetching gets any archive missing from `userland/toolchain/packages/`,
+checks it against the pinned sha256, and unpacks it into the rootfs
+overlay that the userland install step copies onto the initrd. The cache
 survives `make clean`, so the download happens once per version.
 Unpacking needs `zstd` on the host, which `make deps` installs.
 
