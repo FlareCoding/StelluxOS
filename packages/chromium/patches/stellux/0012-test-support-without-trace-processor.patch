@@ -1,0 +1,26 @@
+content_shell links base's test support, whose trace processor only works as
+a shared library. Static builds leave the trace processor out, and nothing
+content_shell runs uses it.
+
+--- a/base/test/BUILD.gn
++++ b/base/test/BUILD.gn
+@@ -4,6 +4,7 @@
+ 
+ import("//build/compiled_action.gni")
+ import("//build/config/features.gni")
++import("//build/config/gcc/static.gni")
+ import("//build/config/ui.gni")
+ import("//build/rust/rust_static_library.gni")
+ import("//build/rust/rust_static_library.gni")
+@@ -271,6 +272,11 @@
+   # that would require special support in gn2bp (AOSP Cronet).
+   if (!is_cronet_build) {
+     public_deps += [ "//third_party/perfetto:perfetto_test_support" ]
++  }
++
++  # The trace processor hides its duplicate symbols in a shared library, which
++  # a static build cannot link, so static builds go without it
++  if (!is_cronet_build && !static_executables) {
+     public_deps += [ ":test_trace_processor" ]
+     sources += [
+       "tracing/test_trace_processor.cc",

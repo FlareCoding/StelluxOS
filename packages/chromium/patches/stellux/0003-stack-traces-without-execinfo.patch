@@ -1,0 +1,38 @@
+musl has no execinfo, so stack traces print bare addresses for
+llvm-symbolizer to resolve against the unstripped binary.
+
+--- a/base/debug/stack_trace_posix.cc
++++ b/base/debug/stack_trace_posix.cc
+@@ -1073,6 +1073,17 @@
+ #if defined(HAVE_BACKTRACE)
+   PrintBacktraceOutputHandler handler;
+   ProcessBacktrace(addresses(), prefix_string, &handler);
++#else
++  // Without libc symbolization every frame prints as a bare address, which
++  // llvm-symbolizer resolves afterwards against the unstripped binary.
++  char buf[32];
++  for (const void* address : addresses()) {
++    PrintToStderr(prefix_string.c_str());
++    PrintToStderr("0x");
++    internal::itoa_r(reinterpret_cast<intptr_t>(address), 16, 12, buf);
++    PrintToStderr(buf);
++    PrintToStderr("\n");
++  }
+ #endif
+ }
+ 
+@@ -1082,6 +1093,14 @@
+     cstring_view prefix_string) const {
+   StreamBacktraceOutputHandler handler(os);
+   ProcessBacktrace(addresses(), prefix_string, &handler);
++}
++#else
++void StackTrace::OutputToStreamWithPrefixImpl(
++    std::ostream* os,
++    cstring_view prefix_string) const {
++  for (const void* address : addresses()) {
++    (*os) << prefix_string << address << "\n";
++  }
+ }
+ #endif
+ 

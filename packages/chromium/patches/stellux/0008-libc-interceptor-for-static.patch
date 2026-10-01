@@ -1,0 +1,61 @@
+In a static binary the sandbox's localtime and getaddrinfo overrides replace
+libc's own and cannot reach the originals, so static builds leave them out.
+
+--- a/sandbox/linux/BUILD.gn
++++ b/sandbox/linux/BUILD.gn
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/gcc/static.gni")
+ import("//sandbox/features.gni")
+ import("//testing/test.gni")
+ 
+@@ -371,6 +372,12 @@
+       "services/libc_interceptor.cc",
+       "services/libc_interceptor.h",
+     ]
++
++    # A static binary has no next object for dlsym to find libc in, so
++    # libc keeps its own localtime and getaddrinfo there.
++    if (static_executables) {
++      defines += [ "SANDBOX_NO_LIBC_OVERRIDES" ]
++    }
+   }
+ }
+ 
+--- a/sandbox/linux/services/libc_interceptor.cc
++++ b/sandbox/linux/services/libc_interceptor.cc
+@@ -287,6 +287,7 @@
+     g_libc_localtime64_r = g_libc_localtime_r;
+ }
+ 
++#if !defined(SANDBOX_NO_LIBC_OVERRIDES)
+ // Define localtime_override() function with asm name "localtime", so that all
+ // references to localtime() will resolve to this function. Notice that we need
+ // to set visibility attribute to "default" to export the symbol, as it is set
+@@ -390,6 +391,8 @@
+   return res;
+ }
+ 
++#endif  // !defined(SANDBOX_NO_LIBC_OVERRIDES)
++
+ void SetAmZygoteOrRenderer(bool enable, int backchannel_fd) {
+   g_am_zygote_or_renderer = enable;
+   g_backchannel_fd = backchannel_fd;
+@@ -414,6 +417,7 @@
+ std::atomic<bool> g_getaddrinfo_discouraged{false};
+ }  // namespace
+ 
++#if !defined(SANDBOX_NO_LIBC_OVERRIDES)
+ extern "C" {
+ __attribute__((visibility("default"), noinline)) int getaddrinfo(
+     const char* node,
+@@ -429,6 +433,7 @@
+   return CALL_FUNC(getaddrinfo, node, service, hints, res);
+ }
+ }
++#endif  // !defined(SANDBOX_NO_LIBC_OVERRIDES)
+ 
+ void DiscourageGetaddrinfo() {
+   g_getaddrinfo_discouraged = true;

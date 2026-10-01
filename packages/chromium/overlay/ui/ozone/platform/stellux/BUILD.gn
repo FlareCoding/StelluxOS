@@ -1,0 +1,48 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+visibility = [ "//ui/ozone/*" ]
+
+# Windows on the Stellux display manager, stlxdm. Frames are composited in
+# software and presented through the libstlxwin protocol client.
+source_set("stellux") {
+  sources = [
+    "client_native_pixmap_factory_stellux.cc",
+    "client_native_pixmap_factory_stellux.h",
+    "ozone_platform_stellux.cc",
+    "ozone_platform_stellux.h",
+    "stellux_connection.cc",
+    "stellux_connection.h",
+    "stellux_frame_queue.cc",
+    "stellux_frame_queue.h",
+    "stellux_screen.cc",
+    "stellux_screen.h",
+    "stellux_surface_factory.cc",
+    "stellux_surface_factory.h",
+    "stellux_window.cc",
+    "stellux_window.h",
+  ]
+
+  defines = [ "OZONE_IMPLEMENTATION" ]
+
+  deps = [
+    "//base",
+    "//skia",
+    "//third_party/stlxwin",
+    "//ui/base",
+    "//ui/base/cursor",
+    "//ui/base/cursor/mojom:cursor_type",
+    "//ui/base/ime",
+    "//ui/display",
+    "//ui/events",
+    "//ui/events:dom_keycode_converter",
+    "//ui/events/ozone/layout",
+    "//ui/events/platform",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//ui/ozone:ozone_base",
+    "//ui/ozone/common",
+    "//ui/platform_window",
+  ]
+}

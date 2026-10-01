@@ -1,0 +1,48 @@
+Adds a static_executables build argument. Stellux has no dynamic loader, so
+executables link fully static and position dependent, with LLVM's runtime.
+
+--- a/build/config/gcc/BUILD.gn
++++ b/build/config/gcc/BUILD.gn
+@@ -4,6 +4,7 @@
+ 
+ import("//build/config/c++/c++.gni")
+ import("//build/config/compiler/compiler.gni")
++import("//build/config/gcc/static.gni")
+ import("//build/config/sanitizers/sanitizers.gni")
+ import("//build/config/sysroot.gni")
+ import("//build/toolchain/toolchain.gni")
+@@ -93,7 +94,21 @@
+ # Settings for executables.
+ config("executable_config") {
+   configs = executable_and_shared_library_configs_
+-  ldflags = [ "-pie" ]
++
++  # Rust build scripts run on the build machine and expect a dynamic libc
++  if (static_executables && !toolchain_for_rust_host_build_tools) {
++    ldflags = [
++      "-static",
++      "-no-pie",
++
++      # GCC's static unwinder repeats routines that the compiler-rt builtins
++      # linked into every target already define
++      "--rtlib=compiler-rt",
++      "--unwindlib=libunwind",
++    ]
++  } else {
++    ldflags = [ "-pie" ]
++  }
+   if (is_android) {
+     ldflags += [
+       "-Bdynamic",
+--- /dev/null
++++ b/build/config/gcc/static.gni
+@@ -0,0 +1,9 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++declare_args() {
++  # Link executables fully static and position dependent, for systems whose
++  # program loader accepts only static ET_EXEC images.
++  static_executables = false
++}

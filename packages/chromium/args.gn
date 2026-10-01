@@ -1,0 +1,93 @@
+# GN args for content_shell on Stellux. target_cpu is appended by
+# container.sh from the build machine, since host and target always match.
+
+# Stellux has no dynamic loader, so everything links statically and every
+# third party library comes from Chromium's own bundled copy.
+static_executables = true
+is_component_build = false
+is_component_ffmpeg = false
+use_system_minigbm = false
+
+# Toolchain: Alpine's LLVM 22 and Rust through Chromium's unbundle toolchain,
+# the same arrangement as Alpine's own musl packaging.
+custom_toolchain = "//build/toolchain/linux/unbundle:default"
+host_toolchain = "//build/toolchain/linux/unbundle:default"
+clang_base_path = "/usr/lib/llvm22"
+clang_version = "22"
+clang_use_chrome_plugins = false
+is_clang = true
+is_musl = true
+use_sysroot = false
+use_custom_libcxx = true
+use_clang_modules = false
+use_safe_libstdcxx = false
+enable_rust = true
+rust_sysroot_absolute = "/usr"
+rust_bindgen_root = "/usr"
+rustc_version = "yes"
+
+# Alpine's node is newer than the one Chromium pins
+node_version_check = false
+
+# Release code with line tables, so crashes on Stellux symbolize on the host
+is_debug = false
+is_official_build = false
+symbol_level = 1
+blink_symbol_level = 0
+v8_symbol_level = 1
+dcheck_always_on = false
+treat_warnings_as_errors = false
+fatal_linker_warnings = false
+chrome_pgo_phase = 0
+use_thin_lto = false
+is_cfi = false
+enable_nocompile_tests = false
+disable_fieldtrial_testing_config = true
+blink_enable_generated_code_formatting = false
+enable_stripping = false
+
+# The stlxdm platform content_shell opens its windows on, and nothing else
+use_ozone = true
+ozone_auto_platforms = false
+ozone_platform = "stellux"
+ozone_platform_stellux = true
+angle_enable_vulkan = true
+angle_enable_swiftshader = true
+
+use_bundled_fontconfig = true
+icu_use_data_file = false
+v8_use_external_startup_data = false
+use_alsa = false
+use_bluez = false
+use_cups = false
+use_dbus = false
+use_gio = false
+use_kerberos = false
+use_libpci = false
+use_pulseaudio = false
+use_udev = false
+rtc_use_pipewire = false
+v8_enable_lazy_source_positions = false
+use_glib = false
+use_gtk = false
+use_pangocairo = false
+use_mold = false
+
+# NSS loads its crypto module with dlopen, so certificate handling goes
+# through BoringSSL and the Chrome Root Store, as on Android and Fuchsia
+use_nss_certs = false
+
+# Crash uploads go over BoringSSL sockets rather than the system libcurl
+crashpad_http_transport_impl = "socket"
+
+# Nothing that needs a desktop session, hardware video, or licensed codecs
+use_xkbcommon = false
+use_qt5 = false
+use_qt6 = false
+use_vaapi = false
+proprietary_codecs = false
+ffmpeg_branding = "Chromium"
+enable_widevine = false
+enable_hangout_services_extension = false
+safe_browsing_use_unrar = false
+enable_vr = false

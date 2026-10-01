@@ -1,0 +1,23 @@
+From d8b94093a10ef34c2a7e80d1d6fec7e75b476547 Mon Sep 17 00:00:00 2001
+From: LN Liberda <lauren@selfisekai.rocks>
+Date: Mon, 27 Apr 2026 04:23:42 +0200
+Subject: [PATCH] musl: Disable SystemAllocatorTest
+
+Tests otherwise unused code, which we'd notice to be used because it fails to link.
+---
+ base/BUILD.gn | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/base/BUILD.gn b/base/BUILD.gn
+index 16fd234a12b25..4059dcb502425 100644
+--- a/base/BUILD.gn
++++ b/base/BUILD.gn
+@@ -4029,7 +4029,7 @@ test("base_unittests") {
+     "//testing/buildbot/filters:base_unittests_filters",
+   ]
+ 
+-  if (is_win || is_linux) {
++  if (is_win || is_linux && false) {
+     data_deps += [ "//base/allocator:system_allocator_test_helper" ]
+     sources += [ "allocator/system_allocator_unittest.cc" ]
+   }

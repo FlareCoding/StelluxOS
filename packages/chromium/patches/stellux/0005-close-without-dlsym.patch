@@ -1,0 +1,41 @@
+A static binary cannot look up libc's close with dlsym, so the close
+wrapper issues the system call itself.
+
+--- a/base/files/scoped_file_linux.cc
++++ b/base/files/scoped_file_linux.cc
+@@ -5,6 +5,9 @@
+ #include "base/files/scoped_file.h"
+ 
+ #include <dlfcn.h>
++#include <errno.h>
++#include <sys/syscall.h>
++#include <unistd.h>
+ 
+ #include <algorithm>
+ #include <array>
+@@ -85,6 +88,14 @@
+ #if !defined(COMPONENT_BUILD)
+ using LibcCloseFuncPtr = int (*)(int);
+ 
++// A static binary has no next object to find close in, so the wrapper issues
++// the system call itself and reports an interrupted close as done, as musl
++// does.
++int CloseWithSyscall(int fd) {
++  long rc = syscall(SYS_close, fd);
++  return (rc == -1 && errno == EINTR) ? 0 : static_cast<int>(rc);
++}
++
+ // Load the libc close symbol to forward to from the close wrapper.
+ LibcCloseFuncPtr LoadCloseSymbol() {
+ #if defined(THREAD_SANITIZER)
+@@ -93,7 +104,9 @@
+   return reinterpret_cast<LibcCloseFuncPtr>(
+       dlsym(RTLD_DEFAULT, "__interceptor___close"));
+ #else
+-  return reinterpret_cast<LibcCloseFuncPtr>(dlsym(RTLD_NEXT, "close"));
++  auto* libc_close =
++      reinterpret_cast<LibcCloseFuncPtr>(dlsym(RTLD_NEXT, "close"));
++  return libc_close ? libc_close : CloseWithSyscall;
+ #endif
+ }
+ 

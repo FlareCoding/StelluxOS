@@ -1,0 +1,23 @@
+A static build has no system expat to link, so it builds the bundled copy.
+
+--- a/third_party/expat/BUILD.gn
++++ b/third_party/expat/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/config/cast.gni")
++import("//build/config/gcc/static.gni")
+ import("//testing/libfuzzer/fuzzer_test.gni")
+ 
+ # New dependencies should use `xml-rs` (potentially via `xml_dom.h`) instead of
+@@ -18,7 +19,9 @@
+ # let's not pull it in twice.
+ # Chromecast doesn't ship expat as a system library.
+ # Libfuzzer and AFL need to build library from sources.
+-if (((is_linux && !is_castos) || is_chromeos) && !use_fuzzing_engine) {
++# A static build has no system library to use.
++if (((is_linux && !is_castos) || is_chromeos) && !use_fuzzing_engine &&
++    !static_executables) {
+   config("expat_config") {
+     libs = [ "expat" ]
+   }

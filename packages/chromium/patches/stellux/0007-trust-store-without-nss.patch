@@ -1,0 +1,35 @@
+Without NSS, certificates are verified against the Chrome Root Store
+alone, as Android and Fuchsia builds do.
+
+--- a/net/BUILD.gn
++++ b/net/BUILD.gn
+@@ -1665,6 +1665,11 @@
+     public_configs = [ "//build/config/linux/nss" ]
+   }
+ 
++  # Without NSS there is no platform store for test roots to join
++  if (is_linux && !use_nss_certs) {
++    sources += [ "cert/test_root_certs_builtin.cc" ]
++  }
++
+   if (is_fuchsia) {
+     deps += [
+       "//net/data/ssl/chrome_root_store:gen_root_store_inc",
+--- a/net/cert/internal/system_trust_store.cc
++++ b/net/cert/internal/system_trust_store.cc
+@@ -237,6 +237,15 @@
+                                   TrustStoreNSS::UseTrustFromAllUserSlots()));
+ }
+ 
++#elif BUILDFLAG(IS_LINUX)
++
++// Without NSS there is no platform store to consult, so the Chrome Root
++// Store alone decides which roots are trusted.
++std::unique_ptr<SystemTrustStore> CreateSslSystemTrustStoreChromeRoot(
++    std::unique_ptr<TrustStoreChrome> chrome_root) {
++  return CreateChromeOnlySystemTrustStore(std::move(chrome_root));
++}
++
+ #elif BUILDFLAG(IS_MAC)
+ 
+ namespace {

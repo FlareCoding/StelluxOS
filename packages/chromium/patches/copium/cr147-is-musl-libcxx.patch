@@ -1,0 +1,67 @@
+From 490f585d15e671a4f45586bbe22c2af2e13965c2 Mon Sep 17 00:00:00 2001
+From: LN Liberda <lauren@selfisekai.rocks>
+Date: Sat, 4 Jan 2025 01:56:11 +0100
+Subject: [PATCH] [musl] Introduce is_musl build arg, indicate musl to libc++
+
+Bug: 40244829
+---
+ build/config/c++/BUILD.gn                   |  7 +++++++
+ build/config/linux/musl.gni                 | 10 ++++++++++
+ buildtools/third_party/libc++/__config_site |  2 --
+ 3 files changed, 17 insertions(+), 2 deletions(-)
+ create mode 100644 build/config/linux/musl.gni
+
+diff --git a/build/config/c++/BUILD.gn b/build/config/c++/BUILD.gn
+index 2574bffb52281..bb07b9b710744 100644
+--- a/build/config/c++/BUILD.gn
++++ b/build/config/c++/BUILD.gn
+@@ -3,6 +3,7 @@ import("//build/config/chrome_build.gni")
+ import("//build/config/chromeos/ui_mode.gni")
+ import("//build/config/compiler/compiler.gni")
+ import("//build/config/dcheck_always_on.gni")
++import("//build/config/linux/musl.gni")
+ import("//buildtools/deps_revisions.gni")
+ 
+ assert(use_custom_libcxx, "should only be used if use_custom_libcxx is set")
+@@ -60,6 +61,12 @@ config("runtime_library") {
+ 
+   defines += [ "CR_LIBCXX_REVISION=$libcxx_revision" ]
+ 
++  # Musl has no preprocessor macro to indicate that it's used,
++  # libc++ needs it indicated explicitly.
++  if (is_musl) {
++    defines += [ "_LIBCPP_HAS_MUSL_LIBC=1" ]
++  }
++
+   if (is_win) {
+     # Intentionally not using libc++abi on Windows because libc++abi only
+     # implements the Itanium C++ ABI, and not the Microsoft ABI which we use on
+diff --git a/build/config/linux/musl.gni b/build/config/linux/musl.gni
+new file mode 100644
+index 0000000000000..331bf5590e42e
+--- /dev/null
++++ b/build/config/linux/musl.gni
+@@ -0,0 +1,10 @@
++# Copyright 2025 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++declare_args() {
++  # Whether the build is targeting musl libc. This is a special variable
++  # because musl cannot be detected with a preprocessor macro.
++  # See: https://wiki.musl-libc.org/faq#Q:-Why-is-there-no-%3Ccode%3E__MUSL__%3C/code%3E-macro
++  is_musl = false
++}
+diff --git a/buildtools/third_party/libc++/__config_site b/buildtools/third_party/libc++/__config_site
+index 8e1fb11322711..2c050b828ccbd 100644
+--- a/buildtools/third_party/libc++/__config_site
++++ b/buildtools/third_party/libc++/__config_site
+@@ -28,8 +28,6 @@
+ 
+ #ifdef ANDROID_HOST_MUSL
+ #define _LIBCPP_HAS_MUSL_LIBC 1
+-#else
+-#define _LIBCPP_HAS_MUSL_LIBC 0
+ #endif
+ 
+ #ifdef _WIN32

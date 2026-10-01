@@ -1,0 +1,19 @@
+# The Stellux window protocol client library. container.sh copies include/
+# and src/ from userland/lib/libstlxwin at configure time, so the protocol
+# stays defined in one place.
+
+config("stlxwin_config") {
+  include_dirs = [ "include" ]
+}
+
+static_library("stlxwin") {
+  sources = [
+    "src/buffer.c",
+    "src/clipboard.c",
+    "src/conn.c",
+    "src/window.c",
+  ]
+  public_configs = [ ":stlxwin_config" ]
+  configs -= [ "//build/config/compiler:chromium_code" ]
+  configs += [ "//build/config/compiler:no_chromium_code" ]
+}

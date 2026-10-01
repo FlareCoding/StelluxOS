@@ -1,0 +1,21 @@
+From 8a231ea451a704af43bce7608ff36417578b7f55 Mon Sep 17 00:00:00 2001
+From: LN Liberda <lauren@selfisekai.rocks>
+Date: Thu, 30 Jul 2026 03:01:41 +0200
+Subject: [PATCH] armv7 is real and can hurt you.
+
+---
+ tools/python/cipd_deps.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/third_party/dawn/tools/python/cipd_deps.py b/third_party/dawn/tools/python/cipd_deps.py
+index 3d0befea95..4c4ad554ac 100644
+--- a/third_party/dawn/tools/python/cipd_deps.py
++++ b/third_party/dawn/tools/python/cipd_deps.py
+@@ -75,4 +75,7 @@ def get_cipd_compatible_current_arch() -> str:
+     native_x86 = platform.machine().lower() in ('x86', 'x86_64', 'amd64')
+     if native_x86:
+         return 'amd64'
++
++    if platform.machine().lower() in ('armv7', 'armv7l', 'armv8l'):
++        return 'arm'
+     raise ValueError('Unable to determine architecture')

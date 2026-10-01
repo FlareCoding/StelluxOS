@@ -1,0 +1,19 @@
+Registers the Ozone platform for the Stellux display manager, whose sources
+the recipe overlays into ui/ozone/platform/stellux.
+
+--- a/build/config/ozone_extra.gni
++++ b/build/config/ozone_extra.gni
+@@ -32,3 +32,13 @@
+ # source_set can be listed here so that they can included into
+ # interactive_ui_tests.
+ ozone_external_interactive_ui_tests_deps = []
++
++declare_args() {
++  # Build the platform for the Stellux display manager, stlxdm
++  ozone_platform_stellux = false
++}
++
++if (ozone_platform_stellux) {
++  ozone_external_platforms += [ "stellux" ]
++  ozone_external_platform_deps += [ "platform/stellux" ]
++}
