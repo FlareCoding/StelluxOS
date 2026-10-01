@@ -48,7 +48,7 @@ public:
     void shutdown();
 
     /* Fired by a dock pin's release, the server spawns the app */
-    std::function<void(const char*)> on_launch;
+    std::function<void(const stlxconf_pin_t&)> on_launch;
 
     bool dirty() const {
         return m_host.dirty() || m_dock_host.dirty();

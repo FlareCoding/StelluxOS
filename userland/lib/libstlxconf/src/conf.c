@@ -153,6 +153,8 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
             copy_bounded(it->label, val, sizeof(it->label));
         } else if (strcmp(key, "path") == 0) {
             copy_bounded(it->path, val, sizeof(it->path));
+        } else if (strcmp(key, "args") == 0) {
+            copy_bounded(it->args, val, sizeof(it->args));
         } else if (strcmp(key, "icon") == 0) {
             copy_bounded(it->icon_path, val, sizeof(it->icon_path));
         }
@@ -310,6 +312,10 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
         fprintf(f, "\n[taskbar:%s]\n", it->name);
         fprintf(f, "label=%s\n", it->label);
         fprintf(f, "path=%s\n", it->path);
+        if (it->args[0]) {
+            fprintf(f, "args=%s\n", it->args);
+        }
+
         fprintf(f, "icon=%s\n", it->icon_path);
     }
 

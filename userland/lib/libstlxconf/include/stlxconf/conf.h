@@ -13,12 +13,13 @@ extern "C" {
 #define STLXCONF_MAX_SHORTCUTS 8
 #define STLXCONF_MAX_AUTOSTART 8
 
-/* One pinned launcher in the dock, order preserved from the file.
- * The name is the section suffix, kept for faithful re-serialization. */
+/* One pinned launcher in the dock, order preserved from the file, args space
+ * separated. The name is the section suffix, kept for faithful re-serialization. */
 typedef struct {
     char name[64];
     char label[64];
     char path[256];
+    char args[256];
     char icon_path[256];
 } stlxconf_pin_t;
 
