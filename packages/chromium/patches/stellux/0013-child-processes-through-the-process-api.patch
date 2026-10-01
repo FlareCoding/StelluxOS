@@ -1,0 +1,444 @@
+Stellux has no fork(). LaunchProcess starts children through the Stellux
+process API instead, which creates a child from an executable, installs the
+remapped descriptors at the numbers the child expects, and starts it. The
+launcher keeps each child's process handle, and waiting for a child and
+reading its termination status go through that handle instead of waitpid().
+
+--- a/base/BUILD.gn
++++ b/base/BUILD.gn
+@@ -1130,6 +1130,7 @@
+     "//build:branding_buildflags",
+     "//build:ios_buildflags",
+     "//build/config/compiler:compiler_buildflags",
++    "//third_party/libstlx:proc",
+     "//third_party/modp_b64",
+   ]
+ 
+@@ -1733,6 +1734,8 @@
+       "posix/can_lower_nice_to.cc",
+       "posix/can_lower_nice_to.h",
+       "process/launch_posix.cc",
++      "process/launch_stellux.cc",
++      "process/launch_stellux.h",
+       "profiler/module_cache_posix.cc",
+       "profiler/stack_base_address_posix.cc",
+       "profiler/stack_base_address_posix.h",
+--- a/base/process/kill_posix.cc
++++ b/base/process/kill_posix.cc
+@@ -13,6 +13,7 @@
+ #include "base/logging.h"
+ #include "base/memory/self_deleting.h"
+ #include "base/posix/eintr_wrapper.h"
++#include "base/process/launch_stellux.h"
+ #include "base/process/process_iterator.h"
+ #include "base/threading/platform_thread.h"
+ #include "build/build_config.h"
+@@ -26,15 +27,17 @@
+                                            int* exit_code) {
+   DCHECK(exit_code);
+ 
++  // A Stellux child's status comes through the process handle its launcher
++  // kept, in the same encoding waitpid() reports.
+   int status = 0;
+-  const pid_t result =
+-      HANDLE_EINTR(waitpid(handle, &status, can_block ? 0 : WNOHANG));
+-  if (result == -1) {
+-    DPLOG(ERROR) << "waitpid(" << handle << ")";
++  const internal::StelluxChildState state = internal::WaitForStelluxChild(
++      handle, can_block ? TimeDelta::Max() : TimeDelta(), &status);
++  if (state == internal::StelluxChildState::kUnknown) {
++    DLOG(ERROR) << "no child " << handle << " to wait for";
+     *exit_code = 0;
+     return TERMINATION_STATUS_NORMAL_TERMINATION;
+   }
+-  if (result == 0) {
++  if (state == internal::StelluxChildState::kRunning) {
+     // the child hasn't exited yet.
+     *exit_code = 0;
+     return TERMINATION_STATUS_STILL_RUNNING;
+--- a/base/process/launch_posix.cc
++++ b/base/process/launch_posix.cc
+@@ -38,6 +38,7 @@
+ #include "base/logging.h"
+ #include "base/memory/raw_ptr_exclusion.h"
+ #include "base/process/environment_internal.h"
++#include "base/process/launch_stellux.h"
+ #include "base/process/process.h"
+ #include "base/process/process_metrics.h"
+ #include "base/strings/string_number_conversions.h"
+@@ -292,260 +293,10 @@
+ Process LaunchProcess(const std::vector<std::string>& argv,
+                       const LaunchOptions& options) {
+   TRACE_EVENT0("base", "LaunchProcess");
+-
+-  InjectiveMultimap fd_shuffle1;
+-  InjectiveMultimap fd_shuffle2;
+-  fd_shuffle1.reserve(options.fds_to_remap.size());
+-  fd_shuffle2.reserve(options.fds_to_remap.size());
+-
+-  std::vector<char*> argv_cstr;
+-  argv_cstr.reserve(argv.size() + 1);
+-  for (const auto& arg : argv) {
+-    argv_cstr.push_back(const_cast<char*>(arg.c_str()));
+-  }
+-  argv_cstr.push_back(nullptr);
+-
+-  base::HeapArray<char*> new_environ;
+-  base::span<const char* const> old_environ = internal::GetEnvironment();
+-  if (options.clear_environment) {
+-    old_environ = base::span<const char* const>();
+-  }
+-  if (!options.environment.empty()) {
+-    // SAFETY: AlterEnvironment() requires each string in the input span to be
+-    // null-terminated. internal::GetEnvironment() promises in its header
+-    // contract (see environment_internal.h) that each string it returns is
+-    // null-terminated, satisfying this requirement. See:
+-    // https://man7.org/linux/man-pages/man7/environ.7.html
+-    new_environ = UNSAFE_BUFFERS(
+-        internal::AlterEnvironment(old_environ, options.environment));
+-  }
+-
+-  sigset_t full_sigset;
+-  sigfillset(&full_sigset);
+-  const sigset_t orig_sigmask = SetSignalMask(full_sigset);
+-
+-  const char* current_directory = nullptr;
+-  if (!options.current_directory.empty()) {
+-    current_directory = options.current_directory.value().c_str();
+-  }
+-
+-  pid_t pid;
+-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_AIX)
+-  if (options.clone_flags) {
+-    // Signal handling in this function assumes the creation of a new
+-    // process, so we check that a thread is not being created by mistake
+-    // and that signal handling follows the process-creation rules.
+-    RAW_CHECK(
+-        !(options.clone_flags & (CLONE_SIGHAND | CLONE_THREAD | CLONE_VM)));
+-
+-    // We specify a null ptid and ctid.
+-    RAW_CHECK(
+-        !(options.clone_flags &
+-          (CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_PARENT_SETTID)));
+-
+-    // Since we use waitpid, we do not support custom termination signals in the
+-    // clone flags.
+-    RAW_CHECK((options.clone_flags & 0xff) == 0);
+-
+-    pid = ForkWithFlags(options.clone_flags | SIGCHLD, nullptr, nullptr);
+-  } else
+-#endif
+-  {
+-    pid = fork();
+-  }
+-
+-  // Always restore the original signal mask in the parent.
+-  if (pid != 0) {
+-    SetSignalMask(orig_sigmask);
+-  }
+ 
+-  if (pid < 0) {
+-    DPLOG(ERROR) << "fork";
+-    return Process();
+-  }
+-  if (pid == 0) {
+-    // Child process
+-
+-    // DANGER: no calls to malloc or locks are allowed from now on:
+-    // http://crbug.com/36678
+-
+-    // DANGER: fork() rule: in the child, if you don't end up doing exec*(),
+-    // you call _exit() instead of exit(). This is because _exit() does not
+-    // call any previously-registered (in the parent) exit handlers, which
+-    // might do things like block waiting for threads that don't even exist
+-    // in the child.
+-
+-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+-    // See comments on the ResetFDOwnership() declaration in
+-    // base/files/scoped_file.h regarding why this is called early here.
+-    subtle::ResetFDOwnership();
+-
+-    // The parent process might set FD_CLOEXEC flag on certain file
+-    // descriptors to prevent them leaking into child processes of the
+-    // embedder application. Remove the flag from the file descriptors
+-    // which meant to be inherited by the child process.
+-    //
+-    // Cannot use STL iterators here, since debug iterators use locks.
+-    // NOLINTNEXTLINE(modernize-loop-convert)
+-    for (size_t i = 0; i < options.fds_to_remove_cloexec.size(); ++i) {
+-      if (!RemoveCloseOnExec(options.fds_to_remove_cloexec[i])) {
+-        RAW_LOG(WARNING, "Failed to remove FD_CLOEXEC flag");
+-      }
+-    }
+-#endif
+-
+-    {
+-      // If a child process uses the readline library, the process block
+-      // forever. In BSD like OSes including OS X it is safe to assign /dev/null
+-      // as stdin. See http://crbug.com/56596.
+-      base::ScopedFD null_fd(HANDLE_EINTR(open("/dev/null", O_RDONLY)));
+-      if (!null_fd.is_valid()) {
+-        RAW_LOG(ERROR, "Failed to open /dev/null");
+-        _exit(127);
+-      }
+-
+-      int new_fd = HANDLE_EINTR(dup2(null_fd.get(), STDIN_FILENO));
+-      if (new_fd != STDIN_FILENO) {
+-        RAW_LOG(ERROR, "Failed to dup /dev/null for stdin");
+-        _exit(127);
+-      }
+-    }
+-
+-    if (options.new_process_group) {
+-      // Instead of inheriting the process group ID of the parent, the child
+-      // starts off a new process group with pgid equal to its process ID.
+-      if (setpgid(0, 0) < 0) {
+-        RAW_LOG(ERROR, "setpgid failed");
+-        _exit(127);
+-      }
+-    }
+-
+-    if (options.maximize_rlimits) {
+-      // Some resource limits need to be maximal in this child.
+-      for (auto resource : *options.maximize_rlimits) {
+-        struct rlimit limit;
+-        if (getrlimit(resource, &limit) < 0) {
+-          RAW_LOG(WARNING, "getrlimit failed");
+-        } else if (limit.rlim_cur < limit.rlim_max) {
+-          limit.rlim_cur = limit.rlim_max;
+-          if (setrlimit(resource, &limit) < 0) {
+-            RAW_LOG(WARNING, "setrlimit failed");
+-          }
+-        }
+-      }
+-    }
+-
+-    ResetChildSignalHandlersToDefaults();
+-    SetSignalMask(orig_sigmask);
+-
+-#if 0
+-    // When debugging it can be helpful to check that we really aren't making
+-    // any hidden calls to malloc.
+-    void *malloc_thunk =
+-        reinterpret_cast<void*>(reinterpret_cast<intptr_t>(malloc) & ~4095);
+-    HANDLE_EINTR(mprotect(malloc_thunk, 4096, PROT_READ | PROT_WRITE | PROT_EXEC));
+-    memset(reinterpret_cast<void*>(malloc), 0xff, 8);
+-#endif  // 0
+-
+-#if BUILDFLAG(IS_CHROMEOS)
+-    if (options.ctrl_terminal_fd >= 0) {
+-      // Set process' controlling terminal.
+-      if (HANDLE_EINTR(setsid()) != -1) {
+-        if (HANDLE_EINTR(ioctl(options.ctrl_terminal_fd, TIOCSCTTY, nullptr)) ==
+-            -1) {
+-          RAW_LOG(WARNING, "ioctl(TIOCSCTTY), ctrl terminal not set");
+-        }
+-      } else {
+-        RAW_LOG(WARNING, "setsid failed, ctrl terminal not set");
+-      }
+-    }
+-#endif  // BUILDFLAG(IS_CHROMEOS)
+-
+-    // Cannot use STL iterators here, since debug iterators use locks.
+-    // NOLINTNEXTLINE(modernize-loop-convert)
+-    for (size_t i = 0; i < options.fds_to_remap.size(); ++i) {
+-      const FileHandleMappingVector::value_type& value =
+-          options.fds_to_remap[i];
+-      fd_shuffle1.emplace_back(value.first, value.second, false);
+-      fd_shuffle2.emplace_back(value.first, value.second, false);
+-    }
+-
+-    if (!options.environment.empty() || options.clear_environment) {
+-      // `new_environ` is a single allocation containing both the pointer array
+-      // and the backing string storage. Because `SetEnvironment` expects a span
+-      // containing only the pointers (ending with the null terminator), we must
+-      // scan `new_environ` to find the null pointer and reconstruct a span
+-      // that excludes the trailing string data.
+-      size_t ptr_count = 0;
+-      if (!new_environ.empty()) {
+-        while (new_environ[ptr_count] != nullptr) {
+-          ptr_count++;
+-        }
+-        ptr_count++;  // Include the nullptr.
+-      }
+-      internal::SetEnvironment(new_environ.first(ptr_count));
+-    }
+-
+-    // fd_shuffle1 is mutated by this call because it cannot malloc.
+-    if (!ShuffleFileDescriptors(&fd_shuffle1)) {
+-      _exit(127);
+-    }
+-
+-    CloseSuperfluousFds(fd_shuffle2);
+-
+-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_AIX)
+-#ifndef PR_SET_NO_NEW_PRIVS
+-#define PR_SET_NO_NEW_PRIVS 38
+-#endif
+-    if (!options.allow_new_privs) {
+-      if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
+-        // EINVAL means PR_SET_NO_NEW_PRIVS is unsupported (kernel < 3.5)
+-        // EPERM indicates a problem with the environment out of our
+-        // control (e.g. a system-imposed seccomp bpf sandbox)
+-        if (errno != EINVAL && errno != EPERM) {
+-          RAW_LOG(FATAL, "prctl(PR_SET_NO_NEW_PRIVS) failed");
+-        }
+-      }
+-    }
+-
+-    if (options.kill_on_parent_death) {
+-      if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
+-        RAW_LOG(ERROR, "prctl(PR_SET_PDEATHSIG) failed");
+-        _exit(127);
+-      }
+-    }
+-#endif
+-
+-    if (current_directory != nullptr) {
+-      RAW_CHECK(chdir(current_directory) == 0);
+-    }
+-
+-    if (options.pre_exec_delegate != nullptr) {
+-      options.pre_exec_delegate->RunAsyncSafe();
+-    }
+-
+-    const char* executable_path = !options.real_path.empty()
+-                                      ? options.real_path.value().c_str()
+-                                      : argv_cstr[0];
+-
+-    execvp(executable_path, argv_cstr.data());
+-
+-    RAW_LOG(ERROR, "LaunchProcess: failed to execvp:");
+-    RAW_LOG(ERROR, argv_cstr[0]);
+-    _exit(127);
+-  } else {
+-    // Parent process
+-    if (options.wait) {
+-      // While this isn't strictly disk IO, waiting for another process to
+-      // finish is the sort of thing ThreadRestrictions is trying to prevent.
+-      ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+-                                              BlockingType::MAY_BLOCK);
+-      pid_t ret = HANDLE_EINTR(waitpid(pid, nullptr, 0));
+-      DPCHECK(ret > 0);
+-    }
+-  }
+-
+-  return Process(pid);
++  // Stellux has no fork(). Children start through its process API, which
++  // installs the remapped descriptors in the child before it runs.
++  return internal::LaunchStelluxProcess(argv, options);
+ }
+ 
+ void RaiseProcessToHighPriority() {
+--- a/base/process/process_posix.cc
++++ b/base/process/process_posix.cc
+@@ -20,6 +20,7 @@
+ #include "base/notimplemented.h"
+ #include "base/posix/eintr_wrapper.h"
+ #include "base/process/kill.h"
++#include "base/process/launch_stellux.h"
+ #include "base/threading/thread_restrictions.h"
+ #include "base/time/time.h"
+ #include "base/trace_event/trace_event.h"
+@@ -45,62 +46,10 @@
+                         base::TimeDelta wait) {
+   DCHECK_GE(wait, base::TimeDelta());
+ 
+-  // This POSIX version of this function only guarantees that we wait no less
+-  // than |wait| for the process to exit.  The child process may
+-  // exit sometime before the timeout has ended but we may still block for up
+-  // to 256 milliseconds after the fact.
+-  //
+-  // waitpid() has no direct support on POSIX for specifying a timeout, you can
+-  // either ask it to block indefinitely or return immediately (WNOHANG).
+-  // When a child process terminates a SIGCHLD signal is sent to the parent.
+-  // Catching this signal would involve installing a signal handler which may
+-  // affect other parts of the application and would be difficult to debug.
+-  //
+-  // Our strategy is to call waitpid() once up front to check if the process
+-  // has already exited, otherwise to loop for |wait|, sleeping for
+-  // at most 256 milliseconds each time using usleep() and then calling
+-  // waitpid().  The amount of time we sleep starts out at 1 milliseconds, and
+-  // we double it every 4 sleep cycles.
+-  //
+-  // usleep() is speced to exit if a signal is received for which a handler
+-  // has been installed.  This means that when a SIGCHLD is sent, it will exit
+-  // depending on behavior external to this function.
+-  //
+-  // This function is used primarily for unit tests, if we want to use it in
+-  // the application itself it would probably be best to examine other routes.
+-
+-  if (wait == base::TimeDelta::Max()) {
+-    return HANDLE_EINTR(waitpid(handle, status, 0)) > 0;
+-  }
+-
+-  pid_t ret_pid = HANDLE_EINTR(waitpid(handle, status, WNOHANG));
+-  static const uint32_t kMaxSleepInMicroseconds = 1 << 18;  // ~256 ms.
+-  uint32_t max_sleep_time_usecs = 1 << 10;                  // ~1 ms.
+-  int double_sleep_time = 0;
+-
+-  // If the process hasn't exited yet, then sleep and try again.
+-  base::TimeTicks wakeup_time = base::TimeTicks::Now() + wait;
+-  while (ret_pid == 0) {
+-    base::TimeTicks now = base::TimeTicks::Now();
+-    if (now > wakeup_time) {
+-      break;
+-    }
+-
+-    const uint32_t sleep_time_usecs = static_cast<uint32_t>(
+-        std::min(static_cast<uint64_t>((wakeup_time - now).InMicroseconds()),
+-                 uint64_t{max_sleep_time_usecs}));
+-    // usleep() will return 0 and set errno to EINTR on receipt of a signal
+-    // such as SIGCHLD.
+-    usleep(sleep_time_usecs);
+-    ret_pid = HANDLE_EINTR(waitpid(handle, status, WNOHANG));
+-
+-    if ((max_sleep_time_usecs < kMaxSleepInMicroseconds) &&
+-        (double_sleep_time++ % 4 == 0)) {
+-      max_sleep_time_usecs *= 2;
+-    }
+-  }
+-
+-  return ret_pid > 0;
++  // A Stellux child is waited for through the process handle its launcher
++  // kept, which polls readable once the child exits.
++  return base::internal::WaitForStelluxChild(handle, wait, status) ==
++         base::internal::StelluxChildState::kExited;
+ }
+ #endif
+ 
+@@ -366,22 +315,11 @@
+ 
+   TRACE_EVENT0("base", "Process::WaitForExitWithTimeout");
+ 
+-  const base::ProcessHandle parent_pid = base::GetParentProcessId(handle);
+-  const bool exited = (parent_pid < 0);
+-
+-  if (!exited && parent_pid != our_pid) {
+-#if BUILDFLAG(IS_MAC)
+-    // On Mac we can wait on non child processes.
+-    return WaitForSingleNonChildProcess(handle, timeout);
+-#else
+-    // Currently on Linux we can't handle non child processes.
+-    NOTIMPLEMENTED();
+-#endif  // BUILDFLAG(IS_MAC)
+-  }
+-
++  // Stellux has no /proc/<pid>/stat to name a parent from, and the launcher's
++  // records already tell whether this process is the one to wait for.
+   int status;
+   if (!WaitpidWithTimeout(handle, &status, timeout)) {
+-    return exited;
++    return false;
+   }
+   if (WIFSIGNALED(status)) {
+     if (exit_code) {
+@@ -395,7 +333,7 @@
+     }
+     return true;
+   }
+-  return exited;
++  return false;
+ }
+ #endif
+ 
