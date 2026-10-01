@@ -4,6 +4,8 @@
  */
 #include <stlxconf/conf.h>
 
+#include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,8 +69,12 @@ static void copy_bounded(char* dst, const char* src, size_t cap) {
 /* Section headers switch state and allocate item slots. item_idx is
  * negative when the item table is full and values must be dropped. */
 static void enter_section(stlxconf_t* conf, char* name,
-                          conf_section_t* sec, int32_t* item_idx) {
-    if (strcmp(name, "desktop") == 0) {
+                          conf_section_t* sec, int32_t* item_idx,
+                          bool from_drop_in) {
+    /* A drop-in file may only add items, so its other sections are skipped */
+    if (strchr(name, ':') == NULL && from_drop_in) {
+        *sec = SEC_NONE;
+    } else if (strcmp(name, "desktop") == 0) {
         *sec = SEC_DESKTOP;
     } else if (strcmp(name, "theme") == 0) {
         *sec = SEC_THEME;
@@ -83,6 +89,7 @@ static void enter_section(stlxconf_t* conf, char* name,
         if (*item_idx >= 0) {
             copy_bounded(conf->pins[*item_idx].name, name + 8,
                          sizeof(conf->pins[*item_idx].name));
+            conf->pins[*item_idx].from_drop_in = from_drop_in;
         }
     } else if (strncmp(name, "shortcut:", 9) == 0) {
         *sec = SEC_SHORTCUT;
@@ -91,6 +98,7 @@ static void enter_section(stlxconf_t* conf, char* name,
         if (*item_idx >= 0) {
             copy_bounded(conf->shortcuts[*item_idx].name, name + 9,
                          sizeof(conf->shortcuts[*item_idx].name));
+            conf->shortcuts[*item_idx].from_drop_in = from_drop_in;
         }
     } else if (strncmp(name, "autostart:", 10) == 0) {
         *sec = SEC_AUTOSTART;
@@ -99,6 +107,7 @@ static void enter_section(stlxconf_t* conf, char* name,
         if (*item_idx >= 0) {
             copy_bounded(conf->autostart[*item_idx].name, name + 10,
                          sizeof(conf->autostart[*item_idx].name));
+            conf->autostart[*item_idx].from_drop_in = from_drop_in;
         }
     } else {
         *sec = SEC_NONE;
@@ -194,7 +203,8 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
 }
 
 static void parse_line(stlxconf_t* conf, const char* line,
-                       conf_section_t* sec, int32_t* item_idx) {
+                       conf_section_t* sec, int32_t* item_idx,
+                       bool from_drop_in) {
     char buf[512];
     copy_bounded(buf, line, sizeof(buf));
     char* s = trim(buf);
@@ -210,7 +220,7 @@ static void parse_line(stlxconf_t* conf, const char* line,
         }
 
         *end = '\0';
-        enter_section(conf, s + 1, sec, item_idx);
+        enter_section(conf, s + 1, sec, item_idx, from_drop_in);
         return;
     }
 
@@ -223,18 +233,23 @@ static void parse_line(stlxconf_t* conf, const char* line,
     apply_value(conf, *sec, *item_idx, trim(s), trim(eq + 1));
 }
 
-int stlxconf_load(stlxconf_t* conf, const char* path) {
-    stlxconf_defaults(conf);
-
+/* Parses one file over the configuration, marking the items it adds */
+static int parse_file(stlxconf_t* conf, const char* path, bool from_drop_in) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
         return -1;
     }
 
     struct stat st;
-    if (fstat(fd, &st) < 0 || st.st_size <= 0) {
+    if (fstat(fd, &st) < 0) {
         close(fd);
         return -1;
+    }
+
+    /* An empty file has nothing to say and is not an error */
+    if (st.st_size == 0) {
+        close(fd);
+        return 0;
     }
 
     size_t file_size = (size_t)st.st_size;
@@ -262,16 +277,50 @@ int stlxconf_load(stlxconf_t* conf, const char* path) {
         char* eol = strchr(cursor, '\n');
         if (eol) {
             *eol = '\0';
-            parse_line(conf, cursor, &sec, &item_idx);
+            parse_line(conf, cursor, &sec, &item_idx, from_drop_in);
             cursor = eol + 1;
         } else {
-            parse_line(conf, cursor, &sec, &item_idx);
+            parse_line(conf, cursor, &sec, &item_idx, from_drop_in);
             break;
         }
     }
 
     free(data);
     return 0;
+}
+
+int stlxconf_load(stlxconf_t* conf, const char* path) {
+    stlxconf_defaults(conf);
+
+    return parse_file(conf, path, false);
+}
+
+static int is_conf_file(const struct dirent* entry) {
+    const char* dot = strrchr(entry->d_name, '.');
+
+    return dot && strcmp(dot, ".conf") == 0;
+}
+
+int stlxconf_load_drop_ins(stlxconf_t* conf, const char* dir) {
+    struct dirent** entries = NULL;
+    int count = scandir(dir, &entries, is_conf_file, alphasort);
+    if (count < 0) {
+        return errno == ENOENT ? 0 : -1;
+    }
+
+    int result = 0;
+    for (int i = 0; i < count; i++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", dir, entries[i]->d_name);
+        if (parse_file(conf, path, true) != 0) {
+            result = -1;
+        }
+
+        free(entries[i]);
+    }
+
+    free(entries);
+    return result;
 }
 
 int stlxconf_save(const stlxconf_t* conf, const char* path) {
@@ -301,6 +350,10 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
 
     for (uint32_t i = 0; i < conf->shortcut_count; i++) {
         const stlxconf_shortcut_t* sc = &conf->shortcuts[i];
+        if (sc->from_drop_in) {
+            continue;
+        }
+
         fprintf(f, "\n[shortcut:%s]\n", sc->name);
         fprintf(f, "key=%s\n", sc->key);
         fprintf(f, "action=%s\n", sc->action);
@@ -309,6 +362,10 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
 
     for (uint32_t i = 0; i < conf->pin_count; i++) {
         const stlxconf_pin_t* it = &conf->pins[i];
+        if (it->from_drop_in) {
+            continue;
+        }
+
         fprintf(f, "\n[taskbar:%s]\n", it->name);
         fprintf(f, "label=%s\n", it->label);
         fprintf(f, "path=%s\n", it->path);
@@ -321,6 +378,10 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
 
     for (uint32_t i = 0; i < conf->autostart_count; i++) {
         const stlxconf_autostart_t* as = &conf->autostart[i];
+        if (as->from_drop_in) {
+            continue;
+        }
+
         fprintf(f, "\n[autostart:%s]\n", as->name);
         fprintf(f, "path=%s\n", as->path);
         if (as->args[0]) {
