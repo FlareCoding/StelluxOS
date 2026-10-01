@@ -131,6 +131,12 @@ void stlxwin_disconnect(stlxwin_conn* conn);
 int stlxwin_conn_fd(const stlxwin_conn* conn);
 
 /**
+ * @brief The screen size the display manager reported on connect, so
+ * toolkits can size and place windows before any configure arrives.
+ */
+void stlxwin_screen_size(const stlxwin_conn* conn, uint32_t* w, uint32_t* h);
+
+/**
  * @brief Drain protocol messages into the event queue. Never blocks.
  * @return Number of events queued, or -1 if the connection died.
  */

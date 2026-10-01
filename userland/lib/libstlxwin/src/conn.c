@@ -357,6 +357,16 @@ int stlxwin_conn_fd(const stlxwin_conn* conn) {
     return conn ? conn->fd : -1;
 }
 
+void stlxwin_screen_size(const stlxwin_conn* conn, uint32_t* w, uint32_t* h) {
+    if (w) {
+        *w = conn ? conn->screen_w : 0;
+    }
+
+    if (h) {
+        *h = conn ? conn->screen_h : 0;
+    }
+}
+
 stlxwin_conn* stlxwin_connect(const char* app_id) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
