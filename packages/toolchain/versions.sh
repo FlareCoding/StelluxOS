@@ -1,5 +1,5 @@
-# Version and source pins for the Stellux developer packages.
-# Sourced by build.sh on the host and by container/build.sh inside.
+# Version and source pins for the toolchain recipe. Sourced by build.sh on
+# the host, by container.sh inside, and by the dispatcher for package_version.
 
 # musl-cross-make provides the musl targeting patches and the build
 # system for every component below.
@@ -25,6 +25,16 @@ PYTHON_URL="https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar
 GCC_PKG_REL="1"
 BINUTILS_PKG_REL="1"
 PYTHON_PKG_REL="1"
+
+# The version-release of each package this recipe emits, as the archive names it
+package_version() {
+    case "$1" in
+    gcc) echo "$GCC_VER-$GCC_PKG_REL" ;;
+    binutils) echo "$BINUTILS_VER-$BINUTILS_PKG_REL" ;;
+    python) echo "$PYTHON_VER-$PYTHON_PKG_REL" ;;
+    *) return 1 ;;
+    esac
+}
 
 # Downloads come from the kernel.org mirror, since the GNU primary
 # intermittently serves errors long enough to outlast curl retries.

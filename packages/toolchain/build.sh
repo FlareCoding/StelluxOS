@@ -1,0 +1,97 @@
+#!/bin/sh
+# The toolchain recipe: one Docker build of the GCC toolchain and CPython for an
+# architecture, leaving the archives of the packages asked for in the cache, or of
+# all three when none is named, so a pinned sibling in the cache is never replaced.
+#
+# Usage: packages/toolchain/build.sh <x86_64|aarch64> [package...]
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+. "$SCRIPT_DIR/versions.sh"
+
+arch="${1:?usage: build.sh <x86_64|aarch64> [package...]}"
+shift
+packages="${*:-gcc binutils python}"
+TOP="$REPO_ROOT/userland/toolchain/packages"
+SOURCES_CACHE="$TOP/sources"
+IMAGE_TAG="stellux-toolchain"
+
+if ! docker info > /dev/null 2>&1; then
+    echo "toolchain: docker daemon unavailable, start Docker first" >&2
+    exit 1
+fi
+
+mkdir -p "$TOP" "$SOURCES_CACHE"
+
+# Archive timestamps come from the recipe's last change, so identical inputs
+# produce identical bytes on every machine
+SOURCE_DATE_EPOCH="$(git -C "$REPO_ROOT" log -1 --format=%ct -- packages/toolchain 2>/dev/null || echo 0)"
+
+docker build -q -t "$IMAGE_TAG" \
+    --build-arg "ALPINE_IMAGE=$ALPINE_IMAGE" \
+    --build-arg "ALPINE_PKGS=$ALPINE_PKGS" \
+    "$SCRIPT_DIR" > /dev/null
+
+# One pristine clone at the pinned commit, local-cloned per stage so
+# every build tree gets consistent file timestamps from extraction
+if [ ! -d "$TOP/mcm" ]; then
+    git clone "$MCM_REPO" "$TOP/mcm"
+fi
+git -C "$TOP/mcm" fetch -q origin "$MCM_COMMIT" 2>/dev/null || true
+git -C "$TOP/mcm" checkout -q "$MCM_COMMIT"
+
+# Sources built outside musl-cross-make are fetched and verified here,
+# once, and shared with every architecture through the cache
+python_tarball="$SOURCES_CACHE/Python-$PYTHON_VER.tar.xz"
+if [ ! -f "$python_tarball" ]; then
+    curl -fsSL --retry 3 -o "$python_tarball.tmp" "$PYTHON_URL"
+    mv "$python_tarball.tmp" "$python_tarball"
+fi
+echo "$PYTHON_SHA256  $python_tarball" | shasum -a 256 -c - > /dev/null || {
+    echo "toolchain: $python_tarball does not match its pinned checksum" >&2
+    exit 1
+}
+
+work="$TOP/work/$arch"
+echo "=== toolchain: building $arch ==="
+
+rm -rf "$work"
+mkdir -p "$work"
+cp "$SCRIPT_DIR/versions.sh" "$work/versions.sh"
+cp "$SCRIPT_DIR/container.sh" "$work/build.sh"
+
+for stage in mcm-stage1 mcm-stage2; do
+    git clone -q "$TOP/mcm" "$work/$stage"
+    patch -s -d "$work/$stage" -p1 < "$SCRIPT_DIR/patches/mcm-prefix.patch"
+    cp "$SCRIPT_DIR"/hashes/* "$work/$stage/hashes/"
+    mkdir -p "$work/$stage/sources"
+    find "$SOURCES_CACHE" -maxdepth 1 -type f \
+        -exec cp {} "$work/$stage/sources/" \;
+done
+
+# Stellux patches apply only to the native stage, since stage 1
+# tools run on the build host, not on the target
+for d in "$SCRIPT_DIR"/patches/*/; do
+    name="$(basename "$d")"
+    mkdir -p "$work/mcm-stage2/patches/$name"
+    cp "$d"/* "$work/mcm-stage2/patches/$name/"
+done
+
+mkdir -p "$work/python"
+cp "$python_tarball" "$SCRIPT_DIR"/python/* "$work/python/"
+cp "$SCRIPT_DIR"/patches/python-"$PYTHON_VER"/*.patch "$work/python/"
+
+docker run --rm -v "$work:/host" \
+    -e "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+    "$IMAGE_TAG" "$arch"
+
+# Keep downloaded tarballs so later builds skip the mirrors
+find "$work/mcm-stage1/sources" -maxdepth 1 -type f \
+    -exec cp {} "$SOURCES_CACHE/" \;
+
+for package in $packages; do
+    cp "$work/dist/$package-$(package_version "$package")-$arch.tar.zst" "$TOP/"
+done
+
+echo "=== toolchain: $arch done ==="

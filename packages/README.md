@@ -52,16 +52,31 @@ travel with the kernel sources they were tested against.
 
 A fetch that does not match its pinned sha256 fails the build.
 
+## Recipes
+
+Each package is built by the recipe `packages.conf` names, a directory
+under `packages/` with a `build.sh <arch> [package...]` that leaves the
+archives in the cache and a `versions.sh` whose `package_version <name>`
+prints the version-release the recipe builds today. One recipe may emit
+several packages: `toolchain` builds the GCC toolchain and CPython in one
+container run and can emit gcc, binutils and python, leaving in the cache
+only the ones it was asked for.
+
 ## Building and publishing
 
-    make packages-build [ARCHES=x86_64]  builds every package, for both
-                                         architectures by default, in Docker
-    make packages-publish RELEASE=<tag>  uploads the archives from the
-                                         cache to a new GitHub release
+    make packages-build [PACKAGES=...] [ARCHES=x86_64]
+    make packages-publish RELEASE=<tag>
 
-The `packages` workflow does the same on GitHub runners and is the
-normal way to publish. After a release, `make packages-pin RELEASE=<tag>`
-rewrites `packages.lock` from the release's checksums; review the diff,
-boot the result once, and commit it. Bump a package's release number in
-`versions.sh` whenever its recipe changes, so a changed archive always
-gets a new name.
+A build only makes what a release does not already hold: a selected
+package whose version-release `packages.lock` pins for that architecture
+is fetched from the pinned release instead, and the recipes of the rest
+run once per architecture. So bump a package's release number in its
+recipe's `versions.sh` whenever the recipe changes, otherwise the next
+build reuses the published archive. Both architectures are built unless
+`ARCHES` says otherwise.
+
+`make packages-publish` uploads the archives from the cache to a new
+GitHub release. The `packages` workflow does the same on GitHub runners
+and is the normal way to publish. After a release,
+`make packages-pin RELEASE=<tag>` rewrites `packages.lock` from the
+release's checksums; review the diff, boot the result once, and commit it.

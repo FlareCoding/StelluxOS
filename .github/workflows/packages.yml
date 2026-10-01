@@ -48,7 +48,7 @@ jobs:
           fetch-depth: 0
 
       - name: Build packages
-        run: ./packages/build.sh ${{ matrix.arch }}
+        run: make packages-build ARCHES=${{ matrix.arch }}
 
       - name: Upload archives
         uses: actions/upload-artifact@v4
