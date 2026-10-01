@@ -583,7 +583,8 @@ packages-pin:
 packages-list:
 	$(Q)true $(foreach p,$(PACKAGES_SELECTED),$(call check_package,$(p)))
 	$(Q)[ -n "$(PACKAGES_SELECTED)" ] || echo "no packages selected"
-	$(Q)$(foreach p,$(PACKAGES_SELECTED),echo "$(p) $(call pkg_tier,$(p)) $(call pkg_version,$(p))  $(call pkg_url,$(p))";)
+	$(Q)$(foreach p,$(PACKAGES_SELECTED),\
+		echo "$(p) $(call pkg_tier,$(p)) $(call pkg_version,$(p))  $(call pkg_origin,$(p))";)
 
 LLVM_VERSION := 20.1.8
 LLVM_URL     := https://github.com/llvm/llvm-project/releases/download/llvmorg-$(LLVM_VERSION)/llvm-project-$(LLVM_VERSION).src.tar.xz
