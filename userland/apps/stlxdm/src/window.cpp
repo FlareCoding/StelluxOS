@@ -31,6 +31,16 @@ static dm_window* find_window(dm_client& c, uint32_t win_id) {
     return nullptr;
 }
 
+static bool is_dismissed(const dm_client& c, uint32_t win_id) {
+    for (uint32_t id : c.dismissed_windows) {
+        if (id == win_id) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static dm_buffer* find_buffer(dm_window& w, uint32_t buf_id) {
     for (auto& b : w.buffers) {
         if (b.buf_id == buf_id) {
@@ -115,8 +125,36 @@ void server::destroy_window_tree(dm_client& c, uint32_t win_id) {
     }
 }
 
+void server::dismiss_window_tree(dm_client& c, uint32_t win_id) {
+    note_dismissed_tree(c, win_id);
+    destroy_window_tree(c, win_id);
+}
+
+/* The client learns of a dismissal after the fact, so the ids stay known
+ * and the buffers it handed over go back to it as if superseded */
+void server::note_dismissed_tree(dm_client& c, uint32_t win_id) {
+    c.dismissed_windows.push_back(win_id);
+    for (auto& w : c.windows) {
+        if (w->parent_id == win_id) {
+            note_dismissed_tree(c, w->win_id);
+        } else if (w->win_id == win_id) {
+            release_held_buffers(c, *w);
+        }
+    }
+}
+
+void server::release_held_buffers(dm_client& c, const dm_window& w) {
+    for (int32_t held : { w.pending, w.current }) {
+        if (held >= 0) {
+            swp_release rel = { w.win_id, w.buffers[static_cast<size_t>(held)].buf_id };
+            send_to(c, SWP_MSG_RELEASE, &rel, sizeof(rel));
+        }
+    }
+}
+
 void server::handle_destroy_window(dm_client& c, const uint8_t* payload) {
     const auto* m = reinterpret_cast<const swp_destroy_window*>(payload);
+    std::erase(c.dismissed_windows, m->win_id);
     destroy_window_tree(c, m->win_id);
 }
 
@@ -157,9 +195,14 @@ void server::handle_set_window(dm_client& c, const uint8_t* payload) {
 void server::handle_attach_buffer(dm_client& c, const uint8_t* payload) {
     const auto* m = reinterpret_cast<const swp_attach_buffer*>(payload);
     dm_window* w = find_window(c, m->win_id);
-    if (!w || m->width == 0 || m->height == 0 ||
-        find_buffer(*w, m->buf_id) ||
-        memchr(m->shm_name, '/', sizeof(m->shm_name))) {
+    if (!w && !is_dismissed(c, m->win_id)) {
+        c.dead = true;
+        return;
+    }
+
+    if (m->width == 0 || m->height == 0 ||
+        memchr(m->shm_name, '/', sizeof(m->shm_name)) ||
+        (w && find_buffer(*w, m->buf_id))) {
         c.dead = true;
         return;
     }
@@ -170,6 +213,13 @@ void server::handle_attach_buffer(dm_client& c, const uint8_t* payload) {
 
     char path[SWP_SHM_NAME_MAX + 16];
     snprintf(path, sizeof(path), "/dev/shm/%s", name);
+
+    /* A dismissed window takes no buffer, but the name is still this
+     * side's to unlink */
+    if (!w) {
+        unlink(path);
+        return;
+    }
 
     int fd = open(path, O_RDWR);
     if (fd < 0) {
@@ -232,7 +282,13 @@ void server::handle_commit(dm_client& c, const uint8_t* payload) {
     const auto* m = reinterpret_cast<const swp_commit*>(payload);
     dm_window* w = find_window(c, m->win_id);
     if (!w) {
-        c.dead = true;
+        if (is_dismissed(c, m->win_id)) {
+            swp_release rel = { m->win_id, m->buf_id };
+            send_to(c, SWP_MSG_RELEASE, &rel, sizeof(rel));
+        } else {
+            c.dead = true;
+        }
+
         return;
     }
 

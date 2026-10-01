@@ -117,6 +117,10 @@ struct dm_client {
 
     std::vector<std::unique_ptr<dm_window>> windows;
 
+    /* Windows the display manager destroyed on its own, whose messages
+     * in flight are ignored until the client learns and destroys them */
+    std::vector<uint32_t> dismissed_windows;
+
     explicit dm_client(int sock) : fd(sock) {}
 };
 
@@ -207,6 +211,9 @@ private:
     void handle_detach_buffer(dm_client& c, const uint8_t* payload);
     void handle_commit(dm_client& c, const uint8_t* payload);
     void destroy_window_tree(dm_client& c, uint32_t win_id);
+    void dismiss_window_tree(dm_client& c, uint32_t win_id);
+    void note_dismissed_tree(dm_client& c, uint32_t win_id);
+    void release_held_buffers(dm_client& c, const dm_window& w);
     void latch_window(dm_client& c, dm_window& w);
     void flush_configures();
     void compose_rect(stlxgfx_surface_t* back, const damage_list::rect& r);
