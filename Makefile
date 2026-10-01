@@ -568,7 +568,7 @@ packages-build:
 	$(Q)[ -n "$(PACKAGES_SELECTED)" ] || { echo "no packages selected"; exit 1; }
 	$(Q)./packages/build.sh "$(ARCHES)" $(PACKAGES_SELECTED)
 
-# Publishes the built packages as a GitHub release, normally done by the
+# Publishes a complete package release, normally done by the
 # Developer Packages workflow instead
 packages-publish:
 	$(Q)[ -n "$(RELEASE)" ] || { echo "usage: make packages-publish RELEASE=packages-YYYY.MM.DD"; exit 1; }
@@ -916,7 +916,7 @@ help:
 	@echo "                               plus the names given, minus -names, or none/all (see packages/README.md)"
 	@echo "  make packages-list ARCH=<arch> PACKAGES=\"...\" Show the packages and archives PACKAGES selects"
 	@echo "  make packages-build [PACKAGES=...] [ARCHES=x86_64] Build the selected packages the lock does not pin (slow)"
-	@echo "  make packages-publish RELEASE=<tag> Publish built packages as a GitHub release"
+	@echo "  make packages-publish RELEASE=<tag> [DRY_RUN=1] Publish a complete package release (built plus reused)"
 	@echo "  make packages-pin RELEASE=<tag>  Point packages.lock at a published release"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
 	@echo "  make run-headless ARCH=<arch> Build + run headless (for SSH)"

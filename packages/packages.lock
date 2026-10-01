@@ -4,6 +4,7 @@
 # source  base URL of the GitHub releases hosting the archives
 # release tag of the release every entry below was published under
 # <name> <version>-<release> <arch> <sha256>
+# recipe  <recipe> <tree> the committed packages/<recipe> the release was built from
 
 source https://github.com/FlareCoding/StelluxOS/releases/download
 
