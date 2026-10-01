@@ -1,0 +1,14 @@
+# The Stellux process API from userland/lib/libstlx. container.sh copies its
+# header and source at configure time, so Chromium starts child processes
+# through the same definitions every Stellux program uses.
+
+config("libstlx_config") {
+  include_dirs = [ "include" ]
+}
+
+static_library("proc") {
+  sources = [ "src/proc.c" ]
+  public_configs = [ ":libstlx_config" ]
+  configs -= [ "//build/config/compiler:chromium_code" ]
+  configs += [ "//build/config/compiler:no_chromium_code" ]
+}

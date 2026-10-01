@@ -39,8 +39,8 @@ step_fetch() {
     fetch_verified "$DL/test_fonts-$TEST_FONTS_OBJECT.tar.gz" "$TEST_FONTS_URL" "$TEST_FONTS_SHA512"
 }
 
-# Copies the Stellux-only sources, the stlxwin sources they build on, and the
-# test fonts into the tree, so an already prepared tree catches up
+# Copies the Stellux-only sources, the stlxwin and libstlx sources they build
+# on, and the test fonts into the tree, so an already prepared tree catches up
 sync_tree() {
     cd "$SRC"
     rsync -a "$RECIPE/overlay/" ./
@@ -48,6 +48,11 @@ sync_tree() {
     local stlxwin=/stellux/userland/lib/libstlxwin
     rsync -a --delete "$stlxwin/include/" third_party/stlxwin/include/
     rsync -a --delete "$stlxwin/src/" third_party/stlxwin/src/
+
+    local libstlx=/stellux/userland/lib/libstlx
+    mkdir -p third_party/libstlx/include/stlx third_party/libstlx/src
+    cp "$libstlx/include/stlx/proc.h" "$libstlx/include/stlx/syscall_nums.h" third_party/libstlx/include/stlx/
+    cp "$libstlx/src/proc.c" third_party/libstlx/src/
 
     if [ ! -f third_party/test_fonts/test_fonts/Ahem.ttf ]; then
         mkdir -p third_party/test_fonts/test_fonts
