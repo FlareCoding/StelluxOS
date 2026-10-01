@@ -35,8 +35,9 @@ LIMINE_DIR="$PROJECT_DIR/boot/limine"
 IMG="$PROJECT_DIR/images/stellux-x86.img"
 KERNEL="$PROJECT_DIR/build/kernel/x86_64/kernel.elf"
 
-# Prebuilt Stellux packages to include, override with PACKAGES="" for a lean image.
-PACKAGES="${PACKAGES-binutils gcc python}"
+# Prebuilt Stellux packages to include: the default tier unless PACKAGES selects
+# otherwise, PACKAGES=none for a lean image. See packages/README.md.
+PACKAGES="${PACKAGES-}"
 
 # --- Argument parsing ---
 

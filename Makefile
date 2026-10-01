@@ -164,9 +164,10 @@ userland:
 # Unit Tests
 # ============================================================================
 
+# Test images carry no packages unless PACKAGES asks for some
 test:
 	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
-	$(Q)$(MAKE) image ARCH=$(ARCH) STLX_UNIT_TESTS_ENABLED=1
+	$(Q)$(MAKE) image ARCH=$(ARCH) STLX_UNIT_TESTS_ENABLED=1 PACKAGES="$(if $(PACKAGES),$(PACKAGES),none)"
 	@echo ""
 	$(Q)./scripts/run_tests.sh $(ARCH)
 
@@ -576,11 +577,11 @@ packages-pin:
 	$(Q)[ -n "$(RELEASE)" ] || { echo "usage: make packages-pin RELEASE=packages-YYYY.MM.DD"; exit 1; }
 	$(Q)./packages/pin.sh $(RELEASE)
 
-# Shows which package archives PACKAGES resolves to for ARCH
+# Shows which packages and archives PACKAGES selects for ARCH
 packages-list:
-	$(Q)true $(foreach p,$(PACKAGES),$(call check_package,$(p)))
-	$(Q)[ -n "$(PACKAGES)" ] || echo "no packages selected, use PACKAGES=\"<name> ...\""
-	$(Q)$(foreach p,$(PACKAGES),echo "$(p) $(call pkg_version,$(p))  $(call pkg_url,$(p))";)
+	$(Q)true $(foreach p,$(PACKAGES_SELECTED),$(call check_package,$(p)))
+	$(Q)[ -n "$(PACKAGES_SELECTED)" ] || echo "no packages selected"
+	$(Q)$(foreach p,$(PACKAGES_SELECTED),echo "$(p) $(call pkg_tier,$(p)) $(call pkg_version,$(p))  $(call pkg_url,$(p))";)
 
 LLVM_VERSION := 20.1.8
 LLVM_URL     := https://github.com/llvm/llvm-project/releases/download/llvmorg-$(LLVM_VERSION)/llvm-project-$(LLVM_VERSION).src.tar.xz
@@ -909,8 +910,9 @@ help:
 	@echo "  make image ARCH=<arch>       Build kernel + userland + create disk image"
 	@echo "  make image-x86_64            Build x86_64 disk image (shortcut)"
 	@echo "  make image-aarch64           Build AArch64 disk image (shortcut)"
-	@echo "  make image PACKAGES=\"gcc ...\" Include prebuilt Stellux developer packages (see packages/README.md)"
-	@echo "  make packages-list ARCH=<arch> PACKAGES=\"gcc ...\" Show the archives PACKAGES resolves to"
+	@echo "  make image PACKAGES=\"-python\"  Select the prebuilt developer packages in the image: the default tier"
+	@echo "                               plus the names given, minus -names, or none/all (see packages/README.md)"
+	@echo "  make packages-list ARCH=<arch> PACKAGES=\"...\" Show the packages and archives PACKAGES selects"
 	@echo "  make packages-build [ARCHES=x86_64] Build the Stellux developer packages in Docker (slow, publishers only)"
 	@echo "  make packages-publish RELEASE=<tag> Publish built packages as a GitHub release"
 	@echo "  make packages-pin RELEASE=<tag>  Point packages.lock at a published release"
