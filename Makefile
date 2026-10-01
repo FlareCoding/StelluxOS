@@ -188,6 +188,20 @@ image-aarch64:
 INITRD_DIR  := initrd
 INITRD_CPIO := $(BUILD_DIR)/initrd.cpio
 
+# Disk images hold the kernel and initrd on one FAT partition and grow past
+# the default size when packages make the initrd large
+IMAGE_MIN_MB   := 512
+IMAGE_SLACK_MB := 64
+GPT_BACKUP_SECTORS := 34
+
+define create_disk_image
+$(Q)mb=$$(( $$(wc -c < $(INITRD_CPIO)) / 1048576 + $(IMAGE_SLACK_MB) )); \
+	if [ $$mb -lt $(IMAGE_MIN_MB) ]; then mb=$(IMAGE_MIN_MB); fi; \
+	dd if=/dev/zero of=$(1) bs=1M count=$$mb status=none && \
+	$(SGDISK) --clear --new=1:2048:$$(( mb * 2048 - $(GPT_BACKUP_SECTORS) )) \
+		--typecode=1:ef00 $(1) > /dev/null
+endef
+
 .PHONY: $(INITRD_CPIO)
 $(INITRD_CPIO):
 	@mkdir -p $(BUILD_DIR)
@@ -198,8 +212,7 @@ $(INITRD_CPIO):
 $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating x86_64 UEFI disk image..."
-	$(Q)dd if=/dev/zero of=$@ bs=1M count=512 status=none
-	$(Q)$(SGDISK) --clear --new=1:2048:1048542 --typecode=1:ef00 $@ > /dev/null
+	$(call create_disk_image,$@)
 	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT
@@ -212,8 +225,7 @@ $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DI
 $(IMAGE_DIR)/stellux-aarch64.img: $(BUILD_DIR)/kernel/aarch64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating AArch64 UEFI disk image..."
-	$(Q)dd if=/dev/zero of=$@ bs=1M count=512 status=none
-	$(Q)$(SGDISK) --clear --new=1:2048:1048542 --typecode=1:ef00 $@ > /dev/null
+	$(call create_disk_image,$@)
 	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT
