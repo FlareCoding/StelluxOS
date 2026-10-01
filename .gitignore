@@ -33,9 +33,6 @@ userland/llvm-project-*
 userland/linux-headers-*
 userland/toolchain/
 userland/build/
-initrd/bin/*
-initrd/usr/
-!initrd/bin/.gitkeep
 
 # OS files
 .DS_Store

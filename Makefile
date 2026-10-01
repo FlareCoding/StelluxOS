@@ -187,7 +187,10 @@ image-aarch64:
 	$(Q)$(MAKE) image ARCH=aarch64
 
 INITRD_DIR  := initrd
-INITRD_CPIO := $(BUILD_DIR)/initrd.cpio
+INITRD_ROOT := $(BUILD_DIR)/initrd/$(ARCH)/root
+INITRD_CPIO := $(BUILD_DIR)/initrd/$(ARCH)/initrd.cpio
+USERLAND_BIN    := userland/build/$(ARCH)/bin
+USERLAND_ROOTFS := userland/build/$(ARCH)/rootfs
 
 # Disk images hold the kernel and initrd on one FAT partition and grow past
 # the default size when packages make the initrd large
@@ -203,11 +206,18 @@ $(Q)mb=$$(( $$(wc -c < $(INITRD_CPIO)) / 1048576 + $(IMAGE_SLACK_MB) )); \
 		--typecode=1:ef00 $(1) > /dev/null
 endef
 
-.PHONY: $(INITRD_CPIO)
-$(INITRD_CPIO):
-	@mkdir -p $(BUILD_DIR)
+# The initrd is assembled fresh from the skeleton in initrd/, the userland
+# binaries, and the package overlay, so no build writes into the source tree
+.PHONY: initrd $(INITRD_CPIO)
+initrd: $(INITRD_CPIO)
+
+$(INITRD_CPIO): userland
 	@echo "Creating initrd.cpio..."
-	$(Q)cd $(INITRD_DIR) && find . -mindepth 1 | cpio -o -H newc > ../$(INITRD_CPIO) 2>/dev/null
+	$(Q)rm -rf $(INITRD_ROOT) && mkdir -p $(INITRD_ROOT)/bin
+	$(Q)cp -a $(INITRD_DIR)/. $(INITRD_ROOT)/
+	$(Q)cp -a $(USERLAND_BIN)/. $(INITRD_ROOT)/bin/
+	$(Q)if [ -d $(USERLAND_ROOTFS) ]; then cp -a $(USERLAND_ROOTFS)/. $(INITRD_ROOT)/; fi
+	$(Q)cd $(INITRD_ROOT) && find . -mindepth 1 | cpio -o -H newc > $(abspath $(INITRD_CPIO)) 2>/dev/null
 	@echo "Created: $(INITRD_CPIO)"
 
 $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
@@ -495,13 +505,7 @@ usb: image
 clean:
 	@echo "Cleaning build artifacts..."
 	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
-	$(Q)if [ -f userland/build/overlay.installed ]; then \
-		(cd initrd && grep -v '/$$' ../userland/build/overlay.installed | xargs rm -f && \
-			grep '/$$' ../userland/build/overlay.installed | sort -r | xargs rmdir 2>/dev/null; true); \
-	fi
 	$(Q)rm -rf userland/build userland/apps/*/build userland/lib/*/build
-	$(Q)find initrd/bin -mindepth 1 ! -name '.gitkeep' -delete 2>/dev/null || true
-	$(Q)rm -rf initrd/usr
 	@echo "Done."
 
 # ============================================================================

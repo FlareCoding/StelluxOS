@@ -27,28 +27,9 @@ ifeq ($(wildcard $(SYSROOT)/lib/libc.a),)
   $(error musl sysroot not found at $(SYSROOT). Run 'make musl' from the top-level directory first)
 endif
 
-# Output directories
+# Output directories, the image build assembles the initrd from both
 BIN_DIR   := $(USERLAND_ROOT)/build/$(ARCH)/bin
-INITRD_BIN := $(USERLAND_ROOT)/../initrd/bin
 ROOTFS_DIR := $(USERLAND_ROOT)/build/$(ARCH)/rootfs
-INITRD_ROOT := $(USERLAND_ROOT)/../initrd
-OVERLAY_LIST := $(USERLAND_ROOT)/build/overlay.installed
-
-# The overlay's files outside /usr sit among the tracked initrd files, so the
-# last overlay is removed by its list before another one is copied in
-define remove_overlay
-if [ -f $(OVERLAY_LIST) ]; then \
-	(cd $(INITRD_ROOT) && grep -v '/$$' $(OVERLAY_LIST) | xargs rm -f && \
-		grep '/$$' $(OVERLAY_LIST) | sort -r | xargs rmdir 2>/dev/null; true); \
-	rm -f $(OVERLAY_LIST); \
-fi
-endef
-
-define install_overlay
-cp -a $(ROOTFS_DIR)/. $(INITRD_ROOT)/ && \
-(cd $(ROOTFS_DIR) && find . -mindepth 1 ! -type d | sed 's|^\./||' && \
-	find . -mindepth 1 -type d | sed 's|^\./||; s|$$|/|') > $(OVERLAY_LIST)
-endef
 
 # Verbosity
 ifeq ($(V),1)
@@ -59,7 +40,7 @@ else
   export STLX_QUIET := 1
 endif
 
-all: install-summary
+all: summary
 
 build:
 ifeq ($(V),1)
@@ -75,49 +56,30 @@ else
 	@echo ""
 endif
 
-# initrd/usr comes only from the overlay, so it is replaced rather than
-# accumulating files from earlier builds and other architectures
-install-summary: build packages
-	@mkdir -p $(INITRD_BIN)
-	@$(call remove_overlay)
-	@rm -rf $(INITRD_ROOT)/usr
+summary: build packages
 ifeq ($(V),1)
-	@echo "Installing userland binaries/rootfs to initrd..."
-	@if [ -d "$(BIN_DIR)" ] && [ -n "$$(ls -A $(BIN_DIR) 2>/dev/null)" ]; then \
-		cp $(BIN_DIR)/* $(INITRD_BIN)/; \
-		echo "Installed binaries: $$(ls $(BIN_DIR)/)"; \
-	else \
-		echo "No binaries to install"; \
-	fi
+	@echo "Built binaries: $$(ls $(BIN_DIR)/ 2>/dev/null | tr '\n' ' ')"
 	@if [ -d "$(ROOTFS_DIR)" ] && [ -n "$$(ls -A $(ROOTFS_DIR) 2>/dev/null)" ]; then \
-		$(call install_overlay); \
-		echo "Installed rootfs overlay from $(ROOTFS_DIR)"; \
+		echo "Package overlay staged in $(ROOTFS_DIR)"; \
 	else \
-		echo "No rootfs overlay to install"; \
+		echo "No package overlay"; \
 	fi
 else
-	@if [ -d "$(BIN_DIR)" ] && [ -n "$$(ls -A $(BIN_DIR) 2>/dev/null)" ]; then \
-		cp $(BIN_DIR)/* $(INITRD_BIN)/; \
-		bincount=$$(ls -1 $(BIN_DIR)/ | wc -l); \
-	else \
-		bincount=0; \
-	fi; \
+	@bincount=$$(ls -1 $(BIN_DIR)/ 2>/dev/null | wc -l); \
 	if [ -d "$(ROOTFS_DIR)" ] && [ -n "$$(ls -A $(ROOTFS_DIR) 2>/dev/null)" ]; then \
-		$(call install_overlay); \
-		rootfsword=", rootfs overlay installed"; \
+		rootfsword=", package overlay staged"; \
 	else \
 		rootfsword=""; \
 	fi; \
 	libcount=$$(ls -1 $(SYSROOT)/lib/libstlx.a 2>/dev/null | wc -l); \
 	if [ $$libcount -eq 1 ]; then libword="library"; else libword="libraries"; fi; \
-	printf "  $$libcount $$libword, $$bincount binaries installed to initrd/bin/$$rootfsword\n"
+	printf "  $$libcount $$libword, $$bincount binaries built$$rootfsword\n"
 endif
 
 clean:
 	@echo "Cleaning userland build artifacts..."
 	@$(MAKE) -C lib clean ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
 	@$(MAKE) -C apps clean ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
-	@$(call remove_overlay)
 	@rm -rf build
 
 include mk/toolchain.mk
@@ -149,4 +111,4 @@ compile-commands:
 	@echo "]" >> compile_commands.json
 	@echo "Created userland/compile_commands.json"
 
-.PHONY: all build install-summary clean compile-commands
+.PHONY: all build summary clean compile-commands
