@@ -61,7 +61,8 @@ __PRIVILEGED_CODE int32_t unmount(const char* target);
 file* open(const char* path, uint32_t flags);
 file* open(const char* path, uint32_t flags, int32_t* out_err);
 file* open_at(node* base_dir, const char* path, uint32_t flags);
-file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err);
+file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err,
+              uint32_t create_mode = DEFAULT_FILE_MODE);
 // `flags` carries the caller's O_NONBLOCK and O_APPEND
 ssize_t read(file* f, void* buf, size_t count, uint32_t flags = 0);
 ssize_t write(file* f, const void* buf, size_t count, uint32_t flags = 0);
@@ -73,6 +74,9 @@ int32_t close(file* f);
 int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);
 int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr, size_t length,
              uint32_t prot, uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
+
+// The mode an object of `type` has when its creator requests none
+uint32_t default_mode(node_type type);
 
 int32_t stat(const char* path, vattr* attr);
 int32_t fstat(file* f, vattr* attr);

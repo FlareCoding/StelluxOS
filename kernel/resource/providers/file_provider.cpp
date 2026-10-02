@@ -198,6 +198,7 @@ static const resource_ops g_file_ops = {
 __PRIVILEGED_CODE int32_t open_file_resource(
     const char* path,
     uint32_t flags,
+    uint32_t create_mode,
     resource_object** out_obj
 ) {
     if (!path || !out_obj) {
@@ -205,7 +206,7 @@ __PRIVILEGED_CODE int32_t open_file_resource(
     }
 
     int32_t fs_err = fs::OK;
-    fs::file* file = fs::open(path, flags, &fs_err);
+    fs::file* file = fs::open_at(nullptr, path, flags, &fs_err, create_mode);
     if (!file) {
         return map_fs_error_to_resource(fs_err);
     }

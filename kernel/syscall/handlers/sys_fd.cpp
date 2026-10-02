@@ -217,27 +217,15 @@ static inline uint32_t node_type_to_mode_bits(fs::node_type t) {
     }
 }
 
-static inline uint32_t node_type_default_perms(fs::node_type t) {
-    switch (t) {
-        case fs::node_type::directory:
-            return 0755;
-        case fs::node_type::socket:
-            return 0666;
-        case fs::node_type::char_device:
-        case fs::node_type::block_device:
-            return 0600;
-        case fs::node_type::symlink:
-            return 0777;
-        default:
-            return 0644;
-    }
+__PRIVILEGED_CODE static uint32_t apply_umask(uint64_t mode) {
+    return static_cast<uint32_t>(mode) & fs::MODE_PERMISSION_BITS & ~sched::current_umask();
 }
 
 static inline int64_t copy_stat_to_user(const fs::vattr& attr, uint64_t u_stat) {
     linux_kstat st = {};
     st.st_dev = attr.dev;
     st.st_ino = attr.ino;
-    st.st_mode = node_type_to_mode_bits(attr.type) | node_type_default_perms(attr.type);
+    st.st_mode = node_type_to_mode_bits(attr.type) | attr.mode;
     st.st_nlink = (attr.type == fs::node_type::directory) ? 2 : 1;
 
     st.st_size = static_cast<int64_t>(attr.size);
@@ -657,6 +645,7 @@ static int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
 
         sync::mutex_lock(backing->lock);
         attr.type = fs::node_type::regular;
+        attr.mode = fs::default_mode(attr.type);
         attr.size = backing->m_size;
         sync::mutex_unlock(backing->lock);
 
@@ -666,6 +655,7 @@ static int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
 
     if (obj->type == resource::resource_type::SOCKET) {
         attr.type = fs::node_type::socket;
+        attr.mode = fs::default_mode(attr.type);
         attr.size = 0;
         resource::resource_release(obj);
         return copy_stat_to_user(attr, u_stat);
@@ -721,7 +711,7 @@ static int64_t read_utimens(uint64_t u_times, fs::vattr* attr, uint32_t* mask) {
     return 0;
 }
 
-static int64_t set_fd_times(sched::task* task, int64_t fd, const fs::vattr& attr, uint32_t mask) {
+static int64_t set_fd_attributes(sched::task* task, int64_t fd, const fs::vattr& attr, uint32_t mask) {
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
         task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
@@ -825,8 +815,6 @@ static int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u
 }
 
 static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, uint64_t mode) {
-    (void)mode;
-
     char kpath[fs::PATH_MAX];
     int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
         kpath,
@@ -900,7 +888,8 @@ static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, 
         task,
         path_for_open,
         open_flags,
-        &handle
+        &handle,
+        apply_umask(mode)
     );
     heap::ufree(resolved_path);
     if (rc != resource::OK) {
@@ -2021,7 +2010,7 @@ DEFINE_SYSCALL3(mkdirat, dirfd, pathname, mode) {
     }
 
     fs::node* child = nullptr;
-    int32_t rc = parent->mkdir(name, name_len, static_cast<uint32_t>(mode), &child);
+    int32_t rc = parent->mkdir(name, name_len, apply_umask(mode), &child);
     if (child) {
         if (child->release()) {
             fs::node::ref_destroy(child);
@@ -2081,8 +2070,6 @@ DEFINE_SYSCALL3(faccessat, dirfd, pathname, mode) {
 }
 
 DEFINE_SYSCALL3(fchmodat, dirfd, pathname, mode) {
-    (void)mode;
-
     char kpath[fs::PATH_MAX];
     int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
         kpath, sizeof(kpath),
@@ -2110,10 +2097,28 @@ DEFINE_SYSCALL3(fchmodat, dirfd, pathname, mode) {
         return lookup_rc;
     }
 
-    // The vfs synthesizes permissions from node type and stores no mode
-    // bits, so a change on a resolvable node succeeds without effect
+    fs::vattr attr = {};
+    attr.mode = static_cast<uint32_t>(mode);
+
+    int32_t fs_rc = node->setattr(attr, fs::VATTR_MODE);
     release_node_ref(node);
+    if (fs_rc != fs::OK) {
+        return syscall::error_map::map_fs_error(fs_rc);
+    }
+
     return 0;
+}
+
+DEFINE_SYSCALL2(fchmod, fd, mode) {
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    fs::vattr attr = {};
+    attr.mode = static_cast<uint32_t>(mode);
+
+    return set_fd_attributes(task, static_cast<int64_t>(fd), attr, fs::VATTR_MODE);
 }
 
 DEFINE_SYSCALL2(chmod, pathname, mode) {
@@ -2150,7 +2155,7 @@ DEFINE_SYSCALL4(utimensat, dirfd, pathname, times, flags) {
             return syscall::EFAULT;
         }
 
-        return set_fd_times(task, static_cast<int64_t>(dirfd), attr, mask);
+        return set_fd_attributes(task, static_cast<int64_t>(dirfd), attr, mask);
     }
 
     char kpath[fs::PATH_MAX];

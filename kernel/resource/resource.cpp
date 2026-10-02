@@ -219,7 +219,8 @@ __PRIVILEGED_CODE int32_t open(
     sched::task* owner,
     const char* kpath,
     uint32_t flags,
-    handle_t* out_handle
+    handle_t* out_handle,
+    uint32_t create_mode
 ) {
     if (!owner || !kpath || !out_handle) {
         return ERR_INVAL;
@@ -239,7 +240,7 @@ __PRIVILEGED_CODE int32_t open(
         rc = shm_provider::open_shm_resource(kpath, fs_flags, &obj);
         rtype = resource_type::SHMEM;
     } else {
-        rc = file_provider::open_file_resource(kpath, fs_flags, &obj);
+        rc = file_provider::open_file_resource(kpath, fs_flags, create_mode, &obj);
         rtype = resource_type::FILE;
     }
     if (rc != OK) {

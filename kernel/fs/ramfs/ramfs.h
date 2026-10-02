@@ -27,7 +27,7 @@ public:
     int32_t rename(const char* name, size_t len, fs::node* new_parent,
                    const char* new_name, size_t new_len) override;
     int32_t symlink(const char* name, size_t len, const char* target, fs::node** out) override;
-    int32_t create_socket(const char* name, size_t len, void* impl, fs::node** out) override;
+    int32_t create_socket(const char* name, size_t len, uint32_t mode, fs::node** out) override;
 };
 
 class symlink_node : public fs::node {

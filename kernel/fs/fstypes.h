@@ -42,6 +42,7 @@ constexpr int64_t MAX_FILE_OFFSET = 0x7FFFFFFFFFFFFFFF;
 
 struct vattr {
     node_type type;
+    uint32_t mode;      // Permission bits, within MODE_PERMISSION_BITS
     size_t size;
     uint64_t ino;       // Unique among all nodes for the node's lifetime, never 0
     uint64_t dev;       // Identifies the mounted filesystem instance, 0 if unmounted
@@ -53,6 +54,14 @@ struct vattr {
 // setattr mask bits naming the vattr fields to apply
 constexpr uint32_t VATTR_ATIME = 1u << 0;
 constexpr uint32_t VATTR_MTIME = 1u << 1;
+constexpr uint32_t VATTR_MODE  = 1u << 2;
+
+// The permission, set-id, and sticky bits of a mode
+constexpr uint32_t MODE_PERMISSION_BITS = 07777;
+
+// Modes of the files and directories the kernel creates without a request
+constexpr uint32_t DEFAULT_FILE_MODE      = 0644;
+constexpr uint32_t DEFAULT_DIRECTORY_MODE = 0755;
 
 struct dirent {
     char name[NAME_MAX + 1];

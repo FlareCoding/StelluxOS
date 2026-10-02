@@ -6,6 +6,7 @@
 #include "rc/ref_counted.h"
 #include "common/list.h"
 #include "sync/atomic.h"
+#include "fs/fstypes.h"
 
 namespace sched { struct task; }
 namespace mm { struct mm_context; }
@@ -170,7 +171,8 @@ __PRIVILEGED_CODE int32_t open(
     sched::task* owner,
     const char* kpath,
     uint32_t flags,
-    handle_t* out_handle
+    handle_t* out_handle,
+    uint32_t create_mode = fs::DEFAULT_FILE_MODE
 );
 
 /**

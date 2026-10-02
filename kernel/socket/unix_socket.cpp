@@ -585,7 +585,8 @@ __PRIVILEGED_CODE static int32_t unix_bind(
     }
 
     fs::node* sock_node = nullptr;
-    rc = parent->create_socket(name, name_len, nullptr, &sock_node);
+    uint32_t mode = fs::default_mode(fs::node_type::socket) & ~sched::current_umask();
+    rc = parent->create_socket(name, name_len, mode, &sock_node);
     if (parent->release()) {
         fs::node::ref_destroy(parent);
     }

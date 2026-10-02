@@ -1496,6 +1496,25 @@ TEST(socket_test, a_socket_connects_only_to_a_listener_of_its_own_type) {
     EXPECT_EQ(fs::unlink(TYPED_LISTENER_PATH), fs::OK);
 }
 
+static const char BOUND_MODE_PATH[] = "/bound_mode.sock";
+
+TEST(socket_test, a_bound_socket_file_gets_the_socket_mode_less_the_creation_mask) {
+    resource::resource_object* bound = nullptr;
+    ASSERT_EQ(socket::create_unbound_socket(&bound), resource::OK);
+
+    unix_address address = {};
+    address.family = UNIX_ADDRESS_FAMILY;
+    string::memcpy(address.path, BOUND_MODE_PATH, sizeof(BOUND_MODE_PATH));
+    ASSERT_EQ(bound->ops->socket->bind(bound, &address, sizeof(address)), resource::OK);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat(BOUND_MODE_PATH, &attr), fs::OK);
+    EXPECT_EQ(attr.mode, fs::default_mode(fs::node_type::socket) & ~sched::current_umask());
+
+    resource::resource_release(bound);
+    EXPECT_EQ(fs::unlink(BOUND_MODE_PATH), fs::OK);
+}
+
 TEST(socket_test, a_batch_rides_on_the_first_stretch_that_fits) {
     resource::resource_object* obj_a = nullptr;
     resource::resource_object* obj_b = nullptr;

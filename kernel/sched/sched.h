@@ -232,6 +232,13 @@ void yield();
 task* current();
 
 /**
+ * @brief The file creation mask of the current task's process, or the default
+ * mask for a task that belongs to none.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t current_umask();
+
+/**
  * @brief Read a snapshot of a CPU's accounting stats. Safe to call
  * from any CPU.
  * @param cpu_id Logical CPU ID, must be below smp::cpu_count().

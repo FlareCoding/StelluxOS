@@ -69,6 +69,7 @@ constexpr uint64_t UNLINK           = 87;
 constexpr uint64_t SYMLINK          = 88;
 constexpr uint64_t READLINK         = 89;
 constexpr uint64_t CHMOD            = 90;
+constexpr uint64_t FCHMOD           = 91;
 constexpr uint64_t UMASK            = 95;
 constexpr uint64_t GETTIMEOFDAY     = 96;
 constexpr uint64_t GETRUSAGE        = 98;

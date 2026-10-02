@@ -70,7 +70,7 @@ public:
     virtual int32_t readlink(char* buf, size_t size, size_t* out_len);
 
     // --- Socket node creation (directory nodes may override) ---
-    virtual int32_t create_socket(const char* name, size_t len, void* impl, node** out);
+    virtual int32_t create_socket(const char* name, size_t len, uint32_t mode, node** out);
 
     /**
      * ref_counted contract. Destroys the node and frees privileged memory.
@@ -85,6 +85,7 @@ public:
     const char* name() const { return m_name; }
     size_t size() const { return m_size; }
     uint64_t ino() const { return m_ino; }
+    uint32_t mode() const { return m_mode; }
     instance* mounted_here() const { return m_mounted_here; }
     record_lock_table& record_locks() { return m_record_locks; }
 
@@ -92,6 +93,7 @@ public:
     void set_filesystem(instance* fs) { m_fs = fs; }
     void set_mounted_here(instance* inst) { m_mounted_here = inst; }
     void set_name(const char* name, size_t len);
+    void set_mode(uint32_t mode) { m_mode = mode & MODE_PERMISSION_BITS; }
 
     // Records an attribute change by moving ctime to now
     void mark_changed();
@@ -108,6 +110,7 @@ protected:
     char           m_name[NAME_MAX + 1];
     size_t         m_size;
     uint64_t       m_ino;
+    uint32_t       m_mode;
     uint64_t       m_atime_ns;
     uint64_t       m_mtime_ns;
     uint64_t       m_ctime_ns;
