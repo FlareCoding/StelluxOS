@@ -275,10 +275,6 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
         return syscall::EINVAL;
     }
 
-    if (fd_val != -1) {
-        return syscall::EINVAL;
-    }
-
     if (offset != 0) {
         return syscall::EINVAL;
     }
