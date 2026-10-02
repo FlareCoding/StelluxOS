@@ -264,7 +264,7 @@ else ifeq ($(ARCH),aarch64)
 	$(Q)$(MAKE) run-qemu-aarch64-headless
 endif
 
-run-qemu-x86_64: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
+run-qemu-x86_64: check-image-x86_64 $(BUILD_DIR)/OVMF_VARS.fd
 	@echo ""
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
 	@echo ""
@@ -291,7 +291,7 @@ $(BUILD_DIR)/OVMF_VARS.fd: $(OVMF_VARS)
 	@mkdir -p $(BUILD_DIR)
 	$(Q)cp $< $@
 
-run-qemu-aarch64: $(IMAGE_DIR)/stellux-aarch64.img
+run-qemu-aarch64: check-image-aarch64
 	@echo "Starting QEMU AArch64 ($(ACCEL))..."
 	@echo ""
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
@@ -314,7 +314,7 @@ run-qemu-aarch64: $(IMAGE_DIR)/stellux-aarch64.img
 		-no-shutdown
 
 # Headless QEMU (for SSH/no display)
-run-qemu-x86_64-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
+run-qemu-x86_64-headless: check-image-x86_64 $(BUILD_DIR)/OVMF_VARS.fd
 	@echo "Starting QEMU x86_64 (headless)..."
 	@echo ""
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
@@ -337,7 +337,7 @@ run-qemu-x86_64-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS
 		-no-reboot \
 		-no-shutdown
 
-run-qemu-aarch64-headless: $(IMAGE_DIR)/stellux-aarch64.img
+run-qemu-aarch64-headless: check-image-aarch64
 	@echo "Starting QEMU AArch64 (headless, $(ACCEL))..."
 	@echo ""
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
@@ -362,7 +362,7 @@ run-qemu-aarch64-headless: $(IMAGE_DIR)/stellux-aarch64.img
 # QEMU Debug (with GDB support)
 # ============================================================================
 
-run-qemu-x86_64-debug: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
+run-qemu-x86_64-debug: check-image-x86_64 $(BUILD_DIR)/OVMF_VARS.fd
 	@echo "Starting QEMU x86_64 (debug, waiting for GDB on port $(GDB_PORT))..."
 	@echo "Connect with: make connect-gdb-x86_64"
 	@echo ""
@@ -389,7 +389,7 @@ run-qemu-x86_64-debug: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 		-no-reboot \
 		-no-shutdown
 
-run-qemu-x86_64-debug-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
+run-qemu-x86_64-debug-headless: check-image-x86_64 $(BUILD_DIR)/OVMF_VARS.fd
 	@echo "Starting QEMU x86_64 (debug headless, waiting for GDB on port $(GDB_PORT))..."
 	@echo "Connect with: make connect-gdb-x86_64"
 	@echo ""
@@ -415,7 +415,7 @@ run-qemu-x86_64-debug-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVM
 		-no-reboot \
 		-no-shutdown
 
-run-qemu-aarch64-debug: $(IMAGE_DIR)/stellux-aarch64.img
+run-qemu-aarch64-debug: check-image-aarch64
 	@echo "Starting QEMU AArch64 (debug, waiting for GDB on port $(GDB_PORT))..."
 	@echo "Connect with: make connect-gdb-aarch64"
 	@echo ""
@@ -440,7 +440,7 @@ run-qemu-aarch64-debug: $(IMAGE_DIR)/stellux-aarch64.img
 		-no-reboot \
 		-no-shutdown
 
-run-qemu-aarch64-debug-headless: $(IMAGE_DIR)/stellux-aarch64.img
+run-qemu-aarch64-debug-headless: check-image-aarch64
 	@echo "Starting QEMU AArch64 (debug headless, waiting for GDB on port $(GDB_PORT))..."
 	@echo "Connect with: make connect-gdb-aarch64"
 	@echo ""
@@ -521,6 +521,14 @@ check-limine:
 		(echo ""; echo "ERROR: Limine not found. Run: make limine"; echo ""; exit 1)
 	@test -f $(BOOT_DIR)/BOOTAA64.EFI || \
 		(echo ""; echo "ERROR: Limine not found. Run: make limine"; echo ""; exit 1)
+
+check-image-x86_64:
+	@test -f $(IMAGE_DIR)/stellux-x86_64.img || \
+		(echo ""; echo "ERROR: x86_64 disk image not found. Run: make image-x86_64"; echo ""; exit 1)
+
+check-image-aarch64:
+	@test -f $(IMAGE_DIR)/stellux-aarch64.img || \
+		(echo ""; echo "ERROR: aarch64 disk image not found. Run: make image-aarch64"; echo ""; exit 1)
 
 # ============================================================================
 # Setup Targets (no ARCH required)
