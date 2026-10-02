@@ -1,4 +1,4 @@
-# GN args for content_shell on Stellux. target_cpu is appended by
+# GN args for the Chromium browser on Stellux. target_cpu is appended by
 # container.sh from the build machine, since host and target always match.
 
 # Stellux has no dynamic loader, so everything links statically and every
@@ -46,7 +46,7 @@ disable_fieldtrial_testing_config = true
 blink_enable_generated_code_formatting = false
 enable_stripping = false
 
-# The stlxdm platform content_shell opens its windows on, and nothing else
+# The stlxdm platform the browser opens its windows on, and nothing else
 use_ozone = true
 ozone_auto_platforms = false
 ozone_platform = "stellux"

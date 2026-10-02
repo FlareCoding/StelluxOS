@@ -1,7 +1,7 @@
 #!/bin/sh
-# The chromium recipe: builds content_shell natively in a persistent Docker
-# container, since the source tree is 10 GB and a clean build takes hours, and
-# leaves the archive in the package cache.
+# The chromium recipe: builds the Chromium browser natively in a persistent
+# Docker container, since the source tree is 10 GB and a clean build takes
+# hours, and leaves the archive in the package cache.
 #
 # Usage: packages/chromium/build.sh <x86_64|aarch64> [chromium]
 #   STEPS="fetch prepare configure build install" selects steps, STEPS=shell

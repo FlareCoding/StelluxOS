@@ -1,0 +1,54 @@
+Builds without udev have no HID backend, so HidService::Create() returns null.
+The HID manager then reports no devices and refuses connections instead of
+dereferencing a missing service.
+
+--- a/services/device/hid/hid_manager_impl.cc
++++ b/services/device/hid/hid_manager_impl.cc
+@@ -32,8 +32,10 @@
+     hid_service_ = HidService::Create();
+   }
+ 
+-  DCHECK(hid_service_);
+-  hid_service_observation_.Observe(hid_service_.get());
++  // Platforms without a HID backend have no service, and so no devices
++  if (hid_service_) {
++    hid_service_observation_.Observe(hid_service_.get());
++  }
+ }
+ 
+ HidManagerImpl::~HidManagerImpl() {}
+@@ -57,12 +59,22 @@
+ void HidManagerImpl::GetDevicesAndSetClient(
+     mojo::PendingAssociatedRemote<mojom::HidManagerClient> client,
+     GetDevicesCallback callback) {
++  if (!hid_service_) {
++    CreateDeviceList(std::move(callback), std::move(client), {});
++    return;
++  }
++
+   hid_service_->GetDevices(base::BindOnce(
+       &HidManagerImpl::CreateDeviceList, weak_factory_.GetWeakPtr(),
+       std::move(callback), std::move(client)));
+ }
+ 
+ void HidManagerImpl::GetDevices(GetDevicesCallback callback) {
++  if (!hid_service_) {
++    std::move(callback).Run({});
++    return;
++  }
++
+   hid_service_->GetDevices(base::BindOnce(
+       &HidManagerImpl::CreateDeviceList, weak_factory_.GetWeakPtr(),
+       std::move(callback), mojo::NullAssociatedRemote()));
+@@ -87,6 +99,11 @@
+     bool allow_protected_reports,
+     bool allow_fido_reports,
+     ConnectCallback callback) {
++  if (!hid_service_) {
++    std::move(callback).Run(mojo::NullRemote());
++    return;
++  }
++
+   hid_service_->Connect(
+       device_guid, allow_protected_reports, allow_fido_reports,
+       base::BindOnce(&HidManagerImpl::CreateConnection,

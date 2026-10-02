@@ -1,0 +1,49 @@
+The browser shows notifications, opens files and URLs in other applications,
+and shuts Bluetooth down through D-Bus. Without D-Bus, it shows notifications in
+its own message center, hands nothing to other applications, and builds the
+Bluetooth feature switches without the BlueZ stack.
+
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1605,6 +1605,8 @@
+         "//components/os_crypt/async/browser:secret_portal_key_provider",
+         "//dbus",
+       ]
++    } else {
++      sources += [ "platform_util_linux_without_dbus.cc" ]
+     }
+   }
+ 
+--- a/chrome/browser/notifications/BUILD.gn
++++ b/chrome/browser/notifications/BUILD.gn
+@@ -334,6 +334,8 @@
+         "//chrome/app/theme:chrome_unscaled_resources_grit",
+         "//chrome/browser/themes",
+       ]
++    } else {
++      sources += [ "notification_platform_bridge_linux_without_dbus.cc" ]
+     }
+   }
+ 
+--- a/device/bluetooth/BUILD.gn
++++ b/device/bluetooth/BUILD.gn
+@@ -614,6 +614,8 @@
+       sources += [
+         "dbus/dbus_bluez_manager_wrapper_linux.h",
+         "dbus/dbus_bluez_manager_wrapper_stub_linux.cc",
++        "floss/floss_features.cc",
++        "floss/floss_features.h",
+       ]
+     }
+ 
+--- a/chrome/browser/chrome_browser_main_linux.cc
++++ b/chrome/browser/chrome_browser_main_linux.cc
+@@ -109,7 +109,7 @@
+ void ChromeBrowserMainPartsLinux::PostDestroyThreads() {
+ #if BUILDFLAG(IS_CHROMEOS)
+   // No-op; per PostBrowserStart() comment, this is done elsewhere.
+-#else
++#elif BUILDFLAG(USE_DBUS)
+   bluez::BluezDBusManager::Shutdown();
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 

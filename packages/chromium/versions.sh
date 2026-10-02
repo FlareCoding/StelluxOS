@@ -2,15 +2,9 @@
 # host, by container.sh inside, and by the dispatcher for package_version.
 
 CHROMIUM_VER=151.0.7922.137
-CHROMIUM_PKG_REL=1 # Counts rebuilds of the same version with a changed recipe
+CHROMIUM_PKG_REL=2 # Counts rebuilds of the same version with a changed recipe
 CHROMIUM_URL="https://github.com/chromium-linux-tarballs/chromium-tarballs/releases/download/$CHROMIUM_VER/chromium-$CHROMIUM_VER-linux.tar.xz"
 CHROMIUM_SHA512=379dede0ca1ae3137e67776608a1b899ecdfa2c5c566df92841f63f1643dbe09d021df05a6a2d1fd853fb7d0fab95e2fea6a4568c18a94fdb84758e0f668f68b
-
-# content_shell embeds Chromium's web test fonts, which DEPS pins by object
-# name in the chromium-fonts bucket
-TEST_FONTS_OBJECT=9c07d19d9c5ee1ff94f717e6fb17e0c8c354e6f9
-TEST_FONTS_URL="https://storage.googleapis.com/chromium-fonts/$TEST_FONTS_OBJECT"
-TEST_FONTS_SHA512=2d3602b7a924d2bb8d538882f13a05428e23bf16ea3a9cf07eb13801fe7f33261ce61f2e5dc12e5c6f61f21b392526024d1969e8a967cf1f5138c647b84025b6
 
 # Alpine's devtools build swaps the prebuilt native rollup for the wasm one
 ROLLUP_VER=4.22.4
@@ -34,9 +28,9 @@ ALPINE_PKGS="bash bison flex gperf perl findutils gzip xz tar patch git curl rsy
 FONT_FILES="DejaVuSans.ttf DejaVuSans-Bold.ttf DejaVuSerif.ttf DejaVuSerif-Bold.ttf
     DejaVuSansMono.ttf DejaVuSansMono-Bold.ttf"
 
-# The program the package ships and the resource pack it loads from beside itself
-PROGRAM=content_shell
-RESOURCE_PAK=content_shell.pak
+# The program the package ships and the resources it loads from beside itself
+PROGRAM=chrome
+RESOURCE_FILES="chrome_100_percent.pak chrome_200_percent.pak resources.pak locales/en-US.pak"
 LLVM_ROOT=/usr/lib/llvm22
 RUST_TARGET_SUFFIX=alpine-linux-musl
 
