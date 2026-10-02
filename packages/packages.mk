@@ -8,8 +8,8 @@ PACKAGES_REGISTRY := $(PACKAGES_DIR)/packages.conf
 PACKAGES_LOCK     := $(PACKAGES_DIR)/packages.lock
 PACKAGES_CACHE    := $(abspath $(PACKAGES_DIR)/../userland/toolchain/packages)
 
-PACKAGES_ALL     := $(shell awk '$$1 !~ /^\#/ && NF { print $$1 }' $(PACKAGES_REGISTRY))
-PACKAGES_DEFAULT := $(shell awk '$$1 !~ /^\#/ && $$2 == "default" { print $$1 }' $(PACKAGES_REGISTRY))
+PACKAGES_ALL     := $(shell awk '$$1 !~ /^\043/ && NF { print $$1 }' $(PACKAGES_REGISTRY))
+PACKAGES_DEFAULT := $(shell awk '$$1 !~ /^\043/ && $$2 == "default" { print $$1 }' $(PACKAGES_REGISTRY))
 
 # PACKAGES is a selection over the default tier: a name adds a package, -name
 # removes one, and `none` or `all` replaces the default tier as the base
