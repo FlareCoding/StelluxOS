@@ -45,7 +45,9 @@ stellux/0005-close-without-dlsym.patch
 stellux/0006-bundled-expat-for-static.patch
 stellux/0007-trust-store-without-nss.patch
 stellux/0008-libc-interceptor-for-static.patch
-stellux/0010-ozone-platform-stellux.patch
-stellux/0011-fontconfig-cache-generator-deps.patch
-stellux/0012-test-support-without-trace-processor.patch
-stellux/0013-child-processes-through-the-process-api.patch
+stellux/0009-ozone-platform-stellux.patch
+stellux/0010-child-processes-through-the-process-api.patch
+stellux/0011-browser-without-nss.patch
+stellux/0012-browser-without-dbus.patch
+stellux/0013-processes-without-a-crash-handler.patch
+stellux/0014-hid-manager-without-a-hid-service.patch

@@ -1,0 +1,95 @@
+The browser uses NSS for client certificates and for decrypting Firefox
+passwords. Without NSS, it offers no platform client certificates and imports
+Firefox data without saved passwords.
+
+--- a/chrome/utility/importer/nss_decryptor.h
++++ b/chrome/utility/importer/nss_decryptor.h
+@@ -13,7 +13,7 @@
+ #elif BUILDFLAG(USE_NSS_CERTS)
+ #include "chrome/utility/importer/nss_decryptor_system_nss.h"
+ #else
+-#error NSSDecryptor not implemented.
++#include "chrome/utility/importer/nss_decryptor_null.h"
+ #endif
+ 
+ #endif  // CHROME_UTILITY_IMPORTER_NSS_DECRYPTOR_H_
+--- a/chrome/utility/BUILD.gn
++++ b/chrome/utility/BUILD.gn
+@@ -118,10 +118,12 @@
+     if (!is_mac && !is_chromeos) {
+       # NSS decryptor is not needed on ChromeOS. Additionally, it depends on
+       # system NSS that is unavailable on MacOS/Fuchsia.
+-      sources += [
+-        "importer/nss_decryptor.cc",
+-        "importer/nss_decryptor.h",
+-      ]
++      sources += [ "importer/nss_decryptor.h" ]
++      if (is_win || use_nss_certs) {
++        sources += [ "importer/nss_decryptor.cc" ]
++      } else {
++        sources += [ "importer/nss_decryptor_null.h" ]
++      }
+ 
+       deps += [ "//crypto:buildflags" ]
+     }
+--- a/chrome/browser/net/profile_network_context_service.cc
++++ b/chrome/browser/net/profile_network_context_service.cc
+@@ -136,9 +136,9 @@
+ #include "net/ssl/client_cert_store_mac.h"
+ #endif  // BUILDFLAG(IS_MAC)
+ 
+-#if BUILDFLAG(IS_ANDROID)
++#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX)
+ #include "net/ssl/client_cert_store_empty.h"
+-#endif  // BUILDFLAG(IS_ANDROID)
++#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX)
+ 
+ #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+ #include "extensions/common/constants.h"
+@@ -1301,7 +1301,7 @@
+ #elif BUILDFLAG(IS_MAC)
+   return GetWrappedCertStore(profile_,
+                              std::make_unique<net::ClientCertStoreMac>());
+-#elif BUILDFLAG(IS_ANDROID)
++#elif BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX)
+   // On Android client we don't use a platform client cert store, but we still
+   // need to use Chrome profile and browser level stores, so we wrap the empty
+   // store to use it as a platform cert store.
+--- a/chrome/browser/ui/webui/certificate_manager/client_cert_sources.cc
++++ b/chrome/browser/ui/webui/certificate_manager/client_cert_sources.cc
+@@ -130,7 +130,7 @@
+       active_requests_;
+ };
+ 
+-#if BUILDFLAG(IS_LINUX)
++#if (BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_NSS_CERTS))
+ class ClientCertStoreFactoryNSS : public ClientCertStoreFactory {
+  public:
+   std::unique_ptr<net::ClientCertStore> CreateClientCertStore() override {
+@@ -155,7 +155,7 @@
+ };
+ #endif
+ 
+-#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_LINUX)
++#if !BUILDFLAG(IS_CHROMEOS) && !(BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_NSS_CERTS))
+ std::unique_ptr<ClientCertStoreLoader> CreatePlatformClientCertLoader(
+     Profile* profile) {
+ #if BUILDFLAG(IS_WIN)
+@@ -326,7 +326,7 @@
+   std::optional<net::CertificateList> certs_;
+ };
+ 
+-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
++#if BUILDFLAG(IS_CHROMEOS) || (BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_NSS_CERTS))
+ // ChromeOS currently can use either Kcer or NSS for listing client certs, and
+ // Linux uses NSS only. This interface provides an abstraction to hide that
+ // from WritableClientCertSource. Currently this class only handles reading
+@@ -1048,7 +1048,7 @@
+     mojo::Remote<certificate_manager::mojom::CertificateManagerPage>*
+         remote_client,
+     Profile* profile) {
+-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
++#if BUILDFLAG(IS_CHROMEOS) || (BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_NSS_CERTS))
+   return std::make_unique<WritableClientCertSource>(remote_client, profile);
+ #else
+   return std::make_unique<ClientCertSource>(

@@ -36,11 +36,10 @@ step_fetch() {
     mkdir -p "$DL"
     fetch_verified "$DL/chromium-$CHROMIUM_VER-linux.tar.xz" "$CHROMIUM_URL" "$CHROMIUM_SHA512"
     fetch_verified "$DL/rollup-wasm-$ROLLUP_VER.tgz" "$ROLLUP_URL" "$ROLLUP_SHA512"
-    fetch_verified "$DL/test_fonts-$TEST_FONTS_OBJECT.tar.gz" "$TEST_FONTS_URL" "$TEST_FONTS_SHA512"
 }
 
-# Copies the Stellux-only sources, the stlxwin and libstlx sources they build
-# on, and the test fonts into the tree, so an already prepared tree catches up
+# Copies the Stellux-only sources and the stlxwin and libstlx sources they build
+# on into the tree, so an already prepared tree catches up
 sync_tree() {
     cd "$SRC"
     rsync -a "$RECIPE/overlay/" ./
@@ -53,11 +52,6 @@ sync_tree() {
     mkdir -p third_party/libstlx/include/stlx third_party/libstlx/src
     cp "$libstlx/include/stlx/proc.h" "$libstlx/include/stlx/syscall_nums.h" third_party/libstlx/include/stlx/
     cp "$libstlx/src/proc.c" third_party/libstlx/src/
-
-    if [ ! -f third_party/test_fonts/test_fonts/Ahem.ttf ]; then
-        mkdir -p third_party/test_fonts/test_fonts
-        tar -xzf "$DL/test_fonts-$TEST_FONTS_OBJECT.tar.gz" -C third_party/test_fonts/test_fonts
-    fi
 }
 
 step_prepare() {
@@ -149,8 +143,11 @@ step_install() {
     mkdir -p "$root/usr/bin" "$PACKAGES_CACHE"
     "$LLVM_ROOT/bin/llvm-strip" -o "$root/usr/bin/$PROGRAM" "$SRC/$OUT/$PROGRAM"
 
-    # Chromium looks for its resource pack next to its own binary
-    cp "$SRC/$OUT/$RESOURCE_PAK" "$root/usr/bin/"
+    # Chromium looks for its resources next to its own binary
+    for resource in $RESOURCE_FILES; do
+        mkdir -p "$root/usr/bin/$(dirname "$resource")"
+        cp "$SRC/$OUT/$resource" "$root/usr/bin/$resource"
+    done
 
     # Blink cannot lay out text without at least one font
     mkdir -p "$root/usr/share/fonts/dejavu" "$root/etc/fonts"

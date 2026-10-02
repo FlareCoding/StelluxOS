@@ -1,9 +1,19 @@
-musl has no execinfo, so stack traces print bare addresses for
-llvm-symbolizer to resolve against the unstripped binary.
+musl has no execinfo, so stack traces walk the frame pointer chain and print
+bare addresses for llvm-symbolizer to resolve against the unstripped binary.
 
 --- a/base/debug/stack_trace_posix.cc
 +++ b/base/debug/stack_trace_posix.cc
-@@ -1073,6 +1073,17 @@
+@@ -1051,6 +1051,9 @@
+   return base::saturated_cast<size_t>(
+       backtrace(const_cast<void**>(trace.data()),
+                 base::saturated_cast<int>(trace.size())));
++#elif BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
++  // Without backtrace(3), stack traces walk the frame pointer chain
++  return base::debug::TraceStackFramePointers(trace, 0);
+ #else
+   return 0;
+ #endif
+@@ -1073,6 +1076,17 @@
  #if defined(HAVE_BACKTRACE)
    PrintBacktraceOutputHandler handler;
    ProcessBacktrace(addresses(), prefix_string, &handler);
@@ -21,7 +31,7 @@ llvm-symbolizer to resolve against the unstripped binary.
  #endif
  }
  
-@@ -1082,6 +1093,14 @@
+@@ -1082,6 +1096,14 @@
      cstring_view prefix_string) const {
    StreamBacktraceOutputHandler handler(os);
    ProcessBacktrace(addresses(), prefix_string, &handler);
