@@ -43,8 +43,8 @@ __PRIVILEGED_CODE void arch_post_switch(task* next);
  *   under that lock only when it leaves the queue, so a waker holding the
  *   lock sees whether the task is still queued or running.
  * - Must NOT finalize per-CPU runtime elevation state for trap/syscall return.
- *   Trap/syscall return-boundary code restores percpu_is_elevated from the
- *   selected task's TASK_FLAG_ELEVATED after switch teardown is complete.
+ *   Trap/syscall return-boundary code restores percpu_is_elevated for the
+ *   privilege it returns to after switch teardown is complete.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted);

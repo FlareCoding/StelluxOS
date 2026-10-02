@@ -45,12 +45,9 @@ static void trap_fatal(const char* kind, const aarch64::trap_frame* tf) {
     panic::on_trap(const_cast<aarch64::trap_frame*>(tf), kind);
 }
 
-__PRIVILEGED_CODE static inline void restore_post_trap_elevation_state() {
-    // Return-boundary restoration: select runtime elevation based on the
-    // currently selected task's privilege-mode bit.
-    constexpr uint32_t mask = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL;
-    this_cpu(percpu_is_elevated) =
-        (this_cpu(current_task_exec)->flags & mask) != 0;
+__PRIVILEGED_CODE static inline void restore_post_trap_elevation_state(const aarch64::trap_frame* tf) {
+    // Taken from the frame, since a task can resume inside kernel code that a fault entered
+    this_cpu(percpu_is_elevated) = !aarch64::from_user(tf);
 }
 
 // Translates an abort's ESR into the access description the mm layer expects
@@ -102,7 +99,7 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
 
     if (ec == aarch64::EC_SVC_A64) {
         stlx_aarch64_syscall_dispatch(tf);
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -116,7 +113,7 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
 
         if (mm::handle_user_pf(guard.task_core->mm_ctx, fault_addr, pf_flags)) {
             // Fault has been handled successfully, restart instruction
-            restore_post_trap_elevation_state();
+            restore_post_trap_elevation_state(tf);
             return;
         }
     }
@@ -153,7 +150,7 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
             sched::on_tick(tf);
         }
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -161,7 +158,7 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         smp::ipi::dispatch();
         irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -169,20 +166,20 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         serial::on_rx_irq();
         irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
     if (arch::msi_handle_irq(irq_id)) {
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
     if (irq::dispatch(irq_id)) {
         irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -217,7 +214,7 @@ void stlx_aarch64_el1_sync_handler(aarch64::trap_frame* tf) {
 
     if (ec == aarch64::EC_SVC_A64) {
         stlx_aarch64_syscall_dispatch(tf);
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -233,7 +230,7 @@ void stlx_aarch64_el1_sync_handler(aarch64::trap_frame* tf) {
                 can_sleep
             )
         ) {
-            restore_post_trap_elevation_state();
+            restore_post_trap_elevation_state(tf);
             return;
         }
     }
@@ -257,7 +254,7 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
             sched::on_tick(tf);
         }
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -265,7 +262,7 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
         smp::ipi::dispatch();
         irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -273,20 +270,20 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
         serial::on_rx_irq();
         irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
     if (arch::msi_handle_irq(irq_id)) {
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
     if (irq::dispatch(irq_id)) {
         irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 

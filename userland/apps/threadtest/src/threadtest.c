@@ -7,12 +7,15 @@
 #include <time.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <signal.h>
 #include <stlx/proc.h>
 
 #define STACK_SIZE (64 * 1024)
 
 #define STRESS_THREADS 16
 #define STRESS_ITERS   10000
+
+#define SIBLING_BLOCK_WAIT_NS 100000000
 
 static int passed = 0;
 static int failed = 0;
@@ -416,6 +419,18 @@ static void test_leader_exit_kills_threads(void) {
     check("child process exited", STLX_WIFEXITED(status));
 }
 
+static void test_leader_fault_kills_blocked_threads(void) {
+    int h = proc_exec("/bin/threadtest", (const char*[]){ "--child-leader-fault", NULL });
+    if (h < 0) {
+        printf("  SKIP: could not spawn child process\n");
+        return;
+    }
+
+    int status = 0;
+    proc_wait(h, &status);
+    check("faulting leader is killed by SIGSEGV", STLX_WIFSIGNALED(status) && STLX_WTERMSIG(status) == SIGSEGV);
+}
+
 /* ---------- test 14: kill_sleeping_thread ---------- */
 
 static void thread_sleep_long(void* arg) {
@@ -500,6 +515,30 @@ static void run_child_leader_exit(void) {
     _exit(0);
 }
 
+static void run_child_leader_fault(void) {
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) {
+        _exit(EXIT_FAILURE);
+    }
+
+    void* stk = alloc_stack();
+    if (!stk) {
+        _exit(EXIT_FAILURE);
+    }
+
+    int h = proc_create_thread(thread_read_fd, (void*)(long)pipe_fds[0], stack_top(stk), "t_blocked");
+    if (h < 0) {
+        _exit(EXIT_FAILURE);
+    }
+
+    proc_thread_start(h);
+
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = SIBLING_BLOCK_WAIT_NS };
+    nanosleep(&ts, NULL);
+
+    *(volatile int*)NULL = 0;
+}
+
 /* ---------- main ---------- */
 
 int main(int argc, char** argv) {
@@ -507,6 +546,11 @@ int main(int argc, char** argv) {
 
     if (argc > 1 && strcmp(argv[1], "--child-leader-exit") == 0) {
         run_child_leader_exit();
+        return 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--child-leader-fault") == 0) {
+        run_child_leader_fault();
         return 0;
     }
 
@@ -534,6 +578,7 @@ int main(int argc, char** argv) {
     printf("\n[kill and termination]\n");
     test_thread_kill();
     test_leader_exit_kills_threads();
+    test_leader_fault_kills_blocked_threads();
     test_kill_sleeping_thread();
 
     printf("\n[error cases]\n");
