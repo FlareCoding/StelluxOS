@@ -53,6 +53,12 @@ constexpr size_t XHCI_SCRATCHPAD_BUFFERS_ALIGNMENT       = paging::PAGE_SIZE_4KB
 
 void* alloc_xhci_memory(size_t size);
 
+/**
+ * Restrict all subsequent xHCI DMA allocations to the low 4 GiB. Required
+ * when the controller does not report 64-bit addressing (HCCPARAMS1.AC64).
+ */
+void set_xhci_dma32_only(bool dma32_only);
+
 void free_xhci_memory(void* ptr);
 
 uintptr_t xhci_get_physical_addr(void* vaddr);

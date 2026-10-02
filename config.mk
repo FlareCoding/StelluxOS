@@ -89,4 +89,5 @@ KTRACE_ENABLED ?= 1
 # Supported platforms:
 #   qemu-virt   - QEMU virt machine (default for aarch64)
 #   rpi4        - Raspberry Pi 4 (BCM2711)
+#   jetson-nano - NVIDIA Jetson Nano (Tegra210)
 PLATFORM ?= qemu-virt

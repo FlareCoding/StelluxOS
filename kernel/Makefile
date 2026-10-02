@@ -52,6 +52,17 @@ include ../config.mk
 # Architecture-specific flags
 include arch/$(ARCH)/defconfig
 
+# Platform selection is a compile-time define that per-object dependency
+# tracking cannot see, so wipe stale objects when PLATFORM changes.
+ifneq ($(MAKECMDGOALS),clean)
+PLATFORM_STAMP := $(KERNEL_BUILD_DIR)/.platform
+ifneq ($(shell cat $(PLATFORM_STAMP) 2>/dev/null),$(PLATFORM))
+$(shell rm -rf $(OBJ_DIR) $(KERNEL_ELF))
+$(shell mkdir -p $(KERNEL_BUILD_DIR))
+$(shell echo $(PLATFORM) > $(PLATFORM_STAMP))
+endif
+endif
+
 # ============================================================================
 # Source Discovery
 # ============================================================================

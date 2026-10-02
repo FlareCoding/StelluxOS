@@ -43,3 +43,5 @@ __pycache__/
 
 # DOOM WAD file (downloadable via 'make doom-wad')
 initrd/etc/res/doom/doom1.wad
+initrd/lib/firmware/nvidia/
+initrd/lib/firmware/LICENCE.nvidia

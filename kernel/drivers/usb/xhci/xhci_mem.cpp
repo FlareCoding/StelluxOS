@@ -7,6 +7,12 @@
 
 namespace drivers::xhci {
 
+static bool g_dma32_only = false;
+
+void set_xhci_dma32_only(bool dma32_only) {
+    g_dma32_only = dma32_only;
+}
+
 void* alloc_xhci_memory(size_t size) {
     if (size == 0) {
         log::error("xhci_mem: alloc with size 0");
@@ -18,7 +24,8 @@ void* alloc_xhci_memory(size_t size) {
     dma::buffer buf = {};
     int32_t rc = 0;
     RUN_ELEVATED({
-        rc = dma::alloc_pages(pages, buf, pmm::ZONE_ANY, paging::PAGE_USER);
+        rc = dma::alloc_pages(pages, buf, g_dma32_only ? pmm::ZONE_DMA32 : pmm::ZONE_ANY,
+                             paging::PAGE_USER);
     });
 
     if (rc != dma::OK) {

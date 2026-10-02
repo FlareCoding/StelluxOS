@@ -1,7 +1,9 @@
 #include "hw/rtc.h"
 #include "common/logging.h"
 
-#if !defined(STLX_PLATFORM_RPI4)
+#if defined(STLX_PLATFORM_RPI4) || defined(STLX_PLATFORM_JETSON_NANO)
+#define STLX_NO_HW_RTC
+#else
 #include "mm/vmm.h"
 #include "mm/paging_types.h"
 #include "hw/mmio.h"
@@ -13,7 +15,7 @@ static uint64_t g_boot_unix_ns;
 
 constexpr uint64_t NS_PER_SEC = 1000000000ULL;
 
-#if defined(STLX_PLATFORM_RPI4)
+#if defined(STLX_NO_HW_RTC)
 
 __PRIVILEGED_CODE int32_t init() {
 #ifdef STLX_BUILD_EPOCH
@@ -55,7 +57,7 @@ __PRIVILEGED_CODE int32_t init() {
     return OK;
 }
 
-#endif // STLX_PLATFORM_RPI4
+#endif // STLX_NO_HW_RTC
 
 uint64_t boot_unix_ns() {
     return g_boot_unix_ns;

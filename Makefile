@@ -130,7 +130,7 @@ endif
 # ============================================================================
 
 .PHONY: all kernel userland image run run-headless clean test \
-        image-x86_64 image-aarch64 \
+        image-x86_64 image-aarch64 image-jetson-nano jetson-firmware \
         run-qemu-x86_64 run-qemu-aarch64 \
         run-qemu-x86_64-headless run-qemu-aarch64-headless \
         run-qemu-x86_64-debug run-qemu-aarch64-debug \
@@ -185,6 +185,33 @@ image-x86_64:
 
 image-aarch64:
 	$(Q)$(MAKE) image ARCH=aarch64
+
+# Jetson Nano SD image: same UEFI/Limine layout, booted via U-Boot's EFI
+# implementation on the Nano (kernel/Makefile rebuilds on platform change).
+image-jetson-nano: jetson-firmware
+	$(Q)$(MAKE) image ARCH=aarch64 PLATFORM=jetson-nano
+
+# NVIDIA's Tegra210 XUSB controller runs firmware the kernel loads at boot.
+# Fetched from linux-firmware (redistributable under LICENCE.nvidia) and
+# pinned by checksum rather than committed.
+LINUX_FIRMWARE_URL := https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain
+JETSON_FW_DIR      := initrd/lib/firmware
+
+jetson-firmware:
+	$(Q)$(call fetch_checked,$(JETSON_FW_DIR)/nvidia/tegra210/xusb.bin,$(LINUX_FIRMWARE_URL)/nvidia/tegra210/xusb.bin,941873a6a70993b5c40a608cedc4608c281458c11949092d4bce125b96a92025)
+	$(Q)$(call fetch_checked,$(JETSON_FW_DIR)/LICENCE.nvidia,$(LINUX_FIRMWARE_URL)/LICENSES/LICENCE.nvidia,bc5225a57f49c5249dcf238e4ae6437811677a2a8a7f579c3d839e058653ee44)
+
+# fetch_checked(dest, url, sha256): download once, then verify the checksum
+define fetch_checked
+if [ ! -f $(1) ]; then \
+	mkdir -p $(dir $(1)) && echo "Downloading $(1)" && \
+	curl -fsSL -o $(1).tmp "$(2)" && mv $(1).tmp $(1); \
+fi; \
+actual=$$(shasum -a 256 $(1) | cut -d' ' -f1); \
+if [ "$$actual" != "$(3)" ]; then \
+	echo "error: $(1) checksum mismatch (got $$actual)"; rm -f $(1); exit 1; \
+fi
+endef
 
 INITRD_DIR  := initrd
 INITRD_ROOT := $(BUILD_DIR)/initrd/$(ARCH)/root
@@ -940,6 +967,8 @@ help:
 	@echo "  make packages-build [PACKAGES=...] [ARCHES=x86_64] Build the selected packages the lock does not pin (slow)"
 	@echo "  make packages-publish RELEASE=<tag> [DRY_RUN=1] Publish a complete package release (built plus reused)"
 	@echo "  make packages-pin RELEASE=<tag>  Point packages.lock at a published release"
+	@echo "  make image-jetson-nano       Build Jetson Nano SD image (shortcut)"
+	@echo "  make jetson-firmware         Download NVIDIA Tegra210 USB firmware"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
 	@echo "  make run-headless ARCH=<arch> Build + run headless (for SSH)"
 	@echo "  make usb ARCH=<arch>         Build + print USB instructions"

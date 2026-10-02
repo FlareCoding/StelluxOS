@@ -8,6 +8,12 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
+#if defined(STLX_PLATFORM_JETSON_NANO)
+#include "drivers/usb/xhci/xhci.h"
+#include "drivers/usb/xhci/tegra_xusb.h"
+#include "sched/task_exec_core.h"
+#include "smp/smp.h"
+#endif
 
 namespace drivers {
 
@@ -148,12 +154,83 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
     return 0;
 }
 
+#if defined(STLX_PLATFORM_JETSON_NANO)
+static void xusb_task_entry(void* arg) {
+    auto* drv = static_cast<xhci_hcd*>(arg);
+    drv->run();
+    sched::exit(0);
+}
+
+// Tegra210 XUSB: an on-SoC xHCI that needs power, clocks, pads and NVIDIA
+// firmware before the generic xHCI driver can drive it.
+//
+// Bring-up runs in its own elevated task on the last CPU. A misconfigured XUSB
+// access stalls the CPU that issues it instead of faulting, so it must not sit
+// on the boot path ahead of /bin/init and the display manager.
+__PRIVILEGED_CODE static void xusb_bringup_entry(void*) {
+    if (tegra_xusb::bring_up() != tegra_xusb::OK) {
+        log::error("platform: Tegra XUSB bring-up failed, USB unavailable");
+        sched::exit(0);
+    }
+
+    auto* drv = heap::ualloc_new<xhci_hcd>(
+        tegra_xusb::XHCI_PHYS, tegra_xusb::XHCI_SIZE, tegra_xusb::XHCI_IRQ,
+        tegra_xusb::on_controller_started, nullptr);
+    if (!drv) {
+        log::error("platform: failed to allocate XUSB xHCI driver");
+        sched::exit(0);
+    }
+
+    int32_t rc = drv->attach();
+    if (rc != 0) {
+        log::error("platform: XUSB xHCI attach failed (%d)", rc);
+        drv->detach();
+        heap::ufree_delete(drv);
+        sched::exit(0);
+    }
+
+    sched::task* t = sched::create_kernel_task(xusb_task_entry, drv, drv->name());
+    if (!t) {
+        log::error("platform: task creation failed for XUSB xHCI");
+        drv->detach();
+        heap::ufree_delete(drv);
+        sched::exit(0);
+    }
+
+    drv->set_task(t);
+    sched::enqueue(t);
+    log::info("platform: Tegra XUSB xHCI bound (IRQ %u)", tegra_xusb::XHCI_IRQ);
+    sched::exit(0);
+}
+
+__PRIVILEGED_CODE static int32_t probe_tegra_xusb() {
+    sched::task* t = sched::create_kernel_task(xusb_bringup_entry, nullptr, "xusb_bringup",
+                                               sched::TASK_FLAG_ELEVATED);
+    if (!t) {
+        log::error("platform: failed to create XUSB bring-up task");
+        return -1;
+    }
+
+    uint32_t cpus = smp::cpu_count();
+    uint32_t cpu = cpus > 1 ? cpus - 1 : 0;
+    sched::enqueue_on(t, cpu);
+    log::info("platform: Tegra XUSB bring-up scheduled on CPU %u", cpu);
+    return 0;
+}
+#endif
+
 __PRIVILEGED_CODE int32_t platform_init() {
     uint32_t bound = 0;
 
     if (probe_genet() == 0) {
         bound++;
     }
+
+#if defined(STLX_PLATFORM_JETSON_NANO)
+    if (probe_tegra_xusb() == 0) {
+        bound++;
+    }
+#endif
 
     if (bound > 0) {
         log::info("platform: %u device(s) bound", bound);

@@ -1,4 +1,5 @@
 #include "drivers/graphics/gfxfb.h"
+#include "drivers/graphics/tegra_dc.h"
 #include "boot/boot_services.h"
 #include "common/logging.h"
 #include "fs/devfs/devfs.h"
@@ -115,6 +116,11 @@ private:
  */
 __PRIVILEGED_CODE int32_t init() {
     auto& fb = g_boot_info.framebuffer;
+#if defined(STLX_PLATFORM_JETSON_NANO)
+    if (fb.fb_phys == 0) {
+        (void)tegra_dc::adopt_boot_framebuffer();
+    }
+#endif
     if (fb.fb_phys == 0) {
         log::info("gfxfb: no framebuffer available");
         return OK;

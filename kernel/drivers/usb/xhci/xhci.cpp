@@ -12,25 +12,84 @@
 #include "sync/wait_queue.h"
 #include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
+#include "irq/irq.h"
+#include "mm/vmm.h"
+#if defined(__aarch64__)
+#include "irq/irq_arch.h"
+#endif
 
 using namespace drivers::xhci;
 
 namespace drivers {
 
-int32_t xhci_hcd::attach() {
-    // Enable PCI memory space + bus mastering before any MMIO access
+int32_t xhci_hcd::_map_platform_regs() {
+    int32_t rc = vmm::ERR_INVALID_ARG;
     RUN_ELEVATED({
-        dev().enable();
-        dev().enable_bus_mastering();
+        rc = vmm::map_device(static_cast<pmm::phys_addr_t>(m_plat_phys), m_plat_size,
+                             paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER,
+                             m_plat_map_base, m_xhc_base);
     });
-
-    int32_t rc = map_bar(0, m_xhc_base, paging::PAGE_USER);
-    if (rc != 0) {
-        log::error("xhci: failed to map BAR: %d", rc);
+    if (rc != vmm::OK) {
+        log::error("xhci: failed to map registers at 0x%lx: %d", m_plat_phys, rc);
         return rc;
     }
+    m_xhc_bar_size = m_plat_size;
+    return drivers::OK;
+}
 
-    m_xhc_bar_size = dev().get_bar(0).size;
+__PRIVILEGED_CODE void xhci_hcd::platform_isr(uint32_t, void* context) {
+    auto* self = static_cast<xhci_hcd*>(context);
+    self->on_interrupt(0);
+
+    sync::irq_state irq = sync::spin_lock_irqsave(self->m_irq_lock);
+    self->m_event_pending = true;
+    sync::wake_one(self->m_irq_wq);
+    sync::spin_unlock_irqrestore(self->m_irq_lock, irq);
+}
+
+int32_t xhci_hcd::_setup_platform_irq() {
+#if defined(__aarch64__)
+    int32_t rc = irq::ERR_INVAL;
+    RUN_ELEVATED({
+        rc = irq::register_handler(m_plat_irq, platform_isr, this);
+        if (rc == irq::OK) {
+            irq::set_level_triggered(m_plat_irq);
+            irq::set_spi_target(m_plat_irq, 0x01);
+            irq::set_group1(m_plat_irq);
+            irq::unmask(m_plat_irq);
+        }
+    });
+    if (rc != irq::OK) {
+        return rc;
+    }
+    m_plat_irq_registered = true;
+    return drivers::OK;
+#else
+    return irq::ERR_INVAL;
+#endif
+}
+
+int32_t xhci_hcd::attach() {
+    if (is_platform()) {
+        int32_t rc = _map_platform_regs();
+        if (rc != drivers::OK) {
+            return rc;
+        }
+    } else {
+        // Enable PCI memory space + bus mastering before any MMIO access
+        RUN_ELEVATED({
+            dev().enable();
+            dev().enable_bus_mastering();
+        });
+
+        int32_t rc = map_bar(0, m_xhc_base, paging::PAGE_USER);
+        if (rc != 0) {
+            log::error("xhci: failed to map BAR: %d", rc);
+            return rc;
+        }
+
+        m_xhc_bar_size = dev().get_bar(0).size;
+    }
 
     m_xhc_cap_regs = reinterpret_cast<volatile xhci_capability_registers*>(m_xhc_base);
 
@@ -59,6 +118,13 @@ int32_t xhci_hcd::attach() {
     m_hc_params.csz = XHCI_CSZ(m_xhc_cap_regs);
     m_hc_params.ppc = XHCI_PPC(m_xhc_cap_regs);
 
+    set_xhci_dma32_only(!m_hc_params.ac64);
+    if (is_platform()) {
+        log::info("xhci: platform controller at 0x%lx: %u ports, %u slots, ac64=%u, csz=%u",
+                  m_plat_phys, m_hc_params.max_ports, m_hc_params.max_device_slots,
+                  m_hc_params.ac64 ? 1u : 0u, m_hc_params.csz ? 1u : 0u);
+    }
+
     _parse_extended_capabilities();
 
     int32_t reset_rc = _reset_host_controller();
@@ -85,6 +151,14 @@ int32_t xhci_hcd::attach() {
     if (!m_port_devices) {
         log::error("xhci: failed to allocate port device tracking array");
         return -1;
+    }
+
+    if (is_platform()) {
+        if (_setup_platform_irq() != drivers::OK) {
+            log::warn("xhci: IRQ %u registration failed, interrupts unavailable",
+                      m_plat_irq);
+        }
+        return drivers::OK;
     }
 
     // Setup MSI/MSI-X interrupts
@@ -161,6 +235,24 @@ int32_t xhci_hcd::detach() {
         m_dcbaa = nullptr;
     }
 
+    if (is_platform()) {
+        RUN_ELEVATED({
+            if (m_plat_irq_registered) {
+#if defined(__aarch64__)
+                irq::mask(m_plat_irq);
+#endif
+                irq::unregister_handler(m_plat_irq);
+            }
+            if (m_plat_map_base) {
+                (void)vmm::free(m_plat_map_base);
+            }
+        });
+        m_plat_irq_registered = false;
+        m_plat_map_base = 0;
+        m_xhc_base = 0;
+        return drivers::OK;
+    }
+
     // Base class tears down MSI and unmaps BARs
     return pci_driver::detach();
 }
@@ -169,6 +261,10 @@ void xhci_hcd::run() {
     if (_start_host_controller() != 0) {
         log::error("xhci: failed to start controller");
         return;
+    }
+
+    if (m_on_started) {
+        m_on_started(m_on_started_ctx);
     }
 
     // Let ports stabilize after the controller transitions to running.
@@ -727,8 +823,10 @@ int32_t xhci_hcd::_send_command(xhci_trb_t* trb, xhci_command_completion_trb_t* 
         constexpr uint64_t CMD_TIMEOUT_MS = 5000;
         uint64_t deadline = clock::now_ns() + CMD_TIMEOUT_MS * 1000000ULL;
 
+        // Poll rather than block on the IRQ: a command that never completes
+        // raises no interrupt, so a blocking wait would never reach the deadline.
         while (!m_cmd_state.completed && clock::now_ns() < deadline) {
-            wait_for_event();
+            RUN_ELEVATED(sched::sleep_ms(1));
             _process_event_ring();
             m_event_ring->finish_processing();
         }
@@ -987,6 +1085,13 @@ int32_t xhci_hcd::_set_tr_dequeue_ptr(xhci_device* device, uint8_t dci,
     trb.new_dequeue_ptr = (new_dequeue_phys & ~static_cast<uintptr_t>(0xF))
                         | (static_cast<uintptr_t>(dcs) & 1);
     return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
+}
+
+bool xhci_hcd::_control_error_halts_endpoint(uint32_t completion_code) {
+    // xHCI 4.10.2: these errors transition the endpoint to Halted.
+    return completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR ||
+           completion_code == XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR ||
+           completion_code == XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR;
 }
 
 int32_t xhci_hcd::_recover_stalled_control_endpoint(xhci_device* device) {
@@ -1631,6 +1736,7 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
     }
 
     xhci_interface_info* current_iface = nullptr;
+    bool in_alt_setting = false;
 
     while (offset + sizeof(usb::usb_descriptor_header) <= data_length) {
         auto* hdr = reinterpret_cast<usb::usb_descriptor_header*>(&config.data[offset]);
@@ -1648,7 +1754,15 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
         }
 
         if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_INTERFACE) {
+            in_alt_setting = false;
             if (hdr->bLength >= sizeof(usb::usb_interface_descriptor) &&
+                reinterpret_cast<usb::usb_interface_descriptor*>(hdr)->bAlternateSetting != 0) {
+                // Only alternate setting 0 is active after SET_CONFIGURATION.
+                // Hubs list their multi-TT mode this way under the same
+                // interface number, so binding it would attach a second driver.
+                in_alt_setting = true;
+                current_iface = nullptr;
+            } else if (hdr->bLength >= sizeof(usb::usb_interface_descriptor) &&
                 device->num_interfaces() < xhci_device::MAX_INTERFACES) {
                 auto* iface_desc = reinterpret_cast<usb::usb_interface_descriptor*>(hdr);
                 uint8_t idx = device->num_interfaces();
@@ -1686,7 +1800,7 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
                 }
             }
         } else if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_ENDPOINT) {
-            if (hdr->bLength >= sizeof(usb::usb_endpoint_descriptor)) {
+            if (!in_alt_setting && hdr->bLength >= sizeof(usb::usb_endpoint_descriptor)) {
                 auto* ep_desc = reinterpret_cast<usb::usb_endpoint_descriptor*>(hdr);
                 auto* ep = _create_endpoint(device, ep_desc);
                 if (ep) {
@@ -2725,6 +2839,34 @@ int32_t xhci_hcd::_send_control_transfer(
     xhci_device_request_packet& request,
     void* buffer, uint32_t length
 ) {
+    // Babble and transaction errors on FS/LS devices behind a TT are
+    // transient; the endpoint is repaired after each one, so retry.
+    constexpr int MAX_ATTEMPTS = 3;
+    int32_t rc = -1;
+    for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        rc = _send_control_transfer_once(device, request, buffer, length);
+        if (rc == 0) {
+            return 0;
+        }
+        uint32_t cc = device->ctrl_result().completion_code;
+        if (cc != XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR &&
+            cc != XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR) {
+            return rc;
+        }
+        if (attempt < MAX_ATTEMPTS) {
+            log::info("xhci: slot %u control request %02x/%02x retry %d after %s",
+                      device->slot_id(), request.bRequestType, request.bRequest, attempt,
+                      trb_completion_code_to_string(static_cast<uint8_t>(cc)));
+        }
+    }
+    return rc;
+}
+
+int32_t xhci_hcd::_send_control_transfer_once(
+    xhci_device* device,
+    xhci_device_request_packet& request,
+    void* buffer, uint32_t length
+) {
     xhci_transfer_ring* ring = device->ctrl_ring();
 
     // Use the device's persistent DMA buffer
@@ -2813,7 +2955,7 @@ int32_t xhci_hcd::_send_control_transfer(
     m_event_ring->finish_processing();
 
     while (!device->ctrl_completed() && clock::now_ns() < deadline) {
-        wait_for_event();
+        RUN_ELEVATED(sched::sleep_ms(1));
         _process_event_ring();
         m_event_ring->finish_processing();
     }
@@ -2825,7 +2967,7 @@ int32_t xhci_hcd::_send_control_transfer(
     }
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+        if (_control_error_halts_endpoint(device->ctrl_result().completion_code)) {
             (void)_recover_stalled_control_endpoint(device);
         }
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
@@ -3074,7 +3216,7 @@ int32_t xhci_hcd::usb_control_transfer(
     });
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+        if (_control_error_halts_endpoint(device->ctrl_result().completion_code)) {
             (void)_recover_stalled_control_endpoint(device);
         }
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));

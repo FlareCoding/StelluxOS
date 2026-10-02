@@ -133,5 +133,30 @@ __PRIVILEGED_CODE void dump() {
     }
 }
 
+#if defined(STLX_PLATFORM_JETSON_NANO)
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void populate_tegra210() {
+    // Tegra210 GIC-400: GICD at 0x50041000, GICC at 0x50042000
+    g_madt.gicd_base = 0x50041000;
+    g_madt.gic_version = 2;
+    g_madt.gicr_base = 0;
+    g_madt.gicr_length = 0;
+    g_madt.msi_frame.base_address = 0;
+    g_madt.msi_frame.flags = 0;
+    g_madt.msi_frame.spi_count = 0;
+    g_madt.msi_frame.spi_base = 0;
+
+    // 4x Cortex-A57, single cluster, affinity-level-0 ids 0-3
+    g_madt.cpu_count = 4;
+    for (uint32_t i = 0; i < g_madt.cpu_count; i++) {
+        g_madt.giccs[i].base_address = 0x50042000;
+        g_madt.giccs[i].mpidr = i;
+        g_madt.giccs[i].enabled = true;
+    }
+}
+#endif
+
 } // namespace madt
 } // namespace acpi
