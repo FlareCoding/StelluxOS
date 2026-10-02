@@ -207,7 +207,7 @@ TEST(fs_test, removed_directory_refuses_new_entries) {
     EXPECT_EQ(dir->create("f", 1, 0, &out), fs::ERR_NOENT);
     EXPECT_EQ(dir->mkdir("d", 1, 0, &out), fs::ERR_NOENT);
     EXPECT_EQ(dir->symlink("l", 1, "/", &out), fs::ERR_NOENT);
-    EXPECT_EQ(dir->create_socket("s", 1, nullptr, &out), fs::ERR_NOENT);
+    EXPECT_EQ(dir->create_socket("s", 1, 0, &out), fs::ERR_NOENT);
     EXPECT_NULL(out);
 
     fs::node* root = nullptr;
@@ -528,6 +528,98 @@ TEST(fs_test, setattr_rejects_unknown_mask) {
 
     fs::close(f);
     fs::unlink("/ts_mask");
+}
+
+TEST(fs_test, create_stores_the_requested_mode) {
+    fs::file* f = fs::open_at(nullptr, "/mode_file", fs::O_CREAT | fs::O_RDWR, nullptr, 0640);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::fstat(f, &attr), fs::OK);
+    EXPECT_EQ(attr.mode, static_cast<uint32_t>(0640));
+
+    fs::close(f);
+    fs::unlink("/mode_file");
+}
+
+TEST(fs_test, open_without_a_mode_creates_the_default_file_mode) {
+    fs::file* f = fs::open("/mode_default", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::fstat(f, &attr), fs::OK);
+    EXPECT_EQ(attr.mode, fs::DEFAULT_FILE_MODE);
+
+    fs::close(f);
+    fs::unlink("/mode_default");
+}
+
+TEST(fs_test, creating_an_existing_file_keeps_its_mode) {
+    fs::file* first = fs::open_at(nullptr, "/mode_kept", fs::O_CREAT | fs::O_RDWR, nullptr, 0600);
+    ASSERT_NOT_NULL(first);
+    fs::close(first);
+
+    fs::file* again = fs::open_at(nullptr, "/mode_kept", fs::O_CREAT | fs::O_RDWR, nullptr, 0666);
+    ASSERT_NOT_NULL(again);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::fstat(again, &attr), fs::OK);
+    EXPECT_EQ(attr.mode, static_cast<uint32_t>(0600));
+
+    fs::close(again);
+    fs::unlink("/mode_kept");
+}
+
+TEST(fs_test, mkdir_stores_the_requested_mode) {
+    ASSERT_EQ(fs::mkdir("/mode_dir", 0700), fs::OK);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/mode_dir", &attr), fs::OK);
+    EXPECT_EQ(attr.mode, static_cast<uint32_t>(0700));
+
+    fs::rmdir("/mode_dir");
+}
+
+TEST(fs_test, setattr_mode_keeps_only_permission_bits) {
+    fs::file* f = fs::open("/mode_set", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr before = {};
+    EXPECT_EQ(fs::fstat(f, &before), fs::OK);
+
+    fs::vattr want = {};
+    want.mode = 0170751;
+    EXPECT_EQ(fs::fsetattr(f, want, fs::VATTR_MODE), fs::OK);
+
+    fs::vattr after = {};
+    EXPECT_EQ(fs::fstat(f, &after), fs::OK);
+    EXPECT_EQ(after.mode, static_cast<uint32_t>(0751));
+    EXPECT_EQ(after.type, fs::node_type::regular);
+    EXPECT_EQ(after.mtime_ns, before.mtime_ns);
+    EXPECT_GE(after.ctime_ns, before.ctime_ns);
+
+    fs::close(f);
+    fs::unlink("/mode_set");
+}
+
+TEST(fs_test, symlinks_report_every_permission) {
+    ASSERT_EQ(fs::symlink("/mode_nowhere", "/mode_link"), fs::OK);
+
+    fs::node* link = nullptr;
+    ASSERT_EQ(fs::lookup_at(nullptr, "/mode_link", fs::LOOKUP_NOFOLLOW, &link), fs::OK);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(link->getattr(&attr), fs::OK);
+    EXPECT_EQ(attr.mode, fs::default_mode(fs::node_type::symlink));
+
+    release_node(link);
+    fs::unlink("/mode_link");
+}
+
+TEST(fs_test, tmp_is_writable_by_everyone_and_sticky) {
+    fs::vattr attr = {};
+    ASSERT_EQ(fs::stat("/tmp", &attr), fs::OK);
+    EXPECT_EQ(attr.mode, static_cast<uint32_t>(01777));
 }
 
 TEST(fs_test, write_moves_mtime_forward) {

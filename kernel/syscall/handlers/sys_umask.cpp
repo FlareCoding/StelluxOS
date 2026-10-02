@@ -11,8 +11,6 @@ DEFINE_SYSCALL1(umask, u_mask) {
         return syscall::ESRCH;
     }
 
-    // The filesystem synthesizes permissions and consumes no creation
-    // mode yet, so the mask's observable behavior is the swap itself.
     sched::thread_group* group = current->group;
     uint32_t new_mask = static_cast<uint32_t>(u_mask) & MODE_BITS;
 

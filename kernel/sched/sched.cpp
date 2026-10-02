@@ -191,6 +191,19 @@ task* current() {
     return this_cpu(current_task);
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t current_umask() {
+    task* t = current();
+    if (!t || !t->group) {
+        return DEFAULT_UMASK;
+    }
+
+    sync::irq_lock_guard guard(t->group->lock);
+    return t->group->umask;
+}
+
 // A pending SIGKILL bit is the task's "must terminate" marker
 static inline bool task_kill_bit_set(const task* t) {
     return (t->sig.pending.load_acquire()

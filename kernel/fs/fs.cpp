@@ -37,6 +37,28 @@ __PRIVILEGED_BSS static mount_point* g_mounts[MAX_MOUNTS];
 static sync::atomic<uint64_t> g_next_ino{1};
 static sync::atomic<uint64_t> g_next_dev{1};
 
+constexpr uint32_t SYMLINK_MODE = 0777;
+constexpr uint32_t SOCKET_MODE  = 0777;
+constexpr uint32_t DEVICE_MODE  = 0600;
+
+constexpr uint32_t TMP_DIRECTORY_MODE = 01777;
+
+uint32_t default_mode(node_type type) {
+    switch (type) {
+        case node_type::directory:
+            return DEFAULT_DIRECTORY_MODE;
+        case node_type::symlink:
+            return SYMLINK_MODE;
+        case node_type::socket:
+            return SOCKET_MODE;
+        case node_type::char_device:
+        case node_type::block_device:
+            return DEVICE_MODE;
+        default:
+            return DEFAULT_FILE_MODE;
+    }
+}
+
 node::node(node_type t, instance* fs, const char* name)
     : m_child_link{}
     , m_type(t)
@@ -44,6 +66,7 @@ node::node(node_type t, instance* fs, const char* name)
     , m_parent(nullptr)
     , m_size(0)
     , m_ino(g_next_ino.fetch_add_relaxed(1))
+    , m_mode(default_mode(t))
     , m_atime_ns(clock::realtime_ns())
     , m_mtime_ns(m_atime_ns)
     , m_ctime_ns(m_atime_ns)
@@ -77,7 +100,7 @@ uint32_t node::poll(file*, sync::poll_table*)       { return sync::POLL_IN | syn
 int32_t node::open(file*, uint32_t)                 { return OK; }
 int32_t node::on_close(file*)                       { return OK; }
 int32_t node::readlink(char*, size_t, size_t*)      { return ERR_NOSYS; }
-int32_t node::create_socket(const char*, size_t, void*, node**) { return ERR_NOSYS; }
+int32_t node::create_socket(const char*, size_t, uint32_t, node**) { return ERR_NOSYS; }
 int32_t node::truncate(size_t)                      { return ERR_NOSYS; }
 int32_t node::allocate(uint64_t, uint64_t)          { return ERR_NOSYS; }
 
@@ -85,6 +108,7 @@ int32_t node::getattr(vattr* attr) {
     if (!attr) return ERR_INVAL;
 
     attr->type = m_type;
+    attr->mode = m_mode;
     attr->size = m_size;
     attr->ino = m_ino;
     attr->dev = m_fs ? m_fs->dev() : 0;
@@ -96,7 +120,7 @@ int32_t node::getattr(vattr* attr) {
 }
 
 int32_t node::setattr(const vattr& attr, uint32_t mask) {
-    if (mask & ~(VATTR_ATIME | VATTR_MTIME)) {
+    if (mask & ~(VATTR_ATIME | VATTR_MTIME | VATTR_MODE)) {
         return ERR_INVAL;
     }
 
@@ -110,6 +134,10 @@ int32_t node::setattr(const vattr& attr, uint32_t mask) {
 
     if (mask & VATTR_MTIME) {
         m_mtime_ns = attr.mtime_ns;
+    }
+
+    if (mask & VATTR_MODE) {
+        set_mode(attr.mode);
     }
 
     m_ctime_ns = clock::realtime_ns();
@@ -745,7 +773,7 @@ __PRIVILEGED_CODE int32_t unmount(const char* target) {
 
 // Creating through a link creates the final missing name of its chain, as the
 // standard requires. dir holds the link and anchors its relative target.
-__PRIVILEGED_CODE static int32_t create_symlink_target(node* dir, node* link, node** out) {
+__PRIVILEGED_CODE static int32_t create_symlink_target(node* dir, node* link, uint32_t create_mode, node** out) {
     char* target = static_cast<char*>(heap::uzalloc(PATH_MAX));
     if (!target) {
         return ERR_NOMEM;
@@ -782,7 +810,7 @@ __PRIVILEGED_CODE static int32_t create_symlink_target(node* dir, node* link, no
         node* found = nullptr;
         err = dir->lookup(name, name_len, &found);
         if (err == ERR_NOENT) {
-            err = dir->create(name, name_len, 0, out);
+            err = dir->create(name, name_len, create_mode, out);
             if (err == ERR_EXIST) {
                 err = dir->lookup(name, name_len, out);
             }
@@ -821,7 +849,7 @@ file* open_at(node* base_dir, const char* path, uint32_t flags) {
     return open_at(base_dir, path, flags, nullptr);
 }
 
-file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err) {
+file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err, uint32_t create_mode) {
     auto set_err = [out_err](int32_t err) {
         if (out_err) {
             *out_err = err;
@@ -860,10 +888,10 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
                 } else if (err == OK && n->type() == node_type::symlink) {
                     node* link = n;
                     n = nullptr;
-                    err = create_symlink_target(parent, link, &n);
+                    err = create_symlink_target(parent, link, create_mode, &n);
                     release_node_ref(link);
                 } else if (err == ERR_NOENT) {
-                    err = parent->create(name, name_len, 0, &n);
+                    err = parent->create(name, name_len, create_mode, &n);
                     if (err == ERR_EXIST && !(flags & O_EXCL)) {
                         err = parent->lookup(name, name_len, &n);
                     }
@@ -1246,7 +1274,7 @@ __PRIVILEGED_CODE static int32_t mount_procfs() {
         return err;
     }
 
-    err = mkdir("/proc", 0);
+    err = mkdir("/proc", DEFAULT_DIRECTORY_MODE);
     if (err != OK && err != ERR_EXIST) {
         return err;
     }
@@ -1293,7 +1321,7 @@ __PRIVILEGED_CODE int32_t init() {
         return err;
     }
 
-    err = mkdir("/dev", 0);
+    err = mkdir("/dev", DEFAULT_DIRECTORY_MODE);
     if (err != OK && err != ERR_EXIST) {
         log::error("fs: failed to create /dev mount point");
         return err;
@@ -1306,7 +1334,7 @@ __PRIVILEGED_CODE int32_t init() {
     }
 
     // Best-effort, userland expects /tmp to exist at boot
-    mkdir("/tmp", 0);
+    mkdir("/tmp", TMP_DIRECTORY_MODE);
 
     // Best-effort as well, since only ported programs look in /proc
     err = mount_procfs();

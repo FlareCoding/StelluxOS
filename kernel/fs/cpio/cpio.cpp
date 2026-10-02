@@ -60,7 +60,7 @@ static void ensure_parents(const char* path) {
     for (size_t i = 1; i < len; i++) {
         if (buf[i] == '/') {
             buf[i] = '\0';
-            fs::mkdir(buf, 0);
+            fs::mkdir(buf, fs::DEFAULT_DIRECTORY_MODE);
             buf[i] = '/';
         }
     }
@@ -159,14 +159,15 @@ __PRIVILEGED_CODE int32_t load_initrd() {
         path_buf[PREFIX_LEN + name_len] = '\0';
 
         bool is_dir = (mode & S_IFMT) == S_IFDIR;
+        uint32_t permissions = mode & fs::MODE_PERMISSION_BITS;
 
         if (is_dir) {
             ensure_parents(path_buf);
-            fs::mkdir(path_buf, 0);
+            fs::mkdir(path_buf, permissions);
             dirs_created++;
         } else if ((mode & S_IFMT) == S_IFREG) {
             ensure_parents(path_buf);
-            fs::file* f = fs::open(path_buf, fs::O_CREAT | fs::O_WRONLY);
+            fs::file* f = fs::open_at(nullptr, path_buf, fs::O_CREAT | fs::O_WRONLY, nullptr, permissions);
             if (f) {
                 if (filesize > 0 && offset + filesize <= archive_len) {
                     fs::write(f, file_data, filesize);

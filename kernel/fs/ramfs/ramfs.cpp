@@ -62,8 +62,6 @@ int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node**
 
     if (len > fs::NAME_MAX) return fs::ERR_NAMETOOLONG;
 
-    (void)mode;
-
     sync::irq_lock_guard guard(m_lock);
 
     if (detached()) {
@@ -90,14 +88,14 @@ int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node**
         return rc;
     }
 
+    child->set_mode(mode);
     attach_child(child);
 
     *out = child;
     return fs::OK;
 }
 
-int32_t dir_node::create_socket(const char* name, size_t len, void* impl, fs::node** out) {
-    (void)impl;
+int32_t dir_node::create_socket(const char* name, size_t len, uint32_t mode, fs::node** out) {
     if (!name || !out || len == 0) return fs::ERR_INVAL;
 
     if (len > fs::NAME_MAX) return fs::ERR_NAMETOOLONG;
@@ -122,6 +120,7 @@ int32_t dir_node::create_socket(const char* name, size_t len, void* impl, fs::no
     }
 
     auto* child = new (mem) fs::socket_node(m_fs, name_buf);
+    child->set_mode(mode);
     attach_child(child);
 
     *out = child;
@@ -132,8 +131,6 @@ int32_t dir_node::mkdir(const char* name, size_t len, uint32_t mode, fs::node** 
     if (!name || !out || len == 0) return fs::ERR_INVAL;
 
     if (len > fs::NAME_MAX) return fs::ERR_NAMETOOLONG;
-
-    (void)mode;
 
     sync::irq_lock_guard guard(m_lock);
 
@@ -155,6 +152,7 @@ int32_t dir_node::mkdir(const char* name, size_t len, uint32_t mode, fs::node** 
     }
 
     auto* child = new (mem) dir_node(m_fs, name_buf);
+    child->set_mode(mode);
     attach_child(child);
 
     *out = child;

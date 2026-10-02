@@ -23,6 +23,7 @@ constexpr uint64_t FALLOCATE        = 47;
 constexpr uint64_t FACCESSAT        = 48;
 constexpr uint64_t CHDIR            = 49;
 constexpr uint64_t FCHDIR           = 50;
+constexpr uint64_t FCHMOD           = 52;
 constexpr uint64_t FCHMODAT         = 53;
 constexpr uint64_t OPENAT           = 56;
 constexpr uint64_t CLOSE            = 57;

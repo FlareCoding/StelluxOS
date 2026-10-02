@@ -15,6 +15,7 @@ namespace resource::file_provider {
 __PRIVILEGED_CODE int32_t open_file_resource(
     const char* path,
     uint32_t flags,
+    uint32_t create_mode,
     resource_object** out_obj
 );
 
