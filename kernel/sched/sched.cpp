@@ -429,9 +429,8 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
     this_cpu(current_task_exec) = &next->exec;
 
 #ifdef DEBUG
-    // Runtime elevation state remains true while trap/syscall teardown continues.
-    // Return-boundary code restores percpu_is_elevated from the selected task's
-    // TASK_FLAG_ELEVATED after switch teardown is complete.
+    // Elevation stays set through switch teardown, the trap or syscall return
+    // then sets it for the privilege it returns to
     assert_switch_privilege_state("pick_next_and_switch:post-select");
 #endif
 

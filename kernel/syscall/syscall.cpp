@@ -42,7 +42,6 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     uint64_t arg6
 ) {
     // Entry already runs at Ring 0, so RUN_ELEVATED skips nested SYSCALLs.
-    // IN_SYSCALL keeps percpu_is_elevated correct across a mid-syscall switch.
     this_cpu(current_task_exec)->flags |= sched::TASK_FLAG_IN_SYSCALL;
     this_cpu(percpu_is_elevated) = true;
     cpu::irq_enable();

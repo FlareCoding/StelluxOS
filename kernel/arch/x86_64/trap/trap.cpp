@@ -21,12 +21,9 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf);
 __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf);
 } // namespace sched
 
-__PRIVILEGED_CODE static inline void restore_post_trap_elevation_state() {
-    // Return-boundary restoration: select runtime elevation based on the
-    // currently selected task's privilege-mode bit.
-    constexpr uint32_t mask = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL;
-    this_cpu(percpu_is_elevated) =
-        (this_cpu(current_task_exec)->flags & mask) != 0;
+__PRIVILEGED_CODE static inline void restore_post_trap_elevation_state(const x86::trap_frame* tf) {
+    // Taken from the frame, since a task can resume inside kernel code that a fault entered
+    this_cpu(percpu_is_elevated) = !x86::from_user(tf);
 }
 
 static inline int vector_to_signal(uint64_t vec) {
@@ -66,7 +63,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         sched::on_yield(tf);
         // Clear the IRQ flag on the originally interrupted task, not the post-switch task.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -78,7 +75,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         }
         // Clear IRQ state on the interrupted task to avoid stale IN_IRQ ownership.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -86,7 +83,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         irq::eoi(0);
         serial::on_rx_irq();
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -94,7 +91,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         irq::eoi(0);
         smp::ipi::dispatch();
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -103,7 +100,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         irq::eoi(0);
         msi::dispatch(static_cast<uint32_t>(tf->vector - x86::VEC_MSI_BASE));
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state();
+        restore_post_trap_elevation_state(tf);
         return;
     }
 
@@ -125,7 +122,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
 
         if (handled) {
             irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-            restore_post_trap_elevation_state();
+            restore_post_trap_elevation_state(tf);
             return;
         }
     }
