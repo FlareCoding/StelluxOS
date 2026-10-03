@@ -7,7 +7,7 @@
 #
 # Handles both .c and .cpp sources. Links against libc++, libc++abi,
 # and libunwind in addition to musl libc. Requires 'make libcxx' to
-# have been run first.
+# have been run first. APP_QT := 1 builds the app on Qt, see qt.mk.
 #
 
 USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)
@@ -32,6 +32,16 @@ CXX_OBJECTS := $(CXX_SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 OBJECTS     := $(C_OBJECTS) $(CXX_OBJECTS)
 TARGET      := $(BIN_DIR)/$(APP_NAME)
 
+# A Qt app compiles against the kit and links libstlxqpa whole, so the stellux
+# platform plugin registers
+ifdef APP_QT
+include $(USERLAND_ROOT)/mk/qt.mk
+APP_CXXFLAGS := $(QT_CPPFLAGS)
+APP_LDLIBS   := -Wl,--whole-archive -lstlxqpa -Wl,--no-whole-archive -lstlxwin $(QT_LDLIBS)
+OBJECTS      += $(QT_MOC_OBJECTS)
+LIB_ARCHIVES += $(SYSROOT)/lib/libstlxqpa.a $(SYSROOT)/lib/libstlxwin.a
+endif
+
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS) $(LIB_ARCHIVES)
@@ -43,7 +53,7 @@ $(TARGET): $(OBJECTS) $(LIB_ARCHIVES)
 		$(OBJECTS) \
 		-L$(SYSROOT)/lib \
 		-Wl,--start-group \
-		-lstlx $(addprefix -l,$(APP_LIBS)) -lc++ -lc++abi -lunwind -lc -lm $(BUILTINS_LIB) \
+		-lstlx $(addprefix -l,$(APP_LIBS)) $(APP_LDLIBS) -lc++ -lc++abi -lunwind -lc -lm $(BUILTINS_LIB) \
 		-Wl,--end-group \
 		$(SYSROOT)/lib/crtn.o
 
@@ -55,7 +65,13 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	$(UQ)mkdir -p $(dir $@)
 	@echo "[CXX] $< ($(ARCH))"
-	$(UQ)$(CXX) $(CXXFLAGS_COMMON) -c $< -o $@
+	$(UQ)$(CXX) $(CXXFLAGS_COMMON) $(APP_CXXFLAGS) -c $< -o $@
+
+ifdef APP_QT
+$(BUILD_DIR)/moc_%.o: $(BUILD_DIR)/moc_%.cpp
+	@echo "[CXX] $< ($(ARCH))"
+	$(UQ)$(CXX) $(CXXFLAGS_COMMON) $(APP_CXXFLAGS) -c $< -o $@
+endif
 
 -include $(OBJECTS:.o=.d)
 
