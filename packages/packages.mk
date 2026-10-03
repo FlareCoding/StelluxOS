@@ -1,5 +1,5 @@
-# Resolves the packages PACKAGES selects against the registry, and their pins
-# from packages.lock for the target ARCH. Included by both Makefiles, see README.md.
+# Resolves the selected packages and every build package against the registry, and their
+# pins from packages.lock for the target ARCH. Included by both Makefiles, see README.md.
 
 PACKAGES ?=
 
@@ -10,6 +10,7 @@ PACKAGES_CACHE    := $(abspath $(PACKAGES_DIR)/../userland/toolchain/packages)
 
 PACKAGES_ALL     := $(shell awk '$$1 !~ /^\043/ && NF { print $$1 }' $(PACKAGES_REGISTRY))
 PACKAGES_DEFAULT := $(shell awk '$$1 !~ /^\043/ && $$2 == "default" { print $$1 }' $(PACKAGES_REGISTRY))
+PACKAGES_BUILD   := $(shell awk '$$1 !~ /^\043/ && $$2 == "build" { print $$1 }' $(PACKAGES_REGISTRY))
 
 # PACKAGES is a selection over the default tier: a name adds a package, -name
 # removes one, and `none` or `all` replaces the default tier as the base
@@ -41,7 +42,8 @@ pkg_current_$(1) := $$(shell . $(PACKAGES_DIR)/$$(call pkg_recipe,$(1))/versions
 pkg_built_$(1)   := $$(wildcard $(PACKAGES_CACHE)/$(1)-$$(pkg_current_$(1))-$(ARCH).tar.zst)
 pkg_local_$(1)   := $$(if $$(filter-out $$(pkg_pinned_$(1)),$$(pkg_current_$(1))),$$(pkg_built_$(1)))
 endef
-$(foreach p,$(PACKAGES_SELECTED),$(eval $(call resolve_package,$(p))))
+# Build packages are resolved whatever PACKAGES selects, since every build of the tree uses them
+$(foreach p,$(sort $(PACKAGES_SELECTED) $(PACKAGES_BUILD)),$(eval $(call resolve_package,$(p))))
 
 pkg_is_local = $(pkg_local_$(1))
 pkg_version  = $(if $(call pkg_is_local,$(1)),$(pkg_current_$(1)),$(pkg_pinned_$(1)))
