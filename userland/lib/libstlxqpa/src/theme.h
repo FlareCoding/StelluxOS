@@ -5,7 +5,7 @@
 #include <QPalette>
 #include <qpa/qplatformtheme.h>
 
-// The desktop's look for Qt programs: its palette and font on Qt's Fusion style
+// The desktop's look for Qt programs: its palette, its fonts and the stellux style
 class QStelluxTheme : public QPlatformTheme {
 public:
     static constexpr const char* NAME = "stellux";
@@ -20,6 +20,7 @@ public:
 private:
     QPalette m_palette;
     QFont m_font;
+    QFont m_button_font;
 };
 
 #endif
