@@ -229,6 +229,24 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
     }
 }
 
+uint32_t signal_for_user_exception(uint64_t esr) {
+    uint8_t ec = static_cast<uint8_t>((esr >> ESR_EC_SHIFT) & ESR_EC_MASK);
+    switch (ec) {
+        case EC_DATA_ABORT_LOWER:
+        case EC_INST_ABORT_LOWER:
+        case EC_SP_ALIGN:
+            return signals::SIGSEGV;
+        case EC_PC_ALIGN:
+            return signals::SIGBUS;
+        case EC_FP_A64:
+            return signals::SIGFPE;
+        case EC_BRK_A64:
+            return signals::SIGTRAP;
+        default:
+            return signals::SIGILL;
+    }
+}
+
 } // namespace aarch64
 
 __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,

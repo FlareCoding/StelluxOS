@@ -351,4 +351,21 @@ TEST(signal_delivery, aarch64_rejects_corrupt_fpsimd_record) {
 
     RUN_ELEVATED({ heap::kfree_delete(frame); });
 }
+
+static uint64_t esr_for_class(uint8_t ec) {
+    return static_cast<uint64_t>(ec) << aarch64::ESR_EC_SHIFT;
+}
+
+TEST(signal_delivery, aarch64_user_exceptions_raise_their_signals) {
+    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_UNKNOWN)), signals::SIGILL);
+    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_MSR_MRS)), signals::SIGILL);
+    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_DATA_ABORT_LOWER)), signals::SIGSEGV);
+    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_PC_ALIGN)), signals::SIGBUS);
+    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_FP_A64)), signals::SIGFPE);
+    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_BRK_A64)), signals::SIGTRAP);
+}
+
+TEST(signal_delivery, aarch64_unrecognized_user_exception_raises_sigill) {
+    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_WFX)), signals::SIGILL);
+}
 #endif

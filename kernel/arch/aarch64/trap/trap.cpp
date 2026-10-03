@@ -15,6 +15,7 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "signals/signal.h"
+#include "signals/delivery.h"
 #include "mm/mm.h"
 #include "mm/uaccess.h"
 
@@ -72,20 +73,6 @@ static uint32_t abort_pf_flags(uint64_t esr, uint8_t ec) {
     return pf_flags;
 }
 
-static inline int ec_to_signal(uint8_t ec) {
-    switch (ec) {
-        case aarch64::EC_DATA_ABORT_LOWER:
-        case aarch64::EC_INST_ABORT_LOWER:
-        case aarch64::EC_SP_ALIGN:           return 11;  // SIGSEGV
-        case aarch64::EC_UNKNOWN:            return 4;   // SIGILL
-        case aarch64::EC_MSR_MRS:            return 4;   // SIGILL
-        case aarch64::EC_BRK_A64:            return 5;   // SIGTRAP
-        case aarch64::EC_FP_A64:             return 8;   // SIGFPE
-        case aarch64::EC_PC_ALIGN:           return 7;   // SIGBUS
-        default:                             return 11;  // SIGSEGV fallback
-    }
-}
-
 extern "C" __PRIVILEGED_CODE 
 void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
     this_cpu(percpu_is_elevated) = true;
@@ -118,17 +105,8 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
         }
     }
 
-    if (in_user_code && (
-        ec == aarch64::EC_DATA_ABORT_LOWER ||
-        ec == aarch64::EC_INST_ABORT_LOWER ||
-        ec == aarch64::EC_UNKNOWN          ||
-        ec == aarch64::EC_MSR_MRS          ||
-        ec == aarch64::EC_PC_ALIGN         ||
-        ec == aarch64::EC_SP_ALIGN         ||
-        ec == aarch64::EC_FP_A64           ||
-        ec == aarch64::EC_BRK_A64)
-    ) {
-        signals::die_from_signal(static_cast<uint32_t>(ec_to_signal(ec)));
+    if (in_user_code) {
+        signals::die_from_signal(aarch64::signal_for_user_exception(esr));
     }
 
     trap_fatal("el0 sync", tf);
