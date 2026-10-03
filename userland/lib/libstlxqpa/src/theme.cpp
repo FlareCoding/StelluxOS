@@ -7,6 +7,7 @@
 
 // The desktop's palette, the one stlxui draws its widgets with
 static const QColor WINDOW_BG(0x1E1E2E);
+static const QColor ALTERNATE_ROW(0x212131);  // a step off the window, under the hover and selection fills
 static const QColor SURFACE(0x313244);
 static const QColor SURFACE_HOVER(0x45475A);
 static const QColor SURFACE_PRESS(0x585B70);
@@ -40,7 +41,7 @@ static QPalette desktop_palette() {
     palette.setColor(QPalette::Window, WINDOW_BG);
     palette.setColor(QPalette::WindowText, TEXT);
     palette.setColor(QPalette::Base, SURFACE);
-    palette.setColor(QPalette::AlternateBase, SURFACE_HOVER);
+    palette.setColor(QPalette::AlternateBase, ALTERNATE_ROW);
     palette.setColor(QPalette::Text, TEXT);
     palette.setColor(QPalette::PlaceholderText, TEXT_DIM);
     palette.setColor(QPalette::Button, SURFACE);
