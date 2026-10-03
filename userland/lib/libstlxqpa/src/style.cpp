@@ -1,9 +1,12 @@
 #include "style.h"
 
 #include <QAbstractButton>
+#include <QAbstractItemView>
+#include <QListView>
 #include <QPainter>
 #include <QStyleFactory>
 #include <QStyleOption>
+#include <QTreeView>
 
 static const char* BASE_STYLE = "Fusion";
 
@@ -23,6 +26,15 @@ static const int SCROLL_BAR_EXTENT = 8;
 static const int SCROLL_THUMB_WIDTH = 4;
 static const int SCROLL_THUMB_RADIUS = 2;
 static const int SCROLL_THUMB_MIN = 16;
+static const int ROW_HEIGHT = 26;
+static const int ROW_RADIUS = 4;
+static const int ROW_CONTENT_INSET = 8;
+static const int ROW_MARKER_WIDTH = 3;
+static const int ROW_MARKER_INSET = 5;
+static const int ROW_MARKER_RADIUS = 2;
+
+// How far a hovered row's fill moves from the window color toward the surface color
+static const float ROW_HOVER_TINT = 0.25f;
 
 // QLineEdit insets its text by this much inside the contents rect on its own
 static const int LINE_EDIT_MARGIN = 2;
@@ -150,6 +162,86 @@ static QStyleOptionMenuItem with_desktop_highlight(const QStyleOptionMenuItem& i
     return copy;
 }
 
+static QColor blend_colors(const QColor& from, const QColor& to, float amount) {
+    return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * amount,
+                            from.greenF() + (to.greenF() - from.greenF()) * amount,
+                            from.blueF() + (to.blueF() - from.blueF()) * amount);
+}
+
+// The cells of a row share one panel, rounded only where the row starts and ends
+static bool is_row_start(const QStyleOptionViewItem& item) {
+    return item.viewItemPosition != QStyleOptionViewItem::Middle && item.viewItemPosition != QStyleOptionViewItem::End;
+}
+
+static bool is_row_end(const QStyleOptionViewItem& item) {
+    return item.viewItemPosition != QStyleOptionViewItem::Beginning
+        && item.viewItemPosition != QStyleOptionViewItem::Middle;
+}
+
+// stlxui marks a selected row with the surface and an accent bar, and tints a hovered one
+static void draw_row_panel(const QStyleOptionViewItem& item, QPainter* painter) {
+    bool is_selected = item.state & QStyle::State_Selected;
+    if (!is_selected && !is_hovered(&item)) {
+        return;
+    }
+
+    const QPalette& palette = item.palette;
+    QColor fill = is_selected ? palette.color(QPalette::Button)
+                              : blend_colors(palette.color(QPalette::Window), palette.color(QPalette::Button),
+                                             ROW_HOVER_TINT);
+
+    // Rounded past the cell's inner edges, which the clip then cuts straight
+    QRect panel = item.rect;
+    if (!is_row_start(item)) {
+        panel.setLeft(panel.left() - ROW_RADIUS);
+    }
+
+    if (!is_row_end(item)) {
+        panel.setRight(panel.right() + ROW_RADIUS);
+    }
+
+    painter->save();
+    painter->setClipRect(item.rect, Qt::IntersectClip);
+    fill_rounded(painter, panel, ROW_RADIUS, fill);
+    painter->restore();
+
+    if (!is_selected || !is_row_start(item)) {
+        return;
+    }
+
+    QRect marker(item.rect.left(), item.rect.top() + ROW_MARKER_INSET, ROW_MARKER_WIDTH,
+                 item.rect.height() - 2 * ROW_MARKER_INSET);
+    fill_rounded(painter, marker, ROW_MARKER_RADIUS, palette.color(QPalette::Highlight));
+}
+
+// Every cell insets its content alike, which keeps it clear of the selection marker and
+// lets a size hint, measured without the cell's place in the row, match the painted width
+static QStyleOptionViewItem inset_cell_content(const QStyleOptionViewItem& item) {
+    QStyleOptionViewItem inset = item;
+    inset.rect.adjust(ROW_CONTENT_INSET, 0, -ROW_CONTENT_INSET, 0);
+    return inset;
+}
+
+static bool is_row_content(QStyle::SubElement element) {
+    return element == QStyle::SE_ItemViewItemCheckIndicator || element == QStyle::SE_ItemViewItemDecoration
+        || element == QStyle::SE_ItemViewItemText || element == QStyle::SE_ItemViewItemFocusRect;
+}
+
+// stlxui draws its lists on the window color, which list and tree views take in every mode
+static bool is_list_or_tree(const QWidget* widget) {
+    return qobject_cast<const QListView*>(widget) || qobject_cast<const QTreeView*>(widget);
+}
+
+// Decided as each item paints, since a list view can switch to an icon grid, which keeps
+// Fusion's look like the tables and other item views stlxui lacks
+static bool takes_row_look(const QWidget* widget) {
+    if (const auto* list = qobject_cast<const QListView*>(widget)) {
+        return list->viewMode() == QListView::ListMode;
+    }
+
+    return qobject_cast<const QTreeView*>(widget);
+}
+
 static QRect scroll_bar_slider(const QStyleOptionSlider& bar) {
     bool is_horizontal = bar.orientation == Qt::Horizontal;
     int length = is_horizontal ? bar.rect.width() : bar.rect.height();
@@ -172,6 +264,27 @@ static QRect scroll_bar_slider(const QStyleOptionSlider& bar) {
 
 QStelluxStyle::QStelluxStyle()
     : QProxyStyle(QStyleFactory::create(QString::fromLatin1(BASE_STYLE))) {
+}
+
+// List and tree views paint on the window color and track the hovered row
+void QStelluxStyle::polish(QWidget* widget) {
+    QProxyStyle::polish(widget);
+
+    if (is_list_or_tree(widget)) {
+        auto* view = static_cast<QAbstractItemView*>(widget);
+        view->viewport()->setBackgroundRole(QPalette::Window);
+        view->viewport()->setAttribute(Qt::WA_Hover);
+    }
+}
+
+void QStelluxStyle::unpolish(QWidget* widget) {
+    if (is_list_or_tree(widget)) {
+        auto* view = static_cast<QAbstractItemView*>(widget);
+        view->viewport()->setBackgroundRole(QPalette::Base);
+        view->viewport()->setAttribute(Qt::WA_Hover, false);
+    }
+
+    QProxyStyle::unpolish(widget);
 }
 
 QStyle* QStelluxStylePlugin::create(const QString& key) {
@@ -239,6 +352,14 @@ QSize QStelluxStyle::sizeFromContents(ContentsType type, const QStyleOption* opt
 
             break;
         }
+        case CT_ItemViewItem: {
+            if (!takes_row_look(widget)) {
+                break;
+            }
+
+            QSize size = QProxyStyle::sizeFromContents(type, option, contents, widget);
+            return QSize(size.width() + 2 * ROW_CONTENT_INSET, qMax(size.height(), ROW_HEIGHT));
+        }
         default:
             break;
     }
@@ -250,6 +371,13 @@ QRect QStelluxStyle::subElementRect(SubElement element, const QStyleOption* opti
     if (element == SE_LineEditContents && has_frame(option)) {
         int inset = FIELD_PADDING - LINE_EDIT_MARGIN;
         return option->rect.adjusted(inset, 1, -inset, -1);
+    }
+
+    // Painting, hit testing and editors all place a row's content through here
+    const auto* view_item = qstyleoption_cast<const QStyleOptionViewItem*>(option);
+    if (view_item && is_row_content(element) && takes_row_look(widget)) {
+        QStyleOptionViewItem inset = inset_cell_content(*view_item);
+        return QProxyStyle::subElementRect(element, &inset, widget);
     }
 
     return QProxyStyle::subElementRect(element, option, widget);
@@ -308,6 +436,31 @@ void QStelluxStyle::drawPrimitive(PrimitiveElement element, const QStyleOption* 
         case PE_IndicatorCheckBox:
             draw_check_box(option, painter);
             return;
+        case PE_PanelItemViewItem: {
+            const auto* view_item = qstyleoption_cast<const QStyleOptionViewItem*>(option);
+            if (!view_item || !takes_row_look(widget)) {
+                break;
+            }
+
+            // The model's background brush, then the panel marking selection and hover over it
+            QStyleOptionViewItem background = *view_item;
+            background.state &= ~(State_Selected | State_MouseOver);
+            QProxyStyle::drawPrimitive(element, &background, painter, widget);
+            draw_row_panel(*view_item, painter);
+            return;
+        }
+        case PE_PanelItemViewRow: {
+            // Selection shows only in the item panels, so a row background keeps its alternating color
+            const auto* view_item = qstyleoption_cast<const QStyleOptionViewItem*>(option);
+            if (view_item && (option->state & State_Selected) && takes_row_look(widget)) {
+                QStyleOptionViewItem unselected = *view_item;
+                unselected.state &= ~State_Selected;
+                QProxyStyle::drawPrimitive(element, &unselected, painter, widget);
+                return;
+            }
+
+            break;
+        }
         case PE_PanelMenu:
             painter->fillRect(option->rect, option->palette.color(QPalette::Button));
             return;
@@ -335,6 +488,23 @@ void QStelluxStyle::drawPrimitive(PrimitiveElement element, const QStyleOption* 
 
 void QStelluxStyle::drawControl(ControlElement element, const QStyleOption* option, QPainter* painter,
                                 const QWidget* widget) const {
+    const auto* view_item = qstyleoption_cast<const QStyleOptionViewItem*>(option);
+    if (element == CE_ItemViewItem && view_item && takes_row_look(widget)) {
+        proxy()->drawPrimitive(PE_PanelItemViewItem, view_item, painter, widget);
+
+        // The background is painted and the panel marks selection, hover and the selected
+        // current item, so the content draws plain over them
+        QStyleOptionViewItem content = *view_item;
+        content.backgroundBrush = Qt::NoBrush;
+        content.state &= ~(State_Selected | State_MouseOver);
+        if (view_item->state & State_Selected) {
+            content.state &= ~State_HasFocus;
+        }
+
+        QProxyStyle::drawControl(element, &content, painter, widget);
+        return;
+    }
+
     if (element == CE_PushButtonLabel && is_default_button(option)) {
         QStyleOptionButton accented = *qstyleoption_cast<const QStyleOptionButton*>(option);
         accented.palette.setColor(QPalette::ButtonText, option->palette.color(QPalette::HighlightedText));
