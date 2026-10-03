@@ -7,6 +7,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -47,8 +48,6 @@ constexpr int SWATCH_PX = 28;
 constexpr int MENU_BUTTON_W = 36;
 constexpr int BRAND_PX = 14;
 constexpr int TITLE_PX = 16;
-constexpr int CARD_TITLE_PX = 10;
-constexpr int SMALL_PX = 10;
 
 constexpr uint32_t REPEAT_DELAY_MS = 400;
 constexpr uint32_t REPEAT_INTERVAL_MS = 40;
@@ -252,7 +251,7 @@ static QVBoxLayout* layout_of(QWidget* widget) {
 
 static QLabel* make_caption(const QString& text) {
     auto* caption = new QLabel(text);
-    caption->setFont(font_px(CARD_TITLE_PX));
+    caption->setFont(QFontDatabase::systemFont(QFontDatabase::SmallestReadableFont));
     caption->setContentsMargins(4, 0, 0, 0);
     set_dim(caption);
     return caption;
@@ -717,7 +716,7 @@ static QWidget* make_rail() {
     layout->addStretch(1);
 
     auto* version = new QLabel(QStringLiteral("Stellux 3.0"));
-    version->setFont(font_px(SMALL_PX));
+    version->setFont(QFontDatabase::systemFont(QFontDatabase::SmallestReadableFont));
     version->setContentsMargins(4, 4, 4, 4);
     set_dim(version);
     layout->addWidget(version);
@@ -736,7 +735,7 @@ static QWidget* make_header() {
     layout->addWidget(g_st.page_title);
 
     g_st.page_blurb = new QLabel;
-    g_st.page_blurb->setFont(font_px(SMALL_PX));
+    g_st.page_blurb->setFont(QFontDatabase::systemFont(QFontDatabase::SmallestReadableFont));
     set_dim(g_st.page_blurb);
     layout->addWidget(g_st.page_blurb);
 
@@ -750,7 +749,7 @@ static QWidget* make_footer() {
     layout->setSpacing(8);
 
     g_st.status = new QLabel;
-    g_st.status->setFont(font_px(SMALL_PX));
+    g_st.status->setFont(QFontDatabase::systemFont(QFontDatabase::SmallestReadableFont));
     set_dim(g_st.status);
     layout->addWidget(g_st.status);
     layout->addStretch(1);

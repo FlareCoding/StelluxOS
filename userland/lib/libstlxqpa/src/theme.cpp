@@ -18,9 +18,10 @@ static const QColor TEXT(0xCDD6F4);
 static const QColor TEXT_DIM(0x585B70);
 
 // stlxgfx sizes a face from ascender to descender, which makes the desktop's
-// 14 px text an Inter face with a 12 px em, the size Qt takes
+// 14 px and 12 px text Inter faces with 12 px and 10 px ems, the sizes Qt takes
 static const char* FONT_FAMILY = "Inter";
 static const int FONT_PIXEL_SIZE = 12;
+static const int SMALL_FONT_PIXEL_SIZE = 10;
 
 static QPalette desktop_palette() {
     QPalette palette;
@@ -56,9 +57,9 @@ static QPalette desktop_palette() {
 }
 
 // Built from the family, since a default QFont reads the application font before this theme exists
-static QFont desktop_font(QFont::Weight weight) {
+static QFont desktop_font(int pixel_size, QFont::Weight weight) {
     QFont font(QString::fromLatin1(FONT_FAMILY));
-    font.setPixelSize(FONT_PIXEL_SIZE);
+    font.setPixelSize(pixel_size);
     font.setWeight(weight);
     return font;
 }
@@ -66,8 +67,9 @@ static QFont desktop_font(QFont::Weight weight) {
 // Button labels take the medium weight, as stlxui sets them
 QStelluxTheme::QStelluxTheme()
     : m_palette(desktop_palette())
-    , m_font(desktop_font(QFont::Normal))
-    , m_button_font(desktop_font(QFont::Medium)) {
+    , m_font(desktop_font(FONT_PIXEL_SIZE, QFont::Normal))
+    , m_small_font(desktop_font(SMALL_FONT_PIXEL_SIZE, QFont::Normal))
+    , m_button_font(desktop_font(FONT_PIXEL_SIZE, QFont::Medium)) {
 }
 
 const QPalette* QStelluxTheme::palette(Palette type) const {
@@ -78,6 +80,9 @@ const QFont* QStelluxTheme::font(Font type) const {
     switch (type) {
         case SystemFont:
             return &m_font;
+        // Programs ask for it as QFontDatabase::SmallestReadableFont
+        case MiniFont:
+            return &m_small_font;
         case PushButtonFont:
         case ToolButtonFont:
             return &m_button_font;
