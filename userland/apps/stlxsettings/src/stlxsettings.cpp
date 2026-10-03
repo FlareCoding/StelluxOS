@@ -759,12 +759,9 @@ static QWidget* make_footer() {
     QObject::connect(revert, &QPushButton::clicked, revert_conf);
     layout->addWidget(revert);
 
-    /* The accent marks the action that writes the file */
+    /* The default button takes the accent, which marks the action that writes the file */
     auto* save = new QPushButton(QStringLiteral("Save"));
-    QPalette palette = save->palette();
-    palette.setColor(QPalette::Button, palette.color(QPalette::Highlight));
-    palette.setColor(QPalette::ButtonText, palette.color(QPalette::HighlightedText));
-    save->setPalette(palette);
+    save->setDefault(true);
     QObject::connect(save, &QPushButton::clicked, save_conf);
     layout->addWidget(save);
 

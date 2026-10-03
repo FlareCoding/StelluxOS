@@ -1,4 +1,5 @@
 #include "theme.h"
+#include "style.h"
 
 #include <QStringList>
 #include <QVariant>
@@ -20,7 +21,6 @@ static const QColor TEXT_DIM(0x585B70);
 // 14 px text an Inter face with a 12 px em, the size Qt takes
 static const char* FONT_FAMILY = "Inter";
 static const int FONT_PIXEL_SIZE = 12;
-static const char* STYLE = "Fusion";
 
 static QPalette desktop_palette() {
     QPalette palette;
@@ -55,10 +55,19 @@ static QPalette desktop_palette() {
     return palette;
 }
 
+// Built from the family, since a default QFont reads the application font before this theme exists
+static QFont desktop_font(QFont::Weight weight) {
+    QFont font(QString::fromLatin1(FONT_FAMILY));
+    font.setPixelSize(FONT_PIXEL_SIZE);
+    font.setWeight(weight);
+    return font;
+}
+
+// Button labels take the medium weight, as stlxui sets them
 QStelluxTheme::QStelluxTheme()
     : m_palette(desktop_palette())
-    , m_font(QString::fromLatin1(FONT_FAMILY)) {
-    m_font.setPixelSize(FONT_PIXEL_SIZE);
+    , m_font(desktop_font(QFont::Normal))
+    , m_button_font(desktop_font(QFont::Medium)) {
 }
 
 const QPalette* QStelluxTheme::palette(Palette type) const {
@@ -66,12 +75,20 @@ const QPalette* QStelluxTheme::palette(Palette type) const {
 }
 
 const QFont* QStelluxTheme::font(Font type) const {
-    return type == SystemFont ? &m_font : nullptr;
+    switch (type) {
+        case SystemFont:
+            return &m_font;
+        case PushButtonFont:
+        case ToolButtonFont:
+            return &m_button_font;
+        default:
+            return nullptr;
+    }
 }
 
 QVariant QStelluxTheme::themeHint(ThemeHint hint) const {
     if (hint == StyleNames) {
-        return QStringList { QString::fromLatin1(STYLE) };
+        return QStringList { QString::fromLatin1(QStelluxStyle::NAME) };
     }
 
     return QPlatformTheme::themeHint(hint);
