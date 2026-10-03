@@ -11,6 +11,11 @@ public:
 
     QStelluxStyle();
 
+    using QProxyStyle::polish;
+    using QProxyStyle::unpolish;
+    void polish(QWidget* widget) override;
+    void unpolish(QWidget* widget) override;
+
     int pixelMetric(PixelMetric metric, const QStyleOption* option, const QWidget* widget) const override;
     QSize sizeFromContents(ContentsType type, const QStyleOption* option, const QSize& contents,
                            const QWidget* widget) const override;
