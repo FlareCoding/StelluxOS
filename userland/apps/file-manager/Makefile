@@ -1,4 +1,4 @@
 APP_NAME := file-manager
-APP_LIBS := stlxui stlxwin stlxgfx
+APP_QT := 1
 
 include ../../mk/cxxapp.mk
