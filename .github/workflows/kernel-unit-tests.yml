@@ -74,7 +74,7 @@ jobs:
             libclang-rt-dev \
             gcc-aarch64-linux-gnu \
             linux-libc-dev-arm64-cross \
-            cmake \
+            cmake ninja-build \
             mtools gdisk xorriso
 
       - name: Fetch Limine EFI binaries
@@ -122,6 +122,17 @@ jobs:
       - name: Build compiler-rt builtins
         if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
         run: make compiler-rt
+
+      - name: Cache Qt code generators
+        uses: actions/cache@v4
+        id: qt-host-cache
+        with:
+          path: userland/toolchain/qt-host
+          key: qt-host-${{ hashFiles('packages/qt/versions.sh', 'scripts/qt-host-tools.sh') }}-v1
+
+      - name: Build Qt code generators
+        if: steps.qt-host-cache.outputs.cache-hit != 'true'
+        run: make qt
 
       - name: Build kernel
         run: |
@@ -214,6 +225,17 @@ jobs:
         if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
         run: make compiler-rt
 
+      - name: Cache Qt code generators
+        uses: actions/cache@v4
+        id: qt-host-cache
+        with:
+          path: userland/toolchain/qt-host
+          key: macos-qt-host-${{ hashFiles('packages/qt/versions.sh', 'scripts/qt-host-tools.sh') }}-v1
+
+      - name: Build Qt code generators
+        if: steps.qt-host-cache.outputs.cache-hit != 'true'
+        run: make qt
+
       - name: Build kernel, userland, and disk image
         run: make image ARCH=${{ matrix.arch }} PACKAGES=none
 
@@ -253,7 +275,7 @@ jobs:
             libclang-rt-dev \
             gcc-aarch64-linux-gnu \
             linux-libc-dev-arm64-cross \
-            cmake \
+            cmake ninja-build \
             qemu-system-x86 qemu-system-arm \
             ovmf qemu-efi-aarch64 \
             mtools gdisk xorriso
@@ -303,6 +325,17 @@ jobs:
       - name: Build compiler-rt builtins
         if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
         run: make compiler-rt
+
+      - name: Cache Qt code generators
+        uses: actions/cache@v4
+        id: qt-host-cache
+        with:
+          path: userland/toolchain/qt-host
+          key: qt-host-${{ hashFiles('packages/qt/versions.sh', 'scripts/qt-host-tools.sh') }}-v1
+
+      - name: Build Qt code generators
+        if: steps.qt-host-cache.outputs.cache-hit != 'true'
+        run: make qt
 
       - name: Run unit tests
         # binutils is small, so fetching it here keeps the package path exercised
