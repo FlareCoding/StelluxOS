@@ -3,6 +3,7 @@
 
 #include "signals/sigframe.h"
 #include "trap/trap_frame.h"
+#include "defs/exception.h"
 #include "sched/fpu_state.h"
 #include "signals/signal_types.h"
 
@@ -58,6 +59,13 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(trap_frame* tf);
  */
 __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
                                             trap_frame* tf);
+
+/**
+ * @brief The signal a synchronous exception taken from user code raises,
+ * by the exception class in esr. A class the kernel does not recognize
+ * raises SIGILL, since the instruction cannot run in this environment.
+ */
+uint32_t signal_for_user_exception(uint64_t esr);
 
 } // namespace aarch64
 
