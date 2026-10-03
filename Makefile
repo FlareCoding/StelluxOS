@@ -136,7 +136,7 @@ endif
         run-qemu-x86_64-debug run-qemu-aarch64-debug \
         run-qemu-x86_64-debug-headless run-qemu-aarch64-debug-headless \
         connect-gdb-x86_64 connect-gdb-aarch64 \
-        deps limine musl libcxx rpi4-firmware toolchain-check \
+        deps limine musl libcxx qt rpi4-firmware toolchain-check \
         packages-list packages-build packages-plan packages-publish packages-pin help
 
 # Default target
@@ -805,6 +805,11 @@ compiler-rt:
 	@echo ""
 	@echo "compiler-rt builtins $(LLVM_VERSION) ready for both architectures."
 
+# Qt's code generators for this machine, which the tree's Qt programs run at build time.
+# The kit they compile against is the qt build package the userland build unpacks.
+qt:
+	$(Q)./scripts/qt-host-tools.sh $(abspath userland/toolchain/qt-host)
+
 limine:
 	@echo "Downloading Limine ($(LIMINE_BRANCH))..."
 	@mkdir -p $(BOOT_DIR)
@@ -912,8 +917,10 @@ toolchain-check:
 				echo "NOT FOUND - run 'make compiler-rt'"; \
 			fi; \
 		 fi)
+	@printf "%-24s" "Qt code generators:" && \
+		(test -f userland/toolchain/qt-host/VERSION && echo "Qt $$(cat userland/toolchain/qt-host/VERSION)" || echo "NOT FOUND - run 'make qt'")
 	@echo ""
-	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', 'make libcxx', 'make compiler-rt', and/or 'make rpi4-firmware'"
+	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', 'make libcxx', 'make compiler-rt', 'make qt', and/or 'make rpi4-firmware'"
 
 # ============================================================================
 # Help
@@ -928,6 +935,7 @@ help:
 	@echo "  make musl                    Build musl libc for both architectures"
 	@echo "  make libcxx                  Build libc++ for C++ userland support"
 	@echo "  make compiler-rt             Build compiler-rt builtins (required for cross-arch static linking)"
+	@echo "  make qt                      Build Qt's code generators for the userland's Qt programs"
 	@echo "  make rpi4-firmware           Download RPi4 UEFI firmware"
 	@echo "  make doom-wad                Download DOOM1.WAD shareware"
 	@echo "  make toolchain-check         Verify tools are installed"
@@ -969,6 +977,7 @@ help:
 	@echo "  3. make musl"
 	@echo "  4. make libcxx"
 	@echo "  5. make compiler-rt"
+	@echo "  6. make qt"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make kernel ARCH=x86_64"

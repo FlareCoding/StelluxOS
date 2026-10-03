@@ -93,6 +93,7 @@ make limine
 make musl
 make libcxx
 make compiler-rt
+make qt
 ```
 
 `make deps` installs system packages -- via apt on Linux (clang, lld,
@@ -102,7 +103,9 @@ the Limine bootloader binaries. `make musl` builds musl 1.2.5 for both
 x86_64 and aarch64. `make libcxx` builds the LLVM C++ runtime (libc++,
 libc++abi, libunwind) against the musl sysroot for C++ userland
 application support. `make compiler-rt` builds the compiler runtime
-builtins for both architectures.
+builtins for both architectures. `make qt` builds Qt's code generators
+for this machine, which the userland apps built on Qt need. The Qt
+libraries themselves are a prebuilt package every build fetches.
 
 Heavy programs that run on Stellux, such as the GCC toolchain, binutils,
 and CPython, are prebuilt packages rather than part of this setup:

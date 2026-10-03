@@ -44,7 +44,7 @@ define HOST_DEPS_INSTALL
 	@echo "Installing required packages (Homebrew)..."
 	@command -v brew > /dev/null 2>&1 || \
 		{ echo "ERROR: Homebrew not found. Install it from https://brew.sh first."; exit 1; }
-	brew install llvm lld cmake qemu mtools gptfdisk coreutils bash gdb zstd
+	brew install llvm lld cmake ninja qemu mtools gptfdisk coreutils bash gdb zstd
 endef
 
 # Extra CMake flags for cross-building the LLVM runtimes from a Darwin
@@ -117,7 +117,7 @@ define HOST_DEPS_INSTALL
 		libclang-rt-dev \
 		gcc-aarch64-linux-gnu \
 		linux-libc-dev-arm64-cross \
-		cmake \
+		cmake ninja-build \
 		qemu-system-x86 qemu-system-arm \
 		ovmf qemu-efi-aarch64 \
 		mtools gdisk xorriso zstd \
