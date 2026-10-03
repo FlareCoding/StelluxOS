@@ -90,6 +90,19 @@ more memory than QEMU's 4 GB default, so run it with `QEMU_MEMORY=8G`. A
 version bump means refreshing `patches/alpine` and `patches/copium` from
 the aports commit that packages the same release.
 
+## The qt recipe
+
+`qt` is a `build` package: static QtCore, QtGui, QtWidgets and QtSvg
+libraries cross-built with the tree's own compiler, C++ runtime and musl,
+which the recipe builds in its container from the committed tree. The kit
+carries `share/stellux/qt.mk`, the flags a program compiles and links with,
+measured on the recipe's probe programs, and Qt's license texts under
+`qt/LICENSES`. Qt is LGPLv3: the recipe pins the exact upstream sources, and
+the programs linked against the kit are built from this tree, so anyone can
+relink them against a modified Qt. A run takes about 10 minutes per
+architecture on 16 cores, plus the sysroot and the host Qt on the first run,
+both kept in the `stellux-qt-work` volume.
+
 ## Building and publishing
 
     make packages-build [PACKAGES=...] [ARCHES=x86_64]
