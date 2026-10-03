@@ -623,6 +623,8 @@ linux-headers:
 	@echo "Installing Linux kernel headers into sysroots..."
 	$(HOST_SYSROOT_HEADERS_INSTALL)
 
+# musl has no glibc thread exit hook, which libc++abi's compile-only configure checks would
+# assume, so thread_local destructors run on libc++abi's own
 libcxx:
 	@echo "Building libc++ $(LLVM_VERSION) for x86_64 and aarch64..."
 	@test -f userland/sysroot/x86_64/lib/libc.a || \
@@ -669,6 +671,7 @@ libcxx:
 		-DLIBCXXABI_USE_LLVM_UNWINDER=ON \
 		-DLIBCXXABI_ENABLE_THREADS=ON \
 		-DLIBCXXABI_USE_COMPILER_RT=ON \
+		-DLIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF \
 		-DLIBUNWIND_ENABLE_SHARED=OFF \
 		-DLIBUNWIND_ENABLE_STATIC=ON \
 		-DLIBUNWIND_ENABLE_THREADS=ON \
@@ -711,6 +714,7 @@ libcxx:
 		-DLIBCXXABI_USE_LLVM_UNWINDER=ON \
 		-DLIBCXXABI_ENABLE_THREADS=ON \
 		-DLIBCXXABI_USE_COMPILER_RT=ON \
+		-DLIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF \
 		-DLIBUNWIND_ENABLE_SHARED=OFF \
 		-DLIBUNWIND_ENABLE_STATIC=ON \
 		-DLIBUNWIND_ENABLE_THREADS=ON \
