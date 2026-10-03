@@ -1,6 +1,7 @@
 #include "theme.h"
 #include "style.h"
 
+#include <QFileInfo>
 #include <QStringList>
 #include <QVariant>
 
@@ -22,6 +23,17 @@ static const QColor TEXT_DIM(0x585B70);
 static const char* FONT_FAMILY = "Inter";
 static const int FONT_PIXEL_SIZE = 12;
 static const int SMALL_FONT_PIXEL_SIZE = 10;
+
+static const char* FOLDER_ICON = "/etc/res/icons/icon_fm_folder_16x16.bmp";
+static const char* PROGRAM_ICON = "/etc/res/icons/icon_fm_exec_16x16.bmp";
+static const char* IMAGE_ICON = "/etc/res/icons/icon_fm_image_16x16.bmp";
+static const char* TEXT_ICON = "/etc/res/icons/icon_fm_text_16x16.bmp";
+static const char* FILE_ICON = "/etc/res/icons/icon_fm_file_16x16.bmp";
+
+static const char* IMAGE_MIME_PREFIX = "image/";
+static const char* TEXT_MIME_TYPE = "text/plain";
+
+static const QFile::Permissions EXECUTE_PERMISSIONS = QFile::ExeOwner | QFile::ExeGroup | QFile::ExeOther;
 
 static QPalette desktop_palette() {
     QPalette palette;
@@ -69,7 +81,12 @@ QStelluxTheme::QStelluxTheme()
     : m_palette(desktop_palette())
     , m_font(desktop_font(FONT_PIXEL_SIZE, QFont::Normal))
     , m_small_font(desktop_font(SMALL_FONT_PIXEL_SIZE, QFont::Normal))
-    , m_button_font(desktop_font(FONT_PIXEL_SIZE, QFont::Medium)) {
+    , m_button_font(desktop_font(FONT_PIXEL_SIZE, QFont::Medium))
+    , m_folder_icon(QString::fromLatin1(FOLDER_ICON))
+    , m_program_icon(QString::fromLatin1(PROGRAM_ICON))
+    , m_image_icon(QString::fromLatin1(IMAGE_ICON))
+    , m_text_icon(QString::fromLatin1(TEXT_ICON))
+    , m_file_icon(QString::fromLatin1(FILE_ICON)) {
 }
 
 const QPalette* QStelluxTheme::palette(Palette type) const {
@@ -89,6 +106,30 @@ const QFont* QStelluxTheme::font(Font type) const {
         default:
             return nullptr;
     }
+}
+
+// Qt calls this from its file system threads as well, so it only reads what the constructor loaded
+QIcon QStelluxTheme::fileIcon(const QFileInfo& info, IconOptions) const {
+    if (info.isDir()) {
+        return m_folder_icon;
+    }
+
+    // A program is a file carrying an execute permission bit
+    if (info.isFile() && info.permissions().testAnyFlags(EXECUTE_PERMISSIONS)) {
+        return m_program_icon;
+    }
+
+    // By name alone, since reading each file's contents would slow every listing
+    QMimeType type = m_mime_database.mimeTypeForFile(info, QMimeDatabase::MatchExtension);
+    if (type.name().startsWith(QLatin1String(IMAGE_MIME_PREFIX))) {
+        return m_image_icon;
+    }
+
+    if (type.inherits(QLatin1String(TEXT_MIME_TYPE))) {
+        return m_text_icon;
+    }
+
+    return m_file_icon;
 }
 
 QVariant QStelluxTheme::themeHint(ThemeHint hint) const {
