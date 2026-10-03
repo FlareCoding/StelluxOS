@@ -104,7 +104,7 @@ jobs:
             userland/sysroot/aarch64/lib/libc++abi.a
             userland/sysroot/aarch64/lib/libunwind.a
             userland/sysroot/aarch64/include/c++
-          key: libcxx-sysroot-20.1.8-v2
+          key: libcxx-sysroot-20.1.8-v3
 
       - name: Build libc++
         if: steps.libcxx-cache.outputs.cache-hit != 'true'
@@ -195,7 +195,7 @@ jobs:
             userland/sysroot/aarch64/lib/libc++abi.a
             userland/sysroot/aarch64/lib/libunwind.a
             userland/sysroot/aarch64/include/c++
-          key: macos-libcxx-sysroot-20.1.8-v2
+          key: macos-libcxx-sysroot-20.1.8-v3
 
       - name: Build libc++
         if: steps.libcxx-cache.outputs.cache-hit != 'true'
@@ -285,7 +285,7 @@ jobs:
             userland/sysroot/aarch64/lib/libc++abi.a
             userland/sysroot/aarch64/lib/libunwind.a
             userland/sysroot/aarch64/include/c++
-          key: libcxx-sysroot-20.1.8-v2
+          key: libcxx-sysroot-20.1.8-v3
 
       - name: Build libc++
         if: steps.libcxx-cache.outputs.cache-hit != 'true'
