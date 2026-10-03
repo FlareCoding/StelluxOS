@@ -42,7 +42,7 @@ endif
 
 all: summary
 
-build:
+build: sdk
 ifeq ($(V),1)
 	@$(MAKE) -C lib ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) V=$(V)
 	@$(MAKE) -C apps ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) V=$(V)

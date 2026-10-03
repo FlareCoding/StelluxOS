@@ -2,13 +2,17 @@
 
 Stellux programs too heavy to build on every clone, such as the GCC
 toolchain and CPython, ship as packages: static binaries built for Stellux once in a
-container, published on a GitHub release, and pulled into the image.
+container, published on a GitHub release, and pulled into the image. Libraries
+the tree's own programs compile against ship the same way, as build packages.
 
 ## The registry
 
 `packages.conf` lists every package and its tier. Packages in the
 `default` tier are part of every image unless left out, packages in the
-`extra` tier are included only by name.
+`extra` tier are included only by name. Packages in the `build` tier are
+never part of an image: every userland build unpacks them into
+`userland/toolchain/sdk/<arch>/` for the tree's programs to compile and
+link against.
 
 ## Selecting packages
 
@@ -23,7 +27,9 @@ default tier, a name adds a package, `-name` removes one, and `none` or
     make packages-list PACKAGES="all"   what every package resolves to
 
 A name the registry does not know fails the build at once. `make test`
-builds its images with `PACKAGES=none` unless told otherwise.
+builds its images with `PACKAGES=none` unless told otherwise. A build
+package in the selection is built, published and listed like any other,
+but never staged into the image.
 
 Fetching gets any archive missing from `userland/toolchain/packages/`,
 checks it against the pinned sha256, and unpacks it into the rootfs
@@ -31,11 +37,18 @@ overlay that the userland install step copies onto the initrd. The cache
 survives `make clean`, so the download happens once per version.
 Unpacking needs `zstd` on the host, which `make deps` installs.
 
+Build packages are fetched the same way, whatever `PACKAGES` selects, and
+unpacked into the SDK directory before any library or app is built. The
+SDK survives `make clean` like the cache, and a build package whose pin
+changes is unpacked again.
+
 ## Package format
 
 `<name>-<version>-<release>-<arch>.tar.zst`, for example
 `gcc-14.3.0-1-x86_64.tar.zst`. The archive is rooted at `/` so
-unpacking it into a directory yields the exact tree the target sees.
+unpacking it into a directory yields the exact tree the target sees. A
+build package's archive is rooted at the SDK directory instead, holding
+one directory named after the package.
 `version` is the upstream version, `release` counts rebuilds of the
 same upstream version with a changed recipe. Archives are reproducible:
 sorted entries, root ownership, fixed timestamps, zstd level 19.
