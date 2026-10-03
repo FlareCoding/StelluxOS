@@ -20,6 +20,7 @@ public:
 private:
     QPalette m_palette;
     QFont m_font;
+    QFont m_small_font;
     QFont m_button_font;
 };
 
