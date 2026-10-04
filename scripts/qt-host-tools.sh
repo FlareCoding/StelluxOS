@@ -1,16 +1,19 @@
 #!/bin/sh
-# Builds Qt's code generators for this machine from the qtbase source the qt package pins,
-# which the tree's Qt libraries and apps run at build time. Run by make qt.
+# Builds and installs a host Qt from the qtbase source the qt package pins. The tree's Qt
+# programs run its code generators at build time, and CMake builds against the kit use it
+# as their host Qt. Run by make qt.
 #
-# Usage: scripts/qt-host-tools.sh <install dir>
+# Usage: scripts/qt-host-tools.sh <install prefix>
 set -eu
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/packages/qt/versions.sh"
 
-dest="${1:?usage: qt-host-tools.sh <install dir>}"
-if [ "$(cat "$dest/VERSION" 2> /dev/null)" = "$QT_VER" ]; then
-    echo "Qt $QT_VER code generators are up to date in $dest"
+prefix="${1:?usage: qt-host-tools.sh <install prefix>}"
+
+# An install without the CMake packages cross builds look up is incomplete
+if [ "$(cat "$prefix/VERSION" 2> /dev/null)" = "$QT_VER" ] && [ -d "$prefix/lib/cmake/Qt6WidgetsTools" ]; then
+    echo "Qt $QT_VER host build is up to date in $prefix"
     exit 0
 fi
 
@@ -28,29 +31,32 @@ echo "$QTBASE_SHA256  $tarball" | shasum -a 256 -c - > /dev/null || {
     exit 1
 }
 
-work="$dest/build"
-rm -rf "$work" "$dest/bin" "$dest/VERSION"
-mkdir -p "$work" "$dest/bin"
+work="$prefix.build"
+rm -rf "$work" "$prefix"
+mkdir -p "$work/build"
 tar -C "$work" -xf "$tarball"
+cd "$work/build"
 
-# Only QtCore and the code generators on it, built against the host's own C library
-echo "Building the Qt $QT_VER code generators..."
-cmake -S "$work/qtbase-everywhere-src-$QT_VER" -B "$work/build" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-    -DQT_BUILD_TESTS=OFF -DQT_BUILD_EXAMPLES=OFF \
-    -DFEATURE_gui=OFF -DFEATURE_widgets=OFF -DFEATURE_network=OFF -DFEATURE_sql=OFF \
-    -DFEATURE_testlib=OFF -DFEATURE_dbus=OFF -DFEATURE_concurrent=OFF -DFEATURE_xml=OFF \
-    -DFEATURE_printsupport=OFF -DFEATURE_icu=OFF -DFEATURE_glib=OFF > "$work/configure.log" 2>&1 || {
+# The features of the qt recipe's host Qt, which the kit's CMake packages were generated against
+echo "Building the Qt $QT_VER host build, which takes several minutes..."
+"$work/qtbase-everywhere-src-$QT_VER/configure" -prefix "$prefix" -static -release \
+    -opensource -confirm-license -nomake tests -nomake examples -no-pch \
+    -no-dbus -no-glib -no-icu -no-opengl -no-fontconfig -no-openssl -no-zstd \
+    -no-feature-vulkan -no-feature-xcb -no-feature-network -no-feature-sql \
+    -no-feature-printsupport -no-feature-testlib \
+    -qt-zlib -qt-libpng -qt-libjpeg -qt-freetype -qt-harfbuzz -qt-pcre > "$work/configure.log" 2>&1 || {
     tail -40 "$work/configure.log"
-    echo "qt: configuring the code generators failed, see $work/configure.log" >&2
+    echo "qt: configuring the host build failed, see $work/configure.log" >&2
     exit 1
 }
-cmake --build "$work/build" --target moc rcc
 
-for tool in moc rcc; do
-    cp "$(find "$work/build" -type f -name "$tool" -perm -u+x | head -1)" "$dest/bin/$tool"
-done
+cmake --build . > "$work/build.log" 2>&1 || {
+    tail -40 "$work/build.log"
+    echo "qt: the host build failed, see $work/build.log" >&2
+    exit 1
+}
 
-echo "$QT_VER" > "$dest/VERSION"
+cmake --install . > /dev/null
+echo "$QT_VER" > "$prefix/VERSION"
 rm -rf "$work"
-echo "Qt $QT_VER code generators installed in $dest/bin"
+echo "Qt $QT_VER host build installed in $prefix"

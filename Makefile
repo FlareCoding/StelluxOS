@@ -805,8 +805,8 @@ compiler-rt:
 	@echo ""
 	@echo "compiler-rt builtins $(LLVM_VERSION) ready for both architectures."
 
-# Qt's code generators for this machine, which the tree's Qt programs run at build time.
-# The kit they compile against is the qt build package the userland build unpacks.
+# A host Qt for this machine: the tree's Qt programs run its code generators at build time,
+# and CMake builds against the kit, which the userland build unpacks, use it as their host Qt.
 qt:
 	$(Q)./scripts/qt-host-tools.sh $(abspath userland/toolchain/qt-host)
 
@@ -917,8 +917,9 @@ toolchain-check:
 				echo "NOT FOUND - run 'make compiler-rt'"; \
 			fi; \
 		 fi)
-	@printf "%-24s" "Qt code generators:" && \
-		(test -f userland/toolchain/qt-host/VERSION && echo "Qt $$(cat userland/toolchain/qt-host/VERSION)" || echo "NOT FOUND - run 'make qt'")
+	@printf "%-24s" "Host Qt:" && \
+		(test -f userland/toolchain/qt-host/VERSION && test -d userland/toolchain/qt-host/lib/cmake/Qt6WidgetsTools && \
+			echo "Qt $$(cat userland/toolchain/qt-host/VERSION)" || echo "NOT FOUND - run 'make qt'")
 	@echo ""
 	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', 'make libcxx', 'make compiler-rt', 'make qt', and/or 'make rpi4-firmware'"
 
@@ -935,7 +936,7 @@ help:
 	@echo "  make musl                    Build musl libc for both architectures"
 	@echo "  make libcxx                  Build libc++ for C++ userland support"
 	@echo "  make compiler-rt             Build compiler-rt builtins (required for cross-arch static linking)"
-	@echo "  make qt                      Build Qt's code generators for the userland's Qt programs"
+	@echo "  make qt                      Build the host Qt that Qt programs and CMake builds need"
 	@echo "  make rpi4-firmware           Download RPi4 UEFI firmware"
 	@echo "  make doom-wad                Download DOOM1.WAD shareware"
 	@echo "  make toolchain-check         Verify tools are installed"
