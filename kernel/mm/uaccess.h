@@ -65,17 +65,20 @@ __PRIVILEGED_CODE int32_t copy_cstr_from_user(
 );
 
 /**
- * @brief Copy to a user range without ever blocking, for interrupt
- * context. The address-space lock is only tried, and lazy stack pages
- * are faulted in under it so the copy itself can never fault.
- * @return OK on success, ERR_RETRY when the lock is contended,
- * ERR_FAULT/ERR_INVAL on a bad range.
+ * @brief Copy to a user range with interrupts masked, where a fault on a
+ * lazy user page cannot be served. Missing pages are faulted in under the
+ * address-space lock first, so the copy itself can never fault.
+ * @param can_sleep Whether the lock may be waited for. Interrupt context
+ * passes false, so a contended lock reports ERR_RETRY instead.
+ * @return OK on success, ERR_RETRY when the lock is contended and the caller
+ * cannot sleep, ERR_FAULT/ERR_INVAL on a bad range.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t copy_to_user_nonblock(
+__PRIVILEGED_CODE int32_t copy_to_user_irqs_masked(
     void* udst,
     const void* ksrc,
-    size_t len
+    size_t len,
+    bool can_sleep
 );
 
 /**

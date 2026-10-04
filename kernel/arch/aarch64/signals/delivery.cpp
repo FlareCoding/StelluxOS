@@ -53,7 +53,7 @@ __PRIVILEGED_CODE void pack_sigframe(rt_sigframe* frame, const trap_frame* tf,
 
     frame->uc.uc_sigmask = old_blocked;
     frame->info.si_signo = static_cast<int32_t>(sig);
-    frame->info.si_code = SI_USER;
+    frame->info.si_code = signals::SI_USER;
 }
 
 __PRIVILEGED_CODE bool unpack_sigframe(const rt_sigframe* frame, trap_frame* tf,
@@ -138,8 +138,8 @@ __PRIVILEGED_CODE static int32_t build_signal_frame_async(
     pack_sigframe(frame, tf, static_cast<int64_t>(tf->x[0]), sig,
                   old_blocked, &fp);
 
-    int32_t rc = mm::uaccess::copy_to_user_nonblock(
-        reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame));
+    int32_t rc = mm::uaccess::copy_to_user_irqs_masked(
+        reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame), false);
     heap::kfree_delete(frame);
 
     if (rc != mm::uaccess::OK) {

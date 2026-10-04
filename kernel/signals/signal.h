@@ -145,6 +145,36 @@ __PRIVILEGED_CODE void untake_deliverable(sched::task* t, uint32_t sig,
                                           sig_set_t old_blocked);
 
 /**
+ * @brief The signal a user page fault raises when demand paging cannot
+ * resolve it, by the reason mm::handle_user_pf reported.
+ */
+fault_signal map_page_fault_to_signal(uintptr_t fault_addr, int32_t pf_result);
+
+/**
+ * @brief Take sig for its handler on a synchronous fault in t's user code.
+ * Succeeds only when sig has a handler t does not block. The action is then
+ * taken as for any delivery: snapshotted, SA_RESETHAND applied, and the
+ * handler's mask blocked, with old_blocked receiving the mask to restore.
+ * @return true when the handler runs, false when the fault must be fatal.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool take_fault_handler(sched::task* t, uint32_t sig,
+                                          k_sigaction* act,
+                                          sig_set_t* old_blocked);
+
+/**
+ * @brief Begin delivering a synchronous fault the current task's user code
+ * raised at pc. Returns with act and old_blocked filled when the handler
+ * runs. Otherwise the process dies from a fatal signal already pending,
+ * from the fault itself when no handler takes it, or from SIGSEGV when the
+ * action has no restorer to return through.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void begin_fault_delivery(const fault_signal& fault, uintptr_t pc,
+                                            k_sigaction* act,
+                                            sig_set_t* old_blocked);
+
+/**
  * @brief Terminate the current task because of signal sig.
  * Fatal signals kill the whole process: a non-leader records sig as the
  * group exit signal and force-kills the leader so teardown reaps every

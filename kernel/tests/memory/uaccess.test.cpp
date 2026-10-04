@@ -251,11 +251,44 @@ TEST(uaccess, cstr_copy_stops_at_the_terminator) {
     mm::mm_context_release(ctx);
 }
 
-// --- nonblock_copy_lands_in_a_lazy_page ---
-// Proves: the interrupt-context copy still faults lazy pages in under the
-// tried lock and delivers its bytes through the same primitive.
+// --- irqs_masked_copy_lands_in_a_lazy_page ---
+// Proves: the masked-context copy faults lazy pages in under the lock it
+// tries or waits for, and delivers its bytes through the same primitive.
 
-TEST(uaccess, nonblock_copy_lands_in_a_lazy_page) {
+TEST(uaccess, irqs_masked_copy_lands_in_a_lazy_page) {
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t addr = map_user(ctx, 2, PROT_RW, LAZY_ANON);
+    ASSERT_NE(addr, static_cast<uintptr_t>(0));
+
+    {
+        user_space_scope scope(ctx);
+        alignas(8) uint8_t pattern[24];
+        string::memset(pattern, 0xC3, sizeof(pattern));
+        EXPECT_EQ(mm::uaccess::copy_to_user_irqs_masked(
+            reinterpret_cast<void*>(addr + 8), pattern, sizeof(pattern), false
+        ), mm::uaccess::OK);
+        EXPECT_EQ(mm::uaccess::copy_to_user_irqs_masked(
+            reinterpret_cast<void*>(addr + PAGE + 8), pattern, sizeof(pattern), true
+        ), mm::uaccess::OK);
+
+        for (uintptr_t page = addr; page < addr + 2 * PAGE; page += PAGE) {
+            uint8_t* landed = page_bytes(ctx, page + 8);
+            EXPECT_NOT_NULL(landed);
+            if (landed) {
+                EXPECT_EQ(string::memcmp(landed, pattern, sizeof(pattern)), 0);
+            }
+        }
+    }
+
+    mm::mm_context_release(ctx);
+}
+
+// --- irqs_masked_copy_retries_a_lock_it_cannot_wait_for ---
+// Proves: a caller that cannot sleep is told to retry while the address-space
+// lock is held, and nothing reaches the user page.
+
+TEST(uaccess, irqs_masked_copy_retries_a_lock_it_cannot_wait_for) {
     mm::mm_context* ctx = mm::mm_context_create();
     ASSERT_NOT_NULL(ctx);
     uintptr_t addr = map_user(ctx, 1, PROT_RW, LAZY_ANON);
@@ -263,17 +296,15 @@ TEST(uaccess, nonblock_copy_lands_in_a_lazy_page) {
 
     {
         user_space_scope scope(ctx);
-        alignas(8) uint8_t pattern[24];
-        string::memset(pattern, 0xC3, sizeof(pattern));
-        EXPECT_EQ(mm::uaccess::copy_to_user_nonblock(
-            reinterpret_cast<void*>(addr + 8), pattern, sizeof(pattern)
-        ), mm::uaccess::OK);
+        uint8_t byte = 0x5A;
 
-        uint8_t* landed = page_bytes(ctx, addr + 8);
-        EXPECT_NOT_NULL(landed);
-        if (landed) {
-            EXPECT_EQ(string::memcmp(landed, pattern, sizeof(pattern)), 0);
-        }
+        sync::mutex_lock(ctx->lock);
+        int32_t rc = mm::uaccess::copy_to_user_irqs_masked(
+            reinterpret_cast<void*>(addr), &byte, sizeof(byte), false);
+        sync::mutex_unlock(ctx->lock);
+
+        EXPECT_EQ(rc, mm::uaccess::ERR_RETRY);
+        EXPECT_NULL(page_bytes(ctx, addr));
     }
 
     mm::mm_context_release(ctx);

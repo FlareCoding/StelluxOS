@@ -6,8 +6,6 @@
 
 namespace aarch64 {
 
-constexpr int32_t SI_USER = 0;
-
 // Delivered to SA_SIGINFO handlers. Only si_signo and si_code are filled,
 // sender identity stays zero because standard signals carry no queue.
 struct siginfo {

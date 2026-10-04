@@ -62,7 +62,7 @@ __PRIVILEGED_CODE void pack_sigframe(rt_sigframe* frame,
 
     frame->uc.uc_sigmask = old_blocked;
     frame->info.si_signo = static_cast<int32_t>(sig);
-    frame->info.si_code = SI_USER;
+    frame->info.si_code = signals::SI_USER;
 }
 
 __PRIVILEGED_CODE bool unpack_sigframe(const rt_sigframe* frame,
@@ -204,7 +204,8 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
 __PRIVILEGED_CODE void pack_sigframe_full(rt_sigframe* frame,
                                           const trap_frame* tf, uint32_t sig,
                                           signals::sig_set_t old_blocked,
-                                          uint64_t user_fpstate) {
+                                          uint64_t user_fpstate,
+                                          const signals::fault_signal* fault) {
     sigcontext& sc = frame->uc.uc_mcontext;
     sc.r8  = tf->r8;
     sc.r9  = tf->r9;
@@ -231,7 +232,15 @@ __PRIVILEGED_CODE void pack_sigframe_full(rt_sigframe* frame,
     frame->uc.uc_flags = UC_FULL_RESTORE;
     frame->uc.uc_sigmask = old_blocked;
     frame->info.si_signo = static_cast<int32_t>(sig);
-    frame->info.si_code = SI_USER;
+    frame->info.si_code = signals::SI_USER;
+
+    if (fault) {
+        frame->info.si_code = fault->code;
+        frame->info.si_addr = fault->addr;
+        sc.trapno = tf->vector;
+        sc.err = tf->error_code;
+        sc.cr2 = tf->vector == EXC_PAGE_FAULT ? fault->addr : 0;
+    }
 }
 
 __PRIVILEGED_CODE bool unpack_sigframe_full(const rt_sigframe* frame,
@@ -276,13 +285,15 @@ constexpr uint64_t RFLAGS_DF = 1ULL << 10;
 constexpr uint64_t RFLAGS_TF = 1ULL << 8;
 
 /**
- * Frame write for delivery outside a syscall. Never blocks, the caller
- * defers the signal when the address-space lock is contended.
+ * Frame write for delivery from a trap frame, outside a syscall. Unless the
+ * caller can sleep, a contended address-space lock reports ERR_RETRY so the
+ * signal can be deferred.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static int32_t build_signal_frame_async(
+__PRIVILEGED_CODE static int32_t build_trap_signal_frame(
     trap_frame* tf, uint32_t sig, const signals::k_sigaction* act,
-    signals::sig_set_t old_blocked) {
+    signals::sig_set_t old_blocked, const signals::fault_signal* fault,
+    bool can_sleep) {
     // SYSRET is not involved here, but the same user-half bound keeps a
     // kernel-half handler from ever running with user state
     if (act->handler >= USER_ADDR_LIMIT) {
@@ -298,17 +309,17 @@ __PRIVILEGED_CODE static int32_t build_signal_frame_async(
         return mm::uaccess::ERR_RETRY;
     }
 
-    pack_sigframe_full(frame, tf, sig, old_blocked, fpstate);
+    pack_sigframe_full(frame, tf, sig, old_blocked, fpstate, fault);
     frame->pretcode = act->restorer;
 
     sched::fpu_state fp;
     fpu::save(&fp);
 
-    int32_t rc = mm::uaccess::copy_to_user_nonblock(
-        reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame));
+    int32_t rc = mm::uaccess::copy_to_user_irqs_masked(
+        reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame), can_sleep);
     if (rc == mm::uaccess::OK) {
-        rc = mm::uaccess::copy_to_user_nonblock(
-            reinterpret_cast<void*>(fpstate), &fp, sizeof(fp));
+        rc = mm::uaccess::copy_to_user_irqs_masked(
+            reinterpret_cast<void*>(fpstate), &fp, sizeof(fp), can_sleep);
     }
     heap::kfree_delete(frame);
 
@@ -359,7 +370,7 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
         signals::die_from_signal(signals::SIGSEGV);
     }
 
-    int32_t rc = build_signal_frame_async(tf, sig, &act, old_blocked);
+    int32_t rc = build_trap_signal_frame(tf, sig, &act, old_blocked, nullptr, false);
     if (rc == mm::uaccess::ERR_RETRY) {
         // Not deliverable right now, a later boundary picks it up
         signals::untake_deliverable(self, sig, &act, old_blocked);
@@ -367,6 +378,85 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
     }
 
     if (rc != 0) {
+        signals::die_from_signal(signals::SIGSEGV);
+    }
+}
+
+// Raised x87 or SIMD exceptions the program left unmasked, which decide the
+// code of a floating-point fault
+static uint32_t unmasked_fp_exceptions(uint64_t vector) {
+    if (vector == EXC_SIMD_FP) {
+        uint32_t mxcsr = fpu::read_mxcsr();
+        return mxcsr & ~(mxcsr >> fpu::MXCSR_EXCEPTION_MASK_SHIFT) & fpu::FP_EXCEPTIONS;
+    }
+
+    if (vector == EXC_X87_FPU) {
+        return fpu::read_x87_status() & ~fpu::read_x87_control() & fpu::FP_EXCEPTIONS;
+    }
+
+    return 0;
+}
+
+static int32_t fp_exception_code(uint32_t fp_exceptions) {
+    if (fp_exceptions & fpu::FP_INVALID) {
+        return signals::FPE_FLTINV;
+    }
+
+    if (fp_exceptions & fpu::FP_DIVIDE_BY_ZERO) {
+        return signals::FPE_FLTDIV;
+    }
+
+    if (fp_exceptions & fpu::FP_OVERFLOW) {
+        return signals::FPE_FLTOVF;
+    }
+
+    if (fp_exceptions & (fpu::FP_UNDERFLOW | fpu::FP_DENORMAL)) {
+        return signals::FPE_FLTUND;
+    }
+
+    if (fp_exceptions & fpu::FP_INEXACT) {
+        return signals::FPE_FLTRES;
+    }
+
+    return signals::SI_KERNEL;
+}
+
+signals::fault_signal fault_signal_for_trap(const trap_frame* tf, uint64_t fault_addr,
+                                            int32_t pf_result, uint32_t fp_exceptions) {
+    switch (tf->vector) {
+        case EXC_INVALID_OPCODE:
+            return { signals::SIGILL, signals::ILL_ILLOPC, tf->rip };
+        case EXC_DIVIDE_ERROR:
+            return { signals::SIGFPE, signals::FPE_INTDIV, tf->rip };
+        case EXC_OVERFLOW:
+            return { signals::SIGFPE, signals::FPE_INTOVF, tf->rip };
+        case EXC_X87_FPU:
+        case EXC_SIMD_FP:
+            return { signals::SIGFPE, fp_exception_code(fp_exceptions), tf->rip };
+        case EXC_PAGE_FAULT:
+            return signals::map_page_fault_to_signal(fault_addr, pf_result);
+        case EXC_ALIGNMENT_CHECK:
+            return { signals::SIGBUS, signals::BUS_ADRALN, 0 };
+        case EXC_BREAKPOINT:
+            return { signals::SIGTRAP, signals::TRAP_BRKPT, tf->rip };
+        case EXC_DEBUG:
+            return { signals::SIGTRAP, signals::TRAP_TRACE, tf->rip };
+        default:
+            // General protection, stack segment and bound range faults report no address
+            return { signals::SIGSEGV, signals::SI_KERNEL, 0 };
+    }
+}
+
+__PRIVILEGED_CODE void deliver_fault_signal(trap_frame* tf, uint64_t fault_addr,
+                                            int32_t pf_result) {
+    uint32_t fp_exceptions = unmasked_fp_exceptions(tf->vector);
+    signals::fault_signal fault = fault_signal_for_trap(tf, fault_addr, pf_result, fp_exceptions);
+
+    signals::k_sigaction act{};
+    signals::sig_set_t old_blocked = 0;
+    signals::begin_fault_delivery(fault, tf->rip, &act, &old_blocked);
+
+    if (build_trap_signal_frame(tf, fault.sig, &act, old_blocked, &fault, true) != 0) {
         signals::die_from_signal(signals::SIGSEGV);
     }
 }

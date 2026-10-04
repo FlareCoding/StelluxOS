@@ -4,6 +4,7 @@
 #include "signals/sigframe.h"
 #include "syscall/syscall_frame.h"
 #include "trap/trap_frame.h"
+#include "defs/vectors.h"
 #include "signals/signal_types.h"
 
 namespace sched { struct task; }
@@ -57,13 +58,16 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx);
 /**
  * @brief Fill a zeroed kernel-local signal frame from a trap frame, for
  * delivery outside a syscall. Every register including RCX/R11/RAX is
- * captured and the frame is marked UC_FULL_RESTORE. Pure, unit-testable.
+ * captured and the frame is marked UC_FULL_RESTORE. A fault also reports
+ * its cause and address, fault is null for any other signal. Pure,
+ * unit-testable.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void pack_sigframe_full(rt_sigframe* frame,
                                           const trap_frame* tf, uint32_t sig,
                                           signals::sig_set_t old_blocked,
-                                          uint64_t user_fpstate);
+                                          uint64_t user_fpstate,
+                                          const signals::fault_signal* fault);
 
 /**
  * @brief Recover a full register context from a UC_FULL_RESTORE frame.
@@ -85,6 +89,28 @@ __PRIVILEGED_CODE bool unpack_sigframe_full(const rt_sigframe* frame,
  */
 __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
                                             trap_frame* tf);
+
+/**
+ * @brief The signal a synchronous exception taken from user code raises.
+ * @param fault_addr CR2 of a page fault, ignored for other vectors.
+ * @param pf_result Why demand paging did not resolve a page fault.
+ * @param fp_exceptions Unmasked fpu::FP_* exceptions of an x87 or SIMD
+ * floating-point fault.
+ */
+signals::fault_signal fault_signal_for_trap(const trap_frame* tf, uint64_t fault_addr,
+                                            int32_t pf_result, uint32_t fp_exceptions);
+
+/**
+ * @brief Deliver the synchronous fault user code raised at tf to its handler,
+ * redirecting the trap frame, or kill the process when no handler takes it.
+ * Runs in the exception itself, so the frame write may wait for the
+ * address-space lock.
+ * @param fault_addr CR2 of a page fault, ignored for other vectors.
+ * @param pf_result Why demand paging did not resolve a page fault.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void deliver_fault_signal(trap_frame* tf, uint64_t fault_addr,
+                                            int32_t pf_result);
 
 } // namespace x86
 

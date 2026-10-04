@@ -157,10 +157,11 @@ __PRIVILEGED_CODE int32_t copy_to_user(
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t copy_to_user_nonblock(
+__PRIVILEGED_CODE int32_t copy_to_user_irqs_masked(
     void* udst,
     const void* ksrc,
-    size_t len
+    size_t len,
+    bool can_sleep
 ) {
     if (!udst || !ksrc || len == 0) {
         return ERR_INVAL;
@@ -180,7 +181,9 @@ __PRIVILEGED_CODE int32_t copy_to_user_nonblock(
 
     // Interrupt context cannot block on the address-space lock
     mm_context* mm_ctx = task->exec.mm_ctx;
-    if (!sync::mutex_trylock(mm_ctx->lock)) {
+    if (can_sleep) {
+        sync::mutex_lock(mm_ctx->lock);
+    } else if (!sync::mutex_trylock(mm_ctx->lock)) {
         return ERR_RETRY;
     }
 

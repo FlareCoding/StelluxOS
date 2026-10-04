@@ -45,6 +45,24 @@ constexpr uint64_t SA_RESTART   = 0x10000000;
 constexpr uint64_t SA_NODEFER   = 0x40000000;
 constexpr uint64_t SA_RESETHAND = 0x80000000;
 
+// si_code values reported to handlers (musl ABI), each scoped to its signal
+constexpr int32_t SI_USER     = 0;
+constexpr int32_t SI_KERNEL   = 0x80;
+constexpr int32_t ILL_ILLOPC  = 1;
+constexpr int32_t FPE_INTDIV  = 1;
+constexpr int32_t FPE_INTOVF  = 2;
+constexpr int32_t FPE_FLTDIV  = 3;
+constexpr int32_t FPE_FLTOVF  = 4;
+constexpr int32_t FPE_FLTUND  = 5;
+constexpr int32_t FPE_FLTRES  = 6;
+constexpr int32_t FPE_FLTINV  = 7;
+constexpr int32_t SEGV_MAPERR = 1;
+constexpr int32_t SEGV_ACCERR = 2;
+constexpr int32_t BUS_ADRALN  = 1;
+constexpr int32_t BUS_ADRERR  = 2;
+constexpr int32_t TRAP_BRKPT  = 1;
+constexpr int32_t TRAP_TRACE  = 2;
+
 // Bitmask of signals 1..64: bit (N-1) represents signal N
 using sig_set_t = uint64_t;
 
@@ -82,6 +100,13 @@ struct group_signals {
     sync::atomic<sig_set_t> shared_pending;
     sync::atomic<uint32_t> exit_signal; // first fatal signal that began group termination, 0 if none
     k_sigaction actions[NSIG];
+};
+
+// A synchronous fault raised by user code, as the signal it raises
+struct fault_signal {
+    uint32_t  sig;
+    int32_t   code; // si_code
+    uintptr_t addr; // si_addr, the faulting instruction or data address
 };
 
 constexpr sig_set_t sig_bit(uint32_t sig) {
