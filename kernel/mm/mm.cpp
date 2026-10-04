@@ -74,68 +74,72 @@ __PRIVILEGED_CODE int32_t init() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE
-bool handle_user_pf(
+int32_t handle_user_pf(
     mm_context* mm_ctx,
     uintptr_t fault_address,
     uint64_t pf_flags
 ) {
     if (!mm_ctx) {
-        return false;
+        return MM_CTX_ERR_INVALID_ARG;
     }
 
     sync::mutex_lock(mm_ctx->lock);
-    bool resolved = handle_user_pf_locked(mm_ctx, fault_address, pf_flags);
+    int32_t result = handle_user_pf_locked(mm_ctx, fault_address, pf_flags);
     sync::mutex_unlock(mm_ctx->lock);
-    return resolved;
+    return result;
 }
 
 /**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE
-bool handle_user_pf_locked(
+int32_t handle_user_pf_locked(
     mm_context* mm_ctx,
     uintptr_t fault_address,
     uint64_t pf_flags
 ) {
     // Protection violations on present pages are never recoverable here
     if (pf_flags & PF_FLAG_PRESENT) {
-        return false;
+        return MM_CTX_ERR_PROTECTION;
     }
 
     uintptr_t page_addr = fault_address & ~(pmm::PAGE_SIZE - 1);
 
     // Get the virtual memory area for this page
     vma* vm = vma_find_locked(mm_ctx, page_addr);
+    if (!vm) {
+        return MM_CTX_ERR_NOT_MAPPED;
+    }
 
-    // Demand paging serves anonymous memory, including stacks
-    if (!vm || !(vm->flags & (VMA_FLAG_ANONYMOUS | VMA_FLAG_STACK))) {
-        return false;
+    // Demand paging serves anonymous memory, including stacks. Other regions
+    // map every page up front, so a missing one lies past the mapped object.
+    if (!(vm->flags & (VMA_FLAG_ANONYMOUS | VMA_FLAG_STACK))) {
+        return MM_CTX_ERR_NO_BACKING;
     }
 
     // Regions with no access rights are pure reservations and never fault in
     if (vm->prot == 0) {
-        return false;
+        return MM_CTX_ERR_PROTECTION;
     }
 
     // Reject access types the region forbids before committing a page
     if ((pf_flags & PF_FLAG_WRITE) && !(vm->prot & MM_PROT_WRITE)) {
-        return false;
+        return MM_CTX_ERR_PROTECTION;
     }
 
     if ((pf_flags & PF_FLAG_INSTRUCTION) && !(vm->prot & MM_PROT_EXEC)) {
-        return false;
+        return MM_CTX_ERR_PROTECTION;
     }
 
     // Concurrent page fault on same page won by another CPU, retry
     if (paging::get_physical(page_addr, mm_ctx->pt_root) != 0) {
-        return true;
+        return MM_CTX_OK;
     }
 
     // Allocate a new physical page to back the memory
     pmm::phys_addr_t phys = pmm::alloc_page();
     if (phys == 0) {
-        return false; // OOM - my favorite thing (ptsd from the days of having to fix Cursor Glass perf and OOMs specifically)
+        return MM_CTX_ERR_NO_MEM; // OOM - my favorite thing (ptsd from the days of having to fix Cursor Glass perf and OOMs specifically)
     }
 
     // Fresh anonymous pages must be zero-filled before reaching userland
@@ -145,10 +149,10 @@ bool handle_user_pf_locked(
     paging::page_flags_t pagefl = prot_to_page_flags(vm->prot);
     if (paging::map_page(page_addr, phys, pagefl, mm_ctx->pt_root) != paging::OK) {
         pmm::free_page(phys);
-        return false;
+        return MM_CTX_ERR_MAP_FAILED;
     }
 
-    return true;
+    return MM_CTX_OK;
 }
 
 /**

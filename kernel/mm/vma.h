@@ -20,6 +20,8 @@ constexpr int32_t MM_CTX_ERR_EXISTS       = -4;
 constexpr int32_t MM_CTX_ERR_MAP_FAILED   = -5;
 constexpr int32_t MM_CTX_ERR_NOT_MAPPED   = -6;
 constexpr int32_t MM_CTX_ERR_CANNOT_GROW  = -7;
+constexpr int32_t MM_CTX_ERR_PROTECTION   = -8;
+constexpr int32_t MM_CTX_ERR_NO_BACKING   = -9;
 
 constexpr uint32_t MM_PROT_READ    = (1u << 0);
 constexpr uint32_t MM_PROT_WRITE   = (1u << 1);
