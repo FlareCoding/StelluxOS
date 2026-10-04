@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <signal.h>
+#include <fenv.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -124,6 +125,29 @@ static void test_unblock_delivers(void) {
 
     sigprocmask(SIG_UNBLOCK, &set, NULL);
     check("unblock delivers immediately", usr1_count == 1);
+}
+
+static volatile sig_atomic_t handler_rounding = -1;
+
+static void rounding_handler(int sig) {
+    (void)sig;
+    handler_rounding = fegetround();
+}
+
+/* A handler starts from the default FP environment and the interrupted one returns after it */
+static void test_handler_fp_environment(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = rounding_handler;
+    sigaction(SIGUSR1, &sa, NULL);
+
+    fesetround(FE_UPWARD);
+    raise(SIGUSR1);
+    int restored = fegetround();
+    fesetround(FE_TONEAREST);
+
+    check("handler starts with round to nearest", handler_rounding == FE_TONEAREST);
+    check("interrupted rounding mode survives the handler", restored == FE_UPWARD);
 }
 
 /* Child mode: a write with no reader must die by default SIGPIPE */
@@ -611,6 +635,7 @@ int main(int argc, char** argv) {
     test_siginfo_delivery();
     test_deferred_reentry();
     test_unblock_delivers();
+    test_handler_fp_environment();
     test_read_eintr();
     test_read_restart();
     test_poll_eintr_despite_restart();

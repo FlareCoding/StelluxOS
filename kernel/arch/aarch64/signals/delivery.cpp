@@ -21,6 +21,17 @@ static inline uint64_t align_down(uint64_t v, uint64_t a) {
     return v & ~(a - 1);
 }
 
+/**
+ * Load the initial floating-point state a handler starts from. The
+ * interrupted state waits in the frame for rt_sigreturn.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void load_initial_fpu_state() {
+    sched::fpu_state initial;
+    fpu::init_state(&initial);
+    fpu::restore(&initial);
+}
+
 static inline void copy_vregs(uint8_t dst[32][16], const uint8_t src[32][16]) {
     for (uint32_t i = 0; i < 32; i++) {
         for (uint32_t j = 0; j < 16; j++) {
@@ -116,6 +127,8 @@ __PRIVILEGED_CODE int32_t build_signal_frame(trap_frame* tf, uint32_t sig,
         return rc;
     }
 
+    load_initial_fpu_state();
+
     tf->sp = frame_addr;
     tf->elr = act->handler;
     tf->x[0] = sig;
@@ -158,6 +171,8 @@ __PRIVILEGED_CODE static int32_t build_trap_signal_frame(
     if (rc != mm::uaccess::OK) {
         return rc;
     }
+
+    load_initial_fpu_state();
 
     tf->sp = frame_addr;
     tf->elr = act->handler;
