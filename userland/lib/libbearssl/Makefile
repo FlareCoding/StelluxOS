@@ -22,7 +22,7 @@ SYSROOT_INC := $(USERLAND_ROOT)/sysroot/$(ARCH)/include/bearssl
 # BearSSL library sources (all .c files under bearssl/src/)
 BEARSSL_SRCS := $(shell find bearssl/src -name '*.c' | sort)
 
-# Trust anchor data (generated separately, see gen_trust_anchors.sh)
+# Trust anchors, generated from the image's CA bundle by scripts/update-ca-bundle.sh
 EXTRA_SRCS := trust_anchors.c
 
 ALL_SRCS := $(BEARSSL_SRCS) $(EXTRA_SRCS)
