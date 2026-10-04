@@ -60,6 +60,7 @@ constexpr int32_t SEGV_MAPERR = 1;
 constexpr int32_t SEGV_ACCERR = 2;
 constexpr int32_t BUS_ADRALN  = 1;
 constexpr int32_t BUS_ADRERR  = 2;
+constexpr int32_t BUS_OBJERR  = 3;
 constexpr int32_t TRAP_BRKPT  = 1;
 constexpr int32_t TRAP_TRACE  = 2;
 

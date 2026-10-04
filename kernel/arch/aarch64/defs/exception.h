@@ -39,6 +39,16 @@ constexpr uint64_t FSC_TRANSLATION = 0x04;
 constexpr uint64_t FSC_PERMISSION  = 0x0C;
 constexpr uint64_t FSC_ALIGNMENT   = 0x21;
 
+// Trapped floating-point exception flags, ESR.ISS of EC_FP_A64, valid only
+// when ESR_FP_FLAGS_VALID is set
+constexpr uint64_t ESR_FP_INVALID        = 1ULL << 0;
+constexpr uint64_t ESR_FP_DIVIDE_BY_ZERO = 1ULL << 1;
+constexpr uint64_t ESR_FP_OVERFLOW       = 1ULL << 2;
+constexpr uint64_t ESR_FP_UNDERFLOW      = 1ULL << 3;
+constexpr uint64_t ESR_FP_INEXACT        = 1ULL << 4;
+constexpr uint64_t ESR_FP_DENORMAL       = 1ULL << 7;
+constexpr uint64_t ESR_FP_FLAGS_VALID    = 1ULL << 23;
+
 // SPSR masks
 constexpr uint64_t SPSR_MODE_MASK = 0x1F;
 constexpr uint64_t SPSR_EL0T      = 0x00;  // EL0 using SP_EL0
