@@ -53,11 +53,15 @@ __PRIVILEGED_CODE int32_t init();
  * @param fault_address Linear address that triggered the fault
  *                      (x86 CR2, aarch64 FAR_EL1).
  * @param pf_flags Generic page fault flags describing the fault.
- * @return true if the fault was resolved and the instruction may safely retry,
- *         false if the access was invalid.
+ * @return MM_CTX_OK if the fault was resolved and the instruction may safely
+ *         retry. Otherwise the reason it was not: MM_CTX_ERR_NOT_MAPPED when
+ *         no region covers the address, MM_CTX_ERR_PROTECTION when the region
+ *         forbids the access, MM_CTX_ERR_NO_BACKING when the address lies past
+ *         the end of a mapped object, MM_CTX_ERR_NO_MEM or
+ *         MM_CTX_ERR_MAP_FAILED when no page could be committed.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE bool handle_user_pf(
+__PRIVILEGED_CODE int32_t handle_user_pf(
     mm_context* mm_ctx,
     uintptr_t fault_address,
     uint64_t pf_flags
@@ -68,7 +72,7 @@ __PRIVILEGED_CODE bool handle_user_pf(
  * Never blocks, so it is safe from interrupt context.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE bool handle_user_pf_locked(
+__PRIVILEGED_CODE int32_t handle_user_pf_locked(
     mm_context* mm_ctx,
     uintptr_t fault_address,
     uint64_t pf_flags

@@ -84,7 +84,7 @@ TEST(private_copy, pages_past_the_end_of_the_source_stay_unmapped) {
     ASSERT_NOT_NULL(mapped_page_bytes(mm_ctx, addr));
     EXPECT_EQ(mapped_page_bytes(mm_ctx, addr)[0], static_cast<uint8_t>(1));
     EXPECT_NULL(mapped_page_bytes(mm_ctx, addr + PAGE));
-    EXPECT_FALSE(mm::handle_user_pf(mm_ctx, addr + 2 * PAGE, 0));
+    EXPECT_EQ(mm::handle_user_pf(mm_ctx, addr + 2 * PAGE, 0), mm::MM_CTX_ERR_NO_BACKING);
 
     mm::mm_context_release(mm_ctx);
 }

@@ -99,7 +99,7 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
         uintptr_t fault_addr = aarch64::get_far(tf);
         uint32_t pf_flags = abort_pf_flags(esr, ec);
 
-        if (mm::handle_user_pf(guard.task_core->mm_ctx, fault_addr, pf_flags)) {
+        if (mm::handle_user_pf(guard.task_core->mm_ctx, fault_addr, pf_flags) == mm::MM_CTX_OK) {
             // Fault has been handled successfully, restart instruction
             restore_post_trap_elevation_state(tf);
             return;

@@ -67,7 +67,7 @@ __PRIVILEGED_CODE bool handle_kernel_fault(
         return false;
     }
 
-    if (can_sleep && mm_ctx && handle_user_pf(mm_ctx, fault_addr, pf_flags)) {
+    if (can_sleep && mm_ctx && handle_user_pf(mm_ctx, fault_addr, pf_flags) == MM_CTX_OK) {
         return true;
     }
 
@@ -216,7 +216,7 @@ __PRIVILEGED_CODE int32_t copy_to_user_nonblock(
             continue;
         }
 
-        if (!handle_user_pf_locked(mm_ctx, page, 0)) {
+        if (handle_user_pf_locked(mm_ctx, page, 0) != MM_CTX_OK) {
             sync::mutex_unlock(mm_ctx->lock);
             return ERR_FAULT;
         }

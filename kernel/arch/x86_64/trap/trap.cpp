@@ -116,7 +116,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         if (ec & 0x10) pf_flags |= mm::PF_FLAG_INSTRUCTION;
 
         bool handled = in_user_code
-            ? mm::handle_user_pf(irq_task_core->mm_ctx, fault_addr, pf_flags)
+            ? mm::handle_user_pf(irq_task_core->mm_ctx, fault_addr, pf_flags) == mm::MM_CTX_OK
             : mm::uaccess::handle_kernel_fault(irq_task_core->mm_ctx, &tf->rip, fault_addr,
                                                pf_flags, (tf->rflags & cpu::RFLAGS_IF) != 0);
 
