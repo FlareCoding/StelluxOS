@@ -375,3 +375,120 @@ TEST(uaccess, masked_context_never_faults_a_page_in) {
 
     mm::mm_context_release(ctx);
 }
+
+static constexpr uint32_t CMPXCHG_ATTEMPTS = 64;
+
+// Retries the lost reservations a weak exchange may report while the word still matched
+static int32_t cmpxchg_until_decided(uint32_t* word, uint32_t* expected, uint32_t desired) {
+    uint32_t wanted = *expected;
+    int32_t rc = mm::uaccess::cmpxchg_u32_in_user(word, expected, desired);
+    for (uint32_t attempt = 1; attempt < CMPXCHG_ATTEMPTS; attempt++) {
+        if (rc != mm::uaccess::ERR_RETRY || *expected != wanted) {
+            break;
+        }
+
+        rc = mm::uaccess::cmpxchg_u32_in_user(word, expected, desired);
+    }
+
+    return rc;
+}
+
+// --- cmpxchg_u32_stores_only_over_the_expected_value ---
+// Proves: the exchange stores over a matching word, reports the value it found
+// otherwise, and refuses misaligned, unmapped, and kernel words.
+
+TEST(uaccess, cmpxchg_u32_stores_only_over_the_expected_value) {
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t addr = map_user(ctx, 1, PROT_RW, EAGER_ANON);
+    ASSERT_NE(addr, static_cast<uintptr_t>(0));
+
+    uint32_t* backing = reinterpret_cast<uint32_t*>(page_bytes(ctx, addr + 64));
+    ASSERT_NOT_NULL(backing);
+    *backing = 7;
+    uint32_t kernel_word = 7;
+
+    {
+        user_space_scope scope(ctx);
+        uint32_t* word = reinterpret_cast<uint32_t*>(addr + 64);
+
+        uint32_t expected = 7;
+        EXPECT_EQ(cmpxchg_until_decided(word, &expected, 9), mm::uaccess::OK);
+        EXPECT_EQ(expected, 7u);
+        EXPECT_EQ(*backing, 9u);
+
+        expected = 7;
+        EXPECT_EQ(mm::uaccess::cmpxchg_u32_in_user(word, &expected, 11), mm::uaccess::ERR_RETRY);
+        EXPECT_EQ(expected, 9u);
+        EXPECT_EQ(*backing, 9u);
+
+        expected = 9;
+        EXPECT_EQ(mm::uaccess::cmpxchg_u32_in_user(
+            reinterpret_cast<uint32_t*>(addr + 66), &expected, 11), mm::uaccess::ERR_INVAL);
+        EXPECT_EQ(mm::uaccess::cmpxchg_u32_in_user(
+            reinterpret_cast<uint32_t*>(addr + 4 * PAGE), &expected, 11), mm::uaccess::ERR_FAULT);
+        EXPECT_EQ(mm::uaccess::cmpxchg_u32_in_user(&kernel_word, &expected, 11), mm::uaccess::ERR_FAULT);
+    }
+
+    EXPECT_EQ(*backing, 9u);
+    EXPECT_EQ(kernel_word, 7u);
+    mm::mm_context_release(ctx);
+}
+
+// --- cmpxchg_u32_refuses_a_read_only_word ---
+// Proves: storing over a matching word in a read-only page faults and leaves
+// the word as it was.
+
+TEST(uaccess, cmpxchg_u32_refuses_a_read_only_word) {
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t addr = map_user(ctx, 1, mm::MM_PROT_READ, EAGER_ANON);
+    ASSERT_NE(addr, static_cast<uintptr_t>(0));
+
+    uint32_t* backing = reinterpret_cast<uint32_t*>(page_bytes(ctx, addr));
+    ASSERT_NOT_NULL(backing);
+    *backing = 5;
+
+    {
+        user_space_scope scope(ctx);
+        uint32_t expected = 5;
+        EXPECT_EQ(mm::uaccess::cmpxchg_u32_in_user(
+            reinterpret_cast<uint32_t*>(addr), &expected, 6), mm::uaccess::ERR_FAULT);
+    }
+
+    EXPECT_EQ(*backing, 5u);
+    mm::mm_context_release(ctx);
+}
+
+// --- cmpxchg_u32_never_faults_a_page_in_while_masked ---
+// Proves: with interrupts off a missing page reports a fault instead of
+// sleeping on the address-space lock, and the exchange stores once they are on.
+
+TEST(uaccess, cmpxchg_u32_never_faults_a_page_in_while_masked) {
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t addr = map_user(ctx, 1, PROT_RW, LAZY_ANON);
+    ASSERT_NE(addr, static_cast<uintptr_t>(0));
+
+    {
+        user_space_scope scope(ctx);
+        uint32_t* word = reinterpret_cast<uint32_t*>(addr);
+        uint32_t expected = 0;
+
+        sync::irq_state irq = sync::spin_lock_irqsave(g_masked_lock);
+        int32_t masked_rc = mm::uaccess::cmpxchg_u32_in_user(word, &expected, 3);
+        sync::spin_unlock_irqrestore(g_masked_lock, irq);
+
+        EXPECT_EQ(masked_rc, mm::uaccess::ERR_FAULT);
+        EXPECT_NULL(page_bytes(ctx, addr));
+
+        EXPECT_EQ(cmpxchg_until_decided(word, &expected, 3), mm::uaccess::OK);
+        uint32_t* backing = reinterpret_cast<uint32_t*>(page_bytes(ctx, addr));
+        EXPECT_NOT_NULL(backing);
+        if (backing) {
+            EXPECT_EQ(*backing, 3u);
+        }
+    }
+
+    mm::mm_context_release(ctx);
+}

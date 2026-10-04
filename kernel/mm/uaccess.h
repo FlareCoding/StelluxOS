@@ -40,6 +40,23 @@ __PRIVILEGED_CODE int32_t load_u32_from_user(
 );
 
 /**
+ * @brief Atomically store `desired` over the 32-bit aligned user word at
+ * `udst` if it holds `*expected`, fully ordered when it stores.
+ * @param expected The value the word must hold, replaced by the value found.
+ * @return OK when `desired` was stored. ERR_RETRY when it was not, because the
+ * word held another value or because the exclusive access was lost, which
+ * some architectures allow even when the word matched. ERR_INVAL for a
+ * misaligned address, ERR_FAULT when the access faults, as a missing page
+ * always does with interrupts masked.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t cmpxchg_u32_in_user(
+    uint32_t* udst,
+    uint32_t* expected,
+    uint32_t desired
+);
+
+/**
  * @brief Copy from a kernel buffer to a user buffer. A user page that is
  * missing or read-only at the moment of the copy reports ERR_FAULT.
  * @note Privilege: **required**
