@@ -74,3 +74,42 @@ stlx_user_load32_fixup:
     ret
 
 .size stlx_user_load32, . - stlx_user_load32
+
+/*
+ * size_t stlx_user_cmpxchg32(uint32_t* dst, uint32_t expected, uint32_t desired, uint32_t* observed)
+ *
+ * Makes one exclusive attempt to store desired over the aligned word if it
+ * holds expected. Writes the word as found to observed, returns zero when
+ * desired was stored, one when it was not, and two when the word faulted.
+ * A lost reservation returns one even though the word held expected.
+ */
+.global stlx_user_cmpxchg32
+.type stlx_user_cmpxchg32, %function
+
+stlx_user_cmpxchg32:
+    mov w5, #1
+
+.global stlx_user_cmpxchg32_begin
+stlx_user_cmpxchg32_begin:
+    ldxr w4, [x0]
+    cmp w4, w1
+    b.ne 1f
+    stlxr w5, w2, [x0]
+
+.global stlx_user_cmpxchg32_end
+stlx_user_cmpxchg32_end:
+1:  str w4, [x3]
+    cbnz w5, 2f
+    dmb ish
+    mov x0, #0
+    ret
+2:  clrex
+    mov x0, #1
+    ret
+
+.global stlx_user_cmpxchg32_fixup
+stlx_user_cmpxchg32_fixup:
+    mov x0, #2
+    ret
+
+.size stlx_user_cmpxchg32, . - stlx_user_cmpxchg32

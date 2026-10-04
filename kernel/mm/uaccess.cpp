@@ -6,6 +6,10 @@
 #include "sched/task.h"
 #include "sync/mutex.h"
 
+// Results of stlx_user_cmpxchg32
+constexpr size_t USER_CMPXCHG_STORED  = 0;
+constexpr size_t USER_CMPXCHG_FAULTED = 2;
+
 namespace {
 
 // Text range of one user access routine and where it resumes after a fault
@@ -27,9 +31,15 @@ extern "C" char stlx_user_load32_begin[];
 extern "C" char stlx_user_load32_end[];
 extern "C" char stlx_user_load32_fixup[];
 
+extern "C" size_t stlx_user_cmpxchg32(uint32_t* dst, uint32_t expected, uint32_t desired, uint32_t* observed);
+extern "C" char stlx_user_cmpxchg32_begin[];
+extern "C" char stlx_user_cmpxchg32_end[];
+extern "C" char stlx_user_cmpxchg32_fixup[];
+
 static const access_region g_access_regions[] = {
     { stlx_user_copy_begin, stlx_user_copy_end, stlx_user_copy_fixup },
     { stlx_user_load32_begin, stlx_user_load32_end, stlx_user_load32_fixup },
+    { stlx_user_cmpxchg32_begin, stlx_user_cmpxchg32_end, stlx_user_cmpxchg32_fixup },
 };
 
 namespace mm::uaccess {
@@ -124,6 +134,37 @@ __PRIVILEGED_CODE int32_t load_u32_from_user(
     }
 
     return stlx_user_load32(usrc, out) == 0 ? OK : ERR_FAULT;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t cmpxchg_u32_in_user(
+    uint32_t* udst,
+    uint32_t* expected,
+    uint32_t desired
+) {
+    if (!udst || !expected || reinterpret_cast<uintptr_t>(udst) % sizeof(uint32_t) != 0) {
+        return ERR_INVAL;
+    }
+
+    if (!user_range_ok(udst, sizeof(uint32_t))) {
+        return ERR_FAULT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return ERR_NO_MMCTX;
+    }
+
+    uint32_t observed = 0;
+    size_t result = stlx_user_cmpxchg32(udst, *expected, desired, &observed);
+    if (result == USER_CMPXCHG_FAULTED) {
+        return ERR_FAULT;
+    }
+
+    *expected = observed;
+    return result == USER_CMPXCHG_STORED ? OK : ERR_RETRY;
 }
 
 /**
