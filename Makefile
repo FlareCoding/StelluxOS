@@ -192,20 +192,6 @@ INITRD_CPIO := $(BUILD_DIR)/initrd/$(ARCH)/initrd.cpio
 USERLAND_BIN    := userland/build/$(ARCH)/bin
 USERLAND_ROOTFS := userland/build/$(ARCH)/rootfs
 
-# Disk images hold the kernel and initrd on one FAT partition and grow past
-# the default size when packages make the initrd large
-IMAGE_MIN_MB   := 512
-IMAGE_SLACK_MB := 64
-GPT_BACKUP_SECTORS := 34
-
-define create_disk_image
-$(Q)mb=$$(( $$(wc -c < $(INITRD_CPIO)) / 1048576 + $(IMAGE_SLACK_MB) )); \
-	if [ $$mb -lt $(IMAGE_MIN_MB) ]; then mb=$(IMAGE_MIN_MB); fi; \
-	dd if=/dev/zero of=$(1) bs=1M count=$$mb status=none && \
-	$(SGDISK) --clear --new=1:2048:$$(( mb * 2048 - $(GPT_BACKUP_SECTORS) )) \
-		--typecode=1:ef00 $(1) > /dev/null
-endef
-
 # The initrd is assembled fresh from the skeleton in initrd/, the userland
 # binaries, and the package overlay, so no build writes into the source tree
 .PHONY: initrd $(INITRD_CPIO)
@@ -223,7 +209,7 @@ $(INITRD_CPIO): userland
 $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating x86_64 UEFI disk image..."
-	$(call create_disk_image,$@)
+	$(Q)SGDISK=$(SGDISK) scripts/create-disk-image.sh $@ $(INITRD_CPIO)
 	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT
@@ -236,7 +222,7 @@ $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DI
 $(IMAGE_DIR)/stellux-aarch64.img: $(BUILD_DIR)/kernel/aarch64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating AArch64 UEFI disk image..."
-	$(call create_disk_image,$@)
+	$(Q)SGDISK=$(SGDISK) scripts/create-disk-image.sh $@ $(INITRD_CPIO)
 	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT

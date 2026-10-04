@@ -110,9 +110,10 @@ make -C "$PROJECT_DIR" userland ARCH=x86_64 RELEASE=1 PACKAGES="$PACKAGES"
 info "Creating boot image..."
 mkdir -p "$(dirname "$IMG")"
 
-dd if=/dev/zero of="$IMG" bs=1M count=512 status=none
-sgdisk --clear --new=1:2048:1048542 --typecode=1:ef00 "$IMG" > /dev/null
+INITRD_CPIO="$PROJECT_DIR/build/initrd/x86_64/initrd.cpio"
+make -C "$PROJECT_DIR" initrd ARCH=x86_64 RELEASE=1 PACKAGES="$PACKAGES"
 
+"$SCRIPT_DIR/create-disk-image.sh" "$IMG" "$INITRD_CPIO"
 mformat -i "$IMG"@@1M -F -v STELLUX ::
 
 mmd   -i "$IMG"@@1M ::/EFI
@@ -121,9 +122,6 @@ mcopy -i "$IMG"@@1M "$LIMINE_DIR/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
 
 mcopy -i "$IMG"@@1M "$KERNEL" ::/kernel.elf
 mcopy -i "$IMG"@@1M "$LIMINE_DIR/limine.conf" ::/limine.conf
-
-INITRD_CPIO="$PROJECT_DIR/build/initrd/x86_64/initrd.cpio"
-make -C "$PROJECT_DIR" initrd ARCH=x86_64 RELEASE=1 PACKAGES="$PACKAGES"
 mcopy -i "$IMG"@@1M "$INITRD_CPIO" ::/initrd.cpio
 
 # --- Step 3: Unmount & flash ---
