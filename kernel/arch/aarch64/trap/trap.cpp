@@ -55,8 +55,7 @@ __PRIVILEGED_CODE static inline void restore_post_trap_elevation_state(const aar
 static uint32_t abort_pf_flags(uint64_t esr, uint8_t ec) {
     uint32_t pf_flags = 0;
 
-    // DFSC[5:0] is in ESR.ISS bits [5:0], its top four bits classify the fault
-    if (((esr & 0x3F) >> 2) == 0b0011) {
+    if (aarch64::is_permission_fault(esr)) {
         pf_flags |= mm::PF_FLAG_PRESENT;
     }
 
@@ -90,10 +89,12 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
         return;
     }
 
-    // If it's a page fault, attempt to handle it for on-demand paging
+    // Demand paging only resolves a missing translation, an alignment or
+    // permission fault on a mapped page would otherwise retry forever
     if (in_user_code && (
         ec == aarch64::EC_DATA_ABORT_LOWER ||
-        ec == aarch64::EC_INST_ABORT_LOWER)
+        ec == aarch64::EC_INST_ABORT_LOWER) &&
+        aarch64::is_translation_fault(esr)
     ) {
         uintptr_t fault_addr = aarch64::get_far(tf);
         uint32_t pf_flags = abort_pf_flags(esr, ec);

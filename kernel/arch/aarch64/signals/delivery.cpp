@@ -234,9 +234,9 @@ uint32_t signal_for_user_exception(uint64_t esr) {
     switch (ec) {
         case EC_DATA_ABORT_LOWER:
         case EC_INST_ABORT_LOWER:
-        case EC_SP_ALIGN:
-            return signals::SIGSEGV;
+            return (esr & ESR_FSC_MASK) == FSC_ALIGNMENT ? signals::SIGBUS : signals::SIGSEGV;
         case EC_PC_ALIGN:
+        case EC_SP_ALIGN:
             return signals::SIGBUS;
         case EC_FP_A64:
             return signals::SIGFPE;
