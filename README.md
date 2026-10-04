@@ -103,9 +103,10 @@ the Limine bootloader binaries. `make musl` builds musl 1.2.5 for both
 x86_64 and aarch64. `make libcxx` builds the LLVM C++ runtime (libc++,
 libc++abi, libunwind) against the musl sysroot for C++ userland
 application support. `make compiler-rt` builds the compiler runtime
-builtins for both architectures. `make qt` builds Qt's code generators
-for this machine, which the userland apps built on Qt need. The Qt
-libraries themselves are a prebuilt package every build fetches.
+builtins for both architectures. `make qt` builds a host Qt for this
+machine, whose code generators the userland apps built on Qt need and
+which CMake builds against the Qt kit use. The Qt libraries themselves
+are a prebuilt package every build fetches.
 
 Heavy programs that run on Stellux, such as the GCC toolchain, binutils,
 and CPython, are prebuilt packages rather than part of this setup:

@@ -3,12 +3,12 @@
 #
 # Included after SRC_DIR and BUILD_DIR are set by a library or app built on Qt.
 # The kit is the qt build package the userland build unpacks into the SDK, and
-# its code generators are this machine's, built by 'make qt'.
+# its code generators come from this machine's host Qt, built by 'make qt'.
 #
 
 QT_DIR      := $(USERLAND_ROOT)/toolchain/sdk/$(ARCH)/qt
 QT_HOST_DIR := $(USERLAND_ROOT)/toolchain/qt-host
-QT_MOC      := $(QT_HOST_DIR)/bin/moc
+QT_MOC      := $(QT_HOST_DIR)/libexec/moc
 
 # Cleaning needs neither the kit nor the code generators
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
@@ -19,8 +19,13 @@ endif
 
 include $(QT_DIR)/share/stellux/qt.mk
 
+QT_HOST_MISSING := Qt $(QT_VERSION) host build not found in $(QT_HOST_DIR). Run 'make qt' from the top-level directory first
 ifneq ($(shell cat $(QT_HOST_DIR)/VERSION 2>/dev/null),$(QT_VERSION))
-  $(error Qt $(QT_VERSION) code generators not found in $(QT_HOST_DIR). Run 'make qt' from the top-level directory first)
+  $(error $(QT_HOST_MISSING))
+endif
+
+ifeq ($(wildcard $(QT_MOC)),)
+  $(error $(QT_HOST_MISSING))
 endif
 
 endif
