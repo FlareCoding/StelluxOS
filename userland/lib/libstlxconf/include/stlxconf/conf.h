@@ -14,6 +14,7 @@ extern "C" {
 #define STLXCONF_MAX_TASKBAR   16
 #define STLXCONF_MAX_SHORTCUTS 8
 #define STLXCONF_MAX_AUTOSTART 8
+#define STLXCONF_MAX_URL_HANDLERS 8
 
 /* One pinned launcher in the dock, order preserved from the file, args space
  * separated. The name is the section suffix, kept for faithful re-serialization. */
@@ -43,6 +44,15 @@ typedef struct {
     char args[256];
     bool from_drop_in;
 } stlxconf_autostart_t;
+
+/* The program that opens URLs of one scheme, the section suffix. args are
+ * space separated, and the URL follows them as the last argument. */
+typedef struct {
+    char scheme[32];
+    char path[256];
+    char args[256];
+    bool from_drop_in;
+} stlxconf_url_handler_t;
 
 /**
  * The desktop configuration, parsed from an INI-style file. Every
@@ -78,6 +88,9 @@ typedef struct {
 
     stlxconf_autostart_t autostart[STLXCONF_MAX_AUTOSTART];
     uint32_t autostart_count;
+
+    stlxconf_url_handler_t url_handlers[STLXCONF_MAX_URL_HANDLERS];
+    uint32_t url_handler_count;
 } stlxconf_t;
 
 /**
@@ -93,9 +106,9 @@ void stlxconf_defaults(stlxconf_t* conf);
 int stlxconf_load(stlxconf_t* conf, const char* path);
 
 /**
- * @brief Adds the launchers, shortcuts and autostart entries of every
- * .conf file in `dir`, in name order, to the loaded configuration. They
- * stay out of stlxconf_save, since their files own them, and any other
+ * @brief Adds the launchers, shortcuts, autostart entries and URL handlers
+ * of every .conf file in `dir`, in name order, to the loaded configuration.
+ * They stay out of stlxconf_save, since their files own them, and any other
  * section of a drop-in file is ignored.
  * @return 0 on success, also when the directory does not exist, -1 when
  *         it or one of its files cannot be read.
@@ -110,6 +123,26 @@ int stlxconf_load_drop_ins(stlxconf_t* conf, const char* dir);
  * @return 0 on success, -1 when the file cannot be written.
  */
 int stlxconf_save(const stlxconf_t* conf, const char* path);
+
+/**
+ * @brief Finds the handler for URLs of `scheme`, compared without case.
+ *
+ * The main file's handlers come before the drop-in files', so a handler
+ * the user configured wins over one a package installed.
+ * @return the first handler for the scheme, NULL when none is configured.
+ */
+const stlxconf_url_handler_t* stlxconf_find_url_handler(const stlxconf_t* conf,
+                                                        const char* scheme);
+
+/**
+ * @brief Splits a space-separated args value into arguments, in place.
+ *
+ * Each separator in `args` becomes a terminator, and `argv` points into
+ * `args`. At most `capacity - 1` arguments are stored, followed by NULL,
+ * so `capacity` must be at least 1.
+ * @return the number of arguments stored.
+ */
+int stlxconf_split_args(char* args, const char* argv[], int capacity);
 
 #ifdef __cplusplus
 }

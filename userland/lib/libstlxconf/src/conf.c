@@ -1,6 +1,6 @@
 /* The INI-style configuration parser and serializer. Sections select
  * a state, key=value lines fill the active section, and repeated item
- * sections (taskbar:, shortcut:, autostart:) append to their arrays.
+ * sections, named prefix:name such as taskbar:files, append to arrays.
  */
 #include <stlxconf/conf.h>
 
@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -22,6 +23,7 @@ typedef enum {
     SEC_PIN,
     SEC_SHORTCUT,
     SEC_AUTOSTART,
+    SEC_URL_HANDLER,
 } conf_section_t;
 
 void stlxconf_defaults(stlxconf_t* conf) {
@@ -109,6 +111,15 @@ static void enter_section(stlxconf_t* conf, char* name,
                          sizeof(conf->autostart[*item_idx].name));
             conf->autostart[*item_idx].from_drop_in = from_drop_in;
         }
+    } else if (strncmp(name, "url_handler:", 12) == 0) {
+        *sec = SEC_URL_HANDLER;
+        *item_idx = conf->url_handler_count < STLXCONF_MAX_URL_HANDLERS
+                  ? (int32_t)conf->url_handler_count++ : -1;
+        if (*item_idx >= 0) {
+            copy_bounded(conf->url_handlers[*item_idx].scheme, name + 12,
+                         sizeof(conf->url_handlers[*item_idx].scheme));
+            conf->url_handlers[*item_idx].from_drop_in = from_drop_in;
+        }
     } else {
         *sec = SEC_NONE;
     }
@@ -194,6 +205,19 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
             copy_bounded(as->path, val, sizeof(as->path));
         } else if (strcmp(key, "args") == 0) {
             copy_bounded(as->args, val, sizeof(as->args));
+        }
+        return;
+    }
+    case SEC_URL_HANDLER: {
+        if (item_idx < 0) {
+            return;
+        }
+
+        stlxconf_url_handler_t* uh = &conf->url_handlers[item_idx];
+        if (strcmp(key, "path") == 0) {
+            copy_bounded(uh->path, val, sizeof(uh->path));
+        } else if (strcmp(key, "args") == 0) {
+            copy_bounded(uh->args, val, sizeof(uh->args));
         }
         return;
     }
@@ -389,6 +413,56 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
         }
     }
 
+    for (uint32_t i = 0; i < conf->url_handler_count; i++) {
+        const stlxconf_url_handler_t* uh = &conf->url_handlers[i];
+        if (uh->from_drop_in) {
+            continue;
+        }
+
+        fprintf(f, "\n[url_handler:%s]\n", uh->scheme);
+        fprintf(f, "path=%s\n", uh->path);
+        if (uh->args[0]) {
+            fprintf(f, "args=%s\n", uh->args);
+        }
+    }
+
     fclose(f);
     return 0;
+}
+
+const stlxconf_url_handler_t* stlxconf_find_url_handler(const stlxconf_t* conf,
+                                                        const char* scheme) {
+    for (uint32_t i = 0; i < conf->url_handler_count; i++) {
+        if (strcasecmp(conf->url_handlers[i].scheme, scheme) == 0) {
+            return &conf->url_handlers[i];
+        }
+    }
+
+    return NULL;
+}
+
+int stlxconf_split_args(char* args, const char* argv[], int capacity) {
+    int argc = 0;
+    char* p = args;
+    while (*p && argc < capacity - 1) {
+        while (*p == ' ') {
+            p++;
+        }
+
+        if (!*p) {
+            break;
+        }
+
+        argv[argc++] = p;
+        while (*p && *p != ' ') {
+            p++;
+        }
+
+        if (*p) {
+            *p++ = '\0';
+        }
+    }
+
+    argv[argc] = NULL;
+    return argc;
 }

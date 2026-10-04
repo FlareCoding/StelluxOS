@@ -16,31 +16,13 @@
 /* Spawns a detached app. args is an optional space-separated argument
  * string tokenized into a scratch copy, no quoting support. */
 static void spawn_app(const char* path, const char* args) {
-    char scratch[256];
-    const char* argv[16];
-    int argc = 0;
-
-    if (args && args[0]) {
+    char scratch[256] = "";
+    if (args) {
         strncpy(scratch, args, sizeof(scratch) - 1);
-        scratch[sizeof(scratch) - 1] = '\0';
-
-        for (char* p = scratch; *p && argc < 15;) {
-            while (*p == ' ') {
-                p++;
-            }
-            if (!*p) {
-                break;
-            }
-            argv[argc++] = p;
-            while (*p && *p != ' ') {
-                p++;
-            }
-            if (*p) {
-                *p++ = '\0';
-            }
-        }
     }
-    argv[argc] = nullptr;
+
+    const char* argv[16];
+    int argc = stlxconf_split_args(scratch, argv, sizeof(argv) / sizeof(argv[0]));
 
     int handle = proc_exec(path, argc > 0 ? argv : nullptr);
     if (handle < 0) {

@@ -8,6 +8,7 @@
 #include <qpa/qplatformfontdatabase.h>
 #include <qpa/qplatformintegration.h>
 #include <qpa/qplatformscreen.h>
+#include <qpa/qplatformservices.h>
 
 #include <stlxwin/stlxwin.h>
 
@@ -61,6 +62,7 @@ public:
     QAbstractEventDispatcher* createEventDispatcher() const override;
     QPlatformFontDatabase* fontDatabase() const override;
     QPlatformClipboard* clipboard() const override;
+    QPlatformServices* services() const override;
     QStringList themeNames() const override;
     QPlatformTheme* createPlatformTheme(const QString& name) const override;
 
@@ -74,6 +76,7 @@ private:
     QHash<stlxwin_window*, QStelluxWindow*> m_windows;
     mutable std::unique_ptr<QPlatformFontDatabase> m_font_database;
     mutable std::unique_ptr<QPlatformClipboard> m_clipboard;
+    mutable std::unique_ptr<QPlatformServices> m_services;
 };
 
 #endif
