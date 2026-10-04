@@ -8,6 +8,7 @@
 #include "clock/clock.h"
 #include "dynpriv/dynpriv.h"
 #include "syscall/syscall_table.h"
+#include "syscall/handlers/sys_futex.h"
 
 using test_helpers::spin_wait;
 using test_helpers::spin_wait_ge;
@@ -632,4 +633,238 @@ TEST(futex, wait_until_a_passed_deadline_times_out_at_once) {
     ASSERT_TRUE(run_deadline_waiter(true));
     EXPECT_EQ(g_dl_rc.load_acquire(), syscall::ETIMEDOUT);
     EXPECT_LT(g_dl_elapsed.load_acquire(), DEADLINE_WAIT_NS);
+}
+
+// A FUTEX_WAKE_OP update, from the high bits: operation:4 comparison:4 operand:12 comparand:12
+constexpr uint32_t OPERATION_SHIFT         = 28;
+constexpr uint32_t COMPARISON_SHIFT        = 24;
+constexpr uint32_t OPERAND_SHIFT           = 12;
+constexpr uint32_t ARGUMENT_MASK           = 0xFFF;
+constexpr uint32_t ARGUMENT_MINUS_ONE      = 0xFFF;
+constexpr uint32_t ARGUMENT_MOST_NEGATIVE  = 0x800;
+constexpr uint32_t SHIFT_PAST_WORD         = 32;
+constexpr uint32_t UPDATE_SET              = 0;
+constexpr uint32_t UPDATE_ADD              = 1;
+constexpr uint32_t UPDATE_OR               = 2;
+constexpr uint32_t UPDATE_AND_NOT          = 3;
+constexpr uint32_t UPDATE_XOR              = 4;
+constexpr uint32_t UPDATE_UNKNOWN          = 5;
+constexpr uint32_t UPDATE_OPERAND_IS_SHIFT = 8;
+constexpr uint32_t COMPARE_EQUAL           = 0;
+constexpr uint32_t COMPARE_NOT_EQUAL       = 1;
+constexpr uint32_t COMPARE_LESS            = 2;
+constexpr uint32_t COMPARE_LESS_EQUAL      = 3;
+constexpr uint32_t COMPARE_GREATER         = 4;
+constexpr uint32_t COMPARE_GREATER_EQUAL   = 5;
+constexpr uint32_t COMPARE_UNKNOWN         = 6;
+constexpr uint64_t FUTEX_OP_WAKE_OP        = 5;
+constexpr uint64_t FUTEX_PRIVATE_FLAG      = 128;
+
+struct update_case {
+    uint32_t initial;
+    uint32_t update;
+    uint32_t updated;
+};
+
+struct comparison_case {
+    uint32_t old_value;
+    uint32_t comparison;
+    uint32_t comparand;
+    bool     holds;
+};
+
+static uint32_t g_wo_first = 0;
+static uint32_t g_wo_second = 0;
+
+static constexpr uint32_t encode_update(uint32_t operation, uint32_t operand, uint32_t comparison,
+                                        uint32_t comparand) {
+    return (operation << OPERATION_SHIFT) | (comparison << COMPARISON_SHIFT) |
+           ((operand & ARGUMENT_MASK) << OPERAND_SHIFT) | (comparand & ARGUMENT_MASK);
+}
+
+static int32_t wake_op(uint32_t& first, uint32_t& second, uint32_t nr_wake, uint32_t nr_wake2, uint32_t update) {
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        rc = sync::futex_wake_op(word_addr(first), word_addr(second), nr_wake, nr_wake2, update);
+    });
+    return rc;
+}
+
+static int64_t sys_wake_op(uint32_t& first, uint32_t& second, int64_t nr_wake, int64_t nr_wake2, uint32_t update) {
+    int64_t rc = 0;
+    RUN_ELEVATED({
+        rc = sys_futex(word_addr(first), FUTEX_OP_WAKE_OP | FUTEX_PRIVATE_FLAG, static_cast<uint64_t>(nr_wake),
+                       static_cast<uint64_t>(nr_wake2), word_addr(second), update);
+    });
+    return rc;
+}
+
+// Parks waiters on both words, each proven queued before a test acts on it
+static bool park_on_both_words(uint32_t on_first, uint32_t on_second) {
+    if (!park_waiters(on_first + on_second)) {
+        return false;
+    }
+
+    int32_t moved_first = requeue(g_rq_hold, g_wo_first, 0, on_first);
+    int32_t moved_second = requeue(g_rq_hold, g_wo_second, 0, on_second);
+    return moved_first == static_cast<int32_t>(on_first) && moved_second == static_cast<int32_t>(on_second);
+}
+
+TEST(futex, wake_op_wakes_both_words_when_the_comparison_holds) {
+    g_wo_second = 0;
+    ASSERT_TRUE(park_on_both_words(2, 3));
+
+    EXPECT_EQ(wake_op(g_wo_first, g_wo_second, 1, 2, encode_update(UPDATE_ADD, 1, COMPARE_EQUAL, 0)), 3);
+    EXPECT_EQ(g_wo_second, 1u);
+    ASSERT_TRUE(spin_wait_ge(g_rq_woken, 3));
+    brief_delay();
+    EXPECT_EQ(g_rq_woken.load_acquire(), 3u);
+
+    EXPECT_EQ(wake(g_wo_first, 3), 1);
+    EXPECT_EQ(wake(g_wo_second, 3), 1);
+    EXPECT_TRUE(spin_wait_ge(g_rq_woken, 5));
+}
+
+TEST(futex, wake_op_wakes_only_the_first_word_when_the_comparison_fails) {
+    g_wo_second = 5;
+    ASSERT_TRUE(park_on_both_words(1, 1));
+
+    EXPECT_EQ(wake_op(g_wo_first, g_wo_second, 1, 1, encode_update(UPDATE_SET, 7, COMPARE_EQUAL, 0)), 1);
+    EXPECT_EQ(g_wo_second, 7u);
+    ASSERT_TRUE(spin_wait_ge(g_rq_woken, 1));
+    brief_delay();
+    EXPECT_EQ(g_rq_woken.load_acquire(), 1u);
+
+    EXPECT_EQ(wake(g_wo_second, 1), 1);
+    EXPECT_TRUE(spin_wait_ge(g_rq_woken, 2));
+}
+
+TEST(futex, wake_op_on_one_word_wakes_both_limits_from_its_queue) {
+    g_wo_first = 0;
+    ASSERT_TRUE(park_on_both_words(3, 0));
+
+    EXPECT_EQ(wake_op(g_wo_first, g_wo_first, 1, 1, encode_update(UPDATE_ADD, 1, COMPARE_EQUAL, 0)), 2);
+    EXPECT_EQ(g_wo_first, 1u);
+    ASSERT_TRUE(spin_wait_ge(g_rq_woken, 2));
+    brief_delay();
+    EXPECT_EQ(g_rq_woken.load_acquire(), 2u);
+
+    EXPECT_EQ(wake(g_wo_first, 3), 1);
+    EXPECT_TRUE(spin_wait_ge(g_rq_woken, 3));
+}
+
+TEST(futex, wake_op_compares_the_old_value_as_signed) {
+    const comparison_case cases[] = {
+        { 4,          COMPARE_EQUAL,         4,                  true },
+        { 4,          COMPARE_EQUAL,         5,                  false },
+        { 4,          COMPARE_NOT_EQUAL,     5,                  true },
+        { 0xFFFFFFFF, COMPARE_LESS,          0,                  true },
+        { 0xFFFFFFFF, COMPARE_GREATER,       0,                  false },
+        { 0,          COMPARE_GREATER,       ARGUMENT_MINUS_ONE, true },
+        { 4,          COMPARE_LESS_EQUAL,    4,                  true },
+        { 3,          COMPARE_GREATER_EQUAL, 4,                  false },
+    };
+
+    for (const comparison_case& c : cases) {
+        g_wo_second = c.old_value;
+        ASSERT_TRUE(park_on_both_words(0, 1));
+
+        uint32_t update = encode_update(UPDATE_ADD, 0, c.comparison, c.comparand);
+        EXPECT_EQ(wake_op(g_wo_first, g_wo_second, 0, 1, update), c.holds ? 1 : 0);
+        if (!c.holds) {
+            EXPECT_EQ(wake(g_wo_second, 1), 1);
+        }
+
+        EXPECT_TRUE(spin_wait_ge(g_rq_woken, 1));
+    }
+}
+
+TEST(futex, wake_op_applies_each_update_to_the_second_word) {
+    const update_case cases[] = {
+        { 3,          encode_update(UPDATE_SET, 7, COMPARE_EQUAL, 0),                              7 },
+        { 0xFFFFFFFF, encode_update(UPDATE_SET, ARGUMENT_MOST_NEGATIVE, COMPARE_EQUAL, 0),         0xFFFFF800 },
+        { 10,         encode_update(UPDATE_ADD, 5, COMPARE_EQUAL, 0),                              15 },
+        { 10,         encode_update(UPDATE_ADD, ARGUMENT_MINUS_ONE, COMPARE_EQUAL, 0),             9 },
+        { 0x00F,      encode_update(UPDATE_OR, 0x0F0, COMPARE_EQUAL, 0),                           0x0FF },
+        { 0xFFF,      encode_update(UPDATE_AND_NOT, 0x00F, COMPARE_EQUAL, 0),                      0xFF0 },
+        { 0x0F0,      encode_update(UPDATE_XOR, 0x0FF, COMPARE_EQUAL, 0),                          0x00F },
+        { 0,          encode_update(UPDATE_OR | UPDATE_OPERAND_IS_SHIFT, 31, COMPARE_EQUAL, 0),    0x80000000 },
+    };
+
+    for (const update_case& c : cases) {
+        g_wo_second = c.initial;
+        EXPECT_EQ(sys_wake_op(g_wo_first, g_wo_second, 1, 1, c.update), 0);
+        EXPECT_EQ(g_wo_second, c.updated);
+    }
+}
+
+TEST(futex, wake_op_refuses_malformed_updates_and_counts) {
+    const uint32_t malformed[] = {
+        encode_update(UPDATE_UNKNOWN, 0, COMPARE_EQUAL, 0),
+        encode_update(UPDATE_SET, 0, COMPARE_UNKNOWN, 0),
+        encode_update(UPDATE_SET | UPDATE_OPERAND_IS_SHIFT, SHIFT_PAST_WORD, COMPARE_EQUAL, 0),
+        encode_update(UPDATE_SET | UPDATE_OPERAND_IS_SHIFT, ARGUMENT_MINUS_ONE, COMPARE_EQUAL, 0),
+    };
+
+    g_wo_second = 3;
+
+    for (uint32_t update : malformed) {
+        EXPECT_EQ(sys_wake_op(g_wo_first, g_wo_second, 1, 1, update), syscall::EINVAL);
+    }
+
+    uint32_t valid = encode_update(UPDATE_SET, 9, COMPARE_EQUAL, 0);
+    EXPECT_EQ(sys_wake_op(g_wo_first, g_wo_second, -1, 1, valid), syscall::EINVAL);
+    EXPECT_EQ(sys_wake_op(g_wo_first, g_wo_second, 1, -1, valid), syscall::EINVAL);
+    EXPECT_EQ(g_wo_second, 3u);
+}
+
+TEST(futex, wake_op_rejects_misaligned_words) {
+    uint32_t pair[2] = {};
+    uintptr_t misaligned = reinterpret_cast<uintptr_t>(pair) + 1;
+    uint32_t update = encode_update(UPDATE_SET, 1, COMPARE_EQUAL, 0);
+
+    int32_t first_rc = 0;
+    int32_t second_rc = 0;
+    RUN_ELEVATED({
+        first_rc = sync::futex_wake_op(misaligned, word_addr(pair[1]), 1, 1, update);
+        second_rc = sync::futex_wake_op(word_addr(pair[0]), misaligned, 1, 1, update);
+    });
+    EXPECT_EQ(first_rc, syscall::EINVAL);
+    EXPECT_EQ(second_rc, syscall::EINVAL);
+    EXPECT_EQ(pair[1], 0u);
+}
+
+// Reads a user word through its frame, zero when no page backs it
+static uint32_t user_word(mm::mm_context* ctx, uintptr_t addr) {
+    pmm::phys_addr_t phys = paging::get_physical(addr, ctx->pt_root);
+    return phys ? *static_cast<uint32_t*>(paging::phys_to_virt(phys)) : 0;
+}
+
+TEST(futex, wake_op_faults_a_lazy_second_word_in_and_refuses_a_read_only_one) {
+    test_helpers::user_page page;
+    ASSERT_TRUE(page.ready());
+
+    uintptr_t lazy = 0;
+    uintptr_t read_only = 0;
+    uint32_t anonymous = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS;
+    ASSERT_EQ(mm::mm_context_map_anonymous(page.ctx, 0, pmm::PAGE_SIZE, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+                                           anonymous | mm::MM_MAP_LAZY, &lazy), mm::MM_CTX_OK);
+    ASSERT_EQ(mm::mm_context_map_anonymous(page.ctx, 0, pmm::PAGE_SIZE, mm::MM_PROT_READ, anonymous, &read_only),
+              mm::MM_CTX_OK);
+
+    uint32_t update = encode_update(UPDATE_SET, 5, COMPARE_EQUAL, 0);
+    int32_t lazy_rc = 0;
+    int32_t read_only_rc = 0;
+    {
+        test_helpers::user_space_scope scope(page.ctx);
+        RUN_ELEVATED({
+            lazy_rc = sync::futex_wake_op(page.addr, lazy, 1, 1, update);
+            read_only_rc = sync::futex_wake_op(page.addr, read_only, 1, 1, update);
+        });
+    }
+
+    EXPECT_EQ(lazy_rc, 0);
+    EXPECT_EQ(read_only_rc, syscall::EFAULT);
+    EXPECT_EQ(user_word(page.ctx, lazy), 5u);
+    EXPECT_EQ(user_word(page.ctx, read_only), 0u);
 }

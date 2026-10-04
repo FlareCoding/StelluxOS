@@ -15,6 +15,7 @@ constexpr uint64_t FUTEX_OP_WAIT        = 0;
 constexpr uint64_t FUTEX_OP_WAKE        = 1;
 constexpr uint64_t FUTEX_OP_REQUEUE     = 3;
 constexpr uint64_t FUTEX_OP_CMP_REQUEUE = 4;
+constexpr uint64_t FUTEX_OP_WAKE_OP     = 5;
 constexpr uint64_t FUTEX_OP_WAIT_BITSET = 9;
 constexpr uint64_t FUTEX_OP_WAKE_BITSET = 10;
 constexpr uint64_t FUTEX_CLOCK_REALTIME = 256;
@@ -131,6 +132,18 @@ DEFINE_SYSCALL6(futex, u_uaddr, u_op, u_val, u_timeout, u_uaddr2, u_val3) {
         const uint32_t* compare = cmd == FUTEX_OP_CMP_REQUEUE ? &expected : nullptr;
         return sync::futex_requeue(uaddr, static_cast<uintptr_t>(u_uaddr2), static_cast<uint32_t>(nr_wake),
                                    static_cast<uint32_t>(nr_requeue), compare);
+    }
+
+    case FUTEX_OP_WAKE_OP: {
+        // The ABI carries the second wake limit in the timeout argument
+        int32_t nr_wake = static_cast<int32_t>(u_val);
+        int32_t nr_wake2 = static_cast<int32_t>(u_timeout);
+        if (nr_wake < 0 || nr_wake2 < 0) {
+            return syscall::EINVAL;
+        }
+
+        return sync::futex_wake_op(uaddr, static_cast<uintptr_t>(u_uaddr2), static_cast<uint32_t>(nr_wake),
+                                   static_cast<uint32_t>(nr_wake2), static_cast<uint32_t>(u_val3));
     }
 
     default:
