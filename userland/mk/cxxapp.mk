@@ -37,9 +37,9 @@ TARGET      := $(BIN_DIR)/$(APP_NAME)
 ifdef APP_QT
 include $(USERLAND_ROOT)/mk/qt.mk
 APP_CXXFLAGS := $(QT_CPPFLAGS)
-APP_LDLIBS   := -Wl,--whole-archive -lstlxqpa -Wl,--no-whole-archive -lstlxwin $(QT_LDLIBS)
+APP_LDLIBS   := -Wl,--whole-archive -lstlxqpa -Wl,--no-whole-archive -lstlxwin -lstlxconf $(QT_LDLIBS)
 OBJECTS      += $(QT_MOC_OBJECTS)
-LIB_ARCHIVES += $(SYSROOT)/lib/libstlxqpa.a $(SYSROOT)/lib/libstlxwin.a
+LIB_ARCHIVES += $(SYSROOT)/lib/libstlxqpa.a $(SYSROOT)/lib/libstlxwin.a $(SYSROOT)/lib/libstlxconf.a
 endif
 
 all: $(TARGET)

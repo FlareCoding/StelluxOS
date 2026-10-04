@@ -2,6 +2,7 @@
 #include "backing_store.h"
 #include "clipboard.h"
 #include "font_database.h"
+#include "services.h"
 #include "theme.h"
 #include "window.h"
 
@@ -200,6 +201,14 @@ QPlatformClipboard* QStelluxIntegration::clipboard() const {
     }
 
     return m_clipboard.get();
+}
+
+QPlatformServices* QStelluxIntegration::services() const {
+    if (!m_services) {
+        m_services = std::make_unique<QStelluxServices>();
+    }
+
+    return m_services.get();
 }
 
 QStringList QStelluxIntegration::themeNames() const {

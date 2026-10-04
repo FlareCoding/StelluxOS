@@ -60,4 +60,4 @@ set(QT_HOST_PATH "${STELLUX_USERLAND}/toolchain/qt-host" CACHE PATH "Host Qt for
 # libstlxqpa is linked whole so its plugins register, as userland/mk/cxxapp.mk links it
 set(STELLUX_QT_PLATFORM_LIBRARIES
     -Wl,--whole-archive ${STELLUX_SYSROOT}/lib/libstlxqpa.a -Wl,--no-whole-archive
-    ${STELLUX_SYSROOT}/lib/libstlxwin.a ${STELLUX_SYSROOT}/lib/libstlx.a)
+    ${STELLUX_SYSROOT}/lib/libstlxwin.a ${STELLUX_SYSROOT}/lib/libstlxconf.a ${STELLUX_SYSROOT}/lib/libstlx.a)
