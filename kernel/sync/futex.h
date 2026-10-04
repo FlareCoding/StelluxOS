@@ -82,6 +82,16 @@ __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr);
 __PRIVILEGED_CODE int32_t futex_requeue(uintptr_t uaddr, uintptr_t uaddr2, uint32_t nr_wake,
                                         uint32_t nr_requeue, const uint32_t* expected);
 
+/**
+ * Applies `update` to *uaddr2, then wakes up to nr_wake threads waiting on uaddr, plus up to nr_wake2
+ * waiting on uaddr2 if the old *uaddr2 passes the comparison `update` carries. From its high bits,
+ * `update` packs a 4-bit operation and comparison, then a signed 12-bit operand and comparand.
+ * Returns the number woken, -EINVAL, or -EFAULT when *uaddr2 cannot be written.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t futex_wake_op(uintptr_t uaddr, uintptr_t uaddr2, uint32_t nr_wake,
+                                        uint32_t nr_wake2, uint32_t update);
+
 } // namespace sync
 
 #endif // STELLUX_SYNC_FUTEX_H
