@@ -31,12 +31,28 @@ constexpr uint8_t EC_WATCHPOINT_LOWER   = 0x34;
 constexpr uint8_t EC_WATCHPOINT_SAME    = 0x35;
 constexpr uint8_t EC_BRK_A64            = 0x3C;
 
+// Fault status code of instruction and data aborts, ESR.ISS[5:0]. For
+// translation and permission faults the low two bits hold the table level.
+constexpr uint64_t ESR_FSC_MASK    = 0x3F;
+constexpr uint64_t FSC_LEVEL_MASK  = 0x03;
+constexpr uint64_t FSC_TRANSLATION = 0x04;
+constexpr uint64_t FSC_PERMISSION  = 0x0C;
+constexpr uint64_t FSC_ALIGNMENT   = 0x21;
+
 // SPSR masks
 constexpr uint64_t SPSR_MODE_MASK = 0x1F;
 constexpr uint64_t SPSR_EL0T      = 0x00;  // EL0 using SP_EL0
 constexpr uint64_t SPSR_EL1T      = 0x04;  // EL1 using SP_EL0
 constexpr uint64_t SPSR_EL1H      = 0x05;  // EL1 using SP_EL1
 constexpr uint64_t SPSR_IRQ_MASK  = 1ull << 7;  // PSTATE.I, IRQs masked
+
+constexpr bool is_translation_fault(uint64_t esr) {
+    return (esr & ESR_FSC_MASK & ~FSC_LEVEL_MASK) == FSC_TRANSLATION;
+}
+
+constexpr bool is_permission_fault(uint64_t esr) {
+    return (esr & ESR_FSC_MASK & ~FSC_LEVEL_MASK) == FSC_PERMISSION;
+}
 
 } // namespace aarch64
 

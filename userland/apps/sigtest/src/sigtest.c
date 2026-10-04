@@ -14,6 +14,9 @@
 #define VICTIM_WAIT_SECONDS 1
 #define VICTIM_SETTLE_US    (200 * 1000)
 
+/* A word here spans a 16-byte boundary, which faults even where misaligned exclusives do not */
+#define MISALIGNED_WORD_OFFSET 14
+
 static int passed = 0;
 static int failed = 0;
 
@@ -155,6 +158,16 @@ static int trap_victim_child(void) {
     __asm__ volatile("brk #0");
 #endif
     return 1; /* only reached if the trap never fired */
+}
+
+/* Child mode: a misaligned exclusive load must die by default SIGBUS */
+static int align_victim_child(void) {
+#if defined(__aarch64__)
+    static uint64_t words[4] __attribute__((aligned(16)));
+    uint32_t value;
+    __asm__ volatile("ldxr %w0, [%1]" : "=r"(value) : "r"((char*)words + MISALIGNED_WORD_OFFSET) : "memory");
+#endif
+    return 1; /* only reached if the load never faulted */
 }
 
 static volatile sig_atomic_t eintr_handler_ran = 0;
@@ -554,6 +567,26 @@ static void test_trap_default_kills(void) {
           STLX_WIFSIGNALED(status) && STLX_WTERMSIG(status) == SIGTRAP);
 }
 
+/* A misaligned exclusive load must kill the child with SIGBUS, not fault forever */
+static void test_alignment_fault_kills(void) {
+#if defined(__aarch64__)
+    static const char* args[] = { "--align-victim", NULL };
+    int h = proc_create("/bin/sigtest", args);
+    if (h < 0) {
+        printf("  SKIP: self exec unavailable\n");
+        return;
+    }
+
+    proc_start(h);
+    int status = 0;
+    proc_wait(h, &status);
+    check("default SIGBUS kills a misaligned exclusive load",
+          STLX_WIFSIGNALED(status) && STLX_WTERMSIG(status) == SIGBUS);
+#else
+    printf("  SKIP: misaligned accesses do not fault on this architecture\n");
+#endif
+}
+
 int main(int argc, char** argv) {
     if (argc >= 2 && strcmp(argv[1], "--pipe-victim") == 0) {
         return pipe_victim_child();
@@ -565,6 +598,10 @@ int main(int argc, char** argv) {
 
     if (argc >= 2 && strcmp(argv[1], "--wait-mask-victim") == 0) {
         return wait_mask_victim_child();
+    }
+
+    if (argc >= 2 && strcmp(argv[1], "--align-victim") == 0) {
+        return align_victim_child();
     }
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -582,6 +619,7 @@ int main(int argc, char** argv) {
     test_async_compute_delivery();
     test_sigpipe_dispositions();
     test_trap_default_kills();
+    test_alignment_fault_kills();
 
     printf("sigtest: %d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

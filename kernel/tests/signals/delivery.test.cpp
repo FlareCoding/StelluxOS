@@ -368,4 +368,18 @@ TEST(signal_delivery, aarch64_user_exceptions_raise_their_signals) {
 TEST(signal_delivery, aarch64_unrecognized_user_exception_raises_sigill) {
     EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_WFX)), signals::SIGILL);
 }
+
+TEST(signal_delivery, aarch64_alignment_faults_raise_sigbus) {
+    uint64_t data_abort = esr_for_class(aarch64::EC_DATA_ABORT_LOWER);
+    EXPECT_EQ(aarch64::signal_for_user_exception(data_abort | aarch64::FSC_ALIGNMENT), signals::SIGBUS);
+    EXPECT_EQ(aarch64::signal_for_user_exception(data_abort | aarch64::FSC_TRANSLATION), signals::SIGSEGV);
+    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_SP_ALIGN)), signals::SIGBUS);
+}
+
+TEST(signal_delivery, aarch64_only_translation_faults_are_demand_paged) {
+    uint64_t data_abort = esr_for_class(aarch64::EC_DATA_ABORT_LOWER);
+    EXPECT_TRUE(aarch64::is_translation_fault(data_abort | aarch64::FSC_TRANSLATION | aarch64::FSC_LEVEL_MASK));
+    EXPECT_FALSE(aarch64::is_translation_fault(data_abort | aarch64::FSC_PERMISSION | aarch64::FSC_LEVEL_MASK));
+    EXPECT_FALSE(aarch64::is_translation_fault(data_abort | aarch64::FSC_ALIGNMENT));
+}
 #endif
