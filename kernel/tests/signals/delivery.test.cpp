@@ -450,7 +450,7 @@ TEST(signal_delivery, aarch64_frame_round_trip_preserves_state) {
     bool ok = false;
     RUN_ELEVATED({
         fpu::init_state(&out_fp);
-        aarch64::pack_sigframe(frame, &tf, 0x2222, signals::SIGINT, 0xABCD, &fp);
+        aarch64::pack_sigframe(frame, &tf, 0x2222, signals::SIGINT, 0xABCD, &fp, nullptr);
         ok = aarch64::unpack_sigframe(frame, &out, &out_fp, &mask);
     });
 
@@ -491,7 +491,7 @@ TEST(signal_delivery, aarch64_rejects_corrupt_fpsimd_record) {
     bool ok = true;
     RUN_ELEVATED({
         fpu::init_state(&out_fp);
-        aarch64::pack_sigframe(frame, &tf, 0, signals::SIGINT, 0, &fp);
+        aarch64::pack_sigframe(frame, &tf, 0, signals::SIGINT, 0, &fp, nullptr);
         frame->uc.uc_mcontext.__reserved[0] ^= 0xFF; // corrupt the FPSIMD magic
         ok = aarch64::unpack_sigframe(frame, &out, &out_fp, &mask);
     });
@@ -506,24 +506,104 @@ static uint64_t esr_for_class(uint8_t ec) {
     return static_cast<uint64_t>(ec) << aarch64::ESR_EC_SHIFT;
 }
 
+static constexpr uint64_t USER_PC = 0x401000;
+static constexpr uint64_t USER_SP = 0x7fff0000;
+static constexpr uint64_t FAULT_ADDR = 0x7000;
+
+static signals::fault_signal fault_for(uint64_t esr, int32_t pf_result) {
+    aarch64::trap_frame tf{};
+    tf.esr = esr;
+    tf.elr = USER_PC;
+    tf.sp = USER_SP;
+    tf.far = FAULT_ADDR;
+    return aarch64::fault_signal_for_exception(&tf, pf_result);
+}
+
 TEST(signal_delivery, aarch64_user_exceptions_raise_their_signals) {
-    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_UNKNOWN)), signals::SIGILL);
-    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_MSR_MRS)), signals::SIGILL);
-    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_DATA_ABORT_LOWER)), signals::SIGSEGV);
-    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_PC_ALIGN)), signals::SIGBUS);
-    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_FP_A64)), signals::SIGFPE);
-    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_BRK_A64)), signals::SIGTRAP);
+    uint64_t data_abort = esr_for_class(aarch64::EC_DATA_ABORT_LOWER);
+    EXPECT_TRUE(fault_is(fault_for(esr_for_class(aarch64::EC_UNKNOWN), mm::MM_CTX_OK),
+                         signals::SIGILL, signals::ILL_ILLOPC, USER_PC));
+    EXPECT_TRUE(fault_is(fault_for(esr_for_class(aarch64::EC_MSR_MRS), mm::MM_CTX_OK),
+                         signals::SIGILL, signals::ILL_ILLOPC, USER_PC));
+    EXPECT_TRUE(fault_is(fault_for(data_abort | aarch64::FSC_TRANSLATION, mm::MM_CTX_ERR_NOT_MAPPED),
+                         signals::SIGSEGV, signals::SEGV_MAPERR, FAULT_ADDR));
+    EXPECT_TRUE(fault_is(fault_for(data_abort | aarch64::FSC_PERMISSION, mm::MM_CTX_OK),
+                         signals::SIGSEGV, signals::SEGV_ACCERR, FAULT_ADDR));
+    EXPECT_TRUE(fault_is(fault_for(esr_for_class(aarch64::EC_PC_ALIGN), mm::MM_CTX_OK),
+                         signals::SIGBUS, signals::BUS_ADRALN, FAULT_ADDR));
+    EXPECT_TRUE(fault_is(fault_for(esr_for_class(aarch64::EC_BRK_A64), mm::MM_CTX_OK),
+                         signals::SIGTRAP, signals::TRAP_BRKPT, USER_PC));
 }
 
 TEST(signal_delivery, aarch64_unrecognized_user_exception_raises_sigill) {
-    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_WFX)), signals::SIGILL);
+    EXPECT_TRUE(fault_is(fault_for(esr_for_class(aarch64::EC_WFX), mm::MM_CTX_OK),
+                         signals::SIGILL, signals::ILL_ILLOPC, USER_PC));
 }
 
 TEST(signal_delivery, aarch64_alignment_faults_raise_sigbus) {
     uint64_t data_abort = esr_for_class(aarch64::EC_DATA_ABORT_LOWER);
-    EXPECT_EQ(aarch64::signal_for_user_exception(data_abort | aarch64::FSC_ALIGNMENT), signals::SIGBUS);
-    EXPECT_EQ(aarch64::signal_for_user_exception(data_abort | aarch64::FSC_TRANSLATION), signals::SIGSEGV);
-    EXPECT_EQ(aarch64::signal_for_user_exception(esr_for_class(aarch64::EC_SP_ALIGN)), signals::SIGBUS);
+    EXPECT_TRUE(fault_is(fault_for(data_abort | aarch64::FSC_ALIGNMENT, mm::MM_CTX_OK),
+                         signals::SIGBUS, signals::BUS_ADRALN, FAULT_ADDR));
+    EXPECT_TRUE(fault_is(fault_for(esr_for_class(aarch64::EC_SP_ALIGN), mm::MM_CTX_OK),
+                         signals::SIGBUS, signals::BUS_ADRALN, USER_SP));
+}
+
+TEST(signal_delivery, aarch64_fp_faults_report_the_raised_exception) {
+    uint64_t fp_fault = esr_for_class(aarch64::EC_FP_A64);
+    uint64_t reported = fp_fault | aarch64::ESR_FP_FLAGS_VALID;
+
+    EXPECT_EQ(fault_for(reported | aarch64::ESR_FP_DIVIDE_BY_ZERO, mm::MM_CTX_OK).code,
+              signals::FPE_FLTDIV);
+    EXPECT_EQ(fault_for(reported | aarch64::ESR_FP_INVALID | aarch64::ESR_FP_INEXACT, mm::MM_CTX_OK).code,
+              signals::FPE_FLTINV);
+
+    // Flags the CPU did not mark valid say nothing about the cause
+    EXPECT_EQ(fault_for(fp_fault | aarch64::ESR_FP_OVERFLOW, mm::MM_CTX_OK).code, signals::SI_KERNEL);
+}
+
+TEST(signal_delivery, aarch64_fault_frame_reports_cause_address_and_syndrome) {
+    aarch64::trap_frame tf{};
+    tf.sp = USER_SP; tf.elr = USER_PC; tf.far = FAULT_ADDR;
+    tf.esr = esr_for_class(aarch64::EC_DATA_ABORT_LOWER) | aarch64::FSC_TRANSLATION;
+    signals::fault_signal fault = { signals::SIGSEGV, signals::SEGV_MAPERR, FAULT_ADDR };
+
+    sched::fpu_state fp;
+    RUN_ELEVATED({ fpu::init_state(&fp); });
+
+    aarch64::rt_sigframe* fault_frame = nullptr;
+    aarch64::rt_sigframe* plain_frame = nullptr;
+    RUN_ELEVATED({
+        fault_frame = heap::kalloc_new<aarch64::rt_sigframe>();
+        plain_frame = heap::kalloc_new<aarch64::rt_sigframe>();
+    });
+    ASSERT_TRUE(fault_frame != nullptr);
+    ASSERT_TRUE(plain_frame != nullptr);
+
+    RUN_ELEVATED({
+        aarch64::pack_sigframe(fault_frame, &tf, 0, fault.sig, 0, &fp, &fault);
+        aarch64::pack_sigframe(plain_frame, &tf, 0, signals::SIGUSR1, 0, &fp, nullptr);
+    });
+
+    const aarch64::esr_context* fault_record = reinterpret_cast<const aarch64::esr_context*>(
+        fault_frame->uc.uc_mcontext.__reserved + sizeof(aarch64::fpsimd_context));
+    EXPECT_EQ(fault_frame->info.si_code, signals::SEGV_MAPERR);
+    EXPECT_EQ(fault_frame->info.si_addr, FAULT_ADDR);
+    EXPECT_EQ(fault_frame->uc.uc_mcontext.fault_address, FAULT_ADDR);
+    EXPECT_EQ(fault_record->magic, aarch64::ESR_MAGIC);
+    EXPECT_EQ(fault_record->size, static_cast<uint32_t>(sizeof(aarch64::esr_context)));
+    EXPECT_EQ(fault_record->esr, tf.esr);
+
+    // Any other signal reports neither an address nor a syndrome
+    const aarch64::esr_context* plain_record = reinterpret_cast<const aarch64::esr_context*>(
+        plain_frame->uc.uc_mcontext.__reserved + sizeof(aarch64::fpsimd_context));
+    EXPECT_EQ(plain_frame->info.si_code, signals::SI_USER);
+    EXPECT_EQ(plain_frame->uc.uc_mcontext.fault_address, 0ULL);
+    EXPECT_EQ(plain_record->magic, 0U);
+
+    RUN_ELEVATED({
+        heap::kfree_delete(fault_frame);
+        heap::kfree_delete(plain_frame);
+    });
 }
 
 TEST(signal_delivery, aarch64_only_translation_faults_are_demand_paged) {

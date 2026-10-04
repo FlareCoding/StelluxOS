@@ -32,7 +32,8 @@ static inline void copy_vregs(uint8_t dst[32][16], const uint8_t src[32][16]) {
 __PRIVILEGED_CODE void pack_sigframe(rt_sigframe* frame, const trap_frame* tf,
                                      int64_t saved_result, uint32_t sig,
                                      signals::sig_set_t old_blocked,
-                                     const sched::fpu_state* fp) {
+                                     const sched::fpu_state* fp,
+                                     const signals::fault_signal* fault) {
     sigcontext& sc = frame->uc.uc_mcontext;
     for (uint32_t i = 0; i < 31; i++) {
         sc.regs[i] = tf->x[i];
@@ -42,7 +43,6 @@ __PRIVILEGED_CODE void pack_sigframe(rt_sigframe* frame, const trap_frame* tf,
     sc.sp = tf->sp;
     sc.pc = tf->elr;
     sc.pstate = tf->spsr;
-    sc.fault_address = tf->far;
 
     fpsimd_context* fc = reinterpret_cast<fpsimd_context*>(sc.__reserved);
     fc->magic = FPSIMD_MAGIC;
@@ -54,6 +54,17 @@ __PRIVILEGED_CODE void pack_sigframe(rt_sigframe* frame, const trap_frame* tf,
     frame->uc.uc_sigmask = old_blocked;
     frame->info.si_signo = static_cast<int32_t>(sig);
     frame->info.si_code = signals::SI_USER;
+
+    if (fault) {
+        frame->info.si_code = fault->code;
+        frame->info.si_addr = fault->addr;
+        sc.fault_address = fault->addr;
+
+        esr_context* esr_record = reinterpret_cast<esr_context*>(sc.__reserved + sizeof(fpsimd_context));
+        esr_record->magic = ESR_MAGIC;
+        esr_record->size = sizeof(esr_context);
+        esr_record->esr = tf->esr;
+    }
 }
 
 __PRIVILEGED_CODE bool unpack_sigframe(const rt_sigframe* frame, trap_frame* tf,
@@ -95,7 +106,7 @@ __PRIVILEGED_CODE int32_t build_signal_frame(trap_frame* tf, uint32_t sig,
 
     sched::fpu_state fp;
     fpu::save(&fp);
-    pack_sigframe(frame, tf, saved_result, sig, old_blocked, &fp);
+    pack_sigframe(frame, tf, saved_result, sig, old_blocked, &fp, nullptr);
 
     int32_t rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame));
@@ -116,14 +127,16 @@ __PRIVILEGED_CODE int32_t build_signal_frame(trap_frame* tf, uint32_t sig,
 }
 
 /**
- * Frame write for delivery outside a syscall. Never blocks, the caller
- * defers the signal when the address-space lock is contended. The ERET
- * exit already rebuilds every register, no special restore is needed.
+ * Frame write for delivery from a trap frame, outside a syscall. Unless the
+ * caller can sleep, a contended address-space lock reports ERR_RETRY so the
+ * signal can be deferred. The ERET exit already rebuilds every register, no
+ * special restore is needed.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static int32_t build_signal_frame_async(
+__PRIVILEGED_CODE static int32_t build_trap_signal_frame(
     trap_frame* tf, uint32_t sig, const signals::k_sigaction* act,
-    signals::sig_set_t old_blocked) {
+    signals::sig_set_t old_blocked, const signals::fault_signal* fault,
+    bool can_sleep) {
     uint64_t frame_addr = align_down(tf->sp - sizeof(rt_sigframe), 16);
 
     rt_sigframe* frame = heap::kalloc_new<rt_sigframe>();
@@ -136,10 +149,10 @@ __PRIVILEGED_CODE static int32_t build_signal_frame_async(
 
     // x0 still holds the interrupted value, there is no syscall result
     pack_sigframe(frame, tf, static_cast<int64_t>(tf->x[0]), sig,
-                  old_blocked, &fp);
+                  old_blocked, &fp, fault);
 
     int32_t rc = mm::uaccess::copy_to_user_irqs_masked(
-        reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame), false);
+        reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame), can_sleep);
     heap::kfree_delete(frame);
 
     if (rc != mm::uaccess::OK) {
@@ -217,7 +230,7 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
         signals::die_from_signal(signals::SIGSEGV);
     }
 
-    int32_t rc = build_signal_frame_async(tf, sig, &act, old_blocked);
+    int32_t rc = build_trap_signal_frame(tf, sig, &act, old_blocked, nullptr, false);
     if (rc == mm::uaccess::ERR_RETRY) {
         // Not deliverable right now, a later boundary picks it up
         signals::untake_deliverable(self, sig, &act, old_blocked);
@@ -229,21 +242,78 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
     }
 }
 
-uint32_t signal_for_user_exception(uint64_t esr) {
-    uint8_t ec = static_cast<uint8_t>((esr >> ESR_EC_SHIFT) & ESR_EC_MASK);
+static signals::fault_signal fault_signal_for_abort(uint64_t esr, uint64_t far, int32_t pf_result) {
+    if (is_translation_fault(esr)) {
+        return signals::map_page_fault_to_signal(far, pf_result);
+    }
+
+    if (is_permission_fault(esr)) {
+        return { signals::SIGSEGV, signals::SEGV_ACCERR, far };
+    }
+
+    if ((esr & ESR_FSC_MASK) == FSC_ALIGNMENT) {
+        return { signals::SIGBUS, signals::BUS_ADRALN, far };
+    }
+
+    return { signals::SIGBUS, signals::BUS_OBJERR, far };
+}
+
+static int32_t fp_exception_code(uint64_t esr) {
+    if (!(esr & ESR_FP_FLAGS_VALID)) {
+        return signals::SI_KERNEL;
+    }
+
+    if (esr & ESR_FP_INVALID) {
+        return signals::FPE_FLTINV;
+    }
+
+    if (esr & ESR_FP_DIVIDE_BY_ZERO) {
+        return signals::FPE_FLTDIV;
+    }
+
+    if (esr & ESR_FP_OVERFLOW) {
+        return signals::FPE_FLTOVF;
+    }
+
+    if (esr & (ESR_FP_UNDERFLOW | ESR_FP_DENORMAL)) {
+        return signals::FPE_FLTUND;
+    }
+
+    if (esr & ESR_FP_INEXACT) {
+        return signals::FPE_FLTRES;
+    }
+
+    return signals::SI_KERNEL;
+}
+
+signals::fault_signal fault_signal_for_exception(const trap_frame* tf, int32_t pf_result) {
+    uint8_t ec = static_cast<uint8_t>((tf->esr >> ESR_EC_SHIFT) & ESR_EC_MASK);
     switch (ec) {
         case EC_DATA_ABORT_LOWER:
         case EC_INST_ABORT_LOWER:
-            return (esr & ESR_FSC_MASK) == FSC_ALIGNMENT ? signals::SIGBUS : signals::SIGSEGV;
+            return fault_signal_for_abort(tf->esr, tf->far, pf_result);
         case EC_PC_ALIGN:
+            return { signals::SIGBUS, signals::BUS_ADRALN, tf->far };
         case EC_SP_ALIGN:
-            return signals::SIGBUS;
+            return { signals::SIGBUS, signals::BUS_ADRALN, tf->sp };
         case EC_FP_A64:
-            return signals::SIGFPE;
+            return { signals::SIGFPE, fp_exception_code(tf->esr), tf->elr };
         case EC_BRK_A64:
-            return signals::SIGTRAP;
+            return { signals::SIGTRAP, signals::TRAP_BRKPT, tf->elr };
         default:
-            return signals::SIGILL;
+            return { signals::SIGILL, signals::ILL_ILLOPC, tf->elr };
+    }
+}
+
+__PRIVILEGED_CODE void deliver_fault_signal(trap_frame* tf, int32_t pf_result) {
+    signals::fault_signal fault = fault_signal_for_exception(tf, pf_result);
+
+    signals::k_sigaction act{};
+    signals::sig_set_t old_blocked = 0;
+    signals::begin_fault_delivery(fault, tf->elr, &act, &old_blocked);
+
+    if (build_trap_signal_frame(tf, fault.sig, &act, old_blocked, &fault, true) != 0) {
+        signals::die_from_signal(signals::SIGSEGV);
     }
 }
 

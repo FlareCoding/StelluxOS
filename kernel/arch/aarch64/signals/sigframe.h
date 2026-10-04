@@ -6,25 +6,24 @@
 
 namespace aarch64 {
 
-// Delivered to SA_SIGINFO handlers. Only si_signo and si_code are filled,
-// sender identity stays zero because standard signals carry no queue.
+// Delivered to SA_SIGINFO handlers. si_addr overlays the sender identity,
+// which stays zero because standard signals carry no queue.
 struct siginfo {
     int32_t  si_signo;
     int32_t  si_errno;
     int32_t  si_code;
     int32_t  __pad0;
-    int32_t  si_pid;
-    uint32_t si_uid;
+    uint64_t si_addr;
     uint8_t  __pad[128 - 24];
 };
 
 static_assert(__builtin_offsetof(siginfo, si_signo) == 0x00);
 static_assert(__builtin_offsetof(siginfo, si_code) == 0x08);
-static_assert(__builtin_offsetof(siginfo, si_pid) == 0x10);
-static_assert(__builtin_offsetof(siginfo, si_uid) == 0x14);
+static_assert(__builtin_offsetof(siginfo, si_addr) == 0x10);
 static_assert(sizeof(siginfo) == 128);
 
 constexpr uint32_t FPSIMD_MAGIC = 0x46508001;
+constexpr uint32_t ESR_MAGIC    = 0x45535201;
 
 // FP/SIMD block for the mcontext reserved area. Field order is the kernel
 // ABI (fpsr/fpcr before vregs), unlike sched::fpu_state, so delivery converts.
@@ -42,8 +41,18 @@ static_assert(__builtin_offsetof(fpsimd_context, vregs) == 0x10);
 static_assert(sizeof(fpsimd_context) == 528);
 static_assert(alignof(fpsimd_context) == 16);
 
-// Interrupted registers, matching the kernel sigcontext / musl mcontext_t.
-// __reserved holds the fpsimd_context, 16-byte aligned per the ABI.
+// Exception syndrome of a fault, the record after fpsimd_context, so a
+// handler can tell a read from a write
+struct esr_context {
+    uint32_t magic;
+    uint32_t size;
+    uint64_t esr;
+};
+
+static_assert(sizeof(esr_context) == 16);
+
+// Interrupted registers, matching the kernel sigcontext / musl mcontext_t. __reserved holds
+// the fpsimd_context, then an esr_context for a fault, then a zero header ending the records.
 struct alignas(16) sigcontext {
     uint64_t fault_address;
     uint64_t regs[31]; // x0-x30

@@ -14,13 +14,16 @@ namespace aarch64 {
 /**
  * @brief Fill a zeroed kernel-local signal frame from interrupted state.
  * Pure marshaling with no user access, so it is unit-testable. The FP block
- * is written in the kernel ABI field order, converting from fpu_state.
+ * is written in the kernel ABI field order, converting from fpu_state. A
+ * fault also reports its cause, address and syndrome, fault is null for any
+ * other signal.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void pack_sigframe(rt_sigframe* frame, const trap_frame* tf,
                                      int64_t saved_result, uint32_t sig,
                                      signals::sig_set_t old_blocked,
-                                     const sched::fpu_state* fp);
+                                     const sched::fpu_state* fp,
+                                     const signals::fault_signal* fault);
 
 /**
  * @brief Apply a restored frame onto interrupted state (rt_sigreturn core).
@@ -61,11 +64,22 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
                                             trap_frame* tf);
 
 /**
- * @brief The signal a synchronous exception taken from user code raises,
- * by the exception class in esr. A class the kernel does not recognize
- * raises SIGILL, since the instruction cannot run in this environment.
+ * @brief The signal a synchronous exception taken from user code raises. A
+ * class the kernel does not recognize raises SIGILL, since the instruction
+ * cannot run in this environment.
+ * @param pf_result Why demand paging did not resolve a translation fault.
  */
-uint32_t signal_for_user_exception(uint64_t esr);
+signals::fault_signal fault_signal_for_exception(const trap_frame* tf, int32_t pf_result);
+
+/**
+ * @brief Deliver the synchronous fault user code raised at tf to its handler,
+ * redirecting the trap frame, or kill the process when no handler takes it.
+ * Runs in the exception itself, so the frame write may wait for the
+ * address-space lock.
+ * @param pf_result Why demand paging did not resolve a translation fault.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void deliver_fault_signal(trap_frame* tf, int32_t pf_result);
 
 } // namespace aarch64
 

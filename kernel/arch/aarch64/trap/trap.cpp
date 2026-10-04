@@ -14,7 +14,6 @@
 #include "timer/timer.h"
 #include "sched/sched.h"
 #include "sched/task.h"
-#include "signals/signal.h"
 #include "signals/delivery.h"
 #include "mm/mm.h"
 #include "mm/uaccess.h"
@@ -91,6 +90,7 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
 
     // Demand paging only resolves a missing translation, an alignment or
     // permission fault on a mapped page would otherwise retry forever
+    int32_t pf_result = mm::MM_CTX_OK;
     if (in_user_code && (
         ec == aarch64::EC_DATA_ABORT_LOWER ||
         ec == aarch64::EC_INST_ABORT_LOWER) &&
@@ -99,7 +99,8 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
         uintptr_t fault_addr = aarch64::get_far(tf);
         uint32_t pf_flags = abort_pf_flags(esr, ec);
 
-        if (mm::handle_user_pf(guard.task_core->mm_ctx, fault_addr, pf_flags) == mm::MM_CTX_OK) {
+        pf_result = mm::handle_user_pf(guard.task_core->mm_ctx, fault_addr, pf_flags);
+        if (pf_result == mm::MM_CTX_OK) {
             // Fault has been handled successfully, restart instruction
             restore_post_trap_elevation_state(tf);
             return;
@@ -107,7 +108,9 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
     }
 
     if (in_user_code) {
-        signals::die_from_signal(aarch64::signal_for_user_exception(esr));
+        aarch64::deliver_fault_signal(tf, pf_result);
+        restore_post_trap_elevation_state(tf);
+        return;
     }
 
     trap_fatal("el0 sync", tf);
