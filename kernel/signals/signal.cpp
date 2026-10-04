@@ -1,4 +1,5 @@
 #include "signals/signal.h"
+#include "mm/vma.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sched/task_registry.h"
@@ -429,6 +430,42 @@ __PRIVILEGED_CODE uint32_t next_deliverable(sched::task* t) {
     return result;
 }
 
+/**
+ * Snapshot sig's action for delivery. The caller holds the group's sig.lock.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void snapshot_action_locked(sched::thread_group* tg, uint32_t sig,
+                                                     k_sigaction* act) {
+    *act = tg->sig.actions[sig - 1];
+
+    // POSIX: SA_RESETHAND restores the default disposition on delivery
+    if (act->flags & SA_RESETHAND) {
+        tg->sig.actions[sig - 1].handler = SIG_DFL;
+    }
+}
+
+/**
+ * Block what sig's handler runs with and return the mask the frame must
+ * carry for rt_sigreturn to restore.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static sig_set_t block_for_handler(sched::task* t, uint32_t sig,
+                                                     const k_sigaction* act,
+                                                     sig_set_t blocked) {
+    // The handler runs with its sa_mask plus its own signal blocked
+    sig_set_t next = blocked | act->mask;
+    if (!(act->flags & SA_NODEFER)) {
+        next |= sig_bit(sig);
+    }
+
+    set_blocked(t, SIG_SETMASK, &next, nullptr);
+
+    // The handler of a signal that interrupted a temporary mask returns to the mask it replaced
+    sig_set_t old_blocked = t->sig.restore_mask ? t->sig.saved_mask : blocked;
+    t->sig.restore_mask = false;
+    return old_blocked;
+}
+
 __PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
                                         k_sigaction* act,
                                         sig_set_t* old_blocked) {
@@ -477,27 +514,11 @@ __PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
         t->group->sig.shared_pending.fetch_and_acq_rel(keep);
     }
 
-    *act = t->group->sig.actions[selected - 1];
-
-    // POSIX: SA_RESETHAND restores the default disposition on delivery
-    if (act->flags & SA_RESETHAND) {
-        t->group->sig.actions[selected - 1].handler = SIG_DFL;
-    }
-
+    snapshot_action_locked(t->group, selected, act);
     sync::spin_unlock_irqrestore(t->group->sig.lock, irq);
 
-    // The handler runs with its sa_mask plus its own signal blocked,
-    // the frame carries old_blocked for rt_sigreturn to restore
-    sig_set_t next = blocked | act->mask;
-    if (!(act->flags & SA_NODEFER)) {
-        next |= sig_bit(selected);
-    }
-    set_blocked(t, SIG_SETMASK, &next, nullptr);
-
-    // The handler of a signal that interrupted a temporary mask returns to the mask it replaced
     *sig = selected;
-    *old_blocked = t->sig.restore_mask ? t->sig.saved_mask : blocked;
-    t->sig.restore_mask = false;
+    *old_blocked = block_for_handler(t, selected, act, blocked);
     return true;
 }
 
@@ -517,6 +538,69 @@ __PRIVILEGED_CODE void untake_deliverable(sched::task* t, uint32_t sig,
     }
 
     t->sig.pending.fetch_or_acq_rel(sig_bit(sig));
+}
+
+fault_signal map_page_fault_to_signal(uintptr_t fault_addr, int32_t pf_result) {
+    switch (pf_result) {
+        case mm::MM_CTX_ERR_PROTECTION:
+            return { SIGSEGV, SEGV_ACCERR, fault_addr };
+        case mm::MM_CTX_ERR_NO_BACKING:
+        case mm::MM_CTX_ERR_NO_MEM:
+        case mm::MM_CTX_ERR_MAP_FAILED:
+            return { SIGBUS, BUS_ADRERR, fault_addr };
+        default:
+            return { SIGSEGV, SEGV_MAPERR, fault_addr };
+    }
+}
+
+__PRIVILEGED_CODE bool take_fault_handler(sched::task* t, uint32_t sig,
+                                          k_sigaction* act,
+                                          sig_set_t* old_blocked) {
+    // A blocked fault cannot stay pending, returning would raise it again
+    sig_set_t blocked = t->sig.blocked.load_acquire();
+    if (blocked & sig_bit(sig)) {
+        return false;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(t->group->sig.lock);
+
+    uintptr_t handler = t->group->sig.actions[sig - 1].handler;
+    bool handled = handler != SIG_DFL && handler != SIG_IGN;
+    if (handled) {
+        snapshot_action_locked(t->group, sig, act);
+    }
+
+    sync::spin_unlock_irqrestore(t->group->sig.lock, irq);
+
+    if (!handled) {
+        return false;
+    }
+
+    *old_blocked = block_for_handler(t, sig, act, blocked);
+    return true;
+}
+
+__PRIVILEGED_CODE void begin_fault_delivery(const fault_signal& fault, uintptr_t pc,
+                                            k_sigaction* act,
+                                            sig_set_t* old_blocked) {
+    sched::task* self = sched::current();
+
+    // A pending fatal signal wins, the same rule every delivery boundary applies
+    uint32_t fatal_sig = fatal_pending(self);
+    if (fatal_sig) {
+        die_from_signal(fatal_sig);
+    }
+
+    if (!take_fault_handler(self, fault.sig, act, old_blocked)) {
+        log::warn("signals: tid %u (%s) killed by signal %u, code %d, at pc 0x%lx, address 0x%lx",
+                  self->tid, self->name, fault.sig, fault.code, pc, fault.addr);
+        die_from_signal(fault.sig);
+    }
+
+    // The handler returns through the restorer's rt_sigreturn
+    if (!(act->flags & SA_RESTORER) || !act->restorer) {
+        die_from_signal(SIGSEGV);
+    }
 }
 
 __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {

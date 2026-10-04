@@ -11,7 +11,7 @@
 #include "smp/ipi.h"
 #include "sched/sched.h"
 #include "sched/task.h"
-#include "signals/signal.h"
+#include "signals/delivery.h"
 #include "mm/mm.h"
 #include "mm/uaccess.h"
 #include "hw/cpu.h"
@@ -24,24 +24,6 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf);
 __PRIVILEGED_CODE static inline void restore_post_trap_elevation_state(const x86::trap_frame* tf) {
     // Taken from the frame, since a task can resume inside kernel code that a fault entered
     this_cpu(percpu_is_elevated) = !x86::from_user(tf);
-}
-
-static inline int vector_to_signal(uint64_t vec) {
-    switch (vec) {
-        case x86::EXC_PAGE_FAULT:
-        case x86::EXC_GENERAL_PROTECTION:
-        case x86::EXC_STACK_FAULT:
-        case x86::EXC_BOUND_RANGE:        return 11;  // SIGSEGV
-        case x86::EXC_INVALID_OPCODE:     return 4;   // SIGILL
-        case x86::EXC_DIVIDE_ERROR:
-        case x86::EXC_OVERFLOW:
-        case x86::EXC_X87_FPU:
-        case x86::EXC_SIMD_FP:            return 8; // SIGFPE
-        case x86::EXC_DEBUG:
-        case x86::EXC_BREAKPOINT:         return 5;   // SIGTRAP
-        case x86::EXC_ALIGNMENT_CHECK:    return 7;   // SIGBUS
-        default:                          return 11;  // SIGSEGV fallback
-    }
 }
 
 /**
@@ -106,8 +88,10 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
 
     // If it's a user page fault, attempt to handle it for on-demand paging,
     // otherwise a kernel fault is only recoverable when raised by a user copy.
+    uintptr_t fault_addr = 0;
+    int32_t pf_result = mm::MM_CTX_OK;
     if (tf->vector == x86::EXC_PAGE_FAULT) {
-        uintptr_t fault_addr = x86::read_cr2();
+        fault_addr = x86::read_cr2();
         uint64_t ec = tf->error_code;
         uint32_t pf_flags = 0;
 
@@ -115,10 +99,14 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         if (ec & 0x2)  pf_flags |= mm::PF_FLAG_WRITE;
         if (ec & 0x10) pf_flags |= mm::PF_FLAG_INSTRUCTION;
 
-        bool handled = in_user_code
-            ? mm::handle_user_pf(irq_task_core->mm_ctx, fault_addr, pf_flags) == mm::MM_CTX_OK
-            : mm::uaccess::handle_kernel_fault(irq_task_core->mm_ctx, &tf->rip, fault_addr,
-                                               pf_flags, (tf->rflags & cpu::RFLAGS_IF) != 0);
+        bool handled = false;
+        if (in_user_code) {
+            pf_result = mm::handle_user_pf(irq_task_core->mm_ctx, fault_addr, pf_flags);
+            handled = pf_result == mm::MM_CTX_OK;
+        } else {
+            handled = mm::uaccess::handle_kernel_fault(irq_task_core->mm_ctx, &tf->rip, fault_addr,
+                                                       pf_flags, (tf->rflags & cpu::RFLAGS_IF) != 0);
+        }
 
         if (handled) {
             irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
@@ -141,7 +129,10 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         tf->vector == x86::EXC_X87_FPU ||
         tf->vector == x86::EXC_SIMD_FP)
     ) {
-        signals::die_from_signal(static_cast<uint32_t>(vector_to_signal(tf->vector)));
+        x86::deliver_fault_signal(tf, fault_addr, pf_result);
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state(tf);
+        return;
     }
 
     panic::on_trap(tf);

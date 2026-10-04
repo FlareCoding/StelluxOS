@@ -6,6 +6,7 @@
 #include "sched/fpu.h"
 #include "sched/task.h"
 #include "mm/heap.h"
+#include "mm/vma.h"
 #include "dynpriv/dynpriv.h"
 
 TEST_SUITE(signal_delivery);
@@ -83,6 +84,75 @@ TEST(signal_delivery, selects_lowest_handled_signal) {
     g_leader->sig.pending.fetch_or_relaxed(signals::sig_bit(signals::SIGTERM));
     RUN_ELEVATED({ sig = signals::next_deliverable(g_leader); });
     EXPECT_EQ(sig, signals::SIGUSR1);
+}
+
+TEST(signal_delivery, fault_handler_runs_with_its_mask) {
+    install_handler(signals::SIGSEGV);
+    g_tg->sig.actions[signals::SIGSEGV - 1].mask = signals::sig_bit(signals::SIGUSR1);
+
+    bool taken = false;
+    signals::k_sigaction act{};
+    signals::sig_set_t old_blocked = 0;
+    RUN_ELEVATED({
+        taken = signals::take_fault_handler(g_leader, signals::SIGSEGV, &act, &old_blocked);
+    });
+
+    EXPECT_TRUE(taken);
+    EXPECT_EQ(act.handler, static_cast<uintptr_t>(0x400000));
+    EXPECT_EQ(old_blocked, 0ULL);
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(),
+              signals::sig_bit(signals::SIGSEGV) | signals::sig_bit(signals::SIGUSR1));
+}
+
+TEST(signal_delivery, fault_without_a_runnable_handler_is_fatal) {
+    bool taken = true;
+    signals::k_sigaction act{};
+    signals::sig_set_t old_blocked = 0;
+
+    RUN_ELEVATED({ taken = signals::take_fault_handler(g_leader, signals::SIGILL, &act, &old_blocked); });
+    EXPECT_FALSE(taken);
+
+    g_tg->sig.actions[signals::SIGILL - 1].handler = signals::SIG_IGN;
+    RUN_ELEVATED({ taken = signals::take_fault_handler(g_leader, signals::SIGILL, &act, &old_blocked); });
+    EXPECT_FALSE(taken);
+
+    // A blocked fault cannot stay pending, so even a handled one is fatal
+    install_handler(signals::SIGILL);
+    g_leader->sig.blocked.fetch_or_relaxed(signals::sig_bit(signals::SIGILL));
+    RUN_ELEVATED({ taken = signals::take_fault_handler(g_leader, signals::SIGILL, &act, &old_blocked); });
+    EXPECT_FALSE(taken);
+}
+
+TEST(signal_delivery, fault_handler_honors_resethand_and_nodefer) {
+    install_handler(signals::SIGFPE);
+    g_tg->sig.actions[signals::SIGFPE - 1].flags = signals::SA_RESETHAND | signals::SA_NODEFER;
+
+    bool taken = false;
+    signals::k_sigaction act{};
+    signals::sig_set_t old_blocked = 0;
+    RUN_ELEVATED({
+        taken = signals::take_fault_handler(g_leader, signals::SIGFPE, &act, &old_blocked);
+    });
+
+    EXPECT_TRUE(taken);
+    EXPECT_EQ(g_tg->sig.actions[signals::SIGFPE - 1].handler, signals::SIG_DFL);
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), 0ULL);
+}
+
+static bool fault_is(const signals::fault_signal& fault, uint32_t sig, int32_t code, uintptr_t addr) {
+    return fault.sig == sig && fault.code == code && fault.addr == addr;
+}
+
+TEST(signal_delivery, unresolved_page_faults_map_to_signals) {
+    constexpr uintptr_t FAULT_ADDR = 0x7000;
+    EXPECT_TRUE(fault_is(signals::map_page_fault_to_signal(FAULT_ADDR, mm::MM_CTX_ERR_NOT_MAPPED),
+                         signals::SIGSEGV, signals::SEGV_MAPERR, FAULT_ADDR));
+    EXPECT_TRUE(fault_is(signals::map_page_fault_to_signal(FAULT_ADDR, mm::MM_CTX_ERR_PROTECTION),
+                         signals::SIGSEGV, signals::SEGV_ACCERR, FAULT_ADDR));
+    EXPECT_TRUE(fault_is(signals::map_page_fault_to_signal(FAULT_ADDR, mm::MM_CTX_ERR_NO_BACKING),
+                         signals::SIGBUS, signals::BUS_ADRERR, FAULT_ADDR));
+    EXPECT_TRUE(fault_is(signals::map_page_fault_to_signal(FAULT_ADDR, mm::MM_CTX_ERR_NO_MEM),
+                         signals::SIGBUS, signals::BUS_ADRERR, FAULT_ADDR));
 }
 
 #ifdef __x86_64__
@@ -189,7 +259,7 @@ TEST(signal_delivery, x86_full_frame_captures_scratch_registers) {
     ASSERT_TRUE(frame != nullptr);
 
     RUN_ELEVATED({
-        x86::pack_sigframe_full(frame, &tf, signals::SIGINT, 0xABCD, 0x7ffe0000);
+        x86::pack_sigframe_full(frame, &tf, signals::SIGINT, 0xABCD, 0x7ffe0000, nullptr);
     });
 
     // The scratch registers a syscall boundary never carries are captured
@@ -198,8 +268,88 @@ TEST(signal_delivery, x86_full_frame_captures_scratch_registers) {
     EXPECT_EQ(frame->uc.uc_mcontext.r11, 0x2003ULL);
     EXPECT_EQ(frame->uc.uc_flags & x86::UC_FULL_RESTORE, x86::UC_FULL_RESTORE);
     EXPECT_EQ(frame->uc.uc_sigmask, 0xABCDULL);
+    EXPECT_EQ(frame->info.si_code, signals::SI_USER);
+    EXPECT_EQ(frame->info.si_addr, 0ULL);
 
     RUN_ELEVATED({ heap::kfree_delete(frame); });
+}
+
+TEST(signal_delivery, x86_fault_frame_reports_cause_and_address) {
+    constexpr uint64_t PAGE_FAULT_WRITE_USER = 0x6;
+    x86::trap_frame tf{};
+    tf.vector = x86::EXC_PAGE_FAULT; tf.error_code = PAGE_FAULT_WRITE_USER;
+    tf.rsp = 0x7fff0000; tf.rip = 0x401000; tf.rflags = 0x246;
+    signals::fault_signal fault = { signals::SIGSEGV, signals::SEGV_MAPERR, 0x7000 };
+
+    x86::rt_sigframe* frame = nullptr;
+    RUN_ELEVATED({ frame = heap::kalloc_new<x86::rt_sigframe>(); });
+    ASSERT_TRUE(frame != nullptr);
+
+    RUN_ELEVATED({
+        x86::pack_sigframe_full(frame, &tf, fault.sig, 0, 0, &fault);
+    });
+
+    EXPECT_EQ(frame->info.si_signo, static_cast<int32_t>(signals::SIGSEGV));
+    EXPECT_EQ(frame->info.si_code, signals::SEGV_MAPERR);
+    EXPECT_EQ(frame->info.si_addr, 0x7000ULL);
+    EXPECT_EQ(frame->uc.uc_mcontext.trapno, static_cast<uint64_t>(x86::EXC_PAGE_FAULT));
+    EXPECT_EQ(frame->uc.uc_mcontext.err, PAGE_FAULT_WRITE_USER);
+    EXPECT_EQ(frame->uc.uc_mcontext.cr2, 0x7000ULL);
+
+    RUN_ELEVATED({ heap::kfree_delete(frame); });
+}
+
+TEST(signal_delivery, x86_user_exceptions_raise_their_signals) {
+    constexpr uint64_t PC = 0x401000;
+    constexpr uint64_t FAULT_ADDR = 0x7000;
+    x86::trap_frame tf{};
+    tf.rip = PC;
+
+    tf.vector = x86::EXC_INVALID_OPCODE;
+    EXPECT_TRUE(fault_is(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, 0),
+                         signals::SIGILL, signals::ILL_ILLOPC, PC));
+
+    tf.vector = x86::EXC_DIVIDE_ERROR;
+    EXPECT_TRUE(fault_is(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, 0),
+                         signals::SIGFPE, signals::FPE_INTDIV, PC));
+
+    tf.vector = x86::EXC_PAGE_FAULT;
+    EXPECT_TRUE(fault_is(x86::fault_signal_for_trap(&tf, FAULT_ADDR, mm::MM_CTX_ERR_PROTECTION, 0),
+                         signals::SIGSEGV, signals::SEGV_ACCERR, FAULT_ADDR));
+
+    tf.vector = x86::EXC_GENERAL_PROTECTION;
+    EXPECT_TRUE(fault_is(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, 0),
+                         signals::SIGSEGV, signals::SI_KERNEL, 0));
+
+    tf.vector = x86::EXC_ALIGNMENT_CHECK;
+    EXPECT_TRUE(fault_is(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, 0),
+                         signals::SIGBUS, signals::BUS_ADRALN, 0));
+
+    tf.vector = x86::EXC_BREAKPOINT;
+    EXPECT_TRUE(fault_is(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, 0),
+                         signals::SIGTRAP, signals::TRAP_BRKPT, PC));
+
+    tf.vector = x86::EXC_DEBUG;
+    EXPECT_TRUE(fault_is(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, 0),
+                         signals::SIGTRAP, signals::TRAP_TRACE, PC));
+}
+
+TEST(signal_delivery, x86_fp_faults_report_the_raised_exception) {
+    x86::trap_frame tf{};
+    tf.vector = x86::EXC_SIMD_FP;
+
+    EXPECT_EQ(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, fpu::FP_DIVIDE_BY_ZERO).code,
+              signals::FPE_FLTDIV);
+    EXPECT_EQ(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, fpu::FP_OVERFLOW).code,
+              signals::FPE_FLTOVF);
+    EXPECT_EQ(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, fpu::FP_DENORMAL).code,
+              signals::FPE_FLTUND);
+    EXPECT_EQ(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, fpu::FP_INEXACT).code,
+              signals::FPE_FLTRES);
+
+    // An invalid operation outranks the inexact result it also raised
+    EXPECT_EQ(x86::fault_signal_for_trap(&tf, 0, mm::MM_CTX_OK, fpu::FP_INVALID | fpu::FP_INEXACT).code,
+              signals::FPE_FLTINV);
 }
 
 TEST(signal_delivery, x86_full_frame_round_trip) {
@@ -216,7 +366,7 @@ TEST(signal_delivery, x86_full_frame_round_trip) {
     bool ok = false;
     sched::thread_cpu_context out{};
     RUN_ELEVATED({
-        x86::pack_sigframe_full(frame, &tf, signals::SIGUSR1, 0x77, 0);
+        x86::pack_sigframe_full(frame, &tf, signals::SIGUSR1, 0x77, 0, nullptr);
         ok = x86::unpack_sigframe_full(frame, &out, &mask);
     });
 
@@ -247,7 +397,7 @@ TEST(signal_delivery, x86_full_restore_sanitizes_forged_context) {
     uint16_t user_cs = 0;
     uint16_t user_ss = 0;
     RUN_ELEVATED({
-        x86::pack_sigframe_full(frame, &tf, signals::SIGUSR1, 0, 0);
+        x86::pack_sigframe_full(frame, &tf, signals::SIGUSR1, 0, 0, nullptr);
         user_cs = frame->uc.uc_mcontext.cs;
         user_ss = frame->uc.uc_mcontext.ss;
 

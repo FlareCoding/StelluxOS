@@ -6,29 +6,25 @@
 
 namespace x86 {
 
-constexpr int32_t SI_USER = 0;
-
 // uc_flags bit: the saved context carries live RCX/R11/RAX from an
 // interrupted instruction stream, so the return must rebuild every
 // register through an IRET exit (SYSRET consumes RCX and R11).
 constexpr uint64_t UC_FULL_RESTORE = 1;
 
-// Delivered to SA_SIGINFO handlers. Only si_signo and si_code are filled,
-// sender identity stays zero because standard signals carry no queue.
+// Delivered to SA_SIGINFO handlers. si_addr overlays the sender identity,
+// which stays zero because standard signals carry no queue.
 struct siginfo {
     int32_t  si_signo;
     int32_t  si_errno;
     int32_t  si_code;
     int32_t  __pad0;
-    int32_t  si_pid;
-    uint32_t si_uid;
+    uint64_t si_addr;
     uint8_t  __pad[128 - 24];
 };
 
 static_assert(__builtin_offsetof(siginfo, si_signo) == 0x00);
 static_assert(__builtin_offsetof(siginfo, si_code) == 0x08);
-static_assert(__builtin_offsetof(siginfo, si_pid) == 0x10);
-static_assert(__builtin_offsetof(siginfo, si_uid) == 0x14);
+static_assert(__builtin_offsetof(siginfo, si_addr) == 0x10);
 static_assert(sizeof(siginfo) == 128);
 
 // Saved registers. Field order overlays musl's mcontext_t gregs[] and the
