@@ -137,6 +137,18 @@ make image-x86_64
 make image-aarch64
 ```
 
+### Building CMake projects for Stellux
+
+`userland/cmake/toolchain-<arch>.cmake` targets Stellux from CMake, against
+the sysroot and the Qt kit an `ARCH` build of the tree leaves behind:
+
+```
+cmake -DCMAKE_TOOLCHAIN_FILE=userland/cmake/toolchain-aarch64.cmake ...
+```
+
+Qt programs also link `${STELLUX_QT_PLATFORM_LIBRARIES}`, which registers
+the stellux platform plugin.
+
 ### Running in QEMU
 
 ```
