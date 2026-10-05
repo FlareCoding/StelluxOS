@@ -52,8 +52,7 @@ __PRIVILEGED_CODE void write_lapic_register(uint32_t offset, uint32_t value);
 
 /**
  * @brief Get the mapped LAPIC virtual address.
- * Valid after irq::init(). Used by the timer
- * layer to access LAPIC timer registers.
+ * Valid after irq::init().
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uintptr_t get_lapic_va();
