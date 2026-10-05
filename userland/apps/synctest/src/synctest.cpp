@@ -134,23 +134,31 @@ static void test_thread_join() {
 
 // --- Test 5: Thread detach ---
 
-static void test_thread_detach() {
-    volatile int flag = 0;
+static constexpr long DETACH_POLL_INTERVAL_NS = 1000000;
+static constexpr int DETACH_MAX_POLLS = 1000;
 
+// File scope, since a detached thread can still be running after the test returns
+static int g_detached_thread_ran = 0;
+
+static void test_thread_detach() {
     {
-        stlxstd::thread t([&] {
-            __atomic_store_n(&flag, 1, __ATOMIC_RELEASE);
+        stlxstd::thread t([] {
+            __atomic_store_n(&g_detached_thread_ran, 1, __ATOMIC_RELEASE);
         });
         t.detach();
     }
 
-    // Brief busy-wait for the detached thread to run
-    for (int i = 0; i < 10000000; i++) {
-        if (__atomic_load_n(&flag, __ATOMIC_ACQUIRE)) break;
-        asm volatile("" ::: "memory");
+    // Sleeping between checks lets the thread run even when it shares this CPU
+    const timespec poll_interval = { 0, DETACH_POLL_INTERVAL_NS };
+    for (int poll = 0; poll < DETACH_MAX_POLLS; poll++) {
+        if (__atomic_load_n(&g_detached_thread_ran, __ATOMIC_ACQUIRE)) {
+            break;
+        }
+
+        nanosleep(&poll_interval, nullptr);
     }
 
-    check("thread detach", __atomic_load_n(&flag, __ATOMIC_ACQUIRE) == 1);
+    check("thread detach", __atomic_load_n(&g_detached_thread_ran, __ATOMIC_ACQUIRE) == 1);
 }
 
 // --- Test 6: Multiple independent mutexes ---
