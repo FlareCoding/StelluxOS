@@ -72,6 +72,16 @@ else
   $(error ACCEL must be tcg or hvf)
 endif
 
+# QEMU_X2APIC=1 makes the firmware start Stellux in x2APIC mode.
+# The extra CPU at APIC ID 256 forces this because only x2APIC mode can address it.
+ifeq ($(QEMU_X2APIC),1)
+  QEMU_X86_64_CPUS := -cpu qemu64,+fsgsbase,+rdrand,+x2apic \
+	-smp $(QEMU_CPU_CORES),maxcpus=512,sockets=2,cores=256,threads=1 \
+	-device qemu64-x86_64-cpu,socket-id=1,core-id=0,thread-id=0
+else
+  QEMU_X86_64_CPUS := -cpu qemu64,+fsgsbase,+rdrand -smp $(QEMU_CPU_CORES)
+endif
+
 # Verbosity (V=1 for verbose)
 ifeq ($(V),1)
   Q :=
@@ -169,7 +179,7 @@ test:
 	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
 	$(Q)$(MAKE) image ARCH=$(ARCH) STLX_UNIT_TESTS_ENABLED=1 PACKAGES="$(if $(PACKAGES),$(PACKAGES),none)"
 	@echo ""
-	$(Q)./scripts/run_tests.sh $(ARCH)
+	$(Q)QEMU_X2APIC=$(QEMU_X2APIC) ./scripts/run_tests.sh $(ARCH)
 
 # ============================================================================
 # Disk Image Creation
@@ -256,9 +266,8 @@ run-qemu-x86_64: check-image-x86_64 $(BUILD_DIR)/OVMF_VARS.fd
 	@echo ""
 	qemu-system-x86_64 \
 		-machine q35 \
-		-cpu qemu64,+fsgsbase,+rdrand \
+		$(QEMU_X86_64_CPUS) \
 		-m $(QEMU_MEMORY) \
-		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
@@ -307,9 +316,8 @@ run-qemu-x86_64-headless: check-image-x86_64 $(BUILD_DIR)/OVMF_VARS.fd
 	@echo ""
 	qemu-system-x86_64 \
 		-machine q35 \
-		-cpu qemu64,+fsgsbase,+rdrand \
+		$(QEMU_X86_64_CPUS) \
 		-m $(QEMU_MEMORY) \
-		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
@@ -356,9 +364,8 @@ run-qemu-x86_64-debug: check-image-x86_64 $(BUILD_DIR)/OVMF_VARS.fd
 	@echo ""
 	qemu-system-x86_64 \
 		-machine q35 \
-		-cpu qemu64,+fsgsbase,+rdrand \
+		$(QEMU_X86_64_CPUS) \
 		-m $(QEMU_MEMORY) \
-		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
@@ -383,9 +390,8 @@ run-qemu-x86_64-debug-headless: check-image-x86_64 $(BUILD_DIR)/OVMF_VARS.fd
 	@echo ""
 	qemu-system-x86_64 \
 		-machine q35 \
-		-cpu qemu64,+fsgsbase,+rdrand \
+		$(QEMU_X86_64_CPUS) \
 		-m $(QEMU_MEMORY) \
-		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
