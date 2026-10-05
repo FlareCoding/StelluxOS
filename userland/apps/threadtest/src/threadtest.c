@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdint.h>
+#include <sys/syscall.h>
 #include <stlx/proc.h>
 
 #define STACK_SIZE (64 * 1024)
@@ -16,6 +18,11 @@
 #define STRESS_ITERS   10000
 
 #define SIBLING_BLOCK_WAIT_NS 100000000
+
+/* In the unmapped first pages, so a stray access through it faults */
+#define UNMAPPED_TLS_BASE 0x1000UL
+#define TLS_SWITCH_NAP_NS 1000000
+#define ARCH_GET_FS       0x1003
 
 static int passed = 0;
 static int failed = 0;
@@ -502,6 +509,76 @@ static void test_join_after_detach(void) {
     // stack not freed: detached thread may still be using it, reclaimed at process exit
 }
 
+/* ---------- test 18: tls_base_set_without_syscall ---------- */
+
+static volatile uintptr_t g_thread_tls_base = 0;
+
+static uintptr_t read_tls_base(void) {
+    uintptr_t base;
+#if defined(__x86_64__)
+    __asm__ volatile("rdfsbase %0" : "=r"(base));
+#elif defined(__aarch64__)
+    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(base));
+#endif
+    return base;
+}
+
+static void write_tls_base(uintptr_t base) {
+#if defined(__x86_64__)
+    __asm__ volatile("wrfsbase %0" :: "r"(base) : "memory");
+#elif defined(__aarch64__)
+    __asm__ volatile("msr tpidr_el0, %0" :: "r"(base) : "memory");
+#endif
+}
+
+/* Points the register at live while the copy the kernel saved at the last switch out holds
+ * stale. Only raw syscalls run meanwhile, since libc's wrappers read thread state through it. */
+static void set_tls_base_with_stale_copy(uintptr_t live, uintptr_t stale) {
+    struct timespec nap = { .tv_sec = 0, .tv_nsec = TLS_SWITCH_NAP_NS };
+    write_tls_base(stale);
+    syscall(SYS_nanosleep, &nap, NULL);
+    write_tls_base(live);
+}
+
+static void thread_record_tls_base(void* arg) {
+    (void)arg;
+    g_thread_tls_base = read_tls_base();
+    _exit(0);
+}
+
+/* The C library sets the thread pointer without a syscall, so the kernel must read the register
+ * rather than the copy it saved at a switch */
+static void test_tls_base_set_without_syscall(void) {
+    void* stk = alloc_stack();
+    if (!stk) {
+        check("stack allocated", 0);
+        return;
+    }
+
+    uintptr_t own_base = read_tls_base();
+    set_tls_base_with_stale_copy(own_base, UNMAPPED_TLS_BASE);
+
+    int h = proc_create_thread(thread_record_tls_base, NULL, stack_top(stk), "t_tls");
+    if (h < 0) {
+        check("create ok", 0);
+        free_stack(stk);
+        return;
+    }
+
+    proc_thread_start(h);
+    proc_thread_join(h, NULL);
+    check("thread inherits the creator's live TLS base", g_thread_tls_base == own_base);
+    free_stack(stk);
+
+#if defined(__x86_64__)
+    uintptr_t reported = 0;
+    set_tls_base_with_stale_copy(UNMAPPED_TLS_BASE, own_base);
+    syscall(SYS_arch_prctl, ARCH_GET_FS, &reported);
+    write_tls_base(own_base);
+    check("ARCH_GET_FS reports the live FS base", reported == UNMAPPED_TLS_BASE);
+#endif
+}
+
 /* ---------- child process mode for leader_exit_kills_threads ---------- */
 
 static void run_child_leader_exit(void) {
@@ -571,6 +648,9 @@ int main(int argc, char** argv) {
     printf("\n[handle table isolation]\n");
     test_handle_table_isolation();
     test_inherited_handles();
+
+    printf("\n[thread pointer]\n");
+    test_tls_base_set_without_syscall();
 
     printf("\n[thread-spawns-thread]\n");
     test_nested_thread_create();

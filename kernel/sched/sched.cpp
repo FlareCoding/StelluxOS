@@ -1362,14 +1362,16 @@ __PRIVILEGED_CODE task* create_user_task(
  * Shared setup for native and clone threads. Initializes every task
  * field except the initial CPU context, which each entry point fills
  * in after this returns. The task joins the creator's thread group
- * and either snapshots or shares the creator's handle table.
+ * and either snapshots or shares the creator's handle table. The
+ * creator must be the calling task, whose live TLS base the new thread
+ * inherits.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static task* init_user_thread_core(
     task* creator, uintptr_t stack_top, bool share_files, const char* name
 ) {
-    if (!creator || !creator->exec.mm_ctx || !creator->group ||
-        !creator->handles) {
+    if (!creator || creator != current() || !creator->exec.mm_ctx ||
+        !creator->group || !creator->handles) {
         log::error("sched: invalid creator provided for user thread creation");
         return nullptr;
     }
@@ -1423,7 +1425,10 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
 
     t->exec.pt_root = paging::supervisor_pt_root_for_user_task(creator->exec.mm_ctx->pt_root);
     t->exec.user_pt_root = creator->exec.mm_ctx->pt_root;
-    t->exec.tls_base = creator->exec.tls_base;
+
+    // The creator is running, so its TLS base is the register's. User code sets the register
+    // without a syscall, which leaves the copy saved at its last switch out stale.
+    t->exec.tls_base = cpu::read_tls_base();
 
     t->task_stack_base = 0; // user stack is not VMM-allocated
     t->sys_stack_base = sys_stack_base;

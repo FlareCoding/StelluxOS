@@ -86,8 +86,8 @@ task* create_user_task(exec::loaded_image* image, const char* path,
  * The thread shares the creator's address space (mm_context) and joins its
  * thread_group. System stack is allocated in kernel VA, the caller supplies
  * the user stack. Returns in TASK_STATE_CREATED (not yet enqueued).
- * @param creator Any task in the target process, its resource handle table
- *   and mm_context are inherited by the new thread.
+ * @param creator The calling task, whose TLS base, resource handle table
+ *   and mm_context the new thread inherits.
  * @param entry User-space entry point address.
  * @param arg Argument passed to entry via first register.
  * @param stack_top Top of the caller-allocated user stack in the shared
@@ -110,7 +110,8 @@ task* create_user_thread(task* creator, uintptr_t entry, uintptr_t arg,
  * @param creator The calling task, must be the current task.
  * @param stack_top Child user stack pointer, used exactly as passed.
  * @param tls New thread pointer value when set_tls is true.
- * @param set_tls True when the caller requested a new thread pointer.
+ * @param set_tls True when the caller requested a new thread pointer,
+ *   false inherits the caller's TLS base.
  * @param share_files True shares the caller's handle table, false
  *   snapshots it with native copy semantics.
  * @return task pointer on success, nullptr on failure.

@@ -16,8 +16,10 @@ DEFINE_SYSCALL2(arch_prctl, code, addr) {
             cpu::write_tls_base(addr);
             return 0;
         case ARCH_GET_FS: {
+            // WRFSBASE sets FS_BASE without a syscall, so the register holds it, not the saved copy
+            uint64_t base = cpu::read_tls_base();
             int32_t rc = mm::uaccess::copy_to_user(
-                reinterpret_cast<void*>(addr), &task->tls_base, sizeof(task->tls_base)
+                reinterpret_cast<void*>(addr), &base, sizeof(base)
             );
 
             if (rc != mm::uaccess::OK) {
