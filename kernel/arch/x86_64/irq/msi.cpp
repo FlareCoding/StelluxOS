@@ -1,6 +1,6 @@
 #include "arch/arch_msi.h"
 #include "defs/vectors.h"
-#include "irq/irq_arch.h"
+#include "irq/lapic.h"
 #include "smp/smp.h"
 #include "hw/mmio.h"
 #include "common/logging.h"

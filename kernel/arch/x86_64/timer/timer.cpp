@@ -2,7 +2,7 @@
 #include "timer/timer_internal.h"
 #include "clock/clock.h"
 #include "irq/irq.h"
-#include "irq/irq_arch.h"
+#include "irq/lapic.h"
 #include "defs/vectors.h"
 #include "hw/portio.h"
 #include "hw/mmio.h"
