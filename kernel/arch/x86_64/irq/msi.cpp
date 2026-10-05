@@ -29,13 +29,17 @@ __PRIVILEGED_CODE int32_t msi_compose(uint32_t vector, uint32_t target_cpu,
         return msi::ERR_INVALID;
     }
 
-    uint8_t apic_id = 0;
+    uint32_t apic_id = 0;
     smp::cpu_info* info = smp::get_cpu_info(target_cpu);
     if (info) {
-        apic_id = static_cast<uint8_t>(info->hw_id);
+        apic_id = static_cast<uint32_t>(info->hw_id);
     } else if (target_cpu == 0) {
-        apic_id = static_cast<uint8_t>(irq::read_lapic_id());
+        apic_id = irq::read_lapic_id();
     } else {
+        return msi::ERR_INVALID;
+    }
+
+    if (apic_id > irq::MAX_DEVICE_IRQ_APIC_ID) {
         return msi::ERR_INVALID;
     }
 

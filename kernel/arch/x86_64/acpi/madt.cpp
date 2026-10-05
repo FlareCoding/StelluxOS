@@ -131,7 +131,7 @@ __PRIVILEGED_CODE void dump() {
     for (uint32_t i = 0; i < g_madt.lapic_count; i++) {
         const auto& l = g_madt.lapics[i];
         log::info("madt: CPU %u: APIC ID=%u (%s)",
-                  i, static_cast<uint32_t>(l.apic_id),
+                  i, l.apic_id,
                   l.enabled ? "enabled" : "disabled");
     }
 
