@@ -151,10 +151,6 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
 
     uint32_t count = 0;
     for (uint32_t i = 0; i < madt.lapic_count && count < max; i++) {
-        if (!madt.lapics[i].enabled) {
-            continue;
-        }
-
         // Drivers aim MSIs at the CPU that sets them up, so every AP must be reachable
         uint32_t apic_id = madt.lapics[i].apic_id;
         bool is_bsp = (apic_id == bsp_apic_id);
