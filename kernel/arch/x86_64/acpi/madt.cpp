@@ -57,12 +57,12 @@ __PRIVILEGED_CODE int32_t parse() {
         case MADT_TYPE_LOCAL_APIC: {
             if (entry->length < sizeof(madt_local_apic)) break;
 
+            // Disabled entries are hotplug slots that Stellux never brings online
             const auto* e = reinterpret_cast<const madt_local_apic*>(ptr);
             uint32_t flags = read_u32_safe(&e->flags);
-            if (g_madt.lapic_count < MAX_CPUS) {
+            if ((flags & LAPIC_FLAG_ENABLED) && g_madt.lapic_count < MAX_CPUS) {
                 auto& l = g_madt.lapics[g_madt.lapic_count++];
                 l.apic_id = e->apic_id;
-                l.enabled = (flags & LAPIC_FLAG_ENABLED) != 0;
             }
             break;
         }
@@ -130,9 +130,7 @@ __PRIVILEGED_CODE void dump() {
 
     for (uint32_t i = 0; i < g_madt.lapic_count; i++) {
         const auto& l = g_madt.lapics[i];
-        log::info("madt: CPU %u: APIC ID=%u (%s)",
-                  i, l.apic_id,
-                  l.enabled ? "enabled" : "disabled");
+        log::info("madt: CPU %u: APIC ID=%u", i, l.apic_id);
     }
 
     for (uint32_t i = 0; i < g_madt.io_apic_count; i++) {
