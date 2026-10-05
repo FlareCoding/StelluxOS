@@ -1,5 +1,5 @@
-#ifndef STELLUX_X86_64_IRQ_IRQ_ARCH_H
-#define STELLUX_X86_64_IRQ_IRQ_ARCH_H
+#ifndef STELLUX_ARCH_X86_64_IRQ_LAPIC_H
+#define STELLUX_ARCH_X86_64_IRQ_LAPIC_H
 
 #include "common/types.h"
 
@@ -27,13 +27,37 @@ constexpr uint32_t LVT_MASKED         = (1 << 16);
 constexpr uint32_t LVT_PERIODIC       = (1 << 17);
 
 /**
+ * @brief Map the local APIC registers.
+ * Must be called once on the boot CPU after acpi::init() and mm::init(), and
+ * before any other LAPIC function.
+ * @return OK, ERR_NO_MADT if the MADT gives no LAPIC address, or ERR_MAP if
+ *         the registers could not be mapped.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_lapic();
+
+/**
+ * @brief Read a register of the calling CPU's local APIC.
+ * @param offset One of the LAPIC_ register offsets.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t read_lapic_register(uint32_t offset);
+
+/**
+ * @brief Write a register of the calling CPU's local APIC.
+ * @param offset One of the LAPIC_ register offsets.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void write_lapic_register(uint32_t offset, uint32_t value);
+
+/**
  * @brief Get the mapped LAPIC virtual address.
- * Valid after irq::init(). Used by the timer layer to access
- * LAPIC timer registers in the same 4KB MMIO page.
+ * Valid after irq::init(). Used by the timer
+ * layer to access LAPIC timer registers.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uintptr_t get_lapic_va();
 
 } // namespace irq
 
-#endif // STELLUX_X86_64_IRQ_IRQ_ARCH_H
+#endif // STELLUX_ARCH_X86_64_IRQ_LAPIC_H

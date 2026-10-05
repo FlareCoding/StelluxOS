@@ -1,6 +1,6 @@
 #include "arch/arch_smp.h"
 #include "acpi/madt_arch.h"
-#include "irq/irq_arch.h"
+#include "irq/lapic.h"
 #include "irq/irq.h"
 #include "smp/ipi.h"
 #include "defs/vectors.h"
