@@ -55,8 +55,8 @@ constexpr size_t MAX_ISOS     = 48;
 constexpr size_t MAX_NMIS     = 8;
 
 struct lapic_entry {
-    uint8_t apic_id;
-    bool    enabled;
+    uint32_t apic_id;
+    bool     enabled;
 };
 
 struct io_apic_entry {

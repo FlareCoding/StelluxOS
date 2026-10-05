@@ -38,6 +38,9 @@ constexpr uint32_t MSR_IA32_APIC_BASE      = 0x1B;
 constexpr uint64_t APIC_BASE_BSP_FLAG      = (1ULL << 8);
 constexpr uint64_t APIC_BASE_X2APIC_ENABLE = (1ULL << 10);
 
+// Without interrupt remapping, MSI and IOAPIC destinations are 8 bits and 0xFF broadcasts
+constexpr uint32_t MAX_DEVICE_IRQ_APIC_ID = 0xFE;
+
 /**
  * @brief Find the LAPIC mode firmware chose and map the registers in xAPIC mode.
  * Must be called once on the boot CPU after acpi::init() and mm::init(), and

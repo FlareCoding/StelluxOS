@@ -125,7 +125,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     sched::run_idle();
 }
 
-__PRIVILEGED_CODE static void send_init_ipi(uint8_t apic_id) {
+__PRIVILEGED_CODE static void send_init_ipi(uint32_t apic_id) {
     // Assert INIT
     irq::send_lapic_ipi(apic_id, irq::ICR_DM_INIT | irq::ICR_LEVEL_ASSERT | irq::ICR_TRIGGER_LEVEL);
 
@@ -133,7 +133,7 @@ __PRIVILEGED_CODE static void send_init_ipi(uint8_t apic_id) {
     irq::send_lapic_ipi(apic_id, irq::ICR_DM_INIT | irq::ICR_TRIGGER_LEVEL);
 }
 
-__PRIVILEGED_CODE static void send_startup_ipi(uint8_t apic_id, uint32_t vector) {
+__PRIVILEGED_CODE static void send_startup_ipi(uint32_t apic_id, uint32_t vector) {
     irq::send_lapic_ipi(apic_id, (vector & 0xFF) | irq::ICR_DM_STARTUP);
 }
 
@@ -143,10 +143,10 @@ __PRIVILEGED_CODE static void send_startup_ipi(uint8_t apic_id, uint32_t vector)
 __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
     const acpi::madt_info& madt = acpi::get_madt_info();
 
-    uint8_t bsp_apic_id = 0;
+    uint32_t bsp_apic_id = 0;
     uint64_t apic_base_msr = msr::read(irq::MSR_IA32_APIC_BASE);
     if (apic_base_msr & irq::APIC_BASE_BSP_FLAG) {
-        bsp_apic_id = static_cast<uint8_t>(irq::read_lapic_id());
+        bsp_apic_id = irq::read_lapic_id();
     }
 
     uint32_t count = 0;
@@ -155,10 +155,18 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
             continue;
         }
 
+        // Drivers aim MSIs at the CPU that sets them up, so every AP must be reachable
+        uint32_t apic_id = madt.lapics[i].apic_id;
+        bool is_bsp = (apic_id == bsp_apic_id);
+        if (!is_bsp && apic_id > irq::MAX_DEVICE_IRQ_APIC_ID) {
+            log::warn("smp: leaving APIC ID %u offline, device interrupts cannot reach it", apic_id);
+            continue;
+        }
+
         cpus[count].logical_id = count;
-        cpus[count].hw_id = madt.lapics[i].apic_id;
+        cpus[count].hw_id = apic_id;
         cpus[count].state.store_relaxed(smp::CPU_OFFLINE);
-        cpus[count].is_bsp = (madt.lapics[i].apic_id == bsp_apic_id);
+        cpus[count].is_bsp = is_bsp;
         count++;
     }
 
@@ -249,7 +257,7 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
     data->logical_id = cpu.logical_id;
     data->percpu_base = percpu_va;
 
-    uint8_t apic_id = static_cast<uint8_t>(cpu.hw_id);
+    uint32_t apic_id = static_cast<uint32_t>(cpu.hw_id);
 
     // INIT-SIPI-SIPI sequence
     send_init_ipi(apic_id);
@@ -311,11 +319,6 @@ __PRIVILEGED_CODE int32_t smp_ipi_init_ap() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t smp_raise_ipi(const smp::cpu_info& target) {
-    // Physical destinations in the ICR hold an 8-bit APIC id
-    if (target.hw_id > 0xFF) {
-        return smp::ipi::ERR_UNREACHABLE;
-    }
-
     uint32_t apic_id = static_cast<uint32_t>(target.hw_id);
     irq::send_lapic_ipi(apic_id, x86::VEC_IPI | irq::ICR_DM_FIXED | irq::ICR_LEVEL_ASSERT);
 
