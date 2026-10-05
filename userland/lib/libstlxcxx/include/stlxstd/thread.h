@@ -1,10 +1,9 @@
 #ifndef STLXSTD_THREAD_H
 #define STLXSTD_THREAD_H
 
-#include <stlx/proc.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <new>
 
 namespace stlxstd {
@@ -40,15 +39,15 @@ struct thread_context_impl : thread_context {
 };
 
 // Defined in thread.cpp
-extern "C" void stlxstd_thread_entry(void* arg);
+extern "C" void* stlxstd_thread_entry(void* arg);
 
 } // namespace detail
 
+// A POSIX thread, since the C library gives only the threads it creates their own
+// thread-local storage and locks its shared state once any exist
 class thread {
 public:
-    static constexpr size_t STACK_SIZE = 64 * 1024;
-
-    thread() : m_handle(-1), m_stack(nullptr) {}
+    thread() = default;
 
     template<typename Fn>
     explicit thread(Fn&& fn) {
@@ -61,26 +60,13 @@ public:
 
         new (ctx) ctx_t(static_cast<Fn&&>(fn));
 
-        m_stack = mmap(nullptr, STACK_SIZE, PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
-        if (m_stack == MAP_FAILED) {
+        if (pthread_create(&m_native, nullptr, detail::stlxstd_thread_entry, ctx) != 0) {
             ctx->~ctx_t();
             free(ctx);
             abort();
         }
 
-        void* stack_top = static_cast<char*>(m_stack) + STACK_SIZE;
-        m_handle = proc_create_thread(detail::stlxstd_thread_entry, ctx,
-                                      stack_top, "stlxstd");
-        if (m_handle < 0) {
-            ctx->~ctx_t();
-            free(ctx);
-            munmap(m_stack, STACK_SIZE);
-            m_stack = nullptr;
-            abort();
-        }
-
-        proc_thread_start(m_handle);
+        m_joinable = true;
     }
 
     ~thread() {
@@ -90,46 +76,45 @@ public:
     thread(const thread&) = delete;
     thread& operator=(const thread&) = delete;
 
-    thread(thread&& o) : m_handle(o.m_handle), m_stack(o.m_stack) {
-        o.m_handle = -1;
-        o.m_stack = nullptr;
+    thread(thread&& o) : m_native(o.m_native), m_joinable(o.m_joinable) {
+        o.m_joinable = false;
     }
 
     thread& operator=(thread&& o) {
         if (this != &o) {
             if (joinable()) abort();
-            m_handle = o.m_handle;
-            m_stack = o.m_stack;
-            o.m_handle = -1;
-            o.m_stack = nullptr;
+            m_native = o.m_native;
+            m_joinable = o.m_joinable;
+            o.m_joinable = false;
         }
         return *this;
     }
 
-    bool joinable() const { return m_handle >= 0; }
+    bool joinable() const { return m_joinable; }
 
     void join() {
         if (!joinable()) return;
 
-        proc_thread_join(m_handle, nullptr);
-        munmap(m_stack, STACK_SIZE);
-        m_handle = -1;
-        m_stack = nullptr;
+        if (pthread_join(m_native, nullptr) != 0) {
+            abort();
+        }
+
+        m_joinable = false;
     }
 
-    // Stack is intentionally not freed on detach. The thread is still
-    // using it. It will be reclaimed when the process exits.
     void detach() {
         if (!joinable()) return;
 
-        proc_thread_detach(m_handle);
-        m_handle = -1;
-        m_stack = nullptr;
+        if (pthread_detach(m_native) != 0) {
+            abort();
+        }
+
+        m_joinable = false;
     }
 
 private:
-    int m_handle;
-    void* m_stack;
+    pthread_t m_native{};
+    bool m_joinable = false;
 };
 
 } // namespace stlxstd

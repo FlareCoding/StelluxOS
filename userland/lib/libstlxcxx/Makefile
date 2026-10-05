@@ -1,7 +1,7 @@
 #
 # Stellux Userland - libstlxcxx Static Library
 #
-# C++ threading wrappers (stlxstd::thread, mutex, etc.) built on libstlx.
+# C++ threading wrappers: stlxstd::thread on pthreads, the sync primitives on libstlx.
 #
 
 USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)
