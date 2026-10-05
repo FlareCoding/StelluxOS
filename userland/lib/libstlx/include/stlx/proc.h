@@ -83,6 +83,9 @@ int proc_kill(int handle);
 /**
  * Create a thread in the caller's address space. The thread shares the
  * caller's mm_context and gets a copy of the caller's handle table and cwd.
+ * It starts with the caller's thread pointer, so it shares the caller's
+ * thread-local storage, and the C library does not know of it: code that
+ * calls into libc from more than one thread must use pthreads instead.
  * Returns a handle in CREATED state, call proc_thread_start() to schedule.
  * The entry function MUST call _exit() -- returning from it is undefined.
  *
