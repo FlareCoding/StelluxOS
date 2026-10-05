@@ -5,7 +5,6 @@
 #include "irq/lapic.h"
 #include "defs/vectors.h"
 #include "hw/portio.h"
-#include "hw/mmio.h"
 #include "hw/cpu.h"
 #include "percpu/percpu.h"
 #include "sync/spinlock.h"
@@ -42,11 +41,9 @@ constexpr uint16_t PIT_10MS     = 11932;
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static uint64_t calibrate_lapic() {
-    uintptr_t lapic = irq::get_lapic_va();
-
-    uint32_t lvt = mmio::read32(lapic + irq::LAPIC_LVT_TIMER);
-    mmio::write32(lapic + irq::LAPIC_LVT_TIMER, lvt | irq::LVT_MASKED);
-    mmio::write32(lapic + irq::LAPIC_TIMER_DCR, 0x7);
+    uint32_t lvt = irq::read_lapic_register(irq::LAPIC_LVT_TIMER);
+    irq::write_lapic_register(irq::LAPIC_LVT_TIMER, lvt | irq::LVT_MASKED);
+    irq::write_lapic_register(irq::LAPIC_TIMER_DCR, 0x7);
 
     uint8_t port_b_orig = portio::in8(PORT_B);
     portio::out8(PORT_B, (port_b_orig & ~PORT_B_SPKR) & ~PORT_B_GATE);
@@ -55,15 +52,15 @@ __PRIVILEGED_CODE static uint64_t calibrate_lapic() {
     portio::out8(PIT_CH2_DATA, PIT_10MS >> 8);
 
     portio::out8(PORT_B, (port_b_orig & ~PORT_B_SPKR) | PORT_B_GATE);
-    mmio::write32(lapic + irq::LAPIC_TIMER_ICR, 0xFFFFFFFF);
+    irq::write_lapic_register(irq::LAPIC_TIMER_ICR, 0xFFFFFFFF);
 
     while ((portio::in8(PORT_B) & PORT_B_OUT2) == 0) {
         cpu::relax();
     }
 
-    uint32_t current = mmio::read32(lapic + irq::LAPIC_TIMER_CCR);
+    uint32_t current = irq::read_lapic_register(irq::LAPIC_TIMER_CCR);
     uint32_t elapsed = 0xFFFFFFFF - current;
-    mmio::write32(lapic + irq::LAPIC_TIMER_ICR, 0);
+    irq::write_lapic_register(irq::LAPIC_TIMER_ICR, 0);
     portio::out8(PORT_B, port_b_orig);
 
     return static_cast<uint64_t>(elapsed) * 100;
@@ -106,20 +103,13 @@ __PRIVILEGED_CODE static void program_oneshot(uint64_t deadline_ns) {
     uint32_t count = (ticks > 0xFFFFFFFF) ? 0xFFFFFFFF : static_cast<uint32_t>(ticks);
     if (count == 0) count = 1;
 
-    uintptr_t lapic = irq::get_lapic_va();
-    mmio::write32(lapic + irq::LAPIC_TIMER_ICR, count);
+    irq::write_lapic_register(irq::LAPIC_TIMER_ICR, count);
 }
 
 /**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init(uint32_t hz) {
-    uintptr_t lapic = irq::get_lapic_va();
-    if (!lapic) {
-        log::error("timer: LAPIC not initialized");
-        return ERR;
-    }
-
     g_lapic_freq = calibrate_lapic();
     if (g_lapic_freq == 0) {
         log::error("timer: LAPIC calibration failed");
@@ -129,9 +119,8 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
     compute_inv_mult_shift(g_lapic_freq, &g_inv_mult, &g_inv_shift);
 
     // Configure one-shot mode (no LVT_PERIODIC), masked during setup
-    mmio::write32(lapic + irq::LAPIC_LVT_TIMER,
-                  irq::LVT_MASKED | x86::VEC_TIMER);
-    mmio::write32(lapic + irq::LAPIC_TIMER_DCR, 0x7);
+    irq::write_lapic_register(irq::LAPIC_LVT_TIMER, irq::LVT_MASKED | x86::VEC_TIMER);
+    irq::write_lapic_register(irq::LAPIC_TIMER_DCR, 0x7);
 
     // Initialize per-CPU timer state
     timer_cpu_state& state = this_cpu(cpu_timer_state);
@@ -144,7 +133,7 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
     // Program first tick and unmask
     g_tick_hz = hz;
     program_oneshot(state.next_tick_ns);
-    mmio::write32(lapic + irq::LAPIC_LVT_TIMER, x86::VEC_TIMER);
+    irq::write_lapic_register(irq::LAPIC_LVT_TIMER, x86::VEC_TIMER);
 
     cpu::irq_enable();
 
@@ -164,14 +153,12 @@ __PRIVILEGED_CODE uint32_t tick_hz() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init_ap(uint32_t hz) {
-    uintptr_t lapic = irq::get_lapic_va();
-    if (!lapic || g_lapic_freq == 0) {
+    if (g_lapic_freq == 0) {
         return ERR;
     }
 
-    mmio::write32(lapic + irq::LAPIC_LVT_TIMER,
-                  irq::LVT_MASKED | x86::VEC_TIMER);
-    mmio::write32(lapic + irq::LAPIC_TIMER_DCR, 0x7);
+    irq::write_lapic_register(irq::LAPIC_LVT_TIMER, irq::LVT_MASKED | x86::VEC_TIMER);
+    irq::write_lapic_register(irq::LAPIC_TIMER_DCR, 0x7);
 
     timer_cpu_state& state = this_cpu(cpu_timer_state);
     state.lock = sync::SPINLOCK_INIT;
@@ -181,7 +168,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t hz) {
     deadline_init_this_cpu();
 
     program_oneshot(state.next_tick_ns);
-    mmio::write32(lapic + irq::LAPIC_LVT_TIMER, x86::VEC_TIMER);
+    irq::write_lapic_register(irq::LAPIC_LVT_TIMER, x86::VEC_TIMER);
 
     cpu::irq_enable();
 
@@ -192,12 +179,9 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t hz) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void stop() {
-    uintptr_t lapic = irq::get_lapic_va();
-    if (!lapic) return;
-
-    uint32_t lvt = mmio::read32(lapic + irq::LAPIC_LVT_TIMER);
-    mmio::write32(lapic + irq::LAPIC_LVT_TIMER, lvt | irq::LVT_MASKED);
-    mmio::write32(lapic + irq::LAPIC_TIMER_ICR, 0);
+    uint32_t lvt = irq::read_lapic_register(irq::LAPIC_LVT_TIMER);
+    irq::write_lapic_register(irq::LAPIC_LVT_TIMER, lvt | irq::LVT_MASKED);
+    irq::write_lapic_register(irq::LAPIC_TIMER_ICR, 0);
 }
 
 /**
@@ -214,8 +198,7 @@ __PRIVILEGED_CODE bool on_interrupt() {
         uint32_t count = (ticks > 0xFFFFFFFF) ? 0xFFFFFFFF
                        : (ticks == 0)         ? 1
                        : static_cast<uint32_t>(ticks);
-        uintptr_t lapic = irq::get_lapic_va();
-        mmio::write32(lapic + irq::LAPIC_TIMER_ICR, count);
+        irq::write_lapic_register(irq::LAPIC_TIMER_ICR, count);
         sync::spin_unlock_irqrestore(state.lock, irq);
         return true;
     }
