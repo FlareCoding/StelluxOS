@@ -4,9 +4,7 @@
 #include "irq/irq.h"
 #include "smp/ipi.h"
 #include "defs/vectors.h"
-#include "hw/mmio.h"
 #include "hw/msr.h"
-#include "hw/cpu.h"
 #include "hw/delay.h"
 #include "mm/paging.h"
 #include "mm/paging_types.h"
@@ -38,15 +36,6 @@ constexpr uint32_t  AP_SIPI_VECTOR = AP_TRAMPOLINE_PHYS >> 12; // 0x8
 
 constexpr uint32_t AP_STACK_PAGES = 4;
 constexpr uint16_t AP_GUARD_PAGES = 1;
-
-// LAPIC ICR command constants
-constexpr uint32_t ICR_DM_FIXED      = (0 << 8);
-constexpr uint32_t ICR_DM_INIT       = (5 << 8);
-constexpr uint32_t ICR_DM_STARTUP    = (6 << 8);
-constexpr uint32_t ICR_LEVEL_ASSERT  = (1 << 14);
-constexpr uint32_t ICR_TRIGGER_LEVEL = (1 << 15);
-constexpr uint32_t ICR_DELIVERY_BUSY = (1 << 12);
-constexpr uint32_t ICR_DEST_SHIFT    = 24;
 
 // IPI timing
 constexpr uint32_t IPI_INIT_DELAY_MS    = 10;
@@ -139,39 +128,16 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     sched::run_idle();
 }
 
-__PRIVILEGED_CODE static void wait_icr_idle() {
-    uintptr_t lapic_va = irq::get_lapic_va();
-    while (mmio::read32(lapic_va + irq::LAPIC_ICR_LOW) & ICR_DELIVERY_BUSY) {
-        cpu::relax();
-    }
-}
-
 __PRIVILEGED_CODE static void send_init_ipi(uint8_t apic_id) {
-    uintptr_t lapic_va = irq::get_lapic_va();
-
     // Assert INIT
-    mmio::write32(lapic_va + irq::LAPIC_ICR_HIGH,
-                  static_cast<uint32_t>(apic_id) << ICR_DEST_SHIFT);
-    mmio::write32(lapic_va + irq::LAPIC_ICR_LOW,
-                  ICR_DM_INIT | ICR_LEVEL_ASSERT | ICR_TRIGGER_LEVEL);
-    wait_icr_idle();
+    irq::send_lapic_ipi(apic_id, irq::ICR_DM_INIT | irq::ICR_LEVEL_ASSERT | irq::ICR_TRIGGER_LEVEL);
 
     // Deassert INIT
-    mmio::write32(lapic_va + irq::LAPIC_ICR_HIGH,
-                  static_cast<uint32_t>(apic_id) << ICR_DEST_SHIFT);
-    mmio::write32(lapic_va + irq::LAPIC_ICR_LOW,
-                  ICR_DM_INIT | ICR_TRIGGER_LEVEL);
-    wait_icr_idle();
+    irq::send_lapic_ipi(apic_id, irq::ICR_DM_INIT | irq::ICR_TRIGGER_LEVEL);
 }
 
 __PRIVILEGED_CODE static void send_startup_ipi(uint8_t apic_id, uint32_t vector) {
-    uintptr_t lapic_va = irq::get_lapic_va();
-
-    mmio::write32(lapic_va + irq::LAPIC_ICR_HIGH,
-                  static_cast<uint32_t>(apic_id) << ICR_DEST_SHIFT);
-    mmio::write32(lapic_va + irq::LAPIC_ICR_LOW,
-                  (vector & 0xFF) | ICR_DM_STARTUP);
-    wait_icr_idle();
+    irq::send_lapic_ipi(apic_id, (vector & 0xFF) | irq::ICR_DM_STARTUP);
 }
 
 /**
@@ -183,8 +149,7 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
     uint8_t bsp_apic_id = 0;
     uint64_t apic_base_msr = msr::read(MSR_IA32_APIC_BASE);
     if (apic_base_msr & APIC_BASE_BSP_FLAG) {
-        uintptr_t lapic_va = irq::get_lapic_va();
-        bsp_apic_id = static_cast<uint8_t>(mmio::read32(lapic_va + irq::LAPIC_ID) >> 24);
+        bsp_apic_id = static_cast<uint8_t>(irq::read_lapic_id());
     }
 
     uint32_t count = 0;
@@ -354,17 +319,8 @@ __PRIVILEGED_CODE int32_t smp_raise_ipi(const smp::cpu_info& target) {
         return smp::ipi::ERR_UNREACHABLE;
     }
 
-    uintptr_t lapic_va = irq::get_lapic_va();
     uint32_t apic_id = static_cast<uint32_t>(target.hw_id);
-
-    // The destination and command halves must land as a pair, an interrupt
-    // handler sending its own IPI between them would redirect this one.
-    uint64_t flags = cpu::irq_save();
-    wait_icr_idle();
-    mmio::write32(lapic_va + irq::LAPIC_ICR_HIGH, apic_id << ICR_DEST_SHIFT);
-    mmio::write32(lapic_va + irq::LAPIC_ICR_LOW,
-                  x86::VEC_IPI | ICR_DM_FIXED | ICR_LEVEL_ASSERT);
-    cpu::irq_restore(flags);
+    irq::send_lapic_ipi(apic_id, x86::VEC_IPI | irq::ICR_DM_FIXED | irq::ICR_LEVEL_ASSERT);
 
     return smp::ipi::OK;
 }

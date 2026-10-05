@@ -26,6 +26,13 @@ constexpr uint32_t LAPIC_TIMER_DCR    = 0x3E0;
 constexpr uint32_t LVT_MASKED         = (1 << 16);
 constexpr uint32_t LVT_PERIODIC       = (1 << 17);
 
+// LAPIC ICR command constants
+constexpr uint32_t ICR_DM_FIXED       = (0 << 8);
+constexpr uint32_t ICR_DM_INIT        = (5 << 8);
+constexpr uint32_t ICR_DM_STARTUP     = (6 << 8);
+constexpr uint32_t ICR_LEVEL_ASSERT   = (1 << 14);
+constexpr uint32_t ICR_TRIGGER_LEVEL  = (1 << 15);
+
 /**
  * @brief Map the local APIC registers.
  * Must be called once on the boot CPU after acpi::init() and mm::init(), and
@@ -51,11 +58,19 @@ __PRIVILEGED_CODE uint32_t read_lapic_register(uint32_t offset);
 __PRIVILEGED_CODE void write_lapic_register(uint32_t offset, uint32_t value);
 
 /**
- * @brief Get the mapped LAPIC virtual address.
- * Valid after irq::init().
+ * @brief Read the APIC ID of the calling CPU.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE uintptr_t get_lapic_va();
+__PRIVILEGED_CODE uint32_t read_lapic_id();
+
+/**
+ * @brief Send an IPI from the calling CPU to the CPU with APIC ID `apic_id`.
+ * The caller may have interrupts enabled.
+ * @param command Vector, delivery mode, level and trigger, built from the
+ *                ICR_ constants.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void send_lapic_ipi(uint32_t apic_id, uint32_t command);
 
 } // namespace irq
 

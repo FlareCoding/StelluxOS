@@ -2,7 +2,6 @@
 #include "defs/vectors.h"
 #include "irq/lapic.h"
 #include "smp/smp.h"
-#include "hw/mmio.h"
 #include "common/logging.h"
 
 namespace arch {
@@ -35,8 +34,7 @@ __PRIVILEGED_CODE int32_t msi_compose(uint32_t vector, uint32_t target_cpu,
     if (info) {
         apic_id = static_cast<uint8_t>(info->hw_id);
     } else if (target_cpu == 0) {
-        apic_id = static_cast<uint8_t>(
-            mmio::read32(irq::get_lapic_va() + irq::LAPIC_ID) >> 24);
+        apic_id = static_cast<uint8_t>(irq::read_lapic_id());
     } else {
         return msi::ERR_INVALID;
     }
