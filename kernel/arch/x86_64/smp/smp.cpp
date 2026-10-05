@@ -54,9 +54,6 @@ struct ap_startup_data {
 };
 static_assert(sizeof(ap_startup_data) == 40);
 
-constexpr uint32_t MSR_IA32_APIC_BASE = 0x1B;
-constexpr uint64_t APIC_BASE_BSP_FLAG = (1ULL << 8);
-
 // AP C entry, called from the trampoline's 64-bit section
 extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     auto* data = reinterpret_cast<ap_startup_data*>(AP_STARTUP_DATA_PHYS);
@@ -147,8 +144,8 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
     const acpi::madt_info& madt = acpi::get_madt_info();
 
     uint8_t bsp_apic_id = 0;
-    uint64_t apic_base_msr = msr::read(MSR_IA32_APIC_BASE);
-    if (apic_base_msr & APIC_BASE_BSP_FLAG) {
+    uint64_t apic_base_msr = msr::read(irq::MSR_IA32_APIC_BASE);
+    if (apic_base_msr & irq::APIC_BASE_BSP_FLAG) {
         bsp_apic_id = static_cast<uint8_t>(irq::read_lapic_id());
     }
 

@@ -12,7 +12,7 @@ constexpr int32_t ERR_NO_CPU_INTERFACE = -5;
 
 /**
  * @brief Initialize the interrupt controller hardware.
- * x86_64: masks 8259 PIC, maps and enables LAPIC.
+ * x86_64: masks 8259 PIC and enables LAPIC.
  * AArch64: maps the GIC, routes every SPI to the boot CPU, and enables the
  *          distributor and this CPU's interface.
  * Must be called after acpi::init().
@@ -24,7 +24,6 @@ __PRIVILEGED_CODE int32_t init();
 /**
  * @brief Initialize the interrupt controller for an AP.
  * x86_64: enables this CPU's LAPIC (SVR), masks LVTs, clears EOI.
- *         Uses the shared LAPIC MMIO mapping from init().
  * AArch64: enables this CPU's GIC interface and records how the GIC
  *          addresses the CPU.
  * @return OK on success, ERR_NO_CPU_INTERFACE if the controller cannot
