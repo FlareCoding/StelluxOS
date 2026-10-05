@@ -69,11 +69,19 @@ if [[ "$ARCH" == "x86_64" ]]; then
     mkdir -p "$BUILD_DIR"
     cp "$OVMF_VARS_SRC" "$OVMF_VARS"
 
+    # QEMU_X2APIC=1 adds a CPU at APIC ID 256 which makes OVMF hand it off in x2APIC mode
+    if [[ "${QEMU_X2APIC:-0}" == "1" ]]; then
+        QEMU_X86_64_CPUS=(-cpu qemu64,+fsgsbase,+rdrand,+x2apic
+                          -smp 4,maxcpus=512,sockets=2,cores=256,threads=1
+                          -device qemu64-x86_64-cpu,socket-id=1,core-id=0,thread-id=0)
+    else
+        QEMU_X86_64_CPUS=(-cpu qemu64,+fsgsbase,+rdrand -smp 4)
+    fi
+
     qemu-system-x86_64 \
         -machine q35 \
-        -cpu qemu64,+fsgsbase,+rdrand \
+        "${QEMU_X86_64_CPUS[@]}" \
         -m 4G \
-        -smp 4 \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$OVMF_VARS" \
         -drive format=raw,file="$IMAGE" \
