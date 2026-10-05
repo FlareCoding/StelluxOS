@@ -1,7 +1,6 @@
 #include "irq/irq.h"
 #include "irq/lapic.h"
 #include "irq/ioapic.h"
-#include "acpi/madt_arch.h"
 #include "defs/vectors.h"
 #include "hw/portio.h"
 #include "common/logging.h"
@@ -45,8 +44,7 @@ __PRIVILEGED_CODE int32_t init() {
     // Clear any stale interrupt state
     write_lapic_register(LAPIC_EOI, 0);
 
-    log::info("irq: LAPIC enabled at 0x%lx (spurious=0x%02x)",
-              acpi::get_madt_info().lapic_base,
+    log::info("irq: LAPIC enabled (spurious=0x%02x)",
               static_cast<uint32_t>(x86::VEC_SPURIOUS));
 
     int32_t ioapic_rc = ioapic::init();

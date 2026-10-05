@@ -33,8 +33,13 @@ constexpr uint32_t ICR_DM_STARTUP     = (6 << 8);
 constexpr uint32_t ICR_LEVEL_ASSERT   = (1 << 14);
 constexpr uint32_t ICR_TRIGGER_LEVEL  = (1 << 15);
 
+// IA32_APIC_BASE MSR and its bits
+constexpr uint32_t MSR_IA32_APIC_BASE      = 0x1B;
+constexpr uint64_t APIC_BASE_BSP_FLAG      = (1ULL << 8);
+constexpr uint64_t APIC_BASE_X2APIC_ENABLE = (1ULL << 10);
+
 /**
- * @brief Map the local APIC registers.
+ * @brief Find the LAPIC mode firmware chose and map the registers in xAPIC mode.
  * Must be called once on the boot CPU after acpi::init() and mm::init(), and
  * before any other LAPIC function.
  * @return OK, ERR_NO_MADT if the MADT gives no LAPIC address, or ERR_MAP if
@@ -58,7 +63,7 @@ __PRIVILEGED_CODE uint32_t read_lapic_register(uint32_t offset);
 __PRIVILEGED_CODE void write_lapic_register(uint32_t offset, uint32_t value);
 
 /**
- * @brief Read the APIC ID of the calling CPU.
+ * @brief Read the calling CPU's APIC ID, 8 bits in xAPIC mode and 32 in x2APIC mode.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t read_lapic_id();
