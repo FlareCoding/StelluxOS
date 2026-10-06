@@ -1,7 +1,5 @@
 #include "drivers/net/virtio_net.h"
-#include "sync/atomic.h"
 #include "mm/vmm.h"
-#include "hw/mmio.h"
 #include "net/packet.h"
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
@@ -12,214 +10,16 @@ namespace drivers {
 
 using namespace virtio;
 
-// Virtio advertises its config regions as vendor-specific PCI capabilities
-// (id 0x09), distinguished by a cfg_type field.
-int32_t virtio_net_driver::parse_virtio_caps() {
-    string::memset(&m_pci_cfg, 0, sizeof(m_pci_cfg));
-
-    // Walk the PCI capability list
-    uint16_t status = 0;
-    RUN_ELEVATED(status = m_dev->config_read16(pci::CFG_STATUS));
-    if (!(status & pci::STS_CAPABILITIES)) {
-        log::error("virtio-net: device has no PCI capabilities");
-        return -1;
-    }
-
-    uint8_t cap_ptr = 0;
-    RUN_ELEVATED(cap_ptr = m_dev->config_read8(pci::CFG_CAP_PTR));
-    cap_ptr &= 0xFC;
-
-    uint32_t visited = 0;
-    while (cap_ptr != 0 && visited < 48) {
-        uint8_t cap_id = 0;
-        RUN_ELEVATED(cap_id = m_dev->config_read8(cap_ptr));
-
-        if (cap_id == 0x09) { // Vendor-specific = virtio
-            uint8_t cfg_type = 0;
-            uint8_t bar = 0;
-            uint32_t offset = 0;
-            uint32_t length = 0;
-
-            RUN_ELEVATED({
-                cfg_type = m_dev->config_read8(cap_ptr + 3);
-                bar = m_dev->config_read8(cap_ptr + 4);
-                offset = m_dev->config_read32(cap_ptr + 8);
-                length = m_dev->config_read32(cap_ptr + 12);
-            });
-
-            switch (cfg_type) {
-            case VIRTIO_PCI_CAP_COMMON_CFG:
-                m_pci_cfg.common_bar = bar;
-                m_pci_cfg.common_offset = offset;
-                m_pci_cfg.common_length = length;
-                m_pci_cfg.has_common = true;
-                break;
-            case VIRTIO_PCI_CAP_NOTIFY_CFG:
-                m_pci_cfg.notify_bar = bar;
-                m_pci_cfg.notify_offset = offset;
-                m_pci_cfg.notify_length = length;
-                m_pci_cfg.has_notify = true;
-                // Read the notify_off_multiplier (4 bytes after the standard cap)
-                RUN_ELEVATED(
-                    m_pci_cfg.notify_off_multiplier = m_dev->config_read32(cap_ptr + 16)
-                );
-                break;
-            case VIRTIO_PCI_CAP_ISR_CFG:
-                m_pci_cfg.isr_bar = bar;
-                m_pci_cfg.isr_offset = offset;
-                m_pci_cfg.has_isr = true;
-                break;
-            case VIRTIO_PCI_CAP_DEVICE_CFG:
-                m_pci_cfg.device_bar = bar;
-                m_pci_cfg.device_offset = offset;
-                m_pci_cfg.device_length = length;
-                m_pci_cfg.has_device = true;
-                break;
-            }
-        }
-
-        uint8_t next = 0;
-        RUN_ELEVATED(next = m_dev->config_read8(cap_ptr + 1));
-        cap_ptr = next & 0xFC;
-        visited++;
-    }
-
-    if (!m_pci_cfg.has_common) {
-        log::error("virtio-net: missing common config capability");
-        return -1;
-    }
-
-    return 0;
-}
-
-int32_t virtio_net_driver::map_config_regions() {
-    // Map the BAR that contains the common config
-    uintptr_t bar_va = 0;
-    int32_t rc = map_bar(m_pci_cfg.common_bar, bar_va, paging::PAGE_USER);
-    if (rc != 0) {
-        log::error("virtio-net: failed to map BAR %u", m_pci_cfg.common_bar);
-        return rc;
-    }
-
-    m_common_cfg = reinterpret_cast<volatile virtio_pci_common_cfg*>(
-        bar_va + m_pci_cfg.common_offset);
-
-    // If notify is on the same BAR, compute its address
-    if (m_pci_cfg.has_notify) {
-        uintptr_t notify_bar_va = 0;
-        if (m_pci_cfg.notify_bar == m_pci_cfg.common_bar) {
-            notify_bar_va = bar_va;
-        } else {
-            rc = map_bar(m_pci_cfg.notify_bar, notify_bar_va, paging::PAGE_USER);
-            if (rc != 0) {
-                log::error("virtio-net: failed to map notify BAR %u", m_pci_cfg.notify_bar);
-                return rc;
-            }
-        }
-
-        m_notify_base = notify_bar_va + m_pci_cfg.notify_offset;
-        m_notify_off_multiplier = m_pci_cfg.notify_off_multiplier;
-    }
-
-    // ISR config
-    if (m_pci_cfg.has_isr) {
-        uintptr_t isr_bar_va = 0;
-        if (m_pci_cfg.isr_bar == m_pci_cfg.common_bar) {
-            isr_bar_va = bar_va;
-        } else {
-            rc = map_bar(m_pci_cfg.isr_bar, isr_bar_va, paging::PAGE_USER);
-            if (rc != 0) {
-                log::error("virtio-net: failed to map ISR BAR %u", m_pci_cfg.isr_bar);
-                return rc;
-            }
-        }
-
-        m_isr_addr = isr_bar_va + m_pci_cfg.isr_offset;
-    }
-
-    // Device-specific config (MAC address, etc.)
-    if (m_pci_cfg.has_device) {
-        uintptr_t dev_bar_va = 0;
-        if (m_pci_cfg.device_bar == m_pci_cfg.common_bar) {
-            dev_bar_va = bar_va;
-        } else {
-            rc = map_bar(m_pci_cfg.device_bar, dev_bar_va, paging::PAGE_USER);
-            if (rc != 0) {
-                log::error("virtio-net: failed to map device BAR %u", m_pci_cfg.device_bar);
-                return rc;
-            }
-        }
-
-        m_device_cfg = reinterpret_cast<volatile virtio_net_config*>(
-            dev_bar_va + m_pci_cfg.device_offset);
-    }
-
-    return 0;
-}
-
-void virtio_net_driver::write_status(uint8_t status) {
-    m_common_cfg->device_status = status;
-
-    // Fence orders the status write ahead of later device config accesses.
-    sync::atomic_fence_seq_cst();
-}
-
-uint8_t virtio_net_driver::read_status() {
-    return m_common_cfg->device_status;
-}
-
-int32_t virtio_net_driver::negotiate_features() {
-    // The 64-bit feature word is exposed through a 32-bit select window.
-    m_common_cfg->device_feature_select = 0;
-    sync::atomic_fence_seq_cst();
-    uint32_t features_lo = m_common_cfg->device_feature;
-
-    m_common_cfg->device_feature_select = 1;
-    sync::atomic_fence_seq_cst();
-    uint32_t features_hi = m_common_cfg->device_feature;
-
-    uint64_t device_features = (static_cast<uint64_t>(features_hi) << 32) | features_lo;
-
-    // Select features we want
-    uint64_t driver_features = 0;
-    if (device_features & VIRTIO_NET_F_MAC) {
-        driver_features |= VIRTIO_NET_F_MAC;
-        m_has_mac = true;
-    }
-    if (device_features & VIRTIO_NET_F_STATUS) {
-        driver_features |= VIRTIO_NET_F_STATUS;
-        m_has_status = true;
-    }
-    if (device_features & VIRTIO_F_VERSION_1) {
-        driver_features |= VIRTIO_F_VERSION_1;
-        m_version_1 = true;
-        m_net_hdr_size = 12; // includes num_buffers field
-    }
-
-    log::info("virtio-net: device features=0x%lx, driver features=0x%lx",
-              device_features, driver_features);
-
-    // Write driver features
-    m_common_cfg->driver_feature_select = 0;
-    sync::atomic_fence_seq_cst();
-    m_common_cfg->driver_feature = static_cast<uint32_t>(driver_features & 0xFFFFFFFF);
-
-    m_common_cfg->driver_feature_select = 1;
-    sync::atomic_fence_seq_cst();
-    m_common_cfg->driver_feature = static_cast<uint32_t>(driver_features >> 32);
-
-    return 0;
-}
-
 int32_t virtio_net_driver::read_mac() {
-    if (!m_device_cfg || !m_has_mac) {
+    volatile virtio_net_config* cfg = device_config<virtio_net_config>();
+    if (!cfg || !m_has_mac) {
         // Device provides no MAC, use a fixed locally administered address.
         m_mac = {{0x52, 0x54, 0x00, 0x12, 0x34, 0x56}};
         return 0;
     }
 
     for (size_t i = 0; i < net::eth::MAC_ADDR_LEN; i++) {
-        m_mac.bytes[i] = m_device_cfg->mac[i];
+        m_mac.bytes[i] = cfg->mac[i];
     }
 
     log::info("virtio-net: MAC %02x:%02x:%02x:%02x:%02x:%02x",
@@ -229,68 +29,18 @@ int32_t virtio_net_driver::read_mac() {
 }
 
 int32_t virtio_net_driver::init_queues() {
-    // Initialize RX queue (queue index 0)
-    m_common_cfg->queue_select = VIRTIO_NET_QUEUE_RX;
-    sync::atomic_fence_seq_cst();
-    uint16_t rx_size = m_common_cfg->queue_size;
-    if (rx_size == 0) {
-        log::error("virtio-net: RX queue size is 0");
-        return -1;
-    }
-
-    if (rx_size > virtio::VIRTQ_MAX_SIZE) {
-        rx_size = virtio::VIRTQ_MAX_SIZE;
-    }
-    m_common_cfg->queue_size = rx_size;
-
-    int32_t rc = m_rxq.init(rx_size, VIRTIO_NET_QUEUE_RX);
+    int32_t rc = setup_queue(VIRTIO_NET_QUEUE_RX, m_rxq, &m_rx_notify_addr);
     if (rc != 0) {
-        log::error("virtio-net: RX virtqueue init failed");
         return rc;
     }
 
-    m_common_cfg->queue_desc = m_rxq.desc_phys();
-    m_common_cfg->queue_avail = m_rxq.avail_phys();
-    m_common_cfg->queue_used = m_rxq.used_phys();
-    m_common_cfg->queue_enable = 1;
-    sync::atomic_fence_seq_cst();
-
-    uint16_t rx_notify_off = m_common_cfg->queue_notify_off;
-    m_rx_notify_addr = m_notify_base +
-        static_cast<uintptr_t>(rx_notify_off) * m_notify_off_multiplier;
-
-    // Initialize TX queue (queue index 1)
-    m_common_cfg->queue_select = VIRTIO_NET_QUEUE_TX;
-    sync::atomic_fence_seq_cst();
-    uint16_t tx_size = m_common_cfg->queue_size;
-    if (tx_size == 0) {
-        log::error("virtio-net: TX queue size is 0");
-        return -1;
-    }
-
-    if (tx_size > virtio::VIRTQ_MAX_SIZE) {
-        tx_size = virtio::VIRTQ_MAX_SIZE;
-    }
-    m_common_cfg->queue_size = tx_size;
-
-    rc = m_txq.init(tx_size, VIRTIO_NET_QUEUE_TX);
+    rc = setup_queue(VIRTIO_NET_QUEUE_TX, m_txq, &m_tx_notify_addr);
     if (rc != 0) {
-        log::error("virtio-net: TX virtqueue init failed");
         return rc;
     }
-
-    m_common_cfg->queue_desc = m_txq.desc_phys();
-    m_common_cfg->queue_avail = m_txq.avail_phys();
-    m_common_cfg->queue_used = m_txq.used_phys();
-    m_common_cfg->queue_enable = 1;
-    sync::atomic_fence_seq_cst();
-
-    uint16_t tx_notify_off = m_common_cfg->queue_notify_off;
-    m_tx_notify_addr = m_notify_base +
-        static_cast<uintptr_t>(tx_notify_off) * m_notify_off_multiplier;
 
     log::info("virtio-net: RX queue (%u entries), TX queue (%u entries)",
-              rx_size, tx_size);
+              m_rxq.size(), m_txq.size());
 
     // Allocate RX buffers
     for (uint16_t i = 0; i < RX_BUF_COUNT; i++) {
@@ -355,41 +105,15 @@ int32_t virtio_net_driver::attach() {
     log::info("virtio-net: attaching to %02x:%02x.%x",
               m_dev->bus(), m_dev->slot(), m_dev->func());
 
-    // Enable the device
-    RUN_ELEVATED({
-        m_dev->enable();
-        m_dev->enable_bus_mastering();
-    });
-
-    // Parse virtio PCI capabilities
-    int32_t rc = parse_virtio_caps();
+    uint64_t features = 0;
+    int32_t rc = start_transport(0, VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_F_VERSION_1, &features);
     if (rc != 0) return rc;
 
-    // Map config regions
-    rc = map_config_regions();
-    if (rc != 0) return rc;
-
-    // Reset device
-    write_status(0);
-    while (read_status() != 0) { }
-
-    // Acknowledge and identify as a driver
-    write_status(VIRTIO_STATUS_ACKNOWLEDGE);
-    write_status(read_status() | VIRTIO_STATUS_DRIVER);
-
-    // Negotiate features
-    rc = negotiate_features();
-    if (rc != 0) {
-        write_status(read_status() | VIRTIO_STATUS_FAILED);
-        return rc;
-    }
-
-    // Finalize feature negotiation
-    write_status(read_status() | VIRTIO_STATUS_FEATURES_OK);
-    if (!(read_status() & VIRTIO_STATUS_FEATURES_OK)) {
-        log::error("virtio-net: device did not accept features");
-        write_status(read_status() | VIRTIO_STATUS_FAILED);
-        return -1;
+    m_has_mac = (features & VIRTIO_NET_F_MAC) != 0;
+    m_has_status = (features & VIRTIO_NET_F_STATUS) != 0;
+    m_version_1 = (features & VIRTIO_F_VERSION_1) != 0;
+    if (m_version_1) {
+        m_net_hdr_size = 12; // includes num_buffers field
     }
 
     // Read MAC address and initialize virtqueues
@@ -398,7 +122,7 @@ int32_t virtio_net_driver::attach() {
 
     rc = init_queues();
     if (rc != 0) {
-        write_status(read_status() | VIRTIO_STATUS_FAILED);
+        set_failed();
         return rc;
     }
 
@@ -413,22 +137,12 @@ int32_t virtio_net_driver::attach() {
 
     // Assign MSI-X vectors to queues
     if (m_dev->get_msi_state().mode == pci::MSI_MODE_MSIX) {
-        m_common_cfg->msix_config = 0;
-        sync::atomic_fence_seq_cst();
-
-        m_common_cfg->queue_select = VIRTIO_NET_QUEUE_RX;
-        sync::atomic_fence_seq_cst();
-        m_common_cfg->queue_msix_vector = 0;
-        sync::atomic_fence_seq_cst();
-
-        m_common_cfg->queue_select = VIRTIO_NET_QUEUE_TX;
-        sync::atomic_fence_seq_cst();
-        m_common_cfg->queue_msix_vector = (m_dev->get_msi_state().vector_count > 1) ? 1 : 0;
-        sync::atomic_fence_seq_cst();
+        route_config_msix(0);
+        route_queue_msix(VIRTIO_NET_QUEUE_RX, 0);
+        route_queue_msix(VIRTIO_NET_QUEUE_TX, (m_dev->get_msi_state().vector_count > 1) ? 1 : 0);
     }
 
-    // Mark device as ready
-    write_status(read_status() | VIRTIO_STATUS_DRIVER_OK);
+    set_driver_ok();
 
     // Post RX buffers after DRIVER_OK, the virtio spec (Section 3.1.1) forbids
     // sending buffer available notifications before DRIVER_OK is set.
@@ -456,16 +170,13 @@ int32_t virtio_net_driver::detach() {
     m_enabled = false;
     RUN_ELEVATED(set_link_up(false));
 
-    write_status(0);
+    reset_device();
     return pci_driver::detach();
 }
 
 __PRIVILEGED_CODE void virtio_net_driver::on_interrupt(uint32_t vector) {
     (void)vector;
-    // Read ISR status to acknowledge the interrupt
-    if (m_isr_addr) {
-        mmio::read8(m_isr_addr);
-    }
+    ack_interrupt();
 }
 
 void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
@@ -677,9 +388,10 @@ int32_t virtio_net_driver::transmit(net::packet* pkt) {
 }
 
 bool virtio_net_driver::link_up() {
+    volatile virtio_net_config* cfg = device_config<virtio_net_config>();
     bool up = true;
-    if (m_has_status && m_device_cfg) {
-        up = (m_device_cfg->status & 1) != 0;
+    if (m_has_status && cfg) {
+        up = (cfg->status & VIRTIO_NET_S_LINK_UP) != 0;
     }
 
     return up;
