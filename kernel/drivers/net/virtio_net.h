@@ -2,11 +2,45 @@
 #define STELLUX_DRIVERS_NET_VIRTIO_NET_H
 
 #include "drivers/pci_driver.h"
-#include "drivers/net/virtio_pci.h"
-#include "drivers/net/virtio_queue.h"
+#include "drivers/virtio/virtio_pci.h"
+#include "drivers/virtio/virtqueue.h"
 #include "net/interface.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
+
+namespace drivers::virtio {
+
+// Virtio-net feature bits
+constexpr uint64_t VIRTIO_NET_F_MAC         = (1ULL << 5);
+constexpr uint64_t VIRTIO_NET_F_STATUS      = (1ULL << 16);
+constexpr uint64_t VIRTIO_NET_F_MRG_RXBUF   = (1ULL << 15);
+
+// Virtio-net device config (mapped via BAR at device config offset)
+struct virtio_net_config {
+    uint8_t  mac[6];
+    uint16_t status;
+} __attribute__((packed));
+
+// Virtio-net header prepended to every packet (legacy format, 10 bytes,
+// modern with VIRTIO_F_VERSION_1 uses 12 bytes with num_buffers)
+struct virtio_net_hdr {
+    uint8_t  flags;
+    uint8_t  gso_type;
+    uint16_t hdr_len;
+    uint16_t gso_size;
+    uint16_t csum_start;
+    uint16_t csum_offset;
+    uint16_t num_buffers; // only present with VIRTIO_F_VERSION_1
+} __attribute__((packed));
+
+constexpr uint8_t VIRTIO_NET_HDR_F_NEEDS_CSUM = 1;
+constexpr uint8_t VIRTIO_NET_HDR_GSO_NONE     = 0;
+
+// Virtio-net queue indices
+constexpr uint16_t VIRTIO_NET_QUEUE_RX = 0;
+constexpr uint16_t VIRTIO_NET_QUEUE_TX = 1;
+
+} // namespace drivers::virtio
 
 namespace drivers {
 

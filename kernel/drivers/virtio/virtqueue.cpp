@@ -1,4 +1,4 @@
-#include "drivers/net/virtio_queue.h"
+#include "drivers/virtio/virtqueue.h"
 #include "sync/atomic.h"
 #include "mm/vmm.h"
 #include "mm/paging_types.h"
