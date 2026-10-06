@@ -72,6 +72,9 @@ else
   $(error ACCEL must be tcg or hvf)
 endif
 
+# The kernel drives a virtio GPU because the aarch64 firmware caps ramfb at 1024x768
+QEMU_AARCH64_DISPLAY := -device virtio-gpu-pci,xres=1920,yres=1080
+
 # QEMU_X2APIC=1 makes the firmware start Stellux in x2APIC mode.
 # The extra CPU at APIC ID 256 forces this because only x2APIC mode can address it.
 ifeq ($(QEMU_X2APIC),1)
@@ -297,7 +300,7 @@ run-qemu-aarch64: check-image-aarch64
 		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
-		-device ramfb \
+		$(QEMU_AARCH64_DISPLAY) \
 		-device qemu-xhci,id=xhci \
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
@@ -419,7 +422,7 @@ run-qemu-aarch64-debug: check-image-aarch64
 		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
-		-device ramfb \
+		$(QEMU_AARCH64_DISPLAY) \
 		-device qemu-xhci,id=xhci \
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
