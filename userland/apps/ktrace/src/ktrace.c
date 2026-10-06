@@ -12,6 +12,9 @@
 
 #define CONTROL_PATH "/dev/ktrace/control"
 #define STATUS_PATH  "/dev/ktrace/status"
+#define TRACE_PATH   "/dev/ktrace/trace"
+
+#define DUMP_CHUNK_BYTES (64 * 1024)
 
 #define CPU_FLAG_RING_WRAPPED 0x1
 #define CPU_FLAG_NO_RING      0x2
@@ -20,6 +23,7 @@
 #define NS_PER_MSEC 1000000ull
 
 static char g_status[16384];
+static char g_dump_buffer[DUMP_CHUNK_BYTES];
 
 static int read_status(void) {
     int fd = open(STATUS_PATH, O_RDONLY);
@@ -187,6 +191,71 @@ static int stop_session(void) {
     return 1;
 }
 
+static bool write_all(int fd, const char* data, size_t length) {
+    while (length > 0) {
+        ssize_t n = write(fd, data, length);
+        if (n < 0) {
+            return false;
+        }
+
+        data += n;
+        length -= (size_t)n;
+    }
+
+    return true;
+}
+
+static int dump_trace(const char* path) {
+    int trace = open(TRACE_PATH, O_RDONLY);
+    if (trace < 0) {
+        if (errno == ENODATA) {
+            fprintf(stderr, "ktrace: cannot dump: no session has been recorded\n");
+        } else if (errno == EBUSY) {
+            fprintf(stderr, "ktrace: cannot dump: a session is still recording\n");
+        } else {
+            fprintf(stderr, "ktrace: %s: %s\n", TRACE_PATH, strerror(errno));
+        }
+
+        return 1;
+    }
+
+    int out = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out < 0) {
+        fprintf(stderr, "ktrace: %s: %s\n", path, strerror(errno));
+        close(trace);
+        return 1;
+    }
+
+    unsigned long long total = 0;
+    int err = 0;
+    while (true) {
+        ssize_t n = read(trace, g_dump_buffer, sizeof(g_dump_buffer));
+        if (n == 0) {
+            break;
+        }
+
+        if (n < 0 || !write_all(out, g_dump_buffer, (size_t)n)) {
+            err = errno;
+            break;
+        }
+
+        total += (unsigned long long)n;
+    }
+
+    close(out);
+    close(trace);
+
+    // A partial dump would pass for a complete one, so failures remove it
+    if (err != 0) {
+        fprintf(stderr, "ktrace: cannot dump to %s: %s\n", path, strerror(err));
+        unlink(path);
+        return 1;
+    }
+
+    printf("wrote %llu bytes to %s\n", total, path);
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc == 2 && strcmp(argv[1], "start") == 0) {
         return start_session();
@@ -200,6 +269,10 @@ int main(int argc, char* argv[]) {
         return show_status();
     }
 
-    fprintf(stderr, "usage: ktrace start | stop | status\n");
+    if (argc == 4 && strcmp(argv[1], "dump") == 0 && strcmp(argv[2], "-o") == 0) {
+        return dump_trace(argv[3]);
+    }
+
+    fprintf(stderr, "usage: ktrace start | stop | status | dump -o FILE\n");
     return 1;
 }
