@@ -8,6 +8,9 @@ namespace drivers::virtio {
 // Virtio PCI vendor ID
 constexpr uint16_t VIRTIO_VENDOR_ID = 0x1AF4;
 
+// Modern PCI device IDs are this base plus the virtio device type
+constexpr uint16_t VIRTIO_DEV_MODERN_BASE = 0x1040;
+
 // Virtio PCI capability types (vendor-specific cap, cap_vndr = 0x09)
 constexpr uint8_t VIRTIO_PCI_CAP_COMMON_CFG  = 1;
 constexpr uint8_t VIRTIO_PCI_CAP_NOTIFY_CFG  = 2;
