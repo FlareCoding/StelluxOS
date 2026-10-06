@@ -19,10 +19,11 @@
 
 name: Kernel CI
 
+# Pull requests run every branch under review, so pushes run only for master
 on:
   push:
     branches:
-      - "**"
+      - master
   pull_request:
 
 # A newer commit on a pull request cancels its older run, and each push keeps its own
