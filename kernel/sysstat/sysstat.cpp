@@ -109,12 +109,11 @@ __PRIVILEGED_CODE int32_t init() {
     struct {
         const char*                          name;
         devfs::text_snapshot_node::generator gen;
-        size_t                               cap;
     } nodes[] = {
-        { "cpu",    generate_cpu,    64 * MAX_CPUS },
-        { "mem",    generate_mem,    128 },
-        { "uptime", generate_uptime, 32 },
-        { "tasks",  generate_tasks,  16384 },
+        { "cpu",    generate_cpu },
+        { "mem",    generate_mem },
+        { "uptime", generate_uptime },
+        { "tasks",  generate_tasks },
     };
 
     for (auto& n : nodes) {
@@ -124,7 +123,7 @@ __PRIVILEGED_CODE int32_t init() {
             return ERR;
         }
 
-        auto* node = new (mem) devfs::text_snapshot_node(n.name, n.gen, n.cap);
+        auto* node = new (mem) devfs::text_snapshot_node(n.name, n.gen);
 
         if (devfs::add_char_device_at(dir, node) != devfs::OK) {
             log::error("sysstat: failed to register /dev/sysinfo/%s", n.name);

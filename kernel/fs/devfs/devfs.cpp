@@ -9,6 +9,9 @@
 
 namespace devfs {
 
+constexpr size_t SNAPSHOT_INITIAL_CAPACITY = 4096;
+constexpr size_t U64_DECIMAL_DIGITS_MAX    = 20;
+
 class devfs_dir_node : public fs::dir_node {
 public:
     devfs_dir_node(fs::instance* fs, const char* name)
@@ -119,14 +122,18 @@ __PRIVILEGED_CODE int32_t add_char_device_at(fs::node* dir, fs::node* dev_node) 
 }
 
 int32_t text_snapshot_node::open(fs::file* f, uint32_t) {
-    void* mem = heap::uzalloc(sizeof(snapshot) + m_cap);
-    if (!mem) {
+    auto* snap = heap::ualloc_new<snapshot>();
+    if (!snap) {
         return fs::ERR_NOMEM;
     }
 
-    auto* snap = static_cast<snapshot*>(mem);
-    snap->text = reinterpret_cast<char*>(mem) + sizeof(snapshot);
-    snap->len = 0;
+    snap->text = static_cast<char*>(heap::ualloc(SNAPSHOT_INITIAL_CAPACITY));
+    if (!snap->text) {
+        heap::ufree_delete(snap);
+        return fs::ERR_NOMEM;
+    }
+
+    snap->capacity = SNAPSHOT_INITIAL_CAPACITY;
 
     f->set_private_data(snap);
     return fs::OK;
@@ -136,10 +143,31 @@ int32_t text_snapshot_node::on_close(fs::file* f) {
     auto* snap = static_cast<snapshot*>(f->private_data());
     if (snap) {
         f->set_private_data(nullptr);
-        heap::ufree(snap);
+        heap::ufree(snap->text);
+        heap::ufree_delete(snap);
     }
 
     return fs::OK;
+}
+
+// Generates the text, growing the buffer until the whole text fits
+int32_t text_snapshot_node::fill(snapshot* snap) {
+    while (true) {
+        size_t len = m_generate(snap->text, snap->capacity);
+        if (len <= snap->capacity) {
+            snap->len = len;
+            return fs::OK;
+        }
+
+        auto* text = static_cast<char*>(heap::ualloc(len));
+        if (!text) {
+            return fs::ERR_NOMEM;
+        }
+
+        heap::ufree(snap->text);
+        snap->text = text;
+        snap->capacity = len;
+    }
 }
 
 ssize_t text_snapshot_node::read(fs::file* f, void* buf, size_t count, uint32_t) {
@@ -158,7 +186,10 @@ ssize_t text_snapshot_node::read(fs::file* f, void* buf, size_t count, uint32_t)
     }
 
     if (off == 0) {
-        snap->len = m_generate(snap->text, m_cap);
+        int32_t rc = fill(snap);
+        if (rc != fs::OK) {
+            return rc;
+        }
     }
 
     size_t offset = static_cast<size_t>(off);
@@ -175,17 +206,24 @@ ssize_t text_snapshot_node::read(fs::file* f, void* buf, size_t count, uint32_t)
     return static_cast<ssize_t>(count);
 }
 
-size_t append_str(char* buf, size_t cap, size_t pos, const char* s) {
-    while (*s && pos < cap) {
-        buf[pos++] = *s++;
+static size_t append_bytes(char* buf, size_t cap, size_t pos, const char* bytes, size_t length) {
+    for (size_t i = 0; i < length; i++, pos++) {
+        if (pos < cap) {
+            buf[pos] = bytes[i];
+        }
     }
 
     return pos;
 }
 
+size_t append_str(char* buf, size_t cap, size_t pos, const char* s) {
+    return append_bytes(buf, cap, pos, s, string::strlen(s));
+}
+
 size_t append_u64(char* buf, size_t cap, size_t pos, uint64_t value) {
-    size_t digits = string::format_u64(buf + pos, cap - pos, value);
-    return digits > 0 ? pos + digits : cap;
+    char digits[U64_DECIMAL_DIGITS_MAX];
+    size_t length = string::format_u64(digits, sizeof(digits), value);
+    return append_bytes(buf, cap, pos, digits, length);
 }
 
 } // namespace devfs
