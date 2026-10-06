@@ -25,6 +25,11 @@ on:
       - "**"
   pull_request:
 
+# A newer commit on a pull request cancels its older run, and each push keeps its own
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
 # Ensure all run steps use bash with pipefail so piped commands like
 # `make test | tee` correctly propagate non-zero exit codes.
 defaults:
