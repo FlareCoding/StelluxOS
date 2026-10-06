@@ -35,7 +35,7 @@ public:
 };
 
 /* Composes into one persistent buffer and row-copies damage into the
- * write-combining scanout mapping, the only mode today's hardware has. */
+ * framebuffer mapping, flushing it on displays that need a flush. */
 class memcpy_presenter final : public presenter {
 public:
     /* Opens and maps the framebuffer. Returns 0, or -1 without one. */
@@ -49,6 +49,7 @@ public:
 
 private:
     void copy_rect(const damage_list::rect& r);
+    void flush_display(const damage_list::rect* rects, uint32_t count);
 
     int       m_fd = -1;
     uint8_t*  m_scanout = nullptr;
@@ -58,6 +59,8 @@ private:
     uint32_t  m_pitch = 0;
     uint64_t  m_size = 0;
     bool      m_first_acquire = true;
+    bool      m_needs_flush = false;
+    bool      m_last_flush_failed = false;
 };
 
 #endif
