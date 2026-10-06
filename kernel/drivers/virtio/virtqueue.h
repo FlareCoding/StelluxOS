@@ -1,5 +1,5 @@
-#ifndef STELLUX_DRIVERS_NET_VIRTIO_QUEUE_H
-#define STELLUX_DRIVERS_NET_VIRTIO_QUEUE_H
+#ifndef STELLUX_DRIVERS_VIRTIO_VIRTQUEUE_H
+#define STELLUX_DRIVERS_VIRTIO_VIRTQUEUE_H
 
 #include "common/types.h"
 #include "mm/pmm_types.h"
@@ -54,7 +54,7 @@ public:
      * Initialize the virtqueue. Allocates DMA memory for descriptor table,
      * available ring, and used ring.
      * @param queue_size Number of descriptors (must be power of 2).
-     * @param queue_index Virtio queue index (0=RX, 1=TX, etc.) for spec-compliant notification.
+     * @param queue_index Virtio queue index, written to the doorbell on kick.
      * @return 0 on success, negative on failure.
      */
     int32_t init(uint16_t queue_size, uint16_t queue_index = 0);
@@ -131,4 +131,4 @@ private:
 
 } // namespace drivers::virtio
 
-#endif // STELLUX_DRIVERS_NET_VIRTIO_QUEUE_H
+#endif // STELLUX_DRIVERS_VIRTIO_VIRTQUEUE_H
