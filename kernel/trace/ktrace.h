@@ -3,6 +3,41 @@
 
 #include "common/types.h"
 
+/*
+ * Layout of a .ktrace file, which holds one stopped session. Fields are
+ * little-endian, offsets count bytes from the start of the file, and every
+ * section starts on a 64-byte boundary.
+ *
+ * File header, 64 bytes:
+ *   0   magic             char[8]     "STLXKTRC"
+ *   8   version           uint16_t    1
+ *   10  header_size       uint16_t    64
+ *   12  arch              uint8_t     1 is x86_64, 2 is aarch64
+ *   13  reserved          uint8_t[3]
+ *   16  cpu_count         uint32_t    entries in the CPU table
+ *   20  record_size       uint32_t    sizeof(trace_record)
+ *   24  cpu_table_offset  uint64_t
+ *   32  boot_unix_ns      uint64_t    wall-clock time at boot, 0 without an RTC
+ *   40  session_start_ns  uint64_t    nanoseconds since boot
+ *   48  session_stop_ns   uint64_t    nanoseconds since boot
+ *   56  reserved          uint8_t[8]
+ *
+ * CPU table, one 32-byte entry per online CPU in CPU id order:
+ *   0   cpu_id            uint32_t
+ *   4   flags             uint32_t    bit 0: the ring wrapped
+ *                                     bit 1: the CPU has no ring
+ *   8   record_count      uint64_t
+ *   16  records_offset    uint64_t
+ *   24  reserved          uint8_t[8]
+ *
+ * A CPU's records are `record_count` consecutive `trace_record` structs in
+ * slot order, oldest first. An interrupt can record between a writer's clock
+ * read and its slot reservation, so readers sort by timestamp.
+ *
+ * Fields are only appended to the header, growing `header_size`. `version`
+ * changes only for layouts that existing readers cannot parse.
+ */
+
 namespace ktrace {
 
 constexpr int32_t OK                = 0;
