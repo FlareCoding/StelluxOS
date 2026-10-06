@@ -2,6 +2,7 @@
 #include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "exec/elf_arch.h"
 #include "fs/devfs/devfs.h"
 #include "fs/file.h"
 #include "fs/fs.h"
@@ -33,12 +34,20 @@ constexpr uint32_t SESSION_RECORDING = 1;
 constexpr uint32_t SESSION_STOPPING  = 2;
 constexpr uint32_t SESSION_STOPPED   = 3;
 
+constexpr uint64_t SECTION_ALIGNMENT = 64;
+
 namespace {
 
 struct trace_ring {
     trace_record*          records;
     sync::atomic<uint64_t> head;
     sync::atomic<uint64_t> committed;
+};
+
+struct ring_summary {
+    uint64_t kept;
+    uint64_t oldest_slot;
+    uint32_t flags;
 };
 
 // /dev/ktrace/control, where each write is one command, `start` or `stop`
@@ -80,6 +89,15 @@ private:
     }
 };
 
+class trace_node : public fs::node {
+public:
+    trace_node() : fs::node(fs::node_type::char_device, nullptr, "trace") {}
+
+    int32_t open(fs::file* f, uint32_t flags) override;
+    int32_t on_close(fs::file* f) override;
+    ssize_t read(fs::file* f, void* buf, size_t count, uint32_t flags) override;
+};
+
 } // anonymous namespace
 
 static DEFINE_PER_CPU_CACHELINE_ALIGNED(trace_ring, ktrace_percpu_ring);
@@ -88,6 +106,7 @@ static sync::spinlock g_session_lock = sync::SPINLOCK_INIT;
 static sync::atomic<uint32_t> g_session_state;
 static sync::atomic<uint64_t> g_session_start_ns;
 static sync::atomic<uint64_t> g_session_stop_ns;
+static uint32_t g_trace_open_count;
 
 /**
  * @note Privilege: **required**
@@ -124,11 +143,31 @@ static const char* session_state_name(uint32_t state) {
     }
 }
 
+static ring_summary summarize_ring(trace_ring& ring) {
+    uint64_t committed = ring.committed.load_acquire();
+    bool wrapped = committed > PERCPU_RECORD_BUFFER_RECORDS;
+
+    ring_summary summary = {};
+    summary.kept = wrapped ? PERCPU_RECORD_BUFFER_RECORDS : committed;
+    summary.oldest_slot = wrapped ? committed % PERCPU_RECORD_BUFFER_RECORDS : 0;
+
+    if (wrapped) {
+        summary.flags |= CPU_FLAG_RING_WRAPPED;
+    }
+
+    if (!ring.records) {
+        summary.flags |= CPU_FLAG_NO_RING;
+    }
+
+    return summary;
+}
+
 // `key value` lines, then one `cpu<N> <kept> <flags>` line per CPU with the CPU table flags
 static size_t generate_status(char* buf, size_t cap) {
     uint32_t state;
     uint64_t start_ns;
     uint64_t stop_ns;
+    uint32_t trace_open;
 
     {
         sync::lock_guard guard(g_session_lock);
@@ -136,6 +175,7 @@ static size_t generate_status(char* buf, size_t cap) {
         state = g_session_state.load_acquire();
         start_ns = g_session_start_ns.load_relaxed();
         stop_ns = g_session_stop_ns.load_relaxed();
+        trace_open = g_trace_open_count;
     }
 
     size_t pos = 0;
@@ -148,34 +188,156 @@ static size_t generate_status(char* buf, size_t cap) {
     pos = devfs::append_u64(buf, cap, pos, stop_ns);
     pos = devfs::append_str(buf, cap, pos, "\ncapacity ");
     pos = devfs::append_u64(buf, cap, pos, PERCPU_RECORD_BUFFER_RECORDS);
+
+    pos = devfs::append_str(buf, cap, pos, "\ntrace_open ");
+    pos = devfs::append_u64(buf, cap, pos, trace_open);
     pos = devfs::append_str(buf, cap, pos, "\n");
 
     uint32_t cpu_count = smp::cpu_count();
 
     for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
-        trace_ring& ring = per_cpu_on(ktrace_percpu_ring, cpu);
-        uint64_t committed = ring.committed.load_acquire();
-        uint64_t kept = committed < PERCPU_RECORD_BUFFER_RECORDS ? committed : PERCPU_RECORD_BUFFER_RECORDS;
-
-        uint32_t flags = 0;
-        if (committed > PERCPU_RECORD_BUFFER_RECORDS) {
-            flags |= CPU_FLAG_RING_WRAPPED;
-        }
-
-        if (!ring.records) {
-            flags |= CPU_FLAG_NO_RING;
-        }
+        ring_summary summary = summarize_ring(per_cpu_on(ktrace_percpu_ring, cpu));
 
         pos = devfs::append_str(buf, cap, pos, "cpu");
         pos = devfs::append_u64(buf, cap, pos, cpu);
         pos = devfs::append_str(buf, cap, pos, " ");
-        pos = devfs::append_u64(buf, cap, pos, kept);
+        pos = devfs::append_u64(buf, cap, pos, summary.kept);
         pos = devfs::append_str(buf, cap, pos, " ");
-        pos = devfs::append_u64(buf, cap, pos, flags);
+        pos = devfs::append_u64(buf, cap, pos, summary.flags);
         pos = devfs::append_str(buf, cap, pos, "\n");
     }
 
     return pos;
+}
+
+static uint64_t records_start(uint32_t cpu_count) {
+    uint64_t table_end = sizeof(file_header) + cpu_count * sizeof(cpu_table_entry);
+    return (table_end + SECTION_ALIGNMENT - 1) / SECTION_ALIGNMENT * SECTION_ALIGNMENT;
+}
+
+static uint64_t trace_file_size(uint32_t cpu_count) {
+    uint64_t size = records_start(cpu_count);
+
+    for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
+        size += summarize_ring(per_cpu_on(ktrace_percpu_ring, cpu)).kept * sizeof(trace_record);
+    }
+
+    return size;
+}
+
+// Copies the bytes of a region that fall inside the read window [pos, end)
+static void copy_overlap(uint8_t* dst, uint64_t pos, uint64_t end,
+                         uint64_t region_offset, const void* region, uint64_t region_size) {
+    uint64_t from = pos > region_offset ? pos : region_offset;
+    uint64_t to = end < region_offset + region_size ? end : region_offset + region_size;
+    if (from >= to) {
+        return;
+    }
+
+    string::memcpy(dst + (from - pos), static_cast<const uint8_t*>(region) + (from - region_offset), to - from);
+}
+
+static file_header build_file_header(uint32_t cpu_count) {
+    file_header header = {};
+    string::memcpy(header.magic, FILE_MAGIC, sizeof(header.magic));
+    header.version = FILE_VERSION;
+    header.header_size = sizeof(file_header);
+    header.arch = exec::ELF_EXPECTED_MACHINE;
+    header.cpu_count = cpu_count;
+    header.record_size = sizeof(trace_record);
+    header.cpu_table_offset = sizeof(file_header);
+    header.boot_unix_ns = clock::boot_realtime_ns();
+    header.session_start_ns = g_session_start_ns.load_relaxed();
+    header.session_stop_ns = g_session_stop_ns.load_relaxed();
+    return header;
+}
+
+static void copy_records(uint8_t* dst, uint64_t pos, uint64_t end, const trace_ring& ring,
+                         const ring_summary& summary, uint64_t records_offset) {
+    uint64_t records_end = records_offset + summary.kept * sizeof(trace_record);
+    if (end <= records_offset || pos >= records_end) {
+        return;
+    }
+
+    uint64_t first = ((pos > records_offset ? pos : records_offset) - records_offset) / sizeof(trace_record);
+    uint64_t last = ((end < records_end ? end : records_end) - records_offset - 1) / sizeof(trace_record);
+
+    for (uint64_t i = first; i <= last; i++) {
+        const trace_record& rec = ring.records[(summary.oldest_slot + i) % PERCPU_RECORD_BUFFER_RECORDS];
+        copy_overlap(dst, pos, end, records_offset + i * sizeof(trace_record), &rec, sizeof(rec));
+    }
+}
+
+static void copy_trace_bytes(uint8_t* dst, uint64_t pos, uint64_t end, uint32_t cpu_count) {
+    file_header header = build_file_header(cpu_count);
+    copy_overlap(dst, pos, end, 0, &header, sizeof(header));
+
+    uint64_t records_offset = records_start(cpu_count);
+
+    for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
+        trace_ring& ring = per_cpu_on(ktrace_percpu_ring, cpu);
+        ring_summary summary = summarize_ring(ring);
+
+        cpu_table_entry entry = {};
+        entry.cpu_id = cpu;
+        entry.flags = summary.flags;
+        entry.record_count = summary.kept;
+        entry.records_offset = records_offset;
+
+        uint64_t entry_offset = sizeof(file_header) + cpu * sizeof(cpu_table_entry);
+        copy_overlap(dst, pos, end, entry_offset, &entry, sizeof(entry));
+        copy_records(dst, pos, end, ring, summary, records_offset);
+
+        records_offset += summary.kept * sizeof(trace_record);
+    }
+}
+
+int32_t trace_node::open(fs::file*, uint32_t) {
+    sync::lock_guard guard(g_session_lock);
+
+    uint32_t state = g_session_state.load_acquire();
+    if (state == SESSION_IDLE) {
+        return fs::ERR_NODATA;
+    }
+
+    if (state != SESSION_STOPPED) {
+        return fs::ERR_BUSY;
+    }
+
+    g_trace_open_count++;
+    return fs::OK;
+}
+
+int32_t trace_node::on_close(fs::file*) {
+    sync::lock_guard guard(g_session_lock);
+
+    g_trace_open_count--;
+    return fs::OK;
+}
+
+ssize_t trace_node::read(fs::file* f, void* buf, size_t count, uint32_t) {
+    int64_t offset = f->offset();
+    if (offset < 0) {
+        return fs::ERR_INVAL;
+    }
+
+    uint32_t cpu_count = smp::cpu_count();
+    uint64_t size = trace_file_size(cpu_count);
+    uint64_t pos = static_cast<uint64_t>(offset);
+    if (pos >= size) {
+        return 0;
+    }
+
+    if (count > size - pos) {
+        count = size - pos;
+    }
+
+    auto* dst = static_cast<uint8_t*>(buf);
+    string::memset(dst, 0, count);
+    copy_trace_bytes(dst, pos, pos + count, cpu_count);
+
+    f->set_offset(offset + static_cast<int64_t>(count));
+    return static_cast<ssize_t>(count);
 }
 
 __PRIVILEGED_CODE static int32_t add_node(fs::node* dir, fs::node* node, const char* path) {
@@ -209,7 +371,12 @@ __PRIVILEGED_CODE int32_t register_devfs_nodes() {
     }
 
     auto* status = heap::kalloc_new<devfs::text_snapshot_node>("status", generate_status);
-    return add_node(dir, status, "/dev/ktrace/status");
+    rc = add_node(dir, status, "/dev/ktrace/status");
+    if (rc != OK) {
+        return rc;
+    }
+
+    return add_node(dir, heap::kalloc_new<trace_node>(), "/dev/ktrace/trace");
 }
 
 int32_t start() {
@@ -217,6 +384,10 @@ int32_t start() {
 
     uint32_t state = g_session_state.load_acquire();
     if (state != SESSION_IDLE && state != SESSION_STOPPED) {
+        return ERR_BUSY;
+    }
+
+    if (g_trace_open_count != 0) {
         return ERR_BUSY;
     }
 

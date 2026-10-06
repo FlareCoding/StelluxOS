@@ -38,6 +38,7 @@ constexpr int64_t EFBIG  = -27;
 constexpr int64_t ENOSPC = -28;
 constexpr int64_t ESPIPE = -29;
 constexpr int64_t EPIPE  = -32;
+constexpr int64_t ENODATA = -61;
 constexpr int64_t ENOTSOCK = -88;
 constexpr int64_t EMSGSIZE         = -90;
 constexpr int64_t EPROTOTYPE       = -91;
