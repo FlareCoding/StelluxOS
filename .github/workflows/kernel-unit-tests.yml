@@ -3,7 +3,7 @@
 #
 # Validates every commit by linting privilege annotations, building the kernel
 # across all supported architectures and build modes, and running the full
-# unit-test suite inside QEMU.
+# unit-test suite inside QEMU on the test image the debug builds produce.
 #
 # Job graph:
 #
@@ -151,6 +151,21 @@ jobs:
           fi
           echo "Kernel ELF: $(ls -lh "$elf")"
 
+      # make test builds in the default mode, so the debug entry builds the test image
+      - name: Build unit test image
+        if: matrix.mode == 'debug'
+        # binutils is small, so fetching it here keeps the package path exercised
+        run: make test-image ARCH=${{ matrix.arch }} PACKAGES="none binutils"
+
+      - name: Upload unit test image
+        if: matrix.mode == 'debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-image-${{ matrix.arch }}
+          path: images/stellux-${{ matrix.arch }}.img
+          if-no-files-found: error
+          retention-days: 3
+
   # ============================================================================
   # macOS Host Build (arm64 runner, arch matrix; unit tests run on Linux)
   # ============================================================================
@@ -267,79 +282,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install build and QEMU dependencies
+      - name: Install QEMU
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            clang lld llvm \
-            libclang-rt-dev \
-            gcc-aarch64-linux-gnu \
-            linux-libc-dev-arm64-cross \
-            cmake ninja-build \
             qemu-system-x86 qemu-system-arm \
-            ovmf qemu-efi-aarch64 \
-            mtools gdisk xorriso
+            ovmf qemu-efi-aarch64
 
-      - name: Fetch Limine EFI binaries
-        run: make limine
-
-      - name: Cache musl sysroot
-        uses: actions/cache@v4
-        id: musl-cache
+      - name: Download unit test image
+        uses: actions/download-artifact@v4
         with:
-          path: userland/sysroot
-          key: musl-sysroot-1.2.5-v2
-
-      - name: Build musl libc
-        if: steps.musl-cache.outputs.cache-hit != 'true'
-        run: make musl
-
-      - name: Cache libc++ sysroot
-        uses: actions/cache@v4
-        id: libcxx-cache
-        with:
-          path: |
-            userland/sysroot/x86_64/lib/libc++.a
-            userland/sysroot/x86_64/lib/libc++abi.a
-            userland/sysroot/x86_64/lib/libunwind.a
-            userland/sysroot/x86_64/include/c++
-            userland/sysroot/aarch64/lib/libc++.a
-            userland/sysroot/aarch64/lib/libc++abi.a
-            userland/sysroot/aarch64/lib/libunwind.a
-            userland/sysroot/aarch64/include/c++
-          key: libcxx-sysroot-20.1.8-v3
-
-      - name: Build libc++
-        if: steps.libcxx-cache.outputs.cache-hit != 'true'
-        run: make libcxx
-
-      - name: Cache compiler-rt builtins
-        uses: actions/cache@v4
-        id: compiler-rt-cache
-        with:
-          path: |
-            userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a
-            userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a
-          key: compiler-rt-builtins-20.1.8-v2
-
-      - name: Build compiler-rt builtins
-        if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
-        run: make compiler-rt
-
-      - name: Cache Qt code generators
-        uses: actions/cache@v4
-        id: qt-host-cache
-        with:
-          path: userland/toolchain/qt-host
-          key: qt-host-${{ hashFiles('packages/qt/versions.sh', 'scripts/qt-host-tools.sh') }}-v1
-
-      - name: Build Qt code generators
-        if: steps.qt-host-cache.outputs.cache-hit != 'true'
-        run: make qt
+          name: test-image-${{ matrix.arch }}
+          path: images
 
       - name: Run unit tests
-        # binutils is small, so fetching it here keeps the package path exercised
-        run: make test ARCH=${{ matrix.arch }} PACKAGES="none binutils" 2>&1 | tee test-log-${{ matrix.arch }}.txt
+        run: ./scripts/run_tests.sh ${{ matrix.arch }} 2>&1 | tee test-log-${{ matrix.arch }}.txt
         env:
           STLX_TEST_TIMEOUT: 120
 
