@@ -28,9 +28,13 @@ static_assert((PERCPU_RECORD_BUFFER_RECORDS & (PERCPU_RECORD_BUFFER_RECORDS - 1)
 
 constexpr uint64_t RING_CLOSED = 1ull << 63;
 
-constexpr uint32_t SESSION_STOPPED   = 0;
+constexpr uint32_t SESSION_IDLE      = 0;
 constexpr uint32_t SESSION_RECORDING = 1;
 constexpr uint32_t SESSION_STOPPING  = 2;
+constexpr uint32_t SESSION_STOPPED   = 3;
+
+constexpr uint32_t CPU_FLAG_RING_WRAPPED = 1 << 0;
+constexpr uint32_t CPU_FLAG_NO_RING      = 1 << 1;
 
 namespace {
 
@@ -85,6 +89,8 @@ static DEFINE_PER_CPU_CACHELINE_ALIGNED(trace_ring, ktrace_percpu_ring);
 
 static sync::spinlock g_session_lock = sync::SPINLOCK_INIT;
 static sync::atomic<uint32_t> g_session_state;
+static sync::atomic<uint64_t> g_session_start_ns;
+static sync::atomic<uint64_t> g_session_stop_ns;
 
 /**
  * @note Privilege: **required**
@@ -111,6 +117,85 @@ __PRIVILEGED_CODE int32_t init() {
     return OK;
 }
 
+static const char* session_state_name(uint32_t state) {
+    switch (state) {
+    case SESSION_IDLE:      return "idle";
+    case SESSION_RECORDING: return "recording";
+    case SESSION_STOPPING:  return "stopping";
+    case SESSION_STOPPED:   return "stopped";
+    default:                return "unknown";
+    }
+}
+
+// `key value` lines, then one `cpu<N> <kept> <flags>` line per CPU with the CPU table flags
+static size_t generate_status(char* buf, size_t cap) {
+    uint32_t state;
+    uint64_t start_ns;
+    uint64_t stop_ns;
+
+    {
+        sync::lock_guard guard(g_session_lock);
+
+        state = g_session_state.load_acquire();
+        start_ns = g_session_start_ns.load_relaxed();
+        stop_ns = g_session_stop_ns.load_relaxed();
+    }
+
+    size_t pos = 0;
+    pos = devfs::append_str(buf, cap, pos, "state ");
+    pos = devfs::append_str(buf, cap, pos, session_state_name(state));
+    pos = devfs::append_str(buf, cap, pos, "\nsession_start_ns ");
+    pos = devfs::append_u64(buf, cap, pos, start_ns);
+
+    pos = devfs::append_str(buf, cap, pos, "\nsession_stop_ns ");
+    pos = devfs::append_u64(buf, cap, pos, stop_ns);
+    pos = devfs::append_str(buf, cap, pos, "\ncapacity ");
+    pos = devfs::append_u64(buf, cap, pos, PERCPU_RECORD_BUFFER_RECORDS);
+    pos = devfs::append_str(buf, cap, pos, "\n");
+
+    uint32_t cpu_count = smp::cpu_count();
+
+    for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
+        trace_ring& ring = per_cpu_on(ktrace_percpu_ring, cpu);
+        uint64_t committed = ring.committed.load_acquire();
+        uint64_t kept = committed < PERCPU_RECORD_BUFFER_RECORDS ? committed : PERCPU_RECORD_BUFFER_RECORDS;
+
+        uint32_t flags = 0;
+        if (committed > PERCPU_RECORD_BUFFER_RECORDS) {
+            flags |= CPU_FLAG_RING_WRAPPED;
+        }
+
+        if (!ring.records) {
+            flags |= CPU_FLAG_NO_RING;
+        }
+
+        pos = devfs::append_str(buf, cap, pos, "cpu");
+        pos = devfs::append_u64(buf, cap, pos, cpu);
+        pos = devfs::append_str(buf, cap, pos, " ");
+        pos = devfs::append_u64(buf, cap, pos, kept);
+        pos = devfs::append_str(buf, cap, pos, " ");
+        pos = devfs::append_u64(buf, cap, pos, flags);
+        pos = devfs::append_str(buf, cap, pos, "\n");
+    }
+
+    return pos;
+}
+
+__PRIVILEGED_CODE static int32_t add_node(fs::node* dir, fs::node* node, const char* path) {
+    if (!node) {
+        log::error("ktrace: failed to allocate %s", path);
+        return ERR_NO_MEMORY;
+    }
+
+    if (devfs::add_char_device_at(dir, node) != devfs::OK) {
+        log::error("ktrace: failed to register %s", path);
+        heap::kfree_delete(node);
+        return ERR_DEVFS;
+    }
+
+    return OK;
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -121,25 +206,20 @@ __PRIVILEGED_CODE int32_t register_devfs_nodes() {
         return ERR_DEVFS;
     }
 
-    auto* control = heap::kalloc_new<control_node>();
-    if (!control) {
-        log::error("ktrace: failed to allocate /dev/ktrace/control");
-        return ERR_NO_MEMORY;
+    int32_t rc = add_node(dir, heap::kalloc_new<control_node>(), "/dev/ktrace/control");
+    if (rc != OK) {
+        return rc;
     }
 
-    if (devfs::add_char_device_at(dir, control) != devfs::OK) {
-        log::error("ktrace: failed to register /dev/ktrace/control");
-        heap::kfree_delete(control);
-        return ERR_DEVFS;
-    }
-
-    return OK;
+    auto* status = heap::kalloc_new<devfs::text_snapshot_node>("status", generate_status);
+    return add_node(dir, status, "/dev/ktrace/status");
 }
 
 int32_t start() {
     sync::lock_guard guard(g_session_lock);
 
-    if (g_session_state.load_acquire() != SESSION_STOPPED) {
+    uint32_t state = g_session_state.load_acquire();
+    if (state != SESSION_IDLE && state != SESSION_STOPPED) {
         return ERR_BUSY;
     }
 
@@ -154,6 +234,8 @@ int32_t start() {
         ring.head.store_release(0);
     }
 
+    g_session_start_ns.store_relaxed(clock::now_ns());
+    g_session_stop_ns.store_relaxed(0);
     g_session_state.store_release(SESSION_RECORDING);
     return OK;
 }
@@ -184,6 +266,7 @@ int32_t stop() {
         close_ring(per_cpu_on(ktrace_percpu_ring, cpu));
     }
 
+    g_session_stop_ns.store_relaxed(clock::now_ns());
     g_session_state.store_release(SESSION_STOPPED);
     return OK;
 }
