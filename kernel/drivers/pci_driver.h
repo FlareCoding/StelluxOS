@@ -121,9 +121,8 @@ protected:
     int32_t setup_msix(uint32_t count);
 
     /**
-     * Block the driver task until an interrupt or other event wakes it.
-     * Multiple interrupts may coalesce into a single wake, the driver's
-     * run() loop must drain all pending device work on each return.
+     * Block until an interrupt arrives. One task may wait at a time, and it
+     * must drain all pending work on return since interrupts coalesce.
      */
     void wait_for_event();
 
