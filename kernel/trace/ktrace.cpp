@@ -1,4 +1,5 @@
 #include "trace/ktrace.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "sync/atomic.h"
 #include "mm/kva.h"
@@ -46,6 +47,7 @@ __PRIVILEGED_CODE int32_t init() {
 
 #if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
 void record_event(const trace_record& rec) {
+    uint64_t timestamp = clock::now_ns();
     auto& buffer = this_cpu(ktrace_percpu_record_buffer);
     auto& head_idx = this_cpu(ktrace_percpu_head_index);
 
@@ -58,7 +60,9 @@ void record_event(const trace_record& rec) {
     uint64_t slot = sync::atomic_ref<uint64_t>{head_idx}.fetch_add_relaxed(1);
 
     // Insert the event record
-    buffer[slot % PERCPU_RECORD_BUFFER_RECORDS] = rec;
+    trace_record& entry = buffer[slot % PERCPU_RECORD_BUFFER_RECORDS];
+    entry = rec;
+    entry.hdr.timestamp = timestamp;
 }
 #endif
 } // namespace ktrace

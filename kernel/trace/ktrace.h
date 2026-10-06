@@ -9,7 +9,7 @@ constexpr int32_t OK                = 0;
 constexpr int32_t ERR_NO_MEMORY     = -1;
 
 struct trace_record_header {
-    uint64_t    timestamp;     // Timestamp of the event
+    uint64_t    timestamp;     // Nanoseconds since boot, set by record_event()
     uint16_t    event_id;      // ID of the event in a given trace profile
     uint16_t    context;       // Event context information
     uint8_t     length;        // Length of the record in 8-byte words
@@ -32,6 +32,11 @@ static_assert(sizeof(trace_record) == 64, "trace_record size must be 64 bytes");
  */
 __PRIVILEGED_CODE int32_t init();
 
+/**
+ * @brief Append a record to this CPU's trace ring, stamped with `clock::now_ns()`.
+ * Any timestamp already in `rec` is replaced. Callable from any context at either
+ * privilege level.
+ */
 #if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
     void record_event(const trace_record& rec);
 #else
