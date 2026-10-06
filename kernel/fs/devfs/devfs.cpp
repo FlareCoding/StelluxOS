@@ -1,5 +1,6 @@
 #include "fs/devfs/devfs.h"
 #include "fs/dir_node.h"
+#include "fs/file.h"
 #include "fs/mount.h"
 #include "fs/fs.h"
 #include "common/string.h"
@@ -115,6 +116,76 @@ __PRIVILEGED_CODE int32_t add_char_device_at(fs::node* dir, fs::node* dev_node) 
     auto* ddir = static_cast<devfs_dir_node*>(dir);
     ddir->add_child(dev_node);
     return OK;
+}
+
+int32_t text_snapshot_node::open(fs::file* f, uint32_t) {
+    void* mem = heap::uzalloc(sizeof(snapshot) + m_cap);
+    if (!mem) {
+        return fs::ERR_NOMEM;
+    }
+
+    auto* snap = static_cast<snapshot*>(mem);
+    snap->text = reinterpret_cast<char*>(mem) + sizeof(snapshot);
+    snap->len = 0;
+
+    f->set_private_data(snap);
+    return fs::OK;
+}
+
+int32_t text_snapshot_node::on_close(fs::file* f) {
+    auto* snap = static_cast<snapshot*>(f->private_data());
+    if (snap) {
+        f->set_private_data(nullptr);
+        heap::ufree(snap);
+    }
+
+    return fs::OK;
+}
+
+ssize_t text_snapshot_node::read(fs::file* f, void* buf, size_t count, uint32_t) {
+    if (!f || !buf) {
+        return fs::ERR_BADF;
+    }
+
+    auto* snap = static_cast<snapshot*>(f->private_data());
+    if (!snap) {
+        return fs::ERR_BADF;
+    }
+
+    int64_t off = f->offset();
+    if (off < 0) {
+        return fs::ERR_INVAL;
+    }
+
+    if (off == 0) {
+        snap->len = m_generate(snap->text, m_cap);
+    }
+
+    size_t offset = static_cast<size_t>(off);
+    if (offset >= snap->len) {
+        return 0;
+    }
+
+    if (offset + count > snap->len) {
+        count = snap->len - offset;
+    }
+
+    string::memcpy(buf, snap->text + offset, count);
+    f->set_offset(static_cast<int64_t>(offset + count));
+    return static_cast<ssize_t>(count);
+}
+
+size_t append_str(char* buf, size_t cap, size_t pos, const char* s) {
+    while (*s && pos < cap) {
+        buf[pos++] = *s++;
+    }
+
+    return pos;
+}
+
+size_t append_u64(char* buf, size_t cap, size_t pos, uint64_t value) {
+    size_t digits = string::format_u64(buf + pos, cap - pos, value);
+    return digits > 0 ? pos + digits : cap;
 }
 
 } // namespace devfs

@@ -15,20 +15,8 @@
 
 namespace sysstat {
 
-// Bounded text append helpers. Output past cap is dropped silently, so
-// an overfull snapshot ends with a truncated final line.
-
-static size_t append_str(char* buf, size_t cap, size_t pos, const char* s) {
-    while (*s && pos < cap) {
-        buf[pos++] = *s++;
-    }
-    return pos;
-}
-
-static size_t append_u64(char* buf, size_t cap, size_t pos, uint64_t value) {
-    size_t digits = string::format_u64(buf + pos, cap - pos, value);
-    return digits > 0 ? pos + digits : cap;
-}
+using devfs::append_str;
+using devfs::append_u64;
 
 static const char* task_state_name(uint32_t state) {
     switch (state) {
@@ -111,92 +99,6 @@ static size_t generate_tasks(char* buf, size_t cap) {
     return pos;
 }
 
-namespace {
-
-/**
- * A readable devfs text node. Every open holds a private snapshot buffer,
- * a read from offset zero regenerates it and later reads serve the same
- * bytes, so each reader sees one consistent capture.
- */
-class stats_node : public fs::node {
-public:
-    using generator = size_t (*)(char* buf, size_t cap);
-
-    stats_node(const char* name, generator gen, size_t cap)
-        : fs::node(fs::node_type::char_device, nullptr, name),
-          m_generate(gen), m_cap(cap) {}
-
-    int32_t open(fs::file* f, uint32_t) override {
-        // Snapshots hold formatted text on its way to userland, so
-        // they live in unprivileged memory like the file that owns them
-        void* mem = heap::uzalloc(sizeof(snapshot) + m_cap);
-        if (!mem) {
-            return fs::ERR_NOMEM;
-        }
-
-        auto* snap = static_cast<snapshot*>(mem);
-        snap->text = reinterpret_cast<char*>(mem) + sizeof(snapshot);
-        snap->len = 0;
-
-        f->set_private_data(snap);
-        return fs::OK;
-    }
-
-    int32_t on_close(fs::file* f) override {
-        auto* snap = static_cast<snapshot*>(f->private_data());
-        if (snap) {
-            f->set_private_data(nullptr);
-            heap::ufree(snap);
-        }
-
-        return fs::OK;
-    }
-
-    ssize_t read(fs::file* f, void* buf, size_t count, uint32_t) override {
-        if (!f || !buf) {
-            return fs::ERR_BADF;
-        }
-
-        auto* snap = static_cast<snapshot*>(f->private_data());
-        if (!snap) {
-            return fs::ERR_BADF;
-        }
-
-        int64_t off = f->offset();
-        if (off < 0) {
-            return fs::ERR_INVAL;
-        }
-
-        if (off == 0) {
-            snap->len = m_generate(snap->text, m_cap);
-        }
-
-        size_t offset = static_cast<size_t>(off);
-        if (offset >= snap->len) {
-            return 0;
-        }
-
-        if (offset + count > snap->len) {
-            count = snap->len - offset;
-        }
-
-        string::memcpy(buf, snap->text + offset, count);
-        f->set_offset(static_cast<int64_t>(offset + count));
-        return static_cast<ssize_t>(count);
-    }
-
-private:
-    struct snapshot {
-        char*  text;
-        size_t len;
-    };
-
-    generator m_generate;
-    size_t    m_cap;
-};
-
-} // anonymous namespace
-
 __PRIVILEGED_CODE int32_t init() {
     fs::node* dir = devfs::ensure_dir("sysinfo");
     if (!dir) {
@@ -205,9 +107,9 @@ __PRIVILEGED_CODE int32_t init() {
     }
 
     struct {
-        const char*           name;
-        stats_node::generator gen;
-        size_t                cap;
+        const char*                          name;
+        devfs::text_snapshot_node::generator gen;
+        size_t                               cap;
     } nodes[] = {
         { "cpu",    generate_cpu,    64 * MAX_CPUS },
         { "mem",    generate_mem,    128 },
@@ -216,17 +118,17 @@ __PRIVILEGED_CODE int32_t init() {
     };
 
     for (auto& n : nodes) {
-        void* mem = heap::kzalloc(sizeof(stats_node));
+        void* mem = heap::kzalloc(sizeof(devfs::text_snapshot_node));
         if (!mem) {
             log::error("sysstat: failed to allocate /dev/sysinfo/%s", n.name);
             return ERR;
         }
 
-        auto* node = new (mem) stats_node(n.name, n.gen, n.cap);
+        auto* node = new (mem) devfs::text_snapshot_node(n.name, n.gen, n.cap);
 
         if (devfs::add_char_device_at(dir, node) != devfs::OK) {
             log::error("sysstat: failed to register /dev/sysinfo/%s", n.name);
-            node->~stats_node();
+            node->~text_snapshot_node();
             heap::kfree(mem);
             return ERR;
         }
