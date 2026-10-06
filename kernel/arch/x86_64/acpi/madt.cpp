@@ -7,6 +7,9 @@
 
 namespace acpi {
 
+// Lowest APIC ID that ACPI lists in x2APIC entries when Local APIC entries exist
+constexpr uint32_t MIN_X2APIC_ENTRY_ID = 0xFF;
+
 __PRIVILEGED_DATA static madt_info g_madt = {};
 
 __PRIVILEGED_CODE static uint32_t read_u32_safe(const void* ptr) {
@@ -48,6 +51,10 @@ __PRIVILEGED_CODE int32_t parse() {
     const auto* base = reinterpret_cast<const uint8_t*>(m);
     const auto* ptr = base + sizeof(acpi::madt_table);
     const auto* end = base + table_length;
+
+    // x2APIC entries wait until the walk shows whether Local APIC entries exist
+    uint32_t x2apic_ids[MAX_CPUS];
+    uint32_t x2apic_count = 0;
 
     while (ptr + sizeof(madt_entry_header) <= end) {
         const auto* entry = reinterpret_cast<const madt_entry_header*>(ptr);
@@ -112,11 +119,33 @@ __PRIVILEGED_CODE int32_t parse() {
             g_madt.lapic_base = read_u64_safe(&e->address);
             break;
         }
+        case MADT_TYPE_LOCAL_X2APIC: {
+            if (entry->length < sizeof(madt_local_x2apic)) {
+                break;
+            }
+
+            const auto* e = reinterpret_cast<const madt_local_x2apic*>(ptr);
+            uint32_t flags = read_u32_safe(&e->flags);
+            if ((flags & LAPIC_FLAG_ENABLED) && x2apic_count < MAX_CPUS) {
+                x2apic_ids[x2apic_count++] = read_u32_safe(&e->x2apic_id);
+            }
+
+            break;
+        }
         default:
             break;
         }
 
         ptr += entry->length;
+    }
+
+    bool has_local_apic_entries = g_madt.lapic_count > 0;
+    for (uint32_t i = 0; i < x2apic_count && g_madt.lapic_count < MAX_CPUS; i++) {
+        if (has_local_apic_entries && x2apic_ids[i] < MIN_X2APIC_ENTRY_ID) {
+            continue;
+        }
+
+        g_madt.lapics[g_madt.lapic_count++].apic_id = x2apic_ids[i];
     }
 
     return OK;
