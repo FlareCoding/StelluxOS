@@ -127,6 +127,8 @@ constexpr int32_t ERR_CONNRESET   = -29;
 constexpr int32_t ERR_PROTO       = -30;
 constexpr int32_t ERR_SPIPE       = -31;
 constexpr int32_t ERR_PROTOTYPE   = -32;
+constexpr int32_t ERR_BUSY        = -33;
+constexpr int32_t ERR_NODATA      = -34;
 
 /**
  * @brief Allocate a private handle table and attach it to the task.

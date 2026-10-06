@@ -173,6 +173,10 @@ static inline int64_t map_resource_error(int64_t rc) {
             return syscall::ELOOP;
         case resource::ERR_SPIPE:
             return syscall::ESPIPE;
+        case resource::ERR_BUSY:
+            return syscall::EBUSY;
+        case resource::ERR_NODATA:
+            return syscall::ENODATA;
         case resource::ERR_IO:
         default:
             return syscall::EIO;
