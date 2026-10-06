@@ -40,6 +40,9 @@ else
   export STLX_QUIET := 1
 endif
 
+# Steps run in order, only the compiles inside each library and app run in parallel
+.NOTPARALLEL:
+
 all: summary
 
 build: sdk

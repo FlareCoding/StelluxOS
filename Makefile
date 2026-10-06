@@ -160,7 +160,7 @@ all: help
 # ============================================================================
 
 kernel: check-lld
-	$(Q)$(MAKE) -C kernel ARCH=$(ARCH) BUILD_DIR=../$(BUILD_DIR) \
+	$(Q)$(MAKE) -C kernel ARCH=$(ARCH) BUILD_DIR=../$(BUILD_DIR) -j$(NPROC) \
 		$(if $(RELEASE),RELEASE=1) \
 		$(if $(DEBUG),DEBUG=1) \
 		$(if $(STLX_UNIT_TESTS_ENABLED),STLX_UNIT_TESTS_ENABLED=1) \
@@ -171,7 +171,7 @@ kernel: check-lld
 # ============================================================================
 
 userland:
-	$(Q)$(MAKE) --no-print-directory -C userland ARCH=$(ARCH) $(if $(V),V=1)
+	$(Q)$(MAKE) --no-print-directory -C userland ARCH=$(ARCH) -j$(NPROC) $(if $(V),V=1)
 
 # ============================================================================
 # Unit Tests
