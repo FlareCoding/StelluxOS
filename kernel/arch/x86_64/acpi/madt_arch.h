@@ -47,6 +47,14 @@ struct __attribute__((packed)) madt_lapic_addr_override {
     uint64_t address;
 };
 
+struct __attribute__((packed)) madt_local_x2apic {
+    madt_entry_header header; // type=9, length=16
+    uint16_t reserved;
+    uint32_t x2apic_id;
+    uint32_t flags;
+    uint32_t acpi_processor_uid;
+};
+
 // Parsed MADT result
 
 // Static capacity limits. ACPI allows arbitrary counts, but these values are safe in practice.
