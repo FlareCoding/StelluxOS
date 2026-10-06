@@ -163,6 +163,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::warn("ktrace::init failed on BSP, performance profiling may be degraded");
     }
 
+    if (ktrace::register_devfs_nodes() != ktrace::OK) {
+        log::warn("ktrace::register_devfs_nodes failed, /dev/ktrace unavailable");
+    }
+
     if (smp::init() != smp::OK) {
         log::warn("smp::init failed, continuing with single CPU");
     }

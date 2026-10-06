@@ -1,8 +1,14 @@
 #include "trace/ktrace.h"
 #include "clock/clock.h"
 #include "common/logging.h"
+#include "common/string.h"
+#include "fs/devfs/devfs.h"
+#include "fs/file.h"
+#include "fs/fs.h"
+#include "fs/node.h"
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
+#include "mm/heap.h"
 #include "mm/kva.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
@@ -26,11 +32,54 @@ constexpr uint32_t SESSION_STOPPED   = 0;
 constexpr uint32_t SESSION_RECORDING = 1;
 constexpr uint32_t SESSION_STOPPING  = 2;
 
+namespace {
+
 struct trace_ring {
     trace_record*          records;
     sync::atomic<uint64_t> head;
     sync::atomic<uint64_t> committed;
 };
+
+// /dev/ktrace/control, where each write is one command, `start` or `stop`
+class control_node : public fs::node {
+public:
+    control_node() : fs::node(fs::node_type::char_device, nullptr, "control") {}
+
+    ssize_t write(fs::file*, const void* buf, size_t count, uint32_t) override {
+        const char* text = static_cast<const char*>(buf);
+
+        int32_t rc;
+        if (is_command(text, count, "start")) {
+            rc = start();
+        } else if (is_command(text, count, "stop")) {
+            rc = stop();
+        } else {
+            return fs::ERR_INVAL;
+        }
+
+        if (rc == ERR_BUSY) {
+            return fs::ERR_BUSY;
+        }
+
+        if (rc != OK) {
+            return fs::ERR_INVAL;
+        }
+
+        return static_cast<ssize_t>(count);
+    }
+
+private:
+    static bool is_command(const char* text, size_t length, const char* command) {
+        size_t command_length = string::strlen(command);
+        if (length == command_length + 1 && text[command_length] == '\n') {
+            length = command_length;
+        }
+
+        return length == command_length && string::memcmp(text, command, command_length) == 0;
+    }
+};
+
+} // anonymous namespace
 
 static DEFINE_PER_CPU_CACHELINE_ALIGNED(trace_ring, ktrace_percpu_ring);
 
@@ -59,6 +108,31 @@ __PRIVILEGED_CODE int32_t init() {
     }
 
     this_cpu(ktrace_percpu_ring).records = reinterpret_cast<trace_record*>(virt_addr);
+    return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t register_devfs_nodes() {
+    fs::node* dir = devfs::ensure_dir("ktrace");
+    if (!dir) {
+        log::error("ktrace: failed to create /dev/ktrace");
+        return ERR_DEVFS;
+    }
+
+    auto* control = heap::kalloc_new<control_node>();
+    if (!control) {
+        log::error("ktrace: failed to allocate /dev/ktrace/control");
+        return ERR_NO_MEMORY;
+    }
+
+    if (devfs::add_char_device_at(dir, control) != devfs::OK) {
+        log::error("ktrace: failed to register /dev/ktrace/control");
+        heap::kfree_delete(control);
+        return ERR_DEVFS;
+    }
+
     return OK;
 }
 

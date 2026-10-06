@@ -44,6 +44,7 @@ constexpr int32_t OK                = 0;
 constexpr int32_t ERR_NO_MEMORY     = -1;
 constexpr int32_t ERR_BUSY          = -2;
 constexpr int32_t ERR_NOT_RECORDING = -3;
+constexpr int32_t ERR_DEVFS         = -4;
 
 struct trace_record_header {
     uint64_t    timestamp;     // Nanoseconds since boot, set by record_event()
@@ -68,6 +69,12 @@ static_assert(sizeof(trace_record) == 64, "trace_record size must be 64 bytes");
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init();
+
+/**
+ * @brief Registers the /dev/ktrace nodes. Must be called after devfs is mounted.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t register_devfs_nodes();
 
 /**
  * @brief Starts a session on every CPU, emptying the rings first.
