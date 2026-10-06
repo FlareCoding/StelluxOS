@@ -16,11 +16,12 @@ constexpr int32_t ERR = -1;
  */
 class text_snapshot_node : public fs::node {
 public:
+    // Writes the text into buf as far as cap allows and returns its full length,
+    // so the node can grow the buffer and generate again
     using generator = size_t (*)(char* buf, size_t cap);
 
-    text_snapshot_node(const char* name, generator gen, size_t cap)
-        : fs::node(fs::node_type::char_device, nullptr, name),
-          m_generate(gen), m_cap(cap) {}
+    text_snapshot_node(const char* name, generator gen)
+        : fs::node(fs::node_type::char_device, nullptr, name), m_generate(gen) {}
 
     int32_t open(fs::file* f, uint32_t flags) override;
     int32_t on_close(fs::file* f) override;
@@ -29,11 +30,13 @@ public:
 private:
     struct snapshot {
         char*  text;
+        size_t capacity;
         size_t len;
     };
 
+    int32_t fill(snapshot* snap);
+
     generator m_generate;
-    size_t    m_cap;
 };
 
 /**
@@ -64,8 +67,8 @@ __PRIVILEGED_CODE fs::node* ensure_dir(const char* name);
  */
 __PRIVILEGED_CODE int32_t add_char_device_at(fs::node* dir, fs::node* dev_node);
 
-// Bounded text append helpers. Output past cap is dropped silently, so
-// an overfull snapshot ends with a truncated final line.
+// Text append helpers for generators. They write only what fits below cap but
+// return the position after the whole text, so a generator returns its full length.
 size_t append_str(char* buf, size_t cap, size_t pos, const char* s);
 size_t append_u64(char* buf, size_t cap, size_t pos, uint64_t value);
 
