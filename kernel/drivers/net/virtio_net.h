@@ -1,9 +1,7 @@
 #ifndef STELLUX_DRIVERS_NET_VIRTIO_NET_H
 #define STELLUX_DRIVERS_NET_VIRTIO_NET_H
 
-#include "drivers/pci_driver.h"
-#include "drivers/virtio/virtio_pci.h"
-#include "drivers/virtio/virtqueue.h"
+#include "drivers/virtio/virtio_pci_driver.h"
 #include "net/interface.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
@@ -20,6 +18,8 @@ struct virtio_net_config {
     uint8_t  mac[6];
     uint16_t status;
 } __attribute__((packed));
+
+constexpr uint16_t VIRTIO_NET_S_LINK_UP = 1; // virtio_net_config::status bit
 
 // Virtio-net header prepended to every packet (legacy format, 10 bytes,
 // modern with VIRTIO_F_VERSION_1 uses 12 bytes with num_buffers)
@@ -44,15 +44,10 @@ constexpr uint16_t VIRTIO_NET_QUEUE_TX = 1;
 
 namespace drivers {
 
-class virtio_net_driver : public pci_driver, public net::interface {
+class virtio_net_driver : public virtio_pci_driver, public net::interface {
 public:
     virtio_net_driver(pci::device* dev)
-        : pci_driver("virtio_net", dev)
-        , m_common_cfg(nullptr)
-        , m_notify_base(0)
-        , m_notify_off_multiplier(0)
-        , m_isr_addr(0)
-        , m_device_cfg(nullptr)
+        : virtio_pci_driver("virtio_net", "virtio-net", dev)
         , m_rx_notify_addr(0)
         , m_tx_notify_addr(0) {
         m_vq_lock = sync::SPINLOCK_INIT;
@@ -69,9 +64,6 @@ public:
 
 private:
     // Virtio initialization helpers
-    int32_t parse_virtio_caps();
-    int32_t map_config_regions();
-    int32_t negotiate_features();
     int32_t init_queues();
     void fill_rx_queue();
     int32_t read_mac();
@@ -96,20 +88,6 @@ private:
     void deliver_rx_batch(rx_batch& batch);    // called without m_vq_lock
     void process_tx_completions();             // under lock
     void replenish_rx();                       // under lock
-
-    // Virtio config access
-    void write_status(uint8_t status);
-    uint8_t read_status();
-
-    // Parsed config locations
-    virtio::virtio_pci_config  m_pci_cfg;
-
-    // Mapped MMIO pointers
-    volatile virtio::virtio_pci_common_cfg* m_common_cfg;
-    uintptr_t m_notify_base;
-    uint32_t  m_notify_off_multiplier;
-    uintptr_t m_isr_addr;
-    volatile virtio::virtio_net_config* m_device_cfg;
 
     // Notification addresses for each queue
     uintptr_t m_rx_notify_addr;
