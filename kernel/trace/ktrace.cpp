@@ -33,9 +33,6 @@ constexpr uint32_t SESSION_RECORDING = 1;
 constexpr uint32_t SESSION_STOPPING  = 2;
 constexpr uint32_t SESSION_STOPPED   = 3;
 
-constexpr uint32_t CPU_FLAG_RING_WRAPPED = 1 << 0;
-constexpr uint32_t CPU_FLAG_NO_RING      = 1 << 1;
-
 namespace {
 
 struct trace_ring {
