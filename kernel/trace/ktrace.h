@@ -42,6 +42,8 @@ namespace ktrace {
 
 constexpr int32_t OK                = 0;
 constexpr int32_t ERR_NO_MEMORY     = -1;
+constexpr int32_t ERR_BUSY          = -2;
+constexpr int32_t ERR_NOT_RECORDING = -3;
 
 struct trace_record_header {
     uint64_t    timestamp;     // Nanoseconds since boot, set by record_event()
@@ -68,9 +70,21 @@ static_assert(sizeof(trace_record) == 64, "trace_record size must be 64 bytes");
 __PRIVILEGED_CODE int32_t init();
 
 /**
+ * @brief Starts a session on every CPU, emptying the rings first.
+ * @return OK, or ERR_BUSY while a session is recording.
+ */
+int32_t start();
+
+/**
+ * @brief Stops the recording session. The rings keep its records until the next start().
+ * @return OK, or ERR_NOT_RECORDING when no session is recording.
+ */
+int32_t stop();
+
+/**
  * @brief Append a record to this CPU's trace ring, stamped with `clock::now_ns()`.
- * Any timestamp already in `rec` is replaced. Callable from any context at either
- * privilege level.
+ * Does nothing unless a session is recording. Any timestamp already in `rec` is
+ * replaced. Callable from any context at either privilege level.
  */
 #if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
     void record_event(const trace_record& rec);
