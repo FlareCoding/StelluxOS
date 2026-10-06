@@ -2,6 +2,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_GFXFB_H
 
 #include "common/types.h"
+#include "mm/pmm_types.h"
 
 namespace gfxfb {
 
@@ -20,6 +21,20 @@ struct gfxfb_info {
     uint8_t  blue_shift;
     uint8_t  padding[3];
     uint64_t size;
+};
+
+/**
+ * The pixel memory behind /dev/gfxfb and the layout userland draws in.
+ */
+struct surface {
+    pmm::phys_addr_t phys; // physically contiguous, pitch * height bytes
+    uint64_t width;
+    uint64_t height;
+    uint64_t pitch;
+    uint16_t bpp;
+    uint8_t  red_shift;
+    uint8_t  green_shift;
+    uint8_t  blue_shift;
 };
 
 /**
