@@ -260,16 +260,31 @@ int32_t virtio_pci_driver::setup_queue(uint16_t index, virtqueue& queue, uintptr
     return 0;
 }
 
-void virtio_pci_driver::route_queue_msix(uint16_t index, uint16_t vector) {
+int32_t virtio_pci_driver::route_queue_msix(uint16_t index, uint16_t vector) {
     m_common_cfg->queue_select = index;
     sync::atomic_fence_seq_cst();
     m_common_cfg->queue_msix_vector = vector;
     sync::atomic_fence_seq_cst();
+
+    // The device reads back NO_VECTOR in place of a vector it cannot use
+    if (m_common_cfg->queue_msix_vector != vector) {
+        log::error("%s: queue %u refused MSI-X vector %u", m_log_name, index, vector);
+        return -1;
+    }
+
+    return 0;
 }
 
-void virtio_pci_driver::route_config_msix(uint16_t vector) {
+int32_t virtio_pci_driver::route_config_msix(uint16_t vector) {
     m_common_cfg->msix_config = vector;
     sync::atomic_fence_seq_cst();
+
+    if (m_common_cfg->msix_config != vector) {
+        log::error("%s: config changes refused MSI-X vector %u", m_log_name, vector);
+        return -1;
+    }
+
+    return 0;
 }
 
 void virtio_pci_driver::set_driver_ok() {
@@ -281,6 +296,10 @@ void virtio_pci_driver::set_failed() {
 }
 
 void virtio_pci_driver::reset_device() {
+    if (!m_common_cfg) {
+        return;
+    }
+
     write_status(0);
     while (read_status() != 0) {
         cpu::relax();

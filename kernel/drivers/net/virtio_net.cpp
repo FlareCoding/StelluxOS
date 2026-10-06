@@ -137,9 +137,14 @@ int32_t virtio_net_driver::attach() {
 
     // Assign MSI-X vectors to queues
     if (m_dev->get_msi_state().mode == pci::MSI_MODE_MSIX) {
-        route_config_msix(0);
-        route_queue_msix(VIRTIO_NET_QUEUE_RX, 0);
-        route_queue_msix(VIRTIO_NET_QUEUE_TX, (m_dev->get_msi_state().vector_count > 1) ? 1 : 0);
+        uint16_t tx_vector = (m_dev->get_msi_state().vector_count > 1) ? 1 : 0;
+
+        if (route_config_msix(0) != 0 ||
+            route_queue_msix(VIRTIO_NET_QUEUE_RX, 0) != 0 ||
+            route_queue_msix(VIRTIO_NET_QUEUE_TX, tx_vector) != 0) {
+            set_failed();
+            return -1;
+        }
     }
 
     set_driver_ok();

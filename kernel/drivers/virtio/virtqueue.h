@@ -95,6 +95,11 @@ public:
     bool has_used() const;
 
     /**
+     * Number of free descriptors. `add_buf()` uses one and `add_buf_chain()` uses two.
+     */
+    uint16_t free_count() const { return m_free_count; }
+
+    /**
      * Notify the device by writing to the doorbell.
      * @param notify_addr Virtual address of the notification register.
      */

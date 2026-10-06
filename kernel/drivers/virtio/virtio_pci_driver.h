@@ -44,13 +44,16 @@ protected:
      */
     int32_t setup_queue(uint16_t index, virtio::virtqueue& queue, uintptr_t* out_notify);
 
-    // Route a queue's interrupts or config change interrupts to an MSI-X vector
-    void route_queue_msix(uint16_t index, uint16_t vector);
-    void route_config_msix(uint16_t vector);
+    // Route a queue's interrupts or config change interrupts to an MSI-X vector.
+    // Both return negative when the device cannot use the vector.
+    int32_t route_queue_msix(uint16_t index, uint16_t vector);
+    int32_t route_config_msix(uint16_t vector);
 
     // Queues may carry buffers only after the driver reports itself ready
     void set_driver_ok();
     void set_failed();
+
+    // Does nothing until start_transport() maps the device, so a failed attach can still detach
     void reset_device();
 
     // Reading the ISR status acknowledges a legacy or MSI interrupt
