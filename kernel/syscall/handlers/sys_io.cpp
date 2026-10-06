@@ -35,6 +35,8 @@ static inline int64_t map_resource_error(int64_t rc) {
         case resource::ERR_PIPE:      return syscall::EPIPE;
         case resource::ERR_INTR:      return syscall::ERESTARTSYS;
         case resource::ERR_AGAIN:     return syscall::EAGAIN;
+        case resource::ERR_BUSY:      return syscall::EBUSY;
+        case resource::ERR_NODATA:    return syscall::ENODATA;
         case resource::ERR_IO:
         default:                      return syscall::EIO;
     }
