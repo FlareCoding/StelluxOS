@@ -110,7 +110,7 @@ SUPPORTED_ARCHS := x86_64 aarch64
 # ============================================================================
 
 # Targets that require ARCH
-ARCH_REQUIRED_TARGETS := kernel userland image run test packages-list
+ARCH_REQUIRED_TARGETS := kernel userland image run test test-image packages-list
 
 # Check if current target requires ARCH
 CURRENT_GOALS := $(MAKECMDGOALS)
@@ -142,7 +142,7 @@ endif
 # Primary Targets
 # ============================================================================
 
-.PHONY: all kernel userland image run run-headless clean test \
+.PHONY: all kernel userland image run run-headless clean test test-image \
         image-x86_64 image-aarch64 \
         run-qemu-x86_64 run-qemu-aarch64 \
         run-qemu-x86_64-headless run-qemu-aarch64-headless \
@@ -178,9 +178,11 @@ userland:
 # ============================================================================
 
 # Test images carry no packages unless PACKAGES asks for some
-test:
+test-image:
 	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
 	$(Q)$(MAKE) image ARCH=$(ARCH) STLX_UNIT_TESTS_ENABLED=1 PACKAGES="$(if $(PACKAGES),$(PACKAGES),none)"
+
+test: test-image
 	@echo ""
 	$(Q)QEMU_X2APIC=$(QEMU_X2APIC) ./scripts/run_tests.sh $(ARCH)
 
