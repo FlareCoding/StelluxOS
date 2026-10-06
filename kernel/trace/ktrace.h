@@ -76,7 +76,9 @@ __PRIVILEGED_CODE int32_t init();
 int32_t start();
 
 /**
- * @brief Stops the recording session. The rings keep its records until the next start().
+ * @brief Stops the recording session. Returns once every record reserved in the session
+ * is completely written, yielding the CPU while it waits. The rings keep the session's
+ * records until the next start().
  * @return OK, or ERR_NOT_RECORDING when no session is recording.
  */
 int32_t stop();
