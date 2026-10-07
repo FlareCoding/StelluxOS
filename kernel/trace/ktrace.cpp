@@ -60,7 +60,7 @@ public:
 
         int32_t rc;
         if (is_command(text, count, "start")) {
-            rc = start();
+            rc = start(ALL_EVENTS);
         } else if (is_command(text, count, "stop")) {
             rc = stop();
         } else {
@@ -106,6 +106,7 @@ static sync::spinlock g_session_lock = sync::SPINLOCK_INIT;
 static sync::atomic<uint32_t> g_session_state;
 static sync::atomic<uint64_t> g_session_start_ns;
 static sync::atomic<uint64_t> g_session_stop_ns;
+static sync::atomic<uint64_t> g_session_event_mask;
 static uint32_t g_trace_open_count;
 
 /**
@@ -381,7 +382,7 @@ __PRIVILEGED_CODE int32_t register_devfs_nodes() {
     return add_node(dir, heap::kalloc_new<trace_node>(), "/dev/ktrace/trace");
 }
 
-int32_t start() {
+int32_t start(uint64_t event_mask) {
     sync::lock_guard guard(g_session_lock);
 
     uint32_t state = g_session_state.load_acquire();
@@ -406,6 +407,7 @@ int32_t start() {
 
     g_session_start_ns.store_relaxed(clock::now_ns());
     g_session_stop_ns.store_relaxed(0);
+    g_session_event_mask.store_relaxed(event_mask);
     g_session_state.store_release(SESSION_RECORDING);
     return OK;
 }
@@ -444,6 +446,11 @@ int32_t stop() {
 #if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
 void record_event(const trace_record& rec) {
     if (g_session_state.load_acquire() != SESSION_RECORDING) {
+        return;
+    }
+
+    uint16_t event_id = rec.hdr.event_id;
+    if (event_id >= EVENT_ID_COUNT || !(g_session_event_mask.load_relaxed() & (1ull << event_id))) {
         return;
     }
 
