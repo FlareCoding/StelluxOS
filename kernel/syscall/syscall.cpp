@@ -8,6 +8,8 @@
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 #include "hw/cpu.h"
+#include "clock/clock.h"
+#include "trace/ktrace_events.h"
 #include "common/logging.h"
 
 constexpr uint32_t ELEVATION_CONTEXT_MASK = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL;
@@ -46,6 +48,11 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     this_cpu(percpu_is_elevated) = true;
     cpu::irq_enable();
 
+    uint64_t trace_start_ns = 0;
+    if (ktrace::is_recording(ktrace::EVENT_SYSCALL) && syscall_num != syscall::SYS_ELEVATE) {
+        trace_start_ns = clock::now_ns();
+    }
+
     int64_t result;
 
     if (syscall_num < syscall::MAX_SYSCALL_NUM && syscall::g_syscall_table[syscall_num]) {
@@ -72,6 +79,11 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
         if (signals::end_temporary_blocked(self)) {
             deliver_fatal_signal(self);
         }
+    }
+
+    if (trace_start_ns && self) {
+        ktrace::record_syscall(self->tid, static_cast<uint32_t>(syscall_num),
+                               clock::now_ns() - trace_start_ns, result);
     }
 
     // Return-boundary restore: dynamic runtime elevation follows the selected
