@@ -82,7 +82,8 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     }
 
     if (trace_start_ns && self) {
-        ktrace::record_syscall(self->tid, static_cast<uint32_t>(syscall_num),
+        uint32_t pid = self->group ? self->group->pid : 0;
+        ktrace::record_syscall(self->tid, pid, static_cast<uint32_t>(syscall_num),
                                clock::now_ns() - trace_start_ns, result);
     }
 

@@ -6,6 +6,10 @@
 #include "mm/heap.h"
 #include "mm/paging.h"
 #include "mm/shmem.h"
+#include "sched/sched.h"
+#include "sched/task.h"
+#include "clock/clock.h"
+#include "trace/ktrace_events.h"
 #include "common/string.h"
 #include "common/logging.h"
 #include "hw/cache.h"
@@ -83,9 +87,17 @@ int32_t handle_user_pf(
         return MM_CTX_ERR_INVALID_ARG;
     }
 
+    uint64_t trace_start_ns = ktrace::is_recording(ktrace::EVENT_PAGE_FAULT) ? clock::now_ns() : 0;
+
     sync::mutex_lock(mm_ctx->lock);
     int32_t result = handle_user_pf_locked(mm_ctx, fault_address, pf_flags);
     sync::mutex_unlock(mm_ctx->lock);
+
+    if (trace_start_ns) {
+        ktrace::record_page_fault(sched::current()->tid, fault_address, pf_flags,
+                                  clock::now_ns() - trace_start_ns, result);
+    }
+
     return result;
 }
 

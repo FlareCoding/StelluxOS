@@ -63,6 +63,7 @@ void record_sched_wakeup(
 
 void record_syscall(
     uint32_t tid,
+    uint32_t pid,
     uint32_t number,
     uint64_t duration_ns,
     int64_t result
@@ -76,9 +77,35 @@ void record_syscall(
     payload.result = result;
     payload.number = number;
     payload.tid = tid;
+    payload.pid = pid;
 
     trace_record rec = {};
     rec.hdr.event_id = EVENT_SYSCALL;
+    rec.hdr.length = sizeof(trace_record) / sizeof(uint64_t);
+    string::memcpy(rec.payload, &payload, sizeof(payload));
+    record_event(rec);
+}
+
+void record_page_fault(
+    uint32_t tid,
+    uint64_t address,
+    uint64_t flags,
+    uint64_t duration_ns,
+    int32_t result
+) {
+    if (!is_recording(EVENT_PAGE_FAULT)) {
+        return;
+    }
+
+    page_fault_payload payload = {};
+    payload.address = address;
+    payload.flags = flags;
+    payload.duration_ns = duration_ns;
+    payload.result = result;
+    payload.tid = tid;
+
+    trace_record rec = {};
+    rec.hdr.event_id = EVENT_PAGE_FAULT;
     rec.hdr.length = sizeof(trace_record) / sizeof(uint64_t);
     string::memcpy(rec.payload, &payload, sizeof(payload));
     record_event(rec);
