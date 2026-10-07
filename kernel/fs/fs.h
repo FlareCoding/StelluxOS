@@ -30,6 +30,7 @@ constexpr int32_t ERR_XDEV      = -15;
 constexpr int32_t ERR_SPIPE     = -16;
 constexpr int32_t ERR_INTR      = -17;
 constexpr int32_t ERR_NODATA    = -18;
+constexpr int32_t ERR_PIPE      = -19;
 
 /**
  * @brief Initialize the filesystem subsystem. Registers ramfs,
