@@ -4,28 +4,26 @@
 #include "common/types.h"
 
 /*
- * A .ktrace file holds one stopped session. Fields are little-endian and
- * offsets are relative to the start of the file. Each section starts on a
- * 64-byte boundary.
+ * A .ktrace file holds one session, streamed while it records. Fields are
+ * little-endian and every section is a multiple of 64 bytes.
  *
- *   offset 0           +-------------------------+
- *                      | file_header             |  64 bytes
- *   cpu_table_offset   +-------------------------+
- *                      | cpu_table_entry CPU 0   |  32 bytes each, cpu_count
- *                      | cpu_table_entry CPU 1   |  entries in CPU id order
- *                      | ...                     |
- *   records_offset     +-------------------------+
- *   of CPU 0           | trace_record            |  record_count records,
- *                      | ...                     |  oldest first
- *   records_offset     +-------------------------+
- *   of CPU 1           | trace_record            |
- *                      | ...                     |
- *                      +-------------------------+
+ *   +-------------------------+
+ *   | file_header             |  64 bytes
+ *   +-------------------------+
+ *   | chunk_header            |  64 bytes, CHUNK_RECORDS
+ *   | trace_record            |  record_count records of one CPU,
+ *   | ...                     |  oldest first
+ *   +-------------------------+
+ *   | ...                     |  more chunks, CPUs interleaved
+ *   +-------------------------+
+ *   | chunk_header            |  CHUNK_END, last in the file
+ *   +-------------------------+
  *
- * Readers sort records by timestamp, since an interrupt can record between a
- * writer's clock read and its slot reservation, and they drop records older
- * than session_start_ns. Fields are only appended to the header, growing
- * header_size, and version changes only for incompatible layouts.
+ * A file without a CHUNK_END chunk was cut short. Readers sort records by
+ * timestamp, since an interrupt can record between a writer's clock read and
+ * its slot reservation, and they drop records older than session_start_ns.
+ * Fields are only appended to the headers, and version changes only for
+ * incompatible layouts.
  */
 
 namespace ktrace {
@@ -35,12 +33,13 @@ constexpr int32_t ERR_NO_MEMORY     = -1;
 constexpr int32_t ERR_BUSY          = -2;
 constexpr int32_t ERR_NOT_RECORDING = -3;
 constexpr int32_t ERR_DEVFS         = -4;
+constexpr int32_t ERR_NO_READER     = -5;
 
 constexpr char     FILE_MAGIC[]  = "STLXKTRC";
 constexpr uint16_t FILE_VERSION  = 1;
 
-constexpr uint32_t CPU_FLAG_RING_WRAPPED = 1 << 0;
-constexpr uint32_t CPU_FLAG_NO_RING      = 1 << 1;
+constexpr uint32_t CHUNK_RECORDS = 1;
+constexpr uint32_t CHUNK_END     = 2;
 
 // An event mask holds one bit per event id
 constexpr uint16_t EVENT_ID_COUNT = 64;
@@ -69,26 +68,26 @@ struct file_header {
     uint16_t    header_size;        // sizeof(file_header)
     uint16_t    arch;               // ELF machine number of the kernel
     uint16_t    reserved0;
-    uint32_t    cpu_count;          // Entries in the CPU table
+    uint32_t    cpu_count;
     uint32_t    record_size;        // sizeof(trace_record)
-    uint64_t    cpu_table_offset;
     uint64_t    boot_unix_ns;       // Wall-clock time at boot, 0 without an RTC
     uint64_t    session_start_ns;   // Nanoseconds since boot
-    uint64_t    session_stop_ns;    // Nanoseconds since boot
-    uint64_t    reserved1;
+    uint64_t    event_mask;         // Event ids the session recorded, one bit each
+    uint64_t    reserved1[2];
 } __attribute__((packed));
 
 static_assert(sizeof(file_header) == 64, "file_header size must be 64 bytes");
 
-struct cpu_table_entry {
+struct chunk_header {
+    uint32_t    kind;               // CHUNK_RECORDS or CHUNK_END
     uint32_t    cpu_id;
-    uint32_t    flags;              // CPU_FLAG_* bits
     uint64_t    record_count;
-    uint64_t    records_offset;
-    uint64_t    reserved;
+    uint64_t    lost_records;       // Records the CPU dropped since its previous chunk
+    uint64_t    stop_ns;            // Nanoseconds since boot, set in CHUNK_END
+    uint64_t    reserved[4];
 } __attribute__((packed));
 
-static_assert(sizeof(cpu_table_entry) == 32, "cpu_table_entry size must be 32 bytes");
+static_assert(sizeof(chunk_header) == 64, "chunk_header size must be 64 bytes");
 
 /**
  * @brief Initializes the kernel tracing and profiling subsystem for a given CPU.
@@ -104,23 +103,24 @@ __PRIVILEGED_CODE int32_t register_devfs_nodes();
 
 /**
  * @brief Starts a session on every CPU that records the events set in `event_mask`,
- * emptying the rings first.
- * @return OK, or ERR_BUSY while a session is recording.
+ * emptying the rings first. It streams to the reader of /dev/ktrace/trace.
+ * @return OK, ERR_BUSY while a session is recording, or ERR_NO_READER when the trace has
+ * no reader or its reader already streamed a session.
  */
 int32_t start(uint64_t event_mask);
 
 /**
  * @brief Stops the recording session. Returns once every record reserved in the session
- * is completely written, yielding the CPU while it waits. The rings keep the session's
- * records until the next start().
+ * is completely written, yielding the CPU while it waits. The reader then gets the rest.
  * @return OK, or ERR_NOT_RECORDING when no session is recording.
  */
 int32_t stop();
 
 /**
  * @brief Append a record to this CPU's trace ring, stamped with `clock::now_ns()`.
- * Does nothing unless a session is recording `rec`'s event id. Any timestamp already
- * in `rec` is replaced. Callable from any context at either privilege level.
+ * Does nothing unless a session is recording `rec`'s event id, and drops the record while
+ * the ring is full. Any timestamp already in `rec` is replaced. Callable from any context
+ * at either privilege level.
  */
 #if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
     void record_event(const trace_record& rec);
