@@ -1,7 +1,11 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "trace/ktrace.h"
+#include "dynpriv/dynpriv.h"
+#include "sched/sched.h"
+#include "sched/task.h"
 #include "exec/elf_arch.h"
 #include "fs/fs.h"
 #include "fs/file.h"
@@ -368,4 +372,48 @@ TEST(ktrace, the_trace_lists_a_wrapped_ring_oldest_first) {
     EXPECT_EQ(wrapped ? wrapped->record_count : 0, RING_RECORDS);
     EXPECT_EQ(out_of_order, 0u);
     heap::ufree(trace);
+}
+
+static constexpr uint32_t RECORDING_CPU = 1;
+static constexpr uint64_t RECORDING_CPU_EVENTS = 5;
+
+static sync::atomic<uint32_t> g_recorder_done;
+
+static void record_on_cpu_task(void*) {
+    record_events(RECORDING_CPU_EVENTS);
+    g_recorder_done.store_release(1);
+    sched::exit(0);
+}
+
+// CPU 0 records nothing, so a single read crosses its empty range on the way to CPU 1's records
+TEST(ktrace, the_trace_reads_past_a_cpu_that_recorded_nothing) {
+    ASSERT_TRUE(smp::cpu_count() > RECORDING_CPU);
+    g_recorder_done.store_relaxed(0);
+    ASSERT_EQ(ktrace::start(), ktrace::OK);
+
+    bool created = false;
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(record_on_cpu_task, nullptr, "ktrace_recorder");
+        if (t) {
+            sched::enqueue_on(t, RECORDING_CPU);
+            created = true;
+        }
+    });
+    ASSERT_TRUE(created);
+    EXPECT_TRUE(test_helpers::spin_wait(g_recorder_done));
+    ASSERT_EQ(ktrace::stop(), ktrace::OK);
+
+    size_t length = read_trace(g_trace_bytes, sizeof(g_trace_bytes), LARGE_READ_BYTES);
+    const auto* header = reinterpret_cast<const ktrace::file_header*>(g_trace_bytes);
+    const auto* entries = reinterpret_cast<const ktrace::cpu_table_entry*>(g_trace_bytes + header->cpu_table_offset);
+    const auto& recorded = entries[RECORDING_CPU];
+    const auto* records = reinterpret_cast<const ktrace::trace_record*>(g_trace_bytes + recorded.records_offset);
+
+    EXPECT_EQ(entries[0].record_count, 0u);
+    EXPECT_EQ(recorded.record_count, RECORDING_CPU_EVENTS);
+    EXPECT_EQ(length, recorded.records_offset + RECORDING_CPU_EVENTS * sizeof(ktrace::trace_record));
+
+    for (uint64_t i = 0; i < RECORDING_CPU_EVENTS; i++) {
+        EXPECT_EQ(records[i].payload[0], i);
+    }
 }

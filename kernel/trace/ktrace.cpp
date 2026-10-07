@@ -255,12 +255,14 @@ static file_header build_file_header(uint32_t cpu_count) {
 static void copy_records(uint8_t* dst, uint64_t pos, uint64_t end, const trace_ring& ring,
                          const ring_summary& summary, uint64_t records_offset) {
     uint64_t records_end = records_offset + summary.kept * sizeof(trace_record);
-    if (end <= records_offset || pos >= records_end) {
+    uint64_t from = pos > records_offset ? pos : records_offset;
+    uint64_t to = end < records_end ? end : records_end;
+    if (from >= to) {
         return;
     }
 
-    uint64_t first = ((pos > records_offset ? pos : records_offset) - records_offset) / sizeof(trace_record);
-    uint64_t last = ((end < records_end ? end : records_end) - records_offset - 1) / sizeof(trace_record);
+    uint64_t first = (from - records_offset) / sizeof(trace_record);
+    uint64_t last = (to - records_offset - 1) / sizeof(trace_record);
 
     for (uint64_t i = first; i <= last; i++) {
         const trace_record& rec = ring.records[(summary.oldest_slot + i) % PERCPU_RECORD_BUFFER_RECORDS];
