@@ -8,6 +8,7 @@ namespace ktrace {
 constexpr uint16_t EVENT_SCHED_SWITCH = 1;
 constexpr uint16_t EVENT_SCHED_WAKEUP = 2;
 constexpr uint16_t EVENT_SYSCALL      = 3;
+constexpr uint16_t EVENT_PAGE_FAULT   = 4;
 
 constexpr uint8_t SWITCH_REASON_PREEMPTED = 0;
 constexpr uint8_t SWITCH_REASON_YIELDED   = 1;
@@ -46,11 +47,24 @@ struct syscall_payload {
     int64_t     result;
     uint32_t    number;
     uint32_t    tid;
-    uint8_t     reserved[24];
+    uint32_t    pid;
+    uint8_t     reserved[20];
 } __attribute__((packed));
 
 static_assert(sizeof(syscall_payload) == sizeof(trace_record::payload),
               "syscall_payload must fill a record payload");
+
+struct page_fault_payload {
+    uint64_t    address;
+    uint64_t    flags;
+    uint64_t    duration_ns;
+    int32_t     result;
+    uint32_t    tid;
+    uint8_t     reserved[16];
+} __attribute__((packed));
+
+static_assert(sizeof(page_fault_payload) == sizeof(trace_record::payload),
+              "page_fault_payload must fill a record payload");
 
 #if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
     /**
@@ -69,11 +83,19 @@ static_assert(sizeof(syscall_payload) == sizeof(trace_record::payload),
     /**
     * @brief Records one completed syscall of task `tid`.
     */
-    void record_syscall(uint32_t tid, uint32_t number, uint64_t duration_ns, int64_t result);
+    void record_syscall(uint32_t tid, uint32_t pid, uint32_t number, uint64_t duration_ns,
+                        int64_t result);
+
+    /**
+    * @brief Records one page fault of task `tid` at `address`.
+    */
+    void record_page_fault(uint32_t tid, uint64_t address, uint64_t flags, uint64_t duration_ns,
+                           int32_t result);
 #else
     inline void record_sched_switch(uint32_t, const char*, uint32_t, const char*, uint8_t) {}
     inline void record_sched_wakeup(uint32_t, const char*, uint32_t, uint32_t, const char*, bool) {}
-    inline void record_syscall(uint32_t, uint32_t, uint64_t, int64_t) {}
+    inline void record_syscall(uint32_t, uint32_t, uint32_t, uint64_t, int64_t) {}
+    inline void record_page_fault(uint32_t, uint64_t, uint64_t, uint64_t, int32_t) {}
 #endif
 
 } // namespace ktrace
