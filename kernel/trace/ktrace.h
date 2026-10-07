@@ -63,7 +63,6 @@ struct trace_record {
 } __attribute__((aligned(64)));
 
 static_assert(sizeof(trace_record) == 64, "trace_record size must be 64 bytes");
-
 struct file_header {
     char        magic[8];           // FILE_MAGIC without its terminator
     uint16_t    version;            // FILE_VERSION
@@ -127,6 +126,16 @@ int32_t stop();
     void record_event(const trace_record& rec);
 #else
     inline void record_event(const trace_record&) {}
+#endif
+
+/**
+ * @brief Whether a session is recording `event_id`, so typed recorders can return
+ * before building a record.
+ */
+#if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
+    bool is_recording(uint16_t event_id);
+#else
+    inline bool is_recording(uint16_t) { return false; }
 #endif
 } // namespace ktrace
 

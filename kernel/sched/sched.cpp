@@ -22,6 +22,7 @@
 #include "hw/cpu_features.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
+#include "trace/ktrace_events.h"
 #include "rc/reaper.h"
 #include "exec/elf.h"
 #include "random/random.h"
@@ -362,6 +363,18 @@ __PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
     return 0;
 }
 
+static uint8_t switch_reason(bool prev_dead, bool preempted, uint32_t prev_state) {
+    if (prev_dead) {
+        return ktrace::SWITCH_REASON_EXITED;
+    }
+
+    if (preempted) {
+        return ktrace::SWITCH_REASON_PREEMPTED;
+    }
+
+    return prev_state == TASK_STATE_BLOCKED ? ktrace::SWITCH_REASON_BLOCKED : ktrace::SWITCH_REASON_YIELDED;
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -423,6 +436,11 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
     // A task resuming its wait entry stays BLOCKED
     if (next->state.load_relaxed() != TASK_STATE_BLOCKED) {
         next->state.store_relaxed(TASK_STATE_RUNNING);
+    }
+
+    if (next != prev) {
+        ktrace::record_sched_switch(prev->tid, prev->name, next->tid, next->name,
+                                    switch_reason(prev_dead, preempted, prev_state));
     }
 
     // One timestamp ends prev's charge and starts next's, so no time goes uncharged

@@ -444,13 +444,13 @@ int32_t stop() {
 }
 
 #if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
-void record_event(const trace_record& rec) {
-    if (g_session_state.load_acquire() != SESSION_RECORDING) {
-        return;
-    }
+bool is_recording(uint16_t event_id) {
+    return g_session_state.load_acquire() == SESSION_RECORDING && event_id < EVENT_ID_COUNT &&
+           (g_session_event_mask.load_relaxed() & (1ull << event_id));
+}
 
-    uint16_t event_id = rec.hdr.event_id;
-    if (event_id >= EVENT_ID_COUNT || !(g_session_event_mask.load_relaxed() & (1ull << event_id))) {
+void record_event(const trace_record& rec) {
+    if (!is_recording(rec.hdr.event_id)) {
         return;
     }
 
