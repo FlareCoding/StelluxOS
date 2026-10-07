@@ -33,8 +33,7 @@ struct sched_wakeup_payload {
     uint32_t    woken_tid;
     uint32_t    target_cpu;
     uint32_t    waker_tid;
-    uint8_t     from_interrupt;
-    uint8_t     reserved[3];
+    uint8_t     reserved[4];
     char        woken_name[TASK_NAME_BYTES];
     char        waker_name[TASK_NAME_BYTES];
 } __attribute__((packed));
@@ -78,7 +77,7 @@ static_assert(sizeof(page_fault_payload) == sizeof(trace_record::payload),
     * @brief Records task `woken_tid` becoming runnable on `target_cpu`.
     */
     void record_sched_wakeup(uint32_t woken_tid, const char* woken_name, uint32_t target_cpu,
-                             uint32_t waker_tid, const char* waker_name, bool from_interrupt);
+                             uint32_t waker_tid, const char* waker_name);
 
     /**
     * @brief Records one completed syscall of task `tid`.
@@ -93,7 +92,7 @@ static_assert(sizeof(page_fault_payload) == sizeof(trace_record::payload),
                            int32_t result);
 #else
     inline void record_sched_switch(uint32_t, const char*, uint32_t, const char*, uint8_t) {}
-    inline void record_sched_wakeup(uint32_t, const char*, uint32_t, uint32_t, const char*, bool) {}
+    inline void record_sched_wakeup(uint32_t, const char*, uint32_t, uint32_t, const char*) {}
     inline void record_syscall(uint32_t, uint32_t, uint32_t, uint64_t, int64_t) {}
     inline void record_page_fault(uint32_t, uint64_t, uint64_t, uint64_t, int32_t) {}
 #endif

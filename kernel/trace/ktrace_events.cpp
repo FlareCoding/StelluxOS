@@ -39,8 +39,7 @@ void record_sched_wakeup(
     const char* woken_name,
     uint32_t target_cpu,
     uint32_t waker_tid,
-    const char* waker_name,
-    bool from_interrupt
+    const char* waker_name
 ) {
     if (!is_recording(EVENT_SCHED_WAKEUP)) {
         return;
@@ -50,7 +49,6 @@ void record_sched_wakeup(
     payload.woken_tid = woken_tid;
     payload.target_cpu = target_cpu;
     payload.waker_tid = waker_tid;
-    payload.from_interrupt = from_interrupt;
     copy_task_name(payload.woken_name, woken_name);
     copy_task_name(payload.waker_name, waker_name);
 
