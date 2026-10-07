@@ -42,6 +42,10 @@ constexpr uint16_t FILE_VERSION  = 1;
 constexpr uint32_t CPU_FLAG_RING_WRAPPED = 1 << 0;
 constexpr uint32_t CPU_FLAG_NO_RING      = 1 << 1;
 
+// An event mask holds one bit per event id
+constexpr uint16_t EVENT_ID_COUNT = 64;
+constexpr uint64_t ALL_EVENTS     = ~0ull;
+
 struct trace_record_header {
     uint64_t    timestamp;     // Nanoseconds since boot, set by record_event()
     uint16_t    event_id;      // ID of the event in a given trace profile
@@ -100,10 +104,11 @@ __PRIVILEGED_CODE int32_t init();
 __PRIVILEGED_CODE int32_t register_devfs_nodes();
 
 /**
- * @brief Starts a session on every CPU, emptying the rings first.
+ * @brief Starts a session on every CPU that records the events set in `event_mask`,
+ * emptying the rings first.
  * @return OK, or ERR_BUSY while a session is recording.
  */
-int32_t start();
+int32_t start(uint64_t event_mask);
 
 /**
  * @brief Stops the recording session. Returns once every record reserved in the session
@@ -115,8 +120,8 @@ int32_t stop();
 
 /**
  * @brief Append a record to this CPU's trace ring, stamped with `clock::now_ns()`.
- * Does nothing unless a session is recording. Any timestamp already in `rec` is
- * replaced. Callable from any context at either privilege level.
+ * Does nothing unless a session is recording `rec`'s event id. Any timestamp already
+ * in `rec` is replaced. Callable from any context at either privilege level.
  */
 #if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
     void record_event(const trace_record& rec);

@@ -23,6 +23,10 @@ struct cpu_line_totals {
 static constexpr uint64_t MISSING_STATUS_VALUE = ~0ull;
 static constexpr uint64_t RING_RECORDS = 65536;
 
+// Sessions here record only this id, so kernel events never mix into the counts
+static constexpr uint16_t TEST_EVENT_ID = ktrace::EVENT_ID_COUNT - 1;
+static constexpr uint64_t TEST_EVENT_MASK = 1ull << TEST_EVENT_ID;
+
 // Odd sizes, so reads cross section and record boundaries
 static constexpr size_t SMALL_READ_BYTES = 100;
 static constexpr size_t LARGE_READ_BYTES = 64 * 1024 + 7;
@@ -115,6 +119,7 @@ static cpu_line_totals sum_cpu_lines() {
 static void record_events(uint64_t count) {
     for (uint64_t i = 0; i < count; i++) {
         ktrace::trace_record rec = {};
+        rec.hdr.event_id = TEST_EVENT_ID;
         rec.payload[0] = i;
         ktrace::record_event(rec);
     }
@@ -167,8 +172,8 @@ TEST(ktrace, opening_the_trace_before_the_first_session_fails_with_nodata) {
 }
 
 TEST(ktrace, start_fails_while_a_session_is_recording) {
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
-    EXPECT_EQ(ktrace::start(), ktrace::ERR_BUSY);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
+    EXPECT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::ERR_BUSY);
     EXPECT_EQ(ktrace::stop(), ktrace::OK);
 }
 
@@ -177,9 +182,9 @@ TEST(ktrace, stop_fails_when_no_session_is_recording) {
 }
 
 TEST(ktrace, a_stopped_session_can_be_started_again) {
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     ASSERT_EQ(ktrace::stop(), ktrace::OK);
-    EXPECT_EQ(ktrace::start(), ktrace::OK);
+    EXPECT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     EXPECT_EQ(ktrace::stop(), ktrace::OK);
 }
 
@@ -196,7 +201,7 @@ static ssize_t write_to_control(const char* command) {
 
 TEST(ktrace, writing_start_and_stop_to_control_drives_a_session) {
     ASSERT_EQ(write_to_control("start"), 5);
-    EXPECT_EQ(ktrace::start(), ktrace::ERR_BUSY);
+    EXPECT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::ERR_BUSY);
     EXPECT_EQ(write_to_control("stop"), 4);
     EXPECT_EQ(ktrace::stop(), ktrace::ERR_NOT_RECORDING);
 }
@@ -223,7 +228,7 @@ TEST(ktrace, control_refuses_unknown_commands) {
 }
 
 TEST(ktrace, status_counts_records_while_recording_and_after_stop) {
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     record_events(3);
 
     ASSERT_TRUE(read_status());
@@ -241,18 +246,36 @@ TEST(ktrace, status_counts_records_while_recording_and_after_stop) {
 }
 
 TEST(ktrace, start_empties_the_rings) {
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     record_events(2);
     ASSERT_EQ(ktrace::stop(), ktrace::OK);
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
 
     ASSERT_TRUE(read_status());
     EXPECT_EQ(sum_cpu_lines().kept, 0u);
     EXPECT_EQ(ktrace::stop(), ktrace::OK);
 }
 
+TEST(ktrace, events_outside_the_session_mask_are_dropped) {
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
+    record_events(2);
+
+    ktrace::trace_record unselected = {};
+    unselected.hdr.event_id = TEST_EVENT_ID - 1;
+    ktrace::record_event(unselected);
+
+    ktrace::trace_record out_of_range = {};
+    out_of_range.hdr.event_id = ktrace::EVENT_ID_COUNT;
+    ktrace::record_event(out_of_range);
+
+    ASSERT_EQ(ktrace::stop(), ktrace::OK);
+
+    ASSERT_TRUE(read_status());
+    EXPECT_EQ(sum_cpu_lines().kept, 2u);
+}
+
 TEST(ktrace, events_outside_a_session_are_dropped) {
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     ASSERT_EQ(ktrace::stop(), ktrace::OK);
     record_events(5);
 
@@ -261,7 +284,7 @@ TEST(ktrace, events_outside_a_session_are_dropped) {
 }
 
 TEST(ktrace, status_flags_a_ring_that_wrapped) {
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     record_events(RING_RECORDS + 10);
     ASSERT_EQ(ktrace::stop(), ktrace::OK);
 
@@ -272,28 +295,28 @@ TEST(ktrace, status_flags_a_ring_that_wrapped) {
 }
 
 TEST(ktrace, opening_the_trace_while_recording_fails_with_busy) {
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     EXPECT_EQ(try_open_trace(), fs::ERR_BUSY);
     EXPECT_EQ(ktrace::stop(), ktrace::OK);
 }
 
 TEST(ktrace, start_fails_while_the_trace_is_open) {
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     ASSERT_EQ(ktrace::stop(), ktrace::OK);
 
     fs::file* trace = fs::open("/dev/ktrace/trace", fs::O_RDONLY);
     ASSERT_NOT_NULL(trace);
-    EXPECT_EQ(ktrace::start(), ktrace::ERR_BUSY);
+    EXPECT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::ERR_BUSY);
     EXPECT_TRUE(read_status());
     EXPECT_EQ(status_value("trace_open"), 1u);
 
     fs::close(trace);
-    EXPECT_EQ(ktrace::start(), ktrace::OK);
+    EXPECT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     EXPECT_EQ(ktrace::stop(), ktrace::OK);
 }
 
 TEST(ktrace, the_trace_describes_the_stopped_session) {
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     record_events(3);
     ASSERT_EQ(ktrace::stop(), ktrace::OK);
 
@@ -339,7 +362,7 @@ TEST(ktrace, the_trace_describes_the_stopped_session) {
 
 TEST(ktrace, the_trace_lists_a_wrapped_ring_oldest_first) {
     constexpr uint64_t overwritten = 10;
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
     record_events(RING_RECORDS + overwritten);
     ASSERT_EQ(ktrace::stop(), ktrace::OK);
 
@@ -389,7 +412,7 @@ static void record_on_cpu_task(void*) {
 TEST(ktrace, the_trace_reads_past_a_cpu_that_recorded_nothing) {
     ASSERT_TRUE(smp::cpu_count() > RECORDING_CPU);
     g_recorder_done.store_relaxed(0);
-    ASSERT_EQ(ktrace::start(), ktrace::OK);
+    ASSERT_EQ(ktrace::start(TEST_EVENT_MASK), ktrace::OK);
 
     bool created = false;
     RUN_ELEVATED({
