@@ -39,6 +39,10 @@ static int32_t map_fs_error_to_resource(int32_t fs_err) {
             return ERR_BUSY;
         case fs::ERR_NODATA:
             return ERR_NODATA;
+        case fs::ERR_INTR:
+            return ERR_INTR;
+        case fs::ERR_PIPE:
+            return ERR_PIPE;
         default:
             return ERR_IO;
     }
