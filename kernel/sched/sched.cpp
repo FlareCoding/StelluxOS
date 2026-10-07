@@ -582,8 +582,7 @@ __PRIVILEGED_CODE void wake(task* t) {
     }
 
     task* waker = current();
-    ktrace::record_sched_wakeup(t->tid, t->name, task_cpu, waker->tid, waker->name,
-                                (waker->exec.flags & TASK_FLAG_IN_IRQ) != 0);
+    ktrace::record_sched_wakeup(t->tid, t->name, task_cpu, waker->tid, waker->name);
 
     // If queued or running, its own switch-out keeps a READY task on the runqueue
     if (t->exec.on_runqueue) {
