@@ -362,6 +362,10 @@ __PRIVILEGED_CODE static int32_t add_node(fs::node* dir, fs::node* node, const c
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t register_devfs_nodes() {
+#if !defined(KTRACE_ENABLED) || KTRACE_ENABLED == 0
+    return OK;
+#endif
+
     fs::node* dir = devfs::ensure_dir("ktrace");
     if (!dir) {
         log::error("ktrace: failed to create /dev/ktrace");

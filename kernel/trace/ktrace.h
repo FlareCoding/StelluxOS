@@ -97,7 +97,7 @@ static_assert(sizeof(cpu_table_entry) == 32, "cpu_table_entry size must be 32 by
 __PRIVILEGED_CODE int32_t init();
 
 /**
- * @brief Registers the /dev/ktrace nodes. Must be called after devfs is mounted.
+ * @brief Registers the /dev/ktrace nodes if ktrace is enabled.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t register_devfs_nodes();
