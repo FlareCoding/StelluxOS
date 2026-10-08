@@ -37,6 +37,7 @@ struct open_stretch {
 };
 
 struct thread_progress {
+    bool                    has_appeared = false;
     uint64_t                first_ns = 0;
     uint64_t                last_ns = 0;
     uint8_t                 kind = ktrace::TASK_KIND_NOT_RECORDED;
@@ -261,9 +262,9 @@ static bool insert_thread_name_row(derived_writer& w, uint32_t tid, const thread
 // Records that `tid` appears at `ts_ns` with the kind and name a switch or wakeup carried
 static bool note_task(derived_writer& w, uint32_t tid, uint8_t kind, const char* name, uint64_t ts_ns,
                       thread_progress*& thread) {
-    auto [entry, inserted] = w.thread_by_tid.try_emplace(tid);
-    thread = &entry->second;
-    if (inserted) {
+    thread = &w.thread_by_tid[tid];
+    if (!thread->has_appeared) {
+        thread->has_appeared = true;
         thread->first_ns = ts_ns;
     }
 
@@ -289,13 +290,35 @@ static bool note_task(derived_writer& w, uint32_t tid, uint8_t kind, const char*
 }
 
 static thread_progress& note_thread(derived_writer& w, uint32_t tid, uint64_t ts_ns) {
-    auto [entry, inserted] = w.thread_by_tid.try_emplace(tid);
-    if (inserted) {
-        entry->second.first_ns = ts_ns;
+    thread_progress& thread = w.thread_by_tid[tid];
+    if (!thread.has_appeared) {
+        thread.has_appeared = true;
+        thread.first_ns = ts_ns;
     }
 
-    entry->second.last_ns = ts_ns;
-    return entry->second;
+    thread.last_ns = ts_ns;
+    return thread;
+}
+
+// The thread each CPU runs when the session starts appears only as the previous task of that
+// CPU's first switch. It counts as running from the start, so a wakeup before then is ignored.
+static void mark_session_start_runners(derived_writer& w, const timeline& order) {
+    std::vector<bool> has_switched(w.slice_by_cpu.size(), false);
+    size_t cpus_left = has_switched.size();
+    for (const timeline_record& record : order.records) {
+        if (cpus_left == 0) {
+            break;
+        }
+
+        const uint8_t* bytes = record_bytes(w.file, record);
+        if (record_event_id(bytes) != ktrace::EVENT_SCHED_SWITCH || has_switched[record.cpu]) {
+            continue;
+        }
+
+        w.thread_by_tid[record_payload<ktrace::sched_switch_payload>(bytes).prev_tid].is_running = true;
+        has_switched[record.cpu] = true;
+        cpus_left--;
+    }
 }
 
 static void start_stretch_after_switch_out(derived_writer& w, uint32_t tid, thread_progress& thread, uint8_t reason,
@@ -536,6 +559,7 @@ bool write_derived_tables(database& db, const trace_file& file, const timeline& 
     }
 
     collect_activity(w, order);
+    mark_session_start_runners(w, order);
     if (!walk_timeline(w, order) || !end_open_rows(w)) {
         return false;
     }
