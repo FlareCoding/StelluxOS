@@ -13,6 +13,6 @@ struct health_check {
 };
 
 // Checks whether the file holds the whole session as it was recorded
-std::vector<health_check> check_health(const trace_file& file, const record_counts& counts);
+std::vector<health_check> check_health(const trace_file& file, const timeline& order);
 
 #endif // KTRACE_DECODE_HEALTH_HPP

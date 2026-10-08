@@ -1,6 +1,8 @@
 #include "database.hpp"
+#include "derived_tables.hpp"
 #include "event_tables.hpp"
 #include "health.hpp"
+#include "name_table.hpp"
 #include "session_tables.hpp"
 #include "text.hpp"
 #include "trace_file.hpp"
@@ -67,7 +69,8 @@ static std::string describe_event_rows(const record_counts& counts) {
 }
 
 static void print_summary(const char* database_path, const trace_file& file, const record_counts& counts,
-                          const std::vector<health_check>& checks, const phase_durations& durations) {
+                          const derived_counts& derived, const std::vector<health_check>& checks,
+                          const phase_durations& durations) {
     const ktrace::file_header& header = file.header;
     const char* arch = arch_name(header.arch);
     printf("wrote %s\n", database_path);
@@ -81,6 +84,8 @@ static void print_summary(const char* database_path, const trace_file& file, con
     printf(" on %u CPUs (%s), %" PRIu64 " records, %" PRIu64 " lost\n", header.cpu_count,
            arch ? arch : "unknown arch", counts.in_session, file.lost_records);
     printf("  rows     %s\n", describe_event_rows(counts).c_str());
+    printf("  derived  cpu_slices %" PRIu64 ", thread_states %" PRIu64 ", threads %" PRIu64 ", processes %" PRIu64 "\n",
+           derived.cpu_slices, derived.thread_states, derived.threads, derived.processes);
 
     const char* label = "health";
     for (const health_check& check : checks) {
@@ -94,11 +99,14 @@ static void print_summary(const char* database_path, const trace_file& file, con
 }
 
 static bool write_database(const char* database_path, const trace_file& file, const timeline& order,
-                           const std::vector<health_check>& checks, std::string& error) {
+                           const std::vector<health_check>& checks, derived_counts& derived, std::string& error) {
     database db;
+    name_ids ids;
     if (open_database(database_path, db, error) &&
         write_session_tables(db, file, order.counts, checks, error) &&
-        write_event_tables(db, file, order, error) &&
+        write_event_tables(db, file, order, ids, error) &&
+        write_derived_tables(db, file, order, ids, derived, error) &&
+        write_name_table(db, ids, error) &&
         finish_database(db, error)) {
         return true;
     }
@@ -134,10 +142,11 @@ int main(int argc, char** argv) {
 
     uint64_t order_start_ns = monotonic_ns();
     timeline order = build_timeline(file);
-    std::vector<health_check> checks = check_health(file, order.counts);
+    std::vector<health_check> checks = check_health(file, order);
 
     uint64_t write_start_ns = monotonic_ns();
-    if (!write_database(database_path, file, order, checks, error)) {
+    derived_counts derived;
+    if (!write_database(database_path, file, order, checks, derived, error)) {
         fprintf(stderr, "ktrace-decode: %s\n", error.c_str());
         return 1;
     }
@@ -145,7 +154,7 @@ int main(int argc, char** argv) {
     uint64_t done_ns = monotonic_ns();
     phase_durations durations = {order_start_ns - read_start_ns, write_start_ns - order_start_ns,
                                  done_ns - write_start_ns};
-    print_summary(database_path, file, order.counts, checks, durations);
+    print_summary(database_path, file, order.counts, derived, checks, durations);
 
     return 0;
 }

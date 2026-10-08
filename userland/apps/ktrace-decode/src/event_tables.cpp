@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstring>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <vector>
 
 struct column_definition {
@@ -17,18 +17,7 @@ struct event_table {
     sqlite_statement                 insert;
 };
 
-// Gives each distinct task name one id, numbered from 1 as the names first appear
-struct name_ids {
-    std::unordered_map<std::string, int64_t> id_by_name;
-    std::vector<std::string>                 names;
-};
-
-constexpr const char* RECORD_TABLES_SCHEMA = R"sql(
-CREATE TABLE names (
-    name_id           INTEGER PRIMARY KEY,
-    name              TEXT NOT NULL      -- A task name as the kernel copied it, at most 16 bytes
-);
-
+constexpr const char* UNKNOWN_RECORDS_SCHEMA = R"sql(
 CREATE TABLE unknown_records (
     ts_ns             INTEGER NOT NULL,  -- When the kernel wrote the record, nanoseconds since boot
     cpu               INTEGER NOT NULL,  -- The CPU whose ring held the record
@@ -36,8 +25,6 @@ CREATE TABLE unknown_records (
     record            BLOB NOT NULL      -- The whole 64-byte record, header included
 );
 )sql";
-
-constexpr const char* INSERT_NAME_SQL = "INSERT INTO names (name_id, name) VALUES (?, ?)";
 
 constexpr const char* INSERT_UNKNOWN_RECORD_SQL =
     "INSERT INTO unknown_records (ts_ns, cpu, event_id, record) VALUES (?, ?, ?, ?)";
@@ -124,18 +111,6 @@ static T read_field(const uint8_t* payload, const ktrace::event_field& field) {
     return value;
 }
 
-static int64_t intern_task_name(name_ids& ids, const uint8_t* bytes) {
-    const char* text = reinterpret_cast<const char*>(bytes);
-    std::string name(text, strnlen(text, ktrace::TASK_NAME_BYTES));
-
-    auto [entry, inserted] = ids.id_by_name.try_emplace(name, static_cast<int64_t>(ids.names.size() + 1));
-    if (inserted) {
-        ids.names.push_back(std::move(name));
-    }
-
-    return entry->second;
-}
-
 static void bind_payload_fields(sqlite3_stmt* row, const ktrace::event_description& event, const uint8_t* payload,
                                 name_ids& ids) {
     int column = FIRST_FIELD_COLUMN;
@@ -184,8 +159,7 @@ static bool write_record_rows(database& db, const trace_file& file, const timeli
 
     for (const timeline_record& record : order.records) {
         const uint8_t* bytes = record_bytes(file, record);
-        uint16_t event_id;
-        memcpy(&event_id, bytes + offsetof(ktrace::trace_record_header, event_id), sizeof(event_id));
+        uint16_t event_id = record_event_id(bytes);
 
         event_table* table = event_id < ktrace::EVENT_ID_COUNT ? table_by_event_id[event_id] : nullptr;
         sqlite3_stmt* row = table ? table->insert.get() : insert_unknown.get();
@@ -207,26 +181,30 @@ static bool write_record_rows(database& db, const trace_file& file, const timeli
     return true;
 }
 
-static bool write_name_rows(database& db, const name_ids& ids, std::string& error) {
-    sqlite_statement insert = prepare_statement(db, INSERT_NAME_SQL, error);
-    if (!insert) {
-        return false;
-    }
+// Analyses select an event's records by thread, then by time. Every field
+// holding a thread id is named with a tid suffix.
+static bool create_thread_indexes(database& db, std::string& error) {
+    for (const ktrace::event_description& event : ktrace::EVENTS) {
+        for (size_t i = 0; i < event.field_count; i++) {
+            std::string_view field = event.fields[i].name;
+            if (!field.ends_with("tid")) {
+                continue;
+            }
 
-    sqlite3_stmt* row = insert.get();
-    for (size_t i = 0; i < ids.names.size(); i++) {
-        sqlite3_bind_int64(row, 1, static_cast<int64_t>(i + 1));
-        sqlite3_bind_text(row, 2, ids.names[i].data(), static_cast<int>(ids.names[i].size()), SQLITE_STATIC);
-        if (!insert_row(db, row, error)) {
-            return false;
+            std::string sql = format_string("CREATE INDEX %s_by_%s ON %s (%s, ts_ns)", event.name,
+                                            event.fields[i].name, event.name, event.fields[i].name);
+            if (!execute_sql(db, sql.c_str(), error)) {
+                return false;
+            }
         }
     }
 
     return true;
 }
 
-bool write_event_tables(database& db, const trace_file& file, const timeline& order, std::string& error) {
-    if (!execute_sql(db, RECORD_TABLES_SCHEMA, error)) {
+bool write_event_tables(database& db, const trace_file& file, const timeline& order, name_ids& ids,
+                        std::string& error) {
+    if (!execute_sql(db, UNKNOWN_RECORDS_SCHEMA, error)) {
         return false;
     }
 
@@ -235,10 +213,9 @@ bool write_event_tables(database& db, const trace_file& file, const timeline& or
         return false;
     }
 
-    name_ids ids;
     if (!write_record_rows(db, file, order, tables, ids, error)) {
         return false;
     }
 
-    return write_name_rows(db, ids, error);
+    return create_thread_indexes(db, error);
 }
