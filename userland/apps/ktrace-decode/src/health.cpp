@@ -2,6 +2,7 @@
 #include "text.hpp"
 
 #include <cinttypes>
+#include <optional>
 
 static void append_list_item(std::string& list, const std::string& item) {
     if (!list.empty()) {
@@ -68,10 +69,39 @@ static health_check check_known_event_ids(const record_counts& counts) {
     return {"known_event_ids", false, unknown};
 }
 
-std::vector<health_check> check_health(const trace_file& file, const record_counts& counts) {
+// Each switch must start from the task the CPU's previous switch put on it, which the derived
+// tables rely on. Only lost records break the chain.
+static health_check check_switch_chain(const trace_file& file, const timeline& order) {
+    std::vector<std::optional<uint32_t>> running_by_cpu(file.header.cpu_count);
+    uint64_t breaks = 0;
+    for (const timeline_record& record : order.records) {
+        const uint8_t* bytes = record_bytes(file, record);
+        if (record_event_id(bytes) != ktrace::EVENT_SCHED_SWITCH) {
+            continue;
+        }
+
+        auto payload = record_payload<ktrace::sched_switch_payload>(bytes);
+        std::optional<uint32_t>& running = running_by_cpu[record.cpu];
+        if (running && *running != payload.prev_tid) {
+            breaks++;
+        }
+
+        running = payload.next_tid;
+    }
+
+    if (breaks == 0) {
+        return {"switch_chain", true, "every CPU's switches form one unbroken chain"};
+    }
+
+    std::string switches = count_with_noun(breaks, "switch", "switches");
+    return {"switch_chain", false, switches + " did not start from the task the CPU's previous switch put on it"};
+}
+
+std::vector<health_check> check_health(const trace_file& file, const timeline& order) {
     return {
         check_file_complete(file),
         check_no_lost_records(file),
-        check_known_event_ids(counts),
+        check_known_event_ids(order.counts),
+        check_switch_chain(file, order),
     };
 }

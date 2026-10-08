@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -59,6 +60,19 @@ timeline build_timeline(const trace_file& file);
 
 inline const uint8_t* record_bytes(const trace_file& file, const timeline_record& record) {
     return file.bytes.get() + static_cast<size_t>(record.block_index) * sizeof(ktrace::trace_record);
+}
+
+inline uint16_t record_event_id(const uint8_t* record) {
+    uint16_t event_id;
+    memcpy(&event_id, record + offsetof(ktrace::trace_record_header, event_id), sizeof(event_id));
+    return event_id;
+}
+
+template <typename T>
+inline T record_payload(const uint8_t* record) {
+    T payload;
+    memcpy(&payload, record + sizeof(ktrace::trace_record_header), sizeof(payload));
+    return payload;
 }
 
 // Returns nullptr for an ELF machine number this decoder has no name for
