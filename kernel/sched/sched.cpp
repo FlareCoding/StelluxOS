@@ -439,8 +439,7 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
     }
 
     if (next != prev) {
-        ktrace::record_sched_switch(prev->tid, prev->name, next->tid, next->name,
-                                    switch_reason(prev_dead, preempted, prev_state));
+        ktrace::record_sched_switch(prev, next, switch_reason(prev_dead, preempted, prev_state));
     }
 
     // One timestamp ends prev's charge and starts next's, so no time goes uncharged
@@ -581,8 +580,7 @@ __PRIVILEGED_CODE void wake(task* t) {
         return;
     }
 
-    task* waker = current();
-    ktrace::record_sched_wakeup(t->tid, t->name, task_cpu, waker->tid, waker->name);
+    ktrace::record_sched_wakeup(t, task_cpu, current());
 
     // If queued or running, its own switch-out keeps a READY task on the runqueue
     if (t->exec.on_runqueue) {

@@ -3,6 +3,8 @@
 
 #include "trace/ktrace.h"
 
+namespace sched { struct task; }
+
 namespace ktrace {
 
 constexpr uint16_t EVENT_SCHED_SWITCH = 1;
@@ -15,13 +17,21 @@ constexpr uint8_t SWITCH_REASON_YIELDED   = 1;
 constexpr uint8_t SWITCH_REASON_BLOCKED   = 2;
 constexpr uint8_t SWITCH_REASON_EXITED    = 3;
 
+constexpr uint8_t TASK_KIND_NOT_RECORDED = 0;
+constexpr uint8_t TASK_KIND_USER         = 1;
+constexpr uint8_t TASK_KIND_KERNEL       = 2;
+constexpr uint8_t TASK_KIND_IDLE         = 3;
+
 constexpr size_t TASK_NAME_BYTES = 16;
 
 struct sched_switch_payload {
     uint32_t    prev_tid;
     uint32_t    next_tid;
     uint8_t     reason;
-    uint8_t     reserved[7];
+    uint8_t     prev_kind;
+    uint8_t     next_kind;
+    uint8_t     reserved;
+    uint32_t    next_pid;   // 0 when the task belongs to no process
     char        prev_name[TASK_NAME_BYTES];
     char        next_name[TASK_NAME_BYTES];
 } __attribute__((packed));
@@ -33,7 +43,9 @@ struct sched_wakeup_payload {
     uint32_t    woken_tid;
     uint32_t    target_cpu;
     uint32_t    waker_tid;
-    uint8_t     reserved[4];
+    uint8_t     woken_kind;
+    uint8_t     waker_kind;
+    uint8_t     reserved[2];
     char        woken_name[TASK_NAME_BYTES];
     char        waker_name[TASK_NAME_BYTES];
 } __attribute__((packed));
@@ -67,17 +79,15 @@ static_assert(sizeof(page_fault_payload) == sizeof(trace_record::payload),
 
 #if defined(KTRACE_ENABLED) && KTRACE_ENABLED == 1
     /**
-    * @brief Records this CPU switching from task `prev_tid` to `next_tid` when the session
+    * @brief Records this CPU switching from task `prev` to `next` when the session
     * records EVENT_SCHED_SWITCH.
     */
-    void record_sched_switch(uint32_t prev_tid, const char* prev_name,
-                             uint32_t next_tid, const char* next_name, uint8_t reason);
+    void record_sched_switch(const sched::task* prev, const sched::task* next, uint8_t reason);
 
     /**
-    * @brief Records task `woken_tid` becoming runnable on `target_cpu`.
+    * @brief Records task `woken` becoming runnable on `target_cpu`.
     */
-    void record_sched_wakeup(uint32_t woken_tid, const char* woken_name, uint32_t target_cpu,
-                             uint32_t waker_tid, const char* waker_name);
+    void record_sched_wakeup(const sched::task* woken, uint32_t target_cpu, const sched::task* waker);
 
     /**
     * @brief Records one completed syscall of task `tid`.
@@ -91,8 +101,8 @@ static_assert(sizeof(page_fault_payload) == sizeof(trace_record::payload),
     void record_page_fault(uint32_t tid, uint64_t address, uint64_t flags, uint64_t duration_ns,
                            int32_t result);
 #else
-    inline void record_sched_switch(uint32_t, const char*, uint32_t, const char*, uint8_t) {}
-    inline void record_sched_wakeup(uint32_t, const char*, uint32_t, uint32_t, const char*) {}
+    inline void record_sched_switch(const sched::task*, const sched::task*, uint8_t) {}
+    inline void record_sched_wakeup(const sched::task*, uint32_t, const sched::task*) {}
     inline void record_syscall(uint32_t, uint32_t, uint32_t, uint64_t, int64_t) {}
     inline void record_page_fault(uint32_t, uint64_t, uint64_t, uint64_t, int32_t) {}
 #endif
