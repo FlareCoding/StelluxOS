@@ -1,5 +1,6 @@
 #include "text.hpp"
 
+#include <cinttypes>
 #include <cstdarg>
 #include <cstdio>
 
@@ -17,4 +18,8 @@ std::string format_string(const char* format, ...) {
     va_end(args);
 
     return text;
+}
+
+std::string count_with_noun(uint64_t count, const char* singular, const char* plural) {
+    return format_string("%" PRIu64 " %s", count, count == 1 ? singular : plural);
 }

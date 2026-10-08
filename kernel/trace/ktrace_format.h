@@ -56,6 +56,14 @@ constexpr uint8_t TASK_KIND_IDLE         = 3;
 
 constexpr size_t TASK_NAME_BYTES = 16;
 
+constexpr uint8_t FIELD_U8        = 1;
+constexpr uint8_t FIELD_U32       = 2;
+constexpr uint8_t FIELD_U64       = 3;
+constexpr uint8_t FIELD_I32       = 4;
+constexpr uint8_t FIELD_I64       = 5;
+constexpr uint8_t FIELD_TASK_NAME = 6;  // TASK_NAME_BYTES, NUL-terminated only when shorter
+constexpr uint8_t FIELD_RESERVED  = 7;
+
 struct trace_record_header {
     uint64_t    timestamp;     // Nanoseconds since boot, set by record_event()
     uint16_t    event_id;      // ID of the event in a given trace profile
@@ -153,6 +161,137 @@ struct page_fault_payload {
 
 static_assert(sizeof(page_fault_payload) == sizeof(trace_record::payload),
               "page_fault_payload must fill a record payload");
+
+// Lets a reader decode every event from this header alone, without code per event
+struct event_field {
+    const char* name;
+    uint8_t     type;               // FIELD_*
+    uint16_t    offset;             // Within the payload
+    uint16_t    size;
+};
+
+struct event_description {
+    uint16_t           id;
+    const char*        name;
+    const event_field* fields;
+    size_t             field_count;
+};
+
+constexpr bool field_type_fits_size(const event_field& field) {
+    switch (field.type) {
+    case FIELD_U8:
+        return field.size == 1;
+    case FIELD_U32:
+    case FIELD_I32:
+        return field.size == 4;
+    case FIELD_U64:
+    case FIELD_I64:
+        return field.size == 8;
+    case FIELD_TASK_NAME:
+        return field.size == TASK_NAME_BYTES;
+    case FIELD_RESERVED:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Whether `fields` describe every byte of the payload in order, each with a type that fits its size
+template <size_t N>
+constexpr bool fields_describe_payload(const event_field (&fields)[N], size_t payload_size) {
+    size_t next_offset = 0;
+    for (size_t i = 0; i < N; i++) {
+        if (fields[i].offset != next_offset || !field_type_fits_size(fields[i])) {
+            return false;
+        }
+
+        next_offset += fields[i].size;
+    }
+
+    return next_offset == payload_size;
+}
+
+// Takes the name, offset and size from one member, so an entry cannot describe the wrong bytes
+#define KTRACE_PAYLOAD_FIELD(payload, member, type) \
+    { #member, type, __builtin_offsetof(payload, member), sizeof(payload::member) }
+
+constexpr event_field SCHED_SWITCH_FIELDS[] = {
+    KTRACE_PAYLOAD_FIELD(sched_switch_payload, prev_tid,  FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(sched_switch_payload, next_tid,  FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(sched_switch_payload, reason,    FIELD_U8),
+    KTRACE_PAYLOAD_FIELD(sched_switch_payload, prev_kind, FIELD_U8),
+    KTRACE_PAYLOAD_FIELD(sched_switch_payload, next_kind, FIELD_U8),
+    KTRACE_PAYLOAD_FIELD(sched_switch_payload, reserved,  FIELD_RESERVED),
+    KTRACE_PAYLOAD_FIELD(sched_switch_payload, next_pid,  FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(sched_switch_payload, prev_name, FIELD_TASK_NAME),
+    KTRACE_PAYLOAD_FIELD(sched_switch_payload, next_name, FIELD_TASK_NAME),
+};
+
+static_assert(fields_describe_payload(SCHED_SWITCH_FIELDS, sizeof(sched_switch_payload)),
+              "SCHED_SWITCH_FIELDS must describe every byte of sched_switch_payload");
+
+constexpr event_field SCHED_WAKEUP_FIELDS[] = {
+    KTRACE_PAYLOAD_FIELD(sched_wakeup_payload, woken_tid,  FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(sched_wakeup_payload, target_cpu, FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(sched_wakeup_payload, waker_tid,  FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(sched_wakeup_payload, woken_kind, FIELD_U8),
+    KTRACE_PAYLOAD_FIELD(sched_wakeup_payload, waker_kind, FIELD_U8),
+    KTRACE_PAYLOAD_FIELD(sched_wakeup_payload, reserved,   FIELD_RESERVED),
+    KTRACE_PAYLOAD_FIELD(sched_wakeup_payload, woken_name, FIELD_TASK_NAME),
+    KTRACE_PAYLOAD_FIELD(sched_wakeup_payload, waker_name, FIELD_TASK_NAME),
+};
+
+static_assert(fields_describe_payload(SCHED_WAKEUP_FIELDS, sizeof(sched_wakeup_payload)),
+              "SCHED_WAKEUP_FIELDS must describe every byte of sched_wakeup_payload");
+
+constexpr event_field SYSCALL_FIELDS[] = {
+    KTRACE_PAYLOAD_FIELD(syscall_payload, duration_ns, FIELD_U64),
+    KTRACE_PAYLOAD_FIELD(syscall_payload, result,      FIELD_I64),
+    KTRACE_PAYLOAD_FIELD(syscall_payload, number,      FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(syscall_payload, tid,         FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(syscall_payload, pid,         FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(syscall_payload, reserved,    FIELD_RESERVED),
+};
+
+static_assert(fields_describe_payload(SYSCALL_FIELDS, sizeof(syscall_payload)),
+              "SYSCALL_FIELDS must describe every byte of syscall_payload");
+
+constexpr event_field PAGE_FAULT_FIELDS[] = {
+    KTRACE_PAYLOAD_FIELD(page_fault_payload, address,     FIELD_U64),
+    KTRACE_PAYLOAD_FIELD(page_fault_payload, flags,       FIELD_U64),
+    KTRACE_PAYLOAD_FIELD(page_fault_payload, duration_ns, FIELD_U64),
+    KTRACE_PAYLOAD_FIELD(page_fault_payload, result,      FIELD_I32),
+    KTRACE_PAYLOAD_FIELD(page_fault_payload, tid,         FIELD_U32),
+    KTRACE_PAYLOAD_FIELD(page_fault_payload, reserved,    FIELD_RESERVED),
+};
+
+static_assert(fields_describe_payload(PAGE_FAULT_FIELDS, sizeof(page_fault_payload)),
+              "PAGE_FAULT_FIELDS must describe every byte of page_fault_payload");
+
+#undef KTRACE_PAYLOAD_FIELD
+
+constexpr event_description EVENTS[] = {
+    { EVENT_SCHED_SWITCH, "sched_switch", SCHED_SWITCH_FIELDS, sizeof(SCHED_SWITCH_FIELDS) / sizeof(event_field) },
+    { EVENT_SCHED_WAKEUP, "sched_wakeup", SCHED_WAKEUP_FIELDS, sizeof(SCHED_WAKEUP_FIELDS) / sizeof(event_field) },
+    { EVENT_SYSCALL,      "syscall",      SYSCALL_FIELDS,      sizeof(SYSCALL_FIELDS) / sizeof(event_field) },
+    { EVENT_PAGE_FAULT,   "page_fault",   PAGE_FAULT_FIELDS,   sizeof(PAGE_FAULT_FIELDS) / sizeof(event_field) },
+};
+
+// Whether every event has its own id with a bit in the event mask
+constexpr bool event_ids_are_distinct_mask_bits() {
+    uint64_t seen = 0;
+    for (const event_description& event : EVENTS) {
+        if (event.id >= EVENT_ID_COUNT || (seen & (1ull << event.id))) {
+            return false;
+        }
+
+        seen |= 1ull << event.id;
+    }
+
+    return true;
+}
+
+static_assert(event_ids_are_distinct_mask_bits(), "EVENTS must give each event its own id below EVENT_ID_COUNT");
 
 } // namespace ktrace
 

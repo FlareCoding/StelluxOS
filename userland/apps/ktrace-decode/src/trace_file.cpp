@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <limits>
 
 // Returns 0 once `size` bytes are read or the file ends, or the errno value that stopped it
 static int read_fully(int fd, uint8_t* buffer, size_t size, size_t& bytes_read) {
@@ -91,6 +92,17 @@ static bool validate_file_header(const char* path, trace_file& file, std::string
         return false;
     }
 
+    if (header.header_size % sizeof(ktrace::trace_record) != 0) {
+        error = format_string("%s declares a %u-byte header, but every section is a multiple of %zu bytes", path,
+                              header.header_size, sizeof(ktrace::trace_record));
+        return false;
+    }
+
+    if (file.size / sizeof(ktrace::trace_record) > std::numeric_limits<uint32_t>::max()) {
+        error = format_string("%s is %zu bytes, more than this decoder indexes", path, file.size);
+        return false;
+    }
+
     if (header.record_size != sizeof(ktrace::trace_record)) {
         error = format_string("%s declares %u-byte records, but this decoder reads %zu-byte records", path,
                               header.record_size, sizeof(ktrace::trace_record));
@@ -162,35 +174,96 @@ bool load_trace_file(const char* path, trace_file& file, std::string& error) {
     return index_chunks(path, file, error);
 }
 
-record_counts count_records(const trace_file& file) {
-    record_counts counts;
-    counts.in_session_by_cpu.assign(file.header.cpu_count, 0);
-    counts.before_start_by_cpu.assign(file.header.cpu_count, 0);
+static bool is_earlier(const timeline_record& a, const timeline_record& b) {
+    return a.ts_ns < b.ts_ns;
+}
+
+// Collects each CPU's records of the session in file order, counting them on the way
+static std::vector<std::vector<timeline_record>> collect_records_by_cpu(const trace_file& file,
+                                                                        record_counts& counts) {
+    std::vector<uint64_t> streamed_records_by_cpu(file.header.cpu_count, 0);
+    for (const record_chunk& chunk : file.chunks) {
+        streamed_records_by_cpu[chunk.cpu] += chunk.record_count;
+    }
+
+    std::vector<std::vector<timeline_record>> records_by_cpu(file.header.cpu_count);
+    for (size_t cpu = 0; cpu < records_by_cpu.size(); cpu++) {
+        records_by_cpu[cpu].reserve(streamed_records_by_cpu[cpu]);
+    }
 
     uint64_t session_start_ns = file.header.session_start_ns;
     for (const record_chunk& chunk : file.chunks) {
-        const uint8_t* first_record = file.bytes.get() + chunk.first_record_offset;
-        for (uint64_t i = 0; i < chunk.record_count; i++) {
-            ktrace::trace_record_header record;
-            memcpy(&record, first_record + i * sizeof(ktrace::trace_record), sizeof(record));
+        uint32_t first_block = static_cast<uint32_t>(chunk.first_record_offset / sizeof(ktrace::trace_record));
+        for (uint32_t i = 0; i < chunk.record_count; i++) {
+            ktrace::trace_record_header header;
+            memcpy(&header, file.bytes.get() + chunk.first_record_offset + i * sizeof(ktrace::trace_record),
+                   sizeof(header));
 
-            if (record.timestamp < session_start_ns) {
+            if (header.timestamp < session_start_ns) {
                 counts.before_start_by_cpu[chunk.cpu]++;
                 counts.before_start++;
                 continue;
             }
 
+            records_by_cpu[chunk.cpu].push_back({header.timestamp, first_block + i, chunk.cpu});
             counts.in_session_by_cpu[chunk.cpu]++;
             counts.in_session++;
-            if (record.event_id < ktrace::EVENT_ID_COUNT) {
-                counts.by_event_id[record.event_id]++;
+            if (header.event_id < ktrace::EVENT_ID_COUNT) {
+                counts.by_event_id[header.event_id]++;
             } else {
                 counts.with_event_id_out_of_range++;
             }
         }
     }
 
-    return counts;
+    return records_by_cpu;
+}
+
+// Merges the CPUs' ordered records, taking the earliest head each time
+static std::vector<timeline_record> merge_by_timestamp(const std::vector<std::vector<timeline_record>>& records_by_cpu,
+                                                       uint64_t record_count) {
+    std::vector<timeline_record> merged;
+    merged.reserve(record_count);
+
+    std::vector<size_t> next_by_cpu(records_by_cpu.size(), 0);
+    while (merged.size() < record_count) {
+        const timeline_record* earliest = nullptr;
+        size_t earliest_cpu = 0;
+        for (size_t cpu = 0; cpu < records_by_cpu.size(); cpu++) {
+            if (next_by_cpu[cpu] == records_by_cpu[cpu].size()) {
+                continue;
+            }
+
+            const timeline_record& candidate = records_by_cpu[cpu][next_by_cpu[cpu]];
+            if (!earliest || is_earlier(candidate, *earliest)) {
+                earliest = &candidate;
+                earliest_cpu = cpu;
+            }
+        }
+
+        merged.push_back(*earliest);
+        next_by_cpu[earliest_cpu]++;
+    }
+
+    return merged;
+}
+
+timeline build_timeline(const trace_file& file) {
+    timeline result;
+    result.counts.in_session_by_cpu.assign(file.header.cpu_count, 0);
+    result.counts.before_start_by_cpu.assign(file.header.cpu_count, 0);
+
+    std::vector<std::vector<timeline_record>> records_by_cpu = collect_records_by_cpu(file, result.counts);
+
+    // A CPU's records are already in order apart from the rare inversion the format allows
+    for (std::vector<timeline_record>& records : records_by_cpu) {
+        if (!std::is_sorted(records.begin(), records.end(), is_earlier)) {
+            std::stable_sort(records.begin(), records.end(), is_earlier);
+        }
+    }
+
+    result.records = merge_by_timestamp(records_by_cpu, result.counts.in_session);
+    return result;
 }
 
 const char* arch_name(uint16_t elf_machine) {
@@ -202,4 +275,14 @@ const char* arch_name(uint16_t elf_machine) {
     default:
         return nullptr;
     }
+}
+
+const ktrace::event_description* find_event_description(uint16_t event_id) {
+    for (const ktrace::event_description& event : ktrace::EVENTS) {
+        if (event.id == event_id) {
+            return &event;
+        }
+    }
+
+    return nullptr;
 }
