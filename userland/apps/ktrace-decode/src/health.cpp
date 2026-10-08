@@ -3,23 +3,6 @@
 
 #include <cinttypes>
 
-constexpr uint16_t KNOWN_EVENT_IDS[] = {
-    ktrace::EVENT_SCHED_SWITCH,
-    ktrace::EVENT_SCHED_WAKEUP,
-    ktrace::EVENT_SYSCALL,
-    ktrace::EVENT_PAGE_FAULT,
-};
-
-static bool is_known_event_id(uint16_t event_id) {
-    for (uint16_t known_event_id : KNOWN_EVENT_IDS) {
-        if (event_id == known_event_id) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 static void append_list_item(std::string& list, const std::string& item) {
     if (!list.empty()) {
         list += ", ";
@@ -29,17 +12,18 @@ static void append_list_item(std::string& list, const std::string& item) {
 }
 
 static health_check check_file_complete(const trace_file& file) {
+    std::string trailing_bytes = count_with_noun(file.trailing_bytes, "byte", "bytes");
     if (!file.has_end_chunk) {
         std::string detail = "the file has no end chunk, so it was cut short";
         if (file.trailing_bytes > 0) {
-            detail += format_string(", and its last %zu bytes are not a whole record", file.trailing_bytes);
+            detail += ", and it ends with " + trailing_bytes + " of a partial record";
         }
 
         return {"file_complete", false, detail};
     }
 
     if (file.trailing_bytes > 0) {
-        return {"file_complete", false, format_string("%zu bytes follow the end chunk", file.trailing_bytes)};
+        return {"file_complete", false, "the end chunk is followed by " + trailing_bytes};
     }
 
     return {"file_complete", true, "the file ends with its end chunk"};
@@ -49,8 +33,9 @@ static health_check check_no_lost_records(const trace_file& file) {
     std::string losses;
     for (size_t cpu = 0; cpu < file.lost_records_by_cpu.size(); cpu++) {
         if (file.lost_records_by_cpu[cpu] > 0) {
-            append_list_item(losses, format_string("CPU %zu lost %" PRIu64 " records", cpu,
-                                                   file.lost_records_by_cpu[cpu]));
+            append_list_item(losses, format_string("CPU %zu lost %s", cpu,
+                                                   count_with_noun(file.lost_records_by_cpu[cpu], "record",
+                                                                   "records").c_str()));
         }
     }
 
@@ -64,15 +49,16 @@ static health_check check_no_lost_records(const trace_file& file) {
 static health_check check_known_event_ids(const record_counts& counts) {
     std::string unknown;
     for (uint16_t event_id = 0; event_id < ktrace::EVENT_ID_COUNT; event_id++) {
-        if (counts.by_event_id[event_id] > 0 && !is_known_event_id(event_id)) {
-            append_list_item(unknown, format_string("%" PRIu64 " records have event id %u",
-                                                    counts.by_event_id[event_id], event_id));
+        if (counts.by_event_id[event_id] > 0 && !find_event_description(event_id)) {
+            std::string records = count_with_noun(counts.by_event_id[event_id], "record", "records");
+            append_list_item(unknown, format_string("%s with event id %u", records.c_str(), event_id));
         }
     }
 
     if (counts.with_event_id_out_of_range > 0) {
-        append_list_item(unknown, format_string("%" PRIu64 " records have an event id of %u or more",
-                                                counts.with_event_id_out_of_range, ktrace::EVENT_ID_COUNT));
+        std::string records = count_with_noun(counts.with_event_id_out_of_range, "record", "records");
+        append_list_item(unknown, format_string("%s with an event id of %u or more", records.c_str(),
+                                                ktrace::EVENT_ID_COUNT));
     }
 
     if (unknown.empty()) {
