@@ -2,7 +2,7 @@
 # Stellux Userland - Libraries
 #
 
-LIB_DIRS := libstlx libstlxcxx libstlxconf libstlxgfx libstlxwin libstlxqpa libstlxui libbearssl
+LIB_DIRS := libstlx libstlxcxx libstlxconf libstlxgfx libstlxwin libstlxqpa libstlxui libbearssl libsqlite3
 LIB_COUNT := $(words $(LIB_DIRS))
 
 all:
