@@ -7,7 +7,7 @@ APP_DIRS := init hello shell ls cat rm cp mv stat touch sleep true false clear p
 			fetch polltest epolltest cputimetest sigtest dropbear blackjack wordle hangman snake tetris \
 			grep wc head threadtest pthreadtest mmstress uname kill cxxtest synctest isoprobe vim tcc stlxtop \
 			reboot shutdown gfxbench windemo stlxterm doom uidemo \
-			stlxsettings file-manager ktrace
+			stlxsettings file-manager ktrace ktrace-decode
 APP_COUNT := $(words $(APP_DIRS))
 
 all:
