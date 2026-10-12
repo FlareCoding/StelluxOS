@@ -113,6 +113,7 @@ private:
 
     // Host controller configuration parameters
     xhci::xhci_hc_params m_hc_params = {};
+    pmm::zone_mask_t     m_dma_zone = pmm::ZONE_DMA32; // Zones the controller can address
 
     // Device Context Base Address Array (DMA, entries are physical addresses)
     uint64_t* m_dcbaa = nullptr;

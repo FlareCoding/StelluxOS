@@ -8,7 +8,8 @@
 
 namespace drivers::xhci {
 
-int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool csz) {
+int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool csz,
+                          pmm::zone_mask_t dma_zone) {
     m_port_id = port_id;
     m_slot_id = slot_id;
     m_speed = speed;
@@ -20,7 +21,7 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
 
     // Allocate input context (DMA)
     size_t input_ctx_size = csz ? sizeof(xhci_input_context64) : sizeof(xhci_input_context32);
-    m_input_ctx = alloc_xhci_memory(input_ctx_size);
+    m_input_ctx = alloc_xhci_memory(input_ctx_size, dma_zone);
     if (!m_input_ctx) {
         log::error("xhci: failed to allocate input context for slot %u", slot_id);
         return -1;
@@ -29,7 +30,7 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
     m_input_ctx_phys = xhci_get_physical_addr(m_input_ctx);
 
     // Allocate a persistent DMA page for control transfer payloads.
-    m_ctrl_transfer_buffer = alloc_xhci_memory(paging::PAGE_SIZE_4KB);
+    m_ctrl_transfer_buffer = alloc_xhci_memory(paging::PAGE_SIZE_4KB, dma_zone);
     if (!m_ctrl_transfer_buffer) {
         log::error("xhci: failed to allocate control transfer buffer for slot %u", slot_id);
         free_xhci_memory(m_input_ctx);
@@ -50,7 +51,7 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
         return -1;
     }
 
-    if (m_ctrl_ring->init(XHCI_TRANSFER_RING_TRB_COUNT, slot_id) != 0) {
+    if (m_ctrl_ring->init(XHCI_TRANSFER_RING_TRB_COUNT, slot_id, dma_zone) != 0) {
         log::error("xhci: failed to init control transfer ring for slot %u", slot_id);
         heap::ufree_delete(m_ctrl_ring);
         m_ctrl_ring = nullptr;

@@ -45,7 +45,7 @@ struct endpoint_async_state {
 class xhci_endpoint {
 public:
     xhci_endpoint() = default;
-    int32_t init(uint8_t slot_id, const usb::usb_endpoint_descriptor* desc);
+    int32_t init(uint8_t slot_id, const usb::usb_endpoint_descriptor* desc, pmm::zone_mask_t dma_zone);
     void destroy();
 
     // USB endpoint properties

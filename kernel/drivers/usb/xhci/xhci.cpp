@@ -56,6 +56,7 @@ int32_t xhci_hcd::attach() {
     m_hc_params.max_scratchpad_buffers = XHCI_MAX_SCRATCHPAD_BUFFERS(m_xhc_cap_regs);
     m_hc_params.extended_capabilities_offset = XHCI_XECP(m_xhc_cap_regs) * sizeof(uint32_t);
     m_hc_params.ac64 = XHCI_AC64(m_xhc_cap_regs);
+    m_dma_zone = m_hc_params.ac64 ? pmm::ZONE_ANY : pmm::ZONE_DMA32;
     m_hc_params.csz = XHCI_CSZ(m_xhc_cap_regs);
     m_hc_params.ppc = XHCI_PPC(m_xhc_cap_regs);
 
@@ -470,7 +471,7 @@ int32_t xhci_hcd::_configure_operational_registers() {
     size_t dcbaa_entries = static_cast<size_t>(m_hc_params.max_device_slots) + 1;
     size_t dcbaa_size = dcbaa_entries * sizeof(uint64_t);
 
-    m_dcbaa = static_cast<uint64_t*>(alloc_xhci_memory(dcbaa_size));
+    m_dcbaa = static_cast<uint64_t*>(alloc_xhci_memory(dcbaa_size, m_dma_zone));
     if (!m_dcbaa) {
         log::error("xhci: failed to allocate DCBAA (%lu entries)", dcbaa_entries);
         return -1;
@@ -490,7 +491,7 @@ int32_t xhci_hcd::_configure_operational_registers() {
 
         // Allocate the scratchpad pointer array (DMA: array of physical addresses)
         m_scratchpad.table = alloc_xhci_memory(
-            static_cast<size_t>(scratchpad_count) * sizeof(uint64_t));
+            static_cast<size_t>(scratchpad_count) * sizeof(uint64_t), m_dma_zone);
         if (!m_scratchpad.table) {
             log::error("xhci: failed to allocate scratchpad pointer array (%u entries)", scratchpad_count);
             goto fail_dcbaa;
@@ -507,7 +508,7 @@ int32_t xhci_hcd::_configure_operational_registers() {
         // Allocate each scratchpad page
         auto* scratchpad_phys_array = static_cast<uint64_t*>(m_scratchpad.table);
         for (uint16_t i = 0; i < scratchpad_count; i++) {
-            void* page = alloc_xhci_memory(paging::PAGE_SIZE_4KB);
+            void* page = alloc_xhci_memory(paging::PAGE_SIZE_4KB, m_dma_zone);
             if (!page) {
                 log::error("xhci: failed to allocate scratchpad page %u/%u", i, scratchpad_count);
                 // Free previously allocated pages
@@ -536,7 +537,7 @@ int32_t xhci_hcd::_configure_operational_registers() {
         goto fail_dcbaap;
     }
 
-    if (m_cmd_ring->init(XHCI_COMMAND_RING_TRB_COUNT) != 0) {
+    if (m_cmd_ring->init(XHCI_COMMAND_RING_TRB_COUNT, m_dma_zone) != 0) {
         log::error("xhci: failed to initialize command ring");
         heap::ufree_delete(m_cmd_ring);
         m_cmd_ring = nullptr;
@@ -585,7 +586,7 @@ int32_t xhci_hcd::_configure_runtime_registers() {
         return -1;
     }
 
-    if (m_event_ring->init(XHCI_EVENT_RING_TRB_COUNT, primary_interrupter) != 0) {
+    if (m_event_ring->init(XHCI_EVENT_RING_TRB_COUNT, primary_interrupter, m_dma_zone) != 0) {
         log::error("xhci: failed to initialize event ring");
         heap::ufree_delete(m_event_ring);
         m_event_ring = nullptr;
@@ -1113,7 +1114,7 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
         ? sizeof(xhci_device_context64)
         : sizeof(xhci_device_context32);
 
-    void* output_ctx = alloc_xhci_memory(dev_ctx_size);
+    void* output_ctx = alloc_xhci_memory(dev_ctx_size, m_dma_zone);
     if (!output_ctx) {
         log::error("xhci: failed to allocate device context for slot %u", slot_id);
         _disable_slot(slot_id);
@@ -1133,7 +1134,7 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
         return;
     }
 
-    if (device->init(port_id, slot_id, port_speed, m_hc_params.csz) != 0) {
+    if (device->init(port_id, slot_id, port_speed, m_hc_params.csz, m_dma_zone) != 0) {
         log::error("xhci: failed to init xhci_device for slot %u", slot_id);
         heap::ufree_delete(device);
         free_xhci_memory(output_ctx);
@@ -1287,7 +1288,7 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
         ? sizeof(xhci_device_context64)
         : sizeof(xhci_device_context32);
 
-    void* output_ctx = alloc_xhci_memory(dev_ctx_size);
+    void* output_ctx = alloc_xhci_memory(dev_ctx_size, m_dma_zone);
     if (!output_ctx) {
         log::error("xhci: failed to allocate device context for slot %u", slot_id);
         _disable_slot(slot_id);
@@ -1306,7 +1307,7 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
     }
 
     // Use 1-based hub_port as port_id for logging context
-    if (device->init(hub_port, slot_id, speed, m_hc_params.csz) != 0) {
+    if (device->init(hub_port, slot_id, speed, m_hc_params.csz, m_dma_zone) != 0) {
         log::error("xhci: failed to init xhci_device for slot %u", slot_id);
         heap::ufree_delete(device);
         free_xhci_memory(output_ctx);
@@ -1722,7 +1723,7 @@ xhci_endpoint* xhci_hcd::_create_endpoint(xhci_device* device, const usb::usb_en
         return nullptr;
     }
 
-    if (ep->init(device->slot_id(), desc) != 0) {
+    if (ep->init(device->slot_id(), desc, m_dma_zone) != 0) {
         heap::ufree_delete(ep);
         return nullptr;
     }
