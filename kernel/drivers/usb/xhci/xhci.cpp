@@ -728,7 +728,7 @@ int32_t xhci_hcd::_send_command(xhci_trb_t* trb, xhci_command_completion_trb_t* 
         uint64_t deadline = clock::now_ns() + CMD_TIMEOUT_MS * 1000000ULL;
 
         while (!m_cmd_state.completed && clock::now_ns() < deadline) {
-            wait_for_event();
+            (void)wait_for_event_until(deadline);
             _process_event_ring();
             m_event_ring->finish_processing();
         }
@@ -2820,7 +2820,7 @@ int32_t xhci_hcd::_send_control_transfer(
     m_event_ring->finish_processing();
 
     while (!device->ctrl_completed() && clock::now_ns() < deadline) {
-        wait_for_event();
+        (void)wait_for_event_until(deadline);
         _process_event_ring();
         m_event_ring->finish_processing();
     }
