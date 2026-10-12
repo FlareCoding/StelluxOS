@@ -989,7 +989,7 @@ int32_t xhci_hcd::_set_tr_dequeue_ptr(xhci_device* device, uint8_t dci,
     return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
 }
 
-int32_t xhci_hcd::_recover_stalled_control_endpoint(xhci_device* device) {
+int32_t xhci_hcd::_recover_halted_control_endpoint(xhci_device* device) {
     if (!device || !device->ctrl_ring()) {
         return -1;
     }
@@ -1020,12 +1020,12 @@ int32_t xhci_hcd::_recover_stalled_control_endpoint(xhci_device* device) {
 
     int32_t rc = _reset_endpoint(device, 1);
     if (rc != 0) {
-        log::warn("xhci: recovering stalled EP0 slot %u: reset endpoint failed (ignored)",
+        log::warn("xhci: recovering halted EP0 slot %u: reset endpoint failed (ignored)",
                   device->slot_id());
     }
 
     if (_set_tr_dequeue_ptr(device, 1, dequeue_phys, dequeue_cycle) != 0) {
-        log::warn("xhci: recovering stalled EP0 slot %u: set dequeue pointer failed",
+        log::warn("xhci: recovering halted EP0 slot %u: set dequeue pointer failed",
                   device->slot_id());
         return -1;
     }
@@ -2727,6 +2727,14 @@ uint16_t xhci_hcd::_initial_max_packet_size(uint8_t speed) {
     }
 }
 
+// A stall, babble, or USB transaction error moves the endpoint to the Halted state (xHCI 4.10.2),
+// and every later transfer on it waits until software resets the endpoint.
+static bool completion_halts_endpoint(uint32_t completion_code) {
+    return completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR ||
+           completion_code == XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR ||
+           completion_code == XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR;
+}
+
 int32_t xhci_hcd::_send_control_transfer(
     xhci_device* device,
     xhci_device_request_packet& request,
@@ -2832,8 +2840,8 @@ int32_t xhci_hcd::_send_control_transfer(
     }
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
-            (void)_recover_stalled_control_endpoint(device);
+        if (completion_halts_endpoint(device->ctrl_result().completion_code)) {
+            (void)_recover_halted_control_endpoint(device);
         }
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
         log::warn("xhci: control transfer failed: %s",
@@ -3081,8 +3089,8 @@ int32_t xhci_hcd::usb_control_transfer(
     });
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
-            (void)_recover_stalled_control_endpoint(device);
+        if (completion_halts_endpoint(device->ctrl_result().completion_code)) {
+            (void)_recover_halted_control_endpoint(device);
         }
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
         log::warn("xhci: control transfer failed: %s",
