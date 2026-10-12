@@ -2,6 +2,7 @@
 #define STELLUX_DRIVERS_USB_XHCI_XHCI_MEM_H
 
 #include "mm/paging_types.h"
+#include "mm/pmm_types.h"
 
 namespace drivers::xhci {
 
@@ -51,7 +52,12 @@ constexpr size_t XHCI_EVENT_RING_SEGMENT_TABLE_ALIGNMENT = 64;
 constexpr size_t XHCI_SCRATCHPAD_BUFFER_ARRAY_ALIGNMENT  = 64;
 constexpr size_t XHCI_SCRATCHPAD_BUFFERS_ALIGNMENT       = paging::PAGE_SIZE_4KB;
 
-void* alloc_xhci_memory(size_t size);
+/**
+ * @brief Allocates zeroed, uncached DMA memory for controller data structures.
+ * @param dma_zone Zones the controller can address. A controller without 64-bit
+ * addressing (HCCPARAMS1.AC64 clear) must pass `pmm::ZONE_DMA32`.
+ */
+void* alloc_xhci_memory(size_t size, pmm::zone_mask_t dma_zone);
 
 void free_xhci_memory(void* ptr);
 

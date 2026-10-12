@@ -26,7 +26,8 @@ static uint8_t compute_dci(uint8_t endpoint_addr) {
     return static_cast<uint8_t>(ep_num * 2 + (is_in ? 1 : 0));
 }
 
-int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor* desc) {
+int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor* desc,
+                            pmm::zone_mask_t dma_zone) {
     m_endpoint_addr = desc->bEndpointAddress;
     m_attributes = desc->bmAttributes;
     m_max_packet_size = desc->wMaxPacketSize;
@@ -68,7 +69,7 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
         return -1;
     }
 
-    if (m_ring->init(XHCI_TRANSFER_RING_TRB_COUNT, slot_id) != 0) {
+    if (m_ring->init(XHCI_TRANSFER_RING_TRB_COUNT, slot_id, dma_zone) != 0) {
         log::error("xhci: failed to init transfer ring for EP %u", endpoint_num());
         heap::ufree_delete(m_ring);
         m_ring = nullptr;
@@ -77,7 +78,7 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
         return -1;
     }
 
-    m_dma_buffer = alloc_xhci_memory(paging::PAGE_SIZE_4KB);
+    m_dma_buffer = alloc_xhci_memory(paging::PAGE_SIZE_4KB, dma_zone);
     if (!m_dma_buffer) {
         log::error("xhci: failed to allocate DMA buffer for EP %u", endpoint_num());
         m_ring->destroy();

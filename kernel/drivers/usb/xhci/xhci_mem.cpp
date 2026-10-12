@@ -7,7 +7,7 @@
 
 namespace drivers::xhci {
 
-void* alloc_xhci_memory(size_t size) {
+void* alloc_xhci_memory(size_t size, pmm::zone_mask_t dma_zone) {
     if (size == 0) {
         log::error("xhci_mem: alloc with size 0");
         return nullptr;
@@ -18,7 +18,7 @@ void* alloc_xhci_memory(size_t size) {
     dma::buffer buf = {};
     int32_t rc = 0;
     RUN_ELEVATED({
-        rc = dma::alloc_pages(pages, buf, pmm::ZONE_ANY, paging::PAGE_USER);
+        rc = dma::alloc_pages(pages, buf, dma_zone, paging::PAGE_USER);
     });
 
     if (rc != dma::OK) {

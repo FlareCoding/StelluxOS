@@ -10,7 +10,7 @@ namespace drivers::xhci {
 class xhci_command_ring {
 public:
     xhci_command_ring() = default;
-    int32_t init(size_t max_trbs);
+    int32_t init(size_t max_trbs, pmm::zone_mask_t dma_zone);
     void destroy();
 
     inline xhci_trb_t* get_virtual_base() const { return m_trbs; }
@@ -48,7 +48,8 @@ public:
     xhci_event_ring() = default;
     int32_t init(
         size_t max_trbs,
-        volatile xhci_interrupter_registers* primary_interrupter_registers
+        volatile xhci_interrupter_registers* primary_interrupter_registers,
+        pmm::zone_mask_t dma_zone
     );
     void destroy();
 
@@ -83,7 +84,7 @@ private:
 class xhci_transfer_ring {
 public:
     xhci_transfer_ring() = default;
-    int32_t init(size_t max_trbs, uint8_t doorbell_id);
+    int32_t init(size_t max_trbs, uint8_t doorbell_id, pmm::zone_mask_t dma_zone);
     void destroy();
 
     inline xhci_trb_t* get_virtual_base() const { return m_trbs; }

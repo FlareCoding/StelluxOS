@@ -26,7 +26,8 @@ struct xhci_interface_info {
 class xhci_device {
 public:
     xhci_device() = default;
-    int32_t init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool csz);
+    int32_t init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool csz,
+                 pmm::zone_mask_t dma_zone);
     void destroy();
 
     // Identity
