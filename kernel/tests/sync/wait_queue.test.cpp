@@ -7,6 +7,7 @@
 #include "dynpriv/dynpriv.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
+#include "clock/clock.h"
 
 using test_helpers::spin_wait;
 using test_helpers::spin_wait_ge;
@@ -497,4 +498,104 @@ TEST(wait_queue, observer_returned_task_is_woken) {
     });
 
     EXPECT_TRUE(spin_wait(g_owed_done));
+}
+
+constexpr uint64_t SHORT_DEADLINE_NS = 20000000ULL; // 20ms
+constexpr uint64_t LONG_DEADLINE_NS  = 10000000000ULL; // 10s
+
+static sync::wait_queue g_timed_wq;
+static sync::spinlock g_timed_lock;
+static sync::atomic<uint32_t> g_timed_go;
+static sync::atomic<uint32_t> g_timed_waiting;
+static sync::atomic<uint32_t> g_timed_done;
+static uint64_t g_timed_deadline;
+static uint64_t g_timed_woke_at;
+
+static void timed_waiter_fn(void*) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_timed_lock);
+        g_timed_waiting.store_release(1);
+        while (!g_timed_go.load_acquire() && clock::now_ns() < g_timed_deadline) {
+            irq = sync::wait_until(g_timed_wq, g_timed_lock, irq, g_timed_deadline);
+        }
+
+        g_timed_woke_at = clock::now_ns();
+        sync::spin_unlock_irqrestore(g_timed_lock, irq);
+    });
+
+    g_timed_done.store_release(1);
+    sched::exit(0);
+}
+
+static void reset_timed_state(uint64_t timeout_ns) {
+    g_timed_wq.init();
+    g_timed_lock = sync::SPINLOCK_INIT;
+    g_timed_go.store_relaxed(0);
+    g_timed_waiting.store_relaxed(0);
+    g_timed_done.store_relaxed(0);
+    g_timed_woke_at = 0;
+    g_timed_deadline = clock::now_ns() + timeout_ns;
+}
+
+static bool start_timed_waiter() {
+    bool started = false;
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(timed_waiter_fn, nullptr, "wq_timed");
+        if (t) {
+            sched::enqueue(t);
+            started = true;
+        }
+    });
+
+    return started;
+}
+
+// Nothing wakes the queue, so only the deadline can end the wait.
+
+TEST(wait_queue, wait_until_returns_at_deadline) {
+    reset_timed_state(SHORT_DEADLINE_NS);
+
+    ASSERT_TRUE(start_timed_waiter());
+    ASSERT_TRUE(spin_wait(g_timed_done));
+
+    EXPECT_GE(g_timed_woke_at, g_timed_deadline);
+    EXPECT_EQ(g_timed_go.load_acquire(), 0u);
+}
+
+// A wake ends the wait long before a deadline far in the future.
+
+TEST(wait_queue, wait_until_wakes_before_deadline) {
+    reset_timed_state(LONG_DEADLINE_NS);
+
+    ASSERT_TRUE(start_timed_waiter());
+    ASSERT_TRUE(spin_wait(g_timed_waiting));
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_timed_lock);
+        g_timed_go.store_release(1);
+        sync::spin_unlock_irqrestore(g_timed_lock, irq);
+        sync::wake_one(g_timed_wq);
+    });
+
+    ASSERT_TRUE(spin_wait(g_timed_done));
+    EXPECT_LT(g_timed_woke_at, g_timed_deadline);
+}
+
+// A deadline already behind the clock returns without waiting for any wake or timer.
+
+TEST(wait_queue, wait_until_past_deadline_returns_at_once) {
+    sync::wait_queue wq;
+    wq.init();
+    sync::spinlock lock = sync::SPINLOCK_INIT;
+    uint64_t elapsed = 0;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(lock);
+        uint64_t start = clock::now_ns();
+        irq = sync::wait_until(wq, lock, irq, start - 1);
+        elapsed = clock::now_ns() - start;
+        sync::spin_unlock_irqrestore(lock, irq);
+    });
+
+    EXPECT_LT(elapsed, SHORT_DEADLINE_NS);
 }
