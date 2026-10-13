@@ -1,5 +1,5 @@
 #
-# Stellux Userland - Applications
+# Stellux Userland Applications
 #
 
 APP_DIRS := init hello shell ls cat rm cp mv stat touch sleep true false clear ptytest date \

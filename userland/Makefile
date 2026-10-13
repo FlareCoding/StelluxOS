@@ -1,5 +1,5 @@
 #
-# Stellux 3.0 - Userland Master Makefile
+# Stellux Userland Master Makefile
 #
 # Builds userland applications and installs them to the initrd.
 # Requires musl sysroot to be set up first (make musl from top-level).

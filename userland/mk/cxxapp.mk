@@ -1,5 +1,5 @@
 #
-# Stellux Userland - Generic C++ App Build Rules
+# Stellux Userland Generic C++ App Build Rules
 #
 # Include from an app Makefile after setting APP_NAME:
 #   APP_NAME := myapp

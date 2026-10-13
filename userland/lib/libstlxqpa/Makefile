@@ -1,5 +1,5 @@
 #
-# Stellux Userland - libstlxqpa Static Library
+# Stellux Userland libstlxqpa Static Library
 #
 # The stellux Qt platform plugin and widget style. Qt apps link it whole,
 # which keeps the registrations the plugins make at startup.

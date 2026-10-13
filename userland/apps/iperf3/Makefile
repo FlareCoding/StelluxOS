@@ -1,5 +1,5 @@
 #
-# Stellux Userland - iperf 3.15 (esnet/iperf, BSD-3-Clause)
+# Stellux Userland iperf 3.15 (esnet/iperf, BSD-3-Clause)
 #
 # src/ is the upstream source tree without its tests, plus the two files
 # configure generates: iperf_config.h, cross-configured against the musl
