@@ -2,6 +2,7 @@
 #define STELLUX_DRIVERS_PCI_DRIVER_H
 
 #include "pci/pci.h"
+#include "dma/dma.h"
 #include "drivers/device_driver.h"
 #include "sync/wait_queue.h"
 #include "mm/paging_types.h"
@@ -103,6 +104,15 @@ protected:
      * @return 0 on success, negative error code on failure.
      */
     int32_t unmap_bar(uint8_t index);
+
+    /**
+     * Describe this device to the DMA layer. Its coherence comes from the PCI
+     * layer, which knows whether the device's host bridge keeps it coherent.
+     * @param address_bits Physical address bits the device can drive. A value
+     *        outside 32 to 64 is refused by `dma::alloc_pages`.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE dma::device_profile dma_profile(uint8_t address_bits) const;
 
     /**
      * Set up MSI with the given vector count. Calls pci::device::enable_msi

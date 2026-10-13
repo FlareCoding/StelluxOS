@@ -106,6 +106,9 @@ public:
     uint8_t header_type() const { return m_header_type; }
     uint8_t interrupt_pin() const { return m_interrupt_pin; }
 
+    // Whether the CPU caches take part in the device's memory accesses
+    bool is_dma_coherent() const { return m_is_dma_coherent; }
+
     const bar& get_bar(uint8_t index) const;
     bool has_capability(uint8_t cap_id) const;
     uint8_t capability_offset(uint8_t cap_id) const;
@@ -161,6 +164,7 @@ private:
     uint8_t   m_prog_if;
     uint8_t   m_header_type;
     uint8_t   m_interrupt_pin;
+    bool      m_is_dma_coherent;
     uintptr_t m_ecam_base;
     bar        m_bars[MAX_BARS];
     capability m_caps[MAX_CAPS];

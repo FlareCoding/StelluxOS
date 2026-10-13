@@ -114,6 +114,13 @@ int32_t pci_driver::unmap_bar(uint8_t index) {
     return rc;
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE dma::device_profile pci_driver::dma_profile(uint8_t address_bits) const {
+    return dma::device_profile(address_bits, m_dev->is_dma_coherent());
+}
+
 int32_t pci_driver::register_msi_handlers() {
     const pci::msi_state& ms = m_dev->get_msi_state();
     int32_t rc = 0;
