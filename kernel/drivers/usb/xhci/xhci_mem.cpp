@@ -1,11 +1,13 @@
 #include "drivers/usb/xhci/xhci_mem.h"
 #include "dma/dma.h"
 #include "mm/paging.h"
-#include "mm/pmm_types.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
 
 namespace drivers::xhci {
+
+// Every controller is assumed to drive 64-bit addresses, without checking its AC64 capability bit
+constexpr uint8_t XHCI_ADDRESS_BITS = 64;
 
 void* alloc_xhci_memory(size_t size) {
     if (size == 0) {
@@ -18,7 +20,13 @@ void* alloc_xhci_memory(size_t size) {
     dma::buffer buf = {};
     int32_t rc = 0;
     RUN_ELEVATED({
-        rc = dma::alloc_pages(pages, buf, pmm::ZONE_ANY, paging::PAGE_USER);
+        rc = dma::alloc_pages(
+            dma::uncached_profile(XHCI_ADDRESS_BITS),
+            pages,
+            dma::caching::uncached,
+            paging::PAGE_USER,
+            buf
+        );
     });
 
     if (rc != dma::OK) {
@@ -35,7 +43,7 @@ void free_xhci_memory(void* ptr) {
         return;
     }
 
-    dma::buffer buf = { reinterpret_cast<uintptr_t>(ptr), 0, 0 };
+    dma::buffer buf = { reinterpret_cast<uintptr_t>(ptr), 0, 0, false };
     RUN_ELEVATED({
         dma::free_pages(buf);
     });
