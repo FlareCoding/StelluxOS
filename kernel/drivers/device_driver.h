@@ -25,7 +25,8 @@ public:
     /**
      * Bind to hardware: map registers, allocate DMA, set up interrupts.
      * Called synchronously during bus enumeration.
-     * @return 0 on success, negative error code on failure.
+     * @return 0 on success, negative error code on failure. A PCI driver may
+     * also return `DECLINED`, a positive value that `pci_driver` describes.
      */
     virtual int32_t attach() = 0;
 

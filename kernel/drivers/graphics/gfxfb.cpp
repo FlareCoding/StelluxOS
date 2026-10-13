@@ -272,12 +272,19 @@ __PRIVILEGED_CODE int32_t init() {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE bool has_driver_display() {
+    return g_node && g_node->has_driver_display();
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE int32_t register_display(const surface& fb, display* driver_display) {
     if (!driver_display) {
         return ERR;
     }
 
-    if (g_node && g_node->has_driver_display()) {
+    if (has_driver_display()) {
         log::warn("gfxfb: a driver display is already registered");
         return ERR;
     }

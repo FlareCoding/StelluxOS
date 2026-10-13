@@ -13,6 +13,9 @@ constexpr int32_t OK               = 0;
 constexpr int32_t ERR_INVALID_BAR  = -1;
 constexpr int32_t ERR_BAR_NOT_MMIO = -2;
 
+// Returned by a PCI driver's `attach()` when it chooses not to take the device, which is not a failure
+constexpr int32_t DECLINED = 1;
+
 /**
  * Match criteria for binding a PCI driver to a device.
  * Fields set to their wildcard value match any device.
@@ -59,6 +62,17 @@ __PRIVILEGED_CODE int32_t init();
  * must allocate from the unprivileged heap (heap::ualloc_new).
  * On failure, the factory must return nullptr without leaking memory.
  * The framework frees driver objects with heap::ufree_delete on error.
+ *
+ * Attach contract: `attach()` returns `OK` when the driver takes the device,
+ * `DECLINED` when it chooses not to, such as for a device it does not
+ * support, or a negative error code. After any result but `OK` the framework
+ * calls `detach()`, which must release what a partial `attach()` acquired,
+ * as the base `detach()` does for BAR mappings and MSI. Decoding and bus
+ * mastering turned on with the device's `enable()` and `enable_bus_mastering()`
+ * may stay on, so `detach()` must stop the device before it frees memory the
+ * device may still reach. The framework then frees the driver and offers the
+ * device to the next matching driver. A declined device is logged at info
+ * level, not as a failure.
  */
 class pci_driver : public device_driver {
 public:

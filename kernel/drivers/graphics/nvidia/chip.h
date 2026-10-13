@@ -5,6 +5,9 @@
 
 namespace drivers::nvidia {
 
+// Byte offset in BAR0 of the register that identifies the chip
+constexpr uint32_t PMC_BOOT_0 = 0x0;
+
 /**
  * What the driver knows about one chip it supports, as an entry of the chip
  * table. The table is the only record of chip-specific values, so the rest of
