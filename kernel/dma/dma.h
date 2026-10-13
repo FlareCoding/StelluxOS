@@ -19,10 +19,13 @@
  * uncached pages it allocates up front.
  *
  * Drivers cannot build a coherent profile, because only the bus layer knows
- * whether a device is coherent. Code that always allocates uncached memory
+ * whether a device is coherent. PCI drivers get theirs from
+ * `pci_driver::dma_profile()`. Code that always allocates uncached memory
  * builds its profile with `uncached_profile()`, since uncached memory is
  * correct for every device.
  */
+
+namespace drivers { class pci_driver; }
 
 namespace dma {
 
@@ -46,6 +49,7 @@ public:
     bool coherent() const { return m_coherent; }
 
 private:
+    friend class drivers::pci_driver;
     friend struct device_profile_test_access;
     friend device_profile uncached_profile(uint8_t address_bits);
 

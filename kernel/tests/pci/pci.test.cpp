@@ -64,6 +64,20 @@ TEST(pci_test, device_index_bounds) {
     EXPECT_NULL(dev);
 }
 
+// Only devices behind the Raspberry Pi 4's Broadcom bridge are not coherent
+TEST(pci_test, dma_coherence_follows_host_bridge) {
+    bool behind_broadcom = pci::brcm_controller_base() != 0;
+
+    for (uint32_t i = 0; i < pci::device_count(); i++) {
+        pci::device* dev = pci::get_device(i);
+        if (!dev) {
+            continue;
+        }
+
+        EXPECT_EQ(dev->is_dma_coherent(), !behind_broadcom);
+    }
+}
+
 TEST(pci_test, bar_alignment) {
     for (uint32_t i = 0; i < pci::device_count(); i++) {
         pci::device* dev = pci::get_device(i);

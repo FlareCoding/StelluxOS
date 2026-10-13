@@ -3,6 +3,7 @@
 
 #include "drivers/virtio/virtio_pci_driver.h"
 #include "drivers/graphics/gfxfb.h"
+#include "dma/dma.h"
 #include "sync/mutex.h"
 
 namespace drivers::virtio {
@@ -148,13 +149,12 @@ private:
     uintptr_t m_control_notify = 0;
 
     // A batch's requests and responses share this DMA page
-    uintptr_t m_command_page_va = 0;
-    pmm::phys_addr_t m_command_page_phys = 0;
+    dma::buffer m_command_page = {};
     uint32_t m_batch_bytes = 0;
     uint32_t m_batch_commands = 0;
     uint32_t m_response_offsets[MAX_BATCH_COMMANDS] = {};
 
-    uintptr_t m_backing_va = 0;
+    dma::buffer m_backing = {};
     gfxfb::surface m_surface = {};
 
     // Held across a batch's completion wait

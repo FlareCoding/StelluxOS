@@ -5,7 +5,6 @@
 #include "dynpriv/dynpriv.h"
 #include "hw/cpu.h"
 #include "mm/heap.h"
-#include "mm/vmm.h"
 
 namespace drivers {
 
@@ -43,6 +42,11 @@ constexpr uint32_t COMMANDS_PER_RECT = 2;
 // The alignment of the widest request or response field
 constexpr uint32_t COMMAND_ALIGN = 8;
 
+// The command page stays below 4 GiB with the virtqueue rings. The large scanout backing
+// may use any address, leaving DMA32 to devices that reach only 32 bits.
+constexpr uint8_t COMMAND_PAGE_ADDRESS_BITS = 32;
+constexpr uint8_t BACKING_ADDRESS_BITS = 64;
+
 static uint32_t align_command_bytes(uint32_t size) {
     return (size + COMMAND_ALIGN - 1) & ~(COMMAND_ALIGN - 1);
 }
@@ -65,14 +69,16 @@ static bool is_usable_mode(const virtio_gpu_display_one& mode) {
 int32_t virtio_gpu_driver::allocate_command_page() {
     int32_t rc = 0;
     RUN_ELEVATED(
-        rc = vmm::alloc_contiguous(
-            1, pmm::ZONE_DMA32,
-            paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_DMA,
-            vmm::ALLOC_ZERO, kva::tag::generic,
-            m_command_page_va, m_command_page_phys)
+        rc = dma::alloc_pages(
+            dma_profile(COMMAND_PAGE_ADDRESS_BITS),
+            1,
+            dma::caching::uncached,
+            paging::PAGE_USER,
+            m_command_page
+        )
     );
 
-    if (rc != vmm::OK) {
+    if (rc != dma::OK) {
         log::error("virtio-gpu: failed to allocate the command page");
         return ERR_DEVICE;
     }
@@ -98,13 +104,13 @@ int32_t virtio_gpu_driver::queue_command(const void* request, uint32_t request_s
 
     uint32_t request_offset = m_batch_bytes;
     uint32_t response_offset = request_offset + align_command_bytes(request_size);
-    auto* page = reinterpret_cast<uint8_t*>(m_command_page_va);
+    auto* page = reinterpret_cast<uint8_t*>(m_command_page.virt);
     string::memcpy(page + request_offset, request, request_size);
     string::memset(page + response_offset, 0, response_size);
 
     int32_t head = m_control_queue.add_buf_chain(
-        m_command_page_phys + request_offset, request_size,
-        m_command_page_phys + response_offset, response_size,
+        m_command_page.phys + request_offset, request_size,
+        m_command_page.phys + response_offset, response_size,
         0, VRING_DESC_F_WRITE);
 
     if (head < 0) {
@@ -167,7 +173,7 @@ int32_t virtio_gpu_driver::run_batch(wait_mode mode) {
     }
 
     int32_t rc = OK;
-    auto* page = reinterpret_cast<const uint8_t*>(m_command_page_va);
+    auto* page = reinterpret_cast<const uint8_t*>(m_command_page.virt);
 
     for (uint32_t i = 0; i < m_batch_commands && rc == OK; i++) {
         auto* response = reinterpret_cast<const virtio_gpu_ctrl_hdr*>(page + m_response_offsets[i]);
@@ -203,7 +209,7 @@ int32_t virtio_gpu_driver::query_display(uint32_t* out_scanout, uint32_t* out_wi
 
     // The response stays in the page until the next command is queued
     auto* display_info = reinterpret_cast<const virtio_gpu_resp_display_info*>(
-        m_command_page_va + response_offset);
+        m_command_page.virt + response_offset);
 
     if (display_info->hdr.type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO) {
         log::error("virtio-gpu: display info came back as response 0x%x", display_info->hdr.type);
@@ -234,16 +240,18 @@ int32_t virtio_gpu_driver::create_scanout_surface(uint32_t scanout, uint32_t wid
     uint64_t size = pitch * height;
     size_t pages = pmm::page_align_up(size) / pmm::PAGE_SIZE;
 
-    pmm::phys_addr_t phys = 0;
     int32_t rc = 0;
     RUN_ELEVATED(
-        rc = vmm::alloc_contiguous(
-            pages, pmm::ZONE_ANY, paging::PAGE_KERNEL_RW,
-            vmm::ALLOC_ZERO, kva::tag::generic,
-            m_backing_va, phys)
+        rc = dma::alloc_pages(
+            dma_profile(BACKING_ADDRESS_BITS),
+            pages,
+            dma::caching::cached_when_coherent,
+            0,
+            m_backing
+        )
     );
 
-    if (rc != vmm::OK) {
+    if (rc != dma::OK) {
         log::error("virtio-gpu: failed to allocate a %lu byte backing", size);
         return ERR_DEVICE;
     }
@@ -259,7 +267,7 @@ int32_t virtio_gpu_driver::create_scanout_surface(uint32_t scanout, uint32_t wid
     attach_backing.hdr.type     = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
     attach_backing.resource_id  = RESOURCE_ID;
     attach_backing.nr_entries   = 1;
-    attach_backing.entry.addr   = phys;
+    attach_backing.entry.addr   = m_backing.phys;
     attach_backing.entry.length = static_cast<uint32_t>(size);
 
     virtio_gpu_set_scanout set_scanout = {};
@@ -276,7 +284,7 @@ int32_t virtio_gpu_driver::create_scanout_surface(uint32_t scanout, uint32_t wid
     }
 
     m_surface = {
-        .phys        = phys,
+        .phys        = m_backing.phys,
         .width       = width,
         .height      = height,
         .pitch       = pitch,
@@ -284,7 +292,7 @@ int32_t virtio_gpu_driver::create_scanout_surface(uint32_t scanout, uint32_t wid
         .red_shift   = RED_SHIFT,
         .green_shift = GREEN_SHIFT,
         .blue_shift  = BLUE_SHIFT,
-        .cacheable   = true,
+        .cacheable   = m_backing.cached,
     };
 
     return OK;
@@ -375,15 +383,11 @@ int32_t virtio_gpu_driver::detach() {
     reset_device();
 
     // gfxfb keeps a registered surface for the life of the kernel
-    if (!m_is_registered && m_backing_va) {
-        RUN_ELEVATED(vmm::free(m_backing_va));
-        m_backing_va = 0;
+    if (!m_is_registered) {
+        RUN_ELEVATED(dma::free_pages(m_backing));
     }
 
-    if (m_command_page_va) {
-        RUN_ELEVATED(vmm::free(m_command_page_va));
-        m_command_page_va = 0;
-    }
+    RUN_ELEVATED(dma::free_pages(m_command_page));
 
     return pci_driver::detach();
 }

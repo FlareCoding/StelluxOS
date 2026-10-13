@@ -404,6 +404,10 @@ __PRIVILEGED_CODE void enumerate_function(uint8_t bus, uint8_t slot, uint8_t fun
     dev.m_header_type = cfg_read8(dev.m_ecam_base, CFG_HEADER_TYPE) & HDR_TYPE_MASK;
     dev.m_interrupt_pin = cfg_read8(dev.m_ecam_base, CFG_INTERRUPT_PIN);
 
+    // Every ECAM platform Stellux supports is coherent and the Raspberry Pi 4's Broadcom bridge is not,
+    // so the backend decides coherence. A non-coherent ECAM platform would need its own rule.
+    dev.m_is_dma_coherent = g_backend == config_backend::ECAM;
+
     parse_bars(dev);
     parse_capabilities(dev);
 
