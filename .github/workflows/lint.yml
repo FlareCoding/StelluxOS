@@ -1,0 +1,40 @@
+#
+# Lint
+#
+# Checks the lines each pull request adds against `.cursor/rules/style.mdc` and a
+# few unwritten conventions, with `scripts/style_lint.py` once its own tests pass.
+# Errors fail the job, while warnings only annotate the pull request.
+#
+
+name: Lint
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer commit on a pull request cancels the run for the older one
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  style-lint:
+    name: style lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The pull request's merge commit and its first parent, the base branch the change is measured from
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Test style_lint
+        run: python3 scripts/style_lint_test.py
+
+      - name: Check the lines the pull request adds
+        run: python3 scripts/style_lint.py --base HEAD^1
