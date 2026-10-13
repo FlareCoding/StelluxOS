@@ -6,14 +6,15 @@ alwaysApply: false
 
 # Stellux Style
 
-Vendored code is exempt and must never be restyled: doom, python, vim,
-dropbear, bearssl, stb_* headers, and kernel/boot/limine.h.
+Vendored code, every path `.gitattributes` marks `linguist-vendored`, is
+exempt and must never be restyled.
 
 ## Language, in code and comments
 
 - ASCII only. No unicode arrows, icons, emoji, box drawing, or typographic
   punctuation anywhere.
-- No em-dashes. Use commas, parentheses, or separate sentences.
+- No dashes as punctuation: no em-dash, en-dash, double hyphen `--`, or
+  spaced ` - ` between words. Use commas, parentheses, or separate sentences.
 - No semicolons in comments. Restructure the sentence with commas or split it.
 - Plain, simple language, written for a reader with no prior context in this
   domain. Banned words and their relatives: leverage, robust, seamless,

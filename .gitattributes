@@ -1,0 +1,18 @@
+# Paths marked `linguist-vendored` hold third-party code, which keeps its upstream style and is exempt from the
+# style guide. A later `-linguist-vendored` line unsets the mark again, keeping Stellux's own files first-party.
+kernel/boot/limine.h linguist-vendored
+userland/apps/doom/src/** linguist-vendored
+userland/apps/doom/src/doomgeneric_stlx.c -linguist-vendored
+userland/apps/dropbear/** linguist-vendored
+userland/apps/dropbear/Makefile -linguist-vendored
+userland/apps/dropbear/config.h -linguist-vendored
+userland/apps/dropbear/localoptions.h -linguist-vendored
+userland/apps/dropbear/stellux_stubs.c -linguist-vendored
+userland/apps/iperf3/src/** linguist-vendored
+userland/apps/tcc/src/** linguist-vendored
+userland/apps/vim/src/** linguist-vendored
+userland/apps/vim/src/auto/** -linguist-vendored
+userland/apps/vim/src/stellux_stubs.c -linguist-vendored
+userland/lib/libbearssl/bearssl/** linguist-vendored
+userland/lib/libsqlite3/sqlite/** linguist-vendored
+userland/lib/libstlxgfx/include/stlxgfx/internal/stb_*.h linguist-vendored
