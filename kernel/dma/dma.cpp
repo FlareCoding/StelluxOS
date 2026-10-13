@@ -8,8 +8,9 @@
 
 namespace dma {
 
-constexpr paging::page_flags_t DMA_PAGE_FLAGS =
-    paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_DMA;
+// The first zone ends at 4 GiB, so no zone serves a device that reaches less
+constexpr uint8_t DMA32_ADDRESS_BITS = 32;
+constexpr uint8_t MAX_ADDRESS_BITS   = 64;
 
 constexpr uint16_t SLAB_BITMAP_BITS = 64;
 [[maybe_unused]] constexpr uint8_t DEBUG_FREE_FILL = 0xDE;
@@ -27,27 +28,69 @@ static inline uint64_t make_bitmap(uint16_t count) {
     return (1ULL << count) - 1;
 }
 
-[[nodiscard]] __PRIVILEGED_CODE
-int32_t alloc_pages(size_t pages, buffer& out, pmm::zone_mask_t zone,
-                    paging::page_flags_t flags) {
+static bool reaches(uint8_t address_bits, pmm::phys_addr_t end) {
+    if (address_bits == MAX_ADDRESS_BITS) {
+        return true;
+    }
+
+    return end <= (1ULL << address_bits);
+}
+
+device_profile uncached_profile(uint8_t address_bits) {
+    return device_profile(address_bits, false);
+}
+
+[[nodiscard]] __PRIVILEGED_CODE int32_t alloc_pages(
+    const device_profile& device,
+    size_t pages,
+    caching mode,
+    paging::page_flags_t access,
+    buffer& out
+) {
     if (pages == 0) {
         return ERR_INVALID_ARG;
     }
 
+    uint8_t address_bits = device.address_bits();
+    bool is_valid_limit = address_bits >= DMA32_ADDRESS_BITS && address_bits <= MAX_ADDRESS_BITS;
+    bool is_valid_access = (access & ~paging::PAGE_USER) == 0;
+    if (!is_valid_limit || !is_valid_access) {
+        return ERR_INVALID_ARG;
+    }
+
+    bool cached = mode == caching::cached_when_coherent && device.coherent();
+    paging::page_flags_t memory_type = cached ? paging::PAGE_NORMAL : paging::PAGE_DMA;
+    pmm::zone_mask_t zone = address_bits == DMA32_ADDRESS_BITS ? pmm::ZONE_DMA32 : pmm::ZONE_ANY;
+    size_t size = pages * pmm::PAGE_SIZE;
+
+    uintptr_t virt = 0;
+    pmm::phys_addr_t phys = 0;
     int32_t rc = vmm::alloc_contiguous(
-        pages, zone, DMA_PAGE_FLAGS | flags, vmm::ALLOC_ZERO,
-        kva::tag::dma, out.virt, out.phys
+        pages,
+        zone,
+        paging::PAGE_KERNEL_RW | memory_type | access,
+        vmm::ALLOC_ZERO,
+        kva::tag::dma,
+        virt,
+        phys
     );
     if (rc != vmm::OK) {
         return ERR_NO_MEM;
     }
 
-    out.size = pages * pmm::PAGE_SIZE;
+    // A 32-bit limit is the only one with a zone of its own, so other limits are checked here
+    if (!reaches(address_bits, phys + size)) {
+        vmm::free(virt);
+        return ERR_NO_MEM;
+    }
 
-    // Flush any stale dirty cache lines from prior Normal WB usage of these
-    // physical pages. Without this, evicted dirty lines can overwrite the
-    // DMA buffer with stale data after the NC mapping is active.
-    cache::clean_dcache_poc(out.virt, out.size);
+    // Earlier cached writes to these pages, the zeroing included, leave dirty lines that could later
+    // overwrite an uncached buffer. A cached buffer goes only to a coherent device, which sees them.
+    if (!cached) {
+        cache::clean_dcache_poc(virt, size);
+    }
+
+    out = {virt, phys, size, cached};
 
     return OK;
 }
@@ -59,10 +102,15 @@ __PRIVILEGED_CODE void free_pages(buffer& buf) {
     buf.virt = 0;
     buf.phys = 0;
     buf.size = 0;
+    buf.cached = false;
 }
 
-__PRIVILEGED_CODE int32_t pool::init(size_t object_size, size_t alignment,
-                                     size_t capacity, pmm::zone_mask_t zone) {
+__PRIVILEGED_CODE int32_t pool::init(
+    const device_profile& device,
+    size_t object_size,
+    size_t alignment,
+    size_t capacity
+) {
     if (m_initialized) {
         return ERR_INVALID_ARG;
     }
@@ -110,14 +158,14 @@ __PRIVILEGED_CODE int32_t pool::init(size_t object_size, size_t alignment,
     size_t remaining = capacity;
     for (uint16_t i = 0; i < slab_count; i++) {
         buffer page_buf = {};
-        int32_t rc = alloc_pages(1, page_buf, zone);
+        int32_t rc = alloc_pages(device, 1, caching::uncached, 0, page_buf);
         if (rc != OK) {
             for (uint16_t j = 0; j < i; j++) {
-                buffer rollback = {slabs[j].virt_base, slabs[j].phys_base, pmm::PAGE_SIZE};
+                buffer rollback = {slabs[j].virt_base, slabs[j].phys_base, pmm::PAGE_SIZE, false};
                 free_pages(rollback);
             }
             heap::kfree(slabs);
-            return ERR_NO_MEM;
+            return rc;
         }
 
         uint16_t slab_cap = (remaining < objs_per_page)
@@ -167,6 +215,7 @@ __PRIVILEGED_CODE int32_t pool::init(size_t object_size, size_t alignment,
             out.virt = s.virt_base + static_cast<size_t>(idx) * m_obj_stride;
             out.phys = s.phys_base + static_cast<size_t>(idx) * m_obj_stride;
             out.size = m_obj_size;
+            out.cached = false;
 
             // Zeroing happens outside the lock (below)
             goto zero_and_return;
@@ -228,7 +277,7 @@ __PRIVILEGED_CODE void pool::destroy() {
     }
 
     for (uint16_t i = 0; i < m_slab_count; i++) {
-        buffer page_buf = {m_slabs[i].virt_base, m_slabs[i].phys_base, pmm::PAGE_SIZE};
+        buffer page_buf = {m_slabs[i].virt_base, m_slabs[i].phys_base, pmm::PAGE_SIZE, false};
         free_pages(page_buf);
     }
 
