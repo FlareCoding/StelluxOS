@@ -207,7 +207,12 @@ __PRIVILEGED_CODE int32_t init() {
 
             int32_t rc = drv->attach();
             if (rc != 0) {
-                log::error("drivers: %s attach failed: %d", drv->name(), rc);
+                if (rc == DECLINED) {
+                    log::info("drivers: %s declined %02x:%02x.%d", drv->name(), dev->bus(), dev->slot(), dev->func());
+                } else {
+                    log::error("drivers: %s attach failed: %d", drv->name(), rc);
+                }
+
                 drv->detach();
                 heap::ufree_delete(drv);
                 continue;

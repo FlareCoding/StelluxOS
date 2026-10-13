@@ -87,6 +87,16 @@ public:
 __PRIVILEGED_CODE int32_t init();
 
 /**
+ * @brief Report whether a driver display is registered behind /dev/gfxfb, in
+ * which case `register_display` refuses any other. A driver asks before it
+ * prepares a display, so it can decline instead of preparing one that would
+ * be refused.
+ * @return true when a driver display is registered.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool has_driver_display();
+
+/**
  * @brief Put a driver-owned display behind /dev/gfxfb in place of the boot
  * framebuffer. Only the first driver display is accepted. It must be
  * registered before userland starts, as from a driver's `attach()`.
