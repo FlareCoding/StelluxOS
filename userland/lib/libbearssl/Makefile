@@ -1,5 +1,5 @@
 #
-# Stellux Userland - libbearssl Static Library
+# Stellux Userland libbearssl Static Library
 #
 # Cross-compiles BearSSL (https://www.bearssl.org/) as a static library
 # for Stellux userland. BearSSL provides TLS 1.2 with zero dynamic

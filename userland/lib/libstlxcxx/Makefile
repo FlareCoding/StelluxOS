@@ -1,5 +1,5 @@
 #
-# Stellux Userland - libstlxcxx Static Library
+# Stellux Userland libstlxcxx Static Library
 #
 # C++ threading wrappers: stlxstd::thread on pthreads, the sync primitives on libstlx.
 #

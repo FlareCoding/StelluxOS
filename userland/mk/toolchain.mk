@@ -1,5 +1,5 @@
 #
-# Stellux Userland - Toolchain Configuration
+# Stellux Userland Toolchain Configuration
 #
 # Defines compiler, flags, and paths parameterized by ARCH.
 # Included by app.mk and other build rules.

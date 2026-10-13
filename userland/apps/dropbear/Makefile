@@ -1,5 +1,5 @@
 #
-# Dropbear SSH Server - Stellux Build
+# Stellux Userland Dropbear SSH Server
 #
 # Cross-compiles Dropbear against the Stellux musl sysroot.
 # Uses bundled libtomcrypt and libtommath.

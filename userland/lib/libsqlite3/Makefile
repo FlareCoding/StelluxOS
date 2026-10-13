@@ -1,5 +1,5 @@
 #
-# Stellux Userland - libsqlite3 Static Library
+# Stellux Userland libsqlite3 Static Library
 #
 # Cross-compiles the SQLite amalgamation (https://sqlite.org/amalgamation.html)
 # as a static library for Stellux userland.

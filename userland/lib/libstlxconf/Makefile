@@ -1,5 +1,5 @@
 #
-# Stellux Userland - libstlxconf Static Library
+# Stellux Userland libstlxconf Static Library
 #
 
 USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)

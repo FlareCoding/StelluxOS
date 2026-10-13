@@ -1,5 +1,5 @@
 #
-# Stellux Userland - Qt Build Rules
+# Stellux Userland Qt Build Rules
 #
 # Included after SRC_DIR and BUILD_DIR are set by a library or app built on Qt.
 # The kit is the qt build package the userland build unpacks into the SDK, and

@@ -1,5 +1,5 @@
 #
-# Stellux Userland - DOOM (doomgeneric port)
+# Stellux Userland DOOM (doomgeneric port)
 #
 # Custom Makefile because doomgeneric has many warnings incompatible
 # with the strict -Werror policy used by the standard app.mk.

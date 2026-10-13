@@ -1,5 +1,5 @@
 #
-# Stellux Userland - Libraries
+# Stellux Userland Libraries
 #
 
 LIB_DIRS := libstlx libstlxcxx libstlxconf libstlxgfx libstlxwin libstlxqpa libstlxui libbearssl libsqlite3
