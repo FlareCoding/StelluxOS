@@ -9,6 +9,9 @@ alwaysApply: false
 Vendored code, every path `.gitattributes` marks `linguist-vendored`, is
 exempt and must never be restyled.
 
+Run `scripts/style_lint.py` before committing to check the lines a change
+adds. Its `--help` describes the rules it covers.
+
 ## Language, in code and comments
 
 - ASCII only. No unicode arrows, icons, emoji, box drawing, or typographic
