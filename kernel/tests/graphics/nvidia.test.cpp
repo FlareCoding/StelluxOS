@@ -1,3 +1,5 @@
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under drivers/graphics/nvidia/LICENSE-NVIDIA
+
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
