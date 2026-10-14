@@ -2,6 +2,7 @@
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "drivers/graphics/nvidia/protected_memory.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/vbios.h"
 #include "drivers/graphics/gfxfb.h"
@@ -122,7 +123,26 @@ int32_t nvidia_gpu_driver::attach() {
         fwsec.signature_count,
         fwsec.signatures_offset
     );
-    log::info("nvidia: bring-up stops after finding FWSEC");
+
+    rc = nvidia::wait_for_boot_firmware(regs, nvidia::BOOT_FIRMWARE_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    nvidia::frts_region frts = {};
+    rc = nvidia::place_frts_region(regs, frts);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: FRTS region at 0x%lX, below the VGA workspace as laid out at 0x%lX, in 0x%lX bytes of usable video "
+        "memory",
+        frts.offset,
+        frts.vga_workspace_offset,
+        frts.video_memory_size
+    );
+    log::info("nvidia: bring-up stops after placing the FRTS region");
 
     return DECLINED;
 }

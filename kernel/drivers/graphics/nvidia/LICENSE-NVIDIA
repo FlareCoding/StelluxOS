@@ -12,6 +12,50 @@ src/common/inc/swref/published/turing/tu102/dev_ext_devices.h
     the ROM window's offset, in vbios.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
+src/common/inc/swref/published/ampere/ga100/dev_fuse.h
+    the display fuse and its bit 0, clear while the display is enabled, in
+    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
+    the falcon control register's offset and its halted bit, in
+    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_gc6_island.h
+    the boot progress register, its read protection register with the level 0
+    read field, and the register holding the usable size of video memory, in
+    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_gc6_island_addendum.h
+    the boot progress field and its complete value, and that the usable size
+    of video memory counts MiB, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_gsp.h
+    the base of the GSP's registers, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/disp/v04_00/dev_disp.h
+    the VGA workspace register and its valid bit, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and its start
+    field, in kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/turing/tu102/dev_fb.h
+    the register bounding protected memory from above and its address field,
+    in protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/turing/tu102/dev_ram.h
+    the 1 MiB size of the PRAMIN window, which NVIDIA's layout takes as the
+    most the VGA workspace takes, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES
+
 src/nvidia/inc/kernel/platform/pci_exp_table.h
     NVIDIA's image and PCI data signatures, and the signature and fields of
     NVIDIA's extension to the PCI data structure, in vbios.cpp and
@@ -42,8 +86,53 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_fwsec.c
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     the name of the GSP image's .fwversion section and the rule that it holds
     exactly the version string and its NUL, in firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp
+    kernel/tests/graphics/nvidia_firmware.test.cpp, and the rule that the GSP
+    is not booted while protected memory is already set up, in
+    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c
+    the rule that the boot firmware has finished once its progress register
+    is readable and reads complete and the GSP is halted, and the time it is
+    given, 50 ms to start and 2 s to finish, in protected_memory.h,
+    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/arch/ampere/kern_gpu_ga100.c
+    the rule that the chip has a display while its display fuse's bit 0 is
+    clear, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mem_sys/arch/ampere/kern_mem_sys_ga102.c
+    the rule that the usable size of video memory is its register's value in
+    MiB, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2018-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/disp/arch/v04/kern_disp_0400.c
+    the rule that the VGA workspace register counts only when its valid bit
+    is set, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and its start in
+    units of 64 KiB, kept to 32 bits, in protected_memory.h and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
+    the rules that protected memory is set up once the address field of its
+    upper bound is not 0, that the VGA workspace takes the last 1 MiB of
+    usable video memory when the display is fused off or its register is not
+    valid and the last 128 KiB when its register points lower than that, and
+    that the FRTS region ends right below the VGA workspace, in
+    protected_memory.h, protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
+    the FRTS region's size of 1 MiB and the rule that the region never starts
+    at offset 0, in protected_memory.h, protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 nouveau/extract-firmware-nouveau.py
     the boot file header and its values, in firmware_files.h,
