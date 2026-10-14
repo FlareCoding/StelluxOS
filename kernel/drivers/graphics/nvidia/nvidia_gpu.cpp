@@ -2,6 +2,7 @@
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
+#include "drivers/graphics/nvidia/vbios.h"
 #include "drivers/graphics/gfxfb.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
@@ -51,7 +52,21 @@ int32_t nvidia_gpu_driver::attach() {
     }
 
     uint8_t revision = nvidia::decode_chip_revision(boot0);
-    log::info("nvidia: %s revision %02X, bring-up stops at the chip check", chip->name, revision);
+    log::info("nvidia: %s revision %02X", chip->name, revision);
+
+    nvidia::registers rom(registers_base + nvidia::ROM_WINDOW);
+    nvidia::vbios_layout layout = {};
+    rc = nvidia::read_vbios_layout(rom, layout);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    for (size_t i = 0; i < layout.image_count; i++) {
+        const nvidia::vbios_image& image = layout.images[i];
+        log::info("nvidia: VBIOS image at 0x%X, %u bytes, code type 0x%02X", image.offset, image.size, image.code_type);
+    }
+
+    log::info("nvidia: bring-up stops after reading the VBIOS layout");
 
     return DECLINED;
 }
