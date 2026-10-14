@@ -8,8 +8,8 @@
 
 namespace drivers::nvidia {
 
-// The firmware version the driver boots on every chip, which names the directory under nvidia/ in
-// `fw::DIRECTORY` that holds its files
+// The firmware version the driver boots on every chip. It names the directory under nvidia/ in `fw::DIRECTORY`
+// that holds its files, and the GSP image's .fwversion section must hold it.
 constexpr const char FIRMWARE_VERSION[] = "535.183.01";
 
 // The firmware files bring-up opens, each open until the object is destroyed when `attach()` returns
@@ -58,6 +58,28 @@ int32_t open_firmware_files(const chip_firmware& firmware, firmware_files& files
  * `ERR_BAD_FIRMWARE` for every other result.
  */
 int32_t to_bring_up_result(int32_t fw_result);
+
+/**
+ * @brief Check that the GSP image is a 64-bit little-endian ELF file with
+ * a single section named .fwversion, which holds exactly `FIRMWARE_VERSION`
+ * and its NUL. Reads the ELF header, the section headers, the 11 bytes at the
+ * start of each section's name when all 11 lie inside the name table, as many
+ * as ".fwversion" and its NUL take, and the .fwversion section, each with
+ * `fw::file::read`, which takes the file's mutex, so this must not run in an
+ * interrupt handler or under a spinlock. On the boot thread, which cannot
+ * wait, `image` must be one no other thread uses at the time, as `fw::file`
+ * describes.
+ * @param image Must hold a file open.
+ * @return `OK`, or `ERR_BAD_FIRMWARE` when the file is shorter than an ELF
+ * header or not a 64-bit little-endian ELF file, its section headers are not
+ * 64 bytes each, it has no section or more than 64, the most section headers
+ * it reads, its section table or section name table lies outside the file,
+ * the name table's index is 0 or past the last section, it has no .fwversion
+ * section or more than one, that section lies outside the file, is larger
+ * than the 32 bytes it reads a version into or holds anything but
+ * `FIRMWARE_VERSION` and its NUL, or reading fails. The cause is logged.
+ */
+int32_t check_gsp_image(const fw::file& image);
 
 /**
  * @brief Check that a bootloader or booter starts with a `boot_file_header`

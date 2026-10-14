@@ -9,7 +9,8 @@ namespace drivers::nvidia {
 constexpr int32_t OK                 = 0;
 constexpr int32_t ERR_NOT_RESPONDING = -1; // `PMC_BOOT_0` reads all ones, so the card does not respond
 constexpr int32_t ERR_BAD_VBIOS      = -2; // the ROM window holds no chain of images `read_vbios_layout` accepts
-constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unreadable or malformed, or its name invalid
+constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unreadable, malformed or of another version,
+                                           // or its name invalid
 
 } // namespace drivers::nvidia
 

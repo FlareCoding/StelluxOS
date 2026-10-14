@@ -73,6 +73,11 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
+    rc = nvidia::check_gsp_image(files.gsp_image);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
     rc = nvidia::check_boot_file(files.bootloader, "bootloader");
     if (rc != nvidia::OK) {
         return rc;
@@ -83,7 +88,8 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
-    log::info("nvidia: bring-up stops after checking the bootloader and booter load headers");
+    log::info("nvidia: firmware %s checked", nvidia::FIRMWARE_VERSION);
+    log::info("nvidia: bring-up stops after checking the firmware files");
 
     return DECLINED;
 }

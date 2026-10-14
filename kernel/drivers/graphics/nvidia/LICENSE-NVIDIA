@@ -18,6 +18,12 @@ src/nvidia/inc/kernel/platform/pci_exp_table.h
     kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+    the name of the GSP image's .fwversion section and the rule that it holds
+    exactly the version string and its NUL, in firmware_files.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 nouveau/extract-firmware-nouveau.py
     the boot file header and its values, in firmware_files.h,
     firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp
