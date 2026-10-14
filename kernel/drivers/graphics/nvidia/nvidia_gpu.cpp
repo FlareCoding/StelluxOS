@@ -102,7 +102,27 @@ int32_t nvidia_gpu_driver::attach() {
         table.entry_count,
         table.entry_size
     );
-    log::info("nvidia: bring-up stops after finding the falcon program table");
+
+    nvidia::fwsec_layout fwsec = {};
+    rc = nvidia::find_fwsec(rom, layout, table, fwsec);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: FWSEC at 0x%X in the VBIOS, %u bytes holding %u bytes of code and %u bytes of data",
+        fwsec.offset,
+        fwsec.size,
+        fwsec.code_size,
+        fwsec.data_size
+    );
+    log::info(
+        "nvidia: FWSEC's signature slot at byte 0x%X of its data, for one of its %u signatures at 0x%X in the VBIOS",
+        fwsec.signature_slot,
+        fwsec.signature_count,
+        fwsec.signatures_offset
+    );
+    log::info("nvidia: bring-up stops after finding FWSEC");
 
     return DECLINED;
 }

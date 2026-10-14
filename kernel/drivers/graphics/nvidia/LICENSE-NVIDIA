@@ -28,9 +28,15 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_vbios_tu102.c
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp_fwsec.c
     the BIT's id, signature, version and header fields, the rule that the
     bytes of its header sum to zero, its token fields, the falcon data token
-    with the pointer its version 2 data holds, and the falcon program table's
-    header fields with its version and the smallest sizes of its header and
-    entries, in vbios.h, vbios.cpp and kernel/tests/graphics/nvidia.test.cpp
+    with the pointer its version 2 data holds, the falcon program table's
+    header and entry fields with its version and the smallest sizes of its
+    header and entries, the app ids of production and debug FWSEC's entries
+    and of FIRMWARE_SEC_LIC's, the version 3 descriptor's first 32 bits, its
+    fields and its smallest size of 44 bytes, the size of FWSEC's signatures,
+    and the rules that FWSEC's signatures follow the descriptor's fields, that
+    FWSEC follows the descriptor with its code first and its data right after,
+    and that it spans its stored size rounded up to a multiple of 256 bytes, in
+    vbios.h, vbios.cpp and kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
