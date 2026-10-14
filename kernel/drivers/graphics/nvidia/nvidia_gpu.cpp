@@ -1,5 +1,6 @@
 #include "drivers/graphics/nvidia/nvidia_gpu.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/gfxfb.h"
 #include "common/logging.h"
@@ -17,12 +18,6 @@ constexpr uint8_t REGISTERS_BAR = 0;
 // Reads from a card that does not respond return all ones, a value PMC_BOOT_0
 // never holds on a working card
 constexpr uint32_t UNRESPONSIVE_CARD_READ = 0xFFFFFFFF;
-
-namespace nvidia {
-
-constexpr int32_t ERR_NOT_RESPONDING = -1;
-
-} // namespace nvidia
 
 int32_t nvidia_gpu_driver::attach() {
     bool is_display_registered = false;
