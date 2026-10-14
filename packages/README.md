@@ -4,6 +4,8 @@ Stellux programs too heavy to build on every clone, such as the GCC
 toolchain and CPython, ship as packages: static binaries built for Stellux once in a
 container, published on a GitHub release, and pulled into the image. Libraries
 the tree's own programs compile against ship the same way, as build packages.
+Third-party files the tree does not hold, such as NVIDIA's GPU firmware, ship
+as packages too.
 
 ## The registry
 
@@ -102,6 +104,39 @@ the programs linked against the kit are built from this tree, so anyone can
 relink them against a modified Qt. A run takes about 10 minutes per
 architecture on 16 cores, plus the sysroot and the host Qt on the first run,
 both kept in the `stellux-qt-work` volume.
+
+## The nvidia-firmware recipe
+
+`nvidia-firmware` is a `default` package holding NVIDIA's firmware for the
+GSP of GA10x GPUs, the chip family of the GeForce RTX 30 series. The GSP is
+the processor inside an NVIDIA GPU that manages the GPU. The files install in
+`/usr/lib/firmware/nvidia/<version>/`, where `<version>` is the firmware
+version `versions.sh` pins. The GSP image comes from NVIDIA's driver package,
+and the bootloader and booters that start it are written out of NVIDIA's open
+kernel modules by NVIDIA's own extraction tool. All are redistributed
+unmodified, the GSP image under NVIDIA's license agreement and the boot files
+under the MIT notices their sources carry, with both texts in
+`/usr/share/licenses/nvidia-firmware/`. This tree's license does not cover
+them. Whoever builds the package or publishes any release accepts NVIDIA's
+whole agreement, which the driver package holds as `LICENSE`. A
+`make packages-build` whose selection holds the package, as the default
+selection does, builds it while `packages.lock` does not pin its version, and
+every release holds every registry package. An image that carries the
+package, as every image built with the default selection does, holds NVIDIA's
+files with both texts, and whoever shares such an image redistributes them
+under the same terms.
+
+The recipe keeps its downloads, the driver package among them, in
+`userland/toolchain/packages/sources/` and reuses them on later builds.
+Building unpacks the driver package, and NVIDIA's agreement does not license
+its GeForce software for data centers, where GitHub's hosted runners run, so
+the `packages` workflow builds the package only on a self-hosted x86_64
+runner, which must sit outside a data center too. A dispatch that selects the
+package, the default tier included, waits for such a runner. Without one,
+`make packages-build` and `make packages-publish` build and publish it from a
+machine the builder owns, outside a data center, with Docker. Both
+architectures get the same files, and `PACKAGES="-nvidia-firmware"` leaves
+them out of an image.
 
 ## Building and publishing
 
