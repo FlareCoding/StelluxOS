@@ -3,8 +3,10 @@
 #include "stlx_unit_test.h"
 #include "fw/fw.h"
 #include "fs/fs.h"
+#include "fs/node.h"
 #include "common/string.h"
 #include "mm/heap.h"
+#include "rc/strong_ref.h"
 
 TEST_SUITE(fw);
 
@@ -201,4 +203,25 @@ TEST(fw, open_on_an_open_object_is_refused_and_keeps_its_file) {
     ASSERT_EQ(firmware.open(FIXTURE_NAME), fw::OK);
     EXPECT_EQ(firmware.open(OTHER_NAME), fw::ERR_INVALID_ARG);
     EXPECT_EQ(firmware.size(), FIXTURE_BYTES);
+}
+
+// An open object holds one reference on the file's node, which closing and destroying it give back
+TEST(fw, close_and_destruction_release_the_file) {
+    fs::node* raw_node = nullptr;
+    ASSERT_EQ(fs::lookup(FIXTURE_PATH, &raw_node), fs::OK);
+    rc::strong_ref<fs::node> node = rc::strong_ref<fs::node>::adopt(raw_node);
+    uint32_t closed_refs = node->ref_count();
+
+    {
+        fw::file firmware;
+        EXPECT_EQ(firmware.open(FIXTURE_NAME), fw::OK);
+        EXPECT_EQ(node->ref_count(), closed_refs + 1);
+
+        firmware.close();
+        EXPECT_EQ(node->ref_count(), closed_refs);
+
+        EXPECT_EQ(firmware.open(FIXTURE_NAME), fw::OK);
+    }
+
+    EXPECT_EQ(node->ref_count(), closed_refs);
 }
