@@ -5,6 +5,7 @@
 #include "stlx_unit_test.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "exec/elf64.h"
 #include "fs/fs.h"
 #include "fw/fw.h"
 #include "common/string.h"
@@ -13,7 +14,9 @@
 TEST_SUITE(nvidia_firmware);
 
 using drivers::nvidia::check_boot_file;
+using drivers::nvidia::check_gsp_image;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
+using drivers::nvidia::FIRMWARE_VERSION;
 using drivers::nvidia::OK;
 
 // The directories down to the suite's own, in creation order. The suite creates only the missing ones and removes
@@ -33,7 +36,7 @@ static bool g_created_directories[FIXTURE_DIRECTORY_COUNT];
 static constexpr const char CHECKED_NAME[] = "nvidia_test/checked.bin";
 static constexpr const char CHECKED_PATH[] = "/usr/lib/firmware/nvidia_test/checked.bin";
 
-// `check_boot_file` never returns it, so a test whose file could not be allocated, written or opened fails
+// Neither check returns it, so a test whose file could not be allocated, written or opened fails
 static constexpr int32_t NOT_CHECKED = 1;
 
 static int32_t remove_fixtures() {
@@ -257,4 +260,322 @@ TEST(nvidia_firmware, boot_file_program_must_end_inside_the_file) {
     boot_file wrapping(GA102_BOOTLOADER);
     wrapping.put(PROGRAM_SIZE_FIELD, WRAPPING_PROGRAM_SIZE);
     EXPECT_EQ(check_boot(wrapping), ERR_BAD_FIRMWARE);
+}
+
+// Room for 65 section headers and every table a layout places beside them
+static constexpr size_t GSP_IMAGE_BYTES = 8192;
+
+// The name table of every synthetic image. .fwversion comes last, so the table ends with its NUL.
+static constexpr char NAME_TABLE[] = "\0.shstrtab\0.fwimage\0.fwversion";
+
+// Where each name starts in the table, the value a section header holds to name its section
+static constexpr uint32_t SHSTRTAB_NAME_OFFSET  = 1;
+static constexpr uint32_t FWIMAGE_NAME_OFFSET   = 11;
+static constexpr uint32_t FWVERSION_NAME_OFFSET = 20;
+
+// Where a synthetic GSP image places its parts, as offsets from the file's start and section indexes
+struct gsp_layout {
+    uint64_t section_table_offset;
+    uint16_t section_count;
+    uint16_t name_table_index;
+    uint64_t name_table_offset;
+    uint16_t version_index;
+    uint64_t version_offset;
+};
+
+// The synthetic GSP image every test checks, rebuilt by `build_image` before each case
+alignas(elf64::Shdr) static uint8_t g_image[GSP_IMAGE_BYTES];
+static gsp_layout g_layout;
+
+static elf64::Ehdr& image_header() {
+    return *reinterpret_cast<elf64::Ehdr*>(g_image);
+}
+
+static elf64::Shdr& image_section(uint16_t index) {
+    uint64_t offset = g_layout.section_table_offset + index * sizeof(elf64::Shdr);
+    return *reinterpret_cast<elf64::Shdr*>(g_image + offset);
+}
+
+// Lays out a valid image as `layout` says, with section 0 unnamed and the others named .fwimage unless they are the
+// name table or .fwversion. It stays valid until the test breaks one property.
+static void build_image(const gsp_layout& layout) {
+    string::memset(g_image, 0, sizeof(g_image));
+    g_layout = layout;
+
+    elf64::Ehdr& header = image_header();
+    header.e_ident[0] = elf64::ELFMAG0;
+    header.e_ident[1] = elf64::ELFMAG1;
+    header.e_ident[2] = elf64::ELFMAG2;
+    header.e_ident[3] = elf64::ELFMAG3;
+    header.e_ident[elf64::EI_CLASS] = elf64::ELFCLASS64;
+    header.e_ident[elf64::EI_DATA] = elf64::ELFDATA2LSB;
+    header.e_shoff = layout.section_table_offset;
+    header.e_shentsize = sizeof(elf64::Shdr);
+    header.e_shnum = layout.section_count;
+    header.e_shstrndx = layout.name_table_index;
+
+    for (uint16_t i = 1; i < layout.section_count; i++) {
+        image_section(i).sh_name = FWIMAGE_NAME_OFFSET;
+    }
+
+    elf64::Shdr& name_table = image_section(layout.name_table_index);
+    name_table.sh_name = SHSTRTAB_NAME_OFFSET;
+    name_table.sh_offset = layout.name_table_offset;
+    name_table.sh_size = sizeof(NAME_TABLE);
+    string::memcpy(g_image + layout.name_table_offset, NAME_TABLE, sizeof(NAME_TABLE));
+
+    elf64::Shdr& version_section = image_section(layout.version_index);
+    version_section.sh_name = FWVERSION_NAME_OFFSET;
+    version_section.sh_offset = layout.version_offset;
+    version_section.sh_size = sizeof(FIRMWARE_VERSION);
+    string::memcpy(g_image + layout.version_offset, FIRMWARE_VERSION, sizeof(FIRMWARE_VERSION));
+}
+
+static int32_t check_image() {
+    fw::file file;
+    if (!install(g_image, GSP_IMAGE_BYTES, file)) {
+        return NOT_CHECKED;
+    }
+
+    return check_gsp_image(file);
+}
+
+// As gsp_ga10x.bin of firmware 535.183.01 places them: the section table ends the file, the name table is the last
+// of 10 sections, and .fwversion is the third
+static constexpr gsp_layout GSP_GA10X_LAYOUT = {
+    .section_table_offset = GSP_IMAGE_BYTES - 10 * sizeof(elf64::Shdr),
+    .section_count = 10,
+    .name_table_index = 9,
+    .name_table_offset = 7000,
+    .version_index = 2,
+    .version_offset = 4000,
+};
+
+// The section table in the middle with room for one header after it, the name table's header at index 1 and its
+// names right after the ELF header, and .fwversion's contents at an odd offset, ending the file
+static constexpr gsp_layout MIDDLE_TABLE_LAYOUT = {
+    .section_table_offset = 2048,
+    .section_count = 10,
+    .name_table_index = 1,
+    .name_table_offset = sizeof(elf64::Ehdr),
+    .version_index = 7,
+    .version_offset = GSP_IMAGE_BYTES - sizeof(FIRMWARE_VERSION),
+};
+
+// The most sections an image may have, with room for one more header after the table, and the name table ending
+// the file
+static constexpr gsp_layout MOST_SECTIONS_LAYOUT = {
+    .section_table_offset = sizeof(elf64::Ehdr),
+    .section_count = 64,
+    .name_table_index = 63,
+    .name_table_offset = GSP_IMAGE_BYTES - sizeof(NAME_TABLE),
+    .version_index = 33,
+    .version_offset = 4800,
+};
+
+// The section table ending the file with .fwversion's header last
+static constexpr gsp_layout VERSION_LAST_LAYOUT = {
+    .section_table_offset = GSP_IMAGE_BYTES - 10 * sizeof(elf64::Shdr),
+    .section_count = 10,
+    .name_table_index = 1,
+    .name_table_offset = 3000,
+    .version_index = 9,
+    .version_offset = 5001,
+};
+
+static constexpr gsp_layout VALID_LAYOUTS[] = {
+    GSP_GA10X_LAYOUT,
+    MIDDLE_TABLE_LAYOUT,
+    MOST_SECTIONS_LAYOUT,
+    VERSION_LAST_LAYOUT,
+};
+
+TEST(nvidia_firmware, gsp_images_of_varied_layouts_pass) {
+    for (const gsp_layout& layout : VALID_LAYOUTS) {
+        build_image(layout);
+        EXPECT_EQ(check_image(), OK);
+    }
+}
+
+// Reading the ELF header would refuse this file too, so the case shows only that it is refused, not which check does
+TEST(nvidia_firmware, gsp_image_shorter_than_an_elf_header_is_refused) {
+    build_image(GSP_GA10X_LAYOUT);
+
+    fw::file file;
+    ASSERT_TRUE(install(g_image, sizeof(elf64::Ehdr) - 1, file));
+
+    EXPECT_EQ(check_gsp_image(file), ERR_BAD_FIRMWARE);
+}
+
+// Each valid layout ends with a zero byte some read needs: a section header's last, or the NUL of .fwversion's name
+// or contents. Cut off after opening, that read comes up short into zeroed memory, so only a failed read refuses.
+TEST(nvidia_firmware, gsp_image_cut_short_after_opening_is_refused) {
+    for (const gsp_layout& layout : VALID_LAYOUTS) {
+        build_image(layout);
+
+        fw::file opened;
+        ASSERT_TRUE(install(g_image, GSP_IMAGE_BYTES, opened));
+
+        fw::file cut_short;
+        ASSERT_TRUE(install(g_image, GSP_IMAGE_BYTES - 1, cut_short));
+
+        EXPECT_EQ(check_gsp_image(opened), ERR_BAD_FIRMWARE);
+    }
+}
+
+static constexpr size_t ELF_MAGIC_BYTES = 4;
+
+// ELF's values for a 32-bit class and for big-endian data
+static constexpr uint8_t ELFCLASS32  = 1;
+static constexpr uint8_t ELFDATA2MSB = 2;
+
+TEST(nvidia_firmware, gsp_image_must_be_a_64_bit_little_endian_elf_file) {
+    for (size_t i = 0; i < ELF_MAGIC_BYTES; i++) {
+        build_image(GSP_GA10X_LAYOUT);
+        image_header().e_ident[i] ^= 0xFF;
+        EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+    }
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_header().e_ident[elf64::EI_CLASS] = ELFCLASS32;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_header().e_ident[elf64::EI_DATA] = ELFDATA2MSB;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// The check reads 64-byte headers whatever the file says, so only the entry size check refuses these
+TEST(nvidia_firmware, gsp_image_section_headers_must_be_64_bytes) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_header().e_shentsize = sizeof(elf64::Shdr) - 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_header().e_shentsize = sizeof(elf64::Shdr) + 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// With no sections the name table index lies past them. The 65th header is all zeros, a section with an empty name,
+// so only the section limit refuses that image.
+TEST(nvidia_firmware, gsp_image_with_no_sections_or_more_than_64_is_refused) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_header().e_shnum = 0;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(MOST_SECTIONS_LAYOUT);
+    image_header().e_shnum = MOST_SECTIONS_LAYOUT.section_count + 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+static constexpr uint64_t LAST_OFFSET = 0xFFFFFFFFFFFFFFFFULL;
+
+// The table one byte past the file's end, and at an offset whose end wraps around to 576, inside the file. Reading a
+// header past the end would refuse both too, so these show only that the image is refused, not which check does.
+TEST(nvidia_firmware, gsp_image_section_table_must_lie_inside_the_file) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_header().e_shoff += 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_header().e_shoff = LAST_OFFSET - sizeof(elf64::Shdr) + 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// Each index leads to a valid copy of the name table's header, in the null section or just past the table, so only
+// the index check refuses them
+TEST(nvidia_firmware, gsp_image_name_table_index_must_not_be_0_or_past_the_last_section) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(0) = image_section(GSP_GA10X_LAYOUT.name_table_index);
+    image_header().e_shstrndx = 0;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    uint16_t past_last = MIDDLE_TABLE_LAYOUT.section_count;
+    build_image(MIDDLE_TABLE_LAYOUT);
+    image_section(past_last) = image_section(MIDDLE_TABLE_LAYOUT.name_table_index);
+    image_header().e_shstrndx = past_last;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// The table one byte longer than the file holds, and so long that its end wraps around to 1. Every name read stays
+// inside the real table, so only the bounds check refuses them.
+TEST(nvidia_firmware, gsp_image_name_table_must_lie_inside_the_file) {
+    build_image(MOST_SECTIONS_LAYOUT);
+    image_section(MOST_SECTIONS_LAYOUT.name_table_index).sh_size += 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.name_table_index).sh_size = LAST_OFFSET - GSP_GA10X_LAYOUT.name_table_offset + 2;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// No section named .fwversion, which the version checks would refuse as well, one named .fwversionX, which only a
+// comparison that includes the NUL refuses, and two identical ones
+TEST(nvidia_firmware, gsp_image_must_have_exactly_one_version_section) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.version_index).sh_name = FWIMAGE_NAME_OFFSET;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    g_image[GSP_GA10X_LAYOUT.name_table_offset + sizeof(NAME_TABLE) - 1] = 'X';
+    image_section(GSP_GA10X_LAYOUT.name_table_index).sh_size = sizeof(NAME_TABLE) + 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.version_index + 1) = image_section(GSP_GA10X_LAYOUT.version_index);
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// The table ending just before .fwversion's NUL, which the zero byte after the table would supply to a check reading
+// past its end, and the table ending a byte before the name starts, which only the check of the name's offset refuses
+TEST(nvidia_firmware, gsp_image_version_section_name_must_end_inside_the_name_table) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.name_table_index).sh_size = sizeof(NAME_TABLE) - 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.name_table_index).sh_size = FWVERSION_NAME_OFFSET - 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// The contents one byte past the file's end, and at an offset whose end wraps around to 1. Reading the contents would
+// refuse both too, so these show only that the image is refused, not which check does.
+TEST(nvidia_firmware, gsp_image_version_section_must_lie_inside_the_file) {
+    build_image(MIDDLE_TABLE_LAYOUT);
+    image_section(MIDDLE_TABLE_LAYOUT.version_index).sh_offset += 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.version_index).sh_offset = LAST_OFFSET - sizeof(FIRMWARE_VERSION) + 2;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// Another version of the same length and one a digit longer, which only comparing the versions up to their NULs
+// refuses, then the version without its NUL and with a byte after it
+TEST(nvidia_firmware, gsp_image_version_section_must_hold_exactly_the_driver_version_and_its_nul) {
+    build_image(GSP_GA10X_LAYOUT);
+    g_image[GSP_GA10X_LAYOUT.version_offset] += 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    g_image[GSP_GA10X_LAYOUT.version_offset + sizeof(FIRMWARE_VERSION) - 1] = '0';
+    image_section(GSP_GA10X_LAYOUT.version_index).sh_size = sizeof(FIRMWARE_VERSION) + 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.version_index).sh_size = sizeof(FIRMWARE_VERSION) - 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.version_index).sh_size = sizeof(FIRMWARE_VERSION) + 1;
+    g_image[GSP_GA10X_LAYOUT.version_offset + sizeof(FIRMWARE_VERSION)] = 'X';
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// A section running to the file's end, refused unread. Without the size check, reading it would overrun the check's
+// version buffer by kilobytes rather than return a result.
+TEST(nvidia_firmware, gsp_image_version_section_larger_than_the_version_buffer_is_refused) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.version_index).sh_size = GSP_IMAGE_BYTES - GSP_GA10X_LAYOUT.version_offset;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
 }

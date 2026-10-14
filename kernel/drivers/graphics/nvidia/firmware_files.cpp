@@ -5,6 +5,7 @@
 #include "drivers/pci_driver.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "exec/elf64.h"
 
 namespace drivers::nvidia {
 
@@ -30,6 +31,19 @@ struct firmware_names {
 // The magic and header version a valid `boot_file_header` holds
 constexpr uint32_t BOOT_FILE_MAGIC          = 0x10DE;
 constexpr uint32_t BOOT_FILE_HEADER_VERSION = 1;
+
+// The GSP image's section that holds its firmware version, a string and its NUL
+constexpr const char VERSION_SECTION[] = ".fwversion";
+
+// A bound on the section headers and names the check reads, several times the section count of each GSP image the
+// chip table names. An image with more sections fails with `ERR_BAD_FIRMWARE`.
+constexpr uint16_t GSP_IMAGE_MAX_SECTIONS = 64;
+
+// Room for a version string of up to 31 bytes and its NUL, so a .fwversion section holding another version can be
+// logged. A larger section fails unread.
+constexpr size_t VERSION_CAPACITY = 32;
+
+static_assert(sizeof(FIRMWARE_VERSION) <= VERSION_CAPACITY, "FIRMWARE_VERSION must fit the version buffer");
 
 // Writes `directory`, a '/' and `file` into `name_out`, which must hold `NAME_CAPACITY` bytes. Returns false when
 // they and a NUL do not fit.
@@ -120,6 +134,224 @@ int32_t to_bring_up_result(int32_t fw_result) {
     return ERR_BAD_FIRMWARE;
 }
 
+// Whether the `bytes` bytes at `offset` lie inside the first `limit` bytes, also when their sum would overflow
+static bool lies_inside(uint64_t offset, uint64_t bytes, uint64_t limit) {
+    return offset <= limit && bytes <= limit - offset;
+}
+
+// Reads `count` bytes at `offset` of `file` into `dst`, logging a failure with `name` saying what the file is
+static int32_t read_firmware(const fw::file& file, const char* name, uint64_t offset, void* dst, size_t count) {
+    int32_t fw_result = file.read(offset, dst, count);
+    int32_t rc = to_bring_up_result(fw_result);
+    if (rc != OK) {
+        log::error("nvidia: reading the %s failed with fw error %d", name, fw_result);
+    }
+
+    return rc;
+}
+
+static int32_t read_gsp_image(const fw::file& image, uint64_t offset, void* dst, size_t count) {
+    return read_firmware(image, "GSP image", offset, dst, count);
+}
+
+// Callers check first that the section table lies inside the file and that `index` is below its section count, so
+// the sum cannot wrap
+static uint64_t section_header_offset(const elf64::Ehdr& header, uint16_t index) {
+    return header.e_shoff + static_cast<uint64_t>(index) * sizeof(elf64::Shdr);
+}
+
+// Reads the GSP image's ELF header and checks that the file is a 64-bit little-endian ELF file with at most
+// `GSP_IMAGE_MAX_SECTIONS` section headers of 64 bytes inside it, and a name table index from 1 to the last section
+static int32_t read_elf_header(const fw::file& image, elf64::Ehdr& header_out) {
+    if (image.size() < sizeof(header_out)) {
+        log::error("nvidia: the GSP image is %lu bytes, shorter than its 64-byte ELF header", image.size());
+        return ERR_BAD_FIRMWARE;
+    }
+
+    int32_t rc = read_gsp_image(image, 0, &header_out, sizeof(header_out));
+    if (rc != OK) {
+        return rc;
+    }
+
+    const uint8_t* ident = header_out.e_ident;
+    bool has_magic = ident[0] == elf64::ELFMAG0
+        && ident[1] == elf64::ELFMAG1
+        && ident[2] == elf64::ELFMAG2
+        && ident[3] == elf64::ELFMAG3;
+    bool is_64_bit = ident[elf64::EI_CLASS] == elf64::ELFCLASS64;
+    bool is_little_endian = ident[elf64::EI_DATA] == elf64::ELFDATA2LSB;
+    if (!has_magic || !is_64_bit || !is_little_endian) {
+        log::error("nvidia: the GSP image is not a 64-bit little-endian ELF file");
+        return ERR_BAD_FIRMWARE;
+    }
+
+    if (header_out.e_shentsize != sizeof(elf64::Shdr)) {
+        log::error("nvidia: the GSP image's section headers are %u bytes instead of 64", header_out.e_shentsize);
+        return ERR_BAD_FIRMWARE;
+    }
+
+    if (header_out.e_shnum > GSP_IMAGE_MAX_SECTIONS) {
+        log::error(
+            "nvidia: the GSP image has %u sections, more than the %u the driver reads",
+            header_out.e_shnum,
+            GSP_IMAGE_MAX_SECTIONS
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    uint64_t table_bytes = static_cast<uint64_t>(header_out.e_shnum) * sizeof(elf64::Shdr);
+    if (!lies_inside(header_out.e_shoff, table_bytes, image.size())) {
+        log::error(
+            "nvidia: the GSP image's section table of %lu bytes at offset %lu runs past the image's %lu bytes",
+            table_bytes,
+            header_out.e_shoff,
+            image.size()
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    uint16_t name_table_index = header_out.e_shstrndx;
+    bool is_null_section = name_table_index == elf64::SHN_UNDEF;
+    bool is_past_last_section = name_table_index >= header_out.e_shnum;
+    if (is_null_section || is_past_last_section) {
+        log::error(
+            "nvidia: the GSP image's section name table index %u must be at least 1 and below its section count %u",
+            name_table_index,
+            header_out.e_shnum
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    return OK;
+}
+
+// Reads the section header of the GSP image's name table and checks that the table lies inside the file
+static int32_t read_name_table_header(const fw::file& image, const elf64::Ehdr& header, elf64::Shdr& name_table_out) {
+    uint64_t name_table_header_offset = section_header_offset(header, header.e_shstrndx);
+    int32_t rc = read_gsp_image(image, name_table_header_offset, &name_table_out, sizeof(name_table_out));
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (!lies_inside(name_table_out.sh_offset, name_table_out.sh_size, image.size())) {
+        log::error(
+            "nvidia: the GSP image's section name table of %lu bytes at offset %lu runs past the image's %lu bytes",
+            name_table_out.sh_size,
+            name_table_out.sh_offset,
+            image.size()
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    return OK;
+}
+
+// Finds the section named `VERSION_SECTION`, failing unless exactly one has that name. A name counts only when it
+// and its NUL lie inside the name table.
+static int32_t find_version_section(
+    const fw::file& image,
+    const elf64::Ehdr& header,
+    const elf64::Shdr& name_table,
+    elf64::Shdr& version_section_out
+) {
+    size_t version_section_count = 0;
+    for (uint16_t i = 0; i < header.e_shnum; i++) {
+        elf64::Shdr section = {};
+        int32_t rc = read_gsp_image(image, section_header_offset(header, i), &section, sizeof(section));
+        if (rc != OK) {
+            return rc;
+        }
+
+        char name[sizeof(VERSION_SECTION)] = {};
+        if (!lies_inside(section.sh_name, sizeof(name), name_table.sh_size)) {
+            continue;
+        }
+
+        rc = read_gsp_image(image, name_table.sh_offset + section.sh_name, name, sizeof(name));
+        if (rc != OK) {
+            return rc;
+        }
+
+        if (string::memcmp(name, VERSION_SECTION, sizeof(name)) == 0) {
+            version_section_out = section;
+            version_section_count++;
+        }
+    }
+
+    if (version_section_count != 1) {
+        log::error("nvidia: the GSP image has %lu .fwversion sections instead of one", version_section_count);
+        return ERR_BAD_FIRMWARE;
+    }
+
+    return OK;
+}
+
+// Checks that the .fwversion section lies inside the GSP image and holds exactly `FIRMWARE_VERSION` and its NUL
+static int32_t check_version(const fw::file& image, const elf64::Shdr& version_section) {
+    if (!lies_inside(version_section.sh_offset, version_section.sh_size, image.size())) {
+        log::error(
+            "nvidia: the GSP image's .fwversion section of %lu bytes at offset %lu runs past the image's %lu bytes",
+            version_section.sh_size,
+            version_section.sh_offset,
+            image.size()
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    char version[VERSION_CAPACITY] = {};
+    if (version_section.sh_size > sizeof(version)) {
+        log::error(
+            "nvidia: the GSP image's .fwversion section is %lu bytes, more than the driver's %lu-byte version buffer",
+            version_section.sh_size,
+            sizeof(version)
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    int32_t rc = read_gsp_image(image, version_section.sh_offset, version, version_section.sh_size);
+    if (rc != OK) {
+        return rc;
+    }
+
+    bool is_one_string = string::strnlen(version, version_section.sh_size) + 1 == version_section.sh_size;
+    if (!is_one_string) {
+        log::error(
+            "nvidia: the GSP image's .fwversion section of %lu bytes does not hold exactly one string and its NUL",
+            version_section.sh_size
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    if (string::strcmp(version, FIRMWARE_VERSION) != 0) {
+        log::error("nvidia: the GSP image is firmware %s, but the driver boots only %s", version, FIRMWARE_VERSION);
+        return ERR_BAD_FIRMWARE;
+    }
+
+    return OK;
+}
+
+int32_t check_gsp_image(const fw::file& image) {
+    elf64::Ehdr header = {};
+    int32_t rc = read_elf_header(image, header);
+    if (rc != OK) {
+        return rc;
+    }
+
+    elf64::Shdr name_table = {};
+    rc = read_name_table_header(image, header, name_table);
+    if (rc != OK) {
+        return rc;
+    }
+
+    elf64::Shdr version_section = {};
+    rc = find_version_section(image, header, name_table, version_section);
+    if (rc != OK) {
+        return rc;
+    }
+
+    return check_version(image, version_section);
+}
+
 int32_t check_boot_file(const fw::file& file, const char* name) {
     boot_file_header header = {};
     if (file.size() < sizeof(header)) {
@@ -127,10 +359,8 @@ int32_t check_boot_file(const fw::file& file, const char* name) {
         return ERR_BAD_FIRMWARE;
     }
 
-    int32_t fw_result = file.read(0, &header, sizeof(header));
-    int32_t rc = to_bring_up_result(fw_result);
+    int32_t rc = read_firmware(file, name, 0, &header, sizeof(header));
     if (rc != OK) {
-        log::error("nvidia: reading the %s failed with fw error %d", name, fw_result);
         return rc;
     }
 
