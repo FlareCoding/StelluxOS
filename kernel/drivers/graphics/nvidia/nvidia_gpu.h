@@ -12,11 +12,15 @@ namespace drivers {
  * result but `OK`. The driver owns its BAR0 mapping, which `detach()` unmaps.
  *
  * `attach()` declines the card when a driver display is already registered
- * with gfxfb, or when the chip table does not list the card's chip. Bring-up
- * ends after reading the layout of the card's VBIOS, so when the chip is listed
- * and the layout is read, `attach()` logs the layout and declines as well.
- * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
- * does not respond, or its VBIOS is not laid out as the driver expects.
+ * with gfxfb, when the chip table does not list the card's chip, or when a
+ * directory the chip's firmware files belong in is not installed, as in an
+ * image without the nvidia-firmware package. Bring-up ends after logging the
+ * layout of the card's VBIOS and opening the chip's firmware files, so when
+ * every file opens, `attach()` declines as well. `attach()` fails with a
+ * negative error when BAR0 cannot be mapped, the card does not respond, its
+ * VBIOS is not laid out as the driver expects, a firmware file of an
+ * installed directory cannot be opened, or a firmware name built from the
+ * chip table is too long or malformed.
  * Whether `attach()` declines or fails, the screen is left as it was, and the
  * card keeps only the memory and I/O decoding that `attach()` turned on. That
  * decoding stays on because the boot framebuffer may be in this card's memory,

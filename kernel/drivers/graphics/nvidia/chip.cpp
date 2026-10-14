@@ -9,7 +9,11 @@ constexpr uint32_t PMC_BOOT_0_REVISION_MASK = 0xFF;
 // Only chips verified on real hardware are listed, so another chip of the same
 // architecture, such as GA104, has no entry
 constexpr chip_info CHIP_TABLE[] = {
-    {.id = 0x172, .name = "GA102"},
+    {
+        .id = 0x172,
+        .name = "GA102",
+        .firmware = {.gsp_image = "gsp_ga10x.bin", .boot_directory = "ga102"},
+    },
 };
 
 uint16_t decode_chip_id(uint32_t boot0) {

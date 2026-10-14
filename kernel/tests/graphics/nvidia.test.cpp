@@ -2,23 +2,32 @@
 
 #include "stlx_unit_test.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/vbios.h"
+#include "drivers/pci_driver.h"
+#include "fw/fw.h"
 #include "mm/heap.h"
 
 TEST_SUITE(nvidia);
 
+using drivers::DECLINED;
+using drivers::nvidia::chip_firmware;
 using drivers::nvidia::chip_info;
 using drivers::nvidia::decode_chip_id;
 using drivers::nvidia::decode_chip_revision;
+using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::ERR_BAD_VBIOS;
 using drivers::nvidia::find_chip;
+using drivers::nvidia::firmware_files;
 using drivers::nvidia::OK;
+using drivers::nvidia::open_firmware_files;
 using drivers::nvidia::PMC_BOOT_0;
 using drivers::nvidia::read_vbios_layout;
 using drivers::nvidia::registers;
 using drivers::nvidia::ROM_WINDOW_BYTES;
+using drivers::nvidia::to_bring_up_result;
 using drivers::nvidia::VBIOS_MAX_IMAGES;
 using drivers::nvidia::vbios_image;
 using drivers::nvidia::vbios_layout;
@@ -450,4 +459,47 @@ TEST(nvidia, chain_holds_at_most_the_image_limit) {
     write_image(rom, one_block_image(VBIOS_MAX_IMAGES - 1), false);
     write_image(rom, one_block_image(VBIOS_MAX_IMAGES), true);
     EXPECT_EQ(read_layout(rom, layout), ERR_BAD_VBIOS);
+}
+
+// Only a firmware directory no package installed declines, and every other `fw::file` result fails bring-up
+TEST(nvidia, only_an_uninstalled_firmware_directory_declines) {
+    EXPECT_EQ(to_bring_up_result(fw::OK), OK);
+    EXPECT_EQ(to_bring_up_result(fw::ERR_NOT_INSTALLED), DECLINED);
+    EXPECT_EQ(to_bring_up_result(fw::ERR_MISSING), ERR_BAD_FIRMWARE);
+    EXPECT_EQ(to_bring_up_result(fw::ERR_UNREADABLE), ERR_BAD_FIRMWARE);
+    EXPECT_EQ(to_bring_up_result(fw::ERR_INVALID_ARG), ERR_BAD_FIRMWARE);
+}
+
+// No package installs a boot directory of this name
+static constexpr chip_firmware UNINSTALLED_BOOT_DIRECTORY = {
+    .gsp_image = "gsp_test.bin",
+    .boot_directory = "test_boot_directory",
+};
+
+TEST(nvidia, chip_whose_boot_directory_is_not_installed_declines) {
+    firmware_files files;
+    EXPECT_EQ(open_firmware_files(UNINSTALLED_BOOT_DIRECTORY, files), DECLINED);
+}
+
+// The longest name, nvidia/535.183.01/<boot directory>/booter_load.bin, fills the driver's 128 bytes with its NUL
+// when the boot directory has this length
+static constexpr size_t LONGEST_BOOT_DIRECTORY_BYTES = 93;
+
+static void fill_boot_directory(char* boot_directory, size_t length) {
+    string::memset(boot_directory, 'a', length);
+    boot_directory[length] = '\0';
+}
+
+// The longest boot directory still builds its names and declines, since no package installs it
+TEST(nvidia, firmware_names_too_long_to_build_fail) {
+    char boot_directory[LONGEST_BOOT_DIRECTORY_BYTES + 2];
+    chip_firmware firmware = {.gsp_image = "gsp_test.bin", .boot_directory = boot_directory};
+
+    fill_boot_directory(boot_directory, LONGEST_BOOT_DIRECTORY_BYTES);
+    firmware_files longest_files;
+    EXPECT_EQ(open_firmware_files(firmware, longest_files), DECLINED);
+
+    fill_boot_directory(boot_directory, LONGEST_BOOT_DIRECTORY_BYTES + 1);
+    firmware_files overlong_files;
+    EXPECT_EQ(open_firmware_files(firmware, overlong_files), ERR_BAD_FIRMWARE);
 }

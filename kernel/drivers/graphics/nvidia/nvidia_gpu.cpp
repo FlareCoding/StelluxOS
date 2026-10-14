@@ -1,5 +1,6 @@
 #include "drivers/graphics/nvidia/nvidia_gpu.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/vbios.h"
@@ -66,7 +67,13 @@ int32_t nvidia_gpu_driver::attach() {
         log::info("nvidia: VBIOS image at 0x%X, %u bytes, code type 0x%02X", image.offset, image.size, image.code_type);
     }
 
-    log::info("nvidia: bring-up stops after reading the VBIOS layout");
+    nvidia::firmware_files files;
+    rc = nvidia::open_firmware_files(chip->firmware, files);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info("nvidia: bring-up stops after opening the firmware files");
 
     return DECLINED;
 }
