@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
+#include "common/string.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -21,7 +22,9 @@ using drivers::nvidia::decode_chip_id;
 using drivers::nvidia::decode_chip_revision;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::ERR_BAD_VBIOS;
+using drivers::nvidia::falcon_program_table;
 using drivers::nvidia::find_chip;
+using drivers::nvidia::find_falcon_program_table;
 using drivers::nvidia::firmware_files;
 using drivers::nvidia::OK;
 using drivers::nvidia::open_firmware_files;
@@ -461,6 +464,495 @@ TEST(nvidia, chain_holds_at_most_the_image_limit) {
     write_image(rom, one_block_image(VBIOS_MAX_IMAGES - 1), false);
     write_image(rom, one_block_image(VBIOS_MAX_IMAGES), true);
     EXPECT_EQ(read_layout(rom, layout), ERR_BAD_VBIOS);
+}
+
+// The ids, signatures and fields of the BIT, NVIDIA's index of the VBIOS, and of the falcon program table,
+// restated here so the tests hold the lookup to the format rather than to its own constants
+static constexpr uint16_t BIT_ID                  = 0xB8FF;
+static constexpr uint32_t BIT_SIGNATURE           = 0x00544942; // "BIT\0"
+static constexpr uint16_t BIT_VERSION             = 0x0100;
+static constexpr uint32_t BIT_SIGNATURE_FIELD     = 0x02;
+static constexpr uint32_t BIT_VERSION_FIELD       = 0x06;
+static constexpr uint32_t BIT_HEADER_SIZE         = 0x08;
+static constexpr uint32_t BIT_TOKEN_SIZE          = 0x09;
+static constexpr uint32_t BIT_TOKEN_COUNT         = 0x0A;
+static constexpr uint32_t BIT_CHECKSUM            = 0x0B;
+static constexpr uint32_t BIT_HEADER_FIELD_BYTES  = 12;
+static constexpr uint32_t TOKEN_ID                = 0x00;
+static constexpr uint32_t TOKEN_DATA_VERSION      = 0x01;
+static constexpr uint32_t TOKEN_DATA_SIZE         = 0x02;
+static constexpr uint32_t TOKEN_DATA_OFFSET       = 0x04;
+static constexpr uint8_t  TOKEN_FIELD_BYTES       = 6;
+static constexpr uint8_t  FALCON_DATA_TOKEN       = 0x70;
+static constexpr uint16_t FALCON_DATA_FIELD_BYTES = 4;
+static constexpr uint32_t TABLE_VERSION           = 0x00;
+static constexpr uint32_t TABLE_HEADER_SIZE       = 0x01;
+static constexpr uint32_t TABLE_ENTRY_SIZE        = 0x02;
+static constexpr uint32_t TABLE_ENTRY_COUNT       = 0x03;
+
+// A token id the lookup has no use for
+static constexpr uint8_t OTHER_TOKEN = 0x01;
+
+// Where a synthetic VBIOS places the BIT, the falcon data and the falcon program table, in bytes from the
+// VBIOS's start, and the values each holds
+struct table_placement {
+    uint32_t bit;
+    uint8_t  bit_header_size;
+    uint8_t  token_size;
+    uint8_t  token_count;
+    uint8_t  falcon_data_token_index;
+    uint8_t  falcon_data_version;
+    uint16_t falcon_data_size;
+    uint32_t falcon_data;
+    uint32_t table;
+    uint8_t  table_version;
+    uint8_t  table_header_size;
+    uint8_t  entry_size;
+    uint8_t  entry_count;
+};
+
+// A synthetic VBIOS's images, and the base its pointers into NVIDIA's data are written from: the offset of the first
+// image of NVIDIA's data less the size of the first x86 image, or 0 when either image is missing
+struct layout_with_base {
+    vbios_layout layout;
+    uint32_t     nvidia_data_base;
+};
+
+// The bytes of a BIT header past its 12 bytes of fields hold this nonzero value, so a lookup that sums or skips
+// only the fields fails
+static constexpr uint8_t BIT_HEADER_PADDING = 0x5A;
+
+// Sets the byte at `adjusted` so the `bytes` bytes at `offset` sum to zero
+static void zero_sum(rom_window& rom, uint32_t offset, uint32_t bytes, uint32_t adjusted) {
+    rom.bytes[adjusted] = 0;
+
+    uint8_t sum = 0;
+    for (uint32_t i = 0; i < bytes; i++) {
+        sum = static_cast<uint8_t>(sum + rom.bytes[offset + i]);
+    }
+
+    rom.bytes[adjusted] = static_cast<uint8_t>(0 - sum);
+}
+
+static uint32_t token_offset(const table_placement& placement, uint32_t index) {
+    return placement.bit + placement.bit_header_size + index * placement.token_size;
+}
+
+static void write_token(
+    rom_window& rom,
+    uint32_t token,
+    uint8_t id,
+    uint8_t version,
+    uint16_t size,
+    uint16_t data_offset
+) {
+    rom.bytes[token + TOKEN_ID] = id;
+    rom.bytes[token + TOKEN_DATA_VERSION] = version;
+    put_u16(rom, token + TOKEN_DATA_SIZE, size);
+    put_u16(rom, token + TOKEN_DATA_OFFSET, data_offset);
+}
+
+// The other tokens give 4 bytes of data at the VBIOS's start, whose zeros name no table: the falcon data token's
+// id at version 1 right before it and at version 2 right after it, and another id at version 2 elsewhere
+static void write_bit(rom_window& rom, const table_placement& placement) {
+    uint32_t bit = placement.bit;
+    uint32_t index = placement.falcon_data_token_index;
+
+    put_u16(rom, bit, BIT_ID);
+    put_u32(rom, bit + BIT_SIGNATURE_FIELD, BIT_SIGNATURE);
+    put_u16(rom, bit + BIT_VERSION_FIELD, BIT_VERSION);
+    rom.bytes[bit + BIT_HEADER_SIZE] = placement.bit_header_size;
+    rom.bytes[bit + BIT_TOKEN_SIZE] = placement.token_size;
+    rom.bytes[bit + BIT_TOKEN_COUNT] = placement.token_count;
+    for (uint32_t i = BIT_HEADER_FIELD_BYTES; i < placement.bit_header_size; i++) {
+        rom.bytes[bit + i] = BIT_HEADER_PADDING;
+    }
+
+    zero_sum(rom, bit, placement.bit_header_size, bit + BIT_CHECKSUM);
+
+    for (uint32_t i = 0; i < placement.token_count; i++) {
+        uint32_t token = token_offset(placement, i);
+        if (i == index) {
+            write_token(
+                rom,
+                token,
+                FALCON_DATA_TOKEN,
+                placement.falcon_data_version,
+                placement.falcon_data_size,
+                static_cast<uint16_t>(placement.falcon_data)
+            );
+        } else if (i + 1 == index) {
+            write_token(rom, token, FALCON_DATA_TOKEN, 1, FALCON_DATA_FIELD_BYTES, 0);
+        } else if (i == index + 1) {
+            write_token(rom, token, FALCON_DATA_TOKEN, 2, FALCON_DATA_FIELD_BYTES, 0);
+        } else {
+            write_token(rom, token, OTHER_TOKEN, 2, FALCON_DATA_FIELD_BYTES, 0);
+        }
+    }
+}
+
+// Writes only the table's header, since the lookup reads no entry
+static void write_table(rom_window& rom, const table_placement& placement) {
+    uint32_t table = placement.table;
+
+    rom.bytes[table + TABLE_VERSION] = placement.table_version;
+    rom.bytes[table + TABLE_HEADER_SIZE] = placement.table_header_size;
+    rom.bytes[table + TABLE_ENTRY_SIZE] = placement.entry_size;
+    rom.bytes[table + TABLE_ENTRY_COUNT] = placement.entry_count;
+}
+
+// Clears the ROM window first, so no structure of an earlier placement remains for the lookup to find
+static void write_placement(rom_window& rom, const layout_with_base& vbios, const table_placement& placement) {
+    string::memset(rom.bytes, 0, ROM_WINDOW_BYTES + GUARD_BYTES);
+    write_bit(rom, placement);
+    put_u32(rom, placement.falcon_data, placement.table - vbios.nvidia_data_base);
+    write_table(rom, placement);
+}
+
+// The lookup gets the layout as `read_vbios_layout` would return it, so the fake ROM window holds no images
+static int32_t find_table(const rom_window& rom, const layout_with_base& vbios, falcon_program_table& table) {
+    registers window(reinterpret_cast<uintptr_t>(rom.bytes));
+    return find_falcon_program_table(window, vbios.layout, table);
+}
+
+static int32_t find_placed(rom_window& rom, const layout_with_base& vbios, const table_placement& placement) {
+    write_placement(rom, vbios, placement);
+
+    falcon_program_table table = {};
+    return find_table(rom, vbios, table);
+}
+
+// The RTX 3080's images, whose EFI image of 0x16A00 bytes lies between its x86 image and NVIDIA's data
+static constexpr layout_with_base RTX_3080_VBIOS = {
+    .layout = {
+        .images = {
+            RTX_3080_IMAGES[0].image,
+            RTX_3080_IMAGES[1].image,
+            RTX_3080_IMAGES[2].image,
+            RTX_3080_IMAGES[3].image,
+        },
+        .image_count = RTX_3080_IMAGE_COUNT,
+    },
+    .nvidia_data_base = 0x16A00,
+};
+
+// As the RTX 3080's VBIOS places its BIT, falcon data token and falcon program table, with the falcon data at an
+// offset that is arbitrary here
+static constexpr table_placement RTX_3080_TABLE = {
+    .bit = 0x1B0,
+    .bit_header_size = 12,
+    .token_size = 6,
+    .token_count = 18,
+    .falcon_data_token_index = 14,
+    .falcon_data_version = 2,
+    .falcon_data_size = 4,
+    .falcon_data = 0x800,
+    .table = 0x895F1,
+    .table_version = 1,
+    .table_header_size = 6,
+    .entry_size = 6,
+    .entry_count = 16,
+};
+
+// The base comes from the first of the RTX 3080's two images of NVIDIA's data, and the table from the first of two
+// falcon data tokens of version 2. Its pointer 0x72BF1 does not fit in 16 bits.
+TEST(nvidia, rtx_3080_falcon_program_table_is_found) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    write_placement(rom, RTX_3080_VBIOS, RTX_3080_TABLE);
+
+    falcon_program_table table = {};
+    EXPECT_EQ(find_table(rom, RTX_3080_VBIOS, table), OK);
+    EXPECT_EQ(table.offset, 0x895F1u);
+    EXPECT_EQ(table.base, 0x16A00u);
+    EXPECT_EQ(table.header_size, 6u);
+    EXPECT_EQ(table.entry_size, 6u);
+    EXPECT_EQ(table.entry_count, 16u);
+}
+
+// NVIDIA's data starts right at the first x86 image's size, so the base is zero, and a second x86 image ends
+// the VBIOS where the BIT's 16-bit offsets still reach
+static constexpr layout_with_base EDGE_VBIOS = {
+    .layout = {
+        .images = {
+            {.offset = 0x0000, .size = 0x4000, .code_type = X86_CODE},
+            {.offset = 0x4000, .size = 0xB000, .code_type = NVIDIA_DATA},
+            {.offset = 0xF000, .size = 0x1000, .code_type = X86_CODE},
+        },
+        .image_count = 3,
+    },
+    .nvidia_data_base = 0,
+};
+
+static constexpr uint32_t EDGE_VBIOS_END = 0x10000;
+
+// Every size and count but the falcon data's 4 bytes differs from the RTX 3080's, the BIT's header is a byte longer
+// than its fields and its tokens two bytes longer, and the falcon data token is the last token
+static constexpr table_placement EDGE_TABLE = {
+    .bit = 0x40,
+    .bit_header_size = 13,
+    .token_size = 8,
+    .token_count = 3,
+    .falcon_data_token_index = 2,
+    .falcon_data_version = 2,
+    .falcon_data_size = 4,
+    .falcon_data = 0x100,
+    .table = 0x9000,
+    .table_version = 1,
+    .table_header_size = 7,
+    .entry_size = 9,
+    .entry_count = 29,
+};
+
+TEST(nvidia, falcon_program_table_of_other_sizes_is_found) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    write_placement(rom, EDGE_VBIOS, EDGE_TABLE);
+
+    falcon_program_table table = {};
+    EXPECT_EQ(find_table(rom, EDGE_VBIOS, table), OK);
+    EXPECT_EQ(table.offset, 0x9000u);
+    EXPECT_EQ(table.base, 0u);
+    EXPECT_EQ(table.header_size, 7u);
+    EXPECT_EQ(table.entry_size, 9u);
+    EXPECT_EQ(table.entry_count, 29u);
+}
+
+// Pointers are written from the base the rule gives when it wraps below zero, so only the check refuses it
+static constexpr layout_with_base NVIDIA_DATA_FIRST = {
+    .layout = {
+        .images = {
+            {.offset = 0x0000, .size = 0xC000, .code_type = NVIDIA_DATA},
+            {.offset = 0xC000, .size = 0x4000, .code_type = X86_CODE},
+        },
+        .image_count = 2,
+    },
+    .nvidia_data_base = 0u - 0x4000u,
+};
+
+static constexpr layout_with_base NO_NVIDIA_DATA = {
+    .layout = {
+        .images = {
+            {.offset = 0x0000, .size = 0x4000, .code_type = X86_CODE},
+            {.offset = 0x4000, .size = 0xC000, .code_type = EFI_CODE},
+        },
+        .image_count = 2,
+    },
+    .nvidia_data_base = 0,
+};
+
+static constexpr layout_with_base NO_X86_IMAGE = {
+    .layout = {
+        .images = {
+            {.offset = 0x0000, .size = 0x4000, .code_type = EFI_CODE},
+            {.offset = 0x4000, .size = 0xC000, .code_type = NVIDIA_DATA},
+        },
+        .image_count = 2,
+    },
+    .nvidia_data_base = 0,
+};
+
+TEST(nvidia, nvidia_data_base_needs_both_images_and_cannot_be_negative) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    EXPECT_EQ(find_placed(rom, NVIDIA_DATA_FIRST, EDGE_TABLE), ERR_BAD_VBIOS);
+    EXPECT_EQ(find_placed(rom, NO_NVIDIA_DATA, EDGE_TABLE), ERR_BAD_VBIOS);
+    EXPECT_EQ(find_placed(rom, NO_X86_IMAGE, EDGE_TABLE), ERR_BAD_VBIOS);
+}
+
+// Writes a header with the BIT's id and signature and no tokens, so it leads to no table if the scan takes it
+static void write_bit_decoy(rom_window& rom, uint32_t offset, uint8_t header_size) {
+    put_u16(rom, offset, BIT_ID);
+    put_u32(rom, offset + BIT_SIGNATURE_FIELD, BIT_SIGNATURE);
+    rom.bytes[offset + BIT_HEADER_SIZE] = header_size;
+    rom.bytes[offset + BIT_TOKEN_SIZE] = TOKEN_FIELD_BYTES;
+    rom.bytes[offset + BIT_TOKEN_COUNT] = 0;
+}
+
+// Before the BIT come a header whose bytes do not sum to zero, one whose size is zero and one a byte shorter
+// than its fields, both summing to zero, and a valid header follows it
+TEST(nvidia, bit_is_the_first_valid_header) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    write_placement(rom, EDGE_VBIOS, EDGE_TABLE);
+
+    write_bit_decoy(rom, 0x10, BIT_HEADER_FIELD_BYTES);
+    zero_sum(rom, 0x10, BIT_HEADER_FIELD_BYTES, 0x10 + BIT_CHECKSUM);
+    rom.bytes[0x10 + BIT_CHECKSUM]++;
+
+    write_bit_decoy(rom, 0x20, 0);
+
+    write_bit_decoy(rom, 0x30, BIT_HEADER_FIELD_BYTES - 1);
+    zero_sum(rom, 0x30, BIT_HEADER_FIELD_BYTES - 1, 0x30 + BIT_VERSION_FIELD);
+
+    write_bit_decoy(rom, 0x80, BIT_HEADER_FIELD_BYTES);
+    zero_sum(rom, 0x80, BIT_HEADER_FIELD_BYTES, 0x80 + BIT_CHECKSUM);
+
+    falcon_program_table table = {};
+    EXPECT_EQ(find_table(rom, EDGE_VBIOS, table), OK);
+    EXPECT_EQ(table.offset, EDGE_TABLE.table);
+}
+
+// A 255-byte decoy header, the most its size can give, before the BIT near the VBIOS's end: the scan takes it when it
+// ends exactly at the VBIOS's end, which leads to no table, and skips it for the BIT when it ends a byte past
+static constexpr uint8_t LONGEST_BIT_HEADER = 255;
+static constexpr uint32_t LATE_BIT = 0xFF80;
+
+TEST(nvidia, bit_header_must_lie_inside_the_vbios) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    table_placement placement = EDGE_TABLE;
+    placement.bit = LATE_BIT;
+    uint32_t ending_at_end = EDGE_VBIOS_END - LONGEST_BIT_HEADER;
+    uint32_t ending_past_end = ending_at_end + 1;
+    falcon_program_table table = {};
+
+    write_placement(rom, EDGE_VBIOS, placement);
+    write_bit_decoy(rom, ending_at_end, LONGEST_BIT_HEADER);
+    zero_sum(rom, ending_at_end, LONGEST_BIT_HEADER, ending_at_end + BIT_VERSION_FIELD);
+    EXPECT_EQ(find_table(rom, EDGE_VBIOS, table), ERR_BAD_VBIOS);
+
+    write_placement(rom, EDGE_VBIOS, placement);
+    write_bit_decoy(rom, ending_past_end, LONGEST_BIT_HEADER);
+    zero_sum(rom, ending_past_end, LONGEST_BIT_HEADER, ending_past_end + BIT_VERSION_FIELD);
+    EXPECT_EQ(find_table(rom, EDGE_VBIOS, table), OK);
+}
+
+TEST(nvidia, bit_needs_its_id_and_signature) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    falcon_program_table table = {};
+
+    write_placement(rom, EDGE_VBIOS, EDGE_TABLE);
+    rom.bytes[EDGE_TABLE.bit + 1] ^= 1;
+    zero_sum(rom, EDGE_TABLE.bit, EDGE_TABLE.bit_header_size, EDGE_TABLE.bit + BIT_CHECKSUM);
+    EXPECT_EQ(find_table(rom, EDGE_VBIOS, table), ERR_BAD_VBIOS);
+
+    write_placement(rom, EDGE_VBIOS, EDGE_TABLE);
+    rom.bytes[EDGE_TABLE.bit + BIT_SIGNATURE_FIELD + 3] ^= 1;
+    zero_sum(rom, EDGE_TABLE.bit, EDGE_TABLE.bit_header_size, EDGE_TABLE.bit + BIT_CHECKSUM);
+    EXPECT_EQ(find_table(rom, EDGE_VBIOS, table), ERR_BAD_VBIOS);
+}
+
+// Tokens of exactly their 6 bytes of fields pass in the RTX 3080 test, so only a shorter stride is tested here
+TEST(nvidia, bit_tokens_must_hold_their_fields) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    table_placement short_tokens = EDGE_TABLE;
+    short_tokens.token_size = TOKEN_FIELD_BYTES - 1;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, short_tokens), ERR_BAD_VBIOS);
+}
+
+// A data size of 0x100 reads as zero in 8 bits, so only a 16-bit read of the size accepts it
+TEST(nvidia, falcon_data_token_must_be_version_2_with_a_table_pointer) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    table_placement version_3 = EDGE_TABLE;
+    version_3.falcon_data_version = 3;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, version_3), ERR_BAD_VBIOS);
+
+    table_placement too_short = EDGE_TABLE;
+    too_short.falcon_data_size = FALCON_DATA_FIELD_BYTES - 1;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, too_short), ERR_BAD_VBIOS);
+
+    table_placement larger = EDGE_TABLE;
+    larger.falcon_data_size = 0x100;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, larger), OK);
+}
+
+// The falcon data token is written in full before the count is lowered, so it lies right past the count
+TEST(nvidia, falcon_data_token_past_the_token_count_is_not_read) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    write_placement(rom, EDGE_VBIOS, EDGE_TABLE);
+    rom.bytes[EDGE_TABLE.bit + BIT_TOKEN_COUNT] = EDGE_TABLE.falcon_data_token_index;
+    zero_sum(rom, EDGE_TABLE.bit, EDGE_TABLE.bit_header_size, EDGE_TABLE.bit + BIT_CHECKSUM);
+
+    falcon_program_table table = {};
+    EXPECT_EQ(find_table(rom, EDGE_VBIOS, table), ERR_BAD_VBIOS);
+}
+
+// The falcon data token's 6 bytes of fields start 29 bytes into the BIT, after its 13-byte header and two 8-byte
+// tokens
+static constexpr uint32_t EDGE_FALCON_DATA_TOKEN_FIELDS_END = 35;
+
+TEST(nvidia, bit_tokens_and_falcon_data_must_lie_inside_the_vbios) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    table_placement token_at_end = EDGE_TABLE;
+    token_at_end.bit = EDGE_VBIOS_END - EDGE_FALCON_DATA_TOKEN_FIELDS_END;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, token_at_end), OK);
+
+    table_placement token_past_end = EDGE_TABLE;
+    token_past_end.bit = EDGE_VBIOS_END - EDGE_FALCON_DATA_TOKEN_FIELDS_END + 1;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, token_past_end), ERR_BAD_VBIOS);
+
+    table_placement data_at_end = EDGE_TABLE;
+    data_at_end.falcon_data = EDGE_VBIOS_END - FALCON_DATA_FIELD_BYTES;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, data_at_end), OK);
+
+    table_placement data_past_end = EDGE_TABLE;
+    data_past_end.falcon_data = EDGE_VBIOS_END - FALCON_DATA_FIELD_BYTES + 1;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, data_past_end), ERR_BAD_VBIOS);
+}
+
+TEST(nvidia, falcon_program_table_must_be_version_1_and_hold_its_fields) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    table_placement version_0 = EDGE_TABLE;
+    version_0.table_version = 0;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, version_0), ERR_BAD_VBIOS);
+
+    table_placement version_2 = EDGE_TABLE;
+    version_2.table_version = 2;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, version_2), ERR_BAD_VBIOS);
+
+    table_placement short_header = EDGE_TABLE;
+    short_header.table_header_size = 5;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, short_header), ERR_BAD_VBIOS);
+
+    table_placement short_entries = EDGE_TABLE;
+    short_entries.entry_size = 5;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, short_entries), ERR_BAD_VBIOS);
+}
+
+// `EDGE_TABLE`'s 7-byte header and 29 entries of 9 bytes span 268 bytes, the entries alone 261, both more than
+// 8 bits can count
+static constexpr uint32_t EDGE_TABLE_BYTES = 268;
+
+// A table in the RTX 3080's x86 image lies before the base, so its pointer wraps around to name it. A pointer
+// of 0x19000 lies past the VBIOS, while its low 16 bits name the table.
+TEST(nvidia, falcon_program_table_must_lie_inside_the_vbios) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    table_placement entries_at_end = EDGE_TABLE;
+    entries_at_end.table = EDGE_VBIOS_END - EDGE_TABLE_BYTES;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, entries_at_end), OK);
+
+    table_placement entries_past_end = EDGE_TABLE;
+    entries_past_end.table = EDGE_VBIOS_END - EDGE_TABLE_BYTES + 1;
+    EXPECT_EQ(find_placed(rom, EDGE_VBIOS, entries_past_end), ERR_BAD_VBIOS);
+
+    table_placement wrapping = RTX_3080_TABLE;
+    wrapping.table = 0x1000;
+    EXPECT_EQ(find_placed(rom, RTX_3080_VBIOS, wrapping), ERR_BAD_VBIOS);
+
+    write_placement(rom, EDGE_VBIOS, EDGE_TABLE);
+    put_u32(rom, EDGE_TABLE.falcon_data, 0x10000 + EDGE_TABLE.table);
+    falcon_program_table table = {};
+    EXPECT_EQ(find_table(rom, EDGE_VBIOS, table), ERR_BAD_VBIOS);
 }
 
 // Only a firmware directory no package installed declines, and every other `fw::file` result fails bring-up

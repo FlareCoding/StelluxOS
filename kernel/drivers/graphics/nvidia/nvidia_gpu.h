@@ -15,17 +15,21 @@ namespace drivers {
  * with gfxfb, when the chip table does not list the card's chip, or when a
  * directory the chip's firmware files belong in is not installed, as in an
  * image without the nvidia-firmware package. Bring-up ends after logging the
- * layout of the card's VBIOS, opening the chip's firmware files and checking
- * the GSP image's firmware version and the headers of the bootloader and
- * booter load, so when every check passes, `attach()` declines as well.
+ * layout of the card's VBIOS, opening the chip's firmware files, checking the
+ * GSP image's firmware version and the headers of the bootloader and booter
+ * load, and finding the VBIOS's falcon program table, so when every step
+ * succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
- * does not respond, its VBIOS is not laid out as the driver expects, a
- * firmware file of an installed directory cannot be opened, the GSP image
- * fails `nvidia::check_gsp_image`, which requires a 64-bit little-endian ELF
- * file whose one .fwversion section holds exactly `FIRMWARE_VERSION` and its
- * NUL, the bootloader or booter load is shorter than its header, cannot be
- * read or holds a header that does not describe it, or a firmware name built
- * from the chip table is too long or malformed.
+ * does not respond, its VBIOS's images are not laid out as
+ * `nvidia::read_vbios_layout` requires, a firmware file of an installed
+ * directory cannot be opened, the GSP image fails `nvidia::check_gsp_image`,
+ * which requires a 64-bit little-endian ELF file whose one .fwversion section
+ * holds exactly `FIRMWARE_VERSION` and its NUL, the bootloader or booter load
+ * is shorter than its header, cannot be read or holds a header that does not
+ * describe it, or a firmware name built from the chip table is too long or
+ * malformed. Once the firmware files check out, it also fails when the VBIOS
+ * does not lead to a falcon program table as
+ * `nvidia::find_falcon_program_table` requires.
  * Whether `attach()` declines or fails, the screen is left as it was, and the
  * card keeps only the memory and I/O decoding that `attach()` turned on. That
  * decoding stays on because the boot framebuffer may be in this card's memory,

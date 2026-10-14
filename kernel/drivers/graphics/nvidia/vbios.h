@@ -50,6 +50,25 @@ struct vbios_layout {
 };
 
 /**
+ * Where the VBIOS keeps its falcon program table, which lists the programs the
+ * VBIOS stores for the card's microcontrollers, called falcons. Each entry
+ * says what its program does and points to the program's descriptor, the
+ * record that says where the program lies.
+ * Pointers into NVIDIA's data, the entries' pointers among them, count bytes
+ * from `base`: the offset of the first image of NVIDIA's data less the size of
+ * the first x86 image. When the x86 image is the VBIOS's first image, the base
+ * is the total size of the images between it and NVIDIA's data, such as an EFI
+ * image.
+ */
+struct falcon_program_table {
+    uint32_t offset;      // bytes from the start of the VBIOS
+    uint32_t base;        // bytes from the start of the VBIOS
+    uint8_t  header_size; // bytes, with the entries right after the header
+    uint8_t  entry_size;  // bytes
+    uint8_t  entry_count;
+};
+
+/**
  * @brief Walk the chain of VBIOS images through the card's ROM window,
  * reading only the structures that describe each image.
  * @param rom A view whose offset 0 is the first byte of the ROM window, and
@@ -61,6 +80,34 @@ struct vbios_layout {
  * within `VBIOS_MAX_IMAGES` images. The cause is logged.
  */
 int32_t read_vbios_layout(const registers& rom, vbios_layout& layout_out);
+
+/**
+ * @brief Find the falcon program table through the BIT, NVIDIA's index of the
+ * VBIOS: the first header from the VBIOS's start that has the BIT's id and
+ * signature, is at least its 12 bytes of fields long, lies inside the VBIOS
+ * and whose bytes sum to zero. Each of the BIT's tokens names a kind of data
+ * with its version, size and offset from the VBIOS's start, and the falcon
+ * data token names the data about the falcons' programs. The data of the
+ * first falcon data token of version 2 with at least 4 bytes of data holds the
+ * table's pointer. The table must be version 1, with a header and entries of
+ * at least their 6 bytes of fields.
+ * @param rom A view whose offset 0 is the first byte of the ROM window, and
+ * which must cover all `ROM_WINDOW_BYTES` of it.
+ * @param layout The VBIOS's images, which must be as `read_vbios_layout`
+ * returns them.
+ * @param table_out Receives the table when the result is `OK`. The table then
+ * lies inside the VBIOS with all its entries.
+ * @return `OK`, or `ERR_BAD_VBIOS` when the layout has no x86 image or no
+ * image of NVIDIA's data, the first image of NVIDIA's data starts at an offset
+ * below the first x86 image's size, no BIT is found, the BIT's tokens are
+ * shorter than their 6 bytes of fields, it has no falcon data token of version
+ * 2 with at least 4 bytes of data, the table is not version 1 or has a header
+ * or entries shorter than their 6 bytes of fields, or the fields of a token
+ * read on the way, the falcon data's first 4 bytes, the table's 6 bytes of
+ * header fields at the base plus its pointer or the table with all its entries
+ * end past the end of the VBIOS's last image. The cause is logged.
+ */
+int32_t find_falcon_program_table(const registers& rom, const vbios_layout& layout, falcon_program_table& table_out);
 
 } // namespace drivers::nvidia
 

@@ -8,9 +8,18 @@ namespace drivers::nvidia {
 // Result codes shared by every part of the driver
 constexpr int32_t OK                 = 0;
 constexpr int32_t ERR_NOT_RESPONDING = -1; // `PMC_BOOT_0` reads all ones, so the card does not respond
-constexpr int32_t ERR_BAD_VBIOS      = -2; // the ROM window holds no chain of images `read_vbios_layout` accepts
+constexpr int32_t ERR_BAD_VBIOS      = -2; // the VBIOS lacks a structure bring-up reads from it, or one is malformed
+                                           // or ends past the ROM window or the VBIOS
 constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unreadable, malformed or of another version,
                                            // or its name invalid
+
+/**
+ * @brief Whether the `bytes` bytes at `offset` lie inside the first `limit`
+ * bytes, also when `offset + bytes` would overflow.
+ */
+inline bool lies_inside(uint64_t offset, uint64_t bytes, uint64_t limit) {
+    return offset <= limit && bytes <= limit - offset;
+}
 
 } // namespace drivers::nvidia
 
