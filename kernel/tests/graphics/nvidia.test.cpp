@@ -25,7 +25,9 @@ using drivers::nvidia::ERR_BAD_VBIOS;
 using drivers::nvidia::falcon_program_table;
 using drivers::nvidia::find_chip;
 using drivers::nvidia::find_falcon_program_table;
+using drivers::nvidia::find_fwsec;
 using drivers::nvidia::firmware_files;
+using drivers::nvidia::fwsec_layout;
 using drivers::nvidia::OK;
 using drivers::nvidia::open_firmware_files;
 using drivers::nvidia::PMC_BOOT_0;
@@ -592,7 +594,7 @@ static void write_bit(rom_window& rom, const table_placement& placement) {
     }
 }
 
-// Writes only the table's header, since the lookup reads no entry
+// Writes only the table's header, since `find_falcon_program_table` reads no entry
 static void write_table(rom_window& rom, const table_placement& placement) {
     uint32_t table = placement.table;
 
@@ -977,6 +979,418 @@ TEST(nvidia, falcon_program_table_must_lie_inside_the_vbios) {
     put_u32(rom, EDGE_TABLE.falcon_data, 0x10000 + EDGE_TABLE.table);
     falcon_program_table table = {};
     EXPECT_EQ(find_table(rom, EDGE_VBIOS, table), ERR_BAD_VBIOS);
+}
+
+// The table's entry fields, FWSEC's app ids, its version 3 descriptor's fields and its signature size, restated here
+// so the tests hold the lookup to the format rather than to its own constants
+static constexpr uint32_t ENTRY_APPLICATION          = 0x00;
+static constexpr uint32_t ENTRY_TARGET               = 0x01;
+static constexpr uint32_t ENTRY_DESCRIPTOR           = 0x02;
+static constexpr uint8_t  FIRMWARE_SEC_LIC           = 0x05;
+static constexpr uint8_t  FWSEC_DEBUG                = 0x45;
+static constexpr uint8_t  FWSEC_PRODUCTION           = 0x85;
+static constexpr uint32_t DESCRIPTOR_HAS_VERSION     = 0x1;
+static constexpr uint32_t DESCRIPTOR_VERSION_SHIFT   = 8;
+static constexpr uint32_t DESCRIPTOR_SIZE_SHIFT      = 16;
+static constexpr uint32_t DESCRIPTOR_STORED_SIZE     = 0x04;
+static constexpr uint32_t DESCRIPTOR_SIGNATURE_SLOT  = 0x08;
+static constexpr uint32_t DESCRIPTOR_CODE_SIZE       = 0x14;
+static constexpr uint32_t DESCRIPTOR_DATA_SIZE       = 0x20;
+static constexpr uint32_t DESCRIPTOR_SIGNATURE_COUNT = 0x27;
+static constexpr uint32_t DESCRIPTOR_FIELD_BYTES     = 44;
+static constexpr uint32_t SIGNATURE_BYTES            = 384;
+
+// An app id the lookup has no use for
+static constexpr uint8_t OTHER_PROGRAM = 0x01;
+
+// Every entry's target id, a byte the lookup does not read, so a lookup reading the app id as 16 bits fails
+static constexpr uint8_t TARGET_ID = 0x07;
+
+// Where a synthetic VBIOS places production FWSEC's entry, by its index in the falcon program table, and FWSEC's
+// descriptor, in bytes from the VBIOS's start, and the values the entry and the descriptor hold
+struct fwsec_placement {
+    uint8_t  entry_index;
+    uint8_t  application;
+    uint32_t descriptor;
+    uint8_t  descriptor_flags;
+    uint8_t  descriptor_version;
+    uint16_t descriptor_size;
+    uint32_t stored_size;
+    uint32_t signature_slot;
+    uint32_t code_size;
+    uint32_t data_size;
+    uint8_t  signature_count;
+};
+
+// The descriptor's 44 bytes of fields first hold this value plus their offset, so no two of them are alike
+static constexpr uint8_t DESCRIPTOR_PATTERN = 0x80;
+
+// The entries right before and after FWSEC's, if any, are debug FWSEC's and a second production entry, and the rest
+// are another program's. All but FWSEC's point at the base, whose zeros give no descriptor version.
+static void write_entries(
+    rom_window& rom,
+    const layout_with_base& vbios,
+    const table_placement& table,
+    const fwsec_placement& placement
+) {
+    uint32_t index = placement.entry_index;
+
+    for (uint32_t i = 0; i < table.entry_count; i++) {
+        uint32_t entry = table.table + table.table_header_size + i * table.entry_size;
+        uint8_t application = OTHER_PROGRAM;
+        uint32_t pointer = 0;
+        if (i == index) {
+            application = placement.application;
+            pointer = placement.descriptor - vbios.nvidia_data_base;
+        } else if (i + 1 == index) {
+            application = FWSEC_DEBUG;
+        } else if (i == index + 1) {
+            application = FWSEC_PRODUCTION;
+        }
+
+        rom.bytes[entry + ENTRY_APPLICATION] = application;
+        rom.bytes[entry + ENTRY_TARGET] = TARGET_ID;
+        put_u32(rom, entry + ENTRY_DESCRIPTOR, pointer);
+    }
+}
+
+// The fields the lookup does not read keep the pattern, so a field read at the wrong offset differs from the one
+// written
+static void write_descriptor(rom_window& rom, const fwsec_placement& placement) {
+    uint32_t descriptor = placement.descriptor;
+    uint32_t header = placement.descriptor_flags
+        | static_cast<uint32_t>(placement.descriptor_version) << DESCRIPTOR_VERSION_SHIFT
+        | static_cast<uint32_t>(placement.descriptor_size) << DESCRIPTOR_SIZE_SHIFT;
+
+    for (uint32_t i = 0; i < DESCRIPTOR_FIELD_BYTES; i++) {
+        rom.bytes[descriptor + i] = static_cast<uint8_t>(DESCRIPTOR_PATTERN + i);
+    }
+
+    put_u32(rom, descriptor, header);
+    put_u32(rom, descriptor + DESCRIPTOR_STORED_SIZE, placement.stored_size);
+    put_u32(rom, descriptor + DESCRIPTOR_SIGNATURE_SLOT, placement.signature_slot);
+    put_u32(rom, descriptor + DESCRIPTOR_CODE_SIZE, placement.code_size);
+    put_u32(rom, descriptor + DESCRIPTOR_DATA_SIZE, placement.data_size);
+    rom.bytes[descriptor + DESCRIPTOR_SIGNATURE_COUNT] = placement.signature_count;
+}
+
+static void write_fwsec(
+    rom_window& rom,
+    const layout_with_base& vbios,
+    const table_placement& table,
+    const fwsec_placement& placement
+) {
+    write_placement(rom, vbios, table);
+    write_entries(rom, vbios, table, placement);
+    write_descriptor(rom, placement);
+}
+
+// The table as `find_falcon_program_table` returns it for the placement, so only `find_fwsec` can refuse
+static falcon_program_table placed_table(const layout_with_base& vbios, const table_placement& table) {
+    return {
+        .offset = table.table,
+        .base = vbios.nvidia_data_base,
+        .header_size = table.table_header_size,
+        .entry_size = table.entry_size,
+        .entry_count = table.entry_count,
+    };
+}
+
+static int32_t find_placed_fwsec(
+    rom_window& rom,
+    const layout_with_base& vbios,
+    const table_placement& table,
+    const fwsec_placement& placement,
+    fwsec_layout& fwsec
+) {
+    write_fwsec(rom, vbios, table, placement);
+
+    registers window(reinterpret_cast<uintptr_t>(rom.bytes));
+    return find_fwsec(window, vbios.layout, placed_table(vbios, table), fwsec);
+}
+
+static int32_t find_placed_fwsec(
+    rom_window& rom,
+    const layout_with_base& vbios,
+    const table_placement& table,
+    const fwsec_placement& placement
+) {
+    fwsec_layout fwsec = {};
+    return find_placed_fwsec(rom, vbios, table, placement, fwsec);
+}
+
+// As the RTX 3080's VBIOS places production FWSEC's entry and FWSEC's descriptor, with the sizes, slot and count
+// the descriptor holds. The entry's pointer 0x2C9B8 does not fit in 16 bits.
+static constexpr fwsec_placement RTX_3080_FWSEC = {
+    .entry_index = 9,
+    .application = FWSEC_PRODUCTION,
+    .descriptor = 0x433B8,
+    .descriptor_flags = 1,
+    .descriptor_version = 3,
+    .descriptor_size = 1196,
+    .stored_size = 59904,
+    .signature_slot = 0x5A4,
+    .code_size = 57856,
+    .data_size = 2048,
+    .signature_count = 3,
+};
+
+// The debug entry right before FWSEC's and the second production entry right after it point at zeros, so FWSEC is
+// found only through the first production entry
+TEST(nvidia, rtx_3080_fwsec_is_found) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_layout fwsec = {};
+    EXPECT_EQ(find_placed_fwsec(rom, RTX_3080_VBIOS, RTX_3080_TABLE, RTX_3080_FWSEC, fwsec), OK);
+    EXPECT_EQ(fwsec.offset, 0x43864u);
+    EXPECT_EQ(fwsec.size, 59904u);
+    EXPECT_EQ(fwsec.code_size, 57856u);
+    EXPECT_EQ(fwsec.data_size, 2048u);
+    EXPECT_EQ(fwsec.signature_slot, 0x5A4u);
+    EXPECT_EQ(fwsec.signatures_offset, 0x433E4u);
+    EXPECT_EQ(fwsec.signature_count, 3u);
+}
+
+// FWSEC ends at 0x89000, past 0x72E00, the RTX 3080's VBIOS's end less the base, which bounds the descriptor's
+// pointer but not FWSEC
+TEST(nvidia, fwsec_ending_past_the_vbios_end_less_the_base_is_found) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement past_end_less_base = RTX_3080_FWSEC;
+    past_end_less_base.descriptor = 0x7A154;
+
+    fwsec_layout fwsec = {};
+    EXPECT_EQ(find_placed_fwsec(rom, RTX_3080_VBIOS, RTX_3080_TABLE, past_end_less_base, fwsec), OK);
+    EXPECT_EQ(fwsec.offset, 0x7A600u);
+}
+
+// FWSEC's entry is `EDGE_TABLE`'s last, and its descriptor sets a flag besides the version flag. Its stored size
+// rounded up ends FWSEC at the VBIOS's end, its code and data fill FWSEC, and its signature slot ends its data.
+static constexpr fwsec_placement EDGE_FWSEC = {
+    .entry_index = 28,
+    .application = FWSEC_PRODUCTION,
+    .descriptor = 0xDF54,
+    .descriptor_flags = 3,
+    .descriptor_version = 3,
+    .descriptor_size = DESCRIPTOR_FIELD_BYTES + SIGNATURE_BYTES,
+    .stored_size = 0x1E01,
+    .signature_slot = 0x680,
+    .code_size = 0x1700,
+    .data_size = 0x800,
+    .signature_count = 1,
+};
+
+// FWSEC's entry is found both as `EDGE_TABLE`'s last entry and as its first, so a walk skipping either end fails
+TEST(nvidia, fwsec_at_its_limits_is_found) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_layout fwsec = {};
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, EDGE_FWSEC, fwsec), OK);
+    EXPECT_EQ(fwsec.offset, 0xE100u);
+    EXPECT_EQ(fwsec.size, 0x1F00u);
+    EXPECT_EQ(fwsec.code_size, 0x1700u);
+    EXPECT_EQ(fwsec.data_size, 0x800u);
+    EXPECT_EQ(fwsec.signature_slot, 0x680u);
+    EXPECT_EQ(fwsec.signatures_offset, 0xDF80u);
+    EXPECT_EQ(fwsec.signature_count, 1u);
+
+    fwsec_placement first_entry = EDGE_FWSEC;
+    first_entry.entry_index = 0;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, first_entry), OK);
+}
+
+// The descriptor runs 4 bytes past its one signature, so FWSEC starts where the descriptor's size says rather than
+// right after the signature
+TEST(nvidia, fwsec_starts_where_its_descriptor_size_says) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement padded = EDGE_FWSEC;
+    padded.descriptor = EDGE_FWSEC.descriptor - 4;
+    padded.descriptor_size = EDGE_FWSEC.descriptor_size + 4;
+
+    fwsec_layout fwsec = {};
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, padded, fwsec), OK);
+    EXPECT_EQ(fwsec.offset, 0xE100u);
+    EXPECT_EQ(fwsec.signatures_offset, 0xDF7Cu);
+}
+
+// FWSEC holds 0x100 bytes past its data, so its code and data need only fit in it
+TEST(nvidia, fwsec_with_room_past_its_data_is_found) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement room_past_data = EDGE_FWSEC;
+    room_past_data.data_size = 0x700;
+    room_past_data.signature_slot = 0x580;
+
+    fwsec_layout fwsec = {};
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, room_past_data, fwsec), OK);
+    EXPECT_EQ(fwsec.size, 0x1F00u);
+    EXPECT_EQ(fwsec.data_size, 0x700u);
+    EXPECT_EQ(fwsec.signature_slot, 0x580u);
+}
+
+// FWSEC's entry is the table's last, so the table has no production FWSEC entry when that entry's app id is one below
+// or above production FWSEC's, or `FIRMWARE_SEC_LIC`'s, which NVIDIA's open kernel modules also take for FWSEC
+TEST(nvidia, fwsec_entry_must_have_production_fwsec_app_id) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement below = EDGE_FWSEC;
+    below.application = FWSEC_PRODUCTION - 1;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, below), ERR_BAD_VBIOS);
+
+    fwsec_placement above = EDGE_FWSEC;
+    above.application = FWSEC_PRODUCTION + 1;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, above), ERR_BAD_VBIOS);
+
+    fwsec_placement firmware_sec_lic = EDGE_FWSEC;
+    firmware_sec_lic.application = FIRMWARE_SEC_LIC;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, firmware_sec_lic), ERR_BAD_VBIOS);
+}
+
+// The entries are written in full before the table's count is lowered, so FWSEC's entry lies right past the count
+TEST(nvidia, fwsec_entry_past_the_entry_count_is_not_read) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    table_placement lowered = EDGE_TABLE;
+    lowered.entry_count = EDGE_FWSEC.entry_index;
+
+    write_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, EDGE_FWSEC);
+    rom.bytes[EDGE_TABLE.table + TABLE_ENTRY_COUNT] = lowered.entry_count;
+
+    fwsec_layout fwsec = {};
+    registers window(reinterpret_cast<uintptr_t>(rom.bytes));
+    EXPECT_EQ(find_fwsec(window, EDGE_VBIOS.layout, placed_table(EDGE_VBIOS, lowered), fwsec), ERR_BAD_VBIOS);
+}
+
+// A descriptor in the RTX 3080's x86 image lies before the base, so its entry's pointer wraps around to name it, and
+// one whose fields end at the base needs a pointer whose sum with their 44 bytes wraps around 32 bits to 0
+TEST(nvidia, fwsec_descriptor_pointer_must_not_wrap_below_the_base) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement wrapping = RTX_3080_FWSEC;
+    wrapping.descriptor = 0x2000;
+    EXPECT_EQ(find_placed_fwsec(rom, RTX_3080_VBIOS, RTX_3080_TABLE, wrapping), ERR_BAD_VBIOS);
+
+    fwsec_placement fields_ending_at_base = RTX_3080_FWSEC;
+    fields_ending_at_base.descriptor = RTX_3080_VBIOS.nvidia_data_base - DESCRIPTOR_FIELD_BYTES;
+    EXPECT_EQ(find_placed_fwsec(rom, RTX_3080_VBIOS, RTX_3080_TABLE, fields_ending_at_base), ERR_BAD_VBIOS);
+}
+
+// Only the version flag is cleared, so a lookup testing the whole flags byte would take EDGE's other flag for it,
+// and version 0x83 holds 3 in its low bits, so a lookup reading fewer than 8 bits of version would take it for 3
+TEST(nvidia, fwsec_descriptor_must_be_version_3) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement without_version = EDGE_FWSEC;
+    without_version.descriptor_flags = EDGE_FWSEC.descriptor_flags & ~DESCRIPTOR_HAS_VERSION;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, without_version), ERR_BAD_VBIOS);
+
+    fwsec_placement version_2 = EDGE_FWSEC;
+    version_2.descriptor_version = 2;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, version_2), ERR_BAD_VBIOS);
+
+    fwsec_placement version_4 = EDGE_FWSEC;
+    version_4.descriptor_version = 4;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, version_4), ERR_BAD_VBIOS);
+
+    fwsec_placement version_0x83 = EDGE_FWSEC;
+    version_0x83.descriptor_version = 0x83;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, version_0x83), ERR_BAD_VBIOS);
+}
+
+// The shortened descriptor starts a byte later, so FWSEC still starts where it does in `EDGE_FWSEC`. The fields
+// and 171 signatures need 65708 bytes, more than the 16-bit size can give, which a 16-bit sum wraps to 172.
+TEST(nvidia, fwsec_descriptor_must_list_and_hold_its_signatures) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement without_signatures = EDGE_FWSEC;
+    without_signatures.signature_count = 0;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, without_signatures), ERR_BAD_VBIOS);
+
+    fwsec_placement byte_short = EDGE_FWSEC;
+    byte_short.descriptor = EDGE_FWSEC.descriptor + 1;
+    byte_short.descriptor_size = EDGE_FWSEC.descriptor_size - 1;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, byte_short), ERR_BAD_VBIOS);
+
+    fwsec_placement too_many = EDGE_FWSEC;
+    too_many.signature_count = 171;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, too_many), ERR_BAD_VBIOS);
+}
+
+// The descriptor a byte later ends FWSEC a byte past the VBIOS, a stored size of 0x11E01 passes in its low 16 bits,
+// and one of 0xFFFFF000 ends FWSEC past the VBIOS only in 64 bits, its 32-bit end wrapping around to 0xD100
+TEST(nvidia, fwsec_must_end_inside_the_vbios) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement byte_past_end = EDGE_FWSEC;
+    byte_past_end.descriptor = EDGE_FWSEC.descriptor + 1;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, byte_past_end), ERR_BAD_VBIOS);
+
+    fwsec_placement upper_bits = EDGE_FWSEC;
+    upper_bits.stored_size = 0x11E01;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, upper_bits), ERR_BAD_VBIOS);
+
+    fwsec_placement wrapping = EDGE_FWSEC;
+    wrapping.stored_size = 0xFFFFF000;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, wrapping), ERR_BAD_VBIOS);
+}
+
+// Code of 0x11700 bytes and data of 0x10800 pass in their low 16 bits, and 0xFFFFFF00 bytes of code and 0x800 of
+// data add up to 0x700 in 32 bits
+TEST(nvidia, fwsec_code_and_data_must_fit_in_its_size) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement byte_too_many = EDGE_FWSEC;
+    byte_too_many.data_size = 0x801;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, byte_too_many), ERR_BAD_VBIOS);
+
+    fwsec_placement code_upper_bits = EDGE_FWSEC;
+    code_upper_bits.code_size = 0x11700;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, code_upper_bits), ERR_BAD_VBIOS);
+
+    fwsec_placement data_upper_bits = EDGE_FWSEC;
+    data_upper_bits.data_size = 0x10800;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, data_upper_bits), ERR_BAD_VBIOS);
+
+    fwsec_placement wrapping = EDGE_FWSEC;
+    wrapping.code_size = 0xFFFFFF00;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, wrapping), ERR_BAD_VBIOS);
+}
+
+// With 0x700 bytes of data, a slot ending a byte past them still lies inside FWSEC. A slot at 0x10680 passes in
+// its low 16 bits, and one at 0xFFFFFF00 ends at 0x80 in 32 bits.
+TEST(nvidia, fwsec_signature_slot_must_lie_inside_its_data) {
+    rom_window rom;
+    ASSERT_NOT_NULL(rom.bytes);
+
+    fwsec_placement byte_past_end = EDGE_FWSEC;
+    byte_past_end.signature_slot = 0x681;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, byte_past_end), ERR_BAD_VBIOS);
+
+    fwsec_placement past_shorter_data = EDGE_FWSEC;
+    past_shorter_data.data_size = 0x700;
+    past_shorter_data.signature_slot = 0x581;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, past_shorter_data), ERR_BAD_VBIOS);
+
+    fwsec_placement upper_bits = EDGE_FWSEC;
+    upper_bits.signature_slot = 0x10680;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, upper_bits), ERR_BAD_VBIOS);
+
+    fwsec_placement wrapping = EDGE_FWSEC;
+    wrapping.signature_slot = 0xFFFFFF00;
+    EXPECT_EQ(find_placed_fwsec(rom, EDGE_VBIOS, EDGE_TABLE, wrapping), ERR_BAD_VBIOS);
 }
 
 // Only a firmware directory no package installed declines, and every other `fw::file` result fails bring-up

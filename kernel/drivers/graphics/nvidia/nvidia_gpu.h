@@ -17,8 +17,9 @@ namespace drivers {
  * image without the nvidia-firmware package. Bring-up ends after logging the
  * layout of the card's VBIOS, opening the chip's firmware files, checking the
  * GSP image's firmware version and the headers of the bootloader and booter
- * load, and finding the VBIOS's falcon program table, so when every step
- * succeeds, `attach()` declines as well.
+ * load, and finding FWSEC, the signed program in the VBIOS that fences off
+ * protected memory for the GSP's firmware, through the VBIOS's falcon program
+ * table, so when every step succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -29,7 +30,8 @@ namespace drivers {
  * describe it, or a firmware name built from the chip table is too long or
  * malformed. Once the firmware files check out, it also fails when the VBIOS
  * does not lead to a falcon program table as
- * `nvidia::find_falcon_program_table` requires.
+ * `nvidia::find_falcon_program_table` requires, or the table does not lead
+ * to FWSEC as `nvidia::find_fwsec` requires.
  * Whether `attach()` declines or fails, the screen is left as it was, and the
  * card keeps only the memory and I/O decoding that `attach()` turned on. That
  * decoding stays on because the boot framebuffer may be in this card's memory,

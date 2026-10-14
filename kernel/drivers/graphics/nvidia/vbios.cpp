@@ -78,6 +78,31 @@ constexpr uint8_t  TABLE_VERSION_1          = 1;
 constexpr uint32_t TABLE_HEADER_FIELD_BYTES = 6;
 constexpr uint32_t TABLE_ENTRY_FIELD_BYTES  = 6;
 
+// Falcon program table entry fields, as byte offsets from its start
+constexpr uint32_t ENTRY_APPLICATION = 0x00; // 8 bits, the app id saying which program the entry is for
+constexpr uint32_t ENTRY_DESCRIPTOR  = 0x02; // 32 bits, a pointer into NVIDIA's data to the program's descriptor
+
+// The app id of production FWSEC's entry
+constexpr uint8_t FWSEC_PRODUCTION = 0x85;
+
+// The descriptor's first 32 bits: bit 0 is set when bits 15:8 give its version, and bits 31:16 give its size in
+// bytes, which covers its fields and the signatures after them
+constexpr uint32_t DESCRIPTOR_HAS_VERSION   = 0x1;
+constexpr uint32_t DESCRIPTOR_VERSION_SHIFT = 8;
+constexpr uint32_t DESCRIPTOR_SIZE_SHIFT    = 16;
+constexpr uint8_t  DESCRIPTOR_VERSION_3     = 3;
+
+// Version 3 descriptor fields, as byte offsets from its start
+constexpr uint32_t DESCRIPTOR_STORED_SIZE     = 0x04; // 32 bits, bytes of the program as stored, before rounding
+constexpr uint32_t DESCRIPTOR_SIGNATURE_SLOT  = 0x08; // 32 bits, bytes from the start of the program's data
+constexpr uint32_t DESCRIPTOR_CODE_SIZE       = 0x14; // 32 bits, bytes
+constexpr uint32_t DESCRIPTOR_DATA_SIZE       = 0x20; // 32 bits, bytes
+constexpr uint32_t DESCRIPTOR_SIGNATURE_COUNT = 0x27; // 8 bits
+constexpr uint32_t DESCRIPTOR_FIELD_BYTES     = 44;
+
+// FWSEC spans its stored size rounded up to a multiple of 256 bytes, the bytes copied from the VBIOS to load it
+constexpr uint64_t FWSEC_SIZE_ALIGNMENT = 256;
+
 // A `registers` view reads only aligned 32-bit words, so fields are built a byte at a time from the words holding them
 static uint8_t read_rom_u8(const registers& rom, uint32_t offset) {
     uint32_t word = rom.read(offset & ~3u);
@@ -99,6 +124,12 @@ static uint32_t read_rom_u32(const registers& rom, uint32_t offset) {
 
 static bool is_inside_rom_window(uint32_t offset, uint32_t bytes) {
     return lies_inside(offset, bytes, ROM_WINDOW_BYTES);
+}
+
+// The VBIOS ends with its last image, so every structure read from it must end at or before that image's end
+static uint32_t end_of_vbios(const vbios_layout& layout) {
+    const vbios_image& last_image = layout.images[layout.image_count - 1];
+    return last_image.offset + last_image.size;
 }
 
 // Reads the size and code type of the image at `offset` from the structures that
@@ -359,8 +390,7 @@ int32_t find_falcon_program_table(const registers& rom, const vbios_layout& layo
         return rc;
     }
 
-    const vbios_image& last_image = layout.images[layout.image_count - 1];
-    uint32_t vbios_end = last_image.offset + last_image.size;
+    uint32_t vbios_end = end_of_vbios(layout);
 
     uint32_t bit = 0;
     if (!find_bit(rom, vbios_end, bit)) {
@@ -391,6 +421,142 @@ int32_t find_falcon_program_table(const registers& rom, const vbios_layout& layo
     table_out.base = base;
 
     return OK;
+}
+
+// Finds the table's first production FWSEC entry. The table lies inside the VBIOS with all its entries, so their
+// fields need no bound check.
+static bool find_fwsec_entry(const registers& rom, const falcon_program_table& table, uint32_t& entry_out) {
+    for (uint32_t i = 0; i < table.entry_count; i++) {
+        uint32_t entry = table.offset + table.header_size + i * table.entry_size;
+        if (read_rom_u8(rom, entry + ENTRY_APPLICATION) == FWSEC_PRODUCTION) {
+            entry_out = entry;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Checks that the descriptor, whose fields must lie inside the VBIOS, is version 3 and lists and holds its signatures,
+// then reads where FWSEC lies, checking that it lies inside the VBIOS, its code and data in it, its slot in its data
+static int32_t read_fwsec_descriptor(
+    const registers& rom,
+    uint32_t descriptor,
+    uint32_t vbios_end,
+    fwsec_layout& fwsec_out
+) {
+    uint32_t header = read_rom_u32(rom, descriptor);
+    bool has_version = (header & DESCRIPTOR_HAS_VERSION) != 0;
+    if (!has_version) {
+        log::error("nvidia: FWSEC's descriptor at 0x%X gives no version", descriptor);
+        return ERR_BAD_VBIOS;
+    }
+
+    uint8_t version = static_cast<uint8_t>(header >> DESCRIPTOR_VERSION_SHIFT);
+    if (version != DESCRIPTOR_VERSION_3) {
+        log::error(
+            "nvidia: FWSEC's descriptor at 0x%X is version %u instead of %u",
+            descriptor,
+            version,
+            DESCRIPTOR_VERSION_3
+        );
+        return ERR_BAD_VBIOS;
+    }
+
+    uint8_t signature_count = read_rom_u8(rom, descriptor + DESCRIPTOR_SIGNATURE_COUNT);
+    if (signature_count == 0) {
+        log::error("nvidia: FWSEC's descriptor at 0x%X lists no signatures", descriptor);
+        return ERR_BAD_VBIOS;
+    }
+
+    uint32_t descriptor_size = header >> DESCRIPTOR_SIZE_SHIFT;
+    uint32_t fields_and_signatures = DESCRIPTOR_FIELD_BYTES + signature_count * FWSEC_SIGNATURE_BYTES;
+    if (descriptor_size < fields_and_signatures) {
+        log::error(
+            "nvidia: FWSEC's descriptor at 0x%X is %u bytes, fewer than its %u bytes of fields and %u signatures of "
+            "%u bytes",
+            descriptor,
+            descriptor_size,
+            DESCRIPTOR_FIELD_BYTES,
+            signature_count,
+            FWSEC_SIGNATURE_BYTES
+        );
+        return ERR_BAD_VBIOS;
+    }
+
+    uint32_t fwsec_offset = descriptor + descriptor_size;
+    uint64_t stored_size = read_rom_u32(rom, descriptor + DESCRIPTOR_STORED_SIZE);
+    uint64_t fwsec_size = (stored_size + FWSEC_SIZE_ALIGNMENT - 1) / FWSEC_SIZE_ALIGNMENT * FWSEC_SIZE_ALIGNMENT;
+    if (!lies_inside(fwsec_offset, fwsec_size, vbios_end)) {
+        log::error("nvidia: FWSEC at 0x%X ends past the VBIOS with its %lu bytes", fwsec_offset, fwsec_size);
+        return ERR_BAD_VBIOS;
+    }
+
+    uint32_t code_size = read_rom_u32(rom, descriptor + DESCRIPTOR_CODE_SIZE);
+    uint32_t data_size = read_rom_u32(rom, descriptor + DESCRIPTOR_DATA_SIZE);
+    if (!lies_inside(code_size, data_size, fwsec_size)) {
+        log::error(
+            "nvidia: FWSEC's %u bytes of code and %u bytes of data do not fit in its %lu bytes",
+            code_size,
+            data_size,
+            fwsec_size
+        );
+        return ERR_BAD_VBIOS;
+    }
+
+    uint32_t signature_slot = read_rom_u32(rom, descriptor + DESCRIPTOR_SIGNATURE_SLOT);
+    if (!lies_inside(signature_slot, FWSEC_SIGNATURE_BYTES, data_size)) {
+        log::error(
+            "nvidia: FWSEC's %u-byte signature slot at byte 0x%X of its data ends past its %u bytes of data",
+            FWSEC_SIGNATURE_BYTES,
+            signature_slot,
+            data_size
+        );
+        return ERR_BAD_VBIOS;
+    }
+
+    fwsec_out.offset = fwsec_offset;
+    fwsec_out.size = static_cast<uint32_t>(fwsec_size);
+    fwsec_out.code_size = code_size;
+    fwsec_out.data_size = data_size;
+    fwsec_out.signature_slot = signature_slot;
+    fwsec_out.signatures_offset = descriptor + DESCRIPTOR_FIELD_BYTES;
+    fwsec_out.signature_count = signature_count;
+
+    return OK;
+}
+
+int32_t find_fwsec(
+    const registers& rom,
+    const vbios_layout& layout,
+    const falcon_program_table& table,
+    fwsec_layout& fwsec_out
+) {
+    uint32_t vbios_end = end_of_vbios(layout);
+
+    uint32_t entry = 0;
+    if (!find_fwsec_entry(rom, table, entry)) {
+        log::error(
+            "nvidia: the falcon program table at 0x%X has no production FWSEC entry (app id 0x%02X)",
+            table.offset,
+            FWSEC_PRODUCTION
+        );
+        return ERR_BAD_VBIOS;
+    }
+
+    uint32_t pointer = read_rom_u32(rom, entry + ENTRY_DESCRIPTOR);
+    if (!lies_inside(pointer, DESCRIPTOR_FIELD_BYTES, vbios_end - table.base)) {
+        log::error(
+            "nvidia: the %u bytes of fields of FWSEC's descriptor, at the base 0x%X plus its pointer 0x%X, end past "
+            "the VBIOS",
+            DESCRIPTOR_FIELD_BYTES,
+            table.base,
+            pointer
+        );
+        return ERR_BAD_VBIOS;
+    }
+
+    return read_fwsec_descriptor(rom, table.base + pointer, vbios_end, fwsec_out);
 }
 
 } // namespace drivers::nvidia

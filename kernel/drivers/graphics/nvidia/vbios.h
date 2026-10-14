@@ -69,6 +69,29 @@ struct falcon_program_table {
 };
 
 /**
+ * Where FWSEC lies in the VBIOS. FWSEC is a program that NVIDIA signs and
+ * stores in the VBIOS. The GSP's falcon runs it before the GSP's firmware
+ * starts, to fence off the protected memory that firmware boots into. The
+ * program is its code followed by its data, and its signatures follow its
+ * descriptor's fields. The falcon checks the signature at the signature slot
+ * in the program's data, so before FWSEC runs, the slot must hold the
+ * signature for the version that the chip's fuses, bits burned into the chip
+ * for good, record for FWSEC.
+ */
+struct fwsec_layout {
+    uint32_t offset;            // bytes from the start of the VBIOS
+    uint32_t size;              // bytes, the descriptor's stored size rounded up to a multiple of 256
+    uint32_t code_size;         // bytes of code at the program's start
+    uint32_t data_size;         // bytes of data right after the code
+    uint32_t signature_slot;    // bytes from the start of the data
+    uint32_t signatures_offset; // bytes from the start of the VBIOS to the first signature
+    uint8_t  signature_count;   // signatures of `FWSEC_SIGNATURE_BYTES` each, back to back
+};
+
+// Bytes of each of FWSEC's signatures, an RSA-3072 signature
+constexpr uint32_t FWSEC_SIGNATURE_BYTES = 384;
+
+/**
  * @brief Walk the chain of VBIOS images through the card's ROM window,
  * reading only the structures that describe each image.
  * @param rom A view whose offset 0 is the first byte of the ROM window, and
@@ -108,6 +131,38 @@ int32_t read_vbios_layout(const registers& rom, vbios_layout& layout_out);
  * end past the end of the VBIOS's last image. The cause is logged.
  */
 int32_t find_falcon_program_table(const registers& rom, const vbios_layout& layout, falcon_program_table& table_out);
+
+/**
+ * @brief Find FWSEC through the falcon program table. The table's first entry
+ * for production FWSEC, the build signed for production cards rather than
+ * debug ones, points to FWSEC's descriptor, which must be version 3, list at
+ * least one signature and be large enough for its 44 bytes of fields and its
+ * signatures. A version 2 descriptor lays out other fields and is refused.
+ * FWSEC starts where the descriptor ends.
+ * @param rom A view whose offset 0 is the first byte of the ROM window, and
+ * which must cover all `ROM_WINDOW_BYTES` of it.
+ * @param layout The VBIOS's images, which must be as `read_vbios_layout`
+ * returns them.
+ * @param table The falcon program table, which must be as
+ * `find_falcon_program_table` returns it for `layout`.
+ * @param fwsec_out Receives where FWSEC lies when the result is `OK`. FWSEC
+ * then lies inside the VBIOS, its code and data fit in its `size`, its
+ * signature slot lies inside its data, and its `signature_count` signatures,
+ * at least one, lie between the descriptor's fields and FWSEC.
+ * @return `OK`, or `ERR_BAD_VBIOS` when the table has no production FWSEC
+ * entry, the descriptor's 44 bytes of fields at the table's base plus the
+ * entry's pointer end past the end of the VBIOS's last image, the descriptor
+ * gives no version or one other than 3, lists no signatures or is smaller
+ * than its fields and signatures, FWSEC ends past the end of the VBIOS's
+ * last image, its code and data do not fit in it, or its signature slot does
+ * not fit in its data. The cause is logged.
+ */
+int32_t find_fwsec(
+    const registers& rom,
+    const vbios_layout& layout,
+    const falcon_program_table& table,
+    fwsec_layout& fwsec_out
+);
 
 } // namespace drivers::nvidia
 
