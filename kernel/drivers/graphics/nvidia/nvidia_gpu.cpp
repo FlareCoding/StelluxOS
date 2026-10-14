@@ -73,7 +73,17 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
-    log::info("nvidia: bring-up stops after opening the firmware files");
+    rc = nvidia::check_boot_file(files.bootloader, "bootloader");
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    rc = nvidia::check_boot_file(files.booter_load, "booter load");
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info("nvidia: bring-up stops after checking the bootloader and booter load headers");
 
     return DECLINED;
 }

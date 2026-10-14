@@ -15,12 +15,14 @@ namespace drivers {
  * with gfxfb, when the chip table does not list the card's chip, or when a
  * directory the chip's firmware files belong in is not installed, as in an
  * image without the nvidia-firmware package. Bring-up ends after logging the
- * layout of the card's VBIOS and opening the chip's firmware files, so when
- * every file opens, `attach()` declines as well. `attach()` fails with a
- * negative error when BAR0 cannot be mapped, the card does not respond, its
- * VBIOS is not laid out as the driver expects, a firmware file of an
- * installed directory cannot be opened, or a firmware name built from the
- * chip table is too long or malformed.
+ * layout of the card's VBIOS, opening the chip's firmware files and checking
+ * the headers of its bootloader and booter load, so when both headers pass,
+ * `attach()` declines as well. `attach()` fails with a negative error when
+ * BAR0 cannot be mapped, the card does not respond, its VBIOS is not laid out
+ * as the driver expects, a firmware file of an installed directory cannot be
+ * opened, the bootloader or booter load is shorter than its header, cannot be
+ * read or holds a header that does not describe it, or a firmware name built
+ * from the chip table is too long or malformed.
  * Whether `attach()` declines or fails, the screen is left as it was, and the
  * card keeps only the memory and I/O decoding that `attach()` turned on. That
  * decoding stays on because the boot framebuffer may be in this card's memory,

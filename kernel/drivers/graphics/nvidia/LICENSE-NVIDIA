@@ -18,6 +18,11 @@ src/nvidia/inc/kernel/platform/pci_exp_table.h
     kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+nouveau/extract-firmware-nouveau.py
+    the boot file header and its values, in firmware_files.h,
+    firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 Each of these files carries this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a

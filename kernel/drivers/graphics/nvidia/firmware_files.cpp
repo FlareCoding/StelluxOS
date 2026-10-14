@@ -1,3 +1,5 @@
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
+
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/pci_driver.h"
@@ -24,6 +26,10 @@ struct firmware_names {
     char booter_load[NAME_CAPACITY];
     char gsp_image[NAME_CAPACITY];
 };
+
+// The magic and header version a valid `boot_file_header` holds
+constexpr uint32_t BOOT_FILE_MAGIC          = 0x10DE;
+constexpr uint32_t BOOT_FILE_HEADER_VERSION = 1;
 
 // Writes `directory`, a '/' and `file` into `name_out`, which must hold `NAME_CAPACITY` bytes. Returns false when
 // they and a NUL do not fit.
@@ -112,6 +118,60 @@ int32_t to_bring_up_result(int32_t fw_result) {
     }
 
     return ERR_BAD_FIRMWARE;
+}
+
+int32_t check_boot_file(const fw::file& file, const char* name) {
+    boot_file_header header = {};
+    if (file.size() < sizeof(header)) {
+        log::error("nvidia: the %s is %lu bytes, shorter than its 24-byte header", name, file.size());
+        return ERR_BAD_FIRMWARE;
+    }
+
+    int32_t fw_result = file.read(0, &header, sizeof(header));
+    int32_t rc = to_bring_up_result(fw_result);
+    if (rc != OK) {
+        log::error("nvidia: reading the %s failed with fw error %d", name, fw_result);
+        return rc;
+    }
+
+    bool has_magic = header.magic == BOOT_FILE_MAGIC;
+    bool has_version = header.header_version == BOOT_FILE_HEADER_VERSION;
+    if (!has_magic || !has_version) {
+        log::error(
+            "nvidia: the %s starts with magic 0x%X and header version %u instead of magic 0x10DE and version 1",
+            name,
+            header.magic,
+            header.header_version
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    bool descriptors_follow_header = header.descriptor_offset == sizeof(header);
+    bool program_follows_descriptors = header.program_offset >= header.descriptor_offset;
+    if (!descriptors_follow_header || !program_follows_descriptors) {
+        log::error(
+            "nvidia: the %s's header places its descriptors at %u and its program at %u, where the descriptors must "
+            "start right after the 24-byte header and the program at or after them",
+            name,
+            header.descriptor_offset,
+            header.program_offset
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    uint64_t program_end = static_cast<uint64_t>(header.program_offset) + header.program_size;
+    if (program_end > file.size()) {
+        log::error(
+            "nvidia: the %s's program of %u bytes at %u ends past the file's %lu bytes",
+            name,
+            header.program_size,
+            header.program_offset,
+            file.size()
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    return OK;
 }
 
 } // namespace drivers::nvidia
