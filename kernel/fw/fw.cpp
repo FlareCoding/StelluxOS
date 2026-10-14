@@ -107,6 +107,21 @@ int32_t file::open(const char* name) {
     return rc;
 }
 
+int32_t file::read(uint64_t offset, void* dst, size_t count) const {
+    uint64_t end = offset + count;
+    bool is_inside_file = end >= offset && end <= m_size;
+    if (!m_file || !is_inside_file) {
+        return ERR_INVALID_ARG;
+    }
+
+    ssize_t copied = fs::read_at(m_file, dst, count, offset);
+    if (copied != static_cast<ssize_t>(count)) {
+        return ERR_UNREADABLE;
+    }
+
+    return OK;
+}
+
 void file::close() {
     if (!m_file) {
         return;

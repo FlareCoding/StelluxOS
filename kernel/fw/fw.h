@@ -10,8 +10,8 @@ namespace fw {
 constexpr int32_t OK                =  0;
 constexpr int32_t ERR_NOT_INSTALLED = -1; // the directory the name places the file in does not exist
 constexpr int32_t ERR_MISSING       = -2; // that directory exists but holds no file of the name
-constexpr int32_t ERR_UNREADABLE    = -3; // what the name leads to is not a regular file, or opening failed otherwise
-constexpr int32_t ERR_INVALID_ARG   = -4; // a malformed name, or an object that already holds a file open
+constexpr int32_t ERR_UNREADABLE    = -3; // what the name leads to is not a regular file, or opening or reading failed
+constexpr int32_t ERR_INVALID_ARG   = -4; // a malformed name or out-of-file range, or no file open or one already open
 
 // Where packages install firmware files, the directory every name is relative to
 constexpr const char DIRECTORY[] = "/usr/lib/firmware";
@@ -20,15 +20,23 @@ constexpr const char DIRECTORY[] = "/usr/lib/firmware";
  * A firmware file: code or data a driver hands to its device, installed by a
  * package under `DIRECTORY`. A driver opens one by its name relative to
  * `DIRECTORY`, such as "vendor/1.0/device.bin", and the result tells whether a
- * package installed it. Calls log nothing, since only the caller knows whether
- * a result is a failure, so the caller logs it, naming the file. The object
- * closes its file in `close()` or when it goes out of scope.
+ * package installed it. The driver then copies ranges of it straight into
+ * memory it owns, such as the DMA memory its device reads, so a large file
+ * reaches the device with no copy in between. Calls log nothing, since only
+ * the caller knows whether a result is a failure, so the caller logs it,
+ * naming the file. The object closes its file in `close()` or when it goes out
+ * of scope.
  *
- * Calls never sleep on ramfs, which holds every installed package, so the boot
- * thread, which cannot sleep, may make them while drivers attach. None is
- * `__PRIVILEGED_CODE`, and the file system and heap calls they make elevate
- * internally, so any kernel thread may use an object, elevated or lowered. One
- * object must be used by one thread at a time.
+ * `read` takes the file's mutex and waits while another thread holds it, so it
+ * must not run in an interrupt handler or under a spinlock. The boot thread
+ * cannot wait and stops for good on a held mutex, so it may read only a file no
+ * other thread uses at the time, as with firmware while drivers attach before
+ * userland starts. `fs::init` relies on the same when it unpacks the initrd on
+ * that thread. `open`, `size` and `close` never sleep on ramfs, which holds
+ * every installed package. None is `__PRIVILEGED_CODE`, and the file system
+ * and heap calls they make elevate internally, so any kernel thread may use an
+ * object, elevated or lowered. One object must be used by one thread at a
+ * time.
  */
 class file {
 public:
@@ -54,6 +62,19 @@ public:
      * a file open, which stays open.
      */
     [[nodiscard]] int32_t open(const char* name);
+
+    /**
+     * @brief Copy the `count` bytes starting at `offset` into `dst`, which
+     * must hold `count` bytes and must not be null.
+     * @return `OK` when all `count` bytes were copied, which for a `count` of
+     * 0 copies nothing. `ERR_INVALID_ARG` when the object holds no file open,
+     * or when `offset` plus `count` exceeds `size()` or overflows, which
+     * callers rule out by checking against `size()` first. `ERR_UNREADABLE`
+     * when the file system fails or delivers fewer bytes, as when the file
+     * shrank after it was opened. On `ERR_UNREADABLE`, `dst` may hold part of
+     * the range.
+     */
+    [[nodiscard]] int32_t read(uint64_t offset, void* dst, size_t count) const;
 
     // Closes the file. Closing an object that holds no file open does nothing.
     void close();
