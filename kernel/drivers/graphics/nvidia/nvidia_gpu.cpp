@@ -89,7 +89,20 @@ int32_t nvidia_gpu_driver::attach() {
     }
 
     log::info("nvidia: firmware %s checked", nvidia::FIRMWARE_VERSION);
-    log::info("nvidia: bring-up stops after checking the firmware files");
+
+    nvidia::falcon_program_table table = {};
+    rc = nvidia::find_falcon_program_table(rom, layout, table);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: falcon program table at 0x%X in the VBIOS, %u entries of %u bytes",
+        table.offset,
+        table.entry_count,
+        table.entry_size
+    );
+    log::info("nvidia: bring-up stops after finding the falcon program table");
 
     return DECLINED;
 }

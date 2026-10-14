@@ -134,11 +134,6 @@ int32_t to_bring_up_result(int32_t fw_result) {
     return ERR_BAD_FIRMWARE;
 }
 
-// Whether the `bytes` bytes at `offset` lie inside the first `limit` bytes, also when their sum would overflow
-static bool lies_inside(uint64_t offset, uint64_t bytes, uint64_t limit) {
-    return offset <= limit && bytes <= limit - offset;
-}
-
 // Reads `count` bytes at `offset` of `file` into `dst`, logging a failure with `name` saying what the file is
 static int32_t read_firmware(const fw::file& file, const char* name, uint64_t offset, void* dst, size_t count) {
     int32_t fw_result = file.read(offset, dst, count);
