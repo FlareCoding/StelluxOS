@@ -9,13 +9,27 @@ namespace drivers::nvidia {
 constexpr uint32_t PMC_BOOT_0 = 0x0;
 
 /**
+ * The names of the firmware files a chip boots from, which
+ * `open_firmware_files` looks up in the version's directory,
+ * nvidia/<FIRMWARE_VERSION>/ in `fw::DIRECTORY`. The GSP is the processor
+ * inside the GPU that manages the GPU's resources, the GSP image is NVIDIA's
+ * firmware it runs, and the bootloader and booter load are small programs that
+ * start the GSP image.
+ */
+struct chip_firmware {
+    const char* gsp_image;      // file name of the GSP image in the version's directory, which several chips share
+    const char* boot_directory; // directory in the version's directory holding the chip's bootloader and booters
+};
+
+/**
  * What the driver knows about one chip it supports, as an entry of the chip
  * table. The table is the only record of chip-specific values, so the rest of
  * the driver looks them up with `find_chip` instead of keeping its own.
  */
 struct chip_info {
-    uint16_t    id;   // as `decode_chip_id` returns it
-    const char* name; // NVIDIA's code name for the chip
+    uint16_t      id;       // as `decode_chip_id` returns it
+    const char*   name;     // NVIDIA's code name for the chip
+    chip_firmware firmware;
 };
 
 /**
