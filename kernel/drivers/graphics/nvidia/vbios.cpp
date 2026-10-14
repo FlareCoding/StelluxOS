@@ -1,3 +1,5 @@
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
+
 #include "drivers/graphics/nvidia/vbios.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "common/logging.h"

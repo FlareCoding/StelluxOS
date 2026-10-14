@@ -1,3 +1,5 @@
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
+
 #ifndef STELLUX_DRIVERS_GRAPHICS_NVIDIA_CHIP_H
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_CHIP_H
 
