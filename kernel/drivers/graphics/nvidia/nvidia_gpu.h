@@ -13,13 +13,14 @@ namespace drivers {
  *
  * `attach()` declines the card when a driver display is already registered
  * with gfxfb, or when the chip table does not list the card's chip. Bring-up
- * ends at the chip check, so a listed chip is logged and declined as well.
- * `attach()` fails with a negative error when BAR0 cannot be mapped or the
- * card does not respond. Whether `attach()` declines or fails, the screen is
- * left as it was, and the card keeps only the memory and I/O decoding that
- * `attach()` turned on. That decoding stays on because the boot framebuffer
- * may be in this card's memory, which the CPU reaches only while memory
- * decoding is on.
+ * ends after reading the layout of the card's VBIOS, so when the chip is listed
+ * and the layout is read, `attach()` logs the layout and declines as well.
+ * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
+ * does not respond, or its VBIOS is not laid out as the driver expects.
+ * Whether `attach()` declines or fails, the screen is left as it was, and the
+ * card keeps only the memory and I/O decoding that `attach()` turned on. That
+ * decoding stays on because the boot framebuffer may be in this card's memory,
+ * which the CPU reaches only while memory decoding is on.
  */
 class nvidia_gpu_driver : public pci_driver {
 public:
