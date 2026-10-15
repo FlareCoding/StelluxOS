@@ -99,9 +99,16 @@ src/common/inc/swref/published/disp/v04_00/dev_disp.h
     field, in kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
+src/common/inc/swref/published/turing/tu102/dev_bus.h
+    the offset of the VBIOS scratch registers and their 4-byte spacing, in
+    protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
 src/common/inc/swref/published/turing/tu102/dev_fb.h
-    the register bounding protected memory from above and its address field,
-    in protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    the registers bounding protected memory from below and from above, their
+    address fields and the 4 KiB units these count, in protected_memory.cpp
+    and kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/turing/tu102/dev_ram.h
@@ -206,8 +213,14 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
-    the FRTS region's size of 1 MiB and the rule that the region never starts
-    at offset 0, in protected_memory.h, protected_memory.cpp and
+    the index 0x0E of the VBIOS scratch register whose bits 31 to 16 hold
+    FWSEC's FRTS error code, 0 for none, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the FRTS region's
+    size of 1 MiB, the rule that the region never starts at offset 0 and the
+    rule that the FRTS command failed unless that error code is 0, protected
+    memory is set up and the address field of its lower bound is the region's
+    offset in 4 KiB units kept to 32 bits, in protected_memory.h,
+    protected_memory.cpp and
     kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the
     application interface's header and entry fields and sizes, the id of the
     entries that lead to a DMEM mapper, the DMEM mapper's fields and size, the

@@ -14,7 +14,7 @@ constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unread
                                            // or its name invalid
 constexpr int32_t ERR_TIMEOUT        = -4; // the card did not finish a step within its deadline
 constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers show a state bring-up cannot proceed from, such as
-                                           // protected memory already set up or no room for the FRTS region
+                                           // protected memory already set up, or FWSEC not fencing off the FRTS region
 constexpr int32_t ERR_NO_MEMORY      = -6; // allocating memory for the card to reach failed
 
 /**

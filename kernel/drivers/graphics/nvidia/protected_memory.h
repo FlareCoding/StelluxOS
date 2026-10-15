@@ -64,7 +64,9 @@ int32_t wait_for_boot_firmware(const registers& regs, uint64_t timeout_ns);
  * @param region_out Receives the region when the result is `OK`. Its
  * `vga_workspace_offset` is then the start of the last 128 KiB or the last
  * 1 MiB of usable video memory, and the region starts at a multiple of
- * 128 KiB above offset 0 and ends at `vga_workspace_offset`.
+ * 128 KiB above offset 0 and ends at `vga_workspace_offset`. The region thus
+ * lies below 16 TiB whenever usable video memory does, as
+ * `prepare_fwsec_frts` and `check_frts_result` need.
  * @return `OK`, or `ERR_BAD_STATE` when protected memory is already set up, as
  * after an earlier bring-up with no card reset since, when usable video memory
  * is below 1 MiB, or when the VGA workspace leaves no room for the region
@@ -72,6 +74,23 @@ int32_t wait_for_boot_firmware(const registers& regs, uint64_t timeout_ns);
  * The cause is logged.
  */
 int32_t place_frts_region(const registers& regs, frts_region& region_out);
+
+/**
+ * @brief Check that FWSEC fenced off the FRTS region, as NVIDIA's driver
+ * checks once the GSP's falcon has halted on FWSEC, reading each register
+ * once. The error code FWSEC records for the FRTS command must be 0,
+ * protected memory must be set up, and it must start at the region.
+ * @param regs A view of BAR0. `run_gsp_falcon_program` must have returned
+ * `OK` for FWSEC's copy as `prepare_fwsec_frts` patched it for `region`.
+ * @param region The region FWSEC's copy was patched to fence off, as
+ * `place_frts_region` placed it. Its offset must lie below 16 TiB, as for
+ * `prepare_fwsec_frts`, since the check keeps it in 4 KiB units to 32 bits,
+ * as NVIDIA's driver does.
+ * @return `OK`, or `ERR_BAD_STATE` when FWSEC's FRTS error code is not 0,
+ * protected memory is not set up, or it starts elsewhere than at the region.
+ * The cause is logged.
+ */
+int32_t check_frts_result(const registers& regs, const frts_region& region);
 
 } // namespace drivers::nvidia
 
