@@ -16,9 +16,17 @@ constexpr uint32_t READABLE_AT_LEVEL_0           = 0x1;
 constexpr uint32_t BOOT_PROGRESS_MASK            = 0xFF;
 constexpr uint32_t BOOT_PROGRESS_COMPLETE        = 0xFF;
 
-// The bound that protected memory ends at, whose bits 31 to 4 stay 0 until protected memory is set up
-constexpr uint32_t PROTECTED_MEMORY_END      = 0x1FA828;
-constexpr uint32_t PROTECTED_MEMORY_END_MASK = 0xFFFFFFF0;
+// The lower and upper bounds of protected memory, each holding an address in 4 KiB units in bits 31 to 4. The upper
+// bound's address stays 0 until protected memory is set up.
+constexpr uint32_t PROTECTED_MEMORY_LOWER_BOUND = 0x1FA824;
+constexpr uint32_t PROTECTED_MEMORY_UPPER_BOUND = 0x1FA828;
+constexpr uint32_t BOUND_ADDRESS_SHIFT          = 4;
+constexpr uint32_t BOUND_UNIT_SHIFT             = 12;
+
+// A VBIOS scratch register, one of those the VBIOS's programs leave results in, whose bits 31 to 16 hold the error
+// code FWSEC records for the FRTS command, 0 for none
+constexpr uint32_t FRTS_ERROR_SCRATCH    = 0x1438;
+constexpr uint32_t FRTS_ERROR_CODE_SHIFT = 16;
 
 // Where the boot firmware records the usable size of video memory, in MiB
 constexpr uint32_t USABLE_VIDEO_MEMORY_MIB = 0x1183A4;
@@ -77,6 +85,10 @@ int32_t wait_for_boot_firmware(const registers& regs, uint64_t timeout_ns) {
     }
 }
 
+static bool is_protected_memory_set_up(const registers& regs) {
+    return (regs.read(PROTECTED_MEMORY_UPPER_BOUND) >> BOUND_ADDRESS_SHIFT) != 0;
+}
+
 // Where the layout counts the VGA workspace as starting. `video_memory_size` must be at least `VGA_WORKSPACE_MAX_BYTES`
 static uint64_t find_vga_workspace(const registers& regs, uint64_t video_memory_size) {
     bool has_display = (regs.read(DISPLAY_FUSE) & DISPLAY_DISABLED) == 0;
@@ -89,7 +101,7 @@ static uint64_t find_vga_workspace(const registers& regs, uint64_t video_memory_
 }
 
 int32_t place_frts_region(const registers& regs, frts_region& region_out) {
-    if ((regs.read(PROTECTED_MEMORY_END) & PROTECTED_MEMORY_END_MASK) != 0) {
+    if (is_protected_memory_set_up(regs)) {
         log::error("nvidia: protected memory is already set up, as after an earlier bring-up with no card reset since");
         return ERR_BAD_STATE;
     }
@@ -115,6 +127,33 @@ int32_t place_frts_region(const registers& regs, frts_region& region_out) {
     region_out.video_memory_size = video_memory_size;
     region_out.vga_workspace_offset = vga_workspace_offset;
     region_out.offset = vga_workspace_offset - FRTS_REGION_BYTES;
+
+    return OK;
+}
+
+int32_t check_frts_result(const registers& regs, const frts_region& region) {
+    uint32_t error_code = regs.read(FRTS_ERROR_SCRATCH) >> FRTS_ERROR_CODE_SHIFT;
+    if (error_code != 0) {
+        log::error("nvidia: FWSEC's FRTS error code reads 0x%04X", error_code);
+        return ERR_BAD_STATE;
+    }
+
+    if (!is_protected_memory_set_up(regs)) {
+        log::error("nvidia: FWSEC did not set up protected memory for the FRTS region at 0x%lX", region.offset);
+        return ERR_BAD_STATE;
+    }
+
+    // NVIDIA's driver compares the start with the region's offset in 4 KiB units kept to 32 bits
+    uint32_t start_4k = regs.read(PROTECTED_MEMORY_LOWER_BOUND) >> BOUND_ADDRESS_SHIFT;
+    uint32_t region_4k = static_cast<uint32_t>(region.offset >> BOUND_UNIT_SHIFT);
+    if (start_4k != region_4k) {
+        log::error(
+            "nvidia: protected memory's lower bound reads address 0x%lX instead of the FRTS region's 0x%lX",
+            static_cast<uint64_t>(start_4k) << BOUND_UNIT_SHIFT,
+            region.offset
+        );
+        return ERR_BAD_STATE;
+    }
 
     return OK;
 }

@@ -12,6 +12,7 @@
 TEST_SUITE(nvidia_protected_memory);
 
 using drivers::nvidia::BOOT_FIRMWARE_TIMEOUT_NS;
+using drivers::nvidia::check_frts_result;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::frts_region;
@@ -25,7 +26,9 @@ using drivers::nvidia::wait_for_boot_firmware;
 static constexpr uint32_t BOOT_PROGRESS_READ_PROTECTION = 0x118128;
 static constexpr uint32_t BOOT_PROGRESS                 = 0x118234;
 static constexpr uint32_t GSP_FALCON_CPUCTL             = 0x110100;
-static constexpr uint32_t PROTECTED_MEMORY_END          = 0x1FA828;
+static constexpr uint32_t FRTS_ERROR_SCRATCH            = 0x1438;
+static constexpr uint32_t PROTECTED_MEMORY_LOWER_BOUND  = 0x1FA824;
+static constexpr uint32_t PROTECTED_MEMORY_UPPER_BOUND  = 0x1FA828;
 static constexpr uint32_t USABLE_VIDEO_MEMORY_MIB       = 0x1183A4;
 static constexpr uint32_t DISPLAY_FUSE                  = 0x820C04;
 static constexpr uint32_t VGA_WORKSPACE_BASE            = 0x625F04;
@@ -221,17 +224,17 @@ TEST(nvidia_protected_memory, protected_memory_already_set_up_is_refused) {
     ASSERT_NOT_NULL(bar0.bytes);
     put_layout(bar0, VIDEO_MEMORY_MIB, DISPLAY_DISABLED, 0);
 
-    bar0.write(PROTECTED_MEMORY_END, 0x10);
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0x10);
     frts_region region = {.video_memory_size = 1, .vga_workspace_offset = 2, .offset = 3};
     EXPECT_EQ(place_frts_region(bar0.regs, region), ERR_BAD_STATE);
     EXPECT_EQ(region.video_memory_size, 1u);
     EXPECT_EQ(region.vga_workspace_offset, 2u);
     EXPECT_EQ(region.offset, 3u);
 
-    bar0.write(PROTECTED_MEMORY_END, 0x80000000);
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0x80000000);
     EXPECT_EQ(place_frts_region(bar0.regs, region), ERR_BAD_STATE);
 
-    bar0.write(PROTECTED_MEMORY_END, 0xF);
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0xF);
     EXPECT_EQ(place_frts_region(bar0.regs, region), OK);
 }
 
@@ -257,4 +260,130 @@ TEST(nvidia_protected_memory, region_must_start_above_offset_0) {
 
     put_layout(bar0, 0, DISPLAY_DISABLED, 0);
     EXPECT_EQ(place_frts_region(bar0.regs, region), ERR_BAD_STATE);
+}
+
+// FWSEC's result as an RTX 3080 reports it once FWSEC fenced off the FRTS region of its layout
+static constexpr uint32_t RTX_3080_FRTS_ERROR_SCRATCH           = 0x0;
+static constexpr uint32_t RTX_3080_PROTECTED_MEMORY_LOWER_BOUND = 0x27FE000;
+static constexpr uint32_t RTX_3080_PROTECTED_MEMORY_UPPER_BOUND = 0x27FEE00;
+
+static constexpr frts_region RTX_3080_FRTS_REGION = {
+    .video_memory_size = 0x280000000,
+    .vga_workspace_offset = 0x27FF00000,
+    .offset = 0x27FE00000,
+};
+
+static void put_rtx_3080_frts_result(fake_bar0& bar0) {
+    bar0.write(FRTS_ERROR_SCRATCH, RTX_3080_FRTS_ERROR_SCRATCH);
+    bar0.write(PROTECTED_MEMORY_LOWER_BOUND, RTX_3080_PROTECTED_MEMORY_LOWER_BOUND);
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, RTX_3080_PROTECTED_MEMORY_UPPER_BOUND);
+}
+
+// The FRTS region placed for the RTX 3080's layout is the one its FWSEC fenced off
+TEST(nvidia_protected_memory, rtx_3080_frts_result_checks_out) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    put_layout(bar0, RTX_3080_VIDEO_MEMORY_MIB, RTX_3080_DISPLAY_FUSE, RTX_3080_VGA_WORKSPACE);
+
+    frts_region region = {};
+    ASSERT_EQ(place_frts_region(bar0.regs, region), OK);
+
+    put_rtx_3080_frts_result(bar0);
+    EXPECT_EQ(check_frts_result(bar0.regs, region), OK);
+}
+
+// Bits 31 to 16 of the scratch register hold FWSEC's FRTS error code, and any code but 0 is refused
+TEST(nvidia_protected_memory, nonzero_frts_error_code_is_refused) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    put_rtx_3080_frts_result(bar0);
+
+    bar0.write(FRTS_ERROR_SCRATCH, 0x10000);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), ERR_BAD_STATE);
+
+    bar0.write(FRTS_ERROR_SCRATCH, 0x80000000);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), ERR_BAD_STATE);
+
+    bar0.write(FRTS_ERROR_SCRATCH, 0xFFFF);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), OK);
+}
+
+// The RTX 3080's bounds before FWSEC ran, with protected memory not set up though the lower bound holds a value
+static constexpr uint32_t RTX_3080_PROTECTED_MEMORY_LOWER_BOUND_BEFORE_FWSEC = 0x1FFFFE00;
+static constexpr uint32_t RTX_3080_PROTECTED_MEMORY_UPPER_BOUND_BEFORE_FWSEC = 0x0;
+
+// Protected memory must be set up, which only bits 31 to 4 of its upper bound show, and the RTX 3080's bounds from
+// before FWSEC ran are refused
+TEST(nvidia_protected_memory, frts_result_needs_protected_memory_set_up) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    put_rtx_3080_frts_result(bar0);
+
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), ERR_BAD_STATE);
+
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0xF);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), ERR_BAD_STATE);
+
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0x10);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), OK);
+
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0x80000000);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), OK);
+
+    bar0.write(PROTECTED_MEMORY_LOWER_BOUND, RTX_3080_PROTECTED_MEMORY_LOWER_BOUND_BEFORE_FWSEC);
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, RTX_3080_PROTECTED_MEMORY_UPPER_BOUND_BEFORE_FWSEC);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), ERR_BAD_STATE);
+}
+
+// One 4 KiB unit in a bound's address field, which bits 31 to 4 hold
+static constexpr uint32_t BOUND_ADDRESS_UNIT = 0x10;
+
+// Protected memory must start at the region: bits 31 to 4 of the lower bound must hold its offset in 4 KiB units
+TEST(nvidia_protected_memory, protected_memory_must_start_at_the_region) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    put_rtx_3080_frts_result(bar0);
+
+    bar0.write(PROTECTED_MEMORY_LOWER_BOUND, RTX_3080_PROTECTED_MEMORY_LOWER_BOUND + BOUND_ADDRESS_UNIT);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), ERR_BAD_STATE);
+
+    bar0.write(PROTECTED_MEMORY_LOWER_BOUND, RTX_3080_PROTECTED_MEMORY_LOWER_BOUND - BOUND_ADDRESS_UNIT);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), ERR_BAD_STATE);
+
+    bar0.write(PROTECTED_MEMORY_LOWER_BOUND, RTX_3080_PROTECTED_MEMORY_LOWER_BOUND | 0x80000000);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), ERR_BAD_STATE);
+
+    bar0.write(PROTECTED_MEMORY_LOWER_BOUND, RTX_3080_PROTECTED_MEMORY_LOWER_BOUND | 0xF);
+    EXPECT_EQ(check_frts_result(bar0.regs, RTX_3080_FRTS_REGION), OK);
+}
+
+// A region just below 1 TiB, whose offset in 4 KiB units reaches bit 31 of the lower bound
+TEST(nvidia_protected_memory, lower_bound_uses_its_whole_field) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    frts_region region = {
+        .video_memory_size = 0x10000000000,
+        .vga_workspace_offset = 0xFFFFF00000,
+        .offset = 0xFFFFE00000,
+    };
+
+    bar0.write(PROTECTED_MEMORY_LOWER_BOUND, 0xFFFFE000);
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0xFFFFEE00);
+    EXPECT_EQ(check_frts_result(bar0.regs, region), OK);
+}
+
+// The region's offset is compared in 4 KiB units kept to 32 bits, so the RTX 3080's region raised by 8 TiB, whose
+// offset in 4 KiB units matches the RTX 3080's lower bound in its low 31 bits only, is refused
+TEST(nvidia_protected_memory, region_offset_is_compared_in_32_bits) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    put_rtx_3080_frts_result(bar0);
+    frts_region region = {
+        .video_memory_size = 0x80280000000,
+        .vga_workspace_offset = 0x8027FF00000,
+        .offset = 0x8027FE00000,
+    };
+
+    EXPECT_EQ(check_frts_result(bar0.regs, region), ERR_BAD_STATE);
 }

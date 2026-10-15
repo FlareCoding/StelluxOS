@@ -203,9 +203,12 @@ int32_t nvidia_gpu_driver::attach() {
 
     RUN_ELEVATED(dma::free_pages(fwsec_image));
 
-    log::info(
-        "nvidia: bring-up stops after the GSP's falcon was started on FWSEC and halted, FWSEC's result unchecked"
-    );
+    rc = nvidia::check_frts_result(regs, frts);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info("nvidia: bring-up stops after FWSEC fenced off the FRTS region at 0x%lX", frts.offset);
 
     return DECLINED;
 }

@@ -29,8 +29,8 @@ namespace drivers {
  * FWSEC, and that reset is the first step that writes to the card's BAR0
  * registers. The card's bus mastering is then turned on, and the falcon
  * loads FWSEC from the copy and is started on it. Once the falcon halts, the
- * copy is freed. Bring-up ends there without reading FWSEC's result, so when
- * every step succeeds, `attach()` declines as well.
+ * copy is freed, and bring-up ends by checking that FWSEC fenced off the
+ * region, so when every step succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -56,7 +56,10 @@ namespace drivers {
  * RISC-V core to its falcon core, within `nvidia::FALCON_TIMEOUT_NS` of that
  * wait's start. Once the falcon is reset, it fails when the falcon does not
  * finish loading a block of FWSEC, or does not halt, within
- * `nvidia::FALCON_TIMEOUT_NS` of that wait's start.
+ * `nvidia::FALCON_TIMEOUT_NS` of that wait's start. Once the falcon halts,
+ * it fails when `nvidia::check_frts_result` finds an FRTS error code other
+ * than 0, or protected memory not set up or starting elsewhere than at the
+ * region.
  * Whether `attach()` declines or fails, the screen is left as it was, since
  * bring-up itself never writes to the display engine, and the card keeps the
  * memory and I/O decoding that `attach()` turned on. A card that `attach()`
@@ -69,10 +72,10 @@ namespace drivers {
  * leaves the falcon not started, with its DMA engine possibly still copying,
  * and a run that times out leaves the falcon possibly still running FWSEC,
  * which may yet fence off the FRTS region. Either leaves FWSEC's copy
- * allocated for good, since the falcon may still read it. When every step
- * succeeds, the GSP's falcon is left halted, after FWSEC ran or after the
- * falcon's boot ROM refused it, which bring-up does not tell apart. Once
- * FWSEC has fenced off the FRTS region, the region stays fenced off until the
+ * allocated for good, since the falcon may still read it. A falcon that
+ * halts is left halted, after FWSEC ran or after the falcon's boot ROM
+ * refused it. When every step succeeds, FWSEC ran and fenced off the FRTS
+ * region. Once FWSEC has set up protected memory, it stays set up until the
  * card is reset, and `nvidia::place_frts_region` refuses the card in every
  * `attach()` until then. The decoding stays on because the boot framebuffer
  * may be in this card's memory, which the CPU reaches only while memory
