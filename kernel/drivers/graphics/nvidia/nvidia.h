@@ -16,6 +16,9 @@ constexpr int32_t ERR_TIMEOUT        = -4; // the card did not finish a step wit
 constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers show a state bring-up cannot proceed from, such as
                                            // protected memory already set up, or FWSEC not fencing off the FRTS region
 constexpr int32_t ERR_NO_MEMORY      = -6; // allocating memory for the card to reach failed
+constexpr int32_t ERR_QUEUE_FULL     = -7; // the command queue has no room for a message, as the read pointer in its
+                                           // header page has not moved far enough or lies past the queue's ring
+constexpr int32_t ERR_TOO_LARGE      = -8; // a payload exceeds the most bytes a message to the GSP's firmware carries
 
 /**
  * @brief Whether the `bytes` bytes at `offset` lie inside the first `limit`

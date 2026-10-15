@@ -329,6 +329,59 @@ nouveau/extract-firmware-nouveau.py
     firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/common/shared/msgq/inc/msgq/msgq_priv.h
+    the queue header's fields and the read pointer after them, and the queue
+    version 0, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/shared/msgq/inc/msgq/msgq.h
+    the flag asking to swap read pointers, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2018-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/shared/msgq/msgq.c
+    the queue header's values, where the firmware's read pointer is read
+    before the status queue's header is checked, the count of free elements
+    and the write pointer's wrap, in message_queues.h, message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the rule that
+    read pointers swap only when both queues' headers ask, each reader then
+    keeping its own in the header page of the queue it writes, in
+    message_queues.h and message_queues.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h
+    the element header, the element and message sizes and the checksum, in
+    message_queues.h, message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
+    the queue memory's layout and page table, and each message's sequence
+    number and element count, in message_queues.h, message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and each message's
+    checksum and its last element copied whole, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_rpc-message-header.h
+    the RPC header's fields, in message_queues.h, message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/kernel/inc/vgpu/rpc_headers.h
+    the RPC header's version, signature and pending result, in
+    message_queues.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/rmapi/rpc_common.c
+    the RPC header's values in each message sent, its length covering the
+    RPC header and the payload, in message_queues.h, message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the zeros after
+    the payload, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 Each of these files carries this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
