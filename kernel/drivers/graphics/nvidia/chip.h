@@ -29,9 +29,10 @@ struct chip_firmware {
  * the driver looks them up with `find_chip` instead of keeping its own.
  */
 struct chip_info {
-    uint16_t      id;       // as `decode_chip_id` returns it
-    const char*   name;     // NVIDIA's code name for the chip
+    uint16_t      id;               // as `decode_chip_id` returns it
+    const char*   name;             // NVIDIA's code name for the chip
     chip_firmware firmware;
+    uint8_t       dma_address_bits; // bits of the physical addresses the chip reaches system memory with, 32 to 64
 };
 
 /**

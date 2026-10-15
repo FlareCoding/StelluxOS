@@ -8,9 +8,11 @@
 #include "drivers/graphics/nvidia/vbios.h"
 #include "drivers/graphics/gfxfb.h"
 #include "common/logging.h"
+#include "dma/dma.h"
 #include "dynpriv/dynpriv.h"
 #include "mm/heap.h"
 #include "mm/paging_types.h"
+#include "mm/pmm_types.h"
 #include "pci/pci_class_codes.h"
 
 namespace drivers {
@@ -156,7 +158,33 @@ int32_t nvidia_gpu_driver::attach() {
         fwsec.signature_count,
         signature.fuse_version
     );
-    log::info("nvidia: bring-up stops after choosing FWSEC's signature");
+
+    size_t image_pages = pmm::page_align_up(fwsec.size) / pmm::PAGE_SIZE;
+    dma::buffer fwsec_image = {};
+    RUN_ELEVATED(
+        rc = dma::alloc_pages(
+            dma_profile(chip->dma_address_bits),
+            image_pages,
+            dma::caching::uncached,
+            paging::PAGE_USER,
+            fwsec_image
+        )
+    );
+    if (rc != dma::OK) {
+        log::error("nvidia: allocating %lu pages for FWSEC's copy failed: %d", image_pages, rc);
+        return nvidia::ERR_NO_MEMORY;
+    }
+
+    // The card is never given this memory's address, so it is freed whatever the result
+    uint8_t* image = reinterpret_cast<uint8_t*>(fwsec_image.virt);
+    rc = nvidia::prepare_fwsec_frts(rom, fwsec, signature, frts.offset, image);
+    RUN_ELEVATED(dma::free_pages(fwsec_image));
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info("nvidia: FWSEC copied into memory the card can reach and patched to fence off the FRTS region");
+    log::info("nvidia: bring-up stops after patching FWSEC's copy");
 
     return DECLINED;
 }

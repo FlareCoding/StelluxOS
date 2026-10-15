@@ -58,6 +58,11 @@ src/common/inc/swref/published/turing/tu102/dev_ram.h
     kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES
 
+src/common/inc/swref/published/turing/tu102/hwproject.h
+    the 47 bits of the physical addresses the chip reaches system memory
+    with, in chip.cpp and kernel/tests/graphics/nvidia.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2021 NVIDIA CORPORATION & AFFILIATES
+
 src/nvidia/inc/kernel/platform/pci_exp_table.h
     NVIDIA's image and PCI data signatures, and the signature and fields of
     NVIDIA's extension to the PCI data structure, in vbios.cpp and
@@ -82,7 +87,10 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_fwsec.c
     and the rules that FWSEC's signatures follow the descriptor's fields, that
     FWSEC follows the descriptor with its code first and its data right after,
     and that it spans its stored size rounded up to a multiple of 256 bytes, in
-    vbios.h, vbios.cpp and kernel/tests/graphics/nvidia.test.cpp
+    vbios.h, vbios.cpp and kernel/tests/graphics/nvidia.test.cpp, the size of
+    FWSEC's signatures, in kernel/tests/graphics/nvidia_fwsec.test.cpp, and the
+    rule that its data follows its code, in fwsec.cpp and
+    kernel/tests/graphics/nvidia_fwsec.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
@@ -97,7 +105,9 @@ src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c
     the rule that the boot firmware has finished once its progress register
     is readable and reads complete and the GSP is halted, and the time it is
     given, 50 ms to start and 2 s to finish, in protected_memory.h,
-    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    and the rule that the chip reaches system memory with its extended
+    physical address bits, in chip.cpp and kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/src/kernel/gpu/arch/ampere/kern_gpu_ga100.c
@@ -133,11 +143,20 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
     the FRTS region's size of 1 MiB and the rule that the region never starts
     at offset 0, in protected_memory.h, protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rules that
-    FWSEC has a signature for the fuse version only when its signature
-    versions include that version, and that this signature comes after one for
-    each lower version FWSEC has a signature for, in vbios.h, fwsec.h,
-    fwsec.cpp and kernel/tests/graphics/nvidia_fwsec.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the
+    application interface's header and entry fields and sizes, the id of the
+    entries that lead to a DMEM mapper, the DMEM mapper's fields and size, the
+    FRTS command's id, fields, values and size, and the rules that FWSEC has a
+    signature for the fuse version only when its signature versions include
+    that version, that this signature comes after one for each lower version
+    FWSEC has a signature for, that the interface lists at least 2 entries,
+    that the interface's header, its listed entries and every DMEM mapper they
+    lead to lie inside FWSEC's data, that its last DMEM mapper entry leads to
+    the mapper, that the command goes in the mapper's input buffer and its id
+    in the mapper's command field, that the region's offset and size count
+    4 KiB units with the offset kept to 32 bits, and that the signature goes
+    in the signature slot after the command, in vbios.h, fwsec.h, fwsec.cpp
+    and kernel/tests/graphics/nvidia_fwsec.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga100.c
