@@ -21,8 +21,10 @@ namespace drivers {
  * memory for the GSP's firmware, through the VBIOS's falcon program table.
  * Once the card's boot firmware has finished setting up video memory, it
  * works out where in video memory FWSEC's FRTS region goes, the part of
- * protected memory FWSEC fences off first. Bring-up ends there, so when every
- * step succeeds, `attach()` declines as well.
+ * protected memory FWSEC fences off first. It then chooses which of FWSEC's
+ * signatures its signature slot must hold, the one for the version the
+ * chip's fuses record for FWSEC. Bring-up ends there, so when every step
+ * succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -37,7 +39,10 @@ namespace drivers {
  * to FWSEC as `nvidia::find_fwsec` requires. Once FWSEC is found, it fails
  * when the card's boot firmware has not finished within
  * `nvidia::BOOT_FIRMWARE_TIMEOUT_NS`, or when `nvidia::place_frts_region`
- * refuses the card's state, as when protected memory is already set up.
+ * refuses the card's state, as when protected memory is already set up. Once
+ * the region is placed, it fails when `nvidia::select_fwsec_signature`
+ * refuses FWSEC's signatures, as when none is for the version the chip's
+ * fuses record.
  * Whether `attach()` declines or fails, the screen is left as it was, and the
  * card keeps only the memory and I/O decoding that `attach()` turned on. That
  * decoding stays on because the boot framebuffer may be in this card's memory,

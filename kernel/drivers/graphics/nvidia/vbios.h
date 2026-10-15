@@ -76,16 +76,19 @@ struct falcon_program_table {
  * descriptor's fields. The falcon checks the signature at the signature slot
  * in the program's data, so before FWSEC runs, the slot must hold the
  * signature for the version that the chip's fuses, bits burned into the chip
- * for good, record for FWSEC.
+ * for good, record for FWSEC. The signatures are in increasing order of the
+ * version each is for.
  */
 struct fwsec_layout {
-    uint32_t offset;            // bytes from the start of the VBIOS
-    uint32_t size;              // bytes, the descriptor's stored size rounded up to a multiple of 256
-    uint32_t code_size;         // bytes of code at the program's start
-    uint32_t data_size;         // bytes of data right after the code
-    uint32_t signature_slot;    // bytes from the start of the data
-    uint32_t signatures_offset; // bytes from the start of the VBIOS to the first signature
-    uint8_t  signature_count;   // signatures of `FWSEC_SIGNATURE_BYTES` each, back to back
+    uint32_t offset;             // bytes from the start of the VBIOS
+    uint32_t size;               // bytes, the descriptor's stored size rounded up to a multiple of 256
+    uint32_t code_size;          // bytes of code at the program's start
+    uint32_t data_size;          // bytes of data right after the code
+    uint32_t signature_slot;     // bytes from the start of the data
+    uint32_t signatures_offset;  // bytes from the start of the VBIOS to the first signature
+    uint8_t  signature_count;    // signatures of `FWSEC_SIGNATURE_BYTES` each, back to back
+    uint8_t  ucode_id;           // NVIDIA's number for FWSEC among the GSP's programs, naming its fuse register
+    uint16_t signature_versions; // bit N set when one of the signatures is for version N
 };
 
 // Bytes of each of FWSEC's signatures, an RSA-3072 signature
@@ -148,7 +151,8 @@ int32_t find_falcon_program_table(const registers& rom, const vbios_layout& layo
  * @param fwsec_out Receives where FWSEC lies when the result is `OK`. FWSEC
  * then lies inside the VBIOS, its code and data fit in its `size`, its
  * signature slot lies inside its data, and its `signature_count` signatures,
- * at least one, lie between the descriptor's fields and FWSEC.
+ * at least one, lie between the descriptor's fields and FWSEC. Its ucode id
+ * and signature versions are as the descriptor gives them, unchecked.
  * @return `OK`, or `ERR_BAD_VBIOS` when the table has no production FWSEC
  * entry, the descriptor's 44 bytes of fields at the table's base plus the
  * entry's pointer end past the end of the VBIOS's last image, the descriptor
