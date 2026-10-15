@@ -23,8 +23,10 @@ namespace drivers {
  * works out where in video memory FWSEC's FRTS region goes, the part of
  * protected memory FWSEC fences off first. It then chooses which of FWSEC's
  * signatures its signature slot must hold, the one for the version the
- * chip's fuses record for FWSEC. Bring-up ends there, so when every step
- * succeeds, `attach()` declines as well.
+ * chip's fuses record for FWSEC, and copies FWSEC into memory the card can
+ * reach, patched to fence off the region and holding that signature. It
+ * frees the copy without giving the card its address. Bring-up ends there,
+ * so when every step succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -42,7 +44,9 @@ namespace drivers {
  * refuses the card's state, as when protected memory is already set up. Once
  * the region is placed, it fails when `nvidia::select_fwsec_signature`
  * refuses FWSEC's signatures, as when none is for the version the chip's
- * fuses record.
+ * fuses record, when the memory for FWSEC's copy cannot be allocated, or
+ * when FWSEC's data does not lead to a place for the FRTS command as
+ * `nvidia::prepare_fwsec_frts` requires.
  * Whether `attach()` declines or fails, the screen is left as it was, and the
  * card keeps only the memory and I/O decoding that `attach()` turned on. That
  * decoding stays on because the boot framebuffer may be in this card's memory,

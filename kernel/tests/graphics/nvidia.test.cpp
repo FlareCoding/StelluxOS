@@ -44,6 +44,9 @@ static constexpr uint32_t RTX_3080_BOOT_0 = 0xb72000a1;
 static constexpr uint16_t GA102_CHIP_ID = 0x172;
 static constexpr uint8_t RTX_3080_REVISION = 0xa1;
 
+// The physical address bits NVIDIA's driver gives GA102 for reaching system memory
+static constexpr uint8_t GA102_DMA_ADDRESS_BITS = 47;
+
 // The RTX 3080's identity decodes to the GA102 entry of the chip table
 TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(decode_chip_id(RTX_3080_BOOT_0), GA102_CHIP_ID);
@@ -53,6 +56,7 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
     ASSERT_NOT_NULL(chip);
     EXPECT_EQ(chip->id, GA102_CHIP_ID);
     EXPECT_STREQ(chip->name, "GA102");
+    EXPECT_EQ(chip->dma_address_bits, GA102_DMA_ADDRESS_BITS);
 }
 
 // GA104 shares GA102's architecture but has no chip table entry
@@ -994,6 +998,7 @@ static constexpr uint32_t DESCRIPTOR_VERSION_SHIFT      = 8;
 static constexpr uint32_t DESCRIPTOR_SIZE_SHIFT         = 16;
 static constexpr uint32_t DESCRIPTOR_STORED_SIZE        = 0x04;
 static constexpr uint32_t DESCRIPTOR_SIGNATURE_SLOT     = 0x08;
+static constexpr uint32_t DESCRIPTOR_INTERFACE_OFFSET   = 0x0C;
 static constexpr uint32_t DESCRIPTOR_CODE_SIZE          = 0x14;
 static constexpr uint32_t DESCRIPTOR_DATA_SIZE          = 0x20;
 static constexpr uint32_t DESCRIPTOR_UCODE_ID           = 0x26;
@@ -1019,6 +1024,7 @@ struct fwsec_placement {
     uint16_t descriptor_size;
     uint32_t stored_size;
     uint32_t signature_slot;
+    uint32_t interface_offset;
     uint32_t code_size;
     uint32_t data_size;
     uint8_t  signature_count;
@@ -1073,6 +1079,7 @@ static void write_descriptor(rom_window& rom, const fwsec_placement& placement) 
     put_u32(rom, descriptor, header);
     put_u32(rom, descriptor + DESCRIPTOR_STORED_SIZE, placement.stored_size);
     put_u32(rom, descriptor + DESCRIPTOR_SIGNATURE_SLOT, placement.signature_slot);
+    put_u32(rom, descriptor + DESCRIPTOR_INTERFACE_OFFSET, placement.interface_offset);
     put_u32(rom, descriptor + DESCRIPTOR_CODE_SIZE, placement.code_size);
     put_u32(rom, descriptor + DESCRIPTOR_DATA_SIZE, placement.data_size);
     rom.bytes[descriptor + DESCRIPTOR_UCODE_ID] = placement.ucode_id;
@@ -1136,6 +1143,7 @@ static constexpr fwsec_placement RTX_3080_FWSEC = {
     .descriptor_size = 1196,
     .stored_size = 59904,
     .signature_slot = 0x5A4,
+    .interface_offset = 0x1C,
     .code_size = 57856,
     .data_size = 2048,
     .signature_count = 3,
@@ -1158,6 +1166,7 @@ TEST(nvidia, rtx_3080_fwsec_is_found) {
     EXPECT_EQ(fwsec.signature_slot, 0x5A4u);
     EXPECT_EQ(fwsec.signatures_offset, 0x433E4u);
     EXPECT_EQ(fwsec.signature_count, 3u);
+    EXPECT_EQ(fwsec.interface_offset, 0x1Cu);
     EXPECT_EQ(fwsec.ucode_id, 9u);
     EXPECT_EQ(fwsec.signature_versions, 0x7u);
 }
@@ -1187,6 +1196,7 @@ static constexpr fwsec_placement EDGE_FWSEC = {
     .descriptor_size = DESCRIPTOR_FIELD_BYTES + SIGNATURE_BYTES,
     .stored_size = 0x1E01,
     .signature_slot = 0x680,
+    .interface_offset = 0x80402010,
     .code_size = 0x1700,
     .data_size = 0x800,
     .signature_count = 1,
@@ -1195,7 +1205,7 @@ static constexpr fwsec_placement EDGE_FWSEC = {
 };
 
 // FWSEC's entry is found both as `EDGE_TABLE`'s last entry and as its first, so a walk skipping either end fails.
-// The ucode id and signature versions set their top bits.
+// The interface offset's bytes all differ and the ucode id and signature versions set their top bits.
 TEST(nvidia, fwsec_at_its_limits_is_found) {
     rom_window rom;
     ASSERT_NOT_NULL(rom.bytes);
@@ -1209,6 +1219,7 @@ TEST(nvidia, fwsec_at_its_limits_is_found) {
     EXPECT_EQ(fwsec.signature_slot, 0x680u);
     EXPECT_EQ(fwsec.signatures_offset, 0xDF80u);
     EXPECT_EQ(fwsec.signature_count, 1u);
+    EXPECT_EQ(fwsec.interface_offset, 0x80402010u);
     EXPECT_EQ(fwsec.ucode_id, 0xFFu);
     EXPECT_EQ(fwsec.signature_versions, 0x8001u);
 

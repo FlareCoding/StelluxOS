@@ -15,6 +15,7 @@ constexpr chip_info CHIP_TABLE[] = {
         .id = 0x172,
         .name = "GA102",
         .firmware = {.gsp_image = "gsp_ga10x.bin", .boot_directory = "ga102"},
+        .dma_address_bits = 47,
     },
 };
 

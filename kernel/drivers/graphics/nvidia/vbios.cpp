@@ -95,6 +95,7 @@ constexpr uint8_t  DESCRIPTOR_VERSION_3     = 3;
 // Version 3 descriptor fields, as byte offsets from its start
 constexpr uint32_t DESCRIPTOR_STORED_SIZE        = 0x04; // 32 bits, bytes of the program as stored, before rounding
 constexpr uint32_t DESCRIPTOR_SIGNATURE_SLOT     = 0x08; // 32 bits, bytes from the start of the program's data
+constexpr uint32_t DESCRIPTOR_INTERFACE_OFFSET   = 0x0C; // 32 bits, bytes from the start of the program's data
 constexpr uint32_t DESCRIPTOR_CODE_SIZE          = 0x14; // 32 bits, bytes
 constexpr uint32_t DESCRIPTOR_DATA_SIZE          = 0x20; // 32 bits, bytes
 constexpr uint32_t DESCRIPTOR_UCODE_ID           = 0x26; // 8 bits
@@ -522,6 +523,7 @@ static int32_t read_fwsec_descriptor(
     fwsec_out.code_size = code_size;
     fwsec_out.data_size = data_size;
     fwsec_out.signature_slot = signature_slot;
+    fwsec_out.interface_offset = read_rom_u32(rom, descriptor + DESCRIPTOR_INTERFACE_OFFSET);
     fwsec_out.signatures_offset = descriptor + DESCRIPTOR_FIELD_BYTES;
     fwsec_out.signature_count = signature_count;
     fwsec_out.ucode_id = read_rom_u8(rom, descriptor + DESCRIPTOR_UCODE_ID);
@@ -561,6 +563,20 @@ int32_t find_fwsec(
     }
 
     return read_fwsec_descriptor(rom, table.base + pointer, vbios_end, fwsec_out);
+}
+
+void copy_vbios_bytes(const registers& rom, uint32_t offset, uint32_t bytes, uint8_t* out) {
+    uint32_t word = 0;
+
+    for (uint32_t i = 0; i < bytes; i++) {
+        uint32_t position = offset + i;
+        bool starts_word = i == 0 || (position & 3) == 0;
+        if (starts_word) {
+            word = rom.read(position & ~3u);
+        }
+
+        out[i] = static_cast<uint8_t>(word >> ((position & 3) * 8));
+    }
 }
 
 } // namespace drivers::nvidia
