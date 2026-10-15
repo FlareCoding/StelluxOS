@@ -56,12 +56,7 @@ constexpr uint32_t UNIT_4K_SHIFT          = 12;
 // The flags NVIDIA's driver always passes for reading the VBIOS, whose meaning its code does not give
 constexpr uint32_t NVIDIA_READ_VBIOS_FLAGS = 2;
 
-// FWSEC's data may lie at any offset, so its fields are read and written a byte at a time
-static uint32_t read_u32(const uint8_t* bytes) {
-    return static_cast<uint32_t>(bytes[0]) | static_cast<uint32_t>(bytes[1]) << 8 |
-           static_cast<uint32_t>(bytes[2]) << 16 | static_cast<uint32_t>(bytes[3]) << 24;
-}
-
+// FWSEC's data may lie at any offset, so its fields are written a byte at a time, as `read_u32` reads them
 static void write_u32(uint8_t* bytes, uint32_t value) {
     bytes[0] = static_cast<uint8_t>(value);
     bytes[1] = static_cast<uint8_t>(value >> 8);

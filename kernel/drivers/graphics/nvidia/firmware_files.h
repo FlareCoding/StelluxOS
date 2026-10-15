@@ -39,6 +39,23 @@ struct boot_file_header {
 static_assert(sizeof(boot_file_header) == 24, "boot_file_header must be 24 bytes");
 
 /**
+ * Where three parts of the bootloader's program start, and the program's app
+ * version, as the bootloader's descriptor records them. That descriptor, the
+ * bytes between the bootloader's header and its program, is NVIDIA's
+ * descriptor of a program for the GSP's RISC-V core. The parts are the
+ * monitor's code, the monitor's data and the manifest. The monitor is a part
+ * of the program the core runs, and the manifest describes it to the core's
+ * boot ROM, the code the core runs from its own ROM as it starts. Each part
+ * lies inside the program.
+ */
+struct bootloader_layout {
+    uint32_t manifest_offset;     // bytes from the start of the program
+    uint32_t monitor_data_offset; // bytes from the start of the program
+    uint32_t monitor_code_offset; // bytes from the start of the program
+    uint32_t app_version;         // NVIDIA's change number for the program's build, which may be 0
+};
+
+/**
  * @brief Open the files a chip boots from, in the layout the nvidia-firmware
  * package installs under `fw::DIRECTORY`: the bootloader and booter load in
  * the chip's boot directory in nvidia/<FIRMWARE_VERSION>/ first, then the GSP
@@ -102,6 +119,30 @@ int32_t check_gsp_image(const fw::file& image);
  * `name`.
  */
 int32_t check_boot_file(const fw::file& file, const char* name, boot_file_header& header_out);
+
+/**
+ * @brief Read the bootloader's layout from its descriptor and check that the
+ * descriptor holds every field read and places the manifest and the
+ * monitor's data and code each inside the program. The descriptor is read
+ * with `fw::file::read`, which takes the file's mutex, so this must not run
+ * in an interrupt handler or under a spinlock. On the boot thread, which
+ * cannot wait, `bootloader` must be one no other thread uses at the time, as
+ * `fw::file` describes.
+ * @param bootloader Must hold the bootloader open.
+ * @param header Must be the header `check_boot_file` returned for
+ * `bootloader`, whose program then starts at or after its descriptor.
+ * @param layout_out Receives the layout on `OK`, each of whose parts then ends
+ * inside the program, and is left unchanged on an error.
+ * @return `OK`, or `ERR_BAD_FIRMWARE` when the descriptor, from the end of
+ * the header to the start of the program, is shorter than the 56 bytes up to
+ * the end of the last field read, when the manifest or the monitor's data or
+ * code ends past the program, or when reading fails. The cause is logged.
+ */
+int32_t read_bootloader_layout(
+    const fw::file& bootloader,
+    const boot_file_header& header,
+    bootloader_layout& layout_out
+);
 
 } // namespace drivers::nvidia
 

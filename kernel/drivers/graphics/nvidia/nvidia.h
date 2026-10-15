@@ -35,6 +35,15 @@ inline bool lies_inside(uint64_t offset, uint64_t bytes, uint64_t limit) {
     return offset <= limit && bytes <= limit - offset;
 }
 
+/**
+ * @brief The little-endian 32-bit value in the 4 bytes at `bytes`, read a byte
+ * at a time, so `bytes` needs no alignment.
+ */
+inline uint32_t read_u32(const uint8_t* bytes) {
+    return static_cast<uint32_t>(bytes[0]) | static_cast<uint32_t>(bytes[1]) << 8 |
+           static_cast<uint32_t>(bytes[2]) << 16 | static_cast<uint32_t>(bytes[3]) << 24;
+}
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_H

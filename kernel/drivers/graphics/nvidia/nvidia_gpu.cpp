@@ -89,6 +89,22 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
+    nvidia::bootloader_layout bootloader_parts = {};
+    rc = nvidia::read_bootloader_layout(files.bootloader, bootloader_header, bootloader_parts);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: bootloader's manifest at 0x%X, monitor data at 0x%X and monitor code at 0x%X in its %u-byte program, "
+        "app version %u",
+        bootloader_parts.manifest_offset,
+        bootloader_parts.monitor_data_offset,
+        bootloader_parts.monitor_code_offset,
+        bootloader_header.program_size,
+        bootloader_parts.app_version
+    );
+
     nvidia::boot_file_header booter_load_header = {};
     rc = nvidia::check_boot_file(files.booter_load, "booter load", booter_load_header);
     if (rc != nvidia::OK) {
