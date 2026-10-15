@@ -35,6 +35,62 @@ constexpr uint32_t RISCV_CORE_SELECTED = 0x10;
 constexpr uint32_t CORE_SELECT_VALID   = 0x1;
 constexpr uint32_t SELECT_FALCON_CORE  = 0x0;
 
+// The falcon's control register: writing bit 1 starts the falcon, bit 4 is set while it is halted, and while bit 6
+// is set the falcon is started through the register's alias instead
+constexpr uint32_t GSP_FALCON_CPUCTL       = GSP_FALCON_BASE + 0x100;
+constexpr uint32_t GSP_FALCON_CPUCTL_ALIAS = GSP_FALCON_BASE + 0x130;
+constexpr uint32_t START_FALCON            = 0x2;
+constexpr uint32_t FALCON_HALTED           = 0x10;
+constexpr uint32_t STARTS_THROUGH_ALIAS    = 0x40;
+
+// Where the falcon starts running, as a virtual address of its code
+constexpr uint32_t GSP_FALCON_BOOTVEC = GSP_FALCON_BASE + 0x104;
+
+// The DMA engine's control register, cleared so a copy needs no address space bound to the falcon
+constexpr uint32_t GSP_FALCON_DMACTL = GSP_FALCON_BASE + 0x10C;
+
+// The DMA engine's copy registers. A copy takes the system memory address in 256-byte units, split over two
+// registers, then for each block the offset in IMEM or DMEM, the offset added to the address, and the command.
+constexpr uint32_t GSP_FALCON_DMATRFBASE   = GSP_FALCON_BASE + 0x110;
+constexpr uint32_t GSP_FALCON_DMATRFMOFFS  = GSP_FALCON_BASE + 0x114;
+constexpr uint32_t GSP_FALCON_DMATRFCMD    = GSP_FALCON_BASE + 0x118;
+constexpr uint32_t GSP_FALCON_DMATRFFBOFFS = GSP_FALCON_BASE + 0x11C;
+constexpr uint32_t GSP_FALCON_DMATRFBASE1  = GSP_FALCON_BASE + 0x128;
+constexpr uint32_t DMA_BLOCK_BYTES         = 256;
+constexpr uint32_t DMA_ADDRESS_SHIFT       = 8;
+constexpr uint32_t DMA_ADDRESS_HIGH_MASK   = 0x1FF;
+constexpr uint32_t DMA_MEMORY_OFFSET_MASK  = 0xFFFFFF;
+
+// The falcon's memory interface: bit 7 of its control lets the DMA engine use physical addresses with no address space
+// bound. Its first transfer register is transfer setup 0: the target in bits 1:0, and bit 2 for physical addresses.
+constexpr uint32_t GSP_FBIF_BASE                    = 0x110600;
+constexpr uint32_t GSP_FBIF_TRANSCFG0               = GSP_FBIF_BASE + 0x000;
+constexpr uint32_t GSP_FBIF_CTL                     = GSP_FBIF_BASE + 0x024;
+constexpr uint32_t ALLOW_PHYSICAL_WITHOUT_CONTEXT   = 0x80;
+constexpr uint32_t TRANSFER_TARGET_MASK             = 0x3;
+constexpr uint32_t TARGET_COHERENT_SYSTEM_MEMORY    = 0x1;
+constexpr uint32_t TARGET_NONCOHERENT_SYSTEM_MEMORY = 0x2;
+constexpr uint32_t PHYSICAL_ADDRESSES               = 0x4;
+
+// The command register reads back with bit 1 set once the DMA engine is idle
+constexpr uint32_t DMA_IDLE = 0x2;
+
+// The command's fields for a block of 256 bytes, a block into IMEM rather than DMEM, and code marked secure, as NVIDIA
+// loads the code of a program its boot ROM checks. Every command uses transfer setup 0, so its context field is 0.
+constexpr uint32_t DMA_256_BYTES            = 0x600;
+constexpr uint32_t DMA_TO_IMEM              = 0x10;
+constexpr uint32_t DMA_SECURE               = 0x4;
+constexpr uint32_t DMA_SECURE_BLOCK_TO_IMEM = DMA_256_BYTES | DMA_TO_IMEM | DMA_SECURE;
+constexpr uint32_t DMA_BLOCK_TO_DMEM        = DMA_256_BYTES;
+
+// The boot ROM's registers in the second register block: the signature's offset in the data, the engine mask, the
+// ucode id, and the signature's algorithm, RSA-3072
+constexpr uint32_t GSP_FALCON2_BROM_PARAADDR0     = GSP_FALCON2_BASE + 0x210;
+constexpr uint32_t GSP_FALCON2_BROM_ENGIDMASK     = GSP_FALCON2_BASE + 0x19C;
+constexpr uint32_t GSP_FALCON2_BROM_CURR_UCODE_ID = GSP_FALCON2_BASE + 0x198;
+constexpr uint32_t GSP_FALCON2_MOD_SEL            = GSP_FALCON2_BASE + 0x180;
+constexpr uint32_t RSA_3072                       = 0x1;
+
 constexpr uint64_t NS_PER_MS = 1000000;
 
 // Spins until the `bits` of the register at `offset` read as `value` or `timeout_ns` passes, reading it at least
@@ -137,6 +193,114 @@ int32_t reset_gsp_falcon(registers& regs, uint32_t boot0, uint64_t ready_timeout
     }
 
     regs.write(GSP_FALCON_RM, boot0);
+
+    return OK;
+}
+
+bool is_gsp_falcon_halted(const registers& regs) {
+    return (regs.read(GSP_FALCON_CPUCTL) & FALCON_HALTED) != 0;
+}
+
+// Lets the DMA engine read system memory by physical address through transfer setup 0, looking in the CPU's caches
+// only for a cached program
+static void configure_dma(registers& regs, bool is_cached) {
+    uint32_t control = regs.read(GSP_FBIF_CTL) | ALLOW_PHYSICAL_WITHOUT_CONTEXT;
+    regs.write(GSP_FBIF_CTL, control);
+    regs.write(GSP_FALCON_DMACTL, 0);
+
+    uint32_t target = is_cached ? TARGET_COHERENT_SYSTEM_MEMORY : TARGET_NONCOHERENT_SYSTEM_MEMORY;
+    uint32_t transfer = (regs.read(GSP_FBIF_TRANSCFG0) & ~TRANSFER_TARGET_MASK) | target | PHYSICAL_ADDRESSES;
+    regs.write(GSP_FBIF_TRANSCFG0, transfer);
+}
+
+// Copies the `bytes` of the program's `part` into IMEM or DMEM from `memory_offset`. Each block is read at `base`
+// plus its offset, which counts from `first_offset`.
+static int32_t copy_blocks(
+    registers& regs,
+    uint64_t base,
+    uint32_t first_offset,
+    uint32_t memory_offset,
+    uint32_t bytes,
+    uint32_t command,
+    const char* part,
+    uint64_t timeout_ns
+) {
+    uint64_t base_blocks = base >> DMA_ADDRESS_SHIFT;
+    regs.write(GSP_FALCON_DMATRFBASE, static_cast<uint32_t>(base_blocks));
+    regs.write(GSP_FALCON_DMATRFBASE1, static_cast<uint32_t>(base_blocks >> 32) & DMA_ADDRESS_HIGH_MASK);
+
+    for (uint64_t copied = 0; copied < bytes; copied += DMA_BLOCK_BYTES) {
+        uint32_t block = static_cast<uint32_t>(copied);
+        regs.write(GSP_FALCON_DMATRFMOFFS, (memory_offset + block) & DMA_MEMORY_OFFSET_MASK);
+        regs.write(GSP_FALCON_DMATRFFBOFFS, first_offset + block);
+        regs.write(GSP_FALCON_DMATRFCMD, command);
+
+        if (!wait_for_bits(regs, GSP_FALCON_DMATRFCMD, DMA_IDLE, DMA_IDLE, timeout_ns)) {
+            log::error(
+                "nvidia: the GSP's falcon did not finish copying the block at byte 0x%X of its program's %s within "
+                "%lu ms",
+                block,
+                part,
+                timeout_ns / NS_PER_MS
+            );
+            return ERR_TIMEOUT;
+        }
+    }
+
+    return OK;
+}
+
+int32_t run_gsp_falcon_program(registers& regs, const falcon_program& program, uint64_t timeout_ns) {
+    configure_dma(regs, program.is_cached);
+
+    // As in NVIDIA's driver, the code's base sits below the program by its virtual base, and its blocks' offsets
+    // count from the virtual base, so they are read from the program's start and tagged with their virtual addresses
+    uint64_t code_base = program.dma_address - program.imem_virtual_base;
+    uint64_t data_base = program.dma_address + program.code_size;
+
+    int32_t rc = copy_blocks(
+        regs,
+        code_base,
+        program.imem_virtual_base,
+        program.imem_physical_base,
+        program.code_size,
+        DMA_SECURE_BLOCK_TO_IMEM,
+        "code",
+        timeout_ns
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = copy_blocks(
+        regs,
+        data_base,
+        0,
+        program.dmem_physical_base,
+        program.data_size,
+        DMA_BLOCK_TO_DMEM,
+        "data",
+        timeout_ns
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    regs.write(GSP_FALCON2_BROM_PARAADDR0, program.signature_offset);
+    regs.write(GSP_FALCON2_BROM_ENGIDMASK, program.engine_mask);
+    regs.write(GSP_FALCON2_BROM_CURR_UCODE_ID, program.ucode_id);
+    regs.write(GSP_FALCON2_MOD_SEL, RSA_3072);
+    regs.write(GSP_FALCON_BOOTVEC, program.imem_virtual_base);
+
+    bool starts_through_alias = (regs.read(GSP_FALCON_CPUCTL) & STARTS_THROUGH_ALIAS) != 0;
+    regs.write(starts_through_alias ? GSP_FALCON_CPUCTL_ALIAS : GSP_FALCON_CPUCTL, START_FALCON);
+    if (!wait_for_bits(regs, GSP_FALCON_CPUCTL, FALCON_HALTED, FALCON_HALTED, timeout_ns)) {
+        log::error(
+            "nvidia: the GSP's falcon did not halt within %lu ms of starting its program",
+            timeout_ns / NS_PER_MS
+        );
+        return ERR_TIMEOUT;
+    }
 
     return OK;
 }

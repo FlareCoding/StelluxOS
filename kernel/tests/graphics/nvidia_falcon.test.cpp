@@ -15,8 +15,10 @@ using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::FALCON_READY_TIMEOUT_NS;
 using drivers::nvidia::FALCON_TIMEOUT_NS;
 using drivers::nvidia::OK;
+using drivers::nvidia::falcon_program;
 using drivers::nvidia::registers;
 using drivers::nvidia::reset_gsp_falcon;
+using drivers::nvidia::run_gsp_falcon_program;
 
 // Registers and fields the reset uses, restated here so the tests hold the reset to NVIDIA's layout rather than to
 // its own constants
@@ -182,12 +184,176 @@ TEST(nvidia_falcon, falcon_core_is_kept) {
     EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), ~RISCV_CORE_SELECTED);
 }
 
+// Registers and fields loading and running a program use, restated here so the tests hold the run to NVIDIA's layout
+static constexpr uint32_t GSP_FALCON_CPUCTL              = 0x110100;
+static constexpr uint32_t GSP_FALCON_BOOTVEC             = 0x110104;
+static constexpr uint32_t GSP_FALCON_DMACTL              = 0x11010C;
+static constexpr uint32_t GSP_FALCON_DMATRFBASE          = 0x110110;
+static constexpr uint32_t GSP_FALCON_DMATRFMOFFS         = 0x110114;
+static constexpr uint32_t GSP_FALCON_DMATRFCMD           = 0x110118;
+static constexpr uint32_t GSP_FALCON_DMATRFFBOFFS        = 0x11011C;
+static constexpr uint32_t GSP_FALCON_DMATRFBASE1         = 0x110128;
+static constexpr uint32_t GSP_FALCON_CPUCTL_ALIAS        = 0x110130;
+static constexpr uint32_t GSP_FBIF_TRANSCFG0             = 0x110600;
+static constexpr uint32_t GSP_FBIF_CTL                   = 0x110624;
+static constexpr uint32_t GSP_FALCON2_MOD_SEL            = 0x111180;
+static constexpr uint32_t GSP_FALCON2_BROM_CURR_UCODE_ID = 0x111198;
+static constexpr uint32_t GSP_FALCON2_BROM_ENGIDMASK     = 0x11119C;
+static constexpr uint32_t GSP_FALCON2_BROM_PARAADDR0     = 0x111210;
+
+static constexpr uint32_t START_FALCON                     = 0x2;
+static constexpr uint32_t FALCON_HALTED                    = 0x10;
+static constexpr uint32_t STARTS_THROUGH_ALIAS             = 0x40;
+static constexpr uint32_t REQUIRE_CONTEXT                  = 0x1;
+static constexpr uint32_t ALLOW_PHYSICAL_WITHOUT_CONTEXT   = 0x80;
+static constexpr uint32_t TRANSFER_TARGET_MASK             = 0x3;
+static constexpr uint32_t TARGET_COHERENT_SYSTEM_MEMORY    = 0x1;
+static constexpr uint32_t TARGET_NONCOHERENT_SYSTEM_MEMORY = 0x2;
+static constexpr uint32_t PHYSICAL_ADDRESSES               = 0x4;
+static constexpr uint32_t DMA_SECURE                       = 0x4;
+static constexpr uint32_t DMA_TO_IMEM                      = 0x10;
+static constexpr uint32_t DMA_256_BYTES                    = 0x600;
+static constexpr uint32_t RSA_3072                         = 0x1;
+
+// A program above the run's 512 TiB bound, so its address in 256-byte units has bits past the 9-bit second base
+// register, with every field distinct, and IMEM and DMEM bases with bits on both sides of the 24-bit memory offset
+static constexpr falcon_program DISTINCT_PROGRAM = {
+    .dma_address = 0x24A1234567000,
+    .is_cached = false,
+    .code_size = 0x300,
+    .imem_physical_base = 0xAB341100,
+    .imem_virtual_base = 0x12000,
+    .data_size = 0x180,
+    .dmem_physical_base = 0xCD560400,
+    .signature_offset = 0x125A4,
+    .engine_mask = 0x480,
+    .ucode_id = 0x89,
+};
+
+// Control bits of the memory interface that loading a program keeps
+static constexpr uint32_t FBIF_CTL_OTHER_BITS = 0x5;
+
+// Far longer than any run here takes, since every wait in these tests ends at once or after a timeout of at most 1 ms
+static constexpr uint64_t RUN_TIME_LIMIT_NS = 100000000;
+
+// With the DMA engine set to read physical addresses without looking in the CPU's caches, an uncached program's first
+// code block goes to IMEM marked secure, read from the program less its virtual base, and the falcon is left unstarted
+TEST(nvidia_falcon, code_block_is_copied_before_start) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FBIF_CTL, FBIF_CTL_OTHER_BITS);
+    bar0.write(GSP_FALCON_DMACTL, REQUIRE_CONTEXT);
+    bar0.write(GSP_FBIF_TRANSCFG0, ~0u);
+    bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, DISTINCT_PROGRAM, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RUN_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(GSP_FBIF_CTL), FBIF_CTL_OTHER_BITS | ALLOW_PHYSICAL_WITHOUT_CONTEXT);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMACTL), 0u);
+    EXPECT_EQ(
+        bar0.read(GSP_FBIF_TRANSCFG0),
+        ~TRANSFER_TARGET_MASK | TARGET_NONCOHERENT_SYSTEM_MEMORY | PHYSICAL_ADDRESSES
+    );
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE), 0x12345550u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE1), 0x4Au);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFMOFFS), 0x341100u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFFBOFFS), 0x12000u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFCMD), DMA_256_BYTES | DMA_TO_IMEM | DMA_SECURE);
+    EXPECT_EQ(bar0.read(GSP_FALCON2_BROM_PARAADDR0), 0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_BOOTVEC), 0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), FALCON_HALTED);
+}
+
+// Without code, the data's first block goes to DMEM with neither the IMEM nor the secure field, read from the
+// program's start at offset 0 whatever the virtual base
+TEST(nvidia_falcon, data_block_is_copied_to_dmem) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.code_size = 0;
+
+    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE), 0x12345670u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE1), 0x4Au);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFMOFFS), 0x560400u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFFBOFFS), 0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFCMD), DMA_256_BYTES);
+    EXPECT_EQ(bar0.read(GSP_FALCON_BOOTVEC), 0u);
+}
+
+// A cached program is read looking in the CPU's caches, and a falcon with its control register's alias enabled gets
+// the boot ROM's parameters and the boot vector and is started through the alias, the run ending once it halts
+TEST(nvidia_falcon, falcon_is_started_through_alias) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, STARTS_THROUGH_ALIAS | FALCON_HALTED);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.is_cached = true;
+    program.code_size = 0;
+    program.data_size = 0;
+
+    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, 0), OK);
+    EXPECT_EQ(bar0.read(GSP_FBIF_TRANSCFG0), TARGET_COHERENT_SYSTEM_MEMORY | PHYSICAL_ADDRESSES);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFCMD), 0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON2_BROM_PARAADDR0), 0x125A4u);
+    EXPECT_EQ(bar0.read(GSP_FALCON2_BROM_ENGIDMASK), 0x480u);
+    EXPECT_EQ(bar0.read(GSP_FALCON2_BROM_CURR_UCODE_ID), 0x89u);
+    EXPECT_EQ(bar0.read(GSP_FALCON2_MOD_SEL), RSA_3072);
+    EXPECT_EQ(bar0.read(GSP_FALCON_BOOTVEC), 0x12000u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), START_FALCON);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), STARTS_THROUGH_ALIAS | FALCON_HALTED);
+}
+
+// A falcon without the alias, halted as the RTX 3080's is after its reset or with every other control bit set, is
+// started through its control register and fails the run when it does not halt again
+TEST(nvidia_falcon, run_waits_for_halt) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.code_size = 0;
+    program.data_size = 0;
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RUN_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), START_FALCON);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), 0u);
+
+    bar0.write(GSP_FALCON_CPUCTL, ~STARTS_THROUGH_ALIAS);
+    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), START_FALCON);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), 0u);
+}
+
+// A falcon with the alias and every control bit but the halted bit set is started through the alias, and fails the
+// run when it does not halt
+TEST(nvidia_falcon, run_through_alias_fails_without_halt) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, ~FALCON_HALTED);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.code_size = 0;
+    program.data_size = 0;
+
+    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), START_FALCON);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), ~FALCON_HALTED);
+}
+
 // NVIDIA's wait for the ready report, and its default timeout for a GPU in graphics mode rather than compute mode
 static constexpr uint64_t NVIDIA_READY_TIMEOUT_NS   = 150000;
 static constexpr uint64_t NVIDIA_DEFAULT_TIMEOUT_NS = 4000000000;
 
-// Bring-up gives the ready report NVIDIA's 150 us, and each wait for the memories or the core selection NVIDIA's
-// default timeout
+// Bring-up gives the ready report NVIDIA's 150 us, and each wait for the memories, the core selection, a block's
+// load or a program's halt NVIDIA's default timeout
 TEST(nvidia_falcon, falcon_timeouts_are_nvidias) {
     EXPECT_EQ(FALCON_READY_TIMEOUT_NS, NVIDIA_READY_TIMEOUT_NS);
     EXPECT_EQ(FALCON_TIMEOUT_NS, NVIDIA_DEFAULT_TIMEOUT_NS);
