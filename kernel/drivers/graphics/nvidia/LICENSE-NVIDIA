@@ -21,7 +21,15 @@ src/common/inc/swref/published/ampere/ga100/dev_fuse.h
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
     the falcon control register's offset and its halted bit, in
-    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    and the hardware configuration register with its RISC-V and memory
+    scrubbing fields and the RM register, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_falcon_v4_addendum.h
+    the hardware configuration register's reset ready field, in falcon.cpp
+    and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_gc6_island.h
@@ -37,9 +45,18 @@ src/common/inc/swref/published/ampere/ga102/dev_gc6_island_addendum.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_gsp.h
-    the base of the GSP's registers, in protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    the base of the GSP's registers, in protected_memory.cpp, falcon.cpp,
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the GSP's engine
+    register and its reset field, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_riscv_pri.h
+    the base of the GSP's second register block, and the RISC-V boot control
+    register with its valid and core select fields, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/disp/v04_00/dev_disp.h
     the VGA workspace register and its valid bit, in protected_memory.cpp and
@@ -68,6 +85,11 @@ src/nvidia/inc/kernel/platform/pci_exp_table.h
     NVIDIA's extension to the PCI data structure, in vbios.cpp and
     kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/falcon/falcon_common.h
+    the count of 10 reads that let a falcon's engine reset propagate, in
+    falcon.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_vbios_tu102.c
     the code type 0xE0 that marks NVIDIA's data and the rule that pointers
@@ -137,7 +159,10 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     valid and the last 128 KiB when its register points lower than that, and
     that the FRTS region ends right below the VGA workspace, in
     protected_memory.h, protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rule that
+    the GSP's engine is reset by setting and then clearing its reset field,
+    keeping the register's other bits and reading it after each write, in
+    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
@@ -166,6 +191,63 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga100.c
     that any other id has fuse version 0, in fwsec.h, fwsec.cpp and
     kernel/tests/graphics/nvidia_fwsec.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
+    the rules that the GSP's falcon registers count from the base of the GSP's
+    registers, in falcon.cpp, protected_memory.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that its RISC-V
+    core's registers count from the GSP's second register block, in falcon.cpp
+    and kernel/tests/graphics/nvidia_falcon.test.cpp, that the GSP's falcon has
+    no bit in the chip's engine enable register, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and that it is reset before
+    FWSEC runs, in falcon.h
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/falcon/arch/turing/kernel_falcon_tu102.c
+    the rules that a falcon's register offsets count from its register base, in
+    falcon.cpp, protected_memory.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that its RISC-V
+    offsets count from its RISC-V register base, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that a falcon has a RISC-V
+    core when its hardware configuration register's RISC-V field is set, that a
+    falcon is reset by disabling and then enabling it, that a falcon with no bit
+    in the chip's engine enable register is reset in full each time by waiting
+    for it to be ready, resetting its engine, waiting for its memories and
+    selecting its falcon core, and that enabling it ends by selecting its falcon
+    core, waiting for its memories once more and writing the chip id to its RM
+    register, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga102.c
+    the rules that a falcon is given 150 us to report it is ready for a reset
+    and that the waits for the memories and for the core selection take the
+    default timeout, in falcon.h and kernel/tests/graphics/nvidia_falcon.test.cpp,
+    and that the reset goes on without the ready report when it does not come,
+    that the memories are cleared once the memory scrubbing field is clear, and
+    that the falcon core is selected, when the falcon has a RISC-V core and its
+    boot control register selects it, by clearing that register and waiting
+    for its valid field, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu_mgr/gpu_mgr.c
+    the rule that the chip id a falcon's RM register is given is the value of
+    PMC_BOOT_0, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gpu_timeout.c
+    the rule that waits given the default timeout share one budget for a whole
+    call of NVIDIA's driver, in falcon.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/unix/src/os.c
+    the default timeout of 4 s in graphics mode, in falcon.h and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1999-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 nouveau/extract-firmware-nouveau.py
     the boot file header and its values, in firmware_files.h,
