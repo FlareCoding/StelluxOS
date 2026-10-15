@@ -983,22 +983,24 @@ TEST(nvidia, falcon_program_table_must_lie_inside_the_vbios) {
 
 // The table's entry fields, FWSEC's app ids, its version 3 descriptor's fields and its signature size, restated here
 // so the tests hold the lookup to the format rather than to its own constants
-static constexpr uint32_t ENTRY_APPLICATION          = 0x00;
-static constexpr uint32_t ENTRY_TARGET               = 0x01;
-static constexpr uint32_t ENTRY_DESCRIPTOR           = 0x02;
-static constexpr uint8_t  FIRMWARE_SEC_LIC           = 0x05;
-static constexpr uint8_t  FWSEC_DEBUG                = 0x45;
-static constexpr uint8_t  FWSEC_PRODUCTION           = 0x85;
-static constexpr uint32_t DESCRIPTOR_HAS_VERSION     = 0x1;
-static constexpr uint32_t DESCRIPTOR_VERSION_SHIFT   = 8;
-static constexpr uint32_t DESCRIPTOR_SIZE_SHIFT      = 16;
-static constexpr uint32_t DESCRIPTOR_STORED_SIZE     = 0x04;
-static constexpr uint32_t DESCRIPTOR_SIGNATURE_SLOT  = 0x08;
-static constexpr uint32_t DESCRIPTOR_CODE_SIZE       = 0x14;
-static constexpr uint32_t DESCRIPTOR_DATA_SIZE       = 0x20;
-static constexpr uint32_t DESCRIPTOR_SIGNATURE_COUNT = 0x27;
-static constexpr uint32_t DESCRIPTOR_FIELD_BYTES     = 44;
-static constexpr uint32_t SIGNATURE_BYTES            = 384;
+static constexpr uint32_t ENTRY_APPLICATION             = 0x00;
+static constexpr uint32_t ENTRY_TARGET                  = 0x01;
+static constexpr uint32_t ENTRY_DESCRIPTOR              = 0x02;
+static constexpr uint8_t  FIRMWARE_SEC_LIC              = 0x05;
+static constexpr uint8_t  FWSEC_DEBUG                   = 0x45;
+static constexpr uint8_t  FWSEC_PRODUCTION              = 0x85;
+static constexpr uint32_t DESCRIPTOR_HAS_VERSION        = 0x1;
+static constexpr uint32_t DESCRIPTOR_VERSION_SHIFT      = 8;
+static constexpr uint32_t DESCRIPTOR_SIZE_SHIFT         = 16;
+static constexpr uint32_t DESCRIPTOR_STORED_SIZE        = 0x04;
+static constexpr uint32_t DESCRIPTOR_SIGNATURE_SLOT     = 0x08;
+static constexpr uint32_t DESCRIPTOR_CODE_SIZE          = 0x14;
+static constexpr uint32_t DESCRIPTOR_DATA_SIZE          = 0x20;
+static constexpr uint32_t DESCRIPTOR_UCODE_ID           = 0x26;
+static constexpr uint32_t DESCRIPTOR_SIGNATURE_COUNT    = 0x27;
+static constexpr uint32_t DESCRIPTOR_SIGNATURE_VERSIONS = 0x28;
+static constexpr uint32_t DESCRIPTOR_FIELD_BYTES        = 44;
+static constexpr uint32_t SIGNATURE_BYTES               = 384;
 
 // An app id the lookup has no use for
 static constexpr uint8_t OTHER_PROGRAM = 0x01;
@@ -1020,6 +1022,8 @@ struct fwsec_placement {
     uint32_t code_size;
     uint32_t data_size;
     uint8_t  signature_count;
+    uint8_t  ucode_id;
+    uint16_t signature_versions;
 };
 
 // The descriptor's 44 bytes of fields first hold this value plus their offset, so no two of them are alike
@@ -1071,7 +1075,9 @@ static void write_descriptor(rom_window& rom, const fwsec_placement& placement) 
     put_u32(rom, descriptor + DESCRIPTOR_SIGNATURE_SLOT, placement.signature_slot);
     put_u32(rom, descriptor + DESCRIPTOR_CODE_SIZE, placement.code_size);
     put_u32(rom, descriptor + DESCRIPTOR_DATA_SIZE, placement.data_size);
+    rom.bytes[descriptor + DESCRIPTOR_UCODE_ID] = placement.ucode_id;
     rom.bytes[descriptor + DESCRIPTOR_SIGNATURE_COUNT] = placement.signature_count;
+    put_u16(rom, descriptor + DESCRIPTOR_SIGNATURE_VERSIONS, placement.signature_versions);
 }
 
 static void write_fwsec(
@@ -1119,8 +1125,8 @@ static int32_t find_placed_fwsec(
     return find_placed_fwsec(rom, vbios, table, placement, fwsec);
 }
 
-// As the RTX 3080's VBIOS places production FWSEC's entry and FWSEC's descriptor, with the sizes, slot and count
-// the descriptor holds. The entry's pointer 0x2C9B8 does not fit in 16 bits.
+// As the RTX 3080's VBIOS places production FWSEC's entry and FWSEC's descriptor, with the fields the descriptor
+// holds. The entry's pointer 0x2C9B8 does not fit in 16 bits.
 static constexpr fwsec_placement RTX_3080_FWSEC = {
     .entry_index = 9,
     .application = FWSEC_PRODUCTION,
@@ -1133,6 +1139,8 @@ static constexpr fwsec_placement RTX_3080_FWSEC = {
     .code_size = 57856,
     .data_size = 2048,
     .signature_count = 3,
+    .ucode_id = 9,
+    .signature_versions = 0x7,
 };
 
 // The debug entry right before FWSEC's and the second production entry right after it point at zeros, so FWSEC is
@@ -1150,6 +1158,8 @@ TEST(nvidia, rtx_3080_fwsec_is_found) {
     EXPECT_EQ(fwsec.signature_slot, 0x5A4u);
     EXPECT_EQ(fwsec.signatures_offset, 0x433E4u);
     EXPECT_EQ(fwsec.signature_count, 3u);
+    EXPECT_EQ(fwsec.ucode_id, 9u);
+    EXPECT_EQ(fwsec.signature_versions, 0x7u);
 }
 
 // FWSEC ends at 0x89000, past 0x72E00, the RTX 3080's VBIOS's end less the base, which bounds the descriptor's
@@ -1180,9 +1190,12 @@ static constexpr fwsec_placement EDGE_FWSEC = {
     .code_size = 0x1700,
     .data_size = 0x800,
     .signature_count = 1,
+    .ucode_id = 0xFF,
+    .signature_versions = 0x8001,
 };
 
-// FWSEC's entry is found both as `EDGE_TABLE`'s last entry and as its first, so a walk skipping either end fails
+// FWSEC's entry is found both as `EDGE_TABLE`'s last entry and as its first, so a walk skipping either end fails.
+// The ucode id and signature versions set their top bits.
 TEST(nvidia, fwsec_at_its_limits_is_found) {
     rom_window rom;
     ASSERT_NOT_NULL(rom.bytes);
@@ -1196,6 +1209,8 @@ TEST(nvidia, fwsec_at_its_limits_is_found) {
     EXPECT_EQ(fwsec.signature_slot, 0x680u);
     EXPECT_EQ(fwsec.signatures_offset, 0xDF80u);
     EXPECT_EQ(fwsec.signature_count, 1u);
+    EXPECT_EQ(fwsec.ucode_id, 0xFFu);
+    EXPECT_EQ(fwsec.signature_versions, 0x8001u);
 
     fwsec_placement first_entry = EDGE_FWSEC;
     first_entry.entry_index = 0;

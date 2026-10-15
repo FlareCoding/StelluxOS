@@ -1,6 +1,7 @@
 #include "drivers/graphics/nvidia/nvidia_gpu.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
+#include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/protected_memory.h"
 #include "drivers/graphics/nvidia/registers.h"
@@ -142,7 +143,20 @@ int32_t nvidia_gpu_driver::attach() {
         frts.vga_workspace_offset,
         frts.video_memory_size
     );
-    log::info("nvidia: bring-up stops after placing the FRTS region");
+
+    nvidia::fwsec_signature signature = {};
+    rc = nvidia::select_fwsec_signature(regs, fwsec, signature);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: FWSEC's signature %u of %u is the one for fuse version %u",
+        signature.index + 1,
+        fwsec.signature_count,
+        signature.fuse_version
+    );
+    log::info("nvidia: bring-up stops after choosing FWSEC's signature");
 
     return DECLINED;
 }

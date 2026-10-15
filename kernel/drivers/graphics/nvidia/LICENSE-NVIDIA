@@ -14,7 +14,9 @@ src/common/inc/swref/published/turing/tu102/dev_ext_devices.h
 
 src/common/inc/swref/published/ampere/ga100/dev_fuse.h
     the display fuse and its bit 0, clear while the display is enabled, in
-    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    and the first of the fuse registers recording the versions of the GSP's
+    programs, in fwsec.cpp and kernel/tests/graphics/nvidia_fwsec.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
@@ -131,8 +133,20 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
     the FRTS region's size of 1 MiB and the rule that the region never starts
     at offset 0, in protected_memory.h, protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rules that
+    FWSEC has a signature for the fuse version only when its signature
+    versions include that version, and that this signature comes after one for
+    each lower version FWSEC has a signature for, in vbios.h, fwsec.h,
+    fwsec.cpp and kernel/tests/graphics/nvidia_fwsec.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga100.c
+    the rules that the program with a ucode id from 1 to 16 has its fuse
+    register 4 bytes per id past the first, that its fuse version is the index
+    of that register's highest set bit plus 1, or 0 when no bit is set, and
+    that any other id has fuse version 0, in fwsec.h, fwsec.cpp and
+    kernel/tests/graphics/nvidia_fwsec.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 nouveau/extract-firmware-nouveau.py
     the boot file header and its values, in firmware_files.h,

@@ -93,12 +93,14 @@ constexpr uint32_t DESCRIPTOR_SIZE_SHIFT    = 16;
 constexpr uint8_t  DESCRIPTOR_VERSION_3     = 3;
 
 // Version 3 descriptor fields, as byte offsets from its start
-constexpr uint32_t DESCRIPTOR_STORED_SIZE     = 0x04; // 32 bits, bytes of the program as stored, before rounding
-constexpr uint32_t DESCRIPTOR_SIGNATURE_SLOT  = 0x08; // 32 bits, bytes from the start of the program's data
-constexpr uint32_t DESCRIPTOR_CODE_SIZE       = 0x14; // 32 bits, bytes
-constexpr uint32_t DESCRIPTOR_DATA_SIZE       = 0x20; // 32 bits, bytes
-constexpr uint32_t DESCRIPTOR_SIGNATURE_COUNT = 0x27; // 8 bits
-constexpr uint32_t DESCRIPTOR_FIELD_BYTES     = 44;
+constexpr uint32_t DESCRIPTOR_STORED_SIZE        = 0x04; // 32 bits, bytes of the program as stored, before rounding
+constexpr uint32_t DESCRIPTOR_SIGNATURE_SLOT     = 0x08; // 32 bits, bytes from the start of the program's data
+constexpr uint32_t DESCRIPTOR_CODE_SIZE          = 0x14; // 32 bits, bytes
+constexpr uint32_t DESCRIPTOR_DATA_SIZE          = 0x20; // 32 bits, bytes
+constexpr uint32_t DESCRIPTOR_UCODE_ID           = 0x26; // 8 bits
+constexpr uint32_t DESCRIPTOR_SIGNATURE_COUNT    = 0x27; // 8 bits
+constexpr uint32_t DESCRIPTOR_SIGNATURE_VERSIONS = 0x28; // 16 bits
+constexpr uint32_t DESCRIPTOR_FIELD_BYTES        = 44;
 
 // FWSEC spans its stored size rounded up to a multiple of 256 bytes, the bytes copied from the VBIOS to load it
 constexpr uint64_t FWSEC_SIZE_ALIGNMENT = 256;
@@ -522,6 +524,8 @@ static int32_t read_fwsec_descriptor(
     fwsec_out.signature_slot = signature_slot;
     fwsec_out.signatures_offset = descriptor + DESCRIPTOR_FIELD_BYTES;
     fwsec_out.signature_count = signature_count;
+    fwsec_out.ucode_id = read_rom_u8(rom, descriptor + DESCRIPTOR_UCODE_ID);
+    fwsec_out.signature_versions = read_rom_u16(rom, descriptor + DESCRIPTOR_SIGNATURE_VERSIONS);
 
     return OK;
 }
