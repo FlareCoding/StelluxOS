@@ -56,6 +56,33 @@ struct bootloader_layout {
 };
 
 /**
+ * Where booter load's code, data, signature slot and signatures lie, with its
+ * ucode id and engine mask, as its descriptors record them. Booter load is
+ * the file holding the program that SEC2, the GPU's security processor, runs
+ * on its falcon, the microcontroller in SEC2, to load the GSP's firmware into
+ * protected memory, the video memory reserved for that firmware, verify it
+ * and boot it. The falcon's boot ROM, the code the falcon runs from its own
+ * ROM as it starts, runs the code only once the signature in the signature
+ * slot checks out. Booter load carries signatures for one or more of the
+ * versions the chip's fuses, bits burned into the chip for good, may record
+ * for it, and the slot must receive the one for the version they record. The
+ * code and data each lie inside the program, the slot lies inside the data,
+ * and the signatures lie one after another inside the file.
+ */
+struct booter_layout {
+    uint32_t code_offset;       // bytes from the start of the program
+    uint32_t code_size;         // bytes
+    uint32_t data_offset;       // bytes from the start of the program
+    uint32_t data_size;         // bytes
+    uint32_t signature_slot;    // bytes from the start of the data
+    uint32_t signatures_offset; // bytes from the start of the file
+    uint32_t signature_size;    // bytes of each signature, at least 1
+    uint32_t signature_count;   // at least 1
+    uint32_t ucode_id;          // NVIDIA's number for booter load among SEC2's programs
+    uint32_t engine_mask;       // the engines booter load is signed to run on
+};
+
+/**
  * @brief Open the files a chip boots from, in the layout the nvidia-firmware
  * package installs under `fw::DIRECTORY`: the bootloader and booter load in
  * the chip's boot directory in nvidia/<FIRMWARE_VERSION>/ first, then the GSP
@@ -142,6 +169,42 @@ int32_t read_bootloader_layout(
     const fw::file& bootloader,
     const boot_file_header& header,
     bootloader_layout& layout_out
+);
+
+/**
+ * @brief Read booter load's layout from its descriptors and check it. The
+ * descriptors start with a header of nine 32-bit fields, each a size or an
+ * offset from the start of the file, that lead to the rest: the signatures,
+ * the slot's offset from the start of the program, NVIDIA's signature patch
+ * index, which NVIDIA's driver requires to be 0 and otherwise ignores, the
+ * metadata, which ends with booter load's engine mask and ucode id, the
+ * signature count, and the load header. The load header places the data and
+ * the program's apps, NVIDIA's name for the parts of a falcon program's code
+ * its boot ROM checks against a signature. Booter load has one app, whose
+ * code is the code. Each field is read with `fw::file::read`, which takes
+ * the file's mutex, so this must not run in an interrupt handler or under a
+ * spinlock. On the boot thread, which cannot wait, `booter_load` must be one
+ * no other thread uses at the time, as `fw::file` describes.
+ * @param booter_load Must hold booter load open.
+ * @param header Must be the header `check_boot_file` returned for
+ * `booter_load`, whose program then starts at or after its descriptors.
+ * @param layout_out Receives the layout on `OK`, whose parts then lie as
+ * `booter_layout` describes and whose slot ends before the program's end,
+ * and is left unchanged on an error.
+ * @return `OK`, or `ERR_BAD_FIRMWARE` when the descriptors, from the end of
+ * the header to the start of the program, are shorter than their 36-byte
+ * header, the metadata is not 12 bytes or the load header not 36, a
+ * descriptor, the metadata or the load header ends past the file, the
+ * signature patch index is not 0, the count is 0, the signatures take 0
+ * bytes, a number not a multiple of the count, or end past the file, the
+ * load header lists other than one app, the code or data ends past the
+ * program, the slot does not lie inside the data or does not end before the
+ * program's end, or when reading fails. The cause is logged.
+ */
+int32_t read_booter_layout(
+    const fw::file& booter_load,
+    const boot_file_header& header,
+    booter_layout& layout_out
 );
 
 } // namespace drivers::nvidia

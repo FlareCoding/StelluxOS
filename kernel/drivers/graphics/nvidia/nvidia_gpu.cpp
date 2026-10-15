@@ -111,6 +111,32 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
+    nvidia::booter_layout booter_parts = {};
+    rc = nvidia::read_booter_layout(files.booter_load, booter_load_header, booter_parts);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: booter load's %u bytes of code at 0x%X and %u bytes of data at 0x%X in its %u-byte program, "
+        "ucode id %u, engine mask 0x%X",
+        booter_parts.code_size,
+        booter_parts.code_offset,
+        booter_parts.data_size,
+        booter_parts.data_offset,
+        booter_load_header.program_size,
+        booter_parts.ucode_id,
+        booter_parts.engine_mask
+    );
+
+    log::info(
+        "nvidia: booter load's signature slot at byte 0x%X of its data, %u signatures of %u bytes at 0x%X in the file",
+        booter_parts.signature_slot,
+        booter_parts.signature_count,
+        booter_parts.signature_size,
+        booter_parts.signatures_offset
+    );
+
     log::info("nvidia: firmware %s checked", nvidia::FIRMWARE_VERSION);
 
     nvidia::falcon_program_table table = {};
