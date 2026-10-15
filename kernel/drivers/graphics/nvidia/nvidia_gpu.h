@@ -16,9 +16,11 @@ namespace drivers {
  * directory the chip's firmware files belong in is not installed, as in an
  * image without the nvidia-firmware package. Bring-up logs the layout of the
  * card's VBIOS, opens the chip's firmware files, checks the GSP image's
- * firmware version and the headers of the bootloader and booter load, and
- * finds FWSEC, the signed program in the VBIOS that fences off protected
- * memory for the GSP's firmware, through the VBIOS's falcon program table.
+ * firmware version and the bootloader's header, logs where the bootloader's
+ * descriptor places the parts of its program and the program's app version,
+ * checks booter load's header, and finds FWSEC, the signed program in the
+ * VBIOS that fences off protected memory for the GSP's firmware, through the
+ * VBIOS's falcon program table.
  * Once the card's boot firmware has finished setting up video memory, it
  * works out where in video memory FWSEC's FRTS region goes, the part of
  * protected memory FWSEC fences off first. It then chooses which of FWSEC's
@@ -38,9 +40,11 @@ namespace drivers {
  * which requires a 64-bit little-endian ELF file whose one .fwversion section
  * holds exactly `FIRMWARE_VERSION` and its NUL, the bootloader or booter load
  * is shorter than its header, cannot be read or holds a header that does not
- * describe it, or a firmware name built from the chip table is too long or
- * malformed. Once the firmware files check out, it also fails when the VBIOS
- * does not lead to a falcon program table as
+ * describe it, the bootloader's descriptor is too short to hold every field
+ * `nvidia::read_bootloader_layout` reads or places a part that ends past the
+ * end of the bootloader's program, or a firmware name built from the chip
+ * table is too long or malformed. Once the firmware files check out, it also
+ * fails when the VBIOS does not lead to a falcon program table as
  * `nvidia::find_falcon_program_table` requires, or the table does not lead
  * to FWSEC as `nvidia::find_fwsec` requires. Once FWSEC is found, it fails
  * when the card's boot firmware has not finished within

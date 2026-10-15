@@ -14,11 +14,13 @@
 TEST_SUITE(nvidia_firmware);
 
 using drivers::nvidia::boot_file_header;
+using drivers::nvidia::bootloader_layout;
 using drivers::nvidia::check_boot_file;
 using drivers::nvidia::check_gsp_image;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::FIRMWARE_VERSION;
 using drivers::nvidia::OK;
+using drivers::nvidia::read_bootloader_layout;
 
 // The directories down to the suite's own, in creation order. The suite creates only the missing ones and removes
 // exactly those, so an installed package's files are never touched.
@@ -37,7 +39,8 @@ static bool g_created_directories[FIXTURE_DIRECTORY_COUNT];
 static constexpr const char CHECKED_NAME[] = "nvidia_test/checked.bin";
 static constexpr const char CHECKED_PATH[] = "/usr/lib/firmware/nvidia_test/checked.bin";
 
-// Neither check returns it, so a test whose file could not be allocated, written or opened fails
+// No function under test returns it, so a test fails when its file could not be allocated, written or opened, and a
+// layout test also fails when the header check refuses its file
 static constexpr int32_t NOT_CHECKED = 1;
 
 static int32_t remove_fixtures() {
@@ -283,7 +286,7 @@ TEST(nvidia_firmware, boot_file_header_is_returned_once_checked) {
     EXPECT_EQ(header.program_size, GA102_BOOTLOADER.program_size);
 }
 
-// What a refused check leaves in each field of the caller's header
+// What a refused check or read leaves in each field of the caller's header or layout
 static constexpr uint32_t UNCHANGED_FIELD = 0xA5A5A5A5;
 
 // The program's end is the last check, so the header has been read and checked in full before the refusal
@@ -308,6 +311,288 @@ TEST(nvidia_firmware, refused_boot_file_leaves_the_header_unchanged) {
     EXPECT_EQ(header.descriptor_offset, UNCHANGED_FIELD);
     EXPECT_EQ(header.program_offset, UNCHANGED_FIELD);
     EXPECT_EQ(header.program_size, UNCHANGED_FIELD);
+}
+
+// Where each field of the bootloader's descriptor the driver reads lies, in bytes from the descriptor's start, and
+// the bytes up to the last one's end, restated here so the tests hold the read to the format
+static constexpr uint32_t BOOTLOADER_APP_VERSION_FIELD         = 0x1C;
+static constexpr uint32_t BOOTLOADER_MANIFEST_OFFSET_FIELD     = 0x20;
+static constexpr uint32_t BOOTLOADER_MANIFEST_SIZE_FIELD       = 0x24;
+static constexpr uint32_t BOOTLOADER_MONITOR_DATA_OFFSET_FIELD = 0x28;
+static constexpr uint32_t BOOTLOADER_MONITOR_DATA_SIZE_FIELD   = 0x2C;
+static constexpr uint32_t BOOTLOADER_MONITOR_CODE_OFFSET_FIELD = 0x30;
+static constexpr uint32_t BOOTLOADER_MONITOR_CODE_SIZE_FIELD   = 0x34;
+static constexpr uint32_t BOOTLOADER_DESCRIPTOR_FIELD_BYTES    = 0x38;
+
+struct bootloader_descriptor_values {
+    uint32_t app_version;
+    uint32_t manifest_offset;
+    uint32_t manifest_size;
+    uint32_t monitor_data_offset;
+    uint32_t monitor_data_size;
+    uint32_t monitor_code_offset;
+    uint32_t monitor_code_size;
+};
+
+// The descriptor of the GA102 bootloader the nvidia-firmware package installs. Each part ends short of the program's
+// end, and the manifest offset equals the app version.
+static constexpr bootloader_descriptor_values GA102_BOOTLOADER_DESCRIPTOR = {
+    .app_version = 0,
+    .manifest_offset = 0,
+    .manifest_size = 0x800,
+    .monitor_data_offset = 0x800,
+    .monitor_data_size = 0x1000,
+    .monitor_code_offset = 0x1800,
+    .monitor_code_size = 0x2900,
+};
+
+// Writes `values` into the descriptor of `file`, which starts right after its header
+static void put_descriptor(boot_file& file, const bootloader_descriptor_values& values) {
+    file.put(BOOT_HEADER_BYTES + BOOTLOADER_APP_VERSION_FIELD, values.app_version);
+    file.put(BOOT_HEADER_BYTES + BOOTLOADER_MANIFEST_OFFSET_FIELD, values.manifest_offset);
+    file.put(BOOT_HEADER_BYTES + BOOTLOADER_MANIFEST_SIZE_FIELD, values.manifest_size);
+    file.put(BOOT_HEADER_BYTES + BOOTLOADER_MONITOR_DATA_OFFSET_FIELD, values.monitor_data_offset);
+    file.put(BOOT_HEADER_BYTES + BOOTLOADER_MONITOR_DATA_SIZE_FIELD, values.monitor_data_size);
+    file.put(BOOT_HEADER_BYTES + BOOTLOADER_MONITOR_CODE_OFFSET_FIELD, values.monitor_code_offset);
+    file.put(BOOT_HEADER_BYTES + BOOTLOADER_MONITOR_CODE_SIZE_FIELD, values.monitor_code_size);
+}
+
+// Installs `file`, checks its header and reads its layout into `layout_out`
+static int32_t read_layout(const boot_file& file, bootloader_layout& layout_out) {
+    fw::file opened;
+    if (!file.bytes || !install(file.bytes, file.size, opened)) {
+        return NOT_CHECKED;
+    }
+
+    boot_file_header header = {};
+    if (check_boot_file(opened, "test bootloader", header) != OK) {
+        return NOT_CHECKED;
+    }
+
+    return read_bootloader_layout(opened, header, layout_out);
+}
+
+static int32_t read_layout(const boot_file& file) {
+    bootloader_layout layout = {};
+    return read_layout(file, layout);
+}
+
+// The GA102 bootloader with 256 bytes after its program, so a part that ends past the program can still end inside
+// the file
+static constexpr boot_file_values PADDED_BOOTLOADER = {
+    .file_bytes = GA102_BOOTLOADER.file_bytes + 256,
+    .rounded_size = GA102_BOOTLOADER.rounded_size + 256,
+    .program_offset = GA102_BOOTLOADER.program_offset,
+    .program_size = GA102_BOOTLOADER.program_size,
+};
+
+// Reads the layout of the padded bootloader holding the GA102 descriptor with the field at `field` set to `value`
+static int32_t read_padded_layout_with(uint32_t field, uint32_t value) {
+    boot_file bootloader(PADDED_BOOTLOADER);
+    put_descriptor(bootloader, GA102_BOOTLOADER_DESCRIPTOR);
+    bootloader.put(BOOT_HEADER_BYTES + field, value);
+    return read_layout(bootloader);
+}
+
+TEST(nvidia_firmware, ga102_bootloader_layout_is_read) {
+    boot_file bootloader(GA102_BOOTLOADER);
+    put_descriptor(bootloader, GA102_BOOTLOADER_DESCRIPTOR);
+
+    bootloader_layout layout = {};
+    ASSERT_EQ(read_layout(bootloader, layout), OK);
+
+    EXPECT_EQ(layout.manifest_offset, GA102_BOOTLOADER_DESCRIPTOR.manifest_offset);
+    EXPECT_EQ(layout.monitor_data_offset, GA102_BOOTLOADER_DESCRIPTOR.monitor_data_offset);
+    EXPECT_EQ(layout.monitor_code_offset, GA102_BOOTLOADER_DESCRIPTOR.monitor_code_offset);
+    EXPECT_EQ(layout.app_version, GA102_BOOTLOADER_DESCRIPTOR.app_version);
+}
+
+// A bootloader whose four fields the read returns all differ and need more than 16 bits, and whose monitor code
+// ends at the program's end
+static constexpr uint32_t WIDE_PROGRAM_BYTES = 0x30000;
+
+static constexpr boot_file_values WIDE_BOOTLOADER = {
+    .file_bytes = GA102_BOOTLOADER.program_offset + WIDE_PROGRAM_BYTES,
+    .rounded_size = GA102_BOOTLOADER.program_offset + WIDE_PROGRAM_BYTES,
+    .program_offset = GA102_BOOTLOADER.program_offset,
+    .program_size = WIDE_PROGRAM_BYTES,
+};
+
+static constexpr bootloader_descriptor_values WIDE_BOOTLOADER_DESCRIPTOR = {
+    .app_version = 0x8A5B3C2D,
+    .manifest_offset = 0x10100,
+    .manifest_size = 0x800,
+    .monitor_data_offset = 0x11200,
+    .monitor_data_size = 0x1000,
+    .monitor_code_offset = 0x12400,
+    .monitor_code_size = WIDE_PROGRAM_BYTES - 0x12400,
+};
+
+TEST(nvidia_firmware, bootloader_layout_holds_each_field_in_full) {
+    boot_file bootloader(WIDE_BOOTLOADER);
+    put_descriptor(bootloader, WIDE_BOOTLOADER_DESCRIPTOR);
+
+    bootloader_layout layout = {};
+    ASSERT_EQ(read_layout(bootloader, layout), OK);
+
+    EXPECT_EQ(layout.manifest_offset, WIDE_BOOTLOADER_DESCRIPTOR.manifest_offset);
+    EXPECT_EQ(layout.monitor_data_offset, WIDE_BOOTLOADER_DESCRIPTOR.monitor_data_offset);
+    EXPECT_EQ(layout.monitor_code_offset, WIDE_BOOTLOADER_DESCRIPTOR.monitor_code_offset);
+    EXPECT_EQ(layout.app_version, WIDE_BOOTLOADER_DESCRIPTOR.app_version);
+}
+
+// The GA102 bootloader with its descriptor cut to the bytes up to the end of the last field the driver reads, and its
+// program moved up after them
+static constexpr boot_file_values SHORTEST_DESCRIPTOR = {
+    .file_bytes = GA102_BOOTLOADER.file_bytes,
+    .rounded_size = GA102_BOOTLOADER.rounded_size,
+    .program_offset = BOOT_HEADER_BYTES + BOOTLOADER_DESCRIPTOR_FIELD_BYTES,
+    .program_size = GA102_BOOTLOADER.program_size,
+};
+
+TEST(nvidia_firmware, bootloader_descriptor_must_hold_every_field_read) {
+    boot_file shortest(SHORTEST_DESCRIPTOR);
+    put_descriptor(shortest, GA102_BOOTLOADER_DESCRIPTOR);
+    EXPECT_EQ(read_layout(shortest), OK);
+
+    boot_file one_byte_short(SHORTEST_DESCRIPTOR);
+    put_descriptor(one_byte_short, GA102_BOOTLOADER_DESCRIPTOR);
+    one_byte_short.put(PROGRAM_OFFSET_FIELD, SHORTEST_DESCRIPTOR.program_offset - 1);
+    EXPECT_EQ(read_layout(one_byte_short), ERR_BAD_FIRMWARE);
+}
+
+// The GA102 bootloader with a descriptor of 0x10010 bytes, whose length cut to 8 or 16 bits is 0x10, short of the
+// fields the driver reads
+static constexpr uint32_t LONG_DESCRIPTOR_BYTES = 0x10010;
+
+static constexpr boot_file_values LONG_DESCRIPTOR = {
+    .file_bytes = BOOT_HEADER_BYTES + LONG_DESCRIPTOR_BYTES + GA102_BOOTLOADER.program_size,
+    .rounded_size = BOOT_HEADER_BYTES + LONG_DESCRIPTOR_BYTES + GA102_BOOTLOADER.program_size,
+    .program_offset = BOOT_HEADER_BYTES + LONG_DESCRIPTOR_BYTES,
+    .program_size = GA102_BOOTLOADER.program_size,
+};
+
+TEST(nvidia_firmware, bootloader_descriptor_length_is_computed_past_16_bits) {
+    boot_file bootloader(LONG_DESCRIPTOR);
+    put_descriptor(bootloader, GA102_BOOTLOADER_DESCRIPTOR);
+    EXPECT_EQ(read_layout(bootloader), OK);
+}
+
+// The size that takes each part of the GA102 bootloader's program exactly to the program's end
+static constexpr uint32_t MANIFEST_TO_PROGRAM_END =
+    GA102_BOOTLOADER.program_size - GA102_BOOTLOADER_DESCRIPTOR.manifest_offset;
+static constexpr uint32_t MONITOR_DATA_TO_PROGRAM_END =
+    GA102_BOOTLOADER.program_size - GA102_BOOTLOADER_DESCRIPTOR.monitor_data_offset;
+static constexpr uint32_t MONITOR_CODE_TO_PROGRAM_END =
+    GA102_BOOTLOADER.program_size - GA102_BOOTLOADER_DESCRIPTOR.monitor_code_offset;
+
+TEST(nvidia_firmware, bootloader_parts_may_end_at_the_program_end) {
+    EXPECT_EQ(read_padded_layout_with(BOOTLOADER_MANIFEST_SIZE_FIELD, MANIFEST_TO_PROGRAM_END), OK);
+    EXPECT_EQ(read_padded_layout_with(BOOTLOADER_MONITOR_DATA_SIZE_FIELD, MONITOR_DATA_TO_PROGRAM_END), OK);
+    EXPECT_EQ(read_padded_layout_with(BOOTLOADER_MONITOR_CODE_SIZE_FIELD, MONITOR_CODE_TO_PROGRAM_END), OK);
+}
+
+// Each part ends inside the file's padding, so only a check against the program refuses it
+TEST(nvidia_firmware, bootloader_parts_must_end_inside_the_program) {
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MANIFEST_SIZE_FIELD, MANIFEST_TO_PROGRAM_END + 1),
+        ERR_BAD_FIRMWARE
+    );
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MONITOR_DATA_SIZE_FIELD, MONITOR_DATA_TO_PROGRAM_END + 1),
+        ERR_BAD_FIRMWARE
+    );
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MONITOR_CODE_SIZE_FIELD, MONITOR_CODE_TO_PROGRAM_END + 1),
+        ERR_BAD_FIRMWARE
+    );
+}
+
+// Adding this to any of the GA102 descriptor's part fields leaves its low 16 bits as they were, inside the program
+static constexpr uint32_t ABOVE_16_BITS = 0x10000;
+
+TEST(nvidia_firmware, bootloader_part_fields_are_read_past_16_bits) {
+    const bootloader_descriptor_values& ga102 = GA102_BOOTLOADER_DESCRIPTOR;
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MANIFEST_OFFSET_FIELD, ga102.manifest_offset + ABOVE_16_BITS),
+        ERR_BAD_FIRMWARE
+    );
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MANIFEST_SIZE_FIELD, ga102.manifest_size + ABOVE_16_BITS),
+        ERR_BAD_FIRMWARE
+    );
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MONITOR_DATA_OFFSET_FIELD, ga102.monitor_data_offset + ABOVE_16_BITS),
+        ERR_BAD_FIRMWARE
+    );
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MONITOR_DATA_SIZE_FIELD, ga102.monitor_data_size + ABOVE_16_BITS),
+        ERR_BAD_FIRMWARE
+    );
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MONITOR_CODE_OFFSET_FIELD, ga102.monitor_code_offset + ABOVE_16_BITS),
+        ERR_BAD_FIRMWARE
+    );
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MONITOR_CODE_SIZE_FIELD, ga102.monitor_code_size + ABOVE_16_BITS),
+        ERR_BAD_FIRMWARE
+    );
+}
+
+// A size and an offset whose sum with the part's other field wraps around to 0x10 in 32-bit arithmetic
+static constexpr uint32_t WRAPPING_MONITOR_CODE_SIZE = 0x10 - GA102_BOOTLOADER_DESCRIPTOR.monitor_code_offset;
+static constexpr uint32_t WRAPPING_MANIFEST_OFFSET   = 0x10 - GA102_BOOTLOADER_DESCRIPTOR.manifest_size;
+
+TEST(nvidia_firmware, bootloader_part_bounds_are_checked_without_wrapping) {
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MONITOR_CODE_SIZE_FIELD, WRAPPING_MONITOR_CODE_SIZE),
+        ERR_BAD_FIRMWARE
+    );
+    EXPECT_EQ(
+        read_padded_layout_with(BOOTLOADER_MANIFEST_OFFSET_FIELD, WRAPPING_MANIFEST_OFFSET),
+        ERR_BAD_FIRMWARE
+    );
+}
+
+// The monitor code is the last part checked, so every field has been read before the refusal
+TEST(nvidia_firmware, refused_bootloader_leaves_the_layout_unchanged) {
+    boot_file bootloader(PADDED_BOOTLOADER);
+    put_descriptor(bootloader, GA102_BOOTLOADER_DESCRIPTOR);
+    bootloader.put(BOOT_HEADER_BYTES + BOOTLOADER_MONITOR_CODE_SIZE_FIELD, MONITOR_CODE_TO_PROGRAM_END + 1);
+
+    bootloader_layout layout = {
+        .manifest_offset = UNCHANGED_FIELD,
+        .monitor_data_offset = UNCHANGED_FIELD,
+        .monitor_code_offset = UNCHANGED_FIELD,
+        .app_version = UNCHANGED_FIELD,
+    };
+
+    ASSERT_EQ(read_layout(bootloader, layout), ERR_BAD_FIRMWARE);
+
+    EXPECT_EQ(layout.manifest_offset, UNCHANGED_FIELD);
+    EXPECT_EQ(layout.monitor_data_offset, UNCHANGED_FIELD);
+    EXPECT_EQ(layout.monitor_code_offset, UNCHANGED_FIELD);
+    EXPECT_EQ(layout.app_version, UNCHANGED_FIELD);
+}
+
+// Cutting the bootloader to its header after opening leaves the descriptor read short, and a zeroed buffer places every
+// part inside the program, so only the failed read refuses the file
+TEST(nvidia_firmware, bootloader_cut_short_after_opening_is_refused) {
+    boot_file bootloader(GA102_BOOTLOADER);
+    ASSERT_NOT_NULL(bootloader.bytes);
+    put_descriptor(bootloader, GA102_BOOTLOADER_DESCRIPTOR);
+
+    fw::file opened;
+    ASSERT_TRUE(install(bootloader.bytes, bootloader.size, opened));
+
+    boot_file_header header = {};
+    ASSERT_EQ(check_boot_file(opened, "test bootloader", header), OK);
+
+    fw::file cut_short;
+    ASSERT_TRUE(install(bootloader.bytes, BOOT_HEADER_BYTES, cut_short));
+
+    bootloader_layout layout = {};
+    EXPECT_EQ(read_bootloader_layout(opened, header, layout), ERR_BAD_FIRMWARE);
 }
 
 // Room for 65 section headers and every table a layout places beside them

@@ -32,6 +32,17 @@ struct firmware_names {
 constexpr uint32_t BOOT_FILE_MAGIC          = 0x10DE;
 constexpr uint32_t BOOT_FILE_HEADER_VERSION = 1;
 
+// Where each field the driver reads lies in the bootloader's descriptor, in bytes from its start, and the bytes up to
+// the last one's end. Each is a little-endian 32-bit field. The driver reads offsets and sizes as bytes of the program.
+constexpr uint32_t BOOTLOADER_APP_VERSION_FIELD         = 0x1C;
+constexpr uint32_t BOOTLOADER_MANIFEST_OFFSET_FIELD     = 0x20;
+constexpr uint32_t BOOTLOADER_MANIFEST_SIZE_FIELD       = 0x24;
+constexpr uint32_t BOOTLOADER_MONITOR_DATA_OFFSET_FIELD = 0x28;
+constexpr uint32_t BOOTLOADER_MONITOR_DATA_SIZE_FIELD   = 0x2C;
+constexpr uint32_t BOOTLOADER_MONITOR_CODE_OFFSET_FIELD = 0x30;
+constexpr uint32_t BOOTLOADER_MONITOR_CODE_SIZE_FIELD   = 0x34;
+constexpr uint32_t BOOTLOADER_DESCRIPTOR_FIELD_BYTES    = 0x38;
+
 // The GSP image's section that holds its firmware version, a string and its NUL
 constexpr const char VERSION_SECTION[] = ".fwversion";
 
@@ -397,6 +408,94 @@ int32_t check_boot_file(const fw::file& file, const char* name, boot_file_header
     }
 
     header_out = header;
+
+    return OK;
+}
+
+// Checks that the part of the bootloader's program whose offset and size the descriptor holds at `offset_field` and
+// `size_field` lies inside the program, naming the part `part` in the log line when it does not
+static int32_t check_program_part(
+    const uint8_t* descriptor,
+    uint32_t offset_field,
+    uint32_t size_field,
+    uint32_t program_size,
+    const char* part
+) {
+    uint32_t offset = read_u32(descriptor + offset_field);
+    uint32_t size = read_u32(descriptor + size_field);
+    if (!lies_inside(offset, size, program_size)) {
+        log::error(
+            "nvidia: the bootloader's %s of %u bytes at 0x%X ends past its program's %u bytes",
+            part,
+            size,
+            offset,
+            program_size
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    return OK;
+}
+
+int32_t read_bootloader_layout(
+    const fw::file& bootloader,
+    const boot_file_header& header,
+    bootloader_layout& layout_out
+) {
+    uint32_t descriptor_bytes = header.program_offset - header.descriptor_offset;
+    if (descriptor_bytes < BOOTLOADER_DESCRIPTOR_FIELD_BYTES) {
+        log::error(
+            "nvidia: the bootloader's descriptor is %u bytes, shorter than the %u bytes up to the end of the last "
+            "field the driver reads",
+            descriptor_bytes,
+            BOOTLOADER_DESCRIPTOR_FIELD_BYTES
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    uint8_t descriptor[BOOTLOADER_DESCRIPTOR_FIELD_BYTES] = {};
+    int32_t rc = read_firmware(bootloader, "bootloader", header.descriptor_offset, descriptor, sizeof(descriptor));
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = check_program_part(
+        descriptor,
+        BOOTLOADER_MANIFEST_OFFSET_FIELD,
+        BOOTLOADER_MANIFEST_SIZE_FIELD,
+        header.program_size,
+        "manifest"
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = check_program_part(
+        descriptor,
+        BOOTLOADER_MONITOR_DATA_OFFSET_FIELD,
+        BOOTLOADER_MONITOR_DATA_SIZE_FIELD,
+        header.program_size,
+        "monitor data"
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = check_program_part(
+        descriptor,
+        BOOTLOADER_MONITOR_CODE_OFFSET_FIELD,
+        BOOTLOADER_MONITOR_CODE_SIZE_FIELD,
+        header.program_size,
+        "monitor code"
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    layout_out.manifest_offset = read_u32(descriptor + BOOTLOADER_MANIFEST_OFFSET_FIELD);
+    layout_out.monitor_data_offset = read_u32(descriptor + BOOTLOADER_MONITOR_DATA_OFFSET_FIELD);
+    layout_out.monitor_code_offset = read_u32(descriptor + BOOTLOADER_MONITOR_CODE_OFFSET_FIELD);
+    layout_out.app_version = read_u32(descriptor + BOOTLOADER_APP_VERSION_FIELD);
 
     return OK;
 }

@@ -207,10 +207,14 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     valid and the last 128 KiB when its register points lower than that, and
     that the FRTS region ends right below the VGA workspace, in
     protected_memory.h, protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rule that
-    the GSP's engine is reset by setting and then clearing its reset field,
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that the
+    GSP's engine is reset by setting and then clearing its reset field,
     keeping the register's other bits and reading it after each write, in
-    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
+    and the rule that the bootloader descriptor's manifest and monitor code
+    and data offsets are offsets inside the bootloader's program, in
+    firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
@@ -327,8 +331,33 @@ src/nvidia/arch/nvalloc/unix/src/os.c
 
 nouveau/extract-firmware-nouveau.py
     the boot file header and its values, in firmware_files.h,
-    firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp
+    firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp,
+    the rule that the bootloader's descriptor is NVIDIA's descriptor of a
+    RISC-V program, in firmware_files.h, and the rule that the descriptor
+    fills the bytes from the header's end to the program's start, in
+    firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/common/inc/rmRiscvUcode.h
+    the offsets of the RISC-V program descriptor's app version and of the
+    offsets and sizes of the manifest and the monitor's code and data, in
+    firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp,
+    where the last of them ends, in those files and firmware_files.h, the
+    rule that the monitor's code and data offsets lie within the program, in
+    firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp, and the rules that the
+    manifest describes the monitor to the core's boot ROM and that the app
+    version is NVIDIA's change number for the program's build, in
+    firmware_files.h
+    SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
+    the rule that the offsets of the manifest and the monitor's code and
+    data lie inside the bootloader's program, counted from its start, in
+    firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/shared/msgq/inc/msgq/msgq_priv.h
     the queue header's fields and the read pointer after them, and the queue
