@@ -83,12 +83,14 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
-    rc = nvidia::check_boot_file(files.bootloader, "bootloader");
+    nvidia::boot_file_header bootloader_header = {};
+    rc = nvidia::check_boot_file(files.bootloader, "bootloader", bootloader_header);
     if (rc != nvidia::OK) {
         return rc;
     }
 
-    rc = nvidia::check_boot_file(files.booter_load, "booter load");
+    nvidia::boot_file_header booter_load_header = {};
+    rc = nvidia::check_boot_file(files.booter_load, "booter load", booter_load_header);
     if (rc != nvidia::OK) {
         return rc;
     }

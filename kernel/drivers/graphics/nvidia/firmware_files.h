@@ -92,13 +92,16 @@ int32_t check_gsp_image(const fw::file& image);
  * describes.
  * @param file Must hold a file open.
  * @param name What the file is, such as "bootloader", for the log line.
+ * @param header_out Receives the header on `OK`, whose descriptors then start
+ * right after it and whose program starts at or after them and ends inside
+ * the file, and is left unchanged on an error.
  * @return `OK`, or `ERR_BAD_FIRMWARE` when the file is shorter than the
  * header, the magic is not 0x10DE or the header version not 1, the
  * descriptors do not start right after the header, the program starts before
  * them or ends past the file, or reading fails. The cause is logged, naming
  * `name`.
  */
-int32_t check_boot_file(const fw::file& file, const char* name);
+int32_t check_boot_file(const fw::file& file, const char* name, boot_file_header& header_out);
 
 } // namespace drivers::nvidia
 

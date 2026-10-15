@@ -13,6 +13,7 @@
 
 TEST_SUITE(nvidia_firmware);
 
+using drivers::nvidia::boot_file_header;
 using drivers::nvidia::check_boot_file;
 using drivers::nvidia::check_gsp_image;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
@@ -157,13 +158,19 @@ boot_file::boot_file(const boot_file_values& values)
     put(PROGRAM_SIZE_FIELD, values.program_size);
 }
 
-static int32_t check_boot(const boot_file& file) {
+// Installs `file` and checks its header into `header_out`
+static int32_t check_boot(const boot_file& file, boot_file_header& header_out) {
     fw::file opened;
     if (!file.bytes || !install(file.bytes, file.size, opened)) {
         return NOT_CHECKED;
     }
 
-    return check_boot_file(opened, "test boot file");
+    return check_boot_file(opened, "test boot file", header_out);
+}
+
+static int32_t check_boot(const boot_file& file) {
+    boot_file_header header = {};
+    return check_boot(file, header);
 }
 
 TEST(nvidia_firmware, ga102_boot_files_pass) {
@@ -221,7 +228,8 @@ TEST(nvidia_firmware, boot_file_cut_short_after_opening_is_refused) {
     fw::file cut_short;
     ASSERT_TRUE(install(bootloader.bytes, CUT_SHORT_BYTES, cut_short));
 
-    EXPECT_EQ(check_boot_file(opened, "test boot file"), ERR_BAD_FIRMWARE);
+    boot_file_header header = {};
+    EXPECT_EQ(check_boot_file(opened, "test boot file", header), ERR_BAD_FIRMWARE);
 }
 
 TEST(nvidia_firmware, boot_file_must_carry_the_header_magic_and_version) {
@@ -260,6 +268,46 @@ TEST(nvidia_firmware, boot_file_program_must_end_inside_the_file) {
     boot_file wrapping(GA102_BOOTLOADER);
     wrapping.put(PROGRAM_SIZE_FIELD, WRAPPING_PROGRAM_SIZE);
     EXPECT_EQ(check_boot(wrapping), ERR_BAD_FIRMWARE);
+}
+
+TEST(nvidia_firmware, boot_file_header_is_returned_once_checked) {
+    boot_file bootloader(GA102_BOOTLOADER);
+    boot_file_header header = {};
+    ASSERT_EQ(check_boot(bootloader, header), OK);
+
+    EXPECT_EQ(header.magic, BOOT_FILE_MAGIC);
+    EXPECT_EQ(header.header_version, BOOT_FILE_HEADER_VERSION);
+    EXPECT_EQ(header.rounded_size, GA102_BOOTLOADER.rounded_size);
+    EXPECT_EQ(header.descriptor_offset, BOOT_HEADER_BYTES);
+    EXPECT_EQ(header.program_offset, GA102_BOOTLOADER.program_offset);
+    EXPECT_EQ(header.program_size, GA102_BOOTLOADER.program_size);
+}
+
+// What a refused check leaves in each field of the caller's header
+static constexpr uint32_t UNCHANGED_FIELD = 0xA5A5A5A5;
+
+// The program's end is the last check, so the header has been read and checked in full before the refusal
+TEST(nvidia_firmware, refused_boot_file_leaves_the_header_unchanged) {
+    boot_file one_byte_past(GA102_BOOTLOADER);
+    one_byte_past.put(PROGRAM_SIZE_FIELD, GA102_BOOTLOADER.program_size + 1);
+
+    boot_file_header header = {
+        .magic = UNCHANGED_FIELD,
+        .header_version = UNCHANGED_FIELD,
+        .rounded_size = UNCHANGED_FIELD,
+        .descriptor_offset = UNCHANGED_FIELD,
+        .program_offset = UNCHANGED_FIELD,
+        .program_size = UNCHANGED_FIELD,
+    };
+
+    ASSERT_EQ(check_boot(one_byte_past, header), ERR_BAD_FIRMWARE);
+
+    EXPECT_EQ(header.magic, UNCHANGED_FIELD);
+    EXPECT_EQ(header.header_version, UNCHANGED_FIELD);
+    EXPECT_EQ(header.rounded_size, UNCHANGED_FIELD);
+    EXPECT_EQ(header.descriptor_offset, UNCHANGED_FIELD);
+    EXPECT_EQ(header.program_offset, UNCHANGED_FIELD);
+    EXPECT_EQ(header.program_size, UNCHANGED_FIELD);
 }
 
 // Room for 65 section headers and every table a layout places beside them
