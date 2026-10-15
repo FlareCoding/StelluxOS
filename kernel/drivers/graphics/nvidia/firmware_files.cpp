@@ -43,6 +43,33 @@ constexpr uint32_t BOOTLOADER_MONITOR_CODE_OFFSET_FIELD = 0x30;
 constexpr uint32_t BOOTLOADER_MONITOR_CODE_SIZE_FIELD   = 0x34;
 constexpr uint32_t BOOTLOADER_DESCRIPTOR_FIELD_BYTES    = 0x38;
 
+// Where each field of booter load's descriptor header lies, in bytes from its start, and the header's size. Each is a
+// little-endian 32-bit size or offset from the start of the file, the latter leading to a descriptor.
+constexpr uint32_t BOOTER_SIGNATURES_OFFSET_FIELD      = 0x00;
+constexpr uint32_t BOOTER_SIGNATURES_SIZE_FIELD        = 0x04;
+constexpr uint32_t BOOTER_SLOT_DESCRIPTOR_FIELD        = 0x08; // the signature slot's offset from the program's start
+constexpr uint32_t BOOTER_PATCH_INDEX_DESCRIPTOR_FIELD = 0x0C; // NVIDIA's signature patch index, which must be 0
+constexpr uint32_t BOOTER_METADATA_OFFSET_FIELD        = 0x10;
+constexpr uint32_t BOOTER_METADATA_SIZE_FIELD          = 0x14;
+constexpr uint32_t BOOTER_COUNT_DESCRIPTOR_FIELD       = 0x18; // the signature count
+constexpr uint32_t BOOTER_LOAD_HEADER_OFFSET_FIELD     = 0x1C;
+constexpr uint32_t BOOTER_LOAD_HEADER_SIZE_FIELD       = 0x20;
+constexpr uint32_t BOOTER_DESCRIPTOR_HEADER_BYTES      = 0x24;
+
+// The metadata fields the driver reads, in bytes from its start, and the metadata's size
+constexpr uint32_t BOOTER_ENGINE_MASK_FIELD = 0x04;
+constexpr uint32_t BOOTER_UCODE_ID_FIELD    = 0x08;
+constexpr uint32_t BOOTER_METADATA_BYTES    = 12;
+
+// The load header fields the driver reads, in bytes from its start, and the load header's size. The code is the one
+// app's, and the data is the one NVIDIA's driver loads with it.
+constexpr uint32_t BOOTER_DATA_OFFSET_FIELD = 0x08;
+constexpr uint32_t BOOTER_DATA_SIZE_FIELD   = 0x0C;
+constexpr uint32_t BOOTER_APP_COUNT_FIELD   = 0x10;
+constexpr uint32_t BOOTER_CODE_OFFSET_FIELD = 0x14;
+constexpr uint32_t BOOTER_CODE_SIZE_FIELD   = 0x18;
+constexpr uint32_t BOOTER_LOAD_HEADER_BYTES = 36;
+
 // The GSP image's section that holds its firmware version, a string and its NUL
 constexpr const char VERSION_SECTION[] = ".fwversion";
 
@@ -412,20 +439,22 @@ int32_t check_boot_file(const fw::file& file, const char* name, boot_file_header
     return OK;
 }
 
-// Checks that the part of the bootloader's program whose offset and size the descriptor holds at `offset_field` and
-// `size_field` lies inside the program, naming the part `part` in the log line when it does not
+// Checks that the part of a boot file's program whose offset and size the descriptor holds at `offset_field` and
+// `size_field` lies inside the program, naming the file `name` and the part `part` in the log line when it does not
 static int32_t check_program_part(
     const uint8_t* descriptor,
     uint32_t offset_field,
     uint32_t size_field,
     uint32_t program_size,
+    const char* name,
     const char* part
 ) {
     uint32_t offset = read_u32(descriptor + offset_field);
     uint32_t size = read_u32(descriptor + size_field);
     if (!lies_inside(offset, size, program_size)) {
         log::error(
-            "nvidia: the bootloader's %s of %u bytes at 0x%X ends past its program's %u bytes",
+            "nvidia: the %s's %s of %u bytes at 0x%X ends past its program's %u bytes",
+            name,
             part,
             size,
             offset,
@@ -464,6 +493,7 @@ int32_t read_bootloader_layout(
         BOOTLOADER_MANIFEST_OFFSET_FIELD,
         BOOTLOADER_MANIFEST_SIZE_FIELD,
         header.program_size,
+        "bootloader",
         "manifest"
     );
     if (rc != OK) {
@@ -475,6 +505,7 @@ int32_t read_bootloader_layout(
         BOOTLOADER_MONITOR_DATA_OFFSET_FIELD,
         BOOTLOADER_MONITOR_DATA_SIZE_FIELD,
         header.program_size,
+        "bootloader",
         "monitor data"
     );
     if (rc != OK) {
@@ -486,6 +517,7 @@ int32_t read_bootloader_layout(
         BOOTLOADER_MONITOR_CODE_OFFSET_FIELD,
         BOOTLOADER_MONITOR_CODE_SIZE_FIELD,
         header.program_size,
+        "bootloader",
         "monitor code"
     );
     if (rc != OK) {
@@ -496,6 +528,299 @@ int32_t read_bootloader_layout(
     layout_out.monitor_data_offset = read_u32(descriptor + BOOTLOADER_MONITOR_DATA_OFFSET_FIELD);
     layout_out.monitor_code_offset = read_u32(descriptor + BOOTLOADER_MONITOR_CODE_OFFSET_FIELD);
     layout_out.app_version = read_u32(descriptor + BOOTLOADER_APP_VERSION_FIELD);
+
+    return OK;
+}
+
+// Reads the `count` bytes at `offset` of booter load into `dst` once they lie inside the file, naming them `name` in
+// the log line when they end past it or the read fails
+static int32_t read_booter_bytes(
+    const fw::file& booter_load,
+    const char* name,
+    uint32_t offset,
+    void* dst,
+    uint32_t count
+) {
+    if (!lies_inside(offset, count, booter_load.size())) {
+        log::error(
+            "nvidia: the %s of %u bytes at 0x%X ends past the file's %lu bytes",
+            name,
+            count,
+            offset,
+            booter_load.size()
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    return read_firmware(booter_load, name, offset, dst, count);
+}
+
+// Reads the 32-bit descriptor of booter load that the descriptor header's field at `field` leads to, naming the
+// descriptor `descriptor` in the log line when it ends past the file or the read fails
+static int32_t read_booter_descriptor(
+    const fw::file& booter_load,
+    const uint8_t* descriptor_header,
+    uint32_t field,
+    const char* descriptor,
+    uint32_t& value_out
+) {
+    uint8_t bytes[sizeof(uint32_t)] = {};
+    uint32_t offset = read_u32(descriptor_header + field);
+    int32_t rc = read_booter_bytes(booter_load, descriptor, offset, bytes, sizeof(bytes));
+    if (rc != OK) {
+        return rc;
+    }
+
+    value_out = read_u32(bytes);
+
+    return OK;
+}
+
+// Reads the signature patch index and the signature count, checks them and the signatures' size as NVIDIA's driver
+// does, then checks that the signatures end inside the file and records them in `layout`
+static int32_t read_booter_signatures(
+    const fw::file& booter_load,
+    const uint8_t* descriptor_header,
+    booter_layout& layout
+) {
+    uint32_t patch_index = 0;
+    int32_t rc = read_booter_descriptor(
+        booter_load,
+        descriptor_header,
+        BOOTER_PATCH_INDEX_DESCRIPTOR_FIELD,
+        "booter load's signature patch index",
+        patch_index
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (patch_index != 0) {
+        log::error("nvidia: the booter load's signature patch index is %u, not 0", patch_index);
+        return ERR_BAD_FIRMWARE;
+    }
+
+    uint32_t count = 0;
+    rc = read_booter_descriptor(
+        booter_load,
+        descriptor_header,
+        BOOTER_COUNT_DESCRIPTOR_FIELD,
+        "booter load's signature count",
+        count
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint32_t signatures_offset = read_u32(descriptor_header + BOOTER_SIGNATURES_OFFSET_FIELD);
+    uint32_t signatures_size = read_u32(descriptor_header + BOOTER_SIGNATURES_SIZE_FIELD);
+    bool has_signatures = count != 0 && signatures_size != 0;
+    bool splits_evenly = has_signatures && signatures_size % count == 0;
+    if (!splits_evenly) {
+        log::error(
+            "nvidia: the booter load's %u bytes of signatures do not split into %u signatures of one nonzero size",
+            signatures_size,
+            count
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    if (!lies_inside(signatures_offset, signatures_size, booter_load.size())) {
+        log::error(
+            "nvidia: the booter load's %u bytes of signatures at 0x%X end past the file's %lu bytes",
+            signatures_size,
+            signatures_offset,
+            booter_load.size()
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    layout.signatures_offset = signatures_offset;
+    layout.signature_size = signatures_size / count;
+    layout.signature_count = count;
+
+    return OK;
+}
+
+// Reads the metadata and the load header, checks that the load header lists one app and places the code and data
+// inside the program, and records them in `layout`
+static int32_t read_booter_parts(
+    const fw::file& booter_load,
+    const boot_file_header& header,
+    const uint8_t* descriptor_header,
+    booter_layout& layout
+) {
+    uint8_t metadata[BOOTER_METADATA_BYTES] = {};
+    uint32_t metadata_offset = read_u32(descriptor_header + BOOTER_METADATA_OFFSET_FIELD);
+    int32_t rc = read_booter_bytes(booter_load, "booter load's metadata", metadata_offset, metadata, sizeof(metadata));
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint8_t load_header[BOOTER_LOAD_HEADER_BYTES] = {};
+    uint32_t load_header_offset = read_u32(descriptor_header + BOOTER_LOAD_HEADER_OFFSET_FIELD);
+    rc = read_booter_bytes(
+        booter_load,
+        "booter load's load header",
+        load_header_offset,
+        load_header,
+        sizeof(load_header)
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint32_t app_count = read_u32(load_header + BOOTER_APP_COUNT_FIELD);
+    if (app_count != 1) {
+        log::error("nvidia: the booter load's load header lists %u apps, not 1", app_count);
+        return ERR_BAD_FIRMWARE;
+    }
+
+    rc = check_program_part(
+        load_header,
+        BOOTER_CODE_OFFSET_FIELD,
+        BOOTER_CODE_SIZE_FIELD,
+        header.program_size,
+        "booter load",
+        "code"
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = check_program_part(
+        load_header,
+        BOOTER_DATA_OFFSET_FIELD,
+        BOOTER_DATA_SIZE_FIELD,
+        header.program_size,
+        "booter load",
+        "data"
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    layout.code_offset = read_u32(load_header + BOOTER_CODE_OFFSET_FIELD);
+    layout.code_size = read_u32(load_header + BOOTER_CODE_SIZE_FIELD);
+    layout.data_offset = read_u32(load_header + BOOTER_DATA_OFFSET_FIELD);
+    layout.data_size = read_u32(load_header + BOOTER_DATA_SIZE_FIELD);
+    layout.ucode_id = read_u32(metadata + BOOTER_UCODE_ID_FIELD);
+    layout.engine_mask = read_u32(metadata + BOOTER_ENGINE_MASK_FIELD);
+
+    return OK;
+}
+
+// Reads the signature slot's offset, checks that the slot lies inside the data and ends before the program's end, and
+// records its offset from the data's start in `layout`
+static int32_t read_booter_slot(
+    const fw::file& booter_load,
+    const boot_file_header& header,
+    const uint8_t* descriptor_header,
+    booter_layout& layout
+) {
+    uint32_t slot = 0;
+    int32_t rc = read_booter_descriptor(
+        booter_load,
+        descriptor_header,
+        BOOTER_SLOT_DESCRIPTOR_FIELD,
+        "booter load's signature slot offset",
+        slot
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint32_t data_end = layout.data_offset + layout.data_size;
+    bool starts_in_data = slot >= layout.data_offset;
+    bool lies_in_data = starts_in_data && lies_inside(slot, layout.signature_size, data_end);
+    if (!lies_in_data) {
+        log::error(
+            "nvidia: the booter load's %u-byte signature slot at byte 0x%X of its program is not inside its %u bytes "
+            "of data at 0x%X",
+            layout.signature_size,
+            slot,
+            layout.data_size,
+            layout.data_offset
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    // NVIDIA's driver also refuses a slot that ends exactly at the program's end
+    if (header.program_size - slot <= layout.signature_size) {
+        log::error(
+            "nvidia: the booter load's %u-byte signature slot at byte 0x%X of its program does not end before the "
+            "program's %u bytes do",
+            layout.signature_size,
+            slot,
+            header.program_size
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    layout.signature_slot = slot - layout.data_offset;
+
+    return OK;
+}
+
+int32_t read_booter_layout(
+    const fw::file& booter_load,
+    const boot_file_header& header,
+    booter_layout& layout_out
+) {
+    uint32_t descriptor_bytes = header.program_offset - header.descriptor_offset;
+    if (descriptor_bytes < BOOTER_DESCRIPTOR_HEADER_BYTES) {
+        log::error(
+            "nvidia: the booter load's descriptors are %u bytes, shorter than their %u-byte header",
+            descriptor_bytes,
+            BOOTER_DESCRIPTOR_HEADER_BYTES
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    uint8_t descriptor_header[BOOTER_DESCRIPTOR_HEADER_BYTES] = {};
+    int32_t rc = read_firmware(
+        booter_load,
+        "booter load",
+        header.descriptor_offset,
+        descriptor_header,
+        sizeof(descriptor_header)
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint32_t metadata_size = read_u32(descriptor_header + BOOTER_METADATA_SIZE_FIELD);
+    uint32_t load_header_size = read_u32(descriptor_header + BOOTER_LOAD_HEADER_SIZE_FIELD);
+    bool has_metadata_size = metadata_size == BOOTER_METADATA_BYTES;
+    bool has_load_header_size = load_header_size == BOOTER_LOAD_HEADER_BYTES;
+    if (!has_metadata_size || !has_load_header_size) {
+        log::error(
+            "nvidia: the booter load's metadata is %u bytes and its load header %u, where they must be %u and %u",
+            metadata_size,
+            load_header_size,
+            BOOTER_METADATA_BYTES,
+            BOOTER_LOAD_HEADER_BYTES
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    booter_layout layout = {};
+    rc = read_booter_signatures(booter_load, descriptor_header, layout);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = read_booter_parts(booter_load, header, descriptor_header, layout);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = read_booter_slot(booter_load, header, descriptor_header, layout);
+    if (rc != OK) {
+        return rc;
+    }
+
+    layout_out = layout;
 
     return OK;
 }
