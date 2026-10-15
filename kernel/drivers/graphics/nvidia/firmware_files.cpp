@@ -347,7 +347,7 @@ int32_t check_gsp_image(const fw::file& image) {
     return check_version(image, version_section);
 }
 
-int32_t check_boot_file(const fw::file& file, const char* name) {
+int32_t check_boot_file(const fw::file& file, const char* name, boot_file_header& header_out) {
     boot_file_header header = {};
     if (file.size() < sizeof(header)) {
         log::error("nvidia: the %s is %lu bytes, shorter than its 24-byte header", name, file.size());
@@ -395,6 +395,8 @@ int32_t check_boot_file(const fw::file& file, const char* name) {
         );
         return ERR_BAD_FIRMWARE;
     }
+
+    header_out = header;
 
     return OK;
 }
