@@ -1,6 +1,7 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
 
 #include "drivers/graphics/nvidia/protected_memory.h"
+#include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "clock/clock.h"
 #include "common/logging.h"
@@ -14,10 +15,6 @@ constexpr uint32_t BOOT_PROGRESS                 = 0x118234;
 constexpr uint32_t READABLE_AT_LEVEL_0           = 0x1;
 constexpr uint32_t BOOT_PROGRESS_MASK            = 0xFF;
 constexpr uint32_t BOOT_PROGRESS_COMPLETE        = 0xFF;
-
-// The GSP's falcon control register, whose bit 4 is set while the GSP is halted
-constexpr uint32_t GSP_FALCON_CPUCTL = 0x110100;
-constexpr uint32_t FALCON_HALTED     = 0x10;
 
 // The bound that protected memory ends at, whose bits 31 to 4 stay 0 until protected memory is set up
 constexpr uint32_t PROTECTED_MEMORY_END      = 0x1FA828;
@@ -65,7 +62,7 @@ int32_t wait_for_boot_firmware(const registers& regs, uint64_t timeout_ns) {
     while (true) {
         bool is_readable = (regs.read(BOOT_PROGRESS_READ_PROTECTION) & READABLE_AT_LEVEL_0) != 0;
         uint32_t progress = is_readable ? regs.read(BOOT_PROGRESS) & BOOT_PROGRESS_MASK : 0;
-        bool is_halted = (regs.read(GSP_FALCON_CPUCTL) & FALCON_HALTED) != 0;
+        bool is_halted = is_gsp_falcon_halted(regs);
         bool is_complete = progress == BOOT_PROGRESS_COMPLETE;
         if (is_complete && is_halted) {
             return OK;

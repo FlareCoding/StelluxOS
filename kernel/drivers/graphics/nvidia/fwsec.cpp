@@ -260,4 +260,19 @@ int32_t prepare_fwsec_frts(
     return OK;
 }
 
+falcon_program describe_fwsec_program(const fwsec_layout& fwsec, uint64_t dma_address, bool is_cached) {
+    return {
+        .dma_address = dma_address,
+        .is_cached = is_cached,
+        .code_size = fwsec.code_size,
+        .imem_physical_base = fwsec.imem_physical_base,
+        .imem_virtual_base = fwsec.imem_virtual_base,
+        .data_size = fwsec.data_size,
+        .dmem_physical_base = fwsec.dmem_physical_base,
+        .signature_offset = fwsec.signature_slot,
+        .engine_mask = fwsec.engine_mask,
+        .ucode_id = fwsec.ucode_id,
+    };
+}
+
 } // namespace drivers::nvidia

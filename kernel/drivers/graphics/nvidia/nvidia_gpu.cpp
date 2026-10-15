@@ -176,11 +176,10 @@ int32_t nvidia_gpu_driver::attach() {
         return nvidia::ERR_NO_MEMORY;
     }
 
-    // The card is never given this memory's address, so it is freed whatever the result
     uint8_t* image = reinterpret_cast<uint8_t*>(fwsec_image.virt);
     rc = nvidia::prepare_fwsec_frts(rom, fwsec, signature, frts.offset, image);
-    RUN_ELEVATED(dma::free_pages(fwsec_image));
     if (rc != nvidia::OK) {
+        RUN_ELEVATED(dma::free_pages(fwsec_image));
         return rc;
     }
 
@@ -188,10 +187,25 @@ int32_t nvidia_gpu_driver::attach() {
 
     rc = nvidia::reset_gsp_falcon(regs, boot0, nvidia::FALCON_READY_TIMEOUT_NS, nvidia::FALCON_TIMEOUT_NS);
     if (rc != nvidia::OK) {
+        RUN_ELEVATED(dma::free_pages(fwsec_image));
         return rc;
     }
 
-    log::info("nvidia: bring-up stops after resetting the GSP's falcon");
+    // The falcon reads the copy by DMA, which the card issues only while its bus mastering is on
+    RUN_ELEVATED(m_dev->enable_bus_mastering());
+
+    // After a timeout the falcon may still read the copy, so it is freed only once the falcon has halted
+    nvidia::falcon_program program = nvidia::describe_fwsec_program(fwsec, fwsec_image.phys, fwsec_image.cached);
+    rc = nvidia::run_gsp_falcon_program(regs, program, nvidia::FALCON_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    RUN_ELEVATED(dma::free_pages(fwsec_image));
+
+    log::info(
+        "nvidia: bring-up stops after the GSP's falcon was started on FWSEC and halted, FWSEC's result unchecked"
+    );
 
     return DECLINED;
 }

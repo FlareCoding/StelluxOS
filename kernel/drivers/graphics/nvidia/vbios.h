@@ -87,6 +87,10 @@ struct fwsec_layout {
     uint32_t signature_slot;     // bytes from the start of the data
     uint32_t interface_offset;   // bytes from the start of the data to FWSEC's application interface
     uint32_t signatures_offset;  // bytes from the start of the VBIOS to the first signature
+    uint32_t imem_physical_base; // where in IMEM, the falcon's code memory, the code goes
+    uint32_t imem_virtual_base;  // the address the code runs at, which tags its blocks in IMEM
+    uint32_t dmem_physical_base; // where in DMEM, the falcon's data memory, the data goes
+    uint16_t engine_mask;        // the engines FWSEC is signed to run on, which the falcon's boot ROM checks
     uint8_t  signature_count;    // signatures of `FWSEC_SIGNATURE_BYTES` each, back to back
     uint8_t  ucode_id;           // NVIDIA's number for FWSEC among the GSP's programs, naming its fuse register
     uint16_t signature_versions; // bit N set when one of the signatures is for version N
@@ -153,8 +157,8 @@ int32_t find_falcon_program_table(const registers& rom, const vbios_layout& layo
  * then lies inside the VBIOS, its code and data fit in its `size`, its
  * signature slot lies inside its data, and its `signature_count` signatures,
  * at least one, lie between the descriptor's fields and FWSEC. Its interface
- * offset, ucode id and signature versions are as the descriptor gives them,
- * unchecked.
+ * offset, IMEM and DMEM bases, engine mask, ucode id and signature versions
+ * are as the descriptor gives them, unchecked.
  * @return `OK`, or `ERR_BAD_VBIOS` when the table has no production FWSEC
  * entry, the descriptor's 44 bytes of fields at the table's base plus the
  * entry's pointer end past the end of the VBIOS's last image, the descriptor

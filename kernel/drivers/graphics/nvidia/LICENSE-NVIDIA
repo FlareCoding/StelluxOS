@@ -20,10 +20,35 @@ src/common/inc/swref/published/ampere/ga100/dev_fuse.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
-    the falcon control register's offset and its halted bit, in
-    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
-    and the hardware configuration register with its RISC-V and memory
-    scrubbing fields and the RM register, in falcon.cpp and
+    the falcon control register's offset and its halted bit, in falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the control
+    register's start and alias enable bits, its alias with the start bit, the
+    boot vector register, and the DMA engine's control, base, memory offset,
+    command, offset and second base registers, with the command's secure, IMEM
+    and 256-byte size fields, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the memory offset's 24-bit
+    field and the second base's 9-bit field, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the command's idle and
+    context fields, in falcon.cpp, the DMA control register's field requiring
+    a bound address space, in
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the hardware
+    configuration register with its RISC-V and memory scrubbing fields and the
+    RM register, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_falcon_second_pri.h
+    the boot ROM's registers for the signature's offset in the data, the
+    engine mask and the ucode id, and the signature algorithm register with
+    its RSA-3072 value, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_fbif_v4.h
+    the memory interface's transfer registers with the target field, its
+    coherent system memory value and the physical memory type, and the
+    interface's control register with the field allowing physical addresses
+    with no address space bound, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -45,18 +70,28 @@ src/common/inc/swref/published/ampere/ga102/dev_gc6_island_addendum.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_gsp.h
-    the base of the GSP's registers, in protected_memory.cpp, falcon.cpp,
+    the base of the GSP's registers, in falcon.cpp,
     kernel/tests/graphics/nvidia_protected_memory.test.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, and the GSP's engine
     register and its reset field, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
+src/common/inc/swref/published/ampere/ga102/dev_gsp_addendum.h
+    the base of the GSP's memory interface registers, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017-2021 NVIDIA CORPORATION & AFFILIATES
+
 src/common/inc/swref/published/ampere/ga102/dev_riscv_pri.h
     the base of the GSP's second register block, and the RISC-V boot control
     register with its valid and core select fields, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/nvswitch/lr10/dev_soe_ip.h
+    the non-coherent system memory value of a falcon memory interface's
+    target field, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/disp/v04_00/dev_disp.h
     the VGA workspace register and its valid bit, in protected_memory.cpp and
@@ -88,7 +123,8 @@ src/nvidia/inc/kernel/platform/pci_exp_table.h
 
 src/nvidia/inc/kernel/gpu/falcon/falcon_common.h
     the count of 10 reads that let a falcon's engine reset propagate, in
-    falcon.cpp
+    falcon.cpp, and the 256 bytes a falcon's DMA engine copies at a time, in
+    falcon.h and falcon.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_vbios_tu102.c
@@ -110,8 +146,12 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_fwsec.c
     FWSEC follows the descriptor with its code first and its data right after,
     and that it spans its stored size rounded up to a multiple of 256 bytes, in
     vbios.h, vbios.cpp and kernel/tests/graphics/nvidia.test.cpp, the size of
-    FWSEC's signatures, in kernel/tests/graphics/nvidia_fwsec.test.cpp, and the
-    rule that its data follows its code, in fwsec.cpp and
+    FWSEC's signatures, in kernel/tests/graphics/nvidia_fwsec.test.cpp, the
+    rule that its data follows its code, in falcon.h, falcon.cpp, fwsec.cpp and
+    kernel/tests/graphics/nvidia_fwsec.test.cpp, and the rule that FWSEC is
+    run with its code at the descriptor's IMEM bases, its data at its DMEM
+    base, its signature slot as the signature's offset in the data, and the
+    descriptor's engine mask and ucode id, in fwsec.h, fwsec.cpp and
     kernel/tests/graphics/nvidia_fwsec.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -194,20 +234,35 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga100.c
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
     the rules that the GSP's falcon registers count from the base of the GSP's
-    registers, in falcon.cpp, protected_memory.cpp,
-    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    registers, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_protected_memory.test.cpp, that its RISC-V
-    core's registers count from the GSP's second register block, in falcon.cpp
-    and kernel/tests/graphics/nvidia_falcon.test.cpp, that the GSP's falcon has
-    no bit in the chip's engine enable register, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and that it is reset before
-    FWSEC runs, in falcon.h
+    core's and boot ROM's registers count from the GSP's second register block
+    and its memory interface's registers from the GSP's memory interface
+    base, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that
+    the GSP's falcon has no bit in the chip's engine enable register, in
+    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and
+    that it is reset before FWSEC runs, in falcon.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
+    the rules that a program for the GSP's falcon is loaded with the memory
+    interface's transfer setup 0 set to physical system memory, its code
+    copied into IMEM marked secure and then its data into DMEM, 256 bytes at a
+    time with the address in 256-byte units split over the two base registers
+    and a wait for the DMA engine to go idle after each block, the code read
+    from below the program by its virtual base with its offsets counting from
+    that base, and the data read from its own start with its offsets counting
+    from 0, that the boot ROM is then given the signature's offset in the
+    data, the engine mask, the ucode id and the RSA-3072 algorithm, that the
+    boot vector is the code's virtual base, and that the falcon is then
+    started and waited on until it halts, each wait given the default
+    timeout, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/falcon/arch/turing/kernel_falcon_tu102.c
     the rules that a falcon's register offsets count from its register base, in
-    falcon.cpp, protected_memory.cpp,
-    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_protected_memory.test.cpp, that its RISC-V
     offsets count from its RISC-V register base, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, that a falcon has a RISC-V
@@ -218,6 +273,12 @@ src/nvidia/src/kernel/gpu/falcon/arch/turing/kernel_falcon_tu102.c
     selecting its falcon core, and that enabling it ends by selecting its falcon
     core, waiting for its memories once more and writing the chip id to its RM
     register, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the rules that a falcon's
+    DMA engine is let run with no address space bound by setting its memory
+    interface's field for it and clearing its DMA control register, that a
+    falcon is started through its control register's alias while the alias is
+    enabled and through the control register otherwise, and that it has halted
+    once its halted bit is set, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -241,7 +302,8 @@ src/nvidia/src/kernel/gpu_mgr/gpu_mgr.c
 
 src/nvidia/src/kernel/gpu/gpu_timeout.c
     the rule that waits given the default timeout share one budget for a whole
-    call of NVIDIA's driver, in falcon.h
+    call of NVIDIA's driver while its thread-state timeout is on, and have
+    their own deadlines otherwise, in falcon.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/unix/src/os.c

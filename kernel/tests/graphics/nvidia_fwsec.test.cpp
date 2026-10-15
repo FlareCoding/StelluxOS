@@ -13,7 +13,9 @@
 TEST_SUITE(nvidia_fwsec);
 
 using drivers::nvidia::copy_vbios_bytes;
+using drivers::nvidia::describe_fwsec_program;
 using drivers::nvidia::ERR_BAD_VBIOS;
+using drivers::nvidia::falcon_program;
 using drivers::nvidia::fwsec_layout;
 using drivers::nvidia::fwsec_signature;
 using drivers::nvidia::OK;
@@ -73,6 +75,10 @@ static constexpr fwsec_layout RTX_3080_FWSEC = {
     .signature_slot = 0x5A4,
     .interface_offset = 0x1C,
     .signatures_offset = 0x433E4,
+    .imem_physical_base = 0,
+    .imem_virtual_base = 0,
+    .dmem_physical_base = 0,
+    .engine_mask = 0x400,
     .signature_count = 3,
     .ucode_id = 9,
     .signature_versions = 0x7,
@@ -667,4 +673,43 @@ TEST(nvidia_fwsec, vbios_bytes_are_copied_at_any_offset) {
 
     copy_vbios_bytes(rom.regs, ROM_WINDOW_BYTES - 7, 7, copy);
     EXPECT_EQ(string::memcmp(copy, rom.bytes + ROM_WINDOW_BYTES - 7, 7), 0);
+}
+
+// FWSEC with every field the description reads distinct
+static constexpr fwsec_layout DISTINCT_FWSEC = {
+    .offset = 0x10000,
+    .size = 0x14700,
+    .code_size = 0x1700,
+    .data_size = 0x13000,
+    .signature_slot = 0x12680,
+    .interface_offset = 0x1C,
+    .signatures_offset = 0xFE00,
+    .imem_physical_base = 0x100,
+    .imem_virtual_base = 0x10200,
+    .dmem_physical_base = 0x300,
+    .engine_mask = 0x400,
+    .signature_count = 2,
+    .ucode_id = 0x13,
+    .signature_versions = 0x3,
+};
+
+static constexpr uint64_t COPY_DMA_ADDRESS = 0x4A1234567000;
+
+// FWSEC's sizes, bases, engine mask and ucode id carry over, its signature slot becomes the signature's offset in
+// the data, and the copy's address and caching are the caller's
+TEST(nvidia_fwsec, fwsec_is_described_as_a_falcon_program) {
+    falcon_program program = describe_fwsec_program(DISTINCT_FWSEC, COPY_DMA_ADDRESS, true);
+
+    EXPECT_EQ(program.dma_address, COPY_DMA_ADDRESS);
+    EXPECT_TRUE(program.is_cached);
+    EXPECT_EQ(program.code_size, 0x1700u);
+    EXPECT_EQ(program.imem_physical_base, 0x100u);
+    EXPECT_EQ(program.imem_virtual_base, 0x10200u);
+    EXPECT_EQ(program.data_size, 0x13000u);
+    EXPECT_EQ(program.dmem_physical_base, 0x300u);
+    EXPECT_EQ(program.signature_offset, 0x12680u);
+    EXPECT_EQ(program.engine_mask, 0x400u);
+    EXPECT_EQ(program.ucode_id, 0x13u);
+
+    EXPECT_FALSE(describe_fwsec_program(DISTINCT_FWSEC, COPY_DMA_ADDRESS, false).is_cached);
 }
