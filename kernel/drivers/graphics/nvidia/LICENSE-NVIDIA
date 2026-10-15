@@ -167,7 +167,8 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     exactly the version string and its NUL, in firmware_files.cpp and
     kernel/tests/graphics/nvidia_firmware.test.cpp, and the rule that the GSP
     is not booted while protected memory is already set up, in
-    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    and the full fence before each received message, in message_queues.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c
@@ -341,13 +342,18 @@ src/common/shared/msgq/inc/msgq/msgq.h
     SPDX-FileCopyrightText: Copyright (c) 2018-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/shared/msgq/msgq.c
-    the queue header's values, where the firmware's read pointer is read
-    before the status queue's header is checked, the count of free elements
-    and the write pointer's wrap, in message_queues.h, message_queues.cpp and
+    the queue header's values, the read pointer every queue keeps between its
+    header and first element, the checks NVIDIA's driver makes of the status
+    queue's header to link it, the status queue's elements read where its
+    header places them and the driver's read pointer set to 0 then, where
+    each read pointer is kept before and after the link, the counts of free
+    and written elements, and the wrap of the write and read pointers, in
+    message_queues.h, message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and the rule that
     read pointers swap only when both queues' headers ask, each reader then
-    keeping its own in the header page of the queue it writes, in
-    message_queues.h and message_queues.cpp
+    keeping its own in the queue it writes, in
+    message_queues.h, message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h
@@ -357,11 +363,17 @@ src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
-    the queue memory's layout and page table, and each message's sequence
-    number and element count, in message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and each message's
+    the queue memory's layout and page table, each message's sequence number
+    and element count, the rules that refuse a received message in place
+    while the write pointer has not passed all its elements and for the
+    length its RPC header gives or its checksum, and the check of its
+    sequence number, in message_queues.h, message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, each message's
     checksum and its last element copied whole, in message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the status queue
+    linked once the firmware has written its header and retried within a
+    deadline, in message_queues.h, and the full fence before each link, in
+    message_queues.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc-message-header.h
