@@ -1,5 +1,6 @@
 #include "drivers/graphics/nvidia/nvidia_gpu.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -184,7 +185,13 @@ int32_t nvidia_gpu_driver::attach() {
     }
 
     log::info("nvidia: FWSEC copied into memory the card can reach and patched to fence off the FRTS region");
-    log::info("nvidia: bring-up stops after patching FWSEC's copy");
+
+    rc = nvidia::reset_gsp_falcon(regs, boot0, nvidia::FALCON_READY_TIMEOUT_NS, nvidia::FALCON_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info("nvidia: bring-up stops after resetting the GSP's falcon");
 
     return DECLINED;
 }
