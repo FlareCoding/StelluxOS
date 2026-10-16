@@ -101,6 +101,48 @@ TEST(dma_test, page_alloc_zero_returns_error) {
     EXPECT_EQ(rc, dma::ERR_INVALID_ARG);
 }
 
+// Stores and loads 8 bytes one byte past the page's start, which faults where the mapping does not permit an
+// unaligned access
+static uint64_t store_and_load_unaligned(uintptr_t page, uint64_t value) {
+    using unaligned_u64 = uint64_t __attribute__((aligned(1)));
+    volatile unaligned_u64* word = reinterpret_cast<volatile unaligned_u64*>(page + 1);
+
+    *word = value;
+
+    return *word;
+}
+
+TEST(dma_test, page_alloc_of_either_caching_mode_takes_an_unaligned_access) {
+    dma::device_profile coherent = dma::device_profile_test_access::build(ALL_MEMORY_BITS, true);
+    dma::caching modes[] = {dma::caching::uncached, dma::caching::cached_when_coherent};
+
+    for (dma::caching mode : modes) {
+        dma::buffer buf = {};
+        int32_t rc = 0;
+        RUN_ELEVATED({
+            rc = dma::alloc_pages(coherent, 1, mode, paging::PAGE_USER, buf);
+        });
+        ASSERT_EQ(rc, dma::OK);
+
+        uint64_t pattern = 0x0123456789ABCDEF;
+        EXPECT_EQ(store_and_load_unaligned(buf.virt, pattern), pattern);
+
+#ifdef __aarch64__
+        // An emulator may not raise the fault aarch64's device memory raises on an unaligned access, so the test
+        // also checks that neither mode maps the pages as device memory
+        paging::page_flags_t flags = 0;
+        RUN_ELEVATED({
+            flags = paging::get_page_flags(buf.virt, paging::get_kernel_pt_root());
+        });
+        EXPECT_NE(flags & paging::PAGE_TYPE_MASK, paging::PAGE_DEVICE);
+#endif
+
+        RUN_ELEVATED({
+            dma::free_pages(buf);
+        });
+    }
+}
+
 // One page past the largest block fails whatever memory is free, leaving `out` empty
 TEST(dma_test, page_alloc_more_pages_than_the_largest_block_returns_no_mem) {
     dma::buffer buf = {};

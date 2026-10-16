@@ -75,7 +75,10 @@ enum class caching : uint8_t {
 
 /**
  * @brief Allocate zeroed, physically contiguous pages that `device` reaches.
- * The caller owns the buffer and releases it with `free_pages`.
+ * In both caching modes the CPU may access the pages at any alignment, since
+ * neither maps them with a memory type that faults on an unaligned access,
+ * as aarch64's device memory for registers does. The caller owns the buffer
+ * and releases it with `free_pages`.
  * @param device The device that will access the pages.
  * @param pages Number of pages, 1 to 2^`pmm::MAX_ORDER`, the pages the largest block holds.
  * @param mode Whether the buffer may be cached.
