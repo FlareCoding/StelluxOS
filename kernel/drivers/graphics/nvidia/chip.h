@@ -28,15 +28,35 @@ struct chip_firmware {
 };
 
 /**
+ * The chip's values from which `lay_out_protected_memory` sizes the video
+ * memory NVIDIA's driver reserves for the GSP's firmware: the firmware's heap
+ * inside protected memory (the video memory fenced off for that firmware),
+ * the heap the firmware keeps below protected memory, and the top of video
+ * memory all of it must fit in. Only the top `prescrubbed_top_bytes` of video
+ * memory is scrubbed, cleared to known values, before the firmware runs, and
+ * the firmware scrubs the rest itself once it runs. The driver runs no
+ * program that scrubs more beforehand, so `lay_out_protected_memory` refuses
+ * a layout that does not fit in that top part.
+ */
+struct chip_gsp_reservation {
+    uint32_t heap_os_bytes;          // the firmware heap's share for the operating system the firmware runs on
+    uint32_t heap_base_bytes;        // the firmware heap's share for what the firmware allocates while it boots
+    uint32_t heap_min_bytes;         // the firmware heap's minimum size, whatever its shares add up to
+    uint32_t unprotected_heap_bytes; // the heap the firmware keeps below protected memory
+    uint64_t prescrubbed_top_bytes;  // scrubbed before the firmware runs
+};
+
+/**
  * What the driver knows about one chip it supports, as an entry of the chip
  * table. The table is the only record of chip-specific values, so the rest of
  * the driver looks them up with `find_chip` instead of keeping its own.
  */
 struct chip_info {
-    uint16_t      id;               // as `decode_chip_id` returns it
-    const char*   name;             // NVIDIA's code name for the chip
-    chip_firmware firmware;
-    uint8_t       dma_address_bits; // bits of the physical addresses the chip reaches system memory with, 32 to 64
+    uint16_t             id;               // as `decode_chip_id` returns it
+    const char*          name;             // NVIDIA's code name for the chip
+    chip_firmware        firmware;
+    uint8_t              dma_address_bits; // physical address bits the chip reaches system memory with, 32 to 64
+    chip_gsp_reservation gsp_reservation;
 };
 
 /**

@@ -32,11 +32,13 @@ namespace drivers {
  * finds FWSEC, the signed program in the VBIOS that fences off protected
  * memory for the GSP's firmware, through the VBIOS's falcon program table.
  * Once the card's boot firmware has finished setting up video memory, it
- * works out where in video memory FWSEC's FRTS region goes, the part of
- * protected memory FWSEC fences off first. It then chooses which of FWSEC's
- * signatures its signature slot must hold, the one for the version the
- * chip's fuses record for FWSEC, and copies FWSEC into memory the card can
- * reach, patched to fence off the region and holding that signature. It
+ * works out where in video memory FWSEC's FRTS region goes (the part of
+ * protected memory FWSEC fences off first), then lays out and logs the rest
+ * of protected memory and the heap the GSP's firmware keeps below it, as
+ * `nvidia::protected_memory_layout` describes. It then chooses which of
+ * FWSEC's signatures its signature slot must hold, the one for the version
+ * the chip's fuses record for FWSEC, and copies FWSEC into memory the card
+ * can reach, patched to fence off the region and holding that signature. It
  * then resets the GSP's falcon, the microcontroller in the GSP that runs
  * FWSEC, and that reset is the first step that writes to the card's BAR0
  * registers. The card's bus mastering is then turned on, and the falcon
@@ -77,7 +79,9 @@ namespace drivers {
  * fails when the card's boot firmware has not finished within
  * `nvidia::BOOT_FIRMWARE_TIMEOUT_NS`, or when `nvidia::place_frts_region`
  * refuses the card's state, as when protected memory is already set up. Once
- * the region is placed, it fails when `nvidia::select_fwsec_signature`
+ * the region is placed, it fails when `nvidia::lay_out_protected_memory`
+ * finds that the layout does not fit in the part of video memory cleared
+ * before the GSP's firmware runs, or when `nvidia::select_fwsec_signature`
  * refuses FWSEC's signatures, as when none is for the version the chip's
  * fuses record, when the memory for FWSEC's copy cannot be allocated, or
  * when FWSEC's data does not lead to a place for the FRTS command as

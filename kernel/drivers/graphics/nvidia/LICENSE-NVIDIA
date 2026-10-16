@@ -184,19 +184,30 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     the full fence before each received message, in message_queues.cpp, booter
     load's role, run on SEC2 to load, verify with the signature and boot the
     GSP's firmware in protected memory, in chip.h, firmware_files.h,
-    gsp_boot_memory.h and nvidia_gpu.h, the radix3 page table's three levels
-    of 64-bit addresses, level 0 a single page listing the pages of level 1,
-    level 1 listing those of level 2 and level 2 listing every page of the
-    data, each of the table's page size, each level's entries running on
-    across its pages and the table's levels lying in that order, in
-    gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
+    gsp_boot_memory.h, protected_memory.h and nvidia_gpu.h, the radix3 page
+    table's three levels of 64-bit addresses, level 0 a single page listing
+    the pages of level 1, level 1 listing those of level 2 and level 2 listing
+    every page of the data, each of the table's page size, each level's
+    entries running on across its pages and the table's levels lying in that
+    order, in gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rules that the
     GSP's firmware, its signature and the bootloader's program are each copied
     into system memory of their own, the firmware's last page ending in zeros,
     in gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rule that
-    the copies of the signature and the bootloader's program each lie in one
-    contiguous range, in gsp_boot_memory.h and gsp_boot_memory.cpp
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    copies of the signature and the bootloader's program each lie in one
+    contiguous range, in gsp_boot_memory.h and gsp_boot_memory.cpp, the
+    firmware heap's size as the sum, in 32 bits, of its share for the
+    operating system the firmware runs on, its base share, its share for
+    each GiB of video memory with a part GiB counting whole, rounded up to 1
+    MiB, and its share for the firmware's channels, raised to the chip's
+    minimum, in chip.h, protected_memory.h, protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rule that
+    the GSP is not booted on a chip without a scrubber program when the
+    memory from the unprotected heap's start to the end of video memory is
+    larger than the prescrubbed top, in chip.h, protected_memory.h,
+    protected_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -205,8 +216,38 @@ src/nvidia/generated/g_kernel_gsp_nvoc.h
     firmware_files.h, firmware_files.cpp, gsp_boot_memory.h, nvidia_gpu.h,
     kernel/tests/graphics/nvidia.test.cpp,
     kernel/tests/graphics/nvidia_firmware.test.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the 32 bits of the
+    firmware heap's operating system's and base shares, in chip.h and
+    protected_memory.cpp, and the 1 MiB unprotected heap, the 256 MiB
+    prescrubbed top and the 84 MiB minimum heap, in chip.cpp,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_gsp_nvoc.c
+    the firmware heap's 20 MiB share for the operating system the firmware
+    runs on and its 8 MiB base share on GA102, and which minimum heap,
+    unprotected heap and prescrubbed top GA102 gets, in chip.cpp,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/gsp/gsp_fw_heap.h
+    the firmware heap's 20 MiB share for the operating system the firmware
+    runs on, its 8 MiB base share, 96 KiB for each GiB of video memory and 96
+    MiB for the firmware's records of up to 2048 channels, and what the two
+    shares are for, in chip.h, chip.cpp, protected_memory.h,
+    protected_memory.cpp, kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvmisc.h
+    the rule that rounding up keeps its operand's width, so the firmware
+    heap's share for video memory is rounded up in 32 bits, in
+    protected_memory.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
     the fields of booter load's metadata and load header, and the rules that
@@ -284,10 +325,21 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     the rule that the bootloader descriptor's manifest and monitor code and
     data offsets are offsets inside the bootloader's program, in
     firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, and the rule that the
+    kernel/tests/graphics/nvidia_firmware.test.cpp, the rule that the
     bootloader's program holds at least one byte, in gsp_boot_memory.h,
     gsp_boot_memory.cpp, nvidia_gpu.h and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the layout below
+    the FRTS region (the bootloader's program at a 4 KiB boundary, the GSP's
+    firmware at a 64 KiB boundary, and the heap, protected memory's start,
+    which leaves room below the heap for protected memory's metadata, and
+    the unprotected heap each at a 1 MiB boundary, each part ending at or
+    below the part above it, with the heap's size the room below the
+    firmware rounded down to 1 MiB), in protected_memory.h,
+    protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and that the
+    memory reserved for the firmware starts at the unprotected heap, in
+    protected_memory.h, protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
@@ -450,10 +502,18 @@ src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
     the rule that the offsets of the manifest and the monitor's code and
     data lie inside the bootloader's program, counted from its start, in
     firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, and that booter load
-    reads the copies of the GSP's firmware, its signature and the
-    bootloader's program in system memory and places the firmware and the
-    bootloader's program in protected memory, in gsp_boot_memory.h
+    kernel/tests/graphics/nvidia_firmware.test.cpp, that booter load reads
+    the copies of the GSP's firmware, its signature and the bootloader's
+    program in system memory and places the firmware and the bootloader's
+    program in protected memory, in gsp_boot_memory.h and
+    protected_memory.h, the order of protected memory's parts below the FRTS
+    region and of the unprotected heap below them, in chip.h,
+    protected_memory.h, protected_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the metadata
+    booter load places at protected memory's start and its 256 bytes, in
+    protected_memory.h and protected_memory.cpp, and the rule that only the
+    last 256 MiB of video memory is scrubbed before the GSP's firmware runs,
+    which scrubs the rest, in chip.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/common/inc/nv-firmware.h
@@ -533,7 +593,8 @@ src/nvidia/src/kernel/rmapi/rpc_common.c
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-Each of these files carries this permission notice:
+Each of these files, or for g_kernel_gsp_nvoc.c the package's COPYING, carries
+this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),
