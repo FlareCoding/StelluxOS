@@ -3,6 +3,7 @@
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
+#include "drivers/graphics/nvidia/gsp_boot_memory.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/protected_memory.h"
 #include "drivers/graphics/nvidia/registers.h"
@@ -160,6 +161,11 @@ int32_t nvidia_gpu_driver::attach() {
         booter_load_signature.fuse_version
     );
 
+    rc = nvidia::check_boot_copies(bootloader_header, gsp_image_parts);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
     log::info("nvidia: firmware %s checked", nvidia::FIRMWARE_VERSION);
 
     nvidia::falcon_program_table table = {};
@@ -227,11 +233,15 @@ int32_t nvidia_gpu_driver::attach() {
         signature.fuse_version
     );
 
+    // Only the bus layer knows whether the card is coherent, and asking it takes privilege
+    dma::device_profile card_profile = dma::uncached_profile(chip->dma_address_bits);
+    RUN_ELEVATED(card_profile = dma_profile(chip->dma_address_bits));
+
     size_t image_pages = pmm::page_align_up(fwsec.size) / pmm::PAGE_SIZE;
     dma::buffer fwsec_image = {};
     RUN_ELEVATED(
         rc = dma::alloc_pages(
-            dma_profile(chip->dma_address_bits),
+            card_profile,
             image_pages,
             dma::caching::uncached,
             paging::PAGE_USER,
@@ -275,7 +285,26 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
-    log::info("nvidia: bring-up stops after FWSEC fenced off the FRTS region at 0x%lX", frts.offset);
+    log::info("nvidia: FWSEC fenced off the FRTS region at 0x%lX", frts.offset);
+
+    nvidia::gsp_boot_memory boot_memory;
+    rc = boot_memory.copy_boot_files(card_profile, files, bootloader_header, gsp_image_parts);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: GSP's firmware copied into pages listed by a radix3 page table at physical address 0x%lX, the "
+        "bootloader's program to 0x%lX and the firmware's signature to 0x%lX",
+        boot_memory.radix3_address(),
+        boot_memory.bootloader_address(),
+        boot_memory.signature_address()
+    );
+
+    // The card was never given these addresses, so nothing on it reads the memory
+    boot_memory.release();
+
+    log::info("nvidia: bring-up stops before starting the GSP, with its boot memory freed");
 
     return DECLINED;
 }
