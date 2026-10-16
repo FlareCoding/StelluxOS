@@ -77,15 +77,16 @@ enum class caching : uint8_t {
  * @brief Allocate zeroed, physically contiguous pages that `device` reaches.
  * The caller owns the buffer and releases it with `free_pages`.
  * @param device The device that will access the pages.
- * @param pages Number of pages, at least one.
+ * @param pages Number of pages, 1 to 2^`pmm::MAX_ORDER`, the pages the largest block holds.
  * @param mode Whether the buffer may be cached.
  * @param access 0, or `PAGE_USER` for a driver that touches the buffer while lowered.
  * @param out Receives the buffer, with `cached` set to the layer's choice.
  * @return OK on success, ERR_INVALID_ARG for zero pages, an address limit
  *         outside 32 to 64 bits or an access flag other than `PAGE_USER`,
- *         ERR_NO_MEM when no contiguous run is free. A limit of 33 to 63 bits
- *         is checked after allocating from any zone, so it can also fail with
- *         ERR_NO_MEM while memory below the limit is free.
+ *         ERR_NO_MEM when no contiguous run is free or `pages` is more than
+ *         the largest block holds. A limit of 33 to 63 bits is checked after
+ *         allocating from any zone, so it can also fail with ERR_NO_MEM while
+ *         memory below the limit is free.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE int32_t alloc_pages(

@@ -159,7 +159,9 @@ __PRIVILEGED_CODE static int32_t alloc_contiguous_once(
     uintptr_t&           out_addr,
     pmm::phys_addr_t&    out_phys
 ) {
-    if (pages == 0) {
+    // `pages_to_order` stops at the largest block, so a larger request would map fewer pages than asked
+    bool exceeds_one_block = pages > pmm::order_to_pages(pmm::MAX_ORDER);
+    if (pages == 0 || exceeds_one_block) {
         return ERR_INVALID_ARG;
     }
 

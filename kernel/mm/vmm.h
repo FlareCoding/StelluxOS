@@ -57,14 +57,15 @@ __PRIVILEGED_CODE int32_t init();
 /**
  * @brief Allocate physically contiguous pages (single PMM block).
  * Page count is rounded up to 2^order. Large pages used when aligned.
- * @param pages Requested pages (rounded up to power of 2).
+ * @param pages Requested pages, 1 to 2^MAX_ORDER, the pages the largest block holds.
  * @param zone PMM zone mask (ZONE_DMA32, ZONE_NORMAL, ZONE_ANY).
  * @param flags Page permissions.
  * @param alloc_flags ALLOC_ZERO, ALLOC_ALLOW_2MB, ALLOC_ALLOW_1GB.
  * @param tag KVA allocation tag.
  * @param out_addr Usable virtual address on success.
  * @param out_phys Physical base address on success (for DMA).
- * @return OK on success, error code on failure.
+ * @return OK on success, ERR_INVALID_ARG for 0 pages or more than the largest block holds, error code on
+ *         other failures.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE int32_t alloc_contiguous(
