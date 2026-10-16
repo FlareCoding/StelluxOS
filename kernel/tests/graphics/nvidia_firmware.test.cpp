@@ -20,6 +20,7 @@ using drivers::nvidia::check_boot_file;
 using drivers::nvidia::check_gsp_image;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::FIRMWARE_VERSION;
+using drivers::nvidia::gsp_image_layout;
 using drivers::nvidia::OK;
 using drivers::nvidia::read_booter_layout;
 using drivers::nvidia::read_bootloader_layout;
@@ -510,7 +511,7 @@ TEST(nvidia_firmware, bootloader_parts_must_end_inside_the_program) {
     );
 }
 
-// Adding this to any of the GA102 descriptor's part fields leaves its low 16 bits as they were, inside the program
+// Adding this to a field leaves its low 16 bits as they were, so only a check that reads the whole field sees it
 static constexpr uint32_t ABOVE_16_BITS = 0x10000;
 
 TEST(nvidia_firmware, bootloader_part_fields_are_read_past_16_bits) {
@@ -1066,12 +1067,21 @@ TEST(nvidia_firmware, booter_load_cut_short_after_opening_is_refused) {
 static constexpr size_t GSP_IMAGE_BYTES = 8192;
 
 // The name table of every synthetic image. .fwversion comes last, so the table ends with its NUL.
-static constexpr char NAME_TABLE[] = "\0.shstrtab\0.fwimage\0.fwversion";
+static constexpr char NAME_TABLE[] = "\0.shstrtab\0.fwsignature_ad10x\0.fwimage\0.fwsignature_ga10x\0.fwversion";
 
 // Where each name starts in the table, the value a section header holds to name its section
-static constexpr uint32_t SHSTRTAB_NAME_OFFSET  = 1;
-static constexpr uint32_t FWIMAGE_NAME_OFFSET   = 11;
-static constexpr uint32_t FWVERSION_NAME_OFFSET = 20;
+static constexpr uint32_t SHSTRTAB_NAME_OFFSET   = 1;
+static constexpr uint32_t OTHER_CHIP_NAME_OFFSET = 11;
+static constexpr uint32_t FWIMAGE_NAME_OFFSET    = 30;
+static constexpr uint32_t SIGNATURE_NAME_OFFSET  = 39;
+static constexpr uint32_t FWVERSION_NAME_OFFSET  = 58;
+
+// The signature section every synthetic image is checked for, the one the chip table names for GA102
+static constexpr char SIGNATURE_SECTION[] = ".fwsignature_ga10x";
+
+// The sizes of every synthetic firmware and signature section, unequal so a check that swaps them fails
+static constexpr uint64_t GSP_FIRMWARE_BYTES  = 0x400;
+static constexpr uint64_t GSP_SIGNATURE_BYTES = 0x100;
 
 // Where a synthetic GSP image places its parts, as offsets from the file's start and section indexes
 struct gsp_layout {
@@ -1081,6 +1091,10 @@ struct gsp_layout {
     uint64_t name_table_offset;
     uint16_t version_index;
     uint64_t version_offset;
+    uint16_t firmware_index;
+    uint64_t firmware_offset;
+    uint16_t signature_index;
+    uint64_t signature_offset;
 };
 
 // The synthetic GSP image every test checks, rebuilt by `build_image` before each case
@@ -1096,8 +1110,8 @@ static elf64::Shdr& image_section(uint16_t index) {
     return *reinterpret_cast<elf64::Shdr*>(g_image + offset);
 }
 
-// Lays out a valid image as `layout` says, with section 0 unnamed and the others named .fwimage unless they are the
-// name table or .fwversion. It stays valid until the test breaks one property.
+// Lays out a valid image as `layout` says, with section 0 unnamed and each section without a part of its own named
+// for another chip's signature, as the image holds those too. It stays valid until the test breaks one property.
 static void build_image(const gsp_layout& layout) {
     string::memset(g_image, 0, sizeof(g_image));
     g_layout = layout;
@@ -1115,7 +1129,7 @@ static void build_image(const gsp_layout& layout) {
     header.e_shstrndx = layout.name_table_index;
 
     for (uint16_t i = 1; i < layout.section_count; i++) {
-        image_section(i).sh_name = FWIMAGE_NAME_OFFSET;
+        image_section(i).sh_name = OTHER_CHIP_NAME_OFFSET;
     }
 
     elf64::Shdr& name_table = image_section(layout.name_table_index);
@@ -1129,19 +1143,45 @@ static void build_image(const gsp_layout& layout) {
     version_section.sh_offset = layout.version_offset;
     version_section.sh_size = sizeof(FIRMWARE_VERSION);
     string::memcpy(g_image + layout.version_offset, FIRMWARE_VERSION, sizeof(FIRMWARE_VERSION));
+
+    elf64::Shdr& firmware = image_section(layout.firmware_index);
+    firmware.sh_name = FWIMAGE_NAME_OFFSET;
+    firmware.sh_offset = layout.firmware_offset;
+    firmware.sh_size = GSP_FIRMWARE_BYTES;
+
+    elf64::Shdr& signature = image_section(layout.signature_index);
+    signature.sh_name = SIGNATURE_NAME_OFFSET;
+    signature.sh_offset = layout.signature_offset;
+    signature.sh_size = GSP_SIGNATURE_BYTES;
 }
 
-static int32_t check_image() {
+// Appends `name` and its NUL to the name table, which the layout must leave room after, and names section `index`
+// with it
+static void rename_section(uint16_t index, const char* name) {
+    elf64::Shdr& name_table = image_section(g_layout.name_table_index);
+    size_t name_bytes = string::strlen(name) + 1;
+    string::memcpy(g_image + name_table.sh_offset + name_table.sh_size, name, name_bytes);
+
+    image_section(index).sh_name = static_cast<uint32_t>(name_table.sh_size);
+    name_table.sh_size += name_bytes;
+}
+
+static int32_t check_image(const char* signature_section, gsp_image_layout& layout_out) {
     fw::file file;
     if (!install(g_image, GSP_IMAGE_BYTES, file)) {
         return NOT_CHECKED;
     }
 
-    return check_gsp_image(file);
+    return check_gsp_image(file, signature_section, layout_out);
 }
 
-// As gsp_ga10x.bin of firmware 535.183.01 places them: the section table ends the file, the name table is the last
-// of 10 sections, and .fwversion is the third
+static int32_t check_image() {
+    gsp_image_layout layout = {};
+    return check_image(SIGNATURE_SECTION, layout);
+}
+
+// As gsp_ga10x.bin of firmware 535.183.01 places them: the section table ends the file, and of its 10 sections
+// .fwimage is the second, .fwversion the third, the GA10x signature the seventh and the name table the last
 static constexpr gsp_layout GSP_GA10X_LAYOUT = {
     .section_table_offset = GSP_IMAGE_BYTES - 10 * sizeof(elf64::Shdr),
     .section_count = 10,
@@ -1149,10 +1189,14 @@ static constexpr gsp_layout GSP_GA10X_LAYOUT = {
     .name_table_offset = 7000,
     .version_index = 2,
     .version_offset = 4000,
+    .firmware_index = 1,
+    .firmware_offset = sizeof(elf64::Ehdr),
+    .signature_index = 6,
+    .signature_offset = 5003,
 };
 
-// The section table in the middle with room for one header after it, the name table's header at index 1 and its
-// names right after the ELF header, and .fwversion's contents at an odd offset, ending the file
+// The section table in the middle with room for a header after it, the name table's header at index 1 and its names
+// after the ELF header, .fwversion's contents ending the file from an odd offset and .fwimage's header the last
 static constexpr gsp_layout MIDDLE_TABLE_LAYOUT = {
     .section_table_offset = 2048,
     .section_count = 10,
@@ -1160,10 +1204,14 @@ static constexpr gsp_layout MIDDLE_TABLE_LAYOUT = {
     .name_table_offset = sizeof(elf64::Ehdr),
     .version_index = 7,
     .version_offset = GSP_IMAGE_BYTES - sizeof(FIRMWARE_VERSION),
+    .firmware_index = 9,
+    .firmware_offset = 3000,
+    .signature_index = 4,
+    .signature_offset = 200,
 };
 
-// The most sections an image may have, with room for one more header after the table, and the name table ending
-// the file
+// The most sections an image may have, with room for one more header after the table, the signature's header
+// right after the null section's, and the name table ending the file
 static constexpr gsp_layout MOST_SECTIONS_LAYOUT = {
     .section_table_offset = sizeof(elf64::Ehdr),
     .section_count = 64,
@@ -1171,6 +1219,10 @@ static constexpr gsp_layout MOST_SECTIONS_LAYOUT = {
     .name_table_offset = GSP_IMAGE_BYTES - sizeof(NAME_TABLE),
     .version_index = 33,
     .version_offset = 4800,
+    .firmware_index = 62,
+    .firmware_offset = 5000,
+    .signature_index = 1,
+    .signature_offset = 6100,
 };
 
 // The section table ending the file with .fwversion's header last
@@ -1181,6 +1233,10 @@ static constexpr gsp_layout VERSION_LAST_LAYOUT = {
     .name_table_offset = 3000,
     .version_index = 9,
     .version_offset = 5001,
+    .firmware_index = 5,
+    .firmware_offset = 1000,
+    .signature_index = 8,
+    .signature_offset = 6000,
 };
 
 static constexpr gsp_layout VALID_LAYOUTS[] = {
@@ -1190,10 +1246,16 @@ static constexpr gsp_layout VALID_LAYOUTS[] = {
     VERSION_LAST_LAYOUT,
 };
 
-TEST(nvidia_firmware, gsp_images_of_varied_layouts_pass) {
+TEST(nvidia_firmware, gsp_images_of_varied_layouts_pass_with_their_firmware_and_signature) {
     for (const gsp_layout& layout : VALID_LAYOUTS) {
         build_image(layout);
-        EXPECT_EQ(check_image(), OK);
+
+        gsp_image_layout found = {};
+        EXPECT_EQ(check_image(SIGNATURE_SECTION, found), OK);
+        EXPECT_EQ(found.firmware_file_offset, layout.firmware_offset);
+        EXPECT_EQ(found.firmware_size, GSP_FIRMWARE_BYTES);
+        EXPECT_EQ(found.signature_file_offset, layout.signature_offset);
+        EXPECT_EQ(found.signature_size, GSP_SIGNATURE_BYTES);
     }
 }
 
@@ -1204,7 +1266,8 @@ TEST(nvidia_firmware, gsp_image_shorter_than_an_elf_header_is_refused) {
     fw::file file;
     ASSERT_TRUE(install(g_image, sizeof(elf64::Ehdr) - 1, file));
 
-    EXPECT_EQ(check_gsp_image(file), ERR_BAD_FIRMWARE);
+    gsp_image_layout found = {};
+    EXPECT_EQ(check_gsp_image(file, SIGNATURE_SECTION, found), ERR_BAD_FIRMWARE);
 }
 
 // Each valid layout ends with a zero byte some read needs: a section header's last, or the NUL of .fwversion's name
@@ -1219,7 +1282,8 @@ TEST(nvidia_firmware, gsp_image_cut_short_after_opening_is_refused) {
         fw::file cut_short;
         ASSERT_TRUE(install(g_image, GSP_IMAGE_BYTES - 1, cut_short));
 
-        EXPECT_EQ(check_gsp_image(opened), ERR_BAD_FIRMWARE);
+        gsp_image_layout found = {};
+        EXPECT_EQ(check_gsp_image(opened, SIGNATURE_SECTION, found), ERR_BAD_FIRMWARE);
     }
 }
 
@@ -1313,7 +1377,7 @@ TEST(nvidia_firmware, gsp_image_name_table_must_lie_inside_the_file) {
 // comparison that includes the NUL refuses, and two identical ones
 TEST(nvidia_firmware, gsp_image_must_have_exactly_one_version_section) {
     build_image(GSP_GA10X_LAYOUT);
-    image_section(GSP_GA10X_LAYOUT.version_index).sh_name = FWIMAGE_NAME_OFFSET;
+    image_section(GSP_GA10X_LAYOUT.version_index).sh_name = OTHER_CHIP_NAME_OFFSET;
     EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
 
     build_image(GSP_GA10X_LAYOUT);
@@ -1350,11 +1414,15 @@ TEST(nvidia_firmware, gsp_image_version_section_must_lie_inside_the_file) {
     EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
 }
 
-// Another version of the same length and one a digit longer, which only comparing the versions up to their NULs
-// refuses, then the version without its NUL and with a byte after it
+// Another version of the same length, one a digit longer in the version's bytes, which NVIDIA's driver accepts, and in
+// one byte more, which only comparing up to the NULs refuses, then the version without its NUL and with a byte after it
 TEST(nvidia_firmware, gsp_image_version_section_must_hold_exactly_the_driver_version_and_its_nul) {
     build_image(GSP_GA10X_LAYOUT);
     g_image[GSP_GA10X_LAYOUT.version_offset] += 1;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    g_image[GSP_GA10X_LAYOUT.version_offset + sizeof(FIRMWARE_VERSION) - 1] = '0';
     EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
 
     build_image(GSP_GA10X_LAYOUT);
@@ -1378,4 +1446,145 @@ TEST(nvidia_firmware, gsp_image_version_section_larger_than_the_version_buffer_i
     build_image(GSP_GA10X_LAYOUT);
     image_section(GSP_GA10X_LAYOUT.version_index).sh_size = GSP_IMAGE_BYTES - GSP_GA10X_LAYOUT.version_offset;
     EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// A section of GSP_GA10X_LAYOUT with no part of its own
+static constexpr uint16_t GA10X_SPARE_INDEX = 4;
+
+// Expects a refusal when the section at `index` is missing, has bit 16 of its name offset set, which a 16-bit cut
+// would clear, is named `longer_name`, its name and one byte more, or appears twice
+static void expect_exactly_one_section(uint16_t index, const char* longer_name) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(index).sh_name = OTHER_CHIP_NAME_OFFSET;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(index).sh_name += ABOVE_16_BITS;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    rename_section(index, longer_name);
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GA10X_SPARE_INDEX) = image_section(index);
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+TEST(nvidia_firmware, gsp_image_must_have_exactly_one_firmware_section) {
+    expect_exactly_one_section(GSP_GA10X_LAYOUT.firmware_index, ".fwimageX");
+}
+
+// Without its signature section the image still holds another chip's, which names every section without a part of
+// its own
+TEST(nvidia_firmware, gsp_image_must_have_exactly_one_signature_section_for_the_chip) {
+    expect_exactly_one_section(GSP_GA10X_LAYOUT.signature_index, ".fwsignature_ga10xX");
+}
+
+// The indexes of the firmware's and the signature's sections in GSP_GA10X_LAYOUT
+static constexpr uint16_t GA10X_CONTENT_INDEXES[] = {GSP_GA10X_LAYOUT.firmware_index, GSP_GA10X_LAYOUT.signature_index};
+
+// A section of one byte passes, and an empty one is refused
+TEST(nvidia_firmware, gsp_image_firmware_and_signature_must_hold_at_least_one_byte) {
+    for (uint16_t index : GA10X_CONTENT_INDEXES) {
+        build_image(GSP_GA10X_LAYOUT);
+        image_section(index).sh_size = 1;
+        EXPECT_EQ(check_image(), OK);
+
+        image_section(index).sh_size = 0;
+        EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+    }
+}
+
+// Above 32 bits, so a bound computed in 32 bits would pass these cases
+static constexpr uint64_t ABOVE_32_BITS = 0x100000000ULL;
+
+// Each section passes ending at the file's end and is refused ending a byte later, wrapping around or above 32 bits.
+// The check never reads either section, so only its bounds check refuses these, and one may cover the section table.
+TEST(nvidia_firmware, gsp_image_firmware_and_signature_must_lie_inside_the_file) {
+    for (uint16_t index : GA10X_CONTENT_INDEXES) {
+        build_image(GSP_GA10X_LAYOUT);
+        elf64::Shdr& section = image_section(index);
+        section.sh_offset = GSP_IMAGE_BYTES - section.sh_size;
+        EXPECT_EQ(check_image(), OK);
+
+        section.sh_offset += 1;
+        EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+        section.sh_offset = LAST_OFFSET - section.sh_size + 2;
+        EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+    }
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.firmware_index).sh_offset += ABOVE_32_BITS;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.signature_index).sh_size += ABOVE_32_BITS;
+    EXPECT_EQ(check_image(), ERR_BAD_FIRMWARE);
+}
+
+// A section of GSP_GA10X_LAYOUT with no part of its own, after every section the check looks for
+static constexpr uint16_t GA10X_LATE_SPARE_INDEX = 8;
+
+// A section the check does not look for, after every one it does, with its name starting past the name table or its
+// contents past the file. NVIDIA's lookup refuses both, as it checks each section from the table's end to its match.
+TEST(nvidia_firmware, gsp_image_sections_the_check_does_not_look_for_may_lie_past_the_name_table_or_file) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GA10X_LATE_SPARE_INDEX).sh_name = sizeof(NAME_TABLE);
+    EXPECT_EQ(check_image(), OK);
+
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GA10X_LATE_SPARE_INDEX).sh_offset = GSP_IMAGE_BYTES;
+    image_section(GA10X_LATE_SPARE_INDEX).sh_size = GSP_SIGNATURE_BYTES;
+    EXPECT_EQ(check_image(), OK);
+}
+
+// The most bytes of a section name the check compares, its NUL included, as many as NVIDIA's driver gives the
+// signature section's name
+static constexpr size_t SECTION_NAME_BYTES = 32;
+
+// Zero bytes the name table holds before the names `rename_section` appends, so a name lies past byte 255
+static constexpr uint32_t NAME_PADDING_BYTES = 256;
+
+// A name read from an offset cut to 8 bits would look for .fwimage in the zero bytes before it
+TEST(nvidia_firmware, gsp_image_section_named_past_byte_255_of_the_name_table_is_found) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.name_table_index).sh_size += NAME_PADDING_BYTES;
+    rename_section(GSP_GA10X_LAYOUT.firmware_index, ".fwimage");
+    EXPECT_EQ(check_image(), OK);
+}
+
+// The longest section name the check compares, 31 bytes and its NUL, and one a byte longer
+static constexpr char LONGEST_SECTION_NAME[]  = ".fwsignature_longest_name_check";
+static constexpr char OVERLONG_SECTION_NAME[] = ".fwsignature_longest_name_checks";
+
+static_assert(sizeof(LONGEST_SECTION_NAME) == SECTION_NAME_BYTES, "LONGEST_SECTION_NAME must fill the check's bytes");
+static_assert(sizeof(OVERLONG_SECTION_NAME) == SECTION_NAME_BYTES + 1, "OVERLONG_SECTION_NAME must be one byte more");
+
+// The image holds a signature section of each name, so only the check of the name's length refuses the longer one
+TEST(nvidia_firmware, signature_section_name_longer_than_the_check_compares_is_refused) {
+    gsp_image_layout found = {};
+    uint16_t signature_index = GSP_GA10X_LAYOUT.signature_index;
+
+    build_image(GSP_GA10X_LAYOUT);
+    rename_section(signature_index, LONGEST_SECTION_NAME);
+    EXPECT_EQ(check_image(LONGEST_SECTION_NAME, found), OK);
+
+    build_image(GSP_GA10X_LAYOUT);
+    rename_section(signature_index, OVERLONG_SECTION_NAME);
+    EXPECT_EQ(check_image(OVERLONG_SECTION_NAME, found), ERR_BAD_FIRMWARE);
+}
+
+// Refused at its last check, after the firmware was found
+TEST(nvidia_firmware, refused_gsp_image_leaves_the_layout_unchanged) {
+    build_image(GSP_GA10X_LAYOUT);
+    image_section(GSP_GA10X_LAYOUT.signature_index).sh_offset = GSP_IMAGE_BYTES;
+
+    gsp_image_layout found = {UNCHANGED_FIELD, UNCHANGED_FIELD, UNCHANGED_FIELD, UNCHANGED_FIELD};
+    EXPECT_EQ(check_image(SIGNATURE_SECTION, found), ERR_BAD_FIRMWARE);
+    EXPECT_EQ(found.firmware_file_offset, UNCHANGED_FIELD);
+    EXPECT_EQ(found.firmware_size, UNCHANGED_FIELD);
+    EXPECT_EQ(found.signature_file_offset, UNCHANGED_FIELD);
+    EXPECT_EQ(found.signature_size, UNCHANGED_FIELD);
 }

@@ -166,15 +166,33 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_fwsec.c
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
-    the name of the GSP image's .fwversion section and the rule that it holds
-    exactly the version string and its NUL, in firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, and the rule that the GSP
-    is not booted while protected memory is already set up, in
+    the rule that the GSP image's .fwversion section is one byte longer than
+    the version string and starts with it, in firmware_files.h,
+    firmware_files.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_firmware.test.cpp, the rules that the GSP
+    image's firmware is its .fwimage section, which holds at least one byte,
+    and its signature the section whose name is the signature prefix
+    followed by the name of the chip's firmware family, that a section is
+    found by its whole name, which with its NUL lies inside the section name
+    table, and the 32 bytes given the signature section's name, in chip.cpp,
+    chip.h, firmware_files.h, firmware_files.cpp, nvidia_gpu.h,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp, the rule that the GSP is
+    not booted while protected memory is already set up, in
     protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
-    and the full fence before each received message, in message_queues.cpp,
-    and booter load's role, run on SEC2 to load, verify and boot the GSP's
-    firmware in protected memory, in firmware_files.h
+    the full fence before each received message, in message_queues.cpp, and
+    booter load's role, run on SEC2 to load, verify with the signature and
+    boot the GSP's firmware in protected memory, in chip.h and
+    firmware_files.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_gsp_nvoc.h
+    the names of the GSP image's .fwversion and .fwimage sections and the
+    prefix .fwsignature_ of its signature sections, in chip.cpp,
+    firmware_files.h, firmware_files.cpp, nvidia_gpu.h,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
     the fields of booter load's metadata and load header, and the rules that
@@ -399,6 +417,19 @@ src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
     firmware_files.h, firmware_files.cpp and
     kernel/tests/graphics/nvidia_firmware.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/common/inc/nv-firmware.h
+    the names ga10x and ad10x of two firmware families, NVIDIA's groups of
+    chips for choosing firmware, ga10x in chip.cpp,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp, and ad10x in
+    kernel/tests/graphics/nvidia_firmware.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/common/inc/nv-firmware-chip-family-select.h
+    the rule that an Ampere chip other than GA100 is of the GA10x firmware
+    family, in chip.cpp and kernel/tests/graphics/nvidia.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/shared/msgq/inc/msgq/msgq_priv.h
     the queue header's fields and the read pointer after them, and the queue

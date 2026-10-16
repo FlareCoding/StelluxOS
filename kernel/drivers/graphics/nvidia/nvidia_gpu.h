@@ -1,3 +1,5 @@
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
+
 #ifndef STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_GPU_H
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_GPU_H
 
@@ -16,15 +18,16 @@ namespace drivers {
  * directory the chip's firmware files belong in is not installed, as in an
  * image without the nvidia-firmware package. Bring-up logs the layout of the
  * card's VBIOS, opens the chip's firmware files, checks the GSP image's
- * firmware version and the bootloader's header, logs where the bootloader's
- * descriptor places the parts of its program and the program's app version,
- * checks booter load's header, logs where booter load's descriptors place its
- * code, data, signature slot and signatures, with its ucode id and engine
- * mask, chooses and logs which of booter load's signatures its slot must
- * hold, reading the version the chip's fuses, bits burned into it for good,
- * record for booter load, and finds FWSEC, the signed program in the VBIOS
- * that fences off protected memory for the GSP's firmware, through the
- * VBIOS's falcon program table.
+ * firmware version, logs where the GSP image places its firmware and the
+ * chip's signature for it, checks the bootloader's header, logs where the
+ * bootloader's descriptor places the parts of its program and the program's
+ * app version, checks booter load's header, logs where booter load's
+ * descriptors place its code, data, signature slot and signatures, with its
+ * ucode id and engine mask, chooses and logs which of booter load's
+ * signatures its slot must hold, reading the version the chip's fuses, bits
+ * burned into it for good, record for booter load, and finds FWSEC, the
+ * signed program in the VBIOS that fences off protected memory for the GSP's
+ * firmware, through the VBIOS's falcon program table.
  * Once the card's boot firmware has finished setting up video memory, it
  * works out where in video memory FWSEC's FRTS region goes, the part of
  * protected memory FWSEC fences off first. It then chooses which of FWSEC's
@@ -41,8 +44,11 @@ namespace drivers {
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
  * directory cannot be opened, the GSP image fails `nvidia::check_gsp_image`,
- * which requires a 64-bit little-endian ELF file whose one .fwversion section
- * holds exactly `FIRMWARE_VERSION` and its NUL, the bootloader or booter load
+ * which requires a 64-bit little-endian ELF file whose one .fwversion
+ * section holds exactly `FIRMWARE_VERSION` and its NUL, with one
+ * .fwimage section and one section of the name the chip table gives for
+ * the chip's signature, a name of at most 31 bytes, each section holding
+ * at least one byte inside the file, the bootloader or booter load
  * is shorter than its header, cannot be read or holds a header that does not
  * describe it, the bootloader's descriptor is too short to hold every field
  * `nvidia::read_bootloader_layout` reads or places a part that ends past the
