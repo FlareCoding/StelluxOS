@@ -1,4 +1,7 @@
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
+
 #include "drivers/graphics/nvidia/nvidia_gpu.h"
+#include "drivers/graphics/nvidia/boot_messages.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
@@ -22,7 +25,10 @@ namespace drivers {
 
 constexpr uint16_t NVIDIA_VENDOR_ID = 0x10DE;
 
-constexpr uint8_t REGISTERS_BAR = 0;
+// Numbered by register, so instance memory, NVIDIA's BAR2, is BAR3 after the 64-bit BAR1
+constexpr uint8_t REGISTERS_BAR       = 0;
+constexpr uint8_t VIDEO_MEMORY_BAR    = 1;
+constexpr uint8_t INSTANCE_MEMORY_BAR = 3;
 
 // Reads from a card that does not respond return all ones, a value PMC_BOOT_0
 // never holds on a working card
@@ -352,6 +358,23 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
+    // The PCI layer keeps its devices in privileged memory
+    nvidia::card_placement card = {};
+    RUN_ELEVATED({
+        card.registers_address = m_dev->get_bar(REGISTERS_BAR).phys;
+        card.video_memory_address = m_dev->get_bar(VIDEO_MEMORY_BAR).phys;
+        card.instance_memory_address = m_dev->get_bar(INSTANCE_MEMORY_BAR).phys;
+        card.bus = m_dev->bus();
+        card.device = m_dev->slot();
+    });
+
+    rc = nvidia::queue_boot_messages(queues, card);
+    if (rc != nvidia::OK) {
+        log::error("nvidia: queueing the system information and the registry failed: %d", rc);
+        boot_memory.release();
+        return rc;
+    }
+
     log::info(
         "nvidia: GSP's firmware copied into pages listed by a radix3 page table at physical address 0x%lX, the "
         "bootloader's program to 0x%lX and the firmware's signature to 0x%lX",
@@ -380,6 +403,13 @@ int32_t nvidia_gpu_driver::attach() {
         boot_memory.log_buffer_address(2),
         boot_memory.resource_manager_arguments_address(),
         boot_memory.libos_arguments_address()
+    );
+    log::info(
+        "nvidia: the system information for BAR0 at 0x%lX, BAR1 at 0x%lX and BAR3 at 0x%lX, and an empty registry, "
+        "queued for the GSP's firmware",
+        card.registers_address,
+        card.video_memory_address,
+        card.instance_memory_address
     );
 
     // The card was never given these addresses, so nothing on it reads the memory
