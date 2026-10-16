@@ -44,12 +44,12 @@ struct message_headers {
 } // namespace
 
 // The queue memory's layout: a page table in the first page, then the command queue and the status queue
-constexpr uint32_t PAGE_BYTES           = 0x1000;
-constexpr uint32_t PAGE_TABLE_ENTRIES   = QUEUE_MEMORY_BYTES / PAGE_BYTES;
-constexpr uint32_t QUEUE_BYTES          = 0x40000;
-constexpr uint32_t COMMAND_QUEUE_OFFSET = PAGE_BYTES;
-constexpr uint32_t STATUS_QUEUE_OFFSET  = COMMAND_QUEUE_OFFSET + QUEUE_BYTES;
+constexpr uint32_t PAGE_BYTES  = 0x1000;
+constexpr uint32_t QUEUE_BYTES = 0x40000;
 
+static_assert(QUEUE_PAGE_TABLE_ENTRIES * PAGE_BYTES == QUEUE_MEMORY_BYTES, "the page table lists every page");
+static_assert(COMMAND_QUEUE_OFFSET == PAGE_BYTES, "the command queue follows the page table's page");
+static_assert(STATUS_QUEUE_OFFSET == COMMAND_QUEUE_OFFSET + QUEUE_BYTES, "the status queue follows the command queue");
 static_assert(STATUS_QUEUE_OFFSET + QUEUE_BYTES == QUEUE_MEMORY_BYTES, "the status queue ends the memory");
 
 // The command queue's layout as NVIDIA's driver creates it: a header page, then 4 KiB elements to the queue's end.
@@ -128,7 +128,7 @@ message_queues::message_queues(uint8_t* memory, uint64_t dma_address)
     string::memset(memory, 0, QUEUE_MEMORY_BYTES);
 
     uint64_t* page_table = reinterpret_cast<uint64_t*>(memory);
-    for (uint32_t i = 0; i < PAGE_TABLE_ENTRIES; i++) {
+    for (uint32_t i = 0; i < QUEUE_PAGE_TABLE_ENTRIES; i++) {
         page_table[i] = dma_address + static_cast<uint64_t>(i) * PAGE_BYTES;
     }
 
@@ -160,7 +160,8 @@ int32_t message_queues::send(uint32_t function, const void* payload, uint32_t pa
     uint32_t element_count = (message_bytes + ELEMENT_BYTES - 1) / ELEMENT_BYTES;
     uint32_t next_write_pointer = (m_write_pointer + element_count) % ELEMENT_COUNT;
 
-    // A read pointer past the ring leaves no room, as NVIDIA's count of free elements treats it
+    // A read pointer past the ring leaves no room, as NVIDIA's count of free elements treats it once a message needs
+    // more elements than its cached count, where `send` reads it for every payload no larger than its maximum
     uint32_t read_pointer = sync::atomic_ref<uint32_t>{*m_firmware_read_pointer}.load_acquire();
     bool is_read_pointer_in_ring = read_pointer < ELEMENT_COUNT;
     uint32_t free_elements =
@@ -268,8 +269,8 @@ int32_t message_queues::receive(received_message& out, void* payload, uint32_t p
     // NVIDIA's driver fences fully before each receive, so the write pointer is read after all the caller did before
     barrier::dma_full();
 
-    // A write pointer past the ring leaves nothing to read, as NVIDIA's count of written elements treats it once its
-    // cached count is spent, where the driver reads the write pointer on every call
+    // A write pointer past the ring leaves nothing to read, as NVIDIA's count of written elements treats it once a
+    // message needs more elements than its cached count, where `receive` reads it on every call once linked
     queue_header* status_queue = reinterpret_cast<queue_header*>(m_status_queue);
     uint32_t write_pointer = sync::atomic_ref<uint32_t>{status_queue->write_pointer}.load_relaxed();
     bool is_write_pointer_in_ring = write_pointer < m_status_element_count;

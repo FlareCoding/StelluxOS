@@ -30,6 +30,24 @@ constexpr uint64_t PROTECTED_METADATA_REVISION = 1;
 // signature's size rounded up to a whole number of them
 constexpr uint64_t SIGNATURE_BLOCK_BYTES = 256;
 
+// NVIDIA's size for each log buffer in its release build. A buffer starts with the firmware's write position, 8
+// bytes, then lists the address of each of its pages
+constexpr uint64_t LOG_BUFFER_BYTES = 0x10000;
+constexpr uint64_t LOG_BUFFER_PAGES = LOG_BUFFER_BYTES / pmm::PAGE_SIZE;
+
+// NVIDIA's names for the log buffers in LibOS's arguments, the init task's first, as the firmware's earliest log
+// lines need, and for the resource manager's arguments
+constexpr const char* LOG_BUFFER_NAMES[FIRMWARE_LOG_COUNT] = {"LOGINIT", "LOGINTR", "LOGRM"};
+constexpr const char* RESOURCE_MANAGER_ARGUMENTS_NAME = "RMARGS";
+
+// NVIDIA's driver gives LibOS's arguments and the resource manager's arguments a page each
+constexpr uint64_t LIBOS_ARGUMENTS_BYTES            = 0x1000;
+constexpr uint64_t RESOURCE_MANAGER_ARGUMENTS_BYTES = 0x1000;
+
+// What LibOS's arguments say of each region they list: one contiguous range, in system memory
+constexpr uint8_t LIBOS_REGION_CONTIGUOUS       = 1;
+constexpr uint8_t LIBOS_REGION_IN_SYSTEM_MEMORY = 1;
+
 namespace {
 
 // Protected memory's metadata in the order NVIDIA's driver lays it out. Offsets count bytes from the start of video
@@ -68,9 +86,55 @@ struct protected_metadata {
     uint64_t verified;                             // set by booter load to let the GSP boot, checked by the bootloader
 };
 
+// One region of LibOS's arguments, as NVIDIA's driver lays it out
+struct libos_region {
+    uint64_t id;         // NVIDIA's name for the region, as `libos_region_id` packs it
+    uint64_t address;    // where the card reaches the region's first byte
+    uint64_t bytes;
+    uint8_t  kind;
+    uint8_t  location;
+    uint8_t  padding[6];
+};
+
+// The resource manager's arguments in the order NVIDIA's driver lays them out. Queue offsets count bytes from the
+// start of the message queues' memory
+struct resource_manager_arguments {
+    uint64_t queue_memory_address;           // the memory's first page, which holds its page table
+    uint32_t queue_page_table_entries;
+    uint32_t padding;
+    uint64_t command_queue_offset;
+    uint64_t status_queue_offset;
+    uint64_t interrupt_command_queue_offset; // NVIDIA's lockless queues for the firmware's interrupt task
+    uint64_t interrupt_status_queue_offset;
+    uint32_t power_transition_old_level;     // set only when the GSP boots during a power transition
+    uint32_t power_transition_flags;
+    uint8_t  in_power_transition;
+    uint8_t  power_transition_padding[3];
+    uint32_t gpu_instance;
+    uint64_t profiler_address;               // a buffer for the firmware's profiler
+    uint64_t profiler_bytes;
+};
+
 } // namespace
 
 static_assert(sizeof(protected_metadata) == PROTECTED_METADATA_BYTES, "the metadata fills the room the layout leaves");
+static_assert(sizeof(libos_region) == 32, "alignment pads each of LibOS's regions to 32 bytes, as in NVIDIA's driver");
+static_assert(sizeof(resource_manager_arguments) == 80, "the resource manager's arguments take NVIDIA's 80 bytes");
+
+// NVIDIA's id for a region of LibOS's arguments: up to eight characters of its name, the first in the highest byte used
+static constexpr uint64_t libos_region_id(const char* name) {
+    uint64_t id = 0;
+    for (size_t i = 0; i < sizeof(id) && name[i] != '\0'; i++) {
+        id = id << 8 | static_cast<uint8_t>(name[i]);
+    }
+
+    return id;
+}
+
+static_assert(
+    libos_region_id("LONGER_NAME") == 0x4C4F4E4745525F4E,
+    "an id keeps a name's first eight characters, as NVIDIA's driver packs it"
+);
 
 // The pages that hold `bytes` bytes, also when rounding `bytes` up would overflow
 static uint64_t pages_for_bytes(uint64_t bytes) {
@@ -468,11 +532,127 @@ void gsp_boot_memory::fill_protected_metadata(
     metadata->vga_workspace_bytes = region.video_memory_size - region.vga_workspace_offset;
 }
 
+int32_t gsp_boot_memory::write_firmware_arguments(const dma::device_profile& device) {
+    if (m_libos_arguments.virt != 0) {
+        log::error(
+            "nvidia: the GSP's boot memory already holds the log buffers and arguments the GSP's firmware starts with"
+        );
+        return ERR_BAD_STATE;
+    }
+
+    if (m_message_queues.virt == 0) {
+        log::error(
+            "nvidia: the log buffers and arguments the GSP's firmware starts with need the message queues' memory first"
+        );
+        return ERR_BAD_STATE;
+    }
+
+    int32_t rc = allocate_firmware_arguments(device);
+    if (rc != OK) {
+        // The card was never given these addresses, so nothing reads the memory
+        free_firmware_arguments();
+        return rc;
+    }
+
+    // The firmware's write position, the first 8 bytes of each log buffer, stays 0 from the zeroed pages
+    for (const dma::buffer& log_buffer : m_log_buffers) {
+        uint64_t* words = reinterpret_cast<uint64_t*>(log_buffer.virt);
+        for (uint64_t page = 0; page < LOG_BUFFER_PAGES; page++) {
+            words[1 + page] = log_buffer.phys + page * pmm::PAGE_SIZE;
+        }
+    }
+
+    fill_resource_manager_arguments();
+    fill_libos_arguments();
+
+    return OK;
+}
+
+int32_t gsp_boot_memory::allocate_firmware_arguments(const dma::device_profile& device) {
+    for (dma::buffer& log_buffer : m_log_buffers) {
+        int32_t rc = allocate_for_card(
+            device,
+            LOG_BUFFER_BYTES,
+            dma::caching::cached_when_coherent,
+            "a log buffer of the GSP's firmware",
+            log_buffer
+        );
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    int32_t rc = allocate_for_card(
+        device,
+        RESOURCE_MANAGER_ARGUMENTS_BYTES,
+        dma::caching::cached_when_coherent,
+        "the resource manager's arguments",
+        m_resource_manager_arguments
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    return allocate_for_card(
+        device,
+        LIBOS_ARGUMENTS_BYTES,
+        dma::caching::uncached,
+        "LibOS's arguments",
+        m_libos_arguments
+    );
+}
+
+// Writes only what NVIDIA's driver sets by default on its first attempt to boot the first GPU it attaches, since the
+// page comes zeroed: no queues for the interrupt task, no power transition, no profiler buffer and GPU instance 0
+void gsp_boot_memory::fill_resource_manager_arguments() {
+    auto* arguments = reinterpret_cast<resource_manager_arguments*>(m_resource_manager_arguments.virt);
+
+    arguments->queue_memory_address = m_message_queues.phys;
+    arguments->queue_page_table_entries = QUEUE_PAGE_TABLE_ENTRIES;
+    arguments->command_queue_offset = COMMAND_QUEUE_OFFSET;
+    arguments->status_queue_offset = STATUS_QUEUE_OFFSET;
+}
+
+// The page comes zeroed, as NVIDIA's driver zeroes it, so the regions past the last stay 0
+void gsp_boot_memory::fill_libos_arguments() {
+    auto* regions = reinterpret_cast<libos_region*>(m_libos_arguments.virt);
+
+    for (size_t i = 0; i < FIRMWARE_LOG_COUNT; i++) {
+        regions[i] = {
+            .id       = libos_region_id(LOG_BUFFER_NAMES[i]),
+            .address  = m_log_buffers[i].phys,
+            .bytes    = m_log_buffers[i].size,
+            .kind     = LIBOS_REGION_CONTIGUOUS,
+            .location = LIBOS_REGION_IN_SYSTEM_MEMORY,
+            .padding  = {},
+        };
+    }
+
+    regions[FIRMWARE_LOG_COUNT] = {
+        .id       = libos_region_id(RESOURCE_MANAGER_ARGUMENTS_NAME),
+        .address  = m_resource_manager_arguments.phys,
+        .bytes    = m_resource_manager_arguments.size,
+        .kind     = LIBOS_REGION_CONTIGUOUS,
+        .location = LIBOS_REGION_IN_SYSTEM_MEMORY,
+        .padding  = {},
+    };
+}
+
 void gsp_boot_memory::release() {
     free_bootloader_and_gsp_image_copies();
+    free_firmware_arguments();
     RUN_ELEVATED(dma::free_pages(m_booter_load));
     RUN_ELEVATED(dma::free_pages(m_message_queues));
     RUN_ELEVATED(dma::free_pages(m_protected_metadata));
+}
+
+void gsp_boot_memory::free_firmware_arguments() {
+    for (dma::buffer& log_buffer : m_log_buffers) {
+        RUN_ELEVATED(dma::free_pages(log_buffer));
+    }
+
+    RUN_ELEVATED(dma::free_pages(m_resource_manager_arguments));
+    RUN_ELEVATED(dma::free_pages(m_libos_arguments));
 }
 
 void gsp_boot_memory::free_bootloader_and_gsp_image_copies() {

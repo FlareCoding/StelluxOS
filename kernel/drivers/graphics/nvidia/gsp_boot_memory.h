@@ -16,6 +16,10 @@ constexpr uint64_t RADIX3_PAGE_BYTES = 0x1000;
 // The 64-bit addresses one page of a radix3 page table holds
 constexpr uint64_t RADIX3_PAGE_ENTRIES = RADIX3_PAGE_BYTES / sizeof(uint64_t);
 
+// The GSP firmware's log buffers, one for each of its tasks that log: the init task, the interrupt task and the
+// resource manager (its task that serves the driver's requests), in that order
+constexpr size_t FIRMWARE_LOG_COUNT = 3;
+
 /**
  * @brief How many pages a radix3 page table takes to map `data_pages` pages
  * of data, its three levels together, as `gsp_boot_memory` describes them.
@@ -110,6 +114,13 @@ int32_t write_booter_load_image(
  * one contiguous range, from `bootloader_address()` and
  * `signature_address()`.
  *
+ * The object also holds what the firmware reads when it starts: a log buffer
+ * for each of the firmware's tasks that log, a page of arguments telling the
+ * resource manager (the firmware's task that serves the driver's requests)
+ * where the message queues lie, and a page of LibOS's arguments, which lists
+ * those buffers and that page as the regions LibOS (the small operating system
+ * the firmware runs on) maps for the firmware.
+ *
  * The firmware lies in physically contiguous runs of up to 2 MiB, listed by
  * a radix3 page table, three levels of 4 KiB pages of 64-bit addresses.
  * Level 0 is one page that lists the pages of level 1, level 1 lists the
@@ -126,14 +137,14 @@ int32_t write_booter_load_image(
  *
  * One object owns all of this memory, and only `release` frees it all. The
  * copies `copy_boot_files` makes, booter load's copy, the message queues'
- * memory and the metadata are each filled by a call of their own, which on
- * an error frees only what it allocated. Once the card has the addresses,
- * booter load on SEC2 and a running GSP may read any of it, and the GSP
- * writes the message queues, so the caller calls `release` only once SEC2
- * and the GSP are both confirmed halted, or before the card was given any of
- * the addresses. An object dropped without `release` leaves the memory
- * allocated for good, which is what a card whose halt was never confirmed
- * needs.
+ * memory, the metadata and what the firmware reads when it starts are each
+ * filled by a call of their own, which on an error frees only what it
+ * allocated. Once the card has the addresses, booter load on SEC2 and a
+ * running GSP may read any of it, and the GSP writes the message queues and
+ * the log buffers, so the caller calls `release` only once SEC2 and the GSP
+ * are both confirmed halted, or before the card was given any of the
+ * addresses. An object dropped without `release` leaves the memory allocated
+ * for good, which is what a card whose halt was never confirmed needs.
  */
 class gsp_boot_memory {
 public:
@@ -253,6 +264,36 @@ public:
     );
 
     /**
+     * @brief Allocate and write what the GSP's firmware reads when it starts,
+     * as NVIDIA's driver writes it by default on its first attempt to boot the
+     * first GPU it attaches. The resource manager's arguments give where the
+     * card reaches the message queues' memory, how many entries its page table
+     * holds and where the command queue and the status queue start in it, as
+     * `message_queues` lays them out, with no queues for the firmware's
+     * interrupt task and GPU instance 0, the number NVIDIA's driver gives the
+     * first GPU it attaches. Each of the `FIRMWARE_LOG_COUNT` log buffers
+     * holds 64 KiB, NVIDIA's size in its release build, starting with the
+     * firmware's write position (0), then the address of each of its pages.
+     * LibOS's arguments list the memory regions LibOS maps for the firmware:
+     * the log buffers (the init task's first), then the resource manager's
+     * arguments. Each region gives NVIDIA's name for it, its size and the
+     * address the card reaches it at as one contiguous range in system memory.
+     * The card reaches each log buffer and each page of arguments as one
+     * contiguous range from `log_buffer_address(index)`,
+     * `resource_manager_arguments_address()` or `libos_arguments_address()`,
+     * starting on a 4 KiB boundary, as NVIDIA's driver aligns them. LibOS's
+     * arguments are uncached, as NVIDIA's driver allocates them, and the rest
+     * is cached when the card is coherent and uncached otherwise.
+     * @param device The card's profile, from `pci_driver::dma_profile`.
+     * @return `OK`, `ERR_BAD_STATE` when the object already holds the log
+     * buffers and arguments, which it keeps, or does not hold the message
+     * queues' memory, or `ERR_NO_MEMORY` when allocating fails, which frees
+     * what the call allocated. Either error leaves the object's other memory
+     * as it was. The cause is logged.
+     */
+    int32_t write_firmware_arguments(const dma::device_profile& device);
+
+    /**
      * @brief Free all of the memory, leaving the object holding none. The
      * caller must have confirmed that SEC2 and the GSP are halted, or never
      * given the card any of the memory's addresses. Releasing an object
@@ -267,8 +308,22 @@ public:
     uint64_t booter_load_address() const { return m_booter_load.phys; }
     uint64_t message_queues_address() const { return m_message_queues.phys; }
     uint64_t protected_metadata_address() const { return m_protected_metadata.phys; }
+    uint64_t resource_manager_arguments_address() const { return m_resource_manager_arguments.phys; }
+    uint64_t libos_arguments_address() const { return m_libos_arguments.phys; }
+
+    // Where the card reaches the log buffer of the init task, the interrupt task or the resource manager at `index` 0,
+    // 1 or 2, or 0 while the object does not hold the log buffers or for an index past the last
+    uint64_t log_buffer_address(size_t index) const {
+        return index < FIRMWARE_LOG_COUNT ? m_log_buffers[index].phys : 0;
+    }
+
+    // The CPU's mapping of the message queues' memory, for `message_queues` to lay the queues out in, or null while
+    // the object does not hold it
+    uint8_t* message_queues_memory() const { return reinterpret_cast<uint8_t*>(m_message_queues.virt); }
 
 private:
+    friend struct gsp_boot_memory_test_access;
+
     bool holds_bootloader_and_gsp_image_copies() const;
 
     int32_t copy_each_part(
@@ -288,6 +343,14 @@ private:
         const bootloader_layout& bootloader_parts
     );
 
+    int32_t allocate_firmware_arguments(const dma::device_profile& device);
+
+    // Frees what `write_firmware_arguments` allocates, leaving the object's other memory as it was
+    void free_firmware_arguments();
+
+    void fill_resource_manager_arguments();
+    void fill_libos_arguments();
+
     dma::buffer  m_bootloader = {};
     dma::buffer  m_signature = {};
     dma::buffer  m_radix3_table = {};
@@ -296,6 +359,9 @@ private:
     dma::buffer  m_booter_load = {};
     dma::buffer  m_message_queues = {};
     dma::buffer  m_protected_metadata = {};
+    dma::buffer  m_log_buffers[FIRMWARE_LOG_COUNT] = {};
+    dma::buffer  m_resource_manager_arguments = {};
+    dma::buffer  m_libos_arguments = {};
 
     // Bytes of each part `copy_boot_files` copied, while the object holds the copies
     uint64_t m_bootloader_bytes = 0;

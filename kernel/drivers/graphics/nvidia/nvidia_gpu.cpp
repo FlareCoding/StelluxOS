@@ -4,6 +4,7 @@
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
+#include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/protected_memory.h"
 #include "drivers/graphics/nvidia/registers.h"
@@ -335,7 +336,17 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
+    // Writes the page table and the command queue's header where the resource manager's arguments tell the firmware
+    // to find them
+    nvidia::message_queues queues(boot_memory.message_queues_memory(), boot_memory.message_queues_address());
+
     rc = boot_memory.write_protected_metadata(card_profile, frts, protected_memory, bootloader_parts);
+    if (rc != nvidia::OK) {
+        boot_memory.release();
+        return rc;
+    }
+
+    rc = boot_memory.write_firmware_arguments(card_profile);
     if (rc != nvidia::OK) {
         boot_memory.release();
         return rc;
@@ -350,7 +361,7 @@ int32_t nvidia_gpu_driver::attach() {
     );
     log::info(
         "nvidia: booter load's program copied with its chosen signature to physical address 0x%lX, and the message "
-        "queues' memory allocated at 0x%lX",
+        "queues laid out at 0x%lX",
         boot_memory.booter_load_address(),
         boot_memory.message_queues_address()
     );
@@ -359,6 +370,16 @@ int32_t nvidia_gpu_driver::attach() {
         "0x%lX in video memory",
         boot_memory.protected_metadata_address(),
         protected_memory.protected_start
+    );
+    log::info(
+        "nvidia: the GSP firmware's log buffers for its init task, interrupt task and resource manager allocated at "
+        "physical addresses 0x%lX, 0x%lX and 0x%lX, its resource manager's arguments written at 0x%lX and LibOS's "
+        "arguments, which list them all, at 0x%lX",
+        boot_memory.log_buffer_address(0),
+        boot_memory.log_buffer_address(1),
+        boot_memory.log_buffer_address(2),
+        boot_memory.resource_manager_arguments_address(),
+        boot_memory.libos_arguments_address()
     );
 
     // The card was never given these addresses, so nothing on it reads the memory

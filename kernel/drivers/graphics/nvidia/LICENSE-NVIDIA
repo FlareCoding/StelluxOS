@@ -209,12 +209,31 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     when no setting of NVIDIA's driver asks for a margin past protected
     memory's end, a first attempt to boot the GSP leaves none and clears the
     metadata's flag that marks one, in gsp_boot_memory.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rule that
-    the GSP is not booted on a chip without a scrubber program when the
-    memory from the unprotected heap's start to the end of video memory is
-    larger than the prescrubbed top, in chip.h, protected_memory.h,
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    GSP is not booted on a chip without a scrubber program when the memory
+    from the unprotected heap's start to the end of video memory is larger
+    than the prescrubbed top, in chip.h, protected_memory.h,
     protected_memory.cpp, nvidia_gpu.h and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that a
+    region of LibOS's arguments is named by up to eight characters packed
+    with the first in the highest byte used, in gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the log buffers of
+    the init task, the interrupt task and the resource manager, 64 KiB each
+    in a release build, each zeroed and listing the address of each of its
+    pages after the firmware's 8-byte write position, their names LOGINIT,
+    LOGINTR and LOGRM and the name RMARGS, and LibOS's arguments listing
+    those buffers in that order, then the resource manager's arguments, each
+    as one contiguous range in system memory of the size allocated for it,
+    in gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the log buffers'
+    alignment to 4 KiB, in gsp_boot_memory.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the resource
+    manager's arguments giving the message queues' memory, its page table's
+    entry count and the offsets of the command queue and the status queue, with
+    the interrupt task's queues, the power transition's fields and the
+    profiler's buffer 0 when none is asked for and the GPU's instance, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -225,18 +244,25 @@ src/nvidia/generated/g_kernel_gsp_nvoc.h
     kernel/tests/graphics/nvidia_firmware.test.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the 32 bits of the
     firmware heap's operating system's and base shares, in chip.h and
-    protected_memory.cpp, and the 1 MiB unprotected heap, the 256 MiB
+    protected_memory.cpp, the 1 MiB unprotected heap, the 256 MiB
     prescrubbed top and the 84 MiB minimum heap, in chip.cpp,
     kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the 4 KiB of
+    LibOS's arguments and the order of the log buffers, the init task's, the
+    interrupt task's and the resource manager's, in gsp_boot_memory.h,
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.c
     the firmware heap's 20 MiB share for the operating system the firmware
-    runs on and its 8 MiB base share on GA102, and which minimum heap,
+    runs on and its 8 MiB base share on GA102, which minimum heap,
     unprotected heap and prescrubbed top GA102 gets, in chip.cpp,
     kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rule that
+    no chip asks for queues for the firmware's interrupt task, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     It carries no notice of its own and is covered by the package's COPYING,
     which gives the notice below and this copyright line:
     Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -347,17 +373,21 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     reserved for the firmware starts at the unprotected heap and that the
     unprotected heap's size is the chip's, in protected_memory.h,
     protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the metadata
-    a first attempt to boot the GSP writes into a page of its own (the
-    copies' addresses and sizes, the signature's size as the size of its
-    memory, the bootloader descriptor's offsets, the start of the memory
-    reserved for the firmware at the unprotected heap, the unprotected heap,
-    each part of protected memory, protected memory's end at the FRTS
-    region's end, video memory's size and the VGA workspace, which takes the
-    rest of video memory, with the boot count and the verified mark 0, the
-    partition count 0 without virtual GPUs and the crash report queue's
-    fields 0 without a queue), in gsp_boot_memory.h, gsp_boot_memory.cpp,
-    nvidia_gpu.h and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, LibOS's arguments
+    in uncached memory of their own, aligned to their size, and the resource
+    manager's arguments in a 4 KiB page of their own, each zeroed, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the metadata a
+    first attempt to boot the GSP writes into a page of its own (the copies'
+    addresses and sizes, the signature's size as the size of its memory, the
+    bootloader descriptor's offsets, the start of the memory reserved for the
+    firmware at the unprotected heap, the unprotected heap, each part of
+    protected memory, protected memory's end at the FRTS region's end, video
+    memory's size and the VGA workspace, which takes the rest of video memory,
+    with the boot count and the verified mark 0, the partition count 0 without
+    virtual GPUs and the crash report queue's fields 0 without a queue), in
+    gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
@@ -468,7 +498,9 @@ src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga102.c
 src/nvidia/src/kernel/gpu_mgr/gpu_mgr.c
     the rule that the chip id a falcon's RM register is given is the value of
     PMC_BOOT_0, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and GPU instance 0 for the
+    first GPU attached, in gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gpu_timeout.c
@@ -513,8 +545,29 @@ src/nvidia/arch/nvalloc/common/inc/rmRiscvUcode.h
 
 src/common/uproc/os/common/include/libos_init_args.h
     the radix3 page table's page size of 4 KiB, in gsp_boot_memory.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the fields of
+    a region of LibOS's arguments, its id, address and size in 64 bits, then
+    its kind and location bytes, and the values marking it one contiguous
+    range in system memory, in gsp_boot_memory.h, gsp_boot_memory.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2018-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/gsp/gsp_init_args.h
+    the resource manager's arguments, their fields in that order: the
+    address of the message queues' memory, its page table's entry count, the
+    offsets of the command queue, the status queue and two lockless queues, the
+    power transition's fields, the GPU's instance and the profiler's buffer, in
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvtypes.h
+    the 64 bits of NVIDIA's lengths on a 64-bit build, which the resource
+    manager's queue offsets take, in gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the single byte
+    of NVIDIA's booleans, which the power transition's flag takes, in
+    gsp_boot_memory.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
     the rule that the offsets of the manifest and the monitor's code and
@@ -594,8 +647,12 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     checksum and its last element copied whole, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the status queue
     linked once the firmware has written its header and retried within a
-    deadline, in message_queues.h, and the full fence before each link, in
-    message_queues.cpp
+    deadline, in message_queues.h, the full fence before each link, in
+    message_queues.cpp, the address of the queues' memory given as its first
+    page's, which holds the page table, in gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the queue
+    memory's layout and page table, in
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc-message-header.h

@@ -10,6 +10,12 @@ namespace drivers::nvidia {
 // Bytes of the memory the message queues take, their page table included
 constexpr uint32_t QUEUE_MEMORY_BYTES = 0x81000;
 
+// Where the command queue and the status queue start in that memory, and how many pages its page table lists: every
+// page of the memory, its own included
+constexpr uint32_t COMMAND_QUEUE_OFFSET     = 0x1000;
+constexpr uint32_t STATUS_QUEUE_OFFSET      = 0x41000;
+constexpr uint32_t QUEUE_PAGE_TABLE_ENTRIES = QUEUE_MEMORY_BYTES / 0x1000;
+
 // The most payload bytes one message carries: 16 elements of 4 KiB less the message's 80 bytes of headers
 constexpr uint32_t MESSAGE_PAYLOAD_MAX_BYTES = 16 * 0x1000 - 80;
 
@@ -64,8 +70,9 @@ struct received_message {
  * The object keeps the driver's side of both queues: the command queue's
  * write pointer and next sequence number, and once the status queue is
  * linked, its read pointer and the sequence number its next message must
- * carry. It owns nothing, so the memory must outlive it. Its calls never
- * wait, and only one thread may use it at a time.
+ * carry. It owns nothing, so the memory must stay allocated for as long as
+ * the object is used. Its calls never wait, and only one thread may use it
+ * at a time.
  */
 class message_queues {
 public:
