@@ -293,12 +293,37 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
+    rc = boot_memory.copy_booter_load(
+        card_profile,
+        files.booter_load,
+        booter_load_header,
+        booter_parts,
+        booter_load_signature
+    );
+    if (rc != nvidia::OK) {
+        // The card was never given any of the memory's addresses, so nothing on it reads what this frees
+        boot_memory.release();
+        return rc;
+    }
+
+    rc = boot_memory.allocate_message_queues(card_profile);
+    if (rc != nvidia::OK) {
+        boot_memory.release();
+        return rc;
+    }
+
     log::info(
         "nvidia: GSP's firmware copied into pages listed by a radix3 page table at physical address 0x%lX, the "
         "bootloader's program to 0x%lX and the firmware's signature to 0x%lX",
         boot_memory.radix3_address(),
         boot_memory.bootloader_address(),
         boot_memory.signature_address()
+    );
+    log::info(
+        "nvidia: booter load's program copied with its chosen signature to physical address 0x%lX, and the message "
+        "queues' memory allocated at 0x%lX",
+        boot_memory.booter_load_address(),
+        boot_memory.message_queues_address()
     );
 
     // The card was never given these addresses, so nothing on it reads the memory

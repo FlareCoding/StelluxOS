@@ -75,9 +75,10 @@ public:
      * command queue's header. The firmware writes the status queue's header.
      * @param memory The CPU's mapping of `QUEUE_MEMORY_BYTES` bytes. It must
      * be aligned to 8 bytes, since the page table is written in 8-byte
-     * entries, and be normal memory rather than device memory, since messages
-     * are copied in at any alignment, mapped so the card sees the CPU's writes
-     * and the CPU sees the card's without cache maintenance.
+     * entries, and be memory the CPU may access at any alignment, since
+     * messages are copied in at any alignment. It must be mapped so the card
+     * sees the CPU's writes and the CPU sees the card's without cache
+     * maintenance.
      * @param dma_address The address the card reaches the memory's first byte
      * at. It must be a multiple of 4 KiB, since the page table lists whole
      * pages, and the card must reach the whole memory as one contiguous range
