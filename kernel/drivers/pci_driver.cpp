@@ -4,6 +4,7 @@
 #include "mm/paging_types.h"
 #include "msi/msi.h"
 #include "sched/sched.h"
+#include "clock/clock.h"
 #include "dynpriv/dynpriv.h"
 #include "common/logging.h"
 #include "percpu/percpu.h"
@@ -169,6 +170,22 @@ void pci_driver::wait_for_event() {
         m_event_pending = false;
         sync::spin_unlock_irqrestore(m_irq_lock, irq);
     });
+}
+
+bool pci_driver::wait_for_event_until(uint64_t deadline_ns) {
+    bool arrived = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_irq_lock);
+        while (!m_event_pending && clock::now_ns() < deadline_ns) {
+            irq = sync::wait_until(m_irq_wq, m_irq_lock, irq, deadline_ns);
+        }
+
+        arrived = m_event_pending;
+        m_event_pending = false;
+        sync::spin_unlock_irqrestore(m_irq_lock, irq);
+    });
+
+    return arrived;
 }
 
 /**
