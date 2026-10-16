@@ -25,9 +25,11 @@ namespace drivers {
  * descriptors place its code, data, signature slot and signatures, with its
  * ucode id and engine mask, chooses and logs which of booter load's
  * signatures its slot must hold, reading the version the chip's fuses, bits
- * burned into it for good, record for booter load, and finds FWSEC, the
- * signed program in the VBIOS that fences off protected memory for the GSP's
- * firmware, through the VBIOS's falcon program table.
+ * burned into it for good, record for booter load, checks that the
+ * bootloader's program holds at least one byte and that a radix3 page table,
+ * NVIDIA's three-level table of page addresses, maps the GSP's firmware, and
+ * finds FWSEC, the signed program in the VBIOS that fences off protected
+ * memory for the GSP's firmware, through the VBIOS's falcon program table.
  * Once the card's boot firmware has finished setting up video memory, it
  * works out where in video memory FWSEC's FRTS region goes, the part of
  * protected memory FWSEC fences off first. It then chooses which of FWSEC's
@@ -38,8 +40,13 @@ namespace drivers {
  * FWSEC, and that reset is the first step that writes to the card's BAR0
  * registers. The card's bus mastering is then turned on, and the falcon
  * loads FWSEC from the copy and is started on it. Once the falcon halts, the
- * copy is freed, and bring-up ends by checking that FWSEC fenced off the
- * region, so when every step succeeds, `attach()` declines as well.
+ * copy is freed, and bring-up checks that FWSEC fenced off the region. It
+ * then copies the bootloader's program, the GSP's firmware and the
+ * firmware's signature into memory the card can reach, the firmware into
+ * pages listed by a radix3 page table, as `nvidia::gsp_boot_memory`
+ * describes, and frees that memory, since the card was never given its
+ * addresses. Bring-up ends there, so when every step succeeds, `attach()`
+ * declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -56,8 +63,10 @@ namespace drivers {
  * `nvidia::read_booter_layout`, which requires them to follow NVIDIA's rules
  * for booter load and place its code, data, signature slot and signatures as
  * `nvidia::booter_layout` describes, booter load has more than one signature
- * and none for the fuse version read for it, or a firmware name built from
- * the chip table is too long or malformed. Once the firmware files check
+ * and none for the fuse version read for it, the bootloader's program holds
+ * no byte or the GSP's firmware has more pages than a radix3 page table maps,
+ * as `nvidia::check_boot_copies` checks, or a firmware name built from the
+ * chip table is too long or malformed. Once the firmware files check
  * out, it also fails when the VBIOS does not lead to a falcon program table
  * as `nvidia::find_falcon_program_table` requires, or the table does not
  * lead to FWSEC as `nvidia::find_fwsec` requires. Once FWSEC is found, it
@@ -77,7 +86,9 @@ namespace drivers {
  * `nvidia::FALCON_TIMEOUT_NS` of that wait's start. Once the falcon halts,
  * it fails when `nvidia::check_frts_result` finds an FRTS error code other
  * than 0, or protected memory not set up or starting elsewhere than at the
- * region.
+ * region. Once FWSEC has fenced off the region, it fails when the memory for
+ * the copies cannot be allocated or reading a firmware file fails, each
+ * freeing everything allocated for the copies.
  * Whether `attach()` declines or fails, the screen is left as it was, since
  * bring-up itself never writes to the display engine, and the card keeps the
  * memory and I/O decoding that `attach()` turned on. A card that `attach()`

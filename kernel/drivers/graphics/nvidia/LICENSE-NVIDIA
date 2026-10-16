@@ -175,23 +175,35 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     followed by the name of the chip's firmware family, that a section is
     found by its whole name, which with its NUL lies inside the section name
     table, and the 32 bytes given the signature section's name, in chip.cpp,
-    chip.h, firmware_files.h, firmware_files.cpp, nvidia_gpu.h,
-    kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, the rule that the GSP is
-    not booted while protected memory is already set up, in
+    chip.h, firmware_files.h, firmware_files.cpp, gsp_boot_memory.h,
+    nvidia_gpu.h, kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_firmware.test.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    GSP is not booted while protected memory is already set up, in
     protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
-    the full fence before each received message, in message_queues.cpp, and
+    the full fence before each received message, in message_queues.cpp,
     booter load's role, run on SEC2 to load, verify with the signature and
-    boot the GSP's firmware in protected memory, in chip.h and
-    firmware_files.h
+    boot the GSP's firmware in protected memory, in chip.h,
+    firmware_files.h and gsp_boot_memory.h, the radix3 page table's three
+    levels of 64-bit addresses, level 0 a single page listing the pages of
+    level 1, level 1 listing those of level 2 and level 2 listing every page
+    of the data, each of the table's page size, each level's entries running
+    on across its pages and the table's levels lying in that order, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rules
+    that the GSP's firmware, its signature and the bootloader's program are
+    each copied into system memory of their own, the firmware's last page
+    ending in zeros, in gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h
+    and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
     the names of the GSP image's .fwversion and .fwimage sections and the
     prefix .fwsignature_ of its signature sections, in chip.cpp,
-    firmware_files.h, firmware_files.cpp, nvidia_gpu.h,
-    kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp
+    firmware_files.h, firmware_files.cpp, gsp_boot_memory.h, nvidia_gpu.h,
+    kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_firmware.test.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
@@ -254,10 +266,13 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     GSP's engine is reset by setting and then clearing its reset field,
     keeping the register's other bits and reading it after each write, in
     falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
-    and the rule that the bootloader descriptor's manifest and monitor code
-    and data offsets are offsets inside the bootloader's program, in
+    the rule that the bootloader descriptor's manifest and monitor code and
+    data offsets are offsets inside the bootloader's program, in
     firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp
+    kernel/tests/graphics/nvidia_firmware.test.cpp, and the rule that the
+    bootloader's program holds at least one byte, in gsp_boot_memory.h,
+    gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
@@ -386,9 +401,9 @@ nouveau/extract-firmware-nouveau.py
     the boot file header and its values, in firmware_files.h,
     firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp,
     the rule that the bootloader's descriptor is NVIDIA's descriptor of a
-    RISC-V program, in firmware_files.h, and the rule that the descriptor
-    fills the bytes from the header's end to the program's start, in
-    firmware_files.h, firmware_files.cpp and
+    RISC-V program, in firmware_files.h and gsp_boot_memory.h, and the rule
+    that the descriptor fills the bytes from the header's end to the
+    program's start, in firmware_files.h, firmware_files.cpp and
     kernel/tests/graphics/nvidia_firmware.test.cpp, the fields of booter
     load's descriptor header, each a size or an offset from the file's start,
     that lead to its signatures, signature slot, signature patch index,
@@ -411,11 +426,19 @@ src/nvidia/arch/nvalloc/common/inc/rmRiscvUcode.h
     firmware_files.h
     SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/common/uproc/os/common/include/libos_init_args.h
+    the radix3 page table's page size of 4 KiB, in gsp_boot_memory.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2018-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
     the rule that the offsets of the manifest and the monitor's code and
     data lie inside the bootloader's program, counted from its start, in
     firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp
+    kernel/tests/graphics/nvidia_firmware.test.cpp, and that booter load
+    reads the copies of the GSP's firmware, its signature and the
+    bootloader's program in system memory and places the firmware and the
+    bootloader's program in protected memory, in gsp_boot_memory.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/common/inc/nv-firmware.h
