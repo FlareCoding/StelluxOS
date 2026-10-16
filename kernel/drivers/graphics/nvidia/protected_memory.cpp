@@ -56,9 +56,6 @@ constexpr uint64_t BOOTLOADER_ALIGNMENT = 0x1000;
 constexpr uint64_t FIRMWARE_ALIGNMENT   = 0x10000;
 constexpr uint64_t HEAP_ALIGNMENT       = 0x100000;
 
-// Bytes of protected memory's metadata, which protected memory's start leaves room for below the heap
-constexpr uint64_t PROTECTED_METADATA_BYTES = 256;
-
 constexpr uint32_t GIB_SHIFT = 30;
 constexpr uint64_t NS_PER_MS = 1000000;
 
@@ -219,8 +216,10 @@ int32_t lay_out_protected_memory(
     layout_out.firmware_offset = firmware_offset;
     layout_out.heap_offset = heap_offset;
     layout_out.heap_bytes = align_down(firmware_offset - heap_offset, HEAP_ALIGNMENT);
+
     layout_out.protected_start = protected_start;
     layout_out.unprotected_heap_offset = unprotected_heap_offset;
+    layout_out.unprotected_heap_bytes = reservation.unprotected_heap_bytes;
 
     return OK;
 }

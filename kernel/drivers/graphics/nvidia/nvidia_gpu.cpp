@@ -335,6 +335,12 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
+    rc = boot_memory.write_protected_metadata(card_profile, frts, protected_memory, bootloader_parts);
+    if (rc != nvidia::OK) {
+        boot_memory.release();
+        return rc;
+    }
+
     log::info(
         "nvidia: GSP's firmware copied into pages listed by a radix3 page table at physical address 0x%lX, the "
         "bootloader's program to 0x%lX and the firmware's signature to 0x%lX",
@@ -347,6 +353,12 @@ int32_t nvidia_gpu_driver::attach() {
         "queues' memory allocated at 0x%lX",
         boot_memory.booter_load_address(),
         boot_memory.message_queues_address()
+    );
+    log::info(
+        "nvidia: protected memory's metadata written at physical address 0x%lX, for booter load to place at offset "
+        "0x%lX in video memory",
+        boot_memory.protected_metadata_address(),
+        protected_memory.protected_start
     );
 
     // The card was never given these addresses, so nothing on it reads the memory

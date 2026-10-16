@@ -543,6 +543,7 @@ TEST(nvidia_protected_memory, chip_values_size_the_heaps_and_the_prescrubbed_top
     EXPECT_EQ(layout.heap_bytes, 0x7500000u);
     EXPECT_EQ(layout.protected_start, 0x268800000u);
     EXPECT_EQ(layout.unprotected_heap_offset, 0x268500000u);
+    EXPECT_EQ(layout.unprotected_heap_bytes, 0x2C0000u);
 
     reservation.prescrubbed_top_bytes = 0x10000000;
     EXPECT_EQ(

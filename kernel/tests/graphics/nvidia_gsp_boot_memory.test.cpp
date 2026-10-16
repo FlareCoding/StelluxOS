@@ -7,6 +7,7 @@
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "drivers/graphics/nvidia/protected_memory.h"
 #include "fs/fs.h"
 #include "fw/fw.h"
 #include "mm/heap.h"
@@ -18,16 +19,21 @@
 TEST_SUITE(nvidia_gsp_boot_memory);
 
 using drivers::nvidia::boot_file_header;
+using drivers::nvidia::bootloader_layout;
 using drivers::nvidia::booter_layout;
 using drivers::nvidia::booter_signature;
 using drivers::nvidia::check_boot_copies;
+using drivers::nvidia::chip_gsp_reservation;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::firmware_files;
+using drivers::nvidia::frts_region;
 using drivers::nvidia::gsp_boot_memory;
 using drivers::nvidia::gsp_image_layout;
+using drivers::nvidia::lay_out_protected_memory;
 using drivers::nvidia::OK;
+using drivers::nvidia::protected_memory_layout;
 using drivers::nvidia::radix3_table_pages;
 using drivers::nvidia::write_booter_load_image;
 using drivers::nvidia::write_radix3_table;
@@ -758,6 +764,232 @@ TEST(nvidia_gsp_boot_memory, filling_booter_load_or_the_message_queues_again_is_
     EXPECT_EQ(memory.allocate_message_queues(coherent_card()), ERR_BAD_STATE);
     EXPECT_EQ(memory.booter_load_address(), booter_load_address);
     EXPECT_EQ(memory.message_queues_address(), message_queues_address);
+
+    memory.release();
+}
+
+// A card with 10 GiB of video memory whose VGA workspace takes its last 128 KiB, so the workspace's size differs from
+// the FRTS region's 1 MiB
+static constexpr frts_region METADATA_REGION = {
+    .video_memory_size    = 0x280000000,
+    .vga_workspace_offset = 0x27FFE0000,
+    .offset               = 0x27FEE0000,
+};
+
+static constexpr uint64_t METADATA_VGA_WORKSPACE_BYTES = 0x20000;
+static constexpr uint64_t METADATA_FRTS_BYTES          = 0x100000;
+
+// Invented sizes for the heaps and the prescrubbed top, with a 2.75 MiB unprotected heap whose size differs from the
+// FRTS region's 1 MiB
+static constexpr chip_gsp_reservation METADATA_RESERVATION = {
+    .heap_os_bytes          = 0x1000000,
+    .heap_base_bytes        = 0x400000,
+    .heap_min_bytes         = 0x2000000,
+    .unprotected_heap_bytes = 0x2C0000,
+    .prescrubbed_top_bytes  = 0x20000000,
+};
+
+// Offsets past 16 bits inside the bootloader's 0x10F21-byte program
+static constexpr bootloader_layout METADATA_BOOTLOADER_PARTS = {
+    .manifest_offset     = 0x10C00,
+    .monitor_data_offset = 0x10400,
+    .monitor_code_offset = 0x10200,
+    .app_version         = 0,
+};
+
+// The signature's 0x10ABC bytes in whole 256-byte blocks
+static constexpr uint64_t METADATA_SIGNATURE_BYTES = 0x10B00;
+
+// NVIDIA's metadata layout, restated here so the tests hold the page to NVIDIA's offsets rather than to the driver's
+// structure. Every field from the boot count to the end is 0 on NVIDIA's first attempt to boot the GSP by default
+static constexpr uint64_t METADATA_MAGIC                = 0xDC3AAE21371A60B3;
+static constexpr uint64_t METADATA_REVISION             = 1;
+static constexpr uint64_t METADATA_BYTES                = 256;
+static constexpr uint64_t MAGIC_AT                      = 0;
+static constexpr uint64_t REVISION_AT                   = 8;
+static constexpr uint64_t RADIX3_ADDRESS_AT             = 16;
+static constexpr uint64_t FIRMWARE_BYTES_AT             = 24;
+static constexpr uint64_t BOOTLOADER_ADDRESS_AT         = 32;
+static constexpr uint64_t BOOTLOADER_BYTES_AT           = 40;
+static constexpr uint64_t BOOTLOADER_CODE_OFFSET_AT     = 48;
+static constexpr uint64_t BOOTLOADER_DATA_OFFSET_AT     = 56;
+static constexpr uint64_t BOOTLOADER_MANIFEST_OFFSET_AT = 64;
+static constexpr uint64_t SIGNATURE_ADDRESS_AT          = 72;
+static constexpr uint64_t SIGNATURE_BYTES_AT            = 80;
+static constexpr uint64_t RESERVED_START_AT             = 88;
+static constexpr uint64_t UNPROTECTED_HEAP_OFFSET_AT    = 96;
+static constexpr uint64_t UNPROTECTED_HEAP_BYTES_AT     = 104;
+static constexpr uint64_t PROTECTED_START_AT            = 112;
+static constexpr uint64_t HEAP_OFFSET_AT                = 120;
+static constexpr uint64_t HEAP_BYTES_AT                 = 128;
+static constexpr uint64_t FIRMWARE_OFFSET_AT            = 136;
+static constexpr uint64_t BOOTLOADER_OFFSET_AT          = 144;
+static constexpr uint64_t FRTS_OFFSET_AT                = 152;
+static constexpr uint64_t FRTS_BYTES_AT                 = 160;
+static constexpr uint64_t PROTECTED_END_AT              = 168;
+static constexpr uint64_t VIDEO_MEMORY_SIZE_AT          = 176;
+static constexpr uint64_t VGA_WORKSPACE_OFFSET_AT       = 184;
+static constexpr uint64_t VGA_WORKSPACE_BYTES_AT        = 192;
+static constexpr uint64_t BOOT_COUNT_AT                 = 200;
+
+static int32_t lay_out_for_metadata(protected_memory_layout& layout_out) {
+    return lay_out_protected_memory(
+        METADATA_REGION,
+        METADATA_RESERVATION,
+        BOOTLOADER_PROGRAM_BYTES,
+        COPIED_FIRMWARE_BYTES,
+        layout_out
+    );
+}
+
+static int32_t write_metadata(
+    gsp_boot_memory& memory,
+    const dma::device_profile& device,
+    const protected_memory_layout& layout
+) {
+    return memory.write_protected_metadata(device, METADATA_REGION, layout, METADATA_BOOTLOADER_PARTS);
+}
+
+// The 64-bit field at `offset` in the metadata's page, read through the kernel's mapping of all physical memory
+static uint64_t metadata_field(const gsp_boot_memory& memory, uint64_t offset) {
+    const uint8_t* page = static_cast<const uint8_t*>(paging::phys_to_virt(memory.protected_metadata_address()));
+    uint64_t value = 0;
+    string::memcpy(&value, page + offset, sizeof(value));
+
+    return value;
+}
+
+TEST(nvidia_gsp_boot_memory, protected_metadata_holds_each_field_at_nvidias_offset) {
+    firmware_files files;
+    ASSERT_TRUE(install_boot_files(files));
+
+    protected_memory_layout layout = {};
+    ASSERT_EQ(lay_out_for_metadata(layout), OK);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.copy_boot_files(coherent_card(), files, BOOTLOADER_HEADER, GSP_IMAGE), OK);
+    ASSERT_EQ(write_metadata(memory, coherent_card(), layout), OK);
+
+    EXPECT_EQ(memory.protected_metadata_address() % PAGE_BYTES, static_cast<uint64_t>(0));
+    EXPECT_EQ(metadata_field(memory, MAGIC_AT), METADATA_MAGIC);
+    EXPECT_EQ(metadata_field(memory, REVISION_AT), METADATA_REVISION);
+
+    EXPECT_EQ(metadata_field(memory, RADIX3_ADDRESS_AT), memory.radix3_address());
+    EXPECT_EQ(metadata_field(memory, FIRMWARE_BYTES_AT), COPIED_FIRMWARE_BYTES);
+    EXPECT_EQ(metadata_field(memory, BOOTLOADER_ADDRESS_AT), memory.bootloader_address());
+    EXPECT_EQ(metadata_field(memory, BOOTLOADER_BYTES_AT), static_cast<uint64_t>(BOOTLOADER_PROGRAM_BYTES));
+    EXPECT_EQ(metadata_field(memory, SIGNATURE_ADDRESS_AT), memory.signature_address());
+    EXPECT_EQ(metadata_field(memory, SIGNATURE_BYTES_AT), METADATA_SIGNATURE_BYTES);
+
+    uint64_t code_offset = METADATA_BOOTLOADER_PARTS.monitor_code_offset;
+    uint64_t data_offset = METADATA_BOOTLOADER_PARTS.monitor_data_offset;
+    uint64_t manifest_offset = METADATA_BOOTLOADER_PARTS.manifest_offset;
+    EXPECT_EQ(metadata_field(memory, BOOTLOADER_CODE_OFFSET_AT), code_offset);
+    EXPECT_EQ(metadata_field(memory, BOOTLOADER_DATA_OFFSET_AT), data_offset);
+    EXPECT_EQ(metadata_field(memory, BOOTLOADER_MANIFEST_OFFSET_AT), manifest_offset);
+
+    uint64_t unprotected_heap_bytes = METADATA_RESERVATION.unprotected_heap_bytes;
+    EXPECT_EQ(metadata_field(memory, RESERVED_START_AT), layout.unprotected_heap_offset);
+    EXPECT_EQ(metadata_field(memory, UNPROTECTED_HEAP_OFFSET_AT), layout.unprotected_heap_offset);
+    EXPECT_EQ(metadata_field(memory, UNPROTECTED_HEAP_BYTES_AT), unprotected_heap_bytes);
+    EXPECT_EQ(metadata_field(memory, PROTECTED_START_AT), layout.protected_start);
+    EXPECT_EQ(metadata_field(memory, HEAP_OFFSET_AT), layout.heap_offset);
+    EXPECT_EQ(metadata_field(memory, HEAP_BYTES_AT), layout.heap_bytes);
+
+    EXPECT_EQ(metadata_field(memory, FIRMWARE_OFFSET_AT), layout.firmware_offset);
+    EXPECT_EQ(metadata_field(memory, BOOTLOADER_OFFSET_AT), layout.bootloader_offset);
+    EXPECT_EQ(metadata_field(memory, FRTS_OFFSET_AT), METADATA_REGION.offset);
+    EXPECT_EQ(metadata_field(memory, FRTS_BYTES_AT), METADATA_FRTS_BYTES);
+    EXPECT_EQ(metadata_field(memory, PROTECTED_END_AT), METADATA_REGION.offset + METADATA_FRTS_BYTES);
+
+    EXPECT_EQ(metadata_field(memory, VIDEO_MEMORY_SIZE_AT), METADATA_REGION.video_memory_size);
+    EXPECT_EQ(metadata_field(memory, VGA_WORKSPACE_OFFSET_AT), METADATA_REGION.vga_workspace_offset);
+    EXPECT_EQ(metadata_field(memory, VGA_WORKSPACE_BYTES_AT), METADATA_VGA_WORKSPACE_BYTES);
+
+    uint64_t nonzero_fields = 0;
+    for (uint64_t offset = BOOT_COUNT_AT; offset < METADATA_BYTES; offset += sizeof(uint64_t)) {
+        nonzero_fields += metadata_field(memory, offset) != 0;
+    }
+
+    EXPECT_EQ(nonzero_fields, static_cast<uint64_t>(0));
+
+    memory.release();
+
+    EXPECT_EQ(memory.protected_metadata_address(), static_cast<uint64_t>(0));
+}
+
+// A signature size on a 256-byte boundary is kept, and one a byte past it takes the whole next block, which rounding
+// to the nearest block, to 128 bytes or to 512 bytes would not give
+static constexpr uint64_t WHOLE_BLOCKS_SIGNATURE_BYTES = 0x10A00;
+static constexpr uint64_t PAST_A_BLOCK_SIGNATURE_BYTES = 0x10A01;
+static constexpr uint64_t NEXT_BLOCK_SIGNATURE_BYTES   = 0x10B00;
+
+TEST(nvidia_gsp_boot_memory, protected_metadata_rounds_the_signature_size_up_to_whole_blocks) {
+    firmware_files files;
+    ASSERT_TRUE(install_boot_files(files));
+
+    protected_memory_layout layout = {};
+    ASSERT_EQ(lay_out_for_metadata(layout), OK);
+
+    gsp_image_layout image = GSP_IMAGE;
+    image.signature_size = WHOLE_BLOCKS_SIGNATURE_BYTES;
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.copy_boot_files(coherent_card(), files, BOOTLOADER_HEADER, image), OK);
+    ASSERT_EQ(write_metadata(memory, coherent_card(), layout), OK);
+
+    EXPECT_EQ(metadata_field(memory, SIGNATURE_BYTES_AT), WHOLE_BLOCKS_SIGNATURE_BYTES);
+
+    memory.release();
+    image.signature_size = PAST_A_BLOCK_SIGNATURE_BYTES;
+
+    ASSERT_EQ(memory.copy_boot_files(coherent_card(), files, BOOTLOADER_HEADER, image), OK);
+    ASSERT_EQ(write_metadata(memory, coherent_card(), layout), OK);
+
+    EXPECT_EQ(metadata_field(memory, SIGNATURE_BYTES_AT), NEXT_BLOCK_SIGNATURE_BYTES);
+
+    memory.release();
+}
+
+TEST(nvidia_gsp_boot_memory, protected_metadata_needs_the_copies_and_is_written_once) {
+    firmware_files files;
+    ASSERT_TRUE(install_boot_files(files));
+
+    protected_memory_layout layout = {};
+    ASSERT_EQ(lay_out_for_metadata(layout), OK);
+
+    gsp_boot_memory memory;
+    EXPECT_EQ(write_metadata(memory, coherent_card(), layout), ERR_BAD_STATE);
+    EXPECT_EQ(memory.protected_metadata_address(), static_cast<uint64_t>(0));
+
+    ASSERT_EQ(memory.copy_boot_files(coherent_card(), files, BOOTLOADER_HEADER, GSP_IMAGE), OK);
+    ASSERT_EQ(write_metadata(memory, coherent_card(), layout), OK);
+    uint64_t metadata_address = memory.protected_metadata_address();
+
+    EXPECT_EQ(write_metadata(memory, coherent_card(), layout), ERR_BAD_STATE);
+    EXPECT_EQ(memory.protected_metadata_address(), metadata_address);
+
+    memory.release();
+}
+
+TEST(nvidia_gsp_boot_memory, failed_metadata_allocation_keeps_the_copies_and_takes_no_page) {
+    firmware_files files;
+    ASSERT_TRUE(install_boot_files(files));
+
+    protected_memory_layout layout = {};
+    ASSERT_EQ(lay_out_for_metadata(layout), OK);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.copy_boot_files(coherent_card(), files, BOOTLOADER_HEADER, GSP_IMAGE), OK);
+    uint64_t bootloader_address = memory.bootloader_address();
+
+    dma::device_profile refused_card = dma::device_profile_test_access::build(REFUSED_ADDRESS_BITS, true);
+    uint64_t free_pages_before = drained_free_pages();
+
+    EXPECT_EQ(write_metadata(memory, refused_card, layout), ERR_NO_MEMORY);
+    EXPECT_EQ(drained_free_pages(), free_pages_before);
+    EXPECT_EQ(memory.protected_metadata_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.bootloader_address(), bootloader_address);
 
     memory.release();
 }
