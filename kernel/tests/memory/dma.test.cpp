@@ -7,16 +7,7 @@
 #include "mm/page_quarantine.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
-
-namespace dma {
-
-struct device_profile_test_access {
-    static device_profile build(uint8_t address_bits, bool coherent) {
-        return device_profile(address_bits, coherent);
-    }
-};
-
-} // namespace dma
+#include "tests/memory/dma_test_access.h"
 
 TEST_SUITE(dma_test);
 
