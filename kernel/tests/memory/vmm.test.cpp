@@ -132,6 +132,47 @@ TEST(vmm_test, alloc_contiguous_dma32) {
     vmm::free(out_addr);
 }
 
+// One page past the largest block, which rounding up to an order capped at `MAX_ORDER` would shorten to that block
+TEST(vmm_test, alloc_contiguous_refuses_more_pages_than_the_largest_block) {
+    uintptr_t out_addr = 0;
+    pmm::phys_addr_t out_phys = 0;
+    int32_t result = vmm::alloc_contiguous(
+        pmm::order_to_pages(pmm::MAX_ORDER) + 1,
+        pmm::ZONE_ANY,
+        paging::PAGE_KERNEL_RW,
+        0,
+        kva::tag::generic,
+        out_addr,
+        out_phys
+    );
+    if (result == vmm::OK) {
+        vmm::free(out_addr);
+    }
+
+    EXPECT_EQ(result, vmm::ERR_INVALID_ARG);
+    EXPECT_EQ(out_addr, static_cast<uintptr_t>(0));
+}
+
+// The largest block passes the size bound, though the test machine may have no such block free to allocate
+TEST(vmm_test, alloc_contiguous_size_bound_admits_the_largest_block) {
+    uintptr_t out_addr = 0;
+    pmm::phys_addr_t out_phys = 0;
+    int32_t result = vmm::alloc_contiguous(
+        pmm::order_to_pages(pmm::MAX_ORDER),
+        pmm::ZONE_ANY,
+        paging::PAGE_KERNEL_RW,
+        vmm::ALLOC_ALLOW_2MB,
+        kva::tag::generic,
+        out_addr,
+        out_phys
+    );
+    if (result == vmm::OK) {
+        vmm::free(out_addr);
+    }
+
+    EXPECT_NE(result, vmm::ERR_INVALID_ARG);
+}
+
 TEST(vmm_test, alloc_stack_with_guards) {
     uintptr_t out_base = 0;
     uintptr_t out_top = 0;

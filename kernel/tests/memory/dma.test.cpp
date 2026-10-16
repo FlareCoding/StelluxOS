@@ -110,6 +110,31 @@ TEST(dma_test, page_alloc_zero_returns_error) {
     EXPECT_EQ(rc, dma::ERR_INVALID_ARG);
 }
 
+// One page past the largest block fails whatever memory is free, leaving `out` empty
+TEST(dma_test, page_alloc_more_pages_than_the_largest_block_returns_no_mem) {
+    dma::buffer buf = {};
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        rc = dma::alloc_pages(
+            full_range_device(),
+            pmm::order_to_pages(pmm::MAX_ORDER) + 1,
+            dma::caching::uncached,
+            0,
+            buf
+        );
+    });
+
+    EXPECT_EQ(rc, dma::ERR_NO_MEM);
+    EXPECT_EQ(buf.virt, static_cast<uintptr_t>(0));
+    EXPECT_EQ(buf.size, static_cast<size_t>(0));
+
+    if (rc == dma::OK) {
+        RUN_ELEVATED({
+            dma::free_pages(buf);
+        });
+    }
+}
+
 TEST(dma_test, page_alloc_dma32_phys_below_4gb) {
     dma::buffer buf = {};
     int32_t rc = 0;
