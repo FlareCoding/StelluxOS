@@ -202,7 +202,14 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     each GiB of video memory with a part GiB counting whole, rounded up to 1
     MiB, and its share for the firmware's channels, raised to the chip's
     minimum, in chip.h, protected_memory.h, protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rule that
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the signature's
+    memory sized in whole 256-byte blocks, the alignment booter load's DMA
+    needs, in gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that,
+    when no setting of NVIDIA's driver asks for a margin past protected
+    memory's end, a first attempt to boot the GSP leaves none and clears the
+    metadata's flag that marks one, in gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rule that
     the GSP is not booted on a chip without a scrubber program when the
     memory from the unprotected heap's start to the end of video memory is
     larger than the prescrubbed top, in chip.h, protected_memory.h,
@@ -336,10 +343,21 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     below the part above it, with the heap's size the room below the
     firmware rounded down to 1 MiB), in protected_memory.h,
     protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and that the
-    memory reserved for the firmware starts at the unprotected heap, in
-    protected_memory.h, protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that the memory
+    reserved for the firmware starts at the unprotected heap and that the
+    unprotected heap's size is the chip's, in protected_memory.h,
+    protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the metadata
+    a first attempt to boot the GSP writes into a page of its own (the
+    copies' addresses and sizes, the signature's size as the size of its
+    memory, the bootloader descriptor's offsets, the start of the memory
+    reserved for the firmware at the unprotected heap, the unprotected heap,
+    each part of protected memory, protected memory's end at the FRTS
+    region's end, video memory's size and the VGA workspace, which takes the
+    rest of video memory, with the boot count and the verified mark 0, the
+    partition count 0 without virtual GPUs and the crash report queue's
+    fields 0 without a queue), in gsp_boot_memory.h, gsp_boot_memory.cpp,
+    nvidia_gpu.h and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
@@ -511,9 +529,14 @@ src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
     protected_memory.h, protected_memory.cpp, nvidia_gpu.h and
     kernel/tests/graphics/nvidia_protected_memory.test.cpp, the metadata
     booter load places at protected memory's start and its 256 bytes, in
-    protected_memory.h and protected_memory.cpp, and the rule that only the
-    last 256 MiB of video memory is scrubbed before the GSP's firmware runs,
-    which scrubs the rest, in chip.h
+    protected_memory.h, protected_memory.cpp, gsp_boot_memory.h,
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the metadata's
+    fields, their order and meanings, its magic and its revision, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rule that
+    only the last 256 MiB of video memory is scrubbed before the GSP's
+    firmware runs, which scrubs the rest, in chip.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/common/inc/nv-firmware.h

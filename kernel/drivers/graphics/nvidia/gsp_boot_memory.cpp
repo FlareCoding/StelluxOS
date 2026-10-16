@@ -22,6 +22,56 @@ static_assert(pmm::PAGE_SIZE == RADIX3_PAGE_BYTES);
 // The most data pages a radix3 page table maps, the entries of a full level 2 under a level 0 of one page
 constexpr uint64_t RADIX3_MAX_DATA_PAGES = RADIX3_PAGE_ENTRIES * RADIX3_PAGE_ENTRIES * RADIX3_PAGE_ENTRIES;
 
+// What protected memory's metadata starts with, and the revision of its layout
+constexpr uint64_t PROTECTED_METADATA_MAGIC    = 0xDC3AAE21371A60B3;
+constexpr uint64_t PROTECTED_METADATA_REVISION = 1;
+
+// NVIDIA's driver aligns the signature's memory to the 256 bytes booter load's DMA needs, and the metadata gives the
+// signature's size rounded up to a whole number of them
+constexpr uint64_t SIGNATURE_BLOCK_BYTES = 256;
+
+namespace {
+
+// Protected memory's metadata in the order NVIDIA's driver lays it out. Offsets count bytes from the start of video
+// memory unless their comment says otherwise, and each address is a physical address the card reaches in system memory
+struct protected_metadata {
+    uint64_t magic;
+    uint64_t revision;
+    uint64_t radix3_address;
+    uint64_t firmware_bytes;
+    uint64_t bootloader_address;
+    uint64_t bootloader_bytes;
+    uint64_t bootloader_code_offset;               // the monitor's code, from the start of the bootloader's program
+    uint64_t bootloader_data_offset;               // the monitor's data, from the start of the bootloader's program
+    uint64_t bootloader_manifest_offset;           // from the start of the bootloader's program
+    uint64_t signature_address;
+    uint64_t signature_bytes;                      // of the signature's memory, a whole number of 256-byte blocks
+    uint64_t reserved_start;                       // from here to the end of video memory is reserved for the firmware
+    uint64_t unprotected_heap_offset;
+    uint64_t unprotected_heap_bytes;
+    uint64_t protected_start;
+    uint64_t heap_offset;
+    uint64_t heap_bytes;
+    uint64_t firmware_offset;
+    uint64_t bootloader_offset;
+    uint64_t frts_offset;
+    uint64_t frts_bytes;
+    uint64_t protected_end;
+    uint64_t video_memory_size;
+    uint64_t vga_workspace_offset;
+    uint64_t vga_workspace_bytes;
+    uint64_t boot_count;                           // decides if the firmware's image is loaded, 0 on a first attempt
+    uint8_t  partition_or_crash_report_fields[32]; // for a partition bootstrapper, a resume or a crash report queue
+    uint8_t  partition_count;                      // virtual GPU partitions taking parts of the firmware's heap
+    uint8_t  flags;                                // boot options, such as a margin past protected memory
+    uint8_t  padding[6];
+    uint64_t verified;                             // set by booter load to let the GSP boot, checked by the bootloader
+};
+
+} // namespace
+
+static_assert(sizeof(protected_metadata) == PROTECTED_METADATA_BYTES, "the metadata fills the room the layout leaves");
+
 // The pages that hold `bytes` bytes, also when rounding `bytes` up would overflow
 static uint64_t pages_for_bytes(uint64_t bytes) {
     return bytes / RADIX3_PAGE_BYTES + (bytes % RADIX3_PAGE_BYTES != 0);
@@ -166,8 +216,7 @@ int32_t gsp_boot_memory::copy_boot_files(
     const boot_file_header& bootloader_header,
     const gsp_image_layout& gsp_image
 ) {
-    bool holds_copies = m_bootloader.virt != 0 || m_signature.virt != 0 || m_radix3_table.virt != 0 || m_firmware_runs;
-    if (holds_copies) {
+    if (holds_bootloader_and_gsp_image_copies()) {
         log::error("nvidia: the GSP's boot memory already holds copies of the bootloader and the GSP image");
         return ERR_BAD_STATE;
     }
@@ -182,9 +231,18 @@ int32_t gsp_boot_memory::copy_boot_files(
     if (rc != OK) {
         // The card was never given these addresses, so nothing reads the memory
         free_bootloader_and_gsp_image_copies();
+        return rc;
     }
 
-    return rc;
+    m_bootloader_bytes = bootloader_header.program_size;
+    m_firmware_bytes = gsp_image.firmware_size;
+    m_signature_bytes = gsp_image.signature_size;
+
+    return OK;
+}
+
+bool gsp_boot_memory::holds_bootloader_and_gsp_image_copies() const {
+    return m_bootloader.virt != 0 || m_signature.virt != 0 || m_radix3_table.virt != 0 || m_firmware_runs;
 }
 
 int32_t gsp_boot_memory::copy_each_part(
@@ -335,10 +393,86 @@ int32_t gsp_boot_memory::allocate_message_queues(const dma::device_profile& devi
     );
 }
 
+int32_t gsp_boot_memory::write_protected_metadata(
+    const dma::device_profile& device,
+    const frts_region& region,
+    const protected_memory_layout& layout,
+    const bootloader_layout& bootloader_parts
+) {
+    if (m_protected_metadata.virt != 0) {
+        log::error("nvidia: the GSP's boot memory already holds protected memory's metadata");
+        return ERR_BAD_STATE;
+    }
+
+    if (!holds_bootloader_and_gsp_image_copies()) {
+        log::error("nvidia: protected memory's metadata needs the copies of the bootloader and the GSP image first");
+        return ERR_BAD_STATE;
+    }
+
+    int32_t rc = allocate_for_card(
+        device,
+        PROTECTED_METADATA_BYTES,
+        dma::caching::cached_when_coherent,
+        "protected memory's metadata",
+        m_protected_metadata
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    fill_protected_metadata(region, layout, bootloader_parts);
+
+    return OK;
+}
+
+// Writes only what NVIDIA's driver sets by default on its first attempt to boot the GSP, since the page comes zeroed
+void gsp_boot_memory::fill_protected_metadata(
+    const frts_region& region,
+    const protected_memory_layout& layout,
+    const bootloader_layout& bootloader_parts
+) {
+    uint64_t signature_blocks = (m_signature_bytes + SIGNATURE_BLOCK_BYTES - 1) / SIGNATURE_BLOCK_BYTES;
+    auto* metadata = reinterpret_cast<protected_metadata*>(m_protected_metadata.virt);
+
+    metadata->magic = PROTECTED_METADATA_MAGIC;
+    metadata->revision = PROTECTED_METADATA_REVISION;
+
+    metadata->radix3_address = m_radix3_table.phys;
+    metadata->firmware_bytes = m_firmware_bytes;
+    metadata->bootloader_address = m_bootloader.phys;
+    metadata->bootloader_bytes = m_bootloader_bytes;
+    metadata->signature_address = m_signature.phys;
+    metadata->signature_bytes = signature_blocks * SIGNATURE_BLOCK_BYTES;
+
+    metadata->bootloader_code_offset = bootloader_parts.monitor_code_offset;
+    metadata->bootloader_data_offset = bootloader_parts.monitor_data_offset;
+    metadata->bootloader_manifest_offset = bootloader_parts.manifest_offset;
+
+    metadata->reserved_start = layout.unprotected_heap_offset;
+    metadata->unprotected_heap_offset = layout.unprotected_heap_offset;
+    metadata->unprotected_heap_bytes = layout.unprotected_heap_bytes;
+
+    metadata->protected_start = layout.protected_start;
+    metadata->heap_offset = layout.heap_offset;
+    metadata->heap_bytes = layout.heap_bytes;
+    metadata->firmware_offset = layout.firmware_offset;
+    metadata->bootloader_offset = layout.bootloader_offset;
+
+    // Protected memory ends where its topmost part, the FRTS region, ends
+    metadata->frts_offset = region.offset;
+    metadata->frts_bytes = FRTS_REGION_BYTES;
+    metadata->protected_end = region.offset + FRTS_REGION_BYTES;
+
+    metadata->video_memory_size = region.video_memory_size;
+    metadata->vga_workspace_offset = region.vga_workspace_offset;
+    metadata->vga_workspace_bytes = region.video_memory_size - region.vga_workspace_offset;
+}
+
 void gsp_boot_memory::release() {
     free_bootloader_and_gsp_image_copies();
     RUN_ELEVATED(dma::free_pages(m_booter_load));
     RUN_ELEVATED(dma::free_pages(m_message_queues));
+    RUN_ELEVATED(dma::free_pages(m_protected_metadata));
 }
 
 void gsp_boot_memory::free_bootloader_and_gsp_image_copies() {
@@ -356,6 +490,9 @@ void gsp_boot_memory::free_bootloader_and_gsp_image_copies() {
 
     m_firmware_runs = nullptr;
     m_firmware_run_count = 0;
+    m_bootloader_bytes = 0;
+    m_firmware_bytes = 0;
+    m_signature_bytes = 0;
 }
 
 } // namespace drivers::nvidia

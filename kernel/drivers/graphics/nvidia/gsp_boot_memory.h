@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_GSP_BOOT_MEMORY_H
 
 #include "drivers/graphics/nvidia/firmware_files.h"
+#include "drivers/graphics/nvidia/protected_memory.h"
 #include "dma/dma.h"
 
 namespace drivers::nvidia {
@@ -99,11 +100,14 @@ int32_t write_booter_load_image(
  * and the bootloader's program is the program the GSP's RISC-V core runs to
  * start the firmware. It also holds a copy of booter load's program, which
  * SEC2 loads, with the signature given to `copy_booter_load` in its signature
- * slot, and the memory `message_queues` lays the message queues out in, the
- * two rings through which the driver and the running firmware exchange
- * messages. Each copy starts on a page, and the rest of its last page holds
- * zeros. The card reaches the copies of the bootloader's program and of the
- * signature each as one contiguous range, from `bootloader_address()` and
+ * slot, the memory `message_queues` lays the message queues out in (the two
+ * rings through which the driver and the running firmware exchange messages)
+ * and a page holding protected memory's metadata. The metadata tells booter
+ * load where the copies of the bootloader's program, the firmware and the
+ * signature lie and where each part of protected memory goes. Each copy
+ * starts on a page, and the rest of its last page holds zeros. The card
+ * reaches the copies of the bootloader's program and of the signature each as
+ * one contiguous range, from `bootloader_address()` and
  * `signature_address()`.
  *
  * The firmware lies in physically contiguous runs of up to 2 MiB, listed by
@@ -121,14 +125,15 @@ int32_t write_booter_load_image(
  * level filling whole pages.
  *
  * One object owns all of this memory, and only `release` frees it all. The
- * copies `copy_boot_files` makes, booter load's copy and the message queues'
- * memory are each filled by a call of their own, which on an error frees
- * only what it allocated. Once the card has the addresses, booter load on
- * SEC2 and a running GSP may read any of it, and the GSP writes the message
- * queues, so the caller calls `release` only once SEC2 and the GSP are both
- * confirmed halted, or before the card was given any of the addresses. An
- * object dropped without `release` leaves the memory allocated for good,
- * which is what a card whose halt was never confirmed needs.
+ * copies `copy_boot_files` makes, booter load's copy, the message queues'
+ * memory and the metadata are each filled by a call of their own, which on
+ * an error frees only what it allocated. Once the card has the addresses,
+ * booter load on SEC2 and a running GSP may read any of it, and the GSP
+ * writes the message queues, so the caller calls `release` only once SEC2
+ * and the GSP are both confirmed halted, or before the card was given any of
+ * the addresses. An object dropped without `release` leaves the memory
+ * allocated for good, which is what a card whose halt was never confirmed
+ * needs.
  */
 class gsp_boot_memory {
 public:
@@ -217,6 +222,37 @@ public:
     int32_t allocate_message_queues(const dma::device_profile& device);
 
     /**
+     * @brief Allocate a page for protected memory's metadata and write the
+     * metadata into it as NVIDIA's driver writes it by default on its first
+     * attempt to boot the GSP, rather than a retry or a resume: where the
+     * copies `copy_boot_files` made lie and their sizes, the signature's
+     * rounded up to whole 256-byte blocks, where the bootloader's descriptor
+     * places the parts of its program, video memory's size, and where `region`
+     * and `layout` put the VGA workspace, each part of protected memory and
+     * the unprotected heap in video memory. Booter load reads the metadata
+     * from `protected_metadata_address()`, the page's start, and places it at
+     * `layout.protected_start`. The page is cached when the card is coherent
+     * and uncached otherwise.
+     * @param device The card's profile, from `pci_driver::dma_profile`.
+     * @param region Must be the FRTS region `layout` was laid out below.
+     * @param layout Must be the layout `lay_out_protected_memory` returned for
+     * `region` and the sizes of the bootloader's program and the firmware
+     * that `copy_boot_files` copied.
+     * @param bootloader_parts Must be the layout `read_bootloader_layout`
+     * returned for the bootloader whose program `copy_boot_files` copied.
+     * @return `OK`, `ERR_BAD_STATE` when the object already holds the
+     * metadata, which it keeps, or does not hold the copies `copy_boot_files`
+     * makes, or `ERR_NO_MEMORY` when allocating fails. Either error leaves the
+     * object's other memory as it was. The cause is logged.
+     */
+    int32_t write_protected_metadata(
+        const dma::device_profile& device,
+        const frts_region& region,
+        const protected_memory_layout& layout,
+        const bootloader_layout& bootloader_parts
+    );
+
+    /**
      * @brief Free all of the memory, leaving the object holding none. The
      * caller must have confirmed that SEC2 and the GSP are halted, or never
      * given the card any of the memory's addresses. Releasing an object
@@ -230,8 +266,11 @@ public:
     uint64_t signature_address() const { return m_signature.phys; }
     uint64_t booter_load_address() const { return m_booter_load.phys; }
     uint64_t message_queues_address() const { return m_message_queues.phys; }
+    uint64_t protected_metadata_address() const { return m_protected_metadata.phys; }
 
 private:
+    bool holds_bootloader_and_gsp_image_copies() const;
+
     int32_t copy_each_part(
         const dma::device_profile& device,
         const firmware_files& files,
@@ -243,6 +282,12 @@ private:
     // Frees what `copy_boot_files` allocates, leaving the object's other memory as it was
     void free_bootloader_and_gsp_image_copies();
 
+    void fill_protected_metadata(
+        const frts_region& region,
+        const protected_memory_layout& layout,
+        const bootloader_layout& bootloader_parts
+    );
+
     dma::buffer  m_bootloader = {};
     dma::buffer  m_signature = {};
     dma::buffer  m_radix3_table = {};
@@ -250,6 +295,12 @@ private:
     size_t       m_firmware_run_count = 0;
     dma::buffer  m_booter_load = {};
     dma::buffer  m_message_queues = {};
+    dma::buffer  m_protected_metadata = {};
+
+    // Bytes of each part `copy_boot_files` copied, while the object holds the copies
+    uint64_t m_bootloader_bytes = 0;
+    uint64_t m_firmware_bytes = 0;
+    uint64_t m_signature_bytes = 0;
 };
 
 } // namespace drivers::nvidia

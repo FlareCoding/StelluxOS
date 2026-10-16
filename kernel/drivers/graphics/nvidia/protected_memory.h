@@ -69,10 +69,14 @@ struct protected_memory_layout {
     uint64_t heap_bytes;              // a whole number of MiB
     uint64_t protected_start;
     uint64_t unprotected_heap_offset;
+    uint64_t unprotected_heap_bytes;
 };
 
 // Bytes of the FRTS region
 constexpr uint64_t FRTS_REGION_BYTES = 0x100000;
+
+// Bytes of protected memory's metadata, which protected memory's start leaves room for below the heap
+constexpr uint64_t PROTECTED_METADATA_BYTES = 256;
 
 // How long the card's boot firmware may take: 50 ms to start and 2 s to finish
 constexpr uint64_t BOOT_FIRMWARE_TIMEOUT_NS = 50000000 + 2000000000;
@@ -124,14 +128,16 @@ int32_t place_frts_region(const registers& regs, frts_region& region_out);
  * the highest 64 KiB boundary where it ends at or below the program. The
  * heap, protected memory's start and the unprotected heap each go at the
  * highest 1 MiB boundary where they end at or below the part above them, the
- * start leaving room below the heap for the 256 bytes of metadata. The heap
- * is placed for the sum, in 32 bits as NVIDIA's driver computes it, of
- * `reservation.heap_os_bytes`, `reservation.heap_base_bytes`, 96 KiB for each
- * whole or part GiB of video memory with that share rounded up to 1 MiB, and
- * 96 MiB for the firmware's records of up to 2048 channels (queues of work
- * for the GPU's engines), raised to `reservation.heap_min_bytes` when below
- * it. `heap_bytes` is then the room from `heap_offset` to the firmware
- * rounded down to 1 MiB. No register is read.
+ * start leaving room below the heap for `PROTECTED_METADATA_BYTES` bytes of
+ * metadata. The heap is placed for the sum, in 32 bits as NVIDIA's driver
+ * computes it, of `reservation.heap_os_bytes`, `reservation.heap_base_bytes`,
+ * 96 KiB for each whole or part GiB of video memory with that share rounded
+ * up to 1 MiB, and 96 MiB for the firmware's records of up to 2048 channels
+ * (queues of work for the GPU's engines), raised to
+ * `reservation.heap_min_bytes` when below it. `heap_bytes` is then the room
+ * from `heap_offset` to the firmware rounded down to 1 MiB, and
+ * `unprotected_heap_bytes` is `reservation.unprotected_heap_bytes`. No
+ * register is read.
  * @param region Must be the FRTS region as `place_frts_region` placed it.
  * @param reservation The chip's values from the chip table.
  * @param bootloader_bytes Bytes of the bootloader's program.
