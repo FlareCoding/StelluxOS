@@ -220,6 +220,29 @@ int32_t nvidia_gpu_driver::attach() {
         frts.video_memory_size
     );
 
+    nvidia::protected_memory_layout protected_memory = {};
+    rc = nvidia::lay_out_protected_memory(
+        frts,
+        chip->gsp_reservation,
+        bootloader_header.program_size,
+        gsp_image_parts.firmware_size,
+        protected_memory
+    );
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: protected memory laid out in video memory from 0x%lX, with the bootloader's program at 0x%lX, the "
+        "GSP's firmware at 0x%lX and its heap of 0x%lX bytes at 0x%lX, and the unprotected heap below it at 0x%lX",
+        protected_memory.protected_start,
+        protected_memory.bootloader_offset,
+        protected_memory.firmware_offset,
+        protected_memory.heap_bytes,
+        protected_memory.heap_offset,
+        protected_memory.unprotected_heap_offset
+    );
+
     nvidia::fwsec_signature signature = {};
     rc = nvidia::select_fwsec_signature(regs, fwsec, signature);
     if (rc != nvidia::OK) {

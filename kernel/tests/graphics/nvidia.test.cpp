@@ -50,6 +50,14 @@ static constexpr uint8_t GA102_DMA_ADDRESS_BITS = 47;
 // The GSP image section NVIDIA's driver takes GA102's signature from, named for the GA10x chips
 static constexpr char GA102_SIGNATURE_SECTION[] = ".fwsignature_ga10x";
 
+// How NVIDIA's driver sizes the GSP firmware's memory on GA102: 20 MiB of the heap for the firmware's operating
+// system, an 8 MiB base share, a minimum heap of 84 MiB, a 1 MiB unprotected heap and a prescrubbed top of 256 MiB
+static constexpr uint32_t GA102_HEAP_OS_BYTES          = 0x1400000;
+static constexpr uint32_t GA102_HEAP_BASE_BYTES        = 0x800000;
+static constexpr uint32_t GA102_HEAP_MIN_BYTES         = 0x5400000;
+static constexpr uint32_t GA102_UNPROTECTED_HEAP_BYTES = 0x100000;
+static constexpr uint64_t GA102_PRESCRUBBED_TOP_BYTES  = 0x10000000;
+
 // The RTX 3080's identity decodes to the GA102 entry of the chip table
 TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(decode_chip_id(RTX_3080_BOOT_0), GA102_CHIP_ID);
@@ -61,6 +69,11 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_STREQ(chip->name, "GA102");
     EXPECT_EQ(chip->dma_address_bits, GA102_DMA_ADDRESS_BITS);
     EXPECT_STREQ(chip->firmware.gsp_signature_section, GA102_SIGNATURE_SECTION);
+    EXPECT_EQ(chip->gsp_reservation.heap_os_bytes, GA102_HEAP_OS_BYTES);
+    EXPECT_EQ(chip->gsp_reservation.heap_base_bytes, GA102_HEAP_BASE_BYTES);
+    EXPECT_EQ(chip->gsp_reservation.heap_min_bytes, GA102_HEAP_MIN_BYTES);
+    EXPECT_EQ(chip->gsp_reservation.unprotected_heap_bytes, GA102_UNPROTECTED_HEAP_BYTES);
+    EXPECT_EQ(chip->gsp_reservation.prescrubbed_top_bytes, GA102_PRESCRUBBED_TOP_BYTES);
 }
 
 // GA104 shares GA102's architecture but has no chip table entry

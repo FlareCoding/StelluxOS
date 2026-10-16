@@ -20,6 +20,13 @@ constexpr chip_info CHIP_TABLE[] = {
             .gsp_signature_section = ".fwsignature_ga10x",
         },
         .dma_address_bits = 47,
+        .gsp_reservation = {
+            .heap_os_bytes = 0x1400000,
+            .heap_base_bytes = 0x800000,
+            .heap_min_bytes = 0x5400000,
+            .unprotected_heap_bytes = 0x100000,
+            .prescrubbed_top_bytes = 0x10000000,
+        },
     },
 };
 

@@ -13,11 +13,14 @@ TEST_SUITE(nvidia_protected_memory);
 
 using drivers::nvidia::BOOT_FIRMWARE_TIMEOUT_NS;
 using drivers::nvidia::check_frts_result;
+using drivers::nvidia::chip_gsp_reservation;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::frts_region;
+using drivers::nvidia::lay_out_protected_memory;
 using drivers::nvidia::OK;
 using drivers::nvidia::place_frts_region;
+using drivers::nvidia::protected_memory_layout;
 using drivers::nvidia::registers;
 using drivers::nvidia::wait_for_boot_firmware;
 
@@ -386,4 +389,203 @@ TEST(nvidia_protected_memory, region_offset_is_compared_in_32_bits) {
     };
 
     EXPECT_EQ(check_frts_result(bar0.regs, region), ERR_BAD_STATE);
+}
+
+// GA102's values as NVIDIA's driver sizes the firmware's memory: 20 MiB of the heap for the firmware's operating
+// system, an 8 MiB base share, a minimum heap of 84 MiB, a 1 MiB unprotected heap and a prescrubbed top of 256 MiB
+static constexpr chip_gsp_reservation GA102_GSP_RESERVATION = {
+    .heap_os_bytes = 0x1400000,
+    .heap_base_bytes = 0x800000,
+    .heap_min_bytes = 0x5400000,
+    .unprotected_heap_bytes = 0x100000,
+    .prescrubbed_top_bytes = 0x10000000,
+};
+
+// The sizes of the bootloader's program and the GSP's firmware in GA102's files
+static constexpr uint64_t GA102_BOOTLOADER_BYTES = 24576;
+static constexpr uint64_t GA102_FIRMWARE_BYTES   = 38141952;
+
+// The heap GA102's values give for up to 10 GiB of video memory: 20 + 8 MiB, 1 MiB for the video memory and 96 MiB
+// for the firmware's records of channels
+static constexpr uint64_t GA102_HEAP_BYTES = 0x7D00000;
+
+static constexpr uint64_t GIB = 0x40000000;
+
+static int32_t lay_out_for_ga102(const frts_region& region, uint64_t firmware_bytes, protected_memory_layout& layout) {
+    return lay_out_protected_memory(region, GA102_GSP_RESERVATION, GA102_BOOTLOADER_BYTES, firmware_bytes, layout);
+}
+
+// The RTX 3080 booted on its own framebuffer gets NVIDIA's layout for GA102's files below its FRTS region
+TEST(nvidia_protected_memory, rtx_3080_protected_memory_layout) {
+    protected_memory_layout layout = {};
+    ASSERT_EQ(lay_out_for_ga102(RTX_3080_FRTS_REGION, GA102_FIRMWARE_BYTES, layout), OK);
+
+    EXPECT_EQ(layout.bootloader_offset, 0x27FDFA000u);
+    EXPECT_EQ(layout.firmware_offset, 0x27D990000u);
+    EXPECT_EQ(layout.heap_offset, 0x275C00000u);
+    EXPECT_EQ(layout.heap_bytes, GA102_HEAP_BYTES);
+    EXPECT_EQ(layout.protected_start, 0x275B00000u);
+    EXPECT_EQ(layout.unprotected_heap_offset, 0x275A00000u);
+}
+
+// With a valid workspace register the RTX 3080's region sits 896 KiB higher, the bootloader's program and the firmware
+// move up 896 KiB with it, and the parts below them 1 MiB
+TEST(nvidia_protected_memory, rtx_3080_layout_with_a_valid_workspace_register) {
+    frts_region region = {
+        .video_memory_size = 0x280000000,
+        .vga_workspace_offset = 0x27FFE0000,
+        .offset = 0x27FEE0000,
+    };
+
+    protected_memory_layout layout = {};
+    ASSERT_EQ(lay_out_for_ga102(region, GA102_FIRMWARE_BYTES, layout), OK);
+    EXPECT_EQ(layout.bootloader_offset, 0x27FEDA000u);
+    EXPECT_EQ(layout.firmware_offset, 0x27DA70000u);
+    EXPECT_EQ(layout.heap_offset, 0x275D00000u);
+    EXPECT_EQ(layout.heap_bytes, GA102_HEAP_BYTES);
+    EXPECT_EQ(layout.protected_start, 0x275C00000u);
+    EXPECT_EQ(layout.unprotected_heap_offset, 0x275B00000u);
+}
+
+// The bootloader's program or the firmware, one byte larger than the room from its boundary to the part above it,
+// starts a whole boundary lower, 4 KiB lower for the program and 64 KiB lower for the firmware
+TEST(nvidia_protected_memory, bootloader_and_firmware_start_on_their_boundaries) {
+    uint64_t bootloader_bytes = GA102_BOOTLOADER_BYTES + 1;
+    uint64_t firmware_bytes = 0x2469001;
+
+    protected_memory_layout layout = {};
+    ASSERT_EQ(
+        lay_out_protected_memory(RTX_3080_FRTS_REGION, GA102_GSP_RESERVATION, bootloader_bytes, firmware_bytes, layout),
+        OK
+    );
+    EXPECT_EQ(layout.bootloader_offset, 0x27FDF9000u);
+    EXPECT_EQ(layout.firmware_offset, 0x27D980000u);
+    EXPECT_EQ(layout.heap_offset, 0x275C00000u);
+}
+
+// The region below the last 1 MiB of `video_memory_size` bytes of video memory, as `place_frts_region` places it
+// without a valid workspace register
+static frts_region region_below_last_mib(uint64_t video_memory_size) {
+    return {
+        .video_memory_size = video_memory_size,
+        .vga_workspace_offset = video_memory_size - VGA_WORKSPACE_MAX_BYTES,
+        .offset = video_memory_size - VGA_WORKSPACE_MAX_BYTES - FRTS_REGION_BYTES,
+    };
+}
+
+// The heap GA102's files get with `video_memory_size` bytes of video memory, or 0 when the layout is refused
+static uint64_t ga102_heap_bytes_for(uint64_t video_memory_size) {
+    protected_memory_layout layout = {};
+    if (lay_out_for_ga102(region_below_last_mib(video_memory_size), GA102_FIRMWARE_BYTES, layout) != OK) {
+        return 0;
+    }
+
+    return layout.heap_bytes;
+}
+
+// The heap takes 96 KiB for each GiB of video memory, a part GiB counting whole and the product rounded up to 1 MiB
+TEST(nvidia_protected_memory, heap_grows_with_video_memory) {
+    EXPECT_EQ(ga102_heap_bytes_for(10 * GIB + MIB), GA102_HEAP_BYTES + MIB);
+    EXPECT_EQ(ga102_heap_bytes_for(32 * GIB), GA102_HEAP_BYTES + 2 * MIB);
+    EXPECT_EQ(ga102_heap_bytes_for(32 * GIB + MIB), GA102_HEAP_BYTES + 3 * MIB);
+}
+
+// The heap is summed in 32 bits as NVIDIA's driver sums it: 0x2AAAB and 0x15556 GiB wrap the product to 32 and 64 KiB,
+// and 43679 GiB rounds it to 0xFFF00000, which wraps the sum to 123 MiB
+TEST(nvidia_protected_memory, heap_is_sized_in_32_bits) {
+    EXPECT_EQ(ga102_heap_bytes_for(0x2AAAB * GIB), GA102_HEAP_BYTES);
+    EXPECT_EQ(ga102_heap_bytes_for(0x15556 * GIB), GA102_HEAP_BYTES);
+    EXPECT_EQ(ga102_heap_bytes_for(43679 * GIB), GA102_HEAP_BYTES - 2 * MIB);
+}
+
+// The heap is raised to the chip's minimum: GA102's 84 MiB once 42368 GiB wraps the sum to 0, and a 200 MiB minimum
+// above the RTX 3080's 125 MiB sum
+TEST(nvidia_protected_memory, heap_is_raised_to_the_chip_minimum) {
+    EXPECT_EQ(ga102_heap_bytes_for(42368 * GIB), GA102_GSP_RESERVATION.heap_min_bytes);
+
+    chip_gsp_reservation reservation = GA102_GSP_RESERVATION;
+    reservation.heap_min_bytes = 200 * MIB;
+
+    protected_memory_layout layout = {};
+    ASSERT_EQ(
+        lay_out_protected_memory(
+            RTX_3080_FRTS_REGION,
+            reservation,
+            GA102_BOOTLOADER_BYTES,
+            GA102_FIRMWARE_BYTES,
+            layout
+        ),
+        OK
+    );
+    EXPECT_EQ(layout.heap_bytes, 200 * MIB);
+}
+
+// The chip's values size the heaps and a prescrubbed top past 32 bits. A 116.5 MiB heap gets the 117 MiB of room
+// it leaves below the firmware, and a 2.75 MiB unprotected heap starts 3 MiB below protected memory's start
+TEST(nvidia_protected_memory, chip_values_size_the_heaps_and_the_prescrubbed_top) {
+    chip_gsp_reservation reservation = {
+        .heap_os_bytes = 0x1080000,
+        .heap_base_bytes = 0x300000,
+        .heap_min_bytes = 0x4000000,
+        .unprotected_heap_bytes = 0x2C0000,
+        .prescrubbed_top_bytes = 0x110000000,
+    };
+
+    uint64_t firmware_bytes = 0xFFBA000;
+
+    protected_memory_layout layout = {};
+    ASSERT_EQ(
+        lay_out_protected_memory(RTX_3080_FRTS_REGION, reservation, GA102_BOOTLOADER_BYTES, firmware_bytes, layout),
+        OK
+    );
+    EXPECT_EQ(layout.firmware_offset, 0x26FE40000u);
+    EXPECT_EQ(layout.heap_offset, 0x268900000u);
+    EXPECT_EQ(layout.heap_bytes, 0x7500000u);
+    EXPECT_EQ(layout.protected_start, 0x268800000u);
+    EXPECT_EQ(layout.unprotected_heap_offset, 0x268500000u);
+
+    reservation.prescrubbed_top_bytes = 0x10000000;
+    EXPECT_EQ(
+        lay_out_protected_memory(RTX_3080_FRTS_REGION, reservation, GA102_BOOTLOADER_BYTES, firmware_bytes, layout),
+        ERR_BAD_STATE
+    );
+}
+
+// The largest firmware whose layout fits the RTX 3080's prescrubbed top puts the unprotected heap at its very start,
+// one byte more is refused, leaving the layout as it was, and sizes 4 GiB larger than GA102's are refused too
+TEST(nvidia_protected_memory, layout_must_fit_in_the_prescrubbed_top) {
+    uint64_t largest_firmware_bytes = 0x7EFA000;
+    uint64_t prescrubbed_start = RTX_3080_FRTS_REGION.video_memory_size - GA102_GSP_RESERVATION.prescrubbed_top_bytes;
+
+    protected_memory_layout layout = {};
+    ASSERT_EQ(lay_out_for_ga102(RTX_3080_FRTS_REGION, largest_firmware_bytes, layout), OK);
+    EXPECT_EQ(layout.unprotected_heap_offset, prescrubbed_start);
+
+    EXPECT_EQ(lay_out_for_ga102(RTX_3080_FRTS_REGION, largest_firmware_bytes + 1, layout), ERR_BAD_STATE);
+    EXPECT_EQ(layout.firmware_offset, RTX_3080_FRTS_REGION.offset - GA102_BOOTLOADER_BYTES - largest_firmware_bytes);
+    EXPECT_EQ(layout.unprotected_heap_offset, prescrubbed_start);
+
+    uint64_t firmware_past_32_bits = (static_cast<uint64_t>(1) << 32) + GA102_FIRMWARE_BYTES;
+    EXPECT_EQ(lay_out_for_ga102(RTX_3080_FRTS_REGION, firmware_past_32_bits, layout), ERR_BAD_STATE);
+
+    uint64_t bootloader_past_32_bits = (static_cast<uint64_t>(1) << 32) + GA102_BOOTLOADER_BYTES;
+    EXPECT_EQ(
+        lay_out_protected_memory(
+            RTX_3080_FRTS_REGION,
+            GA102_GSP_RESERVATION,
+            bootloader_past_32_bits,
+            GA102_FIRMWARE_BYTES,
+            layout
+        ),
+        ERR_BAD_STATE
+    );
+}
+
+// Video memory smaller than the prescrubbed top must hold the layout from offset 0 up, and GA102's files need 166 MiB
+TEST(nvidia_protected_memory, layout_must_fit_in_video_memory) {
+    protected_memory_layout layout = {};
+    ASSERT_EQ(lay_out_for_ga102(region_below_last_mib(166 * MIB), GA102_FIRMWARE_BYTES, layout), OK);
+    EXPECT_EQ(layout.unprotected_heap_offset, 0u);
+
+    EXPECT_EQ(lay_out_for_ga102(region_below_last_mib(165 * MIB), GA102_FIRMWARE_BYTES, layout), ERR_BAD_STATE);
 }
