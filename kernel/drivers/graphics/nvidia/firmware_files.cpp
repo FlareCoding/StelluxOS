@@ -1,6 +1,7 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
 
 #include "drivers/graphics/nvidia/firmware_files.h"
+#include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/pci_driver.h"
 #include "common/logging.h"
@@ -821,6 +822,32 @@ int32_t read_booter_layout(
     }
 
     layout_out = layout;
+
+    return OK;
+}
+
+int32_t select_booter_signature(
+    const registers& regs,
+    const booter_layout& booter_load,
+    booter_signature& signature_out
+) {
+    uint32_t fuse_version = read_ucode_fuse_version(regs, falcon_id::sec2, booter_load.ucode_id);
+    uint32_t last_index = booter_load.signature_count - 1;
+    bool has_several_signatures = booter_load.signature_count > 1;
+    bool has_signature_for_version = fuse_version <= last_index;
+    if (has_several_signatures && !has_signature_for_version) {
+        log::error(
+            "nvidia: SEC2's fuse register for booter load's ucode id %u gives fuse version %u, while booter load "
+            "has signatures only for versions 0 to %u",
+            booter_load.ucode_id,
+            fuse_version,
+            last_index
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    signature_out.fuse_version = fuse_version;
+    signature_out.index = has_several_signatures ? last_index - fuse_version : 0;
 
     return OK;
 }

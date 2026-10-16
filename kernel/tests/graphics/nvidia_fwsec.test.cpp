@@ -24,9 +24,9 @@ using drivers::nvidia::registers;
 using drivers::nvidia::ROM_WINDOW_BYTES;
 using drivers::nvidia::select_fwsec_signature;
 
-// The first fuse register recording a program's version and the bytes to the next, restated here so the tests hold
-// the choice to NVIDIA's register map rather than to its own constants
-static constexpr uint32_t UCODE_VERSION_FUSES       = 0x8241C0;
+// The first fuse register recording a version of a program the GSP's falcon runs, and the bytes to the next, restated
+// here so the tests hold the choice to NVIDIA's register map rather than to its own constants
+static constexpr uint32_t GSP_UCODE_VERSION_FUSES   = 0x8241C0;
 static constexpr uint32_t UCODE_VERSION_FUSE_STRIDE = 4;
 
 // The application interface, the DMEM mapper, the FRTS command and the signatures' size, restated here so the tests
@@ -63,7 +63,7 @@ struct fuse_bar0 {
 
 // Writes the fuse register of the program with `ucode_id`, which may name a register just outside the 16
 static void put_fuses(fuse_bar0& bar0, uint32_t ucode_id, uint32_t fuses) {
-    bar0.write(UCODE_VERSION_FUSES + UCODE_VERSION_FUSE_STRIDE * ucode_id - UCODE_VERSION_FUSE_STRIDE, fuses);
+    bar0.write(GSP_UCODE_VERSION_FUSES + UCODE_VERSION_FUSE_STRIDE * ucode_id - UCODE_VERSION_FUSE_STRIDE, fuses);
 }
 
 // FWSEC as `find_fwsec` returns it for the RTX 3080's VBIOS

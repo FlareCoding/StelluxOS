@@ -137,6 +137,19 @@ int32_t nvidia_gpu_driver::attach() {
         booter_parts.signatures_offset
     );
 
+    nvidia::booter_signature booter_load_signature = {};
+    rc = nvidia::select_booter_signature(regs, booter_parts, booter_load_signature);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: booter load's signature %u of %u chosen with fuse version %u",
+        booter_load_signature.index + 1,
+        booter_parts.signature_count,
+        booter_load_signature.fuse_version
+    );
+
     log::info("nvidia: firmware %s checked", nvidia::FIRMWARE_VERSION);
 
     nvidia::falcon_program_table table = {};

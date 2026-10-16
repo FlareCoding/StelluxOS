@@ -21,11 +21,9 @@ struct fwsec_signature {
 };
 
 /**
- * @brief Choose FWSEC's signature for the version the chip's fuses record.
- * FWSEC's ucode id, NVIDIA's number for it among the programs the GSP's
- * falcon runs, names one of 16 fuse registers, from 1 for the first. The
- * version is the bit number of that register's highest set bit plus 1, or 0
- * when no bit is set or the ucode id names none of them.
+ * @brief Choose FWSEC's signature for the version the chip's fuses record,
+ * which `read_ucode_fuse_version` reads for FWSEC's ucode id, NVIDIA's
+ * number for it among the programs the GSP's falcon runs.
  * @param regs A view of BAR0.
  * @param fwsec FWSEC as `find_fwsec` returns it.
  * @param signature_out Receives the choice when the result is `OK`. Its

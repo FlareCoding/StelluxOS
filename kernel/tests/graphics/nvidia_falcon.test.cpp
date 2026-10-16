@@ -5,20 +5,25 @@
 #include "stlx_unit_test.h"
 #include "clock/clock.h"
 #include "drivers/graphics/nvidia/falcon.h"
+#include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "mm/heap.h"
 
 TEST_SUITE(nvidia_falcon);
 
+using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::FALCON_READY_TIMEOUT_NS;
 using drivers::nvidia::FALCON_TIMEOUT_NS;
 using drivers::nvidia::OK;
+using drivers::nvidia::booter_layout;
+using drivers::nvidia::booter_signature;
 using drivers::nvidia::falcon_program;
 using drivers::nvidia::registers;
 using drivers::nvidia::reset_gsp_falcon;
 using drivers::nvidia::run_gsp_falcon_program;
+using drivers::nvidia::select_booter_signature;
 
 // Registers and fields the reset uses, restated here so the tests hold the reset to NVIDIA's layout rather than to
 // its own constants
@@ -357,4 +362,95 @@ static constexpr uint64_t NVIDIA_DEFAULT_TIMEOUT_NS = 4000000000;
 TEST(nvidia_falcon, falcon_timeouts_are_nvidias) {
     EXPECT_EQ(FALCON_READY_TIMEOUT_NS, NVIDIA_READY_TIMEOUT_NS);
     EXPECT_EQ(FALCON_TIMEOUT_NS, NVIDIA_DEFAULT_TIMEOUT_NS);
+}
+
+// The first fuse register recording a version of a program each falcon runs, and the bytes from one to the next,
+// restated here so the tests hold the choice to NVIDIA's register map rather than to the driver's constants
+static constexpr uint32_t GSP_UCODE_VERSION_FUSES   = 0x8241C0;
+static constexpr uint32_t SEC2_UCODE_VERSION_FUSES  = 0x824140;
+static constexpr uint32_t UCODE_VERSION_FUSE_STRIDE = 4;
+
+// Writes the register that `ucode_id` names among the fuse registers from `first_fuse`
+static void put_ucode_fuses(falcon_bar0& bar0, uint32_t first_fuse, uint32_t ucode_id, uint32_t fuses) {
+    bar0.write(first_fuse + UCODE_VERSION_FUSE_STRIDE * ucode_id - UCODE_VERSION_FUSE_STRIDE, fuses);
+}
+
+// Booter load as `read_booter_layout` returns it for the GA102 file the nvidia-firmware package installs
+static constexpr booter_layout GA102_BOOTER_LAYOUT = {
+    .code_offset = 0x100,
+    .code_size = 0x8300,
+    .data_offset = 0x8400,
+    .data_size = 0x6200,
+    .signature_slot = 0x10,
+    .signatures_offset = 0x3C,
+    .signature_size = 384,
+    .signature_count = 2,
+    .ucode_id = 3,
+    .engine_mask = 0x1,
+};
+
+// Writes `fuses` to SEC2's fuse register for `booter_load`'s ucode id, then chooses booter load's signature
+static int32_t select_for_sec2_fuses(
+    falcon_bar0& bar0,
+    const booter_layout& booter_load,
+    uint32_t fuses,
+    booter_signature& signature
+) {
+    put_ucode_fuses(bar0, SEC2_UCODE_VERSION_FUSES, booter_load.ucode_id, fuses);
+    return select_booter_signature(bar0.regs, booter_load, signature);
+}
+
+// Of the GA102 booter load's two signatures, fuse version 0 takes the second, version 1 the first and version 2 none.
+// The GSP's register for the same ucode id holds version 1, so reading it instead fails the version 0 and 2 cases.
+TEST(nvidia_falcon, ga102_booter_load_signature_follows_its_fuse_version) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    put_ucode_fuses(bar0, GSP_UCODE_VERSION_FUSES, GA102_BOOTER_LAYOUT.ucode_id, 0x1);
+
+    booter_signature signature = {};
+    EXPECT_EQ(select_for_sec2_fuses(bar0, GA102_BOOTER_LAYOUT, 0x0, signature), OK);
+    EXPECT_EQ(signature.fuse_version, 0u);
+    EXPECT_EQ(signature.index, 1u);
+
+    EXPECT_EQ(select_for_sec2_fuses(bar0, GA102_BOOTER_LAYOUT, 0x1, signature), OK);
+    EXPECT_EQ(signature.fuse_version, 1u);
+    EXPECT_EQ(signature.index, 0u);
+
+    signature = {.fuse_version = 7, .index = 7};
+    EXPECT_EQ(select_for_sec2_fuses(bar0, GA102_BOOTER_LAYOUT, 0x2, signature), ERR_BAD_FIRMWARE);
+    EXPECT_EQ(signature.fuse_version, 7u);
+    EXPECT_EQ(signature.index, 7u);
+}
+
+// A lone signature is chosen whatever version the fuses record, even 32, the version of bit 31
+TEST(nvidia_falcon, lone_booter_load_signature_is_chosen_even_at_fuse_version_32) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+
+    booter_layout lone = GA102_BOOTER_LAYOUT;
+    lone.signature_count = 1;
+    booter_signature signature = {};
+    EXPECT_EQ(select_for_sec2_fuses(bar0, lone, 0x80000000, signature), OK);
+    EXPECT_EQ(signature.fuse_version, 32u);
+    EXPECT_EQ(signature.index, 0u);
+}
+
+// With 0x10002 signatures the index needs 17 bits. A ucode id of 0x10003, which 8 or 16 bits would cut to 3, GA102's
+// id, gives fuse version 0 rather than the version 1 the register for id 3 records.
+TEST(nvidia_falcon, booter_load_signature_choice_keeps_bits_past_16) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+
+    booter_layout many = GA102_BOOTER_LAYOUT;
+    many.signature_count = 0x10002;
+    booter_signature signature = {};
+    EXPECT_EQ(select_for_sec2_fuses(bar0, many, 0x1, signature), OK);
+    EXPECT_EQ(signature.index, 0x10000u);
+
+    booter_layout wide_id = GA102_BOOTER_LAYOUT;
+    wide_id.ucode_id = 0x10003;
+    put_ucode_fuses(bar0, SEC2_UCODE_VERSION_FUSES, GA102_BOOTER_LAYOUT.ucode_id, 0x1);
+    EXPECT_EQ(select_booter_signature(bar0.regs, wide_id, signature), OK);
+    EXPECT_EQ(signature.fuse_version, 0u);
+    EXPECT_EQ(signature.index, 1u);
 }

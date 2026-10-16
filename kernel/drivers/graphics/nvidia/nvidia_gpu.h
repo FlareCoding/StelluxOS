@@ -20,9 +20,11 @@ namespace drivers {
  * descriptor places the parts of its program and the program's app version,
  * checks booter load's header, logs where booter load's descriptors place its
  * code, data, signature slot and signatures, with its ucode id and engine
- * mask, and finds FWSEC, the signed program in the VBIOS that fences off
- * protected memory for the GSP's firmware, through the VBIOS's falcon program
- * table.
+ * mask, chooses and logs which of booter load's signatures its slot must
+ * hold, reading the version the chip's fuses, bits burned into it for good,
+ * record for booter load, and finds FWSEC, the signed program in the VBIOS
+ * that fences off protected memory for the GSP's firmware, through the
+ * VBIOS's falcon program table.
  * Once the card's boot firmware has finished setting up video memory, it
  * works out where in video memory FWSEC's FRTS region goes, the part of
  * protected memory FWSEC fences off first. It then chooses which of FWSEC's
@@ -47,12 +49,13 @@ namespace drivers {
  * end of the bootloader's program, booter load's descriptors fail
  * `nvidia::read_booter_layout`, which requires them to follow NVIDIA's rules
  * for booter load and place its code, data, signature slot and signatures as
- * `nvidia::booter_layout` describes, or a firmware name built from the chip
- * table is too long or malformed. Once the firmware files check out, it also
- * fails when the VBIOS does not lead to a falcon program table as
- * `nvidia::find_falcon_program_table` requires, or the table does not lead
- * to FWSEC as `nvidia::find_fwsec` requires. Once FWSEC is found, it fails
- * when the card's boot firmware has not finished within
+ * `nvidia::booter_layout` describes, booter load has more than one signature
+ * and none for the fuse version read for it, or a firmware name built from
+ * the chip table is too long or malformed. Once the firmware files check
+ * out, it also fails when the VBIOS does not lead to a falcon program table
+ * as `nvidia::find_falcon_program_table` requires, or the table does not
+ * lead to FWSEC as `nvidia::find_fwsec` requires. Once FWSEC is found, it
+ * fails when the card's boot firmware has not finished within
  * `nvidia::BOOT_FIRMWARE_TIMEOUT_NS`, or when `nvidia::place_frts_region`
  * refuses the card's state, as when protected memory is already set up. Once
  * the region is placed, it fails when `nvidia::select_fwsec_signature`

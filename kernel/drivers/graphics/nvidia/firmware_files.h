@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_FIRMWARE_FILES_H
 
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/registers.h"
 #include "fw/fw.h"
 
 namespace drivers::nvidia {
@@ -65,9 +66,9 @@ struct bootloader_layout {
  * ROM as it starts, runs the code only once the signature in the signature
  * slot checks out. Booter load carries signatures for one or more of the
  * versions the chip's fuses, bits burned into the chip for good, may record
- * for it, and the slot must receive the one for the version they record. The
- * code and data each lie inside the program, the slot lies inside the data,
- * and the signatures lie one after another inside the file.
+ * for it, and `select_booter_signature` chooses the one the slot must
+ * receive. The code and data each lie inside the program, the slot lies
+ * inside the data, and the signatures lie one after another inside the file.
  */
 struct booter_layout {
     uint32_t code_offset;       // bytes from the start of the program
@@ -80,6 +81,12 @@ struct booter_layout {
     uint32_t signature_count;   // at least 1
     uint32_t ucode_id;          // NVIDIA's number for booter load among SEC2's programs
     uint32_t engine_mask;       // the engines booter load is signed to run on
+};
+
+// Which of booter load's signatures its signature slot must hold, and the fuse version read to choose it
+struct booter_signature {
+    uint32_t fuse_version; // the version `read_ucode_fuse_version` gives for booter load, from 0 to 32
+    uint32_t index;        // the signature's place among booter load's signatures, counting from 0
 };
 
 /**
@@ -205,6 +212,28 @@ int32_t read_booter_layout(
     const fw::file& booter_load,
     const boot_file_header& header,
     booter_layout& layout_out
+);
+
+/**
+ * @brief Choose which of booter load's signatures its signature slot must
+ * hold. As in NVIDIA's driver, a lone signature is chosen whatever version
+ * the chip's fuses record, and with more than one the one for fuse version v
+ * is at index `signature_count` - 1 - v, where `read_ucode_fuse_version`
+ * gives v for SEC2's falcon and booter load's ucode id.
+ * @param regs A view of BAR0.
+ * @param booter_load Booter load's layout, which must be as
+ * `read_booter_layout` returns it, so it holds at least one signature.
+ * @param signature_out Receives the choice on `OK`, whose `index` is then
+ * below `booter_load.signature_count`, so the signature lies inside the
+ * file, and is left unchanged on an error.
+ * @return `OK`, or `ERR_BAD_FIRMWARE` when booter load has more than one
+ * signature and the fuse version is above `signature_count` - 1, so none is
+ * for it. The cause is logged.
+ */
+int32_t select_booter_signature(
+    const registers& regs,
+    const booter_layout& booter_load,
+    booter_signature& signature_out
 );
 
 } // namespace drivers::nvidia

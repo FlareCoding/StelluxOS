@@ -91,6 +91,12 @@ constexpr uint32_t GSP_FALCON2_BROM_CURR_UCODE_ID = GSP_FALCON2_BASE + 0x198;
 constexpr uint32_t GSP_FALCON2_MOD_SEL            = GSP_FALCON2_BASE + 0x180;
 constexpr uint32_t RSA_3072                       = 0x1;
 
+// The first fuse register recording a version of a program each falcon runs, the one for ucode id 1
+constexpr uint32_t GSP_UCODE_VERSION_FUSES   = 0x8241C0;
+constexpr uint32_t SEC2_UCODE_VERSION_FUSES  = 0x824140;
+constexpr uint32_t UCODE_VERSION_FUSE_STRIDE = 4; // bytes from one fuse register to the next
+constexpr uint32_t UCODE_VERSION_FUSE_COUNT  = 16;
+
 constexpr uint64_t NS_PER_MS = 1000000;
 
 // Spins until the `bits` of the register at `offset` read as `value` or `timeout_ns` passes, reading it at least
@@ -303,6 +309,32 @@ int32_t run_gsp_falcon_program(registers& regs, const falcon_program& program, u
     }
 
     return OK;
+}
+
+// Without a default, the compiler flags a falcon added to `falcon_id` but missing here
+static uint32_t first_ucode_version_fuse(falcon_id falcon) {
+    switch (falcon) {
+        case falcon_id::gsp:
+            return GSP_UCODE_VERSION_FUSES;
+        case falcon_id::sec2:
+            return SEC2_UCODE_VERSION_FUSES;
+    }
+}
+
+uint32_t read_ucode_fuse_version(const registers& regs, falcon_id falcon, uint32_t ucode_id) {
+    uint32_t fuse_index = ucode_id - 1;
+    if (fuse_index >= UCODE_VERSION_FUSE_COUNT) {
+        return 0;
+    }
+
+    uint32_t fuses = regs.read(first_ucode_version_fuse(falcon) + fuse_index * UCODE_VERSION_FUSE_STRIDE);
+    uint32_t version = 0;
+    while (fuses != 0) {
+        version++;
+        fuses >>= 1;
+    }
+
+    return version;
 }
 
 } // namespace drivers::nvidia
