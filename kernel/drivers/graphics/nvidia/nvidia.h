@@ -11,7 +11,7 @@ constexpr int32_t ERR_NOT_RESPONDING = -1; // `PMC_BOOT_0` reads all ones, so th
 constexpr int32_t ERR_BAD_VBIOS      = -2; // the VBIOS lacks a structure bring-up reads from it, or one is malformed
                                            // or ends past the ROM window or the VBIOS
 constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unreadable, malformed, of another version or
-                                           // without a signature for the fuse version read for it, or its name invalid
+                                           // lacks a signature bring-up needs, or a chip table name for it is invalid
 constexpr int32_t ERR_TIMEOUT        = -4; // the card did not finish a step within its deadline
 constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers show a state bring-up cannot proceed from, such as
                                            // protected memory already set up, or FWSEC not fencing off the FRTS region

@@ -90,6 +90,21 @@ struct booter_signature {
 };
 
 /**
+ * Where the GSP image places its firmware and the chip's signature for it,
+ * each a section holding at least one byte inside the file. The firmware is
+ * the .fwimage section, which booter load's program loads into protected
+ * memory, verifies with the signature and boots. The signature is the section
+ * the chip table names for the chip, since the image holds signatures for
+ * several kinds of chip.
+ */
+struct gsp_image_layout {
+    uint64_t firmware_file_offset;  // bytes from the start of the file
+    uint64_t firmware_size;         // bytes, at least 1
+    uint64_t signature_file_offset; // bytes from the start of the file
+    uint64_t signature_size;        // bytes, at least 1
+};
+
+/**
  * @brief Open the files a chip boots from, in the layout the nvidia-firmware
  * package installs under `fw::DIRECTORY`: the bootloader and booter load in
  * the chip's boot directory in nvidia/<FIRMWARE_VERSION>/ first, then the GSP
@@ -111,26 +126,36 @@ int32_t open_firmware_files(const chip_firmware& firmware, firmware_files& files
 int32_t to_bring_up_result(int32_t fw_result);
 
 /**
- * @brief Check that the GSP image is a 64-bit little-endian ELF file with
- * a single section named .fwversion, which holds exactly `FIRMWARE_VERSION`
- * and its NUL. Reads the ELF header, the section headers, the 11 bytes at the
- * start of each section's name when all 11 lie inside the name table, as many
- * as ".fwversion" and its NUL take, and the .fwversion section, each with
- * `fw::file::read`, which takes the file's mutex, so this must not run in an
- * interrupt handler or under a spinlock. On the boot thread, which cannot
- * wait, `image` must be one no other thread uses at the time, as `fw::file`
- * describes.
+ * @brief Check that the GSP image is a 64-bit little-endian ELF file whose
+ * single .fwversion section holds exactly `FIRMWARE_VERSION` and its NUL, and
+ * find where it places its firmware and the chip's signature. The .fwversion,
+ * .fwimage and signature sections must each be the only section of its name,
+ * hold at least one byte and lie inside the file. Reads the ELF header, the
+ * section headers, for each name sought the bytes at the start of each
+ * section's name that the name and its NUL take when they lie inside the name
+ * table, and the .fwversion section, each with `fw::file::read`, which takes
+ * the file's mutex, so this must not run in an interrupt handler or under a
+ * spinlock. On the boot thread, which cannot wait, `image` must be one no
+ * other thread uses at the time, as `fw::file` describes.
  * @param image Must hold a file open.
+ * @param signature_section The name of the section holding the chip's
+ * signature, such as the chip table's `gsp_signature_section`, which must not
+ * be null.
+ * @param layout_out Receives where the firmware and the signature lie on
+ * `OK`, each then holding at least one byte inside the file, and is left
+ * unchanged on an error.
  * @return `OK`, or `ERR_BAD_FIRMWARE` when the file is shorter than an ELF
  * header or not a 64-bit little-endian ELF file, its section headers are not
  * 64 bytes each, it has no section or more than 64, the most section headers
  * it reads, its section table or section name table lies outside the file,
- * the name table's index is 0 or past the last section, it has no .fwversion
- * section or more than one, that section lies outside the file, is larger
- * than the 32 bytes it reads a version into or holds anything but
- * `FIRMWARE_VERSION` and its NUL, or reading fails. The cause is logged.
+ * the name table's index is 0 or past the last section, it has no .fwversion,
+ * .fwimage or signature section or more than one of a name, one of them holds
+ * no byte or lies outside the file, the .fwversion section is larger than the
+ * 32 bytes it reads a version into or holds anything but `FIRMWARE_VERSION`
+ * and its NUL, `signature_section` is longer than the 31 bytes of a name the
+ * check compares, or reading fails. The cause is logged.
  */
-int32_t check_gsp_image(const fw::file& image);
+int32_t check_gsp_image(const fw::file& image, const char* signature_section, gsp_image_layout& layout_out);
 
 /**
  * @brief Check that a bootloader or booter starts with a `boot_file_header`

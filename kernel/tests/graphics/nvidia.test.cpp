@@ -47,6 +47,9 @@ static constexpr uint8_t RTX_3080_REVISION = 0xa1;
 // The physical address bits NVIDIA's driver gives GA102 for reaching system memory
 static constexpr uint8_t GA102_DMA_ADDRESS_BITS = 47;
 
+// The GSP image section NVIDIA's driver takes GA102's signature from, named for the GA10x chips
+static constexpr char GA102_SIGNATURE_SECTION[] = ".fwsignature_ga10x";
+
 // The RTX 3080's identity decodes to the GA102 entry of the chip table
 TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(decode_chip_id(RTX_3080_BOOT_0), GA102_CHIP_ID);
@@ -57,6 +60,7 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(chip->id, GA102_CHIP_ID);
     EXPECT_STREQ(chip->name, "GA102");
     EXPECT_EQ(chip->dma_address_bits, GA102_DMA_ADDRESS_BITS);
+    EXPECT_STREQ(chip->firmware.gsp_signature_section, GA102_SIGNATURE_SECTION);
 }
 
 // GA104 shares GA102's architecture but has no chip table entry
@@ -1460,6 +1464,7 @@ TEST(nvidia, only_an_uninstalled_firmware_directory_declines) {
 static constexpr chip_firmware UNINSTALLED_BOOT_DIRECTORY = {
     .gsp_image = "gsp_test.bin",
     .boot_directory = "test_boot_directory",
+    .gsp_signature_section = ".fwsignature_test",
 };
 
 TEST(nvidia, chip_whose_boot_directory_is_not_installed_declines) {
@@ -1479,7 +1484,11 @@ static void fill_boot_directory(char* boot_directory, size_t length) {
 // The longest boot directory still builds its names and declines, since no package installs it
 TEST(nvidia, firmware_names_too_long_to_build_fail) {
     char boot_directory[LONGEST_BOOT_DIRECTORY_BYTES + 2];
-    chip_firmware firmware = {.gsp_image = "gsp_test.bin", .boot_directory = boot_directory};
+    chip_firmware firmware = {
+        .gsp_image = "gsp_test.bin",
+        .boot_directory = boot_directory,
+        .gsp_signature_section = ".fwsignature_test",
+    };
 
     fill_boot_directory(boot_directory, LONGEST_BOOT_DIRECTORY_BYTES);
     firmware_files longest_files;

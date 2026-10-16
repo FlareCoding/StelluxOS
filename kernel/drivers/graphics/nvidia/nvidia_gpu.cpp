@@ -78,10 +78,20 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
-    rc = nvidia::check_gsp_image(files.gsp_image);
+    nvidia::gsp_image_layout gsp_image_parts = {};
+    rc = nvidia::check_gsp_image(files.gsp_image, chip->firmware.gsp_signature_section, gsp_image_parts);
     if (rc != nvidia::OK) {
         return rc;
     }
+
+    log::info(
+        "nvidia: GSP image's firmware of %lu bytes at 0x%lX and signature section %s of %lu bytes at 0x%lX in the file",
+        gsp_image_parts.firmware_size,
+        gsp_image_parts.firmware_file_offset,
+        chip->firmware.gsp_signature_section,
+        gsp_image_parts.signature_size,
+        gsp_image_parts.signature_file_offset
+    );
 
     nvidia::boot_file_header bootloader_header = {};
     rc = nvidia::check_boot_file(files.bootloader, "bootloader", bootloader_header);

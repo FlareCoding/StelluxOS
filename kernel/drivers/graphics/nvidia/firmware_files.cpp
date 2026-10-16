@@ -74,9 +74,16 @@ constexpr uint32_t BOOTER_LOAD_HEADER_BYTES = 36;
 // The GSP image's section that holds its firmware version, a string and its NUL
 constexpr const char VERSION_SECTION[] = ".fwversion";
 
+// The GSP image's section that holds the firmware the GSP runs
+constexpr const char FIRMWARE_SECTION[] = ".fwimage";
+
 // A bound on the section headers and names the check reads, several times the section count of each GSP image the
 // chip table names. An image with more sections fails with `ERR_BAD_FIRMWARE`.
 constexpr uint16_t GSP_IMAGE_MAX_SECTIONS = 64;
+
+// Room for each section name the check looks for and its NUL, as many bytes as NVIDIA's driver gives the signature
+// section's name. A longer name fails with `ERR_BAD_FIRMWARE`.
+constexpr size_t SECTION_NAME_CAPACITY = 32;
 
 // Room for a version string of up to 31 bytes and its NUL, so a .fwversion section holding another version can be
 // logged. A larger section fails unread.
@@ -280,15 +287,28 @@ static int32_t read_name_table_header(const fw::file& image, const elf64::Ehdr& 
     return OK;
 }
 
-// Finds the section named `VERSION_SECTION`, failing unless exactly one has that name. A name counts only when it
-// and its NUL lie inside the name table.
-static int32_t find_version_section(
+// Finds the section named `name`, failing unless exactly one is, and checks that it holds at least one byte inside
+// the file. A section's name counts only when the bytes `name` and its NUL take lie inside the name table.
+static int32_t find_section(
     const fw::file& image,
     const elf64::Ehdr& header,
     const elf64::Shdr& name_table,
-    elf64::Shdr& version_section_out
+    const char* name,
+    elf64::Shdr& section_out
 ) {
-    size_t version_section_count = 0;
+    size_t name_length = string::strnlen(name, SECTION_NAME_CAPACITY);
+    if (name_length == SECTION_NAME_CAPACITY) {
+        log::error(
+            "nvidia: section name %s is longer than the %lu bytes of a GSP image section name the driver compares",
+            name,
+            SECTION_NAME_CAPACITY - 1
+        );
+        return ERR_BAD_FIRMWARE;
+    }
+
+    size_t name_bytes = name_length + 1;
+    size_t match_count = 0;
+    elf64::Shdr match = {};
     for (uint16_t i = 0; i < header.e_shnum; i++) {
         elf64::Shdr section = {};
         int32_t rc = read_gsp_image(image, section_header_offset(header, i), &section, sizeof(section));
@@ -296,42 +316,51 @@ static int32_t find_version_section(
             return rc;
         }
 
-        char name[sizeof(VERSION_SECTION)] = {};
-        if (!lies_inside(section.sh_name, sizeof(name), name_table.sh_size)) {
+        if (!lies_inside(section.sh_name, name_bytes, name_table.sh_size)) {
             continue;
         }
 
-        rc = read_gsp_image(image, name_table.sh_offset + section.sh_name, name, sizeof(name));
+        char section_name[SECTION_NAME_CAPACITY] = {};
+        rc = read_gsp_image(image, name_table.sh_offset + section.sh_name, section_name, name_bytes);
         if (rc != OK) {
             return rc;
         }
 
-        if (string::memcmp(name, VERSION_SECTION, sizeof(name)) == 0) {
-            version_section_out = section;
-            version_section_count++;
+        if (string::memcmp(section_name, name, name_bytes) == 0) {
+            match = section;
+            match_count++;
         }
     }
 
-    if (version_section_count != 1) {
-        log::error("nvidia: the GSP image has %lu .fwversion sections instead of one", version_section_count);
+    if (match_count != 1) {
+        log::error("nvidia: the GSP image has %lu %s sections instead of one", match_count, name);
         return ERR_BAD_FIRMWARE;
     }
 
-    return OK;
-}
+    if (match.sh_size == 0) {
+        log::error("nvidia: the GSP image's %s section is empty", name);
+        return ERR_BAD_FIRMWARE;
+    }
 
-// Checks that the .fwversion section lies inside the GSP image and holds exactly `FIRMWARE_VERSION` and its NUL
-static int32_t check_version(const fw::file& image, const elf64::Shdr& version_section) {
-    if (!lies_inside(version_section.sh_offset, version_section.sh_size, image.size())) {
+    if (!lies_inside(match.sh_offset, match.sh_size, image.size())) {
         log::error(
-            "nvidia: the GSP image's .fwversion section of %lu bytes at offset %lu runs past the image's %lu bytes",
-            version_section.sh_size,
-            version_section.sh_offset,
+            "nvidia: the GSP image's %s section of %lu bytes at offset %lu runs past the image's %lu bytes",
+            name,
+            match.sh_size,
+            match.sh_offset,
             image.size()
         );
         return ERR_BAD_FIRMWARE;
     }
 
+    section_out = match;
+
+    return OK;
+}
+
+// Checks that the .fwversion section, which `find_section` found inside the GSP image, holds exactly
+// `FIRMWARE_VERSION` and its NUL
+static int32_t check_version(const fw::file& image, const elf64::Shdr& version_section) {
     char version[VERSION_CAPACITY] = {};
     if (version_section.sh_size > sizeof(version)) {
         log::error(
@@ -364,7 +393,7 @@ static int32_t check_version(const fw::file& image, const elf64::Shdr& version_s
     return OK;
 }
 
-int32_t check_gsp_image(const fw::file& image) {
+int32_t check_gsp_image(const fw::file& image, const char* signature_section, gsp_image_layout& layout_out) {
     elf64::Ehdr header = {};
     int32_t rc = read_elf_header(image, header);
     if (rc != OK) {
@@ -378,12 +407,34 @@ int32_t check_gsp_image(const fw::file& image) {
     }
 
     elf64::Shdr version_section = {};
-    rc = find_version_section(image, header, name_table, version_section);
+    rc = find_section(image, header, name_table, VERSION_SECTION, version_section);
     if (rc != OK) {
         return rc;
     }
 
-    return check_version(image, version_section);
+    rc = check_version(image, version_section);
+    if (rc != OK) {
+        return rc;
+    }
+
+    elf64::Shdr firmware = {};
+    rc = find_section(image, header, name_table, FIRMWARE_SECTION, firmware);
+    if (rc != OK) {
+        return rc;
+    }
+
+    elf64::Shdr signature = {};
+    rc = find_section(image, header, name_table, signature_section, signature);
+    if (rc != OK) {
+        return rc;
+    }
+
+    layout_out.firmware_file_offset = firmware.sh_offset;
+    layout_out.firmware_size = firmware.sh_size;
+    layout_out.signature_file_offset = signature.sh_offset;
+    layout_out.signature_size = signature.sh_size;
+
+    return OK;
 }
 
 int32_t check_boot_file(const fw::file& file, const char* name, boot_file_header& header_out) {
