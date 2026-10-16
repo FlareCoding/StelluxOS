@@ -6,8 +6,10 @@
 #include "common/string.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
+#include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/protected_memory.h"
+#include "dynpriv/dynpriv.h"
 #include "fs/fs.h"
 #include "fw/fw.h"
 #include "mm/heap.h"
@@ -27,19 +29,21 @@ using drivers::nvidia::chip_gsp_reservation;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_NO_MEMORY;
+using drivers::nvidia::FIRMWARE_LOG_COUNT;
 using drivers::nvidia::firmware_files;
 using drivers::nvidia::frts_region;
 using drivers::nvidia::gsp_boot_memory;
 using drivers::nvidia::gsp_image_layout;
 using drivers::nvidia::lay_out_protected_memory;
+using drivers::nvidia::message_queues;
 using drivers::nvidia::OK;
 using drivers::nvidia::protected_memory_layout;
 using drivers::nvidia::radix3_table_pages;
 using drivers::nvidia::write_booter_load_image;
 using drivers::nvidia::write_radix3_table;
 
-// A radix3 page table's page size and the addresses one of its pages holds, restated here so the tests hold the
-// table to NVIDIA's page and entry sizes rather than to the driver's constants
+// The 4 KiB page every part of the boot memory is laid out in, radix3 tables included, and the addresses one radix3
+// page holds, restated here so the tests hold the memory to NVIDIA's page and entry sizes rather than to the driver's
 static constexpr uint64_t PAGE_BYTES   = 0x1000;
 static constexpr uint64_t PAGE_ENTRIES = 512;
 
@@ -990,6 +994,293 @@ TEST(nvidia_gsp_boot_memory, failed_metadata_allocation_keeps_the_copies_and_tak
     EXPECT_EQ(drained_free_pages(), free_pages_before);
     EXPECT_EQ(memory.protected_metadata_address(), static_cast<uint64_t>(0));
     EXPECT_EQ(memory.bootloader_address(), bootloader_address);
+
+    memory.release();
+}
+
+static uint64_t u64_at(const uint8_t* bytes, uint64_t offset) {
+    uint64_t value = 0;
+    string::memcpy(&value, bytes + offset, sizeof(value));
+
+    return value;
+}
+
+// The bytes at `address`, read through the kernel's mapping of all physical memory
+static const uint8_t* bytes_at(uint64_t address) {
+    return static_cast<const uint8_t*>(paging::phys_to_virt(address));
+}
+
+// LibOS's arguments in a page of their own, as NVIDIA's driver lays them out: regions 32 bytes apart, each an id, an
+// address and a size, then a kind byte and a location byte
+static constexpr uint64_t LIBOS_ARGUMENTS_BYTES  = 0x1000;
+static constexpr uint64_t LIBOS_REGION_BYTES     = 32;
+static constexpr uint64_t REGION_ID_AT           = 0;
+static constexpr uint64_t REGION_ADDRESS_AT      = 8;
+static constexpr uint64_t REGION_SIZE_AT         = 16;
+static constexpr uint64_t REGION_KIND_AT         = 24;
+static constexpr uint64_t REGION_LOCATION_AT     = 25;
+static constexpr uint64_t REGION_PADDING_AT      = 26;
+static constexpr uint8_t  CONTIGUOUS_KIND        = 1;
+static constexpr uint8_t  SYSTEM_MEMORY_LOCATION = 1;
+
+// NVIDIA's ids for LOGINIT, LOGINTR, LOGRM and RMARGS, each name's characters packed with its first in the highest
+// byte used, in the order NVIDIA's driver lists the regions
+static constexpr size_t   LIBOS_REGION_COUNT                   = 4;
+static constexpr uint64_t LIBOS_REGION_IDS[LIBOS_REGION_COUNT] = {
+    0x4C4F47494E4954,
+    0x4C4F47494E5452,
+    0x4C4F47524D,
+    0x524D41524753,
+};
+
+// The resource manager's arguments in NVIDIA's layout and the queue layout they give. Every argument after the
+// status queue's offset is 0 on NVIDIA's first attempt to boot the first GPU it attaches
+static constexpr uint64_t RESOURCE_MANAGER_ARGUMENTS_BYTES = 0x1000;
+static constexpr uint64_t QUEUE_MEMORY_ADDRESS_AT          = 0;
+static constexpr uint64_t PAGE_TABLE_ENTRIES_AT            = 8;
+static constexpr uint64_t COMMAND_QUEUE_OFFSET_AT          = 16;
+static constexpr uint64_t STATUS_QUEUE_OFFSET_AT           = 24;
+static constexpr uint64_t ZERO_ARGUMENTS_AT                = 32;
+static constexpr uint64_t QUEUE_PAGE_TABLE_ENTRIES         = 129;
+static constexpr uint64_t COMMAND_QUEUE_OFFSET             = 0x1000;
+static constexpr uint64_t STATUS_QUEUE_OFFSET              = 0x41000;
+
+// Each log buffer's 64 KiB, NVIDIA's size in its release build, start with the firmware's write position, then list
+// the address of each of its pages
+static constexpr uint64_t LOG_BUFFER_BYTES = 0x10000;
+static constexpr uint64_t LOG_BUFFER_PAGES = LOG_BUFFER_BYTES / PAGE_BYTES;
+
+namespace drivers::nvidia {
+
+// Reaches the parts the object keeps to itself: their buffers, whose caching the tests check and through whose own
+// mapping LibOS's uncached page is read, since the kernel's mapping of all physical memory is cached
+struct gsp_boot_memory_test_access {
+    static const dma::buffer& log_buffer(const gsp_boot_memory& memory, size_t index) {
+        return memory.m_log_buffers[index];
+    }
+
+    static const dma::buffer& resource_manager_arguments(const gsp_boot_memory& memory) {
+        return memory.m_resource_manager_arguments;
+    }
+
+    static const dma::buffer& libos_arguments(const gsp_boot_memory& memory) {
+        return memory.m_libos_arguments;
+    }
+
+    // Holds every part `write_firmware_arguments` allocates but LibOS's arguments, which it allocates last, as the
+    // call holds them when that last allocation fails
+    static int32_t hold_all_but_libos_arguments(gsp_boot_memory& memory, const dma::device_profile& device) {
+        int32_t rc = memory.allocate_firmware_arguments(device);
+        RUN_ELEVATED(dma::free_pages(memory.m_libos_arguments));
+
+        return rc;
+    }
+};
+
+} // namespace drivers::nvidia
+
+using drivers::nvidia::gsp_boot_memory_test_access;
+
+TEST(nvidia_gsp_boot_memory, firmware_arguments_hold_the_queue_layout_the_log_pages_and_the_regions_libos_maps) {
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    ASSERT_EQ(memory.write_firmware_arguments(coherent_card()), OK);
+
+    const uint8_t* arguments = bytes_at(memory.resource_manager_arguments_address());
+
+    uint64_t nonzero_bytes_past_the_queue_layout = 0;
+    for (uint64_t offset = ZERO_ARGUMENTS_AT; offset < RESOURCE_MANAGER_ARGUMENTS_BYTES; offset++) {
+        nonzero_bytes_past_the_queue_layout += arguments[offset] != 0;
+    }
+
+    EXPECT_EQ(u64_at(arguments, QUEUE_MEMORY_ADDRESS_AT), memory.message_queues_address());
+    EXPECT_EQ(u64_at(arguments, PAGE_TABLE_ENTRIES_AT), QUEUE_PAGE_TABLE_ENTRIES);
+    EXPECT_EQ(u64_at(arguments, COMMAND_QUEUE_OFFSET_AT), COMMAND_QUEUE_OFFSET);
+    EXPECT_EQ(u64_at(arguments, STATUS_QUEUE_OFFSET_AT), STATUS_QUEUE_OFFSET);
+    EXPECT_EQ(nonzero_bytes_past_the_queue_layout, static_cast<uint64_t>(0));
+
+    for (size_t i = 0; i < FIRMWARE_LOG_COUNT; i++) {
+        uint64_t address = memory.log_buffer_address(i);
+        const uint8_t* log_buffer = bytes_at(address);
+
+        uint64_t wrong_page_addresses = 0;
+        for (uint64_t page = 0; page < LOG_BUFFER_PAGES; page++) {
+            uint64_t listed_address = u64_at(log_buffer, (1 + page) * sizeof(uint64_t));
+            wrong_page_addresses += listed_address != address + page * PAGE_BYTES;
+        }
+
+        uint64_t nonzero_bytes_past_the_list = 0;
+        for (uint64_t offset = (1 + LOG_BUFFER_PAGES) * sizeof(uint64_t); offset < LOG_BUFFER_BYTES; offset++) {
+            nonzero_bytes_past_the_list += log_buffer[offset] != 0;
+        }
+
+        EXPECT_EQ(address % PAGE_BYTES, static_cast<uint64_t>(0));
+        EXPECT_EQ(u64_at(log_buffer, 0), static_cast<uint64_t>(0));
+        EXPECT_EQ(wrong_page_addresses, static_cast<uint64_t>(0));
+        EXPECT_EQ(nonzero_bytes_past_the_list, static_cast<uint64_t>(0));
+        EXPECT_TRUE(gsp_boot_memory_test_access::log_buffer(memory, i).cached);
+    }
+
+    uint64_t addresses[] = {
+        memory.log_buffer_address(0),
+        memory.log_buffer_address(1),
+        memory.log_buffer_address(2),
+        memory.resource_manager_arguments_address(),
+        memory.libos_arguments_address(),
+    };
+
+    constexpr size_t address_count = sizeof(addresses) / sizeof(addresses[0]);
+
+    uint64_t shared_addresses = 0;
+    for (size_t i = 0; i < address_count; i++) {
+        for (size_t j = i + 1; j < address_count; j++) {
+            shared_addresses += addresses[i] == addresses[j];
+        }
+    }
+
+    EXPECT_EQ(shared_addresses, static_cast<uint64_t>(0));
+    EXPECT_NE(memory.libos_arguments_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.libos_arguments_address() % LIBOS_ARGUMENTS_BYTES, static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.log_buffer_address(FIRMWARE_LOG_COUNT), static_cast<uint64_t>(0));
+    EXPECT_TRUE(gsp_boot_memory_test_access::resource_manager_arguments(memory).cached);
+    EXPECT_FALSE(gsp_boot_memory_test_access::libos_arguments(memory).cached);
+
+    const dma::buffer& libos_page = gsp_boot_memory_test_access::libos_arguments(memory);
+    const uint8_t* libos_arguments = reinterpret_cast<const uint8_t*>(libos_page.virt);
+    uint64_t listed_bytes[LIBOS_REGION_COUNT] = {
+        LOG_BUFFER_BYTES,
+        LOG_BUFFER_BYTES,
+        LOG_BUFFER_BYTES,
+        RESOURCE_MANAGER_ARGUMENTS_BYTES,
+    };
+
+    for (size_t i = 0; i < LIBOS_REGION_COUNT; i++) {
+        const uint8_t* region = libos_arguments + i * LIBOS_REGION_BYTES;
+
+        uint64_t nonzero_padding_bytes = 0;
+        for (uint64_t offset = REGION_PADDING_AT; offset < LIBOS_REGION_BYTES; offset++) {
+            nonzero_padding_bytes += region[offset] != 0;
+        }
+
+        EXPECT_EQ(u64_at(region, REGION_ID_AT), LIBOS_REGION_IDS[i]);
+        EXPECT_EQ(u64_at(region, REGION_ADDRESS_AT), addresses[i]);
+        EXPECT_EQ(u64_at(region, REGION_SIZE_AT), listed_bytes[i]);
+        EXPECT_EQ(region[REGION_KIND_AT], CONTIGUOUS_KIND);
+        EXPECT_EQ(region[REGION_LOCATION_AT], SYSTEM_MEMORY_LOCATION);
+        EXPECT_EQ(nonzero_padding_bytes, static_cast<uint64_t>(0));
+    }
+
+    uint64_t nonzero_bytes_past_the_regions = 0;
+    for (uint64_t offset = LIBOS_REGION_COUNT * LIBOS_REGION_BYTES; offset < LIBOS_ARGUMENTS_BYTES; offset++) {
+        nonzero_bytes_past_the_regions += libos_arguments[offset] != 0;
+    }
+
+    EXPECT_EQ(nonzero_bytes_past_the_regions, static_cast<uint64_t>(0));
+
+    memory.release();
+
+    EXPECT_EQ(memory.resource_manager_arguments_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.libos_arguments_address(), static_cast<uint64_t>(0));
+    for (size_t i = 0; i < FIRMWARE_LOG_COUNT; i++) {
+        EXPECT_EQ(memory.log_buffer_address(i), static_cast<uint64_t>(0));
+    }
+}
+
+TEST(nvidia_gsp_boot_memory, firmware_arguments_are_all_uncached_for_a_card_that_is_not_coherent) {
+    dma::device_profile non_coherent_card = dma::device_profile_test_access::build(64, false);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(non_coherent_card), OK);
+    ASSERT_EQ(memory.write_firmware_arguments(non_coherent_card), OK);
+
+    for (size_t i = 0; i < FIRMWARE_LOG_COUNT; i++) {
+        EXPECT_FALSE(gsp_boot_memory_test_access::log_buffer(memory, i).cached);
+    }
+
+    EXPECT_FALSE(gsp_boot_memory_test_access::resource_manager_arguments(memory).cached);
+    EXPECT_FALSE(gsp_boot_memory_test_access::libos_arguments(memory).cached);
+
+    memory.release();
+}
+
+TEST(nvidia_gsp_boot_memory, message_queues_lay_out_through_the_cpu_mapping_of_their_memory) {
+    gsp_boot_memory memory;
+    EXPECT_NULL(memory.message_queues_memory());
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+
+    uint64_t queue_memory_address = memory.message_queues_address();
+    message_queues queues(memory.message_queues_memory(), queue_memory_address);
+
+    const uint8_t* page_table = bytes_at(queue_memory_address);
+    uint64_t last_entry_at = (QUEUE_PAGE_TABLE_ENTRIES - 1) * sizeof(uint64_t);
+    uint64_t last_page_address = queue_memory_address + (QUEUE_PAGE_TABLE_ENTRIES - 1) * PAGE_BYTES;
+    EXPECT_EQ(u64_at(page_table, 0), queue_memory_address);
+    EXPECT_EQ(u64_at(page_table, last_entry_at), last_page_address);
+
+    memory.release();
+
+    EXPECT_NULL(memory.message_queues_memory());
+}
+
+TEST(nvidia_gsp_boot_memory, firmware_arguments_need_the_queue_memory_and_are_written_once) {
+    gsp_boot_memory memory;
+    uint64_t free_pages_before = drained_free_pages();
+
+    EXPECT_EQ(memory.write_firmware_arguments(coherent_card()), ERR_BAD_STATE);
+    EXPECT_EQ(drained_free_pages(), free_pages_before);
+    EXPECT_EQ(memory.libos_arguments_address(), static_cast<uint64_t>(0));
+
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    ASSERT_EQ(memory.write_firmware_arguments(coherent_card()), OK);
+    uint64_t libos_arguments_address = memory.libos_arguments_address();
+    uint64_t resource_manager_arguments_address = memory.resource_manager_arguments_address();
+    uint64_t first_log_buffer_address = memory.log_buffer_address(0);
+
+    EXPECT_EQ(memory.write_firmware_arguments(coherent_card()), ERR_BAD_STATE);
+    EXPECT_EQ(memory.libos_arguments_address(), libos_arguments_address);
+    EXPECT_EQ(memory.resource_manager_arguments_address(), resource_manager_arguments_address);
+    EXPECT_EQ(memory.log_buffer_address(0), first_log_buffer_address);
+
+    memory.release();
+}
+
+TEST(nvidia_gsp_boot_memory, failed_first_firmware_arguments_allocation_takes_no_page_and_keeps_the_queue_memory) {
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t queue_memory_address = memory.message_queues_address();
+
+    dma::device_profile refused_card = dma::device_profile_test_access::build(REFUSED_ADDRESS_BITS, true);
+    uint64_t free_pages_before = drained_free_pages();
+
+    EXPECT_EQ(memory.write_firmware_arguments(refused_card), ERR_NO_MEMORY);
+    EXPECT_EQ(drained_free_pages(), free_pages_before);
+    EXPECT_EQ(memory.libos_arguments_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.resource_manager_arguments_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.log_buffer_address(0), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.message_queues_address(), queue_memory_address);
+
+    memory.release();
+}
+
+TEST(nvidia_gsp_boot_memory, failed_firmware_arguments_allocation_frees_the_parts_already_held) {
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t queue_memory_address = memory.message_queues_address();
+    uint64_t free_pages_before = drained_free_pages();
+
+    ASSERT_EQ(gsp_boot_memory_test_access::hold_all_but_libos_arguments(memory, coherent_card()), OK);
+    dma::device_profile refused_card = dma::device_profile_test_access::build(REFUSED_ADDRESS_BITS, true);
+
+    EXPECT_EQ(memory.write_firmware_arguments(refused_card), ERR_NO_MEMORY);
+    EXPECT_GE(drained_free_pages() + KERNEL_PAGE_TABLE_PAGES, free_pages_before);
+
+    // The page count cannot tell the resource manager's one page from a kept page table, so its address shows it freed
+    EXPECT_EQ(memory.resource_manager_arguments_address(), static_cast<uint64_t>(0));
+    for (size_t i = 0; i < FIRMWARE_LOG_COUNT; i++) {
+        EXPECT_EQ(memory.log_buffer_address(i), static_cast<uint64_t>(0));
+    }
+
+    EXPECT_EQ(memory.message_queues_address(), queue_memory_address);
 
     memory.release();
 }

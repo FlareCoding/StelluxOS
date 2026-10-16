@@ -44,18 +44,22 @@ namespace drivers {
  * registers. The card's bus mastering is then turned on, and the falcon
  * loads FWSEC from the copy and is started on it. Once the falcon halts, the
  * copy is freed, and bring-up checks that FWSEC fenced off the region. It
- * then copies the bootloader's program, the GSP's firmware and the
- * firmware's signature into memory the card can reach, the firmware into
- * pages listed by a radix3 page table, copies booter load's program, with the
- * chosen signature in its slot, into memory of its own the card can reach,
- * allocates the memory for the message queues (the two rings through which the
- * driver and the GSP's firmware exchange messages) and writes protected
- * memory's metadata into a page of its own, as `nvidia::gsp_boot_memory`
- * describes. The metadata tells booter load where the copies of the
- * bootloader's program, the firmware and its signature lie and where each part
- * of protected memory goes. Bring-up then frees all of the GSP's boot memory,
- * since the card was never given its addresses, and ends there, so when every
- * step succeeds, `attach()` declines as well.
+ * then copies the bootloader's program, the GSP's firmware and the firmware's
+ * signature into memory the card can reach, the firmware into pages listed by
+ * a radix3 page table, copies booter load's program, with the chosen signature
+ * in its slot, into memory of its own the card can reach, lays out the message
+ * queues (the two rings through which the driver and the GSP's firmware
+ * exchange messages) in memory of their own, writes protected memory's
+ * metadata into a page of its own, and writes the log buffers and the
+ * arguments the firmware reads when it starts, all as
+ * `nvidia::gsp_boot_memory` describes. The arguments are those of the
+ * firmware's resource manager (its task that serves the driver's requests) and
+ * of LibOS (the small operating system the firmware runs on). The metadata
+ * tells booter load where the copies of the bootloader's program, the firmware
+ * and its signature lie and where each part of protected memory goes. Bring-up
+ * then frees all of the GSP's boot memory, since the card was never given its
+ * addresses, and ends there, so when every step succeeds, `attach()` declines
+ * as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -98,9 +102,9 @@ namespace drivers {
  * it fails when `nvidia::check_frts_result` finds an FRTS error code other
  * than 0, or protected memory not set up or starting elsewhere than at the
  * region. Once FWSEC has fenced off the region, it fails when the memory for
- * the copies, the message queues or protected memory's metadata cannot be
- * allocated or reading a firmware file fails, each freeing everything
- * allocated for them.
+ * the copies, the message queues, protected memory's metadata or what the
+ * firmware reads when it starts cannot be allocated or reading a firmware
+ * file fails, each freeing everything allocated for them.
  * Whether `attach()` declines or fails, the screen is left as it was, since
  * bring-up itself never writes to the display engine, and the card keeps the
  * memory and I/O decoding that `attach()` turned on. A card that `attach()`
