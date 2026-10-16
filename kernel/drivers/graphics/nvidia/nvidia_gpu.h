@@ -57,9 +57,11 @@ namespace drivers {
  * of LibOS (the small operating system the firmware runs on). The metadata
  * tells booter load where the copies of the bootloader's program, the firmware
  * and its signature lie and where each part of protected memory goes. Bring-up
- * then frees all of the GSP's boot memory, since the card was never given its
- * addresses, and ends there, so when every step succeeds, `attach()` declines
- * as well.
+ * next queues in the command queue the two messages NVIDIA's driver sends
+ * before the GSP starts (the system information and the registry, here with no
+ * entry), as `nvidia::queue_boot_messages` describes. Bring-up then frees all
+ * of the GSP's boot memory, since the card was never given its addresses, and
+ * ends there, so when every step succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -103,8 +105,9 @@ namespace drivers {
  * than 0, or protected memory not set up or starting elsewhere than at the
  * region. Once FWSEC has fenced off the region, it fails when the memory for
  * the copies, the message queues, protected memory's metadata or what the
- * firmware reads when it starts cannot be allocated or reading a firmware
- * file fails, each freeing everything allocated for them.
+ * firmware reads when it starts cannot be allocated, reading a firmware file
+ * fails or the command queue lacks room for the system information or the
+ * registry, each freeing everything allocated for them.
  * Whether `attach()` declines or fails, the screen is left as it was, since
  * bring-up itself never writes to the display engine, and the card keeps the
  * memory and I/O decoding that `attach()` turned on. A card that `attach()`

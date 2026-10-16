@@ -227,13 +227,15 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     in gsp_boot_memory.h, gsp_boot_memory.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the log buffers'
     alignment to 4 KiB, in gsp_boot_memory.h and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the resource
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the resource
     manager's arguments giving the message queues' memory, its page table's
     entry count and the offsets of the command queue and the status queue, with
     the interrupt task's queues, the power transition's fields and the
     profiler's buffer 0 when none is asked for and the GPU's instance, in
     gsp_boot_memory.h, gsp_boot_memory.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rule
+    that, after each message, the firmware is told that the message waits,
+    in boot_messages.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -441,8 +443,12 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
     and its memory interface's registers from the GSP's memory interface
     base, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that
     the GSP's falcon has no bit in the chip's engine enable register, in
-    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and
-    that it is reset before FWSEC runs, in falcon.h
+    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
+    that it is reset before FWSEC runs, in falcon.h, that the system
+    information and then the registry are queued before the GSP starts, in
+    nvidia_gpu.h, boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that the boot
+    fails when the registry is not sent, in boot_messages.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
@@ -498,9 +504,11 @@ src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga102.c
 src/nvidia/src/kernel/gpu_mgr/gpu_mgr.c
     the rule that the chip id a falcon's RM register is given is the value of
     PMC_BOOT_0, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and GPU instance 0 for the
+    kernel/tests/graphics/nvidia_falcon.test.cpp, GPU instance 0 for the
     first GPU attached, in gsp_boot_memory.h, gsp_boot_memory.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the CPU
+    architecture's code chosen by the architecture the driver is built for,
+    in boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gpu_timeout.c
@@ -511,7 +519,8 @@ src/nvidia/src/kernel/gpu/gpu_timeout.c
 
 src/nvidia/arch/nvalloc/unix/src/os.c
     the default timeout of 4 s in graphics mode, in falcon.h and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and that registry.c packs
+    the registry sent to the GSP, in boot_messages.h
     SPDX-FileCopyrightText: Copyright (c) 1999-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 nouveau/extract-firmware-nouveau.py
@@ -566,7 +575,8 @@ src/common/sdk/nvidia/inc/nvtypes.h
     manager's queue offsets take, in gsp_boot_memory.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the single byte
     of NVIDIA's booleans, which the power transition's flag takes, in
-    gsp_boot_memory.cpp
+    gsp_boot_memory.cpp, and which the system information's flags take, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
@@ -606,7 +616,9 @@ src/nvidia/arch/nvalloc/common/inc/nv-firmware-chip-family-select.h
     SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/shared/msgq/inc/msgq/msgq_priv.h
-    the queue header's fields and the read pointer after them, and the queue
+    the queue header's fields and the read pointer after them, in
+    message_queues.cpp, kernel/tests/graphics/nvidia_message_queues.test.cpp
+    and kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the queue
     version 0, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -624,17 +636,22 @@ src/common/shared/msgq/msgq.c
     each read pointer is kept before and after the link, the counts of free
     and written elements, and the wrap of the write and read pointers, in
     message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the rule that
-    read pointers swap only when both queues' headers ask, each reader then
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that read
+    pointers swap only when both queues' headers ask, each reader then
     keeping its own in the queue it writes, in
     message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the read
+    pointer every queue keeps between its header and first element, where
+    each read pointer is kept before the link, and the count of free
+    elements, in kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h
     the element header, the element and message sizes and the checksum, in
     message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the element
+    header's size and the element's size, in
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
@@ -650,14 +667,17 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     deadline, in message_queues.h, the full fence before each link, in
     message_queues.cpp, the address of the queues' memory given as its first
     page's, which holds the page table, in gsp_boot_memory.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the queue
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the queue
     memory's layout and page table, in
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the queue
+    memory's layout and each message's element count, in
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc-message-header.h
-    the RPC header's fields, in message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    the RPC header's fields, in message_queues.h, message_queues.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc_headers.h
@@ -666,15 +686,133 @@ src/nvidia/kernel/inc/vgpu/rpc_headers.h
     SPDX-FileCopyrightText: Copyright (c) 2017-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/rmapi/rpc_common.c
-    the RPC header's values in each message sent, its length covering the
-    RPC header and the payload, in message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the zeros after
-    the payload, in message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    the RPC header's values in each message sent, in message_queues.h,
+    message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, its length covering
+    the RPC header and the payload, in message_queues.h, message_queues.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the zeros after the
+    payload, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the zeros in
+    every field of the system information NVIDIA's driver does not set, in
+    boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-Each of these files, or for g_kernel_gsp_nvoc.c the package's COPYING, carries
-this permission notice:
+src/nvidia/inc/kernel/gpu/gsp/gsp_static_config.h
+    the system information's fields, their order and types, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2019-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_chipset_nvoc.h
+    the size of the chipset's bus information, which the system information
+    holds twice, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/gpu_acpi_data.h
+    the ACPI method data's fields, their order and types, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073system.h
+    the most displays NVIDIA's driver maps to ACPI IDs, which sizes three of
+    the ACPI method data's arrays, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvstatus.h
+    the size of NVIDIA's status codes, which the ACPI method data holds, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/unix/src/registry.c
+    the registry table's size, which counts its header, its entries and the
+    names and data they point to, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that packing a
+    table with no entry returns a warning, in boot_messages.h
+    SPDX-FileCopyrightText: Copyright (c) 1999-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/kernel/vgpu/nv/rpc.c
+    what NVIDIA's driver writes in each field of the system information,
+    and the rule that neither message waits for a reply, in
+    boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that no
+    registry is sent when packing it returns a warning, in boot_messages.h
+    SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
+    the two messages' function numbers, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_os_nvoc.h
+    the registry table's header, its size and entry count, in
+    boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_gpu_nvoc.h
+    the codes for the x86_64 and aarch64 CPU architectures and the PCI
+    address's encoding of the domain, bus and device, in boot_messages.cpp
+    and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2004-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/common/inc/nv-hypervisor.h
+    the hypervisor type for none known, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1999-2018 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/maxwell/gm107/dev_nv_xve.h
+    where BAR0 mirrors the card's PCI configuration space, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/bif/arch/maxwell/kernel_bif_gm107.c
+    the rule that BAR0's mirror spans that whole range, in boot_messages.cpp
+    and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_bif_nvoc.c
+    the rule that GA102 takes that mirror, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_bif_nvoc.h
+    that the check for one of the system information's flags does nothing,
+    so NVIDIA's driver never sets the flag, in boot_messages.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2013-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/unix/src/osinit.c
+    the rule that the system information's three addresses are those of the
+    card's registers, its framebuffer and the BAR NVIDIA's driver calls
+    instance memory, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the boot
+    console's video memory NVIDIA's driver reserves, in boot_messages.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1999-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/nvidia/nv-pci.c
+    the rule that NVIDIA's driver numbers only the valid BARs that hold
+    memory, in boot_messages.h and nvidia_gpu.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2019-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/common/inc/nv.h
+    NVIDIA's index of instance memory among those BARs, in boot_messages.h
+    and nvidia_gpu.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1999-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/virtualization/hypervisor/hypervisor.c
+    the rule that the hypervisor type stays unknown when NVIDIA's driver
+    finds no hypervisor, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c and
+rpc_global_enums.h the package's COPYING, carries this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),
