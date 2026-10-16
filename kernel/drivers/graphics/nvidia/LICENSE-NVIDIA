@@ -181,20 +181,22 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
     GSP is not booted while protected memory is already set up, in
     protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
-    the full fence before each received message, in message_queues.cpp,
-    booter load's role, run on SEC2 to load, verify with the signature and
-    boot the GSP's firmware in protected memory, in chip.h,
-    firmware_files.h and gsp_boot_memory.h, the radix3 page table's three
-    levels of 64-bit addresses, level 0 a single page listing the pages of
-    level 1, level 1 listing those of level 2 and level 2 listing every page
-    of the data, each of the table's page size, each level's entries running
-    on across its pages and the table's levels lying in that order, in
+    the full fence before each received message, in message_queues.cpp, booter
+    load's role, run on SEC2 to load, verify with the signature and boot the
+    GSP's firmware in protected memory, in chip.h, firmware_files.h,
+    gsp_boot_memory.h and nvidia_gpu.h, the radix3 page table's three levels
+    of 64-bit addresses, level 0 a single page listing the pages of level 1,
+    level 1 listing those of level 2 and level 2 listing every page of the
+    data, each of the table's page size, each level's entries running on
+    across its pages and the table's levels lying in that order, in
     gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rules
-    that the GSP's firmware, its signature and the bootloader's program are
-    each copied into system memory of their own, the firmware's last page
-    ending in zeros, in gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h
-    and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rules that the
+    GSP's firmware, its signature and the bootloader's program are each copied
+    into system memory of their own, the firmware's last page ending in zeros,
+    in gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rule that
+    the copies of the signature and the bootloader's program each lie in one
+    contiguous range, in gsp_boot_memory.h and gsp_boot_memory.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -223,7 +225,20 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
     at index count - 1 - v for fuse version v and none is for a version above
     count - 1, and that a lone signature is chosen whatever the version, in
     firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that booter load's
+    whole program is copied, in gsp_boot_memory.h, gsp_boot_memory.cpp,
+    nvidia_gpu.h and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp,
+    into one contiguous range of uncached memory, in gsp_boot_memory.h and
+    gsp_boot_memory.cpp, the rule that the chosen signature is written over
+    the copy at the slot, in gsp_boot_memory.h, gsp_boot_memory.cpp,
+    nvidia_gpu.h and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp,
+    the rule that the signatures lie back to back, in gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    slot lies at the data's offset plus the signature's DMEM address, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rule that
+    fuse version v takes the signature at index count - 1 - v, in
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c

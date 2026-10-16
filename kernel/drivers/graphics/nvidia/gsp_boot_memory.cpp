@@ -1,6 +1,7 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
 
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
+#include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
@@ -73,17 +74,18 @@ void write_radix3_table(uint64_t* table, uint64_t table_address, const dma::buff
     }
 }
 
-// Allocates whole pages holding `bytes` bytes for the card to read, naming the memory as `what` in a failure's log
+// Allocates whole pages holding `bytes` bytes for the card to reach, naming the memory as `what` in a failure's log
 static int32_t allocate_for_card(
     const dma::device_profile& device,
     uint64_t bytes,
+    dma::caching mode,
     const char* what,
     dma::buffer& out
 ) {
     uint64_t pages = pmm::page_align_up(bytes) / pmm::PAGE_SIZE;
 
     int32_t rc = dma::ERR_NO_MEM;
-    RUN_ELEVATED(rc = dma::alloc_pages(device, pages, dma::caching::cached_when_coherent, paging::PAGE_USER, out));
+    RUN_ELEVATED(rc = dma::alloc_pages(device, pages, mode, paging::PAGE_USER, out));
     if (rc != dma::OK) {
         log::error("nvidia: allocating %lu pages for %s failed: %d", pages, what, rc);
         return ERR_NO_MEMORY;
@@ -126,15 +128,47 @@ int32_t check_boot_copies(const boot_file_header& bootloader_header, const gsp_i
     return OK;
 }
 
+int32_t write_booter_load_image(
+    const fw::file& booter_load,
+    const boot_file_header& header,
+    const booter_layout& layout,
+    const booter_signature& signature,
+    uint8_t* image
+) {
+    uint64_t slot_offset = static_cast<uint64_t>(layout.data_offset) + layout.signature_slot;
+    uint64_t chosen_index = signature.index;
+    uint64_t signature_offset = layout.signatures_offset + chosen_index * layout.signature_size;
+    uintptr_t program = reinterpret_cast<uintptr_t>(image);
+
+    int32_t rc = copy_from_file(
+        booter_load,
+        header.program_offset,
+        header.program_size,
+        program,
+        "booter load's program"
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    return copy_from_file(
+        booter_load,
+        signature_offset,
+        layout.signature_size,
+        program + slot_offset,
+        "booter load's signature"
+    );
+}
+
 int32_t gsp_boot_memory::copy_boot_files(
     const dma::device_profile& device,
     const firmware_files& files,
     const boot_file_header& bootloader_header,
     const gsp_image_layout& gsp_image
 ) {
-    bool holds_memory = m_bootloader.virt != 0 || m_signature.virt != 0 || m_radix3_table.virt != 0 || m_firmware_runs;
-    if (holds_memory) {
-        log::error("nvidia: the GSP's boot memory already holds copies");
+    bool holds_copies = m_bootloader.virt != 0 || m_signature.virt != 0 || m_radix3_table.virt != 0 || m_firmware_runs;
+    if (holds_copies) {
+        log::error("nvidia: the GSP's boot memory already holds copies of the bootloader and the GSP image");
         return ERR_BAD_STATE;
     }
 
@@ -147,7 +181,7 @@ int32_t gsp_boot_memory::copy_boot_files(
     rc = copy_each_part(device, files, bootloader_header, gsp_image, table_pages);
     if (rc != OK) {
         // The card was never given these addresses, so nothing reads the memory
-        release();
+        free_bootloader_and_gsp_image_copies();
     }
 
     return rc;
@@ -160,7 +194,13 @@ int32_t gsp_boot_memory::copy_each_part(
     const gsp_image_layout& gsp_image,
     uint64_t table_pages
 ) {
-    int32_t rc = allocate_for_card(device, bootloader_header.program_size, "the bootloader's program", m_bootloader);
+    int32_t rc = allocate_for_card(
+        device,
+        bootloader_header.program_size,
+        dma::caching::cached_when_coherent,
+        "the bootloader's program",
+        m_bootloader
+    );
     if (rc != OK) {
         return rc;
     }
@@ -176,7 +216,13 @@ int32_t gsp_boot_memory::copy_each_part(
         return rc;
     }
 
-    rc = allocate_for_card(device, gsp_image.signature_size, "the firmware's signature", m_signature);
+    rc = allocate_for_card(
+        device,
+        gsp_image.signature_size,
+        dma::caching::cached_when_coherent,
+        "the firmware's signature",
+        m_signature
+    );
     if (rc != OK) {
         return rc;
     }
@@ -192,7 +238,13 @@ int32_t gsp_boot_memory::copy_each_part(
         return rc;
     }
 
-    rc = allocate_for_card(device, table_pages * RADIX3_PAGE_BYTES, "the radix3 page table", m_radix3_table);
+    rc = allocate_for_card(
+        device,
+        table_pages * RADIX3_PAGE_BYTES,
+        dma::caching::cached_when_coherent,
+        "the radix3 page table",
+        m_radix3_table
+    );
     if (rc != OK) {
         return rc;
     }
@@ -212,7 +264,13 @@ int32_t gsp_boot_memory::copy_each_part(
         uint64_t run_bytes = left_bytes < FIRMWARE_RUN_BYTES ? left_bytes : FIRMWARE_RUN_BYTES;
         uint64_t file_offset = gsp_image.firmware_file_offset + copied_bytes;
 
-        rc = allocate_for_card(device, run_bytes, "the GSP's firmware", m_firmware_runs[i]);
+        rc = allocate_for_card(
+            device,
+            run_bytes,
+            dma::caching::cached_when_coherent,
+            "the GSP's firmware",
+            m_firmware_runs[i]
+        );
         if (rc != OK) {
             return rc;
         }
@@ -229,7 +287,61 @@ int32_t gsp_boot_memory::copy_each_part(
     return OK;
 }
 
+int32_t gsp_boot_memory::copy_booter_load(
+    const dma::device_profile& device,
+    const fw::file& booter_load,
+    const boot_file_header& header,
+    const booter_layout& layout,
+    const booter_signature& signature
+) {
+    if (m_booter_load.virt != 0) {
+        log::error("nvidia: the GSP's boot memory already holds a copy of booter load's program");
+        return ERR_BAD_STATE;
+    }
+
+    int32_t rc = allocate_for_card(
+        device,
+        header.program_size,
+        dma::caching::uncached,
+        "booter load's program",
+        m_booter_load
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint8_t* image = reinterpret_cast<uint8_t*>(m_booter_load.virt);
+    rc = write_booter_load_image(booter_load, header, layout, signature, image);
+    if (rc != OK) {
+        // The card was never given the copy's address, so nothing reads it
+        RUN_ELEVATED(dma::free_pages(m_booter_load));
+    }
+
+    return rc;
+}
+
+int32_t gsp_boot_memory::allocate_message_queues(const dma::device_profile& device) {
+    if (m_message_queues.virt != 0) {
+        log::error("nvidia: the GSP's boot memory already holds the message queues' memory");
+        return ERR_BAD_STATE;
+    }
+
+    return allocate_for_card(
+        device,
+        QUEUE_MEMORY_BYTES,
+        dma::caching::cached_when_coherent,
+        "the message queues",
+        m_message_queues
+    );
+}
+
 void gsp_boot_memory::release() {
+    free_bootloader_and_gsp_image_copies();
+    RUN_ELEVATED(dma::free_pages(m_booter_load));
+    RUN_ELEVATED(dma::free_pages(m_message_queues));
+}
+
+void gsp_boot_memory::free_bootloader_and_gsp_image_copies() {
     RUN_ELEVATED(dma::free_pages(m_bootloader));
     RUN_ELEVATED(dma::free_pages(m_signature));
     RUN_ELEVATED(dma::free_pages(m_radix3_table));

@@ -21,9 +21,10 @@ namespace drivers {
  * firmware version, logs where the GSP image places its firmware and the
  * chip's signature for it, checks the bootloader's header, logs where the
  * bootloader's descriptor places the parts of its program and the program's
- * app version, checks booter load's header, logs where booter load's
- * descriptors place its code, data, signature slot and signatures, with its
- * ucode id and engine mask, chooses and logs which of booter load's
+ * app version. Booter load is the program SEC2, the GPU's security processor,
+ * runs to boot the GSP. Bring-up then checks booter load's header, logs where
+ * its descriptors place its code, data, signature slot and signatures, with
+ * its ucode id and engine mask, chooses and logs which of booter load's
  * signatures its slot must hold, reading the version the chip's fuses, bits
  * burned into it for good, record for booter load, checks that the
  * bootloader's program holds at least one byte and that a radix3 page table,
@@ -43,10 +44,13 @@ namespace drivers {
  * copy is freed, and bring-up checks that FWSEC fenced off the region. It
  * then copies the bootloader's program, the GSP's firmware and the
  * firmware's signature into memory the card can reach, the firmware into
- * pages listed by a radix3 page table, as `nvidia::gsp_boot_memory`
- * describes, and frees that memory, since the card was never given its
- * addresses. Bring-up ends there, so when every step succeeds, `attach()`
- * declines as well.
+ * pages listed by a radix3 page table, copies booter load's program, with the
+ * chosen signature in its slot, into memory of its own the card can reach, and
+ * allocates the memory for the message queues, the two rings through which the
+ * driver and the GSP's firmware exchange messages, as
+ * `nvidia::gsp_boot_memory` describes, then frees all of it, since the card
+ * was never given its addresses. Bring-up ends there, so when every step
+ * succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -87,8 +91,8 @@ namespace drivers {
  * it fails when `nvidia::check_frts_result` finds an FRTS error code other
  * than 0, or protected memory not set up or starting elsewhere than at the
  * region. Once FWSEC has fenced off the region, it fails when the memory for
- * the copies cannot be allocated or reading a firmware file fails, each
- * freeing everything allocated for the copies.
+ * the copies or the message queues cannot be allocated or reading a firmware
+ * file fails, each freeing everything allocated for them.
  * Whether `attach()` declines or fails, the screen is left as it was, since
  * bring-up itself never writes to the display engine, and the card keeps the
  * memory and I/O decoding that `attach()` turned on. A card that `attach()`

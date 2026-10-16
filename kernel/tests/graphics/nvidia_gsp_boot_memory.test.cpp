@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "common/string.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -17,6 +18,8 @@
 TEST_SUITE(nvidia_gsp_boot_memory);
 
 using drivers::nvidia::boot_file_header;
+using drivers::nvidia::booter_layout;
+using drivers::nvidia::booter_signature;
 using drivers::nvidia::check_boot_copies;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::ERR_BAD_STATE;
@@ -26,6 +29,7 @@ using drivers::nvidia::gsp_boot_memory;
 using drivers::nvidia::gsp_image_layout;
 using drivers::nvidia::OK;
 using drivers::nvidia::radix3_table_pages;
+using drivers::nvidia::write_booter_load_image;
 using drivers::nvidia::write_radix3_table;
 
 // A radix3 page table's page size and the addresses one of its pages holds, restated here so the tests hold the
@@ -52,15 +56,18 @@ static constexpr size_t FIXTURE_DIRECTORY_COUNT = sizeof(FIXTURE_DIRECTORIES) / 
 
 static bool g_created_directories[FIXTURE_DIRECTORY_COUNT];
 
-// The two files the copies are read from, by their names for `fw::file` and by their paths for `fs::`
-static constexpr const char BOOTLOADER_NAME[] = "nvidia_boot_memory_test/bootloader.bin";
-static constexpr const char BOOTLOADER_PATH[] = "/usr/lib/firmware/nvidia_boot_memory_test/bootloader.bin";
-static constexpr const char GSP_IMAGE_NAME[]  = "nvidia_boot_memory_test/gsp.bin";
-static constexpr const char GSP_IMAGE_PATH[]  = "/usr/lib/firmware/nvidia_boot_memory_test/gsp.bin";
+// The files the copies are read from, by their names for `fw::file` and by their paths for `fs::`
+static constexpr const char BOOTLOADER_NAME[]  = "nvidia_boot_memory_test/bootloader.bin";
+static constexpr const char BOOTLOADER_PATH[]  = "/usr/lib/firmware/nvidia_boot_memory_test/bootloader.bin";
+static constexpr const char GSP_IMAGE_NAME[]   = "nvidia_boot_memory_test/gsp.bin";
+static constexpr const char GSP_IMAGE_PATH[]   = "/usr/lib/firmware/nvidia_boot_memory_test/gsp.bin";
+static constexpr const char BOOTER_LOAD_NAME[] = "nvidia_boot_memory_test/booter_load.bin";
+static constexpr const char BOOTER_LOAD_PATH[] = "/usr/lib/firmware/nvidia_boot_memory_test/booter_load.bin";
 
 static int32_t remove_fixtures() {
     fs::unlink(BOOTLOADER_PATH);
     fs::unlink(GSP_IMAGE_PATH);
+    fs::unlink(BOOTER_LOAD_PATH);
 
     for (size_t i = FIXTURE_DIRECTORY_COUNT; i > 0; i--) {
         if (g_created_directories[i - 1]) {
@@ -269,13 +276,20 @@ static dma::device_profile coherent_card() {
     return dma::device_profile_test_access::build(64, true);
 }
 
+// How many of the copy's `bytes` bytes differ from the fixture's at `file_offset`
+static uint64_t count_differing_bytes(const uint8_t* copy, uint64_t file_offset, uint64_t bytes, uint32_t salt) {
+    uint64_t differing = 0;
+    for (uint64_t i = 0; i < bytes; i++) {
+        differing += copy[i] != fixture_byte(file_offset + i, salt);
+    }
+
+    return differing;
+}
+
 // How many of the copy's `bytes` bytes differ from the fixture's at `file_offset`, plus how many bytes of the rest
 // of its last page are not zero
 static uint64_t count_wrong_bytes(const uint8_t* copy, uint64_t file_offset, uint64_t bytes, uint32_t salt) {
-    uint64_t wrong = 0;
-    for (uint64_t i = 0; i < bytes; i++) {
-        wrong += copy[i] != fixture_byte(file_offset + i, salt);
-    }
+    uint64_t wrong = count_differing_bytes(copy, file_offset, bytes, salt);
 
     uint64_t padded_bytes = (bytes + PAGE_BYTES - 1) / PAGE_BYTES * PAGE_BYTES;
     for (uint64_t i = bytes; i < padded_bytes; i++) {
@@ -395,7 +409,7 @@ TEST(nvidia_gsp_boot_memory, firmware_of_more_pages_than_a_radix3_table_maps_is_
     EXPECT_EQ(check_boot_copies(BOOTLOADER_HEADER, one_byte_more), ERR_BAD_FIRMWARE);
 }
 
-TEST(nvidia_gsp_boot_memory, copy_into_an_object_holding_memory_is_refused_keeping_that_memory) {
+TEST(nvidia_gsp_boot_memory, copying_the_bootloader_and_gsp_image_again_is_refused_keeping_the_first_copies) {
     firmware_files files;
     ASSERT_TRUE(install_boot_files(files));
 
@@ -501,4 +515,249 @@ TEST(nvidia_gsp_boot_memory, failed_allocation_of_the_radix3_table_frees_every_p
     EXPECT_EQ(memory.radix3_address(), static_cast<uint64_t>(0));
     EXPECT_EQ(memory.bootloader_address(), static_cast<uint64_t>(0));
     EXPECT_EQ(memory.signature_address(), static_cast<uint64_t>(0));
+}
+
+// Every offset and size the copy reads lies above 0xFFFF, so a field cut to 16 bits fails, a data offset of 0x12300
+// fails a slot not counted from the data's start, and the signatures lie before the program, as in booter load's file
+static constexpr uint32_t BOOTER_SIGNATURES_OFFSET = 0x10040;
+static constexpr uint32_t BOOTER_SIGNATURE_BYTES   = 0x10180;
+static constexpr uint32_t BOOTER_SIGNATURE_COUNT   = 4;
+static constexpr uint64_t BOOTER_PROGRAM_OFFSET    = 0x50700;
+static constexpr uint32_t BOOTER_PROGRAM_BYTES     = 0x40E51;
+static constexpr uint32_t BOOTER_DATA_OFFSET       = 0x12300;
+static constexpr uint32_t BOOTER_SIGNATURE_SLOT    = 0x10088;
+static constexpr uint64_t BOOTER_LOAD_FILE_BYTES   = 0xD2000;
+static constexpr uint32_t BOOTER_LOAD_SALT         = 0x3C6EF372;
+
+static constexpr boot_file_header BOOTER_LOAD_HEADER = {
+    .magic             = 0x10DE,
+    .header_version    = 1,
+    .rounded_size      = static_cast<uint32_t>(BOOTER_LOAD_FILE_BYTES),
+    .descriptor_offset = 24,
+    .program_offset    = static_cast<uint32_t>(BOOTER_PROGRAM_OFFSET),
+    .program_size      = BOOTER_PROGRAM_BYTES,
+};
+
+static constexpr booter_layout BOOTER_LAYOUT = {
+    .code_offset       = 0x100,
+    .code_size         = 0x12200,
+    .data_offset       = BOOTER_DATA_OFFSET,
+    .data_size         = 0x20B00,
+    .signature_slot    = BOOTER_SIGNATURE_SLOT,
+    .signatures_offset = BOOTER_SIGNATURES_OFFSET,
+    .signature_size    = BOOTER_SIGNATURE_BYTES,
+    .signature_count   = BOOTER_SIGNATURE_COUNT,
+    .ucode_id          = 3,
+    .engine_mask       = 0x1,
+};
+
+// Index 1 of 4 is neither the fuse version, 0, nor the last index, which NVIDIA's rule gives for that version, so a
+// patch taking any signature but the chosen one fails
+static constexpr booter_signature CHOSEN_SIGNATURE = {.fuse_version = 0, .index = 1};
+
+// Where the slot starts in the program and where the chosen signature starts in the file
+static constexpr uint64_t BOOTER_SLOT_OFFSET      = BOOTER_DATA_OFFSET + BOOTER_SIGNATURE_SLOT;
+static constexpr uint64_t CHOSEN_SIGNATURE_OFFSET = BOOTER_SIGNATURES_OFFSET + 1 * BOOTER_SIGNATURE_BYTES;
+
+// The same layout with the signatures after the program, so a cut can leave the whole program and fail only the
+// chosen signature's read
+static constexpr uint32_t LATE_SIGNATURES_OFFSET       = 0x91600;
+static constexpr uint64_t LATE_CHOSEN_SIGNATURE_OFFSET = LATE_SIGNATURES_OFFSET + 1 * BOOTER_SIGNATURE_BYTES;
+
+static constexpr booter_layout late_signatures_layout() {
+    booter_layout layout = BOOTER_LAYOUT;
+    layout.signatures_offset = LATE_SIGNATURES_OFFSET;
+    return layout;
+}
+
+// Bytes past the program's end that a write past it would change
+static constexpr uint64_t PROGRAM_GUARD_BYTES = 0x100;
+static constexpr uint8_t  PROGRAM_GUARD_BYTE  = 0xA5;
+
+static bool install_booter_load(fw::file& file_out) {
+    return install(BOOTER_LOAD_PATH, BOOTER_LOAD_NAME, BOOTER_LOAD_FILE_BYTES, BOOTER_LOAD_SALT, file_out);
+}
+
+static int32_t copy_booter_load(gsp_boot_memory& memory, const dma::device_profile& device, const fw::file& file) {
+    return memory.copy_booter_load(device, file, BOOTER_LOAD_HEADER, BOOTER_LAYOUT, CHOSEN_SIGNATURE);
+}
+
+TEST(nvidia_gsp_boot_memory, booter_load_image_holds_its_program_with_the_chosen_signature_over_its_slot) {
+    fw::file booter_load;
+    ASSERT_TRUE(install_booter_load(booter_load));
+
+    uint8_t* image = static_cast<uint8_t*>(heap::ualloc(BOOTER_PROGRAM_BYTES + PROGRAM_GUARD_BYTES));
+    ASSERT_NOT_NULL(image);
+    string::memset(image, PROGRAM_GUARD_BYTE, BOOTER_PROGRAM_BYTES + PROGRAM_GUARD_BYTES);
+
+    int32_t rc = write_booter_load_image(booter_load, BOOTER_LOAD_HEADER, BOOTER_LAYOUT, CHOSEN_SIGNATURE, image);
+
+    uint64_t slot_end = BOOTER_SLOT_OFFSET + BOOTER_SIGNATURE_BYTES;
+    uint64_t wrong_before_slot = count_differing_bytes(
+        image,
+        BOOTER_PROGRAM_OFFSET,
+        BOOTER_SLOT_OFFSET,
+        BOOTER_LOAD_SALT
+    );
+    uint64_t wrong_in_slot = count_differing_bytes(
+        image + BOOTER_SLOT_OFFSET,
+        CHOSEN_SIGNATURE_OFFSET,
+        BOOTER_SIGNATURE_BYTES,
+        BOOTER_LOAD_SALT
+    );
+    uint64_t wrong_after_slot = count_differing_bytes(
+        image + slot_end,
+        BOOTER_PROGRAM_OFFSET + slot_end,
+        BOOTER_PROGRAM_BYTES - slot_end,
+        BOOTER_LOAD_SALT
+    );
+
+    uint64_t changed_guard_bytes = 0;
+    for (uint64_t i = BOOTER_PROGRAM_BYTES; i < BOOTER_PROGRAM_BYTES + PROGRAM_GUARD_BYTES; i++) {
+        changed_guard_bytes += image[i] != PROGRAM_GUARD_BYTE;
+    }
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_EQ(wrong_before_slot, static_cast<uint64_t>(0));
+    EXPECT_EQ(wrong_in_slot, static_cast<uint64_t>(0));
+    EXPECT_EQ(wrong_after_slot, static_cast<uint64_t>(0));
+    EXPECT_EQ(changed_guard_bytes, static_cast<uint64_t>(0));
+
+    heap::ufree(image);
+}
+
+// The DMA layer takes blocks of a power of two pages (vmm.h), so booter load's 65 pages take 128 and the queues' 129
+// take 256, while a request a page short of either takes half as many
+static constexpr uint64_t BOOTER_PROGRAM_BLOCK_PAGES = 128;
+static constexpr uint64_t QUEUE_BLOCK_PAGES          = 256;
+
+TEST(nvidia_gsp_boot_memory, booter_load_copy_and_message_queues_hold_their_pages_until_release) {
+    fw::file booter_load;
+    ASSERT_TRUE(install_booter_load(booter_load));
+
+    uint64_t free_pages_before = drained_free_pages();
+    gsp_boot_memory memory;
+
+    ASSERT_EQ(copy_booter_load(memory, coherent_card(), booter_load), OK);
+    uint64_t free_pages_with_booter_load = drained_free_pages();
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t free_pages_with_both = drained_free_pages();
+
+    EXPECT_NE(memory.booter_load_address(), static_cast<uint64_t>(0));
+    EXPECT_NE(memory.message_queues_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.booter_load_address() % PAGE_BYTES, static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.message_queues_address() % PAGE_BYTES, static_cast<uint64_t>(0));
+    EXPECT_GE(free_pages_before - free_pages_with_booter_load, BOOTER_PROGRAM_BLOCK_PAGES);
+    EXPECT_GE(free_pages_with_booter_load - free_pages_with_both, QUEUE_BLOCK_PAGES);
+
+    memory.release();
+
+    EXPECT_EQ(memory.booter_load_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.message_queues_address(), static_cast<uint64_t>(0));
+    EXPECT_GE(drained_free_pages() + KERNEL_PAGE_TABLE_PAGES, free_pages_before);
+}
+
+// Cuts booter load to its first `cut_bytes` bytes, so a read past the cut fails, then expects copying it with `layout`
+// into an object holding the message queues' memory to fail, giving back only its own copy's pages
+static void expect_cut_booter_load_to_free_only_its_copy(const booter_layout& layout, uint64_t cut_bytes) {
+    fw::file booter_load;
+    ASSERT_TRUE(install_booter_load(booter_load));
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t message_queues_address = memory.message_queues_address();
+
+    // A first copy maps memory the way the failing one does, so its page tables already exist
+    gsp_boot_memory first_copy;
+    int32_t first_rc = first_copy.copy_booter_load(
+        coherent_card(),
+        booter_load,
+        BOOTER_LOAD_HEADER,
+        layout,
+        CHOSEN_SIGNATURE
+    );
+    ASSERT_EQ(first_rc, OK);
+    first_copy.release();
+
+    ASSERT_TRUE(write_fixture(BOOTER_LOAD_PATH, cut_bytes, BOOTER_LOAD_SALT));
+    uint64_t free_pages_before = drained_free_pages();
+
+    int32_t rc = memory.copy_booter_load(coherent_card(), booter_load, BOOTER_LOAD_HEADER, layout, CHOSEN_SIGNATURE);
+
+    EXPECT_EQ(rc, ERR_BAD_FIRMWARE);
+    EXPECT_GE(drained_free_pages() + KERNEL_PAGE_TABLE_PAGES, free_pages_before);
+    EXPECT_EQ(memory.booter_load_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.message_queues_address(), message_queues_address);
+
+    memory.release();
+}
+
+// The cut leaves the signatures before the program whole, so the copy fails only if it stops at the program's read
+TEST(nvidia_gsp_boot_memory, failed_read_of_booter_load_program_frees_only_its_copy) {
+    expect_cut_booter_load_to_free_only_its_copy(BOOTER_LAYOUT, BOOTER_PROGRAM_OFFSET + 0x100);
+}
+
+TEST(nvidia_gsp_boot_memory, failed_read_of_booter_load_signature_frees_only_its_copy) {
+    expect_cut_booter_load_to_free_only_its_copy(late_signatures_layout(), LATE_CHOSEN_SIGNATURE_OFFSET + 0x100);
+}
+
+// The refused profile fails the first allocation of `copy_boot_files`, before the bootloader or the GSP image is
+// read, so only booter load is installed
+TEST(nvidia_gsp_boot_memory, failed_copy_of_the_bootloader_and_gsp_image_keeps_booter_load_and_the_message_queues) {
+    firmware_files files;
+    ASSERT_TRUE(install_booter_load(files.booter_load));
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(copy_booter_load(memory, coherent_card(), files.booter_load), OK);
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t booter_load_address = memory.booter_load_address();
+    uint64_t message_queues_address = memory.message_queues_address();
+
+    dma::device_profile refused_card = dma::device_profile_test_access::build(REFUSED_ADDRESS_BITS, true);
+
+    EXPECT_EQ(memory.copy_boot_files(refused_card, files, BOOTLOADER_HEADER, GSP_IMAGE), ERR_NO_MEMORY);
+    EXPECT_EQ(memory.booter_load_address(), booter_load_address);
+    EXPECT_EQ(memory.message_queues_address(), message_queues_address);
+
+    memory.release();
+}
+
+TEST(nvidia_gsp_boot_memory, failed_booter_load_or_queue_allocation_keeps_the_bootloader_and_gsp_image_copies) {
+    firmware_files files;
+    ASSERT_TRUE(install_boot_files(files));
+    ASSERT_TRUE(install_booter_load(files.booter_load));
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.copy_boot_files(coherent_card(), files, BOOTLOADER_HEADER, GSP_IMAGE), OK);
+    uint64_t bootloader_address = memory.bootloader_address();
+
+    dma::device_profile refused_card = dma::device_profile_test_access::build(REFUSED_ADDRESS_BITS, true);
+    uint64_t free_pages_before = drained_free_pages();
+
+    EXPECT_EQ(copy_booter_load(memory, refused_card, files.booter_load), ERR_NO_MEMORY);
+    EXPECT_EQ(memory.allocate_message_queues(refused_card), ERR_NO_MEMORY);
+    EXPECT_EQ(drained_free_pages(), free_pages_before);
+    EXPECT_EQ(memory.booter_load_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.message_queues_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(memory.bootloader_address(), bootloader_address);
+
+    memory.release();
+}
+
+TEST(nvidia_gsp_boot_memory, filling_booter_load_or_the_message_queues_again_is_refused_keeping_the_first) {
+    fw::file booter_load;
+    ASSERT_TRUE(install_booter_load(booter_load));
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(copy_booter_load(memory, coherent_card(), booter_load), OK);
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t booter_load_address = memory.booter_load_address();
+    uint64_t message_queues_address = memory.message_queues_address();
+
+    EXPECT_EQ(copy_booter_load(memory, coherent_card(), booter_load), ERR_BAD_STATE);
+    EXPECT_EQ(memory.allocate_message_queues(coherent_card()), ERR_BAD_STATE);
+    EXPECT_EQ(memory.booter_load_address(), booter_load_address);
+    EXPECT_EQ(memory.message_queues_address(), message_queues_address);
+
+    memory.release();
 }
