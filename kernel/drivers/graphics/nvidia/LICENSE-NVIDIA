@@ -15,8 +15,11 @@ src/common/inc/swref/published/turing/tu102/dev_ext_devices.h
 src/common/inc/swref/published/ampere/ga100/dev_fuse.h
     the display fuse and its bit 0, clear while the display is enabled, in
     protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
-    and the first of the fuse registers recording the versions of the GSP's
-    programs, in fwsec.cpp and kernel/tests/graphics/nvidia_fwsec.test.cpp
+    the first of the fuse registers recording the versions of the GSP's
+    programs, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_fwsec.test.cpp, and the first of those
+    recording the versions of SEC2's programs, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
@@ -184,9 +187,13 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
     slot, counted from the program's start, ends before the program's end,
     and that the signature's DMEM address is the slot's offset less the
     data's, in firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, and the rule that the
-    slot receives the signature for the version the chip's fuses record, in
-    firmware_files.h
+    kernel/tests/graphics/nvidia_firmware.test.cpp, and the rules that
+    booter load's fuse version is the one SEC2's fuse registers record for
+    its ucode id, that with more than one signature the slot receives the one
+    at index count - 1 - v for fuse version v and none is for a version above
+    count - 1, and that a lone signature is chosen whatever the version, in
+    firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c
@@ -261,11 +268,21 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga100.c
-    the rules that the program with a ucode id from 1 to 16 has its fuse
-    register 4 bytes per id past the first, that its fuse version is the index
-    of that register's highest set bit plus 1, or 0 when no bit is set, and
-    that any other id has fuse version 0, in fwsec.h, fwsec.cpp and
+    the rules that the program the GSP's falcon runs with a ucode id from 1 to
+    16 has its fuse register 4 bytes per id past the GSP's first, that its
+    fuse version is the index of that register's highest set bit plus 1, or 0
+    when no bit is set, and that any other id, taken in 32 bits, has fuse
+    version 0, in falcon.h, falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_fwsec.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/sec2/arch/ampere/kernel_sec2_ga100.c
+    the rules that the program SEC2's falcon runs with a ucode id from 1 to 16
+    has its fuse register 4 bytes per id past SEC2's first, that its fuse
+    version is the index of that register's highest set bit plus 1, or 0 when
+    no bit is set, and that any other id, taken in 32 bits, has fuse version
+    0, in falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c

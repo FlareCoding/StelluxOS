@@ -38,6 +38,13 @@ struct falcon_program {
     uint8_t  ucode_id;           // NVIDIA's number for the program among the falcon's programs
 };
 
+// Identifies one of the GPU's falcons, the microcontrollers in its engines: the GSP's, which runs FWSEC, or that of
+// SEC2, the GPU's security processor, which runs the program that boots the GSP's firmware
+enum class falcon_id : uint8_t {
+    gsp,
+    sec2,
+};
+
 /**
  * @brief Reset the GSP's falcon, the microcontroller in the GSP that runs
  * FWSEC, into the state NVIDIA's driver loads FWSEC into. The falcon has a
@@ -122,6 +129,21 @@ bool is_gsp_falcon_halted(const registers& regs);
  * block is loaded.
  */
 int32_t run_gsp_falcon_program(registers& regs, const falcon_program& program, uint64_t timeout_ns);
+
+/**
+ * @brief Read the version the chip's fuses, bits burned into the chip for
+ * good, record for a program that `falcon` runs. The program's ucode id,
+ * NVIDIA's number for it among that falcon's programs, names one of the
+ * falcon's 16 fuse registers, from 1 for the first. The version is the bit
+ * number of that register's highest set bit plus 1, or 0 when no bit is set
+ * or the ucode id names none of the registers.
+ * @param regs A view of BAR0.
+ * @param falcon The falcon whose fuse registers record the program's version.
+ * @param ucode_id The program's ucode id, in all 32 bits NVIDIA's driver
+ * takes it in, so an id past 16 names no register.
+ * @return The version, from 0 to 32.
+ */
+uint32_t read_ucode_fuse_version(const registers& regs, falcon_id falcon, uint32_t ucode_id);
 
 } // namespace drivers::nvidia
 
