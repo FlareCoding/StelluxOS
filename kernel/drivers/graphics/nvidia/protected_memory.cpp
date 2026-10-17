@@ -103,8 +103,7 @@ static bool is_protected_memory_set_up(const registers& regs) {
 }
 
 // Where the layout counts the VGA workspace as starting. `video_memory_size` must be at least `VGA_WORKSPACE_MAX_BYTES`
-static uint64_t find_vga_workspace(const registers& regs, uint64_t video_memory_size) {
-    bool has_display = (regs.read(DISPLAY_FUSE) & DISPLAY_DISABLED) == 0;
+static uint64_t find_vga_workspace(const registers& regs, uint64_t video_memory_size, bool has_display) {
     bool has_valid_register = has_display && (regs.read(VGA_WORKSPACE_BASE) & VGA_WORKSPACE_VALID) != 0;
     if (!has_valid_register) {
         return video_memory_size - VGA_WORKSPACE_MAX_BYTES;
@@ -128,7 +127,8 @@ int32_t place_frts_region(const registers& regs, frts_region& region_out) {
         return ERR_BAD_STATE;
     }
 
-    uint64_t vga_workspace_offset = find_vga_workspace(regs, video_memory_size);
+    bool has_display = (regs.read(DISPLAY_FUSE) & DISPLAY_DISABLED) == 0;
+    uint64_t vga_workspace_offset = find_vga_workspace(regs, video_memory_size, has_display);
     if (vga_workspace_offset <= FRTS_REGION_BYTES) {
         log::error(
             "nvidia: the VGA workspace at 0x%lX leaves no room for the 1 MiB FRTS region above offset 0",
@@ -140,6 +140,7 @@ int32_t place_frts_region(const registers& regs, frts_region& region_out) {
     region_out.video_memory_size = video_memory_size;
     region_out.vga_workspace_offset = vga_workspace_offset;
     region_out.offset = vga_workspace_offset - FRTS_REGION_BYTES;
+    region_out.has_display = has_display;
 
     return OK;
 }

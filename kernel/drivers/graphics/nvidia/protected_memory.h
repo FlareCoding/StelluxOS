@@ -29,6 +29,7 @@ struct frts_region {
     uint64_t video_memory_size;    // bytes of usable video memory, as the card's boot firmware records it
     uint64_t vga_workspace_offset; // bytes from the start of video memory, as the layout counts it
     uint64_t offset;               // bytes from the start of video memory
+    bool     has_display;          // whether the chip's fuses leave its display enabled, as the layout read them
 };
 
 /**
@@ -107,11 +108,12 @@ int32_t wait_for_boot_firmware(const registers& regs, uint64_t timeout_ns);
  * @param regs A view of BAR0. The card's boot firmware must have finished, as
  * `wait_for_boot_firmware` waits for, since it records the usable size.
  * @param region_out Receives the region when the result is `OK`. Its
- * `vga_workspace_offset` is then the start of the last 128 KiB or the last
- * 1 MiB of usable video memory, and the region starts at a multiple of
- * 128 KiB above offset 0 and ends at `vga_workspace_offset`. The region thus
- * lies below 16 TiB whenever usable video memory does, as
- * `prepare_fwsec_frts` and `check_frts_result` need.
+ * `vga_workspace_offset` is then the start of the last 128 KiB or the last 1
+ * MiB of usable video memory, and the region starts at a multiple of 128 KiB
+ * above offset 0 and ends at `vga_workspace_offset`. The region thus lies below
+ * 16 TiB whenever usable video memory does, as `prepare_fwsec_frts` and
+ * `check_frts_result` need. Its `has_display` is false when the chip's fuses
+ * disable its display.
  * @return `OK`, or `ERR_BAD_STATE` when protected memory is already set up, as
  * after an earlier bring-up with no card reset since, when usable video memory
  * is below 1 MiB, or when the VGA workspace leaves no room for the region

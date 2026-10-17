@@ -13,6 +13,7 @@
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/vbios.h"
 #include "drivers/graphics/gfxfb.h"
+#include "boot/boot_services.h"
 #include "common/logging.h"
 #include "dma/dma.h"
 #include "dynpriv/dynpriv.h"
@@ -25,7 +26,8 @@ namespace drivers {
 
 constexpr uint16_t NVIDIA_VENDOR_ID = 0x10DE;
 
-// Numbered by register, so instance memory, NVIDIA's BAR2, is BAR3 after the 64-bit BAR1
+// Named for each BAR's role on the card and numbered by register, so the BAR after the 64-bit BAR1 is BAR3.
+// `nvidia::card_placement` says how NVIDIA's driver numbers them
 constexpr uint8_t REGISTERS_BAR       = 0;
 constexpr uint8_t VIDEO_MEMORY_BAR    = 1;
 constexpr uint8_t INSTANCE_MEMORY_BAR = 3;
@@ -364,17 +366,23 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
-    // The PCI layer keeps its devices in privileged memory
+    // The PCI layer's devices and `g_boot_info`'s record of the boot framebuffer sit in privileged memory
     nvidia::card_placement card = {};
+    nvidia::boot_framebuffer framebuffer = {};
     RUN_ELEVATED({
         card.registers_address = m_dev->get_bar(REGISTERS_BAR).phys;
-        card.video_memory_address = m_dev->get_bar(VIDEO_MEMORY_BAR).phys;
-        card.instance_memory_address = m_dev->get_bar(INSTANCE_MEMORY_BAR).phys;
+        card.bar1_address = m_dev->get_bar(VIDEO_MEMORY_BAR).phys;
+        card.bar3_address = m_dev->get_bar(INSTANCE_MEMORY_BAR).phys;
         card.bus = m_dev->bus();
         card.device = m_dev->slot();
+        framebuffer.address = g_boot_info.framebuffer.fb_phys;
+        framebuffer.height = g_boot_info.framebuffer.height;
+        framebuffer.pitch = g_boot_info.framebuffer.pitch;
     });
 
-    rc = nvidia::queue_boot_messages(queues, card);
+    uint64_t console_bytes = nvidia::boot_console_bytes(card, framebuffer, frts.has_display);
+
+    rc = nvidia::queue_boot_messages(queues, card, console_bytes);
     if (rc != nvidia::OK) {
         log::error("nvidia: queueing the system information and the registry failed: %d", rc);
         return rc;
@@ -410,11 +418,13 @@ int32_t nvidia_gpu_driver::attach() {
         m_boot_memory.libos_arguments_address()
     );
     log::info(
-        "nvidia: the system information for BAR0 at 0x%lX, BAR1 at 0x%lX and BAR3 at 0x%lX, and an empty registry, "
-        "queued for the GSP's firmware",
+        "nvidia: the system information and an empty registry queued for the GSP's firmware, for the card whose BAR0, "
+        "BAR1 and BAR3 lie at 0x%lX, 0x%lX and 0x%lX (0 for a BAR left unassigned), the system information asking the "
+        "firmware to leave alone %lu bytes of video memory for a boot console",
         card.registers_address,
-        card.video_memory_address,
-        card.instance_memory_address
+        card.bar1_address,
+        card.bar3_address,
+        console_bytes
     );
 
     rc = nvidia::reset_gsp_into_riscv(regs, nvidia::FALCON_READY_TIMEOUT_NS, nvidia::FALCON_TIMEOUT_NS);
