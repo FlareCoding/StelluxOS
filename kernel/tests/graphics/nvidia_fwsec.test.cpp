@@ -695,16 +695,19 @@ static constexpr fwsec_layout DISTINCT_FWSEC = {
 
 static constexpr uint64_t COPY_DMA_ADDRESS = 0x4A1234567000;
 
-// FWSEC's sizes, bases, engine mask and ucode id carry over, its signature slot becomes the signature's offset in
-// the data, and the copy's address and caching are the caller's
+// FWSEC's sizes, bases, engine mask and ucode id carry over, its code starts the copy with its data right after, its
+// signature slot becomes the signature's offset in the data, and the copy's address and caching are the caller's
 TEST(nvidia_fwsec, fwsec_is_described_as_a_falcon_program) {
     falcon_program program = describe_fwsec_program(DISTINCT_FWSEC, COPY_DMA_ADDRESS, true);
 
     EXPECT_EQ(program.dma_address, COPY_DMA_ADDRESS);
     EXPECT_TRUE(program.is_cached);
+    EXPECT_FALSE(program.reads_cached_memory);
+    EXPECT_EQ(program.code_offset, 0u);
     EXPECT_EQ(program.code_size, 0x1700u);
     EXPECT_EQ(program.imem_physical_base, 0x100u);
     EXPECT_EQ(program.imem_virtual_base, 0x10200u);
+    EXPECT_EQ(program.data_offset, 0x1700u);
     EXPECT_EQ(program.data_size, 0x13000u);
     EXPECT_EQ(program.dmem_physical_base, 0x300u);
     EXPECT_EQ(program.signature_offset, 0x12680u);

@@ -40,7 +40,8 @@ src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
     RM register, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
     the hardware configuration register with its memory scrubbing field and the
     RM register, in kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and
-    the two mailbox registers, in falcon.cpp
+    the two mailbox registers, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_second_pri.h
@@ -175,11 +176,11 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_fwsec.c
     and that it spans its stored size rounded up to a multiple of 256 bytes, in
     vbios.h, vbios.cpp and kernel/tests/graphics/nvidia.test.cpp, the size of
     FWSEC's signatures, in kernel/tests/graphics/nvidia_fwsec.test.cpp, the
-    rule that its data follows its code, in falcon.h, falcon.cpp, fwsec.cpp and
-    kernel/tests/graphics/nvidia_fwsec.test.cpp, and the rule that FWSEC is
-    run with its code at the descriptor's IMEM bases, its data at its DMEM
-    base, its signature slot as the signature's offset in the data, and the
-    descriptor's engine mask and ucode id, in fwsec.h, fwsec.cpp and
+    rule that its data follows its code, in fwsec.h, fwsec.cpp and
+    kernel/tests/graphics/nvidia_fwsec.test.cpp, and the rule that FWSEC is run
+    with its code at the descriptor's IMEM bases, its data at its DMEM base, its
+    signature slot as the signature's offset in the data, and the descriptor's
+    engine mask and ucode id, in fwsec.h, fwsec.cpp and
     kernel/tests/graphics/nvidia_fwsec.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -520,14 +521,16 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
     transfer setup 0 set to physical system memory, its code copied into IMEM
     marked secure and then its data into DMEM, 256 bytes at a time with the
     address in 256-byte units split over the two base registers and a wait for
-    the DMA engine to go idle after each block, the code read from below the
-    program by its virtual base with its offsets counting from that base, and
-    the data read from its own start with its offsets counting from 0, that the
-    boot ROM is then given the signature's offset in the data, the engine mask,
-    the ucode id and the RSA-3072 algorithm, that the boot vector is the code's
-    virtual base, and that the falcon is then started and waited on until it
-    halts, each wait given the default timeout, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    the DMA engine to go idle after each block, the code read from below its
+    offset in the program by its virtual base with its offsets counting from
+    that base, and the data read from its own offset in the program with its
+    offsets counting from 0, that the boot ROM is then given the signature's
+    offset in the data, the whole engine mask, the ucode id and the RSA-3072
+    algorithm, that the boot vector is the code's virtual base, that a program's
+    mailboxes are then written, that the falcon is then started and waited on
+    until it halts, each wait given the default timeout, and that the mailboxes
+    are read after that wait whether or not it succeeds, in falcon.h, falcon.cpp
+    and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/falcon/arch/turing/kernel_falcon_tu102.c

@@ -55,7 +55,8 @@ constexpr uint32_t READY_FOR_RESET   = 0x80000000;
 // The falcon register NVIDIA's driver writes the chip's `PMC_BOOT_0` value to as a reset ends
 constexpr uint32_t FALCON_RM = 0x084;
 
-// The falcon's two mailbox registers. NVIDIA's driver writes the address of LibOS's arguments into the GSP's.
+// The falcon's two mailbox registers. NVIDIA's driver writes the address of LibOS's arguments into the GSP's, and a
+// program's arguments into those of the falcon running it.
 constexpr uint32_t FALCON_MAILBOX0 = 0x040;
 constexpr uint32_t FALCON_MAILBOX1 = 0x044;
 
@@ -336,13 +337,13 @@ int32_t stop_falcon(registers& regs, falcon_id falcon, uint32_t boot0, uint64_t 
 }
 
 // Lets the DMA engine read system memory by physical address through transfer setup 0, looking in the CPU's caches
-// only for a cached program
-static void configure_dma(registers& regs, const falcon_layout& layout, bool is_cached) {
+// only when memory read through it may be cached
+static void configure_dma(registers& regs, const falcon_layout& layout, bool reaches_cached_memory) {
     uint32_t control = regs.read(layout.fbif_base + FBIF_CTL) | ALLOW_PHYSICAL_WITHOUT_CONTEXT;
     regs.write(layout.fbif_base + FBIF_CTL, control);
     regs.write(layout.base + FALCON_DMACTL, 0);
 
-    uint32_t target = is_cached ? TARGET_COHERENT_SYSTEM_MEMORY : TARGET_NONCOHERENT_SYSTEM_MEMORY;
+    uint32_t target = reaches_cached_memory ? TARGET_COHERENT_SYSTEM_MEMORY : TARGET_NONCOHERENT_SYSTEM_MEMORY;
     uint32_t transfer = regs.read(layout.fbif_base + FBIF_TRANSCFG0) & ~TRANSFER_TARGET_MASK;
     regs.write(layout.fbif_base + FBIF_TRANSCFG0, transfer | target | PHYSICAL_ADDRESSES);
 }
@@ -385,15 +386,23 @@ static int32_t copy_blocks(
     return OK;
 }
 
-int32_t run_falcon_program(registers& regs, falcon_id falcon, const falcon_program& program, uint64_t timeout_ns) {
+// Runs `program` on `falcon`, handing it `mailboxes` and reading them back when `mailboxes` is not null
+static int32_t run_program(
+    registers& regs,
+    falcon_id falcon,
+    const falcon_program& program,
+    falcon_mailboxes* mailboxes,
+    uint64_t timeout_ns
+) {
     const falcon_layout& layout = layout_of(falcon);
+    bool reaches_cached_memory = program.is_cached || program.reads_cached_memory;
 
-    configure_dma(regs, layout, program.is_cached);
+    configure_dma(regs, layout, reaches_cached_memory);
 
-    // As in NVIDIA's driver, the code's base sits below the program by its virtual base, and its blocks' offsets
-    // count from the virtual base, so they are read from the program's start and tagged with their virtual addresses
-    uint64_t code_base = program.dma_address - program.imem_virtual_base;
-    uint64_t data_base = program.dma_address + program.code_size;
+    // As in NVIDIA's driver, the code's base sits below the code by its virtual base, and its blocks' offsets count
+    // from the virtual base, so they are read from the code's start and tagged with their virtual addresses
+    uint64_t code_base = program.dma_address + program.code_offset - program.imem_virtual_base;
+    uint64_t data_base = program.dma_address + program.data_offset;
 
     int32_t rc = copy_blocks(
         regs,
@@ -431,18 +440,53 @@ int32_t run_falcon_program(registers& regs, falcon_id falcon, const falcon_progr
     regs.write(layout.second_base + FALCON2_MOD_SEL, RSA_3072);
     regs.write(layout.base + FALCON_BOOTVEC, program.imem_virtual_base);
 
+    if (mailboxes) {
+        regs.write(layout.base + FALCON_MAILBOX0, mailboxes->mailbox0);
+        regs.write(layout.base + FALCON_MAILBOX1, mailboxes->mailbox1);
+    }
+
     bool starts_through_alias = (regs.read(layout.base + FALCON_CPUCTL) & STARTS_THROUGH_ALIAS) != 0;
     regs.write(layout.base + (starts_through_alias ? FALCON_CPUCTL_ALIAS : FALCON_CPUCTL), START_FALCON);
-    if (!wait_for_bits(regs, layout.base + FALCON_CPUCTL, FALCON_HALTED, FALCON_HALTED, timeout_ns)) {
+    bool has_halted = wait_for_bits(regs, layout.base + FALCON_CPUCTL, FALCON_HALTED, FALCON_HALTED, timeout_ns);
+
+    if (mailboxes) {
+        mailboxes->mailbox0 = regs.read(layout.base + FALCON_MAILBOX0);
+        mailboxes->mailbox1 = regs.read(layout.base + FALCON_MAILBOX1);
+    }
+
+    if (!has_halted) {
         log::error(
             "nvidia: %s's falcon did not halt within %lu ms of starting its program",
             layout.name,
             timeout_ns / NS_PER_MS
         );
+        if (mailboxes) {
+            log::error(
+                "nvidia: the mailboxes of %s's falcon read 0x%X and 0x%X after the wait for its halt",
+                layout.name,
+                mailboxes->mailbox0,
+                mailboxes->mailbox1
+            );
+        }
+
         return ERR_TIMEOUT;
     }
 
     return OK;
+}
+
+int32_t run_falcon_program(registers& regs, falcon_id falcon, const falcon_program& program, uint64_t timeout_ns) {
+    return run_program(regs, falcon, program, nullptr, timeout_ns);
+}
+
+int32_t run_falcon_program(
+    registers& regs,
+    falcon_id falcon,
+    const falcon_program& program,
+    falcon_mailboxes& mailboxes,
+    uint64_t timeout_ns
+) {
+    return run_program(regs, falcon, program, &mailboxes, timeout_ns);
 }
 
 uint32_t read_ucode_fuse_version(const registers& regs, falcon_id falcon, uint32_t ucode_id) {
