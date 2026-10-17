@@ -1,6 +1,8 @@
 #include "sync/wait_queue.h"
 #include "sched/sched.h"
 #include "sched/task_exec_core.h"
+#include "clock/clock.h"
+#include "timer/timer.h"
 
 namespace sync {
 
@@ -49,12 +51,12 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
 }
 
 /**
- * Not interruptible on its own: a force-woken waiter re-blocks unless
- * the caller loops on signals::interrupt_pending().
+ * Sleeps on `wq` until woken, or until the sleep timer fires when `deadline_ns` is nonzero. A
+ * force-woken waiter re-blocks unless the caller loops on signals::interrupt_pending().
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE
-irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
+__PRIVILEGED_CODE static irq_state block_on(wait_queue& wq, spinlock& lock, irq_state saved,
+                                            uint64_t deadline_ns) {
     sched::task* self = sched::current();
 
     if (self->exec.flags & sched::TASK_FLAG_IDLE) {
@@ -66,11 +68,20 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
     spin_lock(wq.lock);
     sched::prepare_to_block_task();
     wq.waiters.push_back(self);
+
+    if (deadline_ns != 0) {
+        timer::schedule_sleep(self, deadline_ns);
+    }
+
     spin_unlock(wq.lock);
 
     spin_unlock_irqrestore(lock, saved);
 
     sched::yield();
+
+    if (deadline_ns != 0) {
+        timer::cancel_sleep(self);
+    }
 
     irq_state wq_irq = spin_lock_irqsave(wq.lock);
     if (self->wait_link.is_linked()) {
@@ -79,6 +90,26 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
     spin_unlock_irqrestore(wq.lock, wq_irq);
 
     return spin_lock_irqsave(lock);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE
+irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
+    return block_on(wq, lock, saved, 0);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE
+irq_state wait_until(wait_queue& wq, spinlock& lock, irq_state saved, uint64_t deadline_ns) {
+    if (clock::now_ns() >= deadline_ns) {
+        return saved;
+    }
+
+    return block_on(wq, lock, saved, deadline_ns);
 }
 
 /**
