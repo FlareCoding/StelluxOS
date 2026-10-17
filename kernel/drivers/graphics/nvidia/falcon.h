@@ -264,6 +264,50 @@ int32_t run_falcon_program(
 );
 
 /**
+ * @brief Run booter load, the program that starts the GSP's firmware, on
+ * SEC2's falcon with `run_falcon_program`, handing it `metadata_address` in
+ * the SEC2 falcon's two mailboxes, its low 32 bits in the first and its high
+ * 32 bits in the second, and check that booter load leaves 0 in the first, as
+ * NVIDIA's driver does.
+ * @param regs A view of BAR0, as for `run_falcon_program` on SEC2's falcon:
+ * the card's bus mastering must be on and SEC2's falcon must have been reset
+ * with `reset_falcon`.
+ * @param booter_load Booter load's program, as `describe_booter_load_program`
+ * gives it, whose memory must stay allocated as `run_falcon_program` requires.
+ * @param metadata_address Where protected memory's metadata lies, as the card
+ * addresses memory.
+ * @param timeout_ns How long each block's load and the run may take, as for
+ * `run_falcon_program`.
+ * @return `OK` once booter load halts with 0 in the first mailbox, the
+ * `ERR_TIMEOUT` that `run_falcon_program` returns, or `ERR_BAD_STATE` when the
+ * first mailbox reads other than 0 after the halt. The cause is logged.
+ */
+int32_t run_booter_load(
+    registers& regs,
+    const falcon_program& booter_load,
+    uint64_t metadata_address,
+    uint64_t timeout_ns
+);
+
+/**
+ * @brief Write `app_version` into the register of the GSP's falcon NVIDIA
+ * calls its OS register, as NVIDIA's driver does once booter load succeeds.
+ * @param regs A view of BAR0.
+ * @param app_version The app version of the bootloader's program, as
+ * `read_bootloader_layout` returns it.
+ */
+void write_gsp_app_version(registers& regs, uint32_t app_version);
+
+/**
+ * @brief Whether the GSP's RISC-V core is running, as the active field of the
+ * core's control register shows. NVIDIA's driver reads it once booter load
+ * succeeds and fails the GSP's boot when the core is not running.
+ * @param regs A view of BAR0.
+ * @return Whether the active field is set.
+ */
+bool is_gsp_riscv_running(const registers& regs);
+
+/**
  * @brief Read the version the chip's fuses, bits burned into the chip for
  * good, record for a program that `falcon` runs. The program's ucode id,
  * NVIDIA's number for it among that falcon's programs, names one of the

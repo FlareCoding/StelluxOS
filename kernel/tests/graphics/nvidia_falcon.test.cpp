@@ -6,9 +6,11 @@
 #include "clock/clock.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
+#include "drivers/graphics/nvidia/gsp_boot_memory.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "mm/heap.h"
+#include "tests/memory/dma_test_access.h"
 
 TEST_SUITE(nvidia_falcon);
 
@@ -20,17 +22,22 @@ using drivers::nvidia::FALCON_TIMEOUT_NS;
 using drivers::nvidia::OK;
 using drivers::nvidia::booter_layout;
 using drivers::nvidia::booter_signature;
+using drivers::nvidia::describe_booter_load_program;
 using drivers::nvidia::falcon_id;
 using drivers::nvidia::falcon_mailboxes;
 using drivers::nvidia::falcon_program;
+using drivers::nvidia::gsp_boot_memory;
 using drivers::nvidia::has_gsp_riscv_core;
+using drivers::nvidia::is_gsp_riscv_running;
 using drivers::nvidia::notify_gsp_of_queued_messages;
 using drivers::nvidia::registers;
 using drivers::nvidia::reset_falcon;
 using drivers::nvidia::reset_gsp_into_riscv;
+using drivers::nvidia::run_booter_load;
 using drivers::nvidia::run_falcon_program;
 using drivers::nvidia::select_booter_signature;
 using drivers::nvidia::stop_falcon;
+using drivers::nvidia::write_gsp_app_version;
 using drivers::nvidia::write_libos_arguments_address;
 
 // Registers and fields the reset uses, restated here so the tests hold the reset to NVIDIA's layout rather than to
@@ -805,6 +812,229 @@ TEST(nvidia_falcon, halt_timeout_leaves_program_mailboxes_written) {
     EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX1), 0x2468ACE0u);
     EXPECT_EQ(mailboxes.mailbox0, 0x13579BDFu);
     EXPECT_EQ(mailboxes.mailbox1, 0x2468ACE0u);
+}
+
+// The register of the GSP's falcon NVIDIA calls its OS register, restated here so the test holds the write to NVIDIA's
+// layout
+static constexpr uint32_t GSP_FALCON_OS = 0x110080;
+
+// The bootloader's app version replaces every bit of the GSP falcon's OS register
+TEST(nvidia_falcon, app_version_is_written_to_gsp_os_register) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_OS, ~0u);
+
+    write_gsp_app_version(bar0.regs, 0x2C1E5A7);
+    EXPECT_EQ(bar0.read(GSP_FALCON_OS), 0x2C1E5A7u);
+}
+
+// The GSP's RISC-V core reads as running by its own active bit, whether every other bit of its control register is
+// clear or set, and whatever SEC2's RISC-V control register holds
+TEST(nvidia_falcon, gsp_riscv_core_reads_as_running_by_its_active_bit) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_RISCV_CPUCTL, ~0u);
+
+    bar0.write(GSP_RISCV_CPUCTL, RISCV_ACTIVE);
+    EXPECT_TRUE(is_gsp_riscv_running(bar0.regs));
+
+    bar0.write(GSP_RISCV_CPUCTL, ~0u);
+    EXPECT_TRUE(is_gsp_riscv_running(bar0.regs));
+
+    bar0.write(GSP_RISCV_CPUCTL, ~RISCV_ACTIVE);
+    EXPECT_FALSE(is_gsp_riscv_running(bar0.regs));
+}
+
+// Booter load's layout with every field distinct, a ucode id past 8 bits and offsets and an engine mask past 16 bits
+static constexpr booter_layout DISTINCT_BOOTER_LOAD = {
+    .code_offset = 0x10300,
+    .code_size = 0x8300,
+    .data_offset = 0x19500,
+    .data_size = 0x6200,
+    .signature_slot = 0x10,
+    .signatures_offset = 0x3C,
+    .signature_size = 384,
+    .signature_count = 2,
+    .ucode_id = 0x7B03,
+    .engine_mask = 0x80000401,
+};
+
+// Booter load's uncached copy is described from its code's offset, also its virtual base, and its data's offset, into
+// IMEM and DMEM from their starts, with its slot as the signature's offset, its whole mask and its ucode id's low byte
+TEST(nvidia_falcon, booter_load_is_described_from_its_offsets) {
+    falcon_program program = describe_booter_load_program(DISTINCT_BOOTER_LOAD, 0x4D2C3B000, true);
+
+    EXPECT_EQ(program.dma_address, static_cast<uint64_t>(0x4D2C3B000));
+    EXPECT_FALSE(program.is_cached);
+    EXPECT_TRUE(program.reads_cached_memory);
+    EXPECT_EQ(program.code_offset, 0x10300u);
+    EXPECT_EQ(program.code_size, 0x8300u);
+    EXPECT_EQ(program.imem_physical_base, 0u);
+    EXPECT_EQ(program.imem_virtual_base, 0x10300u);
+    EXPECT_EQ(program.data_offset, 0x19500u);
+    EXPECT_EQ(program.data_size, 0x6200u);
+    EXPECT_EQ(program.dmem_physical_base, 0u);
+    EXPECT_EQ(program.signature_offset, 0x10u);
+    EXPECT_EQ(program.engine_mask, 0x80000401u);
+    EXPECT_EQ(program.ucode_id, static_cast<uint8_t>(0x03));
+
+    // Whether booter load reads cached memory once started is the caller's to say
+    EXPECT_FALSE(describe_booter_load_program(DISTINCT_BOOTER_LOAD, 0x4D2C3B000, false).reads_cached_memory);
+}
+
+// Booter load gets protected memory's metadata address in the SEC2 falcon's mailboxes, its low half in the first, and
+// succeeds once the first reads 0 after the halt, as the fake leaves it for an address whose low half is 0
+TEST(nvidia_falcon, booter_load_gets_metadata_address_in_sec2_falcon_mailboxes) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_CPUCTL, STARTS_THROUGH_ALIAS | FALCON_HALTED);
+    bar0.write(SEC2_FALCON_MAILBOX0, ~0u);
+    bar0.write(SEC2_FALCON_MAILBOX1, ~0u);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.code_size = 0;
+    program.data_size = 0;
+
+    EXPECT_EQ(run_booter_load(bar0.regs, program, 0x8765400000000, 0), OK);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX0), 0u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX1), 0x87654u);
+}
+
+// Booter load fails when the SEC2 falcon's first mailbox reads other than 0 after the halt, as the fake leaves the
+// address's low half there
+TEST(nvidia_falcon, booter_load_fails_unless_first_mailbox_reads_zero) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_CPUCTL, STARTS_THROUGH_ALIAS | FALCON_HALTED);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.code_size = 0;
+    program.data_size = 0;
+
+    EXPECT_EQ(run_booter_load(bar0.regs, program, 0x87654321000, 0), ERR_BAD_STATE);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX0), 0x54321000u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX1), 0x876u);
+}
+
+// A booter load that does not halt fails with the run's timeout, waited out in full, though the address's low half is 0
+TEST(nvidia_falcon, booter_load_fails_when_sec2_does_not_halt) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_CPUCTL, ~FALCON_HALTED);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.code_size = 0;
+    program.data_size = 0;
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = run_booter_load(bar0.regs, program, 0x8765400000000, SHORT_TIMEOUT_NS);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RUN_TIME_LIMIT_NS);
+}
+
+// The release tests allocate the message queues' memory and only compare its address, so any profile serves
+static dma::device_profile coherent_card() {
+    return dma::device_profile_test_access::build(64, true);
+}
+
+// The boot memory is freed once SEC2 and the GSP read as stopped, each reset writing its own RM register. Neither
+// falcon reports it is ready, so each of the four full resets waits out the ready timeout, not the memory timeout.
+TEST(nvidia_falcon, boot_memory_is_freed_once_sec2_and_gsp_read_as_stopped) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_CPUCTL, FALCON_HALTED);
+    bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = memory.release_after_sec2_and_gsp_stops(
+        bar0.regs,
+        RTX_3080_BOOT_0,
+        SHORT_TIMEOUT_NS,
+        LONG_MEMORY_TIMEOUT_NS
+    );
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_GE(elapsed, 4 * SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_RM), RTX_3080_BOOT_0);
+    EXPECT_EQ(bar0.read(GSP_FALCON_RM), RTX_3080_BOOT_0);
+    EXPECT_EQ(memory.message_queues_address(), static_cast<uint64_t>(0));
+}
+
+// While SEC2 does not read as stopped, its falcon not halted after its reset or its memories never clearing, the boot
+// memory stays allocated and SEC2's error is returned, though the GSP's stop still runs and waits out its own timeouts
+TEST(nvidia_falcon, boot_memory_stays_allocated_until_sec2_reads_as_stopped) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_CPUCTL, ~FALCON_HALTED);
+    bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t queue_memory_address = memory.message_queues_address();
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = memory.release_after_sec2_and_gsp_stops(
+        bar0.regs,
+        RTX_3080_BOOT_0,
+        SHORT_TIMEOUT_NS,
+        LONG_MEMORY_TIMEOUT_NS
+    );
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_BAD_STATE);
+    EXPECT_GE(elapsed, 4 * SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_RM), RTX_3080_BOOT_0);
+    EXPECT_EQ(bar0.read(GSP_FALCON_RM), RTX_3080_BOOT_0);
+    EXPECT_EQ(memory.message_queues_address(), queue_memory_address);
+
+    bar0.write(SEC2_FALCON_CPUCTL, FALCON_HALTED);
+    bar0.write(SEC2_FALCON_HWCFG2, CLEARING_MEMORIES);
+    bar0.write(GSP_FALCON_HWCFG2, CLEARING_MEMORIES);
+    start = clock::now_ns();
+    rc = memory.release_after_sec2_and_gsp_stops(bar0.regs, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS);
+    elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, 2 * SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(memory.message_queues_address(), queue_memory_address);
+
+    memory.release();
+}
+
+// Once SEC2 reads as stopped, the boot memory still stays allocated while the GSP's falcon is not halted after its
+// reset or its memories never clear
+TEST(nvidia_falcon, boot_memory_stays_allocated_until_gsp_reads_as_stopped_after_sec2) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_CPUCTL, FALCON_HALTED);
+    bar0.write(GSP_FALCON_CPUCTL, ~FALCON_HALTED);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t queue_memory_address = memory.message_queues_address();
+
+    EXPECT_EQ(memory.release_after_sec2_and_gsp_stops(bar0.regs, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
+    EXPECT_EQ(bar0.read(GSP_FALCON_RM), RTX_3080_BOOT_0);
+
+    bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
+    bar0.write(GSP_FALCON_HWCFG2, CLEARING_MEMORIES);
+    uint64_t start = clock::now_ns();
+    int32_t rc = memory.release_after_sec2_and_gsp_stops(bar0.regs, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(memory.message_queues_address(), queue_memory_address);
+
+    memory.release();
 }
 
 // NVIDIA's wait for the ready report, and its default timeout for a GPU in graphics mode rather than compute mode

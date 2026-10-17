@@ -39,8 +39,10 @@ src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
     configuration register with its RISC-V and memory scrubbing fields and the
     RM register, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
     the hardware configuration register with its memory scrubbing field and the
-    RM register, in kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and
-    the two mailbox registers, in falcon.cpp and
+    RM register, in kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the
+    two mailbox registers, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the OS register, in
+    falcon.h, falcon.cpp, nvidia_gpu.h and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -48,6 +50,8 @@ src/common/inc/swref/published/ampere/ga102/dev_falcon_second_pri.h
     the base of SEC2's second register block, the boot ROM's registers for the
     signature's offset in the data, the engine mask and the ucode id, and the
     signature algorithm register with its RSA-3072 value, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the ucode id register's
+    8-bit field, in firmware_files.h, firmware_files.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -257,10 +261,14 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     boot_messages.h, falcon.h, falcon.cpp, nvidia_gpu.h and nvidia_gpu.cpp, that
     it is told by writing 0 to the queue head register of the message's queue
     and that the driver's messages go through the resource manager's queue, in
-    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and
-    the rule that the GSP's falcon is reset as its firmware is unloaded, after a
+    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, the
+    rule that the GSP's falcon is reset as its firmware is unloaded, after a
     wait for the firmware to suspend the GSP's processor, whether or not the
-    wait succeeds, in falcon.h
+    wait succeeds, in falcon.h, and the rules that the firmware is first asked
+    to unload, that the GSP is reset after a wait for it to suspend and that,
+    after the GSP's reset, FWSEC runs to put back the programs the VBIOS runs
+    before an operating system loads and booter unload runs to take protected
+    memory down, in nvidia_gpu.h and nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -306,7 +314,9 @@ src/nvidia/inc/kernel/gpu/gsp/gsp_fw_heap.h
 src/common/sdk/nvidia/inc/nvmisc.h
     the rule that rounding up keeps its operand's width, so the firmware
     heap's share for video memory is rounded up in 32 bits, in
-    protected_memory.cpp
+    protected_memory.cpp, and the rule that a value written through a register's
+    field keeps only as many low bits as the field holds, in firmware_files.h,
+    firmware_files.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
@@ -320,31 +330,45 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
     slot, counted from the program's start, ends before the program's end,
     and that the signature's DMEM address is the slot's offset less the
     data's, in firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, and the rules that
-    booter load's fuse version is the one SEC2's fuse registers record for
-    its ucode id, that with more than one signature the slot receives the one
-    at index count - 1 - v for fuse version v and none is for a version above
-    count - 1, and that a lone signature is chosen whatever the version, in
+    kernel/tests/graphics/nvidia_firmware.test.cpp, the rules that booter load's
+    fuse version is the one SEC2's fuse registers record for its ucode id, that
+    with more than one signature the slot receives the one at index
+    count - 1 - v for fuse version v and none is for a version above count - 1,
+    and that a lone signature is chosen whatever the version, in
     firmware_files.h, firmware_files.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that booter load's
     whole program is copied, in gsp_boot_memory.h, gsp_boot_memory.cpp,
-    nvidia_gpu.h and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp,
-    into one contiguous range of uncached memory, in gsp_boot_memory.h and
-    gsp_boot_memory.cpp, the rule that the chosen signature is written over
-    the copy at the slot, in gsp_boot_memory.h, gsp_boot_memory.cpp,
-    nvidia_gpu.h and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp,
-    the rule that the signatures lie back to back, in gsp_boot_memory.cpp and
+    nvidia_gpu.h and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, into
+    one contiguous range of uncached memory, in gsp_boot_memory.h and
+    gsp_boot_memory.cpp, the rule that the chosen signature is written over the
+    copy at the slot, in gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h
+    and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    signatures lie back to back, in gsp_boot_memory.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
     slot lies at the data's offset plus the signature's DMEM address, in
     gsp_boot_memory.h, gsp_boot_memory.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rule that
-    fuse version v takes the signature at index count - 1 - v, in
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that fuse
+    version v takes the signature at index count - 1 - v, in
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rules that
+    booter load runs from its uncached copy with its code at the code's offset,
+    which is also the code's virtual base, and its data at the data's offset,
+    each loaded from the start of IMEM and DMEM, with the signature's DMEM
+    address as the signature's offset in the data, its engine mask and its ucode
+    id, in firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c
     the rule that SEC2's falcon is reset before booter load runs on it, in
-    falcon.h
+    falcon.h, nvidia_gpu.h and nvidia_gpu.cpp, the rule that booter load is
+    given the address of protected memory's metadata, in nvidia_gpu.cpp, the
+    rule that booter load takes the address of protected memory's metadata in
+    the SEC2 falcon's two mailboxes and fails unless the first reads 0 after it,
+    in falcon.h, falcon.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the rule that the
+    address's low 32 bits go into the first mailbox and its high 32 bits into
+    the second, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c
@@ -510,10 +534,14 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
     reset, resetting its engine, waiting for its memories, stopping when they
     are not cleared, and selecting its RISC-V core with the BRFETCH field set,
     before the messages are queued, in falcon.h, falcon.cpp, nvidia_gpu.h,
-    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and that
-    the address of LibOS's arguments is written to the GSP after the GSP's reset
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that the
+    address of LibOS's arguments is written to the GSP after the GSP's reset
     into its RISC-V core and before booter load runs, in falcon.h and
-    nvidia_gpu.h
+    nvidia_gpu.h, and that once booter load succeeds the GSP falcon's OS
+    register is given the bootloader's app version and the boot fails unless the
+    GSP's RISC-V core then reads as running, in falcon.h, falcon.cpp,
+    nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
@@ -528,9 +556,11 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
     offset in the data, the whole engine mask, the ucode id and the RSA-3072
     algorithm, that the boot vector is the code's virtual base, that a program's
     mailboxes are then written, that the falcon is then started and waited on
-    until it halts, each wait given the default timeout, and that the mailboxes
-    are read after that wait whether or not it succeeds, in falcon.h, falcon.cpp
-    and kernel/tests/graphics/nvidia_falcon.test.cpp
+    until it halts, each wait given the default timeout, that the mailboxes are
+    read after that wait whether or not it succeeds, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and that the ucode id is
+    written through the value field of its register, in firmware_files.h,
+    firmware_files.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/falcon/arch/turing/kernel_falcon_tu102.c
@@ -667,7 +697,8 @@ src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
     firmware_files.h, firmware_files.cpp and
     kernel/tests/graphics/nvidia_firmware.test.cpp, that booter load reads
     the copies of the GSP's firmware, its signature and the bootloader's
-    program in system memory and places the firmware and the bootloader's
+    program in system memory, in firmware_files.h, gsp_boot_memory.h and
+    protected_memory.h, that it places the firmware and the bootloader's
     program in protected memory, in gsp_boot_memory.h and
     protected_memory.h, the order of protected memory's parts below the FRTS
     region and of the unprotected heap below them, in chip.h,
