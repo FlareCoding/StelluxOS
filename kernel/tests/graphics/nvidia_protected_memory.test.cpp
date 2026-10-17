@@ -151,6 +151,7 @@ TEST(nvidia_protected_memory, rtx_3080_frts_region_is_placed) {
     EXPECT_EQ(region.video_memory_size, 0x280000000u);
     EXPECT_EQ(region.vga_workspace_offset, 0x27FF00000u);
     EXPECT_EQ(region.offset, 0x27FE00000u);
+    EXPECT_TRUE(region.has_display);
 }
 
 static constexpr uint32_t VIDEO_MEMORY_MIB = 64;
@@ -161,7 +162,8 @@ static uint32_t vga_workspace_at(uint64_t start) {
     return (static_cast<uint32_t>(start / VGA_WORKSPACE_UNIT_BYTES) << VGA_WORKSPACE_START_SHIFT) | VGA_WORKSPACE_VALID;
 }
 
-// Without a display or a valid workspace register, the VGA workspace takes the last 1 MiB
+// Without a display or a valid workspace register, the VGA workspace takes the last 1 MiB, and the region reports
+// whether the chip has a display
 TEST(nvidia_protected_memory, workspace_without_a_display_or_a_valid_register_takes_the_last_mib) {
     fake_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
@@ -172,11 +174,19 @@ TEST(nvidia_protected_memory, workspace_without_a_display_or_a_valid_register_ta
     ASSERT_EQ(place_frts_region(bar0.regs, region), OK);
     EXPECT_EQ(region.vga_workspace_offset, VIDEO_MEMORY_BYTES - VGA_WORKSPACE_MAX_BYTES);
     EXPECT_EQ(region.offset, VIDEO_MEMORY_BYTES - VGA_WORKSPACE_MAX_BYTES - FRTS_REGION_BYTES);
+    EXPECT_FALSE(region.has_display);
+
+    put_layout(bar0, VIDEO_MEMORY_MIB, 0xFFFFFFFF, last_unit_register);
+    region = {};
+    ASSERT_EQ(place_frts_region(bar0.regs, region), OK);
+    EXPECT_EQ(region.vga_workspace_offset, VIDEO_MEMORY_BYTES - VGA_WORKSPACE_MAX_BYTES);
+    EXPECT_FALSE(region.has_display);
 
     put_layout(bar0, VIDEO_MEMORY_MIB, 0, last_unit_register & ~VGA_WORKSPACE_VALID);
     region = {};
     ASSERT_EQ(place_frts_region(bar0.regs, region), OK);
     EXPECT_EQ(region.vga_workspace_offset, VIDEO_MEMORY_BYTES - VGA_WORKSPACE_MAX_BYTES);
+    EXPECT_TRUE(region.has_display);
 }
 
 // A valid workspace register gives the last 128 KiB wherever it points, as NVIDIA's driver does when more than
@@ -207,6 +217,7 @@ TEST(nvidia_protected_memory, workspace_with_a_valid_register_takes_the_last_128
     frts_region region = {};
     ASSERT_EQ(place_frts_region(bar0.regs, region), OK);
     EXPECT_EQ(region.vga_workspace_offset, rtx_3080_video_memory_bytes - VALID_VGA_WORKSPACE_BYTES);
+    EXPECT_TRUE(region.has_display);
 }
 
 // Every bit of the usable size counts, past 32 bits of bytes
@@ -228,11 +239,12 @@ TEST(nvidia_protected_memory, protected_memory_already_set_up_is_refused) {
     put_layout(bar0, VIDEO_MEMORY_MIB, DISPLAY_DISABLED, 0);
 
     bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0x10);
-    frts_region region = {.video_memory_size = 1, .vga_workspace_offset = 2, .offset = 3};
+    frts_region region = {.video_memory_size = 1, .vga_workspace_offset = 2, .offset = 3, .has_display = true};
     EXPECT_EQ(place_frts_region(bar0.regs, region), ERR_BAD_STATE);
     EXPECT_EQ(region.video_memory_size, 1u);
     EXPECT_EQ(region.vga_workspace_offset, 2u);
     EXPECT_EQ(region.offset, 3u);
+    EXPECT_TRUE(region.has_display);
 
     bar0.write(PROTECTED_MEMORY_UPPER_BOUND, 0x80000000);
     EXPECT_EQ(place_frts_region(bar0.regs, region), ERR_BAD_STATE);
@@ -274,6 +286,7 @@ static constexpr frts_region RTX_3080_FRTS_REGION = {
     .video_memory_size = 0x280000000,
     .vga_workspace_offset = 0x27FF00000,
     .offset = 0x27FE00000,
+    .has_display = true,
 };
 
 static void put_rtx_3080_frts_result(fake_bar0& bar0) {
@@ -369,6 +382,7 @@ TEST(nvidia_protected_memory, lower_bound_uses_its_whole_field) {
         .video_memory_size = 0x10000000000,
         .vga_workspace_offset = 0xFFFFF00000,
         .offset = 0xFFFFE00000,
+        .has_display = true,
     };
 
     bar0.write(PROTECTED_MEMORY_LOWER_BOUND, 0xFFFFE000);
@@ -386,6 +400,7 @@ TEST(nvidia_protected_memory, region_offset_is_compared_in_32_bits) {
         .video_memory_size = 0x80280000000,
         .vga_workspace_offset = 0x8027FF00000,
         .offset = 0x8027FE00000,
+        .has_display = true,
     };
 
     EXPECT_EQ(check_frts_result(bar0.regs, region), ERR_BAD_STATE);
@@ -435,6 +450,7 @@ TEST(nvidia_protected_memory, rtx_3080_layout_with_a_valid_workspace_register) {
         .video_memory_size = 0x280000000,
         .vga_workspace_offset = 0x27FFE0000,
         .offset = 0x27FEE0000,
+        .has_display = true,
     };
 
     protected_memory_layout layout = {};
@@ -470,6 +486,7 @@ static frts_region region_below_last_mib(uint64_t video_memory_size) {
         .video_memory_size = video_memory_size,
         .vga_workspace_offset = video_memory_size - VGA_WORKSPACE_MAX_BYTES,
         .offset = video_memory_size - VGA_WORKSPACE_MAX_BYTES - FRTS_REGION_BYTES,
+        .has_display = true,
     };
 }
 

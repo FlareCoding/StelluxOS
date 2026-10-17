@@ -553,9 +553,12 @@ src/nvidia/src/kernel/gpu_mgr/gpu_mgr.c
     kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, GPU instance 0 for
     the first GPU attached, in gsp_boot_memory.h, gsp_boot_memory.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the CPU
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the CPU
     architecture's code chosen by the architecture the driver is built for,
-    in boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    in boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,
+    and BAR0's window into video memory, 7 MiB in, sent in place of instance
+    memory NVIDIA's driver lacks, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gpu_timeout.c
@@ -843,21 +846,63 @@ src/nvidia/generated/g_kernel_bif_nvoc.h
 
 src/nvidia/arch/nvalloc/unix/src/osinit.c
     the rule that the system information's three addresses are those of the
-    card's registers, its framebuffer and the BAR NVIDIA's driver calls
+    card's registers, its framebuffer BAR and the BAR NVIDIA's driver calls
     instance memory, in boot_messages.h, boot_messages.cpp and
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the boot
-    console's video memory NVIDIA's driver reserves, in boot_messages.cpp
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the video memory
+    NVIDIA's driver reserves for a boot console before the GSP's firmware runs,
+    none for a chip whose fuses disable its display, else the bytes of a console
+    it finds on the card rounded up to 64 KiB, or 256 KiB when those come to 0
+    and it does not know that the card booted through UEFI, in boot_messages.h,
+    boot_messages.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1999-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 kernel-open/nvidia/nv-pci.c
-    the rule that NVIDIA's driver numbers only the valid BARs that hold
-    memory, in boot_messages.h and nvidia_gpu.cpp
+    the rules that NVIDIA's driver keeps a card whose BARs other than BAR0 are
+    not valid and numbers only the valid BARs that hold memory, so that without
+    BAR1 its framebuffer BAR is BAR3 and it has no instance memory, in
+    boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 kernel-open/common/inc/nv.h
-    NVIDIA's index of instance memory among those BARs, in boot_messages.h
-    and nvidia_gpu.cpp
+    NVIDIA's indexes of its framebuffer BAR and instance memory among the valid
+    BARs that hold memory, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the two places in
+    the card's BARs where NVIDIA's driver looks for a boot console (the start of
+    its framebuffer BAR, where a UEFI display driver sets the console up, and 16
+    MiB into instance memory, where the VBIOS sets it up), in boot_messages.h,
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1999-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/nvidia/nv.c
+    the rule that a boot console takes its height times its pitch in bytes when
+    it lies where nv.h places it, and 0 bytes anywhere else, as NVIDIA's driver
+    finds it through a registered framebuffer or the boot screen's information,
+    in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that NVIDIA's driver
+    keeps 16 bits of the height and of the pitch, in boot_messages.h and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that NVIDIA's driver
+    keeps only the low 32 bits of a boot console's address on a host whose
+    kernel gives it no more, in boot_messages.h, and that on an aarch64 host
+    whose kernel withholds the boot screen's information from it, NVIDIA's
+    driver takes the size of the whole memory range the host's framebuffer
+    driver claims, in boot_messages.h
+    SPDX-FileCopyrightText: Copyright (c) 1999-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_gpu_nvoc.c
+    the rule that NVIDIA's driver starts out not knowing that the card booted
+    through UEFI, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gpu_gspclient.c
+    the rule that NVIDIA's driver learns from the GSP's firmware whether the
+    card booted through UEFI, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/virtualization/hypervisor/hypervisor.c
     the rule that the hypervisor type stays unknown when NVIDIA's driver
@@ -865,8 +910,9 @@ src/nvidia/src/kernel/virtualization/hypervisor/hypervisor.c
     kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c and
-rpc_global_enums.h the package's COPYING, carries this permission notice:
+Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
+g_gpu_nvoc.c and rpc_global_enums.h the package's COPYING, carries this
+permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),

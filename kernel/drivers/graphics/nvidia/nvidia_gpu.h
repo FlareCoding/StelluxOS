@@ -63,12 +63,16 @@ namespace drivers {
  * of protected memory goes. Bring-up next queues in the command queue the two
  * messages NVIDIA's driver sends before the GSP starts (the system information
  * and the registry, here with no entry), as `nvidia::queue_boot_messages`
- * describes. Bring-up then resets the GSP into its RISC-V core, tells the
- * firmware once that both messages wait and writes the address of LibOS's
- * arguments into the GSP falcon's two mailbox registers. NVIDIA's driver does
- * these before booter load too, but resets the GSP before queueing the
- * messages and tells the firmware after each. Bring-up stops there, so when
- * every step succeeds, `attach()` declines as well.
+ * describes. The system information says how much video memory the firmware
+ * must leave alone for a boot console (a boot framebuffer that may still be
+ * drawn in), as `nvidia::boot_console_bytes` works it out from the card's
+ * BARs, the boot framebuffer `g_boot_info` records and whether the chip's
+ * fuses disable its display. Bring-up then resets the GSP into its RISC-V
+ * core, tells the firmware once that both messages wait and writes the address
+ * of LibOS's arguments into the GSP falcon's two mailbox registers. NVIDIA's
+ * driver does these before booter load too, but resets the GSP before queueing
+ * the messages and tells the firmware after each. Bring-up stops there, so
+ * when every step succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed

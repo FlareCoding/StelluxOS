@@ -781,6 +781,7 @@ static constexpr frts_region METADATA_REGION = {
     .video_memory_size    = 0x280000000,
     .vga_workspace_offset = 0x27FFE0000,
     .offset               = 0x27FEE0000,
+    .has_display          = true,
 };
 
 static constexpr uint64_t METADATA_VGA_WORKSPACE_BYTES = 0x20000;
