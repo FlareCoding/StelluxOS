@@ -83,7 +83,7 @@ int32_t wait_for_boot_firmware(const registers& regs, uint64_t timeout_ns) {
     while (true) {
         bool is_readable = (regs.read(BOOT_PROGRESS_READ_PROTECTION) & READABLE_AT_LEVEL_0) != 0;
         uint32_t progress = is_readable ? regs.read(BOOT_PROGRESS) & BOOT_PROGRESS_MASK : 0;
-        bool is_halted = is_gsp_falcon_halted(regs);
+        bool is_halted = is_falcon_halted(regs, falcon_id::gsp);
         bool is_complete = progress == BOOT_PROGRESS_COMPLETE;
         if (is_complete && is_halted) {
             return OK;

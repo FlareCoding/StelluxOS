@@ -658,7 +658,7 @@ int32_t gsp_boot_memory::release_after_gsp_stop(
     uint64_t ready_timeout_ns,
     uint64_t timeout_ns
 ) {
-    int32_t rc = stop_gsp(regs, boot0, ready_timeout_ns, timeout_ns);
+    int32_t rc = stop_falcon(regs, falcon_id::gsp, boot0, ready_timeout_ns, timeout_ns);
     if (rc != OK) {
         return rc;
     }

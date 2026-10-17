@@ -145,9 +145,9 @@ namespace drivers {
  * The decoding stays on because the boot framebuffer may be in this card's
  * memory, which the CPU reaches only while memory decoding is on.
  * From the first reset of the GSP's falcon on, whether `attach()` declines or
- * fails, `detach()` resets the GSP's falcon again with `nvidia::stop_gsp` and
- * frees all of the GSP's boot memory once the falcon reads as halted and the
- * RISC-V core as not running, leaving the falcon core selected. `detach()`
+ * fails, `detach()` resets the GSP's falcon again with `nvidia::stop_falcon`
+ * and frees all of the GSP's boot memory once the falcon reads as halted and
+ * the RISC-V core as not running, leaving the falcon core selected. `detach()`
  * fails, keeping all of the boot memory allocated for good, when that reset
  * times out or the falcon then does not read as halted or the RISC-V core
  * reads as running.

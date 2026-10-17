@@ -29,25 +29,24 @@ src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the control
     register's start and alias enable bits, its alias with the start bit, the
     boot vector register, and the DMA engine's control, base, memory offset,
-    command, offset and second base registers, with the command's secure, IMEM
-    and 256-byte size fields, in falcon.cpp and
+    command, offset and second base registers, with the command's secure, IMEM,
+    256-byte size and idle fields, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, the memory offset's 24-bit
     field and the second base's 9-bit field, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, the command's idle and
-    context fields, in falcon.cpp, the DMA control register's field requiring
-    a bound address space, in
-    kernel/tests/graphics/nvidia_falcon.test.cpp, the hardware configuration
-    register with its RISC-V and memory scrubbing fields and the RM register, in
-    falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, the hardware
-    configuration register with its memory scrubbing field and the RM register,
-    in kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the two
-    mailbox registers, in falcon.cpp
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the command's context field,
+    in falcon.cpp, the DMA control register's field requiring a bound address
+    space, in kernel/tests/graphics/nvidia_falcon.test.cpp, the hardware
+    configuration register with its RISC-V and memory scrubbing fields and the
+    RM register, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
+    the hardware configuration register with its memory scrubbing field and the
+    RM register, in kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and
+    the two mailbox registers, in falcon.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_second_pri.h
-    the boot ROM's registers for the signature's offset in the data, the
-    engine mask and the ucode id, and the signature algorithm register with
-    its RSA-3072 value, in falcon.cpp and
+    the base of SEC2's second register block, the boot ROM's registers for the
+    signature's offset in the data, the engine mask and the ucode id, and the
+    signature algorithm register with its RSA-3072 value, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -97,6 +96,16 @@ src/common/inc/swref/published/ampere/ga102/dev_riscv_pri.h
     the base of the GSP's second register block, the RISC-V boot control
     register with its valid, core select and BRFETCH fields, and the RISC-V
     control register with its active field, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_sec_pri.h
+    the base of SEC2's registers and SEC2's engine register with its reset
+    field, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_sec_addendum.h
+    the base of SEC2's memory interface registers, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -192,7 +201,7 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
     the full fence before each received message, in message_queues.cpp, booter
     load's role, run on SEC2 to load, verify with the signature and boot the
-    GSP's firmware in protected memory, in chip.h, firmware_files.h,
+    GSP's firmware in protected memory, in chip.h, falcon.h, firmware_files.h,
     gsp_boot_memory.h, protected_memory.h and nvidia_gpu.h, the radix3 page
     table's three levels of 64-bit addresses, level 0 a single page listing
     the pages of level 1, level 1 listing those of level 2 and level 2 listing
@@ -332,6 +341,11 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c
+    the rule that SEC2's falcon is reset before booter load runs on it, in
+    falcon.h
+    SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c
     the rule that the boot firmware has finished once its progress register
     is readable and reads complete and the GSP is halted, and the time it is
@@ -458,6 +472,22 @@ src/nvidia/src/kernel/gpu/sec2/arch/ampere/kernel_sec2_ga100.c
     0, in falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/nvidia/src/kernel/gpu/sec2/arch/ampere/kernel_sec2_ga102.c
+    the rules that SEC2's falcon registers count from the base of SEC2's
+    registers, that its RISC-V core's and boot ROM's registers count from SEC2's
+    second register block and its memory interface's registers from SEC2's
+    memory interface base, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and that SEC2's falcon has no
+    bit in the chip's engine enable register, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/sec2/arch/turing/kernel_sec2_tu102.c
+    the rule that SEC2's engine is reset by setting and then clearing its reset
+    field, keeping the register's other bits and reading it after each write, in
+    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
     the rules that the GSP's falcon registers count from the base of the GSP's
     registers, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp,
@@ -486,18 +516,17 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
-    the rules that a program for the GSP's falcon is loaded with the memory
-    interface's transfer setup 0 set to physical system memory, its code
-    copied into IMEM marked secure and then its data into DMEM, 256 bytes at a
-    time with the address in 256-byte units split over the two base registers
-    and a wait for the DMA engine to go idle after each block, the code read
-    from below the program by its virtual base with its offsets counting from
-    that base, and the data read from its own start with its offsets counting
-    from 0, that the boot ROM is then given the signature's offset in the
-    data, the engine mask, the ucode id and the RSA-3072 algorithm, that the
-    boot vector is the code's virtual base, and that the falcon is then
-    started and waited on until it halts, each wait given the default
-    timeout, in falcon.h, falcon.cpp and
+    the rules that a program for a falcon is loaded with the memory interface's
+    transfer setup 0 set to physical system memory, its code copied into IMEM
+    marked secure and then its data into DMEM, 256 bytes at a time with the
+    address in 256-byte units split over the two base registers and a wait for
+    the DMA engine to go idle after each block, the code read from below the
+    program by its virtual base with its offsets counting from that base, and
+    the data read from its own start with its offsets counting from 0, that the
+    boot ROM is then given the signature's offset in the data, the engine mask,
+    the ucode id and the RSA-3072 algorithm, that the boot vector is the code's
+    virtual base, and that the falcon is then started and waited on until it
+    halts, each wait given the default timeout, in falcon.h, falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

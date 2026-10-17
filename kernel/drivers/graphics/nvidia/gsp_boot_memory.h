@@ -319,20 +319,20 @@ public:
     void release();
 
     /**
-     * @brief Stop the GSP with `stop_gsp`, then free all of the memory as
+     * @brief Stop the GSP with `stop_falcon`, then free all of the memory as
      * `release` does, but only once the GSP reads as stopped, since a GSP not
      * confirmed stopped may still read or write any of it. The stop spins on
-     * the calling CPU, as `stop_gsp` describes. The caller must have confirmed
-     * that SEC2 is stopped if it was given any of the memory's addresses,
-     * since only the GSP is stopped here.
-     * @param regs A view of BAR0, as for `stop_gsp`.
+     * the calling CPU, as `stop_falcon` describes. The caller must have
+     * confirmed that SEC2 is stopped if it was given any of the memory's
+     * addresses, since only the GSP is stopped here.
+     * @param regs A view of BAR0, as for `stop_falcon`.
      * @param boot0 The chip's `PMC_BOOT_0` value, for the reset.
      * @param ready_timeout_ns How long each wait for the ready report may
-     * take, as for `stop_gsp`.
+     * take, as for `stop_falcon`.
      * @param timeout_ns How long each wait for the memories or the core
-     * selection may take, as for `stop_gsp`.
+     * selection may take, as for `stop_falcon`.
      * @return `OK` with all of the memory freed, or the `ERR_TIMEOUT` or
-     * `ERR_BAD_STATE` that `stop_gsp` returns, with all of the memory kept
+     * `ERR_BAD_STATE` that `stop_falcon` returns, with all of the memory kept
      * allocated. The cause is logged.
      */
     int32_t release_after_gsp_stop(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns);

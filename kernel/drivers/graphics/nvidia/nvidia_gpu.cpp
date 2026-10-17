@@ -304,7 +304,13 @@ int32_t nvidia_gpu_driver::attach() {
     m_must_stop_gsp = true;
     m_boot0 = boot0;
 
-    rc = nvidia::reset_gsp_falcon(regs, boot0, nvidia::FALCON_READY_TIMEOUT_NS, nvidia::FALCON_TIMEOUT_NS);
+    rc = nvidia::reset_falcon(
+        regs,
+        nvidia::falcon_id::gsp,
+        boot0,
+        nvidia::FALCON_READY_TIMEOUT_NS,
+        nvidia::FALCON_TIMEOUT_NS
+    );
     if (rc != nvidia::OK) {
         RUN_ELEVATED(dma::free_pages(fwsec_image));
         return rc;
@@ -316,7 +322,7 @@ int32_t nvidia_gpu_driver::attach() {
     // After a timeout the falcon may still read the copy, so the GSP's boot memory keeps it until `detach()` confirms
     // the GSP stopped
     nvidia::falcon_program program = nvidia::describe_fwsec_program(fwsec, fwsec_image.phys, fwsec_image.cached);
-    rc = nvidia::run_gsp_falcon_program(regs, program, nvidia::FALCON_TIMEOUT_NS);
+    rc = nvidia::run_falcon_program(regs, nvidia::falcon_id::gsp, program, nvidia::FALCON_TIMEOUT_NS);
     if (rc != nvidia::OK) {
         m_boot_memory.keep_fwsec_copy(fwsec_image);
         return rc;

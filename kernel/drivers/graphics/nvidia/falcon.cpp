@@ -8,29 +8,56 @@
 
 namespace drivers::nvidia {
 
-// The base of the GSP's falcon registers, and of its second register block, which holds its RISC-V core's registers
-constexpr uint32_t GSP_FALCON_BASE  = 0x110000;
-constexpr uint32_t GSP_FALCON2_BASE = 0x111000;
+namespace {
 
-// The GSP's engine register, whose bit 0 holds the GSP in reset while set, and the reads of it NVIDIA's driver makes
+// Where a falcon's registers lie in BAR0, and its engine's name for log lines
+struct falcon_layout {
+    uint32_t    base;                // the falcon's own block
+    uint32_t    second_base;         // the block holding its RISC-V core's and boot ROM's registers
+    uint32_t    fbif_base;           // its memory interface's block
+    uint32_t    engine;              // its engine register
+    uint32_t    ucode_version_fuses; // the first fuse register recording a version of its programs, for ucode id 1
+    const char* name;                // its engine's name, for log lines
+};
+
+} // namespace
+
+constexpr falcon_layout GSP_FALCON = {
+    .base = 0x110000,
+    .second_base = 0x111000,
+    .fbif_base = 0x110600,
+    .engine = 0x1103C0,
+    .ucode_version_fuses = 0x8241C0,
+    .name = "the GSP",
+};
+
+constexpr falcon_layout SEC2_FALCON = {
+    .base = 0x840000,
+    .second_base = 0x841000,
+    .fbif_base = 0x840600,
+    .engine = 0x8403C0,
+    .ucode_version_fuses = 0x824140,
+    .name = "SEC2",
+};
+
+// Bit 0 of a falcon's engine register holds the falcon in reset while set, and NVIDIA's driver reads the register
 // after each write so the reset signal propagates
-constexpr uint32_t GSP_FALCON_ENGINE       = 0x1103C0;
 constexpr uint32_t ENGINE_RESET            = 0x1;
 constexpr uint32_t RESET_PROPAGATION_READS = 10;
 
-// The falcon's hardware configuration register: bit 10 set when the GSP has a RISC-V core, bit 12 set while the
+// The falcon's hardware configuration register: bit 10 set when the falcon has a RISC-V core, bit 12 set while the
 // falcon clears its memories after a reset, bit 31 set once the falcon is ready for a reset
-constexpr uint32_t GSP_FALCON_HWCFG2 = GSP_FALCON_BASE + 0x0F4;
+constexpr uint32_t FALCON_HWCFG2     = 0x0F4;
 constexpr uint32_t HAS_RISCV_CORE    = 0x400;
 constexpr uint32_t CLEARING_MEMORIES = 0x1000;
 constexpr uint32_t READY_FOR_RESET   = 0x80000000;
 
 // The falcon register NVIDIA's driver writes the chip's `PMC_BOOT_0` value to as a reset ends
-constexpr uint32_t GSP_FALCON_RM = GSP_FALCON_BASE + 0x084;
+constexpr uint32_t FALCON_RM = 0x084;
 
-// The GSP falcon's two mailbox registers, which NVIDIA's driver writes the address of LibOS's arguments into
-constexpr uint32_t GSP_FALCON_MAILBOX0 = GSP_FALCON_BASE + 0x040;
-constexpr uint32_t GSP_FALCON_MAILBOX1 = GSP_FALCON_BASE + 0x044;
+// The falcon's two mailbox registers. NVIDIA's driver writes the address of LibOS's arguments into the GSP's.
+constexpr uint32_t FALCON_MAILBOX0 = 0x040;
+constexpr uint32_t FALCON_MAILBOX1 = 0x044;
 
 // The first of the GSP's eight queue head registers, which NVIDIA's driver writes 0 to after each message it queues
 // for the GSP's resource manager
@@ -38,7 +65,7 @@ constexpr uint32_t GSP_QUEUE_HEAD0 = 0x110C00;
 
 // The RISC-V core's boot control register: bit 4 set while the RISC-V core is selected over the falcon core, bit 0
 // set once a selection has taken effect, and the value NVIDIA's driver writes to select the falcon core
-constexpr uint32_t GSP_RISCV_BCR_CTRL  = GSP_FALCON2_BASE + 0x668;
+constexpr uint32_t RISCV_BCR_CTRL      = 0x668;
 constexpr uint32_t RISCV_CORE_SELECTED = 0x10;
 constexpr uint32_t CORE_SELECT_VALID   = 0x1;
 constexpr uint32_t SELECT_FALCON_CORE  = 0x0;
@@ -48,40 +75,39 @@ constexpr uint32_t SELECT_FALCON_CORE  = 0x0;
 constexpr uint32_t SELECT_RISCV_CORE = 0x111;
 
 // The RISC-V core's control register, whose bit 7 is set while the core is running
-constexpr uint32_t GSP_RISCV_CPUCTL = GSP_FALCON2_BASE + 0x388;
-constexpr uint32_t RISCV_ACTIVE     = 0x80;
+constexpr uint32_t RISCV_CPUCTL = 0x388;
+constexpr uint32_t RISCV_ACTIVE = 0x80;
 
 // The falcon's control register: writing bit 1 starts the falcon, bit 4 is set while it is halted, and while bit 6
 // is set the falcon is started through the register's alias instead
-constexpr uint32_t GSP_FALCON_CPUCTL       = GSP_FALCON_BASE + 0x100;
-constexpr uint32_t GSP_FALCON_CPUCTL_ALIAS = GSP_FALCON_BASE + 0x130;
-constexpr uint32_t START_FALCON            = 0x2;
-constexpr uint32_t FALCON_HALTED           = 0x10;
-constexpr uint32_t STARTS_THROUGH_ALIAS    = 0x40;
+constexpr uint32_t FALCON_CPUCTL        = 0x100;
+constexpr uint32_t FALCON_CPUCTL_ALIAS  = 0x130;
+constexpr uint32_t START_FALCON         = 0x2;
+constexpr uint32_t FALCON_HALTED        = 0x10;
+constexpr uint32_t STARTS_THROUGH_ALIAS = 0x40;
 
 // Where the falcon starts running, as a virtual address of its code
-constexpr uint32_t GSP_FALCON_BOOTVEC = GSP_FALCON_BASE + 0x104;
+constexpr uint32_t FALCON_BOOTVEC = 0x104;
 
 // The DMA engine's control register, cleared so a copy needs no address space bound to the falcon
-constexpr uint32_t GSP_FALCON_DMACTL = GSP_FALCON_BASE + 0x10C;
+constexpr uint32_t FALCON_DMACTL = 0x10C;
 
 // The DMA engine's copy registers. A copy takes the system memory address in 256-byte units, split over two
 // registers, then for each block the offset in IMEM or DMEM, the offset added to the address, and the command.
-constexpr uint32_t GSP_FALCON_DMATRFBASE   = GSP_FALCON_BASE + 0x110;
-constexpr uint32_t GSP_FALCON_DMATRFMOFFS  = GSP_FALCON_BASE + 0x114;
-constexpr uint32_t GSP_FALCON_DMATRFCMD    = GSP_FALCON_BASE + 0x118;
-constexpr uint32_t GSP_FALCON_DMATRFFBOFFS = GSP_FALCON_BASE + 0x11C;
-constexpr uint32_t GSP_FALCON_DMATRFBASE1  = GSP_FALCON_BASE + 0x128;
-constexpr uint32_t DMA_BLOCK_BYTES         = 256;
-constexpr uint32_t DMA_ADDRESS_SHIFT       = 8;
-constexpr uint32_t DMA_ADDRESS_HIGH_MASK   = 0x1FF;
-constexpr uint32_t DMA_MEMORY_OFFSET_MASK  = 0xFFFFFF;
+constexpr uint32_t FALCON_DMATRFBASE      = 0x110;
+constexpr uint32_t FALCON_DMATRFMOFFS     = 0x114;
+constexpr uint32_t FALCON_DMATRFCMD       = 0x118;
+constexpr uint32_t FALCON_DMATRFFBOFFS    = 0x11C;
+constexpr uint32_t FALCON_DMATRFBASE1     = 0x128;
+constexpr uint32_t DMA_BLOCK_BYTES        = 256;
+constexpr uint32_t DMA_ADDRESS_SHIFT      = 8;
+constexpr uint32_t DMA_ADDRESS_HIGH_MASK  = 0x1FF;
+constexpr uint32_t DMA_MEMORY_OFFSET_MASK = 0xFFFFFF;
 
 // The falcon's memory interface: bit 7 of its control lets the DMA engine use physical addresses with no address space
 // bound. Its first transfer register is transfer setup 0: the target in bits 1:0, and bit 2 for physical addresses.
-constexpr uint32_t GSP_FBIF_BASE                    = 0x110600;
-constexpr uint32_t GSP_FBIF_TRANSCFG0               = GSP_FBIF_BASE + 0x000;
-constexpr uint32_t GSP_FBIF_CTL                     = GSP_FBIF_BASE + 0x024;
+constexpr uint32_t FBIF_TRANSCFG0                   = 0x000;
+constexpr uint32_t FBIF_CTL                         = 0x024;
 constexpr uint32_t ALLOW_PHYSICAL_WITHOUT_CONTEXT   = 0x80;
 constexpr uint32_t TRANSFER_TARGET_MASK             = 0x3;
 constexpr uint32_t TARGET_COHERENT_SYSTEM_MEMORY    = 0x1;
@@ -101,19 +127,27 @@ constexpr uint32_t DMA_BLOCK_TO_DMEM        = DMA_256_BYTES;
 
 // The boot ROM's registers in the second register block: the signature's offset in the data, the engine mask, the
 // ucode id, and the signature's algorithm, RSA-3072
-constexpr uint32_t GSP_FALCON2_BROM_PARAADDR0     = GSP_FALCON2_BASE + 0x210;
-constexpr uint32_t GSP_FALCON2_BROM_ENGIDMASK     = GSP_FALCON2_BASE + 0x19C;
-constexpr uint32_t GSP_FALCON2_BROM_CURR_UCODE_ID = GSP_FALCON2_BASE + 0x198;
-constexpr uint32_t GSP_FALCON2_MOD_SEL            = GSP_FALCON2_BASE + 0x180;
-constexpr uint32_t RSA_3072                       = 0x1;
+constexpr uint32_t FALCON2_BROM_PARAADDR0     = 0x210;
+constexpr uint32_t FALCON2_BROM_ENGIDMASK     = 0x19C;
+constexpr uint32_t FALCON2_BROM_CURR_UCODE_ID = 0x198;
+constexpr uint32_t FALCON2_MOD_SEL            = 0x180;
+constexpr uint32_t RSA_3072                   = 0x1;
 
-// The first fuse register recording a version of a program each falcon runs, the one for ucode id 1
-constexpr uint32_t GSP_UCODE_VERSION_FUSES   = 0x8241C0;
-constexpr uint32_t SEC2_UCODE_VERSION_FUSES  = 0x824140;
+// The fuse registers recording the versions of a falcon's programs, one for each ucode id from 1
 constexpr uint32_t UCODE_VERSION_FUSE_STRIDE = 4; // bytes from one fuse register to the next
 constexpr uint32_t UCODE_VERSION_FUSE_COUNT  = 16;
 
 constexpr uint64_t NS_PER_MS = 1000000;
+
+// Without a default, the compiler flags a falcon added to `falcon_id` but missing here
+static const falcon_layout& layout_of(falcon_id falcon) {
+    switch (falcon) {
+        case falcon_id::gsp:
+            return GSP_FALCON;
+        case falcon_id::sec2:
+            return SEC2_FALCON;
+    }
+}
 
 // Spins until the `bits` of the register at `offset` read as `value` or `timeout_ns` passes, reading it at least
 // once, and returns whether they did
@@ -133,26 +167,27 @@ static bool wait_for_bits(const registers& regs, uint32_t offset, uint32_t bits,
     }
 }
 
-static void let_reset_propagate(const registers& regs) {
+static void let_reset_propagate(const registers& regs, const falcon_layout& layout) {
     for (uint32_t i = 0; i < RESET_PROPAGATION_READS; i++) {
-        (void)regs.read(GSP_FALCON_ENGINE);
+        (void)regs.read(layout.engine);
     }
 }
 
-static void pulse_engine_reset(registers& regs) {
-    uint32_t engine = regs.read(GSP_FALCON_ENGINE);
-    regs.write(GSP_FALCON_ENGINE, engine | ENGINE_RESET);
-    let_reset_propagate(regs);
+static void pulse_engine_reset(registers& regs, const falcon_layout& layout) {
+    uint32_t engine = regs.read(layout.engine);
+    regs.write(layout.engine, engine | ENGINE_RESET);
+    let_reset_propagate(regs, layout);
 
-    engine = regs.read(GSP_FALCON_ENGINE);
-    regs.write(GSP_FALCON_ENGINE, engine & ~ENGINE_RESET);
-    let_reset_propagate(regs);
+    engine = regs.read(layout.engine);
+    regs.write(layout.engine, engine & ~ENGINE_RESET);
+    let_reset_propagate(regs, layout);
 }
 
-static int32_t wait_for_cleared_memories(const registers& regs, uint64_t timeout_ns) {
-    if (!wait_for_bits(regs, GSP_FALCON_HWCFG2, CLEARING_MEMORIES, 0, timeout_ns)) {
+static int32_t wait_for_cleared_memories(const registers& regs, const falcon_layout& layout, uint64_t timeout_ns) {
+    if (!wait_for_bits(regs, layout.base + FALCON_HWCFG2, CLEARING_MEMORIES, 0, timeout_ns)) {
         log::error(
-            "nvidia: the GSP's falcon did not finish clearing its memories within %lu ms",
+            "nvidia: %s's falcon did not finish clearing its memories within %lu ms",
+            layout.name,
             timeout_ns / NS_PER_MS
         );
         return ERR_TIMEOUT;
@@ -161,16 +196,22 @@ static int32_t wait_for_cleared_memories(const registers& regs, uint64_t timeout
     return OK;
 }
 
-static int32_t select_falcon_core(registers& regs, uint64_t timeout_ns) {
-    bool is_riscv_selected = has_gsp_riscv_core(regs) && (regs.read(GSP_RISCV_BCR_CTRL) & RISCV_CORE_SELECTED) != 0;
+static bool has_riscv_core(const registers& regs, const falcon_layout& layout) {
+    return (regs.read(layout.base + FALCON_HWCFG2) & HAS_RISCV_CORE) != 0;
+}
+
+static int32_t select_falcon_core(registers& regs, const falcon_layout& layout, uint64_t timeout_ns) {
+    uint32_t boot_control = layout.second_base + RISCV_BCR_CTRL;
+    bool is_riscv_selected = has_riscv_core(regs, layout) && (regs.read(boot_control) & RISCV_CORE_SELECTED) != 0;
     if (!is_riscv_selected) {
         return OK;
     }
 
-    regs.write(GSP_RISCV_BCR_CTRL, SELECT_FALCON_CORE);
-    if (!wait_for_bits(regs, GSP_RISCV_BCR_CTRL, CORE_SELECT_VALID, CORE_SELECT_VALID, timeout_ns)) {
+    regs.write(boot_control, SELECT_FALCON_CORE);
+    if (!wait_for_bits(regs, boot_control, CORE_SELECT_VALID, CORE_SELECT_VALID, timeout_ns)) {
         log::error(
-            "nvidia: the GSP did not switch from its RISC-V core to its falcon core within %lu ms",
+            "nvidia: %s did not switch from its RISC-V core to its falcon core within %lu ms",
+            layout.name,
             timeout_ns / NS_PER_MS
         );
         return ERR_TIMEOUT;
@@ -179,60 +220,78 @@ static int32_t select_falcon_core(registers& regs, uint64_t timeout_ns) {
     return OK;
 }
 
-static int32_t reset_engine(registers& regs, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
+static int32_t reset_engine(
+    registers& regs,
+    const falcon_layout& layout,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns
+) {
     // The ready bit may never be set, so the reset goes on without it, as in NVIDIA's driver
-    (void)wait_for_bits(regs, GSP_FALCON_HWCFG2, READY_FOR_RESET, READY_FOR_RESET, ready_timeout_ns);
-    pulse_engine_reset(regs);
+    (void)wait_for_bits(regs, layout.base + FALCON_HWCFG2, READY_FOR_RESET, READY_FOR_RESET, ready_timeout_ns);
+    pulse_engine_reset(regs, layout);
 
-    return wait_for_cleared_memories(regs, timeout_ns);
+    return wait_for_cleared_memories(regs, layout, timeout_ns);
 }
 
-static int32_t reset_in_full(registers& regs, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
-    int32_t rc = reset_engine(regs, ready_timeout_ns, timeout_ns);
+static int32_t reset_in_full(
+    registers& regs,
+    const falcon_layout& layout,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns
+) {
+    int32_t rc = reset_engine(regs, layout, ready_timeout_ns, timeout_ns);
     if (rc != OK) {
         return rc;
     }
 
-    return select_falcon_core(regs, timeout_ns);
+    return select_falcon_core(regs, layout, timeout_ns);
 }
 
-int32_t reset_gsp_falcon(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
-    int32_t rc = reset_in_full(regs, ready_timeout_ns, timeout_ns);
+int32_t reset_falcon(
+    registers& regs,
+    falcon_id falcon,
+    uint32_t boot0,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns
+) {
+    const falcon_layout& layout = layout_of(falcon);
+
+    int32_t rc = reset_in_full(regs, layout, ready_timeout_ns, timeout_ns);
     if (rc != OK) {
         return rc;
     }
 
-    rc = reset_in_full(regs, ready_timeout_ns, timeout_ns);
+    rc = reset_in_full(regs, layout, ready_timeout_ns, timeout_ns);
     if (rc != OK) {
         return rc;
     }
 
-    rc = select_falcon_core(regs, timeout_ns);
+    rc = select_falcon_core(regs, layout, timeout_ns);
     if (rc != OK) {
         return rc;
     }
 
-    rc = wait_for_cleared_memories(regs, timeout_ns);
+    rc = wait_for_cleared_memories(regs, layout, timeout_ns);
     if (rc != OK) {
         return rc;
     }
 
-    regs.write(GSP_FALCON_RM, boot0);
+    regs.write(layout.base + FALCON_RM, boot0);
 
     return OK;
 }
 
 bool has_gsp_riscv_core(const registers& regs) {
-    return (regs.read(GSP_FALCON_HWCFG2) & HAS_RISCV_CORE) != 0;
+    return has_riscv_core(regs, GSP_FALCON);
 }
 
 int32_t reset_gsp_into_riscv(registers& regs, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
-    int32_t rc = reset_engine(regs, ready_timeout_ns, timeout_ns);
+    int32_t rc = reset_engine(regs, GSP_FALCON, ready_timeout_ns, timeout_ns);
     if (rc != OK) {
         return rc;
     }
 
-    regs.write(GSP_RISCV_BCR_CTRL, SELECT_RISCV_CORE);
+    regs.write(GSP_FALCON.second_base + RISCV_BCR_CTRL, SELECT_RISCV_CORE);
 
     return OK;
 }
@@ -242,31 +301,34 @@ void notify_gsp_of_queued_messages(registers& regs) {
 }
 
 void write_libos_arguments_address(registers& regs, uint64_t address) {
-    regs.write(GSP_FALCON_MAILBOX0, static_cast<uint32_t>(address));
-    regs.write(GSP_FALCON_MAILBOX1, static_cast<uint32_t>(address >> 32));
+    regs.write(GSP_FALCON.base + FALCON_MAILBOX0, static_cast<uint32_t>(address));
+    regs.write(GSP_FALCON.base + FALCON_MAILBOX1, static_cast<uint32_t>(address >> 32));
 }
 
-bool is_gsp_falcon_halted(const registers& regs) {
-    return (regs.read(GSP_FALCON_CPUCTL) & FALCON_HALTED) != 0;
+bool is_falcon_halted(const registers& regs, falcon_id falcon) {
+    return (regs.read(layout_of(falcon).base + FALCON_CPUCTL) & FALCON_HALTED) != 0;
 }
 
-static bool is_gsp_riscv_active(const registers& regs) {
-    return (regs.read(GSP_RISCV_CPUCTL) & RISCV_ACTIVE) != 0;
+static bool is_riscv_active(const registers& regs, const falcon_layout& layout) {
+    return (regs.read(layout.second_base + RISCV_CPUCTL) & RISCV_ACTIVE) != 0;
 }
 
-int32_t stop_gsp(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
-    int32_t rc = reset_gsp_falcon(regs, boot0, ready_timeout_ns, timeout_ns);
+int32_t stop_falcon(registers& regs, falcon_id falcon, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
+    const falcon_layout& layout = layout_of(falcon);
+
+    int32_t rc = reset_falcon(regs, falcon, boot0, ready_timeout_ns, timeout_ns);
     if (rc != OK) {
         return rc;
     }
 
-    if (!is_gsp_falcon_halted(regs)) {
-        log::error("nvidia: the GSP's falcon does not read as halted after its reset");
+    if (!is_falcon_halted(regs, falcon)) {
+        log::error("nvidia: %s's falcon does not read as halted after its reset", layout.name);
         return ERR_BAD_STATE;
     }
 
-    if (is_gsp_riscv_active(regs)) {
-        log::error("nvidia: the GSP's RISC-V core reads as running after its reset");
+    bool is_riscv_running = has_riscv_core(regs, layout) && is_riscv_active(regs, layout);
+    if (is_riscv_running) {
+        log::error("nvidia: %s's RISC-V core reads as running after its reset", layout.name);
         return ERR_BAD_STATE;
     }
 
@@ -275,20 +337,21 @@ int32_t stop_gsp(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uin
 
 // Lets the DMA engine read system memory by physical address through transfer setup 0, looking in the CPU's caches
 // only for a cached program
-static void configure_dma(registers& regs, bool is_cached) {
-    uint32_t control = regs.read(GSP_FBIF_CTL) | ALLOW_PHYSICAL_WITHOUT_CONTEXT;
-    regs.write(GSP_FBIF_CTL, control);
-    regs.write(GSP_FALCON_DMACTL, 0);
+static void configure_dma(registers& regs, const falcon_layout& layout, bool is_cached) {
+    uint32_t control = regs.read(layout.fbif_base + FBIF_CTL) | ALLOW_PHYSICAL_WITHOUT_CONTEXT;
+    regs.write(layout.fbif_base + FBIF_CTL, control);
+    regs.write(layout.base + FALCON_DMACTL, 0);
 
     uint32_t target = is_cached ? TARGET_COHERENT_SYSTEM_MEMORY : TARGET_NONCOHERENT_SYSTEM_MEMORY;
-    uint32_t transfer = (regs.read(GSP_FBIF_TRANSCFG0) & ~TRANSFER_TARGET_MASK) | target | PHYSICAL_ADDRESSES;
-    regs.write(GSP_FBIF_TRANSCFG0, transfer);
+    uint32_t transfer = regs.read(layout.fbif_base + FBIF_TRANSCFG0) & ~TRANSFER_TARGET_MASK;
+    regs.write(layout.fbif_base + FBIF_TRANSCFG0, transfer | target | PHYSICAL_ADDRESSES);
 }
 
 // Copies the `bytes` of the program's `part` into IMEM or DMEM from `memory_offset`. Each block is read at `base`
 // plus its offset, which counts from `first_offset`.
 static int32_t copy_blocks(
     registers& regs,
+    const falcon_layout& layout,
     uint64_t base,
     uint32_t first_offset,
     uint32_t memory_offset,
@@ -298,19 +361,19 @@ static int32_t copy_blocks(
     uint64_t timeout_ns
 ) {
     uint64_t base_blocks = base >> DMA_ADDRESS_SHIFT;
-    regs.write(GSP_FALCON_DMATRFBASE, static_cast<uint32_t>(base_blocks));
-    regs.write(GSP_FALCON_DMATRFBASE1, static_cast<uint32_t>(base_blocks >> 32) & DMA_ADDRESS_HIGH_MASK);
+    regs.write(layout.base + FALCON_DMATRFBASE, static_cast<uint32_t>(base_blocks));
+    regs.write(layout.base + FALCON_DMATRFBASE1, static_cast<uint32_t>(base_blocks >> 32) & DMA_ADDRESS_HIGH_MASK);
 
     for (uint64_t copied = 0; copied < bytes; copied += DMA_BLOCK_BYTES) {
         uint32_t block = static_cast<uint32_t>(copied);
-        regs.write(GSP_FALCON_DMATRFMOFFS, (memory_offset + block) & DMA_MEMORY_OFFSET_MASK);
-        regs.write(GSP_FALCON_DMATRFFBOFFS, first_offset + block);
-        regs.write(GSP_FALCON_DMATRFCMD, command);
+        regs.write(layout.base + FALCON_DMATRFMOFFS, (memory_offset + block) & DMA_MEMORY_OFFSET_MASK);
+        regs.write(layout.base + FALCON_DMATRFFBOFFS, first_offset + block);
+        regs.write(layout.base + FALCON_DMATRFCMD, command);
 
-        if (!wait_for_bits(regs, GSP_FALCON_DMATRFCMD, DMA_IDLE, DMA_IDLE, timeout_ns)) {
+        if (!wait_for_bits(regs, layout.base + FALCON_DMATRFCMD, DMA_IDLE, DMA_IDLE, timeout_ns)) {
             log::error(
-                "nvidia: the GSP's falcon did not finish copying the block at byte 0x%X of its program's %s within "
-                "%lu ms",
+                "nvidia: %s's falcon did not finish copying the block at byte 0x%X of its program's %s within %lu ms",
+                layout.name,
                 block,
                 part,
                 timeout_ns / NS_PER_MS
@@ -322,8 +385,10 @@ static int32_t copy_blocks(
     return OK;
 }
 
-int32_t run_gsp_falcon_program(registers& regs, const falcon_program& program, uint64_t timeout_ns) {
-    configure_dma(regs, program.is_cached);
+int32_t run_falcon_program(registers& regs, falcon_id falcon, const falcon_program& program, uint64_t timeout_ns) {
+    const falcon_layout& layout = layout_of(falcon);
+
+    configure_dma(regs, layout, program.is_cached);
 
     // As in NVIDIA's driver, the code's base sits below the program by its virtual base, and its blocks' offsets
     // count from the virtual base, so they are read from the program's start and tagged with their virtual addresses
@@ -332,6 +397,7 @@ int32_t run_gsp_falcon_program(registers& regs, const falcon_program& program, u
 
     int32_t rc = copy_blocks(
         regs,
+        layout,
         code_base,
         program.imem_virtual_base,
         program.imem_physical_base,
@@ -346,6 +412,7 @@ int32_t run_gsp_falcon_program(registers& regs, const falcon_program& program, u
 
     rc = copy_blocks(
         regs,
+        layout,
         data_base,
         0,
         program.dmem_physical_base,
@@ -358,17 +425,18 @@ int32_t run_gsp_falcon_program(registers& regs, const falcon_program& program, u
         return rc;
     }
 
-    regs.write(GSP_FALCON2_BROM_PARAADDR0, program.signature_offset);
-    regs.write(GSP_FALCON2_BROM_ENGIDMASK, program.engine_mask);
-    regs.write(GSP_FALCON2_BROM_CURR_UCODE_ID, program.ucode_id);
-    regs.write(GSP_FALCON2_MOD_SEL, RSA_3072);
-    regs.write(GSP_FALCON_BOOTVEC, program.imem_virtual_base);
+    regs.write(layout.second_base + FALCON2_BROM_PARAADDR0, program.signature_offset);
+    regs.write(layout.second_base + FALCON2_BROM_ENGIDMASK, program.engine_mask);
+    regs.write(layout.second_base + FALCON2_BROM_CURR_UCODE_ID, program.ucode_id);
+    regs.write(layout.second_base + FALCON2_MOD_SEL, RSA_3072);
+    regs.write(layout.base + FALCON_BOOTVEC, program.imem_virtual_base);
 
-    bool starts_through_alias = (regs.read(GSP_FALCON_CPUCTL) & STARTS_THROUGH_ALIAS) != 0;
-    regs.write(starts_through_alias ? GSP_FALCON_CPUCTL_ALIAS : GSP_FALCON_CPUCTL, START_FALCON);
-    if (!wait_for_bits(regs, GSP_FALCON_CPUCTL, FALCON_HALTED, FALCON_HALTED, timeout_ns)) {
+    bool starts_through_alias = (regs.read(layout.base + FALCON_CPUCTL) & STARTS_THROUGH_ALIAS) != 0;
+    regs.write(layout.base + (starts_through_alias ? FALCON_CPUCTL_ALIAS : FALCON_CPUCTL), START_FALCON);
+    if (!wait_for_bits(regs, layout.base + FALCON_CPUCTL, FALCON_HALTED, FALCON_HALTED, timeout_ns)) {
         log::error(
-            "nvidia: the GSP's falcon did not halt within %lu ms of starting its program",
+            "nvidia: %s's falcon did not halt within %lu ms of starting its program",
+            layout.name,
             timeout_ns / NS_PER_MS
         );
         return ERR_TIMEOUT;
@@ -377,23 +445,13 @@ int32_t run_gsp_falcon_program(registers& regs, const falcon_program& program, u
     return OK;
 }
 
-// Without a default, the compiler flags a falcon added to `falcon_id` but missing here
-static uint32_t first_ucode_version_fuse(falcon_id falcon) {
-    switch (falcon) {
-        case falcon_id::gsp:
-            return GSP_UCODE_VERSION_FUSES;
-        case falcon_id::sec2:
-            return SEC2_UCODE_VERSION_FUSES;
-    }
-}
-
 uint32_t read_ucode_fuse_version(const registers& regs, falcon_id falcon, uint32_t ucode_id) {
     uint32_t fuse_index = ucode_id - 1;
     if (fuse_index >= UCODE_VERSION_FUSE_COUNT) {
         return 0;
     }
 
-    uint32_t fuses = regs.read(first_ucode_version_fuse(falcon) + fuse_index * UCODE_VERSION_FUSE_STRIDE);
+    uint32_t fuses = regs.read(layout_of(falcon).ucode_version_fuses + fuse_index * UCODE_VERSION_FUSE_STRIDE);
     uint32_t version = 0;
     while (fuses != 0) {
         version++;
