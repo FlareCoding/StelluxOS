@@ -20,15 +20,16 @@ using drivers::nvidia::FALCON_TIMEOUT_NS;
 using drivers::nvidia::OK;
 using drivers::nvidia::booter_layout;
 using drivers::nvidia::booter_signature;
+using drivers::nvidia::falcon_id;
 using drivers::nvidia::falcon_program;
 using drivers::nvidia::has_gsp_riscv_core;
 using drivers::nvidia::notify_gsp_of_queued_messages;
 using drivers::nvidia::registers;
-using drivers::nvidia::reset_gsp_falcon;
+using drivers::nvidia::reset_falcon;
 using drivers::nvidia::reset_gsp_into_riscv;
-using drivers::nvidia::run_gsp_falcon_program;
+using drivers::nvidia::run_falcon_program;
 using drivers::nvidia::select_booter_signature;
-using drivers::nvidia::stop_gsp;
+using drivers::nvidia::stop_falcon;
 using drivers::nvidia::write_libos_arguments_address;
 
 // Registers and fields the reset uses, restated here so the tests hold the reset to NVIDIA's layout rather than to
@@ -80,7 +81,7 @@ TEST(nvidia_falcon, rtx_3080_falcon_is_reset) {
     bar0.write(GSP_FALCON_HWCFG2, RTX_3080_HWCFG2);
     bar0.write(GSP_RISCV_BCR_CTRL, RTX_3080_BCR);
 
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, 0), OK);
     EXPECT_EQ(bar0.read(GSP_FALCON_ENGINE), RTX_3080_ENGINE);
     EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), RTX_3080_BCR);
     EXPECT_EQ(bar0.read(GSP_FALCON_RM), RTX_3080_BOOT_0);
@@ -92,7 +93,7 @@ TEST(nvidia_falcon, engine_reset_keeps_other_bits) {
     ASSERT_NOT_NULL(bar0.bytes);
     bar0.write(GSP_FALCON_ENGINE, ~0u);
 
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, 0), OK);
     EXPECT_EQ(bar0.read(GSP_FALCON_ENGINE), ~ENGINE_RESET);
 }
 
@@ -104,7 +105,7 @@ TEST(nvidia_falcon, reset_goes_on_without_ready_bit) {
     bar0.write(GSP_FALCON_HWCFG2, ~READY_FOR_RESET & ~CLEARING_MEMORIES);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, SHORT_TIMEOUT_NS, 0), OK);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, SHORT_TIMEOUT_NS, 0), OK);
     uint64_t elapsed = clock::now_ns() - start;
 
     EXPECT_GE(elapsed, 2 * SHORT_TIMEOUT_NS);
@@ -121,7 +122,7 @@ TEST(nvidia_falcon, ready_bit_ends_its_wait) {
     bar0.write(GSP_FALCON_HWCFG2, READY_FOR_RESET);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, LONG_READY_TIMEOUT_NS, 0), OK);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, LONG_READY_TIMEOUT_NS, 0), OK);
     uint64_t elapsed = clock::now_ns() - start;
 
     EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
@@ -134,7 +135,7 @@ TEST(nvidia_falcon, reset_waits_for_cleared_memories) {
     bar0.write(GSP_FALCON_HWCFG2, CLEARING_MEMORIES | READY_FOR_RESET);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
     uint64_t elapsed = clock::now_ns() - start;
 
     EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
@@ -142,7 +143,7 @@ TEST(nvidia_falcon, reset_waits_for_cleared_memories) {
     EXPECT_EQ(bar0.read(GSP_FALCON_RM), 0u);
 
     bar0.write(GSP_FALCON_HWCFG2, ~CLEARING_MEMORIES);
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, 0), OK);
 }
 
 // Each full reset releases the engine reset before it waits for the memories, and waits for them before it
@@ -154,7 +155,7 @@ TEST(nvidia_falcon, memory_wait_comes_between_engine_reset_and_core_switch) {
     bar0.write(GSP_FALCON_HWCFG2, HAS_RISCV_CORE | CLEARING_MEMORIES | READY_FOR_RESET);
     bar0.write(GSP_RISCV_BCR_CTRL, RISCV_CORE_SELECTED | CORE_SELECT_VALID);
 
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
     EXPECT_EQ(bar0.read(GSP_FALCON_ENGINE), ~ENGINE_RESET);
     EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), RISCV_CORE_SELECTED | CORE_SELECT_VALID);
     EXPECT_EQ(bar0.read(GSP_FALCON_RM), 0u);
@@ -169,7 +170,7 @@ TEST(nvidia_falcon, riscv_core_is_switched_and_waits_for_confirmation) {
     bar0.write(GSP_RISCV_BCR_CTRL, RISCV_CORE_SELECTED | CORE_SELECT_VALID);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
     uint64_t elapsed = clock::now_ns() - start;
 
     EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
@@ -186,12 +187,12 @@ TEST(nvidia_falcon, falcon_core_is_kept) {
 
     bar0.write(GSP_FALCON_HWCFG2, ~HAS_RISCV_CORE & ~CLEARING_MEMORIES);
     bar0.write(GSP_RISCV_BCR_CTRL, RISCV_CORE_SELECTED | CORE_SELECT_VALID);
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, 0), OK);
     EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), RISCV_CORE_SELECTED | CORE_SELECT_VALID);
 
     bar0.write(GSP_FALCON_HWCFG2, HAS_RISCV_CORE | READY_FOR_RESET);
     bar0.write(GSP_RISCV_BCR_CTRL, ~RISCV_CORE_SELECTED);
-    EXPECT_EQ(reset_gsp_falcon(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, 0), OK);
     EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), ~RISCV_CORE_SELECTED);
 }
 
@@ -370,7 +371,7 @@ TEST(nvidia_falcon, code_block_is_copied_before_start) {
     bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, DISTINCT_PROGRAM, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::gsp, DISTINCT_PROGRAM, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
     uint64_t elapsed = clock::now_ns() - start;
 
     EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
@@ -399,7 +400,7 @@ TEST(nvidia_falcon, data_block_is_copied_to_dmem) {
     falcon_program program = DISTINCT_PROGRAM;
     program.code_size = 0;
 
-    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, 0), ERR_TIMEOUT);
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::gsp, program, 0), ERR_TIMEOUT);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE), 0x12345670u);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE1), 0x4Au);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFMOFFS), 0x560400u);
@@ -419,7 +420,7 @@ TEST(nvidia_falcon, falcon_is_started_through_alias) {
     program.code_size = 0;
     program.data_size = 0;
 
-    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, 0), OK);
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::gsp, program, 0), OK);
     EXPECT_EQ(bar0.read(GSP_FBIF_TRANSCFG0), TARGET_COHERENT_SYSTEM_MEMORY | PHYSICAL_ADDRESSES);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFCMD), 0u);
     EXPECT_EQ(bar0.read(GSP_FALCON2_BROM_PARAADDR0), 0x125A4u);
@@ -442,7 +443,7 @@ TEST(nvidia_falcon, run_waits_for_halt) {
     program.data_size = 0;
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::gsp, program, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
     uint64_t elapsed = clock::now_ns() - start;
 
     EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
@@ -451,7 +452,7 @@ TEST(nvidia_falcon, run_waits_for_halt) {
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), 0u);
 
     bar0.write(GSP_FALCON_CPUCTL, ~STARTS_THROUGH_ALIAS);
-    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, 0), ERR_TIMEOUT);
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::gsp, program, 0), ERR_TIMEOUT);
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), START_FALCON);
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), 0u);
 }
@@ -466,7 +467,7 @@ TEST(nvidia_falcon, run_through_alias_fails_without_halt) {
     program.code_size = 0;
     program.data_size = 0;
 
-    EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, 0), ERR_TIMEOUT);
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::gsp, program, 0), ERR_TIMEOUT);
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), START_FALCON);
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), ~FALCON_HALTED);
 }
@@ -491,12 +492,12 @@ TEST(nvidia_falcon, rtx_3080_gsp_is_stopped) {
     bar0.write(GSP_FALCON_CPUCTL, RTX_3080_CPUCTL);
     bar0.write(GSP_RISCV_CPUCTL, RTX_3080_RISCV_CPUCTL);
 
-    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, 0), OK);
     EXPECT_EQ(bar0.read(GSP_FALCON_RM), RTX_3080_BOOT_0);
 
     bar0.write(GSP_FALCON_CPUCTL, ~0u);
     bar0.write(GSP_RISCV_CPUCTL, ~RISCV_ACTIVE);
-    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, 0), OK);
 }
 
 // A falcon with every control bit but the halted bit set does not read as stopped after the reset
@@ -505,7 +506,7 @@ TEST(nvidia_falcon, gsp_is_not_stopped_without_halted_falcon) {
     ASSERT_NOT_NULL(bar0.bytes);
     bar0.write(GSP_FALCON_CPUCTL, ~FALCON_HALTED);
 
-    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
+    EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
 }
 
 // A RISC-V core whose control register has every bit set reads as running, so the GSP is not stopped even with its
@@ -518,7 +519,7 @@ TEST(nvidia_falcon, gsp_is_not_stopped_with_running_riscv_core) {
     bar0.write(GSP_FALCON_CPUCTL, RTX_3080_CPUCTL);
     bar0.write(GSP_RISCV_CPUCTL, ~0u);
 
-    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
+    EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
 }
 
 // A reset whose memories never clear fails the stop once the memory timeout passes, not at the ready timeout of 0, even
@@ -530,7 +531,7 @@ TEST(nvidia_falcon, gsp_stop_fails_when_its_reset_times_out) {
     bar0.write(GSP_FALCON_CPUCTL, RTX_3080_CPUCTL);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
     uint64_t elapsed = clock::now_ns() - start;
 
     EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
@@ -549,11 +550,170 @@ TEST(nvidia_falcon, gsp_stop_gives_each_ready_wait_the_ready_timeout) {
     bar0.write(GSP_FALCON_CPUCTL, RTX_3080_CPUCTL);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, SHORT_TIMEOUT_NS, LONG_MEMORY_TIMEOUT_NS), OK);
+    EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::gsp, RTX_3080_BOOT_0, SHORT_TIMEOUT_NS, LONG_MEMORY_TIMEOUT_NS), OK);
     uint64_t elapsed = clock::now_ns() - start;
 
     EXPECT_GE(elapsed, 2 * SHORT_TIMEOUT_NS);
     EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+}
+
+// The registers that `reset_falcon`, `run_falcon_program` and `stop_falcon` use, as SEC2's falcon has them at the GSP's
+// offsets from SEC2's bases, restated here so the tests hold SEC2's falcon to NVIDIA's layout
+static constexpr uint32_t SEC2_FALCON_ENGINE              = 0x8403C0;
+static constexpr uint32_t SEC2_FALCON_HWCFG2              = 0x8400F4;
+static constexpr uint32_t SEC2_FALCON_RM                  = 0x840084;
+static constexpr uint32_t SEC2_FALCON_CPUCTL              = 0x840100;
+static constexpr uint32_t SEC2_FALCON_BOOTVEC             = 0x840104;
+static constexpr uint32_t SEC2_FALCON_DMACTL              = 0x84010C;
+static constexpr uint32_t SEC2_FALCON_DMATRFBASE          = 0x840110;
+static constexpr uint32_t SEC2_FALCON_DMATRFMOFFS         = 0x840114;
+static constexpr uint32_t SEC2_FALCON_DMATRFCMD           = 0x840118;
+static constexpr uint32_t SEC2_FALCON_DMATRFFBOFFS        = 0x84011C;
+static constexpr uint32_t SEC2_FALCON_DMATRFBASE1         = 0x840128;
+static constexpr uint32_t SEC2_FALCON_CPUCTL_ALIAS        = 0x840130;
+static constexpr uint32_t SEC2_FBIF_TRANSCFG0             = 0x840600;
+static constexpr uint32_t SEC2_FBIF_CTL                   = 0x840624;
+static constexpr uint32_t SEC2_FALCON2_MOD_SEL            = 0x841180;
+static constexpr uint32_t SEC2_FALCON2_BROM_CURR_UCODE_ID = 0x841198;
+static constexpr uint32_t SEC2_FALCON2_BROM_ENGIDMASK     = 0x84119C;
+static constexpr uint32_t SEC2_FALCON2_BROM_PARAADDR0     = 0x841210;
+static constexpr uint32_t SEC2_RISCV_CPUCTL               = 0x841388;
+static constexpr uint32_t SEC2_RISCV_BCR_CTRL             = 0x841668;
+
+// SEC2's falcon is reset, and its switch from its RISC-V core requested, through SEC2's registers. A reset reading the
+// GSP's seeds would wait out the ready timeout, time out on its memories or a core switch, or skip or confirm a switch.
+TEST(nvidia_falcon, sec2_falcon_is_reset_through_its_registers) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_ENGINE, ~0u);
+    bar0.write(SEC2_FALCON_HWCFG2, READY_FOR_RESET);
+    bar0.write(SEC2_FALCON_RM, ~0u);
+    bar0.write(GSP_FALCON_HWCFG2, HAS_RISCV_CORE | CLEARING_MEMORIES);
+    bar0.write(GSP_RISCV_BCR_CTRL, RISCV_CORE_SELECTED);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::sec2, RTX_3080_BOOT_0, LONG_READY_TIMEOUT_NS, 0), OK);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_ENGINE), ~ENGINE_RESET);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_RM), RTX_3080_BOOT_0);
+    EXPECT_EQ(bar0.read(GSP_FALCON_ENGINE), 0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_RM), 0u);
+    EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), RISCV_CORE_SELECTED);
+
+    bar0.write(SEC2_FALCON_HWCFG2, HAS_RISCV_CORE | READY_FOR_RESET);
+    bar0.write(SEC2_RISCV_BCR_CTRL, ~0u);
+    bar0.write(GSP_FALCON_HWCFG2, CLEARING_MEMORIES);
+    bar0.write(GSP_RISCV_BCR_CTRL, ~RISCV_CORE_SELECTED);
+    EXPECT_EQ(reset_falcon(bar0.regs, falcon_id::sec2, RTX_3080_BOOT_0, 0, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(SEC2_RISCV_BCR_CTRL), 0u);
+    EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), ~RISCV_CORE_SELECTED);
+}
+
+// The bit of the DMA command register that reads back set once the DMA engine is idle
+static constexpr uint32_t DMA_IDLE = 0x2;
+
+// The 8 KiB from the base of the GSP's registers, which holds every register of the GSP's falcon the driver uses
+static constexpr uint32_t GSP_FALCON_REGISTERS_START = 0x110000;
+static constexpr uint32_t GSP_FALCON_REGISTERS_END   = 0x112000;
+
+// The registers a load and a start through the alias on SEC2 write whole, which the run test starts with every bit set
+static constexpr uint32_t SEC2_REGISTERS_WRITTEN_WHOLE[] = {
+    SEC2_FALCON_DMACTL,
+    SEC2_FALCON_DMATRFBASE,
+    SEC2_FALCON_DMATRFBASE1,
+    SEC2_FALCON_DMATRFMOFFS,
+    SEC2_FALCON_DMATRFFBOFFS,
+    SEC2_FALCON_DMATRFCMD,
+    SEC2_FALCON2_BROM_PARAADDR0,
+    SEC2_FALCON2_BROM_ENGIDMASK,
+    SEC2_FALCON2_BROM_CURR_UCODE_ID,
+    SEC2_FALCON2_MOD_SEL,
+    SEC2_FALCON_BOOTVEC,
+    SEC2_FALCON_CPUCTL_ALIAS,
+};
+
+// Counts the registers from `GSP_FALCON_REGISTERS_START` to `GSP_FALCON_REGISTERS_END` that read other than 0
+static uint32_t count_nonzero_gsp_falcon_registers(const falcon_bar0& bar0) {
+    uint32_t count = 0;
+    for (uint32_t offset = GSP_FALCON_REGISTERS_START; offset < GSP_FALCON_REGISTERS_END; offset += sizeof(uint32_t)) {
+        if (bar0.read(offset) != 0) {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+// A program for SEC2 is loaded and started through SEC2's registers, and the GSP's falcon registers keep their seeds.
+// The GSP's DMA engine reads as idle, so a load waiting on it would go on past the first block.
+TEST(nvidia_falcon, sec2_program_is_run_through_its_registers) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    for (uint32_t offset : SEC2_REGISTERS_WRITTEN_WHOLE) {
+        bar0.write(offset, ~0u);
+    }
+
+    bar0.write(SEC2_FBIF_CTL, FBIF_CTL_OTHER_BITS);
+    bar0.write(SEC2_FBIF_TRANSCFG0, ~0u);
+    bar0.write(GSP_FALCON_DMATRFCMD, DMA_IDLE);
+
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::sec2, DISTINCT_PROGRAM, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(SEC2_FBIF_CTL), FBIF_CTL_OTHER_BITS | ALLOW_PHYSICAL_WITHOUT_CONTEXT);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_DMACTL), 0u);
+    EXPECT_EQ(
+        bar0.read(SEC2_FBIF_TRANSCFG0),
+        ~TRANSFER_TARGET_MASK | TARGET_NONCOHERENT_SYSTEM_MEMORY | PHYSICAL_ADDRESSES
+    );
+    EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFBASE), 0x12345550u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFBASE1), 0x4Au);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFMOFFS), 0x341100u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFFBOFFS), 0x12000u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFCMD), DMA_256_BYTES | DMA_TO_IMEM | DMA_SECURE);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFCMD), DMA_IDLE);
+    EXPECT_EQ(count_nonzero_gsp_falcon_registers(bar0), 1u);
+
+    bar0.write(SEC2_FALCON_CPUCTL, STARTS_THROUGH_ALIAS | FALCON_HALTED);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.code_size = 0;
+    program.data_size = 0;
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::sec2, program, 0), OK);
+    EXPECT_EQ(bar0.read(SEC2_FALCON2_BROM_PARAADDR0), 0x125A4u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON2_BROM_ENGIDMASK), 0x480u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON2_BROM_CURR_UCODE_ID), 0x89u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON2_MOD_SEL), RSA_3072);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_BOOTVEC), 0x12000u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL_ALIAS), START_FALCON);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFCMD), DMA_IDLE);
+    EXPECT_EQ(count_nonzero_gsp_falcon_registers(bar0), 1u);
+
+    bar0.write(SEC2_FALCON_CPUCTL_ALIAS, ~0u);
+    bar0.write(SEC2_FALCON_CPUCTL, ~STARTS_THROUGH_ALIAS);
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::sec2, program, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL), START_FALCON);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL_ALIAS), ~0u);
+    EXPECT_EQ(count_nonzero_gsp_falcon_registers(bar0), 1u);
+}
+
+// SEC2's falcon reads as stopped by its own halted bit, whatever the GSP's reads. A falcon without a RISC-V core is not
+// held to the RISC-V core's control register, which has every bit set here, while one with a RISC-V core is.
+TEST(nvidia_falcon, sec2_falcon_is_stopped_through_its_registers) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_HWCFG2, ~HAS_RISCV_CORE & ~CLEARING_MEMORIES);
+    bar0.write(SEC2_RISCV_CPUCTL, ~0u);
+    bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
+
+    EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::sec2, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
+
+    bar0.write(SEC2_FALCON_CPUCTL, FALCON_HALTED);
+    bar0.write(GSP_FALCON_CPUCTL, ~FALCON_HALTED);
+    EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::sec2, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_RM), RTX_3080_BOOT_0);
+
+    bar0.write(SEC2_FALCON_HWCFG2, HAS_RISCV_CORE | READY_FOR_RESET);
+    EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::sec2, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
 }
 
 // NVIDIA's wait for the ready report, and its default timeout for a GPU in graphics mode rather than compute mode

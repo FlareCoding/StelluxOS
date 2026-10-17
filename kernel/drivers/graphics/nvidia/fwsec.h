@@ -84,13 +84,13 @@ int32_t prepare_fwsec_frts(
  * the signature slot as the signature's offset in the data. The descriptor's
  * code size and IMEM virtual base are unchecked, as in NVIDIA's driver, so a
  * copy on a 256-byte boundary, as a page allocation is, meets
- * `run_gsp_falcon_program`'s alignment only when both are multiples of 256.
+ * `run_falcon_program`'s alignment only when both are multiples of 256.
  * FWSEC's size, rounded up to 256 bytes, then holds each part's whole blocks.
  * @param fwsec FWSEC as `find_fwsec` returns it.
  * @param dma_address Where the copy starts, as the card addresses memory.
  * The copy must hold FWSEC as `prepare_fwsec_frts` fills it.
  * @param is_cached Whether the CPU maps the copy cached.
- * @return The program `run_gsp_falcon_program` loads from the copy.
+ * @return The program `run_falcon_program` loads from the copy.
  */
 falcon_program describe_fwsec_program(const fwsec_layout& fwsec, uint64_t dma_address, bool is_cached);
 

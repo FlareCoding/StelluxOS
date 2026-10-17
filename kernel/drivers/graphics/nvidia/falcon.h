@@ -17,10 +17,10 @@ constexpr uint64_t FALCON_READY_TIMEOUT_NS = 150000;
 constexpr uint64_t FALCON_TIMEOUT_NS = 4000000000;
 
 /**
- * A program for the GSP's falcon, which the falcon's boot ROM runs only once
- * the program's signature checks out. The program lies in system memory, its
- * code at `dma_address` and its data right after the code. The falcon runs
- * code from IMEM, its code memory, and keeps data in DMEM, its data memory. A
+ * A program for a falcon, which the falcon's boot ROM runs only once the
+ * program's signature checks out. The program lies in system memory, its code
+ * at `dma_address` and its data right after the code. The falcon runs code
+ * from IMEM, its code memory, and keeps data in DMEM, its data memory. A
  * physical base says where in IMEM or DMEM a part goes. The code's blocks in
  * IMEM are also tagged with the virtual addresses the code runs at, starting
  * from its virtual base.
@@ -46,28 +46,29 @@ enum class falcon_id : uint8_t {
 };
 
 /**
- * @brief Reset the GSP's falcon, the microcontroller in the GSP that runs
- * FWSEC, into the state NVIDIA's driver loads FWSEC into. The falcon has a
- * falcon core and, when its hardware configuration says so, a RISC-V core,
- * and it runs whichever core its RISC-V boot control register selects.
- * FWSEC runs on the falcon core.
- * NVIDIA's driver resets a falcon by disabling and then enabling it, and the
- * GSP's falcon has no bit in the chip's engine enable register, so each of
- * the two is a full reset. Each full reset gives the falcon up to
- * `ready_timeout_ns` to report it is ready for a reset, going on without the
- * report when it does not come, sets and then releases the GSP's engine
- * reset, waits for the falcon to finish clearing its code and data memories,
- * IMEM and DMEM, and selects the falcon core if the RISC-V core is
- * selected. After both full resets, as NVIDIA's reset ends, it selects the
- * falcon core again if the RISC-V core is selected, waits for the memories
- * once more, and writes `boot0` to the falcon's RM register, which NVIDIA's
- * driver sets to the chip's `PMC_BOOT_0` value as it finishes enabling a
- * falcon.
+ * @brief Reset `falcon` into the state NVIDIA's driver loads a signed program
+ * into. A falcon has a falcon core and, when its hardware configuration says
+ * so, a RISC-V core, in which case it runs whichever of the two its RISC-V
+ * boot control register selects. The programs `run_falcon_program` loads run
+ * on the falcon core.
+ * NVIDIA's driver resets a falcon by disabling and then enabling it, and
+ * neither the GSP's falcon nor SEC2's has a bit in the chip's engine enable
+ * register, so the disable and the enable are each a full reset. Each full
+ * reset gives the falcon up to `ready_timeout_ns` to report it is ready for a
+ * reset, going on without the report when it does not come, sets and then
+ * releases the falcon's engine reset, waits for the falcon to finish clearing
+ * its code and data memories, IMEM and DMEM, and selects the falcon core if
+ * the RISC-V core is selected. After both full resets, as NVIDIA's reset
+ * ends, it selects the falcon core again if the RISC-V core is selected,
+ * waits for the memories once more, and writes `boot0` to the falcon's RM
+ * register, which NVIDIA's driver sets to the chip's `PMC_BOOT_0` value as it
+ * finishes enabling a falcon.
  * The waits spin on the calling CPU instead of sleeping, so a slow falcon can
  * hold the CPU for up to twice `ready_timeout_ns` and six times `timeout_ns`.
- * @param regs A view of BAR0. The card's boot firmware must have finished, as
- * `wait_for_boot_firmware` waits for, since the GSP runs it and the reset
- * would stop it.
+ * @param regs A view of BAR0. Before a reset of the GSP's falcon, the card's
+ * boot firmware must have finished, as `wait_for_boot_firmware` waits for,
+ * since the GSP runs it and the reset would stop it.
+ * @param falcon The falcon to reset.
  * @param boot0 The chip's `PMC_BOOT_0` value.
  * @param ready_timeout_ns How long each wait for the ready report may take,
  * `FALCON_READY_TIMEOUT_NS` at bring-up.
@@ -77,13 +78,19 @@ enum class falcon_id : uint8_t {
  * timeout once for a whole call while its thread-state timeout is on, and for
  * each wait otherwise.
  * @return `OK`, or `ERR_TIMEOUT` when the falcon has not finished clearing
- * its memories, or the GSP has not confirmed its switch to the falcon core,
- * within `timeout_ns` of that wait's start. NVIDIA's driver goes on after
- * either wait runs out, so both failures are this driver's, to stop bring-up
- * before FWSEC is loaded into a falcon that has not finished its reset. The
+ * its memories, or has not confirmed its switch to the falcon core, within
+ * `timeout_ns` of that wait's start. NVIDIA's driver goes on after either
+ * wait runs out, so both failures are this driver's, to stop bring-up before
+ * a program is loaded into a falcon that has not finished its reset. The
  * cause is logged, and the RM register is left unwritten.
  */
-int32_t reset_gsp_falcon(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns);
+int32_t reset_falcon(
+    registers& regs,
+    falcon_id falcon,
+    uint32_t boot0,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns
+);
 
 /**
  * @brief Whether the GSP has a RISC-V core, the core its firmware runs on, as
@@ -149,63 +156,66 @@ void notify_gsp_of_queued_messages(registers& regs);
 void write_libos_arguments_address(registers& regs, uint64_t address);
 
 /**
- * @brief Whether the GSP's falcon is halted, as it is once the card's boot
- * firmware has finished with it and once a program run on it stops.
+ * @brief Whether `falcon` is halted, as the GSP's falcon is once the card's
+ * boot firmware has finished with it, and as a falcon is once a program run
+ * on it stops.
  * @param regs A view of BAR0.
+ * @param falcon The falcon to read.
  * @return Whether the halted bit of the falcon's control register is set.
  */
-bool is_gsp_falcon_halted(const registers& regs);
+bool is_falcon_halted(const registers& regs, falcon_id falcon);
 
 /**
- * @brief Stop the GSP: reset its falcon as `reset_gsp_falcon` does, then
- * confirm that the falcon reads as halted and that the RISC-V core does not
- * read as running, as the active field of the core's control register shows.
- * NVIDIA's driver gives the GSP this reset as it unloads the firmware, after
- * waiting for the firmware to suspend the GSP's processor, whether or not the
- * wait succeeds. This driver stops the GSP with it before freeing the memory
- * the GSP was given.
+ * @brief Stop `falcon`: reset it as `reset_falcon` does, then confirm that
+ * the falcon reads as halted and, when the falcon has a RISC-V core, that the
+ * core does not read as running, as the active field of the core's control
+ * register shows. NVIDIA's driver gives the GSP's falcon this reset as it
+ * unloads the firmware, after waiting for the firmware to suspend the GSP's
+ * processor, whether or not the wait succeeds. This driver stops a falcon
+ * with it before freeing memory the falcon may still read.
  * The waits spin on the calling CPU instead of sleeping, so a slow falcon can
  * hold the CPU for up to twice `ready_timeout_ns` and six times `timeout_ns`.
- * @param regs A view of BAR0. The card's boot firmware must have finished, as
- * for `reset_gsp_falcon`.
+ * @param regs A view of BAR0, as for `reset_falcon`.
+ * @param falcon The falcon to stop.
  * @param boot0 The chip's `PMC_BOOT_0` value, for the reset.
  * @param ready_timeout_ns How long each wait for the ready report may take,
- * as for `reset_gsp_falcon`.
+ * as for `reset_falcon`.
  * @param timeout_ns How long each wait for the memories or the core selection
- * may take, as for `reset_gsp_falcon`.
- * @return `OK` once the GSP reads as stopped, `ERR_TIMEOUT` when the reset
- * times out as `reset_gsp_falcon` describes, or `ERR_BAD_STATE` when, after
- * the reset, the falcon does not read as halted or the RISC-V core reads as
+ * may take, as for `reset_falcon`.
+ * @return `OK` once the falcon reads as stopped, `ERR_TIMEOUT` when the reset
+ * times out as `reset_falcon` describes, or `ERR_BAD_STATE` when, after the
+ * reset, the falcon does not read as halted or its RISC-V core reads as
  * running. The cause is logged.
  */
-int32_t stop_gsp(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns);
+int32_t stop_falcon(registers& regs, falcon_id falcon, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns);
 
 /**
- * @brief Load `program` into the GSP's falcon and run it until the falcon
- * halts. The falcon's DMA engine copies the code into IMEM and then the data
- * into DMEM, 256 bytes at a time, reading system memory by its physical
- * addresses. The reads look in the CPU's caches only when the program is
- * cached, since memory the CPU writes uncached holds every write already. The
- * falcon's boot ROM is then given the signature's offset in the data, the
- * engine mask, the ucode id and the signature's algorithm, RSA-3072, the
- * falcon's boot vector is set to the code's virtual base, and the falcon is
- * started. The boot ROM checks the signature and runs the program, and the
- * falcon halts when the program ends or when the boot ROM refuses it, so a
- * halt says nothing of the program's result.
+ * @brief Load `program` into `falcon` and run it until the falcon halts. The
+ * falcon's DMA engine copies the code into IMEM and then the data into DMEM,
+ * 256 bytes at a time, reading system memory by its physical addresses. The
+ * reads look in the CPU's caches only when the program is cached, since
+ * memory the CPU writes uncached holds every write already. The falcon's boot
+ * ROM is then given the signature's offset in the data, the engine mask, the
+ * ucode id and the signature's algorithm, RSA-3072, the falcon's boot vector
+ * is set to the code's virtual base, and the falcon is started. The boot ROM
+ * checks the signature and runs the program, and the falcon halts when the
+ * program ends or when the boot ROM refuses it, so a halt says nothing of the
+ * program's result.
  * The waits spin on the calling CPU instead of sleeping, so a slow falcon can
  * hold the CPU for up to `timeout_ns` for each block and for the run.
  * @param regs A view of BAR0. The card's bus mastering must be on, since the
- * DMA engine reads system memory, and the GSP's falcon must have been reset
- * with `reset_gsp_falcon`, since the load needs its memories cleared and its
- * falcon core selected.
+ * DMA engine reads system memory, and `falcon` must have been reset with
+ * `reset_falcon`, since the load needs its memories cleared and its falcon
+ * core selected.
+ * @param falcon The falcon to run the program on.
  * @param program The program. It must lie in system memory below 512 TiB,
  * since the DMA engine takes its addresses in 256-byte units and its two base
  * registers hold 41 bits of them, so `dma_address` less `imem_virtual_base`
  * and `dma_address` plus `code_size` must also be multiples of 256. The DMA
  * engine reads whole blocks, so the memory must hold each part rounded up to
  * 256 bytes, and must stay allocated while the falcon may read it: until this
- * returns `OK`, and after any other result until the GSP's falcon is reset and
- * confirmed halted, as `stop_gsp` does.
+ * returns `OK`, and after any other result until the falcon is reset and
+ * confirmed halted, as `stop_falcon` does.
  * @param timeout_ns How long each block's load and the run may take,
  * `FALCON_TIMEOUT_NS` at bring-up. Each wait reads its register at least
  * once, even for a timeout of 0. NVIDIA's driver counts its default timeout
@@ -216,7 +226,7 @@ int32_t stop_gsp(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uin
  * wait's start. The cause is logged. The falcon is started only after every
  * block is loaded.
  */
-int32_t run_gsp_falcon_program(registers& regs, const falcon_program& program, uint64_t timeout_ns);
+int32_t run_falcon_program(registers& regs, falcon_id falcon, const falcon_program& program, uint64_t timeout_ns);
 
 /**
  * @brief Read the version the chip's fuses, bits burned into the chip for

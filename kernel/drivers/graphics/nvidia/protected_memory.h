@@ -167,8 +167,8 @@ int32_t lay_out_protected_memory(
  * checks once the GSP's falcon has halted on FWSEC, reading each register
  * once. The error code FWSEC records for the FRTS command must be 0,
  * protected memory must be set up, and it must start at the region.
- * @param regs A view of BAR0. `run_gsp_falcon_program` must have returned
- * `OK` for FWSEC's copy as `prepare_fwsec_frts` patched it for `region`.
+ * @param regs A view of BAR0. `run_falcon_program` must have returned `OK`
+ * for FWSEC's copy as `prepare_fwsec_frts` patched it for `region`.
  * @param region The region FWSEC's copy was patched to fence off, as
  * `place_frts_region` placed it. Its offset must lie below 16 TiB, as for
  * `prepare_fwsec_frts`, since the check keeps it in 4 KiB units to 32 bits,
