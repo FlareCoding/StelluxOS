@@ -81,11 +81,14 @@ int32_t prepare_fwsec_frts(
 /**
  * @brief Describe a copy of FWSEC as the program the GSP's falcon runs, with
  * the sizes, bases, engine mask and ucode id FWSEC's descriptor gives, and
- * the signature slot as the signature's offset in the data. The descriptor's
- * code size and IMEM virtual base are unchecked, as in NVIDIA's driver, so a
- * copy on a 256-byte boundary, as a page allocation is, meets
- * `run_falcon_program`'s alignment only when both are multiples of 256.
- * FWSEC's size, rounded up to 256 bytes, then holds each part's whole blocks.
+ * the signature slot as the signature's offset in the data. The code lies at
+ * the copy's start and the data right after it. The descriptor's code size
+ * and IMEM virtual base are unchecked, as in NVIDIA's driver, so a copy on a
+ * 256-byte boundary, as a page allocation is, meets `run_falcon_program`'s
+ * alignment only when both are multiples of 256. FWSEC's size, rounded up to
+ * 256 bytes, then holds each part's whole blocks. FWSEC's command lies in its
+ * data and names only video memory, so FWSEC is given no other system memory
+ * to read.
  * @param fwsec FWSEC as `find_fwsec` returns it.
  * @param dma_address Where the copy starts, as the card addresses memory.
  * The copy must hold FWSEC as `prepare_fwsec_frts` fills it.

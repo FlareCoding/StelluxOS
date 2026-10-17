@@ -18,24 +18,33 @@ constexpr uint64_t FALCON_TIMEOUT_NS = 4000000000;
 
 /**
  * A program for a falcon, which the falcon's boot ROM runs only once the
- * program's signature checks out. The program lies in system memory, its code
- * at `dma_address` and its data right after the code. The falcon runs code
- * from IMEM, its code memory, and keeps data in DMEM, its data memory. A
- * physical base says where in IMEM or DMEM a part goes. The code's blocks in
- * IMEM are also tagged with the virtual addresses the code runs at, starting
- * from its virtual base.
+ * program's signature checks out. The program lies in system memory from
+ * `dma_address`, its code and its data each at an offset of its own. The
+ * falcon runs code from IMEM, its code memory, and keeps data in DMEM, its
+ * data memory. A physical base says where in IMEM or DMEM a part goes. The
+ * code's blocks in IMEM are also tagged with the virtual addresses the code
+ * runs at, starting from its virtual base.
  */
 struct falcon_program {
-    uint64_t dma_address;        // the program's first byte, as the card addresses memory
-    bool     is_cached;          // whether the CPU maps the program's memory cached, so its writes may sit in caches
-    uint32_t code_size;          // bytes
-    uint32_t imem_physical_base; // bytes from the start of IMEM, of which the DMA engine keeps the low 24 bits
-    uint32_t imem_virtual_base;  // the address the code starts running at
-    uint32_t data_size;          // bytes
-    uint32_t dmem_physical_base; // bytes from the start of DMEM, of which the DMA engine keeps the low 24 bits
-    uint32_t signature_offset;   // bytes from the start of the data to the signature the boot ROM checks
-    uint16_t engine_mask;        // the engines the program is signed to run on
-    uint8_t  ucode_id;           // NVIDIA's number for the program among the falcon's programs
+    uint64_t dma_address;         // the program's first byte, as the card addresses memory
+    bool     is_cached;           // whether the CPU maps the program's memory cached, so its writes may sit in caches
+    bool     reads_cached_memory; // whether the program, once started, may read other memory the CPU maps cached
+    uint32_t code_offset;         // bytes from the program's first byte to its code
+    uint32_t code_size;           // bytes
+    uint32_t imem_physical_base;  // bytes from the start of IMEM, of which the DMA engine keeps the low 24 bits
+    uint32_t imem_virtual_base;   // the address the code starts running at
+    uint32_t data_offset;         // bytes from the program's first byte to its data
+    uint32_t data_size;           // bytes
+    uint32_t dmem_physical_base;  // bytes from the start of DMEM, of which the DMA engine keeps the low 24 bits
+    uint32_t signature_offset;    // bytes from the start of the data to the signature the boot ROM checks
+    uint32_t engine_mask;         // the engines the program is signed to run on
+    uint8_t  ucode_id;            // NVIDIA's number for the program among the falcon's programs
+};
+
+// The values a program finds in its falcon's two mailbox registers as it starts, and those it leaves in them
+struct falcon_mailboxes {
+    uint32_t mailbox0;
+    uint32_t mailbox1;
 };
 
 // Identifies one of the GPU's falcons, the microcontrollers in its engines: the GSP's, which runs FWSEC, or that of
@@ -193,7 +202,8 @@ int32_t stop_falcon(registers& regs, falcon_id falcon, uint32_t boot0, uint64_t 
  * @brief Load `program` into `falcon` and run it until the falcon halts. The
  * falcon's DMA engine copies the code into IMEM and then the data into DMEM,
  * 256 bytes at a time, reading system memory by its physical addresses. The
- * reads look in the CPU's caches only when the program is cached, since
+ * reads look in the CPU's caches only when the program is cached or may, once
+ * started, read other cached memory through the same DMA settings, since
  * memory the CPU writes uncached holds every write already. The falcon's boot
  * ROM is then given the signature's offset in the data, the engine mask, the
  * ucode id and the signature's algorithm, RSA-3072, the falcon's boot vector
@@ -210,12 +220,12 @@ int32_t stop_falcon(registers& regs, falcon_id falcon, uint32_t boot0, uint64_t 
  * @param falcon The falcon to run the program on.
  * @param program The program. It must lie in system memory below 512 TiB,
  * since the DMA engine takes its addresses in 256-byte units and its two base
- * registers hold 41 bits of them, so `dma_address` less `imem_virtual_base`
- * and `dma_address` plus `code_size` must also be multiples of 256. The DMA
- * engine reads whole blocks, so the memory must hold each part rounded up to
- * 256 bytes, and must stay allocated while the falcon may read it: until this
- * returns `OK`, and after any other result until the falcon is reset and
- * confirmed halted, as `stop_falcon` does.
+ * registers hold 41 bits of them, so `dma_address` plus `code_offset` less
+ * `imem_virtual_base`, and `dma_address` plus `data_offset`, must also be
+ * multiples of 256. The DMA engine reads whole blocks, so the memory must
+ * hold each part rounded up to 256 bytes, and must stay allocated while the
+ * falcon may read it: until this returns `OK`, and after any other result
+ * until the falcon is reset and confirmed halted, as `stop_falcon` does.
  * @param timeout_ns How long each block's load and the run may take,
  * `FALCON_TIMEOUT_NS` at bring-up. Each wait reads its register at least
  * once, even for a timeout of 0. NVIDIA's driver counts its default timeout
@@ -227,6 +237,31 @@ int32_t stop_falcon(registers& regs, falcon_id falcon, uint32_t boot0, uint64_t 
  * block is loaded.
  */
 int32_t run_falcon_program(registers& regs, falcon_id falcon, const falcon_program& program, uint64_t timeout_ns);
+
+/**
+ * @brief Run `program` on `falcon` as the other `run_falcon_program` does,
+ * also writing `mailboxes` into the falcon's two mailbox registers after the
+ * boot vector and before the start, and reading both registers back into
+ * `mailboxes` after the wait for the halt, whether or not it timed out, as
+ * NVIDIA's driver does for a program it hands arguments to.
+ * @param regs A view of BAR0, as for the other `run_falcon_program`.
+ * @param falcon The falcon to run the program on.
+ * @param program The program, as for the other `run_falcon_program`.
+ * @param mailboxes The values to write, which receive what the registers hold
+ * after the halt wait, and keep the values to write when a block's load times
+ * out, since the falcon is then not started.
+ * @param timeout_ns How long each block's load and the run may take, as for
+ * the other `run_falcon_program`.
+ * @return As the other `run_falcon_program` returns. When the falcon does not
+ * halt, what its mailboxes then read is logged as well.
+ */
+int32_t run_falcon_program(
+    registers& regs,
+    falcon_id falcon,
+    const falcon_program& program,
+    falcon_mailboxes& mailboxes,
+    uint64_t timeout_ns
+);
 
 /**
  * @brief Read the version the chip's fuses, bits burned into the chip for

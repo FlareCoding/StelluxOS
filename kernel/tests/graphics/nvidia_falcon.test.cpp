@@ -21,6 +21,7 @@ using drivers::nvidia::OK;
 using drivers::nvidia::booter_layout;
 using drivers::nvidia::booter_signature;
 using drivers::nvidia::falcon_id;
+using drivers::nvidia::falcon_mailboxes;
 using drivers::nvidia::falcon_program;
 using drivers::nvidia::has_gsp_riscv_core;
 using drivers::nvidia::notify_gsp_of_queued_messages;
@@ -339,18 +340,21 @@ static constexpr uint32_t DMA_TO_IMEM                      = 0x10;
 static constexpr uint32_t DMA_256_BYTES                    = 0x600;
 static constexpr uint32_t RSA_3072                         = 0x1;
 
-// A program above the run's 512 TiB bound, so its address in 256-byte units has bits past the 9-bit second base
-// register, with every field distinct, and IMEM and DMEM bases with bits on both sides of the 24-bit memory offset
+// A program past 512 TiB, so its address in 256-byte units overflows the 9-bit second base, with every number distinct,
+// its data apart from its code's end, offsets and a mask past 16 bits and memory bases with bits on each side of bit 24
 static constexpr falcon_program DISTINCT_PROGRAM = {
     .dma_address = 0x24A1234567000,
     .is_cached = false,
+    .reads_cached_memory = false,
+    .code_offset = 0x10100,
     .code_size = 0x300,
     .imem_physical_base = 0xAB341100,
     .imem_virtual_base = 0x12000,
+    .data_offset = 0x17400,
     .data_size = 0x180,
     .dmem_physical_base = 0xCD560400,
     .signature_offset = 0x125A4,
-    .engine_mask = 0x480,
+    .engine_mask = 0x2A480,
     .ucode_id = 0x89,
 };
 
@@ -361,7 +365,7 @@ static constexpr uint32_t FBIF_CTL_OTHER_BITS = 0x5;
 static constexpr uint64_t RUN_TIME_LIMIT_NS = 100000000;
 
 // With the DMA engine set to read physical addresses without looking in the CPU's caches, an uncached program's first
-// code block goes to IMEM marked secure, read from the program less its virtual base, and the falcon is left unstarted
+// code block goes to IMEM marked secure, read from the code less its virtual base, and the falcon is left unstarted
 TEST(nvidia_falcon, code_block_is_copied_before_start) {
     falcon_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
@@ -382,7 +386,7 @@ TEST(nvidia_falcon, code_block_is_copied_before_start) {
         bar0.read(GSP_FBIF_TRANSCFG0),
         ~TRANSFER_TARGET_MASK | TARGET_NONCOHERENT_SYSTEM_MEMORY | PHYSICAL_ADDRESSES
     );
-    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE), 0x12345550u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE), 0x12345651u);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE1), 0x4Au);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFMOFFS), 0x341100u);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFFBOFFS), 0x12000u);
@@ -392,8 +396,8 @@ TEST(nvidia_falcon, code_block_is_copied_before_start) {
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), FALCON_HALTED);
 }
 
-// Without code, the data's first block goes to DMEM with neither the IMEM nor the secure field, read from the
-// program's start at offset 0 whatever the virtual base
+// Without code, the data's first block goes to DMEM with neither the IMEM nor the secure field, read from the data's
+// start at offset 0 whatever the virtual base
 TEST(nvidia_falcon, data_block_is_copied_to_dmem) {
     falcon_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
@@ -401,7 +405,7 @@ TEST(nvidia_falcon, data_block_is_copied_to_dmem) {
     program.code_size = 0;
 
     EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::gsp, program, 0), ERR_TIMEOUT);
-    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE), 0x12345670u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE), 0x123457E4u);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFBASE1), 0x4Au);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFMOFFS), 0x560400u);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFFBOFFS), 0u);
@@ -409,12 +413,14 @@ TEST(nvidia_falcon, data_block_is_copied_to_dmem) {
     EXPECT_EQ(bar0.read(GSP_FALCON_BOOTVEC), 0u);
 }
 
-// A cached program is read looking in the CPU's caches, and a falcon with its control register's alias enabled gets
-// the boot ROM's parameters and the boot vector and is started through the alias, the run ending once it halts
+// A cached program is read looking in the CPU's caches, and a falcon with its control register's alias enabled gets the
+// boot ROM's parameters and boot vector, starts through the alias and halts, its mailboxes untouched
 TEST(nvidia_falcon, falcon_is_started_through_alias) {
     falcon_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
     bar0.write(GSP_FALCON_CPUCTL, STARTS_THROUGH_ALIAS | FALCON_HALTED);
+    bar0.write(GSP_FALCON_MAILBOX0, ~0u);
+    bar0.write(GSP_FALCON_MAILBOX1, ~0u);
     falcon_program program = DISTINCT_PROGRAM;
     program.is_cached = true;
     program.code_size = 0;
@@ -423,13 +429,29 @@ TEST(nvidia_falcon, falcon_is_started_through_alias) {
     EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::gsp, program, 0), OK);
     EXPECT_EQ(bar0.read(GSP_FBIF_TRANSCFG0), TARGET_COHERENT_SYSTEM_MEMORY | PHYSICAL_ADDRESSES);
     EXPECT_EQ(bar0.read(GSP_FALCON_DMATRFCMD), 0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX0), ~0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX1), ~0u);
     EXPECT_EQ(bar0.read(GSP_FALCON2_BROM_PARAADDR0), 0x125A4u);
-    EXPECT_EQ(bar0.read(GSP_FALCON2_BROM_ENGIDMASK), 0x480u);
+    EXPECT_EQ(bar0.read(GSP_FALCON2_BROM_ENGIDMASK), 0x2A480u);
     EXPECT_EQ(bar0.read(GSP_FALCON2_BROM_CURR_UCODE_ID), 0x89u);
     EXPECT_EQ(bar0.read(GSP_FALCON2_MOD_SEL), RSA_3072);
     EXPECT_EQ(bar0.read(GSP_FALCON_BOOTVEC), 0x12000u);
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), START_FALCON);
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), STARTS_THROUGH_ALIAS | FALCON_HALTED);
+}
+
+// An uncached program that may, once started, read other memory the CPU maps cached is loaded through the caches
+TEST(nvidia_falcon, program_reading_cached_memory_is_read_through_caches) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, STARTS_THROUGH_ALIAS | FALCON_HALTED);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.reads_cached_memory = true;
+    program.code_size = 0;
+    program.data_size = 0;
+
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::gsp, program, 0), OK);
+    EXPECT_EQ(bar0.read(GSP_FBIF_TRANSCFG0), TARGET_COHERENT_SYSTEM_MEMORY | PHYSICAL_ADDRESSES);
 }
 
 // A falcon without the alias, halted as the RTX 3080's is after its reset or with every other control bit set, is
@@ -666,7 +688,7 @@ TEST(nvidia_falcon, sec2_program_is_run_through_its_registers) {
         bar0.read(SEC2_FBIF_TRANSCFG0),
         ~TRANSFER_TARGET_MASK | TARGET_NONCOHERENT_SYSTEM_MEMORY | PHYSICAL_ADDRESSES
     );
-    EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFBASE), 0x12345550u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFBASE), 0x12345651u);
     EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFBASE1), 0x4Au);
     EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFMOFFS), 0x341100u);
     EXPECT_EQ(bar0.read(SEC2_FALCON_DMATRFFBOFFS), 0x12000u);
@@ -680,7 +702,7 @@ TEST(nvidia_falcon, sec2_program_is_run_through_its_registers) {
     program.data_size = 0;
     EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::sec2, program, 0), OK);
     EXPECT_EQ(bar0.read(SEC2_FALCON2_BROM_PARAADDR0), 0x125A4u);
-    EXPECT_EQ(bar0.read(SEC2_FALCON2_BROM_ENGIDMASK), 0x480u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON2_BROM_ENGIDMASK), 0x2A480u);
     EXPECT_EQ(bar0.read(SEC2_FALCON2_BROM_CURR_UCODE_ID), 0x89u);
     EXPECT_EQ(bar0.read(SEC2_FALCON2_MOD_SEL), RSA_3072);
     EXPECT_EQ(bar0.read(SEC2_FALCON_BOOTVEC), 0x12000u);
@@ -714,6 +736,75 @@ TEST(nvidia_falcon, sec2_falcon_is_stopped_through_its_registers) {
 
     bar0.write(SEC2_FALCON_HWCFG2, HAS_RISCV_CORE | READY_FOR_RESET);
     EXPECT_EQ(stop_falcon(bar0.regs, falcon_id::sec2, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
+}
+
+// The SEC2 falcon's two mailbox registers, restated here so the tests hold a program's mailboxes to NVIDIA's layout
+static constexpr uint32_t SEC2_FALCON_MAILBOX0 = 0x840040;
+static constexpr uint32_t SEC2_FALCON_MAILBOX1 = 0x840044;
+
+// Mailbox values that differ from each other and from every seed the tests write
+static constexpr falcon_mailboxes PROGRAM_MAILBOXES = {
+    .mailbox0 = 0x13579BDF,
+    .mailbox1 = 0x2468ACE0,
+};
+
+// A run on SEC2 given mailboxes writes each into its own register of SEC2's falcon, leaving the GSP's registers at
+// their seeds, and hands back nothing read from them
+TEST(nvidia_falcon, program_mailboxes_go_through_sec2_registers) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_CPUCTL, STARTS_THROUGH_ALIAS | FALCON_HALTED);
+    bar0.write(SEC2_FALCON_MAILBOX0, ~0u);
+    bar0.write(SEC2_FALCON_MAILBOX1, ~0u);
+    bar0.write(GSP_FALCON_MAILBOX0, 0x5A5A5A5A);
+    bar0.write(GSP_FALCON_MAILBOX1, 0xA5A5A5A5);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.code_size = 0;
+    program.data_size = 0;
+    falcon_mailboxes mailboxes = PROGRAM_MAILBOXES;
+
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::sec2, program, mailboxes, 0), OK);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX0), 0x13579BDFu);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX1), 0x2468ACE0u);
+    EXPECT_EQ(mailboxes.mailbox0, 0x13579BDFu);
+    EXPECT_EQ(mailboxes.mailbox1, 0x2468ACE0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX0), 0x5A5A5A5Au);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX1), 0xA5A5A5A5u);
+}
+
+// A block's load that times out leaves the SEC2 falcon's mailbox registers unwritten and the values to write in place,
+// since the falcon is never started
+TEST(nvidia_falcon, load_timeout_leaves_program_mailboxes_unwritten) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_MAILBOX0, ~0u);
+    bar0.write(SEC2_FALCON_MAILBOX1, ~0u);
+    falcon_mailboxes mailboxes = PROGRAM_MAILBOXES;
+
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::sec2, DISTINCT_PROGRAM, mailboxes, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX0), ~0u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX1), ~0u);
+    EXPECT_EQ(mailboxes.mailbox0, 0x13579BDFu);
+    EXPECT_EQ(mailboxes.mailbox1, 0x2468ACE0u);
+}
+
+// A run whose falcon does not halt still leaves the program's values in the SEC2 falcon's mailbox registers
+TEST(nvidia_falcon, halt_timeout_leaves_program_mailboxes_written) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FALCON_CPUCTL, ~FALCON_HALTED);
+    bar0.write(SEC2_FALCON_MAILBOX0, ~0u);
+    bar0.write(SEC2_FALCON_MAILBOX1, ~0u);
+    falcon_program program = DISTINCT_PROGRAM;
+    program.code_size = 0;
+    program.data_size = 0;
+    falcon_mailboxes mailboxes = PROGRAM_MAILBOXES;
+
+    EXPECT_EQ(run_falcon_program(bar0.regs, falcon_id::sec2, program, mailboxes, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX0), 0x13579BDFu);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_MAILBOX1), 0x2468ACE0u);
+    EXPECT_EQ(mailboxes.mailbox0, 0x13579BDFu);
+    EXPECT_EQ(mailboxes.mailbox1, 0x2468ACE0u);
 }
 
 // NVIDIA's wait for the ready report, and its default timeout for a GPU in graphics mode rather than compute mode
