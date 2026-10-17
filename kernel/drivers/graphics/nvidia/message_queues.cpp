@@ -2,9 +2,11 @@
 
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "hw/barrier.h"
+#include "hw/cpu.h"
 #include "sync/atomic.h"
 
 namespace drivers::nvidia {
@@ -258,6 +260,15 @@ int32_t message_queues::link_status_queue() {
 
     sync::atomic_ref<uint32_t>{*m_driver_read_pointer}.store_relaxed(0);
 
+    log::info(
+        "nvidia: the status queue linked to the firmware's header, which places the %u elements 0x%X bytes and the "
+        "read pointer 0x%X bytes from the queue's start, each reader keeping its read pointer in the queue it %s",
+        header.element_count,
+        header.elements_offset,
+        header.read_pointer_offset,
+        swaps_read_pointers ? "writes" : "reads"
+    );
+
     return OK;
 }
 
@@ -400,6 +411,71 @@ int32_t message_queues::receive(received_message& out, void* payload, uint32_t p
     m_status_sequence_number++;
 
     return OK;
+}
+
+int32_t link_status_queue_within(message_queues& queues, uint64_t timeout_ns) {
+    uint64_t deadline = clock::now_ns() + timeout_ns;
+
+    while (true) {
+        if (queues.link_status_queue() == OK) {
+            return OK;
+        }
+
+        if (clock::now_ns() > deadline) {
+            log::error(
+                "nvidia: the GSP's firmware did not write a status queue header the link accepts within %lu ms",
+                timeout_ns / NS_PER_MS
+            );
+            return ERR_TIMEOUT;
+        }
+
+        cpu::relax();
+    }
+}
+
+// Rereads at once a message failing a check, up to `RECEIVE_TRIES` reads in all, before the poll gives up on it
+static int32_t receive_with_tries(
+    message_queues& queues,
+    received_message& out,
+    void* payload,
+    uint32_t payload_capacity
+) {
+    int32_t rc = ERR_BAD_MESSAGE;
+    for (uint32_t i = 0; i < RECEIVE_TRIES && rc == ERR_BAD_MESSAGE; i++) {
+        rc = queues.receive(out, payload, payload_capacity);
+    }
+
+    return rc;
+}
+
+int32_t receive_within(
+    message_queues& queues,
+    received_message& out,
+    void* payload,
+    uint32_t payload_capacity,
+    uint64_t timeout_ns
+) {
+    uint64_t deadline = clock::now_ns() + timeout_ns;
+
+    while (true) {
+        // Sampled before the read, so a message present when the deadline passes is still received
+        bool is_past_deadline = clock::now_ns() > deadline;
+
+        int32_t rc = receive_with_tries(queues, out, payload, payload_capacity);
+        if (rc != ERR_QUEUE_EMPTY) {
+            return rc;
+        }
+
+        if (is_past_deadline) {
+            log::error(
+                "nvidia: no message from the GSP's firmware arrived in the status queue within %lu ms",
+                timeout_ns / NS_PER_MS
+            );
+            return ERR_TIMEOUT;
+        }
+
+        cpu::relax();
+    }
 }
 
 } // namespace drivers::nvidia

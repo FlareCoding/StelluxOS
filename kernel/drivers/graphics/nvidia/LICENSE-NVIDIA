@@ -264,11 +264,16 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, the
     rule that the GSP's falcon is reset as its firmware is unloaded, after a
     wait for the firmware to suspend the GSP's processor, whether or not the
-    wait succeeds, in falcon.h, and the rules that the firmware is first asked
-    to unload, that the GSP is reset after a wait for it to suspend and that,
+    wait succeeds, in falcon.h, the rules that the firmware is first asked to
+    unload, that the GSP is reset after a wait for it to suspend and that,
     after the GSP's reset, FWSEC runs to put back the programs the VBIOS runs
     before an operating system loads and booter unload runs to take protected
-    memory down, in nvidia_gpu.h and nvidia_gpu.cpp
+    memory down, in nvidia_gpu.h and nvidia_gpu.cpp, and the wait for a
+    message from the firmware, which polls the status queue until a deadline
+    of its own (the default timeout and half as long again), judged by the
+    time taken before each read, and ends once receiving a message fails, in
+    message_queues.h, message_queues.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -537,11 +542,12 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
     nvidia_gpu.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that the
     address of LibOS's arguments is written to the GSP after the GSP's reset
     into its RISC-V core and before booter load runs, in falcon.h and
-    nvidia_gpu.h, and that once booter load succeeds the GSP falcon's OS
-    register is given the bootloader's app version and the boot fails unless the
-    GSP's RISC-V core then reads as running, in falcon.h, falcon.cpp,
-    nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    nvidia_gpu.h, that once booter load succeeds the GSP falcon's OS register
+    is given the bootloader's app version and the boot fails unless the GSP's
+    RISC-V core then reads as running, in falcon.h, falcon.cpp, nvidia_gpu.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and that
+    the status queue is linked once the core reads as running, in
+    message_queues.h, nvidia_gpu.h and nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
@@ -630,9 +636,10 @@ src/nvidia/src/kernel/gpu/gpu_timeout.c
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/unix/src/os.c
-    the default timeout of 4 s in graphics mode, in falcon.h and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and that registry.c packs
-    the registry sent to the GSP, in boot_messages.h
+    the default timeout of 4 s in graphics mode, in nvidia.h,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that registry.c
+    packs the registry sent to the GSP, in boot_messages.h
     SPDX-FileCopyrightText: Copyright (c) 1999-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 nouveau/extract-firmware-nouveau.py
@@ -782,13 +789,21 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     checksum and its last element copied whole, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the status queue
     linked once the firmware has written its header and retried within a
-    deadline, in message_queues.h, the full fence before each link, in
-    message_queues.cpp, the address of the queues' memory given as its first
-    page's, which holds the page table, in gsp_boot_memory.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the queue
-    memory's layout and page table, in
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the queue
-    memory's layout and each message's element count, in
+    deadline, in message_queues.h, message_queues.cpp, nvidia_gpu.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    that deadline of 4 s, in message_queues.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, a received message
+    read up to 3 times in a row while it is not wholly written or fails its
+    checksum or sequence number check, in message_queues.h,
+    message_queues.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the full fence
+    before each link, in message_queues.cpp, the address of the queues' memory
+    given as its first page's, which holds the page table, in
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the queue memory's
+    layout and page table, in
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the queue memory's
+    layout and each message's element count, in
     kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that the resource
     manager's queue takes the resource manager's queue index, in falcon.h,
     falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp

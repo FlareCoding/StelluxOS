@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_FALCON_H
 
 #include "common/types.h"
+#include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
 
 namespace drivers::nvidia {
@@ -12,9 +13,9 @@ namespace drivers::nvidia {
 // in NVIDIA's driver
 constexpr uint64_t FALCON_READY_TIMEOUT_NS = 150000;
 
-// How long each wait for a falcon's memories, its core selection, a block of a program's load or a program's halt
-// may take, NVIDIA's default timeout of 4 s for a GPU in graphics mode rather than compute mode
-constexpr uint64_t FALCON_TIMEOUT_NS = 4000000000;
+// How long each wait for a falcon's memories, its core selection, a block of a program's load or a program's halt may
+// take, NVIDIA's default timeout
+constexpr uint64_t FALCON_TIMEOUT_NS = DEFAULT_TIMEOUT_NS;
 
 /**
  * A program for a falcon, which the falcon's boot ROM runs only once the

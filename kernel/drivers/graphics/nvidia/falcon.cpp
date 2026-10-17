@@ -141,8 +141,6 @@ constexpr uint32_t RSA_3072                   = 0x1;
 constexpr uint32_t UCODE_VERSION_FUSE_STRIDE = 4; // bytes from one fuse register to the next
 constexpr uint32_t UCODE_VERSION_FUSE_COUNT  = 16;
 
-constexpr uint64_t NS_PER_MS = 1000000;
-
 // Without a default, the compiler flags a falcon added to `falcon_id` but missing here
 static const falcon_layout& layout_of(falcon_id falcon) {
     switch (falcon) {
