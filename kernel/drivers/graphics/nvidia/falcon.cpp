@@ -60,6 +60,9 @@ constexpr uint32_t FALCON_RM = 0x084;
 constexpr uint32_t FALCON_MAILBOX0 = 0x040;
 constexpr uint32_t FALCON_MAILBOX1 = 0x044;
 
+// The register NVIDIA calls the falcon's OS register, which its driver sets to the bootloader's app version
+constexpr uint32_t FALCON_OS = 0x080;
+
 // The first of the GSP's eight queue head registers, which NVIDIA's driver writes 0 to after each message it queues
 // for the GSP's resource manager
 constexpr uint32_t GSP_QUEUE_HEAD0 = 0x110C00;
@@ -487,6 +490,41 @@ int32_t run_falcon_program(
     uint64_t timeout_ns
 ) {
     return run_program(regs, falcon, program, &mailboxes, timeout_ns);
+}
+
+int32_t run_booter_load(
+    registers& regs,
+    const falcon_program& booter_load,
+    uint64_t metadata_address,
+    uint64_t timeout_ns
+) {
+    falcon_mailboxes mailboxes = {
+        .mailbox0 = static_cast<uint32_t>(metadata_address),
+        .mailbox1 = static_cast<uint32_t>(metadata_address >> 32),
+    };
+
+    int32_t rc = run_falcon_program(regs, falcon_id::sec2, booter_load, mailboxes, timeout_ns);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (mailboxes.mailbox0 != 0) {
+        log::error(
+            "nvidia: the SEC2 falcon's first mailbox reads 0x%X after booter load, which leaves 0 when it succeeds",
+            mailboxes.mailbox0
+        );
+        return ERR_BAD_STATE;
+    }
+
+    return OK;
+}
+
+void write_gsp_app_version(registers& regs, uint32_t app_version) {
+    regs.write(GSP_FALCON.base + FALCON_OS, app_version);
+}
+
+bool is_gsp_riscv_running(const registers& regs) {
+    return is_riscv_active(regs, GSP_FALCON);
 }
 
 uint32_t read_ucode_fuse_version(const registers& regs, falcon_id falcon, uint32_t ucode_id) {

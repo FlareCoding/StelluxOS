@@ -149,9 +149,9 @@ int32_t write_booter_load_image(
  * the log buffers, so the caller calls `release` only once every processor
  * given any of the addresses, SEC2 or the GSP, is confirmed stopped.
  * `release_after_gsp_stop` stops the GSP and calls `release` only once the GSP
- * reads as stopped. An object dropped without `release` leaves the memory
- * allocated for good, which is what a card whose stop was never confirmed
- * needs.
+ * reads as stopped, and `release_after_sec2_and_gsp_stops` stops SEC2 before
+ * that. An object dropped without `release` leaves the memory allocated for
+ * good, which is what a card whose stop was never confirmed needs.
  */
 class gsp_boot_memory {
 public:
@@ -199,7 +199,7 @@ public:
      * both as NVIDIA's driver allocates it. The reads take the file's mutex,
      * so this must not run in an interrupt handler or under a spinlock, and on
      * the boot thread `booter_load` must be one no other thread uses at the
-     * time.
+     * time. The copy starts on a 4 KiB page and spans whole pages.
      * @param device The card's profile, from `pci_driver::dma_profile`.
      * @param booter_load Must hold booter load open.
      * @param header Must be the header `check_boot_file` returned for
@@ -336,6 +336,30 @@ public:
      * allocated. The cause is logged.
      */
     int32_t release_after_gsp_stop(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns);
+
+    /**
+     * @brief Stop SEC2 with `stop_falcon`, then stop the GSP, freeing all of
+     * the memory as `release_after_gsp_stop` does, but only once SEC2 reads
+     * as stopped too, since a booter load still running on SEC2 may read any
+     * of the memory and may start the GSP's RISC-V core after the GSP's stop.
+     * The stops spin on the calling CPU, as `stop_falcon` describes.
+     * @param regs A view of BAR0, as for `stop_falcon`.
+     * @param boot0 The chip's `PMC_BOOT_0` value, for both resets.
+     * @param ready_timeout_ns How long each wait for the ready report may
+     * take, as for `stop_falcon`.
+     * @param timeout_ns How long each wait for the memories or the core
+     * selection may take, as for `stop_falcon`.
+     * @return `OK` with all of the memory freed, or the `ERR_TIMEOUT` or
+     * `ERR_BAD_STATE` that either stop returns, with all of the memory kept
+     * allocated. When SEC2's stop fails, the GSP's stop still runs and SEC2's
+     * error is returned. The cause is logged.
+     */
+    int32_t release_after_sec2_and_gsp_stops(
+        registers& regs,
+        uint32_t boot0,
+        uint64_t ready_timeout_ns,
+        uint64_t timeout_ns
+    );
 
     // Where the card reaches each part, or 0 while the object does not hold that part
     uint64_t radix3_address() const { return m_radix3_table.phys; }

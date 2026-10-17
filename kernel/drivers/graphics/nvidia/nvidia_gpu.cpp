@@ -450,7 +450,49 @@ int32_t nvidia_gpu_driver::attach() {
         m_boot_memory.libos_arguments_address()
     );
 
-    log::info("nvidia: bring-up stops before booter load, leaving the GSP to be reset before its boot memory is freed");
+    rc = nvidia::reset_falcon(
+        regs,
+        nvidia::falcon_id::sec2,
+        boot0,
+        nvidia::FALCON_READY_TIMEOUT_NS,
+        nvidia::FALCON_TIMEOUT_NS
+    );
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    uint64_t metadata_address = m_boot_memory.protected_metadata_address();
+    nvidia::falcon_program booter_load = nvidia::describe_booter_load_program(
+        booter_parts,
+        m_boot_memory.booter_load_address(),
+        card_profile.coherent()
+    );
+
+    // From booter load's load on, SEC2 may read the boot memory and booter load may start the GSP's RISC-V core, so
+    // `detach()` stops SEC2 before the GSP
+    m_must_stop_sec2 = true;
+
+    rc = nvidia::run_booter_load(regs, booter_load, metadata_address, nvidia::FALCON_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    nvidia::write_gsp_app_version(regs, bootloader_parts.app_version);
+
+    if (!nvidia::is_gsp_riscv_running(regs)) {
+        log::error("nvidia: the GSP's RISC-V core does not read as running after booter load");
+        return nvidia::ERR_BAD_STATE;
+    }
+
+    log::info(
+        "nvidia: booter load ran on SEC2 with protected memory's metadata at 0x%lX, and the GSP's RISC-V core reads "
+        "as running",
+        metadata_address
+    );
+
+    log::info(
+        "nvidia: bring-up stops with the GSP's RISC-V core running, leaving SEC2 and the GSP to be stopped in detach"
+    );
 
     return DECLINED;
 }
@@ -458,8 +500,9 @@ int32_t nvidia_gpu_driver::attach() {
 int32_t nvidia_gpu_driver::detach() {
     int32_t stop_rc = nvidia::OK;
     if (m_must_stop_gsp) {
-        stop_rc = stop_gsp_and_free_boot_memory();
+        stop_rc = stop_falcons_and_free_boot_memory();
         m_must_stop_gsp = false;
+        m_must_stop_sec2 = false;
     }
 
     int32_t rc = pci_driver::detach();
@@ -470,21 +513,37 @@ int32_t nvidia_gpu_driver::detach() {
     return rc;
 }
 
-int32_t nvidia_gpu_driver::stop_gsp_and_free_boot_memory() {
+// NVIDIA's driver asks the firmware to unload and waits for the GSP to suspend before resetting it, then puts back the
+// programs the VBIOS runs before an operating system loads and takes protected memory down. This driver only resets.
+int32_t nvidia_gpu_driver::stop_falcons_and_free_boot_memory() {
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
 
-    int32_t rc = m_boot_memory.release_after_gsp_stop(
-        regs,
-        m_boot0,
-        nvidia::FALCON_READY_TIMEOUT_NS,
-        nvidia::FALCON_TIMEOUT_NS
-    );
+    int32_t rc = nvidia::OK;
+    if (m_must_stop_sec2) {
+        rc = m_boot_memory.release_after_sec2_and_gsp_stops(
+            regs,
+            m_boot0,
+            nvidia::FALCON_READY_TIMEOUT_NS,
+            nvidia::FALCON_TIMEOUT_NS
+        );
+    } else {
+        rc = m_boot_memory.release_after_gsp_stop(
+            regs,
+            m_boot0,
+            nvidia::FALCON_READY_TIMEOUT_NS,
+            nvidia::FALCON_TIMEOUT_NS
+        );
+    }
+
     if (rc != nvidia::OK) {
-        log::error("nvidia: the GSP was not confirmed stopped, so all of its boot memory stays allocated for good");
+        log::error(
+            "nvidia: a falcon that detach resets was not confirmed stopped, so all of the GSP's boot memory stays "
+            "allocated for good"
+        );
         return rc;
     }
 
-    log::info("nvidia: the GSP reads as stopped after its reset, and all of its boot memory is freed");
+    log::info("nvidia: each falcon that detach resets reads as stopped, and all of the GSP's boot memory is freed");
 
     return nvidia::OK;
 }

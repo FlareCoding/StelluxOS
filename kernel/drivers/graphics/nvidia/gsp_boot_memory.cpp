@@ -668,6 +668,22 @@ int32_t gsp_boot_memory::release_after_gsp_stop(
     return OK;
 }
 
+int32_t gsp_boot_memory::release_after_sec2_and_gsp_stops(
+    registers& regs,
+    uint32_t boot0,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns
+) {
+    int32_t rc = stop_falcon(regs, falcon_id::sec2, boot0, ready_timeout_ns, timeout_ns);
+    if (rc != OK) {
+        // The GSP's stop runs even so, though the memory stays allocated for a SEC2 that may still read it
+        (void)stop_falcon(regs, falcon_id::gsp, boot0, ready_timeout_ns, timeout_ns);
+        return rc;
+    }
+
+    return release_after_gsp_stop(regs, boot0, ready_timeout_ns, timeout_ns);
+}
+
 void gsp_boot_memory::free_firmware_arguments() {
     for (dma::buffer& log_buffer : m_log_buffers) {
         RUN_ELEVATED(dma::free_pages(log_buffer));

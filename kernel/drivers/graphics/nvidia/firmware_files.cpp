@@ -903,4 +903,26 @@ int32_t select_booter_signature(
     return OK;
 }
 
+falcon_program describe_booter_load_program(
+    const booter_layout& layout,
+    uint64_t dma_address,
+    bool reads_cached_memory
+) {
+    return {
+        .dma_address = dma_address,
+        .is_cached = false,
+        .reads_cached_memory = reads_cached_memory,
+        .code_offset = layout.code_offset,
+        .code_size = layout.code_size,
+        .imem_physical_base = 0,
+        .imem_virtual_base = layout.code_offset,
+        .data_offset = layout.data_offset,
+        .data_size = layout.data_size,
+        .dmem_physical_base = 0,
+        .signature_offset = layout.signature_slot,
+        .engine_mask = layout.engine_mask,
+        .ucode_id = static_cast<uint8_t>(layout.ucode_id),
+    };
+}
+
 } // namespace drivers::nvidia
