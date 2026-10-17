@@ -86,12 +86,99 @@ enum class falcon_id : uint8_t {
 int32_t reset_gsp_falcon(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns);
 
 /**
+ * @brief Whether the GSP has a RISC-V core, the core its firmware runs on, as
+ * its falcon's hardware configuration register says. NVIDIA's driver boots
+ * the GSP's firmware only on a GSP that has one, which it checks before FWSEC
+ * runs.
+ * @param regs A view of BAR0.
+ * @return Whether the RISC-V field of the falcon's hardware configuration
+ * register is set.
+ */
+bool has_gsp_riscv_core(const registers& regs);
+
+/**
+ * @brief Reset the GSP into its RISC-V core, as NVIDIA's driver does once
+ * FWSEC has run and before it queues its first message for the GSP's
+ * firmware. The reset gives the falcon up to `ready_timeout_ns` to report it
+ * is ready for a reset, going on without the report when it does not come,
+ * sets and then releases the GSP's engine reset, waits for the falcon to
+ * finish clearing IMEM and DMEM, and then selects the RISC-V core in its boot
+ * control register, also setting the register's field NVIDIA's driver calls
+ * BRFETCH. The core is left unstarted.
+ * The waits spin on the calling CPU instead of sleeping, so a slow falcon can
+ * hold the CPU for up to `ready_timeout_ns` and `timeout_ns`.
+ * @param regs A view of BAR0. The card's boot firmware must have finished, as
+ * `wait_for_boot_firmware` waits for, since the GSP runs it and the reset
+ * would stop it. The GSP must have a RISC-V core, as `has_gsp_riscv_core`
+ * reports, since the reset selects that core.
+ * @param ready_timeout_ns How long the wait for the ready report may take,
+ * `FALCON_READY_TIMEOUT_NS` at bring-up.
+ * @param timeout_ns How long the wait for the memories may take,
+ * `FALCON_TIMEOUT_NS` at bring-up. The wait reads its register at least once,
+ * even for a timeout of 0. NVIDIA's driver counts its default timeout once
+ * for a whole call while its thread-state timeout is on, and for each wait
+ * otherwise.
+ * @return `OK`, or `ERR_TIMEOUT` when the falcon has not finished clearing
+ * its memories within `timeout_ns`, where NVIDIA's driver stops too. The
+ * cause is logged, and the boot control register is left unwritten.
+ */
+int32_t reset_gsp_into_riscv(registers& regs, uint64_t ready_timeout_ns, uint64_t timeout_ns);
+
+/**
+ * @brief Tell the GSP's firmware that messages wait in the command queue, by
+ * writing 0 to the queue head register of its resource manager (the
+ * firmware's task that serves the driver's requests), as NVIDIA's driver does
+ * after each message it queues.
+ * @param regs A view of BAR0. The GSP must have been reset into its RISC-V
+ * core with `reset_gsp_into_riscv`, which NVIDIA's driver does before it
+ * queues the first message.
+ */
+void notify_gsp_of_queued_messages(registers& regs);
+
+/**
+ * @brief Write the address of the arguments of LibOS (the small operating
+ * system the GSP's firmware runs on) into the GSP falcon's two mailbox
+ * registers, the low 32 bits into the first and the high 32 bits into the
+ * second. NVIDIA's driver writes them before SEC2 runs booter load, the
+ * program that boots the GSP's firmware.
+ * @param regs A view of BAR0. The GSP must have been reset into its RISC-V
+ * core with `reset_gsp_into_riscv`, after which NVIDIA's driver writes them
+ * too, since a later reset of the GSP clears both registers.
+ * @param address The arguments' first byte, as the card addresses memory.
+ */
+void write_libos_arguments_address(registers& regs, uint64_t address);
+
+/**
  * @brief Whether the GSP's falcon is halted, as it is once the card's boot
  * firmware has finished with it and once a program run on it stops.
  * @param regs A view of BAR0.
  * @return Whether the halted bit of the falcon's control register is set.
  */
 bool is_gsp_falcon_halted(const registers& regs);
+
+/**
+ * @brief Stop the GSP: reset its falcon as `reset_gsp_falcon` does, then
+ * confirm that the falcon reads as halted and that the RISC-V core does not
+ * read as running, as the active field of the core's control register shows.
+ * NVIDIA's driver gives the GSP this reset as it unloads the firmware, after
+ * waiting for the firmware to suspend the GSP's processor, whether or not the
+ * wait succeeds. This driver stops the GSP with it before freeing the memory
+ * the GSP was given.
+ * The waits spin on the calling CPU instead of sleeping, so a slow falcon can
+ * hold the CPU for up to twice `ready_timeout_ns` and six times `timeout_ns`.
+ * @param regs A view of BAR0. The card's boot firmware must have finished, as
+ * for `reset_gsp_falcon`.
+ * @param boot0 The chip's `PMC_BOOT_0` value, for the reset.
+ * @param ready_timeout_ns How long each wait for the ready report may take,
+ * as for `reset_gsp_falcon`.
+ * @param timeout_ns How long each wait for the memories or the core selection
+ * may take, as for `reset_gsp_falcon`.
+ * @return `OK` once the GSP reads as stopped, `ERR_TIMEOUT` when the reset
+ * times out as `reset_gsp_falcon` describes, or `ERR_BAD_STATE` when, after
+ * the reset, the falcon does not read as halted or the RISC-V core reads as
+ * running. The cause is logged.
+ */
+int32_t stop_gsp(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns);
 
 /**
  * @brief Load `program` into the GSP's falcon and run it until the falcon
@@ -117,7 +204,8 @@ bool is_gsp_falcon_halted(const registers& regs);
  * and `dma_address` plus `code_size` must also be multiples of 256. The DMA
  * engine reads whole blocks, so the memory must hold each part rounded up to
  * 256 bytes, and must stay allocated while the falcon may read it: until this
- * returns `OK`, and for good after any other result.
+ * returns `OK`, and after any other result until the GSP's falcon is reset and
+ * confirmed halted, as `stop_gsp` does.
  * @param timeout_ns How long each block's load and the run may take,
  * `FALCON_TIMEOUT_NS` at bring-up. Each wait reads its register at least
  * once, even for a timeout of 0. NVIDIA's driver counts its default timeout

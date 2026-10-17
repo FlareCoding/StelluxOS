@@ -13,6 +13,7 @@
 TEST_SUITE(nvidia_falcon);
 
 using drivers::nvidia::ERR_BAD_FIRMWARE;
+using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::FALCON_READY_TIMEOUT_NS;
 using drivers::nvidia::FALCON_TIMEOUT_NS;
@@ -20,10 +21,15 @@ using drivers::nvidia::OK;
 using drivers::nvidia::booter_layout;
 using drivers::nvidia::booter_signature;
 using drivers::nvidia::falcon_program;
+using drivers::nvidia::has_gsp_riscv_core;
+using drivers::nvidia::notify_gsp_of_queued_messages;
 using drivers::nvidia::registers;
 using drivers::nvidia::reset_gsp_falcon;
+using drivers::nvidia::reset_gsp_into_riscv;
 using drivers::nvidia::run_gsp_falcon_program;
 using drivers::nvidia::select_booter_signature;
+using drivers::nvidia::stop_gsp;
+using drivers::nvidia::write_libos_arguments_address;
 
 // Registers and fields the reset uses, restated here so the tests hold the reset to NVIDIA's layout rather than to
 // its own constants
@@ -189,6 +195,118 @@ TEST(nvidia_falcon, falcon_core_is_kept) {
     EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), ~RISCV_CORE_SELECTED);
 }
 
+// The RTX 3080's GSP has a RISC-V core, and a GSP whose hardware configuration has every bit but the RISC-V bit set
+// has none
+TEST(nvidia_falcon, riscv_core_is_read_from_hardware_configuration) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+
+    bar0.write(GSP_FALCON_HWCFG2, RTX_3080_HWCFG2);
+    EXPECT_TRUE(has_gsp_riscv_core(bar0.regs));
+
+    bar0.write(GSP_FALCON_HWCFG2, ~HAS_RISCV_CORE);
+    EXPECT_FALSE(has_gsp_riscv_core(bar0.regs));
+}
+
+// Registers and values the reset into the RISC-V core and the steps after it use or leave alone, restated here so the
+// tests hold them to NVIDIA's layout
+static constexpr uint32_t GSP_FALCON_MAILBOX0 = 0x110040;
+static constexpr uint32_t GSP_FALCON_MAILBOX1 = 0x110044;
+static constexpr uint32_t GSP_QUEUE_HEAD0     = 0x110C00;
+static constexpr uint32_t GSP_QUEUE_HEAD1     = 0x110C08;
+
+static constexpr uint32_t SELECT_RISCV_CORE = 0x111; // the RISC-V core, the valid bit and BRFETCH
+
+// What the RM register holds before a reset that must leave it alone, as only the full reset writes it
+static constexpr uint32_t RM_BEFORE_RESET = 0x2468ACE1;
+
+// With the RTX 3080's hardware configuration and boot control values and every engine bit set, the GSP is reset into
+// its RISC-V core, releasing its engine reset with the register's other bits kept and leaving the RM register alone
+TEST(nvidia_falcon, gsp_is_reset_into_riscv) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_ENGINE, ~0u);
+    bar0.write(GSP_FALCON_HWCFG2, RTX_3080_HWCFG2);
+    bar0.write(GSP_RISCV_BCR_CTRL, RTX_3080_BCR);
+    bar0.write(GSP_FALCON_RM, RM_BEFORE_RESET);
+
+    EXPECT_EQ(reset_gsp_into_riscv(bar0.regs, 0, 0), OK);
+    EXPECT_EQ(bar0.read(GSP_FALCON_ENGINE), ~ENGINE_RESET);
+    EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), SELECT_RISCV_CORE);
+    EXPECT_EQ(bar0.read(GSP_FALCON_RM), RM_BEFORE_RESET);
+}
+
+// A GSP with its RISC-V core already selected is reset into it with no switch to its falcon core, which only the full
+// reset makes and which would time out here, since the fake never confirms a switch
+TEST(nvidia_falcon, reset_into_riscv_makes_no_core_switch) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_HWCFG2, RTX_3080_HWCFG2);
+    bar0.write(GSP_RISCV_BCR_CTRL, RISCV_CORE_SELECTED | CORE_SELECT_VALID);
+
+    EXPECT_EQ(reset_gsp_into_riscv(bar0.regs, 0, SHORT_TIMEOUT_NS), OK);
+    EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), SELECT_RISCV_CORE);
+}
+
+// A falcon that never reports it is ready for a reset is reset into the RISC-V core once the ready timeout passes, and
+// the boot control register, which starts with every bit set, is written whole with the selection
+TEST(nvidia_falcon, reset_into_riscv_goes_on_without_ready_bit) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_HWCFG2, HAS_RISCV_CORE);
+    bar0.write(GSP_RISCV_BCR_CTRL, ~0u);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(reset_gsp_into_riscv(bar0.regs, SHORT_TIMEOUT_NS, 0), OK);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), SELECT_RISCV_CORE);
+}
+
+// A falcon that keeps clearing its memories fails the reset into the RISC-V core once the timeout passes, with the
+// boot control register left as it was
+TEST(nvidia_falcon, reset_into_riscv_waits_for_cleared_memories) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_HWCFG2, HAS_RISCV_CORE | CLEARING_MEMORIES | READY_FOR_RESET);
+    bar0.write(GSP_RISCV_BCR_CTRL, RTX_3080_BCR);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(reset_gsp_into_riscv(bar0.regs, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), RTX_3080_BCR);
+}
+
+// The notice writes 0 to the resource manager's queue head register and leaves the next one alone
+TEST(nvidia_falcon, queued_messages_notice_writes_resource_manager_queue_head) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_QUEUE_HEAD0, ~0u);
+    bar0.write(GSP_QUEUE_HEAD1, ~0u);
+
+    notify_gsp_of_queued_messages(bar0.regs);
+    EXPECT_EQ(bar0.read(GSP_QUEUE_HEAD0), 0u);
+    EXPECT_EQ(bar0.read(GSP_QUEUE_HEAD1), ~0u);
+}
+
+// An address with bits set past 16 bits in both halves goes low half into the first mailbox and high half into the
+// second, and each mailbox, which starts with every bit set, is written whole
+TEST(nvidia_falcon, libos_arguments_address_is_split_over_mailboxes) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_MAILBOX0, ~0u);
+    bar0.write(GSP_FALCON_MAILBOX1, ~0u);
+
+    write_libos_arguments_address(bar0.regs, 0x876543219ABCD000);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX0), 0x9ABCD000u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX1), 0x87654321u);
+}
+
 // Registers and fields loading and running a program use, restated here so the tests hold the run to NVIDIA's layout
 static constexpr uint32_t GSP_FALCON_CPUCTL              = 0x110100;
 static constexpr uint32_t GSP_FALCON_BOOTVEC             = 0x110104;
@@ -351,6 +469,91 @@ TEST(nvidia_falcon, run_through_alias_fails_without_halt) {
     EXPECT_EQ(run_gsp_falcon_program(bar0.regs, program, 0), ERR_TIMEOUT);
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), START_FALCON);
     EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), ~FALCON_HALTED);
+}
+
+// The RISC-V core's control register and its active field, which stopping the GSP reads after its reset, restated
+// here so the tests hold the stop to NVIDIA's layout
+static constexpr uint32_t GSP_RISCV_CPUCTL = 0x111388;
+static constexpr uint32_t RISCV_ACTIVE     = 0x80;
+
+// The falcon's and the RISC-V core's control registers as the RTX 3080's read after its GSP's reset, the falcon halted
+// and the RISC-V core not active
+static constexpr uint32_t RTX_3080_CPUCTL       = 0x10;
+static constexpr uint32_t RTX_3080_RISCV_CPUCTL = 0x10;
+
+// The RTX 3080's GSP reads as stopped after its reset, which writes the RM register, and so does a GSP whose falcon
+// control register has every bit set and whose RISC-V control register has every bit but the active bit set
+TEST(nvidia_falcon, rtx_3080_gsp_is_stopped) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_HWCFG2, RTX_3080_HWCFG2);
+    bar0.write(GSP_RISCV_BCR_CTRL, RTX_3080_BCR);
+    bar0.write(GSP_FALCON_CPUCTL, RTX_3080_CPUCTL);
+    bar0.write(GSP_RISCV_CPUCTL, RTX_3080_RISCV_CPUCTL);
+
+    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(bar0.read(GSP_FALCON_RM), RTX_3080_BOOT_0);
+
+    bar0.write(GSP_FALCON_CPUCTL, ~0u);
+    bar0.write(GSP_RISCV_CPUCTL, ~RISCV_ACTIVE);
+    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+}
+
+// A falcon with every control bit but the halted bit set does not read as stopped after the reset
+TEST(nvidia_falcon, gsp_is_not_stopped_without_halted_falcon) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, ~FALCON_HALTED);
+
+    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
+}
+
+// A RISC-V core whose control register has every bit set reads as running, so the GSP is not stopped even with its
+// falcon halted
+TEST(nvidia_falcon, gsp_is_not_stopped_with_running_riscv_core) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_HWCFG2, RTX_3080_HWCFG2);
+    bar0.write(GSP_RISCV_BCR_CTRL, RTX_3080_BCR);
+    bar0.write(GSP_FALCON_CPUCTL, RTX_3080_CPUCTL);
+    bar0.write(GSP_RISCV_CPUCTL, ~0u);
+
+    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
+}
+
+// A reset whose memories never clear fails the stop once the memory timeout passes, not at the ready timeout of 0, even
+// with the falcon halted and the RISC-V core not running
+TEST(nvidia_falcon, gsp_stop_fails_when_its_reset_times_out) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_HWCFG2, CLEARING_MEMORIES);
+    bar0.write(GSP_FALCON_CPUCTL, RTX_3080_CPUCTL);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(GSP_FALCON_RM), 0u);
+}
+
+// A memory timeout the stop must never spend on a ready wait
+static constexpr uint64_t LONG_MEMORY_TIMEOUT_NS = 1000000000;
+
+// A falcon that never reports it is ready holds the stop for the short timeout of each of its two ready waits, not for
+// the long timeout of the memory waits, which end at once
+TEST(nvidia_falcon, gsp_stop_gives_each_ready_wait_the_ready_timeout) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, RTX_3080_CPUCTL);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(stop_gsp(bar0.regs, RTX_3080_BOOT_0, SHORT_TIMEOUT_NS, LONG_MEMORY_TIMEOUT_NS), OK);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, 2 * SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
 }
 
 // NVIDIA's wait for the ready report, and its default timeout for a GPU in graphics mode rather than compute mode

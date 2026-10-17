@@ -1,6 +1,7 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
 
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
+#include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "common/logging.h"
@@ -638,12 +639,33 @@ void gsp_boot_memory::fill_libos_arguments() {
     };
 }
 
+void gsp_boot_memory::keep_fwsec_copy(const dma::buffer& copy) {
+    m_fwsec_copy = copy;
+}
+
 void gsp_boot_memory::release() {
     free_bootloader_and_gsp_image_copies();
     free_firmware_arguments();
     RUN_ELEVATED(dma::free_pages(m_booter_load));
     RUN_ELEVATED(dma::free_pages(m_message_queues));
     RUN_ELEVATED(dma::free_pages(m_protected_metadata));
+    RUN_ELEVATED(dma::free_pages(m_fwsec_copy));
+}
+
+int32_t gsp_boot_memory::release_after_gsp_stop(
+    registers& regs,
+    uint32_t boot0,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns
+) {
+    int32_t rc = stop_gsp(regs, boot0, ready_timeout_ns, timeout_ns);
+    if (rc != OK) {
+        return rc;
+    }
+
+    release();
+
+    return OK;
 }
 
 void gsp_boot_memory::free_firmware_arguments() {
