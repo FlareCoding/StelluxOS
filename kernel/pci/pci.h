@@ -69,7 +69,7 @@ constexpr uint8_t MAX_CAPS = 16;
 constexpr uint32_t MAX_DEVICES = 64;
 
 struct bar {
-    uint64_t phys;
+    uint64_t phys; // 0 for a BAR the firmware left unassigned
     uint64_t size;
     uint8_t type;
     bool prefetchable;
