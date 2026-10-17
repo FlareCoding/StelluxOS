@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
+#include "clock/clock.h"
 #include "common/string.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -14,11 +15,17 @@ using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_NOT_LINKED;
 using drivers::nvidia::ERR_QUEUE_EMPTY;
 using drivers::nvidia::ERR_QUEUE_FULL;
+using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::MESSAGE_PAYLOAD_MAX_BYTES;
 using drivers::nvidia::OK;
 using drivers::nvidia::QUEUE_MEMORY_BYTES;
+using drivers::nvidia::RECEIVE_TIMEOUT_NS;
+using drivers::nvidia::RECEIVE_TRIES;
+using drivers::nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS;
+using drivers::nvidia::link_status_queue_within;
 using drivers::nvidia::message_queues;
+using drivers::nvidia::receive_within;
 using drivers::nvidia::received_message;
 
 // The queue memory's layout and a queue's, as NVIDIA's driver lays them out, restated here so the tests hold the
@@ -910,4 +917,97 @@ TEST(nvidia_message_queues, write_pointer_moved_back_or_past_the_ring_shows_no_m
         expect_received(queues, payload.bytes, payload.count);
         EXPECT_EQ(memory.read(header.driver_read_pointer()), 2u);
     }
+}
+
+// NVIDIA's link timeout, its poll timeout (its default of 4 s and half as long again) and the most times it reads one
+// message in a row, restated here so the tests hold the waits to NVIDIA's values rather than to the driver's constants
+static constexpr uint64_t NVIDIA_STATUS_QUEUE_LINK_TIMEOUT_NS = 4000000000;
+static constexpr uint64_t NVIDIA_RECEIVE_TIMEOUT_NS           = 6000000000;
+static constexpr uint32_t NVIDIA_RECEIVE_TRIES                = 3;
+
+// The link and the poll get NVIDIA's timeouts, and a message gets at most NVIDIA's number of reads in a row
+TEST(nvidia_message_queues, waits_are_nvidias) {
+    EXPECT_EQ(STATUS_QUEUE_LINK_TIMEOUT_NS, NVIDIA_STATUS_QUEUE_LINK_TIMEOUT_NS);
+    EXPECT_EQ(RECEIVE_TIMEOUT_NS, NVIDIA_RECEIVE_TIMEOUT_NS);
+    EXPECT_EQ(RECEIVE_TRIES, NVIDIA_RECEIVE_TRIES);
+}
+
+// A wait that must run out gets the short timeout and lasts at least that long, a wait an error must end at once gets
+// the long timeout, and each timed wait ends within the limit, far short of the long timeout
+static constexpr uint64_t SHORT_TIMEOUT_NS   = 1000000;
+static constexpr uint64_t LONG_TIMEOUT_NS    = 1000000000;
+static constexpr uint64_t WAIT_TIME_LIMIT_NS = 100000000;
+
+// The link waits out its timeout while the firmware has written no header, and since it is tried at least once, a
+// header already written links with no time to wait
+TEST(nvidia_message_queues, status_queue_link_waits_out_its_timeout) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(link_status_queue_within(queues, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
+
+    status_queue_test_header{}.write_to(memory);
+    EXPECT_EQ(link_status_queue_within(queues, 0), OK);
+}
+
+// Room for the payload `receive_waits_out_its_timeout_only_on_an_empty_queue` receives
+static constexpr uint32_t WAIT_BUFFER_BYTES = 64;
+
+// A wait on an empty queue lasts its timeout and a waiting message is received with no time to wait, while an unlinked
+// queue, a refused message or too little room ends a long wait at once, leaving the message in place
+TEST(nvidia_message_queues, receive_waits_out_its_timeout_only_on_an_empty_queue) {
+    static constexpr status_queue_test_header HEADER = MOVED_HEADER;
+
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    queue_test_payload payload(13);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    uint8_t buffer[WAIT_BUFFER_BYTES];
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(receive_within(queues, out, buffer, sizeof(buffer), LONG_TIMEOUT_NS), ERR_NOT_LINKED);
+    EXPECT_LT(clock::now_ns() - start, WAIT_TIME_LIMIT_NS);
+
+    HEADER.write_to(memory);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+    start = clock::now_ns();
+    EXPECT_EQ(receive_within(queues, out, buffer, sizeof(buffer), SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
+
+    message.frame(1, 1, payload.bytes, payload.count);
+    message.store(memory, HEADER, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    start = clock::now_ns();
+    EXPECT_EQ(receive_within(queues, out, buffer, sizeof(buffer), LONG_TIMEOUT_NS), ERR_BAD_MESSAGE);
+    EXPECT_LT(clock::now_ns() - start, WAIT_TIME_LIMIT_NS);
+
+    message.frame(1, 0, payload.bytes, payload.count);
+    message.store(memory, HEADER, 0);
+    start = clock::now_ns();
+    EXPECT_EQ(receive_within(queues, out, buffer, payload.count - 1, LONG_TIMEOUT_NS), ERR_TOO_LARGE);
+    EXPECT_LT(clock::now_ns() - start, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(out.function, STALE_WORD);
+    EXPECT_EQ(out.result, STALE_WORD);
+    EXPECT_EQ(out.payload_bytes, STALE_WORD);
+    EXPECT_EQ(memory.read(HEADER.driver_read_pointer()), 0u);
+
+    EXPECT_EQ(receive_within(queues, out, buffer, sizeof(buffer), 0), OK);
+    EXPECT_EQ(out.function, FUNCTION);
+    EXPECT_EQ(out.result, RESULT);
+    EXPECT_EQ(out.payload_bytes, payload.count);
+    EXPECT_EQ(string::memcmp(buffer, payload.bytes, payload.count), 0);
+    EXPECT_EQ(memory.read(HEADER.driver_read_pointer()), 1u);
 }

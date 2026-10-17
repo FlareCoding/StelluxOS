@@ -490,8 +490,40 @@ int32_t nvidia_gpu_driver::attach() {
         metadata_address
     );
 
+    rc = nvidia::link_status_queue_within(queues, nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    // A payload may fill nearly 64 KiB, more than the boot thread's stack can spare
+    void* payload = heap::ualloc(nvidia::MESSAGE_PAYLOAD_MAX_BYTES);
+    if (!payload) {
+        log::error("nvidia: allocating %u bytes for a message's payload failed", nvidia::MESSAGE_PAYLOAD_MAX_BYTES);
+        return nvidia::ERR_NO_MEMORY;
+    }
+
+    nvidia::received_message message = {};
+    rc = nvidia::receive_within(
+        queues,
+        message,
+        payload,
+        nvidia::MESSAGE_PAYLOAD_MAX_BYTES,
+        nvidia::RECEIVE_TIMEOUT_NS
+    );
+    heap::ufree(payload);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
     log::info(
-        "nvidia: bring-up stops with the GSP's RISC-V core running, leaving SEC2 and the GSP to be stopped in detach"
+        "nvidia: the GSP's firmware sent function 0x%X first, with result 0x%X and %u payload bytes",
+        message.function,
+        message.result,
+        message.payload_bytes
+    );
+
+    log::info(
+        "nvidia: bring-up stops at the firmware's first message, leaving SEC2 and the GSP to be stopped in detach"
     );
 
     return DECLINED;

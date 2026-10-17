@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_MESSAGE_QUEUES_H
 
 #include "common/types.h"
+#include "drivers/graphics/nvidia/nvidia.h"
 
 namespace drivers::nvidia {
 
@@ -18,6 +19,17 @@ constexpr uint32_t QUEUE_PAGE_TABLE_ENTRIES = QUEUE_MEMORY_BYTES / 0x1000;
 
 // The most payload bytes one message carries: 16 elements of 4 KiB less the message's 80 bytes of headers
 constexpr uint32_t MESSAGE_PAYLOAD_MAX_BYTES = 16 * 0x1000 - 80;
+
+// The timeout NVIDIA's driver gives its retries of the status queue's link once the GSP's RISC-V core runs
+constexpr uint64_t STATUS_QUEUE_LINK_TIMEOUT_NS = 4000000000;
+
+// The timeout NVIDIA's driver gives its poll of the status queue for a message it waits for, its default timeout and
+// half as long again
+constexpr uint64_t RECEIVE_TIMEOUT_NS = DEFAULT_TIMEOUT_NS + DEFAULT_TIMEOUT_NS / 2;
+
+// How many times in a row NVIDIA's driver reads a message not wholly written or failing its checksum or sequence number
+// check before it stops waiting, counting no read of an older message it then consumes
+constexpr uint32_t RECEIVE_TRIES = 3;
 
 // What `message_queues::receive` reports of a message the firmware wrote
 struct received_message {
@@ -127,11 +139,13 @@ public:
     /**
      * @brief Link the status queue once the firmware runs: check the header
      * the firmware wrote at the start of the status queue, then set the
-     * driver's read pointer to 0 where NVIDIA's driver sets it, in the
-     * command queue's header page when both queues' headers ask to swap and
-     * where the status queue's header places it otherwise. From then on
-     * `send` reads the firmware's read pointer where the status queue's
-     * header places it when both ask to swap. A call after `OK` changes
+     * driver's read pointer to 0 where NVIDIA's driver sets it, in the command
+     * queue's header page when both queues' headers ask to swap and where the
+     * status queue's header places it otherwise. From then on `send` reads the
+     * firmware's read pointer where the status queue's header places it when
+     * both ask to swap. The first `OK` logs the header's element count, where
+     * it places the first element and the read pointer, and whether both
+     * queues' headers ask to swap. A call after `OK` changes nothing and logs
      * nothing.
      * @return `OK`, or `ERR_NOT_LINKED` when the header gives another version,
      * queue size or element size than NVIDIA's, a first element ending past
@@ -141,7 +155,8 @@ public:
      * the header, its zeros fail these checks. The error writes nothing. A
      * retry returns `OK` once the firmware has written a header that passes,
      * which a firmware that stops first or lays the queue out otherwise never
-     * does, so the caller must bound its retries with a deadline.
+     * does, so the caller must bound its retries with a deadline, as
+     * `link_status_queue_within` does.
      */
     int32_t link_status_queue();
 
@@ -175,9 +190,9 @@ public:
      * exceeds `payload_capacity`, the last two logged. Every error leaves the
      * message in place and writes nothing, so a later call checks the same
      * message again. A caller retrying `ERR_QUEUE_EMPTY` or `ERR_BAD_MESSAGE`
-     * must bound its retries with a deadline, as a firmware that stops writes
-     * no message and a message that fails a check after the firmware wrote it
-     * whole never passes.
+     * must bound its retries, as `receive_within` does, since a firmware that
+     * stops writes no message and a message that fails a check after the
+     * firmware wrote it whole never passes.
      */
     int32_t receive(received_message& out, void* payload, uint32_t payload_capacity);
 
@@ -195,6 +210,54 @@ private:
     uint32_t  m_status_read_pointer;
     uint32_t  m_status_sequence_number;
 };
+
+/**
+ * @brief Link the status queue once the GSP's firmware has written its header,
+ * calling `queues.link_status_queue()` until it returns `OK` or `timeout_ns`
+ * passes, as NVIDIA's driver retries its link once the GSP's RISC-V core runs.
+ * The call spins on the calling CPU without sleeping, holding it for up to
+ * `timeout_ns` and then until its last try returns.
+ * @param timeout_ns How long to retry, `STATUS_QUEUE_LINK_TIMEOUT_NS` at
+ * bring-up. The link is tried at least once.
+ * @return `OK`, or `ERR_TIMEOUT`, which is logged, when no try returned `OK`
+ * within `timeout_ns`, as when the firmware stops before writing the header or
+ * lays the queue out otherwise.
+ */
+int32_t link_status_queue_within(message_queues& queues, uint64_t timeout_ns);
+
+/**
+ * @brief Receive the next message in the status queue as
+ * `message_queues::receive` does, calling it until it returns anything but
+ * `ERR_QUEUE_EMPTY` or `timeout_ns` passes. A message that fails a check is
+ * read up to `RECEIVE_TRIES` times in a row before the call gives up on it,
+ * since bytes the firmware is still writing may pass a later read. NVIDIA's
+ * driver rereads one only when it is not wholly written or fails its checksum
+ * or sequence number check. The call spins on the calling CPU without
+ * sleeping, holding it for up to `timeout_ns` and then until its last read
+ * returns.
+ * @param out Receives the message's function, result and payload size, which
+ * never exceeds `payload_capacity` or `MESSAGE_PAYLOAD_MAX_BYTES`, on `OK`,
+ * and is left unchanged on an error.
+ * @param payload Where the payload is copied, as for
+ * `message_queues::receive`.
+ * @param payload_capacity How many bytes `payload` holds.
+ * @param timeout_ns How long to wait for a message, `RECEIVE_TIMEOUT_NS` at
+ * bring-up. The queue is read at least once, and `ERR_TIMEOUT` follows only a
+ * read begun after `timeout_ns` passed.
+ * @return `OK`, `ERR_TIMEOUT`, which is logged, when no message arrives within
+ * `timeout_ns`, `ERR_BAD_MESSAGE` when the next message fails a check on each
+ * of `RECEIVE_TRIES` reads in a row, or `ERR_NOT_LINKED` or `ERR_TOO_LARGE` as
+ * soon as `message_queues::receive` returns either. `message_queues::receive`
+ * logs each refused read and `ERR_TOO_LARGE`. Every error leaves the message
+ * in place.
+ */
+int32_t receive_within(
+    message_queues& queues,
+    received_message& out,
+    void* payload,
+    uint32_t payload_capacity,
+    uint64_t timeout_ns
+);
 
 } // namespace drivers::nvidia
 

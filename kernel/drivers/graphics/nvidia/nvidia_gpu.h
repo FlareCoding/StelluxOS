@@ -77,8 +77,13 @@ namespace drivers {
  * left 0 in the first, writes the bootloader's app version into the register
  * of the GSP's falcon NVIDIA calls its OS register, and checks that the GSP's
  * RISC-V core, which booter load starts on the bootloader's program, reads as
- * running. Bring-up stops there, so when every step succeeds, `attach()`
- * declines as well.
+ * running. Bring-up then links the status queue (the ring the firmware writes
+ * its messages into) once the firmware has written the queue's header, as
+ * `nvidia::message_queues::link_status_queue` describes, retrying for up to
+ * `nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS`, and waits up to
+ * `nvidia::RECEIVE_TIMEOUT_NS` for the firmware's first message, logging its
+ * function, result and payload size. Bring-up stops there, so when every step
+ * succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -132,7 +137,14 @@ namespace drivers {
  * falcon can, when SEC2's falcon does not finish loading a block of booter
  * load, or does not halt, within `nvidia::FALCON_TIMEOUT_NS` of that wait's
  * start, when its first mailbox then reads other than 0, or when the GSP's
- * RISC-V core does not read as running.
+ * RISC-V core does not read as running. Once the core runs, it fails when the
+ * firmware writes no status queue header that
+ * `nvidia::message_queues::link_status_queue` accepts within
+ * `nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS`, when room for a message's payload
+ * cannot be allocated, when no message arrives within
+ * `nvidia::RECEIVE_TIMEOUT_NS`, or when the first message fails a check of
+ * `nvidia::message_queues::receive` on each of `nvidia::RECEIVE_TRIES` reads
+ * in a row.
  * Whether `attach()` declines or fails, the screen is left as it was, since
  * bring-up itself never writes to the display engine, and the card keeps the
  * memory and I/O decoding that `attach()` turned on. A card that `attach()`
@@ -151,13 +163,15 @@ namespace drivers {
  * `attach()` fails before the GSP's reset into its RISC-V core. A load of
  * booter load that times out leaves SEC2's falcon as FWSEC's leaves the GSP's,
  * and a run that times out may leave booter load running, which may later
- * start the GSP's RISC-V core. When every step succeeds, FWSEC ran and fenced
- * off the FRTS region, booter load ran on SEC2, and `attach()` returns with
- * the GSP's RISC-V core reading as running. Once FWSEC has set up protected
- * memory, it stays set up until the card is reset, and
- * `nvidia::place_frts_region` refuses the card in every `attach()` until then.
- * The decoding stays on because the boot framebuffer may be in this card's
- * memory, which the CPU reaches only while memory decoding is on.
+ * start the GSP's RISC-V core. A failure after the RISC-V core reads as
+ * running leaves the core as booter load left it. When every step succeeds,
+ * FWSEC ran and fenced off the FRTS region, booter load ran on SEC2, and
+ * `attach()` returns with the GSP's RISC-V core reading as running and the
+ * firmware's first message received. Once FWSEC has set up protected memory,
+ * it stays set up until the card is reset, and `nvidia::place_frts_region`
+ * refuses the card in every `attach()` until then. The decoding stays on
+ * because the boot framebuffer may be in this card's memory, which the CPU
+ * reaches only while memory decoding is on.
  * From the first reset of the GSP's falcon on, whether `attach()` declines or
  * fails, `detach()` resets the GSP's falcon again with `nvidia::stop_falcon`
  * and frees all of the GSP's boot memory once the falcon reads as halted and

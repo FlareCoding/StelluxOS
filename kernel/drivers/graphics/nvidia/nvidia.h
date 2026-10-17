@@ -1,3 +1,5 @@
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
+
 #ifndef STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_H
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_H
 
@@ -15,8 +17,8 @@ constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unread
 constexpr int32_t ERR_TIMEOUT        = -4; // the card did not finish a step within its deadline
 constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers or the driver's records show bring-up cannot proceed,
                                            // or a falcon does not read as stopped after `stop_falcon` resets it
-constexpr int32_t ERR_NO_MEMORY      = -6; // allocating memory for the card to reach, or the list of the runs
-                                           // holding the GSP's firmware, failed
+constexpr int32_t ERR_NO_MEMORY      = -6; // allocating memory for the card to reach, the list of the runs holding the
+                                           // GSP's firmware, or room for a received message's payload, failed
 constexpr int32_t ERR_QUEUE_FULL     = -7; // the command queue has no room for a message, as the read pointer `send`
                                            // reads for the firmware has not moved far enough or lies past the ring
 constexpr int32_t ERR_TOO_LARGE      = -8; // a payload exceeds the most bytes a message to the GSP's firmware carries,
@@ -27,6 +29,12 @@ constexpr int32_t ERR_QUEUE_EMPTY    = -10; // the status queue shows no message
                                             // pointer equals the read pointer or lies past the ring
 constexpr int32_t ERR_BAD_MESSAGE    = -11; // a message from the GSP's firmware fails a check of its element count, the
                                             // length its RPC header gives, its checksum or its sequence number
+
+// Converts the timeouts the driver logs to milliseconds
+constexpr uint64_t NS_PER_MS = 1000000;
+
+// NVIDIA's default timeout for a GPU in graphics mode rather than compute mode
+constexpr uint64_t DEFAULT_TIMEOUT_NS = 4000000000;
 
 /**
  * @brief Whether the `bytes` bytes at `offset` lie inside the first `limit`
