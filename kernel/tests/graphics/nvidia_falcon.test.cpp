@@ -20,6 +20,7 @@ using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::FALCON_READY_TIMEOUT_NS;
 using drivers::nvidia::FALCON_TIMEOUT_NS;
 using drivers::nvidia::OK;
+using drivers::nvidia::allow_falcon_dma_without_context;
 using drivers::nvidia::booter_layout;
 using drivers::nvidia::booter_signature;
 using drivers::nvidia::describe_booter_load_program;
@@ -33,10 +34,13 @@ using drivers::nvidia::notify_gsp_of_queued_messages;
 using drivers::nvidia::registers;
 using drivers::nvidia::reset_falcon;
 using drivers::nvidia::reset_gsp_into_riscv;
+using drivers::nvidia::resume_gsp_firmware;
 using drivers::nvidia::run_booter_load;
 using drivers::nvidia::run_falcon_program;
 using drivers::nvidia::select_booter_signature;
+using drivers::nvidia::start_falcon;
 using drivers::nvidia::stop_falcon;
+using drivers::nvidia::wait_for_falcon_halt;
 using drivers::nvidia::write_gsp_app_version;
 using drivers::nvidia::write_libos_arguments_address;
 
@@ -1041,11 +1045,218 @@ TEST(nvidia_falcon, boot_memory_stays_allocated_until_gsp_reads_as_stopped_after
 static constexpr uint64_t NVIDIA_READY_TIMEOUT_NS   = 150000;
 static constexpr uint64_t NVIDIA_DEFAULT_TIMEOUT_NS = 4000000000;
 
-// Bring-up gives the ready report NVIDIA's 150 us, and each wait for the memories, the core selection, a block's
-// load or a program's halt NVIDIA's default timeout
+// The ready report gets NVIDIA's 150 us, and each wait for the memories, the core selection, a block's load, a falcon's
+// halt or the handoff of the GSP's firmware NVIDIA's default timeout
 TEST(nvidia_falcon, falcon_timeouts_are_nvidias) {
     EXPECT_EQ(FALCON_READY_TIMEOUT_NS, NVIDIA_READY_TIMEOUT_NS);
     EXPECT_EQ(FALCON_TIMEOUT_NS, NVIDIA_DEFAULT_TIMEOUT_NS);
+}
+
+// Each falcon's DMA engine is let run with no address space bound through its own registers, keeping the memory
+// interface's other control bits and its transfer setup and writing the DMA control register whole from every bit set
+TEST(nvidia_falcon, falcon_dma_is_allowed_without_context) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(SEC2_FBIF_CTL, ~ALLOW_PHYSICAL_WITHOUT_CONTEXT);
+    bar0.write(SEC2_FALCON_DMACTL, ~0u);
+    bar0.write(SEC2_FBIF_TRANSCFG0, TRANSFER_TARGET_MASK);
+    bar0.write(GSP_FBIF_CTL, FBIF_CTL_OTHER_BITS);
+    bar0.write(GSP_FALCON_DMACTL, ~0u);
+    bar0.write(GSP_FBIF_TRANSCFG0, TRANSFER_TARGET_MASK);
+
+    allow_falcon_dma_without_context(bar0.regs, falcon_id::sec2);
+    EXPECT_EQ(bar0.read(SEC2_FBIF_CTL), ~0u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_DMACTL), 0u);
+    EXPECT_EQ(bar0.read(SEC2_FBIF_TRANSCFG0), TRANSFER_TARGET_MASK);
+    EXPECT_EQ(bar0.read(GSP_FBIF_CTL), FBIF_CTL_OTHER_BITS);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMACTL), ~0u);
+
+    allow_falcon_dma_without_context(bar0.regs, falcon_id::gsp);
+    EXPECT_EQ(bar0.read(GSP_FBIF_CTL), FBIF_CTL_OTHER_BITS | ALLOW_PHYSICAL_WITHOUT_CONTEXT);
+    EXPECT_EQ(bar0.read(GSP_FALCON_DMACTL), 0u);
+    EXPECT_EQ(bar0.read(GSP_FBIF_TRANSCFG0), TRANSFER_TARGET_MASK);
+}
+
+// A falcon is started through its control register's alias only while the register's alias bit is set, every other
+// bit set either way, with the start bit written whole and the other falcon's control registers left as they were
+TEST(nvidia_falcon, falcon_is_started_through_alias_only_while_enabled) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, ~STARTS_THROUGH_ALIAS);
+    bar0.write(GSP_FALCON_CPUCTL_ALIAS, ~0u);
+    bar0.write(SEC2_FALCON_CPUCTL, ~0u);
+    bar0.write(SEC2_FALCON_CPUCTL_ALIAS, ~0u);
+
+    start_falcon(bar0.regs, falcon_id::gsp);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL), START_FALCON);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), ~0u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL), ~0u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL_ALIAS), ~0u);
+
+    start_falcon(bar0.regs, falcon_id::sec2);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL_ALIAS), START_FALCON);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL), ~0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_CPUCTL_ALIAS), ~0u);
+}
+
+// A falcon whose control register has every bit set ends the wait with no time to wait, and one with every bit but
+// the halted bit set waits out the timeout, each falcon read through its own register
+TEST(nvidia_falcon, halt_wait_ends_on_the_falcons_halted_bit) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, ~0u);
+    bar0.write(SEC2_FALCON_CPUCTL, ~FALCON_HALTED);
+
+    EXPECT_EQ(wait_for_falcon_halt(bar0.regs, falcon_id::gsp, 0), OK);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(wait_for_falcon_halt(bar0.regs, falcon_id::sec2, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RUN_TIME_LIMIT_NS);
+}
+
+// Secure scratch register 14 and its boot stage 3 handoff field, which NVIDIA's driver waits on after starting SEC2 to
+// resume the GSP's firmware, restated here so the tests hold the resume to NVIDIA's register map
+static constexpr uint32_t BOOT_STAGE_SCRATCH      = 0x1180F8;
+static constexpr uint32_t BOOT_STAGE_3_HANDED_OFF = 0x4000000;
+
+// An address of LibOS's arguments and an app version, each half of the address distinct
+static constexpr uint64_t RESUME_LIBOS_ARGUMENTS_ADDRESS = 0x5A4B3C2D1E000;
+static constexpr uint32_t RESUME_APP_VERSION             = 0x2C1E5A7;
+
+// A timeout the resume must not wait out with the handoff reported, so a wait that misreads the handoff bit fails
+static constexpr uint64_t LONG_RESUME_TIMEOUT_NS = 1000000000;
+
+// The resume resets the GSP into its RISC-V core, writes the address of LibOS's arguments into its falcon's mailboxes,
+// starts SEC2's falcon with no reset and, with every bit of the scratch register set, writes the app version at once
+TEST(nvidia_falcon, gsp_firmware_is_resumed_through_sec2) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BOOT_STAGE_SCRATCH, ~0u);
+    bar0.write(GSP_RISCV_CPUCTL, ~0u);
+    bar0.write(SEC2_FALCON_ENGINE, ~0u);
+    bar0.write(SEC2_FALCON_RM, RM_BEFORE_RESET);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = resume_gsp_firmware(
+        bar0.regs,
+        RESUME_LIBOS_ARGUMENTS_ADDRESS,
+        RESUME_APP_VERSION,
+        0,
+        LONG_RESUME_TIMEOUT_NS
+    );
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), SELECT_RISCV_CORE);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX0), 0xC2D1E000u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX1), 0x5A4B3u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL), START_FALCON);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_ENGINE), ~0u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_RM), RM_BEFORE_RESET);
+    EXPECT_EQ(bar0.read(GSP_FALCON_OS), RESUME_APP_VERSION);
+}
+
+// The ready timeout goes to the reset's ready wait: a falcon that never reports it is ready holds the resume for that
+// timeout, and with a timeout of 0 for every other wait the resume still succeeds
+TEST(nvidia_falcon, gsp_firmware_resume_gives_its_reset_the_ready_timeout) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_HWCFG2, HAS_RISCV_CORE);
+    bar0.write(BOOT_STAGE_SCRATCH, BOOT_STAGE_3_HANDED_OFF);
+    bar0.write(GSP_RISCV_CPUCTL, RISCV_ACTIVE);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = resume_gsp_firmware(
+        bar0.regs,
+        RESUME_LIBOS_ARGUMENTS_ADDRESS,
+        RESUME_APP_VERSION,
+        SHORT_TIMEOUT_NS,
+        0
+    );
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+}
+
+// A GSP whose memories never clear after its reset into the RISC-V core ends the resume once the timeout passes, before
+// the mailboxes are written or SEC2 is started
+TEST(nvidia_falcon, gsp_firmware_resume_stops_when_its_reset_times_out) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_HWCFG2, HAS_RISCV_CORE | CLEARING_MEMORIES | READY_FOR_RESET);
+    bar0.write(BOOT_STAGE_SCRATCH, BOOT_STAGE_3_HANDED_OFF);
+    bar0.write(GSP_RISCV_CPUCTL, RISCV_ACTIVE);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = resume_gsp_firmware(
+        bar0.regs,
+        RESUME_LIBOS_ARGUMENTS_ADDRESS,
+        RESUME_APP_VERSION,
+        0,
+        SHORT_TIMEOUT_NS
+    );
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RESET_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(GSP_RISCV_BCR_CTRL), 0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX0), 0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_MAILBOX1), 0u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL), 0u);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL_ALIAS), 0u);
+    EXPECT_EQ(bar0.read(GSP_FALCON_OS), 0u);
+}
+
+// Without the handoff bit, every other bit of the scratch register set, the resume waits out its timeout, and with it
+// a first mailbox on SEC2's falcon holding only its top bit fails the resume, each before the OS register is written
+TEST(nvidia_falcon, gsp_firmware_resume_waits_for_the_handoff_then_needs_a_zero_sec2_mailbox) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BOOT_STAGE_SCRATCH, ~BOOT_STAGE_3_HANDED_OFF);
+    bar0.write(GSP_RISCV_CPUCTL, RISCV_ACTIVE);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = resume_gsp_firmware(
+        bar0.regs,
+        RESUME_LIBOS_ARGUMENTS_ADDRESS,
+        RESUME_APP_VERSION,
+        0,
+        SHORT_TIMEOUT_NS
+    );
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, RUN_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL), START_FALCON);
+    EXPECT_EQ(bar0.read(GSP_FALCON_OS), 0u);
+
+    bar0.write(BOOT_STAGE_SCRATCH, BOOT_STAGE_3_HANDED_OFF);
+    bar0.write(SEC2_FALCON_MAILBOX0, 0x80000000);
+    EXPECT_EQ(resume_gsp_firmware(bar0.regs, RESUME_LIBOS_ARGUMENTS_ADDRESS, RESUME_APP_VERSION, 0, 0), ERR_BAD_STATE);
+    EXPECT_EQ(bar0.read(GSP_FALCON_OS), 0u);
+}
+
+// SEC2's falcon with its alias enabled is started through the alias, and with the handoff reported the OS register
+// takes the app version even when the RISC-V core does not run, which fails the resume
+TEST(nvidia_falcon, gsp_firmware_resume_fails_unless_its_riscv_core_runs) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BOOT_STAGE_SCRATCH, BOOT_STAGE_3_HANDED_OFF);
+    bar0.write(GSP_RISCV_CPUCTL, ~RISCV_ACTIVE);
+    bar0.write(SEC2_FALCON_CPUCTL, STARTS_THROUGH_ALIAS);
+
+    EXPECT_EQ(resume_gsp_firmware(bar0.regs, RESUME_LIBOS_ARGUMENTS_ADDRESS, RESUME_APP_VERSION, 0, 0), ERR_BAD_STATE);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL_ALIAS), START_FALCON);
+    EXPECT_EQ(bar0.read(SEC2_FALCON_CPUCTL), STARTS_THROUGH_ALIAS);
+    EXPECT_EQ(bar0.read(GSP_FALCON_OS), RESUME_APP_VERSION);
 }
 
 // The first fuse register recording a version of a program each falcon runs, and the bytes from one to the next,
