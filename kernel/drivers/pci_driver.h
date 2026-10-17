@@ -151,6 +151,12 @@ protected:
      */
     void wait_for_event();
 
+    /**
+     * Block until an interrupt arrives or `deadline_ns` passes.
+     * Returns true if an interrupt arrived.
+     */
+    bool wait_for_event_until(uint64_t deadline_ns);
+
     pci::device* m_dev;
     sync::wait_queue m_irq_wq;
     sync::spinlock m_irq_lock;

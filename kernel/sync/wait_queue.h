@@ -57,6 +57,24 @@ struct wait_queue {
 irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved);
 
 /**
+ * Block like `wait`, but also wake once `deadline_ns` passes. A deadline
+ * already in the past returns at once without releasing `lock`.
+ *
+ * The caller re-checks its condition and the clock to tell a wake from a timeout.
+ *
+ * Usage:
+ *   irq_state irq = spin_lock_irqsave(lock);
+ *   while (!condition && clock::now_ns() < deadline) {
+ *       irq = sync::wait_until(wq, lock, irq, deadline);
+ *   }
+ *   spin_unlock_irqrestore(lock, irq);
+ *
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE
+irq_state wait_until(wait_queue& wq, spinlock& lock, irq_state saved, uint64_t deadline_ns);
+
+/**
  * Wake the first waiting task (FIFO order).
  * No-op if the queue is empty. Waiters are pinned internally, but the
  * off-CPU spin rule of sched::wake still applies to the caller.
