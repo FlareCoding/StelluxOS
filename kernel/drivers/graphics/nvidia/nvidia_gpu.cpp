@@ -263,6 +263,12 @@ int32_t nvidia_gpu_driver::attach() {
         signature.fuse_version
     );
 
+    // NVIDIA's driver checks this before FWSEC, so FRTS is never set up for a GSP that cannot run its firmware
+    if (!nvidia::has_gsp_riscv_core(regs)) {
+        log::error("nvidia: the GSP has no RISC-V core to run its firmware on");
+        return nvidia::ERR_BAD_STATE;
+    }
+
     // Only the bus layer knows whether the card is coherent, and asking it takes privilege
     dma::device_profile card_profile = dma::uncached_profile(chip->dma_address_bits);
     RUN_ELEVATED(card_profile = dma_profile(chip->dma_address_bits));
@@ -292,6 +298,10 @@ int32_t nvidia_gpu_driver::attach() {
 
     log::info("nvidia: FWSEC copied into memory the card can reach and patched to fence off the FRTS region");
 
+    // From the GSP's first reset on, `detach()` stops the GSP and frees its boot memory only once it reads as stopped
+    m_must_stop_gsp = true;
+    m_boot0 = boot0;
+
     rc = nvidia::reset_gsp_falcon(regs, boot0, nvidia::FALCON_READY_TIMEOUT_NS, nvidia::FALCON_TIMEOUT_NS);
     if (rc != nvidia::OK) {
         RUN_ELEVATED(dma::free_pages(fwsec_image));
@@ -301,10 +311,12 @@ int32_t nvidia_gpu_driver::attach() {
     // The falcon reads the copy by DMA, which the card issues only while its bus mastering is on
     RUN_ELEVATED(m_dev->enable_bus_mastering());
 
-    // After a timeout the falcon may still read the copy, so it is freed only once the falcon has halted
+    // After a timeout the falcon may still read the copy, so the GSP's boot memory keeps it until `detach()` confirms
+    // the GSP stopped
     nvidia::falcon_program program = nvidia::describe_fwsec_program(fwsec, fwsec_image.phys, fwsec_image.cached);
     rc = nvidia::run_gsp_falcon_program(regs, program, nvidia::FALCON_TIMEOUT_NS);
     if (rc != nvidia::OK) {
+        m_boot_memory.keep_fwsec_copy(fwsec_image);
         return rc;
     }
 
@@ -317,13 +329,12 @@ int32_t nvidia_gpu_driver::attach() {
 
     log::info("nvidia: FWSEC fenced off the FRTS region at 0x%lX", frts.offset);
 
-    nvidia::gsp_boot_memory boot_memory;
-    rc = boot_memory.copy_boot_files(card_profile, files, bootloader_header, gsp_image_parts);
+    rc = m_boot_memory.copy_boot_files(card_profile, files, bootloader_header, gsp_image_parts);
     if (rc != nvidia::OK) {
         return rc;
     }
 
-    rc = boot_memory.copy_booter_load(
+    rc = m_boot_memory.copy_booter_load(
         card_profile,
         files.booter_load,
         booter_load_header,
@@ -331,30 +342,25 @@ int32_t nvidia_gpu_driver::attach() {
         booter_load_signature
     );
     if (rc != nvidia::OK) {
-        // The card was never given any of the memory's addresses, so nothing on it reads what this frees
-        boot_memory.release();
         return rc;
     }
 
-    rc = boot_memory.allocate_message_queues(card_profile);
+    rc = m_boot_memory.allocate_message_queues(card_profile);
     if (rc != nvidia::OK) {
-        boot_memory.release();
         return rc;
     }
 
     // Writes the page table and the command queue's header where the resource manager's arguments tell the firmware
     // to find them
-    nvidia::message_queues queues(boot_memory.message_queues_memory(), boot_memory.message_queues_address());
+    nvidia::message_queues queues(m_boot_memory.message_queues_memory(), m_boot_memory.message_queues_address());
 
-    rc = boot_memory.write_protected_metadata(card_profile, frts, protected_memory, bootloader_parts);
+    rc = m_boot_memory.write_protected_metadata(card_profile, frts, protected_memory, bootloader_parts);
     if (rc != nvidia::OK) {
-        boot_memory.release();
         return rc;
     }
 
-    rc = boot_memory.write_firmware_arguments(card_profile);
+    rc = m_boot_memory.write_firmware_arguments(card_profile);
     if (rc != nvidia::OK) {
-        boot_memory.release();
         return rc;
     }
 
@@ -371,38 +377,37 @@ int32_t nvidia_gpu_driver::attach() {
     rc = nvidia::queue_boot_messages(queues, card);
     if (rc != nvidia::OK) {
         log::error("nvidia: queueing the system information and the registry failed: %d", rc);
-        boot_memory.release();
         return rc;
     }
 
     log::info(
         "nvidia: GSP's firmware copied into pages listed by a radix3 page table at physical address 0x%lX, the "
         "bootloader's program to 0x%lX and the firmware's signature to 0x%lX",
-        boot_memory.radix3_address(),
-        boot_memory.bootloader_address(),
-        boot_memory.signature_address()
+        m_boot_memory.radix3_address(),
+        m_boot_memory.bootloader_address(),
+        m_boot_memory.signature_address()
     );
     log::info(
         "nvidia: booter load's program copied with its chosen signature to physical address 0x%lX, and the message "
         "queues laid out at 0x%lX",
-        boot_memory.booter_load_address(),
-        boot_memory.message_queues_address()
+        m_boot_memory.booter_load_address(),
+        m_boot_memory.message_queues_address()
     );
     log::info(
         "nvidia: protected memory's metadata written at physical address 0x%lX, for booter load to place at offset "
         "0x%lX in video memory",
-        boot_memory.protected_metadata_address(),
+        m_boot_memory.protected_metadata_address(),
         protected_memory.protected_start
     );
     log::info(
         "nvidia: the GSP firmware's log buffers for its init task, interrupt task and resource manager allocated at "
         "physical addresses 0x%lX, 0x%lX and 0x%lX, its resource manager's arguments written at 0x%lX and LibOS's "
         "arguments, which list them all, at 0x%lX",
-        boot_memory.log_buffer_address(0),
-        boot_memory.log_buffer_address(1),
-        boot_memory.log_buffer_address(2),
-        boot_memory.resource_manager_arguments_address(),
-        boot_memory.libos_arguments_address()
+        m_boot_memory.log_buffer_address(0),
+        m_boot_memory.log_buffer_address(1),
+        m_boot_memory.log_buffer_address(2),
+        m_boot_memory.resource_manager_arguments_address(),
+        m_boot_memory.libos_arguments_address()
     );
     log::info(
         "nvidia: the system information for BAR0 at 0x%lX, BAR1 at 0x%lX and BAR3 at 0x%lX, and an empty registry, "
@@ -412,12 +417,60 @@ int32_t nvidia_gpu_driver::attach() {
         card.instance_memory_address
     );
 
-    // The card was never given these addresses, so nothing on it reads the memory
-    boot_memory.release();
+    rc = nvidia::reset_gsp_into_riscv(regs, nvidia::FALCON_READY_TIMEOUT_NS, nvidia::FALCON_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
 
-    log::info("nvidia: bring-up stops before starting the GSP, with its boot memory freed");
+    // NVIDIA's driver queues both messages after the reset into the RISC-V core and writes this after each. Here both
+    // were queued before that reset, so the two writes would come back to back after it, and this driver writes once.
+    nvidia::notify_gsp_of_queued_messages(regs);
+
+    nvidia::write_libos_arguments_address(regs, m_boot_memory.libos_arguments_address());
+
+    log::info(
+        "nvidia: the GSP reset into its RISC-V core, its firmware told that the two messages wait, and the address "
+        "0x%lX of LibOS's arguments written into its falcon's mailboxes",
+        m_boot_memory.libos_arguments_address()
+    );
+
+    log::info("nvidia: bring-up stops before booter load, leaving the GSP to be reset before its boot memory is freed");
 
     return DECLINED;
+}
+
+int32_t nvidia_gpu_driver::detach() {
+    int32_t stop_rc = nvidia::OK;
+    if (m_must_stop_gsp) {
+        stop_rc = stop_gsp_and_free_boot_memory();
+        m_must_stop_gsp = false;
+    }
+
+    int32_t rc = pci_driver::detach();
+    if (stop_rc != nvidia::OK) {
+        return stop_rc;
+    }
+
+    return rc;
+}
+
+int32_t nvidia_gpu_driver::stop_gsp_and_free_boot_memory() {
+    nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
+
+    int32_t rc = m_boot_memory.release_after_gsp_stop(
+        regs,
+        m_boot0,
+        nvidia::FALCON_READY_TIMEOUT_NS,
+        nvidia::FALCON_TIMEOUT_NS
+    );
+    if (rc != nvidia::OK) {
+        log::error("nvidia: the GSP was not confirmed stopped, so all of its boot memory stays allocated for good");
+        return rc;
+    }
+
+    log::info("nvidia: the GSP reads as stopped after its reset, and all of its boot memory is freed");
+
+    return nvidia::OK;
 }
 
 void nvidia_gpu_driver::run() {

@@ -14,7 +14,7 @@ constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unread
                                            // lacks a signature bring-up needs, or a chip table name for it is invalid
 constexpr int32_t ERR_TIMEOUT        = -4; // the card did not finish a step within its deadline
 constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers or the driver's records show bring-up cannot proceed,
-                                           // as with boot or protected memory in place or too little cleared memory
+                                           // or the GSP does not read as stopped after `stop_gsp` resets it
 constexpr int32_t ERR_NO_MEMORY      = -6; // allocating memory for the card to reach, or the list of the runs
                                            // holding the GSP's firmware, failed
 constexpr int32_t ERR_QUEUE_FULL     = -7; // the command queue has no room for a message, as the read pointer `send`

@@ -5,6 +5,7 @@
 
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/protected_memory.h"
+#include "drivers/graphics/nvidia/registers.h"
 #include "dma/dma.h"
 
 namespace drivers::nvidia {
@@ -121,6 +122,10 @@ int32_t write_booter_load_image(
  * those buffers and that page as the regions LibOS (the small operating system
  * the firmware runs on) maps for the firmware.
  *
+ * After a load or run of FWSEC (the signed program from the VBIOS that sets up
+ * protected memory) that timed out, the object also holds FWSEC's copy, which
+ * `keep_fwsec_copy` hands it, since the GSP may still read the copy.
+ *
  * The firmware lies in physically contiguous runs of up to 2 MiB, listed by
  * a radix3 page table, three levels of 4 KiB pages of 64-bit addresses.
  * Level 0 is one page that lists the pages of level 1, level 1 lists the
@@ -141,10 +146,12 @@ int32_t write_booter_load_image(
  * filled by a call of their own, which on an error frees only what it
  * allocated. Once the card has the addresses, booter load on SEC2 and a
  * running GSP may read any of it, and the GSP writes the message queues and
- * the log buffers, so the caller calls `release` only once SEC2 and the GSP
- * are both confirmed halted, or before the card was given any of the
- * addresses. An object dropped without `release` leaves the memory allocated
- * for good, which is what a card whose halt was never confirmed needs.
+ * the log buffers, so the caller calls `release` only once every processor
+ * given any of the addresses, SEC2 or the GSP, is confirmed stopped.
+ * `release_after_gsp_stop` stops the GSP and calls `release` only once the GSP
+ * reads as stopped. An object dropped without `release` leaves the memory
+ * allocated for good, which is what a card whose stop was never confirmed
+ * needs.
  */
 class gsp_boot_memory {
 public:
@@ -294,12 +301,41 @@ public:
     int32_t write_firmware_arguments(const dma::device_profile& device);
 
     /**
+     * @brief Take the memory holding FWSEC's copy, which the GSP may still
+     * read after a load or run of FWSEC that timed out, so that `release`
+     * frees it with the rest of the memory.
+     * @param copy The memory, from `dma::alloc_pages`, which the caller must
+     * not free afterwards. The object must not hold FWSEC's copy already, or
+     * the copy it holds stays allocated for good.
+     */
+    void keep_fwsec_copy(const dma::buffer& copy);
+
+    /**
      * @brief Free all of the memory, leaving the object holding none. The
-     * caller must have confirmed that SEC2 and the GSP are halted, or never
-     * given the card any of the memory's addresses. Releasing an object
-     * holding no memory does nothing.
+     * caller must have confirmed that every processor given any of the
+     * memory's addresses, SEC2 or the GSP, is stopped. Releasing an
+     * object holding no memory does nothing.
      */
     void release();
+
+    /**
+     * @brief Stop the GSP with `stop_gsp`, then free all of the memory as
+     * `release` does, but only once the GSP reads as stopped, since a GSP not
+     * confirmed stopped may still read or write any of it. The stop spins on
+     * the calling CPU, as `stop_gsp` describes. The caller must have confirmed
+     * that SEC2 is stopped if it was given any of the memory's addresses,
+     * since only the GSP is stopped here.
+     * @param regs A view of BAR0, as for `stop_gsp`.
+     * @param boot0 The chip's `PMC_BOOT_0` value, for the reset.
+     * @param ready_timeout_ns How long each wait for the ready report may
+     * take, as for `stop_gsp`.
+     * @param timeout_ns How long each wait for the memories or the core
+     * selection may take, as for `stop_gsp`.
+     * @return `OK` with all of the memory freed, or the `ERR_TIMEOUT` or
+     * `ERR_BAD_STATE` that `stop_gsp` returns, with all of the memory kept
+     * allocated. The cause is logged.
+     */
+    int32_t release_after_gsp_stop(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns);
 
     // Where the card reaches each part, or 0 while the object does not hold that part
     uint64_t radix3_address() const { return m_radix3_table.phys; }
@@ -362,6 +398,7 @@ private:
     dma::buffer  m_log_buffers[FIRMWARE_LOG_COUNT] = {};
     dma::buffer  m_resource_manager_arguments = {};
     dma::buffer  m_libos_arguments = {};
+    dma::buffer  m_fwsec_copy = {};
 
     // Bytes of each part `copy_boot_files` copied, while the object holds the copies
     uint64_t m_bootloader_bytes = 0;

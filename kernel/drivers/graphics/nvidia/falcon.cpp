@@ -28,12 +28,28 @@ constexpr uint32_t READY_FOR_RESET   = 0x80000000;
 // The falcon register NVIDIA's driver writes the chip's `PMC_BOOT_0` value to as a reset ends
 constexpr uint32_t GSP_FALCON_RM = GSP_FALCON_BASE + 0x084;
 
+// The GSP falcon's two mailbox registers, which NVIDIA's driver writes the address of LibOS's arguments into
+constexpr uint32_t GSP_FALCON_MAILBOX0 = GSP_FALCON_BASE + 0x040;
+constexpr uint32_t GSP_FALCON_MAILBOX1 = GSP_FALCON_BASE + 0x044;
+
+// The first of the GSP's eight queue head registers, which NVIDIA's driver writes 0 to after each message it queues
+// for the GSP's resource manager
+constexpr uint32_t GSP_QUEUE_HEAD0 = 0x110C00;
+
 // The RISC-V core's boot control register: bit 4 set while the RISC-V core is selected over the falcon core, bit 0
 // set once a selection has taken effect, and the value NVIDIA's driver writes to select the falcon core
 constexpr uint32_t GSP_RISCV_BCR_CTRL  = GSP_FALCON2_BASE + 0x668;
 constexpr uint32_t RISCV_CORE_SELECTED = 0x10;
 constexpr uint32_t CORE_SELECT_VALID   = 0x1;
 constexpr uint32_t SELECT_FALCON_CORE  = 0x0;
+
+// The value NVIDIA's driver writes to select the RISC-V core, setting bits 0 and 4 and also bit 8, the field NVIDIA
+// calls BRFETCH
+constexpr uint32_t SELECT_RISCV_CORE = 0x111;
+
+// The RISC-V core's control register, whose bit 7 is set while the core is running
+constexpr uint32_t GSP_RISCV_CPUCTL = GSP_FALCON2_BASE + 0x388;
+constexpr uint32_t RISCV_ACTIVE     = 0x80;
 
 // The falcon's control register: writing bit 1 starts the falcon, bit 4 is set while it is halted, and while bit 6
 // is set the falcon is started through the register's alias instead
@@ -146,8 +162,7 @@ static int32_t wait_for_cleared_memories(const registers& regs, uint64_t timeout
 }
 
 static int32_t select_falcon_core(registers& regs, uint64_t timeout_ns) {
-    bool has_riscv_core = (regs.read(GSP_FALCON_HWCFG2) & HAS_RISCV_CORE) != 0;
-    bool is_riscv_selected = has_riscv_core && (regs.read(GSP_RISCV_BCR_CTRL) & RISCV_CORE_SELECTED) != 0;
+    bool is_riscv_selected = has_gsp_riscv_core(regs) && (regs.read(GSP_RISCV_BCR_CTRL) & RISCV_CORE_SELECTED) != 0;
     if (!is_riscv_selected) {
         return OK;
     }
@@ -164,12 +179,16 @@ static int32_t select_falcon_core(registers& regs, uint64_t timeout_ns) {
     return OK;
 }
 
-static int32_t reset_in_full(registers& regs, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
+static int32_t reset_engine(registers& regs, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
     // The ready bit may never be set, so the reset goes on without it, as in NVIDIA's driver
     (void)wait_for_bits(regs, GSP_FALCON_HWCFG2, READY_FOR_RESET, READY_FOR_RESET, ready_timeout_ns);
     pulse_engine_reset(regs);
 
-    int32_t rc = wait_for_cleared_memories(regs, timeout_ns);
+    return wait_for_cleared_memories(regs, timeout_ns);
+}
+
+static int32_t reset_in_full(registers& regs, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
+    int32_t rc = reset_engine(regs, ready_timeout_ns, timeout_ns);
     if (rc != OK) {
         return rc;
     }
@@ -203,8 +222,55 @@ int32_t reset_gsp_falcon(registers& regs, uint32_t boot0, uint64_t ready_timeout
     return OK;
 }
 
+bool has_gsp_riscv_core(const registers& regs) {
+    return (regs.read(GSP_FALCON_HWCFG2) & HAS_RISCV_CORE) != 0;
+}
+
+int32_t reset_gsp_into_riscv(registers& regs, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
+    int32_t rc = reset_engine(regs, ready_timeout_ns, timeout_ns);
+    if (rc != OK) {
+        return rc;
+    }
+
+    regs.write(GSP_RISCV_BCR_CTRL, SELECT_RISCV_CORE);
+
+    return OK;
+}
+
+void notify_gsp_of_queued_messages(registers& regs) {
+    regs.write(GSP_QUEUE_HEAD0, 0);
+}
+
+void write_libos_arguments_address(registers& regs, uint64_t address) {
+    regs.write(GSP_FALCON_MAILBOX0, static_cast<uint32_t>(address));
+    regs.write(GSP_FALCON_MAILBOX1, static_cast<uint32_t>(address >> 32));
+}
+
 bool is_gsp_falcon_halted(const registers& regs) {
     return (regs.read(GSP_FALCON_CPUCTL) & FALCON_HALTED) != 0;
+}
+
+static bool is_gsp_riscv_active(const registers& regs) {
+    return (regs.read(GSP_RISCV_CPUCTL) & RISCV_ACTIVE) != 0;
+}
+
+int32_t stop_gsp(registers& regs, uint32_t boot0, uint64_t ready_timeout_ns, uint64_t timeout_ns) {
+    int32_t rc = reset_gsp_falcon(regs, boot0, ready_timeout_ns, timeout_ns);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (!is_gsp_falcon_halted(regs)) {
+        log::error("nvidia: the GSP's falcon does not read as halted after its reset");
+        return ERR_BAD_STATE;
+    }
+
+    if (is_gsp_riscv_active(regs)) {
+        log::error("nvidia: the GSP's RISC-V core reads as running after its reset");
+        return ERR_BAD_STATE;
+    }
+
+    return OK;
 }
 
 // Lets the DMA engine read system memory by physical address through transfer setup 0, looking in the CPU's caches

@@ -3,6 +3,7 @@
 #ifndef STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_GPU_H
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_GPU_H
 
+#include "drivers/graphics/nvidia/gsp_boot_memory.h"
 #include "drivers/pci_driver.h"
 
 namespace drivers {
@@ -11,7 +12,9 @@ namespace drivers {
  * The driver for NVIDIA GPUs, one object per card. The PCI framework creates
  * it on the unprivileged heap for every NVIDIA display controller, calls
  * `attach()` on the boot thread before userland starts, and frees it after any
- * result but `OK`. The driver owns its BAR0 mapping, which `detach()` unmaps.
+ * result but `OK`. The driver owns its BAR0 mapping, which `detach()` unmaps,
+ * and the GSP's boot memory, which `detach()` frees once the GSP reads as
+ * stopped.
  *
  * `attach()` declines the card when a driver display is already registered
  * with gfxfb, when the chip table does not list the card's chip, or when a
@@ -36,32 +39,36 @@ namespace drivers {
  * protected memory FWSEC fences off first), then lays out and logs the rest
  * of protected memory and the heap the GSP's firmware keeps below it, as
  * `nvidia::protected_memory_layout` describes. It then chooses which of
- * FWSEC's signatures its signature slot must hold, the one for the version
- * the chip's fuses record for FWSEC, and copies FWSEC into memory the card
- * can reach, patched to fence off the region and holding that signature. It
- * then resets the GSP's falcon, the microcontroller in the GSP that runs
- * FWSEC, and that reset is the first step that writes to the card's BAR0
- * registers. The card's bus mastering is then turned on, and the falcon
- * loads FWSEC from the copy and is started on it. Once the falcon halts, the
- * copy is freed, and bring-up checks that FWSEC fenced off the region. It
- * then copies the bootloader's program, the GSP's firmware and the firmware's
- * signature into memory the card can reach, the firmware into pages listed by
- * a radix3 page table, copies booter load's program, with the chosen signature
- * in its slot, into memory of its own the card can reach, lays out the message
- * queues (the two rings through which the driver and the GSP's firmware
- * exchange messages) in memory of their own, writes protected memory's
- * metadata into a page of its own, and writes the log buffers and the
- * arguments the firmware reads when it starts, all as
- * `nvidia::gsp_boot_memory` describes. The arguments are those of the
- * firmware's resource manager (its task that serves the driver's requests) and
- * of LibOS (the small operating system the firmware runs on). The metadata
- * tells booter load where the copies of the bootloader's program, the firmware
- * and its signature lie and where each part of protected memory goes. Bring-up
- * next queues in the command queue the two messages NVIDIA's driver sends
- * before the GSP starts (the system information and the registry, here with no
- * entry), as `nvidia::queue_boot_messages` describes. Bring-up then frees all
- * of the GSP's boot memory, since the card was never given its addresses, and
- * ends there, so when every step succeeds, `attach()` declines as well.
+ * FWSEC's signatures its signature slot must hold (the one for the version the
+ * chip's fuses record for FWSEC), checks that the GSP has a RISC-V core for
+ * the GSP's firmware to run on, and copies FWSEC into memory the card can
+ * reach, patched to fence off the region and holding that signature. It then
+ * resets the GSP's falcon, the microcontroller in the GSP that runs FWSEC, and
+ * that reset is the first step that writes to the card's BAR0 registers. The
+ * card's bus mastering is then turned on, and the falcon loads FWSEC from the
+ * copy and is started on it. Once the falcon halts, the copy is freed, and
+ * bring-up checks that FWSEC fenced off the region. It then copies the
+ * bootloader's program, the GSP's firmware and the firmware's signature into
+ * memory the card can reach, the firmware into pages listed by a radix3 page
+ * table, copies booter load's program, with the chosen signature in its slot,
+ * into memory of its own the card can reach, lays out the message queues (the
+ * two rings through which the driver and the GSP's firmware exchange messages)
+ * in memory of their own, writes protected memory's metadata into a page of
+ * its own, and writes the log buffers and the arguments the firmware reads
+ * when it starts, all as `nvidia::gsp_boot_memory` describes. The arguments
+ * are those of the firmware's resource manager (its task that serves the
+ * driver's requests) and of LibOS (the small operating system the firmware
+ * runs on). The metadata tells booter load where the copies of the
+ * bootloader's program, the firmware and its signature lie and where each part
+ * of protected memory goes. Bring-up next queues in the command queue the two
+ * messages NVIDIA's driver sends before the GSP starts (the system information
+ * and the registry, here with no entry), as `nvidia::queue_boot_messages`
+ * describes. Bring-up then resets the GSP into its RISC-V core, tells the
+ * firmware once that both messages wait and writes the address of LibOS's
+ * arguments into the GSP falcon's two mailbox registers. NVIDIA's driver does
+ * these before booter load too, but resets the GSP before queueing the
+ * messages and tells the firmware after each. Bring-up stops there, so when
+ * every step succeeds, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -91,9 +98,10 @@ namespace drivers {
  * the region is placed, it fails when `nvidia::lay_out_protected_memory`
  * finds that the layout does not fit in the part of video memory cleared
  * before the GSP's firmware runs, or when `nvidia::select_fwsec_signature`
- * refuses FWSEC's signatures, as when none is for the version the chip's
- * fuses record, when the memory for FWSEC's copy cannot be allocated, or
- * when FWSEC's data does not lead to a place for the FRTS command as
+ * refuses FWSEC's signatures (as when none is for the version the chip's fuses
+ * record), when the GSP has no RISC-V core for the GSP's firmware to run on,
+ * when the memory for FWSEC's copy cannot be allocated, or when FWSEC's data
+ * does not lead to a place for the FRTS command as
  * `nvidia::prepare_fwsec_frts` requires. Once the copy is patched, it fails
  * when, during the reset of the GSP's falcon, the falcon does not finish
  * clearing its memories, or the GSP does not confirm its switch from its
@@ -107,37 +115,71 @@ namespace drivers {
  * the copies, the message queues, protected memory's metadata or what the
  * firmware reads when it starts cannot be allocated, reading a firmware file
  * fails or the command queue lacks room for the system information or the
- * registry, each freeing everything allocated for them.
+ * registry. Once the messages are queued, it fails when the falcon does not
+ * finish clearing its memories within `nvidia::FALCON_TIMEOUT_NS` during the
+ * GSP's reset into its RISC-V core.
  * Whether `attach()` declines or fails, the screen is left as it was, since
  * bring-up itself never writes to the display engine, and the card keeps the
  * memory and I/O decoding that `attach()` turned on. A card that `attach()`
- * declines or fails before the reset keeps only that decoding. A reset that
- * times out leaves the falcon out of reset with its memories still being
- * cleared, or with its switch to the falcon core requested but not
- * confirmed. A card that gets as far as the load also keeps its bus
- * mastering on, and its falcon's memory interface keeps letting the DMA
- * engine read system memory by physical address. A load that times out
- * leaves the falcon not started, with its DMA engine possibly still copying,
- * and a run that times out leaves the falcon possibly still running FWSEC,
- * which may yet fence off the FRTS region. Either leaves FWSEC's copy
- * allocated for good, since the falcon may still read it. A falcon that
- * halts is left halted, after FWSEC ran or after the falcon's boot ROM
- * refused it. When every step succeeds, FWSEC ran and fenced off the FRTS
- * region. Once FWSEC has set up protected memory, it stays set up until the
- * card is reset, and `nvidia::place_frts_region` refuses the card in every
- * `attach()` until then. The decoding stays on because the boot framebuffer
- * may be in this card's memory, which the CPU reaches only while memory
- * decoding is on.
+ * declines or fails before the first reset of the GSP's falcon keeps only that
+ * decoding. A reset that times out leaves the falcon out of reset with its
+ * memories still being cleared, or with its switch to the falcon core
+ * requested but not confirmed. A card that gets as far as the load also keeps
+ * its bus mastering on, and the load leaves its falcon's memory interface
+ * letting the DMA engine read system memory by physical address. A load that
+ * times out leaves the falcon not started, with its DMA engine possibly still
+ * copying, and a run that times out leaves the falcon possibly still running
+ * FWSEC, which may yet fence off the FRTS region. Either leaves FWSEC's copy
+ * allocated until `detach()` confirms the GSP stopped, and for good when it
+ * cannot, since the falcon may still read it. A falcon that halts, after FWSEC
+ * ran or after the falcon's boot ROM refused it, is left halted when
+ * `attach()` fails before the GSP's reset into its RISC-V core. When every
+ * step succeeds, FWSEC ran and fenced off the FRTS region, and `attach()`
+ * returns with the GSP reset into its RISC-V core, unstarted. Once FWSEC has
+ * set up protected memory, it stays set up until the card is reset, and
+ * `nvidia::place_frts_region` refuses the card in every `attach()` until then.
+ * The decoding stays on because the boot framebuffer may be in this card's
+ * memory, which the CPU reaches only while memory decoding is on.
+ * From the first reset of the GSP's falcon on, whether `attach()` declines or
+ * fails, `detach()` resets the GSP's falcon again with `nvidia::stop_gsp` and
+ * frees all of the GSP's boot memory once the falcon reads as halted and the
+ * RISC-V core as not running, leaving the falcon core selected. `detach()`
+ * fails, keeping all of the boot memory allocated for good, when that reset
+ * times out or the falcon then does not read as halted or the RISC-V core
+ * reads as running.
  */
 class nvidia_gpu_driver : public pci_driver {
 public:
     nvidia_gpu_driver(pci::device* dev) : pci_driver("nvidia_gpu", dev) {}
 
     int32_t attach() override;
+
+    /**
+     * @brief Stop the GSP once bring-up has reset its falcon, freeing the
+     * GSP's boot memory only once the GSP reads as stopped, then unmap BAR0 as
+     * `pci_driver::detach()` does. Stopping the GSP spins on the calling CPU,
+     * for up to twice `nvidia::FALCON_READY_TIMEOUT_NS` and six times
+     * `nvidia::FALCON_TIMEOUT_NS` when its falcon is slow to reset.
+     * @return What `pci_driver::detach()` returns once the GSP is stopped or
+     * needs no stop, `nvidia::ERR_TIMEOUT` when the GSP's reset times out, or
+     * `nvidia::ERR_BAD_STATE` when the falcon then does not read as halted or
+     * the RISC-V core reads as running, each error keeping the boot memory
+     * allocated for good. The cause is logged. A later call does not stop the
+     * GSP again and returns what `pci_driver::detach()` returns.
+     */
+    int32_t detach() override;
+
     void run() override;
 
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
+
+private:
+    int32_t stop_gsp_and_free_boot_memory();
+
+    nvidia::gsp_boot_memory m_boot_memory;
+    uint32_t                m_boot0 = 0;
+    bool                    m_must_stop_gsp = false;
 };
 
 } // namespace drivers

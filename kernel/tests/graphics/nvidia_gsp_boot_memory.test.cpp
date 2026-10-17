@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "clock/clock.h"
 #include "common/string.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
@@ -29,6 +30,7 @@ using drivers::nvidia::chip_gsp_reservation;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_NO_MEMORY;
+using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::FIRMWARE_LOG_COUNT;
 using drivers::nvidia::firmware_files;
 using drivers::nvidia::frts_region;
@@ -39,6 +41,7 @@ using drivers::nvidia::message_queues;
 using drivers::nvidia::OK;
 using drivers::nvidia::protected_memory_layout;
 using drivers::nvidia::radix3_table_pages;
+using drivers::nvidia::registers;
 using drivers::nvidia::write_booter_load_image;
 using drivers::nvidia::write_radix3_table;
 
@@ -1052,11 +1055,15 @@ static constexpr uint64_t LOG_BUFFER_PAGES = LOG_BUFFER_BYTES / PAGE_BYTES;
 
 namespace drivers::nvidia {
 
-// Reaches the parts the object keeps to itself: their buffers, whose caching the tests check and through whose own
-// mapping LibOS's uncached page is read, since the kernel's mapping of all physical memory is cached
+// Reaches the parts the object keeps to itself: their buffers, whose caching and addresses the tests check and through
+// whose own mapping LibOS's uncached page is read, since the kernel's mapping of all physical memory is cached
 struct gsp_boot_memory_test_access {
     static const dma::buffer& log_buffer(const gsp_boot_memory& memory, size_t index) {
         return memory.m_log_buffers[index];
+    }
+
+    static const dma::buffer& fwsec_copy(const gsp_boot_memory& memory) {
+        return memory.m_fwsec_copy;
     }
 
     static const dma::buffer& resource_manager_arguments(const gsp_boot_memory& memory) {
@@ -1283,4 +1290,136 @@ TEST(nvidia_gsp_boot_memory, failed_firmware_arguments_allocation_frees_the_part
     EXPECT_EQ(memory.message_queues_address(), queue_memory_address);
 
     memory.release();
+}
+
+// The GSP falcon's registers and fields the stop uses, restated here so the tests hold the stop to NVIDIA's layout
+static constexpr uint32_t GSP_FALCON_CPUCTL = 0x110100;
+static constexpr uint32_t GSP_FALCON_HWCFG2 = 0x1100F4;
+static constexpr uint32_t GSP_FALCON_RM     = 0x110084;
+static constexpr uint32_t FALCON_HALTED     = 0x10;
+static constexpr uint32_t CLEARING_MEMORIES = 0x1000;
+
+// A zeroed fake of BAR0's first 2 MiB, which holds every GSP register the stop reads or writes, kept small as a
+// 16 MiB fake in a `TIER_SCHED` file can hang the suite after it
+struct boot_memory_bar0 {
+    static constexpr size_t BYTES = 0x200000;
+
+    uint8_t*  bytes = static_cast<uint8_t*>(heap::uzalloc(BYTES));
+    registers regs{reinterpret_cast<uintptr_t>(bytes)};
+
+    ~boot_memory_bar0() { heap::ufree(bytes); }
+
+    uint32_t read(uint32_t offset) const { return *reinterpret_cast<uint32_t*>(bytes + offset); }
+    void write(uint32_t offset, uint32_t value) { *reinterpret_cast<uint32_t*>(bytes + offset) = value; }
+};
+
+// The RTX 3080's `PMC_BOOT_0` value, which the stop's reset writes into the RM register
+static constexpr uint32_t RTX_3080_BOOT_0 = 0xB72000A1;
+
+// Allocates a page and hands it to `memory` as FWSEC's copy, as bring-up hands over the copy after a load or run of
+// FWSEC that timed out
+static int32_t keep_fwsec_copy_page(gsp_boot_memory& memory, dma::buffer& copy_out) {
+    int32_t rc = dma::OK;
+    RUN_ELEVATED(rc = dma::alloc_pages(coherent_card(), 1, dma::caching::uncached, paging::PAGE_USER, copy_out));
+    if (rc != dma::OK) {
+        return rc;
+    }
+
+    memory.keep_fwsec_copy(copy_out);
+
+    return dma::OK;
+}
+
+// The message queues' memory and FWSEC's copy stay allocated when the GSP's falcon has every control bit but the halted
+// bit set after the stop's reset
+TEST(nvidia_gsp_boot_memory, memory_stays_allocated_when_the_gsp_does_not_read_as_stopped) {
+    boot_memory_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, ~FALCON_HALTED);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t queue_memory_address = memory.message_queues_address();
+    dma::buffer fwsec_copy = {};
+    ASSERT_EQ(keep_fwsec_copy_page(memory, fwsec_copy), dma::OK);
+
+    EXPECT_EQ(memory.release_after_gsp_stop(bar0.regs, RTX_3080_BOOT_0, 0, 0), ERR_BAD_STATE);
+    EXPECT_EQ(memory.message_queues_address(), queue_memory_address);
+    EXPECT_EQ(gsp_boot_memory_test_access::fwsec_copy(memory).phys, fwsec_copy.phys);
+
+    memory.release();
+}
+
+// A timeout of 1 ms, and a memory timeout of 1 s that the stop must never spend on a ready wait, also far longer than a
+// stop given the short one takes
+static constexpr uint64_t SHORT_TIMEOUT_NS       = 1000000;
+static constexpr uint64_t LONG_MEMORY_TIMEOUT_NS = 1000000000;
+
+// The message queues' memory and FWSEC's copy stay allocated when the stop's reset times out, even with the GSP's
+// falcon halted, and the stop fails only once the memory timeout passes, not at the ready timeout of 0
+TEST(nvidia_gsp_boot_memory, memory_stays_allocated_when_the_stop_times_out) {
+    boot_memory_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
+    bar0.write(GSP_FALCON_HWCFG2, CLEARING_MEMORIES);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    uint64_t queue_memory_address = memory.message_queues_address();
+    dma::buffer fwsec_copy = {};
+    ASSERT_EQ(keep_fwsec_copy_page(memory, fwsec_copy), dma::OK);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = memory.release_after_gsp_stop(bar0.regs, RTX_3080_BOOT_0, 0, SHORT_TIMEOUT_NS);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, LONG_MEMORY_TIMEOUT_NS);
+    EXPECT_EQ(memory.message_queues_address(), queue_memory_address);
+    EXPECT_EQ(gsp_boot_memory_test_access::fwsec_copy(memory).phys, fwsec_copy.phys);
+
+    memory.release();
+}
+
+// The message queues' memory and FWSEC's copy are freed once the GSP reads as stopped after the stop's reset
+TEST(nvidia_gsp_boot_memory, memory_is_freed_once_the_gsp_reads_as_stopped) {
+    boot_memory_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+    dma::buffer fwsec_copy = {};
+    ASSERT_EQ(keep_fwsec_copy_page(memory, fwsec_copy), dma::OK);
+
+    EXPECT_EQ(memory.release_after_gsp_stop(bar0.regs, RTX_3080_BOOT_0, 0, 0), OK);
+    EXPECT_EQ(bar0.read(GSP_FALCON_RM), RTX_3080_BOOT_0);
+    EXPECT_EQ(memory.message_queues_address(), static_cast<uint64_t>(0));
+    EXPECT_EQ(gsp_boot_memory_test_access::fwsec_copy(memory).phys, static_cast<uint64_t>(0));
+}
+
+// A falcon that never reports it is ready holds the release for the short timeout of each of the stop's two ready
+// waits, not for the long timeout of the memory waits, which end at once
+TEST(nvidia_gsp_boot_memory, release_gives_each_ready_wait_of_the_stop_the_ready_timeout) {
+    boot_memory_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(GSP_FALCON_CPUCTL, FALCON_HALTED);
+
+    gsp_boot_memory memory;
+    ASSERT_EQ(memory.allocate_message_queues(coherent_card()), OK);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = memory.release_after_gsp_stop(
+        bar0.regs,
+        RTX_3080_BOOT_0,
+        SHORT_TIMEOUT_NS,
+        LONG_MEMORY_TIMEOUT_NS
+    );
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_GE(elapsed, 2 * SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, LONG_MEMORY_TIMEOUT_NS);
+    EXPECT_EQ(memory.message_queues_address(), static_cast<uint64_t>(0));
 }
