@@ -13,8 +13,8 @@ namespace drivers::nvidia {
 // in NVIDIA's driver
 constexpr uint64_t FALCON_READY_TIMEOUT_NS = 150000;
 
-// How long each wait for a falcon's memories, its core selection, a block of a program's load or a program's halt may
-// take, NVIDIA's default timeout
+// How long each wait for a falcon's memories, its core selection, a block of a program's load, a falcon's halt or the
+// handoff of the GSP's firmware may take, NVIDIA's default timeout
 constexpr uint64_t FALCON_TIMEOUT_NS = DEFAULT_TIMEOUT_NS;
 
 /**
@@ -307,6 +307,88 @@ void write_gsp_app_version(registers& regs, uint32_t app_version);
  * @return Whether the active field is set.
  */
 bool is_gsp_riscv_running(const registers& regs);
+
+/**
+ * @brief Let `falcon`'s DMA engine use physical addresses with no address
+ * space bound to the falcon, by setting the field of its memory interface's
+ * control register that allows it and clearing its DMA control register.
+ * `run_falcon_program` does this before loading a program. NVIDIA's driver
+ * also does it after each reset of the GSP's falcon that the CPU sequencer
+ * asks for. The CPU sequencer is a list of register, delay and falcon steps
+ * the GSP's firmware sends for the driver to run.
+ * @param regs A view of BAR0.
+ * @param falcon The falcon whose DMA engine is set up.
+ */
+void allow_falcon_dma_without_context(registers& regs, falcon_id falcon);
+
+/**
+ * @brief Start `falcon` at the boot vector it holds, through its control
+ * register's alias while the register's alias enable bit is set and through
+ * the register itself otherwise, as NVIDIA's driver starts a falcon.
+ * `run_falcon_program` starts its falcon this way, and the CPU sequencer asks
+ * for it on the GSP's falcon.
+ * @param regs A view of BAR0.
+ * @param falcon The falcon to start.
+ */
+void start_falcon(registers& regs, falcon_id falcon);
+
+/**
+ * @brief Wait for `falcon` to halt, a step the CPU sequencer asks for on the
+ * GSP's falcon. The wait spins on the calling CPU without sleeping, holding it
+ * for up to `timeout_ns` and then until its last read returns.
+ * @param regs A view of BAR0.
+ * @param falcon The falcon to wait for.
+ * @param timeout_ns How long the wait may take, NVIDIA's default timeout
+ * `FALCON_TIMEOUT_NS` for the CPU sequencer's halt step. The wait reads its
+ * register at least once, even for a timeout of 0. NVIDIA's driver counts its
+ * default timeout once for a whole call while its thread-state timeout is on,
+ * and for each wait otherwise.
+ * @return `OK` once the falcon's halted bit is set, or `ERR_TIMEOUT`, which is
+ * logged, when it is not set within `timeout_ns`.
+ */
+int32_t wait_for_falcon_halt(const registers& regs, falcon_id falcon, uint64_t timeout_ns);
+
+/**
+ * @brief Have SEC2 resume the GSP's firmware, the CPU sequencer's resume step.
+ * As in NVIDIA's driver, the GSP is reset into its RISC-V core as
+ * `reset_gsp_into_riscv` does, the address of LibOS's arguments is written
+ * into its falcon's mailboxes, and SEC2's falcon is started as booter load
+ * left it, with no reset, for SEC2 to resume the firmware. The call then waits
+ * for the field of a secure scratch register that NVIDIA's driver reads as the
+ * firmware resumed, checks that the SEC2 falcon's first mailbox reads 0, gives
+ * the GSP falcon's OS register `app_version` and checks that the RISC-V core
+ * runs. It spins on the calling CPU without sleeping, holding it for up to
+ * `ready_timeout_ns` and twice `timeout_ns`, and then until its last read
+ * returns.
+ * @param regs A view of BAR0, as for `reset_gsp_into_riscv`. Booter load must
+ * also have run on SEC2's falcon, as `run_booter_load` runs it, with nothing
+ * resetting SEC2 since.
+ * @param libos_arguments_address As for `write_libos_arguments_address`.
+ * @param app_version As for `write_gsp_app_version`.
+ * @param ready_timeout_ns As for `reset_gsp_into_riscv`.
+ * @param timeout_ns How long the reset's wait for the memories and the wait
+ * for the scratch register's field may each take, NVIDIA's default timeout
+ * `FALCON_TIMEOUT_NS` for the CPU sequencer's resume step. Each wait reads its
+ * register at least once, even for a timeout of 0, and the field is read once
+ * more after its deadline passes, as NVIDIA's driver reads it. NVIDIA's wait
+ * for the memories also reads its register once more after its deadline, which
+ * the wait in `reset_gsp_into_riscv` does not. NVIDIA's driver counts its
+ * default timeout once for a whole call while its thread-state timeout is on,
+ * and for each wait otherwise.
+ * @return `OK`, `ERR_TIMEOUT` when the reset times out as
+ * `reset_gsp_into_riscv` describes, leaving the mailboxes unwritten and SEC2
+ * not started, or when the field is not set within `timeout_ns`, SEC2 left
+ * started, or `ERR_BAD_STATE` when the SEC2 falcon's first mailbox then reads
+ * other than 0 or the RISC-V core does not read as running. The cause is
+ * logged.
+ */
+int32_t resume_gsp_firmware(
+    registers& regs,
+    uint64_t libos_arguments_address,
+    uint32_t app_version,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns
+);
 
 /**
  * @brief Read the version the chip's fuses, bits burned into the chip for

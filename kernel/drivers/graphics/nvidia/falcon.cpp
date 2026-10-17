@@ -67,6 +67,11 @@ constexpr uint32_t FALCON_OS = 0x080;
 // for the GSP's resource manager
 constexpr uint32_t GSP_QUEUE_HEAD0 = 0x110C00;
 
+// The secure scratch register whose bit 26, the handoff of boot stage 3, NVIDIA's driver waits on to know that SEC2
+// has resumed the GSP's firmware
+constexpr uint32_t BOOT_STAGE_SCRATCH      = 0x1180F8;
+constexpr uint32_t BOOT_STAGE_3_HANDED_OFF = 0x4000000;
+
 // The RISC-V core's boot control register: bit 4 set while the RISC-V core is selected over the falcon core, bit 0
 // set once a selection has taken effect, and the value NVIDIA's driver writes to select the falcon core
 constexpr uint32_t RISCV_BCR_CTRL      = 0x668;
@@ -151,13 +156,17 @@ static const falcon_layout& layout_of(falcon_id falcon) {
     }
 }
 
+static bool reads_as(const registers& regs, uint32_t offset, uint32_t bits, uint32_t value) {
+    return (regs.read(offset) & bits) == value;
+}
+
 // Spins until the `bits` of the register at `offset` read as `value` or `timeout_ns` passes, reading it at least
 // once, and returns whether they did
 static bool wait_for_bits(const registers& regs, uint32_t offset, uint32_t bits, uint32_t value, uint64_t timeout_ns) {
     uint64_t deadline = clock::now_ns() + timeout_ns;
 
     while (true) {
-        if ((regs.read(offset) & bits) == value) {
+        if (reads_as(regs, offset, bits, value)) {
             return true;
         }
 
@@ -167,6 +176,17 @@ static bool wait_for_bits(const registers& regs, uint32_t offset, uint32_t bits,
 
         cpu::relax();
     }
+}
+
+// Waits as `wait_for_bits` does and, like NVIDIA's condition waits, reads the register once more after the deadline
+static bool wait_for_bits_with_last_read(
+    const registers& regs,
+    uint32_t offset,
+    uint32_t bits,
+    uint32_t value,
+    uint64_t timeout_ns
+) {
+    return wait_for_bits(regs, offset, bits, value, timeout_ns) || reads_as(regs, offset, bits, value);
 }
 
 static void let_reset_propagate(const registers& regs, const falcon_layout& layout) {
@@ -337,12 +357,25 @@ int32_t stop_falcon(registers& regs, falcon_id falcon, uint32_t boot0, uint64_t 
     return OK;
 }
 
-// Lets the DMA engine read system memory by physical address through transfer setup 0, looking in the CPU's caches
-// only when memory read through it may be cached
-static void configure_dma(registers& regs, const falcon_layout& layout, bool reaches_cached_memory) {
+static void allow_dma_without_context(registers& regs, const falcon_layout& layout) {
     uint32_t control = regs.read(layout.fbif_base + FBIF_CTL) | ALLOW_PHYSICAL_WITHOUT_CONTEXT;
     regs.write(layout.fbif_base + FBIF_CTL, control);
     regs.write(layout.base + FALCON_DMACTL, 0);
+}
+
+static void start(registers& regs, const falcon_layout& layout) {
+    bool starts_through_alias = (regs.read(layout.base + FALCON_CPUCTL) & STARTS_THROUGH_ALIAS) != 0;
+    regs.write(layout.base + (starts_through_alias ? FALCON_CPUCTL_ALIAS : FALCON_CPUCTL), START_FALCON);
+}
+
+static bool wait_for_halt(const registers& regs, const falcon_layout& layout, uint64_t timeout_ns) {
+    return wait_for_bits(regs, layout.base + FALCON_CPUCTL, FALCON_HALTED, FALCON_HALTED, timeout_ns);
+}
+
+// Lets the DMA engine read system memory by physical address through transfer setup 0, looking in the CPU's caches
+// only when memory read through it may be cached
+static void configure_dma(registers& regs, const falcon_layout& layout, bool reaches_cached_memory) {
+    allow_dma_without_context(regs, layout);
 
     uint32_t target = reaches_cached_memory ? TARGET_COHERENT_SYSTEM_MEMORY : TARGET_NONCOHERENT_SYSTEM_MEMORY;
     uint32_t transfer = regs.read(layout.fbif_base + FBIF_TRANSCFG0) & ~TRANSFER_TARGET_MASK;
@@ -446,9 +479,8 @@ static int32_t run_program(
         regs.write(layout.base + FALCON_MAILBOX1, mailboxes->mailbox1);
     }
 
-    bool starts_through_alias = (regs.read(layout.base + FALCON_CPUCTL) & STARTS_THROUGH_ALIAS) != 0;
-    regs.write(layout.base + (starts_through_alias ? FALCON_CPUCTL_ALIAS : FALCON_CPUCTL), START_FALCON);
-    bool has_halted = wait_for_bits(regs, layout.base + FALCON_CPUCTL, FALCON_HALTED, FALCON_HALTED, timeout_ns);
+    start(regs, layout);
+    bool has_halted = wait_for_halt(regs, layout, timeout_ns);
 
     if (mailboxes) {
         mailboxes->mailbox0 = regs.read(layout.base + FALCON_MAILBOX0);
@@ -523,6 +555,78 @@ void write_gsp_app_version(registers& regs, uint32_t app_version) {
 
 bool is_gsp_riscv_running(const registers& regs) {
     return is_riscv_active(regs, GSP_FALCON);
+}
+
+void allow_falcon_dma_without_context(registers& regs, falcon_id falcon) {
+    allow_dma_without_context(regs, layout_of(falcon));
+}
+
+void start_falcon(registers& regs, falcon_id falcon) {
+    start(regs, layout_of(falcon));
+}
+
+int32_t wait_for_falcon_halt(const registers& regs, falcon_id falcon, uint64_t timeout_ns) {
+    const falcon_layout& layout = layout_of(falcon);
+
+    if (!wait_for_halt(regs, layout, timeout_ns)) {
+        log::error("nvidia: %s's falcon did not halt within %lu ms", layout.name, timeout_ns / NS_PER_MS);
+        return ERR_TIMEOUT;
+    }
+
+    return OK;
+}
+
+int32_t resume_gsp_firmware(
+    registers& regs,
+    uint64_t libos_arguments_address,
+    uint32_t app_version,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns
+) {
+    int32_t rc = reset_gsp_into_riscv(regs, ready_timeout_ns, timeout_ns);
+    if (rc != OK) {
+        return rc;
+    }
+
+    write_libos_arguments_address(regs, libos_arguments_address);
+
+    start(regs, SEC2_FALCON);
+
+    bool is_handed_off = wait_for_bits_with_last_read(
+        regs,
+        BOOT_STAGE_SCRATCH,
+        BOOT_STAGE_3_HANDED_OFF,
+        BOOT_STAGE_3_HANDED_OFF,
+        timeout_ns
+    );
+    uint32_t sec2_mailbox0 = regs.read(SEC2_FALCON.base + FALCON_MAILBOX0);
+    if (!is_handed_off) {
+        log::error(
+            "nvidia: secure scratch register 14 reported no handoff of the GSP's firmware within %lu ms, the SEC2 "
+            "falcon's first mailbox reading 0x%X",
+            timeout_ns / NS_PER_MS,
+            sec2_mailbox0
+        );
+        return ERR_TIMEOUT;
+    }
+
+    if (sec2_mailbox0 != 0) {
+        log::error(
+            "nvidia: the SEC2 falcon's first mailbox reads 0x%X with the GSP firmware's handoff reported, where 0 "
+            "means success",
+            sec2_mailbox0
+        );
+        return ERR_BAD_STATE;
+    }
+
+    write_gsp_app_version(regs, app_version);
+
+    if (!is_gsp_riscv_running(regs)) {
+        log::error("nvidia: the GSP's RISC-V core does not read as running with its firmware's handoff reported");
+        return ERR_BAD_STATE;
+    }
+
+    return OK;
 }
 
 uint32_t read_ucode_fuse_version(const registers& regs, falcon_id falcon, uint32_t ucode_id) {
