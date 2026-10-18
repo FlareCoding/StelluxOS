@@ -117,7 +117,9 @@ static uint64_t find_vga_workspace(const registers& regs, uint64_t video_memory_
 
 int32_t place_frts_region(const registers& regs, frts_region& region_out) {
     if (is_protected_memory_set_up(regs)) {
-        log::error("nvidia: protected memory is already set up, as after an earlier bring-up with no card reset since");
+        log::error(
+            "nvidia: protected memory already reads as set up, as when no detach took it down after the last bring-up"
+        );
         return ERR_BAD_STATE;
     }
 
@@ -272,6 +274,47 @@ int32_t check_fwsec_sb_result(const registers& regs) {
         log::error("nvidia: FWSEC's SB error code reads 0x%04X", error_code);
         return ERR_BAD_STATE;
     }
+
+    return OK;
+}
+
+int32_t take_down_protected_memory(
+    registers& regs,
+    const falcon_program& booter_unload,
+    uint32_t boot0,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns,
+    bool& sec2_may_read_out
+) {
+    sec2_may_read_out = false;
+
+    if (!is_protected_memory_set_up(regs)) {
+        log::info("nvidia: protected memory does not read as set up, so booter unload is not run");
+        return OK;
+    }
+
+    log::info("nvidia: protected memory reads as set up, so SEC2's falcon is reset to run booter unload");
+
+    int32_t rc = reset_falcon(regs, falcon_id::sec2, boot0, ready_timeout_ns, timeout_ns);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = run_booter_unload(regs, booter_unload, timeout_ns);
+    if (rc != OK) {
+        sec2_may_read_out = rc == ERR_TIMEOUT;
+        return rc;
+    }
+
+    if (is_protected_memory_set_up(regs)) {
+        log::error("nvidia: protected memory still reads as set up after booter unload");
+        return ERR_BAD_STATE;
+    }
+
+    log::info(
+        "nvidia: protected memory no longer reads as set up after booter unload, so a later bring-up can place the "
+        "FRTS region"
+    );
 
     return OK;
 }

@@ -49,9 +49,9 @@ void write_radix3_table(uint64_t* table, uint64_t table_address, const dma::buff
 /**
  * @brief Check that the bootloader's program holds at least one byte and
  * that a radix3 page table maps the GSP's firmware, the two rules on the
- * files that `gsp_boot_memory` relies on. Bring-up checks this with the
- * other firmware checks, before FWSEC runs, since a refusal after FWSEC
- * leaves protected memory set up until the card is reset.
+ * files that `gsp_boot_memory` relies on. Bring-up checks this with the other
+ * firmware checks, before FWSEC runs, so a refusal leaves protected memory as
+ * the card had it.
  * @param bootloader_header Must be the header `check_boot_file` returned for
  * the bootloader.
  * @param gsp_image Must be the layout `check_gsp_image` returned for the GSP
@@ -63,35 +63,76 @@ void write_radix3_table(uint64_t* table, uint64_t table_address, const dma::buff
 int32_t check_boot_copies(const boot_file_header& bootloader_header, const gsp_image_layout& gsp_image);
 
 /**
- * @brief Copy booter load's program to `image`, then write the signature
+ * @brief Copy a booter's program to `image`, then write the signature
  * `signature` names over the copy's signature slot, the
  * `layout.signature_size` bytes at `layout.signature_slot` from the start of
- * the program's data, as NVIDIA's driver patches booter load. Both parts are
- * read with `fw::file::read`, which takes the file's mutex, so this must not
- * run in an interrupt handler or under a spinlock. On the boot thread, which
- * cannot wait, `booter_load` must be one no other thread uses at the time,
- * as `fw::file` describes.
- * @param booter_load Must hold booter load open.
- * @param header Must be the header `check_boot_file` returned for
- * `booter_load`, whose program then lies inside the file.
- * @param layout Must be the layout `read_booter_layout` returned for
- * `booter_load`, whose signature slot then lies inside the program's data
- * and whose signatures lie inside the file.
+ * the program's data, as NVIDIA's driver patches booter load and booter
+ * unload. Both parts are read with `fw::file::read`, which takes the file's
+ * mutex, so this must not run in an interrupt handler or under a spinlock. On
+ * the boot thread, which cannot wait, `booter` must be one no other thread
+ * uses at the time, as `fw::file` describes.
+ * @param booter Must hold a booter open.
+ * @param name Which booter it is, such as "booter load", for the log lines.
+ * @param header Must be the header `check_boot_file` returned for `booter`,
+ * whose program then lies inside the file.
+ * @param layout Must be the layout `read_booter_layout` returned for `booter`,
+ * whose signature slot then lies inside the program's data and whose
+ * signatures lie inside the file.
  * @param signature The signature to write, whose `index` must be below
  * `layout.signature_count`, as it is in any choice `select_booter_signature`
  * returns for `layout`.
  * @param image Must hold `header.program_size` bytes the CPU may write at any
  * alignment, as `dma::alloc_pages` promises of its buffers, since the reads
  * copy into it at any alignment.
- * @return `OK`, or `ERR_BAD_FIRMWARE` when a read fails, which leaves
- * `image` partly written. The cause is logged.
+ * @return `OK`, or `ERR_BAD_FIRMWARE` when a read fails, which leaves `image`
+ * partly written. The cause is logged, naming `name`.
  */
-int32_t write_booter_load_image(
-    const fw::file& booter_load,
+int32_t write_booter_image(
+    const fw::file& booter,
+    const char* name,
     const boot_file_header& header,
     const booter_layout& layout,
     const booter_signature& signature,
     uint8_t* image
+);
+
+/**
+ * @brief Allocate memory for SEC2 to load booter unload from, and write booter
+ * unload's program into it with its signature, as `write_booter_image`
+ * describes. NVIDIA's driver prepares booter unload this way at bring-up, runs
+ * it at unload and frees it only as the GPU is destroyed. `detach()` runs it
+ * after `gsp_boot_memory::release` frees the boot memory, so the copy is the
+ * caller's own rather than `gsp_boot_memory`'s. Booter unload's mailboxes
+ * carry no address. The card reaches the copy as one contiguous range from
+ * `copy_out.phys`, and the copy is uncached, both as NVIDIA's driver allocates
+ * it. The copy starts on a 4 KiB page and spans whole pages. The reads take
+ * the file's mutex, so this must not run in an interrupt handler or under a
+ * spinlock, and on the boot thread `booter_unload` must be one no other thread
+ * uses at the time.
+ * @param device The card's profile, from `pci_driver::dma_profile`.
+ * @param booter_unload Must hold booter unload open.
+ * @param header Must be the header `check_boot_file` returned for
+ * `booter_unload`.
+ * @param layout Must be the layout `read_booter_layout` returned for
+ * `booter_unload`.
+ * @param signature The signature to write, whose `index` must be below
+ * `layout.signature_count`, as it is in any choice `select_booter_signature`
+ * returns for `layout`.
+ * @param copy_out Must be empty. Receives the copy's memory on `OK`, which the
+ * caller frees with `dma::free_pages` once SEC2 can no longer read it, and is
+ * left empty on an error.
+ * @return `OK`, `ERR_BAD_FIRMWARE` when a read fails, or `ERR_NO_MEMORY` when
+ * allocating fails, as it does for a program larger than a single DMA
+ * allocation holds. The cause is logged. A failed read frees the copy, which
+ * the card was never given.
+ */
+int32_t copy_booter_unload(
+    const dma::device_profile& device,
+    const fw::file& booter_unload,
+    const boot_file_header& header,
+    const booter_layout& layout,
+    const booter_signature& signature,
+    dma::buffer& copy_out
 );
 
 /**
@@ -194,7 +235,7 @@ public:
     /**
      * @brief Allocate memory for SEC2 to load booter load from, and write
      * booter load's program into it with its signature, as
-     * `write_booter_load_image` describes. The card reaches the copy as one
+     * `write_booter_image` describes. The card reaches the copy as one
      * contiguous range from `booter_load_address()`, and the copy is uncached,
      * both as NVIDIA's driver allocates it. The reads take the file's mutex,
      * so this must not run in an interrupt handler or under a spinlock, and on
@@ -212,9 +253,9 @@ public:
      * @return `OK`, `ERR_BAD_STATE` when the object already holds booter
      * load's copy, which it keeps, `ERR_BAD_FIRMWARE` when a read fails, or
      * `ERR_NO_MEMORY` when allocating fails, as it does for a program larger
-     * than a single DMA allocation holds. The cause is logged. Any other
-     * error frees the copy, which the card was never given, and leaves the
-     * object's other memory as it was.
+     * than a single DMA allocation holds. The cause is logged. A failed read
+     * frees the copy, which the card was never given, and neither a failed
+     * read nor a failed allocation changes the object's other memory.
      */
     int32_t copy_booter_load(
         const dma::device_profile& device,

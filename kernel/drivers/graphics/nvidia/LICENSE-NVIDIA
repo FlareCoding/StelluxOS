@@ -45,10 +45,13 @@ src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
     falcon.h, falcon.cpp, nvidia_gpu.h and
     kernel/tests/graphics/nvidia_falcon.test.cpp, the control register's
     halted and alias enable bits, its alias and the DMA engine's control
-    register, in falcon.h, and the control register with its start, halted and
-    alias enable bits, its alias, the DMA engine's control register, the
-    hardware configuration register with its memory scrubbing field, the RM
-    register, the two mailbox registers and the OS register, in
+    register, in falcon.h, the hardware configuration register with its RISC-V
+    field, the RM register, the two mailbox registers and the control register's
+    alias enable bit, in kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    and the control register with its start, halted and alias enable bits, its
+    alias, the DMA engine's control register, the hardware configuration
+    register with its memory scrubbing field, the RM register, the two mailbox
+    registers and the OS register, in
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -56,9 +59,10 @@ src/common/inc/swref/published/ampere/ga102/dev_falcon_second_pri.h
     the base of SEC2's second register block, the boot ROM's registers for the
     signature's offset in the data, the engine mask and the ucode id, and the
     signature algorithm register with its RSA-3072 value, in falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and the ucode id register's
-    8-bit field, in firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the base of SEC2's second
+    register block, in kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    and the ucode id register's 8-bit field, in firmware_files.h,
+    firmware_files.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_fbif_v4.h
@@ -72,8 +76,9 @@ src/common/inc/swref/published/ampere/ga102/dev_fbif_v4.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_v4_addendum.h
-    the hardware configuration register's reset ready field, in falcon.cpp
-    and kernel/tests/graphics/nvidia_falcon.test.cpp
+    the hardware configuration register's reset ready field, in falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_gc6_island.h
@@ -122,14 +127,16 @@ src/common/inc/swref/published/ampere/ga102/dev_riscv_pri.h
     register with its valid, core select and BRFETCH fields, and the RISC-V
     control register with its active field, in falcon.cpp,
     kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, and the RISC-V boot
+    control register, in kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_sec_pri.h
     the base of SEC2's registers and SEC2's engine register with its reset
     field, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and
     the base of SEC2's registers, in
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_sec_addendum.h
@@ -295,18 +302,28 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     suspend and that, after the GSP's reset, FWSEC runs the SB command, a
     failure being logged and asserted on without failing the unload, and booter
     unload runs after the SB command, in nvidia_gpu.h and nvidia_gpu.cpp, the
-    rules that the reset's result is not checked and that the SB command runs
-    from the copy of FWSEC made at bring-up and freed only as the GPU is
-    destroyed, in nvidia_gpu.h, booter unload's role, run on SEC2 to take
-    protected memory down, in firmware_files.h and nvidia_gpu.h, the rule that
-    booter unload is read and its signature chosen at bring-up, in nvidia_gpu.h
-    and nvidia_gpu.cpp, the rule that FWSEC's SB command runs as the firmware is
-    unloaded, to put back the programs the VBIOS runs before an operating system
-    loads, in fwsec.h and nvidia_gpu.h, the wait for a message from the
-    firmware, which polls the status queue until a deadline of its own (the
-    default timeout and half as long again), judged by the time taken before
-    each read, and ends once receiving a message fails, in message_queues.h,
-    message_queues.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    rule that booter unload runs after the GSP's reset and the SB command, in
+    protected_memory.h, the rules that booter unload runs whatever the SB
+    command's result and that the unload fails when booter unload fails, in
+    nvidia_gpu.h and nvidia_gpu.cpp, the rule that the unload request's error is
+    returned ahead of booter unload's result, in nvidia_gpu.h, the rules that
+    the reset's result is not checked and that the SB command runs from the copy
+    of FWSEC made at bring-up and freed only as the GPU is destroyed, in
+    nvidia_gpu.h, booter unload's role, run on SEC2 to take protected memory
+    down, in falcon.h, firmware_files.h, nvidia_gpu.h, nvidia_gpu.cpp,
+    protected_memory.h and protected_memory.cpp, the rule that booter unload is
+    read, its signature chosen and its program copied at bring-up, before FWSEC
+    runs, in gsp_boot_memory.h, nvidia_gpu.h and nvidia_gpu.cpp, the rules that
+    booter unload runs at unload and that its copy is freed only as the GPU is
+    destroyed, in gsp_boot_memory.h, the rule that booter unload is handed no
+    address in its mailboxes at an unload, in falcon.h, falcon.cpp,
+    firmware_files.h and gsp_boot_memory.h, the rule that FWSEC's SB command
+    runs as the firmware is unloaded, to put back the programs the VBIOS runs
+    before an operating system loads, in fwsec.h and nvidia_gpu.h, the wait for
+    a message from the firmware, which polls the status queue until a deadline
+    of its own (the default timeout and half as long again), judged by the time
+    taken before each read, and ends once receiving a message fails, in
+    message_queues.h, message_queues.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that the CPU
     sequencer is a list of register, delay and falcon steps the firmware sends
     for the driver to run, among them steps that reset the GSP's falcon and
@@ -349,10 +366,12 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     in gsp_unload.h, gsp_unload.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that a request is
     skipped when the GSP has crashed or the GPU is in reset, lost, shut down,
-    below full power or without access to system memory, that the suspend wait's
-    result is dropped and that the GSP's log is written out before the GSP's
-    reset, in gsp_unload.h, and that the thread-state budget is not started
-    again before the request to unload, in cpu_sequencer.h and gsp_unload.h
+    below full power or without access to system memory and that the GSP's log
+    is written out before the GSP's reset, in gsp_unload.h, that the suspend
+    wait's result is dropped, in gsp_unload.h and nvidia_gpu.h, that the
+    thread-state budget is not started again before the request to unload, in
+    cpu_sequencer.h and gsp_unload.h, and that it is started again before the
+    GSP's reset at unload, in nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -415,21 +434,23 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
     is the slot's offset less the data's, in firmware_files.h,
     firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp, the
     rule that booter unload is read by booter load's rules, in firmware_files.h,
-    nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, with its signature chosen by
-    them, in firmware_files.h, nvidia_gpu.h and nvidia_gpu.cpp, the rules that a
-    booter's fuse version is the one SEC2's fuse registers record for its ucode
-    id, that with more than one signature the slot receives the one at index
-    count - 1 - v for fuse version v and none is for a version above count - 1,
-    and that a lone signature is chosen whatever the version, in
-    firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that booter load's
+    nvidia_gpu.h, nvidia_gpu.cpp, kernel/tests/graphics/nvidia_firmware.test.cpp
+    and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, with its
+    signature chosen by them, in firmware_files.h, nvidia_gpu.h and
+    nvidia_gpu.cpp, the rules that a booter's fuse version is the one SEC2's
+    fuse registers record for its ucode id, that with more than one signature
+    the slot receives the one at index count - 1 - v for fuse version v and none
+    is for a version above count - 1, and that a lone signature is chosen
+    whatever the version, in firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that each booter's
     whole program is copied, in gsp_boot_memory.h, gsp_boot_memory.cpp,
     nvidia_gpu.h and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, into
-    one contiguous range of uncached memory, in gsp_boot_memory.h and
-    gsp_boot_memory.cpp, the rule that the chosen signature is written over the
-    copy at the slot, in gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h
-    and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    one contiguous range of uncached memory, in gsp_boot_memory.h,
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    chosen signature is written over the copy at the slot, in gsp_boot_memory.h,
+    gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
     signatures lie back to back, in gsp_boot_memory.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
     slot lies at the data's offset plus the signature's DMEM address, in
@@ -437,7 +458,7 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that fuse
     version v takes the signature at index count - 1 - v, in
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rules that
-    booter load runs from its uncached copy with its code at the code's offset,
+    each booter runs from its uncached copy with its code at the code's offset,
     which is also the code's virtual base, and its data at the data's offset,
     each loaded from the start of IMEM and DMEM, with the signature's DMEM
     address as the signature's offset in the data, its engine mask and its ucode
@@ -456,8 +477,20 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c
     low 32 bits go into the first mailbox and its high 32 bits into the second,
     in falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
     the rule that booter unload runs only while protected memory is set up, in
-    nvidia_gpu.h, and the rule that SEC2's falcon is reset before booter unload
-    runs on it, in nvidia_gpu.h and nvidia_gpu.cpp
+    protected_memory.h, protected_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that SEC2's
+    falcon is reset before booter unload runs on it, in falcon.h,
+    protected_memory.h, protected_memory.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that the
+    reset's result is not checked, in nvidia_gpu.h and protected_memory.h, the
+    rule that booter unload takes 0xFF in both of the SEC2 falcon's mailboxes at
+    an unload outside a power transition and fails unless the first reads 0
+    after it, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that booter
+    unload is handed no address in its mailboxes at an unload, in
+    firmware_files.h and gsp_boot_memory.h, and the rule that the unload fails
+    while protected memory still reads as set up after booter unload, in
+    protected_memory.h, protected_memory.cpp and nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c
@@ -601,13 +634,16 @@ src/nvidia/src/kernel/gpu/sec2/arch/ampere/kernel_sec2_ga100.c
 
 src/nvidia/src/kernel/gpu/sec2/arch/ampere/kernel_sec2_ga102.c
     the rule that SEC2's falcon registers count from the base of SEC2's
-    registers, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the rules that its
+    registers, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rules that its
     RISC-V core's and boot ROM's registers count from SEC2's second register
     block and its memory interface's registers from SEC2's memory interface
-    base, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and
-    that SEC2's falcon has no bit in the chip's engine enable register, in
-    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    base, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that
+    its RISC-V core's registers count from SEC2's second register block, in
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and that SEC2's
+    falcon has no bit in the chip's engine enable register, in falcon.h,
+    falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/sec2/arch/turing/kernel_sec2_tu102.c
@@ -680,8 +716,11 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
     mailboxes are then written, that the falcon is then started and waited on
     until it halts, each wait given the default timeout, that the mailboxes are
     read after that wait whether or not it succeeds, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and that the ucode id is
-    written through the value field of its register, in firmware_files.h,
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that a program's mailboxes are
+    written, that the falcon is waited on until it halts and that the mailboxes
+    are read after that wait, in
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and that the ucode
+    id is written through the value field of its register, in firmware_files.h,
     firmware_files.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -711,7 +750,13 @@ src/nvidia/src/kernel/gpu/falcon/arch/turing/kernel_falcon_tu102.c
     falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, the
     rule that a falcon has halted once its halted bit is set, in falcon.h,
     falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rules that a
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rules that a
+    falcon's RISC-V offsets count from its RISC-V register base, that a falcon
+    has a RISC-V core when its hardware configuration register's RISC-V field is
+    set, that the reset ends by writing the chip id to its RM register, that a
+    falcon is started through its control register's alias while the alias is
+    enabled and that it has halted once its halted bit is set, in
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rules that a
     falcon is reset by disabling and then enabling it, that the reset waits for
     the falcon's memories and writes the chip id to the RM register, that a
     falcon's DMA engine is let run with no address space bound by setting its
@@ -733,20 +778,22 @@ src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga102.c
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that the reset goes on
     without the ready report when it does not come, in falcon.h, falcon.cpp,
     kernel/tests/graphics/nvidia_falcon.test.cpp,
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp and
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that the falcon core is
-    selected, when the falcon has a RISC-V core and its boot control register
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that the falcon core
+    is selected, when the falcon has a RISC-V core and its boot control register
     selects it, by clearing that register and waiting for its valid field, in
-    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that
-    the RISC-V core is selected with the core select and valid fields set and
-    BRFETCH as its caller asks and that the RISC-V core is running while the
-    active field of its control register is set, in falcon.h, falcon.cpp,
+    falcon.h, falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that the RISC-V core
+    is selected with the core select and valid fields set and BRFETCH as its
+    caller asks and that the RISC-V core is running while the active field of
+    its control register is set, in falcon.h, falcon.cpp,
     kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that the wait for the
     memories is a condition wait, in falcon.h, that the ready wait is kept out
     of the thread-state budget while the waits for the memories and for the core
-    selection count against it, in cpu_sequencer.h, and that the wait for the
-    memories takes the default timeout, in
+    selection count against it, in cpu_sequencer.h and nvidia_gpu.h, and that
+    the wait for the memories takes the default timeout, in
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -754,9 +801,10 @@ src/nvidia/src/kernel/gpu_mgr/gpu_mgr.c
     the rule that the chip id a falcon's RM register is given is the value of
     PMC_BOOT_0, in falcon.h, falcon.cpp, cpu_sequencer.h,
     kernel/tests/graphics/nvidia_falcon.test.cpp,
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp and
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, GPU instance 0 for the
-    first GPU attached, in gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, GPU instance 0 for
+    the first GPU attached, in gsp_boot_memory.h, gsp_boot_memory.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the CPU
     architecture's code chosen by the architecture the driver is built for,
     in boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,

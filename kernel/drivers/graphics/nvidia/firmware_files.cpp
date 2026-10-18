@@ -924,7 +924,7 @@ int32_t select_booter_signature(
     return OK;
 }
 
-falcon_program describe_booter_load_program(
+falcon_program describe_booter_program(
     const booter_layout& layout,
     uint64_t dma_address,
     bool reads_cached_memory

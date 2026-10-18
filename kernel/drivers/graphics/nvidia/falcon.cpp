@@ -60,6 +60,9 @@ constexpr uint32_t FALCON_RM = 0x084;
 constexpr uint32_t FALCON_MAILBOX0 = 0x040;
 constexpr uint32_t FALCON_MAILBOX1 = 0x044;
 
+// What NVIDIA's driver writes into both of SEC2's mailboxes for booter unload at an unload outside a power transition
+constexpr uint32_t BOOTER_UNLOAD_ARGUMENT = 0xFF;
+
 // What NVIDIA's driver reads in the GSP falcon's first mailbox as LibOS's report that the GSP's processor is suspended
 constexpr uint32_t GSP_PROCESSOR_SUSPENDED = 0x80000000;
 
@@ -544,6 +547,32 @@ int32_t run_falcon_program(
     return run_program(regs, falcon, program, &mailboxes, timeout_ns);
 }
 
+// Runs `booter`, which `name` names in the log line, on SEC2's falcon with `mailboxes`, and checks that it leaves 0 in
+// the first
+static int32_t run_booter(
+    registers& regs,
+    const falcon_program& booter,
+    const char* name,
+    falcon_mailboxes mailboxes,
+    uint64_t timeout_ns
+) {
+    int32_t rc = run_falcon_program(regs, falcon_id::sec2, booter, mailboxes, timeout_ns);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (mailboxes.mailbox0 != 0) {
+        log::error(
+            "nvidia: the SEC2 falcon's first mailbox reads 0x%X after %s, which leaves 0 when it succeeds",
+            mailboxes.mailbox0,
+            name
+        );
+        return ERR_BAD_STATE;
+    }
+
+    return OK;
+}
+
 int32_t run_booter_load(
     registers& regs,
     const falcon_program& booter_load,
@@ -555,20 +584,16 @@ int32_t run_booter_load(
         .mailbox1 = static_cast<uint32_t>(metadata_address >> 32),
     };
 
-    int32_t rc = run_falcon_program(regs, falcon_id::sec2, booter_load, mailboxes, timeout_ns);
-    if (rc != OK) {
-        return rc;
-    }
+    return run_booter(regs, booter_load, "booter load", mailboxes, timeout_ns);
+}
 
-    if (mailboxes.mailbox0 != 0) {
-        log::error(
-            "nvidia: the SEC2 falcon's first mailbox reads 0x%X after booter load, which leaves 0 when it succeeds",
-            mailboxes.mailbox0
-        );
-        return ERR_BAD_STATE;
-    }
+int32_t run_booter_unload(registers& regs, const falcon_program& booter_unload, uint64_t timeout_ns) {
+    falcon_mailboxes mailboxes = {
+        .mailbox0 = BOOTER_UNLOAD_ARGUMENT,
+        .mailbox1 = BOOTER_UNLOAD_ARGUMENT,
+    };
 
-    return OK;
+    return run_booter(regs, booter_unload, "booter unload", mailboxes, timeout_ns);
 }
 
 void write_gsp_app_version(registers& regs, uint32_t app_version) {

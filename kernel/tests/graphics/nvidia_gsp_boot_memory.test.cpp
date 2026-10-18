@@ -27,6 +27,7 @@ using drivers::nvidia::booter_layout;
 using drivers::nvidia::booter_signature;
 using drivers::nvidia::check_boot_copies;
 using drivers::nvidia::chip_gsp_reservation;
+using drivers::nvidia::copy_booter_unload;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_NO_MEMORY;
@@ -42,7 +43,7 @@ using drivers::nvidia::OK;
 using drivers::nvidia::protected_memory_layout;
 using drivers::nvidia::radix3_table_pages;
 using drivers::nvidia::registers;
-using drivers::nvidia::write_booter_load_image;
+using drivers::nvidia::write_booter_image;
 using drivers::nvidia::write_radix3_table;
 
 // The 4 KiB page every part of the boot memory is laid out in, radix3 tables included, and the addresses one radix3
@@ -603,7 +604,14 @@ TEST(nvidia_gsp_boot_memory, booter_load_image_holds_its_program_with_the_chosen
     ASSERT_NOT_NULL(image);
     string::memset(image, PROGRAM_GUARD_BYTE, BOOTER_PROGRAM_BYTES + PROGRAM_GUARD_BYTES);
 
-    int32_t rc = write_booter_load_image(booter_load, BOOTER_LOAD_HEADER, BOOTER_LAYOUT, CHOSEN_SIGNATURE, image);
+    int32_t rc = write_booter_image(
+        booter_load,
+        "booter load",
+        BOOTER_LOAD_HEADER,
+        BOOTER_LAYOUT,
+        CHOSEN_SIGNATURE,
+        image
+    );
 
     uint64_t slot_end = BOOTER_SLOT_OFFSET + BOOTER_SIGNATURE_BYTES;
     uint64_t wrong_before_slot = count_differing_bytes(
@@ -712,6 +720,61 @@ TEST(nvidia_gsp_boot_memory, failed_read_of_booter_load_program_frees_only_its_c
 
 TEST(nvidia_gsp_boot_memory, failed_read_of_booter_load_signature_frees_only_its_copy) {
     expect_cut_booter_load_to_free_only_its_copy(late_signatures_layout(), LATE_CHOSEN_SIGNATURE_OFFSET + 0x100);
+}
+
+// Booter unload is read by booter load's rules, so booter load's file stands in for booter unload's
+static int32_t copy_booter_unload_from(const fw::file& booter_unload, dma::buffer& copy) {
+    return copy_booter_unload(
+        coherent_card(),
+        booter_unload,
+        BOOTER_LOAD_HEADER,
+        BOOTER_LAYOUT,
+        CHOSEN_SIGNATURE,
+        copy
+    );
+}
+
+// Booter unload's copy starts on a page, is uncached even for a coherent card and holds the program with the chosen
+// signature over its slot, until its owner frees it
+TEST(nvidia_gsp_boot_memory, booter_unload_copy_is_uncached_and_holds_the_chosen_signature) {
+    fw::file booter_unload;
+    ASSERT_TRUE(install_booter_load(booter_unload));
+
+    uint64_t free_pages_before = drained_free_pages();
+    dma::buffer copy = {};
+    ASSERT_EQ(copy_booter_unload_from(booter_unload, copy), OK);
+    uint64_t free_pages_with_copy = drained_free_pages();
+
+    uint8_t* image = reinterpret_cast<uint8_t*>(copy.virt);
+    uint64_t slot_end = BOOTER_SLOT_OFFSET + BOOTER_SIGNATURE_BYTES;
+    uint64_t wrong_before_slot = count_differing_bytes(
+        image,
+        BOOTER_PROGRAM_OFFSET,
+        BOOTER_SLOT_OFFSET,
+        BOOTER_LOAD_SALT
+    );
+    uint64_t wrong_in_slot = count_differing_bytes(
+        image + BOOTER_SLOT_OFFSET,
+        CHOSEN_SIGNATURE_OFFSET,
+        BOOTER_SIGNATURE_BYTES,
+        BOOTER_LOAD_SALT
+    );
+    uint64_t wrong_after_slot = count_differing_bytes(
+        image + slot_end,
+        BOOTER_PROGRAM_OFFSET + slot_end,
+        BOOTER_PROGRAM_BYTES - slot_end,
+        BOOTER_LOAD_SALT
+    );
+
+    EXPECT_FALSE(copy.cached);
+    EXPECT_EQ(copy.phys % PAGE_BYTES, static_cast<uint64_t>(0));
+    EXPECT_GE(free_pages_before - free_pages_with_copy, BOOTER_PROGRAM_BLOCK_PAGES);
+    EXPECT_EQ(wrong_before_slot, static_cast<uint64_t>(0));
+    EXPECT_EQ(wrong_in_slot, static_cast<uint64_t>(0));
+    EXPECT_EQ(wrong_after_slot, static_cast<uint64_t>(0));
+
+    RUN_ELEVATED(dma::free_pages(copy));
+    EXPECT_GE(drained_free_pages() + KERNEL_PAGE_TABLE_PAGES, free_pages_before);
 }
 
 // The refused profile fails the first allocation of `copy_boot_files`, before the bootloader or the GSP image is

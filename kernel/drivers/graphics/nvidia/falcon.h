@@ -49,7 +49,7 @@ struct falcon_mailboxes {
 };
 
 // Identifies one of the GPU's falcons, the microcontrollers in its engines: the GSP's, which runs FWSEC, or that of
-// SEC2, the GPU's security processor, which runs the program that boots the GSP's firmware
+// SEC2, the GPU's security processor, which runs the programs that boot the GSP and take protected memory down
 enum class falcon_id : uint8_t {
     gsp,
     sec2,
@@ -293,8 +293,8 @@ int32_t run_falcon_program(
  * @param regs A view of BAR0, as for `run_falcon_program` on SEC2's falcon:
  * the card's bus mastering must be on and SEC2's falcon must have been reset
  * with `reset_falcon`.
- * @param booter_load Booter load's program, as `describe_booter_load_program`
- * gives it, whose memory must stay allocated as `run_falcon_program` requires.
+ * @param booter_load Booter load's program, as `describe_booter_program` gives
+ * it, whose memory must stay allocated as `run_falcon_program` requires.
  * @param metadata_address Where protected memory's metadata lies, as the card
  * addresses memory.
  * @param timeout_ns How long each block's load and the run may take, as for
@@ -309,6 +309,24 @@ int32_t run_booter_load(
     uint64_t metadata_address,
     uint64_t timeout_ns
 );
+
+/**
+ * @brief Run booter unload, the program that takes protected memory down, on
+ * SEC2's falcon with `run_falcon_program`, handing it 0xFF in both of the SEC2
+ * falcon's mailboxes, and check that booter unload leaves 0 in the first, as
+ * NVIDIA's driver does at an unload outside a power transition.
+ * @param regs A view of BAR0, as for `run_falcon_program` on SEC2's falcon:
+ * the card's bus mastering must be on and SEC2's falcon must have been reset
+ * with `reset_falcon`.
+ * @param booter_unload Booter unload's program, as `describe_booter_program`
+ * gives it, whose memory must stay allocated as `run_falcon_program` requires.
+ * @param timeout_ns How long each block's load and the run may take, as for
+ * `run_falcon_program`.
+ * @return `OK` once booter unload halts with 0 in the first mailbox, the
+ * `ERR_TIMEOUT` that `run_falcon_program` returns, or `ERR_BAD_STATE` when the
+ * first mailbox reads other than 0 after the halt. The cause is logged.
+ */
+int32_t run_booter_unload(registers& regs, const falcon_program& booter_unload, uint64_t timeout_ns);
 
 /**
  * @brief Write `app_version` into the register of the GSP's falcon NVIDIA

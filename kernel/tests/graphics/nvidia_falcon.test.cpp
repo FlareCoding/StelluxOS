@@ -24,7 +24,7 @@ using drivers::nvidia::OK;
 using drivers::nvidia::allow_falcon_dma_without_context;
 using drivers::nvidia::booter_layout;
 using drivers::nvidia::booter_signature;
-using drivers::nvidia::describe_booter_load_program;
+using drivers::nvidia::describe_booter_program;
 using drivers::nvidia::falcon_id;
 using drivers::nvidia::falcon_mailboxes;
 using drivers::nvidia::falcon_program;
@@ -870,7 +870,7 @@ static constexpr booter_layout DISTINCT_BOOTER_LOAD = {
 // Booter load's uncached copy is described from its code's offset, also its virtual base, and its data's offset, into
 // IMEM and DMEM from their starts, with its slot as the signature's offset, its whole mask and its ucode id's low byte
 TEST(nvidia_falcon, booter_load_is_described_from_its_offsets) {
-    falcon_program program = describe_booter_load_program(DISTINCT_BOOTER_LOAD, 0x4D2C3B000, true);
+    falcon_program program = describe_booter_program(DISTINCT_BOOTER_LOAD, 0x4D2C3B000, true);
 
     EXPECT_EQ(program.dma_address, static_cast<uint64_t>(0x4D2C3B000));
     EXPECT_FALSE(program.is_cached);
@@ -887,7 +887,7 @@ TEST(nvidia_falcon, booter_load_is_described_from_its_offsets) {
     EXPECT_EQ(program.ucode_id, static_cast<uint8_t>(0x03));
 
     // Whether booter load reads cached memory once started is the caller's to say
-    EXPECT_FALSE(describe_booter_load_program(DISTINCT_BOOTER_LOAD, 0x4D2C3B000, false).reads_cached_memory);
+    EXPECT_FALSE(describe_booter_program(DISTINCT_BOOTER_LOAD, 0x4D2C3B000, false).reads_cached_memory);
 }
 
 // Booter load gets protected memory's metadata address in the SEC2 falcon's mailboxes, its low half in the first, and
