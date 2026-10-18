@@ -13,19 +13,21 @@ namespace drivers::nvidia {
 // The directory in `fw::DIRECTORY` holding NVIDIA's firmware, one directory per firmware version
 constexpr const char NVIDIA_DIRECTORY[] = "nvidia";
 
-// File names of the bootloader and the booter that loads the GSP image, in a chip's boot directory
-constexpr const char BOOTLOADER_FILE[]  = "bootloader.bin";
-constexpr const char BOOTER_LOAD_FILE[] = "booter_load.bin";
+// File names of the bootloader and the two booters, in a chip's boot directory
+constexpr const char BOOTLOADER_FILE[]    = "bootloader.bin";
+constexpr const char BOOTER_LOAD_FILE[]   = "booter_load.bin";
+constexpr const char BOOTER_UNLOAD_FILE[] = "booter_unload.bin";
 
 // Room for every name built from a chip table entry, with its NUL. A longer name fails with `ERR_BAD_FIRMWARE`.
 constexpr size_t NAME_CAPACITY = 128;
 
-// The names `open_firmware_files` builds, relative to `fw::DIRECTORY`: three files and the directories they lie in
+// The names `open_firmware_files` builds, relative to `fw::DIRECTORY`: four files and the directories they lie in
 struct firmware_names {
     char version_directory[NAME_CAPACITY];
     char boot_directory[NAME_CAPACITY];
     char bootloader[NAME_CAPACITY];
     char booter_load[NAME_CAPACITY];
+    char booter_unload[NAME_CAPACITY];
     char gsp_image[NAME_CAPACITY];
 };
 
@@ -44,7 +46,7 @@ constexpr uint32_t BOOTLOADER_MONITOR_CODE_OFFSET_FIELD = 0x30;
 constexpr uint32_t BOOTLOADER_MONITOR_CODE_SIZE_FIELD   = 0x34;
 constexpr uint32_t BOOTLOADER_DESCRIPTOR_FIELD_BYTES    = 0x38;
 
-// Where each field of booter load's descriptor header lies, in bytes from its start, and the header's size. Each is a
+// Where each field of a booter's descriptor header lies, in bytes from its start, and the header's size. Each is a
 // little-endian 32-bit size or offset from the start of the file, the latter leading to a descriptor.
 constexpr uint32_t BOOTER_SIGNATURES_OFFSET_FIELD      = 0x00;
 constexpr uint32_t BOOTER_SIGNATURES_SIZE_FIELD        = 0x04;
@@ -107,13 +109,14 @@ static bool join_name(char* name_out, const char* directory, const char* file) {
     return true;
 }
 
-// Builds the names in the layout the nvidia-firmware package installs, the bootloader and booter load in
+// Builds the names in the layout the nvidia-firmware package installs, the bootloader and both booters in
 // nvidia/<version>/<boot directory>/ and the GSP image in nvidia/<version>/. Returns false when one does not fit.
 static bool build_names(const chip_firmware& firmware, firmware_names& names_out) {
     return join_name(names_out.version_directory, NVIDIA_DIRECTORY, FIRMWARE_VERSION)
         && join_name(names_out.boot_directory, names_out.version_directory, firmware.boot_directory)
         && join_name(names_out.bootloader, names_out.boot_directory, BOOTLOADER_FILE)
         && join_name(names_out.booter_load, names_out.boot_directory, BOOTER_LOAD_FILE)
+        && join_name(names_out.booter_unload, names_out.boot_directory, BOOTER_UNLOAD_FILE)
         && join_name(names_out.gsp_image, names_out.version_directory, firmware.gsp_image);
 }
 
@@ -161,6 +164,11 @@ int32_t open_firmware_files(const chip_firmware& firmware, firmware_files& files
     }
 
     rc = open_firmware_file(names.boot_directory, names.booter_load, files_out.booter_load);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = open_firmware_file(names.boot_directory, names.booter_unload, files_out.booter_unload);
     if (rc != OK) {
         return rc;
     }
@@ -584,33 +592,42 @@ int32_t read_bootloader_layout(
     return OK;
 }
 
-// Reads the `count` bytes at `offset` of booter load into `dst` once they lie inside the file, naming them `name` in
-// the log line when they end past it or the read fails
+// Reads the `count` bytes at `offset` of `booter` into `dst` once they lie inside the file, naming them `name`'s `part`
+// in the log line when they end past it or the read fails
 static int32_t read_booter_bytes(
-    const fw::file& booter_load,
+    const fw::file& booter,
     const char* name,
+    const char* part,
     uint32_t offset,
     void* dst,
     uint32_t count
 ) {
-    if (!lies_inside(offset, count, booter_load.size())) {
+    if (!lies_inside(offset, count, booter.size())) {
         log::error(
-            "nvidia: the %s of %u bytes at 0x%X ends past the file's %lu bytes",
+            "nvidia: the %s's %s of %u bytes at 0x%X ends past the file's %lu bytes",
             name,
+            part,
             count,
             offset,
-            booter_load.size()
+            booter.size()
         );
         return ERR_BAD_FIRMWARE;
     }
 
-    return read_firmware(booter_load, name, offset, dst, count);
+    int32_t fw_result = booter.read(offset, dst, count);
+    int32_t rc = to_bring_up_result(fw_result);
+    if (rc != OK) {
+        log::error("nvidia: reading the %s's %s failed with fw error %d", name, part, fw_result);
+    }
+
+    return rc;
 }
 
-// Reads the 32-bit descriptor of booter load that the descriptor header's field at `field` leads to, naming the
-// descriptor `descriptor` in the log line when it ends past the file or the read fails
+// Reads from `booter` the 32-bit descriptor that the descriptor header's field at `field` leads to, naming it `name`'s
+// `descriptor` in the log line when it ends past the file or the read fails
 static int32_t read_booter_descriptor(
-    const fw::file& booter_load,
+    const fw::file& booter,
+    const char* name,
     const uint8_t* descriptor_header,
     uint32_t field,
     const char* descriptor,
@@ -618,7 +635,7 @@ static int32_t read_booter_descriptor(
 ) {
     uint8_t bytes[sizeof(uint32_t)] = {};
     uint32_t offset = read_u32(descriptor_header + field);
-    int32_t rc = read_booter_bytes(booter_load, descriptor, offset, bytes, sizeof(bytes));
+    int32_t rc = read_booter_bytes(booter, name, descriptor, offset, bytes, sizeof(bytes));
     if (rc != OK) {
         return rc;
     }
@@ -631,16 +648,18 @@ static int32_t read_booter_descriptor(
 // Reads the signature patch index and the signature count, checks them and the signatures' size as NVIDIA's driver
 // does, then checks that the signatures end inside the file and records them in `layout`
 static int32_t read_booter_signatures(
-    const fw::file& booter_load,
+    const fw::file& booter,
+    const char* name,
     const uint8_t* descriptor_header,
     booter_layout& layout
 ) {
     uint32_t patch_index = 0;
     int32_t rc = read_booter_descriptor(
-        booter_load,
+        booter,
+        name,
         descriptor_header,
         BOOTER_PATCH_INDEX_DESCRIPTOR_FIELD,
-        "booter load's signature patch index",
+        "signature patch index",
         patch_index
     );
     if (rc != OK) {
@@ -648,16 +667,17 @@ static int32_t read_booter_signatures(
     }
 
     if (patch_index != 0) {
-        log::error("nvidia: the booter load's signature patch index is %u, not 0", patch_index);
+        log::error("nvidia: the %s's signature patch index is %u, not 0", name, patch_index);
         return ERR_BAD_FIRMWARE;
     }
 
     uint32_t count = 0;
     rc = read_booter_descriptor(
-        booter_load,
+        booter,
+        name,
         descriptor_header,
         BOOTER_COUNT_DESCRIPTOR_FIELD,
-        "booter load's signature count",
+        "signature count",
         count
     );
     if (rc != OK) {
@@ -670,19 +690,21 @@ static int32_t read_booter_signatures(
     bool splits_evenly = has_signatures && signatures_size % count == 0;
     if (!splits_evenly) {
         log::error(
-            "nvidia: the booter load's %u bytes of signatures do not split into %u signatures of one nonzero size",
+            "nvidia: the %s's %u bytes of signatures do not split into %u signatures of one nonzero size",
+            name,
             signatures_size,
             count
         );
         return ERR_BAD_FIRMWARE;
     }
 
-    if (!lies_inside(signatures_offset, signatures_size, booter_load.size())) {
+    if (!lies_inside(signatures_offset, signatures_size, booter.size())) {
         log::error(
-            "nvidia: the booter load's %u bytes of signatures at 0x%X end past the file's %lu bytes",
+            "nvidia: the %s's %u bytes of signatures at 0x%X end past the file's %lu bytes",
+            name,
             signatures_size,
             signatures_offset,
-            booter_load.size()
+            booter.size()
         );
         return ERR_BAD_FIRMWARE;
     }
@@ -697,34 +719,29 @@ static int32_t read_booter_signatures(
 // Reads the metadata and the load header, checks that the load header lists one app and places the code and data
 // inside the program, and records them in `layout`
 static int32_t read_booter_parts(
-    const fw::file& booter_load,
+    const fw::file& booter,
+    const char* name,
     const boot_file_header& header,
     const uint8_t* descriptor_header,
     booter_layout& layout
 ) {
     uint8_t metadata[BOOTER_METADATA_BYTES] = {};
     uint32_t metadata_offset = read_u32(descriptor_header + BOOTER_METADATA_OFFSET_FIELD);
-    int32_t rc = read_booter_bytes(booter_load, "booter load's metadata", metadata_offset, metadata, sizeof(metadata));
+    int32_t rc = read_booter_bytes(booter, name, "metadata", metadata_offset, metadata, sizeof(metadata));
     if (rc != OK) {
         return rc;
     }
 
     uint8_t load_header[BOOTER_LOAD_HEADER_BYTES] = {};
     uint32_t load_header_offset = read_u32(descriptor_header + BOOTER_LOAD_HEADER_OFFSET_FIELD);
-    rc = read_booter_bytes(
-        booter_load,
-        "booter load's load header",
-        load_header_offset,
-        load_header,
-        sizeof(load_header)
-    );
+    rc = read_booter_bytes(booter, name, "load header", load_header_offset, load_header, sizeof(load_header));
     if (rc != OK) {
         return rc;
     }
 
     uint32_t app_count = read_u32(load_header + BOOTER_APP_COUNT_FIELD);
     if (app_count != 1) {
-        log::error("nvidia: the booter load's load header lists %u apps, not 1", app_count);
+        log::error("nvidia: the %s's load header lists %u apps, not 1", name, app_count);
         return ERR_BAD_FIRMWARE;
     }
 
@@ -733,7 +750,7 @@ static int32_t read_booter_parts(
         BOOTER_CODE_OFFSET_FIELD,
         BOOTER_CODE_SIZE_FIELD,
         header.program_size,
-        "booter load",
+        name,
         "code"
     );
     if (rc != OK) {
@@ -745,7 +762,7 @@ static int32_t read_booter_parts(
         BOOTER_DATA_OFFSET_FIELD,
         BOOTER_DATA_SIZE_FIELD,
         header.program_size,
-        "booter load",
+        name,
         "data"
     );
     if (rc != OK) {
@@ -765,17 +782,19 @@ static int32_t read_booter_parts(
 // Reads the signature slot's offset, checks that the slot lies inside the data and ends before the program's end, and
 // records its offset from the data's start in `layout`
 static int32_t read_booter_slot(
-    const fw::file& booter_load,
+    const fw::file& booter,
+    const char* name,
     const boot_file_header& header,
     const uint8_t* descriptor_header,
     booter_layout& layout
 ) {
     uint32_t slot = 0;
     int32_t rc = read_booter_descriptor(
-        booter_load,
+        booter,
+        name,
         descriptor_header,
         BOOTER_SLOT_DESCRIPTOR_FIELD,
-        "booter load's signature slot offset",
+        "signature slot offset",
         slot
     );
     if (rc != OK) {
@@ -787,8 +806,9 @@ static int32_t read_booter_slot(
     bool lies_in_data = starts_in_data && lies_inside(slot, layout.signature_size, data_end);
     if (!lies_in_data) {
         log::error(
-            "nvidia: the booter load's %u-byte signature slot at byte 0x%X of its program is not inside its %u bytes "
-            "of data at 0x%X",
+            "nvidia: the %s's %u-byte signature slot at byte 0x%X of its program is not inside its %u bytes of data "
+            "at 0x%X",
+            name,
             layout.signature_size,
             slot,
             layout.data_size,
@@ -800,8 +820,9 @@ static int32_t read_booter_slot(
     // NVIDIA's driver also refuses a slot that ends exactly at the program's end
     if (header.program_size - slot <= layout.signature_size) {
         log::error(
-            "nvidia: the booter load's %u-byte signature slot at byte 0x%X of its program does not end before the "
-            "program's %u bytes do",
+            "nvidia: the %s's %u-byte signature slot at byte 0x%X of its program does not end before the program's "
+            "%u bytes do",
+            name,
             layout.signature_size,
             slot,
             header.program_size
@@ -815,14 +836,16 @@ static int32_t read_booter_slot(
 }
 
 int32_t read_booter_layout(
-    const fw::file& booter_load,
+    const fw::file& booter,
+    const char* name,
     const boot_file_header& header,
     booter_layout& layout_out
 ) {
     uint32_t descriptor_bytes = header.program_offset - header.descriptor_offset;
     if (descriptor_bytes < BOOTER_DESCRIPTOR_HEADER_BYTES) {
         log::error(
-            "nvidia: the booter load's descriptors are %u bytes, shorter than their %u-byte header",
+            "nvidia: the %s's descriptors are %u bytes, shorter than their %u-byte header",
+            name,
             descriptor_bytes,
             BOOTER_DESCRIPTOR_HEADER_BYTES
         );
@@ -830,13 +853,7 @@ int32_t read_booter_layout(
     }
 
     uint8_t descriptor_header[BOOTER_DESCRIPTOR_HEADER_BYTES] = {};
-    int32_t rc = read_firmware(
-        booter_load,
-        "booter load",
-        header.descriptor_offset,
-        descriptor_header,
-        sizeof(descriptor_header)
-    );
+    int32_t rc = read_firmware(booter, name, header.descriptor_offset, descriptor_header, sizeof(descriptor_header));
     if (rc != OK) {
         return rc;
     }
@@ -847,7 +864,8 @@ int32_t read_booter_layout(
     bool has_load_header_size = load_header_size == BOOTER_LOAD_HEADER_BYTES;
     if (!has_metadata_size || !has_load_header_size) {
         log::error(
-            "nvidia: the booter load's metadata is %u bytes and its load header %u, where they must be %u and %u",
+            "nvidia: the %s's metadata is %u bytes and its load header %u, where they must be %u and %u",
+            name,
             metadata_size,
             load_header_size,
             BOOTER_METADATA_BYTES,
@@ -857,17 +875,17 @@ int32_t read_booter_layout(
     }
 
     booter_layout layout = {};
-    rc = read_booter_signatures(booter_load, descriptor_header, layout);
+    rc = read_booter_signatures(booter, name, descriptor_header, layout);
     if (rc != OK) {
         return rc;
     }
 
-    rc = read_booter_parts(booter_load, header, descriptor_header, layout);
+    rc = read_booter_parts(booter, name, header, descriptor_header, layout);
     if (rc != OK) {
         return rc;
     }
 
-    rc = read_booter_slot(booter_load, header, descriptor_header, layout);
+    rc = read_booter_slot(booter, name, header, descriptor_header, layout);
     if (rc != OK) {
         return rc;
     }
@@ -879,19 +897,22 @@ int32_t read_booter_layout(
 
 int32_t select_booter_signature(
     const registers& regs,
-    const booter_layout& booter_load,
+    const booter_layout& layout,
+    const char* name,
     booter_signature& signature_out
 ) {
-    uint32_t fuse_version = read_ucode_fuse_version(regs, falcon_id::sec2, booter_load.ucode_id);
-    uint32_t last_index = booter_load.signature_count - 1;
-    bool has_several_signatures = booter_load.signature_count > 1;
+    uint32_t fuse_version = read_ucode_fuse_version(regs, falcon_id::sec2, layout.ucode_id);
+    uint32_t last_index = layout.signature_count - 1;
+    bool has_several_signatures = layout.signature_count > 1;
     bool has_signature_for_version = fuse_version <= last_index;
     if (has_several_signatures && !has_signature_for_version) {
         log::error(
-            "nvidia: SEC2's fuse register for booter load's ucode id %u gives fuse version %u, while booter load "
-            "has signatures only for versions 0 to %u",
-            booter_load.ucode_id,
+            "nvidia: SEC2's fuse register for %s's ucode id %u gives fuse version %u, while %s has signatures only "
+            "for versions 0 to %u",
+            name,
+            layout.ucode_id,
             fuse_version,
+            name,
             last_index
         );
         return ERR_BAD_FIRMWARE;

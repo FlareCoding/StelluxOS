@@ -40,6 +40,64 @@ constexpr uint8_t INSTANCE_MEMORY_BAR = 3;
 // never holds on a working card
 constexpr uint32_t UNRESPONSIVE_CARD_READ = 0xFFFFFFFF;
 
+// Checks the header of `booter`, which `name` names in the log lines, and reads its layout, logging where its
+// descriptors place its parts, then chooses and logs the signature its slot must hold. The outputs are set on `OK`.
+static int32_t check_booter(
+    const nvidia::registers& regs,
+    const fw::file& booter,
+    const char* name,
+    nvidia::boot_file_header& header_out,
+    nvidia::booter_layout& layout_out,
+    nvidia::booter_signature& signature_out
+) {
+    int32_t rc = nvidia::check_boot_file(booter, name, header_out);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    rc = nvidia::read_booter_layout(booter, name, header_out, layout_out);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: %s's %u bytes of code at 0x%X and %u bytes of data at 0x%X in its %u-byte program, ucode id %u, "
+        "engine mask 0x%X",
+        name,
+        layout_out.code_size,
+        layout_out.code_offset,
+        layout_out.data_size,
+        layout_out.data_offset,
+        header_out.program_size,
+        layout_out.ucode_id,
+        layout_out.engine_mask
+    );
+
+    log::info(
+        "nvidia: %s's signature slot at byte 0x%X of its data, %u signatures of %u bytes at 0x%X in the file",
+        name,
+        layout_out.signature_slot,
+        layout_out.signature_count,
+        layout_out.signature_size,
+        layout_out.signatures_offset
+    );
+
+    rc = nvidia::select_booter_signature(regs, layout_out, name, signature_out);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: %s's signature %u of %u chosen with fuse version %u",
+        name,
+        signature_out.index + 1,
+        layout_out.signature_count,
+        signature_out.fuse_version
+    );
+
+    return nvidia::OK;
+}
+
 int32_t nvidia_gpu_driver::attach() {
     bool is_display_registered = false;
     RUN_ELEVATED(is_display_registered = gfxfb::has_driver_display());
@@ -130,49 +188,35 @@ int32_t nvidia_gpu_driver::attach() {
     );
 
     nvidia::boot_file_header booter_load_header = {};
-    rc = nvidia::check_boot_file(files.booter_load, "booter load", booter_load_header);
-    if (rc != nvidia::OK) {
-        return rc;
-    }
-
-    nvidia::booter_layout booter_parts = {};
-    rc = nvidia::read_booter_layout(files.booter_load, booter_load_header, booter_parts);
-    if (rc != nvidia::OK) {
-        return rc;
-    }
-
-    log::info(
-        "nvidia: booter load's %u bytes of code at 0x%X and %u bytes of data at 0x%X in its %u-byte program, "
-        "ucode id %u, engine mask 0x%X",
-        booter_parts.code_size,
-        booter_parts.code_offset,
-        booter_parts.data_size,
-        booter_parts.data_offset,
-        booter_load_header.program_size,
-        booter_parts.ucode_id,
-        booter_parts.engine_mask
-    );
-
-    log::info(
-        "nvidia: booter load's signature slot at byte 0x%X of its data, %u signatures of %u bytes at 0x%X in the file",
-        booter_parts.signature_slot,
-        booter_parts.signature_count,
-        booter_parts.signature_size,
-        booter_parts.signatures_offset
-    );
-
+    nvidia::booter_layout booter_load_parts = {};
     nvidia::booter_signature booter_load_signature = {};
-    rc = nvidia::select_booter_signature(regs, booter_parts, booter_load_signature);
+    rc = check_booter(
+        regs,
+        files.booter_load,
+        "booter load",
+        booter_load_header,
+        booter_load_parts,
+        booter_load_signature
+    );
     if (rc != nvidia::OK) {
         return rc;
     }
 
-    log::info(
-        "nvidia: booter load's signature %u of %u chosen with fuse version %u",
-        booter_load_signature.index + 1,
-        booter_parts.signature_count,
-        booter_load_signature.fuse_version
+    // NVIDIA's driver prepares booter unload at bring-up too, so a bad file fails here, before FWSEC runs
+    nvidia::boot_file_header booter_unload_header = {};
+    nvidia::booter_layout booter_unload_parts = {};
+    nvidia::booter_signature booter_unload_signature = {};
+    rc = check_booter(
+        regs,
+        files.booter_unload,
+        "booter unload",
+        booter_unload_header,
+        booter_unload_parts,
+        booter_unload_signature
     );
+    if (rc != nvidia::OK) {
+        return rc;
+    }
 
     rc = nvidia::check_boot_copies(bootloader_header, gsp_image_parts);
     if (rc != nvidia::OK) {
@@ -356,7 +400,7 @@ int32_t nvidia_gpu_driver::attach() {
         card_profile,
         files.booter_load,
         booter_load_header,
-        booter_parts,
+        booter_load_parts,
         booter_load_signature
     );
     if (rc != nvidia::OK) {
@@ -475,7 +519,7 @@ int32_t nvidia_gpu_driver::attach() {
 
     uint64_t metadata_address = m_boot_memory.protected_metadata_address();
     nvidia::falcon_program booter_load = nvidia::describe_booter_load_program(
-        booter_parts,
+        booter_load_parts,
         m_boot_memory.booter_load_address(),
         card_profile.coherent()
     );

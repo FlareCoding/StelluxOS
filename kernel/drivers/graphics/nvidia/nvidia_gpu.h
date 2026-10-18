@@ -30,17 +30,18 @@ namespace drivers {
  * chip's signature for it, checks the bootloader's header, logs where the
  * bootloader's descriptor places the parts of its program and the program's
  * app version. Booter load is the program SEC2, the GPU's security processor,
- * runs to boot the GSP. Bring-up then checks booter load's header, logs where
- * its descriptors place its code, data, signature slot and signatures, with
- * its ucode id and engine mask, chooses and logs which of booter load's
- * signatures its slot must hold, reading the version the chip's fuses, bits
- * burned into it for good, record for booter load, checks that the
- * bootloader's program holds at least one byte and that a radix3 page table,
- * NVIDIA's three-level table of page addresses, maps the GSP's firmware, and
- * finds FWSEC, the signed program in the VBIOS that fences off protected
- * memory for the GSP's firmware, through the VBIOS's falcon program table.
- * Once the card's boot firmware has finished setting up video memory, it
- * works out where in video memory FWSEC's FRTS region goes (the part of
+ * runs to boot the GSP, and booter unload is SEC2's program to take protected
+ * memory down. Bring-up then checks booter load's header, logs where its
+ * descriptors place its code, data, signature slot and signatures, with its
+ * ucode id and engine mask, chooses and logs which of booter load's signatures
+ * its slot must hold, reading the version the chip's fuses, bits burned into
+ * it for good, record for booter load, does the same for booter unload, checks
+ * that the bootloader's program holds at least one byte and that a radix3 page
+ * table, NVIDIA's three-level table of page addresses, maps the GSP's
+ * firmware, and finds FWSEC, the signed program in the VBIOS that fences off
+ * protected memory for the GSP's firmware, through the VBIOS's falcon program
+ * table. Once the card's boot firmware has finished setting up video memory,
+ * it works out where in video memory FWSEC's FRTS region goes (the part of
  * protected memory FWSEC fences off first), then lays out and logs the rest
  * of protected memory and the heap the GSP's firmware keeps below it, as
  * `nvidia::protected_memory_layout` describes. It then chooses which of
@@ -108,14 +109,14 @@ namespace drivers {
  * section holds exactly `FIRMWARE_VERSION` and its NUL, with one
  * .fwimage section and one section of the name the chip table gives for
  * the chip's signature, a name of at most 31 bytes, each section holding
- * at least one byte inside the file, the bootloader or booter load
- * is shorter than its header, cannot be read or holds a header that does not
- * describe it, the bootloader's descriptor is too short to hold every field
- * `nvidia::read_bootloader_layout` reads or places a part that ends past the
- * end of the bootloader's program, booter load's descriptors fail
+ * at least one byte inside the file, the bootloader, booter load or booter
+ * unload is shorter than its header, cannot be read or holds a header that
+ * does not describe it, the bootloader's descriptor is too short to hold every
+ * field `nvidia::read_bootloader_layout` reads or places a part that ends past
+ * the end of the bootloader's program, a booter's descriptors fail
  * `nvidia::read_booter_layout`, which requires them to follow NVIDIA's rules
- * for booter load and place its code, data, signature slot and signatures as
- * `nvidia::booter_layout` describes, booter load has more than one signature
+ * for booters and place the booter's code, data, signature slot and signatures
+ * as `nvidia::booter_layout` describes, a booter has more than one signature
  * and none for the fuse version read for it, the bootloader's program holds
  * no byte or the GSP's firmware has more pages than a radix3 page table maps,
  * as `nvidia::check_boot_copies` checks, or a firmware name built from the

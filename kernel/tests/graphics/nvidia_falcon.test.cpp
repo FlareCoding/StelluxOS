@@ -1341,7 +1341,7 @@ static int32_t select_for_sec2_fuses(
     booter_signature& signature
 ) {
     put_ucode_fuses(bar0, SEC2_UCODE_VERSION_FUSES, booter_load.ucode_id, fuses);
-    return select_booter_signature(bar0.regs, booter_load, signature);
+    return select_booter_signature(bar0.regs, booter_load, "test booter load", signature);
 }
 
 // Of the GA102 booter load's two signatures, fuse version 0 takes the second, version 1 the first and version 2 none.
@@ -1394,7 +1394,7 @@ TEST(nvidia_falcon, booter_load_signature_choice_keeps_bits_past_16) {
     booter_layout wide_id = GA102_BOOTER_LAYOUT;
     wide_id.ucode_id = 0x10003;
     put_ucode_fuses(bar0, SEC2_UCODE_VERSION_FUSES, GA102_BOOTER_LAYOUT.ucode_id, 0x1);
-    EXPECT_EQ(select_booter_signature(bar0.regs, wide_id, signature), OK);
+    EXPECT_EQ(select_booter_signature(bar0.regs, wide_id, "test booter load", signature), OK);
     EXPECT_EQ(signature.fuse_version, 0u);
     EXPECT_EQ(signature.index, 1u);
 }

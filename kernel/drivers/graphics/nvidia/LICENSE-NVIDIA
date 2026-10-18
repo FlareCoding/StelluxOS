@@ -295,16 +295,18 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     suspend and that, after the GSP's reset, FWSEC runs the SB command, a
     failure being logged and asserted on without failing the unload, and booter
     unload runs after the SB command, in nvidia_gpu.h and nvidia_gpu.cpp, the
-    rules that the reset's result is not checked, that the SB command runs from
-    the copy of FWSEC made at bring-up and freed only as the GPU is destroyed,
-    and that booter unload takes protected memory down, in nvidia_gpu.h, the
-    rule that FWSEC's SB command runs as the firmware is unloaded, to put back
-    the programs the VBIOS runs before an operating system loads, in fwsec.h and
-    nvidia_gpu.h, the wait for a message from the firmware, which polls the
-    status queue until a deadline of its own (the default timeout and half as
-    long again), judged by the time taken before each read, and ends once
-    receiving a message fails, in message_queues.h, message_queues.cpp,
-    nvidia_gpu.h, nvidia_gpu.cpp and
+    rules that the reset's result is not checked and that the SB command runs
+    from the copy of FWSEC made at bring-up and freed only as the GPU is
+    destroyed, in nvidia_gpu.h, booter unload's role, run on SEC2 to take
+    protected memory down, in firmware_files.h and nvidia_gpu.h, the rule that
+    booter unload is read and its signature chosen at bring-up, in nvidia_gpu.h
+    and nvidia_gpu.cpp, the rule that FWSEC's SB command runs as the firmware is
+    unloaded, to put back the programs the VBIOS runs before an operating system
+    loads, in fwsec.h and nvidia_gpu.h, the wait for a message from the
+    firmware, which polls the status queue until a deadline of its own (the
+    default timeout and half as long again), judged by the time taken before
+    each read, and ends once receiving a message fails, in message_queues.h,
+    message_queues.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that the CPU
     sequencer is a list of register, delay and falcon steps the firmware sends
     for the driver to run, among them steps that reset the GSP's falcon and
@@ -402,19 +404,22 @@ src/common/sdk/nvidia/inc/nvmisc.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
-    the fields of booter load's metadata and load header, and the rules that
-    the metadata and the load header are exactly the size of their fields,
-    that the load header lists one app, whose code is the code booter load
-    runs, that the load header's OS data is booter load's data, that the
-    signature patch index is 0, that the signature count and the signatures'
-    size are not 0 and the size is a multiple of the count, that the
-    signatures lie back to back, each the size divided by the count, that the
-    slot, counted from the program's start, ends before the program's end,
-    and that the signature's DMEM address is the slot's offset less the
-    data's, in firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, the rules that booter load's
-    fuse version is the one SEC2's fuse registers record for its ucode id, that
-    with more than one signature the slot receives the one at index
+    the fields of a booter's metadata and load header, and the rules that the
+    metadata and the load header are exactly the size of their fields, that the
+    load header lists one app, whose code is the code the booter runs, that the
+    load header's OS data is the booter's data, that the signature patch index
+    is 0, that the signature count and the signatures' size are not 0 and the
+    size is a multiple of the count, that the signatures lie back to back, each
+    the size divided by the count, that the slot, counted from the program's
+    start, ends before the program's end, and that the signature's DMEM address
+    is the slot's offset less the data's, in firmware_files.h,
+    firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp, the
+    rule that booter unload is read by booter load's rules, in firmware_files.h,
+    nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp, with its signature chosen by
+    them, in firmware_files.h, nvidia_gpu.h and nvidia_gpu.cpp, the rules that a
+    booter's fuse version is the one SEC2's fuse registers record for its ucode
+    id, that with more than one signature the slot receives the one at index
     count - 1 - v for fuse version v and none is for a version above count - 1,
     and that a lone signature is chosen whatever the version, in
     firmware_files.h, firmware_files.cpp and
@@ -805,12 +810,12 @@ nouveau/extract-firmware-nouveau.py
     RISC-V program, in firmware_files.h and gsp_boot_memory.h, and the rule
     that the descriptor fills the bytes from the header's end to the
     program's start, in firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, the fields of booter
-    load's descriptor header, each a size or an offset from the file's start,
-    that lead to its signatures, signature slot, signature patch index,
-    metadata, signature count and load header, in firmware_files.h,
-    firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp,
-    and where the tool places each of those after the descriptor header, in
+    kernel/tests/graphics/nvidia_firmware.test.cpp, the fields of a booter's
+    descriptor header, each a size or an offset from the file's start, that lead
+    to its signatures, signature slot, signature patch index, metadata,
+    signature count and load header, in firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp, and where the tool places
+    each of those after the descriptor header, in
     kernel/tests/graphics/nvidia_firmware.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
