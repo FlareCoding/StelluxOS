@@ -3,25 +3,37 @@
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
+#include "clock/clock.h"
 #include "common/string.h"
+#include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/vbios.h"
+#include "dynpriv/dynpriv.h"
 #include "mm/heap.h"
+#include "mm/page_quarantine.h"
+#include "mm/pmm.h"
+#include "tests/memory/dma_test_access.h"
 
 TEST_SUITE(nvidia_fwsec);
 
 using drivers::nvidia::copy_vbios_bytes;
 using drivers::nvidia::describe_fwsec_program;
 using drivers::nvidia::ERR_BAD_VBIOS;
+using drivers::nvidia::ERR_NO_MEMORY;
+using drivers::nvidia::ERR_TIMEOUT;
+using drivers::nvidia::falcon_id;
 using drivers::nvidia::falcon_program;
 using drivers::nvidia::fwsec_layout;
 using drivers::nvidia::fwsec_signature;
 using drivers::nvidia::OK;
 using drivers::nvidia::prepare_fwsec_frts;
+using drivers::nvidia::prepare_fwsec_sb;
 using drivers::nvidia::registers;
 using drivers::nvidia::ROM_WINDOW_BYTES;
+using drivers::nvidia::run_falcon_program;
+using drivers::nvidia::run_fwsec_sb;
 using drivers::nvidia::select_fwsec_signature;
 
 // The first fuse register recording a version of a program the GSP's falcon runs, and the bytes to the next, restated
@@ -29,8 +41,8 @@ using drivers::nvidia::select_fwsec_signature;
 static constexpr uint32_t GSP_UCODE_VERSION_FUSES   = 0x8241C0;
 static constexpr uint32_t UCODE_VERSION_FUSE_STRIDE = 4;
 
-// The application interface, the DMEM mapper, the FRTS command and the signatures' size, restated here so the tests
-// hold the patch to NVIDIA's layout rather than to its own constants
+// The application interface, the DMEM mapper, the FRTS and SB commands and the signatures' size, restated here so the
+// tests hold the patch to NVIDIA's layout rather than to its own constants
 static constexpr uint32_t INTERFACE_ENTRY_COUNT       = 0x03;
 static constexpr uint32_t INTERFACE_HEADER_BYTES      = 4;
 static constexpr uint32_t INTERFACE_ENTRY_ID          = 0x00;
@@ -44,6 +56,9 @@ static constexpr uint32_t MAPPER_BYTES                = 64;
 static constexpr uint32_t FRTS_COMMAND_ID             = 0x15;
 static constexpr uint32_t FRTS_COMMAND_WORDS          = 12;
 static constexpr uint32_t FRTS_COMMAND_BYTES          = 4 * FRTS_COMMAND_WORDS;
+static constexpr uint32_t SB_COMMAND_ID               = 0x19;
+static constexpr uint32_t SB_COMMAND_WORDS            = 6;
+static constexpr uint32_t SB_COMMAND_BYTES            = 4 * SB_COMMAND_WORDS;
 static constexpr uint32_t SIGNATURE_BYTES             = 384;
 
 // An interface entry id other than the DMEM mapper's
@@ -232,7 +247,7 @@ struct fwsec_rom {
 // Zeroed bytes past FWSEC's end in both images, so a nonzero write within 256 bytes past its end makes them differ
 static constexpr uint32_t IMAGE_GUARD_BYTES = 256;
 
-// FWSEC as `prepare_fwsec_frts` writes it and as a test expects it
+// FWSEC as `prepare_fwsec_frts` or `prepare_fwsec_sb` writes it and as a test expects it
 struct fwsec_image {
     uint32_t size;
     uint8_t* actual;
@@ -269,6 +284,13 @@ struct mapper_placement {
     uint32_t input_bytes;
 };
 
+// A command as a test expects it, with the id for the mapper's command to run and its arguments as 32-bit words
+struct expected_command {
+    uint32_t        id;
+    const uint32_t* words;
+    uint32_t        word_count;
+};
+
 static uint8_t* data_in_rom(fwsec_rom& rom, const fwsec_layout& fwsec) {
     return rom.bytes + fwsec.offset + fwsec.code_size;
 }
@@ -291,13 +313,13 @@ static void write_mapper(fwsec_rom& rom, const fwsec_layout& fwsec, const mapper
     put_u32(mapper + MAPPER_INPUT_SIZE, placement.input_bytes);
 }
 
-// FWSEC as the ROM holds it, with the FRTS command in the mapper's input buffer, its id in the mapper's command to run
-// and the chosen signature in the signature slot
+// FWSEC as the ROM holds it, with the command at the start of the mapper's input buffer, its id in the mapper's command
+// to run and the chosen signature in the signature slot
 static void build_expected(
     const fwsec_rom& rom,
     const fwsec_layout& fwsec,
     const mapper_placement& placement,
-    const uint32_t* command,
+    const expected_command& command,
     const fwsec_signature& signature,
     uint8_t* expected
 ) {
@@ -305,11 +327,11 @@ static void build_expected(
     const uint8_t* signature_bytes = rom.bytes + fwsec.signatures_offset + signature.index * SIGNATURE_BYTES;
 
     string::memcpy(expected, rom.bytes + fwsec.offset, fwsec.size);
-    for (uint32_t i = 0; i < FRTS_COMMAND_WORDS; i++) {
-        put_u32(data + placement.input + 4 * i, command[i]);
+    for (uint32_t i = 0; i < command.word_count; i++) {
+        put_u32(data + placement.input + 4 * i, command.words[i]);
     }
 
-    put_u32(data + placement.mapper + MAPPER_INIT_COMMAND, FRTS_COMMAND_ID);
+    put_u32(data + placement.mapper + MAPPER_INIT_COMMAND, command.id);
     string::memcpy(data + fwsec.signature_slot, signature_bytes, SIGNATURE_BYTES);
 }
 
@@ -326,9 +348,15 @@ static constexpr fwsec_signature RTX_3080_SIGNATURE = {.fuse_version = 2, .index
 
 static constexpr uint64_t RTX_3080_FRTS_OFFSET = 0x27FE00000;
 
-// The FRTS command for the RTX 3080's FRTS region, as 32-bit words
-static constexpr uint32_t RTX_3080_FRTS_COMMAND[FRTS_COMMAND_WORDS] = {
+// The FRTS command for the RTX 3080's FRTS region
+static constexpr uint32_t RTX_3080_FRTS_WORDS[FRTS_COMMAND_WORDS] = {
     1, 24, 0, 0, 0, 2, 1, 20, 0x27FE00, 0x100, 2, 0,
+};
+
+static constexpr expected_command RTX_3080_FRTS_COMMAND = {
+    .id = FRTS_COMMAND_ID,
+    .words = RTX_3080_FRTS_WORDS,
+    .word_count = FRTS_COMMAND_WORDS,
 };
 
 static void write_rtx_3080_fwsec(fwsec_rom& rom, const fwsec_layout& fwsec) {
@@ -379,8 +407,14 @@ static constexpr mapper_placement UNALIGNED_MAPPER = {.mapper = 0x1D7, .input = 
 // The command for an FRTS region at the top of 44-bit video memory, whose offset in 4 KiB units takes all 32 bits
 static constexpr uint64_t HIGHEST_FRTS_OFFSET = 0xFFFFFF00000;
 
-static constexpr uint32_t HIGHEST_FRTS_COMMAND[FRTS_COMMAND_WORDS] = {
+static constexpr uint32_t HIGHEST_FRTS_WORDS[FRTS_COMMAND_WORDS] = {
     1, 24, 0, 0, 0, 2, 1, 20, 0xFFFFFF00, 0x100, 2, 0,
+};
+
+static constexpr expected_command HIGHEST_FRTS_COMMAND = {
+    .id = FRTS_COMMAND_ID,
+    .words = HIGHEST_FRTS_WORDS,
+    .word_count = FRTS_COMMAND_WORDS,
 };
 
 TEST(nvidia_fwsec, unaligned_fwsec_is_patched_for_the_highest_frts_offset) {
@@ -657,6 +691,209 @@ TEST(nvidia_fwsec, command_id_overwrites_an_input_buffer_over_the_mapper) {
     build_expected(rom, RTX_3080_FWSEC, MAPPER_UNDER_INPUT, RTX_3080_FRTS_COMMAND, RTX_3080_SIGNATURE, image.expected);
     EXPECT_EQ(prepare_for_rtx_3080(rom, RTX_3080_FWSEC, image), OK);
     EXPECT_TRUE(image.matches());
+}
+
+// The SB command's arguments, which match the first 24 bytes of the FRTS command's arguments
+static constexpr uint32_t SB_WORDS[SB_COMMAND_WORDS] = {1, 24, 0, 0, 0, 2};
+
+static constexpr expected_command SB_COMMAND = {
+    .id = SB_COMMAND_ID,
+    .words = SB_WORDS,
+    .word_count = SB_COMMAND_WORDS,
+};
+
+static int32_t prepare_sb_for_rtx_3080(const fwsec_rom& rom, const fwsec_layout& fwsec, fwsec_image& image) {
+    return prepare_fwsec_sb(rom.regs, fwsec, RTX_3080_SIGNATURE, image.actual);
+}
+
+// Only the SB command's 24 bytes, its id and the signature differ from FWSEC as the ROM holds it, so the rest of the
+// input buffer keeps the ROM's bytes
+TEST(nvidia_fwsec, rtx_3080_fwsec_is_patched_for_the_sb_command) {
+    fwsec_rom rom;
+    fwsec_image image(RTX_3080_FWSEC);
+    ASSERT_NOT_NULL(rom.bytes);
+    ASSERT_NOT_NULL(image.actual);
+    ASSERT_NOT_NULL(image.expected);
+    write_rtx_3080_fwsec(rom, RTX_3080_FWSEC);
+
+    build_expected(rom, RTX_3080_FWSEC, RTX_3080_MAPPER, SB_COMMAND, RTX_3080_SIGNATURE, image.expected);
+    EXPECT_EQ(prepare_sb_for_rtx_3080(rom, RTX_3080_FWSEC, image), OK);
+    EXPECT_TRUE(image.matches());
+}
+
+// The SB command fits a 24-byte input buffer and one ending at the data's end, but not a byte less or later nor where
+// its end wraps, and a refusal leaves the copy as the ROM holds it
+TEST(nvidia_fwsec, sb_command_needs_24_bytes_inside_the_data) {
+    fwsec_rom rom;
+    fwsec_image image(RTX_3080_FWSEC);
+    ASSERT_NOT_NULL(rom.bytes);
+    ASSERT_NOT_NULL(image.actual);
+    write_rtx_3080_fwsec(rom, RTX_3080_FWSEC);
+
+    mapper_placement exact_buffer = RTX_3080_MAPPER;
+    exact_buffer.input_bytes = SB_COMMAND_BYTES;
+    write_mapper(rom, RTX_3080_FWSEC, exact_buffer);
+    EXPECT_EQ(prepare_sb_for_rtx_3080(rom, RTX_3080_FWSEC, image), OK);
+
+    mapper_placement short_buffer = exact_buffer;
+    short_buffer.input_bytes--;
+    write_mapper(rom, RTX_3080_FWSEC, short_buffer);
+    EXPECT_EQ(prepare_sb_for_rtx_3080(rom, RTX_3080_FWSEC, image), ERR_BAD_VBIOS);
+    EXPECT_EQ(string::memcmp(image.actual, rom.bytes + RTX_3080_FWSEC.offset, RTX_3080_FWSEC.size), 0);
+
+    mapper_placement at_end = exact_buffer;
+    at_end.input = RTX_3080_FWSEC.data_size - SB_COMMAND_BYTES;
+    write_mapper(rom, RTX_3080_FWSEC, at_end);
+    EXPECT_EQ(prepare_sb_for_rtx_3080(rom, RTX_3080_FWSEC, image), OK);
+
+    mapper_placement byte_past_end = at_end;
+    byte_past_end.input++;
+    write_mapper(rom, RTX_3080_FWSEC, byte_past_end);
+    EXPECT_EQ(prepare_sb_for_rtx_3080(rom, RTX_3080_FWSEC, image), ERR_BAD_VBIOS);
+    EXPECT_EQ(string::memcmp(image.actual, rom.bytes + RTX_3080_FWSEC.offset, RTX_3080_FWSEC.size), 0);
+
+    mapper_placement wrapping = exact_buffer;
+    wrapping.input = 0u - SB_COMMAND_BYTES;
+    write_mapper(rom, RTX_3080_FWSEC, wrapping);
+    EXPECT_EQ(prepare_sb_for_rtx_3080(rom, RTX_3080_FWSEC, image), ERR_BAD_VBIOS);
+    EXPECT_EQ(string::memcmp(image.actual, rom.bytes + RTX_3080_FWSEC.offset, RTX_3080_FWSEC.size), 0);
+}
+
+// The middle of three signatures, as chosen for fuse version 2 when versions 1 to 3 have one, is copied into the slot
+TEST(nvidia_fwsec, middle_signature_is_copied_into_the_slot) {
+    fwsec_rom rom;
+    fwsec_image image(RTX_3080_FWSEC);
+    ASSERT_NOT_NULL(rom.bytes);
+    ASSERT_NOT_NULL(image.actual);
+    ASSERT_NOT_NULL(image.expected);
+
+    fwsec_layout fwsec = RTX_3080_FWSEC;
+    fwsec.signature_versions = 0xE;
+    fwsec_signature middle = {.fuse_version = 2, .index = 1};
+    write_rtx_3080_fwsec(rom, fwsec);
+
+    build_expected(rom, fwsec, RTX_3080_MAPPER, SB_COMMAND, middle, image.expected);
+    EXPECT_EQ(prepare_fwsec_sb(rom.regs, fwsec, middle, image.actual), OK);
+    EXPECT_TRUE(image.matches());
+}
+
+// Pages the kernel may keep for page tables that mapped a copy, fewer than the copy's 15
+static constexpr uint64_t KERNEL_PAGE_TABLE_PAGES = 3;
+
+// A limit below 32 bits is one the DMA layer refuses
+static constexpr uint8_t REFUSED_ADDRESS_BITS = 31;
+
+// Far longer than the call here takes at a timeout of 0, and shorter than a wait of `FALCON_TIMEOUT_NS`
+static constexpr uint64_t SB_RUN_TIME_LIMIT_NS = 1000000000;
+
+static dma::device_profile coherent_card() {
+    return dma::device_profile_test_access::build(64, true);
+}
+
+static uint64_t drained_free_pages() {
+    uint64_t free_pages = 0;
+    RUN_ELEVATED({
+        page_quarantine::drain();
+        free_pages = pmm::free_page_count();
+    });
+    return free_pages;
+}
+
+static bool is_untouched(const fuse_bar0& bar0) {
+    const uint64_t* words = reinterpret_cast<const uint64_t*>(bar0.bytes);
+    for (size_t i = 0; i < fuse_bar0::BYTES / sizeof(uint64_t); i++) {
+        if (words[i] != 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool matches(const fuse_bar0& bar0, const fuse_bar0& expected) {
+    const uint64_t* words = reinterpret_cast<const uint64_t*>(bar0.bytes);
+    const uint64_t* expected_words = reinterpret_cast<const uint64_t*>(expected.bytes);
+    for (size_t i = 0; i < fuse_bar0::BYTES / sizeof(uint64_t); i++) {
+        if (words[i] != expected_words[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static int32_t run_sb_for_rtx_3080(
+    fuse_bar0& bar0,
+    const fwsec_rom& rom,
+    const dma::device_profile& card,
+    dma::buffer& kept
+) {
+    return run_fwsec_sb(bar0.regs, rom.regs, RTX_3080_FWSEC, RTX_3080_SIGNATURE, card, 0, kept);
+}
+
+// The fake never reports a block copied, so the load times out at once at FWSEC's first block, and the copy, uncached
+// for a coherent card and patched for the SB command, goes to the caller with BAR0 matching a reference run of the copy
+TEST(nvidia_fwsec, sb_copy_is_kept_when_its_load_times_out) {
+    fwsec_rom rom;
+    fwsec_image image(RTX_3080_FWSEC);
+    fuse_bar0 bar0;
+    fuse_bar0 expected_bar0;
+    ASSERT_NOT_NULL(rom.bytes);
+    ASSERT_NOT_NULL(image.expected);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(expected_bar0.bytes);
+    write_rtx_3080_fwsec(rom, RTX_3080_FWSEC);
+    build_expected(rom, RTX_3080_FWSEC, RTX_3080_MAPPER, SB_COMMAND, RTX_3080_SIGNATURE, image.expected);
+
+    dma::buffer kept = {};
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(run_sb_for_rtx_3080(bar0, rom, coherent_card(), kept), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+    ASSERT_TRUE(kept.virt != 0);
+
+    falcon_program program = describe_fwsec_program(RTX_3080_FWSEC, kept.phys, kept.cached);
+    EXPECT_EQ(run_falcon_program(expected_bar0.regs, falcon_id::gsp, program, 0), ERR_TIMEOUT);
+    EXPECT_LT(elapsed, SB_RUN_TIME_LIMIT_NS);
+    EXPECT_FALSE(kept.cached);
+    EXPECT_EQ(string::memcmp(reinterpret_cast<uint8_t*>(kept.virt), image.expected, RTX_3080_FWSEC.size), 0);
+    EXPECT_TRUE(matches(bar0, expected_bar0));
+
+    RUN_ELEVATED(dma::free_pages(kept));
+}
+
+// A copy the patch refuses is freed, and the falcon loads none of it
+TEST(nvidia_fwsec, refused_sb_copy_is_freed_and_never_loaded) {
+    fwsec_rom rom;
+    fuse_bar0 bar0;
+    ASSERT_NOT_NULL(rom.bytes);
+    ASSERT_NOT_NULL(bar0.bytes);
+    write_rtx_3080_fwsec(rom, RTX_3080_FWSEC);
+
+    mapper_placement short_buffer = RTX_3080_MAPPER;
+    short_buffer.input_bytes = SB_COMMAND_BYTES - 1;
+    write_mapper(rom, RTX_3080_FWSEC, short_buffer);
+
+    uint64_t free_pages_before = drained_free_pages();
+    dma::buffer kept = {};
+    EXPECT_EQ(run_sb_for_rtx_3080(bar0, rom, coherent_card(), kept), ERR_BAD_VBIOS);
+    EXPECT_GE(drained_free_pages() + KERNEL_PAGE_TABLE_PAGES, free_pages_before);
+    EXPECT_EQ(kept.virt, static_cast<uintptr_t>(0));
+    EXPECT_TRUE(is_untouched(bar0));
+}
+
+// A copy the DMA layer cannot allocate leaves BAR0 untouched
+TEST(nvidia_fwsec, unallocated_sb_copy_returns_no_memory) {
+    fwsec_rom rom;
+    fuse_bar0 bar0;
+    ASSERT_NOT_NULL(rom.bytes);
+    ASSERT_NOT_NULL(bar0.bytes);
+    write_rtx_3080_fwsec(rom, RTX_3080_FWSEC);
+
+    dma::device_profile refused_card = dma::device_profile_test_access::build(REFUSED_ADDRESS_BITS, true);
+    dma::buffer kept = {};
+    EXPECT_EQ(run_sb_for_rtx_3080(bar0, rom, refused_card, kept), ERR_NO_MEMORY);
+    EXPECT_EQ(kept.virt, static_cast<uintptr_t>(0));
+    EXPECT_TRUE(is_untouched(bar0));
 }
 
 // Copies starting and ending inside a word, up to the ROM window's last byte, match the ROM

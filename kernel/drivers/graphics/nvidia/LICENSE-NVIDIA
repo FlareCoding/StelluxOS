@@ -292,13 +292,19 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     in falcon.h, nvidia_gpu.h and nvidia_gpu.cpp, the rule that the firmware is
     first asked to unload, in falcon.h, gsp_unload.h, nvidia_gpu.h and
     nvidia_gpu.cpp, the rules that the GSP is reset after a wait for it to
-    suspend and that, after the GSP's reset, FWSEC runs to put back the programs
-    the VBIOS runs before an operating system loads and booter unload runs to
-    take protected memory down, in nvidia_gpu.h and nvidia_gpu.cpp, the wait for
-    a message from the firmware, which polls the status queue until a deadline
-    of its own (the default timeout and half as long again), judged by the time
-    taken before each read, and ends once receiving a message fails, in
-    message_queues.h, message_queues.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    suspend and that, after the GSP's reset, FWSEC runs the SB command, a
+    failure being logged and asserted on without failing the unload, and booter
+    unload runs after the SB command, in nvidia_gpu.h and nvidia_gpu.cpp, the
+    rules that the reset's result is not checked, that the SB command runs from
+    the copy of FWSEC made at bring-up and freed only as the GPU is destroyed,
+    and that booter unload takes protected memory down, in nvidia_gpu.h, the
+    rule that FWSEC's SB command runs as the firmware is unloaded, to put back
+    the programs the VBIOS runs before an operating system loads, in fwsec.h and
+    nvidia_gpu.h, the wait for a message from the firmware, which polls the
+    status queue until a deadline of its own (the default timeout and half as
+    long again), judged by the time taken before each read, and ends once
+    receiving a message fails, in message_queues.h, message_queues.cpp,
+    nvidia_gpu.h, nvidia_gpu.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that the CPU
     sequencer is a list of register, delay and falcon steps the firmware sends
     for the driver to run, among them steps that reset the GSP's falcon and
@@ -441,10 +447,12 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c
     rule that booter load takes the address of protected memory's metadata in
     the SEC2 falcon's two mailboxes and fails unless the first reads 0 after it,
     in falcon.h, falcon.cpp, nvidia_gpu.h and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and the rule that the
-    address's low 32 bits go into the first mailbox and its high 32 bits into
-    the second, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that the address's
+    low 32 bits go into the first mailbox and its high 32 bits into the second,
+    in falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
+    the rule that booter unload runs only while protected memory is set up, in
+    nvidia_gpu.h, and the rule that SEC2's falcon is reset before booter unload
+    runs on it, in nvidia_gpu.h and nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c
@@ -536,27 +544,36 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
     the index 0x0E of the VBIOS scratch register whose bits 31 to 16 hold
-    FWSEC's FRTS error code, 0 for none, in protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the FRTS region's
-    size of 1 MiB, the rule that the region never starts at offset 0 and the
-    rule that the FRTS command failed unless that error code is 0, protected
-    memory is set up and the address field of its lower bound is the region's
-    offset in 4 KiB units kept to 32 bits, in protected_memory.h,
-    protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the
-    application interface's header and entry fields and sizes, the id of the
-    entries that lead to a DMEM mapper, the DMEM mapper's fields and size, the
-    FRTS command's id, fields, values and size, and the rules that FWSEC has a
-    signature for the fuse version only when its signature versions include
-    that version, that this signature comes after one for each lower version
-    FWSEC has a signature for, that the interface lists at least 2 entries,
-    that the interface's header, its listed entries and every DMEM mapper they
-    lead to lie inside FWSEC's data, that its last DMEM mapper entry leads to
-    the mapper, that the command goes in the mapper's input buffer and its id
-    in the mapper's command field, that the region's offset and size count
-    4 KiB units with the offset kept to 32 bits, and that the signature goes
-    in the signature slot after the command, in vbios.h, fwsec.h, fwsec.cpp
-    and kernel/tests/graphics/nvidia_fwsec.test.cpp
+    FWSEC's FRTS error code, 0 for none, and the index 0x15 of the one whose
+    bits 15 to 0 hold FWSEC's SB error code, 0 for none, in protected_memory.cpp
+    and kernel/tests/graphics/nvidia_protected_memory.test.cpp, the FRTS
+    region's size of 1 MiB, the rule that the region never starts at offset 0,
+    the rule that the FRTS command failed unless the FRTS error code is 0,
+    protected memory is set up and the address field of its lower bound is the
+    region's offset in 4 KiB units kept to 32 bits, and the rule that the SB
+    command failed unless the boot firmware's progress register is open to
+    reading, its progress reads complete and the SB error code is 0, in
+    protected_memory.h, protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the application
+    interface's header and entry fields and sizes, the id of the entries that
+    lead to a DMEM mapper, the DMEM mapper's fields and size, the FRTS command's
+    id, fields, values and size, the SB command's id and its arguments (the same
+    24 bytes that start the FRTS command's arguments), and the rules that FWSEC
+    has a signature for the fuse version only when its signature versions
+    include that version, that this signature comes after one for each lower
+    version FWSEC has a signature for, that the interface lists at least 2
+    entries, that the interface's header, its listed entries and every DMEM
+    mapper they lead to lie inside FWSEC's data, that its last DMEM mapper entry
+    leads to the mapper, that the command goes in the mapper's input buffer and
+    its id in the mapper's command field, that the region's offset and size
+    count 4 KiB units with the offset kept to 32 bits, and that the signature
+    goes in the signature slot after the command, in vbios.h, fwsec.h, fwsec.cpp
+    and kernel/tests/graphics/nvidia_fwsec.test.cpp, the rule that the SB
+    command runs on the GSP's falcon as the FRTS command does, in fwsec.h,
+    fwsec.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_fwsec.test.cpp, and the rule that FWSEC's copy
+    is patched in place for each command, with the signature chosen again for
+    the fuse version, in nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga100.c

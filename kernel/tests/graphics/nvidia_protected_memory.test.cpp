@@ -13,6 +13,7 @@ TEST_SUITE(nvidia_protected_memory);
 
 using drivers::nvidia::BOOT_FIRMWARE_TIMEOUT_NS;
 using drivers::nvidia::check_frts_result;
+using drivers::nvidia::check_fwsec_sb_result;
 using drivers::nvidia::chip_gsp_reservation;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_TIMEOUT;
@@ -30,6 +31,7 @@ static constexpr uint32_t BOOT_PROGRESS_READ_PROTECTION = 0x118128;
 static constexpr uint32_t BOOT_PROGRESS                 = 0x118234;
 static constexpr uint32_t GSP_FALCON_CPUCTL             = 0x110100;
 static constexpr uint32_t FRTS_ERROR_SCRATCH            = 0x1438;
+static constexpr uint32_t SB_ERROR_SCRATCH              = 0x1454;
 static constexpr uint32_t PROTECTED_MEMORY_LOWER_BOUND  = 0x1FA824;
 static constexpr uint32_t PROTECTED_MEMORY_UPPER_BOUND  = 0x1FA828;
 static constexpr uint32_t USABLE_VIDEO_MEMORY_MIB       = 0x1183A4;
@@ -404,6 +406,52 @@ TEST(nvidia_protected_memory, region_offset_is_compared_in_32_bits) {
     };
 
     EXPECT_EQ(check_frts_result(bar0.regs, region), ERR_BAD_STATE);
+}
+
+// FWSEC's result for the SB command with no error code, and the boot firmware's registers as an RTX 3080 reports them
+// once its boot firmware has finished
+static void put_sb_result(fake_bar0& bar0) {
+    bar0.write(BOOT_PROGRESS_READ_PROTECTION, RTX_3080_READ_PROTECTION);
+    bar0.write(BOOT_PROGRESS, RTX_3080_BOOT_PROGRESS);
+    bar0.write(SB_ERROR_SCRATCH, 0);
+}
+
+// The progress register must be open to reading and read complete, each on its own, and only their own bits count
+TEST(nvidia_protected_memory, sb_result_needs_the_boot_progress_readable_and_complete) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+
+    put_sb_result(bar0);
+    EXPECT_EQ(check_fwsec_sb_result(bar0.regs), OK);
+
+    bar0.write(BOOT_PROGRESS_READ_PROTECTION, RTX_3080_READ_PROTECTION & ~READABLE_AT_LEVEL_0);
+    EXPECT_EQ(check_fwsec_sb_result(bar0.regs), ERR_BAD_STATE);
+
+    bar0.write(BOOT_PROGRESS_READ_PROTECTION, READABLE_AT_LEVEL_0);
+    EXPECT_EQ(check_fwsec_sb_result(bar0.regs), OK);
+
+    put_sb_result(bar0);
+    bar0.write(BOOT_PROGRESS, BOOT_PROGRESS_COMPLETE - 1);
+    EXPECT_EQ(check_fwsec_sb_result(bar0.regs), ERR_BAD_STATE);
+
+    bar0.write(BOOT_PROGRESS, BOOT_PROGRESS_COMPLETE >> 1);
+    EXPECT_EQ(check_fwsec_sb_result(bar0.regs), ERR_BAD_STATE);
+}
+
+// Bits 15 to 0 of the scratch register hold FWSEC's SB error code, and any code but 0 is refused
+TEST(nvidia_protected_memory, nonzero_sb_error_code_is_refused) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    put_sb_result(bar0);
+
+    bar0.write(SB_ERROR_SCRATCH, 0x1);
+    EXPECT_EQ(check_fwsec_sb_result(bar0.regs), ERR_BAD_STATE);
+
+    bar0.write(SB_ERROR_SCRATCH, 0x8000);
+    EXPECT_EQ(check_fwsec_sb_result(bar0.regs), ERR_BAD_STATE);
+
+    bar0.write(SB_ERROR_SCRATCH, 0xFFFF0000);
+    EXPECT_EQ(check_fwsec_sb_result(bar0.regs), OK);
 }
 
 // GA102's values as NVIDIA's driver sizes the firmware's memory: 20 MiB of the heap for the firmware's operating

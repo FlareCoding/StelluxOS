@@ -28,6 +28,10 @@ constexpr uint32_t BOUND_UNIT_SHIFT             = 12;
 constexpr uint32_t FRTS_ERROR_SCRATCH    = 0x1438;
 constexpr uint32_t FRTS_ERROR_CODE_SHIFT = 16;
 
+// The VBIOS scratch register whose bits 15 to 0 hold the error code FWSEC records for the SB command, 0 for none
+constexpr uint32_t SB_ERROR_SCRATCH   = 0x1454;
+constexpr uint32_t SB_ERROR_CODE_MASK = 0xFFFF;
+
 // Where the boot firmware records the usable size of video memory, in MiB
 constexpr uint32_t USABLE_VIDEO_MEMORY_MIB = 0x1183A4;
 constexpr uint32_t MIB_SHIFT               = 20;
@@ -245,6 +249,27 @@ int32_t check_frts_result(const registers& regs, const frts_region& region) {
             static_cast<uint64_t>(start_4k) << BOUND_UNIT_SHIFT,
             region.offset
         );
+        return ERR_BAD_STATE;
+    }
+
+    return OK;
+}
+
+int32_t check_fwsec_sb_result(const registers& regs) {
+    if ((regs.read(BOOT_PROGRESS_READ_PROTECTION) & READABLE_AT_LEVEL_0) == 0) {
+        log::error("nvidia: after FWSEC's SB command, the boot firmware's progress is read-protected");
+        return ERR_BAD_STATE;
+    }
+
+    uint32_t progress = regs.read(BOOT_PROGRESS) & BOOT_PROGRESS_MASK;
+    if (progress != BOOT_PROGRESS_COMPLETE) {
+        log::error("nvidia: after FWSEC's SB command, the boot firmware's progress reads 0x%02X of 0xFF", progress);
+        return ERR_BAD_STATE;
+    }
+
+    uint32_t error_code = regs.read(SB_ERROR_SCRATCH) & SB_ERROR_CODE_MASK;
+    if (error_code != 0) {
+        log::error("nvidia: FWSEC's SB error code reads 0x%04X", error_code);
         return ERR_BAD_STATE;
     }
 
