@@ -4,6 +4,7 @@
 
 #include "stlx_unit_test.h"
 #include "drivers/graphics/nvidia/boot_messages.h"
+#include "drivers/graphics/nvidia/gsp.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "mm/heap.h"
@@ -16,8 +17,10 @@ using drivers::nvidia::QUEUE_MEMORY_BYTES;
 using drivers::nvidia::boot_console_bytes;
 using drivers::nvidia::boot_framebuffer;
 using drivers::nvidia::card_placement;
-using drivers::nvidia::message_queues;
+using drivers::nvidia::cpu_sequencer_context;
+using drivers::nvidia::gsp;
 using drivers::nvidia::queue_boot_messages;
+using drivers::nvidia::registers;
 
 // Where the command queue's elements, its write pointer and the firmware's read pointer of it lie in the queue
 // memory, and a message's fields as offsets from its first byte, as NVIDIA's driver lays them out
@@ -109,6 +112,15 @@ struct boot_message_queue_memory {
     }
 };
 
+// Starts `conversation` on the fake memory with a BAR0 view at address 0 and an empty sequencer context, since queueing
+// the boot messages reaches neither
+static int32_t start_conversation(gsp& conversation, boot_message_queue_memory& memory) {
+    registers no_registers(0);
+    cpu_sequencer_context unused_sequencer_context = {};
+
+    return conversation.start(no_registers, memory.bytes, 0, unused_sequencer_context);
+}
+
 // Counts the nonzero bytes of the system information in the first element outside the fields this driver writes
 static uint32_t nonzero_unwritten_system_bytes(const boot_message_queue_memory& memory) {
     const uint8_t* system = memory.bytes + memory.payload_offset(0);
@@ -130,9 +142,10 @@ static uint32_t nonzero_unwritten_system_bytes(const boot_message_queue_memory& 
 TEST(nvidia_boot_messages, system_information_then_empty_registry_queued) {
     boot_message_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
-    message_queues queues(memory.bytes, 0);
+    gsp conversation;
+    ASSERT_EQ(start_conversation(conversation, memory), OK);
 
-    EXPECT_EQ(queue_boot_messages(queues, CARD, CONSOLE_BYTES), OK);
+    EXPECT_EQ(queue_boot_messages(conversation, CARD, CONSOLE_BYTES), OK);
 
     uint32_t system_offset = memory.payload_offset(0);
     uint32_t registry_offset = memory.payload_offset(1);
@@ -160,14 +173,15 @@ TEST(nvidia_boot_messages, system_information_then_empty_registry_queued) {
 TEST(nvidia_boot_messages, full_queue_returns_its_error) {
     boot_message_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
-    message_queues queues(memory.bytes, 0);
+    gsp conversation;
+    ASSERT_EQ(start_conversation(conversation, memory), OK);
 
     memory.write(FIRMWARE_READ_POINTER, 2);
-    EXPECT_EQ(queue_boot_messages(queues, CARD, CONSOLE_BYTES), ERR_QUEUE_FULL);
+    EXPECT_EQ(queue_boot_messages(conversation, CARD, CONSOLE_BYTES), ERR_QUEUE_FULL);
     EXPECT_EQ(memory.read(WRITE_POINTER), 1u);
     EXPECT_EQ(memory.read(memory.payload_offset(0) - MESSAGE_PAYLOAD + MESSAGE_FUNCTION), SET_SYSTEM_INFO);
 
-    EXPECT_EQ(queue_boot_messages(queues, CARD, CONSOLE_BYTES), ERR_QUEUE_FULL);
+    EXPECT_EQ(queue_boot_messages(conversation, CARD, CONSOLE_BYTES), ERR_QUEUE_FULL);
     EXPECT_EQ(memory.read(WRITE_POINTER), 1u);
 }
 
@@ -181,21 +195,24 @@ TEST(nvidia_boot_messages, unassigned_bars_go_out_as_nvidia_sends_them) {
 
     card_placement card = CARD;
     card.bar1_address = 0;
-    message_queues queues_without_bar1(memory.bytes, 0);
-    EXPECT_EQ(queue_boot_messages(queues_without_bar1, card, 0), OK);
+    gsp conversation_without_bar1;
+    ASSERT_EQ(start_conversation(conversation_without_bar1, memory), OK);
+    EXPECT_EQ(queue_boot_messages(conversation_without_bar1, card, 0), OK);
     EXPECT_EQ(memory.read_wide(system_offset + SYSTEM_VIDEO_MEMORY_ADDRESS), CARD.bar3_address);
     EXPECT_EQ(memory.read_wide(system_offset + SYSTEM_INSTANCE_MEMORY_ADDRESS), window_address);
 
     card = CARD;
     card.bar3_address = 0;
-    message_queues queues_without_bar3(memory.bytes, 0);
-    EXPECT_EQ(queue_boot_messages(queues_without_bar3, card, 0), OK);
+    gsp conversation_without_bar3;
+    ASSERT_EQ(start_conversation(conversation_without_bar3, memory), OK);
+    EXPECT_EQ(queue_boot_messages(conversation_without_bar3, card, 0), OK);
     EXPECT_EQ(memory.read_wide(system_offset + SYSTEM_VIDEO_MEMORY_ADDRESS), CARD.bar1_address);
     EXPECT_EQ(memory.read_wide(system_offset + SYSTEM_INSTANCE_MEMORY_ADDRESS), window_address);
 
     card.bar1_address = 0;
-    message_queues queues_without_either(memory.bytes, 0);
-    EXPECT_EQ(queue_boot_messages(queues_without_either, card, 0), OK);
+    gsp conversation_without_either;
+    ASSERT_EQ(start_conversation(conversation_without_either, memory), OK);
+    EXPECT_EQ(queue_boot_messages(conversation_without_either, card, 0), OK);
     EXPECT_EQ(memory.read_wide(system_offset + SYSTEM_VIDEO_MEMORY_ADDRESS), static_cast<uint64_t>(0));
     EXPECT_EQ(memory.read_wide(system_offset + SYSTEM_INSTANCE_MEMORY_ADDRESS), window_address);
 }

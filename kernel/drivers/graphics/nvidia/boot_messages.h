@@ -3,7 +3,7 @@
 #ifndef STELLUX_DRIVERS_GRAPHICS_NVIDIA_BOOT_MESSAGES_H
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_BOOT_MESSAGES_H
 
-#include "drivers/graphics/nvidia/message_queues.h"
+#include "drivers/graphics/nvidia/gsp.h"
 #include "common/types.h"
 
 namespace drivers::nvidia {
@@ -82,14 +82,17 @@ uint64_t boot_console_bytes(const card_placement& card, const boot_framebuffer& 
  * `queue_boot_messages` never waits and touches none of the card's
  * registers, so the caller must then tell the firmware that the messages
  * wait, as NVIDIA's driver does after each one, before the GSP starts.
+ * @param conversation The driver's `gsp`, which must already be started.
+ * @param card Where the card sits on the PCI bus and the addresses at which
+ * the CPU reaches its BARs.
  * @param console_bytes The bytes of video memory the firmware must leave
  * alone for a boot console, as `boot_console_bytes` works them out.
  * @return `OK`, or `ERR_QUEUE_FULL` when the command queue lacks room for a
- * message, as `message_queues::send` decides, since neither message is too
- * large for it. After that error for the registry, the system information
- * stays queued.
+ * message, as `gsp::send` decides, since neither message is too large for
+ * it. After that error for the registry, the system information stays
+ * queued.
  */
-int32_t queue_boot_messages(message_queues& queues, const card_placement& card, uint64_t console_bytes);
+int32_t queue_boot_messages(gsp& conversation, const card_placement& card, uint64_t console_bytes);
 
 } // namespace drivers::nvidia
 

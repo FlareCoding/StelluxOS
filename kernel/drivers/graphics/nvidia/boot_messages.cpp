@@ -121,7 +121,7 @@ uint64_t boot_console_bytes(const card_placement& card, const boot_framebuffer& 
     return (bytes + CONSOLE_RESERVATION_UNIT - 1) & ~(CONSOLE_RESERVATION_UNIT - 1);
 }
 
-int32_t queue_boot_messages(message_queues& queues, const card_placement& card, uint64_t console_bytes) {
+int32_t queue_boot_messages(gsp& conversation, const card_placement& card, uint64_t console_bytes) {
     nvidia_bars bars = number_bars_as_nvidia(card);
     uint64_t instance_memory_address = bars.instance_memory_address;
     if (instance_memory_address == 0) {
@@ -139,7 +139,7 @@ int32_t queue_boot_messages(message_queues& queues, const card_placement& card, 
     system.cpu_architecture = CPU_ARCHITECTURE;
     system.hypervisor = HYPERVISOR_UNKNOWN;
 
-    int32_t rc = queues.send(FUNCTION_SET_SYSTEM_INFORMATION, &system, sizeof(system));
+    int32_t rc = conversation.send(FUNCTION_SET_SYSTEM_INFORMATION, &system, sizeof(system));
     if (rc != OK) {
         return rc;
     }
@@ -147,7 +147,7 @@ int32_t queue_boot_messages(message_queues& queues, const card_placement& card, 
     registry_table registry = {};
     registry.bytes = sizeof(registry);
 
-    return queues.send(FUNCTION_SET_REGISTRY, &registry, sizeof(registry));
+    return conversation.send(FUNCTION_SET_REGISTRY, &registry, sizeof(registry));
 }
 
 } // namespace drivers::nvidia

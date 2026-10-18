@@ -57,10 +57,10 @@ struct cpu_sequencer_context {
  * `ready_timeout_ns`, as in NVIDIA's driver. Every other wait counts against
  * `deadline_ns`, as NVIDIA's driver counts it against its thread-state budget
  * (one default timeout that the waits of a call share, started again at
- * bring-up just before its wait for the firmware's messages), so `attach()`
- * sets `deadline_ns` to the time `DEFAULT_TIMEOUT_NS` after its own wait for
- * the messages starts, and `detach()` does the same when it asks the firmware
- * to unload, where NVIDIA's driver starts no budget again before the request.
+ * bring-up just before its wait for the firmware's messages), so `gsp::await`
+ * and `gsp::request` set `deadline_ns` to the time `DEFAULT_TIMEOUT_NS` after
+ * their call begins, where NVIDIA's driver starts no budget again before a
+ * request.
  * A poll ends at `deadline_ns`, or sooner at its own timeout in microseconds,
  * without the OS tick NVIDIA's driver adds, and a poll whose timeout is 0,
  * NVIDIA's default, ends only at `deadline_ns`. Each falcon step that waits
