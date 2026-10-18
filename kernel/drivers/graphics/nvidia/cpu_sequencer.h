@@ -11,7 +11,7 @@ namespace drivers::nvidia {
 // NVIDIA's number for the message that carries the CPU sequencer from the GSP's firmware
 constexpr uint32_t FUNCTION_RUN_CPU_SEQUENCER = 0x1002;
 
-// What the CPU sequencer's steps take from bring-up besides BAR0's registers
+// What the CPU sequencer's steps take besides BAR0's registers, kept from bring-up
 struct cpu_sequencer_context {
     uint64_t register_bytes;          // how many bytes of BAR0 are mapped, past which no register step reaches
     uint32_t boot0;                   // the chip's `PMC_BOOT_0` value, for the GSP falcon's reset
@@ -56,18 +56,19 @@ struct cpu_sequencer_context {
  * microseconds, and each ready wait of a falcon step lasts at most
  * `ready_timeout_ns`, as in NVIDIA's driver. Every other wait counts against
  * `deadline_ns`, as NVIDIA's driver counts it against its thread-state budget
- * (one default timeout that the waits of a call share, started again just
- * before its wait for the firmware's messages), so `attach()` sets
- * `deadline_ns` to the time `DEFAULT_TIMEOUT_NS` after its own wait for the
- * messages starts. A poll ends at `deadline_ns`, or sooner at its own timeout
- * in microseconds, without the OS tick NVIDIA's driver adds, and a poll whose
- * timeout is 0, NVIDIA's default, ends only at `deadline_ns`. Each falcon
- * step that waits is given the time left until `deadline_ns` as its timeout,
- * so a step's later waits may end past it by as long as its earlier waits
- * took.
+ * (one default timeout that the waits of a call share, started again at
+ * bring-up just before its wait for the firmware's messages), so `attach()`
+ * sets `deadline_ns` to the time `DEFAULT_TIMEOUT_NS` after its own wait for
+ * the messages starts, and `detach()` does the same when it asks the firmware
+ * to unload, where NVIDIA's driver starts no budget again before the request.
+ * A poll ends at `deadline_ns`, or sooner at its own timeout in microseconds,
+ * without the OS tick NVIDIA's driver adds, and a poll whose timeout is 0,
+ * NVIDIA's default, ends only at `deadline_ns`. Each falcon step that waits
+ * is given the time left until `deadline_ns` as its timeout, so a step's
+ * later waits may end past it by as long as its earlier waits took.
  * @param regs A view of BAR0. Booter load must have run on SEC2's falcon, as
  * `resume_gsp_firmware` requires, with nothing resetting SEC2 since.
- * @param context What the steps take from bring-up.
+ * @param context What the steps take, kept from bring-up.
  * @param payload The message's payload. A register store step writes the
  * value it reads into the payload's save area, as NVIDIA's driver writes its
  * copy of the message, which nothing reads afterwards.

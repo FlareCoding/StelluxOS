@@ -32,7 +32,8 @@ constexpr int32_t ERR_BAD_MESSAGE    = -11; // a message from the GSP's firmware
                                             // length its RPC header gives, its checksum or its sequence number, or
                                             // the CPU sequencer it carries fails a check of its sizes or its steps
 constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a failure, as a ready message whose result
-                                            // is not 0 reports that its initialization failed
+                                            // is not 0 reports that its initialization failed, and a reply whose
+                                            // result is not 0 that the request failed
 
 // Converts the timeouts the driver logs to milliseconds
 constexpr uint64_t NS_PER_MS = 1000000;

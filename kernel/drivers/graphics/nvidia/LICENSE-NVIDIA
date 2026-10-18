@@ -104,9 +104,11 @@ src/common/inc/swref/published/ampere/ga102/dev_gsp.h
     kernel/tests/graphics/nvidia_falcon.test.cpp, the GSP falcon's two mailbox
     registers, in kernel/tests/graphics/nvidia_falcon.test.cpp, the first of the
     GSP's eight queue head registers, in falcon.cpp, the first two, 8 bytes
-    apart, in kernel/tests/graphics/nvidia_falcon.test.cpp, and the base of
-    the GSP's registers and the GSP falcon's two mailbox registers, in
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    apart, in kernel/tests/graphics/nvidia_falcon.test.cpp, the base of the
+    GSP's registers and the GSP falcon's two mailbox registers, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, and the first of the
+    GSP's queue head registers and the GSP falcon's first mailbox register, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_gsp_addendum.h
@@ -279,20 +281,23 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     gsp_boot_memory.h, gsp_boot_memory.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that, after
     each message, the firmware is told that the message waits, in
-    boot_messages.h, falcon.h, falcon.cpp, nvidia_gpu.h and nvidia_gpu.cpp, that
-    it is told by writing 0 to the queue head register of the message's queue
-    and that the driver's messages go through the resource manager's queue, in
-    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, the
-    rule that the GSP's falcon is reset as its firmware is unloaded, after a
-    wait for the firmware to suspend the GSP's processor, whether or not the
-    wait succeeds, in falcon.h, the rules that the firmware is first asked to
-    unload, that the GSP is reset after a wait for it to suspend and that,
-    after the GSP's reset, FWSEC runs to put back the programs the VBIOS runs
-    before an operating system loads and booter unload runs to take protected
-    memory down, in nvidia_gpu.h and nvidia_gpu.cpp, the wait for a message
-    from the firmware, which polls the status queue until a deadline of its
-    own (the default timeout and half as long again), judged by the time taken
-    before each read, and ends once receiving a message fails, in
+    boot_messages.h, falcon.h, falcon.cpp, gsp_unload.h, gsp_unload.cpp,
+    nvidia_gpu.h and nvidia_gpu.cpp, that it is told by writing 0 to the queue
+    head register of the message's queue and that the driver's messages go
+    through the resource manager's queue, in falcon.h, falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that the
+    GSP's falcon is reset as its firmware is unloaded, after a wait for the
+    firmware to suspend the GSP's processor, whether or not the wait succeeds,
+    in falcon.h, nvidia_gpu.h and nvidia_gpu.cpp, the rule that the firmware is
+    first asked to unload, in falcon.h, gsp_unload.h, nvidia_gpu.h and
+    nvidia_gpu.cpp, the rules that the GSP is reset after a wait for it to
+    suspend and that, after the GSP's reset, FWSEC runs to put back the programs
+    the VBIOS runs before an operating system loads and booter unload runs to
+    take protected memory down, in nvidia_gpu.h and nvidia_gpu.cpp, the wait for
+    a message from the firmware, which polls the status queue until a deadline
+    of its own (the default timeout and half as long again), judged by the time
+    taken before each read, and ends once receiving a message fails, in
     message_queues.h, message_queues.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that the CPU
     sequencer is a list of register, delay and falcon steps the firmware sends
@@ -328,9 +333,18 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     message_queues.cpp, that such a wait reads the GSP's log after each read of
     the queue, checks the GSP's health whenever its reads stop, checks the GPU's
     state on each turn that ends without the awaited message and reports a
-    timeout as Xid 119, in message_queues.h, and that bring-up waits for the
+    timeout as Xid 119, in message_queues.h, that bring-up waits for the
     firmware's ready message, whose result fails the boot when it is not NV_OK,
-    in nvidia.h, nvidia_gpu.h and nvidia_gpu.cpp
+    in nvidia.h, nvidia_gpu.h and nvidia_gpu.cpp, that the request to unload
+    asks for no power transition, no entry into GC6 and power level 0 and is
+    followed by the wait for the GSP to suspend whatever the request's result,
+    in gsp_unload.h, gsp_unload.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a request is
+    skipped when the GSP has crashed or the GPU is in reset, lost, shut down,
+    below full power or without access to system memory, that the suspend wait's
+    result is dropped and that the GSP's log is written out before the GSP's
+    reset, in gsp_unload.h, and that the thread-state budget is not started
+    again before the request to unload, in cpu_sequencer.h and gsp_unload.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -510,10 +524,14 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     in falcon.h, falcon.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that its low 32 bits
     go into the first and its high 32 bits into the second, in falcon.h,
-    falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and the rule
+    falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, the rule
     that a queue's head is written to the GSP's queue head register of the
-    queue's index, in falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    queue's index, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, and the rule that
+    the GSP's processor is suspended once the GSP falcon's first mailbox reads
+    0x80000000, waited for with no timeout of the wait's own, in falcon.h,
+    falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
@@ -738,9 +756,11 @@ src/nvidia/src/kernel/gpu/gpu_timeout.c
     check and that a timeout is padded by an OS tick, in cpu_sequencer.h, that a
     timeout is given in microseconds, in cpu_sequencer.h, cpu_sequencer.cpp,
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that its
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that its
     nanoseconds are counted in 64 bits, in cpu_sequencer.cpp and
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, and that a wait for a
+    condition given no timeout of its own takes the default timeout, and so
+    shares that budget, in falcon.h, gsp_unload.h and nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/gpu_timeout.h
@@ -813,8 +833,10 @@ src/common/sdk/nvidia/inc/nvtypes.h
     manager's queue offsets take, in gsp_boot_memory.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the single byte
     of NVIDIA's booleans, which the power transition's flag takes, in
-    gsp_boot_memory.cpp, and which the system information's flags take, in
-    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    gsp_boot_memory.cpp, which the system information's flags take, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,
+    and which the two flags of the request to unload take, in gsp_unload.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
@@ -894,8 +916,9 @@ src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/gsp/message_queue.h
-    the resource manager's queue index, 0, in falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    the resource manager's queue index, 0, in falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
@@ -923,9 +946,12 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     layout and page table, in
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the queue memory's
     layout and each message's element count, in
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that the resource
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that the resource
     manager's queue takes the resource manager's queue index, in falcon.h,
-    falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that a message
+    waits up to 1 s for room for each of its elements in the command queue, in
+    gsp_unload.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc-message-header.h
@@ -936,7 +962,9 @@ src/nvidia/generated/g_rpc-message-header.h
 
 src/nvidia/kernel/inc/vgpu/rpc_headers.h
     the RPC header's version, signature and pending result, in
-    message_queues.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    message_queues.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    and the reply's success value NV_OK, in nvidia.h, gsp_unload.h,
+    gsp_unload.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/rmapi/rpc_common.c
@@ -947,10 +975,11 @@ src/nvidia/src/kernel/rmapi/rpc_common.c
     kernel/tests/graphics/nvidia_message_queues.test.cpp and
     kernel/tests/graphics/nvidia_boot_messages.test.cpp, the zeros after the
     payload, in message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the zeros in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the zeros in
     every field of the system information NVIDIA's driver does not set, in
     boot_messages.h, boot_messages.cpp and
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that the RPC
+    version the driver runs at is made from the VGX version, in gsp_unload.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/gsp/gsp_static_config.h
@@ -982,8 +1011,9 @@ src/common/sdk/nvidia/inc/nvstatus.h
 
 src/common/sdk/nvidia/inc/nvstatuscodes.h
     that NV_OK, the status for success, is 0, in falcon.h, falcon.cpp, nvidia.h,
-    nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    gsp_unload.h, gsp_unload.cpp, nvidia_gpu.h, nvidia_gpu.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/unix/src/registry.c
@@ -997,8 +1027,12 @@ src/nvidia/kernel/vgpu/nv/rpc.c
     what NVIDIA's driver writes in each field of the system information,
     and the rule that neither message waits for a reply, in
     boot_messages.h, boot_messages.cpp and
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that no
-    registry is sent when packing it returns a warning, in boot_messages.h
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that no
+    registry is sent when packing it returns a warning, in boot_messages.h,
+    and that the request to unload is sent with its caller's values and waits
+    for its reply, whose result fails the request when it is not NVIDIA's
+    success value, in nvidia.h, gsp_unload.h, gsp_unload.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
@@ -1008,8 +1042,10 @@ src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the ready message's
     function number, in message_queues.h and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and its name
-    GSP_INIT_DONE, in nvidia_gpu.h
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, its name
+    GSP_INIT_DONE, in nvidia_gpu.h, and the request to unload's function
+    number, in gsp_unload.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     It carries no notice of its own and is covered by the package's COPYING,
     which gives the notice below and this copyright line:
     Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -1026,6 +1062,8 @@ src/nvidia/generated/g_rpc-structures.h
     holds, the words its steps take and the save area before the steps, in
     cpu_sequencer.h, cpu_sequencer.cpp,
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the layout of
+    version 0x1F07 of the request to unload's arguments, in gsp_unload.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -1138,9 +1176,27 @@ src/nvidia/src/kernel/virtualization/hypervisor/hypervisor.c
     kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/nvidia/src/kernel/gpu/gpu.c
+    the rule that the firmware is asked to unload as the GPU's state is
+    destroyed, with no check that the firmware reported its initialization
+    done, in nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_rpc_private.h
+    the rule that from RPC version 0x1F070000 on, the request to unload takes
+    the arguments of version 0x1F07, in gsp_unload.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/kernel/inc/vgpu/vgpu_version.h
+    the VGX version 0x23.05, from which NVIDIA's driver makes the RPC version
+    it runs this firmware at, in gsp_unload.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2008-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
-g_gpu_nvoc.c and rpc_global_enums.h the package's COPYING, carries this
-permission notice:
+g_gpu_nvoc.c, rpc_global_enums.h and g_rpc_private.h the package's COPYING,
+carries this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),

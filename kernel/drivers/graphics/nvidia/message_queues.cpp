@@ -467,10 +467,6 @@ int32_t receive_within(
         }
 
         if (is_past_deadline) {
-            log::error(
-                "nvidia: no message from the GSP's firmware arrived in the status queue within %lu ms",
-                timeout_ns / NS_PER_MS
-            );
             return ERR_TIMEOUT;
         }
 
@@ -521,11 +517,17 @@ static int32_t receive_awaited_unlogged(
     }
 }
 
-static void log_passed_messages(const received_message (&passed)[PASSED_MESSAGES_LOGGED], uint32_t passed_count) {
+static void log_passed_messages(
+    uint32_t function,
+    const received_message (&passed)[PASSED_MESSAGES_LOGGED],
+    uint32_t passed_count
+) {
     uint32_t logged_count = passed_count < PASSED_MESSAGES_LOGGED ? passed_count : PASSED_MESSAGES_LOGGED;
     for (uint32_t i = 0; i < logged_count; i++) {
         log::info(
-            "nvidia: the GSP's firmware sent function 0x%X with result 0x%X and %u payload bytes",
+            "nvidia: the wait for function 0x%X passed over a message of function 0x%X from the GSP's firmware, with "
+            "result 0x%X and %u payload bytes",
+            function,
             passed[i].function,
             passed[i].result,
             passed[i].payload_bytes
@@ -533,7 +535,11 @@ static void log_passed_messages(const received_message (&passed)[PASSED_MESSAGES
     }
 
     if (passed_count > logged_count) {
-        log::info("nvidia: messages the GSP's firmware sent past these, not logged: %u", passed_count - logged_count);
+        log::info(
+            "nvidia: the wait for function 0x%X passed over more messages from the GSP's firmware, not logged: %u",
+            function,
+            passed_count - logged_count
+        );
     }
 }
 
@@ -562,7 +568,7 @@ int32_t receive_awaited(
         passed_count
     );
 
-    log_passed_messages(passed, passed_count);
+    log_passed_messages(function, passed, passed_count);
     if (rc == ERR_TIMEOUT) {
         log::error("nvidia: the GSP's firmware sent no message of function 0x%X by the wait's deadline", function);
     }

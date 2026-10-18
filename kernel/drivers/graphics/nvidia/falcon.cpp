@@ -60,6 +60,9 @@ constexpr uint32_t FALCON_RM = 0x084;
 constexpr uint32_t FALCON_MAILBOX0 = 0x040;
 constexpr uint32_t FALCON_MAILBOX1 = 0x044;
 
+// What NVIDIA's driver reads in the GSP falcon's first mailbox as LibOS's report that the GSP's processor is suspended
+constexpr uint32_t GSP_PROCESSOR_SUSPENDED = 0x80000000;
+
 // The register NVIDIA calls the falcon's OS register, which its driver sets to the bootloader's app version
 constexpr uint32_t FALCON_OS = 0x080;
 
@@ -329,6 +332,21 @@ void write_libos_arguments_address(registers& regs, uint64_t address) {
 
 bool is_falcon_halted(const registers& regs, falcon_id falcon) {
     return (regs.read(layout_of(falcon).base + FALCON_CPUCTL) & FALCON_HALTED) != 0;
+}
+
+int32_t wait_for_gsp_suspend(const registers& regs, uint64_t timeout_ns) {
+    uint32_t mailbox = GSP_FALCON.base + FALCON_MAILBOX0;
+    if (!wait_for_bits_with_last_read(regs, mailbox, 0xFFFFFFFF, GSP_PROCESSOR_SUSPENDED, timeout_ns)) {
+        log::error(
+            "nvidia: the GSP's processor did not read as suspended within %lu ms, the GSP falcon's first mailbox "
+            "reading 0x%X",
+            timeout_ns / NS_PER_MS,
+            regs.read(mailbox)
+        );
+        return ERR_TIMEOUT;
+    }
+
+    return OK;
 }
 
 static bool is_riscv_active(const registers& regs, const falcon_layout& layout) {

@@ -3,7 +3,10 @@
 #ifndef STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_GPU_H
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_GPU_H
 
+#include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
+#include "drivers/graphics/nvidia/message_queues.h"
+#include "drivers/graphics/nvidia/registers.h"
 #include "drivers/pci_driver.h"
 
 namespace drivers {
@@ -193,6 +196,12 @@ namespace drivers {
  * refuses the card in every `attach()` until then. The decoding stays on
  * because the boot framebuffer may be in this card's memory, which the CPU
  * reaches only while memory decoding is on.
+ * Once the ready message has arrived, whatever its result, `detach()` first
+ * asks the GSP's firmware to unload and waits for the GSP's processor to be
+ * suspended, as `nvidia::unload_gsp_firmware` describes, with the queues and
+ * the CPU sequencer's context `attach()` kept. It then stops the falcons as
+ * below whatever the unload's result, as NVIDIA's driver also resets the GSP
+ * after a failed unload.
  * From the first reset of the GSP's falcon on, whether `attach()` declines or
  * fails, `detach()` resets the GSP's falcon again with `nvidia::stop_falcon`
  * and frees all of the GSP's boot memory once the falcon reads as halted and
@@ -214,12 +223,15 @@ namespace drivers {
  * may start the GSP's RISC-V core again once `detach()` has written the
  * register, and the GSP's firmware may then rewrite it once more, with nothing
  * logged.
- * NVIDIA's driver asks the GSP's firmware to unload and waits for the GSP to
- * suspend before the GSP's reset, then runs FWSEC again, to put back the
- * programs the VBIOS runs before an operating system loads, and booter unload,
- * to take protected memory down. `detach()` resets the running firmware
- * without these steps, so those programs are not put back and protected memory
- * stays set up. Writing BAR1's block register back is this driver's own step.
+ * NVIDIA's driver asks the firmware to unload as it destroys the GPU's state,
+ * with no check that the ready message arrived, while `detach()` asks only
+ * once it has, since a firmware that never reported itself ready is not known
+ * to answer and the resets follow either way. After the GSP's reset, NVIDIA's
+ * driver also runs FWSEC again, to put back the programs the VBIOS runs before
+ * an operating system loads, and booter unload, to take protected memory down.
+ * `detach()` resets SEC2 and the GSP without these steps, so those programs
+ * are not put back and protected memory stays set up. Writing BAR1's block
+ * register back is this driver's own step.
  */
 class nvidia_gpu_driver : public pci_driver {
 public:
@@ -228,21 +240,28 @@ public:
     int32_t attach() override;
 
     /**
-     * @brief Stop SEC2 once bring-up has begun loading booter load, then the
-     * GSP once bring-up has reset its falcon, freeing the GSP's boot memory
-     * only once each reads as stopped and, from the load of booter load on,
-     * writing back BAR1's block register once the GSP reads as stopped, then
-     * unmap BAR0 as `pci_driver::detach()` does. Each stop spins on the
-     * calling CPU, for up to twice `nvidia::FALCON_READY_TIMEOUT_NS` and six
-     * times `nvidia::FALCON_TIMEOUT_NS` when its falcon is slow to reset.
+     * @brief Ask the GSP's firmware to unload once its ready message has
+     * arrived, then stop SEC2 once bring-up has begun loading booter load,
+     * then the GSP once bring-up has reset its falcon, freeing the GSP's boot
+     * memory only once each reads as stopped and, from the load of booter load
+     * on, writing back BAR1's block register once the GSP reads as stopped,
+     * then unmap BAR0 as `pci_driver::detach()` does. The unload spins on the
+     * calling CPU, waiting for the reply as `nvidia::receive_awaited` waits,
+     * with a deadline `nvidia::RECEIVE_TIMEOUT_NS` after the request, then for
+     * up to `nvidia::DEFAULT_TIMEOUT_NS` for the suspend. Each stop spins for
+     * up to twice `nvidia::FALCON_READY_TIMEOUT_NS` and six times
+     * `nvidia::FALCON_TIMEOUT_NS` when its falcon is slow to reset.
      * @return What `pci_driver::detach()` returns once the falcons are stopped
      * or need no stop, `nvidia::ERR_TIMEOUT` when a reset times out, or
      * `nvidia::ERR_BAD_STATE` when a falcon then does not read as halted or
      * its RISC-V core reads as running, each error keeping the boot memory
      * allocated for good. When SEC2's stop fails, the GSP's stop still runs
-     * and SEC2's error is returned. The cause is logged. A later call stops no
-     * falcon and writes no register again, and returns what
-     * `pci_driver::detach()` returns.
+     * and SEC2's error is returned. When the stops succeed after an unload
+     * that failed, the unload's error is returned: `nvidia::ERR_NO_MEMORY`
+     * when room for the reply's payload cannot be allocated, or what
+     * `nvidia::unload_gsp_firmware` returns. The cause is logged. A later call
+     * sends no request, stops no falcon and writes no register again, and
+     * returns what `pci_driver::detach()` returns.
      */
     int32_t detach() override;
 
@@ -253,12 +272,16 @@ public:
 
 private:
     int32_t stop_falcons_and_free_boot_memory();
+    int32_t unload_firmware(nvidia::registers& regs);
 
-    nvidia::gsp_boot_memory m_boot_memory;
-    uint32_t                m_boot0 = 0;
-    uint32_t                m_bar1_block = 0;
-    bool                    m_must_stop_gsp = false;
-    bool                    m_must_stop_sec2 = false;
+    nvidia::gsp_boot_memory       m_boot_memory;
+    nvidia::message_queues        m_queues;
+    nvidia::cpu_sequencer_context m_sequencer = {};
+    uint32_t                      m_boot0 = 0;
+    uint32_t                      m_bar1_block = 0;
+    bool                          m_must_stop_gsp = false;
+    bool                          m_must_stop_sec2 = false;
+    bool                          m_must_unload = false;
 };
 
 } // namespace drivers

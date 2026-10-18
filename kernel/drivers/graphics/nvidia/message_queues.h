@@ -91,11 +91,25 @@ struct received_message {
  * write pointer and next sequence number, and once the status queue is
  * linked, its read pointer and the sequence number its next message must
  * carry. It owns nothing, so the memory must stay allocated for as long as
- * the object is used. Its calls never wait, and only one thread may use it
- * at a time.
+ * the object is used. Its calls never wait, and only one thread may use it at
+ * a time. It moves but does not copy, since two copies would keep two write
+ * pointers into one queue, and a moved-from object takes no call until
+ * another object is assigned to it.
  */
 class message_queues {
 public:
+    /**
+     * @brief An object holding no queues, for a driver to keep until it lays
+     * the memory out. No call may be made on it until an object made by the
+     * constructor below is assigned to it.
+     */
+    message_queues() = default;
+
+    message_queues(const message_queues&) = delete;
+    message_queues& operator=(const message_queues&) = delete;
+    message_queues(message_queues&&) = default;
+    message_queues& operator=(message_queues&&) = default;
+
     /**
      * @brief Lay the queue memory out as NVIDIA's driver does before the
      * firmware starts: zero the memory, write the page table and write the
@@ -205,18 +219,18 @@ public:
     int32_t receive(received_message& out, void* payload, uint32_t payload_capacity);
 
 private:
-    uint8_t*  m_command_queue;
-    uint32_t* m_firmware_read_pointer;
-    uint32_t  m_write_pointer;
-    uint32_t  m_sequence_number;
+    uint8_t*  m_command_queue = nullptr;
+    uint32_t* m_firmware_read_pointer = nullptr;
+    uint32_t  m_write_pointer = 0;
+    uint32_t  m_sequence_number = 0;
 
-    uint8_t*  m_status_queue;
-    bool      m_is_status_queue_linked;
-    uint8_t*  m_status_elements;
-    uint32_t  m_status_element_count;
-    uint32_t* m_driver_read_pointer;
-    uint32_t  m_status_read_pointer;
-    uint32_t  m_status_sequence_number;
+    uint8_t*  m_status_queue = nullptr;
+    bool      m_is_status_queue_linked = false;
+    uint8_t*  m_status_elements = nullptr;
+    uint32_t  m_status_element_count = 0;
+    uint32_t* m_driver_read_pointer = nullptr;
+    uint32_t  m_status_read_pointer = 0;
+    uint32_t  m_status_sequence_number = 0;
 };
 
 /**
@@ -249,11 +263,10 @@ int32_t link_status_queue_within(message_queues& queues, uint64_t timeout_ns);
  * @param payload Where the payload is copied, as for
  * `message_queues::receive`.
  * @param payload_capacity How many bytes `payload` holds.
- * @param timeout_ns How long to wait for a message, at bring-up what is left
- * of one `RECEIVE_TIMEOUT_NS` deadline set before the first read. The queue is
- * read at least once, and `ERR_TIMEOUT` follows only a read begun after
- * `timeout_ns` passed.
- * @return `OK`, `ERR_TIMEOUT`, which is logged, when no message arrives within
+ * @param timeout_ns How long to wait for a message, which `receive_awaited`
+ * sets to what is left until its `deadline_ns`. The queue is read at least
+ * once, and `ERR_TIMEOUT` follows only a read begun after `timeout_ns` passed.
+ * @return `OK`, `ERR_TIMEOUT`, unlogged, when no message arrives within
  * `timeout_ns`, `ERR_BAD_MESSAGE` when the next message fails a check on each
  * of `RECEIVE_TRIES` reads in a row, or `ERR_NOT_LINKED` or `ERR_TOO_LARGE` as
  * soon as `message_queues::receive` returns either. `message_queues::receive`
@@ -278,37 +291,41 @@ int32_t receive_within(
  * as in NVIDIA's driver, whose wait hands each message but the awaited one to
  * its event handler. The other messages are passed over, where NVIDIA's
  * handler acts on the events it knows, and logged with their function, result
- * and payload size once the wait ends, the first `PASSED_MESSAGES_LOGGED` of
- * them with a count of the rest. The lines a refused read or a sequencer's run
- * writes still come during the wait. NVIDIA's wait also reads the GSP's log
- * after each read of the queue, checks the GSP's health whenever its reads
- * stop, the awaited message's arrival included, checks the GPU's state on each
- * turn that ends without the awaited message and reports a timeout as Xid 119,
- * all of which this wait leaves out. Each read waits as `receive_within`
- * waits, for what is left until `deadline_ns`, so the messages and the
- * sequencer's runs share one deadline, which a run counts against without
- * being cut short, and the wait goes on past it for as long as each read finds
- * a message. The call spins on the calling CPU without sleeping, holding it
- * until the message arrives or a read fails. @param regs A view of BAR0, for
- * the sequencer's steps. Booter load must have run on SEC2's falcon, with
- * nothing resetting SEC2 since, as `run_cpu_sequencer` requires. @param
- * sequencer What the sequencer's steps take from bring-up. @param function
- * NVIDIA's number for the message awaited. @param out Receives the awaited
- * message's function, result and payload size, which never exceeds
- * `payload_capacity` or `MESSAGE_PAYLOAD_MAX_BYTES`, on `OK`, and is left
- * unchanged on an error. @param payload Where each message's payload is
- * copied, the awaited message's last. @param payload_capacity How many bytes
- * `payload` holds. A capacity of `MESSAGE_PAYLOAD_MAX_BYTES` takes any
- * message, and a smaller one ends the wait at the first message larger than
- * it, whatever its function. @param deadline_ns A time as `clock::now_ns`
- * reads it. The queue is read at least once, even when `deadline_ns` passed
- * before the call. @return `OK`, or the first error `receive_within` returns,
- * which ends the wait: `ERR_TIMEOUT` when a read begun after `deadline_ns`
- * finds no message, logged with `function`, `ERR_BAD_MESSAGE`, each refused
- * read logged, when a message fails a check on each of `RECEIVE_TRIES` reads
- * in a row, `ERR_TOO_LARGE`, logged and leaving the message in place as
- * `receive_within` describes, or `ERR_NOT_LINKED`, unlogged, when the status
- * queue is not linked.
+ * and payload size, and the function awaited, once the wait ends, the first
+ * `PASSED_MESSAGES_LOGGED` of them with a count of the rest. The lines a
+ * refused read or a sequencer's run writes still come during the wait.
+ * NVIDIA's wait also reads the GSP's log after each read of the queue, checks
+ * the GSP's health whenever its reads stop, the awaited message's arrival
+ * included, checks the GPU's state on each turn that ends without the awaited
+ * message and reports a timeout as Xid 119, all of which this wait leaves out.
+ * Each read waits as `receive_within` waits, for what is left until
+ * `deadline_ns`, so the messages and the sequencer's runs share one deadline,
+ * which a run counts against without being cut short, and the wait goes on
+ * past it for as long as each read finds a message. The call spins on the
+ * calling CPU without sleeping, holding it until the message arrives or a read
+ * fails.
+ * @param queues The message queues, whose status queue must be linked.
+ * @param regs A view of BAR0, for the sequencer's steps. Booter load must have
+ * run on SEC2's falcon, with nothing resetting SEC2 since, as
+ * `run_cpu_sequencer` requires.
+ * @param sequencer What the sequencer's steps take, kept from bring-up.
+ * @param function NVIDIA's number for the message awaited.
+ * @param out Receives the awaited message's function, result and payload size,
+ * which never exceeds `payload_capacity` or `MESSAGE_PAYLOAD_MAX_BYTES`, on
+ * `OK`, and is left unchanged on an error.
+ * @param payload Where each message's payload is copied, the awaited message's
+ * last.
+ * @param payload_capacity How many bytes `payload` holds. A capacity of
+ * `MESSAGE_PAYLOAD_MAX_BYTES` takes any message, and a smaller one ends the
+ * wait at the first message larger than it, whatever its function.
+ * @param deadline_ns A time as `clock::now_ns` reads it. The queue is read at
+ * least once, even when `deadline_ns` passed before the call.
+ * @return `OK`, or the first error a read returns, which ends the wait:
+ * `ERR_TIMEOUT` when a read begun after `deadline_ns` finds no message, logged
+ * with `function`, `ERR_BAD_MESSAGE`, each refused read logged, when a message
+ * fails a check on each of `RECEIVE_TRIES` reads in a row, `ERR_TOO_LARGE`,
+ * logged and leaving the message in place as `receive_within` describes, or
+ * `ERR_NOT_LINKED`, unlogged, when the status queue is not linked.
  */
 int32_t receive_awaited(
     message_queues& queues,

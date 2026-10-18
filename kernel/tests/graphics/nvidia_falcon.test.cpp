@@ -44,6 +44,7 @@ using drivers::nvidia::select_booter_signature;
 using drivers::nvidia::start_falcon;
 using drivers::nvidia::stop_falcon;
 using drivers::nvidia::wait_for_falcon_halt;
+using drivers::nvidia::wait_for_gsp_suspend;
 using drivers::nvidia::write_gsp_app_version;
 using drivers::nvidia::write_libos_arguments_address;
 
@@ -1396,4 +1397,28 @@ TEST(nvidia_falcon, booter_load_signature_choice_keeps_bits_past_16) {
     EXPECT_EQ(select_booter_signature(bar0.regs, wide_id, signature), OK);
     EXPECT_EQ(signature.fuse_version, 0u);
     EXPECT_EQ(signature.index, 1u);
+}
+
+// What NVIDIA's driver reads in the GSP falcon's first mailbox once the GSP's processor is suspended
+static constexpr uint32_t PROCESSOR_SUSPENDED = 0x80000000;
+
+// The wait ends only on exactly that value in the GSP falcon's first mailbox, read even at a timeout of 0, never on
+// it with bit 0 also set, on the value one below it, or on it in the GSP falcon's second mailbox or SEC2's first
+TEST(nvidia_falcon, gsp_suspend_is_read_exactly_from_the_gsp_falcons_first_mailbox) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+
+    bar0.write(GSP_FALCON_MAILBOX0, PROCESSOR_SUSPENDED);
+    EXPECT_EQ(wait_for_gsp_suspend(bar0.regs, 0), OK);
+
+    bar0.write(GSP_FALCON_MAILBOX0, PROCESSOR_SUSPENDED | 0x1);
+    EXPECT_EQ(wait_for_gsp_suspend(bar0.regs, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+
+    bar0.write(GSP_FALCON_MAILBOX0, PROCESSOR_SUSPENDED - 1);
+    EXPECT_EQ(wait_for_gsp_suspend(bar0.regs, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+
+    bar0.write(GSP_FALCON_MAILBOX0, 0);
+    bar0.write(GSP_FALCON_MAILBOX1, PROCESSOR_SUSPENDED);
+    bar0.write(SEC2_FALCON_MAILBOX0, PROCESSOR_SUSPENDED);
+    EXPECT_EQ(wait_for_gsp_suspend(bar0.regs, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
 }

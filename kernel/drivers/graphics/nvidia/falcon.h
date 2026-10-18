@@ -179,6 +179,23 @@ void write_libos_arguments_address(registers& regs, uint64_t address);
 bool is_falcon_halted(const registers& regs, falcon_id falcon);
 
 /**
+ * @brief Wait for the GSP's processor (its RISC-V core, which runs the
+ * firmware) to be suspended, as NVIDIA's driver waits once it has asked the
+ * GSP's firmware to unload: until the GSP falcon's first mailbox reads
+ * exactly 0x80000000, which NVIDIA's driver reads as the report of LibOS (the
+ * small operating system the firmware runs on) that the processor is
+ * suspended, or until `timeout_ns` passes. The mailbox is read once more
+ * after the deadline, as NVIDIA's waits for a condition read it. The call
+ * spins on the calling CPU without sleeping.
+ * @param regs A view of BAR0.
+ * @param timeout_ns How long to wait, `DEFAULT_TIMEOUT_NS` at unload, the
+ * default timeout NVIDIA's wait takes.
+ * @return `OK` once the mailbox reads 0x80000000, or `ERR_TIMEOUT`, logged
+ * with what the mailbox then reads, when it did not by the last read.
+ */
+int32_t wait_for_gsp_suspend(const registers& regs, uint64_t timeout_ns);
+
+/**
  * @brief Stop `falcon`: reset it as `reset_falcon` does, then confirm that
  * the falcon reads as halted and, when the falcon has a RISC-V core, that the
  * core does not read as running, as the active field of the core's control

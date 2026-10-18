@@ -9,6 +9,7 @@
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
+#include "drivers/graphics/nvidia/gsp_unload.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/protected_memory.h"
@@ -363,7 +364,7 @@ int32_t nvidia_gpu_driver::attach() {
 
     // Writes the page table and the command queue's header where the resource manager's arguments tell the firmware
     // to find them
-    nvidia::message_queues queues(m_boot_memory.message_queues_memory(), m_boot_memory.message_queues_address());
+    m_queues = nvidia::message_queues(m_boot_memory.message_queues_memory(), m_boot_memory.message_queues_address());
 
     rc = m_boot_memory.write_protected_metadata(card_profile, frts, protected_memory, bootloader_parts);
     if (rc != nvidia::OK) {
@@ -393,7 +394,7 @@ int32_t nvidia_gpu_driver::attach() {
 
     uint64_t console_bytes = nvidia::boot_console_bytes(card, framebuffer, frts.has_display);
 
-    rc = nvidia::queue_boot_messages(queues, card, console_bytes);
+    rc = nvidia::queue_boot_messages(m_queues, card, console_bytes);
     if (rc != nvidia::OK) {
         log::error("nvidia: queueing the system information and the registry failed: %d", rc);
         return rc;
@@ -498,7 +499,7 @@ int32_t nvidia_gpu_driver::attach() {
         metadata_address
     );
 
-    rc = nvidia::link_status_queue_within(queues, nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS);
+    rc = nvidia::link_status_queue_within(m_queues, nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS);
     if (rc != nvidia::OK) {
         return rc;
     }
@@ -513,7 +514,7 @@ int32_t nvidia_gpu_driver::attach() {
     // NVIDIA's driver waits for the ready message in one poll whose deadline the sequencer's run counts against, and
     // ends every sequencer wait but delays and ready waits once a default timeout begun with the poll runs out
     uint64_t wait_start = clock::now_ns();
-    nvidia::cpu_sequencer_context sequencer = {
+    m_sequencer = {
         .register_bytes          = registers_bytes,
         .boot0                   = boot0,
         .libos_arguments_address = m_boot_memory.libos_arguments_address(),
@@ -524,9 +525,9 @@ int32_t nvidia_gpu_driver::attach() {
 
     nvidia::received_message ready = {};
     rc = nvidia::receive_awaited(
-        queues,
+        m_queues,
         regs,
-        sequencer,
+        m_sequencer,
         nvidia::FUNCTION_GSP_INIT_DONE,
         ready,
         payload,
@@ -538,6 +539,9 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
+    // From the ready message on, whatever its result, `detach()` asks the firmware to unload before the resets
+    m_must_unload = true;
+
     if (ready.result != 0) {
         log::error("nvidia: the GSP's firmware reports that its initialization failed, with status 0x%X", ready.result);
         return nvidia::ERR_FIRMWARE;
@@ -545,7 +549,8 @@ int32_t nvidia_gpu_driver::attach() {
 
     log::info("nvidia: the GSP's firmware sent its ready message with %u payload bytes", ready.payload_bytes);
     log::info(
-        "nvidia: bring-up stops at the firmware's ready message, leaving SEC2 and the GSP to be stopped in detach"
+        "nvidia: bring-up stops at the firmware's ready message, leaving detach to unload the firmware and stop SEC2 "
+        "and the GSP"
     );
 
     return DECLINED;
@@ -559,6 +564,9 @@ int32_t nvidia_gpu_driver::detach() {
         m_must_stop_sec2 = false;
     }
 
+    m_queues = nvidia::message_queues();
+    m_sequencer = {};
+
     int32_t rc = pci_driver::detach();
     if (stop_rc != nvidia::OK) {
         return stop_rc;
@@ -567,10 +575,16 @@ int32_t nvidia_gpu_driver::detach() {
     return rc;
 }
 
-// NVIDIA's driver asks the firmware to unload and waits for the GSP to suspend before resetting it, then puts back the
-// programs the VBIOS runs before an operating system loads and takes protected memory down. This driver resets instead.
+// After the GSP's reset, NVIDIA's driver also puts back the programs the VBIOS runs before an operating system loads,
+// and its booter unload takes protected memory down. This driver resets SEC2 and the GSP without these steps.
 int32_t nvidia_gpu_driver::stop_falcons_and_free_boot_memory() {
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
+
+    int32_t unload_rc = nvidia::OK;
+    if (m_must_unload) {
+        unload_rc = unload_firmware(regs);
+        m_must_unload = false;
+    }
 
     int32_t rc = nvidia::OK;
     if (m_must_stop_sec2) {
@@ -599,6 +613,38 @@ int32_t nvidia_gpu_driver::stop_falcons_and_free_boot_memory() {
     }
 
     log::info("nvidia: each falcon that detach resets reads as stopped, and all of the GSP's boot memory is freed");
+
+    return unload_rc;
+}
+
+// The resets that follow run whatever this returns, as NVIDIA's driver resets the GSP whatever the unload's result
+int32_t nvidia_gpu_driver::unload_firmware(nvidia::registers& regs) {
+    uint8_t* payload = static_cast<uint8_t*>(heap::ualloc(nvidia::MESSAGE_PAYLOAD_MAX_BYTES));
+    if (!payload) {
+        log::error(
+            "nvidia: allocating %u bytes for the firmware's reply failed, so the GSP's firmware is not asked to unload",
+            nvidia::MESSAGE_PAYLOAD_MAX_BYTES
+        );
+        return nvidia::ERR_NO_MEMORY;
+    }
+
+    uint64_t wait_start = clock::now_ns();
+    m_sequencer.deadline_ns = wait_start + nvidia::DEFAULT_TIMEOUT_NS;
+    int32_t rc = nvidia::unload_gsp_firmware(
+        m_queues,
+        regs,
+        m_sequencer,
+        payload,
+        nvidia::MESSAGE_PAYLOAD_MAX_BYTES,
+        wait_start + nvidia::RECEIVE_TIMEOUT_NS,
+        nvidia::DEFAULT_TIMEOUT_NS
+    );
+    heap::ufree(payload);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info("nvidia: the GSP's firmware accepted the request to unload, and the GSP's processor reads as suspended");
 
     return nvidia::OK;
 }
