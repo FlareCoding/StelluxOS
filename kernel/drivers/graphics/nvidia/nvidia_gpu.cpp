@@ -510,37 +510,9 @@ int32_t nvidia_gpu_driver::attach() {
         return nvidia::ERR_NO_MEMORY;
     }
 
-    // NVIDIA's driver runs the sequencer inside one poll whose deadline the run counts against without being cut short,
-    // and ends every sequencer wait but delays and ready waits once a default timeout begun with the poll runs out
+    // NVIDIA's driver waits for the ready message in one poll whose deadline the sequencer's run counts against, and
+    // ends every sequencer wait but delays and ready waits once a default timeout begun with the poll runs out
     uint64_t wait_start = clock::now_ns();
-    uint64_t deadline = wait_start + nvidia::RECEIVE_TIMEOUT_NS;
-    nvidia::received_message message = {};
-    while (true) {
-        rc = nvidia::receive_within(
-            queues,
-            message,
-            payload,
-            nvidia::MESSAGE_PAYLOAD_MAX_BYTES,
-            nvidia::time_left_until(deadline)
-        );
-        if (rc != nvidia::OK) {
-            heap::ufree(payload);
-            return rc;
-        }
-
-        // The sequencer's message is not logged, as a log line can outlast the bit the run's first poll waits for
-        if (message.function == nvidia::FUNCTION_RUN_CPU_SEQUENCER) {
-            break;
-        }
-
-        log::info(
-            "nvidia: the GSP's firmware sent function 0x%X with result 0x%X and %u payload bytes",
-            message.function,
-            message.result,
-            message.payload_bytes
-        );
-    }
-
     nvidia::cpu_sequencer_context sequencer = {
         .register_bytes          = registers_bytes,
         .boot0                   = boot0,
@@ -550,34 +522,30 @@ int32_t nvidia_gpu_driver::attach() {
         .deadline_ns             = wait_start + nvidia::DEFAULT_TIMEOUT_NS,
     };
 
-    // As in NVIDIA's driver, a failed sequencer is logged and the wait for the firmware's messages goes on
-    rc = nvidia::run_cpu_sequencer(regs, sequencer, payload, message.payload_bytes);
-    if (rc != nvidia::OK) {
-        log::error("nvidia: the CPU sequencer failed: %d", rc);
-    }
-
-    rc = nvidia::receive_within(
+    nvidia::received_message ready = {};
+    rc = nvidia::receive_awaited(
         queues,
-        message,
+        regs,
+        sequencer,
+        nvidia::FUNCTION_GSP_INIT_DONE,
+        ready,
         payload,
         nvidia::MESSAGE_PAYLOAD_MAX_BYTES,
-        nvidia::time_left_until(deadline)
+        wait_start + nvidia::RECEIVE_TIMEOUT_NS
     );
     heap::ufree(payload);
     if (rc != nvidia::OK) {
         return rc;
     }
 
-    log::info(
-        "nvidia: the GSP's firmware sent function 0x%X after the CPU sequencer, with result 0x%X and %u payload bytes",
-        message.function,
-        message.result,
-        message.payload_bytes
-    );
+    if (ready.result != 0) {
+        log::error("nvidia: the GSP's firmware reports that its initialization failed, with status 0x%X", ready.result);
+        return nvidia::ERR_FIRMWARE;
+    }
 
+    log::info("nvidia: the GSP's firmware sent its ready message with %u payload bytes", ready.payload_bytes);
     log::info(
-        "nvidia: bring-up stops at the firmware's message after the CPU sequencer, leaving SEC2 and the GSP to be "
-        "stopped in detach"
+        "nvidia: bring-up stops at the firmware's ready message, leaving SEC2 and the GSP to be stopped in detach"
     );
 
     return DECLINED;

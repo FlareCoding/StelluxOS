@@ -4,9 +4,12 @@
 
 #include "stlx_unit_test.h"
 #include "clock/clock.h"
+#include "common/logging.h"
 #include "common/string.h"
+#include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "drivers/graphics/nvidia/registers.h"
 #include "mm/heap.h"
 
 TEST_SUITE(nvidia_message_queues);
@@ -17,16 +20,21 @@ using drivers::nvidia::ERR_QUEUE_EMPTY;
 using drivers::nvidia::ERR_QUEUE_FULL;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::ERR_TOO_LARGE;
+using drivers::nvidia::FUNCTION_GSP_INIT_DONE;
 using drivers::nvidia::MESSAGE_PAYLOAD_MAX_BYTES;
 using drivers::nvidia::OK;
+using drivers::nvidia::PASSED_MESSAGES_LOGGED;
 using drivers::nvidia::QUEUE_MEMORY_BYTES;
 using drivers::nvidia::RECEIVE_TIMEOUT_NS;
 using drivers::nvidia::RECEIVE_TRIES;
 using drivers::nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS;
+using drivers::nvidia::cpu_sequencer_context;
 using drivers::nvidia::link_status_queue_within;
 using drivers::nvidia::message_queues;
+using drivers::nvidia::receive_awaited;
 using drivers::nvidia::receive_within;
 using drivers::nvidia::received_message;
+using drivers::nvidia::registers;
 
 // The queue memory's layout and a queue's, as NVIDIA's driver lays them out, restated here so the tests hold the
 // queues to NVIDIA's layout rather than to their own constants
@@ -205,6 +213,54 @@ struct queue_test_payload {
     }
 
     ~queue_test_payload() { heap::ufree(bytes); }
+};
+
+// NVIDIA's numbers for the ready message and the CPU sequencer's, restated here so the tests hold the wait to NVIDIA's
+// numbers rather than to the driver's constants
+static constexpr uint32_t NVIDIA_GSP_INIT_DONE     = 0x1001;
+static constexpr uint32_t NVIDIA_RUN_CPU_SEQUENCER = 0x1002;
+
+// The words of the CPU sequencer's save area, and the opcodes of its register write and register poll
+static constexpr uint32_t SEQUENCER_SAVE_AREA_WORDS = 8;
+static constexpr uint32_t SEQUENCER_WRITE           = 0;
+static constexpr uint32_t SEQUENCER_POLL            = 2;
+
+// The registers of a fake BAR0 the sequencer polls and then writes, and the bit the poll waits for
+static constexpr uint32_t TEST_BAR0_BYTES  = 0x400;
+static constexpr uint32_t POLLED_REGISTER  = 0x100;
+static constexpr uint32_t WRITTEN_REGISTER = 0x200;
+static constexpr uint32_t POLLED_BIT       = 0x80000000;
+static constexpr uint32_t WRITTEN_VALUE    = 0x13579BDF;
+static constexpr uint32_t POLL_TIMEOUT_US  = 1000;
+
+// A zeroed fake of the part of BAR0 the sequencer's steps reach
+struct awaited_test_bar0 {
+    uint8_t*  bytes = static_cast<uint8_t*>(heap::uzalloc(TEST_BAR0_BYTES));
+    registers regs{reinterpret_cast<uintptr_t>(bytes)};
+
+    ~awaited_test_bar0() { heap::ufree(bytes); }
+
+    uint32_t read(uint32_t offset) const { return *reinterpret_cast<uint32_t*>(bytes + offset); }
+    void write(uint32_t offset, uint32_t value) { *reinterpret_cast<uint32_t*>(bytes + offset) = value; }
+};
+
+// A CPU sequencer's payload in NVIDIA's layout that polls `POLLED_REGISTER` for `POLLED_BIT`, then writes
+// `WRITTEN_REGISTER`, its buffer one word larger than its steps, the fewest NVIDIA accepts
+struct poll_then_write_sequencer {
+    static constexpr uint32_t STEP_WORDS = 9;
+
+    uint32_t buffer_words                         = STEP_WORDS + 1;
+    uint32_t step_words                           = STEP_WORDS;
+    uint32_t save_area[SEQUENCER_SAVE_AREA_WORDS] = {};
+
+    uint32_t poll_opcode     = SEQUENCER_POLL;
+    uint32_t poll_register   = POLLED_REGISTER;
+    uint32_t poll_mask       = POLLED_BIT;
+    uint32_t poll_value      = POLLED_BIT;
+    uint32_t poll_timeout_us = POLL_TIMEOUT_US;
+    uint32_t poll_error      = 0;
+
+    uint32_t write[3] = {SEQUENCER_WRITE, WRITTEN_REGISTER, WRITTEN_VALUE};
 };
 
 // NVIDIA's checksum of a message's first `bytes` bytes, which must be a multiple of 8: the XOR of its 8-byte words,
@@ -1010,4 +1066,279 @@ TEST(nvidia_message_queues, receive_waits_out_its_timeout_only_on_an_empty_queue
     EXPECT_EQ(out.payload_bytes, payload.count);
     EXPECT_EQ(string::memcmp(buffer, payload.bytes, payload.count), 0);
     EXPECT_EQ(memory.read(HEADER.driver_read_pointer()), 1u);
+}
+
+// `FUNCTION_GSP_INIT_DONE` holds NVIDIA's number for the ready message
+TEST(nvidia_message_queues, ready_message_number_is_nvidias) {
+    EXPECT_EQ(FUNCTION_GSP_INIT_DONE, NVIDIA_GSP_INIT_DONE);
+}
+
+// Room for any payload the tests of `receive_awaited` receive, the sequencer's the largest
+static constexpr uint32_t AWAITED_BUFFER_BYTES = 128;
+
+// Stores a message of `function` with a result of 0 and this payload in element `index` of the moved status queue,
+// numbered `index`
+static void store_function_message(
+    fake_queue_memory& memory,
+    status_test_message& message,
+    uint32_t index,
+    uint32_t function,
+    const void* payload,
+    uint32_t payload_bytes
+) {
+    message.frame(1, index, static_cast<const uint8_t*>(payload), payload_bytes);
+    message.set(MESSAGE_FUNCTION, function);
+    message.set(MESSAGE_RESULT, 0);
+    message.seal(MESSAGE_PAYLOAD + payload_bytes);
+    message.store(memory, MOVED_HEADER, index);
+}
+
+// Waits for the ready message until `deadline_ns`, the sequencer's waits bound by a deadline the long timeout later,
+// so a wait that ends at the sequencer's deadline instead of its own fails a test
+static int32_t await_ready(
+    message_queues& queues,
+    awaited_test_bar0& bar0,
+    received_message& out,
+    uint8_t (&buffer)[AWAITED_BUFFER_BYTES],
+    uint64_t deadline_ns
+) {
+    cpu_sequencer_context context = {
+        .register_bytes          = TEST_BAR0_BYTES,
+        .boot0                   = 0,
+        .libos_arguments_address = 0,
+        .app_version             = 0,
+        .ready_timeout_ns        = 0,
+        .deadline_ns             = deadline_ns + LONG_TIMEOUT_NS,
+    };
+
+    return receive_awaited(
+        queues,
+        bar0.regs,
+        context,
+        FUNCTION_GSP_INIT_DONE,
+        out,
+        buffer,
+        sizeof(buffer),
+        deadline_ns
+    );
+}
+
+// Where the backend below drops the polled bit, and the text it keeps
+static awaited_test_bar0* s_dropping_bar0     = nullptr;
+static char               s_logged_text[4096] = {};
+static uint32_t           s_logged_bytes      = 0;
+
+// Drops the polled bit at any log line, as the firmware holds the bit for less time than a log line can take, and
+// keeps the line's text
+static void drop_polled_bit_at_any_line(const char* data, size_t len) {
+    s_dropping_bar0->write(POLLED_REGISTER, 0);
+    for (size_t i = 0; i < len && s_logged_bytes < sizeof(s_logged_text); i++) {
+        s_logged_text[s_logged_bytes++] = data[i];
+    }
+}
+
+static constexpr log::backend POLLED_BIT_DROPPING_BACKEND = {.write = drop_polled_bit_at_any_line};
+
+static bool logged_text_contains(const char* text) {
+    size_t text_bytes = string::strlen(text);
+    for (uint32_t start = 0; start + text_bytes <= s_logged_bytes; start++) {
+        if (string::memcmp(s_logged_text + start, text, text_bytes) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The sequencer runs before any log line, as the firmware holds the bit its first poll waits for only briefly from
+// its send, while a message before it is logged only after the run and the ready message's payload is returned
+TEST(nvidia_message_queues, receive_awaited_runs_the_sequencer_before_any_log_line) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    awaited_test_bar0 bar0;
+    queue_test_payload earlier_payload(13);
+    queue_test_payload ready_payload(29);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(earlier_payload.bytes);
+    ASSERT_NOT_NULL(ready_payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    poll_then_write_sequencer sequencer;
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+
+    MOVED_HEADER.write_to(memory);
+    message.frame(1, 0, earlier_payload.bytes, earlier_payload.count);
+    message.store(memory, MOVED_HEADER, 0);
+    store_function_message(memory, message, 1, NVIDIA_RUN_CPU_SEQUENCER, &sequencer, sizeof(sequencer));
+    store_function_message(memory, message, 2, NVIDIA_GSP_INIT_DONE, ready_payload.bytes, ready_payload.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+    bar0.write(POLLED_REGISTER, POLLED_BIT);
+
+    s_dropping_bar0 = &bar0;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t rc = await_ready(queues, bar0, out, buffer, clock::now_ns() + LONG_TIMEOUT_NS);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), WRITTEN_VALUE);
+    EXPECT_TRUE(logged_text_contains("function 0x12345"));
+    EXPECT_EQ(out.function, NVIDIA_GSP_INIT_DONE);
+    EXPECT_EQ(out.result, 0u);
+    EXPECT_EQ(out.payload_bytes, ready_payload.count);
+    EXPECT_EQ(string::memcmp(buffer, ready_payload.bytes, ready_payload.count), 0);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 3u);
+}
+
+// A sequencer that fails stops at its failed step and the wait goes on to the first of two ready messages, while a
+// deadline already passed still reads the queue once
+TEST(nvidia_message_queues, receive_awaited_goes_on_past_a_failed_sequencer) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    awaited_test_bar0 bar0;
+    queue_test_payload first_payload(13);
+    queue_test_payload second_payload(29);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(first_payload.bytes);
+    ASSERT_NOT_NULL(second_payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    poll_then_write_sequencer sequencer;
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+    received_message out = {};
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_RUN_CPU_SEQUENCER, &sequencer, sizeof(sequencer));
+    store_function_message(memory, message, 1, NVIDIA_GSP_INIT_DONE, first_payload.bytes, first_payload.count);
+    store_function_message(memory, message, 2, NVIDIA_GSP_INIT_DONE, second_payload.bytes, second_payload.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    EXPECT_EQ(await_ready(queues, bar0, out, buffer, clock::now_ns() + LONG_TIMEOUT_NS), OK);
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), 0u);
+    EXPECT_EQ(out.payload_bytes, first_payload.count);
+    EXPECT_EQ(string::memcmp(buffer, first_payload.bytes, first_payload.count), 0);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 2u);
+
+    EXPECT_EQ(await_ready(queues, bar0, out, buffer, 0), OK);
+    EXPECT_EQ(out.payload_bytes, second_payload.count);
+    EXPECT_EQ(string::memcmp(buffer, second_payload.bytes, second_payload.count), 0);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 3u);
+}
+
+// A wait whose message never comes takes the messages before it and runs out at its deadline, and a refused message
+// ends a long wait at once, each leaving the caller's message unchanged
+TEST(nvidia_message_queues, receive_awaited_ends_at_its_deadline_or_a_refused_message) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    awaited_test_bar0 bar0;
+    queue_test_payload payload(13);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+
+    MOVED_HEADER.write_to(memory);
+    message.frame(1, 0, payload.bytes, payload.count);
+    message.store(memory, MOVED_HEADER, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(await_ready(queues, bar0, out, buffer, start + SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 1u);
+
+    // The same message again, numbered 0 where 1 is due
+    message.store(memory, MOVED_HEADER, 1);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    start = clock::now_ns();
+    EXPECT_EQ(await_ready(queues, bar0, out, buffer, start + LONG_TIMEOUT_NS), ERR_BAD_MESSAGE);
+    EXPECT_LT(clock::now_ns() - start, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 1u);
+    EXPECT_EQ(out.function, STALE_WORD);
+    EXPECT_EQ(out.result, STALE_WORD);
+    EXPECT_EQ(out.payload_bytes, STALE_WORD);
+}
+
+// A deadline the sequencer's poll outlasts, and that poll's timeout, three times as long
+static constexpr uint64_t OUTLASTED_DEADLINE_NS      = 100000000;
+static constexpr uint32_t OUTLASTING_POLL_TIMEOUT_US = 300000;
+
+// A sequencer whose poll outlasts the wait's deadline runs to the poll's own timeout, after which the wait reads the
+// empty queue once and ends, as the run counts against the deadline
+TEST(nvidia_message_queues, receive_awaited_counts_a_sequencer_run_against_its_deadline) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    awaited_test_bar0 bar0;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    poll_then_write_sequencer sequencer;
+    sequencer.poll_timeout_us = OUTLASTING_POLL_TIMEOUT_US;
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+    received_message out = {};
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_RUN_CPU_SEQUENCER, &sequencer, sizeof(sequencer));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(await_ready(queues, bar0, out, buffer, start + OUTLASTED_DEADLINE_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    uint64_t poll_timeout_ns = OUTLASTING_POLL_TIMEOUT_US * 1000ULL;
+    EXPECT_GE(elapsed, poll_timeout_ns);
+    EXPECT_LT(elapsed, poll_timeout_ns + WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), 0u);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 1u);
+}
+
+// Of more messages passed over than the wait logs, the first `PASSED_MESSAGES_LOGGED` are logged and the rest counted
+TEST(nvidia_message_queues, receive_awaited_logs_the_first_passed_messages_and_counts_the_rest) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    awaited_test_bar0 bar0;
+    queue_test_payload payload(4);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+    received_message out = {};
+
+    MOVED_HEADER.write_to(memory);
+    uint32_t passed_count = PASSED_MESSAGES_LOGGED + 1;
+    for (uint32_t i = 0; i < passed_count; i++) {
+        store_function_message(memory, message, i, FUNCTION + i, payload.bytes, payload.count);
+    }
+
+    store_function_message(memory, message, passed_count, NVIDIA_GSP_INIT_DONE, payload.bytes, payload.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, passed_count + 1);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    s_dropping_bar0 = &bar0;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t rc = await_ready(queues, bar0, out, buffer, clock::now_ns() + LONG_TIMEOUT_NS);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_TRUE(logged_text_contains("function 0x12354"));
+    EXPECT_FALSE(logged_text_contains("function 0x12355"));
+    EXPECT_TRUE(logged_text_contains("not logged: 1\r\n"));
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), passed_count + 1);
 }

@@ -478,4 +478,96 @@ int32_t receive_within(
     }
 }
 
+// Keeps the messages passed over for the caller to log, since a log line can outlast the window, counted from the
+// firmware's send of a sequencer's message, in which that sequencer's first poll finds its bit
+static int32_t receive_awaited_unlogged(
+    message_queues& queues,
+    registers& regs,
+    const cpu_sequencer_context& sequencer,
+    uint32_t function,
+    received_message& out,
+    uint8_t* payload,
+    uint32_t payload_capacity,
+    uint64_t deadline_ns,
+    received_message (&passed)[PASSED_MESSAGES_LOGGED],
+    uint32_t& passed_count
+) {
+    while (true) {
+        received_message message = {};
+        int32_t rc = receive_within(queues, message, payload, payload_capacity, time_left_until(deadline_ns));
+        if (rc != OK) {
+            return rc;
+        }
+
+        if (message.function == function) {
+            out = message;
+            return OK;
+        }
+
+        if (message.function == FUNCTION_RUN_CPU_SEQUENCER) {
+            rc = run_cpu_sequencer(regs, sequencer, payload, message.payload_bytes);
+            if (rc != OK) {
+                log::error("nvidia: the CPU sequencer failed: %d", rc);
+            }
+
+            continue;
+        }
+
+        if (passed_count < PASSED_MESSAGES_LOGGED) {
+            passed[passed_count] = message;
+        }
+
+        passed_count++;
+    }
+}
+
+static void log_passed_messages(const received_message (&passed)[PASSED_MESSAGES_LOGGED], uint32_t passed_count) {
+    uint32_t logged_count = passed_count < PASSED_MESSAGES_LOGGED ? passed_count : PASSED_MESSAGES_LOGGED;
+    for (uint32_t i = 0; i < logged_count; i++) {
+        log::info(
+            "nvidia: the GSP's firmware sent function 0x%X with result 0x%X and %u payload bytes",
+            passed[i].function,
+            passed[i].result,
+            passed[i].payload_bytes
+        );
+    }
+
+    if (passed_count > logged_count) {
+        log::info("nvidia: messages the GSP's firmware sent past these, not logged: %u", passed_count - logged_count);
+    }
+}
+
+int32_t receive_awaited(
+    message_queues& queues,
+    registers& regs,
+    const cpu_sequencer_context& sequencer,
+    uint32_t function,
+    received_message& out,
+    uint8_t* payload,
+    uint32_t payload_capacity,
+    uint64_t deadline_ns
+) {
+    received_message passed[PASSED_MESSAGES_LOGGED] = {};
+    uint32_t passed_count = 0;
+    int32_t rc = receive_awaited_unlogged(
+        queues,
+        regs,
+        sequencer,
+        function,
+        out,
+        payload,
+        payload_capacity,
+        deadline_ns,
+        passed,
+        passed_count
+    );
+
+    log_passed_messages(passed, passed_count);
+    if (rc == ERR_TIMEOUT) {
+        log::error("nvidia: the GSP's firmware sent no message of function 0x%X by the wait's deadline", function);
+    }
+
+    return rc;
+}
+
 } // namespace drivers::nvidia

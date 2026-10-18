@@ -4,7 +4,9 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_MESSAGE_QUEUES_H
 
 #include "common/types.h"
+#include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "drivers/graphics/nvidia/registers.h"
 
 namespace drivers::nvidia {
 
@@ -30,6 +32,12 @@ constexpr uint64_t RECEIVE_TIMEOUT_NS = DEFAULT_TIMEOUT_NS + DEFAULT_TIMEOUT_NS 
 // How many times in a row NVIDIA's driver reads a message not wholly written or failing its checksum or sequence number
 // check before it stops waiting, counting no read of an older message it then consumes
 constexpr uint32_t RECEIVE_TRIES = 3;
+
+// NVIDIA's number for the message in which the GSP's firmware reports that its initialization is done
+constexpr uint32_t FUNCTION_GSP_INIT_DONE = 0x1001;
+
+// The most passed-over messages a wait for one message logs once it ends, counting the rest
+constexpr uint32_t PASSED_MESSAGES_LOGGED = 16;
 
 // What `message_queues::receive` reports of a message the firmware wrote
 struct received_message {
@@ -258,6 +266,59 @@ int32_t receive_within(
     void* payload,
     uint32_t payload_capacity,
     uint64_t timeout_ns
+);
+
+/**
+ * @brief Receive the next message carrying `function` from the status queue,
+ * running or logging each message before it. A CPU sequencer (the steps the
+ * firmware sends for the driver to run) runs with `run_cpu_sequencer` as soon
+ * as its message is read, with no log line first, as `run_cpu_sequencer`
+ * requires, since the window in which its first poll finds its bit counts from
+ * the firmware's send. A sequencer that fails is logged and the wait goes on,
+ * as in NVIDIA's driver, whose wait hands each message but the awaited one to
+ * its event handler. The other messages are passed over, where NVIDIA's
+ * handler acts on the events it knows, and logged with their function, result
+ * and payload size once the wait ends, the first `PASSED_MESSAGES_LOGGED` of
+ * them with a count of the rest. The lines a refused read or a sequencer's run
+ * writes still come during the wait. NVIDIA's wait also reads the GSP's log
+ * after each read of the queue, checks the GSP's health whenever its reads
+ * stop, the awaited message's arrival included, checks the GPU's state on each
+ * turn that ends without the awaited message and reports a timeout as Xid 119,
+ * all of which this wait leaves out. Each read waits as `receive_within`
+ * waits, for what is left until `deadline_ns`, so the messages and the
+ * sequencer's runs share one deadline, which a run counts against without
+ * being cut short, and the wait goes on past it for as long as each read finds
+ * a message. The call spins on the calling CPU without sleeping, holding it
+ * until the message arrives or a read fails. @param regs A view of BAR0, for
+ * the sequencer's steps. Booter load must have run on SEC2's falcon, with
+ * nothing resetting SEC2 since, as `run_cpu_sequencer` requires. @param
+ * sequencer What the sequencer's steps take from bring-up. @param function
+ * NVIDIA's number for the message awaited. @param out Receives the awaited
+ * message's function, result and payload size, which never exceeds
+ * `payload_capacity` or `MESSAGE_PAYLOAD_MAX_BYTES`, on `OK`, and is left
+ * unchanged on an error. @param payload Where each message's payload is
+ * copied, the awaited message's last. @param payload_capacity How many bytes
+ * `payload` holds. A capacity of `MESSAGE_PAYLOAD_MAX_BYTES` takes any
+ * message, and a smaller one ends the wait at the first message larger than
+ * it, whatever its function. @param deadline_ns A time as `clock::now_ns`
+ * reads it. The queue is read at least once, even when `deadline_ns` passed
+ * before the call. @return `OK`, or the first error `receive_within` returns,
+ * which ends the wait: `ERR_TIMEOUT` when a read begun after `deadline_ns`
+ * finds no message, logged with `function`, `ERR_BAD_MESSAGE`, each refused
+ * read logged, when a message fails a check on each of `RECEIVE_TRIES` reads
+ * in a row, `ERR_TOO_LARGE`, logged and leaving the message in place as
+ * `receive_within` describes, or `ERR_NOT_LINKED`, unlogged, when the status
+ * queue is not linked.
+ */
+int32_t receive_awaited(
+    message_queues& queues,
+    registers& regs,
+    const cpu_sequencer_context& sequencer,
+    uint32_t function,
+    received_message& out,
+    uint8_t* payload,
+    uint32_t payload_capacity,
+    uint64_t deadline_ns
 );
 
 } // namespace drivers::nvidia

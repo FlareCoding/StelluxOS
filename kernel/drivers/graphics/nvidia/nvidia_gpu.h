@@ -80,21 +80,21 @@ namespace drivers {
  * running. Bring-up then links the status queue (the ring the firmware writes
  * its messages into) once the firmware has written the queue's header, as
  * `nvidia::message_queues::link_status_queue` describes, retrying for up to
- * `nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS`. It then takes the firmware's
- * messages, logging the function, result and payload size of each that comes
- * before the CPU sequencer (the register, delay and falcon steps the firmware
- * sends for the driver to run). The sequencer's own message is not logged: the
- * sequencer runs as soon as that message arrives, as
- * `nvidia::run_cpu_sequencer` requires and describes, and bring-up then takes
- * the message after it. As NVIDIA's driver runs the sequencer inside one poll,
- * every wait for a message gets what is left of one
- * `nvidia::RECEIVE_TIMEOUT_NS` deadline set before the first read, the run's
- * time counting against it, and a wait with none left still reads the queue
- * once. The sequencer is given a deadline `nvidia::DEFAULT_TIMEOUT_NS` after
- * the same start, which its waits count against as `nvidia::run_cpu_sequencer`
- * describes. A sequencer that fails is logged and the wait goes on, as in
- * NVIDIA's driver. Bring-up stops at the message after the sequencer, so once
- * that message arrives, `attach()` declines as well.
+ * `nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS`. It then waits for the firmware's
+ * ready message (NVIDIA's GSP_INIT_DONE), taking the messages before it as
+ * `nvidia::receive_awaited` describes: the CPU sequencer (the register, delay
+ * and falcon steps the firmware sends for the driver to run) runs as soon as
+ * its message is read, as `nvidia::run_cpu_sequencer` requires and describes,
+ * and the other messages are logged once the wait ends. As NVIDIA's driver
+ * waits for the ready message in one poll, every wait for a message gets what
+ * is left of one `nvidia::RECEIVE_TIMEOUT_NS` deadline set before the first
+ * read, the sequencer's runs counting against it, and a wait with none left
+ * still reads the queue once. The sequencer is given a deadline
+ * `nvidia::DEFAULT_TIMEOUT_NS` after the same start, which its waits count
+ * against as `nvidia::run_cpu_sequencer` describes. A sequencer that fails is
+ * logged and the wait goes on, as in NVIDIA's driver. Bring-up stops at the
+ * ready message, so once it arrives with a result of 0, `attach()` declines as
+ * well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -152,11 +152,12 @@ namespace drivers {
  * firmware writes no status queue header that
  * `nvidia::message_queues::link_status_queue` accepts within
  * `nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS`, when room for a message's payload
- * cannot be allocated, when the CPU sequencer or the message after it has not
- * arrived by a read begun after the waits' shared `nvidia::RECEIVE_TIMEOUT_NS`
- * deadline, or when a message fails a check of
- * `nvidia::message_queues::receive` on each of `nvidia::RECEIVE_TRIES` reads
- * in a row.
+ * cannot be allocated, when the ready message has not arrived by a read begun
+ * after the waits' shared `nvidia::RECEIVE_TIMEOUT_NS` deadline, or when a
+ * message fails a check of `nvidia::message_queues::receive` on each of
+ * `nvidia::RECEIVE_TRIES` reads in a row. It fails with `nvidia::ERR_FIRMWARE`
+ * when the ready message's result is not 0, the firmware's report that its
+ * initialization failed, which NVIDIA's driver also treats as a failed boot.
  * Bring-up itself never writes to the display engine, and the CPU sequencer's
  * steps write only the registers the firmware names. Once the sequencer has
  * resumed the GSP's firmware, though, the firmware puts all of BAR1 (the CPU's
@@ -184,14 +185,14 @@ namespace drivers {
  * the GSP's, and a run that times out may leave booter load running, which may
  * later start the GSP's RISC-V core. A failure after the RISC-V core reads as
  * running leaves the core as booter load or the CPU sequencer's steps left it.
- * When `attach()` declines at the message after the CPU sequencer, FWSEC ran
- * and fenced off the FRTS region, booter load ran on SEC2, the CPU sequencer
- * ran, or was refused or stopped at a step as it logged, and the message after
- * it was received. Once FWSEC has set up protected memory, it stays set up
- * until the card is reset, and `nvidia::place_frts_region` refuses the card in
- * every `attach()` until then. The decoding stays on because the boot
- * framebuffer may be in this card's memory, which the CPU reaches only while
- * memory decoding is on.
+ * When `attach()` declines at the ready message, FWSEC ran and fenced off the
+ * FRTS region, booter load ran on SEC2, each CPU sequencer the firmware sent
+ * ran, or was refused or stopped at a step as it logged, and the firmware
+ * reported its initialization done. Once FWSEC has set up protected memory, it
+ * stays set up until the card is reset, and `nvidia::place_frts_region`
+ * refuses the card in every `attach()` until then. The decoding stays on
+ * because the boot framebuffer may be in this card's memory, which the CPU
+ * reaches only while memory decoding is on.
  * From the first reset of the GSP's falcon on, whether `attach()` declines or
  * fails, `detach()` resets the GSP's falcon again with `nvidia::stop_falcon`
  * and frees all of the GSP's boot memory once the falcon reads as halted and
