@@ -344,7 +344,11 @@ int32_t stop_falcon(registers& regs, falcon_id falcon, uint32_t boot0, uint64_t 
     }
 
     if (!is_falcon_halted(regs, falcon)) {
-        log::error("nvidia: %s's falcon does not read as halted after its reset", layout.name);
+        log::error(
+            "nvidia: %s's falcon does not read as halted after its reset, its control register reading 0x%X",
+            layout.name,
+            regs.read(layout.base + FALCON_CPUCTL)
+        );
         return ERR_BAD_STATE;
     }
 

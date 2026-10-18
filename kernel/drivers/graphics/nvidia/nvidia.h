@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_H
 
 #include "common/types.h"
+#include "clock/clock.h"
 
 namespace drivers::nvidia {
 
@@ -28,7 +29,8 @@ constexpr int32_t ERR_NOT_LINKED     = -9; // the status queue is not linked, as
 constexpr int32_t ERR_QUEUE_EMPTY    = -10; // the status queue shows no message to read, as the firmware's write
                                             // pointer equals the read pointer or lies past the ring
 constexpr int32_t ERR_BAD_MESSAGE    = -11; // a message from the GSP's firmware fails a check of its element count, the
-                                            // length its RPC header gives, its checksum or its sequence number
+                                            // length its RPC header gives, its checksum or its sequence number, or
+                                            // the CPU sequencer it carries fails a check of its sizes or its steps
 
 // Converts the timeouts the driver logs to milliseconds
 constexpr uint64_t NS_PER_MS = 1000000;
@@ -51,6 +53,26 @@ inline bool lies_inside(uint64_t offset, uint64_t bytes, uint64_t limit) {
 inline uint32_t read_u32(const uint8_t* bytes) {
     return static_cast<uint32_t>(bytes[0]) | static_cast<uint32_t>(bytes[1]) << 8 |
            static_cast<uint32_t>(bytes[2]) << 16 | static_cast<uint32_t>(bytes[3]) << 24;
+}
+
+/**
+ * @brief Write `value` little-endian into the 4 bytes at `bytes` a byte at a
+ * time, as `read_u32` reads them, so `bytes` needs no alignment.
+ */
+inline void write_u32(uint8_t* bytes, uint32_t value) {
+    bytes[0] = static_cast<uint8_t>(value);
+    bytes[1] = static_cast<uint8_t>(value >> 8);
+    bytes[2] = static_cast<uint8_t>(value >> 16);
+    bytes[3] = static_cast<uint8_t>(value >> 24);
+}
+
+/**
+ * @brief The time left until `deadline_ns`, a time as `clock::now_ns` reads
+ * it, or 0 once it has passed, so a wait given the result still reads once.
+ */
+inline uint64_t time_left_until(uint64_t deadline_ns) {
+    uint64_t now = clock::now_ns();
+    return deadline_ns > now ? deadline_ns - now : 0;
 }
 
 } // namespace drivers::nvidia

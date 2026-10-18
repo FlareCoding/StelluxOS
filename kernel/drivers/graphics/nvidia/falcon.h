@@ -13,8 +13,8 @@ namespace drivers::nvidia {
 // in NVIDIA's driver
 constexpr uint64_t FALCON_READY_TIMEOUT_NS = 150000;
 
-// How long each wait for a falcon's memories, its core selection, a block of a program's load, a falcon's halt or the
-// handoff of the GSP's firmware may take, NVIDIA's default timeout
+// How long each wait for a falcon's memories, its core selection, a block of a program's load or a falcon's halt may
+// take outside the CPU sequencer's steps, NVIDIA's default timeout
 constexpr uint64_t FALCON_TIMEOUT_NS = DEFAULT_TIMEOUT_NS;
 
 /**
@@ -83,10 +83,11 @@ enum class falcon_id : uint8_t {
  * @param ready_timeout_ns How long each wait for the ready report may take,
  * `FALCON_READY_TIMEOUT_NS` at bring-up.
  * @param timeout_ns How long each wait for the memories or the core selection
- * may take, `FALCON_TIMEOUT_NS` at bring-up. Each wait reads its register at
- * least once, even for a timeout of 0. NVIDIA's driver counts its default
- * timeout once for a whole call while its thread-state timeout is on, and for
- * each wait otherwise.
+ * may take, `FALCON_TIMEOUT_NS` at bring-up, or the time left until
+ * `cpu_sequencer_context::deadline_ns` for the CPU sequencer's reset step.
+ * Each wait reads its register at least once, even for a timeout of 0.
+ * NVIDIA's driver counts its default timeout once for a whole call while its
+ * thread-state timeout is on, and for each wait otherwise.
  * @return `OK`, or `ERR_TIMEOUT` when the falcon has not finished clearing
  * its memories, or has not confirmed its switch to the falcon core, within
  * `timeout_ns` of that wait's start. NVIDIA's driver goes on after either
@@ -131,10 +132,12 @@ bool has_gsp_riscv_core(const registers& regs);
  * @param ready_timeout_ns How long the wait for the ready report may take,
  * `FALCON_READY_TIMEOUT_NS` at bring-up.
  * @param timeout_ns How long the wait for the memories may take,
- * `FALCON_TIMEOUT_NS` at bring-up. The wait reads its register at least once,
- * even for a timeout of 0. NVIDIA's driver counts its default timeout once
- * for a whole call while its thread-state timeout is on, and for each wait
- * otherwise.
+ * `FALCON_TIMEOUT_NS` at bring-up, or the time left until
+ * `cpu_sequencer_context::deadline_ns` when `resume_gsp_firmware` resets the
+ * GSP for the CPU sequencer's resume step. The wait reads its register at
+ * least once, even for a timeout of 0. NVIDIA's driver counts its default
+ * timeout once for a whole call while its thread-state timeout is on, and for
+ * each wait otherwise.
  * @return `OK`, or `ERR_TIMEOUT` when the falcon has not finished clearing
  * its memories within `timeout_ns`, where NVIDIA's driver stops too. The
  * cause is logged, and the boot control register is left unwritten.
@@ -338,11 +341,12 @@ void start_falcon(registers& regs, falcon_id falcon);
  * for up to `timeout_ns` and then until its last read returns.
  * @param regs A view of BAR0.
  * @param falcon The falcon to wait for.
- * @param timeout_ns How long the wait may take, NVIDIA's default timeout
- * `FALCON_TIMEOUT_NS` for the CPU sequencer's halt step. The wait reads its
- * register at least once, even for a timeout of 0. NVIDIA's driver counts its
- * default timeout once for a whole call while its thread-state timeout is on,
- * and for each wait otherwise.
+ * @param timeout_ns How long the wait may take, the time left until
+ * `cpu_sequencer_context::deadline_ns` for the CPU sequencer's halt step,
+ * which NVIDIA's driver gives its default timeout. The wait reads its register
+ * at least once, even for a timeout of 0. NVIDIA's driver counts its default
+ * timeout once for a whole call while its thread-state timeout is on, and for
+ * each wait otherwise.
  * @return `OK` once the falcon's halted bit is set, or `ERR_TIMEOUT`, which is
  * logged, when it is not set within `timeout_ns`.
  */
@@ -367,14 +371,15 @@ int32_t wait_for_falcon_halt(const registers& regs, falcon_id falcon, uint64_t t
  * @param app_version As for `write_gsp_app_version`.
  * @param ready_timeout_ns As for `reset_gsp_into_riscv`.
  * @param timeout_ns How long the reset's wait for the memories and the wait
- * for the scratch register's field may each take, NVIDIA's default timeout
- * `FALCON_TIMEOUT_NS` for the CPU sequencer's resume step. Each wait reads its
- * register at least once, even for a timeout of 0, and the field is read once
- * more after its deadline passes, as NVIDIA's driver reads it. NVIDIA's wait
- * for the memories also reads its register once more after its deadline, which
- * the wait in `reset_gsp_into_riscv` does not. NVIDIA's driver counts its
- * default timeout once for a whole call while its thread-state timeout is on,
- * and for each wait otherwise.
+ * for the scratch register's field may each take, the time left until
+ * `cpu_sequencer_context::deadline_ns` for the CPU sequencer's resume step,
+ * where NVIDIA's driver gives both waits its default timeout. Each wait reads
+ * its register at least once, even for a timeout of 0, and the field is read
+ * once more after its deadline passes, as NVIDIA's driver reads it. NVIDIA's
+ * wait for the memories also reads its register once more after its deadline,
+ * which the wait in `reset_gsp_into_riscv` does not. NVIDIA's driver counts
+ * its default timeout once for a whole call while its thread-state timeout is
+ * on, and for each wait otherwise.
  * @return `OK`, `ERR_TIMEOUT` when the reset times out as
  * `reset_gsp_into_riscv` describes, leaving the mailboxes unwritten and SEC2
  * not started, or when the field is not set within `timeout_ns`, SEC2 left

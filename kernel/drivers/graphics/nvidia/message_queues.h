@@ -241,9 +241,10 @@ int32_t link_status_queue_within(message_queues& queues, uint64_t timeout_ns);
  * @param payload Where the payload is copied, as for
  * `message_queues::receive`.
  * @param payload_capacity How many bytes `payload` holds.
- * @param timeout_ns How long to wait for a message, `RECEIVE_TIMEOUT_NS` at
- * bring-up. The queue is read at least once, and `ERR_TIMEOUT` follows only a
- * read begun after `timeout_ns` passed.
+ * @param timeout_ns How long to wait for a message, at bring-up what is left
+ * of one `RECEIVE_TIMEOUT_NS` deadline set before the first read. The queue is
+ * read at least once, and `ERR_TIMEOUT` follows only a read begun after
+ * `timeout_ns` passed.
  * @return `OK`, `ERR_TIMEOUT`, which is logged, when no message arrives within
  * `timeout_ns`, `ERR_BAD_MESSAGE` when the next message fails a check on each
  * of `RECEIVE_TRIES` reads in a row, or `ERR_NOT_LINKED` or `ERR_TOO_LARGE` as

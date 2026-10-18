@@ -1,8 +1,10 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
 
 #include "drivers/graphics/nvidia/nvidia_gpu.h"
+#include "drivers/graphics/nvidia/bar1.h"
 #include "drivers/graphics/nvidia/boot_messages.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
@@ -14,6 +16,7 @@
 #include "drivers/graphics/nvidia/vbios.h"
 #include "drivers/graphics/gfxfb.h"
 #include "boot/boot_services.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "dma/dma.h"
 #include "dynpriv/dynpriv.h"
@@ -375,8 +378,10 @@ int32_t nvidia_gpu_driver::attach() {
     // The PCI layer's devices and `g_boot_info`'s record of the boot framebuffer sit in privileged memory
     nvidia::card_placement card = {};
     nvidia::boot_framebuffer framebuffer = {};
+    uint64_t registers_bytes = 0;
     RUN_ELEVATED({
         card.registers_address = m_dev->get_bar(REGISTERS_BAR).phys;
+        registers_bytes = m_dev->get_bar(REGISTERS_BAR).size;
         card.bar1_address = m_dev->get_bar(VIDEO_MEMORY_BAR).phys;
         card.bar3_address = m_dev->get_bar(INSTANCE_MEMORY_BAR).phys;
         card.bus = m_dev->bus();
@@ -472,6 +477,9 @@ int32_t nvidia_gpu_driver::attach() {
     // `detach()` stops SEC2 before the GSP
     m_must_stop_sec2 = true;
 
+    // Read before the GSP's firmware can run, for `detach()` to write back once the GSP reads as stopped
+    m_bar1_block = nvidia::read_bar1_block(regs);
+
     rc = nvidia::run_booter_load(regs, booter_load, metadata_address, nvidia::FALCON_TIMEOUT_NS);
     if (rc != nvidia::OK) {
         return rc;
@@ -496,19 +504,59 @@ int32_t nvidia_gpu_driver::attach() {
     }
 
     // A payload may fill nearly 64 KiB, more than the boot thread's stack can spare
-    void* payload = heap::ualloc(nvidia::MESSAGE_PAYLOAD_MAX_BYTES);
+    uint8_t* payload = static_cast<uint8_t*>(heap::ualloc(nvidia::MESSAGE_PAYLOAD_MAX_BYTES));
     if (!payload) {
         log::error("nvidia: allocating %u bytes for a message's payload failed", nvidia::MESSAGE_PAYLOAD_MAX_BYTES);
         return nvidia::ERR_NO_MEMORY;
     }
 
+    // NVIDIA's driver runs the sequencer inside one poll whose deadline the run counts against without being cut short,
+    // and ends every sequencer wait but delays and ready waits once a default timeout begun with the poll runs out
+    uint64_t wait_start = clock::now_ns();
+    uint64_t deadline = wait_start + nvidia::RECEIVE_TIMEOUT_NS;
     nvidia::received_message message = {};
+    do {
+        rc = nvidia::receive_within(
+            queues,
+            message,
+            payload,
+            nvidia::MESSAGE_PAYLOAD_MAX_BYTES,
+            nvidia::time_left_until(deadline)
+        );
+        if (rc != nvidia::OK) {
+            heap::ufree(payload);
+            return rc;
+        }
+
+        log::info(
+            "nvidia: the GSP's firmware sent function 0x%X with result 0x%X and %u payload bytes",
+            message.function,
+            message.result,
+            message.payload_bytes
+        );
+    } while (message.function != nvidia::FUNCTION_RUN_CPU_SEQUENCER);
+
+    nvidia::cpu_sequencer_context sequencer = {
+        .register_bytes          = registers_bytes,
+        .boot0                   = boot0,
+        .libos_arguments_address = m_boot_memory.libos_arguments_address(),
+        .app_version             = bootloader_parts.app_version,
+        .ready_timeout_ns        = nvidia::FALCON_READY_TIMEOUT_NS,
+        .deadline_ns             = wait_start + nvidia::DEFAULT_TIMEOUT_NS,
+    };
+
+    // As in NVIDIA's driver, a failed sequencer is logged and the wait for the firmware's messages goes on
+    rc = nvidia::run_cpu_sequencer(regs, sequencer, payload, message.payload_bytes);
+    if (rc != nvidia::OK) {
+        log::error("nvidia: the CPU sequencer failed: %d", rc);
+    }
+
     rc = nvidia::receive_within(
         queues,
         message,
         payload,
         nvidia::MESSAGE_PAYLOAD_MAX_BYTES,
-        nvidia::RECEIVE_TIMEOUT_NS
+        nvidia::time_left_until(deadline)
     );
     heap::ufree(payload);
     if (rc != nvidia::OK) {
@@ -516,14 +564,15 @@ int32_t nvidia_gpu_driver::attach() {
     }
 
     log::info(
-        "nvidia: the GSP's firmware sent function 0x%X first, with result 0x%X and %u payload bytes",
+        "nvidia: the GSP's firmware sent function 0x%X after the CPU sequencer, with result 0x%X and %u payload bytes",
         message.function,
         message.result,
         message.payload_bytes
     );
 
     log::info(
-        "nvidia: bring-up stops at the firmware's first message, leaving SEC2 and the GSP to be stopped in detach"
+        "nvidia: bring-up stops at the firmware's message after the CPU sequencer, leaving SEC2 and the GSP to be "
+        "stopped in detach"
     );
 
     return DECLINED;
@@ -546,7 +595,7 @@ int32_t nvidia_gpu_driver::detach() {
 }
 
 // NVIDIA's driver asks the firmware to unload and waits for the GSP to suspend before resetting it, then puts back the
-// programs the VBIOS runs before an operating system loads and takes protected memory down. This driver only resets.
+// programs the VBIOS runs before an operating system loads and takes protected memory down. This driver resets instead.
 int32_t nvidia_gpu_driver::stop_falcons_and_free_boot_memory() {
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
 
@@ -558,6 +607,7 @@ int32_t nvidia_gpu_driver::stop_falcons_and_free_boot_memory() {
             nvidia::FALCON_READY_TIMEOUT_NS,
             nvidia::FALCON_TIMEOUT_NS
         );
+        nvidia::restore_bar1_block(regs, m_bar1_block);
     } else {
         rc = m_boot_memory.release_after_gsp_stop(
             regs,

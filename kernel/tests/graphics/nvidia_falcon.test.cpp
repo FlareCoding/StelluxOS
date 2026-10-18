@@ -4,6 +4,7 @@
 
 #include "stlx_unit_test.h"
 #include "clock/clock.h"
+#include "drivers/graphics/nvidia/bar1.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
@@ -31,9 +32,11 @@ using drivers::nvidia::gsp_boot_memory;
 using drivers::nvidia::has_gsp_riscv_core;
 using drivers::nvidia::is_gsp_riscv_running;
 using drivers::nvidia::notify_gsp_of_queued_messages;
+using drivers::nvidia::read_bar1_block;
 using drivers::nvidia::registers;
 using drivers::nvidia::reset_falcon;
 using drivers::nvidia::reset_gsp_into_riscv;
+using drivers::nvidia::restore_bar1_block;
 using drivers::nvidia::resume_gsp_firmware;
 using drivers::nvidia::run_booter_load;
 using drivers::nvidia::run_falcon_program;
@@ -1041,12 +1044,57 @@ TEST(nvidia_falcon, boot_memory_stays_allocated_until_gsp_reads_as_stopped_after
     memory.release();
 }
 
+// BAR1's block register, measured on the card since no NVIDIA source names it, and what it reads on an RTX 3080
+// before the GSP's firmware runs
+static constexpr uint32_t BAR1_BLOCK               = 0x1704;
+static constexpr uint32_t RTX_3080_BOOT_BAR1_BLOCK = 0x0027FF00;
+
+// BAR1's block register is read as found, and written back whole over every bit set once the GSP reads as stopped,
+// with every falcon control bit set and every RISC-V control bit but the active bit set
+TEST(nvidia_falcon, bar1_block_is_written_back_once_gsp_reads_as_stopped) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BAR1_BLOCK, RTX_3080_BOOT_BAR1_BLOCK);
+    EXPECT_EQ(read_bar1_block(bar0.regs), RTX_3080_BOOT_BAR1_BLOCK);
+
+    bar0.write(BAR1_BLOCK, ~0u);
+    bar0.write(GSP_FALCON_CPUCTL, ~0u);
+    bar0.write(GSP_RISCV_CPUCTL, ~RISCV_ACTIVE);
+    restore_bar1_block(bar0.regs, RTX_3080_BOOT_BAR1_BLOCK);
+    EXPECT_EQ(bar0.read(BAR1_BLOCK), RTX_3080_BOOT_BAR1_BLOCK);
+}
+
+// A changed BAR1 block register stays unwritten while the GSP falcon's control register has every bit but the halted
+// bit set
+TEST(nvidia_falcon, bar1_block_stays_unwritten_without_halted_gsp_falcon) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BAR1_BLOCK, ~0u);
+    bar0.write(GSP_FALCON_CPUCTL, ~FALCON_HALTED);
+
+    restore_bar1_block(bar0.regs, RTX_3080_BOOT_BAR1_BLOCK);
+    EXPECT_EQ(bar0.read(BAR1_BLOCK), ~0u);
+}
+
+// A RISC-V core whose control register has every bit set reads as running, so a changed BAR1 block register stays
+// unwritten even with the GSP's falcon halted
+TEST(nvidia_falcon, bar1_block_stays_unwritten_with_running_gsp_riscv_core) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BAR1_BLOCK, ~0u);
+    bar0.write(GSP_FALCON_CPUCTL, ~0u);
+    bar0.write(GSP_RISCV_CPUCTL, ~0u);
+
+    restore_bar1_block(bar0.regs, RTX_3080_BOOT_BAR1_BLOCK);
+    EXPECT_EQ(bar0.read(BAR1_BLOCK), ~0u);
+}
+
 // NVIDIA's wait for the ready report, and its default timeout for a GPU in graphics mode rather than compute mode
 static constexpr uint64_t NVIDIA_READY_TIMEOUT_NS   = 150000;
 static constexpr uint64_t NVIDIA_DEFAULT_TIMEOUT_NS = 4000000000;
 
-// The ready report gets NVIDIA's 150 us, and each wait for the memories, the core selection, a block's load, a falcon's
-// halt or the handoff of the GSP's firmware NVIDIA's default timeout
+// The ready report gets NVIDIA's 150 us, and each wait for the memories, the core selection, a block's load or a
+// falcon's halt outside the CPU sequencer's steps gets NVIDIA's default timeout
 TEST(nvidia_falcon, falcon_timeouts_are_nvidias) {
     EXPECT_EQ(FALCON_READY_TIMEOUT_NS, NVIDIA_READY_TIMEOUT_NS);
     EXPECT_EQ(FALCON_TIMEOUT_NS, NVIDIA_DEFAULT_TIMEOUT_NS);
