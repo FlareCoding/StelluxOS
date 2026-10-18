@@ -81,11 +81,13 @@ namespace drivers {
  * its messages into) once the firmware has written the queue's header, as
  * `nvidia::message_queues::link_status_queue` describes, retrying for up to
  * `nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS`. It then takes the firmware's
- * messages, logging the function, result and payload size of each, until the
- * CPU sequencer arrives (the register, delay and falcon steps the firmware
- * sends for the driver to run), runs it as `nvidia::run_cpu_sequencer`
- * describes, and takes the message after it. As NVIDIA's driver runs the
- * sequencer inside one poll, every wait for a message gets what is left of one
+ * messages, logging the function, result and payload size of each that comes
+ * before the CPU sequencer (the register, delay and falcon steps the firmware
+ * sends for the driver to run). The sequencer's own message is not logged: the
+ * sequencer runs as soon as that message arrives, as
+ * `nvidia::run_cpu_sequencer` requires and describes, and bring-up then takes
+ * the message after it. As NVIDIA's driver runs the sequencer inside one poll,
+ * every wait for a message gets what is left of one
  * `nvidia::RECEIVE_TIMEOUT_NS` deadline set before the first read, the run's
  * time counting against it, and a wait with none left still reads the queue
  * once. The sequencer is given a deadline `nvidia::DEFAULT_TIMEOUT_NS` after
