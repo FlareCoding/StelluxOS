@@ -5,6 +5,7 @@
 
 #include "common/types.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/registers.h"
 
 namespace drivers::nvidia {
@@ -114,11 +115,11 @@ int32_t wait_for_boot_firmware(const registers& regs, uint64_t timeout_ns);
  * 16 TiB whenever usable video memory does, as `prepare_fwsec_frts` and
  * `check_frts_result` need. Its `has_display` is false when the chip's fuses
  * disable its display.
- * @return `OK`, or `ERR_BAD_STATE` when protected memory is already set up, as
- * after an earlier bring-up with no card reset since, when usable video memory
- * is below 1 MiB, or when the VGA workspace leaves no room for the region
- * above offset 0, since NVIDIA's driver never asks FWSEC to put it at offset 0.
- * The cause is logged.
+ * @return `OK`, or `ERR_BAD_STATE` when protected memory already reads as set
+ * up (as when no `detach()` took it down after the last bring-up), when usable
+ * video memory is below 1 MiB, or when the VGA workspace leaves no room for
+ * the region above offset 0, since NVIDIA's driver never asks FWSEC to put it
+ * at offset 0. The cause is logged.
  */
 int32_t place_frts_region(const registers& regs, frts_region& region_out);
 
@@ -192,6 +193,48 @@ int32_t check_frts_result(const registers& regs, const frts_region& region);
  * The cause is logged.
  */
 int32_t check_fwsec_sb_result(const registers& regs);
+
+/**
+ * @brief Take protected memory down with booter unload, the program SEC2 runs
+ * to take it down, as NVIDIA's driver does at unload after resetting the GSP
+ * and running FWSEC's SB command. When protected memory reads as set up,
+ * SEC2's falcon is reset as `reset_falcon` does, booter unload is run on it as
+ * `run_booter_unload` describes, and protected memory must then no longer read
+ * as set up. When protected memory does not read as set up, nothing is reset
+ * or run, as in NVIDIA's driver. A reset that times out ends the take-down
+ * before booter unload is loaded, where NVIDIA's driver does not check the
+ * reset's result and runs booter unload anyway. Whether booter unload runs,
+ * and that protected memory then no longer reads as set up, are logged. The
+ * waits spin on the calling CPU, as `reset_falcon` and `run_falcon_program`
+ * describe.
+ * @param regs A view of BAR0. While protected memory reads as set up, the
+ * card's bus mastering must be on, since SEC2's DMA engine then reads booter
+ * unload's program.
+ * @param booter_unload Booter unload's program, as `describe_booter_program`
+ * gives it, whose memory must stay allocated while SEC2 may read it.
+ * @param boot0 The chip's `PMC_BOOT_0` value, for the reset.
+ * @param ready_timeout_ns How long each wait for the ready report may take, as
+ * for `reset_falcon`.
+ * @param timeout_ns How long each of the reset's other waits, each block's
+ * load and the run may take, as for `reset_falcon` and `run_falcon_program`.
+ * @param sec2_may_read_out Receives whether SEC2 may still read booter
+ * unload's memory, true exactly when the load or run of booter unload timed
+ * out. The memory must then stay allocated for good, since nothing resets SEC2
+ * after booter unload.
+ * @return `OK` once protected memory does not read as set up, whether or not
+ * booter unload ran, the `ERR_TIMEOUT` that `reset_falcon` returns before
+ * booter unload is loaded, the `ERR_TIMEOUT` or `ERR_BAD_STATE` that
+ * `run_booter_unload` returns, or `ERR_BAD_STATE` when protected memory still
+ * reads as set up after booter unload. The cause is logged.
+ */
+int32_t take_down_protected_memory(
+    registers& regs,
+    const falcon_program& booter_unload,
+    uint32_t boot0,
+    uint64_t ready_timeout_ns,
+    uint64_t timeout_ns,
+    bool& sec2_may_read_out
+);
 
 } // namespace drivers::nvidia
 

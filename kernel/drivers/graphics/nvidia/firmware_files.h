@@ -271,28 +271,30 @@ int32_t select_booter_signature(
 );
 
 /**
- * @brief Describe a copy of booter load's program as the program SEC2's
- * falcon runs, as NVIDIA's driver loads it: the code from its offset into
- * IMEM from IMEM's start, its blocks tagged with virtual addresses from the
- * code's offset, and the data from its own offset into DMEM from DMEM's
- * start, with the signature slot as the signature's offset in the data and
- * the engine mask whole. The ucode id keeps its low 8 bits, the field of the
- * boot ROM's register NVIDIA's driver writes it into. Neither offset's
+ * @brief Describe a copy of a booter's program as the program SEC2's falcon
+ * runs, as NVIDIA's driver loads booter load and booter unload: the code from
+ * its offset into IMEM from IMEM's start, its blocks tagged with virtual
+ * addresses from the code's offset, and the data from its own offset into DMEM
+ * from DMEM's start, with the signature slot as the signature's offset in the
+ * data and the engine mask whole. The ucode id keeps its low 8 bits, the field
+ * of the boot ROM's register NVIDIA's driver writes it into. Neither offset's
  * alignment is checked, as in NVIDIA's driver, so a copy on a 256-byte
  * boundary meets `run_falcon_program`'s alignment only when the data's offset
  * is a multiple of 256, and holds each part's whole blocks when the code's
  * offset is one as well.
- * @param layout Booter load's layout, as `read_booter_layout` returns it.
+ * @param layout The booter's layout, as `read_booter_layout` returns it.
  * @param dma_address Where the copy starts, as the card addresses memory. The
- * copy must hold booter load's program, uncached, as
- * `gsp_boot_memory::copy_booter_load` copies it.
- * @param reads_cached_memory Whether the CPU maps cached the memory booter
- * load reads once started (protected memory's metadata and the parts of the
- * GSP's boot memory the metadata lists), as `gsp_boot_memory` does for a
- * coherent card.
+ * copy must hold the booter's program, uncached, as
+ * `gsp_boot_memory::copy_booter_load` copies booter load and
+ * `copy_booter_unload` copies booter unload.
+ * @param reads_cached_memory Whether the CPU maps cached the memory the booter
+ * reads once started. Booter load reads protected memory's metadata and the
+ * parts of the GSP's boot memory the metadata lists, which `gsp_boot_memory`
+ * maps cached for a coherent card, and booter unload's mailboxes carry no
+ * address.
  * @return The program `run_falcon_program` loads from the copy.
  */
-falcon_program describe_booter_load_program(
+falcon_program describe_booter_program(
     const booter_layout& layout,
     uint64_t dma_address,
     bool reads_cached_memory

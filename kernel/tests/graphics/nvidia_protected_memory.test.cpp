@@ -17,12 +17,14 @@ using drivers::nvidia::check_fwsec_sb_result;
 using drivers::nvidia::chip_gsp_reservation;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_TIMEOUT;
+using drivers::nvidia::falcon_program;
 using drivers::nvidia::frts_region;
 using drivers::nvidia::lay_out_protected_memory;
 using drivers::nvidia::OK;
 using drivers::nvidia::place_frts_region;
 using drivers::nvidia::protected_memory_layout;
 using drivers::nvidia::registers;
+using drivers::nvidia::take_down_protected_memory;
 using drivers::nvidia::wait_for_boot_firmware;
 
 // Registers and fields the steps read, restated here so the tests hold the steps to NVIDIA's layout rather than
@@ -452,6 +454,111 @@ TEST(nvidia_protected_memory, nonzero_sb_error_code_is_refused) {
 
     bar0.write(SB_ERROR_SCRATCH, 0xFFFF0000);
     EXPECT_EQ(check_fwsec_sb_result(bar0.regs), OK);
+}
+
+// The SEC2 falcon's registers that its reset and booter unload's run go through, and the values the fake gives them
+static constexpr uint32_t SEC2_FALCON_MAILBOX0 = 0x840040;
+static constexpr uint32_t SEC2_FALCON_MAILBOX1 = 0x840044;
+static constexpr uint32_t SEC2_FALCON_RM       = 0x840084;
+static constexpr uint32_t SEC2_FALCON_HWCFG2   = 0x8400F4;
+static constexpr uint32_t SEC2_FALCON_CPUCTL   = 0x840100;
+static constexpr uint32_t SEC2_RISCV_BCR_CTRL  = 0x841668;
+static constexpr uint32_t HAS_RISCV_CORE       = 0x400;
+static constexpr uint32_t READY_FOR_RESET      = 0x80000000;
+static constexpr uint32_t FALCON_HALTED        = 0x10;
+static constexpr uint32_t STARTS_THROUGH_ALIAS = 0x40;
+
+// Protected memory's upper bound with every bit set, and with only the bits below its address field set
+static constexpr uint32_t UPPER_BOUND_SET_UP          = 0xFFFFFFFF;
+static constexpr uint32_t UPPER_BOUND_WITHOUT_ADDRESS = 0xF;
+
+static constexpr uint32_t RTX_3080_BOOT_0 = 0xB72000A1;
+static constexpr uint32_t SEEDED_MAILBOX  = 0x5EED;
+
+// Booter unload with no code or data to load, so its run needs only SEC2's halt
+static constexpr falcon_program EMPTY_BOOTER_UNLOAD = {};
+
+// A SEC2 falcon with no RISC-V core, ready for its reset at once, halted from the start so a run's wait for its halt
+// ends at once, and with both mailboxes seeded so the tests see what a run writes into them
+static void put_ready_sec2(fake_bar0& bar0) {
+    bar0.write(SEC2_FALCON_HWCFG2, READY_FOR_RESET);
+    bar0.write(SEC2_FALCON_CPUCTL, STARTS_THROUGH_ALIAS | FALCON_HALTED);
+    bar0.write(SEC2_FALCON_MAILBOX0, SEEDED_MAILBOX);
+    bar0.write(SEC2_FALCON_MAILBOX1, SEEDED_MAILBOX);
+}
+
+static int32_t take_down(fake_bar0& bar0, uint64_t ready_timeout_ns, uint64_t timeout_ns, bool& sec2_may_read) {
+    return take_down_protected_memory(
+        bar0.regs,
+        EMPTY_BOOTER_UNLOAD,
+        RTX_3080_BOOT_0,
+        ready_timeout_ns,
+        timeout_ns,
+        sec2_may_read
+    );
+}
+
+// SEC2 is reset and booter unload run only while protected memory reads as set up. The reset waits out the ready
+// timeout of a SEC2 never ready, and the run fails on the 0xFF the fake keeps in the first mailbox
+TEST(nvidia_protected_memory, sec2_is_reset_and_booter_unload_run_only_while_protected_memory_reads_as_set_up) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    put_ready_sec2(bar0);
+    bar0.write(SEC2_FALCON_HWCFG2, 0);
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, UPPER_BOUND_WITHOUT_ADDRESS);
+
+    bool sec2_may_read = true;
+    EXPECT_EQ(take_down(bar0, SHORT_TIMEOUT_NS, SHORT_TIMEOUT_NS, sec2_may_read), OK);
+    EXPECT_FALSE(sec2_may_read);
+    EXPECT_EQ(bar0.regs.read(SEC2_FALCON_RM), 0u);
+    EXPECT_EQ(bar0.regs.read(SEC2_FALCON_MAILBOX0), SEEDED_MAILBOX);
+    EXPECT_EQ(bar0.regs.read(SEC2_FALCON_MAILBOX1), SEEDED_MAILBOX);
+
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, UPPER_BOUND_SET_UP);
+    sec2_may_read = true;
+    uint64_t start = clock::now_ns();
+    int32_t rc = take_down(bar0, SHORT_TIMEOUT_NS, 0, sec2_may_read);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_BAD_STATE);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_FALSE(sec2_may_read);
+    EXPECT_EQ(bar0.regs.read(SEC2_FALCON_RM), RTX_3080_BOOT_0);
+    EXPECT_EQ(bar0.regs.read(SEC2_FALCON_MAILBOX0), 0xFFu);
+    EXPECT_EQ(bar0.regs.read(SEC2_FALCON_MAILBOX1), 0xFFu);
+}
+
+// A SEC2 reset that times out on its switch to the falcon core ends the take-down before booter unload is loaded, while
+// a booter unload that never halts fails once the run's own timeout passes and reports that SEC2 may still read it
+TEST(nvidia_protected_memory, take_down_timeouts_say_whether_sec2_may_still_read_booter_unload) {
+    fake_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    put_ready_sec2(bar0);
+    bar0.write(SEC2_FALCON_HWCFG2, HAS_RISCV_CORE | READY_FOR_RESET);
+    bar0.write(SEC2_RISCV_BCR_CTRL, ~0u);
+    bar0.write(PROTECTED_MEMORY_UPPER_BOUND, UPPER_BOUND_SET_UP);
+
+    bool sec2_may_read = true;
+    uint64_t start = clock::now_ns();
+    int32_t rc = take_down(bar0, 0, SHORT_TIMEOUT_NS, sec2_may_read);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_FALSE(sec2_may_read);
+    EXPECT_EQ(bar0.regs.read(SEC2_FALCON_MAILBOX0), SEEDED_MAILBOX);
+    EXPECT_EQ(bar0.regs.read(SEC2_FALCON_MAILBOX1), SEEDED_MAILBOX);
+
+    bar0.write(SEC2_FALCON_HWCFG2, READY_FOR_RESET);
+    bar0.write(SEC2_FALCON_CPUCTL, STARTS_THROUGH_ALIAS);
+    sec2_may_read = false;
+    start = clock::now_ns();
+    rc = take_down(bar0, 0, SHORT_TIMEOUT_NS, sec2_may_read);
+    elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_TRUE(sec2_may_read);
 }
 
 // GA102's values as NVIDIA's driver sizes the firmware's memory: 20 MiB of the heap for the firmware's operating

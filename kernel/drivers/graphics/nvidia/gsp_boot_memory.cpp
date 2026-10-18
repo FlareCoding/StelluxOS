@@ -226,6 +226,24 @@ static int32_t copy_from_file(
     return rc;
 }
 
+// Copies the `bytes` bytes at `offset` in `booter` to `destination`, naming them as `name`'s `part` in a failure's log
+static int32_t copy_booter_part(
+    const fw::file& booter,
+    const char* name,
+    const char* part,
+    uint64_t offset,
+    uint64_t bytes,
+    uintptr_t destination
+) {
+    int32_t fw_result = booter.read(offset, reinterpret_cast<void*>(destination), bytes);
+    int32_t rc = to_bring_up_result(fw_result);
+    if (rc != OK) {
+        log::error("nvidia: reading %s's %s failed with fw error %d", name, part, fw_result);
+    }
+
+    return rc;
+}
+
 int32_t check_boot_copies(const boot_file_header& bootloader_header, const gsp_image_layout& gsp_image) {
     if (bootloader_header.program_size == 0) {
         log::error("nvidia: the bootloader's program holds no byte");
@@ -243,8 +261,9 @@ int32_t check_boot_copies(const boot_file_header& bootloader_header, const gsp_i
     return OK;
 }
 
-int32_t write_booter_load_image(
-    const fw::file& booter_load,
+int32_t write_booter_image(
+    const fw::file& booter,
+    const char* name,
     const boot_file_header& header,
     const booter_layout& layout,
     const booter_signature& signature,
@@ -255,24 +274,53 @@ int32_t write_booter_load_image(
     uint64_t signature_offset = layout.signatures_offset + chosen_index * layout.signature_size;
     uintptr_t program = reinterpret_cast<uintptr_t>(image);
 
-    int32_t rc = copy_from_file(
-        booter_load,
-        header.program_offset,
-        header.program_size,
-        program,
-        "booter load's program"
-    );
+    int32_t rc = copy_booter_part(booter, name, "program", header.program_offset, header.program_size, program);
     if (rc != OK) {
         return rc;
     }
 
-    return copy_from_file(
-        booter_load,
-        signature_offset,
-        layout.signature_size,
-        program + slot_offset,
-        "booter load's signature"
-    );
+    return copy_booter_part(booter, name, "signature", signature_offset, layout.signature_size, program + slot_offset);
+}
+
+// Copies a booter's program with its signature into uncached memory of its own, which a failed read frees
+static int32_t copy_booter(
+    const dma::device_profile& device,
+    const fw::file& booter,
+    const char* name,
+    const boot_file_header& header,
+    const booter_layout& layout,
+    const booter_signature& signature,
+    dma::buffer& copy_out
+) {
+    uint64_t pages = pmm::page_align_up(header.program_size) / pmm::PAGE_SIZE;
+
+    int32_t rc = dma::ERR_NO_MEM;
+    RUN_ELEVATED(rc = dma::alloc_pages(device, pages, dma::caching::uncached, paging::PAGE_USER, copy_out));
+    if (rc != dma::OK) {
+        log::error("nvidia: allocating %lu pages for %s's program failed: %d", pages, name, rc);
+        copy_out = {};
+        return ERR_NO_MEMORY;
+    }
+
+    uint8_t* image = reinterpret_cast<uint8_t*>(copy_out.virt);
+    rc = write_booter_image(booter, name, header, layout, signature, image);
+    if (rc != OK) {
+        // The card was never given the copy's address, so nothing reads it
+        RUN_ELEVATED(dma::free_pages(copy_out));
+    }
+
+    return rc;
+}
+
+int32_t copy_booter_unload(
+    const dma::device_profile& device,
+    const fw::file& booter_unload,
+    const boot_file_header& header,
+    const booter_layout& layout,
+    const booter_signature& signature,
+    dma::buffer& copy_out
+) {
+    return copy_booter(device, booter_unload, "booter unload", header, layout, signature, copy_out);
 }
 
 int32_t gsp_boot_memory::copy_boot_files(
@@ -422,25 +470,7 @@ int32_t gsp_boot_memory::copy_booter_load(
         return ERR_BAD_STATE;
     }
 
-    int32_t rc = allocate_for_card(
-        device,
-        header.program_size,
-        dma::caching::uncached,
-        "booter load's program",
-        m_booter_load
-    );
-    if (rc != OK) {
-        return rc;
-    }
-
-    uint8_t* image = reinterpret_cast<uint8_t*>(m_booter_load.virt);
-    rc = write_booter_load_image(booter_load, header, layout, signature, image);
-    if (rc != OK) {
-        // The card was never given the copy's address, so nothing reads it
-        RUN_ELEVATED(dma::free_pages(m_booter_load));
-    }
-
-    return rc;
+    return copy_booter(device, booter_load, "booter load", header, layout, signature, m_booter_load);
 }
 
 int32_t gsp_boot_memory::allocate_message_queues(const dma::device_profile& device) {

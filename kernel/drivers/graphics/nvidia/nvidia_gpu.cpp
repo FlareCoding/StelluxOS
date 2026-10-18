@@ -323,6 +323,26 @@ int32_t nvidia_gpu_driver::attach() {
     dma::device_profile card_profile = dma::uncached_profile(chip->dma_address_bits);
     RUN_ELEVATED(card_profile = dma_profile(chip->dma_address_bits));
 
+    // Copied before FWSEC sets up protected memory, so every detach after FWSEC has booter unload to take it down
+    rc = nvidia::copy_booter_unload(
+        card_profile,
+        files.booter_unload,
+        booter_unload_header,
+        booter_unload_parts,
+        booter_unload_signature,
+        m_booter_unload_copy
+    );
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    m_booter_unload_parts = booter_unload_parts;
+
+    log::info(
+        "nvidia: booter unload's program copied with its chosen signature to physical address 0x%lX",
+        m_booter_unload_copy.phys
+    );
+
     size_t image_pages = pmm::page_align_up(fwsec.size) / pmm::PAGE_SIZE;
     dma::buffer fwsec_image = {};
     RUN_ELEVATED(
@@ -518,7 +538,7 @@ int32_t nvidia_gpu_driver::attach() {
     }
 
     uint64_t metadata_address = m_boot_memory.protected_metadata_address();
-    nvidia::falcon_program booter_load = nvidia::describe_booter_load_program(
+    nvidia::falcon_program booter_load = nvidia::describe_booter_program(
         booter_load_parts,
         m_boot_memory.booter_load_address(),
         card_profile.coherent()
@@ -600,7 +620,7 @@ int32_t nvidia_gpu_driver::attach() {
     log::info("nvidia: the GSP's firmware sent its ready message with %u payload bytes", ready.payload_bytes);
     log::info(
         "nvidia: bring-up stops at the firmware's ready message, leaving detach to unload the firmware, stop SEC2 and "
-        "the GSP and run FWSEC's SB command"
+        "the GSP, run FWSEC's SB command and run booter unload"
     );
 
     return DECLINED;
@@ -615,6 +635,10 @@ int32_t nvidia_gpu_driver::detach() {
         m_must_run_fwsec_sb = false;
     }
 
+    // Only booter unload's run hands SEC2 the copy, and `take_down_protected_memory` empties `m_booter_unload_copy`
+    // when SEC2 may still read it
+    RUN_ELEVATED(dma::free_pages(m_booter_unload_copy));
+
     m_queues = nvidia::message_queues();
     m_sequencer = {};
 
@@ -626,8 +650,8 @@ int32_t nvidia_gpu_driver::detach() {
     return rc;
 }
 
-// Unloads the firmware, stops SEC2 and the GSP, writes BAR1's block register back and runs FWSEC's SB command, each
-// as far as bring-up got. NVIDIA's driver resets SEC2 only after the SB command, to run a booter unload never run here.
+// Unloads the firmware, stops SEC2 and the GSP, writes BAR1's block register back, then runs FWSEC's SB command and
+// booter unload, each as far as bring-up got. NVIDIA's driver resets SEC2 only for booter unload, after the SB command.
 int32_t nvidia_gpu_driver::tear_down_gsp() {
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
 
@@ -658,7 +682,7 @@ int32_t nvidia_gpu_driver::tear_down_gsp() {
     if (rc != nvidia::OK) {
         log::error(
             "nvidia: a falcon that detach resets was not confirmed stopped, so all of the GSP's boot memory stays "
-            "allocated for good"
+            "allocated for good, and neither FWSEC's SB command nor booter unload runs"
         );
         return rc;
     }
@@ -669,7 +693,39 @@ int32_t nvidia_gpu_driver::tear_down_gsp() {
         run_fwsec_sb(regs);
     }
 
-    return unload_rc;
+    int32_t take_down_rc = take_down_protected_memory(regs);
+
+    if (unload_rc != nvidia::OK) {
+        return unload_rc;
+    }
+
+    return take_down_rc;
+}
+
+// NVIDIA's driver runs booter unload after the SB command whatever its result, and fails its unload when booter unload
+// fails. Booter unload runs only once FWSEC has run, which bring-up starts with bus mastering on.
+int32_t nvidia_gpu_driver::take_down_protected_memory(nvidia::registers& regs) {
+    nvidia::falcon_program booter_unload = nvidia::describe_booter_program(
+        m_booter_unload_parts,
+        m_booter_unload_copy.phys,
+        false
+    );
+
+    bool sec2_may_read = false;
+    int32_t rc = nvidia::take_down_protected_memory(
+        regs,
+        booter_unload,
+        m_boot0,
+        nvidia::FALCON_READY_TIMEOUT_NS,
+        nvidia::FALCON_TIMEOUT_NS,
+        sec2_may_read
+    );
+    if (sec2_may_read) {
+        m_booter_unload_copy = {};
+        log::error("nvidia: booter unload's copy stays allocated for good, since SEC2's falcon may still read it");
+    }
+
+    return rc;
 }
 
 // The GSP's stop has just reset the falcon FWSEC runs on, and the card's bus mastering stays on from bring-up.
