@@ -179,6 +179,20 @@ int32_t lay_out_protected_memory(
  */
 int32_t check_frts_result(const registers& regs, const frts_region& region);
 
+/**
+ * @brief Check that the registers show no failure of FWSEC's SB command, as
+ * NVIDIA's driver checks once the GSP's falcon has halted on FWSEC, reading
+ * each register once. The boot firmware's progress register must be open to
+ * reading and read complete, as `wait_for_boot_firmware` also requires, and
+ * the error code FWSEC records for the SB command must be 0.
+ * @param regs A view of BAR0. `run_falcon_program` must have returned `OK` for
+ * FWSEC's copy as `prepare_fwsec_sb` patched it.
+ * @return `OK`, or `ERR_BAD_STATE` when the progress register is
+ * read-protected or does not read complete, or FWSEC's SB error code is not 0.
+ * The cause is logged.
+ */
+int32_t check_fwsec_sb_result(const registers& regs);
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_PROTECTED_MEMORY_H

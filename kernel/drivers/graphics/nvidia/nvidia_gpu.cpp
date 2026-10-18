@@ -334,6 +334,12 @@ int32_t nvidia_gpu_driver::attach() {
 
     RUN_ELEVATED(dma::free_pages(fwsec_image));
 
+    // Once the falcon has halted on FWSEC, `detach()` runs FWSEC's SB command after the stops
+    m_must_run_fwsec_sb = true;
+    m_fwsec = fwsec;
+    m_fwsec_signature = signature;
+    m_chip = chip;
+
     rc = nvidia::check_frts_result(regs, frts);
     if (rc != nvidia::OK) {
         return rc;
@@ -549,8 +555,8 @@ int32_t nvidia_gpu_driver::attach() {
 
     log::info("nvidia: the GSP's firmware sent its ready message with %u payload bytes", ready.payload_bytes);
     log::info(
-        "nvidia: bring-up stops at the firmware's ready message, leaving detach to unload the firmware and stop SEC2 "
-        "and the GSP"
+        "nvidia: bring-up stops at the firmware's ready message, leaving detach to unload the firmware, stop SEC2 and "
+        "the GSP and run FWSEC's SB command"
     );
 
     return DECLINED;
@@ -559,9 +565,10 @@ int32_t nvidia_gpu_driver::attach() {
 int32_t nvidia_gpu_driver::detach() {
     int32_t stop_rc = nvidia::OK;
     if (m_must_stop_gsp) {
-        stop_rc = stop_falcons_and_free_boot_memory();
+        stop_rc = tear_down_gsp();
         m_must_stop_gsp = false;
         m_must_stop_sec2 = false;
+        m_must_run_fwsec_sb = false;
     }
 
     m_queues = nvidia::message_queues();
@@ -575,9 +582,9 @@ int32_t nvidia_gpu_driver::detach() {
     return rc;
 }
 
-// After the GSP's reset, NVIDIA's driver also puts back the programs the VBIOS runs before an operating system loads,
-// and its booter unload takes protected memory down. This driver resets SEC2 and the GSP without these steps.
-int32_t nvidia_gpu_driver::stop_falcons_and_free_boot_memory() {
+// Unloads the firmware, stops SEC2 and the GSP, writes BAR1's block register back and runs FWSEC's SB command, each
+// as far as bring-up got. NVIDIA's driver resets SEC2 only after the SB command, to run a booter unload never run here.
+int32_t nvidia_gpu_driver::tear_down_gsp() {
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
 
     int32_t unload_rc = nvidia::OK;
@@ -614,7 +621,44 @@ int32_t nvidia_gpu_driver::stop_falcons_and_free_boot_memory() {
 
     log::info("nvidia: each falcon that detach resets reads as stopped, and all of the GSP's boot memory is freed");
 
+    if (m_must_run_fwsec_sb) {
+        run_fwsec_sb(regs);
+    }
+
     return unload_rc;
+}
+
+// The GSP's stop has just reset the falcon FWSEC runs on, and the card's bus mastering stays on from bring-up.
+// NVIDIA's driver logs and asserts on a failure of the SB command without failing the unload.
+void nvidia_gpu_driver::run_fwsec_sb(nvidia::registers& regs) {
+    nvidia::registers rom(m_bar_mappings[REGISTERS_BAR].va + nvidia::ROM_WINDOW);
+
+    // The copy is uncached, which is correct for the card whether or not it is coherent
+    dma::device_profile card_profile = dma::uncached_profile(m_chip->dma_address_bits);
+    dma::buffer kept_copy = {};
+    int32_t rc = nvidia::run_fwsec_sb(
+        regs,
+        rom,
+        m_fwsec,
+        m_fwsec_signature,
+        card_profile,
+        nvidia::FALCON_TIMEOUT_NS,
+        kept_copy
+    );
+    if (rc == nvidia::ERR_TIMEOUT) {
+        log::error(
+            "nvidia: FWSEC's copy for the SB command stays allocated for good, since the GSP's falcon may still read it"
+        );
+    }
+
+    if (rc != nvidia::OK) {
+        return;
+    }
+
+    log::info(
+        "nvidia: the GSP's falcon halted on FWSEC's SB command, with the boot firmware's progress reading complete and "
+        "the SB error code reading 0"
+    );
 }
 
 // The resets that follow run whatever this returns, as NVIDIA's driver resets the GSP whatever the unload's result
