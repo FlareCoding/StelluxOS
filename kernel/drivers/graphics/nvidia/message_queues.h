@@ -99,9 +99,9 @@ struct received_message {
 class message_queues {
 public:
     /**
-     * @brief An object holding no queues, for a driver to keep until it lays
-     * the memory out. No call may be made on it until an object made by the
-     * constructor below is assigned to it.
+     * @brief An object holding no queues, for an owner such as `gsp` to keep
+     * until it lays the memory out. No call may be made on it until an object
+     * made by the constructor below is assigned to it.
      */
     message_queues() = default;
 

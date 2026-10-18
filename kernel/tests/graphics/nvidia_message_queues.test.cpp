@@ -7,6 +7,7 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
+#include "drivers/graphics/nvidia/gsp.h"
 #include "drivers/graphics/nvidia/gsp_unload.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -31,6 +32,7 @@ using drivers::nvidia::RECEIVE_TIMEOUT_NS;
 using drivers::nvidia::RECEIVE_TRIES;
 using drivers::nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS;
 using drivers::nvidia::cpu_sequencer_context;
+using drivers::nvidia::gsp;
 using drivers::nvidia::link_status_queue_within;
 using drivers::nvidia::message_queues;
 using drivers::nvidia::receive_awaited;
@@ -1127,14 +1129,14 @@ static int32_t await_ready(
 }
 
 // Where the backend below drops the polled bit, and the text it keeps
-static awaited_test_bar0* s_dropping_bar0     = nullptr;
-static char               s_logged_text[4096] = {};
-static uint32_t           s_logged_bytes      = 0;
+static registers* s_dropping_registers = nullptr;
+static char       s_logged_text[4096]  = {};
+static uint32_t   s_logged_bytes       = 0;
 
 // Drops the polled bit at any log line, as the firmware holds the bit for less time than a log line can take, and
 // keeps the line's text
 static void drop_polled_bit_at_any_line(const char* data, size_t len) {
-    s_dropping_bar0->write(POLLED_REGISTER, 0);
+    s_dropping_registers->write(POLLED_REGISTER, 0);
     for (size_t i = 0; i < len && s_logged_bytes < sizeof(s_logged_text); i++) {
         s_logged_text[s_logged_bytes++] = data[i];
     }
@@ -1191,7 +1193,7 @@ TEST(nvidia_message_queues, receive_awaited_runs_the_sequencer_before_any_log_li
     ASSERT_EQ(queues.link_status_queue(), OK);
     bar0.write(POLLED_REGISTER, POLLED_BIT);
 
-    s_dropping_bar0 = &bar0;
+    s_dropping_registers = &bar0.regs;
     s_logged_bytes = 0;
     log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
     int32_t rc = await_ready(queues, bar0, out, buffer, clock::now_ns() + LONG_TIMEOUT_NS);
@@ -1345,7 +1347,7 @@ TEST(nvidia_message_queues, receive_awaited_logs_the_first_passed_messages_and_c
     memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, passed_count + 1);
     ASSERT_EQ(queues.link_status_queue(), OK);
 
-    s_dropping_bar0 = &bar0;
+    s_dropping_registers = &bar0.regs;
     s_logged_bytes = 0;
     log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
     int32_t rc = await_ready(queues, bar0, out, buffer, clock::now_ns() + LONG_TIMEOUT_NS);
@@ -1379,7 +1381,7 @@ TEST(nvidia_message_queues, timed_out_wait_logs_the_passed_message_then_its_time
     memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
     ASSERT_EQ(queues.link_status_queue(), OK);
 
-    s_dropping_bar0 = &bar0;
+    s_dropping_registers = &bar0.regs;
     s_logged_bytes = 0;
     log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
     int32_t rc = await_ready(queues, bar0, out, buffer, clock::now_ns() + SHORT_TIMEOUT_NS);
@@ -1403,13 +1405,13 @@ static constexpr uint32_t GSP_FALCON_MAILBOX0 = 0x110040;
 static constexpr uint32_t PROCESSOR_SUSPENDED = 0x80000000;
 
 // A zeroed fake of BAR0, all 16 MiB of it, so a register misplaced in another engine's range fails a test
-struct unload_test_bar0 {
+struct request_test_bar0 {
     static constexpr uint32_t BYTES = 0x1000000;
 
     uint8_t*  bytes = static_cast<uint8_t*>(heap::uzalloc(BYTES));
     registers regs{reinterpret_cast<uintptr_t>(bytes)};
 
-    ~unload_test_bar0() { heap::ufree(bytes); }
+    ~request_test_bar0() { heap::ufree(bytes); }
 
     uint32_t read(uint32_t offset) const { return *reinterpret_cast<uint32_t*>(bytes + offset); }
     void write(uint32_t offset, uint32_t value) { *reinterpret_cast<uint32_t*>(bytes + offset) = value; }
@@ -1431,39 +1433,24 @@ static void store_unload_reply(
     message.store(memory, MOVED_HEADER, index);
 }
 
-// Unloads with a reply deadline `reply_timeout_ns` from now, the sequencer's waits bound by the long timeout
-static int32_t unload(
-    message_queues& queues,
-    unload_test_bar0& bar0,
-    uint64_t reply_timeout_ns,
-    uint64_t suspend_timeout_ns
-) {
-    uint64_t now = clock::now_ns();
+// Starts `conversation` on the fake memory and the fake BAR0, with a sequencer context that reaches all of that BAR0
+static int32_t start_conversation(gsp& conversation, fake_queue_memory& memory, request_test_bar0& bar0) {
     cpu_sequencer_context context = {
-        .register_bytes          = unload_test_bar0::BYTES,
+        .register_bytes          = request_test_bar0::BYTES,
         .boot0                   = 0,
         .libos_arguments_address = 0,
         .app_version             = 0,
         .ready_timeout_ns        = 0,
-        .deadline_ns             = now + LONG_TIMEOUT_NS,
+        .deadline_ns             = 0,
     };
 
-    uint8_t buffer[AWAITED_BUFFER_BYTES];
-    return unload_gsp_firmware(
-        queues,
-        bar0.regs,
-        context,
-        buffer,
-        sizeof(buffer),
-        now + reply_timeout_ns,
-        suspend_timeout_ns
-    );
+    return conversation.start(bar0.regs, memory.bytes, DMA_ADDRESS, context);
 }
 
 // Links the moved status queue holding `reply_count` replies, the first with `first_result` and the rest with 0
 static void link_unload_replies(
     fake_queue_memory& memory,
-    message_queues& queues,
+    gsp& conversation,
     status_test_message& message,
     uint32_t reply_count,
     uint32_t first_result
@@ -1474,7 +1461,220 @@ static void link_unload_replies(
     }
 
     memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, reply_count);
-    ASSERT_EQ(queues.link_status_queue(), OK);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+}
+
+// Only the firmware's success status, 0, translates to OK, and each nonzero status tried gives ERR_FIRMWARE, from
+// the lowest bit set alone to the highest
+TEST(nvidia_message_queues, only_the_firmwares_success_status_translates_to_ok) {
+    EXPECT_EQ(gsp::to_error(0), OK);
+    EXPECT_EQ(gsp::to_error(1), ERR_FIRMWARE);
+    EXPECT_EQ(gsp::to_error(0x100), ERR_FIRMWARE);
+    EXPECT_EQ(gsp::to_error(0x10000), ERR_FIRMWARE);
+    EXPECT_EQ(gsp::to_error(0x80000000), ERR_FIRMWARE);
+    EXPECT_EQ(gsp::to_error(RESULT), ERR_FIRMWARE);
+}
+
+// `start` lays the queues out at the card address it is given, which the page table lists for the first page
+TEST(nvidia_message_queues, start_lays_the_queues_out_at_the_card_address_given) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    registers no_registers(0);
+    cpu_sequencer_context unused_sequencer_context = {};
+    gsp conversation;
+
+    ASSERT_EQ(conversation.start(no_registers, memory.bytes, DMA_ADDRESS, unused_sequencer_context), OK);
+
+    EXPECT_EQ(*reinterpret_cast<uint64_t*>(memory.bytes), DMA_ADDRESS);
+}
+
+// The link waits out its own timeout while the status queue's header stays unwritten, and the wait for a message the
+// firmware sends unasked waits out its own on a queue that stays empty
+TEST(nvidia_message_queues, link_and_await_wait_out_their_timeouts) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t link_elapsed = clock::now_ns() - start;
+    EXPECT_GE(link_elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(link_elapsed, WAIT_TIME_LIMIT_NS);
+
+    MOVED_HEADER.write_to(memory);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    start = clock::now_ns();
+    EXPECT_EQ(conversation.await(FUNCTION_GSP_INIT_DONE, out, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t await_elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(await_elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(await_elapsed, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(out.function, STALE_WORD);
+}
+
+// Links the moved status queue holding a sequencer in element 0 and, in element 1, a message of `function` whose
+// payload holds the bytes of `payload`
+static void link_sequencer_then_message(
+    fake_queue_memory& memory,
+    gsp& conversation,
+    status_test_message& message,
+    const poll_then_write_sequencer& sequencer,
+    uint32_t function,
+    const queue_test_payload& payload
+) {
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_RUN_CPU_SEQUENCER, &sequencer, sizeof(sequencer));
+    store_function_message(memory, message, 1, function, payload.bytes, payload.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+}
+
+// A sequencer stored ahead of a request's reply runs before any log line, as the firmware holds the bit the sequencer's
+// first poll waits for only briefly after sending the sequencer, and the request then takes its reply
+TEST(nvidia_message_queues, request_runs_a_sequencer_ahead_of_its_reply_before_any_log_line) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload arguments(24);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(arguments.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    poll_then_write_sequencer sequencer;
+    link_sequencer_then_message(memory, conversation, message, sequencer, FUNCTION, arguments);
+    bar0.write(POLLED_REGISTER, POLLED_BIT);
+    bar0.write(GSP_QUEUE_HEAD0, STALE_WORD);
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t rc = conversation.request(FUNCTION, arguments.bytes, arguments.count, LONG_TIMEOUT_NS);
+    log::set_backend(nullptr);
+
+    const uint8_t* request = memory.element(0);
+    EXPECT_EQ(rc, OK);
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), WRITTEN_VALUE);
+    EXPECT_EQ(field_at(request, MESSAGE_FUNCTION), FUNCTION);
+    EXPECT_EQ(string::memcmp(request + MESSAGE_PAYLOAD, arguments.bytes, arguments.count), 0);
+    EXPECT_EQ(bar0.read(GSP_QUEUE_HEAD0), 0u);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 2u);
+}
+
+// A poll mask over every bit of the doorbell, so only the request's write of 0 to it meets the poll
+static constexpr uint32_t WHOLE_REGISTER_MASK = 0xFFFFFFFF;
+
+// Before its wait begins, a request tells the firmware that the request waits, so a sequencer stored ahead of the reply
+// that polls the doorbell for 0 finds it written
+TEST(nvidia_message_queues, request_tells_the_firmware_before_its_wait) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload arguments(24);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(arguments.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    poll_then_write_sequencer sequencer;
+    sequencer.poll_register = GSP_QUEUE_HEAD0;
+    sequencer.poll_mask = WHOLE_REGISTER_MASK;
+    sequencer.poll_value = 0;
+    link_sequencer_then_message(memory, conversation, message, sequencer, FUNCTION, arguments);
+    bar0.write(GSP_QUEUE_HEAD0, STALE_WORD);
+
+    EXPECT_EQ(conversation.request(FUNCTION, arguments.bytes, arguments.count, LONG_TIMEOUT_NS), OK);
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), WRITTEN_VALUE);
+}
+
+// A request the full command queue has no room for fails at once with the queue's error, and the firmware is never
+// told that the request waits
+TEST(nvidia_message_queues, request_to_a_full_queue_fails_before_telling_the_firmware) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    memory.write(MOVED_HEADER.firmware_read_pointer(), 1);
+    bar0.write(GSP_QUEUE_HEAD0, STALE_WORD);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(conversation.request(FUNCTION, nullptr, 0, LONG_TIMEOUT_NS), ERR_QUEUE_FULL);
+    EXPECT_LT(clock::now_ns() - start, WAIT_TIME_LIMIT_NS);
+
+    EXPECT_EQ(bar0.read(GSP_QUEUE_HEAD0), STALE_WORD);
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 0u);
+}
+
+// A poll timeout long enough for the test to tell a poll that runs to it from one that ends at its first check
+static constexpr uint32_t UNMET_POLL_TIMEOUT_US = 50000;
+
+// A request gives the sequencer a deadline of its own rather than the reply's, so a poll that is never met runs to its
+// own timeout past the 1 ms reply deadline, and the reply, read once more after that deadline, is still taken
+TEST(nvidia_message_queues, request_gives_the_sequencer_a_deadline_of_its_own) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload arguments(24);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(arguments.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    poll_then_write_sequencer sequencer;
+    sequencer.poll_timeout_us = UNMET_POLL_TIMEOUT_US;
+    link_sequencer_then_message(memory, conversation, message, sequencer, FUNCTION, arguments);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(conversation.request(FUNCTION, arguments.bytes, arguments.count, SHORT_TIMEOUT_NS), OK);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    uint64_t poll_timeout_ns = UNMET_POLL_TIMEOUT_US * 1000ULL;
+    EXPECT_GE(elapsed, poll_timeout_ns);
+    EXPECT_LT(elapsed, poll_timeout_ns + WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), 0u);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 2u);
+}
+
+// The wait for a message the firmware sends unasked also gives the sequencer a deadline of its own rather than the
+// wait's, so a poll that is never met runs to its own timeout past the 1 ms wait, and the ready message is still taken
+TEST(nvidia_message_queues, await_gives_the_sequencer_a_deadline_of_its_own) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload ready_payload(16);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(ready_payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    poll_then_write_sequencer sequencer;
+    sequencer.poll_timeout_us = UNMET_POLL_TIMEOUT_US;
+    link_sequencer_then_message(memory, conversation, message, sequencer, NVIDIA_GSP_INIT_DONE, ready_payload);
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(conversation.await(FUNCTION_GSP_INIT_DONE, out, SHORT_TIMEOUT_NS), OK);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    uint64_t poll_timeout_ns = UNMET_POLL_TIMEOUT_US * 1000ULL;
+    EXPECT_GE(elapsed, poll_timeout_ns);
+    EXPECT_LT(elapsed, poll_timeout_ns + WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), 0u);
+    EXPECT_EQ(out.function, NVIDIA_GSP_INIT_DONE);
+    EXPECT_EQ(out.payload_bytes, ready_payload.count);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 2u);
 }
 
 // The request goes out with NVIDIA's number and 8 bytes of arguments, all 0, the doorbell is written, and the wait
@@ -1482,23 +1682,24 @@ static void link_unload_replies(
 TEST(nvidia_message_queues, unload_is_requested_and_its_reply_and_the_suspend_awaited) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
-    message_queues queues(memory.bytes, DMA_ADDRESS);
-    unload_test_bar0 bar0;
+    request_test_bar0 bar0;
+    gsp conversation;
     queue_test_payload passed_payload(40);
     status_test_message message(1);
     ASSERT_NOT_NULL(bar0.bytes);
     ASSERT_NOT_NULL(passed_payload.bytes);
     ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
     MOVED_HEADER.write_to(memory);
     store_function_message(memory, message, 0, FUNCTION, passed_payload.bytes, passed_payload.count);
     store_unload_reply(memory, message, 1, 0);
     memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
-    ASSERT_EQ(queues.link_status_queue(), OK);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
     bar0.write(GSP_QUEUE_HEAD0, STALE_WORD);
     bar0.write(GSP_FALCON_MAILBOX0, PROCESSOR_SUSPENDED);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(unload(queues, bar0, LONG_TIMEOUT_NS, LONG_TIMEOUT_NS), OK);
+    EXPECT_EQ(unload_gsp_firmware(conversation, bar0.regs, LONG_TIMEOUT_NS, LONG_TIMEOUT_NS), OK);
     EXPECT_LT(clock::now_ns() - start, WAIT_TIME_LIMIT_NS);
 
     const uint8_t* request = memory.element(0);
@@ -1520,46 +1721,48 @@ TEST(nvidia_message_queues, unload_is_requested_and_its_reply_and_the_suspend_aw
 TEST(nvidia_message_queues, unload_waits_for_the_suspend_whatever_the_reply) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
-    message_queues queues(memory.bytes, DMA_ADDRESS);
-    unload_test_bar0 bar0;
+    request_test_bar0 bar0;
+    gsp conversation;
     status_test_message message(1);
     ASSERT_NOT_NULL(bar0.bytes);
     ASSERT_NOT_NULL(message.bytes);
-    link_unload_replies(memory, queues, message, 2, RESULT);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    link_unload_replies(memory, conversation, message, 2, RESULT);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(unload(queues, bar0, LONG_TIMEOUT_NS, SHORT_TIMEOUT_NS), ERR_FIRMWARE);
+    EXPECT_EQ(unload_gsp_firmware(conversation, bar0.regs, LONG_TIMEOUT_NS, SHORT_TIMEOUT_NS), ERR_FIRMWARE);
     uint64_t refused_elapsed = clock::now_ns() - start;
     EXPECT_GE(refused_elapsed, SHORT_TIMEOUT_NS);
     EXPECT_LT(refused_elapsed, WAIT_TIME_LIMIT_NS);
 
     start = clock::now_ns();
-    EXPECT_EQ(unload(queues, bar0, LONG_TIMEOUT_NS, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_EQ(unload_gsp_firmware(conversation, bar0.regs, LONG_TIMEOUT_NS, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
     EXPECT_LT(clock::now_ns() - start, WAIT_TIME_LIMIT_NS);
     EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 2u);
 }
 
-// With no reply by the deadline the unload fails with the reply wait's timeout only after a suspend wait ten times
-// as long has run out, so a missing suspend wait shows, and a suspended processor does not hide the missing reply
+// With no reply by its deadline the unload fails with the reply wait's timeout only after a suspend wait ten times as
+// long has run out, and with the processor suspended the reply wait still takes its own timeout, not the suspend's
 TEST(nvidia_message_queues, unanswered_unload_still_waits_for_the_suspend) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
-    message_queues queues(memory.bytes, DMA_ADDRESS);
-    unload_test_bar0 bar0;
+    request_test_bar0 bar0;
+    gsp conversation;
     status_test_message message(1);
     ASSERT_NOT_NULL(bar0.bytes);
     ASSERT_NOT_NULL(message.bytes);
-    link_unload_replies(memory, queues, message, 0, 0);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    link_unload_replies(memory, conversation, message, 0, 0);
 
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(unload(queues, bar0, SHORT_TIMEOUT_NS, 10 * SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_EQ(unload_gsp_firmware(conversation, bar0.regs, SHORT_TIMEOUT_NS, 10 * SHORT_TIMEOUT_NS), ERR_TIMEOUT);
     uint64_t unanswered_elapsed = clock::now_ns() - start;
     EXPECT_GE(unanswered_elapsed, 11 * SHORT_TIMEOUT_NS);
     EXPECT_LT(unanswered_elapsed, WAIT_TIME_LIMIT_NS);
 
     bar0.write(GSP_FALCON_MAILBOX0, PROCESSOR_SUSPENDED);
     start = clock::now_ns();
-    EXPECT_EQ(unload(queues, bar0, SHORT_TIMEOUT_NS, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_EQ(unload_gsp_firmware(conversation, bar0.regs, SHORT_TIMEOUT_NS, LONG_TIMEOUT_NS), ERR_TIMEOUT);
     uint64_t suspended_elapsed = clock::now_ns() - start;
     EXPECT_GE(suspended_elapsed, SHORT_TIMEOUT_NS);
     EXPECT_LT(suspended_elapsed, WAIT_TIME_LIMIT_NS);

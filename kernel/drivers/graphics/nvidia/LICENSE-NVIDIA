@@ -288,10 +288,10 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     gsp_boot_memory.h, gsp_boot_memory.cpp and
     kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that, after
     each message, the firmware is told that the message waits, in
-    boot_messages.h, falcon.h, falcon.cpp, gsp_unload.h, gsp_unload.cpp,
-    nvidia_gpu.h and nvidia_gpu.cpp, that it is told by writing 0 to the queue
-    head register of the message's queue and that the driver's messages go
-    through the resource manager's queue, in falcon.h, falcon.cpp,
+    boot_messages.h, falcon.h, falcon.cpp, gsp.h, gsp.cpp, nvidia_gpu.h and
+    nvidia_gpu.cpp, that it is told by writing 0 to the queue head register of
+    the message's queue and that the driver's messages go through the resource
+    manager's queue, in falcon.h, falcon.cpp,
     kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that the
     GSP's falcon is reset as its firmware is unloaded, after a wait for the
@@ -323,10 +323,11 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     a message from the firmware, which polls the status queue until a deadline
     of its own (the default timeout and half as long again), judged by the time
     taken before each read, and ends once receiving a message fails, in
-    message_queues.h, message_queues.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the CPU
-    sequencer is a list of register, delay and falcon steps the firmware sends
-    for the driver to run, among them steps that reset the GSP's falcon and
+    message_queues.h, message_queues.cpp, gsp.h, gsp.cpp, nvidia_gpu.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    that the CPU sequencer is a list of register, delay and falcon steps the
+    firmware sends for the driver to run, in falcon.h, cpu_sequencer.h, gsp.h
+    and nvidia_gpu.h, that among them are steps that reset the GSP's falcon and
     then let its DMA engine run with no address space bound, start the falcon
     and wait for it to halt, in falcon.h, cpu_sequencer.h and nvidia_gpu.h, that
     the halt step waits with the default timeout, in falcon.h, cpu_sequencer.cpp
@@ -348,30 +349,31 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that the sequencer
     runs inside the wait for the firmware's messages, which takes the messages
     before it and counts the run against its deadline, in message_queues.h,
-    message_queues.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    message_queues.cpp, gsp.h, gsp.cpp, nvidia_gpu.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that the thread-state
-    budget is started again just before that wait, in cpu_sequencer.h,
-    nvidia_gpu.h and nvidia_gpu.cpp, that the handler of the firmware's event
-    messages runs the sequencer straight from the message carrying it, after an
-    info-level print, in cpu_sequencer.h, that a wait for one message hands
-    each other message it receives to that handler, in message_queues.h and
-    message_queues.cpp, that such a wait reads the GSP's log after each read of
-    the queue, checks the GSP's health whenever its reads stop, checks the GPU's
-    state on each turn that ends without the awaited message and reports a
-    timeout as Xid 119, in message_queues.h, that bring-up waits for the
-    firmware's ready message, whose result fails the boot when it is not NV_OK,
-    in nvidia.h, nvidia_gpu.h and nvidia_gpu.cpp, that the request to unload
-    asks for no power transition, no entry into GC6 and power level 0 and is
-    followed by the wait for the GSP to suspend whatever the request's result,
-    in gsp_unload.h, gsp_unload.cpp and
+    budget is started again just before the wait for the ready message, in
+    cpu_sequencer.h, gsp.h, gsp.cpp and nvidia_gpu.h, that the handler of the
+    firmware's event messages runs the sequencer straight from the message
+    carrying it, after an info-level print, in cpu_sequencer.h, that a wait for
+    one message hands each other message it receives to that handler, in
+    message_queues.h and message_queues.cpp, that such a wait reads the GSP's
+    log after each read of the queue, checks the GSP's health whenever its reads
+    stop, checks the GPU's state on each turn that ends without the awaited
+    message and reports a timeout as Xid 119, in message_queues.h, that bring-up
+    waits for the firmware's ready message, whose result fails the boot when it
+    is not NV_OK, in nvidia.h, gsp.h, nvidia_gpu.h and nvidia_gpu.cpp, that a
+    failed ready message's status is handed up whatever its value, in gsp.h,
+    that the request to unload asks for no power transition, no entry into GC6
+    and power level 0 and is followed by the wait for the GSP to suspend
+    whatever the request's result, in gsp_unload.h, gsp_unload.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that a request is
     skipped when the GSP has crashed or the GPU is in reset, lost, shut down,
-    below full power or without access to system memory and that the GSP's log
-    is written out before the GSP's reset, in gsp_unload.h, that the suspend
-    wait's result is dropped, in gsp_unload.h and nvidia_gpu.h, that the
-    thread-state budget is not started again before the request to unload, in
-    cpu_sequencer.h and gsp_unload.h, and that it is started again before the
-    GSP's reset at unload, in nvidia_gpu.h
+    below full power or without access to system memory, in gsp.h, that the
+    GSP's log is written out before the GSP's reset, in gsp_unload.h, that the
+    suspend wait's result is dropped, in gsp_unload.h and nvidia_gpu.h, that
+    the thread-state budget is not started again before a request, the request
+    to unload among them, in cpu_sequencer.h, gsp.h and gsp_unload.h, and that
+    it is started again before the GSP's reset at unload, in nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -792,8 +794,8 @@ src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga102.c
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that the wait for the
     memories is a condition wait, in falcon.h, that the ready wait is kept out
     of the thread-state budget while the waits for the memories and for the core
-    selection count against it, in cpu_sequencer.h and nvidia_gpu.h, and that
-    the wait for the memories takes the default timeout, in
+    selection count against it, in cpu_sequencer.h, gsp.h and nvidia_gpu.h, and
+    that the wait for the memories takes the default timeout, in
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -816,15 +818,16 @@ src/nvidia/src/kernel/gpu_mgr/gpu_mgr.c
 src/nvidia/src/kernel/gpu/gpu_timeout.c
     the rule that waits given the default timeout share one budget for a whole
     call of NVIDIA's driver while its thread-state timeout is on, and have their
-    own deadlines otherwise, in falcon.h, cpu_sequencer.h, nvidia_gpu.h and
-    nvidia_gpu.cpp, that a wait for a condition reads it once more after its
-    deadline passes, in falcon.h and falcon.cpp, that the budget lasts the
-    default timeout, in cpu_sequencer.h, nvidia_gpu.h and nvidia_gpu.cpp, that a
-    wait with a timeout of its own also ends once that budget is spent, unless
-    it passes the flag bypassing the budget, in cpu_sequencer.h and
-    nvidia_gpu.cpp, that a wait finding the budget spent times out at its first
-    check and that a timeout is padded by an OS tick, in cpu_sequencer.h, that a
-    timeout is given in microseconds, in cpu_sequencer.h, cpu_sequencer.cpp,
+    own deadlines otherwise, in falcon.h, cpu_sequencer.h, gsp.h, gsp.cpp,
+    nvidia_gpu.h and nvidia_gpu.cpp, that a wait for a condition reads it once
+    more after its deadline passes, in falcon.h and falcon.cpp, that the budget
+    lasts the default timeout, in cpu_sequencer.h, gsp.h, gsp.cpp and
+    nvidia_gpu.h, that a wait with a timeout of its own also ends once that
+    budget is spent, unless it passes the flag bypassing the budget, in
+    cpu_sequencer.h and gsp.h, that a wait finding the budget spent times out at
+    its first check and that a timeout is padded by an OS tick, in
+    cpu_sequencer.h, that a timeout is given in microseconds, in
+    cpu_sequencer.h, cpu_sequencer.cpp,
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that its
     nanoseconds are counted in 64 bits, in cpu_sequencer.cpp and
@@ -841,7 +844,7 @@ src/nvidia/inc/kernel/gpu/gpu_timeout.h
 
 src/nvidia/src/kernel/core/thread_state.c
     the rule that resetting a thread's timeout starts its budget again from the
-    time of the reset, in cpu_sequencer.h, nvidia_gpu.h and nvidia_gpu.cpp
+    time of the reset, in cpu_sequencer.h, gsp.h, gsp.cpp and nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/unix/src/os.c
@@ -1001,7 +1004,7 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     checksum and its last element copied whole, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the status queue
     linked once the firmware has written its header and retried within a
-    deadline, in message_queues.h, message_queues.cpp, nvidia_gpu.h,
+    deadline, in message_queues.h, message_queues.cpp, gsp.h, nvidia_gpu.h,
     nvidia_gpu.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
     that deadline of 4 s, in message_queues.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, a received message
@@ -1021,7 +1024,7 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and that a message
     waits up to 1 s for room for each of its elements in the command queue, in
-    gsp_unload.h
+    gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc-message-header.h
@@ -1033,8 +1036,9 @@ src/nvidia/generated/g_rpc-message-header.h
 src/nvidia/kernel/inc/vgpu/rpc_headers.h
     the RPC header's version, signature and pending result, in
     message_queues.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
-    and the reply's success value NV_OK, in nvidia.h, gsp_unload.h,
-    gsp_unload.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    the reply's success value NV_OK, in nvidia.h, gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that results below
+    0xFF000000 are NVIDIA's status codes, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2017-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/rmapi/rpc_common.c
@@ -1081,9 +1085,8 @@ src/common/sdk/nvidia/inc/nvstatus.h
 
 src/common/sdk/nvidia/inc/nvstatuscodes.h
     that NV_OK, the status for success, is 0, in falcon.h, falcon.cpp, nvidia.h,
-    gsp_unload.h, gsp_unload.cpp, nvidia_gpu.h, nvidia_gpu.cpp,
-    kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    gsp.h, gsp.cpp, nvidia_gpu.h, kernel/tests/graphics/nvidia_falcon.test.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/unix/src/registry.c
@@ -1094,15 +1097,20 @@ src/nvidia/arch/nvalloc/unix/src/registry.c
     SPDX-FileCopyrightText: Copyright (c) 1999-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/vgpu/nv/rpc.c
-    what NVIDIA's driver writes in each field of the system information,
-    and the rule that neither message waits for a reply, in
+    what NVIDIA's driver writes in each field of the system information, in
     boot_messages.h, boot_messages.cpp and
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that no
-    registry is sent when packing it returns a warning, in boot_messages.h,
-    and that the request to unload is sent with its caller's values and waits
-    for its reply, whose result fails the request when it is not NVIDIA's
-    success value, in nvidia.h, gsp_unload.h, gsp_unload.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the rule that neither
+    message waits for a reply, in boot_messages.h, boot_messages.cpp, gsp.h and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that no registry is
+    sent when packing it returns a warning, in boot_messages.h, that the request
+    to unload is sent with its caller's values, in gsp_unload.h, gsp_unload.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, that a request
+    waits for its reply (the next message carrying the request's function),
+    whose result fails the request when it is not NVIDIA's success value, in
+    nvidia.h, gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the reply's
+    status is then handed up as the request's when it lies below 0xFF000000, and
+    NV_ERR_GENERIC in its place otherwise, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
