@@ -309,14 +309,28 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     not passed, a store into the message's save area and a reset that takes no
     result, that the steps run in order and the first that fails ends the run,
     in cpu_sequencer.h, cpu_sequencer.cpp and
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that a sequencer that
-    fails is logged and the wait for messages goes on, that the sequencer runs
-    inside the wait for the firmware's messages, which takes the messages before
-    it and counts the run against its deadline, in nvidia_gpu.h and
-    nvidia_gpu.cpp, that the thread-state budget is started again just before
-    that wait, in cpu_sequencer.h, nvidia_gpu.h and nvidia_gpu.cpp, and that the
-    handler of the firmware's event messages runs the sequencer straight from
-    the message carrying it, after an info-level print, in cpu_sequencer.h
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that the sequencer's
+    buffer holds more words than its steps take, what its poll and write steps
+    do and that the first step that fails ends the run, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a sequencer that
+    fails is logged and the wait for messages goes on, in message_queues.h,
+    message_queues.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the sequencer
+    runs inside the wait for the firmware's messages, which takes the messages
+    before it and counts the run against its deadline, in message_queues.h,
+    message_queues.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the thread-state
+    budget is started again just before that wait, in cpu_sequencer.h,
+    nvidia_gpu.h and nvidia_gpu.cpp, that the handler of the firmware's event
+    messages runs the sequencer straight from the message carrying it, after an
+    info-level print, in cpu_sequencer.h, that a wait for one message hands
+    each other message it receives to that handler, in message_queues.h and
+    message_queues.cpp, that such a wait reads the GSP's log after each read of
+    the queue, checks the GSP's health whenever its reads stop, checks the GPU's
+    state on each turn that ends without the awaited message and reports a
+    timeout as Xid 119, in message_queues.h, and that bring-up waits for the
+    firmware's ready message, whose result fails the boot when it is not NV_OK,
+    in nvidia.h, nvidia_gpu.h and nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -591,13 +605,14 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
     RISC-V core then reads as running, in falcon.h, falcon.cpp, nvidia_gpu.h,
     nvidia_gpu.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that the
     status queue is linked once the core reads as running, in
-    message_queues.h, nvidia_gpu.h and nvidia_gpu.cpp, that the CPU
-    sequencer's resume resets the GSP into its RISC-V core, writes the address
-    of LibOS's arguments, starts SEC2's falcon with no reset, waits with the
-    default timeout for the boot stage 3 handoff, fails unless the SEC2
-    falcon's first mailbox then reads NV_OK, gives the GSP falcon's OS
-    register the app version and fails unless the RISC-V core reads as
-    running, in falcon.h, falcon.cpp, cpu_sequencer.h and
+    message_queues.h, nvidia_gpu.h and nvidia_gpu.cpp, that the firmware's
+    ready message is awaited right after that link, in nvidia_gpu.h and
+    nvidia_gpu.cpp, that the CPU sequencer's resume resets the GSP into its
+    RISC-V core, writes the address of LibOS's arguments, starts SEC2's falcon
+    with no reset, waits with the default timeout for the boot stage 3 handoff,
+    fails unless the SEC2 falcon's first mailbox then reads NV_OK, gives the GSP
+    falcon's OS register the app version and fails unless the RISC-V core reads
+    as running, in falcon.h, falcon.cpp, cpu_sequencer.h and
     kernel/tests/graphics/nvidia_falcon.test.cpp, that a CPU sequencer step of
     an opcode the chip's handler lacks fails, in cpu_sequencer.h,
     cpu_sequencer.cpp and kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp,
@@ -721,8 +736,9 @@ src/nvidia/src/kernel/gpu/gpu_timeout.c
     it passes the flag bypassing the budget, in cpu_sequencer.h and
     nvidia_gpu.cpp, that a wait finding the budget spent times out at its first
     check and that a timeout is padded by an OS tick, in cpu_sequencer.h, that a
-    timeout is given in microseconds, in cpu_sequencer.h, cpu_sequencer.cpp and
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, and that its
+    timeout is given in microseconds, in cpu_sequencer.h, cpu_sequencer.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that its
     nanoseconds are counted in 64 bits, in cpu_sequencer.cpp and
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -965,7 +981,8 @@ src/common/sdk/nvidia/inc/nvstatus.h
     SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/nvstatuscodes.h
-    that NV_OK, the status for success, is 0, in falcon.h, falcon.cpp and
+    that NV_OK, the status for success, is 0, in falcon.h, falcon.cpp, nvidia.h,
+    nvidia_gpu.h, nvidia_gpu.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -986,24 +1003,30 @@ src/nvidia/kernel/vgpu/nv/rpc.c
 
 src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
     the two messages' function numbers, in boot_messages.cpp and
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the CPU
-    sequencer's function number, in cpu_sequencer.h and
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the CPU sequencer's
+    function number, in cpu_sequencer.h,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the ready message's
+    function number, in message_queues.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and its name
+    GSP_INIT_DONE, in nvidia_gpu.h
     It carries no notice of its own and is covered by the package's COPYING,
     which gives the notice below and this copyright line:
     Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/common/inc/rmgspseq.h
     the CPU sequencer's opcodes, the words of arguments each takes and their
-    order, and the save area's 8 words, in cpu_sequencer.h, cpu_sequencer.cpp
-    and kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    order, and the save area's 8 words, in cpu_sequencer.h, cpu_sequencer.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc-structures.h
     the CPU sequencer's payload, which gives the words the firmware's buffer
     holds, the words its steps take and the save area before the steps, in
-    cpu_sequencer.h, cpu_sequencer.cpp and
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    cpu_sequencer.h, cpu_sequencer.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_os_nvoc.h
