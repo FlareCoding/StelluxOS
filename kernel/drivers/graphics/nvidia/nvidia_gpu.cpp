@@ -515,7 +515,7 @@ int32_t nvidia_gpu_driver::attach() {
     uint64_t wait_start = clock::now_ns();
     uint64_t deadline = wait_start + nvidia::RECEIVE_TIMEOUT_NS;
     nvidia::received_message message = {};
-    do {
+    while (true) {
         rc = nvidia::receive_within(
             queues,
             message,
@@ -528,13 +528,18 @@ int32_t nvidia_gpu_driver::attach() {
             return rc;
         }
 
+        // The sequencer's message is not logged, as a log line can outlast the bit the run's first poll waits for
+        if (message.function == nvidia::FUNCTION_RUN_CPU_SEQUENCER) {
+            break;
+        }
+
         log::info(
             "nvidia: the GSP's firmware sent function 0x%X with result 0x%X and %u payload bytes",
             message.function,
             message.result,
             message.payload_bytes
         );
-    } while (message.function != nvidia::FUNCTION_RUN_CPU_SEQUENCER);
+    }
 
     nvidia::cpu_sequencer_context sequencer = {
         .register_bytes          = registers_bytes,

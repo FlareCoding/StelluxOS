@@ -33,6 +33,14 @@ struct cpu_sequencer_context {
  * halt, and have SEC2 resume the GSP's firmware as `resume_gsp_firmware`
  * does. The steps run in order, and the first that fails or is refused ends
  * the run, as in NVIDIA's driver.
+ * The steps the firmware sends while it boots open with a poll for a bit it
+ * sets in the GSP falcon's first mailbox about 0.4 ms after the message
+ * arrives and holds for only about 10 ms, so the caller must run the
+ * sequencer at once, doing nothing first that can wait on another CPU or a
+ * device, such as writing a log line. A poll that starts too late finds the
+ * bit gone and times out. NVIDIA's driver runs the sequencer straight from
+ * the handler of the message that carries it, after a print at info level
+ * that this driver leaves out.
  * Two refusals and one ending are this driver's own. A payload too short for
  * its 40-byte header or for the words its steps take is refused, since the
  * bytes past it are not the message's, where NVIDIA's driver reads its copy
@@ -72,7 +80,8 @@ struct cpu_sequencer_context {
  * register offset as above, the steps before it having run. Otherwise the
  * error of the first step that fails: `ERR_TIMEOUT` from a poll, the reset,
  * the halt wait or the resume, or `ERR_BAD_STATE` from the resume. Every
- * refusal and failure is logged.
+ * refusal and failure is logged, and a run that returns `OK` logs how many
+ * words its steps took and how many steps of each opcode ran.
  */
 int32_t run_cpu_sequencer(
     registers& regs,

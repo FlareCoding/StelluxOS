@@ -313,8 +313,10 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     fails is logged and the wait for messages goes on, that the sequencer runs
     inside the wait for the firmware's messages, which takes the messages before
     it and counts the run against its deadline, in nvidia_gpu.h and
-    nvidia_gpu.cpp, and that the thread-state budget is started again just
-    before that wait, in cpu_sequencer.h, nvidia_gpu.h and nvidia_gpu.cpp
+    nvidia_gpu.cpp, that the thread-state budget is started again just before
+    that wait, in cpu_sequencer.h, nvidia_gpu.h and nvidia_gpu.cpp, and that the
+    handler of the firmware's event messages runs the sequencer straight from
+    the message carrying it, after an info-level print, in cpu_sequencer.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
