@@ -598,7 +598,7 @@ TEST(nvidia_firmware, bootloader_cut_short_after_opening_is_refused) {
     EXPECT_EQ(read_bootloader_layout(opened, header, layout), ERR_BAD_FIRMWARE);
 }
 
-// Where each field of booter load's descriptor header lies, in bytes from the header's start, and the header's size,
+// Where each field of a booter's descriptor header lies, in bytes from the header's start, and the header's size,
 // restated here so the tests hold the read to the format
 static constexpr uint32_t BOOTER_SIGNATURES_OFFSET_FIELD      = 0x00;
 static constexpr uint32_t BOOTER_SIGNATURES_SIZE_FIELD        = 0x04;
@@ -614,7 +614,7 @@ static constexpr uint32_t BOOTER_DESCRIPTOR_HEADER_BYTES      = 0x24;
 // Bytes of each descriptor that is one 32-bit field: the slot's offset, the signature patch index and the count
 static constexpr uint32_t BOOTER_FIELD_DESCRIPTOR_BYTES = 4;
 
-// Where each field of booter load's metadata and load header lies, in bytes from each one's start, and their sizes
+// Where each field of a booter's metadata and load header lies, in bytes from each one's start, and their sizes
 static constexpr uint32_t BOOTER_FUSE_VERSION_FIELD    = 0x00;
 static constexpr uint32_t BOOTER_ENGINE_MASK_FIELD     = 0x04;
 static constexpr uint32_t BOOTER_UCODE_ID_FIELD        = 0x08;
@@ -630,7 +630,7 @@ static constexpr uint32_t BOOTER_APP_DATA_OFFSET_FIELD = 0x1C;
 static constexpr uint32_t BOOTER_APP_DATA_SIZE_FIELD   = 0x20;
 static constexpr uint32_t BOOTER_LOAD_HEADER_BYTES     = 36;
 
-// The values booter load's descriptors hold, with the fields the driver does not read last
+// The values a booter's descriptors hold, with the fields the driver does not read last
 struct booter_descriptor_values {
     uint32_t signature_size;
     uint32_t signature_count;
@@ -667,7 +667,7 @@ static constexpr booter_descriptor_values GA102_BOOTER_DESCRIPTORS = {
     .app_data_size = 0,
 };
 
-// Where NVIDIA's extraction tool places booter load's descriptors, in bytes from the file's start: the signatures, the
+// Where NVIDIA's extraction tool places a booter's descriptors, in bytes from the file's start: the signatures, the
 // slot's offset, the signature patch index, the metadata, the count and the load header in turn, then the program
 struct booter_places {
     uint32_t signatures;
@@ -700,7 +700,7 @@ static constexpr booter_places place_booter_descriptors(const booter_descriptor_
 
 static constexpr booter_places GA102_BOOTER_PLACES = place_booter_descriptors(GA102_BOOTER_DESCRIPTORS);
 
-// The tool's places start the GA102 program where the GA102 header does
+// The tool's places start the GA102 booter load's program where its header does
 static_assert(GA102_BOOTER_PLACES.program == GA102_BOOTER_LOAD.program_offset);
 
 // Writes `values` into the descriptors of `file`, placed as `place_booter_descriptors` places them
@@ -735,7 +735,7 @@ static void put_booter_descriptors(boot_file& file, const booter_descriptor_valu
     file.put(places.load_header + BOOTER_APP_DATA_SIZE_FIELD, values.app_data_size);
 }
 
-// Installs `file`, checks its header and reads booter load's layout into `layout_out`
+// Installs `file`, checks its header and reads the booter's layout into `layout_out`
 static int32_t read_booter(const boot_file& file, booter_layout& layout_out) {
     fw::file opened;
     if (!file.bytes || !install(file.bytes, file.size, opened)) {
@@ -743,11 +743,11 @@ static int32_t read_booter(const boot_file& file, booter_layout& layout_out) {
     }
 
     boot_file_header header = {};
-    if (check_boot_file(opened, "test booter load", header) != OK) {
+    if (check_boot_file(opened, "test booter", header) != OK) {
         return NOT_CHECKED;
     }
 
-    return read_booter_layout(opened, header, layout_out);
+    return read_booter_layout(opened, "test booter", header, layout_out);
 }
 
 static int32_t read_booter(const boot_file& file) {
@@ -797,6 +797,48 @@ TEST(nvidia_firmware, ga102_booter_load_layout_is_read) {
     EXPECT_EQ(layout.signature_count, GA102_BOOTER_DESCRIPTORS.signature_count);
     EXPECT_EQ(layout.ucode_id, GA102_BOOTER_DESCRIPTORS.ucode_id);
     EXPECT_EQ(layout.engine_mask, GA102_BOOTER_DESCRIPTORS.engine_mask);
+}
+
+// The descriptors of the GA102 booter unload the nvidia-firmware package installs. Its data ends at the program's end,
+// and its OS code's size equals its code's offset.
+static constexpr booter_descriptor_values GA102_BOOTER_UNLOAD_DESCRIPTORS = {
+    .signature_size = 384,
+    .signature_count = 2,
+    .signature_slot = 0x4A10,
+    .engine_mask = 0x1,
+    .ucode_id = 3,
+    .code_offset = 0x100,
+    .code_size = 0x4900,
+    .data_offset = 0x4A00,
+    .data_size = 0x4D00,
+    .fuse_version = 1,
+    .os_code_offset = 0,
+    .os_code_size = 0x100,
+    .app_data_offset = 0x100,
+    .app_data_size = 0,
+};
+
+// The tool's places start the GA102 booter unload's program where its header does
+static_assert(place_booter_descriptors(GA102_BOOTER_UNLOAD_DESCRIPTORS).program == GA102_BOOTER_UNLOAD.program_offset);
+
+// The GA102 booter unload's descriptors pass the rules booter load's pass, with its slot 0x10 bytes into its data
+TEST(nvidia_firmware, ga102_booter_unload_layout_is_read) {
+    boot_file booter_unload(GA102_BOOTER_UNLOAD);
+    put_booter_descriptors(booter_unload, GA102_BOOTER_UNLOAD_DESCRIPTORS);
+
+    booter_layout layout = {};
+    ASSERT_EQ(read_booter(booter_unload, layout), OK);
+
+    EXPECT_EQ(layout.code_offset, 0x100u);
+    EXPECT_EQ(layout.code_size, 0x4900u);
+    EXPECT_EQ(layout.data_offset, 0x4A00u);
+    EXPECT_EQ(layout.data_size, 0x4D00u);
+    EXPECT_EQ(layout.signature_slot, 0x10u);
+    EXPECT_EQ(layout.signatures_offset, 0x3Cu);
+    EXPECT_EQ(layout.signature_size, 384u);
+    EXPECT_EQ(layout.signature_count, 2u);
+    EXPECT_EQ(layout.ucode_id, 3u);
+    EXPECT_EQ(layout.engine_mask, 0x1u);
 }
 
 // Descriptors that all hold different values, past 16 bits where the layout returns them but for the signatures, whose
@@ -1055,12 +1097,12 @@ TEST(nvidia_firmware, booter_load_cut_short_after_opening_is_refused) {
     ASSERT_EQ(check_boot_file(opened, "test booter load", header), OK);
 
     booter_layout layout = {};
-    ASSERT_EQ(read_booter_layout(opened, header, layout), OK);
+    ASSERT_EQ(read_booter_layout(opened, "test booter load", header, layout), OK);
 
     fw::file cut_short;
     ASSERT_TRUE(install(booter_load.bytes, last_descriptor, cut_short));
 
-    EXPECT_EQ(read_booter_layout(opened, header, layout), ERR_BAD_FIRMWARE);
+    EXPECT_EQ(read_booter_layout(opened, "test booter load", header, layout), ERR_BAD_FIRMWARE);
 }
 
 // Room for 65 section headers and every table a layout places beside them

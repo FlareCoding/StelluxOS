@@ -1485,9 +1485,9 @@ TEST(nvidia, chip_whose_boot_directory_is_not_installed_declines) {
     EXPECT_EQ(open_firmware_files(UNINSTALLED_BOOT_DIRECTORY, files), DECLINED);
 }
 
-// The longest name, nvidia/535.183.01/<boot directory>/booter_load.bin, fills the driver's 128 bytes with its NUL
+// The longest name, nvidia/535.183.01/<boot directory>/booter_unload.bin, fills the driver's 128 bytes with its NUL
 // when the boot directory has this length
-static constexpr size_t LONGEST_BOOT_DIRECTORY_BYTES = 93;
+static constexpr size_t LONGEST_BOOT_DIRECTORY_BYTES = 91;
 
 static void fill_boot_directory(char* boot_directory, size_t length) {
     string::memset(boot_directory, 'a', length);

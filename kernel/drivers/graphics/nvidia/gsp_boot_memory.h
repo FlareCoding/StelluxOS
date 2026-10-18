@@ -170,7 +170,7 @@ public:
      * describes.
      * @param device The card's profile, from `pci_driver::dma_profile`. The
      * memory is cached when the card is coherent and uncached otherwise.
-     * @param files The firmware files, each open.
+     * @param files Must hold the bootloader and the GSP image open.
      * @param bootloader_header Must be the header `check_boot_file` returned
      * for `files.bootloader`, whose program then lies inside the file.
      * @param gsp_image Must be the layout `check_gsp_image` returned for
