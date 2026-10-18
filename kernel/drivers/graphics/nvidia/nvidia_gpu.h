@@ -80,10 +80,19 @@ namespace drivers {
  * running. Bring-up then links the status queue (the ring the firmware writes
  * its messages into) once the firmware has written the queue's header, as
  * `nvidia::message_queues::link_status_queue` describes, retrying for up to
- * `nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS`, and waits up to
- * `nvidia::RECEIVE_TIMEOUT_NS` for the firmware's first message, logging its
- * function, result and payload size. Bring-up stops there, so when every step
- * succeeds, `attach()` declines as well.
+ * `nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS`. It then takes the firmware's
+ * messages, logging the function, result and payload size of each, until the
+ * CPU sequencer arrives (the register, delay and falcon steps the firmware
+ * sends for the driver to run), runs it as `nvidia::run_cpu_sequencer`
+ * describes, and takes the message after it. As NVIDIA's driver runs the
+ * sequencer inside one poll, every wait for a message gets what is left of one
+ * `nvidia::RECEIVE_TIMEOUT_NS` deadline set before the first read, the run's
+ * time counting against it, and a wait with none left still reads the queue
+ * once. The sequencer is given a deadline `nvidia::DEFAULT_TIMEOUT_NS` after
+ * the same start, which its waits count against as `nvidia::run_cpu_sequencer`
+ * describes. A sequencer that fails is logged and the wait goes on, as in
+ * NVIDIA's driver. Bring-up stops at the message after the sequencer, so once
+ * that message arrives, `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -141,37 +150,46 @@ namespace drivers {
  * firmware writes no status queue header that
  * `nvidia::message_queues::link_status_queue` accepts within
  * `nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS`, when room for a message's payload
- * cannot be allocated, when no message arrives within
- * `nvidia::RECEIVE_TIMEOUT_NS`, or when the first message fails a check of
+ * cannot be allocated, when the CPU sequencer or the message after it has not
+ * arrived by a read begun after the waits' shared `nvidia::RECEIVE_TIMEOUT_NS`
+ * deadline, or when a message fails a check of
  * `nvidia::message_queues::receive` on each of `nvidia::RECEIVE_TRIES` reads
  * in a row.
- * Whether `attach()` declines or fails, the screen is left as it was, since
- * bring-up itself never writes to the display engine, and the card keeps the
- * memory and I/O decoding that `attach()` turned on. A card that `attach()`
- * declines or fails before the first reset of the GSP's falcon keeps only that
- * decoding. A reset that times out leaves the falcon out of reset with its
- * memories still being cleared, or with its switch to the falcon core
- * requested but not confirmed. A card that gets as far as the load also keeps
- * its bus mastering on, and the load leaves its falcon's memory interface
- * letting the DMA engine read system memory by physical address. A load that
- * times out leaves the falcon not started, with its DMA engine possibly still
- * copying, and a run that times out leaves the falcon possibly still running
- * FWSEC, which may yet fence off the FRTS region. Either leaves FWSEC's copy
- * allocated until `detach()` confirms the GSP stopped, and for good when it
- * cannot, since the falcon may still read it. A falcon that halts, after FWSEC
- * ran or after the falcon's boot ROM refused it, is left halted when
- * `attach()` fails before the GSP's reset into its RISC-V core. A load of
- * booter load that times out leaves SEC2's falcon as FWSEC's leaves the GSP's,
- * and a run that times out may leave booter load running, which may later
- * start the GSP's RISC-V core. A failure after the RISC-V core reads as
- * running leaves the core as booter load left it. When every step succeeds,
- * FWSEC ran and fenced off the FRTS region, booter load ran on SEC2, and
- * `attach()` returns with the GSP's RISC-V core reading as running and the
- * firmware's first message received. Once FWSEC has set up protected memory,
- * it stays set up until the card is reset, and `nvidia::place_frts_region`
- * refuses the card in every `attach()` until then. The decoding stays on
- * because the boot framebuffer may be in this card's memory, which the CPU
- * reaches only while memory decoding is on.
+ * Bring-up itself never writes to the display engine, and the CPU sequencer's
+ * steps write only the registers the firmware names. Once the sequencer has
+ * resumed the GSP's firmware, though, the firmware puts all of BAR1 (the CPU's
+ * window into the card's video memory) into virtual mode, translated through
+ * the firmware's page tables, as NVIDIA's driver expects, so BAR1 no longer
+ * reaches what it reached before, such as a boot framebuffer, until `detach()`
+ * writes back BAR1's block register, which binds BAR1 to the video memory.
+ * When the console lies at the start of BAR1, NVIDIA's driver maps it there
+ * for the console's driver to draw through, which this driver does not do. The
+ * card keeps the memory and I/O decoding that `attach()` turned on. A card
+ * that `attach()` declines or fails before the first reset of the GSP's falcon
+ * keeps only that decoding. A reset that times out leaves the falcon out of
+ * reset with its memories still being cleared, or with its switch to the
+ * falcon core requested but not confirmed. A card that gets as far as the load
+ * also keeps its bus mastering on, and the load leaves its falcon's memory
+ * interface letting the DMA engine read system memory by physical address. A
+ * load that times out leaves the falcon not started, with its DMA engine
+ * possibly still copying, and a run that times out leaves the falcon possibly
+ * still running FWSEC, which may yet fence off the FRTS region. Either leaves
+ * FWSEC's copy allocated until `detach()` confirms the GSP stopped, and for
+ * good when it cannot, since the falcon may still read it. A falcon that
+ * halts, after FWSEC ran or after the falcon's boot ROM refused it, is left
+ * halted when `attach()` fails before the GSP's reset into its RISC-V core. A
+ * load of booter load that times out leaves SEC2's falcon as FWSEC's leaves
+ * the GSP's, and a run that times out may leave booter load running, which may
+ * later start the GSP's RISC-V core. A failure after the RISC-V core reads as
+ * running leaves the core as booter load or the CPU sequencer's steps left it.
+ * When `attach()` declines at the message after the CPU sequencer, FWSEC ran
+ * and fenced off the FRTS region, booter load ran on SEC2, the CPU sequencer
+ * ran, or was refused or stopped at a step as it logged, and the message after
+ * it was received. Once FWSEC has set up protected memory, it stays set up
+ * until the card is reset, and `nvidia::place_frts_region` refuses the card in
+ * every `attach()` until then. The decoding stays on because the boot
+ * framebuffer may be in this card's memory, which the CPU reaches only while
+ * memory decoding is on.
  * From the first reset of the GSP's falcon on, whether `attach()` declines or
  * fails, `detach()` resets the GSP's falcon again with `nvidia::stop_falcon`
  * and frees all of the GSP's boot memory once the falcon reads as halted and
@@ -181,13 +199,24 @@ namespace drivers {
  * then stops the GSP whatever SEC2's result, freeing the memory only once both
  * read as stopped. `detach()` fails, keeping all of the boot memory allocated
  * for good, when a reset times out or a falcon then does not read as halted or
- * its RISC-V core reads as running.
+ * its RISC-V core reads as running. Once the CPU sequencer's resume has
+ * started SEC2's falcon again, that falcon may not read as halted after
+ * `detach()` resets it, and `detach()` then fails the same way. From the load
+ * of booter load on, once the GSP reads as stopped, whatever SEC2's result,
+ * `detach()` writes back BAR1's block register when the register no longer
+ * reads as it did before booter load, as `nvidia::restore_bar1_block`
+ * describes, and logs the register's values. When the register has changed but
+ * the GSP does not read as stopped, `detach()` leaves it unwritten and logs
+ * both values. When SEC2 does not read as halted, a booter load still running
+ * may start the GSP's RISC-V core again once `detach()` has written the
+ * register, and the GSP's firmware may then rewrite it once more, with nothing
+ * logged.
  * NVIDIA's driver asks the GSP's firmware to unload and waits for the GSP to
  * suspend before the GSP's reset, then runs FWSEC again, to put back the
  * programs the VBIOS runs before an operating system loads, and booter unload,
  * to take protected memory down. `detach()` resets the running firmware
  * without these steps, so those programs are not put back and protected memory
- * stays set up.
+ * stays set up. Writing BAR1's block register back is this driver's own step.
  */
 class nvidia_gpu_driver : public pci_driver {
 public:
@@ -198,17 +227,19 @@ public:
     /**
      * @brief Stop SEC2 once bring-up has begun loading booter load, then the
      * GSP once bring-up has reset its falcon, freeing the GSP's boot memory
-     * only once each reads as stopped, then unmap BAR0 as
-     * `pci_driver::detach()` does. Each stop spins on the calling CPU, for up
-     * to twice `nvidia::FALCON_READY_TIMEOUT_NS` and six times
-     * `nvidia::FALCON_TIMEOUT_NS` when its falcon is slow to reset.
+     * only once each reads as stopped and, from the load of booter load on,
+     * writing back BAR1's block register once the GSP reads as stopped, then
+     * unmap BAR0 as `pci_driver::detach()` does. Each stop spins on the
+     * calling CPU, for up to twice `nvidia::FALCON_READY_TIMEOUT_NS` and six
+     * times `nvidia::FALCON_TIMEOUT_NS` when its falcon is slow to reset.
      * @return What `pci_driver::detach()` returns once the falcons are stopped
      * or need no stop, `nvidia::ERR_TIMEOUT` when a reset times out, or
      * `nvidia::ERR_BAD_STATE` when a falcon then does not read as halted or
      * its RISC-V core reads as running, each error keeping the boot memory
      * allocated for good. When SEC2's stop fails, the GSP's stop still runs
      * and SEC2's error is returned. The cause is logged. A later call stops no
-     * falcon again and returns what `pci_driver::detach()` returns.
+     * falcon and writes no register again, and returns what
+     * `pci_driver::detach()` returns.
      */
     int32_t detach() override;
 
@@ -222,6 +253,7 @@ private:
 
     nvidia::gsp_boot_memory m_boot_memory;
     uint32_t                m_boot0 = 0;
+    uint32_t                m_bar1_block = 0;
     bool                    m_must_stop_gsp = false;
     bool                    m_must_stop_sec2 = false;
 };
