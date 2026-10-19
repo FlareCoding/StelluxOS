@@ -1,8 +1,26 @@
 Some definitions in this directory and in the driver's tests in
 kernel/tests/graphics are re-declared from NVIDIA's open GPU kernel modules at
 release 535.183.01 (https://github.com/NVIDIA/open-gpu-kernel-modules), and
-each file holding one says so in its first line. Below are the files of the
-open kernel modules they come from, what each gives, and its copyright line.
+each file holding one says so in its first line. The EDID parser
+(kernel/drivers/graphics/edid.h and edid.cpp) and its tests
+(kernel/tests/graphics/edid.test.cpp) restate rules from them too. Below are
+the files of the open kernel modules these definitions and rules come from,
+what each gives, and its copyright line.
+
+src/common/modeset/timing/nvt_edid.c
+    the polarities a timing descriptor's sync kind does not give (horizontal
+    negative for analog sync, vertical positive for analog and digital
+    composite sync), the first descriptor's timing read as preferred only when
+    bit 1 of the features byte is set whatever the revision, a descriptor
+    starting with five 0x01 bytes parsed as unused, a timing descriptor with a
+    width or height of 0 parsed as no timing, a product name ended by a NUL as
+    by a newline, without trailing spaces and with any other byte outside
+    printable ASCII shown as a question mark, and a display descriptor parsed
+    only when its reserved byte 2 is 0, in kernel/drivers/graphics/edid.h,
+    kernel/drivers/graphics/edid.cpp and kernel/tests/graphics/edid.test.cpp,
+    and a first byte of 0x20 to 0x2F taken as a DisplayID 2 version with no
+    other header byte checked, in kernel/tests/graphics/edid.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/nv_ref.h
     PMC_BOOT_0 and its chip id and revision fields, in chip.h and chip.cpp

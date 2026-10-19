@@ -1,0 +1,659 @@
+#include "stlx_unit_test.h"
+#include "common/string.h"
+#include "drivers/graphics/edid.h"
+
+TEST_SUITE(edid);
+
+// The AOC AG241QG4's base block, its serial number (bytes 12 to 15) zeroed and its checksum recomputed
+static constexpr uint8_t AOC_AG241QG4_BASE_BLOCK[edid::BLOCK_BYTES] = {
+    0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x05, 0xE3, 0x10, 0x24, 0x00, 0x00, 0x00, 0x00,
+    0x26, 0x1C, 0x01, 0x04, 0xA5, 0x35, 0x28, 0x78, 0x3B, 0xE1, 0x61, 0xA4, 0x57, 0x53, 0xA0, 0x27,
+    0x0D, 0x50, 0x54, 0xBF, 0xEF, 0x00, 0xD1, 0xC0, 0x81, 0x80, 0x31, 0x68, 0x31, 0x7C, 0x45, 0x68,
+    0x45, 0x7C, 0x61, 0x68, 0x61, 0x7C, 0x56, 0x5E, 0x00, 0xA0, 0xA0, 0xA0, 0x29, 0x50, 0x30, 0x20,
+    0x35, 0x00, 0x0F, 0x8C, 0x21, 0x00, 0x00, 0x1E, 0x40, 0xE7, 0x00, 0x6A, 0xA0, 0xA0, 0x67, 0x50,
+    0x08, 0x20, 0x98, 0x04, 0x0F, 0x8C, 0x21, 0x00, 0x00, 0x1A, 0x00, 0x00, 0x00, 0xFD, 0x00, 0x1E,
+    0x92, 0xE6, 0xE6, 0x3C, 0x01, 0x0A, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x00, 0x00, 0x00, 0xFC,
+    0x00, 0x41, 0x47, 0x32, 0x34, 0x31, 0x51, 0x47, 0x34, 0x0A, 0x20, 0x20, 0x20, 0x20, 0x01, 0xCC,
+};
+
+// The two timings of the AOC's base block, 2560 by 1440 at about 60 Hz and at about 144 Hz
+static constexpr edid::timing AOC_60_HZ  = {241500, 2560, 48, 32, 80, 1440, 3, 5, 33, true, true};
+static constexpr edid::timing AOC_144_HZ = {592000, 2560, 8, 32, 66, 1440, 25, 8, 70, true, false};
+
+static constexpr size_t MAKER_OFFSET           = 8;
+static constexpr size_t VERSION_OFFSET         = 18;
+static constexpr size_t REVISION_OFFSET        = 19;
+static constexpr size_t FEATURES_OFFSET        = 24;
+static constexpr size_t DESCRIPTORS_OFFSET     = 54;
+static constexpr size_t DESCRIPTOR_BYTES       = 18;
+static constexpr size_t BASE_DESCRIPTORS       = 4;
+static constexpr size_t EXTENSION_COUNT_OFFSET = 126;
+static constexpr size_t CHECKSUM_OFFSET        = 127;
+
+static constexpr size_t  DISPLAY_RESERVED_OFFSET  = 2;
+static constexpr size_t  DISPLAY_TAG_OFFSET       = 3;
+static constexpr uint8_t DISPLAY_TAG_PRODUCT_NAME = 0xFC;
+static constexpr size_t  NAME_OFFSET              = 5;
+static constexpr size_t  NAME_BYTES               = 13;
+
+// The AOC's features byte, and the same with its preferred bit (bit 1) clear
+static constexpr uint8_t AOC_FEATURES             = 0x3B;
+static constexpr uint8_t AOC_FEATURES_BIT_1_CLEAR = 0x39;
+
+// A timing descriptor's fields as the EDID stores them, the blanking in place of the back porch
+struct timing_descriptor_fields {
+    uint32_t clock_units; // 10 kHz each
+    uint32_t width;
+    uint32_t h_blanking;
+    uint32_t h_front_porch;
+    uint32_t h_sync_width;
+    uint32_t height;
+    uint32_t v_blanking;
+    uint32_t v_front_porch;
+    uint32_t v_sync_width;
+    uint8_t  h_border;
+    uint8_t  v_border;
+    uint8_t  flags;
+};
+
+// A sync flags byte and the polarities the parser gives for it
+struct sync_polarity_case {
+    uint8_t flags;
+    bool    h_sync_positive;
+    bool    v_sync_positive;
+};
+
+// A product name descriptor's 13 text bytes and the name the parser reads from them
+struct name_case {
+    char text[NAME_BYTES + 1];
+    char name[NAME_BYTES + 1];
+};
+
+// One byte of an unused descriptor's fill and the value it changes to
+struct fill_change {
+    size_t  offset;
+    uint8_t value;
+};
+
+// 1920 by 1080 at 60 Hz with separate digital sync, both pulses positive
+static constexpr timing_descriptor_fields FULL_HD        = {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0x1E};
+static constexpr edid::timing             FULL_HD_TIMING = {148500, 1920, 88, 44, 148, 1080, 4, 5, 36, true, true};
+
+static uint8_t       g_block[edid::BLOCK_BYTES];
+static edid::monitor g_monitor;
+
+// Sets the checksum byte so the block's bytes sum to 0 modulo 256
+static void seal_block() {
+    uint8_t sum = 0;
+    for (size_t i = 0; i < CHECKSUM_OFFSET; i++) {
+        sum = static_cast<uint8_t>(sum + g_block[i]);
+    }
+
+    g_block[CHECKSUM_OFFSET] = static_cast<uint8_t>(0x100 - sum);
+}
+
+// The AOC's base block with `features` as its features byte, no extensions and every descriptor a display descriptor of
+// no kind the parser reads
+static void make_base_block(uint8_t features) {
+    string::memcpy(g_block, AOC_AG241QG4_BASE_BLOCK, sizeof(g_block));
+    string::memset(g_block + DESCRIPTORS_OFFSET, 0, BASE_DESCRIPTORS * DESCRIPTOR_BYTES);
+    g_block[FEATURES_OFFSET] = features;
+    g_block[EXTENSION_COUNT_OFFSET] = 0;
+    seal_block();
+}
+
+static uint8_t* descriptor_at(size_t index) {
+    return g_block + DESCRIPTORS_OFFSET + index * DESCRIPTOR_BYTES;
+}
+
+static void write_timing_descriptor(size_t index, const timing_descriptor_fields& f) {
+    uint8_t* d = descriptor_at(index);
+    string::memset(d, 0, DESCRIPTOR_BYTES);
+
+    d[0] = static_cast<uint8_t>(f.clock_units);
+    d[1] = static_cast<uint8_t>(f.clock_units >> 8);
+    d[2] = static_cast<uint8_t>(f.width);
+    d[3] = static_cast<uint8_t>(f.h_blanking);
+    d[4] = static_cast<uint8_t>((f.width >> 8) << 4 | f.h_blanking >> 8);
+    d[5] = static_cast<uint8_t>(f.height);
+    d[6] = static_cast<uint8_t>(f.v_blanking);
+    d[7] = static_cast<uint8_t>((f.height >> 8) << 4 | f.v_blanking >> 8);
+    d[8] = static_cast<uint8_t>(f.h_front_porch);
+    d[9] = static_cast<uint8_t>(f.h_sync_width);
+    d[10] = static_cast<uint8_t>((f.v_front_porch & 0x0F) << 4 | (f.v_sync_width & 0x0F));
+    d[11] = static_cast<uint8_t>(
+        (f.h_front_porch >> 8) << 6 | (f.h_sync_width >> 8) << 4 | (f.v_front_porch >> 4) << 2 | f.v_sync_width >> 4
+    );
+    d[15] = f.h_border;
+    d[16] = f.v_border;
+    d[17] = f.flags;
+    seal_block();
+}
+
+static void write_name_descriptor(size_t index, const char (&text)[NAME_BYTES + 1]) {
+    uint8_t* d = descriptor_at(index);
+    string::memset(d, 0, DESCRIPTOR_BYTES);
+
+    d[DISPLAY_TAG_OFFSET] = DISPLAY_TAG_PRODUCT_NAME;
+    string::memcpy(d + NAME_OFFSET, text, NAME_BYTES);
+    seal_block();
+}
+
+static int32_t parse_block() {
+    return edid::parse(g_block, sizeof(g_block), g_monitor);
+}
+
+static void expect_timing(const edid::timing& actual, const edid::timing& expected) {
+    EXPECT_EQ(actual.pixel_clock_khz, expected.pixel_clock_khz);
+    EXPECT_EQ(actual.width, expected.width);
+    EXPECT_EQ(actual.h_front_porch, expected.h_front_porch);
+    EXPECT_EQ(actual.h_sync_width, expected.h_sync_width);
+    EXPECT_EQ(actual.h_back_porch, expected.h_back_porch);
+    EXPECT_EQ(actual.height, expected.height);
+    EXPECT_EQ(actual.v_front_porch, expected.v_front_porch);
+    EXPECT_EQ(actual.v_sync_width, expected.v_sync_width);
+    EXPECT_EQ(actual.v_back_porch, expected.v_back_porch);
+    EXPECT_EQ(actual.h_sync_positive, expected.h_sync_positive);
+    EXPECT_EQ(actual.v_sync_positive, expected.v_sync_positive);
+}
+
+static bool is_zeroed(const edid::monitor& m) {
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&m);
+    for (size_t i = 0; i < sizeof(m); i++) {
+        if (bytes[i] != 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Parses `g_block`'s first `size` bytes over a good parse in `g_monitor`, expecting `error` and `g_monitor` cleared
+static void expect_refused(size_t size, int32_t error) {
+    ASSERT_EQ(edid::parse(AOC_AG241QG4_BASE_BLOCK, sizeof(AOC_AG241QG4_BASE_BLOCK), g_monitor), edid::OK);
+
+    EXPECT_EQ(edid::parse(g_block, size, g_monitor), error);
+    EXPECT_TRUE(is_zeroed(g_monitor));
+}
+
+TEST(edid, reads_the_aoc_ag241qg4_base_block) {
+    ASSERT_EQ(edid::parse(AOC_AG241QG4_BASE_BLOCK, sizeof(AOC_AG241QG4_BASE_BLOCK), g_monitor), edid::OK);
+
+    EXPECT_STREQ(g_monitor.maker, "AOC");
+    EXPECT_STREQ(g_monitor.name, "AG241QG4");
+    ASSERT_EQ(g_monitor.timing_count, 2u);
+    expect_timing(g_monitor.timings[0], AOC_60_HZ);
+    expect_timing(g_monitor.timings[1], AOC_144_HZ);
+    EXPECT_EQ(g_monitor.timings[0].h_total(), 2720u);
+    EXPECT_EQ(g_monitor.timings[0].v_total(), 1481u);
+    EXPECT_EQ(g_monitor.timings[1].h_total(), 2666u);
+    EXPECT_EQ(g_monitor.timings[1].v_total(), 1543u);
+    EXPECT_EQ(g_monitor.timings[0].refresh_millihertz(), 59950ull);
+    EXPECT_EQ(g_monitor.timings[1].refresh_millihertz(), 143911ull);
+    EXPECT_TRUE(g_monitor.first_timing_is_preferred);
+}
+
+TEST(edid, refuses_fewer_bytes_than_one_block) {
+    make_base_block(AOC_FEATURES);
+
+    expect_refused(edid::BLOCK_BYTES - 1, edid::ERR_TOO_SHORT);
+    expect_refused(0, edid::ERR_TOO_SHORT);
+}
+
+// A base block, then the bytes a fifth descriptor at byte 126 would read as a timing, then 0xFF bytes
+static uint8_t g_two_blocks[2 * edid::BLOCK_BYTES];
+
+TEST(edid, ignores_bytes_past_the_base_block) {
+    size_t fifth_descriptor_offset = DESCRIPTORS_OFFSET + BASE_DESCRIPTORS * DESCRIPTOR_BYTES;
+    size_t bytes_inside = edid::BLOCK_BYTES - fifth_descriptor_offset;
+
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(0, FULL_HD);
+
+    // The checksum would be the fifth descriptor's clock high byte, nonzero so the descriptor reads as a timing
+    ASSERT_NE(g_block[CHECKSUM_OFFSET], 0);
+
+    string::memcpy(g_two_blocks, g_block, edid::BLOCK_BYTES);
+    string::memset(g_two_blocks + edid::BLOCK_BYTES, 0xFF, edid::BLOCK_BYTES);
+    string::memcpy(g_two_blocks + edid::BLOCK_BYTES, descriptor_at(0) + bytes_inside, DESCRIPTOR_BYTES - bytes_inside);
+
+    ASSERT_EQ(edid::parse(g_two_blocks, sizeof(g_two_blocks), g_monitor), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    EXPECT_TRUE(g_monitor.first_timing_is_preferred);
+}
+
+TEST(edid, refuses_a_wrong_header) {
+    static constexpr size_t CHANGED_HEADER_OFFSETS[] = {0, 3, 7};
+    static constexpr uint8_t HEADER_BIT_FLIPS[] = {0x01, 0x80};
+    static constexpr uint8_t DISPLAYID_2_FIRST_BYTES[] = {0x20, 0x2F};
+
+    for (size_t offset : CHANGED_HEADER_OFFSETS) {
+        for (uint8_t flip : HEADER_BIT_FLIPS) {
+            make_base_block(AOC_FEATURES);
+            g_block[offset] ^= flip;
+            seal_block();
+
+            expect_refused(edid::BLOCK_BYTES, edid::ERR_BAD_HEADER);
+        }
+    }
+
+    // These first bytes are refused as a wrong header, where the EDID code in NVIDIA's open kernel modules takes them
+    // as a version of DisplayID 2 (a format other than EDID) and checks no other header byte
+    for (uint8_t first_byte : DISPLAYID_2_FIRST_BYTES) {
+        make_base_block(AOC_FEATURES);
+        g_block[0] = first_byte;
+        seal_block();
+
+        expect_refused(edid::BLOCK_BYTES, edid::ERR_BAD_HEADER);
+    }
+}
+
+TEST(edid, refuses_a_bad_checksum) {
+    make_base_block(AOC_FEATURES);
+    g_block[CHECKSUM_OFFSET]++;
+    expect_refused(edid::BLOCK_BYTES, edid::ERR_BAD_CHECKSUM);
+
+    make_base_block(AOC_FEATURES);
+    g_block[CHECKSUM_OFFSET] ^= 0x80;
+    expect_refused(edid::BLOCK_BYTES, edid::ERR_BAD_CHECKSUM);
+
+    make_base_block(AOC_FEATURES);
+    descriptor_at(2)[DISPLAY_TAG_OFFSET] = DISPLAY_TAG_PRODUCT_NAME;
+    expect_refused(edid::BLOCK_BYTES, edid::ERR_BAD_CHECKSUM);
+}
+
+TEST(edid, reads_only_version_1_at_any_revision) {
+    static constexpr uint8_t REFUSED_VERSIONS[] = {0, 2, 0x81};
+    static constexpr uint8_t ACCEPTED_REVISIONS[] = {0, 0xFF};
+
+    for (uint8_t version : REFUSED_VERSIONS) {
+        make_base_block(AOC_FEATURES);
+        g_block[VERSION_OFFSET] = version;
+        seal_block();
+
+        expect_refused(edid::BLOCK_BYTES, edid::ERR_BAD_VERSION);
+    }
+
+    for (uint8_t revision : ACCEPTED_REVISIONS) {
+        make_base_block(AOC_FEATURES);
+        g_block[REVISION_OFFSET] = revision;
+        seal_block();
+
+        EXPECT_EQ(parse_block(), edid::OK);
+    }
+}
+
+TEST(edid, reports_the_first_check_that_fails) {
+    make_base_block(AOC_FEATURES);
+    g_block[0] = 0x01;
+    g_block[VERSION_OFFSET] = 2;
+    expect_refused(edid::BLOCK_BYTES - 1, edid::ERR_TOO_SHORT);
+    expect_refused(edid::BLOCK_BYTES, edid::ERR_BAD_HEADER);
+
+    make_base_block(AOC_FEATURES);
+    g_block[VERSION_OFFSET] = 2;
+    expect_refused(edid::BLOCK_BYTES, edid::ERR_BAD_CHECKSUM);
+}
+
+TEST(edid, reads_display_descriptors_alone_as_no_timings) {
+    // A pixel clock of 0 makes a display descriptor even when the other bytes form a timing
+    timing_descriptor_fields no_clock = FULL_HD;
+    no_clock.clock_units = 0;
+
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(0, no_clock);
+
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_STREQ(g_monitor.maker, "AOC");
+    EXPECT_STREQ(g_monitor.name, "");
+    EXPECT_EQ(g_monitor.timing_count, 0u);
+    EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+}
+
+// Every count's high bits set, so a mask that drops one of them changes a count
+static constexpr uint8_t ALL_HIGH_BITS_DESCRIPTOR[DESCRIPTOR_BYTES] = {
+    0xFF, 0xFF, 0x00, 0x01, 0xFF, 0x00, 0x02, 0xFF, 0x00, 0x01, 0x0F, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1E,
+};
+
+// The high-bit fields sharing a byte hold different patterns, so a field read from a neighbor's place changes a count
+static constexpr uint8_t HIGH_BITS_DESCRIPTOR[DESCRIPTOR_BYTES] = {
+    0x34, 0x12, 0xBC, 0xDE, 0xA5, 0xF1, 0xE2, 0x93, 0xC4, 0xA7, 0xBD, 0x1B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1A,
+};
+
+TEST(edid, reads_the_high_bits_of_every_count) {
+    make_base_block(AOC_FEATURES);
+    string::memcpy(descriptor_at(2), ALL_HIGH_BITS_DESCRIPTOR, DESCRIPTOR_BYTES);
+    string::memcpy(descriptor_at(3), HIGH_BITS_DESCRIPTOR, DESCRIPTOR_BYTES);
+    seal_block();
+
+    ASSERT_EQ(parse_block(), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 2u);
+    expect_timing(g_monitor.timings[0], {655350, 3840, 768, 769, 2304, 3840, 48, 63, 3731, true, true});
+    expect_timing(g_monitor.timings[1], {46600, 2748, 196, 423, 883, 2545, 43, 61, 890, true, false});
+    EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+}
+
+// Separate digital sync gives both polarities and digital composite sync the horizontal one, and a missing polarity
+// reads as the EDID code in NVIDIA's open kernel modules assigns it, horizontal negative and vertical positive
+static constexpr sync_polarity_case SYNC_POLARITY_CASES[] = {
+    {0x18, false, false}, {0x1A, true, false}, {0x1C, false, true}, {0x1E, true, true},
+    {0x10, false, true},  {0x12, true, true},  {0x14, false, true}, {0x16, true, true},
+    {0x00, false, true},  {0x06, false, true}, {0x08, false, true}, {0x0E, false, true},
+    {0x7B, true, false},  {0x7D, false, true}, {0x75, false, true}, {0x6F, false, true},
+};
+
+TEST(edid, reads_sync_polarity_as_the_sync_kind_allows) {
+    for (const sync_polarity_case& c : SYNC_POLARITY_CASES) {
+        timing_descriptor_fields fields = FULL_HD;
+        fields.flags = c.flags;
+        make_base_block(AOC_FEATURES);
+        write_timing_descriptor(0, fields);
+
+        ASSERT_EQ(parse_block(), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 1u);
+        EXPECT_EQ(g_monitor.timings[0].h_sync_positive, c.h_sync_positive);
+        EXPECT_EQ(g_monitor.timings[0].v_sync_positive, c.v_sync_positive);
+    }
+}
+
+// `FULL_HD` changed into a timing the parser leaves out
+static constexpr timing_descriptor_fields LEFT_OUT_TIMINGS[] = {
+    {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0x80},    // interlaced, no other flag set
+    {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0x9E},    // interlaced
+    {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0xFF},    // interlaced, every other flag set too
+    {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 1, 0, 0x1E},    // a horizontal border
+    {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0x80, 0, 0x1E}, // a horizontal border with only its high bit set
+    {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 1, 0x1E},    // a vertical border
+    {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 0x80, 0x1E}, // a vertical border with only its high bit set
+    {14850, 0, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0x1E},       // no width
+    {14850, 1920, 280, 88, 44, 0, 45, 4, 5, 0, 0, 0x1E},       // no height
+    {14850, 1920, 131, 88, 44, 1080, 45, 4, 5, 0, 0, 0x1E},    // front porch and sync one pixel past the blanking
+    {14850, 1920, 280, 88, 44, 1080, 8, 4, 5, 0, 0, 0x1E},     // front porch and sync one line past the blanking
+};
+
+TEST(edid, leaves_out_empty_and_undescribable_timings) {
+    for (const timing_descriptor_fields& fields : LEFT_OUT_TIMINGS) {
+        make_base_block(AOC_FEATURES);
+        write_timing_descriptor(0, fields);
+        write_timing_descriptor(1, FULL_HD);
+
+        ASSERT_EQ(parse_block(), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 1u);
+        expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+        EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+    }
+}
+
+TEST(edid, keeps_timings_with_no_back_porch_or_every_flag_but_interlaced) {
+    timing_descriptor_fields no_h_back_porch = FULL_HD;
+    no_h_back_porch.h_blanking = FULL_HD.h_front_porch + FULL_HD.h_sync_width;
+    timing_descriptor_fields no_v_back_porch = FULL_HD;
+    no_v_back_porch.v_blanking = FULL_HD.v_front_porch + FULL_HD.v_sync_width;
+    timing_descriptor_fields every_flag_but_interlaced = FULL_HD;
+    every_flag_but_interlaced.flags = 0x7F;
+
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(0, no_h_back_porch);
+    write_timing_descriptor(1, no_v_back_porch);
+    write_timing_descriptor(2, every_flag_but_interlaced);
+
+    ASSERT_EQ(parse_block(), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 3u);
+    EXPECT_EQ(g_monitor.timings[0].h_back_porch, 0u);
+    EXPECT_EQ(g_monitor.timings[0].v_back_porch, FULL_HD_TIMING.v_back_porch);
+    EXPECT_EQ(g_monitor.timings[1].h_back_porch, FULL_HD_TIMING.h_back_porch);
+    EXPECT_EQ(g_monitor.timings[1].v_back_porch, 0u);
+    expect_timing(g_monitor.timings[2], FULL_HD_TIMING);
+}
+
+// At revisions 3 and 4 alike, bit 1 is the preferred mark, as in the EDID code in NVIDIA's open kernel modules
+TEST(edid, marks_the_first_descriptor_preferred_only_as_the_features_byte_says) {
+    static constexpr uint8_t REVISIONS[] = {3, 4};
+    static constexpr uint8_t FIRST_PREFERRED_FEATURES[] = {AOC_FEATURES, 0x02, 0xFF};
+    static constexpr uint8_t NONE_PREFERRED_FEATURES[] = {AOC_FEATURES_BIT_1_CLEAR, 0xFD};
+
+    for (uint8_t revision : REVISIONS) {
+        for (uint8_t features : FIRST_PREFERRED_FEATURES) {
+            make_base_block(features);
+            g_block[REVISION_OFFSET] = revision;
+            write_timing_descriptor(0, FULL_HD);
+
+            ASSERT_EQ(parse_block(), edid::OK);
+            EXPECT_TRUE(g_monitor.first_timing_is_preferred);
+        }
+
+        for (uint8_t features : NONE_PREFERRED_FEATURES) {
+            make_base_block(features);
+            g_block[REVISION_OFFSET] = revision;
+            write_timing_descriptor(0, FULL_HD);
+
+            ASSERT_EQ(parse_block(), edid::OK);
+            EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+        }
+    }
+}
+
+TEST(edid, marks_no_timing_preferred_when_the_first_descriptor_is_a_display_descriptor) {
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(1, FULL_HD);
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 1u);
+    EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+
+    write_name_descriptor(0, "NAMED FIRST\n ");
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_STREQ(g_monitor.name, "NAMED FIRST");
+    EXPECT_EQ(g_monitor.timing_count, 1u);
+    EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+}
+
+static constexpr name_case NAME_CASES[] = {
+    {"ABCDEFGHIJKLM", "ABCDEFGHIJKLM"},
+    {"TRAILING  \n  ", "TRAILING"},
+    {"INNER SPACE  ", "INNER SPACE"},
+    {"NUL\0PADDED\n  ", "NUL"},
+    {"\n            ", ""},
+    {"A\x01" "B\x7F" "C\x80" "D\xFF" "E\t   ", "A?B?C?D?E?"},
+    {" ~\x1F" "\n         ", " ~?"},
+    {"\x8A" "\x0B" "STOP! \n    ", "??STOP!"},
+    {"             ", ""},
+};
+
+// The timing after each name puts a nonzero byte just past the name's 13 bytes
+TEST(edid, reads_the_name_to_a_newline_or_nul_trimmed_and_printable) {
+    for (const name_case& c : NAME_CASES) {
+        make_base_block(AOC_FEATURES);
+        write_name_descriptor(1, c.text);
+        write_timing_descriptor(2, FULL_HD);
+
+        ASSERT_EQ(parse_block(), edid::OK);
+        EXPECT_STREQ(g_monitor.name, c.name);
+    }
+}
+
+TEST(edid, reads_the_first_name_descriptor_alone) {
+    make_base_block(AOC_FEATURES);
+    write_name_descriptor(0, "HIGH BIT TAG\n");
+    descriptor_at(0)[DISPLAY_TAG_OFFSET] = DISPLAY_TAG_PRODUCT_NAME & 0x7F; // a tag differing in its high bit alone
+    write_name_descriptor(1, "\n            ");
+    write_name_descriptor(2, "SECOND\n      ");
+
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_STREQ(g_monitor.name, "");
+}
+
+// A name descriptor setting its reserved byte 2 gives no name, as the EDID code in NVIDIA's open kernel modules parses
+// no display descriptor whose byte 2 is set
+TEST(edid, reads_no_name_from_a_display_descriptor_with_byte_2_set) {
+    static constexpr uint8_t SET_RESERVED_BYTES[] = {0x01, 0x80};
+
+    for (uint8_t reserved : SET_RESERVED_BYTES) {
+        make_base_block(AOC_FEATURES);
+        write_name_descriptor(1, "BYTE 2 SET\n  ");
+        descriptor_at(1)[DISPLAY_RESERVED_OFFSET] = reserved;
+        write_name_descriptor(2, "BYTE 2 CLEAR\n");
+
+        ASSERT_EQ(parse_block(), edid::OK);
+        EXPECT_STREQ(g_monitor.name, "BYTE 2 CLEAR");
+    }
+}
+
+TEST(edid, reads_maker_codes_as_a_to_z_or_question_marks) {
+    make_base_block(AOC_FEATURES);
+    g_block[MAKER_OFFSET] = 0x00;
+    g_block[MAKER_OFFSET + 1] = 0x3A; // letters 0, 1 and 26
+    seal_block();
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_STREQ(g_monitor.maker, "?AZ");
+
+    g_block[MAKER_OFFSET] = 0xEF;
+    g_block[MAKER_OFFSET + 1] = 0xE1; // bit 15 set, then letters 27, 31 and 1
+    seal_block();
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_STREQ(g_monitor.maker, "??A");
+
+    g_block[MAKER_OFFSET] = 0x84;
+    g_block[MAKER_OFFSET + 1] = 0x21; // bit 15 set, then letters 1, 1 and 1
+    seal_block();
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_STREQ(g_monitor.maker, "AAA");
+}
+
+TEST(edid, reads_a_pixel_clock_with_either_byte_zero) {
+    timing_descriptor_fields low_byte_zero = FULL_HD;
+    low_byte_zero.clock_units = 0x3A00;
+    timing_descriptor_fields high_byte_zero = FULL_HD;
+    high_byte_zero.clock_units = 0x00FF;
+    timing_descriptor_fields only_bit_15 = FULL_HD;
+    only_bit_15.clock_units = 0x8000;
+    timing_descriptor_fields only_bit_7 = FULL_HD;
+    only_bit_7.clock_units = 0x0080;
+
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(0, low_byte_zero);
+    write_timing_descriptor(1, high_byte_zero);
+    write_timing_descriptor(2, only_bit_15);
+    write_timing_descriptor(3, only_bit_7);
+
+    ASSERT_EQ(parse_block(), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 4u);
+    EXPECT_EQ(g_monitor.timings[0].pixel_clock_khz, 148480u);
+    EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 2550u);
+    EXPECT_EQ(g_monitor.timings[2].pixel_clock_khz, 327680u);
+    EXPECT_EQ(g_monitor.timings[3].pixel_clock_khz, 1280u);
+}
+
+TEST(edid, reads_a_timing_with_the_name_tag_in_byte_3_as_a_timing) {
+    // Bytes 2 and 3 hold a product name descriptor's 0 and 0xFC, so only the nonzero clock makes the bytes a timing
+    timing_descriptor_fields tag_in_byte_3 = FULL_HD;
+    tag_in_byte_3.width = 0x700;
+    tag_in_byte_3.h_blanking = 0x100 | DISPLAY_TAG_PRODUCT_NAME;
+
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(0, tag_in_byte_3);
+
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_STREQ(g_monitor.name, "");
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], {148500, 1792, 88, 44, 376, 1080, 4, 5, 36, true, true});
+}
+
+// Five 0x01 bytes at a descriptor's start mark it unused, as the EDID code in NVIDIA's open kernel modules parses it
+static constexpr uint8_t UNUSED_FILL       = 0x01;
+static constexpr size_t  UNUSED_FILL_BYTES = 5;
+
+// One fill byte changed to 0x02, in its high bit alone (0x81) or in its low bit alone (0x00), but not to 0x00 at byte 2
+// or 4, which would leave the timing out with a width of 0 or too short a blanking
+static constexpr fill_change FILL_CHANGES[] = {
+    {0, 0x02}, {1, 0x02}, {2, 0x02}, {3, 0x02}, {4, 0x02},
+    {0, 0x81}, {1, 0x81}, {2, 0x81}, {3, 0x81}, {4, 0x81},
+    {0, 0x00}, {1, 0x00}, {3, 0x00},
+};
+
+TEST(edid, reads_a_descriptor_starting_with_five_0x01_bytes_as_unused) {
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(0, FULL_HD);
+    write_timing_descriptor(1, FULL_HD);
+    string::memset(descriptor_at(0), UNUSED_FILL, UNUSED_FILL_BYTES);
+    seal_block();
+
+    ASSERT_EQ(parse_block(), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+
+    // A fill with any one of these changes is no longer unused, so the descriptor's bytes give a timing
+    for (const fill_change& change : FILL_CHANGES) {
+        string::memset(descriptor_at(0), UNUSED_FILL, UNUSED_FILL_BYTES);
+        descriptor_at(0)[change.offset] = change.value;
+        seal_block();
+
+        ASSERT_EQ(parse_block(), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 2u);
+        EXPECT_TRUE(g_monitor.first_timing_is_preferred);
+    }
+}
+
+// `FULL_HD` with one field of its timing changed in each row
+static constexpr timing_descriptor_fields FULL_HD_NEIGHBORS[] = {
+    {14851, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0x1E}, // pixel clock
+    {14850, 1921, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0x1E}, // width
+    {14850, 1920, 281, 89, 44, 1080, 45, 4, 5, 0, 0, 0x1E}, // horizontal front porch
+    {14850, 1920, 281, 88, 45, 1080, 45, 4, 5, 0, 0, 0x1E}, // horizontal sync width
+    {14850, 1920, 281, 88, 44, 1080, 45, 4, 5, 0, 0, 0x1E}, // horizontal back porch
+    {14850, 1920, 280, 88, 44, 1081, 45, 4, 5, 0, 0, 0x1E}, // height
+    {14850, 1920, 280, 88, 44, 1080, 46, 5, 5, 0, 0, 0x1E}, // vertical front porch
+    {14850, 1920, 280, 88, 44, 1080, 46, 4, 6, 0, 0, 0x1E}, // vertical sync width
+    {14850, 1920, 280, 88, 44, 1080, 46, 4, 5, 0, 0, 0x1E}, // vertical back porch
+    {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0x1C}, // horizontal sync polarity
+    {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0x1A}, // vertical sync polarity
+};
+
+TEST(edid, lists_a_repeated_timing_once) {
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(0, FULL_HD);
+    write_timing_descriptor(2, FULL_HD);
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 1u);
+
+    for (const timing_descriptor_fields& neighbor : FULL_HD_NEIGHBORS) {
+        write_timing_descriptor(2, neighbor);
+        ASSERT_EQ(parse_block(), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 2u);
+    }
+
+    // A repeat of the first timing and a repeat of a later one, each after another timing, are both listed once
+    write_timing_descriptor(1, FULL_HD_NEIGHBORS[0]);
+    write_timing_descriptor(2, FULL_HD);
+    write_timing_descriptor(3, FULL_HD_NEIGHBORS[0]);
+    ASSERT_EQ(parse_block(), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 2u);
+}
+
+TEST(edid, computes_refresh_in_64_bits) {
+    edid::timing fastest_clock = {655350, 1, 1, 1, 5, 1, 1, 1, 5, true, true};
+    EXPECT_EQ(fastest_clock.refresh_millihertz(), 10239843750ull);
+
+    edid::timing frame_past_32_bits = {1000000, 65534, 1, 1, 1, 65534, 1, 1, 1, true, true};
+    EXPECT_EQ(frame_past_32_bits.refresh_millihertz(), 232ull);
+
+    edid::timing no_lines = {148500, 5, 0, 0, 0, 0, 0, 0, 0, true, true};
+    edid::timing no_pixels = {148500, 0, 0, 0, 0, 5, 0, 0, 0, true, true};
+    EXPECT_EQ(no_lines.refresh_millihertz(), 0ull);
+    EXPECT_EQ(no_pixels.refresh_millihertz(), 0ull);
+}
+
+TEST(edid, rewrites_the_monitor_on_every_parse) {
+    ASSERT_EQ(edid::parse(AOC_AG241QG4_BASE_BLOCK, sizeof(AOC_AG241QG4_BASE_BLOCK), g_monitor), edid::OK);
+
+    make_base_block(AOC_FEATURES_BIT_1_CLEAR);
+    write_timing_descriptor(0, FULL_HD);
+    ASSERT_EQ(parse_block(), edid::OK);
+
+    EXPECT_STREQ(g_monitor.name, "");
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    expect_timing(g_monitor.timings[1], {});
+    EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+}
