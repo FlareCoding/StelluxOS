@@ -6,6 +6,7 @@
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "mm/heap.h"
 
 namespace drivers::nvidia {
 
@@ -27,13 +28,35 @@ struct guest_system_info {
     char     title[GUEST_STRING_BYTES];
 };
 
+// One entry of the table of video memory regions in NVIDIA's static configuration
+struct region_entry {
+    uint64_t base;
+    uint64_t limit;
+    uint64_t reserved;
+    uint32_t performance;
+    uint8_t  supports_compression;
+    uint8_t  supports_scanout;
+    uint8_t  is_protected;
+    uint8_t  type_blacklist[17];
+};
+
 } // namespace
 
 static_assert(sizeof(guest_system_info) == 792, "NVIDIA's layout of the guest system information");
 static_assert(sizeof(FIRMWARE_VERSION) <= GUEST_STRING_BYTES, "the driver's version fits its room");
+static_assert(sizeof(region_entry) == 48, "NVIDIA's layout of a video memory region");
 
 // The bytes of the reply's copy of the arguments that give the VGX version, the first two fields
 constexpr uint32_t VGX_VERSION_BYTES = 2 * sizeof(uint32_t);
+
+// The bytes of NVIDIA's static configuration for this firmware, and where in it the table of video memory regions lies:
+// a 32-bit count of regions, then the entries from the next 8-byte boundary
+constexpr uint32_t STATIC_INFO_BYTES     = 2168;
+constexpr uint32_t REGION_TABLE_OFFSET   = 840;
+constexpr uint32_t REGION_ENTRIES_OFFSET = REGION_TABLE_OFFSET + 8;
+constexpr uint32_t REGION_TABLE_END      = REGION_ENTRIES_OFFSET + VIDEO_MEMORY_REGIONS_MAX * sizeof(region_entry);
+
+static_assert(REGION_TABLE_END <= STATIC_INFO_BYTES, "the table of regions lies inside the static configuration");
 
 int32_t confirm_message_version(gsp& conversation, uint64_t timeout_ns) {
     guest_system_info info = {};
@@ -94,6 +117,111 @@ int32_t confirm_message_version(gsp& conversation, uint64_t timeout_ns) {
     }
 
     return OK;
+}
+
+static region_entry region_entry_at(const uint8_t* info, uint32_t index) {
+    region_entry entry = {};
+    string::memcpy(&entry, info + REGION_ENTRIES_OFFSET + index * sizeof(region_entry), sizeof(entry));
+    return entry;
+}
+
+// Reads the table of regions from the static configuration copied to `info`, of which the reply's payload filled the
+// first `info_bytes` bytes
+static int32_t read_region_table(const uint8_t* info, uint32_t info_bytes, static_configuration& configuration) {
+    if (info_bytes < REGION_TABLE_END) {
+        log::error(
+            "nvidia: the GSP firmware's static configuration has %u bytes, ending before the end of its table of "
+            "video memory regions at byte %u",
+            info_bytes,
+            REGION_TABLE_END
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    uint32_t count = read_u32(info + REGION_TABLE_OFFSET);
+    bool is_count_in_range = count >= 1 && count <= VIDEO_MEMORY_REGIONS_MAX;
+    if (!is_count_in_range) {
+        log::error(
+            "nvidia: the GSP firmware's static configuration gives %u video memory regions, outside the range of 1 "
+            "to %u",
+            count,
+            VIDEO_MEMORY_REGIONS_MAX
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    // Every entry is checked before any is handed back, so `configuration` stays unchanged on every error
+    for (uint32_t i = 0; i < count; i++) {
+        region_entry entry = region_entry_at(info, i);
+        if (entry.limit < entry.base) {
+            log::error(
+                "nvidia: the GSP firmware's video memory region %u ends at 0x%lX, below its first byte 0x%lX",
+                i,
+                entry.limit,
+                entry.base
+            );
+            return ERR_BAD_MESSAGE;
+        }
+
+        bool spans_all_bytes = entry.limit - entry.base + 1 == 0;
+        if (spans_all_bytes) {
+            log::error(
+                "nvidia: the GSP firmware's video memory region %u spans all 2^64 bytes, more than a 64-bit size holds",
+                i
+            );
+            return ERR_BAD_MESSAGE;
+        }
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        region_entry entry = region_entry_at(info, i);
+        video_memory_region& region = configuration.regions[i];
+
+        region.offset = entry.base;
+        region.size = entry.limit - entry.base + 1;
+        region.reserved_bytes = entry.reserved;
+        region.is_reserved = entry.reserved != 0;
+        region.is_protected = entry.is_protected != 0;
+        region.supports_scanout = entry.supports_scanout != 0;
+        region.supports_compression = entry.supports_compression != 0;
+    }
+
+    configuration.region_count = count;
+
+    return OK;
+}
+
+int32_t read_static_configuration(gsp& conversation, uint64_t timeout_ns, static_configuration& configuration) {
+    uint8_t* info = static_cast<uint8_t*>(heap::uzalloc(STATIC_INFO_BYTES));
+    if (info == nullptr) {
+        log::error("nvidia: allocating %u bytes for the GSP firmware's static configuration failed", STATIC_INFO_BYTES);
+        return ERR_NO_MEMORY;
+    }
+
+    received_message reply = {};
+    int32_t rc = conversation.request(
+        FUNCTION_GET_GSP_STATIC_INFO,
+        info,
+        STATIC_INFO_BYTES,
+        STATIC_INFO_BYTES,
+        reply,
+        timeout_ns
+    );
+    if (rc == OK) {
+        log::info(
+            "nvidia: the GSP's firmware sends its static configuration in %u payload bytes, where NVIDIA's layout "
+            "for this firmware takes %u",
+            reply.payload_bytes,
+            STATIC_INFO_BYTES
+        );
+
+        uint32_t info_bytes = reply.payload_bytes < STATIC_INFO_BYTES ? reply.payload_bytes : STATIC_INFO_BYTES;
+        rc = read_region_table(info, info_bytes, configuration);
+    }
+
+    heap::ufree(info);
+
+    return rc;
 }
 
 } // namespace drivers::nvidia
