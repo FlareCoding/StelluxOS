@@ -41,9 +41,10 @@ constexpr uint32_t PASSED_MESSAGES_LOGGED = 16;
 
 // What `message_queues::receive` reports of a message the firmware wrote
 struct received_message {
-    uint32_t function;      // NVIDIA's number for what the message reports or answers
-    uint32_t result;        // the status code the firmware put in the RPC header, its result for a request it answers
-    uint32_t payload_bytes; // how many bytes the message carries after its headers
+    uint32_t function;       // NVIDIA's number for what the message reports or answers
+    uint32_t result;         // the RPC header's first status code, the firmware's result for a request it answers
+    uint32_t private_result; // the RPC header's second status code, which only some requests use for their result
+    uint32_t payload_bytes;  // how many bytes the message carries after its headers
 };
 
 /**
@@ -198,7 +199,7 @@ public:
      * is summed and copied where it lies, while NVIDIA's driver copies the
      * whole message first. Both drivers see the same bytes, as the firmware
      * rewrites only elements the read pointer has passed.
-     * @param out Receives the message's function, result and payload size,
+     * @param out Receives the message's function, results and payload size,
      * which never exceeds `payload_capacity` or `MESSAGE_PAYLOAD_MAX_BYTES`,
      * on `OK`, and is left unchanged on an error.
      * @param payload Where the payload is copied, which may be null when
@@ -257,7 +258,7 @@ int32_t link_status_queue_within(message_queues& queues, uint64_t timeout_ns);
  * or sequence number check. The call spins on the calling CPU without
  * sleeping, holding it for up to `timeout_ns` and then until its last read
  * returns.
- * @param out Receives the message's function, result and payload size, which
+ * @param out Receives the message's function, results and payload size, which
  * never exceeds `payload_capacity` or `MESSAGE_PAYLOAD_MAX_BYTES`, on `OK`,
  * and is left unchanged on an error.
  * @param payload Where the payload is copied, as for
@@ -310,9 +311,9 @@ int32_t receive_within(
  * `run_cpu_sequencer` requires.
  * @param sequencer What the sequencer's steps take, kept from bring-up.
  * @param function NVIDIA's number for the message awaited.
- * @param out Receives the awaited message's function, result and payload size,
- * which never exceeds `payload_capacity` or `MESSAGE_PAYLOAD_MAX_BYTES`, on
- * `OK`, and is left unchanged on an error.
+ * @param out Receives the awaited message's function, results and payload
+ * size, which never exceeds `payload_capacity` or `MESSAGE_PAYLOAD_MAX_BYTES`,
+ * on `OK`, and is left unchanged on an error.
  * @param payload Where each message's payload is copied, the awaited message's
  * last.
  * @param payload_capacity How many bytes `payload` holds. A capacity of

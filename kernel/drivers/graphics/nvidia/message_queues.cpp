@@ -400,6 +400,7 @@ int32_t message_queues::receive(received_message& out, void* payload, uint32_t p
 
     out.function = headers.function;
     out.result = headers.result;
+    out.private_result = headers.private_result;
     out.payload_bytes = payload_bytes;
 
     // The firmware may rewrite the elements once the read pointer passes them, so every read of them comes first

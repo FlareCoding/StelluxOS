@@ -28,11 +28,14 @@ int32_t unload_gsp_firmware(
     uint64_t suspend_timeout_ns
 ) {
     unload_arguments arguments = {};
+    received_message reply = {};
 
     int32_t request_rc = conversation.request(
         FUNCTION_UNLOADING_GUEST_DRIVER,
         &arguments,
         sizeof(arguments),
+        0,
+        reply,
         reply_timeout_ns
     );
     int32_t suspend_rc = wait_for_gsp_suspend(regs, suspend_timeout_ns);

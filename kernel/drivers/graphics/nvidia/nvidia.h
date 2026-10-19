@@ -23,17 +23,17 @@ constexpr int32_t ERR_NO_MEMORY      = -6; // allocating memory for the card to 
 constexpr int32_t ERR_QUEUE_FULL     = -7; // the command queue has no room for a message, as the read pointer `send`
                                            // reads for the firmware has not moved far enough or lies past the ring
 constexpr int32_t ERR_TOO_LARGE      = -8; // a payload exceeds the most bytes a message to the GSP's firmware carries,
-                                           // or the room a caller gives a received message's payload
+                                           // or the room a caller of `receive` gives the message's payload
 constexpr int32_t ERR_NOT_LINKED     = -9; // the status queue is not linked, as no call to `link_status_queue` has
                                            // accepted its header, such as before the firmware writes it
 constexpr int32_t ERR_QUEUE_EMPTY    = -10; // the status queue shows no message to read, as the firmware's write
                                             // pointer equals the read pointer or lies past the ring
 constexpr int32_t ERR_BAD_MESSAGE    = -11; // a message from the GSP's firmware fails a check of its element count, the
-                                            // length its RPC header gives, its checksum or its sequence number, or
-                                            // the CPU sequencer it carries fails a check of its sizes or its steps
-constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a failure, as a ready message whose result
-                                            // is not 0 reports that its initialization failed, and a reply whose
-                                            // result is not 0 that the request failed
+                                            // length its RPC header gives, its checksum, its sequence number, the sizes
+                                            // or steps of a CPU sequencer it carries, or a reply's payload size
+constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a failure, as a ready message or a reply whose
+                                            // result is not 0 does, or does not take the driver's VGX version, as a
+                                            // reply shows by a private result other than 0 or by giving another version
 
 // Converts the timeouts the driver logs to milliseconds
 constexpr uint64_t NS_PER_MS = 1000000;
