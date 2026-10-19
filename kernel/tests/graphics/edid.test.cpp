@@ -36,6 +36,10 @@ static constexpr uint8_t DISPLAY_TAG_PRODUCT_NAME = 0xFC;
 static constexpr size_t  NAME_OFFSET              = 5;
 static constexpr size_t  NAME_BYTES               = 13;
 
+static constexpr size_t  EXTENSION_TAG_OFFSET    = 0;
+static constexpr uint8_t EXTENSION_TAG_CTA_861   = 0x02;
+static constexpr uint8_t EXTENSION_TAG_DISPLAYID = 0x70;
+
 // The AOC's features byte, and the same with its preferred bit (bit 1) clear
 static constexpr uint8_t AOC_FEATURES             = 0x3B;
 static constexpr uint8_t AOC_FEATURES_BIT_1_CLEAR = 0x39;
@@ -82,14 +86,21 @@ static constexpr edid::timing             FULL_HD_TIMING = {148500, 1920, 88, 44
 static uint8_t       g_block[edid::BLOCK_BYTES];
 static edid::monitor g_monitor;
 
+// A base block, then room for the 255 extension blocks byte 126 can give, so every byte read past `size` is in `g_edid`
+static uint8_t g_edid[256 * edid::BLOCK_BYTES];
+
 // Sets the checksum byte so the block's bytes sum to 0 modulo 256
-static void seal_block() {
+static void seal(uint8_t* block) {
     uint8_t sum = 0;
     for (size_t i = 0; i < CHECKSUM_OFFSET; i++) {
-        sum = static_cast<uint8_t>(sum + g_block[i]);
+        sum = static_cast<uint8_t>(sum + block[i]);
     }
 
-    g_block[CHECKSUM_OFFSET] = static_cast<uint8_t>(0x100 - sum);
+    block[CHECKSUM_OFFSET] = static_cast<uint8_t>(0x100 - sum);
+}
+
+static void seal_block() {
+    seal(g_block);
 }
 
 // The AOC's base block with `features` as its features byte, no extensions and every descriptor a display descriptor of
@@ -143,6 +154,35 @@ static int32_t parse_block() {
     return edid::parse(g_block, sizeof(g_block), g_monitor);
 }
 
+// Copies `g_block` into `g_edid` as its base block and zeroes every byte after it
+static void copy_block_into_edid() {
+    string::memset(g_edid, 0, sizeof(g_edid));
+    string::memcpy(g_edid, g_block, edid::BLOCK_BYTES);
+}
+
+static uint8_t* block_at(size_t index) {
+    return g_edid + index * edid::BLOCK_BYTES;
+}
+
+// Sets byte 126 of `g_edid`'s base block to `count`, keeping the block's checksum right
+static void set_extension_count(uint8_t count) {
+    g_edid[EXTENSION_COUNT_OFFSET] = count;
+    seal(g_edid);
+}
+
+// Writes block `index` of `g_edid` as an extension block of kind `tag` holding nothing else, its checksum right
+static void write_extension(size_t index, uint8_t tag) {
+    uint8_t* block = block_at(index);
+    string::memset(block, 0, edid::BLOCK_BYTES);
+
+    block[EXTENSION_TAG_OFFSET] = tag;
+    seal(block);
+}
+
+static int32_t parse_edid(size_t size) {
+    return edid::parse(g_edid, size, g_monitor);
+}
+
 static void expect_timing(const edid::timing& actual, const edid::timing& expected) {
     EXPECT_EQ(actual.pixel_clock_khz, expected.pixel_clock_khz);
     EXPECT_EQ(actual.width, expected.width);
@@ -191,6 +231,9 @@ TEST(edid, reads_the_aoc_ag241qg4_base_block) {
     EXPECT_EQ(g_monitor.timings[0].refresh_millihertz(), 59950ull);
     EXPECT_EQ(g_monitor.timings[1].refresh_millihertz(), 143911ull);
     EXPECT_TRUE(g_monitor.first_timing_is_preferred);
+
+    // Byte 126 says one extension block follows, and the fixture leaves it out
+    EXPECT_EQ(g_monitor.skipped_extensions, 1u);
 }
 
 TEST(edid, refuses_fewer_bytes_than_one_block) {
@@ -203,7 +246,7 @@ TEST(edid, refuses_fewer_bytes_than_one_block) {
 // A base block, then the bytes a fifth descriptor at byte 126 would read as a timing, then 0xFF bytes
 static uint8_t g_two_blocks[2 * edid::BLOCK_BYTES];
 
-TEST(edid, ignores_bytes_past_the_base_block) {
+TEST(edid, ignores_bytes_past_a_base_block_whose_byte_126_is_0) {
     size_t fifth_descriptor_offset = DESCRIPTORS_OFFSET + BASE_DESCRIPTORS * DESCRIPTOR_BYTES;
     size_t bytes_inside = edid::BLOCK_BYTES - fifth_descriptor_offset;
 
@@ -221,6 +264,7 @@ TEST(edid, ignores_bytes_past_the_base_block) {
     ASSERT_EQ(g_monitor.timing_count, 1u);
     expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
     EXPECT_TRUE(g_monitor.first_timing_is_preferred);
+    EXPECT_EQ(g_monitor.skipped_extensions, 0u);
 }
 
 TEST(edid, refuses_a_wrong_header) {
@@ -656,4 +700,120 @@ TEST(edid, rewrites_the_monitor_on_every_parse) {
     expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
     expect_timing(g_monitor.timings[1], {});
     EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+    EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+}
+
+TEST(edid, counts_the_extension_blocks_the_bytes_do_not_hold_whole) {
+    make_base_block(AOC_FEATURES);
+    copy_block_into_edid();
+    set_extension_count(1);
+    write_extension(1, EXTENSION_TAG_CTA_861);
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES - 1), edid::OK);
+    EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+
+    // Block 2 lies past the bytes given, so it is skipped whether its checksum passes or fails
+    set_extension_count(2);
+    write_extension(2, EXTENSION_TAG_CTA_861);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+
+    block_at(2)[CHECKSUM_OFFSET]++;
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+
+    set_extension_count(0xFF);
+    ASSERT_EQ(parse_edid(edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.skipped_extensions, 255u);
+}
+
+TEST(edid, counts_cta_861_and_displayid_extension_blocks_failing_their_checksum) {
+    static constexpr uint8_t CHECKED_TAGS[] = {EXTENSION_TAG_CTA_861, EXTENSION_TAG_DISPLAYID};
+
+    for (uint8_t tag : CHECKED_TAGS) {
+        make_base_block(AOC_FEATURES);
+        write_timing_descriptor(0, FULL_HD);
+        copy_block_into_edid();
+        set_extension_count(1);
+
+        write_extension(1, tag);
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+
+        // The base block's timing stays listed when the extension block is skipped
+        block_at(1)[CHECKSUM_OFFSET]++;
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+        ASSERT_EQ(g_monitor.timing_count, 1u);
+        expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+
+        write_extension(1, tag);
+        block_at(1)[CHECKSUM_OFFSET] ^= 0x80;
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+    }
+}
+
+// 0x10, which marks a Video Timing Block (an extension that lists timings), the tags either side of 0x02 and 0x70, and
+// those two with only the high bit flipped
+static constexpr uint8_t UNCHECKED_TAGS[] = {0x01, 0x03, 0x82, 0x6F, 0x71, 0xF0, 0x10};
+
+TEST(edid, counts_no_extension_block_of_another_kind_failing_its_checksum) {
+    for (uint8_t tag : UNCHECKED_TAGS) {
+        make_base_block(AOC_FEATURES);
+        copy_block_into_edid();
+        set_extension_count(1);
+        write_extension(1, tag);
+        block_at(1)[CHECKSUM_OFFSET]++;
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+    }
+}
+
+// Blocks 1 and 3 fail their checksum around a good block 2, and a failing block 4 lies just past the last block while
+// byte 126 says 3, then is the last when it says 4
+TEST(edid, counts_failing_blocks_up_to_the_extension_count_and_none_past_it) {
+    make_base_block(AOC_FEATURES);
+    copy_block_into_edid();
+    write_extension(1, EXTENSION_TAG_CTA_861);
+    write_extension(2, EXTENSION_TAG_DISPLAYID);
+    write_extension(3, EXTENSION_TAG_DISPLAYID);
+    write_extension(4, EXTENSION_TAG_CTA_861);
+    block_at(1)[CHECKSUM_OFFSET]++;
+    block_at(3)[CHECKSUM_OFFSET]++;
+    block_at(4)[CHECKSUM_OFFSET]++;
+
+    set_extension_count(3);
+    ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
+    EXPECT_EQ(g_monitor.skipped_extensions, 2u);
+
+    set_extension_count(4);
+    ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
+    EXPECT_EQ(g_monitor.skipped_extensions, 3u);
+}
+
+// The start of a CTA-861 block whose one data block (a tagged field before the block's descriptors) is the HDMI Forum's
+// override of the extension count (HF-EEODB), giving 2
+static constexpr uint8_t HF_EEODB_BLOCK_START[] = {EXTENSION_TAG_CTA_861, 0x03, 0x07, 0x00, 0xE2, 0x78, 0x02};
+
+// A failing CTA-861 block 2 stays unchecked where byte 126 of an EDID 1.3 (version 1, revision 3) gives 1 and block 1
+// holds the override
+TEST(edid, takes_the_extension_count_from_byte_126_alone) {
+    make_base_block(AOC_FEATURES);
+    g_block[REVISION_OFFSET] = 3;
+    seal_block();
+    copy_block_into_edid();
+    set_extension_count(1);
+
+    string::memcpy(block_at(1), HF_EEODB_BLOCK_START, sizeof(HF_EEODB_BLOCK_START));
+    seal(block_at(1));
+    write_extension(2, EXTENSION_TAG_CTA_861);
+    block_at(2)[CHECKSUM_OFFSET]++;
+
+    ASSERT_EQ(parse_edid(3 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.skipped_extensions, 0u);
 }
