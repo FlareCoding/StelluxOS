@@ -196,6 +196,57 @@ src/common/inc/swref/published/disp/v04_00/dev_disp.h
     field, in kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
+src/common/inc/swref/published/maxwell/gm107/dev_bus.h
+    the BAR0 window register, its base field of 64 KiB steps in bits 23:0 and
+    its target field in bits 25:24, where 0 is video memory, in bar0_window.cpp
+    and kernel/tests/graphics/nvidia_falcon.test.cpp, that the register holds a
+    base of 64 KiB steps and a target, in bar0_window.h, the target field's
+    value 2 for coherent system memory, in
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the reach of the base
+    field's 24 bits, in bar0_window.h,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/bus/arch/maxwell/kern_bus_gm107.c
+    that NVIDIA's function for reads and writes of up to 8 bytes sets the
+    window's base to the 64 KiB step holding the offset accessed and its target
+    to video memory, in bar0_window.h, bar0_window.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that it does so only for an
+    access the window at its cached base (the base last set or read) does not
+    hold, in bar0_window.h, that NVIDIA's driver writes the base and the target
+    in turn, in bar0_window.h, that the VBIOS also uses the window, in
+    bar0_window.h, that after a set the function writes back only the base
+    cached before the set, with video memory as the target, unless NVIDIA's
+    driver is setting up its BAR2, in bar0_window.h, that the check NVIDIA's
+    driver makes that BAR2 works writes back the target it found, in
+    bar0_window.h, that the function reads 8 bytes as two 32-bit words, in
+    bar0_window.h and bar0_window.cpp, that it reads the word at the offset as
+    the value's low half, in bar0_window.h, bar0_window.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and that it reads that word
+    first, in bar0_window.h and bar0_window.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2004-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_gpu_access_nvoc.h
+    that a write of one field of a register keeps the register's other bits, in
+    bar0_window.h, bar0_window.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2004-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/bus/kern_bus.c
+    that the static configuration's field bar1PdeBase holds the offset in video
+    memory of the root page directory of the page tables the GSP's firmware
+    binds BAR1 to, in gsp_info.h, gsp_info.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that NVIDIA's
+    driver uses the offset with no check, in gsp_info.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/pascal/gp100/dev_mmu.h
+    the 8 bytes of an entry of a version 2 page directory, in gsp_info.h,
+    gsp_info.cpp, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
 src/common/inc/swref/published/turing/tu102/dev_bus.h
     the offset of the VBIOS scratch registers and their 4-byte spacing, in
     protected_memory.cpp and
@@ -209,9 +260,12 @@ src/common/inc/swref/published/turing/tu102/dev_fb.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/turing/tu102/dev_ram.h
-    the 1 MiB size of the PRAMIN window, which NVIDIA's layout takes as the
-    most the VGA workspace takes, in protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    the 1 MiB size of the PRAMIN window (BAR0's window), which NVIDIA's layout
+    takes as the most the VGA workspace takes, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the window's size
+    and its start in BAR0, 0x700000, in bar0_window.h and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the size alone in
+    nvidia_gpu.h, and the start alone in bar0_window.cpp
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/turing/tu102/hwproject.h
@@ -1122,11 +1176,11 @@ src/nvidia/inc/kernel/gpu/gsp/gsp_static_config.h
     the system information's fields, their order and types, in
     boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,
     the static configuration's members, their order and types, which give its
-    size for this firmware, 2168 bytes, and the offset of its table of video
-    memory regions, 840, in gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the static
-    configuration holds the facts about the GPU the firmware gathers as it
-    starts, in gsp_info.h
+    size for this firmware (2168 bytes), the offset of its table of video memory
+    regions (840) and that of its field bar1PdeBase (2088), in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    that the static configuration holds the facts about the GPU the firmware
+    gathers as it starts, in gsp_info.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_chipset_nvoc.h
@@ -1306,7 +1360,8 @@ kernel-open/nvidia/nv-pci.c
     not valid and numbers only the valid BARs that hold memory, so that without
     BAR1 its framebuffer BAR is BAR3 and it has no instance memory, in
     boot_messages.h, boot_messages.cpp and
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that its BAR2, the
+    third valid BAR holding memory, is BAR3 here, in bar0_window.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 kernel-open/common/inc/nv.h

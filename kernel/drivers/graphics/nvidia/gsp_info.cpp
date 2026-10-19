@@ -1,6 +1,7 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
 
 #include "drivers/graphics/nvidia/gsp_info.h"
+#include "drivers/graphics/nvidia/bar0_window.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -56,7 +57,13 @@ constexpr uint32_t REGION_TABLE_OFFSET   = 840;
 constexpr uint32_t REGION_ENTRIES_OFFSET = REGION_TABLE_OFFSET + 8;
 constexpr uint32_t REGION_TABLE_END      = REGION_ENTRIES_OFFSET + VIDEO_MEMORY_REGIONS_MAX * sizeof(region_entry);
 
-static_assert(REGION_TABLE_END <= STATIC_INFO_BYTES, "the table of regions lies inside the static configuration");
+// Where the last field read, the one holding the 64-bit offset of BAR1's root page directory, lies in the static
+// configuration, and where that field ends
+constexpr uint32_t BAR1_PAGE_DIRECTORY_FIELD_OFFSET = 2088;
+constexpr uint32_t READ_FIELDS_END                  = BAR1_PAGE_DIRECTORY_FIELD_OFFSET + sizeof(uint64_t);
+
+static_assert(REGION_TABLE_END <= BAR1_PAGE_DIRECTORY_FIELD_OFFSET, "the table of regions ends before the field");
+static_assert(READ_FIELDS_END <= STATIC_INFO_BYTES, "the fields read lie inside the static configuration");
 
 int32_t confirm_message_version(gsp& conversation, uint64_t timeout_ns) {
     guest_system_info info = {};
@@ -125,19 +132,8 @@ static region_entry region_entry_at(const uint8_t* info, uint32_t index) {
     return entry;
 }
 
-// Reads the table of regions from the static configuration copied to `info`, of which the reply's payload filled the
-// first `info_bytes` bytes
-static int32_t read_region_table(const uint8_t* info, uint32_t info_bytes, static_configuration& configuration) {
-    if (info_bytes < REGION_TABLE_END) {
-        log::error(
-            "nvidia: the GSP firmware's static configuration has %u bytes, ending before the end of its table of "
-            "video memory regions at byte %u",
-            info_bytes,
-            REGION_TABLE_END
-        );
-        return ERR_BAD_MESSAGE;
-    }
-
+// Reads the table of regions from the static configuration copied to `info`
+static int32_t read_region_table(const uint8_t* info, static_configuration& configuration) {
     uint32_t count = read_u32(info + REGION_TABLE_OFFSET);
     bool is_count_in_range = count >= 1 && count <= VIDEO_MEMORY_REGIONS_MAX;
     if (!is_count_in_range) {
@@ -191,7 +187,59 @@ static int32_t read_region_table(const uint8_t* info, uint32_t info_bytes, stati
     return OK;
 }
 
-int32_t read_static_configuration(gsp& conversation, uint64_t timeout_ns, static_configuration& configuration) {
+// Reads the members of `configuration` from the static configuration copied to `info`, of which the reply's payload
+// filled the first `info_bytes` bytes
+static int32_t read_configuration(
+    const uint8_t* info,
+    uint32_t info_bytes,
+    uint64_t video_memory_size,
+    static_configuration& configuration
+) {
+    if (info_bytes < READ_FIELDS_END) {
+        log::error(
+            "nvidia: the GSP firmware's static configuration has %u bytes, ending before the field holding the "
+            "offset of BAR1's root page directory ends at byte %u",
+            info_bytes,
+            READ_FIELDS_END
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    uint64_t page_directory_offset = 0;
+    string::memcpy(&page_directory_offset, info + BAR1_PAGE_DIRECTORY_FIELD_OFFSET, sizeof(page_directory_offset));
+
+    bool is_entry_aligned = page_directory_offset % sizeof(uint64_t) == 0;
+    bool is_below_window_reach = page_directory_offset < BAR0_WINDOW_REACH;
+    bool is_entry_in_video_memory = lies_inside(page_directory_offset, sizeof(uint64_t), video_memory_size);
+    if (!is_entry_aligned || !is_below_window_reach || !is_entry_in_video_memory) {
+        log::error(
+            "nvidia: the GSP firmware's static configuration places BAR1's root page directory at 0x%lX in video "
+            "memory, refused since that offset is not a multiple of 8 below 0x%lX (the reach of the base of BAR0's "
+            "window) or the directory's first entry ends past the 0x%lX bytes of video memory the card's boot "
+            "firmware records",
+            page_directory_offset,
+            BAR0_WINDOW_REACH,
+            video_memory_size
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    int32_t rc = read_region_table(info, configuration);
+    if (rc != OK) {
+        return rc;
+    }
+
+    configuration.bar1_page_directory_offset = page_directory_offset;
+
+    return OK;
+}
+
+int32_t read_static_configuration(
+    gsp& conversation,
+    uint64_t timeout_ns,
+    uint64_t video_memory_size,
+    static_configuration& configuration
+) {
     uint8_t* info = static_cast<uint8_t*>(heap::uzalloc(STATIC_INFO_BYTES));
     if (info == nullptr) {
         log::error("nvidia: allocating %u bytes for the GSP firmware's static configuration failed", STATIC_INFO_BYTES);
@@ -216,7 +264,7 @@ int32_t read_static_configuration(gsp& conversation, uint64_t timeout_ns, static
         );
 
         uint32_t info_bytes = reply.payload_bytes < STATIC_INFO_BYTES ? reply.payload_bytes : STATIC_INFO_BYTES;
-        rc = read_region_table(info, info_bytes, configuration);
+        rc = read_configuration(info, info_bytes, video_memory_size, configuration);
     }
 
     heap::ufree(info);

@@ -31,7 +31,7 @@ constexpr int32_t ERR_QUEUE_EMPTY    = -10; // the status queue shows no message
                                             // pointer equals the read pointer or lies past the ring
 constexpr int32_t ERR_BAD_MESSAGE    = -11; // a message from the GSP's firmware fails a check of its element count, the
                                             // length its RPC header gives, its checksum, its sequence number or a CPU
-                                            // sequencer it carries, or a reply's payload size or video memory regions
+                                            // sequencer it carries, or a reply's payload size or video memory layout
 constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a failure, as a ready message or a reply whose
                                             // result is not 0 does, or does not take the driver's VGX version, as a
                                             // reply shows by a private result other than 0 or by giving another version

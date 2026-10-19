@@ -1,6 +1,7 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
 
 #include "drivers/graphics/nvidia/nvidia_gpu.h"
+#include "drivers/graphics/nvidia/bar0_window.h"
 #include "drivers/graphics/nvidia/bar1.h"
 #include "drivers/graphics/nvidia/boot_messages.h"
 #include "drivers/graphics/nvidia/chip.h"
@@ -615,7 +616,7 @@ int32_t nvidia_gpu_driver::attach() {
     );
 
     nvidia::static_configuration configuration = {};
-    rc = nvidia::read_static_configuration(m_gsp, nvidia::RECEIVE_TIMEOUT_NS, configuration);
+    rc = nvidia::read_static_configuration(m_gsp, nvidia::RECEIVE_TIMEOUT_NS, frts.video_memory_size, configuration);
     if (rc != nvidia::OK) {
         return rc;
     }
@@ -638,9 +639,18 @@ int32_t nvidia_gpu_driver::attach() {
         );
     }
 
+    uint64_t first_entry = nvidia::read_video_memory_u64(regs, configuration.bar1_page_directory_offset);
     log::info(
-        "nvidia: bring-up stops once the firmware's video memory regions are logged, leaving detach to unload the "
-        "firmware, stop SEC2 and the GSP, run FWSEC's SB command and run booter unload"
+        "nvidia: BAR1's block register reads 0x%X, and the root page directory of the page tables the GSP's firmware "
+        "binds BAR1 to lies at 0x%lX in video memory, its first entry reading 0x%lX",
+        nvidia::read_bar1_block(regs),
+        configuration.bar1_page_directory_offset,
+        first_entry
+    );
+
+    log::info(
+        "nvidia: bring-up stops once the first entry of BAR1's root page directory is logged, leaving detach to unload "
+        "the firmware, stop SEC2 and the GSP, run FWSEC's SB command and run booter unload"
     );
 
     return DECLINED;

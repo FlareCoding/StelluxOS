@@ -39,6 +39,8 @@ struct video_memory_region {
 struct static_configuration {
     video_memory_region regions[VIDEO_MEMORY_REGIONS_MAX]; // the video memory regions, in the firmware's order
     uint32_t            region_count;                      // how many entries of `regions` hold a region
+    uint64_t            bar1_page_directory_offset;        // bytes from the start of video memory to the root page
+                                                           // directory of the page tables the firmware binds BAR1 to
 };
 
 /**
@@ -76,35 +78,56 @@ int32_t confirm_message_version(gsp& conversation, uint64_t timeout_ns);
  * @brief Ask the GSP's firmware for its static configuration (the facts about
  * the GPU the firmware gathers as it starts), as NVIDIA's driver does with its
  * second request once the firmware is ready, and read from it the members
- * `static_configuration` holds: the video memory regions the firmware reports.
- * The request carries 2168 zero bytes, the size of NVIDIA's static
- * configuration for this firmware, from a buffer allocated on the unprivileged
- * heap for the call, and `gsp::request` copies the reply's payload back over
- * those bytes. NVIDIA's driver checks only the reply's result before copying
- * the whole configuration, while here the reply's payload must also reach the
- * end of the table of regions. The table must give 1 to
- * `VIDEO_MEMORY_REGIONS_MAX` regions, as NVIDIA's driver requires. Each
- * region's last byte must lie at or above its first, and no region may span
- * all 2^64 bytes, so that a region's size, its last byte less its first plus 1
- * as NVIDIA counts it, never wraps. NVIDIA's driver makes neither check. A
- * region with reserved bytes is reserved, as NVIDIA's driver decides when it
- * reads the table. Once the request succeeds, the call logs the reply's
- * payload size before reading the table. It spins on the calling CPU without
- * sleeping, through the wait for the reply, which `gsp::request` bounds.
+ * `static_configuration` holds: the video memory regions the firmware reports
+ * and where BAR1's root page directory lies. BAR1 is the CPU's window into the
+ * card's video memory, and its root page directory is the top level of the
+ * page tables the firmware binds BAR1 to. The request carries 2168 zero bytes,
+ * the size of NVIDIA's static configuration for this firmware, from a buffer
+ * allocated on the unprivileged heap for the call, and `gsp::request` copies
+ * the reply's payload back over those bytes. NVIDIA's driver checks only the
+ * reply's result before copying the whole configuration, while here the
+ * reply's payload must also extend to byte 2096, where the field holding the
+ * root page directory's offset, the last field read, ends. The configuration's
+ * table of video memory regions must give 1 to `VIDEO_MEMORY_REGIONS_MAX`
+ * regions, as NVIDIA's driver requires. Each region's last byte must lie at or
+ * above its first, and no region may span all 2^64 bytes, so that a region's
+ * size, its last byte less its first plus 1 as NVIDIA counts it, never wraps.
+ * NVIDIA's driver makes neither check. A region with reserved bytes is
+ * reserved, as NVIDIA's driver decides when it reads the table. The root page
+ * directory's offset must be a multiple of 8 (the size of its entries) below
+ * `BAR0_WINDOW_REACH`, as `read_video_memory_u64` requires to read the first
+ * entry, and that entry must end at or below `video_memory_size`, since an
+ * offset past the card's memory names no page directory. NVIDIA's driver uses
+ * the offset unchecked. Once the request succeeds, the call logs the reply's
+ * payload size before reading the configuration. It spins on the calling CPU
+ * without sleeping, through the wait for the reply, which `gsp::request`
+ * bounds.
  * @param conversation The driver's `gsp`, whose status queue must be linked.
  * @param timeout_ns How long the wait for the reply may take, as
  * `gsp::request` takes it, `RECEIVE_TIMEOUT_NS` at bring-up.
- * @param configuration Receives on `OK` the regions in the firmware's order
- * and their count, 1 to `VIDEO_MEMORY_REGIONS_MAX`, the entries past the count
- * left unchanged, and is left unchanged on an error.
+ * @param video_memory_size The video memory's size in bytes, as
+ * `frts_region::video_memory_size` holds it.
+ * @param configuration Receives on `OK` the root page directory's offset (a
+ * multiple of 8 below `BAR0_WINDOW_REACH`, with the directory's first entry
+ * ending at or below `video_memory_size`) and the regions in the firmware's
+ * order with their count (1 to `VIDEO_MEMORY_REGIONS_MAX`), the entries past
+ * the count left unchanged. It is left unchanged on an error.
  * @return `OK`, `ERR_NO_MEMORY` when the buffer cannot be allocated, what
  * `gsp::request` returns when the request fails, logged as its doc describes,
- * or `ERR_BAD_MESSAGE` when the reply's payload ends before the table's end,
- * the table gives no region or more than `VIDEO_MEMORY_REGIONS_MAX`, or a
- * region's last byte lies below its first or the region spans all 2^64 bytes.
- * Every error but the request's is logged here.
+ * or `ERR_BAD_MESSAGE` when the reply's payload ends before byte 2096, when
+ * the root page directory's offset is not a multiple of 8 below
+ * `BAR0_WINDOW_REACH` or the directory's first entry ends past
+ * `video_memory_size`, when the table gives no region or more than
+ * `VIDEO_MEMORY_REGIONS_MAX`, or when a region's last byte lies below its
+ * first or the region spans all 2^64 bytes. Every error but the request's is
+ * logged here.
  */
-int32_t read_static_configuration(gsp& conversation, uint64_t timeout_ns, static_configuration& configuration);
+int32_t read_static_configuration(
+    gsp& conversation,
+    uint64_t timeout_ns,
+    uint64_t video_memory_size,
+    static_configuration& configuration
+);
 
 } // namespace drivers::nvidia
 
