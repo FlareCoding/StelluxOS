@@ -372,8 +372,11 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     GSP's log is written out before the GSP's reset, in gsp_unload.h, that the
     suspend wait's result is dropped, in gsp_unload.h and nvidia_gpu.h, that
     the thread-state budget is not started again before a request, the request
-    to unload among them, in cpu_sequencer.h, gsp.h and gsp_unload.h, and that
-    it is started again before the GSP's reset at unload, in nvidia_gpu.h
+    to unload among them, in cpu_sequencer.h, gsp.h and gsp_unload.h, that it is
+    started again before the GSP's reset at unload, in nvidia_gpu.h, and that
+    once the firmware is ready NVIDIA's driver first sends the guest system
+    information, failing the boot when it fails, in gsp_info.h, nvidia_gpu.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -1052,7 +1055,9 @@ src/nvidia/src/kernel/rmapi/rpc_common.c
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the zeros in
     every field of the system information NVIDIA's driver does not set, in
     boot_messages.h, boot_messages.cpp and
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that the RPC
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the zeros after the
+    driver's version string in the guest system information, in gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the RPC
     version the driver runs at is made from the VGX version, in gsp_unload.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -1108,9 +1113,25 @@ src/nvidia/kernel/vgpu/nv/rpc.c
     waits for its reply (the next message carrying the request's function),
     whose result fails the request when it is not NVIDIA's success value, in
     nvidia.h, gsp.h, gsp.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the reply's
-    status is then handed up as the request's when it lies below 0xFF000000, and
-    NV_ERR_GENERIC in its place otherwise, in gsp.h
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a failing reply's
+    status is handed up as the request's when it lies below 0xFF000000, and
+    NV_ERR_GENERIC in its place otherwise, in gsp.h, that only some requests
+    report through the private result, in message_queues.h, what NVIDIA's driver
+    sends as the guest system information (the VGX version, the room of 256
+    bytes for each of the three strings and its version string as the driver's),
+    in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that NVIDIA's driver
+    sends its own build's branch name, title and changelist number in the guest
+    system information, in gsp_info.h, the rule that the firmware refuses the
+    version with a private result other than NV_OK, which NVIDIA's driver hands
+    up whatever its value unless it sends the request again, in gsp.h,
+    gsp_info.h, gsp_info.cpp, nvidia.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that NVIDIA's driver
+    reads the version from the reply whatever the reply's length, in gsp_info.h,
+    and that NVIDIA's driver takes the version a successful reply gives and
+    sends a refusing reply back as its request when the version the reply gives
+    differs from the version sent and is at least 0x18.00, in gsp_info.h and
+    gsp_info.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
@@ -1121,8 +1142,10 @@ src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the ready message's
     function number, in message_queues.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, its name
-    GSP_INIT_DONE, in nvidia_gpu.h, and the request to unload's function
-    number, in gsp_unload.h and
+    GSP_INIT_DONE, in nvidia_gpu.h, the guest system information's function
+    number, in gsp_info.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the request to
+    unload's function number, in gsp_unload.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     It carries no notice of its own and is covered by the package's COPYING,
     which gives the notice below and this copyright line:
@@ -1140,9 +1163,12 @@ src/nvidia/generated/g_rpc-structures.h
     holds, the words its steps take and the save area before the steps, in
     cpu_sequencer.h, cpu_sequencer.cpp,
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the layout of
-    version 0x1F07 of the request to unload's arguments, in gsp_unload.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the layout of the
+    guest system information, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the lowest VGX version
+    NVIDIA's driver sends its request again at, 0x18.00, in gsp_info.h, and the
+    layout of version 0x1F07 of the request to unload's arguments, in
+    gsp_unload.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_os_nvoc.h
@@ -1269,12 +1295,28 @@ src/nvidia/generated/g_rpc_private.h
 
 src/nvidia/kernel/inc/vgpu/vgpu_version.h
     the VGX version 0x23.05, from which NVIDIA's driver makes the RPC version
-    it runs this firmware at, in gsp_unload.cpp
+    it runs this firmware at, in gsp_unload.cpp, and which it sends in the guest
+    system information, in gsp_info.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/common/sdk/nvidia/inc/ctrl/ctrl0000/ctrl0000system.h
+    the room of 256 bytes NVIDIA's driver gives each string of the guest system
+    information, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/nvUnixVersion.h
+    the version string NVIDIA's driver sends as its own in the guest system
+    information, in gsp_info.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
-g_gpu_nvoc.c, rpc_global_enums.h and g_rpc_private.h the package's COPYING,
-carries this permission notice:
+g_gpu_nvoc.c, rpc_global_enums.h, g_rpc_private.h and nvUnixVersion.h the
+package's COPYING, carries this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),

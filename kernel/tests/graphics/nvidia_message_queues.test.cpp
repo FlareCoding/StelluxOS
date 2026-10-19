@@ -8,6 +8,7 @@
 #include "common/string.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/gsp.h"
+#include "drivers/graphics/nvidia/gsp_info.h"
 #include "drivers/graphics/nvidia/gsp_unload.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -31,6 +32,7 @@ using drivers::nvidia::QUEUE_MEMORY_BYTES;
 using drivers::nvidia::RECEIVE_TIMEOUT_NS;
 using drivers::nvidia::RECEIVE_TRIES;
 using drivers::nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS;
+using drivers::nvidia::confirm_message_version;
 using drivers::nvidia::cpu_sequencer_context;
 using drivers::nvidia::gsp;
 using drivers::nvidia::link_status_queue_within;
@@ -106,6 +108,10 @@ static constexpr uint32_t FUNCTION = 0x12345;
 
 // A result above 16 bits, so a result cut to 16 bits shows
 static constexpr uint32_t RESULT = 0x87654321;
+
+// A private result other than `RESULT` and above 16 bits, so a private result cut to 16 bits or read from the result's
+// field shows
+static constexpr uint32_t PRIVATE_RESULT = 0x2468ACE1;
 
 // What the fake memory holds wherever the queues have written nothing
 static constexpr uint8_t STALE_BYTE = 0xA5;
@@ -185,7 +191,8 @@ struct status_test_message {
 
     ~status_test_message() { heap::ufree(bytes); }
 
-    // Frames a message of `FUNCTION` and `RESULT` filling `element_count` elements, zeros following the payload
+    // Frames a message of `FUNCTION`, `RESULT` and `PRIVATE_RESULT` filling `element_count` elements, zeros following
+    // the payload
     void frame(uint32_t element_count, uint32_t sequence_number, const uint8_t* payload, uint32_t payload_bytes);
 
     void set(uint32_t offset, uint32_t value) { *reinterpret_cast<uint32_t*>(bytes + offset) = value; }
@@ -302,6 +309,7 @@ void status_test_message::frame(
     set(MESSAGE_RPC_BYTES, RPC_HEADER_BYTES + payload_bytes);
     set(MESSAGE_FUNCTION, FUNCTION);
     set(MESSAGE_RESULT, RESULT);
+    set(MESSAGE_PRIVATE_RESULT, PRIVATE_RESULT);
     string::memcpy(bytes + MESSAGE_PAYLOAD, payload, payload_bytes);
 
     seal(MESSAGE_PAYLOAD + payload_bytes);
@@ -378,7 +386,7 @@ static void expect_message(
 }
 
 // Receives the next message into room for `payload_capacity` bytes, any payload by default, and checks it carries
-// `FUNCTION`, `RESULT` and this payload, with nothing written past the payload
+// `FUNCTION`, `RESULT`, `PRIVATE_RESULT` and this payload, with nothing written past the payload
 static void expect_received(
     message_queues& queues,
     const uint8_t* payload,
@@ -390,10 +398,11 @@ static void expect_received(
     ASSERT_NOT_NULL(buffer);
     string::memset(buffer, STALE_BYTE, buffer_bytes);
 
-    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
     EXPECT_EQ(queues.receive(out, buffer, payload_capacity), OK);
     EXPECT_EQ(out.function, FUNCTION);
     EXPECT_EQ(out.result, RESULT);
+    EXPECT_EQ(out.private_result, PRIVATE_RESULT);
     EXPECT_EQ(out.payload_bytes, payload_bytes);
     EXPECT_EQ(string::memcmp(buffer, payload, payload_bytes), 0);
     EXPECT_TRUE(is_stale(buffer + payload_bytes, buffer_bytes - payload_bytes));
@@ -415,10 +424,11 @@ static void expect_refused(
     uint32_t read_pointer = memory.read(header.driver_read_pointer());
 
     for (uint32_t attempt = 0; attempt < 2; attempt++) {
-        received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+        received_message out = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
         EXPECT_EQ(queues.receive(out, buffer, payload_capacity), error);
         EXPECT_EQ(out.function, STALE_WORD);
         EXPECT_EQ(out.result, STALE_WORD);
+        EXPECT_EQ(out.private_result, STALE_WORD);
         EXPECT_EQ(out.payload_bytes, STALE_WORD);
     }
 
@@ -1033,7 +1043,7 @@ TEST(nvidia_message_queues, receive_waits_out_its_timeout_only_on_an_empty_queue
     ASSERT_NOT_NULL(payload.bytes);
     ASSERT_NOT_NULL(message.bytes);
     uint8_t buffer[WAIT_BUFFER_BYTES];
-    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
 
     uint64_t start = clock::now_ns();
     EXPECT_EQ(receive_within(queues, out, buffer, sizeof(buffer), LONG_TIMEOUT_NS), ERR_NOT_LINKED);
@@ -1081,19 +1091,21 @@ TEST(nvidia_message_queues, ready_message_number_is_nvidias) {
 // Room for any payload the tests of `receive_awaited` receive, the sequencer's the largest
 static constexpr uint32_t AWAITED_BUFFER_BYTES = 128;
 
-// Stores a message of `function` with a result of 0 and this payload in element `index` of the moved status queue,
-// numbered `index`
+// Stores a message of `function` with a result of 0, this private result and this payload in element `index` of the
+// moved status queue, numbered `index`
 static void store_function_message(
     fake_queue_memory& memory,
     status_test_message& message,
     uint32_t index,
     uint32_t function,
     const void* payload,
-    uint32_t payload_bytes
+    uint32_t payload_bytes,
+    uint32_t private_result = 0
 ) {
     message.frame(1, index, static_cast<const uint8_t*>(payload), payload_bytes);
     message.set(MESSAGE_FUNCTION, function);
     message.set(MESSAGE_RESULT, 0);
+    message.set(MESSAGE_PRIVATE_RESULT, private_result);
     message.seal(MESSAGE_PAYLOAD + payload_bytes);
     message.store(memory, MOVED_HEADER, index);
 }
@@ -1182,7 +1194,7 @@ TEST(nvidia_message_queues, receive_awaited_runs_the_sequencer_before_any_log_li
     ASSERT_NOT_NULL(message.bytes);
     poll_then_write_sequencer sequencer;
     uint8_t buffer[AWAITED_BUFFER_BYTES];
-    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
 
     MOVED_HEADER.write_to(memory);
     message.frame(1, 0, earlier_payload.bytes, earlier_payload.count);
@@ -1259,7 +1271,7 @@ TEST(nvidia_message_queues, receive_awaited_ends_at_its_deadline_or_a_refused_me
     ASSERT_NOT_NULL(payload.bytes);
     ASSERT_NOT_NULL(message.bytes);
     uint8_t buffer[AWAITED_BUFFER_BYTES];
-    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
 
     MOVED_HEADER.write_to(memory);
     message.frame(1, 0, payload.bytes, payload.count);
@@ -1497,7 +1509,7 @@ TEST(nvidia_message_queues, link_and_await_wait_out_their_timeouts) {
     gsp conversation;
     ASSERT_NOT_NULL(bar0.bytes);
     ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
-    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
 
     uint64_t start = clock::now_ns();
     EXPECT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), ERR_TIMEOUT);
@@ -1551,10 +1563,12 @@ TEST(nvidia_message_queues, request_runs_a_sequencer_ahead_of_its_reply_before_a
     bar0.write(POLLED_REGISTER, POLLED_BIT);
     bar0.write(GSP_QUEUE_HEAD0, STALE_WORD);
 
+    received_message reply = {};
+
     s_dropping_registers = &bar0.regs;
     s_logged_bytes = 0;
     log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
-    int32_t rc = conversation.request(FUNCTION, arguments.bytes, arguments.count, LONG_TIMEOUT_NS);
+    int32_t rc = conversation.request(FUNCTION, arguments.bytes, arguments.count, 0, reply, LONG_TIMEOUT_NS);
     log::set_backend(nullptr);
 
     const uint8_t* request = memory.element(0);
@@ -1589,12 +1603,13 @@ TEST(nvidia_message_queues, request_tells_the_firmware_before_its_wait) {
     link_sequencer_then_message(memory, conversation, message, sequencer, FUNCTION, arguments);
     bar0.write(GSP_QUEUE_HEAD0, STALE_WORD);
 
-    EXPECT_EQ(conversation.request(FUNCTION, arguments.bytes, arguments.count, LONG_TIMEOUT_NS), OK);
+    received_message reply = {};
+    EXPECT_EQ(conversation.request(FUNCTION, arguments.bytes, arguments.count, 0, reply, LONG_TIMEOUT_NS), OK);
     EXPECT_EQ(bar0.read(WRITTEN_REGISTER), WRITTEN_VALUE);
 }
 
-// A request the full command queue has no room for fails at once with the queue's error, and the firmware is never
-// told that the request waits
+// A request the full command queue has no room for fails at once with the queue's error, leaving its reply unwritten,
+// and the firmware is never told that the request waits
 TEST(nvidia_message_queues, request_to_a_full_queue_fails_before_telling_the_firmware) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
@@ -1607,12 +1622,15 @@ TEST(nvidia_message_queues, request_to_a_full_queue_fails_before_telling_the_fir
     memory.write(MOVED_HEADER.firmware_read_pointer(), 1);
     bar0.write(GSP_QUEUE_HEAD0, STALE_WORD);
 
+    received_message reply = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
+
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(conversation.request(FUNCTION, nullptr, 0, LONG_TIMEOUT_NS), ERR_QUEUE_FULL);
+    EXPECT_EQ(conversation.request(FUNCTION, nullptr, 0, 0, reply, LONG_TIMEOUT_NS), ERR_QUEUE_FULL);
     EXPECT_LT(clock::now_ns() - start, WAIT_TIME_LIMIT_NS);
 
     EXPECT_EQ(bar0.read(GSP_QUEUE_HEAD0), STALE_WORD);
     EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 0u);
+    EXPECT_EQ(reply.function, STALE_WORD);
 }
 
 // A poll timeout long enough for the test to tell a poll that runs to it from one that ends at its first check
@@ -1635,8 +1653,10 @@ TEST(nvidia_message_queues, request_gives_the_sequencer_a_deadline_of_its_own) {
     sequencer.poll_timeout_us = UNMET_POLL_TIMEOUT_US;
     link_sequencer_then_message(memory, conversation, message, sequencer, FUNCTION, arguments);
 
+    received_message reply = {};
+
     uint64_t start = clock::now_ns();
-    EXPECT_EQ(conversation.request(FUNCTION, arguments.bytes, arguments.count, SHORT_TIMEOUT_NS), OK);
+    EXPECT_EQ(conversation.request(FUNCTION, arguments.bytes, arguments.count, 0, reply, SHORT_TIMEOUT_NS), OK);
     uint64_t elapsed = clock::now_ns() - start;
 
     uint64_t poll_timeout_ns = UNMET_POLL_TIMEOUT_US * 1000ULL;
@@ -1662,7 +1682,7 @@ TEST(nvidia_message_queues, await_gives_the_sequencer_a_deadline_of_its_own) {
     poll_then_write_sequencer sequencer;
     sequencer.poll_timeout_us = UNMET_POLL_TIMEOUT_US;
     link_sequencer_then_message(memory, conversation, message, sequencer, NVIDIA_GSP_INIT_DONE, ready_payload);
-    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD};
+    received_message out = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
 
     uint64_t start = clock::now_ns();
     EXPECT_EQ(conversation.await(FUNCTION_GSP_INIT_DONE, out, SHORT_TIMEOUT_NS), OK);
@@ -1767,4 +1787,195 @@ TEST(nvidia_message_queues, unanswered_unload_still_waits_for_the_suspend) {
     EXPECT_GE(suspended_elapsed, SHORT_TIMEOUT_NS);
     EXPECT_LT(suspended_elapsed, WAIT_TIME_LIMIT_NS);
     EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 2u);
+}
+
+// The reply's fields and as much of its payload as fits the room reach the caller, its result alone failing the
+// request, the arguments sent before the copy, and a wait ending without the reply leaves the fields and the room alone
+TEST(nvidia_message_queues, request_hands_its_caller_the_reply_and_the_payload_that_fits) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload payload(40);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    message.frame(1, 0, payload.bytes, payload.count);
+    message.store(memory, MOVED_HEADER, 0);
+    store_function_message(memory, message, 1, FUNCTION, payload.bytes, payload.count, PRIVATE_RESULT);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    uint8_t cut_payload[64];
+    uint8_t whole_payload[64];
+    uint8_t unanswered_payload[64];
+    string::memset(cut_payload, STALE_BYTE, sizeof(cut_payload));
+    string::memset(whole_payload, STALE_BYTE, sizeof(whole_payload));
+    string::memset(unanswered_payload, STALE_BYTE, sizeof(unanswered_payload));
+    received_message refused = {};
+    received_message accepted = {};
+    received_message unanswered = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
+
+    EXPECT_EQ(conversation.request(FUNCTION, cut_payload, 0, 24, refused, LONG_TIMEOUT_NS), ERR_FIRMWARE);
+    EXPECT_EQ(conversation.request(FUNCTION, whole_payload, 24, 64, accepted, LONG_TIMEOUT_NS), OK);
+    EXPECT_EQ(conversation.request(FUNCTION, unanswered_payload, 0, 64, unanswered, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+
+    const uint8_t* second_request = memory.element(1);
+    EXPECT_EQ(refused.function, FUNCTION);
+    EXPECT_EQ(refused.result, RESULT);
+    EXPECT_EQ(refused.private_result, PRIVATE_RESULT);
+    EXPECT_EQ(refused.payload_bytes, 40u);
+    EXPECT_EQ(string::memcmp(cut_payload, payload.bytes, 24), 0);
+    EXPECT_TRUE(is_stale(cut_payload + 24, sizeof(cut_payload) - 24));
+    EXPECT_EQ(accepted.result, 0u);
+    EXPECT_EQ(accepted.private_result, PRIVATE_RESULT);
+    EXPECT_EQ(accepted.payload_bytes, 40u);
+    EXPECT_TRUE(is_stale(second_request + MESSAGE_PAYLOAD, 24));
+    EXPECT_EQ(string::memcmp(whole_payload, payload.bytes, 40), 0);
+    EXPECT_TRUE(is_stale(whole_payload + 40, sizeof(whole_payload) - 40));
+    EXPECT_EQ(unanswered.function, STALE_WORD);
+    EXPECT_EQ(unanswered.private_result, STALE_WORD);
+    EXPECT_EQ(unanswered.payload_bytes, STALE_WORD);
+    EXPECT_TRUE(is_stale(unanswered_payload, sizeof(unanswered_payload)));
+}
+
+// NVIDIA's number for the first request sent after the ready message and the layout of its arguments, restated here
+// so the tests hold the request to NVIDIA's number and layout rather than to the driver's constants
+static constexpr uint32_t NVIDIA_SET_GUEST_SYSTEM_INFO = 0x01;
+static constexpr uint32_t GUEST_SYSTEM_INFO_BYTES      = 792;
+static constexpr uint32_t GUEST_VGX_MAJOR              = 0;
+static constexpr uint32_t GUEST_VGX_MINOR              = 4;
+static constexpr uint32_t GUEST_VGX_VERSION_BYTES      = 8;
+static constexpr uint32_t GUEST_DRIVER_VERSION_LENGTH  = 8;
+static constexpr uint32_t GUEST_BRANCH_LENGTH          = 12;
+static constexpr uint32_t GUEST_TITLE_LENGTH           = 16;
+static constexpr uint32_t GUEST_DRIVER_VERSION         = 24;
+static constexpr uint32_t GUEST_STRING_BYTES           = 256;
+
+// NVIDIA's VGX version for this firmware's messages and the version string its driver sends as its own
+static constexpr uint32_t VGX_MAJOR = 0x23;
+static constexpr uint32_t VGX_MINOR = 0x05;
+static constexpr char NVIDIA_DRIVER_VERSION[] = "535.183.01";
+
+static void put_word(uint8_t* bytes, uint32_t offset, uint32_t value) {
+    string::memcpy(bytes + offset, &value, sizeof(value));
+}
+
+// Fills `info` with the guest system information the driver sends, giving the VGX version `major`.`minor`
+static void fill_guest_system_info(uint8_t (&info)[GUEST_SYSTEM_INFO_BYTES], uint32_t major, uint32_t minor) {
+    string::memset(info, 0, sizeof(info));
+    put_word(info, GUEST_VGX_MAJOR, major);
+    put_word(info, GUEST_VGX_MINOR, minor);
+    put_word(info, GUEST_DRIVER_VERSION_LENGTH, GUEST_STRING_BYTES);
+    put_word(info, GUEST_BRANCH_LENGTH, GUEST_STRING_BYTES);
+    put_word(info, GUEST_TITLE_LENGTH, GUEST_STRING_BYTES);
+    string::memcpy(info + GUEST_DRIVER_VERSION, NVIDIA_DRIVER_VERSION, sizeof(NVIDIA_DRIVER_VERSION));
+}
+
+// The guest system information goes out in NVIDIA's layout with the VGX version, the 256-byte lengths, the firmware's
+// version string as the driver's and zeros elsewhere, and a reply with private result 0 and that version accepts it
+TEST(nvidia_message_queues, message_version_goes_out_in_nvidias_layout_and_its_echo_is_accepted) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint8_t expected[GUEST_SYSTEM_INFO_BYTES];
+    fill_guest_system_info(expected, VGX_MAJOR, VGX_MINOR);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_SET_GUEST_SYSTEM_INFO, expected, sizeof(expected));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    EXPECT_EQ(confirm_message_version(conversation, LONG_TIMEOUT_NS), OK);
+
+    const uint8_t* request = memory.element(0);
+    EXPECT_EQ(field_at(request, MESSAGE_FUNCTION), NVIDIA_SET_GUEST_SYSTEM_INFO);
+    EXPECT_EQ(field_at(request, MESSAGE_RPC_BYTES), RPC_HEADER_BYTES + GUEST_SYSTEM_INFO_BYTES);
+    EXPECT_EQ(string::memcmp(request + MESSAGE_PAYLOAD, expected, sizeof(expected)), 0);
+}
+
+// Versions off by one either way in either field, or equal to the driver's only in their low 16 bits
+static constexpr uint32_t OTHER_VERSIONS[][2] = {
+    {VGX_MAJOR + 1, VGX_MINOR},
+    {VGX_MAJOR - 1, VGX_MINOR},
+    {VGX_MAJOR, VGX_MINOR + 1},
+    {VGX_MAJOR, VGX_MINOR - 1},
+    {VGX_MAJOR + 0x10000, VGX_MINOR},
+    {VGX_MAJOR, VGX_MINOR + 0x10000},
+};
+
+static constexpr uint32_t OTHER_VERSION_COUNT = sizeof(OTHER_VERSIONS) / sizeof(OTHER_VERSIONS[0]);
+
+// A failed result, or a private result other than 0 (0x10000 included) whatever the reply's length or version, fails
+// with no second request, as do a version off by one or equal only in its low 16 bits and 7 payload bytes, not 8
+TEST(nvidia_message_queues, message_version_refused_changed_or_unstated_fails) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint8_t info[GUEST_SYSTEM_INFO_BYTES];
+    uint32_t cut_bytes = GUEST_VGX_VERSION_BYTES - 1;
+    MOVED_HEADER.write_to(memory);
+    fill_guest_system_info(info, VGX_MAJOR, VGX_MINOR);
+    store_function_message(memory, message, 0, NVIDIA_SET_GUEST_SYSTEM_INFO, info, sizeof(info), PRIVATE_RESULT);
+    store_function_message(memory, message, 1, NVIDIA_SET_GUEST_SYSTEM_INFO, info, sizeof(info), 0x10000);
+    store_function_message(memory, message, 2, NVIDIA_SET_GUEST_SYSTEM_INFO, info, cut_bytes, PRIVATE_RESULT);
+    store_function_message(memory, message, 3, NVIDIA_SET_GUEST_SYSTEM_INFO, info, cut_bytes);
+    store_function_message(memory, message, 4, NVIDIA_SET_GUEST_SYSTEM_INFO, info, GUEST_VGX_VERSION_BYTES);
+    store_function_message(memory, message, 5, NVIDIA_SET_GUEST_SYSTEM_INFO, info, sizeof(info));
+    message.set(MESSAGE_RESULT, RESULT);
+    message.seal(MESSAGE_PAYLOAD + sizeof(info));
+    message.store(memory, MOVED_HEADER, 5);
+    fill_guest_system_info(info, VGX_MAJOR - 1, VGX_MINOR);
+    store_function_message(memory, message, 6, NVIDIA_SET_GUEST_SYSTEM_INFO, info, sizeof(info), PRIVATE_RESULT);
+    for (uint32_t i = 0; i < OTHER_VERSION_COUNT; i++) {
+        fill_guest_system_info(info, OTHER_VERSIONS[i][0], OTHER_VERSIONS[i][1]);
+        store_function_message(memory, message, 7 + i, NVIDIA_SET_GUEST_SYSTEM_INFO, info, sizeof(info));
+    }
+
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 7 + OTHER_VERSION_COUNT);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    EXPECT_EQ(confirm_message_version(conversation, LONG_TIMEOUT_NS), ERR_FIRMWARE);
+    EXPECT_EQ(confirm_message_version(conversation, LONG_TIMEOUT_NS), ERR_FIRMWARE);
+    EXPECT_EQ(confirm_message_version(conversation, LONG_TIMEOUT_NS), ERR_FIRMWARE);
+    EXPECT_EQ(confirm_message_version(conversation, LONG_TIMEOUT_NS), ERR_BAD_MESSAGE);
+    EXPECT_EQ(confirm_message_version(conversation, LONG_TIMEOUT_NS), OK);
+    EXPECT_EQ(confirm_message_version(conversation, LONG_TIMEOUT_NS), ERR_FIRMWARE);
+    EXPECT_EQ(confirm_message_version(conversation, LONG_TIMEOUT_NS), ERR_FIRMWARE);
+    for (uint32_t i = 0; i < OTHER_VERSION_COUNT; i++) {
+        EXPECT_EQ(confirm_message_version(conversation, LONG_TIMEOUT_NS), ERR_FIRMWARE);
+    }
+
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 7 + OTHER_VERSION_COUNT);
+}
+
+// The request waits for its reply only as long as its caller gives, failing with the wait's timeout on a queue that
+// stays empty
+TEST(nvidia_message_queues, message_version_waits_out_its_timeout) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(confirm_message_version(conversation, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
 }

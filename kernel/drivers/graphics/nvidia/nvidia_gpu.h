@@ -99,14 +99,18 @@ namespace drivers {
  * run) runs as soon as its message is read, as `nvidia::run_cpu_sequencer`
  * requires and describes, and the other messages are logged once the wait
  * ends. As NVIDIA's driver waits for the ready message in one poll, every wait
- * for a message gets what is left of one `nvidia::RECEIVE_TIMEOUT_NS` deadline
- * set before the first read, the sequencer's runs counting against it, and a
- * wait with none left still reads the queue once. The sequencer is given a
- * deadline `nvidia::DEFAULT_TIMEOUT_NS` after the same start, which its waits
- * count against as `nvidia::run_cpu_sequencer` describes. A sequencer that
- * fails is logged and the wait goes on, as in NVIDIA's driver. Bring-up stops
- * at the ready message, so once it arrives with a result of 0, `attach()`
- * declines as well.
+ * for a message until the ready message arrives gets what is left of one
+ * `nvidia::RECEIVE_TIMEOUT_NS` deadline set before the first read, the
+ * sequencer's runs counting against it, and a wait with none left still reads
+ * the queue once. The sequencer is given a deadline
+ * `nvidia::DEFAULT_TIMEOUT_NS` after the same start, which its waits count
+ * against as `nvidia::run_cpu_sequencer` describes. A sequencer that fails is
+ * logged and the wait goes on, as in NVIDIA's driver. Once the ready message
+ * arrives with a result of 0, bring-up sends the request NVIDIA's driver sends
+ * first, through `nvidia::confirm_message_version`, which checks that the
+ * firmware accepts the driver's VGX version (the version of NVIDIA's messages
+ * the driver builds). Once the firmware accepts it, bring-up logs the version
+ * accepted and stops there, so `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -171,7 +175,9 @@ namespace drivers {
  * in a row. It fails with the `nvidia::ERR_FIRMWARE` that
  * `nvidia::gsp::to_error` gives when the ready message's result is not 0, the
  * firmware's report that its initialization failed, which NVIDIA's driver also
- * treats as a failed boot. Bring-up itself never writes to the display engine,
+ * treats as a failed boot. Once that result is 0, `attach()` fails as
+ * `nvidia::confirm_message_version` describes, such as when the firmware
+ * refuses the VGX version. Bring-up itself never writes to the display engine,
  * and the CPU sequencer's steps write only the registers the firmware names.
  * Once the sequencer has resumed the GSP's firmware, though, the firmware puts
  * all of BAR1 (the CPU's window into the card's video memory) into virtual
@@ -198,15 +204,16 @@ namespace drivers {
  * SEC2's falcon as FWSEC's leaves the GSP's, and a run that times out may
  * leave booter load running, which may later start the GSP's RISC-V core. A
  * failure after the RISC-V core reads as running leaves the core as booter
- * load or the CPU sequencer's steps left it. When `attach()` declines at the
- * ready message, FWSEC ran and fenced off the FRTS region, booter load ran on
- * SEC2, each CPU sequencer the firmware sent ran, or was refused or stopped at
- * a step as it logged, and the firmware reported its initialization done. Once
- * FWSEC has set up protected memory, it stays set up until `detach()` takes it
- * down with booter unload, as below, or the card is reset, and
- * `nvidia::place_frts_region` refuses the card in every `attach()` until then.
- * The decoding stays on because the boot framebuffer may be in this card's
- * memory, which the CPU reaches only while memory decoding is on.
+ * load or the CPU sequencer's steps left it. When `attach()` declines once the
+ * firmware accepts the VGX version, FWSEC ran and fenced off the FRTS region,
+ * booter load ran on SEC2, each CPU sequencer the firmware sent ran, or was
+ * refused or stopped at a step as it logged, and the firmware reported its
+ * initialization done and accepted the VGX version. Once FWSEC has set up
+ * protected memory, it stays set up until `detach()` takes it down with booter
+ * unload, as below, or the card is reset, and `nvidia::place_frts_region`
+ * refuses the card in every `attach()` until then. The decoding stays on
+ * because the boot framebuffer may be in this card's memory, which the CPU
+ * reaches only while memory decoding is on.
  * Once the ready message has arrived, whatever its result, `detach()` first
  * asks the GSP's firmware to unload, through the `nvidia::gsp` that `attach()`
  * started, and waits for the GSP's processor to be suspended, as

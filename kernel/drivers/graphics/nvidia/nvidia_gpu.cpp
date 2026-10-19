@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/gsp.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
+#include "drivers/graphics/nvidia/gsp_info.h"
 #include "drivers/graphics/nvidia/gsp_unload.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -601,9 +602,20 @@ int32_t nvidia_gpu_driver::attach() {
     }
 
     log::info("nvidia: the GSP's firmware sent its ready message with %u payload bytes", ready.payload_bytes);
+
+    rc = nvidia::confirm_message_version(m_gsp, nvidia::RECEIVE_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
     log::info(
-        "nvidia: bring-up stops at the firmware's ready message, leaving detach to unload the firmware, stop SEC2 and "
-        "the GSP, run FWSEC's SB command and run booter unload"
+        "nvidia: the GSP's firmware accepts VGX version 0x%X.%02X for the driver's messages",
+        nvidia::VGX_VERSION_MAJOR,
+        nvidia::VGX_VERSION_MINOR
+    );
+    log::info(
+        "nvidia: bring-up stops once the firmware accepts the driver's VGX version, leaving detach to unload the "
+        "firmware, stop SEC2 and the GSP, run FWSEC's SB command and run booter unload"
     );
 
     return DECLINED;

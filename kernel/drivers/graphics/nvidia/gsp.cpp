@@ -5,6 +5,7 @@
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "clock/clock.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "mm/heap.h"
 
 namespace drivers::nvidia {
@@ -51,7 +52,14 @@ int32_t gsp::await(uint32_t function, received_message& out, uint64_t timeout_ns
     return await_since(function, out, clock::now_ns(), timeout_ns);
 }
 
-int32_t gsp::request(uint32_t function, const void* arguments, uint32_t argument_bytes, uint64_t timeout_ns) {
+int32_t gsp::request(
+    uint32_t function,
+    void* arguments,
+    uint32_t argument_bytes,
+    uint32_t reply_capacity,
+    received_message& reply,
+    uint64_t timeout_ns
+) {
     uint64_t start_ns = clock::now_ns();
 
     int32_t rc = m_queues.send(function, arguments, argument_bytes);
@@ -62,18 +70,25 @@ int32_t gsp::request(uint32_t function, const void* arguments, uint32_t argument
 
     notify_gsp_of_queued_messages(m_regs);
 
-    received_message reply = {};
-    rc = await_since(function, reply, start_ns, timeout_ns);
+    received_message received = {};
+    rc = await_since(function, received, start_ns, timeout_ns);
     if (rc != OK) {
         return rc;
     }
 
-    rc = to_error(reply.result);
+    uint32_t copied_bytes = received.payload_bytes < reply_capacity ? received.payload_bytes : reply_capacity;
+    if (copied_bytes > 0) {
+        string::memcpy(arguments, m_payload, copied_bytes);
+    }
+
+    reply = received;
+
+    rc = to_error(received.result);
     if (rc != OK) {
         log::error(
             "nvidia: the GSP's firmware reports that the request of function 0x%X failed, with status 0x%X",
             function,
-            reply.result
+            received.result
         );
     }
 
