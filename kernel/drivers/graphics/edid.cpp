@@ -14,11 +14,18 @@ static constexpr size_t  DESCRIPTORS_OFFSET      = 54;
 static constexpr size_t  DESCRIPTOR_BYTES        = 18;
 static constexpr size_t  BASE_DESCRIPTORS        = 4;
 static constexpr size_t  EXTENSION_COUNT_OFFSET  = 126;
+static constexpr size_t  CHECKSUM_OFFSET         = 127;
 
 // An extension block's first byte is its tag, naming its kind
 static constexpr size_t  EXTENSION_TAG_OFFSET    = 0;
 static constexpr uint8_t EXTENSION_TAG_CTA_861   = 0x02;
 static constexpr uint8_t EXTENSION_TAG_DISPLAYID = 0x70;
+
+// A CTA-861 block's header is its first four bytes: its tag, its revision, the offset of its first timing descriptor
+// and a byte the parser does not read
+static constexpr size_t CTA_861_REVISION_OFFSET         = 1;
+static constexpr size_t CTA_861_DESCRIPTOR_START_OFFSET = 2;
+static constexpr size_t CTA_861_HEADER_BYTES            = 4;
 
 // The maker's id is a big-endian word of three 5-bit letters in bits 14 to 0, the first highest, 1 meaning A
 static constexpr uint32_t MAKER_LETTERS     = 3;
@@ -64,8 +71,6 @@ static constexpr uint8_t FLAG_V_SYNC_POSITIVE   = 0x04;
 
 static constexpr uint32_t KHZ_PER_CLOCK_UNIT = 10;
 static constexpr uint64_t MILLIHERTZ_PER_KHZ = 1000000;
-
-static_assert(BASE_DESCRIPTORS <= TIMINGS_MAX, "every timing the base block gives fits in `monitor::timings`");
 
 uint32_t timing::h_total() const {
     return width + h_front_porch + h_sync_width + h_back_porch;
@@ -209,7 +214,7 @@ static bool read_timing_descriptor(const uint8_t* descriptor, timing& out) {
     return true;
 }
 
-// Lists `t` after the listed timings unless one equals it. The static_assert above keeps the write inside `timings`
+// Lists `t` after the listed timings unless one equals it, counting it in `dropped_timings` when `timings` is full
 static void list_timing(const timing& t, monitor& out) {
     for (uint32_t i = 0; i < out.timing_count; i++) {
         if (out.timings[i] == t) {
@@ -217,8 +222,33 @@ static void list_timing(const timing& t, monitor& out) {
         }
     }
 
+    if (out.timing_count == TIMINGS_MAX) {
+        out.dropped_timings++;
+        return;
+    }
+
     out.timings[out.timing_count] = t;
     out.timing_count++;
+}
+
+// Lists the timing of a descriptor whose pixel clock is not 0, returning false when the descriptor gives none
+static bool list_descriptor_timing(const uint8_t* descriptor, monitor& out) {
+    if (is_unused_descriptor(descriptor)) {
+        return false;
+    }
+
+    timing t = {};
+    if (!read_timing_descriptor(descriptor, t)) {
+        return false;
+    }
+
+    list_timing(t, out);
+
+    return true;
+}
+
+static bool has_zero_clock(const uint8_t* descriptor) {
+    return descriptor[TIMING_CLOCK_LOW] == 0 && descriptor[TIMING_CLOCK_HIGH] == 0;
 }
 
 static void read_descriptors(const uint8_t* block, monitor& out) {
@@ -228,9 +258,8 @@ static void read_descriptors(const uint8_t* block, monitor& out) {
 
     for (size_t i = 0; i < BASE_DESCRIPTORS; i++) {
         const uint8_t* descriptor = block + DESCRIPTORS_OFFSET + i * DESCRIPTOR_BYTES;
-        bool is_display_descriptor = descriptor[TIMING_CLOCK_LOW] == 0 && descriptor[TIMING_CLOCK_HIGH] == 0;
 
-        if (is_display_descriptor) {
+        if (has_zero_clock(descriptor)) {
             bool is_reserved_clear = descriptor[DISPLAY_RESERVED_OFFSET] == 0;
             bool is_name = descriptor[DISPLAY_TAG_OFFSET] == DISPLAY_TAG_PRODUCT_NAME;
             if (!has_name && is_reserved_clear && is_name) {
@@ -241,24 +270,36 @@ static void read_descriptors(const uint8_t* block, monitor& out) {
             continue;
         }
 
-        if (is_unused_descriptor(descriptor)) {
-            continue;
-        }
-
-        timing t = {};
-        if (!read_timing_descriptor(descriptor, t)) {
-            continue;
-        }
-
-        list_timing(t, out);
-        if (i == 0) {
+        bool gives_timing = list_descriptor_timing(descriptor, out);
+        if (i == 0 && gives_timing) {
             out.first_timing_is_preferred = marks_first_preferred;
         }
     }
 }
 
-// Counts the extension blocks `bytes` does not hold whole, and the CTA-861 and DisplayID blocks failing their checksum
-static void count_skipped_extensions(const uint8_t* bytes, size_t size, monitor& out) {
+// Reads no descriptor at a byte 2 of 1 to 3. Like the EDID parse in NVIDIA's open kernel modules, it reads none at
+// revision 0 or a byte 2 of 0 and stops at the first whose pixel clock is 0 or that would not end before byte 127
+static void read_cta_861_descriptors(const uint8_t* block, monitor& out) {
+    bool has_revision = block[CTA_861_REVISION_OFFSET] != 0;
+    size_t offset = block[CTA_861_DESCRIPTOR_START_OFFSET];
+    bool starts_past_header = offset >= CTA_861_HEADER_BYTES;
+    if (!has_revision || !starts_past_header) {
+        return;
+    }
+
+    for (; offset + DESCRIPTOR_BYTES <= CHECKSUM_OFFSET; offset += DESCRIPTOR_BYTES) {
+        const uint8_t* descriptor = block + offset;
+        if (has_zero_clock(descriptor)) {
+            return;
+        }
+
+        list_descriptor_timing(descriptor, out);
+    }
+}
+
+// Reads the extension blocks byte 126 says follow the base block, counting as skipped each one `bytes` does not hold
+// whole and each CTA-861 or DisplayID block failing its checksum, and listing the timings of every other CTA-861 block
+static void read_extensions(const uint8_t* bytes, size_t size, monitor& out) {
     size_t extension_count = bytes[EXTENSION_COUNT_OFFSET];
     size_t whole_blocks = size / BLOCK_BYTES;
 
@@ -273,6 +314,11 @@ static void count_skipped_extensions(const uint8_t* bytes, size_t size, monitor&
         bool is_checked_kind = tag == EXTENSION_TAG_CTA_861 || tag == EXTENSION_TAG_DISPLAYID;
         if (is_checked_kind && !has_valid_checksum(block)) {
             out.skipped_extensions++;
+            continue;
+        }
+
+        if (tag == EXTENSION_TAG_CTA_861) {
+            read_cta_861_descriptors(block, out);
         }
     }
 }
@@ -287,7 +333,7 @@ int32_t parse(const uint8_t* bytes, size_t size, monitor& out) {
 
     read_maker(bytes, out.maker);
     read_descriptors(bytes, out);
-    count_skipped_extensions(bytes, size, out);
+    read_extensions(bytes, size, out);
 
     return OK;
 }
