@@ -110,9 +110,16 @@ namespace drivers {
  * sends first: `nvidia::confirm_message_version` checks that the firmware
  * accepts the driver's VGX version (the version of NVIDIA's messages the
  * driver builds), and `nvidia::read_static_configuration` reads the video
- * memory regions the firmware reports. Bring-up logs each region, as reserved
- * when it holds reserved bytes and as usable otherwise, as NVIDIA's driver
- * counts regions, and stops there, so `attach()` declines as well.
+ * memory regions the firmware reports and where BAR1's root page directory
+ * lies. BAR1 is the CPU's window into the card's video memory, and its root
+ * page directory is the top level of the page tables the firmware binds BAR1
+ * to. Bring-up logs each region, as reserved when it holds reserved bytes and
+ * as usable otherwise, as NVIDIA's driver counts regions. It then reads the
+ * root page directory's first entry, the one covering the start of BAR1, with
+ * `nvidia::read_video_memory_u64` through BAR0's window (the 1 MiB of BAR0
+ * that reaches video memory without page tables), logs the entry with BAR1's
+ * block register (the register that binds BAR1 to video memory), and stops
+ * there, so `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -208,15 +215,18 @@ namespace drivers {
  * leave booter load running, which may later start the GSP's RISC-V core. A
  * failure after the RISC-V core reads as running leaves the core as booter
  * load or the CPU sequencer's steps left it. When `attach()` declines after
- * logging the video memory regions, FWSEC ran and fenced off the FRTS region,
- * booter load ran on SEC2, each CPU sequencer the firmware sent ran, or was
- * refused or stopped at a step as it logged, and the firmware reported its
- * initialization done, accepted the VGX version and reported its video memory
- * regions. Once FWSEC has set up protected memory, it stays set up until
- * `detach()` takes it down with booter unload, as below, or the card is reset,
- * and `nvidia::place_frts_region` refuses the card in every `attach()` until
- * then. The decoding stays on because the boot framebuffer may be in this
- * card's memory, which the CPU reaches only while memory decoding is on.
+ * logging the first entry of BAR1's root page directory, FWSEC ran and fenced
+ * off the FRTS region, booter load ran on SEC2, each CPU sequencer the
+ * firmware sent ran, or was refused or stopped at a step as it logged, the
+ * firmware reported its initialization done, accepted the VGX version and
+ * reported its video memory regions and where BAR1's root page directory lies,
+ * and once the entry was read, the register of BAR0's window was written back
+ * with the value it held before. Once FWSEC has set up protected memory, it
+ * stays set up until `detach()` takes it down with booter unload, as below, or
+ * the card is reset, and `nvidia::place_frts_region` refuses the card in every
+ * `attach()` until then. The decoding stays on because the boot framebuffer
+ * may be in this card's memory, which the CPU reaches only while memory
+ * decoding is on.
  * Once the ready message has arrived, whatever its result, `detach()` first
  * asks the GSP's firmware to unload, through the `nvidia::gsp` that `attach()`
  * started, and waits for the GSP's processor to be suspended, as

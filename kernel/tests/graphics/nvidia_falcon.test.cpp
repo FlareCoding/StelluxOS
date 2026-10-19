@@ -4,6 +4,7 @@
 
 #include "stlx_unit_test.h"
 #include "clock/clock.h"
+#include "drivers/graphics/nvidia/bar0_window.h"
 #include "drivers/graphics/nvidia/bar1.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
@@ -15,6 +16,7 @@
 
 TEST_SUITE(nvidia_falcon);
 
+using drivers::nvidia::BAR0_WINDOW_REACH;
 using drivers::nvidia::ERR_BAD_FIRMWARE;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_TIMEOUT;
@@ -33,14 +35,17 @@ using drivers::nvidia::has_gsp_riscv_core;
 using drivers::nvidia::is_gsp_riscv_running;
 using drivers::nvidia::notify_gsp_of_queued_messages;
 using drivers::nvidia::read_bar1_block;
+using drivers::nvidia::read_video_memory_u64;
 using drivers::nvidia::registers;
 using drivers::nvidia::reset_falcon;
 using drivers::nvidia::reset_gsp_into_riscv;
+using drivers::nvidia::restore_bar0_window;
 using drivers::nvidia::restore_bar1_block;
 using drivers::nvidia::resume_gsp_firmware;
 using drivers::nvidia::run_booter_load;
 using drivers::nvidia::run_falcon_program;
 using drivers::nvidia::select_booter_signature;
+using drivers::nvidia::set_bar0_window;
 using drivers::nvidia::start_falcon;
 using drivers::nvidia::stop_falcon;
 using drivers::nvidia::wait_for_falcon_halt;
@@ -1088,6 +1093,55 @@ TEST(nvidia_falcon, bar1_block_stays_unwritten_with_running_gsp_riscv_core) {
 
     restore_bar1_block(bar0.regs, RTX_3080_BOOT_BAR1_BLOCK);
     EXPECT_EQ(bar0.read(BAR1_BLOCK), ~0u);
+}
+
+// BAR0's window register, where the window starts in BAR0 and the end of what its base can reach, restated here so the
+// tests hold the window to NVIDIA's layout rather than to the driver's constants
+static constexpr uint32_t BAR0_WINDOW  = 0x1700;
+static constexpr uint32_t PRAMIN       = 0x700000;
+static constexpr uint64_t WINDOW_REACH = 0x10000000000;
+
+// A window register with a base of 0xABCDEF, a coherent system memory target and bits 31:26 at 010110, so the tests
+// fail for a set that forces those bits on and for a restore of the two fields alone
+static constexpr uint32_t FOUND_WINDOW = 0x5AABCDEF;
+
+// The window is set to the offset's 64 KiB step with a video memory target and its bits outside both fields kept, from
+// a register with every bit at 1 and from FOUND_WINDOW at the reach's last step, and is written back whole
+TEST(nvidia_falcon, bar0_window_is_set_to_the_offsets_step_and_restored_whole) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BAR0_WINDOW, ~0u);
+
+    EXPECT_EQ(BAR0_WINDOW_REACH, WINDOW_REACH);
+    EXPECT_EQ(set_bar0_window(bar0.regs, 0x275A1FFF8), ~0u);
+    EXPECT_EQ(bar0.read(BAR0_WINDOW), 0xFC0275A1u);
+    restore_bar0_window(bar0.regs, FOUND_WINDOW);
+    EXPECT_EQ(bar0.read(BAR0_WINDOW), FOUND_WINDOW);
+    EXPECT_EQ(set_bar0_window(bar0.regs, WINDOW_REACH - 8), FOUND_WINDOW);
+    EXPECT_EQ(bar0.read(BAR0_WINDOW), 0x58FFFFFFu);
+}
+
+// The word at the offset is the value's low 32 bits, read from its place in its 64 KiB step at either end of a step,
+// with bit 16 set, inside FOUND_WINDOW's 1 MiB and at the reach's last 8 bytes, the window written back as found
+TEST(nvidia_falcon, video_memory_is_read_from_the_offsets_step_through_bar0_window) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BAR0_WINDOW, FOUND_WINDOW);
+    bar0.write(PRAMIN, 0x11223344);
+    bar0.write(PRAMIN + 4, 0x55667788);
+    bar0.write(PRAMIN + 0xFFF8, 0x99AABBCC);
+    bar0.write(PRAMIN + 0xFFFC, 0xDDEEFF00);
+    bar0.write(PRAMIN + 0x1FFF8, ~0u);
+    bar0.write(PRAMIN + 0x1FFFC, ~0u);
+
+    // An offset inside the fake's 16 MiB, so a step mask left out fails here rather than reading past the fake
+    ASSERT_EQ(read_video_memory_u64(bar0.regs, 0x1FFF8), 0xDDEEFF0099AABBCCu);
+    EXPECT_EQ(read_video_memory_u64(bar0.regs, 0), 0x5566778811223344u);
+    EXPECT_EQ(read_video_memory_u64(bar0.regs, 0xFFF8), 0xDDEEFF0099AABBCCu);
+    EXPECT_EQ(read_video_memory_u64(bar0.regs, 0x275A1FFF8), 0xDDEEFF0099AABBCCu);
+    EXPECT_EQ(read_video_memory_u64(bar0.regs, 0xABCDF0FFF8), 0xDDEEFF0099AABBCCu);
+    EXPECT_EQ(read_video_memory_u64(bar0.regs, WINDOW_REACH - 8), 0xDDEEFF0099AABBCCu);
+    EXPECT_EQ(bar0.read(BAR0_WINDOW), FOUND_WINDOW);
 }
 
 // NVIDIA's wait for the ready report, and its default timeout for a GPU in graphics mode rather than compute mode

@@ -1972,7 +1972,6 @@ static constexpr uint32_t REGION_PADDING_OFFSET      = 844;
 static constexpr uint32_t REGION_ENTRIES_OFFSET      = 848;
 static constexpr uint32_t REGION_ENTRY_BYTES         = 48;
 static constexpr uint32_t REGIONS_MAX                = 16;
-static constexpr uint32_t REGION_TABLE_END           = REGION_ENTRIES_OFFSET + REGIONS_MAX * REGION_ENTRY_BYTES;
 static constexpr uint32_t REGION_BASE                = 0;
 static constexpr uint32_t REGION_LIMIT               = 8;
 static constexpr uint32_t REGION_RESERVED            = 16;
@@ -1981,6 +1980,17 @@ static constexpr uint32_t REGION_COMPRESSED          = 28;
 static constexpr uint32_t REGION_SCANOUT             = 29;
 static constexpr uint32_t REGION_PROTECTED           = 30;
 static constexpr uint32_t REGION_BLACKLIST           = 31;
+
+// Where the field holding the offset of BAR1's root page directory lies in the static configuration, and where it ends,
+// restated here so the tests hold the field to NVIDIA's layout
+static constexpr uint32_t BAR1_PAGE_DIRECTORY_FIELD_OFFSET = 2088;
+static constexpr uint32_t BAR1_PAGE_DIRECTORY_FIELD_END    = BAR1_PAGE_DIRECTORY_FIELD_OFFSET + 8;
+
+// An offset of BAR1's root page directory with bits set in both words, a value for the 8 bytes before and after its
+// field, and a video memory size (10 GiB less 2 MiB), so a bound rounded to a power of two or to whole GiB fails
+static constexpr uint64_t BAR1_PAGE_DIRECTORY_OFFSET = 0x275A90000;
+static constexpr uint64_t AROUND_FIELD_VALUE         = 0x123456789ABCDEF0;
+static constexpr uint64_t VIDEO_MEMORY_BYTES         = 0x27FE00000;
 
 // The byte `fill_static_info` gives a set flag, nonzero with bit 0 clear, so a flag read from bit 0 alone reads clear
 static constexpr uint8_t SET_FLAG_BYTE = 0x80;
@@ -2037,6 +2047,11 @@ TEST(nvidia_message_queues, video_memory_regions_are_read_from_the_static_config
     entry_of(info, 3)[REGION_COMPRESSED] = 1;
     entry_of(info, 4)[REGION_SCANOUT] = 1;
     entry_of(info, 5)[REGION_PROTECTED] = 1;
+    // Other values in the 8 bytes before and after the field holding BAR1's root page directory's offset, so a read 8
+    // bytes off fails
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET - 8, AROUND_FIELD_VALUE);
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET, BAR1_PAGE_DIRECTORY_OFFSET);
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_END, AROUND_FIELD_VALUE);
     MOVED_HEADER.write_to(memory);
     store_function_message(memory, message, 0, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
     memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
@@ -2044,7 +2059,7 @@ TEST(nvidia_message_queues, video_memory_regions_are_read_from_the_static_config
     static_configuration configuration = {};
     configuration.regions[6].offset = STALE_WORD;
 
-    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), OK);
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
 
     const uint8_t* request = memory.element(0);
     const video_memory_region* regions = configuration.regions;
@@ -2090,13 +2105,14 @@ TEST(nvidia_message_queues, video_memory_regions_are_read_from_the_static_config
     EXPECT_TRUE(regions[5].is_reserved);
     EXPECT_TRUE(regions[5].is_protected);
     EXPECT_EQ(regions[6].offset, STALE_WORD);
+    EXPECT_EQ(configuration.bar1_page_directory_offset, BAR1_PAGE_DIRECTORY_OFFSET);
 }
 
 // A reply's payload 8 bytes longer than NVIDIA's static configuration for this firmware
 static constexpr uint32_t LONG_STATIC_INFO_BYTES = STATIC_INFO_BYTES + 8;
 
-// A failed result, a payload short of the table's end or a count of 0, 17 or 0x10002 fails with nothing changed, while
-// 16 regions with a nonzero private result in a payload ending there and 1 in one longer than NVIDIA's layout pass
+// A failed result, a payload short of byte 2096 or a count of 0, 17 or 0x10002 fails with nothing changed, while 16
+// regions with a nonzero private result in a payload ending there and 1 in one longer than NVIDIA's layout pass
 TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fails) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
@@ -2115,9 +2131,16 @@ TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fai
     message.set(MESSAGE_RESULT, RESULT);
     message.seal(MESSAGE_PAYLOAD + STATIC_INFO_BYTES);
     message.store(memory, MOVED_HEADER, 0);
-    // A count of 1, so the counted entry ends inside the short payload and only a check of the table's end refuses it
+    // A count of 1, so the counted entry ends inside the short payload and only a check of the field's end refuses it
     put_word(info.bytes, REGION_COUNT_OFFSET, 1);
-    store_function_message(memory, message, 1, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, REGION_TABLE_END - 1);
+    store_function_message(
+        memory,
+        message,
+        1,
+        NVIDIA_GET_GSP_STATIC_INFO,
+        info.bytes,
+        BAR1_PAGE_DIRECTORY_FIELD_END - 1
+    );
     put_word(info.bytes, REGION_COUNT_OFFSET, 0);
     store_function_message(memory, message, 2, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, STATIC_INFO_BYTES);
     put_word(info.bytes, REGION_COUNT_OFFSET, REGIONS_MAX + 1);
@@ -2125,13 +2148,14 @@ TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fai
     put_word(info.bytes, REGION_COUNT_OFFSET, 0x10002);
     store_function_message(memory, message, 4, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, STATIC_INFO_BYTES);
     put_word(info.bytes, REGION_COUNT_OFFSET, REGIONS_MAX);
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET, BAR1_PAGE_DIRECTORY_OFFSET);
     store_function_message(
         memory,
         message,
         5,
         NVIDIA_GET_GSP_STATIC_INFO,
         info.bytes,
-        REGION_TABLE_END,
+        BAR1_PAGE_DIRECTORY_FIELD_END,
         PRIVATE_RESULT
     );
     put_word(info.bytes, REGION_COUNT_OFFSET, 1);
@@ -2142,21 +2166,30 @@ TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fai
     static_configuration configuration = {};
     configuration.regions[0].offset = STALE_WORD;
     configuration.region_count = STALE_WORD;
+    configuration.bar1_page_directory_offset = STALE_WORD;
 
-    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), ERR_FIRMWARE);
+    EXPECT_EQ(
+        read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration),
+        ERR_FIRMWARE
+    );
     for (uint32_t i = 0; i < 4; i++) {
-        EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), ERR_BAD_MESSAGE);
+        EXPECT_EQ(
+            read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration),
+            ERR_BAD_MESSAGE
+        );
     }
 
     EXPECT_EQ(configuration.region_count, STALE_WORD);
     EXPECT_EQ(configuration.regions[0].offset, STALE_WORD);
-    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), OK);
+    EXPECT_EQ(configuration.bar1_page_directory_offset, STALE_WORD);
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
+    EXPECT_EQ(configuration.bar1_page_directory_offset, BAR1_PAGE_DIRECTORY_OFFSET);
     EXPECT_EQ(configuration.region_count, REGIONS_MAX);
     EXPECT_EQ(configuration.regions[last].offset, region_base(last));
     EXPECT_EQ(configuration.regions[last].size, 0xF00100000u);
     EXPECT_EQ(configuration.regions[last].reserved_bytes, 0xF00000000u);
     EXPECT_TRUE(configuration.regions[last].is_reserved);
-    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), OK);
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
     EXPECT_EQ(configuration.region_count, 1u);
 }
 
@@ -2201,18 +2234,88 @@ TEST(nvidia_message_queues, video_memory_region_ending_below_its_start_or_spanni
     configuration.region_count = STALE_WORD;
 
     for (uint32_t i = 0; i < 3; i++) {
-        EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), ERR_BAD_MESSAGE);
+        EXPECT_EQ(
+            read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration),
+            ERR_BAD_MESSAGE
+        );
     }
 
     EXPECT_EQ(configuration.region_count, STALE_WORD);
     EXPECT_EQ(configuration.regions[0].offset, STALE_WORD);
-    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), OK);
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
     EXPECT_EQ(configuration.region_count, 2u);
     EXPECT_EQ(configuration.regions[0].offset, 0u);
     EXPECT_EQ(configuration.regions[0].size, 1u);
     EXPECT_EQ(configuration.regions[1].offset, 1u);
     EXPECT_EQ(configuration.regions[1].size, 0xFFFFFFFFFFFFFFFFu);
     EXPECT_EQ(configuration.regions[2].offset, STALE_WORD);
+}
+
+// A video memory size of 2 TiB, the reach of the base of BAR0's window (1 TiB, as NVIDIA's base field counts 64 KiB
+// steps in 24 bits) and the size of an entry of a version 2 page directory
+static constexpr uint64_t PAST_REACH_VIDEO_MEMORY_BYTES = 0x20000000000;
+static constexpr uint64_t WINDOW_REACH                  = 0x10000000000;
+static constexpr uint64_t PAGE_DIRECTORY_ENTRY_BYTES    = 8;
+
+// A root page directory 4 bytes off a multiple of 8, with its entry ending past video memory or a size 4 bytes short,
+// or at the reach with 2 TiB fails, count and offset unchanged, while the last 8 bytes of memory and of the reach pass
+TEST(nvidia_message_queues, bar1_page_directory_misaligned_or_out_of_bounds_fails) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload info(STATIC_INFO_BYTES);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(info.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    fill_static_info(info, 1);
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET, BAR1_PAGE_DIRECTORY_OFFSET + 4);
+    store_function_message(memory, message, 0, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET, VIDEO_MEMORY_BYTES);
+    store_function_message(memory, message, 1, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET, VIDEO_MEMORY_BYTES - PAGE_DIRECTORY_ENTRY_BYTES);
+    store_function_message(memory, message, 2, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET, WINDOW_REACH);
+    store_function_message(memory, message, 3, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET, VIDEO_MEMORY_BYTES - PAGE_DIRECTORY_ENTRY_BYTES);
+    store_function_message(memory, message, 4, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET, WINDOW_REACH - PAGE_DIRECTORY_ENTRY_BYTES);
+    store_function_message(memory, message, 5, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 6);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    static_configuration configuration = {};
+    configuration.region_count = STALE_WORD;
+    configuration.bar1_page_directory_offset = STALE_WORD;
+
+    for (uint32_t i = 0; i < 2; i++) {
+        EXPECT_EQ(
+            read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration),
+            ERR_BAD_MESSAGE
+        );
+    }
+
+    EXPECT_EQ(
+        read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES - 4, configuration),
+        ERR_BAD_MESSAGE
+    );
+    EXPECT_EQ(
+        read_static_configuration(conversation, LONG_TIMEOUT_NS, PAST_REACH_VIDEO_MEMORY_BYTES, configuration),
+        ERR_BAD_MESSAGE
+    );
+
+    EXPECT_EQ(configuration.region_count, STALE_WORD);
+    EXPECT_EQ(configuration.bar1_page_directory_offset, STALE_WORD);
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
+    EXPECT_EQ(configuration.bar1_page_directory_offset, VIDEO_MEMORY_BYTES - PAGE_DIRECTORY_ENTRY_BYTES);
+    EXPECT_EQ(
+        read_static_configuration(conversation, LONG_TIMEOUT_NS, PAST_REACH_VIDEO_MEMORY_BYTES, configuration),
+        OK
+    );
+    EXPECT_EQ(configuration.bar1_page_directory_offset, WINDOW_REACH - PAGE_DIRECTORY_ENTRY_BYTES);
+    EXPECT_EQ(configuration.region_count, 1u);
 }
 
 // Both requests wait for their replies only as long as their callers give, each failing with the wait's timeout on a
@@ -2234,7 +2337,10 @@ TEST(nvidia_message_queues, message_version_and_static_configuration_wait_out_th
     EXPECT_EQ(confirm_message_version(conversation, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
     uint64_t version_elapsed = clock::now_ns() - start;
     start = clock::now_ns();
-    EXPECT_EQ(read_static_configuration(conversation, SHORT_TIMEOUT_NS, configuration), ERR_TIMEOUT);
+    EXPECT_EQ(
+        read_static_configuration(conversation, SHORT_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration),
+        ERR_TIMEOUT
+    );
     uint64_t configuration_elapsed = clock::now_ns() - start;
 
     EXPECT_GE(version_elapsed, SHORT_TIMEOUT_NS);
