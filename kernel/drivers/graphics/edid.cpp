@@ -13,6 +13,12 @@ static constexpr uint8_t FEATURE_FIRST_PREFERRED = 0x02;
 static constexpr size_t  DESCRIPTORS_OFFSET      = 54;
 static constexpr size_t  DESCRIPTOR_BYTES        = 18;
 static constexpr size_t  BASE_DESCRIPTORS        = 4;
+static constexpr size_t  EXTENSION_COUNT_OFFSET  = 126;
+
+// An extension block's first byte is its tag, naming its kind
+static constexpr size_t  EXTENSION_TAG_OFFSET    = 0;
+static constexpr uint8_t EXTENSION_TAG_CTA_861   = 0x02;
+static constexpr uint8_t EXTENSION_TAG_DISPLAYID = 0x70;
 
 // The maker's id is a big-endian word of three 5-bit letters in bits 14 to 0, the first highest, 1 meaning A
 static constexpr uint32_t MAKER_LETTERS     = 3;
@@ -78,6 +84,15 @@ uint64_t timing::refresh_millihertz() const {
     return pixel_clock_khz * MILLIHERTZ_PER_KHZ / frame_pixels;
 }
 
+static bool has_valid_checksum(const uint8_t* block) {
+    uint8_t sum = 0;
+    for (size_t i = 0; i < BLOCK_BYTES; i++) {
+        sum = static_cast<uint8_t>(sum + block[i]);
+    }
+
+    return sum == 0;
+}
+
 static int32_t check_base_block(const uint8_t* bytes, size_t size) {
     if (size < BLOCK_BYTES) {
         return ERR_TOO_SHORT;
@@ -87,12 +102,7 @@ static int32_t check_base_block(const uint8_t* bytes, size_t size) {
         return ERR_BAD_HEADER;
     }
 
-    uint8_t sum = 0;
-    for (size_t i = 0; i < BLOCK_BYTES; i++) {
-        sum = static_cast<uint8_t>(sum + bytes[i]);
-    }
-
-    if (sum != 0) {
+    if (!has_valid_checksum(bytes)) {
         return ERR_BAD_CHECKSUM;
     }
 
@@ -247,6 +257,26 @@ static void read_descriptors(const uint8_t* block, monitor& out) {
     }
 }
 
+// Counts the extension blocks `bytes` does not hold whole, and the CTA-861 and DisplayID blocks failing their checksum
+static void count_skipped_extensions(const uint8_t* bytes, size_t size, monitor& out) {
+    size_t extension_count = bytes[EXTENSION_COUNT_OFFSET];
+    size_t whole_blocks = size / BLOCK_BYTES;
+
+    for (size_t i = 1; i <= extension_count; i++) {
+        if (i >= whole_blocks) {
+            out.skipped_extensions++;
+            continue;
+        }
+
+        const uint8_t* block = bytes + i * BLOCK_BYTES;
+        uint8_t tag = block[EXTENSION_TAG_OFFSET];
+        bool is_checked_kind = tag == EXTENSION_TAG_CTA_861 || tag == EXTENSION_TAG_DISPLAYID;
+        if (is_checked_kind && !has_valid_checksum(block)) {
+            out.skipped_extensions++;
+        }
+    }
+}
+
 int32_t parse(const uint8_t* bytes, size_t size, monitor& out) {
     string::memset(&out, 0, sizeof(out));
 
@@ -257,6 +287,7 @@ int32_t parse(const uint8_t* bytes, size_t size, monitor& out) {
 
     read_maker(bytes, out.maker);
     read_descriptors(bytes, out);
+    count_skipped_extensions(bytes, size, out);
 
     return OK;
 }

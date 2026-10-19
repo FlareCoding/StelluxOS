@@ -24,16 +24,27 @@
  *   byte 127   checksum, making the block's 128 bytes sum to 0 modulo 256
  *
  * The parser checks the block's size, header, checksum and version, then reads
- * the maker, the features byte and the descriptors. A signal named by a bit or
- * a code must be looked up in a table or computed, so it is not a timing and
- * the parser leaves it out.
+ * the maker, the features byte, the descriptors and byte 126. A signal named
+ * by a bit or a code must be looked up in a table or computed, so it is not a
+ * timing and the parser leaves it out.
+ *
+ * Extension blocks follow the base block, as many as its byte 126 says, each
+ * 128 bytes with the same checksum rule. An extension block's first byte, its
+ * tag, names its kind, such as 0x02 for CTA-861 (the extension TVs and many
+ * monitors add) or 0x70 for DisplayID (a separate format whose sections an
+ * EDID can carry). The parser counts as skipped each extension block it is not
+ * given whole and each CTA-861 or DisplayID block failing its checksum, so a
+ * driver can tell that the EDID arrived cut short or corrupted. A block of
+ * another kind is skipped only when it is not given whole, and no extension
+ * block gives a timing.
  *
  * A display driver hands the bytes it read to `edid::parse`, which returns the
- * maker, the product name and the timings in an `edid::monitor`. The driver
- * chooses the timing it sends and must translate it into its own mode type
- * once, so no code past the driver uses the parser's types. The parser keeps
- * no state and never logs, allocates, blocks or touches hardware, so any
- * kernel thread may call it at any privilege.
+ * maker, the product name, the timings and the number of skipped extension
+ * blocks in an `edid::monitor`. The driver chooses the timing it sends and
+ * must translate it into its own mode type once, so no code past the driver
+ * uses the parser's types. The parser keeps no state and never logs,
+ * allocates, blocks or touches hardware, so any kernel thread may call it at
+ * any privilege.
  */
 
 namespace edid {
@@ -78,9 +89,9 @@ struct timing {
 };
 
 /**
- * The maker, name and timings `parse` reads from a monitor's base block. A
- * `monitor` takes about 1.3 KiB, so a caller keeps it in its own state rather
- * than on the stack.
+ * The maker, name and timings `parse` reads from a monitor's base block, and
+ * how many extension blocks `parse` skipped. A `monitor` takes about 1.3 KiB,
+ * so a caller keeps it in its own state rather than on the stack.
  */
 struct monitor {
     char     maker[4];                  // the maker's three-letter Plug and Play id, such as "AOC"
@@ -88,10 +99,12 @@ struct monitor {
     timing   timings[TIMINGS_MAX];      // distinct timings in the order the EDID lists them
     uint32_t timing_count;              // entries of `timings` in use
     bool     first_timing_is_preferred; // `timings[0]` is the timing the monitor's maker recommends
+    uint32_t skipped_extensions;        // extension blocks cut short, and CTA-861 or DisplayID ones failing a checksum
 };
 
 /**
- * @brief Read a monitor's maker, name and timings from its EDID's base block.
+ * @brief Read a monitor's maker, name and timings from its EDID's base block,
+ * and count the skipped extension blocks.
  * The timings come from the timing descriptors in descriptor order, and one
  * equal in every field to a listed timing is not listed again. A descriptor
  * gives no timing when its pixel clock is 0 (the mark of a display
@@ -116,16 +129,25 @@ struct monitor {
  * without trailing spaces. A maker letter outside A to Z and a name byte
  * outside printable ASCII read as `?`.
  *
+ * The base block's byte 126 says how many extension blocks follow it. Each of
+ * them is skipped when `bytes` does not hold it whole, or when it is a CTA-861
+ * or DisplayID block whose 128 bytes do not sum to 0 modulo 256, and
+ * `skipped_extensions` counts the skipped blocks. A block of another kind is
+ * skipped only when `bytes` does not hold it whole. A skipped block never
+ * makes the call fail, so it never costs the caller the base block's timings.
+ *
  * The caller owns `bytes` and `out`. The parser keeps no pointer to either and
  * no state between calls, so two threads may parse into two `monitor`s at
  * once, and a caller must keep a parse into `out` from overlapping any other
  * use of `out`.
  * @param bytes The EDID as read from the monitor, at any alignment. Only the
- * base block is read, so bytes past it are ignored.
+ * base block and the extension blocks its byte 126 says follow it are read, so
+ * bytes past them are ignored.
  * @param size Number of bytes at `bytes`.
  * @param out Rewritten whole. On an error every field is zero. On OK, `maker`
- * and `name` end in a NUL, `timing_count` is at most `TIMINGS_MAX`, and every
- * listed timing has a nonzero pixel clock, width and height. `out` may list no
+ * and `name` end in a NUL, `timing_count` is at most `TIMINGS_MAX`, every
+ * listed timing has a nonzero pixel clock, width and height, and
+ * `skipped_extensions` is at most the number in byte 126. `out` may list no
  * timings, as for a base block holding only display descriptors.
  * @return OK, or the first base block check that fails, in this order:
  * ERR_TOO_SHORT, ERR_BAD_HEADER, ERR_BAD_CHECKSUM, ERR_BAD_VERSION. A read
