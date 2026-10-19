@@ -37,11 +37,14 @@ using drivers::nvidia::cpu_sequencer_context;
 using drivers::nvidia::gsp;
 using drivers::nvidia::link_status_queue_within;
 using drivers::nvidia::message_queues;
+using drivers::nvidia::read_static_configuration;
 using drivers::nvidia::receive_awaited;
 using drivers::nvidia::receive_within;
 using drivers::nvidia::received_message;
 using drivers::nvidia::registers;
+using drivers::nvidia::static_configuration;
 using drivers::nvidia::unload_gsp_firmware;
+using drivers::nvidia::video_memory_region;
 
 // The queue memory's layout and a queue's, as NVIDIA's driver lays them out, restated here so the tests hold the
 // queues to NVIDIA's layout rather than to their own constants
@@ -1913,7 +1916,7 @@ static constexpr uint32_t OTHER_VERSIONS[][2] = {
 static constexpr uint32_t OTHER_VERSION_COUNT = sizeof(OTHER_VERSIONS) / sizeof(OTHER_VERSIONS[0]);
 
 // A failed result, or a private result other than 0 (0x10000 included) whatever the reply's length or version, fails
-// with no second request, as do a version off by one or equal only in its low 16 bits and 7 payload bytes, not 8
+// with no request resent, as do a version off by one or equal only in its low 16 bits and 7 payload bytes, not 8
 TEST(nvidia_message_queues, message_version_refused_changed_or_unstated_fails) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
@@ -1960,9 +1963,261 @@ TEST(nvidia_message_queues, message_version_refused_changed_or_unstated_fails) {
     EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 7 + OTHER_VERSION_COUNT);
 }
 
-// The request waits for its reply only as long as its caller gives, failing with the wait's timeout on a queue that
-// stays empty
-TEST(nvidia_message_queues, message_version_waits_out_its_timeout) {
+// NVIDIA's number for the request for the static configuration, its size and the layout of its table of video memory
+// regions, restated here so the tests hold the request and the table to NVIDIA's layout rather than to the driver's
+static constexpr uint32_t NVIDIA_GET_GSP_STATIC_INFO = 0x41;
+static constexpr uint32_t STATIC_INFO_BYTES          = 2168;
+static constexpr uint32_t REGION_COUNT_OFFSET        = 840;
+static constexpr uint32_t REGION_PADDING_OFFSET      = 844;
+static constexpr uint32_t REGION_ENTRIES_OFFSET      = 848;
+static constexpr uint32_t REGION_ENTRY_BYTES         = 48;
+static constexpr uint32_t REGIONS_MAX                = 16;
+static constexpr uint32_t REGION_TABLE_END           = REGION_ENTRIES_OFFSET + REGIONS_MAX * REGION_ENTRY_BYTES;
+static constexpr uint32_t REGION_BASE                = 0;
+static constexpr uint32_t REGION_LIMIT               = 8;
+static constexpr uint32_t REGION_RESERVED            = 16;
+static constexpr uint32_t REGION_PERFORMANCE         = 24;
+static constexpr uint32_t REGION_COMPRESSED          = 28;
+static constexpr uint32_t REGION_SCANOUT             = 29;
+static constexpr uint32_t REGION_PROTECTED           = 30;
+static constexpr uint32_t REGION_BLACKLIST           = 31;
+
+// The byte `fill_static_info` gives a set flag, nonzero with bit 0 clear, so a flag read from bit 0 alone reads clear
+static constexpr uint8_t SET_FLAG_BYTE = 0x80;
+
+static void put_double_word(uint8_t* bytes, uint32_t offset, uint64_t value) {
+    string::memcpy(bytes + offset, &value, sizeof(value));
+}
+
+static uint8_t* entry_of(queue_test_payload& info, uint32_t index) {
+    return info.bytes + REGION_ENTRIES_OFFSET + index * REGION_ENTRY_BYTES;
+}
+
+static uint64_t region_base(uint32_t index) {
+    return static_cast<uint64_t>(index) << 33 | static_cast<uint64_t>(index) << 20;
+}
+
+// Fills `info` with `region_count` regions, region `i` at `i` times 8 GiB plus `i` MiB, `i` times 4 GiB plus 1 MiB
+// long, reserved only above bit 31 when odd, and compressed, scanout or protected as `i` modulo 3 is 0, 1 or 2
+static void fill_static_info(queue_test_payload& info, uint32_t region_count) {
+    string::memset(info.bytes, 0, info.count);
+    put_word(info.bytes, REGION_COUNT_OFFSET, region_count);
+    // The padding after the count holds no zero, so a count read 64 bits wide fails
+    put_word(info.bytes, REGION_PADDING_OFFSET, STALE_WORD);
+    for (uint32_t i = 0; i < region_count; i++) {
+        uint8_t* entry = entry_of(info, i);
+        uint64_t size = static_cast<uint64_t>(i) << 32 | 0x100000;
+        put_double_word(entry, REGION_BASE, region_base(i));
+        put_double_word(entry, REGION_LIMIT, region_base(i) + size - 1);
+        put_double_word(entry, REGION_RESERVED, i % 2 == 1 ? static_cast<uint64_t>(i) << 32 : 0);
+        put_word(entry, REGION_PERFORMANCE, 0xFFFFFFFF);
+        entry[REGION_COMPRESSED] = i % 3 == 0 ? SET_FLAG_BYTE : 0;
+        entry[REGION_SCANOUT] = i % 3 == 1 ? SET_FLAG_BYTE : 0;
+        entry[REGION_PROTECTED] = i % 3 == 2 ? SET_FLAG_BYTE : 0;
+        string::memset(entry + REGION_BLACKLIST, 0xFF, REGION_ENTRY_BYTES - REGION_BLACKLIST);
+    }
+}
+
+// The static configuration is asked for with NVIDIA's 2168 zero bytes, and each region the count covers is read in full
+// 64 bits with NVIDIA's reserved decision and each flag set from 1 and 0x80, while a valid region past the count is not
+TEST(nvidia_message_queues, video_memory_regions_are_read_from_the_static_configuration) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload info(STATIC_INFO_BYTES);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(info.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    fill_static_info(info, 7);
+    put_word(info.bytes, REGION_COUNT_OFFSET, 6);
+    // One flag of each kind set to 1, NVIDIA's value for true, so a flag read from bit 7 alone reads clear
+    entry_of(info, 3)[REGION_COMPRESSED] = 1;
+    entry_of(info, 4)[REGION_SCANOUT] = 1;
+    entry_of(info, 5)[REGION_PROTECTED] = 1;
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    static_configuration configuration = {};
+    configuration.regions[6].offset = STALE_WORD;
+
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), OK);
+
+    const uint8_t* request = memory.element(0);
+    const video_memory_region* regions = configuration.regions;
+    uint32_t nonzero_argument_bytes = 0;
+    for (uint32_t i = 0; i < STATIC_INFO_BYTES; i++) {
+        nonzero_argument_bytes += request[MESSAGE_PAYLOAD + i] != 0 ? 1 : 0;
+    }
+
+    EXPECT_EQ(field_at(request, MESSAGE_FUNCTION), NVIDIA_GET_GSP_STATIC_INFO);
+    EXPECT_EQ(field_at(request, MESSAGE_RPC_BYTES), RPC_HEADER_BYTES + STATIC_INFO_BYTES);
+    EXPECT_EQ(nonzero_argument_bytes, 0u);
+    EXPECT_EQ(configuration.region_count, 6u);
+    EXPECT_EQ(regions[0].offset, 0u);
+    EXPECT_EQ(regions[0].size, 0x100000u);
+    EXPECT_EQ(regions[0].reserved_bytes, 0u);
+    EXPECT_FALSE(regions[0].is_reserved);
+    EXPECT_FALSE(regions[0].is_protected);
+    EXPECT_FALSE(regions[0].supports_scanout);
+    EXPECT_TRUE(regions[0].supports_compression);
+    EXPECT_EQ(regions[1].offset, 0x200100000u);
+    EXPECT_EQ(regions[1].size, 0x100100000u);
+    EXPECT_EQ(regions[1].reserved_bytes, 0x100000000u);
+    EXPECT_TRUE(regions[1].is_reserved);
+    EXPECT_FALSE(regions[1].is_protected);
+    EXPECT_TRUE(regions[1].supports_scanout);
+    EXPECT_FALSE(regions[1].supports_compression);
+    EXPECT_EQ(regions[2].offset, 0x400200000u);
+    EXPECT_EQ(regions[2].size, 0x200100000u);
+    EXPECT_FALSE(regions[2].is_reserved);
+    EXPECT_TRUE(regions[2].is_protected);
+    EXPECT_FALSE(regions[2].supports_scanout);
+    EXPECT_FALSE(regions[2].supports_compression);
+    EXPECT_EQ(regions[3].offset, 0x600300000u);
+    EXPECT_EQ(regions[3].size, 0x300100000u);
+    EXPECT_TRUE(regions[3].is_reserved);
+    EXPECT_TRUE(regions[3].supports_compression);
+    EXPECT_EQ(regions[4].offset, 0x800400000u);
+    EXPECT_EQ(regions[4].size, 0x400100000u);
+    EXPECT_FALSE(regions[4].is_reserved);
+    EXPECT_TRUE(regions[4].supports_scanout);
+    EXPECT_EQ(regions[5].offset, 0xA00500000u);
+    EXPECT_EQ(regions[5].size, 0x500100000u);
+    EXPECT_TRUE(regions[5].is_reserved);
+    EXPECT_TRUE(regions[5].is_protected);
+    EXPECT_EQ(regions[6].offset, STALE_WORD);
+}
+
+// A reply's payload 8 bytes longer than NVIDIA's static configuration for this firmware
+static constexpr uint32_t LONG_STATIC_INFO_BYTES = STATIC_INFO_BYTES + 8;
+
+// A failed result, a payload short of the table's end or a count of 0, 17 or 0x10002 fails with nothing changed, while
+// 16 regions with a nonzero private result in a payload ending there and 1 in one longer than NVIDIA's layout pass
+TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fails) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload info(LONG_STATIC_INFO_BYTES);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(info.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint32_t last = REGIONS_MAX - 1;
+    MOVED_HEADER.write_to(memory);
+    fill_static_info(info, REGIONS_MAX);
+    store_function_message(memory, message, 0, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, STATIC_INFO_BYTES);
+    message.set(MESSAGE_RESULT, RESULT);
+    message.seal(MESSAGE_PAYLOAD + STATIC_INFO_BYTES);
+    message.store(memory, MOVED_HEADER, 0);
+    // A count of 1, so the counted entry ends inside the short payload and only a check of the table's end refuses it
+    put_word(info.bytes, REGION_COUNT_OFFSET, 1);
+    store_function_message(memory, message, 1, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, REGION_TABLE_END - 1);
+    put_word(info.bytes, REGION_COUNT_OFFSET, 0);
+    store_function_message(memory, message, 2, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, STATIC_INFO_BYTES);
+    put_word(info.bytes, REGION_COUNT_OFFSET, REGIONS_MAX + 1);
+    store_function_message(memory, message, 3, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, STATIC_INFO_BYTES);
+    put_word(info.bytes, REGION_COUNT_OFFSET, 0x10002);
+    store_function_message(memory, message, 4, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, STATIC_INFO_BYTES);
+    put_word(info.bytes, REGION_COUNT_OFFSET, REGIONS_MAX);
+    store_function_message(
+        memory,
+        message,
+        5,
+        NVIDIA_GET_GSP_STATIC_INFO,
+        info.bytes,
+        REGION_TABLE_END,
+        PRIVATE_RESULT
+    );
+    put_word(info.bytes, REGION_COUNT_OFFSET, 1);
+    string::memset(info.bytes + STATIC_INFO_BYTES, STALE_BYTE, LONG_STATIC_INFO_BYTES - STATIC_INFO_BYTES);
+    store_function_message(memory, message, 6, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, LONG_STATIC_INFO_BYTES);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 7);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    static_configuration configuration = {};
+    configuration.regions[0].offset = STALE_WORD;
+    configuration.region_count = STALE_WORD;
+
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), ERR_FIRMWARE);
+    for (uint32_t i = 0; i < 4; i++) {
+        EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), ERR_BAD_MESSAGE);
+    }
+
+    EXPECT_EQ(configuration.region_count, STALE_WORD);
+    EXPECT_EQ(configuration.regions[0].offset, STALE_WORD);
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), OK);
+    EXPECT_EQ(configuration.region_count, REGIONS_MAX);
+    EXPECT_EQ(configuration.regions[last].offset, region_base(last));
+    EXPECT_EQ(configuration.regions[last].size, 0xF00100000u);
+    EXPECT_EQ(configuration.regions[last].reserved_bytes, 0xF00000000u);
+    EXPECT_TRUE(configuration.regions[last].is_reserved);
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), OK);
+    EXPECT_EQ(configuration.region_count, 1u);
+}
+
+// A first region backward only in its bits above 31, the last of 16 a byte backward or one spanning 2^64 bytes fails
+// with nothing changed, while a 1-byte region and one from byte 1 to the last pass beside a backward one past the count
+TEST(nvidia_message_queues, video_memory_region_ending_below_its_start_or_spanning_all_bytes_fails) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload info(STATIC_INFO_BYTES);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(info.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint32_t last = REGIONS_MAX - 1;
+    MOVED_HEADER.write_to(memory);
+    fill_static_info(info, REGIONS_MAX);
+    put_double_word(entry_of(info, 0), REGION_BASE, 0x200100000);
+    put_double_word(entry_of(info, 0), REGION_LIMIT, 0x100200000);
+    store_function_message(memory, message, 0, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    fill_static_info(info, REGIONS_MAX);
+    put_double_word(entry_of(info, last), REGION_LIMIT, region_base(last) - 1);
+    store_function_message(memory, message, 1, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    fill_static_info(info, REGIONS_MAX);
+    put_double_word(entry_of(info, 1), REGION_BASE, 0);
+    put_double_word(entry_of(info, 1), REGION_LIMIT, 0xFFFFFFFFFFFFFFFF);
+    store_function_message(memory, message, 2, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    fill_static_info(info, 3);
+    put_word(info.bytes, REGION_COUNT_OFFSET, 2);
+    put_double_word(entry_of(info, 0), REGION_LIMIT, 0);
+    put_double_word(entry_of(info, 1), REGION_BASE, 1);
+    put_double_word(entry_of(info, 1), REGION_LIMIT, 0xFFFFFFFFFFFFFFFF);
+    put_double_word(entry_of(info, 2), REGION_LIMIT, region_base(2) - 1);
+    store_function_message(memory, message, 3, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 4);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    static_configuration configuration = {};
+    configuration.regions[0].offset = STALE_WORD;
+    configuration.regions[2].offset = STALE_WORD;
+    configuration.region_count = STALE_WORD;
+
+    for (uint32_t i = 0; i < 3; i++) {
+        EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), ERR_BAD_MESSAGE);
+    }
+
+    EXPECT_EQ(configuration.region_count, STALE_WORD);
+    EXPECT_EQ(configuration.regions[0].offset, STALE_WORD);
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, configuration), OK);
+    EXPECT_EQ(configuration.region_count, 2u);
+    EXPECT_EQ(configuration.regions[0].offset, 0u);
+    EXPECT_EQ(configuration.regions[0].size, 1u);
+    EXPECT_EQ(configuration.regions[1].offset, 1u);
+    EXPECT_EQ(configuration.regions[1].size, 0xFFFFFFFFFFFFFFFFu);
+    EXPECT_EQ(configuration.regions[2].offset, STALE_WORD);
+}
+
+// Both requests wait for their replies only as long as their callers give, each failing with the wait's timeout on a
+// queue that stays empty, the configuration left unchanged
+TEST(nvidia_message_queues, message_version_and_static_configuration_wait_out_their_timeouts) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
     request_test_bar0 bar0;
@@ -1971,11 +2226,21 @@ TEST(nvidia_message_queues, message_version_waits_out_its_timeout) {
     ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
     MOVED_HEADER.write_to(memory);
     ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    static_configuration configuration = {};
+    configuration.regions[0].offset = STALE_WORD;
+    configuration.region_count = STALE_WORD;
 
     uint64_t start = clock::now_ns();
     EXPECT_EQ(confirm_message_version(conversation, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
-    uint64_t elapsed = clock::now_ns() - start;
+    uint64_t version_elapsed = clock::now_ns() - start;
+    start = clock::now_ns();
+    EXPECT_EQ(read_static_configuration(conversation, SHORT_TIMEOUT_NS, configuration), ERR_TIMEOUT);
+    uint64_t configuration_elapsed = clock::now_ns() - start;
 
-    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
-    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
+    EXPECT_GE(version_elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(version_elapsed, WAIT_TIME_LIMIT_NS);
+    EXPECT_GE(configuration_elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(configuration_elapsed, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(configuration.region_count, STALE_WORD);
+    EXPECT_EQ(configuration.regions[0].offset, STALE_WORD);
 }

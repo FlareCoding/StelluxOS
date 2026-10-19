@@ -613,8 +613,33 @@ int32_t nvidia_gpu_driver::attach() {
         nvidia::VGX_VERSION_MAJOR,
         nvidia::VGX_VERSION_MINOR
     );
+
+    nvidia::static_configuration configuration = {};
+    rc = nvidia::read_static_configuration(m_gsp, nvidia::RECEIVE_TIMEOUT_NS, configuration);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    for (uint32_t i = 0; i < configuration.region_count; i++) {
+        const nvidia::video_memory_region& region = configuration.regions[i];
+        uint64_t last_byte = region.offset + region.size - 1;
+        const char* use = region.is_reserved ? "reserved" : "usable";
+
+        log::info(
+            "nvidia: video memory 0x%lX to 0x%lX is %s, with 0x%lX bytes reserved, protected %u, scanout %u, "
+            "compression %u",
+            region.offset,
+            last_byte,
+            use,
+            region.reserved_bytes,
+            region.is_protected,
+            region.supports_scanout,
+            region.supports_compression
+        );
+    }
+
     log::info(
-        "nvidia: bring-up stops once the firmware accepts the driver's VGX version, leaving detach to unload the "
+        "nvidia: bring-up stops once the firmware's video memory regions are logged, leaving detach to unload the "
         "firmware, stop SEC2 and the GSP, run FWSEC's SB command and run booter unload"
     );
 
