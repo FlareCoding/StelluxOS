@@ -14,6 +14,7 @@
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
 #include "drivers/graphics/nvidia/gsp_info.h"
 #include "drivers/graphics/nvidia/gsp_unload.h"
+#include "drivers/graphics/nvidia/interrupts.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/protected_memory.h"
@@ -701,6 +702,29 @@ int32_t nvidia_gpu_driver::attach() {
         nvidia::read_bar1_block(regs),
         configuration.bar1_page_directory_offset,
         first_entry
+    );
+
+    uint32_t gsp_vector = 0;
+    rc = nvidia::read_gsp_interrupt_vector(
+        m_gsp,
+        configuration.internal_client,
+        configuration.internal_subdevice,
+        chip->interrupt_leaf_count,
+        nvidia::RECEIVE_TIMEOUT_NS,
+        gsp_vector
+    );
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: the GSP's firmware signals the driver on GPU interrupt vector %u, bit %u of the CPU interrupt tree's "
+        "leaf %u, as the kernel interrupt table read from subdevice 0x%X of internal client 0x%X gives",
+        gsp_vector,
+        gsp_vector % nvidia::VECTORS_PER_LEAF,
+        gsp_vector / nvidia::VECTORS_PER_LEAF,
+        configuration.internal_subdevice,
+        configuration.internal_client
     );
 
     if (nvidia::is_console_kept_at_bar1_start(card, framebuffer, frts.has_display)) {

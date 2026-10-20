@@ -737,10 +737,12 @@ src/nvidia/generated/g_kernel_gsp_nvoc.c
     runs on and its 8 MiB base share on GA102, which minimum heap,
     unprotected heap and prescrubbed top GA102 gets, in chip.cpp,
     kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rule that
-    no chip asks for queues for the firmware's interrupt task, in
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that no
+    chip asks for queues for the firmware's interrupt task, in
     gsp_boot_memory.h, gsp_boot_memory.cpp and
-    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and that the GSP's
+    interrupt service keeps the default clear of its stall interrupt, in
+    interrupts.h
     It carries no notice of its own and is covered by the package's COPYING,
     which gives the notice below and this copyright line:
     Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -1256,8 +1258,10 @@ src/common/sdk/nvidia/inc/nvtypes.h
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the 32 bits of
     NVIDIA's handles, which the static configuration's three handles take, in
     gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that NV_TRUE,
-    NVIDIA's value for true, is 1, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, which `rm::handle`
+    takes, in rm.h, and which a control request's client and object take, in
+    gsp.h, gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    that NV_TRUE, NVIDIA's value for true, is 1, in
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -1409,7 +1413,9 @@ src/nvidia/src/kernel/rmapi/rpc_common.c
     driver's version string in the guest system information, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the zeros in the
     arguments of the request for the static configuration, in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
+    zero in a control request's status, which NVIDIA's driver does not set, in
+    gsp.h, gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
     that the RPC version the driver runs at is made from the VGX version, in
     gsp_unload.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -1420,9 +1426,16 @@ src/nvidia/inc/kernel/gpu/gsp/gsp_static_config.h
     the static configuration's members, their order and types, which give its
     size for this firmware (2168 bytes), the offset of its table of video memory
     regions (840) and that of its field bar1PdeBase (2088), in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
-    that the static configuration holds the facts about the GPU the firmware
-    gathers as it starts, in gsp_info.h
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
+    offsets of its fields hInternalClient (2152) and hInternalSubdevice (2160),
+    in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that of
+    hInternalDevice (2156), in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the static
+    configuration holds the facts about the GPU the firmware gathers as it
+    starts, in gsp_info.h, and that its handles hInternalClient and
+    hInternalSubdevice name the client and subdevice for internal RMAPI
+    controls, in gsp_info.h and nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_chipset_nvoc.h
@@ -1492,10 +1505,21 @@ src/nvidia/kernel/vgpu/nv/rpc.c
     from the version sent and is at least 0x18.00, in gsp_info.h and
     gsp_info.cpp, that the static configuration is asked for with its whole size
     and that the reply's payload holds it from its first byte, in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
-    that only the reply's result is checked before it is copied whole, in
-    gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, that
+    only the reply's result is checked before it is copied whole, in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, what
+    NVIDIA's driver writes in a control request's header (the client, the
+    object, the command, the parameters' size and no flags for a control neither
+    serialized nor marked to copy its parameters out on an error) with the
+    parameters after it, and that the control's own failing status skips the
+    copy of the parameters back, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that a failed
+    control's status is handed up whatever its value, the reply's flags can ask
+    for a failed control's parameters to be copied out, a control marked
+    cacheable is answered from a cache of its successful answers, parameters too
+    large for one message are sent in several, some controls are sent
+    serialized, parameters given with a size of 0 are refused, and the
+    parameters are copied back whatever the reply's length, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
@@ -1508,8 +1532,10 @@ src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
     kernel/tests/graphics/nvidia_message_queues.test.cpp, its name
     GSP_INIT_DONE, in nvidia_gpu.h, the function numbers of the guest system
     information and the static configuration, in gsp_info.h and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the request to
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the request to
     unload's function number, in gsp_unload.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the control
+    request's function number, in gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     It carries no notice of its own and is covered by the package's COPYING,
     which gives the notice below and this copyright line:
@@ -1532,11 +1558,88 @@ src/nvidia/generated/g_rpc-structures.h
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the lowest VGX version
     NVIDIA's driver sends its request again at, 0x18.00, in gsp_info.h, the
     layout of version 0x1F07 of the request to unload's arguments, in
-    gsp_unload.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    gsp_unload.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
     that the reply's payload holds the static configuration from its first byte,
     in gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the layout of a
+    control request's header, with the control's status in it, in gsp.h, gsp.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/rmapi/rmapi.h
+    that RMAPI_RPC_FLAGS_NONE, the flags of a control neither serialized nor
+    marked to copy its parameters out on an error, is 0, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2018-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
+    the command NV2080_CTRL_CMD_INTERNAL_INTR_GET_KERNEL_TABLE, a control of a
+    subdevice, the layout of its parameters and of their rows, the most rows
+    they hold, 128, the count of interrupt categories their subtree map covers,
+    7, and that only the rows their count gives are valid, in rm.h,
+    interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that they give the
+    interrupt table for NVIDIA's kernel-side driver, in rm.h, interrupts.h and
+    nvidia_gpu.h, and that their subtree map gives the first and last of the
+    top-level bits a category of interrupts takes, in rm.h
+    SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/intr/engine_idx.h
+    the GSP's engine number MC_ENGINE_IDX_GSP, 49, in rm.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that its engines
+    are those NVIDIA's interrupt code serves, in rm.h and interrupts.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/intr/intr.c
+    that NVIDIA's driver asks for the kernel interrupt table on the internal
+    client and subdevice as it starts the GPU, sending its parameters unzeroed,
+    refuses a table counting more rows than it holds and copies each row's
+    vectors into its table unchecked, in rm.h, interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it looks an
+    engine's vector up in the first row of that engine, returning
+    NV_INTR_VECTOR_INVALID without one, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it services an
+    engine's stall interrupts with the engine's handler and its nonstall
+    interrupts as notifications, in rm.h and interrupts.h, and that it services
+    the GSP's as stall interrupts, keeps every row of the GSP's engine and
+    accepts a table without a row for the GSP, in interrupts.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/intr/intr_service.c
+    that an engine's interrupt service clears the engine's stall interrupt by
+    default on the stall vector NVIDIA's driver looks up for the engine, in
+    interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/intr/arch/turing/intr_tu102.c
+    that NVIDIA's driver never enables a vector of the kernel interrupt table
+    past the leaves of the CPU interrupt tree, which has no leaf register for
+    it, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it takes
+    0xFFFFFFFF for no vector, in interrupts.h, and that the subtree map's ranges
+    are of the CPU interrupt tree's top-level bits, in rm.h
+    SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/ampere/ga102/dev_vm.h
+    the CPU interrupt tree, the GPU's registers reporting its interrupts to the
+    CPU, in chip.h, interrupts.h, interrupts.cpp, nvidia_gpu.h, nvidia_gpu.cpp,
+    rm.h, kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that it has 8 leaf
+    registers on GA102, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/arch/nvalloc/common/inc/dev_ctrl_defines.h
+    that interrupt vector `i` is bit `i % 32` of leaf `i / 32`, in chip.h,
+    interrupts.h, interrupts.cpp, nvidia_gpu.cpp,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a GPU interrupt
+    vector numbers a bit of an interrupt tree's leaves, in interrupts.h and
+    nvidia_gpu.h, and the invalid interrupt vector NV_INTR_VECTOR_INVALID,
+    0xFFFFFFFF, in interrupts.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_os_nvoc.h
     the registry table's header, its size and entry count, in
@@ -1660,8 +1763,10 @@ src/nvidia/src/kernel/virtualization/hypervisor/hypervisor.c
 
 src/nvidia/src/kernel/gpu/gpu.c
     the rule that the firmware is asked to unload as the GPU's state is
-    destroyed, with no check that the firmware reported its initialization
-    done, in nvidia_gpu.h
+    destroyed, with no check that the firmware reported its initialization done,
+    in nvidia_gpu.h, and that NVIDIA's driver takes the static configuration's
+    handles as the firmware gives them for a GSP client other than T234D and
+    later, as GA102 is, in gsp_info.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc_private.h
