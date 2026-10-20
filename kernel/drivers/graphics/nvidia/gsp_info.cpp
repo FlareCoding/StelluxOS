@@ -57,10 +57,12 @@ constexpr uint32_t REGION_TABLE_OFFSET   = 840;
 constexpr uint32_t REGION_ENTRIES_OFFSET = REGION_TABLE_OFFSET + 8;
 constexpr uint32_t REGION_TABLE_END      = REGION_ENTRIES_OFFSET + VIDEO_MEMORY_REGIONS_MAX * sizeof(region_entry);
 
-// Where the last field read, the one holding the 64-bit offset of BAR1's root page directory, lies in the static
-// configuration, and where that field ends
+// Where the field holding the 64-bit offset of BAR1's root page directory and those holding the internal client's and
+// subdevice's handles lie in the static configuration, and where the last field read, the subdevice's, ends
 constexpr uint32_t BAR1_PAGE_DIRECTORY_FIELD_OFFSET = 2088;
-constexpr uint32_t READ_FIELDS_END                  = BAR1_PAGE_DIRECTORY_FIELD_OFFSET + sizeof(uint64_t);
+constexpr uint32_t INTERNAL_CLIENT_FIELD_OFFSET     = 2152;
+constexpr uint32_t INTERNAL_SUBDEVICE_FIELD_OFFSET  = 2160;
+constexpr uint32_t READ_FIELDS_END                  = INTERNAL_SUBDEVICE_FIELD_OFFSET + sizeof(rm::handle);
 
 static_assert(REGION_TABLE_END <= BAR1_PAGE_DIRECTORY_FIELD_OFFSET, "the table of regions ends before the field");
 static_assert(READ_FIELDS_END <= STATIC_INFO_BYTES, "the fields read lie inside the static configuration");
@@ -198,7 +200,7 @@ static int32_t read_configuration(
     if (info_bytes < READ_FIELDS_END) {
         log::error(
             "nvidia: the GSP firmware's static configuration has %u bytes, ending before the field holding the "
-            "offset of BAR1's root page directory ends at byte %u",
+            "internal subdevice's handle ends at byte %u",
             info_bytes,
             READ_FIELDS_END
         );
@@ -230,6 +232,8 @@ static int32_t read_configuration(
     }
 
     configuration.bar1_page_directory_offset = page_directory_offset;
+    configuration.internal_client = read_u32(info + INTERNAL_CLIENT_FIELD_OFFSET);
+    configuration.internal_subdevice = read_u32(info + INTERNAL_SUBDEVICE_FIELD_OFFSET);
 
     return OK;
 }

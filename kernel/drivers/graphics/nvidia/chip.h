@@ -51,11 +51,12 @@ struct chip_gsp_reservation {
  * the driver looks them up with `find_chip` instead of keeping its own.
  */
 struct chip_info {
-    uint16_t             id;               // as `decode_chip_id` returns it
-    const char*          name;             // NVIDIA's code name for the chip
+    uint16_t             id;                   // as `decode_chip_id` returns it
+    const char*          name;                 // NVIDIA's code name for the chip
     chip_firmware        firmware;
-    uint8_t              dma_address_bits; // physical address bits the chip reaches system memory with, 32 to 64
+    uint8_t              dma_address_bits;     // physical address bits the chip reaches system memory with, 32 to 64
     chip_gsp_reservation gsp_reservation;
+    uint8_t              interrupt_leaf_count; // 32-bit leaf registers reporting the chip's interrupts to the CPU
 };
 
 /**

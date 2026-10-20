@@ -13,6 +13,28 @@ namespace drivers::nvidia {
 // NVIDIA's NV_OK, the status the firmware reports for what succeeded
 constexpr uint32_t FIRMWARE_STATUS_OK = 0;
 
+// NVIDIA's number for a control request, which the reply carries too
+constexpr uint32_t FUNCTION_GSP_RM_CONTROL = 0x4C;
+
+namespace {
+
+// NVIDIA's header of a control request, which the control's parameters follow, its status filled by the reply
+struct control_header {
+    rm::handle client;
+    rm::handle object;
+    uint32_t   command;
+    uint32_t   status;
+    uint32_t   params_bytes;
+    uint32_t   flags;
+};
+
+} // namespace
+
+static_assert(sizeof(control_header) == 24, "NVIDIA's layout of a control request's header");
+
+// The most bytes of parameters one message carries after a control request's header
+constexpr uint32_t CONTROL_PARAMS_MAX_BYTES = MESSAGE_PAYLOAD_MAX_BYTES - sizeof(control_header);
+
 gsp::~gsp() {
     stop();
 }
@@ -91,6 +113,79 @@ int32_t gsp::request(
             received.result
         );
     }
+
+    return rc;
+}
+
+int32_t gsp::control(
+    rm::handle client,
+    rm::handle object,
+    uint32_t command,
+    void* params,
+    uint32_t params_bytes,
+    uint64_t timeout_ns
+) {
+    if (params_bytes > CONTROL_PARAMS_MAX_BYTES) {
+        log::error(
+            "nvidia: the parameters of control 0x%X take %u bytes, more than the %u one message carries after the "
+            "control's header",
+            command,
+            params_bytes,
+            CONTROL_PARAMS_MAX_BYTES
+        );
+        return ERR_TOO_LARGE;
+    }
+
+    uint32_t message_bytes = sizeof(control_header) + params_bytes;
+    uint8_t* message = static_cast<uint8_t*>(heap::ualloc(message_bytes));
+    if (message == nullptr) {
+        log::error("nvidia: allocating %u bytes for the request of control 0x%X failed", message_bytes, command);
+        return ERR_NO_MEMORY;
+    }
+
+    control_header header = {
+        .client       = client,
+        .object       = object,
+        .command      = command,
+        .status       = 0,
+        .params_bytes = params_bytes,
+        .flags        = 0,
+    };
+
+    string::memcpy(message, &header, sizeof(header));
+    string::memcpy(message + sizeof(header), params, params_bytes);
+
+    received_message reply = {};
+    int32_t rc = request(FUNCTION_GSP_RM_CONTROL, message, message_bytes, message_bytes, reply, timeout_ns);
+    if (rc == OK && reply.payload_bytes < message_bytes) {
+        log::error(
+            "nvidia: the GSP's firmware replies to control 0x%X with %u payload bytes, ending before the control's "
+            "parameters end at byte %u",
+            command,
+            reply.payload_bytes,
+            message_bytes
+        );
+        rc = ERR_BAD_MESSAGE;
+    }
+
+    if (rc == OK) {
+        string::memcpy(&header, message, sizeof(header));
+        rc = to_error(header.status);
+        if (rc != OK) {
+            log::error(
+                "nvidia: the GSP's firmware reports that control 0x%X on object 0x%X failed, with status 0x%X",
+                command,
+                object,
+                header.status
+            );
+        }
+    }
+
+    if (rc == OK) {
+        string::memcpy(params, message + sizeof(header), params_bytes);
+    }
+
+    heap::ufree(message);
 
     return rc;
 }

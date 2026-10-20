@@ -7,6 +7,7 @@
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/registers.h"
+#include "drivers/graphics/nvidia/rm.h"
 
 namespace drivers::nvidia {
 
@@ -28,17 +29,19 @@ namespace drivers::nvidia {
  * as soon as its message is read) and handed to the caller, with as much of
  * its payload as the caller has room for copied over the request's arguments,
  * and its result is translated with `to_error`, the one translation of the
- * firmware's status codes into this driver's errors. A message the firmware
- * sends unasked, such as its ready message, is awaited with `await`.
+ * firmware's status codes into this driver's errors. A control (a command to
+ * an object the firmware keeps) goes through `control`, which sends it as a
+ * request. A message the firmware sends unasked, such as its ready message, is
+ * awaited with `await`.
  *
  *   driver --- send, request ---> command queue ---> GSP's firmware
  *   driver <-- await, request --- status queue  <--- GSP's firmware
  *
- * The object owns the payload buffer, which `stop` and the destructor free,
- * but not the queues' memory, which must stay allocated for as long as
- * messages are sent or received through the object, nor BAR0's mapping, which
- * must stay mapped until `stop`. Its waits spin on the calling CPU without
- * sleeping, and only one thread may use it at a time.
+ * A `gsp` owns the payload buffer, which `stop` and the destructor free, but
+ * not the queues' memory, which must stay allocated for as long as messages
+ * are sent or received through the `gsp`, nor BAR0's mapping, which must stay
+ * mapped until `stop`. Its waits spin on the calling CPU without sleeping, and
+ * only one thread may use it at a time.
  */
 class gsp {
 public:
@@ -180,21 +183,71 @@ public:
     );
 
     /**
+     * @brief Send a control (a command to an object the firmware keeps)
+     * through `request` and copy the parameters the reply carries back over
+     * `params`. The request carries NVIDIA's 24-byte header (the client, the
+     * object, the command, a status of 0 for the reply to fill, the
+     * parameters' size and no flags) and then the parameters, from a buffer
+     * allocated on the unprivileged heap for the call. The control's own
+     * status, which the reply gives in its copy of the header, must be
+     * NVIDIA's success value, or nothing is copied back. NVIDIA's driver also
+     * skips the copy then, unless the reply's flags ask for the parameters to
+     * be copied out on an error, while here the reply's flags are not read.
+     * NVIDIA's driver answers a control marked cacheable from its cache once
+     * the firmware has answered it with NVIDIA's success value, sends
+     * parameters too large for one message in several and sends a serializable
+     * control's parameters as a serialized buffer, while here every control is
+     * sent to the firmware in one message with its parameters flat, as their
+     * struct lies in memory. NVIDIA's driver also copies the parameters back
+     * whatever the reply's length, while here the reply's payload must hold
+     * the header and the parameters. NVIDIA's driver refuses parameters given
+     * with a size of 0, while here the header is then sent alone. The status
+     * queue must be linked. The call spins on the calling CPU without
+     * sleeping, through the wait for the reply, which `request` bounds.
+     * @param client The client (the owner of a tree of objects) holding
+     * `object`.
+     * @param object The object the control is sent to.
+     * @param command NVIDIA's number for the control.
+     * @param params The control's parameters in NVIDIA's flat layout, which
+     * receive the reply's copy on `OK` and are left unchanged on an error. It
+     * must be non-null unless `params_bytes` is 0.
+     * @param params_bytes How many bytes `params` holds, refused when they and
+     * the header exceed `MESSAGE_PAYLOAD_MAX_BYTES`.
+     * @param timeout_ns How long to wait for the reply, as `request` takes it.
+     * @return `OK`, `ERR_TOO_LARGE` when the parameters do not fit one
+     * message, `ERR_NO_MEMORY` when the buffer cannot be allocated, what
+     * `request` returns when the request fails, logged as its doc describes,
+     * `ERR_BAD_MESSAGE` when the reply's payload ends before the parameters
+     * do, or `ERR_FIRMWARE` when the control's status is not NVIDIA's success
+     * value. Every error but the request's is logged here.
+     */
+    int32_t control(
+        rm::handle client,
+        rm::handle object,
+        uint32_t command,
+        void* params,
+        uint32_t params_bytes,
+        uint64_t timeout_ns
+    );
+
+    /**
      * @brief The driver's error for a status code the firmware reports in a
      * reply or in its ready message. NVIDIA's driver hands the status of a
      * failed request up to the request's caller when the status lies below
-     * 0xFF000000, and NV_ERR_GENERIC otherwise. Whatever their value, it
-     * hands up the status of a failed ready message and, unless it sends the
-     * request again, the private result of a reply refusing the driver's VGX
-     * version (the version of NVIDIA's messages the driver builds). Here
-     * every failure is the one error, and the callers log the status.
-     * @param status The result field of a reply or of the ready message, or
-     * the private result of a reply whose request reports through it.
+     * 0xFF000000, and NV_ERR_GENERIC otherwise. Whatever their value, it hands
+     * up the status of a failed control, that of a failed ready message and,
+     * unless it sends the request again, the private result of a reply
+     * refusing the driver's VGX version (the version of NVIDIA's messages the
+     * driver builds). Here every failure is the one error, and the callers log
+     * the status.
+     * @param status The result field of a reply or of the ready message, the
+     * private result of a reply whose request reports through it, or the
+     * status a control's reply gives in its copy of the control's header.
      * @return `OK` for NVIDIA's success value 0, and `ERR_FIRMWARE` for every
-     * other status, which in a reply's result reports that the request
-     * failed, in a private result that the firmware refuses what the request
-     * asked, and in the ready message that the firmware's initialization
-     * failed.
+     * other status, which in a reply's result reports that the request failed,
+     * in a private result that the firmware refuses what the request asked, in
+     * a control's status that the control failed, and in the ready message
+     * that the firmware's initialization failed.
      */
     static int32_t to_error(uint32_t status);
 

@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/gsp.h"
 #include "drivers/graphics/nvidia/gsp_info.h"
 #include "drivers/graphics/nvidia/gsp_unload.h"
+#include "drivers/graphics/nvidia/interrupts.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
@@ -37,6 +38,7 @@ using drivers::nvidia::cpu_sequencer_context;
 using drivers::nvidia::gsp;
 using drivers::nvidia::link_status_queue_within;
 using drivers::nvidia::message_queues;
+using drivers::nvidia::read_gsp_interrupt_vector;
 using drivers::nvidia::read_static_configuration;
 using drivers::nvidia::receive_awaited;
 using drivers::nvidia::receive_within;
@@ -1986,6 +1988,18 @@ static constexpr uint32_t REGION_BLACKLIST           = 31;
 static constexpr uint32_t BAR1_PAGE_DIRECTORY_FIELD_OFFSET = 2088;
 static constexpr uint32_t BAR1_PAGE_DIRECTORY_FIELD_END    = BAR1_PAGE_DIRECTORY_FIELD_OFFSET + 8;
 
+// Where the fields holding the internal client's, device's and subdevice's handles lie in the static configuration, and
+// where the subdevice's, the last field read, ends, restated here so the tests hold them to NVIDIA's layout
+static constexpr uint32_t INTERNAL_CLIENT_FIELD_OFFSET    = 2152;
+static constexpr uint32_t INTERNAL_DEVICE_FIELD_OFFSET    = 2156;
+static constexpr uint32_t INTERNAL_SUBDEVICE_FIELD_OFFSET = 2160;
+static constexpr uint32_t READ_FIELDS_END                 = INTERNAL_SUBDEVICE_FIELD_OFFSET + 4;
+
+// Handles of the internal client, device and subdevice, each different, so a handle read from a neighbor's field fails
+static constexpr uint32_t INTERNAL_CLIENT    = 0xC1D00001;
+static constexpr uint32_t INTERNAL_DEVICE    = 0xC1D00002;
+static constexpr uint32_t INTERNAL_SUBDEVICE = 0xC1D00003;
+
 // An offset of BAR1's root page directory with bits set in both words, a value for the 8 bytes before and after its
 // field, and a video memory size (10 GiB less 2 MiB), so a bound rounded to a power of two or to whole GiB fails
 static constexpr uint64_t BAR1_PAGE_DIRECTORY_OFFSET = 0x275A90000;
@@ -2108,10 +2122,38 @@ TEST(nvidia_message_queues, video_memory_regions_are_read_from_the_static_config
     EXPECT_EQ(configuration.bar1_page_directory_offset, BAR1_PAGE_DIRECTORY_OFFSET);
 }
 
+// The internal client's and subdevice's handles are read from their fields, with the device's handle between them
+TEST(nvidia_message_queues, internal_handles_are_read_from_the_static_configuration) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload info(STATIC_INFO_BYTES);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(info.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    fill_static_info(info, 1);
+    put_word(info.bytes, INTERNAL_CLIENT_FIELD_OFFSET, INTERNAL_CLIENT);
+    put_word(info.bytes, INTERNAL_DEVICE_FIELD_OFFSET, INTERNAL_DEVICE);
+    put_word(info.bytes, INTERNAL_SUBDEVICE_FIELD_OFFSET, INTERNAL_SUBDEVICE);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    static_configuration configuration = {};
+
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
+
+    EXPECT_EQ(configuration.internal_client, INTERNAL_CLIENT);
+    EXPECT_EQ(configuration.internal_subdevice, INTERNAL_SUBDEVICE);
+}
+
 // A reply's payload 8 bytes longer than NVIDIA's static configuration for this firmware
 static constexpr uint32_t LONG_STATIC_INFO_BYTES = STATIC_INFO_BYTES + 8;
 
-// A failed result, a payload short of byte 2096 or a count of 0, 17 or 0x10002 fails with nothing changed, while 16
+// A failed result, a payload short of byte 2164 or a count of 0, 17 or 0x10002 fails with nothing changed, while 16
 // regions with a nonzero private result in a payload ending there and 1 in one longer than NVIDIA's layout pass
 TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fails) {
     fake_queue_memory memory;
@@ -2139,7 +2181,7 @@ TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fai
         1,
         NVIDIA_GET_GSP_STATIC_INFO,
         info.bytes,
-        BAR1_PAGE_DIRECTORY_FIELD_END - 1
+        READ_FIELDS_END - 1
     );
     put_word(info.bytes, REGION_COUNT_OFFSET, 0);
     store_function_message(memory, message, 2, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, STATIC_INFO_BYTES);
@@ -2149,13 +2191,15 @@ TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fai
     store_function_message(memory, message, 4, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, STATIC_INFO_BYTES);
     put_word(info.bytes, REGION_COUNT_OFFSET, REGIONS_MAX);
     put_double_word(info.bytes, BAR1_PAGE_DIRECTORY_FIELD_OFFSET, BAR1_PAGE_DIRECTORY_OFFSET);
+    put_word(info.bytes, INTERNAL_CLIENT_FIELD_OFFSET, INTERNAL_CLIENT);
+    put_word(info.bytes, INTERNAL_SUBDEVICE_FIELD_OFFSET, INTERNAL_SUBDEVICE);
     store_function_message(
         memory,
         message,
         5,
         NVIDIA_GET_GSP_STATIC_INFO,
         info.bytes,
-        BAR1_PAGE_DIRECTORY_FIELD_END,
+        READ_FIELDS_END,
         PRIVATE_RESULT
     );
     put_word(info.bytes, REGION_COUNT_OFFSET, 1);
@@ -2167,6 +2211,8 @@ TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fai
     configuration.regions[0].offset = STALE_WORD;
     configuration.region_count = STALE_WORD;
     configuration.bar1_page_directory_offset = STALE_WORD;
+    configuration.internal_client = STALE_WORD;
+    configuration.internal_subdevice = STALE_WORD;
 
     EXPECT_EQ(
         read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration),
@@ -2182,8 +2228,12 @@ TEST(nvidia_message_queues, static_configuration_refused_short_or_miscounted_fai
     EXPECT_EQ(configuration.region_count, STALE_WORD);
     EXPECT_EQ(configuration.regions[0].offset, STALE_WORD);
     EXPECT_EQ(configuration.bar1_page_directory_offset, STALE_WORD);
+    EXPECT_EQ(configuration.internal_client, STALE_WORD);
+    EXPECT_EQ(configuration.internal_subdevice, STALE_WORD);
     EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
     EXPECT_EQ(configuration.bar1_page_directory_offset, BAR1_PAGE_DIRECTORY_OFFSET);
+    EXPECT_EQ(configuration.internal_client, INTERNAL_CLIENT);
+    EXPECT_EQ(configuration.internal_subdevice, INTERNAL_SUBDEVICE);
     EXPECT_EQ(configuration.region_count, REGIONS_MAX);
     EXPECT_EQ(configuration.regions[last].offset, region_base(last));
     EXPECT_EQ(configuration.regions[last].size, 0xF00100000u);
@@ -2232,6 +2282,8 @@ TEST(nvidia_message_queues, video_memory_region_ending_below_its_start_or_spanni
     configuration.regions[0].offset = STALE_WORD;
     configuration.regions[2].offset = STALE_WORD;
     configuration.region_count = STALE_WORD;
+    configuration.internal_client = STALE_WORD;
+    configuration.internal_subdevice = STALE_WORD;
 
     for (uint32_t i = 0; i < 3; i++) {
         EXPECT_EQ(
@@ -2242,6 +2294,8 @@ TEST(nvidia_message_queues, video_memory_region_ending_below_its_start_or_spanni
 
     EXPECT_EQ(configuration.region_count, STALE_WORD);
     EXPECT_EQ(configuration.regions[0].offset, STALE_WORD);
+    EXPECT_EQ(configuration.internal_client, STALE_WORD);
+    EXPECT_EQ(configuration.internal_subdevice, STALE_WORD);
     EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
     EXPECT_EQ(configuration.region_count, 2u);
     EXPECT_EQ(configuration.regions[0].offset, 0u);
@@ -2257,8 +2311,8 @@ static constexpr uint64_t PAST_REACH_VIDEO_MEMORY_BYTES = 0x20000000000;
 static constexpr uint64_t WINDOW_REACH                  = 0x10000000000;
 static constexpr uint64_t PAGE_DIRECTORY_ENTRY_BYTES    = 8;
 
-// A root page directory 4 bytes off a multiple of 8, with its entry ending past video memory or a size 4 bytes short,
-// or at the reach with 2 TiB fails, count and offset unchanged, while the last 8 bytes of memory and of the reach pass
+// A root page directory 4 bytes off a multiple of 8, its entry past video memory or a size 4 bytes short, or at the
+// reach with 2 TiB fails, count, offset and handles unchanged, while the last 8 bytes of memory and of the reach pass
 TEST(nvidia_message_queues, bar1_page_directory_misaligned_or_out_of_bounds_fails) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
@@ -2289,6 +2343,8 @@ TEST(nvidia_message_queues, bar1_page_directory_misaligned_or_out_of_bounds_fail
     static_configuration configuration = {};
     configuration.region_count = STALE_WORD;
     configuration.bar1_page_directory_offset = STALE_WORD;
+    configuration.internal_client = STALE_WORD;
+    configuration.internal_subdevice = STALE_WORD;
 
     for (uint32_t i = 0; i < 2; i++) {
         EXPECT_EQ(
@@ -2308,6 +2364,8 @@ TEST(nvidia_message_queues, bar1_page_directory_misaligned_or_out_of_bounds_fail
 
     EXPECT_EQ(configuration.region_count, STALE_WORD);
     EXPECT_EQ(configuration.bar1_page_directory_offset, STALE_WORD);
+    EXPECT_EQ(configuration.internal_client, STALE_WORD);
+    EXPECT_EQ(configuration.internal_subdevice, STALE_WORD);
     EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
     EXPECT_EQ(configuration.bar1_page_directory_offset, VIDEO_MEMORY_BYTES - PAGE_DIRECTORY_ENTRY_BYTES);
     EXPECT_EQ(
@@ -2349,4 +2407,447 @@ TEST(nvidia_message_queues, message_version_and_static_configuration_wait_out_th
     EXPECT_LT(configuration_elapsed, WAIT_TIME_LIMIT_NS);
     EXPECT_EQ(configuration.region_count, STALE_WORD);
     EXPECT_EQ(configuration.regions[0].offset, STALE_WORD);
+}
+
+// NVIDIA's number for a control request and the layout of the header its parameters follow, restated here so the tests
+// hold the request to NVIDIA's layout rather than to the driver's
+static constexpr uint32_t NVIDIA_GSP_RM_CONTROL      = 0x4C;
+static constexpr uint32_t CONTROL_CLIENT_FIELD       = 0;
+static constexpr uint32_t CONTROL_OBJECT_FIELD       = 4;
+static constexpr uint32_t CONTROL_COMMAND_FIELD      = 8;
+static constexpr uint32_t CONTROL_STATUS_FIELD       = 12;
+static constexpr uint32_t CONTROL_PARAMS_BYTES_FIELD = 16;
+static constexpr uint32_t CONTROL_FLAGS_FIELD        = 20;
+static constexpr uint32_t CONTROL_PARAMS_FIELD       = 24;
+
+// A control's command, the parameters sent and those the reply carries back, and two failing statuses of the control's
+// own, one with only low bits set and one with only bit 31, so a status read through too narrow a mask fails
+static constexpr uint32_t TEST_COMMAND               = 0x20801234;
+static constexpr uint32_t PARAMS_WORDS               = 3;
+static constexpr uint32_t SENT_PARAMS[PARAMS_WORDS]  = {0x11111111, 0x22222222, 0x33333333};
+static constexpr uint32_t REPLY_PARAMS[PARAMS_WORDS] = {0x44444444, 0x55555555, 0x66666666};
+static constexpr uint32_t PARAMS_BYTES               = sizeof(SENT_PARAMS);
+static constexpr uint32_t CONTROL_REPLY_BYTES        = CONTROL_PARAMS_FIELD + PARAMS_BYTES;
+static constexpr uint32_t CONTROL_FAILURE            = 0x1F;
+static constexpr uint32_t CONTROL_HIGH_FAILURE       = 0x80000000;
+
+// Sizes of parameters only the control's own check refuses, one no allocation holds and one whose sum with the 24 bytes
+// of the header wraps to 0 in 32 bits
+static constexpr uint32_t HUGE_PARAMS_BYTES     = 0xFFFFFF00;
+static constexpr uint32_t WRAPPING_PARAMS_BYTES = 0xFFFFFFE8;
+
+// Writes a control reply's header for the internal subdevice with this command, status and size of parameters
+static void put_control_header(uint8_t* reply, uint32_t command, uint32_t status, uint32_t params_bytes) {
+    put_word(reply, CONTROL_CLIENT_FIELD, INTERNAL_CLIENT);
+    put_word(reply, CONTROL_OBJECT_FIELD, INTERNAL_SUBDEVICE);
+    put_word(reply, CONTROL_COMMAND_FIELD, command);
+    put_word(reply, CONTROL_STATUS_FIELD, status);
+    put_word(reply, CONTROL_PARAMS_BYTES_FIELD, params_bytes);
+    put_word(reply, CONTROL_FLAGS_FIELD, 0);
+}
+
+// Fills the first `CONTROL_REPLY_BYTES` of `reply` with a reply to `TEST_COMMAND` with this status, carrying
+// `REPLY_PARAMS`
+static void fill_control_reply(uint8_t* reply, uint32_t status) {
+    put_control_header(reply, TEST_COMMAND, status, PARAMS_BYTES);
+    string::memcpy(reply + CONTROL_PARAMS_FIELD, REPLY_PARAMS, PARAMS_BYTES);
+}
+
+// A control is sent with NVIDIA's header (the client, the object, the command, a status of 0, the parameters' size and
+// no flags) and then its parameters, or alone for parameters of size 0, and a longer reply's parameters are copied back
+TEST(nvidia_message_queues, control_carries_its_header_and_parameters_and_copies_the_reply_back) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    // 8 bytes past the parameters, so a check that the reply's length equals the request's fails
+    uint8_t reply[CONTROL_REPLY_BYTES + 8] = {};
+    fill_control_reply(reply, 0);
+    string::memset(reply + CONTROL_REPLY_BYTES, STALE_BYTE, 8);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply));
+    put_control_header(reply, TEST_COMMAND, 0, 0);
+    store_function_message(memory, message, 1, NVIDIA_GSP_RM_CONTROL, reply, CONTROL_PARAMS_FIELD);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    uint32_t params[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+
+    EXPECT_EQ(
+        conversation.control(INTERNAL_CLIENT, INTERNAL_SUBDEVICE, TEST_COMMAND, params, PARAMS_BYTES, LONG_TIMEOUT_NS),
+        OK
+    );
+    EXPECT_EQ(conversation.control(INTERNAL_CLIENT, INTERNAL_SUBDEVICE, TEST_COMMAND, params, 0, LONG_TIMEOUT_NS), OK);
+
+    const uint8_t* request = memory.element(0);
+    const uint8_t* bare_request = memory.element(1);
+    EXPECT_EQ(field_at(request, MESSAGE_FUNCTION), NVIDIA_GSP_RM_CONTROL);
+    EXPECT_EQ(field_at(request, MESSAGE_RPC_BYTES), RPC_HEADER_BYTES + CONTROL_REPLY_BYTES);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_CLIENT_FIELD), INTERNAL_CLIENT);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_OBJECT_FIELD), INTERNAL_SUBDEVICE);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_COMMAND_FIELD), TEST_COMMAND);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_STATUS_FIELD), 0u);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_PARAMS_BYTES_FIELD), PARAMS_BYTES);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_FLAGS_FIELD), 0u);
+    for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
+        EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_PARAMS_FIELD + i * 4), SENT_PARAMS[i]);
+        EXPECT_EQ(params[i], REPLY_PARAMS[i]);
+    }
+
+    EXPECT_EQ(field_at(bare_request, MESSAGE_RPC_BYTES), RPC_HEADER_BYTES + CONTROL_PARAMS_FIELD);
+    EXPECT_EQ(field_at(bare_request, MESSAGE_PAYLOAD + CONTROL_PARAMS_BYTES_FIELD), 0u);
+}
+
+// A failing status, even with every reply flag set, or a reply a byte short leaves the parameters unchanged, a byte too
+// many or 0xFFFFFF00 or 0xFFFFFFE8 bytes of parameters queue nothing, and the most one message holds take 16 elements
+TEST(nvidia_message_queues, control_refused_by_its_status_its_size_or_a_short_reply_fails) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    queue_test_payload oversized(PAYLOAD_MAX_BYTES - CONTROL_PARAMS_FIELD + 1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_NOT_NULL(oversized.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint8_t reply[CONTROL_REPLY_BYTES] = {};
+    MOVED_HEADER.write_to(memory);
+    fill_control_reply(reply, CONTROL_FAILURE);
+    put_word(reply, CONTROL_FLAGS_FIELD, 0xFFFFFFFF);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply));
+    fill_control_reply(reply, CONTROL_HIGH_FAILURE);
+    store_function_message(memory, message, 1, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply));
+    fill_control_reply(reply, 0);
+    store_function_message(memory, message, 2, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply) - 1);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    uint32_t params[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+
+    for (uint32_t i = 0; i < 2; i++) {
+        EXPECT_EQ(
+            conversation.control(
+                INTERNAL_CLIENT,
+                INTERNAL_SUBDEVICE,
+                TEST_COMMAND,
+                params,
+                PARAMS_BYTES,
+                LONG_TIMEOUT_NS
+            ),
+            ERR_FIRMWARE
+        );
+    }
+
+    EXPECT_EQ(
+        conversation.control(INTERNAL_CLIENT, INTERNAL_SUBDEVICE, TEST_COMMAND, params, PARAMS_BYTES, LONG_TIMEOUT_NS),
+        ERR_BAD_MESSAGE
+    );
+
+    // The control's own limit refuses a byte too many, in words `send` never logs, so a looser or missing limit fails
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t oversized_rc = conversation.control(
+        INTERNAL_CLIENT,
+        INTERNAL_SUBDEVICE,
+        TEST_COMMAND,
+        oversized.bytes,
+        oversized.count,
+        LONG_TIMEOUT_NS
+    );
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(oversized_rc, ERR_TOO_LARGE);
+    EXPECT_TRUE(logged_text_contains("more than the 65432 one message carries"));
+
+    ASSERT_EQ(
+        conversation.control(
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            TEST_COMMAND,
+            params,
+            HUGE_PARAMS_BYTES,
+            LONG_TIMEOUT_NS
+        ),
+        ERR_TOO_LARGE
+    );
+    EXPECT_EQ(
+        conversation.control(
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            TEST_COMMAND,
+            params,
+            WRAPPING_PARAMS_BYTES,
+            LONG_TIMEOUT_NS
+        ),
+        ERR_TOO_LARGE
+    );
+
+    for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
+        EXPECT_EQ(params[i], SENT_PARAMS[i]);
+    }
+
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 3u);
+    EXPECT_EQ(
+        conversation.control(
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            TEST_COMMAND,
+            oversized.bytes,
+            oversized.count - 1,
+            SHORT_TIMEOUT_NS
+        ),
+        ERR_TIMEOUT
+    );
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 3u + MESSAGE_ELEMENTS);
+}
+
+// NVIDIA's command for the kernel interrupt table, the table's layout and the GSP's engine, restated here so the tests
+// hold the table to NVIDIA's layout rather than to the driver's
+static constexpr uint32_t NVIDIA_GET_KERNEL_INTERRUPT_TABLE = 0x20800A5C;
+static constexpr uint32_t INTERRUPT_TABLE_BYTES             = 2068;
+static constexpr uint32_t INTERRUPT_ROWS_OFFSET             = 4;
+static constexpr uint32_t INTERRUPT_ROW_BYTES               = 16;
+static constexpr uint32_t INTERRUPT_ROW_PADDING_OFFSET      = 2;
+static constexpr uint32_t INTERRUPT_ROW_STALL_VECTOR        = 8;
+static constexpr uint32_t INTERRUPT_ROW_NONSTALL_VECTOR     = 12;
+static constexpr uint32_t INTERRUPT_ROWS_MAX                = 128;
+static constexpr uint16_t NVIDIA_ENGINE_GSP                 = 49;
+static constexpr uint32_t INTERRUPT_TABLE_REPLY_BYTES       = CONTROL_PARAMS_FIELD + INTERRUPT_TABLE_BYTES;
+
+// GA102's CPU interrupt tree (the GPU's registers reporting its interrupts to the CPU), 8 leaves of 32 GPU interrupt
+// vectors (NVIDIA's numbers for the GPU's interrupts), restated here so the tests hold the bound to NVIDIA's leaves
+static constexpr uint32_t INTERRUPT_LEAF_COUNT   = 8;
+static constexpr uint32_t INTERRUPT_LEAF_VECTORS = 32;
+static constexpr uint32_t INTERRUPT_VECTORS      = INTERRUPT_LEAF_COUNT * INTERRUPT_LEAF_VECTORS;
+
+// A tree of 5 leaves, whose last vector is 159, so a bound that ignores the leaf count passes vector 160
+static constexpr uint32_t SMALL_INTERRUPT_LEAF_COUNT = 5;
+static constexpr uint32_t SMALL_INTERRUPT_VECTORS    = SMALL_INTERRUPT_LEAF_COUNT * INTERRUPT_LEAF_VECTORS;
+
+// The engine of every row `fill_interrupt_table_reply` writes is this plus the row's index, never the GSP's
+static constexpr uint16_t FIRST_OTHER_ENGINE = 100;
+
+// An engine equal to the GSP's in its low byte alone, so an engine read 8 bits wide fails
+static constexpr uint16_t GSP_LOW_BYTE_ENGINE = NVIDIA_ENGINE_GSP | 0x100;
+
+// Writes row `index` of the table in `reply` with this engine and stall vector, its nonstall vector `stall_vector + 1`
+// and the padding after its engine holding no zero, so an engine read 32 bits wide fails
+static void put_interrupt_row(queue_test_payload& reply, uint32_t index, uint16_t engine, uint32_t stall_vector) {
+    uint8_t* row = reply.bytes + CONTROL_PARAMS_FIELD + INTERRUPT_ROWS_OFFSET + index * INTERRUPT_ROW_BYTES;
+    string::memcpy(row, &engine, sizeof(engine));
+    string::memset(row + INTERRUPT_ROW_PADDING_OFFSET, STALE_BYTE, 2);
+    put_word(row, INTERRUPT_ROW_STALL_VECTOR, stall_vector);
+    put_word(row, INTERRUPT_ROW_NONSTALL_VECTOR, stall_vector + 1);
+}
+
+// Fills `reply` with a reply to the request for the kernel interrupt table counting `row_count` rows, with all 128 rows
+// written, row `i` of engine `FIRST_OTHER_ENGINE + i` with stall vector `i`
+static void fill_interrupt_table_reply(queue_test_payload& reply, uint32_t row_count) {
+    string::memset(reply.bytes, 0, reply.count);
+    put_control_header(reply.bytes, NVIDIA_GET_KERNEL_INTERRUPT_TABLE, 0, INTERRUPT_TABLE_BYTES);
+    put_word(reply.bytes, CONTROL_PARAMS_FIELD, row_count);
+    for (uint32_t i = 0; i < INTERRUPT_ROWS_MAX; i++) {
+        put_interrupt_row(reply, i, static_cast<uint16_t>(FIRST_OTHER_ENGINE + i), i);
+    }
+}
+
+// The table is asked for on the internal subdevice with 2068 zero bytes. The GSP's vector is the stall vector of the
+// GSP's first row, not its nonstall vector, a later GSP row's or that of engine 48 or of one equal in its low byte
+TEST(nvidia_message_queues, gsp_interrupt_vector_is_read_from_the_kernel_interrupt_table) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    queue_test_payload reply(INTERRUPT_TABLE_REPLY_BYTES);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_NOT_NULL(reply.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    fill_interrupt_table_reply(reply, 5);
+    put_interrupt_row(reply, 0, NVIDIA_ENGINE_GSP - 1, 3);
+    put_interrupt_row(reply, 1, GSP_LOW_BYTE_ENGINE, 7);
+    put_interrupt_row(reply, 2, NVIDIA_ENGINE_GSP, 155);
+    put_interrupt_row(reply, 4, NVIDIA_ENGINE_GSP, INTERRUPT_VECTORS);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    uint32_t vector = STALE_WORD;
+
+    EXPECT_EQ(
+        read_gsp_interrupt_vector(
+            conversation,
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            INTERRUPT_LEAF_COUNT,
+            LONG_TIMEOUT_NS,
+            vector
+        ),
+        OK
+    );
+
+    const uint8_t* request = memory.element(0);
+    uint32_t nonzero_param_bytes = 0;
+    for (uint32_t i = 0; i < INTERRUPT_TABLE_BYTES; i++) {
+        nonzero_param_bytes += request[MESSAGE_PAYLOAD + CONTROL_PARAMS_FIELD + i] != 0 ? 1 : 0;
+    }
+
+    EXPECT_EQ(field_at(request, MESSAGE_FUNCTION), NVIDIA_GSP_RM_CONTROL);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_CLIENT_FIELD), INTERNAL_CLIENT);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_OBJECT_FIELD), INTERNAL_SUBDEVICE);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_COMMAND_FIELD), NVIDIA_GET_KERNEL_INTERRUPT_TABLE);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_PARAMS_BYTES_FIELD), INTERRUPT_TABLE_BYTES);
+    EXPECT_EQ(nonzero_param_bytes, 0u);
+    EXPECT_EQ(vector, 155u);
+}
+
+// With 8 leaves, 129 or 0x10001 rows, a GSP row only past the count or a GSP vector of 256 (also before one of 9),
+// 0x1009B or 0xFFFFFFFF fails, the vector unchanged, and 255 and 0 pass, as 159 does with 5 leaves while 160 fails
+TEST(nvidia_message_queues, gsp_interrupt_vector_refused_or_missing_fails) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    queue_test_payload reply(INTERRUPT_TABLE_REPLY_BYTES);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_NOT_NULL(reply.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    fill_interrupt_table_reply(reply, INTERRUPT_ROWS_MAX + 1);
+    put_interrupt_row(reply, 0, NVIDIA_ENGINE_GSP, 1);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    // A count whose low half alone would pass, so a count read 16 bits wide fails
+    put_word(reply.bytes, CONTROL_PARAMS_FIELD, 0x10001);
+    store_function_message(memory, message, 1, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    fill_interrupt_table_reply(reply, 3);
+    put_interrupt_row(reply, 3, NVIDIA_ENGINE_GSP, 1);
+    store_function_message(memory, message, 2, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    fill_interrupt_table_reply(reply, 3);
+    put_interrupt_row(reply, 1, NVIDIA_ENGINE_GSP, INTERRUPT_VECTORS);
+    store_function_message(memory, message, 3, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    // A vector whose low half alone would pass, so a vector read 16 bits wide fails
+    put_interrupt_row(reply, 1, NVIDIA_ENGINE_GSP, 0x1009B);
+    store_function_message(memory, message, 4, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    // NVIDIA's NV_INTR_VECTOR_INVALID, which its lookup gives for an engine without a row
+    put_interrupt_row(reply, 1, NVIDIA_ENGINE_GSP, 0xFFFFFFFF);
+    store_function_message(memory, message, 5, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    put_interrupt_row(reply, 1, NVIDIA_ENGINE_GSP, INTERRUPT_VECTORS);
+    put_interrupt_row(reply, 2, NVIDIA_ENGINE_GSP, 9);
+    store_function_message(memory, message, 6, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    fill_interrupt_table_reply(reply, INTERRUPT_ROWS_MAX);
+    put_interrupt_row(reply, INTERRUPT_ROWS_MAX - 1, NVIDIA_ENGINE_GSP, INTERRUPT_VECTORS - 1);
+    store_function_message(memory, message, 7, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    fill_interrupt_table_reply(reply, 1);
+    put_interrupt_row(reply, 0, NVIDIA_ENGINE_GSP, 0);
+    store_function_message(memory, message, 8, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    put_interrupt_row(reply, 0, NVIDIA_ENGINE_GSP, SMALL_INTERRUPT_VECTORS);
+    store_function_message(memory, message, 9, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    put_interrupt_row(reply, 0, NVIDIA_ENGINE_GSP, SMALL_INTERRUPT_VECTORS - 1);
+    store_function_message(memory, message, 10, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 11);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    uint32_t vector = STALE_WORD;
+
+    for (uint32_t i = 0; i < 7; i++) {
+        EXPECT_EQ(
+            read_gsp_interrupt_vector(
+                conversation,
+                INTERNAL_CLIENT,
+                INTERNAL_SUBDEVICE,
+                INTERRUPT_LEAF_COUNT,
+                LONG_TIMEOUT_NS,
+                vector
+            ),
+            ERR_BAD_MESSAGE
+        );
+    }
+
+    EXPECT_EQ(vector, STALE_WORD);
+    EXPECT_EQ(
+        read_gsp_interrupt_vector(
+            conversation,
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            INTERRUPT_LEAF_COUNT,
+            LONG_TIMEOUT_NS,
+            vector
+        ),
+        OK
+    );
+    EXPECT_EQ(vector, INTERRUPT_VECTORS - 1);
+    EXPECT_EQ(
+        read_gsp_interrupt_vector(
+            conversation,
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            INTERRUPT_LEAF_COUNT,
+            LONG_TIMEOUT_NS,
+            vector
+        ),
+        OK
+    );
+    EXPECT_EQ(vector, 0u);
+    EXPECT_EQ(
+        read_gsp_interrupt_vector(
+            conversation,
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            SMALL_INTERRUPT_LEAF_COUNT,
+            LONG_TIMEOUT_NS,
+            vector
+        ),
+        ERR_BAD_MESSAGE
+    );
+    EXPECT_EQ(vector, 0u);
+    EXPECT_EQ(
+        read_gsp_interrupt_vector(
+            conversation,
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            SMALL_INTERRUPT_LEAF_COUNT,
+            LONG_TIMEOUT_NS,
+            vector
+        ),
+        OK
+    );
+    EXPECT_EQ(vector, SMALL_INTERRUPT_VECTORS - 1);
+}
+
+// The table's control waits for its reply only as long as its caller gives, failing with the wait's timeout on a queue
+// that stays empty, the vector left unchanged
+TEST(nvidia_message_queues, gsp_interrupt_vector_waits_out_its_timeout) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    uint32_t vector = STALE_WORD;
+
+    uint64_t start = clock::now_ns();
+    EXPECT_EQ(
+        read_gsp_interrupt_vector(
+            conversation,
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            INTERRUPT_LEAF_COUNT,
+            SHORT_TIMEOUT_NS,
+            vector
+        ),
+        ERR_TIMEOUT
+    );
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(vector, STALE_WORD);
 }

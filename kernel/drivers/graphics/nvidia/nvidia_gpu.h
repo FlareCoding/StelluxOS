@@ -66,18 +66,19 @@ namespace drivers {
  * protected memory's metadata into a page of its own, and writes the log
  * buffers and the arguments the firmware reads when it starts, all as
  * `nvidia::gsp_boot_memory` describes. The arguments are those of the
- * firmware's resource manager (its task that serves the driver's requests) and
- * of LibOS (the small operating system the firmware runs on). The metadata
- * tells booter load where the copies of the bootloader's program, the firmware
- * and its signature lie and where each part of protected memory goes. Bring-up
- * next calls `nvidia::gsp::start`, which allocates the buffer each received
- * message's payload is copied into and lays the queues out in their memory,
- * after which the `nvidia::gsp` carries every message the driver sends or
- * receives. Through it, bring-up queues in the command queue the two messages
- * NVIDIA's driver sends before the GSP starts (the system information and the
- * registry, here with no entry), as `nvidia::queue_boot_messages` describes.
- * The system information says how much video memory the firmware must leave
- * alone for a boot console (a boot framebuffer that may still be drawn in), as
+ * firmware's resource manager (its task that keeps the GPU's objects and
+ * carries out the commands to them, called controls) and of LibOS (the small
+ * operating system the firmware runs on). The metadata tells booter load where
+ * the copies of the bootloader's program, the firmware and its signature lie
+ * and where each part of protected memory goes. Bring-up next calls
+ * `nvidia::gsp::start`, which allocates the buffer each received message's
+ * payload is copied into and lays the queues out in their memory, after which
+ * the `nvidia::gsp` carries every message the driver sends or receives.
+ * Through it, bring-up queues in the command queue the two messages NVIDIA's
+ * driver sends before the GSP starts (the system information and the registry,
+ * here with no entry), as `nvidia::queue_boot_messages` describes. The system
+ * information says how much video memory the firmware must leave alone for a
+ * boot console (a boot framebuffer that may still be drawn in), as
  * `nvidia::boot_console_bytes` works it out from the card's BARs, the boot
  * framebuffer `g_boot_info` records and whether the chip's fuses disable its
  * display. Bring-up then resets the GSP into its RISC-V core, tells the
@@ -111,15 +112,25 @@ namespace drivers {
  * sends first: `nvidia::confirm_message_version` checks that the firmware
  * accepts the driver's VGX version (the version of NVIDIA's messages the
  * driver builds), and `nvidia::read_static_configuration` reads the video
- * memory regions the firmware reports and where BAR1's root page directory
- * lies. BAR1 is the CPU's window into the card's video memory, and its root
- * page directory is the top level of the page tables the firmware binds BAR1
- * to. Bring-up logs each region, as reserved when it holds reserved bytes and
- * as usable otherwise, as NVIDIA's driver counts regions. It then reads the
- * root page directory's first entry, the one covering the start of BAR1, with
- * `nvidia::read_video_memory_u64` through BAR0's window (the 1 MiB of BAR0
- * that reaches video memory without page tables), and logs the entry with
- * BAR1's block register (the register that binds BAR1 to video memory). When
+ * memory regions the firmware reports, where BAR1's root page directory lies,
+ * and the handles (the numbers naming the firmware's objects) of the internal
+ * client and subdevice, the objects the firmware keeps for the controls that
+ * NVIDIA's driver sends on its own behalf. BAR1 is the CPU's window into the
+ * card's video memory, and its root page directory is the top level of the
+ * page tables the firmware binds BAR1 to. Bring-up logs each region, as
+ * reserved when it holds reserved bytes and as usable otherwise, as NVIDIA's
+ * driver counts regions. It then reads the root page directory's first entry,
+ * the one covering the start of BAR1, with `nvidia::read_video_memory_u64`
+ * through BAR0's window (the 1 MiB of BAR0 that reaches video memory without
+ * page tables), and logs the entry with BAR1's block register (the register
+ * that binds BAR1 to video memory). It then reads the GSP's GPU interrupt
+ * vector (NVIDIA's number for one of the GPU's interrupts, not an MSI vector
+ * `on_interrupt` receives) from the firmware's kernel interrupt table (for
+ * each GPU unit whose interrupts NVIDIA's driver services, the vectors on
+ * which they arrive) with `nvidia::read_gsp_interrupt_vector` and logs it with
+ * both handles. The firmware signals the driver on that vector, which must
+ * name a bit of the CPU interrupt tree (the GPU's registers reporting its
+ * interrupts to the CPU), as `nvidia::read_gsp_interrupt_vector` checks. When
  * NVIDIA's driver keeps the boot console mapped at the start of BAR1, as
  * `nvidia::is_console_kept_at_bar1_start` decides, bring-up maps it there too.
  * The console's memory is then the firmware's video memory region 0 whole, as
@@ -204,14 +215,15 @@ namespace drivers {
  * firmware's report that its initialization failed, which NVIDIA's driver also
  * treats as a failed boot. Once that result is 0, `attach()` fails as
  * `nvidia::confirm_message_version` describes, such as when the firmware
- * refuses the VGX version, and then as `nvidia::read_static_configuration`
- * describes. While mapping the console, it fails as
- * `nvidia::place_console_page_tables` describes, such as when region 0 leaves
- * no byte of BAR1 past it, with `nvidia::ERR_NO_MEMORY` when the copy of the
- * tables cannot be allocated, with `nvidia::ERR_BAD_STATE` when
- * `nvidia::write_video_memory` refuses the copy or the first entry reads back
- * as another value, with `nvidia::ERR_TIMEOUT` when BAR1's invalidate does not
- * finish within `nvidia::DEFAULT_TIMEOUT_NS`, as
+ * refuses the VGX version, then as `nvidia::read_static_configuration`
+ * describes, and then as `nvidia::read_gsp_interrupt_vector` describes, as
+ * when the kernel interrupt table has no row for the GSP. While mapping the
+ * console, it fails as `nvidia::place_console_page_tables` describes, as when
+ * region 0 leaves no byte of BAR1 past it, with `nvidia::ERR_NO_MEMORY` when
+ * the copy of the tables cannot be allocated, with `nvidia::ERR_BAD_STATE`
+ * when `nvidia::write_video_memory` refuses the copy or the first entry reads
+ * back as another value, with `nvidia::ERR_TIMEOUT` when BAR1's invalidate
+ * does not finish within `nvidia::DEFAULT_TIMEOUT_NS`, as
  * `nvidia::link_console_page_tables` describes, with the error
  * `pci_driver::map_bar` returns when BAR1 cannot be mapped, with the error
  * `pci_driver::unmap_bar` returns when BAR1 cannot be unmapped after the check
@@ -247,8 +259,10 @@ namespace drivers {
  * end of bring-up, FWSEC ran and fenced off the FRTS region, booter load ran
  * on SEC2, each CPU sequencer the firmware sent ran, or was refused or stopped
  * at a step as it logged, the firmware reported its initialization done,
- * accepted the VGX version and reported its video memory regions and where
- * BAR1's root page directory lies, and the register of BAR0's window was
+ * accepted the VGX version, reported its video memory regions, where BAR1's
+ * root page directory lies and the handles of the internal client and
+ * subdevice, and its kernel interrupt table held a row for the GSP with a
+ * vector inside the CPU interrupt tree, and the register of BAR0's window was
  * written back after each use with the value it held before. When bring-up
  * maps the console, the console's tables also lie in video memory and the root
  * page directory's first entry names them. Nothing frees the tables' video

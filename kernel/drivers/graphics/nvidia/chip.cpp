@@ -27,6 +27,7 @@ constexpr chip_info CHIP_TABLE[] = {
             .unprotected_heap_bytes = 0x100000,
             .prescrubbed_top_bytes = 0x10000000,
         },
+        .interrupt_leaf_count = 8,
     },
 };
 
