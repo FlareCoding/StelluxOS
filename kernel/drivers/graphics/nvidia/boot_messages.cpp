@@ -121,6 +121,10 @@ uint64_t boot_console_bytes(const card_placement& card, const boot_framebuffer& 
     return (bytes + CONSOLE_RESERVATION_UNIT - 1) & ~(CONSOLE_RESERVATION_UNIT - 1);
 }
 
+bool is_console_kept_at_bar1_start(const card_placement& card, const boot_framebuffer& framebuffer, bool has_display) {
+    return has_display && card.bar1_address != 0 && framebuffer.address == card.bar1_address;
+}
+
 int32_t queue_boot_messages(gsp& conversation, const card_placement& card, uint64_t console_bytes) {
     nvidia_bars bars = number_bars_as_nvidia(card);
     uint64_t instance_memory_address = bars.instance_memory_address;

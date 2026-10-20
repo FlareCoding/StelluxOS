@@ -64,6 +64,27 @@ void restore_bar0_window(registers& regs, uint32_t saved_window);
  */
 uint64_t read_video_memory_u64(registers& regs, uint64_t offset);
 
+/**
+ * @brief Write `count` 64-bit values into the card's video memory at
+ * consecutive offsets from `offset` on, through BAR0's window, each as two
+ * 32-bit words, the low word first at the value's offset, as NVIDIA's function
+ * for reads and writes of up to 8 bytes writes one value. The call sets the
+ * window with `set_bar0_window` before the first value and restores it with
+ * `restore_bar0_window` after the last, so every value must lie inside the 1
+ * MiB the window reaches from the 64 KiB step holding `offset`. NVIDIA's
+ * function sets the window again for each value its window does not hold. The
+ * call never blocks.
+ * @param regs A view of BAR0.
+ * @param offset Bytes from the start of video memory. The offset must be a
+ * multiple of 8 (the value's size), so each word is an aligned 32-bit access
+ * to BAR0, and must lie below `BAR0_WINDOW_REACH`.
+ * @param values The values, `count` of them, written in order.
+ * @param count How many values to write.
+ * @return `OK`, or `ERR_BAD_STATE`, logged, with nothing written, when the
+ * values end past the window's 1 MiB.
+ */
+int32_t write_video_memory(registers& regs, uint64_t offset, const uint64_t* values, uint64_t count);
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_BAR0_WINDOW_H

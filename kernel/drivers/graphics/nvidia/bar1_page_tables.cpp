@@ -2,6 +2,7 @@
 
 #include "drivers/graphics/nvidia/bar1_page_tables.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "common/logging.h"
 
 namespace drivers::nvidia {
 
@@ -110,6 +111,61 @@ uint64_t write_console_page_tables(uint64_t* tables, uint64_t tables_offset, uin
     }
 
     return directory_entry(tables_offset);
+}
+
+int32_t place_console_page_tables(
+    const static_configuration& configuration,
+    uint64_t reserved_console_bytes,
+    uint64_t bar1_bytes,
+    console_tables_placement& placement_out
+) {
+    const video_memory_region& console_region = configuration.regions[0];
+    uint64_t console_bytes = console_region.size;
+    uint64_t tables_bytes = console_page_table_bytes(console_bytes);
+    bool starts_at_zero = console_region.offset == 0;
+    bool holds_reserved_bytes = console_bytes >= reserved_console_bytes;
+    if (!starts_at_zero || !holds_reserved_bytes || tables_bytes == 0) {
+        log::error(
+            "nvidia: video memory region 0 holds 0x%lX bytes at 0x%lX, where the console's tables need it to start at "
+            "0, hold the 0x%lX bytes reserved for the boot console and hold whole 4 KiB pages up to 512 MiB",
+            console_bytes,
+            console_region.offset,
+            reserved_console_bytes
+        );
+        return ERR_BAD_STATE;
+    }
+
+    if (console_bytes >= bar1_bytes) {
+        log::error(
+            "nvidia: the console's 0x%lX bytes leave none of BAR1's 0x%lX bytes past them",
+            console_bytes,
+            bar1_bytes
+        );
+        return ERR_BAD_STATE;
+    }
+
+    uint64_t root_entry_offset = configuration.bar1_page_directory_offset;
+    for (uint32_t i = 0; i < configuration.region_count; i++) {
+        const video_memory_region& region = configuration.regions[i];
+        uint64_t aligned_start = (region.offset + ADDRESS_UNIT_BYTES - 1) & ~(ADDRESS_UNIT_BYTES - 1);
+        uint64_t start = aligned_start > console_bytes ? aligned_start : console_bytes;
+        bool is_usable = !region.is_reserved && !region.is_protected;
+        bool fits_region = start >= region.offset && lies_inside(start - region.offset, tables_bytes, region.size);
+        bool is_nameable = lies_inside(start, tables_bytes, ADDRESS_FIELD_REACH);
+        bool holds_root_entry =
+            root_entry_offset < start + tables_bytes && start < root_entry_offset + sizeof(uint64_t);
+        if (is_usable && fits_region && is_nameable && !holds_root_entry) {
+            placement_out = {.console_bytes = console_bytes, .offset = start, .bytes = tables_bytes};
+            return OK;
+        }
+    }
+
+    log::error(
+        "nvidia: no video memory region that is neither reserved nor protected holds the console's 0x%lX bytes of "
+        "tables past region 0, below 128 GiB and without holding the first entry of BAR1's root page directory",
+        tables_bytes
+    );
+    return ERR_BAD_STATE;
 }
 
 } // namespace drivers::nvidia

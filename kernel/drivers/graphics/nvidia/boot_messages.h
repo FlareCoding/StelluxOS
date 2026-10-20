@@ -63,6 +63,31 @@ struct boot_framebuffer {
 uint64_t boot_console_bytes(const card_placement& card, const boot_framebuffer& framebuffer, bool has_display);
 
 /**
+ * @brief Whether NVIDIA's driver keeps the boot console mapped at the start of
+ * BAR1 once the GSP's firmware runs: the chip's fuses leave its display
+ * enabled, so NVIDIA's driver keeps video memory for a console, and the boot
+ * framebuffer lies at the start of NVIDIA's framebuffer BAR. NVIDIA's driver
+ * also keeps none on a host of virtual GPUs or in a guest given one, neither
+ * of which this driver supports. The rules that follow are this driver's own.
+ * Only BAR1 counts, since the console is mapped through BAR1's page tables, so
+ * a card without BAR1, whose BAR3 NVIDIA's driver takes as its framebuffer
+ * BAR, never has its console kept there. The framebuffer's address counts in
+ * full, as `boot_console_bytes` counts it, where NVIDIA's driver compares the
+ * address its OS layer reports, cut to 32 bits on a host whose kernel gives it
+ * no more. On an aarch64 host whose kernel withholds the boot screen's
+ * information, that address is the start of the range the host's framebuffer
+ * driver claims, the framebuffer's own start. A framebuffer whose height times
+ * its pitch is 0 still counts, where NVIDIA's driver keeps a console for it
+ * only when its OS layer still reports the base. The call never blocks.
+ * @param card The card's PCI address and the addresses of its BARs.
+ * @param framebuffer The framebuffer the boot firmware left on screen.
+ * @param has_display Whether the chip's fuses leave its display enabled, as
+ * `place_frts_region` reports it.
+ * @return Whether the console is kept mapped at the start of BAR1.
+ */
+bool is_console_kept_at_bar1_start(const card_placement& card, const boot_framebuffer& framebuffer, bool has_display);
+
+/**
  * @brief Queue the two messages NVIDIA's driver writes to the command queue
  * before the GSP's firmware starts, in NVIDIA's order, for the firmware's
  * resource manager (its task that serves the driver's requests). NVIDIA's

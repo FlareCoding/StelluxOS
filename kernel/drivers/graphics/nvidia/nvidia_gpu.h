@@ -7,6 +7,7 @@
 #include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/gsp.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
+#include "drivers/graphics/nvidia/gsp_info.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/pci_driver.h"
 
@@ -117,9 +118,26 @@ namespace drivers {
  * as usable otherwise, as NVIDIA's driver counts regions. It then reads the
  * root page directory's first entry, the one covering the start of BAR1, with
  * `nvidia::read_video_memory_u64` through BAR0's window (the 1 MiB of BAR0
- * that reaches video memory without page tables), logs the entry with BAR1's
- * block register (the register that binds BAR1 to video memory), and stops
- * there, so `attach()` declines as well.
+ * that reaches video memory without page tables), and logs the entry with
+ * BAR1's block register (the register that binds BAR1 to video memory). When
+ * NVIDIA's driver keeps the boot console mapped at the start of BAR1, as
+ * `nvidia::is_console_kept_at_bar1_start` decides, bring-up maps it there too.
+ * The console's memory is then the firmware's video memory region 0 whole, as
+ * NVIDIA's driver takes it, and the console's tables are the page tables that
+ * map that many bytes from the start of BAR1 onto the same offsets of video
+ * memory. Bring-up places the tables with `nvidia::place_console_page_tables`,
+ * builds a copy of them on the unprivileged heap with
+ * `nvidia::write_console_page_tables`, writes the copy through BAR0's window
+ * with `nvidia::write_video_memory` and frees the copy. It then links the
+ * tables with `nvidia::link_console_page_tables`, which names them in the root
+ * page directory's first entry and then invalidates BAR1's cached
+ * translations, as NVIDIA's driver links its own tables. In between, the call
+ * reads the entry back, which NVIDIA's driver does not. Bring-up then maps
+ * BAR1 into the kernel's address space, checks that BAR1 reads region 0's last
+ * 8 bytes as BAR0's window does and that a value written there through BAR1
+ * reads back through both, writes the bytes back, checks that BAR1 reads 0
+ * just past region 0 and unmaps BAR1. Whether bring-up maps the console or
+ * not, it then stops, so `attach()` declines as well.
  * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
  * does not respond, its VBIOS's images are not laid out as
  * `nvidia::read_vbios_layout` requires, a firmware file of an installed
@@ -187,16 +205,27 @@ namespace drivers {
  * treats as a failed boot. Once that result is 0, `attach()` fails as
  * `nvidia::confirm_message_version` describes, such as when the firmware
  * refuses the VGX version, and then as `nvidia::read_static_configuration`
- * describes. Bring-up itself never writes to the display engine, and the CPU
- * sequencer's steps write only the registers the firmware names. Once the
+ * describes. While mapping the console, it fails as
+ * `nvidia::place_console_page_tables` describes, such as when region 0 leaves
+ * no byte of BAR1 past it, with `nvidia::ERR_NO_MEMORY` when the copy of the
+ * tables cannot be allocated, with `nvidia::ERR_BAD_STATE` when
+ * `nvidia::write_video_memory` refuses the copy or the first entry reads back
+ * as another value, with `nvidia::ERR_TIMEOUT` when BAR1's invalidate does not
+ * finish within `nvidia::DEFAULT_TIMEOUT_NS`, as
+ * `nvidia::link_console_page_tables` describes, with the error
+ * `pci_driver::map_bar` returns when BAR1 cannot be mapped, with the error
+ * `pci_driver::unmap_bar` returns when BAR1 cannot be unmapped after the check
+ * passed, or with `nvidia::ERR_BAD_STATE` when the check through BAR1 reads
+ * another value. Bring-up itself never writes to the display engine, and the
+ * CPU sequencer's steps write only the registers the firmware names. Once the
  * sequencer has resumed the GSP's firmware, though, the firmware puts all of
  * BAR1 (the CPU's window into the card's video memory) into virtual mode,
  * translated through the firmware's page tables, as NVIDIA's driver expects,
  * so BAR1 no longer reaches what it reached before, such as a boot
  * framebuffer, until `detach()` writes back BAR1's block register, which binds
- * BAR1 to the video memory. When the console lies at the start of BAR1,
- * NVIDIA's driver maps it there for the console's driver to draw through,
- * which this driver does not do. The card keeps the memory and I/O decoding
+ * BAR1 to the video memory. When bring-up maps the console, as NVIDIA's driver
+ * does for the console's driver to draw through, BAR1 reaches region 0 again
+ * and reads 0 just past its end. The card keeps the memory and I/O decoding
  * that `attach()` turned on. A card that `attach()` declines or fails before
  * the first reset of the GSP's falcon keeps only that decoding. A reset that
  * times out leaves the falcon out of reset with its memories still being
@@ -214,19 +243,25 @@ namespace drivers {
  * SEC2's falcon as FWSEC's leaves the GSP's, and a run that times out may
  * leave booter load running, which may later start the GSP's RISC-V core. A
  * failure after the RISC-V core reads as running leaves the core as booter
- * load or the CPU sequencer's steps left it. When `attach()` declines after
- * logging the first entry of BAR1's root page directory, FWSEC ran and fenced
- * off the FRTS region, booter load ran on SEC2, each CPU sequencer the
- * firmware sent ran, or was refused or stopped at a step as it logged, the
- * firmware reported its initialization done, accepted the VGX version and
- * reported its video memory regions and where BAR1's root page directory lies,
- * and once the entry was read, the register of BAR0's window was written back
- * with the value it held before. Once FWSEC has set up protected memory, it
- * stays set up until `detach()` takes it down with booter unload, as below, or
- * the card is reset, and `nvidia::place_frts_region` refuses the card in every
- * `attach()` until then. The decoding stays on because the boot framebuffer
- * may be in this card's memory, which the CPU reaches only while memory
- * decoding is on.
+ * load or the CPU sequencer's steps left it. When `attach()` declines at the
+ * end of bring-up, FWSEC ran and fenced off the FRTS region, booter load ran
+ * on SEC2, each CPU sequencer the firmware sent ran, or was refused or stopped
+ * at a step as it logged, the firmware reported its initialization done,
+ * accepted the VGX version and reported its video memory regions and where
+ * BAR1's root page directory lies, and the register of BAR0's window was
+ * written back after each use with the value it held before. When bring-up
+ * maps the console, the console's tables also lie in video memory and the root
+ * page directory's first entry names them. Nothing frees the tables' video
+ * memory, which BAR1 translates through until `detach()` writes BAR1's block
+ * register back, and for good when it is not written back. A failure after the
+ * first entry is written leaves the entry and the tables as they are, and
+ * BAR1, once mapped into the kernel's address space for the check, is unmapped
+ * again whatever the check found, unless `pci_driver::unmap_bar` fails. Once
+ * FWSEC has set up protected memory, it stays set up until `detach()` takes it
+ * down with booter unload, as below, or the card is reset, and
+ * `nvidia::place_frts_region` refuses the card in every `attach()` until then.
+ * The decoding stays on because the boot framebuffer may be in this card's
+ * memory, which the CPU reaches only while memory decoding is on.
  * Once the ready message has arrived, whatever its result, `detach()` first
  * asks the GSP's firmware to unload, through the `nvidia::gsp` that `attach()`
  * started, and waits for the GSP's processor to be suspended, as
@@ -309,7 +344,15 @@ namespace drivers {
  * request's ahead of booter unload's, and the unload's error can be the
  * suspend wait's timeout, which NVIDIA's driver drops, as
  * `nvidia::unload_gsp_firmware` describes.
- * Writing BAR1's block register back is this driver's own step.
+ * Writing BAR1's block register back and the check through BAR1 are this
+ * driver's own steps, and so is failing `attach()` when BAR1's invalidate
+ * times out, which NVIDIA's driver ignores. So is failing `attach()` when the
+ * root page directory's first entry reads back as another value, since
+ * NVIDIA's driver reads back none of the entries it writes into the firmware's
+ * root page directory. Bring-up writes only the root page directory's first
+ * entry, which covers all of BAR1, where NVIDIA's driver writes every entry of
+ * its own root page directory into the firmware's and makes any entries past
+ * its own invalid.
  */
 class nvidia_gpu_driver : public pci_driver {
 public:
@@ -364,6 +407,12 @@ public:
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
 
 private:
+    int32_t map_boot_console(
+        nvidia::registers& regs,
+        const nvidia::static_configuration& configuration,
+        uint64_t reserved_console_bytes,
+        uint64_t bar1_bytes
+    );
     int32_t tear_down_gsp();
     int32_t unload_firmware(nvidia::registers& regs);
     void run_fwsec_sb(nvidia::registers& regs);

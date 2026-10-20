@@ -3,6 +3,7 @@
 #include "drivers/graphics/nvidia/nvidia_gpu.h"
 #include "drivers/graphics/nvidia/bar0_window.h"
 #include "drivers/graphics/nvidia/bar1.h"
+#include "drivers/graphics/nvidia/bar1_page_tables.h"
 #include "drivers/graphics/nvidia/boot_messages.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
@@ -23,6 +24,8 @@
 #include "common/logging.h"
 #include "dma/dma.h"
 #include "dynpriv/dynpriv.h"
+#include "hw/mmio.h"
+#include "mm/heap.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
 #include "pci/pci_class_codes.h"
@@ -96,6 +99,56 @@ static int32_t check_booter(
         signature_out.fuse_version
     );
 
+    return nvidia::OK;
+}
+
+// Checks that BAR1 reads the console's last 8 bytes as BAR0's window does, that a value written there through BAR1
+// reads back through both before the bytes are written back, and that BAR1 reads 0 just past the console
+static int32_t check_console_through_bar1(nvidia::registers& regs, uintptr_t bar1_base, uint64_t console_bytes) {
+    uint64_t value_offset = console_bytes - sizeof(uint64_t);
+    uint64_t found = nvidia::read_video_memory_u64(regs, value_offset);
+    uint64_t found_through_bar1 = mmio::read64(bar1_base + value_offset);
+    if (found_through_bar1 != found) {
+        log::error(
+            "nvidia: BAR1 reads 0x%lX at offset 0x%lX, where BAR0's window reads 0x%lX, so nothing is written through "
+            "BAR1",
+            found_through_bar1,
+            value_offset,
+            found
+        );
+        return nvidia::ERR_BAD_STATE;
+    }
+
+    uint64_t written = ~found;
+    mmio::write64(bar1_base + value_offset, written);
+    uint64_t through_window = nvidia::read_video_memory_u64(regs, value_offset);
+    uint64_t through_bar1 = mmio::read64(bar1_base + value_offset);
+    mmio::write64(bar1_base + value_offset, found);
+    uint64_t past_console = mmio::read64(bar1_base + console_bytes);
+
+    bool reaches_console = through_window == written && through_bar1 == written;
+    if (!reaches_console || past_console != 0) {
+        log::error(
+            "nvidia: 0x%lX written through BAR1 at offset 0x%lX reads back as 0x%lX through BAR0's window and as 0x%lX "
+            "through BAR1, and BAR1 reads 0x%lX, where 0 is expected, at offset 0x%lX, just past the console",
+            written,
+            value_offset,
+            through_window,
+            through_bar1,
+            past_console,
+            console_bytes
+        );
+        return nvidia::ERR_BAD_STATE;
+    }
+
+    log::info(
+        "nvidia: BAR1 reads 0x%lX at offset 0x%lX as BAR0's window does, 0x%lX written there through BAR1 reads back "
+        "through both, and BAR1 reads 0 at offset 0x%lX, just past the console",
+        found,
+        value_offset,
+        written,
+        console_bytes
+    );
     return nvidia::OK;
 }
 
@@ -447,10 +500,12 @@ int32_t nvidia_gpu_driver::attach() {
     nvidia::card_placement card = {};
     nvidia::boot_framebuffer framebuffer = {};
     uint64_t registers_bytes = 0;
+    uint64_t bar1_bytes = 0;
     RUN_ELEVATED({
         card.registers_address = m_dev->get_bar(REGISTERS_BAR).phys;
         registers_bytes = m_dev->get_bar(REGISTERS_BAR).size;
         card.bar1_address = m_dev->get_bar(VIDEO_MEMORY_BAR).phys;
+        bar1_bytes = m_dev->get_bar(VIDEO_MEMORY_BAR).size;
         card.bar3_address = m_dev->get_bar(INSTANCE_MEMORY_BAR).phys;
         card.bus = m_dev->bus();
         card.device = m_dev->slot();
@@ -648,12 +703,97 @@ int32_t nvidia_gpu_driver::attach() {
         first_entry
     );
 
+    if (nvidia::is_console_kept_at_bar1_start(card, framebuffer, frts.has_display)) {
+        rc = map_boot_console(regs, configuration, console_bytes, bar1_bytes);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+    } else {
+        log::info(
+            "nvidia: no console is mapped at the start of BAR1, with the chip's display %s, BAR1 at 0x%lX and the boot "
+            "framebuffer at 0x%lX (0 for a BAR left unassigned or no framebuffer)",
+            frts.has_display ? "enabled" : "disabled",
+            card.bar1_address,
+            framebuffer.address
+        );
+    }
+
     log::info(
-        "nvidia: bring-up stops once the first entry of BAR1's root page directory is logged, leaving detach to unload "
-        "the firmware, stop SEC2 and the GSP, run FWSEC's SB command and run booter unload"
+        "nvidia: bring-up ends without setting up a display, leaving detach to unload the firmware, stop SEC2 and the "
+        "GSP, write BAR1's block register back, run FWSEC's SB command and run booter unload"
     );
 
     return DECLINED;
+}
+
+// Maps the console at BAR1's start and checks it through BAR1, mapped into the kernel's address space for the check.
+// Nothing frees the console's tables, which BAR1 translates through until `detach()` writes BAR1's block register back
+int32_t nvidia_gpu_driver::map_boot_console(
+    nvidia::registers& regs,
+    const nvidia::static_configuration& configuration,
+    uint64_t reserved_console_bytes,
+    uint64_t bar1_bytes
+) {
+    nvidia::console_tables_placement placement = {};
+    int32_t rc = nvidia::place_console_page_tables(configuration, reserved_console_bytes, bar1_bytes, placement);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    uint64_t* tables = static_cast<uint64_t*>(heap::ualloc(placement.bytes));
+    if (tables == nullptr) {
+        log::error("nvidia: allocating 0x%lX bytes for the CPU's copy of the console's tables failed", placement.bytes);
+        return nvidia::ERR_NO_MEMORY;
+    }
+
+    uint64_t root_entry = nvidia::write_console_page_tables(tables, placement.offset, placement.console_bytes);
+    if (root_entry == 0) {
+        log::error(
+            "nvidia: the console's tables for 0x%lX bytes cannot lie at 0x%lX in video memory",
+            placement.console_bytes,
+            placement.offset
+        );
+        heap::ufree(tables);
+        return nvidia::ERR_BAD_STATE;
+    }
+
+    rc = nvidia::write_video_memory(regs, placement.offset, tables, placement.bytes / sizeof(uint64_t));
+    heap::ufree(tables);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: the console's tables for the first 0x%lX of BAR1's 0x%lX bytes are written at 0x%lX in video memory",
+        placement.console_bytes,
+        bar1_bytes,
+        placement.offset
+    );
+
+    rc = nvidia::link_console_page_tables(
+        regs,
+        configuration.bar1_page_directory_offset,
+        root_entry,
+        nvidia::DEFAULT_TIMEOUT_NS
+    );
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    uintptr_t bar1_base = 0;
+    rc = map_bar(VIDEO_MEMORY_BAR, bar1_base, paging::PAGE_USER);
+    if (rc != OK) {
+        log::error("nvidia: mapping BAR1 failed: %d", rc);
+        return rc;
+    }
+
+    int32_t check_rc = check_console_through_bar1(regs, bar1_base, placement.console_bytes);
+    int32_t unmap_rc = unmap_bar(VIDEO_MEMORY_BAR);
+    if (unmap_rc != OK) {
+        log::error("nvidia: unmapping BAR1 failed: %d", unmap_rc);
+    }
+
+    return check_rc != nvidia::OK ? check_rc : unmap_rc;
 }
 
 int32_t nvidia_gpu_driver::detach() {

@@ -4,11 +4,17 @@
 
 #include "stlx_unit_test.h"
 #include "drivers/graphics/nvidia/bar1_page_tables.h"
+#include "drivers/graphics/nvidia/nvidia.h"
 #include "mm/heap.h"
 
 TEST_SUITE(nvidia_bar1_page_tables);
 
+using drivers::nvidia::ERR_BAD_STATE;
+using drivers::nvidia::OK;
 using drivers::nvidia::console_page_table_bytes;
+using drivers::nvidia::console_tables_placement;
+using drivers::nvidia::place_console_page_tables;
+using drivers::nvidia::static_configuration;
 using drivers::nvidia::write_console_page_tables;
 
 // NVIDIA's 4 KiB tables and pages, a table's 512 words (one entry each but in level 0, whose 256 entries take two), and
@@ -248,4 +254,180 @@ TEST(nvidia_bar1_page_tables, an_offset_or_size_the_tables_cannot_take_is_refuse
     EXPECT_EQ(written_words(tables, 0, table_pages + 1), static_cast<uint64_t>(0));
 
     heap::ufree(tables);
+}
+
+// The first three of the six regions the RTX 3080's GSP firmware reports: region 0 for the console, the rest of what it
+// reserves below its one usable region, and that usable region, with BAR1's root page directory reserved past it
+static constexpr uint64_t RTX_3080_USABLE_END = 0x2728E0000;
+static constexpr uint64_t RTX_3080_BAR1_ROOT  = 0x2744A9000;
+
+// A static configuration holding those regions and that root, for a test to copy and edit for its own case
+static static_configuration rtx_3080_configuration() {
+    static_configuration configuration = {};
+    configuration.regions[0] = {.offset = 0, .size = RTX_3080_CONSOLE_BYTES, .is_reserved = true};
+    configuration.regions[1] = {.offset = RTX_3080_CONSOLE_BYTES, .size = 0x2900000, .is_reserved = true};
+    configuration.regions[2] = {.offset = TABLES_OFFSET, .size = RTX_3080_USABLE_END - TABLES_OFFSET};
+    configuration.region_count = 3;
+    configuration.bar1_page_directory_offset = RTX_3080_BAR1_ROOT;
+    return configuration;
+}
+
+// The bytes of the RTX 3080's console's tables and of its BAR1, and a placement no call makes, which a refusal must
+// leave as it is
+static constexpr uint64_t RTX_3080_TABLES_BYTES = (DIRECTORY_PAGES + RTX_3080_PAGE_TABLES) * PAGE_BYTES;
+static constexpr uint64_t RTX_3080_BAR1_BYTES   = 0x10000000;
+static constexpr console_tables_placement UNPLACED = {.console_bytes = 1, .offset = 1, .bytes = 1};
+
+// Region 0 is mapped whole, holding exactly the reserved bytes or more, and the tables lie at the usable region's start
+TEST(nvidia_bar1_page_tables, rtx_3080_tables_map_region_0_whole_and_lie_at_the_start_of_the_usable_region) {
+    static_configuration configuration = rtx_3080_configuration();
+    console_tables_placement placement = UNPLACED;
+
+    ASSERT_EQ(place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement), OK);
+    EXPECT_EQ(placement.console_bytes, RTX_3080_CONSOLE_BYTES);
+    EXPECT_EQ(placement.offset, TABLES_OFFSET);
+    EXPECT_EQ(placement.bytes, RTX_3080_TABLES_BYTES);
+
+    placement = UNPLACED;
+    ASSERT_EQ(
+        place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES - TABLE_SPAN, RTX_3080_BAR1_BYTES, placement),
+        OK
+    );
+    EXPECT_EQ(placement.console_bytes, RTX_3080_CONSOLE_BYTES);
+}
+
+// Region 0 ending 4 KiB before BAR1 does is mapped, and region 0 filling BAR1 is refused
+TEST(nvidia_bar1_page_tables, region_0_is_refused_unless_it_ends_before_bar1_does) {
+    static_configuration configuration = rtx_3080_configuration();
+    console_tables_placement placement = UNPLACED;
+    uint64_t bar1_bytes = RTX_3080_CONSOLE_BYTES + PAGE_BYTES;
+
+    ASSERT_EQ(place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, bar1_bytes, placement), OK);
+    EXPECT_EQ(placement.console_bytes, RTX_3080_CONSOLE_BYTES);
+
+    placement = UNPLACED;
+    bar1_bytes = RTX_3080_CONSOLE_BYTES;
+    EXPECT_EQ(place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, bar1_bytes, placement), ERR_BAD_STATE);
+    EXPECT_EQ(placement.offset, UNPLACED.offset);
+}
+
+// Region 0 starting past 0, smaller than the bytes reserved for the console, or ending inside a 4 KiB page is refused
+TEST(nvidia_bar1_page_tables, region_0_is_refused_unless_it_starts_at_0_and_holds_the_reserved_bytes_in_whole_pages) {
+    static_configuration configuration = rtx_3080_configuration();
+    console_tables_placement placement = UNPLACED;
+
+    configuration.regions[0].offset = PAGE_BYTES;
+    EXPECT_EQ(
+        place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES - TABLE_SPAN, RTX_3080_BAR1_BYTES, placement),
+        ERR_BAD_STATE
+    );
+    configuration.regions[0].offset = 0;
+    EXPECT_EQ(
+        place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES + PAGE_BYTES, RTX_3080_BAR1_BYTES, placement),
+        ERR_BAD_STATE
+    );
+    configuration.regions[0].size = RTX_3080_CONSOLE_BYTES + PAGE_BYTES / 2;
+    EXPECT_EQ(
+        place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement),
+        ERR_BAD_STATE
+    );
+    EXPECT_EQ(placement.offset, UNPLACED.offset);
+}
+
+// A usable region too small for the tables, a protected region, a reserved region and a usable region 0 are skipped,
+// and the tables start at the first 4 KiB boundary of the next usable region, whose room past it fits them exactly
+TEST(nvidia_bar1_page_tables, tables_skip_regions_they_may_not_use_and_start_at_a_4_kib_boundary) {
+    static_configuration configuration = {};
+    configuration.regions[0] = {.offset = 0, .size = RTX_3080_CONSOLE_BYTES};
+    configuration.regions[1] = {.offset = RTX_3080_CONSOLE_BYTES, .size = RTX_3080_TABLES_BYTES - PAGE_BYTES};
+    configuration.regions[2] = {.offset = 0x1700000, .size = 0x100000, .is_protected = true};
+    configuration.regions[3] = {.offset = 0x1800000, .size = 0x100000, .is_reserved = true};
+    configuration.regions[4] = {.offset = 0x1900100, .size = RTX_3080_TABLES_BYTES + PAGE_BYTES - 0x100};
+    configuration.region_count = 5;
+    configuration.bar1_page_directory_offset = RTX_3080_BAR1_ROOT;
+    console_tables_placement placement = UNPLACED;
+
+    ASSERT_EQ(place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement), OK);
+    EXPECT_EQ(placement.offset, static_cast<uint64_t>(0x1901000));
+}
+
+// A usable region whose start rounded up to 4 KiB wraps to 0 and one the tables fill up to 2^64, so their end wraps to
+// 0, are skipped, and the tables lie at the start of the card's usable region listed after them
+TEST(nvidia_bar1_page_tables, tables_skip_usable_regions_in_the_last_4_kib_below_2_64_or_ending_there) {
+    static_configuration configuration = rtx_3080_configuration();
+    configuration.regions[4] = configuration.regions[2];
+    configuration.regions[2] = {.offset = 0xFFFFFFFFFFFFF001, .size = 0x10};
+    configuration.regions[3] = {.offset = 0 - RTX_3080_TABLES_BYTES, .size = RTX_3080_TABLES_BYTES};
+    configuration.region_count = 5;
+    console_tables_placement placement = UNPLACED;
+
+    ASSERT_EQ(place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement), OK);
+    EXPECT_EQ(placement.offset, TABLES_OFFSET);
+}
+
+// The tables lie in region 1 when it is the first usable region they fit
+TEST(nvidia_bar1_page_tables, tables_lie_in_region_1_when_it_is_the_first_usable_region_they_fit) {
+    static_configuration configuration = rtx_3080_configuration();
+    configuration.regions[1].is_reserved = false;
+    console_tables_placement placement = UNPLACED;
+
+    ASSERT_EQ(place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement), OK);
+    EXPECT_EQ(placement.offset, RTX_3080_CONSOLE_BYTES);
+}
+
+// A usable region the tables fit, listed just past the count of regions, is never used, so counted regions that all
+// fail are refused
+TEST(nvidia_bar1_page_tables, a_fitting_region_past_the_count_of_regions_is_never_used) {
+    static_configuration configuration = rtx_3080_configuration();
+    configuration.regions[2].is_protected = true;
+    configuration.regions[3] = {.offset = RTX_3080_BAR1_ROOT + PAGE_BYTES, .size = 0x100000};
+    console_tables_placement placement = UNPLACED;
+
+    EXPECT_EQ(
+        place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement),
+        ERR_BAD_STATE
+    );
+    EXPECT_EQ(placement.offset, UNPLACED.offset);
+}
+
+// When the root page directory's first entry would lie in the tables' first or last 8 bytes, the tables are placed in
+// the next usable region, and with a root just before or just after them they are placed at the usable region's start
+TEST(nvidia_bar1_page_tables, tables_never_hold_the_first_entry_of_bar1s_root) {
+    static_configuration configuration = rtx_3080_configuration();
+    configuration.regions[3] = {.offset = RTX_3080_BAR1_ROOT + PAGE_BYTES, .size = 0x100000};
+    configuration.region_count = 4;
+    uint64_t holding_roots[] = {TABLES_OFFSET, TABLES_OFFSET + RTX_3080_TABLES_BYTES - 8};
+    uint64_t clear_roots[] = {TABLES_OFFSET - 8, TABLES_OFFSET + RTX_3080_TABLES_BYTES};
+    console_tables_placement placement = UNPLACED;
+
+    for (uint64_t root : holding_roots) {
+        configuration.bar1_page_directory_offset = root;
+        ASSERT_EQ(place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement), OK);
+        EXPECT_EQ(placement.offset, RTX_3080_BAR1_ROOT + PAGE_BYTES);
+    }
+
+    for (uint64_t root : clear_roots) {
+        configuration.bar1_page_directory_offset = root;
+        ASSERT_EQ(place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement), OK);
+        EXPECT_EQ(placement.offset, TABLES_OFFSET);
+    }
+}
+
+// Tables ending at 128 GiB are placed, and tables 4 KiB higher, which would end past it, are refused
+TEST(nvidia_bar1_page_tables, tables_end_by_128_gib) {
+    static_configuration configuration = rtx_3080_configuration();
+    uint64_t top_offset = ADDRESS_FIELD_REACH - RTX_3080_TABLES_BYTES;
+    configuration.regions[2] = {.offset = top_offset, .size = 0x100000};
+    console_tables_placement placement = UNPLACED;
+
+    ASSERT_EQ(place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement), OK);
+    EXPECT_EQ(placement.offset, top_offset);
+
+    placement = UNPLACED;
+    configuration.regions[2].offset = top_offset + PAGE_BYTES;
+    EXPECT_EQ(
+        place_console_page_tables(configuration, RTX_3080_CONSOLE_BYTES, RTX_3080_BAR1_BYTES, placement),
+        ERR_BAD_STATE
+    );
+    EXPECT_EQ(placement.offset, UNPLACED.offset);
 }
