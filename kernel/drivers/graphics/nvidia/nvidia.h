@@ -16,11 +16,12 @@ constexpr int32_t ERR_BAD_VBIOS      = -2; // the VBIOS lacks a structure bring-
 constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unreadable, malformed, of another version or
                                            // lacks a signature bring-up needs, or a chip table name for it is invalid
 constexpr int32_t ERR_TIMEOUT        = -4; // the card did not finish a step within its deadline
-constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers or the driver's records show bring-up cannot proceed,
-                                           // or a falcon does not read as stopped after `stop_falcon` resets it
+constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers or memory, or the driver's records, show bring-up
+                                           // cannot proceed, or a falcon does not read as stopped after `stop_falcon`
+                                           // resets it
 constexpr int32_t ERR_NO_MEMORY      = -6; // allocating memory for the card to reach, the list of the runs holding the
-                                           // GSP's firmware, room for a received message's payload, or the buffer for
-                                           // the firmware's static configuration, failed
+                                           // GSP's firmware, room for a received message's payload, the buffer for the
+                                           // firmware's static configuration or a copy of the console's tables, failed
 constexpr int32_t ERR_QUEUE_FULL     = -7; // the command queue has no room for a message, as the read pointer `send`
                                            // reads for the firmware has not moved far enough or lies past the ring
 constexpr int32_t ERR_TOO_LARGE      = -8; // a payload exceeds the most bytes a message to the GSP's firmware carries,

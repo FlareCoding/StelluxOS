@@ -19,6 +19,7 @@ using drivers::nvidia::boot_framebuffer;
 using drivers::nvidia::card_placement;
 using drivers::nvidia::cpu_sequencer_context;
 using drivers::nvidia::gsp;
+using drivers::nvidia::is_console_kept_at_bar1_start;
 using drivers::nvidia::queue_boot_messages;
 using drivers::nvidia::registers;
 
@@ -311,4 +312,37 @@ TEST(nvidia_boot_messages, chip_without_display_takes_no_bytes) {
 
     framebuffer.address = 0;
     EXPECT_EQ(boot_console_bytes(CARD, framebuffer, WITHOUT_DISPLAY), static_cast<uint64_t>(0));
+}
+
+// The console is kept at BAR1's start on a chip with display for a framebuffer at BAR1's first byte, with or without
+// BAR3, and not for one 4 KiB into BAR1, one 4 GiB below it sharing its low 32 bits, or one 16 MiB into BAR3
+TEST(nvidia_boot_messages, console_is_kept_at_bar1_start_only_for_a_framebuffer_there_on_a_chip_with_display) {
+    card_placement card = CARD;
+    boot_framebuffer framebuffer = {.address = CARD.bar1_address, .height = 1080, .pitch = 7680};
+    EXPECT_TRUE(is_console_kept_at_bar1_start(card, framebuffer, WITH_DISPLAY));
+    EXPECT_FALSE(is_console_kept_at_bar1_start(card, framebuffer, WITHOUT_DISPLAY));
+
+    card.bar3_address = 0;
+    EXPECT_TRUE(is_console_kept_at_bar1_start(card, framebuffer, WITH_DISPLAY));
+
+    framebuffer.address = CARD.bar1_address + 0x1000;
+    EXPECT_FALSE(is_console_kept_at_bar1_start(CARD, framebuffer, WITH_DISPLAY));
+
+    framebuffer.address = CARD.bar1_address - (1ULL << 32);
+    EXPECT_FALSE(is_console_kept_at_bar1_start(CARD, framebuffer, WITH_DISPLAY));
+
+    framebuffer.address = CARD.bar3_address + VBIOS_CONSOLE_OFFSET;
+    EXPECT_FALSE(is_console_kept_at_bar1_start(CARD, framebuffer, WITH_DISPLAY));
+}
+
+// This driver's own rule: on a card without BAR1, whose BAR3 NVIDIA's driver takes as its framebuffer BAR, no console
+// is kept at BAR1's start, with the framebuffer at BAR3's start or at physical 0
+TEST(nvidia_boot_messages, console_is_never_kept_at_bar1_start_without_bar1) {
+    card_placement card = CARD;
+    card.bar1_address = 0;
+    boot_framebuffer framebuffer = {.address = CARD.bar3_address, .height = 1080, .pitch = 7680};
+    EXPECT_FALSE(is_console_kept_at_bar1_start(card, framebuffer, WITH_DISPLAY));
+
+    framebuffer.address = 0;
+    EXPECT_FALSE(is_console_kept_at_bar1_start(card, framebuffer, WITH_DISPLAY));
 }

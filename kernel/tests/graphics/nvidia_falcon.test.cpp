@@ -32,7 +32,9 @@ using drivers::nvidia::falcon_mailboxes;
 using drivers::nvidia::falcon_program;
 using drivers::nvidia::gsp_boot_memory;
 using drivers::nvidia::has_gsp_riscv_core;
+using drivers::nvidia::invalidate_bar1_tlb;
 using drivers::nvidia::is_gsp_riscv_running;
+using drivers::nvidia::link_console_page_tables;
 using drivers::nvidia::notify_gsp_of_queued_messages;
 using drivers::nvidia::read_bar1_block;
 using drivers::nvidia::read_video_memory_u64;
@@ -52,6 +54,7 @@ using drivers::nvidia::wait_for_falcon_halt;
 using drivers::nvidia::wait_for_gsp_suspend;
 using drivers::nvidia::write_gsp_app_version;
 using drivers::nvidia::write_libos_arguments_address;
+using drivers::nvidia::write_video_memory;
 
 // Registers and fields the reset uses, restated here so the tests hold the reset to NVIDIA's layout rather than to
 // its own constants
@@ -1095,6 +1098,62 @@ TEST(nvidia_falcon, bar1_block_stays_unwritten_with_running_gsp_riscv_core) {
     EXPECT_EQ(bar0.read(BAR1_BLOCK), ~0u);
 }
 
+// NVIDIA's invalidate registers in the block from 0xB80000, the trigger the card clears when done, and NVIDIA's value
+// for BAR1 on GA102: the trigger, every offset, the hub's TLB alone and scope 2 (bits 16:15), excluding NVLink's TLBs
+static constexpr uint32_t INVALIDATE_PDB       = 0xB830A0;
+static constexpr uint32_t INVALIDATE_UPPER_PDB = 0xB830A4;
+static constexpr uint32_t INVALIDATE           = 0xB830B0;
+static constexpr uint32_t INVALIDATE_TRIGGER   = 0x80000000;
+static constexpr uint32_t BAR1_INVALIDATE      = 0x80010005;
+
+// Where the RTX 3080's GSP firmware places BAR1's root page directory, past 4 GiB of video memory
+static constexpr uint64_t RTX_3080_BAR1_ROOT = 0x2744A9000;
+
+// From registers reading set bits, the root's offset in 4 KiB units is written to the first two with aperture 0 and
+// NVIDIA's value to the third, and the second wait times out on the trigger the fake never clears
+TEST(nvidia_falcon, bar1_tlb_invalidate_names_the_root_in_4_kib_units_for_the_hubs_tlb) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(INVALIDATE_PDB, ~0u);
+    bar0.write(INVALIDATE_UPPER_PDB, ~0u);
+    bar0.write(INVALIDATE, ~INVALIDATE_TRIGGER);
+
+    EXPECT_EQ(invalidate_bar1_tlb(bar0.regs, RTX_3080_BAR1_ROOT, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(INVALIDATE_PDB), 0x02744A90u);
+    EXPECT_EQ(bar0.read(INVALIDATE_UPPER_PDB), 0u);
+    EXPECT_EQ(bar0.read(INVALIDATE), BAR1_INVALIDATE);
+}
+
+// For a root 4 KiB below 4 TiB, its offset in 4 KiB units fills all 28 bits of the first register's field, and the
+// offset's other bits are in the second register
+TEST(nvidia_falcon, bar1_tlb_invalidate_splits_a_root_past_1_tib_across_both_registers) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+
+    EXPECT_EQ(invalidate_bar1_tlb(bar0.regs, (3ULL << 40) + 0xFFFFFFF000, 0), ERR_TIMEOUT);
+    EXPECT_EQ(bar0.read(INVALIDATE_PDB), 0xFFFFFFF0u);
+    EXPECT_EQ(bar0.read(INVALIDATE_UPPER_PDB), 3u);
+}
+
+// While the invalidate register reads every bit set, as for an invalidate the card is still running, the call waits
+// until the deadline and writes none of the three registers
+TEST(nvidia_falcon, bar1_tlb_invalidate_writes_nothing_while_an_earlier_one_runs) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(INVALIDATE_UPPER_PDB, ~0u);
+    bar0.write(INVALIDATE, ~0u);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = invalidate_bar1_tlb(bar0.regs, RTX_3080_BAR1_ROOT, SHORT_TIMEOUT_NS);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_EQ(bar0.read(INVALIDATE_PDB), 0u);
+    EXPECT_EQ(bar0.read(INVALIDATE_UPPER_PDB), ~0u);
+    EXPECT_EQ(bar0.read(INVALIDATE), ~0u);
+}
+
 // BAR0's window register, where the window starts in BAR0 and the end of what its base can reach, restated here so the
 // tests hold the window to NVIDIA's layout rather than to the driver's constants
 static constexpr uint32_t BAR0_WINDOW  = 0x1700;
@@ -1142,6 +1201,95 @@ TEST(nvidia_falcon, video_memory_is_read_from_the_offsets_step_through_bar0_wind
     EXPECT_EQ(read_video_memory_u64(bar0.regs, 0xABCDF0FFF8), 0xDDEEFF0099AABBCCu);
     EXPECT_EQ(read_video_memory_u64(bar0.regs, WINDOW_REACH - 8), 0xDDEEFF0099AABBCCu);
     EXPECT_EQ(bar0.read(BAR0_WINDOW), FOUND_WINDOW);
+}
+
+// Two values the window tests write, and the BAR0 offset just past the window's 1 MiB
+static constexpr uint64_t FIRST_VALUE  = 0x5566778811223344;
+static constexpr uint64_t SECOND_VALUE = 0xDDEEFF0099AABBCC;
+static constexpr uint32_t PAST_PRAMIN  = PRAMIN + 0x100000;
+
+// Once a first write inside the fake's 16 MiB shows the step mask is applied, each value's low word is written at its
+// place in the offset's 64 KiB step and its high word 4 bytes past it, and the window is written back as found
+TEST(nvidia_falcon, video_memory_is_written_with_the_low_word_at_the_offset_through_bar0_window) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BAR0_WINDOW, FOUND_WINDOW);
+    uint64_t guard_values[] = {SECOND_VALUE, FIRST_VALUE};
+    uint64_t values[] = {FIRST_VALUE, SECOND_VALUE};
+
+    ASSERT_EQ(write_video_memory(bar0.regs, 0x1FFF0, guard_values, 2), OK);
+    ASSERT_EQ(bar0.read(PRAMIN + 0xFFF0), 0x99AABBCCu);
+
+    ASSERT_EQ(write_video_memory(bar0.regs, 0x275A1FFF0, values, 2), OK);
+    EXPECT_EQ(bar0.read(PRAMIN + 0xFFF0), 0x11223344u);
+    EXPECT_EQ(bar0.read(PRAMIN + 0xFFF4), 0x55667788u);
+    EXPECT_EQ(bar0.read(PRAMIN + 0xFFF8), 0x99AABBCCu);
+    EXPECT_EQ(bar0.read(PRAMIN + 0xFFFC), 0xDDEEFF00u);
+    EXPECT_EQ(bar0.read(BAR0_WINDOW), FOUND_WINDOW);
+}
+
+// The count of values from 0xFFF0 into a 64 KiB step through the last 8 bytes of the window's 1 MiB from that step
+static constexpr uint64_t VALUES_TO_WINDOW_END = (0x100000 - 0xFFF0) / sizeof(uint64_t);
+
+// Once a first write inside the fake's 16 MiB shows the step mask is applied, values through the window's last 8 bytes
+// are written and one value more is refused, with nothing written at the next step's start or the window's last 8 bytes
+TEST(nvidia_falcon, video_memory_is_written_up_to_the_end_of_the_windows_1_mib_and_no_further) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BAR0_WINDOW, FOUND_WINDOW);
+    uint64_t* values = static_cast<uint64_t*>(heap::ualloc((VALUES_TO_WINDOW_END + 1) * sizeof(uint64_t)));
+    ASSERT_NOT_NULL(values);
+    for (uint64_t i = 0; i <= VALUES_TO_WINDOW_END; i++) {
+        values[i] = FIRST_VALUE;
+    }
+
+    values[VALUES_TO_WINDOW_END - 1] = SECOND_VALUE;
+
+    ASSERT_EQ(write_video_memory(bar0.regs, 0x1FFF0, values, 2), OK);
+    ASSERT_EQ(bar0.read(PRAMIN + 0xFFF0), 0x11223344u);
+
+    EXPECT_EQ(write_video_memory(bar0.regs, 0x3F8FFF0, values, VALUES_TO_WINDOW_END + 1), ERR_BAD_STATE);
+    EXPECT_EQ(bar0.read(PRAMIN + 0x10000), 0u);
+    EXPECT_EQ(bar0.read(PRAMIN + 0xFFFF8), 0u);
+
+    ASSERT_EQ(write_video_memory(bar0.regs, 0x3F8FFF0, values, VALUES_TO_WINDOW_END), OK);
+    EXPECT_EQ(bar0.read(PRAMIN + 0xFFFF8), 0x99AABBCCu);
+    EXPECT_EQ(bar0.read(PRAMIN + 0xFFFFC), 0xDDEEFF00u);
+    EXPECT_EQ(bar0.read(PAST_PRAMIN), 0u);
+    EXPECT_EQ(bar0.read(BAR0_WINDOW), FOUND_WINDOW);
+
+    heap::ufree(values);
+}
+
+// The entry naming the RTX 3080's console tables, which lie at 0x3F80000 in video memory
+static constexpr uint64_t RTX_3080_TABLES_ENTRY = 0x3F8002;
+
+// Only the root's first entry is written, over both words at the root's place in its 64 KiB step, and the invalidate
+// names the root and waits out the link's timeout on a trigger the fake never clears, the link returning `ERR_TIMEOUT`
+TEST(nvidia_falcon, console_tables_are_linked_at_the_roots_first_entry_and_invalidated_through_the_root) {
+    falcon_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(BAR0_WINDOW, FOUND_WINDOW);
+    bar0.write(PRAMIN + 0x9000, ~0u);
+    bar0.write(PRAMIN + 0x9004, ~0u);
+    bar0.write(PRAMIN + 0x9008, ~0u);
+    bar0.write(INVALIDATE_PDB, ~0u);
+    bar0.write(INVALIDATE_UPPER_PDB, ~0u);
+    bar0.write(INVALIDATE, ~INVALIDATE_TRIGGER);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = link_console_page_tables(bar0.regs, RTX_3080_BAR1_ROOT, RTX_3080_TABLES_ENTRY, SHORT_TIMEOUT_NS);
+    uint64_t elapsed = clock::now_ns() - start;
+
+    EXPECT_EQ(rc, ERR_TIMEOUT);
+    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
+    EXPECT_EQ(bar0.read(PRAMIN + 0x9000), 0x3F8002u);
+    EXPECT_EQ(bar0.read(PRAMIN + 0x9004), 0u);
+    EXPECT_EQ(bar0.read(PRAMIN + 0x9008), ~0u);
+    EXPECT_EQ(bar0.read(BAR0_WINDOW), FOUND_WINDOW);
+    EXPECT_EQ(bar0.read(INVALIDATE_PDB), 0x02744A90u);
+    EXPECT_EQ(bar0.read(INVALIDATE_UPPER_PDB), 0u);
+    EXPECT_EQ(bar0.read(INVALIDATE), BAR1_INVALIDATE);
 }
 
 // NVIDIA's wait for the ready report, and its default timeout for a GPU in graphics mode rather than compute mode
