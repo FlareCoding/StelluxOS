@@ -74,6 +74,12 @@ int32_t gsp::await(uint32_t function, received_message& out, uint64_t timeout_ns
     return await_since(function, out, clock::now_ns(), timeout_ns);
 }
 
+int32_t gsp::drain() {
+    m_sequencer.deadline_ns = clock::now_ns() + DEFAULT_TIMEOUT_NS;
+
+    return drain_status_queue(m_queues, m_regs, m_sequencer, m_payload, MESSAGE_PAYLOAD_MAX_BYTES);
+}
+
 int32_t gsp::request(
     uint32_t function,
     void* arguments,

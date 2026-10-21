@@ -32,10 +32,11 @@ namespace drivers::nvidia {
  * firmware's status codes into this driver's errors. A control (a command to
  * an object the firmware keeps) goes through `control`, which sends it as a
  * request. A message the firmware sends unasked, such as its ready message, is
- * awaited with `await`.
+ * awaited with `await` during bring-up and read with `drain` once bring-up
+ * ends.
  *
- *   driver --- send, request ---> command queue ---> GSP's firmware
- *   driver <-- await, request --- status queue  <--- GSP's firmware
+ *   driver --- send, request ----------> command queue ---> GSP's firmware
+ *   driver <-- await, request, drain --- status queue  <--- GSP's firmware
  *
  * A `gsp` owns the payload buffer, which `stop` and the destructor free, but
  * not the queues' memory, which must stay allocated for as long as messages
@@ -127,6 +128,20 @@ public:
      * @return What `receive_awaited` returns, logged as its doc describes.
      */
     int32_t await(uint32_t function, received_message& out, uint64_t timeout_ns);
+
+    /**
+     * @brief Read every message the status queue holds, as
+     * `drain_status_queue` reads them, with the CPU sequencer's waits other
+     * than its delays and the ready waits of its falcon steps counted against
+     * a deadline `DEFAULT_TIMEOUT_NS` after the call, as `await` counts them.
+     * NVIDIA's driver drains in the bottom half of its interrupt handler and
+     * gives that thread, as one servicing an interrupt, a thread-state budget
+     * of 500 ms instead, so that its waits end before the OS panics the
+     * kernel, while the drain here runs in the driver's own kernel task, a
+     * thread the scheduler preempts. The status queue must be linked.
+     * @return What `drain_status_queue` returns, logged as its doc describes.
+     */
+    int32_t drain();
 
     /**
      * @brief Send the firmware a request and wait for its reply: queue the

@@ -37,8 +37,9 @@ constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a fail
                                             // result or a control's status, or does not take the driver's VGX version,
                                             // as a reply shows by a private result other than 0 or another version
 
-// Converts the timeouts the driver logs to milliseconds
+// Nanoseconds per millisecond and per microsecond, for the sequencer's waits and the times the driver logs
 constexpr uint64_t NS_PER_MS = 1000000;
+constexpr uint64_t NS_PER_US = 1000;
 
 // NVIDIA's default timeout for a GPU in graphics mode rather than compute mode
 constexpr uint64_t DEFAULT_TIMEOUT_NS = 4000000000;

@@ -30,8 +30,6 @@ constexpr uint32_t OPCODE_WAIT_FOR_GSP_HALT = 7;
 constexpr uint32_t OPCODE_RESUME_GSP        = 8;
 constexpr uint32_t OPCODE_COUNT             = 9;
 
-constexpr uint64_t NS_PER_US = 1000;
-
 // The words of arguments after an opcode as NVIDIA's driver counts them, 0 for a falcon step or an opcode it does not
 // know
 static uint32_t argument_words(uint32_t opcode) {
