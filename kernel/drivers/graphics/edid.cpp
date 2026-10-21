@@ -27,6 +27,13 @@ static constexpr size_t CTA_861_REVISION_OFFSET         = 1;
 static constexpr size_t CTA_861_DESCRIPTOR_START_OFFSET = 2;
 static constexpr size_t CTA_861_HEADER_BYTES            = 4;
 
+// A DisplayID block holds one section from byte 1: its version, the byte count of its data blocks, two bytes the parser
+// does not read, the data blocks, then its checksum byte, which must come before the block's own
+static constexpr size_t DISPLAYID_VERSION_OFFSET    = 1;
+static constexpr size_t DISPLAYID_DATA_BYTES_OFFSET = 2;
+static constexpr size_t DISPLAYID_DATA_OFFSET       = 5;
+static constexpr size_t DISPLAYID_DATA_BYTES_MAX    = CHECKSUM_OFFSET - 1 - DISPLAYID_DATA_OFFSET;
+
 // The maker's id is a big-endian word of three 5-bit letters in bits 14 to 0, the first highest, 1 meaning A
 static constexpr uint32_t MAKER_LETTERS     = 3;
 static constexpr uint32_t MAKER_LETTER_BITS = 5;
@@ -89,10 +96,10 @@ uint64_t timing::refresh_millihertz() const {
     return pixel_clock_khz * MILLIHERTZ_PER_KHZ / frame_pixels;
 }
 
-static bool has_valid_checksum(const uint8_t* block) {
+static bool has_valid_checksum(const uint8_t* bytes, size_t count) {
     uint8_t sum = 0;
-    for (size_t i = 0; i < BLOCK_BYTES; i++) {
-        sum = static_cast<uint8_t>(sum + block[i]);
+    for (size_t i = 0; i < count; i++) {
+        sum = static_cast<uint8_t>(sum + bytes[i]);
     }
 
     return sum == 0;
@@ -107,7 +114,7 @@ static int32_t check_base_block(const uint8_t* bytes, size_t size) {
         return ERR_BAD_HEADER;
     }
 
-    if (!has_valid_checksum(bytes)) {
+    if (!has_valid_checksum(bytes, BLOCK_BYTES)) {
         return ERR_BAD_CHECKSUM;
     }
 
@@ -297,8 +304,21 @@ static void read_cta_861_descriptors(const uint8_t* block, monitor& out) {
     }
 }
 
-// Reads the extension blocks byte 126 says follow the base block, counting as skipped each one `bytes` does not hold
-// whole and each CTA-861 or DisplayID block failing its checksum, and listing the timings of every other CTA-861 block
+// A section is valid when its checksum byte comes before the block's and its bytes sum to 0 modulo 256
+static bool has_valid_displayid_section(const uint8_t* block) {
+    size_t data_bytes = block[DISPLAYID_DATA_BYTES_OFFSET];
+    if (data_bytes > DISPLAYID_DATA_BYTES_MAX) {
+        return false;
+    }
+
+    size_t section_checksum_offset = DISPLAYID_DATA_OFFSET + data_bytes;
+    size_t section_bytes = section_checksum_offset + 1 - DISPLAYID_VERSION_OFFSET;
+
+    return has_valid_checksum(block + DISPLAYID_VERSION_OFFSET, section_bytes);
+}
+
+// Lists the timings of the CTA-861 blocks byte 126 counts, skipping and counting each extension block `bytes` does not
+// hold whole, each CTA-861 or DisplayID one failing its checksum and each DisplayID one whose section fails
 static void read_extensions(const uint8_t* bytes, size_t size, monitor& out) {
     size_t extension_count = bytes[EXTENSION_COUNT_OFFSET];
     size_t whole_blocks = size / BLOCK_BYTES;
@@ -312,7 +332,12 @@ static void read_extensions(const uint8_t* bytes, size_t size, monitor& out) {
         const uint8_t* block = bytes + i * BLOCK_BYTES;
         uint8_t tag = block[EXTENSION_TAG_OFFSET];
         bool is_checked_kind = tag == EXTENSION_TAG_CTA_861 || tag == EXTENSION_TAG_DISPLAYID;
-        if (is_checked_kind && !has_valid_checksum(block)) {
+        if (is_checked_kind && !has_valid_checksum(block, BLOCK_BYTES)) {
+            out.skipped_extensions++;
+            continue;
+        }
+
+        if (tag == EXTENSION_TAG_DISPLAYID && !has_valid_displayid_section(block)) {
             out.skipped_extensions++;
             continue;
         }
