@@ -43,6 +43,10 @@ constexpr uint64_t NS_PER_MS = 1000000;
 // NVIDIA's default timeout for a GPU in graphics mode rather than compute mode
 constexpr uint64_t DEFAULT_TIMEOUT_NS = 4000000000;
 
+// Where BAR0 mirrors the card's PCI configuration space, the same on every chip in the chip table
+constexpr uint32_t PCI_CONFIG_MIRROR_OFFSET = 0x88000;
+constexpr uint32_t PCI_CONFIG_MIRROR_BYTES  = 0x1000;
+
 /**
  * @brief Whether the `bytes` bytes at `offset` lie inside the first `limit`
  * bytes, also when `offset + bytes` would overflow.

@@ -23,13 +23,13 @@ constexpr uint32_t KERNEL_INTERRUPT_ROWS_MAX = 128;
 // which the GSP's row in the kernel interrupt table gives
 constexpr uint16_t ENGINE_GSP = 49;
 
-// A row of the kernel interrupt table: an engine, a mask this driver does not read (NVIDIA's pmcIntrMask) and two GPU
-// interrupt vectors (NVIDIA's numbers for the GPU's interrupts)
+// A row of the kernel interrupt table: an engine, its PMC mask (NVIDIA's pmcIntrMask) and two GPU interrupt vectors
+// (NVIDIA's numbers for the GPU's interrupts)
 struct kernel_interrupt_row {
     uint16_t engine;
-    uint32_t pmc_interrupt_mask;
-    uint32_t stall_vector;    // for the interrupts NVIDIA's driver services with the engine's handler
-    uint32_t nonstall_vector; // for the engine's notifications
+    uint32_t pmc_interrupt_mask; // the engine's bits in the GPU's PMC interrupt register, 0 for none
+    uint32_t stall_vector;       // for the interrupts NVIDIA's driver services with the engine's handler
+    uint32_t nonstall_vector;    // for the engine's notifications
 };
 
 // NVIDIA's NV2080_INTR_CATEGORY_SUBTREE_MAP, the first and last of the top-level bits a category of interrupts takes in

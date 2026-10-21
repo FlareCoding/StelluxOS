@@ -23,8 +23,8 @@ struct falcon_layout {
 } // namespace
 
 constexpr falcon_layout GSP_FALCON = {
-    .base = 0x110000,
-    .second_base = 0x111000,
+    .base = GSP_FALCON_BASE,
+    .second_base = GSP_FALCON_SECOND_BASE,
     .fbif_base = 0x110600,
     .engine = 0x1103C0,
     .ucode_version_fuses = 0x8241C0,

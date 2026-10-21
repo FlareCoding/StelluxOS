@@ -130,7 +130,8 @@ namespace drivers {
  * which they arrive) with `nvidia::read_gsp_interrupt_vector` and logs it with
  * both handles. The firmware signals the driver on that vector, which must
  * name a bit of the CPU interrupt tree (the GPU's registers reporting its
- * interrupts to the CPU), as `nvidia::read_gsp_interrupt_vector` checks. When
+ * interrupts to the CPU) and come from a row holding no bits in the GPU's PMC
+ * interrupt register, as `nvidia::read_gsp_interrupt_vector` checks. When
  * NVIDIA's driver keeps the boot console mapped at the start of BAR1, as
  * `nvidia::is_console_kept_at_bar1_start` decides, bring-up maps it there too.
  * The console's memory is then the firmware's video memory region 0 whole, as
@@ -262,20 +263,21 @@ namespace drivers {
  * accepted the VGX version, reported its video memory regions, where BAR1's
  * root page directory lies and the handles of the internal client and
  * subdevice, and its kernel interrupt table held a row for the GSP with a
- * vector inside the CPU interrupt tree, and the register of BAR0's window was
- * written back after each use with the value it held before. When bring-up
- * maps the console, the console's tables also lie in video memory and the root
- * page directory's first entry names them. Nothing frees the tables' video
- * memory, which BAR1 translates through until `detach()` writes BAR1's block
- * register back, and for good when it is not written back. A failure after the
- * first entry is written leaves the entry and the tables as they are, and
- * BAR1, once mapped into the kernel's address space for the check, is unmapped
- * again whatever the check found, unless `pci_driver::unmap_bar` fails. Once
- * FWSEC has set up protected memory, it stays set up until `detach()` takes it
- * down with booter unload, as below, or the card is reset, and
- * `nvidia::place_frts_region` refuses the card in every `attach()` until then.
- * The decoding stays on because the boot framebuffer may be in this card's
- * memory, which the CPU reaches only while memory decoding is on.
+ * vector inside the CPU interrupt tree and no bits in the GPU's PMC interrupt
+ * register, and the register of BAR0's window was written back after each use
+ * with the value it held before. When bring-up maps the console, the console's
+ * tables also lie in video memory and the root page directory's first entry
+ * names them. Nothing frees the tables' video memory, which BAR1 translates
+ * through until `detach()` writes BAR1's block register back, and for good
+ * when it is not written back. A failure after the first entry is written
+ * leaves the entry and the tables as they are, and BAR1, once mapped into the
+ * kernel's address space for the check, is unmapped again whatever the check
+ * found, unless `pci_driver::unmap_bar` fails. Once FWSEC has set up protected
+ * memory, it stays set up until `detach()` takes it down with booter unload,
+ * as below, or the card is reset, and `nvidia::place_frts_region` refuses the
+ * card in every `attach()` until then. The decoding stays on because the boot
+ * framebuffer may be in this card's memory, which the CPU reaches only while
+ * memory decoding is on.
  * Once the ready message has arrived, whatever its result, `detach()` first
  * asks the GSP's firmware to unload, through the `nvidia::gsp` that `attach()`
  * started, and waits for the GSP's processor to be suspended, as

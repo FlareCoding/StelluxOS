@@ -31,6 +31,18 @@ constexpr chip_info CHIP_TABLE[] = {
     },
 };
 
+static constexpr bool keeps_interrupt_leaves_within_max() {
+    for (const chip_info& chip : CHIP_TABLE) {
+        if (chip.interrupt_leaf_count > INTERRUPT_LEAVES_MAX) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static_assert(keeps_interrupt_leaves_within_max(), "every chip's CPU interrupt tree has at most NVIDIA's 16 leaves");
+
 uint16_t decode_chip_id(uint32_t boot0) {
     return static_cast<uint16_t>((boot0 >> PMC_BOOT_0_CHIP_ID_SHIFT) & PMC_BOOT_0_CHIP_ID_MASK);
 }
