@@ -722,11 +722,25 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     suspend wait's result is dropped, in gsp_unload.h and nvidia_gpu.h, that
     the thread-state budget is not started again before a request, the request
     to unload among them, in cpu_sequencer.h, gsp.h and gsp_unload.h, that it is
-    started again before the GSP's reset at unload, in nvidia_gpu.h, and that
-    once the firmware is ready NVIDIA's driver first sends the guest system
+    started again before the GSP's reset at unload, in nvidia_gpu.h, that once
+    the firmware is ready NVIDIA's driver first sends the guest system
     information and then asks for the static configuration, failing the boot
     when either fails, in gsp_info.h, nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that NVIDIA's driver
+    drains its queue one message at a time until it is empty, handing each
+    message to its event handler, reading the GSP's log after each read and
+    checking the GSP's health once the reads stop, in message_queues.h, that its
+    drain awaits its count of functions and asserts that no event carries it, in
+    message_queues.h and message_queues.cpp, that the drain stops at a message
+    of that count, in message_queues.h, that its event handler logs a message of
+    a function it does not know and the drain reads on, in message_queues.h,
+    that NVIDIA's driver drains in the bottom half of its interrupt handler
+    holding the GPUs lock, in gsp.h and nvidia_gpu.h, that a notice from the
+    firmware tells the driver whether the GSP's lockdown engages or disengages,
+    so NVIDIA's driver takes the GSP as in lockdown while the last notice it has
+    read says the lockdown engages, that while the GSP is in lockdown the host
+    cannot reach some of its registers, its interrupt status and control among
+    them, and that NVIDIA's driver then expects no SWGEN0, in nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -937,13 +951,18 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     GSP's processor is suspended once the GSP falcon's first mailbox reads
     0x80000000, waited for with no timeout of the wait's own, in falcon.h,
     falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the rules that the
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rules that the
     GSP's interrupt service reads the GSP falcon's pending sources directed to
     the host and returns at once when none is pending, that it clears only HALT
     (the source the firmware raises when its crash report needs the host) and
     SWGEN0, SWGEN0 before it receives the messages the firmware sends unasked,
     and that it then retriggers the falcon's interrupt, in interrupts.h,
-    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    the rules that the service reports a run that finds no source pending, that
+    it clears SWGEN0 before receiving the firmware's messages and retriggers the
+    falcon's interrupt after receiving them, unless the GSP is then in lockdown,
+    and that it returns the sources still pending after the retrigger, in
+    nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
@@ -1227,7 +1246,10 @@ src/nvidia/inc/kernel/gpu/gpu_timeout.h
 
 src/nvidia/src/kernel/core/thread_state.c
     the rule that resetting a thread's timeout starts its budget again from the
-    time of the reset, in cpu_sequencer.h, gsp.h, gsp.cpp and nvidia_gpu.h
+    time of the reset, in cpu_sequencer.h, gsp.h, gsp.cpp and nvidia_gpu.h, and
+    the rule that a thread servicing an interrupt gets a budget of 500 ms, so
+    that its waits end before the operating system panics the kernel, in
+    cpu_sequencer.h and gsp.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/unix/src/os.c
@@ -1574,9 +1596,11 @@ src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
     information and the static configuration, in gsp_info.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the request to
     unload's function number, in gsp_unload.h and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the control
-    request's function number, in gsp.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the control request's
+    function number, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the numbering of
+    functions from 0 and of events from 0x1000, fewer than 0x1000 of each, in
+    message_queues.cpp
     It carries no notice of its own and is covered by the package's COPYING,
     which gives the notice below and this copyright line:
     Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -1642,9 +1666,12 @@ src/nvidia/src/kernel/gpu/intr/intr.c
     that it services an engine's stall interrupts with the engine's handler and
     its nonstall interrupts as notifications, in rm.h and interrupts.h, that it
     services the GSP's as stall interrupts, keeps every row of the GSP's engine
-    and accepts a table without a row for the GSP, in interrupts.h, and that it
+    and accepts a table without a row for the GSP, in interrupts.h, that it
     clears an engine's interrupt before it services the engine, in interrupts.h
-    and interrupts.cpp
+    and interrupts.cpp, and that it services an engine's stall interrupts again
+    while the engine's service reports sources still pending, until it has
+    counted the same sources returned more times than its threshold for a stuck
+    interrupt, which it then reports, in nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/intr/intr_service.c
@@ -1675,10 +1702,11 @@ src/nvidia/src/kernel/gpu/intr/arch/turing/intr_tu102.c
     clears every bit of each leaf's enable before it enables any vector, since
     an earlier driver can leave enables set, that it enables a vector by writing
     the vector's bit to its leaf's enable set register and clears a vector's
-    pending bit by writing the bit to its leaf, and that it clears every
-    top-level enable and then every leaf's enable as it unloads, in
-    interrupts.h, interrupts.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    pending bit by writing the bit to its leaf, that it clears every top-level
+    enable and then every leaf's enable as it unloads, in interrupts.h,
+    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    that an earlier driver can leave enables set, in nvidia_gpu.h and
+    nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_intr_nvoc.h
@@ -1761,8 +1789,15 @@ src/nvidia/src/kernel/gpu/bif/arch/maxwell/kernel_bif_gm107.c
     writing 0 to NV_XVE_CYA_2 through that mirror, a value the card ignores, in
     interrupts.h, interrupts.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the write is
-    skipped when NVIDIA's check of register access fails, in interrupts.h
+    skipped when NVIDIA's check of register access fails, in interrupts.h and
+    nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gpu_access.c
+    the rules that NVIDIA's driver, when a register reads all ones and
+    PMC_BOOT_0 then reads as invalid, handles the GPU as lost, and that its
+    check of register access fails for a GPU no longer attached, in nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_bif_nvoc.c
     the rule that GA102 takes BAR0's mirror of its PCI configuration space, in
@@ -1798,16 +1833,21 @@ src/nvidia/arch/nvalloc/unix/src/osinit.c
     framebuffer BAR, in boot_messages.h, boot_messages.cpp and
     kernel/tests/graphics/nvidia_boot_messages.test.cpp, that NVIDIA's driver
     keeps no console mapped there on a host of virtual GPUs or in a guest given
-    one, in boot_messages.h, and that it keeps one for a console whose size its
-    OS layer reports as 0 only when that layer reports its base, in
-    boot_messages.h
+    one, in boot_messages.h, that it keeps one for a console whose size its OS
+    layer reports as 0 only when that layer reports its base, in
+    boot_messages.h, that NVIDIA's driver re-arms MSI once after initializing
+    the GPU's state, and that it takes a GPU whose PMC_BOOT_0 no longer reads
+    its saved value as fallen off the bus, in nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 1999-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/unix/src/unix_intr.c
-    the rule that NVIDIA's driver re-arms MSI at the end of each run of its
+    the rules that NVIDIA's driver re-arms MSI at the end of each run of its
     interrupt handler while the GPU's state is loaded and its interrupts are
     enabled in hardware, whether or not it found an interrupt pending, in
-    interrupts.h
+    interrupts.h and nvidia_gpu.h, that holding the GPUs lock disables the
+    interrupts of every GPU it has initialized, in nvidia_gpu.h, and that the
+    bottom half of its interrupt handler runs with the thread state of a
+    deferred interrupt handler, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 kernel-open/nvidia/nv-pci.c

@@ -73,6 +73,13 @@ constexpr uint32_t RPC_HEADER_VERSION = 0x03000000;
 constexpr uint32_t RPC_SIGNATURE      = 0x43505256;
 constexpr uint32_t RPC_RESULT_PENDING = 0xFFFFFFFF;
 
+// The function a drain awaits, outside NVIDIA's numbering of its functions from 0 and its events from 0x1000, fewer
+// than 0x1000 of each (NVIDIA's own drain awaits its count of functions and asserts that no message carries it)
+constexpr uint32_t NO_FUNCTION = 0xFFFFFFFF;
+
+// The deadline a drain waits until, already passed when it begins, so it waits for no message
+constexpr uint64_t DRAIN_DEADLINE_NS = 0;
+
 // The checksum covers the message in 8-byte words, the last one filled out by the bytes that follow the message
 constexpr uint32_t CHECKSUM_WORD_BYTES = 8;
 
@@ -518,13 +525,26 @@ static int32_t receive_awaited_unlogged(
     }
 }
 
+// A drain, which awaits `NO_FUNCTION`, passes over only messages the firmware sent unasked, and its lines say so
 static void log_passed_messages(
     uint32_t function,
     const received_message (&passed)[PASSED_MESSAGES_LOGGED],
     uint32_t passed_count
 ) {
+    bool is_drain = function == NO_FUNCTION;
     uint32_t logged_count = passed_count < PASSED_MESSAGES_LOGGED ? passed_count : PASSED_MESSAGES_LOGGED;
     for (uint32_t i = 0; i < logged_count; i++) {
+        if (is_drain) {
+            log::info(
+                "nvidia: the GSP's firmware sent a message of function 0x%X unasked, with result 0x%X and %u payload "
+                "bytes",
+                passed[i].function,
+                passed[i].result,
+                passed[i].payload_bytes
+            );
+            continue;
+        }
+
         log::info(
             "nvidia: the wait for function 0x%X passed over a message of function 0x%X from the GSP's firmware, with "
             "result 0x%X and %u payload bytes",
@@ -535,11 +555,14 @@ static void log_passed_messages(
         );
     }
 
-    if (passed_count > logged_count) {
+    uint32_t unlogged_count = passed_count - logged_count;
+    if (unlogged_count != 0 && is_drain) {
+        log::info("nvidia: the GSP's firmware sent more messages unasked, not logged: %u", unlogged_count);
+    } else if (unlogged_count != 0) {
         log::info(
             "nvidia: the wait for function 0x%X passed over more messages from the GSP's firmware, not logged: %u",
             function,
-            passed_count - logged_count
+            unlogged_count
         );
     }
 }
@@ -575,6 +598,43 @@ int32_t receive_awaited(
     }
 
     return rc;
+}
+
+int32_t drain_status_queue(
+    message_queues& queues,
+    registers& regs,
+    const cpu_sequencer_context& sequencer,
+    uint8_t* payload,
+    uint32_t payload_capacity
+) {
+    received_message passed[PASSED_MESSAGES_LOGGED] = {};
+    uint32_t passed_count = 0;
+    received_message unused = {};
+    int32_t rc = receive_awaited_unlogged(
+        queues,
+        regs,
+        sequencer,
+        NO_FUNCTION,
+        unused,
+        payload,
+        payload_capacity,
+        DRAIN_DEADLINE_NS,
+        passed,
+        passed_count
+    );
+
+    log_passed_messages(NO_FUNCTION, passed, passed_count);
+
+    if (rc == OK) {
+        log::error(
+            "nvidia: the GSP's firmware sent a message of function 0x%X, outside NVIDIA's numbering of functions and "
+            "events",
+            NO_FUNCTION
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    return rc == ERR_TIMEOUT ? OK : rc;
 }
 
 } // namespace drivers::nvidia

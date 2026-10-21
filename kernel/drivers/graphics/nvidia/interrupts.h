@@ -21,6 +21,9 @@ constexpr uint32_t LEAVES_PER_SUBTREE = 2;
 // firmware raises when it queues a message it sends unasked (NVIDIA's SWGEN0)
 constexpr uint32_t GSP_MESSAGE_SOURCE = 1u << 6;
 
+// What `acknowledge_gsp_interrupt` returns for a card that has stopped responding, whose registers then read all ones
+constexpr uint32_t UNRESPONSIVE_CARD_SOURCES = 0xFFFFFFFF;
+
 /**
  * @brief Ask the GSP's firmware for the kernel interrupt table (for each GPU
  * unit whose interrupts NVIDIA's driver services, the vectors on which they
@@ -141,8 +144,8 @@ void disable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count);
  * @param vector The GSP's vector, as `enable_cpu_interrupt_tree` took it.
  * @return The sources written to the clear, 0 when none was pending.
  * `GSP_MESSAGE_SOURCE` among them means the firmware signalled a message,
- * unless every bit is set, which means the card has stopped responding, as its
- * registers then read all ones.
+ * unless they are `UNRESPONSIVE_CARD_SOURCES`, every bit set, which means the
+ * card has stopped responding, as its registers then read all ones.
  */
 uint32_t acknowledge_gsp_interrupt(registers& regs, uint32_t vector);
 

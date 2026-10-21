@@ -28,6 +28,7 @@ using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::FUNCTION_GSP_INIT_DONE;
 using drivers::nvidia::GSP_MESSAGE_SOURCE;
 using drivers::nvidia::MESSAGE_PAYLOAD_MAX_BYTES;
+using drivers::nvidia::NS_PER_US;
 using drivers::nvidia::OK;
 using drivers::nvidia::PASSED_MESSAGES_LOGGED;
 using drivers::nvidia::QUEUE_MEMORY_BYTES;
@@ -38,6 +39,7 @@ using drivers::nvidia::acknowledge_gsp_interrupt;
 using drivers::nvidia::confirm_message_version;
 using drivers::nvidia::cpu_sequencer_context;
 using drivers::nvidia::disable_cpu_interrupt_tree;
+using drivers::nvidia::drain_status_queue;
 using drivers::nvidia::enable_cpu_interrupt_tree;
 using drivers::nvidia::gsp;
 using drivers::nvidia::link_status_queue_within;
@@ -3106,4 +3108,200 @@ TEST(nvidia_message_queues, msi_is_rearmed_through_the_mirror_of_the_pci_configu
     rearm_msi(bar0.regs);
 
     EXPECT_EQ(bar0.read(NVIDIA_XVE_CYA_2), 0u);
+}
+
+// Drains the status queue with the sequencer's waits bound by a deadline `LONG_TIMEOUT_NS` after the call
+static int32_t drain(message_queues& queues, awaited_test_bar0& bar0, uint8_t (&buffer)[AWAITED_BUFFER_BYTES]) {
+    cpu_sequencer_context context = {
+        .register_bytes          = TEST_BAR0_BYTES,
+        .boot0                   = 0,
+        .libos_arguments_address = 0,
+        .app_version             = 0,
+        .ready_timeout_ns        = 0,
+        .deadline_ns             = clock::now_ns() + LONG_TIMEOUT_NS,
+    };
+
+    return drain_status_queue(queues, bar0.regs, context, buffer, sizeof(buffer));
+}
+
+// The drain runs the sequencer between two unasked messages before any log line, logs each unasked message with its
+// result and then finds the queue empty
+TEST(nvidia_message_queues, drain_runs_the_sequencer_and_logs_each_unasked_message) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    awaited_test_bar0 bar0;
+    queue_test_payload payload(13);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    poll_then_write_sequencer sequencer;
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+
+    MOVED_HEADER.write_to(memory);
+    message.frame(1, 0, payload.bytes, payload.count);
+    message.seal(MESSAGE_PAYLOAD + payload.count);
+    message.store(memory, MOVED_HEADER, 0);
+    store_function_message(memory, message, 1, NVIDIA_RUN_CPU_SEQUENCER, &sequencer, sizeof(sequencer));
+    store_function_message(memory, message, 2, FUNCTION + 1, payload.bytes, payload.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+    bar0.write(POLLED_REGISTER, POLLED_BIT);
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t rc = drain(queues, bar0, buffer);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), WRITTEN_VALUE);
+    EXPECT_TRUE(logged_text_contains("function 0x12345 unasked, with result 0x87654321 and 13 payload bytes"));
+    EXPECT_TRUE(logged_text_contains("sent a message of function 0x12346 unasked"));
+    EXPECT_EQ(logged_line_count(), 3u);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 3u);
+}
+
+// An empty queue ends the drain at once with nothing logged, and a refused message ends it with the read's error, the
+// message left in place
+TEST(nvidia_message_queues, drain_ends_at_an_empty_queue_or_a_refused_message) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    awaited_test_bar0 bar0;
+    queue_test_payload payload(13);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+
+    MOVED_HEADER.write_to(memory);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    uint64_t start = clock::now_ns();
+    int32_t rc = drain(queues, bar0, buffer);
+    uint64_t elapsed = clock::now_ns() - start;
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(logged_line_count(), 0u);
+
+    // Numbered 1 where 0 is due
+    store_function_message(memory, message, 1, FUNCTION, payload.bytes, payload.count);
+    message.store(memory, MOVED_HEADER, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    EXPECT_EQ(drain(queues, bar0, buffer), ERR_BAD_MESSAGE);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 0u);
+}
+
+// The function a drain awaits, as message_queues.cpp's `NO_FUNCTION` gives it
+static constexpr uint32_t DRAIN_AWAITED_FUNCTION = 0xFFFFFFFF;
+
+// A message of the function a drain awaits ends the drain with `ERR_BAD_MESSAGE`, logged, once the messages before it
+// are logged and before the next is read
+TEST(nvidia_message_queues, drain_refuses_a_message_of_the_function_it_awaits) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    awaited_test_bar0 bar0;
+    queue_test_payload payload(13);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, FUNCTION, payload.bytes, payload.count);
+    store_function_message(memory, message, 1, DRAIN_AWAITED_FUNCTION, payload.bytes, payload.count);
+    store_function_message(memory, message, 2, FUNCTION + 2, payload.bytes, payload.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t rc = drain(queues, bar0, buffer);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, ERR_BAD_MESSAGE);
+    EXPECT_TRUE(logged_text_contains("sent a message of function 0x12345 unasked"));
+    EXPECT_TRUE(logged_text_contains("sent a message of function 0xFFFFFFFF, outside NVIDIA's numbering"));
+    EXPECT_FALSE(logged_text_contains("function 0x12347"));
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 2u);
+}
+
+// Past the first `PASSED_MESSAGES_LOGGED` unasked messages, each logged, the drain logs how many more there were
+TEST(nvidia_message_queues, drain_counts_the_unasked_messages_past_those_logged) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    awaited_test_bar0 bar0;
+    queue_test_payload payload(13);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(payload.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+    uint32_t message_count = PASSED_MESSAGES_LOGGED + 2;
+
+    MOVED_HEADER.write_to(memory);
+    for (uint32_t i = 0; i < message_count; i++) {
+        store_function_message(memory, message, i, FUNCTION + i, payload.bytes, payload.count);
+    }
+
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, message_count);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t rc = drain(queues, bar0, buffer);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_EQ(logged_line_count(), PASSED_MESSAGES_LOGGED + 1);
+    EXPECT_TRUE(logged_text_contains("sent a message of function 0x12354 unasked"));
+    EXPECT_FALSE(logged_text_contains("function 0x12355"));
+    EXPECT_TRUE(logged_text_contains("sent more messages unasked, not logged: 2\r\n"));
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), message_count);
+}
+
+// `gsp::drain` sets the sequencer's deadline itself, so a poll of a bit never set waits out its own timeout although
+// the deadline the conversation started with, 0, has passed
+TEST(nvidia_message_queues, gsp_drain_sets_the_sequencer_deadline_itself) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    poll_then_write_sequencer sequencer;
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_RUN_CPU_SEQUENCER, &sequencer, sizeof(sequencer));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    uint64_t start = clock::now_ns();
+    int32_t rc = conversation.drain();
+    uint64_t elapsed = clock::now_ns() - start;
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_GE(elapsed, POLL_TIMEOUT_US * NS_PER_US);
+    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), 0u);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 1u);
 }

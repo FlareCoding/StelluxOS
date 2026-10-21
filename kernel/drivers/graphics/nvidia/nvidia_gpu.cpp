@@ -22,6 +22,7 @@
 #include "drivers/graphics/nvidia/vbios.h"
 #include "drivers/graphics/gfxfb.h"
 #include "boot/boot_services.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "dma/dma.h"
 #include "dynpriv/dynpriv.h"
@@ -30,6 +31,7 @@
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
 #include "pci/pci_class_codes.h"
+#include "sync/atomic.h"
 
 namespace drivers {
 
@@ -742,12 +744,33 @@ int32_t nvidia_gpu_driver::attach() {
         );
     }
 
+    // An earlier driver can leave vectors of the tree enabled, which would raise MSI before the GSP's is enabled
+    nvidia::disable_cpu_interrupt_tree(regs, chip->interrupt_leaf_count);
+
+    m_gsp_vector = gsp_vector;
+    rc = setup_msi(1);
+    if (rc != OK) {
+        log::error("nvidia: setting up MSI for the GSP's interrupt failed: %d", rc);
+        return rc;
+    }
+
+    nvidia::rearm_msi(regs);
+
+    nvidia::enable_cpu_interrupt_tree(regs, chip->interrupt_leaf_count, gsp_vector);
+    m_is_gsp_interrupt_enabled = true;
+
+    uint32_t msi_vector = 0;
+    RUN_ELEVATED({
+        msi_vector = m_dev->get_msi_state().base_vector;
+    });
+
     log::info(
-        "nvidia: bring-up ends without setting up a display, leaving detach to unload the firmware, stop SEC2 and the "
-        "GSP, write BAR1's block register back, run FWSEC's SB command and run booter unload"
+        "nvidia: bring-up ends with the driver attached, GPU interrupt vector %u raising MSI vector %u",
+        gsp_vector,
+        msi_vector
     );
 
-    return DECLINED;
+    return OK;
 }
 
 // Maps the console at BAR1's start and checks it through BAR1, mapped into the kernel's address space for the check.
@@ -821,6 +844,14 @@ int32_t nvidia_gpu_driver::map_boot_console(
 }
 
 int32_t nvidia_gpu_driver::detach() {
+    // After `OK` the framework detaches only when it cannot create the task. Disabling the tree first keeps the GSP's
+    // vector from raising an interrupt while the unload and the resets below change the GSP falcon's registers
+    if (m_is_gsp_interrupt_enabled) {
+        nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
+        nvidia::disable_cpu_interrupt_tree(regs, m_chip->interrupt_leaf_count);
+        m_is_gsp_interrupt_enabled = false;
+    }
+
     int32_t stop_rc = nvidia::OK;
     if (m_must_stop_gsp) {
         stop_rc = tear_down_gsp();
@@ -969,12 +1000,61 @@ int32_t nvidia_gpu_driver::unload_firmware(nvidia::registers& regs) {
 }
 
 void nvidia_gpu_driver::run() {
-    // `attach()` never returns `OK`, so the framework never creates this task
+    bool has_woken = false;
+    while (true) {
+        wait_for_event();
+
+        uint64_t handled_ns = sync::atomic_ref<uint64_t>{m_last_interrupt_ns}.load_relaxed();
+        uint64_t woken_ns = clock::now_ns();
+        uint32_t sources = sync::atomic_ref<uint32_t>{m_gsp_sources}.exchange_relaxed(0);
+        bool is_first_wake = !has_woken;
+        has_woken = true;
+        if (sources == nvidia::UNRESPONSIVE_CARD_SOURCES) {
+            log::error(
+                "nvidia: the GSP falcon's interrupt registers read all ones, as on a card that stopped responding, so "
+                "no message is read"
+            );
+            continue;
+        }
+
+        int32_t rc = m_gsp.drain();
+
+        if (is_first_wake) {
+            // The load does not order the clock's read, so a handler on another CPU can store a time after `woken_ns`
+            uint64_t waited_ns = woken_ns > handled_ns ? woken_ns - handled_ns : 0;
+            log::info(
+                "nvidia: the driver task first woke %lu us after the GSP interrupt's handler last ran",
+                waited_ns / nvidia::NS_PER_US
+            );
+        }
+
+        uint32_t other_sources = sources & ~nvidia::GSP_MESSAGE_SOURCE;
+        if (other_sources != 0) {
+            log::warn(
+                "nvidia: the GSP's falcon raised interrupt sources 0x%X besides the firmware's message signal SWGEN0, "
+                "cleared by the handler",
+                other_sources
+            );
+        }
+
+        if (rc != nvidia::OK) {
+            log::error("nvidia: reading the GSP firmware's messages failed: %d", rc);
+        }
+    }
 }
 
 __PRIVILEGED_CODE void nvidia_gpu_driver::on_interrupt(uint32_t vector) {
-    // MSI is never set up, so the framework never calls this
+    // The card's one MSI vector, which only the GSP's vector raises
     (void)vector;
+
+    nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
+    uint32_t sources = nvidia::acknowledge_gsp_interrupt(regs, m_gsp_vector);
+    if (sources != nvidia::UNRESPONSIVE_CARD_SOURCES) {
+        nvidia::rearm_msi(regs);
+    }
+
+    sync::atomic_ref<uint32_t>{m_gsp_sources}.fetch_or_relaxed(sources);
+    sync::atomic_ref<uint64_t>{m_last_interrupt_ns}.store_relaxed(clock::now_ns());
 }
 
 // Any subclass, so VGA compatible and 3D controllers both bind

@@ -339,6 +339,47 @@ int32_t receive_awaited(
     uint64_t deadline_ns
 );
 
+/**
+ * @brief Read every message the status queue holds through the loop
+ * `receive_awaited` waits in, awaiting a function outside NVIDIA's numbering
+ * until a deadline already passed, so the drain ends once a read finds the
+ * queue empty, waiting for no message. A CPU sequencer runs as soon as its
+ * message is read, as in `receive_awaited`, and the other messages, which the
+ * firmware sent unasked, are logged with their function, result and payload
+ * size once the drain ends, the first `PASSED_MESSAGES_LOGGED` of them with a
+ * count of the rest. NVIDIA's driver reads its queue one message at a time the
+ * same way until it is empty, hands each message to its event handler, reads
+ * the GSP's log after each read and checks the GSP's health once the reads
+ * stop, while this drain only runs CPU sequencers and logs the other messages.
+ * A message a read fails on stays in the queue, so each later drain starts
+ * with it, while a message of the function the drain awaits is consumed. A
+ * message of NVIDIA's count of functions, at which NVIDIA's drain stops and
+ * asserts, is logged as any other unasked message. The call spins on the
+ * calling CPU without sleeping, for as long as each read finds a message and
+ * through each CPU sequencer's run, whose waits count against
+ * `sequencer.deadline_ns`. The driver task, `nvidia_gpu_driver::run`, drains
+ * the queue each time the GSP's interrupt wakes the task.
+ * @param queues The message queues, whose status queue must be linked.
+ * @param regs A view of BAR0, for the sequencer's steps, as `receive_awaited`
+ * requires it.
+ * @param sequencer What the sequencer's steps take, kept from bring-up.
+ * @param payload Where each message's payload is copied.
+ * @param payload_capacity How many bytes `payload` holds, as `receive_awaited`
+ * takes it.
+ * @return `OK` once a read finds the queue empty, `ERR_BAD_MESSAGE`, logged,
+ * for a message of the function the drain awaits, or the first other error a
+ * read returns, as `receive_awaited` returns and logs it. NVIDIA's drain
+ * awaits its count of functions instead, so it would log a message of the
+ * function this drain awaits as an unexpected event and read on.
+ */
+int32_t drain_status_queue(
+    message_queues& queues,
+    registers& regs,
+    const cpu_sequencer_context& sequencer,
+    uint8_t* payload,
+    uint32_t payload_capacity
+);
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_MESSAGE_QUEUES_H
