@@ -9,10 +9,6 @@ namespace drivers::nvidia {
 constexpr uint32_t FUNCTION_SET_SYSTEM_INFORMATION = 72;
 constexpr uint32_t FUNCTION_SET_REGISTRY           = 73;
 
-// Where BAR0 mirrors the card's PCI configuration space, the same on every chip in the chip table
-constexpr uint32_t PCI_CONFIG_MIRROR_OFFSET = 0x88000;
-constexpr uint32_t PCI_CONFIG_MIRROR_BYTES  = 0x1000;
-
 // NVIDIA's code for the CPU architecture its driver is built for
 #if defined(__x86_64__)
 constexpr uint8_t CPU_ARCHITECTURE = 0;

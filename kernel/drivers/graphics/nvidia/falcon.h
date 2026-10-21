@@ -17,6 +17,11 @@ constexpr uint64_t FALCON_READY_TIMEOUT_NS = 150000;
 // take outside the CPU sequencer's steps, NVIDIA's default timeout
 constexpr uint64_t FALCON_TIMEOUT_NS = DEFAULT_TIMEOUT_NS;
 
+// Where the GSP falcon's registers lie in BAR0: its own block, and its second block, which holds its RISC-V core's and
+// boot ROM's registers
+constexpr uint32_t GSP_FALCON_BASE        = 0x110000;
+constexpr uint32_t GSP_FALCON_SECOND_BASE = 0x111000;
+
 /**
  * A program for a falcon, which the falcon's boot ROM runs only once the
  * program's signature checks out. The program lies in system memory from

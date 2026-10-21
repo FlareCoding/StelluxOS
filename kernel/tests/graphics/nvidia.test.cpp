@@ -28,6 +28,7 @@ using drivers::nvidia::find_falcon_program_table;
 using drivers::nvidia::find_fwsec;
 using drivers::nvidia::firmware_files;
 using drivers::nvidia::fwsec_layout;
+using drivers::nvidia::INTERRUPT_LEAVES_MAX;
 using drivers::nvidia::OK;
 using drivers::nvidia::open_firmware_files;
 using drivers::nvidia::PMC_BOOT_0;
@@ -87,6 +88,14 @@ static constexpr uint16_t GA104_CHIP_ID = 0x174;
 // Sharing a listed chip's architecture does not give a chip an entry
 TEST(nvidia, ga104_has_no_entry) {
     EXPECT_NULL(find_chip(GA104_CHIP_ID));
+}
+
+// The most leaf registers NVIDIA's driver expects a chip's CPU interrupt tree to have, NV_MAX_INTR_LEAVES
+static constexpr uint8_t NVIDIA_MAX_INTERRUPT_LEAVES = 16;
+
+// The bound the chip table keeps every tree's leaves within is NVIDIA's
+TEST(nvidia, interrupt_leaves_max_is_nvidias) {
+    EXPECT_EQ(INTERRUPT_LEAVES_MAX, NVIDIA_MAX_INTERRUPT_LEAVES);
 }
 
 // Large enough that a read counting words instead of bytes stays inside the

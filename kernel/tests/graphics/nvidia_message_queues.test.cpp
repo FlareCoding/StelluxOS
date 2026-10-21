@@ -26,6 +26,7 @@ using drivers::nvidia::ERR_QUEUE_FULL;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::FUNCTION_GSP_INIT_DONE;
+using drivers::nvidia::GSP_MESSAGE_SOURCE;
 using drivers::nvidia::MESSAGE_PAYLOAD_MAX_BYTES;
 using drivers::nvidia::OK;
 using drivers::nvidia::PASSED_MESSAGES_LOGGED;
@@ -33,13 +34,17 @@ using drivers::nvidia::QUEUE_MEMORY_BYTES;
 using drivers::nvidia::RECEIVE_TIMEOUT_NS;
 using drivers::nvidia::RECEIVE_TRIES;
 using drivers::nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS;
+using drivers::nvidia::acknowledge_gsp_interrupt;
 using drivers::nvidia::confirm_message_version;
 using drivers::nvidia::cpu_sequencer_context;
+using drivers::nvidia::disable_cpu_interrupt_tree;
+using drivers::nvidia::enable_cpu_interrupt_tree;
 using drivers::nvidia::gsp;
 using drivers::nvidia::link_status_queue_within;
 using drivers::nvidia::message_queues;
 using drivers::nvidia::read_gsp_interrupt_vector;
 using drivers::nvidia::read_static_configuration;
+using drivers::nvidia::rearm_msi;
 using drivers::nvidia::receive_awaited;
 using drivers::nvidia::receive_within;
 using drivers::nvidia::received_message;
@@ -2850,4 +2855,255 @@ TEST(nvidia_message_queues, gsp_interrupt_vector_waits_out_its_timeout) {
     EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
     EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
     EXPECT_EQ(vector, STALE_WORD);
+}
+
+// Where a row of the kernel interrupt table holds its PMC mask (NVIDIA's pmcIntrMask, the engine's bits in the GPU's
+// PMC interrupt register), restated here so the tests hold the driver to NVIDIA's layout
+static constexpr uint32_t INTERRUPT_ROW_PMC_MASK = 4;
+
+// Writes the PMC mask of row `index` of the table in `reply`
+static void put_interrupt_row_pmc_mask(queue_test_payload& reply, uint32_t index, uint32_t mask) {
+    uint8_t* row = reply.bytes + CONTROL_PARAMS_FIELD + INTERRUPT_ROWS_OFFSET + index * INTERRUPT_ROW_BYTES;
+    put_word(row, INTERRUPT_ROW_PMC_MASK, mask);
+}
+
+// A PMC mask in the GSP's row fails, its high bit alone too, so a mask read 16 bits wide fails, while a PMC mask in
+// another engine's row or in a later row of the GSP's leaves the GSP's vector to be read
+TEST(nvidia_message_queues, gsp_interrupt_vector_with_a_pmc_mask_fails) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    queue_test_payload reply(INTERRUPT_TABLE_REPLY_BYTES);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_NOT_NULL(reply.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    fill_interrupt_table_reply(reply, 3);
+    put_interrupt_row(reply, 1, NVIDIA_ENGINE_GSP, 155);
+    put_interrupt_row_pmc_mask(reply, 1, 0x1);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    put_interrupt_row_pmc_mask(reply, 1, 0x80000000);
+    store_function_message(memory, message, 1, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    put_interrupt_row_pmc_mask(reply, 1, 0);
+    put_interrupt_row_pmc_mask(reply, 0, 0x1);
+    put_interrupt_row(reply, 2, NVIDIA_ENGINE_GSP, 200);
+    put_interrupt_row_pmc_mask(reply, 2, 0x1);
+    store_function_message(memory, message, 2, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    for (uint32_t i = 0; i < 2; i++) {
+        uint32_t vector = STALE_WORD;
+        int32_t rc = read_gsp_interrupt_vector(
+            conversation,
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            INTERRUPT_LEAF_COUNT,
+            LONG_TIMEOUT_NS,
+            vector
+        );
+        EXPECT_EQ(rc, ERR_BAD_MESSAGE);
+        EXPECT_EQ(vector, STALE_WORD);
+    }
+
+    uint32_t vector = STALE_WORD;
+    int32_t rc = read_gsp_interrupt_vector(
+        conversation,
+        INTERNAL_CLIENT,
+        INTERNAL_SUBDEVICE,
+        INTERRUPT_LEAF_COUNT,
+        LONG_TIMEOUT_NS,
+        vector
+    );
+    EXPECT_EQ(rc, OK);
+    EXPECT_EQ(vector, 155u);
+}
+
+// GA102's CPU interrupt tree registers (NVIDIA's NV_VIRTUAL_FUNCTION_PRIV_CPU_INTR_*), as NVIDIA's headers give them,
+// where a bit written to an enable set or clear register sets or clears that enable bit alone
+static constexpr uint32_t NVIDIA_CPU_LEAF          = 0xB81000;
+static constexpr uint32_t NVIDIA_CPU_LEAF_EN_SET   = 0xB81200;
+static constexpr uint32_t NVIDIA_CPU_LEAF_EN_CLEAR = 0xB81400;
+static constexpr uint32_t NVIDIA_CPU_TOP_EN_SET    = 0xB81608;
+static constexpr uint32_t NVIDIA_CPU_TOP_EN_CLEAR  = 0xB81610;
+
+// The words just after the top level's first enable set and clear registers, so a write to a second register fails
+static constexpr uint32_t WORD_AFTER_TOP_EN_SET   = 0xB8160C;
+static constexpr uint32_t WORD_AFTER_TOP_EN_CLEAR = 0xB81614;
+
+// The GSP falcon's interrupt registers and SWGEN0, as NVIDIA's headers give them, where a pending source set in both
+// the mask and the destination of the falcon core or of the RISC-V core passes to the host (the CPU)
+static constexpr uint32_t NVIDIA_GSP_IRQSCLR        = 0x110004;
+static constexpr uint32_t NVIDIA_GSP_IRQSTAT        = 0x110008;
+static constexpr uint32_t NVIDIA_GSP_IRQMASK        = 0x110018;
+static constexpr uint32_t NVIDIA_GSP_IRQDEST        = 0x11001C;
+static constexpr uint32_t NVIDIA_GSP_INTR_RETRIGGER = 0x1103E8;
+static constexpr uint32_t NVIDIA_GSP_IRQSTAT_SWGEN0 = 1u << 6;
+static constexpr uint32_t NVIDIA_GSP_RISCV_IRQMASK  = 0x111528;
+static constexpr uint32_t NVIDIA_GSP_RISCV_IRQDEST  = 0x11152C;
+
+// NV_XVE_CYA_2 of BAR0's mirror of the PCI configuration space, as NVIDIA's headers give it
+static constexpr uint32_t NVIDIA_XVE_CYA_2 = 0x88704;
+
+// The bytes from one leaf's register to the next
+static constexpr uint32_t LEAF_BYTES = 4;
+
+// A register's seed with every bit set, so a write that keeps the register's other bits fails
+static constexpr uint32_t ALL_BITS_SET = 0xFFFFFFFF;
+
+// The GSP's vector on the RTX 3080, bit 27 of leaf 4, whose subtree (the leaves reporting to one bit of the tree's top
+// level) is 2
+static constexpr uint32_t CARD_GSP_VECTOR = 155;
+static constexpr uint32_t CARD_GSP_LEAF   = 4;
+
+// The register of leaf `leaf` in the array of leaf registers starting at `first_leaf_register`
+static uint32_t cpu_leaf_register(uint32_t first_leaf_register, uint32_t leaf) {
+    return first_leaf_register + leaf * LEAF_BYTES;
+}
+
+// `enable_cpu_interrupt_tree` writes every bit to each leaf's enable clear register, the vector's bit alone to its
+// leaf's enable set register and its subtree's to the top level's, for vectors 0 and 255 too, and none seeded stale
+TEST(nvidia_message_queues, cpu_interrupt_tree_enable_sets_the_gsp_vector_alone) {
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, INTERRUPT_LEAF_COUNT), STALE_WORD);
+    bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF, CARD_GSP_LEAF), STALE_WORD);
+    bar0.write(NVIDIA_CPU_TOP_EN_CLEAR, STALE_WORD);
+    bar0.write(WORD_AFTER_TOP_EN_SET, STALE_WORD);
+    bar0.write(WORD_AFTER_TOP_EN_CLEAR, STALE_WORD);
+
+    uint32_t vectors[] = {CARD_GSP_VECTOR, 0, INTERRUPT_VECTORS - 1};
+    uint32_t leaf_bits[] = {1u << 27, 1u << 0, 1u << 31};
+    uint32_t subtree_bits[] = {1u << 2, 1u << 0, 1u << 3};
+    for (uint32_t i = 0; i < 3; i++) {
+        uint32_t vector_leaf = vectors[i] / INTERRUPT_LEAF_VECTORS;
+        for (uint32_t leaf = 0; leaf < INTERRUPT_LEAF_COUNT; leaf++) {
+            bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, leaf), 0);
+        }
+
+        for (uint32_t leaf = 0; leaf <= INTERRUPT_LEAF_COUNT; leaf++) {
+            bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, leaf), STALE_WORD);
+        }
+
+        bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, vector_leaf), ALL_BITS_SET);
+        bar0.write(NVIDIA_CPU_TOP_EN_SET, ALL_BITS_SET);
+
+        enable_cpu_interrupt_tree(bar0.regs, INTERRUPT_LEAF_COUNT, vectors[i]);
+
+        for (uint32_t leaf = 0; leaf < INTERRUPT_LEAF_COUNT; leaf++) {
+            EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, leaf)), ALL_BITS_SET);
+        }
+
+        for (uint32_t leaf = 0; leaf <= INTERRUPT_LEAF_COUNT; leaf++) {
+            uint32_t expected = leaf == vector_leaf ? leaf_bits[i] : STALE_WORD;
+            EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, leaf)), expected);
+        }
+
+        EXPECT_EQ(bar0.read(NVIDIA_CPU_TOP_EN_SET), subtree_bits[i]);
+    }
+
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, INTERRUPT_LEAF_COUNT)), STALE_WORD);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF, CARD_GSP_LEAF)), STALE_WORD);
+    EXPECT_EQ(bar0.read(NVIDIA_CPU_TOP_EN_CLEAR), STALE_WORD);
+    EXPECT_EQ(bar0.read(WORD_AFTER_TOP_EN_SET), STALE_WORD);
+    EXPECT_EQ(bar0.read(WORD_AFTER_TOP_EN_CLEAR), STALE_WORD);
+}
+
+// `disable_cpu_interrupt_tree` writes every bit to the top level's enable clear register and to each leaf's, and none
+// of the registers seeded stale
+TEST(nvidia_message_queues, cpu_interrupt_tree_disable_clears_every_enable) {
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, INTERRUPT_LEAF_COUNT), STALE_WORD);
+    bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF), STALE_WORD);
+    bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF, CARD_GSP_LEAF), STALE_WORD);
+    bar0.write(NVIDIA_CPU_TOP_EN_SET, STALE_WORD);
+    bar0.write(WORD_AFTER_TOP_EN_SET, STALE_WORD);
+    bar0.write(WORD_AFTER_TOP_EN_CLEAR, STALE_WORD);
+
+    disable_cpu_interrupt_tree(bar0.regs, INTERRUPT_LEAF_COUNT);
+
+    EXPECT_EQ(bar0.read(NVIDIA_CPU_TOP_EN_CLEAR), ALL_BITS_SET);
+    for (uint32_t leaf = 0; leaf < INTERRUPT_LEAF_COUNT; leaf++) {
+        EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, leaf)), ALL_BITS_SET);
+    }
+
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, INTERRUPT_LEAF_COUNT)), STALE_WORD);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF)), STALE_WORD);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF, CARD_GSP_LEAF)), STALE_WORD);
+    EXPECT_EQ(bar0.read(NVIDIA_CPU_TOP_EN_SET), STALE_WORD);
+    EXPECT_EQ(bar0.read(WORD_AFTER_TOP_EN_SET), STALE_WORD);
+    EXPECT_EQ(bar0.read(WORD_AFTER_TOP_EN_CLEAR), STALE_WORD);
+}
+
+// `enable_cpu_interrupt_tree` and `disable_cpu_interrupt_tree` clear the enables of the leaves of the tree they are
+// given, not of a fixed count of leaves
+TEST(nvidia_message_queues, cpu_interrupt_tree_enables_are_cleared_up_to_the_leaf_count) {
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT), STALE_WORD);
+
+    enable_cpu_interrupt_tree(bar0.regs, SMALL_INTERRUPT_LEAF_COUNT, CARD_GSP_VECTOR);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT - 1)), ALL_BITS_SET);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT)), STALE_WORD);
+
+    bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT - 1), 0);
+    disable_cpu_interrupt_tree(bar0.regs, SMALL_INTERRUPT_LEAF_COUNT);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT - 1)), ALL_BITS_SET);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT)), STALE_WORD);
+}
+
+// `acknowledge_gsp_interrupt` clears the pending bit alone, writes to the clear exactly the sources either core's mask
+// and destination pass to the host and retriggers, or writes neither with none passed. SWGEN0 is the message source
+TEST(nvidia_message_queues, gsp_interrupt_acknowledge_clears_the_sources_directed_to_the_host) {
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    uint32_t gsp_leaf = cpu_leaf_register(NVIDIA_CPU_LEAF, CARD_GSP_LEAF);
+    bar0.write(gsp_leaf, ALL_BITS_SET);
+    bar0.write(NVIDIA_GSP_IRQSCLR, ALL_BITS_SET);
+    bar0.write(NVIDIA_GSP_INTR_RETRIGGER, ALL_BITS_SET);
+
+    // The RTX 3080's routing, SWGEN0 and bit 24 directed to the host by the RISC-V core's mask and destination
+    bar0.write(NVIDIA_GSP_IRQMASK, 0x1000000);
+    bar0.write(NVIDIA_GSP_IRQDEST, 0);
+    bar0.write(NVIDIA_GSP_RISCV_IRQMASK, 0x1049042);
+    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, 0x1000040);
+    bar0.write(NVIDIA_GSP_IRQSTAT, 0x10000D2);
+    EXPECT_EQ(acknowledge_gsp_interrupt(bar0.regs, CARD_GSP_VECTOR), 0x1000040u);
+    EXPECT_EQ(bar0.read(gsp_leaf), 1u << 27);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), 0x1000040u);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), 1u);
+
+    // Each mask passes a pending source its destination keeps from the host, and each destination one its mask keeps
+    bar0.write(NVIDIA_GSP_IRQMASK, 0x30);
+    bar0.write(NVIDIA_GSP_IRQDEST, 0x18);
+    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, 0x1000240);
+    bar0.write(NVIDIA_GSP_IRQSTAT, 0x100027A);
+    EXPECT_EQ(acknowledge_gsp_interrupt(bar0.regs, CARD_GSP_VECTOR), 0x1000050u);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), 0x1000050u);
+
+    bar0.write(gsp_leaf, ALL_BITS_SET);
+    bar0.write(NVIDIA_GSP_IRQSCLR, STALE_WORD);
+    bar0.write(NVIDIA_GSP_INTR_RETRIGGER, STALE_WORD);
+    bar0.write(NVIDIA_GSP_IRQSTAT, 0x280);
+    EXPECT_EQ(acknowledge_gsp_interrupt(bar0.regs, CARD_GSP_VECTOR), 0u);
+    EXPECT_EQ(bar0.read(gsp_leaf), 1u << 27);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), STALE_WORD);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), STALE_WORD);
+
+    EXPECT_EQ(GSP_MESSAGE_SOURCE, NVIDIA_GSP_IRQSTAT_SWGEN0);
+}
+
+// `rearm_msi` writes 0 to NV_XVE_CYA_2 in BAR0's mirror of the PCI configuration space
+TEST(nvidia_message_queues, msi_is_rearmed_through_the_mirror_of_the_pci_configuration_space) {
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(NVIDIA_XVE_CYA_2, ALL_BITS_SET);
+
+    rearm_msi(bar0.regs);
+
+    EXPECT_EQ(bar0.read(NVIDIA_XVE_CYA_2), 0u);
 }

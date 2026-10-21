@@ -10,6 +10,10 @@ namespace drivers::nvidia {
 // Byte offset in BAR0 of the register that identifies the chip
 constexpr uint32_t PMC_BOOT_0 = 0x0;
 
+// The most leaf registers (the 32-bit registers reporting a chip's interrupts to the CPU) NVIDIA's driver expects a
+// chip to have, NV_MAX_INTR_LEAVES. No chip table entry exceeds it, so one top-level register serves every leaf
+constexpr uint8_t INTERRUPT_LEAVES_MAX = 16;
+
 /**
  * The names of a chip's firmware files, which `open_firmware_files` looks up
  * in the version's directory, nvidia/<FIRMWARE_VERSION>/ in `fw::DIRECTORY`,
