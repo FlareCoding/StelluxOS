@@ -3305,3 +3305,107 @@ TEST(nvidia_message_queues, gsp_drain_sets_the_sequencer_deadline_itself) {
     EXPECT_EQ(bar0.read(WRITTEN_REGISTER), 0u);
     EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 1u);
 }
+
+// The first two of the GSP's four mailbox registers (NVIDIA's NV_PGSP_MAILBOX(0) and (1), apart from the GSP falcon's
+// two), as NVIDIA's header gives them
+static constexpr uint32_t NVIDIA_GSP_MAILBOX_0 = 0x110804;
+static constexpr uint32_t NVIDIA_GSP_MAILBOX_1 = 0x110808;
+
+// Failure reports with the error tag 0xE in bits 31:28, task 146, reason 0x1A and code 0xA5, so a misplaced field reads
+// wrong, and 8, 1 or 0 errors skipped in bits 27:24, so a condition on one bit of the count logs one of them wrong
+static constexpr uint32_t REPORT_WITH_8_SKIPPED = 0xE8921AA5;
+static constexpr uint32_t REPORT_WITH_1_SKIPPED = 0xE1921AA5;
+static constexpr uint32_t REPORT_WITH_0_SKIPPED = 0xE0921AA5;
+
+// The bits the first mailbox register held as any line was logged, gathered by the backend below
+static uint32_t s_report_bits_as_logged = 0;
+
+// Gathers the first mailbox register's bits at each line, then does what `drop_polled_bit_at_any_line` does
+static void gather_report_bits_as_logged(const char* data, size_t len) {
+    s_report_bits_as_logged |= s_dropping_registers->read(NVIDIA_GSP_MAILBOX_0);
+    drop_polled_bit_at_any_line(data, len);
+}
+
+static constexpr log::backend REPORT_BITS_GATHERING_BACKEND = {.write = gather_report_bits_as_logged};
+
+// Writes `report` into the first mailbox register and checks the GSP's health, gathering the register's bits at each
+// line logged
+static void check_health_with_report(gsp& conversation, request_test_bar0& bar0, uint32_t report) {
+    bar0.write(NVIDIA_GSP_MAILBOX_0, report);
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    s_report_bits_as_logged = 0;
+    log::set_backend(&REPORT_BITS_GATHERING_BACKEND);
+    conversation.check_health();
+    log::set_backend(nullptr);
+}
+
+// A report is cleared before any of its lines is logged, each at error level, the second mailbox register stays as it
+// was, and the count of errors skipped is logged only when it is not 0
+TEST(nvidia_message_queues, health_check_clears_a_report_then_logs_it) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    bar0.write(NVIDIA_GSP_MAILBOX_1, 0xDEADBEEF);
+
+    check_health_with_report(conversation, bar0, REPORT_WITH_8_SKIPPED);
+
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), 0u);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_1), 0xDEADBEEFu);
+    EXPECT_EQ(s_report_bits_as_logged, 0u);
+    EXPECT_EQ(logged_line_count(), 2u);
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the GSP's firmware reports error code 0xA5 for reason 0x1A"));
+    EXPECT_TRUE(logged_text_contains("reports error code 0xA5 for reason 0x1A in its task 146, with 0xDEADBEEF in"));
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the GSP's firmware skipped reporting more errors, 8 of them"));
+
+    check_health_with_report(conversation, bar0, REPORT_WITH_1_SKIPPED);
+
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), 0u);
+    EXPECT_EQ(s_report_bits_as_logged, 0u);
+    EXPECT_EQ(logged_line_count(), 2u);
+    EXPECT_TRUE(logged_text_contains("skipped reporting more errors, 1 of them"));
+
+    check_health_with_report(conversation, bar0, REPORT_WITH_0_SKIPPED);
+
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), 0u);
+    EXPECT_EQ(s_report_bits_as_logged, 0u);
+    EXPECT_EQ(logged_line_count(), 1u);
+    EXPECT_TRUE(logged_text_contains("reports error code 0xA5 for reason 0x1A in its task 146"));
+}
+
+// Words without the error tag in bits 31:28: 0xF and 0x6 there, which differ from the tag only in its lowest and only
+// in its highest bit, the tag's value in the skipped count's bits 27:24 instead, and 0
+static constexpr uint32_t UNTAGGED_WORDS[]    = {0xFB921AA5, 0x6B921AA5, 0x0E000000, 0};
+static constexpr size_t   UNTAGGED_WORD_COUNT = sizeof(UNTAGGED_WORDS) / sizeof(UNTAGGED_WORDS[0]);
+
+// A word without the error tag is no report, so it stays in the first mailbox register and nothing is logged
+TEST(nvidia_message_queues, health_check_leaves_a_word_without_the_error_tag) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint32_t words_after_check[UNTAGGED_WORD_COUNT] = {};
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    for (size_t i = 0; i < UNTAGGED_WORD_COUNT; i++) {
+        bar0.write(NVIDIA_GSP_MAILBOX_0, UNTAGGED_WORDS[i]);
+        conversation.check_health();
+        words_after_check[i] = bar0.read(NVIDIA_GSP_MAILBOX_0);
+    }
+
+    log::set_backend(nullptr);
+
+    for (size_t i = 0; i < UNTAGGED_WORD_COUNT; i++) {
+        EXPECT_EQ(words_after_check[i], UNTAGGED_WORDS[i]);
+    }
+
+    EXPECT_EQ(s_logged_bytes, 0u);
+}
