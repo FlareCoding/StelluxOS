@@ -16,6 +16,21 @@ constexpr uint32_t FIRMWARE_STATUS_OK = 0;
 // NVIDIA's number for a control request, which the reply carries too
 constexpr uint32_t FUNCTION_GSP_RM_CONTROL = 0x4C;
 
+// The first two of the GSP's four mailbox registers (NVIDIA's NV_PGSP_MAILBOX(0) and (1), apart from the GSP falcon's
+// two), where the firmware can report a failure, and the tag that marks a report in bits 31:28 of the first
+constexpr uint32_t REPORT_MAILBOX        = 0x110804;
+constexpr uint32_t REPORT_DETAIL_MAILBOX = 0x110808;
+constexpr uint32_t ERROR_TAG             = 0xE;
+
+// A report's fields: the code in bits 7:0, the reason in 15:8, the task in 23:16, the count of errors the firmware
+// skipped in 27:24 and the tag in 31:28
+constexpr uint32_t REPORT_BYTE_MASK     = 0xFF;
+constexpr uint32_t REPORT_REASON_SHIFT  = 8;
+constexpr uint32_t REPORT_TASK_SHIFT    = 16;
+constexpr uint32_t REPORT_SKIPPED_SHIFT = 24;
+constexpr uint32_t REPORT_SKIPPED_MASK  = 0xF;
+constexpr uint32_t REPORT_TAG_SHIFT     = 28;
+
 namespace {
 
 // NVIDIA's header of a control request, which the control's parameters follow, its status filled by the reply
@@ -78,6 +93,34 @@ int32_t gsp::drain() {
     m_sequencer.deadline_ns = clock::now_ns() + DEFAULT_TIMEOUT_NS;
 
     return drain_status_queue(m_queues, m_regs, m_sequencer, m_payload, MESSAGE_PAYLOAD_MAX_BYTES);
+}
+
+void gsp::check_health() {
+    uint32_t report = m_regs.read(REPORT_MAILBOX);
+    if (report >> REPORT_TAG_SHIFT != ERROR_TAG) {
+        return;
+    }
+
+    uint32_t detail = m_regs.read(REPORT_DETAIL_MAILBOX);
+    uint32_t code = report & REPORT_BYTE_MASK;
+    uint32_t reason = (report >> REPORT_REASON_SHIFT) & REPORT_BYTE_MASK;
+    uint32_t task = (report >> REPORT_TASK_SHIFT) & REPORT_BYTE_MASK;
+    uint32_t skipped = (report >> REPORT_SKIPPED_SHIFT) & REPORT_SKIPPED_MASK;
+
+    m_regs.write(REPORT_MAILBOX, 0);
+
+    log::error(
+        "nvidia: the GSP's firmware reports error code 0x%X for reason 0x%X in its task %u, with 0x%X in the GSP's "
+        "second mailbox register, so the GPU likely needs a reset",
+        code,
+        reason,
+        task,
+        detail
+    );
+
+    if (skipped != 0) {
+        log::error("nvidia: the GSP's firmware skipped reporting more errors, %u of them", skipped);
+    }
 }
 
 int32_t gsp::request(

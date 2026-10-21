@@ -159,9 +159,13 @@ src/common/inc/swref/published/ampere/ga102/dev_gsp.h
     GSP's eight queue head registers, in falcon.cpp, the first two, 8 bytes
     apart, in kernel/tests/graphics/nvidia_falcon.test.cpp, the base of the
     GSP's registers and the GSP falcon's two mailbox registers, in
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, and the base of the
-    GSP's registers, the first of the GSP's queue head registers and the GSP
-    falcon's first mailbox register, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the base of the GSP's
+    registers, the first of the GSP's queue head registers and the GSP falcon's
+    first mailbox register, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the GSP's four mailbox
+    registers, apart from the GSP falcon's two, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the first two, 4
+    bytes apart, in gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
@@ -729,18 +733,23 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that NVIDIA's driver
     drains its queue one message at a time until it is empty, handing each
     message to its event handler, reading the GSP's log after each read and
-    checking the GSP's health once the reads stop, in message_queues.h, that its
-    drain awaits its count of functions and asserts that no event carries it, in
-    message_queues.h and message_queues.cpp, that the drain stops at a message
-    of that count, in message_queues.h, that its event handler logs a message of
-    a function it does not know and the drain reads on, in message_queues.h,
-    that NVIDIA's driver drains in the bottom half of its interrupt handler
-    holding the GPUs lock, in gsp.h and nvidia_gpu.h, that a notice from the
-    firmware tells the driver whether the GSP's lockdown engages or disengages,
-    so NVIDIA's driver takes the GSP as in lockdown while the last notice it has
-    read says the lockdown engages, that while the GSP is in lockdown the host
-    cannot reach some of its registers, its interrupt status and control among
-    them, and that NVIDIA's driver then expects no SWGEN0, in nvidia_gpu.h
+    checking the GSP's health once the reads stop, in message_queues.h, that it
+    checks once the reads stop whatever they returned, in nvidia_gpu.h and
+    nvidia_gpu.cpp, that its drain awaits its count of functions and asserts
+    that no event carries it, in message_queues.h and message_queues.cpp, that
+    the drain stops at a message of that count, in message_queues.h, that its
+    event handler logs a message of a function it does not know and the drain
+    reads on, in message_queues.h, that NVIDIA's driver drains in the bottom
+    half of its interrupt handler holding the GPUs lock, in gsp.h and
+    nvidia_gpu.h, that a notice from the firmware tells the driver whether the
+    GSP's lockdown engages or disengages, so NVIDIA's driver takes the GSP as in
+    lockdown while the last notice it has read says the lockdown engages, that
+    while the GSP is in lockdown the host cannot reach some of its registers,
+    its interrupt status and control among them, that NVIDIA's driver then
+    expects no SWGEN0, in nvidia_gpu.h, and that NVIDIA's handling of the GSP's
+    failure halts every user channel and notifies it of the error and that the
+    log NVIDIA's driver then writes holds the most recent messages it sent and
+    the firmware's most recent unasked messages, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -957,12 +966,27 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     (the source the firmware raises when its crash report needs the host) and
     SWGEN0, SWGEN0 before it receives the messages the firmware sends unasked,
     and that it then retriggers the falcon's interrupt, in interrupts.h,
-    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
-    the rules that the service reports a run that finds no source pending, that
-    it clears SWGEN0 before receiving the firmware's messages and retriggers the
+    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
+    rules that the service reports a run that finds no source pending, that it
+    clears SWGEN0 before receiving the firmware's messages and retriggers the
     falcon's interrupt after receiving them, unless the GSP is then in lockdown,
-    and that it returns the sources still pending after the retrigger, in
-    nvidia_gpu.h
+    that it returns the sources still pending after the retrigger and that on
+    HALT, which the firmware raises when its crash report needs the host, it
+    reads the GSP's log and checks the GSP's health before receiving the
+    firmware's messages, in nvidia_gpu.h, the rule that the check reads only
+    CrashCat's reports when CrashCat (NVIDIA's interface for the GSP's crash
+    reports) is set up, in gsp.h, the rules that, without CrashCat, the first of
+    the GSP's four mailbox registers reports a failure when its bits 31:28 hold
+    the error tag and that the second mailbox register is then read and the
+    first cleared to 0 before the code, reason and task the report held and the
+    second register's word are logged, with the count of errors skipped logged
+    only when it is not 0, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that a report
+    likely means the GPU needs a reset, in gsp.cpp, and the rules that NVIDIA's
+    driver then marks the GSP crashed, logs its debug information on the
+    messages exchanged with the firmware, on its first failure runs its channel
+    error handling with an error notice on every user channel and on every
+    failure checks the GPU's counts of ECC errors, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
@@ -1077,14 +1101,16 @@ src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
     kernel/tests/graphics/nvidia_falcon.test.cpp, that a CPU sequencer step of
     an opcode the chip's handler lacks fails, in cpu_sequencer.h,
     cpu_sequencer.cpp and kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp,
-    and the rules that the GSP's falcon registers count from the base of the
-    GSP's registers, its RISC-V core's from its second register block and its
-    memory interface's from its memory interface base, and that the resume
-    resets the GSP into its RISC-V core, writes the address of LibOS's
-    arguments, starts SEC2's falcon, waits with the default timeout for the boot
-    stage 3 handoff, gives the GSP falcon's OS register the app version and
-    fails unless the RISC-V core reads as running, in
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    the rules that the GSP's falcon registers count from the base of the GSP's
+    registers, its RISC-V core's from its second register block and its memory
+    interface's from its memory interface base, and that the resume resets the
+    GSP into its RISC-V core, writes the address of LibOS's arguments, starts
+    SEC2's falcon, waits with the default timeout for the boot stage 3 handoff,
+    gives the GSP falcon's OS register the app version and fails unless the
+    RISC-V core reads as running, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, and the rule that
+    NVIDIA's driver sets CrashCat up unless confidential computing is on, in
+    gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
@@ -1327,6 +1353,16 @@ src/common/sdk/nvidia/inc/nvtypes.h
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/nvidia/arch/nvalloc/common/inc/gsp/gsp_error.h
+    the fields through which the GSP's firmware reports a failure in a mailbox
+    register, the code in bits 7:0, the reason in bits 15:8, the task in bits
+    23:16, the count of errors skipped in bits 27:24 and the tag in bits 31:28,
+    whose value 0xE marks a report, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the tag in bits
+    31:28 with its value 0xE and the report's code, reason, task and count of
+    errors skipped, in gsp.h
+    SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
     the rule that the offsets of the manifest and the monitor's code and
     data lie inside the bootloader's program, counted from its start, in
@@ -1437,9 +1473,11 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     kernel/tests/graphics/nvidia_boot_messages.test.cpp, that the resource
     manager's queue takes the resource manager's queue index, in falcon.h,
     falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that a message
-    waits up to 1 s for room for each of its elements in the command queue, in
-    gsp.h
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a message waits
+    up to 1 s for room for each of its elements in the command queue, in gsp.h,
+    and that NVIDIA's driver reads the GSP's log and checks the GSP's health
+    after each try that fails before the link's timeout passes, failing the link
+    when the check finds a failure, in message_queues.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc-message-header.h

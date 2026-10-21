@@ -18,8 +18,9 @@ namespace drivers::nvidia {
  * queues through which the driver and the firmware exchange messages, the
  * buffer each received message's payload is copied into, the context taken by
  * the steps of the CPU sequencer (the register, delay and falcon steps the
- * firmware sends for the driver to run), and a view of BAR0 for those steps
- * and for telling the firmware that a request waits.
+ * firmware sends for the driver to run), and a view of BAR0 for those steps,
+ * for telling the firmware that a request waits and for reading and clearing a
+ * failure report.
  *
  * A message that needs no reply, such as either of the two messages queued
  * before the GSP starts, is queued with `send`. A request goes through
@@ -33,7 +34,7 @@ namespace drivers::nvidia {
  * an object the firmware keeps) goes through `control`, which sends it as a
  * request. A message the firmware sends unasked, such as its ready message, is
  * awaited with `await` during bring-up and read with `drain` once bring-up
- * ends.
+ * ends. A failure the firmware reports is looked for with `check_health`.
  *
  *   driver --- send, request ----------> command queue ---> GSP's firmware
  *   driver <-- await, request, drain --- status queue  <--- GSP's firmware
@@ -62,12 +63,14 @@ public:
      * @brief Allocate the payload buffer, room for `MESSAGE_PAYLOAD_MAX_BYTES`
      * on the unprivileged heap, lay the message queues out in `queue_memory`
      * as `message_queues` does before the firmware starts, and keep `regs` and
-     * `sequencer` for the requests and the CPU sequencer's runs. The object
-     * must hold no queues, as the default constructor and `stop` leave it.
+     * `sequencer` for the requests, the CPU sequencer's runs and the health
+     * check. The object must hold no queues, as the default constructor and
+     * `stop` leave it.
      * @param regs A view of BAR0, kept until `stop`, for telling the firmware
-     * that a request waits and for the sequencer's steps. Booter load must
-     * have run on SEC2's falcon before the first wait, with nothing resetting
-     * SEC2 since, as `receive_awaited` requires.
+     * that a request waits, for the sequencer's steps and for reading and
+     * clearing a failure report. Booter load must have run on SEC2's falcon
+     * before the first wait, with nothing resetting SEC2 since, as
+     * `receive_awaited` requires.
      * @param queue_memory The CPU's mapping of the queues' memory, as the
      * `message_queues` constructor requires it.
      * @param queue_dma_address The address the card reaches that memory at, as
@@ -142,6 +145,35 @@ public:
      * @return What `drain_status_queue` returns, logged as its doc describes.
      */
     int32_t drain();
+
+    /**
+     * @brief Check the GSP's health as NVIDIA's driver does when CrashCat
+     * (NVIDIA's interface for the GSP's crash reports) is not set up. NVIDIA's
+     * driver sets CrashCat up unless confidential computing (a mode in which
+     * the GPU encrypts what it shares with the host) is on, and its check then
+     * reads only CrashCat's reports, while this driver never sets CrashCat up.
+     * Without CrashCat, NVIDIA's driver treats a word holding the error tag
+     * 0xE in bits 31:28 of the first of the GSP's four mailbox registers
+     * (NVIDIA's NV_PGSP_MAILBOX(0), apart from the GSP falcon's two) as a
+     * failure report from the firmware. It never reads that register while
+     * confidential computing is off, so whether this firmware reports a
+     * failure there is not known, and the check may never find one. For such a
+     * report, the check reads the word in the GSP's second mailbox register,
+     * clears the first to 0 and only then logs the code, reason and task the
+     * report held and that word, followed by the count of errors the firmware
+     * skipped when that count is not 0. Any other word is left in the register
+     * and nothing is logged. After a report NVIDIA's driver marks its GSP
+     * crashed, so that it skips every later request. It also logs the most
+     * recent messages it sent and the firmware's most recent unasked messages,
+     * and on its first failure halts every user channel (a stream of work the
+     * GPU runs for a program) with an error notice. On every failure it checks
+     * the GPU's counts of ECC errors (memory errors its error-correcting code
+     * finds). This driver leaves all of that out: it sends no request once its
+     * task runs, keeps no record of the messages it exchanges, runs no channel
+     * and reads no ECC count. The check returns nothing, since no caller acts
+     * on a failure, and a later check does not find a report this one cleared.
+     */
+    void check_health();
 
     /**
      * @brief Send the firmware a request and wait for its reply: queue the

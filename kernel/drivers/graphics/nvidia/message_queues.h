@@ -238,8 +238,11 @@ private:
  * @brief Link the status queue once the GSP's firmware has written its header,
  * calling `queues.link_status_queue()` until it returns `OK` or `timeout_ns`
  * passes, as NVIDIA's driver retries its link once the GSP's RISC-V core runs.
- * The call spins on the calling CPU without sleeping, holding it for up to
- * `timeout_ns` and then until its last try returns.
+ * After each try that fails before the link's timeout passes, NVIDIA's driver
+ * also reads the GSP's log and checks the GSP's health, failing the link when
+ * the check finds a failure, where this link only retries. The call spins on
+ * the calling CPU without sleeping, holding it for up to `timeout_ns` and then
+ * until its last try returns.
  * @param timeout_ns How long to retry, `STATUS_QUEUE_LINK_TIMEOUT_NS` at
  * bring-up. The link is tried at least once.
  * @return `OK`, or `ERR_TIMEOUT`, which is logged, when no try returned `OK`
@@ -358,7 +361,9 @@ int32_t receive_awaited(
  * calling CPU without sleeping, for as long as each read finds a message and
  * through each CPU sequencer's run, whose waits count against
  * `sequencer.deadline_ns`. The driver task, `nvidia_gpu_driver::run`, drains
- * the queue each time the GSP's interrupt wakes the task.
+ * the queue and then checks the GSP's health with `gsp::check_health` each
+ * time the GSP's interrupt wakes it, unless the GSP falcon's interrupt
+ * registers read all ones.
  * @param queues The message queues, whose status queue must be linked.
  * @param regs A view of BAR0, for the sequencer's steps, as `receive_awaited`
  * requires it.

@@ -1012,12 +1012,13 @@ void nvidia_gpu_driver::run() {
         if (sources == nvidia::UNRESPONSIVE_CARD_SOURCES) {
             log::error(
                 "nvidia: the GSP falcon's interrupt registers read all ones, as on a card that stopped responding, so "
-                "no message is read"
+                "no message is read and the GSP's health is not checked"
             );
             continue;
         }
 
         int32_t rc = m_gsp.drain();
+        m_gsp.check_health();
 
         if (is_first_wake) {
             // The load does not order the clock's read, so a handler on another CPU can store a time after `woken_ns`

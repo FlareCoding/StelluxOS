@@ -160,21 +160,21 @@ namespace drivers {
  * `nvidia::enable_cpu_interrupt_tree` describes, and `attach()` returns `OK`
  * with the firmware running. From the enable on, the handler acknowledges each
  * interrupt as `on_interrupt` describes, and the driver task the framework
- * starts after `OK` reads the firmware's messages as `run` describes. When the
- * framework cannot create the task, it calls `detach()` on the boot thread
- * instead, as below. An interrupt source is a bit of the interrupt status of
- * the GSP's falcon, and the firmware raises `nvidia::GSP_MESSAGE_SOURCE` when
- * it queues a message it sends unasked. Bring-up never clears that source,
- * which the messages the firmware sent unasked during bring-up left pending,
- * so the card raises the first interrupt as soon as the vector is enabled.
- * `attach()` fails with a negative error when BAR0 cannot be mapped, the card
- * does not respond, its VBIOS's images are not laid out as
- * `nvidia::read_vbios_layout` requires, a firmware file of an installed
- * directory cannot be opened, the GSP image fails `nvidia::check_gsp_image`,
- * which requires a 64-bit little-endian ELF file whose one .fwversion
- * section holds exactly `FIRMWARE_VERSION` and its NUL, with one
- * .fwimage section and one section of the name the chip table gives for
- * the chip's signature, a name of at most 31 bytes, each section holding
+ * starts after `OK` reads the firmware's messages and checks the GSP's health
+ * as `run` describes. When the framework cannot create the task, it calls
+ * `detach()` on the boot thread instead, as below. An interrupt source is a
+ * bit of the interrupt status of the GSP's falcon, and the firmware raises
+ * `nvidia::GSP_MESSAGE_SOURCE` when it queues a message it sends unasked.
+ * Bring-up never clears that source, which the messages the firmware sent
+ * unasked during bring-up left pending, so the card raises the first interrupt
+ * as soon as the vector is enabled. `attach()` fails with a negative error
+ * when BAR0 cannot be mapped, the card does not respond, its VBIOS's images
+ * are not laid out as `nvidia::read_vbios_layout` requires, a firmware file of
+ * an installed directory cannot be opened, the GSP image fails
+ * `nvidia::check_gsp_image`, which requires a 64-bit little-endian ELF file
+ * whose one .fwversion section holds exactly `FIRMWARE_VERSION` and its NUL,
+ * with one .fwimage section and one section of the name the chip table gives
+ * for the chip's signature, a name of at most 31 bytes, each section holding
  * at least one byte inside the file, the bootloader, booter load or booter
  * unload is shorter than its header, cannot be read or holds a header that
  * does not describe it, the bootloader's descriptor is too short to hold every
@@ -450,30 +450,39 @@ public:
      * @brief The driver task, which the framework starts once `attach()`
      * returns `OK`. Each time it wakes, it takes the sources the handler
      * cleared since its last wake and the time the handler last ran, reads
-     * with `nvidia::gsp::drain` every message the firmware has queued, and
-     * only then logs, since a CPU sequencer the drain reads must run before
-     * any log line: on its first wake the time since the handler last ran,
-     * which includes the rest of `attach()` and the task's start when the
-     * handler first runs before `attach()` returns, then any source other than
-     * `nvidia::GSP_MESSAGE_SOURCE`, then a failed drain, after which it goes
-     * on waiting. The drain runs with the GSP's vector enabled, so the handler
-     * may clear the GSP falcon's sources and retrigger its interrupt while a
-     * CPU sequencer resets, starts or resumes that falcon, where NVIDIA's
-     * driver drains holding a lock that keeps the GPU's interrupts disabled.
-     * The GSP's lockdown is a state in which the host cannot reach some of the
-     * GSP's registers, its interrupt status and control among them, and a
-     * notice that the lockdown engages is logged as any other unasked message.
-     * The handler retriggers the GSP falcon's interrupt, as
-     * `nvidia::acknowledge_gsp_interrupt` describes, before the drain reads
-     * any message, where NVIDIA's driver retriggers after reading the messages
-     * and skips the retrigger while the last lockdown notice it read says the
-     * lockdown engages. NVIDIA's driver itself writes to the falcon before
-     * reading the messages, clearing `nvidia::GSP_MESSAGE_SOURCE`, and expects
-     * no `nvidia::GSP_MESSAGE_SOURCE` while the GSP is in lockdown, so only
-     * the run that reads a notice that the lockdown engages differs. When the
-     * sources are `nvidia::UNRESPONSIVE_CARD_SOURCES`, the task only logs that
-     * the GSP falcon's interrupt registers read all ones and reads no message.
-     * It never returns.
+     * with `nvidia::gsp::drain` the messages the firmware has queued, then
+     * checks the GSP's health with `nvidia::gsp::check_health` whatever the
+     * drain returned, as NVIDIA's driver checks it once its reads stop, and
+     * only then writes its own lines, since a CPU sequencer the drain reads
+     * must run before any log line: on its first wake the time since the
+     * handler last ran, which includes the rest of `attach()` and the task's
+     * start when the handler first runs before `attach()` returns, then any
+     * source other than `nvidia::GSP_MESSAGE_SOURCE`, then a failed drain,
+     * after which it goes on waiting. The check runs only on a wake, so a
+     * report the firmware leaves without queuing a message after it stays
+     * unread until an interrupt next wakes the task. NVIDIA's driver also
+     * reads the GSP's log and checks the GSP's health before reading the
+     * messages when HALT (the source the firmware raises when its crash report
+     * needs the host) is pending, while here the task reads no GSP log and
+     * checks after the drain, never before it. The drain runs with the GSP's
+     * vector enabled, so the handler may clear the GSP falcon's sources and
+     * retrigger its interrupt while a CPU sequencer resets, starts or resumes
+     * that falcon, where NVIDIA's driver drains holding a lock that keeps the
+     * GPU's interrupts disabled. The GSP's lockdown is a state in which the
+     * host cannot reach some of the GSP's registers, its interrupt status and
+     * control among them, and a notice that the lockdown engages is logged as
+     * any other unasked message. The handler retriggers the GSP falcon's
+     * interrupt, as `nvidia::acknowledge_gsp_interrupt` describes, before the
+     * drain reads any message, where NVIDIA's driver retriggers after reading
+     * the messages and skips the retrigger while the last lockdown notice it
+     * read says the lockdown engages. NVIDIA's driver itself writes to the
+     * falcon before reading the messages, clearing
+     * `nvidia::GSP_MESSAGE_SOURCE`, and expects no
+     * `nvidia::GSP_MESSAGE_SOURCE` while the GSP is in lockdown, so only the
+     * run that reads a notice that the lockdown engages differs. When the
+     * sources are `nvidia::UNRESPONSIVE_CARD_SOURCES`, the task logs that the
+     * GSP falcon's interrupt registers read all ones and neither reads a
+     * message nor checks the GSP's health. It never returns.
      */
     void run() override;
 
