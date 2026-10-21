@@ -34,11 +34,14 @@
  * monitors add) or 0x70 for DisplayID (a separate format whose sections an
  * EDID can carry). A CTA-861 block can hold more timing descriptors, whose
  * timings the parser lists after the base block's, and no block of another
- * kind gives a timing. The parser counts as skipped each extension block it is
- * not given whole and each CTA-861 or DisplayID block failing its checksum, so
- * a driver can tell that the EDID arrived cut short or corrupted. A skipped
- * block gives no timing, and a block of another kind is skipped only when it
- * is not given whole.
+ * kind gives a timing. A DisplayID block holds one section of DisplayID data
+ * with a checksum byte of its own. The parser counts as skipped each extension
+ * block it is not given whole, each CTA-861 or DisplayID block failing its
+ * checksum and each DisplayID block whose section does not end before the
+ * block's checksum byte or fails its own checksum, so a driver can tell that
+ * the EDID arrived cut short, corrupted or malformed. A skipped block gives no
+ * timing, and a block of another kind is skipped only when it is not given
+ * whole.
  *
  * A display driver hands the bytes it read to `edid::parse`, which returns the
  * maker, the product name, the timings, the number of timings that did not fit
@@ -103,7 +106,7 @@ struct monitor {
     uint32_t timing_count;              // entries of `timings` in use
     bool     first_timing_is_preferred; // `timings[0]` is the timing the monitor's maker recommends
     uint32_t dropped_timings;           // timings found with `timings` full that equal no listed timing
-    uint32_t skipped_extensions;        // extension blocks cut short, and CTA-861 or DisplayID ones failing a checksum
+    uint32_t skipped_extensions;        // extension blocks cut short, and CTA-861 or DisplayID ones failing a check
 };
 
 /**
@@ -138,8 +141,9 @@ struct monitor {
  * outside printable ASCII read as `?`.
  *
  * The base block's byte 126 says how many extension blocks follow it. Each of
- * them is skipped when `bytes` does not hold it whole, or when it is a CTA-861
- * or DisplayID block whose 128 bytes do not sum to 0 modulo 256, and
+ * them is skipped when `bytes` does not hold it whole, when it is a CTA-861 or
+ * DisplayID block whose 128 bytes do not sum to 0 modulo 256, or when it is a
+ * DisplayID block whose section fails the checks below, and
  * `skipped_extensions` counts the skipped blocks. A block of another kind is
  * skipped only when `bytes` does not hold it whole. A skipped block gives no
  * timing and never makes the call fail, so it never costs the caller the
@@ -153,6 +157,18 @@ struct monitor {
  * checksum byte 127, so at most six. A block at revision 0, or whose byte 2 is
  * below 4 (0 meaning no descriptors, 1 to 3 an offset within bytes 0 to 3),
  * gives no timings.
+ *
+ * A DisplayID block holds one section from byte 1. Bytes 1 to 4 are the
+ * section's version, the byte count of its data blocks (the tagged records
+ * describing the monitor), a product type and a count of extension sections.
+ * The product type is a code for the kind of product the section describes,
+ * and the count says how many sections extend this one. The data blocks follow
+ * from byte 5, then a checksum byte making the section's bytes sum to 0 modulo
+ * 256. The bytes after that checksum byte, up to the block's own, are not part
+ * of the section. The section fails at any version when its data blocks take
+ * more than 121 bytes, which puts its checksum byte at or past the block's, or
+ * when its bytes do not sum to 0. The parser reads a section only for these
+ * checks, so no section gives a timing.
  *
  * The caller owns `bytes` and `out`. The parser keeps no pointer to either and
  * no state between calls, so two threads may parse into two `monitor`s at

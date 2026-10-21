@@ -63,6 +63,13 @@ static constexpr uint8_t CTA_861_HEADER_BYTES            = 4;
 static constexpr size_t  CTA_861_DESCRIPTORS_MAX         = 6;
 static constexpr uint8_t CTA_861_REVISION_3              = 3;
 
+static constexpr size_t  DISPLAYID_VERSION_OFFSET            = 1;
+static constexpr size_t  DISPLAYID_DATA_BYTES_OFFSET         = 2;
+static constexpr size_t  DISPLAYID_PRODUCT_TYPE_OFFSET       = 3;
+static constexpr size_t  DISPLAYID_EXTENSION_SECTIONS_OFFSET = 4;
+static constexpr size_t  DISPLAYID_DATA_OFFSET               = 5;
+static constexpr uint8_t DISPLAYID_DATA_BYTES_MAX            = 121;
+
 // The AOC's features byte, and the same with its preferred bit (bit 1) clear
 static constexpr uint8_t AOC_FEATURES             = 0x3B;
 static constexpr uint8_t AOC_FEATURES_BIT_1_CLEAR = 0x39;
@@ -112,14 +119,19 @@ static edid::monitor g_monitor;
 // A base block, then room for the 255 extension blocks byte 126 can give, so every byte read past `size` is in `g_edid`
 static uint8_t g_edid[256 * edid::BLOCK_BYTES];
 
-// Sets the checksum byte so the block's bytes sum to 0 modulo 256
-static void seal(uint8_t* block) {
+// Sets the last of `count` bytes so the bytes sum to 0 modulo 256
+static void write_checksum(uint8_t* bytes, size_t count) {
     uint8_t sum = 0;
-    for (size_t i = 0; i < CHECKSUM_OFFSET; i++) {
-        sum = static_cast<uint8_t>(sum + block[i]);
+    for (size_t i = 0; i + 1 < count; i++) {
+        sum = static_cast<uint8_t>(sum + bytes[i]);
     }
 
-    block[CHECKSUM_OFFSET] = static_cast<uint8_t>(0x100 - sum);
+    bytes[count - 1] = static_cast<uint8_t>(0x100 - sum);
+}
+
+// Sets the checksum byte so the block's bytes sum to 0 modulo 256
+static void seal(uint8_t* block) {
+    write_checksum(block, edid::BLOCK_BYTES);
 }
 
 static void seal_block() {
@@ -238,6 +250,26 @@ static void write_cta_861_edid(uint8_t revision, uint8_t start) {
     block[CTA_861_REVISION_OFFSET] = revision;
     block[CTA_861_DESCRIPTOR_START_OFFSET] = start;
     seal(block);
+}
+
+// Writes the checksum byte after the data blocks of DisplayID block `block` so the section's bytes sum to 0 modulo 256,
+// past the block when its section's data blocks take more than 122 bytes
+static void write_section_checksum(uint8_t* block) {
+    size_t section_bytes = DISPLAYID_DATA_OFFSET + block[DISPLAYID_DATA_BYTES_OFFSET] + 1 - DISPLAYID_VERSION_OFFSET;
+    write_checksum(block + DISPLAYID_VERSION_OFFSET, section_bytes);
+}
+
+// Sets both checksums of block `index` of `g_edid`, a DisplayID block whose section ends before byte 127
+static void seal_displayid_block(size_t index) {
+    write_section_checksum(block_at(index));
+    seal(block_at(index));
+}
+
+// Writes block `index` of `g_edid` as a DisplayID block whose section, at `version`, holds no data block
+static void write_displayid_block(size_t index, uint8_t version) {
+    write_extension(index, EXTENSION_TAG_DISPLAYID);
+    block_at(index)[DISPLAYID_VERSION_OFFSET] = version;
+    seal_displayid_block(index);
 }
 
 static int32_t parse_edid(size_t size) {
@@ -1046,7 +1078,14 @@ TEST(edid, lists_timings_from_cta_861_blocks_alone) {
         expect_no_timing_with_tag(tag);
     }
 
-    expect_no_timing_with_tag(EXTENSION_TAG_DISPLAYID);
+    // The same bytes give no timing from a DisplayID block whose section passes, its checksum byte written over the low
+    // byte of the descriptor's height
+    write_cta_861_edid(CTA_861_REVISION_3, CTA_861_HEADER_BYTES);
+    block_at(1)[EXTENSION_TAG_OFFSET] = EXTENSION_TAG_DISPLAYID;
+    seal_displayid_block(1);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 0u);
+    EXPECT_EQ(g_monitor.skipped_extensions, 0u);
 
     make_base_block(AOC_FEATURES);
     copy_block_into_edid();
@@ -1142,4 +1181,92 @@ TEST(edid, counts_a_timing_found_with_the_array_full_unless_it_is_listed) {
     seal(block_at(5));
     ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
     EXPECT_EQ(g_monitor.dropped_timings, 0u);
+}
+
+// Version bytes of DisplayID 1.3 and 2.1 and of two versions DisplayID does not name, each section checked the same way
+static constexpr uint8_t SECTION_VERSION_BYTES[] = {0x13, 0x21, 0x00, 0x92};
+
+TEST(edid, skips_a_displayid_block_whose_section_fails_its_checksum) {
+    for (uint8_t version : SECTION_VERSION_BYTES) {
+        make_base_block(AOC_FEATURES);
+        write_timing_descriptor(0, FULL_HD);
+        copy_block_into_edid();
+        set_extension_count(3);
+        write_cta_861_block(1);
+        write_extension_descriptor(1, cta_861_descriptor_offset(0), full_hd_raised(1));
+        write_displayid_block(2, version);
+        write_cta_861_block(3);
+        write_extension_descriptor(3, cta_861_descriptor_offset(0), full_hd_raised(2));
+        ASSERT_EQ(parse_edid(4 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 3u);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+
+        // The section's checksum byte off by one makes both checksums fail, and the block is counted once
+        uint8_t* block = block_at(2);
+        size_t section_checksum_offset = DISPLAYID_DATA_OFFSET + block[DISPLAYID_DATA_BYTES_OFFSET];
+        block[section_checksum_offset]++;
+        ASSERT_EQ(parse_edid(4 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+
+        // With the block's checksum right, the section check alone skips the DisplayID block, and the CTA-861 blocks on
+        // either side keep their timings listed
+        seal(block);
+        ASSERT_EQ(parse_edid(4 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+        ASSERT_EQ(g_monitor.timing_count, 3u);
+        expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+        EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 148510u);
+        EXPECT_EQ(g_monitor.timings[2].pixel_clock_khz, 148520u);
+
+        // The byte after the section's checksum byte is not part of the section
+        block[section_checksum_offset]--;
+        block[section_checksum_offset + 1] = 0x5A;
+        seal(block);
+        ASSERT_EQ(parse_edid(4 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+    }
+}
+
+// With 122 bytes of data blocks the section's checksum byte is the block's own, and with more it lies past the block,
+// where the test writes it so the section's bytes would sum to 0 modulo 256 if read there
+static constexpr uint8_t LONG_DATA_BYTES[] = {122, 123, 251, 255};
+
+// Product types and counts of extension sections for which a stricter parser could skip a DisplayID block
+static constexpr uint8_t UNCOMPARED_SECTION_VALUES[] = {7, 0xFF};
+
+TEST(edid, skips_a_displayid_block_whose_data_blocks_take_more_than_121_bytes) {
+    for (uint8_t version : SECTION_VERSION_BYTES) {
+        make_base_block(AOC_FEATURES);
+        copy_block_into_edid();
+        set_extension_count(1);
+        write_displayid_block(1, version);
+        block_at(1)[DISPLAYID_DATA_BYTES_OFFSET] = DISPLAYID_DATA_BYTES_MAX;
+        seal_displayid_block(1);
+        ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+
+        // The product type and the count of extension sections are summed but never compared
+        for (uint8_t value : UNCOMPARED_SECTION_VALUES) {
+            block_at(1)[DISPLAYID_PRODUCT_TYPE_OFFSET] = value;
+            block_at(1)[DISPLAYID_EXTENSION_SECTIONS_OFFSET] = value;
+            seal_displayid_block(1);
+
+            ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
+            EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+        }
+
+        write_displayid_block(1, version);
+
+        for (uint8_t data_bytes : LONG_DATA_BYTES) {
+            uint8_t* block = block_at(1);
+            block[DISPLAYID_DATA_BYTES_OFFSET] = data_bytes;
+            seal(block);
+            if (DISPLAYID_DATA_OFFSET + data_bytes > CHECKSUM_OFFSET) {
+                write_section_checksum(block);
+            }
+
+            ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
+            EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+        }
+    }
 }
