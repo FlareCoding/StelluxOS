@@ -12,7 +12,10 @@ TEST_SUITE(nvidia_bar1_page_tables);
 
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::OK;
+using drivers::nvidia::bar1_page_entry;
+using drivers::nvidia::bar1_page_entry_offset;
 using drivers::nvidia::bar1_page_table_bytes;
+using drivers::nvidia::bar1_sparse_page_entry;
 using drivers::nvidia::bar1_window_bytes;
 using drivers::nvidia::check_console_region;
 using drivers::nvidia::static_configuration;
@@ -201,6 +204,37 @@ TEST(nvidia_bar1_page_tables, bar1_tables_map_bar1s_start_onto_the_same_video_me
     EXPECT_EQ(written_words(tables, table_pages, 1), static_cast<uint64_t>(0));
 
     heap::ufree(tables);
+}
+
+// A mapping's entries and the sparse entry are the ones the tables hold for the console and past it, at the offsets the
+// tables give BAR1's pages
+TEST(nvidia_bar1_page_tables, page_entries_and_their_offsets_match_the_tables_written_for_a_console) {
+    uint64_t table_pages = DIRECTORY_PAGES + RTX_3080_PAGE_TABLES;
+    uint64_t* tables = alloc_copy(table_pages);
+    ASSERT_NOT_NULL(tables);
+
+    ASSERT_NE(write_bar1_page_tables(tables, TABLES_OFFSET, RTX_3080_CONSOLE_BYTES, RTX_3080_CONSOLE_BYTES), 0u);
+
+    static constexpr uint64_t CHECKED_PAGES[] = {0, 0x1235, 0x167F};
+    for (uint64_t page : CHECKED_PAGES) {
+        uint64_t bar1_offset = page * PAGE_BYTES;
+        uint64_t entry_offset = bar1_page_entry_offset(TABLES_OFFSET, bar1_offset);
+        EXPECT_EQ(entry_offset, TABLES_OFFSET + DIRECTORY_PAGES * PAGE_BYTES + page * sizeof(uint64_t));
+        EXPECT_EQ(bar1_page_entry(bar1_offset), tables[(entry_offset - TABLES_OFFSET) / sizeof(uint64_t)]);
+    }
+
+    uint64_t past_console = bar1_page_entry_offset(TABLES_OFFSET, RTX_3080_CONSOLE_BYTES);
+    EXPECT_EQ(bar1_sparse_page_entry(), tables[(past_console - TABLES_OFFSET) / sizeof(uint64_t)]);
+    EXPECT_EQ(bar1_sparse_page_entry(), SPARSE_ENTRY);
+
+    heap::ufree(tables);
+}
+
+TEST(nvidia_bar1_page_tables, a_page_entry_names_every_page_below_128_gib_and_refuses_the_rest) {
+    uint64_t last_page = ADDRESS_FIELD_REACH - PAGE_BYTES;
+    EXPECT_EQ(bar1_page_entry(last_page), (last_page >> 12) << ADDRESS_FIELD_SHIFT | 1);
+    EXPECT_EQ(bar1_page_entry(ADDRESS_FIELD_REACH), 0u);
+    EXPECT_EQ(bar1_page_entry(PAGE_BYTES + 8), 0u);
 }
 
 // Tables for the RTX 3080's window with its console map the console's pages and leave every page past the console

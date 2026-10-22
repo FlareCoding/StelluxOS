@@ -130,6 +130,37 @@ uint64_t write_bar1_page_tables(
 );
 
 /**
+ * @brief The page table entry of BAR1's tables mapping the 4 KiB page at
+ * `vram_offset` in video memory, as `write_bar1_page_tables` writes an entry
+ * mapping a console page. The call never blocks.
+ * @param vram_offset The page's offset in video memory.
+ * @return The entry, or 0 when `vram_offset` is not a multiple of 4 KiB or
+ * lies at or past 128 GiB, which the entry's address field cannot name. No
+ * entry naming a page is 0.
+ */
+uint64_t bar1_page_entry(uint64_t vram_offset);
+
+/**
+ * @brief The page table entry of BAR1's tables mapping nothing, NVIDIA's
+ * sparse value, as `write_bar1_page_tables` writes it. The call never blocks.
+ * @return The entry.
+ */
+uint64_t bar1_sparse_page_entry();
+
+/**
+ * @brief Where in video memory the page table entry lies that maps BAR1's
+ * 4 KiB page at `bar1_offset`, in tables `write_bar1_page_tables` wrote at
+ * `tables_offset`. The page tables follow the three directories in the order
+ * of the 2 MiB they cover, so the window's entries lie in BAR1's order, 8
+ * bytes each. The call never blocks.
+ * @param tables_offset Where in video memory the tables lie.
+ * @param bar1_offset The page's offset in BAR1, which must be a multiple of
+ * 4 KiB inside the window.
+ * @return The entry's offset in video memory.
+ */
+uint64_t bar1_page_entry_offset(uint64_t tables_offset, uint64_t bar1_offset);
+
+/**
  * @brief Check that the video memory region 0 the GSP's firmware reports can
  * be the console's memory, which BAR1's tables map. When NVIDIA's driver keeps
  * video memory for a boot console, it takes the firmware's region 0 whole as

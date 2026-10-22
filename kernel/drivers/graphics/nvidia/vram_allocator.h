@@ -129,6 +129,14 @@ public:
      */
     void release(const vram_range& range);
 
+    /**
+     * @brief Whether `range` is an allocation `allocate` handed out, whole,
+     * and not released.
+     * @param range The range to look for.
+     * @return True for such a range, false otherwise.
+     */
+    bool is_handed_out(const vram_range& range);
+
 private:
     // The record of one allocation
     struct record {
