@@ -32,16 +32,17 @@
  * 128 bytes with the same checksum rule. An extension block's first byte, its
  * tag, names its kind, such as 0x02 for CTA-861 (the extension TVs and many
  * monitors add) or 0x70 for DisplayID (a separate format whose sections an
- * EDID can carry). A CTA-861 block can hold more timing descriptors, whose
- * timings the parser lists after the base block's, and no block of another
- * kind gives a timing. A DisplayID block holds one section of DisplayID data
- * with a checksum byte of its own. The parser counts as skipped each extension
- * block it is not given whole, each CTA-861 or DisplayID block failing its
- * checksum and each DisplayID block whose section does not end before the
- * block's checksum byte or fails its own checksum, so a driver can tell that
- * the EDID arrived cut short, corrupted or malformed. A skipped block gives no
- * timing, and a block of another kind is skipped only when it is not given
- * whole.
+ * EDID can carry). A CTA-861 block can hold more timing descriptors. A
+ * DisplayID block holds one section of DisplayID data with a checksum byte of
+ * its own, and a version 1 section can hold Type I descriptors, DisplayID 1's
+ * 20-byte timing descriptors. The parser lists the timings of both after the
+ * base block's, and no block of another kind gives a timing. The parser counts
+ * as skipped each extension block it is not given whole, each CTA-861 or
+ * DisplayID block failing its checksum and each DisplayID block whose section
+ * does not end before the block's checksum byte or fails its own checksum, so
+ * a driver can tell that the EDID arrived cut short, corrupted or malformed. A
+ * skipped block gives no timing, and a block of another kind is skipped only
+ * when it is not given whole.
  *
  * A display driver hands the bytes it read to `edid::parse`, which returns the
  * maker, the product name, the timings, the number of timings that did not fit
@@ -113,27 +114,29 @@ struct monitor {
  * @brief Read a monitor's maker, name and timings from its EDID, and count the
  * timings that did not fit and the skipped extension blocks.
  * The timings come from the base block's timing descriptors in descriptor
- * order, then from each CTA-861 block's in block order, and one equal in every
+ * order, then from the extension blocks in block order, and one equal in every
  * field to a listed timing is not listed again. When `timings` is full, a
  * timing equal to no listed one is counted in `dropped_timings` instead, each
  * time it is found, so a caller can tell that `out` lacks a timing. One equal
  * to a listed timing is not counted, as `out` lists it. A descriptor gives no
- * timing when its pixel clock is 0 (the mark of a display descriptor), when it
- * starts with five 0x01 bytes (the fill of an unused descriptor), when its
- * width or height is 0, or when `timing` cannot describe it: an interlaced
- * timing (one sending every other line on each pass down the screen), a timing
- * with a border around its visible area, or a timing whose front porch and
- * sync pulse together are longer than the blanking (every invisible pixel or
- * line) on either axis. The timing of the base block's first descriptor is the
- * preferred one when it is listed and the features byte marks it, so a
- * preferred timing is always `timings[0]`. The features byte's mark is read
- * the same way at every revision.
+ * timing when `timing` cannot describe it: an interlaced timing (one sending
+ * every other line on each pass down the screen), a timing with a border
+ * around its visible area, or a timing whose front porch and sync pulse
+ * together are longer than the blanking (every invisible pixel or line) on
+ * either axis. An 18-byte descriptor also gives none when its pixel clock is 0
+ * (the mark of a display descriptor), when it starts with five 0x01 bytes (the
+ * fill of an unused descriptor), or when its width or height is 0. The timing
+ * of the base block's first descriptor is the preferred one when it is listed
+ * and the features byte marks it, so a preferred timing is always
+ * `timings[0]`. The features byte's mark is read the same way at every
+ * revision.
  *
- * Polarities come from the descriptor's flags byte when its sync kind gives
- * them: separate digital sync gives both, digital composite sync only the
- * horizontal one and analog sync neither. A polarity the kind does not give
- * reads as negative for the horizontal pulse and positive for the vertical
- * one.
+ * An 18-byte descriptor's polarities come from its flags byte when its sync
+ * kind gives them: separate digital sync gives both, digital composite sync
+ * only the horizontal one and analog sync neither. A polarity the kind does
+ * not give reads as negative for the horizontal pulse and positive for the
+ * vertical one. A Type I descriptor gives both, each axis's in the top bit of
+ * its front porch.
  *
  * The name is the text of the first product name descriptor whose reserved
  * byte 2 is 0: at most 13 characters, stopping before a newline or a NUL, and
@@ -159,16 +162,25 @@ struct monitor {
  * gives no timings.
  *
  * A DisplayID block holds one section from byte 1. Bytes 1 to 4 are the
- * section's version, the byte count of its data blocks (the tagged records
- * describing the monitor), a product type and a count of extension sections.
- * The product type is a code for the kind of product the section describes,
- * and the count says how many sections extend this one. The data blocks follow
- * from byte 5, then a checksum byte making the section's bytes sum to 0 modulo
- * 256. The bytes after that checksum byte, up to the block's own, are not part
- * of the section. The section fails at any version when its data blocks take
- * more than 121 bytes, which puts its checksum byte at or past the block's, or
- * when its bytes do not sum to 0. The parser reads a section only for these
- * checks, so no section gives a timing.
+ * section's version byte, the byte count of its data blocks (the tagged
+ * records describing the monitor), a product type and a count of extension
+ * sections. The product type is a code for the kind of product the section
+ * describes, and the count says how many sections extend this one. The data
+ * blocks follow from byte 5, then a checksum byte making the section's bytes
+ * sum to 0 modulo 256. The bytes after that checksum byte, up to the block's
+ * own, are not part of the section. The section fails at any version when its
+ * data blocks take more than 121 bytes, which puts its checksum byte at or
+ * past the block's, or when its bytes do not sum to 0. Only a section of
+ * version 1 (a version byte of 0x10 to 0x1F) gives timings, whatever its
+ * product type and count, and one of any other version that passes the checks
+ * gives none and is not counted. Each data block is a tag, a revision, its
+ * length (the count of bytes that follow) and those bytes. The parser walks
+ * the data blocks in order, listing the timings of each Type I timing block
+ * (tag 3) and passing over the others, and stops at a data block that would
+ * not end before the section's checksum byte or at the zero padding after the
+ * last data block. The padding is any tag 0 block but a first one holding
+ * bytes (the product identification block). A Type I block holds 20-byte
+ * descriptors and gives no timings when its length is not a multiple of 20.
  *
  * The caller owns `bytes` and `out`. The parser keeps no pointer to either and
  * no state between calls, so two threads may parse into two `monitor`s at
@@ -183,7 +195,8 @@ struct monitor {
  * listed timing has a nonzero pixel clock, width and height, `dropped_timings`
  * is 0 unless `timing_count` is `TIMINGS_MAX`, and `skipped_extensions` is at
  * most the number in byte 126. `out` may list no timings, as for a base block
- * holding only display descriptors and followed by no CTA-861 block.
+ * holding only display descriptors and followed by no CTA-861 or DisplayID
+ * block.
  * @return OK, or the first base block check that fails, in this order:
  * ERR_TOO_SHORT, ERR_BAD_HEADER, ERR_BAD_CHECKSUM, ERR_BAD_VERSION. A read
  * over the cable may have corrupted bytes, so ERR_BAD_CHECKSUM is worth one
