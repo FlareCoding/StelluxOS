@@ -245,8 +245,10 @@ src/common/inc/swref/published/maxwell/gm107/dev_bus.h
     the BAR0 window register, its base field of 64 KiB steps in bits 23:0 and
     its target field in bits 25:24, where 0 is video memory, in bar0_window.cpp
     and kernel/tests/graphics/nvidia_falcon.test.cpp, that the register holds a
-    base of 64 KiB steps and a target, in bar0_window.h, the target field's
-    value 2 for coherent system memory, in
+    base of 64 KiB steps and a target, in bar0_window.h, its base of 64 KiB
+    steps alone, in nvidia_gpu.h, video_memory.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, the target field's value
+    2 for coherent system memory, in
     kernel/tests/graphics/nvidia_falcon.test.cpp, and the reach of the base
     field's 24 bits, in bar0_window.h,
     kernel/tests/graphics/nvidia_falcon.test.cpp and
@@ -282,10 +284,12 @@ src/nvidia/src/kernel/gpu/bus/arch/maxwell/kern_bus_gm107.c
     first, in bar0_window.h and bar0_window.cpp, that NVIDIA's driver sets up
     BAR1's address space as a BAR's, in bar1.h, bar1.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, that NVIDIA's driver flushes
-    its writes to page tables with a read before an invalidate, in bar1.h and
-    bar1.cpp, that NVIDIA's driver maps nothing in BAR1's last 4 KiB, so it
-    cannot map a boot console that fills BAR1, in bar1_page_tables.h,
-    bar1_page_tables.cpp and
+    its writes to page tables with a read before an invalidate, in bar1.h,
+    bar1.cpp, video_memory.h and video_memory.cpp, that the flush puts a full
+    fence before the read, in video_memory.h and video_memory.cpp, that it
+    compares nothing that read returns, in video_memory.h, that NVIDIA's driver
+    maps nothing in BAR1's last 4 KiB, so it cannot map a boot console that
+    fills BAR1, in bar1_page_tables.h, bar1_page_tables.cpp and
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and that NVIDIA's
     driver links its tables for BAR1 into the firmware's whether or not it keeps
     a boot console, in nvidia_gpu.h
@@ -309,9 +313,11 @@ src/nvidia/src/kernel/gpu/bus/kern_bus.c
     invalidates BAR1's cached translations after it replaces its own root page
     directory for BAR1 with the firmware's, in bar1_page_tables.h, bar1.h,
     bar1.cpp and nvidia_gpu.h, and that the replacement makes the firmware's
-    root page directory the one NVIDIA's driver holds for BAR1, so the
-    invalidate names the firmware's, in bar1.h, bar1.cpp, nvidia_gpu.h,
-    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    root page directory the one NVIDIA's driver holds for BAR1, so its
+    invalidates for BAR1 name the firmware's, in bar1.h, bar1.cpp, nvidia_gpu.h,
+    nvidia_gpu.cpp, video_memory.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/libraries/mmu/mmu_walk_migrate.c
@@ -326,10 +332,11 @@ src/common/inc/swref/published/pascal/gp100/dev_mmu.h
     gsp_info.cpp, nvidia_gpu.cpp, bar1_page_tables.cpp,
     kernel/tests/graphics/nvidia_message_queues.test.cpp and
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 8 bytes of a
-    page table entry, in bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 16 bytes of an
-    entry of a level 0 directory, in bar1_page_tables.h, bar1_page_tables.cpp
-    and kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, its first half
+    page table entry, in bar1_page_tables.h, bar1_page_tables.cpp,
+    video_memory.cpp, kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, the 16 bytes of an entry
+    of a level 0 directory, in bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, its first half
     naming a page table of larger pages and its second half, laid out as a
     directory entry, naming a page table of 4 KiB pages, in bar1_page_tables.cpp
     and kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the address
@@ -338,14 +345,18 @@ src/common/inc/swref/published/pascal/gp100/dev_mmu.h
     bar1_page_tables.cpp and
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 25 bits of the
     address field and their reach of 128 GiB, in bar1_page_tables.h,
-    bar1_page_tables.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, a page table entry's
+    bar1_page_tables.cpp, video_memory.h, video_memory.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, a page table entry's
     valid bit in bit 0, in bar1_page_tables.h, bar1_page_tables.cpp and
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the volatile bit in
-    bit 3 of a directory entry, of a page table entry and of the first half of a
-    level 0 directory entry, in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and a page table
-    entry's kind field, in bar1_page_tables.h
+    bit 3 of a directory entry and of the first half of a level 0 directory
+    entry, in bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the same bit of a
+    page table entry, in bar1_page_tables.h, bar1_page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, and a page table entry's
+    kind field, in bar1_page_tables.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 kernel-open/nvidia-uvm/hwref/pascal/gp100/dev_mmu.h
@@ -390,8 +401,9 @@ src/nvidia/src/kernel/gpu/mmu/arch/maxwell/kern_gmmu_gm200.c
     volatile bit set: a page table entry whose valid bit is 0, a directory entry
     whose aperture is 0, and a level 0 directory entry whose two apertures are
     0, with the volatile bit of its first half set, in bar1_page_tables.h,
-    bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    bar1_page_tables.cpp, kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    and, for a page table entry, in
+    kernel/tests/graphics/nvidia_video_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kern_gmmu_nvoc.c
@@ -422,14 +434,15 @@ src/nvidia/src/kernel/gpu/mmu/arch/maxwell/kern_gmmu_gm107.c
     the invalidate NVIDIA's driver asks for after it replaces its root page
     directory for BAR1: one of every offset through one root page directory, of
     the hub's TLB alone for a BAR's address space, whose translations need none
-    of the graphics engine's TLBs invalidated, in bar1.h, bar1.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, with the system memory barrier
-    and acknowledgement left to the chip's function for them, in bar1.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, with both waits given one
-    timeout of their own, in bar1.h, bar1.cpp and
+    of the graphics engine's TLBs invalidated, in bar1.h, bar1.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, with the system memory
+    barrier and acknowledgement left to the chip's function for them, in
+    bar1.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, with both waits
+    given one timeout of their own, in bar1.h, bar1.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, with that timeout the default
-    one, in nvidia_gpu.cpp, and with no failure reported to its caller, in
-    nvidia_gpu.h
+    one, in nvidia_gpu.h, video_memory.h and video_memory.cpp, and with no
+    failure reported to its caller, in nvidia_gpu.h and video_memory.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mmu/arch/ampere/kern_gmmu_ga100.c
@@ -449,28 +462,34 @@ src/nvidia/generated/g_kern_gmmu_nvoc.h
 src/common/inc/swref/published/maxwell/gm107/dev_fb.h
     the invalidate's fields NVIDIA's driver sets it with: every offset in bit 0,
     one root page directory rather than all in bit 1 at 0, the hub's TLB alone
-    in bit 2, and the trigger in bit 31, in bar1.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    in bit 2, and the trigger in bit 31, in bar1.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/turing/tu102/dev_vm.h
     the offset 0xB80000 of the block of a virtual function's registers, in
-    bar1.cpp, interrupts.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, the offsets in it of
-    the invalidate's three registers and the third's trigger in bit 31, which
-    the waits read, in bar1.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and the fields of the
-    invalidate's first two registers: the low 28 bits of the root page
-    directory's offset in 4 KiB units in bits 31:4 with the aperture in bit 1, 0
-    for video memory, and the offset's other bits in bits 19:0 of the second, in
-    bar1.h, bar1.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    bar1.cpp, interrupts.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, the offsets in it of the
+    invalidate's three registers and the third's trigger in bit 31, which the
+    waits read, in bar1.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
+    the offsets of the first and third and the third's trigger in bit 31, in
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, the first register's
+    fields (the low 28 bits of the root page directory's offset in 4 KiB units
+    in bits 31:4 and the aperture in bit 1, which is 0 for video memory), in
+    bar1.h, bar1.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, and the second
+    register's field (the offset's other bits in bits 19:0), in bar1.h, bar1.cpp
+    and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga100/dev_vm.h
     the invalidate's scope field, in bar1.h, bar1.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, with its bits 16:15 and its
-    value 2 for every TLB but those of NVLink, in bar1.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    value 2 for every TLB but those of NVLink, in bar1.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/src/kernel/gpu/mmu/arch/volta/kern_gmmu_gv100.c
@@ -492,12 +511,16 @@ src/nvidia/src/kernel/gpu/mmu/kern_gmmu.c
 src/nvidia/src/kernel/mem_mgr/gpu_vaspace.c
     that NVIDIA's driver makes sparse all of BAR1's address space when it sets
     the space up, and each range of it the driver reserves or unmaps, in
-    bar1_page_tables.h, that NVIDIA's driver invalidates an address space's
-    cached translations through the root page directory it holds for the space,
-    in bar1.h, bar1.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and
-    that it gives the invalidate the scope of every TLB but those of NVLink for
-    a space not marked to invalidate NVLink's TLBs alone, in bar1.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    bar1_page_tables.h, that NVIDIA's driver flushes a BAR's address space
+    before it unmaps a range of it, in video_memory.h, that NVIDIA's driver
+    invalidates an address space's cached translations through the root page
+    directory it holds for the space, in bar1.h, bar1.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, and that it gives the
+    invalidate the scope of every TLB but those of NVLink for a space not marked
+    to invalidate NVLink's TLBs alone, in bar1.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_video_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mmu/gmmu_walk.c
@@ -559,8 +582,9 @@ src/common/inc/swref/published/turing/tu102/dev_ram.h
     takes as the most the VGA workspace takes, in protected_memory.cpp and
     kernel/tests/graphics/nvidia_protected_memory.test.cpp, the window's size
     and its start in BAR0, 0x700000, in bar0_window.h, bar0_window.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and the size alone in
-    nvidia_gpu.h
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the start alone in
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, and the size alone in
+    nvidia_gpu.h and video_memory.cpp
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/turing/tu102/hwproject.h

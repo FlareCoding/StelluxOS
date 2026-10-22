@@ -132,6 +132,25 @@ uint64_t write_bar1_page_tables(
     return directory_entry(tables_offset);
 }
 
+uint64_t bar1_page_entry(uint64_t vram_offset) {
+    bool is_unit_aligned = vram_offset % ADDRESS_UNIT_BYTES == 0;
+    bool is_nameable = vram_offset < ADDRESS_FIELD_REACH;
+    if (!is_unit_aligned || !is_nameable) {
+        return 0;
+    }
+
+    return page_entry(vram_offset);
+}
+
+uint64_t bar1_sparse_page_entry() {
+    return SPARSE_ENTRY;
+}
+
+uint64_t bar1_page_entry_offset(uint64_t tables_offset, uint64_t bar1_offset) {
+    uint64_t page_tables_offset = tables_offset + DIRECTORY_COUNT * TABLE_BYTES;
+    return page_tables_offset + bar1_offset / SMALL_PAGE_BYTES * sizeof(uint64_t);
+}
+
 int32_t check_console_region(
     const static_configuration& configuration,
     uint64_t reserved_console_bytes,

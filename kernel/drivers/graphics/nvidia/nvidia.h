@@ -20,7 +20,8 @@ constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers or memory, or
                                            // cannot proceed, or a falcon does not read as stopped after `stop_falcon`
                                            // resets it
 constexpr int32_t ERR_NO_MEMORY      = -6; // allocating system memory for the card to reach or for the driver's copies
-                                           // and records failed, or video memory has no free range for an allocation
+                                           // and records failed, video memory has no free range for an allocation, or
+                                           // BAR1's window has no free run for a mapping
 constexpr int32_t ERR_QUEUE_FULL     = -7; // the command queue has no room for a message, as the read pointer `send`
                                            // reads for the firmware has not moved far enough or lies past the ring
 constexpr int32_t ERR_TOO_LARGE      = -8; // a payload exceeds the most bytes a message to the GSP's firmware carries,
@@ -36,7 +37,9 @@ constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a fail
                                             // result or a control's status, or does not take the driver's VGX version,
                                             // as a reply shows by a private result other than 0 or another version
 constexpr int32_t ERR_INVALID_ARG    = -13; // a video memory allocation's size is 0 or overflows when rounded to whole
-                                            // pages, or its alignment is 0 or not a power of two
+                                            // pages, its alignment is 0 or not a power of two, or a range to map
+                                            // through BAR1 is not a whole allocation, is mapped already or ends past
+                                            // what a page table entry can name
 
 // Nanoseconds per millisecond and per microsecond, for the sequencer's waits and the times the driver logs
 constexpr uint64_t NS_PER_MS = 1000000;

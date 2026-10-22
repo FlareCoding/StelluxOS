@@ -196,6 +196,13 @@ void vram_allocator::release(const vram_range& range) {
     heap::ufree_delete(released);
 }
 
+bool vram_allocator::is_handed_out(const vram_range& range) {
+    RUN_ELEVATED(sync::mutex_lock(m_lock));
+    bool is_found = find_record(range) != nullptr;
+    RUN_ELEVATED(sync::mutex_unlock(m_lock));
+    return is_found;
+}
+
 int32_t vram_allocator::place_range(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) {
     uint64_t offset = 0;
     bool is_found = false;

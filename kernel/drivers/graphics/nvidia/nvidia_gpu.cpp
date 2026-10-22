@@ -26,8 +26,8 @@
 #include "common/logging.h"
 #include "dma/dma.h"
 #include "dynpriv/dynpriv.h"
+#include "hw/barrier.h"
 #include "hw/mmio.h"
-#include "mm/heap.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
 #include "pci/pci_class_codes.h"
@@ -46,6 +46,10 @@ constexpr uint8_t INSTANCE_MEMORY_BAR = 3;
 // Reads from a card that does not respond return all ones, a value PMC_BOOT_0
 // never holds on a working card
 constexpr uint32_t UNRESPONSIVE_CARD_READ = 0xFFFFFFFF;
+
+// The value the mapping check writes through BAR0's window, then its complement through BAR1. Neither is 0, which BAR1
+// reads where no page is mapped
+constexpr uint64_t MAPPING_CHECK_VALUE = 0x0123456789ABCDEF;
 
 // Checks the header of `booter`, which `name` names in the log lines, and reads its layout, logging where its
 // descriptors place its parts, then chooses and logs the signature its slot must hold. The outputs are set on `OK`.
@@ -122,11 +126,14 @@ static int32_t check_console_through_bar1(nvidia::registers& regs, uintptr_t bar
         return nvidia::ERR_BAD_STATE;
     }
 
+    // BAR1 is mapped write-combining, so each write through it is fenced before anything else reads the memory
     uint64_t written = ~found;
     mmio::write64(bar1_base + value_offset, written);
+    barrier::dma_write();
     uint64_t through_window = nvidia::read_video_memory_u64(regs, value_offset);
     uint64_t through_bar1 = mmio::read64(bar1_base + value_offset);
     mmio::write64(bar1_base + value_offset, found);
+    barrier::dma_write();
     uint64_t past_console = mmio::read64(bar1_base + console_bytes);
 
     bool reaches_console = through_window == written && through_bar1 == written;
@@ -151,6 +158,88 @@ static int32_t check_console_through_bar1(nvidia::registers& regs, uintptr_t bar
         value_offset,
         written,
         console_bytes
+    );
+    return nvidia::OK;
+}
+
+// Reads BAR1 at `window_start_virt`, maps a page there, writes through it, unmaps it and maps it again, each BAR1 read
+// after the first showing that the invalidate before it dropped the translation the BAR1 read before it cached
+static int32_t check_mapping_through_bar1(
+    nvidia::registers& regs,
+    nvidia::video_memory& memory,
+    uintptr_t window_start_virt,
+    pmm::phys_addr_t window_start_phys
+) {
+    nvidia::vram_range page = {};
+    int32_t rc = memory.allocate(nvidia::SMALL_PAGE_BYTES, nvidia::SMALL_PAGE_BYTES, nvidia::vram_use::general, page);
+    if (rc != nvidia::OK) {
+        log::error("nvidia: allocating a page of video memory for the check of a mapping through BAR1 failed: %d", rc);
+        return rc;
+    }
+
+    uint64_t value = MAPPING_CHECK_VALUE;
+    rc = nvidia::write_video_memory(regs, page.offset, &value, 1);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    uint64_t before_mapping = mmio::read64(window_start_virt);
+
+    nvidia::cpu_mapping first = {};
+    rc = memory.map_for_cpu(page, first);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    uint64_t through_first = mmio::read64(first.virt);
+
+    // BAR1 is mapped write-combining, so the write is fenced before BAR0's window reads the page
+    mmio::write64(first.virt, ~value);
+    barrier::dma_write();
+    uint64_t through_window = nvidia::read_video_memory_u64(regs, page.offset);
+
+    memory.unmap_for_cpu(page);
+    uint64_t unmapped = mmio::read64(first.virt);
+
+    nvidia::cpu_mapping second = {};
+    rc = memory.map_for_cpu(page, second);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    uint64_t through_second = mmio::read64(second.virt);
+    memory.release(page);
+
+    bool is_probed = before_mapping == 0 && first.virt == window_start_virt;
+    bool is_reached = through_first == value && through_window == ~value;
+    bool is_remapped = unmapped == 0 && second.virt == first.virt && through_second == ~value;
+    if (!is_probed || !is_reached || !is_remapped) {
+        log::error(
+            "nvidia: BAR1 read 0x%lX at physical address 0x%lX before a mapping, where 0 is expected, video memory at "
+            "0x%lX mapped through BAR1 at physical address 0x%lX read 0x%lX, where 0x%lX was written, 0x%lX written "
+            "through BAR1 read back as 0x%lX through BAR0's window, BAR1 read 0x%lX there with the page unmapped, "
+            "where 0 is expected, and with the page mapped again at physical address 0x%lX, BAR1 read 0x%lX",
+            before_mapping,
+            window_start_phys,
+            page.offset,
+            first.phys,
+            through_first,
+            value,
+            ~value,
+            through_window,
+            unmapped,
+            second.phys,
+            through_second
+        );
+        return nvidia::ERR_BAD_STATE;
+    }
+
+    log::info(
+        "nvidia: BAR1 reads 0 at physical address 0x%lX before a mapping, video memory at 0x%lX mapped there reads "
+        "what BAR0's window wrote, a value written through BAR1 reads back through BAR0's window, BAR1 reads 0 there "
+        "once the page is unmapped, and with the page mapped again at the same address, BAR1 reads that value",
+        first.phys,
+        page.offset
     );
     return nvidia::OK;
 }
@@ -730,7 +819,7 @@ int32_t nvidia_gpu_driver::attach() {
         configuration.internal_client
     );
 
-    rc = m_vram_allocator.init(configuration, frts.video_memory_size);
+    rc = m_video_memory.init(configuration, frts.video_memory_size);
     if (rc != nvidia::OK) {
         return rc;
     }
@@ -755,14 +844,14 @@ int32_t nvidia_gpu_driver::attach() {
     bool is_bar1_assigned = card.bar1_address != 0;
     bool has_window = window_bytes != 0;
     if (is_bar1_assigned && has_window) {
-        rc = set_up_bar1_page_tables(regs, configuration, window_bytes, console_region_bytes);
+        rc = bring_up_bar1(regs, configuration, card.bar1_address, bar1_bytes, console_region_bytes);
         if (rc != nvidia::OK) {
             return rc;
         }
     } else {
         log::info(
-            "nvidia: no tables are linked into BAR1, at 0x%lX (0 for a BAR left unassigned) with 0x%lX bytes, since "
-            "BAR1 is unassigned or too small to hold a 4 KiB page before its last 4 KiB",
+            "nvidia: BAR1, at 0x%lX (0 for a BAR left unassigned) with 0x%lX bytes, is not mapped, gets no tables and "
+            "has no mapping checked, since BAR1 is unassigned or too small to hold a 4 KiB page before its last 4 KiB",
             card.bar1_address,
             bar1_bytes
         );
@@ -797,93 +886,39 @@ int32_t nvidia_gpu_driver::attach() {
     return OK;
 }
 
-// Writes and links BAR1's tables, mapping a kept console at BAR1's start and checking it through a kernel mapping of
-// BAR1. Nothing frees the tables, which BAR1 translates through until `detach()` writes BAR1's block register back
-int32_t nvidia_gpu_driver::set_up_bar1_page_tables(
+// Sets up BAR1's window, then maps BAR1 write-combining for the driver's life and checks a kept console and a mapping
+// through it. Nothing frees the tables, which BAR1 translates through until `detach()` restores BAR1's block register
+int32_t nvidia_gpu_driver::bring_up_bar1(
     nvidia::registers& regs,
     const nvidia::static_configuration& configuration,
-    uint64_t window_bytes,
+    uint64_t bar1_address,
+    uint64_t bar1_bytes,
     uint64_t console_bytes
 ) {
-    uint64_t tables_bytes = nvidia::bar1_page_table_bytes(window_bytes);
-    nvidia::vram_range tables_range = {};
-    int32_t rc = m_vram_allocator.allocate(
-        tables_bytes,
-        nvidia::SMALL_PAGE_BYTES,
-        nvidia::vram_use::general,
-        tables_range
-    );
+    uint64_t root_offset = configuration.bar1_page_directory_offset;
+    int32_t rc = m_video_memory.set_up_bar1(regs, bar1_address, bar1_bytes, root_offset, console_bytes);
     if (rc != nvidia::OK) {
-        log::error("nvidia: allocating 0x%lX bytes of video memory for BAR1's tables failed: %d", tables_bytes, rc);
-        return rc;
-    }
-
-    uint64_t* tables = static_cast<uint64_t*>(heap::ualloc(tables_bytes));
-    if (tables == nullptr) {
-        log::error("nvidia: allocating 0x%lX bytes for the CPU's copy of BAR1's tables failed", tables_bytes);
-        return nvidia::ERR_NO_MEMORY;
-    }
-
-    uint64_t root_entry = nvidia::write_bar1_page_tables(tables, tables_range.offset, window_bytes, console_bytes);
-    if (root_entry == 0) {
-        log::error(
-            "nvidia: BAR1's tables, 0x%lX bytes at 0x%lX in video memory, end past 128 GiB, the reach of an entry's "
-            "address field",
-            tables_bytes,
-            tables_range.offset
-        );
-        heap::ufree(tables);
-        return nvidia::ERR_BAD_STATE;
-    }
-
-    // BAR0's window reaches 1 MiB from the 64 KiB step a write starts in, so each write copies one 4 KiB table
-    uint64_t table_words = nvidia::SMALL_PAGE_BYTES / sizeof(uint64_t);
-    for (uint64_t written = 0; written < tables_bytes; written += nvidia::SMALL_PAGE_BYTES) {
-        uint64_t* table = tables + written / sizeof(uint64_t);
-        rc = nvidia::write_video_memory(regs, tables_range.offset + written, table, table_words);
-        if (rc != nvidia::OK) {
-            break;
-        }
-    }
-
-    heap::ufree(tables);
-    if (rc != nvidia::OK) {
-        return rc;
-    }
-
-    log::info(
-        "nvidia: BAR1's tables for a window of BAR1's first 0x%lX bytes, mapping the first 0x%lX of them onto the same "
-        "offsets of video memory, are written as 0x%lX bytes at 0x%lX in video memory",
-        window_bytes,
-        console_bytes,
-        tables_bytes,
-        tables_range.offset
-    );
-
-    rc = nvidia::link_bar1_page_tables(
-        regs,
-        configuration.bar1_page_directory_offset,
-        root_entry,
-        nvidia::DEFAULT_TIMEOUT_NS
-    );
-    if (rc != nvidia::OK || console_bytes == 0) {
         return rc;
     }
 
     uintptr_t bar1_base = 0;
-    rc = map_bar(VIDEO_MEMORY_BAR, bar1_base, paging::PAGE_USER);
+    rc = map_bar(VIDEO_MEMORY_BAR, bar1_base, paging::PAGE_USER | paging::PAGE_WC);
     if (rc != OK) {
         log::error("nvidia: mapping BAR1 failed: %d", rc);
         return rc;
     }
 
-    int32_t check_rc = check_console_through_bar1(regs, bar1_base, console_bytes);
-    int32_t unmap_rc = unmap_bar(VIDEO_MEMORY_BAR);
-    if (unmap_rc != OK) {
-        log::error("nvidia: unmapping BAR1 failed: %d", unmap_rc);
+    m_video_memory.open_window(bar1_base);
+    if (console_bytes != 0) {
+        rc = check_console_through_bar1(regs, bar1_base, console_bytes);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
     }
 
-    return check_rc != nvidia::OK ? check_rc : unmap_rc;
+    uintptr_t window_start_virt = bar1_base + console_bytes;
+    pmm::phys_addr_t window_start_phys = bar1_address + console_bytes;
+    return check_mapping_through_bar1(regs, m_video_memory, window_start_virt, window_start_phys);
 }
 
 int32_t nvidia_gpu_driver::detach() {
@@ -894,6 +929,11 @@ int32_t nvidia_gpu_driver::detach() {
         nvidia::disable_cpu_interrupt_tree(regs, m_chip->interrupt_leaf_count);
         m_is_gsp_interrupt_enabled = false;
     }
+
+    // The CPU may read ahead through BAR1's write-combining mapping, and such a read while the unload and the resets
+    // below change how BAR1 translates could fault the card's MMU, so BAR1 is unmapped before them
+    m_video_memory.drop_window();
+    unmap_bar(VIDEO_MEMORY_BAR);
 
     int32_t stop_rc = nvidia::OK;
     if (m_must_stop_gsp) {

@@ -280,6 +280,23 @@ TEST(nvidia_vram_allocator, a_released_range_is_handed_out_again) {
     EXPECT_EQ(allocated_offset(allocator, PAGE_BYTES), 0x101000u);
 }
 
+TEST(nvidia_vram_allocator, a_range_is_handed_out_only_whole_and_until_it_is_released) {
+    static_configuration configuration = root_region_configuration();
+    add_region(configuration, {.offset = 0x100000, .size = 2 * PAGE_BYTES});
+
+    vram_allocator allocator;
+    ASSERT_EQ(allocator.init(configuration, VIDEO_MEMORY_BYTES), OK);
+
+    vram_range handed_out = UNTOUCHED;
+    ASSERT_EQ(allocator.allocate(2 * PAGE_BYTES, PAGE_BYTES, vram_use::general, handed_out), OK);
+    EXPECT_TRUE(allocator.is_handed_out(handed_out));
+    EXPECT_FALSE(allocator.is_handed_out({.offset = handed_out.offset, .size = PAGE_BYTES}));
+    EXPECT_FALSE(allocator.is_handed_out({.offset = handed_out.offset + PAGE_BYTES, .size = PAGE_BYTES}));
+
+    allocator.release(handed_out);
+    EXPECT_FALSE(allocator.is_handed_out(handed_out));
+}
+
 TEST(nvidia_vram_allocator, releasing_a_range_matching_no_allocation_changes_nothing) {
     static_configuration configuration = root_region_configuration();
     add_region(configuration, {.offset = 0x100000, .size = 2 * PAGE_BYTES});
