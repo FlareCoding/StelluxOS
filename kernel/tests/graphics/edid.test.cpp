@@ -69,6 +69,20 @@ static constexpr size_t  DISPLAYID_PRODUCT_TYPE_OFFSET       = 3;
 static constexpr size_t  DISPLAYID_EXTENSION_SECTIONS_OFFSET = 4;
 static constexpr size_t  DISPLAYID_DATA_OFFSET               = 5;
 static constexpr uint8_t DISPLAYID_DATA_BYTES_MAX            = 121;
+static constexpr uint8_t DISPLAYID_VERSION_1_3               = 0x13;
+
+static constexpr uint8_t DISPLAYID_DATA_BLOCK_HEADER_BYTES    = 3;
+static constexpr size_t  DISPLAYID_DATA_BLOCK_TAG_OFFSET      = 0;
+static constexpr size_t  DISPLAYID_DATA_BLOCK_REVISION_OFFSET = 1;
+static constexpr size_t  DISPLAYID_DATA_BLOCK_LENGTH_OFFSET   = 2;
+static constexpr uint8_t DISPLAYID_TAG_PRODUCT_ID             = 0x00;
+static constexpr uint8_t DISPLAYID_TAG_TYPE_I_TIMINGS         = 0x03;
+static constexpr uint8_t DISPLAYID_TAG_TYPE_II_TIMINGS        = 0x04;
+static constexpr uint8_t DISPLAYID_TAG_TYPE_VII_TIMINGS       = 0x22;
+static constexpr uint8_t DISPLAYID_TAG_VENDOR                 = 0x7F;
+static constexpr uint8_t TYPE_I_DESCRIPTOR_BYTES              = 20;
+static constexpr uint8_t DISPLAYID_VESA_TIMINGS_BYTES         = 10;
+static constexpr uint8_t DISPLAYID_CEA_TIMINGS_BYTES          = 8;
 
 // The AOC's features byte, and the same with its preferred bit (bit 1) clear
 static constexpr uint8_t AOC_FEATURES             = 0x3B;
@@ -109,9 +123,36 @@ struct fill_change {
     uint8_t value;
 };
 
+// One axis of a Type I timing descriptor, each count as the timing means it rather than stored minus 1
+struct type_i_axis_fields {
+    uint32_t visible;
+    uint32_t blanking;
+    uint32_t front_porch;
+    uint32_t sync_width;
+    bool     sync_positive;
+};
+
+// A DisplayID Type I timing descriptor's fields, the blanking in place of the back porch on each axis
+struct type_i_fields {
+    uint32_t           clock_units; // 10 kHz each
+    uint8_t            options;
+    type_i_axis_fields horizontal;
+    type_i_axis_fields vertical;
+};
+
+// A DisplayID data block's tag, its length and its bytes, at most as many as a VESA timings block (tag 7) holds
+struct data_block_fields {
+    uint8_t tag;
+    uint8_t length;
+    uint8_t bytes[DISPLAYID_VESA_TIMINGS_BYTES];
+};
+
 // 1920 by 1080 at 60 Hz with separate digital sync, both pulses positive
 static constexpr timing_descriptor_fields FULL_HD        = {14850, 1920, 280, 88, 44, 1080, 45, 4, 5, 0, 0, 0x1E};
 static constexpr edid::timing             FULL_HD_TIMING = {148500, 1920, 88, 44, 148, 1080, 4, 5, 36, true, true};
+
+// `FULL_HD` as a DisplayID Type I timing descriptor gives it
+static constexpr type_i_fields FULL_HD_TYPE_I = {14850, 0x00, {1920, 280, 88, 44, true}, {1080, 45, 4, 5, true}};
 
 static uint8_t       g_block[edid::BLOCK_BYTES];
 static edid::monitor g_monitor;
@@ -1073,13 +1114,13 @@ static void expect_no_timing_with_tag(uint8_t tag) {
 // modules lists. Its tag and revision come first, then its counts of timing descriptors and of two kinds of signal code
 static constexpr uint8_t VIDEO_TIMING_BLOCK_START[] = {0x10, 0x01, 0x01, 0x00, 0x00};
 
-TEST(edid, lists_timings_from_cta_861_blocks_alone) {
+TEST(edid, reads_18_byte_descriptors_from_cta_861_extensions_alone) {
     for (uint8_t tag : UNCHECKED_TAGS) {
         expect_no_timing_with_tag(tag);
     }
 
-    // The same bytes give no timing from a DisplayID block whose section passes, its checksum byte written over the low
-    // byte of the descriptor's height
+    // The same bytes give no timing from a DisplayID block whose section passes, their version byte of 0x03 naming
+    // version 0 and the section's checksum byte written over the low byte of the descriptor's height
     write_cta_861_edid(CTA_861_REVISION_3, CTA_861_HEADER_BYTES);
     block_at(1)[EXTENSION_TAG_OFFSET] = EXTENSION_TAG_DISPLAYID;
     seal_displayid_block(1);
@@ -1269,4 +1310,425 @@ TEST(edid, skips_a_displayid_block_whose_data_blocks_take_more_than_121_bytes) {
             EXPECT_EQ(g_monitor.skipped_extensions, 1u);
         }
     }
+}
+
+// Writes `value` minus 1 in `count` bytes at `bytes`, low byte first
+static void store_minus_1(uint8_t* bytes, uint32_t value, size_t count) {
+    uint32_t stored = value - 1;
+    for (size_t i = 0; i < count; i++) {
+        bytes[i] = static_cast<uint8_t>(stored >> (8 * i));
+    }
+}
+
+// Writes `f` as one axis of a Type I timing descriptor at `axis`
+static void encode_type_i_axis(uint8_t* axis, const type_i_axis_fields& f) {
+    store_minus_1(axis, f.visible, 2);
+    store_minus_1(axis + 2, f.blanking, 2);
+    store_minus_1(axis + 4, f.front_porch, 2);
+    store_minus_1(axis + 6, f.sync_width, 2);
+    if (f.sync_positive) {
+        axis[5] |= 0x80;
+    }
+}
+
+// Writes `f` as a Type I timing descriptor at `d`, leaving the checksums of the section and block holding it to the
+// caller
+static void encode_type_i_descriptor(uint8_t* d, const type_i_fields& f) {
+    store_minus_1(d, f.clock_units, 3);
+    d[3] = f.options;
+    encode_type_i_axis(d + 4, f.horizontal);
+    encode_type_i_axis(d + 12, f.vertical);
+}
+
+// Adds a data block of `tag` holding `length` bytes as the last data block of block `index`'s section, returning a
+// pointer to those bytes and leaving the checksums to `seal_displayid_block`
+static uint8_t* add_data_block(size_t index, uint8_t tag, uint8_t length) {
+    uint8_t* block = block_at(index);
+    uint8_t data_bytes = block[DISPLAYID_DATA_BYTES_OFFSET];
+    uint8_t* data_block = block + DISPLAYID_DATA_OFFSET + data_bytes;
+
+    data_block[DISPLAYID_DATA_BLOCK_TAG_OFFSET] = tag;
+    data_block[DISPLAYID_DATA_BLOCK_LENGTH_OFFSET] = length;
+    block[DISPLAYID_DATA_BYTES_OFFSET] = static_cast<uint8_t>(data_bytes + DISPLAYID_DATA_BLOCK_HEADER_BYTES + length);
+
+    return data_block + DISPLAYID_DATA_BLOCK_HEADER_BYTES;
+}
+
+// Adds a Type I block holding one descriptor of `fields` as the last data block of block `index`'s section, then sets
+// both checksums
+static void add_type_i_block(size_t index, const type_i_fields& fields) {
+    encode_type_i_descriptor(add_data_block(index, DISPLAYID_TAG_TYPE_I_TIMINGS, TYPE_I_DESCRIPTOR_BYTES), fields);
+    seal_displayid_block(index);
+}
+
+// Lays out `g_edid` as a base block holding no timing, then one DisplayID block whose section, at `version`, holds no
+// data block
+static void write_empty_displayid_edid(uint8_t version) {
+    make_base_block(AOC_FEATURES);
+    copy_block_into_edid();
+    set_extension_count(1);
+    write_displayid_block(1, version);
+}
+
+// Lays out `g_edid` as `write_empty_displayid_edid` does, its section holding a Type I block of `fields`
+static void write_displayid_edid(uint8_t version, const type_i_fields& fields) {
+    write_empty_displayid_edid(version);
+    add_type_i_block(1, fields);
+}
+
+// `FULL_HD_TYPE_I` with its pixel clock raised by `n` units, distinct for every `n` that keeps the clock in its 3 bytes
+static type_i_fields full_hd_type_i_raised(uint32_t n) {
+    type_i_fields fields = FULL_HD_TYPE_I;
+    fields.clock_units += n;
+    return fields;
+}
+
+// Version bytes 0x10 to 0x1F are version 1 at any revision, and in a section of any other version a Type I block gives
+// no timing
+static constexpr uint8_t VERSION_1_BYTES[]     = {0x10, 0x13, 0x1F};
+static constexpr uint8_t OTHER_VERSION_BYTES[] = {0x00, 0x02, 0x03, 0x0F, 0x20, 0x21, 0x30, 0x92};
+
+TEST(edid, reads_type_i_timings_from_version_1_sections_alone) {
+    for (uint8_t version : VERSION_1_BYTES) {
+        write_displayid_edid(version, FULL_HD_TYPE_I);
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 1u);
+        expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+    }
+
+    for (uint8_t version : OTHER_VERSION_BYTES) {
+        write_displayid_edid(version, FULL_HD_TYPE_I);
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 0u);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+    }
+}
+
+// A DisplayID block's bytes holding `FULL_HD_TYPE_I` give no timing once their byte 0 names a block of another kind
+TEST(edid, lists_no_type_i_timing_from_extension_blocks_of_another_kind) {
+    for (uint8_t tag : UNCHECKED_TAGS) {
+        write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+        block_at(1)[EXTENSION_TAG_OFFSET] = tag;
+        seal(block_at(1));
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 0u);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+    }
+}
+
+// Product types 0 to 6 are the ones DisplayID 1.3 names, and 7 and 0xFF read the same, as does any count of extension
+// sections
+TEST(edid, reads_a_section_whatever_its_product_type_and_count) {
+    static constexpr uint8_t SECTION_VALUES[] = {0x00, 0x06, 0x07, 0xFF};
+
+    for (uint8_t value : SECTION_VALUES) {
+        write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+        block_at(1)[DISPLAYID_PRODUCT_TYPE_OFFSET] = value;
+        block_at(1)[DISPLAYID_EXTENSION_SECTIONS_OFFSET] = value;
+        seal_displayid_block(1);
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 1u);
+    }
+}
+
+// The parser does not read a data block's revision, so a Type I block gives its timing at any revision
+TEST(edid, reads_type_i_blocks_at_any_revision) {
+    static constexpr uint8_t REVISIONS[] = {0x00, 0x01, 0xFF};
+
+    for (uint8_t revision : REVISIONS) {
+        write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+        block_at(1)[DISPLAYID_DATA_OFFSET + DISPLAYID_DATA_BLOCK_REVISION_OFFSET] = revision;
+        seal_displayid_block(1);
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 1u);
+        expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    }
+}
+
+// A version 1 section holding a Type I timing gives none when it fails its checksum
+TEST(edid, lists_no_type_i_timing_from_a_skipped_displayid_block) {
+    write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+    uint8_t* block = block_at(1);
+    block[DISPLAYID_DATA_OFFSET + block[DISPLAYID_DATA_BYTES_OFFSET]]++;
+    seal(block);
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 0u);
+    EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+}
+
+// Every count is above 256 and the clock above 65536 units, each field distinct, so a lost high byte or a field read
+// from another field's offset changes the timing
+static constexpr type_i_fields HIGH_BYTES_TYPE_I = {
+    0x123456, 0x00, {0x1234, 0x0567, 0x0123, 0x0234, true}, {0x0ABC, 0x0345, 0x0111, 0x0222, false}
+};
+
+static constexpr edid::timing HIGH_BYTES_TIMING = {11930460, 4660, 291, 564, 528, 2748, 273, 546, 18, true, false};
+
+// The clock and every count at its largest but the sync widths, each the blanking minus the front porch, so the front
+// porch and sync pulse fill the blanking on each axis
+static constexpr type_i_fields LARGEST_TYPE_I = {
+    0x1000000, 0x00, {65536, 65536, 32768, 32768, true}, {65536, 65536, 32768, 32768, true}
+};
+
+static constexpr edid::timing LARGEST_TIMING = {167772160, 65536, 32768, 32768, 0, 65536, 32768, 32768, 0, true, true};
+
+// The clock and every count at its smallest but the blankings, each the front porch plus the sync width, so the clock
+// and both visible counts are stored as 0, which in an 18-byte descriptor gives no timing
+static constexpr type_i_fields SMALLEST_TYPE_I = {1, 0x00, {1, 2, 1, 1, true}, {1, 2, 1, 1, false}};
+
+static constexpr edid::timing SMALLEST_TIMING = {10, 1, 1, 1, 0, 1, 1, 1, 0, true, false};
+
+TEST(edid, reads_the_clock_and_both_axes_of_a_type_i_descriptor) {
+    write_displayid_edid(DISPLAYID_VERSION_1_3, HIGH_BYTES_TYPE_I);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], HIGH_BYTES_TIMING);
+
+    // The polarities reversed, the vertical front porch reads the same with the polarity bit of its 2 bytes set
+    type_i_fields reversed = HIGH_BYTES_TYPE_I;
+    reversed.horizontal.sync_positive = false;
+    reversed.vertical.sync_positive = true;
+    write_displayid_edid(DISPLAYID_VERSION_1_3, reversed);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    EXPECT_FALSE(g_monitor.timings[0].h_sync_positive);
+    EXPECT_TRUE(g_monitor.timings[0].v_sync_positive);
+    EXPECT_EQ(g_monitor.timings[0].v_front_porch, 273u);
+
+    write_displayid_edid(DISPLAYID_VERSION_1_3, LARGEST_TYPE_I);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], LARGEST_TIMING);
+
+    write_displayid_edid(DISPLAYID_VERSION_1_3, SMALLEST_TYPE_I);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], SMALLEST_TIMING);
+}
+
+// `FULL_HD_TYPE_I` changed into timings the parser leaves out: the interlaced ones 10 kHz faster so as not to repeat
+// it, and the others with a front porch or sync width one larger than the blanking leaves room for
+static constexpr type_i_fields LEFT_OUT_TYPE_I[] = {
+    {14851, 0x10, {1920, 280, 88, 44, true}, {1080, 45, 4, 5, true}},        // interlaced, no other option set
+    {14851, 0xFF, {1920, 280, 88, 44, true}, {1080, 45, 4, 5, true}},        // interlaced, every other option set too
+    {14850, 0x00, {1920, 280, 237, 44, true}, {1080, 45, 4, 5, true}},       // horizontal front porch
+    {14850, 0x00, {1920, 280, 88, 44, true}, {1080, 45, 41, 5, true}},       // vertical front porch
+    {14850, 0x00, {1920, 280, 88, 44, true}, {1080, 65536, 1, 65536, true}}, // vertical sync width, over 16 bits
+};
+
+// Each timing left out comes before `FULL_HD_TYPE_I` in one Type I block, and the parser lists `FULL_HD_TYPE_I` alone
+TEST(edid, leaves_out_undescribable_type_i_timings) {
+    for (const type_i_fields& fields : LEFT_OUT_TYPE_I) {
+        write_empty_displayid_edid(DISPLAYID_VERSION_1_3);
+        uint8_t* descriptors = add_data_block(1, DISPLAYID_TAG_TYPE_I_TIMINGS, 2 * TYPE_I_DESCRIPTOR_BYTES);
+        encode_type_i_descriptor(descriptors, fields);
+        encode_type_i_descriptor(descriptors + TYPE_I_DESCRIPTOR_BYTES, FULL_HD_TYPE_I);
+        seal_displayid_block(1);
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 1u);
+        expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    }
+}
+
+// Bit 7 of the options byte marks a Type I timing preferred, a mark the parser takes from the base block alone
+TEST(edid, keeps_type_i_timings_with_every_option_but_interlaced) {
+    type_i_fields every_option = FULL_HD_TYPE_I;
+    every_option.options = 0xEF;
+    write_displayid_edid(DISPLAYID_VERSION_1_3, every_option);
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+}
+
+// The length of a data block the parser passes over, so that with a Type I block before and after it the data blocks
+// take 121 bytes
+static constexpr uint8_t FILLER_LENGTH =
+    DISPLAYID_DATA_BYTES_MAX - 3 * DISPLAYID_DATA_BLOCK_HEADER_BYTES - 2 * TYPE_I_DESCRIPTOR_BYTES;
+
+TEST(edid, stops_the_walk_at_a_block_reaching_the_section_checksum_byte) {
+    write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+    uint8_t* filler = add_data_block(1, DISPLAYID_TAG_VENDOR, FILLER_LENGTH);
+    add_type_i_block(1, full_hd_type_i_raised(1));
+    ASSERT_EQ(block_at(1)[DISPLAYID_DATA_BYTES_OFFSET], DISPLAYID_DATA_BYTES_MAX);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 2u);
+
+    // Decrementing the DisplayID block's byte 2 makes the second Type I block's last byte the section's checksum byte,
+    // and the first byte the filler holds, which the parser only sums, is set to keep the section's sum at 0
+    uint8_t* block = block_at(1);
+    uint8_t data_bytes = block[DISPLAYID_DATA_BYTES_OFFSET];
+    filler[0] = static_cast<uint8_t>(block[DISPLAYID_DATA_OFFSET + data_bytes] + 1);
+    block[DISPLAYID_DATA_BYTES_OFFSET] = static_cast<uint8_t>(data_bytes - 1);
+    seal(block);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+
+    // A data block whose length byte says 0xFD ends past the section and the DisplayID block, and the walk reads no
+    // data block after it
+    write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+    uint8_t* header = add_data_block(1, DISPLAYID_TAG_VENDOR, 0) - DISPLAYID_DATA_BLOCK_HEADER_BYTES;
+    add_type_i_block(1, full_hd_type_i_raised(1));
+    header[DISPLAYID_DATA_BLOCK_LENGTH_OFFSET] = 0xFD;
+    seal_displayid_block(1);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+}
+
+// A tag 0 block is the padding after the last data block unless it comes first and holds bytes, as the product
+// identification block does, so the walk reads the Type I block after one only in that case
+TEST(edid, stops_the_walk_at_the_padding) {
+    static constexpr uint8_t FIRST_LENGTHS[] = {1, 12};
+    static constexpr uint8_t LATER_LENGTHS[] = {0, 12};
+
+    for (uint8_t length : FIRST_LENGTHS) {
+        write_empty_displayid_edid(DISPLAYID_VERSION_1_3);
+        add_data_block(1, DISPLAYID_TAG_PRODUCT_ID, length);
+        add_type_i_block(1, FULL_HD_TYPE_I);
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 1u);
+    }
+
+    write_empty_displayid_edid(DISPLAYID_VERSION_1_3);
+    add_data_block(1, DISPLAYID_TAG_PRODUCT_ID, 0);
+    add_type_i_block(1, FULL_HD_TYPE_I);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 0u);
+
+    for (uint8_t length : LATER_LENGTHS) {
+        write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+        add_data_block(1, DISPLAYID_TAG_PRODUCT_ID, length);
+        add_type_i_block(1, full_hd_type_i_raised(1));
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 1u);
+        expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+    }
+}
+
+// Tags one bit away from Type I's 3 and the padding's 0, the tags of DisplayID 1's data blocks naming signals by a bit
+// or a code (5 to 8, 0x11 and 0x81), then version 2's Type VII timing tag and the vendor block tag
+static constexpr uint8_t PASSED_OVER_TAGS[] = {
+    0x02, 0x83, 0x01, 0x80, 0x05, 0x06, 0x07, 0x08, 0x11, 0x81, DISPLAYID_TAG_TYPE_VII_TIMINGS, DISPLAYID_TAG_VENDOR,
+};
+
+// 1920 by 1080 at 60 Hz with VESA's reduced blanking (CVT-RB) as an 11-byte Type II descriptor: the pixel clock of
+// 138.50 MHz, the options byte, then the horizontal counts in 8-pixel characters and the vertical ones in lines
+static constexpr uint8_t TYPE_II_DESCRIPTOR[] = {0x19, 0x36, 0x00, 0x08, 0xEF, 0x26, 0x53, 0x37, 0x04, 0x1E, 0x24};
+
+// Each data block passed over sits between two Type I blocks, the walk reading the second. Those of `PASSED_OVER_TAGS`,
+// a Type I block whose length byte says 30 and a Type II block each hold a descriptor that would give a timing
+TEST(edid, reads_the_type_i_block_after_blocks_it_passes_over) {
+    for (uint8_t tag : PASSED_OVER_TAGS) {
+        write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+        encode_type_i_descriptor(add_data_block(1, tag, TYPE_I_DESCRIPTOR_BYTES), full_hd_type_i_raised(1));
+        add_type_i_block(1, full_hd_type_i_raised(2));
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 2u);
+        EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 148520u);
+    }
+
+    write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+    uint8_t* long_type_i = add_data_block(1, DISPLAYID_TAG_TYPE_I_TIMINGS, TYPE_I_DESCRIPTOR_BYTES + 10);
+    encode_type_i_descriptor(long_type_i, full_hd_type_i_raised(1));
+    add_type_i_block(1, full_hd_type_i_raised(2));
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 2u);
+    EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 148520u);
+
+    write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+    uint8_t* type_ii = add_data_block(1, DISPLAYID_TAG_TYPE_II_TIMINGS, sizeof(TYPE_II_DESCRIPTOR));
+    string::memcpy(type_ii, TYPE_II_DESCRIPTOR, sizeof(TYPE_II_DESCRIPTOR));
+    add_type_i_block(1, full_hd_type_i_raised(2));
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 2u);
+    EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 148520u);
+
+    // A vendor block and a Type I block whose length bytes say 0 hold nothing and are passed over too
+    static constexpr uint8_t EMPTY_BLOCK_TAGS[] = {DISPLAYID_TAG_VENDOR, DISPLAYID_TAG_TYPE_I_TIMINGS};
+    for (uint8_t tag : EMPTY_BLOCK_TAGS) {
+        write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+        add_data_block(1, tag, 0);
+        add_type_i_block(1, full_hd_type_i_raised(2));
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 2u);
+        EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 148520u);
+    }
+}
+
+// A data block of each tag whose data blocks name signals by a bit or a code, in DisplayID 1.3's layout and naming one.
+// CEA-861 is CTA-861's earlier name, and a video code is CTA-861's number for a signal, 4 being 1280 by 720 at 60 Hz
+static constexpr data_block_fields SIGNAL_NAMING_DATA_BLOCKS[] = {
+    {0x05, 3, {0x14, 0xEF, 0x3B}},                         // Type III: 1920 by 1080 at 60 Hz with reduced blanking
+    {0x06, 1, {0x04}},                                     // Type IV: code 4 of VESA's Display Monitor Timings (DMT)
+    {0x07, DISPLAYID_VESA_TIMINGS_BYTES, {0x08}},          // VESA timings: bit 3 of `bytes[0]`, DMT code 4
+    {0x08, DISPLAYID_CEA_TIMINGS_BYTES, {0x08}},           // CEA timings: bit 3 of `bytes[0]`, video code 4
+    {0x11, 7, {0x00, 0x00, 0x7F, 0x07, 0x37, 0x04, 0x3B}}, // Type V: 1920 by 1080 at 60 Hz
+    {0x81, 2, {0x41, 0x04}},                               // CTA-861 data: CTA-861's video data block, video code 4
+};
+
+// Each data block naming a signal sits between two Type I blocks, and the parser lists the two Type I timings alone
+TEST(edid, lists_no_timing_from_data_blocks_naming_signals) {
+    for (const data_block_fields& fields : SIGNAL_NAMING_DATA_BLOCKS) {
+        write_displayid_edid(DISPLAYID_VERSION_1_3, FULL_HD_TYPE_I);
+        uint8_t* bytes = add_data_block(1, fields.tag, fields.length);
+        string::memcpy(bytes, fields.bytes, fields.length);
+        add_type_i_block(1, full_hd_type_i_raised(1));
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 2u);
+        EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 148510u);
+    }
+}
+
+// Block 1 is a DisplayID block repeating the base block's timing before another, block 2 a CTA-861 block and block 3 a
+// second DisplayID block, so the timings follow the blocks' order rather than their kinds'
+TEST(edid, lists_displayid_timings_in_block_order_and_a_repeat_once) {
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(0, FULL_HD);
+    copy_block_into_edid();
+    set_extension_count(3);
+    write_displayid_block(1, DISPLAYID_VERSION_1_3);
+    add_type_i_block(1, FULL_HD_TYPE_I);
+    add_type_i_block(1, full_hd_type_i_raised(1));
+    write_cta_861_block(2);
+    write_extension_descriptor(2, cta_861_descriptor_offset(0), full_hd_raised(2));
+    write_displayid_block(3, DISPLAYID_VERSION_1_3);
+    add_type_i_block(3, full_hd_type_i_raised(3));
+
+    ASSERT_EQ(parse_edid(4 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 4u);
+    expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 148510u);
+    EXPECT_EQ(g_monitor.timings[2].pixel_clock_khz, 148520u);
+    EXPECT_EQ(g_monitor.timings[3].pixel_clock_khz, 148530u);
+    EXPECT_TRUE(g_monitor.first_timing_is_preferred);
+}
+
+// Thirty-two timings fill the array before block 6, a DisplayID block holding a listed timing and two unlisted ones
+TEST(edid, counts_displayid_timings_found_with_the_array_full_unless_listed) {
+    write_distinct_timings(edid::TIMINGS_MAX);
+    set_extension_count(6);
+    write_displayid_block(6, DISPLAYID_VERSION_1_3);
+    add_type_i_block(6, full_hd_type_i_raised(0));
+    add_type_i_block(6, full_hd_type_i_raised(edid::TIMINGS_MAX));
+    add_type_i_block(6, full_hd_type_i_raised(edid::TIMINGS_MAX + 1));
+
+    ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, edid::TIMINGS_MAX);
+    EXPECT_EQ(g_monitor.dropped_timings, 2u);
+    EXPECT_EQ(g_monitor.skipped_extensions, 0u);
 }

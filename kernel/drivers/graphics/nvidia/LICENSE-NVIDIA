@@ -15,8 +15,9 @@ src/common/modeset/timing/nvt_edid.c
     starting with five 0x01 bytes parsed as unused, a timing descriptor with a
     width or height of 0 parsed as no timing, a product name ended by a NUL as
     by a newline, without trailing spaces and with any other byte outside
-    printable ASCII shown as a question mark, and a display descriptor parsed
-    only when its reserved byte 2 is 0, in kernel/drivers/graphics/edid.h,
+    printable ASCII shown as a question mark, a display descriptor parsed only
+    when its reserved byte 2 is 0, and the timings listed from a DisplayID 1
+    section kept when its walk stops, in kernel/drivers/graphics/edid.h,
     kernel/drivers/graphics/edid.cpp and kernel/tests/graphics/edid.test.cpp,
     and the timing of a Video Timing Block's one timing descriptor listed at a
     nonzero revision when what the block counts fits in 122 bytes, and a first
@@ -29,6 +30,15 @@ src/common/modeset/timing/nvt_edidext_861.c
     to the first whose pixel clock is 0 or that would not end before the
     checksum byte, and none read when that offset or the revision in its byte 1
     is 0, in kernel/drivers/graphics/edid.h, kernel/drivers/graphics/edid.cpp
+    and kernel/tests/graphics/edid.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/modeset/timing/nvt_edidext_displayid.c
+    a DisplayID 1 section's data blocks walked up to one not ending before the
+    section's checksum byte or to a tag 0 block that is not a first one holding
+    bytes (the zero padding), and a Type I timing block read whatever its
+    revision and passed over without a timing when its length is not a multiple
+    of 20, in kernel/drivers/graphics/edid.h, kernel/drivers/graphics/edid.cpp
     and kernel/tests/graphics/edid.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
