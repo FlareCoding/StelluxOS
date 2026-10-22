@@ -730,6 +730,11 @@ int32_t nvidia_gpu_driver::attach() {
         configuration.internal_client
     );
 
+    rc = m_vram_allocator.init(configuration, frts.video_memory_size);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
     if (nvidia::is_console_kept_at_bar1_start(card, framebuffer, frts.has_display)) {
         rc = map_boot_console(regs, configuration, console_bytes, bar1_bytes);
         if (rc != nvidia::OK) {
@@ -782,30 +787,43 @@ int32_t nvidia_gpu_driver::map_boot_console(
     uint64_t reserved_console_bytes,
     uint64_t bar1_bytes
 ) {
-    nvidia::console_tables_placement placement = {};
-    int32_t rc = nvidia::place_console_page_tables(configuration, reserved_console_bytes, bar1_bytes, placement);
+    uint64_t console_bytes = 0;
+    int32_t rc = nvidia::check_console_region(configuration, reserved_console_bytes, bar1_bytes, console_bytes);
     if (rc != nvidia::OK) {
         return rc;
     }
 
-    uint64_t* tables = static_cast<uint64_t*>(heap::ualloc(placement.bytes));
+    uint64_t tables_bytes = nvidia::console_page_table_bytes(console_bytes);
+    nvidia::vram_range tables_range = {};
+    rc = m_vram_allocator.allocate(tables_bytes, nvidia::SMALL_PAGE_BYTES, nvidia::vram_use::general, tables_range);
+    if (rc != nvidia::OK) {
+        log::error(
+            "nvidia: allocating 0x%lX bytes of video memory for the console's tables failed: %d",
+            tables_bytes,
+            rc
+        );
+        return rc;
+    }
+
+    uint64_t* tables = static_cast<uint64_t*>(heap::ualloc(tables_bytes));
     if (tables == nullptr) {
-        log::error("nvidia: allocating 0x%lX bytes for the CPU's copy of the console's tables failed", placement.bytes);
+        log::error("nvidia: allocating 0x%lX bytes for the CPU's copy of the console's tables failed", tables_bytes);
         return nvidia::ERR_NO_MEMORY;
     }
 
-    uint64_t root_entry = nvidia::write_console_page_tables(tables, placement.offset, placement.console_bytes);
+    uint64_t root_entry = nvidia::write_console_page_tables(tables, tables_range.offset, console_bytes);
     if (root_entry == 0) {
         log::error(
-            "nvidia: the console's tables for 0x%lX bytes cannot lie at 0x%lX in video memory",
-            placement.console_bytes,
-            placement.offset
+            "nvidia: the console's tables, 0x%lX bytes at 0x%lX in video memory, end past 128 GiB, the reach of an "
+            "entry's address field",
+            tables_bytes,
+            tables_range.offset
         );
         heap::ufree(tables);
         return nvidia::ERR_BAD_STATE;
     }
 
-    rc = nvidia::write_video_memory(regs, placement.offset, tables, placement.bytes / sizeof(uint64_t));
+    rc = nvidia::write_video_memory(regs, tables_range.offset, tables, tables_bytes / sizeof(uint64_t));
     heap::ufree(tables);
     if (rc != nvidia::OK) {
         return rc;
@@ -813,9 +831,9 @@ int32_t nvidia_gpu_driver::map_boot_console(
 
     log::info(
         "nvidia: the console's tables for the first 0x%lX of BAR1's 0x%lX bytes are written at 0x%lX in video memory",
-        placement.console_bytes,
+        console_bytes,
         bar1_bytes,
-        placement.offset
+        tables_range.offset
     );
 
     rc = nvidia::link_console_page_tables(
@@ -835,7 +853,7 @@ int32_t nvidia_gpu_driver::map_boot_console(
         return rc;
     }
 
-    int32_t check_rc = check_console_through_bar1(regs, bar1_base, placement.console_bytes);
+    int32_t check_rc = check_console_through_bar1(regs, bar1_base, console_bytes);
     int32_t unmap_rc = unmap_bar(VIDEO_MEMORY_BAR);
     if (unmap_rc != OK) {
         log::error("nvidia: unmapping BAR1 failed: %d", unmap_rc);

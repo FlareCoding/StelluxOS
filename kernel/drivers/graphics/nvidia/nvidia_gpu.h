@@ -9,6 +9,7 @@
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
 #include "drivers/graphics/nvidia/gsp_info.h"
 #include "drivers/graphics/nvidia/registers.h"
+#include "drivers/graphics/nvidia/vram_allocator.h"
 #include "drivers/pci_driver.h"
 
 namespace drivers {
@@ -23,8 +24,10 @@ namespace drivers {
  * message) and its BAR0 mapping, which `detach()` frees and unmaps as
  * `pci_driver::detach()` does, the GSP's boot memory, which `detach()` frees
  * once each falcon it resets reads as stopped, a copy of booter unload, which
- * `detach()` frees once SEC2 can no longer read it, and the payload buffer of
- * its `nvidia::gsp`, which `detach()` frees with `nvidia::gsp::stop`.
+ * `detach()` frees once SEC2 can no longer read it, the payload buffer of its
+ * `nvidia::gsp`, which `detach()` frees with `nvidia::gsp::stop`, and its
+ * `nvidia::vram_allocator`, which hands out the card's video memory and whose
+ * records of allocations not released are freed with the driver.
  *
  * `attach()` declines the card when a driver display is already registered
  * with gfxfb, when the chip table does not list the card's chip, or when a
@@ -134,13 +137,15 @@ namespace drivers {
  * both handles. The firmware signals the driver on that vector, which must
  * name a bit of the CPU interrupt tree (the GPU's registers reporting its
  * interrupts to the CPU) and come from a row holding no bits in the GPU's PMC
- * interrupt register, as `nvidia::read_gsp_interrupt_vector` checks. When
- * NVIDIA's driver keeps the boot console mapped at the start of BAR1, as
+ * interrupt register, as `nvidia::read_gsp_interrupt_vector` checks. Bring-up
+ * then gives the regions to the allocator with `nvidia::vram_allocator::init`.
+ * When NVIDIA's driver keeps the boot console mapped at the start of BAR1, as
  * `nvidia::is_console_kept_at_bar1_start` decides, bring-up maps it there too.
  * The console's memory is then the firmware's video memory region 0 whole, as
  * NVIDIA's driver takes it, and the console's tables are the page tables that
  * map that many bytes from the start of BAR1 onto the same offsets of video
- * memory. Bring-up places the tables with `nvidia::place_console_page_tables`,
+ * memory. Bring-up checks region 0 with `nvidia::check_console_region`, takes
+ * the tables' video memory from the allocator for `nvidia::vram_use::general`,
  * builds a copy of them on the unprivileged heap with
  * `nvidia::write_console_page_tables`, writes the copy through BAR0's window
  * with `nvidia::write_video_memory` and frees the copy. It then links the
@@ -234,14 +239,18 @@ namespace drivers {
  * treats as a failed boot. Once that result is 0, `attach()` fails as
  * `nvidia::confirm_message_version` describes, such as when the firmware
  * refuses the VGX version, then as `nvidia::read_static_configuration`
- * describes, and then as `nvidia::read_gsp_interrupt_vector` describes, as
- * when the kernel interrupt table has no row for the GSP. While mapping the
- * console, it fails as `nvidia::place_console_page_tables` describes, as when
- * region 0 leaves no byte of BAR1 past it, with `nvidia::ERR_NO_MEMORY` when
- * the copy of the tables cannot be allocated, with `nvidia::ERR_BAD_STATE`
- * when `nvidia::write_video_memory` refuses the copy or the first entry reads
- * back as another value, with `nvidia::ERR_TIMEOUT` when BAR1's invalidate
- * does not finish within `nvidia::DEFAULT_TIMEOUT_NS`, as
+ * describes, then as `nvidia::read_gsp_interrupt_vector` describes, as when
+ * the kernel interrupt table has no row for the GSP, and then as
+ * `nvidia::vram_allocator::init` describes, as when two regions overlap. While
+ * mapping the console, it fails as `nvidia::check_console_region` describes,
+ * as when region 0 leaves no byte of BAR1 past it, then as
+ * `nvidia::vram_allocator::allocate` describes, as when no usable region has
+ * room for the tables, with `nvidia::ERR_NO_MEMORY` when the copy of the
+ * tables cannot be allocated, with `nvidia::ERR_BAD_STATE` when
+ * `nvidia::write_console_page_tables` refuses the tables' range for ending
+ * past 128 GiB, `nvidia::write_video_memory` refuses the copy or the first
+ * entry reads back as another value, with `nvidia::ERR_TIMEOUT` when BAR1's
+ * invalidate does not finish within `nvidia::DEFAULT_TIMEOUT_NS`, as
  * `nvidia::link_console_page_tables` describes, with the error
  * `pci_driver::map_bar` returns when BAR1 cannot be mapped, with the error
  * `pci_driver::unmap_bar` returns when BAR1 cannot be unmapped after the check
@@ -520,6 +529,7 @@ private:
 
     nvidia::gsp_boot_memory       m_boot_memory;
     nvidia::gsp                   m_gsp;
+    nvidia::vram_allocator        m_vram_allocator;
     nvidia::fwsec_layout          m_fwsec = {};
     nvidia::fwsec_signature       m_fwsec_signature = {};
     dma::buffer                   m_booter_unload_copy = {};

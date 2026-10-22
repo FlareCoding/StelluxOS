@@ -336,7 +336,7 @@ src/common/inc/swref/published/pascal/gp100/dev_mmu.h
     bar1_page_tables.cpp and
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 25 bits of the
     address field and their reach of 128 GiB, in bar1_page_tables.h,
-    bar1_page_tables.cpp and
+    bar1_page_tables.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, a page table entry's
     valid bit in bit 0, in bar1_page_tables.h, bar1_page_tables.cpp and
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the volatile bit in
@@ -510,10 +510,12 @@ src/nvidia/src/kernel/gpu/mmu/gmmu_walk.c
 
 src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c
     that NVIDIA's driver gives a boot console's memory 4 KiB pages, in
-    bar1_page_tables.h, and that when it keeps video memory for a boot console
-    it takes the firmware's region 0 whole, from wherever region 0 starts, as
-    the console's memory, in bar1_page_tables.h, bar1_page_tables.cpp,
-    nvidia_gpu.h and kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    bar1_page_tables.h, that when it keeps video memory for a boot console it
+    takes the firmware's region 0 whole, from wherever region 0 starts, as the
+    console's memory, in bar1_page_tables.h, bar1_page_tables.cpp, nvidia_gpu.h
+    and kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and that it
+    takes region 0 whether or not the firmware reports it reserved, in
+    bar1_page_tables.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mem_mgr/mem_desc.c
