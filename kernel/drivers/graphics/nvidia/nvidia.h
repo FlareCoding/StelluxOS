@@ -45,6 +45,9 @@ constexpr uint64_t NS_PER_US = 1000;
 // NVIDIA's default timeout for a GPU in graphics mode rather than compute mode
 constexpr uint64_t DEFAULT_TIMEOUT_NS = 4000000000;
 
+// The GPU's small page, the unit of every `vram_range` and the page a page table of 4 KiB pages maps
+constexpr uint64_t SMALL_PAGE_BYTES = 0x1000;
+
 // Where BAR0 mirrors the card's PCI configuration space, the same on every chip in the chip table
 constexpr uint32_t PCI_CONFIG_MIRROR_OFFSET = 0x88000;
 constexpr uint32_t PCI_CONFIG_MIRROR_BYTES  = 0x1000;

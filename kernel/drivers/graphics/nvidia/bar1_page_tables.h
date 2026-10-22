@@ -53,13 +53,6 @@ namespace drivers::nvidia {
  * on that size, which this driver does not read.
  */
 
-// What the console's tables map and where in video memory they lie, as `place_console_page_tables` decides
-struct console_tables_placement {
-    uint64_t console_bytes; // the bytes from the start of BAR1 the tables map onto the same offsets of video memory
-    uint64_t offset;        // where in video memory the tables lie
-    uint64_t bytes;         // the tables' size, `console_page_table_bytes(console_bytes)`
-};
-
 /**
  * @brief How many bytes the console's tables take for a console of
  * `console_bytes` bytes at the start of BAR1: 4 KiB for each of the three
@@ -108,40 +101,36 @@ uint64_t console_page_table_bytes(uint64_t console_bytes);
 uint64_t write_console_page_tables(uint64_t* tables, uint64_t tables_offset, uint64_t console_bytes);
 
 /**
- * @brief Decide what the console's tables map and where in video memory they
- * lie, from the video memory regions the GSP's firmware reports. When NVIDIA's
+ * @brief Check that the video memory region 0 the GSP's firmware reports can
+ * be the console's memory, which the console's tables map. When NVIDIA's
  * driver keeps video memory for a boot console, it takes the firmware's region
  * 0 whole as the console's memory, so the tables map region 0. Region 0 must
  * end before BAR1 does, since NVIDIA's driver maps nothing in the last 4 KiB
  * of BAR1 and so cannot map a region 0 that fills BAR1. The rules that follow
  * are this driver's own, where NVIDIA's driver maps region 0 from wherever it
- * starts. Region 0 must start at 0, since the tables map BAR1's offsets onto
- * the same offsets of video memory, must hold `reserved_console_bytes`, so the
- * boot framebuffer lies wholly inside the mapping, and must have a size
- * `console_page_table_bytes` takes. The tables lie in the first region that is
- * neither reserved nor protected, so they overwrite nothing the firmware
- * keeps, and where they fit whole from the region's first 4 KiB boundary at or
- * past region 0's end, lie below 128 GiB (the reach of an entry's address
- * field) and hold no byte of the first entry of BAR1's root page directory, so
- * writing one never overwrites the other. They start at that boundary, so
- * `write_console_page_tables` takes the placement. The call never blocks.
+ * starts, reserved or not. Region 0 must start at 0, since the tables map
+ * BAR1's offsets onto the same offsets of video memory, must hold
+ * `reserved_console_bytes`, so the boot framebuffer lies wholly inside the
+ * mapping, and must have a size `console_page_table_bytes` takes. It must also
+ * be reserved, so no video memory allocation can overwrite the console. The
+ * call never blocks.
  * @param configuration The static configuration `read_static_configuration`
  * read.
  * @param reserved_console_bytes The bytes the firmware was asked to leave
  * alone for the boot console, as `boot_console_bytes` gives them.
  * @param bar1_bytes BAR1's size.
- * @param placement_out Receives the placement on `OK`, and is left as it is
- * otherwise.
- * @return `OK`, or `ERR_BAD_STATE`, logged, when region 0 does not start at 0,
- * holds fewer than `reserved_console_bytes` bytes, has a size
- * `console_page_table_bytes` refuses or does not end before BAR1 does, or when
- * no region takes the tables.
+ * @param console_bytes_out Receives region 0's size, the console's, on `OK`: a
+ * size `console_page_table_bytes` takes, at least `reserved_console_bytes` and
+ * below `bar1_bytes`. It is left as it is otherwise.
+ * @return `OK`, or `ERR_BAD_STATE`, logged, when region 0 is not reserved,
+ * does not start at 0, holds fewer than `reserved_console_bytes` bytes, has a
+ * size `console_page_table_bytes` refuses or does not end before BAR1 does.
  */
-int32_t place_console_page_tables(
+int32_t check_console_region(
     const static_configuration& configuration,
     uint64_t reserved_console_bytes,
     uint64_t bar1_bytes,
-    console_tables_placement& placement_out
+    uint64_t& console_bytes_out
 );
 
 } // namespace drivers::nvidia

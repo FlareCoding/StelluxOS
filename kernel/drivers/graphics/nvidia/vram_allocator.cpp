@@ -8,9 +8,6 @@
 
 namespace drivers::nvidia {
 
-// The GPU's small page, the unit of every range's offset and size
-constexpr uint64_t PAGE_BYTES = 0x1000;
-
 // Rounds `value` up to a multiple of `alignment`, a power of two, refusing a result past 2^64 - 1
 static bool round_up(uint64_t value, uint64_t alignment, uint64_t& out) {
     uint64_t mask = alignment - 1;
@@ -147,7 +144,7 @@ int32_t vram_allocator::init(const static_configuration& configuration, uint64_t
 
 int32_t vram_allocator::allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) {
     uint64_t rounded_size = 0;
-    bool is_size_valid = size != 0 && round_up(size, PAGE_BYTES, rounded_size);
+    bool is_size_valid = size != 0 && round_up(size, SMALL_PAGE_BYTES, rounded_size);
     if (!is_size_valid) {
         log::error(
             "nvidia: a video memory allocation of 0x%lX bytes was refused, as the size is 0 or overflows when rounded "
@@ -166,7 +163,7 @@ int32_t vram_allocator::allocate(uint64_t size, uint64_t alignment, vram_use use
         return ERR_INVALID_ARG;
     }
 
-    uint64_t rounded_alignment = alignment > PAGE_BYTES ? alignment : PAGE_BYTES;
+    uint64_t rounded_alignment = alignment > SMALL_PAGE_BYTES ? alignment : SMALL_PAGE_BYTES;
 
     RUN_ELEVATED(sync::mutex_lock(m_lock));
 
