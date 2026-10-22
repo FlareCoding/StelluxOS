@@ -63,6 +63,19 @@ static constexpr uint8_t CTA_861_HEADER_BYTES            = 4;
 static constexpr size_t  CTA_861_DESCRIPTORS_MAX         = 6;
 static constexpr uint8_t CTA_861_REVISION_3              = 3;
 
+// A data block's first byte holds its tag in bits 7 to 5 and in bits 4 to 0 its length, the count of bytes after it.
+// Tag 7 names its kind in an extended tag: 34 for a Type VII data block, 13 for a Video Format Preference one
+static constexpr size_t  CTA_861_DATA_BLOCK_HEADER_BYTES        = 1;
+static constexpr uint8_t CTA_861_DATA_BLOCK_LENGTH_MAX          = 0x1F;
+static constexpr uint8_t CTA_861_DATA_BLOCK_TAG_SHIFT           = 5;
+static constexpr uint8_t CTA_861_TAG_RESERVED                   = 6;
+static constexpr uint8_t CTA_861_TAG_EXTENDED                   = 7;
+static constexpr uint8_t CTA_861_EXTENDED_TAG_TYPE_VII          = 34;
+static constexpr uint8_t CTA_861_EXTENDED_TAG_FORMAT_PREFERENCE = 13;
+static constexpr uint8_t CTA_861_TYPE_VII_LENGTH                = 22;
+static constexpr size_t  CTA_861_TYPE_VII_DESCRIPTOR_OFFSET     = 2;
+static constexpr uint8_t CTA_861_TYPE_VII_REVISION              = 0x02;
+
 static constexpr size_t  DISPLAYID_VERSION_OFFSET            = 1;
 static constexpr size_t  DISPLAYID_DATA_BYTES_OFFSET         = 2;
 static constexpr size_t  DISPLAYID_PRODUCT_TYPE_OFFSET       = 3;
@@ -140,6 +153,14 @@ struct type_i_fields {
     uint8_t            options;
     type_i_axis_fields horizontal;
     type_i_axis_fields vertical;
+};
+
+// A CTA-861 data block's tag, length, extended tag and revision byte
+struct cta_861_data_block_fields {
+    uint8_t tag;
+    uint8_t length;
+    uint8_t extended_tag;
+    uint8_t revision;
 };
 
 // A DisplayID data block's tag, its length and its bytes, at most as many as a VESA timings block (tag 7) holds
@@ -2082,6 +2103,393 @@ TEST(edid, lists_type_vii_timings_in_block_order_and_a_repeat_once) {
     EXPECT_EQ(g_monitor.timings[3].pixel_clock_khz, 148530u);
     EXPECT_EQ(g_monitor.timings[4].pixel_clock_khz, 148540u);
     EXPECT_TRUE(g_monitor.first_timing_is_preferred);
+}
+
+// 3840 by 2160 at 120 Hz as a Type VII descriptor, its clock above the 655.35 MHz an 18-byte descriptor can give
+static constexpr type_i_fields UHD_TYPE_VII = {1045229, 0x00, {3840, 80, 8, 32, true}, {2160, 62, 3, 5, false}};
+static constexpr edid::timing  UHD_TIMING   = {1045229, 3840, 8, 32, 40, 2160, 3, 5, 54, true, false};
+
+// `UHD_TYPE_VII` with its pixel clock raised by `n` kHz
+static type_i_fields uhd_type_vii_raised(uint32_t n) {
+    type_i_fields fields = UHD_TYPE_VII;
+    fields.clock_units += n;
+    return fields;
+}
+
+// Adds a data block of `tag` holding `length` bytes after block `index`'s data blocks, moving the offset in its byte 2
+// past it, and returns those bytes for the caller to fill before sealing the block
+static uint8_t* add_cta_861_data_block(size_t index, uint8_t tag, uint8_t length) {
+    uint8_t* block = block_at(index);
+    uint8_t start = block[CTA_861_DESCRIPTOR_START_OFFSET];
+
+    block[start] = static_cast<uint8_t>(tag << CTA_861_DATA_BLOCK_TAG_SHIFT | length);
+    block[CTA_861_DESCRIPTOR_START_OFFSET] = static_cast<uint8_t>(start + CTA_861_DATA_BLOCK_HEADER_BYTES + length);
+    return block + start + CTA_861_DATA_BLOCK_HEADER_BYTES;
+}
+
+// Adds a data block of `f` after block `index`'s data blocks, holding a Type VII descriptor of `fields` cut to the
+// bytes left, then seals the block
+static void add_cta_861_descriptor_block(
+    size_t index,
+    const cta_861_data_block_fields& f,
+    const type_i_fields& fields
+) {
+    uint8_t descriptor[TYPE_I_DESCRIPTOR_BYTES];
+    encode_type_i_descriptor(descriptor, fields);
+
+    uint8_t* bytes = add_cta_861_data_block(index, f.tag, f.length);
+    bytes[0] = f.extended_tag;
+    bytes[1] = f.revision;
+    size_t room = f.length - CTA_861_TYPE_VII_DESCRIPTOR_OFFSET;
+    size_t copied = room < TYPE_I_DESCRIPTOR_BYTES ? room : TYPE_I_DESCRIPTOR_BYTES;
+    string::memcpy(bytes + CTA_861_TYPE_VII_DESCRIPTOR_OFFSET, descriptor, copied);
+    seal(block_at(index));
+}
+
+// Adds a Type VII data block whose revision byte is `revision`, holding a descriptor of `fields`, after block `index`'s
+// data blocks, then seals the block
+static void add_cta_861_type_vii_block(size_t index, uint8_t revision, const type_i_fields& fields) {
+    cta_861_data_block_fields f = {
+        CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, CTA_861_EXTENDED_TAG_TYPE_VII, revision
+    };
+
+    add_cta_861_descriptor_block(index, f, fields);
+}
+
+// Copies `count` bytes of whole data blocks after block 1's data blocks, moving the offset in its byte 2 past them,
+// then seals the block
+static void add_cta_861_data_block_bytes(const uint8_t* bytes, size_t count) {
+    uint8_t* block = block_at(1);
+    uint8_t start = block[CTA_861_DESCRIPTOR_START_OFFSET];
+
+    string::memcpy(block + start, bytes, count);
+    block[CTA_861_DESCRIPTOR_START_OFFSET] = static_cast<uint8_t>(start + count);
+    seal(block);
+}
+
+// Lays out `g_edid` as a base block holding no timing, then a CTA-861 block at revision 3 holding nothing but 0xFF in
+// byte 3, which a walk from byte 3 rather than 4 would read as a data block's first byte
+static void write_empty_cta_861_edid() {
+    make_base_block(AOC_FEATURES);
+    copy_block_into_edid();
+    set_extension_count(1);
+    write_cta_861_block(1);
+    block_at(1)[CTA_861_UNREAD_OFFSET] = 0xFF;
+    seal(block_at(1));
+}
+
+// CTA-861 block revisions from 3 give Type VII data block timings and those below 3 none. The second Type VII data
+// block's timing has visible counts below 4096 and a clock below 655.36 MHz, and its kHz clock is not a multiple of 10
+static constexpr uint8_t CTA_861_REVISIONS_WITH_DATA_BLOCKS[]    = {CTA_861_REVISION_3, 4, 0x82, 0xFF};
+static constexpr uint8_t CTA_861_REVISIONS_WITHOUT_DATA_BLOCKS[] = {0, 1, 2};
+
+TEST(edid, reads_type_vii_data_blocks_from_cta_861_revision_3) {
+    for (uint8_t revision : CTA_861_REVISIONS_WITH_DATA_BLOCKS) {
+        write_empty_cta_861_edid();
+        add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+        add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, full_hd_type_vii_raised(9));
+        block_at(1)[CTA_861_REVISION_OFFSET] = revision;
+        seal(block_at(1));
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 2u);
+        expect_timing(g_monitor.timings[0], UHD_TIMING);
+        EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 148509u);
+    }
+
+    for (uint8_t revision : CTA_861_REVISIONS_WITHOUT_DATA_BLOCKS) {
+        write_empty_cta_861_edid();
+        add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+        block_at(1)[CTA_861_REVISION_OFFSET] = revision;
+        seal(block_at(1));
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 0u);
+    }
+
+    for (uint8_t type_vii_revision : READ_TYPE_VII_REVISIONS) {
+        write_empty_cta_861_edid();
+        add_cta_861_type_vii_block(1, type_vii_revision, UHD_TYPE_VII);
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 1u);
+        expect_timing(g_monitor.timings[0], UHD_TIMING);
+    }
+}
+
+// A CTA-861 block holding a Type VII data block gives no timing when it is cut short, fails its checksum, lies past the
+// count in byte 126 or carries the tag of another kind
+TEST(edid, lists_no_type_vii_timing_from_a_skipped_or_uncounted_block_or_one_of_another_kind) {
+    write_empty_cta_861_edid();
+    add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 1u);
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES - 1), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 0u);
+    EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+
+    block_at(1)[CHECKSUM_OFFSET]++;
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 0u);
+    EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+
+    block_at(1)[CHECKSUM_OFFSET]--;
+    set_extension_count(0);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 0u);
+
+    set_extension_count(1);
+    for (uint8_t tag : UNCHECKED_TAGS) {
+        block_at(1)[EXTENSION_TAG_OFFSET] = tag;
+        seal(block_at(1));
+
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 0u);
+    }
+}
+
+// Data blocks the parser passes over, each a Type VII data block it reads but for one field: a revision byte setting
+// one of bits 6 to 3, a tag other than 7, an extended tag one bit from 34, or a length one byte from 22
+static constexpr cta_861_data_block_fields PASSED_OVER_CTA_861_DATA_BLOCKS[] = {
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, CTA_861_EXTENDED_TAG_TYPE_VII, 0x0A},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, CTA_861_EXTENDED_TAG_TYPE_VII, 0x12},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, CTA_861_EXTENDED_TAG_TYPE_VII, 0x22},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, CTA_861_EXTENDED_TAG_TYPE_VII, 0x42},
+    {0, CTA_861_TYPE_VII_LENGTH, CTA_861_EXTENDED_TAG_TYPE_VII, CTA_861_TYPE_VII_REVISION},
+    {3, CTA_861_TYPE_VII_LENGTH, CTA_861_EXTENDED_TAG_TYPE_VII, CTA_861_TYPE_VII_REVISION},
+    {5, CTA_861_TYPE_VII_LENGTH, CTA_861_EXTENDED_TAG_TYPE_VII, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_RESERVED, CTA_861_TYPE_VII_LENGTH, CTA_861_EXTENDED_TAG_TYPE_VII, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, 2, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, 32, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, 35, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, 38, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, 42, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, 50, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, 98, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH, 162, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH - 1, CTA_861_EXTENDED_TAG_TYPE_VII, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, CTA_861_TYPE_VII_LENGTH + 1, CTA_861_EXTENDED_TAG_TYPE_VII, CTA_861_TYPE_VII_REVISION},
+};
+
+// Data blocks of other kinds the parser passes over by their lengths: tag 3 at length 2, then tag 7 at length 4 with
+// extended tag 8, at length 2 with extended tag 35 and at length 7 with extended tag 42
+static constexpr cta_861_data_block_fields OTHER_KIND_CTA_861_DATA_BLOCKS[] = {
+    {3, 2, CTA_861_EXTENDED_TAG_TYPE_VII, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, 4, 8, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, 2, 35, CTA_861_TYPE_VII_REVISION},
+    {CTA_861_TAG_EXTENDED, 7, 42, CTA_861_TYPE_VII_REVISION},
+};
+
+// A tag 0 data block of length 0
+static constexpr uint8_t EMPTY_DATA_BLOCK[] = {0x00};
+
+// A tag 7 data block of length 0, holding no extended tag, then an audio data block (tag 1) of length 4 holding one
+// 3-byte audio descriptor and 0xFF, which as a data block's first byte gives one ending past the offset
+static constexpr uint8_t PASSED_OVER_DATA_BLOCK_BYTES[] = {0xE0, 0x24, 0x09, 0x07, 0x07, 0xFF};
+
+// Expects `UHD_TYPE_VII` alone from block 1 holding a data block of `f` with a descriptor of `uhd_type_vii_raised(1)`
+// cut to fit, a tag 0 data block whose 0 byte is that descriptor's last, then `UHD_TYPE_VII`'s Type VII data block
+static void expect_type_vii_after_passed_over_data_block(const cta_861_data_block_fields& f) {
+    write_empty_cta_861_edid();
+    add_cta_861_descriptor_block(1, f, uhd_type_vii_raised(1));
+    add_cta_861_data_block_bytes(EMPTY_DATA_BLOCK, sizeof(EMPTY_DATA_BLOCK));
+    add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], UHD_TIMING);
+}
+
+TEST(edid, reads_the_cta_861_type_vii_data_block_after_one_it_passes_over) {
+    for (const cta_861_data_block_fields& f : PASSED_OVER_CTA_861_DATA_BLOCKS) {
+        expect_type_vii_after_passed_over_data_block(f);
+    }
+
+    for (const cta_861_data_block_fields& f : OTHER_KIND_CTA_861_DATA_BLOCKS) {
+        expect_type_vii_after_passed_over_data_block(f);
+    }
+
+    write_empty_cta_861_edid();
+    add_cta_861_data_block_bytes(PASSED_OVER_DATA_BLOCK_BYTES, sizeof(PASSED_OVER_DATA_BLOCK_BYTES));
+    add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], UHD_TIMING);
+}
+
+// A video data block naming video code 16, a Type VIII data block naming DMT code 0x52 and a Type X data block holding
+// a 6-byte descriptor with VESA's standard blanking, each 1920 by 1080 at 60 Hz, header bytes included
+static constexpr uint8_t CTA_861_SIGNAL_NAMING_DATA_BLOCKS[] = {
+    0x41, 16,
+    0xE3, 35, 0x00, 0x52,
+    0xE8, 42, 0x00, 0x00, 0x7F, 0x07, 0x37, 0x04, 0x3B,
+};
+
+TEST(edid, lists_no_timing_from_cta_861_data_blocks_naming_signals) {
+    write_empty_cta_861_edid();
+    add_cta_861_data_block_bytes(CTA_861_SIGNAL_NAMING_DATA_BLOCKS, sizeof(CTA_861_SIGNAL_NAMING_DATA_BLOCKS));
+    add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], UHD_TIMING);
+}
+
+// Five Type VII data blocks of distinct timings fill bytes 4 to 118, and each gives its timing
+TEST(edid, lists_the_timings_of_five_cta_861_type_vii_data_blocks) {
+    static constexpr uint32_t DATA_BLOCKS = 5;
+
+    write_empty_cta_861_edid();
+    for (uint32_t n = 0; n < DATA_BLOCKS; n++) {
+        add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, uhd_type_vii_raised(n));
+    }
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, DATA_BLOCKS);
+    for (uint32_t n = 0; n < DATA_BLOCKS; n++) {
+        EXPECT_EQ(g_monitor.timings[n].pixel_clock_khz, UHD_TIMING.pixel_clock_khz + n);
+    }
+}
+
+// Fills block 1 with data blocks of the reserved tag 6 from the offset in its byte 2 up to byte `end`, then seals it
+static void fill_cta_861_data_blocks(size_t end) {
+    static constexpr size_t DATA_BLOCK_BYTES_MAX = CTA_861_DATA_BLOCK_HEADER_BYTES + CTA_861_DATA_BLOCK_LENGTH_MAX;
+
+    while (block_at(1)[CTA_861_DESCRIPTOR_START_OFFSET] < end) {
+        size_t left = end - block_at(1)[CTA_861_DESCRIPTOR_START_OFFSET];
+        size_t data_block_bytes = left < DATA_BLOCK_BYTES_MAX ? left : DATA_BLOCK_BYTES_MAX;
+        uint8_t length = static_cast<uint8_t>(data_block_bytes - CTA_861_DATA_BLOCK_HEADER_BYTES);
+
+        add_cta_861_data_block(1, CTA_861_TAG_RESERVED, length);
+    }
+
+    seal(block_at(1));
+}
+
+// The data blocks end at the offset in byte 2, or at the checksum byte 127 when the offset is past it, and the walk
+// keeps the timings before a data block not ending before that end
+TEST(edid, stops_the_cta_861_data_block_walk_at_the_descriptors_or_the_checksum_byte) {
+    static constexpr size_t LAST_DATA_BYTE = edid::BLOCK_BYTES - 2;
+    static constexpr uint8_t OFFSETS_AT_OR_PAST_THE_CHECKSUM_BYTE[] = {CHECKSUM_OFFSET, CHECKSUM_OFFSET + 1, 0xFF};
+
+    write_empty_cta_861_edid();
+    add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, uhd_type_vii_raised(1));
+    add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, 2u);
+
+    // Decrementing byte 2 makes the byte at the offset the second data block's last byte
+    block_at(1)[CTA_861_DESCRIPTOR_START_OFFSET]--;
+    seal(block_at(1));
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    EXPECT_EQ(g_monitor.timings[0].pixel_clock_khz, 1045230u);
+
+    // Offsets 0 to 3 leave no data block bytes, 0 meaning no descriptors and 1 to 3 naming header bytes
+    for (uint8_t offset = 0; offset < CTA_861_HEADER_BYTES; offset++) {
+        block_at(1)[CTA_861_DESCRIPTOR_START_OFFSET] = offset;
+        seal(block_at(1));
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 0u);
+    }
+
+    size_t type_vii_bytes = CTA_861_DATA_BLOCK_HEADER_BYTES + CTA_861_TYPE_VII_LENGTH;
+    for (uint8_t offset : OFFSETS_AT_OR_PAST_THE_CHECKSUM_BYTE) {
+        // With the offset at the checksum byte or past it, a data block ending at byte 126 gives its timing and one
+        // ending at 127 none
+        write_empty_cta_861_edid();
+        fill_cta_861_data_blocks(LAST_DATA_BYTE + 1 - type_vii_bytes);
+        add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+        block_at(1)[CTA_861_DESCRIPTOR_START_OFFSET] = offset;
+        seal(block_at(1));
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        ASSERT_EQ(g_monitor.timing_count, 1u);
+        expect_timing(g_monitor.timings[0], UHD_TIMING);
+
+        // The descriptor's last byte, 0, is the checksum byte, so the byte after the first filler data block's header
+        // takes the checksum's value instead
+        write_empty_cta_861_edid();
+        fill_cta_861_data_blocks(LAST_DATA_BYTE + 2 - type_vii_bytes);
+        add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+        block_at(1)[CTA_861_DESCRIPTOR_START_OFFSET] = offset;
+        seal(block_at(1));
+        block_at(1)[CTA_861_HEADER_BYTES + CTA_861_DATA_BLOCK_HEADER_BYTES] = block_at(1)[CHECKSUM_OFFSET];
+        block_at(1)[CHECKSUM_OFFSET] = 0;
+        ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.timing_count, 0u);
+        EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+    }
+}
+
+// Block 1's two Type VII data blocks hold one timing and come before its descriptor, and block 2 holds a Type VII data
+// block before a descriptor
+TEST(edid, lists_cta_861_type_vii_timings_before_descriptor_timings_and_a_repeat_once) {
+    make_base_block(AOC_FEATURES);
+    write_timing_descriptor(0, FULL_HD);
+    copy_block_into_edid();
+    set_extension_count(2);
+
+    write_cta_861_block(1);
+    add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+    add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+    write_extension_descriptor(1, block_at(1)[CTA_861_DESCRIPTOR_START_OFFSET], full_hd_raised(1));
+
+    write_cta_861_block(2);
+    add_cta_861_type_vii_block(2, CTA_861_TYPE_VII_REVISION, uhd_type_vii_raised(1));
+    write_extension_descriptor(2, block_at(2)[CTA_861_DESCRIPTOR_START_OFFSET], full_hd_raised(2));
+
+    ASSERT_EQ(parse_edid(3 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 5u);
+    expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    expect_timing(g_monitor.timings[1], UHD_TIMING);
+    EXPECT_EQ(g_monitor.timings[2].pixel_clock_khz, 148510u);
+    EXPECT_EQ(g_monitor.timings[3].pixel_clock_khz, 1045230u);
+    EXPECT_EQ(g_monitor.timings[4].pixel_clock_khz, 148520u);
+    EXPECT_TRUE(g_monitor.first_timing_is_preferred);
+}
+
+// Thirty-two timings fill the array, block 6 then repeating the base block's first before two of one unlisted timing
+TEST(edid, counts_cta_861_type_vii_timings_found_with_the_array_full_unless_listed) {
+    write_distinct_timings(edid::TIMINGS_MAX);
+    write_cta_861_block(6);
+    add_cta_861_type_vii_block(6, CTA_861_TYPE_VII_REVISION, FULL_HD_TYPE_VII);
+    add_cta_861_type_vii_block(6, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+    add_cta_861_type_vii_block(6, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+    set_extension_count(6);
+
+    ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
+    EXPECT_EQ(g_monitor.timing_count, edid::TIMINGS_MAX);
+    EXPECT_EQ(g_monitor.dropped_timings, 2u);
+}
+
+// Video Format Preference data blocks naming the EDID's first timing descriptor (code 129) and the first Type VII data
+// block's timing (code 145), header byte included
+static constexpr uint8_t PREFERS_FIRST_DESCRIPTOR[] = {0xE2, CTA_861_EXTENDED_TAG_FORMAT_PREFERENCE, 129};
+static constexpr uint8_t PREFERS_FIRST_TYPE_VII[]   = {0xE2, CTA_861_EXTENDED_TAG_FORMAT_PREFERENCE, 145};
+
+TEST(edid, takes_no_preferred_mark_from_a_video_format_preference_data_block) {
+    make_base_block(AOC_FEATURES_BIT_1_CLEAR);
+    write_timing_descriptor(0, FULL_HD);
+    copy_block_into_edid();
+    set_extension_count(1);
+    write_cta_861_block(1);
+    add_cta_861_data_block_bytes(PREFERS_FIRST_DESCRIPTOR, sizeof(PREFERS_FIRST_DESCRIPTOR));
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
+    EXPECT_FALSE(g_monitor.first_timing_is_preferred);
+
+    write_empty_cta_861_edid();
+    add_cta_861_data_block_bytes(PREFERS_FIRST_TYPE_VII, sizeof(PREFERS_FIRST_TYPE_VII));
+    add_cta_861_type_vii_block(1, CTA_861_TYPE_VII_REVISION, UHD_TYPE_VII);
+
+    ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
+    ASSERT_EQ(g_monitor.timing_count, 1u);
+    expect_timing(g_monitor.timings[0], UHD_TIMING);
+    EXPECT_FALSE(g_monitor.first_timing_is_preferred);
 }
 
 // The IOC 25G2S's EDID as it arrives, 384 bytes with byte 126 counting a CTA-861 and a DisplayID block. The base block
