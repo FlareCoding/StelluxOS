@@ -9,28 +9,31 @@ layouts come from, what each gives, and its copyright line.
 
 src/common/modeset/timing/nvt_edid.c
     the polarities a timing descriptor's sync kind does not give (horizontal
-    negative for analog sync, vertical positive for analog and digital
-    composite sync), the first descriptor's timing read as preferred only when
-    bit 1 of the features byte is set whatever the revision, a descriptor
-    starting with five 0x01 bytes parsed as unused, a timing descriptor with a
-    width or height of 0 parsed as no timing, a product name ended by a NUL as
-    by a newline, without trailing spaces and with any other byte outside
-    printable ASCII shown as a question mark, a display descriptor parsed only
-    when its reserved byte 2 is 0, and the timings listed from a DisplayID
-    section kept when its walk stops, in kernel/drivers/graphics/edid.h,
-    kernel/drivers/graphics/edid.cpp and kernel/tests/graphics/edid.test.cpp,
-    and the timing of a Video Timing Block's one timing descriptor listed at a
-    nonzero revision when what the block counts fits in 122 bytes, and a first
-    byte of 0x20 to 0x2F taken as a DisplayID 2 version with no other header
-    byte checked, in kernel/tests/graphics/edid.test.cpp
+    negative for analog sync, vertical positive for analog and digital composite
+    sync), bit 1 of the features byte read as the base block's preferred mark at
+    every revision, a descriptor starting with five 0x01 bytes parsed as unused,
+    a timing descriptor with a width or height of 0 parsed as no timing, a
+    product name ended by a NUL as by a newline, without trailing spaces and
+    with any other byte outside printable ASCII shown as a question mark, a
+    display descriptor parsed only when its reserved byte 2 is 0, and the
+    timings listed from a DisplayID section kept when its walk stops, in
+    kernel/drivers/graphics/edid.h, kernel/drivers/graphics/edid.cpp and
+    kernel/tests/graphics/edid.test.cpp, and the timing of a Video Timing
+    Block's one timing descriptor listed at a nonzero revision when what the
+    block counts fits in 122 bytes, and a first byte of 0x20 to 0x2F taken as a
+    DisplayID 2 version with no other header byte checked, in
+    kernel/tests/graphics/edid.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/modeset/timing/nvt_edidext_861.c
     a CTA-861 block's timing descriptors read from the offset in its byte 2 up
     to the first whose pixel clock is 0 or that would not end before the
-    checksum byte, and none read when that offset or the revision in its byte 1
-    is 0, in kernel/drivers/graphics/edid.h, kernel/drivers/graphics/edid.cpp
-    and kernel/tests/graphics/edid.test.cpp
+    checksum byte, none read when that offset or the revision in its byte 1 is
+    0, and from revision 3 its data blocks walked from byte 4 up to one running
+    past byte 126, with a Type VII data block whose length is 22 read whatever
+    bits 2 to 0 and bit 7 of its revision byte hold and giving no timing when
+    bits 6 to 4 of that byte are not 0, in kernel/drivers/graphics/edid.h,
+    kernel/drivers/graphics/edid.cpp and kernel/tests/graphics/edid.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/modeset/timing/nvt_edidext_displayid.c

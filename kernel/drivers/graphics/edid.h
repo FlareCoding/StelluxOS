@@ -35,15 +35,16 @@
  * EDID can carry). A CTA-861 block can hold more timing descriptors. A
  * DisplayID block holds one section of DisplayID data with a checksum byte of
  * its own. DisplayID's 20-byte timing descriptors are Type I descriptors in a
- * version 1 section and Type VII descriptors in a version 2 section. The
- * parser lists the timings of CTA-861 and DisplayID blocks after the base
- * block's, and no block of another kind gives a timing. The parser counts as
- * skipped each extension block it is not given whole, each CTA-861 or
- * DisplayID block failing its checksum and each DisplayID block whose section
- * does not end before the block's checksum byte or fails its own checksum, so
- * a driver can tell that the EDID arrived cut short, corrupted or malformed. A
- * skipped block gives no timing, and a block of another kind is skipped only
- * when it is not given whole.
+ * version 1 section and Type VII descriptors in a version 2 section, and a
+ * CTA-861 block from revision 3 can carry Type VII descriptors too. The parser
+ * lists the timings of CTA-861 and DisplayID blocks after the base block's,
+ * and no block of another kind gives a timing. The parser counts as skipped
+ * each extension block it is not given whole, each CTA-861 or DisplayID block
+ * failing its checksum and each DisplayID block whose section does not end
+ * before the block's checksum byte or fails its own checksum, so a driver can
+ * tell that the EDID arrived cut short, corrupted or malformed. A skipped
+ * block gives no timing, and a block of another kind is skipped only when it
+ * is not given whole.
  *
  * A display driver hands the bytes it read to `edid::parse`, which returns the
  * maker, the product name, the timings, the number of timings that did not fit
@@ -154,13 +155,25 @@ struct monitor {
  * timings of the other blocks.
  *
  * A CTA-861 block's bytes 0 to 3 are its tag, its revision, the offset of its
- * first timing descriptor and a byte the parser does not read. The bytes from
- * byte 4 up to that offset hold facts the parser does not read either, among
- * them signals named by a code. The parser reads descriptors from that offset
- * up to the first whose pixel clock is 0 or that would not end before the
- * checksum byte 127, so at most six. A block at revision 0, or whose byte 2 is
- * below 4 (0 meaning no descriptors, 1 to 3 an offset within bytes 0 to 3),
- * gives no timings.
+ * first timing descriptor and a byte the parser does not read. The parser
+ * reads descriptors from that offset up to the first whose pixel clock is 0 or
+ * that would not end before the checksum byte 127, so at most six. A block at
+ * revision 0, or whose byte 2 is below 4 (0 meaning no descriptors, 1 to 3 an
+ * offset within bytes 0 to 3), gives no timings.
+ *
+ * From revision 3, the bytes from byte 4 up to the offset in byte 2 are data
+ * blocks, each a byte holding its tag in bits 7 to 5 and its length (the count
+ * of bytes that follow) in bits 4 to 0, then those bytes. A tag 7 data block
+ * names its kind in the byte after its first, its extended tag. A Type VII
+ * data block is a tag 7 data block of extended tag 34. The parser walks the
+ * data blocks in order up to one that would not end before the offset or the
+ * checksum byte, and lists the timing of each Type VII data block of length
+ * 22, which holds a revision byte and one Type VII descriptor after its
+ * extended tag. It passes over the other data blocks, such as those naming
+ * signals by a code. It also passes over a Type VII data block whose revision
+ * byte sets bit 3 or any of bits 6 to 4, as in a DisplayID section. The parser
+ * lists the data blocks' timings before the descriptors' timings, as the data
+ * blocks' bytes come first.
  *
  * A DisplayID block holds one section from byte 1. Bytes 1 to 4 are the
  * section's version byte, the byte count of its data blocks (the tagged

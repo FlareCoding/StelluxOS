@@ -27,6 +27,21 @@ static constexpr size_t CTA_861_REVISION_OFFSET         = 1;
 static constexpr size_t CTA_861_DESCRIPTOR_START_OFFSET = 2;
 static constexpr size_t CTA_861_HEADER_BYTES            = 4;
 
+// From revision 3, data blocks fill the bytes after the header up to the offset in byte 2. A data block's first byte
+// holds its tag in bits 7 to 5 and the count of bytes after it in bits 4 to 0
+static constexpr uint8_t CTA_861_FIRST_DATA_BLOCKS_REVISION = 3;
+static constexpr size_t  CTA_861_DATA_BLOCK_HEADER_BYTES    = 1;
+static constexpr uint8_t CTA_861_DATA_BLOCK_TAG_SHIFT       = 5;
+static constexpr uint8_t CTA_861_DATA_BLOCK_LENGTH_MASK     = 0x1F;
+
+// A tag 7 data block names its kind in its extended tag, the byte after its first, and these offsets count from that
+// byte. A Type VII data block (extended tag 34) follows it with a DisplayID Type VII revision byte and one descriptor
+static constexpr uint8_t CTA_861_TAG_EXTENDED               = 7;
+static constexpr size_t  CTA_861_EXTENDED_TAG_OFFSET        = 0;
+static constexpr uint8_t CTA_861_EXTENDED_TAG_TYPE_VII      = 34;
+static constexpr size_t  CTA_861_TYPE_VII_REVISION_OFFSET   = 1;
+static constexpr size_t  CTA_861_TYPE_VII_DESCRIPTOR_OFFSET = 2;
+
 // A DisplayID block holds one section from byte 1: its version byte, the byte count of its data blocks, two bytes the
 // parser does not read, the data blocks, then its checksum byte, which must come before the block's own
 static constexpr size_t DISPLAYID_VERSION_OFFSET    = 1;
@@ -340,7 +355,7 @@ static bool has_zero_clock(const uint8_t* descriptor) {
 }
 
 static void read_descriptors(const uint8_t* block, monitor& out) {
-    // The EDID code in NVIDIA's open kernel modules reads bit 1 as the preferred mark at every revision
+    // The EDID code in NVIDIA's open kernel modules reads bit 1 as the base block's preferred mark at every revision
     bool marks_first_preferred = (block[FEATURES_OFFSET] & FEATURE_FIRST_PREFERRED) != 0;
     bool has_name = false;
 
@@ -486,6 +501,49 @@ static void read_displayid_section(const uint8_t* block, monitor& out) {
     }
 }
 
+// Lists the timing in the `length` bytes after a tag 7 data block's first byte when they are a Type VII data block's
+// extended tag, a revision byte setting no unsupported bit and one descriptor
+static void list_cta_861_type_vii_timing(const uint8_t* bytes, size_t length, monitor& out) {
+    bool holds_one_descriptor = length == CTA_861_TYPE_VII_DESCRIPTOR_OFFSET + TYPE_I_DESCRIPTOR_BYTES;
+    if (!holds_one_descriptor) {
+        return;
+    }
+
+    bool is_type_vii = bytes[CTA_861_EXTENDED_TAG_OFFSET] == CTA_861_EXTENDED_TAG_TYPE_VII;
+    bool has_unsupported_bits = (bytes[CTA_861_TYPE_VII_REVISION_OFFSET] & TYPE_VII_UNSUPPORTED_REVISION_BITS) != 0;
+    if (is_type_vii && !has_unsupported_bits) {
+        list_displayid_timing(bytes + CTA_861_TYPE_VII_DESCRIPTOR_OFFSET, KHZ_PER_TYPE_VII_CLOCK_UNIT, out);
+    }
+}
+
+// Lists the timings of the Type VII data blocks of a CTA-861 block whose revision is 3 or above, walking its data
+// blocks in order up to one not ending before the offset in byte 2 or the checksum byte 127
+static void read_cta_861_data_blocks(const uint8_t* block, monitor& out) {
+    bool can_hold_data_blocks = block[CTA_861_REVISION_OFFSET] >= CTA_861_FIRST_DATA_BLOCKS_REVISION;
+    if (!can_hold_data_blocks) {
+        return;
+    }
+
+    size_t descriptor_start = block[CTA_861_DESCRIPTOR_START_OFFSET];
+    size_t data_end = descriptor_start < CHECKSUM_OFFSET ? descriptor_start : CHECKSUM_OFFSET;
+
+    size_t offset = CTA_861_HEADER_BYTES;
+    while (offset < data_end) {
+        uint8_t tag = block[offset] >> CTA_861_DATA_BLOCK_TAG_SHIFT;
+        size_t length = block[offset] & CTA_861_DATA_BLOCK_LENGTH_MASK;
+        size_t end = offset + CTA_861_DATA_BLOCK_HEADER_BYTES + length;
+        if (end > data_end) {
+            return;
+        }
+
+        if (tag == CTA_861_TAG_EXTENDED) {
+            list_cta_861_type_vii_timing(block + offset + CTA_861_DATA_BLOCK_HEADER_BYTES, length, out);
+        }
+
+        offset = end;
+    }
+}
+
 // Lists the timings of the blocks byte 126 counts, skipping and counting each extension block `bytes` does not hold
 // whole, each CTA-861 or DisplayID one failing its checksum and each DisplayID one whose section fails
 static void read_extensions(const uint8_t* bytes, size_t size, monitor& out) {
@@ -511,7 +569,9 @@ static void read_extensions(const uint8_t* bytes, size_t size, monitor& out) {
             continue;
         }
 
+        // A CTA-861 block's data blocks come before its descriptors, so the data blocks' timings are listed first
         if (tag == EXTENSION_TAG_CTA_861) {
+            read_cta_861_data_blocks(block, out);
             read_cta_861_descriptors(block, out);
         } else if (tag == EXTENSION_TAG_DISPLAYID) {
             read_displayid_section(block, out);
