@@ -283,10 +283,12 @@ src/nvidia/src/kernel/gpu/bus/arch/maxwell/kern_bus_gm107.c
     BAR1's address space as a BAR's, in bar1.h, bar1.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, that NVIDIA's driver flushes
     its writes to page tables with a read before an invalidate, in bar1.h and
-    bar1.cpp, and that NVIDIA's driver maps nothing in BAR1's last 4 KiB, so it
+    bar1.cpp, that NVIDIA's driver maps nothing in BAR1's last 4 KiB, so it
     cannot map a boot console that fills BAR1, in bar1_page_tables.h,
     bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and that NVIDIA's
+    driver links its tables for BAR1 into the firmware's whether or not it keeps
+    a boot console, in nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2004-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_gpu_access_nvoc.h
@@ -507,6 +509,11 @@ src/nvidia/src/kernel/gpu/mmu/gmmu_walk.c
     bar1_page_tables.cpp and
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/libraries/mmu/mmu_walk.c
+    that NVIDIA's driver allocates each page table only once a mapping needs it,
+    in bar1_page_tables.h
+    SPDX-FileCopyrightText: Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c
     that NVIDIA's driver gives a boot console's memory 4 KiB pages, in

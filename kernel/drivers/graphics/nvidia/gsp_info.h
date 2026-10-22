@@ -86,7 +86,7 @@ int32_t confirm_message_version(gsp& conversation, uint64_t timeout_ns);
  * second request once the firmware is ready, and read from it the members
  * `static_configuration` holds: the video memory regions the firmware reports,
  * where BAR1's root page directory lies, and the handles of the internal
- * client and subdevice. BAR1 is the CPU's window into the card's video memory,
+ * client and subdevice. BAR1 is where the CPU reaches the card's video memory,
  * and its root page directory is the top level of the page tables the firmware
  * binds BAR1 to. The request carries 2168 zero bytes, the size of NVIDIA's
  * static configuration for this firmware, from a buffer allocated on the

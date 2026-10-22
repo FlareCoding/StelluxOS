@@ -34,7 +34,7 @@ using drivers::nvidia::gsp_boot_memory;
 using drivers::nvidia::has_gsp_riscv_core;
 using drivers::nvidia::invalidate_bar1_tlb;
 using drivers::nvidia::is_gsp_riscv_running;
-using drivers::nvidia::link_console_page_tables;
+using drivers::nvidia::link_bar1_page_tables;
 using drivers::nvidia::notify_gsp_of_queued_messages;
 using drivers::nvidia::read_bar1_block;
 using drivers::nvidia::read_video_memory_u64;
@@ -1261,12 +1261,12 @@ TEST(nvidia_falcon, video_memory_is_written_up_to_the_end_of_the_windows_1_mib_a
     heap::ufree(values);
 }
 
-// The entry naming the RTX 3080's console tables, which lie at 0x3F80000 in video memory
+// The entry naming BAR1's tables at 0x3F80000 in video memory, where they lie on the RTX 3080 with the boot console
 static constexpr uint64_t RTX_3080_TABLES_ENTRY = 0x3F8002;
 
 // Only the root's first entry is written, over both words at the root's place in its 64 KiB step, and the invalidate
 // names the root and waits out the link's timeout on a trigger the fake never clears, the link returning `ERR_TIMEOUT`
-TEST(nvidia_falcon, console_tables_are_linked_at_the_roots_first_entry_and_invalidated_through_the_root) {
+TEST(nvidia_falcon, bar1_tables_are_linked_at_the_roots_first_entry_and_invalidated_through_the_root) {
     falcon_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
     bar0.write(BAR0_WINDOW, FOUND_WINDOW);
@@ -1278,7 +1278,7 @@ TEST(nvidia_falcon, console_tables_are_linked_at_the_roots_first_entry_and_inval
     bar0.write(INVALIDATE, ~INVALIDATE_TRIGGER);
 
     uint64_t start = clock::now_ns();
-    int32_t rc = link_console_page_tables(bar0.regs, RTX_3080_BAR1_ROOT, RTX_3080_TABLES_ENTRY, SHORT_TIMEOUT_NS);
+    int32_t rc = link_bar1_page_tables(bar0.regs, RTX_3080_BAR1_ROOT, RTX_3080_TABLES_ENTRY, SHORT_TIMEOUT_NS);
     uint64_t elapsed = clock::now_ns() - start;
 
     EXPECT_EQ(rc, ERR_TIMEOUT);

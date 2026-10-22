@@ -14,12 +14,12 @@ constexpr uint64_t TABLE_SPAN_BYTES = TABLE_WORDS * SMALL_PAGE_BYTES;
 constexpr uint64_t DIRECTORY_COUNT  = 3;
 
 // A level 0 entry takes 16 bytes. Its first half would name a page table of 64 KiB or 128 KiB pages and names none in
-// the console's tables. Its second half, laid out as a directory entry, names a page table of 4 KiB pages or nothing
+// BAR1's tables. Its second half, laid out as a directory entry, names a page table of 4 KiB pages or nothing
 constexpr uint64_t LEVEL_0_ENTRY_WORDS = 2;
 constexpr uint64_t LARGE_PAGES_WORD    = 0;
 constexpr uint64_t SMALL_PAGES_WORD    = 1;
 constexpr uint64_t LEVEL_0_ENTRIES     = TABLE_WORDS / LEVEL_0_ENTRY_WORDS;
-constexpr uint64_t MAX_CONSOLE_BYTES   = LEVEL_0_ENTRIES * TABLE_SPAN_BYTES;
+constexpr uint64_t MAX_WINDOW_BYTES    = LEVEL_0_ENTRIES * TABLE_SPAN_BYTES;
 
 // An entry holds the offset of what it names in 4 KiB units in a 25-bit address field from bit 8, so it names only
 // offsets below 128 GiB
@@ -51,29 +51,49 @@ static uint64_t page_entry(uint64_t offset) {
     return (offset >> ADDRESS_UNIT_SHIFT) << ADDRESS_FIELD_SHIFT | PAGE_VALID;
 }
 
-// How many page tables map a console of `console_bytes` bytes, one for each 2 MiB of it or part of it
-static uint64_t count_page_tables(uint64_t console_bytes) {
-    return (console_bytes + TABLE_SPAN_BYTES - 1) / TABLE_SPAN_BYTES;
+// How many page tables a window of `window_bytes` bytes takes, one for each 2 MiB of it or part of it
+static uint64_t count_page_tables(uint64_t window_bytes) {
+    return (window_bytes + TABLE_SPAN_BYTES - 1) / TABLE_SPAN_BYTES;
 }
 
-uint64_t console_page_table_bytes(uint64_t console_bytes) {
-    bool is_empty = console_bytes == 0;
-    bool is_whole_pages = console_bytes % SMALL_PAGE_BYTES == 0;
-    bool fits_level_0 = console_bytes <= MAX_CONSOLE_BYTES;
+uint64_t bar1_window_bytes(uint64_t bar1_bytes) {
+    if (bar1_bytes <= SMALL_PAGE_BYTES) {
+        return 0;
+    }
+
+    uint64_t mappable_bytes = (bar1_bytes - SMALL_PAGE_BYTES) / SMALL_PAGE_BYTES * SMALL_PAGE_BYTES;
+    return mappable_bytes < MAX_WINDOW_BYTES ? mappable_bytes : MAX_WINDOW_BYTES;
+}
+
+uint64_t bar1_page_table_bytes(uint64_t window_bytes) {
+    bool is_empty = window_bytes == 0;
+    bool is_whole_pages = window_bytes % SMALL_PAGE_BYTES == 0;
+    bool fits_level_0 = window_bytes <= MAX_WINDOW_BYTES;
     if (is_empty || !is_whole_pages || !fits_level_0) {
         return 0;
     }
 
-    return (DIRECTORY_COUNT + count_page_tables(console_bytes)) * TABLE_BYTES;
+    return (DIRECTORY_COUNT + count_page_tables(window_bytes)) * TABLE_BYTES;
 }
 
-uint64_t write_console_page_tables(uint64_t* tables, uint64_t tables_offset, uint64_t console_bytes) {
-    uint64_t table_bytes = console_page_table_bytes(console_bytes);
-    bool is_refused_size = table_bytes == 0;
+uint64_t write_bar1_page_tables(
+    uint64_t* tables,
+    uint64_t tables_offset,
+    uint64_t window_bytes,
+    uint64_t console_bytes
+) {
+    uint64_t table_bytes = bar1_page_table_bytes(window_bytes);
+    bool is_refused_window = table_bytes == 0;
+    bool is_whole_console_pages = console_bytes % SMALL_PAGE_BYTES == 0;
+    bool is_console_in_window = console_bytes <= window_bytes;
+    if (is_refused_window || !is_whole_console_pages || !is_console_in_window) {
+        return 0;
+    }
+
     bool is_unit_aligned = tables_offset % ADDRESS_UNIT_BYTES == 0;
     bool is_past_console = tables_offset >= console_bytes;
     bool is_nameable = lies_inside(tables_offset, table_bytes, ADDRESS_FIELD_REACH);
-    if (is_refused_size || !is_unit_aligned || !is_past_console || !is_nameable) {
+    if (!is_unit_aligned || !is_past_console || !is_nameable) {
         return 0;
     }
 
@@ -85,8 +105,8 @@ uint64_t write_console_page_tables(uint64_t* tables, uint64_t tables_offset, uin
     uint64_t level_1_offset = tables_offset + TABLE_BYTES;
     uint64_t level_0_offset = level_1_offset + TABLE_BYTES;
     uint64_t page_tables_offset = level_0_offset + TABLE_BYTES;
-    uint64_t page_table_count = count_page_tables(console_bytes);
-    uint64_t pages = console_bytes / SMALL_PAGE_BYTES;
+    uint64_t page_table_count = count_page_tables(window_bytes);
+    uint64_t console_pages = console_bytes / SMALL_PAGE_BYTES;
 
     level_2[0] = directory_entry(level_1_offset);
     level_1[0] = directory_entry(level_0_offset);
@@ -106,7 +126,7 @@ uint64_t write_console_page_tables(uint64_t* tables, uint64_t tables_offset, uin
     }
 
     for (uint64_t page = 0; page < page_table_count * TABLE_WORDS; page++) {
-        page_tables[page] = page < pages ? page_entry(page * SMALL_PAGE_BYTES) : SPARSE_ENTRY;
+        page_tables[page] = page < console_pages ? page_entry(page * SMALL_PAGE_BYTES) : SPARSE_ENTRY;
     }
 
     return directory_entry(tables_offset);
@@ -132,11 +152,11 @@ int32_t check_console_region(
     uint64_t console_bytes = console_region.size;
     bool starts_at_zero = console_region.offset == 0;
     bool holds_reserved_bytes = console_bytes >= reserved_console_bytes;
-    bool has_mappable_size = console_page_table_bytes(console_bytes) != 0;
-    if (!starts_at_zero || !holds_reserved_bytes || !has_mappable_size) {
+    bool is_whole_pages = console_bytes % SMALL_PAGE_BYTES == 0;
+    if (!starts_at_zero || !holds_reserved_bytes || !is_whole_pages) {
         log::error(
-            "nvidia: video memory region 0 holds 0x%lX bytes at 0x%lX, where the console's tables need it to start at "
-            "0, hold the 0x%lX bytes reserved for the boot console and hold whole 4 KiB pages up to 512 MiB",
+            "nvidia: video memory region 0 holds 0x%lX bytes at 0x%lX, where BAR1's tables need it to start at 0, hold "
+            "the 0x%lX bytes reserved for the boot console and hold whole 4 KiB pages",
             console_bytes,
             console_region.offset,
             reserved_console_bytes
@@ -144,11 +164,13 @@ int32_t check_console_region(
         return ERR_BAD_STATE;
     }
 
-    if (console_bytes >= bar1_bytes) {
+    uint64_t window_bytes = bar1_window_bytes(bar1_bytes);
+    if (console_bytes > window_bytes) {
         log::error(
-            "nvidia: the console's 0x%lX bytes leave none of BAR1's 0x%lX bytes past them",
+            "nvidia: the console's 0x%lX bytes do not fit BAR1's window of 0x%lX bytes, which leaves out BAR1's last "
+            "4 KiB and holds at most 512 MiB",
             console_bytes,
-            bar1_bytes
+            window_bytes
         );
         return ERR_BAD_STATE;
     }

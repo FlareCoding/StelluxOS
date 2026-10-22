@@ -83,12 +83,12 @@ public:
      * allocations, once they pass three checks of this driver's own, which
      * NVIDIA's driver does not make: no region overlaps another, every usable
      * region ends at or below `video_memory_size`, and the first entry of
-     * BAR1's root page directory, which bring-up rewrites when it keeps a boot
-     * console at the start of BAR1, lies wholly inside a reserved region.
-     * Otherwise the allocator could hand out a byte twice, a reserved byte, a
-     * byte the card lacks or that entry, and it trusts no part of a table that
-     * fails a check. A reserved region may end past `video_memory_size`, since
-     * no range is handed out of it. The regions' count and sizes are taken as
+     * BAR1's root page directory, which bring-up rewrites to link BAR1's
+     * tables, lies wholly inside a reserved region. Otherwise the allocator
+     * could hand out a byte twice, a reserved byte, a byte the card lacks or
+     * that entry, and it trusts no part of a table that fails a check. A
+     * reserved region may end past `video_memory_size`, since no range is
+     * handed out of it. The regions' count and sizes are taken as
      * `read_static_configuration` checked them. It must be called at most once,
      * since a second call would replace the regions of the ranges already
      * handed out.
