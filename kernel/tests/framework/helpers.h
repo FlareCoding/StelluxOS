@@ -94,7 +94,9 @@ inline bool spin_wait_ge(const sync::atomic<uint32_t>& value, uint32_t target) {
     return true;
 }
 
-inline void brief_delay() {
+// A busy delay that reads no clock, out of line and aligned to at least its size so its loop stays within one page,
+// since QEMU's x86_64 emulation runs the loop about five times slower when it crosses a page boundary
+__attribute__((noinline, aligned(128))) inline void brief_delay() {
     uint64_t i = 0;
     while (i < 5000000) {
         asm volatile("" : "+r"(i));
