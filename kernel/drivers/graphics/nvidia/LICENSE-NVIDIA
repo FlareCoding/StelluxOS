@@ -2012,10 +2012,12 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080fb.h
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and what a region's
     fields mean: its first and last valid bytes, which give its size as the last
     less the first plus 1, the bytes the resource manager may need in it, which
-    a driver managing the memory leaves free, and which allocations its
-    compression, scanout and protection flags allow, in gsp_info.h,
-    gsp_info.cpp, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    a driver managing the memory leaves free, how fast its memory is against the
+    other regions', and which allocations its compression, scanout and
+    protection flags allow, in gsp_info.h, gsp_info.cpp, nvidia_gpu.cpp,
+    vram_allocator.h, vram_allocator.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_vram_allocator.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2006-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr_gsp_client.c
@@ -2024,10 +2026,10 @@ src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr_gsp_client.c
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that a region
     with reserved bytes counts as reserved rather than usable, in gsp_info.h,
     gsp_info.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the firmware
-    reserves some regions for its own use and that NVIDIA's driver takes each
-    region's first and last bytes without checking them against each other, in
-    gsp_info.h
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the firmware
+    reserves some regions for its own use, in gsp_info.h and vram_allocator.h,
+    and that NVIDIA's driver takes each region's first and last bytes without
+    checking them against each other, in gsp_info.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_mem_mgr_nvoc.h
@@ -2040,8 +2042,29 @@ src/nvidia/src/kernel/gpu/mem_mgr/heap.c
     supporting it, that allocations of primary, cursor and video surfaces lie
     only in regions supporting scanout, that a protected region holds only
     protected allocations, which lie nowhere else, and that a region a boot
-    console uses is reserved, in gsp_info.h
+    console uses is reserved, in gsp_info.h, vram_allocator.h,
+    vram_allocator.cpp and kernel/tests/graphics/nvidia_vram_allocator.test.cpp,
+    and the rules that only allocations of the reserved type lie in a reserved
+    region, that each contiguous allocation whose offset the heap chooses lies
+    wholly inside one region, at the lowest aligned offset of a free block
+    unless the placement strategy for its type or its caller's flags place it at
+    the top of the highest free block that fits, and that regions are tried
+    fastest first, or slowest first for allocations of low priority, in
+    vram_allocator.h, vram_allocator.cpp and
+    kernel/tests/graphics/nvidia_vram_allocator.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr_regions.c
+    the order in which NVIDIA's driver tries the regions it allocates from,
+    highest performance first, sorted by an exchange sort that can reverse the
+    firmware's order of two regions of equal performance, in vram_allocator.h,
+    vram_allocator.cpp and kernel/tests/graphics/nvidia_vram_allocator.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mem_mgr/arch/maxwell/mem_mgr_gm107.c
+    the placement strategy for each type of allocation, which places allocations
+    of some types at the top of a free block, in vram_allocator.h
+    SPDX-FileCopyrightText: Copyright (c) 2006-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080gr.h
     the size of the graphics capabilities table, which the static configuration

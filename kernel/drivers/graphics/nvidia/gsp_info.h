@@ -28,6 +28,7 @@ struct video_memory_region {
     uint64_t size;                 // the region's bytes, from its first byte to the last the firmware gives
     uint64_t reserved_bytes;       // bytes in it the firmware leaves alone for a boot console or may need, which a
                                    // driver managing the memory leaves free
+    uint32_t performance;          // how fast its memory is against the other regions', higher for faster memory
     bool     is_reserved;          // set when it has reserved bytes, as NVIDIA's driver then marks the whole region
                                    // reserved and counts none of it as usable
     bool     is_protected;         // only allocations marked protected may lie in it, and those lie nowhere else
