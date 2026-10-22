@@ -9,8 +9,8 @@
 namespace drivers::nvidia {
 
 /**
- * @brief Read BAR1's block register, the register that binds BAR1 (the CPU's
- * window into the card's video memory) to video memory. It reads as the boot
+ * @brief Read BAR1's block register, the register that binds BAR1 (where the
+ * CPU reaches the card's video memory) to video memory. It reads as the boot
  * firmware left it until the CPU sequencer's resume step, after which the
  * GSP's firmware rewrites it to send BAR1 through the firmware's own page
  * tables, and BAR1 no longer reaches the memory it reached before, such as a
@@ -67,33 +67,32 @@ void restore_bar1_block(registers& regs, uint32_t saved_block);
 int32_t invalidate_bar1_tlb(registers& regs, uint64_t root_offset, uint64_t timeout_ns);
 
 /**
- * @brief Link the console's page tables into BAR1's: write `root_entry` as the
- * first entry of BAR1's root page directory through BAR0's window, read the
- * entry back through the window, and invalidate BAR1's cached translations
- * through that directory with `invalidate_bar1_tlb`. The console is a boot
- * framebuffer that may still be drawn in, its tables are those
- * `write_console_page_tables` builds, and BAR0's window is the 1 MiB of BAR0
- * that reaches video memory without page tables. NVIDIA's driver writes the
- * entries of its own root page directory into the firmware's and then
- * invalidates, in that order. The read-back between them completes the
- * window's writes in video memory before the invalidate, as NVIDIA's driver
- * requires for its own writes to page tables, flushing them with a read.
- * Refusing an entry that reads back as another value is this driver's own
- * step, since NVIDIA's driver reads back none of the entries it writes. The
- * call spins in the invalidate's waits without sleeping.
+ * @brief Link BAR1's tables into the page tables the firmware binds BAR1 to:
+ * write `root_entry` as the first entry of BAR1's root page directory through
+ * BAR0's window, read the entry back through the window, and invalidate BAR1's
+ * cached translations through that directory with `invalidate_bar1_tlb`.
+ * BAR1's tables are those `write_bar1_page_tables` builds, and BAR0's window
+ * is the 1 MiB of BAR0 that reaches video memory without page tables. NVIDIA's
+ * driver writes the entries of its own root page directory into the firmware's
+ * and then invalidates, in that order. The read-back between them completes
+ * the window's writes in video memory before the invalidate, as NVIDIA's
+ * driver requires for its own writes to page tables, flushing them with a
+ * read. Refusing an entry that reads back as another value is this driver's
+ * own step, since NVIDIA's driver reads back none of the entries it writes.
+ * The call spins in the invalidate's waits without sleeping.
  * @param regs A view of BAR0.
  * @param root_offset Bytes from the start of video memory to BAR1's root page
  * directory. It must be a multiple of 8 below `BAR0_WINDOW_REACH`, as
  * `write_video_memory` requires.
- * @param root_entry The entry naming the console's tables, as
- * `write_console_page_tables` returns it.
+ * @param root_entry The entry naming BAR1's tables, as
+ * `write_bar1_page_tables` returns it.
  * @param timeout_ns How long the invalidate's two waits may take together.
  * @return `OK`, `ERR_BAD_STATE`, logged, with the write made and no invalidate
  * asked for, when the entry reads back as another value, or `ERR_TIMEOUT`,
  * logged, with the entry written, as `invalidate_bar1_tlb` describes.
  * `write_video_memory` refuses no single entry, so it never fails the call.
  */
-int32_t link_console_page_tables(registers& regs, uint64_t root_offset, uint64_t root_entry, uint64_t timeout_ns);
+int32_t link_bar1_page_tables(registers& regs, uint64_t root_offset, uint64_t root_entry, uint64_t timeout_ns);
 
 } // namespace drivers::nvidia
 

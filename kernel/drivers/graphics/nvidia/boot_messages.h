@@ -18,7 +18,7 @@ namespace drivers::nvidia {
  */
 struct card_placement {
     uint64_t registers_address; // BAR0, the card's registers
-    uint64_t bar1_address;      // the window into video memory
+    uint64_t bar1_address;      // where the CPU reaches video memory
     uint64_t bar3_address;
     uint8_t  bus;
     uint8_t  device;

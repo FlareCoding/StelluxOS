@@ -126,7 +126,7 @@ int32_t invalidate_bar1_tlb(registers& regs, uint64_t root_offset, uint64_t time
     return OK;
 }
 
-int32_t link_console_page_tables(registers& regs, uint64_t root_offset, uint64_t root_entry, uint64_t timeout_ns) {
+int32_t link_bar1_page_tables(registers& regs, uint64_t root_offset, uint64_t root_entry, uint64_t timeout_ns) {
     int32_t rc = write_video_memory(regs, root_offset, &root_entry, 1);
     if (rc != OK) {
         return rc;
@@ -136,7 +136,7 @@ int32_t link_console_page_tables(registers& regs, uint64_t root_offset, uint64_t
     if (written_entry != root_entry) {
         log::error(
             "nvidia: the first entry of BAR1's root page directory at 0x%lX in video memory, written as 0x%lX to name "
-            "the console's tables, reads back as 0x%lX",
+            "BAR1's tables, reads back as 0x%lX",
             root_offset,
             root_entry,
             written_entry
@@ -145,8 +145,8 @@ int32_t link_console_page_tables(registers& regs, uint64_t root_offset, uint64_t
     }
 
     log::info(
-        "nvidia: the first entry of BAR1's root page directory at 0x%lX in video memory now reads 0x%lX, naming the "
-        "console's tables",
+        "nvidia: the first entry of BAR1's root page directory at 0x%lX in video memory now reads 0x%lX, naming "
+        "BAR1's tables",
         root_offset,
         written_entry
     );

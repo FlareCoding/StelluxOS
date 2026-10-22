@@ -12,14 +12,15 @@ TEST_SUITE(nvidia_bar1_page_tables);
 
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::OK;
+using drivers::nvidia::bar1_page_table_bytes;
+using drivers::nvidia::bar1_window_bytes;
 using drivers::nvidia::check_console_region;
-using drivers::nvidia::console_page_table_bytes;
 using drivers::nvidia::static_configuration;
 using drivers::nvidia::video_memory_region;
 using drivers::nvidia::vram_allocator;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
-using drivers::nvidia::write_console_page_tables;
+using drivers::nvidia::write_bar1_page_tables;
 
 // NVIDIA's 4 KiB tables and pages, a table's 512 words (one entry each but in level 0, whose 256 entries take two), and
 // which word of a level 0 entry is for a page table of larger pages and which is for a page table of 4 KiB pages
@@ -85,32 +86,96 @@ static uint64_t page_entry(uint64_t offset) {
     return (offset / PAGE_BYTES) << ADDRESS_FIELD_SHIFT | 0x1;
 }
 
+// Writes tables at `tables_offset` for a 2 MiB window that a 2 MiB console fills, returning the writer's root entry
+static uint64_t write_2_mib_window_tables(uint64_t* tables, uint64_t tables_offset) {
+    return write_bar1_page_tables(tables, tables_offset, TABLE_SPAN, TABLE_SPAN);
+}
+
 // A size past 32 bits whose low 32 bits are a size the sizer accepts, so a cut to 32 bits would pass it
 static constexpr uint64_t PAST_32_BITS_BYTES = (1ULL << 32) + PAGE_BYTES;
 
 TEST(nvidia_bar1_page_tables, tables_take_three_directories_and_a_page_table_for_each_2_mib) {
-    EXPECT_EQ(console_page_table_bytes(0), static_cast<uint64_t>(0));
-    EXPECT_EQ(console_page_table_bytes(PAGE_BYTES), (DIRECTORY_PAGES + 1) * PAGE_BYTES);
-    EXPECT_EQ(console_page_table_bytes(TABLE_SPAN), (DIRECTORY_PAGES + 1) * PAGE_BYTES);
-    EXPECT_EQ(console_page_table_bytes(TABLE_SPAN + PAGE_BYTES), (DIRECTORY_PAGES + 2) * PAGE_BYTES);
-    EXPECT_EQ(console_page_table_bytes(RTX_3080_CONSOLE_BYTES), (DIRECTORY_PAGES + RTX_3080_PAGE_TABLES) * PAGE_BYTES);
-    EXPECT_EQ(console_page_table_bytes(LEVEL_0_ENTRIES * TABLE_SPAN), (DIRECTORY_PAGES + LEVEL_0_ENTRIES) * PAGE_BYTES);
-    EXPECT_EQ(console_page_table_bytes(LEVEL_0_ENTRIES * TABLE_SPAN + PAGE_BYTES), static_cast<uint64_t>(0));
-    EXPECT_EQ(console_page_table_bytes(PAGE_BYTES + 1), static_cast<uint64_t>(0));
-    EXPECT_EQ(console_page_table_bytes(PAGE_BYTES + PAGE_BYTES / 2), static_cast<uint64_t>(0));
-    EXPECT_EQ(console_page_table_bytes(PAST_32_BITS_BYTES), static_cast<uint64_t>(0));
+    EXPECT_EQ(bar1_page_table_bytes(0), static_cast<uint64_t>(0));
+    EXPECT_EQ(bar1_page_table_bytes(PAGE_BYTES), (DIRECTORY_PAGES + 1) * PAGE_BYTES);
+    EXPECT_EQ(bar1_page_table_bytes(TABLE_SPAN), (DIRECTORY_PAGES + 1) * PAGE_BYTES);
+    EXPECT_EQ(bar1_page_table_bytes(TABLE_SPAN + PAGE_BYTES), (DIRECTORY_PAGES + 2) * PAGE_BYTES);
+    EXPECT_EQ(bar1_page_table_bytes(RTX_3080_CONSOLE_BYTES), (DIRECTORY_PAGES + RTX_3080_PAGE_TABLES) * PAGE_BYTES);
+    EXPECT_EQ(bar1_page_table_bytes(LEVEL_0_ENTRIES * TABLE_SPAN), (DIRECTORY_PAGES + LEVEL_0_ENTRIES) * PAGE_BYTES);
+    EXPECT_EQ(bar1_page_table_bytes(LEVEL_0_ENTRIES * TABLE_SPAN + PAGE_BYTES), static_cast<uint64_t>(0));
+    EXPECT_EQ(bar1_page_table_bytes(PAGE_BYTES + 1), static_cast<uint64_t>(0));
+    EXPECT_EQ(bar1_page_table_bytes(PAGE_BYTES + PAGE_BYTES / 2), static_cast<uint64_t>(0));
+    EXPECT_EQ(bar1_page_table_bytes(PAST_32_BITS_BYTES), static_cast<uint64_t>(0));
+}
+
+// The RTX 3080's 256 MiB BAR1 and its window, 4 KiB smaller, whose 65535 pages take 128 page tables, and a BAR1 larger
+// than the 512 MiB one level 0 directory covers
+static constexpr uint64_t RTX_3080_BAR1_BYTES         = 0x10000000;
+static constexpr uint64_t RTX_3080_WINDOW_BYTES       = 0x0FFFF000;
+static constexpr uint64_t RTX_3080_WINDOW_PAGE_TABLES = 128;
+static constexpr uint64_t LARGE_BAR1_BYTES            = 1ULL << 34;
+
+TEST(nvidia_bar1_page_tables, bar1s_window_leaves_out_its_last_4_kib_and_stops_at_512_mib) {
+    EXPECT_EQ(bar1_window_bytes(RTX_3080_BAR1_BYTES), RTX_3080_WINDOW_BYTES);
+    EXPECT_EQ(bar1_window_bytes(0), static_cast<uint64_t>(0));
+    EXPECT_EQ(bar1_window_bytes(PAGE_BYTES), static_cast<uint64_t>(0));
+    EXPECT_EQ(bar1_window_bytes(2 * PAGE_BYTES), PAGE_BYTES);
+    EXPECT_EQ(bar1_window_bytes(3 * PAGE_BYTES - 1), PAGE_BYTES);
+    EXPECT_EQ(bar1_window_bytes(LEVEL_0_ENTRIES * TABLE_SPAN), LEVEL_0_ENTRIES * TABLE_SPAN - PAGE_BYTES);
+    EXPECT_EQ(bar1_window_bytes(LEVEL_0_ENTRIES * TABLE_SPAN + PAGE_BYTES), LEVEL_0_ENTRIES * TABLE_SPAN);
+    EXPECT_EQ(bar1_window_bytes(LARGE_BAR1_BYTES), LEVEL_0_ENTRIES * TABLE_SPAN);
+    EXPECT_EQ(
+        bar1_page_table_bytes(RTX_3080_WINDOW_BYTES),
+        (DIRECTORY_PAGES + RTX_3080_WINDOW_PAGE_TABLES) * PAGE_BYTES
+    );
 }
 
 // The video memory offset the test gives the tables, the start of the first region the RTX 3080's GSP firmware reports
 // as usable with the boot console on the card
 static constexpr uint64_t TABLES_OFFSET = 0x3F80000;
 
-TEST(nvidia_bar1_page_tables, console_tables_map_bar1s_start_onto_the_same_video_memory_offsets_with_the_rest_sparse) {
+// How many words of tables written at `tables_offset` with `page_tables` page tables differ from the driver's layout,
+// with the first `console_pages` pages of BAR1 mapped onto the same pages of video memory and every unused entry sparse
+static uint64_t count_wrong_words(
+    const uint64_t* tables,
+    uint64_t tables_offset,
+    uint64_t page_tables,
+    uint64_t console_pages
+) {
+    const uint64_t* level_2 = tables;
+    const uint64_t* level_1 = level_2 + TABLE_WORDS;
+    const uint64_t* level_0 = level_1 + TABLE_WORDS;
+    const uint64_t* page_table_words = level_0 + TABLE_WORDS;
+
+    uint64_t wrong_words = 0;
+    wrong_words += level_2[0] != directory_entry(tables_offset + PAGE_BYTES);
+    wrong_words += level_1[0] != directory_entry(tables_offset + 2 * PAGE_BYTES);
+    for (uint64_t i = 1; i < TABLE_WORDS; i++) {
+        wrong_words += level_2[i] != SPARSE_ENTRY;
+        wrong_words += level_1[i] != SPARSE_ENTRY;
+    }
+
+    for (uint64_t k = 0; k < LEVEL_0_ENTRIES; k++) {
+        const uint64_t* entry = level_0 + k * LEVEL_0_ENTRY_WORDS;
+        bool names_page_table = k < page_tables;
+        uint64_t page_table_offset = tables_offset + (DIRECTORY_PAGES + k) * PAGE_BYTES;
+
+        wrong_words += entry[LARGE_PAGES_WORD] != (names_page_table ? 0 : SPARSE_ENTRY);
+        wrong_words += entry[SMALL_PAGES_WORD] != (names_page_table ? directory_entry(page_table_offset) : 0);
+    }
+
+    for (uint64_t page = 0; page < page_tables * TABLE_WORDS; page++) {
+        wrong_words += page_table_words[page] != (page < console_pages ? page_entry(page * PAGE_BYTES) : SPARSE_ENTRY);
+    }
+
+    return wrong_words;
+}
+
+TEST(nvidia_bar1_page_tables, bar1_tables_map_bar1s_start_onto_the_same_video_memory_offsets_with_the_rest_sparse) {
     uint64_t table_pages = DIRECTORY_PAGES + RTX_3080_PAGE_TABLES;
     uint64_t* tables = alloc_copy(table_pages);
     ASSERT_NOT_NULL(tables);
 
-    uint64_t root_entry = write_console_page_tables(tables, TABLES_OFFSET, RTX_3080_CONSOLE_BYTES);
+    uint64_t root_entry = write_bar1_page_tables(tables, TABLES_OFFSET, RTX_3080_CONSOLE_BYTES, RTX_3080_CONSOLE_BYTES);
 
     uint64_t* level_2 = tables;
     uint64_t* level_1 = level_2 + TABLE_WORDS;
@@ -131,27 +196,54 @@ TEST(nvidia_bar1_page_tables, console_tables_map_bar1s_start_onto_the_same_video
     EXPECT_EQ(page_tables[0x167F], static_cast<uint64_t>(0x167F01));
     EXPECT_EQ(page_tables[0x1680], static_cast<uint64_t>(0x8));
 
-    uint64_t wrong_words = 0;
-    for (uint64_t i = 1; i < TABLE_WORDS; i++) {
-        wrong_words += level_2[i] != SPARSE_ENTRY;
-        wrong_words += level_1[i] != SPARSE_ENTRY;
-    }
-
-    for (uint64_t k = 0; k < LEVEL_0_ENTRIES; k++) {
-        uint64_t* entry = level_0 + k * LEVEL_0_ENTRY_WORDS;
-        bool names_page_table = k < RTX_3080_PAGE_TABLES;
-        uint64_t page_table_offset = TABLES_OFFSET + (DIRECTORY_PAGES + k) * PAGE_BYTES;
-
-        wrong_words += entry[LARGE_PAGES_WORD] != (names_page_table ? 0 : SPARSE_ENTRY);
-        wrong_words += entry[SMALL_PAGES_WORD] != (names_page_table ? directory_entry(page_table_offset) : 0);
-    }
-
     uint64_t console_pages = RTX_3080_CONSOLE_BYTES / PAGE_BYTES;
-    for (uint64_t page = 0; page < RTX_3080_PAGE_TABLES * TABLE_WORDS; page++) {
-        wrong_words += page_tables[page] != (page < console_pages ? page_entry(page * PAGE_BYTES) : SPARSE_ENTRY);
-    }
+    EXPECT_EQ(count_wrong_words(tables, TABLES_OFFSET, RTX_3080_PAGE_TABLES, console_pages), static_cast<uint64_t>(0));
+    EXPECT_EQ(written_words(tables, table_pages, 1), static_cast<uint64_t>(0));
 
-    EXPECT_EQ(wrong_words, static_cast<uint64_t>(0));
+    heap::ufree(tables);
+}
+
+// Tables for the RTX 3080's window with its console map the console's pages and leave every page past the console
+// sparse, BAR1's last 4 KiB included, in 128 page tables
+TEST(nvidia_bar1_page_tables, tables_for_the_rtx_3080_window_map_the_console_and_leave_the_rest_of_bar1_sparse) {
+    uint64_t table_pages = DIRECTORY_PAGES + RTX_3080_WINDOW_PAGE_TABLES;
+    uint64_t* tables = alloc_copy(table_pages);
+    ASSERT_NOT_NULL(tables);
+
+    uint64_t root_entry = write_bar1_page_tables(tables, TABLES_OFFSET, RTX_3080_WINDOW_BYTES, RTX_3080_CONSOLE_BYTES);
+
+    uint64_t* page_tables = tables + DIRECTORY_PAGES * TABLE_WORDS;
+    uint64_t console_pages = RTX_3080_CONSOLE_BYTES / PAGE_BYTES;
+
+    EXPECT_EQ(root_entry, directory_entry(TABLES_OFFSET));
+    EXPECT_EQ(page_tables[console_pages - 1], page_entry(RTX_3080_CONSOLE_BYTES - PAGE_BYTES));
+    EXPECT_EQ(page_tables[RTX_3080_BAR1_BYTES / PAGE_BYTES - 1], SPARSE_ENTRY);
+    EXPECT_EQ(
+        count_wrong_words(tables, TABLES_OFFSET, RTX_3080_WINDOW_PAGE_TABLES, console_pages),
+        static_cast<uint64_t>(0)
+    );
+    EXPECT_EQ(written_words(tables, table_pages, 1), static_cast<uint64_t>(0));
+
+    heap::ufree(tables);
+}
+
+// The start of the one usable region the RTX 3080's GSP firmware reports with no boot console on the card
+static constexpr uint64_t NO_CONSOLE_TABLES_OFFSET = 0x2A40000;
+
+// Without a console, every page entry of the window is sparse while every level 0 entry the window uses still names its
+// page table, so a later mapping only writes page entries
+TEST(nvidia_bar1_page_tables, without_a_console_every_page_entry_of_the_window_is_sparse) {
+    uint64_t table_pages = DIRECTORY_PAGES + RTX_3080_WINDOW_PAGE_TABLES;
+    uint64_t* tables = alloc_copy(table_pages);
+    ASSERT_NOT_NULL(tables);
+
+    uint64_t root_entry = write_bar1_page_tables(tables, NO_CONSOLE_TABLES_OFFSET, RTX_3080_WINDOW_BYTES, 0);
+
+    EXPECT_EQ(root_entry, static_cast<uint64_t>(0x2A4002));
+    EXPECT_EQ(
+        count_wrong_words(tables, NO_CONSOLE_TABLES_OFFSET, RTX_3080_WINDOW_PAGE_TABLES, 0),
+        static_cast<uint64_t>(0)
+    );
     EXPECT_EQ(written_words(tables, table_pages, 1), static_cast<uint64_t>(0));
 
     heap::ufree(tables);
@@ -166,7 +258,12 @@ TEST(nvidia_bar1_page_tables, page_entries_past_a_console_ending_inside_a_larger
     uint64_t* tables = alloc_copy(table_pages);
     ASSERT_NOT_NULL(tables);
 
-    uint64_t root_entry = write_console_page_tables(tables, TABLES_OFFSET, SPLIT_PAGE_CONSOLE_BYTES);
+    uint64_t root_entry = write_bar1_page_tables(
+        tables,
+        TABLES_OFFSET,
+        SPLIT_PAGE_CONSOLE_BYTES,
+        SPLIT_PAGE_CONSOLE_BYTES
+    );
 
     uint64_t* page_tables = tables + DIRECTORY_PAGES * TABLE_WORDS;
 
@@ -188,7 +285,7 @@ TEST(nvidia_bar1_page_tables, tables_ending_at_the_address_fields_reach_keep_eve
     uint64_t* tables = alloc_copy(table_pages);
     ASSERT_NOT_NULL(tables);
 
-    uint64_t root_entry = write_console_page_tables(tables, TOP_TABLES_OFFSET, TABLE_SPAN);
+    uint64_t root_entry = write_2_mib_window_tables(tables, TOP_TABLES_OFFSET);
 
     uint64_t* level_2 = tables;
     uint64_t* level_1 = level_2 + TABLE_WORDS;
@@ -216,8 +313,8 @@ TEST(nvidia_bar1_page_tables, tables_right_after_the_console_or_at_an_odd_multip
     uint64_t* tables = alloc_copy(table_pages);
     ASSERT_NOT_NULL(tables);
 
-    EXPECT_EQ(write_console_page_tables(tables, AFTER_CONSOLE_OFFSET, TABLE_SPAN), static_cast<uint64_t>(0x20002));
-    EXPECT_EQ(write_console_page_tables(tables, ODD_PAGES_OFFSET, TABLE_SPAN), static_cast<uint64_t>(0x1FFFFFB02));
+    EXPECT_EQ(write_2_mib_window_tables(tables, AFTER_CONSOLE_OFFSET), static_cast<uint64_t>(0x20002));
+    EXPECT_EQ(write_2_mib_window_tables(tables, ODD_PAGES_OFFSET), static_cast<uint64_t>(0x1FFFFFB02));
     EXPECT_EQ(written_words(tables, table_pages, 1), static_cast<uint64_t>(0));
 
     heap::ufree(tables);
@@ -233,7 +330,7 @@ TEST(nvidia_bar1_page_tables, root_entry_matches_the_rtx_3080_firmwares_entry_fo
     uint64_t* tables = alloc_copy(table_pages);
     ASSERT_NOT_NULL(tables);
 
-    EXPECT_EQ(write_console_page_tables(tables, RTX_3080_LEVEL_2_OFFSET, TABLE_SPAN), RTX_3080_ROOT_ENTRY);
+    EXPECT_EQ(write_2_mib_window_tables(tables, RTX_3080_LEVEL_2_OFFSET), RTX_3080_ROOT_ENTRY);
     EXPECT_EQ(written_words(tables, table_pages, 1), static_cast<uint64_t>(0));
 
     heap::ufree(tables);
@@ -249,12 +346,18 @@ TEST(nvidia_bar1_page_tables, an_offset_or_size_the_tables_cannot_take_is_refuse
     uint64_t* tables = alloc_copy(table_pages);
     ASSERT_NOT_NULL(tables);
 
-    EXPECT_EQ(write_console_page_tables(tables, TABLES_OFFSET + 1, TABLE_SPAN), static_cast<uint64_t>(0));
-    EXPECT_EQ(write_console_page_tables(tables, TABLES_OFFSET + PAGE_BYTES / 2, TABLE_SPAN), static_cast<uint64_t>(0));
-    EXPECT_EQ(write_console_page_tables(tables, TOP_TABLES_OFFSET + PAGE_BYTES, TABLE_SPAN), static_cast<uint64_t>(0));
-    EXPECT_EQ(write_console_page_tables(tables, WRAPPING_TABLES_OFFSET, TABLE_SPAN), static_cast<uint64_t>(0));
-    EXPECT_EQ(write_console_page_tables(tables, INSIDE_CONSOLE_OFFSET, TABLE_SPAN), static_cast<uint64_t>(0));
-    EXPECT_EQ(write_console_page_tables(tables, TABLES_OFFSET, TABLE_SPAN + 1), static_cast<uint64_t>(0));
+    EXPECT_EQ(write_2_mib_window_tables(tables, TABLES_OFFSET + 1), static_cast<uint64_t>(0));
+    EXPECT_EQ(write_2_mib_window_tables(tables, TABLES_OFFSET + PAGE_BYTES / 2), static_cast<uint64_t>(0));
+    EXPECT_EQ(write_2_mib_window_tables(tables, TOP_TABLES_OFFSET + PAGE_BYTES), static_cast<uint64_t>(0));
+    EXPECT_EQ(write_2_mib_window_tables(tables, WRAPPING_TABLES_OFFSET), static_cast<uint64_t>(0));
+    EXPECT_EQ(write_2_mib_window_tables(tables, INSIDE_CONSOLE_OFFSET), static_cast<uint64_t>(0));
+    EXPECT_EQ(write_bar1_page_tables(tables, TABLES_OFFSET, 0, 0), static_cast<uint64_t>(0));
+    EXPECT_EQ(write_bar1_page_tables(tables, TABLES_OFFSET, TABLE_SPAN + 1, TABLE_SPAN), static_cast<uint64_t>(0));
+    EXPECT_EQ(write_bar1_page_tables(tables, TABLES_OFFSET, TABLE_SPAN, PAGE_BYTES + 1), static_cast<uint64_t>(0));
+    EXPECT_EQ(
+        write_bar1_page_tables(tables, TABLES_OFFSET, TABLE_SPAN, TABLE_SPAN + PAGE_BYTES),
+        static_cast<uint64_t>(0)
+    );
     EXPECT_EQ(written_words(tables, 0, table_pages + 1), static_cast<uint64_t>(0));
 
     heap::ufree(tables);
@@ -302,15 +405,14 @@ static static_configuration rtx_3080_console_configuration() {
     return configuration;
 }
 
-// The bytes of the RTX 3080's console's tables and of its BAR1, and a console size no call gives, which a refusal must
-// leave as it is
-static constexpr uint64_t RTX_3080_TABLES_BYTES = (DIRECTORY_PAGES + RTX_3080_PAGE_TABLES) * PAGE_BYTES;
-static constexpr uint64_t RTX_3080_BAR1_BYTES   = 0x10000000;
+// The bytes of BAR1's tables for the RTX 3080's window, and a console size no call gives, which a refusal must leave as
+// it is
+static constexpr uint64_t RTX_3080_TABLES_BYTES = (DIRECTORY_PAGES + RTX_3080_WINDOW_PAGE_TABLES) * PAGE_BYTES;
 static constexpr uint64_t UNWRITTEN_BYTES       = 1;
 
 // The console is region 0 whole, holding exactly the reserved bytes or more, and the allocator hands out the tables'
 // video memory at the start of the usable region, the offset the writer's tests give the tables
-TEST(nvidia_bar1_page_tables, rtx_3080_console_is_region_0_whole_and_its_tables_lie_at_the_usable_regions_start) {
+TEST(nvidia_bar1_page_tables, rtx_3080_console_is_region_0_whole_and_bar1s_tables_lie_at_the_usable_regions_start) {
     static_configuration configuration = rtx_3080_console_configuration();
     uint64_t console_bytes = UNWRITTEN_BYTES;
 
@@ -328,7 +430,7 @@ TEST(nvidia_bar1_page_tables, rtx_3080_console_is_region_0_whole_and_its_tables_
     ASSERT_EQ(allocator.init(configuration, RTX_3080_VIDEO_MEMORY_BYTES), OK);
 
     vram_range tables_range = {};
-    uint64_t tables_bytes = console_page_table_bytes(console_bytes);
+    uint64_t tables_bytes = bar1_page_table_bytes(RTX_3080_WINDOW_BYTES);
     ASSERT_EQ(allocator.allocate(tables_bytes, PAGE_BYTES, vram_use::general, tables_range), OK);
     EXPECT_EQ(tables_range.offset, TABLES_OFFSET);
     EXPECT_EQ(tables_range.size, RTX_3080_TABLES_BYTES);
@@ -348,8 +450,9 @@ TEST(nvidia_bar1_page_tables, region_0_is_refused_unless_it_is_reserved) {
     EXPECT_EQ(console_bytes, UNWRITTEN_BYTES);
 }
 
-// Region 0 ending 4 KiB before BAR1 does is taken as the console, and region 0 filling BAR1 is refused
-TEST(nvidia_bar1_page_tables, region_0_is_refused_unless_it_ends_before_bar1_does) {
+// Region 0 is taken when it fills the window of a BAR1 4 KiB larger and refused when it fills BAR1, and in a 16 GiB
+// BAR1 it is taken up to the window's 512 MiB and refused past it
+TEST(nvidia_bar1_page_tables, region_0_is_refused_unless_it_fits_bar1s_window) {
     static_configuration configuration = rtx_3080_console_configuration();
     uint64_t console_bytes = UNWRITTEN_BYTES;
     uint64_t bar1_bytes = RTX_3080_CONSOLE_BYTES + PAGE_BYTES;
@@ -360,6 +463,18 @@ TEST(nvidia_bar1_page_tables, region_0_is_refused_unless_it_ends_before_bar1_doe
     console_bytes = UNWRITTEN_BYTES;
     bar1_bytes = RTX_3080_CONSOLE_BYTES;
     EXPECT_EQ(check_console_region(configuration, RTX_3080_CONSOLE_BYTES, bar1_bytes, console_bytes), ERR_BAD_STATE);
+    EXPECT_EQ(console_bytes, UNWRITTEN_BYTES);
+
+    configuration.regions[0] = rtx_3080_reserved_region(0, LEVEL_0_ENTRIES * TABLE_SPAN);
+    ASSERT_EQ(check_console_region(configuration, RTX_3080_CONSOLE_BYTES, LARGE_BAR1_BYTES, console_bytes), OK);
+    EXPECT_EQ(console_bytes, LEVEL_0_ENTRIES * TABLE_SPAN);
+
+    console_bytes = UNWRITTEN_BYTES;
+    configuration.regions[0] = rtx_3080_reserved_region(0, LEVEL_0_ENTRIES * TABLE_SPAN + PAGE_BYTES);
+    EXPECT_EQ(
+        check_console_region(configuration, RTX_3080_CONSOLE_BYTES, LARGE_BAR1_BYTES, console_bytes),
+        ERR_BAD_STATE
+    );
     EXPECT_EQ(console_bytes, UNWRITTEN_BYTES);
 }
 
