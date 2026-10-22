@@ -36,15 +36,23 @@ static constexpr size_t DISPLAYID_DATA_BYTES_MAX    = CHECKSUM_OFFSET - 1 - DISP
 
 // The high nibble of a section's version byte is its version and the low nibble its revision
 static constexpr uint8_t DISPLAYID_VERSION_1 = 0x1;
+static constexpr uint8_t DISPLAYID_VERSION_2 = 0x2;
 
 // A DisplayID data block is a tag, a revision, its length and that many bytes
-static constexpr size_t  DISPLAYID_DATA_BLOCK_HEADER_BYTES  = 3;
-static constexpr size_t  DISPLAYID_DATA_BLOCK_TAG_OFFSET    = 0;
-static constexpr size_t  DISPLAYID_DATA_BLOCK_LENGTH_OFFSET = 2;
-static constexpr uint8_t DISPLAYID_TAG_TYPE_I_TIMINGS       = 0x03;
+static constexpr size_t  DISPLAYID_DATA_BLOCK_HEADER_BYTES    = 3;
+static constexpr size_t  DISPLAYID_DATA_BLOCK_TAG_OFFSET      = 0;
+static constexpr size_t  DISPLAYID_DATA_BLOCK_REVISION_OFFSET = 1;
+static constexpr size_t  DISPLAYID_DATA_BLOCK_LENGTH_OFFSET   = 2;
+static constexpr uint8_t DISPLAYID_TAG_TYPE_I_TIMINGS         = 0x03;
 
-// A tag 0 block is the zero padding after the last data block unless it comes first and holds bytes, as the product
-// identification block does. The EDID parse in NVIDIA's open kernel modules ends its walk at every such padding block
+// A Type VII block holds descriptors laid out as Type I's with the clock in kHz. The parser passes over one whose
+// revision byte sets bit 3 (from revision 1, timings only a compressed stream can carry) or any of bits 6 to 4
+static constexpr uint8_t  DISPLAYID_TAG_TYPE_VII_TIMINGS     = 0x22;
+static constexpr uint8_t  TYPE_VII_UNSUPPORTED_REVISION_BITS = 0x78;
+static constexpr uint32_t KHZ_PER_TYPE_VII_CLOCK_UNIT        = 1;
+
+// A tag 0 block is zero padding unless it comes first and holds bytes, as a version 1 section's product identification
+// block does. In each section the EDID parse in NVIDIA's open kernel modules walks, such padding ends its walk
 static constexpr uint8_t DISPLAYID_TAG_PRODUCT_ID = 0x00;
 
 // A Type I timing block holds 20-byte descriptors: the pixel clock in 10 kHz units in 3 bytes, an options byte, then 8
@@ -123,7 +131,21 @@ struct timing_axis {
     bool     sync_positive;
 };
 
+// What the walk reads in a section of one DisplayID version: the timing blocks' tag, the revision bits that make it
+// pass one over, and the kHz in a unit of their descriptors' pixel clock
+struct displayid_timing_blocks {
+    uint8_t  tag;
+    uint8_t  unsupported_revision_bits;
+    uint32_t khz_per_clock_unit;
+};
+
 } // namespace
+
+// A version 1 section's Type I blocks, read at any revision, and a version 2 section's Type VII blocks
+static constexpr displayid_timing_blocks TYPE_I_BLOCKS = {DISPLAYID_TAG_TYPE_I_TIMINGS, 0, KHZ_PER_CLOCK_UNIT};
+static constexpr displayid_timing_blocks TYPE_VII_BLOCKS = {
+    DISPLAYID_TAG_TYPE_VII_TIMINGS, TYPE_VII_UNSUPPORTED_REVISION_BITS, KHZ_PER_TYPE_VII_CLOCK_UNIT
+};
 
 uint32_t timing::h_total() const {
     return width + h_front_porch + h_sync_width + h_back_porch;
@@ -385,7 +407,7 @@ static uint32_t read_little_endian(const uint8_t* bytes, size_t count) {
     return value;
 }
 
-static timing_axis read_type_i_axis(const uint8_t* axis) {
+static timing_axis read_displayid_axis(const uint8_t* axis) {
     uint32_t front_porch_field = read_little_endian(axis + AXIS_FRONT_PORCH_OFFSET, AXIS_FIELD_BYTES);
 
     return {
@@ -397,44 +419,52 @@ static timing_axis read_type_i_axis(const uint8_t* axis) {
     };
 }
 
-// Lists the timing of a Type I descriptor unless it is interlaced or `fill_timing` refuses its axes
-static void list_type_i_timing(const uint8_t* descriptor, monitor& out) {
+// Lists the timing of a Type I or Type VII descriptor unless it is interlaced or `fill_timing` refuses its axes
+static void list_displayid_timing(const uint8_t* descriptor, uint32_t khz_per_clock_unit, monitor& out) {
     bool is_interlaced = (descriptor[TYPE_I_OPTIONS_OFFSET] & TYPE_I_OPTION_INTERLACED) != 0;
     if (is_interlaced) {
         return;
     }
 
     uint32_t clock_units = read_little_endian(descriptor + TYPE_I_CLOCK_OFFSET, TYPE_I_CLOCK_BYTES) + 1;
-    timing_axis h = read_type_i_axis(descriptor + TYPE_I_HORIZONTAL_OFFSET);
-    timing_axis v = read_type_i_axis(descriptor + TYPE_I_VERTICAL_OFFSET);
+    timing_axis h = read_displayid_axis(descriptor + TYPE_I_HORIZONTAL_OFFSET);
+    timing_axis v = read_displayid_axis(descriptor + TYPE_I_VERTICAL_OFFSET);
 
     timing t = {};
-    if (fill_timing(clock_units * KHZ_PER_CLOCK_UNIT, h, v, t)) {
+    if (fill_timing(clock_units * khz_per_clock_unit, h, v, t)) {
         list_timing(t, out);
     }
 }
 
-// Lists a version 1 section's Type I timings. Like the EDID parse in NVIDIA's open kernel modules, it stops at a data
-// block not ending before the section's checksum byte and reads no Type I block whose length is not a multiple of 20
-static void read_displayid_1_data_blocks(const uint8_t* data, size_t data_bytes, monitor& out) {
+// Lists a section's timings. In each section the EDID parse in NVIDIA's open kernel modules walks, both stop at a data
+// block not ending before the section's checksum byte and read no timing block whose length is not a multiple of 20
+static void read_displayid_data_blocks(
+    const uint8_t* data,
+    size_t data_bytes,
+    const displayid_timing_blocks& blocks,
+    monitor& out
+) {
     size_t offset = 0;
     while (offset + DISPLAYID_DATA_BLOCK_HEADER_BYTES <= data_bytes) {
         const uint8_t* data_block = data + offset;
         uint8_t tag = data_block[DISPLAYID_DATA_BLOCK_TAG_OFFSET];
+        uint8_t revision = data_block[DISPLAYID_DATA_BLOCK_REVISION_OFFSET];
         size_t length = data_block[DISPLAYID_DATA_BLOCK_LENGTH_OFFSET];
         size_t end = offset + DISPLAYID_DATA_BLOCK_HEADER_BYTES + length;
 
-        bool is_product_id = offset == 0 && tag == DISPLAYID_TAG_PRODUCT_ID && length != 0;
-        bool is_padding = tag == DISPLAYID_TAG_PRODUCT_ID && !is_product_id;
+        bool is_first_holding_bytes = offset == 0 && tag == DISPLAYID_TAG_PRODUCT_ID && length != 0;
+        bool is_padding = tag == DISPLAYID_TAG_PRODUCT_ID && !is_first_holding_bytes;
         if (is_padding || end > data_bytes) {
             return;
         }
 
-        bool is_whole_type_i = tag == DISPLAYID_TAG_TYPE_I_TIMINGS && length % TYPE_I_DESCRIPTOR_BYTES == 0;
-        if (is_whole_type_i) {
+        bool is_timing_block = tag == blocks.tag;
+        bool has_unsupported_bits = (revision & blocks.unsupported_revision_bits) != 0;
+        bool is_whole = length % TYPE_I_DESCRIPTOR_BYTES == 0;
+        if (is_timing_block && !has_unsupported_bits && is_whole) {
             const uint8_t* descriptors = data_block + DISPLAYID_DATA_BLOCK_HEADER_BYTES;
             for (size_t i = 0; i < length; i += TYPE_I_DESCRIPTOR_BYTES) {
-                list_type_i_timing(descriptors + i, out);
+                list_displayid_timing(descriptors + i, blocks.khz_per_clock_unit, out);
             }
         }
 
@@ -442,15 +472,18 @@ static void read_displayid_1_data_blocks(const uint8_t* data, size_t data_bytes,
     }
 }
 
-// Lists the timings of a DisplayID block's section when its version is 1. The section must have passed
+// Lists the timings of a DisplayID block's section when its version is 1 or 2. The section must have passed
 // `has_valid_displayid_section`, whose length check keeps the walk inside the block
 static void read_displayid_section(const uint8_t* block, monitor& out) {
-    uint8_t version = block[DISPLAYID_VERSION_OFFSET] >> 4;
-    if (version != DISPLAYID_VERSION_1) {
-        return;
-    }
+    const uint8_t* data = block + DISPLAYID_DATA_OFFSET;
+    size_t data_bytes = block[DISPLAYID_DATA_BYTES_OFFSET];
 
-    read_displayid_1_data_blocks(block + DISPLAYID_DATA_OFFSET, block[DISPLAYID_DATA_BYTES_OFFSET], out);
+    uint8_t version = block[DISPLAYID_VERSION_OFFSET] >> 4;
+    if (version == DISPLAYID_VERSION_1) {
+        read_displayid_data_blocks(data, data_bytes, TYPE_I_BLOCKS, out);
+    } else if (version == DISPLAYID_VERSION_2) {
+        read_displayid_data_blocks(data, data_bytes, TYPE_VII_BLOCKS, out);
+    }
 }
 
 // Lists the timings of the blocks byte 126 counts, skipping and counting each extension block `bytes` does not hold

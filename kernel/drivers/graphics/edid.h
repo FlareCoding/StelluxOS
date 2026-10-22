@@ -34,10 +34,11 @@
  * monitors add) or 0x70 for DisplayID (a separate format whose sections an
  * EDID can carry). A CTA-861 block can hold more timing descriptors. A
  * DisplayID block holds one section of DisplayID data with a checksum byte of
- * its own, and a version 1 section can hold Type I descriptors, DisplayID 1's
- * 20-byte timing descriptors. The parser lists the timings of both after the
- * base block's, and no block of another kind gives a timing. The parser counts
- * as skipped each extension block it is not given whole, each CTA-861 or
+ * its own. DisplayID's 20-byte timing descriptors are Type I descriptors in a
+ * version 1 section and Type VII descriptors in a version 2 section. The
+ * parser lists the timings of CTA-861 and DisplayID blocks after the base
+ * block's, and no block of another kind gives a timing. The parser counts as
+ * skipped each extension block it is not given whole, each CTA-861 or
  * DisplayID block failing its checksum and each DisplayID block whose section
  * does not end before the block's checksum byte or fails its own checksum, so
  * a driver can tell that the EDID arrived cut short, corrupted or malformed. A
@@ -135,8 +136,8 @@ struct monitor {
  * kind gives them: separate digital sync gives both, digital composite sync
  * only the horizontal one and analog sync neither. A polarity the kind does
  * not give reads as negative for the horizontal pulse and positive for the
- * vertical one. A Type I descriptor gives both, each axis's in the top bit of
- * its front porch.
+ * vertical one. A Type I or Type VII descriptor gives both, each axis's in the
+ * top bit of its front porch.
  *
  * The name is the text of the first product name descriptor whose reserved
  * byte 2 is 0: at most 13 characters, stopping before a newline or a NUL, and
@@ -170,17 +171,25 @@ struct monitor {
  * sum to 0 modulo 256. The bytes after that checksum byte, up to the block's
  * own, are not part of the section. The section fails at any version when its
  * data blocks take more than 121 bytes, which puts its checksum byte at or
- * past the block's, or when its bytes do not sum to 0. Only a section of
- * version 1 (a version byte of 0x10 to 0x1F) gives timings, whatever its
+ * past the block's, or when its bytes do not sum to 0. Only sections of
+ * version 1 or 2 (version bytes 0x10 to 0x2F) give timings, whatever their
  * product type and count, and one of any other version that passes the checks
  * gives none and is not counted. Each data block is a tag, a revision, its
  * length (the count of bytes that follow) and those bytes. The parser walks
  * the data blocks in order, listing the timings of each Type I timing block
- * (tag 3) and passing over the others, and stops at a data block that would
- * not end before the section's checksum byte or at the zero padding after the
- * last data block. The padding is any tag 0 block but a first one holding
- * bytes (the product identification block). A Type I block holds 20-byte
- * descriptors and gives no timings when its length is not a multiple of 20.
+ * (tag 3) in a version 1 section and of each Type VII timing block (tag 0x22)
+ * in a version 2 section and passing over the others. It stops at a data block
+ * that would not end before the section's checksum byte or at the zero padding
+ * after the last data block. The padding is any tag 0 block but a first one
+ * holding bytes (in a version 1 section, the product identification block).
+ * The parser reads 20-byte descriptors from both kinds of timing block and
+ * lists no timing from one whose length is not a multiple of 20. A Type VII
+ * descriptor is laid out as a Type I one but gives its pixel clock in kHz
+ * rather than in 10 kHz units. Bits 2 to 0 of a Type VII block's revision byte
+ * hold its revision, and the block is passed over when the byte sets bit 3,
+ * which from revision 1 marks timings only a compressed stream can carry, or
+ * any of bits 6 to 4, which count the bytes each descriptor holds after its
+ * first 20.
  *
  * The caller owns `bytes` and `out`. The parser keeps no pointer to either and
  * no state between calls, so two threads may parse into two `monitor`s at
