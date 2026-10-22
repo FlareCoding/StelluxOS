@@ -178,6 +178,7 @@ static int32_t read_region_table(const uint8_t* info, static_configuration& conf
         region.offset = entry.base;
         region.size = entry.limit - entry.base + 1;
         region.reserved_bytes = entry.reserved;
+        region.performance = entry.performance;
         region.is_reserved = entry.reserved != 0;
         region.is_protected = entry.is_protected != 0;
         region.supports_scanout = entry.supports_scanout != 0;

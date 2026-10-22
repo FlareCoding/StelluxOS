@@ -685,12 +685,13 @@ int32_t nvidia_gpu_driver::attach() {
         const char* use = region.is_reserved ? "reserved" : "usable";
 
         log::info(
-            "nvidia: video memory 0x%lX to 0x%lX is %s, with 0x%lX bytes reserved, protected %u, scanout %u, "
-            "compression %u",
+            "nvidia: video memory 0x%lX to 0x%lX is %s, with 0x%lX bytes reserved, performance %u, protected %u, "
+            "scanout %u, compression %u",
             region.offset,
             last_byte,
             use,
             region.reserved_bytes,
+            region.performance,
             region.is_protected,
             region.supports_scanout,
             region.supports_compression

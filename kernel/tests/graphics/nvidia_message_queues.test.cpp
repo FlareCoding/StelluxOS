@@ -2041,7 +2041,9 @@ static void fill_static_info(queue_test_payload& info, uint32_t region_count) {
         put_double_word(entry, REGION_BASE, region_base(i));
         put_double_word(entry, REGION_LIMIT, region_base(i) + size - 1);
         put_double_word(entry, REGION_RESERVED, i % 2 == 1 ? static_cast<uint64_t>(i) << 32 : 0);
-        put_word(entry, REGION_PERFORMANCE, 0xFFFFFFFF);
+        // A performance with its high half set and the region's index in its low half, so a read of 16 bits, of a
+        // neighboring field or of another region's entry fails the test
+        put_word(entry, REGION_PERFORMANCE, 0xFFFF0000 + i);
         entry[REGION_COMPRESSED] = i % 3 == 0 ? SET_FLAG_BYTE : 0;
         entry[REGION_SCANOUT] = i % 3 == 1 ? SET_FLAG_BYTE : 0;
         entry[REGION_PROTECTED] = i % 3 == 2 ? SET_FLAG_BYTE : 0;
@@ -2125,6 +2127,10 @@ TEST(nvidia_message_queues, video_memory_regions_are_read_from_the_static_config
     EXPECT_EQ(regions[5].size, 0x500100000u);
     EXPECT_TRUE(regions[5].is_reserved);
     EXPECT_TRUE(regions[5].is_protected);
+    for (uint32_t i = 0; i < 6; i++) {
+        EXPECT_EQ(regions[i].performance, 0xFFFF0000u + i);
+    }
+
     EXPECT_EQ(regions[6].offset, STALE_WORD);
     EXPECT_EQ(configuration.bar1_page_directory_offset, BAR1_PAGE_DIRECTORY_OFFSET);
 }
