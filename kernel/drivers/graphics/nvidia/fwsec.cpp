@@ -5,6 +5,9 @@
 #include "drivers/graphics/nvidia/protected_memory.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "dynpriv/dynpriv.h"
+#include "mm/paging_types.h"
+#include "mm/pmm_types.h"
 
 namespace drivers::nvidia {
 
@@ -29,6 +32,7 @@ constexpr uint32_t MAPPER_INIT_COMMAND = 0x2C; // 32 bits, the id of the command
 constexpr uint32_t MAPPER_BYTES        = 64;
 
 constexpr uint32_t FRTS_COMMAND_ID = 0x15;
+constexpr uint32_t SB_COMMAND_ID   = 0x19;
 
 // The FRTS command's 32-bit arguments as byte offsets: how FWSEC reads the VBIOS, then where the FRTS region lies.
 // The 12 bytes from 0x08 are 0 as in NVIDIA's driver, and so are the 4 past the region's fields, which it leaves unset.
@@ -44,6 +48,7 @@ constexpr uint32_t FRTS_COMMAND_BYTES     = 48;
 
 constexpr uint32_t ARGUMENTS_VERSION      = 1;
 constexpr uint32_t READ_VBIOS_FIELD_BYTES = 24;
+constexpr uint32_t SB_COMMAND_BYTES       = READ_VBIOS_FIELD_BYTES; // the SB command's arguments are only these fields
 constexpr uint32_t REGION_FIELD_BYTES     = 20;
 constexpr uint32_t REGION_IN_VIDEO_MEMORY = 2;
 constexpr uint32_t UNIT_4K_SHIFT          = 12;
@@ -51,13 +56,17 @@ constexpr uint32_t UNIT_4K_SHIFT          = 12;
 // The flags NVIDIA's driver always passes for reading the VBIOS, whose meaning its code does not give
 constexpr uint32_t NVIDIA_READ_VBIOS_FLAGS = 2;
 
-// FWSEC's data may lie at any offset, so its fields are written a byte at a time, as `read_u32` reads them
-static void write_u32(uint8_t* bytes, uint32_t value) {
-    bytes[0] = static_cast<uint8_t>(value);
-    bytes[1] = static_cast<uint8_t>(value >> 8);
-    bytes[2] = static_cast<uint8_t>(value >> 16);
-    bytes[3] = static_cast<uint8_t>(value >> 24);
-}
+namespace {
+
+// A command for FWSEC to run when it starts, with its arguments as they go into the input buffer
+struct fwsec_command {
+    const char*    name;
+    uint32_t       id;
+    const uint8_t* arguments;
+    uint32_t       bytes;
+};
+
+} // namespace
 
 int32_t select_fwsec_signature(const registers& regs, const fwsec_layout& fwsec, fwsec_signature& signature_out) {
     uint32_t fuse_version = read_ucode_fuse_version(regs, falcon_id::gsp, fwsec.ucode_id);
@@ -160,24 +169,26 @@ static int32_t find_dmem_mapper(const uint8_t* data, const fwsec_layout& fwsec, 
     return OK;
 }
 
-static void write_frts_command(uint8_t* input, uint64_t frts_offset) {
+static void write_read_vbios_fields(uint8_t* arguments) {
+    write_u32(arguments + READ_VBIOS_VERSION, ARGUMENTS_VERSION);
+    write_u32(arguments + READ_VBIOS_FIELDS_SIZE, READ_VBIOS_FIELD_BYTES);
+    write_u32(arguments + READ_VBIOS_FLAGS, NVIDIA_READ_VBIOS_FLAGS);
+}
+
+static void write_frts_arguments(uint8_t* arguments, uint64_t frts_offset) {
     uint32_t offset_4k = static_cast<uint32_t>(frts_offset >> UNIT_4K_SHIFT);
     uint32_t size_4k = static_cast<uint32_t>(FRTS_REGION_BYTES >> UNIT_4K_SHIFT);
 
-    string::memset(input, 0, FRTS_COMMAND_BYTES);
+    write_read_vbios_fields(arguments);
 
-    write_u32(input + READ_VBIOS_VERSION, ARGUMENTS_VERSION);
-    write_u32(input + READ_VBIOS_FIELDS_SIZE, READ_VBIOS_FIELD_BYTES);
-    write_u32(input + READ_VBIOS_FLAGS, NVIDIA_READ_VBIOS_FLAGS);
-
-    write_u32(input + REGION_VERSION, ARGUMENTS_VERSION);
-    write_u32(input + REGION_FIELDS_SIZE, REGION_FIELD_BYTES);
-    write_u32(input + REGION_OFFSET_4K, offset_4k);
-    write_u32(input + REGION_SIZE_4K, size_4k);
-    write_u32(input + REGION_MEDIA, REGION_IN_VIDEO_MEMORY);
+    write_u32(arguments + REGION_VERSION, ARGUMENTS_VERSION);
+    write_u32(arguments + REGION_FIELDS_SIZE, REGION_FIELD_BYTES);
+    write_u32(arguments + REGION_OFFSET_4K, offset_4k);
+    write_u32(arguments + REGION_SIZE_4K, size_4k);
+    write_u32(arguments + REGION_MEDIA, REGION_IN_VIDEO_MEMORY);
 }
 
-static int32_t patch_frts_command(uint8_t* data, const fwsec_layout& fwsec, uint64_t frts_offset) {
+static int32_t patch_command(uint8_t* data, const fwsec_layout& fwsec, const fwsec_command& command) {
     uint32_t mapper = 0;
     int32_t rc = find_dmem_mapper(data, fwsec, mapper);
     if (rc != OK) {
@@ -186,27 +197,51 @@ static int32_t patch_frts_command(uint8_t* data, const fwsec_layout& fwsec, uint
 
     uint32_t input_offset = read_u32(data + mapper + MAPPER_INPUT_OFFSET);
     uint32_t input_bytes = read_u32(data + mapper + MAPPER_INPUT_SIZE);
-    if (input_bytes < FRTS_COMMAND_BYTES) {
+    if (input_bytes < command.bytes) {
         log::error(
-            "nvidia: FWSEC's DMEM mapper gives an input buffer of %u bytes, smaller than the %u-byte FRTS command",
+            "nvidia: FWSEC's DMEM mapper gives an input buffer of %u bytes, smaller than the %u-byte %s command",
             input_bytes,
-            FRTS_COMMAND_BYTES
+            command.bytes,
+            command.name
         );
         return ERR_BAD_VBIOS;
     }
 
-    if (!lies_inside(input_offset, FRTS_COMMAND_BYTES, fwsec.data_size)) {
+    if (!lies_inside(input_offset, command.bytes, fwsec.data_size)) {
         log::error(
-            "nvidia: the %u-byte FRTS command at byte 0x%X of FWSEC's data ends past the data's %u bytes",
-            FRTS_COMMAND_BYTES,
+            "nvidia: the %u-byte %s command at byte 0x%X of FWSEC's data ends past the data's %u bytes",
+            command.bytes,
+            command.name,
             input_offset,
             fwsec.data_size
         );
         return ERR_BAD_VBIOS;
     }
 
-    write_frts_command(data + input_offset, frts_offset);
-    write_u32(data + mapper + MAPPER_INIT_COMMAND, FRTS_COMMAND_ID);
+    string::memcpy(data + input_offset, command.arguments, command.bytes);
+    write_u32(data + mapper + MAPPER_INIT_COMMAND, command.id);
+
+    return OK;
+}
+
+static int32_t prepare_fwsec(
+    const registers& rom,
+    const fwsec_layout& fwsec,
+    const fwsec_signature& signature,
+    const fwsec_command& command,
+    uint8_t* image
+) {
+    uint8_t* data = image + fwsec.code_size;
+    uint32_t signature_offset = fwsec.signatures_offset + signature.index * FWSEC_SIGNATURE_BYTES;
+
+    copy_vbios_bytes(rom, fwsec.offset, fwsec.size, image);
+
+    int32_t rc = patch_command(data, fwsec, command);
+    if (rc != OK) {
+        return rc;
+    }
+
+    copy_vbios_bytes(rom, signature_offset, FWSEC_SIGNATURE_BYTES, data + fwsec.signature_slot);
 
     return OK;
 }
@@ -218,34 +253,90 @@ int32_t prepare_fwsec_frts(
     uint64_t frts_offset,
     uint8_t* image
 ) {
-    uint8_t* data = image + fwsec.code_size;
-    uint32_t signature_offset = fwsec.signatures_offset + signature.index * FWSEC_SIGNATURE_BYTES;
+    uint8_t arguments[FRTS_COMMAND_BYTES] = {};
+    write_frts_arguments(arguments, frts_offset);
 
-    copy_vbios_bytes(rom, fwsec.offset, fwsec.size, image);
+    fwsec_command command = {
+        .name = "FRTS",
+        .id = FRTS_COMMAND_ID,
+        .arguments = arguments,
+        .bytes = FRTS_COMMAND_BYTES,
+    };
 
-    int32_t rc = patch_frts_command(data, fwsec, frts_offset);
-    if (rc != OK) {
-        return rc;
-    }
+    return prepare_fwsec(rom, fwsec, signature, command, image);
+}
 
-    copy_vbios_bytes(rom, signature_offset, FWSEC_SIGNATURE_BYTES, data + fwsec.signature_slot);
+int32_t prepare_fwsec_sb(
+    const registers& rom,
+    const fwsec_layout& fwsec,
+    const fwsec_signature& signature,
+    uint8_t* image
+) {
+    uint8_t arguments[SB_COMMAND_BYTES] = {};
+    write_read_vbios_fields(arguments);
 
-    return OK;
+    fwsec_command command = {
+        .name = "SB",
+        .id = SB_COMMAND_ID,
+        .arguments = arguments,
+        .bytes = SB_COMMAND_BYTES,
+    };
+
+    return prepare_fwsec(rom, fwsec, signature, command, image);
 }
 
 falcon_program describe_fwsec_program(const fwsec_layout& fwsec, uint64_t dma_address, bool is_cached) {
     return {
         .dma_address = dma_address,
         .is_cached = is_cached,
+        .reads_cached_memory = false,
+        .code_offset = 0,
         .code_size = fwsec.code_size,
         .imem_physical_base = fwsec.imem_physical_base,
         .imem_virtual_base = fwsec.imem_virtual_base,
+        .data_offset = fwsec.code_size,
         .data_size = fwsec.data_size,
         .dmem_physical_base = fwsec.dmem_physical_base,
         .signature_offset = fwsec.signature_slot,
         .engine_mask = fwsec.engine_mask,
         .ucode_id = fwsec.ucode_id,
     };
+}
+
+int32_t run_fwsec_sb(
+    registers& regs,
+    const registers& rom,
+    const fwsec_layout& fwsec,
+    const fwsec_signature& signature,
+    const dma::device_profile& card,
+    uint64_t timeout_ns,
+    dma::buffer& kept_out
+) {
+    size_t image_pages = pmm::page_align_up(fwsec.size) / pmm::PAGE_SIZE;
+    dma::buffer copy = {};
+    int32_t rc = dma::OK;
+    RUN_ELEVATED(rc = dma::alloc_pages(card, image_pages, dma::caching::uncached, paging::PAGE_USER, copy));
+    if (rc != dma::OK) {
+        log::error("nvidia: allocating %lu pages for FWSEC's copy for the SB command failed: %d", image_pages, rc);
+        return ERR_NO_MEMORY;
+    }
+
+    rc = prepare_fwsec_sb(rom, fwsec, signature, reinterpret_cast<uint8_t*>(copy.virt));
+    if (rc != OK) {
+        RUN_ELEVATED(dma::free_pages(copy));
+        return rc;
+    }
+
+    falcon_program program = describe_fwsec_program(fwsec, copy.phys, copy.cached);
+    rc = run_falcon_program(regs, falcon_id::gsp, program, timeout_ns);
+    if (rc != OK) {
+        kept_out = copy;
+        return rc;
+    }
+
+    RUN_ELEVATED(dma::free_pages(copy));
+
+    return check_fwsec_sb_result(regs);
 }
 
 } // namespace drivers::nvidia

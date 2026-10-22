@@ -1,8 +1,49 @@
 Some definitions in this directory and in the driver's tests in
 kernel/tests/graphics are re-declared from NVIDIA's open GPU kernel modules at
 release 535.183.01 (https://github.com/NVIDIA/open-gpu-kernel-modules), and
-each file holding one says so in its first line. Below are the files of the
-open kernel modules they come from, what each gives, and its copyright line.
+each file holding one says so in its first line. The EDID parser
+(kernel/drivers/graphics/edid.h and edid.cpp) and its tests
+(kernel/tests/graphics/edid.test.cpp) restate rules and layouts from them too.
+Below are the files of the open kernel modules these definitions, rules and
+layouts come from, what each gives, and its copyright line.
+
+src/common/modeset/timing/nvt_edid.c
+    the polarities a timing descriptor's sync kind does not give (horizontal
+    negative for analog sync, vertical positive for analog and digital
+    composite sync), the first descriptor's timing read as preferred only when
+    bit 1 of the features byte is set whatever the revision, a descriptor
+    starting with five 0x01 bytes parsed as unused, a timing descriptor with a
+    width or height of 0 parsed as no timing, a product name ended by a NUL as
+    by a newline, without trailing spaces and with any other byte outside
+    printable ASCII shown as a question mark, and a display descriptor parsed
+    only when its reserved byte 2 is 0, in kernel/drivers/graphics/edid.h,
+    kernel/drivers/graphics/edid.cpp and kernel/tests/graphics/edid.test.cpp,
+    and the timing of a Video Timing Block's one timing descriptor listed at a
+    nonzero revision when what the block counts fits in 122 bytes, and a first
+    byte of 0x20 to 0x2F taken as a DisplayID 2 version with no other header
+    byte checked, in kernel/tests/graphics/edid.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/modeset/timing/nvt_edidext_861.c
+    a CTA-861 block's timing descriptors read from the offset in its byte 2 up
+    to the first whose pixel clock is 0 or that would not end before the
+    checksum byte, and none read when that offset or the revision in its byte 1
+    is 0, in kernel/drivers/graphics/edid.h, kernel/drivers/graphics/edid.cpp
+    and kernel/tests/graphics/edid.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/modeset/timing/edid.h
+    a Video Timing Block's first five bytes (its tag, its revision, and its
+    counts of timing descriptors and of two kinds of signal code) and the timing
+    descriptors after them, in kernel/tests/graphics/edid.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/modeset/timing/nvtiming.h
+    a CTA-861 block's revision 0 taken as no revision, in
+    kernel/drivers/graphics/edid.h, kernel/drivers/graphics/edid.cpp and
+    kernel/tests/graphics/edid.test.cpp, and a Video Timing Block's revision 0
+    taken as no revision, in kernel/tests/graphics/edid.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/nv_ref.h
     PMC_BOOT_0 and its chip id and revision fields, in chip.h and chip.cpp
@@ -24,70 +65,140 @@ src/common/inc/swref/published/ampere/ga100/dev_fuse.h
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
     the falcon control register's offset and its halted bit, in falcon.cpp,
-    kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the control
+    kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the control
     register's start and alias enable bits, its alias with the start bit, the
     boot vector register, and the DMA engine's control, base, memory offset,
-    command, offset and second base registers, with the command's secure, IMEM
-    and 256-byte size fields, in falcon.cpp and
+    command, offset and second base registers, with the command's secure, IMEM,
+    256-byte size and idle fields, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, the memory offset's 24-bit
     field and the second base's 9-bit field, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, the command's idle and
-    context fields, in falcon.cpp, the DMA control register's field requiring
-    a bound address space, in
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and the hardware
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the command's context field,
+    in falcon.cpp, the DMA control register's field requiring a bound address
+    space, in kernel/tests/graphics/nvidia_falcon.test.cpp, the hardware
     configuration register with its RISC-V and memory scrubbing fields and the
-    RM register, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    RM register, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
+    the hardware configuration register with its memory scrubbing field and the
+    RM register, in kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the
+    two mailbox registers, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the OS register, in
+    falcon.h, falcon.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the control register's
+    halted and alias enable bits, its alias and the DMA engine's control
+    register, in falcon.h, the hardware configuration register with its RISC-V
+    field, the RM register, the two mailbox registers and the control register's
+    alias enable bit, in kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    the control register with its start, halted and alias enable bits, its
+    alias, the DMA engine's control register, the hardware configuration
+    register with its memory scrubbing field, the RM register, the two mailbox
+    registers and the OS register, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the interrupt clear,
+    status, mask and destination registers and the first interrupt retrigger
+    register with its trigger bit, in interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the interrupt clear,
+    status, mask, destination and retrigger registers, in interrupts.h, the
+    status's SWGEN0 bit, in interrupts.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the status's HALT
+    bit, in interrupts.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_second_pri.h
-    the boot ROM's registers for the signature's offset in the data, the
-    engine mask and the ucode id, and the signature algorithm register with
-    its RSA-3072 value, in falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    the base of SEC2's second register block, the boot ROM's registers for the
+    signature's offset in the data, the engine mask and the ucode id, and the
+    signature algorithm register with its RSA-3072 value, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the base of SEC2's second
+    register block, in kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    and the ucode id register's 8-bit field, in firmware_files.h,
+    firmware_files.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_fbif_v4.h
     the memory interface's transfer registers with the target field, its
-    coherent system memory value and the physical memory type, and the
-    interface's control register with the field allowing physical addresses
-    with no address space bound, in falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    coherent system memory value and the physical memory type, in falcon.cpp
+    and kernel/tests/graphics/nvidia_falcon.test.cpp, the interface's control
+    register with the field allowing physical addresses with no address space
+    bound, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the same register and
+    field, in kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_v4_addendum.h
-    the hardware configuration register's reset ready field, in falcon.cpp
-    and kernel/tests/graphics/nvidia_falcon.test.cpp
+    the hardware configuration register's reset ready field, in falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_gc6_island.h
     the boot progress register, its read protection register with the level 0
     read field, and the register holding the usable size of video memory, in
-    protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, secure scratch
+    register 14, in falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the same register, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_gc6_island_addendum.h
     the boot progress field and its complete value, and that the usable size
     of video memory counts MiB, in protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the boot stage 3
+    handoff field of secure scratch register 14 and its done value, in
+    falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and the same
+    field and value, in kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_gsp.h
-    the base of the GSP's registers, in falcon.cpp,
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and the GSP's engine
+    the base of the GSP's registers, in falcon.h, falcon.cpp, interrupts.cpp,
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the GSP's engine
     register and its reset field, in falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the GSP falcon's two mailbox
+    registers, in kernel/tests/graphics/nvidia_falcon.test.cpp, the first of the
+    GSP's eight queue head registers, in falcon.cpp, the first two, 8 bytes
+    apart, in kernel/tests/graphics/nvidia_falcon.test.cpp, the base of the
+    GSP's registers and the GSP falcon's two mailbox registers, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the base of the GSP's
+    registers, the first of the GSP's queue head registers and the GSP falcon's
+    first mailbox register, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the GSP's four mailbox
+    registers, apart from the GSP falcon's two, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the first two, 4
+    bytes apart, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_gsp_addendum.h
-    the base of the GSP's memory interface registers, in falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    the base of the GSP's memory interface registers, in falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_riscv_pri.h
-    the base of the GSP's second register block, and the RISC-V boot control
-    register with its valid and core select fields, in falcon.cpp and
+    the base of the GSP's second register block, in falcon.h, falcon.cpp,
+    interrupts.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the RISC-V boot
+    control register with its valid, core select and BRFETCH fields and the
+    RISC-V control register with its active field, in falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the RISC-V boot control
+    register, in kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the
+    RISC-V core's interrupt mask and destination registers, in interrupts.h,
+    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_sec_pri.h
+    the base of SEC2's registers and SEC2's engine register with its reset
+    field, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and
+    the base of SEC2's registers, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga102/dev_sec_addendum.h
+    the base of SEC2's memory interface registers, in falcon.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -102,6 +213,298 @@ src/common/inc/swref/published/disp/v04_00/dev_disp.h
     field, in kernel/tests/graphics/nvidia_protected_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
+src/common/inc/swref/published/maxwell/gm107/dev_bus.h
+    the BAR0 window register, its base field of 64 KiB steps in bits 23:0 and
+    its target field in bits 25:24, where 0 is video memory, in bar0_window.cpp
+    and kernel/tests/graphics/nvidia_falcon.test.cpp, that the register holds a
+    base of 64 KiB steps and a target, in bar0_window.h, the target field's
+    value 2 for coherent system memory, in
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the reach of the base
+    field's 24 bits, in bar0_window.h,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/bus/arch/maxwell/kern_bus_gm107.c
+    that NVIDIA's function for reads and writes of up to 8 bytes sets the
+    window's base to the 64 KiB step holding the offset accessed and its target
+    to video memory, in bar0_window.h, bar0_window.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that it does so only for an
+    access the window at its cached base (the base last set or read) does not
+    hold, in bar0_window.h, that NVIDIA's driver writes the base and the target
+    in turn, in bar0_window.h, that the VBIOS also uses the window, in
+    bar0_window.h, that after a set the function writes back only the base
+    cached before the set, with video memory as the target, unless NVIDIA's
+    driver is setting up its BAR2, in bar0_window.h, that the check NVIDIA's
+    driver makes that BAR2 works writes back the target it found, in
+    bar0_window.h, that the function reads 8 bytes as two 32-bit words, in
+    bar0_window.h and bar0_window.cpp, that it reads the word at the offset as
+    the value's low half, in bar0_window.h, bar0_window.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that it reads that word first,
+    in bar0_window.h and bar0_window.cpp, that NVIDIA's driver asks for no page
+    size when it maps memory into BAR1, a boot console's included, in
+    bar1_page_tables.h, that NVIDIA's driver sets up BAR1's address space with
+    one size of larger pages, in bar1_page_tables.h, that NVIDIA's driver makes
+    sparse every part of BAR1 it does not map, to keep the CPU's accesses from
+    faulting, in bar1_page_tables.h and bar1_page_tables.cpp, that the function
+    writes 8 bytes as two 32-bit words, in bar0_window.h and bar0_window.cpp,
+    that it writes the value's low half as the word at the offset, in
+    bar0_window.h, bar0_window.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that it writes that word
+    first, in bar0_window.h and bar0_window.cpp, that NVIDIA's driver sets up
+    BAR1's address space as a BAR's, in bar1.h, bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that NVIDIA's driver flushes
+    its writes to page tables with a read before an invalidate, in bar1.h and
+    bar1.cpp, and that NVIDIA's driver maps nothing in BAR1's last 4 KiB, so it
+    cannot map a boot console that fills BAR1, in bar1_page_tables.h,
+    bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2004-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_gpu_access_nvoc.h
+    that a write of one field of a register keeps the register's other bits, in
+    bar0_window.h, bar0_window.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and that a register of a
+    virtual function's block is reached at the block's offset in BAR0 plus the
+    register's own, in bar1.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2004-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/bus/kern_bus.c
+    that the static configuration's field bar1PdeBase holds the offset in video
+    memory of the root page directory of the page tables the GSP's firmware
+    binds BAR1 to, in gsp_info.h, gsp_info.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the firmware
+    places that root page directory, in bar1_page_tables.h, that NVIDIA's driver
+    uses the offset with no check, in gsp_info.h, that NVIDIA's driver
+    invalidates BAR1's cached translations after it replaces its own root page
+    directory for BAR1 with the firmware's, in bar1_page_tables.h, bar1.h,
+    bar1.cpp and nvidia_gpu.h, and that the replacement makes the firmware's
+    root page directory the one NVIDIA's driver holds for BAR1, so the
+    invalidate names the firmware's, in bar1.h, bar1.cpp, nvidia_gpu.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/libraries/mmu/mmu_walk_migrate.c
+    that NVIDIA's driver writes every entry of its own root page directory into
+    the firmware's when it replaces one with the other and reads none of the
+    entries back, in bar1.h and nvidia_gpu.h, and that it makes any entries past
+    its own invalid, in nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 2014-2018 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/pascal/gp100/dev_mmu.h
+    the 8 bytes of an entry of a version 2 page directory, in gsp_info.h,
+    gsp_info.cpp, nvidia_gpu.cpp, bar1_page_tables.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 8 bytes of a
+    page table entry, in bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 16 bytes of an
+    entry of a level 0 directory, in bar1_page_tables.h, bar1_page_tables.cpp
+    and kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, its first half
+    naming a page table of larger pages and its second half, laid out as a
+    directory entry, naming a page table of 4 KiB pages, in bar1_page_tables.cpp
+    and kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the address
+    field of a directory entry and of a page table entry (bits 32:8, counting 4
+    KiB units) with their aperture field (bits 2:1), in bar1_page_tables.h,
+    bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 25 bits of the
+    address field and their reach of 128 GiB, in bar1_page_tables.h,
+    bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, a page table entry's
+    valid bit in bit 0, in bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the volatile bit in
+    bit 3 of a directory entry, of a page table entry and of the first half of a
+    level 0 directory entry, in bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and a page table
+    entry's kind field, in bar1_page_tables.h
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+kernel-open/nvidia-uvm/hwref/pascal/gp100/dev_mmu.h
+    the aperture values for video memory (1 in a directory entry and 0 in a page
+    table entry), in bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, that an aperture of
+    0 is invalid, leaving a directory entry or a half of a level 0 directory
+    entry naming nothing, in bar1_page_tables.cpp, that bit 0 of a directory
+    entry is 0 when the entry names a table rather than mapping a page, in
+    bar1_page_tables.cpp, and that a volatile bit of 1 marks an entry volatile,
+    in bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    Copyright (c) 2003-2016 NVIDIA Corporation
+
+src/nvidia/src/kernel/gpu/mmu/arch/pascal/kern_gmmu_fmt_gp10x.c
+    the levels of version 2 tables (the root page directory, which NVIDIA's
+    diagram numbers 3, then page directories 2, 1 and 0, then page tables) and
+    the bits of an offset into BAR1 each level resolves, from which come the
+    bytes an entry of each covers, in bar1_page_tables.h, the bytes an entry of
+    the root page directory covers, in nvidia_gpu.h, the 512 entries of a level
+    2 or level 1 directory and of a page table of 4 KiB pages, 4 KiB in all, in
+    bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 256 entries of a
+    level 0 directory, in bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, that a level 0
+    directory entry may map a 2 MiB page instead of naming a table, in
+    bar1_page_tables.cpp, and that a page table of larger pages maps 64 KiB or
+    128 KiB pages, a size its layout depends on and that of a page table of 4
+    KiB pages does not, in bar1_page_tables.h and bar1_page_tables.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mmu/arch/ampere/kern_gmmu_fmt_ga10x.c
+    that its function sets up the levels kern_gmmu_fmt_gp10x.c sets up, in
+    bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and then lets a
+    level 1 directory entry map a 512 MiB page instead of naming a table, in
+    bar1_page_tables.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mmu/arch/maxwell/kern_gmmu_gm200.c
+    the sparse values of version 2 entries, each naming nothing with its
+    volatile bit set: a page table entry whose valid bit is 0, a directory entry
+    whose aperture is 0, and a level 0 directory entry whose two apertures are
+    0, with the volatile bit of its first half set, in bar1_page_tables.h,
+    bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kern_gmmu_nvoc.c
+    the rule that GA102 sets up its levels with the function of
+    kern_gmmu_fmt_ga10x.c, and the sparse values of its entries with TU102's
+    function, whose step for GA100 alone does nothing on GA102, in
+    bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and the rule that
+    GA102 sets an invalidate's scope with GA100's function and its system memory
+    barrier and acknowledgement with a stub, in bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mmu/arch/turing/kern_gmmu_tu102.c
+    that TU102's function for the sparse values of entries leaves them to
+    GV100's, in bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and the steps of an
+    invalidate of one root page directory's cached translations: a wait for any
+    invalidate still running, the root's offset in 4 KiB units written to the
+    first two registers with its aperture in the first, the invalidate's value
+    written to the third, and a wait for the card to clear the third's trigger,
+    in bar1.h, bar1.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mmu/arch/maxwell/kern_gmmu_gm107.c
+    the invalidate NVIDIA's driver asks for after it replaces its root page
+    directory for BAR1: one of every offset through one root page directory, of
+    the hub's TLB alone for a BAR's address space, whose translations need none
+    of the graphics engine's TLBs invalidated, in bar1.h, bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, with the system memory barrier
+    and acknowledgement left to the chip's function for them, in bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, with both waits given one
+    timeout of their own, in bar1.h, bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, with that timeout the default
+    one, in nvidia_gpu.cpp, and with no failure reported to its caller, in
+    nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mmu/arch/ampere/kern_gmmu_ga100.c
+    that GA100's function for an invalidate's scope writes the scope it is given
+    into the scope field, in bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2018-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kern_gmmu_nvoc.h
+    the rule that NVIDIA's driver invalidates with GM107's function and waits
+    for invalidates and starts one with TU102's functions, in bar1.h, bar1.cpp
+    and kernel/tests/graphics/nvidia_falcon.test.cpp, and that GA102's function
+    for an invalidate's system memory barrier and acknowledgement returns 0 and
+    sets neither, in bar1.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/maxwell/gm107/dev_fb.h
+    the invalidate's fields NVIDIA's driver sets it with: every offset in bit 0,
+    one root page directory rather than all in bit 1 at 0, the hub's TLB alone
+    in bit 2, and the trigger in bit 31, in bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/turing/tu102/dev_vm.h
+    the offset 0xB80000 of the block of a virtual function's registers, in
+    bar1.cpp, interrupts.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the offsets in it of
+    the invalidate's three registers and the third's trigger in bit 31, which
+    the waits read, in bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the fields of the
+    invalidate's first two registers: the low 28 bits of the root page
+    directory's offset in 4 KiB units in bits 31:4 with the aperture in bit 1, 0
+    for video memory, and the offset's other bits in bits 19:0 of the second, in
+    bar1.h, bar1.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga100/dev_vm.h
+    the invalidate's scope field, in bar1.h, bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, with its bits 16:15 and its
+    value 2 for every TLB but those of NVLink, in bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/mmu/arch/volta/kern_gmmu_gv100.c
+    that GV100's function for the sparse values of entries leaves them to
+    GM200's, in bar1_page_tables.h, bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/turing/tu102/dev_mmu.h
+    the page kind 0, NVIDIA's kind for memory laid out row by row, in
+    bar1_page_tables.h
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/mmu/kern_gmmu.c
+    that NVIDIA's driver places BAR1's page directories and page tables in video
+    memory by default, in bar1_page_tables.h
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/mem_mgr/gpu_vaspace.c
+    that NVIDIA's driver makes sparse all of BAR1's address space when it sets
+    the space up, and each range of it the driver reserves or unmaps, in
+    bar1_page_tables.h, that NVIDIA's driver invalidates an address space's
+    cached translations through the root page directory it holds for the space,
+    in bar1.h, bar1.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and
+    that it gives the invalidate the scope of every TLB but those of NVLink for
+    a space not marked to invalidate NVLink's TLBs alone, in bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2013-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mmu/gmmu_walk.c
+    NVIDIA's note that a BAR's directories and page tables in system memory can
+    deadlock PCIe transactions, in bar1_page_tables.h, that NVIDIA's driver sets
+    a directory entry's volatile bit from the memory of the table it names, in
+    bar1_page_tables.h, and that NVIDIA's driver writes the sparse value of an
+    entry with two halves to make a level 0 directory entry sparse, in
+    bar1_page_tables.cpp and
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c
+    that NVIDIA's driver gives a boot console's memory 4 KiB pages, in
+    bar1_page_tables.h, and that when it keeps video memory for a boot console
+    it takes the firmware's region 0 whole, from wherever region 0 starts, as
+    the console's memory, in bar1_page_tables.h, bar1_page_tables.cpp,
+    nvidia_gpu.h and kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mem_mgr/mem_desc.c
+    that NVIDIA's driver takes memory as volatile only when it is system memory
+    the card does not cache, so never video memory, and that a part of memory it
+    describes keeps the page size of the memory it is part of, in
+    bar1_page_tables.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mem_mgr/arch/maxwell/virt_mem_allocator_gm107.c
+    that a mapping asking for no page size maps memory of 4 KiB pages in 4 KiB
+    pages, in bar1_page_tables.h, that NVIDIA's driver sets the volatile bit of
+    a page table entry only for memory the card does not cache, so never for
+    video memory, in bar1_page_tables.h, and that NVIDIA's driver maps BAR1 in
+    whole pages of 64 KiB or 128 KiB, mapping the rest of the last onto the
+    memory's first pages, in
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/common/inc/swref/published/turing/tu102/dev_bus.h
     the offset of the VBIOS scratch registers and their 4-byte spacing, in
     protected_memory.cpp and
@@ -115,9 +518,12 @@ src/common/inc/swref/published/turing/tu102/dev_fb.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/turing/tu102/dev_ram.h
-    the 1 MiB size of the PRAMIN window, which NVIDIA's layout takes as the
-    most the VGA workspace takes, in protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    the 1 MiB size of the PRAMIN window (BAR0's window), which NVIDIA's layout
+    takes as the most the VGA workspace takes, in protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the window's size
+    and its start in BAR0, 0x700000, in bar0_window.h, bar0_window.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the size alone in
+    nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/turing/tu102/hwproject.h
@@ -157,11 +563,11 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp_fwsec.c
     and that it spans its stored size rounded up to a multiple of 256 bytes, in
     vbios.h, vbios.cpp and kernel/tests/graphics/nvidia.test.cpp, the size of
     FWSEC's signatures, in kernel/tests/graphics/nvidia_fwsec.test.cpp, the
-    rule that its data follows its code, in falcon.h, falcon.cpp, fwsec.cpp and
-    kernel/tests/graphics/nvidia_fwsec.test.cpp, and the rule that FWSEC is
-    run with its code at the descriptor's IMEM bases, its data at its DMEM
-    base, its signature slot as the signature's offset in the data, and the
-    descriptor's engine mask and ucode id, in fwsec.h, fwsec.cpp and
+    rule that its data follows its code, in fwsec.h, fwsec.cpp and
+    kernel/tests/graphics/nvidia_fwsec.test.cpp, and the rule that FWSEC is run
+    with its code at the descriptor's IMEM bases, its data at its DMEM base, its
+    signature slot as the signature's offset in the data, and the descriptor's
+    engine mask and ucode id, in fwsec.h, fwsec.cpp and
     kernel/tests/graphics/nvidia_fwsec.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -175,52 +581,308 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     followed by the name of the chip's firmware family, that a section is
     found by its whole name, which with its NUL lies inside the section name
     table, and the 32 bytes given the signature section's name, in chip.cpp,
-    chip.h, firmware_files.h, firmware_files.cpp, nvidia_gpu.h,
-    kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, the rule that the GSP is
-    not booted while protected memory is already set up, in
+    chip.h, firmware_files.h, firmware_files.cpp, gsp_boot_memory.h,
+    nvidia_gpu.h, kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_firmware.test.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    GSP is not booted while protected memory is already set up, in
     protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
-    the full fence before each received message, in message_queues.cpp, and
-    booter load's role, run on SEC2 to load, verify with the signature and
-    boot the GSP's firmware in protected memory, in chip.h and
-    firmware_files.h
+    the full fence before each received message, in message_queues.cpp, booter
+    load's role, run on SEC2 to load, verify with the signature and boot the
+    GSP's firmware in protected memory, in chip.h, falcon.h, firmware_files.h,
+    gsp_boot_memory.h, protected_memory.h and nvidia_gpu.h, the radix3 page
+    table's three levels of 64-bit addresses, level 0 a single page listing
+    the pages of level 1, level 1 listing those of level 2 and level 2 listing
+    every page of the data, each of the table's page size, each level's
+    entries running on across its pages and the table's levels lying in that
+    order, in gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rules that the
+    GSP's firmware, its signature and the bootloader's program are each copied
+    into system memory of their own, the firmware's last page ending in zeros,
+    in gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    copies of the signature and the bootloader's program each lie in one
+    contiguous range, in gsp_boot_memory.h and gsp_boot_memory.cpp, the
+    firmware heap's size as the sum, in 32 bits, of its share for the
+    operating system the firmware runs on, its base share, its share for
+    each GiB of video memory with a part GiB counting whole, rounded up to 1
+    MiB, and its share for the firmware's channels, raised to the chip's
+    minimum, in chip.h, protected_memory.h, protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the signature's
+    memory sized in whole 256-byte blocks, the alignment booter load's DMA
+    needs, in gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that,
+    when no setting of NVIDIA's driver asks for a margin past protected
+    memory's end, a first attempt to boot the GSP leaves none and clears the
+    metadata's flag that marks one, in gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    GSP is not booted on a chip without a scrubber program when the memory
+    from the unprotected heap's start to the end of video memory is larger
+    than the prescrubbed top, in chip.h, protected_memory.h,
+    protected_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that a
+    region of LibOS's arguments is named by up to eight characters packed
+    with the first in the highest byte used, in gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the log buffers of
+    the init task, the interrupt task and the resource manager, 64 KiB each
+    in a release build, each zeroed and listing the address of each of its
+    pages after the firmware's 8-byte write position, their names LOGINIT,
+    LOGINTR and LOGRM and the name RMARGS, and LibOS's arguments listing
+    those buffers in that order, then the resource manager's arguments, each
+    as one contiguous range in system memory of the size allocated for it,
+    in gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the log buffers'
+    alignment to 4 KiB, in gsp_boot_memory.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the resource
+    manager's arguments giving the message queues' memory, its page table's
+    entry count and the offsets of the command queue and the status queue, with
+    the interrupt task's queues, the power transition's fields and the
+    profiler's buffer 0 when none is asked for and the GPU's instance, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that, after
+    each message, the firmware is told that the message waits, in
+    boot_messages.h, falcon.h, falcon.cpp, gsp.h, gsp.cpp, nvidia_gpu.h and
+    nvidia_gpu.cpp, that it is told by writing 0 to the queue head register of
+    the message's queue and that the driver's messages go through the resource
+    manager's queue, in falcon.h, falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that the
+    GSP's falcon is reset as its firmware is unloaded, after a wait for the
+    firmware to suspend the GSP's processor, whether or not the wait succeeds,
+    in falcon.h, nvidia_gpu.h and nvidia_gpu.cpp, the rule that the firmware is
+    first asked to unload, in falcon.h, gsp_unload.h, nvidia_gpu.h and
+    nvidia_gpu.cpp, the rules that the GSP is reset after a wait for it to
+    suspend and that, after the GSP's reset, FWSEC runs the SB command, a
+    failure being logged and asserted on without failing the unload, and booter
+    unload runs after the SB command, in nvidia_gpu.h and nvidia_gpu.cpp, the
+    rule that booter unload runs after the GSP's reset and the SB command, in
+    protected_memory.h, the rules that booter unload runs whatever the SB
+    command's result and that the unload fails when booter unload fails, in
+    nvidia_gpu.h and nvidia_gpu.cpp, the rule that the unload request's error is
+    returned ahead of booter unload's result, in nvidia_gpu.h, the rules that
+    the reset's result is not checked and that the SB command runs from the copy
+    of FWSEC made at bring-up and freed only as the GPU is destroyed, in
+    nvidia_gpu.h, booter unload's role, run on SEC2 to take protected memory
+    down, in falcon.h, firmware_files.h, nvidia_gpu.h, nvidia_gpu.cpp,
+    protected_memory.h and protected_memory.cpp, the rule that booter unload is
+    read, its signature chosen and its program copied at bring-up, before FWSEC
+    runs, in gsp_boot_memory.h, nvidia_gpu.h and nvidia_gpu.cpp, the rules that
+    booter unload runs at unload and that its copy is freed only as the GPU is
+    destroyed, in gsp_boot_memory.h, the rule that booter unload is handed no
+    address in its mailboxes at an unload, in falcon.h, falcon.cpp,
+    firmware_files.h and gsp_boot_memory.h, the rule that FWSEC's SB command
+    runs as the firmware is unloaded, to put back the programs the VBIOS runs
+    before an operating system loads, in fwsec.h and nvidia_gpu.h, the wait for
+    a message from the firmware, which polls the status queue until a deadline
+    of its own (the default timeout and half as long again), judged by the time
+    taken before each read, and ends once receiving a message fails, in
+    message_queues.h, message_queues.cpp, gsp.h, gsp.cpp, nvidia_gpu.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    that the CPU sequencer is a list of register, delay and falcon steps the
+    firmware sends for the driver to run, in falcon.h, cpu_sequencer.h, gsp.h
+    and nvidia_gpu.h, that among them are steps that reset the GSP's falcon and
+    then let its DMA engine run with no address space bound, start the falcon
+    and wait for it to halt, in falcon.h, cpu_sequencer.h and nvidia_gpu.h, that
+    the halt step waits with the default timeout, in falcon.h, cpu_sequencer.cpp
+    and kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the CPU sequencer's
+    checks that its buffer holds more words than its steps take, that each
+    step's arguments end within the words its steps take and that a store's
+    index lies inside the save area, what each step does, among them a modify
+    that clears its mask and sets its value whole, a poll that sets its deadline
+    after its first read and reads again only after a check finds the deadline
+    not passed, a store into the message's save area and a reset that takes no
+    result, that the steps run in order and the first that fails ends the run,
+    in cpu_sequencer.h, cpu_sequencer.cpp and
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that the sequencer's
+    buffer holds more words than its steps take, what its poll and write steps
+    do and that the first step that fails ends the run, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a sequencer that
+    fails is logged and the wait for messages goes on, in message_queues.h,
+    message_queues.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the sequencer
+    runs inside the wait for the firmware's messages, which takes the messages
+    before it and counts the run against its deadline, in message_queues.h,
+    message_queues.cpp, gsp.h, gsp.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the thread-state
+    budget is started again just before the wait for the ready message, in
+    cpu_sequencer.h, gsp.h, gsp.cpp and nvidia_gpu.h, that the handler of the
+    firmware's event messages runs the sequencer straight from the message
+    carrying it, after an info-level print, in cpu_sequencer.h, that a wait for
+    one message hands each other message it receives to that handler, in
+    message_queues.h and message_queues.cpp, that such a wait reads the GSP's
+    log after each read of the queue, checks the GSP's health whenever its reads
+    stop, checks the GPU's state on each turn that ends without the awaited
+    message and reports a timeout as Xid 119, in message_queues.h, that bring-up
+    waits for the firmware's ready message, whose result fails the boot when it
+    is not NV_OK, in nvidia.h, gsp.h, nvidia_gpu.h and nvidia_gpu.cpp, that a
+    failed ready message's status is handed up whatever its value, in gsp.h,
+    that the request to unload asks for no power transition, no entry into GC6
+    and power level 0 and is followed by the wait for the GSP to suspend
+    whatever the request's result, in gsp_unload.h, gsp_unload.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a request is
+    skipped when the GSP has crashed or the GPU is in reset, lost, shut down,
+    below full power or without access to system memory, in gsp.h, that the
+    GSP's log is written out before the GSP's reset, in gsp_unload.h, that the
+    suspend wait's result is dropped, in gsp_unload.h and nvidia_gpu.h, that
+    the thread-state budget is not started again before a request, the request
+    to unload among them, in cpu_sequencer.h, gsp.h and gsp_unload.h, that it is
+    started again before the GSP's reset at unload, in nvidia_gpu.h, that once
+    the firmware is ready NVIDIA's driver first sends the guest system
+    information and then asks for the static configuration, failing the boot
+    when either fails, in gsp_info.h, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that NVIDIA's driver
+    drains its queue one message at a time until it is empty, handing each
+    message to its event handler, reading the GSP's log after each read and
+    checking the GSP's health once the reads stop, in message_queues.h, that it
+    checks once the reads stop whatever they returned, in nvidia_gpu.h and
+    nvidia_gpu.cpp, that its drain awaits its count of functions and asserts
+    that no event carries it, in message_queues.h and message_queues.cpp, that
+    the drain stops at a message of that count, in message_queues.h, that its
+    event handler logs a message of a function it does not know and the drain
+    reads on, in message_queues.h, that NVIDIA's driver drains in the bottom
+    half of its interrupt handler holding the GPUs lock, in gsp.h and
+    nvidia_gpu.h, that a notice from the firmware tells the driver whether the
+    GSP's lockdown engages or disengages, so NVIDIA's driver takes the GSP as in
+    lockdown while the last notice it has read says the lockdown engages, that
+    while the GSP is in lockdown the host cannot reach some of its registers,
+    its interrupt status and control among them, that NVIDIA's driver then
+    expects no SWGEN0, in nvidia_gpu.h, and that NVIDIA's handling of the GSP's
+    failure halts every user channel and notifies it of the error and that the
+    log NVIDIA's driver then writes holds the most recent messages it sent and
+    the firmware's most recent unasked messages, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
     the names of the GSP image's .fwversion and .fwimage sections and the
     prefix .fwsignature_ of its signature sections, in chip.cpp,
-    firmware_files.h, firmware_files.cpp, nvidia_gpu.h,
+    firmware_files.h, firmware_files.cpp, gsp_boot_memory.h, nvidia_gpu.h,
+    kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_firmware.test.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the 32 bits of the
+    firmware heap's operating system's and base shares, in chip.h and
+    protected_memory.cpp, the 1 MiB unprotected heap, the 256 MiB
+    prescrubbed top and the 84 MiB minimum heap, in chip.cpp,
     kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the 4 KiB of
+    LibOS's arguments and the order of the log buffers, the init task's, the
+    interrupt task's and the resource manager's, in gsp_boot_memory.h,
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/nvidia/generated/g_kernel_gsp_nvoc.c
+    the firmware heap's 20 MiB share for the operating system the firmware
+    runs on and its 8 MiB base share on GA102, which minimum heap,
+    unprotected heap and prescrubbed top GA102 gets, in chip.cpp,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that no
+    chip asks for queues for the firmware's interrupt task, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and that the GSP's
+    interrupt service keeps the default clear of its stall interrupt, in
+    interrupts.h
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/gsp/gsp_fw_heap.h
+    the firmware heap's 20 MiB share for the operating system the firmware
+    runs on, its 8 MiB base share, 96 KiB for each GiB of video memory and 96
+    MiB for the firmware's records of up to 2048 channels, and what the two
+    shares are for, in chip.h, chip.cpp, protected_memory.h,
+    protected_memory.cpp, kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvmisc.h
+    the rule that rounding up keeps its operand's width, so the firmware
+    heap's share for video memory is rounded up in 32 bits, in
+    protected_memory.cpp, and the rule that a value written through a register's
+    field keeps only as many low bits as the field holds, in firmware_files.h,
+    firmware_files.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/src/kernel/gpu/gsp/kernel_gsp_booter.c
-    the fields of booter load's metadata and load header, and the rules that
-    the metadata and the load header are exactly the size of their fields,
-    that the load header lists one app, whose code is the code booter load
-    runs, that the load header's OS data is booter load's data, that the
-    signature patch index is 0, that the signature count and the signatures'
-    size are not 0 and the size is a multiple of the count, that the
-    signatures lie back to back, each the size divided by the count, that the
-    slot, counted from the program's start, ends before the program's end,
-    and that the signature's DMEM address is the slot's offset less the
-    data's, in firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, and the rules that
-    booter load's fuse version is the one SEC2's fuse registers record for
-    its ucode id, that with more than one signature the slot receives the one
-    at index count - 1 - v for fuse version v and none is for a version above
-    count - 1, and that a lone signature is chosen whatever the version, in
-    firmware_files.h, firmware_files.cpp and
+    the fields of a booter's metadata and load header, and the rules that the
+    metadata and the load header are exactly the size of their fields, that the
+    load header lists one app, whose code is the code the booter runs, that the
+    load header's OS data is the booter's data, that the signature patch index
+    is 0, that the signature count and the signatures' size are not 0 and the
+    size is a multiple of the count, that the signatures lie back to back, each
+    the size divided by the count, that the slot, counted from the program's
+    start, ends before the program's end, and that the signature's DMEM address
+    is the slot's offset less the data's, in firmware_files.h,
+    firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp, the
+    rule that booter unload is read by booter load's rules, in firmware_files.h,
+    nvidia_gpu.h, nvidia_gpu.cpp, kernel/tests/graphics/nvidia_firmware.test.cpp
+    and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, with its
+    signature chosen by them, in firmware_files.h, nvidia_gpu.h and
+    nvidia_gpu.cpp, the rules that a booter's fuse version is the one SEC2's
+    fuse registers record for its ucode id, that with more than one signature
+    the slot receives the one at index count - 1 - v for fuse version v and none
+    is for a version above count - 1, and that a lone signature is chosen
+    whatever the version, in firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that each booter's
+    whole program is copied, in gsp_boot_memory.h, gsp_boot_memory.cpp,
+    nvidia_gpu.h and kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, into
+    one contiguous range of uncached memory, in gsp_boot_memory.h,
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    chosen signature is written over the copy at the slot, in gsp_boot_memory.h,
+    gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    signatures lie back to back, in gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that the
+    slot lies at the data's offset plus the signature's DMEM address, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that fuse
+    version v takes the signature at index count - 1 - v, in
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rules that
+    each booter runs from its uncached copy with its code at the code's offset,
+    which is also the code's virtual base, and its data at the data's offset,
+    each loaded from the start of IMEM and DMEM, with the signature's DMEM
+    address as the signature's offset in the data, its engine mask and its ucode
+    id, in firmware_files.h, firmware_files.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c
+    the rule that SEC2's falcon is reset before booter load runs on it, in
+    falcon.h, nvidia_gpu.h and nvidia_gpu.cpp, the rule that booter load is
+    given the address of protected memory's metadata, in nvidia_gpu.cpp, the
+    rule that booter load takes the address of protected memory's metadata in
+    the SEC2 falcon's two mailboxes and fails unless the first reads 0 after it,
+    in falcon.h, falcon.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that the address's
+    low 32 bits go into the first mailbox and its high 32 bits into the second,
+    in falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
+    the rule that booter unload runs only while protected memory is set up, in
+    protected_memory.h, protected_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that SEC2's
+    falcon is reset before booter unload runs on it, in falcon.h,
+    protected_memory.h, protected_memory.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that the
+    reset's result is not checked, in nvidia_gpu.h and protected_memory.h, the
+    rule that booter unload takes 0xFF in both of the SEC2 falcon's mailboxes at
+    an unload outside a power transition and fails unless the first reads 0
+    after it, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rule that booter
+    unload is handed no address in its mailboxes at an unload, in
+    firmware_files.h and gsp_boot_memory.h, and the rule that the unload fails
+    while protected memory still reads as set up after booter unload, in
+    protected_memory.h, protected_memory.cpp and nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/arch/turing/kern_gpu_tu102.c
     the rule that the boot firmware has finished once its progress register
     is readable and reads complete and the GSP is halted, and the time it is
     given, 50 ms to start and 2 s to finish, in protected_memory.h,
     protected_memory.cpp and kernel/tests/graphics/nvidia_protected_memory.test.cpp,
-    and the rule that the chip reaches system memory with its extended
-    physical address bits, in chip.cpp and kernel/tests/graphics/nvidia.test.cpp
+    the rule that the chip reaches system memory with its extended physical
+    address bits, in chip.cpp and kernel/tests/graphics/nvidia.test.cpp, and
+    that a card that is not a virtual function reaches a virtual function's
+    block of registers at the block's full offset in BAR0, in bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/src/kernel/gpu/arch/ampere/kern_gpu_ga100.c
@@ -254,35 +916,111 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     GSP's engine is reset by setting and then clearing its reset field,
     keeping the register's other bits and reading it after each write, in
     falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
-    and the rule that the bootloader descriptor's manifest and monitor code
-    and data offsets are offsets inside the bootloader's program, in
+    the rule that the bootloader descriptor's manifest and monitor code and
+    data offsets are offsets inside the bootloader's program, in
     firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp
+    kernel/tests/graphics/nvidia_firmware.test.cpp, the rule that the
+    bootloader's program holds at least one byte, in gsp_boot_memory.h,
+    gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the layout below
+    the FRTS region (the bootloader's program at a 4 KiB boundary, the GSP's
+    firmware at a 64 KiB boundary, and the heap, protected memory's start,
+    which leaves room below the heap for protected memory's metadata, and
+    the unprotected heap each at a 1 MiB boundary, each part ending at or
+    below the part above it, with the heap's size the room below the
+    firmware rounded down to 1 MiB), in protected_memory.h,
+    protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that the memory
+    reserved for the firmware starts at the unprotected heap and that the
+    unprotected heap's size is the chip's, in protected_memory.h,
+    protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, LibOS's arguments
+    in uncached memory of their own, aligned to their size, and the resource
+    manager's arguments in a 4 KiB page of their own, each zeroed, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the metadata a
+    first attempt to boot the GSP writes into a page of its own (the copies'
+    addresses and sizes, the signature's size as the size of its memory, the
+    bootloader descriptor's offsets, the start of the memory reserved for the
+    firmware at the unprotected heap, the unprotected heap, each part of
+    protected memory, protected memory's end at the FRTS region's end, video
+    memory's size and the VGA workspace, which takes the rest of video memory,
+    with the boot count and the verified mark 0, the partition count 0 without
+    virtual GPUs and the crash report queue's fields 0 without a queue), in
+    gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rule that LibOS's
+    arguments' address is written into the GSP falcon's two mailbox registers,
+    in falcon.h, falcon.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that its low 32 bits
+    go into the first and its high 32 bits into the second, in falcon.h,
+    falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, the rule
+    that a queue's head is written to the GSP's queue head register of the
+    queue's index, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that the
+    GSP's processor is suspended once the GSP falcon's first mailbox reads
+    0x80000000, waited for with no timeout of the wait's own, in falcon.h,
+    falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rules that the
+    GSP's interrupt service reads the GSP falcon's pending sources directed to
+    the host and returns at once when none is pending, that it clears only HALT
+    (the source the firmware raises when its crash report needs the host) and
+    SWGEN0, SWGEN0 before it receives the messages the firmware sends unasked,
+    and that it then retriggers the falcon's interrupt, in interrupts.h,
+    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
+    rules that the service reports a run that finds no source pending, that it
+    clears SWGEN0 before receiving the firmware's messages and retriggers the
+    falcon's interrupt after receiving them, unless the GSP is then in lockdown,
+    that it returns the sources still pending after the retrigger and that on
+    HALT, which the firmware raises when its crash report needs the host, it
+    reads the GSP's log and checks the GSP's health before receiving the
+    firmware's messages, in nvidia_gpu.h, the rule that the check reads only
+    CrashCat's reports when CrashCat (NVIDIA's interface for the GSP's crash
+    reports) is set up, in gsp.h, the rules that, without CrashCat, the first of
+    the GSP's four mailbox registers reports a failure when its bits 31:28 hold
+    the error tag and that the second mailbox register is then read and the
+    first cleared to 0 before the code, reason and task the report held and the
+    second register's word are logged, with the count of errors skipped logged
+    only when it is not 0, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that a report
+    likely means the GPU needs a reset, in gsp.cpp, and the rules that NVIDIA's
+    driver then marks the GSP crashed, logs its debug information on the
+    messages exchanged with the firmware, on its first failure runs its channel
+    error handling with an error notice on every user channel and on every
+    failure checks the GPU's counts of ECC errors, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_frts_tu102.c
     the index 0x0E of the VBIOS scratch register whose bits 31 to 16 hold
-    FWSEC's FRTS error code, 0 for none, in protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the FRTS region's
-    size of 1 MiB, the rule that the region never starts at offset 0 and the
-    rule that the FRTS command failed unless that error code is 0, protected
-    memory is set up and the address field of its lower bound is the region's
-    offset in 4 KiB units kept to 32 bits, in protected_memory.h,
-    protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the
-    application interface's header and entry fields and sizes, the id of the
-    entries that lead to a DMEM mapper, the DMEM mapper's fields and size, the
-    FRTS command's id, fields, values and size, and the rules that FWSEC has a
-    signature for the fuse version only when its signature versions include
-    that version, that this signature comes after one for each lower version
-    FWSEC has a signature for, that the interface lists at least 2 entries,
-    that the interface's header, its listed entries and every DMEM mapper they
-    lead to lie inside FWSEC's data, that its last DMEM mapper entry leads to
-    the mapper, that the command goes in the mapper's input buffer and its id
-    in the mapper's command field, that the region's offset and size count
-    4 KiB units with the offset kept to 32 bits, and that the signature goes
-    in the signature slot after the command, in vbios.h, fwsec.h, fwsec.cpp
-    and kernel/tests/graphics/nvidia_fwsec.test.cpp
+    FWSEC's FRTS error code, 0 for none, and the index 0x15 of the one whose
+    bits 15 to 0 hold FWSEC's SB error code, 0 for none, in protected_memory.cpp
+    and kernel/tests/graphics/nvidia_protected_memory.test.cpp, the FRTS
+    region's size of 1 MiB, the rule that the region never starts at offset 0,
+    the rule that the FRTS command failed unless the FRTS error code is 0,
+    protected memory is set up and the address field of its lower bound is the
+    region's offset in 4 KiB units kept to 32 bits, and the rule that the SB
+    command failed unless the boot firmware's progress register is open to
+    reading, its progress reads complete and the SB error code is 0, in
+    protected_memory.h, protected_memory.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the application
+    interface's header and entry fields and sizes, the id of the entries that
+    lead to a DMEM mapper, the DMEM mapper's fields and size, the FRTS command's
+    id, fields, values and size, the SB command's id and its arguments (the same
+    24 bytes that start the FRTS command's arguments), and the rules that FWSEC
+    has a signature for the fuse version only when its signature versions
+    include that version, that this signature comes after one for each lower
+    version FWSEC has a signature for, that the interface lists at least 2
+    entries, that the interface's header, its listed entries and every DMEM
+    mapper they lead to lie inside FWSEC's data, that its last DMEM mapper entry
+    leads to the mapper, that the command goes in the mapper's input buffer and
+    its id in the mapper's command field, that the region's offset and size
+    count 4 KiB units with the offset kept to 32 bits, and that the signature
+    goes in the signature slot after the command, in vbios.h, fwsec.h, fwsec.cpp
+    and kernel/tests/graphics/nvidia_fwsec.test.cpp, the rule that the SB
+    command runs on the GSP's falcon as the FRTS command does, in fwsec.h,
+    fwsec.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_fwsec.test.cpp, and the rule that FWSEC's copy
+    is patched in place for each command, with the signature chosen again for
+    the fuse version, in nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga100.c
@@ -303,98 +1041,263 @@ src/nvidia/src/kernel/gpu/sec2/arch/ampere/kernel_sec2_ga100.c
     0, in falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/nvidia/src/kernel/gpu/sec2/arch/ampere/kernel_sec2_ga102.c
+    the rule that SEC2's falcon registers count from the base of SEC2's
+    registers, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the rules that its
+    RISC-V core's and boot ROM's registers count from SEC2's second register
+    block and its memory interface's registers from SEC2's memory interface
+    base, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that
+    its RISC-V core's registers count from SEC2's second register block, in
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and that SEC2's
+    falcon has no bit in the chip's engine enable register, in falcon.h,
+    falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/sec2/arch/turing/kernel_sec2_tu102.c
+    the rule that SEC2's engine is reset by setting and then clearing its reset
+    field, keeping the register's other bits and reading it after each write, in
+    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga102.c
     the rules that the GSP's falcon registers count from the base of the GSP's
-    registers, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that its RISC-V
+    registers, in falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, that its RISC-V
     core's and boot ROM's registers count from the GSP's second register block
     and its memory interface's registers from the GSP's memory interface
     base, in falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that
     the GSP's falcon has no bit in the chip's engine enable register, in
-    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, and
-    that it is reset before FWSEC runs, in falcon.h
+    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp,
+    that it is reset before FWSEC runs, in falcon.h, that the system
+    information and then the registry are queued before the GSP starts, in
+    nvidia_gpu.h, boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that the boot fails
+    when the registry is not sent, in boot_messages.h, that the GSP's firmware
+    is booted only on a GSP with a RISC-V core, checked before FWSEC runs, in
+    falcon.h, nvidia_gpu.h and nvidia_gpu.cpp, that once FWSEC has run the GSP
+    is reset into its RISC-V core, by waiting for its falcon to be ready for a
+    reset, resetting its engine, waiting for its memories, stopping when they
+    are not cleared, and selecting its RISC-V core with the BRFETCH field set,
+    before the messages are queued, in falcon.h, falcon.cpp, nvidia_gpu.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that the
+    address of LibOS's arguments is written to the GSP after the GSP's reset
+    into its RISC-V core and before booter load runs, in falcon.h and
+    nvidia_gpu.h, that once booter load succeeds the GSP falcon's OS register
+    is given the bootloader's app version and the boot fails unless the GSP's
+    RISC-V core then reads as running, in falcon.h, falcon.cpp, nvidia_gpu.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, that the
+    status queue is linked once the core reads as running, in
+    message_queues.h, nvidia_gpu.h and nvidia_gpu.cpp, that the firmware's
+    ready message is awaited right after that link, in nvidia_gpu.h and
+    nvidia_gpu.cpp, that the CPU sequencer's resume resets the GSP into its
+    RISC-V core, writes the address of LibOS's arguments, starts SEC2's falcon
+    with no reset, waits with the default timeout for the boot stage 3 handoff,
+    fails unless the SEC2 falcon's first mailbox then reads NV_OK, gives the GSP
+    falcon's OS register the app version and fails unless the RISC-V core reads
+    as running, in falcon.h, falcon.cpp, cpu_sequencer.h and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that a CPU sequencer step of
+    an opcode the chip's handler lacks fails, in cpu_sequencer.h,
+    cpu_sequencer.cpp and kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp,
+    the rules that the GSP's falcon registers count from the base of the GSP's
+    registers, its RISC-V core's from its second register block and its memory
+    interface's from its memory interface base, and that the resume resets the
+    GSP into its RISC-V core, writes the address of LibOS's arguments, starts
+    SEC2's falcon, waits with the default timeout for the boot stage 3 handoff,
+    gives the GSP falcon's OS register the app version and fails unless the
+    RISC-V core reads as running, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, and the rule that
+    NVIDIA's driver sets CrashCat up unless confidential computing is on, in
+    gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c
-    the rules that a program for the GSP's falcon is loaded with the memory
-    interface's transfer setup 0 set to physical system memory, its code
-    copied into IMEM marked secure and then its data into DMEM, 256 bytes at a
-    time with the address in 256-byte units split over the two base registers
-    and a wait for the DMA engine to go idle after each block, the code read
-    from below the program by its virtual base with its offsets counting from
-    that base, and the data read from its own start with its offsets counting
-    from 0, that the boot ROM is then given the signature's offset in the
-    data, the engine mask, the ucode id and the RSA-3072 algorithm, that the
-    boot vector is the code's virtual base, and that the falcon is then
-    started and waited on until it halts, each wait given the default
-    timeout, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    the rules that a program for a falcon is loaded with the memory interface's
+    transfer setup 0 set to physical system memory, its code copied into IMEM
+    marked secure and then its data into DMEM, 256 bytes at a time with the
+    address in 256-byte units split over the two base registers and a wait for
+    the DMA engine to go idle after each block, the code read from below its
+    offset in the program by its virtual base with its offsets counting from
+    that base, and the data read from its own offset in the program with its
+    offsets counting from 0, that the boot ROM is then given the signature's
+    offset in the data, the whole engine mask, the ucode id and the RSA-3072
+    algorithm, that the boot vector is the code's virtual base, that a program's
+    mailboxes are then written, that the falcon is then started and waited on
+    until it halts, each wait given the default timeout, that the mailboxes are
+    read after that wait whether or not it succeeds, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that a program's mailboxes are
+    written, that the falcon is waited on until it halts and that the mailboxes
+    are read after that wait, in
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and that the ucode
+    id is written through the value field of its register, in firmware_files.h,
+    firmware_files.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/falcon/arch/turing/kernel_falcon_tu102.c
     the rules that a falcon's register offsets count from its register base, in
+    falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp,
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp and
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that its RISC-V offsets
+    count from its RISC-V register base, in falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that a falcon has a
+    RISC-V core when its hardware configuration register's RISC-V field is set,
+    that a falcon is reset by disabling and then enabling it, that a falcon with
+    no bit in the chip's engine enable register is reset in full each time by
+    waiting for it to be ready, resetting its engine, waiting for its memories
+    and selecting its falcon core, and that enabling it ends by selecting its
+    falcon core, waiting for its memories once more and writing the chip id to
+    its RM register, in falcon.h, falcon.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the rule that the reset waits
+    for the falcon's memories and ends by writing the chip id to its RM
+    register, in kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the
+    rules that a falcon's DMA engine is let run with no address space bound by
+    setting its memory interface's field for it and clearing its DMA control
+    register and that a falcon is started through its control register's alias
+    while the alias is enabled and through the control register otherwise, in
+    falcon.h, falcon.cpp and kernel/tests/graphics/nvidia_falcon.test.cpp, the
+    rule that a falcon has halted once its halted bit is set, in falcon.h,
     falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that its RISC-V
-    offsets count from its RISC-V register base, in falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, that a falcon has a RISC-V
-    core when its hardware configuration register's RISC-V field is set, that a
-    falcon is reset by disabling and then enabling it, that a falcon with no bit
-    in the chip's engine enable register is reset in full each time by waiting
-    for it to be ready, resetting its engine, waiting for its memories and
-    selecting its falcon core, and that enabling it ends by selecting its falcon
-    core, waiting for its memories once more and writing the chip id to its RM
-    register, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and the rules that a falcon's
-    DMA engine is let run with no address space bound by setting its memory
-    interface's field for it and clearing its DMA control register, that a
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the rules that a
+    falcon's RISC-V offsets count from its RISC-V register base, that a falcon
+    has a RISC-V core when its hardware configuration register's RISC-V field is
+    set, that the reset ends by writing the chip id to its RM register, that a
     falcon is started through its control register's alias while the alias is
-    enabled and through the control register otherwise, and that it has halted
-    once its halted bit is set, in falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    enabled and that it has halted once its halted bit is set, in
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the rules that a
+    falcon is reset by disabling and then enabling it, that the reset waits for
+    the falcon's memories and writes the chip id to the RM register, that a
+    falcon's DMA engine is let run with no address space bound by setting its
+    memory interface's field for it and clearing its DMA control register, that
+    a falcon is started through its control register's alias while the alias is
+    enabled and through the control register otherwise and that it has halted
+    once its halted bit is set, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga102.c
-    the rules that a falcon is given 150 us to report it is ready for a reset
-    and that the waits for the memories and for the core selection take the
-    default timeout, in falcon.h and kernel/tests/graphics/nvidia_falcon.test.cpp,
-    and that the reset goes on without the ready report when it does not come,
-    that the memories are cleared once the memory scrubbing field is clear, and
-    that the falcon core is selected, when the falcon has a RISC-V core and its
-    boot control register selects it, by clearing that register and waiting
-    for its valid field, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga100.c
+    the rule that a falcon's interrupt is retriggered, sent from the engine to
+    the NV_CTRL tree again, by writing the trigger bit of its first retrigger
+    register, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga102.c
+    the rules that a falcon's pending sources directed to the host are its
+    status masked by the falcon core's mask and destination or by the RISC-V
+    core's, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a falcon is given
+    150 us to report it is ready for a reset and that the waits for the memories
+    and for the core selection take the default timeout, in falcon.h and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, that the memories are cleared
+    once the memory scrubbing field is clear, in falcon.h, falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp and
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that the reset goes on
+    without the ready report when it does not come, in falcon.h, falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that the falcon core
+    is selected, when the falcon has a RISC-V core and its boot control register
+    selects it, by clearing that register and waiting for its valid field, in
+    falcon.h, falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, that the RISC-V core
+    is selected with the core select and valid fields set and BRFETCH as its
+    caller asks and that the RISC-V core is running while the active field of
+    its control register is set, in falcon.h, falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, that the wait for the
+    memories is a condition wait, in falcon.h, that the ready wait is kept out
+    of the thread-state budget while the waits for the memories and for the core
+    selection count against it, in cpu_sequencer.h, gsp.h and nvidia_gpu.h, and
+    that the wait for the memories takes the default timeout, in
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_falcon_nvoc.c
+    the rules that GA102 reads a falcon's pending sources with
+    kernel_falcon_ga102.c's read and retriggers its interrupt with
+    kernel_falcon_ga100.c's retrigger, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu_mgr/gpu_mgr.c
     the rule that the chip id a falcon's RM register is given is the value of
-    PMC_BOOT_0, in falcon.h, falcon.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    PMC_BOOT_0, in falcon.h, falcon.cpp, cpu_sequencer.h,
+    kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, GPU instance 0 for
+    the first GPU attached, in gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the CPU
+    architecture's code chosen by the architecture the driver is built for,
+    in boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,
+    and BAR0's window into video memory, 7 MiB in, sent in place of instance
+    memory NVIDIA's driver lacks, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gpu_timeout.c
     the rule that waits given the default timeout share one budget for a whole
-    call of NVIDIA's driver while its thread-state timeout is on, and have
-    their own deadlines otherwise, in falcon.h
+    call of NVIDIA's driver while its thread-state timeout is on, and have their
+    own deadlines otherwise, in falcon.h, cpu_sequencer.h, gsp.h, gsp.cpp,
+    nvidia_gpu.h and nvidia_gpu.cpp, that a wait for a condition reads it once
+    more after its deadline passes, in falcon.h and falcon.cpp, that the budget
+    lasts the default timeout, in cpu_sequencer.h, gsp.h, gsp.cpp and
+    nvidia_gpu.h, that a wait with a timeout of its own also ends once that
+    budget is spent, unless it passes the flag bypassing the budget, in
+    cpu_sequencer.h and gsp.h, that a wait finding the budget spent times out at
+    its first check and that a timeout is padded by an OS tick, in
+    cpu_sequencer.h, that a timeout is given in microseconds, in
+    cpu_sequencer.h, cpu_sequencer.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that its
+    nanoseconds are counted in 64 bits, in cpu_sequencer.cpp and
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, and that a wait for a
+    condition given no timeout of its own takes the default timeout, and so
+    shares that budget, in falcon.h, gsp_unload.h and nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/nvidia/inc/kernel/gpu/gpu_timeout.h
+    that a timeout of 0 asks for the default timeout and that gpuSetTimeout
+    takes microseconds, in cpu_sequencer.h, cpu_sequencer.cpp and
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2004-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/core/thread_state.c
+    the rule that resetting a thread's timeout starts its budget again from the
+    time of the reset, in cpu_sequencer.h, gsp.h, gsp.cpp and nvidia_gpu.h, and
+    the rule that a thread servicing an interrupt gets a budget of 500 ms, so
+    that its waits end before the operating system panics the kernel, in
+    cpu_sequencer.h and gsp.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/arch/nvalloc/unix/src/os.c
-    the default timeout of 4 s in graphics mode, in falcon.h and
-    kernel/tests/graphics/nvidia_falcon.test.cpp
+    the default timeout of 4 s in graphics mode, in nvidia.h,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that registry.c
+    packs the registry sent to the GSP, in boot_messages.h
     SPDX-FileCopyrightText: Copyright (c) 1999-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 nouveau/extract-firmware-nouveau.py
     the boot file header and its values, in firmware_files.h,
     firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp,
     the rule that the bootloader's descriptor is NVIDIA's descriptor of a
-    RISC-V program, in firmware_files.h, and the rule that the descriptor
-    fills the bytes from the header's end to the program's start, in
-    firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp, the fields of booter
-    load's descriptor header, each a size or an offset from the file's start,
-    that lead to its signatures, signature slot, signature patch index,
-    metadata, signature count and load header, in firmware_files.h,
-    firmware_files.cpp and kernel/tests/graphics/nvidia_firmware.test.cpp,
-    and where the tool places each of those after the descriptor header, in
+    RISC-V program, in firmware_files.h and gsp_boot_memory.h, and the rule
+    that the descriptor fills the bytes from the header's end to the
+    program's start, in firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp, the fields of a booter's
+    descriptor header, each a size or an offset from the file's start, that lead
+    to its signatures, signature slot, signature patch index, metadata,
+    signature count and load header, in firmware_files.h, firmware_files.cpp and
+    kernel/tests/graphics/nvidia_firmware.test.cpp, and where the tool places
+    each of those after the descriptor header, in
     kernel/tests/graphics/nvidia_firmware.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -411,11 +1314,77 @@ src/nvidia/arch/nvalloc/common/inc/rmRiscvUcode.h
     firmware_files.h
     SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/common/uproc/os/common/include/libos_init_args.h
+    the radix3 page table's page size of 4 KiB, in gsp_boot_memory.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the fields of
+    a region of LibOS's arguments, its id, address and size in 64 bits, then
+    its kind and location bytes, and the values marking it one contiguous
+    range in system memory, in gsp_boot_memory.h, gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2018-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/gsp/gsp_init_args.h
+    the resource manager's arguments, their fields in that order: the
+    address of the message queues' memory, its page table's entry count, the
+    offsets of the command queue, the status queue and two lockless queues, the
+    power transition's fields, the GPU's instance and the profiler's buffer, in
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvtypes.h
+    the 64 bits of NVIDIA's lengths on a 64-bit build, which the resource
+    manager's queue offsets take, in gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the single byte of
+    NVIDIA's booleans, which the power transition's flag takes, in
+    gsp_boot_memory.cpp, which the system information's flags take, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,
+    which the two flags of the request to unload take, in gsp_unload.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and which the static
+    configuration's booleans take, a video memory region's flags among them, in
+    gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the 32 bits of
+    NVIDIA's handles, which the static configuration's three handles take, in
+    gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, which `rm::handle`
+    takes, in rm.h, and which a control request's client and object take, in
+    gsp.h, gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    that NV_TRUE, NVIDIA's value for true, is 1, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/common/inc/gsp/gsp_error.h
+    the fields through which the GSP's firmware reports a failure in a mailbox
+    register, the code in bits 7:0, the reason in bits 15:8, the task in bits
+    23:16, the count of errors skipped in bits 27:24 and the tag in bits 31:28,
+    whose value 0xE marks a report, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the tag in bits
+    31:28 with its value 0xE and the report's code, reason, task and count of
+    errors skipped, in gsp.h
+    SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h
     the rule that the offsets of the manifest and the monitor's code and
     data lie inside the bootloader's program, counted from its start, in
     firmware_files.h, firmware_files.cpp and
-    kernel/tests/graphics/nvidia_firmware.test.cpp
+    kernel/tests/graphics/nvidia_firmware.test.cpp, that booter load reads
+    the copies of the GSP's firmware, its signature and the bootloader's
+    program in system memory, in firmware_files.h, gsp_boot_memory.h and
+    protected_memory.h, that it places the firmware and the bootloader's
+    program in protected memory, in gsp_boot_memory.h and
+    protected_memory.h, the order of protected memory's parts below the FRTS
+    region and of the unprotected heap below them, in chip.h,
+    protected_memory.h, protected_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the metadata
+    booter load places at protected memory's start and its 256 bytes, in
+    protected_memory.h, protected_memory.cpp, gsp_boot_memory.h,
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the metadata's
+    fields, their order and meanings, its magic and its revision, in
+    gsp_boot_memory.h, gsp_boot_memory.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, and the rule that
+    only the last 256 MiB of video memory is scrubbed before the GSP's
+    firmware runs, which scrubs the rest, in chip.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/common/inc/nv-firmware.h
@@ -432,7 +1401,9 @@ src/nvidia/arch/nvalloc/common/inc/nv-firmware-chip-family-select.h
     SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/shared/msgq/inc/msgq/msgq_priv.h
-    the queue header's fields and the read pointer after them, and the queue
+    the queue header's fields and the read pointer after them, in
+    message_queues.cpp, kernel/tests/graphics/nvidia_message_queues.test.cpp
+    and kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the queue
     version 0, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -450,16 +1421,27 @@ src/common/shared/msgq/msgq.c
     each read pointer is kept before and after the link, the counts of free
     and written elements, and the wrap of the write and read pointers, in
     message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the rule that
-    read pointers swap only when both queues' headers ask, each reader then
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that read
+    pointers swap only when both queues' headers ask, each reader then
     keeping its own in the queue it writes, in
     message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the read
+    pointer every queue keeps between its header and first element, where
+    each read pointer is kept before the link, and the count of free
+    elements, in kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2018-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/gsp/message_queue_priv.h
     the element header, the element and message sizes and the checksum, in
     message_queues.h, message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the element
+    header's size and the element's size, in
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/gsp/message_queue.h
+    the resource manager's queue index, 0, in falcon.cpp,
+    kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -473,29 +1455,615 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     checksum and its last element copied whole, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the status queue
     linked once the firmware has written its header and retried within a
-    deadline, in message_queues.h, and the full fence before each link, in
-    message_queues.cpp
+    deadline, in message_queues.h, message_queues.cpp, gsp.h, nvidia_gpu.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    that deadline of 4 s, in message_queues.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, a received message
+    read up to 3 times in a row while it is not wholly written or fails its
+    checksum or sequence number check, in message_queues.h,
+    message_queues.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the full fence
+    before each link, in message_queues.cpp, the address of the queues' memory
+    given as its first page's, which holds the page table, in
+    gsp_boot_memory.cpp and
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the queue memory's
+    layout and page table, in
+    kernel/tests/graphics/nvidia_gsp_boot_memory.test.cpp, the queue memory's
+    layout and each message's element count, in
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that the resource
+    manager's queue takes the resource manager's queue index, in falcon.h,
+    falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a message waits
+    up to 1 s for room for each of its elements in the command queue, in gsp.h,
+    and that NVIDIA's driver reads the GSP's log and checks the GSP's health
+    after each try that fails before the link's timeout passes, failing the link
+    when the check finds a failure, in message_queues.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc-message-header.h
-    the RPC header's fields, in message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    the RPC header's fields, in message_queues.h, message_queues.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc_headers.h
     the RPC header's version, signature and pending result, in
-    message_queues.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    message_queues.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    the reply's success value NV_OK, in nvidia.h, gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that results below
+    0xFF000000 are NVIDIA's status codes, in gsp.h, and the most GPCs (graphics
+    processing clusters), 32, and the virtual display's parameters, which size
+    members of the static configuration, the former ahead of its table of video
+    memory regions, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/rmapi/rpc_common.c
-    the RPC header's values in each message sent, its length covering the
-    RPC header and the payload, in message_queues.h, message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the zeros after
-    the payload, in message_queues.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    the RPC header's values in each message sent, in message_queues.h,
+    message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, its length covering
+    the RPC header and the payload, in message_queues.h, message_queues.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the zeros after the
+    payload, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the zeros in
+    every field of the system information NVIDIA's driver does not set, in
+    boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the zeros after the
+    driver's version string in the guest system information, in gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the zeros in the
+    arguments of the request for the static configuration, in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
+    zero in a control request's status, which NVIDIA's driver does not set, in
+    gsp.h, gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    that the RPC version the driver runs at is made from the VGX version, in
+    gsp_unload.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-Each of these files carries this permission notice:
+src/nvidia/inc/kernel/gpu/gsp/gsp_static_config.h
+    the system information's fields, their order and types, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,
+    the static configuration's members, their order and types, which give its
+    size for this firmware (2168 bytes), the offset of its table of video memory
+    regions (840) and that of its field bar1PdeBase (2088), in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
+    offsets of its fields hInternalClient (2152) and hInternalSubdevice (2160),
+    in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that of
+    hInternalDevice (2156), in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the static
+    configuration holds the facts about the GPU the firmware gathers as it
+    starts, in gsp_info.h, and that its handles hInternalClient and
+    hInternalSubdevice name the client and subdevice for internal RMAPI
+    controls, in gsp_info.h and nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 2019-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_chipset_nvoc.h
+    the size of the chipset's bus information, which the system information
+    holds twice, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/gpu_acpi_data.h
+    the ACPI method data's fields, their order and types, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073system.h
+    the most displays NVIDIA's driver maps to ACPI IDs, which sizes three of
+    the ACPI method data's arrays, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvstatus.h
+    the size of NVIDIA's status codes, which the ACPI method data holds, in
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvstatuscodes.h
+    that NV_OK, the status for success, is 0, in falcon.h, falcon.cpp, nvidia.h,
+    gsp.h, gsp.cpp, nvidia_gpu.h, kernel/tests/graphics/nvidia_falcon.test.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/unix/src/registry.c
+    the registry table's size, which counts its header, its entries and the
+    names and data they point to, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that packing a
+    table with no entry returns a warning, in boot_messages.h
+    SPDX-FileCopyrightText: Copyright (c) 1999-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/kernel/vgpu/nv/rpc.c
+    what NVIDIA's driver writes in each field of the system information, in
+    boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the rule that neither
+    message waits for a reply, in boot_messages.h, boot_messages.cpp, gsp.h and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that no registry is
+    sent when packing it returns a warning, in boot_messages.h, that the request
+    to unload is sent with its caller's values, in gsp_unload.h, gsp_unload.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, that a request
+    waits for its reply (the next message carrying the request's function),
+    whose result fails the request when it is not NVIDIA's success value, in
+    nvidia.h, gsp.h, gsp.cpp, gsp_info.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a failing reply's
+    status is handed up as the request's when it lies below 0xFF000000, and
+    NV_ERR_GENERIC in its place otherwise, in gsp.h, that only some requests
+    report through the private result, in message_queues.h, what NVIDIA's driver
+    sends as the guest system information (the VGX version, the room of 256
+    bytes for each of the three strings and its version string as the driver's),
+    in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that NVIDIA's driver
+    sends its own build's branch name, title and changelist number in the guest
+    system information, in gsp_info.h, the rule that the firmware refuses the
+    version with a private result other than NV_OK, which NVIDIA's driver hands
+    up whatever its value unless it sends the request again, in gsp.h,
+    gsp_info.h, gsp_info.cpp, nvidia.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that NVIDIA's driver
+    reads the version from the reply whatever the reply's length, in gsp_info.h,
+    that NVIDIA's driver takes the version a successful reply gives and sends a
+    refusing reply back as its request when the version the reply gives differs
+    from the version sent and is at least 0x18.00, in gsp_info.h and
+    gsp_info.cpp, that the static configuration is asked for with its whole size
+    and that the reply's payload holds it from its first byte, in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, that
+    only the reply's result is checked before it is copied whole, in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, what
+    NVIDIA's driver writes in a control request's header (the client, the
+    object, the command, the parameters' size and no flags for a control neither
+    serialized nor marked to copy its parameters out on an error) with the
+    parameters after it, and that the control's own failing status skips the
+    copy of the parameters back, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that a failed
+    control's status is handed up whatever its value, the reply's flags can ask
+    for a failed control's parameters to be copied out, a control marked
+    cacheable is answered from a cache of its successful answers, parameters too
+    large for one message are sent in several, some controls are sent
+    serialized, parameters given with a size of 0 are refused, and the
+    parameters are copied back whatever the reply's length, in gsp.h
+    SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
+    the two messages' function numbers, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the CPU sequencer's
+    function number, in cpu_sequencer.h,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the ready message's
+    function number, in message_queues.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, its name
+    GSP_INIT_DONE, in nvidia_gpu.h, the function numbers of the guest system
+    information and the static configuration, in gsp_info.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the request to
+    unload's function number, in gsp_unload.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the control request's
+    function number, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the numbering of
+    functions from 0 and of events from 0x1000, fewer than 0x1000 of each, in
+    message_queues.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/common/inc/rmgspseq.h
+    the CPU sequencer's opcodes, the words of arguments each takes and their
+    order, and the save area's 8 words, in cpu_sequencer.h, cpu_sequencer.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2019-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_rpc-structures.h
+    the CPU sequencer's payload, which gives the words the firmware's buffer
+    holds, the words its steps take and the save area before the steps, in
+    cpu_sequencer.h, cpu_sequencer.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the layout of the
+    guest system information, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the lowest VGX version
+    NVIDIA's driver sends its request again at, 0x18.00, in gsp_info.h, the
+    layout of version 0x1F07 of the request to unload's arguments, in
+    gsp_unload.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    that the reply's payload holds the static configuration from its first byte,
+    in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the layout of a
+    control request's header, with the control's status in it, in gsp.h, gsp.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/rmapi/rmapi.h
+    that RMAPI_RPC_FLAGS_NONE, the flags of a control neither serialized nor
+    marked to copy its parameters out on an error, is 0, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2018-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
+    the command NV2080_CTRL_CMD_INTERNAL_INTR_GET_KERNEL_TABLE, a control of a
+    subdevice, the layout of its parameters and of their rows, the most rows
+    they hold, 128, the count of interrupt categories their subtree map covers,
+    7, and that only the rows their count gives are valid, in rm.h,
+    interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that they give the
+    interrupt table for NVIDIA's kernel-side driver, in rm.h, interrupts.h and
+    nvidia_gpu.h, and that their subtree map gives the first and last of the
+    top-level bits a category of interrupts takes, in rm.h
+    SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/intr/engine_idx.h
+    the GSP's engine number MC_ENGINE_IDX_GSP, 49, in rm.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that its engines
+    are those NVIDIA's interrupt code serves, in rm.h and interrupts.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/intr/intr.c
+    that NVIDIA's driver asks for the kernel interrupt table on the internal
+    client and subdevice as it starts the GPU, sending its parameters unzeroed,
+    refuses a table counting more rows than it holds and copies each row's
+    vectors and PMC mask into its table unchecked, in rm.h, interrupts.h,
+    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    that it looks an engine's vector up in the first row of that engine,
+    returning NV_INTR_VECTOR_INVALID without one, in interrupts.h,
+    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    that it services an engine's stall interrupts with the engine's handler and
+    its nonstall interrupts as notifications, in rm.h and interrupts.h, that it
+    services the GSP's as stall interrupts, keeps every row of the GSP's engine
+    and accepts a table without a row for the GSP, in interrupts.h, that it
+    clears an engine's interrupt before it services the engine, in interrupts.h
+    and interrupts.cpp, and that it services an engine's stall interrupts again
+    while the engine's service reports sources still pending, until it has
+    counted the same sources returned more times than its threshold for a stuck
+    interrupt, which it then reports, in nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/intr/intr_service.c
+    that an engine's interrupt service clears the engine's stall interrupt by
+    default on the stall vector NVIDIA's driver looks up for the engine, in
+    interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that it clears the
+    vector before the engine is serviced, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/intr/arch/turing/intr_tu102.c
+    that NVIDIA's driver never enables a vector of the kernel interrupt table
+    past the leaves of the CPU interrupt tree, which has no leaf register for
+    it, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it takes
+    0xFFFFFFFF for no vector, in interrupts.h, that the subtree map's ranges are
+    of the CPU interrupt tree's top-level bits, in rm.h, that the subtree map
+    gives the subtrees of NVIDIA's nonstall interrupts, in interrupts.h, that a
+    row's PMC mask holds the engine's bits in the GPU's PMC interrupt register,
+    which is not part of the CPU interrupt tree, in rm.h, interrupts.h,
+    nvidia_gpu.h and kernel/tests/graphics/nvidia_message_queues.test.cpp, that
+    it never enables, but for the timer's row, the vectors of a row with a PMC
+    mask, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it enables at
+    their leaves the vectors of the remaining rows and at the top level every
+    subtree but those of its nonstall interrupts, in interrupts.h, that it
+    clears every bit of each leaf's enable before it enables any vector, since
+    an earlier driver can leave enables set, that it enables a vector by writing
+    the vector's bit to its leaf's enable set register and clears a vector's
+    pending bit by writing the bit to its leaf, that it clears every top-level
+    enable and then every leaf's enable as it unloads, in interrupts.h,
+    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    that an earlier driver can leave enables set, in nvidia_gpu.h and
+    nvidia_gpu.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_intr_nvoc.h
+    the invalid PMC mask NV_PMC_INTR_INVALID_MASK, 0, which a row without a PMC
+    mask holds, in rm.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2006-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/ampere/ga102/dev_vm.h
+    the CPU interrupt tree, the GPU's registers reporting its interrupts to the
+    CPU, in chip.h, interrupts.h, interrupts.cpp, nvidia_gpu.h, nvidia_gpu.cpp,
+    rm.h, kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the offsets in the
+    block of a virtual function's registers of the tree's leaves and of their
+    enables' set and clear registers, 4 bytes apart, and of the top level's
+    first enable set and clear registers, in interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a second
+    top-level enable set or clear register would lie 4 bytes after the first, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the tree has
+    8 leaf registers on GA102, in chip.cpp,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/arch/nvalloc/common/inc/dev_ctrl_defines.h
+    that interrupt vector `i` is bit `i % 32` of leaf `i / 32`, in chip.h,
+    interrupts.h, interrupts.cpp, nvidia_gpu.cpp,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a GPU interrupt
+    vector numbers a bit of an interrupt tree's leaves, in interrupts.h and
+    nvidia_gpu.h, the invalid interrupt vector NV_INTR_VECTOR_INVALID,
+    0xFFFFFFFF, in interrupts.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a subtree is the
+    two leaves reporting to one bit of the tree's top level and that subtree `i`
+    is bit `i % 32` of the top level's register `i / 32`, in interrupts.h,
+    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    the most leaf registers NVIDIA's driver expects a chip's tree to have,
+    NV_MAX_INTR_LEAVES, 16, in chip.h, chip.cpp, interrupts.cpp and
+    kernel/tests/graphics/nvidia.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_os_nvoc.h
+    the registry table's header, its size and entry count, in
+    boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_gpu_nvoc.h
+    the codes for the x86_64 and aarch64 CPU architectures and the PCI
+    address's encoding of the domain, bus and device, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the compute
+    branding type, which one of the static configuration's members takes, in
+    gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2004-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/common/inc/nv-hypervisor.h
+    the hypervisor type for none known, in boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1999-2018 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/maxwell/gm107/dev_nv_xve.h
+    where BAR0 mirrors the card's PCI configuration space, in nvidia.h,
+    boot_messages.cpp, interrupts.cpp,
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the offset 0x704
+    in it of NV_XVE_CYA_2, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/bif/kernel_bif.c
+    the rule that NVIDIA's driver, with MSI on, re-arms MSI through the PCI
+    configuration space on a chip whose property asks for that, in interrupts.h
+    SPDX-FileCopyrightText: Copyright (c) 2013-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/bif/arch/maxwell/kernel_bif_gm107.c
+    the rules that BAR0's mirror of the card's PCI configuration space spans the
+    whole of NV_PCFG's range, in nvidia.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that MSI is re-armed by
+    writing 0 to NV_XVE_CYA_2 through that mirror, a value the card ignores, in
+    interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the write is
+    skipped when NVIDIA's check of register access fails, in interrupts.h and
+    nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gpu_access.c
+    the rules that NVIDIA's driver, when a register reads all ones and
+    PMC_BOOT_0 then reads as invalid, handles the GPU as lost, and that its
+    check of register access fails for a GPU no longer attached, in nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_bif_nvoc.c
+    the rule that GA102 takes BAR0's mirror of its PCI configuration space, in
+    nvidia.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that GA102 re-arms
+    MSI through its PCI configuration space with kernel_bif_gm107.c's re-arm, in
+    interrupts.h
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_bif_nvoc.h
+    that the check for one of the system information's flags does nothing,
+    so NVIDIA's driver never sets the flag, in boot_messages.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2013-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/unix/src/osinit.c
+    the rule that the system information's three addresses are those of the
+    card's registers, its framebuffer BAR and the BAR NVIDIA's driver calls
+    instance memory, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the video memory
+    NVIDIA's driver reserves for a boot console before the GSP's firmware runs,
+    none for a chip whose fuses disable its display, else the bytes of a console
+    it finds on the card rounded up to 64 KiB, or 256 KiB when those come to 0
+    and it does not know that the card booted through UEFI, in boot_messages.h,
+    boot_messages.cpp, nvidia_gpu.h and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that NVIDIA's driver
+    turns its thread-state timeout on, in cpu_sequencer.h and nvidia_gpu.cpp,
+    that NVIDIA's resource manager puts all of BAR1 into virtual mode, so
+    NVIDIA's driver maps a console lying at the start of BAR1 there, in
+    nvidia_gpu.h, that NVIDIA's driver keeps a console mapped there only when it
+    keeps video memory for one and the console lies at the start of its
+    framebuffer BAR, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that NVIDIA's driver
+    keeps no console mapped there on a host of virtual GPUs or in a guest given
+    one, in boot_messages.h, that it keeps one for a console whose size its OS
+    layer reports as 0 only when that layer reports its base, in
+    boot_messages.h, that NVIDIA's driver re-arms MSI once after initializing
+    the GPU's state, and that it takes a GPU whose PMC_BOOT_0 no longer reads
+    its saved value as fallen off the bus, in nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 1999-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/arch/nvalloc/unix/src/unix_intr.c
+    the rules that NVIDIA's driver re-arms MSI at the end of each run of its
+    interrupt handler while the GPU's state is loaded and its interrupts are
+    enabled in hardware, whether or not it found an interrupt pending, in
+    interrupts.h and nvidia_gpu.h, that holding the GPUs lock disables the
+    interrupts of every GPU it has initialized, in nvidia_gpu.h, and that the
+    bottom half of its interrupt handler runs with the thread state of a
+    deferred interrupt handler, in gsp.h
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/nvidia/nv-pci.c
+    the rules that NVIDIA's driver keeps a card whose BARs other than BAR0 are
+    not valid and numbers only the valid BARs that hold memory, so that without
+    BAR1 its framebuffer BAR is BAR3 and it has no instance memory, in
+    boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and that its BAR2, the
+    third valid BAR holding memory, is BAR3 here, in bar0_window.h
+    SPDX-FileCopyrightText: Copyright (c) 2019-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/common/inc/nv.h
+    NVIDIA's indexes of its framebuffer BAR and instance memory among the valid
+    BARs that hold memory, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the two places in
+    the card's BARs where NVIDIA's driver looks for a boot console (the start of
+    its framebuffer BAR, where a UEFI display driver sets the console up, and 16
+    MiB into instance memory, where the VBIOS sets it up), in boot_messages.h,
+    boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1999-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/nvidia/nv.c
+    the rule that a boot console takes its height times its pitch in bytes when
+    it lies where nv.h places it, and 0 bytes anywhere else, as NVIDIA's driver
+    finds it through a registered framebuffer or the boot screen's information,
+    in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that NVIDIA's driver
+    keeps 16 bits of the height and of the pitch, in boot_messages.h and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, that NVIDIA's driver
+    keeps only the low 32 bits of a boot console's address on a host whose
+    kernel gives it no more, in boot_messages.h, and that on an aarch64 host
+    whose kernel withholds the boot screen's information from it, NVIDIA's
+    driver takes the size of the whole memory range the host's framebuffer
+    driver claims, and its start as the console's address, in boot_messages.h
+    SPDX-FileCopyrightText: Copyright (c) 1999-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_gpu_nvoc.c
+    the rule that NVIDIA's driver starts out not knowing that the card booted
+    through UEFI, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gpu_gspclient.c
+    the rule that NVIDIA's driver learns from the GSP's firmware whether the
+    card booted through UEFI, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/virtualization/hypervisor/hypervisor.c
+    the rule that the hypervisor type stays unknown when NVIDIA's driver
+    finds no hypervisor, in boot_messages.h, boot_messages.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gpu.c
+    the rule that the firmware is asked to unload as the GPU's state is
+    destroyed, with no check that the firmware reported its initialization done,
+    in nvidia_gpu.h, and that NVIDIA's driver takes the static configuration's
+    handles as the firmware gives them for a GSP client other than T234D and
+    later, as GA102 is, in gsp_info.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_rpc_private.h
+    the rule that from RPC version 0x1F070000 on, the request to unload takes
+    the arguments of version 0x1F07, in gsp_unload.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/kernel/inc/vgpu/vgpu_version.h
+    the VGX version 0x23.05, from which NVIDIA's driver makes the RPC version
+    it runs this firmware at, in gsp_unload.cpp, and which it sends in the guest
+    system information, in gsp_info.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2008-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0000/ctrl0000system.h
+    the room of 256 bytes NVIDIA's driver gives each string of the guest system
+    information, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/nvUnixVersion.h
+    the version string NVIDIA's driver sends as its own in the guest system
+    information, in gsp_info.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080fb.h
+    the layout of the table of video memory regions and of each region in it,
+    the table's 16 entries among it, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and what a region's
+    fields mean: its first and last valid bytes, which give its size as the last
+    less the first plus 1, the bytes the resource manager may need in it, which
+    a driver managing the memory leaves free, and which allocations its
+    compression, scanout and protection flags allow, in gsp_info.h,
+    gsp_info.cpp, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2006-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr_gsp_client.c
+    the rule that the static configuration gives 1 to 16 video memory regions,
+    in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that a region
+    with reserved bytes counts as reserved rather than usable, in gsp_info.h,
+    gsp_info.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the firmware
+    reserves some regions for its own use and that NVIDIA's driver takes each
+    region's first and last bytes without checking them against each other, in
+    gsp_info.h
+    SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_mem_mgr_nvoc.h
+    the most video memory regions NVIDIA's driver keeps, 16, in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mem_mgr/heap.c
+    the rules that allocations requiring compression lie only in regions
+    supporting it, that allocations of primary, cursor and video surfaces lie
+    only in regions supporting scanout, that a protected region holds only
+    protected allocations, which lie nowhere else, and that a region a boot
+    console uses is reserved, in gsp_info.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080gr.h
+    the size of the graphics capabilities table, which the static configuration
+    holds ahead of its table of video memory regions, in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2004-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gpu.h
+    the sizes of the GPU's ID, GPC, TPC and ZCULL information, which the static
+    configuration holds ahead of its table of video memory regions, and of the
+    GPU's name strings, which it holds after the table, in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2006-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080bios.h
+    the size of the SKU information, which the static configuration holds ahead
+    of its table of video memory regions, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080gpu.h
+    the size of the SR-IOV capabilities, which the static configuration holds
+    after its table of video memory regions, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2004-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gr.h
+    the length, 5, of the static configuration's arrays of the graphics engine's
+    preemption buffer sizes and alignments, which it holds after its table of
+    video memory regions, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2006-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/gpu_engine_type.h
+    the number of engine types, 0x3e, from which the length of the static
+    configuration's engine capabilities is made, held after its table of video
+    memory regions, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/nvbitmask.h
+    the length of the static configuration's engine capabilities, in 32-bit
+    words made from the number of engine types, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
+g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, rpc_global_enums.h,
+g_rpc_private.h and nvUnixVersion.h the package's COPYING, carries this
+permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),

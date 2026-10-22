@@ -1,0 +1,319 @@
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
+
+#ifndef STELLUX_DRIVERS_GRAPHICS_NVIDIA_GSP_H
+#define STELLUX_DRIVERS_GRAPHICS_NVIDIA_GSP_H
+
+#include "common/types.h"
+#include "drivers/graphics/nvidia/cpu_sequencer.h"
+#include "drivers/graphics/nvidia/message_queues.h"
+#include "drivers/graphics/nvidia/registers.h"
+#include "drivers/graphics/nvidia/rm.h"
+
+namespace drivers::nvidia {
+
+/**
+ * The driver's side of its conversation with the GSP's firmware (the GSP is
+ * the processor inside the GPU that runs NVIDIA's firmware). Every message the
+ * driver sends or receives goes through this object. It keeps the message
+ * queues through which the driver and the firmware exchange messages, the
+ * buffer each received message's payload is copied into, the context taken by
+ * the steps of the CPU sequencer (the register, delay and falcon steps the
+ * firmware sends for the driver to run), and a view of BAR0 for those steps,
+ * for telling the firmware that a request waits and for reading and clearing a
+ * failure report.
+ *
+ * A message that needs no reply, such as either of the two messages queued
+ * before the GSP starts, is queued with `send`. A request goes through
+ * `request`, the one path every request takes: the request is queued, the
+ * firmware is told that the request waits, the reply is awaited as
+ * `receive_awaited` describes (a CPU sequencer the firmware sends first runs
+ * as soon as its message is read) and handed to the caller, with as much of
+ * its payload as the caller has room for copied over the request's arguments,
+ * and its result is translated with `to_error`, the one translation of the
+ * firmware's status codes into this driver's errors. A control (a command to
+ * an object the firmware keeps) goes through `control`, which sends it as a
+ * request. A message the firmware sends unasked, such as its ready message, is
+ * awaited with `await` during bring-up and read with `drain` once bring-up
+ * ends. A failure the firmware reports is looked for with `check_health`.
+ *
+ *   driver --- send, request ----------> command queue ---> GSP's firmware
+ *   driver <-- await, request, drain --- status queue  <--- GSP's firmware
+ *
+ * A `gsp` owns the payload buffer, which `stop` and the destructor free, but
+ * not the queues' memory, which must stay allocated for as long as messages
+ * are sent or received through the `gsp`, nor BAR0's mapping, which must stay
+ * mapped until `stop`. Its waits spin on the calling CPU without sleeping, and
+ * only one thread may use it at a time.
+ */
+class gsp {
+public:
+    /**
+     * @brief An object holding no queues, for a driver to keep until it lays
+     * the queues out. No call but `start` and `stop` may be made on it until
+     * `start` returns `OK`.
+     */
+    gsp() = default;
+
+    ~gsp();
+
+    gsp(const gsp&) = delete;
+    gsp& operator=(const gsp&) = delete;
+
+    /**
+     * @brief Allocate the payload buffer, room for `MESSAGE_PAYLOAD_MAX_BYTES`
+     * on the unprivileged heap, lay the message queues out in `queue_memory`
+     * as `message_queues` does before the firmware starts, and keep `regs` and
+     * `sequencer` for the requests, the CPU sequencer's runs and the health
+     * check. The object must hold no queues, as the default constructor and
+     * `stop` leave it.
+     * @param regs A view of BAR0, kept until `stop`, for telling the firmware
+     * that a request waits, for the sequencer's steps and for reading and
+     * clearing a failure report. Booter load must have run on SEC2's falcon
+     * before the first wait, with nothing resetting SEC2 since, as
+     * `receive_awaited` requires.
+     * @param queue_memory The CPU's mapping of the queues' memory, as the
+     * `message_queues` constructor requires it.
+     * @param queue_dma_address The address the card reaches that memory at, as
+     * the `message_queues` constructor requires it.
+     * @param sequencer What the CPU sequencer's steps take. Its
+     * `register_bytes` must be the size of the mapping `regs` views, and its
+     * `deadline_ns` is ignored, since each wait sets its own as `await`
+     * describes.
+     * @return `OK`, or `ERR_NO_MEMORY`, which is logged, when the payload
+     * buffer cannot be allocated. That error writes nothing and leaves the
+     * object holding no queues.
+     */
+    int32_t start(
+        registers& regs,
+        uint8_t* queue_memory,
+        uint64_t queue_dma_address,
+        const cpu_sequencer_context& sequencer
+    );
+
+    /**
+     * @brief Queue a message for the firmware with no reply awaited, as
+     * `message_queues::send` does. Like `message_queues::send`, it touches
+     * none of the card's registers, so after `OK` the caller must tell the
+     * firmware that a message waits.
+     * @param function NVIDIA's number for what the message asks of the
+     * firmware.
+     * @param payload The bytes the message carries after its headers, which
+     * may be null when `payload_bytes` is 0.
+     * @param payload_bytes How many bytes `payload` holds, refused above
+     * `MESSAGE_PAYLOAD_MAX_BYTES`.
+     * @return What `message_queues::send` returns, `ERR_TOO_LARGE` logged and
+     * `ERR_QUEUE_FULL` not.
+     */
+    int32_t send(uint32_t function, const void* payload, uint32_t payload_bytes);
+
+    /**
+     * @brief Link the status queue once the firmware has written its header,
+     * as `link_status_queue_within` does.
+     * @param timeout_ns How long to retry, `STATUS_QUEUE_LINK_TIMEOUT_NS` at
+     * bring-up.
+     * @return `OK`, or the `ERR_TIMEOUT` `link_status_queue_within` logs and
+     * returns.
+     */
+    int32_t link_status_queue(uint64_t timeout_ns);
+
+    /**
+     * @brief Wait for the next message carrying `function`, as
+     * `receive_awaited` waits, with a deadline `timeout_ns` after the call.
+     * The CPU sequencer's waits other than its delays and the ready waits of
+     * its falcon steps count against a deadline `DEFAULT_TIMEOUT_NS` after the
+     * call, as NVIDIA's driver starts its thread-state budget again just
+     * before its wait for the ready message. The status queue must be linked.
+     * @param function NVIDIA's number for the message awaited.
+     * @param out Receives the message's function, results and payload size,
+     * which never exceeds `MESSAGE_PAYLOAD_MAX_BYTES`, on `OK`, and is left
+     * unchanged on an error.
+     * @param timeout_ns How long to wait, `RECEIVE_TIMEOUT_NS` at bring-up.
+     * @return What `receive_awaited` returns, logged as its doc describes.
+     */
+    int32_t await(uint32_t function, received_message& out, uint64_t timeout_ns);
+
+    /**
+     * @brief Read every message the status queue holds, as
+     * `drain_status_queue` reads them, with the CPU sequencer's waits other
+     * than its delays and the ready waits of its falcon steps counted against
+     * a deadline `DEFAULT_TIMEOUT_NS` after the call, as `await` counts them.
+     * NVIDIA's driver drains in the bottom half of its interrupt handler and
+     * gives that thread, as one servicing an interrupt, a thread-state budget
+     * of 500 ms instead, so that its waits end before the OS panics the
+     * kernel, while the drain here runs in the driver's own kernel task, a
+     * thread the scheduler preempts. The status queue must be linked.
+     * @return What `drain_status_queue` returns, logged as its doc describes.
+     */
+    int32_t drain();
+
+    /**
+     * @brief Check the GSP's health as NVIDIA's driver does when CrashCat
+     * (NVIDIA's interface for the GSP's crash reports) is not set up. NVIDIA's
+     * driver sets CrashCat up unless confidential computing (a mode in which
+     * the GPU encrypts what it shares with the host) is on, and its check then
+     * reads only CrashCat's reports, while this driver never sets CrashCat up.
+     * Without CrashCat, NVIDIA's driver treats a word holding the error tag
+     * 0xE in bits 31:28 of the first of the GSP's four mailbox registers
+     * (NVIDIA's NV_PGSP_MAILBOX(0), apart from the GSP falcon's two) as a
+     * failure report from the firmware. It never reads that register while
+     * confidential computing is off, so whether this firmware reports a
+     * failure there is not known, and the check may never find one. For such a
+     * report, the check reads the word in the GSP's second mailbox register,
+     * clears the first to 0 and only then logs the code, reason and task the
+     * report held and that word, followed by the count of errors the firmware
+     * skipped when that count is not 0. Any other word is left in the register
+     * and nothing is logged. After a report NVIDIA's driver marks its GSP
+     * crashed, so that it skips every later request. It also logs the most
+     * recent messages it sent and the firmware's most recent unasked messages,
+     * and on its first failure halts every user channel (a stream of work the
+     * GPU runs for a program) with an error notice. On every failure it checks
+     * the GPU's counts of ECC errors (memory errors its error-correcting code
+     * finds). This driver leaves all of that out: it sends no request once its
+     * task runs, keeps no record of the messages it exchanges, runs no channel
+     * and reads no ECC count. The check returns nothing, since no caller acts
+     * on a failure, and a later check does not find a report this one cleared.
+     */
+    void check_health();
+
+    /**
+     * @brief Send the firmware a request and wait for its reply: queue the
+     * request, tell the firmware that the request waits, wait for the reply
+     * (the next message carrying `function`) as `await` waits but with both
+     * deadlines counted from before the request is queued, hand the caller the
+     * reply's fields and as much of its payload as `reply_capacity` allows,
+     * copied over `arguments`, and translate the reply's result with
+     * `to_error`. Nothing is logged between the queueing and the wait, and the
+     * wait runs a CPU sequencer the firmware sends ahead of the reply as soon
+     * as its message is read, as `receive_awaited` describes. The status queue
+     * must be linked. NVIDIA's driver does not start its thread-state budget
+     * again before a request, so the sequencer's waits other than its delays
+     * and the ready waits of its falcon steps share what is left of a budget
+     * begun earlier, while here they get one of their own. NVIDIA's driver
+     * also skips a request when its GSP has crashed or the GPU is in reset,
+     * lost, shut down, below full power or without access to system memory,
+     * and waits up to 1 s for room for each element the request fills in the
+     * command queue, whereas `request` fails at once on a full queue.
+     * @param function NVIDIA's number for what the request asks, which the
+     * reply carries too.
+     * @param arguments The buffer whose first `argument_bytes` bytes the
+     * request carries after its headers and over which the reply's payload is
+     * copied once the reply arrives, up to `reply_capacity` bytes. It may be
+     * null when `argument_bytes` and `reply_capacity` are 0.
+     * @param argument_bytes How many bytes of `arguments` the request carries,
+     * refused above `MESSAGE_PAYLOAD_MAX_BYTES`.
+     * @param reply_capacity How many bytes of the reply's payload `arguments`
+     * has room for, 0 for a caller that reads none of it. A longer payload is
+     * cut to its first `reply_capacity` bytes and a shorter one leaves the
+     * bytes past it as they were, so a caller must check that
+     * `reply.payload_bytes` covers what it reads.
+     * @param reply Receives the reply's function, results and payload size,
+     * which never exceeds `MESSAGE_PAYLOAD_MAX_BYTES`, once the reply arrives,
+     * whatever its result, and is left unchanged otherwise. Only the result is
+     * checked here, as NVIDIA's driver checks it for every request, so a
+     * caller whose request also reports through the private result checks that
+     * itself.
+     * @param timeout_ns How long to wait for the reply, `RECEIVE_TIMEOUT_NS`
+     * in the driver.
+     * @return `OK` once the reply's result is NVIDIA's success value, or what
+     * `message_queues::send` returns when the request cannot be queued, which
+     * is logged, what `receive_awaited` returns when its wait ends without the
+     * reply, logged as its doc describes, or what `to_error` returns for the
+     * reply's result, logged with the status.
+     */
+    int32_t request(
+        uint32_t function,
+        void* arguments,
+        uint32_t argument_bytes,
+        uint32_t reply_capacity,
+        received_message& reply,
+        uint64_t timeout_ns
+    );
+
+    /**
+     * @brief Send a control (a command to an object the firmware keeps)
+     * through `request` and copy the parameters the reply carries back over
+     * `params`. The request carries NVIDIA's 24-byte header (the client, the
+     * object, the command, a status of 0 for the reply to fill, the
+     * parameters' size and no flags) and then the parameters, from a buffer
+     * allocated on the unprivileged heap for the call. The control's own
+     * status, which the reply gives in its copy of the header, must be
+     * NVIDIA's success value, or nothing is copied back. NVIDIA's driver also
+     * skips the copy then, unless the reply's flags ask for the parameters to
+     * be copied out on an error, while here the reply's flags are not read.
+     * NVIDIA's driver answers a control marked cacheable from its cache once
+     * the firmware has answered it with NVIDIA's success value, sends
+     * parameters too large for one message in several and sends a serializable
+     * control's parameters as a serialized buffer, while here every control is
+     * sent to the firmware in one message with its parameters flat, as their
+     * struct lies in memory. NVIDIA's driver also copies the parameters back
+     * whatever the reply's length, while here the reply's payload must hold
+     * the header and the parameters. NVIDIA's driver refuses parameters given
+     * with a size of 0, while here the header is then sent alone. The status
+     * queue must be linked. The call spins on the calling CPU without
+     * sleeping, through the wait for the reply, which `request` bounds.
+     * @param client The client (the owner of a tree of objects) holding
+     * `object`.
+     * @param object The object the control is sent to.
+     * @param command NVIDIA's number for the control.
+     * @param params The control's parameters in NVIDIA's flat layout, which
+     * receive the reply's copy on `OK` and are left unchanged on an error. It
+     * must be non-null unless `params_bytes` is 0.
+     * @param params_bytes How many bytes `params` holds, refused when they and
+     * the header exceed `MESSAGE_PAYLOAD_MAX_BYTES`.
+     * @param timeout_ns How long to wait for the reply, as `request` takes it.
+     * @return `OK`, `ERR_TOO_LARGE` when the parameters do not fit one
+     * message, `ERR_NO_MEMORY` when the buffer cannot be allocated, what
+     * `request` returns when the request fails, logged as its doc describes,
+     * `ERR_BAD_MESSAGE` when the reply's payload ends before the parameters
+     * do, or `ERR_FIRMWARE` when the control's status is not NVIDIA's success
+     * value. Every error but the request's is logged here.
+     */
+    int32_t control(
+        rm::handle client,
+        rm::handle object,
+        uint32_t command,
+        void* params,
+        uint32_t params_bytes,
+        uint64_t timeout_ns
+    );
+
+    /**
+     * @brief The driver's error for a status code the firmware reports in a
+     * reply or in its ready message. NVIDIA's driver hands the status of a
+     * failed request up to the request's caller when the status lies below
+     * 0xFF000000, and NV_ERR_GENERIC otherwise. Whatever their value, it hands
+     * up the status of a failed control, that of a failed ready message and,
+     * unless it sends the request again, the private result of a reply
+     * refusing the driver's VGX version (the version of NVIDIA's messages the
+     * driver builds). Here every failure is the one error, and the callers log
+     * the status.
+     * @param status The result field of a reply or of the ready message, the
+     * private result of a reply whose request reports through it, or the
+     * status a control's reply gives in its copy of the control's header.
+     * @return `OK` for NVIDIA's success value 0, and `ERR_FIRMWARE` for every
+     * other status, which in a reply's result reports that the request failed,
+     * in a private result that the firmware refuses what the request asked, in
+     * a control's status that the control failed, and in the ready message
+     * that the firmware's initialization failed.
+     */
+    static int32_t to_error(uint32_t status);
+
+    /**
+     * @brief Free the payload buffer and drop the queues, the view of BAR0 and
+     * the sequencer's context, leaving the object as the default constructor
+     * makes it. The queues' memory is left as it is.
+     */
+    void stop();
+
+private:
+    int32_t await_since(uint32_t function, received_message& out, uint64_t start_ns, uint64_t timeout_ns);
+
+    message_queues        m_queues;
+    registers             m_regs{0};
+    cpu_sequencer_context m_sequencer = {};
+    uint8_t*              m_payload = nullptr;
+};
+
+} // namespace drivers::nvidia
+
+#endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_GSP_H

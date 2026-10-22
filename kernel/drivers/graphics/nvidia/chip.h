@@ -10,16 +10,19 @@ namespace drivers::nvidia {
 // Byte offset in BAR0 of the register that identifies the chip
 constexpr uint32_t PMC_BOOT_0 = 0x0;
 
+// The most leaf registers (the 32-bit registers reporting a chip's interrupts to the CPU) NVIDIA's driver expects a
+// chip to have, NV_MAX_INTR_LEAVES. No chip table entry exceeds it, so one top-level register serves every leaf
+constexpr uint8_t INTERRUPT_LEAVES_MAX = 16;
+
 /**
- * The names of the firmware files a chip boots from, which
- * `open_firmware_files` looks up in the version's directory,
- * nvidia/<FIRMWARE_VERSION>/ in `fw::DIRECTORY`, and of the GSP image's
- * section holding the chip's signature, which booter load's program checks
- * the GSP's firmware against and `check_gsp_image` finds. The GSP is the
- * processor inside the GPU that runs NVIDIA's firmware, which manages the
- * GPU's resources, the GSP image is the file holding that firmware, and the
- * bootloader and booter load are files holding small programs that start the
- * firmware.
+ * The names of a chip's firmware files, which `open_firmware_files` looks up
+ * in the version's directory, nvidia/<FIRMWARE_VERSION>/ in `fw::DIRECTORY`,
+ * and of the GSP image's section holding the chip's signature, which booter
+ * load's program checks the GSP's firmware against and `check_gsp_image`
+ * finds. The GSP is the processor inside the GPU that runs NVIDIA's
+ * firmware, which manages the GPU's resources, the GSP image is the file
+ * holding that firmware, and the bootloader and booter load are files
+ * holding small programs that start the firmware.
  */
 struct chip_firmware {
     const char* gsp_image;             // file name of the GSP image in the version's directory, shared by several chips
@@ -28,15 +31,36 @@ struct chip_firmware {
 };
 
 /**
+ * The chip's values from which `lay_out_protected_memory` sizes the video
+ * memory NVIDIA's driver reserves for the GSP's firmware: the firmware's heap
+ * inside protected memory (the video memory fenced off for that firmware),
+ * the heap the firmware keeps below protected memory, and the top of video
+ * memory all of it must fit in. Only the top `prescrubbed_top_bytes` of video
+ * memory is scrubbed, cleared to known values, before the firmware runs, and
+ * the firmware scrubs the rest itself once it runs. The driver runs no
+ * program that scrubs more beforehand, so `lay_out_protected_memory` refuses
+ * a layout that does not fit in that top part.
+ */
+struct chip_gsp_reservation {
+    uint32_t heap_os_bytes;          // the firmware heap's share for the operating system the firmware runs on
+    uint32_t heap_base_bytes;        // the firmware heap's share for what the firmware allocates while it boots
+    uint32_t heap_min_bytes;         // the firmware heap's minimum size, whatever its shares add up to
+    uint32_t unprotected_heap_bytes; // the heap the firmware keeps below protected memory
+    uint64_t prescrubbed_top_bytes;  // scrubbed before the firmware runs
+};
+
+/**
  * What the driver knows about one chip it supports, as an entry of the chip
  * table. The table is the only record of chip-specific values, so the rest of
  * the driver looks them up with `find_chip` instead of keeping its own.
  */
 struct chip_info {
-    uint16_t      id;               // as `decode_chip_id` returns it
-    const char*   name;             // NVIDIA's code name for the chip
-    chip_firmware firmware;
-    uint8_t       dma_address_bits; // bits of the physical addresses the chip reaches system memory with, 32 to 64
+    uint16_t             id;                   // as `decode_chip_id` returns it
+    const char*          name;                 // NVIDIA's code name for the chip
+    chip_firmware        firmware;
+    uint8_t              dma_address_bits;     // physical address bits the chip reaches system memory with, 32 to 64
+    chip_gsp_reservation gsp_reservation;
+    uint8_t              interrupt_leaf_count; // 32-bit leaf registers reporting the chip's interrupts to the CPU
 };
 
 /**

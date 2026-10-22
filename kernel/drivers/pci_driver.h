@@ -70,9 +70,10 @@ __PRIVILEGED_CODE int32_t init();
  * as the base `detach()` does for BAR mappings and MSI. Decoding and bus
  * mastering turned on with the device's `enable()` and `enable_bus_mastering()`
  * may stay on, so `detach()` must stop the device before it frees memory the
- * device may still reach. The framework then frees the driver and offers the
- * device to the next matching driver. A declined device is logged at info
- * level, not as a failure.
+ * device may still reach, and may keep that memory allocated for good when it
+ * cannot confirm the device stopped. The framework then frees the driver,
+ * whatever `detach()` returns, and offers the device to the next matching
+ * driver. A declined device is logged at info level, not as a failure.
  */
 class pci_driver : public device_driver {
 public:

@@ -2,9 +2,11 @@
 
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "hw/barrier.h"
+#include "hw/cpu.h"
 #include "sync/atomic.h"
 
 namespace drivers::nvidia {
@@ -44,12 +46,12 @@ struct message_headers {
 } // namespace
 
 // The queue memory's layout: a page table in the first page, then the command queue and the status queue
-constexpr uint32_t PAGE_BYTES           = 0x1000;
-constexpr uint32_t PAGE_TABLE_ENTRIES   = QUEUE_MEMORY_BYTES / PAGE_BYTES;
-constexpr uint32_t QUEUE_BYTES          = 0x40000;
-constexpr uint32_t COMMAND_QUEUE_OFFSET = PAGE_BYTES;
-constexpr uint32_t STATUS_QUEUE_OFFSET  = COMMAND_QUEUE_OFFSET + QUEUE_BYTES;
+constexpr uint32_t PAGE_BYTES  = 0x1000;
+constexpr uint32_t QUEUE_BYTES = 0x40000;
 
+static_assert(QUEUE_PAGE_TABLE_ENTRIES * PAGE_BYTES == QUEUE_MEMORY_BYTES, "the page table lists every page");
+static_assert(COMMAND_QUEUE_OFFSET == PAGE_BYTES, "the command queue follows the page table's page");
+static_assert(STATUS_QUEUE_OFFSET == COMMAND_QUEUE_OFFSET + QUEUE_BYTES, "the status queue follows the command queue");
 static_assert(STATUS_QUEUE_OFFSET + QUEUE_BYTES == QUEUE_MEMORY_BYTES, "the status queue ends the memory");
 
 // The command queue's layout as NVIDIA's driver creates it: a header page, then 4 KiB elements to the queue's end.
@@ -70,6 +72,13 @@ constexpr uint32_t SWAPS_READ_POINTERS = 0x1;
 constexpr uint32_t RPC_HEADER_VERSION = 0x03000000;
 constexpr uint32_t RPC_SIGNATURE      = 0x43505256;
 constexpr uint32_t RPC_RESULT_PENDING = 0xFFFFFFFF;
+
+// The function a drain awaits, outside NVIDIA's numbering of its functions from 0 and its events from 0x1000, fewer
+// than 0x1000 of each (NVIDIA's own drain awaits its count of functions and asserts that no message carries it)
+constexpr uint32_t NO_FUNCTION = 0xFFFFFFFF;
+
+// The deadline a drain waits until, already passed when it begins, so it waits for no message
+constexpr uint64_t DRAIN_DEADLINE_NS = 0;
 
 // The checksum covers the message in 8-byte words, the last one filled out by the bytes that follow the message
 constexpr uint32_t CHECKSUM_WORD_BYTES = 8;
@@ -128,7 +137,7 @@ message_queues::message_queues(uint8_t* memory, uint64_t dma_address)
     string::memset(memory, 0, QUEUE_MEMORY_BYTES);
 
     uint64_t* page_table = reinterpret_cast<uint64_t*>(memory);
-    for (uint32_t i = 0; i < PAGE_TABLE_ENTRIES; i++) {
+    for (uint32_t i = 0; i < QUEUE_PAGE_TABLE_ENTRIES; i++) {
         page_table[i] = dma_address + static_cast<uint64_t>(i) * PAGE_BYTES;
     }
 
@@ -160,7 +169,8 @@ int32_t message_queues::send(uint32_t function, const void* payload, uint32_t pa
     uint32_t element_count = (message_bytes + ELEMENT_BYTES - 1) / ELEMENT_BYTES;
     uint32_t next_write_pointer = (m_write_pointer + element_count) % ELEMENT_COUNT;
 
-    // A read pointer past the ring leaves no room, as NVIDIA's count of free elements treats it
+    // A read pointer past the ring leaves no room, as NVIDIA's count of free elements treats it once a message needs
+    // more elements than its cached count, where `send` reads it for every payload no larger than its maximum
     uint32_t read_pointer = sync::atomic_ref<uint32_t>{*m_firmware_read_pointer}.load_acquire();
     bool is_read_pointer_in_ring = read_pointer < ELEMENT_COUNT;
     uint32_t free_elements =
@@ -257,6 +267,15 @@ int32_t message_queues::link_status_queue() {
 
     sync::atomic_ref<uint32_t>{*m_driver_read_pointer}.store_relaxed(0);
 
+    log::info(
+        "nvidia: the status queue linked to the firmware's header, which places the %u elements 0x%X bytes and the "
+        "read pointer 0x%X bytes from the queue's start, each reader keeping its read pointer in the queue it %s",
+        header.element_count,
+        header.elements_offset,
+        header.read_pointer_offset,
+        swaps_read_pointers ? "writes" : "reads"
+    );
+
     return OK;
 }
 
@@ -268,8 +287,8 @@ int32_t message_queues::receive(received_message& out, void* payload, uint32_t p
     // NVIDIA's driver fences fully before each receive, so the write pointer is read after all the caller did before
     barrier::dma_full();
 
-    // A write pointer past the ring leaves nothing to read, as NVIDIA's count of written elements treats it once its
-    // cached count is spent, where the driver reads the write pointer on every call
+    // A write pointer past the ring leaves nothing to read, as NVIDIA's count of written elements treats it once a
+    // message needs more elements than its cached count, where `receive` reads it on every call once linked
     queue_header* status_queue = reinterpret_cast<queue_header*>(m_status_queue);
     uint32_t write_pointer = sync::atomic_ref<uint32_t>{status_queue->write_pointer}.load_relaxed();
     bool is_write_pointer_in_ring = write_pointer < m_status_element_count;
@@ -388,6 +407,7 @@ int32_t message_queues::receive(received_message& out, void* payload, uint32_t p
 
     out.function = headers.function;
     out.result = headers.result;
+    out.private_result = headers.private_result;
     out.payload_bytes = payload_bytes;
 
     // The firmware may rewrite the elements once the read pointer passes them, so every read of them comes first
@@ -399,6 +419,222 @@ int32_t message_queues::receive(received_message& out, void* payload, uint32_t p
     m_status_sequence_number++;
 
     return OK;
+}
+
+int32_t link_status_queue_within(message_queues& queues, uint64_t timeout_ns) {
+    uint64_t deadline = clock::now_ns() + timeout_ns;
+
+    while (true) {
+        if (queues.link_status_queue() == OK) {
+            return OK;
+        }
+
+        if (clock::now_ns() > deadline) {
+            log::error(
+                "nvidia: the GSP's firmware did not write a status queue header the link accepts within %lu ms",
+                timeout_ns / NS_PER_MS
+            );
+            return ERR_TIMEOUT;
+        }
+
+        cpu::relax();
+    }
+}
+
+// Rereads at once a message failing a check, up to `RECEIVE_TRIES` reads in all, before the poll gives up on it
+static int32_t receive_with_tries(
+    message_queues& queues,
+    received_message& out,
+    void* payload,
+    uint32_t payload_capacity
+) {
+    int32_t rc = ERR_BAD_MESSAGE;
+    for (uint32_t i = 0; i < RECEIVE_TRIES && rc == ERR_BAD_MESSAGE; i++) {
+        rc = queues.receive(out, payload, payload_capacity);
+    }
+
+    return rc;
+}
+
+int32_t receive_within(
+    message_queues& queues,
+    received_message& out,
+    void* payload,
+    uint32_t payload_capacity,
+    uint64_t timeout_ns
+) {
+    uint64_t deadline = clock::now_ns() + timeout_ns;
+
+    while (true) {
+        // Sampled before the read, so a message present when the deadline passes is still received
+        bool is_past_deadline = clock::now_ns() > deadline;
+
+        int32_t rc = receive_with_tries(queues, out, payload, payload_capacity);
+        if (rc != ERR_QUEUE_EMPTY) {
+            return rc;
+        }
+
+        if (is_past_deadline) {
+            return ERR_TIMEOUT;
+        }
+
+        cpu::relax();
+    }
+}
+
+// Keeps the messages passed over for the caller to log, since a log line can outlast the window, counted from the
+// firmware's send of a sequencer's message, in which that sequencer's first poll finds its bit
+static int32_t receive_awaited_unlogged(
+    message_queues& queues,
+    registers& regs,
+    const cpu_sequencer_context& sequencer,
+    uint32_t function,
+    received_message& out,
+    uint8_t* payload,
+    uint32_t payload_capacity,
+    uint64_t deadline_ns,
+    received_message (&passed)[PASSED_MESSAGES_LOGGED],
+    uint32_t& passed_count
+) {
+    while (true) {
+        received_message message = {};
+        int32_t rc = receive_within(queues, message, payload, payload_capacity, time_left_until(deadline_ns));
+        if (rc != OK) {
+            return rc;
+        }
+
+        if (message.function == function) {
+            out = message;
+            return OK;
+        }
+
+        if (message.function == FUNCTION_RUN_CPU_SEQUENCER) {
+            rc = run_cpu_sequencer(regs, sequencer, payload, message.payload_bytes);
+            if (rc != OK) {
+                log::error("nvidia: the CPU sequencer failed: %d", rc);
+            }
+
+            continue;
+        }
+
+        if (passed_count < PASSED_MESSAGES_LOGGED) {
+            passed[passed_count] = message;
+        }
+
+        passed_count++;
+    }
+}
+
+// A drain, which awaits `NO_FUNCTION`, passes over only messages the firmware sent unasked, and its lines say so
+static void log_passed_messages(
+    uint32_t function,
+    const received_message (&passed)[PASSED_MESSAGES_LOGGED],
+    uint32_t passed_count
+) {
+    bool is_drain = function == NO_FUNCTION;
+    uint32_t logged_count = passed_count < PASSED_MESSAGES_LOGGED ? passed_count : PASSED_MESSAGES_LOGGED;
+    for (uint32_t i = 0; i < logged_count; i++) {
+        if (is_drain) {
+            log::info(
+                "nvidia: the GSP's firmware sent a message of function 0x%X unasked, with result 0x%X and %u payload "
+                "bytes",
+                passed[i].function,
+                passed[i].result,
+                passed[i].payload_bytes
+            );
+            continue;
+        }
+
+        log::info(
+            "nvidia: the wait for function 0x%X passed over a message of function 0x%X from the GSP's firmware, with "
+            "result 0x%X and %u payload bytes",
+            function,
+            passed[i].function,
+            passed[i].result,
+            passed[i].payload_bytes
+        );
+    }
+
+    uint32_t unlogged_count = passed_count - logged_count;
+    if (unlogged_count != 0 && is_drain) {
+        log::info("nvidia: the GSP's firmware sent more messages unasked, not logged: %u", unlogged_count);
+    } else if (unlogged_count != 0) {
+        log::info(
+            "nvidia: the wait for function 0x%X passed over more messages from the GSP's firmware, not logged: %u",
+            function,
+            unlogged_count
+        );
+    }
+}
+
+int32_t receive_awaited(
+    message_queues& queues,
+    registers& regs,
+    const cpu_sequencer_context& sequencer,
+    uint32_t function,
+    received_message& out,
+    uint8_t* payload,
+    uint32_t payload_capacity,
+    uint64_t deadline_ns
+) {
+    received_message passed[PASSED_MESSAGES_LOGGED] = {};
+    uint32_t passed_count = 0;
+    int32_t rc = receive_awaited_unlogged(
+        queues,
+        regs,
+        sequencer,
+        function,
+        out,
+        payload,
+        payload_capacity,
+        deadline_ns,
+        passed,
+        passed_count
+    );
+
+    log_passed_messages(function, passed, passed_count);
+    if (rc == ERR_TIMEOUT) {
+        log::error("nvidia: the GSP's firmware sent no message of function 0x%X by the wait's deadline", function);
+    }
+
+    return rc;
+}
+
+int32_t drain_status_queue(
+    message_queues& queues,
+    registers& regs,
+    const cpu_sequencer_context& sequencer,
+    uint8_t* payload,
+    uint32_t payload_capacity
+) {
+    received_message passed[PASSED_MESSAGES_LOGGED] = {};
+    uint32_t passed_count = 0;
+    received_message unused = {};
+    int32_t rc = receive_awaited_unlogged(
+        queues,
+        regs,
+        sequencer,
+        NO_FUNCTION,
+        unused,
+        payload,
+        payload_capacity,
+        DRAIN_DEADLINE_NS,
+        passed,
+        passed_count
+    );
+
+    log_passed_messages(NO_FUNCTION, passed, passed_count);
+
+    if (rc == OK) {
+        log::error(
+            "nvidia: the GSP's firmware sent a message of function 0x%X, outside NVIDIA's numbering of functions and "
+            "events",
+            NO_FUNCTION
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    return rc == ERR_TIMEOUT ? OK : rc;
 }
 
 } // namespace drivers::nvidia

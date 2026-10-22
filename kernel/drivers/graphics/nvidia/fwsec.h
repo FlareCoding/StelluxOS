@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_FWSEC_H
 
 #include "common/types.h"
+#include "dma/dma.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/vbios.h"
@@ -79,20 +80,85 @@ int32_t prepare_fwsec_frts(
 );
 
 /**
+ * @brief Copy FWSEC from the VBIOS into `image` and patch the copy as
+ * `prepare_fwsec_frts` does, but for the SB command, which NVIDIA's driver
+ * runs as it unloads the GSP's firmware to put back the programs the VBIOS
+ * runs before an operating system loads. The command's arguments say only how
+ * FWSEC reads the VBIOS, in the same 24 bytes that start the FRTS command's
+ * arguments, and go at the start of the same input buffer, whose later bytes
+ * are left as the VBIOS stores them.
+ * @param rom A view of the ROM window, as for `prepare_fwsec_frts`.
+ * @param fwsec FWSEC, which must be as `find_fwsec` returns it.
+ * @param signature The signature, which must be the one
+ * `select_fwsec_signature` chose for `fwsec`.
+ * @param image Receives the copy, and must hold `fwsec.size` bytes. When the
+ * result is `OK`, the copy differs from FWSEC as the VBIOS stores it only in
+ * the command's arguments, the mapper's command id and the signature slot.
+ * @return `OK`, or `ERR_BAD_VBIOS` for the reasons `prepare_fwsec_frts` gives,
+ * with the SB command's 24 bytes in place of the FRTS command's 48. The cause
+ * is logged, and `image` then holds FWSEC as the VBIOS stores it.
+ */
+int32_t prepare_fwsec_sb(
+    const registers& rom,
+    const fwsec_layout& fwsec,
+    const fwsec_signature& signature,
+    uint8_t* image
+);
+
+/**
  * @brief Describe a copy of FWSEC as the program the GSP's falcon runs, with
  * the sizes, bases, engine mask and ucode id FWSEC's descriptor gives, and
- * the signature slot as the signature's offset in the data. The descriptor's
- * code size and IMEM virtual base are unchecked, as in NVIDIA's driver, so a
- * copy on a 256-byte boundary, as a page allocation is, meets
- * `run_gsp_falcon_program`'s alignment only when both are multiples of 256.
- * FWSEC's size, rounded up to 256 bytes, then holds each part's whole blocks.
+ * the signature slot as the signature's offset in the data. The code lies at
+ * the copy's start and the data right after it. The descriptor's code size
+ * and IMEM virtual base are unchecked, as in NVIDIA's driver, so a copy on a
+ * 256-byte boundary, as a page allocation is, meets `run_falcon_program`'s
+ * alignment only when both are multiples of 256. FWSEC's size, rounded up to
+ * 256 bytes, then holds each part's whole blocks. FWSEC's command lies in its
+ * data and names no system memory, so FWSEC is given no other system memory
+ * to read.
  * @param fwsec FWSEC as `find_fwsec` returns it.
- * @param dma_address Where the copy starts, as the card addresses memory.
- * The copy must hold FWSEC as `prepare_fwsec_frts` fills it.
+ * @param dma_address Where the copy starts, as the card addresses memory. The
+ * copy must hold FWSEC as `prepare_fwsec_frts` or `prepare_fwsec_sb` fills
+ * it.
  * @param is_cached Whether the CPU maps the copy cached.
- * @return The program `run_gsp_falcon_program` loads from the copy.
+ * @return The program `run_falcon_program` loads from the copy.
  */
 falcon_program describe_fwsec_program(const fwsec_layout& fwsec, uint64_t dma_address, bool is_cached);
+
+/**
+ * @brief Run FWSEC's SB command on the GSP's falcon: copy FWSEC into uncached
+ * memory allocated for `card`, patch the copy with `prepare_fwsec_sb`, run it
+ * with `run_falcon_program`, free it once the falcon halts, then check the
+ * result with `check_fwsec_sb_result`.
+ * @param regs A view of BAR0, as for `run_falcon_program` on the GSP's
+ * falcon: the card's bus mastering must be on and the falcon reset.
+ * @param rom A view of the ROM window, as for `prepare_fwsec_frts`.
+ * @param fwsec FWSEC, which must be as `find_fwsec` returns it.
+ * @param signature The signature, which must be the one
+ * `select_fwsec_signature` chose for `fwsec`.
+ * @param card The card's profile, which limits only the copy's addresses,
+ * since the copy is uncached whether or not the card is coherent.
+ * @param timeout_ns How long each block's load and the run may take, as for
+ * `run_falcon_program`.
+ * @param kept_out Receives the copy when the result is `ERR_TIMEOUT`, and is
+ * left untouched otherwise. The falcon may still read a kept copy, so the
+ * caller must keep it allocated until the falcon is reset and confirmed
+ * halted.
+ * @return `OK` once the registers show no failure of the SB command,
+ * `ERR_NO_MEMORY` when the copy cannot be allocated, `ERR_BAD_VBIOS` when
+ * `prepare_fwsec_sb` refuses FWSEC, `ERR_TIMEOUT` when `run_falcon_program`
+ * times out, or `ERR_BAD_STATE` when `check_fwsec_sb_result` finds a failure.
+ * Every copy but a kept one is freed, and the cause is logged.
+ */
+int32_t run_fwsec_sb(
+    registers& regs,
+    const registers& rom,
+    const fwsec_layout& fwsec,
+    const fwsec_signature& signature,
+    const dma::device_profile& card,
+    uint64_t timeout_ns,
+    dma::buffer& kept_out
+);
 
 } // namespace drivers::nvidia
 

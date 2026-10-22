@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_FIRMWARE_FILES_H
 
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "fw/fw.h"
 
@@ -17,6 +18,7 @@ constexpr const char FIRMWARE_VERSION[] = "535.183.01";
 struct firmware_files {
     fw::file bootloader;
     fw::file booter_load;
+    fw::file booter_unload;
     fw::file gsp_image;
 };
 
@@ -57,18 +59,20 @@ struct bootloader_layout {
 };
 
 /**
- * Where booter load's code, data, signature slot and signatures lie, with its
- * ucode id and engine mask, as its descriptors record them. Booter load is
- * the file holding the program that SEC2, the GPU's security processor, runs
- * on its falcon, the microcontroller in SEC2, to load the GSP's firmware into
- * protected memory, the video memory reserved for that firmware, verify it
- * and boot it. The falcon's boot ROM, the code the falcon runs from its own
- * ROM as it starts, runs the code only once the signature in the signature
- * slot checks out. Booter load carries signatures for one or more of the
- * versions the chip's fuses, bits burned into the chip for good, may record
- * for it, and `select_booter_signature` chooses the one the slot must
- * receive. The code and data each lie inside the program, the slot lies
- * inside the data, and the signatures lie one after another inside the file.
+ * Where a booter's code, data, signature slot and signatures lie, with its
+ * ucode id and engine mask, as its descriptors record them. A booter is
+ * either of two files holding a program that SEC2, the GPU's security
+ * processor, runs on its falcon, the microcontroller in SEC2. Booter load's
+ * program loads the GSP's firmware into protected memory (the video memory
+ * reserved for that firmware), verifies it and boots it, and booter unload's
+ * program takes protected memory down again. The falcon's boot ROM, the code
+ * the falcon runs from its own ROM as it starts, runs the code only once the
+ * signature in the signature slot checks out. A booter carries signatures for
+ * one or more of the versions the chip's fuses, bits burned into the chip for
+ * good, may record for it, and `select_booter_signature` chooses the one the
+ * slot must receive. The code and data each lie inside the program, the slot
+ * lies inside the data, and the signatures lie one after another inside the
+ * file.
  */
 struct booter_layout {
     uint32_t code_offset;       // bytes from the start of the program
@@ -79,14 +83,14 @@ struct booter_layout {
     uint32_t signatures_offset; // bytes from the start of the file
     uint32_t signature_size;    // bytes of each signature, at least 1
     uint32_t signature_count;   // at least 1
-    uint32_t ucode_id;          // NVIDIA's number for booter load among SEC2's programs
-    uint32_t engine_mask;       // the engines booter load is signed to run on
+    uint32_t ucode_id;          // selects SEC2's fuse register for the booter's version and is written to its boot ROM
+    uint32_t engine_mask;       // the engines the booter is signed to run on
 };
 
-// Which of booter load's signatures its signature slot must hold, and the fuse version read to choose it
+// Which of a booter's signatures its signature slot must hold, and the fuse version read to choose it
 struct booter_signature {
-    uint32_t fuse_version; // the version `read_ucode_fuse_version` gives for booter load, from 0 to 32
-    uint32_t index;        // the signature's place among booter load's signatures, counting from 0
+    uint32_t fuse_version; // the version `read_ucode_fuse_version` gives for the booter, from 0 to 32
+    uint32_t index;        // the signature's place among the booter's signatures, counting from 0
 };
 
 /**
@@ -105,12 +109,12 @@ struct gsp_image_layout {
 };
 
 /**
- * @brief Open the files a chip boots from, in the layout the nvidia-firmware
- * package installs under `fw::DIRECTORY`: the bootloader and booter load in
- * the chip's boot directory in nvidia/<FIRMWARE_VERSION>/ first, then the GSP
- * image in nvidia/<FIRMWARE_VERSION>/, logging each file's name and size.
- * `files_out` must hold no file open, and keeps every file that opened until
- * it is destroyed, whatever the result.
+ * @brief Open a chip's firmware files, in the layout the nvidia-firmware
+ * package installs under `fw::DIRECTORY`: the bootloader, booter load and
+ * booter unload in the chip's boot directory in nvidia/<FIRMWARE_VERSION>/
+ * first, then the GSP image in nvidia/<FIRMWARE_VERSION>/, logging each
+ * file's name and size. `files_out` must hold no file open, and keeps every
+ * file that opened until it is destroyed, whatever the result.
  * @return `OK`, `DECLINED` when a directory the files belong in is not
  * installed, or `ERR_BAD_FIRMWARE` when a file of an installed directory
  * cannot be opened, a missing file included, or when a name built from
@@ -204,22 +208,24 @@ int32_t read_bootloader_layout(
 );
 
 /**
- * @brief Read booter load's layout from its descriptors and check it. The
- * descriptors start with a header of nine 32-bit fields, each a size or an
- * offset from the start of the file, that lead to the rest: the signatures,
- * the slot's offset from the start of the program, NVIDIA's signature patch
- * index, which NVIDIA's driver requires to be 0 and otherwise ignores, the
- * metadata, which ends with booter load's engine mask and ucode id, the
- * signature count, and the load header. The load header places the data and
- * the program's apps, NVIDIA's name for the parts of a falcon program's code
- * its boot ROM checks against a signature. Booter load has one app, whose
- * code is the code. Each field is read with `fw::file::read`, which takes
- * the file's mutex, so this must not run in an interrupt handler or under a
- * spinlock. On the boot thread, which cannot wait, `booter_load` must be one
- * no other thread uses at the time, as `fw::file` describes.
- * @param booter_load Must hold booter load open.
- * @param header Must be the header `check_boot_file` returned for
- * `booter_load`, whose program then starts at or after its descriptors.
+ * @brief Read a booter's layout from its descriptors and check it. Booter
+ * load and booter unload follow the same rules. The descriptors start with a
+ * header of nine 32-bit fields, each a size or an offset from the start of
+ * the file, that lead to the rest: the signatures, the slot's offset from
+ * the start of the program, NVIDIA's signature patch index, which NVIDIA's
+ * driver requires to be 0 and otherwise ignores, the metadata, which ends
+ * with the booter's engine mask and ucode id, the signature count, and the
+ * load header. The load header places the data and the program's apps,
+ * NVIDIA's name for the parts of a falcon program's code its boot ROM checks
+ * against a signature. A booter has one app, whose code is the code. Each
+ * field is read with `fw::file::read`, which takes the file's mutex, so this
+ * must not run in an interrupt handler or under a spinlock. On the boot
+ * thread, which cannot wait, `booter` must be one no other thread uses at
+ * the time, as `fw::file` describes.
+ * @param booter Must hold a booter open.
+ * @param name Which booter it is, such as "booter load", for the log lines.
+ * @param header Must be the header `check_boot_file` returned for `booter`,
+ * whose program then starts at or after its descriptors.
  * @param layout_out Receives the layout on `OK`, whose parts then lie as
  * `booter_layout` describes and whose slot ends before the program's end,
  * and is left unchanged on an error.
@@ -231,34 +237,67 @@ int32_t read_bootloader_layout(
  * bytes, a number not a multiple of the count, or end past the file, the
  * load header lists other than one app, the code or data ends past the
  * program, the slot does not lie inside the data or does not end before the
- * program's end, or when reading fails. The cause is logged.
+ * program's end, or when reading fails. The cause is logged, naming `name`.
  */
 int32_t read_booter_layout(
-    const fw::file& booter_load,
+    const fw::file& booter,
+    const char* name,
     const boot_file_header& header,
     booter_layout& layout_out
 );
 
 /**
- * @brief Choose which of booter load's signatures its signature slot must
- * hold. As in NVIDIA's driver, a lone signature is chosen whatever version
- * the chip's fuses record, and with more than one the one for fuse version v
- * is at index `signature_count` - 1 - v, where `read_ucode_fuse_version`
- * gives v for SEC2's falcon and booter load's ucode id.
+ * @brief Choose which of a booter's signatures its signature slot must hold.
+ * As in NVIDIA's driver, a lone signature is chosen whatever version the
+ * chip's fuses record, and with more than one the one for fuse version v is
+ * at index `signature_count` - 1 - v, where `read_ucode_fuse_version` gives
+ * v for SEC2's falcon and the booter's ucode id.
  * @param regs A view of BAR0.
- * @param booter_load Booter load's layout, which must be as
- * `read_booter_layout` returns it, so it holds at least one signature.
+ * @param layout The booter's layout, which must be as `read_booter_layout`
+ * returns it, so it holds at least one signature.
+ * @param name Which booter it is, such as "booter load", for the log line.
  * @param signature_out Receives the choice on `OK`, whose `index` is then
- * below `booter_load.signature_count`, so the signature lies inside the
- * file, and is left unchanged on an error.
- * @return `OK`, or `ERR_BAD_FIRMWARE` when booter load has more than one
+ * below `layout.signature_count`, so the signature lies inside the file, and
+ * is left unchanged on an error.
+ * @return `OK`, or `ERR_BAD_FIRMWARE` when the booter has more than one
  * signature and the fuse version is above `signature_count` - 1, so none is
- * for it. The cause is logged.
+ * for it. The cause is logged, naming `name`.
  */
 int32_t select_booter_signature(
     const registers& regs,
-    const booter_layout& booter_load,
+    const booter_layout& layout,
+    const char* name,
     booter_signature& signature_out
+);
+
+/**
+ * @brief Describe a copy of a booter's program as the program SEC2's falcon
+ * runs, as NVIDIA's driver loads booter load and booter unload: the code from
+ * its offset into IMEM from IMEM's start, its blocks tagged with virtual
+ * addresses from the code's offset, and the data from its own offset into DMEM
+ * from DMEM's start, with the signature slot as the signature's offset in the
+ * data and the engine mask whole. The ucode id keeps its low 8 bits, the field
+ * of the boot ROM's register NVIDIA's driver writes it into. Neither offset's
+ * alignment is checked, as in NVIDIA's driver, so a copy on a 256-byte
+ * boundary meets `run_falcon_program`'s alignment only when the data's offset
+ * is a multiple of 256, and holds each part's whole blocks when the code's
+ * offset is one as well.
+ * @param layout The booter's layout, as `read_booter_layout` returns it.
+ * @param dma_address Where the copy starts, as the card addresses memory. The
+ * copy must hold the booter's program, uncached, as
+ * `gsp_boot_memory::copy_booter_load` copies booter load and
+ * `copy_booter_unload` copies booter unload.
+ * @param reads_cached_memory Whether the CPU maps cached the memory the booter
+ * reads once started. Booter load reads protected memory's metadata and the
+ * parts of the GSP's boot memory the metadata lists, which `gsp_boot_memory`
+ * maps cached for a coherent card, and booter unload's mailboxes carry no
+ * address.
+ * @return The program `run_falcon_program` loads from the copy.
+ */
+falcon_program describe_booter_program(
+    const booter_layout& layout,
+    uint64_t dma_address,
+    bool reads_cached_memory
 );
 
 } // namespace drivers::nvidia
