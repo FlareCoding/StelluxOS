@@ -2,46 +2,13 @@
 #define STELLUX_DRIVERS_GRAPHICS_GFXFB_H
 
 #include "common/types.h"
+#include "drivers/graphics/gfxfb_abi.h"
 #include "mm/pmm_types.h"
 
 namespace gfxfb {
 
 constexpr int32_t OK  = 0;
 constexpr int32_t ERR = -1;
-
-constexpr uint32_t GFXFB_GET_INFO = 0x4700;
-constexpr uint32_t GFXFB_FLUSH    = 0x4701;
-
-constexpr uint8_t GFXFB_INFO_NEEDS_FLUSH = 0x01; // drawing reaches the screen only through GFXFB_FLUSH
-
-constexpr uint32_t GFXFB_MAX_FLUSH_RECTS = 256;
-
-struct gfxfb_info {
-    uint64_t width;
-    uint64_t height;
-    uint64_t pitch;
-    uint16_t bpp;
-    uint8_t  red_shift;
-    uint8_t  green_shift;
-    uint8_t  blue_shift;
-    uint8_t  flags; // GFXFB_INFO_*
-    uint8_t  padding[2];
-    uint64_t size;
-};
-
-struct gfxfb_rect {
-    uint32_t x;
-    uint32_t y;
-    uint32_t width;
-    uint32_t height;
-};
-
-// GFXFB_FLUSH argument, naming the regions of the mapping that changed
-struct gfxfb_flush_args {
-    uint64_t rects;    // user address of `count` gfxfb_rect entries
-    uint32_t count;    // at most GFXFB_MAX_FLUSH_RECTS
-    uint32_t reserved; // must be zero
-};
 
 /**
  * The pixel memory behind /dev/gfxfb and the layout userland draws in.

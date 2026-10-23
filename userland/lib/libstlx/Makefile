@@ -17,6 +17,9 @@ SYSROOT_INC := $(USERLAND_ROOT)/sysroot/$(ARCH)/include/stlx
 # The kernel owns the .ktrace format, which trace readers include as <stlx/ktrace_format.h>
 KTRACE_FORMAT_HEADER := $(USERLAND_ROOT)/../kernel/trace/ktrace_format.h
 
+# The kernel owns /dev/gfxfb's ioctl definitions, which userland includes as <stlx/gfxfb_abi.h>
+GFXFB_ABI_HEADER := $(USERLAND_ROOT)/../kernel/drivers/graphics/gfxfb_abi.h
+
 SOURCES := $(wildcard $(SRC_DIR)/*.c)
 OBJECTS := $(SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
@@ -34,6 +37,7 @@ install-headers:
 	$(UQ)mkdir -p $(SYSROOT_INC)
 	$(UQ)cp -p $(INCLUDE_DIR)/stlx/*.h $(SYSROOT_INC)/
 	$(UQ)cp -p $(KTRACE_FORMAT_HEADER) $(SYSROOT_INC)/
+	$(UQ)cp -p $(GFXFB_ABI_HEADER) $(SYSROOT_INC)/
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(UQ)mkdir -p $(dir $@)
