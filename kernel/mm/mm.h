@@ -231,10 +231,16 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
 
 /**
  * @brief Map a contiguous physical address range into a user mm_context.
- * Pages are not owned by the kernel - they are not freed on unmap.
+ * mm never frees the pages.
  * Useful for framebuffers, MMIO regions, and other device memory.
  * @param phys_base Physical base address (must be page-aligned).
  * @param length Number of bytes to map (rounded up to page boundary).
+ * @param backing The owner of the memory, or nullptr when the memory outlives every
+ *                mapping. The caller must hold a reference across the call, and mm
+ *                holds references of its own until every mapping made with it is
+ *                unmapped.
+ * @param backing_offset Where `phys_base` lies in the owner's memory, in bytes,
+ *                       unused without an owner.
  * @param prot MM_PROT_READ / MM_PROT_WRITE / MM_PROT_EXEC.
  * @param cache_type Paging memory type (e.g. paging::PAGE_WC, paging::PAGE_DEVICE).
  * @param map_flags MM_MAP_SHARED, optionally MM_MAP_FIXED / MM_MAP_FIXED_NOREPLACE.
@@ -247,6 +253,8 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
     mm_context* mm_ctx,
     pmm::phys_addr_t phys_base,
     size_t length,
+    device_backing* backing,
+    uint64_t backing_offset,
     uint32_t prot,
     uint32_t cache_type,
     uint32_t map_flags,

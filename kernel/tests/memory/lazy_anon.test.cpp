@@ -364,7 +364,7 @@ TEST(lazy_anon, discard_rejects_device_mappings) {
     ASSERT_NOT_NULL(mm_ctx);
 
     uintptr_t addr = 0;
-    ASSERT_EQ(mm::mm_context_map_device(mm_ctx, frame, PAGE, mm::MM_PROT_READ, paging::PAGE_DEVICE,
+    ASSERT_EQ(mm::mm_context_map_device(mm_ctx, frame, PAGE, nullptr, 0, mm::MM_PROT_READ, paging::PAGE_DEVICE,
                                         mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
 
     EXPECT_EQ(mm::mm_context_discard(mm_ctx, addr, PAGE), mm::MM_CTX_ERR_INVALID_ARG);
