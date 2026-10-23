@@ -30,10 +30,21 @@ constexpr uint8_t  DRIVER_BLUE_SHIFT  = 0;
 // What `find_primary` returns for a display with no output lit
 constexpr uint32_t NO_OUTPUT = 0xFFFFFFFF;
 
+// What `take_handle` returns when every handle of a client is in use
+constexpr uint32_t NO_HANDLE = 0;
+
+// mmap maps handle h's buffer from offset h times this, which no buffer's size reaches, above the primary output's base
+// buffer at offset 0
+constexpr uint64_t BUFFER_MAP_STRIDE = 1ULL << 40;
+
 __PRIVILEGED_BSS static gfxfb_node* g_node;
 
 static uint64_t buffer_bytes(const buffer& buf) {
     return static_cast<uint64_t>(buf.pitch) * buf.height;
+}
+
+static client& client_of(fs::file* f) {
+    return *static_cast<client*>(f->private_data());
 }
 
 // Trims `rect` to `buf` and returns false when nothing of it remains
@@ -77,15 +88,30 @@ static uint32_t find_primary(display& shown_display) {
     return lowest_lit;
 }
 
-// The file layer's code for each result a display's `read_output()` and `flush()` return, and ERR_IO for any other
+// The file layer's code for each result a display's calls return, and ERR_IO for any other
 static int32_t to_fs_error(int32_t rc) {
     switch (rc) {
     case OK:              return fs::OK;
     case ERR_INVALID_ARG: return fs::ERR_INVAL;
     case ERR_DARK:        return fs::ERR_AGAIN;
     case ERR_DEVICE:      return fs::ERR_IO;
+    case ERR_NO_MEMORY:   return fs::ERR_NOMEM;
+    case ERR_UNSUPPORTED: return fs::ERR_NOSYS;
     default:              return fs::ERR_IO;
     }
+}
+
+void buffer_record::take(buffer* buf) {
+    m_buffer = buf;
+    m_layout = *buf;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void buffer_record::release_memory() {
+    m_display->release_buffer(m_buffer);
+    heap::kfree_delete(this);
 }
 
 int32_t boot_display::read_output(uint32_t output, output_state& out) {
@@ -116,12 +142,14 @@ int32_t boot_display::flush(uint32_t, const gfxfb_rect*, uint32_t) {
 
 gfxfb_node::gfxfb_node(const char* name, const boot_framebuffer& boot_fb)
     : fs::node(fs::node_type::char_device, nullptr, name), m_boot_display(boot_fb) {
-    show(&m_boot_display, find_primary(m_boot_display));
+    m_handles_lock.init();
+    show_from_start(&m_boot_display);
 }
 
 gfxfb_node::gfxfb_node(const char* name, display* driver_display)
     : fs::node(fs::node_type::char_device, nullptr, name) {
-    show(driver_display, find_primary(*driver_display));
+    m_handles_lock.init();
+    show_from_start(driver_display);
 }
 
 int32_t gfxfb_node::register_display(display* driver_display) {
@@ -141,24 +169,66 @@ int32_t gfxfb_node::register_display(display* driver_display) {
         return ERR;
     }
 
-    show(driver_display, primary);
+    if (show(driver_display, primary) != OK) {
+        log::error("gfxfb: refused a driver display, since no memory is left to record its base buffer");
+        return ERR;
+    }
 
     return OK;
 }
 
-void gfxfb_node::show(display* shown_display, uint32_t primary) {
+// Shows `shown_display` with `primary` as its primary output, or with none for NO_OUTPUT. Returns ERR_NO_MEMORY,
+// showing nothing new, when the primary output's base buffer cannot be recorded
+int32_t gfxfb_node::show(display* shown_display, uint32_t primary) {
+    buffer* base = primary == NO_OUTPUT ? nullptr : shown_display->base_buffer(primary);
+
+    rc::strong_ref<buffer_record> record;
+    if (base) {
+        auto* fresh = heap::kalloc_new<buffer_record>(shown_display);
+        if (!fresh) {
+            return ERR_NO_MEMORY;
+        }
+
+        fresh->take(base);
+        record = rc::strong_ref<buffer_record>::adopt(fresh);
+    }
+
     m_display = shown_display;
     m_primary = primary;
-    m_primary_buffer = primary == NO_OUTPUT ? nullptr : shown_display->base_buffer(primary);
-    m_size = m_primary_buffer ? buffer_bytes(*m_primary_buffer) : 0;
+    m_primary_record.swap(record);
+    m_size = m_primary_record ? buffer_bytes(m_primary_record->layout()) : 0;
+
+    return OK;
 }
 
-int32_t gfxfb_node::open(fs::file*, uint32_t) {
+// Shows `shown_display` from construction, without a primary output when the primary output's base buffer cannot be
+// recorded
+void gfxfb_node::show_from_start(display* shown_display) {
+    if (show(shown_display, find_primary(*shown_display)) != OK) {
+        log::error("gfxfb: no memory to record the primary output's base buffer, so the device has no primary output");
+        show(shown_display, NO_OUTPUT);
+    }
+}
+
+int32_t gfxfb_node::open(fs::file* f, uint32_t) {
+    auto* owner = heap::kalloc_new<client>();
+    if (!owner) {
+        return fs::ERR_NOMEM;
+    }
+
+    f->set_private_data(owner);
     m_was_opened.store_relaxed(true);
+
     return fs::OK;
 }
 
-int32_t gfxfb_node::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
+// Runs once no call holds the file any more, so its handles drop without the lock
+int32_t gfxfb_node::on_close(fs::file* f) {
+    heap::kfree_delete(&client_of(f));
+    return fs::OK;
+}
+
+int32_t gfxfb_node::ioctl(fs::file* f, uint32_t cmd, uint64_t arg) {
     if (cmd == GFXFB_GET_INFO) {
         return get_info(arg);
     }
@@ -171,6 +241,14 @@ int32_t gfxfb_node::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
         return flush(arg);
     }
 
+    if (cmd == GFXFB_CREATE_BUFFER) {
+        return create_buffer(client_of(f), arg);
+    }
+
+    if (cmd == GFXFB_DESTROY_BUFFER) {
+        return destroy_buffer(client_of(f), arg);
+    }
+
     return fs::ERR_NOSYS;
 }
 
@@ -179,11 +257,11 @@ int32_t gfxfb_node::get_info(uint64_t info_addr) {
         return fs::ERR_INVAL;
     }
 
-    if (!m_primary_buffer) {
+    if (!m_primary_record) {
         return fs::ERR_AGAIN;
     }
 
-    const buffer& base = *m_primary_buffer;
+    const buffer& base = m_primary_record->layout();
 
     gfxfb_info info{};
     info.width = base.width;
@@ -230,7 +308,7 @@ int32_t gfxfb_node::get_output(uint64_t info_addr) {
         return to_fs_error(rc);
     }
 
-    bool is_primary = m_primary_buffer != nullptr && info.output == m_primary;
+    bool is_primary = m_primary_record && info.output == m_primary;
 
     info.output_count = m_display->output_count();
     info.flags = (state.lit ? GFXFB_OUTPUT_LIT : 0) | (is_primary ? GFXFB_OUTPUT_PRIMARY : 0);
@@ -264,7 +342,7 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
         return fs::ERR_INVAL;
     }
 
-    if (!m_primary_buffer) {
+    if (!m_primary_record) {
         return fs::ERR_AGAIN;
     }
 
@@ -289,7 +367,7 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
         for (uint32_t i = 0; i < batch_count; i++) {
             gfxfb_rect rect = batch[i];
 
-            if (clip_rect_to_buffer(rect, *m_primary_buffer)) {
+            if (clip_rect_to_buffer(rect, m_primary_record->layout())) {
                 batch[kept++] = rect;
             }
         }
@@ -307,11 +385,137 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
     return fs::OK;
 }
 
-int32_t gfxfb_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
+int32_t gfxfb_node::create_buffer(client& owner, uint64_t args_addr) {
+    gfxfb_buffer_args args{};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &args, reinterpret_cast<const void*>(args_addr), sizeof(args));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    if (args.width == 0 || args.height == 0 || args.reserved != 0) {
+        return fs::ERR_INVAL;
+    }
+
+    uint32_t handle = take_handle(owner);
+    if (handle == NO_HANDLE) {
+        return fs::ERR_NOMEM;
+    }
+
+    // The record comes first, so a buffer the display creates always has a record to hand it back through
+    auto* record = heap::kalloc_new<buffer_record>(m_display);
+    if (!record) {
+        end_creation(owner, handle, nullptr);
+        return fs::ERR_NOMEM;
+    }
+
+    buffer* created = nullptr;
+    rc = m_display->create_buffer(args.width, args.height, args.format, &created);
+    if (rc != OK) {
+        heap::kfree_delete(record);
+        end_creation(owner, handle, nullptr);
+        return to_fs_error(rc);
+    }
+
+    record->take(created);
+
+    args.handle = handle;
+    args.pitch = record->layout().pitch;
+    args.size = record->layout().size;
+    args.map_offset = handle * BUFFER_MAP_STRIDE;
+
+    rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(args_addr), &args, sizeof(args));
+
+    if (rc != mm::uaccess::OK) {
+        end_creation(owner, handle, nullptr);
+        if (record->release()) {
+            mm::device_backing::ref_destroy(record);
+        }
+
+        return fs::ERR_INVAL;
+    }
+
+    end_creation(owner, handle, record);
+
+    return fs::OK;
+}
+
+int32_t gfxfb_node::destroy_buffer(client& owner, uint64_t handle) {
+    rc::strong_ref<buffer_record> dropped;
+
+    sync::mutex_lock(m_handles_lock);
+    if (handle >= 1 && handle <= GFXFB_CLIENT_BUFFERS_MAX) {
+        dropped.swap(owner.buffers[handle - 1]);
+    }
+
+    sync::mutex_unlock(m_handles_lock);
+
+    return dropped ? fs::OK : fs::ERR_INVAL;
+}
+
+// Holds the lowest free handle of `owner` for a creation, or returns NO_HANDLE when every handle is in use
+uint32_t gfxfb_node::take_handle(client& owner) {
+    uint32_t handle = NO_HANDLE;
+
+    sync::mutex_lock(m_handles_lock);
+    for (uint32_t i = 0; i < GFXFB_CLIENT_BUFFERS_MAX; i++) {
+        if (!owner.buffers[i] && !owner.pending[i]) {
+            owner.pending[i] = true;
+            handle = i + 1;
+            break;
+        }
+    }
+
+    sync::mutex_unlock(m_handles_lock);
+
+    return handle;
+}
+
+// Ends the creation holding `handle`, which then names `record` and takes over the caller's reference to it, or names
+// nothing when `record` is null
+void gfxfb_node::end_creation(client& owner, uint32_t handle, buffer_record* record) {
+    sync::mutex_lock(m_handles_lock);
+    owner.pending[handle - 1] = false;
+    if (record) {
+        owner.buffers[handle - 1] = rc::strong_ref<buffer_record>::adopt(record);
+    }
+
+    sync::mutex_unlock(m_handles_lock);
+}
+
+// The buffer mmap maps from `offset`, with `offset_in_buffer` set to where the offset falls in it, or null when the
+// offset names no buffer of `owner` or primary output
+rc::strong_ref<buffer_record> gfxfb_node::find_buffer_at(
+    client& owner,
+    uint64_t offset,
+    uint64_t& offset_in_buffer
+) {
+    uint64_t handle = offset / BUFFER_MAP_STRIDE;
+    offset_in_buffer = offset % BUFFER_MAP_STRIDE;
+
+    rc::strong_ref<buffer_record> found;
+
+    sync::mutex_lock(m_handles_lock);
+    if (handle == 0) {
+        found = m_primary_record;
+    } else if (handle <= GFXFB_CLIENT_BUFFERS_MAX) {
+        found = owner.buffers[handle - 1];
+    }
+
+    sync::mutex_unlock(m_handles_lock);
+
+    return found;
+}
+
+int32_t gfxfb_node::mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
                          size_t length, uint32_t prot, uint32_t map_flags,
                          uint64_t offset, uintptr_t* out_addr) {
-    if (!m_primary_buffer) {
-        log::error("gfxfb: mmap: no output is lit");
+    uint64_t offset_in_buffer = 0;
+    rc::strong_ref<buffer_record> record = find_buffer_at(client_of(f), offset, offset_in_buffer);
+    if (!record) {
+        log::error("gfxfb: mmap: no buffer at offset 0x%lx", offset);
         return mm::MM_CTX_ERR_INVALID_ARG;
     }
 
@@ -321,32 +525,24 @@ int32_t gfxfb_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
         return mm::MM_CTX_ERR_INVALID_ARG;
     }
 
-    if (offset + aligned_len < aligned_len) {
-        log::error("gfxfb: mmap: offset overflow");
-        return mm::MM_CTX_ERR_INVALID_ARG;
-    }
-
-    const buffer& base = *m_primary_buffer;
-    size_t aligned_fb_size = pmm::page_align_up(buffer_bytes(base));
-    if (offset + aligned_len > aligned_fb_size) {
-        log::error("gfxfb: mmap: offset+aligned_len=%lu > aligned_fb_size=%lu",
-                   offset + aligned_len, aligned_fb_size);
+    const buffer& layout = record->layout();
+    if (aligned_len > layout.size || offset_in_buffer > layout.size - aligned_len) {
+        log::error("gfxfb: mmap: %lu bytes from byte %lu end past the buffer's %lu bytes",
+                   aligned_len, offset_in_buffer, layout.size);
 
         return mm::MM_CTX_ERR_INVALID_ARG;
     }
 
-    uint32_t cache = base.cacheable ? paging::PAGE_NORMAL : paging::PAGE_WC;
+    uint32_t cache = layout.cacheable ? paging::PAGE_NORMAL : paging::PAGE_WC;
     log::info("gfxfb: mmap: phys=0x%lx len=%lu prot=%u cache=%u",
-              base.phys + offset, length, prot, cache);
+              layout.phys + offset_in_buffer, length, prot, cache);
 
-    // The base buffers gfxfb maps, the boot framebuffer and a registered display's, live as long as the kernel, so
-    // mapping one passes no owner
     int32_t rc = mm::mm_context_map_device(
         mm_ctx,
-        base.phys + offset,
+        layout.phys + offset_in_buffer,
         length,
-        nullptr,
-        0,
+        record.ptr(),
+        offset_in_buffer,
         prot,
         cache,
         map_flags,
@@ -362,7 +558,7 @@ int32_t gfxfb_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
 }
 
 /**
- * @brief Publish `node` as /dev/gfxfb and keep it as gfxfb's node, freeing it when devfs refuses it.
+ * @brief Publish `node` as /dev/gfxfb and keep it as gfxfb's node, leaving it allocated when devfs refuses it.
  * @param node A node named `NODE_NAME` from `heap::kalloc_new`, or nullptr when the allocation failed.
  * @return OK, or ERR with an error logged when `node` is null or devfs refuses it.
  * @note Privilege: **required**
@@ -373,10 +569,11 @@ __PRIVILEGED_CODE static int32_t publish_node(gfxfb_node* node) {
         return ERR;
     }
 
+    // A refused node stays allocated, since freeing one that shows its boot display would drop the framebuffer's
+    // record, and the reaper would then hand the framebuffer back to the boot display inside the freed node
     int32_t rc = devfs::add_char_device(NODE_NAME, node);
     if (rc != devfs::OK) {
         log::error("gfxfb: failed to register /dev/gfxfb");
-        heap::kfree_delete(node);
         return ERR;
     }
 
@@ -400,6 +597,7 @@ __PRIVILEGED_CODE int32_t init() {
             .width     = static_cast<uint32_t>(fb.width),
             .height    = static_cast<uint32_t>(fb.height),
             .pitch     = static_cast<uint32_t>(fb.pitch),
+            .size      = pmm::page_align_up(fb.pitch * fb.height),
             .phys      = fb.fb_phys,
             .cacheable = false,
         },

@@ -298,6 +298,7 @@ int32_t virtio_gpu_driver::light_scanout(uint32_t scanout, uint32_t width, uint3
         .width     = width,
         .height    = height,
         .pitch     = static_cast<uint32_t>(pitch),
+        .size      = pages * pmm::PAGE_SIZE,
         .phys      = m_backing.phys,
         .cacheable = m_backing.cached,
     };

@@ -116,7 +116,9 @@ namespace drivers {
  * A virtio GPU used as a 2D display whose outputs are the device's scanouts
  * (its virtual monitors). It lights one scanout with one resource, and
  * userland draws into the RAM backing it, the scanout's base buffer. `flush()`
- * copies the changed rects into the resource and shows them.
+ * copies the changed rects into the resource and shows them. It creates no
+ * other buffers, and its `release_buffer()` frees nothing, since gfxfb holds a
+ * registered display's base buffer for the life of the kernel.
  */
 class virtio_gpu_driver : public virtio_pci_driver, public gfxfb::display {
 public:
@@ -134,6 +136,8 @@ public:
     int32_t read_output(uint32_t output, gfxfb::output_state& out) override;
     gfxfb::buffer* base_buffer(uint32_t output) override;
     int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override;
+    int32_t create_buffer(uint32_t, uint32_t, uint32_t, gfxfb::buffer**) override { return gfxfb::ERR_UNSUPPORTED; }
+    void release_buffer(gfxfb::buffer*) override {}
 
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;

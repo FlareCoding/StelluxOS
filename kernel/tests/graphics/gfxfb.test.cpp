@@ -15,6 +15,7 @@
 #include "mm/vma.h"
 #include "mm/vmm.h"
 
+using test_helpers::spin_wait_ge;
 using test_helpers::user_page;
 using test_helpers::user_space_scope;
 
@@ -26,7 +27,7 @@ static constexpr uint8_t DRIVER_RED_SHIFT = 16;
 static constexpr uint8_t DRIVER_GREEN_SHIFT = 8;
 static constexpr uint8_t DRIVER_BLUE_SHIFT = 0;
 
-// Output 0's base buffer, the largest buffer the tests use, sized in whole pages for their shared allocation
+// Output 0's base buffer, the largest base buffer the tests use, sized in whole pages for their shared allocation
 static constexpr uint64_t OUTPUT_0_WIDTH = 64;
 static constexpr uint64_t OUTPUT_0_HEIGHT = 32;
 static constexpr uint64_t OUTPUT_0_PITCH = OUTPUT_0_WIDTH * (DRIVER_BPP / 8);
@@ -73,16 +74,38 @@ static constexpr size_t RECTS_OFFSET = 64;
 static constexpr uint32_t UNWRITTEN_FIELD = 0xFFFFFFFF;
 static constexpr uint64_t UNWRITTEN_RATE = 0xFFFFFFFFFFFFFFFF;
 
+// A created buffer's size, past what its pixels need and above output 0's base buffer's, and the padding ending each of
+// its rows, so a size or pitch gfxfb derives from the width and height or reads from the primary output fails
+static constexpr size_t CREATED_BUFFER_PAGES = 3;
+static constexpr uint64_t CREATED_BUFFER_SIZE = CREATED_BUFFER_PAGES * pmm::PAGE_SIZE;
+static constexpr uint32_t CREATED_ROW_PADDING = 32;
+
+// The places after output 0's base buffer that created buffers take in turn, so two buffers created in a row lie on
+// different pages, neither on a base buffer's
+static constexpr size_t CREATED_BUFFER_SLOTS = 2;
+static constexpr size_t SHARED_PAGES = OUTPUT_0_PAGES + CREATED_BUFFER_SLOTS * CREATED_BUFFER_PAGES;
+
+// The buffer most tests create, whose pixels fit in a page with a pitch above 0xFF, so a pitch narrowed to 8 bits fails
+static constexpr uint32_t SMALL_BUFFER_WIDTH = 72;
+static constexpr uint32_t SMALL_BUFFER_HEIGHT = 8;
+static constexpr uint32_t SMALL_BUFFER_PITCH = SMALL_BUFFER_WIDTH * (DRIVER_BPP / 8) + CREATED_ROW_PADDING;
+
+// A width and a format whose low 16 bits alone the recording display accepts, so a field narrowed on its way to the
+// display fails a refusal test
+static constexpr uint32_t WIDE_BUFFER_WIDTH = 0x10000 + SMALL_BUFFER_WIDTH;
+static constexpr uint32_t WIDE_FORMAT = 0x10000 + gfxfb::GFXFB_FORMAT_XRGB8888;
+
 // A node's number and its path under /dev/gfxfb_test, each with room for its terminator
 static constexpr size_t NODE_NAME_BYTES = 24;
 static constexpr size_t NODE_PATH_BYTES = 48;
 
 // A display with two outputs, dark until a test lights them, that records its last flush's output and the first
-// MAX_RECORDED rects of its flushes
+// MAX_RECORDED rects of its flushes, creates write-combining buffers and counts the buffers gfxfb hands back
 class recording_display : public gfxfb::display {
 public:
     static constexpr uint32_t OUTPUTS = 2;
     static constexpr uint32_t MAX_RECORDED = 64;
+    static constexpr uint32_t MAX_CREATED = gfxfb::GFXFB_CLIENT_BUFFERS_MAX + 2; // a full file, then two refills
 
     gfxfb::output_state states[OUTPUTS] = {};
     gfxfb::buffer       bases[OUTPUTS] = {};
@@ -90,10 +113,18 @@ public:
     bool                has_base_buffers = true; // false makes `base_buffer()` return nullptr even for a lit output
     bool                flush_needed = true;
     int32_t             flush_result = gfxfb::OK;
+    int32_t             create_result = gfxfb::OK; // when not OK, what `create_buffer()` returns without creating
+    void                (*while_creating)() = nullptr; // run once by the next `create_buffer()`, before it creates
 
     gfxfb::gfxfb_rect recorded[MAX_RECORDED] = {};
     uint32_t          recorded_count = 0;
     uint32_t          flushed_output = OUTPUTS; // the last flush's output, OUTPUTS before any
+
+    uint32_t               create_calls = 0; // refused calls included
+    gfxfb::buffer          created[MAX_CREATED] = {};
+    uint32_t               created_count = 0;
+    gfxfb::buffer*         last_released = nullptr;
+    sync::atomic<uint32_t> released_count{0}; // counted in the reaper's task, after `last_released` is written
 
     uint32_t output_count() const override { return count; }
     bool needs_flush() const override { return flush_needed; }
@@ -119,6 +150,13 @@ public:
 
         return flush_result;
     }
+
+    int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
+
+    void release_buffer(gfxfb::buffer* buf) override {
+        last_released = buf;
+        released_count.fetch_add_release(1);
+    }
 };
 
 // One test's gfxfb, published as its own node apart from /dev/gfxfb, with `node` null when publishing failed
@@ -138,13 +176,52 @@ static int32_t allocate_buffer_memory() {
     uintptr_t kernel_va = 0;
     int32_t rc = vmm::OK;
     RUN_ELEVATED(rc = vmm::alloc_contiguous(
-        OUTPUT_0_PAGES, pmm::ZONE_ANY, paging::PAGE_KERNEL_RW,
+        SHARED_PAGES, pmm::ZONE_ANY, paging::PAGE_KERNEL_RW,
         vmm::ALLOC_ZERO, kva::tag::generic, kernel_va, g_buffer_phys));
 
     return rc;
 }
 
 BEFORE_ALL(gfxfb, allocate_buffer_memory);
+
+int32_t recording_display::create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) {
+    create_calls++;
+
+    if (while_creating) {
+        void (*hook)() = while_creating;
+        while_creating = nullptr;
+        hook();
+    }
+
+    if (create_result != gfxfb::OK) {
+        return create_result;
+    }
+
+    uint64_t pitch = static_cast<uint64_t>(width) * (DRIVER_BPP / 8) + CREATED_ROW_PADDING;
+    if (pitch * height > CREATED_BUFFER_SIZE || format != gfxfb::GFXFB_FORMAT_XRGB8888) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    if (created_count == MAX_CREATED) {
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    size_t page = OUTPUT_0_PAGES + (created_count % CREATED_BUFFER_SLOTS) * CREATED_BUFFER_PAGES;
+    gfxfb::buffer& buf = created[created_count];
+    buf = {
+        .width     = width,
+        .height    = height,
+        .pitch     = static_cast<uint32_t>(pitch),
+        .size      = CREATED_BUFFER_SIZE,
+        .phys      = g_buffer_phys + page * pmm::PAGE_SIZE,
+        .cacheable = false,
+    };
+
+    created_count++;
+    *out = &buf;
+
+    return gfxfb::OK;
+}
 
 // Lights `output` of `fake`, the boot output when `is_boot_output` holds. Output 0's base buffer is cacheable at the
 // start of the shared memory, and output 1's is write-combining a page in, so a test can tell which one is mapped
@@ -155,6 +232,7 @@ static void light_output(recording_display& fake, uint32_t output, bool is_boot_
         .width     = static_cast<uint32_t>(is_first ? OUTPUT_0_WIDTH : OUTPUT_1_WIDTH),
         .height    = static_cast<uint32_t>(is_first ? OUTPUT_0_HEIGHT : OUTPUT_1_HEIGHT),
         .pitch     = static_cast<uint32_t>(is_first ? OUTPUT_0_PITCH : OUTPUT_1_PITCH),
+        .size      = pmm::page_align_up(is_first ? OUTPUT_0_SIZE : OUTPUT_1_SIZE),
         .phys      = is_first ? g_buffer_phys : g_buffer_phys + OUTPUT_1_OFFSET,
         .cacheable = is_first,
     };
@@ -178,6 +256,7 @@ static gfxfb::boot_framebuffer test_boot_framebuffer() {
             .width     = BOOT_WIDTH,
             .height    = BOOT_HEIGHT,
             .pitch     = BOOT_PITCH,
+            .size      = pmm::page_align_up(BOOT_SIZE),
             .phys      = g_buffer_phys,
             .cacheable = true,
         },
@@ -197,7 +276,7 @@ static void name_next_node(char (&name)[NODE_NAME_BYTES], gfxfb_test_node& test)
     devfs::append_u64(test.path, NODE_PATH_BYTES - 1, pos, number);
 }
 
-// Publishes `node` under /dev/gfxfb_test, or returns nullptr, freeing any node devfs refused
+// Publishes `node` under /dev/gfxfb_test, or returns nullptr and leaves allocated a node devfs refused, as gfxfb does
 static gfxfb::gfxfb_node* publish(gfxfb::gfxfb_node* node) {
     if (!node) {
         return nullptr;
@@ -208,10 +287,6 @@ static gfxfb::gfxfb_node* publish(gfxfb::gfxfb_node* node) {
         fs::node* dir = devfs::ensure_dir("gfxfb_test");
         if (dir) {
             rc = devfs::add_char_device_at(dir, node);
-        }
-
-        if (rc != devfs::OK) {
-            heap::kfree_delete(node);
         }
     });
 
@@ -270,7 +345,13 @@ static size_t stat_size(const gfxfb_test_node& test) {
     return attr.size;
 }
 
-// Calls an ioctl on the node at `path` inside the page's address space, as a syscall body would
+// Calls an ioctl on `file` inside the page's address space, as a syscall body would
+static int32_t file_ioctl(fs::file* file, user_page& page, uint32_t cmd, uint64_t arg) {
+    user_space_scope scope(page.ctx);
+    return fs::ioctl(file, cmd, arg);
+}
+
+// Calls an ioctl on the node at `path` through a file opened for the call
 static int32_t call_gfxfb_ioctl(const char* path, user_page& page, uint32_t cmd, uint64_t arg) {
     int32_t open_err = fs::OK;
     fs::file* file = fs::open(path, fs::O_RDWR, &open_err);
@@ -278,15 +359,57 @@ static int32_t call_gfxfb_ioctl(const char* path, user_page& page, uint32_t cmd,
         return open_err;
     }
 
-    int32_t rc = fs::OK;
-    {
-        user_space_scope scope(page.ctx);
-        rc = fs::ioctl(file, cmd, arg);
-    }
-
+    int32_t rc = file_ioctl(file, page, cmd, arg);
     fs::close(file);
 
     return rc;
+}
+
+// Asks `file` for a buffer through GFXFB_CREATE_BUFFER, whose request and reply sit at the page's start
+static int32_t request_buffer(fs::file* file, user_page& page, uint32_t width, uint32_t height, uint32_t format) {
+    *page.at<gfxfb::gfxfb_buffer_args>(0) = {
+        .width  = width,
+        .height = height,
+        .format = format,
+    };
+
+    return file_ioctl(file, page, gfxfb::GFXFB_CREATE_BUFFER, page.addr);
+}
+
+// Creates a SMALL_BUFFER_WIDTH by SMALL_BUFFER_HEIGHT XRGB8888 buffer and returns the reply, with a zero handle when
+// the creation failed
+static gfxfb::gfxfb_buffer_args request_small_buffer(fs::file* file, user_page& page) {
+    if (request_buffer(file, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, gfxfb::GFXFB_FORMAT_XRGB8888) != fs::OK) {
+        return {};
+    }
+
+    return *page.at<gfxfb::gfxfb_buffer_args>(0);
+}
+
+// Writes the small buffer's creation request at the page's start, with `reserved` in its reserved field
+static void write_small_request(user_page& page, uint32_t reserved) {
+    *page.at<gfxfb::gfxfb_buffer_args>(0) = {
+        .width    = SMALL_BUFFER_WIDTH,
+        .height   = SMALL_BUFFER_HEIGHT,
+        .format   = gfxfb::GFXFB_FORMAT_XRGB8888,
+        .reserved = reserved,
+    };
+}
+
+// Drops `handle` through GFXFB_DESTROY_BUFFER on `file`
+static int32_t destroy_buffer(fs::file* file, user_page& page, uint64_t handle) {
+    return file_ioctl(file, page, gfxfb::GFXFB_DESTROY_BUFFER, handle);
+}
+
+// Maps `length` bytes of `file` from `offset` into `ctx`, readable and writable, returning the address or 0
+static uintptr_t map_file(fs::file* file, mm::mm_context* ctx, uint64_t offset, size_t length) {
+    uintptr_t addr = 0;
+    uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
+    if (fs::mmap(file, ctx, 0, length, prot, mm::MM_MAP_SHARED, offset, &addr) != mm::MM_CTX_OK) {
+        return 0;
+    }
+
+    return addr;
 }
 
 // Writes a flush request for `count` rects already placed at RECTS_OFFSET
@@ -916,6 +1039,417 @@ TEST(gfxfb, second_driver_display_is_refused) {
     ASSERT_EQ(flush_one_rect(test.path, page), fs::OK);
     EXPECT_EQ(g_first_display.recorded_count, static_cast<uint32_t>(1));
     EXPECT_EQ(g_rival_display.recorded_count, static_cast<uint32_t>(0));
+}
+
+static recording_display g_create_display;
+
+// GFXFB_CREATE_BUFFER passes the request to the display and replies with a fresh handle, the display's pitch and size
+// and a page-aligned mmap offset, each buffer its own
+TEST(gfxfb, create_buffer_replies_with_the_buffer_layout) {
+    light_output(g_create_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_create_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    gfxfb::gfxfb_buffer_args first = request_small_buffer(file, page);
+    gfxfb::gfxfb_buffer_args second = request_small_buffer(file, page);
+
+    EXPECT_NE(first.handle, static_cast<uint32_t>(0));
+    EXPECT_NE(second.handle, static_cast<uint32_t>(0));
+    EXPECT_NE(first.handle, second.handle);
+    EXPECT_EQ(first.pitch, SMALL_BUFFER_PITCH);
+    EXPECT_EQ(first.size, CREATED_BUFFER_SIZE);
+    EXPECT_NE(first.map_offset, static_cast<uint64_t>(0));
+    EXPECT_NE(first.map_offset, second.map_offset);
+    EXPECT_ALIGNED(first.map_offset, pmm::PAGE_SIZE);
+    EXPECT_ALIGNED(second.map_offset, pmm::PAGE_SIZE);
+
+    ASSERT_EQ(g_create_display.created_count, static_cast<uint32_t>(2));
+    EXPECT_EQ(g_create_display.created[0].width, SMALL_BUFFER_WIDTH);
+    EXPECT_EQ(g_create_display.created[0].height, SMALL_BUFFER_HEIGHT);
+
+    fs::close(file);
+}
+
+static recording_display g_refusing_display;
+
+// gfxfb refuses a zero size, a nonzero reserved field or an unreadable request without asking the display, passes the
+// width and format whole for the display to refuse, maps those refusals to file codes, and a refusal frees its handle
+TEST(gfxfb, create_buffer_refuses_bad_requests) {
+    light_output(g_refusing_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_refusing_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(file, page, 0, SMALL_BUFFER_HEIGHT, format), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(file, page, SMALL_BUFFER_WIDTH, 0, format), fs::ERR_INVAL);
+
+    write_small_request(page, 1);
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_CREATE_BUFFER, page.addr), fs::ERR_INVAL);
+    write_small_request(page, 0x80000000);
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_CREATE_BUFFER, page.addr), fs::ERR_INVAL);
+
+    // A request ending on the unmapped page after `page` is refused without asking the display
+    size_t crossing_offset = pmm::PAGE_SIZE - __builtin_offsetof(gfxfb::gfxfb_buffer_args, size);
+    auto* crossing_request = page.at<gfxfb::gfxfb_buffer_args>(crossing_offset);
+    crossing_request->width = SMALL_BUFFER_WIDTH;
+    crossing_request->height = SMALL_BUFFER_HEIGHT;
+    crossing_request->format = format;
+    crossing_request->reserved = 0;
+
+    uint64_t crossing_addr = page.addr + crossing_offset;
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_CREATE_BUFFER, crossing_addr), fs::ERR_INVAL);
+    EXPECT_EQ(g_refusing_display.create_calls, static_cast<uint32_t>(0));
+
+    EXPECT_EQ(request_buffer(file, page, WIDE_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(file, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+
+    g_refusing_display.create_result = gfxfb::ERR_NO_MEMORY;
+    EXPECT_EQ(request_buffer(file, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOMEM);
+    g_refusing_display.create_result = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(request_buffer(file, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_IO);
+    g_refusing_display.create_result = gfxfb::OK;
+
+    EXPECT_EQ(g_refusing_display.create_calls, static_cast<uint32_t>(4));
+    EXPECT_EQ(g_refusing_display.created_count, static_cast<uint32_t>(0));
+    EXPECT_EQ(request_small_buffer(file, page).handle, static_cast<uint32_t>(1));
+
+    // Only the one buffer created comes back once its handle goes, so no refusal reached `release_buffer()`
+    ASSERT_EQ(destroy_buffer(file, page, 1), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_refusing_display.released_count, 1));
+    EXPECT_EQ(g_refusing_display.released_count.load_acquire(), static_cast<uint32_t>(1));
+    EXPECT_EQ(g_refusing_display.last_released, &g_refusing_display.created[0]);
+
+    fs::close(file);
+}
+
+// The boot display creates no buffers, so GFXFB_CREATE_BUFFER fails with ERR_NOSYS on a boot node
+TEST(gfxfb, boot_display_creates_no_buffers) {
+    gfxfb_test_node test = publish_boot_node();
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(file, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOSYS);
+
+    fs::close(file);
+}
+
+static recording_display g_unreplied_display;
+
+// A creation whose reply cannot be written hands the new buffer back to its display and leaves its handle free
+TEST(gfxfb, a_creation_that_cannot_reply_hands_its_buffer_back) {
+    light_output(g_unreplied_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_unreplied_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    // A read-only page lets gfxfb read the request but not write the reply
+    write_small_request(page, 0);
+    ASSERT_EQ(mm::mm_context_mprotect(page.ctx, page.addr, pmm::PAGE_SIZE, mm::MM_PROT_READ), mm::MM_CTX_OK);
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_CREATE_BUFFER, page.addr), fs::ERR_INVAL);
+    ASSERT_TRUE(spin_wait_ge(g_unreplied_display.released_count, 1));
+    EXPECT_EQ(g_unreplied_display.last_released, &g_unreplied_display.created[0]);
+
+    uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
+    ASSERT_EQ(mm::mm_context_mprotect(page.ctx, page.addr, pmm::PAGE_SIZE, prot), mm::MM_CTX_OK);
+    EXPECT_EQ(request_small_buffer(file, page).handle, static_cast<uint32_t>(1));
+
+    fs::close(file);
+}
+
+static recording_display g_full_display;
+
+// A file holds at most GFXFB_CLIENT_BUFFERS_MAX handles, the last of which maps like any other, and a creation reuses
+// the lowest handle a destroy freed
+TEST(gfxfb, a_file_holds_at_most_client_buffers_max_handles) {
+    light_output(g_full_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_full_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    gfxfb::gfxfb_buffer_args last = {};
+    for (uint32_t i = 0; i < gfxfb::GFXFB_CLIENT_BUFFERS_MAX; i++) {
+        last = request_small_buffer(file, page);
+        ASSERT_NE(last.handle, static_cast<uint32_t>(0));
+    }
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(file, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOMEM);
+    EXPECT_EQ(g_full_display.create_calls, gfxfb::GFXFB_CLIENT_BUFFERS_MAX);
+    EXPECT_EQ(last.handle, gfxfb::GFXFB_CLIENT_BUFFERS_MAX);
+
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    EXPECT_NE(map_file(file, ctx, last.map_offset, last.size), static_cast<uintptr_t>(0));
+
+    ASSERT_EQ(destroy_buffer(file, page, gfxfb::GFXFB_CLIENT_BUFFERS_MAX), fs::OK);
+    ASSERT_EQ(destroy_buffer(file, page, 5), fs::OK);
+    EXPECT_EQ(request_small_buffer(file, page).handle, static_cast<uint32_t>(5));
+    EXPECT_EQ(request_small_buffer(file, page).handle, gfxfb::GFXFB_CLIENT_BUFFERS_MAX);
+
+    fs::close(file);
+    mm::mm_context_release(ctx);
+}
+
+static recording_display g_nested_display;
+
+// The file and page the nested creation asks through, and the result it got
+static fs::file* g_nested_file;
+static user_page* g_nested_page;
+static int32_t g_nested_result;
+
+// Asks for the small buffer from inside the display's `create_buffer()`, in the address space the outer request's ioctl
+// entered, since `user_space_scope` does not nest
+static void request_while_creating() {
+    write_small_request(*g_nested_page, 0);
+    g_nested_result = fs::ioctl(g_nested_file, gfxfb::GFXFB_CREATE_BUFFER, g_nested_page->addr);
+}
+
+// A creation holds its handle while the display creates the buffer, so a creation that runs meanwhile on the same file
+// cannot take that handle
+TEST(gfxfb, a_creation_holds_its_handle_while_the_display_creates) {
+    light_output(g_nested_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_nested_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    for (uint32_t i = 1; i < gfxfb::GFXFB_CLIENT_BUFFERS_MAX; i++) {
+        ASSERT_NE(request_small_buffer(file, page).handle, static_cast<uint32_t>(0));
+    }
+
+    g_nested_file = file;
+    g_nested_page = &page;
+    g_nested_result = fs::OK;
+    g_nested_display.while_creating = request_while_creating;
+    EXPECT_EQ(request_small_buffer(file, page).handle, gfxfb::GFXFB_CLIENT_BUFFERS_MAX);
+    EXPECT_EQ(g_nested_result, fs::ERR_NOMEM);
+    EXPECT_EQ(g_nested_display.create_calls, gfxfb::GFXFB_CLIENT_BUFFERS_MAX);
+
+    fs::close(file);
+}
+
+static recording_display g_destroy_display;
+
+// GFXFB_DESTROY_BUFFER hands an unmapped buffer back to its display, and refuses a handle the file does not hold
+TEST(gfxfb, destroy_buffer_hands_the_buffer_back) {
+    light_output(g_destroy_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_destroy_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t handle = request_small_buffer(file, page).handle;
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+
+    // A handle in the argument's high half names no buffer, even with the low half holding a real one
+    EXPECT_EQ(destroy_buffer(file, page, (1ULL << 32) | handle), fs::ERR_INVAL);
+    EXPECT_EQ(g_destroy_display.released_count.load_acquire(), static_cast<uint32_t>(0));
+
+    ASSERT_EQ(destroy_buffer(file, page, handle), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_destroy_display.released_count, 1));
+    EXPECT_EQ(g_destroy_display.last_released, &g_destroy_display.created[0]);
+
+    EXPECT_EQ(destroy_buffer(file, page, handle), fs::ERR_INVAL);
+    EXPECT_EQ(destroy_buffer(file, page, 0), fs::ERR_INVAL);
+    EXPECT_EQ(destroy_buffer(file, page, gfxfb::GFXFB_CLIENT_BUFFERS_MAX + 1), fs::ERR_INVAL);
+    EXPECT_EQ(g_destroy_display.released_count.load_acquire(), static_cast<uint32_t>(1));
+
+    fs::close(file);
+}
+
+static recording_display g_buffer_mmap_display;
+
+// mmap at a buffer's offset maps that buffer with its own caching, and an offset below the first buffer's maps into the
+// primary output's base buffer
+TEST(gfxfb, mmap_maps_each_buffer_at_its_offset) {
+    light_output(g_buffer_mmap_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_buffer_mmap_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    gfxfb::gfxfb_buffer_args first = request_small_buffer(file, page);
+    gfxfb::gfxfb_buffer_args second = request_small_buffer(file, page);
+    ASSERT_NE(second.handle, static_cast<uint32_t>(0));
+
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+
+    uintptr_t base_addr = map_file(file, ctx, pmm::PAGE_SIZE, pmm::PAGE_SIZE);
+    uintptr_t first_addr = map_file(file, ctx, first.map_offset, first.size);
+    uintptr_t second_addr = map_file(file, ctx, second.map_offset + pmm::PAGE_SIZE, pmm::PAGE_SIZE);
+    ASSERT_NE(base_addr, static_cast<uintptr_t>(0));
+    ASSERT_NE(first_addr, static_cast<uintptr_t>(0));
+    ASSERT_NE(second_addr, static_cast<uintptr_t>(0));
+
+    const gfxfb::buffer* created = g_buffer_mmap_display.created;
+    EXPECT_EQ(paging::get_physical(base_addr, ctx->pt_root), g_buffer_phys + pmm::PAGE_SIZE);
+    EXPECT_EQ(paging::get_physical(first_addr, ctx->pt_root), created[0].phys);
+    EXPECT_EQ(paging::get_physical(first_addr + pmm::PAGE_SIZE, ctx->pt_root), created[0].phys + pmm::PAGE_SIZE);
+    EXPECT_EQ(paging::get_physical(second_addr, ctx->pt_root), created[1].phys + pmm::PAGE_SIZE);
+
+    paging::page_flags_t base_flags = paging::get_page_flags(base_addr, ctx->pt_root);
+    paging::page_flags_t first_flags = paging::get_page_flags(first_addr, ctx->pt_root);
+    EXPECT_EQ(base_flags & paging::PAGE_TYPE_MASK, paging::PAGE_NORMAL);
+    EXPECT_EQ(first_flags & paging::PAGE_TYPE_MASK, paging::PAGE_WC);
+
+    fs::close(file);
+    mm::mm_context_release(ctx);
+}
+
+static recording_display g_mmap_bounds_display;
+
+// mmap refuses a range running past a buffer's size, an offset whose handle names no buffer, and an offset so large
+// that adding the length wraps
+TEST(gfxfb, mmap_refuses_ranges_outside_a_buffer) {
+    light_output(g_mmap_bounds_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_mmap_bounds_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    gfxfb::gfxfb_buffer_args kept = request_small_buffer(file, page);
+    gfxfb::gfxfb_buffer_args destroyed = request_small_buffer(file, page);
+    ASSERT_NE(destroyed.handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(destroy_buffer(file, page, destroyed.handle), fs::OK);
+
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+
+    EXPECT_EQ(map_file(file, ctx, kept.map_offset, kept.size + 1), static_cast<uintptr_t>(0));
+    EXPECT_EQ(map_file(file, ctx, kept.map_offset + pmm::PAGE_SIZE, kept.size), static_cast<uintptr_t>(0));
+    EXPECT_EQ(map_file(file, ctx, kept.map_offset + kept.size, pmm::PAGE_SIZE), static_cast<uintptr_t>(0));
+    EXPECT_EQ(map_file(file, ctx, destroyed.map_offset, pmm::PAGE_SIZE), static_cast<uintptr_t>(0));
+    EXPECT_EQ(map_file(file, ctx, ~static_cast<uint64_t>(pmm::PAGE_SIZE - 1), pmm::PAGE_SIZE),
+              static_cast<uintptr_t>(0));
+    EXPECT_NE(map_file(file, ctx, kept.map_offset, kept.size), static_cast<uintptr_t>(0));
+
+    fs::close(file);
+    mm::mm_context_release(ctx);
+}
+
+static recording_display g_mapped_display;
+
+// A mapping keeps its buffer after GFXFB_DESTROY_BUFFER drops the handle, and unmapping it hands the buffer back
+TEST(gfxfb, a_mapped_buffer_outlives_its_handle) {
+    light_output(g_mapped_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_mapped_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    gfxfb::gfxfb_buffer_args mapped = request_small_buffer(file, page);
+    gfxfb::gfxfb_buffer_args unmapped = request_small_buffer(file, page);
+    ASSERT_NE(unmapped.handle, static_cast<uint32_t>(0));
+
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t addr = map_file(file, ctx, mapped.map_offset, mapped.size);
+    ASSERT_NE(addr, static_cast<uintptr_t>(0));
+
+    // The reaper hands buffers back in the order their last references went, so seeing only the unmapped buffer back
+    // shows the mapping kept the other
+    ASSERT_EQ(destroy_buffer(file, page, mapped.handle), fs::OK);
+    ASSERT_EQ(destroy_buffer(file, page, unmapped.handle), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_mapped_display.released_count, 1));
+    EXPECT_EQ(g_mapped_display.released_count.load_acquire(), static_cast<uint32_t>(1));
+    EXPECT_EQ(g_mapped_display.last_released, &g_mapped_display.created[1]);
+    EXPECT_EQ(paging::get_physical(addr, ctx->pt_root), g_mapped_display.created[0].phys);
+
+    fs::close(file);
+    ASSERT_EQ(mm::mm_context_unmap(ctx, addr, mapped.size), mm::MM_CTX_OK);
+    ASSERT_TRUE(spin_wait_ge(g_mapped_display.released_count, 2));
+    EXPECT_EQ(g_mapped_display.last_released, &g_mapped_display.created[0]);
+
+    mm::mm_context_release(ctx);
+}
+
+static recording_display g_two_files_display;
+
+// A handle names a buffer only in the file that created it, so another file can neither destroy nor map it
+TEST(gfxfb, handles_stay_within_their_file) {
+    light_output(g_two_files_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_two_files_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* owner = fs::open(test.path, fs::O_RDWR);
+    fs::file* other = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(owner);
+    ASSERT_NOT_NULL(other);
+
+    gfxfb::gfxfb_buffer_args args = request_small_buffer(owner, page);
+    ASSERT_NE(args.handle, static_cast<uint32_t>(0));
+
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+
+    EXPECT_EQ(destroy_buffer(other, page, args.handle), fs::ERR_INVAL);
+    EXPECT_EQ(map_file(other, ctx, args.map_offset, args.size), static_cast<uintptr_t>(0));
+    EXPECT_EQ(destroy_buffer(owner, page, args.handle), fs::OK);
+
+    fs::close(other);
+    fs::close(owner);
+    mm::mm_context_release(ctx);
+}
+
+static recording_display g_closing_display;
+
+// Closing a file drops every handle it holds, handing its unmapped buffers back to the display
+TEST(gfxfb, closing_a_file_hands_its_buffers_back) {
+    light_output(g_closing_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_closing_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    ASSERT_NE(request_small_buffer(file, page).handle, static_cast<uint32_t>(0));
+    ASSERT_NE(request_small_buffer(file, page).handle, static_cast<uint32_t>(0));
+
+    fs::close(file);
+    EXPECT_TRUE(spin_wait_ge(g_closing_display.released_count, 2));
 }
 
 // Registration is permanent, so /dev/gfxfb shows `g_registered_display` for the rest of the run

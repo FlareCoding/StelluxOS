@@ -22,7 +22,19 @@
  * refresh rate), and whether it is the primary output, whose pixels
  * `GFXFB_GET_INFO` describes, offset 0 maps and `GFXFB_FLUSH` shows. While no
  * output is lit there is no primary output, so `GFXFB_GET_INFO` and
- * `GFXFB_FLUSH` fail with EAGAIN and mmap at offset 0 is refused.
+ * `GFXFB_FLUSH` fail with EAGAIN and mmap at offset 0 is refused. A device
+ * that had no memory to record its primary output's pixels as it started has
+ * no primary output either.
+ *
+ * A program can also create buffers, each holding one picture of 32-bit
+ * pixels. `GFXFB_CREATE_BUFFER` returns a new buffer's handle, its layout and
+ * the mmap offset that maps it. It fails with ENOSYS on a device that cannot
+ * create buffers, with ENOMEM when no memory is left or the file already holds
+ * `GFXFB_CLIENT_BUFFERS_MAX` handles, and with EIO when the device fails. A
+ * handle names its buffer only within the open file that created it.
+ * `GFXFB_DESTROY_BUFFER` drops a handle, failing with EINVAL for one the file
+ * does not hold, and closing the file drops all of them. A buffer stays
+ * allocated until its handle and its last mapping are gone.
  *
  * The kernel and userland are built from one tree, so a structure may gain
  * fields when its call gains a feature. Each structure holds fixed-width
@@ -33,9 +45,11 @@
 
 namespace gfxfb {
 
-constexpr uint32_t GFXFB_GET_INFO   = 0x4700;
-constexpr uint32_t GFXFB_FLUSH      = 0x4701;
-constexpr uint32_t GFXFB_GET_OUTPUT = 0x4702;
+constexpr uint32_t GFXFB_GET_INFO       = 0x4700;
+constexpr uint32_t GFXFB_FLUSH          = 0x4701;
+constexpr uint32_t GFXFB_GET_OUTPUT     = 0x4702;
+constexpr uint32_t GFXFB_CREATE_BUFFER  = 0x4703;
+constexpr uint32_t GFXFB_DESTROY_BUFFER = 0x4704; // the argument is the handle itself
 
 constexpr uint8_t GFXFB_INFO_NEEDS_FLUSH = 0x01; // drawing reaches the screen only through GFXFB_FLUSH
 
@@ -43,6 +57,10 @@ constexpr uint32_t GFXFB_MAX_FLUSH_RECTS = 256;
 
 constexpr uint32_t GFXFB_OUTPUT_LIT     = 0x1; // the output shows a picture
 constexpr uint32_t GFXFB_OUTPUT_PRIMARY = 0x2; // the output whose pixels offset 0 maps
+
+constexpr uint32_t GFXFB_FORMAT_XRGB8888 = 1; // red in bits 23 to 16, green 15 to 8, blue 7 to 0, 31 to 24 unused
+
+constexpr uint32_t GFXFB_CLIENT_BUFFERS_MAX = 32; // the handles one open file can hold at once
 
 // GFXFB_GET_INFO argument, filled with the layout of the pixels mapped at offset 0
 struct gfxfb_info {
@@ -88,11 +106,24 @@ struct gfxfb_output_info {
     gfxfb_mode current;      // out: the mode while lit, zero while dark
 };
 
+// GFXFB_CREATE_BUFFER argument, filled with the new buffer's handle, layout and mmap offset
+struct gfxfb_buffer_args {
+    uint32_t width;      // in: EINVAL when zero or past the device's limit
+    uint32_t height;     // in: EINVAL when zero or past the device's limit
+    uint32_t format;     // in: GFXFB_FORMAT_XRGB8888, EINVAL for any other
+    uint32_t handle;     // out
+    uint32_t pitch;      // out: bytes per row
+    uint32_t reserved;   // must be zero
+    uint64_t size;       // out: bytes to map
+    uint64_t map_offset; // out: the mmap offset that maps this buffer
+};
+
 static_assert(sizeof(gfxfb_info) == 40, "gfxfb_info layout");
 static_assert(sizeof(gfxfb_rect) == 16, "gfxfb_rect layout");
 static_assert(sizeof(gfxfb_flush_args) == 16, "gfxfb_flush_args layout");
 static_assert(sizeof(gfxfb_mode) == 16, "gfxfb_mode layout");
 static_assert(sizeof(gfxfb_output_info) == 32, "gfxfb_output_info layout");
+static_assert(sizeof(gfxfb_buffer_args) == 40, "gfxfb_buffer_args layout");
 
 } // namespace gfxfb
 
