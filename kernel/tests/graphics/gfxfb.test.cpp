@@ -41,6 +41,19 @@ static constexpr uint64_t OUTPUT_1_HEIGHT = 8;
 static constexpr uint64_t OUTPUT_1_PITCH = OUTPUT_1_WIDTH * (DRIVER_BPP / 8);
 static constexpr uint64_t OUTPUT_1_SIZE = OUTPUT_1_PITCH * OUTPUT_1_HEIGHT;
 
+// The refresh rates outputs 0 and 1 are lit at, unlike each other so a GFXFB_GET_OUTPUT reply shows whose mode it
+// holds, and above 0xFFFF so a rate narrowed to 16 bits fails
+static constexpr uint64_t OUTPUT_0_REFRESH_MILLIHERTZ = 144000;
+static constexpr uint64_t OUTPUT_1_REFRESH_MILLIHERTZ = 75000;
+
+// A mode whose width and height are above 0xFFFF and unlike any base buffer's size, so a reply narrowing either
+// dimension or reporting the base buffer's size fails
+static constexpr uint32_t WIDE_MODE_WIDTH = 70000;
+static constexpr uint32_t WIDE_MODE_HEIGHT = 66000;
+
+// An output index above 0xFFFF, which a 16-bit index would read as output 0
+static constexpr uint32_t WIDE_OUTPUT_INDEX = 0x10000;
+
 // A boot framebuffer that differs from output 0's buffer and the driver layout in every field GFXFB_GET_INFO reports
 static constexpr uint64_t BOOT_WIDTH = 48;
 static constexpr uint64_t BOOT_HEIGHT = 16;
@@ -54,6 +67,11 @@ static constexpr uint8_t BOOT_BLUE_SHIFT = 11;
 // Where the flush tests place their request and rect array in the user page
 static constexpr size_t ARGS_OFFSET = 0;
 static constexpr size_t RECTS_OFFSET = 64;
+
+// What `get_output` fills the GFXFB_GET_OUTPUT reply's 32-bit fields and its refresh rate with first, so a field left
+// unwritten fails its check
+static constexpr uint32_t UNWRITTEN_FIELD = 0xFFFFFFFF;
+static constexpr uint64_t UNWRITTEN_RATE = 0xFFFFFFFFFFFFFFFF;
 
 // A node's number and its path under /dev/gfxfb_test, each with room for its terminator
 static constexpr size_t NODE_NAME_BYTES = 24;
@@ -69,6 +87,7 @@ public:
     gfxfb::output_state states[OUTPUTS] = {};
     gfxfb::buffer       bases[OUTPUTS] = {};
     uint32_t            count = OUTPUTS; // `output_count()`'s answer, which a test may lower below OUTPUTS
+    bool                has_base_buffers = true; // false makes `base_buffer()` return nullptr even for a lit output
     bool                flush_needed = true;
     int32_t             flush_result = gfxfb::OK;
 
@@ -89,7 +108,7 @@ public:
     }
 
     gfxfb::buffer* base_buffer(uint32_t output) override {
-        return output < OUTPUTS && states[output].lit ? &bases[output] : nullptr;
+        return has_base_buffers && output < OUTPUTS && states[output].lit ? &bases[output] : nullptr;
     }
 
     int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override {
@@ -132,13 +151,22 @@ BEFORE_ALL(gfxfb, allocate_buffer_memory);
 static void light_output(recording_display& fake, uint32_t output, bool is_boot_output) {
     bool is_first = output == 0;
 
-    fake.states[output] = {.lit = true, .boot_output = is_boot_output};
     fake.bases[output] = {
         .width     = static_cast<uint32_t>(is_first ? OUTPUT_0_WIDTH : OUTPUT_1_WIDTH),
         .height    = static_cast<uint32_t>(is_first ? OUTPUT_0_HEIGHT : OUTPUT_1_HEIGHT),
         .pitch     = static_cast<uint32_t>(is_first ? OUTPUT_0_PITCH : OUTPUT_1_PITCH),
         .phys      = is_first ? g_buffer_phys : g_buffer_phys + OUTPUT_1_OFFSET,
         .cacheable = is_first,
+    };
+
+    fake.states[output] = {
+        .lit         = true,
+        .boot_output = is_boot_output,
+        .current     = {
+            .width              = fake.bases[output].width,
+            .height             = fake.bases[output].height,
+            .refresh_millihertz = is_first ? OUTPUT_0_REFRESH_MILLIHERTZ : OUTPUT_1_REFRESH_MILLIHERTZ,
+        },
     };
 }
 
@@ -278,6 +306,23 @@ static int32_t flush_one_rect(const char* path, user_page& page) {
     return call_gfxfb_ioctl(path, page, gfxfb::GFXFB_FLUSH, page.addr + ARGS_OFFSET);
 }
 
+// Reads `output`'s state through GFXFB_GET_OUTPUT on the node at `path` into the page's start
+static int32_t get_output(const char* path, user_page& page, uint32_t output) {
+    *page.at<gfxfb::gfxfb_output_info>(0) = {
+        .output       = output,
+        .output_count = UNWRITTEN_FIELD,
+        .flags        = UNWRITTEN_FIELD,
+        .reserved     = UNWRITTEN_FIELD,
+        .current      = {
+            .width              = UNWRITTEN_FIELD,
+            .height             = UNWRITTEN_FIELD,
+            .refresh_millihertz = UNWRITTEN_RATE,
+        },
+    };
+
+    return call_gfxfb_ioctl(path, page, gfxfb::GFXFB_GET_OUTPUT, page.addr);
+}
+
 // True when `rect` holds exactly the given position and size
 static bool rect_equals(const gfxfb::gfxfb_rect& rect, uint32_t x, uint32_t y,
                         uint32_t width, uint32_t height) {
@@ -367,6 +412,124 @@ TEST(gfxfb, boot_display_has_one_lit_boot_output) {
     EXPECT_EQ(base->width, BOOT_WIDTH);
     EXPECT_EQ(base->phys, g_buffer_phys);
     EXPECT_NULL(boot.base_buffer(1));
+}
+
+static recording_display g_outputs_display;
+
+// GFXFB_GET_OUTPUT writes every reply field, an output's mode only while it is lit, and refuses an index of the output
+// count or more, a null or unreadable argument, and with no field written, a request ending on an unmapped page
+TEST(gfxfb, get_output_reports_each_output) {
+    light_output(g_outputs_display, 0, false);
+    g_outputs_display.states[0].current.width = WIDE_MODE_WIDTH;
+    g_outputs_display.states[0].current.height = WIDE_MODE_HEIGHT;
+    g_outputs_display.states[1].current = {.width = 1, .height = 1, .refresh_millihertz = 1}; // stale while dark
+    gfxfb_test_node test = publish_driver_node(&g_outputs_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    auto* info = page.at<gfxfb::gfxfb_output_info>(0);
+
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(info->output, static_cast<uint32_t>(0));
+    EXPECT_EQ(info->output_count, recording_display::OUTPUTS);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_EQ(info->reserved, static_cast<uint32_t>(0));
+    EXPECT_EQ(info->current.width, WIDE_MODE_WIDTH);
+    EXPECT_EQ(info->current.height, WIDE_MODE_HEIGHT);
+    EXPECT_EQ(info->current.refresh_millihertz, OUTPUT_0_REFRESH_MILLIHERTZ);
+
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(info->output, static_cast<uint32_t>(1));
+    EXPECT_EQ(info->output_count, recording_display::OUTPUTS);
+    EXPECT_EQ(info->flags, static_cast<uint32_t>(0));
+    EXPECT_EQ(info->reserved, static_cast<uint32_t>(0));
+    EXPECT_EQ(info->current.width, static_cast<uint32_t>(0));
+    EXPECT_EQ(info->current.height, static_cast<uint32_t>(0));
+    EXPECT_EQ(info->current.refresh_millihertz, static_cast<uint64_t>(0));
+
+    EXPECT_EQ(get_output(test.path, page, recording_display::OUTPUTS), fs::ERR_INVAL);
+    EXPECT_EQ(get_output(test.path, page, WIDE_OUTPUT_INDEX), fs::ERR_INVAL);
+    EXPECT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_OUTPUT, 0), fs::ERR_INVAL);
+    EXPECT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_OUTPUT, page.addr + pmm::PAGE_SIZE), fs::ERR_INVAL);
+
+    // A request whose mode lies on the unmapped page after `page` is refused before any reply field is written
+    size_t crossing_offset = pmm::PAGE_SIZE - __builtin_offsetof(gfxfb::gfxfb_output_info, current);
+    auto* crossing_request = page.at<gfxfb::gfxfb_output_info>(crossing_offset);
+    crossing_request->output = 0;
+    crossing_request->output_count = UNWRITTEN_FIELD;
+    crossing_request->flags = UNWRITTEN_FIELD;
+    crossing_request->reserved = UNWRITTEN_FIELD;
+
+    uint64_t crossing_addr = page.addr + crossing_offset;
+    EXPECT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_OUTPUT, crossing_addr), fs::ERR_INVAL);
+    EXPECT_EQ(crossing_request->output_count, UNWRITTEN_FIELD);
+    EXPECT_EQ(crossing_request->flags, UNWRITTEN_FIELD);
+    EXPECT_EQ(crossing_request->reserved, UNWRITTEN_FIELD);
+}
+
+// The boot display's one output is primary and lit at the boot framebuffer's size, with an unknown refresh rate
+TEST(gfxfb, get_output_reports_the_boot_display) {
+    gfxfb_test_node test = publish_boot_node();
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    auto* info = page.at<gfxfb::gfxfb_output_info>(0);
+
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(info->output_count, static_cast<uint32_t>(1));
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_EQ(info->current.width, BOOT_WIDTH);
+    EXPECT_EQ(info->current.height, BOOT_HEIGHT);
+    EXPECT_EQ(info->current.refresh_millihertz, static_cast<uint64_t>(0));
+
+    EXPECT_EQ(get_output(test.path, page, 1), fs::ERR_INVAL);
+}
+
+static recording_display g_primary_flag_display;
+
+// Only the primary output carries the primary flag: the lit boot output 1, with output 0 also lit
+TEST(gfxfb, get_output_flags_the_primary_output) {
+    light_output(g_primary_flag_display, 0, false);
+    light_output(g_primary_flag_display, 1, true);
+    gfxfb_test_node test = publish_driver_node(&g_primary_flag_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    auto* info = page.at<gfxfb::gfxfb_output_info>(0);
+
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT);
+    EXPECT_EQ(info->current.refresh_millihertz, OUTPUT_0_REFRESH_MILLIHERTZ);
+
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_EQ(info->current.width, OUTPUT_1_WIDTH);
+    EXPECT_EQ(info->current.height, OUTPUT_1_HEIGHT);
+    EXPECT_EQ(info->current.refresh_millihertz, OUTPUT_1_REFRESH_MILLIHERTZ);
+}
+
+static recording_display g_baseless_display;
+
+// A display giving no base buffer for its lit output 0, against `base_buffer()`'s contract, leaves no primary output:
+// GFXFB_GET_OUTPUT flags output 0 lit but not primary, and GFXFB_GET_INFO fails with ERR_AGAIN
+TEST(gfxfb, lit_output_without_a_base_buffer_is_not_primary) {
+    light_output(g_baseless_display, 0, false);
+    g_baseless_display.has_base_buffers = false;
+    gfxfb_test_node test = publish_driver_node(&g_baseless_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_output_info>(0)->flags, gfxfb::GFXFB_OUTPUT_LIT);
+    EXPECT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_INFO, page.addr), fs::ERR_AGAIN);
 }
 
 static recording_display g_clip_display;
@@ -613,8 +776,8 @@ TEST(gfxfb, primary_is_chosen_below_the_output_count) {
 
 static recording_display g_all_dark_display;
 
-// A display registered with every output dark has no primary: stat reports size 0, GFXFB_GET_INFO and GFXFB_FLUSH fail
-// with ERR_AGAIN, mmap is refused, and `flush()` is never called
+// A display registered with every output dark has no primary: GFXFB_GET_OUTPUT sets no flag for either output, stat
+// reports size 0, GFXFB_GET_INFO and GFXFB_FLUSH fail with ERR_AGAIN, mmap is refused, and `flush()` is never called
 TEST(gfxfb, display_with_every_output_dark_has_no_primary) {
     gfxfb_test_node test = publish_driver_node(&g_all_dark_display);
     ASSERT_NOT_NULL(test.node);
@@ -622,6 +785,11 @@ TEST(gfxfb, display_with_every_output_dark_has_no_primary) {
 
     user_page page;
     ASSERT_TRUE(page.ready());
+
+    for (uint32_t output = 0; output < recording_display::OUTPUTS; output++) {
+        ASSERT_EQ(get_output(test.path, page, output), fs::OK);
+        EXPECT_EQ(page.at<gfxfb::gfxfb_output_info>(0)->flags, static_cast<uint32_t>(0));
+    }
 
     EXPECT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_INFO, page.addr), fs::ERR_AGAIN);
     EXPECT_EQ(flush_one_rect(test.path, page), fs::ERR_AGAIN);

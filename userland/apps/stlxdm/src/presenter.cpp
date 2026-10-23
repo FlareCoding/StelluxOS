@@ -16,6 +16,30 @@ static gfxfb::gfxfb_rect to_gfxfb_rect(const damage_list::rect& r) {
              static_cast<uint32_t>(r.w), static_cast<uint32_t>(r.h) };
 }
 
+/* The primary output's refresh rate, or 0 when it is unknown, no output is
+ * primary or GFXFB_GET_OUTPUT fails, with a line printed for the last two */
+static uint64_t read_primary_refresh(int fd) {
+    uint32_t count = 1; /* enough to ask output 0, whose reply gives the real count */
+    for (uint32_t i = 0; i < count; i++) {
+        gfxfb::gfxfb_output_info info = {};
+        info.output = i;
+        if (ioctl(fd, gfxfb::GFXFB_GET_OUTPUT, &info) < 0) {
+            printf("stlxdm: output state read failed: %s\r\n", strerror(errno));
+            return 0;
+        }
+
+        if ((info.flags & gfxfb::GFXFB_OUTPUT_PRIMARY) != 0) {
+            return info.current.refresh_millihertz;
+        }
+
+        count = info.output_count;
+    }
+
+    printf("stlxdm: no primary output\r\n");
+
+    return 0;
+}
+
 int memcpy_presenter::init() {
     m_fd = open("/dev/gfxfb", O_RDWR);
     if (m_fd < 0) {
@@ -45,6 +69,7 @@ int memcpy_presenter::init() {
     m_size = info.size;
     m_scanout = static_cast<uint8_t*>(mem);
     m_needs_flush = (info.flags & gfxfb::GFXFB_INFO_NEEDS_FLUSH) != 0;
+    m_refresh_millihertz = read_primary_refresh(m_fd);
 
     m_back = static_cast<uint8_t*>(
         malloc(static_cast<size_t>(m_width) * m_height * 4));

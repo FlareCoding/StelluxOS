@@ -77,13 +77,14 @@ static uint32_t find_primary(display& shown_display) {
     return lowest_lit;
 }
 
-// The file layer's code for each result a display's `flush()` returns, and ERR_IO for any other
+// The file layer's code for each result a display's `read_output()` and `flush()` return, and ERR_IO for any other
 static int32_t to_fs_error(int32_t rc) {
     switch (rc) {
-    case OK:         return fs::OK;
-    case ERR_DARK:   return fs::ERR_AGAIN;
-    case ERR_DEVICE: return fs::ERR_IO;
-    default:         return fs::ERR_IO;
+    case OK:              return fs::OK;
+    case ERR_INVALID_ARG: return fs::ERR_INVAL;
+    case ERR_DARK:        return fs::ERR_AGAIN;
+    case ERR_DEVICE:      return fs::ERR_IO;
+    default:              return fs::ERR_IO;
     }
 }
 
@@ -94,6 +95,13 @@ int32_t boot_display::read_output(uint32_t output, output_state& out) {
 
     out.lit = true;
     out.boot_output = true;
+
+    // The boot framebuffer carries no refresh rate
+    out.current = {
+        .width              = m_framebuffer.pixels.width,
+        .height             = m_framebuffer.pixels.height,
+        .refresh_millihertz = 0,
+    };
 
     return OK;
 }
@@ -155,6 +163,10 @@ int32_t gfxfb_node::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
         return get_info(arg);
     }
 
+    if (cmd == GFXFB_GET_OUTPUT) {
+        return get_output(arg);
+    }
+
     if (cmd == GFXFB_FLUSH) {
         return flush(arg);
     }
@@ -194,6 +206,38 @@ int32_t gfxfb_node::get_info(uint64_t info_addr) {
     }
 
     int32_t rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(info_addr), &info, sizeof(info));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    return fs::OK;
+}
+
+int32_t gfxfb_node::get_output(uint64_t info_addr) {
+    gfxfb_output_info info{};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &info, reinterpret_cast<const void*>(info_addr), sizeof(info));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    output_state state = {};
+    rc = m_display->read_output(info.output, state);
+    if (rc != OK) {
+        return to_fs_error(rc);
+    }
+
+    bool is_primary = m_primary_buffer != nullptr && info.output == m_primary;
+
+    info.output_count = m_display->output_count();
+    info.flags = (state.lit ? GFXFB_OUTPUT_LIT : 0) | (is_primary ? GFXFB_OUTPUT_PRIMARY : 0);
+    info.reserved = 0;
+    info.current = state.lit ? state.current : gfxfb_mode{};
+
+    rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(info_addr), &info, sizeof(info));
 
     if (rc != mm::uaccess::OK) {

@@ -22,6 +22,9 @@ constexpr uint32_t BYTES_PER_PIXEL = 4;
 constexpr uint32_t DEFAULT_WIDTH = 1024;
 constexpr uint32_t DEFAULT_HEIGHT = 768;
 
+// The display info carries no refresh rate, so the driver supplies 60 Hz, a common monitor's rate, for the lit scanout
+constexpr uint64_t REFRESH_MILLIHERTZ = 60000;
+
 // Bounds the backing allocation against a bad scanout size
 constexpr uint32_t MAX_DIMENSION = 4096;
 
@@ -412,6 +415,14 @@ int32_t virtio_gpu_driver::read_output(uint32_t output, gfxfb::output_state& out
     // The device does not say which scanout the boot firmware lit
     out.lit = output == m_scanout;
     out.boot_output = false;
+
+    if (out.lit) {
+        out.current = {
+            .width              = m_base_buffer.width,
+            .height             = m_base_buffer.height,
+            .refresh_millihertz = REFRESH_MILLIHERTZ,
+        };
+    }
 
     return gfxfb::OK;
 }

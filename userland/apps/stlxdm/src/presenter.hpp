@@ -27,6 +27,10 @@ public:
     virtual uint32_t width() const = 0;
     virtual uint32_t height() const = 0;
 
+    /* The primary output's refresh rate in millihertz, or 0 when it is
+     * unknown, no output is primary or the rate cannot be read. */
+    virtual uint64_t refresh_millihertz() const = 0;
+
     /* The buffer to compose the next frame into. */
     virtual target acquire() = 0;
 
@@ -38,12 +42,14 @@ public:
  * framebuffer mapping, flushing it on displays that need a flush. */
 class memcpy_presenter final : public presenter {
 public:
-    /* Opens and maps the framebuffer. Returns 0, or -1 without one. */
+    /* Opens and maps the framebuffer and reads the primary output's refresh
+     * rate. Returns 0, or -1 without a framebuffer. */
     int init();
     void shutdown();
 
     uint32_t width() const override { return m_width; }
     uint32_t height() const override { return m_height; }
+    uint64_t refresh_millihertz() const override { return m_refresh_millihertz; }
     target acquire() override;
     void present(const damage_list& damage) override;
 
@@ -58,6 +64,7 @@ private:
     uint32_t  m_height = 0;
     uint32_t  m_pitch = 0;
     uint64_t  m_size = 0;
+    uint64_t  m_refresh_millihertz = 0;
     bool      m_first_acquire = true;
     bool      m_needs_flush = false;
     bool      m_last_flush_failed = false;

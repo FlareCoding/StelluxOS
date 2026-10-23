@@ -15,6 +15,12 @@
 
 constexpr const char* DM_PID_PATH = "/tmp/stlxdm.pid";
 
+constexpr uint64_t NS_PER_SECOND = 1000000000ull;
+constexpr uint64_t MILLIHERTZ_PER_HERTZ = 1000;
+
+/* The rate stlxdm composes at when the screen's rate is unknown */
+constexpr uint64_t DEFAULT_REFRESH_MILLIHERTZ = 60000;
+
 /* SIGHUP asks for a config reload, applied on the next wakeup */
 static volatile sig_atomic_t g_reload = 0;
 
@@ -25,7 +31,13 @@ static void on_sighup(int) {
 static uint64_t now_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+    return static_cast<uint64_t>(ts.tv_sec) * NS_PER_SECOND + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+/* The time between refreshes at `refresh_millihertz`, which must not
+ * be 0, to the nearest nanosecond */
+static uint64_t refresh_interval_ns(uint64_t refresh_millihertz) {
+    return (NS_PER_SECOND * MILLIHERTZ_PER_HERTZ + refresh_millihertz / 2) / refresh_millihertz;
 }
 
 /* The pidfile lets the settings app deliver the reload signal */
@@ -96,10 +108,20 @@ int main() {
     signal(SIGHUP, on_sighup);
     write_pidfile();
 
-    printf("stlxdm: serving %ux%u\r\n", pres.width(), pres.height());
-
-    constexpr uint64_t COMPOSE_INTERVAL_NS = 16666667ull;
+    /* Composition runs at most once per refresh, at the default rate
+     * when the screen's rate is unknown */
+    uint64_t reported_millihertz = pres.refresh_millihertz();
+    uint64_t compose_millihertz = reported_millihertz != 0 ? reported_millihertz : DEFAULT_REFRESH_MILLIHERTZ;
+    const uint64_t compose_interval_ns = refresh_interval_ns(compose_millihertz);
     uint64_t last_compose_ns = 0;
+
+    if (reported_millihertz != 0) {
+        printf("stlxdm: serving %ux%u at %llu.%03llu Hz\r\n", pres.width(), pres.height(),
+               static_cast<unsigned long long>(reported_millihertz / MILLIHERTZ_PER_HERTZ),
+               static_cast<unsigned long long>(reported_millihertz % MILLIHERTZ_PER_HERTZ));
+    } else {
+        printf("stlxdm: serving %ux%u, refresh rate unknown\r\n", pres.width(), pres.height());
+    }
 
     std::vector<pollfd> fds;
     while (true) {
@@ -135,7 +157,7 @@ int main() {
         }
 
         if (srv.compose_pending()) {
-            uint64_t deadline = last_compose_ns + COMPOSE_INTERVAL_NS;
+            uint64_t deadline = last_compose_ns + compose_interval_ns;
             int64_t compose_ns = deadline > now
                                ? static_cast<int64_t>(deadline - now) : 0;
             if (next_ns < 0 || compose_ns < next_ns) {
@@ -180,7 +202,7 @@ int main() {
         now = now_ns();
         srv.perf_tick(now);
         if (srv.compose_pending() &&
-            now >= last_compose_ns + COMPOSE_INTERVAL_NS) {
+            now >= last_compose_ns + compose_interval_ns) {
             srv.compose_tick();
             last_compose_ns = now;
         }
