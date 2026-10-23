@@ -1,5 +1,7 @@
 #include "presenter.hpp"
 
+#include <stlx/gfxfb_abi.h>
+
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -9,42 +11,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-constexpr unsigned long GFXFB_GET_INFO = 0x4700;
-constexpr unsigned long GFXFB_FLUSH = 0x4701;
-
-constexpr uint8_t GFXFB_INFO_NEEDS_FLUSH = 0x01;
-
-namespace {
-
-struct gfxfb_info {
-    uint64_t width;
-    uint64_t height;
-    uint64_t pitch;
-    uint16_t bpp;
-    uint8_t  red_shift;
-    uint8_t  green_shift;
-    uint8_t  blue_shift;
-    uint8_t  flags;
-    uint8_t  padding[2];
-    uint64_t size;
-};
-
-struct gfxfb_rect {
-    uint32_t x;
-    uint32_t y;
-    uint32_t width;
-    uint32_t height;
-};
-
-struct gfxfb_flush_args {
-    uint64_t rects;
-    uint32_t count;
-    uint32_t reserved;
-};
-
-} // namespace
-
-static gfxfb_rect to_gfxfb_rect(const damage_list::rect& r) {
+static gfxfb::gfxfb_rect to_gfxfb_rect(const damage_list::rect& r) {
     return { static_cast<uint32_t>(r.x), static_cast<uint32_t>(r.y),
              static_cast<uint32_t>(r.w), static_cast<uint32_t>(r.h) };
 }
@@ -55,8 +22,8 @@ int memcpy_presenter::init() {
         return -1;
     }
 
-    gfxfb_info info;
-    if (ioctl(m_fd, GFXFB_GET_INFO, &info) < 0) {
+    gfxfb::gfxfb_info info;
+    if (ioctl(m_fd, gfxfb::GFXFB_GET_INFO, &info) < 0) {
         close(m_fd);
         m_fd = -1;
         return -1;
@@ -77,7 +44,7 @@ int memcpy_presenter::init() {
     m_pitch = static_cast<uint32_t>(info.pitch);
     m_size = info.size;
     m_scanout = static_cast<uint8_t*>(mem);
-    m_needs_flush = (info.flags & GFXFB_INFO_NEEDS_FLUSH) != 0;
+    m_needs_flush = (info.flags & gfxfb::GFXFB_INFO_NEEDS_FLUSH) != 0;
 
     m_back = static_cast<uint8_t*>(
         malloc(static_cast<size_t>(m_width) * m_height * 4));
@@ -129,7 +96,7 @@ void memcpy_presenter::flush_display(const damage_list::rect* rects, uint32_t co
         return;
     }
 
-    gfxfb_rect changed[damage_list::MAX_RECTS];
+    gfxfb::gfxfb_rect changed[damage_list::MAX_RECTS];
     uint32_t changed_count = 0;
 
     /* A failed flush left its regions unshown, so the next one sends the whole screen */
@@ -141,11 +108,11 @@ void memcpy_presenter::flush_display(const damage_list::rect* rects, uint32_t co
         }
     }
 
-    gfxfb_flush_args args = {};
+    gfxfb::gfxfb_flush_args args = {};
     args.rects = reinterpret_cast<uint64_t>(changed);
     args.count = changed_count;
 
-    bool failed = ioctl(m_fd, GFXFB_FLUSH, &args) < 0;
+    bool failed = ioctl(m_fd, gfxfb::GFXFB_FLUSH, &args) < 0;
     if (failed && !m_last_flush_failed) {
         printf("stlxdm: display flush failed: %s\r\n", strerror(errno));
     }
