@@ -22,7 +22,15 @@
  * Userland maps the primary output's base buffer and draws into it, and
  * `GFXFB_FLUSH` hands the changed regions to the display's `flush()` for that
  * output. With no output lit there is no primary output, so `GFXFB_GET_INFO`
- * and `GFXFB_FLUSH` fail and mmap is refused.
+ * and `GFXFB_FLUSH` fail and mmap at offset 0 is refused. A display shown when
+ * no memory was left to record its primary output's base buffer has no primary
+ * output either.
+ *
+ * Userland also creates buffers, which the display allocates in
+ * `create_buffer()`. gfxfb keeps a reference-counted record of each buffer
+ * userland can map, the primary output's base buffer included, and hands the
+ * buffer back to the display's `release_buffer()` once no handle, output or
+ * mapping refers to it.
  */
 
 namespace gfxfb {
@@ -32,6 +40,8 @@ constexpr int32_t ERR             = -1;
 constexpr int32_t ERR_INVALID_ARG = -2;
 constexpr int32_t ERR_DARK        = -3; // the output is not lit
 constexpr int32_t ERR_DEVICE      = -4; // the display's hardware failed the call
+constexpr int32_t ERR_NO_MEMORY   = -5;
+constexpr int32_t ERR_UNSUPPORTED = -6; // the display creates no buffers
 
 /**
  * One output's state as its display reports it.
@@ -43,16 +53,19 @@ struct output_state {
 };
 
 /**
- * Pixel memory holding the picture an output shows: the boot framebuffer on
- * the boot display, memory the display's driver allocated on a driver display.
- * A driver display's buffers hold 32-bit pixels with red in bits 23 to 16,
- * green in bits 15 to 8 and blue in bits 7 to 0.
+ * Pixel memory holding a picture: the boot framebuffer on the boot display,
+ * memory the display's driver allocated on a driver display, as an output's
+ * base buffer or from `create_buffer()`. A driver display's buffers hold
+ * 32-bit pixels with red in bits 23 to 16, green in bits 15 to 8 and blue in
+ * bits 7 to 0. gfxfb copies the fields when it takes a buffer, and a driver
+ * may derive from it to keep its own state.
  */
 struct buffer {
     uint32_t         width;
     uint32_t         height;
     uint32_t         pitch;     // bytes per row
-    pmm::phys_addr_t phys;      // physically contiguous, pitch * height bytes
+    uint64_t         size;      // bytes userland maps, whole pages holding pitch * height bytes
+    pmm::phys_addr_t phys;      // physically contiguous for `size` bytes
     bool             cacheable; // false maps it write-combining
 };
 
@@ -61,8 +74,11 @@ struct buffer {
  * display. gfxfb calls `output_count()`, `read_output()` and `base_buffer()`
  * from `init()` and `register_display()`, on the boot thread, which cannot
  * sleep, so they must not wait. It calls `output_count()`, `read_output()`,
- * `needs_flush()` and `flush()` from the tasks that use /dev/gfxfb, several
- * tasks at once, and `flush()` may block the task that calls it.
+ * `needs_flush()`, `flush()` and `create_buffer()` from the tasks that use
+ * /dev/gfxfb, several tasks at once, and `flush()` and `create_buffer()` may
+ * block the task that calls them. It calls `release_buffer()` from the reaper,
+ * the kernel task that runs deferred cleanup, and `release_buffer()` must
+ * never wait, since the reaper runs no other cleanup until it returns.
  */
 class display {
 public:
@@ -91,9 +107,10 @@ public:
 
     /**
      * @brief Return an output's base buffer, the buffer it shows while lit.
-     * Once registered, the display must never free it and must return the same
-     * buffer for as long as the output stays lit, since gfxfb keeps the
-     * pointer and userland maps the memory.
+     * Once registered, the display must keep it until gfxfb hands it back
+     * through `release_buffer()` and must return the same buffer for as long
+     * as the output stays lit, since gfxfb keeps the pointer and userland maps
+     * the memory.
      * @param output Index of the output, below the count.
      * @return The buffer, or nullptr while the output is dark.
      */
@@ -109,6 +126,31 @@ public:
      * display's hardware failed the copy.
      */
     virtual int32_t flush(uint32_t output, const gfxfb_rect* rects, uint32_t count) = 0;
+
+    /**
+     * @brief Allocate a buffer of `width` by `height` pixels in `format`,
+     * picking its pitch and size.
+     * @param width Width in pixels, at least 1.
+     * @param height Height in pixels, at least 1.
+     * @param format The format userland asked for, which gfxfb passes on
+     * unchecked.
+     * @param out Set on OK to the buffer, which the display must keep until
+     * gfxfb hands it back through `release_buffer()`.
+     * @return OK, ERR_INVALID_ARG for a size past the display's limit or a
+     * format it does not support, ERR_NO_MEMORY when no memory is left for it,
+     * ERR_UNSUPPORTED on a display that creates no buffers, or ERR_DEVICE when
+     * its hardware failed.
+     */
+    virtual int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, buffer** out) = 0;
+
+    /**
+     * @brief Take back a buffer from `create_buffer()` or `base_buffer()` once
+     * nothing refers to it, freeing it unless the display keeps it for good,
+     * as the boot display keeps the boot framebuffer. Runs once per buffer, in
+     * the reaper's task.
+     * @param buf The buffer.
+     */
+    virtual void release_buffer(buffer* buf) = 0;
 };
 
 /**
@@ -143,12 +185,15 @@ __PRIVILEGED_CODE bool has_boot_display();
  * ready, since gfxfb reads those states to pick the primary output. While the
  * boot display is behind /dev/gfxfb, a display with no output lit is refused,
  * so a card that lit nothing leaves userland the boot framebuffer. On a boot
- * that gave no framebuffer, a display is accepted with every output dark.
+ * that gave no framebuffer, a display is accepted with every output dark, and
+ * with no primary output when no memory is left to record its base buffer.
  * @param driver_display The display. It must never be freed.
  * @return OK, ERR for a null display, or ERR with a line logged when a driver
- * display is already registered, when a program has opened /dev/gfxfb, for a
- * display with no output lit while the boot display is behind /dev/gfxfb, or
- * when gfxfb cannot create or publish its node.
+ * display is already registered, when a program has opened /dev/gfxfb, or when
+ * gfxfb cannot create or publish its node. While the boot display is behind
+ * /dev/gfxfb, it also returns ERR with a line logged for a display with no
+ * output lit or when no memory is left to record the base buffer of its
+ * primary output.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t register_display(display* driver_display);
