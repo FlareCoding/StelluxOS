@@ -10,18 +10,13 @@ namespace drivers {
 
 using namespace virtio;
 
-constexpr int32_t ERR_DEVICE     = -1;
+constexpr int32_t ERR_IO         = -1;
 constexpr int32_t ERR_BATCH_FULL = -2;
 
 constexpr uint32_t RESOURCE_ID = 1;
 
-constexpr uint16_t BITS_PER_PIXEL = 32;
-constexpr uint32_t BYTES_PER_PIXEL = BITS_PER_PIXEL / 8;
-
-// A B8G8R8X8 pixel read as a little-endian 32-bit value
-constexpr uint8_t RED_SHIFT = 16;
-constexpr uint8_t GREEN_SHIFT = 8;
-constexpr uint8_t BLUE_SHIFT = 0;
+// A B8G8R8X8 pixel, which a driver display's buffers hold as a little-endian 32-bit value
+constexpr uint32_t BYTES_PER_PIXEL = 4;
 
 // Used when the device reports no usable scanout
 constexpr uint32_t DEFAULT_WIDTH = 1024;
@@ -80,7 +75,7 @@ int32_t virtio_gpu_driver::allocate_command_page() {
 
     if (rc != dma::OK) {
         log::error("virtio-gpu: failed to allocate the command page");
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
     return OK;
@@ -95,7 +90,7 @@ bool virtio_gpu_driver::batch_has_room(uint32_t bytes, uint32_t commands) const 
 int32_t virtio_gpu_driver::queue_command(const void* request, uint32_t request_size,
                                          uint32_t response_size, uint32_t* out_response_offset) {
     if (m_is_broken) {
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
     if (!batch_has_room(command_footprint(request_size, response_size), 1)) {
@@ -148,7 +143,7 @@ int32_t virtio_gpu_driver::wait_for_batch(wait_mode mode) {
         if (mode == wait_mode::sleep && m_has_completion_interrupt) {
             wait_for_event();
         } else if (clock::now_ns() > deadline) {
-            return ERR_DEVICE;
+            return ERR_IO;
         } else {
             cpu::relax();
         }
@@ -157,7 +152,7 @@ int32_t virtio_gpu_driver::wait_for_batch(wait_mode mode) {
 
 int32_t virtio_gpu_driver::run_batch(wait_mode mode) {
     if (m_is_broken) {
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
     if (m_batch_commands == 0) {
@@ -169,7 +164,7 @@ int32_t virtio_gpu_driver::run_batch(wait_mode mode) {
     if (wait_for_batch(mode) != OK) {
         log::error("virtio-gpu: device stopped answering commands");
         m_is_broken = true;
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
     int32_t rc = OK;
@@ -180,7 +175,7 @@ int32_t virtio_gpu_driver::run_batch(wait_mode mode) {
 
         if (!is_ok_response(response->type)) {
             log::error("virtio-gpu: command failed with response 0x%x", response->type);
-            rc = ERR_DEVICE;
+            rc = ERR_IO;
         }
     }
 
@@ -188,6 +183,18 @@ int32_t virtio_gpu_driver::run_batch(wait_mode mode) {
     m_batch_bytes = 0;
 
     return rc;
+}
+
+// The device's scanout count, at least 1 so the fallback scanout counts, and at most the display info's 16 entries
+uint32_t virtio_gpu_driver::read_scanout_count() {
+    volatile virtio_gpu_config* cfg = device_config<virtio_gpu_config>();
+    uint32_t count = cfg ? cfg->num_scanouts : 1;
+
+    if (count == 0) {
+        return 1;
+    }
+
+    return count < VIRTIO_GPU_MAX_SCANOUTS ? count : VIRTIO_GPU_MAX_SCANOUTS;
 }
 
 int32_t virtio_gpu_driver::query_display(uint32_t* out_scanout, uint32_t* out_width, uint32_t* out_height) {
@@ -213,10 +220,10 @@ int32_t virtio_gpu_driver::query_display(uint32_t* out_scanout, uint32_t* out_wi
 
     if (display_info->hdr.type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO) {
         log::error("virtio-gpu: display info came back as response 0x%x", display_info->hdr.type);
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
-    for (uint32_t i = 0; i < VIRTIO_GPU_MAX_SCANOUTS; i++) {
+    for (uint32_t i = 0; i < m_scanout_count; i++) {
         virtio_gpu_display_one mode = display_info->pmodes[i];
 
         if (is_usable_mode(mode)) {
@@ -235,7 +242,7 @@ int32_t virtio_gpu_driver::query_display(uint32_t* out_scanout, uint32_t* out_wi
     return OK;
 }
 
-int32_t virtio_gpu_driver::create_scanout_surface(uint32_t scanout, uint32_t width, uint32_t height) {
+int32_t virtio_gpu_driver::light_scanout(uint32_t scanout, uint32_t width, uint32_t height) {
     uint64_t pitch = static_cast<uint64_t>(width) * BYTES_PER_PIXEL;
     uint64_t size = pitch * height;
     size_t pages = pmm::page_align_up(size) / pmm::PAGE_SIZE;
@@ -253,7 +260,7 @@ int32_t virtio_gpu_driver::create_scanout_surface(uint32_t scanout, uint32_t wid
 
     if (rc != dma::OK) {
         log::error("virtio-gpu: failed to allocate a %lu byte backing", size);
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
     virtio_gpu_resource_create_2d create = {};
@@ -280,19 +287,16 @@ int32_t virtio_gpu_driver::create_scanout_surface(uint32_t scanout, uint32_t wid
         queue_command(attach_backing) != OK ||
         queue_command(set_scanout) != OK ||
         run_batch(wait_mode::poll) != OK) {
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
-    m_surface = {
-        .phys        = m_backing.phys,
-        .width       = width,
-        .height      = height,
-        .pitch       = pitch,
-        .bpp         = BITS_PER_PIXEL,
-        .red_shift   = RED_SHIFT,
-        .green_shift = GREEN_SHIFT,
-        .blue_shift  = BLUE_SHIFT,
-        .cacheable   = m_backing.cached,
+    m_scanout = scanout;
+    m_base_buffer = {
+        .width     = width,
+        .height    = height,
+        .pitch     = static_cast<uint32_t>(pitch),
+        .phys      = m_backing.phys,
+        .cacheable = m_backing.cached,
     };
 
     return OK;
@@ -300,10 +304,12 @@ int32_t virtio_gpu_driver::create_scanout_surface(uint32_t scanout, uint32_t wid
 
 // Runs the batch first when the rect does not fit
 int32_t virtio_gpu_driver::queue_rect_update(const gfxfb::gfxfb_rect& rect) {
+    uint64_t row_offset = static_cast<uint64_t>(rect.y) * m_base_buffer.pitch;
+
     virtio_gpu_transfer_to_host_2d transfer = {};
     transfer.hdr.type    = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
     transfer.r           = {rect.x, rect.y, rect.width, rect.height};
-    transfer.offset      = rect.y * m_surface.pitch + static_cast<uint64_t>(rect.x) * BYTES_PER_PIXEL;
+    transfer.offset      = row_offset + static_cast<uint64_t>(rect.x) * BYTES_PER_PIXEL;
     transfer.resource_id = RESOURCE_ID;
 
     virtio_gpu_resource_flush show = {};
@@ -316,11 +322,11 @@ int32_t virtio_gpu_driver::queue_rect_update(const gfxfb::gfxfb_rect& rect) {
                      command_footprint(sizeof(show), sizeof(virtio_gpu_ctrl_hdr));
 
     if (!batch_has_room(bytes, COMMANDS_PER_RECT) && run_batch(wait_mode::sleep) != OK) {
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
     if (queue_command(transfer) != OK || queue_command(show) != OK) {
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
     return OK;
@@ -339,7 +345,7 @@ int32_t virtio_gpu_driver::attach() {
     if (setup_queue(VIRTIO_GPU_QUEUE_CONTROL, m_control_queue, &m_control_notify) != OK ||
         allocate_command_page() != OK) {
         set_failed();
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
     // Without MSI-X every batch is polled
@@ -353,26 +359,28 @@ int32_t virtio_gpu_driver::attach() {
 
     set_driver_ok();
 
+    m_scanout_count = read_scanout_count();
+
     uint32_t scanout = 0;
     uint32_t width = 0;
     uint32_t height = 0;
 
     if (query_display(&scanout, &width, &height) != OK ||
-        create_scanout_surface(scanout, width, height) != OK) {
+        light_scanout(scanout, width, height) != OK) {
         log::error("virtio-gpu: display setup failed");
         set_failed();
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
-    RUN_ELEVATED(rc = gfxfb::register_display(m_surface, this));
+    RUN_ELEVATED(rc = gfxfb::register_display(this));
     if (rc != gfxfb::OK) {
         log::error("virtio-gpu: display registration failed");
         set_failed();
-        return ERR_DEVICE;
+        return ERR_IO;
     }
 
     m_is_registered = true;
-    log::info("virtio-gpu: %ux%u on scanout %u, device is live", width, height, scanout);
+    log::info("virtio-gpu: %ux%u on scanout %u of %u, device is live", width, height, scanout, m_scanout_count);
 
     return OK;
 }
@@ -382,7 +390,7 @@ int32_t virtio_gpu_driver::detach() {
     m_is_broken = true;
     reset_device();
 
-    // gfxfb keeps a registered surface for the life of the kernel
+    // gfxfb keeps a registered display's base buffer for the life of the kernel
     if (!m_is_registered) {
         RUN_ELEVATED(dma::free_pages(m_backing));
     }
@@ -396,7 +404,27 @@ void virtio_gpu_driver::run() {
     // Batches complete in the flushing task, so this task has no work
 }
 
-int32_t virtio_gpu_driver::flush(const gfxfb::gfxfb_rect* rects, uint32_t count) {
+int32_t virtio_gpu_driver::read_output(uint32_t output, gfxfb::output_state& out) {
+    if (output >= m_scanout_count) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    // The device does not say which scanout the boot firmware lit
+    out.lit = output == m_scanout;
+    out.boot_output = false;
+
+    return gfxfb::OK;
+}
+
+gfxfb::buffer* virtio_gpu_driver::base_buffer(uint32_t output) {
+    return output == m_scanout ? &m_base_buffer : nullptr;
+}
+
+int32_t virtio_gpu_driver::flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) {
+    if (output != m_scanout) {
+        return gfxfb::ERR_DARK;
+    }
+
     RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
 
     int32_t rc = OK;
@@ -410,7 +438,7 @@ int32_t virtio_gpu_driver::flush(const gfxfb::gfxfb_rect* rects, uint32_t count)
 
     RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
 
-    return rc == OK ? gfxfb::OK : gfxfb::ERR;
+    return rc == OK ? gfxfb::OK : gfxfb::ERR_DEVICE;
 }
 
 __PRIVILEGED_CODE void virtio_gpu_driver::on_interrupt(uint32_t vector) {

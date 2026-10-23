@@ -21,56 +21,133 @@ constexpr uint32_t RECTS_PER_DISPLAY_FLUSH = 16;
 // /dev/gfxfb's name, given to the node and to devfs alike
 constexpr const char* NODE_NAME = "gfxfb";
 
+// The pixel layout of a driver display's buffers, which GFXFB_GET_INFO reports
+constexpr uint16_t DRIVER_BPP         = 32;
+constexpr uint8_t  DRIVER_RED_SHIFT   = 16;
+constexpr uint8_t  DRIVER_GREEN_SHIFT = 8;
+constexpr uint8_t  DRIVER_BLUE_SHIFT  = 0;
+
+// What `find_primary` returns for a display with no output lit
+constexpr uint32_t NO_OUTPUT = 0xFFFFFFFF;
+
 __PRIVILEGED_BSS static gfxfb_node* g_node;
 
-// Trims `rect` to `fb` and returns false when nothing of it remains
-static bool clip_rect_to_surface(gfxfb_rect& rect, const surface& fb) {
-    if (rect.width == 0 || rect.height == 0 || rect.x >= fb.width || rect.y >= fb.height) {
+static uint64_t buffer_bytes(const buffer& buf) {
+    return static_cast<uint64_t>(buf.pitch) * buf.height;
+}
+
+// Trims `rect` to `buf` and returns false when nothing of it remains
+static bool clip_rect_to_buffer(gfxfb_rect& rect, const buffer& buf) {
+    if (rect.width == 0 || rect.height == 0 || rect.x >= buf.width || rect.y >= buf.height) {
         return false;
     }
 
-    uint64_t max_width = fb.width - rect.x;
+    uint32_t max_width = buf.width - rect.x;
     if (rect.width > max_width) {
-        rect.width = static_cast<uint32_t>(max_width);
+        rect.width = max_width;
     }
 
-    uint64_t max_height = fb.height - rect.y;
+    uint32_t max_height = buf.height - rect.y;
     if (rect.height > max_height) {
-        rect.height = static_cast<uint32_t>(max_height);
+        rect.height = max_height;
     }
 
     return true;
 }
 
-int32_t boot_display::flush(const gfxfb_rect*, uint32_t) {
+// The lit boot output, else the lit output with the lowest index, else NO_OUTPUT
+static uint32_t find_primary(display& shown_display) {
+    uint32_t lowest_lit = NO_OUTPUT;
+
+    for (uint32_t i = 0; i < shown_display.output_count(); i++) {
+        output_state state = {};
+        if (shown_display.read_output(i, state) != OK || !state.lit) {
+            continue;
+        }
+
+        if (state.boot_output) {
+            return i;
+        }
+
+        if (lowest_lit == NO_OUTPUT) {
+            lowest_lit = i;
+        }
+    }
+
+    return lowest_lit;
+}
+
+// The file layer's code for each result a display's `flush()` returns, and ERR_IO for any other
+static int32_t to_fs_error(int32_t rc) {
+    switch (rc) {
+    case OK:         return fs::OK;
+    case ERR_DARK:   return fs::ERR_AGAIN;
+    case ERR_DEVICE: return fs::ERR_IO;
+    default:         return fs::ERR_IO;
+    }
+}
+
+int32_t boot_display::read_output(uint32_t output, output_state& out) {
+    if (output != 0) {
+        return ERR_INVALID_ARG;
+    }
+
+    out.lit = true;
+    out.boot_output = true;
+
     return OK;
 }
 
-gfxfb_node::gfxfb_node(const char* name, const surface& boot_fb)
-    : fs::node(fs::node_type::char_device, nullptr, name) {
-    show(boot_fb, &m_boot_display);
+buffer* boot_display::base_buffer(uint32_t output) {
+    return output == 0 ? &m_framebuffer.pixels : nullptr;
 }
 
-gfxfb_node::gfxfb_node(const char* name, const surface& fb, display* driver_display)
-    : fs::node(fs::node_type::char_device, nullptr, name) {
-    show(fb, driver_display);
+int32_t boot_display::flush(uint32_t, const gfxfb_rect*, uint32_t) {
+    return OK;
 }
 
-int32_t gfxfb_node::register_display(const surface& fb, display* driver_display) {
+gfxfb_node::gfxfb_node(const char* name, const boot_framebuffer& boot_fb)
+    : fs::node(fs::node_type::char_device, nullptr, name), m_boot_display(boot_fb) {
+    show(&m_boot_display, find_primary(m_boot_display));
+}
+
+gfxfb_node::gfxfb_node(const char* name, display* driver_display)
+    : fs::node(fs::node_type::char_device, nullptr, name) {
+    show(driver_display, find_primary(*driver_display));
+}
+
+int32_t gfxfb_node::register_display(display* driver_display) {
     if (has_driver_display()) {
         log::warn("gfxfb: a driver display is already registered");
         return ERR;
     }
 
-    show(fb, driver_display);
+    if (m_was_opened.load_relaxed()) {
+        log::warn("gfxfb: refused a driver display, since a program has opened the device");
+        return ERR;
+    }
+
+    uint32_t primary = find_primary(*driver_display);
+    if (primary == NO_OUTPUT) {
+        log::warn("gfxfb: refused a driver display with no output lit, keeping the boot framebuffer");
+        return ERR;
+    }
+
+    show(driver_display, primary);
 
     return OK;
 }
 
-void gfxfb_node::show(const surface& fb, display* shown_display) {
-    m_surface = fb;
+void gfxfb_node::show(display* shown_display, uint32_t primary) {
     m_display = shown_display;
-    m_size = surface_size();
+    m_primary = primary;
+    m_primary_buffer = primary == NO_OUTPUT ? nullptr : shown_display->base_buffer(primary);
+    m_size = m_primary_buffer ? buffer_bytes(*m_primary_buffer) : 0;
+}
+
+int32_t gfxfb_node::open(fs::file*, uint32_t) {
+    m_was_opened.store_relaxed(true);
+    return fs::OK;
 }
 
 int32_t gfxfb_node::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
@@ -90,16 +167,31 @@ int32_t gfxfb_node::get_info(uint64_t info_addr) {
         return fs::ERR_INVAL;
     }
 
+    if (!m_primary_buffer) {
+        return fs::ERR_AGAIN;
+    }
+
+    const buffer& base = *m_primary_buffer;
+
     gfxfb_info info{};
-    info.width       = m_surface.width;
-    info.height      = m_surface.height;
-    info.pitch       = m_surface.pitch;
-    info.bpp         = m_surface.bpp;
-    info.red_shift   = m_surface.red_shift;
-    info.green_shift = m_surface.green_shift;
-    info.blue_shift  = m_surface.blue_shift;
-    info.flags       = has_driver_display() ? GFXFB_INFO_NEEDS_FLUSH : 0;
-    info.size        = surface_size();
+    info.width = base.width;
+    info.height = base.height;
+    info.pitch = base.pitch;
+    info.flags = m_display->needs_flush() ? GFXFB_INFO_NEEDS_FLUSH : 0;
+    info.size = buffer_bytes(base);
+
+    if (has_driver_display()) {
+        info.bpp = DRIVER_BPP;
+        info.red_shift = DRIVER_RED_SHIFT;
+        info.green_shift = DRIVER_GREEN_SHIFT;
+        info.blue_shift = DRIVER_BLUE_SHIFT;
+    } else {
+        const boot_framebuffer& fb = m_boot_display.framebuffer();
+        info.bpp = fb.bpp;
+        info.red_shift = fb.red_shift;
+        info.green_shift = fb.green_shift;
+        info.blue_shift = fb.blue_shift;
+    }
 
     int32_t rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(info_addr), &info, sizeof(info));
@@ -128,6 +220,10 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
         return fs::ERR_INVAL;
     }
 
+    if (!m_primary_buffer) {
+        return fs::ERR_AGAIN;
+    }
+
     gfxfb_rect batch[RECTS_PER_DISPLAY_FLUSH];
     uint32_t handled = 0;
 
@@ -149,13 +245,16 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
         for (uint32_t i = 0; i < batch_count; i++) {
             gfxfb_rect rect = batch[i];
 
-            if (clip_rect_to_surface(rect, m_surface)) {
+            if (clip_rect_to_buffer(rect, *m_primary_buffer)) {
                 batch[kept++] = rect;
             }
         }
 
-        if (kept > 0 && m_display->flush(batch, kept) != OK) {
-            return fs::ERR_IO;
+        if (kept > 0) {
+            rc = m_display->flush(m_primary, batch, kept);
+            if (rc != OK) {
+                return to_fs_error(rc);
+            }
         }
 
         handled += batch_count;
@@ -167,6 +266,11 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
 int32_t gfxfb_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
                          size_t length, uint32_t prot, uint32_t map_flags,
                          uint64_t offset, uintptr_t* out_addr) {
+    if (!m_primary_buffer) {
+        log::error("gfxfb: mmap: no output is lit");
+        return mm::MM_CTX_ERR_INVALID_ARG;
+    }
+
     size_t aligned_len = pmm::page_align_up(length);
     if (aligned_len < length) {
         log::error("gfxfb: mmap: aligned_len < length");
@@ -178,7 +282,8 @@ int32_t gfxfb_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
         return mm::MM_CTX_ERR_INVALID_ARG;
     }
 
-    size_t aligned_fb_size = pmm::page_align_up(surface_size());
+    const buffer& base = *m_primary_buffer;
+    size_t aligned_fb_size = pmm::page_align_up(buffer_bytes(base));
     if (offset + aligned_len > aligned_fb_size) {
         log::error("gfxfb: mmap: offset+aligned_len=%lu > aligned_fb_size=%lu",
                    offset + aligned_len, aligned_fb_size);
@@ -186,13 +291,13 @@ int32_t gfxfb_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
         return mm::MM_CTX_ERR_INVALID_ARG;
     }
 
-    uint32_t cache = m_surface.cacheable ? paging::PAGE_NORMAL : paging::PAGE_WC;
+    uint32_t cache = base.cacheable ? paging::PAGE_NORMAL : paging::PAGE_WC;
     log::info("gfxfb: mmap: phys=0x%lx len=%lu prot=%u cache=%u",
-              m_surface.phys + offset, length, prot, cache);
+              base.phys + offset, length, prot, cache);
 
     int32_t rc = mm::mm_context_map_device(
         mm_ctx,
-        m_surface.phys + offset,
+        base.phys + offset,
         length,
         prot,
         cache,
@@ -242,19 +347,21 @@ __PRIVILEGED_CODE int32_t init() {
         return OK;
     }
 
-    const surface boot_surface = {
-        .phys        = fb.fb_phys,
-        .width       = fb.width,
-        .height      = fb.height,
-        .pitch       = fb.pitch,
+    const boot_framebuffer boot_fb = {
+        .pixels = {
+            .width     = static_cast<uint32_t>(fb.width),
+            .height    = static_cast<uint32_t>(fb.height),
+            .pitch     = static_cast<uint32_t>(fb.pitch),
+            .phys      = fb.fb_phys,
+            .cacheable = false,
+        },
         .bpp         = fb.bpp,
         .red_shift   = fb.red_mask_shift,
         .green_shift = fb.green_mask_shift,
         .blue_shift  = fb.blue_mask_shift,
-        .cacheable   = false,
     };
 
-    if (publish_node(heap::kalloc_new<gfxfb_node>(NODE_NAME, boot_surface)) != OK) {
+    if (publish_node(heap::kalloc_new<gfxfb_node>(NODE_NAME, boot_fb)) != OK) {
         return ERR;
     }
 
@@ -274,26 +381,32 @@ __PRIVILEGED_CODE bool has_driver_display() {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t register_display(const surface& fb, display* driver_display) {
+__PRIVILEGED_CODE bool has_boot_display() {
+    return g_node && !g_node->has_driver_display();
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t register_display(display* driver_display) {
     if (!driver_display) {
         return ERR;
     }
 
     if (g_node) {
-        if (g_node->register_display(fb, driver_display) != OK) {
+        if (g_node->register_display(driver_display) != OK) {
             return ERR;
         }
 
-        log::info("gfxfb: %lux%lu driver display replaced the boot framebuffer",
-                  fb.width, fb.height);
+        log::info("gfxfb: a driver display replaced the boot framebuffer");
         return OK;
     }
 
-    if (publish_node(heap::kalloc_new<gfxfb_node>(NODE_NAME, fb, driver_display)) != OK) {
+    if (publish_node(heap::kalloc_new<gfxfb_node>(NODE_NAME, driver_display)) != OK) {
         return ERR;
     }
 
-    log::info("gfxfb: %lux%lu driver display, registered /dev/gfxfb", fb.width, fb.height);
+    log::info("gfxfb: registered /dev/gfxfb with a driver display");
 
     return OK;
 }

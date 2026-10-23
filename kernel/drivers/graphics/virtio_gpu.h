@@ -27,6 +27,16 @@ constexpr uint32_t VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2;
 
 constexpr uint32_t VIRTIO_GPU_MAX_SCANOUTS = 16;
 
+// The device config region, not packed so that each field is read with one 32-bit access, as virtio asks
+struct virtio_gpu_config {
+    uint32_t events_read;
+    uint32_t events_clear;
+    uint32_t num_scanouts;
+    uint32_t num_capsets;
+};
+
+static_assert(sizeof(virtio_gpu_config) == 16, "virtio's layout of the GPU config region");
+
 struct virtio_gpu_ctrl_hdr {
     uint32_t type;
     uint32_t flags;
@@ -103,8 +113,10 @@ struct virtio_gpu_resource_flush {
 namespace drivers {
 
 /**
- * A virtio GPU used as a 2D display. Userland draws into the RAM backing its
- * one resource, and `flush()` copies the changed rects into it and shows them.
+ * A virtio GPU used as a 2D display whose outputs are the device's scanouts
+ * (its virtual monitors). It lights one scanout with one resource, and
+ * userland draws into the RAM backing it, the scanout's base buffer. `flush()`
+ * copies the changed rects into the resource and shows them.
  */
 class virtio_gpu_driver : public virtio_pci_driver, public gfxfb::display {
 public:
@@ -117,7 +129,11 @@ public:
     int32_t detach() override;
     void run() override;
 
-    int32_t flush(const gfxfb::gfxfb_rect* rects, uint32_t count) override;
+    uint32_t output_count() const override { return m_scanout_count; }
+    bool needs_flush() const override { return true; }
+    int32_t read_output(uint32_t output, gfxfb::output_state& out) override;
+    gfxfb::buffer* base_buffer(uint32_t output) override;
+    int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override;
 
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
@@ -141,8 +157,9 @@ private:
         return queue_command(&request, sizeof(request), sizeof(virtio::virtio_gpu_ctrl_hdr), nullptr);
     }
 
+    uint32_t read_scanout_count();
     int32_t query_display(uint32_t* out_scanout, uint32_t* out_width, uint32_t* out_height);
-    int32_t create_scanout_surface(uint32_t scanout, uint32_t width, uint32_t height);
+    int32_t light_scanout(uint32_t scanout, uint32_t width, uint32_t height);
     int32_t queue_rect_update(const gfxfb::gfxfb_rect& rect);
 
     virtio::virtqueue m_control_queue;
@@ -154,8 +171,11 @@ private:
     uint32_t m_batch_commands = 0;
     uint32_t m_response_offsets[MAX_BATCH_COMMANDS] = {};
 
-    dma::buffer m_backing = {};
-    gfxfb::surface m_surface = {};
+    // Fixed at attach, so the display calls read them with no lock
+    uint32_t      m_scanout_count = 0;
+    uint32_t      m_scanout = 0; // the lit scanout
+    dma::buffer   m_backing = {};
+    gfxfb::buffer m_base_buffer = {};
 
     // Held across a batch's completion wait
     sync::mutex m_batch_lock;
