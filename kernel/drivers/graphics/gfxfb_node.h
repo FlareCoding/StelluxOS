@@ -24,9 +24,9 @@ struct boot_framebuffer {
 
 /**
  * gfxfb's display of the boot framebuffer: one output, lit and the boot
- * output, whose base buffer is the boot framebuffer. The display hardware
- * scans that memory out directly, so `flush()` has nothing to copy and returns
- * `OK`.
+ * output, whose base buffer is the boot framebuffer. The output's mode is the
+ * framebuffer's size with an unknown refresh rate. The display hardware scans
+ * that memory out directly, so `flush()` has nothing to copy and returns `OK`.
  */
 class boot_display : public display {
 public:
@@ -54,8 +54,9 @@ private:
  * leaves the node with no primary output for its life: `GFXFB_GET_INFO` and
  * `GFXFB_FLUSH` refuse a malformed request with `fs::ERR_INVAL`, then fail
  * with `fs::ERR_AGAIN` before GET_INFO writes its reply or FLUSH reads a rect,
- * and mmap is refused. Like every `fs::node`, it lives on the privileged heap,
- * so its callers must run elevated. devfs keeps a published node for good.
+ * and mmap is refused, while `GFXFB_GET_OUTPUT` still reports every output.
+ * Like every `fs::node`, it lives on the privileged heap, so its callers must
+ * run elevated. devfs keeps a published node for good.
  */
 class gfxfb_node : public fs::node {
 public:
@@ -97,6 +98,7 @@ public:
 private:
     void show(display* shown_display, uint32_t primary);
     int32_t get_info(uint64_t info_addr);
+    int32_t get_output(uint64_t info_addr);
     int32_t flush(uint64_t args_addr);
 
     boot_display       m_boot_display;

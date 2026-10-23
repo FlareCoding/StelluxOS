@@ -37,8 +37,9 @@ constexpr int32_t ERR_DEVICE      = -4; // the display's hardware failed the cal
  * One output's state as its display reports it.
  */
 struct output_state {
-    bool lit;
-    bool boot_output; // the boot firmware lit this output
+    bool       lit;
+    bool       boot_output; // the boot firmware lit this output
+    gfxfb_mode current;     // the mode it is lit at, meaningful while lit
 };
 
 /**
@@ -58,10 +59,10 @@ struct buffer {
 /**
  * A display behind /dev/gfxfb: one a device driver owns, or gfxfb's own boot
  * display. gfxfb calls `output_count()`, `read_output()` and `base_buffer()`
- * only from `init()` and `register_display()`, on the boot thread, which
- * cannot sleep, so they must not wait. It calls `needs_flush()` and `flush()`
- * from the tasks that use /dev/gfxfb, several at once, and `flush()` may block
- * them.
+ * from `init()` and `register_display()`, on the boot thread, which cannot
+ * sleep, so they must not wait. It calls `output_count()`, `read_output()`,
+ * `needs_flush()` and `flush()` from the tasks that use /dev/gfxfb, several
+ * tasks at once, and `flush()` may block the task that calls it.
  */
 class display {
 public:
@@ -139,11 +140,10 @@ __PRIVILEGED_CODE bool has_boot_display();
 /**
  * @brief Put a driver display behind /dev/gfxfb. It must be called from a PCI
  * driver's `attach()`, before userland starts, with every output's state
- * ready, since gfxfb reads the states once, to pick the primary output. While
- * the boot display is behind /dev/gfxfb, a display with no output lit is
- * refused, so a card that lit nothing leaves userland the boot framebuffer. On
- * a boot that gave no framebuffer, a display is accepted with every output
- * dark.
+ * ready, since gfxfb reads those states to pick the primary output. While the
+ * boot display is behind /dev/gfxfb, a display with no output lit is refused,
+ * so a card that lit nothing leaves userland the boot framebuffer. On a boot
+ * that gave no framebuffer, a display is accepted with every output dark.
  * @param driver_display The display. It must never be freed.
  * @return OK, ERR for a null display, or ERR with a line logged when a driver
  * display is already registered, when a program has opened /dev/gfxfb, for a
