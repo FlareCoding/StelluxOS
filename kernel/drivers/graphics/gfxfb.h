@@ -26,18 +26,21 @@ struct surface {
 };
 
 /**
- * A display that a device driver owns. Userland draws into its surface
+ * A display behind /dev/gfxfb: one a device driver owns, or gfxfb's own boot
+ * display, which shows the boot framebuffer. Userland draws into its surface
  * through /dev/gfxfb, then `GFXFB_FLUSH` hands the changed regions to
- * `flush()` which copies them to the screen.
+ * `flush()`, which copies them to the screen unless the surface holds the
+ * pixels the screen shows.
  */
 class display {
 public:
     virtual ~display() = default;
 
     /**
-     * @brief Copy regions of the surface to the screen. Runs in the task
-     * that called `GFXFB_FLUSH` and may block it. Several tasks can call
-     * it at once.
+     * @brief Copy regions of the surface to the screen, or copy nothing
+     * where the surface holds the pixels the screen shows. Runs in the
+     * task that called `GFXFB_FLUSH` and may block it. Several tasks can
+     * call it at once.
      * @param rects Regions inside the surface, none of them empty.
      * @param count Number of regions, at least one.
      * @return OK on success, ERR on failure.

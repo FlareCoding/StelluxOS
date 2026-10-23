@@ -1,6 +1,7 @@
 #include "drivers/graphics/gfxfb.h"
 #include "boot/boot_services.h"
 #include "common/logging.h"
+#include "drivers/graphics/gfxfb_node.h"
 #include "fs/devfs/devfs.h"
 #include "fs/file.h"
 #include "fs/fs.h"
@@ -17,33 +18,8 @@ namespace gfxfb {
 // Rects copied in and handed to the display per call, small enough for the kernel stack
 constexpr uint32_t RECTS_PER_DISPLAY_FLUSH = 16;
 
-namespace {
-
-class gfxfb_node : public fs::node {
-public:
-    gfxfb_node(fs::instance* fs, const char* name, const surface& fb, display* driver_display)
-        : fs::node(fs::node_type::char_device, fs, name) {
-        set_surface(fb, driver_display);
-    }
-
-    void set_surface(const surface& fb, display* driver_display);
-    bool has_driver_display() const { return m_display != nullptr; }
-
-    int32_t ioctl(fs::file*, uint32_t cmd, uint64_t arg) override;
-    int32_t mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
-                 size_t length, uint32_t prot, uint32_t map_flags,
-                 uint64_t offset, uintptr_t* out_addr) override;
-
-private:
-    int32_t get_info(uint64_t info_addr);
-    int32_t flush(uint64_t args_addr);
-    uint64_t surface_size() const { return m_surface.pitch * m_surface.height; }
-
-    surface  m_surface = {};
-    display* m_display = nullptr;
-};
-
-} // namespace
+// /dev/gfxfb's name, given to the node and to devfs alike
+constexpr const char* NODE_NAME = "gfxfb";
 
 __PRIVILEGED_BSS static gfxfb_node* g_node;
 
@@ -66,9 +42,34 @@ static bool clip_rect_to_surface(gfxfb_rect& rect, const surface& fb) {
     return true;
 }
 
-void gfxfb_node::set_surface(const surface& fb, display* driver_display) {
+int32_t boot_display::flush(const gfxfb_rect*, uint32_t) {
+    return OK;
+}
+
+gfxfb_node::gfxfb_node(const char* name, const surface& boot_fb)
+    : fs::node(fs::node_type::char_device, nullptr, name) {
+    show(boot_fb, &m_boot_display);
+}
+
+gfxfb_node::gfxfb_node(const char* name, const surface& fb, display* driver_display)
+    : fs::node(fs::node_type::char_device, nullptr, name) {
+    show(fb, driver_display);
+}
+
+int32_t gfxfb_node::register_display(const surface& fb, display* driver_display) {
+    if (has_driver_display()) {
+        log::warn("gfxfb: a driver display is already registered");
+        return ERR;
+    }
+
+    show(fb, driver_display);
+
+    return OK;
+}
+
+void gfxfb_node::show(const surface& fb, display* shown_display) {
     m_surface = fb;
-    m_display = driver_display;
+    m_display = shown_display;
     m_size = surface_size();
 }
 
@@ -125,11 +126,6 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
 
     if (args.reserved != 0 || args.count > GFXFB_MAX_FLUSH_RECTS) {
         return fs::ERR_INVAL;
-    }
-
-    // The boot framebuffer is scanned out directly, so there is nothing to copy
-    if (!has_driver_display()) {
-        return fs::OK;
     }
 
     gfxfb_rect batch[RECTS_PER_DISPLAY_FLUSH];
@@ -213,22 +209,21 @@ int32_t gfxfb_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
 }
 
 /**
+ * @brief Publish `node` as /dev/gfxfb and keep it as gfxfb's node, freeing it when devfs refuses it.
+ * @param node A node named `NODE_NAME` from `heap::kalloc_new`, or nullptr when the allocation failed.
+ * @return OK, or ERR with an error logged when `node` is null or devfs refuses it.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static int32_t add_node(const surface& fb, display* driver_display) {
-    void* mem = heap::kzalloc(sizeof(gfxfb_node));
-    if (!mem) {
+__PRIVILEGED_CODE static int32_t publish_node(gfxfb_node* node) {
+    if (!node) {
         log::error("gfxfb: failed to allocate gfxfb_node");
         return ERR;
     }
 
-    auto* node = new (mem) gfxfb_node(nullptr, "gfxfb", fb, driver_display);
-
-    int32_t rc = devfs::add_char_device("gfxfb", node);
+    int32_t rc = devfs::add_char_device(NODE_NAME, node);
     if (rc != devfs::OK) {
         log::error("gfxfb: failed to register /dev/gfxfb");
-        node->~gfxfb_node();
-        heap::kfree(mem);
+        heap::kfree_delete(node);
         return ERR;
     }
 
@@ -259,7 +254,7 @@ __PRIVILEGED_CODE int32_t init() {
         .cacheable   = false,
     };
 
-    if (add_node(boot_surface, nullptr) != OK) {
+    if (publish_node(heap::kalloc_new<gfxfb_node>(NODE_NAME, boot_surface)) != OK) {
         return ERR;
     }
 
@@ -284,19 +279,17 @@ __PRIVILEGED_CODE int32_t register_display(const surface& fb, display* driver_di
         return ERR;
     }
 
-    if (has_driver_display()) {
-        log::warn("gfxfb: a driver display is already registered");
-        return ERR;
-    }
-
     if (g_node) {
-        g_node->set_surface(fb, driver_display);
+        if (g_node->register_display(fb, driver_display) != OK) {
+            return ERR;
+        }
+
         log::info("gfxfb: %lux%lu driver display replaced the boot framebuffer",
                   fb.width, fb.height);
         return OK;
     }
 
-    if (add_node(fb, driver_display) != OK) {
+    if (publish_node(heap::kalloc_new<gfxfb_node>(NODE_NAME, fb, driver_display)) != OK) {
         return ERR;
     }
 
