@@ -151,6 +151,16 @@ protected:
      */
     void wait_for_event();
 
+    /**
+     * Block like `wait_for_event()`, but return once the clock reaches
+     * `deadline_ns` too. Only one task at a time may wait in this call and
+     * `wait_for_event()` together, since both take the same pending event. The
+     * caller checks its work and the clock to tell an interrupt from the
+     * deadline.
+     * @param deadline_ns The time on `clock::now_ns()` at which to stop waiting.
+     */
+    void wait_for_event_until(uint64_t deadline_ns);
+
     pci::device* m_dev;
     sync::wait_queue m_irq_wq;
     sync::spinlock m_irq_lock;

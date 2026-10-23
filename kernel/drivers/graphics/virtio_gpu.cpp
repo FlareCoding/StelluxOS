@@ -13,7 +13,12 @@ using namespace virtio;
 constexpr int32_t ERR_IO         = -1;
 constexpr int32_t ERR_BATCH_FULL = -2;
 
-constexpr uint32_t RESOURCE_ID = 1;
+// The device left unanswered the command attaching a buffer's RAM to its resource, so the RAM must stay allocated
+// unless a reset stops the device
+constexpr int32_t ERR_ATTACH_UNANSWERED = -3;
+
+// The device had no memory left for a command. A client's requests for buffers reach that limit on a healthy device
+constexpr int32_t ERR_OUT_OF_DEVICE_MEMORY = -4;
 
 // A B8G8R8X8 pixel, which a driver display's buffers hold as a little-endian 32-bit value
 constexpr uint32_t BYTES_PER_PIXEL = 4;
@@ -25,11 +30,11 @@ constexpr uint32_t DEFAULT_HEIGHT = 768;
 // The display info carries no refresh rate, so the driver supplies 60 Hz, a common monitor's rate, for the lit scanout
 constexpr uint64_t REFRESH_MILLIHERTZ = 60000;
 
-// Bounds the backing allocation against a bad scanout size
+// Bounds a buffer's RAM against a bad scanout size or a client's request
 constexpr uint32_t MAX_DIMENSION = 4096;
 
-// A polled batch slower than this marks the device dead
-constexpr uint64_t POLL_TIMEOUT_NS = 1000000000ULL;
+// A batch still unanswered this long after its submission marks the device dead
+constexpr uint64_t BATCH_TIMEOUT_NS = 1000000000ULL;
 
 // A request chained to a response
 constexpr uint32_t DESCRIPTORS_PER_COMMAND = 2;
@@ -40,8 +45,8 @@ constexpr uint32_t COMMANDS_PER_RECT = 2;
 // The alignment of the widest request or response field
 constexpr uint32_t COMMAND_ALIGN = 8;
 
-// The command page stays below 4 GiB with the virtqueue rings. The large scanout backing
-// may use any address, leaving DMA32 to devices that reach only 32 bits.
+// The command page stays below 4 GiB with the virtqueue rings. A buffer's RAM, up to 64 MiB, may use any address,
+// leaving DMA32 to devices that reach only 32 bits.
 constexpr uint8_t COMMAND_PAGE_ADDRESS_BITS = 32;
 constexpr uint8_t BACKING_ADDRESS_BITS = 64;
 
@@ -62,6 +67,15 @@ static bool is_ok_response(uint32_t type) {
 static bool is_usable_mode(const virtio_gpu_display_one& mode) {
     return mode.enabled && mode.r.width > 0 && mode.r.height > 0 &&
            mode.r.width <= MAX_DIMENSION && mode.r.height <= MAX_DIMENSION;
+}
+
+// The caller must then keep the buffer's RAM allocated for the life of the kernel
+static void log_kept_ram(const virtio_gpu_buffer& buf) {
+    log::error(
+        "virtio-gpu: kept the %lu bytes of RAM backing resource %u for good, since the device may still read them",
+        buf.size,
+        buf.resource_id
+    );
 }
 
 int32_t virtio_gpu_driver::allocate_command_page() {
@@ -127,7 +141,7 @@ int32_t virtio_gpu_driver::queue_command(const void* request, uint32_t request_s
 
 int32_t virtio_gpu_driver::wait_for_batch(wait_mode mode) {
     uint32_t completed = 0;
-    uint64_t deadline = clock::now_ns() + POLL_TIMEOUT_NS;
+    uint64_t deadline = clock::now_ns() + BATCH_TIMEOUT_NS;
 
     while (true) {
         uint16_t head = 0;
@@ -142,11 +156,12 @@ int32_t virtio_gpu_driver::wait_for_batch(wait_mode mode) {
             return OK;
         }
 
-        // Wait queues have no timeout, so only polling can detect a dead device
-        if (mode == wait_mode::sleep && m_has_completion_interrupt) {
-            wait_for_event();
-        } else if (clock::now_ns() > deadline) {
+        if (clock::now_ns() >= deadline) {
             return ERR_IO;
+        }
+
+        if (mode == wait_mode::sleep && m_has_completion_interrupt) {
+            wait_for_event_until(deadline);
         } else {
             cpu::relax();
         }
@@ -176,7 +191,9 @@ int32_t virtio_gpu_driver::run_batch(wait_mode mode) {
     for (uint32_t i = 0; i < m_batch_commands && rc == OK; i++) {
         auto* response = reinterpret_cast<const virtio_gpu_ctrl_hdr*>(page + m_response_offsets[i]);
 
-        if (!is_ok_response(response->type)) {
+        if (response->type == VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY) {
+            rc = ERR_OUT_OF_DEVICE_MEMORY;
+        } else if (!is_ok_response(response->type)) {
             log::error("virtio-gpu: command failed with response 0x%x", response->type);
             rc = ERR_IO;
         }
@@ -245,10 +262,10 @@ int32_t virtio_gpu_driver::query_display(uint32_t* out_scanout, uint32_t* out_wi
     return OK;
 }
 
-int32_t virtio_gpu_driver::light_scanout(uint32_t scanout, uint32_t width, uint32_t height) {
+// Allocates the RAM for a width by height picture and fills the buffer's layout from it
+int32_t virtio_gpu_driver::allocate_backing(virtio_gpu_buffer& buf, uint32_t width, uint32_t height) {
     uint64_t pitch = static_cast<uint64_t>(width) * BYTES_PER_PIXEL;
-    uint64_t size = pitch * height;
-    size_t pages = pmm::page_align_up(size) / pmm::PAGE_SIZE;
+    size_t pages = pmm::page_align_up(pitch * height) / pmm::PAGE_SIZE;
 
     int32_t rc = 0;
     RUN_ELEVATED(
@@ -257,51 +274,112 @@ int32_t virtio_gpu_driver::light_scanout(uint32_t scanout, uint32_t width, uint3
             pages,
             dma::caching::cached_when_coherent,
             0,
-            m_backing
+            buf.backing
         )
     );
 
     if (rc != dma::OK) {
-        log::error("virtio-gpu: failed to allocate a %lu byte backing", size);
         return ERR_IO;
     }
 
+    buf.width     = width;
+    buf.height    = height;
+    buf.pitch     = static_cast<uint32_t>(pitch);
+    buf.size      = pages * pmm::PAGE_SIZE;
+    buf.phys      = buf.backing.phys;
+    buf.cacheable = buf.backing.cached;
+
+    return OK;
+}
+
+// Runs under `m_batch_lock` once the driver is attached. On any failure but `ERR_ATTACH_UNANSWERED` the device holds
+// none of the RAM
+int32_t virtio_gpu_driver::create_resource(virtio_gpu_buffer& buf, wait_mode mode) {
+    buf.resource_id = m_next_resource_id++;
+
     virtio_gpu_resource_create_2d create = {};
     create.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
-    create.resource_id = RESOURCE_ID;
+    create.resource_id = buf.resource_id;
     create.format      = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
-    create.width       = width;
-    create.height      = height;
+    create.width       = buf.width;
+    create.height      = buf.height;
 
     virtio_gpu_resource_attach_backing attach_backing = {};
     attach_backing.hdr.type     = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
-    attach_backing.resource_id  = RESOURCE_ID;
+    attach_backing.resource_id  = buf.resource_id;
     attach_backing.nr_entries   = 1;
-    attach_backing.entry.addr   = m_backing.phys;
-    attach_backing.entry.length = static_cast<uint32_t>(size);
+    attach_backing.entry.addr   = buf.phys;
+    attach_backing.entry.length = buf.pitch * buf.height;
+
+    virtio_gpu_resource_unref unref = {};
+    unref.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_UNREF;
+    unref.resource_id = buf.resource_id;
+
+    if (queue_command(create) != OK) {
+        return ERR_IO;
+    }
+
+    int32_t rc = run_batch(mode);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (queue_command(attach_backing) == OK && run_batch(mode) == OK) {
+        return OK;
+    }
+
+    if (m_is_broken) {
+        return ERR_ATTACH_UNANSWERED;
+    }
+
+    // The device refused the RAM, so the resource it created is dropped
+    if (queue_command(unref) == OK) {
+        run_batch(mode);
+    }
+
+    return ERR_IO;
+}
+
+// Runs under `m_batch_lock`. Takes the RAM back from the buffer's resource and drops the resource
+int32_t virtio_gpu_driver::destroy_resource(const virtio_gpu_buffer& buf) {
+    virtio_gpu_resource_detach_backing detach_backing = {};
+    detach_backing.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING;
+    detach_backing.resource_id = buf.resource_id;
+
+    virtio_gpu_resource_unref unref = {};
+    unref.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_UNREF;
+    unref.resource_id = buf.resource_id;
+
+    if (queue_command(detach_backing) != OK ||
+        queue_command(unref) != OK ||
+        run_batch(wait_mode::sleep) != OK) {
+        return ERR_IO;
+    }
+
+    return OK;
+}
+
+int32_t virtio_gpu_driver::light_scanout(uint32_t scanout, uint32_t width, uint32_t height) {
+    if (allocate_backing(m_base_buffer, width, height) != OK) {
+        log::error("virtio-gpu: failed to allocate the RAM for a %ux%u scanout", width, height);
+        return ERR_IO;
+    }
+
+    if (create_resource(m_base_buffer, wait_mode::poll) != OK) {
+        return ERR_IO;
+    }
 
     virtio_gpu_set_scanout set_scanout = {};
     set_scanout.hdr.type    = VIRTIO_GPU_CMD_SET_SCANOUT;
     set_scanout.r           = {0, 0, width, height};
     set_scanout.scanout_id  = scanout;
-    set_scanout.resource_id = RESOURCE_ID;
+    set_scanout.resource_id = m_base_buffer.resource_id;
 
-    if (queue_command(create) != OK ||
-        queue_command(attach_backing) != OK ||
-        queue_command(set_scanout) != OK ||
-        run_batch(wait_mode::poll) != OK) {
+    if (queue_command(set_scanout) != OK || run_batch(wait_mode::poll) != OK) {
         return ERR_IO;
     }
 
     m_scanout = scanout;
-    m_base_buffer = {
-        .width     = width,
-        .height    = height,
-        .pitch     = static_cast<uint32_t>(pitch),
-        .size      = pages * pmm::PAGE_SIZE,
-        .phys      = m_backing.phys,
-        .cacheable = m_backing.cached,
-    };
 
     return OK;
 }
@@ -314,12 +392,12 @@ int32_t virtio_gpu_driver::queue_rect_update(const gfxfb::gfxfb_rect& rect) {
     transfer.hdr.type    = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
     transfer.r           = {rect.x, rect.y, rect.width, rect.height};
     transfer.offset      = row_offset + static_cast<uint64_t>(rect.x) * BYTES_PER_PIXEL;
-    transfer.resource_id = RESOURCE_ID;
+    transfer.resource_id = m_base_buffer.resource_id;
 
     virtio_gpu_resource_flush show = {};
     show.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
     show.r           = transfer.r;
-    show.resource_id = RESOURCE_ID;
+    show.resource_id = m_base_buffer.resource_id;
 
     // Checked together so a rect is never copied without being shown
     uint32_t bytes = command_footprint(sizeof(transfer), sizeof(virtio_gpu_ctrl_hdr)) +
@@ -396,7 +474,7 @@ int32_t virtio_gpu_driver::detach() {
 
     // gfxfb keeps a registered display's base buffer for the life of the kernel
     if (!m_is_registered) {
-        RUN_ELEVATED(dma::free_pages(m_backing));
+        RUN_ELEVATED(dma::free_pages(m_base_buffer.backing));
     }
 
     RUN_ELEVATED(dma::free_pages(m_command_page));
@@ -404,8 +482,89 @@ int32_t virtio_gpu_driver::detach() {
     return pci_driver::detach();
 }
 
+// Sleeps until gfxfb has handed a buffer back, then takes the oldest off the list
+virtio_gpu_buffer* virtio_gpu_driver::wait_for_release() {
+    virtio_gpu_buffer* buf = nullptr;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_release_lock);
+        while (m_releases.empty()) {
+            irq = sync::wait(m_release_wq, m_release_lock, irq);
+        }
+
+        buf = m_releases.pop_front();
+        sync::spin_unlock_irqrestore(m_release_lock, irq);
+    });
+
+    return buf;
+}
+
+// Releases buffers gfxfb handed back, since the release waits for the device and the reaper must not
 void virtio_gpu_driver::run() {
-    // Batches complete in the flushing task, so this task has no work
+    while (true) {
+        virtio_gpu_buffer* buf = wait_for_release();
+
+        RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+        int32_t rc = destroy_resource(*buf);
+        RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+        // Unless the device confirmed both commands, the resource may still hold the RAM
+        if (rc != OK) {
+            log_kept_ram(*buf);
+            continue;
+        }
+
+        RUN_ELEVATED(dma::free_pages(buf->backing));
+        heap::ufree_delete(buf);
+    }
+}
+
+int32_t virtio_gpu_driver::create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) {
+    bool is_supported_format = format == gfxfb::GFXFB_FORMAT_XRGB8888;
+    bool fits = width <= MAX_DIMENSION && height <= MAX_DIMENSION;
+    if (!is_supported_format || !fits) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    auto* buf = heap::ualloc_new<virtio_gpu_buffer>();
+    if (!buf) {
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    if (allocate_backing(*buf, width, height) != OK) {
+        heap::ufree_delete(buf);
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    int32_t rc = create_resource(*buf, wait_mode::sleep);
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    if (rc == OK) {
+        *out = buf;
+        return gfxfb::OK;
+    }
+
+    if (rc == ERR_ATTACH_UNANSWERED) {
+        log_kept_ram(*buf);
+        return gfxfb::ERR_DEVICE;
+    }
+
+    RUN_ELEVATED(dma::free_pages(buf->backing));
+    heap::ufree_delete(buf);
+
+    return rc == ERR_OUT_OF_DEVICE_MEMORY ? gfxfb::ERR_NO_MEMORY : gfxfb::ERR_DEVICE;
+}
+
+void virtio_gpu_driver::release_buffer(gfxfb::buffer* buf) {
+    auto* released = static_cast<virtio_gpu_buffer*>(buf);
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_release_lock);
+        m_releases.push_back(released);
+        sync::wake_one(m_release_wq);
+        sync::spin_unlock_irqrestore(m_release_lock, irq);
+    });
 }
 
 int32_t virtio_gpu_driver::read_output(uint32_t output, gfxfb::output_state& out) {
