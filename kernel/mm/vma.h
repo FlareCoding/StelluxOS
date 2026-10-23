@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "common/rb_tree.h"
+#include "mm/device_backing.h"
 #include "mm/paging.h"
 #include "mm/pmm_types.h"
 #include "mm/shmem.h"
@@ -61,8 +62,10 @@ struct vma {
     uint32_t  prot;
     uint32_t  flags;
     rbt::node addr_link;
-    shmem_mapping shmem_backing;
-    uint64_t      backing_offset;
+
+    shmem_mapping                  shmem_backing;
+    rc::strong_ref<device_backing> device_backing_ref;
+    uint64_t                       backing_offset;
 };
 
 struct vma_addr_cmp {
@@ -192,6 +195,7 @@ __PRIVILEGED_CODE void rollback_new_pages(
 
 /**
  * @brief Merge adjacent VMAs with identical prot/flags/backing.
+ * Where a backing is set, their offsets must also continue.
  * Idempotent. Caller must hold mm_ctx->lock.
  * @note Privilege: **required**
  */

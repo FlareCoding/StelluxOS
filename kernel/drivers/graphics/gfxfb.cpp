@@ -339,10 +339,14 @@ int32_t gfxfb_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
     log::info("gfxfb: mmap: phys=0x%lx len=%lu prot=%u cache=%u",
               base.phys + offset, length, prot, cache);
 
+    // The base buffers gfxfb maps, the boot framebuffer and a registered display's, live as long as the kernel, so
+    // mapping one passes no owner
     int32_t rc = mm::mm_context_map_device(
         mm_ctx,
         base.phys + offset,
         length,
+        nullptr,
+        0,
         prot,
         cache,
         map_flags,

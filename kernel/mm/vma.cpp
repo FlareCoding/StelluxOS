@@ -30,6 +30,16 @@ inline bool vma_can_merge(const vma& left, const vma& right) {
         }
     }
 
+    // A merge keeps only the left part's reference and offset, so two device mappings merge only when neither has an
+    // owner, or both have the same owner and their offsets continue
+    if (left.flags & VMA_FLAG_DEVICE) {
+        bool same_owner = left.device_backing_ref == right.device_backing_ref;
+        bool offsets_continue = left.backing_offset + (left.end - left.start) == right.backing_offset;
+        if (!same_owner || (left.device_backing_ref && !offsets_continue)) {
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -275,6 +285,7 @@ __PRIVILEGED_CODE vma* split_vma_locked(mm_context* mm_ctx, vma* node, uintptr_t
     }
 
     right->shmem_backing = node->shmem_backing;
+    right->device_backing_ref = node->device_backing_ref;
     right->backing_offset = node->backing_offset + (split_addr - node->start);
 
     uintptr_t old_end = node->end;

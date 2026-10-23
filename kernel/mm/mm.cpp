@@ -947,6 +947,8 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
     mm_context* mm_ctx,
     pmm::phys_addr_t phys_base,
     size_t length,
+    device_backing* backing,
+    uint64_t backing_offset,
     uint32_t prot,
     uint32_t cache_type,
     uint32_t map_flags,
@@ -1021,6 +1023,8 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
     size_t pages = aligned_len / pmm::PAGE_SIZE;
 
     if (paging::map_pages(start, phys_base, page_flags, pages, mm_ctx->pt_root) != paging::OK) {
+        // map_pages can fail partway, leaving some of the pages mapped
+        unmap_pages_only(mm_ctx, start, end);
         sync::mutex_unlock(mm_ctx->lock);
         return MM_CTX_ERR_MAP_FAILED;
     }
@@ -1030,6 +1034,12 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
         unmap_pages_only(mm_ctx, start, end);
         sync::mutex_unlock(mm_ctx->lock);
         return MM_CTX_ERR_NO_MEM;
+    }
+
+    if (backing) {
+        backing->add_ref();
+        node->device_backing_ref = rc::strong_ref<device_backing>::adopt(backing);
+        node->backing_offset = backing_offset;
     }
 
     if (!vma_insert_locked(mm_ctx, node)) {
