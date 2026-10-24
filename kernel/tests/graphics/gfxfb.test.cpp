@@ -1452,6 +1452,329 @@ TEST(gfxfb, closing_a_file_hands_its_buffers_back) {
     EXPECT_TRUE(spin_wait_ge(g_closing_display.released_count, 2));
 }
 
+static recording_display g_control_display;
+
+// Until the controlling file closes, even after the display or gfxfb refuses a creation of that file, another file's
+// creations fail with ERR_BUSY without reaching the display, and a third file's flush and close leave control unchanged
+TEST(gfxfb, the_first_file_to_create_a_buffer_controls_the_buffers_until_it_closes) {
+    light_output(g_control_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_control_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* controller = fs::open(test.path, fs::O_RDWR);
+    fs::file* other = fs::open(test.path, fs::O_RDWR);
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(controller);
+    ASSERT_NOT_NULL(other);
+    ASSERT_NOT_NULL(next);
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    ASSERT_NE(request_small_buffer(controller, page).handle, static_cast<uint32_t>(0));
+    EXPECT_NE(request_small_buffer(controller, page).handle, static_cast<uint32_t>(0));
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    ASSERT_EQ(flush_one_rect(test.path, page), fs::OK);
+    EXPECT_EQ(g_control_display.recorded_count, static_cast<uint32_t>(1));
+
+    EXPECT_EQ(request_buffer(controller, page, 0, SMALL_BUFFER_HEIGHT, format), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    // Refusing `other` leaves control with `controller`, so the next creation of `other` fails too
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    // Two refusals by the display in a row leave control with `controller`, so `other`'s creation after each fails too
+    EXPECT_EQ(request_buffer(controller, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    EXPECT_EQ(request_buffer(controller, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    // Destroying every buffer it holds leaves control with `controller`, so the next creation of `other` fails too
+    ASSERT_EQ(destroy_buffer(controller, page, 1), fs::OK);
+    ASSERT_EQ(destroy_buffer(controller, page, 2), fs::OK);
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    EXPECT_EQ(g_control_display.create_calls, static_cast<uint32_t>(4));
+
+    // Once `controller` closes, a creation the display refuses takes no control, so another file's then succeeds
+    fs::close(controller);
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
+
+    fs::close(next);
+    fs::close(other);
+}
+
+static recording_display g_failed_creation_display;
+
+// A creation that fails takes no control, whether gfxfb refuses its malformed request, the display fails it or gfxfb
+// cannot write its reply, so another file's creation then succeeds and takes control
+TEST(gfxfb, a_creation_that_fails_takes_no_control) {
+    light_output(g_failed_creation_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_failed_creation_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* failing = fs::open(test.path, fs::O_RDWR);
+    fs::file* other = fs::open(test.path, fs::O_RDWR);
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(failing);
+    ASSERT_NOT_NULL(other);
+    ASSERT_NOT_NULL(next);
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(failing, page, 0, SMALL_BUFFER_HEIGHT, format), fs::ERR_INVAL);
+
+    // A read-only page lets gfxfb read the request but not write the reply, after the display created the buffer
+    write_small_request(page, 0);
+    ASSERT_EQ(mm::mm_context_mprotect(page.ctx, page.addr, pmm::PAGE_SIZE, mm::MM_PROT_READ), mm::MM_CTX_OK);
+    EXPECT_EQ(file_ioctl(failing, page, gfxfb::GFXFB_CREATE_BUFFER, page.addr), fs::ERR_INVAL);
+    EXPECT_EQ(g_failed_creation_display.created_count, static_cast<uint32_t>(1));
+
+    uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
+    ASSERT_EQ(mm::mm_context_mprotect(page.ctx, page.addr, pmm::PAGE_SIZE, prot), mm::MM_CTX_OK);
+
+    g_failed_creation_display.create_result = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(request_buffer(failing, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_IO);
+    g_failed_creation_display.create_result = gfxfb::ERR_UNSUPPORTED;
+    EXPECT_EQ(request_buffer(failing, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOSYS);
+    g_failed_creation_display.create_result = gfxfb::OK;
+
+    EXPECT_NE(request_small_buffer(other, page).handle, static_cast<uint32_t>(0));
+    EXPECT_EQ(request_buffer(failing, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    // Even while another file controls, gfxfb refuses a zero width with ERR_INVAL before it checks control, and control
+    // stays with `other`, so the next creation of `failing` fails with ERR_BUSY
+    EXPECT_EQ(request_buffer(failing, page, 0, SMALL_BUFFER_HEIGHT, format), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(failing, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    // The display refusing a creation of `other` leaves control with `other`, so the next creation of `failing` fails
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(failing, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    // Once `other` closes, a creation the display refuses takes no control, so another file's then succeeds
+    fs::close(other);
+    EXPECT_EQ(request_buffer(failing, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
+
+    fs::close(next);
+    fs::close(failing);
+}
+
+static recording_display g_reserving_display;
+
+// The files the hook's calls are made on, the page holding their requests, and what those calls returned
+static fs::file* g_reserving_file;
+static fs::file* g_rival_file;
+static fs::file* g_closing_file;
+static user_page* g_reserving_page;
+static int32_t g_reserving_refused_format_result;
+static int32_t g_reserving_reserved_field_result;
+static int32_t g_rival_reserved_field_result;
+static int32_t g_rival_results[2];
+static int32_t g_rival_result_after_close;
+
+// Runs inside the reserving file's first creation: asks that file for a refused format, asks both files with a nonzero
+// reserved field, asks the rival twice, closes a third file, asks the rival again, then fails the first creation
+static void create_on_both_files_while_creating() {
+    *g_reserving_page->at<gfxfb::gfxfb_buffer_args>(0) = {
+        .width  = SMALL_BUFFER_WIDTH,
+        .height = SMALL_BUFFER_HEIGHT,
+        .format = WIDE_FORMAT,
+    };
+
+    g_reserving_refused_format_result = fs::ioctl(g_reserving_file, gfxfb::GFXFB_CREATE_BUFFER, g_reserving_page->addr);
+
+    write_small_request(*g_reserving_page, 1);
+    g_reserving_reserved_field_result = fs::ioctl(g_reserving_file, gfxfb::GFXFB_CREATE_BUFFER, g_reserving_page->addr);
+    g_rival_reserved_field_result = fs::ioctl(g_rival_file, gfxfb::GFXFB_CREATE_BUFFER, g_reserving_page->addr);
+
+    write_small_request(*g_reserving_page, 0);
+    for (int32_t& result : g_rival_results) {
+        result = fs::ioctl(g_rival_file, gfxfb::GFXFB_CREATE_BUFFER, g_reserving_page->addr);
+    }
+
+    fs::close(g_closing_file);
+    g_rival_result_after_close = fs::ioctl(g_rival_file, gfxfb::GFXFB_CREATE_BUFFER, g_reserving_page->addr);
+
+    g_reserving_display.create_result = gfxfb::ERR_NO_MEMORY;
+}
+
+// A file's running creations reserve control, even after one is refused or another file closes, so a rival's creations
+// past gfxfb's checks fail with ERR_BUSY without reaching the display until the reserving file's last creation fails
+TEST(gfxfb, creations_in_the_display_reserve_control_for_their_file) {
+    light_output(g_reserving_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_reserving_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* reserving = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    fs::file* closing = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(reserving);
+    ASSERT_NOT_NULL(rival);
+    ASSERT_NOT_NULL(closing);
+
+    g_reserving_file = reserving;
+    g_rival_file = rival;
+    g_closing_file = closing;
+    g_reserving_page = &page;
+    g_reserving_refused_format_result = fs::OK;
+    g_reserving_reserved_field_result = fs::OK;
+    g_rival_reserved_field_result = fs::OK;
+    g_rival_results[0] = fs::OK;
+    g_rival_results[1] = fs::OK;
+    g_rival_result_after_close = fs::OK;
+    g_reserving_display.while_creating = create_on_both_files_while_creating;
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(reserving, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOMEM);
+    EXPECT_EQ(g_reserving_refused_format_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_rival_results[0], fs::ERR_BUSY);
+    EXPECT_EQ(g_rival_results[1], fs::ERR_BUSY);
+    EXPECT_EQ(g_rival_result_after_close, fs::ERR_BUSY);
+    EXPECT_EQ(g_reserving_display.create_calls, static_cast<uint32_t>(2));
+
+    // While a file reserves control, a nonzero reserved field fails with ERR_INVAL, never ERR_BUSY, from either file
+    EXPECT_EQ(g_reserving_reserved_field_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_rival_reserved_field_result, fs::ERR_INVAL);
+
+    // Once the reservation ends, the rival's creation succeeds under handle 1, as its refused creations took no handle
+    g_reserving_display.create_result = gfxfb::OK;
+    EXPECT_EQ(request_small_buffer(rival, page).handle, static_cast<uint32_t>(1));
+    EXPECT_EQ(request_buffer(reserving, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    fs::close(rival);
+    fs::close(reserving);
+}
+
+static recording_display g_overlapping_display;
+
+// The files the hook's calls are made on, the page holding their requests, and what those calls returned
+static fs::file* g_overlapping_file;
+static fs::file* g_overlapping_rival;
+static fs::file* g_overlapping_closing;
+static user_page* g_overlapping_page;
+static int32_t g_overlapping_results[2];
+static int32_t g_overlapping_refused_format_result;
+static int32_t g_overlapping_reserved_field_result;
+static int32_t g_overlapping_rival_reserved_field_result;
+static int32_t g_overlapping_rival_result;
+
+// Runs inside the file's first creation: asks that file for two small buffers and one in a format the display refuses,
+// closes a third file, asks both files with a nonzero reserved field and the rival without, then fails that creation
+static void create_then_refuse_while_creating() {
+    uintptr_t args_addr = g_overlapping_page->addr;
+
+    for (int32_t& result : g_overlapping_results) {
+        write_small_request(*g_overlapping_page, 0);
+        result = fs::ioctl(g_overlapping_file, gfxfb::GFXFB_CREATE_BUFFER, args_addr);
+    }
+
+    *g_overlapping_page->at<gfxfb::gfxfb_buffer_args>(0) = {
+        .width  = SMALL_BUFFER_WIDTH,
+        .height = SMALL_BUFFER_HEIGHT,
+        .format = WIDE_FORMAT,
+    };
+
+    g_overlapping_refused_format_result = fs::ioctl(g_overlapping_file, gfxfb::GFXFB_CREATE_BUFFER, args_addr);
+
+    fs::close(g_overlapping_closing);
+
+    write_small_request(*g_overlapping_page, 1);
+    g_overlapping_reserved_field_result = fs::ioctl(g_overlapping_file, gfxfb::GFXFB_CREATE_BUFFER, args_addr);
+    g_overlapping_rival_reserved_field_result = fs::ioctl(g_overlapping_rival, gfxfb::GFXFB_CREATE_BUFFER, args_addr);
+
+    write_small_request(*g_overlapping_page, 0);
+    g_overlapping_rival_result = fs::ioctl(g_overlapping_rival, gfxfb::GFXFB_CREATE_BUFFER, args_addr);
+
+    g_overlapping_display.create_result = gfxfb::ERR_NO_MEMORY;
+}
+
+// A creation succeeding while another creation of its file runs takes control, kept through each call made meanwhile
+// and the other's failure, so until the file closes, a rival's creations past gfxfb's checks fail with ERR_BUSY
+TEST(gfxfb, a_creation_that_succeeds_while_another_runs_takes_control) {
+    light_output(g_overlapping_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_overlapping_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* controller = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    fs::file* closing = fs::open(test.path, fs::O_RDWR);
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(controller);
+    ASSERT_NOT_NULL(rival);
+    ASSERT_NOT_NULL(closing);
+    ASSERT_NOT_NULL(next);
+
+    g_overlapping_file = controller;
+    g_overlapping_rival = rival;
+    g_overlapping_closing = closing;
+    g_overlapping_page = &page;
+    g_overlapping_results[0] = fs::ERR_INVAL;
+    g_overlapping_results[1] = fs::ERR_INVAL;
+    g_overlapping_refused_format_result = fs::OK;
+    g_overlapping_reserved_field_result = fs::OK;
+    g_overlapping_rival_reserved_field_result = fs::OK;
+    g_overlapping_rival_result = fs::OK;
+    g_overlapping_display.while_creating = create_then_refuse_while_creating;
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(controller, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOMEM);
+    EXPECT_EQ(g_overlapping_results[0], fs::OK);
+    EXPECT_EQ(g_overlapping_results[1], fs::OK);
+    EXPECT_EQ(g_overlapping_refused_format_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_overlapping_reserved_field_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_overlapping_rival_reserved_field_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_overlapping_rival_result, fs::ERR_BUSY);
+
+    g_overlapping_display.create_result = gfxfb::OK;
+    EXPECT_EQ(request_buffer(rival, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    EXPECT_NE(request_small_buffer(controller, page).handle, static_cast<uint32_t>(0));
+    EXPECT_EQ(g_overlapping_display.create_calls, static_cast<uint32_t>(5));
+
+    // Once `controller` closes, a creation the display refuses takes no control, so another file's then succeeds
+    fs::close(controller);
+    EXPECT_EQ(request_buffer(rival, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
+    fs::close(next);
+
+    // Once `next` closes, the rival's creation succeeds under handle 1, as none of its refused creations kept a handle
+    EXPECT_EQ(request_small_buffer(rival, page).handle, static_cast<uint32_t>(1));
+
+    fs::close(rival);
+}
+
+static recording_display g_after_close_display;
+
+// After the controlling file closes, a creation the display refuses takes no control, so another file's then succeeds
+TEST(gfxfb, a_creation_refused_after_the_controlling_file_closes_takes_no_control) {
+    light_output(g_after_close_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_after_close_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* controller = fs::open(test.path, fs::O_RDWR);
+    fs::file* refused = fs::open(test.path, fs::O_RDWR);
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(controller);
+    ASSERT_NOT_NULL(refused);
+    ASSERT_NOT_NULL(next);
+
+    ASSERT_NE(request_small_buffer(controller, page).handle, static_cast<uint32_t>(0));
+    fs::close(controller);
+
+    EXPECT_EQ(request_buffer(refused, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
+
+    fs::close(next);
+    fs::close(refused);
+}
+
 // Registration is permanent, so /dev/gfxfb shows `g_registered_display` for the rest of the run
 static recording_display g_registered_display;
 static recording_display g_refused_display;

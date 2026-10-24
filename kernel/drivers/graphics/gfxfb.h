@@ -27,10 +27,11 @@
  * output either.
  *
  * Userland also creates buffers, which the display allocates in
- * `create_buffer()`. gfxfb keeps a reference-counted record of each buffer
- * userland can map, the primary output's base buffer included, and hands the
- * buffer back to the display's `release_buffer()` once no handle, output or
- * mapping refers to it.
+ * `create_buffer()`. One open file at a time controls them, from its first
+ * creation that succeeds until it closes. gfxfb keeps a reference-counted
+ * record of each buffer userland can map, the primary output's base buffer
+ * included, and hands the buffer back to the display's `release_buffer()` once
+ * no handle, output or mapping refers to it.
  */
 
 namespace gfxfb {

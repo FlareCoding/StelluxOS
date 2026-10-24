@@ -28,10 +28,18 @@
  *
  * A program can also create buffers, each holding one picture of 32-bit
  * pixels. `GFXFB_CREATE_BUFFER` returns a new buffer's handle, its layout and
- * the mmap offset that maps it. It fails with ENOSYS on a device that cannot
- * create buffers, with ENOMEM when no memory is left or the file already holds
- * `GFXFB_CLIENT_BUFFERS_MAX` handles, and with EIO when the device fails. A
- * handle names its buffer only within the open file that created it.
+ * the mmap offset that maps it. An open file controls the buffers from its
+ * first `GFXFB_CREATE_BUFFER` that succeeds until it closes. A creation fails
+ * with EINVAL when the kernel cannot read its argument, when its width or
+ * height is zero or when its reserved field is set. Any other creation fails
+ * with EBUSY while another open file controls the buffers or reserves control,
+ * and otherwise reserves control for its file until the call returns, so two
+ * files never control the buffers at once. A creation that reserves control
+ * fails with ENOTTY on a device that cannot create buffers, with ENOMEM when
+ * no memory is left or the file already holds `GFXFB_CLIENT_BUFFERS_MAX`
+ * handles, with EIO when the device fails, and with EINVAL when the kernel
+ * cannot write its argument after the device created the buffer. A handle
+ * names its buffer only within the open file that created it.
  * `GFXFB_DESTROY_BUFFER` drops a handle, failing with EINVAL for one the file
  * does not hold, and closing the file drops all of them. A buffer stays
  * allocated until its handle and its last mapping are gone.
