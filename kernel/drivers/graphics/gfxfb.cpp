@@ -66,11 +66,17 @@ static bool clip_rect_to_buffer(gfxfb_rect& rect, const buffer& buf) {
     return true;
 }
 
+// `shown_display`'s output count, at most GFXFB_OUTPUTS_MAX, so gfxfb never indexes past its arrays
+static uint32_t clamped_output_count(display& shown_display) {
+    uint32_t count = shown_display.output_count();
+    return count < GFXFB_OUTPUTS_MAX ? count : GFXFB_OUTPUTS_MAX;
+}
+
 // The lit boot output, else the lit output with the lowest index, else NO_OUTPUT
 static uint32_t find_primary(display& shown_display) {
     uint32_t lowest_lit = NO_OUTPUT;
 
-    for (uint32_t i = 0; i < shown_display.output_count(); i++) {
+    for (uint32_t i = 0; i < clamped_output_count(shown_display); i++) {
         output_state state = {};
         if (shown_display.read_output(i, state) != OK || !state.lit) {
             continue;
@@ -142,14 +148,23 @@ int32_t boot_display::flush(uint32_t, const gfxfb_rect*, uint32_t) {
 
 gfxfb_node::gfxfb_node(const char* name, const boot_framebuffer& boot_fb)
     : fs::node(fs::node_type::char_device, nullptr, name), m_boot_display(boot_fb) {
-    m_clients_lock.init();
+    init_locks();
     show_from_start(&m_boot_display);
 }
 
 gfxfb_node::gfxfb_node(const char* name, display* driver_display)
     : fs::node(fs::node_type::char_device, nullptr, name) {
-    m_clients_lock.init();
+    init_locks();
     show_from_start(driver_display);
+}
+
+void gfxfb_node::init_locks() {
+    m_clients_lock.init();
+    for (sync::mutex& lock : m_present_locks) {
+        lock.init();
+    }
+
+    m_outputs_lock = sync::SPINLOCK_INIT;
 }
 
 int32_t gfxfb_node::register_display(display* driver_display) {
@@ -170,42 +185,61 @@ int32_t gfxfb_node::register_display(display* driver_display) {
     }
 
     if (show(driver_display, primary) != OK) {
-        log::error("gfxfb: refused a driver display, since no memory is left to record its base buffer");
+        log::error("gfxfb: refused a driver display, since no memory is left to record its base buffers");
         return ERR;
     }
 
     return OK;
 }
 
-// Shows `shown_display` with `primary` as its primary output, or with none for NO_OUTPUT. Returns ERR_NO_MEMORY,
-// showing nothing new, when the primary output's base buffer cannot be recorded
+// Shows `shown_display` with `primary` as its primary output and each lit output showing its recorded base buffer, or
+// with neither for NO_OUTPUT. Returns ERR_NO_MEMORY, showing nothing new, when a base buffer cannot be recorded
 int32_t gfxfb_node::show(display* shown_display, uint32_t primary) {
-    buffer* base = primary == NO_OUTPUT ? nullptr : shown_display->base_buffer(primary);
+    uint32_t count = primary == NO_OUTPUT ? 0 : clamped_output_count(*shown_display);
+    buffer* bases[GFXFB_OUTPUTS_MAX] = {};
+    buffer_record* fresh[GFXFB_OUTPUTS_MAX] = {};
 
-    rc::strong_ref<buffer_record> record;
-    if (base) {
-        auto* fresh = heap::kalloc_new<buffer_record>(shown_display);
-        if (!fresh) {
-            return ERR_NO_MEMORY;
+    // Every record is allocated before any takes its buffer, since dropping a record that took one hands the buffer
+    // back to a display that still shows it
+    for (uint32_t i = 0; i < count; i++) {
+        bases[i] = shown_display->base_buffer(i);
+        if (bases[i]) {
+            fresh[i] = heap::kalloc_new<buffer_record>(shown_display);
         }
 
-        fresh->take(base);
-        record = rc::strong_ref<buffer_record>::adopt(fresh);
+        if (bases[i] && !fresh[i]) {
+            for (buffer_record* unused : fresh) {
+                heap::kfree_delete(unused);
+            }
+
+            return ERR_NO_MEMORY;
+        }
+    }
+
+    // Unlocked, since gfxfb shows a display only before any program opens the node, so no present can be in flight
+    for (uint32_t i = 0; i < GFXFB_OUTPUTS_MAX; i++) {
+        rc::strong_ref<buffer_record> base;
+        if (fresh[i]) {
+            fresh[i]->take(bases[i]);
+            base = rc::strong_ref<buffer_record>::adopt(fresh[i]);
+        }
+
+        m_outputs[i].shown = base;
+        m_outputs[i].base = base;
     }
 
     m_display = shown_display;
     m_primary = primary;
-    m_primary_record.swap(record);
+    m_primary_record = primary == NO_OUTPUT ? rc::strong_ref<buffer_record>() : m_outputs[primary].base;
     m_size = m_primary_record ? buffer_bytes(m_primary_record->layout()) : 0;
 
     return OK;
 }
 
-// Shows `shown_display` from construction, without a primary output when the primary output's base buffer cannot be
-// recorded
+// Shows `shown_display` from construction, without a primary output when a lit output's base buffer cannot be recorded
 void gfxfb_node::show_from_start(display* shown_display) {
     if (show(shown_display, find_primary(*shown_display)) != OK) {
-        log::error("gfxfb: no memory to record the primary output's base buffer, so the device has no primary output");
+        log::error("gfxfb: no memory to record the lit outputs' base buffers, so the device has no primary output");
         show(shown_display, NO_OUTPUT);
     }
 }
@@ -259,6 +293,10 @@ int32_t gfxfb_node::ioctl(fs::file* f, uint32_t cmd, uint64_t arg) {
 
     if (cmd == GFXFB_DESTROY_BUFFER) {
         return destroy_buffer(client_of(f), arg);
+    }
+
+    if (cmd == GFXFB_PRESENT) {
+        return present(client_of(f), arg);
     }
 
     return fs::ERR_NOSYS;
@@ -477,6 +515,114 @@ int32_t gfxfb_node::destroy_buffer(client& owner, uint64_t handle) {
     sync::mutex_unlock(m_clients_lock);
 
     return dropped ? fs::OK : fs::ERR_INVAL;
+}
+
+int32_t gfxfb_node::present(client& owner, uint64_t args_addr) {
+    gfxfb_present_args args{};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &args, reinterpret_cast<const void*>(args_addr), sizeof(args));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    if (args.output >= clamped_output_count(*m_display)) {
+        return fs::ERR_INVAL;
+    }
+
+    rc::strong_ref<buffer_record> record = find_buffer_to_present(owner, args);
+    if (!record) {
+        return args.handle == 0 ? fs::ERR_AGAIN : fs::ERR_INVAL;
+    }
+
+    if (!begin_controlled_call(owner)) {
+        return fs::ERR_BUSY;
+    }
+
+    rc = queue_present(args.output, record);
+    end_controlled_call(rc == fs::OK);
+
+    return rc;
+}
+
+// The buffer `args` presents: the handle's buffer of `owner`, or the output's base buffer for handle 0. Null when the
+// handle names no buffer of `owner`, or for handle 0 on an output with no base buffer recorded
+rc::strong_ref<buffer_record> gfxfb_node::find_buffer_to_present(client& owner, const gfxfb_present_args& args) {
+    rc::strong_ref<buffer_record> found;
+
+    if (args.handle == 0) {
+        sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+        found = m_outputs[args.output].base;
+        sync::spin_unlock_irqrestore(m_outputs_lock, state);
+
+        return found;
+    }
+
+    sync::mutex_lock(m_clients_lock);
+    if (args.handle <= GFXFB_CLIENT_BUFFERS_MAX) {
+        found = owner.buffers[args.handle - 1];
+    }
+
+    sync::mutex_unlock(m_clients_lock);
+
+    return found;
+}
+
+// Gives `record`'s buffer to the display for `output`'s next vertical blank, or returns `fs::ERR_BUSY` while the output
+// holds a present. The output holds the buffer before the call, since the display may end the present inside the call
+int32_t gfxfb_node::queue_present(uint32_t output, const rc::strong_ref<buffer_record>& record) {
+    sync::mutex_lock(m_present_locks[output]);
+
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    bool is_free = !m_outputs[output].queued;
+    if (is_free) {
+        m_outputs[output].queued = record;
+    }
+
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
+
+    if (!is_free) {
+        sync::mutex_unlock(m_present_locks[output]);
+        return fs::ERR_BUSY;
+    }
+
+    int32_t rc = m_display->present(output, record->display_buffer());
+
+    // A refused present never reached the hardware, so no end will come for it
+    rc::strong_ref<buffer_record> refused;
+    if (rc != OK) {
+        state = sync::spin_lock_irqsave(m_outputs_lock);
+        refused.swap(m_outputs[output].queued);
+        sync::spin_unlock_irqrestore(m_outputs_lock, state);
+    }
+
+    sync::mutex_unlock(m_present_locks[output]);
+
+    return to_fs_error(rc);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void gfxfb_node::present_done(uint32_t output, const present_result& result) {
+    rc::strong_ref<buffer_record> dropped;
+
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    output_records& records = m_outputs[output];
+    switch (result.status) {
+    case GFXFB_PRESENT_LATCHED:
+        dropped.swap(records.shown);
+        records.shown.swap(records.queued);
+        break;
+    case GFXFB_PRESENT_DARK:
+        dropped.swap(records.queued);
+        break;
+    case GFXFB_PRESENT_FAILED:
+        // Both buffers stay held, since the failed hardware may still read either
+        break;
+    }
+
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
 }
 
 // True when `caller`'s call is admitted, false while another client controls or reserves control. An admitted call

@@ -9,13 +9,16 @@
 #include "fs/fs.h"
 #include "fs/file.h"
 #include "fs/fstypes.h"
+#include "hw/cpu.h"
 #include "mm/heap.h"
 #include "mm/mm.h"
 #include "mm/paging.h"
 #include "mm/vma.h"
 #include "mm/vmm.h"
 
+using test_helpers::spin_wait;
 using test_helpers::spin_wait_ge;
+using test_helpers::unpin;
 using test_helpers::user_page;
 using test_helpers::user_space_scope;
 
@@ -100,7 +103,7 @@ static constexpr size_t NODE_NAME_BYTES = 24;
 static constexpr size_t NODE_PATH_BYTES = 48;
 
 // A display with two outputs, dark until a test lights them, that records its last flush's output and the first
-// MAX_RECORDED rects of its flushes, creates write-combining buffers and counts the buffers gfxfb hands back
+// MAX_RECORDED rects of its flushes, creates write-combining buffers, accepts presents and counts buffers handed back
 class recording_display : public gfxfb::display {
 public:
     static constexpr uint32_t OUTPUTS = 2;
@@ -115,6 +118,8 @@ public:
     int32_t             flush_result = gfxfb::OK;
     int32_t             create_result = gfxfb::OK; // when not OK, what `create_buffer()` returns without creating
     void                (*while_creating)() = nullptr; // run once by the next `create_buffer()`, before it creates
+    int32_t             present_answer = gfxfb::OK; // when not OK, what `present()` returns without presenting
+    void                (*while_presenting)() = nullptr; // run once by the next present accepted, before it returns
 
     gfxfb::gfxfb_rect recorded[MAX_RECORDED] = {};
     uint32_t          recorded_count = 0;
@@ -125,6 +130,10 @@ public:
     uint32_t               created_count = 0;
     gfxfb::buffer*         last_released = nullptr;
     sync::atomic<uint32_t> released_count{0}; // counted in the reaper's task, after `last_released` is written
+
+    uint32_t       present_calls = 0; // refused calls included
+    gfxfb::buffer* presented = nullptr; // the buffer of the last present accepted
+    uint32_t       presented_output = OUTPUTS; // the output of the last present accepted, OUTPUTS before any
 
     uint32_t output_count() const override { return count; }
     bool needs_flush() const override { return flush_needed; }
@@ -152,6 +161,7 @@ public:
     }
 
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
+    int32_t present(uint32_t output, gfxfb::buffer* buf) override;
 
     void release_buffer(gfxfb::buffer* buf) override {
         last_released = buf;
@@ -219,6 +229,35 @@ int32_t recording_display::create_buffer(uint32_t width, uint32_t height, uint32
 
     created_count++;
     *out = &buf;
+
+    return gfxfb::OK;
+}
+
+int32_t recording_display::present(uint32_t output, gfxfb::buffer* buf) {
+    present_calls++;
+
+    if (present_answer != gfxfb::OK) {
+        return present_answer;
+    }
+
+    if (!states[output].lit) {
+        return gfxfb::ERR_DARK;
+    }
+
+    const gfxfb::gfxfb_mode& mode = states[output].current;
+    bool fits_mode = buf->width == mode.width && buf->height == mode.height;
+    if (!fits_mode) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    presented = buf;
+    presented_output = output;
+
+    if (while_presenting) {
+        void (*hook)() = while_presenting;
+        while_presenting = nullptr;
+        hook();
+    }
 
     return gfxfb::OK;
 }
@@ -399,6 +438,32 @@ static void write_small_request(user_page& page, uint32_t reserved) {
 // Drops `handle` through GFXFB_DESTROY_BUFFER on `file`
 static int32_t destroy_buffer(fs::file* file, user_page& page, uint64_t handle) {
     return file_ioctl(file, page, gfxfb::GFXFB_DESTROY_BUFFER, handle);
+}
+
+// Creates a buffer of output 0's width and height on `file` and returns its handle, or 0 when the creation failed
+static uint32_t create_output_0_buffer(fs::file* file, user_page& page) {
+    uint32_t width = static_cast<uint32_t>(OUTPUT_0_WIDTH);
+    uint32_t height = static_cast<uint32_t>(OUTPUT_0_HEIGHT);
+    if (request_buffer(file, page, width, height, gfxfb::GFXFB_FORMAT_XRGB8888) != fs::OK) {
+        return 0;
+    }
+
+    return page.at<gfxfb::gfxfb_buffer_args>(0)->handle;
+}
+
+// Presents `handle` on `output` through GFXFB_PRESENT on `file`, writing the request at the page's start
+static int32_t present_buffer(fs::file* file, user_page& page, uint32_t output, uint32_t handle) {
+    *page.at<gfxfb::gfxfb_present_args>(0) = {
+        .output = output,
+        .handle = handle,
+    };
+
+    return file_ioctl(file, page, gfxfb::GFXFB_PRESENT, page.addr);
+}
+
+// Ends the present the test's node holds on `output` with `status`, as its display would
+static void end_present(const gfxfb_test_node& test, uint32_t output, uint32_t status) {
+    RUN_ELEVATED(test.node->present_done(output, {.status = status}));
 }
 
 // Maps `length` bytes of `file` from `offset` into `ctx`, readable and writable, returning the address or 0
@@ -1773,6 +1838,690 @@ TEST(gfxfb, a_creation_refused_after_the_controlling_file_closes_takes_no_contro
 
     fs::close(next);
     fs::close(refused);
+}
+
+static recording_display g_latching_display;
+
+// An output keeps a presented buffer from its present until another present latches, so destroying its handle then
+// hands nothing back, and a base buffer stays allocated while another buffer replaces it, so handle 0 presents it again
+TEST(gfxfb, an_output_keeps_a_presented_buffer_until_another_latches) {
+    light_output(g_latching_display, 0, false);
+    light_output(g_latching_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_latching_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t first = create_output_0_buffer(file, page);
+    uint32_t second = create_output_0_buffer(file, page);
+    ASSERT_NE(second, static_cast<uint32_t>(0));
+
+    ASSERT_EQ(present_buffer(file, page, 0, first), fs::OK);
+    EXPECT_EQ(g_latching_display.presented, &g_latching_display.created[0]);
+    EXPECT_EQ(g_latching_display.presented_output, static_cast<uint32_t>(0));
+
+    // The output holds one present at a time, so a second fails without reaching the display until the first latches
+    EXPECT_EQ(present_buffer(file, page, 0, second), fs::ERR_BUSY);
+    EXPECT_EQ(g_latching_display.present_calls, static_cast<uint32_t>(1));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(present_buffer(file, page, 0, second), fs::OK);
+
+    // `first` is shown and `second` held for its present, so `first` comes back alone once `second` latches
+    ASSERT_EQ(destroy_buffer(file, page, first), fs::OK);
+    ASSERT_EQ(destroy_buffer(file, page, second), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait_ge(g_latching_display.released_count, 1));
+    EXPECT_EQ(g_latching_display.released_count.load_acquire(), static_cast<uint32_t>(1));
+    EXPECT_EQ(g_latching_display.last_released, &g_latching_display.created[0]);
+
+    // Once the base buffer latches again, only `second`, which it replaced, comes back
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    EXPECT_EQ(g_latching_display.presented, &g_latching_display.bases[0]);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait_ge(g_latching_display.released_count, 2));
+    EXPECT_EQ(g_latching_display.released_count.load_acquire(), static_cast<uint32_t>(2));
+    EXPECT_EQ(g_latching_display.last_released, &g_latching_display.created[1]);
+
+    // Every lit output has a base buffer, not only the primary one, and output 1's stays allocated while a latched
+    // buffer replaces it, so once handle 0 latches back there only that buffer comes back
+    uint32_t width = static_cast<uint32_t>(OUTPUT_1_WIDTH);
+    uint32_t height = static_cast<uint32_t>(OUTPUT_1_HEIGHT);
+    ASSERT_EQ(request_buffer(file, page, width, height, gfxfb::GFXFB_FORMAT_XRGB8888), fs::OK);
+    uint32_t replacing = page.at<gfxfb::gfxfb_buffer_args>(0)->handle;
+    ASSERT_EQ(present_buffer(file, page, 1, replacing), fs::OK);
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(destroy_buffer(file, page, replacing), fs::OK);
+
+    ASSERT_EQ(present_buffer(file, page, 1, 0), fs::OK);
+    EXPECT_EQ(g_latching_display.presented, &g_latching_display.bases[1]);
+    EXPECT_EQ(g_latching_display.presented_output, static_cast<uint32_t>(1));
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait_ge(g_latching_display.released_count, 3));
+    EXPECT_EQ(g_latching_display.released_count.load_acquire(), static_cast<uint32_t>(3));
+    EXPECT_EQ(g_latching_display.last_released, &g_latching_display.created[2]);
+
+    fs::close(file);
+}
+
+static recording_display g_bad_present_display;
+
+// gfxfb refuses a present it cannot read, one for an output of the count or more and one for a handle its file does not
+// hold with ERR_INVAL, and handle 0 on an output dark from the start with ERR_AGAIN, before control and the display
+TEST(gfxfb, present_refuses_requests_before_control) {
+    light_output(g_bad_present_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_bad_present_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* controller = fs::open(test.path, fs::O_RDWR);
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(controller);
+    ASSERT_NOT_NULL(file);
+
+    // With no file in control, `file`'s refusals neither reserve nor take control, so `controller`'s creation succeeds
+    EXPECT_EQ(present_buffer(file, page, 0, 1), fs::ERR_INVAL);
+    EXPECT_EQ(present_buffer(file, page, 1, 0), fs::ERR_AGAIN);
+    uint32_t foreign = create_output_0_buffer(controller, page);
+    ASSERT_NE(foreign, static_cast<uint32_t>(0));
+
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_PRESENT, 0), fs::ERR_INVAL);
+    EXPECT_EQ(present_buffer(file, page, recording_display::OUTPUTS, 0), fs::ERR_INVAL);
+    EXPECT_EQ(present_buffer(file, page, WIDE_OUTPUT_INDEX, 0), fs::ERR_INVAL);
+    EXPECT_EQ(present_buffer(file, page, 0, foreign), fs::ERR_INVAL);
+    EXPECT_EQ(present_buffer(file, page, 0, gfxfb::GFXFB_CLIENT_BUFFERS_MAX + 1), fs::ERR_INVAL);
+    EXPECT_EQ(present_buffer(file, page, 1, 0), fs::ERR_AGAIN);
+    EXPECT_EQ(g_bad_present_display.present_calls, static_cast<uint32_t>(0));
+
+    // `file`'s refusals leave `controller`'s control taken, not merely reserved, so it outlasts a failed creation
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(controller, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(file, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    // The handle `controller` destroyed is refused too and leaves control taken, so after another failed creation
+    // `file`'s creation fails without reaching the display, while `controller`'s present of handle 0 still reaches it
+    ASSERT_EQ(destroy_buffer(controller, page, foreign), fs::OK);
+    EXPECT_EQ(present_buffer(controller, page, 0, foreign), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(controller, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_EQ(request_buffer(file, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    EXPECT_EQ(g_bad_present_display.create_calls, static_cast<uint32_t>(3));
+    EXPECT_EQ(present_buffer(controller, page, 0, 0), fs::OK);
+    EXPECT_EQ(g_bad_present_display.present_calls, static_cast<uint32_t>(1));
+
+    fs::close(file);
+    fs::close(controller);
+}
+
+static recording_display g_full_present_display;
+
+// A file holding GFXFB_CLIENT_BUFFERS_MAX handles presents the last of them, and the handle past it fails with
+// ERR_INVAL without reaching the display
+TEST(gfxfb, a_full_file_presents_its_last_handle) {
+    light_output(g_full_present_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_full_present_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    for (uint32_t i = 1; i < gfxfb::GFXFB_CLIENT_BUFFERS_MAX; i++) {
+        ASSERT_NE(request_small_buffer(file, page).handle, static_cast<uint32_t>(0));
+    }
+
+    ASSERT_EQ(create_output_0_buffer(file, page), gfxfb::GFXFB_CLIENT_BUFFERS_MAX);
+    EXPECT_EQ(present_buffer(file, page, 0, gfxfb::GFXFB_CLIENT_BUFFERS_MAX + 1), fs::ERR_INVAL);
+    EXPECT_EQ(g_full_present_display.present_calls, static_cast<uint32_t>(0));
+    EXPECT_EQ(present_buffer(file, page, 0, gfxfb::GFXFB_CLIENT_BUFFERS_MAX), fs::OK);
+    EXPECT_EQ(g_full_present_display.presented, &g_full_present_display.created[gfxfb::GFXFB_CLIENT_BUFFERS_MAX - 1]);
+
+    fs::close(file);
+}
+
+static recording_display g_refused_present_display;
+
+// A present the display refuses returns its refusal as a file error and keeps nothing, so the output takes the next
+// present and the refused buffer goes back once its handle is destroyed
+TEST(gfxfb, present_returns_the_display_refusals_as_file_errors) {
+    light_output(g_refused_present_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_refused_present_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t fitting = create_output_0_buffer(file, page);
+    uint32_t small = request_small_buffer(file, page).handle;
+    ASSERT_NE(fitting, static_cast<uint32_t>(0));
+    ASSERT_NE(small, static_cast<uint32_t>(0));
+
+    EXPECT_EQ(present_buffer(file, page, 0, small), fs::ERR_INVAL);
+    EXPECT_EQ(present_buffer(file, page, 1, fitting), fs::ERR_AGAIN);
+
+    g_refused_present_display.present_answer = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(present_buffer(file, page, 0, fitting), fs::ERR_IO);
+    g_refused_present_display.present_answer = gfxfb::ERR_UNSUPPORTED;
+    EXPECT_EQ(present_buffer(file, page, 0, fitting), fs::ERR_NOSYS);
+    EXPECT_EQ(g_refused_present_display.present_calls, static_cast<uint32_t>(4));
+    EXPECT_NULL(g_refused_present_display.presented);
+
+    g_refused_present_display.present_answer = gfxfb::OK;
+    ASSERT_EQ(destroy_buffer(file, page, fitting), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_refused_present_display.released_count, 1));
+    EXPECT_EQ(g_refused_present_display.last_released, &g_refused_present_display.created[0]);
+    EXPECT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+
+    fs::close(file);
+}
+
+// The boot display presents nothing, and its refusal takes no control, so another file's creation reaches the display
+TEST(gfxfb, boot_display_presents_nothing) {
+    gfxfb_test_node test = publish_boot_node();
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* other = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(other);
+
+    EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_NOSYS);
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, gfxfb::GFXFB_FORMAT_XRGB8888),
+              fs::ERR_NOSYS);
+
+    fs::close(other);
+    fs::close(file);
+}
+
+static recording_display g_early_end_display;
+static gfxfb_test_node g_early_end_node;
+
+// Ends the present being made, as a display whose hardware latches before `present()` returns
+static void latch_while_presenting() {
+    end_present(g_early_end_node, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+}
+
+// A present that latches before the display's `present()` returns leaves the output showing its buffer
+TEST(gfxfb, a_present_that_latches_inside_the_display_call_is_shown) {
+    light_output(g_early_end_display, 0, false);
+    g_early_end_node = publish_driver_node(&g_early_end_display);
+    ASSERT_NOT_NULL(g_early_end_node.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(g_early_end_node.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t shown = create_output_0_buffer(file, page);
+    uint32_t unshown = create_output_0_buffer(file, page);
+    ASSERT_NE(unshown, static_cast<uint32_t>(0));
+
+    g_early_end_display.while_presenting = latch_while_presenting;
+    ASSERT_EQ(present_buffer(file, page, 0, shown), fs::OK);
+
+    // The output shows `shown`, so only `unshown` comes back, and the output takes the next present at once
+    ASSERT_EQ(destroy_buffer(file, page, shown), fs::OK);
+    ASSERT_EQ(destroy_buffer(file, page, unshown), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_early_end_display.released_count, 1));
+    EXPECT_EQ(g_early_end_display.released_count.load_acquire(), static_cast<uint32_t>(1));
+    EXPECT_EQ(g_early_end_display.last_released, &g_early_end_display.created[1]);
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    end_present(g_early_end_node, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait_ge(g_early_end_display.released_count, 2));
+    EXPECT_EQ(g_early_end_display.last_released, &g_early_end_display.created[0]);
+
+    fs::close(file);
+}
+
+static recording_display g_dark_end_display;
+
+// A present that ends dark drops only its own buffer and leaves its output free for the next present, while one that
+// ends failed keeps its buffer and the shown one and holds its output for good, since the failed hardware may read both
+TEST(gfxfb, a_dark_end_drops_the_present_and_a_failed_end_keeps_it) {
+    light_output(g_dark_end_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_dark_end_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t shown = create_output_0_buffer(file, page);
+    uint32_t darkened = create_output_0_buffer(file, page);
+    uint32_t failed = create_output_0_buffer(file, page);
+    uint32_t unshown = create_output_0_buffer(file, page);
+    uint32_t shown_when_failed = create_output_0_buffer(file, page);
+    ASSERT_NE(shown_when_failed, static_cast<uint32_t>(0));
+
+    // The output shows `shown` with its handle gone, so the dark end hands back `darkened` alone
+    ASSERT_EQ(present_buffer(file, page, 0, shown), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(destroy_buffer(file, page, shown), fs::OK);
+    ASSERT_EQ(present_buffer(file, page, 0, darkened), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_DARK);
+    ASSERT_EQ(destroy_buffer(file, page, darkened), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_dark_end_display.released_count, 1));
+    EXPECT_EQ(g_dark_end_display.released_count.load_acquire(), static_cast<uint32_t>(1));
+    EXPECT_EQ(g_dark_end_display.last_released, &g_dark_end_display.created[1]);
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait_ge(g_dark_end_display.released_count, 2));
+    EXPECT_EQ(g_dark_end_display.last_released, &g_dark_end_display.created[0]);
+
+    // The output shows `shown_when_failed` with its handle gone when the present of `failed` ends failed
+    ASSERT_EQ(present_buffer(file, page, 0, shown_when_failed), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(destroy_buffer(file, page, shown_when_failed), fs::OK);
+    ASSERT_EQ(present_buffer(file, page, 0, failed), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_FAILED);
+    EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(g_dark_end_display.present_calls, static_cast<uint32_t>(5));
+
+    // Buffers come back in the order their last references went, so seeing only `unshown` back shows `failed` and
+    // `shown_when_failed` are kept
+    ASSERT_EQ(destroy_buffer(file, page, failed), fs::OK);
+    ASSERT_EQ(destroy_buffer(file, page, unshown), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_dark_end_display.released_count, 3));
+    EXPECT_EQ(g_dark_end_display.released_count.load_acquire(), static_cast<uint32_t>(3));
+    EXPECT_EQ(g_dark_end_display.last_released, &g_dark_end_display.created[3]);
+
+    fs::close(file);
+}
+
+static recording_display g_interrupt_end_display;
+
+// A latch reported with interrupts disabled, as from an interrupt handler, still hands the replaced buffer back
+TEST(gfxfb, a_latch_with_interrupts_disabled_hands_the_replaced_buffer_back) {
+    light_output(g_interrupt_end_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_interrupt_end_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t replaced = create_output_0_buffer(file, page);
+    ASSERT_NE(replaced, static_cast<uint32_t>(0));
+    ASSERT_EQ(present_buffer(file, page, 0, replaced), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    ASSERT_EQ(destroy_buffer(file, page, replaced), fs::OK);
+
+    RUN_ELEVATED({
+        uint64_t flags = cpu::irq_save();
+        test.node->present_done(0, {.status = gfxfb::GFXFB_PRESENT_LATCHED});
+        cpu::irq_restore(flags);
+    });
+
+    ASSERT_TRUE(spin_wait_ge(g_interrupt_end_display.released_count, 1));
+    EXPECT_EQ(g_interrupt_end_display.last_released, &g_interrupt_end_display.created[0]);
+
+    fs::close(file);
+}
+
+static recording_display g_present_control_display;
+
+// A present that succeeds takes control as a creation does, one refused by the display or by its output's held present
+// takes none, and while one file is in control another file's present fails with ERR_BUSY without reaching the display
+TEST(gfxfb, a_present_takes_control_as_a_creation_does) {
+    light_output(g_present_control_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_present_control_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* presenter = fs::open(test.path, fs::O_RDWR);
+    fs::file* other = fs::open(test.path, fs::O_RDWR);
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(presenter);
+    ASSERT_NOT_NULL(other);
+    ASSERT_NOT_NULL(next);
+
+    // Presenting the base buffer takes control with no creation, and a refusal by the output's held present or by the
+    // display leaves it with the file
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    ASSERT_EQ(present_buffer(presenter, page, 0, 0), fs::OK);
+    EXPECT_EQ(present_buffer(presenter, page, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    g_present_control_display.present_answer = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(present_buffer(presenter, page, 0, 0), fs::ERR_IO);
+    EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
+
+    // The refusal leaves control taken, not merely reserved, so it outlasts a second one and `other`'s creation fails
+    EXPECT_EQ(present_buffer(presenter, page, 0, 0), fs::ERR_IO);
+    EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    EXPECT_EQ(g_present_control_display.present_calls, static_cast<uint32_t>(3));
+    EXPECT_EQ(g_present_control_display.create_calls, static_cast<uint32_t>(0));
+
+    // With no file in control, a present the display refuses takes none, so another file's creation succeeds
+    fs::close(presenter);
+    EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_IO);
+    g_present_control_display.present_answer = gfxfb::OK;
+    ASSERT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
+    EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
+
+    // `next` closes with its present still held, and `other`'s present, refused with ERR_BUSY while the output holds
+    // it, takes no control either
+    ASSERT_EQ(present_buffer(next, page, 0, 0), fs::OK);
+    fs::close(next);
+    EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
+    fs::file* last = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(last);
+    EXPECT_NE(request_small_buffer(last, page).handle, static_cast<uint32_t>(0));
+    EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(g_present_control_display.present_calls, static_cast<uint32_t>(5));
+
+    fs::close(last);
+    fs::close(other);
+}
+
+static recording_display g_present_while_creating_display;
+
+// The files the hook's presents are made on, the page holding their requests, and what those presents returned
+static fs::file* g_creating_file;
+static fs::file* g_presenting_rival;
+static user_page* g_creating_page;
+static int32_t g_rival_present_result;
+static int32_t g_creating_present_result;
+static int32_t g_creating_second_present_result;
+static int32_t g_creating_display_refusal_result;
+static int32_t g_creating_unheld_handle_result;
+static int32_t g_rival_second_present_result;
+static int32_t g_rival_unheld_handle_result;
+
+// Runs inside the creating file's creation: presents through the rival, twice through that file on output 0, twice on
+// output 1 refused by the display and with an unheld handle, twice through the rival, then refuses the creation
+static void present_on_both_files_while_creating() {
+    *g_creating_page->at<gfxfb::gfxfb_present_args>(0) = {
+        .output = 0,
+        .handle = 0,
+    };
+
+    g_rival_present_result = fs::ioctl(g_presenting_rival, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
+    g_creating_present_result = fs::ioctl(g_creating_file, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
+    g_creating_second_present_result = fs::ioctl(g_creating_file, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
+
+    g_creating_page->at<gfxfb::gfxfb_present_args>(0)->output = 1;
+    g_present_while_creating_display.present_answer = gfxfb::ERR_DEVICE;
+    g_creating_display_refusal_result = fs::ioctl(g_creating_file, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
+    g_present_while_creating_display.present_answer = gfxfb::OK;
+
+    g_creating_page->at<gfxfb::gfxfb_present_args>(0)->handle = 2;
+    g_creating_unheld_handle_result = fs::ioctl(g_creating_file, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
+    g_creating_page->at<gfxfb::gfxfb_present_args>(0)->handle = 0;
+    g_rival_second_present_result = fs::ioctl(g_presenting_rival, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
+    g_creating_page->at<gfxfb::gfxfb_present_args>(0)->handle = 2;
+    g_rival_unheld_handle_result = fs::ioctl(g_presenting_rival, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
+    g_present_while_creating_display.create_result = gfxfb::ERR_NO_MEMORY;
+}
+
+// A creation in the display reserves control against a rival's present, and its file's present that succeeds meanwhile
+// takes control, which refused presents of either file and the creation's refusal all leave with that file
+TEST(gfxfb, a_present_during_a_creation_of_its_file_takes_control) {
+    light_output(g_present_while_creating_display, 0, false);
+    light_output(g_present_while_creating_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_present_while_creating_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* creating = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(creating);
+    ASSERT_NOT_NULL(rival);
+    ASSERT_NOT_NULL(next);
+
+    g_creating_file = creating;
+    g_presenting_rival = rival;
+    g_creating_page = &page;
+    g_rival_present_result = fs::OK;
+    g_creating_present_result = fs::ERR_IO;
+    g_creating_second_present_result = fs::OK;
+    g_creating_display_refusal_result = fs::OK;
+    g_creating_unheld_handle_result = fs::OK;
+    g_rival_second_present_result = fs::OK;
+    g_rival_unheld_handle_result = fs::OK;
+    g_present_while_creating_display.while_creating = present_on_both_files_while_creating;
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(creating, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOMEM);
+    EXPECT_EQ(g_rival_present_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_creating_present_result, fs::OK);
+    EXPECT_EQ(g_creating_second_present_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_creating_display_refusal_result, fs::ERR_IO);
+    EXPECT_EQ(g_creating_unheld_handle_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_rival_second_present_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_rival_unheld_handle_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_present_while_creating_display.present_calls, static_cast<uint32_t>(2));
+
+    g_present_while_creating_display.create_result = gfxfb::OK;
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(request_buffer(rival, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    EXPECT_EQ(present_buffer(rival, page, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(present_buffer(rival, page, 0, 2), fs::ERR_INVAL);
+
+    // Once `creating` closes, a creation the display refuses takes no control, so another file's then succeeds
+    fs::close(creating);
+    EXPECT_EQ(request_buffer(rival, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
+
+    fs::close(next);
+    fs::close(rival);
+}
+
+static recording_display g_refused_while_reserving_display;
+
+// The files the hook's calls are made on, the page holding their requests, and what those calls returned
+static fs::file* g_refused_presenter;
+static fs::file* g_refusals_rival;
+static user_page* g_refusals_page;
+static int32_t g_unheld_handle_result;
+static int32_t g_rival_after_unheld_handle_result;
+static int32_t g_held_output_result;
+static int32_t g_rival_after_held_output_result;
+static int32_t g_display_refusal_result;
+static int32_t g_rival_after_display_result;
+static int32_t g_refusals_rival_base_result;
+static int32_t g_rival_after_its_base_result;
+static int32_t g_refusals_rival_unheld_handle_result;
+static int32_t g_rival_after_its_unheld_handle_result;
+
+// Runs inside the presenter's creation: makes presents refused by gfxfb's checks, the held output 0 and the display,
+// then the rival's refused for control and by the checks, each before the rival's creation, then refuses the creation
+static void refuse_presents_while_reserving() {
+    *g_refusals_page->at<gfxfb::gfxfb_present_args>(0) = {
+        .output = 0,
+        .handle = 2,
+    };
+
+    g_unheld_handle_result = fs::ioctl(g_refused_presenter, gfxfb::GFXFB_PRESENT, g_refusals_page->addr);
+    write_small_request(*g_refusals_page, 0);
+    g_rival_after_unheld_handle_result = fs::ioctl(g_refusals_rival, gfxfb::GFXFB_CREATE_BUFFER, g_refusals_page->addr);
+
+    *g_refusals_page->at<gfxfb::gfxfb_present_args>(0) = {
+        .output = 0,
+        .handle = 0,
+    };
+
+    g_held_output_result = fs::ioctl(g_refused_presenter, gfxfb::GFXFB_PRESENT, g_refusals_page->addr);
+    write_small_request(*g_refusals_page, 0);
+    g_rival_after_held_output_result = fs::ioctl(g_refusals_rival, gfxfb::GFXFB_CREATE_BUFFER, g_refusals_page->addr);
+
+    *g_refusals_page->at<gfxfb::gfxfb_present_args>(0) = {
+        .output = 1,
+        .handle = 0,
+    };
+
+    g_refused_while_reserving_display.present_answer = gfxfb::ERR_DEVICE;
+    g_display_refusal_result = fs::ioctl(g_refused_presenter, gfxfb::GFXFB_PRESENT, g_refusals_page->addr);
+    write_small_request(*g_refusals_page, 0);
+    g_rival_after_display_result = fs::ioctl(g_refusals_rival, gfxfb::GFXFB_CREATE_BUFFER, g_refusals_page->addr);
+    g_refused_while_reserving_display.present_answer = gfxfb::OK;
+
+    // On output 1, which holds no present, a rival admitted past control would reach the display and succeed
+    *g_refusals_page->at<gfxfb::gfxfb_present_args>(0) = {
+        .output = 1,
+        .handle = 0,
+    };
+
+    g_refusals_rival_base_result = fs::ioctl(g_refusals_rival, gfxfb::GFXFB_PRESENT, g_refusals_page->addr);
+    write_small_request(*g_refusals_page, 0);
+    g_rival_after_its_base_result = fs::ioctl(g_refusals_rival, gfxfb::GFXFB_CREATE_BUFFER, g_refusals_page->addr);
+
+    *g_refusals_page->at<gfxfb::gfxfb_present_args>(0) = {
+        .output = 1,
+        .handle = 2,
+    };
+
+    g_refusals_rival_unheld_handle_result = fs::ioctl(g_refusals_rival, gfxfb::GFXFB_PRESENT, g_refusals_page->addr);
+    write_small_request(*g_refusals_page, 0);
+    g_rival_after_its_unheld_handle_result = fs::ioctl(
+        g_refusals_rival,
+        gfxfb::GFXFB_CREATE_BUFFER,
+        g_refusals_page->addr
+    );
+
+    g_refused_while_reserving_display.create_result = gfxfb::ERR_NO_MEMORY;
+}
+
+// A present refused during a creation, by gfxfb's checks, the output's held present, the display or control, keeps the
+// creating file's reservation and takes no control, so the rival's creation fails with ERR_BUSY meanwhile
+TEST(gfxfb, a_present_refused_during_a_creation_takes_no_control) {
+    light_output(g_refused_while_reserving_display, 0, false);
+    light_output(g_refused_while_reserving_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_refused_while_reserving_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* holder = fs::open(test.path, fs::O_RDWR);
+    fs::file* presenter = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(holder);
+    ASSERT_NOT_NULL(presenter);
+    ASSERT_NOT_NULL(rival);
+
+    // `holder` closes with its present held, so output 0 refuses the next present while no file controls the buffers
+    ASSERT_EQ(present_buffer(holder, page, 0, 0), fs::OK);
+    fs::close(holder);
+
+    g_refused_presenter = presenter;
+    g_refusals_rival = rival;
+    g_refusals_page = &page;
+    g_unheld_handle_result = fs::OK;
+    g_rival_after_unheld_handle_result = fs::OK;
+    g_held_output_result = fs::OK;
+    g_rival_after_held_output_result = fs::OK;
+    g_display_refusal_result = fs::OK;
+    g_rival_after_display_result = fs::OK;
+    g_refusals_rival_base_result = fs::OK;
+    g_rival_after_its_base_result = fs::OK;
+    g_refusals_rival_unheld_handle_result = fs::OK;
+    g_rival_after_its_unheld_handle_result = fs::OK;
+    g_refused_while_reserving_display.while_creating = refuse_presents_while_reserving;
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(presenter, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOMEM);
+    EXPECT_EQ(g_unheld_handle_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_rival_after_unheld_handle_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_held_output_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_rival_after_held_output_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_display_refusal_result, fs::ERR_IO);
+    EXPECT_EQ(g_rival_after_display_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_refusals_rival_base_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_rival_after_its_base_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_refusals_rival_unheld_handle_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_rival_after_its_unheld_handle_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_refused_while_reserving_display.present_calls, static_cast<uint32_t>(2));
+    EXPECT_EQ(g_refused_while_reserving_display.create_calls, static_cast<uint32_t>(1));
+
+    g_refused_while_reserving_display.create_result = gfxfb::OK;
+    EXPECT_NE(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
+
+    fs::close(rival);
+    fs::close(presenter);
+}
+
+static recording_display g_serialized_display;
+
+// The first present's node, file and page, the second's task, whether that task blocked before its present reached the
+// display, the presents the display had taken by then, the second present's result and the flag set once it returned
+static gfxfb_test_node g_serialized_node;
+static fs::file* g_serialized_file;
+static user_page* g_serialized_page;
+static sched::task* g_second_presenter;
+static bool g_second_presenter_blocked;
+static uint32_t g_present_calls_while_blocked;
+static int32_t g_second_present_result;
+static sync::atomic<uint32_t> g_second_present_done;
+
+// Sends the first present's request again from the page's start, on a task of its own
+static void present_from_a_second_task(void*) {
+    {
+        user_space_scope scope(g_serialized_page->ctx);
+        g_second_present_result = fs::ioctl(g_serialized_file, gfxfb::GFXFB_PRESENT, g_serialized_page->addr);
+    }
+
+    g_second_present_done.store_release(1);
+    sched::exit(0);
+}
+
+// Runs inside the first present's display call: ends that present latched, so the output holds none, then starts the
+// second present's task and records whether it blocks and how many presents the display has taken meanwhile
+static void present_again_while_presenting() {
+    end_present(g_serialized_node, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    g_second_presenter = test_helpers::start_pinned_task(present_from_a_second_task, nullptr, "gfxfb_present");
+    g_second_presenter_blocked = g_second_presenter && test_helpers::blocks_before_deadline(g_second_presenter);
+    g_present_calls_while_blocked = g_serialized_display.present_calls;
+}
+
+// A second present for an output waits for the display call of the first, even once the output holds no present, and
+// reaches the display after it, so the display never runs two presents for one output at once
+TEST(gfxfb, presents_for_one_output_reach_the_display_one_at_a_time) {
+    light_output(g_serialized_display, 0, false);
+    g_serialized_node = publish_driver_node(&g_serialized_display);
+    ASSERT_NOT_NULL(g_serialized_node.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(g_serialized_node.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    g_serialized_file = file;
+    g_serialized_page = &page;
+    g_second_presenter = nullptr;
+    g_second_presenter_blocked = false;
+    g_present_calls_while_blocked = 0;
+    g_second_present_result = fs::ERR_IO;
+    g_second_present_done.store_relaxed(0);
+    g_serialized_display.while_presenting = present_again_while_presenting;
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    ASSERT_NOT_NULL(g_second_presenter);
+    EXPECT_TRUE(g_second_presenter_blocked);
+    EXPECT_EQ(g_present_calls_while_blocked, static_cast<uint32_t>(1));
+
+    ASSERT_TRUE(spin_wait(g_second_present_done));
+    EXPECT_EQ(g_second_present_result, fs::OK);
+    EXPECT_EQ(g_serialized_display.present_calls, static_cast<uint32_t>(2));
+    EXPECT_EQ(g_serialized_display.presented, &g_serialized_display.bases[0]);
+
+    unpin(g_second_presenter);
+    fs::close(file);
 }
 
 // Registration is permanent, so /dev/gfxfb shows `g_registered_display` for the rest of the run
