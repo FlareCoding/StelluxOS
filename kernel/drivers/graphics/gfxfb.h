@@ -22,10 +22,13 @@
  * display's primary output: the lit boot output (the output the boot firmware
  * lit), else the lit output with the lowest index. Userland maps the primary
  * output's base buffer and draws into it, and `GFXFB_FLUSH` hands the changed
- * regions to the display's `flush()` for that output. With no output lit there
- * is no primary output, so `GFXFB_GET_INFO` and `GFXFB_FLUSH` fail and mmap at
- * offset 0 is refused. A display shown when no memory was left to record its
- * lit outputs' base buffers has no primary output either.
+ * regions to the display's `flush()` for that output. While that output shows
+ * a created buffer and holds no present of its base buffer, gfxfb skips the
+ * display instead and passes the display no region with the base buffer's next
+ * present, so a display that copies the buffer copies it whole. With no output
+ * lit there is no primary output, so `GFXFB_GET_INFO` and `GFXFB_FLUSH` fail
+ * and mmap at offset 0 is refused. A display shown when no memory was left to
+ * record its lit outputs' base buffers has no primary output either.
  *
  * Userland also creates buffers, which the display allocates in
  * `create_buffer()`, and presents buffers on outputs, which gfxfb hands to the
@@ -35,7 +38,10 @@
  * from its first creation or present that succeeds until it closes. gfxfb
  * keeps a reference-counted record of each buffer, every lit output's base
  * buffer included, and hands the buffer back to the display's
- * `release_buffer()` once no handle, output or mapping refers to it.
+ * `release_buffer()` once no handle, output or mapping refers to it. Once a
+ * display call returns ERR_DEVICE or a present ends with
+ * `GFXFB_PRESENT_FAILED`, gfxfb fails every later `GFXFB_FLUSH` and
+ * `GFXFB_PRESENT` without calling the display.
  */
 
 namespace gfxfb {
@@ -44,9 +50,10 @@ constexpr int32_t OK              = 0;
 constexpr int32_t ERR             = -1;
 constexpr int32_t ERR_INVALID_ARG = -2;
 constexpr int32_t ERR_DARK        = -3; // the output is not lit
-constexpr int32_t ERR_DEVICE      = -4; // the display's hardware failed the call
+constexpr int32_t ERR_DEVICE      = -4; // the display's hardware failed for good
 constexpr int32_t ERR_NO_MEMORY   = -5;
 constexpr int32_t ERR_UNSUPPORTED = -6; // the display creates or presents no buffers
+constexpr int32_t ERR_REFUSED     = -7; // the hardware refused the call and stays usable
 
 /**
  * One output's state as its display reports it.
@@ -96,7 +103,12 @@ struct present_result {
  * `present()` for one output from two tasks at once. It calls
  * `release_buffer()` from the reaper, the kernel task that runs deferred
  * cleanup, and `release_buffer()` must never wait, since the reaper runs no
- * other cleanup until it returns.
+ * other cleanup until it returns. A display returns ERR_DEVICE only once its
+ * hardware has failed for good, and from then on from every call that needs
+ * the hardware, so a refusal that leaves the hardware usable is ERR_REFUSED,
+ * or ERR_NO_MEMORY when the hardware has no memory left for a buffer. It
+ * likewise ends a present with `GFXFB_PRESENT_FAILED` only once its hardware
+ * has failed for good.
  */
 class display {
 public:
@@ -141,8 +153,8 @@ public:
      * @param output Index of the output, below the count.
      * @param rects Regions inside the base buffer, none of them empty.
      * @param count Number of regions, at least one.
-     * @return OK, ERR_DARK when the output is not lit, or ERR_DEVICE when the
-     * display's hardware failed the copy.
+     * @return OK, ERR_DARK when the output is not lit, ERR_REFUSED when the
+     * hardware refused the copy, or ERR_DEVICE once the hardware has failed.
      */
     virtual int32_t flush(uint32_t output, const gfxfb_rect* rects, uint32_t count) = 0;
 
@@ -157,8 +169,9 @@ public:
      * gfxfb hands it back through `release_buffer()`.
      * @return OK, ERR_INVALID_ARG for a size past the display's limit or a
      * format it does not support, ERR_NO_MEMORY when no memory is left for it,
-     * ERR_UNSUPPORTED on a display that creates no buffers, or ERR_DEVICE when
-     * its hardware failed.
+     * ERR_UNSUPPORTED on a display that creates no buffers, ERR_REFUSED when
+     * its hardware refused the buffer, or ERR_DEVICE once its hardware has
+     * failed.
      */
     virtual int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, buffer** out) = 0;
 
@@ -179,15 +192,16 @@ public:
      * @param buf A buffer from `create_buffer()` or `base_buffer()`.
      * @param regions The regions of `buf` that userland named as changed since
      * `buf` was created or last presented, each wholly inside `buf` and none
-     * of them empty, or null when `region_count` is 0. gfxfb frees them once
-     * the call returns, so a display reading them later must copy them.
+     * of them empty, or null when `region_count` is 0, as for a base buffer
+     * holding changes that gfxfb skipped flushing. gfxfb frees them once the
+     * call returns, so a display reading them later must copy them.
      * @param region_count Number of regions, at most GFXFB_MAX_FLUSH_RECTS.
      * @return OK once the hardware was given the buffer. Otherwise the display
      * must not have given it the buffer, and returns the first that holds of
-     * ERR_UNSUPPORTED on a display that presents no buffers, ERR_DEVICE when
-     * the display had failed before the call, ERR_DARK when the output is not
-     * lit, and ERR_INVALID_ARG when the buffer's width or height differs from
-     * the output's mode.
+     * ERR_UNSUPPORTED on a display that presents no buffers, ERR_DEVICE once
+     * the hardware has failed, ERR_DARK when the output is not lit,
+     * ERR_INVALID_ARG when the buffer's width or height differs from the
+     * output's mode, and ERR_REFUSED when the hardware refused the buffer.
      */
     virtual int32_t present(uint32_t output, buffer* buf, const gfxfb_rect* regions, uint32_t region_count) = 0;
 
