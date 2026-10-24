@@ -119,7 +119,7 @@ public:
     buffer* base_buffer(uint32_t output) override;
     int32_t flush(uint32_t output, const gfxfb_rect* rects, uint32_t count) override;
     int32_t create_buffer(uint32_t, uint32_t, uint32_t, buffer**) override { return ERR_UNSUPPORTED; }
-    int32_t present(uint32_t, buffer*) override { return ERR_UNSUPPORTED; }
+    int32_t present(uint32_t, buffer*, const gfxfb_rect*, uint32_t) override { return ERR_UNSUPPORTED; }
     void release_buffer(buffer*) override {}
 
     const boot_framebuffer& framebuffer() const { return m_framebuffer; }
@@ -146,11 +146,16 @@ private:
  * a creation request fails with `fs::ERR_INVAL` when gfxfb cannot read it,
  * when its width or height is zero or when its reserved field is set, and a
  * present request fails with `fs::ERR_INVAL` when gfxfb cannot read it, when
- * it names an output of the display's output count or more and when it names a
- * handle its client does not hold, or with `fs::ERR_AGAIN` for handle 0 on an
- * output with no base buffer recorded: one dark as the node showed its
- * display, or any output when no memory was left to record the lit outputs'
- * base buffers. Any other creation or present request fails with
+ * its reserved field is set, when it names more than `GFXFB_MAX_FLUSH_RECTS`
+ * regions, when it names an output of the display's output count or more and
+ * when it names a handle its client does not hold, or otherwise with
+ * `fs::ERR_AGAIN` for handle 0 on an output with no base buffer recorded: one
+ * dark as the node showed its display, or any output when no memory was left
+ * to record the lit outputs' base buffers. A present request past those checks
+ * fails, still before control is checked, with `fs::ERR_NOMEM` when no memory
+ * is left to copy its regions, and otherwise with `fs::ERR_INVAL` when gfxfb
+ * cannot read them or one of them has a zero width or height or does not lie
+ * wholly inside the buffer. Any other creation or present request fails with
  * `fs::ERR_BUSY` while another client controls the buffers or reserves
  * control, and otherwise reserves control for its client until the call
  * returns, so two clients never control the buffers at once. Each output holds
@@ -246,7 +251,9 @@ private:
         client& owner,
         uint32_t output,
         uint32_t handle,
-        const rc::strong_ref<buffer_record>& record
+        const rc::strong_ref<buffer_record>& record,
+        const gfxfb_rect* regions,
+        uint32_t region_count
     );
     bool holds_unended_present(const client& owner) const;
     bool begin_controlled_call(client& caller);

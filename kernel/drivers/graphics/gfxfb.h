@@ -164,16 +164,24 @@ public:
 
     /**
      * @brief Give `buf` to the hardware to replace what `output` shows from
-     * the output's next vertical blank, without waiting for that blank. The
-     * call may wait only for the display's own lock and for the hardware to
-     * take the buffer, never for a vertical blank or for its driver's task.
-     * The display must end each present the call accepts exactly once,
-     * possibly before the call returns, by passing its result to
-     * `gfxfb_node::present_done()` from its interrupt handler, or elevated
-     * from a task or a timer's callback. It may hold its own locks then, since
-     * `gfxfb_node::present_done()` never sleeps or calls the display.
+     * the output's next vertical blank, without waiting for that blank. A
+     * display that shows a copy of the buffer copies only `regions`, or the
+     * whole buffer when gfxfb passes none, and a display that scans the buffer
+     * out directly ignores them. The call may wait only for the display's own
+     * lock and for the hardware to take the buffer, never for a vertical blank
+     * or for its driver's task. The display must end each present the call
+     * accepts exactly once, possibly before the call returns, by passing its
+     * result to `gfxfb_node::present_done()` from its interrupt handler, or
+     * elevated from a task or a timer's callback. It may hold its own locks
+     * then, since `gfxfb_node::present_done()` never sleeps or calls the
+     * display.
      * @param output Index of the output, below the count.
      * @param buf A buffer from `create_buffer()` or `base_buffer()`.
+     * @param regions The regions of `buf` that userland named as changed since
+     * `buf` was created or last presented, each wholly inside `buf` and none
+     * of them empty, or null when `region_count` is 0. gfxfb frees them once
+     * the call returns, so a display reading them later must copy them.
+     * @param region_count Number of regions, at most GFXFB_MAX_FLUSH_RECTS.
      * @return OK once the hardware was given the buffer. Otherwise the display
      * must not have given it the buffer, and returns the first that holds of
      * ERR_UNSUPPORTED on a display that presents no buffers, ERR_DEVICE when
@@ -181,7 +189,7 @@ public:
      * lit, and ERR_INVALID_ARG when the buffer's width or height differs from
      * the output's mode.
      */
-    virtual int32_t present(uint32_t output, buffer* buf) = 0;
+    virtual int32_t present(uint32_t output, buffer* buf, const gfxfb_rect* regions, uint32_t region_count) = 0;
 
     /**
      * @brief Take back a buffer from `create_buffer()` or `base_buffer()` once
