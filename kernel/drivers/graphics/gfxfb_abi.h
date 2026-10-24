@@ -17,16 +17,29 @@
  * mapping holds the pixels the screen shows. Either way, a present of a
  * created buffer on the primary output, as described below, replaces the
  * drawing once it latches, until a present of handle 0 latches there.
+ * `GFXFB_FLUSH` fails with EINVAL when the kernel cannot read its argument, a
+ * `gfxfb_flush_args`, when the argument's reserved field is set or when it
+ * names more than `GFXFB_MAX_FLUSH_RECTS` rects, and otherwise with EIO once
+ * the kernel has found the device failed, even while no output is lit. While a
+ * created buffer shows on the primary output and the output holds no present
+ * of handle 0, a flush that passes those checks succeeds without reading its
+ * rects or reaching the screen, and the next present of handle 0 there that
+ * the device accepts shows the whole drawing. Past those checks, any other
+ * flush fails with EAGAIN when there is no primary output, before the kernel
+ * reads its rects, and otherwise with EINVAL when the kernel cannot read one
+ * of its rects, with EAGAIN when the primary output is dark and with EIO when
+ * the device refuses the copy or has failed.
  *
  * The device drives outputs, numbered from 0, each of which can show one
  * monitor's picture. `GFXFB_GET_OUTPUT` reads one output's state: whether it
  * is lit (showing a picture), the mode it is lit at (its picture size and
  * refresh rate), and whether it is the primary output, whose pixels
  * `GFXFB_GET_INFO` describes, offset 0 maps and `GFXFB_FLUSH` shows. While no
- * output is lit there is no primary output, so `GFXFB_GET_INFO` and
- * `GFXFB_FLUSH` fail with EAGAIN and mmap at offset 0 is refused. A device
- * that had no memory to record its lit outputs' pixels as it started has no
- * primary output either.
+ * output is lit there is no primary output, so `GFXFB_GET_INFO` fails with
+ * EAGAIN, `GFXFB_FLUSH` fails with EAGAIN unless the kernel has found the
+ * device failed, and mmap at offset 0 is refused. A device that had no memory
+ * to record its lit outputs' pixels as it started has no primary output
+ * either.
  *
  * A program can also create buffers, each holding one picture of 32-bit
  * pixels. `GFXFB_CREATE_BUFFER` returns a new buffer's handle, its layout and
@@ -40,11 +53,11 @@
  * files never control the buffers at once. A creation that reserves control
  * fails with ENOTTY on a device that cannot create buffers, with ENOMEM when
  * no memory is left or the file already holds `GFXFB_CLIENT_BUFFERS_MAX`
- * handles, with EIO when the device fails, and with EINVAL when the kernel
- * cannot write its argument after the device created the buffer. A handle
- * names its buffer only within the open file that created it.
- * `GFXFB_DESTROY_BUFFER` drops a handle, failing with EINVAL for one the file
- * does not hold, and closing the file drops all of them. A buffer stays
+ * handles, with EIO when the device refuses the buffer or has failed, and with
+ * EINVAL when the kernel cannot write its argument after the device created
+ * the buffer. A handle names its buffer only within the open file that created
+ * it. `GFXFB_DESTROY_BUFFER` drops a handle, failing with EINVAL for one the
+ * file does not hold, and closing the file drops all of them. A buffer stays
  * allocated until its handle and its last mapping are gone and no output shows
  * it or holds it for a present.
  *
@@ -58,22 +71,25 @@
  * since the buffer was created or last presented. A device that shows a copy
  * of each buffer copies only the regions named, so pixels changed outside them
  * may not reach the screen, and copies the whole buffer for a present naming
- * no region, whose `regions` address the kernel never reads. A present fails
- * with EINVAL when the kernel cannot read its argument, when its reserved
- * field is set or it names more than `GFXFB_MAX_FLUSH_RECTS` regions, for an
- * output of `output_count` or more and for a handle the file does not hold,
- * and otherwise with EAGAIN for handle 0 when the device started with the
- * output dark or with no memory to record its lit outputs' pixels. It then
- * fails with ENOMEM when no memory is left to copy its regions, and otherwise
- * with EINVAL when the kernel cannot read them or one of them has a zero width
- * or height or does not lie wholly inside the buffer. Past those checks and
- * control, it fails with EBUSY while the output holds an earlier present,
- * which it does until that present latches or the output goes dark, and for
- * good once the device fails before it latches. It also fails with EBUSY while
- * the file holds the event of its last present on the output. Otherwise it
- * fails with the first that applies of ENOTTY on a device that cannot present,
- * EIO on a device that failed, EAGAIN on a dark output and EINVAL when the
- * buffer's width or height differs from the output's mode.
+ * no region, whose `regions` address the kernel never reads, and for the first
+ * present of handle 0 on the primary output that it accepts after a successful
+ * `GFXFB_FLUSH` that did not reach the screen, whatever regions the present
+ * names, since that flush copied none. A present fails with EINVAL when the
+ * kernel cannot read its argument, when its reserved field is set or it names
+ * more than `GFXFB_MAX_FLUSH_RECTS` regions, for an output of `output_count`
+ * or more and for a handle the file does not hold, and otherwise with EAGAIN
+ * for handle 0 when the device started with the output dark or with no memory
+ * to record its lit outputs' pixels. It then fails with ENOMEM when no memory
+ * is left to copy its regions, and otherwise with EINVAL when the kernel
+ * cannot read them or one of them has a zero width or height or does not lie
+ * wholly inside the buffer. Past those checks and control, it fails with EIO
+ * once the kernel has found the device failed, and otherwise with EBUSY while
+ * the output holds an earlier present, which it does until that present
+ * latches or the output goes dark, or while the file holds the event of its
+ * last present on the output. Otherwise it fails with the first that applies
+ * of ENOTTY on a device that cannot present, EIO on a device that failed,
+ * EAGAIN on a dark output, EINVAL when the buffer's width or height differs
+ * from the output's mode, and EIO when the device refused the buffer.
  *
  * Each present the device accepted ends once: it latches, or the output goes
  * dark or the device fails before it latches. The open file that presented
@@ -84,7 +100,7 @@
  * a null buffer fails with EFAULT at once. Any other read of a file opened
  * write-only fails with EBADF, so such a file never reads its events: once a
  * present of it on an output has ended, `poll` reports it readable for good
- * and its later presents there fail with EBUSY. Otherwise a read whose size
+ * and its later presents there fail for good. Otherwise a read whose size
  * holds less than one record fails with EINVAL, and one holding a record or
  * more returns as many of the file's events as fit, oldest first, as whole
  * records. With none queued, it fails at once with EAGAIN on a non-blocking

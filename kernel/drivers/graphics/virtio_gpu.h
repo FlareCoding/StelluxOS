@@ -148,7 +148,13 @@ struct virtio_gpu_buffer : gfxfb::buffer {
  * once the device confirms both, keeping the RAM for good otherwise, since the
  * device may still read it. gfxfb keeps a registered display's base buffer for
  * the life of the kernel, so only created buffers come back. `present()`
- * refuses every buffer, so the lit scanout always shows its base buffer.
+ * returns ERR_UNSUPPORTED for every buffer, so the lit scanout always shows
+ * its base buffer. Once a batch goes unanswered, which the driver logs once,
+ * or the driver detaches, every call that sends a command fails with
+ * ERR_DEVICE. Before that, a command the device refuses fails its call with
+ * ERR_REFUSED, logged unless the device ran out of memory, or with
+ * ERR_NO_MEMORY when the device has no memory left for a new buffer's
+ * resource.
  */
 class virtio_gpu_driver : public virtio_pci_driver, public gfxfb::display {
 public:

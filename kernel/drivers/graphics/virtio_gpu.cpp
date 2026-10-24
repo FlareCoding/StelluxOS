@@ -538,6 +538,7 @@ int32_t virtio_gpu_driver::create_buffer(uint32_t width, uint32_t height, uint32
 
     RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
     int32_t rc = create_resource(*buf, wait_mode::sleep);
+    bool is_broken = m_is_broken;
     RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
 
     if (rc == OK) {
@@ -553,7 +554,12 @@ int32_t virtio_gpu_driver::create_buffer(uint32_t width, uint32_t height, uint32
     RUN_ELEVATED(dma::free_pages(buf->backing));
     heap::ufree_delete(buf);
 
-    return rc == ERR_OUT_OF_DEVICE_MEMORY ? gfxfb::ERR_NO_MEMORY : gfxfb::ERR_DEVICE;
+    if (rc == ERR_OUT_OF_DEVICE_MEMORY) {
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    // A device still answering refused the command, as it refuses a resource ID still in use once the IDs wrap
+    return is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
 }
 
 int32_t virtio_gpu_driver::present(uint32_t, gfxfb::buffer*, const gfxfb::gfxfb_rect*, uint32_t) {
@@ -611,9 +617,14 @@ int32_t virtio_gpu_driver::flush(uint32_t output, const gfxfb::gfxfb_rect* rects
         rc = run_batch(wait_mode::sleep);
     }
 
+    bool is_broken = m_is_broken;
     RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
 
-    return rc == OK ? gfxfb::OK : gfxfb::ERR_DEVICE;
+    if (rc == OK) {
+        return gfxfb::OK;
+    }
+
+    return is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
 }
 
 __PRIVILEGED_CODE void virtio_gpu_driver::on_interrupt(uint32_t vector) {

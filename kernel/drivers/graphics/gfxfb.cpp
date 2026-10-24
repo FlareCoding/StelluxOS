@@ -148,6 +148,7 @@ static int32_t to_fs_error(int32_t rc) {
     case ERR_DEVICE:      return fs::ERR_IO;
     case ERR_NO_MEMORY:   return fs::ERR_NOMEM;
     case ERR_UNSUPPORTED: return fs::ERR_NOSYS;
+    case ERR_REFUSED:     return fs::ERR_IO;
     default:              return fs::ERR_IO;
     }
 }
@@ -567,8 +568,27 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
         return fs::ERR_INVAL;
     }
 
+    if (has_display_failed()) {
+        return fs::ERR_IO;
+    }
+
     if (!m_primary_record) {
         return fs::ERR_AGAIN;
+    }
+
+    // While the primary shows a created buffer and holds no present of the base buffer, a flush reaches no screen, so
+    // it leaves the display free for presents, and the base buffer's next present passes the display no region
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    output_records& primary = m_outputs[m_primary];
+    bool reaches_screen = primary.shown == primary.base || primary.queued == primary.base;
+    if (!reaches_screen) {
+        primary.base_stale = true;
+    }
+
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
+
+    if (!reaches_screen) {
+        return fs::OK;
     }
 
     gfxfb_rect batch[RECTS_PER_DISPLAY_FLUSH];
@@ -600,6 +620,7 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
         if (kept > 0) {
             rc = m_display->flush(m_primary, batch, kept);
             if (rc != OK) {
+                mark_failed_on_device_error(rc);
                 return to_fs_error(rc);
             }
         }
@@ -652,6 +673,7 @@ int32_t gfxfb_node::create_buffer_under_handle(client& owner, gfxfb_buffer_args&
     if (rc != OK) {
         heap::kfree_delete(record);
         end_creation(owner, handle, nullptr);
+        mark_failed_on_device_error(rc);
         return to_fs_error(rc);
     }
 
@@ -756,8 +778,8 @@ rc::strong_ref<buffer_record> gfxfb_node::find_buffer_to_present(client& owner, 
     return found;
 }
 
-// Gives `record`'s buffer and its `region_count` changed regions to the display for `output`'s next vertical blank, or
-// returns `fs::ERR_BUSY` while the output holds a present or `owner` holds the event of its last present there
+// Hands the display `record`'s buffer for `output` with its changed regions, or none for a stale base buffer, unless
+// the display failed (`fs::ERR_IO`), the output holds a present or `owner` holds an unread event there (`fs::ERR_BUSY`)
 int32_t gfxfb_node::queue_present(
     client& owner,
     uint32_t output,
@@ -770,28 +792,48 @@ int32_t gfxfb_node::queue_present(
 
     // The output holds the present before the display gets it, since the display may end it inside the call
     sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
-    bool is_free = !m_outputs[output].queued && !has_unread_present_event(owner, output);
-    if (is_free) {
-        m_outputs[output].queued = record;
-        m_outputs[output].presenter = &owner;
-        m_outputs[output].presented_handle = handle;
+    output_records& records = m_outputs[output];
+    bool display_failed = m_display_failed;
+    bool is_free = !records.queued && !has_unread_present_event(owner, output);
+    bool passes_whole_buffer = false;
+    if (!display_failed && is_free) {
+        records.queued = record;
+        records.presenter = &owner;
+        records.presented_handle = handle;
+
+        // A skipped flush left changes in the base buffer that no region names
+        if (handle == 0) {
+            passes_whole_buffer = records.base_stale;
+            records.base_stale = false;
+        }
     }
 
     sync::spin_unlock_irqrestore(m_outputs_lock, state);
 
-    if (!is_free) {
+    if (display_failed || !is_free) {
         sync::mutex_unlock(m_present_locks[output]);
-        return fs::ERR_BUSY;
+        return display_failed ? fs::ERR_IO : fs::ERR_BUSY;
     }
 
-    int32_t rc = m_display->present(output, record->display_buffer(), regions, region_count);
+    const gfxfb_rect* given_regions = passes_whole_buffer ? nullptr : regions;
+    uint32_t given_count = passes_whole_buffer ? 0 : region_count;
+    int32_t rc = m_display->present(output, record->display_buffer(), given_regions, given_count);
 
-    // A refused present never reached the hardware, so no end will come for it
+    // A present the display did not accept will get no end, and a stale base buffer stays stale
     rc::strong_ref<buffer_record> refused;
     if (rc != OK) {
         state = sync::spin_lock_irqsave(m_outputs_lock);
-        refused.swap(m_outputs[output].queued);
-        m_outputs[output].presenter = nullptr;
+        refused.swap(records.queued);
+        records.presenter = nullptr;
+
+        if (passes_whole_buffer) {
+            records.base_stale = true;
+        }
+
+        if (rc == ERR_DEVICE) {
+            m_display_failed = true;
+        }
+
         sync::spin_unlock_irqrestore(m_outputs_lock, state);
     }
 
@@ -817,7 +859,8 @@ __PRIVILEGED_CODE void gfxfb_node::present_done(uint32_t output, const present_r
         dropped.swap(records.queued);
         break;
     case GFXFB_PRESENT_FAILED:
-        // Both buffers stay held, since the failed hardware may still read either
+        // Both buffers stay held, since the failed hardware may still read either, and no later present reaches it
+        m_display_failed = true;
         break;
     }
 
@@ -828,6 +871,26 @@ __PRIVILEGED_CODE void gfxfb_node::present_done(uint32_t output, const present_r
     queue_event(*presenter, present_event(output, records.presented_handle, result));
     sync::wake_all(presenter->event_waiters);
 
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
+}
+
+// True once a call of the shown display returned ERR_DEVICE or one of its presents ended failed
+bool gfxfb_node::has_display_failed() {
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    bool display_failed = m_display_failed;
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
+
+    return display_failed;
+}
+
+// Counts the shown display as failed when `rc`, the result of one of its calls, is ERR_DEVICE
+void gfxfb_node::mark_failed_on_device_error(int32_t rc) {
+    if (rc != ERR_DEVICE) {
+        return;
+    }
+
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    m_display_failed = true;
     sync::spin_unlock_irqrestore(m_outputs_lock, state);
 }
 
