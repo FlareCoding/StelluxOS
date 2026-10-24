@@ -147,7 +147,8 @@ struct virtio_gpu_buffer : gfxfb::buffer {
  * takes the RAM back from the resource, drops the resource and frees the RAM
  * once the device confirms both, keeping the RAM for good otherwise, since the
  * device may still read it. gfxfb keeps a registered display's base buffer for
- * the life of the kernel, so only created buffers come back.
+ * the life of the kernel, so only created buffers come back. `present()`
+ * refuses every buffer, so the lit scanout always shows its base buffer.
  */
 class virtio_gpu_driver : public virtio_pci_driver, public gfxfb::display {
 public:
@@ -169,6 +170,7 @@ public:
     gfxfb::buffer* base_buffer(uint32_t output) override;
     int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override;
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
+    int32_t present(uint32_t, gfxfb::buffer*) override { return gfxfb::ERR_UNSUPPORTED; }
     void release_buffer(gfxfb::buffer* buf) override;
 
     /** @note Privilege: **required** */
