@@ -9,10 +9,15 @@
 #include "sync/atomic.h"
 #include "sync/mutex.h"
 #include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 
 // gfxfb keeps its state in a device node: gfxfb.cpp publishes one as /dev/gfxfb, and a test can publish a fresh one
 
 namespace gfxfb {
+
+// The events one client can hold unread, one per output, since an output holds one present at a time and a present
+// fails while its client holds the event of the last one on its output
+constexpr uint32_t CLIENT_EVENTS_MAX = GFXFB_OUTPUTS_MAX;
 
 /**
  * The framebuffer the boot firmware left and its pixel layout, which
@@ -61,25 +66,38 @@ private:
 
 /**
  * One open file of a gfxfb node: the buffers it created, each named by a
- * handle, and the handles held for buffers that `GFXFB_CREATE_BUFFER` calls
- * are still creating. It lives on the privileged heap, from `open()` until the
- * file's last reference goes.
+ * handle, the handles held for buffers that `GFXFB_CREATE_BUFFER` calls are
+ * still creating, and the events of its presents' ends that it has not read.
+ * `events_lock` is taken with interrupts disabled, since
+ * `gfxfb_node::present_done()` may queue an event from an interrupt handler.
+ * It lives on the privileged heap, from `open()` until the file's last
+ * reference goes and the display has ended each present of it.
  */
 struct client {
     rc::strong_ref<buffer_record> buffers[GFXFB_CLIENT_BUFFERS_MAX];   // handle h at index h - 1
     bool                          pending[GFXFB_CLIENT_BUFFERS_MAX] = {}; // true while a creation holds the handle
+
+    sync::spinlock   events_lock;               // over the events, alone or inside the node's outputs lock
+    gfxfb_event      events[CLIENT_EVENTS_MAX]; // `event_count` of them from `first_event` on, wrapping, oldest first
+    uint32_t         first_event = 0;
+    uint32_t         event_count = 0;
+    sync::wait_queue event_waiters;             // woken as each present of the client ends
 };
 
 /**
  * The buffers one output of the shown display has as its base buffer, shows
- * and holds for a present, each through a reference to its record. With the
- * display reporting each present's end as `gfxfb_node::present_done()`
- * requires, no output scans out memory its display has taken back.
+ * and holds for a present, each through a reference to its record, and the
+ * client whose present the display has not ended. With the display reporting
+ * each present's end as `gfxfb_node::present_done()` requires, no output
+ * scans out memory its display has taken back.
  */
 struct output_records {
     rc::strong_ref<buffer_record> base;   // recorded as gfxfb showed the display, null if dark then or memory ran out
     rc::strong_ref<buffer_record> shown;  // the last latched present's buffer, `base` before any latches
     rc::strong_ref<buffer_record> queued; // the buffer the output holds for a present, null while it holds none
+
+    client*  presenter = nullptr;  // the client of the unended present, whose close waits for that present's end
+    uint32_t presented_handle = 0; // the handle that present named, for its event
 };
 
 /**
@@ -139,10 +157,19 @@ private:
  * one present at a time, from just before gfxfb hands it to the display until
  * the display refuses it, reports it latched or reports the output dark, and
  * for good once the display reports it failed. A present request reaching an
- * output that holds one fails with `fs::ERR_BUSY`. Like every `fs::node`, it
- * lives on the privileged heap, so its callers must run elevated. devfs keeps
- * a published node for good, and a node is never freed once built, since the
- * reaper may still hand a base buffer back to its boot display.
+ * output fails with `fs::ERR_BUSY` when the output holds a present or when the
+ * request's client holds the event of its last present there. Each end the
+ * display reports reaches the presenting client as a `gfxfb_event`. `read`
+ * returns as many of a client's events as fit, oldest first, in whole records,
+ * and fails with `fs::ERR_INVAL` for a size below one record, with
+ * `fs::ERR_AGAIN` when a non-blocking read finds none, and with `fs::ERR_INTR`
+ * when a signal ends its wait for one. `poll` reports a client holding events
+ * readable. A client that closes while a present of it has not ended waits for
+ * that end, holding no lock, before it ends its control and is freed. Like
+ * every `fs::node`, it lives on the privileged heap, so its callers must run
+ * elevated. devfs keeps a published node for good, and a node is never freed
+ * once built, since the reaper may still hand a base buffer back to its boot
+ * display.
  */
 class gfxfb_node : public fs::node {
 public:
@@ -175,12 +202,13 @@ public:
     int32_t register_display(display* driver_display);
 
     /**
-     * @brief Record how the present the shown display accepted on `output` ended. On GFXFB_PRESENT_LATCHED the output
-     * shows the present's buffer and drops the one it replaced, on GFXFB_PRESENT_DARK it drops the present's buffer,
-     * and on GFXFB_PRESENT_FAILED it keeps both, since the failed hardware may still read either, so every later
-     * present reaching the output fails with `fs::ERR_BUSY`. The display must call it exactly once per present its
-     * `present()` accepted, possibly before that call returns, from its interrupt handler, or elevated from a task or a
-     * timer's callback. The display must report GFXFB_PRESENT_LATCHED only once the hardware no longer reads the
+     * @brief Record how the present the shown display accepted on `output` ended, and queue the end as an event for
+     * the client that presented, waking the client's readers, pollers and closing task. On GFXFB_PRESENT_LATCHED the
+     * output shows the present's buffer and drops the one it replaced, on GFXFB_PRESENT_DARK it drops the present's
+     * buffer, and on GFXFB_PRESENT_FAILED it keeps both, since the failed hardware may still read either, so every
+     * later present reaching the output fails with `fs::ERR_BUSY`. The display must call it exactly once per present
+     * its `present()` accepted, possibly before that call returns, from its interrupt handler, or elevated from a task
+     * or a timer's callback. The display must report GFXFB_PRESENT_LATCHED only once the hardware no longer reads the
      * replaced buffer and GFXFB_PRESENT_DARK only once the hardware can no longer latch the present. The call never
      * sleeps or calls the display.
      * @param output Index of the output the present was for.
@@ -195,6 +223,8 @@ public:
 
     int32_t open(fs::file*, uint32_t flags) override;
     int32_t on_close(fs::file*) override;
+    ssize_t read(fs::file*, void* buf, size_t count, uint32_t flags) override;
+    uint32_t poll(fs::file*, sync::poll_table* pt) override;
     int32_t ioctl(fs::file*, uint32_t cmd, uint64_t arg) override;
     int32_t mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
                  size_t length, uint32_t prot, uint32_t map_flags,
@@ -212,7 +242,13 @@ private:
     int32_t destroy_buffer(client& owner, uint64_t handle);
     int32_t present(client& owner, uint64_t args_addr);
     rc::strong_ref<buffer_record> find_buffer_to_present(client& owner, const gfxfb_present_args& args);
-    int32_t queue_present(uint32_t output, const rc::strong_ref<buffer_record>& record);
+    int32_t queue_present(
+        client& owner,
+        uint32_t output,
+        uint32_t handle,
+        const rc::strong_ref<buffer_record>& record
+    );
+    bool holds_unended_present(const client& owner) const;
     bool begin_controlled_call(client& caller);
     void end_controlled_call(bool succeeded);
     uint32_t take_handle(client& owner);

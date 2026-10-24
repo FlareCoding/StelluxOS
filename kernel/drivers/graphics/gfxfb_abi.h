@@ -3,9 +3,9 @@
 
 /*
  * Userland draws on the screen through /dev/gfxfb, and this file defines the
- * device's ioctl numbers, constants and argument structures for the kernel and
- * userland alike. The kernel implements the calls and includes the file
- * through gfxfb.h, and userland includes the copy libstlx installs as
+ * device's ioctl numbers, constants, argument structures and event record for
+ * the kernel and userland alike. The kernel implements the calls and includes
+ * the file through gfxfb.h, and userland includes the copy libstlx installs as
  * <stlx/gfxfb_abi.h>. The two take the fixed-width integer types from
  * different headers, so the file includes nothing and an includer must provide
  * those types first.
@@ -60,10 +60,38 @@
  * output dark or with no memory to record its lit outputs' pixels. Past those
  * checks and control, it fails with EBUSY while the output holds an earlier
  * present, which it does until that present latches or the output goes dark,
- * and for good once the device fails before it latches. Otherwise it fails
- * with the first that applies of ENOTTY on a device that cannot present, EIO
- * on a device that failed, EAGAIN on a dark output and EINVAL when the
- * buffer's width or height differs from the output's mode.
+ * and for good once the device fails before it latches. It also fails with
+ * EBUSY while the file holds the event of its last present on the output.
+ * Otherwise it fails with the first that applies of ENOTTY on a device that
+ * cannot present, EIO on a device that failed, EAGAIN on a dark output and
+ * EINVAL when the buffer's width or height differs from the output's mode.
+ *
+ * Each present the device accepted ends once: it latches, or the output goes
+ * dark or the device fails before it latches. The open file that presented
+ * learns of the end through an event, a `gfxfb_event` record that `read`
+ * returns. Since an output holds one present at a time and a file's present on
+ * an output fails while the file holds the event of its last one there, a file
+ * holds at most one event per output. A read of size 0 returns 0, and one with
+ * a null buffer fails with EFAULT at once. Any other read of a file opened
+ * write-only fails with EBADF, so such a file never reads its events: once a
+ * present of it on an output has ended, `poll` reports it readable for good
+ * and its later presents there fail with EBUSY. Otherwise a read whose size
+ * holds less than one record fails with EINVAL, and one holding a record or
+ * more returns as many of the file's events as fit, oldest first, as whole
+ * records. With none queued, it fails at once with EAGAIN on a non-blocking
+ * file, and otherwise waits for one, which only the end of one of the file's
+ * presents brings, so with none of them pending only a signal ends the wait. A
+ * signal handled during the wait fails the read with EINTR, or restarts it
+ * once the handler returns when the handler has SA_RESTART. A read that cannot
+ * write the events it took to its buffer fails with EFAULT, and those events
+ * are lost. `readv` reads its buffers in turn, each as a read of its own
+ * except that a null one is read as a buffer that cannot be written instead of
+ * failing at once, and stops after the first that fails or returns less than
+ * its size, returning the bytes read by then, or the failing read's error when
+ * there are none. `poll` reports the file readable while it holds an event,
+ * and never writable. A file that closes while a present of it has not ended
+ * waits for that end, whose event then reaches no file, and keeps control
+ * through the wait.
  *
  * The kernel and userland are built from one tree, so a structure may gain
  * fields when its call gains a feature. Each structure holds fixed-width
@@ -94,6 +122,8 @@ constexpr uint32_t GFXFB_OUTPUT_PRIMARY = 0x2; // the output whose pixels offset
 constexpr uint32_t GFXFB_PRESENT_LATCHED = 0; // the present latched, so the output shows its buffer
 constexpr uint32_t GFXFB_PRESENT_DARK    = 1; // the output went dark before the present latched
 constexpr uint32_t GFXFB_PRESENT_FAILED  = 2; // the device failed before the present latched
+
+constexpr uint32_t GFXFB_EVENT_PRESENT = 1; // a `gfxfb_event` reporting how a present ended
 
 constexpr uint32_t GFXFB_FORMAT_XRGB8888 = 1; // red in bits 23 to 16, green 15 to 8, blue 7 to 0, 31 to 24 unused
 
@@ -161,6 +191,16 @@ struct gfxfb_present_args {
     uint32_t handle; // the buffer's handle, or 0 for the output's base buffer
 };
 
+// One event as `read` returns it
+struct gfxfb_event {
+    uint32_t type;         // GFXFB_EVENT_PRESENT
+    uint32_t output;       // the output the present was for
+    uint32_t status;       // GFXFB_PRESENT_*, how the present ended
+    uint32_t handle;       // the handle the present named, 0 for the output's base buffer
+    uint64_t frame;        // the output's vertical blanks since it was lit, counted at the latch, 0 unless latched
+    uint64_t timestamp_ns; // when the latching vertical blank began, on the kernel's monotonic clock, 0 unless latched
+};
+
 static_assert(sizeof(gfxfb_info) == 40, "gfxfb_info layout");
 static_assert(sizeof(gfxfb_rect) == 16, "gfxfb_rect layout");
 static_assert(sizeof(gfxfb_flush_args) == 16, "gfxfb_flush_args layout");
@@ -168,6 +208,7 @@ static_assert(sizeof(gfxfb_mode) == 16, "gfxfb_mode layout");
 static_assert(sizeof(gfxfb_output_info) == 32, "gfxfb_output_info layout");
 static_assert(sizeof(gfxfb_buffer_args) == 40, "gfxfb_buffer_args layout");
 static_assert(sizeof(gfxfb_present_args) == 8, "gfxfb_present_args layout");
+static_assert(sizeof(gfxfb_event) == 32, "gfxfb_event layout");
 
 } // namespace gfxfb
 

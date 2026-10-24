@@ -30,10 +30,11 @@
  * Userland also creates buffers, which the display allocates in
  * `create_buffer()`, and presents buffers on outputs, which gfxfb hands to the
  * display's `present()`. The display reports to `gfxfb_node::present_done()`
- * how each present it accepted ended. One open file at a time controls the
- * buffers, from its first creation or present that succeeds until it closes.
- * gfxfb keeps a reference-counted record of each buffer, every lit output's
- * base buffer included, and hands the buffer back to the display's
+ * how each present it accepted ended, and gfxfb queues the end as an event for
+ * the open file that presented. One open file at a time controls the buffers,
+ * from its first creation or present that succeeds until it closes. gfxfb
+ * keeps a reference-counted record of each buffer, every lit output's base
+ * buffer included, and hands the buffer back to the display's
  * `release_buffer()` once no handle, output or mapping refers to it.
  */
 
@@ -75,10 +76,13 @@ struct buffer {
 
 /**
  * How a present the display accepted ended, as it reports to
- * `gfxfb_node::present_done()`.
+ * `gfxfb_node::present_done()`. gfxfb reads `frame` and `timestamp_ns` only
+ * when the present latched.
  */
 struct present_result {
-    uint32_t status; // GFXFB_PRESENT_*
+    uint32_t status;       // GFXFB_PRESENT_*
+    uint64_t frame;        // the output's vertical blanks since it was lit, counted at the latch
+    uint64_t timestamp_ns; // when the latching vertical blank began, on the kernel's monotonic clock
 };
 
 /**
