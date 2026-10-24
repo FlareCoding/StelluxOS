@@ -105,10 +105,17 @@ private:
  * and mmap at offset 0 is refused, while `GFXFB_GET_OUTPUT` still reports
  * every output. Each open file is a client, whose buffers mmap maps at the
  * offsets their creation returned, above the primary output's base buffer at
- * offset 0. Like every `fs::node`, it lives on the privileged heap, so its
- * callers must run elevated. devfs keeps a published node for good, and a node
- * is never freed once built, since the reaper may still hand a base buffer
- * back to its boot display.
+ * offset 0. A client controls the buffers from its first `GFXFB_CREATE_BUFFER`
+ * that succeeds until it closes. Before control is checked, a creation request
+ * fails with `fs::ERR_INVAL` when gfxfb cannot read it, when its width or
+ * height is zero or when its reserved field is set. Any other creation request
+ * fails with `fs::ERR_BUSY` while another client controls the buffers or
+ * reserves control, and otherwise reserves control for its client until the
+ * call returns, so two clients never control the buffers at once. Like every
+ * `fs::node`, it lives on the privileged heap, so its callers must run
+ * elevated. devfs keeps a published node for good, and a node is never freed
+ * once built, since the reaper may still hand a base buffer back to its boot
+ * display.
  */
 class gfxfb_node : public fs::node {
 public:
@@ -158,7 +165,10 @@ private:
     int32_t get_output(uint64_t info_addr);
     int32_t flush(uint64_t args_addr);
     int32_t create_buffer(client& owner, uint64_t args_addr);
+    int32_t create_buffer_under_handle(client& owner, gfxfb_buffer_args& args, uint64_t args_addr);
     int32_t destroy_buffer(client& owner, uint64_t handle);
+    bool begin_controlled_call(client& caller);
+    void end_controlled_call(bool succeeded);
     uint32_t take_handle(client& owner);
     void end_creation(client& owner, uint32_t handle, buffer_record* record);
     rc::strong_ref<buffer_record> find_buffer_at(client& owner, uint64_t offset, uint64_t& offset_in_buffer);
@@ -168,7 +178,11 @@ private:
     uint32_t                      m_primary = 0;
     rc::strong_ref<buffer_record> m_primary_record; // null without a primary output, fixed once the node is opened
     sync::atomic<bool>            m_was_opened{false};
-    sync::mutex                   m_handles_lock;   // over every client's handles
+
+    sync::mutex m_clients_lock;          // over the clients' handles and control, never held across a display call
+    client*     m_controller = nullptr;  // the client that controls the buffers or reserves control, or null
+    bool        m_control_taken = false; // set once an admitted call succeeds, until `m_controller` closes
+    uint32_t    m_controller_calls = 0;  // admitted calls of `m_controller` that have not ended
 };
 
 } // namespace gfxfb
