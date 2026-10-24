@@ -142,13 +142,13 @@ int32_t boot_display::flush(uint32_t, const gfxfb_rect*, uint32_t) {
 
 gfxfb_node::gfxfb_node(const char* name, const boot_framebuffer& boot_fb)
     : fs::node(fs::node_type::char_device, nullptr, name), m_boot_display(boot_fb) {
-    m_handles_lock.init();
+    m_clients_lock.init();
     show_from_start(&m_boot_display);
 }
 
 gfxfb_node::gfxfb_node(const char* name, display* driver_display)
     : fs::node(fs::node_type::char_device, nullptr, name) {
-    m_handles_lock.init();
+    m_clients_lock.init();
     show_from_start(driver_display);
 }
 
@@ -222,9 +222,21 @@ int32_t gfxfb_node::open(fs::file* f, uint32_t) {
     return fs::OK;
 }
 
-// Runs once no call holds the file any more, so its handles drop without the lock
+// Runs once no call holds the file any more, so its handles drop without the lock and none of its calls is admitted.
+// Control held by the closing client ends before the free, or a client allocated at the freed address would inherit it
 int32_t gfxfb_node::on_close(fs::file* f) {
-    heap::kfree_delete(&client_of(f));
+    client* closing = &client_of(f);
+
+    sync::mutex_lock(m_clients_lock);
+    if (m_controller == closing) {
+        m_controller = nullptr;
+        m_control_taken = false;
+    }
+
+    sync::mutex_unlock(m_clients_lock);
+
+    heap::kfree_delete(closing);
+
     return fs::OK;
 }
 
@@ -398,6 +410,18 @@ int32_t gfxfb_node::create_buffer(client& owner, uint64_t args_addr) {
         return fs::ERR_INVAL;
     }
 
+    if (!begin_controlled_call(owner)) {
+        return fs::ERR_BUSY;
+    }
+
+    rc = create_buffer_under_handle(owner, args, args_addr);
+    end_controlled_call(rc == fs::OK);
+
+    return rc;
+}
+
+// Creates the buffer `args` asks for, under a free handle of `owner`, and writes the reply to `args_addr`
+int32_t gfxfb_node::create_buffer_under_handle(client& owner, gfxfb_buffer_args& args, uint64_t args_addr) {
     uint32_t handle = take_handle(owner);
     if (handle == NO_HANDLE) {
         return fs::ERR_NOMEM;
@@ -411,7 +435,7 @@ int32_t gfxfb_node::create_buffer(client& owner, uint64_t args_addr) {
     }
 
     buffer* created = nullptr;
-    rc = m_display->create_buffer(args.width, args.height, args.format, &created);
+    int32_t rc = m_display->create_buffer(args.width, args.height, args.format, &created);
     if (rc != OK) {
         heap::kfree_delete(record);
         end_creation(owner, handle, nullptr);
@@ -445,21 +469,55 @@ int32_t gfxfb_node::create_buffer(client& owner, uint64_t args_addr) {
 int32_t gfxfb_node::destroy_buffer(client& owner, uint64_t handle) {
     rc::strong_ref<buffer_record> dropped;
 
-    sync::mutex_lock(m_handles_lock);
+    sync::mutex_lock(m_clients_lock);
     if (handle >= 1 && handle <= GFXFB_CLIENT_BUFFERS_MAX) {
         dropped.swap(owner.buffers[handle - 1]);
     }
 
-    sync::mutex_unlock(m_handles_lock);
+    sync::mutex_unlock(m_clients_lock);
 
     return dropped ? fs::OK : fs::ERR_INVAL;
+}
+
+// True when `caller`'s call is admitted, false while another client controls or reserves control. An admitted call
+// reserves control for `caller`, takes control if it succeeds and must end through `end_controlled_call`
+bool gfxfb_node::begin_controlled_call(client& caller) {
+    sync::mutex_lock(m_clients_lock);
+    if (!m_controller) {
+        m_controller = &caller;
+    }
+
+    bool is_controller = m_controller == &caller;
+    if (is_controller) {
+        m_controller_calls++;
+    }
+
+    sync::mutex_unlock(m_clients_lock);
+
+    return is_controller;
+}
+
+// Ends a call `begin_controlled_call` admitted: its client takes control when the call succeeded, and loses its
+// reservation once the last of its admitted calls ends with none of them having succeeded
+void gfxfb_node::end_controlled_call(bool succeeded) {
+    sync::mutex_lock(m_clients_lock);
+    m_controller_calls--;
+    if (succeeded) {
+        m_control_taken = true;
+    }
+
+    if (!m_control_taken && m_controller_calls == 0) {
+        m_controller = nullptr;
+    }
+
+    sync::mutex_unlock(m_clients_lock);
 }
 
 // Holds the lowest free handle of `owner` for a creation, or returns NO_HANDLE when every handle is in use
 uint32_t gfxfb_node::take_handle(client& owner) {
     uint32_t handle = NO_HANDLE;
 
-    sync::mutex_lock(m_handles_lock);
+    sync::mutex_lock(m_clients_lock);
     for (uint32_t i = 0; i < GFXFB_CLIENT_BUFFERS_MAX; i++) {
         if (!owner.buffers[i] && !owner.pending[i]) {
             owner.pending[i] = true;
@@ -468,7 +526,7 @@ uint32_t gfxfb_node::take_handle(client& owner) {
         }
     }
 
-    sync::mutex_unlock(m_handles_lock);
+    sync::mutex_unlock(m_clients_lock);
 
     return handle;
 }
@@ -476,13 +534,13 @@ uint32_t gfxfb_node::take_handle(client& owner) {
 // Ends the creation holding `handle`, which then names `record` and takes over the caller's reference to it, or names
 // nothing when `record` is null
 void gfxfb_node::end_creation(client& owner, uint32_t handle, buffer_record* record) {
-    sync::mutex_lock(m_handles_lock);
+    sync::mutex_lock(m_clients_lock);
     owner.pending[handle - 1] = false;
     if (record) {
         owner.buffers[handle - 1] = rc::strong_ref<buffer_record>::adopt(record);
     }
 
-    sync::mutex_unlock(m_handles_lock);
+    sync::mutex_unlock(m_clients_lock);
 }
 
 // The buffer mmap maps from `offset`, with `offset_in_buffer` set to where the offset falls in it, or null when the
@@ -497,14 +555,14 @@ rc::strong_ref<buffer_record> gfxfb_node::find_buffer_at(
 
     rc::strong_ref<buffer_record> found;
 
-    sync::mutex_lock(m_handles_lock);
+    sync::mutex_lock(m_clients_lock);
     if (handle == 0) {
         found = m_primary_record;
     } else if (handle <= GFXFB_CLIENT_BUFFERS_MAX) {
         found = owner.buffers[handle - 1];
     }
 
-    sync::mutex_unlock(m_handles_lock);
+    sync::mutex_unlock(m_clients_lock);
 
     return found;
 }
