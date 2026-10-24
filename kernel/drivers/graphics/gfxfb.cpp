@@ -1,10 +1,12 @@
 #include "drivers/graphics/gfxfb.h"
 #include "boot/boot_services.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "drivers/graphics/gfxfb_node.h"
 #include "fs/devfs/devfs.h"
 #include "fs/file.h"
 #include "fs/fs.h"
+#include "fs/fstypes.h"
 #include "fs/node.h"
 #include "mm/heap.h"
 #include "mm/mm.h"
@@ -12,6 +14,9 @@
 #include "mm/pmm_types.h"
 #include "mm/uaccess.h"
 #include "mm/vma.h"
+#include "sched/sched.h"
+#include "signals/signal.h"
+#include "sync/poll.h"
 
 namespace gfxfb {
 
@@ -105,6 +110,43 @@ static int32_t to_fs_error(int32_t rc) {
     case ERR_UNSUPPORTED: return fs::ERR_NOSYS;
     default:              return fs::ERR_IO;
     }
+}
+
+// The event reporting how the present of `handle` on `output` ended, with a frame and a time only for one that latched
+static gfxfb_event present_event(uint32_t output, uint32_t handle, const present_result& result) {
+    bool latched = result.status == GFXFB_PRESENT_LATCHED;
+
+    return {
+        .type         = GFXFB_EVENT_PRESENT,
+        .output       = output,
+        .status       = result.status,
+        .handle       = handle,
+        .frame        = latched ? result.frame : 0,
+        .timestamp_ns = latched ? result.timestamp_ns : 0,
+    };
+}
+
+// True while `owner` holds an unread event of its present on `output`
+static bool has_unread_present_event(client& owner, uint32_t output) {
+    bool found = false;
+
+    sync::irq_state state = sync::spin_lock_irqsave(owner.events_lock);
+    for (uint32_t i = 0; i < owner.event_count && !found; i++) {
+        found = owner.events[(owner.first_event + i) % CLIENT_EVENTS_MAX].output == output;
+    }
+
+    sync::spin_unlock_irqrestore(owner.events_lock, state);
+
+    return found;
+}
+
+// Appends `event` to `owner`'s events, which always have room, since an output holds one present at a time and a
+// present fails while its client holds the event of the last one on its output
+static void queue_event(client& owner, const gfxfb_event& event) {
+    sync::irq_state state = sync::spin_lock_irqsave(owner.events_lock);
+    owner.events[(owner.first_event + owner.event_count) % CLIENT_EVENTS_MAX] = event;
+    owner.event_count++;
+    sync::spin_unlock_irqrestore(owner.events_lock, state);
 }
 
 void buffer_record::take(buffer* buf) {
@@ -250,6 +292,8 @@ int32_t gfxfb_node::open(fs::file* f, uint32_t) {
         return fs::ERR_NOMEM;
     }
 
+    owner->events_lock = sync::SPINLOCK_INIT;
+    owner->event_waiters.init();
     f->set_private_data(owner);
     m_was_opened.store_relaxed(true);
 
@@ -260,6 +304,14 @@ int32_t gfxfb_node::open(fs::file* f, uint32_t) {
 // Control held by the closing client ends before the free, or a client allocated at the freed address would inherit it
 int32_t gfxfb_node::on_close(fs::file* f) {
     client* closing = &client_of(f);
+
+    // Each accepted present's end queues an event in its client, which must outlive those ends and keeps control
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    while (holds_unended_present(*closing)) {
+        state = sync::wait(closing->event_waiters, m_outputs_lock, state);
+    }
+
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
 
     sync::mutex_lock(m_clients_lock);
     if (m_controller == closing) {
@@ -272,6 +324,52 @@ int32_t gfxfb_node::on_close(fs::file* f) {
     heap::kfree_delete(closing);
 
     return fs::OK;
+}
+
+ssize_t gfxfb_node::read(fs::file* f, void* buf, size_t count, uint32_t flags) {
+    if (count < sizeof(gfxfb_event)) {
+        return fs::ERR_INVAL;
+    }
+
+    client& reader = client_of(f);
+    bool may_wait = !(flags & fs::O_NONBLOCK);
+    size_t taken = 0;
+
+    sync::irq_state state = sync::spin_lock_irqsave(reader.events_lock);
+    while (reader.event_count == 0 && may_wait && !signals::interrupt_pending(sched::current())) {
+        state = sync::wait(reader.event_waiters, reader.events_lock, state);
+    }
+
+    for (; taken < count / sizeof(gfxfb_event) && reader.event_count > 0; taken++) {
+        string::memcpy(
+            static_cast<uint8_t*>(buf) + taken * sizeof(gfxfb_event),
+            &reader.events[reader.first_event],
+            sizeof(gfxfb_event));
+
+        reader.first_event = (reader.first_event + 1) % CLIENT_EVENTS_MAX;
+        reader.event_count--;
+    }
+
+    sync::spin_unlock_irqrestore(reader.events_lock, state);
+
+    if (taken == 0) {
+        return may_wait ? fs::ERR_INTR : fs::ERR_AGAIN;
+    }
+
+    return static_cast<ssize_t>(taken * sizeof(gfxfb_event));
+}
+
+uint32_t gfxfb_node::poll(fs::file* f, sync::poll_table* pt) {
+    client& poller = client_of(f);
+    if (pt) {
+        sync::poll_subscribe(*pt, poller.event_waiters);
+    }
+
+    sync::irq_state state = sync::spin_lock_irqsave(poller.events_lock);
+    bool holds_events = poller.event_count > 0;
+    sync::spin_unlock_irqrestore(poller.events_lock, state);
+
+    return holds_events ? sync::POLL_IN : 0;
 }
 
 int32_t gfxfb_node::ioctl(fs::file* f, uint32_t cmd, uint64_t arg) {
@@ -539,7 +637,7 @@ int32_t gfxfb_node::present(client& owner, uint64_t args_addr) {
         return fs::ERR_BUSY;
     }
 
-    rc = queue_present(args.output, record);
+    rc = queue_present(owner, args.output, args.handle, record);
     end_controlled_call(rc == fs::OK);
 
     return rc;
@@ -569,14 +667,22 @@ rc::strong_ref<buffer_record> gfxfb_node::find_buffer_to_present(client& owner, 
 }
 
 // Gives `record`'s buffer to the display for `output`'s next vertical blank, or returns `fs::ERR_BUSY` while the output
-// holds a present. The output holds the buffer before the call, since the display may end the present inside the call
-int32_t gfxfb_node::queue_present(uint32_t output, const rc::strong_ref<buffer_record>& record) {
+// holds a present or `owner` holds the event of its last present there
+int32_t gfxfb_node::queue_present(
+    client& owner,
+    uint32_t output,
+    uint32_t handle,
+    const rc::strong_ref<buffer_record>& record
+) {
     sync::mutex_lock(m_present_locks[output]);
 
+    // The output holds the present before the display gets it, since the display may end it inside the call
     sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
-    bool is_free = !m_outputs[output].queued;
+    bool is_free = !m_outputs[output].queued && !has_unread_present_event(owner, output);
     if (is_free) {
         m_outputs[output].queued = record;
+        m_outputs[output].presenter = &owner;
+        m_outputs[output].presented_handle = handle;
     }
 
     sync::spin_unlock_irqrestore(m_outputs_lock, state);
@@ -593,6 +699,7 @@ int32_t gfxfb_node::queue_present(uint32_t output, const rc::strong_ref<buffer_r
     if (rc != OK) {
         state = sync::spin_lock_irqsave(m_outputs_lock);
         refused.swap(m_outputs[output].queued);
+        m_outputs[output].presenter = nullptr;
         sync::spin_unlock_irqrestore(m_outputs_lock, state);
     }
 
@@ -622,7 +729,25 @@ __PRIVILEGED_CODE void gfxfb_node::present_done(uint32_t output, const present_r
         break;
     }
 
+    // The wake stays under the lock, since a closing presenter is freed once it takes the lock and finds no unended
+    // present of its own
+    client* presenter = records.presenter;
+    records.presenter = nullptr;
+    queue_event(*presenter, present_event(output, records.presented_handle, result));
+    sync::wake_all(presenter->event_waiters);
+
     sync::spin_unlock_irqrestore(m_outputs_lock, state);
+}
+
+// True while an output holds a present of `owner` that the display has not ended. The caller holds `m_outputs_lock`
+bool gfxfb_node::holds_unended_present(const client& owner) const {
+    for (const output_records& records : m_outputs) {
+        if (records.presenter == &owner) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // True when `caller`'s call is admitted, false while another client controls or reserves control. An admitted call

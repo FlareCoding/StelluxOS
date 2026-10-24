@@ -15,6 +15,8 @@
 #include "mm/paging.h"
 #include "mm/vma.h"
 #include "mm/vmm.h"
+#include "sched/sched.h"
+#include "sync/poll.h"
 
 using test_helpers::spin_wait;
 using test_helpers::spin_wait_ge;
@@ -175,11 +177,33 @@ struct gfxfb_test_node {
     char               path[NODE_PATH_BYTES];
 };
 
+// A close run on a task of its own: the file it closes and the flag the task sets once the close returns
+struct task_close {
+    fs::file*              file;
+    sync::atomic<uint32_t> done;
+};
+
+// A read run on a task of its own: the file, size and flags it reads with, its result and the flag set once it returns
+struct task_read {
+    fs::file*              file;
+    size_t                 size;
+    uint32_t               flags;
+    ssize_t                result;
+    sync::atomic<uint32_t> done;
+};
+
 // A base buffer's memory is never freed, so every test's buffers use this one allocation
 static pmm::phys_addr_t g_buffer_phys;
 
 // devfs never removes a node, so each test's node takes the next number
 static uint64_t g_next_node_number;
+
+// The close `closes_before_deadline()` runs, static since a close that never returns leaves its task pointing to it
+static task_close g_deadline_close;
+
+// The read `reads_before_deadline()` runs and the events it takes, static since its task may outlive the call
+static task_read g_deadline_read;
+static gfxfb::gfxfb_event g_deadline_read_events[gfxfb::CLIENT_EVENTS_MAX];
 
 // Allocates the buffer memory every test shares, before the suite's first test
 static int32_t allocate_buffer_memory() {
@@ -461,9 +485,96 @@ static int32_t present_buffer(fs::file* file, user_page& page, uint32_t output, 
     return file_ioctl(file, page, gfxfb::GFXFB_PRESENT, page.addr);
 }
 
-// Ends the present the test's node holds on `output` with `status`, as its display would
-static void end_present(const gfxfb_test_node& test, uint32_t output, uint32_t status) {
-    RUN_ELEVATED(test.node->present_done(output, {.status = status}));
+// Ends the unended present the test's node holds on `output` with `status`, as its display would, reporting `frame` and
+// `timestamp_ns` with it
+static void end_present(
+    const gfxfb_test_node& test,
+    uint32_t output,
+    uint32_t status,
+    uint64_t frame = 0,
+    uint64_t timestamp_ns = 0
+) {
+    RUN_ELEVATED(test.node->present_done(output, {.status = status, .frame = frame, .timestamp_ns = timestamp_ns}));
+}
+
+// Reads one event from `file` without waiting, or returns a record of zeros when the read fails
+static gfxfb::gfxfb_event read_event(fs::file* file) {
+    gfxfb::gfxfb_event event = {};
+    if (fs::read(file, &event, sizeof(event), fs::O_NONBLOCK) != static_cast<ssize_t>(sizeof(event))) {
+        return {};
+    }
+
+    return event;
+}
+
+// What `file`'s node reports `file` ready for, subscribing nothing
+static uint32_t poll_file(fs::file* file) {
+    uint32_t ready = 0;
+    RUN_ELEVATED(ready = file->get_node()->poll(file, nullptr));
+
+    return ready;
+}
+
+// Closes the file of `arg`, a `task_close`, then sets its flag
+static void close_on_a_task(void* arg) {
+    task_close* request = static_cast<task_close*>(arg);
+    fs::close(request->file);
+    request->done.store_release(1);
+    sched::exit(0);
+}
+
+// Starts closing `file` on a task of its own, which sets `request.done` once the close returns, or returns nullptr when
+// the task cannot start
+static sched::task* start_close(task_close& request, fs::file* file) {
+    request.file = file;
+    request.done.store_relaxed(0);
+
+    return test_helpers::start_pinned_task(close_on_a_task, &request, "gfxfb_close");
+}
+
+// True when `file`'s close, run on a task of its own, returns before the tests' deadline, so a close that never returns
+// fails its test instead of hanging the suite
+static bool closes_before_deadline(fs::file* file) {
+    sched::task* closer = start_close(g_deadline_close, file);
+    bool is_closed = closer != nullptr && spin_wait(g_deadline_close.done);
+    if (is_closed) {
+        unpin(closer);
+    }
+
+    return is_closed;
+}
+
+// Reads the file of `arg`, a `task_read`, into the deadline read's events, then records the result and sets its flag
+static void read_on_a_task(void* arg) {
+    task_read* request = static_cast<task_read*>(arg);
+    request->result = fs::read(request->file, g_deadline_read_events, request->size, request->flags);
+    request->done.store_release(1);
+    sched::exit(0);
+}
+
+// True when a read of `size` bytes of `file` with `flags`, run on a task of its own, returns `expected` before the
+// tests' deadline. A read still waiting then is killed, so it takes no later event and its test fails, never hangs
+static bool reads_before_deadline(fs::file* file, size_t size, uint32_t flags, ssize_t expected) {
+    g_deadline_read.file = file;
+    g_deadline_read.size = size;
+    g_deadline_read.flags = flags;
+    g_deadline_read.done.store_relaxed(0);
+
+    sched::task* reader = test_helpers::start_pinned_task(read_on_a_task, &g_deadline_read, "gfxfb_read");
+    if (!reader) {
+        return false;
+    }
+
+    bool returned_in_time = spin_wait(g_deadline_read.done);
+    if (!returned_in_time) {
+        RUN_ELEVATED(sched::force_wake_for_kill(reader));
+    }
+
+    if (spin_wait(g_deadline_read.done)) {
+        unpin(reader);
+    }
+
+    return returned_in_time && g_deadline_read.result == expected;
 }
 
 // Maps `length` bytes of `file` from `offset` into `ctx`, readable and writable, returning the address or 0
@@ -1863,16 +1974,19 @@ TEST(gfxfb, an_output_keeps_a_presented_buffer_until_another_latches) {
     EXPECT_EQ(g_latching_display.presented, &g_latching_display.created[0]);
     EXPECT_EQ(g_latching_display.presented_output, static_cast<uint32_t>(0));
 
-    // The output holds one present at a time, so a second fails without reaching the display until the first latches
+    // The output holds one present at a time, so a second fails without reaching the display until the first latches,
+    // and the file reads the first's event before it presents again
     EXPECT_EQ(present_buffer(file, page, 0, second), fs::ERR_BUSY);
     EXPECT_EQ(g_latching_display.present_calls, static_cast<uint32_t>(1));
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).handle, first);
     ASSERT_EQ(present_buffer(file, page, 0, second), fs::OK);
 
     // `first` is shown and `second` held for its present, so `first` comes back alone once `second` latches
     ASSERT_EQ(destroy_buffer(file, page, first), fs::OK);
     ASSERT_EQ(destroy_buffer(file, page, second), fs::OK);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).handle, second);
     ASSERT_TRUE(spin_wait_ge(g_latching_display.released_count, 1));
     EXPECT_EQ(g_latching_display.released_count.load_acquire(), static_cast<uint32_t>(1));
     EXPECT_EQ(g_latching_display.last_released, &g_latching_display.created[0]);
@@ -1881,6 +1995,7 @@ TEST(gfxfb, an_output_keeps_a_presented_buffer_until_another_latches) {
     ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
     EXPECT_EQ(g_latching_display.presented, &g_latching_display.bases[0]);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).type, gfxfb::GFXFB_EVENT_PRESENT);
     ASSERT_TRUE(spin_wait_ge(g_latching_display.released_count, 2));
     EXPECT_EQ(g_latching_display.released_count.load_acquire(), static_cast<uint32_t>(2));
     EXPECT_EQ(g_latching_display.last_released, &g_latching_display.created[1]);
@@ -1893,6 +2008,7 @@ TEST(gfxfb, an_output_keeps_a_presented_buffer_until_another_latches) {
     uint32_t replacing = page.at<gfxfb::gfxfb_buffer_args>(0)->handle;
     ASSERT_EQ(present_buffer(file, page, 1, replacing), fs::OK);
     end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).output, static_cast<uint32_t>(1));
     ASSERT_EQ(destroy_buffer(file, page, replacing), fs::OK);
 
     ASSERT_EQ(present_buffer(file, page, 1, 0), fs::OK);
@@ -1903,7 +2019,7 @@ TEST(gfxfb, an_output_keeps_a_presented_buffer_until_another_latches) {
     EXPECT_EQ(g_latching_display.released_count.load_acquire(), static_cast<uint32_t>(3));
     EXPECT_EQ(g_latching_display.last_released, &g_latching_display.created[2]);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_bad_present_display;
@@ -1950,9 +2066,10 @@ TEST(gfxfb, present_refuses_requests_before_control) {
     EXPECT_EQ(g_bad_present_display.create_calls, static_cast<uint32_t>(3));
     EXPECT_EQ(present_buffer(controller, page, 0, 0), fs::OK);
     EXPECT_EQ(g_bad_present_display.present_calls, static_cast<uint32_t>(1));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
 
-    fs::close(file);
-    fs::close(controller);
+    ASSERT_TRUE(closes_before_deadline(file));
+    ASSERT_TRUE(closes_before_deadline(controller));
 }
 
 static recording_display g_full_present_display;
@@ -1978,8 +2095,9 @@ TEST(gfxfb, a_full_file_presents_its_last_handle) {
     EXPECT_EQ(g_full_present_display.present_calls, static_cast<uint32_t>(0));
     EXPECT_EQ(present_buffer(file, page, 0, gfxfb::GFXFB_CLIENT_BUFFERS_MAX), fs::OK);
     EXPECT_EQ(g_full_present_display.presented, &g_full_present_display.created[gfxfb::GFXFB_CLIENT_BUFFERS_MAX - 1]);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_refused_present_display;
@@ -2016,8 +2134,9 @@ TEST(gfxfb, present_returns_the_display_refusals_as_file_errors) {
     ASSERT_TRUE(spin_wait_ge(g_refused_present_display.released_count, 1));
     EXPECT_EQ(g_refused_present_display.last_released, &g_refused_present_display.created[0]);
     EXPECT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 // The boot display presents nothing, and its refusal takes no control, so another file's creation reaches the display
@@ -2036,8 +2155,8 @@ TEST(gfxfb, boot_display_presents_nothing) {
     EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, gfxfb::GFXFB_FORMAT_XRGB8888),
               fs::ERR_NOSYS);
 
-    fs::close(other);
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(other));
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_early_end_display;
@@ -2065,6 +2184,7 @@ TEST(gfxfb, a_present_that_latches_inside_the_display_call_is_shown) {
 
     g_early_end_display.while_presenting = latch_while_presenting;
     ASSERT_EQ(present_buffer(file, page, 0, shown), fs::OK);
+    EXPECT_EQ(read_event(file).handle, shown);
 
     // The output shows `shown`, so only `unshown` comes back, and the output takes the next present at once
     ASSERT_EQ(destroy_buffer(file, page, shown), fs::OK);
@@ -2078,7 +2198,7 @@ TEST(gfxfb, a_present_that_latches_inside_the_display_call_is_shown) {
     ASSERT_TRUE(spin_wait_ge(g_early_end_display.released_count, 2));
     EXPECT_EQ(g_early_end_display.last_released, &g_early_end_display.created[0]);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_dark_end_display;
@@ -2105,9 +2225,11 @@ TEST(gfxfb, a_dark_end_drops_the_present_and_a_failed_end_keeps_it) {
     // The output shows `shown` with its handle gone, so the dark end hands back `darkened` alone
     ASSERT_EQ(present_buffer(file, page, 0, shown), fs::OK);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).status, gfxfb::GFXFB_PRESENT_LATCHED);
     ASSERT_EQ(destroy_buffer(file, page, shown), fs::OK);
     ASSERT_EQ(present_buffer(file, page, 0, darkened), fs::OK);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_DARK);
+    EXPECT_EQ(read_event(file).status, gfxfb::GFXFB_PRESENT_DARK);
     ASSERT_EQ(destroy_buffer(file, page, darkened), fs::OK);
     ASSERT_TRUE(spin_wait_ge(g_dark_end_display.released_count, 1));
     EXPECT_EQ(g_dark_end_display.released_count.load_acquire(), static_cast<uint32_t>(1));
@@ -2115,15 +2237,19 @@ TEST(gfxfb, a_dark_end_drops_the_present_and_a_failed_end_keeps_it) {
 
     ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).status, gfxfb::GFXFB_PRESENT_LATCHED);
     ASSERT_TRUE(spin_wait_ge(g_dark_end_display.released_count, 2));
     EXPECT_EQ(g_dark_end_display.last_released, &g_dark_end_display.created[0]);
 
-    // The output shows `shown_when_failed` with its handle gone when the present of `failed` ends failed
+    // The output shows `shown_when_failed` with its handle gone when the present of `failed` ends failed, and holds
+    // that present with its event read
     ASSERT_EQ(present_buffer(file, page, 0, shown_when_failed), fs::OK);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).status, gfxfb::GFXFB_PRESENT_LATCHED);
     ASSERT_EQ(destroy_buffer(file, page, shown_when_failed), fs::OK);
     ASSERT_EQ(present_buffer(file, page, 0, failed), fs::OK);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_FAILED);
+    EXPECT_EQ(read_event(file).status, gfxfb::GFXFB_PRESENT_FAILED);
     EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_BUSY);
     EXPECT_EQ(g_dark_end_display.present_calls, static_cast<uint32_t>(5));
 
@@ -2135,7 +2261,7 @@ TEST(gfxfb, a_dark_end_drops_the_present_and_a_failed_end_keeps_it) {
     EXPECT_EQ(g_dark_end_display.released_count.load_acquire(), static_cast<uint32_t>(3));
     EXPECT_EQ(g_dark_end_display.last_released, &g_dark_end_display.created[3]);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_interrupt_end_display;
@@ -2155,19 +2281,20 @@ TEST(gfxfb, a_latch_with_interrupts_disabled_hands_the_replaced_buffer_back) {
     ASSERT_NE(replaced, static_cast<uint32_t>(0));
     ASSERT_EQ(present_buffer(file, page, 0, replaced), fs::OK);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).handle, replaced);
     ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
     ASSERT_EQ(destroy_buffer(file, page, replaced), fs::OK);
 
     RUN_ELEVATED({
         uint64_t flags = cpu::irq_save();
-        test.node->present_done(0, {.status = gfxfb::GFXFB_PRESENT_LATCHED});
+        test.node->present_done(0, {.status = gfxfb::GFXFB_PRESENT_LATCHED, .frame = 0, .timestamp_ns = 0});
         cpu::irq_restore(flags);
     });
 
     ASSERT_TRUE(spin_wait_ge(g_interrupt_end_display.released_count, 1));
     EXPECT_EQ(g_interrupt_end_display.last_released, &g_interrupt_end_display.created[0]);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_present_control_display;
@@ -2196,6 +2323,7 @@ TEST(gfxfb, a_present_takes_control_as_a_creation_does) {
     EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
     EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(presenter).status, gfxfb::GFXFB_PRESENT_LATCHED);
     g_present_control_display.present_answer = gfxfb::ERR_DEVICE;
     EXPECT_EQ(present_buffer(presenter, page, 0, 0), fs::ERR_IO);
     EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
@@ -2207,16 +2335,17 @@ TEST(gfxfb, a_present_takes_control_as_a_creation_does) {
     EXPECT_EQ(g_present_control_display.create_calls, static_cast<uint32_t>(0));
 
     // With no file in control, a present the display refuses takes none, so another file's creation succeeds
-    fs::close(presenter);
+    ASSERT_TRUE(closes_before_deadline(presenter));
     EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_IO);
     g_present_control_display.present_answer = gfxfb::OK;
     ASSERT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
     EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
 
-    // `next` closes with its present still held, and `other`'s present, refused with ERR_BUSY while the output holds
-    // it, takes no control either
+    // The output holds `next`'s present for good once it ends failed, so after `next` closes, `other`'s present,
+    // refused with ERR_BUSY by that held present, takes no control either
     ASSERT_EQ(present_buffer(next, page, 0, 0), fs::OK);
-    fs::close(next);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_FAILED);
+    ASSERT_TRUE(closes_before_deadline(next));
     EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
     fs::file* last = fs::open(test.path, fs::O_RDWR);
     ASSERT_NOT_NULL(last);
@@ -2224,8 +2353,8 @@ TEST(gfxfb, a_present_takes_control_as_a_creation_does) {
     EXPECT_EQ(present_buffer(other, page, 0, 0), fs::ERR_BUSY);
     EXPECT_EQ(g_present_control_display.present_calls, static_cast<uint32_t>(5));
 
-    fs::close(last);
-    fs::close(other);
+    ASSERT_TRUE(closes_before_deadline(last));
+    ASSERT_TRUE(closes_before_deadline(other));
 }
 
 static recording_display g_present_while_creating_display;
@@ -2315,12 +2444,12 @@ TEST(gfxfb, a_present_during_a_creation_of_its_file_takes_control) {
     EXPECT_EQ(present_buffer(rival, page, 0, 2), fs::ERR_INVAL);
 
     // Once `creating` closes, a creation the display refuses takes no control, so another file's then succeeds
-    fs::close(creating);
+    ASSERT_TRUE(closes_before_deadline(creating));
     EXPECT_EQ(request_buffer(rival, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
     EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
 
-    fs::close(next);
-    fs::close(rival);
+    ASSERT_TRUE(closes_before_deadline(next));
+    ASSERT_TRUE(closes_before_deadline(rival));
 }
 
 static recording_display g_refused_while_reserving_display;
@@ -2415,9 +2544,11 @@ TEST(gfxfb, a_present_refused_during_a_creation_takes_no_control) {
     ASSERT_NOT_NULL(presenter);
     ASSERT_NOT_NULL(rival);
 
-    // `holder` closes with its present held, so output 0 refuses the next present while no file controls the buffers
+    // Output 0 holds `holder`'s present for good once it ends failed, so after `holder` closes, output 0 refuses the
+    // next present while no file controls the buffers
     ASSERT_EQ(present_buffer(holder, page, 0, 0), fs::OK);
-    fs::close(holder);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_FAILED);
+    ASSERT_TRUE(closes_before_deadline(holder));
 
     g_refused_presenter = presenter;
     g_refusals_rival = rival;
@@ -2452,8 +2583,8 @@ TEST(gfxfb, a_present_refused_during_a_creation_takes_no_control) {
     g_refused_while_reserving_display.create_result = gfxfb::OK;
     EXPECT_NE(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
 
-    fs::close(rival);
-    fs::close(presenter);
+    ASSERT_TRUE(closes_before_deadline(rival));
+    ASSERT_TRUE(closes_before_deadline(presenter));
 }
 
 static recording_display g_serialized_display;
@@ -2480,10 +2611,11 @@ static void present_from_a_second_task(void*) {
     sched::exit(0);
 }
 
-// Runs inside the first present's display call: ends that present latched, so the output holds none, then starts the
-// second present's task and records whether it blocks and how many presents the display has taken meanwhile
+// Runs inside the first present's display call: ends that present latched and reads its event, then starts the second
+// present's task and records whether it blocks and how many presents the display has taken meanwhile
 static void present_again_while_presenting() {
     end_present(g_serialized_node, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    read_event(g_serialized_file);
     g_second_presenter = test_helpers::start_pinned_task(present_from_a_second_task, nullptr, "gfxfb_present");
     g_second_presenter_blocked = g_second_presenter && test_helpers::blocks_before_deadline(g_second_presenter);
     g_present_calls_while_blocked = g_serialized_display.present_calls;
@@ -2516,12 +2648,346 @@ TEST(gfxfb, presents_for_one_output_reach_the_display_one_at_a_time) {
     EXPECT_EQ(g_present_calls_while_blocked, static_cast<uint32_t>(1));
 
     ASSERT_TRUE(spin_wait(g_second_present_done));
-    EXPECT_EQ(g_second_present_result, fs::OK);
+    ASSERT_EQ(g_second_present_result, fs::OK);
     EXPECT_EQ(g_serialized_display.present_calls, static_cast<uint32_t>(2));
     EXPECT_EQ(g_serialized_display.presented, &g_serialized_display.bases[0]);
 
     unpin(g_second_presenter);
-    fs::close(file);
+    end_present(g_serialized_node, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_event_display;
+
+// The frame count and time the test's ends report, so an event that drops or swaps them fails its check
+static constexpr uint64_t LATCH_FRAME = 120;
+static constexpr uint64_t LATCH_TIME_NS = 5000000000;
+
+// Each end of a present the display accepted reaches the presenting file alone as one event naming the output, the end
+// and the handle, with the reported frame and time only for a latch, while a present the display refuses leaves none
+TEST(gfxfb, an_ended_present_reaches_its_file_as_an_event) {
+    light_output(g_event_display, 0, false);
+    light_output(g_event_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_event_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* other = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(other);
+
+    uint32_t latched = create_output_0_buffer(file, page);
+    ASSERT_NE(latched, static_cast<uint32_t>(0));
+    g_event_display.present_answer = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(present_buffer(file, page, 0, latched), fs::ERR_IO);
+    g_event_display.present_answer = gfxfb::OK;
+    ASSERT_EQ(present_buffer(file, page, 0, latched), fs::OK);
+    EXPECT_EQ(poll_file(file), static_cast<uint32_t>(0));
+
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED, LATCH_FRAME, LATCH_TIME_NS);
+    EXPECT_EQ(poll_file(file), sync::POLL_IN);
+    EXPECT_EQ(poll_file(other), static_cast<uint32_t>(0));
+    gfxfb::gfxfb_event event = read_event(file);
+    EXPECT_EQ(event.type, gfxfb::GFXFB_EVENT_PRESENT);
+    EXPECT_EQ(event.output, static_cast<uint32_t>(0));
+    EXPECT_EQ(event.status, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(event.handle, latched);
+    EXPECT_EQ(event.frame, LATCH_FRAME);
+    EXPECT_EQ(event.timestamp_ns, LATCH_TIME_NS);
+    EXPECT_EQ(poll_file(file), static_cast<uint32_t>(0));
+
+    // A dark or failed end carries no frame or time, even when the display reports them
+    ASSERT_EQ(present_buffer(file, page, 1, 0), fs::OK);
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_DARK, LATCH_FRAME, LATCH_TIME_NS);
+    event = read_event(file);
+    EXPECT_EQ(event.output, static_cast<uint32_t>(1));
+    EXPECT_EQ(event.status, gfxfb::GFXFB_PRESENT_DARK);
+    EXPECT_EQ(event.handle, static_cast<uint32_t>(0));
+    EXPECT_EQ(event.frame, static_cast<uint64_t>(0));
+    EXPECT_EQ(event.timestamp_ns, static_cast<uint64_t>(0));
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_FAILED, LATCH_FRAME, LATCH_TIME_NS);
+    event = read_event(file);
+    EXPECT_EQ(event.status, gfxfb::GFXFB_PRESENT_FAILED);
+    EXPECT_EQ(event.frame, static_cast<uint64_t>(0));
+    EXPECT_EQ(event.timestamp_ns, static_cast<uint64_t>(0));
+    ASSERT_TRUE(reads_before_deadline(file, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+
+    ASSERT_TRUE(closes_before_deadline(other));
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_whole_events_display;
+
+// A read returns as many whole events as fit, oldest first, across the wrap of the client's event slots, and fails, at
+// once and taking no event, with ERR_INVAL below one event's size and with ERR_AGAIN when non-blocking and empty
+TEST(gfxfb, a_read_returns_whole_events_oldest_first) {
+    light_output(g_whole_events_display, 0, false);
+    light_output(g_whole_events_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_whole_events_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    gfxfb::gfxfb_event events[3] = {};
+    size_t event_size = sizeof(gfxfb::gfxfb_event);
+    ASSERT_TRUE(reads_before_deadline(file, sizeof(events), fs::O_NONBLOCK, fs::ERR_AGAIN));
+    ASSERT_TRUE(reads_before_deadline(file, event_size - 1, 0, fs::ERR_INVAL));
+
+    // Reading each event before the next present leaves `first_event` at the last slot, so the next two events wrap
+    for (uint32_t i = 1; i < gfxfb::CLIENT_EVENTS_MAX; i++) {
+        ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+        end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+        ASSERT_EQ(read_event(file).output, static_cast<uint32_t>(0));
+    }
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    ASSERT_EQ(present_buffer(file, page, 1, 0), fs::OK);
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_DARK);
+    EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(fs::read(file, events, event_size - 1, fs::O_NONBLOCK), static_cast<ssize_t>(fs::ERR_INVAL));
+    EXPECT_EQ(fs::read(file, events, sizeof(events), fs::O_NONBLOCK), static_cast<ssize_t>(2 * event_size));
+    EXPECT_EQ(events[0].output, static_cast<uint32_t>(1));
+    EXPECT_EQ(events[1].output, static_cast<uint32_t>(0));
+    EXPECT_EQ(events[1].status, gfxfb::GFXFB_PRESENT_DARK);
+    EXPECT_EQ(events[2].type, static_cast<uint32_t>(0));
+
+    // A size between one event and two takes the oldest event alone and leaves the next
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    ASSERT_EQ(present_buffer(file, page, 1, 0), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(fs::read(file, events, event_size + 1, fs::O_NONBLOCK), static_cast<ssize_t>(event_size));
+    EXPECT_EQ(events[0].output, static_cast<uint32_t>(0));
+    EXPECT_EQ(read_event(file).output, static_cast<uint32_t>(1));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_unread_event_display;
+
+// A file's present fails with ERR_BUSY, reaching no display and keeping the file's control, while the file holds the
+// unread event of its last present on that output, which reading alone clears, and a refused present adds no event
+TEST(gfxfb, an_unread_event_fails_the_next_present_on_its_output) {
+    light_output(g_unread_event_display, 0, false);
+    light_output(g_unread_event_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_unread_event_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(rival);
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(g_unread_event_display.present_calls, static_cast<uint32_t>(1));
+    EXPECT_EQ(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
+
+    // The file holds no event of output 1, and reading output 0's event, the oldest, ends only output 0's refusal
+    ASSERT_EQ(present_buffer(file, page, 1, 0), fs::OK);
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).output, static_cast<uint32_t>(0));
+    EXPECT_EQ(present_buffer(file, page, 1, 0), fs::ERR_BUSY);
+    EXPECT_EQ(g_unread_event_display.present_calls, static_cast<uint32_t>(2));
+
+    g_unread_event_display.present_answer = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_IO);
+    g_unread_event_display.present_answer = gfxfb::OK;
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    EXPECT_EQ(g_unread_event_display.present_calls, static_cast<uint32_t>(4));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).output, static_cast<uint32_t>(1));
+    EXPECT_EQ(read_event(file).output, static_cast<uint32_t>(0));
+    ASSERT_TRUE(reads_before_deadline(file, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+    EXPECT_NE(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
+    ASSERT_TRUE(closes_before_deadline(rival));
+}
+
+static recording_display g_waiting_reader_display;
+
+// The file the readers' tasks read, what their reads returned and the flags set once each returned
+static fs::file* g_waiting_reader_file;
+static gfxfb::gfxfb_event g_waited_event;
+static ssize_t g_waited_read_result;
+static ssize_t g_interrupted_read_result;
+static sync::atomic<uint32_t> g_waited_read_done;
+static sync::atomic<uint32_t> g_interrupted_read_done;
+
+// Reads one event from the readers' file, waiting for it
+static void read_waiting_for_an_event(void*) {
+    g_waited_read_result = fs::read(g_waiting_reader_file, &g_waited_event, sizeof(g_waited_event));
+    g_waited_read_done.store_release(1);
+    sched::exit(0);
+}
+
+// Reads one event from the readers' file, which holds none and has no present pending, so only a kill ends the wait
+static void read_until_interrupted(void*) {
+    gfxfb::gfxfb_event event = {};
+    g_interrupted_read_result = fs::read(g_waiting_reader_file, &event, sizeof(event));
+    g_interrupted_read_done.store_release(1);
+    sched::exit(0);
+}
+
+// A blocking read waits for the file's next event and a subscribed poll is triggered by it, while a kill ends a
+// blocking read that has no event with ERR_INTR
+TEST(gfxfb, the_next_event_wakes_a_blocking_read_and_a_subscribed_poll) {
+    light_output(g_waiting_reader_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_waiting_reader_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    g_waiting_reader_file = file;
+    g_waited_event = {};
+    g_waited_read_result = fs::ERR_IO;
+    g_interrupted_read_result = fs::OK;
+    g_waited_read_done.store_relaxed(0);
+    g_interrupted_read_done.store_relaxed(0);
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    sched::task* reader = test_helpers::start_pinned_task(read_waiting_for_an_event, nullptr, "gfxfb_read");
+    ASSERT_NOT_NULL(reader);
+    EXPECT_TRUE(test_helpers::blocks_before_deadline(reader));
+
+    uint32_t ready_before = sync::POLL_IN;
+    bool triggered_before = true;
+    bool triggered_after = false;
+    RUN_ELEVATED({
+        sync::poll_table table;
+        table.init(sched::current());
+        ready_before = file->get_node()->poll(file, &table);
+        triggered_before = table.triggered.load_acquire() != 0;
+        test.node->present_done(0, {.status = gfxfb::GFXFB_PRESENT_LATCHED, .frame = 0, .timestamp_ns = 0});
+        triggered_after = table.triggered.load_acquire() != 0;
+        sync::poll_cleanup(table);
+    });
+
+    EXPECT_EQ(ready_before, static_cast<uint32_t>(0));
+    EXPECT_FALSE(triggered_before);
+    EXPECT_TRUE(triggered_after);
+    ASSERT_TRUE(spin_wait(g_waited_read_done));
+    EXPECT_EQ(g_waited_read_result, static_cast<ssize_t>(sizeof(gfxfb::gfxfb_event)));
+    EXPECT_EQ(g_waited_event.status, gfxfb::GFXFB_PRESENT_LATCHED);
+    unpin(reader);
+
+    sched::task* interrupted = test_helpers::start_pinned_task(read_until_interrupted, nullptr, "gfxfb_intr");
+    ASSERT_NOT_NULL(interrupted);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(interrupted));
+    RUN_ELEVATED(sched::force_wake_for_kill(interrupted));
+    ASSERT_TRUE(spin_wait(g_interrupted_read_done));
+    EXPECT_EQ(g_interrupted_read_result, static_cast<ssize_t>(fs::ERR_INTR));
+    unpin(interrupted);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_unended_close_display;
+
+// The closes that wait for unended presents, the file's and then the rival's
+static task_close g_waiting_close;
+
+// A closing file waits, through a kill and keeping control, until each of its unended presents ends, a file that never
+// presented closes without waiting, and no end's event reaches another file
+TEST(gfxfb, a_closing_file_waits_for_its_unended_presents) {
+    light_output(g_unended_close_display, 0, false);
+    light_output(g_unended_close_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_unended_close_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    fs::file* bystander = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(rival);
+    ASSERT_NOT_NULL(bystander);
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    ASSERT_EQ(present_buffer(file, page, 1, 0), fs::OK);
+    sched::task* closer = start_close(g_waiting_close, file);
+    ASSERT_NOT_NULL(closer);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    EXPECT_EQ(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
+    ASSERT_TRUE(closes_before_deadline(bystander));
+    EXPECT_EQ(g_waiting_close.done.load_acquire(), static_cast<uint32_t>(0));
+
+    // Output 0's end leaves output 1's present unended, so the woken close waits again, as it does after a kill
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    RUN_ELEVATED(sched::force_wake_for_kill(closer));
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    EXPECT_EQ(g_waiting_close.done.load_acquire(), static_cast<uint32_t>(0));
+    EXPECT_EQ(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
+
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait(g_waiting_close.done));
+    unpin(closer);
+    EXPECT_NE(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
+    EXPECT_EQ(poll_file(rival), static_cast<uint32_t>(0));
+
+    // The rival's close waits for its only unended present, on output 0
+    ASSERT_EQ(present_buffer(rival, page, 0, 0), fs::OK);
+    sched::task* rival_closer = start_close(g_waiting_close, rival);
+    ASSERT_NOT_NULL(rival_closer);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(rival_closer));
+    EXPECT_EQ(g_waiting_close.done.load_acquire(), static_cast<uint32_t>(0));
+
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait(g_waiting_close.done));
+    unpin(rival_closer);
+}
+
+static recording_display g_ended_close_display;
+
+// A closing file waits for no present that latched, failed or was refused, even with an event unread, and the next file
+// reads none of its events
+TEST(gfxfb, a_closing_file_waits_for_no_ended_present) {
+    light_output(g_ended_close_display, 0, false);
+    light_output(g_ended_close_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_ended_close_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    // Output 0's last present is the refused one and output 1's failed one leaves its event unread
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).output, static_cast<uint32_t>(0));
+    g_ended_close_display.present_answer = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_IO);
+    g_ended_close_display.present_answer = gfxfb::OK;
+    ASSERT_EQ(present_buffer(file, page, 1, 0), fs::OK);
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_FAILED);
+    ASSERT_TRUE(closes_before_deadline(file));
+
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(next);
+    ASSERT_TRUE(reads_before_deadline(next, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+    ASSERT_EQ(present_buffer(next, page, 0, 0), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(next).output, static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(next));
 }
 
 // Registration is permanent, so /dev/gfxfb shows `g_registered_display` for the rest of the run
