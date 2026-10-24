@@ -99,8 +99,13 @@
  * its size, returning the bytes read by then, or the failing read's error when
  * there are none. `poll` reports the file readable while it holds an event,
  * and never writable. A file that closes while a present of it has not ended
- * waits for that end, whose event then reaches no file, and keeps control
- * through the wait.
+ * waits for that end, whose event then reaches no file. A closing file that
+ * controls the buffers then drops the events it holds and presents the base
+ * buffer of each output showing another buffer, as a present of handle 0
+ * naming no region. It also waits for the ends of those the device accepts,
+ * and their events reach no file either. It keeps control through both waits.
+ * An output where the base buffer's present does not latch, as on a dark
+ * output or a failed device, keeps showing the buffer it showed.
  *
  * The kernel and userland are built from one tree, so a structure may gain
  * fields when its call gains a feature. Each structure holds fixed-width

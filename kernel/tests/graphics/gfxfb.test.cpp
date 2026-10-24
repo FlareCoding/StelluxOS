@@ -147,6 +147,8 @@ public:
     uint32_t       present_calls = 0; // refused calls included
     gfxfb::buffer* presented = nullptr; // the buffer of the last present accepted
     uint32_t       presented_output = OUTPUTS; // the output of the last present accepted, OUTPUTS before any
+    gfxfb::buffer* presented_on[OUTPUTS] = {}; // the buffer of the last present accepted on each output
+    bool           named_no_region_on[OUTPUTS] = {}; // whether that present passed null regions and a count of 0
 
     bool              got_null_regions = false; // the last present accepted passed null regions
     uint32_t          presented_region_count = 0; // that present's region count
@@ -213,6 +215,14 @@ struct task_read {
     sync::atomic<uint32_t> done;
 };
 
+// A creation run on a task of its own: the file and page it asks through, its result and the flag set once it returns
+struct task_create {
+    fs::file*              file;
+    user_page*             page;
+    int32_t                result;
+    sync::atomic<uint32_t> done;
+};
+
 // A base buffer's memory is never freed, so every test's buffers use this one allocation
 static pmm::phys_addr_t g_buffer_phys;
 
@@ -225,6 +235,9 @@ static task_close g_deadline_close;
 // The read `reads_before_deadline()` runs and the events it takes, static since its task may outlive the call
 static task_read g_deadline_read;
 static gfxfb::gfxfb_event g_deadline_read_events[gfxfb::CLIENT_EVENTS_MAX];
+
+// The creation `creates_before_deadline()` runs, static since one that never returns leaves its task pointing to it
+static task_create g_deadline_create;
 
 // Allocates the buffer memory every test shares, before the suite's first test
 static int32_t allocate_buffer_memory() {
@@ -302,6 +315,8 @@ int32_t recording_display::present(
 
     presented = buf;
     presented_output = output;
+    presented_on[output] = buf;
+    named_no_region_on[output] = regions == nullptr && region_count == 0;
     got_null_regions = regions == nullptr;
     presented_region_count = region_count;
     uint32_t readable_count = regions ? region_count : 0;
@@ -655,6 +670,34 @@ static bool closes_before_deadline(fs::file* file) {
     return is_closed;
 }
 
+// True when `file`'s close, run on a task of its own, presents `fake`'s base buffer on `output` naming no region and
+// waits for it, then returns before the tests' deadline once the helper ends that present latched
+static bool closes_giving_output_back(
+    const gfxfb_test_node& test,
+    const recording_display& fake,
+    fs::file* file,
+    uint32_t output
+) {
+    sched::task* closer = start_close(g_deadline_close, file);
+    if (!closer || !test_helpers::blocks_before_deadline(closer)) {
+        return false;
+    }
+
+    bool presented_base = fake.presented == &fake.bases[output] && fake.presented_output == output;
+    bool named_no_region = fake.got_null_regions && fake.presented_region_count == 0;
+    if (!presented_base || !named_no_region) {
+        return false;
+    }
+
+    end_present(test, output, gfxfb::GFXFB_PRESENT_LATCHED);
+    bool is_closed = spin_wait(g_deadline_close.done);
+    if (is_closed) {
+        unpin(closer);
+    }
+
+    return is_closed;
+}
+
 // Reads the file of `arg`, a `task_read`, into the deadline read's events, then records the result and sets its flag
 static void read_on_a_task(void* arg) {
     task_read* request = static_cast<task_read*>(arg);
@@ -686,6 +729,31 @@ static bool reads_before_deadline(fs::file* file, size_t size, uint32_t flags, s
     }
 
     return returned_in_time && g_deadline_read.result == expected;
+}
+
+// Asks the file of `arg`, a `task_create`, for the small buffer, then records the result and sets its flag
+static void create_on_a_task(void* arg) {
+    task_create* request = static_cast<task_create*>(arg);
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    request->result = request_buffer(request->file, *request->page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format);
+    request->done.store_release(1);
+    sched::exit(0);
+}
+
+// True when a creation of the small buffer on `file` through `page`, run on a task of its own, returns `expected`
+// before the tests' deadline, so a creation that never returns fails its test instead of hanging the suite
+static bool creates_before_deadline(fs::file* file, user_page& page, int32_t expected) {
+    g_deadline_create.file = file;
+    g_deadline_create.page = &page;
+    g_deadline_create.done.store_relaxed(0);
+
+    sched::task* creator = test_helpers::start_pinned_task(create_on_a_task, &g_deadline_create, "gfxfb_create");
+    bool returned_in_time = creator != nullptr && spin_wait(g_deadline_create.done);
+    if (returned_in_time) {
+        unpin(creator);
+    }
+
+    return returned_in_time && g_deadline_create.result == expected;
 }
 
 // Maps `length` bytes of `file` from `offset` into `ctx`, readable and writable, returning the address or 0
@@ -1359,7 +1427,7 @@ TEST(gfxfb, create_buffer_replies_with_the_buffer_layout) {
     EXPECT_EQ(g_create_display.created[0].width, SMALL_BUFFER_WIDTH);
     EXPECT_EQ(g_create_display.created[0].height, SMALL_BUFFER_HEIGHT);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_refusing_display;
@@ -1416,7 +1484,7 @@ TEST(gfxfb, create_buffer_refuses_bad_requests) {
     EXPECT_EQ(g_refusing_display.released_count.load_acquire(), static_cast<uint32_t>(1));
     EXPECT_EQ(g_refusing_display.last_released, &g_refusing_display.created[0]);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 // The boot display creates no buffers, so GFXFB_CREATE_BUFFER fails with ERR_NOSYS on a boot node
@@ -1432,7 +1500,7 @@ TEST(gfxfb, boot_display_creates_no_buffers) {
     uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
     EXPECT_EQ(request_buffer(file, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOSYS);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_unreplied_display;
@@ -1459,7 +1527,7 @@ TEST(gfxfb, a_creation_that_cannot_reply_hands_its_buffer_back) {
     ASSERT_EQ(mm::mm_context_mprotect(page.ctx, page.addr, pmm::PAGE_SIZE, prot), mm::MM_CTX_OK);
     EXPECT_EQ(request_small_buffer(file, page).handle, static_cast<uint32_t>(1));
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_full_display;
@@ -1496,7 +1564,7 @@ TEST(gfxfb, a_file_holds_at_most_client_buffers_max_handles) {
     EXPECT_EQ(request_small_buffer(file, page).handle, static_cast<uint32_t>(5));
     EXPECT_EQ(request_small_buffer(file, page).handle, gfxfb::GFXFB_CLIENT_BUFFERS_MAX);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
     mm::mm_context_release(ctx);
 }
 
@@ -1538,7 +1606,7 @@ TEST(gfxfb, a_creation_holds_its_handle_while_the_display_creates) {
     EXPECT_EQ(g_nested_result, fs::ERR_NOMEM);
     EXPECT_EQ(g_nested_display.create_calls, gfxfb::GFXFB_CLIENT_BUFFERS_MAX);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_destroy_display;
@@ -1570,7 +1638,7 @@ TEST(gfxfb, destroy_buffer_hands_the_buffer_back) {
     EXPECT_EQ(destroy_buffer(file, page, gfxfb::GFXFB_CLIENT_BUFFERS_MAX + 1), fs::ERR_INVAL);
     EXPECT_EQ(g_destroy_display.released_count.load_acquire(), static_cast<uint32_t>(1));
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_buffer_mmap_display;
@@ -1612,7 +1680,7 @@ TEST(gfxfb, mmap_maps_each_buffer_at_its_offset) {
     EXPECT_EQ(base_flags & paging::PAGE_TYPE_MASK, paging::PAGE_NORMAL);
     EXPECT_EQ(first_flags & paging::PAGE_TYPE_MASK, paging::PAGE_WC);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
     mm::mm_context_release(ctx);
 }
 
@@ -1646,7 +1714,7 @@ TEST(gfxfb, mmap_refuses_ranges_outside_a_buffer) {
               static_cast<uintptr_t>(0));
     EXPECT_NE(map_file(file, ctx, kept.map_offset, kept.size), static_cast<uintptr_t>(0));
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
     mm::mm_context_release(ctx);
 }
 
@@ -1681,7 +1749,7 @@ TEST(gfxfb, a_mapped_buffer_outlives_its_handle) {
     EXPECT_EQ(g_mapped_display.last_released, &g_mapped_display.created[1]);
     EXPECT_EQ(paging::get_physical(addr, ctx->pt_root), g_mapped_display.created[0].phys);
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
     ASSERT_EQ(mm::mm_context_unmap(ctx, addr, mapped.size), mm::MM_CTX_OK);
     ASSERT_TRUE(spin_wait_ge(g_mapped_display.released_count, 2));
     EXPECT_EQ(g_mapped_display.last_released, &g_mapped_display.created[0]);
@@ -1714,8 +1782,8 @@ TEST(gfxfb, handles_stay_within_their_file) {
     EXPECT_EQ(map_file(other, ctx, args.map_offset, args.size), static_cast<uintptr_t>(0));
     EXPECT_EQ(destroy_buffer(owner, page, args.handle), fs::OK);
 
-    fs::close(other);
-    fs::close(owner);
+    ASSERT_TRUE(closes_before_deadline(other));
+    ASSERT_TRUE(closes_before_deadline(owner));
     mm::mm_context_release(ctx);
 }
 
@@ -1735,7 +1803,7 @@ TEST(gfxfb, closing_a_file_hands_its_buffers_back) {
     ASSERT_NE(request_small_buffer(file, page).handle, static_cast<uint32_t>(0));
     ASSERT_NE(request_small_buffer(file, page).handle, static_cast<uint32_t>(0));
 
-    fs::close(file);
+    ASSERT_TRUE(closes_before_deadline(file));
     EXPECT_TRUE(spin_wait_ge(g_closing_display.released_count, 2));
 }
 
@@ -1783,12 +1851,12 @@ TEST(gfxfb, the_first_file_to_create_a_buffer_controls_the_buffers_until_it_clos
     EXPECT_EQ(g_control_display.create_calls, static_cast<uint32_t>(4));
 
     // Once `controller` closes, a creation the display refuses takes no control, so another file's then succeeds
-    fs::close(controller);
+    ASSERT_TRUE(closes_before_deadline(controller));
     EXPECT_EQ(request_buffer(other, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
     EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
 
-    fs::close(next);
-    fs::close(other);
+    ASSERT_TRUE(closes_before_deadline(next));
+    ASSERT_TRUE(closes_before_deadline(other));
 }
 
 static recording_display g_failed_creation_display;
@@ -1840,12 +1908,12 @@ TEST(gfxfb, a_creation_that_fails_takes_no_control) {
     EXPECT_EQ(request_buffer(failing, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
 
     // Once `other` closes, a creation the display refuses takes no control, so another file's then succeeds
-    fs::close(other);
+    ASSERT_TRUE(closes_before_deadline(other));
     EXPECT_EQ(request_buffer(failing, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
     EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
 
-    fs::close(next);
-    fs::close(failing);
+    ASSERT_TRUE(closes_before_deadline(next));
+    ASSERT_TRUE(closes_before_deadline(failing));
 }
 
 static recording_display g_reserving_display;
@@ -1932,8 +2000,8 @@ TEST(gfxfb, creations_in_the_display_reserve_control_for_their_file) {
     EXPECT_EQ(request_small_buffer(rival, page).handle, static_cast<uint32_t>(1));
     EXPECT_EQ(request_buffer(reserving, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
 
-    fs::close(rival);
-    fs::close(reserving);
+    ASSERT_TRUE(closes_before_deadline(rival));
+    ASSERT_TRUE(closes_before_deadline(reserving));
 }
 
 static recording_display g_overlapping_display;
@@ -2024,15 +2092,15 @@ TEST(gfxfb, a_creation_that_succeeds_while_another_runs_takes_control) {
     EXPECT_EQ(g_overlapping_display.create_calls, static_cast<uint32_t>(5));
 
     // Once `controller` closes, a creation the display refuses takes no control, so another file's then succeeds
-    fs::close(controller);
+    ASSERT_TRUE(closes_before_deadline(controller));
     EXPECT_EQ(request_buffer(rival, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
     EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
-    fs::close(next);
+    ASSERT_TRUE(closes_before_deadline(next));
 
     // Once `next` closes, the rival's creation succeeds under handle 1, as none of its refused creations kept a handle
     EXPECT_EQ(request_small_buffer(rival, page).handle, static_cast<uint32_t>(1));
 
-    fs::close(rival);
+    ASSERT_TRUE(closes_before_deadline(rival));
 }
 
 static recording_display g_after_close_display;
@@ -2053,13 +2121,13 @@ TEST(gfxfb, a_creation_refused_after_the_controlling_file_closes_takes_no_contro
     ASSERT_NOT_NULL(next);
 
     ASSERT_NE(request_small_buffer(controller, page).handle, static_cast<uint32_t>(0));
-    fs::close(controller);
+    ASSERT_TRUE(closes_before_deadline(controller));
 
     EXPECT_EQ(request_buffer(refused, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
     EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
 
-    fs::close(next);
-    fs::close(refused);
+    ASSERT_TRUE(closes_before_deadline(next));
+    ASSERT_TRUE(closes_before_deadline(refused));
 }
 
 static recording_display g_latching_display;
@@ -2208,7 +2276,7 @@ TEST(gfxfb, a_full_file_presents_its_last_handle) {
     EXPECT_EQ(g_full_present_display.presented, &g_full_present_display.created[gfxfb::GFXFB_CLIENT_BUFFERS_MAX - 1]);
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
 
-    ASSERT_TRUE(closes_before_deadline(file));
+    ASSERT_TRUE(closes_giving_output_back(test, g_full_present_display, file, 0));
 }
 
 static recording_display g_refused_present_display;
@@ -2372,7 +2440,9 @@ TEST(gfxfb, a_dark_end_drops_the_present_and_a_failed_end_keeps_it) {
     EXPECT_EQ(g_dark_end_display.released_count.load_acquire(), static_cast<uint32_t>(3));
     EXPECT_EQ(g_dark_end_display.last_released, &g_dark_end_display.created[3]);
 
+    // The output holds the failed present for good, so the close's present of its base buffer never reaches the display
     ASSERT_TRUE(closes_before_deadline(file));
+    EXPECT_EQ(g_dark_end_display.present_calls, static_cast<uint32_t>(5));
 }
 
 static recording_display g_interrupt_end_display;
@@ -3142,6 +3212,154 @@ TEST(gfxfb, a_closing_file_waits_for_no_ended_present) {
     ASSERT_TRUE(closes_before_deadline(next));
 }
 
+static recording_display g_given_back_display;
+
+// The controlling files' closes, run on tasks of their own so a test can end their presents
+static task_close g_controller_close;
+
+// A closing controller presents the base buffer of each output showing another buffer, naming no region, and waits
+// through a kill, keeping control, until those presents end, while a closing bystander presents nothing
+TEST(gfxfb, a_closing_controller_presents_each_output_its_base_buffer) {
+    light_output(g_given_back_display, 0, false);
+    light_output(g_given_back_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_given_back_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    fs::file* bystander = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(rival);
+    ASSERT_NOT_NULL(bystander);
+
+    // Output 0 shows a buffer whose handle remains and output 1 one whose handle is gone, their events unread
+    uint32_t zero = create_output_0_buffer(file, page);
+    ASSERT_NE(zero, static_cast<uint32_t>(0));
+    uint32_t width = static_cast<uint32_t>(OUTPUT_1_WIDTH);
+    uint32_t height = static_cast<uint32_t>(OUTPUT_1_HEIGHT);
+    ASSERT_EQ(request_buffer(file, page, width, height, gfxfb::GFXFB_FORMAT_XRGB8888), fs::OK);
+    uint32_t one = page.at<gfxfb::gfxfb_buffer_args>(0)->handle;
+    ASSERT_EQ(present_one_region(file, page, 0, zero, {0, 0, 1, 1}), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(present_one_region(file, page, 1, one, {0, 0, 1, 1}), fs::OK);
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(destroy_buffer(file, page, one), fs::OK);
+
+    ASSERT_TRUE(closes_before_deadline(bystander));
+    EXPECT_EQ(g_given_back_display.present_calls, static_cast<uint32_t>(2));
+
+    sched::task* closer = start_close(g_controller_close, file);
+    ASSERT_NOT_NULL(closer);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    EXPECT_EQ(g_given_back_display.present_calls, static_cast<uint32_t>(4));
+    ASSERT_EQ(g_given_back_display.presented_on[0], &g_given_back_display.bases[0]);
+    ASSERT_EQ(g_given_back_display.presented_on[1], &g_given_back_display.bases[1]);
+    EXPECT_TRUE(g_given_back_display.named_no_region_on[0]);
+    EXPECT_TRUE(g_given_back_display.named_no_region_on[1]);
+    ASSERT_TRUE(creates_before_deadline(rival, page, fs::ERR_BUSY));
+
+    // Output 0's end leaves output 1's present unended, so the woken close waits again, as it does after a kill
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    RUN_ELEVATED(sched::force_wake_for_kill(closer));
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    EXPECT_EQ(g_controller_close.done.load_acquire(), static_cast<uint32_t>(0));
+    ASSERT_TRUE(creates_before_deadline(rival, page, fs::ERR_BUSY));
+
+    // The ends reach no file, and the buffers they replace are released once the file's handles drop
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait(g_controller_close.done));
+    unpin(closer);
+    ASSERT_TRUE(spin_wait_ge(g_given_back_display.released_count, 2));
+    EXPECT_EQ(g_given_back_display.released_count.load_acquire(), static_cast<uint32_t>(2));
+    EXPECT_EQ(poll_file(rival), static_cast<uint32_t>(0));
+    EXPECT_NE(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(rival));
+}
+
+static recording_display g_queued_close_display;
+
+// A closing controller presents an output's base buffer only once its own present there has ended latched or dark, and
+// waits for no such present the display refuses, as it does on a dark output
+TEST(gfxfb, a_closing_controller_presents_the_base_buffer_once_its_present_ends) {
+    light_output(g_queued_close_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_queued_close_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t shown = create_output_0_buffer(file, page);
+    uint32_t queued = create_output_0_buffer(file, page);
+    ASSERT_NE(queued, static_cast<uint32_t>(0));
+    ASSERT_EQ(present_buffer(file, page, 0, shown), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(read_event(file).handle, shown);
+    ASSERT_EQ(present_buffer(file, page, 0, queued), fs::OK);
+
+    sched::task* closer = start_close(g_controller_close, file);
+    ASSERT_NOT_NULL(closer);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    EXPECT_EQ(g_queued_close_display.present_calls, static_cast<uint32_t>(2));
+
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    EXPECT_EQ(g_queued_close_display.present_calls, static_cast<uint32_t>(3));
+    ASSERT_EQ(g_queued_close_display.presented, &g_queued_close_display.bases[0]);
+    EXPECT_EQ(g_controller_close.done.load_acquire(), static_cast<uint32_t>(0));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait(g_controller_close.done));
+    unpin(closer);
+
+    // A dark end leaves output 0 showing the next file's `shown`, so the close presents the base buffer there, and the
+    // display refuses it, since the output is dark by then
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(next);
+    shown = create_output_0_buffer(next, page);
+    queued = create_output_0_buffer(next, page);
+    ASSERT_NE(queued, static_cast<uint32_t>(0));
+    ASSERT_EQ(present_buffer(next, page, 0, shown), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(read_event(next).handle, shown);
+    ASSERT_EQ(present_buffer(next, page, 0, queued), fs::OK);
+
+    closer = start_close(g_controller_close, next);
+    ASSERT_NOT_NULL(closer);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    g_queued_close_display.states[0].lit = false;
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_DARK);
+    ASSERT_TRUE(spin_wait(g_controller_close.done));
+    unpin(closer);
+    EXPECT_EQ(g_queued_close_display.present_calls, static_cast<uint32_t>(6));
+}
+
+static recording_display g_lit_later_display;
+
+// An output lit only after its node started has no base buffer recorded, so a closing controller presents nothing there
+TEST(gfxfb, a_closing_controller_presents_nothing_on_an_output_without_a_base_buffer) {
+    gfxfb_test_node test = publish_driver_node(&g_lit_later_display);
+    ASSERT_NOT_NULL(test.node);
+    light_output(g_lit_later_display, 0, false);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t handle = create_output_0_buffer(file, page);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(present_buffer(file, page, 0, handle), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+    EXPECT_EQ(g_lit_later_display.present_calls, static_cast<uint32_t>(1));
+}
+
 static recording_display g_regions_display;
 
 // A present hands the display its regions complete and in order, each checked against the presented buffer up to its
@@ -3188,7 +3406,7 @@ TEST(gfxfb, a_present_hands_its_regions_to_the_display) {
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
     EXPECT_EQ(read_event(file).handle, handle);
 
-    ASSERT_TRUE(closes_before_deadline(file));
+    ASSERT_TRUE(closes_giving_output_back(test, g_regions_display, file, 0));
 }
 
 static recording_display g_many_regions_display;
@@ -3232,7 +3450,7 @@ TEST(gfxfb, a_present_names_at_most_gfxfb_max_flush_rects_regions) {
     EXPECT_TRUE(rect_equals(g_many_regions_display.last_presented_region, last.x, last.y, 1, 1));
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
 
-    ASSERT_TRUE(closes_before_deadline(file));
+    ASSERT_TRUE(closes_giving_output_back(test, g_many_regions_display, file, 0));
 }
 
 static recording_display g_refused_regions_display;

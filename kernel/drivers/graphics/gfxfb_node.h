@@ -170,11 +170,16 @@ private:
  * `fs::ERR_AGAIN` when a non-blocking read finds none, and with `fs::ERR_INTR`
  * when a signal ends its wait for one. `poll` reports a client holding events
  * readable. A client that closes while a present of it has not ended waits for
- * that end, holding no lock, before it ends its control and is freed. Like
- * every `fs::node`, it lives on the privileged heap, so its callers must run
- * elevated. devfs keeps a published node for good, and a node is never freed
- * once built, since the reaper may still hand a base buffer back to its boot
- * display.
+ * that end, holding no lock. A closing client that controls the buffers then
+ * drops its events and presents each output's recorded base buffer where the
+ * output shows another buffer, naming no region. It ends its control only once
+ * the display has ended those presents it accepted. An output with no base
+ * buffer recorded, or whose base buffer's present is refused or ends dark or
+ * failed, keeps showing the buffer it showed. A closing client is then freed
+ * with the events it holds. Like every `fs::node`, a gfxfb node lives on the
+ * privileged heap, so its callers must run elevated. devfs keeps a published
+ * node for good, and a node is never freed once built, since the reaper may
+ * still hand a base buffer back to its boot display.
  */
 class gfxfb_node : public fs::node {
 public:
@@ -256,6 +261,8 @@ private:
         uint32_t region_count
     );
     bool holds_unended_present(const client& owner) const;
+    void wait_for_unended_presents(client& owner);
+    void give_outputs_back(client& owner);
     bool begin_controlled_call(client& caller);
     void end_controlled_call(bool succeeded);
     uint32_t take_handle(client& owner);
