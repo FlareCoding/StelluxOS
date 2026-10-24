@@ -71,6 +71,46 @@ static bool clip_rect_to_buffer(gfxfb_rect& rect, const buffer& buf) {
     return true;
 }
 
+// True when each of the `count` regions covers at least one pixel and lies wholly inside `buf`, compared without adding
+// a coordinate to a size, since the sum could wrap
+static bool are_regions_nonempty_inside_buffer(const gfxfb_rect* regions, uint32_t count, const buffer& buf) {
+    for (uint32_t i = 0; i < count; i++) {
+        const gfxfb_rect& region = regions[i];
+        bool covers_pixels = region.width > 0 && region.height > 0;
+        bool fits_across = region.x < buf.width && region.width <= buf.width - region.x;
+        bool fits_down = region.y < buf.height && region.height <= buf.height - region.y;
+        if (!covers_pixels || !fits_across || !fits_down) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Copies the regions `args` names onto the unprivileged heap, as userland supplies them and they can fill 4 KiB, and
+// checks each against `buf`. On OK the caller frees `regions`, left as passed when `args` names no region
+static int32_t copy_present_regions(const gfxfb_present_args& args, const buffer& buf, gfxfb_rect*& regions) {
+    if (args.region_count == 0) {
+        return fs::OK;
+    }
+
+    size_t bytes = args.region_count * sizeof(gfxfb_rect);
+    auto* copy = static_cast<gfxfb_rect*>(heap::ualloc(bytes));
+    if (!copy) {
+        return fs::ERR_NOMEM;
+    }
+
+    int32_t rc = mm::uaccess::copy_from_user(copy, reinterpret_cast<const void*>(args.regions), bytes);
+    if (rc != mm::uaccess::OK || !are_regions_nonempty_inside_buffer(copy, args.region_count, buf)) {
+        heap::ufree(copy);
+        return fs::ERR_INVAL;
+    }
+
+    regions = copy;
+
+    return fs::OK;
+}
+
 // `shown_display`'s output count, at most GFXFB_OUTPUTS_MAX, so gfxfb never indexes past its arrays
 static uint32_t clamped_output_count(display& shown_display) {
     uint32_t count = shown_display.output_count();
@@ -624,6 +664,10 @@ int32_t gfxfb_node::present(client& owner, uint64_t args_addr) {
         return fs::ERR_INVAL;
     }
 
+    if (args.reserved != 0 || args.region_count > GFXFB_MAX_FLUSH_RECTS) {
+        return fs::ERR_INVAL;
+    }
+
     if (args.output >= clamped_output_count(*m_display)) {
         return fs::ERR_INVAL;
     }
@@ -633,12 +677,21 @@ int32_t gfxfb_node::present(client& owner, uint64_t args_addr) {
         return args.handle == 0 ? fs::ERR_AGAIN : fs::ERR_INVAL;
     }
 
-    if (!begin_controlled_call(owner)) {
-        return fs::ERR_BUSY;
+    gfxfb_rect* regions = nullptr;
+    rc = copy_present_regions(args, record->layout(), regions);
+    if (rc != fs::OK) {
+        return rc;
     }
 
-    rc = queue_present(owner, args.output, args.handle, record);
-    end_controlled_call(rc == fs::OK);
+    rc = fs::ERR_BUSY;
+    if (begin_controlled_call(owner)) {
+        rc = queue_present(owner, args.output, args.handle, record, regions, args.region_count);
+        end_controlled_call(rc == fs::OK);
+    }
+
+    if (regions) {
+        heap::ufree(regions);
+    }
 
     return rc;
 }
@@ -666,13 +719,15 @@ rc::strong_ref<buffer_record> gfxfb_node::find_buffer_to_present(client& owner, 
     return found;
 }
 
-// Gives `record`'s buffer to the display for `output`'s next vertical blank, or returns `fs::ERR_BUSY` while the output
-// holds a present or `owner` holds the event of its last present there
+// Gives `record`'s buffer and its `region_count` changed regions to the display for `output`'s next vertical blank, or
+// returns `fs::ERR_BUSY` while the output holds a present or `owner` holds the event of its last present there
 int32_t gfxfb_node::queue_present(
     client& owner,
     uint32_t output,
     uint32_t handle,
-    const rc::strong_ref<buffer_record>& record
+    const rc::strong_ref<buffer_record>& record,
+    const gfxfb_rect* regions,
+    uint32_t region_count
 ) {
     sync::mutex_lock(m_present_locks[output]);
 
@@ -692,7 +747,7 @@ int32_t gfxfb_node::queue_present(
         return fs::ERR_BUSY;
     }
 
-    int32_t rc = m_display->present(output, record->display_buffer());
+    int32_t rc = m_display->present(output, record->display_buffer(), regions, region_count);
 
     // A refused present never reached the hardware, so no end will come for it
     rc::strong_ref<buffer_record> refused;
