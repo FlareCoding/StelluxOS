@@ -346,24 +346,61 @@ int32_t gfxfb_node::on_close(fs::file* f) {
     client* closing = &client_of(f);
 
     // Each accepted present's end queues an event in its client, which must outlive those ends and keeps control
-    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
-    while (holds_unended_present(*closing)) {
-        state = sync::wait(closing->event_waiters, m_outputs_lock, state);
-    }
-
-    sync::spin_unlock_irqrestore(m_outputs_lock, state);
+    wait_for_unended_presents(*closing);
 
     sync::mutex_lock(m_clients_lock);
-    if (m_controller == closing) {
+    bool is_controller = m_controller == closing;
+    sync::mutex_unlock(m_clients_lock);
+
+    // Control ends only after waiting for the base buffers' presents, so no other client's present comes before theirs
+    if (is_controller) {
+        give_outputs_back(*closing);
+
+        sync::mutex_lock(m_clients_lock);
         m_controller = nullptr;
         m_control_taken = false;
+        sync::mutex_unlock(m_clients_lock);
     }
-
-    sync::mutex_unlock(m_clients_lock);
 
     heap::kfree_delete(closing);
 
     return fs::OK;
+}
+
+// Waits, holding no lock while asleep, until the display has ended each present of `owner` it accepted
+void gfxfb_node::wait_for_unended_presents(client& owner) {
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    while (holds_unended_present(owner)) {
+        state = sync::wait(owner.event_waiters, m_outputs_lock, state);
+    }
+
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
+}
+
+// Drops the events of `owner`, the controlling client, and presents each output's recorded base buffer where the output
+// shows another buffer, naming no region. Waits for the display to end those it accepts
+void gfxfb_node::give_outputs_back(client& owner) {
+    // No file reads `owner`'s events any more, and `queue_present()` refuses an output whose event `owner` holds unread
+    sync::irq_state state = sync::spin_lock_irqsave(owner.events_lock);
+    owner.event_count = 0;
+    sync::spin_unlock_irqrestore(owner.events_lock, state);
+
+    for (uint32_t output = 0; output < clamped_output_count(*m_display); output++) {
+        rc::strong_ref<buffer_record> base;
+
+        state = sync::spin_lock_irqsave(m_outputs_lock);
+        if (m_outputs[output].shown != m_outputs[output].base) {
+            base = m_outputs[output].base;
+        }
+
+        sync::spin_unlock_irqrestore(m_outputs_lock, state);
+
+        if (base) {
+            queue_present(owner, output, 0, base, nullptr, 0);
+        }
+    }
+
+    wait_for_unended_presents(owner);
 }
 
 ssize_t gfxfb_node::read(fs::file* f, void* buf, size_t count, uint32_t flags) {
@@ -784,8 +821,8 @@ __PRIVILEGED_CODE void gfxfb_node::present_done(uint32_t output, const present_r
         break;
     }
 
-    // The wake stays under the lock, since a closing presenter is freed once it takes the lock and finds no unended
-    // present of its own
+    // The wake stays under the lock, since a closing presenter may be freed as soon as it takes the lock and finds no
+    // unended present of its own
     client* presenter = records.presenter;
     records.presenter = nullptr;
     queue_event(*presenter, present_event(output, records.presented_handle, result));
