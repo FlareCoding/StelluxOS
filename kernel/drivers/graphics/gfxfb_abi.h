@@ -14,7 +14,9 @@
  * maps the pixels with `mmap` at offset 0 and draws into the mapping. When the
  * layout's `flags` hold `GFXFB_INFO_NEEDS_FLUSH`, the screen shows the drawing
  * only once `GFXFB_FLUSH` names the regions that changed. Otherwise the
- * mapping holds the pixels the screen shows.
+ * mapping holds the pixels the screen shows. Either way, a present of a
+ * created buffer on the primary output, as described below, replaces the
+ * drawing once it latches, until a present of handle 0 latches there.
  *
  * The device drives outputs, numbered from 0, each of which can show one
  * monitor's picture. `GFXFB_GET_OUTPUT` reads one output's state: whether it
@@ -23,15 +25,16 @@
  * `GFXFB_GET_INFO` describes, offset 0 maps and `GFXFB_FLUSH` shows. While no
  * output is lit there is no primary output, so `GFXFB_GET_INFO` and
  * `GFXFB_FLUSH` fail with EAGAIN and mmap at offset 0 is refused. A device
- * that had no memory to record its primary output's pixels as it started has
- * no primary output either.
+ * that had no memory to record its lit outputs' pixels as it started has no
+ * primary output either.
  *
  * A program can also create buffers, each holding one picture of 32-bit
  * pixels. `GFXFB_CREATE_BUFFER` returns a new buffer's handle, its layout and
  * the mmap offset that maps it. An open file controls the buffers from its
- * first `GFXFB_CREATE_BUFFER` that succeeds until it closes. A creation fails
- * with EINVAL when the kernel cannot read its argument, when its width or
- * height is zero or when its reserved field is set. Any other creation fails
+ * first `GFXFB_CREATE_BUFFER` or `GFXFB_PRESENT` that succeeds until it
+ * closes. A creation fails with EINVAL when the kernel cannot read its
+ * argument, when its width or height is zero or when its reserved field is
+ * set. Any other creation, and any present that passes the checks below, fails
  * with EBUSY while another open file controls the buffers or reserves control,
  * and otherwise reserves control for its file until the call returns, so two
  * files never control the buffers at once. A creation that reserves control
@@ -42,7 +45,25 @@
  * names its buffer only within the open file that created it.
  * `GFXFB_DESTROY_BUFFER` drops a handle, failing with EINVAL for one the file
  * does not hold, and closing the file drops all of them. A buffer stays
- * allocated until its handle and its last mapping are gone.
+ * allocated until its handle and its last mapping are gone and no output shows
+ * it or holds it for a present.
+ *
+ * `GFXFB_PRESENT` asks for a buffer to replace what an output shows from the
+ * output's next vertical blank and returns without waiting for it. The present
+ * latches at the vertical blank from which the output shows the buffer. Handle
+ * 0 names an output's base buffer, the pixels the output was lit with. The
+ * output shows them until a present of another buffer latches and again once a
+ * present of handle 0 latches, and on the primary output they are the pixels
+ * offset 0 maps. A present fails with EINVAL when the kernel cannot read its
+ * argument, for an output of `output_count` or more and for a handle the file
+ * does not hold, and with EAGAIN for handle 0 when the device started with the
+ * output dark or with no memory to record its lit outputs' pixels. Past those
+ * checks and control, it fails with EBUSY while the output holds an earlier
+ * present, which it does until that present latches or the output goes dark,
+ * and for good once the device fails before it latches. Otherwise it fails
+ * with the first that applies of ENOTTY on a device that cannot present, EIO
+ * on a device that failed, EAGAIN on a dark output and EINVAL when the
+ * buffer's width or height differs from the output's mode.
  *
  * The kernel and userland are built from one tree, so a structure may gain
  * fields when its call gains a feature. Each structure holds fixed-width
@@ -58,13 +79,21 @@ constexpr uint32_t GFXFB_FLUSH          = 0x4701;
 constexpr uint32_t GFXFB_GET_OUTPUT     = 0x4702;
 constexpr uint32_t GFXFB_CREATE_BUFFER  = 0x4703;
 constexpr uint32_t GFXFB_DESTROY_BUFFER = 0x4704; // the argument is the handle itself
+constexpr uint32_t GFXFB_PRESENT        = 0x4705;
 
 constexpr uint8_t GFXFB_INFO_NEEDS_FLUSH = 0x01; // drawing reaches the screen only through GFXFB_FLUSH
 
 constexpr uint32_t GFXFB_MAX_FLUSH_RECTS = 256;
 
+constexpr uint32_t GFXFB_OUTPUTS_MAX = 16; // the most outputs a device drives
+
 constexpr uint32_t GFXFB_OUTPUT_LIT     = 0x1; // the output shows a picture
 constexpr uint32_t GFXFB_OUTPUT_PRIMARY = 0x2; // the output whose pixels offset 0 maps
+
+// How a present the device accepted ended
+constexpr uint32_t GFXFB_PRESENT_LATCHED = 0; // the present latched, so the output shows its buffer
+constexpr uint32_t GFXFB_PRESENT_DARK    = 1; // the output went dark before the present latched
+constexpr uint32_t GFXFB_PRESENT_FAILED  = 2; // the device failed before the present latched
 
 constexpr uint32_t GFXFB_FORMAT_XRGB8888 = 1; // red in bits 23 to 16, green 15 to 8, blue 7 to 0, 31 to 24 unused
 
@@ -126,12 +155,19 @@ struct gfxfb_buffer_args {
     uint64_t map_offset; // out: the mmap offset that maps this buffer
 };
 
+// GFXFB_PRESENT argument, naming an output and the buffer asked to replace what it shows from its next vertical blank
+struct gfxfb_present_args {
+    uint32_t output; // the output's index, EINVAL unless below `output_count`
+    uint32_t handle; // the buffer's handle, or 0 for the output's base buffer
+};
+
 static_assert(sizeof(gfxfb_info) == 40, "gfxfb_info layout");
 static_assert(sizeof(gfxfb_rect) == 16, "gfxfb_rect layout");
 static_assert(sizeof(gfxfb_flush_args) == 16, "gfxfb_flush_args layout");
 static_assert(sizeof(gfxfb_mode) == 16, "gfxfb_mode layout");
 static_assert(sizeof(gfxfb_output_info) == 32, "gfxfb_output_info layout");
 static_assert(sizeof(gfxfb_buffer_args) == 40, "gfxfb_buffer_args layout");
+static_assert(sizeof(gfxfb_present_args) == 8, "gfxfb_present_args layout");
 
 } // namespace gfxfb
 

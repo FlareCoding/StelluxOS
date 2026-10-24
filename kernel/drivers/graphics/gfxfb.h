@@ -15,23 +15,26 @@
  * from the start. Userland calls gfxfb, and gfxfb calls the display.
  *
  * A display drives outputs, numbered from 0, each of which can show one
- * monitor's picture. An output is lit or dark, and a lit output shows its base
- * buffer. The display owns that state, and gfxfb asks for it. When gfxfb shows
- * a display, it picks the display's primary output: the lit boot output (the
- * output the boot firmware lit), else the lit output with the lowest index.
- * Userland maps the primary output's base buffer and draws into it, and
- * `GFXFB_FLUSH` hands the changed regions to the display's `flush()` for that
- * output. With no output lit there is no primary output, so `GFXFB_GET_INFO`
- * and `GFXFB_FLUSH` fail and mmap at offset 0 is refused. A display shown when
- * no memory was left to record its primary output's base buffer has no primary
- * output either.
+ * monitor's picture. An output is lit or dark, and a lit output has a base
+ * buffer, the buffer it was lit with. The display owns that state, and gfxfb
+ * asks for it. A lit output shows its base buffer until another buffer
+ * presented on it takes its place. When gfxfb shows a display, it picks the
+ * display's primary output: the lit boot output (the output the boot firmware
+ * lit), else the lit output with the lowest index. Userland maps the primary
+ * output's base buffer and draws into it, and `GFXFB_FLUSH` hands the changed
+ * regions to the display's `flush()` for that output. With no output lit there
+ * is no primary output, so `GFXFB_GET_INFO` and `GFXFB_FLUSH` fail and mmap at
+ * offset 0 is refused. A display shown when no memory was left to record its
+ * lit outputs' base buffers has no primary output either.
  *
  * Userland also creates buffers, which the display allocates in
- * `create_buffer()`. One open file at a time controls them, from its first
- * creation that succeeds until it closes. gfxfb keeps a reference-counted
- * record of each buffer userland can map, the primary output's base buffer
- * included, and hands the buffer back to the display's `release_buffer()` once
- * no handle, output or mapping refers to it.
+ * `create_buffer()`, and presents buffers on outputs, which gfxfb hands to the
+ * display's `present()`. The display reports to `gfxfb_node::present_done()`
+ * how each present it accepted ended. One open file at a time controls the
+ * buffers, from its first creation or present that succeeds until it closes.
+ * gfxfb keeps a reference-counted record of each buffer, every lit output's
+ * base buffer included, and hands the buffer back to the display's
+ * `release_buffer()` once no handle, output or mapping refers to it.
  */
 
 namespace gfxfb {
@@ -42,7 +45,7 @@ constexpr int32_t ERR_INVALID_ARG = -2;
 constexpr int32_t ERR_DARK        = -3; // the output is not lit
 constexpr int32_t ERR_DEVICE      = -4; // the display's hardware failed the call
 constexpr int32_t ERR_NO_MEMORY   = -5;
-constexpr int32_t ERR_UNSUPPORTED = -6; // the display creates no buffers
+constexpr int32_t ERR_UNSUPPORTED = -6; // the display creates or presents no buffers
 
 /**
  * One output's state as its display reports it.
@@ -71,15 +74,25 @@ struct buffer {
 };
 
 /**
+ * How a present the display accepted ended, as it reports to
+ * `gfxfb_node::present_done()`.
+ */
+struct present_result {
+    uint32_t status; // GFXFB_PRESENT_*
+};
+
+/**
  * A display behind /dev/gfxfb: one a device driver owns, or gfxfb's own boot
  * display. gfxfb calls `output_count()`, `read_output()` and `base_buffer()`
  * from `init()` and `register_display()`, on the boot thread, which cannot
  * sleep, so they must not wait. It calls `output_count()`, `read_output()`,
- * `needs_flush()`, `flush()` and `create_buffer()` from the tasks that use
- * /dev/gfxfb, several tasks at once, and `flush()` and `create_buffer()` may
- * block the task that calls them. It calls `release_buffer()` from the reaper,
- * the kernel task that runs deferred cleanup, and `release_buffer()` must
- * never wait, since the reaper runs no other cleanup until it returns.
+ * `needs_flush()`, `flush()`, `create_buffer()` and `present()` from the tasks
+ * that use /dev/gfxfb, several tasks at once, and `flush()`, `create_buffer()`
+ * and `present()` may block the task that calls them. gfxfb never calls
+ * `present()` for one output from two tasks at once. It calls
+ * `release_buffer()` from the reaper, the kernel task that runs deferred
+ * cleanup, and `release_buffer()` must never wait, since the reaper runs no
+ * other cleanup until it returns.
  */
 class display {
 public:
@@ -87,7 +100,8 @@ public:
 
     /**
      * @brief Report how many outputs the display drives.
-     * @return The count, which must stay fixed for the display's life.
+     * @return The count, at most GFXFB_OUTPUTS_MAX, which must stay fixed for
+     * the display's life.
      */
     virtual uint32_t output_count() const = 0;
 
@@ -107,11 +121,11 @@ public:
     virtual int32_t read_output(uint32_t output, output_state& out) = 0;
 
     /**
-     * @brief Return an output's base buffer, the buffer it shows while lit.
-     * Once registered, the display must keep it until gfxfb hands it back
-     * through `release_buffer()` and must return the same buffer for as long
-     * as the output stays lit, since gfxfb keeps the pointer and userland maps
-     * the memory.
+     * @brief Return an output's base buffer, the buffer the output was lit
+     * with. Once registered, the display must keep it until gfxfb hands it
+     * back through `release_buffer()` and must return the same buffer for as
+     * long as the output stays lit, since gfxfb keeps the pointer and userland
+     * maps the memory.
      * @param output Index of the output, below the count.
      * @return The buffer, or nullptr while the output is dark.
      */
@@ -143,6 +157,27 @@ public:
      * its hardware failed.
      */
     virtual int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, buffer** out) = 0;
+
+    /**
+     * @brief Give `buf` to the hardware to replace what `output` shows from
+     * the output's next vertical blank, without waiting for that blank. The
+     * call may wait only for the display's own lock and for the hardware to
+     * take the buffer, never for a vertical blank or for its driver's task.
+     * The display must end each present the call accepts exactly once,
+     * possibly before the call returns, by passing its result to
+     * `gfxfb_node::present_done()` from its interrupt handler, or elevated
+     * from a task or a timer's callback. It may hold its own locks then, since
+     * `gfxfb_node::present_done()` never sleeps or calls the display.
+     * @param output Index of the output, below the count.
+     * @param buf A buffer from `create_buffer()` or `base_buffer()`.
+     * @return OK once the hardware was given the buffer. Otherwise the display
+     * must not have given it the buffer, and returns the first that holds of
+     * ERR_UNSUPPORTED on a display that presents no buffers, ERR_DEVICE when
+     * the display had failed before the call, ERR_DARK when the output is not
+     * lit, and ERR_INVALID_ARG when the buffer's width or height differs from
+     * the output's mode.
+     */
+    virtual int32_t present(uint32_t output, buffer* buf) = 0;
 
     /**
      * @brief Take back a buffer from `create_buffer()` or `base_buffer()` once
@@ -187,14 +222,15 @@ __PRIVILEGED_CODE bool has_boot_display();
  * boot display is behind /dev/gfxfb, a display with no output lit is refused,
  * so a card that lit nothing leaves userland the boot framebuffer. On a boot
  * that gave no framebuffer, a display is accepted with every output dark, and
- * with no primary output when no memory is left to record its base buffer.
+ * with no primary output when no memory is left to record its lit outputs'
+ * base buffers.
  * @param driver_display The display. It must never be freed.
  * @return OK, ERR for a null display, or ERR with a line logged when a driver
  * display is already registered, when a program has opened /dev/gfxfb, or when
  * gfxfb cannot create or publish its node. While the boot display is behind
  * /dev/gfxfb, it also returns ERR with a line logged for a display with no
- * output lit or when no memory is left to record the base buffer of its
- * primary output.
+ * output lit or when no memory is left to record the base buffers of its lit
+ * outputs.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t register_display(display* driver_display);
