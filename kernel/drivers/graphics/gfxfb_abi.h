@@ -54,17 +54,26 @@
  * 0 names an output's base buffer, the pixels the output was lit with. The
  * output shows them until a present of another buffer latches and again once a
  * present of handle 0 latches, and on the primary output they are the pixels
- * offset 0 maps. A present fails with EINVAL when the kernel cannot read its
- * argument, for an output of `output_count` or more and for a handle the file
- * does not hold, and with EAGAIN for handle 0 when the device started with the
- * output dark or with no memory to record its lit outputs' pixels. Past those
- * checks and control, it fails with EBUSY while the output holds an earlier
- * present, which it does until that present latches or the output goes dark,
- * and for good once the device fails before it latches. It also fails with
- * EBUSY while the file holds the event of its last present on the output.
- * Otherwise it fails with the first that applies of ENOTTY on a device that
- * cannot present, EIO on a device that failed, EAGAIN on a dark output and
- * EINVAL when the buffer's width or height differs from the output's mode.
+ * offset 0 maps. A present may name the regions of its buffer that changed
+ * since the buffer was created or last presented. A device that shows a copy
+ * of each buffer copies only the regions named, so pixels changed outside them
+ * may not reach the screen, and copies the whole buffer for a present naming
+ * no region, whose `regions` address the kernel never reads. A present fails
+ * with EINVAL when the kernel cannot read its argument, when its reserved
+ * field is set or it names more than `GFXFB_MAX_FLUSH_RECTS` regions, for an
+ * output of `output_count` or more and for a handle the file does not hold,
+ * and otherwise with EAGAIN for handle 0 when the device started with the
+ * output dark or with no memory to record its lit outputs' pixels. It then
+ * fails with ENOMEM when no memory is left to copy its regions, and otherwise
+ * with EINVAL when the kernel cannot read them or one of them has a zero width
+ * or height or does not lie wholly inside the buffer. Past those checks and
+ * control, it fails with EBUSY while the output holds an earlier present,
+ * which it does until that present latches or the output goes dark, and for
+ * good once the device fails before it latches. It also fails with EBUSY while
+ * the file holds the event of its last present on the output. Otherwise it
+ * fails with the first that applies of ENOTTY on a device that cannot present,
+ * EIO on a device that failed, EAGAIN on a dark output and EINVAL when the
+ * buffer's width or height differs from the output's mode.
  *
  * Each present the device accepted ends once: it latches, or the output goes
  * dark or the device fails before it latches. The open file that presented
@@ -111,7 +120,7 @@ constexpr uint32_t GFXFB_PRESENT        = 0x4705;
 
 constexpr uint8_t GFXFB_INFO_NEEDS_FLUSH = 0x01; // drawing reaches the screen only through GFXFB_FLUSH
 
-constexpr uint32_t GFXFB_MAX_FLUSH_RECTS = 256;
+constexpr uint32_t GFXFB_MAX_FLUSH_RECTS = 256; // the most regions one flush or present names
 
 constexpr uint32_t GFXFB_OUTPUTS_MAX = 16; // the most outputs a device drives
 
@@ -185,10 +194,14 @@ struct gfxfb_buffer_args {
     uint64_t map_offset; // out: the mmap offset that maps this buffer
 };
 
-// GFXFB_PRESENT argument, naming an output and the buffer asked to replace what it shows from its next vertical blank
+// GFXFB_PRESENT argument, naming an output, the buffer asked to replace what it shows from its next vertical blank and
+// the regions of that buffer that changed since it was created or last presented
 struct gfxfb_present_args {
-    uint32_t output; // the output's index, EINVAL unless below `output_count`
-    uint32_t handle; // the buffer's handle, or 0 for the output's base buffer
+    uint32_t output;       // the output's index, EINVAL unless below `output_count`
+    uint32_t handle;       // the buffer's handle, or 0 for the output's base buffer
+    uint64_t regions;      // user address of `region_count` gfxfb_rect entries
+    uint32_t region_count; // at most GFXFB_MAX_FLUSH_RECTS, or 0 for the whole buffer
+    uint32_t reserved;     // must be zero
 };
 
 // One event as `read` returns it
@@ -207,7 +220,7 @@ static_assert(sizeof(gfxfb_flush_args) == 16, "gfxfb_flush_args layout");
 static_assert(sizeof(gfxfb_mode) == 16, "gfxfb_mode layout");
 static_assert(sizeof(gfxfb_output_info) == 32, "gfxfb_output_info layout");
 static_assert(sizeof(gfxfb_buffer_args) == 40, "gfxfb_buffer_args layout");
-static_assert(sizeof(gfxfb_present_args) == 8, "gfxfb_present_args layout");
+static_assert(sizeof(gfxfb_present_args) == 24, "gfxfb_present_args layout");
 static_assert(sizeof(gfxfb_event) == 32, "gfxfb_event layout");
 
 } // namespace gfxfb

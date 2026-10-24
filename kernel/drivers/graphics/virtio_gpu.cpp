@@ -556,6 +556,10 @@ int32_t virtio_gpu_driver::create_buffer(uint32_t width, uint32_t height, uint32
     return rc == ERR_OUT_OF_DEVICE_MEMORY ? gfxfb::ERR_NO_MEMORY : gfxfb::ERR_DEVICE;
 }
 
+int32_t virtio_gpu_driver::present(uint32_t, gfxfb::buffer*, const gfxfb::gfxfb_rect*, uint32_t) {
+    return gfxfb::ERR_UNSUPPORTED;
+}
+
 void virtio_gpu_driver::release_buffer(gfxfb::buffer* buf) {
     auto* released = static_cast<virtio_gpu_buffer*>(buf);
 

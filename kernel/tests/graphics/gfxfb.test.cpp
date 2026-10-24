@@ -13,6 +13,7 @@
 #include "mm/heap.h"
 #include "mm/mm.h"
 #include "mm/paging.h"
+#include "mm/uaccess.h"
 #include "mm/vma.h"
 #include "mm/vmm.h"
 #include "sched/sched.h"
@@ -70,9 +71,19 @@ static constexpr uint8_t BOOT_RED_SHIFT = 0;
 static constexpr uint8_t BOOT_GREEN_SHIFT = 5;
 static constexpr uint8_t BOOT_BLUE_SHIFT = 11;
 
-// Where the flush tests place their request and rect array in the user page
+// Where the flush and present tests place their request and rect array in the user page
 static constexpr size_t ARGS_OFFSET = 0;
 static constexpr size_t RECTS_OFFSET = 64;
+
+// How many regions `map_many_regions` writes, one more than a present may name so the bound is tested with every region
+// readable, in pages of their own since they need more than one
+static constexpr uint32_t MANY_REGION_COUNT = gfxfb::GFXFB_MAX_FLUSH_RECTS + 1;
+static constexpr size_t MANY_REGIONS_PAGES =
+    (MANY_REGION_COUNT * sizeof(gfxfb::gfxfb_rect) + pmm::PAGE_SIZE - 1) / pmm::PAGE_SIZE;
+
+// A region count whose low 16 bits alone name one region, so a count narrowed to 16 bits passes the bound and fails its
+// refusal test
+static constexpr uint32_t WIDE_REGION_COUNT = 0x10001;
 
 // What `get_output` fills the GFXFB_GET_OUTPUT reply's 32-bit fields and its refresh rate with first, so a field left
 // unwritten fails its check
@@ -104,8 +115,8 @@ static constexpr uint32_t WIDE_FORMAT = 0x10000 + gfxfb::GFXFB_FORMAT_XRGB8888;
 static constexpr size_t NODE_NAME_BYTES = 24;
 static constexpr size_t NODE_PATH_BYTES = 48;
 
-// A display with two outputs, dark until a test lights them, that records its last flush's output and the first
-// MAX_RECORDED rects of its flushes, creates write-combining buffers, accepts presents and counts buffers handed back
+// A display with two outputs, dark until a test lights them, that records the first MAX_RECORDED rects of its flushes
+// and regions of its last accepted present, creates write-combining buffers and counts buffers handed back
 class recording_display : public gfxfb::display {
 public:
     static constexpr uint32_t OUTPUTS = 2;
@@ -137,6 +148,11 @@ public:
     gfxfb::buffer* presented = nullptr; // the buffer of the last present accepted
     uint32_t       presented_output = OUTPUTS; // the output of the last present accepted, OUTPUTS before any
 
+    bool              got_null_regions = false; // the last present accepted passed null regions
+    uint32_t          presented_region_count = 0; // that present's region count
+    gfxfb::gfxfb_rect presented_regions[MAX_RECORDED] = {}; // its first MAX_RECORDED regions
+    gfxfb::gfxfb_rect last_presented_region = {}; // its last region, zeros for none
+
     uint32_t output_count() const override { return count; }
     bool needs_flush() const override { return flush_needed; }
 
@@ -163,7 +179,12 @@ public:
     }
 
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
-    int32_t present(uint32_t output, gfxfb::buffer* buf) override;
+    int32_t present(
+        uint32_t output,
+        gfxfb::buffer* buf,
+        const gfxfb::gfxfb_rect* regions,
+        uint32_t region_count
+    ) override;
 
     void release_buffer(gfxfb::buffer* buf) override {
         last_released = buf;
@@ -257,7 +278,12 @@ int32_t recording_display::create_buffer(uint32_t width, uint32_t height, uint32
     return gfxfb::OK;
 }
 
-int32_t recording_display::present(uint32_t output, gfxfb::buffer* buf) {
+int32_t recording_display::present(
+    uint32_t output,
+    gfxfb::buffer* buf,
+    const gfxfb::gfxfb_rect* regions,
+    uint32_t region_count
+) {
     present_calls++;
 
     if (present_answer != gfxfb::OK) {
@@ -276,6 +302,14 @@ int32_t recording_display::present(uint32_t output, gfxfb::buffer* buf) {
 
     presented = buf;
     presented_output = output;
+    got_null_regions = regions == nullptr;
+    presented_region_count = region_count;
+    uint32_t readable_count = regions ? region_count : 0;
+    for (uint32_t i = 0; i < readable_count && i < MAX_RECORDED; i++) {
+        presented_regions[i] = regions[i];
+    }
+
+    last_presented_region = readable_count > 0 ? regions[readable_count - 1] : gfxfb::gfxfb_rect{};
 
     if (while_presenting) {
         void (*hook)() = while_presenting;
@@ -475,14 +509,91 @@ static uint32_t create_output_0_buffer(fs::file* file, user_page& page) {
     return page.at<gfxfb::gfxfb_buffer_args>(0)->handle;
 }
 
-// Presents `handle` on `output` through GFXFB_PRESENT on `file`, writing the request at the page's start
-static int32_t present_buffer(fs::file* file, user_page& page, uint32_t output, uint32_t handle) {
-    *page.at<gfxfb::gfxfb_present_args>(0) = {
-        .output = output,
-        .handle = handle,
+// Presents `handle` on `output` through GFXFB_PRESENT on `file` with the `region_count` regions at user address
+// `regions`, writing the request at the page's start
+static int32_t present_regions(
+    fs::file* file,
+    user_page& page,
+    uint32_t output,
+    uint32_t handle,
+    uint64_t regions,
+    uint32_t region_count
+) {
+    *page.at<gfxfb::gfxfb_present_args>(ARGS_OFFSET) = {
+        .output       = output,
+        .handle       = handle,
+        .regions      = regions,
+        .region_count = region_count,
     };
 
-    return file_ioctl(file, page, gfxfb::GFXFB_PRESENT, page.addr);
+    return file_ioctl(file, page, gfxfb::GFXFB_PRESENT, page.addr + ARGS_OFFSET);
+}
+
+// Presents `handle` on `output` through GFXFB_PRESENT on `file` naming no region, which stands for the whole buffer
+static int32_t present_buffer(fs::file* file, user_page& page, uint32_t output, uint32_t handle) {
+    return present_regions(file, page, output, handle, 0, 0);
+}
+
+// Presents `handle` on `output` through GFXFB_PRESENT on `file` with `region` alone, written at RECTS_OFFSET
+static int32_t present_one_region(
+    fs::file* file,
+    user_page& page,
+    uint32_t output,
+    uint32_t handle,
+    const gfxfb::gfxfb_rect& region
+) {
+    *page.at<gfxfb::gfxfb_rect>(RECTS_OFFSET) = region;
+
+    return present_regions(file, page, output, handle, page.addr + RECTS_OFFSET, 1);
+}
+
+// Writes at the page's start a present of output 1's base buffer naming one empty region, refused before control
+static void write_empty_region_present(user_page& page) {
+    *page.at<gfxfb::gfxfb_rect>(RECTS_OFFSET) = {0, 0, 0, 1};
+    *page.at<gfxfb::gfxfb_present_args>(ARGS_OFFSET) = {
+        .output       = 1,
+        .handle       = 0,
+        .regions      = page.addr + RECTS_OFFSET,
+        .region_count = 1,
+    };
+}
+
+// Region `i` of `map_many_regions`: one pixel at column i / OUTPUT_0_HEIGHT and row i % OUTPUT_0_HEIGHT of output 0's
+// buffer, so no two regions are alike and both coordinates vary among the first MAX_RECORDED
+static gfxfb::gfxfb_rect many_regions_entry(uint32_t i) {
+    return {
+        .x      = static_cast<uint32_t>(i / OUTPUT_0_HEIGHT),
+        .y      = static_cast<uint32_t>(i % OUTPUT_0_HEIGHT),
+        .width  = 1,
+        .height = 1,
+    };
+}
+
+// Maps MANY_REGIONS_PAGES pages into the page's address space holding MANY_REGION_COUNT regions, region i being
+// `many_regions_entry(i)`, and returns their user address, or 0 when the mapping or a write fails
+static uintptr_t map_many_regions(user_page& page) {
+    uintptr_t addr = 0;
+    uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
+    uint32_t flags = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS;
+    size_t length = MANY_REGIONS_PAGES * pmm::PAGE_SIZE;
+    int32_t map_rc = mm::MM_CTX_OK;
+    RUN_ELEVATED(map_rc = mm::mm_context_map_anonymous(page.ctx, 0, length, prot, flags, &addr));
+    if (map_rc != mm::MM_CTX_OK) {
+        return 0;
+    }
+
+    user_space_scope scope(page.ctx);
+    for (uint32_t i = 0; i < MANY_REGION_COUNT; i++) {
+        gfxfb::gfxfb_rect region = many_regions_entry(i);
+        void* destination = reinterpret_cast<void*>(addr + i * sizeof(region));
+        int32_t copy_rc = mm::uaccess::OK;
+        RUN_ELEVATED(copy_rc = mm::uaccess::copy_to_user(destination, &region, sizeof(region)));
+        if (copy_rc != mm::uaccess::OK) {
+            return 0;
+        }
+    }
+
+    return addr;
 }
 
 // Ends the unended present the test's node holds on `output` with `status`, as its display would, reporting `frame` and
@@ -2368,11 +2479,13 @@ static int32_t g_creating_present_result;
 static int32_t g_creating_second_present_result;
 static int32_t g_creating_display_refusal_result;
 static int32_t g_creating_unheld_handle_result;
+static int32_t g_creating_empty_region_result;
 static int32_t g_rival_second_present_result;
 static int32_t g_rival_unheld_handle_result;
+static int32_t g_rival_empty_region_result;
 
-// Runs inside the creating file's creation: presents through the rival, twice through that file on output 0, twice on
-// output 1 refused by the display and with an unheld handle, twice through the rival, then refuses the creation
+// Runs inside the creating file's creation: presents through the rival, twice through that file on output 0, thrice on
+// output 1 (a display refusal, an unheld handle, an empty region), thrice by the rival, then refuses the creation
 static void present_on_both_files_while_creating() {
     *g_creating_page->at<gfxfb::gfxfb_present_args>(0) = {
         .output = 0,
@@ -2390,10 +2503,19 @@ static void present_on_both_files_while_creating() {
 
     g_creating_page->at<gfxfb::gfxfb_present_args>(0)->handle = 2;
     g_creating_unheld_handle_result = fs::ioctl(g_creating_file, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
-    g_creating_page->at<gfxfb::gfxfb_present_args>(0)->handle = 0;
+    write_empty_region_present(*g_creating_page);
+    g_creating_empty_region_result = fs::ioctl(g_creating_file, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
+
+    *g_creating_page->at<gfxfb::gfxfb_present_args>(0) = {
+        .output = 1,
+        .handle = 0,
+    };
+
     g_rival_second_present_result = fs::ioctl(g_presenting_rival, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
     g_creating_page->at<gfxfb::gfxfb_present_args>(0)->handle = 2;
     g_rival_unheld_handle_result = fs::ioctl(g_presenting_rival, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
+    write_empty_region_present(*g_creating_page);
+    g_rival_empty_region_result = fs::ioctl(g_presenting_rival, gfxfb::GFXFB_PRESENT, g_creating_page->addr);
     g_present_while_creating_display.create_result = gfxfb::ERR_NO_MEMORY;
 }
 
@@ -2422,8 +2544,10 @@ TEST(gfxfb, a_present_during_a_creation_of_its_file_takes_control) {
     g_creating_second_present_result = fs::OK;
     g_creating_display_refusal_result = fs::OK;
     g_creating_unheld_handle_result = fs::OK;
+    g_creating_empty_region_result = fs::OK;
     g_rival_second_present_result = fs::OK;
     g_rival_unheld_handle_result = fs::OK;
+    g_rival_empty_region_result = fs::OK;
     g_present_while_creating_display.while_creating = present_on_both_files_while_creating;
 
     uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
@@ -2433,8 +2557,10 @@ TEST(gfxfb, a_present_during_a_creation_of_its_file_takes_control) {
     EXPECT_EQ(g_creating_second_present_result, fs::ERR_BUSY);
     EXPECT_EQ(g_creating_display_refusal_result, fs::ERR_IO);
     EXPECT_EQ(g_creating_unheld_handle_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_creating_empty_region_result, fs::ERR_INVAL);
     EXPECT_EQ(g_rival_second_present_result, fs::ERR_BUSY);
     EXPECT_EQ(g_rival_unheld_handle_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_rival_empty_region_result, fs::ERR_INVAL);
     EXPECT_EQ(g_present_while_creating_display.present_calls, static_cast<uint32_t>(2));
 
     g_present_while_creating_display.create_result = gfxfb::OK;
@@ -2460,6 +2586,8 @@ static fs::file* g_refusals_rival;
 static user_page* g_refusals_page;
 static int32_t g_unheld_handle_result;
 static int32_t g_rival_after_unheld_handle_result;
+static int32_t g_empty_region_result;
+static int32_t g_rival_after_empty_region_result;
 static int32_t g_held_output_result;
 static int32_t g_rival_after_held_output_result;
 static int32_t g_display_refusal_result;
@@ -2468,6 +2596,8 @@ static int32_t g_refusals_rival_base_result;
 static int32_t g_rival_after_its_base_result;
 static int32_t g_refusals_rival_unheld_handle_result;
 static int32_t g_rival_after_its_unheld_handle_result;
+static int32_t g_refusals_rival_empty_region_result;
+static int32_t g_rival_after_its_empty_region_result;
 
 // Runs inside the presenter's creation: makes presents refused by gfxfb's checks, the held output 0 and the display,
 // then the rival's refused for control and by the checks, each before the rival's creation, then refuses the creation
@@ -2480,6 +2610,11 @@ static void refuse_presents_while_reserving() {
     g_unheld_handle_result = fs::ioctl(g_refused_presenter, gfxfb::GFXFB_PRESENT, g_refusals_page->addr);
     write_small_request(*g_refusals_page, 0);
     g_rival_after_unheld_handle_result = fs::ioctl(g_refusals_rival, gfxfb::GFXFB_CREATE_BUFFER, g_refusals_page->addr);
+
+    write_empty_region_present(*g_refusals_page);
+    g_empty_region_result = fs::ioctl(g_refused_presenter, gfxfb::GFXFB_PRESENT, g_refusals_page->addr);
+    write_small_request(*g_refusals_page, 0);
+    g_rival_after_empty_region_result = fs::ioctl(g_refusals_rival, gfxfb::GFXFB_CREATE_BUFFER, g_refusals_page->addr);
 
     *g_refusals_page->at<gfxfb::gfxfb_present_args>(0) = {
         .output = 0,
@@ -2524,6 +2659,15 @@ static void refuse_presents_while_reserving() {
         g_refusals_page->addr
     );
 
+    write_empty_region_present(*g_refusals_page);
+    g_refusals_rival_empty_region_result = fs::ioctl(g_refusals_rival, gfxfb::GFXFB_PRESENT, g_refusals_page->addr);
+    write_small_request(*g_refusals_page, 0);
+    g_rival_after_its_empty_region_result = fs::ioctl(
+        g_refusals_rival,
+        gfxfb::GFXFB_CREATE_BUFFER,
+        g_refusals_page->addr
+    );
+
     g_refused_while_reserving_display.create_result = gfxfb::ERR_NO_MEMORY;
 }
 
@@ -2555,6 +2699,8 @@ TEST(gfxfb, a_present_refused_during_a_creation_takes_no_control) {
     g_refusals_page = &page;
     g_unheld_handle_result = fs::OK;
     g_rival_after_unheld_handle_result = fs::OK;
+    g_empty_region_result = fs::OK;
+    g_rival_after_empty_region_result = fs::OK;
     g_held_output_result = fs::OK;
     g_rival_after_held_output_result = fs::OK;
     g_display_refusal_result = fs::OK;
@@ -2563,12 +2709,16 @@ TEST(gfxfb, a_present_refused_during_a_creation_takes_no_control) {
     g_rival_after_its_base_result = fs::OK;
     g_refusals_rival_unheld_handle_result = fs::OK;
     g_rival_after_its_unheld_handle_result = fs::OK;
+    g_refusals_rival_empty_region_result = fs::OK;
+    g_rival_after_its_empty_region_result = fs::OK;
     g_refused_while_reserving_display.while_creating = refuse_presents_while_reserving;
 
     uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
     EXPECT_EQ(request_buffer(presenter, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_NOMEM);
     EXPECT_EQ(g_unheld_handle_result, fs::ERR_INVAL);
     EXPECT_EQ(g_rival_after_unheld_handle_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_empty_region_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_rival_after_empty_region_result, fs::ERR_BUSY);
     EXPECT_EQ(g_held_output_result, fs::ERR_BUSY);
     EXPECT_EQ(g_rival_after_held_output_result, fs::ERR_BUSY);
     EXPECT_EQ(g_display_refusal_result, fs::ERR_IO);
@@ -2577,6 +2727,8 @@ TEST(gfxfb, a_present_refused_during_a_creation_takes_no_control) {
     EXPECT_EQ(g_rival_after_its_base_result, fs::ERR_BUSY);
     EXPECT_EQ(g_refusals_rival_unheld_handle_result, fs::ERR_INVAL);
     EXPECT_EQ(g_rival_after_its_unheld_handle_result, fs::ERR_BUSY);
+    EXPECT_EQ(g_refusals_rival_empty_region_result, fs::ERR_INVAL);
+    EXPECT_EQ(g_rival_after_its_empty_region_result, fs::ERR_BUSY);
     EXPECT_EQ(g_refused_while_reserving_display.present_calls, static_cast<uint32_t>(2));
     EXPECT_EQ(g_refused_while_reserving_display.create_calls, static_cast<uint32_t>(1));
 
@@ -2988,6 +3140,254 @@ TEST(gfxfb, a_closing_file_waits_for_no_ended_present) {
     EXPECT_EQ(read_event(next).output, static_cast<uint32_t>(0));
 
     ASSERT_TRUE(closes_before_deadline(next));
+}
+
+static recording_display g_regions_display;
+
+// A present hands the display its regions complete and in order, each checked against the presented buffer up to its
+// far edges, and a present naming no region hands none, succeeding though its regions' address cannot be read
+TEST(gfxfb, a_present_hands_its_regions_to_the_display) {
+    light_output(g_regions_display, 0, false);
+    light_output(g_regions_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_regions_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t handle = create_output_0_buffer(file, page);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+
+    // The buffer is 64 by 32, so the second region is its last pixel, the third all of it and the fourth, past the
+    // count, outside it
+    auto* regions = page.at<gfxfb::gfxfb_rect>(RECTS_OFFSET);
+    regions[0] = {1, 2, 3, 4};
+    regions[1] = {63, 31, 1, 1};
+    regions[2] = {0, 0, 64, 32};
+    regions[3] = {64, 0, 1, 1};
+    ASSERT_EQ(present_regions(file, page, 0, handle, page.addr + RECTS_OFFSET, 3), fs::OK);
+    ASSERT_EQ(g_regions_display.presented_region_count, static_cast<uint32_t>(3));
+    EXPECT_TRUE(rect_equals(g_regions_display.presented_regions[0], 1, 2, 3, 4));
+    EXPECT_TRUE(rect_equals(g_regions_display.presented_regions[1], 63, 31, 1, 1));
+    EXPECT_TRUE(rect_equals(g_regions_display.presented_regions[2], 0, 0, 64, 32));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).handle, handle);
+
+    // Handle 0 on output 1 names its 32 by 8 base buffer, whose last pixel passes
+    ASSERT_EQ(present_one_region(file, page, 1, 0, {31, 7, 1, 1}), fs::OK);
+    ASSERT_EQ(g_regions_display.presented_region_count, static_cast<uint32_t>(1));
+    EXPECT_TRUE(rect_equals(g_regions_display.presented_regions[0], 31, 7, 1, 1));
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).output, static_cast<uint32_t>(1));
+
+    ASSERT_EQ(present_regions(file, page, 0, handle, page.addr + pmm::PAGE_SIZE, 0), fs::OK);
+    EXPECT_TRUE(g_regions_display.got_null_regions);
+    EXPECT_EQ(g_regions_display.presented_region_count, static_cast<uint32_t>(0));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).handle, handle);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_many_regions_display;
+
+// A present of GFXFB_MAX_FLUSH_RECTS regions hands the display its count, its first MAX_RECORDED regions and its last,
+// while one more, all readable, or a count whose low 16 bits alone would pass fails with ERR_INVAL before the display
+TEST(gfxfb, a_present_names_at_most_gfxfb_max_flush_rects_regions) {
+    light_output(g_many_regions_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_many_regions_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    uintptr_t regions = map_many_regions(page);
+    ASSERT_NE(regions, static_cast<uintptr_t>(0));
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t handle = create_output_0_buffer(file, page);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+
+    EXPECT_EQ(present_regions(file, page, 0, handle, regions, MANY_REGION_COUNT), fs::ERR_INVAL);
+    EXPECT_EQ(present_regions(file, page, 0, handle, regions, WIDE_REGION_COUNT), fs::ERR_INVAL);
+    EXPECT_EQ(g_many_regions_display.present_calls, static_cast<uint32_t>(0));
+
+    // One region first, so regions freed before the display reads them fail this check rather than fault on the 256
+    // below, whose copy takes pages of its own
+    ASSERT_EQ(present_regions(file, page, 0, handle, regions + sizeof(gfxfb::gfxfb_rect), 1), fs::OK);
+    ASSERT_TRUE(rect_equals(g_many_regions_display.last_presented_region, 0, 1, 1, 1));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(read_event(file).handle, handle);
+
+    ASSERT_EQ(present_regions(file, page, 0, handle, regions, gfxfb::GFXFB_MAX_FLUSH_RECTS), fs::OK);
+    ASSERT_EQ(g_many_regions_display.presented_region_count, gfxfb::GFXFB_MAX_FLUSH_RECTS);
+    for (uint32_t i = 0; i < recording_display::MAX_RECORDED; i++) {
+        gfxfb::gfxfb_rect expected = many_regions_entry(i);
+        EXPECT_TRUE(rect_equals(g_many_regions_display.presented_regions[i], expected.x, expected.y, 1, 1));
+    }
+
+    gfxfb::gfxfb_rect last = many_regions_entry(gfxfb::GFXFB_MAX_FLUSH_RECTS - 1);
+    EXPECT_TRUE(rect_equals(g_many_regions_display.last_presented_region, last.x, last.y, 1, 1));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_refused_regions_display;
+
+// Regions each breaking one bound of output 0's 64 by 32 buffer: a zero side, a coordinate at an edge, one pixel past a
+// far edge, a sum wrapping to a small value from either term, and a field whose low 16 bits alone would fit
+static constexpr gfxfb::gfxfb_rect REFUSED_OUTPUT_0_REGIONS[] = {
+    {0, 0, 0, 1},
+    {0, 0, 1, 0},
+    {64, 0, 1, 1},
+    {0, 32, 1, 1},
+    {60, 0, 5, 1},
+    {0, 28, 1, 5},
+    {0xFFFFFFF0, 0, 0x20, 1},
+    {4, 0, 0xFFFFFFFE, 1},
+    {0, 0xFFFFFFF8, 1, 0x10},
+    {0, 4, 1, 0xFFFFFFFE},
+    {0x10001, 0, 1, 1},
+    {0, 0x10001, 1, 1},
+    {0, 0, 0x10001, 1},
+    {0, 0, 1, 0x10001},
+};
+
+// gfxfb refuses with ERR_INVAL before the display a set reserved field, regions it cannot read and a region with a zero
+// width or height or not wholly inside the presented buffer, whatever the output's mode, first or last in a list
+TEST(gfxfb, present_refuses_empty_outside_and_unreadable_regions) {
+    light_output(g_refused_regions_display, 0, false);
+    light_output(g_refused_regions_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_refused_regions_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t handle = create_output_0_buffer(file, page);
+    uint32_t small = request_small_buffer(file, page).handle;
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+    ASSERT_NE(small, static_cast<uint32_t>(0));
+
+    for (const gfxfb::gfxfb_rect& region : REFUSED_OUTPUT_0_REGIONS) {
+        EXPECT_EQ(present_one_region(file, page, 0, handle, region), fs::ERR_INVAL);
+    }
+
+    // A list whose last region lies right of the buffer, then one whose first does
+    auto* regions = page.at<gfxfb::gfxfb_rect>(RECTS_OFFSET);
+    regions[0] = {0, 0, 1, 1};
+    regions[1] = {64, 0, 1, 1};
+    EXPECT_EQ(present_regions(file, page, 0, handle, page.addr + RECTS_OFFSET, 2), fs::ERR_INVAL);
+    regions[0] = {64, 0, 1, 1};
+    regions[1] = {0, 0, 1, 1};
+    EXPECT_EQ(present_regions(file, page, 0, handle, page.addr + RECTS_OFFSET, 2), fs::ERR_INVAL);
+
+    // A reserved field with only its low or only its high bit set
+    const uint32_t reserved_values[] = {0x1, 0x80000000};
+    for (uint32_t reserved : reserved_values) {
+        *page.at<gfxfb::gfxfb_present_args>(ARGS_OFFSET) = {.output = 0, .handle = handle, .reserved = reserved};
+        EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_PRESENT, page.addr + ARGS_OFFSET), fs::ERR_INVAL);
+    }
+
+    // Inside output 0's mode but below the 72 by 8 small buffer, and inside the primary's buffer but right of output
+    // 1's 32 by 8 base buffer
+    EXPECT_EQ(present_one_region(file, page, 0, small, {0, 10, 1, 1}), fs::ERR_INVAL);
+    EXPECT_EQ(present_one_region(file, page, 1, 0, {40, 0, 1, 1}), fs::ERR_INVAL);
+    EXPECT_EQ(g_refused_regions_display.present_calls, static_cast<uint32_t>(0));
+
+    // A region inside the small buffer but right of output 0's mode reaches the display, which refuses the size, and
+    // `file` keeps control through its refusals, so another file's present fails with ERR_BUSY
+    EXPECT_EQ(present_one_region(file, page, 0, small, {70, 0, 2, 8}), fs::ERR_INVAL);
+    EXPECT_EQ(g_refused_regions_display.present_calls, static_cast<uint32_t>(1));
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(rival);
+    ASSERT_EQ(present_buffer(rival, page, 0, 0), fs::ERR_BUSY);
+    ASSERT_TRUE(closes_before_deadline(rival));
+
+    // While output 1 holds a present, presents there of regions the kernel cannot read fail with ERR_INVAL rather than
+    // ERR_BUSY: at a null address, past the page, and a list whose second region lies past the page's end
+    ASSERT_EQ(present_one_region(file, page, 1, 0, {0, 0, 1, 1}), fs::OK);
+    size_t last_region_offset = pmm::PAGE_SIZE - sizeof(gfxfb::gfxfb_rect);
+    *page.at<gfxfb::gfxfb_rect>(last_region_offset) = {0, 0, 1, 1};
+    EXPECT_EQ(present_regions(file, page, 1, 0, 0, 1), fs::ERR_INVAL);
+    EXPECT_EQ(present_regions(file, page, 1, 0, page.addr + pmm::PAGE_SIZE, 1), fs::ERR_INVAL);
+    EXPECT_EQ(present_regions(file, page, 1, 0, page.addr + last_region_offset, 2), fs::ERR_INVAL);
+    EXPECT_EQ(g_refused_regions_display.present_calls, static_cast<uint32_t>(2));
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_LATCHED);
+
+    // Once `file` closes, a creation the display refuses takes no control, so another file's then succeeds
+    ASSERT_TRUE(closes_before_deadline(file));
+    fs::file* refused = fs::open(test.path, fs::O_RDWR);
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(refused);
+    ASSERT_NOT_NULL(next);
+    EXPECT_EQ(request_buffer(refused, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(next));
+    ASSERT_TRUE(closes_before_deadline(refused));
+}
+
+static recording_display g_regions_control_display;
+
+// A present's reserved field, count and regions are refused before control, the first two before handle 0's ERR_AGAIN:
+// the refusals take no control and, while another file controls the buffers, fail with ERR_INVAL, not ERR_BUSY
+TEST(gfxfb, present_checks_its_regions_before_control) {
+    light_output(g_regions_control_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_regions_control_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    uintptr_t many_regions = map_many_regions(page);
+    ASSERT_NE(many_regions, static_cast<uintptr_t>(0));
+    fs::file* controller = fs::open(test.path, fs::O_RDWR);
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(controller);
+    ASSERT_NOT_NULL(file);
+
+    // Output 1 is dark, so a present of its handle 0 fails with ERR_AGAIN, but first with ERR_INVAL for a set reserved
+    // field or too many regions
+    *page.at<gfxfb::gfxfb_present_args>(ARGS_OFFSET) = {.output = 1, .handle = 0, .reserved = 1};
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_PRESENT, page.addr + ARGS_OFFSET), fs::ERR_INVAL);
+    EXPECT_EQ(present_regions(file, page, 1, 0, many_regions, MANY_REGION_COUNT), fs::ERR_INVAL);
+    EXPECT_EQ(present_buffer(file, page, 1, 0), fs::ERR_AGAIN);
+
+    // With no file in control, `file`'s refusals neither reserve nor take control, so `controller`'s creation succeeds
+    EXPECT_EQ(present_one_region(file, page, 0, 0, {0, 0, 0, 1}), fs::ERR_INVAL);
+    EXPECT_EQ(present_regions(file, page, 0, 0, 0, 1), fs::ERR_INVAL);
+    EXPECT_EQ(present_regions(file, page, 0, 0, many_regions, MANY_REGION_COUNT), fs::ERR_INVAL);
+    uint32_t small = request_small_buffer(controller, page).handle;
+    ASSERT_NE(small, static_cast<uint32_t>(0));
+
+    // While `controller` controls the buffers, `file`'s refusals fail with ERR_INVAL and leave `controller` in control
+    // through its present the display refuses, so `file`'s present of one fitting region fails with ERR_BUSY
+    EXPECT_EQ(present_one_region(file, page, 0, 0, {64, 0, 1, 1}), fs::ERR_INVAL);
+    EXPECT_EQ(present_regions(file, page, 0, 0, mm::USER_STACK_TOP, 1), fs::ERR_INVAL);
+    EXPECT_EQ(present_regions(file, page, 0, 0, many_regions, MANY_REGION_COUNT), fs::ERR_INVAL);
+    *page.at<gfxfb::gfxfb_present_args>(ARGS_OFFSET) = {.output = 0, .handle = 0, .reserved = 1};
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_PRESENT, page.addr + ARGS_OFFSET), fs::ERR_INVAL);
+    EXPECT_EQ(present_buffer(controller, page, 0, small), fs::ERR_INVAL);
+    EXPECT_EQ(present_one_region(file, page, 0, 0, {0, 0, 1, 1}), fs::ERR_BUSY);
+    EXPECT_EQ(g_regions_control_display.present_calls, static_cast<uint32_t>(1));
+
+    // Once both close, a creation the display refuses takes no control, so another file's then succeeds
+    ASSERT_TRUE(closes_before_deadline(file));
+    ASSERT_TRUE(closes_before_deadline(controller));
+    fs::file* refused = fs::open(test.path, fs::O_RDWR);
+    fs::file* next = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(refused);
+    ASSERT_NOT_NULL(next);
+    EXPECT_EQ(request_buffer(refused, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, WIDE_FORMAT), fs::ERR_INVAL);
+    EXPECT_NE(request_small_buffer(next, page).handle, static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(next));
+    ASSERT_TRUE(closes_before_deadline(refused));
 }
 
 // Registration is permanent, so /dev/gfxfb shows `g_registered_display` for the rest of the run
