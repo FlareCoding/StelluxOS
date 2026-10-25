@@ -27,14 +27,26 @@ constexpr uint32_t BYTES_PER_PIXEL = 4;
 constexpr uint32_t DEFAULT_WIDTH = 1024;
 constexpr uint32_t DEFAULT_HEIGHT = 768;
 
-// The display info carries no refresh rate, so the driver supplies 60 Hz, a common monitor's rate, for the lit scanout
+// The display info carries no refresh rate, so the driver paces presents at 60 Hz, a common monitor's rate, and reports
+// that rate for the lit scanout
 constexpr uint64_t REFRESH_MILLIHERTZ = 60000;
+
+// The time between two of the lit scanout's refresh boundaries, at which presents latch
+constexpr uint64_t REFRESH_PERIOD_NS = 1000000000000ULL / REFRESH_MILLIHERTZ;
 
 // Bounds a buffer's RAM against a bad scanout size or a client's request
 constexpr uint32_t MAX_DIMENSION = 4096;
 
 // A batch still unanswered this long after its submission marks the device dead
 constexpr uint64_t BATCH_TIMEOUT_NS = 1000000000ULL;
+
+// The deadline of a present's batches, this long after the present takes the lock, so a present the device answers by
+// then ends within GFXFB_PRESENT_TIMEOUT_NS even counted from the lock, its latch coming at most a refresh period later
+constexpr uint64_t PRESENT_BATCH_TIMEOUT_NS = gfxfb::GFXFB_PRESENT_TIMEOUT_NS - REFRESH_PERIOD_NS;
+
+// A batch counts as unanswered no sooner than this long after its submission, even past its deadline, so a task that
+// waited for the CPU before submitting fails no device that answers within this long
+constexpr uint64_t MIN_BATCH_WAIT_NS = REFRESH_PERIOD_NS;
 
 // A request chained to a response
 constexpr uint32_t DESCRIPTORS_PER_COMMAND = 2;
@@ -139,9 +151,8 @@ int32_t virtio_gpu_driver::queue_command(const void* request, uint32_t request_s
     return OK;
 }
 
-int32_t virtio_gpu_driver::wait_for_batch(wait_mode mode) {
+int32_t virtio_gpu_driver::wait_for_batch(wait_mode mode, uint64_t deadline_ns) {
     uint32_t completed = 0;
-    uint64_t deadline = clock::now_ns() + BATCH_TIMEOUT_NS;
 
     while (true) {
         uint16_t head = 0;
@@ -156,19 +167,24 @@ int32_t virtio_gpu_driver::wait_for_batch(wait_mode mode) {
             return OK;
         }
 
-        if (clock::now_ns() >= deadline) {
+        if (clock::now_ns() >= deadline_ns) {
             return ERR_IO;
         }
 
         if (mode == wait_mode::sleep && m_has_completion_interrupt) {
-            wait_for_event_until(deadline);
+            wait_for_event_until(deadline_ns);
         } else {
             cpu::relax();
         }
     }
 }
 
+// Runs the batch with a deadline BATCH_TIMEOUT_NS after its submission
 int32_t virtio_gpu_driver::run_batch(wait_mode mode) {
+    return run_batch_until(mode, clock::now_ns() + BATCH_TIMEOUT_NS);
+}
+
+int32_t virtio_gpu_driver::run_batch_until(wait_mode mode, uint64_t deadline_ns) {
     if (m_is_broken) {
         return ERR_IO;
     }
@@ -179,7 +195,10 @@ int32_t virtio_gpu_driver::run_batch(wait_mode mode) {
 
     m_control_queue.kick(m_control_notify);
 
-    if (wait_for_batch(mode) != OK) {
+    uint64_t earliest_failure_ns = clock::now_ns() + MIN_BATCH_WAIT_NS;
+    uint64_t answer_deadline_ns = deadline_ns > earliest_failure_ns ? deadline_ns : earliest_failure_ns;
+
+    if (wait_for_batch(mode, answer_deadline_ns) != OK) {
         log::error("virtio-gpu: device stopped answering commands");
         m_is_broken = true;
         return ERR_IO;
@@ -359,6 +378,17 @@ int32_t virtio_gpu_driver::destroy_resource(const virtio_gpu_buffer& buf) {
     return OK;
 }
 
+// Queues the command that makes `scanout` show the whole of `buf`'s resource
+int32_t virtio_gpu_driver::queue_set_scanout(uint32_t scanout, const virtio_gpu_buffer& buf) {
+    virtio_gpu_set_scanout set_scanout = {};
+    set_scanout.hdr.type    = VIRTIO_GPU_CMD_SET_SCANOUT;
+    set_scanout.r           = {0, 0, buf.width, buf.height};
+    set_scanout.scanout_id  = scanout;
+    set_scanout.resource_id = buf.resource_id;
+
+    return queue_command(set_scanout);
+}
+
 int32_t virtio_gpu_driver::light_scanout(uint32_t scanout, uint32_t width, uint32_t height) {
     if (allocate_backing(m_base_buffer, width, height) != OK) {
         log::error("virtio-gpu: failed to allocate the RAM for a %ux%u scanout", width, height);
@@ -369,41 +399,42 @@ int32_t virtio_gpu_driver::light_scanout(uint32_t scanout, uint32_t width, uint3
         return ERR_IO;
     }
 
-    virtio_gpu_set_scanout set_scanout = {};
-    set_scanout.hdr.type    = VIRTIO_GPU_CMD_SET_SCANOUT;
-    set_scanout.r           = {0, 0, width, height};
-    set_scanout.scanout_id  = scanout;
-    set_scanout.resource_id = m_base_buffer.resource_id;
-
-    if (queue_command(set_scanout) != OK || run_batch(wait_mode::poll) != OK) {
+    if (queue_set_scanout(scanout, m_base_buffer) != OK || run_batch(wait_mode::poll) != OK) {
         return ERR_IO;
     }
 
     m_scanout = scanout;
+    m_shown_resource_id = m_base_buffer.resource_id;
+    m_lit_ns = clock::now_ns();
 
     return OK;
 }
 
-// Runs the batch first when the rect does not fit
-int32_t virtio_gpu_driver::queue_rect_update(const gfxfb::gfxfb_rect& rect) {
-    uint64_t row_offset = static_cast<uint64_t>(rect.y) * m_base_buffer.pitch;
+// Queues the copy of `rect` from `buf`'s RAM into its resource and the flush that shows it on any scanout showing that
+// resource, first running the batch with `deadline_ns` when the pair does not fit
+int32_t virtio_gpu_driver::queue_rect_update(
+    const virtio_gpu_buffer& buf,
+    const gfxfb::gfxfb_rect& rect,
+    uint64_t deadline_ns
+) {
+    uint64_t row_offset = static_cast<uint64_t>(rect.y) * buf.pitch;
 
     virtio_gpu_transfer_to_host_2d transfer = {};
     transfer.hdr.type    = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
     transfer.r           = {rect.x, rect.y, rect.width, rect.height};
     transfer.offset      = row_offset + static_cast<uint64_t>(rect.x) * BYTES_PER_PIXEL;
-    transfer.resource_id = m_base_buffer.resource_id;
+    transfer.resource_id = buf.resource_id;
 
     virtio_gpu_resource_flush show = {};
     show.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
     show.r           = transfer.r;
-    show.resource_id = m_base_buffer.resource_id;
+    show.resource_id = buf.resource_id;
 
-    // Checked together so a rect is never copied without being shown
+    // Checked together so a rect is never copied without its flush
     uint32_t bytes = command_footprint(sizeof(transfer), sizeof(virtio_gpu_ctrl_hdr)) +
                      command_footprint(sizeof(show), sizeof(virtio_gpu_ctrl_hdr));
 
-    if (!batch_has_room(bytes, COMMANDS_PER_RECT) && run_batch(wait_mode::sleep) != OK) {
+    if (!batch_has_room(bytes, COMMANDS_PER_RECT) && run_batch_until(wait_mode::sleep, deadline_ns) != OK) {
         return ERR_IO;
     }
 
@@ -562,8 +593,107 @@ int32_t virtio_gpu_driver::create_buffer(uint32_t width, uint32_t height, uint32
     return is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
 }
 
-int32_t virtio_gpu_driver::present(uint32_t, gfxfb::buffer*, const gfxfb::gfxfb_rect*, uint32_t) {
-    return gfxfb::ERR_UNSUPPORTED;
+// Runs under `m_batch_lock`. The device runs every command of a batch, so the scanout switches to the buffer's resource
+// in a batch after the copies, which leaves the scanout on the resource it showed when a copy is refused
+int32_t virtio_gpu_driver::show_buffer(const virtio_gpu_buffer& buf, const gfxfb::gfxfb_rect* regions, uint32_t count) {
+    uint64_t deadline_ns = clock::now_ns() + PRESENT_BATCH_TIMEOUT_NS;
+
+    gfxfb::gfxfb_rect whole = {0, 0, buf.width, buf.height};
+    if (count == 0) {
+        regions = &whole;
+        count = 1;
+    }
+
+    int32_t rc = OK;
+    for (uint32_t i = 0; i < count && rc == OK; i++) {
+        rc = queue_rect_update(buf, regions[i], deadline_ns);
+    }
+
+    if (rc == OK) {
+        rc = run_batch_until(wait_mode::sleep, deadline_ns);
+    }
+
+    if (rc != OK || buf.resource_id == m_shown_resource_id) {
+        return rc;
+    }
+
+    if (queue_set_scanout(m_scanout, buf) != OK) {
+        return ERR_IO;
+    }
+
+    rc = run_batch_until(wait_mode::sleep, deadline_ns);
+    if (rc == OK) {
+        m_shown_resource_id = buf.resource_id;
+    }
+
+    return rc;
+}
+
+// Runs under `m_batch_lock` once the device confirmed every command of a present. Records the next refresh boundary as
+// the present's latch, for `report_latch()` to report when it comes
+void virtio_gpu_driver::set_latch_timer() {
+    uint64_t now_ns = clock::now_ns();
+    uint64_t since_lit_ns = now_ns > m_lit_ns ? now_ns - m_lit_ns : 0;
+
+    m_latch_frame = since_lit_ns / REFRESH_PERIOD_NS + 1;
+    m_latch_ns = m_lit_ns + m_latch_frame * REFRESH_PERIOD_NS;
+    RUN_ELEVATED(timer::schedule(&m_latch_timer, m_latch_ns));
+}
+
+// Reports the present the device confirmed last as latched at the refresh boundary `set_latch_timer()` recorded
+void virtio_gpu_driver::report_latch(timer::deadline_timer* latch_timer) {
+    auto* driver = timer::owner_of<virtio_gpu_driver, &virtio_gpu_driver::m_latch_timer>(latch_timer);
+
+    gfxfb::present_result latched = {
+        .status       = gfxfb::GFXFB_PRESENT_LATCHED,
+        .frame        = driver->m_latch_frame,
+        .timestamp_ns = driver->m_latch_ns,
+    };
+
+    RUN_ELEVATED(gfxfb::present_done(driver, driver->m_scanout, latched));
+}
+
+int32_t virtio_gpu_driver::present(
+    uint32_t output,
+    gfxfb::buffer* buf,
+    const gfxfb::gfxfb_rect* regions,
+    uint32_t region_count
+) {
+    const auto& presented = *static_cast<virtio_gpu_buffer*>(buf);
+
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+
+    bool has_scanout_size = presented.width == m_base_buffer.width && presented.height == m_base_buffer.height;
+    int32_t rc = gfxfb::OK;
+    if (m_is_broken) {
+        rc = gfxfb::ERR_DEVICE;
+    } else if (output != m_scanout) {
+        rc = gfxfb::ERR_DARK;
+    } else if (!has_scanout_size) {
+        rc = gfxfb::ERR_INVALID_ARG;
+    } else if (show_buffer(presented, regions, region_count) != OK && !m_is_broken) {
+        rc = gfxfb::ERR_REFUSED;
+    }
+
+    bool missed_deadline = rc == gfxfb::OK && m_is_broken;
+    if (rc == gfxfb::OK && !missed_deadline) {
+        set_latch_timer();
+    }
+
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    // The device was given the buffer and may still read it, so the present ends failed instead of being refused
+    if (missed_deadline) {
+        gfxfb::present_result failed = {
+            .status       = gfxfb::GFXFB_PRESENT_FAILED,
+            .frame        = 0,
+            .timestamp_ns = 0,
+        };
+
+        RUN_ELEVATED(gfxfb::present_done(this, output, failed));
+    }
+
+    return rc;
 }
 
 void virtio_gpu_driver::release_buffer(gfxfb::buffer* buf) {
@@ -610,7 +740,7 @@ int32_t virtio_gpu_driver::flush(uint32_t output, const gfxfb::gfxfb_rect* rects
 
     int32_t rc = OK;
     for (uint32_t i = 0; i < count && rc == OK; i++) {
-        rc = queue_rect_update(rects[i]);
+        rc = queue_rect_update(m_base_buffer, rects[i], clock::now_ns() + BATCH_TIMEOUT_NS);
     }
 
     if (rc == OK) {

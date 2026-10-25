@@ -8,6 +8,7 @@
 #include "sync/mutex.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
+#include "timer/timer.h"
 
 namespace drivers::virtio {
 
@@ -142,17 +143,31 @@ struct virtio_gpu_buffer : gfxfb::buffer {
  * (its virtual monitors). Each buffer is RAM backing a resource, the device's
  * own copy of a picture. The driver lights one scanout with its base buffer,
  * which userland draws into, and `flush()` copies the changed rects from the
- * RAM into the resource and shows them. `create_buffer()` makes further
- * buffers, and `release_buffer()` queues each for the driver's task, which
- * takes the RAM back from the resource, drops the resource and frees the RAM
- * once the device confirms both, keeping the RAM for good otherwise, since the
- * device may still read it. gfxfb keeps a registered display's base buffer for
- * the life of the kernel, so only created buffers come back. `present()`
- * returns ERR_UNSUPPORTED for every buffer, so the lit scanout always shows
- * its base buffer. Once a batch goes unanswered, which the driver logs once,
- * or the driver detaches, every call that sends a command fails with
- * ERR_DEVICE. Before that, a command the device refuses fails its call with
- * ERR_REFUSED, logged unless the device ran out of memory, or with
+ * RAM into the resource. They reach the screen while the scanout shows the
+ * base buffer. `create_buffer()` makes further buffers, and `release_buffer()`
+ * queues each for the driver's task, which takes the RAM back from the
+ * resource, drops the resource and frees the RAM once the device confirms
+ * both, keeping the RAM for good otherwise, since the device may still read
+ * it. gfxfb keeps a registered display's base buffer for the life of the
+ * kernel, so only created buffers come back. `present()` copies a buffer's
+ * regions, or the whole buffer when gfxfb passes none, into its resource as
+ * `flush()` does and, once the device has confirmed every copy, switches the
+ * scanout to that resource when it shows another. The device has no vertical
+ * blank, so a deadline timer reports each present the device confirmed latched
+ * at the scanout's next refresh boundary, within a refresh period of
+ * `present()` returning, the boundaries falling 60 a second from when the
+ * scanout was lit. A present's batches share one deadline,
+ * GFXFB_PRESENT_TIMEOUT_NS less a refresh period after the present takes the
+ * driver's lock, but each counts as unanswered no sooner than a refresh period
+ * after its submission, so `present()` can return past that deadline by up to
+ * a refresh period for each batch that goes out within a refresh period of it
+ * or later, as when its task waited for the CPU, instead of failing a device
+ * that answers within a refresh period. Once a batch goes unanswered, which
+ * the driver logs once, or the driver detaches, every call that sends a
+ * command fails with ERR_DEVICE, but a present whose batch went unanswered
+ * returns OK and ends with GFXFB_PRESENT_FAILED, since the device may still
+ * read its buffer. Before that, a command the device refuses fails its call
+ * with ERR_REFUSED, logged unless the device ran out of memory, or with
  * ERR_NO_MEMORY when the device has no memory left for a new buffer's
  * resource.
  */
@@ -164,6 +179,7 @@ public:
         m_release_lock = sync::SPINLOCK_INIT;
         m_releases.init();
         m_release_wq.init();
+        timer::init_deadline_timer(&m_latch_timer, report_latch);
     }
 
     int32_t attach() override;
@@ -176,7 +192,12 @@ public:
     gfxfb::buffer* base_buffer(uint32_t output) override;
     int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override;
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
-    int32_t present(uint32_t, gfxfb::buffer*, const gfxfb::gfxfb_rect*, uint32_t) override;
+    int32_t present(
+        uint32_t output,
+        gfxfb::buffer* buf,
+        const gfxfb::gfxfb_rect* regions,
+        uint32_t region_count
+    ) override;
     void release_buffer(gfxfb::buffer* buf) override;
 
     /** @note Privilege: **required** */
@@ -195,7 +216,8 @@ private:
     int32_t queue_command(const void* request, uint32_t request_size,
                           uint32_t response_size, uint32_t* out_response_offset);
     int32_t run_batch(wait_mode mode);
-    int32_t wait_for_batch(wait_mode mode);
+    int32_t run_batch_until(wait_mode mode, uint64_t deadline_ns);
+    int32_t wait_for_batch(wait_mode mode, uint64_t deadline_ns);
 
     // For commands whose response is only a header
     template <typename T>
@@ -208,8 +230,12 @@ private:
     int32_t allocate_backing(virtio_gpu_buffer& buf, uint32_t width, uint32_t height);
     int32_t create_resource(virtio_gpu_buffer& buf, wait_mode mode);
     int32_t destroy_resource(const virtio_gpu_buffer& buf);
+    int32_t queue_set_scanout(uint32_t scanout, const virtio_gpu_buffer& buf);
     int32_t light_scanout(uint32_t scanout, uint32_t width, uint32_t height);
-    int32_t queue_rect_update(const gfxfb::gfxfb_rect& rect);
+    int32_t queue_rect_update(const virtio_gpu_buffer& buf, const gfxfb::gfxfb_rect& rect, uint64_t deadline_ns);
+    int32_t show_buffer(const virtio_gpu_buffer& buf, const gfxfb::gfxfb_rect* regions, uint32_t count);
+    void set_latch_timer();
+    static void report_latch(timer::deadline_timer* latch_timer);
     virtio_gpu_buffer* wait_for_release();
 
     virtio::virtqueue m_control_queue;
@@ -224,6 +250,7 @@ private:
     // Fixed at attach, so the display calls read them with no lock
     uint32_t          m_scanout_count = 0;
     uint32_t          m_scanout = 0; // the lit scanout
+    uint64_t          m_lit_ns = 0;  // when the scanout was lit, the first of its refresh boundaries
     virtio_gpu_buffer m_base_buffer = {};
 
     // Held across a batch's completion wait
@@ -234,6 +261,15 @@ private:
 
     // Read and advanced under `m_batch_lock` once the driver is attached
     uint32_t m_next_resource_id = 1;
+
+    // The resource the lit scanout shows, read and written under `m_batch_lock` once the driver is attached
+    uint32_t m_shown_resource_id = 0;
+
+    // The latch of the last present the device confirmed, which `m_latch_timer` reports. Its callback reads them with
+    // no lock, since they are set before the timer and gfxfb sends the scanout no present until their present has ended
+    timer::deadline_timer m_latch_timer;
+    uint64_t              m_latch_frame = 0;
+    uint64_t              m_latch_ns = 0;
 
     // Buffers gfxfb handed back, taken off in order by the driver's task. The reaper takes the lock in
     // `release_buffer()`, so a holder must never keep it across a wait

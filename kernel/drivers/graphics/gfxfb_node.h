@@ -230,12 +230,13 @@ public:
      * output shows the present's buffer and drops the one it replaced, on GFXFB_PRESENT_DARK it drops the present's
      * buffer, and on GFXFB_PRESENT_FAILED it keeps both, since the failed hardware may still read either, and counts
      * the display as failed, so every later `GFXFB_FLUSH` past its request checks and every later present request
-     * reaching an output fails with `fs::ERR_IO`. The display must call it exactly once per present its `present()`
-     * accepted, possibly before that call returns, from its interrupt handler, or elevated from a task or a timer's
-     * callback. The display must report GFXFB_PRESENT_LATCHED only once the hardware no longer reads the replaced
-     * buffer and GFXFB_PRESENT_DARK only once the hardware can no longer latch the present. The call never sleeps or
-     * calls the display.
-     * @param output Index of the output the present was for.
+     * reaching an output fails with `fs::ERR_IO`. The display must report each present its `present()` accepted as
+     * `display::present()` requires, through `gfxfb::present_done()`, which calls this. The display must report
+     * GFXFB_PRESENT_LATCHED only once the hardware no longer reads the replaced buffer and GFXFB_PRESENT_DARK only
+     * once the hardware can no longer latch the present. The call never sleeps or calls the display.
+     * @param output Index of the output the present was for. The call drops the end, logging an error, when the
+     * output holds no unended present, as once that present has ended or for an index of the display's output count
+     * or more.
      * @param result How the present ended.
      * @note Privilege: **required**
      */
@@ -244,6 +245,10 @@ public:
     // True when the node shows a driver display, from construction or `register_display`, and false while it shows its
     // boot display
     bool has_driver_display() const { return m_display != &m_boot_display; }
+
+    // True when `candidate` is the node's display, read with no lock, since the node's display changes only when a
+    // driver display is registered, before userland starts and so before any present
+    bool shows(const display* candidate) const { return m_display == candidate; }
 
     int32_t open(fs::file*, uint32_t flags) override;
     int32_t on_close(fs::file*) override;

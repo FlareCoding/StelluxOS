@@ -3900,3 +3900,65 @@ TEST(gfxfb, register_display_puts_the_first_driver_display_behind_dev_gfxfb) {
     EXPECT_EQ(g_registered_display.recorded_count, static_cast<uint32_t>(1));
     EXPECT_EQ(g_refused_display.recorded_count, static_cast<uint32_t>(0));
 }
+
+// `gfxfb::present_done` ends a present only for /dev/gfxfb's display on the output holding it, so it drops an end of
+// another display, of an output at or past the display's count or GFXFB_OUTPUTS_MAX, and a second end
+TEST(gfxfb, present_done_ends_only_held_presents_of_the_shown_display) {
+    light_output(g_registered_display, 1, false);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    fs::file* file = fs::open("/dev/gfxfb", fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    uint32_t width = static_cast<uint32_t>(OUTPUT_1_WIDTH);
+    uint32_t height = static_cast<uint32_t>(OUTPUT_1_HEIGHT);
+    ASSERT_EQ(request_buffer(file, page, width, height, gfxfb::GFXFB_FORMAT_XRGB8888), fs::OK);
+    uint32_t handle = page.at<gfxfb::gfxfb_buffer_args>(0)->handle;
+    ASSERT_EQ(present_buffer(file, page, 1, handle), fs::OK);
+
+    gfxfb::present_result latched = {.status = gfxfb::GFXFB_PRESENT_LATCHED, .frame = 7, .timestamp_ns = 1234};
+
+    RUN_ELEVATED(gfxfb::present_done(&g_refused_display, 1, latched));
+    ASSERT_TRUE(reads_before_deadline(file, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+    RUN_ELEVATED(gfxfb::present_done(&g_registered_display, recording_display::OUTPUTS, latched));
+    ASSERT_TRUE(reads_before_deadline(file, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+    RUN_ELEVATED(gfxfb::present_done(&g_registered_display, gfxfb::GFXFB_OUTPUTS_MAX, latched));
+    ASSERT_TRUE(reads_before_deadline(file, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+
+    RUN_ELEVATED(gfxfb::present_done(&g_registered_display, 1, latched));
+    gfxfb::gfxfb_event event = read_event(file);
+    EXPECT_EQ(event.type, gfxfb::GFXFB_EVENT_PRESENT);
+    EXPECT_EQ(event.output, static_cast<uint32_t>(1));
+    EXPECT_EQ(event.status, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(event.frame, static_cast<uint64_t>(7));
+    EXPECT_EQ(event.timestamp_ns, static_cast<uint64_t>(1234));
+
+    RUN_ELEVATED(gfxfb::present_done(&g_registered_display, 1, latched));
+    EXPECT_TRUE(reads_before_deadline(file, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_failed_end_display;
+
+// The node drops a second end on an output whose present ended failed, though the output keeps that present for good
+TEST(gfxfb, present_done_drops_a_second_end_of_a_failed_present) {
+    light_output(g_failed_end_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_failed_end_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_FAILED);
+    EXPECT_EQ(read_event(file).status, gfxfb::GFXFB_PRESENT_FAILED);
+
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_FAILED);
+    EXPECT_TRUE(reads_before_deadline(file, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
