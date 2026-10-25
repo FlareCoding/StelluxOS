@@ -20,7 +20,7 @@ constexpr int32_t ERR_ATTACH_UNANSWERED = -3;
 // The device had no memory left for a command. A client's requests for buffers reach that limit on a healthy device
 constexpr int32_t ERR_OUT_OF_DEVICE_MEMORY = -4;
 
-// A B8G8R8X8 pixel, which a driver display's buffers hold as a little-endian 32-bit value
+// A B8G8R8X8 pixel, which a driver display's buffers hold as a little-endian 32-bit value, or a cursor's B8G8R8A8 pixel
 constexpr uint32_t BYTES_PER_PIXEL = 4;
 
 // Used when the device reports no usable scanout
@@ -37,6 +37,10 @@ constexpr uint64_t REFRESH_PERIOD_NS = 1000000000000ULL / REFRESH_MILLIHERTZ;
 // Bounds a buffer's RAM against a bad scanout size or a client's request
 constexpr uint32_t MAX_DIMENSION = 4096;
 
+// The device draws a cursor only from a resource of exactly this width and height
+constexpr uint32_t CURSOR_DIMENSION = 64;
+static_assert(CURSOR_DIMENSION <= gfxfb::CURSOR_DIMENSION_MAX, "a cursor maximum gfxfb accepts");
+
 // A batch still unanswered this long after its submission marks the device dead
 constexpr uint64_t BATCH_TIMEOUT_NS = 1000000000ULL;
 
@@ -44,9 +48,9 @@ constexpr uint64_t BATCH_TIMEOUT_NS = 1000000000ULL;
 // then ends within GFXFB_PRESENT_TIMEOUT_NS even counted from the lock, its latch coming at most a refresh period later
 constexpr uint64_t PRESENT_BATCH_TIMEOUT_NS = gfxfb::GFXFB_PRESENT_TIMEOUT_NS - REFRESH_PERIOD_NS;
 
-// A batch counts as unanswered no sooner than this long after its submission, even past its deadline, so a task that
-// waited for the CPU before submitting fails no device that answers within this long
-constexpr uint64_t MIN_BATCH_WAIT_NS = REFRESH_PERIOD_NS;
+// A batch or a cursor command counts as unanswered no sooner than this long after its submission, even past its
+// deadline, so a task that waited for the CPU before submitting fails no device that answers within this long
+constexpr uint64_t MIN_ANSWER_WAIT_NS = REFRESH_PERIOD_NS;
 
 // A request chained to a response
 constexpr uint32_t DESCRIPTORS_PER_COMMAND = 2;
@@ -79,6 +83,24 @@ static bool is_ok_response(uint32_t type) {
 static bool is_usable_mode(const virtio_gpu_display_one& mode) {
     return mode.enabled && mode.r.width > 0 && mode.r.height > 0 &&
            mode.r.width <= MAX_DIMENSION && mode.r.height <= MAX_DIMENSION;
+}
+
+// The device places a cursor by its picture's top left corner. A corner CURSOR_DIMENSION or more past the scanout's
+// left or top edge shows nothing, so it is held there, which also keeps it a signed 32-bit value for the device
+static uint32_t cursor_corner(int32_t hotspot_position, uint32_t hotspot) {
+    int64_t corner = static_cast<int64_t>(hotspot_position) - hotspot;
+    int64_t farthest = -static_cast<int64_t>(CURSOR_DIMENSION);
+    if (corner < farthest) {
+        corner = farthest;
+    }
+
+    return static_cast<uint32_t>(corner);
+}
+
+// When a request submitted just now counts as unanswered: at `deadline_ns`, or MIN_ANSWER_WAIT_NS from now when later
+static uint64_t answer_deadline(uint64_t deadline_ns) {
+    uint64_t earliest_failure_ns = clock::now_ns() + MIN_ANSWER_WAIT_NS;
+    return deadline_ns > earliest_failure_ns ? deadline_ns : earliest_failure_ns;
 }
 
 // The caller must then keep the buffer's RAM allocated for the life of the kernel
@@ -151,19 +173,20 @@ int32_t virtio_gpu_driver::queue_command(const void* request, uint32_t request_s
     return OK;
 }
 
-int32_t virtio_gpu_driver::wait_for_batch(wait_mode mode, uint64_t deadline_ns) {
+// Waits until the device hands back `count` requests on `queue`, freeing their descriptors, failing at `deadline_ns`
+int32_t virtio_gpu_driver::wait_for_used(virtqueue& queue, uint32_t count, wait_mode mode, uint64_t deadline_ns) {
     uint32_t completed = 0;
 
     while (true) {
         uint16_t head = 0;
         uint32_t written = 0;
 
-        while (m_control_queue.get_used(&head, &written)) {
-            m_control_queue.free_desc(head);
+        while (queue.get_used(&head, &written)) {
+            queue.free_desc(head);
             completed++;
         }
 
-        if (completed >= m_batch_commands) {
+        if (completed >= count) {
             return OK;
         }
 
@@ -195,10 +218,7 @@ int32_t virtio_gpu_driver::run_batch_until(wait_mode mode, uint64_t deadline_ns)
 
     m_control_queue.kick(m_control_notify);
 
-    uint64_t earliest_failure_ns = clock::now_ns() + MIN_BATCH_WAIT_NS;
-    uint64_t answer_deadline_ns = deadline_ns > earliest_failure_ns ? deadline_ns : earliest_failure_ns;
-
-    if (wait_for_batch(mode, answer_deadline_ns) != OK) {
+    if (wait_for_used(m_control_queue, m_batch_commands, mode, answer_deadline(deadline_ns)) != OK) {
         log::error("virtio-gpu: device stopped answering commands");
         m_is_broken = true;
         return ERR_IO;
@@ -281,8 +301,14 @@ int32_t virtio_gpu_driver::query_display(uint32_t* out_scanout, uint32_t* out_wi
     return OK;
 }
 
-// Allocates the RAM for a width by height picture and fills the buffer's layout from it
-int32_t virtio_gpu_driver::allocate_backing(virtio_gpu_buffer& buf, uint32_t width, uint32_t height) {
+// Allocates the RAM for a width by height picture and fills the buffer's layout from it. `access` is
+// `paging::PAGE_USER` for RAM the driver writes while lowered, and 0 otherwise
+int32_t virtio_gpu_driver::allocate_backing(
+    virtio_gpu_buffer& buf,
+    uint32_t width,
+    uint32_t height,
+    paging::page_flags_t access
+) {
     uint64_t pitch = static_cast<uint64_t>(width) * BYTES_PER_PIXEL;
     size_t pages = pmm::page_align_up(pitch * height) / pmm::PAGE_SIZE;
 
@@ -292,7 +318,7 @@ int32_t virtio_gpu_driver::allocate_backing(virtio_gpu_buffer& buf, uint32_t wid
             dma_profile(BACKING_ADDRESS_BITS),
             pages,
             dma::caching::cached_when_coherent,
-            0,
+            access,
             buf.backing
         )
     );
@@ -311,15 +337,15 @@ int32_t virtio_gpu_driver::allocate_backing(virtio_gpu_buffer& buf, uint32_t wid
     return OK;
 }
 
-// Runs under `m_batch_lock` once the driver is attached. On any failure but `ERR_ATTACH_UNANSWERED` the device holds
-// none of the RAM
-int32_t virtio_gpu_driver::create_resource(virtio_gpu_buffer& buf, wait_mode mode) {
+// Runs under `m_batch_lock` once the driver is attached. Gives the device a resource of `format` pixels backed by the
+// buffer's RAM. On any failure but `ERR_ATTACH_UNANSWERED` the device holds none of the RAM
+int32_t virtio_gpu_driver::create_resource(virtio_gpu_buffer& buf, uint32_t format, wait_mode mode) {
     buf.resource_id = m_next_resource_id++;
 
     virtio_gpu_resource_create_2d create = {};
     create.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
     create.resource_id = buf.resource_id;
-    create.format      = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
+    create.format      = format;
     create.width       = buf.width;
     create.height      = buf.height;
 
@@ -390,12 +416,12 @@ int32_t virtio_gpu_driver::queue_set_scanout(uint32_t scanout, const virtio_gpu_
 }
 
 int32_t virtio_gpu_driver::light_scanout(uint32_t scanout, uint32_t width, uint32_t height) {
-    if (allocate_backing(m_base_buffer, width, height) != OK) {
+    if (allocate_backing(m_base_buffer, width, height, 0) != OK) {
         log::error("virtio-gpu: failed to allocate the RAM for a %ux%u scanout", width, height);
         return ERR_IO;
     }
 
-    if (create_resource(m_base_buffer, wait_mode::poll) != OK) {
+    if (create_resource(m_base_buffer, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, wait_mode::poll) != OK) {
         return ERR_IO;
     }
 
@@ -408,6 +434,100 @@ int32_t virtio_gpu_driver::light_scanout(uint32_t scanout, uint32_t width, uint3
     m_lit_ns = clock::now_ns();
 
     return OK;
+}
+
+// Creates the resource every scanout's cursor is drawn from, a picture of B8G8R8A8 pixels, which as little-endian
+// 32-bit values hold alpha, red, green and blue from the top byte down, as gfxfb's cursor pixels do
+int32_t virtio_gpu_driver::create_cursor_resource() {
+    if (allocate_backing(m_cursor_buffer, CURSOR_DIMENSION, CURSOR_DIMENSION, paging::PAGE_USER) != OK) {
+        log::error("virtio-gpu: failed to allocate the RAM for the cursor");
+        return ERR_IO;
+    }
+
+    return create_resource(m_cursor_buffer, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, wait_mode::poll);
+}
+
+// Runs under `m_batch_lock` between batches, sending `command` from the start of the command page. A command the device
+// has not handed back by `answer_deadline(deadline_ns)` marks the device dead, as an unanswered batch does
+int32_t virtio_gpu_driver::run_cursor_command(const virtio_gpu_update_cursor& command, uint64_t deadline_ns) {
+    if (m_is_broken) {
+        return ERR_IO;
+    }
+
+    string::memcpy(reinterpret_cast<void*>(m_command_page.virt), &command, sizeof(command));
+    if (m_cursor_queue.add_buf(m_command_page.phys, sizeof(command), 0) < 0) {
+        return ERR_IO;
+    }
+
+    m_cursor_queue.kick(m_cursor_notify);
+
+    if (wait_for_used(m_cursor_queue, 1, wait_mode::sleep, answer_deadline(deadline_ns)) != OK) {
+        log::error("virtio-gpu: device stopped answering cursor commands");
+        m_is_broken = true;
+        return ERR_IO;
+    }
+
+    return OK;
+}
+
+// A cursor command of `type` for the lit scanout, with a picture's hotspot at the hotspot's recorded position. It names
+// the cursor resource even for a move, since the device hides the cursor on a move naming none
+virtio_gpu_update_cursor virtio_gpu_driver::cursor_command(uint32_t type, uint32_t hot_x, uint32_t hot_y) const {
+    virtio_gpu_update_cursor command = {};
+    command.hdr.type       = type;
+    command.pos.scanout_id = m_scanout;
+    command.pos.x          = cursor_corner(m_cursor_x, hot_x);
+    command.pos.y          = cursor_corner(m_cursor_y, hot_y);
+    command.resource_id    = m_cursor_buffer.resource_id;
+    command.hot_x          = hot_x;
+    command.hot_y          = hot_y;
+
+    return command;
+}
+
+// Runs under `m_batch_lock`. Shows `image` as the lit scanout's cursor, or hides it at a width of 0, the cursor command
+// due by `deadline_ns`. The device reads the resource as it runs the command, so the copy is confirmed first
+int32_t virtio_gpu_driver::update_cursor(const gfxfb::cursor_image& image, uint64_t deadline_ns) {
+    if (image.width == 0) {
+        virtio_gpu_update_cursor hide = cursor_command(VIRTIO_GPU_CMD_UPDATE_CURSOR, 0, 0);
+        hide.resource_id = 0;
+
+        int32_t rc = run_cursor_command(hide, deadline_ns);
+        if (rc == OK) {
+            m_is_cursor_shown = false;
+        }
+
+        return rc;
+    }
+
+    auto* pixels = reinterpret_cast<uint32_t*>(m_cursor_buffer.backing.virt);
+    string::memset(pixels, 0, m_cursor_buffer.size);
+    for (uint32_t row = 0; row < image.height; row++) {
+        uint32_t* destination = pixels + row * CURSOR_DIMENSION;
+        const uint32_t* source = image.pixels + row * image.width;
+        string::memcpy(destination, source, image.width * BYTES_PER_PIXEL);
+    }
+
+    virtio_gpu_transfer_to_host_2d transfer = {};
+    transfer.hdr.type    = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+    transfer.r           = {0, 0, CURSOR_DIMENSION, CURSOR_DIMENSION};
+    transfer.resource_id = m_cursor_buffer.resource_id;
+
+    // A copy the device answers by its deadline leaves the cursor command its minimum wait before `deadline_ns`
+    uint64_t copy_deadline_ns = deadline_ns - MIN_ANSWER_WAIT_NS;
+    if (queue_command(transfer) != OK || run_batch_until(wait_mode::sleep, copy_deadline_ns) != OK) {
+        return ERR_IO;
+    }
+
+    virtio_gpu_update_cursor show = cursor_command(VIRTIO_GPU_CMD_UPDATE_CURSOR, image.hot_x, image.hot_y);
+    int32_t rc = run_cursor_command(show, deadline_ns);
+    if (rc == OK) {
+        m_cursor_hot_x = image.hot_x;
+        m_cursor_hot_y = image.hot_y;
+        m_is_cursor_shown = true;
+    }
+
+    return rc;
 }
 
 // Queues the copy of `rect` from `buf`'s RAM into its resource and the flush that shows it on any scanout showing that
@@ -456,14 +576,17 @@ int32_t virtio_gpu_driver::attach() {
     }
 
     if (setup_queue(VIRTIO_GPU_QUEUE_CONTROL, m_control_queue, &m_control_notify) != OK ||
+        setup_queue(VIRTIO_GPU_QUEUE_CURSOR, m_cursor_queue, &m_cursor_notify) != OK ||
         allocate_command_page() != OK) {
         set_failed();
         return ERR_IO;
     }
 
-    // Without MSI-X every batch is polled
+    // Without MSI-X, or when the device refuses the vector for either queue, every wait polls. The queues share one
+    // vector, so a wait must sleep on it only under `m_batch_lock`
     if (setup_msix(1) == OK) {
-        m_has_completion_interrupt = route_queue_msix(VIRTIO_GPU_QUEUE_CONTROL, 0) == OK;
+        m_has_completion_interrupt = route_queue_msix(VIRTIO_GPU_QUEUE_CONTROL, 0) == OK &&
+                                     route_queue_msix(VIRTIO_GPU_QUEUE_CURSOR, 0) == OK;
     }
 
     if (!m_has_completion_interrupt) {
@@ -479,7 +602,8 @@ int32_t virtio_gpu_driver::attach() {
     uint32_t height = 0;
 
     if (query_display(&scanout, &width, &height) != OK ||
-        light_scanout(scanout, width, height) != OK) {
+        light_scanout(scanout, width, height) != OK ||
+        create_cursor_resource() != OK) {
         log::error("virtio-gpu: display setup failed");
         set_failed();
         return ERR_IO;
@@ -508,6 +632,7 @@ int32_t virtio_gpu_driver::detach() {
         RUN_ELEVATED(dma::free_pages(m_base_buffer.backing));
     }
 
+    RUN_ELEVATED(dma::free_pages(m_cursor_buffer.backing));
     RUN_ELEVATED(dma::free_pages(m_command_page));
 
     return pci_driver::detach();
@@ -562,13 +687,13 @@ int32_t virtio_gpu_driver::create_buffer(uint32_t width, uint32_t height, uint32
         return gfxfb::ERR_NO_MEMORY;
     }
 
-    if (allocate_backing(*buf, width, height) != OK) {
+    if (allocate_backing(*buf, width, height, 0) != OK) {
         heap::ufree_delete(buf);
         return gfxfb::ERR_NO_MEMORY;
     }
 
     RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
-    int32_t rc = create_resource(*buf, wait_mode::sleep);
+    int32_t rc = create_resource(*buf, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, wait_mode::sleep);
     bool is_broken = m_is_broken;
     RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
 
@@ -696,6 +821,52 @@ int32_t virtio_gpu_driver::present(
     return rc;
 }
 
+int32_t virtio_gpu_driver::set_cursor(uint32_t output, const gfxfb::cursor_image& image) {
+    bool fits = image.width <= CURSOR_DIMENSION && image.height <= CURSOR_DIMENSION;
+
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    uint64_t deadline_ns = clock::now_ns() + gfxfb::GFXFB_PRESENT_TIMEOUT_NS;
+
+    int32_t rc = gfxfb::OK;
+    if (m_is_broken) {
+        rc = gfxfb::ERR_DEVICE;
+    } else if (output != m_scanout) {
+        rc = gfxfb::ERR_DARK;
+    } else if (!fits) {
+        rc = gfxfb::ERR_INVALID_ARG;
+    } else if (update_cursor(image, deadline_ns) != OK) {
+        rc = m_is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
+    }
+
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    return rc;
+}
+
+int32_t virtio_gpu_driver::move_cursor(uint32_t output, int32_t x, int32_t y) {
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    uint64_t deadline_ns = clock::now_ns() + gfxfb::GFXFB_PRESENT_TIMEOUT_NS;
+
+    int32_t rc = gfxfb::OK;
+    if (m_is_broken) {
+        rc = gfxfb::ERR_DEVICE;
+    } else if (output != m_scanout) {
+        rc = gfxfb::ERR_DARK;
+    } else {
+        m_cursor_x = x;
+        m_cursor_y = y;
+
+        virtio_gpu_update_cursor move = cursor_command(VIRTIO_GPU_CMD_MOVE_CURSOR, m_cursor_hot_x, m_cursor_hot_y);
+        if (m_is_cursor_shown && run_cursor_command(move, deadline_ns) != OK) {
+            rc = m_is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
+        }
+    }
+
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    return rc;
+}
+
 void virtio_gpu_driver::release_buffer(gfxfb::buffer* buf) {
     auto* released = static_cast<virtio_gpu_buffer*>(buf);
 
@@ -716,9 +887,9 @@ int32_t virtio_gpu_driver::read_output(uint32_t output, gfxfb::output_state& out
     out.lit = output == m_scanout;
     out.boot_output = false;
 
-    // The driver leaves the device's cursor queue unused
-    out.cursor_max_width = 0;
-    out.cursor_max_height = 0;
+    // Every scanout has a cursor, drawn from the cursor resource
+    out.cursor_max_width = CURSOR_DIMENSION;
+    out.cursor_max_height = CURSOR_DIMENSION;
 
     if (out.lit) {
         out.current = {

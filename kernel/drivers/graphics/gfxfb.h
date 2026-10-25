@@ -258,18 +258,19 @@ public:
 
     /**
      * @brief Place the hotspot of an output's cursor at (`x`, `y`) in the
-     * output's pixels, even off the output. A move before any picture only
-     * records the position, and the cursor stays hidden. The call may wait
-     * only for the display's own lock and for the hardware to take the
-     * position, within GFXFB_PRESENT_TIMEOUT_NS of giving it, never for a
-     * vertical blank or for its driver's task.
+     * output's pixels, even off the output. A move while the cursor is hidden,
+     * before any picture or after a hide, only records the position, and the
+     * cursor stays hidden. The call may wait only for the display's own lock
+     * and for the hardware to take the position, within
+     * GFXFB_PRESENT_TIMEOUT_NS of giving it, never for a vertical blank or for
+     * its driver's task.
      * @param output Index of the output, below the count.
      * @param x Column of the hotspot, negative left of the output.
      * @param y Row of the hotspot, negative above the output.
-     * @return OK once the hardware was given the position or, before any
-     * picture, once the display recorded it. Otherwise the first that holds of
-     * ERR_UNSUPPORTED on an output without a hardware cursor, ERR_DEVICE once
-     * the hardware has failed, ERR_DARK when the output is not lit, and
+     * @return OK once the hardware was given the position or, while the cursor
+     * is hidden, once the display recorded it. Otherwise the first that holds
+     * of ERR_UNSUPPORTED on an output without a hardware cursor, ERR_DEVICE
+     * once the hardware has failed, ERR_DARK when the output is not lit, and
      * ERR_REFUSED when the hardware refused the move.
      */
     virtual int32_t move_cursor(uint32_t output, int32_t x, int32_t y) = 0;

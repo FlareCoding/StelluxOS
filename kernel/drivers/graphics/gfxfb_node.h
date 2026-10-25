@@ -207,10 +207,10 @@ private:
  * failing with `fs::ERR_BUSY` while another client controls the buffers or
  * reserves control, then fails with `fs::ERR_IO` once the display has failed,
  * and otherwise returns the display's result. The cursor calls for one output
- * reach the display one at a time, never waiting for a present there. A
- * closing client that controls the buffers hides each output's cursor before
- * its control ends, unless the display has failed, and an output whose hide
- * the display refuses keeps showing its cursor.
+ * reach the display one at a time, and gfxfb never makes one wait for a
+ * present there. A closing client that controls the buffers hides each
+ * output's cursor before its control ends, unless the display has failed, and
+ * an output whose hide the display refuses keeps showing its cursor.
  */
 class gfxfb_node : public fs::node {
 public:
@@ -323,7 +323,7 @@ private:
     uint32_t    m_controller_calls = 0;  // admitted calls of `m_controller` that have not ended
 
     sync::mutex    m_present_locks[GFXFB_OUTPUTS_MAX]; // so presents for one output reach the display one at a time
-    sync::mutex    m_cursor_locks[GFXFB_OUTPUTS_MAX];  // likewise for cursor calls, which never wait for a present
+    sync::mutex    m_cursor_locks[GFXFB_OUTPUTS_MAX];  // likewise for cursor calls, which never wait for a present lock
     sync::spinlock m_outputs_lock;                     // over the members below, taken with interrupts disabled
     output_records m_outputs[GFXFB_OUTPUTS_MAX];       // written unlocked only by `show()`, before the node is opened
     bool           m_display_failed = false;           // set for good by a display call's ERR_DEVICE or a failed end
