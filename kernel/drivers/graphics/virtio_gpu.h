@@ -198,6 +198,11 @@ public:
         const gfxfb::gfxfb_rect* regions,
         uint32_t region_count
     ) override;
+
+    // The driver leaves every scanout's hardware cursor unused, as `read_output()` reports
+    int32_t set_cursor(uint32_t, const gfxfb::cursor_image&) override { return gfxfb::ERR_UNSUPPORTED; }
+    int32_t move_cursor(uint32_t, int32_t, int32_t) override { return gfxfb::ERR_UNSUPPORTED; }
+
     void release_buffer(gfxfb::buffer* buf) override;
 
     /** @note Privilege: **required** */

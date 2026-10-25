@@ -107,8 +107,8 @@ struct output_records {
  * output, whose base buffer is the boot framebuffer. The output's mode is the
  * framebuffer's size with an unknown refresh rate. The display hardware scans
  * that memory out directly, so `flush()` has nothing to copy and returns `OK`.
- * It creates and presents no buffers, and keeps the boot framebuffer when
- * gfxfb hands it back.
+ * It creates and presents no buffers, has no hardware cursor, and keeps the
+ * boot framebuffer when gfxfb hands it back.
  */
 class boot_display : public display {
 public:
@@ -122,6 +122,8 @@ public:
     int32_t flush(uint32_t output, const gfxfb_rect* rects, uint32_t count) override;
     int32_t create_buffer(uint32_t, uint32_t, uint32_t, buffer**) override { return ERR_UNSUPPORTED; }
     int32_t present(uint32_t, buffer*, const gfxfb_rect*, uint32_t) override { return ERR_UNSUPPORTED; }
+    int32_t set_cursor(uint32_t, const cursor_image&) override { return ERR_UNSUPPORTED; }
+    int32_t move_cursor(uint32_t, int32_t, int32_t) override { return ERR_UNSUPPORTED; }
     void release_buffer(buffer*) override {}
 
     const boot_framebuffer& framebuffer() const { return m_framebuffer; }
@@ -145,8 +147,8 @@ private:
  * offset 0 is refused, while `GFXFB_GET_OUTPUT` still reports every output.
  * Each open file is a client, whose buffers mmap maps at the offsets their
  * creation returned, above the primary output's base buffer at offset 0. A
- * client controls the buffers from its first `GFXFB_CREATE_BUFFER` or
- * `GFXFB_PRESENT` that succeeds until it closes. Before control is checked, a
+ * client controls the buffers from its first creation, present or cursor
+ * request that succeeds until the client closes. Before control is checked, a
  * creation request fails with `fs::ERR_INVAL` when gfxfb cannot read it, when
  * its width or height is zero or when its reserved field is set, and a present
  * request fails with `fs::ERR_INVAL` when gfxfb cannot read it, when its
@@ -193,6 +195,22 @@ private:
  * present of its base buffer, a `GFXFB_FLUSH` past its request checks returns
  * `fs::OK` without reading a rect or calling the display, and marks the base
  * buffer stale, so that buffer's next present passes the display no region.
+ *
+ * A cursor request fails with `fs::ERR_INVAL` when gfxfb cannot read it, when
+ * its reserved field is set or when it names an output of the display's output
+ * count or more, and a `GFXFB_SET_CURSOR` showing a picture then fails with
+ * `fs::ERR_INVAL` when its hotspot lies outside the picture or the picture is
+ * wider or taller than the output's cursor maximum or CURSOR_DIMENSION_MAX,
+ * with `fs::ERR_NOMEM` when no memory is left to copy the picture, and
+ * otherwise with `fs::ERR_INVAL` when gfxfb cannot read its pixels. A cursor
+ * request past those checks reserves and takes control as a creation does,
+ * failing with `fs::ERR_BUSY` while another client controls the buffers or
+ * reserves control, then fails with `fs::ERR_IO` once the display has failed,
+ * and otherwise returns the display's result. The cursor calls for one output
+ * reach the display one at a time, never waiting for a present there. A
+ * closing client that controls the buffers hides each output's cursor before
+ * its control ends, unless the display has failed, and an output whose hide
+ * the display refuses keeps showing its cursor.
  */
 class gfxfb_node : public fs::node {
 public:
@@ -229,11 +247,11 @@ public:
      * the client that presented, waking the client's readers, pollers and closing task. On GFXFB_PRESENT_LATCHED the
      * output shows the present's buffer and drops the one it replaced, on GFXFB_PRESENT_DARK it drops the present's
      * buffer, and on GFXFB_PRESENT_FAILED it keeps both, since the failed hardware may still read either, and counts
-     * the display as failed, so every later `GFXFB_FLUSH` past its request checks and every later present request
-     * reaching an output fails with `fs::ERR_IO`. The display must report each present its `present()` accepted as
-     * `display::present()` requires, through `gfxfb::present_done()`, which calls this. The display must report
-     * GFXFB_PRESENT_LATCHED only once the hardware no longer reads the replaced buffer and GFXFB_PRESENT_DARK only
-     * once the hardware can no longer latch the present. The call never sleeps or calls the display.
+     * the display as failed, so every later `GFXFB_FLUSH` past its request checks, present request reaching an output
+     * and cursor request past control fails with `fs::ERR_IO`. The display must report each present its `present()`
+     * accepted as `display::present()` requires, through `gfxfb::present_done()`, which calls this. The display must
+     * report GFXFB_PRESENT_LATCHED only once the hardware no longer reads the replaced buffer and GFXFB_PRESENT_DARK
+     * only once the hardware can no longer latch the present. The call never sleeps or calls the display.
      * @param output Index of the output the present was for. The call drops the end, logging an error, when the
      * output holds no unended present, as once that present has ended or for an index of the display's output count
      * or more.
@@ -279,6 +297,9 @@ private:
         const gfxfb_rect* regions,
         uint32_t region_count
     );
+    int32_t set_cursor(client& owner, uint64_t args_addr);
+    int32_t give_cursor_image(uint32_t output, const cursor_image& image);
+    int32_t move_cursor(client& owner, uint64_t position_addr);
     bool has_display_failed();
     void mark_failed_on_device_error(int32_t rc);
     bool holds_unended_present(const client& owner) const;
@@ -302,6 +323,7 @@ private:
     uint32_t    m_controller_calls = 0;  // admitted calls of `m_controller` that have not ended
 
     sync::mutex    m_present_locks[GFXFB_OUTPUTS_MAX]; // so presents for one output reach the display one at a time
+    sync::mutex    m_cursor_locks[GFXFB_OUTPUTS_MAX];  // likewise for cursor calls, which never wait for a present
     sync::spinlock m_outputs_lock;                     // over the members below, taken with interrupts disabled
     output_records m_outputs[GFXFB_OUTPUTS_MAX];       // written unlocked only by `show()`, before the node is opened
     bool           m_display_failed = false;           // set for good by a display call's ERR_DEVICE or a failed end

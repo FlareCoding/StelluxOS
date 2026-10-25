@@ -85,8 +85,8 @@ static constexpr size_t MANY_REGIONS_PAGES =
 // refusal test
 static constexpr uint32_t WIDE_REGION_COUNT = 0x10001;
 
-// What `get_output` fills the GFXFB_GET_OUTPUT reply's 32-bit fields and its refresh rate with first, so a field left
-// unwritten fails its check
+// What `get_output` fills the GFXFB_GET_OUTPUT reply's 32-bit fields and its refresh rate with first, as a test does an
+// output state's cursor maximum before `read_output()`, so a field left unwritten fails its check
 static constexpr uint32_t UNWRITTEN_FIELD = 0xFFFFFFFF;
 static constexpr uint64_t UNWRITTEN_RATE = 0xFFFFFFFFFFFFFFFF;
 
@@ -115,13 +115,45 @@ static constexpr uint32_t WIDE_FORMAT = 0x10000 + gfxfb::GFXFB_FORMAT_XRGB8888;
 static constexpr size_t NODE_NAME_BYTES = 24;
 static constexpr size_t NODE_PATH_BYTES = 48;
 
-// A display with two outputs, dark until a test lights them, that records the first MAX_RECORDED rects of its flushes
-// and regions of its last accepted present, creates write-combining buffers and counts buffers handed back
+// Where the cursor tests place their move request and their pictures' pixels in the user page, apart from a
+// GFXFB_SET_CURSOR request at ARGS_OFFSET
+static constexpr size_t MOVE_OFFSET = 32;
+static constexpr size_t PIXELS_OFFSET = 1024;
+
+// The cursor maximum the cursor tests' outputs report, unlike in its two dimensions, so a check reading the wrong one
+// fails
+static constexpr uint32_t CURSOR_MAX_WIDTH = 200;
+static constexpr uint32_t CURSOR_MAX_HEIGHT = 40;
+
+// A cursor maximum above both CURSOR_DIMENSION_MAX and 0xFFFF, which no display keeping the contract reports, so a
+// reply or a picture check that trusts it, or narrows it to 16 bits, fails
+static constexpr uint32_t WIDE_CURSOR_MAX_WIDTH = 0x10000 + 16;
+static constexpr uint32_t WIDE_CURSOR_MAX_HEIGHT = 0x10000 + 8;
+
+// A cursor picture's width or height whose low 16 bits alone make 1, so a size check narrowed to 16 bits passes it
+static constexpr uint32_t WIDE_CURSOR_DIMENSION = 0x10001;
+
+// The pages `map_wide_cursor_pixels` maps, holding WIDE_CURSOR_DIMENSION pixels, so their copy cannot refuse a picture
+// that wide or tall in the size check's place
+static constexpr size_t WIDE_CURSOR_PAGES =
+    (WIDE_CURSOR_DIMENSION * sizeof(uint32_t) + pmm::PAGE_SIZE - 1) / pmm::PAGE_SIZE;
+
+// A hotspot column or row whose low 16 bits are 0, so a check narrowed to 16 bits finds it inside any picture
+static constexpr uint32_t WIDE_HOTSPOT = 0x10000;
+
+// A cursor position off any output, one coordinate negative and one above 0xFFFF, so a coordinate narrowed or clamped
+// on its way to the display fails
+static constexpr int32_t OFF_OUTPUT_X = -70000;
+static constexpr int32_t OFF_OUTPUT_Y = 70000;
+
+// A display with two outputs, dark until a test lights them, that records its cursor calls, the first MAX_RECORDED
+// rects of its flushes and regions of its last accepted present, creates write-combining buffers and counts releases
 class recording_display : public gfxfb::display {
 public:
     static constexpr uint32_t OUTPUTS = 2;
     static constexpr uint32_t MAX_RECORDED = 64;
     static constexpr uint32_t MAX_CREATED = gfxfb::GFXFB_CLIENT_BUFFERS_MAX + 2; // a full file, then two refills
+    static constexpr uint32_t MAX_CURSOR_PIXELS = 8;
 
     gfxfb::output_state states[OUTPUTS] = {};
     gfxfb::buffer       bases[OUTPUTS] = {};
@@ -155,6 +187,17 @@ public:
     gfxfb::gfxfb_rect presented_regions[MAX_RECORDED] = {}; // its first MAX_RECORDED regions
     gfxfb::gfxfb_rect last_presented_region = {}; // its last region, zeros for none
 
+    int32_t             cursor_answer = gfxfb::OK; // what `set_cursor()` and `move_cursor()` return
+    void                (*while_setting_cursor)() = nullptr; // run once by the next `set_cursor()`, before it returns
+    uint32_t            set_cursor_calls = 0;
+    uint32_t            move_cursor_calls = 0;
+    uint32_t            cursor_output = OUTPUTS; // the output of the last cursor call, OUTPUTS before any
+    gfxfb::cursor_image cursor = {}; // the last picture `set_cursor()` got
+    uint32_t            cursor_pixels[MAX_CURSOR_PIXELS] = {}; // that picture's first pixels, read during the call
+    bool                hidden_on[OUTPUTS] = {}; // whether the last `set_cursor()` on each output hid the cursor
+    int32_t             cursor_x = 0; // the last move's position
+    int32_t             cursor_y = 0;
+
     uint32_t output_count() const override { return count; }
     bool needs_flush() const override { return flush_needed; }
 
@@ -187,6 +230,16 @@ public:
         const gfxfb::gfxfb_rect* regions,
         uint32_t region_count
     ) override;
+    int32_t set_cursor(uint32_t output, const gfxfb::cursor_image& image) override;
+
+    int32_t move_cursor(uint32_t output, int32_t x, int32_t y) override {
+        move_cursor_calls++;
+        cursor_output = output;
+        cursor_x = x;
+        cursor_y = y;
+
+        return cursor_answer;
+    }
 
     void release_buffer(gfxfb::buffer* buf) override {
         last_released = buf;
@@ -219,6 +272,16 @@ struct task_read {
 struct task_create {
     fs::file*              file;
     user_page*             page;
+    int32_t                result;
+    sync::atomic<uint32_t> done;
+};
+
+// A cursor move to the origin run on a task of its own: the file and page it moves through, the output whose cursor it
+// moves, its result and the flag set once it returns
+struct task_move {
+    fs::file*              file;
+    user_page*             page;
+    uint32_t               output;
     int32_t                result;
     sync::atomic<uint32_t> done;
 };
@@ -335,6 +398,30 @@ int32_t recording_display::present(
     return gfxfb::OK;
 }
 
+int32_t recording_display::set_cursor(uint32_t output, const gfxfb::cursor_image& image) {
+    set_cursor_calls++;
+    cursor_output = output;
+    cursor = image;
+
+    // A close hiding past the output count fails the tests' call counts instead of writing past `hidden_on`
+    if (output < OUTPUTS) {
+        hidden_on[output] = image.width == 0;
+    }
+
+    uint32_t readable_count = image.pixels ? image.width * image.height : 0;
+    for (uint32_t i = 0; i < readable_count && i < MAX_CURSOR_PIXELS; i++) {
+        cursor_pixels[i] = image.pixels[i];
+    }
+
+    if (while_setting_cursor) {
+        void (*hook)() = while_setting_cursor;
+        while_setting_cursor = nullptr;
+        hook();
+    }
+
+    return cursor_answer;
+}
+
 // Lights `output` of `fake`, the boot output when `is_boot_output` holds. Output 0's base buffer is cacheable at the
 // start of the shared memory, and output 1's is write-combining a page in, so a test can tell which one is mapped
 static void light_output(recording_display& fake, uint32_t output, bool is_boot_output) {
@@ -350,13 +437,15 @@ static void light_output(recording_display& fake, uint32_t output, bool is_boot_
     };
 
     fake.states[output] = {
-        .lit         = true,
-        .boot_output = is_boot_output,
-        .current     = {
+        .lit               = true,
+        .boot_output       = is_boot_output,
+        .current           = {
             .width              = fake.bases[output].width,
             .height             = fake.bases[output].height,
             .refresh_millihertz = is_first ? OUTPUT_0_REFRESH_MILLIHERTZ : OUTPUT_1_REFRESH_MILLIHERTZ,
         },
+        .cursor_max_width  = 0,
+        .cursor_max_height = 0,
     };
 }
 
@@ -796,9 +885,107 @@ static int32_t get_output(const char* path, user_page& page, uint32_t output) {
             .height             = UNWRITTEN_FIELD,
             .refresh_millihertz = UNWRITTEN_RATE,
         },
+        .cursor_max_width  = UNWRITTEN_FIELD,
+        .cursor_max_height = UNWRITTEN_FIELD,
     };
 
     return call_gfxfb_ioctl(path, page, gfxfb::GFXFB_GET_OUTPUT, page.addr);
+}
+
+// Sends `args` through GFXFB_SET_CURSOR on `file`, writing them at the page's start
+static int32_t send_cursor_args(fs::file* file, user_page& page, const gfxfb::gfxfb_cursor_args& args) {
+    *page.at<gfxfb::gfxfb_cursor_args>(ARGS_OFFSET) = args;
+
+    return file_ioctl(file, page, gfxfb::GFXFB_SET_CURSOR, page.addr + ARGS_OFFSET);
+}
+
+// A GFXFB_SET_CURSOR request on `output` for a `width` by `height` picture whose pixels sit at PIXELS_OFFSET, with its
+// hotspot on its last pixel, the largest `hot_x` and `hot_y` inside it
+static gfxfb::gfxfb_cursor_args cursor_picture(
+    const user_page& page,
+    uint32_t output,
+    uint32_t width,
+    uint32_t height
+) {
+    return {
+        .output   = output,
+        .width    = width,
+        .height   = height,
+        .hot_x    = width - 1,
+        .hot_y    = height - 1,
+        .reserved = 0,
+        .pixels   = page.addr + PIXELS_OFFSET,
+    };
+}
+
+// Hides `output`'s cursor through GFXFB_SET_CURSOR on `file`
+static int32_t hide_cursor(fs::file* file, user_page& page, uint32_t output) {
+    gfxfb::gfxfb_cursor_args hide = {
+        .output   = output,
+        .width    = 0,
+        .height   = 0,
+        .hot_x    = 0,
+        .hot_y    = 0,
+        .reserved = 0,
+        .pixels   = 0,
+    };
+
+    return send_cursor_args(file, page, hide);
+}
+
+// Pixel i of the pictures `write_cursor_pixels` writes, unlike every other and with alpha set
+static uint32_t cursor_pixel(uint32_t i) {
+    return 0x80000000 + i * 0x00010203;
+}
+
+// Writes `count` pixels at PIXELS_OFFSET, pixel i being `cursor_pixel(i)`
+static void write_cursor_pixels(user_page& page, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        *page.at<uint32_t>(PIXELS_OFFSET + i * sizeof(uint32_t)) = cursor_pixel(i);
+    }
+}
+
+// Maps WIDE_CURSOR_PAGES readable pages into the page's address space and returns their user address, or 0 when the
+// mapping fails
+static uintptr_t map_wide_cursor_pixels(user_page& page) {
+    uintptr_t addr = 0;
+    uint32_t flags = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS;
+    size_t length = WIDE_CURSOR_PAGES * pmm::PAGE_SIZE;
+    int32_t map_rc = mm::MM_CTX_OK;
+    RUN_ELEVATED(map_rc = mm::mm_context_map_anonymous(page.ctx, 0, length, mm::MM_PROT_READ, flags, &addr));
+
+    return map_rc == mm::MM_CTX_OK ? addr : 0;
+}
+
+// Moves `output`'s cursor through GFXFB_MOVE_CURSOR on `file` so its hotspot sits at (`x`, `y`)
+static int32_t move_cursor_to(fs::file* file, user_page& page, uint32_t output, int32_t x, int32_t y) {
+    *page.at<gfxfb::gfxfb_cursor_position>(MOVE_OFFSET) = {
+        .output   = output,
+        .x        = x,
+        .y        = y,
+        .reserved = 0,
+    };
+
+    return file_ioctl(file, page, gfxfb::GFXFB_MOVE_CURSOR, page.addr + MOVE_OFFSET);
+}
+
+// Makes the cursor move of `arg`, a `task_move`, then records the result and sets its flag
+static void move_on_a_task(void* arg) {
+    task_move* request = static_cast<task_move*>(arg);
+    request->result = move_cursor_to(request->file, *request->page, request->output, 0, 0);
+    request->done.store_release(1);
+    sched::exit(0);
+}
+
+// Starts moving `output`'s cursor through `file` on a task of its own, which sets `request.done` once the move returns,
+// or returns nullptr when the task cannot start
+static sched::task* start_move(task_move& request, fs::file* file, user_page& page, uint32_t output) {
+    request.file = file;
+    request.page = &page;
+    request.output = output;
+    request.done.store_relaxed(0);
+
+    return test_helpers::start_pinned_task(move_on_a_task, &request, "gfxfb_move");
 }
 
 // True when `rect` holds exactly the given position and size
@@ -873,16 +1060,21 @@ TEST(gfxfb, get_info_reports_the_boot_display) {
     EXPECT_EQ(stat_size(test), BOOT_SIZE);
 }
 
-// The boot display drives one output, lit and the boot output, whose base buffer is the boot framebuffer
+// The boot display drives one output with no hardware cursor, lit and the boot output, whose base buffer is the boot
+// framebuffer
 TEST(gfxfb, boot_display_has_one_lit_boot_output) {
     gfxfb::boot_display boot(test_boot_framebuffer());
 
     gfxfb::output_state state = {};
+    state.cursor_max_width = UNWRITTEN_FIELD;
+    state.cursor_max_height = UNWRITTEN_FIELD;
     EXPECT_EQ(boot.output_count(), static_cast<uint32_t>(1));
     EXPECT_FALSE(boot.needs_flush());
     ASSERT_EQ(boot.read_output(0, state), gfxfb::OK);
     EXPECT_TRUE(state.lit);
     EXPECT_TRUE(state.boot_output);
+    EXPECT_EQ(state.cursor_max_width, static_cast<uint32_t>(0));
+    EXPECT_EQ(state.cursor_max_height, static_cast<uint32_t>(0));
     EXPECT_EQ(boot.read_output(1, state), gfxfb::ERR_INVALID_ARG);
 
     gfxfb::buffer* base = boot.base_buffer(0);
@@ -900,7 +1092,11 @@ TEST(gfxfb, get_output_reports_each_output) {
     light_output(g_outputs_display, 0, false);
     g_outputs_display.states[0].current.width = WIDE_MODE_WIDTH;
     g_outputs_display.states[0].current.height = WIDE_MODE_HEIGHT;
+    g_outputs_display.states[0].cursor_max_width = WIDE_CURSOR_MAX_WIDTH;
+    g_outputs_display.states[0].cursor_max_height = WIDE_CURSOR_MAX_HEIGHT;
     g_outputs_display.states[1].current = {.width = 1, .height = 1, .refresh_millihertz = 1}; // stale while dark
+    g_outputs_display.states[1].cursor_max_width = CURSOR_MAX_WIDTH;
+    g_outputs_display.states[1].cursor_max_height = CURSOR_MAX_HEIGHT;
     gfxfb_test_node test = publish_driver_node(&g_outputs_display);
     ASSERT_NOT_NULL(test.node);
 
@@ -917,6 +1113,8 @@ TEST(gfxfb, get_output_reports_each_output) {
     EXPECT_EQ(info->current.width, WIDE_MODE_WIDTH);
     EXPECT_EQ(info->current.height, WIDE_MODE_HEIGHT);
     EXPECT_EQ(info->current.refresh_millihertz, OUTPUT_0_REFRESH_MILLIHERTZ);
+    EXPECT_EQ(info->cursor_max_width, gfxfb::CURSOR_DIMENSION_MAX);
+    EXPECT_EQ(info->cursor_max_height, gfxfb::CURSOR_DIMENSION_MAX);
 
     ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
     EXPECT_EQ(info->output, static_cast<uint32_t>(1));
@@ -926,6 +1124,8 @@ TEST(gfxfb, get_output_reports_each_output) {
     EXPECT_EQ(info->current.width, static_cast<uint32_t>(0));
     EXPECT_EQ(info->current.height, static_cast<uint32_t>(0));
     EXPECT_EQ(info->current.refresh_millihertz, static_cast<uint64_t>(0));
+    EXPECT_EQ(info->cursor_max_width, CURSOR_MAX_WIDTH);
+    EXPECT_EQ(info->cursor_max_height, CURSOR_MAX_HEIGHT);
 
     EXPECT_EQ(get_output(test.path, page, recording_display::OUTPUTS), fs::ERR_INVAL);
     EXPECT_EQ(get_output(test.path, page, WIDE_OUTPUT_INDEX), fs::ERR_INVAL);
@@ -947,7 +1147,8 @@ TEST(gfxfb, get_output_reports_each_output) {
     EXPECT_EQ(crossing_request->reserved, UNWRITTEN_FIELD);
 }
 
-// The boot display's one output is primary and lit at the boot framebuffer's size, with an unknown refresh rate
+// The boot display's one output is primary and lit at the boot framebuffer's size, with an unknown refresh rate and no
+// hardware cursor
 TEST(gfxfb, get_output_reports_the_boot_display) {
     gfxfb_test_node test = publish_boot_node();
     ASSERT_NOT_NULL(test.node);
@@ -963,6 +1164,8 @@ TEST(gfxfb, get_output_reports_the_boot_display) {
     EXPECT_EQ(info->current.width, BOOT_WIDTH);
     EXPECT_EQ(info->current.height, BOOT_HEIGHT);
     EXPECT_EQ(info->current.refresh_millihertz, static_cast<uint64_t>(0));
+    EXPECT_EQ(info->cursor_max_width, static_cast<uint32_t>(0));
+    EXPECT_EQ(info->cursor_max_height, static_cast<uint32_t>(0));
 
     EXPECT_EQ(get_output(test.path, page, 1), fs::ERR_INVAL);
 }
@@ -3853,6 +4056,496 @@ TEST(gfxfb, present_checks_its_regions_before_control) {
 
     ASSERT_TRUE(closes_before_deadline(next));
     ASSERT_TRUE(closes_before_deadline(refused));
+}
+
+static recording_display g_cursor_copy_display;
+
+// SET_CURSOR hands the display a copy of the picture with its size and hotspot, takes the largest picture in each
+// dimension, and for a width of 0 hides the cursor, reading none of the picture's other fields
+TEST(gfxfb, set_cursor_hands_the_display_a_copy_of_the_picture) {
+    light_output(g_cursor_copy_display, 0, false);
+    g_cursor_copy_display.states[1].cursor_max_width = CURSOR_MAX_WIDTH;
+    g_cursor_copy_display.states[1].cursor_max_height = CURSOR_MAX_HEIGHT;
+    gfxfb_test_node test = publish_driver_node(&g_cursor_copy_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    constexpr uint32_t width = 3;
+    constexpr uint32_t height = 2;
+    const gfxfb::cursor_image& given = g_cursor_copy_display.cursor;
+    write_cursor_pixels(page, width * height);
+    ASSERT_EQ(send_cursor_args(file, page, cursor_picture(page, 1, width, height)), fs::OK);
+    EXPECT_EQ(g_cursor_copy_display.cursor_output, static_cast<uint32_t>(1));
+    EXPECT_EQ(given.width, width);
+    EXPECT_EQ(given.height, height);
+    EXPECT_EQ(given.hot_x, width - 1);
+    EXPECT_EQ(given.hot_y, height - 1);
+    EXPECT_NE(reinterpret_cast<uintptr_t>(given.pixels), page.addr + PIXELS_OFFSET);
+    for (uint32_t i = 0; i < width * height; i++) {
+        EXPECT_EQ(g_cursor_copy_display.cursor_pixels[i], cursor_pixel(i));
+    }
+
+    ASSERT_EQ(send_cursor_args(file, page, cursor_picture(page, 1, CURSOR_MAX_WIDTH, 1)), fs::OK);
+    EXPECT_EQ(given.width, CURSOR_MAX_WIDTH);
+    ASSERT_EQ(send_cursor_args(file, page, cursor_picture(page, 1, 1, CURSOR_MAX_HEIGHT)), fs::OK);
+    EXPECT_EQ(given.height, CURSOR_MAX_HEIGHT);
+
+    // The hide's other fields hold what no picture may, and its pixels' address cannot be read
+    gfxfb::gfxfb_cursor_args hide = {
+        .output   = 1,
+        .width    = 0,
+        .height   = CURSOR_MAX_HEIGHT + 1,
+        .hot_x    = 1,
+        .hot_y    = CURSOR_MAX_HEIGHT + 1,
+        .reserved = 0,
+        .pixels   = page.addr + pmm::PAGE_SIZE,
+    };
+
+    ASSERT_EQ(send_cursor_args(file, page, hide), fs::OK);
+    EXPECT_TRUE(g_cursor_copy_display.hidden_on[1]);
+    EXPECT_EQ(given.height, static_cast<uint32_t>(0));
+    EXPECT_EQ(given.hot_x, static_cast<uint32_t>(0));
+    EXPECT_EQ(given.hot_y, static_cast<uint32_t>(0));
+    EXPECT_NULL(given.pixels);
+    EXPECT_EQ(g_cursor_copy_display.set_cursor_calls, static_cast<uint32_t>(4));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_cursor_refusal_display;
+
+// Cursor requests gfxfb refuses fail with ERR_INVAL before control, so a file another file's control keeps out sees
+// them, while the largest pictures, held to CURSOR_DIMENSION_MAX past a wider maximum, and a hide reach control
+TEST(gfxfb, cursor_calls_refuse_requests_before_control) {
+    light_output(g_cursor_refusal_display, 0, false);
+    g_cursor_refusal_display.states[0].cursor_max_width = CURSOR_MAX_WIDTH;
+    g_cursor_refusal_display.states[0].cursor_max_height = CURSOR_MAX_HEIGHT;
+    g_cursor_refusal_display.states[1].cursor_max_width = WIDE_CURSOR_MAX_WIDTH;
+    g_cursor_refusal_display.states[1].cursor_max_height = WIDE_CURSOR_MAX_HEIGHT;
+    gfxfb_test_node test = publish_driver_node(&g_cursor_refusal_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* controller = fs::open(test.path, fs::O_RDWR);
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(controller);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NE(request_small_buffer(controller, page).handle, static_cast<uint32_t>(0));
+
+    // A 2 by 2 picture with its hotspot one past either edge or at WIDE_HOTSPOT, or its second row unmapped
+    gfxfb::gfxfb_cursor_args wide_hotspot = cursor_picture(page, 0, 2, 2);
+    wide_hotspot.hot_x = 2;
+    gfxfb::gfxfb_cursor_args tall_hotspot = cursor_picture(page, 0, 2, 2);
+    tall_hotspot.hot_y = 2;
+    gfxfb::gfxfb_cursor_args far_hotspot_x = cursor_picture(page, 0, 2, 2);
+    far_hotspot_x.hot_x = WIDE_HOTSPOT;
+    gfxfb::gfxfb_cursor_args far_hotspot_y = cursor_picture(page, 0, 2, 2);
+    far_hotspot_y.hot_y = WIDE_HOTSPOT;
+    gfxfb::gfxfb_cursor_args unreadable = cursor_picture(page, 0, 2, 2);
+    unreadable.pixels = page.addr + pmm::PAGE_SIZE - 2 * sizeof(uint32_t);
+
+    // Pictures WIDE_CURSOR_DIMENSION wide or tall on output 1, with every pixel readable
+    uintptr_t wide_pixels = map_wide_cursor_pixels(page);
+    ASSERT_NE(wide_pixels, static_cast<uintptr_t>(0));
+    gfxfb::gfxfb_cursor_args wide_picture = cursor_picture(page, 1, WIDE_CURSOR_DIMENSION, 1);
+    wide_picture.pixels = wide_pixels;
+    gfxfb::gfxfb_cursor_args tall_picture = cursor_picture(page, 1, 1, WIDE_CURSOR_DIMENSION);
+    tall_picture.pixels = wide_pixels;
+
+    uint32_t bound = gfxfb::CURSOR_DIMENSION_MAX;
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_SET_CURSOR, 0), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, recording_display::OUTPUTS, 1, 1)), fs::ERR_INVAL);
+    EXPECT_EQ(hide_cursor(file, page, recording_display::OUTPUTS), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, WIDE_OUTPUT_INDEX, 1, 1)), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, wide_hotspot), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, tall_hotspot), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, far_hotspot_x), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, far_hotspot_y), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 0, CURSOR_MAX_WIDTH + 1, 1)), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 0, 1, CURSOR_MAX_HEIGHT + 1)), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 1, bound + 1, 1)), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 1, 1, bound + 1)), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, wide_picture), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, tall_picture), fs::ERR_INVAL);
+    EXPECT_EQ(send_cursor_args(file, page, unreadable), fs::ERR_INVAL);
+
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 0, CURSOR_MAX_WIDTH, 1)), fs::ERR_BUSY);
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 0, 1, CURSOR_MAX_HEIGHT)), fs::ERR_BUSY);
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 1, bound, 1)), fs::ERR_BUSY);
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 1, 1, bound)), fs::ERR_BUSY);
+    EXPECT_EQ(hide_cursor(file, page, 0), fs::ERR_BUSY);
+    EXPECT_EQ(g_cursor_refusal_display.set_cursor_calls, static_cast<uint32_t>(0));
+
+    // A reserved field with only its low or only its high bit set, in a picture and in a move
+    auto* position = page.at<gfxfb::gfxfb_cursor_position>(MOVE_OFFSET);
+    const uint32_t reserved_values[] = {0x1, 0x80000000};
+    for (uint32_t reserved : reserved_values) {
+        gfxfb::gfxfb_cursor_args picture = cursor_picture(page, 0, 2, 2);
+        picture.reserved = reserved;
+        EXPECT_EQ(send_cursor_args(file, page, picture), fs::ERR_INVAL);
+
+        *position = {.output = 0, .x = 0, .y = 0, .reserved = reserved};
+        EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_MOVE_CURSOR, page.addr + MOVE_OFFSET), fs::ERR_INVAL);
+    }
+
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_MOVE_CURSOR, 0), fs::ERR_INVAL);
+    EXPECT_EQ(move_cursor_to(file, page, recording_display::OUTPUTS, 0, 0), fs::ERR_INVAL);
+    EXPECT_EQ(move_cursor_to(file, page, WIDE_OUTPUT_INDEX, 0, 0), fs::ERR_INVAL);
+    EXPECT_EQ(move_cursor_to(file, page, 0, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(g_cursor_refusal_display.move_cursor_calls, static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+    ASSERT_TRUE(closes_before_deadline(controller));
+}
+
+static recording_display g_cursor_move_display;
+
+// MOVE_CURSOR hands the display its output and a position off the output, even before any picture
+TEST(gfxfb, move_cursor_hands_the_display_the_position) {
+    light_output(g_cursor_move_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_cursor_move_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    ASSERT_EQ(move_cursor_to(file, page, 1, OFF_OUTPUT_X, OFF_OUTPUT_Y), fs::OK);
+    EXPECT_EQ(g_cursor_move_display.cursor_output, static_cast<uint32_t>(1));
+    EXPECT_EQ(g_cursor_move_display.cursor_x, OFF_OUTPUT_X);
+    EXPECT_EQ(g_cursor_move_display.cursor_y, OFF_OUTPUT_Y);
+    EXPECT_EQ(g_cursor_move_display.move_cursor_calls, static_cast<uint32_t>(1));
+    EXPECT_EQ(g_cursor_move_display.set_cursor_calls, static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_cursor_answer_display;
+
+// Each refusal of a cursor call by the display returns as its file error and leaves the display usable, so the next
+// call reaches it
+TEST(gfxfb, cursor_calls_return_the_display_refusals_as_file_errors) {
+    light_output(g_cursor_answer_display, 0, false);
+    g_cursor_answer_display.states[0].cursor_max_width = CURSOR_MAX_WIDTH;
+    g_cursor_answer_display.states[0].cursor_max_height = CURSOR_MAX_HEIGHT;
+    gfxfb_test_node test = publish_driver_node(&g_cursor_answer_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    g_cursor_answer_display.cursor_answer = gfxfb::ERR_DARK;
+    EXPECT_EQ(hide_cursor(file, page, 0), fs::ERR_AGAIN);
+    EXPECT_EQ(move_cursor_to(file, page, 0, 0, 0), fs::ERR_AGAIN);
+    g_cursor_answer_display.cursor_answer = gfxfb::ERR_UNSUPPORTED;
+    EXPECT_EQ(hide_cursor(file, page, 0), fs::ERR_NOSYS);
+    EXPECT_EQ(move_cursor_to(file, page, 0, 0, 0), fs::ERR_NOSYS);
+    g_cursor_answer_display.cursor_answer = gfxfb::ERR_INVALID_ARG;
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 0, 1, 1)), fs::ERR_INVAL);
+    g_cursor_answer_display.cursor_answer = gfxfb::ERR_REFUSED;
+    EXPECT_EQ(hide_cursor(file, page, 0), fs::ERR_IO);
+    EXPECT_EQ(move_cursor_to(file, page, 0, 0, 0), fs::ERR_IO);
+
+    g_cursor_answer_display.cursor_answer = gfxfb::OK;
+    EXPECT_EQ(hide_cursor(file, page, 0), fs::OK);
+    EXPECT_EQ(move_cursor_to(file, page, 0, 0, 0), fs::OK);
+    EXPECT_EQ(g_cursor_answer_display.set_cursor_calls, static_cast<uint32_t>(5));
+    EXPECT_EQ(g_cursor_answer_display.move_cursor_calls, static_cast<uint32_t>(4));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_set_cursor_failure_display;
+static recording_display g_move_cursor_failure_display;
+
+// Either cursor call's ERR_DEVICE counts the display as failed, so every later flush, and every present and cursor call
+// that control admits, fails with ERR_IO without handing it to the display, and the controller's close hides no cursor
+TEST(gfxfb, a_cursor_call_failing_the_display_fails_every_later_flush_present_and_cursor_call) {
+    recording_display* fakes[] = {&g_set_cursor_failure_display, &g_move_cursor_failure_display};
+    for (recording_display* fake : fakes) {
+        light_output(*fake, 0, false);
+        gfxfb_test_node test = publish_driver_node(fake);
+        ASSERT_NOT_NULL(test.node);
+
+        user_page page;
+        ASSERT_TRUE(page.ready());
+        fs::file* file = fs::open(test.path, fs::O_RDWR);
+        fs::file* rival = fs::open(test.path, fs::O_RDWR);
+        ASSERT_NOT_NULL(file);
+        ASSERT_NOT_NULL(rival);
+        ASSERT_EQ(move_cursor_to(file, page, 0, 0, 0), fs::OK);
+
+        bool fails_by_moving = fake == &g_move_cursor_failure_display;
+        fake->cursor_answer = gfxfb::ERR_DEVICE;
+        int32_t failing_rc = fails_by_moving ? move_cursor_to(file, page, 0, 0, 0) : hide_cursor(file, page, 0);
+        EXPECT_EQ(failing_rc, fs::ERR_IO);
+        fake->cursor_answer = gfxfb::OK;
+
+        EXPECT_EQ(hide_cursor(file, page, 0), fs::ERR_IO);
+        EXPECT_EQ(move_cursor_to(file, page, 0, 0, 0), fs::ERR_IO);
+        EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_IO);
+        EXPECT_EQ(flush_one_rect(test.path, page), fs::ERR_IO);
+        EXPECT_EQ(fake->set_cursor_calls + fake->move_cursor_calls, static_cast<uint32_t>(2));
+        EXPECT_EQ(fake->present_calls, static_cast<uint32_t>(0));
+        EXPECT_EQ(fake->recorded_count, static_cast<uint32_t>(0));
+
+        // Control is checked before the display's failure, so the rival's calls fail with ERR_BUSY while `file`
+        // controls. Once it closes they fail with ERR_IO and leave no reservation against a file opened afterwards
+        EXPECT_EQ(hide_cursor(rival, page, 0), fs::ERR_BUSY);
+        EXPECT_EQ(move_cursor_to(rival, page, 0, 0, 0), fs::ERR_BUSY);
+        ASSERT_TRUE(closes_before_deadline(file));
+        EXPECT_EQ(hide_cursor(rival, page, 0), fs::ERR_IO);
+        EXPECT_EQ(move_cursor_to(rival, page, 0, 0, 0), fs::ERR_IO);
+        fs::file* late = fs::open(test.path, fs::O_RDWR);
+        ASSERT_NOT_NULL(late);
+        EXPECT_EQ(move_cursor_to(late, page, 0, 0, 0), fs::ERR_IO);
+        EXPECT_EQ(fake->set_cursor_calls + fake->move_cursor_calls, static_cast<uint32_t>(2));
+
+        ASSERT_TRUE(closes_before_deadline(late));
+        ASSERT_TRUE(closes_before_deadline(rival));
+    }
+}
+
+static recording_display g_cursor_control_display;
+
+// The rival file the hook moves through, the page holding its request, the move its task makes, and what the hook saw
+static fs::file* g_cursor_rival;
+static user_page* g_cursor_page;
+static task_move g_rival_move;
+static sched::task* g_rival_mover;
+static bool g_rival_moved_in_time;
+
+// Runs inside a `set_cursor()` display call: moves through the rival file on a task of its own and records whether the
+// move returns before the deadline
+static void move_through_the_rival() {
+    g_rival_mover = start_move(g_rival_move, g_cursor_rival, *g_cursor_page, 0);
+    g_rival_moved_in_time = g_rival_mover && spin_wait(g_rival_move.done);
+}
+
+// A cursor call reserves control while in the display and takes it if it succeeds, as a creation does, so meanwhile and
+// afterwards another file's calls fail with ERR_BUSY, while a call the display refuses takes none
+TEST(gfxfb, a_cursor_call_takes_control_as_a_creation_does) {
+    light_output(g_cursor_control_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_cursor_control_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* setter = fs::open(test.path, fs::O_RDWR);
+    fs::file* mover = fs::open(test.path, fs::O_RDWR);
+    fs::file* creator = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(setter);
+    ASSERT_NOT_NULL(mover);
+    ASSERT_NOT_NULL(creator);
+
+    // The setter's hide reserves control against the mover while in the display, and the display's refusals of that
+    // hide and the mover's move leave no file in control, so the creator's creation succeeds
+    g_cursor_rival = mover;
+    g_cursor_page = &page;
+    g_rival_mover = nullptr;
+    g_rival_moved_in_time = false;
+    g_cursor_control_display.while_setting_cursor = move_through_the_rival;
+    g_cursor_control_display.cursor_answer = gfxfb::ERR_DARK;
+    EXPECT_EQ(hide_cursor(setter, page, 0), fs::ERR_AGAIN);
+    ASSERT_NOT_NULL(g_rival_mover);
+    EXPECT_TRUE(g_rival_moved_in_time);
+    ASSERT_TRUE(spin_wait(g_rival_move.done));
+    EXPECT_EQ(g_rival_move.result, fs::ERR_BUSY);
+    unpin(g_rival_mover);
+    EXPECT_EQ(move_cursor_to(mover, page, 0, 0, 0), fs::ERR_AGAIN);
+    g_cursor_control_display.cursor_answer = gfxfb::OK;
+    ASSERT_NE(request_small_buffer(creator, page).handle, static_cast<uint32_t>(0));
+    ASSERT_TRUE(closes_before_deadline(creator));
+
+    // The setter's hide takes control, which its refused move keeps, so the mover's calls never reach the display
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    ASSERT_EQ(hide_cursor(setter, page, 0), fs::OK);
+    g_cursor_control_display.cursor_answer = gfxfb::ERR_REFUSED;
+    EXPECT_EQ(move_cursor_to(setter, page, 0, 0, 0), fs::ERR_IO);
+    g_cursor_control_display.cursor_answer = gfxfb::OK;
+    EXPECT_EQ(move_cursor_to(mover, page, 0, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(hide_cursor(mover, page, 0), fs::ERR_BUSY);
+    EXPECT_EQ(present_buffer(mover, page, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(request_buffer(mover, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    EXPECT_EQ(g_cursor_control_display.move_cursor_calls, static_cast<uint32_t>(2));
+
+    // Once the setter closes, the mover's move takes control, so a creation through a file opened afterwards fails
+    ASSERT_TRUE(closes_before_deadline(setter));
+    ASSERT_EQ(move_cursor_to(mover, page, 0, 0, 0), fs::OK);
+    fs::file* late = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(late);
+    EXPECT_EQ(request_buffer(late, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    ASSERT_TRUE(closes_before_deadline(late));
+    ASSERT_TRUE(closes_before_deadline(mover));
+}
+
+static recording_display g_cursor_close_display;
+
+// The file the hook creates through, the page holding its request, and whether its creation returned ERR_BUSY in time
+static fs::file* g_close_rival;
+static user_page* g_close_page;
+static bool g_rival_kept_out;
+
+// Runs inside the closing controller's first hide: records whether a creation through the rival file, which takes no
+// cursor lock, fails with ERR_BUSY before the deadline
+static void create_through_the_rival() {
+    g_rival_kept_out = creates_before_deadline(g_close_rival, *g_close_page, fs::ERR_BUSY);
+}
+
+// A closing controller hides the cursor of each output, one it never gave a picture included, before its control ends,
+// while a closing bystander hides none
+TEST(gfxfb, a_closing_controller_hides_each_output_cursor) {
+    light_output(g_cursor_close_display, 0, false);
+    g_cursor_close_display.states[0].cursor_max_width = CURSOR_MAX_WIDTH;
+    g_cursor_close_display.states[0].cursor_max_height = CURSOR_MAX_HEIGHT;
+    gfxfb_test_node test = publish_driver_node(&g_cursor_close_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* bystander = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(bystander);
+    ASSERT_NOT_NULL(rival);
+
+    write_cursor_pixels(page, 1);
+    ASSERT_EQ(send_cursor_args(file, page, cursor_picture(page, 0, 1, 1)), fs::OK);
+    ASSERT_TRUE(closes_before_deadline(bystander));
+    EXPECT_EQ(g_cursor_close_display.set_cursor_calls, static_cast<uint32_t>(1));
+    EXPECT_FALSE(g_cursor_close_display.hidden_on[0]);
+
+    g_close_rival = rival;
+    g_close_page = &page;
+    g_rival_kept_out = false;
+    g_cursor_close_display.while_setting_cursor = create_through_the_rival;
+    ASSERT_TRUE(closes_before_deadline(file));
+    EXPECT_EQ(g_cursor_close_display.set_cursor_calls, static_cast<uint32_t>(3));
+    EXPECT_TRUE(g_cursor_close_display.hidden_on[0]);
+    EXPECT_TRUE(g_cursor_close_display.hidden_on[1]);
+    EXPECT_TRUE(g_rival_kept_out);
+
+    ASSERT_TRUE(closes_before_deadline(rival));
+}
+
+static recording_display g_serialized_cursor_display;
+static gfxfb_test_node g_serialized_cursor_node;
+
+// The file and page the hooks' moves go through, the output whose cursor they move, the move their task makes, and what
+// the hooks saw of it
+static fs::file* g_serialized_cursor_file;
+static user_page* g_serialized_cursor_page;
+static uint32_t g_serialized_cursor_output;
+static task_move g_second_move;
+static sched::task* g_second_mover;
+static bool g_second_mover_blocked;
+static uint32_t g_move_calls_while_blocked;
+static bool g_moved_while_presenting;
+
+// Starts the hooks' move on their output on a task of its own, or returns nullptr when the task cannot start
+static sched::task* start_second_move() {
+    return start_move(g_second_move, g_serialized_cursor_file, *g_serialized_cursor_page, g_serialized_cursor_output);
+}
+
+// Runs inside a `set_cursor()` display call: starts the hooks' move, then records whether it blocks and how many moves
+// the display has taken meanwhile
+static void move_while_setting_cursor() {
+    g_second_mover = start_second_move();
+    g_second_mover_blocked = g_second_mover && test_helpers::blocks_before_deadline(g_second_mover);
+    g_move_calls_while_blocked = g_serialized_cursor_display.move_cursor_calls;
+}
+
+// Runs inside a present's display call: starts the hooks' move and records whether it returns before the deadline
+static void move_while_presenting() {
+    g_second_mover = start_second_move();
+    g_moved_while_presenting = g_second_mover && spin_wait(g_second_move.done);
+}
+
+// A cursor move waits for a `set_cursor()` display call for its output, so the display never runs two cursor calls for
+// one output at once, but never waits for a present there
+TEST(gfxfb, cursor_calls_for_one_output_reach_the_display_one_at_a_time) {
+    light_output(g_serialized_cursor_display, 0, false);
+    light_output(g_serialized_cursor_display, 1, false);
+    g_serialized_cursor_node = publish_driver_node(&g_serialized_cursor_display);
+    ASSERT_NOT_NULL(g_serialized_cursor_node.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(g_serialized_cursor_node.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    g_serialized_cursor_file = file;
+    g_serialized_cursor_page = &page;
+
+    // Output 1 as well as output 0, the primary, since a call locking another output's cursor mutex would let the move
+    // reach the display during the hide
+    for (uint32_t output = 0; output < recording_display::OUTPUTS; output++) {
+        uint32_t moves_before = g_serialized_cursor_display.move_cursor_calls;
+
+        g_serialized_cursor_output = output;
+        g_second_mover = nullptr;
+        g_second_mover_blocked = false;
+        g_move_calls_while_blocked = 0;
+        g_serialized_cursor_display.while_setting_cursor = move_while_setting_cursor;
+
+        ASSERT_EQ(hide_cursor(file, page, output), fs::OK);
+        ASSERT_NOT_NULL(g_second_mover);
+        EXPECT_TRUE(g_second_mover_blocked);
+        EXPECT_EQ(g_move_calls_while_blocked, moves_before);
+
+        ASSERT_TRUE(spin_wait(g_second_move.done));
+        EXPECT_EQ(g_second_move.result, fs::OK);
+        EXPECT_EQ(g_serialized_cursor_display.move_cursor_calls, moves_before + 1);
+        EXPECT_EQ(g_serialized_cursor_display.cursor_output, output);
+        unpin(g_second_mover);
+    }
+
+    g_serialized_cursor_output = 0;
+    g_second_mover = nullptr;
+    g_moved_while_presenting = false;
+    g_serialized_cursor_display.while_presenting = move_while_presenting;
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    ASSERT_NOT_NULL(g_second_mover);
+    EXPECT_TRUE(g_moved_while_presenting);
+    ASSERT_TRUE(spin_wait(g_second_move.done));
+    EXPECT_EQ(g_second_move.result, fs::OK);
+    unpin(g_second_mover);
+
+    end_present(g_serialized_cursor_node, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+// The boot display has no hardware cursor, so a picture exceeds its cursor maximum of 0 by 0 and a hide and a move fail
+// with ERR_NOSYS, none of them taking control
+TEST(gfxfb, boot_display_has_no_cursor) {
+    gfxfb_test_node test = publish_boot_node();
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* other = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(other);
+
+    EXPECT_EQ(send_cursor_args(file, page, cursor_picture(page, 0, 1, 1)), fs::ERR_INVAL);
+    EXPECT_EQ(hide_cursor(file, page, 0), fs::ERR_NOSYS);
+    EXPECT_EQ(move_cursor_to(file, page, 0, 0, 0), fs::ERR_NOSYS);
+    EXPECT_EQ(move_cursor_to(other, page, 0, 0, 0), fs::ERR_NOSYS);
+
+    ASSERT_TRUE(closes_before_deadline(other));
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 // Registration is permanent, so /dev/gfxfb shows `g_registered_display` for the rest of the run

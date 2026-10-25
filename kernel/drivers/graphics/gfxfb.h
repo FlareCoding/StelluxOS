@@ -34,13 +34,17 @@
  * `create_buffer()`, and presents buffers on outputs, which gfxfb hands to the
  * display's `present()`. The display reports to `present_done()` how each
  * present it accepted ended, and gfxfb queues the end as an event for the open
- * file that presented. One open file at a time controls the buffers, from its
- * first creation or present that succeeds until it closes. gfxfb keeps a
- * reference-counted record of each buffer, every lit output's base buffer
- * included, and hands the buffer back to the display's `release_buffer()` once
- * no handle, output or mapping refers to it. Once a display call returns
- * ERR_DEVICE or a present ends with `GFXFB_PRESENT_FAILED`, gfxfb fails every
- * later `GFXFB_FLUSH` and `GFXFB_PRESENT` without calling the display.
+ * file that presented. Userland gives an output's hardware cursor a picture
+ * and moves it, which gfxfb hands to the display's `set_cursor()` and
+ * `move_cursor()`. One open file at a time controls the buffers, from its
+ * first creation, present or cursor call that succeeds until it closes. gfxfb
+ * keeps a reference-counted record of each buffer, every lit output's base
+ * buffer included, and hands the buffer back to the display's
+ * `release_buffer()` once no handle, output or mapping refers to it. Once a
+ * display call returns ERR_DEVICE or a present ends with
+ * `GFXFB_PRESENT_FAILED`, gfxfb fails every later `GFXFB_FLUSH`,
+ * `GFXFB_PRESENT`, `GFXFB_SET_CURSOR` and `GFXFB_MOVE_CURSOR` without handing
+ * it to the display.
  */
 
 namespace gfxfb {
@@ -51,16 +55,23 @@ constexpr int32_t ERR_INVALID_ARG = -2;
 constexpr int32_t ERR_DARK        = -3; // the output is not lit
 constexpr int32_t ERR_DEVICE      = -4; // the display's hardware failed for good
 constexpr int32_t ERR_NO_MEMORY   = -5;
-constexpr int32_t ERR_UNSUPPORTED = -6; // the display creates or presents no buffers
+constexpr int32_t ERR_UNSUPPORTED = -6; // the display creates or presents no buffers, or the output has no cursor
 constexpr int32_t ERR_REFUSED     = -7; // the hardware refused the call and stays usable
 
+// The widest and tallest cursor picture a display may report for an output, which bounds the pictures gfxfb copies
+constexpr uint32_t CURSOR_DIMENSION_MAX = 256;
+
 /**
- * One output's state as its display reports it.
+ * One output's state as its display reports it. Its cursor maximum is the
+ * largest picture its hardware cursor shows, at most CURSOR_DIMENSION_MAX in
+ * each dimension, or 0 by 0 for an output without a hardware cursor.
  */
 struct output_state {
     bool       lit;
-    bool       boot_output; // the boot firmware lit this output
-    gfxfb_mode current;     // the mode it is lit at, meaningful while lit
+    bool       boot_output;       // the boot firmware lit this output
+    gfxfb_mode current;           // the mode it is lit at, meaningful while lit
+    uint32_t   cursor_max_width;  // the widest cursor picture it shows
+    uint32_t   cursor_max_height; // the tallest
 };
 
 /**
@@ -93,22 +104,40 @@ struct present_result {
 };
 
 /**
+ * A cursor picture as gfxfb hands it to `display::set_cursor()`: `width` by
+ * `height` pixels, row after row with no padding, and its hotspot (the pixel
+ * that sits at the cursor's position). Each pixel holds alpha in bits 31 to 24
+ * and red, green and blue as a buffer's pixel does, none multiplied by alpha.
+ * A width of 0 hides the cursor, with every other field zero.
+ */
+struct cursor_image {
+    const uint32_t* pixels; // in gfxfb's memory, valid only during the call
+    uint32_t        width;
+    uint32_t        height;
+    uint32_t        hot_x;
+    uint32_t        hot_y;
+};
+
+/**
  * A display behind /dev/gfxfb: one a device driver owns, or gfxfb's own boot
  * display. gfxfb calls `output_count()`, `read_output()` and `base_buffer()`
  * from `init()` and `register_display()`, on the boot thread, which cannot
  * sleep, so they must not wait. It calls `output_count()`, `read_output()`,
- * `needs_flush()`, `flush()`, `create_buffer()` and `present()` from the tasks
- * that use /dev/gfxfb, several tasks at once, and `flush()`, `create_buffer()`
- * and `present()` may block the task that calls them. gfxfb never calls
- * `present()` for one output from two tasks at once, nor while a present the
- * display accepted there has not ended. It calls `release_buffer()` from the
- * reaper, the kernel task that runs deferred cleanup, and `release_buffer()`
- * must never wait, since the reaper runs no other cleanup until it returns. A
- * display returns ERR_DEVICE only once its hardware has failed for good, and
- * from then on from every call that needs the hardware, so a refusal that
- * leaves the hardware usable is ERR_REFUSED, or ERR_NO_MEMORY when the
- * hardware has no memory left for a buffer. It likewise ends a present with
- * `GFXFB_PRESENT_FAILED` only once its hardware has failed for good.
+ * `needs_flush()`, `flush()`, `create_buffer()`, `present()`, `set_cursor()`
+ * and `move_cursor()` from the tasks that use /dev/gfxfb, several tasks at
+ * once, and `flush()`, `create_buffer()`, `present()` and the two cursor calls
+ * may block the task that calls them. gfxfb never calls `present()` for one
+ * output from two tasks at once, nor while a present the display accepted
+ * there has not ended, and never makes two cursor calls for one output at
+ * once, though a cursor call may run during a present for the same output. It
+ * calls `release_buffer()` from the reaper, the kernel task that runs deferred
+ * cleanup, and `release_buffer()` must never wait, since the reaper runs no
+ * other cleanup until it returns. A display returns ERR_DEVICE only once its
+ * hardware has failed for good, and from then on from every call that needs
+ * the hardware, so a refusal that leaves the hardware usable is ERR_REFUSED,
+ * or ERR_NO_MEMORY when the hardware has no memory left for a buffer. It
+ * likewise ends a present with `GFXFB_PRESENT_FAILED` only once its hardware
+ * has failed for good.
  */
 class display {
 public:
@@ -207,6 +236,43 @@ public:
      * output's mode, and ERR_REFUSED when the hardware refused the buffer.
      */
     virtual int32_t present(uint32_t output, buffer* buf, const gfxfb_rect* regions, uint32_t region_count) = 0;
+
+    /**
+     * @brief Give an output's hardware cursor `image`, or hide the cursor when
+     * `image.width` is 0. The display must copy the picture before returning,
+     * converting it if its hardware wants another form. The call may wait only
+     * for the display's own lock, for the hardware to take the picture and for
+     * the copy, never for a vertical blank or for its driver's task, and
+     * returns within a time the display states.
+     * @param output Index of the output, below the count.
+     * @param image The picture with its hotspot inside it, or a hide with a
+     * width of 0. gfxfb frees its pixels once the call returns.
+     * @return OK once the hardware was given the picture, or hid the cursor.
+     * Otherwise the display returns the first that holds of ERR_UNSUPPORTED on
+     * an output without a hardware cursor, ERR_DEVICE once the hardware has
+     * failed, ERR_DARK when the output is not lit, ERR_INVALID_ARG for a
+     * picture wider or taller than the output's cursor maximum, and
+     * ERR_REFUSED when the hardware refused the call.
+     */
+    virtual int32_t set_cursor(uint32_t output, const cursor_image& image) = 0;
+
+    /**
+     * @brief Place the hotspot of an output's cursor at (`x`, `y`) in the
+     * output's pixels, even off the output. A move before any picture only
+     * records the position, and the cursor stays hidden. The call may wait
+     * only for the display's own lock and for the hardware to take the
+     * position, within GFXFB_PRESENT_TIMEOUT_NS of giving it, never for a
+     * vertical blank or for its driver's task.
+     * @param output Index of the output, below the count.
+     * @param x Column of the hotspot, negative left of the output.
+     * @param y Row of the hotspot, negative above the output.
+     * @return OK once the hardware was given the position or, before any
+     * picture, once the display recorded it. Otherwise the first that holds of
+     * ERR_UNSUPPORTED on an output without a hardware cursor, ERR_DEVICE once
+     * the hardware has failed, ERR_DARK when the output is not lit, and
+     * ERR_REFUSED when the hardware refused the move.
+     */
+    virtual int32_t move_cursor(uint32_t output, int32_t x, int32_t y) = 0;
 
     /**
      * @brief Take back a buffer from `create_buffer()` or `base_buffer()` once

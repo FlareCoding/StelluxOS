@@ -44,10 +44,10 @@
  * A program can also create buffers, each holding one picture of 32-bit
  * pixels. `GFXFB_CREATE_BUFFER` returns a new buffer's handle, its layout and
  * the mmap offset that maps it. An open file controls the buffers from its
- * first `GFXFB_CREATE_BUFFER` or `GFXFB_PRESENT` that succeeds until it
- * closes. A creation fails with EINVAL when the kernel cannot read its
- * argument, when its width or height is zero or when its reserved field is
- * set. Any other creation, and any present that passes the checks below, fails
+ * first creation, present or cursor call that succeeds until it closes. A
+ * creation fails with EINVAL when the kernel cannot read its argument, when
+ * its width or height is zero or when its reserved field is set. Any other
+ * creation, and any present or cursor call that passes the checks below, fails
  * with EBUSY while another open file controls the buffers or reserves control,
  * and otherwise reserves control for its file until the call returns, so two
  * files never control the buffers at once. A creation that reserves control
@@ -120,12 +120,38 @@
  * there are none. `poll` reports the file readable while it holds an event,
  * and never writable. A file that closes while a present of it has not ended
  * waits for that end, whose event then reaches no file. A closing file that
- * controls the buffers then drops the events it holds and presents the base
+ * controls the buffers then drops the events it holds, presents the base
  * buffer of each output showing another buffer, as a present of handle 0
- * naming no region. It also waits for the ends of those the device accepts,
- * and their events reach no file either. It keeps control through both waits.
- * An output where the base buffer's present does not latch, as on a dark
- * output or a failed device, keeps showing the buffer it showed.
+ * naming no region, and hides each output's cursor. It also waits for the ends
+ * of those presents the device accepts, and their events reach no file either.
+ * It keeps control through both waits. An output where the base buffer's
+ * present does not latch, as on a dark output or a failed device, keeps
+ * showing the buffer it showed. An output keeps showing its cursor when the
+ * device refuses the hide or the kernel has found the device failed.
+ *
+ * An output may have a hardware cursor, a small picture the device draws over
+ * what the output shows, so moving it changes no buffer. `GFXFB_GET_OUTPUT`
+ * reports the largest cursor picture an output shows, 0 by 0 for an output
+ * without a hardware cursor. Two cursor calls drive it. `GFXFB_SET_CURSOR`
+ * gives an output's cursor a picture and its hotspot (the picture's pixel that
+ * sits at the cursor's position), or hides the cursor when the picture's width
+ * is 0, reading none of the picture's other fields. Each pixel holds alpha in
+ * bits 31 to 24 and red, green and blue as a buffer's pixel does, none
+ * multiplied by alpha. The kernel copies the picture, so the program may
+ * change its pixels once the call returns. `GFXFB_MOVE_CURSOR` places the
+ * hotspot of an output's cursor at a position in the output's pixels, even one
+ * off the output, so the picture may lie partly or wholly off it. A cursor
+ * call fails with EINVAL when the kernel cannot read its argument, when its
+ * reserved field is set and for an output of `output_count` or more. A
+ * `GFXFB_SET_CURSOR` showing a picture then fails with EINVAL when its hotspot
+ * lies outside the picture or the picture is wider or taller than the output's
+ * largest, with ENOMEM when no memory is left to copy the picture, and
+ * otherwise with EINVAL when the kernel cannot read its pixels. Past those
+ * checks and control, a cursor call fails with EIO once the kernel has found
+ * the device failed, and otherwise with the first that applies of ENOTTY on an
+ * output without a hardware cursor, EIO on a device that failed, EAGAIN on a
+ * dark output, EINVAL for a picture wider or taller than the output's largest,
+ * and EIO when the device refused the call.
  *
  * The kernel and userland are built from one tree, so a structure may gain
  * fields when its call gains a feature. Each structure holds fixed-width
@@ -142,6 +168,8 @@ constexpr uint32_t GFXFB_GET_OUTPUT     = 0x4702;
 constexpr uint32_t GFXFB_CREATE_BUFFER  = 0x4703;
 constexpr uint32_t GFXFB_DESTROY_BUFFER = 0x4704; // the argument is the handle itself
 constexpr uint32_t GFXFB_PRESENT        = 0x4705;
+constexpr uint32_t GFXFB_SET_CURSOR     = 0x4706;
+constexpr uint32_t GFXFB_MOVE_CURSOR    = 0x4707;
 
 constexpr uint8_t GFXFB_INFO_NEEDS_FLUSH = 0x01; // drawing reaches the screen only through GFXFB_FLUSH
 
@@ -204,11 +232,13 @@ struct gfxfb_mode {
 
 // GFXFB_GET_OUTPUT argument, filled with one output's state
 struct gfxfb_output_info {
-    uint32_t   output;       // in: the output's index, EINVAL unless below `output_count`
-    uint32_t   output_count; // out: how many outputs the device drives
-    uint32_t   flags;        // out: GFXFB_OUTPUT_*
-    uint32_t   reserved;     // out: zero
-    gfxfb_mode current;      // out: the mode while lit, zero while dark
+    uint32_t   output;            // in: the output's index, EINVAL unless below `output_count`
+    uint32_t   output_count;      // out: how many outputs the device drives
+    uint32_t   flags;             // out: GFXFB_OUTPUT_*
+    uint32_t   reserved;          // out: zero
+    gfxfb_mode current;           // out: the mode while lit, zero while dark
+    uint32_t   cursor_max_width;  // out: the widest cursor picture the output shows, 0 without a hardware cursor
+    uint32_t   cursor_max_height; // out: the tallest, 0 without a hardware cursor
 };
 
 // GFXFB_CREATE_BUFFER argument, filled with the new buffer's handle, layout and mmap offset
@@ -233,6 +263,25 @@ struct gfxfb_present_args {
     uint32_t reserved;     // must be zero
 };
 
+// GFXFB_SET_CURSOR argument, giving an output's hardware cursor a picture and its hotspot, or hiding the cursor
+struct gfxfb_cursor_args {
+    uint32_t output;   // the output's index, EINVAL unless below `output_count`
+    uint32_t width;    // at most the output's `cursor_max_width`, or 0 to hide the cursor
+    uint32_t height;   // at most the output's `cursor_max_height`
+    uint32_t hot_x;    // the hotspot's column in the picture, below `width`
+    uint32_t hot_y;    // the hotspot's row in the picture, below `height`
+    uint32_t reserved; // must be zero
+    uint64_t pixels;   // user address of `width` times `height` pixels, row after row with no padding
+};
+
+// GFXFB_MOVE_CURSOR argument, placing the hotspot of an output's cursor
+struct gfxfb_cursor_position {
+    uint32_t output;   // the output's index, EINVAL unless below `output_count`
+    int32_t  x;        // the hotspot's column in the output's pixels, negative left of the output
+    int32_t  y;        // the hotspot's row, negative above the output
+    uint32_t reserved; // must be zero
+};
+
 // One event as `read` returns it
 struct gfxfb_event {
     uint32_t type;         // GFXFB_EVENT_PRESENT
@@ -247,9 +296,11 @@ static_assert(sizeof(gfxfb_info) == 40, "gfxfb_info layout");
 static_assert(sizeof(gfxfb_rect) == 16, "gfxfb_rect layout");
 static_assert(sizeof(gfxfb_flush_args) == 16, "gfxfb_flush_args layout");
 static_assert(sizeof(gfxfb_mode) == 16, "gfxfb_mode layout");
-static_assert(sizeof(gfxfb_output_info) == 32, "gfxfb_output_info layout");
+static_assert(sizeof(gfxfb_output_info) == 40, "gfxfb_output_info layout");
 static_assert(sizeof(gfxfb_buffer_args) == 40, "gfxfb_buffer_args layout");
 static_assert(sizeof(gfxfb_present_args) == 24, "gfxfb_present_args layout");
+static_assert(sizeof(gfxfb_cursor_args) == 32, "gfxfb_cursor_args layout");
+static_assert(sizeof(gfxfb_cursor_position) == 16, "gfxfb_cursor_position layout");
 static_assert(sizeof(gfxfb_event) == 32, "gfxfb_event layout");
 
 } // namespace gfxfb
