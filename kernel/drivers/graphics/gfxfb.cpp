@@ -153,6 +153,49 @@ static int32_t to_fs_error(int32_t rc) {
     }
 }
 
+// A cursor maximum as `read_output` reports it, held to CURSOR_DIMENSION_MAX so the pictures gfxfb copies stay bounded
+// and GFXFB_GET_OUTPUT reports the largest picture GFXFB_SET_CURSOR takes
+static uint32_t bounded_cursor_max(uint32_t reported) {
+    return reported < CURSOR_DIMENSION_MAX ? reported : CURSOR_DIMENSION_MAX;
+}
+
+// Copies the picture `args` shows onto the unprivileged heap, as userland supplies it and it can fill 256 KiB, once its
+// hotspot lies inside it and it fits the output's cursor maximum. On OK the caller frees `pixels`
+static int32_t copy_cursor_picture(display& shown_display, const gfxfb_cursor_args& args, uint32_t*& pixels) {
+    bool hotspot_inside = args.hot_x < args.width && args.hot_y < args.height;
+    if (!hotspot_inside) {
+        return fs::ERR_INVAL;
+    }
+
+    output_state state = {};
+    int32_t rc = shown_display.read_output(args.output, state);
+    if (rc != OK) {
+        return to_fs_error(rc);
+    }
+
+    bool fits_across = args.width <= bounded_cursor_max(state.cursor_max_width);
+    bool fits_down = args.height <= bounded_cursor_max(state.cursor_max_height);
+    if (!fits_across || !fits_down) {
+        return fs::ERR_INVAL;
+    }
+
+    size_t bytes = static_cast<size_t>(args.width) * args.height * sizeof(uint32_t);
+    auto* copy = static_cast<uint32_t*>(heap::ualloc(bytes));
+    if (!copy) {
+        return fs::ERR_NOMEM;
+    }
+
+    rc = mm::uaccess::copy_from_user(copy, reinterpret_cast<const void*>(args.pixels), bytes);
+    if (rc != mm::uaccess::OK) {
+        heap::ufree(copy);
+        return fs::ERR_INVAL;
+    }
+
+    pixels = copy;
+
+    return fs::OK;
+}
+
 // The event reporting how the present of `handle` on `output` ended, with a frame and a time only for one that latched
 static gfxfb_event present_event(uint32_t output, uint32_t handle, const present_result& result) {
     bool latched = result.status == GFXFB_PRESENT_LATCHED;
@@ -210,6 +253,8 @@ int32_t boot_display::read_output(uint32_t output, output_state& out) {
 
     out.lit = true;
     out.boot_output = true;
+    out.cursor_max_width = 0;
+    out.cursor_max_height = 0;
 
     // The boot framebuffer carries no refresh rate
     out.current = {
@@ -244,6 +289,10 @@ gfxfb_node::gfxfb_node(const char* name, display* driver_display)
 void gfxfb_node::init_locks() {
     m_clients_lock.init();
     for (sync::mutex& lock : m_present_locks) {
+        lock.init();
+    }
+
+    for (sync::mutex& lock : m_cursor_locks) {
         lock.init();
     }
 
@@ -378,8 +427,8 @@ void gfxfb_node::wait_for_unended_presents(client& owner) {
     sync::spin_unlock_irqrestore(m_outputs_lock, state);
 }
 
-// Drops the events of `owner`, the controlling client, and presents each output's recorded base buffer where the output
-// shows another buffer, naming no region. Waits for the display to end those it accepts
+// Drops the events of `owner`, the controlling client, presents each output's recorded base buffer where the output
+// shows another buffer, naming no region, and hides every cursor. Waits for the display to end the presents it accepts
 void gfxfb_node::give_outputs_back(client& owner) {
     // No file reads `owner`'s events any more, and `queue_present()` refuses an output whose event `owner` holds unread
     sync::irq_state state = sync::spin_lock_irqsave(owner.events_lock);
@@ -399,6 +448,10 @@ void gfxfb_node::give_outputs_back(client& owner) {
         if (base) {
             queue_present(owner, output, 0, base, nullptr, 0);
         }
+
+        // The hide's result is dropped, since a close reports nothing. When the display refuses it with ERR_REFUSED,
+        // the cursor stays until a later controller's GFXFB_SET_CURSOR on the output replaces it
+        give_cursor_image(output, {});
     }
 
     wait_for_unended_presents(owner);
@@ -475,6 +528,14 @@ int32_t gfxfb_node::ioctl(fs::file* f, uint32_t cmd, uint64_t arg) {
         return present(client_of(f), arg);
     }
 
+    if (cmd == GFXFB_SET_CURSOR) {
+        return set_cursor(client_of(f), arg);
+    }
+
+    if (cmd == GFXFB_MOVE_CURSOR) {
+        return move_cursor(client_of(f), arg);
+    }
+
     return fs::ERR_NOSYS;
 }
 
@@ -540,6 +601,8 @@ int32_t gfxfb_node::get_output(uint64_t info_addr) {
     info.flags = (state.lit ? GFXFB_OUTPUT_LIT : 0) | (is_primary ? GFXFB_OUTPUT_PRIMARY : 0);
     info.reserved = 0;
     info.current = state.lit ? state.current : gfxfb_mode{};
+    info.cursor_max_width = bounded_cursor_max(state.cursor_max_width);
+    info.cursor_max_height = bounded_cursor_max(state.cursor_max_height);
 
     rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(info_addr), &info, sizeof(info));
@@ -840,6 +903,102 @@ int32_t gfxfb_node::queue_present(
     sync::mutex_unlock(m_present_locks[output]);
 
     return to_fs_error(rc);
+}
+
+int32_t gfxfb_node::set_cursor(client& owner, uint64_t args_addr) {
+    gfxfb_cursor_args args{};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &args, reinterpret_cast<const void*>(args_addr), sizeof(args));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    bool is_reserved_clear = args.reserved == 0;
+    bool names_output = args.output < clamped_output_count(*m_display);
+    if (!is_reserved_clear || !names_output) {
+        return fs::ERR_INVAL;
+    }
+
+    // A width of 0 hides the cursor, so the picture's other fields go unread
+    uint32_t* pixels = nullptr;
+    cursor_image image = {};
+    if (args.width > 0) {
+        rc = copy_cursor_picture(*m_display, args, pixels);
+        if (rc != fs::OK) {
+            return rc;
+        }
+
+        image = {
+            .pixels = pixels,
+            .width  = args.width,
+            .height = args.height,
+            .hot_x  = args.hot_x,
+            .hot_y  = args.hot_y,
+        };
+    }
+
+    rc = fs::ERR_BUSY;
+    if (begin_controlled_call(owner)) {
+        rc = give_cursor_image(args.output, image);
+        end_controlled_call(rc == fs::OK);
+    }
+
+    if (pixels) {
+        heap::ufree(pixels);
+    }
+
+    return rc;
+}
+
+// Hands the display `image` for `output`'s cursor, a width of 0 hiding the cursor, unless the display failed
+int32_t gfxfb_node::give_cursor_image(uint32_t output, const cursor_image& image) {
+    sync::mutex_lock(m_cursor_locks[output]);
+
+    int32_t rc = fs::ERR_IO;
+    if (!has_display_failed()) {
+        int32_t display_rc = m_display->set_cursor(output, image);
+        mark_failed_on_device_error(display_rc);
+        rc = to_fs_error(display_rc);
+    }
+
+    sync::mutex_unlock(m_cursor_locks[output]);
+
+    return rc;
+}
+
+int32_t gfxfb_node::move_cursor(client& owner, uint64_t position_addr) {
+    gfxfb_cursor_position position{};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &position, reinterpret_cast<const void*>(position_addr), sizeof(position));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    bool is_reserved_clear = position.reserved == 0;
+    bool names_output = position.output < clamped_output_count(*m_display);
+    if (!is_reserved_clear || !names_output) {
+        return fs::ERR_INVAL;
+    }
+
+    if (!begin_controlled_call(owner)) {
+        return fs::ERR_BUSY;
+    }
+
+    sync::mutex_lock(m_cursor_locks[position.output]);
+
+    rc = fs::ERR_IO;
+    if (!has_display_failed()) {
+        int32_t display_rc = m_display->move_cursor(position.output, position.x, position.y);
+        mark_failed_on_device_error(display_rc);
+        rc = to_fs_error(display_rc);
+    }
+
+    sync::mutex_unlock(m_cursor_locks[position.output]);
+    end_controlled_call(rc == fs::OK);
+
+    return rc;
 }
 
 /**

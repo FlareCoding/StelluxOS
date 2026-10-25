@@ -716,6 +716,10 @@ int32_t virtio_gpu_driver::read_output(uint32_t output, gfxfb::output_state& out
     out.lit = output == m_scanout;
     out.boot_output = false;
 
+    // The driver leaves the device's cursor queue unused
+    out.cursor_max_width = 0;
+    out.cursor_max_height = 0;
+
     if (out.lit) {
         out.current = {
             .width              = m_base_buffer.width,
