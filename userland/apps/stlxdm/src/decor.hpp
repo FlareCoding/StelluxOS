@@ -79,8 +79,10 @@ void draw(stlxgfx_surface_t* back, const dm_window& w,
 void blit_content(stlxgfx_surface_t* back, const dm_window& w,
                   const damage_list::rect& clip);
 
-/* Draws the interactive-resize rubber band. */
-void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r);
+/* Draws the interactive-resize rubber band, inside `clip` only, which
+ * must lie inside `back`. */
+void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r,
+                  const damage_list::rect& clip);
 
 } // namespace decor
 

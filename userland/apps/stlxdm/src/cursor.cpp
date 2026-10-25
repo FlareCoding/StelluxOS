@@ -241,18 +241,40 @@ void cursor::bounds(uint32_t shape, int32_t x, int32_t y,
 }
 
 void cursor::draw(stlxgfx_surface_t* back, uint32_t shape,
-                  int32_t x, int32_t y) const {
+                  int32_t x, int32_t y,
+                  const damage_list::rect& clip) const {
     const cursor_sprite* s = sprite_for(shape);
     if (!s || !s->image) {
         return;
     }
 
-    int32_t ox = x - s->hot_x;
-    int32_t oy = y - s->hot_y;
+    int32_t bx, by, bw, bh;
+    bounds(shape, x, y, &bx, &by, &bw, &bh);
+    bool left_or_right_of_clip = bx >= clip.x + clip.w || bx + bw <= clip.x;
+    bool above_or_below_clip = by >= clip.y + clip.h || by + bh <= clip.y;
+    if (left_or_right_of_clip || above_or_below_clip) {
+        return;
+    }
+
+    /* Pixels outside `clip` may already hold the pointer, from an
+     * earlier frame or rect, and a second blend would thicken it */
+    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(
+        back->pixels + static_cast<uint32_t>(clip.y) * back->pitch
+            + static_cast<uint32_t>(clip.x) * 4,
+        static_cast<uint32_t>(clip.w), static_cast<uint32_t>(clip.h),
+        back->pitch, 32, 16, 8, 0);
+    if (!view) {
+        return;
+    }
+
+    int32_t ox = bx - clip.x;
+    int32_t oy = by - clip.y;
     if (s->shadow) {
-        stlxgfx_blit_alpha(back, ox + 1, oy + 1, s->shadow, 0, 0,
+        stlxgfx_blit_alpha(view, ox + 1, oy + 1, s->shadow, 0, 0,
                            s->shadow->width, s->shadow->height);
     }
-    stlxgfx_blit_alpha(back, ox, oy, s->image, 0, 0,
+
+    stlxgfx_blit_alpha(view, ox, oy, s->image, 0, 0,
                        s->image->width, s->image->height);
+    stlxgfx_destroy_surface(view);
 }

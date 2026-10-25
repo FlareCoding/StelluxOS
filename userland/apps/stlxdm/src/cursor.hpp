@@ -1,6 +1,8 @@
 #ifndef STLXDM_CURSOR_HPP
 #define STLXDM_CURSOR_HPP
 
+#include "damage.hpp"
+
 #include <stlxgfx/surface.h>
 #include <stlxwin/proto.h>
 
@@ -27,9 +29,10 @@ public:
     void bounds(uint32_t shape, int32_t x, int32_t y,
                 int32_t* bx, int32_t* by, int32_t* bw, int32_t* bh) const;
 
-    /* Alpha-blits shadow then image onto the target. */
+    /* Alpha-blits shadow then image onto the target, inside `clip` only,
+     * which must lie inside `back`. */
     void draw(stlxgfx_surface_t* back, uint32_t shape,
-              int32_t x, int32_t y) const;
+              int32_t x, int32_t y, const damage_list::rect& clip) const;
 
 private:
     cursor_sprite m_arrow;
