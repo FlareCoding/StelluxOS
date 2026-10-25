@@ -157,6 +157,7 @@ public:
 
     gfxfb::output_state states[OUTPUTS] = {};
     gfxfb::buffer       bases[OUTPUTS] = {};
+    gfxfb::buffer*      relit_bases[OUTPUTS] = {}; // when set, the base buffer an output has in place of `bases`
     uint32_t            count = OUTPUTS; // `output_count()`'s answer, which a test may lower below OUTPUTS
     bool                has_base_buffers = true; // false makes `base_buffer()` return nullptr even for a lit output
     bool                flush_needed = true;
@@ -194,7 +195,7 @@ public:
     uint32_t            cursor_output = OUTPUTS; // the output of the last cursor call, OUTPUTS before any
     gfxfb::cursor_image cursor = {}; // the last picture `set_cursor()` got
     uint32_t            cursor_pixels[MAX_CURSOR_PIXELS] = {}; // that picture's first pixels, read during the call
-    bool                hidden_on[OUTPUTS] = {}; // whether the last `set_cursor()` on each output hid the cursor
+    bool                hidden_on[OUTPUTS] = {}; // whether a hide or going dark last reached each output's cursor
     int32_t             cursor_x = 0; // the last move's position
     int32_t             cursor_y = 0;
 
@@ -211,7 +212,11 @@ public:
     }
 
     gfxfb::buffer* base_buffer(uint32_t output) override {
-        return has_base_buffers && output < OUTPUTS && states[output].lit ? &bases[output] : nullptr;
+        if (!has_base_buffers || output >= OUTPUTS || !states[output].lit) {
+            return nullptr;
+        }
+
+        return relit_bases[output] ? relit_bases[output] : &bases[output];
     }
 
     int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override {
@@ -245,6 +250,49 @@ public:
         last_released = buf;
         released_count.fetch_add_release(1);
     }
+};
+
+// A display that accepts every present, with GFXFB_OUTPUTS_MAX outputs each lit at output 1's size once a test gives it
+// a base buffer, unless the test marks it dark, so one file can hold an event of each kind for every output
+class every_output_display : public gfxfb::display {
+public:
+    gfxfb::buffer bases[gfxfb::GFXFB_OUTPUTS_MAX] = {};
+    bool          dark[gfxfb::GFXFB_OUTPUTS_MAX] = {};
+
+    uint32_t output_count() const override { return gfxfb::GFXFB_OUTPUTS_MAX; }
+    bool needs_flush() const override { return false; }
+
+    int32_t read_output(uint32_t output, gfxfb::output_state& out) override {
+        if (output >= gfxfb::GFXFB_OUTPUTS_MAX) {
+            return gfxfb::ERR_INVALID_ARG;
+        }
+
+        out = {
+            .lit               = !dark[output],
+            .relighting        = false,
+            .boot_output       = false,
+            .current           = {
+                .width              = bases[output].width,
+                .height             = bases[output].height,
+                .refresh_millihertz = OUTPUT_1_REFRESH_MILLIHERTZ,
+            },
+            .cursor_max_width  = 0,
+            .cursor_max_height = 0,
+        };
+
+        return gfxfb::OK;
+    }
+
+    gfxfb::buffer* base_buffer(uint32_t output) override {
+        return output < gfxfb::GFXFB_OUTPUTS_MAX && !dark[output] ? &bases[output] : nullptr;
+    }
+
+    int32_t flush(uint32_t, const gfxfb::gfxfb_rect*, uint32_t) override { return gfxfb::OK; }
+    int32_t create_buffer(uint32_t, uint32_t, uint32_t, gfxfb::buffer**) override { return gfxfb::ERR_UNSUPPORTED; }
+    int32_t present(uint32_t, gfxfb::buffer*, const gfxfb::gfxfb_rect*, uint32_t) override { return gfxfb::OK; }
+    int32_t set_cursor(uint32_t, const gfxfb::cursor_image&) override { return gfxfb::ERR_UNSUPPORTED; }
+    int32_t move_cursor(uint32_t, int32_t, int32_t) override { return gfxfb::ERR_UNSUPPORTED; }
+    void release_buffer(gfxfb::buffer*) override {}
 };
 
 // One test's gfxfb, published as its own node apart from /dev/gfxfb, with `node` null when publishing failed
@@ -438,6 +486,7 @@ static void light_output(recording_display& fake, uint32_t output, bool is_boot_
 
     fake.states[output] = {
         .lit               = true,
+        .relighting        = false,
         .boot_output       = is_boot_output,
         .current           = {
             .width              = fake.bases[output].width,
@@ -712,6 +761,53 @@ static void end_present(
     RUN_ELEVATED(test.node->present_done(output, {.status = status, .frame = frame, .timestamp_ns = timestamp_ns}));
 }
 
+// Reports a change of `output` to the test's node, as its display does once the output lit, went dark or relit
+static void report_change(const gfxfb_test_node& test, uint32_t output) {
+    RUN_ELEVATED(test.node->output_changed(output));
+}
+
+// Takes `output` of `fake` dark, relighting when `is_relighting` holds, with its cursor hidden as a dark output loses
+// it, and reports the change to the test's node
+static void darken_output(const gfxfb_test_node& test, recording_display& fake, uint32_t output, bool is_relighting) {
+    fake.states[output].lit = false;
+    fake.states[output].relighting = is_relighting;
+    fake.hidden_on[output] = true;
+    report_change(test, output);
+}
+
+// Lights `output` of `fake` again at output 1's size with `relit` as its new base buffer, a page into the shared
+// allocation, without reporting it
+static void relight_output(recording_display& fake, uint32_t output, gfxfb::buffer& relit) {
+    relit = {
+        .width     = static_cast<uint32_t>(OUTPUT_1_WIDTH),
+        .height    = static_cast<uint32_t>(OUTPUT_1_HEIGHT),
+        .pitch     = static_cast<uint32_t>(OUTPUT_1_PITCH),
+        .size      = pmm::page_align_up(OUTPUT_1_SIZE),
+        .phys      = g_buffer_phys + OUTPUT_1_OFFSET,
+        .cacheable = false,
+    };
+
+    fake.relit_bases[output] = &relit;
+    fake.states[output].lit = true;
+    fake.states[output].relighting = false;
+    fake.states[output].current.width = relit.width;
+    fake.states[output].current.height = relit.height;
+}
+
+// Gives every output of `fake` a base buffer of output 1's size, a page into the shared allocation, so each one is lit
+static void light_every_output(every_output_display& fake) {
+    for (gfxfb::buffer& base : fake.bases) {
+        base = {
+            .width     = static_cast<uint32_t>(OUTPUT_1_WIDTH),
+            .height    = static_cast<uint32_t>(OUTPUT_1_HEIGHT),
+            .pitch     = static_cast<uint32_t>(OUTPUT_1_PITCH),
+            .size      = pmm::page_align_up(OUTPUT_1_SIZE),
+            .phys      = g_buffer_phys + OUTPUT_1_OFFSET,
+            .cacheable = false,
+        };
+    }
+}
+
 // Reads one event from `file` without waiting, or returns a record of zeros when the read fails
 static gfxfb::gfxfb_event read_event(fs::file* file) {
     gfxfb::gfxfb_event event = {};
@@ -728,6 +824,14 @@ static uint32_t poll_file(fs::file* file) {
     RUN_ELEVATED(ready = file->get_node()->poll(file, nullptr));
 
     return ready;
+}
+
+// True when the next event of `file`, read without waiting, is an output event for `output` with every other field zero
+static bool reads_output_event(fs::file* file, uint32_t output) {
+    gfxfb::gfxfb_event event = read_event(file);
+    bool is_bare = event.status == 0 && event.handle == 0 && event.frame == 0 && event.timestamp_ns == 0;
+
+    return event.type == gfxfb::GFXFB_EVENT_OUTPUT && event.output == output && is_bare;
 }
 
 // Closes the file of `arg`, a `task_close`, then sets its flag
@@ -3505,7 +3609,8 @@ static void read_waiting_for_an_event(void*) {
     sched::exit(0);
 }
 
-// Reads one event from the readers' file, which holds none and has no present pending, so only a kill ends the wait
+// Reads one event from the readers' file, which holds none, has no present pending and sees no output change, so only a
+// kill ends the wait
 static void read_until_interrupted(void*) {
     gfxfb::gfxfb_event event = {};
     g_interrupted_read_result = fs::read(g_waiting_reader_file, &event, sizeof(event));
@@ -3790,11 +3895,14 @@ TEST(gfxfb, a_closing_controller_presents_the_base_buffer_once_its_present_ends)
 
 static recording_display g_lit_later_display;
 
-// An output lit only after its node started has no base buffer recorded, so a closing controller presents nothing there
+// An output its display reports lit with no base buffer, as when none could be recorded, gets no present from a closing
+// controller, which has no base buffer to give it back
 TEST(gfxfb, a_closing_controller_presents_nothing_on_an_output_without_a_base_buffer) {
     gfxfb_test_node test = publish_driver_node(&g_lit_later_display);
     ASSERT_NOT_NULL(test.node);
+    g_lit_later_display.has_base_buffers = false;
     light_output(g_lit_later_display, 0, false);
+    report_change(test, 0);
 
     user_page page;
     ASSERT_TRUE(page.ready());
@@ -4548,6 +4656,618 @@ TEST(gfxfb, boot_display_has_no_cursor) {
     ASSERT_TRUE(closes_before_deadline(file));
 }
 
+static recording_display g_dark_event_display;
+
+// An output reported dark after its present's dark end queues an output event in every file, in the presenter's behind
+// that end and in place of the output event it held for the output, and an unread output event fails no present
+TEST(gfxfb, an_output_event_follows_the_presenters_dark_end_and_reaches_every_file) {
+    light_output(g_dark_event_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_dark_event_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* presenter = fs::open(test.path, fs::O_RDWR);
+    fs::file* watcher = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(presenter);
+    ASSERT_NOT_NULL(watcher);
+
+    // A lit output reported again still reaches every file and keeps its base buffer's record. The reaper hands buffers
+    // back in the order their last references went, so seeing only the spare buffer back shows the record was kept
+    uint32_t handle = create_output_0_buffer(presenter, page);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+    report_change(test, 0);
+    EXPECT_EQ(poll_file(watcher), sync::POLL_IN);
+    gfxfb::gfxfb_buffer_args spare = request_small_buffer(presenter, page);
+    ASSERT_NE(spare.handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(destroy_buffer(presenter, page, spare.handle), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_dark_event_display.released_count, 1));
+    EXPECT_EQ(g_dark_event_display.last_released, &g_dark_event_display.created[1]);
+    EXPECT_EQ(g_dark_event_display.released_count.load_acquire(), static_cast<uint32_t>(1));
+    ASSERT_EQ(present_buffer(presenter, page, 0, handle), fs::OK);
+
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_DARK);
+    darken_output(test, g_dark_event_display, 0, false);
+
+    gfxfb::gfxfb_event dark_end = read_event(presenter);
+    EXPECT_EQ(dark_end.type, gfxfb::GFXFB_EVENT_PRESENT);
+    EXPECT_EQ(dark_end.status, gfxfb::GFXFB_PRESENT_DARK);
+    EXPECT_TRUE(reads_output_event(presenter, 0));
+    EXPECT_EQ(poll_file(presenter), static_cast<uint32_t>(0));
+
+    EXPECT_TRUE(reads_output_event(watcher, 0));
+    EXPECT_EQ(poll_file(watcher), static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(watcher));
+    ASSERT_TRUE(closes_before_deadline(presenter));
+}
+
+static recording_display g_output_wake_display;
+static fs::file* g_output_wake_file;
+static gfxfb::gfxfb_event g_output_wake_event;
+static ssize_t g_output_wake_result;
+static sync::atomic<uint32_t> g_output_wake_done;
+
+// Reads one event from the output wake test's file, waiting for it
+static void read_waiting_for_an_output_event(void*) {
+    g_output_wake_result = fs::read(g_output_wake_file, &g_output_wake_event, sizeof(g_output_wake_event));
+    g_output_wake_done.store_release(1);
+    sched::exit(0);
+}
+
+// A change of an output wakes a blocking read of a file with no present pending, which returns the output event
+TEST(gfxfb, an_output_change_wakes_a_blocking_read) {
+    light_output(g_output_wake_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_output_wake_display);
+    ASSERT_NOT_NULL(test.node);
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    g_output_wake_file = file;
+    g_output_wake_result = fs::ERR_IO;
+    g_output_wake_done.store_relaxed(0);
+    sched::task* reader = test_helpers::start_pinned_task(read_waiting_for_an_output_event, nullptr, "gfxfb_read");
+    ASSERT_NOT_NULL(reader);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(reader));
+
+    darken_output(test, g_output_wake_display, 0, false);
+    ASSERT_TRUE(spin_wait(g_output_wake_done));
+    EXPECT_EQ(g_output_wake_result, static_cast<ssize_t>(sizeof(gfxfb::gfxfb_event)));
+    EXPECT_EQ(g_output_wake_event.type, gfxfb::GFXFB_EVENT_OUTPUT);
+    EXPECT_EQ(g_output_wake_event.output, static_cast<uint32_t>(0));
+    unpin(reader);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_closing_event_display;
+static task_close g_event_close;
+
+// An output change during a close that waits for its present's end leaves the close waiting, and every other file reads
+// both that change and one made after the close
+TEST(gfxfb, an_output_change_leaves_a_closing_file_waiting) {
+    light_output(g_closing_event_display, 0, false);
+    light_output(g_closing_event_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_closing_event_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* closing = fs::open(test.path, fs::O_RDWR);
+    fs::file* watcher = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(closing);
+    ASSERT_NOT_NULL(watcher);
+
+    ASSERT_EQ(present_buffer(closing, page, 0, 0), fs::OK);
+    sched::task* closer = start_close(g_event_close, closing);
+    ASSERT_NOT_NULL(closer);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+
+    darken_output(test, g_closing_event_display, 1, false);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait(g_event_close.done));
+    unpin(closer);
+
+    darken_output(test, g_closing_event_display, 0, false);
+    EXPECT_TRUE(reads_output_event(watcher, 1));
+    EXPECT_TRUE(reads_output_event(watcher, 0));
+    EXPECT_EQ(poll_file(watcher), static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(watcher));
+}
+
+static every_output_display g_every_output_display;
+
+// One record more than a file's queue holds, so a queue grown past its bound returns the extra record
+static gfxfb::gfxfb_event g_every_output_events[gfxfb::CLIENT_EVENTS_MAX + 1];
+
+// One file holds a present event and an output event for every output at once, the bound of its queue, and an output
+// that changes again moves its output event behind the others
+TEST(gfxfb, a_file_holds_a_present_event_and_an_output_event_per_output) {
+    light_every_output(g_every_output_display);
+    gfxfb_test_node test = publish_driver_node(&g_every_output_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        ASSERT_EQ(present_buffer(file, page, output, 0), fs::OK);
+        end_present(test, output, gfxfb::GFXFB_PRESENT_LATCHED);
+    }
+
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        report_change(test, output);
+    }
+
+    report_change(test, 0);
+
+    gfxfb::gfxfb_event* events = g_every_output_events;
+    ssize_t queued = static_cast<ssize_t>(gfxfb::CLIENT_EVENTS_MAX * sizeof(gfxfb::gfxfb_event));
+    ASSERT_EQ(fs::read(file, events, sizeof(g_every_output_events), fs::O_NONBLOCK), queued);
+
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        EXPECT_EQ(events[output].type, gfxfb::GFXFB_EVENT_PRESENT);
+        EXPECT_EQ(events[output].output, output);
+    }
+
+    // Output 0 changed last, so its output event moved behind the others
+    for (uint32_t i = 0; i < gfxfb::GFXFB_OUTPUTS_MAX; i++) {
+        uint32_t output = (i + 1) % gfxfb::GFXFB_OUTPUTS_MAX;
+        EXPECT_EQ(events[gfxfb::GFXFB_OUTPUTS_MAX + i].type, gfxfb::GFXFB_EVENT_OUTPUT);
+        EXPECT_EQ(events[gfxfb::GFXFB_OUTPUTS_MAX + i].output, output);
+    }
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static every_output_display g_wrapped_events_display;
+static gfxfb::gfxfb_event g_wrapped_events[gfxfb::CLIENT_EVENTS_MAX];
+
+// An output event replaced in a queue whose oldest event sits past the ring's start and whose events wrap past its end
+// leaves the other events in order, with the newer output event last
+TEST(gfxfb, a_replaced_output_event_keeps_a_wrapped_queue_in_order) {
+    light_every_output(g_wrapped_events_display);
+    gfxfb_test_node test = publish_driver_node(&g_wrapped_events_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    // Reading a present end of every output leaves the oldest event GFXFB_OUTPUTS_MAX records into the ring
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        ASSERT_EQ(present_buffer(file, page, output, 0), fs::OK);
+        end_present(test, output, gfxfb::GFXFB_PRESENT_LATCHED);
+    }
+
+    gfxfb::gfxfb_event* events = g_wrapped_events;
+    ssize_t ends = static_cast<ssize_t>(gfxfb::GFXFB_OUTPUTS_MAX * sizeof(gfxfb::gfxfb_event));
+    ASSERT_EQ(fs::read(file, events, static_cast<size_t>(ends), fs::O_NONBLOCK), ends);
+
+    // Output 0's next end wraps to the ring's start, and output 3's second change compacts the events across the wrap
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        report_change(test, output);
+    }
+
+    ASSERT_EQ(present_buffer(file, page, 0, 0), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    report_change(test, 3);
+
+    ssize_t queued = static_cast<ssize_t>((gfxfb::GFXFB_OUTPUTS_MAX + 1) * sizeof(gfxfb::gfxfb_event));
+    ASSERT_EQ(fs::read(file, events, sizeof(g_wrapped_events), fs::O_NONBLOCK), queued);
+
+    for (uint32_t i = 0; i + 1 < gfxfb::GFXFB_OUTPUTS_MAX; i++) {
+        uint32_t output = i < 3 ? i : i + 1;
+        EXPECT_EQ(events[i].type, gfxfb::GFXFB_EVENT_OUTPUT);
+        EXPECT_EQ(events[i].output, output);
+    }
+
+    EXPECT_EQ(events[gfxfb::GFXFB_OUTPUTS_MAX - 1].type, gfxfb::GFXFB_EVENT_PRESENT);
+    EXPECT_EQ(events[gfxfb::GFXFB_OUTPUTS_MAX - 1].output, static_cast<uint32_t>(0));
+    EXPECT_EQ(events[gfxfb::GFXFB_OUTPUTS_MAX].type, gfxfb::GFXFB_EVENT_OUTPUT);
+    EXPECT_EQ(events[gfxfb::GFXFB_OUTPUTS_MAX].output, static_cast<uint32_t>(3));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_relit_primary_display;
+static gfxfb::buffer g_relit_primary_base;
+
+// A primary output relighting at another size stays primary, read as primary but not lit while GET_INFO, FLUSH, mmap at
+// offset 0 and its base buffer's present fail, then serves its new base buffer, its old one released once unmapped
+TEST(gfxfb, the_primary_output_stays_on_an_output_that_relights) {
+    light_output(g_relit_primary_display, 0, false);
+    light_output(g_relit_primary_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_relit_primary_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t old_mapping = map_file(file, ctx, 0, OUTPUT_0_SIZE);
+    ASSERT_NE(old_mapping, static_cast<uintptr_t>(0));
+
+    darken_output(test, g_relit_primary_display, 0, true);
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_output_info>(0)->flags, gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_INFO, page.addr), fs::ERR_AGAIN);
+    EXPECT_EQ(flush_one_rect(test.path, page), fs::ERR_AGAIN);
+    EXPECT_EQ(map_file(file, ctx, 0, pmm::PAGE_SIZE), static_cast<uintptr_t>(0));
+    EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_AGAIN);
+    EXPECT_EQ(stat_size(test), static_cast<size_t>(0));
+
+    relight_output(g_relit_primary_display, 0, g_relit_primary_base);
+    report_change(test, 0);
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_output_info>(0)->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    ASSERT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_INFO, page.addr), fs::OK);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_info>(0)->width, OUTPUT_1_WIDTH);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_info>(0)->height, OUTPUT_1_HEIGHT);
+    EXPECT_EQ(stat_size(test), static_cast<size_t>(OUTPUT_1_SIZE));
+    ASSERT_EQ(flush_one_rect(test.path, page), fs::OK);
+    EXPECT_EQ(g_relit_primary_display.flushed_output, static_cast<uint32_t>(0));
+
+    EXPECT_EQ(g_relit_primary_display.released_count.load_acquire(), static_cast<uint32_t>(0));
+    ASSERT_EQ(mm::mm_context_unmap(ctx, old_mapping, OUTPUT_0_SIZE), mm::MM_CTX_OK);
+    ASSERT_TRUE(spin_wait_ge(g_relit_primary_display.released_count, 1));
+    EXPECT_EQ(g_relit_primary_display.last_released, &g_relit_primary_display.bases[0]);
+
+    mm::mm_context_release(ctx);
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_moving_primary_display;
+static gfxfb::buffer g_moving_primary_relit_bases[recording_display::OUTPUTS];
+
+// A primary output going dark hands the primary and the node's size to the lowest lit output, with an output event for
+// both outputs, the boot output lit again leaves the primary there, and with no output lit the next one lit takes it
+TEST(gfxfb, the_primary_output_moves_when_it_goes_dark) {
+    light_output(g_moving_primary_display, 0, false);
+    light_output(g_moving_primary_display, 1, true);
+    gfxfb_test_node test = publish_driver_node(&g_moving_primary_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* watcher = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(watcher);
+    auto* info = page.at<gfxfb::gfxfb_output_info>(0);
+
+    darken_output(test, g_moving_primary_display, 1, false);
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_EQ(stat_size(test), static_cast<size_t>(OUTPUT_0_SIZE));
+    EXPECT_TRUE(reads_output_event(watcher, 1));
+    EXPECT_TRUE(reads_output_event(watcher, 0));
+
+    relight_output(g_moving_primary_display, 1, g_moving_primary_relit_bases[1]);
+    report_change(test, 1);
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT);
+    EXPECT_EQ(stat_size(test), static_cast<size_t>(OUTPUT_0_SIZE));
+    EXPECT_TRUE(reads_output_event(watcher, 1));
+    EXPECT_EQ(poll_file(watcher), static_cast<uint32_t>(0));
+
+    darken_output(test, g_moving_primary_display, 0, false);
+    ASSERT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_INFO, page.addr), fs::OK);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_info>(0)->width, OUTPUT_1_WIDTH);
+    EXPECT_EQ(stat_size(test), static_cast<size_t>(OUTPUT_1_SIZE));
+    EXPECT_TRUE(reads_output_event(watcher, 0));
+    EXPECT_TRUE(reads_output_event(watcher, 1));
+
+    darken_output(test, g_moving_primary_display, 1, false);
+    EXPECT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_INFO, page.addr), fs::ERR_AGAIN);
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(info->flags, static_cast<uint32_t>(0));
+    EXPECT_EQ(stat_size(test), static_cast<size_t>(0));
+    EXPECT_TRUE(reads_output_event(watcher, 1));
+    EXPECT_EQ(poll_file(watcher), static_cast<uint32_t>(0));
+
+    relight_output(g_moving_primary_display, 0, g_moving_primary_relit_bases[0]);
+    report_change(test, 0);
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_EQ(stat_size(test), static_cast<size_t>(OUTPUT_1_SIZE));
+    EXPECT_TRUE(reads_output_event(watcher, 0));
+
+    ASSERT_TRUE(closes_before_deadline(watcher));
+}
+
+static every_output_display g_lowest_primary_display;
+
+// A primary output going dark hands the primary, with an output event, to the lowest of several lit outputs with a base
+// buffer, past a dark one
+TEST(gfxfb, a_dark_primary_output_hands_the_primary_to_the_lowest_lit_output) {
+    light_every_output(g_lowest_primary_display);
+    g_lowest_primary_display.dark[1] = true;
+    gfxfb_test_node test = publish_driver_node(&g_lowest_primary_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* watcher = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(watcher);
+
+    g_lowest_primary_display.dark[0] = true;
+    report_change(test, 0);
+    ASSERT_EQ(get_output(test.path, page, 2), fs::OK);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_output_info>(0)->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_TRUE(reads_output_event(watcher, 0));
+    EXPECT_TRUE(reads_output_event(watcher, 2));
+    EXPECT_EQ(poll_file(watcher), static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(watcher));
+}
+
+static recording_display g_unrecorded_base_display;
+static gfxfb::buffer g_unrecorded_relit_base;
+
+// A lit output without a recorded base buffer counts as dark: the relighting primary output lit again without one hands
+// the primary to the output with a record, and once no output has one, no report makes an output primary
+TEST(gfxfb, a_lit_output_without_a_recorded_base_buffer_counts_as_dark) {
+    light_output(g_unrecorded_base_display, 0, false);
+    light_output(g_unrecorded_base_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_unrecorded_base_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* watcher = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(watcher);
+    auto* info = page.at<gfxfb::gfxfb_output_info>(0);
+
+    darken_output(test, g_unrecorded_base_display, 0, true);
+    EXPECT_TRUE(reads_output_event(watcher, 0));
+    g_unrecorded_base_display.has_base_buffers = false;
+    relight_output(g_unrecorded_base_display, 0, g_unrecorded_relit_base);
+    report_change(test, 0);
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT);
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_TRUE(reads_output_event(watcher, 0));
+    EXPECT_TRUE(reads_output_event(watcher, 1));
+
+    // Output 1 going dark leaves no output with a record, so no primary output, and reports repeating each output's
+    // state make none
+    darken_output(test, g_unrecorded_base_display, 1, false);
+    report_change(test, 1);
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(info->flags, static_cast<uint32_t>(0));
+    report_change(test, 0);
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT);
+
+    ASSERT_TRUE(closes_before_deadline(watcher));
+}
+
+static recording_display g_dark_drop_display;
+
+// An output reported dark drops its base buffer and the buffer it showed, which goes back to the display once its
+// handle is gone too, and a present of its base buffer fails
+TEST(gfxfb, an_output_reported_dark_drops_its_buffers) {
+    light_output(g_dark_drop_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_dark_drop_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t handle = create_output_0_buffer(file, page);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(present_buffer(file, page, 0, handle), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_EQ(destroy_buffer(file, page, handle), fs::OK);
+    EXPECT_EQ(g_dark_drop_display.released_count.load_acquire(), static_cast<uint32_t>(0));
+
+    darken_output(test, g_dark_drop_display, 0, false);
+    ASSERT_TRUE(spin_wait_ge(g_dark_drop_display.released_count, 2));
+    EXPECT_EQ(present_buffer(file, page, 0, 0), fs::ERR_AGAIN);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_latched_relit_display;
+static gfxfb::buffer g_latched_relit_base;
+static task_close g_latched_relit_close;
+
+// A created buffer that latches on an output lit again before its lit report stays shown through that report, so its
+// destroy hands nothing back, and the closing controller presents the new base buffer there, which then replaces it
+TEST(gfxfb, a_lit_report_keeps_the_created_buffer_its_output_shows) {
+    light_output(g_latched_relit_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_latched_relit_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    darken_output(test, g_latched_relit_display, 0, true);
+    ASSERT_TRUE(spin_wait_ge(g_latched_relit_display.released_count, 1));
+    relight_output(g_latched_relit_display, 0, g_latched_relit_base);
+
+    uint32_t width = static_cast<uint32_t>(OUTPUT_1_WIDTH);
+    uint32_t height = static_cast<uint32_t>(OUTPUT_1_HEIGHT);
+    ASSERT_EQ(request_buffer(file, page, width, height, gfxfb::GFXFB_FORMAT_XRGB8888), fs::OK);
+    uint32_t handle = page.at<gfxfb::gfxfb_buffer_args>(0)->handle;
+    ASSERT_EQ(present_buffer(file, page, 0, handle), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    report_change(test, 0);
+    ASSERT_EQ(destroy_buffer(file, page, handle), fs::OK);
+    EXPECT_EQ(g_latched_relit_display.released_count.load_acquire(), static_cast<uint32_t>(1));
+
+    sched::task* closer = start_close(g_latched_relit_close, file);
+    ASSERT_NOT_NULL(closer);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    EXPECT_EQ(g_latched_relit_display.presented_on[0], &g_latched_relit_base);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait(g_latched_relit_close.done));
+    unpin(closer);
+
+    ASSERT_TRUE(spin_wait_ge(g_latched_relit_display.released_count, 2));
+    EXPECT_EQ(g_latched_relit_display.last_released, &g_latched_relit_display.created[0]);
+}
+
+static recording_display g_stale_relit_display;
+static gfxfb::buffer g_stale_relit_base;
+
+// An output lit again shows its new base buffer whole, so the stale mark a skipped flush left goes, and the new base
+// buffer's first present names its regions
+TEST(gfxfb, a_relit_output_clears_the_stale_mark) {
+    light_output(g_stale_relit_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_stale_relit_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t handle = create_output_0_buffer(file, page);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(present_buffer(file, page, 0, handle), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).type, gfxfb::GFXFB_EVENT_PRESENT);
+    ASSERT_EQ(flush_one_rect(test.path, page), fs::OK);
+    EXPECT_EQ(g_stale_relit_display.recorded_count, static_cast<uint32_t>(0));
+
+    darken_output(test, g_stale_relit_display, 0, true);
+    relight_output(g_stale_relit_display, 0, g_stale_relit_base);
+    report_change(test, 0);
+
+    ASSERT_EQ(present_one_region(file, page, 0, 0, {0, 0, 1, 1}), fs::OK);
+    EXPECT_EQ(g_stale_relit_display.presented, &g_stale_relit_base);
+    EXPECT_FALSE(g_stale_relit_display.named_no_region_on[0]);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_stale_kept_display;
+
+// A report that keeps an output's base buffer, a lit report repeating it or a report of another output, keeps the stale
+// mark a skipped flush left, so the base buffer's next present still passes it whole
+TEST(gfxfb, a_report_keeping_the_base_buffer_keeps_the_stale_mark) {
+    light_output(g_stale_kept_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_stale_kept_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t handle = create_output_0_buffer(file, page);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(present_buffer(file, page, 0, handle), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    EXPECT_EQ(read_event(file).type, gfxfb::GFXFB_EVENT_PRESENT);
+    ASSERT_EQ(flush_one_rect(test.path, page), fs::OK);
+    EXPECT_EQ(g_stale_kept_display.recorded_count, static_cast<uint32_t>(0));
+
+    report_change(test, 0);
+    report_change(test, 1);
+
+    ASSERT_EQ(present_one_region(file, page, 0, 0, {0, 0, 1, 1}), fs::OK);
+    EXPECT_EQ(g_stale_kept_display.presented, &g_stale_kept_display.bases[0]);
+    EXPECT_TRUE(g_stale_kept_display.named_no_region_on[0]);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_relit_cursor_display;
+static gfxfb::buffer g_relit_cursor_base;
+
+// An output that goes dark loses its cursor, and its report gives the display no picture as it lights again, so the
+// cursor stays hidden there, even through a move, until the next picture
+TEST(gfxfb, a_relit_output_shows_no_cursor_until_the_next_picture) {
+    light_output(g_relit_cursor_display, 0, false);
+    g_relit_cursor_display.states[0].cursor_max_width = CURSOR_MAX_WIDTH;
+    g_relit_cursor_display.states[0].cursor_max_height = CURSOR_MAX_HEIGHT;
+    gfxfb_test_node test = publish_driver_node(&g_relit_cursor_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    write_cursor_pixels(page, 4);
+    ASSERT_EQ(send_cursor_args(file, page, cursor_picture(page, 0, 2, 2)), fs::OK);
+    EXPECT_FALSE(g_relit_cursor_display.hidden_on[0]);
+
+    darken_output(test, g_relit_cursor_display, 0, true);
+    relight_output(g_relit_cursor_display, 0, g_relit_cursor_base);
+    report_change(test, 0);
+    EXPECT_EQ(g_relit_cursor_display.set_cursor_calls, static_cast<uint32_t>(1));
+
+    ASSERT_EQ(move_cursor_to(file, page, 0, 5, 6), fs::OK);
+    EXPECT_TRUE(g_relit_cursor_display.hidden_on[0]);
+    ASSERT_EQ(send_cursor_args(file, page, cursor_picture(page, 0, 2, 2)), fs::OK);
+    EXPECT_FALSE(g_relit_cursor_display.hidden_on[0]);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_failed_change_display;
+
+// FLUSH fails with EIO once the display failed, even while the primary output relights, and a report from the failed
+// display keeps every buffer, which its hardware may still read, keeps the primary output and queues no event
+TEST(gfxfb, reports_of_a_failed_display_change_nothing) {
+    light_output(g_failed_change_display, 0, false);
+    light_output(g_failed_change_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_failed_change_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    darken_output(test, g_failed_change_display, 0, true);
+    EXPECT_TRUE(reads_output_event(file, 0));
+    ASSERT_TRUE(spin_wait_ge(g_failed_change_display.released_count, 1));
+
+    // A created buffer's failed present keeps output 1 showing its base buffer, which a recorded dark report would drop
+    gfxfb::gfxfb_buffer_args spare = request_small_buffer(file, page);
+    ASSERT_NE(spare.handle, static_cast<uint32_t>(0));
+    uint32_t width = static_cast<uint32_t>(OUTPUT_1_WIDTH);
+    uint32_t height = static_cast<uint32_t>(OUTPUT_1_HEIGHT);
+    ASSERT_EQ(request_buffer(file, page, width, height, gfxfb::GFXFB_FORMAT_XRGB8888), fs::OK);
+    uint32_t handle = page.at<gfxfb::gfxfb_buffer_args>(0)->handle;
+    ASSERT_EQ(present_buffer(file, page, 1, handle), fs::OK);
+    end_present(test, 1, gfxfb::GFXFB_PRESENT_FAILED);
+    EXPECT_EQ(read_event(file).status, gfxfb::GFXFB_PRESENT_FAILED);
+    EXPECT_EQ(flush_one_rect(test.path, page), fs::ERR_IO);
+
+    darken_output(test, g_failed_change_display, 1, false);
+    darken_output(test, g_failed_change_display, 0, false);
+    EXPECT_EQ(poll_file(file), static_cast<uint32_t>(0));
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_output_info>(0)->flags, gfxfb::GFXFB_OUTPUT_PRIMARY);
+
+    // The reaper hands buffers back in the order their last references went, so the spare coming back second shows the
+    // reports dropped nothing
+    ASSERT_EQ(destroy_buffer(file, page, spare.handle), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_failed_change_display.released_count, 2));
+    EXPECT_EQ(g_failed_change_display.last_released, &g_failed_change_display.created[0]);
+    EXPECT_EQ(g_failed_change_display.released_count.load_acquire(), static_cast<uint32_t>(2));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
 // Registration is permanent, so /dev/gfxfb shows `g_registered_display` for the rest of the run
 static recording_display g_registered_display;
 static recording_display g_refused_display;
@@ -4629,6 +5349,23 @@ TEST(gfxfb, present_done_ends_only_held_presents_of_the_shown_display) {
 
     RUN_ELEVATED(gfxfb::present_done(&g_registered_display, 1, latched));
     EXPECT_TRUE(reads_before_deadline(file, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+// `gfxfb::output_changed` reaches /dev/gfxfb only for its display and an output below the display's count, so it drops
+// a report of another display and of an output at or past the count
+TEST(gfxfb, output_changed_reports_only_outputs_of_the_shown_display) {
+    fs::file* file = fs::open("/dev/gfxfb", fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    RUN_ELEVATED(gfxfb::output_changed(&g_refused_display, 1));
+    EXPECT_EQ(poll_file(file), static_cast<uint32_t>(0));
+    RUN_ELEVATED(gfxfb::output_changed(&g_registered_display, recording_display::OUTPUTS));
+    EXPECT_EQ(poll_file(file), static_cast<uint32_t>(0));
+
+    RUN_ELEVATED(gfxfb::output_changed(&g_registered_display, 1));
+    EXPECT_TRUE(reads_output_event(file, 1));
 
     ASSERT_TRUE(closes_before_deadline(file));
 }

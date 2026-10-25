@@ -32,9 +32,6 @@ constexpr uint8_t  DRIVER_RED_SHIFT   = 16;
 constexpr uint8_t  DRIVER_GREEN_SHIFT = 8;
 constexpr uint8_t  DRIVER_BLUE_SHIFT  = 0;
 
-// What `find_primary` returns for a display with no output lit
-constexpr uint32_t NO_OUTPUT = 0xFFFFFFFF;
-
 // What `take_handle` returns when every handle of a client is in use
 constexpr uint32_t NO_HANDLE = 0;
 
@@ -210,13 +207,26 @@ static gfxfb_event present_event(uint32_t output, uint32_t handle, const present
     };
 }
 
+// The event naming `output` as changed, which carries nothing else
+static gfxfb_event output_event(uint32_t output) {
+    return {
+        .type         = GFXFB_EVENT_OUTPUT,
+        .output       = output,
+        .status       = 0,
+        .handle       = 0,
+        .frame        = 0,
+        .timestamp_ns = 0,
+    };
+}
+
 // True while `owner` holds an unread event of its present on `output`
 static bool has_unread_present_event(client& owner, uint32_t output) {
     bool found = false;
 
     sync::irq_state state = sync::spin_lock_irqsave(owner.events_lock);
     for (uint32_t i = 0; i < owner.event_count && !found; i++) {
-        found = owner.events[(owner.first_event + i) % CLIENT_EVENTS_MAX].output == output;
+        const gfxfb_event& event = owner.events[(owner.first_event + i) % CLIENT_EVENTS_MAX];
+        found = event.type == GFXFB_EVENT_PRESENT && event.output == output;
     }
 
     sync::spin_unlock_irqrestore(owner.events_lock, state);
@@ -224,12 +234,33 @@ static bool has_unread_present_event(client& owner, uint32_t output) {
     return found;
 }
 
-// Appends `event` to `owner`'s events, which always have room, since an output holds one present at a time and a
-// present fails while its client holds the event of the last one on its output
+// Appends a present's end, `event`, to `owner`'s events, which always have room: a client holds at most one present
+// event and one output event per output, since a present fails while its client holds the last one's event there
 static void queue_event(client& owner, const gfxfb_event& event) {
     sync::irq_state state = sync::spin_lock_irqsave(owner.events_lock);
     owner.events[(owner.first_event + owner.event_count) % CLIENT_EVENTS_MAX] = event;
     owner.event_count++;
+    sync::spin_unlock_irqrestore(owner.events_lock, state);
+}
+
+// Appends an output event for `output` to `owner`'s events, dropping the one `owner` holds for `output`, so a client
+// holds at most one output event per output and reads it after the ends of that output's earlier presents
+static void queue_output_event(client& owner, uint32_t output) {
+    sync::irq_state state = sync::spin_lock_irqsave(owner.events_lock);
+
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < owner.event_count; i++) {
+        const gfxfb_event& event = owner.events[(owner.first_event + i) % CLIENT_EVENTS_MAX];
+        bool is_replaced = event.type == GFXFB_EVENT_OUTPUT && event.output == output;
+        if (!is_replaced) {
+            owner.events[(owner.first_event + kept) % CLIENT_EVENTS_MAX] = event;
+            kept++;
+        }
+    }
+
+    owner.events[(owner.first_event + kept) % CLIENT_EVENTS_MAX] = output_event(output);
+    owner.event_count = kept + 1;
+
     sync::spin_unlock_irqrestore(owner.events_lock, state);
 }
 
@@ -252,6 +283,7 @@ int32_t boot_display::read_output(uint32_t output, output_state& out) {
     }
 
     out.lit = true;
+    out.relighting = false;
     out.boot_output = true;
     out.cursor_max_width = 0;
     out.cursor_max_height = 0;
@@ -276,17 +308,17 @@ int32_t boot_display::flush(uint32_t, const gfxfb_rect*, uint32_t) {
 
 gfxfb_node::gfxfb_node(const char* name, const boot_framebuffer& boot_fb)
     : fs::node(fs::node_type::char_device, nullptr, name), m_boot_display(boot_fb) {
-    init_locks();
+    init_locks_and_client_list();
     show_from_start(&m_boot_display);
 }
 
 gfxfb_node::gfxfb_node(const char* name, display* driver_display)
     : fs::node(fs::node_type::char_device, nullptr, name) {
-    init_locks();
+    init_locks_and_client_list();
     show_from_start(driver_display);
 }
 
-void gfxfb_node::init_locks() {
+void gfxfb_node::init_locks_and_client_list() {
     m_clients_lock.init();
     for (sync::mutex& lock : m_present_locks) {
         lock.init();
@@ -297,6 +329,7 @@ void gfxfb_node::init_locks() {
     }
 
     m_outputs_lock = sync::SPINLOCK_INIT;
+    m_clients.init();
 }
 
 int32_t gfxfb_node::register_display(display* driver_display) {
@@ -324,8 +357,8 @@ int32_t gfxfb_node::register_display(display* driver_display) {
     return OK;
 }
 
-// Shows `shown_display` with `primary` as its primary output and each lit output showing its recorded base buffer, or
-// with neither for NO_OUTPUT. Returns ERR_NO_MEMORY, showing nothing new, when a base buffer cannot be recorded
+// Shows `shown_display` with each lit output showing its base buffer, and `primary` as the primary output when it has
+// one, or with neither for NO_OUTPUT. Returns ERR_NO_MEMORY, showing nothing new, when a base buffer cannot be recorded
 int32_t gfxfb_node::show(display* shown_display, uint32_t primary) {
     uint32_t count = primary == NO_OUTPUT ? 0 : clamped_output_count(*shown_display);
     buffer* bases[GFXFB_OUTPUTS_MAX] = {};
@@ -348,7 +381,8 @@ int32_t gfxfb_node::show(display* shown_display, uint32_t primary) {
         }
     }
 
-    // Unlocked, since gfxfb shows a display only before any program opens the node, so no present can be in flight
+    // Unlocked, since gfxfb shows a display only before any program opens the node and before the display reports an
+    // output, so no present or report can be in flight
     for (uint32_t i = 0; i < GFXFB_OUTPUTS_MAX; i++) {
         rc::strong_ref<buffer_record> base;
         if (fresh[i]) {
@@ -360,10 +394,10 @@ int32_t gfxfb_node::show(display* shown_display, uint32_t primary) {
         m_outputs[i].base = base;
     }
 
+    bool has_primary = primary != NO_OUTPUT && m_outputs[primary].base;
+    m_primary = has_primary ? primary : NO_OUTPUT;
+    m_size = has_primary ? buffer_bytes(m_outputs[primary].base->layout()) : 0;
     m_display = shown_display;
-    m_primary = primary;
-    m_primary_record = primary == NO_OUTPUT ? rc::strong_ref<buffer_record>() : m_outputs[primary].base;
-    m_size = m_primary_record ? buffer_bytes(m_primary_record->layout()) : 0;
 
     return OK;
 }
@@ -384,6 +418,11 @@ int32_t gfxfb_node::open(fs::file* f, uint32_t) {
 
     owner->events_lock = sync::SPINLOCK_INIT;
     owner->event_waiters.init();
+
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    m_clients.push_back(owner);
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
+
     f->set_private_data(owner);
     m_was_opened.store_relaxed(true);
 
@@ -411,6 +450,11 @@ int32_t gfxfb_node::on_close(fs::file* f) {
         m_control_taken = false;
         sync::mutex_unlock(m_clients_lock);
     }
+
+    // Off the list before the free, so no output change queues an event in freed memory
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    m_clients.remove(closing);
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
 
     heap::kfree_delete(closing);
 
@@ -539,16 +583,40 @@ int32_t gfxfb_node::ioctl(fs::file* f, uint32_t cmd, uint64_t arg) {
     return fs::ERR_NOSYS;
 }
 
+// The primary output's index, NO_OUTPUT while the node has none
+uint32_t gfxfb_node::primary_output() {
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    uint32_t primary = m_primary;
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
+
+    return primary;
+}
+
+// The primary output's recorded base buffer, null while the node has no primary output or the primary output relights
+rc::strong_ref<buffer_record> gfxfb_node::primary_base() {
+    rc::strong_ref<buffer_record> found;
+
+    sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    if (m_primary != NO_OUTPUT) {
+        found = m_outputs[m_primary].base;
+    }
+
+    sync::spin_unlock_irqrestore(m_outputs_lock, state);
+
+    return found;
+}
+
 int32_t gfxfb_node::get_info(uint64_t info_addr) {
     if (info_addr == 0) {
         return fs::ERR_INVAL;
     }
 
-    if (!m_primary_record) {
+    rc::strong_ref<buffer_record> primary = primary_base();
+    if (!primary) {
         return fs::ERR_AGAIN;
     }
 
-    const buffer& base = m_primary_record->layout();
+    const buffer& base = primary->layout();
 
     gfxfb_info info{};
     info.width = base.width;
@@ -595,7 +663,7 @@ int32_t gfxfb_node::get_output(uint64_t info_addr) {
         return to_fs_error(rc);
     }
 
-    bool is_primary = m_primary_record && info.output == m_primary;
+    bool is_primary = info.output == primary_output();
 
     info.output_count = m_display->output_count();
     info.flags = (state.lit ? GFXFB_OUTPUT_LIT : 0) | (is_primary ? GFXFB_OUTPUT_PRIMARY : 0);
@@ -635,20 +703,29 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
         return fs::ERR_IO;
     }
 
-    if (!m_primary_record) {
-        return fs::ERR_AGAIN;
-    }
-
     // While the primary shows a created buffer and holds no present of the base buffer, a flush reaches no screen, so
     // it leaves the display free for presents, and the base buffer's next present passes the display no region
+    uint32_t primary = NO_OUTPUT;
+    rc::strong_ref<buffer_record> primary_record;
+    bool reaches_screen = false;
+
     sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
-    output_records& primary = m_outputs[m_primary];
-    bool reaches_screen = primary.shown == primary.base || primary.queued == primary.base;
-    if (!reaches_screen) {
-        primary.base_stale = true;
+    if (m_primary != NO_OUTPUT && m_outputs[m_primary].base) {
+        output_records& records = m_outputs[m_primary];
+        primary = m_primary;
+        primary_record = records.base;
+        reaches_screen = records.shown == records.base || records.queued == records.base;
+        if (!reaches_screen) {
+            records.base_stale = true;
+        }
     }
 
     sync::spin_unlock_irqrestore(m_outputs_lock, state);
+
+    // No primary output, or a relighting one, fails the flush with nothing marked stale
+    if (!primary_record) {
+        return fs::ERR_AGAIN;
+    }
 
     if (!reaches_screen) {
         return fs::OK;
@@ -675,13 +752,13 @@ int32_t gfxfb_node::flush(uint64_t args_addr) {
         for (uint32_t i = 0; i < batch_count; i++) {
             gfxfb_rect rect = batch[i];
 
-            if (clip_rect_to_buffer(rect, m_primary_record->layout())) {
+            if (clip_rect_to_buffer(rect, primary_record->layout())) {
                 batch[kept++] = rect;
             }
         }
 
         if (kept > 0) {
-            rc = m_display->flush(m_primary, batch, kept);
+            rc = m_display->flush(primary, batch, kept);
             if (rc != OK) {
                 mark_failed_on_device_error(rc);
                 return to_fs_error(rc);
@@ -1039,6 +1116,99 @@ __PRIVILEGED_CODE void gfxfb_node::present_done(uint32_t output, const present_r
     sync::spin_unlock_irqrestore(m_outputs_lock, state);
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void gfxfb_node::output_changed(uint32_t output) {
+    if (output >= clamped_output_count(*m_display)) {
+        log::error("gfxfb: dropped a change of output %u, which the display does not have", output);
+        return;
+    }
+
+    output_state state = {};
+    bool is_read = m_display->read_output(output, state) == OK;
+    bool is_lit = is_read && state.lit;
+    bool is_relighting = is_read && !state.lit && state.relighting;
+    buffer* lit_base = is_lit ? m_display->base_buffer(output) : nullptr;
+
+    // Allocated before the spinlock, as allocating may sleep, and freed unused unless the output lit with a new base
+    // buffer on a display that has not failed
+    buffer_record* fresh = lit_base ? heap::kalloc_new<buffer_record>(m_display) : nullptr;
+
+    rc::strong_ref<buffer_record> dropped_base;
+    rc::strong_ref<buffer_record> dropped_shown;
+
+    sync::irq_state irq = sync::spin_lock_irqsave(m_outputs_lock);
+    if (m_display_failed) {
+        sync::spin_unlock_irqrestore(m_outputs_lock, irq);
+        heap::kfree_delete(fresh);
+        return;
+    }
+
+    // A report repeating a lit output's base buffer keeps its record, so the buffer never has two records to release
+    output_records& records = m_outputs[output];
+    bool keeps_base = lit_base && records.base && records.base->display_buffer() == lit_base;
+    bool lacks_record = false;
+    if (!keeps_base) {
+        dropped_base.swap(records.base);
+        records.base_stale = false;
+
+        if (fresh) {
+            fresh->take(lit_base);
+            records.base = rc::strong_ref<buffer_record>::adopt(fresh);
+            fresh = nullptr;
+        }
+
+        // A lit output keeps showing a created buffer that latched before its report, since its hardware still reads it
+        bool shows_created = is_lit && records.shown && records.shown != dropped_base;
+        if (!shows_created) {
+            dropped_shown.swap(records.shown);
+            records.shown = records.base;
+        }
+
+        lacks_record = lit_base && !records.base;
+    }
+
+    uint32_t gaining = NO_OUTPUT;
+    if (m_primary == output && !records.base && !is_relighting) {
+        m_primary = lowest_output_with_base();
+        gaining = m_primary;
+    } else if (m_primary == NO_OUTPUT && records.base) {
+        m_primary = output;
+    }
+
+    bool has_primary_base = m_primary != NO_OUTPUT && m_outputs[m_primary].base;
+    m_size = has_primary_base ? buffer_bytes(m_outputs[m_primary].base->layout()) : 0;
+
+    for (client& listener : m_clients) {
+        queue_output_event(listener, output);
+        if (gaining != NO_OUTPUT) {
+            queue_output_event(listener, gaining);
+        }
+
+        sync::wake_all(listener.event_waiters);
+    }
+
+    sync::spin_unlock_irqrestore(m_outputs_lock, irq);
+
+    if (lacks_record) {
+        log::error("gfxfb: no memory to record the base buffer of output %u, so it counts as dark", output);
+    }
+
+    heap::kfree_delete(fresh);
+}
+
+// The output with the lowest index that has a base buffer recorded, or NO_OUTPUT. The caller holds `m_outputs_lock`
+uint32_t gfxfb_node::lowest_output_with_base() const {
+    for (uint32_t i = 0; i < GFXFB_OUTPUTS_MAX; i++) {
+        if (m_outputs[i].base) {
+            return i;
+        }
+    }
+
+    return NO_OUTPUT;
+}
+
 // True once a call of the shown display returned ERR_DEVICE or one of its presents ended failed
 bool gfxfb_node::has_display_failed() {
     sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
@@ -1144,12 +1314,14 @@ rc::strong_ref<buffer_record> gfxfb_node::find_buffer_at(
     uint64_t handle = offset / BUFFER_MAP_STRIDE;
     offset_in_buffer = offset % BUFFER_MAP_STRIDE;
 
+    if (handle == 0) {
+        return primary_base();
+    }
+
     rc::strong_ref<buffer_record> found;
 
     sync::mutex_lock(m_clients_lock);
-    if (handle == 0) {
-        found = m_primary_record;
-    } else if (handle <= GFXFB_CLIENT_BUFFERS_MAX) {
+    if (handle <= GFXFB_CLIENT_BUFFERS_MAX) {
         found = owner.buffers[handle - 1];
     }
 
@@ -1316,6 +1488,18 @@ __PRIVILEGED_CODE void present_done(display* driver_display, uint32_t output, co
     }
 
     g_node->present_done(output, result);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void output_changed(display* driver_display, uint32_t output) {
+    if (!g_node || !g_node->shows(driver_display)) {
+        log::error("gfxfb: dropped a change of output %u of a display /dev/gfxfb does not show", output);
+        return;
+    }
+
+    g_node->output_changed(output);
 }
 
 } // namespace gfxfb

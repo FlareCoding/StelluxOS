@@ -171,8 +171,8 @@ struct virtio_gpu_buffer : gfxfb::buffer {
  * queues each for the driver's task, which takes the RAM back from the
  * resource, drops the resource and frees the RAM once the device confirms
  * both, keeping the RAM for good otherwise, since the device may still read
- * it. gfxfb keeps a registered display's base buffer for the life of the
- * kernel, so only created buffers come back. `present()` copies a buffer's
+ * it. Since the driver reports no change of its scanout, gfxfb keeps its base
+ * buffer, so only created buffers come back. `present()` copies a buffer's
  * regions, or the whole buffer when gfxfb passes none, into its resource as
  * `flush()` does and, once the device has confirmed every copy, switches the
  * scanout to that resource when it shows another. The device has no vertical

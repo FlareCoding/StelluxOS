@@ -55,13 +55,14 @@ public:
      * unknown, no output is primary or the rate cannot be read. */
     virtual uint64_t refresh_millihertz() const = 0;
 
-    /* The descriptor that polls readable when the last present has ended,
-     * or -1 when no present is waiting for its end. */
+    /* The descriptor that polls readable when the last present has ended or
+     * an output changed, or -1 when no present is waiting for its end. */
     virtual int end_fd() const = 0;
 
     /* Reads the last present's end. Callers must first see end_fd() poll
-     * readable, since the read otherwise waits for that end, and a signal
-     * during the read leaves end_fd() set. */
+     * readable, since the read otherwise waits for an event, and a signal
+     * during the read, or an output event read in the end's place, leaves
+     * end_fd() set. */
     virtual void take_end() = 0;
 
     /* The vertical blanks presents missed since init, or -1 when the

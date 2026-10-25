@@ -390,6 +390,10 @@ void flip_presenter::take_end() {
         return;
     }
 
+    if (end.type != gfxfb::GFXFB_EVENT_PRESENT) {
+        return;
+    }
+
     m_present_pending = false;
 
     if (end.status != gfxfb::GFXFB_PRESENT_LATCHED) {

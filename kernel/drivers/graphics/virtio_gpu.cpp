@@ -627,7 +627,7 @@ int32_t virtio_gpu_driver::detach() {
     m_is_broken = true;
     reset_device();
 
-    // gfxfb keeps a registered display's base buffer for the life of the kernel
+    // gfxfb keeps a registered display's base buffer for good, since the driver reports no change of its scanout
     if (!m_is_registered) {
         RUN_ELEVATED(dma::free_pages(m_base_buffer.backing));
     }
@@ -885,6 +885,7 @@ int32_t virtio_gpu_driver::read_output(uint32_t output, gfxfb::output_state& out
 
     // The device does not say which scanout the boot firmware lit
     out.lit = output == m_scanout;
+    out.relighting = false;
     out.boot_output = false;
 
     // Every scanout has a cursor, drawn from the cursor resource
