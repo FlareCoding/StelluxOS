@@ -211,6 +211,8 @@ int flip_presenter::init() {
     m_width = primary.current.width;
     m_height = primary.current.height;
     m_refresh_millihertz = primary.current.refresh_millihertz;
+    m_cursor_max_width = primary.cursor_max_width;
+    m_cursor_max_height = primary.cursor_max_height;
 
     for (display_buffer& buffer : m_buffers) {
         rc = create_buffer(buffer);
@@ -420,4 +422,63 @@ void flip_presenter::count_missed_frames(uint64_t frame, uint64_t latch_ns) {
     m_has_latch = true;
     m_latch_frame = frame;
     m_latch_ns = latch_ns;
+}
+
+bool flip_presenter::set_cursor(const cursor_picture& picture) {
+    bool fits = picture.width <= m_cursor_max_width && picture.height <= m_cursor_max_height;
+    if (!has_cursor() || !fits) {
+        return false;
+    }
+
+    gfxfb::gfxfb_cursor_args args = {};
+    args.output = m_output;
+    args.width = picture.width;
+    args.height = picture.height;
+    args.hot_x = picture.hot_x;
+    args.hot_y = picture.hot_y;
+    args.pixels = reinterpret_cast<uint64_t>(picture.pixels);
+
+    bool taken = cursor_call(gfxfb::GFXFB_SET_CURSOR, &args, "set");
+    if (taken) {
+        m_cursor_failing = false;
+    }
+
+    return taken;
+}
+
+void flip_presenter::hide_cursor() {
+    if (!has_cursor()) {
+        return;
+    }
+
+    gfxfb::gfxfb_cursor_args args = {};
+    args.output = m_output;
+
+    cursor_call(gfxfb::GFXFB_SET_CURSOR, &args, "hide");
+}
+
+bool flip_presenter::move_cursor(int32_t x, int32_t y) {
+    if (!has_cursor()) {
+        return false;
+    }
+
+    gfxfb::gfxfb_cursor_position position = {};
+    position.output = m_output;
+    position.x = x;
+    position.y = y;
+
+    return cursor_call(gfxfb::GFXFB_MOVE_CURSOR, &position, "move");
+}
+
+/* Makes the cursor ioctl `request` and returns whether the display took it,
+ * naming `call` in a line at a failure while `m_cursor_failing` is clear */
+bool flip_presenter::cursor_call(uint32_t request, void* args, const char* call) {
+    bool failed = ioctl(m_fd, request, args) < 0;
+    if (failed && !m_cursor_failing) {
+        printf("stlxdm: display cursor %s failed: %s, pointer drawn into frames\r\n",
+               call, strerror(errno));
+        m_cursor_failing = true;
+    }
+
+    return !failed;
 }

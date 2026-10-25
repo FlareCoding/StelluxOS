@@ -72,7 +72,7 @@ struct dm_window {
     int32_t  current = -1;      /* buffers index on screen */
     uint32_t sent_serial = 0;
     uint32_t acked_serial = 0;
-    uint32_t cursor = 0;        /* swp_cursor, drawn once the sprite lands */
+    uint32_t cursor = 0;        /* swp_cursor, shown once the sprite lands */
     bool     mapped = false;    /* first commit latched */
     uint32_t min_w = 0, min_h = 0;  /* client size hints, 0 unset */
     uint32_t max_w = 0, max_h = 0;
@@ -137,6 +137,19 @@ public:
     /* Binds the protocol socket and spawns the config's autostart
      * entries, the moment clients may exist. Returns 0 or -1. */
     int serve();
+
+    /* Shows the pointer after the splash, which has none, on the primary
+     * output's hardware cursor when it can show the shape, else in the
+     * frames, and prints which. */
+    void show_cursor();
+
+    /* Whether a pointer move waits for the hardware cursor. */
+    bool cursor_move_pending() const { return m_cursor_move_pending; }
+
+    /* Sends the hardware cursor the waiting move, at the pointer's
+     * latest position: one call however many motions came. A refused
+     * move puts the pointer back into the frames. */
+    void flush_cursor();
 
     void shutdown();
 
@@ -296,13 +309,22 @@ private:
     std::unique_ptr<dm_power> m_power;
     bool m_power_was_active = false;
 
-    /* The pointer sprite: position, active shape, damage on change */
+    /* The pointer sprite: position, active shape, and whether the
+     * hardware cursor shows it, in which case a move repaints nothing */
     cursor m_cursor;
     int32_t m_cursor_x = 0;
     int32_t m_cursor_y = 0;
     uint32_t m_cursor_shape = SWP_CURSOR_ARROW;
+    bool m_cursor_on_hardware = false;
+
+    /* The pixels the hardware cursor shows while it shows the pointer,
+     * else null, and whether a move waits for `flush_cursor()` */
+    const uint32_t* m_cursor_picture = nullptr;
+    bool m_cursor_move_pending = false;
 
     void move_cursor(int32_t x, int32_t y, uint32_t shape);
+    bool show_hardware_cursor();
+    void damage_cursor();
 
     /* Title drag and close-control hover, decoration hit zones */
     dm_window* m_drag = nullptr;
