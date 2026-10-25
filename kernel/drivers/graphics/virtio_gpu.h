@@ -15,6 +15,7 @@ namespace drivers::virtio {
 constexpr uint16_t VIRTIO_DEV_GPU = VIRTIO_DEV_MODERN_BASE + 16;
 
 constexpr uint16_t VIRTIO_GPU_QUEUE_CONTROL = 0;
+constexpr uint16_t VIRTIO_GPU_QUEUE_CURSOR  = 1;
 
 constexpr uint32_t VIRTIO_GPU_CMD_GET_DISPLAY_INFO        = 0x0100;
 constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_CREATE_2D      = 0x0101;
@@ -25,11 +26,15 @@ constexpr uint32_t VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D     = 0x0105;
 constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING = 0x0106;
 constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING = 0x0107;
 
+constexpr uint32_t VIRTIO_GPU_CMD_UPDATE_CURSOR = 0x0300;
+constexpr uint32_t VIRTIO_GPU_CMD_MOVE_CURSOR   = 0x0301;
+
 constexpr uint32_t VIRTIO_GPU_RESP_OK_NODATA         = 0x1100;
 constexpr uint32_t VIRTIO_GPU_RESP_OK_DISPLAY_INFO   = 0x1101;
 constexpr uint32_t VIRTIO_GPU_RESP_ERR_UNSPEC        = 0x1200;
 constexpr uint32_t VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY = 0x1201;
 
+constexpr uint32_t VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM = 1;
 constexpr uint32_t VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2;
 
 constexpr uint32_t VIRTIO_GPU_MAX_SCANOUTS = 16;
@@ -127,6 +132,24 @@ struct virtio_gpu_resource_flush {
     uint32_t            padding;
 } __attribute__((packed));
 
+// The cursor picture's top left corner on a scanout, each coordinate a signed 32-bit value in an unsigned field
+struct virtio_gpu_cursor_pos {
+    uint32_t scanout_id;
+    uint32_t x;
+    uint32_t y;
+    uint32_t padding;
+} __attribute__((packed));
+
+// Both cursor queue commands, which the device answers by handing them back with no response
+struct virtio_gpu_update_cursor {
+    virtio_gpu_ctrl_hdr   hdr;
+    virtio_gpu_cursor_pos pos;
+    uint32_t              resource_id; // 0 hides the cursor
+    uint32_t              hot_x;
+    uint32_t              hot_y;
+    uint32_t              padding;
+} __attribute__((packed));
+
 } // namespace drivers::virtio
 
 namespace drivers {
@@ -162,14 +185,31 @@ struct virtio_gpu_buffer : gfxfb::buffer {
  * after its submission, so `present()` can return past that deadline by up to
  * a refresh period for each batch that goes out within a refresh period of it
  * or later, as when its task waited for the CPU, instead of failing a device
- * that answers within a refresh period. Once a batch goes unanswered, which
- * the driver logs once, or the driver detaches, every call that sends a
- * command fails with ERR_DEVICE, but a present whose batch went unanswered
- * returns OK and ends with GFXFB_PRESENT_FAILED, since the device may still
- * read its buffer. Before that, a command the device refuses fails its call
- * with ERR_REFUSED, logged unless the device ran out of memory, or with
- * ERR_NO_MEMORY when the device has no memory left for a new buffer's
+ * that answers within a refresh period. Once a batch or a cursor command goes
+ * unanswered, which the driver logs once, or the driver detaches, every call
+ * that sends a command fails with ERR_DEVICE, but a present whose batch went
+ * unanswered returns OK and ends with GFXFB_PRESENT_FAILED, since the device
+ * may still read its buffer. Before that, a command the device refuses fails
+ * its call with ERR_REFUSED, logged unless the device ran out of memory, or
+ * with ERR_NO_MEMORY when the device has no memory left for a new buffer's
  * resource.
+ *
+ * Every scanout has a hardware cursor of up to 64 by 64 pixels, drawn from the
+ * one cursor resource, which the driver shows on the lit scanout through
+ * commands on the device's cursor queue. `set_cursor()` pads the picture with
+ * transparent pixels into the resource's RAM, waits for the device to confirm
+ * the copy into the resource, then sends the cursor command. A hide sends only
+ * a cursor command naming no resource. `move_cursor()` sends the new position,
+ * only recording it while the cursor is hidden. The device answers a cursor
+ * command by handing it back with no response, so it can refuse only the
+ * picture's copy. The cursor command is due GFXFB_PRESENT_TIMEOUT_NS after the
+ * call takes the driver's lock and the copy a refresh period sooner, as a
+ * present's batches are, but each of the two counts as unanswered no sooner
+ * than a refresh period after its submission. So a cursor call returns within
+ * GFXFB_PRESENT_TIMEOUT_NS of taking the lock, or a refresh period after its
+ * last submission when its task waited for the CPU. Either way
+ * `move_cursor()`, whose one submission follows the lock, returns within
+ * GFXFB_PRESENT_TIMEOUT_NS of handing the device its command.
  */
 class virtio_gpu_driver : public virtio_pci_driver, public gfxfb::display {
 public:
@@ -199,9 +239,8 @@ public:
         uint32_t region_count
     ) override;
 
-    // The driver leaves every scanout's hardware cursor unused, as `read_output()` reports
-    int32_t set_cursor(uint32_t, const gfxfb::cursor_image&) override { return gfxfb::ERR_UNSUPPORTED; }
-    int32_t move_cursor(uint32_t, int32_t, int32_t) override { return gfxfb::ERR_UNSUPPORTED; }
+    int32_t set_cursor(uint32_t output, const gfxfb::cursor_image& image) override;
+    int32_t move_cursor(uint32_t output, int32_t x, int32_t y) override;
 
     void release_buffer(gfxfb::buffer* buf) override;
 
@@ -222,7 +261,7 @@ private:
                           uint32_t response_size, uint32_t* out_response_offset);
     int32_t run_batch(wait_mode mode);
     int32_t run_batch_until(wait_mode mode, uint64_t deadline_ns);
-    int32_t wait_for_batch(wait_mode mode, uint64_t deadline_ns);
+    int32_t wait_for_used(virtio::virtqueue& queue, uint32_t count, wait_mode mode, uint64_t deadline_ns);
 
     // For commands whose response is only a header
     template <typename T>
@@ -232,11 +271,15 @@ private:
 
     uint32_t read_scanout_count();
     int32_t query_display(uint32_t* out_scanout, uint32_t* out_width, uint32_t* out_height);
-    int32_t allocate_backing(virtio_gpu_buffer& buf, uint32_t width, uint32_t height);
-    int32_t create_resource(virtio_gpu_buffer& buf, wait_mode mode);
+    int32_t allocate_backing(virtio_gpu_buffer& buf, uint32_t width, uint32_t height, paging::page_flags_t access);
+    int32_t create_resource(virtio_gpu_buffer& buf, uint32_t format, wait_mode mode);
     int32_t destroy_resource(const virtio_gpu_buffer& buf);
     int32_t queue_set_scanout(uint32_t scanout, const virtio_gpu_buffer& buf);
     int32_t light_scanout(uint32_t scanout, uint32_t width, uint32_t height);
+    int32_t create_cursor_resource();
+    int32_t run_cursor_command(const virtio::virtio_gpu_update_cursor& command, uint64_t deadline_ns);
+    int32_t update_cursor(const gfxfb::cursor_image& image, uint64_t deadline_ns);
+    virtio::virtio_gpu_update_cursor cursor_command(uint32_t type, uint32_t hot_x, uint32_t hot_y) const;
     int32_t queue_rect_update(const virtio_gpu_buffer& buf, const gfxfb::gfxfb_rect& rect, uint64_t deadline_ns);
     int32_t show_buffer(const virtio_gpu_buffer& buf, const gfxfb::gfxfb_rect* regions, uint32_t count);
     void set_latch_timer();
@@ -245,8 +288,10 @@ private:
 
     virtio::virtqueue m_control_queue;
     uintptr_t m_control_notify = 0;
+    virtio::virtqueue m_cursor_queue;
+    uintptr_t m_cursor_notify = 0;
 
-    // A batch's requests and responses share this DMA page
+    // A batch's requests and responses share this DMA page, and a cursor command is staged at its start between batches
     dma::buffer m_command_page = {};
     uint32_t m_batch_bytes = 0;
     uint32_t m_batch_commands = 0;
@@ -258,17 +303,28 @@ private:
     uint64_t          m_lit_ns = 0;  // when the scanout was lit, the first of its refresh boundaries
     virtio_gpu_buffer m_base_buffer = {};
 
-    // Held across a batch's completion wait
+    // Held across a batch's or a cursor command's completion wait
     sync::mutex m_batch_lock;
     bool m_has_completion_interrupt = false;
     bool m_is_registered = false;
-    bool m_is_broken = false; // a batch timed out, so the device may still own the page
+    bool m_is_broken = false; // a batch or a cursor command timed out, so the device may still own the page
 
     // Read and advanced under `m_batch_lock` once the driver is attached
     uint32_t m_next_resource_id = 1;
 
     // The resource the lit scanout shows, read and written under `m_batch_lock` once the driver is attached
     uint32_t m_shown_resource_id = 0;
+
+    // The cursor resource, created at attach, whose RAM holds the last picture `set_cursor()` padded into it
+    virtio_gpu_buffer m_cursor_buffer = {};
+
+    // The lit scanout's cursor, read and written under `m_batch_lock`: the hotspot's last position in the scanout's
+    // pixels, and the hotspot in the picture shown while `m_is_cursor_shown`
+    int32_t  m_cursor_x = 0;
+    int32_t  m_cursor_y = 0;
+    uint32_t m_cursor_hot_x = 0;
+    uint32_t m_cursor_hot_y = 0;
+    bool     m_is_cursor_shown = false;
 
     // The latch of the last present the device confirmed, which `m_latch_timer` reports. Its callback reads them with
     // no lock, since they are set before the timer and gfxfb sends the scanout no present until their present has ended
