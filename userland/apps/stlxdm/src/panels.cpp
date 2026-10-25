@@ -2,7 +2,8 @@
  * straight into the backdrop rows it owns, so the toolkit repaints
  * only dirty widgets and compose needs no separate panel step. The
  * dock launches the config's pinned apps, and the top bar shows
- * system stats, the input latency, the clock, and network state.
+ * system stats, the input latency and missed frames, the clock, and
+ * network state.
  */
 #include "panels.hpp"
 
@@ -374,6 +375,10 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
     m_inp_last->s().main = ui::length::content();
     m_inp_last->set_color(conf.accent_color);
 
+    m_missed = left->add<ui::label>("missed frames --");
+    m_missed->s().main = ui::length::content();
+    m_missed->set_color(conf.accent_color);
+
     char text[64];
     format_clock(text, sizeof(text));
     m_clock = bar->add<ui::label>(text);
@@ -455,6 +460,7 @@ void dm_panels::shutdown() {
     m_net = nullptr;
     m_inp = nullptr;
     m_inp_last = nullptr;
+    m_missed = nullptr;
     m_hover_pin = -1;
     m_drawn_hover_pin = -1;
 
@@ -658,7 +664,8 @@ static uint32_t inp_color(uint32_t us, uint32_t accent) {
     return accent;
 }
 
-/* One readout: "<label> <ms>ms", or dashes while the window is empty */
+/* One readout: "<label> <ms>ms", or dashes while the window holds no
+ * latency sample */
 static void set_readout(ui::label* l, const char* label, bool valid,
                         uint32_t us, uint32_t accent) {
     char text[32];
@@ -680,4 +687,15 @@ void dm_panels::set_perf(const perf_snapshot& s) {
 
     set_readout(m_inp, "INP", s.valid, s.p95_us, m_conf->accent_color);
     set_readout(m_inp_last, "last", s.valid, s.last_us, m_conf->accent_color);
+
+    /* The bar shows dashes for a presenter that cannot count, rather
+     * than a 0 it never measured */
+    char text[32];
+    if (s.counts_missed_frames) {
+        snprintf(text, sizeof(text), "missed frames %u", s.missed_frames);
+    } else {
+        snprintf(text, sizeof(text), "missed frames --");
+    }
+
+    m_missed->set_text(text);
 }

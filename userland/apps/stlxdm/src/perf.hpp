@@ -10,26 +10,29 @@ constexpr uint32_t PERF_REFRESH_MS = 250;
 /* An input whose response never came is forgotten after this long */
 constexpr uint64_t PERF_INPUT_STALE_NS = 2000000000ull;
 
-/* What the bar shows after one refresh: the percentile over the
- * rolling window and the newest sample */
+/* What the bar shows after one refresh: the window's latency percentile
+ * and newest sample, `valid` if it holds one, and its missed frames */
 struct perf_snapshot {
     bool valid = false;
     uint32_t p95_us = 0;
     uint32_t last_us = 0;
+    bool counts_missed_frames = false;
+    uint32_t missed_frames = 0;
 };
 
-/* Measures the desktop's input to next paint latency: from the poll
- * wakeup that delivered an input to the present that shows its
- * consequence. A consequence is damage the desktop itself produced in
- * that wakeup, such as the cursor, a drag, or a focus change, or the
- * first commit from a client a key press reached. An input with no
- * consequence is dropped rather than charged to an unrelated frame
- * such as the clock. The one blind spot is a key the client ignores,
- * which its next unprompted repaint, a cursor blink for instance, is
- * taken to answer. Sampling costs one timestamp per presented
- * frame and refreshes run at a fixed cadence. Once the window drains
- * the monitor goes quiescent and asks for no wakeups until the next
- * input. */
+/* Measures the desktop's input to next paint latency and sums the
+ * frames presents missed, both over the rolling window of
+ * `PERF_WINDOW_MS`. The latency runs from the poll wakeup that
+ * delivered an input to the present that shows its consequence. A
+ * consequence is damage the desktop itself produced in that wakeup,
+ * such as the cursor, a drag, or a focus change, or the first commit
+ * from a client a key press reached. An input with no consequence is
+ * dropped rather than charged to an unrelated frame such as the clock.
+ * The one blind spot is a key the client ignores, which its next
+ * unprompted repaint, a cursor blink for instance, is taken to answer.
+ * Sampling costs one timestamp per presented frame and refreshes run at
+ * a fixed cadence. Once the window drains the monitor goes quiescent
+ * and asks for no wakeups until the next input or missed frame. */
 class perf_monitor {
 public:
     /* An input that may paint. Only one waits at a time: the oldest
@@ -52,6 +55,11 @@ public:
     /* A frame was presented */
     void note_present(uint64_t now_ns);
 
+    /* Takes the presenter's missed frames since init, -1 if it cannot
+     * count. Each increase after the first total is stamped `now_ns` and
+     * counts in each refresh up to `PERF_WINDOW_MS` later. */
+    void note_missed_frames(uint64_t now_ns, int64_t total);
+
     /* Nanoseconds until the next refresh, -1 when nothing will change */
     int64_t timeout_ns(uint64_t now_ns) const;
 
@@ -65,11 +73,24 @@ private:
         uint32_t us = 0;
     };
 
+    /* Frames missed between two totals taken, stamped with the later
+     * one's time */
+    struct missed_sample {
+        uint64_t at_ns = 0;
+        uint32_t frames = 0;
+    };
+
     static constexpr uint32_t RING = 1024;
 
     sample m_ring[RING];
     uint32_t m_head = 0;
     uint32_t m_count = 0;
+
+    missed_sample m_missed_ring[RING];
+    uint32_t m_missed_head = 0;
+    uint32_t m_missed_sample_count = 0;
+    uint64_t m_missed_total = 0;
+    bool m_counts_missed_frames = false;
 
     uint64_t m_pending_ns = 0;
     uint32_t m_seq = 0;

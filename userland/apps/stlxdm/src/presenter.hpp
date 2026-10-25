@@ -45,6 +45,18 @@ public:
      * during the read leaves end_fd() set. */
     virtual void take_end() = 0;
 
+    /* The vertical blanks presents missed since init, or -1 when the
+     * backend cannot tell. A present is due at the first vertical blank
+     * more than half a refresh period after both acquire() handing out
+     * its frame's target and the last latch read, so a frame begun just
+     * before a vertical blank is not charged with it. The present misses
+     * each vertical blank before its own latch from the due one on, and
+     * none when the display refused it or when its frame count or time is
+     * not past the last latch's. After init, after a present that ended
+     * without latching or after an end that could not be read, no latch
+     * is kept to count from, so the next latch counts no misses. */
+    virtual int64_t missed_frames() const = 0;
+
     /* The buffer to compose the next frame into. */
     virtual target acquire() = 0;
 
@@ -73,6 +85,9 @@ public:
     /* A present ends within its call, so none waits for its end. */
     int end_fd() const override { return -1; }
     void take_end() override {}
+
+    /* The framebuffer reports no vertical blanks to count. */
+    int64_t missed_frames() const override { return -1; }
 
     target acquire() override;
     void present(const damage_list& damage) override;
@@ -118,6 +133,7 @@ public:
     uint64_t refresh_millihertz() const override { return m_refresh_millihertz; }
     int end_fd() const override { return m_present_pending ? m_fd : -1; }
     void take_end() override;
+    int64_t missed_frames() const override { return static_cast<int64_t>(m_missed_frames); }
     target acquire() override;
     void present(const damage_list& damage) override;
 
@@ -133,6 +149,7 @@ private:
 
     int create_buffer(display_buffer& buffer);
     bool present_buffer(const display_buffer& buffer, const damage_list& changed);
+    void count_missed_frames(uint64_t frame, uint64_t latch_ns);
 
     int            m_fd = -1;
     uint32_t       m_output = 0;
@@ -150,6 +167,16 @@ private:
     bool           m_first_acquire = true;
     bool           m_present_pending = false;
     bool           m_last_present_failed = false;
+
+    /* When acquire() handed out the target of the frame being composed and
+     * of the pending one, whether a latch is kept to count from and its
+     * frame count and time, and the vertical blanks missed since init. */
+    uint64_t       m_frame_start_ns = 0;
+    uint64_t       m_pending_frame_start_ns = 0;
+    bool           m_has_latch = false;
+    uint64_t       m_latch_frame = 0;
+    uint64_t       m_latch_ns = 0;
+    uint64_t       m_missed_frames = 0;
 };
 
 #endif

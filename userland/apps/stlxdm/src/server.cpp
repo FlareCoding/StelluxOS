@@ -263,9 +263,12 @@ void server::perf_settle() {
 }
 
 void server::perf_tick(uint64_t now_ns) {
+    m_perf.note_missed_frames(now_ns, m_presenter->missed_frames());
+
     perf_snapshot snap;
     if (m_perf.tick(now_ns, snap)) {
         m_panels->set_perf(snap);
+        m_perf_readout = snap;
     }
 }
 
@@ -277,6 +280,10 @@ void server::reload_config() {
     }
 
     adopt_conf_state(std::move(state));
+
+    /* The new bar shows the last readout at once, since a quiescent perf
+     * monitor refreshes nothing until the next input or missed frame */
+    m_panels->set_perf(m_perf_readout);
 
     m_damage.add_full();
     printf("stlxdm: config reloaded\r\n");

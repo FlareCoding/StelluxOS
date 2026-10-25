@@ -187,10 +187,12 @@ public:
     void route_pointer(int32_t x, int32_t y, uint16_t buttons,
                        uint16_t changed, int16_t wheel);
 
-    /* The input latency readout. The loop hands over the timestamp it
-     * already took for the wakeup, the routers stamp the inputs that
-     * may paint, settle judges the desktop's own reaction once routing
-     * is done, and the tick runs the refresh. */
+    /* The input latency and missed frames readouts. The loop hands over
+     * the timestamp it already took for the wakeup, the routers stamp
+     * the inputs that may paint, settle judges the desktop's own
+     * reaction once routing is done, and the tick, run once the loop has
+     * read any present end the wakeup delivered, takes the presenter's
+     * missed frames and runs the refresh. */
     void perf_wake(uint64_t now_ns);
     void perf_settle();
     int64_t perf_timeout_ns(uint64_t now_ns) const { return m_perf.timeout_ns(now_ns); }
@@ -253,10 +255,12 @@ private:
      * panels painted into their rows. Exposed pixels blit from here. */
     stlxgfx_surface_t* m_backdrop = nullptr;
 
-    /* The desktop's own input to paint latency meter, the arrival time
-     * of whatever input the current wakeup delivered, and the damage
-     * state before routing so the desktop's own reaction stands out */
+    /* The desktop's own input to paint latency and missed frames meter,
+     * the readout the bar last took, the arrival time of whatever input
+     * the current wakeup delivered, and the damage state before routing
+     * so the desktop's own reaction stands out */
     perf_monitor m_perf;
+    perf_snapshot m_perf_readout;
     uint64_t m_wake_ns = 0;
     uint32_t m_wake_damage = 0;
     bool m_wake_damage_full = false;
