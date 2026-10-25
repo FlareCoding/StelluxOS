@@ -3,6 +3,7 @@
 
 #include <stlx/input.h>
 
+#include <cstdio>
 #include <cstring>
 
 constexpr uint8_t HID_SHIFT =
@@ -246,22 +247,87 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
     send_event(m_focus, rec);
 }
 
-/* Damages the sprite's old and new bounds so both repaint */
+void server::show_cursor() {
+    m_cursor_picture = nullptr;
+    m_cursor_on_hardware = show_hardware_cursor();
+    m_cursor_move_pending = false;
+
+    damage_cursor();
+    printf("stlxdm: pointer %s\r\n",
+           m_cursor_on_hardware ? "on the display's hardware cursor" : "drawn into frames");
+}
+
+void server::flush_cursor() {
+    if (!m_cursor_move_pending) {
+        return;
+    }
+
+    m_cursor_move_pending = false;
+
+    if (!m_presenter->move_cursor(m_cursor_x, m_cursor_y)) {
+        m_presenter->hide_cursor();
+        m_cursor_on_hardware = false;
+        m_cursor_picture = nullptr;
+        damage_cursor();
+    }
+}
+
+/* After a failed cursor call the frames draw the pointer, and the next
+ * shape change tries the hardware cursor again */
 void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
     if (x == m_cursor_x && y == m_cursor_y && shape == m_cursor_shape) {
         return;
     }
 
-    int32_t bx, by, bw, bh;
-    m_cursor.bounds(m_cursor_shape, m_cursor_x, m_cursor_y,
-                    &bx, &by, &bw, &bh);
-    m_damage.add(bx, by, bw, bh);
-    m_cursor.bounds(shape, x, y, &bx, &by, &bw, &bh);
-    m_damage.add(bx, by, bw, bh);
+    bool reshaped = shape != m_cursor_shape;
+    if (!m_cursor_on_hardware) {
+        damage_cursor();
+    }
 
     m_cursor_x = x;
     m_cursor_y = y;
     m_cursor_shape = shape;
+
+    if (reshaped) {
+        m_cursor_on_hardware = show_hardware_cursor();
+        m_cursor_move_pending = false;
+    } else if (m_cursor_on_hardware) {
+        m_cursor_move_pending = true;
+    }
+
+    if (!m_cursor_on_hardware) {
+        damage_cursor();
+    }
+}
+
+/* Shows the pointer's shape on the hardware cursor, sending its picture
+ * unless it shows already, or hides the cursor and returns false */
+bool server::show_hardware_cursor() {
+    presenter::cursor_picture picture;
+    bool has_picture = m_cursor.picture(m_cursor_shape, picture);
+    bool showing = has_picture && picture.pixels == m_cursor_picture;
+
+    bool shown = has_picture && m_presenter->move_cursor(m_cursor_x, m_cursor_y);
+    if (shown && !showing) {
+        shown = m_presenter->set_cursor(picture);
+    }
+
+    if (!shown) {
+        m_presenter->hide_cursor();
+    }
+
+    m_cursor_picture = shown ? picture.pixels : nullptr;
+
+    return shown;
+}
+
+/* Marks the sprite's bounds at the pointer's position and shape for the
+ * next frame to repaint */
+void server::damage_cursor() {
+    int32_t bx, by, bw, bh;
+    m_cursor.bounds(m_cursor_shape, m_cursor_x, m_cursor_y,
+                    &bx, &by, &bw, &bh);
+    m_damage.add(bx, by, bw, bh);
 }
 
 void server::damage_outline() {

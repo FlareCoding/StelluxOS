@@ -25,14 +25,15 @@ struct perf_snapshot {
  * `PERF_WINDOW_MS`. The latency runs from the poll wakeup that
  * delivered an input to the present that shows its consequence. A
  * consequence is damage the desktop itself produced in that wakeup,
- * such as the cursor, a drag, or a focus change, or the first commit
- * from a client a key press reached. An input with no consequence is
- * dropped rather than charged to an unrelated frame such as the clock.
- * The one blind spot is a key the client ignores, which its next
- * unprompted repaint, a cursor blink for instance, is taken to answer.
- * Sampling costs one timestamp per presented frame and refreshes run at
- * a fixed cadence. Once the window drains the monitor goes quiescent
- * and asks for no wakeups until the next input or missed frame. */
+ * such as the pointer drawn into frames, a drag, or a focus change, or
+ * the first commit from a client a key press reached. An input with no
+ * consequence is dropped rather than charged to an unrelated frame such
+ * as the clock. The one blind spot is a key the client ignores, which
+ * its next unprompted repaint, a cursor blink for instance, is taken to
+ * answer. Sampling costs one timestamp per presented frame and
+ * refreshes run at a fixed cadence. Once the window drains the monitor
+ * goes quiescent and asks for no wakeups until the next input or missed
+ * frame. */
 class perf_monitor {
 public:
     /* An input that may paint. Only one waits at a time: the oldest

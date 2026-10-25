@@ -140,18 +140,20 @@
  * multiplied by alpha. The kernel copies the picture, so the program may
  * change its pixels once the call returns. `GFXFB_MOVE_CURSOR` places the
  * hotspot of an output's cursor at a position in the output's pixels, even one
- * off the output, so the picture may lie partly or wholly off it. A cursor
- * call fails with EINVAL when the kernel cannot read its argument, when its
- * reserved field is set and for an output of `output_count` or more. A
- * `GFXFB_SET_CURSOR` showing a picture then fails with EINVAL when its hotspot
- * lies outside the picture or the picture is wider or taller than the output's
- * largest, with ENOMEM when no memory is left to copy the picture, and
- * otherwise with EINVAL when the kernel cannot read its pixels. Past those
- * checks and control, a cursor call fails with EIO once the kernel has found
- * the device failed, and otherwise with the first that applies of ENOTTY on an
- * output without a hardware cursor, EIO on a device that failed, EAGAIN on a
- * dark output, EINVAL for a picture wider or taller than the output's largest,
- * and EIO when the device refused the call.
+ * off the output, so the picture may lie partly or wholly off it. A move while
+ * the cursor is hidden, before any picture or after a hide, only records the
+ * position, where the next picture shows. A cursor call fails with EINVAL when
+ * the kernel cannot read its argument, when its reserved field is set and for
+ * an output of `output_count` or more. A `GFXFB_SET_CURSOR` showing a picture
+ * then fails with EINVAL when its hotspot lies outside the picture or the
+ * picture is wider or taller than the output's largest, with ENOMEM when no
+ * memory is left to copy the picture, and otherwise with EINVAL when the
+ * kernel cannot read its pixels. Past those checks and control, a cursor call
+ * fails with EIO once the kernel has found the device failed, and otherwise
+ * with the first that applies of ENOTTY on an output without a hardware
+ * cursor, EIO on a device that failed, EAGAIN on a dark output, EINVAL for a
+ * picture wider or taller than the output's largest, and EIO when the device
+ * refused the call.
  *
  * The kernel and userland are built from one tree, so a structure may gain
  * fields when its call gains a feature. Each structure holds fixed-width

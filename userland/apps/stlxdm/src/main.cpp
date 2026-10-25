@@ -155,6 +155,10 @@ int main() {
     const uint64_t compose_interval_ns = refresh_interval_ns(compose_millihertz);
     uint64_t last_compose_ns = 0;
 
+    /* A pointer move waiting for the hardware cursor is sent at most once
+     * a refresh too, whether or not a present waits */
+    uint64_t last_cursor_move_ns = 0;
+
     if (reported_millihertz != 0) {
         printf("stlxdm: serving %ux%u at %llu.%03llu Hz\r\n", pres->width(), pres->height(),
                static_cast<unsigned long long>(reported_millihertz / MILLIHERTZ_PER_HERTZ),
@@ -162,6 +166,8 @@ int main() {
     } else {
         printf("stlxdm: serving %ux%u, refresh rate unknown\r\n", pres->width(), pres->height());
     }
+
+    srv.show_cursor();
 
     std::vector<pollfd> fds;
     while (true) {
@@ -210,6 +216,18 @@ int main() {
                 next_ns = compose_ns;
             }
         }
+
+        /* A waiting pointer move bounds the sleep at a refresh after the
+         * last one flushed, damage or not */
+        if (srv.cursor_move_pending()) {
+            uint64_t deadline = last_cursor_move_ns + compose_interval_ns;
+            int64_t move_ns = deadline > now
+                            ? static_cast<int64_t>(deadline - now) : 0;
+            if (next_ns < 0 || move_ns < next_ns) {
+                next_ns = move_ns;
+            }
+        }
+
         int timeout_ms = next_ns < 0 ? -1 : static_cast<int>(next_ns / 1000000);
 
         int rc = poll(fds.data(), fds.size(), timeout_ms);
@@ -251,6 +269,12 @@ int main() {
 
         now = now_ns();
         srv.perf_tick(now);
+
+        bool move_due = now >= last_cursor_move_ns + compose_interval_ns;
+        if (srv.cursor_move_pending() && move_due) {
+            srv.flush_cursor();
+            last_cursor_move_ns = now;
+        }
 
         bool present_waiting = pres->end_fd() >= 0;
         bool period_passed = now >= last_compose_ns + compose_interval_ns;

@@ -151,11 +151,76 @@ static stlxgfx_surface_t* build_shadow(const stlxgfx_surface_t* sprite) {
     return shadow;
 }
 
+/* The image over its shadow as one picture, alpha not multiplied
+ * into the colors, matching `draw()` on a frame within rounding */
+static stlxgfx_surface_t* build_picture(const cursor_sprite& sprite) {
+    const stlxgfx_surface_t* image = sprite.image;
+    const stlxgfx_surface_t* shadow = sprite.shadow;
+    bool picture_layout = image->bpp == 32 && image->red_shift == 16 &&
+                          image->green_shift == 8 && image->blue_shift == 0;
+    if (!picture_layout) {
+        return nullptr;
+    }
+
+    uint32_t pad = shadow ? 1 : 0;
+    stlxgfx_surface_t* picture = stlxgfx_create_surface(
+        image->width + pad, image->height + pad, 32, 16, 8, 0);
+    if (!picture) {
+        return nullptr;
+    }
+
+    /* gfxfb takes a cursor picture in rows without padding */
+    if (picture->pitch != picture->width * 4) {
+        stlxgfx_destroy_surface(picture);
+        return nullptr;
+    }
+
+    uint8_t alpha_index = stlxgfx_alpha_byte_index(picture);
+    for (uint32_t y = 0; y < picture->height; y++) {
+        for (uint32_t x = 0; x < picture->width; x++) {
+            bool inside_image = x < image->width && y < image->height;
+            const uint8_t* ip = nullptr;
+            uint32_t image_alpha = 0;
+            if (inside_image) {
+                ip = image->pixels + y * image->pitch + x * 4;
+                image_alpha = ip[alpha_index];
+            }
+
+            bool under_shadow = shadow && x >= 1 && y >= 1;
+            uint32_t shadow_alpha = 0;
+            if (under_shadow) {
+                uint32_t offset = (y - 1) * shadow->pitch + (x - 1) * 4;
+                shadow_alpha = shadow->pixels[offset + alpha_index];
+            }
+
+            /* The black shadow beneath adds coverage, no color */
+            uint32_t shadow_cover =
+                (shadow_alpha * (255 - image_alpha) + 127) / 255;
+            uint32_t alpha = image_alpha + shadow_cover;
+            uint8_t* pp = picture->pixels + y * picture->pitch + x * 4;
+            for (uint32_t c = 0; c < 4; c++) {
+                uint32_t value = 0;
+                if (c == alpha_index) {
+                    value = alpha;
+                } else if (image_alpha > 0) {
+                    value = (ip[c] * image_alpha + alpha / 2) / alpha;
+                }
+
+                pp[c] = static_cast<uint8_t>(value);
+            }
+        }
+    }
+
+    return picture;
+}
+
 static void destroy_sprite(cursor_sprite* s) {
     stlxgfx_destroy_surface(s->image);
     stlxgfx_destroy_surface(s->shadow);
+    stlxgfx_destroy_surface(s->picture);
     s->image = nullptr;
     s->shadow = nullptr;
+    s->picture = nullptr;
 }
 
 int cursor::init() {
@@ -192,6 +257,7 @@ int cursor::init() {
     for (cursor_sprite* s : all) {
         if (s->image) {
             s->shadow = build_shadow(s->image);
+            s->picture = build_picture(*s);
         }
     }
 
@@ -277,4 +343,19 @@ void cursor::draw(stlxgfx_surface_t* back, uint32_t shape,
     stlxgfx_blit_alpha(view, ox, oy, s->image, 0, 0,
                        s->image->width, s->image->height);
     stlxgfx_destroy_surface(view);
+}
+
+bool cursor::picture(uint32_t shape, presenter::cursor_picture& out) const {
+    const cursor_sprite* s = sprite_for(shape);
+    if (!s || !s->picture) {
+        return false;
+    }
+
+    out.pixels = reinterpret_cast<const uint32_t*>(s->picture->pixels);
+    out.width = s->picture->width;
+    out.height = s->picture->height;
+    out.hot_x = static_cast<uint32_t>(s->hot_x);
+    out.hot_y = static_cast<uint32_t>(s->hot_y);
+
+    return true;
 }

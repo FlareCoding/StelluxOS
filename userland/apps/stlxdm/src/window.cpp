@@ -606,13 +606,15 @@ void server::compose_rect(stlxgfx_surface_t* back,
         decor::draw_outline(back, m_outline, r);
     }
 
-    /* Floating chrome above the windows: the dock tooltip and the
-     * power star, then the overlay, then the pointer */
+    /* Floating chrome above the windows: the dock tooltip and the power
+     * star, then the overlay, then the pointer while the frames draw it */
     m_panels->compose_top(back, r);
     m_power->draw_star(back, r);
     m_power->draw_overlay(back, r);
 
-    m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y, r);
+    if (!m_cursor_on_hardware) {
+        m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y, r);
+    }
 }
 
 void server::compose_tick() {
@@ -654,7 +656,10 @@ void server::compose_tick() {
             damage_list::rect whole = { 0, 0, static_cast<int32_t>(back->width),
                                         static_cast<int32_t>(back->height) };
             m_power->draw_collapse(back);
-            m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y, whole);
+            if (!m_cursor_on_hardware) {
+                m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y, whole);
+            }
+
             stlxgfx_destroy_surface(back);
 
             damage_list full;

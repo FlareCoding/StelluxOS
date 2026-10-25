@@ -14,13 +14,32 @@
  * age 1 means it still holds the previous frame, so only new damage
  * needs repainting, age 0 means the content is undefined. A backend
  * that composes into each of two buffers it flips between returns age
- * 2, and the damage engine unions the history. */
+ * 2, and the damage engine unions the history.
+ *
+ * The compositor may show the pointer on the primary output's hardware
+ * cursor (a small picture the display draws over every frame) through
+ * `set_cursor()` and `move_cursor()`, and leaves the pointer out of
+ * its frames while those calls succeed. A cursor call that reaches the
+ * display returns once the display has taken or refused it. */
 class presenter {
 public:
     struct target {
         uint32_t* pixels = nullptr;
         uint32_t  stride = 0;      /* bytes per row */
         uint32_t  age = 0;
+    };
+
+    /* A hardware cursor picture: `width` by `height` pixels in unpadded
+     * rows and the hotspot (the pixel that sits at the cursor's
+     * position), which must lie inside the picture. Each pixel holds
+     * alpha in bits 31 to 24 and red, green and blue as a frame's pixel
+     * does, none multiplied by alpha. */
+    struct cursor_picture {
+        const uint32_t* pixels = nullptr;
+        uint32_t        width = 0;
+        uint32_t        height = 0;
+        uint32_t        hot_x = 0;
+        uint32_t        hot_y = 0;
     };
 
     virtual ~presenter() = default;
@@ -67,6 +86,22 @@ public:
      * frame reaches the screen, and end_fd() then reports when this
      * present ends. */
     virtual void present(const damage_list& damage) = 0;
+
+    /* Shows a copy of `picture` on the primary output's hardware cursor,
+     * its hotspot at the last `move_cursor()` position. Returns whether the
+     * display took it, false without a cursor that holds the picture. The
+     * display's first refusal of a cursor call, and its first after each
+     * picture it takes, prints a line. */
+    virtual bool set_cursor(const cursor_picture& picture) = 0;
+
+    /* Hides the hardware cursor, which stays shown when the display
+     * refuses the hide. */
+    virtual void hide_cursor() = 0;
+
+    /* Places the hardware cursor's hotspot at (x, y) on the primary
+     * output, or records it for the next `set_cursor()` while the cursor
+     * is hidden. Returns whether the display took it. */
+    virtual bool move_cursor(int32_t x, int32_t y) = 0;
 };
 
 /* Composes into one persistent buffer and row-copies damage into the
@@ -91,6 +126,12 @@ public:
 
     target acquire() override;
     void present(const damage_list& damage) override;
+
+    /* The boot display has no hardware cursor, and a cursor call on another
+     * display would take control of its buffers, so these refuse. */
+    bool set_cursor(const cursor_picture&) override { return false; }
+    void hide_cursor() override {}
+    bool move_cursor(int32_t, int32_t) override { return false; }
 
 private:
     void flush_display(const damage_list::rect* rects, uint32_t count);
@@ -136,6 +177,9 @@ public:
     int64_t missed_frames() const override { return static_cast<int64_t>(m_missed_frames); }
     target acquire() override;
     void present(const damage_list& damage) override;
+    bool set_cursor(const cursor_picture& picture) override;
+    void hide_cursor() override;
+    bool move_cursor(int32_t x, int32_t y) override;
 
 private:
     struct display_buffer {
@@ -150,6 +194,10 @@ private:
     int create_buffer(display_buffer& buffer);
     bool present_buffer(const display_buffer& buffer, const damage_list& changed);
     void count_missed_frames(uint64_t frame, uint64_t latch_ns);
+    bool cursor_call(uint32_t request, void* args, const char* call);
+    bool has_cursor() const {
+        return m_cursor_max_width > 0 && m_cursor_max_height > 0;
+    }
 
     int            m_fd = -1;
     uint32_t       m_output = 0;
@@ -158,6 +206,15 @@ private:
     uint64_t       m_refresh_millihertz = 0;
     uint8_t*       m_composed = nullptr;
     display_buffer m_buffers[BUFFER_COUNT];
+
+    /* The primary output's largest cursor picture, 0 by 0 without a
+     * hardware cursor. */
+    uint32_t       m_cursor_max_width = 0;
+    uint32_t       m_cursor_max_height = 0;
+
+    /* Whether a cursor call failed and the display took no picture after
+     * it, so a run of failures prints one line. */
+    bool           m_cursor_failing = false;
 
     /* The regions each buffer's next present names: those the composed
      * frame changed since that buffer's last accepted present, the whole

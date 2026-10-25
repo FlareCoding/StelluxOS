@@ -7,7 +7,7 @@ class server;
 
 /* Input routing: reads the kernel input devices, tracks the pointer
  * and keyboard focus, and feeds translated events to the server for
- * delivery. The cursor sprite is compose work and lives elsewhere. */
+ * delivery. The server shows the pointer. */
 class input {
 public:
     /* Opens /dev/input/kbd and /dev/input/mouse. Missing devices are
