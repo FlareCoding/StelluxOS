@@ -26,9 +26,22 @@
  * a created buffer and holds no present of its base buffer, gfxfb skips the
  * display instead and passes the display no region with the base buffer's next
  * present, so a display that copies the buffer copies it whole. With no output
- * lit there is no primary output, so `GFXFB_GET_INFO` and `GFXFB_FLUSH` fail
- * and mmap at offset 0 is refused. A display shown when no memory was left to
- * record its lit outputs' base buffers has no primary output either.
+ * lit, `GFXFB_GET_INFO` and `GFXFB_FLUSH` fail and mmap at offset 0 is
+ * refused, and there is no primary output unless the primary output relights,
+ * as described below. A display shown when no memory was left to record its
+ * lit outputs' base buffers has no primary output either.
+ *
+ * The display reports each output that lights or goes dark to
+ * `output_changed()`, and gfxfb then reads the output again, records a lit
+ * output's base buffer or drops a dark output's buffers, moves the primary
+ * when it must and queues an output event for every open file, unless gfxfb
+ * has found the display failed, as described below. A display lights an output
+ * at another mode by taking it dark with `relighting` set, then lighting it,
+ * and the primary stays on it meanwhile. A primary output that goes dark
+ * otherwise hands the primary to the lit output with the lowest index, and
+ * with no primary output the first output that lights becomes the primary
+ * output. Both rules treat a lit output whose base buffer gfxfb had no memory
+ * to record as dark.
  *
  * Userland also creates buffers, which the display allocates in
  * `create_buffer()`, and presents buffers on outputs, which gfxfb hands to the
@@ -68,6 +81,7 @@ constexpr uint32_t CURSOR_DIMENSION_MAX = 256;
  */
 struct output_state {
     bool       lit;
+    bool       relighting;        // its display is lighting it again at another mode, meaningful while dark
     bool       boot_output;       // the boot firmware lit this output
     gfxfb_mode current;           // the mode it is lit at, meaningful while lit
     uint32_t   cursor_max_width;  // the widest cursor picture it shows
@@ -122,7 +136,8 @@ struct cursor_image {
  * A display behind /dev/gfxfb: one a device driver owns, or gfxfb's own boot
  * display. gfxfb calls `output_count()`, `read_output()` and `base_buffer()`
  * from `init()` and `register_display()`, on the boot thread, which cannot
- * sleep, so they must not wait. It calls `output_count()`, `read_output()`,
+ * sleep, so they must not wait, and from `output_changed()`, in the task that
+ * reports the change. It calls `output_count()`, `read_output()`,
  * `needs_flush()`, `flush()`, `create_buffer()`, `present()`, `set_cursor()`
  * and `move_cursor()` from the tasks that use /dev/gfxfb, several tasks at
  * once, and `flush()`, `create_buffer()`, `present()` and the two cursor calls
@@ -170,7 +185,10 @@ public:
      * with. Once registered, the display must keep it until gfxfb hands it
      * back through `release_buffer()` and must return the same buffer for as
      * long as the output stays lit, since gfxfb keeps the pointer and userland
-     * maps the memory.
+     * maps the memory. An output lit again must have a buffer gfxfb holds no
+     * record of, a new one or one gfxfb handed back, since gfxfb records it
+     * afresh as the display reports the lighting to `output_changed()` and
+     * would otherwise hand it back twice.
      * @param output Index of the output, below the count.
      * @return The buffer, or nullptr while the output is dark.
      */
@@ -180,7 +198,10 @@ public:
      * @brief Copy regions of an output's base buffer to the screen, or copy
      * nothing on a display that scans the base buffer out directly.
      * @param output Index of the output, below the count.
-     * @param rects Regions inside the base buffer, none of them empty.
+     * @param rects Regions, none of them empty, inside the base buffer gfxfb
+     * read for the call. The output may have lit again with another base
+     * buffer since, so a display that lights outputs again must clip each
+     * region to the buffer it copies.
      * @param count Number of regions, at least one.
      * @return OK, ERR_DARK when the output is not lit, ERR_REFUSED when the
      * hardware refused the copy, or ERR_DEVICE once the hardware has failed.
@@ -243,7 +264,10 @@ public:
      * converting it if its hardware wants another form. The call may wait only
      * for the display's own lock, for the hardware to take the picture and for
      * the copy, never for a vertical blank or for its driver's task, and
-     * returns within a time the display states.
+     * returns within a time the display states. The display must hide the
+     * cursor of an output that goes dark and keep it hidden once the output
+     * lights again until the next picture, since gfxfb makes no cursor call
+     * when an output changes.
      * @param output Index of the output, below the count.
      * @param image The picture with its hotspot inside it, or a hide with a
      * width of 0. gfxfb frees its pixels once the call returns.
@@ -258,12 +282,12 @@ public:
 
     /**
      * @brief Place the hotspot of an output's cursor at (`x`, `y`) in the
-     * output's pixels, even off the output. A move while the cursor is hidden,
-     * before any picture or after a hide, only records the position, and the
-     * cursor stays hidden. The call may wait only for the display's own lock
-     * and for the hardware to take the position, within
-     * GFXFB_PRESENT_TIMEOUT_NS of giving it, never for a vertical blank or for
-     * its driver's task.
+     * output's pixels, even off the output. A move on a lit output while its
+     * cursor is hidden, before any picture, after a hide or since the output
+     * last went dark, only records the position, and the cursor stays hidden.
+     * The call may wait only for the display's own lock and for the hardware
+     * to take the position, within GFXFB_PRESENT_TIMEOUT_NS of giving it,
+     * never for a vertical blank or for its driver's task.
      * @param output Index of the output, below the count.
      * @param x Column of the hotspot, negative left of the output.
      * @param y Row of the hotspot, negative above the output.
@@ -346,6 +370,36 @@ __PRIVILEGED_CODE int32_t register_display(display* driver_display);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void present_done(display* driver_display, uint32_t output, const present_result& result);
+
+/**
+ * @brief Report that a display's output lit or went dark. gfxfb reads the
+ * output again, records a lit output's base buffer, drops its references to a
+ * dark output's buffers, moves the primary when it must and queues an output
+ * event for every open file. The display must end an output's unended present
+ * with `GFXFB_PRESENT_DARK` before reporting the output dark, so the
+ * presenting file reads that end before the output event. The display's
+ * hardware must have stopped reading the output's buffers by the dark report,
+ * since gfxfb then drops its references and may hand them back. A display
+ * lighting an output again at another mode must report it dark with
+ * `relighting` set, since the primary stays on a relighting output, then
+ * report it lit with a base buffer gfxfb holds no record of, as
+ * `base_buffer()` states, or dark without `relighting` when it cannot light
+ * the output at that mode. Once gfxfb has found the display failed, as the
+ * overview describes, it records nothing and queues no event, keeping every
+ * reference, since the failed hardware may still read any buffer. The display
+ * must call it from a task, since gfxfb allocates in it, and only once
+ * `register_display()` has returned, since gfxfb records the display's outputs
+ * unlocked as it registers. It must make one call at a time, since two calls
+ * could record what they read out of order, and must hold none of the locks
+ * that its `output_count()`, `read_output()` and `base_buffer()` take, since
+ * gfxfb calls them before returning.
+ * @param driver_display The display. gfxfb drops the report, logging an error,
+ * when /dev/gfxfb does not show it.
+ * @param output Index of the output. gfxfb drops the report, logging an error,
+ * for an index of the display's output count or more.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void output_changed(display* driver_display, uint32_t output);
 
 } // namespace gfxfb
 
