@@ -404,15 +404,26 @@ void blit_content(stlxgfx_surface_t* back, const dm_window& w,
     stlxgfx_destroy_surface(src);
 }
 
-void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r) {
-    stlxgfx_fill_rect(back, r.x, r.y,
+void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r,
+                  const damage_list::rect& clip) {
+    /* A fill outside the composed rect would cover the pointer that an
+     * earlier frame or rect drew over the outline there */
+    stlxgfx_surface_t* view = clip_view(back, clip);
+    if (!view) {
+        return;
+    }
+
+    int32_t x = r.x - clip.x;
+    int32_t y = r.y - clip.y;
+    stlxgfx_fill_rect(view, x, y,
                       static_cast<uint32_t>(r.w), static_cast<uint32_t>(OUTLINE_T), OUTLINE_COLOR);
-    stlxgfx_fill_rect(back, r.x, r.y + r.h - OUTLINE_T,
+    stlxgfx_fill_rect(view, x, y + r.h - OUTLINE_T,
                       static_cast<uint32_t>(r.w), static_cast<uint32_t>(OUTLINE_T), OUTLINE_COLOR);
-    stlxgfx_fill_rect(back, r.x, r.y,
+    stlxgfx_fill_rect(view, x, y,
                       static_cast<uint32_t>(OUTLINE_T), static_cast<uint32_t>(r.h), OUTLINE_COLOR);
-    stlxgfx_fill_rect(back, r.x + r.w - OUTLINE_T, r.y,
+    stlxgfx_fill_rect(view, x + r.w - OUTLINE_T, y,
                       static_cast<uint32_t>(OUTLINE_T), static_cast<uint32_t>(r.h), OUTLINE_COLOR);
+    stlxgfx_destroy_surface(view);
 }
 
 } // namespace decor
