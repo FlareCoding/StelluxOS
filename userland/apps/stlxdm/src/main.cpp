@@ -6,6 +6,7 @@
 #include <stlxconf/conf.h>
 #include <stlxgfx/font.h>
 
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <ctime>
@@ -20,6 +21,10 @@ constexpr uint64_t MILLIHERTZ_PER_HERTZ = 1000;
 
 /* The rate stlxdm composes at when the screen's rate is unknown */
 constexpr uint64_t DEFAULT_REFRESH_MILLIHERTZ = 60000;
+
+/* How long stlxdm waits before asking again for display buffers while
+ * another program controls the display's buffers */
+constexpr long DISPLAY_BUSY_RETRY_NS = 100000000;
 
 /* SIGHUP asks for a config reload, applied on the next wakeup */
 static volatile sig_atomic_t g_reload = 0;
@@ -62,11 +67,46 @@ static void load_config(stlxconf_t& config) {
     }
 }
 
+/* The flip presenter, waited for while another program controls the display's buffers since a
+ * frame drawn into the framebuffer would not show, else the memcpy presenter, else null */
+static presenter* open_presenter(flip_presenter& flip, memcpy_presenter& fallback) {
+    bool reported_busy = false;
+    while (true) {
+        int rc = flip.init();
+        if (rc == 0) {
+            printf("stlxdm: presenting through display buffers\r\n");
+            return &flip;
+        }
+
+        if (rc != -EBUSY) {
+            break;
+        }
+
+        if (!reported_busy) {
+            printf("stlxdm: waiting for the program controlling the display's buffers to close /dev/gfxfb\r\n");
+            reported_busy = true;
+        }
+
+        timespec retry = { 0, DISPLAY_BUSY_RETRY_NS };
+        nanosleep(&retry, nullptr);
+    }
+
+    if (fallback.init() != 0) {
+        return nullptr;
+    }
+
+    printf("stlxdm: drawing into the framebuffer\r\n");
+
+    return &fallback;
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
-    memcpy_presenter pres;
-    if (pres.init() != 0) {
+    flip_presenter flip;
+    memcpy_presenter fallback;
+    presenter* pres = open_presenter(flip, fallback);
+    if (!pres) {
         printf("stlxdm: no framebuffer, exiting\r\n");
         return 1;
     }
@@ -82,24 +122,24 @@ int main() {
     /* Display state builds first, so the wallpaper decode and the
      * font opens are already paid when the splash asks for Enter */
     server srv;
-    if (srv.init(&pres, &config) != 0) {
+    if (srv.init(pres, &config) != 0) {
         printf("stlxdm: display init failed\r\n");
-        pres.shutdown();
+        pres->shutdown();
         return 1;
     }
 
     /* The splash owns the screen until Enter, before any client can
      * connect and before autostart spawns */
-    splash_run(pres);
+    splash_run(*pres);
 
     if (srv.serve() != 0) {
         printf("stlxdm: failed to bind %s\r\n", SWP_SOCKET_PATH);
-        pres.shutdown();
+        pres->shutdown();
         return 1;
     }
 
     input inp;
-    if (inp.init(pres.width(), pres.height(),
+    if (inp.init(pres->width(), pres->height(),
                  static_cast<uint64_t>(config.key_repeat_delay_ms) * 1000000ull,
                  static_cast<uint64_t>(config.key_repeat_interval_ms) * 1000000ull) != 0) {
         printf("stlxdm: no input devices, serving without input\r\n");
@@ -108,19 +148,19 @@ int main() {
     signal(SIGHUP, on_sighup);
     write_pidfile();
 
-    /* Composition runs at most once per refresh, at the default rate
-     * when the screen's rate is unknown */
-    uint64_t reported_millihertz = pres.refresh_millihertz();
+    /* Composition waits for the last present to end and runs at most once
+     * per refresh, at the default rate when the screen's rate is unknown */
+    uint64_t reported_millihertz = pres->refresh_millihertz();
     uint64_t compose_millihertz = reported_millihertz != 0 ? reported_millihertz : DEFAULT_REFRESH_MILLIHERTZ;
     const uint64_t compose_interval_ns = refresh_interval_ns(compose_millihertz);
     uint64_t last_compose_ns = 0;
 
     if (reported_millihertz != 0) {
-        printf("stlxdm: serving %ux%u at %llu.%03llu Hz\r\n", pres.width(), pres.height(),
+        printf("stlxdm: serving %ux%u at %llu.%03llu Hz\r\n", pres->width(), pres->height(),
                static_cast<unsigned long long>(reported_millihertz / MILLIHERTZ_PER_HERTZ),
                static_cast<unsigned long long>(reported_millihertz % MILLIHERTZ_PER_HERTZ));
     } else {
-        printf("stlxdm: serving %ux%u, refresh rate unknown\r\n", pres.width(), pres.height());
+        printf("stlxdm: serving %ux%u, refresh rate unknown\r\n", pres->width(), pres->height());
     }
 
     std::vector<pollfd> fds;
@@ -137,8 +177,14 @@ int main() {
             fds.push_back({ inp.mouse_fd(), POLLIN, 0 });
         }
 
-        /* The timeout is the sooner of key repeat and, when damage is
-         * pending, the paced compose deadline. Idle blocks forever. */
+        int end_fd = pres->end_fd();
+        size_t end_slot = fds.size();
+        if (end_fd >= 0) {
+            fds.push_back({ end_fd, POLLIN, 0 });
+        }
+
+        /* Key repeat and, with damage pending and no present waiting,
+         * the compose deadline cap the wait. Idle blocks forever. */
         uint64_t now = now_ns();
         int64_t next_ns = inp.repeat_timeout_ns(now);
 
@@ -156,7 +202,7 @@ int main() {
             next_ns = perf_ns;
         }
 
-        if (srv.compose_pending()) {
+        if (srv.compose_pending() && end_fd < 0) {
             uint64_t deadline = last_compose_ns + compose_interval_ns;
             int64_t compose_ns = deadline > now
                                ? static_cast<int64_t>(deadline - now) : 0;
@@ -199,10 +245,16 @@ int main() {
 
         srv.pump(fds);
 
+        if (end_fd >= 0 && (fds[end_slot].revents & POLLIN)) {
+            pres->take_end();
+        }
+
         now = now_ns();
         srv.perf_tick(now);
-        if (srv.compose_pending() &&
-            now >= last_compose_ns + compose_interval_ns) {
+
+        bool present_waiting = pres->end_fd() >= 0;
+        bool period_passed = now >= last_compose_ns + compose_interval_ns;
+        if (srv.compose_pending() && !present_waiting && period_passed) {
             srv.compose_tick();
             last_compose_ns = now;
         }

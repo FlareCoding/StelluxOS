@@ -49,7 +49,7 @@ public:
     /* End of a wakeup: the desktop's own damage answers a fresh input */
     void settle(bool dm_damage);
 
-    /* A frame reached the screen */
+    /* A frame was presented */
     void note_present(uint64_t now_ns);
 
     /* Nanoseconds until the next refresh, -1 when nothing will change */
