@@ -91,6 +91,10 @@
  * EAGAIN on a dark output, EINVAL when the buffer's width or height differs
  * from the output's mode, and EIO when the device refused the buffer.
  *
+ * A device with no vertical blanks counts boundaries of its own at the
+ * output's refresh rate in their place, and may show a presented buffer before
+ * the boundary its present latches at.
+ *
  * Each present the device accepted ends once: it latches, or the output goes
  * dark or the device fails before it latches. The open file that presented
  * learns of the end through an event, a `gfxfb_event` record that `read`
@@ -152,6 +156,10 @@ constexpr uint32_t GFXFB_OUTPUT_PRIMARY = 0x2; // the output whose pixels offset
 constexpr uint32_t GFXFB_PRESENT_LATCHED = 0; // the present latched, so the output shows its buffer
 constexpr uint32_t GFXFB_PRESENT_DARK    = 1; // the output went dark before the present latched
 constexpr uint32_t GFXFB_PRESENT_FAILED  = 2; // the device failed before the present latched
+
+// A device ends each present it accepted at the latest this long after GFXFB_PRESENT returns, not counting time the
+// kernel spends waiting for the CPU
+constexpr uint64_t GFXFB_PRESENT_TIMEOUT_NS = 100000000;
 
 constexpr uint32_t GFXFB_EVENT_PRESENT = 1; // a `gfxfb_event` reporting how a present ended
 

@@ -849,6 +849,13 @@ __PRIVILEGED_CODE void gfxfb_node::present_done(uint32_t output, const present_r
     rc::strong_ref<buffer_record> dropped;
 
     sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
+    client* presenter = output < GFXFB_OUTPUTS_MAX ? m_outputs[output].presenter : nullptr;
+    if (!presenter) {
+        sync::spin_unlock_irqrestore(m_outputs_lock, state);
+        log::error("gfxfb: dropped the end of a present on output %u, which holds no unended present", output);
+        return;
+    }
+
     output_records& records = m_outputs[output];
     switch (result.status) {
     case GFXFB_PRESENT_LATCHED:
@@ -866,7 +873,6 @@ __PRIVILEGED_CODE void gfxfb_node::present_done(uint32_t output, const present_r
 
     // The wake stays under the lock, since a closing presenter may be freed as soon as it takes the lock and finds no
     // unended present of its own
-    client* presenter = records.presenter;
     records.presenter = nullptr;
     queue_event(*presenter, present_event(output, records.presented_handle, result));
     sync::wake_all(presenter->event_waiters);
@@ -1139,6 +1145,18 @@ __PRIVILEGED_CODE int32_t register_display(display* driver_display) {
     log::info("gfxfb: registered /dev/gfxfb with a driver display");
 
     return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void present_done(display* driver_display, uint32_t output, const present_result& result) {
+    if (!g_node || !g_node->shows(driver_display)) {
+        log::error("gfxfb: dropped the end of a present on output %u of a display /dev/gfxfb does not show", output);
+        return;
+    }
+
+    g_node->present_done(output, result);
 }
 
 } // namespace gfxfb

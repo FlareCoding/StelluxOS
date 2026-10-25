@@ -32,16 +32,15 @@
  *
  * Userland also creates buffers, which the display allocates in
  * `create_buffer()`, and presents buffers on outputs, which gfxfb hands to the
- * display's `present()`. The display reports to `gfxfb_node::present_done()`
- * how each present it accepted ended, and gfxfb queues the end as an event for
- * the open file that presented. One open file at a time controls the buffers,
- * from its first creation or present that succeeds until it closes. gfxfb
- * keeps a reference-counted record of each buffer, every lit output's base
- * buffer included, and hands the buffer back to the display's
- * `release_buffer()` once no handle, output or mapping refers to it. Once a
- * display call returns ERR_DEVICE or a present ends with
- * `GFXFB_PRESENT_FAILED`, gfxfb fails every later `GFXFB_FLUSH` and
- * `GFXFB_PRESENT` without calling the display.
+ * display's `present()`. The display reports to `present_done()` how each
+ * present it accepted ended, and gfxfb queues the end as an event for the open
+ * file that presented. One open file at a time controls the buffers, from its
+ * first creation or present that succeeds until it closes. gfxfb keeps a
+ * reference-counted record of each buffer, every lit output's base buffer
+ * included, and hands the buffer back to the display's `release_buffer()` once
+ * no handle, output or mapping refers to it. Once a display call returns
+ * ERR_DEVICE or a present ends with `GFXFB_PRESENT_FAILED`, gfxfb fails every
+ * later `GFXFB_FLUSH` and `GFXFB_PRESENT` without calling the display.
  */
 
 namespace gfxfb {
@@ -82,9 +81,10 @@ struct buffer {
 };
 
 /**
- * How a present the display accepted ended, as it reports to
- * `gfxfb_node::present_done()`. gfxfb reads `frame` and `timestamp_ns` only
- * when the present latched.
+ * How a present the display accepted ended, as it reports to `present_done()`.
+ * gfxfb reads `frame` and `timestamp_ns` only when the present latched. A
+ * display whose hardware has no vertical blanks counts boundaries of its own
+ * in their place, as `display::present()` says.
  */
 struct present_result {
     uint32_t status;       // GFXFB_PRESENT_*
@@ -100,15 +100,15 @@ struct present_result {
  * `needs_flush()`, `flush()`, `create_buffer()` and `present()` from the tasks
  * that use /dev/gfxfb, several tasks at once, and `flush()`, `create_buffer()`
  * and `present()` may block the task that calls them. gfxfb never calls
- * `present()` for one output from two tasks at once. It calls
- * `release_buffer()` from the reaper, the kernel task that runs deferred
- * cleanup, and `release_buffer()` must never wait, since the reaper runs no
- * other cleanup until it returns. A display returns ERR_DEVICE only once its
- * hardware has failed for good, and from then on from every call that needs
- * the hardware, so a refusal that leaves the hardware usable is ERR_REFUSED,
- * or ERR_NO_MEMORY when the hardware has no memory left for a buffer. It
- * likewise ends a present with `GFXFB_PRESENT_FAILED` only once its hardware
- * has failed for good.
+ * `present()` for one output from two tasks at once, nor while a present the
+ * display accepted there has not ended. It calls `release_buffer()` from the
+ * reaper, the kernel task that runs deferred cleanup, and `release_buffer()`
+ * must never wait, since the reaper runs no other cleanup until it returns. A
+ * display returns ERR_DEVICE only once its hardware has failed for good, and
+ * from then on from every call that needs the hardware, so a refusal that
+ * leaves the hardware usable is ERR_REFUSED, or ERR_NO_MEMORY when the
+ * hardware has no memory left for a buffer. It likewise ends a present with
+ * `GFXFB_PRESENT_FAILED` only once its hardware has failed for good.
  */
 class display {
 public:
@@ -178,16 +178,19 @@ public:
     /**
      * @brief Give `buf` to the hardware to replace what `output` shows from
      * the output's next vertical blank, without waiting for that blank. A
-     * display that shows a copy of the buffer copies only `regions`, or the
-     * whole buffer when gfxfb passes none, and a display that scans the buffer
-     * out directly ignores them. The call may wait only for the display's own
-     * lock and for the hardware to take the buffer, never for a vertical blank
-     * or for its driver's task. The display must end each present the call
-     * accepts exactly once, possibly before the call returns, by passing its
-     * result to `gfxfb_node::present_done()` from its interrupt handler, or
-     * elevated from a task or a timer's callback. It may hold its own locks
-     * then, since `gfxfb_node::present_done()` never sleeps or calls the
-     * display.
+     * display whose hardware has no vertical blanks counts boundaries of its
+     * own at the output's refresh rate in their place. A display that shows a
+     * copy of the buffer copies only `regions`, or the whole buffer when gfxfb
+     * passes none, and a display that scans the buffer out directly ignores
+     * them. The call may wait only for the display's own lock and for the
+     * hardware to take the buffer, never for a vertical blank or for its
+     * driver's task, and returns within a time the display states. The display
+     * must end each present the call accepts exactly once, possibly before the
+     * call returns and at the latest GFXFB_PRESENT_TIMEOUT_NS after it
+     * returns, not counting time spent waiting for the CPU, by passing its
+     * result to `present_done()` from its interrupt handler, or elevated from
+     * a task or a timer's callback. It may hold its own locks then, since
+     * `present_done()` never sleeps or calls the display.
      * @param output Index of the output, below the count.
      * @param buf A buffer from `create_buffer()` or `base_buffer()`.
      * @param regions The regions of `buf` that userland named as changed since
@@ -260,6 +263,22 @@ __PRIVILEGED_CODE bool has_boot_display();
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t register_display(display* driver_display);
+
+/**
+ * @brief End a present that a display accepted, by recording the end and
+ * queuing it as an event for the open file that presented. The display must
+ * call it exactly once for each present it accepted, as `display::present()`
+ * describes. It never sleeps or calls the display, so a display may call it
+ * from its interrupt handler or holding its own locks.
+ * @param driver_display The display that accepted the present. gfxfb drops the
+ * end, logging an error, when /dev/gfxfb does not show it.
+ * @param output Index of the output the present was for. gfxfb drops the end,
+ * logging an error, when the output holds no unended present, as once that
+ * present has ended or for an index of the display's output count or more.
+ * @param result How the present ended.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void present_done(display* driver_display, uint32_t output, const present_result& result);
 
 } // namespace gfxfb
 
