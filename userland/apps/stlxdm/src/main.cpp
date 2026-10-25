@@ -195,8 +195,8 @@ int main() {
             next_ns = clock_ns;
         }
 
-        /* The latency readout refreshes on its own cadence and asks
-         * for nothing once quiet */
+        /* The latency and missed frames readouts refresh on their own
+         * cadence and ask for nothing once quiet */
         int64_t perf_ns = srv.perf_timeout_ns(now);
         if (perf_ns >= 0 && (next_ns < 0 || perf_ns < next_ns)) {
             next_ns = perf_ns;

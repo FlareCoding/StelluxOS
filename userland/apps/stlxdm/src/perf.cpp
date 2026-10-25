@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-/* Scratch for the window's sample values during a refresh */
+/* Scratch for the window's latencies during a refresh */
 static uint32_t g_values[1024];
 
 void perf_monitor::note_input(uint64_t now_ns) {
@@ -52,6 +52,26 @@ void perf_monitor::note_present(uint64_t now_ns) {
     m_answered = false;
 }
 
+void perf_monitor::note_missed_frames(uint64_t now_ns, int64_t total) {
+    if (total < 0) {
+        return;
+    }
+
+    uint64_t latest_total = static_cast<uint64_t>(total);
+    if (m_counts_missed_frames && latest_total > m_missed_total) {
+        m_missed_ring[m_missed_head] = { now_ns, static_cast<uint32_t>(latest_total - m_missed_total) };
+        m_missed_head = (m_missed_head + 1) % RING;
+        if (m_missed_sample_count < RING) {
+            m_missed_sample_count++;
+        }
+
+        m_quiescent = false;
+    }
+
+    m_counts_missed_frames = true;
+    m_missed_total = latest_total;
+}
+
 int64_t perf_monitor::timeout_ns(uint64_t now_ns) const {
     if (m_quiescent) {
         return -1;
@@ -61,8 +81,8 @@ int64_t perf_monitor::timeout_ns(uint64_t now_ns) const {
          ? static_cast<int64_t>(m_next_refresh_ns - now_ns) : 0;
 }
 
-/* Walks the ring newest first until the window's edge. The values are
- * copied out so the partial sort for p95 never disturbs the ring. */
+/* Walks both rings newest first to the window's edge, copying the
+ * latencies out so p95's partial sort leaves their ring alone */
 bool perf_monitor::tick(uint64_t now_ns, perf_snapshot& out) {
     if (m_quiescent || now_ns < m_next_refresh_ns) {
         return false;
@@ -81,11 +101,24 @@ bool perf_monitor::tick(uint64_t now_ns, perf_snapshot& out) {
         g_values[n++] = s.us;
     }
 
-    /* An empty window shows dashes that never change, so nothing
-     * further needs a refresh until an input arrives */
+    uint32_t missed_frames = 0;
+    for (uint32_t i = 0; i < m_missed_sample_count; i++) {
+        const missed_sample& s = m_missed_ring[(m_missed_head + RING - 1 - i) % RING];
+        if (s.at_ns < oldest) {
+            break;
+        }
+
+        missed_frames += s.frames;
+    }
+
+    out = perf_snapshot();
+    out.counts_missed_frames = m_counts_missed_frames;
+    out.missed_frames = missed_frames;
+
+    /* Without latency samples their readout's dashes never change, so
+     * the monitor goes quiescent once no missed frames are left */
     if (n == 0) {
-        m_quiescent = true;
-        out = perf_snapshot();
+        m_quiescent = missed_frames == 0;
         return true;
     }
 

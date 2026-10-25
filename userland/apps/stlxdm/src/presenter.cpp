@@ -6,12 +6,19 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 constexpr uint32_t BYTES_PER_PIXEL = 4;
+
+static uint64_t now_ns() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
 
 static gfxfb::gfxfb_rect to_gfxfb_rect(const damage_list::rect& r) {
     return { static_cast<uint32_t>(r.x), static_cast<uint32_t>(r.y),
@@ -282,6 +289,8 @@ void flip_presenter::shutdown() {
 }
 
 presenter::target flip_presenter::acquire() {
+    m_frame_start_ns = now_ns();
+
     target t;
     t.pixels = reinterpret_cast<uint32_t*>(m_composed);
     t.stride = m_width * BYTES_PER_PIXEL;
@@ -335,6 +344,7 @@ void flip_presenter::present(const damage_list& damage) {
 
     changed.clear();
     m_present_pending = true;
+    m_pending_frame_start_ns = m_frame_start_ns;
 }
 
 /* Presents `buffer` with the regions in `changed`, all of it when `changed` is full. Returns
@@ -372,6 +382,7 @@ void flip_presenter::take_end() {
         if (errno != EINTR) {
             printf("stlxdm: display event read failed: %s\r\n", strerror(errno));
             m_present_pending = false;
+            m_has_latch = false;
         }
 
         return;
@@ -382,8 +393,31 @@ void flip_presenter::take_end() {
     if (end.status != gfxfb::GFXFB_PRESENT_LATCHED) {
         printf("stlxdm: a present ended without latching: %s\r\n",
                end.status == gfxfb::GFXFB_PRESENT_DARK ? "the output went dark" : "the display failed");
+
+        /* An output that went dark counts its vertical blanks from 0 once lit again, so the next
+         * latch counts no misses. A failed display latches no later present */
+        m_has_latch = false;
         return;
     }
 
+    count_missed_frames(end.frame, end.timestamp_ns);
     m_back_index = (m_back_index + 1) % BUFFER_COUNT;
+}
+
+/* Adds the vertical blanks the latched present missed and keeps its latch for the next, taking those
+ * between two latches as evenly spaced. Event times and acquire()'s stamps share the monotonic clock */
+void flip_presenter::count_missed_frames(uint64_t frame, uint64_t latch_ns) {
+    bool has_earlier_latch = m_has_latch && frame > m_latch_frame && latch_ns > m_latch_ns;
+    uint64_t period_ns = has_earlier_latch ? (latch_ns - m_latch_ns) / (frame - m_latch_frame) : 0;
+    if (period_ns != 0) {
+        uint64_t since_latch_ns = m_pending_frame_start_ns > m_latch_ns ? m_pending_frame_start_ns - m_latch_ns : 0;
+        uint64_t due_frame = m_latch_frame + (since_latch_ns + period_ns / 2) / period_ns + 1;
+        if (frame > due_frame) {
+            m_missed_frames += frame - due_frame;
+        }
+    }
+
+    m_has_latch = true;
+    m_latch_frame = frame;
+    m_latch_ns = latch_ns;
 }
