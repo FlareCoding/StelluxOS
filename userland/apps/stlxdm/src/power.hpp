@@ -3,6 +3,7 @@
 
 #include "damage.hpp"
 
+#include <stlxgfx/font.h>
 #include <stlxgfx/surface.h>
 
 #include <cstdint>
@@ -109,6 +110,13 @@ private:
 
     int32_t m_commit = -1;
     bool m_action_ready = false;
+
+    /* Faces for the orb labels and the hint line, one pair per
+     * overlay, since a rebuild has two overlays alive at once */
+    stlxgfx_font* m_label_font = nullptr;
+    stlxgfx_font_metrics m_label_fm = {};
+    stlxgfx_font* m_hint_font = nullptr;
+    stlxgfx_font_metrics m_hint_fm = {};
 
     /* The dimmed desktop is identical every collapse frame, so it is
      * captured once and only faded from there. */
