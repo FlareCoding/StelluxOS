@@ -12,6 +12,48 @@ namespace drivers::nvidia::rm {
 // NVIDIA's handle, the number naming an object the firmware keeps, such as a client (the owner of a tree of objects)
 using handle = uint32_t;
 
+// NVIDIA's classes of the objects standing for the driver and its GPU: a client (NV01_ROOT), a device (NV01_DEVICE_0, a
+// group of GPUs working as one) and a subdevice (NV20_SUBDEVICE_0, one GPU of the group)
+constexpr uint32_t CLASS_CLIENT    = 0x0;
+constexpr uint32_t CLASS_DEVICE    = 0x80;
+constexpr uint32_t CLASS_SUBDEVICE = 0x2080;
+
+// NVIDIA's KERNEL_PID, the process number NVIDIA's driver names in the parameters of a client of the kernel
+constexpr uint32_t KERNEL_PROCESS_ID = 0xFFFFFFFF;
+
+// NVIDIA's NV_PROC_NAME_MAX_LENGTH, the room for a process's name in a client's allocation parameters
+constexpr uint32_t PROCESS_NAME_MAX_BYTES = 100;
+
+// NVIDIA's NV0000_ALLOC_PARAMETERS, the parameters of a client's allocation
+struct client_params {
+    handle   client;
+    uint32_t process_id;
+    char     process_name[PROCESS_NAME_MAX_BYTES];
+};
+
+// NVIDIA's NV0080_ALLOC_PARAMETERS, the parameters of a device's allocation. A device whose shared client is its own
+// client gets a GPU virtual address space of its own
+struct device_params {
+    uint32_t device_index;
+    handle   shared_client;
+    handle   target_client;
+    handle   target_device;
+    uint32_t flags;
+    uint64_t va_space_bytes;
+    uint64_t va_start_internal;
+    uint64_t va_limit_internal;
+    uint32_t va_mode;
+};
+
+// NVIDIA's NV2080_ALLOC_PARAMETERS, the parameters of a subdevice's allocation
+struct subdevice_params {
+    uint32_t subdevice_index;
+};
+
+static_assert(sizeof(client_params) == 108, "NVIDIA's layout of a client's allocation parameters");
+static_assert(sizeof(device_params) == 56, "NVIDIA's layout of a device's allocation parameters");
+static_assert(sizeof(subdevice_params) == 4, "NVIDIA's layout of a subdevice's allocation parameters");
+
 // NVIDIA's NV2080_CTRL_CMD_INTERNAL_INTR_GET_KERNEL_TABLE, the control that gives the kernel interrupt table (for each
 // GPU unit whose interrupts NVIDIA's driver services, the vectors on which they arrive)
 constexpr uint32_t CONTROL_GET_KERNEL_INTERRUPT_TABLE = 0x20800A5C;

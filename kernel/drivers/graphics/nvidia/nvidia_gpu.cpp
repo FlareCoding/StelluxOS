@@ -857,6 +857,23 @@ int32_t nvidia_gpu_driver::attach() {
         );
     }
 
+    rc = m_gsp.allocate_client();
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    rc = nvidia::allocate_gpu_objects(m_gsp, m_gpu_objects);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: the GSP's firmware keeps the driver's client 0x%X, its device 0x%X and subdevice 0x%X",
+        m_gsp.client(),
+        m_gpu_objects.device,
+        m_gpu_objects.subdevice
+    );
+
     // An earlier driver can leave vectors of the tree enabled, which would raise MSI before the GSP's is enabled
     nvidia::disable_cpu_interrupt_tree(regs, chip->interrupt_leaf_count);
 
@@ -962,6 +979,10 @@ int32_t nvidia_gpu_driver::tear_down_gsp() {
 
     int32_t unload_rc = nvidia::OK;
     if (m_must_unload) {
+        if (m_gsp.client() != 0) {
+            release_firmware_objects();
+        }
+
         unload_rc = unload_firmware(regs);
         m_must_unload = false;
     }
@@ -1067,6 +1088,20 @@ void nvidia_gpu_driver::run_fwsec_sb(nvidia::registers& regs) {
         "nvidia: the GSP's falcon halted on FWSEC's SB command, with the boot firmware's progress reading complete and "
         "the SB error code reading 0"
     );
+}
+
+// The unload ends the firmware's service, so the objects it keeps for the driver are released first
+void nvidia_gpu_driver::release_firmware_objects() {
+    int32_t rc = nvidia::OK;
+    if (m_gpu_objects.device != 0) {
+        rc = nvidia::release_gpu_objects(m_gsp, m_gpu_objects);
+        m_gpu_objects = {};
+    }
+
+    int32_t client_rc = m_gsp.release_client();
+    if (rc == nvidia::OK && client_rc == nvidia::OK) {
+        log::info("nvidia: the GSP's firmware released the objects it kept for the driver");
+    }
 }
 
 // The resets that follow run whatever this returns, as NVIDIA's driver resets the GSP whatever the unload's result

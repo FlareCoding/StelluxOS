@@ -2618,6 +2618,262 @@ TEST(nvidia_message_queues, control_refused_by_its_status_its_size_or_a_short_re
     EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 3u + MESSAGE_ELEMENTS);
 }
 
+// NVIDIA's numbers for the requests allocating and releasing an object and the layouts they carry, restated here so the
+// tests hold the requests to NVIDIA's layouts rather than to the driver's
+static constexpr uint32_t NVIDIA_GSP_RM_ALLOC           = 0x67;
+static constexpr uint32_t NVIDIA_FREE                   = 0x0A;
+static constexpr uint32_t ALLOCATION_CLIENT_FIELD       = 0;
+static constexpr uint32_t ALLOCATION_PARENT_FIELD       = 4;
+static constexpr uint32_t ALLOCATION_OBJECT_FIELD       = 8;
+static constexpr uint32_t ALLOCATION_CLASS_FIELD        = 12;
+static constexpr uint32_t ALLOCATION_STATUS_FIELD       = 16;
+static constexpr uint32_t ALLOCATION_PARAMS_BYTES_FIELD = 20;
+static constexpr uint32_t ALLOCATION_FLAGS_FIELD        = 24;
+static constexpr uint32_t ALLOCATION_RESERVED_FIELD     = 28;
+static constexpr uint32_t ALLOCATION_PARAMS_FIELD       = 32;
+static constexpr uint32_t RELEASE_CLIENT_FIELD          = 0;
+static constexpr uint32_t RELEASE_PARENT_FIELD          = 4;
+static constexpr uint32_t RELEASE_OBJECT_FIELD          = 8;
+static constexpr uint32_t RELEASE_STATUS_FIELD          = 12;
+static constexpr uint32_t RELEASE_BYTES                 = 16;
+
+// NVIDIA's first client handle, the size of a client's parameters, the process number NVIDIA's driver names for a
+// client of the kernel, and the first handle NVIDIA's modesetting module gives an object of its first device
+static constexpr uint32_t NVIDIA_FIRST_CLIENT        = 0xC1D00000;
+static constexpr uint32_t NVIDIA_CLIENT_PARAMS_BYTES = 108;
+static constexpr uint32_t NVIDIA_KERNEL_PROCESS_ID   = 0xFFFFFFFF;
+static constexpr uint32_t NVIDIA_FIRST_OBJECT        = 0x00010001;
+
+// The parent, handle and class of an object allocated and released under the driver's client
+static constexpr uint32_t TEST_PARENT = 0x00010001;
+static constexpr uint32_t TEST_OBJECT = 0x00010002;
+static constexpr uint32_t TEST_CLASS  = 0x2080;
+
+static constexpr uint32_t CLIENT_REPLY_BYTES     = ALLOCATION_PARAMS_FIELD + NVIDIA_CLIENT_PARAMS_BYTES;
+static constexpr uint32_t ALLOCATION_REPLY_BYTES = ALLOCATION_PARAMS_FIELD + PARAMS_BYTES;
+
+// A size of parameters whose low 32 bits are those of `PARAMS_BYTES`, so a check made after narrowing passes it
+static constexpr size_t NARROWING_PARAMS_BYTES = (static_cast<size_t>(1) << 32) + PARAMS_BYTES;
+
+// Stores a reply to `function` with this result and payload in element `index` of the moved status queue
+static void store_reply_with_result(
+    fake_queue_memory& memory,
+    status_test_message& message,
+    uint32_t index,
+    uint32_t function,
+    const uint8_t* payload,
+    uint32_t payload_bytes,
+    uint32_t result
+) {
+    message.frame(1, index, payload, payload_bytes);
+    message.set(MESSAGE_FUNCTION, function);
+    message.set(MESSAGE_RESULT, result);
+    message.seal(MESSAGE_PAYLOAD + payload_bytes);
+    message.store(memory, MOVED_HEADER, index);
+}
+
+// The client goes out with no parent or object, its handle and the kernel's process number, then an object with
+// NVIDIA's header and its parameters, both in the driver's length, and the parameters take a longer reply's copy
+TEST(nvidia_message_queues, allocations_carry_nvidias_header_and_parameters_and_copy_the_reply_back) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint8_t client_reply[CLIENT_REPLY_BYTES] = {};
+    uint8_t reply[ALLOCATION_REPLY_BYTES + 8] = {};
+    string::memcpy(reply + ALLOCATION_PARAMS_FIELD, REPLY_PARAMS, PARAMS_BYTES);
+    string::memset(reply + ALLOCATION_REPLY_BYTES, STALE_BYTE, 8);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_ALLOC, client_reply, sizeof(client_reply));
+    store_function_message(memory, message, 1, NVIDIA_GSP_RM_ALLOC, reply, sizeof(reply));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    uint32_t params[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+
+    EXPECT_EQ(conversation.client(), 0u);
+    ASSERT_EQ(conversation.allocate_client(), OK);
+    EXPECT_EQ(conversation.client(), NVIDIA_FIRST_CLIENT);
+    EXPECT_EQ(conversation.allocate(TEST_PARENT, TEST_OBJECT, TEST_CLASS, params, PARAMS_BYTES), OK);
+
+    const uint8_t* client_request = memory.element(0);
+    EXPECT_EQ(field_at(client_request, MESSAGE_FUNCTION), NVIDIA_GSP_RM_ALLOC);
+    EXPECT_EQ(field_at(client_request, MESSAGE_RPC_BYTES), RPC_HEADER_BYTES + CLIENT_REPLY_BYTES);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + ALLOCATION_CLIENT_FIELD), NVIDIA_FIRST_CLIENT);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + ALLOCATION_PARENT_FIELD), 0u);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + ALLOCATION_OBJECT_FIELD), 0u);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + ALLOCATION_CLASS_FIELD), 0u);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + ALLOCATION_PARAMS_BYTES_FIELD), NVIDIA_CLIENT_PARAMS_BYTES);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + ALLOCATION_PARAMS_FIELD), NVIDIA_FIRST_CLIENT);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + ALLOCATION_PARAMS_FIELD + 4), NVIDIA_KERNEL_PROCESS_ID);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + ALLOCATION_PARAMS_FIELD + 8), 0u);
+
+    const uint8_t* request = memory.element(1);
+    EXPECT_EQ(field_at(request, MESSAGE_FUNCTION), NVIDIA_GSP_RM_ALLOC);
+    EXPECT_EQ(field_at(request, MESSAGE_RPC_BYTES), RPC_HEADER_BYTES + ALLOCATION_REPLY_BYTES);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + ALLOCATION_CLIENT_FIELD), NVIDIA_FIRST_CLIENT);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + ALLOCATION_PARENT_FIELD), TEST_PARENT);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + ALLOCATION_OBJECT_FIELD), TEST_OBJECT);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + ALLOCATION_CLASS_FIELD), TEST_CLASS);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + ALLOCATION_STATUS_FIELD), 0u);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + ALLOCATION_PARAMS_BYTES_FIELD), PARAMS_BYTES);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + ALLOCATION_FLAGS_FIELD), 0u);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + ALLOCATION_RESERVED_FIELD), 0u);
+    for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
+        EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + ALLOCATION_PARAMS_FIELD + i * 4), SENT_PARAMS[i]);
+        EXPECT_EQ(params[i], REPLY_PARAMS[i]);
+    }
+}
+
+// The statuses the refused allocation's and release's replies carry, which their failure lines must show
+static constexpr uint32_t REFUSED_ALLOCATION_STATUS = 0x1F;
+static constexpr uint32_t REFUSED_RELEASE_STATUS    = 0x2E;
+
+// A failing result or a reply a byte short leaves the parameters unchanged, a byte too many or a size wider than 32
+// bits whose low bits fit queues nothing, and the most one message holds take 16 elements
+TEST(nvidia_message_queues, allocation_refused_answered_short_or_too_large_fails) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    queue_test_payload oversized(PAYLOAD_MAX_BYTES - ALLOCATION_PARAMS_FIELD + 1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_NOT_NULL(oversized.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint8_t reply[ALLOCATION_REPLY_BYTES] = {};
+    string::memcpy(reply + ALLOCATION_PARAMS_FIELD, REPLY_PARAMS, PARAMS_BYTES);
+    uint8_t refusal[ALLOCATION_REPLY_BYTES] = {};
+    string::memcpy(refusal, reply, sizeof(reply));
+    put_word(refusal, ALLOCATION_STATUS_FIELD, REFUSED_ALLOCATION_STATUS);
+    MOVED_HEADER.write_to(memory);
+    store_reply_with_result(memory, message, 0, NVIDIA_GSP_RM_ALLOC, refusal, sizeof(refusal), CONTROL_FAILURE);
+    store_function_message(memory, message, 1, NVIDIA_GSP_RM_ALLOC, reply, sizeof(reply) - 1);
+    store_function_message(memory, message, 2, NVIDIA_GSP_RM_ALLOC, reply, sizeof(reply));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    uint32_t params[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+
+    // The refusal's line shows the reply's status, and the allocation's own limit refuses a byte too many in words
+    // `send` never logs, so a looser or missing limit fails
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t refused_rc = conversation.allocate(TEST_PARENT, TEST_OBJECT, TEST_CLASS, params, PARAMS_BYTES);
+    int32_t short_rc = conversation.allocate(TEST_PARENT, TEST_OBJECT, TEST_CLASS, params, PARAMS_BYTES);
+    int32_t oversized_rc = conversation.allocate(
+        TEST_PARENT,
+        TEST_OBJECT,
+        TEST_CLASS,
+        oversized.bytes,
+        oversized.count
+    );
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(refused_rc, ERR_FIRMWARE);
+    EXPECT_EQ(short_rc, ERR_BAD_MESSAGE);
+    EXPECT_EQ(oversized_rc, ERR_TOO_LARGE);
+    EXPECT_TRUE(logged_text_contains("with 0x1F in the allocation's status field"));
+    EXPECT_TRUE(logged_text_contains("more than the 65424 one message carries after the allocation's header"));
+    EXPECT_EQ(
+        conversation.allocate(TEST_PARENT, TEST_OBJECT, TEST_CLASS, params, NARROWING_PARAMS_BYTES),
+        ERR_TOO_LARGE
+    );
+
+    for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
+        EXPECT_EQ(params[i], SENT_PARAMS[i]);
+    }
+
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 2u);
+    EXPECT_EQ(
+        conversation.allocate(TEST_PARENT, TEST_OBJECT, TEST_CLASS, oversized.bytes, oversized.count - 1),
+        ERR_BAD_MESSAGE
+    );
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 2u + MESSAGE_ELEMENTS);
+}
+
+// An object's release carries the client, a parent of 0, the object and a status of 0, and the client's names the
+// client as both, which `client()` still gives after a refused release and no longer after an accepted one
+TEST(nvidia_message_queues, releases_carry_nvidias_layout_and_only_an_accepted_one_drops_the_client) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint8_t client_reply[CLIENT_REPLY_BYTES] = {};
+    uint8_t release_reply[RELEASE_BYTES] = {};
+    uint8_t release_refusal[RELEASE_BYTES] = {};
+    put_word(release_refusal, RELEASE_STATUS_FIELD, REFUSED_RELEASE_STATUS);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_ALLOC, client_reply, sizeof(client_reply));
+    store_function_message(memory, message, 1, NVIDIA_FREE, release_reply, sizeof(release_reply));
+    store_reply_with_result(memory, message, 2, NVIDIA_FREE, release_refusal, RELEASE_BYTES, CONTROL_FAILURE);
+    store_function_message(memory, message, 3, NVIDIA_FREE, release_reply, sizeof(release_reply));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 4);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    ASSERT_EQ(conversation.allocate_client(), OK);
+
+    EXPECT_EQ(conversation.release(TEST_OBJECT), OK);
+
+    // The refused release's line names the client and shows the status the reply carries
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t refused_rc = conversation.release_client();
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(refused_rc, ERR_FIRMWARE);
+    EXPECT_TRUE(logged_text_contains("releasing the driver's client 0xC1D00000 failed"));
+    EXPECT_TRUE(logged_text_contains("with 0x2E in the release's status field"));
+    EXPECT_EQ(conversation.client(), NVIDIA_FIRST_CLIENT);
+    EXPECT_EQ(conversation.release_client(), OK);
+    EXPECT_EQ(conversation.client(), 0u);
+
+    const uint8_t* request = memory.element(1);
+    EXPECT_EQ(field_at(request, MESSAGE_FUNCTION), NVIDIA_FREE);
+    EXPECT_EQ(field_at(request, MESSAGE_RPC_BYTES), RPC_HEADER_BYTES + RELEASE_BYTES);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + RELEASE_CLIENT_FIELD), NVIDIA_FIRST_CLIENT);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + RELEASE_PARENT_FIELD), 0u);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + RELEASE_OBJECT_FIELD), TEST_OBJECT);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + RELEASE_STATUS_FIELD), 0u);
+
+    const uint8_t* client_request = memory.element(3);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + RELEASE_CLIENT_FIELD), NVIDIA_FIRST_CLIENT);
+    EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + RELEASE_OBJECT_FIELD), NVIDIA_FIRST_CLIENT);
+}
+
+// Handles count up from NVIDIA's first, and `stop` drops the client and starts the count again for the next `start`
+TEST(nvidia_message_queues, handles_count_up_from_nvidias_first_until_stop) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint8_t client_reply[CLIENT_REPLY_BYTES] = {};
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_ALLOC, client_reply, sizeof(client_reply));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    ASSERT_EQ(conversation.allocate_client(), OK);
+
+    EXPECT_EQ(conversation.new_handle(), NVIDIA_FIRST_OBJECT);
+    EXPECT_EQ(conversation.new_handle(), NVIDIA_FIRST_OBJECT + 1);
+    conversation.stop();
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    EXPECT_EQ(conversation.client(), 0u);
+    EXPECT_EQ(conversation.new_handle(), NVIDIA_FIRST_OBJECT);
+}
+
 // NVIDIA's command for the kernel interrupt table, the table's layout and the GSP's engine, restated here so the tests
 // hold the table to NVIDIA's layout rather than to the driver's
 static constexpr uint32_t NVIDIA_GET_KERNEL_INTERRUPT_TABLE = 0x20800A5C;
