@@ -3,6 +3,7 @@
 #include <stlx/proc.h>
 #include <stlxgfx/image.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -124,6 +125,25 @@ static bool parse_hotkey(const char* chord, uint8_t* out_mods,
     *out_mods = mods;
     *out_usage = usage;
     return true;
+}
+
+/* Finds the largest x and y among a window's position and those its
+ * unacked configures and unsent target hold */
+static void find_furthest_position(const dm_window& w, int32_t* out_x, int32_t* out_y) {
+    int32_t far_x = w.x;
+    int32_t far_y = w.y;
+    for (uint32_t i = 0; i < w.sent_conf_count; i++) {
+        far_x = std::max(far_x, w.sent_confs[i].x);
+        far_y = std::max(far_y, w.sent_confs[i].y);
+    }
+
+    if (w.target_w != 0) {
+        far_x = std::max(far_x, w.target_x);
+        far_y = std::max(far_y, w.target_y);
+    }
+
+    *out_x = far_x;
+    *out_y = far_y;
 }
 
 int server::init(presenter* pres, const stlxconf_t* conf) {
@@ -289,6 +309,55 @@ void server::reload_config() {
 
     m_damage.add_full();
     printf("stlxdm: config reloaded\r\n");
+}
+
+/* Moves each toplevel by the least that puts the left end of its title
+ * bar clear of the right edge, dock and bottom edge wherever it lands */
+void server::keep_windows_in_reach() {
+    /* The bottom edge bounds too, since after a failed rebuild the
+     * running dock can lie below it */
+    int32_t max_x = static_cast<int32_t>(m_presenter->width()) - decor::TITLE_H;
+    int32_t max_y = std::min(m_panels->dock_y(), static_cast<int32_t>(m_presenter->height()));
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            if (w->parent_id != 0) {
+                continue;
+            }
+
+            int32_t far_x = 0;
+            int32_t far_y = 0;
+            find_furthest_position(*w, &far_x, &far_y);
+            int32_t dx = std::min(far_x, max_x) - far_x;
+            int32_t dy = std::min(far_y, max_y) - far_y;
+
+            move_window(w.get(), dx, dy);
+        }
+    }
+}
+
+void server::screen_changed(int32_t pointer_x, int32_t pointer_y, uint16_t buttons) {
+    bool resized = m_backdrop->width != m_presenter->width() || m_backdrop->height != m_presenter->height();
+    if (resized) {
+        dm_conf_state state;
+        if (build_conf_state(state) == 0) {
+            adopt_conf_state(std::move(state));
+            m_panels->set_perf(m_perf_readout);
+        } else {
+            printf("stlxdm: desktop rebuild at %ux%u failed, keeping the running desktop\r\n",
+                   m_presenter->width(), m_presenter->height());
+        }
+
+        keep_windows_in_reach();
+    }
+
+    m_cursor_x = pointer_x;
+    m_cursor_y = pointer_y;
+    show_cursor();
+    m_damage.add_full();
+
+    /* A clamp, a rebuild or a window's move comes from no device, so the
+     * pointer routes as a motion for hover, its shape and the clients */
+    route_untimed_pointer(pointer_x, pointer_y, buttons, 0, 0);
 }
 
 void server::shutdown() {

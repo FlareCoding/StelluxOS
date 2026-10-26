@@ -22,6 +22,19 @@ int input::init(uint32_t screen_w, uint32_t screen_h,
     return (m_kbd_fd >= 0 || m_mouse_fd >= 0) ? 0 : -1;
 }
 
+void input::set_screen_size(uint32_t screen_w, uint32_t screen_h) {
+    m_max_x = static_cast<int32_t>(screen_w) - 1;
+    m_max_y = static_cast<int32_t>(screen_h) - 1;
+
+    if (m_ptr_x > m_max_x) {
+        m_ptr_x = m_max_x;
+    }
+
+    if (m_ptr_y > m_max_y) {
+        m_ptr_y = m_max_y;
+    }
+}
+
 void input::shutdown() {
     if (m_kbd_fd >= 0) {
         close(m_kbd_fd);

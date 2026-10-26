@@ -15,6 +15,11 @@ public:
      * repeat delay of zero disables key repeat. */
     int init(uint32_t screen_w, uint32_t screen_h,
              uint64_t repeat_delay_ns, uint64_t repeat_interval_ns);
+
+    /* Bounds the pointer by a screen of `screen_w` by `screen_h`,
+     * moving it inside when it lies past the screen's edges. */
+    void set_screen_size(uint32_t screen_w, uint32_t screen_h);
+
     void shutdown();
 
     int kbd_fd() const { return m_kbd_fd; }
@@ -38,6 +43,7 @@ public:
 
     int32_t ptr_x() const { return m_ptr_x; }
     int32_t ptr_y() const { return m_ptr_y; }
+    uint16_t buttons() const { return m_buttons; }
 
 private:
     int m_kbd_fd = -1;

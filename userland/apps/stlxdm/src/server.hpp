@@ -138,9 +138,10 @@ public:
      * entries, the moment clients may exist. Returns 0 or -1. */
     int serve();
 
-    /* Shows the pointer after the splash, which has none, on the primary
-     * output's hardware cursor when it can show the shape, else in the
-     * frames, and prints which. */
+    /* Shows the pointer on the primary output's hardware cursor when it
+     * can show the shape, else in the frames, and prints which. Runs
+     * after the splash, which has no pointer, and after each change of
+     * the primary output. */
     void show_cursor();
 
     /* Whether a pointer move waits for the hardware cursor. */
@@ -157,6 +158,18 @@ public:
      * wallpaper, and the hotkeys rebuild, then the desktop repaints.
      * Autostart entries do not respawn. */
     void reload_config();
+
+    /* Redraws the desktop after the presenter's `update_output()`
+     * returns `CHANGED`, since the primary output may show none of the
+     * earlier frames. At a size other than the desktop's the backdrop,
+     * panels and power build again, or the running ones stay when the
+     * build fails, and toplevel windows move back within the pointer's
+     * reach. The pointer then shows again at (`pointer_x`,
+     * `pointer_y`), which must lie on the screen, and routes there as
+     * a motion with `buttons` held, through the steps a device's
+     * motion takes except its latency stamp. The whole desktop
+     * repaints. */
+    void screen_changed(int32_t pointer_x, int32_t pointer_y, uint16_t buttons);
 
     /* Fills fds for one poll cycle: listen socket plus every client. */
     void collect_fds(std::vector<struct pollfd>& fds) const;
@@ -183,6 +196,16 @@ public:
         if (!m_power->active()) {
             m_panels->clock_tick();
         }
+    }
+
+    /* Whether a power overlay phase or hold is in flight. */
+    bool power_animating() const { return m_power->animating(); }
+
+    /* Advances the power overlay and, once its collapse ends, runs a
+     * confirmed action, as `compose_tick()` does while frames show. */
+    void power_tick() {
+        m_power->update();
+        m_power->run_action();
     }
 
     /* Latches pending commits into scene damage, composes exactly the
@@ -237,6 +260,7 @@ private:
     void spawn_shortcut(const char* path);
     int build_conf_state(dm_conf_state& out);
     void adopt_conf_state(dm_conf_state&& next);
+    void keep_windows_in_reach();
     bool send_to(dm_client& c, uint16_t type,
                  const void* payload, uint32_t length);
     void flush_window_events(dm_client& c, dm_window& w);
@@ -248,6 +272,11 @@ private:
     void send_event(dm_window* w, const swp_event_rec& rec);
     void set_focus(dm_window* w);
     void forget_window(dm_window* w);
+
+    /* Takes `route_pointer()`'s steps without stamping an input for
+     * the latency meter, for a pointer event that no device sent. */
+    void route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
+                               uint16_t changed, int16_t wheel);
 
     /* scene.cpp */
     void scene_map(dm_window* w);
@@ -264,8 +293,8 @@ private:
     uint32_t m_window_count = 0;
     damage_list m_damage;
 
-    /* The screen-sized backdrop: wallpaper or flat color, with the
-     * panels painted into their rows. Exposed pixels blit from here. */
+    /* The desktop's backdrop: wallpaper or flat color, with the panels
+     * painted into their rows. Exposed pixels blit from here. */
     stlxgfx_surface_t* m_backdrop = nullptr;
 
     /* The desktop's own input to paint latency and missed frames meter,
@@ -332,6 +361,8 @@ private:
     int32_t m_drag_dy = 0;
     dm_window* m_close_hover = nullptr;
     dm_window* m_close_press = nullptr;
+
+    void move_window(dm_window* w, int32_t dx, int32_t dy);
 
     /* Interactive resize: the grabbed window, which content edges the
      * pointer moves, the fixed opposite content corner, the rubber
