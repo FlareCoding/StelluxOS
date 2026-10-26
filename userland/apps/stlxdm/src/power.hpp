@@ -12,8 +12,8 @@
  * shut down, above every window and below only the cursor. Orbs
  * reveal with a short stagger, commit by holding until the progress
  * ring closes, and the chosen light collapses the screen to black
- * before the platform call. The dock's right edge carries the star
- * that opens it. */
+ * before the platform call, unless `run_action_now()` makes the call
+ * first. The dock's right edge carries the star that opens it. */
 class dm_power {
 public:
     enum class state {
@@ -86,6 +86,10 @@ public:
     /* Issues the chosen power operation once the collapse has fully
      * darkened. Only returns when the platform refused. */
     void run_action();
+
+    /* Issues the chosen power operation without waiting for the
+     * collapse. Only returns when not committing or when refused. */
+    void run_action_now();
 
 private:
     void orb_center(int32_t choice, float* cx, float* cy) const;
