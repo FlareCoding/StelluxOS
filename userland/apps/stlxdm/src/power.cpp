@@ -5,8 +5,6 @@
  */
 #include "power.hpp"
 
-#include <stlxgfx/font.h>
-
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -47,12 +45,6 @@ constexpr uint32_t PW_LABEL_FONT = 15;
 constexpr uint32_t PW_HINT_FONT = 12;
 
 static const char* const g_choice_label[2] = { "Restart", "Shut Down" };
-
-/* Faces for the orb labels and the hint line, opened once */
-static stlxgfx_font* g_label_font = nullptr;
-static stlxgfx_font_metrics g_label_fm = {};
-static stlxgfx_font* g_hint_font = nullptr;
-static stlxgfx_font_metrics g_hint_fm = {};
 
 static uint64_t pw_now_ns() {
     timespec ts;
@@ -357,14 +349,14 @@ int dm_power::init(uint32_t screen_w, uint32_t screen_h,
     m_star_cx = static_cast<int32_t>(screen_w) - PW_STAR_MARGIN;
     m_star_cy = bar_y + static_cast<int32_t>(taskbar_height) / 2;
 
-    g_label_font = stlxgfx_font_open(STLXGFX_UI_FONT_MEDIUM_PATH, PW_LABEL_FONT);
-    g_hint_font = stlxgfx_font_open(STLXGFX_UI_FONT_PATH, PW_HINT_FONT);
-    if (!g_label_font || !g_hint_font) {
+    m_label_font = stlxgfx_font_open(STLXGFX_UI_FONT_MEDIUM_PATH, PW_LABEL_FONT);
+    m_hint_font = stlxgfx_font_open(STLXGFX_UI_FONT_PATH, PW_HINT_FONT);
+    if (!m_label_font || !m_hint_font) {
         return -1;
     }
 
-    stlxgfx_font_metrics_get(g_label_font, &g_label_fm);
-    stlxgfx_font_metrics_get(g_hint_font, &g_hint_fm);
+    stlxgfx_font_metrics_get(m_label_font, &m_label_fm);
+    stlxgfx_font_metrics_get(m_hint_font, &m_hint_fm);
 
     /* Reserved and touched up front, so the first collapse pays for
      * neither the allocation nor faulting a screen of pages in */
@@ -380,10 +372,10 @@ void dm_power::shutdown() {
     stlxgfx_destroy_surface(m_backdrop);
     m_backdrop = nullptr;
 
-    stlxgfx_font_close(g_label_font);
-    stlxgfx_font_close(g_hint_font);
-    g_label_font = nullptr;
-    g_hint_font = nullptr;
+    stlxgfx_font_close(m_label_font);
+    stlxgfx_font_close(m_hint_font);
+    m_label_font = nullptr;
+    m_hint_font = nullptr;
 }
 
 bool dm_power::collapsing() const {
@@ -659,7 +651,7 @@ void dm_power::draw_orbs(stlxgfx_surface_t* s, int32_t ox, int32_t oy) {
                    pw_with_alpha(accent, 0.95f));
         }
 
-        pw_text_centered(s, g_label_font, g_label_fm, cx, cy + r + 24.0f,
+        pw_text_centered(s, m_label_font, m_label_fm, cx, cy + r + 24.0f,
                          g_choice_label[i],
                          pw_with_alpha(hovered ? PW_LABEL_BRIGHT
                                                : PW_LABEL_DIM, local));
@@ -701,7 +693,7 @@ void dm_power::draw_overlay(stlxgfx_surface_t* back,
     const char* hint = "Hold to confirm     Esc to cancel";
     float hy = static_cast<float>(m_height) * 0.46f
              + static_cast<float>(PW_ORB_RADIUS) + 88.0f;
-    pw_text_centered(view, g_hint_font, g_hint_fm,
+    pw_text_centered(view, m_hint_font, m_hint_fm,
                      static_cast<float>(m_width) * 0.5f
                          - static_cast<float>(clip.x),
                      hy - static_cast<float>(clip.y), hint,
