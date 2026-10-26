@@ -272,8 +272,8 @@ void server::flush_cursor() {
     }
 }
 
-/* After a failed cursor call the frames draw the pointer, and the next
- * shape change tries the hardware cursor again */
+/* After a failed cursor call the frames draw the pointer until a shape
+ * change or a change of the primary output tries the hardware cursor */
 void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
     if (x == m_cursor_x && y == m_cursor_y && shape == m_cursor_shape) {
         return;
@@ -340,6 +340,34 @@ void server::damage_outline() {
     m_damage.add(r.x, r.y + r.h - decor::OUTLINE_T, r.w, decor::OUTLINE_T);
     m_damage.add(r.x, r.y, decor::OUTLINE_T, r.h);
     m_damage.add(r.x + r.w - decor::OUTLINE_T, r.y, decor::OUTLINE_T, r.h);
+}
+
+/* Promised positions and a held resize's anchors move with the window, or
+ * a late resize ack or the resize's next motion would snap it back */
+void server::move_window(dm_window* w, int32_t dx, int32_t dy) {
+    scene_damage_window(w);
+    w->x += dx;
+    w->y += dy;
+    scene_damage_window(w);
+
+    for (uint32_t i = 0; i < w->sent_conf_count; i++) {
+        w->sent_confs[i].x += dx;
+        w->sent_confs[i].y += dy;
+    }
+
+    if (w->target_w != 0) {
+        w->target_x += dx;
+        w->target_y += dy;
+    }
+
+    if (w == m_resize) {
+        damage_outline();
+        m_resize_anchor_x += dx;
+        m_resize_anchor_y += dy;
+        m_outline.x += dx;
+        m_outline.y += dy;
+        damage_outline();
+    }
 }
 
 void server::begin_resize(dm_window* w, decor::zone z, uint32_t shape) {
@@ -413,10 +441,14 @@ void server::update_resize(int32_t px, int32_t py) {
 
 void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                            uint16_t changed, int16_t wheel) {
+    m_perf.note_input(m_wake_ns);
+    route_untimed_pointer(x, y, buttons, changed, wheel);
+}
+
+void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
+                                   uint16_t changed, int16_t wheel) {
     bool press = changed != 0 && (buttons & changed) != 0;
     bool all_released = (buttons & 0x7) == 0;
-
-    m_perf.note_input(m_wake_ns);
 
     /* An active overlay owns the pointer entirely. Hover and hold
      * transitions repaint the orb boxes. */
@@ -484,23 +516,10 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
             want_y = m_panels->dock_y();
         }
 
-        scene_damage_window(m_drag);
         int32_t dx = x - m_drag_dx - m_drag->x;
         int32_t dy = want_y - m_drag->y;
-        m_drag->x += dx;
-        m_drag->y += dy;
-        scene_damage_window(m_drag);
 
-        /* Positions promised to unacked configures move with the drag,
-         * or a late resize ack would snap the window back */
-        for (uint32_t i = 0; i < m_drag->sent_conf_count; i++) {
-            m_drag->sent_confs[i].x += dx;
-            m_drag->sent_confs[i].y += dy;
-        }
-        if (m_drag->target_w != 0) {
-            m_drag->target_x += dx;
-            m_drag->target_y += dy;
-        }
+        move_window(m_drag, dx, dy);
 
         /* Dropping the window sheds the drag glow */
         if (all_released) {
