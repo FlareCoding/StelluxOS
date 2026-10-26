@@ -5,6 +5,7 @@
 
 #include "common/types.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
+#include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/rm.h"
@@ -32,9 +33,12 @@ namespace drivers::nvidia {
  * and its result is translated with `to_error`, the one translation of the
  * firmware's status codes into this driver's errors. A control (a command to
  * an object the firmware keeps) goes through `control`, which sends it as a
- * request. A message the firmware sends unasked, such as its ready message, is
- * awaited with `await` during bring-up and read with `drain` once bring-up
- * ends. A failure the firmware reports is looked for with `check_health`.
+ * request. Objects under the driver's own client are allocated and released
+ * through the calls of `firmware`, which a `gsp` implements, once
+ * `allocate_client` has allocated the client. A message the firmware sends
+ * unasked, such as its ready message, is awaited with `await` during bring-up
+ * and read with `drain` once bring-up ends. A failure the firmware reports is
+ * looked for with `check_health`.
  *
  *   driver --- send, request ----------> command queue ---> GSP's firmware
  *   driver <-- await, request, drain --- status queue  <--- GSP's firmware
@@ -42,10 +46,12 @@ namespace drivers::nvidia {
  * A `gsp` owns the payload buffer, which `stop` and the destructor free, but
  * not the queues' memory, which must stay allocated for as long as messages
  * are sent or received through the `gsp`, nor BAR0's mapping, which must stay
- * mapped until `stop`. Its waits spin on the calling CPU without sleeping, and
- * only one thread may use it at a time.
+ * mapped until `stop`. It also owns the driver's client from `allocate_client`
+ * until `release_client` returns `OK`, and `stop` and the destructor drop the
+ * client without asking the firmware to release it. Its waits spin on the
+ * calling CPU without sleeping, and only one thread may use it at a time.
  */
-class gsp {
+class gsp : public firmware {
 public:
     /**
      * @brief An object holding no queues, for a driver to keep until it lays
@@ -299,19 +305,94 @@ public:
     static int32_t to_error(uint32_t status);
 
     /**
-     * @brief Free the payload buffer and drop the queues, the view of BAR0 and
-     * the sequencer's context, leaving the object as the default constructor
-     * makes it. The queues' memory is left as it is.
+     * @brief Allocate the driver's client, under which every object of
+     * `firmware` lies, as NVIDIA's driver allocates the firmware's copy of a
+     * client: a request with no parent and no object, carrying the client's
+     * handle and, for a client of the kernel, NVIDIA's process number for the
+     * kernel. NVIDIA's driver sends the handle its own resource server gave
+     * the client, while here the driver names 0xC1D00000, the handle at index
+     * 0 of the range that server gives clients, which the firmware keeps as
+     * given. The status queue must be linked, and `client()` gives the handle
+     * from `OK` on.
+     * @return `OK`, or what `allocate` returns for an object, logged.
+     */
+    int32_t allocate_client();
+
+    /**
+     * @brief Release the driver's client. `client()` gives 0 once the release
+     * returns `OK` and still gives the client after an error. The client must
+     * have been allocated.
+     * @return `OK`, or what `release` returns, logged.
+     */
+    int32_t release_client();
+
+    /**
+     * @brief Allocate an object under the driver's client with NVIDIA's
+     * allocation request, whose 32-byte header (the client, the parent, the
+     * object, the class, a status of 0 for the reply to fill, the parameters'
+     * size, no flags and 4 reserved bytes) the parameters follow, from a
+     * buffer allocated on the unprivileged heap for the call, or
+     * `ERR_NO_MEMORY` is returned. As in NVIDIA's driver, only the reply's
+     * result tells whether the object was allocated. NVIDIA's driver hands up
+     * the status the reply gives in its copy of the header, whatever its
+     * value, while here a failing result is `ERR_FIRMWARE`, as `to_error`
+     * describes, and that status is only logged. NVIDIA's driver also copies
+     * the parameters back whatever the reply's length, while here the reply's
+     * payload must hold the header and the parameters, or `ERR_BAD_MESSAGE` is
+     * returned. NVIDIA's driver sizes the parameters by the class, serializes
+     * some classes and leaves the parameters out of the message's length,
+     * while here the parameters go out flat at the caller's size and the
+     * length counts them.
+     */
+    int32_t allocate(rm::handle parent, rm::handle object, uint32_t class_id, void* params, size_t size) override;
+
+    /**
+     * @brief Release an object under the driver's client with NVIDIA's release
+     * request, which carries the client, a parent of 0, the object and a
+     * status of 0 for the reply to fill. As in NVIDIA's driver, only the
+     * reply's result tells whether the object was released, and a failure logs
+     * the status the reply carries.
+     */
+    int32_t release(rm::handle object) override;
+
+    /**
+     * @brief Number the objects under the driver's client from 0x00010001 up,
+     * as NVIDIA's modesetting module numbers the first 65535 objects of its
+     * first device. NVIDIA's allocator gives the lowest free number and so
+     * reuses a released one, while here no number repeats until `stop` starts
+     * the count again.
+     */
+    rm::handle new_handle() override;
+
+    rm::handle client() const override;
+
+    /**
+     * @brief Free the payload buffer and drop the queues, the view of BAR0,
+     * the sequencer's context, the driver's client and the count of handles,
+     * leaving the object as the default constructor makes it. The queues'
+     * memory is left as it is, and the firmware is not asked to release the
+     * client.
      */
     void stop();
 
 private:
     int32_t await_since(uint32_t function, received_message& out, uint64_t start_ns, uint64_t timeout_ns);
+    int32_t request_allocation(
+        rm::handle client,
+        rm::handle parent,
+        rm::handle object,
+        uint32_t class_id,
+        void* params,
+        size_t params_bytes
+    );
+    int32_t request_release(rm::handle client, rm::handle object);
 
     message_queues        m_queues;
     registers             m_regs{0};
     cpu_sequencer_context m_sequencer = {};
     uint8_t*              m_payload = nullptr;
+    rm::handle            m_client = 0;
+    uint32_t              m_handle_count = 0; // handles `new_handle` has given since the last `stop`
 };
 
 } // namespace drivers::nvidia

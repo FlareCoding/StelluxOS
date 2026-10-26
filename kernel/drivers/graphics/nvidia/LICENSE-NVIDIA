@@ -1674,13 +1674,23 @@ src/nvidia/kernel/vgpu/nv/rpc.c
     serialized nor marked to copy its parameters out on an error) with the
     parameters after it, and that the control's own failing status skips the
     copy of the parameters back, in gsp.h, gsp.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that a failed
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a failed
     control's status is handed up whatever its value, the reply's flags can ask
     for a failed control's parameters to be copied out, a control marked
     cacheable is answered from a cache of its successful answers, parameters too
     large for one message are sent in several, some controls are sent
-    serialized, parameters given with a size of 0 are refused, and the
-    parameters are copied back whatever the reply's length, in gsp.h
+    serialized, parameters given with a size of 0 are refused, the parameters of
+    a control or an allocation are copied back whatever the reply's length, a
+    failed allocation hands up the status the reply gives in its copy of the
+    header, and an allocation's parameters are sized by its class, serialized
+    for some classes and left out of the message's length, in gsp.h, that a
+    failed allocation or release logs the status its reply carries, in gsp.h and
+    gsp.cpp, and what NVIDIA's driver writes in an allocation request's header
+    (the client, the parent, the object, the class, the parameters' size and no
+    flags) and in a release request (the client, a parent of 0 and the object),
+    with only the reply's result telling whether an allocation succeeded before
+    its parameters are copied back, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
@@ -1697,6 +1707,8 @@ src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
     unload's function number, in gsp_unload.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the control request's
     function number, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the function numbers
+    of the requests allocating and releasing an object, in gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and the numbering of
     functions from 0 and of events from 0x1000, fewer than 0x1000 of each, in
     message_queues.cpp
@@ -1724,10 +1736,96 @@ src/nvidia/generated/g_rpc-structures.h
     gsp_unload.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
     that the reply's payload holds the static configuration from its first byte,
     in gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the layout of a
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the layout of a
     control request's header, with the control's status in it, in gsp.h, gsp.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, the layout of an
+    allocation request's header, with the allocation's status in it, in gsp.h,
+    gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and that a
+    release request's payload holds NVOS00_PARAMETERS_v03_00 alone, in gsp.cpp
     and kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_sdk-structures.h
+    the layout of a release request (the client, the parent, the object and the
+    status the reply fills), in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cl0000.h
+    the class number of a client, NV01_ROOT, and the layout of its allocation
+    parameters, in rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2001-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cl0080.h
+    the class number of a device, NV01_DEVICE_0, and the layout of its
+    allocation parameters, in rm.h and
+    kernel/tests/graphics/nvidia_gpu_objects.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2001-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cl2080.h
+    the class number of a subdevice, NV20_SUBDEVICE_0, and the layout of its
+    allocation parameters, in rm.h and
+    kernel/tests/graphics/nvidia_gpu_objects.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2002-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvlimits.h
+    the length of the process name in a client's allocation parameters, 100, in
+    rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/kernel/inc/vgpu/rpc.h
+    that NVIDIA's driver allocates the firmware's copy of a client with no
+    parent and no object, the client's handle in its parameters and, for a
+    client of the kernel, KERNEL_PID as its process number, in gsp.h, gsp.cpp,
+    rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp, and that it
+    sends the firmware the handle its own resource server gave the client, in
+    gsp.h
+    SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/device.c
+    that NVIDIA's driver releases the firmware's copy of a client with no
+    parent, naming the client as the object, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and only once the
+    device's release succeeds, in nvidia_gpu.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_fifo_nvoc.h
+    KERNEL_PID, NVIDIA's process number for the kernel, in rm.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/libraries/resserv/resserv.h
+    RS_CLIENT_HANDLE_BASE, the first handle of the range of client handles, in
+    gsp.h, gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2015-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/libraries/resserv/src/rs_server.c
+    that NVIDIA's resource server gives its clients handles from
+    RS_CLIENT_HANDLE_BASE up, so that the first client it allocates takes that
+    handle, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2015-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/unix/common/utils/unix_rm_handle.c
+    the composition of an object's handle, the allocator's data in bits 31:16
+    and a number from 1 in bits 15:0, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the allocator
+    gives the lowest free number, reusing a freed one, in gsp.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvos.h
+    that a device whose shared client is the client allocating it gets a GPU
+    virtual address space of its own, in rm.h and gpu_objects.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-rm.c
+    that the modesetting module numbers its first device's objects with 1 in
+    bits 31:16, allocates its device with its own client as the shared client
+    and its subdevice with index 0, and frees the subdevice before the device
+    whatever the first free returns, in gsp.h, gsp.cpp, gpu_objects.h,
+    gpu_objects.cpp, kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_gpu_objects.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
     that RMAPI_RPC_FLAGS_NONE, the flags of a control neither serialized nor

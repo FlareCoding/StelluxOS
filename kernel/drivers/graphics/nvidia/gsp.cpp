@@ -13,8 +13,18 @@ namespace drivers::nvidia {
 // NVIDIA's NV_OK, the status the firmware reports for what succeeded
 constexpr uint32_t FIRMWARE_STATUS_OK = 0;
 
-// NVIDIA's number for a control request, which the reply carries too
+// NVIDIA's numbers for a control request and for the requests allocating and releasing an object, which the reply
+// carries too
 constexpr uint32_t FUNCTION_GSP_RM_CONTROL = 0x4C;
+constexpr uint32_t FUNCTION_GSP_RM_ALLOC   = 0x67;
+constexpr uint32_t FUNCTION_FREE           = 0x0A;
+
+// NVIDIA's RS_CLIENT_HANDLE_BASE, the handle at index 0 of the range NVIDIA's resource server gives clients
+constexpr rm::handle DRIVER_CLIENT = 0xC1D00000;
+
+// The first handle `new_handle` gives: 1 in bits 31:16, as NVIDIA's modesetting module marks its first device's
+// objects, and the object's number from 1 in bits 15:0
+constexpr rm::handle FIRST_OBJECT_HANDLE = 0x00010001;
 
 // The first two of the GSP's four mailbox registers (NVIDIA's NV_PGSP_MAILBOX(0) and (1), apart from the GSP falcon's
 // two), where the firmware can report a failure, and the tag that marks a report in bits 31:28 of the first
@@ -43,12 +53,38 @@ struct control_header {
     uint32_t   flags;
 };
 
+// NVIDIA's header of a request allocating an object, which the class's parameters follow, its status filled by the
+// reply
+struct allocation_header {
+    rm::handle client;
+    rm::handle parent;
+    rm::handle object;
+    uint32_t   class_id;
+    uint32_t   status;
+    uint32_t   params_bytes;
+    uint32_t   flags;
+    uint8_t    reserved[4];
+};
+
+// NVIDIA's request releasing an object, its status filled by the reply
+struct release_request {
+    rm::handle client;
+    rm::handle parent;
+    rm::handle object;
+    uint32_t   status;
+};
+
 } // namespace
 
 static_assert(sizeof(control_header) == 24, "NVIDIA's layout of a control request's header");
+static_assert(sizeof(allocation_header) == 32, "NVIDIA's layout of an allocation request's header");
+static_assert(sizeof(release_request) == 16, "NVIDIA's layout of a release request");
 
 // The most bytes of parameters one message carries after a control request's header
 constexpr uint32_t CONTROL_PARAMS_MAX_BYTES = MESSAGE_PAYLOAD_MAX_BYTES - sizeof(control_header);
+
+// The most bytes of parameters one message carries after an allocation request's header
+constexpr uint32_t ALLOCATION_PARAMS_MAX_BYTES = MESSAGE_PAYLOAD_MAX_BYTES - sizeof(allocation_header);
 
 gsp::~gsp() {
     stop();
@@ -256,6 +292,165 @@ void gsp::stop() {
     m_queues = message_queues();
     m_regs = registers(0);
     m_sequencer = {};
+    m_client = 0;
+    m_handle_count = 0;
+}
+
+int32_t gsp::allocate_client() {
+    rm::client_params params = {};
+    params.client = DRIVER_CLIENT;
+    params.process_id = rm::KERNEL_PROCESS_ID;
+
+    int32_t rc = request_allocation(DRIVER_CLIENT, 0, 0, rm::CLASS_CLIENT, &params, sizeof(params));
+    if (rc == OK) {
+        m_client = DRIVER_CLIENT;
+    }
+
+    return rc;
+}
+
+int32_t gsp::release_client() {
+    int32_t rc = request_release(m_client, m_client);
+    if (rc == OK) {
+        m_client = 0;
+    }
+
+    return rc;
+}
+
+int32_t gsp::allocate(rm::handle parent, rm::handle object, uint32_t class_id, void* params, size_t size) {
+    return request_allocation(m_client, parent, object, class_id, params, size);
+}
+
+int32_t gsp::release(rm::handle object) {
+    return request_release(m_client, object);
+}
+
+rm::handle gsp::new_handle() {
+    return FIRST_OBJECT_HANDLE + m_handle_count++;
+}
+
+rm::handle gsp::client() const {
+    return m_client;
+}
+
+int32_t gsp::request_allocation(
+    rm::handle client,
+    rm::handle parent,
+    rm::handle object,
+    uint32_t class_id,
+    void* params,
+    size_t params_bytes
+) {
+    if (params_bytes > ALLOCATION_PARAMS_MAX_BYTES) {
+        log::error(
+            "nvidia: the parameters of an object of class 0x%X take %lu bytes, more than the %u one message carries "
+            "after the allocation's header",
+            class_id,
+            params_bytes,
+            ALLOCATION_PARAMS_MAX_BYTES
+        );
+        return ERR_TOO_LARGE;
+    }
+
+    uint32_t message_bytes = sizeof(allocation_header) + static_cast<uint32_t>(params_bytes);
+    uint8_t* message = static_cast<uint8_t*>(heap::ualloc(message_bytes));
+    if (message == nullptr) {
+        log::error(
+            "nvidia: allocating %u bytes for the request allocating an object of class 0x%X failed",
+            message_bytes,
+            class_id
+        );
+        return ERR_NO_MEMORY;
+    }
+
+    allocation_header header = {
+        .client       = client,
+        .parent       = parent,
+        .object       = object,
+        .class_id     = class_id,
+        .status       = 0,
+        .params_bytes = static_cast<uint32_t>(params_bytes),
+        .flags        = 0,
+        .reserved     = {},
+    };
+
+    string::memcpy(message, &header, sizeof(header));
+    string::memcpy(message + sizeof(header), params, params_bytes);
+
+    received_message reply = {};
+    int32_t rc = request(FUNCTION_GSP_RM_ALLOC, message, message_bytes, message_bytes, reply, RECEIVE_TIMEOUT_NS);
+    if (rc != OK) {
+        // The reply's status when its payload reaches the field, else the request's 0, as NVIDIA's driver logs it
+        string::memcpy(&header, message, sizeof(header));
+        if (class_id == rm::CLASS_CLIENT) {
+            log::error(
+                "nvidia: allocating the driver's client 0x%X failed: %d, with 0x%X in the allocation's status field",
+                client,
+                rc,
+                header.status
+            );
+        } else {
+            log::error(
+                "nvidia: allocating object 0x%X of class 0x%X under object 0x%X of client 0x%X failed: %d, with 0x%X "
+                "in the allocation's status field",
+                object,
+                class_id,
+                parent,
+                client,
+                rc,
+                header.status
+            );
+        }
+    } else if (reply.payload_bytes < message_bytes) {
+        log::error(
+            "nvidia: the GSP's firmware replies to the allocation of object 0x%X with %u payload bytes, ending before "
+            "the parameters end at byte %u",
+            object,
+            reply.payload_bytes,
+            message_bytes
+        );
+        rc = ERR_BAD_MESSAGE;
+    } else {
+        string::memcpy(params, message + sizeof(header), params_bytes);
+    }
+
+    heap::ufree(message);
+
+    return rc;
+}
+
+int32_t gsp::request_release(rm::handle client, rm::handle object) {
+    release_request message = {
+        .client = client,
+        .parent = 0,
+        .object = object,
+        .status = 0,
+    };
+
+    received_message reply = {};
+    int32_t rc = request(FUNCTION_FREE, &message, sizeof(message), sizeof(message), reply, RECEIVE_TIMEOUT_NS);
+    if (rc != OK) {
+        // The reply's status when its payload reaches the field, else the request's 0, as NVIDIA's driver logs it
+        if (object == client) {
+            log::error(
+                "nvidia: releasing the driver's client 0x%X failed: %d, with 0x%X in the release's status field",
+                client,
+                rc,
+                message.status
+            );
+        } else {
+            log::error(
+                "nvidia: releasing object 0x%X of client 0x%X failed: %d, with 0x%X in the release's status field",
+                object,
+                client,
+                rc,
+                message.status
+            );
+        }
+    }
+
+    return rc;
 }
 
 int32_t gsp::await_since(uint32_t function, received_message& out, uint64_t start_ns, uint64_t timeout_ns) {
