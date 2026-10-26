@@ -2242,6 +2242,82 @@ src/nvidia/inc/kernel/gpu/nvbitmask.h
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/common/displayport/src/dp_watermark.cpp
+    whether a configuration carries a single stream's mode by the rule for links
+    with forward error correction, with it off, and the stream's transfer unit
+    size, watermark and symbols left in the horizontal and vertical blanking, in
+    displayport.h, displayport.cpp and
+    kernel/tests/graphics/nvidia_displayport.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/inc/dp_watermark.h
+    the four values a stream's packing gives, in displayport.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/displayport/displayport.h
+    the watermark's adjustment and lowest value under the normal and the
+    increased watermark limits, in displayport.h, displayport.cpp and
+    kernel/tests/graphics/nvidia_displayport.test.cpp, the codes of the four
+    standard rates and a lane's rate in units of 27 million symbols per second,
+    in displayport.h, displayport.cpp and
+    kernel/tests/graphics/nvidia_displayport.test.cpp, and the lane counts a
+    link takes, 8 among them, in displayport.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/displayport/dpcd.h
+    the link status's four bytes and the bits for a lane's clock recovery,
+    equalization and symbol lock, the lanes' alignment and the first port's
+    sync, in displayport.h, displayport.cpp and
+    kernel/tests/graphics/nvidia_displayport.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/inc/dp_linkconfig.h
+    a link rate less the 0.5% of a spread-spectrum clock, and configurations
+    ordered by lanes times rate with the fewer lanes first where two give the
+    same product, in displayport.h, displayport.cpp and
+    kernel/tests/graphics/nvidia_displayport.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/src/dp_connectorimpl.cpp
+    the configurations a link may run (the standard rates on 1, 2 or 4 lanes),
+    the lowest taken as the first of them in order that lies within the GPU's
+    rate and the monitor's lanes and rate and carries a mode, and which of two
+    rules decides for a GPU, by whether its links support forward error
+    correction, with it left off for every stream not compressed unless the code
+    calling the library sets a preferred configuration with it, in
+    displayport.h, displayport.cpp and
+    kernel/tests/graphics/nvidia_displayport.test.cpp, and enhanced framing run
+    when the monitor takes it, a mode without a pixel clock taken as carried and
+    4 lanes taken for a monitor reporting 0, in displayport.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/src/dp_configcaps.cpp
+    a link taken as trained when each of its lanes has its clock recovered, its
+    equalization done and its symbols locked and the lanes are aligned with each
+    other, in displayport.h, displayport.cpp and
+    kernel/tests/graphics/nvidia_displayport.test.cpp, and a monitor's lane
+    count or rate code it does not take mapped onto one it does, in
+    displayport.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/inc/dp_evoadapter.h
+    the GPU's own highest rate capping a link's, and the connector's where lower
+    only when the firmware or a registry key asks for it, in displayport.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
+    the GPU's reports that its links support forward error correction and take
+    the increased watermark limits, in displayport.h and
+    kernel/tests/graphics/nvidia_displayport.test.cpp, and the transfer unit
+    size, watermark and horizontal and vertical blanking symbols a single
+    stream's configuration takes, in displayport.h
+    SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/dp/nvdp-connector.cpp
+    a mode's pixel clock in hertz, line total and visible width taken from its
+    timing, in displayport.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, rpc_global_enums.h,
 g_rpc_private.h and nvUnixVersion.h the package's COPYING, carries this
