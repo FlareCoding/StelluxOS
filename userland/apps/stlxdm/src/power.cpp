@@ -764,3 +764,12 @@ void dm_power::run_action() {
     m_commit = -1;
     m_backdrop_valid = false;
 }
+
+void dm_power::run_action_now() {
+    if (m_state != state::committing) {
+        return;
+    }
+
+    m_action_ready = true;
+    run_action();
+}

@@ -228,12 +228,14 @@ int server::build_conf_state(dm_conf_state& out) {
     return 0;
 }
 
-/* Retires the running config state and moves the built one in */
+/* Retires the running config state and moves the built one in. The built
+ * overlay is closed, so the running one issues a committed operation. */
 void server::adopt_conf_state(dm_conf_state&& next) {
     if (m_panels) {
         m_panels->shutdown();
     }
     if (m_power) {
+        m_power->run_action_now();
         m_power->shutdown();
     }
     stlxgfx_destroy_surface(m_backdrop);
