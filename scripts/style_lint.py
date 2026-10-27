@@ -11,13 +11,22 @@ lines. Conventions the guide leaves unwritten are checked as well: a closed bloc
 no block of statements starts or ends with a blank line, and no two blank lines in a row appear outside function
 bodies either.
 
+A kernel header is flagged once for each namespace of another subsystem that its added lines name and its unchanged
+lines do not, so that a reviewer can check whether the header's role needs that subsystem's types, or whether the
+header should use its own subsystem's types and convert them in its source file. A namespace belongs to the
+subsystem of the same name, else to the one whose files define it most often. Any header may use the namespaces of
+`common/`, `sync/` and `rc/`, and a header inside an arch tree those of `arch/`. Headers of `sync/`, `rc/` and
+`tests/` are not checked, since `sync/` keeps tasks and address spaces in its fields and calls `hw/` inline, `rc/`
+calls `mm/` inline, and test headers use what they test.
+
 The files checked are the paths the globs line of the guide's front matter matches, minus the paths `.gitattributes`
 marks `linguist-vendored`, which hold third-party code. Files ending in `.c`, `.cpp`, `.h`, `.hpp`, `.S`, `.ld` or
 `.inc` are read with C-style comments, and files ending in `.sh` or `.mk` and files named `Makefile` with hash
-comments. Other files the globs match are not read. The stanza rules read the `.c`, `.cpp`, `.h` and `.hpp` files. A
-change is every commit since the merge base of `HEAD` and the base ref, `origin/master` unless `--base` names
-another, plus the uncommitted edits. Only the lines it adds or edits are checked, so untouched code keeps the style
-it has. Untracked files are checked whole.
+comments. Other files the globs match are not read. The stanza rules read the `.c`, `.cpp`, `.h` and `.hpp` files,
+and the namespace flag the `.h` and `.hpp` files under `kernel/`, after reading every C and C++ file under `kernel/`,
+tracked or untracked, to find the subsystem each namespace belongs to. A change is every commit since the merge base
+of `HEAD` and the base ref, `origin/master` unless `--base` names another, plus the uncommitted edits. Only the lines
+it adds or edits are checked, so untouched code keeps the style it has. Untracked files are checked whole.
 
 Text in backticks names code, and a comment line indented two or more spaces past its marker is a code example
 unless it continues a list item or a doxygen tag other than `@code`, so an example under a list item or a tag
@@ -25,11 +34,11 @@ needs a lead-in line such as "Usage:". Of the comment checks, only those for non
 dashes read either.
 
 Breaking a rule the guide writes down is an error and fails the run. A match that may be innocent is a warning, such
-as a phrase that may date the comment. A stanza of more than the guide's six statements is a warning too, though the
-guide writes the rule down, since the stanza reader can misread a block and code the project accepts often holds
-longer stanzas. A break of an unwritten convention is a warning as well, such as two blank lines in a row outside a
-function body. In GitHub Actions every finding is also printed as an annotation, so errors and warnings both appear
-on the pull request.
+as a phrase that may date the comment or a flagged namespace. A stanza of more than the guide's six statements is a
+warning too, though the guide writes the rule down, since the stanza reader can misread a block and code the project
+accepts often holds longer stanzas. A break of an unwritten convention is a warning as well, such as two blank lines
+in a row outside a function body. In GitHub Actions every finding is also printed as an annotation, so errors and
+warnings both appear on the pull request.
 
 Usage:
     scripts/style_lint.py                checks the change since the merge base with origin/master
@@ -43,11 +52,13 @@ cannot be read.
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import re
 import subprocess
 import sys
 import unicodedata
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -139,6 +150,23 @@ CASE_LABEL = re.compile(r"(?:case\b|default\s*:)")
 GUARD_HEADER = re.compile(r"if\b")
 EARLY_EXIT = re.compile(r"(?:return|continue|break|goto)\b")
 
+HEADER_FILE_TYPES = frozenset({".h", ".hpp"})
+# A namespace that code names, as in `pmm::zone_mask_t` or `::mm::`, but not a later part of a qualified name
+NAMESPACE_USE = re.compile(r"(?<![\w:.>])(?:::)?([A-Za-z_]\w*)::")
+# A namespace that code opens, forward-declares into or brings in with `using namespace`
+NAMESPACE_NAMED = re.compile(r"\bnamespace\s+([A-Za-z_]\w*)")
+NAMESPACE_BLOCK = re.compile(r"\bnamespace\s+([A-Za-z_]\w*)(?:\s*::\s*\w+)*\s*\{")
+# A statement of a namespace block that only forward-declares a type, such as `struct task` or `enum class kind : int`
+FORWARD_DECLARATION = re.compile(
+    r"\s*(?:(?:struct|class|union|enum(?:\s+class|\s+struct)?)\s+\w+(?:\s*:\s*[\w:]+)?)?\s*"
+)
+# Subsystems whose namespaces any kernel header may use: `common/` holds what every file uses, and `sync/` and `rc/`
+# hold the locks and reference counts any object may embed
+SHARED_SUBSYSTEMS = frozenset({"common", "sync", "rc"})
+# Subsystems whose headers are not checked: `sync/` keeps tasks and address spaces in its fields and calls `hw/`
+# inline, `rc/` calls `mm/` inline, and test headers use what they test
+UNCHECKED_SUBSYSTEMS = frozenset({"sync", "rc", "tests"})
+
 # A rule's basis sets its severity: breaking a rule the guide writes down is an error, while a match that may be
 # innocent and a break of a convention the guide leaves unwritten are warnings
 WRITTEN = "written"
@@ -182,6 +210,11 @@ class Rule(Enum):
         "no blank line after the block ending on line {}, add one after its closing brace",
     )
     BLANK_AT_BLOCK_EDGE = (UNWRITTEN, "a blank line at the {} of a block of statements, remove it")
+    FOREIGN_NAMESPACE = (
+        AMBIGUOUS,
+        "a header of {0} uses `{1}::` from {2}, keep it if the header's role needs {2}'s types, else use {0}'s own "
+        "types and convert them to {2}'s in its source file",
+    )
 
     def __init__(self, basis: str, message: str):
         self.message = message
@@ -285,8 +318,15 @@ class OpenBlock:
         self.stanza_statement_lines = []
 
 
+class KernelLayout(NamedTuple):
+    """The kernel's subsystems, which are the directories under `kernel/`, and the subsystem of each namespace."""
+
+    subsystems: frozenset[str]
+    namespace_homes: dict[str, str]
+
+
 class LintError(Exception):
-    """A failure that stops the run before any file is checked, such as git failing."""
+    """A failure that stops the run, such as git failing."""
 
 
 class StanzaReader:
@@ -641,10 +681,177 @@ def find_first_added(numbers: Iterable[int], added: set[int]) -> int | None:
     return next((number for number in numbers if number in added), None)
 
 
+def check_boundaries(path: str, lines: list[ScannedLine], added: set[int]) -> list[Finding]:
+    """Flags, for each namespace of another subsystem a kernel header starts to use, the first added line using it.
+
+    A header is its subsystem's interface to every file that includes it. When its declarations name another
+    subsystem's types, every one of those files depends on that subsystem too, while the interface should use its own
+    subsystem's types and convert the other's once, in its implementation.
+
+    Raises `LintError` when git fails while the kernel's layout is read.
+    """
+    if not path.startswith("kernel/"):
+        return []
+
+    return find_foreign_namespaces(path, lines, added, read_kernel_layout())
+
+
+def find_foreign_namespaces(
+    path: str,
+    lines: list[ScannedLine],
+    added: set[int],
+    layout: KernelLayout,
+) -> list[Finding]:
+    """Reports, for each namespace of another subsystem a kernel header names, the first added line naming it.
+
+    A namespace an unchanged line of the header already names is a dependency the header has, and is not reported.
+    Nor are the namespaces of the `SHARED_SUBSYSTEMS`, or those of `arch` in a header under `kernel/arch/`. Headers of
+    the `UNCHECKED_SUBSYSTEMS` report nothing.
+    """
+    subsystem = find_subsystem(path, layout.subsystems)
+    if subsystem is None or subsystem in UNCHECKED_SUBSYSTEMS:
+        return []
+
+    is_under_arch = path.startswith("kernel/arch/")
+    named_before = {name for line in lines if line.number not in added for name in find_named_namespaces(line.code)}
+    findings = []
+
+    for line in lines:
+        if line.number not in added:
+            continue
+
+        for name in find_named_namespaces(line.code):
+            home = layout.namespace_homes.get(name)
+            is_foreign = home not in (None, subsystem) and home not in SHARED_SUBSYSTEMS
+            is_own_arch = home == "arch" and is_under_arch
+            if not is_foreign or is_own_arch or name in named_before:
+                continue
+
+            named_before.add(name)
+            message = Rule.FOREIGN_NAMESPACE.message.format(f"`{subsystem}/`", name, f"`{home}/`")
+            findings.append(Finding(path, line.number, Rule.FOREIGN_NAMESPACE, message))
+
+    return findings
+
+
+def find_named_namespaces(code: str) -> list[str]:
+    """Returns the namespaces a line's code names, in a qualified name or after `namespace`."""
+    return NAMESPACE_USE.findall(code) + NAMESPACE_NAMED.findall(code)
+
+
+@functools.cache
+def read_kernel_layout() -> KernelLayout:
+    """Reads the kernel's layout from its C and C++ files, tracked or untracked.
+
+    Raises `LintError` when git fails.
+    """
+    listing = run_git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "kernel")
+    paths = [path for path in listing.split("\0") if find_file_type(path) in C_CODE_FILE_TYPES]
+    texts = {path: Path(path).read_text(encoding="utf-8", errors="replace") for path in paths if os.path.isfile(path)}
+
+    return build_kernel_layout(texts)
+
+
+def build_kernel_layout(texts: dict[str, str]) -> KernelLayout:
+    """Finds the kernel's subsystems in the paths of its files, and the subsystem each namespace belongs to.
+
+    A namespace belongs to the subsystem of the same name, as the guide's "namespace = directory = module name" asks.
+    A namespace without one belongs to the subsystem whose files open the most blocks defining it outside
+    `kernel/arch/` and `tests/`, else to the subsystem its files under `kernel/arch/` all belong to, else to `arch`
+    when they belong to several, else to `tests`. A namespace block that only forward-declares types defines nothing.
+    """
+    subsystems = frozenset(path.split("/")[1] for path in texts if path.count("/") >= 2)
+    definers = defaultdict(Counter)
+    arch_definers = defaultdict(set)
+
+    for path, text in texts.items():
+        subsystem = find_subsystem(path, subsystems)
+        is_under_arch = path.startswith("kernel/arch/")
+        for name in find_defined_namespaces(path, text):
+            if is_under_arch:
+                arch_definers[name].add(subsystem)
+            else:
+                definers[name][subsystem] += 1
+
+    namespace_homes = {name: name for name in subsystems}
+
+    for name in definers.keys() | arch_definers.keys():
+        if name in subsystems:
+            continue
+
+        others = Counter({definer: count for definer, count in definers[name].items() if definer != "tests"})
+        arch_homes = arch_definers[name]
+        if others:
+            namespace_homes[name] = others.most_common(1)[0][0]
+        elif arch_homes:
+            namespace_homes[name] = next(iter(arch_homes)) if len(arch_homes) == 1 else "arch"
+        else:
+            namespace_homes[name] = "tests"
+
+    return KernelLayout(subsystems, namespace_homes)
+
+
+def find_defined_namespaces(path: str, text: str) -> list[str]:
+    """Returns the top-level namespaces a file opens to define something, once per namespace block."""
+    code = "\n".join(line.code for line in scan_file(path, text) if not line.code.lstrip().startswith("#"))
+    names = []
+    index = 0
+
+    while index < len(code):
+        block = NAMESPACE_BLOCK.match(code, index)
+        if not block:
+            index += 1
+            continue
+
+        end = find_closing_brace(code, block.end())
+        body = code[block.end():end]
+        if not all(FORWARD_DECLARATION.fullmatch(part) for part in body.split(";")):
+            names.append(block.group(1))
+
+        index = end + 1
+
+    return names
+
+
+def find_closing_brace(code: str, start: int) -> int:
+    """Returns the index of the `}` that closes a block whose body starts at `start`, or the end of the code."""
+    depth = 1
+
+    for index in range(start, len(code)):
+        if code[index] == "{":
+            depth += 1
+        elif code[index] == "}":
+            depth -= 1
+
+        if depth == 0:
+            return index
+
+    return len(code)
+
+
+def find_subsystem(path: str, subsystems: frozenset[str]) -> str | None:
+    """Returns the kernel subsystem a file belongs to, or `None` outside the kernel's subsystems.
+
+    A subsystem is a directory under `kernel/`, and a directory of the same name in an arch tree belongs to it, as
+    the arch-layout rule's mirror naming requires. Files directly under an arch tree, and in an arch tree's
+    directories that mirror no subsystem, such as x86_64's `defs/`, belong to `arch`.
+    """
+    parts = path.split("/")
+    if parts[0] != "kernel" or len(parts) < 3:
+        return None
+
+    if parts[1] != "arch":
+        return parts[1]
+
+    is_mirrored = len(parts) > 4 and parts[3] in subsystems
+    return parts[3] if is_mirrored else "arch"
+
+
 # Defined after the check functions it names, since Python needs a function to exist before a table can hold it
 CHECK_FAMILIES = (
     CheckFamily(C_COMMENT_FILE_TYPES | HASH_COMMENT_FILE_TYPES, run_line_checks),
     CheckFamily(C_CODE_FILE_TYPES, check_stanzas),
+    CheckFamily(HEADER_FILE_TYPES, check_boundaries),
 )
 
 
@@ -844,14 +1051,10 @@ def main() -> int:
         vendored = find_vendored_paths(list(changes))
         checked = [path for path in sorted(changes) if path not in vendored and find_check_families(path)]
         texts = {path: read_changed_file(path) for path in checked}
+        findings = [finding for path in checked for finding in check_file(path, texts[path], changes[path])]
     except LintError as error:
         print(f"style_lint: {error}", file=sys.stderr)
         return 2
-
-    findings = []
-
-    for path in checked:
-        findings.extend(check_file(path, texts[path], changes[path]))
 
     report_findings(findings, len(checked))
 

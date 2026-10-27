@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import style_lint
@@ -434,6 +435,157 @@ class StanzaTest(unittest.TestCase):
                 self.assertEqual([finding.number for finding in findings], numbers)
 
 
+class BoundaryTest(unittest.TestCase):
+    # Forward declarations never count and `tests/` counts only where it alone defines a namespace, so `heap` and `pmm`
+    # belong to `mm/` and `sched` to `sched/`, by its name, though `fs/`, `tests/` and `syscall/` open them more often
+    KERNEL_FILES = {
+        "kernel/fs/fs.h": "namespace heap { struct block; }\nnamespace mm { struct mm_context; }\nnamespace fs {\n}\n",
+        "kernel/fs/file.h": "namespace heap {\nstruct page;\nenum class kind : uint8_t;\n}\n",
+        "kernel/mm/heap.h": "namespace heap {\nvoid* kalloc(size_t bytes);\n}\n",
+        "kernel/mm/pmm_types.h": "#define NS namespace pmm_macro {\nnamespace pmm {\nusing zone_mask_t = int;\n}\n",
+        "kernel/syscall/handlers.h": "namespace sched {\nvoid on_syscall();\n}\n",
+        "kernel/syscall/table.h": "namespace sched {\nvoid on_table();\n}\n",
+        "kernel/rc/strong_ref.h": "namespace rc {\ntemplate <typename T> class strong_ref {};\n}\n",
+        "kernel/tests/mm/pmm.test.cpp": "namespace pmm {\nint check() { return 0; }\n}\n",
+        "kernel/tests/mm/zones.test.cpp": "namespace pmm {\nint check_zones() { return 0; }\n}\n",
+        "kernel/tests/framework/test_framework.h": "namespace stlx_test {\nvoid run_all();\n}\n",
+        "kernel/sched/task.h": "namespace sched {\nstruct task {};\n}\nclass task_namespace final { int id; };\n",
+        "kernel/sync/spinlock.h": "namespace sync {\nstruct spinlock {};\n}\n",
+        "kernel/common/list.h": "namespace list {\ntemplate <typename T> struct head {};\n}\n",
+        "kernel/drivers/usb/xhci/xhci.h": "namespace drivers {\nclass xhci {};\n}\n",
+        "kernel/arch/x86_64/defs/segments.h": "namespace x86 {\nconstexpr int KERNEL_CS = 8;\n}\n",
+        "kernel/arch/x86_64/trap/idt.h": "namespace x86 {\nvoid load_idt();\n}\n",
+        "kernel/arch/x86_64/mm/paging_arch.h": "namespace paging {\nvoid flush();\n}\n",
+        "kernel/arch/aarch64/mm/paging_arch.h": "namespace paging {\nvoid flush();\n}\n",
+        "kernel/arch/x86_64/sched/fpu.h": "namespace fpu {\nvoid save();\n}\n",
+        "kernel/arch/aarch64/trap/fpu_trap.h": "namespace fpu {\nvoid on_trap();\n}\n",
+        "kernel/arch/arch_init.h": "namespace arch {\nvoid init();\n}\n",
+        "kernel/trap/trap.h": (
+            "namespace trap {\n}\nnamespace outer {\nstruct s {};\nnamespace inner {\nvoid f();\n}\n}\n"
+        ),
+    }
+
+    def flag(self, text: str, path: str) -> list[tuple[int, str]]:
+        """Returns each foreign namespace finding in `text`, every line counted as added, as its line and problem."""
+        layout = style_lint.build_kernel_layout(self.KERNEL_FILES)
+        lines = style_lint.scan_file(path, text)
+        findings = style_lint.find_foreign_namespaces(path, lines, {line.number for line in lines}, layout)
+        return [(finding.number, finding.message.split(",")[0]) for finding in findings]
+
+    def test_a_namespace_belongs_to_the_subsystem_named_after_it_else_to_one_defining_it(self):
+        homes = style_lint.build_kernel_layout(self.KERNEL_FILES).namespace_homes
+        subsystems = ("fs", "mm", "syscall", "rc", "tests", "sched", "sync", "common", "drivers", "arch", "trap")
+        expected = {name: name for name in subsystems}
+        expected |= {
+            "heap": "mm",
+            "pmm": "mm",
+            "stlx_test": "tests",
+            "sched": "sched",
+            "sync": "sync",
+            "list": "common",
+            "drivers": "drivers",
+            "x86": "arch",
+            "paging": "mm",
+            "fpu": "arch",
+            "arch": "arch",
+            "outer": "trap",
+        }
+        self.assertEqual(homes, expected)
+
+    def test_a_kernel_header_naming_another_subsystems_namespace_is_flagged(self):
+        xhci = "kernel/drivers/usb/xhci/xhci_mem.h"
+        uses = "int a(pmm::zone_mask_t);\nvoid* b(size_t n) { return ::heap::kalloc(n); }\nint c(pmm::zone_mask_t);\n"
+        xhci_findings = [
+            (1, "a header of `drivers/` uses `pmm::` from `mm/`"),
+            (2, "a header of `drivers/` uses `heap::` from `mm/`"),
+        ]
+        cases = (
+            (xhci, uses, xhci_findings),
+            ("kernel/fs/fs.h", "namespace mm { struct context; }\n", [(1, "a header of `fs/` uses `mm::` from `mm/`")]),
+            ("kernel/fs/fs.h", "using namespace sched;\n", [(1, "a header of `fs/` uses `sched::` from `sched/`")]),
+        )
+
+        for path, text, expected in cases:
+            with self.subTest(text):
+                self.assertEqual(self.flag(text, path), expected)
+
+    def test_a_namespace_is_reported_on_the_first_added_line_naming_it(self):
+        path = "kernel/drivers/usb/xhci/xhci_mem.h"
+        lines = style_lint.scan_file(path, "int a;\nint b(pmm::zone_mask_t);\nint c(pmm::zone_mask_t);\n")
+        layout = style_lint.build_kernel_layout(self.KERNEL_FILES)
+
+        findings = style_lint.find_foreign_namespaces(path, lines, {2, 3}, layout)
+        self.assertEqual([finding.number for finding in findings], [2])
+        self.assertEqual(style_lint.find_foreign_namespaces(path, lines, {3}, layout), [])
+        self.assertEqual(style_lint.find_foreign_namespaces(path, lines, set(), layout), [])
+
+    def test_a_namespace_the_header_already_names_is_not_flagged(self):
+        path = "kernel/drivers/usb/xhci/xhci_mem.h"
+        lines = style_lint.scan_file(path, "int a(pmm::zone_mask_t);\nint b(pmm::zone_mask_t);\nheap::block* c;\n")
+        layout = style_lint.build_kernel_layout(self.KERNEL_FILES)
+
+        findings = style_lint.find_foreign_namespaces(path, lines, {2, 3}, layout)
+        expected = [(3, "a header of `drivers/` uses `heap::` from `mm/`")]
+        self.assertEqual([(finding.number, finding.message.split(",")[0]) for finding in findings], expected)
+
+    def test_own_shared_and_unknown_namespaces_are_not_flagged(self):
+        text = (
+            "drivers::xhci* a;\nsync::spinlock b;\nlist::head<int> c;\nstd::size_t d;\nusb::pmm::port e;\n"
+            "// pmm::zone_mask_t\nconst char* f = \"pmm::\";\nauto g = h.pmm::x;\nauto i = j->pmm::x;\n"
+            "rc::strong_ref<int> k;\n"
+        )
+        self.assertEqual(self.flag(text, "kernel/drivers/usb/xhci/xhci_mem.h"), [])
+
+    def test_headers_of_the_unchecked_subsystems_are_not_flagged(self):
+        cases = (
+            ("kernel/sync/mutex.h", "heap::block* a;\n", []),
+            ("kernel/rc/strong_ref.h", "heap::block* a;\n", []),
+            ("kernel/tests/framework/helpers.h", "heap::block* a;\n", []),
+            ("kernel/common/x.h", "heap::block* a;\n", [(1, "a header of `common/` uses `heap::` from `mm/`")]),
+            ("kernel/fs/file.h", "stlx_test::case* a;\n", [(1, "a header of `fs/` uses `stlx_test::` from `tests/`")]),
+        )
+
+        for path, text, expected in cases:
+            with self.subTest(path):
+                self.assertEqual(self.flag(text, path), expected)
+
+    def test_an_arch_tree_directory_belongs_to_the_subsystem_it_mirrors_or_to_arch(self):
+        subsystems = style_lint.build_kernel_layout(self.KERNEL_FILES).subsystems
+        cases = (
+            ("kernel/arch/x86_64/mm/paging_arch.h", "mm"),
+            ("kernel/arch/x86_64/defs/segments.h", "arch"),
+            ("kernel/arch/x86_64/trap/idt.h", "trap"),
+            ("kernel/arch/x86_64/cpu.h", "arch"),
+            ("kernel/arch/arch_init.h", "arch"),
+            ("kernel/fs/fs.h", "fs"),
+            ("kernel/README", None),
+            ("userland/lib/libx/x.h", None),
+        )
+
+        for path, subsystem in cases:
+            with self.subTest(path):
+                self.assertEqual(style_lint.find_subsystem(path, subsystems), subsystem)
+
+        idt = "kernel/arch/x86_64/trap/idt.h"
+        paging = "kernel/arch/x86_64/mm/paging_arch.h"
+        uses = (
+            (idt, "x86::segment a;\narch::init();\n", []),
+            (idt, "paging::flush();\n", [(1, "a header of `trap/` uses `paging::` from `mm/`")]),
+            (paging, "sched::task* a;\n", [(1, "a header of `mm/` uses `sched::` from `sched/`")]),
+            ("kernel/drivers/x.h", "x86::segment a;\n", [(1, "a header of `drivers/` uses `x86::` from `arch/`")]),
+        )
+
+        for path, text, expected in uses:
+            with self.subTest(path, text=text):
+                self.assertEqual(self.flag(text, path), expected)
+
+    def test_only_kernel_headers_are_checked(self):
+        with unittest.mock.patch.object(style_lint, "read_kernel_layout", side_effect=AssertionError("layout read")):
+            for path in ("kernel/drivers/usb/xhci/xhci.cpp", "userland/lib/libx/x.h", "a.h"):
+                with self.subTest(path):
+                    self.assertEqual(lint("pmm::zone_mask_t a;\n", path), [])
+
+
 class DiffTest(unittest.TestCase):
     def test_hunks_count_context_lines_and_must_match_their_header(self):
         diff = "diff --git a/x.c b/x.c\n--- a/x.c\n+++ b/x.c\n@@ -1,3 +1,4 @@\n one\n-two\n+TWO\n three\n+four\n"
@@ -539,6 +691,18 @@ class RepositoryTest(unittest.TestCase):
         result = self.run_style_lint("kernel")
         summary = "style_lint: 1 file(s) checked, 1 error(s), 0 warning(s)"
         self.assertEqual((result.returncode, result.stdout.splitlines()[-1]), (1, summary))
+
+    def test_flags_a_kernel_header_naming_another_subsystems_namespace(self):
+        write("kernel/mm/pmm.h", "namespace pmm {\nusing zone_mask_t = unsigned;\n}\n")
+        write("kernel/drivers/x.h", "pmm::zone_mask_t zones();\n")
+
+        result = self.run_style_lint()
+        output = [
+            "  warning kernel/drivers/x.h:1: a header of `drivers/` uses `pmm::` from `mm/`, keep it if the header's "
+            "role needs `mm/`'s types, else use `drivers/`'s own types and convert them to `mm/`'s in its source file",
+            "style_lint: 2 file(s) checked, 0 error(s), 1 warning(s)",
+        ]
+        self.assertEqual((result.returncode, result.stdout.splitlines()), (0, output))
 
     def test_warnings_alone_exit_with_0(self):
         write("kernel/a.c", "// TODO drop the retry\n")
