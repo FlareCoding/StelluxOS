@@ -9,10 +9,6 @@
 
 namespace drivers::nvidia {
 
-// PUT and GET, the first two words of a channel's area in BAR0, each a byte offset into the push buffer
-constexpr uint32_t CHANNEL_PUT = 0x0;
-constexpr uint32_t CHANNEL_GET = 0x4;
-
 // A method's header: opcode 0 in bits 31:29, the count of values in bits 27:18 and the register offset in bits 13:2
 constexpr uint32_t METHOD_COUNT_SHIFT = 18;
 constexpr uint32_t METHOD_OFFSET_MAX  = 0x3FFC;

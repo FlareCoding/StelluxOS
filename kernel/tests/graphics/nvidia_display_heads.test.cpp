@@ -44,10 +44,15 @@ static constexpr uint8_t  NVIDIA_FLEXIBLE_MASK           = 0xFF;
 // NVIDIA's NV_MAX_HEADS, the most heads its driver allows on one GPU
 static constexpr uint8_t NVIDIA_MAX_HEADS = 4;
 
-// A handle for display common unlike those `gsp` gives, and a chip of GA102's 4 heads and 8 windows, with the display
-// class left 0, as reading the heads never uses it
+// A handle for display common unlike those `gsp` gives, and a chip of GA102's 4 heads and 8 windows, with the classes
+// left 0, as reading the heads never uses them
 static constexpr rm::handle   TEST_DISPLAY_COMMON = 0x0005000B;
-static constexpr chip_display TEST_DISPLAY        = {.head_count = 4, .window_count = 8, .display_class = 0};
+static constexpr chip_display TEST_DISPLAY        = {
+    .head_count         = 4,
+    .window_count       = 8,
+    .display_class      = 0,
+    .core_channel_class = 0,
+};
 
 // A firmware that records the controls sent to it in order and answers each with its own entry of `results`, and `OK`
 // past them, writing a call's entry of `replies` into its parameters on `OK`
@@ -455,8 +460,13 @@ TEST(nvidia_display_heads, the_first_check_a_report_fails_refuses_it) {
     expect_refused(past_and_unpackable, 3, "reports heads 0x1 for window 8, past the chip's 8 windows");
 }
 
-// A chip of 2 heads, fewer than `DISPLAY_HEADS_MAX`, with the display class left 0
-static constexpr chip_display TWO_HEAD_DISPLAY = {.head_count = 2, .window_count = 8, .display_class = 0};
+// A chip of 2 heads, fewer than `DISPLAY_HEADS_MAX`, with the classes left 0
+static constexpr chip_display TWO_HEAD_DISPLAY = {
+    .head_count         = 2,
+    .window_count       = 8,
+    .display_class      = 0,
+    .core_channel_class = 0,
+};
 
 // The chip's own head count, not `DISPLAY_HEADS_MAX`, bounds the count, the head mask and a fixed window's head
 TEST(nvidia_display_heads, a_chip_of_fewer_heads_bounds_the_report) {

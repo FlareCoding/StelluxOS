@@ -32,6 +32,7 @@ constexpr chip_info CHIP_TABLE[] = {
             .head_count = 4,
             .window_count = 8,
             .display_class = 0xC670,
+            .core_channel_class = 0xC67D,
         },
     },
 };
