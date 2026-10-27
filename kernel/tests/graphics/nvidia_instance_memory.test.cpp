@@ -513,11 +513,11 @@ TEST(nvidia_instance_memory, a_record_names_its_memorys_target_and_first_and_las
 
 // Context DMAs whose bindings to the core channel under `DRIVER_CLIENT` all hash to the last entry, and the entry their
 // bindings to window 0's channel hash to
-static constexpr rm::handle LAST_ENTRY_DMAS[]      = {0xC0DE'0127, 0xC0DE'0526, 0xC0DE'0925};
+static constexpr rm::handle LAST_ENTRY_DMAS[]      = {0xC0DE'0127, 0xC0DE'0526, 0xC0DE'0925, 0xC0DE'0D24};
 static constexpr uint32_t   LAST_ENTRY_WINDOW_ENTRY = 0x3BF;
 
 // A binding takes the first free entry from its hash on, wrapping past the last entry to the first, and the lowest free
-// record
+// record. Undoing the last entry's binding leaves those past it found, and a first binding hashing there takes it
 TEST(nvidia_instance_memory, a_binding_takes_the_first_free_entry_from_its_hash_wrapping_past_the_last) {
     recording_video_memory memory;
     instance_memory_firmware fw(memory);
@@ -536,6 +536,17 @@ TEST(nvidia_instance_memory, a_binding_takes_the_first_free_entry_from_its_hash_
     EXPECT_EQ(entry_word(1, 0), LAST_ENTRY_DMAS[2]);
     EXPECT_EQ(entry_word(1, 1), nvidia_binding_word(2, CORE_CHANNEL));
     EXPECT_EQ(entry_word(2, 0), 0u);
+
+    EXPECT_EQ(instance.unbind(LAST_ENTRY_DMAS[0], CORE_CHANNEL), OK);
+    EXPECT_EQ(instance.bind(LAST_ENTRY_DMAS[2], CORE_CHANNEL, BUFFER_MEMORY), ERR_BAD_STATE);
+    EXPECT_EQ(instance.unbind(LAST_ENTRY_DMAS[2], CORE_CHANNEL), OK);
+    EXPECT_EQ(instance.bind(LAST_ENTRY_DMAS[3], CORE_CHANNEL, NOTIFIER_MEMORY), OK);
+
+    EXPECT_EQ(entry_word(last_entry, 0), LAST_ENTRY_DMAS[3]);
+    EXPECT_EQ(entry_word(last_entry, 1), nvidia_binding_word(0, CORE_CHANNEL));
+    EXPECT_TRUE(is_record_at_unmap(0, NOTIFIER_RECORD));
+    EXPECT_EQ(entry_word(0, 0), LAST_ENTRY_DMAS[1]);
+    EXPECT_EQ(entry_word(1, 0), 0u);
 }
 
 // The bindings in the last entry and the first are found at either end of the table: binding them again is refused as a
@@ -567,9 +578,9 @@ static rm::handle filling_dma(uint32_t j) {
     return FILLING_DMA_BASE | (j << 10) | j;
 }
 
-// Bindings hashing to one entry fill the table, the last searching all of it. Then a binding of another handle or to
-// another channel is refused before mapping, and a repeat as a repeat, since NVIDIA's driver seeks repeats first
-TEST(nvidia_instance_memory, a_binding_to_a_full_hash_table_is_refused) {
+// Bindings hashing to one entry fill the table, the last searching all of it. Then another handle or channel is refused
+// before mapping until an unbinding frees an entry, and a repeat as a repeat, as NVIDIA's driver seeks repeats first
+TEST(nvidia_instance_memory, a_full_hash_table_refuses_a_binding_until_one_is_undone) {
     recording_video_memory memory;
     instance_memory_firmware fw(memory);
     instance_memory& instance = set_up_instance(memory, fw);
@@ -600,6 +611,13 @@ TEST(nvidia_instance_memory, a_binding_to_a_full_hash_table_is_refused) {
     EXPECT_EQ(repeat_rc, ERR_BAD_STATE);
     EXPECT_EQ(memory.map_count, maps_when_full);
     EXPECT_TRUE(memory.is_guard_intact());
+
+    EXPECT_EQ(instance.unbind(filling_dma(0), CORE_CHANNEL), OK);
+    EXPECT_EQ(instance.bind(BUFFER_DMA, CORE_CHANNEL, NOTIFIER_MEMORY), OK);
+
+    EXPECT_EQ(entry_word(FILLING_HASH, 0), BUFFER_DMA);
+    EXPECT_EQ(entry_word(FILLING_HASH, 1), nvidia_binding_word(0, CORE_CHANNEL));
+    EXPECT_TRUE(is_record_at_unmap(0, NOTIFIER_RECORD));
 }
 
 // A second binding of a context DMA to the same channel is refused before anything is mapped
@@ -645,6 +663,82 @@ TEST(nvidia_instance_memory, bindings_of_a_context_dma_share_its_record) {
     EXPECT_EQ(instance.bind(BUFFER_DMA, CORE_CHANNEL, UNALIGNED_MEMORY), ERR_INVALID_ARG);
     EXPECT_EQ(memory.map_count, maps_before);
     EXPECT_EQ(instance.bind(BUFFER_DMA, CORE_CHANNEL, BUFFER_MEMORY), OK);
+}
+
+// A record shared by a context DMA's bindings outlives each unbinding but the last, so a first binding meanwhile takes
+// another record. Once both are free, the next first binding takes the lower, though it was freed later
+TEST(nvidia_instance_memory, a_shared_record_is_freed_at_its_last_unbinding) {
+    recording_video_memory memory;
+    instance_memory_firmware fw(memory);
+    instance_memory& instance = set_up_instance(memory, fw);
+    EXPECT_EQ(instance.bind(BUFFER_DMA, WINDOW_CHANNEL, BUFFER_MEMORY), OK);
+    EXPECT_EQ(instance.bind(BUFFER_DMA, CORE_CHANNEL, BUFFER_MEMORY), OK);
+
+    EXPECT_EQ(instance.unbind(BUFFER_DMA, WINDOW_CHANNEL), OK);
+    EXPECT_EQ(instance.bind(NOTIFIER_DMA, CORE_CHANNEL, NOTIFIER_MEMORY), OK);
+
+    EXPECT_EQ(entry_word(BUFFER_WINDOW_ENTRY, 0), 0u);
+    EXPECT_EQ(entry_word(BUFFER_WINDOW_ENTRY, 1), 0u);
+    EXPECT_TRUE(is_record_at_unmap(0, BUFFER_RECORD));
+    EXPECT_TRUE(is_record_at_unmap(1, NOTIFIER_RECORD));
+
+    EXPECT_EQ(instance.unbind(NOTIFIER_DMA, CORE_CHANNEL), OK);
+    EXPECT_EQ(instance.unbind(BUFFER_DMA, CORE_CHANNEL), OK);
+    EXPECT_EQ(instance.bind(BUFFER_DMA, WINDOW_CHANNEL, TOP_MEMORY), OK);
+
+    EXPECT_EQ(entry_word(BUFFER_WINDOW_ENTRY, 1), nvidia_binding_word(0, WINDOW_CHANNEL));
+    EXPECT_TRUE(is_record_at_unmap(0, TOP_RECORD));
+    EXPECT_TRUE(is_record_at_unmap(1, NOTIFIER_RECORD));
+}
+
+// Undoing a context DMA's only binding clears its entry to zeros through one mapping of the whole memory, taken down
+// after the write, and leaves its freed record's words, sending the firmware no request. Undoing it again is refused
+TEST(nvidia_instance_memory, unbind_clears_the_entry_and_leaves_the_freed_records_words) {
+    recording_video_memory memory;
+    instance_memory_firmware fw(memory);
+    instance_memory& instance = set_up_instance(memory, fw);
+    EXPECT_EQ(instance.bind(BUFFER_DMA, LAST_CURSOR_CHANNEL, BUFFER_MEMORY), OK);
+
+    int32_t rc = instance.unbind(BUFFER_DMA, LAST_CURSOR_CHANNEL);
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_EQ(memory.map_count, 3u);
+    EXPECT_EQ(memory.mapped.offset, HANDED_OUT.offset);
+    EXPECT_EQ(memory.mapped.size, HANDED_OUT.size);
+
+    EXPECT_EQ(memory.unmap_count, 3u);
+    EXPECT_EQ(memory.unmapped.offset, HANDED_OUT.offset);
+    EXPECT_EQ(memory.unmapped.size, HANDED_OUT.size);
+
+    EXPECT_EQ(entry_word(BUFFER_LAST_CURSOR_ENTRY, 0), 0u);
+    EXPECT_EQ(entry_word(BUFFER_LAST_CURSOR_ENTRY, 1), 0u);
+    EXPECT_TRUE(is_record_at_unmap(0, BUFFER_RECORD));
+    EXPECT_EQ(nonzero_words_at_unmap(), BUFFER_RECORD_NONZERO_WORDS);
+    EXPECT_TRUE(memory.is_guard_intact());
+
+    EXPECT_EQ(fw.control_count, 1u);
+    EXPECT_EQ(fw.other_count, 0u);
+    EXPECT_EQ(instance.unbind(BUFFER_DMA, LAST_CURSOR_CHANNEL), ERR_BAD_STATE);
+    EXPECT_EQ(memory.map_count, 3u);
+}
+
+// Undoing a binding the object does not hold is refused before anything is mapped: before `set_up`, for the handle 0
+// every free entry holds, for another context DMA or channel and for a number whose low byte names the bound channel
+TEST(nvidia_instance_memory, unbinding_what_is_not_bound_is_refused) {
+    recording_video_memory memory;
+    instance_memory_firmware fw(memory);
+    EXPECT_EQ(new_instance(memory, fw).unbind(BUFFER_DMA, CORE_CHANNEL), ERR_BAD_STATE);
+    EXPECT_EQ(memory.map_count, 0u);
+
+    instance_memory& instance = set_up_instance(memory, fw);
+    EXPECT_EQ(instance.bind(BUFFER_DMA, CORE_CHANNEL, BUFFER_MEMORY), OK);
+    EXPECT_EQ(instance.unbind(0, CORE_CHANNEL), ERR_BAD_STATE);
+    EXPECT_EQ(instance.unbind(NOTIFIER_DMA, CORE_CHANNEL), ERR_BAD_STATE);
+    EXPECT_EQ(instance.unbind(BUFFER_DMA, WINDOW_CHANNEL), ERR_BAD_STATE);
+    EXPECT_EQ(instance.unbind(BUFFER_DMA, 0x100 + CORE_CHANNEL), ERR_BAD_STATE);
+
+    EXPECT_EQ(memory.map_count, 2u);
+    EXPECT_EQ(instance.unbind(BUFFER_DMA, CORE_CHANNEL), OK);
 }
 
 // Bindings refused for handle 0, the channel numbers 81, 65 and 72 or one whose low byte names a channel, or memory
@@ -744,9 +838,9 @@ TEST(nvidia_instance_memory, a_binding_without_the_memory_set_up_or_a_client_is_
     EXPECT_EQ(entry_word(BUFFER_CORE_ENTRY, 1), nvidia_binding_word(0, CORE_CHANNEL));
 }
 
-// A failed mapping makes `bind` take neither an entry nor a record, after every error `video_memory::map_for_cpu`
-// returns
-TEST(nvidia_instance_memory, a_failed_mapping_in_bind_takes_no_entry_or_record) {
+// A failed mapping makes `bind` take neither an entry nor a record and `unbind` keep the binding and its record, after
+// every error `video_memory::map_for_cpu` returns
+TEST(nvidia_instance_memory, a_failed_mapping_leaves_the_bindings_as_they_were) {
     for (int32_t error : MAP_ERRORS) {
         recording_video_memory memory;
         instance_memory_firmware fw(memory);
@@ -755,9 +849,11 @@ TEST(nvidia_instance_memory, a_failed_mapping_in_bind_takes_no_entry_or_record) 
 
         memory.map_result = error;
         EXPECT_EQ(instance.bind(SECOND_BUFFER_DMA, WINDOW_CHANNEL, NOTIFIER_MEMORY), error);
+        EXPECT_EQ(instance.unbind(BUFFER_DMA, WINDOW_CHANNEL), error);
         EXPECT_EQ(memory.unmap_count, 2u);
 
         memory.map_result = OK;
+        EXPECT_EQ(instance.bind(BUFFER_DMA, WINDOW_CHANNEL, BUFFER_MEMORY), ERR_BAD_STATE);
         EXPECT_EQ(instance.bind(SECOND_BUFFER_DMA, WINDOW_CHANNEL, NOTIFIER_MEMORY), OK);
         EXPECT_EQ(entry_word(SECOND_BUFFER_WINDOW_ENTRY, 1), nvidia_binding_word(1, WINDOW_CHANNEL));
     }

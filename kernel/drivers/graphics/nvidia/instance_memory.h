@@ -44,16 +44,21 @@ struct context_dma_memory {
  *
  * The objects the records describe are context DMAs, and a channel may name a
  * context DMA once `bind` has written the record and the channel's hash table
- * entry for it. A context DMA bound to several channels has one record. This
- * object keeps its own copy of the entries and of how many bindings share each
- * record, as NVIDIA's driver does, so finding an entry reads no video memory,
- * and `bind` maps the memory for the CPU only while it writes, since
- * `video_memory::unmap_for_cpu` is what completes the writes.
+ * entry for it, until `unbind` clears the entry. A context DMA bound to
+ * several channels has one record, kept until its last binding is undone. So a
+ * caller must undo a binding only once no method still to run on the channel
+ * names the context DMA, and its last binding only once the display engine no
+ * longer reads the memory it names, since a later binding may rewrite the
+ * freed record. This object keeps its own copy of the entries and of how many
+ * bindings share each record, as NVIDIA's driver does, so finding an entry
+ * reads no video memory, and `bind` and `unbind` map the memory for the CPU
+ * only while they write, since `video_memory::unmap_for_cpu` is what completes
+ * the writes.
  *
  * The object's calls must come from one thread at a time, since it takes no
- * lock, and `set_up` and `bind` wait on video memory's lock and on the card,
- * `set_up` also on the firmware's reply, so they must never run in an
- * interrupt handler or under a spinlock, and on a thread that cannot sleep,
+ * lock, and `set_up`, `bind` and `unbind` wait on video memory's lock and on
+ * the card, `set_up` also on the firmware's reply, so they must never run in
+ * an interrupt handler or under a spinlock, and on a thread that cannot sleep,
  * such as the boot thread, must run only while no other thread can call into
  * video memory or the firmware.
  */
@@ -103,21 +108,22 @@ public:
     /**
      * @brief Bind the context DMA `object`, under the driver's client, to the
      * display engine's channel `hardware_channel`, as NVIDIA's driver binds
-     * one: the context DMA's first binding writes its record, naming `memory`
-     * as rows of pixels in order (pitch) and readable and writable, into the
-     * lowest free record, and each binding writes the entry naming the client,
-     * `object`, the channel and the record into the first free entry from the
-     * hash of the three. What it writes goes through a mapping for the CPU
-     * that `video_memory::unmap_for_cpu` takes down after completing the
-     * writes, so they have reached video memory when the call returns.
+     * one: a first binding, made while the context DMA has no other, writes
+     * its record, naming `memory` as rows of pixels in order (pitch) and
+     * readable and writable, into the lowest free record, and each binding
+     * writes the entry naming the client, `object`, the channel and the record
+     * into the first free entry from the hash of the three. What it writes
+     * goes through a mapping for the CPU that `video_memory::unmap_for_cpu`
+     * takes down after completing the writes, so they have reached video
+     * memory when the call returns.
      * @param object The context DMA's handle, nonzero.
      * @param hardware_channel The channel's number, 0 to 64 or 73 to 80, the
      * numbers that name a channel.
-     * @param memory The memory the context DMA's first binding writes into its
-     * record. It must end within the first 128 TiB of its address space, since
-     * a record holds only 39 bits of a 256-byte unit's number. `bind` checks a
-     * further binding's `memory` too, and the record that binding shares keeps
-     * naming the first binding's memory.
+     * @param memory The memory a first binding writes into its record. It must
+     * end within the first 128 TiB of its address space, since a record holds
+     * only 39 bits of a 256-byte unit's number. `bind` checks a further
+     * binding's `memory` too, and the record that binding shares keeps naming
+     * the first binding's memory.
      * @return `OK`, `ERR_INVALID_ARG` when `object` is 0, `hardware_channel`
      * names no channel, or `memory` is not 256-byte aligned, has 0 bytes or
      * ends past 128 TiB, `ERR_BAD_STATE` when `set_up` has not cleared the
@@ -127,6 +133,25 @@ public:
      * every error the instance memory and the object's copy are unchanged.
      */
     int32_t bind(rm::handle object, uint32_t hardware_channel, const context_dma_memory& memory);
+
+    /**
+     * @brief Undo the binding of the context DMA `object` to the channel
+     * `hardware_channel`, as NVIDIA's driver undoes one: clear its entry to
+     * zeros through a mapping for the CPU that `video_memory::unmap_for_cpu`
+     * takes down after completing the write, and free its record once no other
+     * binding shares it. A freed record's words stay as they are until a later
+     * binding takes the record, as NVIDIA's driver leaves them.
+     * @param object The context DMA's handle.
+     * @param hardware_channel The channel's number.
+     * @return `OK`, `ERR_BAD_STATE` when `object` is not bound to
+     * `hardware_channel`, as is always so for handle 0 and for a number that
+     * names no channel, or what `video_memory::map_for_cpu` returns, each
+     * logged. On every error the instance memory and the object's copy are
+     * unchanged, so a failed mapping keeps the binding and the record its
+     * entry still names, whereas NVIDIA's driver drops the binding from its
+     * copy and its count even when writing the entry fails.
+     */
+    int32_t unbind(rm::handle object, uint32_t hardware_channel);
 
 private:
     // The object's copy of one hash table entry: the context DMA it binds, 0 while the entry is free, the record and
