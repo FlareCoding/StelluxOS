@@ -188,6 +188,252 @@ class LineCheckTest(unittest.TestCase):
         self.assertEqual(lint(REAL_COMMENTS), [])
 
 
+class StanzaTest(unittest.TestCase):
+    def test_a_stanza_of_more_than_six_statements_warns(self):
+        six = "void f() {\n" + "    a();\n" * 6 + "\n    b();\n}\n"
+        seven = "void f() {\n" + "    a();\n" * 7 + "}\n"
+
+        self.assertEqual(lint(six), [])
+        self.assertEqual(lint(seven), [(False, "the stanza from line 2 holds 7 statements")])
+
+    def test_stanzas_are_read_in_c_and_cpp_files_to_their_last_line(self):
+        seven_without_final_newline = "void f() {\n" + "    a();\n" * 7 + "}"
+        for path in ("example.c", "example.cpp", "example.h", "example.hpp"):
+            with self.subTest(path):
+                expected = [(False, "the stanza from line 2 holds 7 statements")]
+                self.assertEqual(lint(seven_without_final_newline, path), expected)
+
+        self.assertEqual(lint(seven_without_final_newline, "example.S"), [])
+
+    def test_a_statement_counts_once_whatever_it_spans(self):
+        text = """
+            int32_t f(int n) {
+                // a comment and a directive count as no statement
+            #if defined(X) && X == 1
+                int32_t rc = call(
+                    n,
+                    [&](int x) { a(x); b(x); }
+                );
+            #endif
+                for (int i = 0; i < n; i++) { a(i); }
+                do { n--; } while (n > 0);
+                config c = {.lanes = 4, .rate = {1, 2}};
+                auto g = [&]() { return n; };
+                c.apply(g);
+                if (n) {
+                    a(n);
+                } else if (n > 1) {
+                    b(n);
+                } else {
+                    return {rc, n};
+                }
+            }
+        """
+        self.assertEqual(lint(text), [(False, "the stanza from line 3 holds 7 statements")])
+
+    def test_blank_lines_and_labels_end_a_stanza(self):
+        text = """
+            void f(int n) {
+                switch (n) {
+                case 1:
+                    a(); a(); a(); a();
+                    break;
+                default:
+                    b(); b(); b(); b();
+                    break;
+                }
+
+                c(); c(); c(); c(); c();
+            }
+        """
+        self.assertEqual(lint(text), [])
+
+    def test_a_blank_line_inside_parentheses_ends_no_stanza(self):
+        text = "void f() {\n    a(1,\n\n      2);\n" + "    b();\n" * 6 + "}\n"
+        self.assertEqual(lint(text), [(False, "the stanza from line 2 holds 7 statements")])
+
+    def test_function_lambda_and_inner_blocks_hold_statements(self):
+        statements = "    a();\n" * 7
+        cases = [
+            f"class c {{\n    void f() {qualifier} {{\n{statements}    }}\n}};\n"
+            for qualifier in ("const", "volatile", "noexcept", "override", "final", "&", "&&")
+        ]
+        cases += (
+            f"c::c(int n)\n    : m_n(n),\n      m_m(n) {{\n{statements}}}\n",
+            f"TEST(suite, name) {{\n{statements}}}\n",
+            f"auto f() -> int {{\n{statements}}}\n",
+            f"struct s* f(void) {{\n{statements}}}\n",
+            f"void f() {{\n    run([&] {{\n{statements}    }});\n}}\n",
+            f"void f() {{\n    auto g = [n]() mutable {{\n{statements}    }};\n}}\n",
+            f"void f() {{\n    RUN_ELEVATED({{\n{statements}    }});\n}}\n",
+            f"void f() {{\n    do {{\n{statements}    }} while (n);\n}}\n",
+            f"void f() {{\n    {{\n{statements}    }}\n}}\n",
+            f"void f() {{\n    switch (n) {{\n    case 1: {{\n{statements}    }}\n    }}\n}}\n",
+            f"void f() {{\n    switch (n) {{\n    case (A ? 1 : 2): {{\n{statements}    }}\n    }}\n}}\n",
+        )
+
+        for text in cases:
+            with self.subTest(text):
+                self.assertEqual([is_error for is_error, _ in lint(text)], [False])
+
+    def test_namespace_type_and_initializer_blocks_hold_no_statements(self):
+        declarations = "    int a;\n" * 7
+        cases = (
+            f"namespace n {{\n{declarations}}}\n",
+            f"struct s {{\n{declarations}}};\n",
+            f"struct __attribute__((packed)) {{\n{declarations}}} s;\n",
+            f"struct alignas(16) {{\n{declarations}}} s;\n",
+            "void f() {\n    struct __attribute__((aligned(8))) {\n" + "        int a;\n" * 7 + "    } s;\n}\n",
+            "enum e {\n" + "    A,\n" * 7 + "};\n",
+            "static const int TABLE[] = {\n" + "    1,\n" * 7 + "};\n",
+            f"class c {{\n{declarations}    void f() const {{\n        a();\n    }}\n}};\n",
+        )
+
+        for text in cases:
+            with self.subTest(text):
+                self.assertEqual(lint(text), [])
+
+    def test_a_guard_block_needs_a_blank_line_after_it(self):
+        guard = "void f(int n) {{\n    if (!n) {{\n        {}\n    }}\n    a();\n}}\n"
+        for exit_statement in ("return;", "continue;", "break;", "goto out;"):
+            with self.subTest(exit_statement):
+                expected = [(True, "no blank line after the early-exit guard block ending on line 4")]
+                self.assertEqual(lint(guard.format(exit_statement)), expected)
+
+        lambda_guard = "void f() {\n    if (any([&] { return a(); })) {\n        return;\n    }\n    b();\n}\n"
+        expected = [(True, "no blank line after the early-exit guard block ending on line 4")]
+        self.assertEqual(lint(lambda_guard), expected)
+
+        labeled_guard = "void f() {\n    switch (k) {\n    case kind::a:\n        if (!n) {\n            return;\n"
+        labeled_guard += "        }\n        b();\n    }\n}\n"
+        expected = [(True, "no blank line after the early-exit guard block ending on line 6")]
+        self.assertEqual(lint(labeled_guard), expected)
+
+        unclosed_body = "void f(int n) {\n    if (!n) {\n        return;\n    }\n    a();\n"
+        expected = [(True, "no blank line after the early-exit guard block ending on line 4")]
+        self.assertEqual(lint(unclosed_body), expected)
+
+        separated = (
+            "void f(int n) {\n    if (!n) {\n        return;\n    }\n\n    a();\n}\n",
+            "void f(int n) {\n    while (n) {\n        if (!n) {\n            break;\n        }\n    }\n}\n",
+            "void f(int n) {\n    if (!n) {\n        return;\n    } else {\n        a();\n    }\n}\n",
+            "void f(int n) {\n    if (!n) {\n        return;\n    }\n    else {\n        a();\n    }\n}\n",
+            "void f(int n) {\n    if (n) {\n        a();\n    }\n    b();\n}\n",
+            "void f(int n) {\n    if (n) {\n        a();\n    } else if (!n) {\n        return;\n    }\n    b();\n}\n",
+            "void f(int n) {\n#if X\n    if (!n) {\n        return;\n    }\n#endif\n    a();\n}\n",
+            "void f(int n) {\n    switch (n) {\n    case 1:\n        if (!n) {\n            break;\n        }\n"
+            "    case 2:\n        break;\n    }\n}\n",
+        )
+
+        for text in separated:
+            with self.subTest(text):
+                self.assertEqual([problem for is_error, problem in lint(text) if is_error], [])
+
+    def test_a_guard_in_a_body_of_three_lines_needs_no_blank_line(self):
+        short_body = "int f(int x) {\n    if (!x) { return 0; }\n    a();\n    return g(x);\n}\n"
+        long_body = "int f(int x) {\n    if (!x) { return 0; }\n    a();\n    a();\n    return g(x);\n}\n"
+
+        self.assertEqual(lint(short_body), [])
+        self.assertEqual(lint(long_body), [(True, "no blank line after the early-exit guard block ending on line 2")])
+
+    def test_a_closed_block_of_several_lines_needs_a_blank_line_after_it(self):
+        joined = "void f(int n) {\n    while (n) {\n        n--;\n    }\n    a();\n}\n"
+        one_line = "void f(int n) {\n    while (n) { n--; }\n    a();\n}\n"
+        lambda_statement = "void f(int n) {\n    auto g = [&] {\n        a();\n    };\n    g();\n}\n"
+        functions = "void f() {\n    a();\n}\nvoid g() {\n    b();\n}\n"
+        after_guard = "void f(int n) {\n    if (!n) {\n        return;\n    }\n    a();\n    while (n) {\n"
+        after_guard += "        n--;\n    }\n    b();\n}\n"
+        after_guard_findings = [
+            (True, "no blank line after the early-exit guard block ending on line 4"),
+            (False, "no blank line after the block ending on line 8"),
+        ]
+
+        self.assertEqual(lint(joined), [(False, "no blank line after the block ending on line 4")])
+        self.assertEqual(lint(one_line), [])
+        self.assertEqual(lint(lambda_statement), [])
+        self.assertEqual(lint(functions), [])
+        self.assertEqual(lint(after_guard), after_guard_findings)
+
+    def test_a_block_of_statements_neither_starts_nor_ends_with_a_blank_line(self):
+        starting = "void f() {\n\n    a();\n    b();\n}\n"
+        ending = "void f() {\n    a();\n    b();\n\n}\n"
+
+        self.assertEqual(lint(starting), [(False, "a blank line at the start of a block of statements")])
+        self.assertEqual(lint(ending), [(False, "a blank line at the end of a block of statements")])
+        self.assertEqual(lint("void f() {\n\n}\n"), [(False, "a blank line at the start of a block of statements")])
+        self.assertEqual(lint("void f() { a();\n\n    b();\n    c();\n}\n"), [])
+        self.assertEqual(lint("void f() {\n    a();\n    b();\n\n    c(); }\n"), [])
+        self.assertEqual(lint("namespace n {\n\nint a;\n\n}\n"), [])
+
+    def test_a_body_of_three_lines_holds_no_blank_line(self):
+        split = "int f() {\n    int x = g();\n\n    return x;\n}\n"
+        joined = "int f() {\n    int x = g();\n    return x;\n}\n"
+        labels = "int f(int n) {\n    switch (n) {\n    case 1: return 1;\n    default: return 0;\n    }\n}\n"
+
+        self.assertEqual(lint(split), [(True, "a blank line in a body of at most 3 lines")])
+        self.assertEqual(lint(joined), [])
+        self.assertEqual(lint(labels), [])
+
+    def test_exits_and_labels_are_read_as_whole_words(self):
+        assignment = "void f(int x) {{\n    a();\n    if (x) {{\n        {}\n    }}\n    b();\n}}\n"
+        guard = "void f(int x) {{\n    a();\n    if (!x) {{\n        return;\n    }}\n    {}\n}}\n"
+        block_finding = [(False, "no blank line after the block ending on line 5")]
+        guard_finding = [(True, "no blank line after the early-exit guard block ending on line 5")]
+
+        self.assertEqual(lint(assignment.format("return_code = 1;")), block_finding)
+        self.assertEqual(lint(guard.format("case_count = 0;")), guard_finding)
+        self.assertEqual(lint(guard.format("default_timeout = 0;")), guard_finding)
+
+    def test_two_blank_lines_in_a_function_body_are_an_error(self):
+        expected = [(True, "two blank lines in a row in a function body")]
+        self.assertEqual(lint("void f() {\n    a();\n\n\n    b();\n}\n"), expected)
+        self.assertEqual(lint("void f() {\n    int t[] = {\n        1,\n\n\n        2,\n    };\n}\n"), expected)
+        self.assertEqual(lint("void f() {\n    a();\n    a();\n\n    b();\n}\n"), [])
+
+    def test_two_blank_lines_outside_function_bodies_warn(self):
+        expected = [(False, "two blank lines in a row outside a function body")]
+        self.assertEqual(lint("int a;\n\n\nint b;\n"), expected)
+        self.assertEqual(lint("struct s {\n    int a;\n\n\n    int b;\n};\n"), expected)
+        self.assertEqual(lint("int a;\n\n"), [])
+
+    def test_macro_bodies_count_no_statements(self):
+        text = "#define MANY() \\\n    void f() { \\\n" + "        a(); \\\n" * 7 + "    }\nint b;\n"
+        self.assertEqual(lint(text), [])
+
+    def test_findings_are_reported_only_on_added_lines(self):
+        long_stanza = "void f() {\n" + "    a();\n" * 7 + "}\n"
+        nested = "void f() {\n" + "    a();\n" * 6 + "    // c\n    a();\n    if (n) {\n        b();\n    }\n}\n"
+        guard = "void f(int n) {\n    if (!n) {\n        return;\n    }\n    b();\n}\n"
+        double_blank = "void f() {\n    a();\n\n\n    b();\n}\n"
+        blank_at_start = "void f() {\n\n    a();\n    b();\n    c();\n}\n"
+        blank_at_end = "void f() {\n    a();\n    b();\n    c();\n\n}\n"
+        short_body = "void f() {\n    a();\n\n    b();\n}\n"
+        cases = (
+            (long_stanza, {5, 6}, [5]),
+            (long_stanza, {2}, [2]),
+            (long_stanza, {8}, [8]),
+            (long_stanza, {1, 9}, []),
+            (nested, {12}, [12]),
+            (nested, {8, 11}, []),
+            (guard, {4, 5}, [5]),
+            (guard, {4}, [4]),
+            (guard, {2, 3}, []),
+            (double_blank, {4}, [4]),
+            (double_blank, {3, 5}, []),
+            (blank_at_start, {2}, [2]),
+            (blank_at_start, {1, 3}, []),
+            (blank_at_end, {5}, [5]),
+            (blank_at_end, {4, 6}, []),
+            (short_body, {3}, [3]),
+            (short_body, {1, 5}, []),
+        )
+
+        for text, added, numbers in cases:
+            with self.subTest(text, added=added):
+                findings = style_lint.check_stanzas("example.cpp", style_lint.scan_file("example.cpp", text), added)
+                self.assertEqual([finding.number for finding in findings], numbers)
+
+
 class DiffTest(unittest.TestCase):
     def test_hunks_count_context_lines_and_must_match_their_header(self):
         diff = "diff --git a/x.c b/x.c\n--- a/x.c\n+++ b/x.c\n@@ -1,3 +1,4 @@\n one\n-two\n+TWO\n three\n+four\n"
