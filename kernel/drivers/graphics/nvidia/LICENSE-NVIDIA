@@ -2358,10 +2358,24 @@ src/nvidia/generated/g_kern_disp_nvoc.c
 src/common/inc/swref/published/disp/v03_00/dev_disp.h
     NV_PDISP_CHN_NUM_WIN__SIZE_1, the most windows a display engine numbers, 32,
     in chip.h, chip.cpp, display_info.cpp and
-    kernel/tests/graphics/nvidia_display_info.test.cpp, and NV_UDISP_HASH_BASE,
+    kernel/tests/graphics/nvidia_display_info.test.cpp, NV_UDISP_HASH_BASE,
     NV_UDISP_HASH_LIMIT, NV_UDISP_OBJ_MEM_BASE and NV_UDISP_OBJ_MEM_LIMIT, which
     give the display's instance memory an 8 KiB hash table followed by 56 KiB
     for records, in instance_memory.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, the fields of a hash
+    table entry's second word (NV_UDISP_HASH_TBL_CLIENT_ID,
+    NV_UDISP_HASH_TBL_INSTANCE and NV_UDISP_HASH_TBL_CHN), the fields of a
+    context DMA's record (NV_DMA_TARGET_NODE, NV_DMA_ACCESS, NV_DMA_KIND,
+    NV_DMA_ADDRESS_BASE_LO, NV_DMA_ADDRESS_BASE_HI, NV_DMA_ADDRESS_LIMIT_LO and
+    NV_DMA_ADDRESS_LIMIT_HI, with the values NV_DMA_TARGET_NODE_PHYSICAL_NVM,
+    NV_DMA_TARGET_NODE_PHYSICAL_PCI_COHERENT, NV_DMA_ACCESS_READ_AND_WRITE and
+    NV_DMA_KIND_PITCH), the display engine's channel numbers
+    (NV_PDISP_CHN_NUM_CORE, NV_PDISP_CHN_NUM_WIN, NV_PDISP_CHN_NUM_WINIM and
+    NV_PDISP_CHN_NUM_CURS), the windows' and cursors' counts
+    (NV_PDISP_CHN_NUM_WIN__SIZE_1 and NV_PDISP_CHN_NUM_WINIM__SIZE_1, 32 each,
+    and NV_PDISP_CHN_NUM_CURS__SIZE_1, 8) and
+    NV_UDISP_FE_CHN_ASSY_BASEADR__SIZE_1, the size of the array the channel
+    numbers index, 81, in instance_memory.h, instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
@@ -2372,17 +2386,32 @@ src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
     caching, address and size with
     NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM on the internal client and
     subdevice, in rm.h, instance_memory.h, instance_memory.cpp and
-    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and that it writes
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, that it writes
     nothing into that memory before giving the firmware its address, in
-    instance_memory.h
+    instance_memory.h, and that it keeps its own copy of the hash table, gives
+    the bindings of a context DMA one record, allocated from its heap of the
+    memory after the hash table in 32-byte slots past a first 16 bytes it
+    reserves as its NULL instance, counts the bindings sharing each record,
+    refuses a second binding of a context DMA to a channel before reserving a
+    record or seeking an entry, writes a binding's record before its entry,
+    writes an entry as 8 bytes (the context DMA's handle, then the word naming
+    the binding's client, record and channel), takes the first free entry from
+    the binding's hash on, wrapping past the last, and fails a binding when no
+    entry is free, in instance_memory.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/inst_mem/arch/v03/disp_inst_mem_0300.c
     that the display's instance memory takes its hash table's size plus the size
     of the part for its records, in instance_memory.h, instance_memory.cpp and
-    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and that its hash
-    table finds an object's record by a client, the object's handle and a
-    channel, in instance_memory.h
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, that its hash table
+    finds an object's record by a client, the object's handle and a channel, in
+    instance_memory.h, the hash of a binding, the second word of a hash table
+    entry and the words of a context DMA's record, which names video memory as
+    PHYSICAL_NVM and pages read with snooping on as PHYSICAL_PCI_COHERENT,
+    pitch-laid and readable and writable, with the first and last 256-byte unit
+    of its memory, in instance_memory.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_disp_inst_mem_nvoc.h
@@ -2390,6 +2419,22 @@ src/nvidia/generated/g_disp_inst_mem_nvoc.h
     0x10000, in instance_memory.h, instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_disp_inst_mem_nvoc.c
+    that NVIDIA's driver binds instmemHashFunc_v03_00,
+    instmemGenerateHashTableData_v03_00 and instmemCommitContextDma_v03_00 for
+    every display version but DISPv0000, in instance_memory.h,
+    instance_memory.cpp and kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/libraries/containers/eheap/eheap_old.c
+    that NVIDIA's heap, unless asked to grow down, allocates from the bottom of
+    the lowest free block that fits, so a binding takes the lowest free record,
+    in instance_memory.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2015-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_mem_desc_nvoc.h
     ADDR_FBMEM, the address space of video memory, 2, and that an address in it
@@ -2405,8 +2450,8 @@ src/nvidia/inc/kernel/os/nv_memory_type.h
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,
-rpc_global_enums.h, g_rpc_private.h and nvUnixVersion.h the package's COPYING,
-carries this permission notice:
+g_disp_inst_mem_nvoc.c, rpc_global_enums.h, g_rpc_private.h and
+nvUnixVersion.h the package's COPYING, carries this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),
