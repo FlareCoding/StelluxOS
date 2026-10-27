@@ -30,6 +30,7 @@ constexpr chip_info CHIP_TABLE[] = {
         .interrupt_leaf_count = 8,
         .display = {
             .window_count = 8,
+            .display_class = 0xC670,
         },
     },
 };

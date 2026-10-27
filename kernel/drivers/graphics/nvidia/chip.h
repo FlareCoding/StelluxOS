@@ -55,12 +55,13 @@ struct chip_gsp_reservation {
 
 /**
  * The chip's display engine, the part of the GPU that reads images from memory
- * and sends them to monitors, as far as the driver depends on it. The firmware
- * reports which of the chip's windows this GPU has, as `read_present_windows`
- * reads them.
+ * and sends them to monitors, as far as the driver depends on it. Its channels
+ * are the queues of commands it reads from memory. The firmware reports which
+ * of the chip's windows this GPU has, as `read_present_windows` reads them.
  */
 struct chip_display {
-    uint8_t window_count; // the chip's windows, numbered from 0, at most `DISPLAY_WINDOWS_MAX`
+    uint8_t  window_count;  // the chip's windows, numbered from 0, at most `DISPLAY_WINDOWS_MAX`
+    uint32_t display_class; // NVIDIA's class of the display object, the parent of the display engine's channels
 };
 
 /**

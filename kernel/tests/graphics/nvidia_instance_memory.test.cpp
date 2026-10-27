@@ -262,6 +262,11 @@ public:
         return OK;
     }
 
+    int32_t control(rm::handle, uint32_t, void*, size_t) override {
+        other_count++;
+        return OK;
+    }
+
     int32_t release(rm::handle) override {
         other_count++;
         return OK;

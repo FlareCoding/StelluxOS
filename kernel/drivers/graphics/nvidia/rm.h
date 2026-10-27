@@ -133,6 +133,49 @@ struct display_instance_memory_params {
 
 static_assert(sizeof(display_instance_memory_params) == 24, "NVIDIA's layout of WRITE_INST_MEM's parameters");
 
+// NVIDIA's classes of two of the display's objects under a device: display common (NV04_DISPLAY_COMMON, which the
+// controls about the display's connectors go to) and the bandwidth check's object (NVC372_DISPLAY_SW)
+constexpr uint32_t CLASS_DISPLAY_COMMON          = 0x73;
+constexpr uint32_t CLASS_DISPLAY_BANDWIDTH_CHECK = 0xC372;
+
+// NVIDIA's NV0073_CTRL_CMD_SYSTEM_GET_CAPS_V2, the control to display common that gives its capabilities, a table of
+// bits naming what the display engine supports and the workarounds it needs
+constexpr uint32_t CONTROL_GET_DISPLAY_COMMON_CAPABILITIES = 0x730138;
+
+// NVIDIA's NV0073_CTRL_SYSTEM_CAPS_TBL_SIZE, the bytes of display common's table
+constexpr uint32_t DISPLAY_COMMON_CAPABILITY_TABLE_BYTES = 2;
+
+// The parameters of `CONTROL_GET_DISPLAY_COMMON_CAPABILITIES`, which the reply fills
+struct display_common_capabilities_params {
+    uint8_t table[DISPLAY_COMMON_CAPABILITY_TABLE_BYTES];
+};
+
+// NVIDIA's NV0073_CTRL_SYSTEM_CAPS_CROSS_BAR_SUPPORTED, bit 0x08 of the table's byte 1: the display engine's links (its
+// units that each drive one connector) can each drive any connector through a crossbar
+constexpr uint32_t DISPLAY_COMMON_CROSSBAR_BYTE = 1;
+constexpr uint8_t  DISPLAY_COMMON_CROSSBAR_BIT  = 0x08;
+
+// NVIDIA's NV5070_CTRL_CMD_SYSTEM_GET_CAPS_V2, the control to the display that gives its capabilities, a table of
+// bits as display common's is
+constexpr uint32_t CONTROL_GET_DISPLAY_CAPABILITIES = 0x50700709;
+
+// NVIDIA's NV5070_CTRL_SYSTEM_CAPS_TBL_SIZE, the bytes of the display's table
+constexpr uint32_t DISPLAY_CAPABILITY_TABLE_BYTES = 1;
+
+// The parameters of `CONTROL_GET_DISPLAY_CAPABILITIES`, which the reply fills
+struct display_capabilities_params {
+    uint32_t subdevice_index; // NVIDIA's base.subdeviceIndex, the GPU of the device asked about, 0 for the first
+    uint8_t  table[DISPLAY_CAPABILITY_TABLE_BYTES];
+};
+
+// NVIDIA's NV5070_CTRL_SYSTEM_CAPS_BUG_644815_DNISO_VIDMEM_ONLY, bit 0x40 of the table's byte 0: the display engine
+// reaches push buffers, semaphores and notifiers (memory its queues of commands use) only in video memory
+constexpr uint32_t DISPLAY_VIDEO_MEMORY_ONLY_BYTE = 0;
+constexpr uint8_t  DISPLAY_VIDEO_MEMORY_ONLY_BIT  = 0x40;
+
+static_assert(sizeof(display_common_capabilities_params) == 2, "NVIDIA's layout of display common's capabilities");
+static_assert(sizeof(display_capabilities_params) == 8, "NVIDIA's layout of the display's capabilities");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H
