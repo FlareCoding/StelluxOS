@@ -15,20 +15,20 @@ namespace drivers::nvidia {
 // Page table entries written through BAR0's window at a time, 512 bytes, which always fit the 1 MiB it reaches
 constexpr uint64_t ENTRIES_PER_WRITE = 64;
 
-video_memory::video_memory() {
+bar1_video_memory::bar1_video_memory() {
     m_mappings.init();
     m_lock.init();
 }
 
-video_memory::~video_memory() {
+bar1_video_memory::~bar1_video_memory() {
     free_mappings();
 }
 
-int32_t video_memory::init(const static_configuration& configuration, uint64_t video_memory_size) {
+int32_t bar1_video_memory::init(const static_configuration& configuration, uint64_t video_memory_size) {
     return m_allocator.init(configuration, video_memory_size);
 }
 
-int32_t video_memory::set_up_bar1(
+int32_t bar1_video_memory::set_up_bar1(
     registers regs,
     pmm::phys_addr_t bar1_phys,
     uint64_t bar1_bytes,
@@ -95,7 +95,7 @@ int32_t video_memory::set_up_bar1(
     return OK;
 }
 
-void video_memory::open_window(uintptr_t bar1_virt) {
+void bar1_video_memory::open_window(uintptr_t bar1_virt) {
     RUN_ELEVATED(sync::mutex_lock(m_lock));
 
     m_bar1_virt = bar1_virt;
@@ -104,11 +104,11 @@ void video_memory::open_window(uintptr_t bar1_virt) {
     RUN_ELEVATED(sync::mutex_unlock(m_lock));
 }
 
-int32_t video_memory::allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) {
+int32_t bar1_video_memory::allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) {
     return m_allocator.allocate(size, alignment, use, out);
 }
 
-void video_memory::release(const vram_range& range) {
+void bar1_video_memory::release(const vram_range& range) {
     RUN_ELEVATED(sync::mutex_lock(m_lock));
 
     mapping* held = find_mapping(range);
@@ -121,7 +121,7 @@ void video_memory::release(const vram_range& range) {
     RUN_ELEVATED(sync::mutex_unlock(m_lock));
 }
 
-int32_t video_memory::map_for_cpu(const vram_range& range, cpu_mapping& out) {
+int32_t bar1_video_memory::map_for_cpu(const vram_range& range, cpu_mapping& out) {
     RUN_ELEVATED(sync::mutex_lock(m_lock));
 
     int32_t rc = map_locked(range, out);
@@ -131,7 +131,7 @@ int32_t video_memory::map_for_cpu(const vram_range& range, cpu_mapping& out) {
     return rc;
 }
 
-void video_memory::unmap_for_cpu(const vram_range& range) {
+void bar1_video_memory::unmap_for_cpu(const vram_range& range) {
     RUN_ELEVATED(sync::mutex_lock(m_lock));
 
     mapping* held = find_mapping(range);
@@ -151,7 +151,7 @@ void video_memory::unmap_for_cpu(const vram_range& range) {
     }
 }
 
-void video_memory::drop_window() {
+void bar1_video_memory::drop_window() {
     RUN_ELEVATED(sync::mutex_lock(m_lock));
 
     free_mappings();
@@ -165,7 +165,7 @@ void video_memory::drop_window() {
     RUN_ELEVATED(sync::mutex_unlock(m_lock));
 }
 
-void video_memory::record_window(
+void bar1_video_memory::record_window(
     registers regs,
     pmm::phys_addr_t bar1_phys,
     uint64_t bar1_bytes,
@@ -185,7 +185,7 @@ void video_memory::record_window(
     RUN_ELEVATED(sync::mutex_unlock(m_lock));
 }
 
-int32_t video_memory::map_locked(const vram_range& range, cpu_mapping& out) {
+int32_t bar1_video_memory::map_locked(const vram_range& range, cpu_mapping& out) {
     if (!m_allocator.is_handed_out(range)) {
         log::error(
             "nvidia: mapping 0x%lX bytes of video memory at 0x%lX for the CPU was refused, as they are not an "
@@ -266,7 +266,7 @@ int32_t video_memory::map_locked(const vram_range& range, cpu_mapping& out) {
     return OK;
 }
 
-void video_memory::unmap_locked(mapping* held) {
+void bar1_video_memory::unmap_locked(mapping* held) {
     // The full fence orders the CPU's writes through the mapping before the read, which returns once they are in video
     // memory while the run's entries still translate them. On x86_64 a store fence orders no read after the writes
     barrier::dma_full();
@@ -287,7 +287,7 @@ void video_memory::unmap_locked(mapping* held) {
     free_mapping(held);
 }
 
-bool video_memory::find_free_run(uint64_t size, uint64_t& bar1_offset_out) {
+bool bar1_video_memory::find_free_run(uint64_t size, uint64_t& bar1_offset_out) {
     uint64_t candidate = m_console_bytes;
     for (const mapping& held : m_mappings) {
         if (held.bar1_offset - candidate >= size) {
@@ -305,7 +305,7 @@ bool video_memory::find_free_run(uint64_t size, uint64_t& bar1_offset_out) {
     return true;
 }
 
-void video_memory::free_mappings() {
+void bar1_video_memory::free_mappings() {
     mapping* left = m_mappings.pop_front();
     while (left != nullptr) {
         heap::ufree_delete(left);
@@ -313,12 +313,12 @@ void video_memory::free_mappings() {
     }
 }
 
-void video_memory::free_mapping(mapping* held) {
+void bar1_video_memory::free_mapping(mapping* held) {
     m_mappings.remove(held);
     heap::ufree_delete(held);
 }
 
-video_memory::mapping* video_memory::find_mapping(const vram_range& range) {
+bar1_video_memory::mapping* bar1_video_memory::find_mapping(const vram_range& range) {
     for (mapping& held : m_mappings) {
         if (held.range.offset == range.offset && held.range.size == range.size) {
             return &held;
@@ -328,7 +328,7 @@ video_memory::mapping* video_memory::find_mapping(const vram_range& range) {
     return nullptr;
 }
 
-int32_t video_memory::write_run_entries(const mapping& held, bool maps_range) {
+int32_t bar1_video_memory::write_run_entries(const mapping& held, bool maps_range) {
     uint64_t pages = held.range.size / SMALL_PAGE_BYTES;
     uint64_t entries[ENTRIES_PER_WRITE];
     for (uint64_t first = 0; first < pages; first += ENTRIES_PER_WRITE) {
@@ -348,7 +348,7 @@ int32_t video_memory::write_run_entries(const mapping& held, bool maps_range) {
     return OK;
 }
 
-int32_t video_memory::update_run(const mapping& held, bool maps_range) {
+int32_t bar1_video_memory::update_run(const mapping& held, bool maps_range) {
     int32_t rc = write_run_entries(held, maps_range);
     if (rc != OK) {
         return rc;

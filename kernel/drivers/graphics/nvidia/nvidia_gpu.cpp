@@ -889,8 +889,19 @@ int32_t nvidia_gpu_driver::attach() {
             present_windows,
             chip->display.window_count
         );
+
+        rc = m_instance_memory.set_up();
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+
+        log::info(
+            "nvidia: the display's instance memory lies at 0x%lX in video memory, and the GSP's firmware accepted its "
+            "address",
+            m_instance_memory.range().offset
+        );
     } else {
-        log::info("nvidia: the chip's fuses disable its display, so bring-up reads no windows");
+        log::info("nvidia: the chip's fuses disable its display, so bring-up skips its windows and instance memory");
     }
 
     // An earlier driver can leave vectors of the tree enabled, which would raise MSI before the GSP's is enabled

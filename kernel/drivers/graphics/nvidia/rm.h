@@ -113,6 +113,26 @@ struct display_static_info_params {
 
 static_assert(sizeof(display_static_info_params) == 28, "NVIDIA's layout of the display's static information");
 
+// NVIDIA's NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM, the control that gives the firmware where the display's
+// instance memory lies, for the firmware to write into the display engine's registers
+constexpr uint32_t CONTROL_WRITE_DISPLAY_INSTANCE_MEMORY = 0x20800A49;
+
+// NVIDIA's ADDR_FBMEM, the address space of video memory, where an address is an offset from its start
+constexpr uint32_t ADDRESS_SPACE_VIDEO_MEMORY = 2;
+
+// NVIDIA's NV_MEMORY_WRITECOMBINED, the caching of memory the CPU maps write-combined
+constexpr uint32_t CPU_CACHING_WRITE_COMBINED = 2;
+
+// The parameters of `CONTROL_WRITE_DISPLAY_INSTANCE_MEMORY`
+struct display_instance_memory_params {
+    uint64_t address;       // NVIDIA's instMemPhysAddr, for video memory an offset from its start
+    uint64_t bytes;         // NVIDIA's instMemSize
+    uint32_t address_space; // NVIDIA's instMemAddrSpace
+    uint32_t cpu_caching;   // NVIDIA's instMemCpuCacheAttr
+};
+
+static_assert(sizeof(display_instance_memory_params) == 24, "NVIDIA's layout of WRITE_INST_MEM's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H

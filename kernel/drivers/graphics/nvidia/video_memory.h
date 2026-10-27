@@ -14,22 +14,84 @@
 
 namespace drivers::nvidia {
 
-// Where the CPU reaches a range of video memory `video_memory::map_for_cpu` mapped through BAR1
+// Where the CPU reaches a range of video memory `video_memory::map_for_cpu` mapped
 struct cpu_mapping {
-    uintptr_t        virt; // where the range starts in the kernel's mapping of BAR1
-    pmm::phys_addr_t phys; // where the range starts in BAR1's physical addresses
+    uintptr_t        virt; // where the range starts in the kernel's address space, mapped `paging::PAGE_USER`
+    pmm::phys_addr_t phys; // where the range starts in physical addresses, or 0 when the implementation has none
 };
 
 /**
- * The card's video memory as the driver's parts use it: ranges handed out by
- * its `vram_allocator`, and mappings of those ranges for the CPU through BAR1,
- * where the CPU reaches video memory. It owns BAR1's tables, which
- * `set_up_bar1` allocates, writes into video memory and links into the
- * firmware's page tables, and the window (the part of BAR1 a mapping may use,
- * as `bar1_window_bytes` gives it), which `open_window` opens to mappings once
- * the kernel has mapped BAR1. A boot console that bring-up keeps takes the
- * window's first bytes, mapped onto the same offsets of video memory for the
- * kernel's life.
+ * The card's video memory as the driver's parts use it: ranges handed out for
+ * a `vram_use`, each its caller's until the caller releases it, and mappings
+ * of those ranges for the CPU. `bar1_video_memory` implements it, and tests
+ * replace it with a double over ordinary memory. Its calls can block on a lock
+ * and wait on the card, so none may run in an interrupt handler or under a
+ * spinlock, and a thread that cannot sleep, such as the boot thread, must call
+ * only while no other thread can.
+ */
+class video_memory {
+public:
+    virtual ~video_memory() = default;
+
+    /**
+     * @brief Hand out `size` bytes of video memory for `use` at a multiple of
+     * `alignment`.
+     * @param size The bytes needed, rounded up to a multiple of 4 KiB.
+     * @param alignment A power of two, any below 4 KiB counting as 4 KiB.
+     * @param use What the card does with the memory.
+     * @param out Receives the range on `OK`, its size the rounded size, and is
+     * left unchanged on every error.
+     * @return `OK`, `ERR_INVALID_ARG` when `size` is 0 or overflows when
+     * rounded and when `alignment` is 0 or not a power of two, or
+     * `ERR_NO_MEMORY` when no memory `use` may lie in has a free range of that
+     * size at that alignment or the allocation cannot be recorded. Refused
+     * arguments and a failure to record the allocation are logged.
+     */
+    virtual int32_t allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) = 0;
+
+    /**
+     * @brief Take back a range `allocate` handed out, whole and once, first
+     * taking down its mapping when it is mapped. Any other range is logged and
+     * changes nothing, so a release cannot fail.
+     * @param range The range as `allocate` handed it out.
+     */
+    virtual void release(const vram_range& range) = 0;
+
+    /**
+     * @brief Map `range` for the CPU, until `unmap_for_cpu` or `release` takes
+     * the mapping down, or until an implementation's own teardown, such as
+     * `bar1_video_memory::drop_window`, ends it.
+     * @param range A range `allocate` handed out, whole and not mapped.
+     * @param out Receives where the CPU reaches the range on `OK`, and is left
+     * unchanged on every error.
+     * @return `OK`, `ERR_INVALID_ARG` when `range` is not such a range or lies
+     * where no mapping reaches, `ERR_NO_MEMORY` when there is no room for the
+     * mapping or its record, or `ERR_BAD_STATE` or `ERR_TIMEOUT` when the card
+     * does not take the mapping, each logged.
+     */
+    virtual int32_t map_for_cpu(const vram_range& range, cpu_mapping& out) = 0;
+
+    /**
+     * @brief Take down the mapping `map_for_cpu` made of `range`, first
+     * completing the CPU's writes through it, so they have reached video
+     * memory when the call returns. A range not mapped is logged and changes
+     * nothing, and the range counts as unmapped afterwards in every case, so
+     * the call returns nothing.
+     * @param range The range as `map_for_cpu` mapped it.
+     */
+    virtual void unmap_for_cpu(const vram_range& range) = 0;
+};
+
+/**
+ * The card's video memory as `video_memory` gives it to the driver's parts:
+ * ranges handed out by its `vram_allocator`, and mappings of those ranges for
+ * the CPU through BAR1, where the CPU reaches video memory. It owns BAR1's
+ * tables, which `set_up_bar1` allocates, writes into video memory and links
+ * into the firmware's page tables, and the window (the part of BAR1 a mapping
+ * may use, as `bar1_window_bytes` gives it), which `open_window` opens to
+ * mappings once the kernel has mapped BAR1. A boot console that bring-up keeps
+ * takes the window's first bytes, mapped onto the same offsets of video memory
+ * for the kernel's life.
  *
  * `map_for_cpu` maps a range onto a run of the window, a stretch of its pages,
  * at the lowest offset past the console with room for it. It writes the
@@ -72,22 +134,22 @@ struct cpu_mapping {
  * in an invalidate's two waits. `set_up_bar1` writes through BAR0's window
  * without it, as the boot thread alone calls it.
  */
-class video_memory {
+class bar1_video_memory : public video_memory {
 public:
     /**
      * @brief An object with no regions and no window, whose `allocate` fails
      * until `init` succeeds and whose `map_for_cpu` fails until `open_window`
      * opens a window.
      */
-    video_memory();
+    bar1_video_memory();
 
     /**
      * @brief Free the record of every mapping.
      */
-    ~video_memory();
+    ~bar1_video_memory() override;
 
-    video_memory(const video_memory&) = delete;
-    video_memory& operator=(const video_memory&) = delete;
+    bar1_video_memory(const bar1_video_memory&) = delete;
+    bar1_video_memory& operator=(const bar1_video_memory&) = delete;
 
     /**
      * @brief Take the video memory regions of `configuration` for the
@@ -155,7 +217,7 @@ public:
      * leaves it.
      * @return What `vram_allocator::allocate` returns.
      */
-    int32_t allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out);
+    int32_t allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) override;
 
     /**
      * @brief Take back a range `allocate` handed out, as
@@ -163,7 +225,7 @@ public:
      * does when it is mapped.
      * @param range The range as `allocate` handed it out.
      */
-    void release(const vram_range& range);
+    void release(const vram_range& range) override;
 
     /**
      * @brief Map `range` for the CPU through BAR1, at the lowest offset of the
@@ -183,7 +245,7 @@ public:
      * are rewritten sparse with no invalidate, and the run is free again. On
      * `ERR_INVALID_ARG` and `ERR_NO_MEMORY` BAR1's tables are left unwritten.
      */
-    int32_t map_for_cpu(const vram_range& range, cpu_mapping& out);
+    int32_t map_for_cpu(const vram_range& range, cpu_mapping& out) override;
 
     /**
      * @brief Take down the mapping `map_for_cpu` made of `range`: complete the
@@ -196,7 +258,7 @@ public:
      * call returns nothing.
      * @param range The range as `map_for_cpu` mapped it.
      */
-    void unmap_for_cpu(const vram_range& range);
+    void unmap_for_cpu(const vram_range& range) override;
 
     /**
      * @brief Forget BAR1's window, so no later call of the object reaches BAR0

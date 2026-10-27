@@ -17,10 +17,10 @@ using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::OK;
 using drivers::nvidia::bar1_page_entry;
+using drivers::nvidia::bar1_video_memory;
 using drivers::nvidia::cpu_mapping;
 using drivers::nvidia::registers;
 using drivers::nvidia::static_configuration;
-using drivers::nvidia::video_memory;
 using drivers::nvidia::video_memory_region;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
@@ -96,14 +96,14 @@ namespace drivers::nvidia {
 // invalidate finished, which the fake cannot give
 struct video_memory_test_access {
     // Records the window, still closed, with an invalidate timeout of 0
-    static void record_window(video_memory& memory, registers regs, uint64_t bar1_bytes, uint64_t console_bytes) {
+    static void record_window(bar1_video_memory& memory, registers regs, uint64_t bar1_bytes, uint64_t console_bytes) {
         memory.record_window(regs, BAR1_PHYS, bar1_bytes, ROOT_OFFSET, TABLES_OFFSET, console_bytes);
         memory.m_invalidate_timeout_ns = 0;
     }
 
     // Records the window and opens it
     static void record_and_open_window(
-        video_memory& memory,
+        bar1_video_memory& memory,
         registers regs,
         uint64_t bar1_bytes,
         uint64_t console_bytes
@@ -113,26 +113,29 @@ struct video_memory_test_access {
     }
 
     // The window's size, 0 while it is closed
-    static uint64_t window_bytes(const video_memory& memory) { return memory.m_window_bytes; }
+    static uint64_t window_bytes(const bar1_video_memory& memory) { return memory.m_window_bytes; }
 
     // Records a mapping of `range` at `bar1_offset` as one whose invalidate finished
-    static bool hold(video_memory& memory, uint64_t bar1_offset, const vram_range& range) {
-        video_memory::mapping* held = heap::ualloc_new<video_memory::mapping>();
+    static bool hold(bar1_video_memory& memory, uint64_t bar1_offset, const vram_range& range) {
+        bar1_video_memory::mapping* held = heap::ualloc_new<bar1_video_memory::mapping>();
         if (held == nullptr) {
             return false;
         }
 
         held->bar1_offset = bar1_offset;
         held->range = range;
-        memory.m_mappings.insert_sorted(held, [](const video_memory::mapping* a, const video_memory::mapping* b) {
-            return a->bar1_offset < b->bar1_offset;
-        });
+        memory.m_mappings.insert_sorted(
+            held,
+            [](const bar1_video_memory::mapping* a, const bar1_video_memory::mapping* b) {
+                return a->bar1_offset < b->bar1_offset;
+            }
+        );
         return true;
     }
 
     // Points the entries of the held mapping of `range` at its pages, as a mapping writes them before its invalidate
-    static int32_t write_entries(video_memory& memory, const vram_range& range) {
-        video_memory::mapping* held = memory.find_mapping(range);
+    static int32_t write_entries(bar1_video_memory& memory, const vram_range& range) {
+        bar1_video_memory::mapping* held = memory.find_mapping(range);
         if (held == nullptr) {
             return ERR_INVALID_ARG;
         }
@@ -185,7 +188,7 @@ TEST(nvidia_video_memory, a_mapping_before_bar1s_window_is_opened_is_refused) {
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
 
     vram_range page = {};
@@ -214,7 +217,7 @@ TEST(nvidia_video_memory, bar1_tables_ending_past_128_gib_are_refused_and_leave_
     configuration.regions[2] = usable_region(REACH - 2 * PAGE_BYTES, 4 * PAGE_BYTES);
     configuration.region_count = 3;
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(configuration, REACH + 2 * PAGE_BYTES), OK);
     EXPECT_EQ(memory.set_up_bar1(bar0.regs, BAR1_PHYS, 17 * PAGE_BYTES, ROOT_OFFSET, CONSOLE_BYTES), ERR_BAD_STATE);
     memory.open_window(reinterpret_cast<uintptr_t>(bar1_pages));
@@ -238,7 +241,7 @@ TEST(nvidia_video_memory, a_range_not_handed_out_or_part_of_one_is_refused_writi
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -260,7 +263,7 @@ TEST(nvidia_video_memory, a_range_mapped_already_is_refused_writing_nothing) {
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -279,7 +282,7 @@ TEST(nvidia_video_memory, a_mapping_whose_invalidate_times_out_leaves_its_entrie
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -303,7 +306,7 @@ TEST(nvidia_video_memory, a_mapping_longer_than_one_write_of_entries_writes_ever
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -321,7 +324,7 @@ TEST(nvidia_video_memory, the_entries_of_a_run_name_its_ranges_pages_in_order) {
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -343,7 +346,7 @@ TEST(nvidia_video_memory, a_failed_mappings_run_is_free_for_the_next_mapping) {
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -367,7 +370,7 @@ TEST(nvidia_video_memory, an_unmap_whose_invalidate_times_out_leaves_its_entries
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -394,7 +397,7 @@ TEST(nvidia_video_memory, releasing_a_mapped_range_unmaps_it_and_returns_its_mem
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -421,7 +424,7 @@ TEST(nvidia_video_memory, a_range_larger_than_the_windows_free_run_is_refused_wr
     ASSERT_NOT_NULL(bar0.bytes);
 
     // A BAR1 of 17 pages, whose window of 16 pages leaves 14 past the console
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, 17 * PAGE_BYTES, CONSOLE_BYTES);
 
@@ -451,7 +454,7 @@ TEST(nvidia_video_memory, a_window_ends_at_512_mib_on_a_larger_bar1) {
 
     // A 1 GiB BAR1 with live mappings up to the last page below 512 MiB
     static constexpr uint64_t WINDOW_BYTES = 0x20000000;
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, 2 * WINDOW_BYTES, CONSOLE_BYTES);
 
@@ -479,7 +482,7 @@ TEST(nvidia_video_memory, without_a_console_the_first_mapping_starts_at_bar1s_st
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, 0);
 
@@ -501,7 +504,7 @@ TEST(nvidia_video_memory, a_range_ending_past_128_gib_is_refused_and_one_ending_
     static_configuration configuration = two_region_configuration();
     configuration.regions[1] = usable_region(REACH - PAGE_BYTES, 2 * PAGE_BYTES);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(configuration, REACH + PAGE_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -526,7 +529,7 @@ TEST(nvidia_video_memory, unmapping_a_range_not_mapped_changes_nothing) {
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -542,7 +545,7 @@ TEST(nvidia_video_memory, a_mapping_takes_the_lowest_free_run_that_fits_between_
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 
@@ -572,7 +575,7 @@ TEST(nvidia_video_memory, a_dropped_window_maps_nothing_and_forgets_its_mappings
     mapping_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
 
-    video_memory memory;
+    bar1_video_memory memory;
     ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
     video_memory_test_access::record_and_open_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
 

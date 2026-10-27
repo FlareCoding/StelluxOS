@@ -1847,10 +1847,16 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     top-level bits a category of interrupts takes, in rm.h, the command
     NV2080_CTRL_CMD_INTERNAL_DISPLAY_GET_STATIC_INFO, a control of a subdevice,
     and the layout of its parameters, in rm.h, display_info.h, display_info.cpp
-    and kernel/tests/graphics/nvidia_display_info.test.cpp, and that that
-    command's windowPresentMask names the windows present on the chip, in rm.h,
-    chip.h, display_info.h, display_info.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_display_info.test.cpp
+    and kernel/tests/graphics/nvidia_display_info.test.cpp, that that command's
+    windowPresentMask names the windows present on the chip, in rm.h, chip.h,
+    display_info.h, display_info.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_display_info.test.cpp, the command
+    NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM, a control of a subdevice,
+    and the layout of its parameters, in rm.h, instance_memory.h,
+    instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and that that command
+    writes where the display's instance memory lies into the display engine's
+    registers, in rm.h, instance_memory.h and nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/intr/engine_idx.h
@@ -2331,7 +2337,10 @@ src/nvidia/src/kernel/gpu/disp/kern_disp.c
     initializes its display's state, on the internal client and subdevice with
     the parameters zeroed, and keeps its windowPresentMask unchecked, in
     display_info.h, display_info.cpp and
-    kernel/tests/graphics/nvidia_display_info.test.cpp
+    kernel/tests/graphics/nvidia_display_info.test.cpp, and that it sets up the
+    display's instance memory after reading that information, in nvidia_gpu.h
+    and nvidia_gpu.cpp, and as it initializes its display's state, in
+    instance_memory.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/arch/v03/kern_disp_0300.c
@@ -2349,8 +2358,50 @@ src/nvidia/generated/g_kern_disp_nvoc.c
 src/common/inc/swref/published/disp/v03_00/dev_disp.h
     NV_PDISP_CHN_NUM_WIN__SIZE_1, the most windows a display engine numbers, 32,
     in chip.h, chip.cpp, display_info.cpp and
-    kernel/tests/graphics/nvidia_display_info.test.cpp
+    kernel/tests/graphics/nvidia_display_info.test.cpp, and NV_UDISP_HASH_BASE,
+    NV_UDISP_HASH_LIMIT, NV_UDISP_OBJ_MEM_BASE and NV_UDISP_OBJ_MEM_LIMIT, which
+    give the display's instance memory an 8 KiB hash table followed by 56 KiB
+    for records, in instance_memory.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
+    that NVIDIA's driver, when the firmware runs on the GSP, describes the
+    display's instance memory as video memory the CPU maps write-combined, with
+    the alignment DISP_INST_MEM_ALIGN, and gives the firmware its address space,
+    caching, address and size with
+    NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM on the internal client and
+    subdevice, in rm.h, instance_memory.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and that it writes
+    nothing into that memory before giving the firmware its address, in
+    instance_memory.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/disp/inst_mem/arch/v03/disp_inst_mem_0300.c
+    that the display's instance memory takes its hash table's size plus the size
+    of the part for its records, in instance_memory.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and that its hash
+    table finds an object's record by a client, the object's handle and a
+    channel, in instance_memory.h
+    SPDX-FileCopyrightText: Copyright (c) 2017-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_disp_inst_mem_nvoc.h
+    DISP_INST_MEM_ALIGN, the alignment of the display's instance memory,
+    0x10000, in instance_memory.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_mem_desc_nvoc.h
+    ADDR_FBMEM, the address space of video memory, 2, and that an address in it
+    is an offset from video memory's start, in rm.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/kernel/os/nv_memory_type.h
+    NV_MEMORY_WRITECOMBINED, the caching of memory the CPU maps write-combined,
+    2, in rm.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,
