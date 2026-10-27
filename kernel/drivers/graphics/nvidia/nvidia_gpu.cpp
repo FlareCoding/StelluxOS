@@ -8,6 +8,7 @@
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/display_heads.h"
+#include "drivers/graphics/nvidia/display_ids.h"
 #include "drivers/graphics/nvidia/display_info.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
@@ -941,10 +942,22 @@ int32_t nvidia_gpu_driver::attach() {
         for (uint8_t head = 0; head < heads.count; head++) {
             log::info("nvidia: head %u is served by windows 0x%X", head, nvidia::windows_of_head(heads, head));
         }
+
+        nvidia::display_ids ids = {};
+        rc = nvidia::read_display_ids(m_gsp, m_display_objects.display_common, ids);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+
+        log::info(
+            "nvidia: display common reports display ids 0x%X supported and 0x%X of them connected",
+            ids.supported,
+            ids.connected
+        );
     } else {
         log::info(
             "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory, "
-            "objects, capabilities and heads"
+            "objects, capabilities, heads and display ids"
         );
     }
 
