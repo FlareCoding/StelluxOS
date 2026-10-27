@@ -198,11 +198,11 @@ namespace drivers {
  * bring-up maps BAR1, it then allocates the driver's client, device and
  * subdevice, then, unless the fuses disable the display, reads its present
  * windows, sets up the display's instance memory, allocates the display's
- * objects under the device and reads their capabilities, heads, display ids
- * and outputs, allocates the core channel under the display as below, and then
- * disables every vector of the CPU interrupt tree, which an earlier driver can
- * leave enabled, so that no vector raises an interrupt before the GSP's is
- * enabled. It then sets up MSI with one vector, re-arms it as
+ * objects under the device and reads their capabilities, heads, display ids,
+ * outputs and EDIDs, allocates the core channel under the display as below,
+ * and then disables every vector of the CPU interrupt tree, which an earlier
+ * driver can leave enabled, so that no vector raises an interrupt before the
+ * GSP's is enabled. It then sets up MSI with one vector, re-arms it as
  * `nvidia::rearm_msi` describes, as NVIDIA's driver re-arms MSI once after
  * initializing the GPU's state, enables the GSP's vector as
  * `nvidia::enable_cpu_interrupt_tree` describes, and `attach()` returns `OK`
@@ -304,13 +304,13 @@ namespace drivers {
  * the window's first offset past the console. Whether or not it maps BAR1, it
  * then fails as described below when allocating the driver's client, device or
  * subdevice, reading the windows, setting up the instance memory, allocating
- * the display's objects, reading their capabilities, heads, display ids or
- * outputs, or allocating the core channel's push buffer or the core channel
- * fails, and with the error `pci_driver::setup_msi` returns when MSI cannot be
- * set up. Bring-up itself never writes to the display engine, and the CPU
- * sequencer's steps write only the registers the firmware names. Once the
- * sequencer has resumed the GSP's firmware, though, the firmware puts all of
- * BAR1 (where the CPU reaches the card's video memory) into virtual mode,
+ * the display's objects, reading their capabilities, heads, display ids,
+ * outputs or EDIDs, or allocating the core channel's push buffer or the core
+ * channel fails, and with the error `pci_driver::setup_msi` returns when MSI
+ * cannot be set up. Bring-up itself never writes to the display engine, and
+ * the CPU sequencer's steps write only the registers the firmware names. Once
+ * the sequencer has resumed the GSP's firmware, though, the firmware puts all
+ * of BAR1 (where the CPU reaches the card's video memory) into virtual mode,
  * translated through the firmware's page tables, as NVIDIA's driver expects,
  * so BAR1 no longer reaches what it reached before, such as a boot
  * framebuffer, until `detach()` writes back BAR1's block register, which binds
@@ -381,8 +381,8 @@ namespace drivers {
  * `nvidia::frts_region::has_display` records, bring-up then reads the windows
  * this GPU has with `nvidia::read_present_windows` and logs them with the
  * chip's window count, and otherwise logs that it skips them, the instance
- * memory, the display's objects, capabilities, heads, display ids, outputs and
- * core channel. When the read fails, `attach()` fails as
+ * memory, the display's objects, capabilities, heads, display ids, outputs,
+ * EDIDs and core channel. When the read fails, `attach()` fails as
  * `nvidia::read_present_windows` describes, before MSI is set up, such as when
  * the firmware reports a window the chip lacks. With the display enabled,
  * bring-up next sets up the display's instance memory with
@@ -403,15 +403,20 @@ namespace drivers {
  * one is dynamic with `nvidia::read_display_ids` and logs the supported,
  * connected, digital and static digital ones, then reads each static digital
  * one's digital facts with `nvidia::read_display_outputs` and logs the outputs
- * with their facts. Once allocated, the objects stay allocated until
- * `detach()` releases them, even after a failed read, and `attach()` fails as
- * those five describe, before MSI is set up, when one fails, such as when the
- * display engine reaches push buffers, semaphores and notifiers only in video
- * memory, display common's report leaves it no head or the firmware refuses to
- * report the supported or connected display ids. Bring-up then allocates the
- * core channel's push buffer in DMA pages, allocates the core channel under
- * the display with `nvidia::allocate_core_channel` and logs its handle, where
- * its push buffer lies and one read of its PUT and GET. `attach()` fails with
+ * with their facts, then reads the EDID of each connected output's monitor
+ * (the monitor's description of itself, with the timings it accepts) with
+ * `nvidia::read_output_edid` into one `edid::monitor` on the unprivileged heap
+ * and logs the maker, name and timings of each EDID that parses. Once
+ * allocated, the objects stay allocated until `detach()` releases them, even
+ * after a failed read, and `attach()` fails as those six describe, before MSI
+ * is set up, when one fails, such as when the display engine reaches push
+ * buffers, semaphores and notifiers only in video memory, display common's
+ * report leaves it no head or the firmware refuses to report the supported or
+ * connected display ids, and with `nvidia::ERR_NO_MEMORY` when the
+ * `edid::monitor` cannot be allocated. Bring-up then allocates the core
+ * channel's push buffer in DMA pages, allocates the core channel under the
+ * display with `nvidia::allocate_core_channel` and logs its handle, where its
+ * push buffer lies and one read of its PUT and GET. `attach()` fails with
  * `nvidia::ERR_NO_MEMORY`, before MSI is set up, when the pages cannot be
  * allocated, and as `nvidia::allocate_core_channel` describes when it fails.
  * Once allocated, the channel stays allocated until `detach()` releases it.

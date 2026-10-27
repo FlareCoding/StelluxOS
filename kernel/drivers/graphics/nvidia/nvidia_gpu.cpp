@@ -9,6 +9,7 @@
 #include "drivers/graphics/nvidia/core_channel.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/display_channel.h"
+#include "drivers/graphics/nvidia/display_edid.h"
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_ids.h"
 #include "drivers/graphics/nvidia/display_info.h"
@@ -34,6 +35,7 @@
 #include "dynpriv/dynpriv.h"
 #include "hw/barrier.h"
 #include "hw/mmio.h"
+#include "mm/heap.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
 #include "pci/pci_class_codes.h"
@@ -248,6 +250,73 @@ static int32_t check_mapping_through_bar1(
         page.offset
     );
     return nvidia::OK;
+}
+
+// Logs the maker, name and timings an output's EDID gives
+static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
+    log::info(
+        "nvidia: output %u's monitor is %s \"%s\", its EDID giving %u timings, %s, with %u more that did not fit and "
+        "%u extension blocks skipped",
+        output_index,
+        monitor.maker,
+        monitor.name,
+        monitor.timing_count,
+        monitor.first_timing_is_preferred ? "the first preferred" : "none preferred",
+        monitor.dropped_timings,
+        monitor.skipped_extensions
+    );
+
+    for (uint32_t index = 0; index < monitor.timing_count; index++) {
+        const edid::timing& timing = monitor.timings[index];
+        uint64_t millihertz = timing.refresh_millihertz();
+        log::info(
+            "nvidia: output %u's timing %u is %u by %u at %lu.%03lu Hz, with a pixel clock of %u kHz",
+            output_index,
+            index,
+            timing.width,
+            timing.height,
+            millihertz / 1000,
+            millihertz % 1000,
+            timing.pixel_clock_khz
+        );
+    }
+}
+
+// Reads the EDID of each connected output's monitor into one `edid::monitor` on the unprivileged heap, as it is too
+// large for the stack, and logs each EDID that parses
+static int32_t read_connected_monitors(
+    nvidia::firmware& fw,
+    nvidia::rm::handle display_common,
+    const nvidia::display_outputs& outputs
+) {
+    uint32_t monitor_bytes = sizeof(edid::monitor);
+    auto* monitor = static_cast<edid::monitor*>(heap::uzalloc(monitor_bytes));
+    if (monitor == nullptr) {
+        log::error("nvidia: allocating %u bytes for parsing the outputs' EDIDs failed", monitor_bytes);
+        return nvidia::ERR_NO_MEMORY;
+    }
+
+    int32_t rc = nvidia::OK;
+    for (uint8_t index = 0; index < outputs.count; index++) {
+        const nvidia::display_output& output = outputs.outputs[index];
+        if (!output.is_connected) {
+            continue;
+        }
+
+        bool is_parsed = false;
+        rc = nvidia::read_output_edid(fw, display_common, output.display_id, *monitor, is_parsed);
+        if (rc != nvidia::OK) {
+            break;
+        }
+
+        if (is_parsed) {
+            log_monitor(index, *monitor);
+        }
+    }
+
+    heap::ufree(monitor);
+
+    return rc;
 }
 
 int32_t nvidia_gpu_driver::attach() {
@@ -982,6 +1051,11 @@ int32_t nvidia_gpu_driver::attach() {
             );
         }
 
+        rc = read_connected_monitors(m_gsp, m_display_objects.display_common, outputs);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+
         size_t push_buffer_pages = pmm::page_align_up(nvidia::PUSH_BUFFER_BYTES) / pmm::PAGE_SIZE;
         RUN_ELEVATED(
             rc = dma::alloc_pages(
@@ -1020,7 +1094,7 @@ int32_t nvidia_gpu_driver::attach() {
     } else {
         log::info(
             "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory, "
-            "objects, capabilities, heads, display ids, outputs and core channel"
+            "objects, capabilities, heads, display ids, outputs, EDIDs and core channel"
         );
     }
 
