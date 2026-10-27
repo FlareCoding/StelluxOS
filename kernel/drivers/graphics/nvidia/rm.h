@@ -176,6 +176,49 @@ constexpr uint8_t  DISPLAY_VIDEO_MEMORY_ONLY_BIT  = 0x40;
 static_assert(sizeof(display_common_capabilities_params) == 2, "NVIDIA's layout of display common's capabilities");
 static_assert(sizeof(display_capabilities_params) == 8, "NVIDIA's layout of the display's capabilities");
 
+// NVIDIA's NV0073_CTRL_CMD_SYSTEM_GET_NUM_HEADS, the control to display common that gives how many heads (the units
+// that each generate one monitor's timing) the display engine can use
+constexpr uint32_t CONTROL_GET_HEAD_COUNT = 0x730102;
+
+// The parameters of `CONTROL_GET_HEAD_COUNT`, which the reply fills. Flags of 0 (NVIDIA's
+// NV0073_CTRL_SYSTEM_GET_NUM_HEADS_FLAGS_CLIENT_DISABLE) count every usable head, not only those a client has in use
+struct head_count_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, the GPU of the device asked about, 0 for the first
+    uint32_t flags;
+    uint32_t head_count;      // NVIDIA's numHeads
+};
+
+// NVIDIA's NV0073_CTRL_CMD_SPECIFIC_GET_ALL_HEAD_MASK, the control to display common that gives the mask of the heads
+// the display engine can use
+constexpr uint32_t CONTROL_GET_HEAD_MASK = 0x730287;
+
+// The parameters of `CONTROL_GET_HEAD_MASK`, which the reply fills
+struct head_mask_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t head_mask;       // bit i set when head i can be used
+};
+
+// NVIDIA's NV0073_CTRL_CMD_SPECIFIC_GET_VALID_HEAD_WINDOW_ASSIGNMENT, the control to display common that gives, for
+// each window (the units that each scan one image out onto a head), the heads it may serve
+constexpr uint32_t CONTROL_GET_WINDOW_HEADS = 0x7302AD;
+
+// NVIDIA's NV0073_CTRL_SPECIFIC_MAX_WINDOWS, the windows the reply of `CONTROL_GET_WINDOW_HEADS` gives a mask for
+constexpr uint32_t WINDOW_HEAD_MASK_COUNT = 32;
+
+// NVIDIA's NV0073_CTRL_SPECIFIC_FLEXIBLE_HEAD_WINDOW_ASSIGNMENT, the mask of window 0 in a reply whose windows may each
+// serve any head
+constexpr uint8_t FLEXIBLE_WINDOW_HEADS = 0xFF;
+
+// The parameters of `CONTROL_GET_WINDOW_HEADS`, which the reply fills
+struct window_heads_params {
+    uint32_t subdevice_index;                     // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint8_t  window_heads[WINDOW_HEAD_MASK_COUNT]; // bit h of entry i set when window i may serve head h
+};
+
+static_assert(sizeof(head_count_params) == 12, "NVIDIA's layout of GET_NUM_HEADS's parameters");
+static_assert(sizeof(head_mask_params) == 8, "NVIDIA's layout of GET_ALL_HEAD_MASK's parameters");
+static_assert(sizeof(window_heads_params) == 36, "NVIDIA's layout of GET_VALID_HEAD_WINDOW_ASSIGNMENT's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H

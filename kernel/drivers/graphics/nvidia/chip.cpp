@@ -29,6 +29,7 @@ constexpr chip_info CHIP_TABLE[] = {
         },
         .interrupt_leaf_count = 8,
         .display = {
+            .head_count = 4,
             .window_count = 8,
             .display_class = 0xC670,
         },
@@ -55,8 +56,19 @@ static constexpr bool keeps_display_windows_within_max() {
     return true;
 }
 
+static constexpr bool keeps_display_heads_within_max() {
+    for (const chip_info& chip : CHIP_TABLE) {
+        if (chip.display.head_count > DISPLAY_HEADS_MAX) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static_assert(keeps_interrupt_leaves_within_max(), "every chip's CPU interrupt tree has at most NVIDIA's 16 leaves");
 static_assert(keeps_display_windows_within_max(), "every chip's windows fit the 32-bit mask the firmware reports");
+static_assert(keeps_display_heads_within_max(), "every chip's display has at most the 4 heads NVIDIA's driver allows");
 
 uint16_t decode_chip_id(uint32_t boot0) {
     return static_cast<uint16_t>((boot0 >> PMC_BOOT_0_CHIP_ID_SHIFT) & PMC_BOOT_0_CHIP_ID_MASK);

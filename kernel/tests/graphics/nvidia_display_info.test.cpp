@@ -28,9 +28,9 @@ static constexpr size_t   DISPLAY_STATIC_INFO_BYTES      = 28;
 static constexpr uint32_t DISPLAY_STATIC_INFO_WORDS      = DISPLAY_STATIC_INFO_BYTES / 4;
 static constexpr uint32_t PRESENT_WINDOWS_WORD           = 1;
 
-// GA102's window count (with the display class left 0, as reading the windows never uses it), a mask naming only some
-// of the windows, and a value each call's output holds before the call, so a test sees whether the call wrote it
-static constexpr chip_display GA102_DISPLAY     = {.window_count = 8, .display_class = 0};
+// GA102's heads and windows (with the display class left 0, as reading the windows never uses it), a mask naming only
+// some of the windows, and a value each call's output holds before the call, so a test sees whether the call wrote it
+static constexpr chip_display GA102_DISPLAY     = {.head_count = 4, .window_count = 8, .display_class = 0};
 static constexpr uint32_t     SPARSE_WINDOWS    = 0xA5;
 static constexpr uint32_t     UNTOUCHED_WINDOWS = 0xDEADBEEF;
 
@@ -124,9 +124,9 @@ TEST(nvidia_display_info, windows_come_from_nvidias_field_of_one_zeroed_request)
     }
 }
 
-// Chips one window short of NVIDIA's most windows and at the most, with the display class left 0
-static constexpr chip_display ONE_SHORT_DISPLAY    = {.window_count = 31, .display_class = 0};
-static constexpr chip_display MOST_WINDOWS_DISPLAY = {.window_count = 32, .display_class = 0};
+// Chips one window short of NVIDIA's most windows and at the most, with GA102's heads and the display class left 0
+static constexpr chip_display ONE_SHORT_DISPLAY    = {.head_count = 4, .window_count = 31, .display_class = 0};
+static constexpr chip_display MOST_WINDOWS_DISPLAY = {.head_count = 4, .window_count = 32, .display_class = 0};
 
 // Every window of the chip or none is accepted, up to every bit on a chip of NVIDIA's most windows
 TEST(nvidia_display_info, every_window_of_the_chip_or_none_is_accepted) {

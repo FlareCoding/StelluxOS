@@ -195,11 +195,11 @@ namespace drivers {
  * bring-up maps BAR1, it then allocates the driver's client, device and
  * subdevice, then, unless the fuses disable the display, reads its present
  * windows, sets up the display's instance memory, allocates the display's
- * objects under the device and reads their capabilities as below, and then
- * disables every vector of the CPU interrupt tree, which an earlier driver can
- * leave enabled, so that no vector raises an interrupt before the GSP's is
- * enabled. It then sets up MSI with one vector, re-arms it as
- * `nvidia::rearm_msi` describes, as NVIDIA's driver re-arms MSI once after
+ * objects under the device and reads their capabilities and the heads as
+ * below, and then disables every vector of the CPU interrupt tree, which an
+ * earlier driver can leave enabled, so that no vector raises an interrupt
+ * before the GSP's is enabled. It then sets up MSI with one vector, re-arms it
+ * as `nvidia::rearm_msi` describes, as NVIDIA's driver re-arms MSI once after
  * initializing the GPU's state, enables the GSP's vector as
  * `nvidia::enable_cpu_interrupt_tree` describes, and `attach()` returns `OK`
  * with the firmware running. From the enable on, the handler acknowledges each
@@ -300,13 +300,13 @@ namespace drivers {
  * the window's first offset past the console. Whether or not it maps BAR1, it
  * then fails as described below when allocating the driver's client, device or
  * subdevice, reading the windows, setting up the instance memory, allocating
- * the display's objects or reading their capabilities fails, and with the
- * error `pci_driver::setup_msi` returns when MSI cannot be set up. Bring-up
- * itself never writes to the display engine, and the CPU sequencer's steps
- * write only the registers the firmware names. Once the sequencer has resumed
- * the GSP's firmware, though, the firmware puts all of BAR1 (where the CPU
- * reaches the card's video memory) into virtual mode, translated through the
- * firmware's page tables, as NVIDIA's driver expects, so BAR1 no longer
+ * the display's objects, reading their capabilities or the heads fails, and
+ * with the error `pci_driver::setup_msi` returns when MSI cannot be set up.
+ * Bring-up itself never writes to the display engine, and the CPU sequencer's
+ * steps write only the registers the firmware names. Once the sequencer has
+ * resumed the GSP's firmware, though, the firmware puts all of BAR1 (where the
+ * CPU reaches the card's video memory) into virtual mode, translated through
+ * the firmware's page tables, as NVIDIA's driver expects, so BAR1 no longer
  * reaches what it reached before, such as a boot framebuffer, until `detach()`
  * writes back BAR1's block register, which binds BAR1 to the video memory.
  * Once bring-up links BAR1's tables, BAR1 reaches a kept console's region 0
@@ -343,8 +343,10 @@ namespace drivers {
  * driver's client, device and subdevice, MSI was set up and re-armed, and the
  * GSP's vector enabled. With the display enabled, the firmware also holds the
  * instance memory's address and the display's objects, and has reported only
- * the chip's windows and a display engine that can reach push buffers,
- * semaphores and notifiers in system memory. Whenever BAR1 is assigned
+ * the chip's windows, a display engine that can reach push buffers, semaphores
+ * and notifiers in system memory, and heads within the chip's, head 0 usable
+ * and served, with nonzero masks only for the chip's windows, each naming one
+ * of the chip's heads outside a flexible mapping. Whenever BAR1 is assigned
  * and leaves a window, BAR1 is also mapped into the kernel's address space,
  * BAR1's tables lie in video memory, the root page directory's first entry
  * names them and no mapping is left from the check. Nothing frees the tables'
@@ -373,10 +375,10 @@ namespace drivers {
  * `nvidia::frts_region::has_display` records, bring-up then reads the windows
  * this GPU has with `nvidia::read_present_windows` and logs them with the
  * chip's window count, and otherwise logs that it skips them, the instance
- * memory and the display's objects. When the read fails, `attach()` fails as
- * `nvidia::read_present_windows` describes, before MSI is set up, such as when
- * the firmware reports a window the chip lacks. With the display enabled,
- * bring-up next sets up the display's instance memory with
+ * memory, the display's objects, capabilities and heads. When the read fails,
+ * `attach()` fails as `nvidia::read_present_windows` describes, before MSI is
+ * set up, such as when the firmware reports a window the chip lacks. With the
+ * display enabled, bring-up next sets up the display's instance memory with
  * `nvidia::instance_memory::set_up` and logs where it lies in video memory,
  * and `attach()` fails as that describes, before MSI is set up, when it fails,
  * as it always does when BAR1 is not mapped, since
@@ -387,11 +389,13 @@ namespace drivers {
  * allocates the display's objects under the device with
  * `nvidia::allocate_display_objects` and logs their handles, then reads their
  * capabilities with `nvidia::read_display_capabilities` and logs whether
- * display common reports a crossbar. Once allocated, the objects stay
+ * display common reports a crossbar, then reads the heads and each window's
+ * head with `nvidia::read_display_heads` and logs the heads the display engine
+ * is left, with the windows serving each. Once allocated, the objects stay
  * allocated until `detach()` releases them, even after a failed read, and
- * `attach()` fails as those two describe, before MSI is set up, when one
+ * `attach()` fails as those three describe, before MSI is set up, when one
  * fails, such as when the display engine reaches push buffers, semaphores and
- * notifiers only in video memory.
+ * notifiers only in video memory or display common's report leaves it no head.
  * Once `attach()` has enabled the GSP's vector, `detach()` first disables
  * every vector of the CPU interrupt tree as
  * `nvidia::disable_cpu_interrupt_tree` describes, so that the GSP's vector

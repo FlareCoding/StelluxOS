@@ -7,6 +7,7 @@
 #include "drivers/graphics/nvidia/boot_messages.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
+#include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_info.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
@@ -925,10 +926,25 @@ int32_t nvidia_gpu_driver::attach() {
             "common reports %s",
             has_crossbar ? "a crossbar" : "no crossbar"
         );
+
+        nvidia::display_heads heads = {};
+        rc = nvidia::read_display_heads(m_gsp, m_display_objects.display_common, chip->display, heads);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+
+        log::info(
+            "nvidia: display common's report leaves the display engine %u of the chip's %u heads",
+            heads.count,
+            chip->display.head_count
+        );
+        for (uint8_t head = 0; head < heads.count; head++) {
+            log::info("nvidia: head %u is served by windows 0x%X", head, nvidia::windows_of_head(heads, head));
+        }
     } else {
         log::info(
-            "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory "
-            "and objects"
+            "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory, "
+            "objects, capabilities and heads"
         );
     }
 
