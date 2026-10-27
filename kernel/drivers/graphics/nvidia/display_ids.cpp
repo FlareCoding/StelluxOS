@@ -34,6 +34,38 @@ static int32_t read_connected_ids(
     return OK;
 }
 
+// Sets `is_digital` only for a digital display id, and logs and returns `OK` for one whose kind the firmware
+// refuses or is not digital
+static int32_t read_is_digital(firmware& fw, rm::handle display_common, uint32_t display_id, bool& is_digital) {
+    rm::display_kind_params params = {};
+    params.display_id = display_id;
+    int32_t rc = fw.control(display_common, rm::CONTROL_GET_DISPLAY_KIND, &params, sizeof(params));
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display id 0x%X is left out of the digital ones, as display common refused its kind",
+            display_id
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (params.display_kind != rm::DISPLAY_KIND_DIGITAL) {
+        log::info(
+            "nvidia: display id 0x%X is left out of the digital ones, as display common reports its kind %u",
+            display_id,
+            params.display_kind
+        );
+        return OK;
+    }
+
+    is_digital = true;
+
+    return OK;
+}
+
 int32_t read_display_ids(firmware& fw, rm::handle display_common, display_ids& out) {
     rm::supported_displays_params supported = {};
     int32_t rc = fw.control(display_common, rm::CONTROL_GET_SUPPORTED_DISPLAYS, &supported, sizeof(supported));
@@ -46,6 +78,23 @@ int32_t read_display_ids(firmware& fw, rm::handle display_common, display_ids& o
     rc = read_connected_ids(fw, display_common, ids.supported, ids.connected);
     if (rc != OK) {
         return rc;
+    }
+
+    for (uint32_t bit = 0; bit < DISPLAY_IDS_MAX; bit++) {
+        uint32_t display_id = 1u << bit;
+        if ((ids.supported & display_id) == 0) {
+            continue;
+        }
+
+        bool is_digital = false;
+        rc = read_is_digital(fw, display_common, display_id, is_digital);
+        if (rc != OK) {
+            return rc;
+        }
+
+        if (is_digital) {
+            ids.digital |= display_id;
+        }
     }
 
     out = ids;
