@@ -392,13 +392,14 @@ namespace drivers {
  * display common reports a crossbar, then reads the heads and each window's
  * head with `nvidia::read_display_heads` and logs the heads the display engine
  * is left, with the windows serving each, then reads the supported and
- * connected display ids with `nvidia::read_display_ids` and logs them. Once
- * allocated, the objects stay allocated until `detach()` releases them, even
- * after a failed read, and `attach()` fails as those four describe, before MSI
- * is set up, when one fails, such as when the display engine reaches push
- * buffers, semaphores and notifiers only in video memory, display common's
- * report leaves it no head or the firmware refuses to report the supported or
- * connected display ids.
+ * connected display ids and each supported one's kind with
+ * `nvidia::read_display_ids` and logs the supported, connected and digital
+ * ones. Once allocated, the objects stay allocated until `detach()` releases
+ * them, even after a failed read, and `attach()` fails as those four describe,
+ * before MSI is set up, when one fails, such as when the display engine
+ * reaches push buffers, semaphores and notifiers only in video memory, display
+ * common's report leaves it no head or the firmware refuses to report the
+ * supported or connected display ids.
  * Once `attach()` has enabled the GSP's vector, `detach()` first disables
  * every vector of the CPU interrupt tree as
  * `nvidia::disable_cpu_interrupt_tree` describes, so that the GSP's vector

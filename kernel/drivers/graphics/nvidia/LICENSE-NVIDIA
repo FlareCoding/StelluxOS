@@ -1879,16 +1879,20 @@ src/nvidia-modeset/src/nvkms-rm.c
     channel's count of free words at two less than the words before the pad, in
     display_channel.cpp and
     kernel/tests/graphics/nvidia_display_channel.test.cpp, that it asks display
-    common for the supported display ids with the parameters zeroed and for
-    which display ids of a mask are connected with the parameters zeroed but for
-    that mask (so with the default flags), in display_ids.h, display_ids.cpp and
-    kernel/tests/graphics/nvidia_display_ids.test.cpp, and that it fails its
+    common for the supported display ids with the parameters zeroed, for which
+    display ids of a mask are connected with the parameters zeroed but for that
+    mask (so with the default flags) and for a display id's kind with the
+    parameters zeroed but for the display id, in display_ids.h, display_ids.cpp
+    and kernel/tests/graphics/nvidia_display_ids.test.cpp, and that it fails its
     device for want of a display id (going on with none when display common
-    refuses to report the supported ones), keeps and asks about only the display
-    ids the firmware reports static, asks for the connect state again while the
-    reply names a retry time or the firmware is not ready, takes no display id
-    as connected when display common still refuses it and takes the connected
-    mask as returned, in display_ids.h
+    refuses to report the supported ones), keeps only the display ids the
+    firmware reports static, asks about only those whose connector it keeps,
+    asks for the connect state again while the reply names a retry time or the
+    firmware is not ready, takes no display id as connected when display common
+    still refuses it, takes the connected mask as returned, takes the kind of a
+    failed request as unknown, keeps a connector for a display id whatever its
+    kind and tells whether the display id drives DisplayPort from the protocol
+    display common reports for it, in display_ids.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2563,11 +2567,12 @@ src/nvidia-modeset/src/nvkms-evo.c
     it, and frees the display, the bandwidth check's object and display common
     in that order, each whatever the earlier frees return, in
     display_objects.h, display_objects.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp, and the raster
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, the raster
     coordinates of a mode that is not interlaced, in which rasterSize.y less
     rasterBlankStart.y (the last visible line) is the vertical front porch and
     one line, in latch_rules.h, latch_rules.cpp and
-    kernel/tests/graphics/nvidia_latch_rules.test.cpp
+    kernel/tests/graphics/nvidia_latch_rules.test.cpp, and that it sets a mode
+    only on a display id of digital or analog kind, in display_ids.h
     SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-evo3.c
@@ -2583,7 +2588,12 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     NV0073_CTRL_SPECIFIC_MAX_WINDOWS, the windows the second gives a mask for,
     32, and NV0073_CTRL_SPECIFIC_FLEXIBLE_HEAD_WINDOW_ASSIGNMENT, 0xFF, in rm.h,
     display_heads.h, display_heads.cpp and
-    kernel/tests/graphics/nvidia_display_heads.test.cpp
+    kernel/tests/graphics/nvidia_display_heads.test.cpp, and the command
+    NV0073_CTRL_CMD_SPECIFIC_GET_TYPE (a control of display common), the layout
+    of its parameters and the display kinds
+    NV0073_CTRL_SPECIFIC_DISPLAY_TYPE_UNKNOWN (0), CRT (1), TV (3) and DFP (2,
+    the kind of a digital display id), in rm.h, display_ids.h, display_ids.cpp
+    and kernel/tests/graphics/nvidia_display_ids.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-headsurface.c

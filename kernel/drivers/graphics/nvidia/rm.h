@@ -243,8 +243,22 @@ struct connected_displays_params {
     uint32_t retry_time_ms;   // NVIDIA's retryTimeMs, set with NVIDIA's status asking for the control again later
 };
 
+// NVIDIA's NV0073_CTRL_CMD_SPECIFIC_GET_TYPE, the control to display common that gives a display id's kind
+constexpr uint32_t CONTROL_GET_DISPLAY_KIND = 0x730240;
+
+// The parameters of `CONTROL_GET_DISPLAY_KIND`, whose reply fills `display_kind`
+struct display_kind_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t display_id;      // a single bit
+    uint32_t display_kind;    // NVIDIA's displayType: 0 unknown, 1 analog (CRT), 2 digital (DFP) or 3 television
+};
+
+// NVIDIA's NV0073_CTRL_SPECIFIC_DISPLAY_TYPE_DFP, the kind of a digital display id
+constexpr uint32_t DISPLAY_KIND_DIGITAL = 2;
+
 static_assert(sizeof(supported_displays_params) == 12, "NVIDIA's layout of GET_SUPPORTED's parameters");
 static_assert(sizeof(connected_displays_params) == 16, "NVIDIA's layout of GET_CONNECT_STATE's parameters");
+static_assert(sizeof(display_kind_params) == 12, "NVIDIA's layout of GET_TYPE's parameters");
 
 } // namespace drivers::nvidia::rm
 
