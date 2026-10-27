@@ -5,21 +5,31 @@ Comments, code and strings must be ASCII only, as the guide's language rules req
 rules on dashes, semicolons, banned words and wording that dates them, and must not draw decorative separators. A few
 conventions the guide leaves unwritten, such as keeping `TODO` markers out of comments, are checked as well.
 
+C and C++ code must follow the guide's stanza formatting: a blank line after an early-exit guard block, at most six
+statements in a stanza, never two blank lines in a row in a function body, and no blank line in a body of three
+lines. Conventions the guide leaves unwritten are checked as well: a closed block of several lines ends its stanza,
+no block of statements starts or ends with a blank line, and no two blank lines in a row appear outside function
+bodies either.
+
 The files checked are the paths the globs line of the guide's front matter matches, minus the paths `.gitattributes`
 marks `linguist-vendored`, which hold third-party code. Files ending in `.c`, `.cpp`, `.h`, `.hpp`, `.S`, `.ld` or
 `.inc` are read with C-style comments, and files ending in `.sh` or `.mk` and files named `Makefile` with hash
-comments. Other files the globs match are not read. A change is every commit since the merge base of `HEAD` and the
-base ref, `origin/master` unless `--base` names another, plus the uncommitted edits. Only the lines it adds or edits
-are checked, so untouched code keeps the style it has. Untracked files are checked whole.
+comments. Other files the globs match are not read. The stanza rules read the `.c`, `.cpp`, `.h` and `.hpp` files. A
+change is every commit since the merge base of `HEAD` and the base ref, `origin/master` unless `--base` names
+another, plus the uncommitted edits. Only the lines it adds or edits are checked, so untouched code keeps the style
+it has. Untracked files are checked whole.
 
 Text in backticks names code, and a comment line indented two or more spaces past its marker is a code example
 unless it continues a list item or a doxygen tag other than `@code`, so an example under a list item or a tag
 needs a lead-in line such as "Usage:". Of the comment checks, only those for non-ASCII characters and typographic
 dashes read either.
 
-Breaking a rule the guide writes down is an error and fails the run. A match that may be innocent, such as a phrase
-that may date the comment, is a warning, and so is a break of an unwritten convention. In GitHub Actions every
-finding is also printed as an annotation, so errors and warnings both appear on the pull request.
+Breaking a rule the guide writes down is an error and fails the run. A match that may be innocent is a warning, such
+as a phrase that may date the comment. A stanza of more than the guide's six statements is a warning too, though the
+guide writes the rule down, since the stanza reader can misread a block and code the project accepts often holds
+longer stanzas. A break of an unwritten convention is a warning as well, such as two blank lines in a row outside a
+function body. In GitHub Actions every finding is also printed as an annotation, so errors and warnings both appear
+on the pull request.
 
 Usage:
     scripts/style_lint.py                checks the change since the merge base with origin/master
@@ -38,15 +48,17 @@ import re
 import subprocess
 import sys
 import unicodedata
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, Iterator, NamedTuple
+from typing import Callable, Iterable, Iterator, NamedTuple
 
 STYLE_GUIDE = ".cursor/rules/style.mdc"
 GLOBS_LINE = re.compile(r"^globs:[ \t]*(\S.*)$", re.MULTILINE)
 
 C_COMMENT_FILE_TYPES = frozenset({".c", ".cpp", ".h", ".hpp", ".S", ".ld", ".inc"})
 HASH_COMMENT_FILE_TYPES = frozenset({".sh", ".mk", "Makefile"})
+C_CODE_FILE_TYPES = frozenset({".c", ".cpp", ".h", ".hpp"})
 
 # Keeps the diff in one form whatever the user's settings: no color and no external diff tool, `a/` and `b/` prefixes
 # despite `diff.noprefix` or `diff.mnemonicPrefix`, and no context lines joining hunks under `diff.interHunkContext`
@@ -107,6 +119,26 @@ WORK_MARKER = re.compile(r"\b(?:TODO|FIXME|XXX|HACK)\b")
 # does not match.
 SEPARATOR = re.compile(r"^\s*[-=*#~_/]{3,}(?:[^|+]*[-=*#~_/]{3,})?\s*$")
 
+# The guide's stanzas hold one to six statements. A longer one only warns, since `StanzaReader` can misread a block,
+# as it does both branches of an `#if`, and code the project accepts often holds longer stanzas.
+MAX_STANZA_STATEMENTS = 6
+# The guide's short bodies span one to three lines and form a single stanza
+MAX_SHORT_BODY_LINES = 3
+# The end of a function, lambda or control statement header before its `{`: a closing parenthesis or a lambda
+# capture's bracket, then any qualifiers or trailing return type
+FUNCTION_HEADER = r"[)\]](?:\s*(?:const|volatile|noexcept|override|final|mutable|&&?|->\s*[\w:<>*&, ]+))*\s*$"
+FUNCTION_BODY_HEADER = re.compile(FUNCTION_HEADER)
+# Inside a function, a block whose header is empty or ends in `else`, `do` or `(` also holds statements, such as a
+# plain scope, a `case` block or a `RUN_ELEVATED({ ... })` body, but not an initializer or a local `struct`.
+STATEMENT_BLOCK_HEADER = re.compile(rf"{FUNCTION_HEADER}|(?:^|\b(?:else|do)|\()\s*$")
+# Attributes end in a parenthesis, which makes a header such as `struct __attribute__((packed))` read as a function's
+ATTRIBUTE = re.compile(r"__attribute__\s*\(\(.*\)\)|alignas\s*\([^)]*\)")
+# An `else` after a closing brace starts the header of the statement's next branch
+ELSE_BRANCH = re.compile(r"else\b")
+CASE_LABEL = re.compile(r"(?:case\b|default\s*:)")
+GUARD_HEADER = re.compile(r"if\b")
+EARLY_EXIT = re.compile(r"(?:return|continue|break|goto)\b")
+
 # A rule's basis sets its severity: breaking a rule the guide writes down is an error, while a match that may be
 # innocent and a break of a convention the guide leaves unwritten are warnings
 WRITTEN = "written"
@@ -131,6 +163,25 @@ class Rule(Enum):
     MAY_DATE_PHRASE = (AMBIGUOUS, "{} may date the comment, say what is always true")
     FILLER_WORD = (UNWRITTEN, "{} is filler, use a plain word")
     WORK_MARKER = (UNWRITTEN, "{} marks unfinished work, keep comments to what is true")
+    GUARD_WITHOUT_BLANK = (
+        WRITTEN,
+        "no blank line after the early-exit guard block ending on line {}, add one after its closing brace",
+    )
+    DOUBLE_BLANK = (WRITTEN, "two blank lines in a row in a function body, separate stanzas with exactly one")
+    DOUBLE_BLANK_OUTSIDE_BODIES = (UNWRITTEN, "two blank lines in a row outside a function body, use one")
+    LONG_STANZA = (
+        AMBIGUOUS,
+        f"the stanza from line {{}} holds {{}} statements, split it into stanzas of at most {MAX_STANZA_STATEMENTS}",
+    )
+    SHORT_BODY_BLANK = (
+        WRITTEN,
+        f"a blank line in a body of at most {MAX_SHORT_BODY_LINES} lines, remove it to make the body one stanza",
+    )
+    BLOCK_WITHOUT_BLANK = (
+        UNWRITTEN,
+        "no blank line after the block ending on line {}, add one after its closing brace",
+    )
+    BLANK_AT_BLOCK_EDGE = (UNWRITTEN, "a blank line at the {} of a block of statements, remove it")
 
     def __init__(self, basis: str, message: str):
         self.message = message
@@ -182,8 +233,243 @@ class CheckFamily(NamedTuple):
     check: Callable[[str, list[ScannedLine], set[int]], list[Finding]]
 
 
+class Stanza(NamedTuple):
+    """A run of lines in one block of statements and the lines its statements end on.
+
+    A blank line between statements, a `case` label, a `default` label or the block's closing brace ends it.
+    """
+
+    first: int
+    statement_lines: list[int]  # the line each statement ends on, once per statement
+
+
+@dataclass
+class OpenBlock:
+    """A brace block while its lines are read, with what the stanza rules judge once it closes.
+
+    A block holds statements when it is the body of a function or lambda. So does the body of a control statement, a
+    plain scope, a block after a `case` label or a block opened right after a `(` inside one, such as a
+    `RUN_ELEVATED({ ... })` body or the braced argument of `f({a, b})`. Other blocks, such as a namespace, a type or
+    an initializer after `=`, hold none.
+    """
+
+    header: str                 # the code before the block's `{`, such as `if (n)` or `else`
+    holds_statements: bool
+    paren_depth: int            # how many parentheses are open at the `{`, the depth at which a `;` ends a statement
+    opened_on: int              # the line of the block's `{`
+    statement: str = ""         # the code read so far of the statement in progress at the block's own level
+    last_statement: str = ""    # the last statement's code, or a control statement's header
+    stanza_first: int | None = None
+    stanza_statement_lines: list[int] = field(default_factory=list)
+    stanzas: list[Stanza] = field(default_factory=list)
+    blank_lines: list[int] = field(default_factory=list)         # blank lines between the block's statements
+    guard_findings: list[Finding] = field(default_factory=list)  # its guards' findings, held until its length is known
+
+    def touch(self, number: int) -> None:
+        """Starts a stanza at line `number` unless one is in progress."""
+        if self.stanza_first is None:
+            self.stanza_first = number
+
+    def end_statement(self, text: str, number: int) -> None:
+        """Counts a statement ending on line `number` in the stanza in progress."""
+        self.last_statement = text.strip()
+        self.statement = ""
+        self.stanza_statement_lines.append(number)
+
+    def end_stanza(self) -> None:
+        """Closes the stanza in progress, if one is."""
+        if self.stanza_first is not None:
+            self.stanzas.append(Stanza(self.stanza_first, self.stanza_statement_lines))
+
+        self.stanza_first = None
+        self.stanza_statement_lines = []
+
+
 class LintError(Exception):
     """A failure that stops the run before any file is checked, such as git failing."""
+
+
+class StanzaReader:
+    """Reads a C or C++ file into its brace blocks and judges the stanzas of each block of statements.
+
+    A statement ends at a `;` outside the parentheses opened in its block or at the closing brace of a block of
+    statements, so a control statement counts once whatever its body holds. Comments and preprocessor lines join a
+    stanza without counting, and a `case` or `default` label starts a new one.
+    """
+
+    def __init__(self, path: str, lines: list[ScannedLine], added: set[int]):
+        self.path = path
+        self.lines = lines
+        self.added = added
+        self.blocks = [OpenBlock("", False, 0, 0)]
+        self.paren_depth = 0
+        self.continues_directive = False
+        self.follows_blank = False
+        self.findings: list[Finding] = []
+
+    def read(self) -> list[Finding]:
+        """Reads every line and returns the stanza rules the added lines break, in line order."""
+        # `scan_file` gives a file ending in a newline an empty last line, which is not a line of the file
+        is_past_end = bool(self.lines) and self.lines[-1].raw == ""
+        file_lines = self.lines[:-1] if is_past_end else self.lines
+
+        for line in file_lines:
+            self.read_line(line)
+
+        for block in self.blocks:
+            self.findings.extend(block.guard_findings)
+
+        return sorted(self.findings, key=lambda finding: finding.number)
+
+    def read_line(self, line: ScannedLine) -> None:
+        """Reads a line into the block it is in, character by character when it holds code."""
+        code = line.code.strip()
+        is_directive = self.continues_directive or code.startswith("#")
+        self.continues_directive = is_directive and line.raw.rstrip().endswith("\\")
+        block = self.blocks[-1]
+        is_own_level = block.holds_statements and self.paren_depth == block.paren_depth
+
+        if not line.raw.strip():
+            self.read_blank_line(line, block, is_own_level)
+            return
+
+        self.follows_blank = False
+
+        if is_directive or not code:
+            block.touch(line.number)
+            return
+
+        if is_own_level and CASE_LABEL.match(code):
+            block.end_stanza()
+
+        for column, character in enumerate(line.code):
+            self.read_character(line, column, character)
+
+        self.blocks[-1].statement += " "
+
+    def read_blank_line(self, line: ScannedLine, block: OpenBlock, is_own_level: bool) -> None:
+        """Ends the stanza in progress at a blank line between statements.
+
+        Reports a blank line that starts a block of statements or follows another blank line.
+        """
+        is_block_start = is_own_level and line.number == block.opened_on + 1 and block.stanza_first is None
+        if is_block_start and line.number in self.added:
+            self.report(line.number, Rule.BLANK_AT_BLOCK_EDGE, "start")
+
+        if is_own_level:
+            block.end_stanza()
+            block.blank_lines.append(line.number)
+
+        if self.follows_blank and line.number in self.added:
+            is_in_body = any(open_block.holds_statements for open_block in self.blocks)
+            self.report(line.number, Rule.DOUBLE_BLANK if is_in_body else Rule.DOUBLE_BLANK_OUTSIDE_BODIES)
+
+        self.follows_blank = True
+
+    def read_character(self, line: ScannedLine, column: int, character: str) -> None:
+        """Reads a character of code, opening and closing blocks and ending statements."""
+        block = self.blocks[-1]
+        if character == "}" and len(self.blocks) > 1:
+            self.close_block(line, column)
+            return
+
+        if not character.isspace():
+            block.touch(line.number)
+
+        block.statement += character
+
+        if character == "(":
+            self.paren_depth += 1
+        elif character == ")":
+            self.paren_depth -= 1
+        elif character == "{":
+            header = block.statement[:-1].strip()
+            header_pattern = STATEMENT_BLOCK_HEADER if block.holds_statements else FUNCTION_BODY_HEADER
+            holds_statements = bool(header_pattern.search(ATTRIBUTE.sub("", header)))
+            self.blocks.append(OpenBlock(header, holds_statements, self.paren_depth, line.number))
+        elif character == ";" and self.paren_depth == block.paren_depth:
+            block.end_statement(block.statement, line.number)
+        elif character == ":" and self.ends_case_label(line.code, column, block):
+            block.statement = ""
+
+    def ends_case_label(self, code: str, column: int, block: OpenBlock) -> bool:
+        """Tells whether a `:` ends a `case` or `default` label, so the code after it starts another statement."""
+        is_scope = code[column - 1:column] == ":" or code[column + 1:column + 2] == ":"
+        is_own_level = block.holds_statements and self.paren_depth == block.paren_depth
+        return is_own_level and not is_scope and bool(CASE_LABEL.match(block.statement.lstrip()))
+
+    def close_block(self, line: ScannedLine, column: int) -> None:
+        """Judges the innermost block at its closing brace and ends the statement the block belongs to."""
+        closed = self.blocks.pop()
+        parent = self.blocks[-1]
+        # Code after the brace continues the statement, as an `else` does or a `;` after a lambda
+        rest = line.code[column + 1:].strip()
+        ends_statement = closed.holds_statements and self.paren_depth == parent.paren_depth and not rest
+
+        closed.end_stanza()
+        if closed.holds_statements:
+            self.judge_body(closed, line, column)
+            self.judge_following_line(closed, parent, line.number, ends_statement)
+
+        parent.touch(line.number)
+        if ends_statement:
+            parent.end_statement(closed.header, line.number)
+        elif closed.holds_statements and ELSE_BRANCH.match(rest):
+            parent.statement = ""
+        else:
+            parent.statement += "{}"
+
+    def judge_body(self, block: OpenBlock, line: ScannedLine, column: int) -> None:
+        """Reports the stanza rules a block of statements breaks, judged at its closing brace."""
+        body_lines = range(block.opened_on + 1, line.number)
+        is_short_body = len(body_lines) <= MAX_SHORT_BODY_LINES
+        if not is_short_body:
+            self.findings.extend(block.guard_findings)
+
+        for stanza in block.stanzas:
+            number = find_first_added(stanza.statement_lines, self.added)
+            if len(stanza.statement_lines) > MAX_STANZA_STATEMENTS and number:
+                self.report(number, Rule.LONG_STANZA, stanza.first, len(stanza.statement_lines))
+
+        last_body_line = line.number - 1
+        has_inner_blank = any(block.opened_on + 1 < blank < last_body_line for blank in block.blank_lines)
+        number = find_first_added(body_lines, self.added)
+        if is_short_body and has_inner_blank and number:
+            self.report(number, Rule.SHORT_BODY_BLANK)
+
+        is_brace_first = not line.code[:column].strip()
+        is_block_end = last_body_line > block.opened_on + 1 and not self.lines[last_body_line - 1].raw.strip()
+        if is_brace_first and is_block_end and last_body_line in self.added:
+            self.report(last_body_line, Rule.BLANK_AT_BLOCK_EDGE, "end")
+
+    def judge_following_line(self, block: OpenBlock, parent: OpenBlock, closed_on: int, ends_statement: bool) -> None:
+        """Reports a guard block, or a closed block of several lines, with no blank line after it.
+
+        A next line starting with `}`, `#`, `else`, `case` or `default` needs none.
+        """
+        following = self.lines[closed_on] if closed_on < len(self.lines) else None
+        is_multiline = closed_on > block.opened_on
+        if not ends_statement or not parent.holds_statements or following is None:
+            return
+
+        next_code = following.code.strip()
+        is_blank = not following.raw.strip()
+        starts_stanza = next_code.startswith(("}", "#")) or bool(CASE_LABEL.match(next_code))
+        continues_statement = bool(ELSE_BRANCH.match(next_code))
+        is_guard = bool(GUARD_HEADER.match(block.header) and EARLY_EXIT.match(block.last_statement))
+        number = find_first_added([closed_on + 1, closed_on], self.added)
+        if is_blank or starts_stanza or continues_statement or not number:
+            return
+
+        if is_guard:
+            message = Rule.GUARD_WITHOUT_BLANK.message.format(closed_on)
+            parent.guard_findings.append(Finding(self.path, number, Rule.GUARD_WITHOUT_BLANK, message))
+        elif is_multiline:
+            self.report(number, Rule.BLOCK_WITHOUT_BLANK, closed_on)
+
+    def report(self, number: int, rule: Rule, *values: object) -> None:
+        """Reports a rule broken on line `number`, its message filled with `values`."""
+        self.findings.append(Finding(self.path, number, rule, rule.message.format(*values)))
 
 
 LINE_CHECKS = (
@@ -342,9 +628,23 @@ def run_line_checks(path: str, lines: list[ScannedLine], added: set[int]) -> lis
     return findings
 
 
+def check_stanzas(path: str, lines: list[ScannedLine], added: set[int]) -> list[Finding]:
+    """Checks the stanza rules on the added lines of a C or C++ file."""
+    return StanzaReader(path, lines, added).read()
+
+
+def find_first_added(numbers: Iterable[int], added: set[int]) -> int | None:
+    """Returns the first of the line numbers that the change adds, or `None` when it adds none of them.
+
+    A finding is reported on that line, so its annotation shows in a pull request's diff.
+    """
+    return next((number for number in numbers if number in added), None)
+
+
 # Defined after the check functions it names, since Python needs a function to exist before a table can hold it
 CHECK_FAMILIES = (
     CheckFamily(C_COMMENT_FILE_TYPES | HASH_COMMENT_FILE_TYPES, run_line_checks),
+    CheckFamily(C_CODE_FILE_TYPES, check_stanzas),
 )
 
 
