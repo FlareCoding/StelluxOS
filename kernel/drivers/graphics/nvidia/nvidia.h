@@ -17,11 +17,14 @@ constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unread
                                            // lacks a signature bring-up needs, or a chip table name for it is invalid
 constexpr int32_t ERR_TIMEOUT        = -4; // the card did not finish a step within its deadline
 constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers or memory, or the driver's records, show bring-up
-                                           // cannot proceed, or a falcon does not read as stopped after `stop_falcon`
-                                           // resets it
+                                           // cannot proceed, a falcon does not read as stopped after `stop_falcon`
+                                           // resets it, or a binding of a context DMA to a channel repeats one, comes
+                                           // before the display's instance memory is set up or comes while the driver
+                                           // has no client
 constexpr int32_t ERR_NO_MEMORY      = -6; // allocating system memory for the card to reach or for the driver's copies
-                                           // and records failed, video memory has no free range for an allocation, or
-                                           // BAR1's window has no free run for a mapping
+                                           // and records failed, video memory has no free range for an allocation,
+                                           // BAR1's window has no free run for a mapping, or the display's hash table
+                                           // has no free entry for a binding
 constexpr int32_t ERR_QUEUE_FULL     = -7; // the command queue has no room for a message, as the read pointer `send`
                                            // reads for the firmware has not moved far enough or lies past the ring
 constexpr int32_t ERR_TOO_LARGE      = -8; // a payload exceeds the most bytes a message to the GSP's firmware carries,
@@ -38,9 +41,10 @@ constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a fail
                                             // result or a control's status, or does not take the driver's VGX version,
                                             // as a reply shows by a private result other than 0 or another version
 constexpr int32_t ERR_INVALID_ARG    = -13; // a video memory allocation's size is 0 or overflows when rounded to whole
-                                            // pages, its alignment is 0 or not a power of two, or a range to map
-                                            // through BAR1 is not a whole allocation, is mapped already or ends past
-                                            // what a page table entry can name
+                                            // pages, its alignment is 0 or not a power of two, a range to map through
+                                            // BAR1 is not a whole allocation, is mapped already or ends past what a
+                                            // page table entry can name, or a context DMA's binding names handle 0, no
+                                            // display channel or memory its record cannot name
 
 // Nanoseconds per millisecond and per microsecond, for the sequencer's waits and the times the driver logs
 constexpr uint64_t NS_PER_MS = 1000000;

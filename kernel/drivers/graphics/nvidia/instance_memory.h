@@ -17,6 +17,22 @@ constexpr uint64_t INSTANCE_MEMORY_BYTES = 0x10000;
 // NVIDIA's DISP_INST_MEM_ALIGN, the alignment of the display's instance memory in video memory
 constexpr uint64_t INSTANCE_MEMORY_ALIGNMENT = 0x10000;
 
+// How many entries the hash table holds, 8 bytes each in its 8 KiB, and how many 32-byte records follow it in 56 KiB,
+// skipping the first 32 bytes, where NVIDIA's driver reserves 16 bytes as its NULL instance, which no context DMA gets
+constexpr uint32_t INSTANCE_MEMORY_HASH_ENTRIES = 1024;
+constexpr uint32_t INSTANCE_MEMORY_RECORDS      = 1791;
+
+// NVIDIA's display channel numbers run from 0 to 80: the core channel 0, window i's channel 1 + i and its immediate
+// channel 33 + i for 32 windows, and cursor i's channel 73 + i for 8 cursors, while 65 to 72 name no channel
+constexpr uint32_t DISPLAY_CHANNEL_NUMBERS = 81;
+
+// The memory a context DMA names, starting on a 256-byte boundary
+struct context_dma_memory {
+    bool     in_video_memory; // video memory, else DMA pages read with snooping on
+    uint64_t address;         // the offset into video memory, or the pages' physical address
+    uint64_t bytes;           // nonzero
+};
+
 /**
  * The display's instance memory, the video memory where the display engine
  * looks up the memory its channels (the queues of commands it reads from
@@ -24,12 +40,22 @@ constexpr uint64_t INSTANCE_MEMORY_ALIGNMENT = 0x10000;
  * channel to the object's record, which names a range of memory. Once the
  * GSP's firmware is told the memory's address, it writes the address into the
  * display engine's registers, and the display engine may read the memory from
- * then on, so the object keeps the memory for the driver's life. Its calls
- * must come from one thread at a time, since the object takes no lock, and
- * `set_up` waits on video memory's lock, on the card and on the firmware's
- * reply, so it must never run in an interrupt handler or under a spinlock, and
- * on a thread that cannot sleep, such as the boot thread, only while no other
- * thread can call into video memory or the firmware.
+ * then on, so the object keeps the memory for the driver's life.
+ *
+ * The objects the records describe are context DMAs, and a channel may name a
+ * context DMA once `bind` has written the record and the channel's hash table
+ * entry for it. A context DMA bound to several channels has one record. This
+ * object keeps its own copy of the entries and of how many bindings share each
+ * record, as NVIDIA's driver does, so finding an entry reads no video memory,
+ * and `bind` maps the memory for the CPU only while it writes, since
+ * `video_memory::unmap_for_cpu` is what completes the writes.
+ *
+ * The object's calls must come from one thread at a time, since it takes no
+ * lock, and `set_up` and `bind` wait on video memory's lock and on the card,
+ * `set_up` also on the firmware's reply, so they must never run in an
+ * interrupt handler or under a spinlock, and on a thread that cannot sleep,
+ * such as the boot thread, must run only while no other thread can call into
+ * video memory or the firmware.
  */
 class instance_memory {
 public:
@@ -74,10 +100,61 @@ public:
      */
     const vram_range& range() const;
 
+    /**
+     * @brief Bind the context DMA `object`, under the driver's client, to the
+     * display engine's channel `hardware_channel`, as NVIDIA's driver binds
+     * one: the context DMA's first binding writes its record, naming `memory`
+     * as rows of pixels in order (pitch) and readable and writable, into the
+     * lowest free record, and each binding writes the entry naming the client,
+     * `object`, the channel and the record into the first free entry from the
+     * hash of the three. What it writes goes through a mapping for the CPU
+     * that `video_memory::unmap_for_cpu` takes down after completing the
+     * writes, so they have reached video memory when the call returns.
+     * @param object The context DMA's handle, nonzero.
+     * @param hardware_channel The channel's number, 0 to 64 or 73 to 80, the
+     * numbers that name a channel.
+     * @param memory The memory the context DMA's first binding writes into its
+     * record. It must end within the first 128 TiB of its address space, since
+     * a record holds only 39 bits of a 256-byte unit's number. `bind` checks a
+     * further binding's `memory` too, and the record that binding shares keeps
+     * naming the first binding's memory.
+     * @return `OK`, `ERR_INVALID_ARG` when `object` is 0, `hardware_channel`
+     * names no channel, or `memory` is not 256-byte aligned, has 0 bytes or
+     * ends past 128 TiB, `ERR_BAD_STATE` when `set_up` has not cleared the
+     * memory, the driver has no client or `object` is bound to
+     * `hardware_channel` already, `ERR_NO_MEMORY` when the hash table has no
+     * free entry, or what `video_memory::map_for_cpu` returns, each logged. On
+     * every error the instance memory and the object's copy are unchanged.
+     */
+    int32_t bind(rm::handle object, uint32_t hardware_channel, const context_dma_memory& memory);
+
 private:
+    // The object's copy of one hash table entry: the context DMA it binds, 0 while the entry is free, the record and
+    // the channel
+    struct binding {
+        rm::handle object;
+        uint16_t   record;
+        uint8_t    hardware_channel;
+    };
+
+    // The entry binding `object` to `hardware_channel`, or `INSTANCE_MEMORY_HASH_ENTRIES` when there is none
+    uint32_t find_binding(rm::handle object, uint32_t hardware_channel) const;
+
+    // The first free entry from `hash` on, wrapping past the last, or `INSTANCE_MEMORY_HASH_ENTRIES` when all are taken
+    uint32_t find_free_entry(uint32_t hash) const;
+
+    // The record `object`'s bindings share, or `INSTANCE_MEMORY_RECORDS` when it has none
+    uint32_t find_record(rm::handle object) const;
+
+    // The lowest record no binding uses, which exists while an entry is free
+    uint32_t find_free_record() const;
+
     video_memory& m_memory;
     firmware&     m_fw;
     vram_range    m_range;
+
+    binding m_bindings[INSTANCE_MEMORY_HASH_ENTRIES]; // entry i of the hash table
+    uint8_t m_record_users[INSTANCE_MEMORY_RECORDS];  // how many bindings share record i, 0 while it is free
 };
 
 } // namespace drivers::nvidia
