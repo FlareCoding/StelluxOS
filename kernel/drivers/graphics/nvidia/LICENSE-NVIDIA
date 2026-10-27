@@ -2719,7 +2719,8 @@ src/nvidia-modeset/include/nvkms-types.h
     kernel/tests/graphics/nvidia_display_channel.test.cpp, and
     NV_DP_READ_EDID_RETRIES, 18, and NV_DP_REREAD_EDID_DELAY_USEC, 500
     microseconds, the most times the modesetting module asks again for a
-    DisplayPort monitor's EDID and the wait before each, in display_edid.h
+    DisplayPort monitor's EDID and the wait before each, in display_edid.h,
+    display_edid.cpp and kernel/tests/graphics/nvidia_display_edid.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/include/nvkms-dma.h
@@ -2781,9 +2782,23 @@ src/nvidia-modeset/src/nvkms-dpy.c
     NV0073_CTRL_CMD_SPECIFIC_GET_EDID_V2, asks again, sleeping between tries,
     while a request fails or gives no bytes, for a DisplayPort monitor only,
     goes on without the EDID when every try or an allocation fails, copies as
-    many EDID bytes as a reply reports, and first hands the firmware any EDID
-    its DisplayPort code holds, in display_edid.h
+    many EDID bytes as a reply reports, first hands the firmware any EDID its
+    DisplayPort code holds, and never asks again for an EDID failing its
+    checksum, in display_edid.h
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/src/dp_sst_edid.cpp
+    that the DisplayPort library reads a monitor's EDID again at each of its bus
+    addresses while a read fails or gives an EDID failing its checksum, until a
+    timeout passes, and keeps a failing EDID once a later read gives the same
+    bytes as the first failing one, in display_edid.h
+    SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/inc/dp_edid.h
+    EDID_READ_RETRY_TIMEOUT_MS, 100 milliseconds, the DisplayPort library's
+    timeout for reading the EDID again, and ddcAddrList, its three bus addresses
+    for the EDID, in display_edid.h
+    SPDX-FileCopyrightText: Copyright (c) 2010-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,

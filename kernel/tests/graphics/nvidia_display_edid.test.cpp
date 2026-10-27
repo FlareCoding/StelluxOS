@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_UTIL
 
 #include "stlx_unit_test.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "drivers/graphics/edid.h"
@@ -12,6 +13,8 @@
 
 TEST_SUITE(nvidia_display_edid);
 
+using drivers::nvidia::EDID_REREAD_DELAY_US;
+using drivers::nvidia::EDID_REREADS_MAX;
 using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_FIRMWARE;
 using drivers::nvidia::ERR_NO_MEMORY;
@@ -19,6 +22,7 @@ using drivers::nvidia::ERR_QUEUE_FULL;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::firmware;
+using drivers::nvidia::NS_PER_US;
 using drivers::nvidia::OK;
 using drivers::nvidia::read_output_edid;
 namespace rm = drivers::nvidia::rm;
@@ -31,6 +35,11 @@ static constexpr uint32_t DISPLAY_ID_OFFSET        = 4;
 static constexpr uint32_t EDID_BYTES_OFFSET        = 8;
 static constexpr uint32_t EDID_OFFSET              = 16;
 static constexpr uint32_t EDID_BUFFER_BYTES        = 2048;
+
+// NVIDIA's NV_DP_READ_EDID_RETRIES and NV_DP_REREAD_EDID_DELAY_USEC in nanoseconds, restated so the tests hold the
+// rereads to NVIDIA's count and wait
+static constexpr uint32_t NVIDIA_EDID_REREADS    = 18;
+static constexpr uint64_t NVIDIA_REREAD_DELAY_NS = 500000;
 
 // A handle for display common unlike those `gsp` gives, and an output's display id
 static constexpr rm::handle TEST_DISPLAY_COMMON = 0x0005000B;
@@ -54,7 +63,7 @@ static constexpr edid::timing AOC_60_HZ  = {241500, 2560, 48, 32, 80, 1440, 3, 5
 static constexpr edid::timing AOC_144_HZ = {592000, 2560, 8, 32, 66, 1440, 25, 8, 70, true, false};
 
 // A firmware that answers GET_EDID_V2 with the first `reply_copied_bytes` bytes of `reply` and `reply_edid_bytes` as
-// the EDID's length, writing a reply only when `result` is `OK`, and records the first `MAX_CALLS` controls sent to it
+// the EDID's length, and records the first `MAX_CALLS` controls sent to it with the time each arrived
 class edid_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 4;
@@ -65,16 +74,26 @@ public:
         size_t     size;
         uint32_t   display_id;
         bool       is_zero_but_display_id; // every byte of the parameters but the display id's is 0
+        uint64_t   time_ns;
     };
 
     call     calls[MAX_CALLS] = {};
     uint32_t call_count = 0;
     uint32_t stray_count = 0;
 
+    // When the last control arrived, recorded past the first `MAX_CALLS` too
+    uint64_t last_time_ns = 0;
+
     const uint8_t* reply = AOC_BASE_BLOCK;
     uint32_t       reply_copied_bytes = edid::BLOCK_BYTES;
     uint32_t       reply_edid_bytes = edid::BLOCK_BYTES;
-    int32_t        result = OK;
+
+    // How many of the first replies carry the base block's checksum byte one higher
+    uint32_t bad_checksum_reads = 0;
+
+    // Returned with no reply from read `failed_from_read` on, unless `OK`
+    int32_t  result = OK;
+    uint32_t failed_from_read = 1;
 
     int32_t control(rm::handle object, uint32_t command, void* params, size_t size) override {
         record(object, command, params, size);
@@ -83,13 +102,18 @@ public:
             return OK;
         }
 
-        if (result != OK) {
+        if (result != OK && call_count >= failed_from_read) {
             return result;
         }
 
+        // The reply dirties every byte, so a reread whose parameters are not zeroed again shows in its record
         uint8_t* bytes = static_cast<uint8_t*>(params);
+        string::memset(bytes, 0xA5, size);
         string::memcpy(bytes + EDID_BYTES_OFFSET, &reply_edid_bytes, sizeof(uint32_t));
         string::memcpy(bytes + EDID_OFFSET, reply, reply_copied_bytes);
+        if (call_count <= bad_checksum_reads) {
+            bytes[EDID_OFFSET + edid::BLOCK_BYTES - 1]++;
+        }
 
         return OK;
     }
@@ -122,6 +146,7 @@ public:
 private:
     void record(rm::handle object, uint32_t command, void* params, size_t size) {
         call_count++;
+        last_time_ns = clock::now_ns();
         if (call_count > MAX_CALLS) {
             return;
         }
@@ -130,6 +155,7 @@ private:
         recorded.object = object;
         recorded.command = command;
         recorded.size = size;
+        recorded.time_ns = last_time_ns;
         if (params == nullptr || size < DISPLAY_ID_OFFSET + sizeof(uint32_t)) {
             return;
         }
@@ -322,23 +348,20 @@ TEST(nvidia_display_edid, a_reply_longer_than_its_buffer_is_logged) {
         ASSERT_EQ(read_logged(fw, is_parsed), OK);
 
         EXPECT_FALSE(is_parsed);
+        EXPECT_EQ(fw.call_count, 1u);
         EXPECT_TRUE(monitor_holds_only(UNTOUCHED));
         EXPECT_TRUE(edid_log_contains("nvidia: display common reports display id 0x100's EDID as "));
         EXPECT_TRUE(edid_log_contains(reply.logged));
     }
 }
 
-// An EDID failing any of the parser's checks is logged with that check's cause and leaves `is_parsed` cleared, with
-// every field of `out` zero as the parse leaves it
-TEST(nvidia_display_edid, an_edid_failing_to_parse_is_logged_with_its_cause) {
+// An EDID failing any of the parser's checks but its checksum is logged with that check's cause and is not read again,
+// with every field of `out` zero as the parse leaves it
+TEST(nvidia_display_edid, an_edid_failing_another_check_is_logged_and_not_read_again) {
     uint8_t bad_header[edid::BLOCK_BYTES];
     string::memcpy(bad_header, AOC_BASE_BLOCK, sizeof(AOC_BASE_BLOCK));
     bad_header[0] = 0x01;
     bad_header[127] = static_cast<uint8_t>(bad_header[127] - 1);
-
-    uint8_t bad_checksum[edid::BLOCK_BYTES];
-    string::memcpy(bad_checksum, AOC_BASE_BLOCK, sizeof(AOC_BASE_BLOCK));
-    bad_checksum[127] = static_cast<uint8_t>(bad_checksum[127] + 1);
 
     uint8_t bad_version[edid::BLOCK_BYTES];
     string::memcpy(bad_version, AOC_BASE_BLOCK, sizeof(AOC_BASE_BLOCK));
@@ -354,7 +377,6 @@ TEST(nvidia_display_edid, an_edid_failing_to_parse_is_logged_with_its_cause) {
     const bad_edid cases[] = {
         {AOC_BASE_BLOCK, 0, "display id 0x100's EDID of 0 bytes is shorter than one block"},
         {bad_header, edid::BLOCK_BYTES, "display id 0x100's EDID of 128 bytes does not start with the EDID header"},
-        {bad_checksum, edid::BLOCK_BYTES, "display id 0x100's EDID of 128 bytes fails its checksum"},
         {bad_version, edid::BLOCK_BYTES, "display id 0x100's EDID of 128 bytes is not of version 1"},
     };
 
@@ -371,5 +393,109 @@ TEST(nvidia_display_edid, an_edid_failing_to_parse_is_logged_with_its_cause) {
         EXPECT_EQ(fw.call_count, 1u);
         EXPECT_TRUE(monitor_holds_only(0));
         EXPECT_TRUE(edid_log_contains(bad.logged));
+    }
+}
+
+// An EDID failing its checksum is read again at least NVIDIA's 500 microseconds after the read before, each request
+// zeroed again but for the display id, until it passes, and the read that passed is logged
+TEST(nvidia_display_edid, an_edid_failing_its_checksum_is_read_again_until_it_passes) {
+    edid_firmware fw;
+    fw.bad_checksum_reads = 2;
+    bool is_parsed = false;
+
+    ASSERT_EQ(read_logged(fw, is_parsed), OK);
+
+    EXPECT_TRUE(is_parsed);
+    EXPECT_EQ(s_monitor.timing_count, 2u);
+    ASSERT_EQ(fw.call_count, 3u);
+    EXPECT_EQ(fw.stray_count, 0u);
+    for (uint32_t index = 0; index < 3; index++) {
+        EXPECT_EQ(fw.calls[index].display_id, TEST_DISPLAY_ID);
+        EXPECT_TRUE(fw.calls[index].is_zero_but_display_id);
+    }
+
+    for (uint32_t index = 1; index < 3; index++) {
+        uint64_t gap_ns = fw.calls[index].time_ns - fw.calls[index - 1].time_ns;
+        EXPECT_GE(gap_ns, NVIDIA_REREAD_DELAY_NS);
+    }
+
+    EXPECT_TRUE(edid_log_contains("nvidia: display id 0x100's EDID passed its checksum on read 3"));
+    EXPECT_FALSE(edid_log_contains("fails its checksum on each"));
+}
+
+// An EDID failing its checksum is read again up to NVIDIA's 18 more times, so one passing it on the 19th read gives the
+// monitor and one failing it on every read is logged and leaves `is_parsed` cleared, with every field of `out` zero
+TEST(nvidia_display_edid, an_edid_failing_its_checksum_is_read_again_up_to_18_more_times) {
+    edid_firmware passes_last;
+    passes_last.bad_checksum_reads = NVIDIA_EDID_REREADS;
+    bool is_parsed = false;
+
+    ASSERT_EQ(read_logged(passes_last, is_parsed), OK);
+
+    EXPECT_TRUE(is_parsed);
+    EXPECT_EQ(passes_last.call_count, NVIDIA_EDID_REREADS + 1);
+    EXPECT_TRUE(edid_log_contains("nvidia: display id 0x100's EDID passed its checksum on read 19"));
+
+    edid_firmware never_passes;
+    never_passes.bad_checksum_reads = NVIDIA_EDID_REREADS + 1;
+    fill_monitor(UNTOUCHED);
+
+    ASSERT_EQ(read_logged(never_passes, is_parsed), OK);
+
+    EXPECT_FALSE(is_parsed);
+    EXPECT_EQ(never_passes.call_count, NVIDIA_EDID_REREADS + 1);
+    EXPECT_TRUE(monitor_holds_only(0));
+    EXPECT_TRUE(edid_log_contains("nvidia: display id 0x100's EDID fails its checksum on each of its 19 reads"));
+
+    // The 18 waits take at least NVIDIA's 9 milliseconds and less than a hundred times that, which waits in
+    // milliseconds would exceed
+    uint64_t span_ns = never_passes.last_time_ns - never_passes.calls[0].time_ns;
+    EXPECT_GE(span_ns, NVIDIA_EDID_REREADS * NVIDIA_REREAD_DELAY_NS);
+    EXPECT_LT(span_ns, NVIDIA_EDID_REREADS * NVIDIA_REREAD_DELAY_NS * 100);
+}
+
+// The rereads' count and wait are NVIDIA's
+TEST(nvidia_display_edid, rereads_are_nvidias) {
+    EXPECT_EQ(EDID_REREADS_MAX, NVIDIA_EDID_REREADS);
+    EXPECT_EQ(EDID_REREAD_DELAY_US * NS_PER_US, NVIDIA_REREAD_DELAY_NS);
+}
+
+// A reread the firmware refuses is logged and ends the read with `is_parsed` cleared, no later reread and every field
+// of `out` zero, as the failed parse before it left it
+TEST(nvidia_display_edid, a_refused_reread_is_logged_and_ends_the_read) {
+    edid_firmware fw;
+    fw.bad_checksum_reads = 5;
+    fw.result = ERR_FIRMWARE;
+    fw.failed_from_read = 3;
+    bool is_parsed = true;
+    fill_monitor(UNTOUCHED);
+
+    ASSERT_EQ(read_logged(fw, is_parsed), OK);
+
+    EXPECT_FALSE(is_parsed);
+    EXPECT_EQ(fw.call_count, 3u);
+    EXPECT_TRUE(monitor_holds_only(0));
+    EXPECT_TRUE(edid_log_contains("nvidia: display common refused display id 0x100's EDID"));
+    EXPECT_FALSE(edid_log_contains("fails its checksum"));
+}
+
+// Any other error of a reread ends the read with that error, with no later reread, nothing logged and every field of
+// `out` zero, as the failed parse before it left it
+TEST(nvidia_display_edid, other_errors_of_a_reread_end_the_read) {
+    const int32_t errors[] = {ERR_TIMEOUT, ERR_QUEUE_FULL, ERR_BAD_MESSAGE, ERR_NO_MEMORY, ERR_TOO_LARGE};
+    for (int32_t error : errors) {
+        edid_firmware fw;
+        fw.bad_checksum_reads = 5;
+        fw.result = error;
+        fw.failed_from_read = 2;
+        bool is_parsed = true;
+        fill_monitor(UNTOUCHED);
+
+        EXPECT_EQ(read_logged(fw, is_parsed), error);
+
+        EXPECT_FALSE(is_parsed);
+        EXPECT_EQ(fw.call_count, 2u);
+        EXPECT_TRUE(monitor_holds_only(0));
+        EXPECT_EQ(s_edid_log_bytes, 0u);
     }
 }
