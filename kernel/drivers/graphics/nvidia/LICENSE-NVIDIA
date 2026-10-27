@@ -237,8 +237,9 @@ src/common/inc/swref/published/nvswitch/lr10/dev_soe_ip.h
 
 src/common/inc/swref/published/disp/v04_00/dev_disp.h
     the VGA workspace register and its valid bit, in protected_memory.cpp and
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and its start
-    field, in kernel/tests/graphics/nvidia_protected_memory.test.cpp
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, its start field, in
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the name
+    LAST_DATA of a head's timing event, in latch_rules.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/maxwell/gm107/dev_bus.h
@@ -2538,7 +2539,11 @@ src/nvidia-modeset/src/nvkms-evo.c
     it, and frees the display, the bandwidth check's object and display common
     in that order, each whatever the earlier frees return, in
     display_objects.h, display_objects.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, and the raster
+    coordinates of a mode that is not interlaced, in which rasterSize.y less
+    rasterBlankStart.y (the last visible line) is the vertical front porch and
+    one line, in latch_rules.h, latch_rules.cpp and
+    kernel/tests/graphics/nvidia_latch_rules.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-evo3.c
@@ -2556,6 +2561,27 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     display_heads.h, display_heads.cpp and
     kernel/tests/graphics/nvidia_display_heads.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-headsurface.c
+    a flip's notifier slot cleared to not begun before the flip, set to begun
+    at LOADV (the moment the head performs the flip) and left finished once the
+    flip completes, the vertical blank's callback able to run before LOADV sets
+    it, so that a swapgroup flip's slot is read in a callback at RG line 1
+    instead, and the slots flips take in turn, wrapping after the last, in
+    latch_rules.h, latch_rules.cpp and
+    kernel/tests/graphics/nvidia_latch_rules.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/include/nvkms-headsurface-priv.h
+    NVKMS_HEAD_SURFACE_MAX_NOTIFIERS_PER_HEAD, the most notifiers for each head,
+    4, in latch_rules.h and kernel/tests/graphics/nvidia_latch_rules.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/clc67d.h
+    the not begun, begun and finished statuses of a display notifier
+    (NV_DISP_NOTIFIER), in latch_rules.h, and its not begun status, in
+    kernel/tests/graphics/nvidia_latch_rules.test.cpp
+    Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,

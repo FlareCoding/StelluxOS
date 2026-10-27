@@ -50,7 +50,7 @@ constexpr int32_t ERR_INVALID_ARG    = -13; // a video memory allocation's size 
                                             // page table entry can name, or a context DMA's binding names handle 0, no
                                             // display channel or memory its record cannot name
 
-// Nanoseconds per millisecond and per microsecond, for the sequencer's waits and the times the driver logs
+// Nanoseconds per millisecond and per microsecond, for the sequencer's waits, the times the driver logs and mode times
 constexpr uint64_t NS_PER_MS = 1000000;
 constexpr uint64_t NS_PER_US = 1000;
 
