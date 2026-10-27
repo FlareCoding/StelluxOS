@@ -219,6 +219,33 @@ static_assert(sizeof(head_count_params) == 12, "NVIDIA's layout of GET_NUM_HEADS
 static_assert(sizeof(head_mask_params) == 8, "NVIDIA's layout of GET_ALL_HEAD_MASK's parameters");
 static_assert(sizeof(window_heads_params) == 36, "NVIDIA's layout of GET_VALID_HEAD_WINDOW_ASSIGNMENT's parameters");
 
+// NVIDIA's NV0073_CTRL_CMD_SYSTEM_GET_SUPPORTED, the control to display common that reports the supported display ids
+// (single bits that each name one way the firmware can drive a monitor through one of the card's connectors)
+constexpr uint32_t CONTROL_GET_SUPPORTED_DISPLAYS = 0x730120;
+
+// The parameters of `CONTROL_GET_SUPPORTED_DISPLAYS`, which the reply fills
+struct supported_displays_params {
+    uint32_t subdevice_index;  // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t display_mask;     // bit i set when display id 1 << i is supported
+    uint32_t ddc_display_mask; // NVIDIA's displayMaskDDC, the supported display ids with DDC (a connector's I2C bus)
+};
+
+// NVIDIA's NV0073_CTRL_CMD_SYSTEM_GET_CONNECT_STATE, the control to display common that gives which display ids of a
+// mask have a monitor connected
+constexpr uint32_t CONTROL_GET_CONNECTED_DISPLAYS = 0x730122;
+
+// The parameters of `CONTROL_GET_CONNECTED_DISPLAYS`. Flags of 0 (NVIDIA's METHOD_DEFAULT, DDC_DEFAULT, LOAD_DEFAULT
+// and VBLANK_DEFAULT) let the firmware pick how it detects a monitor on each display id
+struct connected_displays_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t flags;
+    uint32_t display_mask;    // the display ids to check, which the reply narrows to those connected
+    uint32_t retry_time_ms;   // NVIDIA's retryTimeMs, set with NVIDIA's status asking for the control again later
+};
+
+static_assert(sizeof(supported_displays_params) == 12, "NVIDIA's layout of GET_SUPPORTED's parameters");
+static_assert(sizeof(connected_displays_params) == 16, "NVIDIA's layout of GET_CONNECT_STATE's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H

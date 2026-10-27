@@ -1621,13 +1621,19 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073system.h
     layout of its parameters with NV0073_CTRL_SYSTEM_CAPS_TBL_SIZE and its
     NV0073_CTRL_SYSTEM_CAPS_CROSS_BAR_SUPPORTED bit, in rm.h,
     display_objects.h, display_objects.cpp and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp, and the command
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, the command
     NV0073_CTRL_CMD_SYSTEM_GET_NUM_HEADS (a control of display common), the
     layout of its parameters and
     NV0073_CTRL_SYSTEM_GET_NUM_HEADS_FLAGS_CLIENT_DISABLE, the flags that count
     every usable head, not only those a client has in use, in rm.h,
     display_heads.h, display_heads.cpp and
-    kernel/tests/graphics/nvidia_display_heads.test.cpp
+    kernel/tests/graphics/nvidia_display_heads.test.cpp, and the commands
+    NV0073_CTRL_CMD_SYSTEM_GET_SUPPORTED and
+    NV0073_CTRL_CMD_SYSTEM_GET_CONNECT_STATE (controls of display common), the
+    layouts of their parameters and the connect state's flags of 0, NVIDIA's
+    METHOD_DEFAULT, DDC_DEFAULT, LOAD_DEFAULT and VBLANK_DEFAULT, in rm.h,
+    display_ids.h, display_ids.cpp and
+    kernel/tests/graphics/nvidia_display_ids.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/nvstatus.h
@@ -1869,10 +1875,20 @@ src/nvidia-modeset/src/nvkms-rm.c
     of chips before Volta, allocates the channel at offset 0 of its push buffer
     and starts its PUT and written end there, in display_channel.h,
     display_channel.cpp and
-    kernel/tests/graphics/nvidia_display_channel.test.cpp, and that it starts
-    the channel's count of free words at two less than the words before the pad,
-    in display_channel.cpp and
-    kernel/tests/graphics/nvidia_display_channel.test.cpp
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, that it starts the
+    channel's count of free words at two less than the words before the pad, in
+    display_channel.cpp and
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, that it asks display
+    common for the supported display ids with the parameters zeroed and for
+    which display ids of a mask are connected with the parameters zeroed but for
+    that mask (so with the default flags), in display_ids.h, display_ids.cpp and
+    kernel/tests/graphics/nvidia_display_ids.test.cpp, and that it fails its
+    device for want of a display id (going on with none when display common
+    refuses to report the supported ones), keeps and asks about only the display
+    ids the firmware reports static, asks for the connect state again while the
+    reply names a retry time or the firmware is not ready, takes no display id
+    as connected when display common still refuses it and takes the connected
+    mask as returned, in display_ids.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
