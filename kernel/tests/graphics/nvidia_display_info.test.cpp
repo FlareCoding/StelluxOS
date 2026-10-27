@@ -28,14 +28,14 @@ static constexpr size_t   DISPLAY_STATIC_INFO_BYTES      = 28;
 static constexpr uint32_t DISPLAY_STATIC_INFO_WORDS      = DISPLAY_STATIC_INFO_BYTES / 4;
 static constexpr uint32_t PRESENT_WINDOWS_WORD           = 1;
 
-// GA102's windows, a mask naming only some of them, and a value each call's output holds before the call, so a test
-// sees whether the call wrote it
-static constexpr chip_display GA102_DISPLAY     = {.window_count = 8};
+// GA102's window count (with the display class left 0, as reading the windows never uses it), a mask naming only some
+// of the windows, and a value each call's output holds before the call, so a test sees whether the call wrote it
+static constexpr chip_display GA102_DISPLAY     = {.window_count = 8, .display_class = 0};
 static constexpr uint32_t     SPARSE_WINDOWS    = 0xA5;
 static constexpr uint32_t     UNTOUCHED_WINDOWS = 0xDEADBEEF;
 
 // A firmware that answers internal controls with `result` and, on `OK`, the words of `reply`, recording what each
-// carried, and counts the calls to `allocate`, `release` and `new_handle`, which no function under test makes
+// carried, and counts calls of `allocate`, `control`, `release` and `new_handle`, which no function under test makes
 class static_info_firmware : public firmware {
 public:
     uint32_t reply[DISPLAY_STATIC_INFO_WORDS] = {};
@@ -75,6 +75,11 @@ public:
     }
 
     int32_t allocate(rm::handle, rm::handle, uint32_t, void*, size_t) override {
+        other_count++;
+        return OK;
+    }
+
+    int32_t control(rm::handle, uint32_t, void*, size_t) override {
         other_count++;
         return OK;
     }
@@ -119,9 +124,9 @@ TEST(nvidia_display_info, windows_come_from_nvidias_field_of_one_zeroed_request)
     }
 }
 
-// Chips one window short of NVIDIA's most windows and at the most
-static constexpr chip_display ONE_SHORT_DISPLAY    = {.window_count = 31};
-static constexpr chip_display MOST_WINDOWS_DISPLAY = {.window_count = 32};
+// Chips one window short of NVIDIA's most windows and at the most, with the display class left 0
+static constexpr chip_display ONE_SHORT_DISPLAY    = {.window_count = 31, .display_class = 0};
+static constexpr chip_display MOST_WINDOWS_DISPLAY = {.window_count = 32, .display_class = 0};
 
 // Every window of the chip or none is accepted, up to every bit on a chip of NVIDIA's most windows
 TEST(nvidia_display_info, every_window_of_the_chip_or_none_is_accepted) {

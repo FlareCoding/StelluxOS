@@ -63,6 +63,9 @@ static constexpr uint64_t GA102_PRESCRUBBED_TOP_BYTES  = 0x10000000;
 // NVIDIA's headers for GA102 give them
 static constexpr uint8_t GA102_INTERRUPT_LEAF_COUNT = 8;
 
+// NVIDIA's class of GA102's display object, NVC670_DISPLAY
+static constexpr uint32_t GA102_DISPLAY_CLASS = 0xC670;
+
 // The RTX 3080's identity decodes to the GA102 entry of the chip table
 TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(decode_chip_id(RTX_3080_BOOT_0), GA102_CHIP_ID);
@@ -80,6 +83,8 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(chip->gsp_reservation.unprotected_heap_bytes, GA102_UNPROTECTED_HEAP_BYTES);
     EXPECT_EQ(chip->gsp_reservation.prescrubbed_top_bytes, GA102_PRESCRUBBED_TOP_BYTES);
     EXPECT_EQ(chip->interrupt_leaf_count, GA102_INTERRUPT_LEAF_COUNT);
+
+    EXPECT_EQ(chip->display.display_class, GA102_DISPLAY_CLASS);
 }
 
 // GA104 shares GA102's architecture but has no chip table entry

@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_GPU_H
 
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/display_objects.h"
 #include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/gpu_objects.h"
 #include "drivers/graphics/nvidia/gsp.h"
@@ -193,7 +194,8 @@ namespace drivers {
  * `nvidia::ERR_NO_MEMORY` with what the memory was for. Whether or not
  * bring-up maps BAR1, it then allocates the driver's client, device and
  * subdevice, then, unless the fuses disable the display, reads its present
- * windows and sets up the display's instance memory as below, and then
+ * windows, sets up the display's instance memory, allocates the display's
+ * objects under the device and reads their capabilities as below, and then
  * disables every vector of the CPU interrupt tree, which an earlier driver can
  * leave enabled, so that no vector raises an interrupt before the GSP's is
  * enabled. It then sets up MSI with one vector, re-arms it as
@@ -296,25 +298,27 @@ namespace drivers {
  * console leaves the window no page, and fails with `nvidia::ERR_BAD_STATE`
  * when the check reads another value or either mapping lies elsewhere than at
  * the window's first offset past the console. Whether or not it maps BAR1, it
- * then fails as described below when the objects, the windows or the instance
- * memory fail, and with the error `pci_driver::setup_msi` returns when MSI
- * cannot be set up. Bring-up itself never writes to the display engine, and
- * the CPU sequencer's steps write only the registers the firmware names. Once
- * the sequencer has resumed the GSP's firmware, though, the firmware puts all
- * of BAR1 (where the CPU reaches the card's video memory) into virtual mode,
- * translated through the firmware's page tables, as NVIDIA's driver expects,
- * so BAR1 no longer reaches what it reached before, such as a boot
- * framebuffer, until `detach()` writes back BAR1's block register, which binds
- * BAR1 to the video memory. Once bring-up links BAR1's tables, BAR1 reaches a
- * kept console's region 0 again, as NVIDIA's driver maps the console for its
- * driver to draw through, and reads 0 past it. Without a kept console, BAR1
- * then reads 0 at each offset. The card keeps the memory and I/O decoding that
- * `attach()` turned on. A card that `attach()` declines or fails before the
- * first reset of the GSP's falcon keeps only that decoding. A reset that times
- * out leaves the falcon out of reset with its memories still being cleared, or
- * with its switch to the falcon core requested but not confirmed. A card that
- * gets as far as the load also keeps its bus mastering on, and the load leaves
- * its falcon's memory interface letting the DMA engine read system memory by
+ * then fails as described below when allocating the driver's client, device or
+ * subdevice, reading the windows, setting up the instance memory, allocating
+ * the display's objects or reading their capabilities fails, and with the
+ * error `pci_driver::setup_msi` returns when MSI cannot be set up. Bring-up
+ * itself never writes to the display engine, and the CPU sequencer's steps
+ * write only the registers the firmware names. Once the sequencer has resumed
+ * the GSP's firmware, though, the firmware puts all of BAR1 (where the CPU
+ * reaches the card's video memory) into virtual mode, translated through the
+ * firmware's page tables, as NVIDIA's driver expects, so BAR1 no longer
+ * reaches what it reached before, such as a boot framebuffer, until `detach()`
+ * writes back BAR1's block register, which binds BAR1 to the video memory.
+ * Once bring-up links BAR1's tables, BAR1 reaches a kept console's region 0
+ * again, as NVIDIA's driver maps the console for its driver to draw through,
+ * and reads 0 past it. Without a kept console, BAR1 then reads 0 at each
+ * offset. The card keeps the memory and I/O decoding that `attach()` turned
+ * on. A card that `attach()` declines or fails before the first reset of the
+ * GSP's falcon keeps only that decoding. A reset that times out leaves the
+ * falcon out of reset with its memories still being cleared, or with its
+ * switch to the falcon core requested but not confirmed. A card that gets as
+ * far as the load also keeps its bus mastering on, and the load leaves its
+ * falcon's memory interface letting the DMA engine read system memory by
  * physical address. A load that times out leaves the falcon not started, with
  * its DMA engine possibly still copying, and a run that times out leaves the
  * falcon possibly still running FWSEC, which may yet fence off the FRTS
@@ -336,9 +340,11 @@ namespace drivers {
  * interrupt tree and no bits in the GPU's PMC interrupt register, and the
  * register of BAR0's window was written back after each use with the value it
  * held before. When `attach()` returns `OK`, the firmware also holds the
- * driver's client, device and subdevice and, with the display enabled, the
- * instance memory's address and has reported only the chip's windows, MSI was
- * set up and re-armed, and the GSP's vector enabled. Whenever BAR1 is assigned
+ * driver's client, device and subdevice, MSI was set up and re-armed, and the
+ * GSP's vector enabled. With the display enabled, the firmware also holds the
+ * instance memory's address and the display's objects, and has reported only
+ * the chip's windows and a display engine that can reach push buffers,
+ * semaphores and notifiers in system memory. Whenever BAR1 is assigned
  * and leaves a window, BAR1 is also mapped into the kernel's address space,
  * BAR1's tables lie in video memory, the root page directory's first entry
  * names them and no mapping is left from the check. Nothing frees the tables'
@@ -366,8 +372,8 @@ namespace drivers {
  * chip's fuses leave its display enabled, as
  * `nvidia::frts_region::has_display` records, bring-up then reads the windows
  * this GPU has with `nvidia::read_present_windows` and logs them with the
- * chip's window count, and otherwise logs that it skips them and the instance
- * memory. When the read fails, `attach()` fails as
+ * chip's window count, and otherwise logs that it skips them, the instance
+ * memory and the display's objects. When the read fails, `attach()` fails as
  * `nvidia::read_present_windows` describes, before MSI is set up, such as when
  * the firmware reports a window the chip lacks. With the display enabled,
  * bring-up next sets up the display's instance memory with
@@ -377,7 +383,15 @@ namespace drivers {
  * `nvidia::bar1_video_memory::map_for_cpu` then has no window to clear the
  * memory through. Once cleared, the instance memory stays allocated after
  * `detach()` whatever the firmware answered, since the display engine's
- * registers may name it from the moment its address is sent.
+ * registers may name it from the moment its address is sent. Bring-up then
+ * allocates the display's objects under the device with
+ * `nvidia::allocate_display_objects` and logs their handles, then reads their
+ * capabilities with `nvidia::read_display_capabilities` and logs whether
+ * display common reports a crossbar. Once allocated, the objects stay
+ * allocated until `detach()` releases them, even after a failed read, and
+ * `attach()` fails as those two describe, before MSI is set up, when one
+ * fails, such as when the display engine reaches push buffers, semaphores and
+ * notifiers only in video memory.
  * Once `attach()` has enabled the GSP's vector, `detach()` first disables
  * every vector of the CPU interrupt tree as
  * `nvidia::disable_cpu_interrupt_tree` describes, so that the GSP's vector
@@ -390,12 +404,14 @@ namespace drivers {
  * the unload and the resets change how BAR1 translates, since the CPU may read
  * ahead through BAR1's write-combining mapping and such a read could then
  * fault the card's MMU. Once bring-up has allocated the driver's client,
- * `detach()` then releases the subdevice and the device, when bring-up
- * allocated them too, as `nvidia::release_gpu_objects` describes, and then the
- * client with `nvidia::gsp::release_client`, while the firmware still runs,
- * logging a failure, which changes no result. The client is released even
- * after a failed release of the device, where NVIDIA's driver releases it only
- * once the device's release succeeds, since the unload follows either way.
+ * `detach()` then releases the display's objects, when bring-up allocated
+ * them, as `nvidia::release_display_objects` describes, then the subdevice and
+ * the device, when bring-up allocated those, as `nvidia::release_gpu_objects`
+ * describes, and then the client with `nvidia::gsp::release_client`, while the
+ * firmware still runs, logging a failure, which changes no result. The client
+ * is released even after a failed release of the device, where NVIDIA's driver
+ * releases it only once the device's release succeeds, since the unload
+ * follows either way.
  * Once the ready message has arrived, whatever its result, `detach()` then
  * asks the GSP's firmware to unload, through the `nvidia::gsp` that `attach()`
  * started, and waits for the GSP's processor to be suspended, as
@@ -502,28 +518,29 @@ public:
      * has enabled the GSP's, then drop the window of its
      * `nvidia::bar1_video_memory` with
      * `nvidia::bar1_video_memory::drop_window` and unmap BAR1 when bring-up
-     * mapped it, then release the driver's subdevice, device and client once
-     * bring-up allocated them, then ask the GSP's firmware to unload once its
-     * ready message has arrived, then free the payload buffer with
-     * `nvidia::gsp::stop`, then stop SEC2 once bring-up has begun loading
-     * booter load, then the GSP once bring-up has reset its falcon, freeing
-     * the GSP's boot memory only once each reads as stopped and, from the load
-     * of booter load on, writing back BAR1's block register once the GSP reads
-     * as stopped, then run FWSEC's SB command on the GSP's falcon once
-     * bring-up's run of FWSEC has halted and the boot memory is freed, then
-     * take protected memory down with booter unload on SEC2 once the boot
-     * memory is freed, then free booter unload's copy unless SEC2 may still
-     * read it, then disable MSI and unmap BAR0, as `pci_driver::detach()`
-     * does. The releases and the unload spin on the calling CPU, waiting for
-     * each reply as `nvidia::gsp::request` waits, with a deadline
-     * `nvidia::RECEIVE_TIMEOUT_NS` after the request, then the unload for up
-     * to `nvidia::DEFAULT_TIMEOUT_NS` for the suspend. Each falcon's stop
-     * spins for up to twice `nvidia::FALCON_READY_TIMEOUT_NS` and six times
-     * `nvidia::FALCON_TIMEOUT_NS` when the falcon is slow to reset. Running
-     * FWSEC's SB command spins for up to `nvidia::FALCON_TIMEOUT_NS` for each
-     * block's load and for the run, as `nvidia::run_falcon_program` describes.
-     * Taking protected memory down spins for SEC2's reset as long as a stop
-     * can, then for booter unload's loads and run as long as the SB command's.
+     * mapped it, then release the display's objects and the driver's
+     * subdevice, device and client once bring-up allocated them, then ask the
+     * GSP's firmware to unload once its ready message has arrived, then free
+     * the payload buffer with `nvidia::gsp::stop`, then stop SEC2 once
+     * bring-up has begun loading booter load, then the GSP once bring-up has
+     * reset its falcon, freeing the GSP's boot memory only once each reads as
+     * stopped and, from the load of booter load on, writing back BAR1's block
+     * register once the GSP reads as stopped, then run FWSEC's SB command on
+     * the GSP's falcon once bring-up's run of FWSEC has halted and the boot
+     * memory is freed, then take protected memory down with booter unload on
+     * SEC2 once the boot memory is freed, then free booter unload's copy
+     * unless SEC2 may still read it, then disable MSI and unmap BAR0, as
+     * `pci_driver::detach()` does. The releases and the unload spin on the
+     * calling CPU, waiting for each reply as `nvidia::gsp::request` waits,
+     * with a deadline `nvidia::RECEIVE_TIMEOUT_NS` after the request, then the
+     * unload for up to `nvidia::DEFAULT_TIMEOUT_NS` for the suspend. Each
+     * falcon's stop spins for up to twice `nvidia::FALCON_READY_TIMEOUT_NS`
+     * and six times `nvidia::FALCON_TIMEOUT_NS` when the falcon is slow to
+     * reset. Running FWSEC's SB command spins for up to
+     * `nvidia::FALCON_TIMEOUT_NS` for each block's load and for the run, as
+     * `nvidia::run_falcon_program` describes. Taking protected memory down
+     * spins for SEC2's reset as long as a stop can, then for booter unload's
+     * loads and run as long as the SB command's.
      * @return What `pci_driver::detach()` returns once the falcons are stopped
      * or need no stop, `nvidia::ERR_TIMEOUT` when a stop's reset times out, or
      * `nvidia::ERR_BAD_STATE` when a falcon then does not read as halted or
@@ -621,6 +638,7 @@ private:
     nvidia::gsp_boot_memory       m_boot_memory;
     nvidia::gsp                   m_gsp;
     nvidia::gpu_objects           m_gpu_objects = {}; // both 0 before bring-up allocates them and after `detach()`
+    nvidia::display_objects       m_display_objects = {}; // all 0 before bring-up allocates them and after `detach()`
     nvidia::bar1_video_memory     m_video_memory;
     nvidia::instance_memory       m_instance_memory;
     nvidia::fwsec_layout          m_fwsec = {};

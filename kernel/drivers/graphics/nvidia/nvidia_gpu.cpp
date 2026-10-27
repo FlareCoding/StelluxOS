@@ -900,8 +900,36 @@ int32_t nvidia_gpu_driver::attach() {
             "address",
             m_instance_memory.range().offset
         );
+
+        rc = nvidia::allocate_display_objects(m_gsp, m_gpu_objects.device, chip->display, m_display_objects);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+
+        log::info(
+            "nvidia: the GSP's firmware keeps the display engine's objects: display common 0x%X, the bandwidth check's "
+            "object 0x%X and the display 0x%X",
+            m_display_objects.display_common,
+            m_display_objects.bandwidth_check,
+            m_display_objects.display
+        );
+
+        bool has_crossbar = false;
+        rc = nvidia::read_display_capabilities(m_gsp, m_display_objects, has_crossbar);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+
+        log::info(
+            "nvidia: the display engine can reach push buffers, semaphores and notifiers in system memory, and display "
+            "common reports %s",
+            has_crossbar ? "a crossbar" : "no crossbar"
+        );
     } else {
-        log::info("nvidia: the chip's fuses disable its display, so bring-up skips its windows and instance memory");
+        log::info(
+            "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory "
+            "and objects"
+        );
     }
 
     // An earlier driver can leave vectors of the tree enabled, which would raise MSI before the GSP's is enabled
@@ -1122,6 +1150,12 @@ void nvidia_gpu_driver::run_fwsec_sb(nvidia::registers& regs) {
 
 // The unload ends the firmware's service, so the objects it keeps for the driver are released first
 void nvidia_gpu_driver::release_firmware_objects() {
+    int32_t display_rc = nvidia::OK;
+    if (m_display_objects.display_common != 0) {
+        display_rc = nvidia::release_display_objects(m_gsp, m_display_objects);
+        m_display_objects = {};
+    }
+
     int32_t rc = nvidia::OK;
     if (m_gpu_objects.device != 0) {
         rc = nvidia::release_gpu_objects(m_gsp, m_gpu_objects);
@@ -1129,7 +1163,7 @@ void nvidia_gpu_driver::release_firmware_objects() {
     }
 
     int32_t client_rc = m_gsp.release_client();
-    if (rc == nvidia::OK && client_rc == nvidia::OK) {
+    if (display_rc == nvidia::OK && rc == nvidia::OK && client_rc == nvidia::OK) {
         log::info("nvidia: the GSP's firmware released the objects it kept for the driver");
     }
 }

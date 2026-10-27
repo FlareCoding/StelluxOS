@@ -1615,7 +1615,12 @@ src/nvidia/inc/kernel/gpu/gpu_acpi_data.h
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073system.h
     the most displays NVIDIA's driver maps to ACPI IDs, which sizes three of
     the ACPI method data's arrays, in boot_messages.cpp and
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the command
+    NV0073_CTRL_CMD_SYSTEM_GET_CAPS_V2 (a control of display common), the
+    layout of its parameters with NV0073_CTRL_SYSTEM_CAPS_TBL_SIZE and its
+    NV0073_CTRL_SYSTEM_CAPS_CROSS_BAR_SUPPORTED bit, in rm.h,
+    display_objects.h, display_objects.cpp and
+    kernel/tests/graphics/nvidia_display_objects.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/nvstatus.h
@@ -1826,7 +1831,17 @@ src/nvidia-modeset/src/nvkms-rm.c
     and its subdevice with index 0, and frees the subdevice before the device
     whatever the first free returns, in gsp.h, gsp.cpp, gpu_objects.h,
     gpu_objects.cpp, kernel/tests/graphics/nvidia_message_queues.test.cpp and
-    kernel/tests/graphics/nvidia_gpu_objects.test.cpp
+    kernel/tests/graphics/nvidia_gpu_objects.test.cpp, that it allocates
+    display common under its device with no parameters and asks for its
+    capabilities with the table zeroed, in display_objects.h,
+    display_objects.cpp and
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, and that the
+    display engine reaches push buffers, semaphores and notifiers only in video
+    memory when the display reports
+    NV5070_CTRL_SYSTEM_CAPS_BUG_644815_DNISO_VIDMEM_ONLY, so that the
+    modesetting module places them there, in rm.h, display_objects.h,
+    display_objects.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_display_objects.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2447,6 +2462,60 @@ src/nvidia/inc/kernel/os/nv_memory_type.h
     2, in rm.h, instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cl0073.h
+    the class number of display common, NV04_DISPLAY_COMMON, in rm.h and
+    kernel/tests/graphics/nvidia_display_objects.test.cpp
+    Copyright (c) 2001-2021, NVIDIA CORPORATION. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/clc372sw.h
+    the class number of the bandwidth check's object, NVC372_DISPLAY_SW, in
+    rm.h and kernel/tests/graphics/nvidia_display_objects.test.cpp
+    Copyright (c) 2015, NVIDIA CORPORATION. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/clc670.h
+    the class number NVC670_DISPLAY, which chip.cpp gives GA102's display, in
+    chip.cpp and kernel/tests/graphics/nvidia.test.cpp
+    Copyright (c) 2018-2022, NVIDIA CORPORATION. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070system.h
+    the command NV5070_CTRL_CMD_SYSTEM_GET_CAPS_V2 (a control of the display),
+    the layout of its parameters with NV5070_CTRL_SYSTEM_CAPS_TBL_SIZE and its
+    NV5070_CTRL_SYSTEM_CAPS_BUG_644815_DNISO_VIDMEM_ONLY bit, in rm.h,
+    display_objects.h, display_objects.cpp and
+    kernel/tests/graphics/nvidia_display_objects.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070base.h
+    the layout of NV5070_CTRL_CMD_BASE_PARAMS, the subdevice's index that
+    begins the parameters of the display's controls, in rm.h and
+    kernel/tests/graphics/nvidia_display_objects.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/rmapi/resource_list.h
+    that display common, the bandwidth check's object and the display take no
+    allocation parameters and go under a device, in display_objects.h,
+    display_objects.cpp and
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, and that the display
+    is the parent of the display engine's channels, in chip.h and
+    display_objects.h
+    SPDX-FileCopyrightText: Copyright (c) 2016-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-evo.c
+    that the modesetting module allocates display common, then the bandwidth
+    check's object, then the display, which it gives no parameters, asks for
+    the display's capabilities with the table zeroed right after allocating
+    it, and frees the display, the bandwidth check's object and display common
+    in that order, each whatever the earlier frees return, in
+    display_objects.h, display_objects.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_display_objects.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-evo3.c
+    that the modesetting module allocates the bandwidth check's object under
+    its device with no parameters, in display_objects.h, display_objects.cpp
+    and kernel/tests/graphics/nvidia_display_objects.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,
