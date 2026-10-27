@@ -34,7 +34,7 @@ static constexpr rm::handle  FIRST_HANDLE = 0x00050007;
 static constexpr gpu_objects UNTOUCHED    = {.device = 0xDEAD0001, .subdevice = 0xDEAD0002};
 
 // A firmware that records its allocations and releases in order and answers each with its own entry of `results`,
-// counted across both, and `OK` past them
+// counted across every allocation, release and internal control, and `OK` past them
 class recording_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 4;
@@ -88,6 +88,12 @@ public:
 
     rm::handle client() const override {
         return TEST_CLIENT;
+    }
+
+    // No function under test sends one, so a stray one shows in `call_count`
+    int32_t internal_control(uint32_t, void*, size_t) override {
+        record();
+        return answer();
     }
 
 private:

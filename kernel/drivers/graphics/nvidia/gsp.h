@@ -35,10 +35,11 @@ namespace drivers::nvidia {
  * an object the firmware keeps) goes through `control`, which sends it as a
  * request. Objects under the driver's own client are allocated and released
  * through the calls of `firmware`, which a `gsp` implements, once
- * `allocate_client` has allocated the client. A message the firmware sends
- * unasked, such as its ready message, is awaited with `await` during bring-up
- * and read with `drain` once bring-up ends. A failure the firmware reports is
- * looked for with `check_health`.
+ * `allocate_client` has allocated the client, and the controls of `firmware`
+ * for the internal client go to the subdevice `set_internal_client` names. A
+ * message the firmware sends unasked, such as its ready message, is awaited
+ * with `await` during bring-up and read with `drain` once bring-up ends. A
+ * failure the firmware reports is looked for with `check_health`.
  *
  *   driver --- send, request ----------> command queue ---> GSP's firmware
  *   driver <-- await, request, drain --- status queue  <--- GSP's firmware
@@ -367,11 +368,30 @@ public:
     rm::handle client() const override;
 
     /**
+     * @brief Keep the handles of the firmware's internal client and of its
+     * subdevice, as the static configuration gives them, for
+     * `internal_control` until `stop`.
+     * @param client The firmware's internal client.
+     * @param subdevice The internal client's subdevice.
+     */
+    void set_internal_client(rm::handle client, rm::handle subdevice);
+
+    /**
+     * @brief Send a control to the internal client's subdevice that
+     * `set_internal_client` named, through `control` with `RECEIVE_TIMEOUT_NS`
+     * for the reply. A size above what one message carries is refused before
+     * it is narrowed to the 32 bits `control` takes. It must follow
+     * `set_internal_client`, since both handles are 0 before it and after
+     * `stop`.
+     */
+    int32_t internal_control(uint32_t command, void* params, size_t size) override;
+
+    /**
      * @brief Free the payload buffer and drop the queues, the view of BAR0,
-     * the sequencer's context, the driver's client and the count of handles,
-     * leaving the object as the default constructor makes it. The queues'
-     * memory is left as it is, and the firmware is not asked to release the
-     * client.
+     * the sequencer's context, the driver's client, the internal client's
+     * handles and the count of handles, leaving the object as the default
+     * constructor makes it. The queues' memory is left as it is, and the
+     * firmware is not asked to release the client.
      */
     void stop();
 
@@ -392,6 +412,8 @@ private:
     cpu_sequencer_context m_sequencer = {};
     uint8_t*              m_payload = nullptr;
     rm::handle            m_client = 0;
+    rm::handle            m_internal_client = 0;
+    rm::handle            m_internal_subdevice = 0;
     uint32_t              m_handle_count = 0; // handles `new_handle` has given since the last `stop`
 };
 

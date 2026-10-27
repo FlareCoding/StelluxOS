@@ -1401,16 +1401,18 @@ src/common/sdk/nvidia/inc/nvtypes.h
     gsp_boot_memory.cpp, which the system information's flags take, in
     boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,
     which the two flags of the request to unload take, in gsp_unload.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and which the static
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, which the static
     configuration's booleans take, a video memory region's flags among them, in
     gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, the 32 bits of
-    NVIDIA's handles, which the static configuration's three handles take, in
-    gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, which `rm::handle`
-    takes, in rm.h, and which a control request's client and object take, in
-    gsp.h, gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
-    that NV_TRUE, NVIDIA's value for true, is 1, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and which the
+    display's static information's two booleans take, in rm.h and
+    kernel/tests/graphics/nvidia_display_info.test.cpp, the 32 bits of NVIDIA's
+    handles, which the static configuration's three handles take, in gsp_info.h,
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, which
+    `rm::handle` takes, in rm.h, and which a control request's client and object
+    take, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that NV_TRUE,
+    NVIDIA's value for true, is 1, in
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -1596,7 +1598,7 @@ src/nvidia/inc/kernel/gpu/gsp/gsp_static_config.h
     configuration holds the facts about the GPU the firmware gathers as it
     starts, in gsp_info.h, and that its handles hInternalClient and
     hInternalSubdevice name the client and subdevice for internal RMAPI
-    controls, in gsp_info.h and nvidia_gpu.h
+    controls, in gsp_info.h, firmware.h, gsp.h and nvidia_gpu.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_chipset_nvoc.h
@@ -1841,8 +1843,14 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     interrupts.h, interrupts.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that they give the
     interrupt table for NVIDIA's kernel-side driver, in rm.h, interrupts.h and
-    nvidia_gpu.h, and that their subtree map gives the first and last of the
-    top-level bits a category of interrupts takes, in rm.h
+    nvidia_gpu.h, that their subtree map gives the first and last of the
+    top-level bits a category of interrupts takes, in rm.h, the command
+    NV2080_CTRL_CMD_INTERNAL_DISPLAY_GET_STATIC_INFO, a control of a subdevice,
+    and the layout of its parameters, in rm.h, display_info.h, display_info.cpp
+    and kernel/tests/graphics/nvidia_display_info.test.cpp, and that that
+    command's windowPresentMask names the windows present on the chip, in rm.h,
+    chip.h, display_info.h, display_info.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_display_info.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/intr/engine_idx.h
@@ -2318,10 +2326,36 @@ src/nvidia-modeset/src/dp/nvdp-connector.cpp
     timing, in displayport.cpp
     SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/nvidia/src/kernel/gpu/disp/kern_disp.c
+    that NVIDIA's driver asks for the display's static information when it
+    initializes its display's state, on the internal client and subdevice with
+    the parameters zeroed, and keeps its windowPresentMask unchecked, in
+    display_info.h, display_info.cpp and
+    kernel/tests/graphics/nvidia_display_info.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/disp/arch/v03/kern_disp_0300.c
+    the rule that NVIDIA's driver allows a window's channel only for a window
+    the static information's windowPresentMask names, in display_info.h
+    SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kern_disp_nvoc.c
+    that NVIDIA's driver binds kdispGetChannelNum_v03_00 for every display
+    version but DISPv0000, in display_info.h
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/disp/v03_00/dev_disp.h
+    NV_PDISP_CHN_NUM_WIN__SIZE_1, the most windows a display engine numbers, 32,
+    in chip.h, chip.cpp, display_info.cpp and
+    kernel/tests/graphics/nvidia_display_info.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
-g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, rpc_global_enums.h,
-g_rpc_private.h and nvUnixVersion.h the package's COPYING, carries this
-permission notice:
+g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,
+rpc_global_enums.h, g_rpc_private.h and nvUnixVersion.h the package's COPYING,
+carries this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),

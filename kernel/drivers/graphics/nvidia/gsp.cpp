@@ -293,6 +293,8 @@ void gsp::stop() {
     m_regs = registers(0);
     m_sequencer = {};
     m_client = 0;
+    m_internal_client = 0;
+    m_internal_subdevice = 0;
     m_handle_count = 0;
 }
 
@@ -332,6 +334,33 @@ rm::handle gsp::new_handle() {
 
 rm::handle gsp::client() const {
     return m_client;
+}
+
+void gsp::set_internal_client(rm::handle client, rm::handle subdevice) {
+    m_internal_client = client;
+    m_internal_subdevice = subdevice;
+}
+
+int32_t gsp::internal_control(uint32_t command, void* params, size_t size) {
+    if (size > CONTROL_PARAMS_MAX_BYTES) {
+        log::error(
+            "nvidia: the parameters of control 0x%X take %lu bytes, more than the %u one message carries after the "
+            "control's header",
+            command,
+            size,
+            CONTROL_PARAMS_MAX_BYTES
+        );
+        return ERR_TOO_LARGE;
+    }
+
+    return control(
+        m_internal_client,
+        m_internal_subdevice,
+        command,
+        params,
+        static_cast<uint32_t>(size),
+        RECEIVE_TIMEOUT_NS
+    );
 }
 
 int32_t gsp::request_allocation(
