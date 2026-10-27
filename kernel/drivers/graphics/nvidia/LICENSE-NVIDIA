@@ -1854,17 +1854,25 @@ src/nvidia-modeset/src/nvkms-rm.c
     module takes a window 0 mask of
     NV0073_CTRL_SPECIFIC_FLEXIBLE_HEAD_WINDOW_ASSIGNMENT to mean each window may
     serve any head, in rm.h, display_heads.h, display_heads.cpp and
-    kernel/tests/graphics/nvidia_display_heads.test.cpp, and that it asks
-    display common for its count of heads, its head mask and each window's heads
-    in that order with the parameters zeroed, refuses a count of 0 and goes on
-    with any other report, takes the head mask as the heads with windows when
-    display common refuses the window request as not supported, gives windows 2N
-    and 2N + 1 head N in that flexible mapping and otherwise the head a window's
+    kernel/tests/graphics/nvidia_display_heads.test.cpp, that it asks display
+    common for its count of heads, its head mask and each window's heads in that
+    order with the parameters zeroed, refuses a count of 0 and goes on with any
+    other report, takes the head mask as the heads with windows when display
+    common refuses the window request as not supported, gives windows 2N and
+    2N + 1 head N in that flexible mapping and otherwise the head a window's
     mask names, gives a window whose mask is 0 no head, keeps the heads the mask
     names that some window serves, from head 0 up to the first one missing and
     no more than the count, and takes from each window a head past those, in
     display_heads.h, display_heads.cpp and
-    kernel/tests/graphics/nvidia_display_heads.test.cpp
+    kernel/tests/graphics/nvidia_display_heads.test.cpp, that it writes a
+    display channel's push buffer only up to the pad before its end, for a bug
+    of chips before Volta, allocates the channel at offset 0 of its push buffer
+    and starts its PUT and written end there, in display_channel.h,
+    display_channel.cpp and
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, and that it starts
+    the channel's count of free words at two less than the words before the pad,
+    in display_channel.cpp and
+    kernel/tests/graphics/nvidia_display_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2582,6 +2590,48 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     (NV_DISP_NOTIFIER), in latch_rules.h, and its not begun status, in
     kernel/tests/graphics/nvidia_latch_rules.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+src/nvidia-modeset/include/nvkms-types.h
+    the size of a display channel's push buffer, 4 KiB, and of the pad at its
+    end, 48 bytes, in display_channel.h and
+    kernel/tests/graphics/nvidia_display_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/include/nvkms-dma.h
+    the layout of a display method's header (opcode 0 in bits 31:29, the count
+    of values in bits 27:18 and the register offset in bits 13:2), that the
+    register offset is a multiple of 4, that the room a method needs counts its
+    header with its values, and that the modesetting module asks for room, and
+    so reads GET, only once its count of free words, lowered by each method's
+    words, is at most the words a method takes, in display_channel.h,
+    display_channel.cpp and
+    kernel/tests/graphics/nvidia_display_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-dma.c
+    the jump to offset 0 (0x20000000) that wraps a display channel's push
+    buffer, placed at the written end, the count of words free at the written
+    end that a read of GET gives (to the pad's start while GET lies at or behind
+    the written end, else to a word short of GET, and none while GET lies at
+    most a chase pad of five words past the written end), that a method needs
+    more words free than it takes, that the push buffer wraps only once GET has
+    left offset 0, that GET is read and the words free counted again after a
+    wrap, that a kick makes PUT the written end's byte offset after a barrier
+    and writes nothing while PUT has not moved and that a channel is empty once
+    GET reads PUT, with GET read before the timeout is checked, in
+    display_channel.h, display_channel.cpp and
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, and that the
+    modesetting module takes a GET past the pad's start, while GET lies ahead of
+    the written end, as the pad's start, and kicks the methods written so far
+    and waits while GET is at offset 0 and a method does not fit, in
+    kernel/tests/graphics/nvidia_display_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2013 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cl917d.h
+    that PUT and GET are the first two words of a display channel's area, in
+    display_channel.h, display_channel.cpp and
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, and the jump's
+    opcode, 1, in bits 31:29, in display_channel.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,

@@ -20,15 +20,18 @@ constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers or memory, or
                                            // cannot proceed, a falcon does not read as stopped after `stop_falcon`
                                            // resets it, the display engine reaches push buffers, semaphores and
                                            // notifiers only in video memory, the display's instance memory lacks a
-                                           // binding it is asked to undo, or a binding of a context DMA to a channel
+                                           // binding it is asked to undo, a binding of a context DMA to a channel
                                            // repeats one, comes before that memory is set up or comes while the driver
-                                           // has no client
+                                           // has no client, or a display channel's GET reads past its push buffer's
+                                           // writable end or not a multiple of 4
 constexpr int32_t ERR_NO_MEMORY      = -6; // allocating system memory for the card to reach or for the driver's copies
                                            // and records failed, video memory has no free range for an allocation,
                                            // BAR1's window has no free run for a mapping, or the display's hash table
                                            // has no free entry for a binding
-constexpr int32_t ERR_QUEUE_FULL     = -7; // the command queue has no room for a message, as the read pointer `send`
-                                           // reads for the firmware has not moved far enough or lies past the ring
+constexpr int32_t ERR_QUEUE_FULL     = -7; // the GSP's command queue has no room for a message, as the read pointer
+                                           // `send` reads for the firmware has not moved far enough or lies past the
+                                           // ring, or a display channel's push buffer has no room for a method, as GET
+                                           // has not moved far enough
 constexpr int32_t ERR_TOO_LARGE      = -8; // a payload exceeds the most bytes a message to the GSP's firmware carries,
                                            // or the room a caller of `receive` gives the message's payload
 constexpr int32_t ERR_NOT_LINKED     = -9; // the status queue is not linked, as no call to `link_status_queue` has
@@ -47,8 +50,10 @@ constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a fail
 constexpr int32_t ERR_INVALID_ARG    = -13; // a video memory allocation's size is 0 or overflows when rounded to whole
                                             // pages, its alignment is 0 or not a power of two, a range to map through
                                             // BAR1 is not a whole allocation, is mapped already or ends past what a
-                                            // page table entry can name, or a context DMA's binding names handle 0, no
-                                            // display channel or memory its record cannot name
+                                            // page table entry can name, a context DMA's binding names handle 0, no
+                                            // display channel or memory its record cannot name, or a display channel's
+                                            // method has a register offset no header names, no values or more than
+                                            // `METHOD_VALUES_MAX`
 
 // Nanoseconds per millisecond and per microsecond, for the sequencer's waits, the times the driver logs and mode times
 constexpr uint64_t NS_PER_MS = 1000000;
