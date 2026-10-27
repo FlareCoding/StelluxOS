@@ -38,7 +38,9 @@ constexpr int32_t ERR_QUEUE_EMPTY    = -10; // the status queue shows no message
 constexpr int32_t ERR_BAD_MESSAGE    = -11; // a message from the GSP's firmware fails a check of its element count, the
                                             // length its RPC header gives, its checksum, sequence number or size, or a
                                             // CPU sequencer, video memory layout or kernel interrupt table it carries,
-                                            // or carries a display report that exceeds the chip table's display limits
+                                            // or carries a display report that exceeds the chip table's display limits,
+                                            // leaves the display engine no head or names several heads for a window
+                                            // that may serve only one
 constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a failure through a ready message's or reply's
                                             // result or a control's status, or does not take the driver's VGX version,
                                             // as a reply shows by a private result other than 0 or another version

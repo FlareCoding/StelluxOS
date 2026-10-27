@@ -14,7 +14,11 @@ constexpr uint32_t PMC_BOOT_0 = 0x0;
 // chip to have, NV_MAX_INTR_LEAVES. No chip table entry exceeds it, so one top-level register serves every leaf
 constexpr uint8_t INTERRUPT_LEAVES_MAX = 16;
 
-// The most windows (the units of the GPU that each scan one image out to a monitor) NVIDIA's GPUs number,
+// The most heads (the units of the GPU that each generate one monitor's timing) NVIDIA's driver allows on one GPU,
+// NV_MAX_HEADS
+constexpr uint8_t DISPLAY_HEADS_MAX = 4;
+
+// The most windows (the units of the GPU that each scan one image out onto a head) NVIDIA's GPUs number,
 // NV_PDISP_CHN_NUM_WIN__SIZE_1, one bit each in the 32-bit mask the firmware reports them in
 constexpr uint8_t DISPLAY_WINDOWS_MAX = 32;
 
@@ -57,9 +61,12 @@ struct chip_gsp_reservation {
  * The chip's display engine, the part of the GPU that reads images from memory
  * and sends them to monitors, as far as the driver depends on it. Its channels
  * are the queues of commands it reads from memory. The firmware reports which
- * of the chip's windows this GPU has, as `read_present_windows` reads them.
+ * of the chip's windows this GPU has, as `read_present_windows` reads them,
+ * and which of its heads the engine can use and the heads each window may
+ * serve, as `read_display_heads` reads them.
  */
 struct chip_display {
+    uint8_t  head_count;    // the chip's heads, numbered from 0, at most `DISPLAY_HEADS_MAX`
     uint8_t  window_count;  // the chip's windows, numbered from 0, at most `DISPLAY_WINDOWS_MAX`
     uint32_t display_class; // NVIDIA's class of the display object, the parent of the display engine's channels
 };

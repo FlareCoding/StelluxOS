@@ -41,7 +41,7 @@ static constexpr uint8_t  CROSSBAR_BIT                      = 0x08;
 static constexpr rm::handle      TEST_CLIENT  = 0xC1D0000B;
 static constexpr rm::handle      TEST_DEVICE  = 0x00050003;
 static constexpr rm::handle      FIRST_HANDLE = 0x00050007;
-static constexpr chip_display    TEST_DISPLAY = {.window_count = 8, .display_class = 0xC67F};
+static constexpr chip_display    TEST_DISPLAY = {.head_count = 4, .window_count = 8, .display_class = 0xC67F};
 static constexpr display_objects UNTOUCHED    = {
     .display_common  = 0xDEAD0001,
     .bandwidth_check = 0xDEAD0002,

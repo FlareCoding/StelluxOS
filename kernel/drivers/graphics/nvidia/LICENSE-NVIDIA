@@ -1615,12 +1615,18 @@ src/nvidia/inc/kernel/gpu/gpu_acpi_data.h
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073system.h
     the most displays NVIDIA's driver maps to ACPI IDs, which sizes three of
     the ACPI method data's arrays, in boot_messages.cpp and
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the command
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp, the command
     NV0073_CTRL_CMD_SYSTEM_GET_CAPS_V2 (a control of display common), the
     layout of its parameters with NV0073_CTRL_SYSTEM_CAPS_TBL_SIZE and its
     NV0073_CTRL_SYSTEM_CAPS_CROSS_BAR_SUPPORTED bit, in rm.h,
     display_objects.h, display_objects.cpp and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, and the command
+    NV0073_CTRL_CMD_SYSTEM_GET_NUM_HEADS (a control of display common), the
+    layout of its parameters and
+    NV0073_CTRL_SYSTEM_GET_NUM_HEADS_FLAGS_CLIENT_DISABLE, the flags that count
+    every usable head, not only those a client has in use, in rm.h,
+    display_heads.h, display_heads.cpp and
+    kernel/tests/graphics/nvidia_display_heads.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/nvstatus.h
@@ -1777,7 +1783,9 @@ src/common/sdk/nvidia/inc/class/cl2080.h
 
 src/common/sdk/nvidia/inc/nvlimits.h
     the length of the process name in a client's allocation parameters, 100, in
-    rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    NV_MAX_HEADS, the most heads NVIDIA's driver allows on one GPU, 4, in
+    chip.h, chip.cpp and kernel/tests/graphics/nvidia_display_heads.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc.h
@@ -1835,13 +1843,27 @@ src/nvidia-modeset/src/nvkms-rm.c
     display common under its device with no parameters and asks for its
     capabilities with the table zeroed, in display_objects.h,
     display_objects.cpp and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp, and that the
-    display engine reaches push buffers, semaphores and notifiers only in video
-    memory when the display reports
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, that the display
+    engine reaches push buffers, semaphores and notifiers only in video memory
+    when the display reports
     NV5070_CTRL_SYSTEM_CAPS_BUG_644815_DNISO_VIDMEM_ONLY, so that the
     modesetting module places them there, in rm.h, display_objects.h,
     display_objects.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, that the modesetting
+    module takes a window 0 mask of
+    NV0073_CTRL_SPECIFIC_FLEXIBLE_HEAD_WINDOW_ASSIGNMENT to mean each window may
+    serve any head, in rm.h, display_heads.h, display_heads.cpp and
+    kernel/tests/graphics/nvidia_display_heads.test.cpp, and that it asks
+    display common for its count of heads, its head mask and each window's heads
+    in that order with the parameters zeroed, refuses a count of 0 and goes on
+    with any other report, takes the head mask as the heads with windows when
+    display common refuses the window request as not supported, gives windows 2N
+    and 2N + 1 head N in that flexible mapping and otherwise the head a window's
+    mask names, gives a window whose mask is 0 no head, keeps the heads the mask
+    names that some window serves, from head 0 up to the first one missing and
+    no more than the count, and takes from each window a head past those, in
+    display_heads.h, display_heads.cpp and
+    kernel/tests/graphics/nvidia_display_heads.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2524,6 +2546,16 @@ src/nvidia-modeset/src/nvkms-evo3.c
     its device with no parameters, in display_objects.h, display_objects.cpp
     and kernel/tests/graphics/nvidia_display_objects.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
+    the commands NV0073_CTRL_CMD_SPECIFIC_GET_ALL_HEAD_MASK and
+    NV0073_CTRL_CMD_SPECIFIC_GET_VALID_HEAD_WINDOW_ASSIGNMENT (controls of
+    display common), the layouts of their parameters,
+    NV0073_CTRL_SPECIFIC_MAX_WINDOWS, the windows the second gives a mask for,
+    32, and NV0073_CTRL_SPECIFIC_FLEXIBLE_HEAD_WINDOW_ASSIGNMENT, 0xFF, in rm.h,
+    display_heads.h, display_heads.cpp and
+    kernel/tests/graphics/nvidia_display_heads.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,
