@@ -260,6 +260,29 @@ static_assert(sizeof(supported_displays_params) == 12, "NVIDIA's layout of GET_S
 static_assert(sizeof(connected_displays_params) == 16, "NVIDIA's layout of GET_CONNECT_STATE's parameters");
 static_assert(sizeof(display_kind_params) == 12, "NVIDIA's layout of GET_TYPE's parameters");
 
+// NVIDIA's NV0073_CTRL_CMD_SPECIFIC_OR_GET_INFO, the control to display common that gives facts about a display id's
+// output resource (the display engine's unit driving it) and whether the firmware allocates the display id dynamically
+constexpr uint32_t CONTROL_GET_OUTPUT_RESOURCE = 0x73028B;
+
+// The parameters of `CONTROL_GET_OUTPUT_RESOURCE`, whose reply fills every field after `display_id`
+struct output_resource_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t display_id;      // a single bit
+    uint32_t index;
+    uint32_t type;
+    uint32_t protocol;
+    uint32_t dither_type;
+    uint32_t dither_algorithm;
+    uint32_t location;
+    uint32_t root_port_id;
+    uint32_t dcb_index;
+    uint64_t vbios_address;
+    uint8_t  is_lit_by_vbios;
+    uint8_t  is_dynamic;      // NVIDIA's bIsDispDynamic, nonzero for a display id the firmware allocates dynamically
+};
+
+static_assert(sizeof(output_resource_params) == 56, "NVIDIA's layout of OR_GET_INFO's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H

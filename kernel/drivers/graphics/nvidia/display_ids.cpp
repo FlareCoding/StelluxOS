@@ -66,6 +66,38 @@ static int32_t read_is_digital(firmware& fw, rm::handle display_common, uint32_t
     return OK;
 }
 
+// Sets `is_static` only for a display id the firmware reports static, and logs and returns `OK` for one it reports
+// dynamic or whose dynamic flag it refuses
+static int32_t read_is_static(firmware& fw, rm::handle display_common, uint32_t display_id, bool& is_static) {
+    rm::output_resource_params params = {};
+    params.display_id = display_id;
+    int32_t rc = fw.control(display_common, rm::CONTROL_GET_OUTPUT_RESOURCE, &params, sizeof(params));
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display id 0x%X is left out of the static ones, as display common refused to say whether it is "
+            "dynamic",
+            display_id
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (params.is_dynamic != 0) {
+        log::info(
+            "nvidia: display id 0x%X is left out of the static ones, as display common reports it dynamic",
+            display_id
+        );
+        return OK;
+    }
+
+    is_static = true;
+
+    return OK;
+}
+
 int32_t read_display_ids(firmware& fw, rm::handle display_common, display_ids& out) {
     rm::supported_displays_params supported = {};
     int32_t rc = fw.control(display_common, rm::CONTROL_GET_SUPPORTED_DISPLAYS, &supported, sizeof(supported));
@@ -92,8 +124,19 @@ int32_t read_display_ids(firmware& fw, rm::handle display_common, display_ids& o
             return rc;
         }
 
-        if (is_digital) {
-            ids.digital |= display_id;
+        if (!is_digital) {
+            continue;
+        }
+
+        ids.digital |= display_id;
+        bool is_static = false;
+        rc = read_is_static(fw, display_common, display_id, is_static);
+        if (rc != OK) {
+            return rc;
+        }
+
+        if (is_static) {
+            ids.static_digital |= display_id;
         }
     }
 

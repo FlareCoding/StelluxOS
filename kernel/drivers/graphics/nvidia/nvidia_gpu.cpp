@@ -950,10 +950,12 @@ int32_t nvidia_gpu_driver::attach() {
         }
 
         log::info(
-            "nvidia: display common reports display ids 0x%X supported, 0x%X of them connected and 0x%X digital",
+            "nvidia: display common reports display ids 0x%X supported, 0x%X of them connected, 0x%X digital and 0x%X "
+            "of the digital ones static",
             ids.supported,
             ids.connected,
-            ids.digital
+            ids.digital,
+            ids.static_digital
         );
     } else {
         log::info(
