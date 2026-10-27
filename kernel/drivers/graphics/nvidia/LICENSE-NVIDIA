@@ -1896,9 +1896,17 @@ src/nvidia-modeset/src/nvkms-rm.c
     connected when display common still refuses it, takes the connected mask as
     returned, takes the kind of a failed request as unknown, keeps a connector
     for a display id whatever its kind and tells whether the display id drives
-    DisplayPort from the protocol display common reports for it, and that a
-    dynamic display id names a device behind a connector with a static one, in
-    display_ids.h
+    DisplayPort from the protocol display common reports for it, that a dynamic
+    display id names a device behind a connector with a static one, in
+    display_ids.h, that it asks display common for a display id's digital facts
+    with the parameters zeroed but for the display id, in display_outputs.h,
+    display_outputs.cpp and
+    kernel/tests/graphics/nvidia_display_outputs.test.cpp, and that it asks for
+    them only of a display id a serial output resource
+    (NV0073_CTRL_SPECIFIC_OR_TYPE_SOR) drives, tells whether the display id
+    drives DisplayPort from the protocol display common reports for that
+    resource and keeps the connector of a display id whose request is refused,
+    taking its flags as 0, in display_outputs.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2372,9 +2380,11 @@ src/common/displayport/src/dp_connectorimpl.cpp
     correction, with it left off for every stream not compressed unless the code
     calling the library sets a preferred configuration with it, in
     displayport.h, displayport.cpp and
-    kernel/tests/graphics/nvidia_displayport.test.cpp, and enhanced framing run
-    when the monitor takes it, a mode without a pixel clock taken as carried and
-    4 lanes taken for a monitor reporting 0, in displayport.h
+    kernel/tests/graphics/nvidia_displayport.test.cpp, enhanced framing run when
+    the monitor takes it, a mode without a pixel clock taken as carried and 4
+    lanes taken for a monitor reporting 0, in displayport.h, and a connector
+    asking for its display id's digital facts as it is made and going on when
+    they are refused, in display_outputs.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_configcaps.cpp
@@ -2599,12 +2609,14 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     of its parameters and the display kinds
     NV0073_CTRL_SPECIFIC_DISPLAY_TYPE_UNKNOWN (0), CRT (1), TV (3) and DFP (2,
     the kind of a digital display id), in rm.h, display_ids.h, display_ids.cpp
-    and kernel/tests/graphics/nvidia_display_ids.test.cpp, and the command
+    and kernel/tests/graphics/nvidia_display_ids.test.cpp, the command
     NV0073_CTRL_CMD_SPECIFIC_OR_GET_INFO (a control of display common giving
     facts about a display id's output resource), the layout of its parameters
     and bIsDispDynamic (set for a display id allocated dynamically), in rm.h,
     display_ids.h, display_ids.cpp and
-    kernel/tests/graphics/nvidia_display_ids.test.cpp
+    kernel/tests/graphics/nvidia_display_ids.test.cpp, and its type field's
+    NV0073_CTRL_SPECIFIC_OR_TYPE_SOR (a serial output resource) and its protocol
+    field, in display_outputs.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-headsurface.c
@@ -2669,6 +2681,23 @@ src/common/sdk/nvidia/inc/class/cl917d.h
     kernel/tests/graphics/nvidia_display_channel.test.cpp, and the jump's
     opcode, 1, in bits 31:29, in display_channel.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dfp.h
+    the command NV0073_CTRL_CMD_DFP_GET_INFO (a control of display common), the
+    layout of its parameters, that the firmware refuses it for a display id not
+    of the digital kind, and its flags' SIGNAL, LANE, LIMIT, DP_LINK_CONSTRAINT
+    and DP_LINK_BW fields with their values, in rm.h, display_outputs.h,
+    display_outputs.cpp and
+    kernel/tests/graphics/nvidia_display_outputs.test.cpp, and its flags'
+    HDMI_CAPABLE, LINK and DP_PHY_REPEATER_COUNT fields with a value each, in
+    kernel/tests/graphics/nvidia_display_outputs.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/src/dp_evoadapter.cpp
+    that the DisplayPort library asks display common for a display id's digital
+    facts and returns without them when the request is refused, in
+    display_outputs.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,

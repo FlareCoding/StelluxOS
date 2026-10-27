@@ -283,6 +283,42 @@ struct output_resource_params {
 
 static_assert(sizeof(output_resource_params) == 56, "NVIDIA's layout of OR_GET_INFO's parameters");
 
+// NVIDIA's NV0073_CTRL_CMD_DFP_GET_INFO, the control to display common that gives a digital display id's facts, which
+// the firmware refuses for a display id of another kind
+constexpr uint32_t CONTROL_GET_DIGITAL_DISPLAY_FACTS = 0x731140;
+
+// The parameters of `CONTROL_GET_DIGITAL_DISPLAY_FACTS`, whose reply fills `flags` and `flags2`
+struct digital_display_facts_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t display_id;      // a single bit
+    uint32_t flags;           // NVIDIA's DFP flags, holding the fields below
+    uint32_t flags2;
+};
+
+// The fields of `digital_display_facts_params::flags` the driver reads, NVIDIA's NV0073_CTRL_DFP_FLAGS_*. SIGNAL, bits
+// 2 to 0, is 3 for DisplayPort, and 0 for TMDS, 1 LVDS, 2 SDI, 4 DSI or 5 writeback
+constexpr uint32_t DIGITAL_SIGNAL_SHIFT       = 0;
+constexpr uint32_t DIGITAL_SIGNAL_MASK        = 0x7;
+constexpr uint32_t DIGITAL_SIGNAL_DISPLAYPORT = 3;
+
+// LANE, bits 5 to 3, the lanes the board supports for a DisplayPort signal: 0 none, 1 one, 2 two, 3 four or 4 eight
+constexpr uint32_t DIGITAL_LANES_SHIFT = 3;
+constexpr uint32_t DIGITAL_LANES_MASK  = 0x7;
+
+// LIMIT, bit 6, set when the display id may only show modes of a 60 Hz refresh rate
+constexpr uint32_t DIGITAL_LIMITED_TO_60_HZ = 1u << 6;
+
+// DP_LINK_CONSTRAINT, bit 16, set when the display id's DisplayPort link must be trained at RBR (the reduced bit rate,
+// 1.62 Gbps) whenever possible
+constexpr uint32_t DIGITAL_PREFERS_RBR = 1u << 16;
+
+// DP_LINK_BW, bits 19 to 17, the highest link rate of a DisplayPort display id: 1 for 1.62 Gbps, 2 for 2.70, 3 for
+// 5.40 or 4 for 8.10
+constexpr uint32_t DIGITAL_LINK_RATE_SHIFT = 17;
+constexpr uint32_t DIGITAL_LINK_RATE_MASK  = 0x7;
+
+static_assert(sizeof(digital_display_facts_params) == 16, "NVIDIA's layout of DFP_GET_INFO's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H

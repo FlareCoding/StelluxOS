@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_ids.h"
 #include "drivers/graphics/nvidia/display_info.h"
+#include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
@@ -957,10 +958,31 @@ int32_t nvidia_gpu_driver::attach() {
             ids.digital,
             ids.static_digital
         );
+
+        nvidia::display_outputs outputs = {};
+        rc = nvidia::read_display_outputs(m_gsp, m_display_objects.display_common, ids, outputs);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+
+        log::info("nvidia: the static digital display ids give DisplayPort outputs, %u of them", outputs.count);
+        for (uint8_t index = 0; index < outputs.count; index++) {
+            const nvidia::display_output& output = outputs.outputs[index];
+            log::info(
+                "nvidia: output %u is display id 0x%X, %s, %s and %s, with lane code %u and link rate code %u",
+                index,
+                output.display_id,
+                output.is_connected ? "connected" : "not connected",
+                output.is_limited_to_60_hz ? "limited to 60 Hz" : "not limited to 60 Hz",
+                output.prefers_rbr ? "preferring RBR" : "not preferring RBR",
+                output.lanes_code,
+                output.link_rate_code
+            );
+        }
     } else {
         log::info(
             "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory, "
-            "objects, capabilities, heads and display ids"
+            "objects, capabilities, heads, display ids and outputs"
         );
     }
 
