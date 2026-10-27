@@ -37,6 +37,9 @@ static constexpr uint32_t NVIDIA_GET_TYPE                = 0x730240;
 static constexpr size_t   NVIDIA_GET_TYPE_BYTES          = 12;
 static constexpr uint32_t DISPLAY_ID_OFFSET              = 4;
 static constexpr uint32_t KIND_OFFSET                    = 8;
+static constexpr uint32_t NVIDIA_OR_GET_INFO             = 0x73028B;
+static constexpr size_t   NVIDIA_OR_GET_INFO_BYTES       = 56;
+static constexpr uint32_t IS_DYNAMIC_OFFSET              = 49;
 
 // NVIDIA's display kinds, from ctrl0073specific.h
 static constexpr uint32_t KIND_UNKNOWN = 0;
@@ -52,7 +55,7 @@ static constexpr rm::handle TEST_DISPLAY_COMMON = 0x0005000B;
 class ids_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 8;
-    static constexpr uint32_t MAX_BYTES = 16;
+    static constexpr uint32_t MAX_BYTES = 56;
 
     struct call {
         rm::handle object;
@@ -74,6 +77,9 @@ public:
     int32_t  connected_result = OK; // the next connect reply's result, the replies after it giving `OK`
     uint32_t kind_failed_ids = 0; // display ids whose kind request returns `kind_result`
     int32_t  kind_result = ERR_FIRMWARE;
+    uint8_t  dynamic_flags[DISPLAY_IDS_MAX] = {}; // entry i is the dynamic flag display id 1 << i's reply gives
+    uint32_t resource_failed_ids = 0; // display ids whose dynamic flag request returns `resource_result`
+    int32_t  resource_result = ERR_FIRMWARE;
     bool     fills_replies = false; // every byte of a reply its fields do not give reads 0xFF
 
     int32_t control(rm::handle object, uint32_t command, void* params, size_t size) override {
@@ -92,7 +98,8 @@ public:
             return reply_connected(bytes, size);
         }
 
-        if (command != NVIDIA_GET_TYPE) {
+        bool is_resource = command == NVIDIA_OR_GET_INFO && size == NVIDIA_OR_GET_INFO_BYTES;
+        if (command != NVIDIA_GET_TYPE && !is_resource) {
             stray_count++;
             return OK;
         }
@@ -103,6 +110,10 @@ public:
         if (!is_single_bit) {
             stray_count++;
             return ERR_FIRMWARE;
+        }
+
+        if (is_resource) {
+            return reply_resource(bytes, size, display_id);
         }
 
         uint32_t kind = kinds[__builtin_ctz(display_id)];
@@ -164,6 +175,20 @@ private:
         return OK;
     }
 
+    int32_t reply_resource(uint8_t* bytes, size_t size, uint32_t display_id) const {
+        if ((resource_failed_ids & display_id) != 0) {
+            return resource_result;
+        }
+
+        if (fills_replies) {
+            string::memset(bytes, 0xFF, size);
+        }
+
+        bytes[IS_DYNAMIC_OFFSET] = dynamic_flags[__builtin_ctz(display_id)];
+
+        return OK;
+    }
+
     int32_t reply_connected(uint8_t* bytes, size_t size) {
         int32_t rc = reply(bytes, size, CONNECT_MASK_OFFSET, connected_ids, connected_result);
         connected_result = OK;
@@ -179,7 +204,12 @@ private:
 };
 
 // Display ids each `out` holds before a call, so a test sees whether the call wrote it
-static constexpr display_ids UNTOUCHED = {.supported = 0xEEEEEEEE, .connected = 0xEEEEEEEE, .digital = 0xEEEEEEEE};
+static constexpr display_ids UNTOUCHED = {
+    .supported = 0xEEEEEEEE,
+    .connected = 0xEEEEEEEE,
+    .digital = 0xEEEEEEEE,
+    .static_digital = 0xEEEEEEEE,
+};
 
 // A report from display common that the read is expected to refuse, with the line logged for it
 struct refused_report {
@@ -228,6 +258,7 @@ static void expect_untouched(const display_ids& out) {
     EXPECT_EQ(out.supported, UNTOUCHED.supported);
     EXPECT_EQ(out.connected, UNTOUCHED.connected);
     EXPECT_EQ(out.digital, UNTOUCHED.digital);
+    EXPECT_EQ(out.static_digital, UNTOUCHED.static_digital);
 }
 
 // Expects a recorded call to send `command` to display common with `size` bytes of parameters holding exactly the
@@ -244,8 +275,8 @@ static void expect_request(const ids_firmware::call& sent, uint32_t command, siz
     }
 }
 
-// Requests for the supported display ids, then which are connected, then each supported one's kind in ascending order
-// are in NVIDIA's layouts and zeroed but for their display ids, and none follows a successful reply naming a retry time
+// Requests for the supported and connected display ids, then each supported one's kind and a digital one's dynamic flag
+// after it, in ascending order, are in NVIDIA's layouts, zeroed but for the display ids, none repeated for a retry time
 TEST(nvidia_display_ids, requests_go_to_display_common_in_order_and_nvidias_layouts) {
     ids_firmware earlier;
     earlier.supported_ids = 0x5;
@@ -268,13 +299,14 @@ TEST(nvidia_display_ids, requests_go_to_display_common_in_order_and_nvidias_layo
     // likely carry an earlier reply, such as the 1 ms retry time only the earlier read's first connect reply names
     display_ids earlier_ids = {};
     ASSERT_EQ(read_display_ids(earlier, TEST_DISPLAY_COMMON, earlier_ids), OK);
-    EXPECT_EQ(earlier.call_count, 4u);
+    EXPECT_EQ(earlier.call_count, 5u);
 
     display_ids ids = {};
     ASSERT_EQ(read_display_ids(fw, TEST_DISPLAY_COMMON, ids), OK);
 
-    ASSERT_EQ(fw.call_count, 4u);
+    ASSERT_EQ(fw.call_count, 5u);
     EXPECT_EQ(fw.stray_count, 0u);
+    EXPECT_EQ(ids.static_digital, 0x1u);
 
     const uint32_t none[] = {0, 0, 0};
     const uint32_t supported_ids[] = {0, 0, 0x5, 0};
@@ -283,17 +315,19 @@ TEST(nvidia_display_ids, requests_go_to_display_common_in_order_and_nvidias_layo
 
     const uint32_t first_id[] = {0, 0x1, 0};
     const uint32_t third_id[] = {0, 0x4, 0};
+    const uint32_t first_resource[NVIDIA_OR_GET_INFO_BYTES / sizeof(uint32_t)] = {0, 0x1};
     expect_request(fw.calls[2], NVIDIA_GET_TYPE, NVIDIA_GET_TYPE_BYTES, first_id);
-    expect_request(fw.calls[3], NVIDIA_GET_TYPE, NVIDIA_GET_TYPE_BYTES, third_id);
+    expect_request(fw.calls[3], NVIDIA_OR_GET_INFO, NVIDIA_OR_GET_INFO_BYTES, first_resource);
+    expect_request(fw.calls[4], NVIDIA_GET_TYPE, NVIDIA_GET_TYPE_BYTES, third_id);
 }
 
 // The supported and connected display ids are kept as display common reports them, and with every kind reported
-// digital, the digital ones are the supported ones, up to bit 31
+// digital and no display id dynamic, the digital and static ones are the supported ones, up to bit 31
 TEST(nvidia_display_ids, display_ids_are_kept_as_reported) {
     const display_ids reports[] = {
-        {.supported = 0x80000F01, .connected = 0x00000901, .digital = 0x80000F01},
-        {.supported = 0x0000FF00, .connected = 0x00000000, .digital = 0x0000FF00},
-        {.supported = 0xFFFFFFFF, .connected = 0xFFFFFFFF, .digital = 0xFFFFFFFF},
+        {.supported = 0x80000F01, .connected = 0x00000901, .digital = 0x80000F01, .static_digital = 0x80000F01},
+        {.supported = 0x0000FF00, .connected = 0x00000000, .digital = 0x0000FF00, .static_digital = 0x0000FF00},
+        {.supported = 0xFFFFFFFF, .connected = 0xFFFFFFFF, .digital = 0xFFFFFFFF, .static_digital = 0xFFFFFFFF},
     };
 
     for (const display_ids& report : reports) {
@@ -311,7 +345,8 @@ TEST(nvidia_display_ids, display_ids_are_kept_as_reported) {
         EXPECT_EQ(ids.supported, report.supported);
         EXPECT_EQ(ids.connected, report.connected);
         EXPECT_EQ(ids.digital, report.digital);
-        EXPECT_EQ(fw.call_count, 2u + __builtin_popcount(report.supported));
+        EXPECT_EQ(ids.static_digital, report.static_digital);
+        EXPECT_EQ(fw.call_count, 2u + 2u * __builtin_popcount(report.supported));
     }
 }
 
@@ -334,7 +369,8 @@ TEST(nvidia_display_ids, digital_ids_are_the_supported_ones_reported_digital) {
     EXPECT_EQ(ids.supported, 0x80000F01u);
     EXPECT_EQ(ids.connected, 0x00000901u);
     EXPECT_EQ(ids.digital, 0x80000B00u);
-    EXPECT_EQ(fw.call_count, 2u + 6u);
+    EXPECT_EQ(ids.static_digital, 0x80000B00u);
+    EXPECT_EQ(fw.call_count, 2u + 6u + 4u);
 }
 
 // A display id whose kind is not digital is logged and left out of the digital ones, whatever kind display common
@@ -385,7 +421,7 @@ TEST(nvidia_display_ids, refused_kind_leaves_only_that_display_id_out_of_the_dig
 
     EXPECT_EQ(ids.digital, 0x5u);
     EXPECT_EQ(ids.connected, 0x7u);
-    EXPECT_EQ(fw.call_count, 5u);
+    EXPECT_EQ(fw.call_count, 7u);
     EXPECT_TRUE(ids_log_contains(
         "nvidia: display id 0x2 is left out of the digital ones, as display common refused its kind"
     ));
@@ -408,7 +444,77 @@ TEST(nvidia_display_ids, other_errors_of_a_kind_request_end_the_read) {
 
         EXPECT_EQ(read_display_ids(fw, TEST_DISPLAY_COMMON, ids), error);
 
-        EXPECT_EQ(fw.call_count, 4u);
+        EXPECT_EQ(fw.call_count, 5u);
+        expect_untouched(ids);
+    }
+}
+
+// A digital display id reported dynamic, with a flag of 1 or of 0x80, is logged and left out of the static ones, the
+// others staying static
+TEST(nvidia_display_ids, dynamic_display_ids_are_logged_and_left_out_of_the_static_ones) {
+    ids_firmware fw;
+    display_ids ids = UNTOUCHED;
+    fw.supported_ids = 0x1F;
+    fw.dynamic_flags[0] = 1;
+    fw.dynamic_flags[2] = 0x80;
+    for (uint32_t bit = 0; bit < 5; bit++) {
+        fw.kinds[bit] = KIND_DFP;
+    }
+
+    ASSERT_EQ(read_logged(fw, ids), OK);
+
+    EXPECT_EQ(ids.digital, 0x1Fu);
+    EXPECT_EQ(ids.static_digital, 0x1Au);
+    EXPECT_EQ(fw.call_count, 2u + 5u + 5u);
+    EXPECT_TRUE(ids_log_contains(
+        "nvidia: display id 0x1 is left out of the static ones, as display common reports it dynamic"
+    ));
+    EXPECT_TRUE(ids_log_contains(
+        "nvidia: display id 0x4 is left out of the static ones, as display common reports it dynamic"
+    ));
+}
+
+// A display id whose dynamic flag the firmware refuses is logged and left out of the static ones, staying digital,
+// and the read goes on with the display ids after it
+TEST(nvidia_display_ids, refused_dynamic_flag_leaves_only_that_display_id_out_of_the_static_ones) {
+    ids_firmware fw;
+    display_ids ids = UNTOUCHED;
+    fw.supported_ids = 0x7;
+    fw.resource_failed_ids = 0x2;
+
+    fw.kinds[0] = KIND_DFP;
+    fw.kinds[1] = KIND_DFP;
+    fw.kinds[2] = KIND_DFP;
+
+    ASSERT_EQ(read_logged(fw, ids), OK);
+
+    EXPECT_EQ(ids.digital, 0x7u);
+    EXPECT_EQ(ids.static_digital, 0x5u);
+    EXPECT_EQ(fw.call_count, 8u);
+    EXPECT_TRUE(ids_log_contains(
+        "nvidia: display id 0x2 is left out of the static ones, as display common refused to say whether it is "
+        "dynamic"
+    ));
+}
+
+// Any other error of a dynamic flag request, even after a static display id, ends the read with that error, no later
+// request sent and `out` left as it was
+TEST(nvidia_display_ids, other_errors_of_a_dynamic_flag_request_end_the_read) {
+    const int32_t errors[] = {ERR_TIMEOUT, ERR_QUEUE_FULL, ERR_BAD_MESSAGE, ERR_NO_MEMORY, ERR_TOO_LARGE};
+    for (int32_t error : errors) {
+        ids_firmware fw;
+        display_ids ids = UNTOUCHED;
+        fw.supported_ids = 0x7;
+        fw.resource_failed_ids = 0x2;
+        fw.resource_result = error;
+
+        fw.kinds[0] = KIND_DFP;
+        fw.kinds[1] = KIND_DFP;
+        fw.kinds[2] = KIND_DFP;
+
+        EXPECT_EQ(read_display_ids(fw, TEST_DISPLAY_COMMON, ids), error);
+
+        EXPECT_EQ(fw.call_count, 6u);
         expect_untouched(ids);
     }
 }
@@ -492,7 +598,9 @@ TEST(nvidia_display_ids, no_supported_display_id_gives_none) {
     ASSERT_EQ(fw.call_count, 2u);
     const uint32_t no_display_id[] = {0, 0, 0, 0};
     expect_request(fw.calls[1], NVIDIA_GET_CONNECT_STATE, NVIDIA_GET_CONNECT_STATE_BYTES, no_display_id);
+
     EXPECT_EQ(ids.supported, 0u);
     EXPECT_EQ(ids.connected, 0u);
     EXPECT_EQ(ids.digital, 0u);
+    EXPECT_EQ(ids.static_digital, 0u);
 }
