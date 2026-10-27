@@ -2407,12 +2407,17 @@ src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
     the bindings of a context DMA one record, allocated from its heap of the
     memory after the hash table in 32-byte slots past a first 16 bytes it
     reserves as its NULL instance, counts the bindings sharing each record,
-    refuses a second binding of a context DMA to a channel before reserving a
-    record or seeking an entry, writes a binding's record before its entry,
-    writes an entry as 8 bytes (the context DMA's handle, then the word naming
-    the binding's client, record and channel), takes the first free entry from
-    the binding's hash on, wrapping past the last, and fails a binding when no
-    entry is free, in instance_memory.h, instance_memory.cpp and
+    frees a record once the last of them is undone, writing into it only through
+    instmemDecommitContextDma, refuses a second binding of a context DMA to a
+    channel before reserving a record or seeking an entry, writes a binding's
+    record before its entry, writes an entry as 8 bytes (the context DMA's
+    handle, then the word naming the binding's client, record and channel),
+    takes the first free entry from the binding's hash on, wrapping past the
+    last, fails a binding when no entry is free, seeks a held binding over the
+    whole table, never stopping at a free entry, refuses to undo a binding it
+    does not hold and clears an undone binding's entry to zeros, dropping the
+    binding from its copy and its count even when writing the entry fails, in
+    instance_memory.h, instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -2432,6 +2437,8 @@ src/nvidia/src/kernel/gpu/disp/inst_mem/arch/v03/disp_inst_mem_0300.c
 src/nvidia/generated/g_disp_inst_mem_nvoc.h
     DISP_INST_MEM_ALIGN, the alignment of the display's instance memory,
     0x10000, in instance_memory.h, instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and that
+    instmemDecommitContextDma does nothing, in instance_memory.h and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -2446,9 +2453,10 @@ src/nvidia/generated/g_disp_inst_mem_nvoc.c
 
 src/nvidia/src/libraries/containers/eheap/eheap_old.c
     that NVIDIA's heap, unless asked to grow down, allocates from the bottom of
-    the lowest free block that fits, so a binding takes the lowest free record,
-    in instance_memory.h, instance_memory.cpp and
-    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    the lowest free block that fits and keeps its free blocks in address order
+    when it frees a block, so a context DMA's first binding takes the lowest
+    free record, a freed one included, in instance_memory.h, instance_memory.cpp
+    and kernel/tests/graphics/nvidia_instance_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2015-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_mem_desc_nvoc.h

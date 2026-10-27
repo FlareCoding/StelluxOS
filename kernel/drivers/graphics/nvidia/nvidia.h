@@ -18,10 +18,11 @@ constexpr int32_t ERR_BAD_FIRMWARE   = -3; // a firmware file is missing, unread
 constexpr int32_t ERR_TIMEOUT        = -4; // the card did not finish a step within its deadline
 constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers or memory, or the driver's records, show bring-up
                                            // cannot proceed, a falcon does not read as stopped after `stop_falcon`
-                                           // resets it, a binding of a context DMA to a channel repeats one, comes
-                                           // before the display's instance memory is set up or comes while the driver
-                                           // has no client, or the display engine reaches push buffers, semaphores and
-                                           // notifiers only in video memory
+                                           // resets it, the display engine reaches push buffers, semaphores and
+                                           // notifiers only in video memory, the display's instance memory lacks a
+                                           // binding it is asked to undo, or a binding of a context DMA to a channel
+                                           // repeats one, comes before that memory is set up or comes while the driver
+                                           // has no client
 constexpr int32_t ERR_NO_MEMORY      = -6; // allocating system memory for the card to reach or for the driver's copies
                                            // and records failed, video memory has no free range for an allocation,
                                            // BAR1's window has no free run for a mapping, or the display's hash table

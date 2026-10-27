@@ -306,7 +306,46 @@ int32_t instance_memory::bind(rm::handle object, uint32_t hardware_channel, cons
     return OK;
 }
 
+int32_t instance_memory::unbind(rm::handle object, uint32_t hardware_channel) {
+    uint32_t entry = find_binding(object, hardware_channel);
+    if (entry == INSTANCE_MEMORY_HASH_ENTRIES) {
+        log::error(
+            "nvidia: unbinding context DMA 0x%X from display channel %u refused: the context DMA is not bound to "
+            "that channel",
+            object,
+            hardware_channel
+        );
+        return ERR_BAD_STATE;
+    }
+
+    cpu_mapping mapping = {};
+    int32_t rc = m_memory.map_for_cpu(m_range, mapping);
+    if (rc != OK) {
+        log::error(
+            "nvidia: mapping the display's instance memory for the CPU to unbind context DMA 0x%X from display "
+            "channel %u failed: %d, so the binding is kept",
+            object,
+            hardware_channel,
+            rc
+        );
+        return rc;
+    }
+
+    write_entry(mapping, entry, 0, 0);
+    m_memory.unmap_for_cpu(m_range);
+
+    m_record_users[m_bindings[entry].record]--;
+    m_bindings[entry] = {};
+
+    return OK;
+}
+
 uint32_t instance_memory::find_binding(rm::handle object, uint32_t hardware_channel) const {
+    // Every free entry holds handle 0, which names no object
+    if (object == 0) {
+        return INSTANCE_MEMORY_HASH_ENTRIES;
+    }
+
     for (uint32_t entry = 0; entry < INSTANCE_MEMORY_HASH_ENTRIES; entry++) {
         const binding& held = m_bindings[entry];
         if (held.object == object && held.hardware_channel == hardware_channel) {
