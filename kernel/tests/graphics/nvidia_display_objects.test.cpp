@@ -36,13 +36,20 @@ static constexpr uint8_t  VIDEO_MEMORY_ONLY_BIT             = 0x40;
 static constexpr uint32_t CROSSBAR_OFFSET                   = 1;
 static constexpr uint8_t  CROSSBAR_BIT                      = 0x08;
 
-// The double's client, device and first handle (unlike those `gsp` gives), a display class no chip has so the test sees
-// it comes from the entry, and handles no call gives, filling `out` before a call so the test sees whether it wrote it
+// The double's client, device and first handle (unlike those `gsp` gives), and a display class no chip has so the test
+// sees it comes from the entry, with the core channel class left 0, as the display's objects never use it
 static constexpr rm::handle      TEST_CLIENT  = 0xC1D0000B;
 static constexpr rm::handle      TEST_DEVICE  = 0x00050003;
 static constexpr rm::handle      FIRST_HANDLE = 0x00050007;
-static constexpr chip_display    TEST_DISPLAY = {.head_count = 4, .window_count = 8, .display_class = 0xC67F};
-static constexpr display_objects UNTOUCHED    = {
+static constexpr chip_display    TEST_DISPLAY = {
+    .head_count         = 4,
+    .window_count       = 8,
+    .display_class      = 0xC67F,
+    .core_channel_class = 0,
+};
+
+// Handles no call gives, filling `out` before a call so the test sees whether it wrote it
+static constexpr display_objects UNTOUCHED = {
     .display_common  = 0xDEAD0001,
     .bandwidth_check = 0xDEAD0002,
     .display         = 0xDEAD0003,

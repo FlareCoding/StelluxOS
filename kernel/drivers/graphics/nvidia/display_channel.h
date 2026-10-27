@@ -13,6 +13,10 @@ namespace drivers::nvidia {
 constexpr uint32_t PUSH_BUFFER_BYTES     = 0x1000;
 constexpr uint32_t PUSH_BUFFER_PAD_BYTES = 48;
 
+// PUT and GET, the first two words of a channel's area in BAR0, each a byte offset into the push buffer
+constexpr uint32_t CHANNEL_PUT = 0x0;
+constexpr uint32_t CHANNEL_GET = 0x4;
+
 // The most values one method carries: from offset 0, its header word, its values and a word kept free for a jump back
 // to offset 0 fit before the pad
 constexpr uint32_t METHOD_VALUES_MAX = (PUSH_BUFFER_BYTES - PUSH_BUFFER_PAD_BYTES) / 4 - 2;

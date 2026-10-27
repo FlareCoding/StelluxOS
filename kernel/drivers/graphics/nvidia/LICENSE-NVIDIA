@@ -1407,14 +1407,20 @@ src/common/sdk/nvidia/inc/nvtypes.h
     gsp_info.h, gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, which the display's
     static information's two booleans take, in rm.h and
-    kernel/tests/graphics/nvidia_display_info.test.cpp, and which the two
-    booleans of a display id's output resource facts take, in rm.h and
-    kernel/tests/graphics/nvidia_display_ids.test.cpp, the 32 bits of NVIDIA's
+    kernel/tests/graphics/nvidia_display_info.test.cpp, which the two booleans
+    of a display id's output resource facts take, in rm.h and
+    kernel/tests/graphics/nvidia_display_ids.test.cpp, and which the push buffer
+    control's valid flag takes, in rm.h and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, the 32 bits of NVIDIA's
     handles, which the static configuration's three handles take, in gsp_info.h,
     gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, which
-    `rm::handle` takes, in rm.h, and which a control request's client and object
+    `rm::handle` takes, in rm.h, which a control request's client and object
     take, in gsp.h, gsp.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that NV_TRUE,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and which a display
+    channel's allocation parameters' two context DMA handles take, in
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, the 64 bits of NVIDIA's
+    pointers (NvP64), which those parameters' pControl takes, in rm.h and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, and that NV_TRUE,
     NVIDIA's value for true, is 1, in
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -1839,7 +1845,11 @@ src/common/unix/common/utils/unix_rm_handle.c
 
 src/common/sdk/nvidia/inc/nvos.h
     that a device whose shared client is the client allocating it gets a GPU
-    virtual address space of its own, in rm.h and gpu_objects.h
+    virtual address space of its own, in rm.h and gpu_objects.h, the layout of
+    NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS, a display channel's allocation
+    parameters, in rm.h, core_channel.cpp and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, and that pControl
+    receives a virtual address of the channel's PUT and GET, in rm.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-rm.c
@@ -1901,12 +1911,26 @@ src/nvidia-modeset/src/nvkms-rm.c
     display_ids.h, that it asks display common for a display id's digital facts
     with the parameters zeroed but for the display id, in display_outputs.h,
     display_outputs.cpp and
-    kernel/tests/graphics/nvidia_display_outputs.test.cpp, and that it asks for
-    them only of a display id a serial output resource
+    kernel/tests/graphics/nvidia_display_outputs.test.cpp, that it asks for them
+    only of a display id a serial output resource
     (NV0073_CTRL_SPECIFIC_OR_TYPE_SOR) drives, tells whether the display id
     drives DisplayPort from the protocol display common reports for that
     resource and keeps the connector of a display id whose request is refused,
-    taking its flags as 0, in display_outputs.h
+    taking its flags as 0, in display_outputs.h, that it gives a display
+    channel's push buffer a limit of its size less 1, in rm.h, core_channel.cpp
+    and kernel/tests/graphics/nvidia_core_channel.test.cpp, that it allocates
+    the core channel as instance 0 with PUT and GET at offset 0, in rm.h,
+    core_channel.h, core_channel.cpp and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, that it sets PRESERVE_HW
+    on the display before releasing its core, base and window channels once it
+    has restored the console itself, so that they stay allocated, releasing each
+    even when the flag fails, in core_channel.h, core_channel.cpp, nvidia_gpu.h
+    and kernel/tests/graphics/nvidia_core_channel.test.cpp, and that it first
+    tries write-combined memory with snooping off for a push buffer when the bus
+    allows it, frees a channel's push buffer right after the channel or when the
+    channel's allocation fails, releases no channel whose allocation failed and
+    names the push buffer's context DMA in a channel's allocation, in
+    core_channel.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -1934,9 +1958,12 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM, a control of a subdevice,
     and the layout of its parameters, in rm.h, instance_memory.h,
     instance_memory.cpp and
-    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and that that command
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, that that command
     writes where the display's instance memory lies into the display engine's
-    registers, in rm.h, instance_memory.h and nvidia_gpu.h
+    registers, in rm.h, instance_memory.h and nvidia_gpu.h, and the command
+    NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, a control of a
+    subdevice, and the layout of its parameters, in rm.h, core_channel.cpp and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/intr/engine_idx.h
@@ -2427,7 +2454,9 @@ src/nvidia/src/kernel/gpu/disp/kern_disp.c
 
 src/nvidia/src/kernel/gpu/disp/arch/v03/kern_disp_0300.c
     the rule that NVIDIA's driver allows a window's channel only for a window
-    the static information's windowPresentMask names, in display_info.h
+    the static information's windowPresentMask names, in display_info.h, and
+    that the core channel's area spans 64 KiB, 32 KiB for the assembled state
+    and 32 KiB for the armed state, in core_channel.h
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kern_disp_nvoc.c
@@ -2455,10 +2484,14 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     (NV_PDISP_CHN_NUM_CORE, NV_PDISP_CHN_NUM_WIN, NV_PDISP_CHN_NUM_WINIM and
     NV_PDISP_CHN_NUM_CURS), the windows' and cursors' counts
     (NV_PDISP_CHN_NUM_WIN__SIZE_1 and NV_PDISP_CHN_NUM_WINIM__SIZE_1, 32 each,
-    and NV_PDISP_CHN_NUM_CURS__SIZE_1, 8) and
-    NV_UDISP_FE_CHN_ASSY_BASEADR__SIZE_1, the size of the array the channel
-    numbers index, 81, in instance_memory.h, instance_memory.cpp and
-    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    and NV_PDISP_CHN_NUM_CURS__SIZE_1, 8), NV_UDISP_FE_CHN_ASSY_BASEADR__SIZE_1,
+    the size of the array the channel numbers index, 81, in instance_memory.h,
+    instance_memory.cpp and
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp,
+    NV_UDISP_FE_CHN_ASSY_BASEADR_CORE, where the core channel's area begins, in
+    core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
+    NV_UDISP_FE_CHN_ARMED_BASEADR_CORE, where its armed state begins, in
+    core_channel.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
@@ -2529,7 +2562,10 @@ src/nvidia/src/libraries/containers/eheap/eheap_old.c
 src/nvidia/generated/g_mem_desc_nvoc.h
     ADDR_FBMEM, the address space of video memory, 2, and that an address in it
     is an offset from video memory's start, in rm.h, instance_memory.cpp and
-    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, ADDR_SYSMEM, the
+    address space of system memory, 1, in rm.h, core_channel.cpp and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, and that an address in
+    it is a physical address on the system bus, in rm.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/os/nv_memory_type.h
@@ -2563,17 +2599,43 @@ src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070system.h
 
 src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070base.h
     the layout of NV5070_CTRL_CMD_BASE_PARAMS, the subdevice's index that
-    begins the parameters of the display's controls, in rm.h and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp
+    begins the parameters of the display's controls, in rm.h,
+    kernel/tests/graphics/nvidia_display_objects.test.cpp and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070chnc.h
+    the command NV5070_CTRL_CMD_SET_RMFREE_FLAGS, a control of the display, the
+    layout of its parameters, NV5070_CTRL_SET_RMFREE_FLAGS_PRESERVE_HW, which
+    asks the release to keep the hardware's configuration, and that the flags
+    hold for the next release only, in rm.h, core_channel.h, core_channel.cpp
+    and kernel/tests/graphics/nvidia_core_channel.test.cpp, PRESERVE_HW's
+    meaning alone, in nvidia_gpu.h, and that an update carries the state the
+    methods assemble into the armed state, in core_channel.h
+    SPDX-FileCopyrightText: Copyright (c) 2001-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/disp/disp_channel.c
+    that NVIDIA's driver gives the firmware's internal subdevice a display
+    channel's push buffer with DISPLAY_CHANNEL_PUSHBUFFER before allocating the
+    channel, marked valid, with its address space, address, limit and snooping
+    and the channel's class and instance, in rm.h, core_channel.h,
+    core_channel.cpp and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
+    that it builds that control from the push buffer's context DMA that the
+    allocation names, drops the control's result and allocates the channel, in
+    core_channel.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/rmapi/resource_list.h
     that display common, the bandwidth check's object and the display take no
     allocation parameters and go under a device, in display_objects.h,
     display_objects.cpp and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp, and that the display
-    is the parent of the display engine's channels, in chip.h and
-    display_objects.h
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, that the display is
+    the parent of the display engine's channels, in chip.h and
+    display_objects.h, that the core channel takes a display channel's
+    allocation parameters and goes under the display, in core_channel.h,
+    core_channel.cpp and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
+    that a context DMA's allocation is never sent to the firmware, so the
+    firmware holds no context DMA, in rm.h
     SPDX-FileCopyrightText: Copyright (c) 2016-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-evo.c
@@ -2636,11 +2698,15 @@ src/nvidia-modeset/include/nvkms-headsurface-priv.h
 
 src/common/sdk/nvidia/inc/class/clc67d.h
     the not begun, begun and finished statuses of a display notifier
-    (NV_DISP_NOTIFIER), in latch_rules.h, and its not begun status, in
-    kernel/tests/graphics/nvidia_latch_rules.test.cpp
+    (NV_DISP_NOTIFIER), in latch_rules.h, its not begun status, in
+    kernel/tests/graphics/nvidia_latch_rules.test.cpp, and the class number
+    NVC67D_CORE_CHANNEL_DMA, which chip.cpp gives GA102's core channel, in
+    chip.cpp and kernel/tests/graphics/nvidia.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 src/nvidia-modeset/include/nvkms-types.h
-    the size of a display channel's push buffer, 4 KiB, and of the pad at its
+    the size of a display channel's push buffer, 4 KiB, in display_channel.h,
+    kernel/tests/graphics/nvidia_display_channel.test.cpp and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, and of the pad at its
     end, 48 bytes, in display_channel.h and
     kernel/tests/graphics/nvidia_display_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -2677,7 +2743,7 @@ src/nvidia-modeset/src/nvkms-dma.c
 
 src/common/sdk/nvidia/inc/class/cl917d.h
     that PUT and GET are the first two words of a display channel's area, in
-    display_channel.h, display_channel.cpp and
+    display_channel.h, core_channel.h and
     kernel/tests/graphics/nvidia_display_channel.test.cpp, and the jump's
     opcode, 1, in bits 31:29, in display_channel.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.

@@ -319,6 +319,50 @@ constexpr uint32_t DIGITAL_LINK_RATE_MASK  = 0x7;
 
 static_assert(sizeof(digital_display_facts_params) == 16, "NVIDIA's layout of DFP_GET_INFO's parameters");
 
+// NVIDIA's NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, the control that gives the firmware where a display
+// channel's push buffer lies, sent before the channel's allocation
+constexpr uint32_t CONTROL_SET_DISPLAY_PUSH_BUFFER = 0x20800A58;
+
+// NVIDIA's ADDR_SYSMEM, the address space of system memory, where an address is a physical address on the system bus
+constexpr uint32_t ADDRESS_SPACE_SYSTEM_MEMORY = 1;
+
+// The parameters of `CONTROL_SET_DISPLAY_PUSH_BUFFER`
+struct display_push_buffer_params {
+    uint32_t address_space;
+    uint64_t address;          // NVIDIA's physicalAddr
+    uint64_t limit;            // the offset of the push buffer's last byte, its size less 1
+    uint32_t snoops;           // NVIDIA's cacheSnoop, 1 when the display engine's reads snoop the CPU's caches
+    uint32_t channel_class;    // NVIDIA's hclass
+    uint32_t channel_instance; // 0 for the core channel
+    uint8_t  is_valid;         // NVIDIA's valid, 1 for a channel with a push buffer
+};
+
+// NVIDIA's NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS, the parameters of a display channel's allocation under the
+// display. The context DMA handles name objects of NVIDIA's kernel-side driver, which the firmware never holds
+struct display_channel_params {
+    uint32_t channel_instance;
+    handle   push_buffer_context_dma; // NVIDIA's hObjectBuffer
+    handle   notifier_context_dma;    // NVIDIA's hObjectNotify
+    uint32_t offset;                  // where PUT and GET start in the push buffer
+    uint64_t control;                 // NVIDIA's pControl, never read, a virtual address of PUT and GET from the reply
+    uint32_t flags;
+};
+
+// NVIDIA's NV5070_CTRL_CMD_SET_RMFREE_FLAGS, the control to the display setting flags for the next release only, and
+// NVIDIA's NV5070_CTRL_SET_RMFREE_FLAGS_PRESERVE_HW, the flag keeping the hardware as it is through that release
+constexpr uint32_t CONTROL_SET_DISPLAY_RELEASE_FLAGS = 0x50700117;
+constexpr uint32_t RELEASE_PRESERVES_HARDWARE        = 0x1;
+
+// The parameters of `CONTROL_SET_DISPLAY_RELEASE_FLAGS`
+struct display_release_flags_params {
+    uint32_t subdevice_index; // as in `display_capabilities_params`
+    uint32_t flags;
+};
+
+static_assert(sizeof(display_push_buffer_params) == 40, "NVIDIA's layout of DISPLAY_CHANNEL_PUSHBUFFER's parameters");
+static_assert(sizeof(display_channel_params) == 32, "NVIDIA's layout of a display channel's allocation parameters");
+static_assert(sizeof(display_release_flags_params) == 8, "NVIDIA's layout of SET_RMFREE_FLAGS's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H

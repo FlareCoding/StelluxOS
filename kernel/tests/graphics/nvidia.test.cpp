@@ -63,10 +63,11 @@ static constexpr uint64_t GA102_PRESCRUBBED_TOP_BYTES  = 0x10000000;
 // NVIDIA's headers for GA102 give them
 static constexpr uint8_t GA102_INTERRUPT_LEAF_COUNT = 8;
 
-// GA102's heads, as many as the RTX 3080's firmware reports usable, and NVIDIA's class of its display object,
-// NVC670_DISPLAY
-static constexpr uint8_t  GA102_HEAD_COUNT    = 4;
-static constexpr uint32_t GA102_DISPLAY_CLASS = 0xC670;
+// GA102's heads, as many as the RTX 3080's firmware reports usable, and NVIDIA's classes of its display object and
+// core channel, NVC670_DISPLAY and NVC67D_CORE_CHANNEL_DMA
+static constexpr uint8_t  GA102_HEAD_COUNT         = 4;
+static constexpr uint32_t GA102_DISPLAY_CLASS      = 0xC670;
+static constexpr uint32_t GA102_CORE_CHANNEL_CLASS = 0xC67D;
 
 // The RTX 3080's identity decodes to the GA102 entry of the chip table
 TEST(nvidia, rtx_3080_decodes_as_ga102) {
@@ -88,6 +89,7 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
 
     EXPECT_EQ(chip->display.head_count, GA102_HEAD_COUNT);
     EXPECT_EQ(chip->display.display_class, GA102_DISPLAY_CLASS);
+    EXPECT_EQ(chip->display.core_channel_class, GA102_CORE_CHANNEL_CLASS);
 }
 
 // GA104 shares GA102's architecture but has no chip table entry

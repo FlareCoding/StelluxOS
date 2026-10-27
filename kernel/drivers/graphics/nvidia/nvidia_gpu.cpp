@@ -6,7 +6,9 @@
 #include "drivers/graphics/nvidia/bar1_page_tables.h"
 #include "drivers/graphics/nvidia/boot_messages.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/core_channel.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
+#include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_ids.h"
 #include "drivers/graphics/nvidia/display_info.h"
@@ -979,10 +981,46 @@ int32_t nvidia_gpu_driver::attach() {
                 output.link_rate_code
             );
         }
+
+        size_t push_buffer_pages = pmm::page_align_up(nvidia::PUSH_BUFFER_BYTES) / pmm::PAGE_SIZE;
+        RUN_ELEVATED(
+            rc = dma::alloc_pages(
+                card_profile,
+                push_buffer_pages,
+                dma::caching::cached_when_coherent,
+                paging::PAGE_USER,
+                m_core_push_buffer
+            )
+        );
+        if (rc != dma::OK) {
+            log::error("nvidia: allocating the core channel's push buffer failed: %d", rc);
+            return nvidia::ERR_NO_MEMORY;
+        }
+
+        rc = nvidia::allocate_core_channel(
+            m_gsp,
+            m_display_objects.display,
+            chip->display,
+            m_core_push_buffer.phys,
+            m_core_channel
+        );
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+
+        nvidia::registers core_area(registers_base + nvidia::CORE_CHANNEL_AREA);
+        log::info(
+            "nvidia: the GSP's firmware keeps the core channel 0x%X, whose push buffer lies at physical address 0x%lX, "
+            "and the channel's PUT and GET read 0x%X and 0x%X, offsets into the push buffer",
+            m_core_channel,
+            m_core_push_buffer.phys,
+            core_area.read(nvidia::CHANNEL_PUT),
+            core_area.read(nvidia::CHANNEL_GET)
+        );
     } else {
         log::info(
             "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory, "
-            "objects, capabilities, heads, display ids and outputs"
+            "objects, capabilities, heads, display ids, outputs and core channel"
         );
     }
 
@@ -1204,6 +1242,12 @@ void nvidia_gpu_driver::run_fwsec_sb(nvidia::registers& regs) {
 
 // The unload ends the firmware's service, so the objects it keeps for the driver are released first
 void nvidia_gpu_driver::release_firmware_objects() {
+    int32_t core_channel_rc = nvidia::OK;
+    if (m_core_channel != 0) {
+        core_channel_rc = nvidia::release_core_channel(m_gsp, m_display_objects.display, m_core_channel);
+        m_core_channel = 0;
+    }
+
     int32_t display_rc = nvidia::OK;
     if (m_display_objects.display_common != 0) {
         display_rc = nvidia::release_display_objects(m_gsp, m_display_objects);
@@ -1217,7 +1261,9 @@ void nvidia_gpu_driver::release_firmware_objects() {
     }
 
     int32_t client_rc = m_gsp.release_client();
-    if (display_rc == nvidia::OK && rc == nvidia::OK && client_rc == nvidia::OK) {
+    bool all_released = core_channel_rc == nvidia::OK && display_rc == nvidia::OK && rc == nvidia::OK &&
+                        client_rc == nvidia::OK;
+    if (all_released) {
         log::info("nvidia: the GSP's firmware released the objects it kept for the driver");
     }
 }
