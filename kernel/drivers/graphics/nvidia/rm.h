@@ -319,6 +319,26 @@ constexpr uint32_t DIGITAL_LINK_RATE_MASK  = 0x7;
 
 static_assert(sizeof(digital_display_facts_params) == 16, "NVIDIA's layout of DFP_GET_INFO's parameters");
 
+// NVIDIA's NV0073_CTRL_CMD_SPECIFIC_GET_EDID_V2, the control to display common that reads the EDID of the monitor on a
+// connected display id
+constexpr uint32_t CONTROL_GET_EDID = 0x730245;
+
+// NVIDIA's NV0073_CTRL_SPECIFIC_GET_EDID_MAX_EDID_BYTES, the most EDID bytes a reply carries, as the firmware refuses a
+// request for a longer EDID
+constexpr uint32_t EDID_BUFFER_BYTES = 2048;
+
+// The parameters of `CONTROL_GET_EDID`, whose reply fills `edid_bytes` and `edid`. Flags of 0 (COPY_CACHE_NO,
+// READ_MODE_COOKED and DISPMUX_READ_MODE_DEFAULT) have the firmware read the EDID from the monitor, not its last copy
+struct edid_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t display_id;      // a single bit
+    uint32_t edid_bytes;      // NVIDIA's bufferSize, how many bytes of `edid` the reply fills
+    uint32_t flags;
+    uint8_t  edid[EDID_BUFFER_BYTES];
+};
+
+static_assert(sizeof(edid_params) == 2064, "NVIDIA's layout of GET_EDID_V2's parameters");
+
 // NVIDIA's NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, the control that gives the firmware where a display
 // channel's push buffer lies, sent before the channel's allocation
 constexpr uint32_t CONTROL_SET_DISPLAY_PUSH_BUFFER = 0x20800A58;

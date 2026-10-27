@@ -2676,9 +2676,17 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     facts about a display id's output resource), the layout of its parameters
     and bIsDispDynamic (set for a display id allocated dynamically), in rm.h,
     display_ids.h, display_ids.cpp and
-    kernel/tests/graphics/nvidia_display_ids.test.cpp, and its type field's
+    kernel/tests/graphics/nvidia_display_ids.test.cpp, its type field's
     NV0073_CTRL_SPECIFIC_OR_TYPE_SOR (a serial output resource) and its protocol
-    field, in display_outputs.h
+    field, in display_outputs.h, and the command
+    NV0073_CTRL_CMD_SPECIFIC_GET_EDID_V2 (a control of display common reading a
+    monitor's EDID), the layout of its parameters,
+    NV0073_CTRL_SPECIFIC_GET_EDID_MAX_EDID_BYTES, 2048, which the firmware
+    refuses a request for an EDID longer than, and its flags COPY_CACHE_NO,
+    READ_MODE_COOKED and DISPMUX_READ_MODE_DEFAULT, each 0, which have the
+    firmware read the EDID from the monitor rather than copy its last one, in
+    rm.h, display_edid.h, display_edid.cpp and
+    kernel/tests/graphics/nvidia_display_edid.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-headsurface.c
@@ -2706,9 +2714,12 @@ src/common/sdk/nvidia/inc/class/clc67d.h
 src/nvidia-modeset/include/nvkms-types.h
     the size of a display channel's push buffer, 4 KiB, in display_channel.h,
     kernel/tests/graphics/nvidia_display_channel.test.cpp and
-    kernel/tests/graphics/nvidia_core_channel.test.cpp, and of the pad at its
-    end, 48 bytes, in display_channel.h and
-    kernel/tests/graphics/nvidia_display_channel.test.cpp
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, the size of the pad at
+    its end, 48 bytes, in display_channel.h and
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, and
+    NV_DP_READ_EDID_RETRIES, 18, and NV_DP_REREAD_EDID_DELAY_USEC, 500
+    microseconds, the most times the modesetting module asks again for a
+    DisplayPort monitor's EDID and the wait before each, in display_edid.h
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/include/nvkms-dma.h
@@ -2764,6 +2775,15 @@ src/common/displayport/src/dp_evoadapter.cpp
     facts and returns without them when the request is refused, in
     display_outputs.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-dpy.c
+    that the modesetting module asks display common for a monitor's EDID with
+    NV0073_CTRL_CMD_SPECIFIC_GET_EDID_V2, asks again, sleeping between tries,
+    while a request fails or gives no bytes, for a DisplayPort monitor only,
+    goes on without the EDID when every try or an allocation fails, copies as
+    many EDID bytes as a reply reports, and first hands the firmware any EDID
+    its DisplayPort code holds, in display_edid.h
+    SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,
