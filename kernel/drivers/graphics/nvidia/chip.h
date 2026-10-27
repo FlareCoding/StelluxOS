@@ -14,6 +14,10 @@ constexpr uint32_t PMC_BOOT_0 = 0x0;
 // chip to have, NV_MAX_INTR_LEAVES. No chip table entry exceeds it, so one top-level register serves every leaf
 constexpr uint8_t INTERRUPT_LEAVES_MAX = 16;
 
+// The most windows (the units of the GPU that each scan one image out to a monitor) NVIDIA's GPUs number,
+// NV_PDISP_CHN_NUM_WIN__SIZE_1, one bit each in the 32-bit mask the firmware reports them in
+constexpr uint8_t DISPLAY_WINDOWS_MAX = 32;
+
 /**
  * The names of a chip's firmware files, which `open_firmware_files` looks up
  * in the version's directory, nvidia/<FIRMWARE_VERSION>/ in `fw::DIRECTORY`,
@@ -50,6 +54,16 @@ struct chip_gsp_reservation {
 };
 
 /**
+ * The chip's display engine, the part of the GPU that reads images from memory
+ * and sends them to monitors, as far as the driver depends on it. The firmware
+ * reports which of the chip's windows this GPU has, as `read_present_windows`
+ * reads them.
+ */
+struct chip_display {
+    uint8_t window_count; // the chip's windows, numbered from 0, at most `DISPLAY_WINDOWS_MAX`
+};
+
+/**
  * What the driver knows about one chip it supports, as an entry of the chip
  * table. The table is the only record of chip-specific values, so the rest of
  * the driver looks them up with `find_chip` instead of keeping its own.
@@ -61,6 +75,7 @@ struct chip_info {
     uint8_t              dma_address_bits;     // physical address bits the chip reaches system memory with, 32 to 64
     chip_gsp_reservation gsp_reservation;
     uint8_t              interrupt_leaf_count; // 32-bit leaf registers reporting the chip's interrupts to the CPU
+    chip_display         display;
 };
 
 /**

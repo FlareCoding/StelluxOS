@@ -2874,6 +2874,75 @@ TEST(nvidia_message_queues, handles_count_up_from_nvidias_first_until_stop) {
     EXPECT_EQ(conversation.new_handle(), NVIDIA_FIRST_OBJECT);
 }
 
+// An internal control takes the reply's parameters and goes to the client and subdevice `set_internal_client` named, a
+// size wider than 32 bits queues nothing, the most one message holds takes 16 elements, and `stop` drops both handles
+TEST(nvidia_message_queues, internal_controls_reach_the_named_subdevice_until_stop) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    queue_test_payload largest_params(PAYLOAD_MAX_BYTES - CONTROL_PARAMS_FIELD);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_NOT_NULL(largest_params.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    uint8_t reply[CONTROL_REPLY_BYTES] = {};
+    fill_control_reply(reply, 0);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply));
+    store_function_message(memory, message, 1, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    uint32_t params[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+    conversation.set_internal_client(INTERNAL_CLIENT, INTERNAL_SUBDEVICE);
+
+    EXPECT_EQ(conversation.internal_control(TEST_COMMAND, params, PARAMS_BYTES), OK);
+
+    const uint8_t* request = memory.element(0);
+    EXPECT_EQ(field_at(request, MESSAGE_FUNCTION), NVIDIA_GSP_RM_CONTROL);
+    EXPECT_EQ(field_at(request, MESSAGE_RPC_BYTES), RPC_HEADER_BYTES + CONTROL_REPLY_BYTES);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_CLIENT_FIELD), INTERNAL_CLIENT);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_OBJECT_FIELD), INTERNAL_SUBDEVICE);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_COMMAND_FIELD), TEST_COMMAND);
+    EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_PARAMS_BYTES_FIELD), PARAMS_BYTES);
+    for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
+        EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_PARAMS_FIELD + i * 4), SENT_PARAMS[i]);
+        EXPECT_EQ(params[i], REPLY_PARAMS[i]);
+    }
+
+    // The refusal's line shows the size whole, so a size narrowed before the check fails
+    string::memcpy(params, SENT_PARAMS, PARAMS_BYTES);
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t narrowing_rc = conversation.internal_control(TEST_COMMAND, params, NARROWING_PARAMS_BYTES);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(narrowing_rc, ERR_TOO_LARGE);
+    EXPECT_TRUE(logged_text_contains("take 4294967308 bytes, more than the 65432 one message carries"));
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 1u);
+    for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
+        EXPECT_EQ(params[i], SENT_PARAMS[i]);
+    }
+
+    // The most one message holds goes out, so a limit tighter than the control's fails, and the stored reply, which
+    // ends before those parameters, is refused
+    EXPECT_EQ(conversation.internal_control(TEST_COMMAND, largest_params.bytes, largest_params.count), ERR_BAD_MESSAGE);
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 1u + MESSAGE_ELEMENTS);
+
+    conversation.stop();
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    EXPECT_EQ(conversation.internal_control(TEST_COMMAND, params, PARAMS_BYTES), OK);
+    EXPECT_EQ(field_at(memory.element(0), MESSAGE_PAYLOAD + CONTROL_CLIENT_FIELD), 0u);
+    EXPECT_EQ(field_at(memory.element(0), MESSAGE_PAYLOAD + CONTROL_OBJECT_FIELD), 0u);
+}
+
 // NVIDIA's command for the kernel interrupt table, the table's layout and the GSP's engine, restated here so the tests
 // hold the table to NVIDIA's layout rather than to the driver's
 static constexpr uint32_t NVIDIA_GET_KERNEL_INTERRUPT_TABLE = 0x20800A5C;

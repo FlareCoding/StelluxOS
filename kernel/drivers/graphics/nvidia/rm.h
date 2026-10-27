@@ -96,6 +96,23 @@ static_assert(sizeof(kernel_interrupt_row) == 16, "NVIDIA's layout of a row of t
 static_assert(sizeof(kernel_interrupt_subtree_range) == 2, "NVIDIA's layout of a range of the subtree map");
 static_assert(sizeof(kernel_interrupt_table_params) == 2068, "NVIDIA's layout of the kernel interrupt table");
 
+// NVIDIA's NV2080_CTRL_CMD_INTERNAL_DISPLAY_GET_STATIC_INFO, the control that gives the display's static information
+// (fixed facts about the display engine, such as its windows)
+constexpr uint32_t CONTROL_GET_DISPLAY_STATIC_INFO = 0x20800A01;
+
+// The parameters of `CONTROL_GET_DISPLAY_STATIC_INFO`, which the reply fills. Only the present windows are read
+struct display_static_info_params {
+    uint32_t system_capabilities; // NVIDIA's feHwSysCap, a copy of the display engine's capability register
+    uint32_t present_windows;     // bit i set when this GPU has window i
+    uint8_t  has_remapper;        // NVIDIA's bFbRemapperEnabled
+    uint32_t head_count;
+    uint8_t  is_primary_vga;
+    uint32_t i2c_port;
+    uint32_t internal_active_displays;
+};
+
+static_assert(sizeof(display_static_info_params) == 28, "NVIDIA's layout of the display's static information");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H

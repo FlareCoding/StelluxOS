@@ -7,6 +7,7 @@
 #include "drivers/graphics/nvidia/boot_messages.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
+#include "drivers/graphics/nvidia/display_info.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
@@ -768,6 +769,8 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
+    m_gsp.set_internal_client(configuration.internal_client, configuration.internal_subdevice);
+
     for (uint32_t i = 0; i < configuration.region_count; i++) {
         const nvidia::video_memory_region& region = configuration.regions[i];
         uint64_t last_byte = region.offset + region.size - 1;
@@ -873,6 +876,22 @@ int32_t nvidia_gpu_driver::attach() {
         m_gpu_objects.device,
         m_gpu_objects.subdevice
     );
+
+    if (frts.has_display) {
+        uint32_t present_windows = 0;
+        rc = nvidia::read_present_windows(m_gsp, chip->display, present_windows);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+
+        log::info(
+            "nvidia: the GSP's firmware reports windows 0x%X present, of the chip's %u windows",
+            present_windows,
+            chip->display.window_count
+        );
+    } else {
+        log::info("nvidia: the chip's fuses disable its display, so bring-up reads no windows");
+    }
 
     // An earlier driver can leave vectors of the tree enabled, which would raise MSI before the GSP's is enabled
     nvidia::disable_cpu_interrupt_tree(regs, chip->interrupt_leaf_count);

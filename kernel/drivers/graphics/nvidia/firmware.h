@@ -7,10 +7,13 @@
 namespace drivers::nvidia {
 
 /**
- * The driver's requests for objects the GSP's firmware keeps under the
- * driver's own client (the owner of a tree of objects). `gsp` implements it,
- * and tests replace it with a double. `allocate` and `release` each spin on
- * the calling CPU until the firmware's reply arrives or `RECEIVE_TIMEOUT_NS`
+ * The driver's requests to the GSP's firmware: for objects it keeps under the
+ * driver's own client (the owner of a tree of objects), and for controls
+ * (commands to an object) to the subdevice of the firmware's internal client,
+ * which the firmware keeps for the controls NVIDIA's driver sends on its own
+ * behalf. `gsp` implements it, and tests replace it with a double. `allocate`,
+ * `release` and `internal_control` each spin on the calling CPU, once their
+ * request is sent, until the firmware's reply arrives or `RECEIVE_TIMEOUT_NS`
  * passes, and only one thread may make the calls at a time, as only one may
  * use a `gsp`.
  */
@@ -63,6 +66,26 @@ public:
      * @brief The driver's client, 0 while the driver has none.
      */
     virtual rm::handle client() const = 0;
+
+    /**
+     * @brief Send a control to the subdevice (the object standing for this
+     * GPU) of the firmware's internal client.
+     * @param command NVIDIA's number for the control, one of the internal
+     * subdevice's.
+     * @param params The control's parameters in NVIDIA's flat layout, which
+     * receive the reply's copy on `OK` and are left unchanged on an error. It
+     * may be null when `size` is 0.
+     * @param size How many bytes `params` holds, refused above what one
+     * message carries.
+     * @return `OK`, `ERR_TOO_LARGE` when the parameters do not fit one
+     * message, `ERR_NO_MEMORY` when the request's buffer cannot be allocated,
+     * `ERR_QUEUE_FULL` when the request cannot be queued, `ERR_TIMEOUT` when
+     * the reply does not arrive in time, `ERR_FIRMWARE` when the firmware
+     * refuses the request or the control, or `ERR_BAD_MESSAGE` when the reply
+     * ends before the parameters or a message in the status queue fails its
+     * checks. Every error is logged.
+     */
+    virtual int32_t internal_control(uint32_t command, void* params, size_t size) = 0;
 };
 
 } // namespace drivers::nvidia
