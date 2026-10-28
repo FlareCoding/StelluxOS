@@ -1635,13 +1635,20 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073system.h
     NV0073_CTRL_SYSTEM_GET_NUM_HEADS_FLAGS_CLIENT_DISABLE, the flags that count
     every usable head, not only those a client has in use, in rm.h,
     display_heads.h, display_heads.cpp and
-    kernel/tests/graphics/nvidia_display_heads.test.cpp, and the commands
+    kernel/tests/graphics/nvidia_display_heads.test.cpp, the commands
     NV0073_CTRL_CMD_SYSTEM_GET_SUPPORTED and
     NV0073_CTRL_CMD_SYSTEM_GET_CONNECT_STATE (controls of display common), the
     layouts of their parameters and the connect state's flags of 0, NVIDIA's
     METHOD_DEFAULT, DDC_DEFAULT, LOAD_DEFAULT and VBLANK_DEFAULT, in rm.h,
     display_ids.h, display_ids.cpp and
-    kernel/tests/graphics/nvidia_display_ids.test.cpp
+    kernel/tests/graphics/nvidia_display_ids.test.cpp, and the command
+    NV0073_CTRL_CMD_SYSTEM_GET_ACTIVE (a control of display common), the layout
+    of its parameters, its displayId (the one display active on the head, 0 for
+    none) and NV0073_CTRL_SYSTEM_GET_ACTIVE_FLAGS_CLIENT_DISABLE, the flags that
+    find a display the boot firmware lit, not only a client's, in rm.h,
+    display_active_heads.h, display_active_heads.cpp,
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/nvstatus.h
@@ -1800,7 +1807,8 @@ src/common/sdk/nvidia/inc/nvlimits.h
     the length of the process name in a client's allocation parameters, 100, in
     rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
     NV_MAX_HEADS, the most heads NVIDIA's driver allows on one GPU, 4, in
-    chip.h, chip.cpp and kernel/tests/graphics/nvidia_display_heads.test.cpp
+    chip.h, chip.cpp, kernel/tests/graphics/nvidia_display_heads.test.cpp and
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc.h
@@ -1940,9 +1948,21 @@ src/nvidia-modeset/src/nvkms-rm.c
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that it binds it only
     after writing the channel's initial methods, in display_engine.h, that it
     frees the core channel with its notifier at once when that binding fails, in
-    completion_notifier.h and display_engine.h, and that it frees the notifier
-    and its context DMA after the channel's release and the push buffer's, in
-    completion_notifier.h
+    completion_notifier.h and display_engine.h, that it frees the notifier and
+    its context DMA after the channel's release and the push buffer's, in
+    completion_notifier.h, that it asks display common for the display id each
+    head it keeps shows only after allocating its core channel and binding the
+    channel's notifier, since before the allocation the firmware misreports the
+    dynamic display ids it allocates for a boot display on a DisplayPort
+    multi-stream device, in display_active_heads.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it asks for each
+    head from head 0 up with the parameters zeroed but for the head, takes a
+    head whose request fails as showing nothing and asserts against a head
+    showing several display ids, then goes on with the first of them, in
+    display_active_heads.h, display_active_heads.cpp and
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp, and that it
+    takes a dynamic display id a head shows to name the connector of the static
+    display id the firmware reports as its root port, in display_active_heads.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2793,7 +2813,8 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     display_ids.h, display_ids.cpp and
     kernel/tests/graphics/nvidia_display_ids.test.cpp, its type field's
     NV0073_CTRL_SPECIFIC_OR_TYPE_SOR (a serial output resource) and its protocol
-    field, in display_outputs.h, and the command
+    field, in display_outputs.h, its rootPortId field, the root port's id for a
+    display id, in display_active_heads.h, and the command
     NV0073_CTRL_CMD_SPECIFIC_GET_EDID_V2 (a control of display common reading a
     monitor's EDID), the layout of its parameters,
     NV0073_CTRL_SPECIFIC_GET_EDID_MAX_EDID_BYTES, 2048, which the firmware
