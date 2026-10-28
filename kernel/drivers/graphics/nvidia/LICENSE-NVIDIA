@@ -1925,12 +1925,13 @@ src/nvidia-modeset/src/nvkms-rm.c
     on the display before releasing its core, base and window channels once it
     has restored the console itself, so that they stay allocated, releasing each
     even when the flag fails, in core_channel.h, core_channel.cpp,
-    display_engine.h and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
+    display_engine.h and kernel/tests/graphics/nvidia_core_channel.test.cpp,
     that it first tries write-combined memory with snooping off for a push
     buffer when the bus allows it, frees a channel's push buffer right after the
     channel or when the channel's allocation fails, releases no channel whose
     allocation failed and names the push buffer's context DMA in a channel's
-    allocation, in core_channel.h
+    allocation, in core_channel.h, and that it writes a channel's initial
+    methods right after allocating the channel, in core_methods.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2634,7 +2635,7 @@ src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070chnc.h
     hold for the next release only, in rm.h, core_channel.h, core_channel.cpp
     and kernel/tests/graphics/nvidia_core_channel.test.cpp, PRESERVE_HW's
     meaning alone, in display_engine.h, and that an update carries the state the
-    methods assemble into the armed state, in core_channel.h
+    methods assemble into the armed state, in core_channel.h and core_methods.h
     SPDX-FileCopyrightText: Copyright (c) 2001-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/disp_channel.c
@@ -2679,7 +2680,14 @@ src/nvidia-modeset/src/nvkms-evo.c
 src/nvidia-modeset/src/nvkms-evo3.c
     that the modesetting module allocates the bandwidth check's object under
     its device with no parameters, in display_objects.h, display_objects.cpp
-    and kernel/tests/graphics/nvidia_display_objects.test.cpp
+    and kernel/tests/graphics/nvidia_display_objects.test.cpp, and that the core
+    channel's initial methods load the output scaler's coefficients (4 values
+    for each of 16 phases of the ratios 1, 2 and 4, each row leaving out the
+    center value the hardware derives, and phase 0's row ending with phase 16's
+    two) into every head before the next coefficient, with its position in the
+    table as its index, then set each head's desktop color to opaque black,
+    ALPHA_RED's method before GREEN_BLUE's, in core_methods.h, core_methods.cpp
+    and kernel/tests/graphics/nvidia_core_methods.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
@@ -2730,9 +2738,15 @@ src/nvidia-modeset/include/nvkms-headsurface-priv.h
 src/common/sdk/nvidia/inc/class/clc67d.h
     the not begun, begun and finished statuses of a display notifier
     (NV_DISP_NOTIFIER), in latch_rules.h, its not begun status, in
-    kernel/tests/graphics/nvidia_latch_rules.test.cpp, and the class number
+    kernel/tests/graphics/nvidia_latch_rules.test.cpp, the class number
     NVC67D_CORE_CHANNEL_DMA, which chip.cpp gives GA102's core channel, in
-    chip.cpp and kernel/tests/graphics/nvidia.test.cpp
+    chip.cpp and kernel/tests/graphics/nvidia.test.cpp, and the methods
+    NVC67D_HEAD_SET_OUTPUT_SCALER_COEFF_VALUE,
+    NVC67D_HEAD_SET_DESKTOP_COLOR_ALPHA_RED and
+    NVC67D_HEAD_SET_DESKTOP_COLOR_GREEN_BLUE for head 0, the stride of 0x400 to
+    each later head's methods, the coefficient's DATA in bits 9:0 and INDEX in
+    bits 19:12 and ALPHA_RED's ALPHA in bits 7:0, in rm.h, core_methods.cpp and
+    kernel/tests/graphics/nvidia_core_methods.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 src/nvidia-modeset/include/nvkms-types.h
     the size of a display channel's push buffer, 4 KiB, in display_channel.h,
@@ -2750,11 +2764,13 @@ src/nvidia-modeset/include/nvkms-dma.h
     the layout of a display method's header (opcode 0 in bits 31:29, the count
     of values in bits 27:18 and the register offset in bits 13:2), that the
     register offset is a multiple of 4, that the room a method needs counts its
-    header with its values, and that the modesetting module asks for room, and
-    so reads GET, only once its count of free words, lowered by each method's
+    header with its values, that the modesetting module asks for room, and so
+    reads GET, only once its count of free words, lowered by each method's
     words, is at most the words a method takes, in display_channel.h,
     display_channel.cpp and
-    kernel/tests/graphics/nvidia_display_channel.test.cpp
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, and that a method of
+    one value takes its header and the value, in
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-dma.c
@@ -2769,10 +2785,13 @@ src/nvidia-modeset/src/nvkms-dma.c
     and writes nothing while PUT has not moved and that a channel is empty once
     GET reads PUT, with GET read before the timeout is checked, in
     display_channel.h, display_channel.cpp and
-    kernel/tests/graphics/nvidia_display_channel.test.cpp, and that the
-    modesetting module takes a GET past the pad's start, while GET lies ahead of
-    the written end, as the pad's start, and kicks the methods written so far
-    and waits while GET is at offset 0 and a method does not fit, in
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, that the modesetting
+    module takes a GET past the pad's start, while GET lies ahead of the written
+    end, as the pad's start, and kicks the methods written so far and waits
+    while GET is at offset 0 and a method does not fit, in
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, and that it logs an
+    error once a wait for room in a push buffer has run 5 seconds and waits on,
+    in display_channel.h and
     kernel/tests/graphics/nvidia_display_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2013 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

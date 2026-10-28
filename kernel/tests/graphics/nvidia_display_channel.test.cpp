@@ -15,6 +15,7 @@ using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_INVALID_ARG;
 using drivers::nvidia::ERR_QUEUE_FULL;
 using drivers::nvidia::ERR_TIMEOUT;
+using drivers::nvidia::IDLE_TIMEOUT_NS;
 using drivers::nvidia::METHOD_VALUES_MAX;
 using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
@@ -100,10 +101,14 @@ static void expect_pad_unwritten() {
     }
 }
 
+// The 5 seconds after which NVIDIA's driver logs a wait for room in a push buffer as an error and waits on
+static constexpr uint64_t NVIDIA_ROOM_TIMEOUT_NS = 5000000000;
+
 TEST(nvidia_display_channel, constants_are_nvidias) {
     EXPECT_EQ(PUSH_BUFFER_BYTES, NVIDIA_PUSH_BUFFER_BYTES);
     EXPECT_EQ(PUSH_BUFFER_PAD_BYTES, NVIDIA_PAD_BYTES);
     EXPECT_EQ(METHOD_VALUES_MAX, NVIDIA_METHOD_VALUES_MAX);
+    EXPECT_EQ(IDLE_TIMEOUT_NS, NVIDIA_ROOM_TIMEOUT_NS);
 }
 
 TEST(nvidia_display_channel, a_method_is_nvidias_header_then_its_values_and_waits_for_a_kick) {

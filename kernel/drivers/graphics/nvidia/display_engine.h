@@ -6,6 +6,7 @@
 #include "common/types.h"
 #include "dma/dma.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_objects.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
@@ -23,17 +24,19 @@ namespace drivers::nvidia {
  * come from one thread at a time, since it takes no lock of its own. It owns
  * the display's instance memory, the objects the firmware keeps for the
  * display (display common, the bandwidth check's object and the display) and
- * the core channel with its push buffer. The instance memory is the video
- * memory where the display engine looks up the memory its channels may read.
- * The core channel is the display channel that sets up heads, links and which
- * head owns each window. The core channel's push buffer is the memory it takes
- * its commands from. The engine reaches the firmware only through the
- * `firmware` and video memory only through the `video_memory` it is built
- * with, and the display engine's registers only through the `registers` passed
- * to `set_up`. The instance memory is never released once cleared, and nothing
- * frees the push buffer once allocated, since the display engine's registers
- * may name either from the moment its address is sent, and a channel released
- * with the hardware kept as it is stays allocated in the hardware.
+ * the core channel with its push buffer and the queue of methods written into
+ * it. The instance memory is the video memory where the display engine looks
+ * up the memory its channels may read. The core channel is the display channel
+ * that sets up heads, links and which head owns each window. The core
+ * channel's push buffer is the memory it takes its commands from. The engine
+ * reaches the firmware only through the `firmware` and video memory only
+ * through the `video_memory` it is built with, and the display engine's
+ * registers only through the `registers` passed to `set_up`, whose core
+ * channel area it keeps until `release`. The instance memory is never released
+ * once cleared, and nothing frees the push buffer once allocated, since the
+ * display engine's registers may name either from the moment its address is
+ * sent, and a channel released with the hardware kept as it is stays allocated
+ * in the hardware.
  */
 class display_engine {
 public:
@@ -71,49 +74,61 @@ public:
      * `read_output_dpcd`, logging their bytes when it reads them all. Then
      * allocate the core channel's push buffer in DMA pages and the core
      * channel under the display with `allocate_core_channel`, and log its
-     * handle, where its push buffer lies and one read of its PUT and GET. The
-     * facts read are not kept, and nothing here writes to the display engine.
-     * Each request spins on the calling CPU, waiting for its reply as
-     * `firmware` describes, and `read_output_edid` spins before each reread of
-     * an EDID as it describes. It must be called at most once, as
+     * handle, where its push buffer lies and one read of its PUT and GET. Then
+     * write the core channel's initial methods, which `core_initial_method`
+     * gives, for the heads read, kicking and waiting for GET to reach PUT
+     * whenever the push buffer has no room, kick the rest with no update, so
+     * nothing on screen changes, wait for GET to reach PUT, and log one read
+     * of PUT and GET with the count of methods written. The facts read are not
+     * kept. Each request spins on the calling CPU, waiting for its reply as
+     * `firmware` describes, and so does each wait for GET, for at most 5
+     * seconds. `read_output_edid` also spins before each reread of an EDID as
+     * it describes. `set_up` must be called at most once, as
      * `instance_memory::set_up` must, and since it waits on video memory's
      * lock and on the card as `instance_memory` describes, it must never run
      * in an interrupt handler or under a spinlock, and on a thread that cannot
      * sleep, such as the boot thread, must run only while no other thread can
      * call into video memory or the firmware.
      * @param regs The card's BAR0 registers, through which the core channel's
-     * PUT and GET are read.
+     * methods are kicked and its PUT and GET read. BAR0 must stay mapped until
+     * `release` returns, since the engine keeps a view of the channel's area
+     * until then.
      * @param card The card's DMA profile, for the push buffer's pages.
      * @param chip The chip table's entry for the card's chip, whose display
      * entry gives the display's limits and classes.
      * @param device The driver's device, the parent of the display's objects.
      * @return `OK`, with the firmware holding the instance memory's address,
      * the display's objects, the core channel and its push buffer's address,
-     * and having reported only the chip's windows, a display engine that can
-     * reach push buffers, semaphores and notifiers in system memory, connected
-     * display ids among the supported ones, and heads within the chip's, head
-     * 0 usable and served, with nonzero masks only for the chip's windows,
-     * each naming one of the chip's heads outside a flexible mapping.
+     * the display engine having read the core channel's initial methods, and
+     * the firmware having reported only the chip's windows, a display engine
+     * that can reach push buffers, semaphores and notifiers in system memory,
+     * connected display ids among the supported ones, and heads within the
+     * chip's, head 0 usable and served, with nonzero masks only for the chip's
+     * windows, each naming one of the chip's heads outside a flexible mapping.
      * Otherwise the error of the first step that fails, logged as that step
      * describes, such as when the firmware reports a window the chip lacks,
      * the display engine reaches push buffers, semaphores and notifiers only
      * in video memory, display common's report leaves it no head or the
      * firmware refuses to report the supported or connected display ids. When
      * the `edid::monitor` or the push buffer's pages cannot be allocated, the
-     * error is `ERR_NO_MEMORY`, logged here. The display's objects and the
-     * core channel stay allocated once allocated, even after a later step
-     * fails, until `release`.
+     * error is `ERR_NO_MEMORY`, logged here. When GET does not reach PUT
+     * within 5 seconds of a kick, the error is `ERR_TIMEOUT`, and when a read
+     * of GET finds it past the push buffer's writable end or not a multiple of
+     * 4, `ERR_BAD_STATE`, each logged as `display_channel` describes and here.
+     * The display's objects and the core channel stay allocated once
+     * allocated, even after a later step fails, until `release`.
      */
     int32_t set_up(
-        const registers& regs,
+        registers& regs,
         const dma::device_profile& card,
         const chip_info& chip,
         rm::handle device
     );
 
     /**
-     * @brief Release the core channel, once `set_up` allocated it or the
-     * firmware may hold it after a failed allocation, as
+     * @brief Drop the core channel's queue of methods, so nothing writes the
+     * released channel's area, then release the core channel, once `set_up`
+     * allocated it or the firmware may hold it after a failed allocation, as
      * `release_core_channel` describes, then the display's objects, once
      * `set_up` allocated them, as `release_display_objects` describes. The
      * core channel is released first, with the hardware kept as it is, so the
@@ -132,6 +147,11 @@ private:
     display_objects m_objects = {};     // all 0 before `set_up` allocates them and after `release`
     rm::handle      m_core_channel = 0; // 0 before `set_up` allocates it and after `release`
     dma::buffer     m_core_push_buffer = {};
+
+    // The core channel's queue of methods, built in `m_core_queue_bytes` once the channel is allocated, null until
+    // then and after `release`
+    display_channel*                 m_core_queue = nullptr;
+    alignas(display_channel) uint8_t m_core_queue_bytes[sizeof(display_channel)];
 };
 
 } // namespace drivers::nvidia

@@ -2,6 +2,7 @@
 
 #include "drivers/graphics/nvidia/display_engine.h"
 #include "drivers/graphics/nvidia/core_channel.h"
+#include "drivers/graphics/nvidia/core_methods.h"
 #include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_edid.h"
@@ -10,6 +11,7 @@
 #include "drivers/graphics/nvidia/display_info.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
 #include "mm/heap.h"
@@ -127,7 +129,12 @@ static int32_t read_connected_monitors(firmware& fw, rm::handle display_common, 
     return rc;
 }
 
-static int32_t read_display_facts(firmware& fw, const display_objects& objects, const chip_display& display) {
+static int32_t read_display_facts(
+    firmware& fw,
+    const display_objects& objects,
+    const chip_display& display,
+    display_heads& heads
+) {
     bool has_crossbar = false;
     int32_t rc = read_display_capabilities(fw, objects, has_crossbar);
     if (rc != OK) {
@@ -140,7 +147,6 @@ static int32_t read_display_facts(firmware& fw, const display_objects& objects, 
         has_crossbar ? "a crossbar" : "no crossbar"
     );
 
-    display_heads heads = {};
     rc = read_display_heads(fw, objects.display_common, display, heads);
     if (rc != OK) {
         return rc;
@@ -194,12 +200,44 @@ static int32_t read_display_facts(firmware& fw, const display_objects& objects, 
     return read_connected_monitors(fw, objects.display_common, outputs);
 }
 
+// Writes `method` into `queue`, and when `write` returns `ERR_QUEUE_FULL`, kicks, waits for GET to reach PUT and writes
+// it again, as `display_channel::write` asks of a writer that may wait. One wait makes room for a method of one value
+static int32_t write_waiting(display_channel& queue, const display_method& method) {
+    int32_t rc = queue.write(method.method, &method.value, 1);
+    if (rc != ERR_QUEUE_FULL) {
+        return rc;
+    }
+
+    queue.kick();
+    rc = queue.wait_idle(clock::now_ns() + IDLE_TIMEOUT_NS);
+    if (rc != OK) {
+        return rc;
+    }
+
+    return queue.write(method.method, &method.value, 1);
+}
+
+// Writes the core channel's initial methods for `head_count` heads, counting them in `written`
+static int32_t write_core_initial_methods(display_channel& queue, uint8_t head_count, uint32_t& written) {
+    display_method method = {};
+    while (core_initial_method(head_count, written, method)) {
+        int32_t rc = write_waiting(queue, method);
+        if (rc != OK) {
+            return rc;
+        }
+
+        written++;
+    }
+
+    return OK;
+}
+
 display_engine::display_engine(firmware& fw, video_memory& memory)
     : m_firmware(fw)
     , m_instance_memory(memory, fw) {}
 
 int32_t display_engine::set_up(
-    const registers& regs,
+    registers& regs,
     const dma::device_profile& card,
     const chip_info& chip,
     rm::handle device
@@ -242,7 +280,8 @@ int32_t display_engine::set_up(
         m_objects.display
     );
 
-    rc = read_display_facts(m_firmware, m_objects, display);
+    display_heads heads = {};
+    rc = read_display_facts(m_firmware, m_objects, display, heads);
     if (rc != OK) {
         return rc;
     }
@@ -276,10 +315,41 @@ int32_t display_engine::set_up(
         regs.read(CORE_CHANNEL_AREA + CHANNEL_GET)
     );
 
+    uint32_t* push_buffer = reinterpret_cast<uint32_t*>(m_core_push_buffer.virt);
+    m_core_queue = new (m_core_queue_bytes) display_channel(push_buffer, regs.at(CORE_CHANNEL_AREA));
+
+    uint32_t written = 0;
+    rc = write_core_initial_methods(*m_core_queue, heads.count, written);
+    if (rc != OK) {
+        log::error("nvidia: writing the core channel's initial methods failed after %u of them: %d", written, rc);
+        return rc;
+    }
+
+    m_core_queue->kick();
+    rc = m_core_queue->wait_idle(clock::now_ns() + IDLE_TIMEOUT_NS);
+    if (rc != OK) {
+        log::error(
+            "nvidia: the core channel's GET did not reach PUT once its %u initial methods were kicked: %d",
+            written,
+            rc
+        );
+        return rc;
+    }
+
+    log::info(
+        "nvidia: the core channel took its %u initial methods, kicked with no update, and its PUT and GET read 0x%X "
+        "and 0x%X, offsets into the push buffer",
+        written,
+        regs.read(CORE_CHANNEL_AREA + CHANNEL_PUT),
+        regs.read(CORE_CHANNEL_AREA + CHANNEL_GET)
+    );
+
     return OK;
 }
 
 int32_t display_engine::release() {
+    m_core_queue = nullptr;
+
     int32_t core_channel_rc = OK;
     if (m_core_channel != 0) {
         core_channel_rc = release_core_channel(m_firmware, m_objects.display, m_core_channel);

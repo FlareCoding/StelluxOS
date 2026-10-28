@@ -411,6 +411,15 @@ struct display_release_flags_params {
     uint32_t flags;
 };
 
+// The core channel's methods for head 0, NVIDIA's NVC67D_HEAD_SET_*(0), and the stride between two heads' methods. A
+// scaler coefficient holds DATA in bits 9:0 and INDEX in bits 19:12, and ALPHA_RED holds ALPHA in bits 7:0
+constexpr uint32_t CORE_HEAD_METHODS_STRIDE           = 0x400;
+constexpr uint32_t CORE_HEAD_OUTPUT_SCALER_COEFFICIENT = 0x2214;
+constexpr uint32_t CORE_HEAD_DESKTOP_COLOR_ALPHA_RED   = 0x2220;
+constexpr uint32_t CORE_HEAD_DESKTOP_COLOR_GREEN_BLUE  = 0x2224;
+constexpr uint32_t SCALER_COEFFICIENT_DATA_MASK        = 0x3FF;
+constexpr uint32_t SCALER_COEFFICIENT_INDEX_SHIFT      = 12;
+
 static_assert(sizeof(display_push_buffer_params) == 40, "NVIDIA's layout of DISPLAY_CHANNEL_PUSHBUFFER's parameters");
 static_assert(sizeof(display_channel_params) == 32, "NVIDIA's layout of a display channel's allocation parameters");
 static_assert(sizeof(display_release_flags_params) == 8, "NVIDIA's layout of SET_RMFREE_FLAGS's parameters");

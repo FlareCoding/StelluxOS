@@ -20,6 +20,9 @@ public:
     uint32_t read(uint32_t offset) const { return mmio::read32(m_base + offset); }
     void write(uint32_t offset, uint32_t value) { mmio::write32(m_base + offset, value); }
 
+    // A view whose offset 0 lies `offset` bytes past this view's, a multiple of 4, taken only from a view that writes
+    registers at(uint32_t offset) { return registers(m_base + offset); }
+
 private:
     uintptr_t m_base;
 };
