@@ -10,6 +10,7 @@
 TEST_SUITE(nvidia_display_light);
 
 using drivers::nvidia::active_heads;
+using drivers::nvidia::base_buffer_pitch;
 using drivers::nvidia::choose_first_light;
 using drivers::nvidia::display_heads;
 using drivers::nvidia::display_outputs;
@@ -243,6 +244,17 @@ TEST(nvidia_display_light, raster_of_gives_a_32_bit_blanking_end_without_horizon
 
     EXPECT_EQ(raster.blank_end_x, 0xFFFFFFFFu);
     EXPECT_EQ(raster.blank_start_x, NO_LEADING_PIXELS.width - 1);
+}
+
+// 1366 pixels take 5464 bytes, which 256-byte rounding makes 5632 and 64-byte rounding would make 5504, and 65,536
+// pixels, the widest an EDID timing gives and too wide for 16 bits, take 262,144 bytes
+TEST(nvidia_display_light, base_buffer_pitch_rounds_rows_of_4_byte_pixels_up_to_256_bytes) {
+    EXPECT_EQ(base_buffer_pitch(1366), 5632u);
+    EXPECT_EQ(base_buffer_pitch(2560), 10240u);
+    EXPECT_EQ(base_buffer_pitch(64), 256u);
+    EXPECT_EQ(base_buffer_pitch(65), 512u);
+    EXPECT_EQ(base_buffer_pitch(1), 256u);
+    EXPECT_EQ(base_buffer_pitch(65536), 262144u);
 }
 
 // The request NVIDIA's modesetting module would send for this head and window alone, unscaled and 4 bytes a pixel

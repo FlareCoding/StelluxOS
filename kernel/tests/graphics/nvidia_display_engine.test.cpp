@@ -19,6 +19,7 @@
 #include "drivers/graphics/nvidia/rm.h"
 #include "drivers/graphics/nvidia/video_memory.h"
 #include "drivers/graphics/nvidia/vram_allocator.h"
+#include "mm/heap.h"
 #include "mm/paging.h"
 #include "tests/memory/dma_test_access.h"
 
@@ -36,6 +37,7 @@ using drivers::nvidia::DPCD_RECEIVER_CAPABILITY_BYTES;
 using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_FIRMWARE;
+using drivers::nvidia::ERR_INVALID_ARG;
 using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::firmware;
@@ -114,6 +116,12 @@ static constexpr uint64_t NVIDIA_NOTIFIER_UNITS       = 16;
 // of the last window channel's
 static uint8_t  g_video_memory[INSTANCE_MEMORY_BYTES];
 static uint32_t g_channel_areas[(window_channel_area(CHIP_WINDOWS) - CORE_CHANNEL_AREA) / sizeof(uint32_t)];
+
+// Where the video memory double hands out scanout memory, the bytes past it the double backs too, so a write running
+// past the range shows, and the byte the double fills them all with
+static constexpr uint64_t SCANOUT_OFFSET      = 0x1000000;
+static constexpr uint64_t SCANOUT_GUARD_BYTES = 0x1000;
+static constexpr uint8_t  SCANOUT_FILL        = 0xA5;
 
 // The core channel's area, where `g_channel_areas` begins, holding its PUT and GET
 static uint32_t* const g_core_channel_registers = g_channel_areas;
@@ -474,28 +482,96 @@ private:
     }
 };
 
-// A video memory that hands out offset 0, refusing more bytes than `g_video_memory` holds, and maps it over that array,
-// so a release or an unmap has nothing to undo
+// A video memory handing out general memory at offset 0 over `g_video_memory` and up to `scanout_bytes` of scanout
+// memory at `SCANOUT_OFFSET` over `scanout`, counting and failing scanout calls as set
 class engine_video_memory : public video_memory {
 public:
-    int32_t allocate(uint64_t size, uint64_t, vram_use, vram_range& out) override {
+    int32_t  scanout_allocate_result = OK;
+    int32_t  scanout_map_result      = OK;
+    uint64_t scanout_bytes           = 0;       // backed by `scanout` once `give_scanout` sets it
+    uint8_t* scanout                 = nullptr; // `scanout_bytes` and their guard, on the unprivileged heap, else null
+    uint64_t scanout_size            = 0;       // of the last scanout request
+    uint64_t scanout_alignment       = 0;       // of the last scanout request
+    uint32_t scanout_requests        = 0;
+    uint32_t scanout_maps            = 0;
+    uint32_t scanout_unmaps          = 0;
+    uint32_t scanout_releases        = 0;
+
+    ~engine_video_memory() override {
+        if (scanout != nullptr) {
+            heap::ufree(scanout);
+        }
+    }
+
+    // Backs `bytes` of scanout memory and `SCANOUT_GUARD_BYTES` after them, all filled with `SCANOUT_FILL`, or gives
+    // false when the unprivileged heap cannot hold them
+    bool give_scanout(uint64_t bytes) {
+        scanout = static_cast<uint8_t*>(heap::ualloc(bytes + SCANOUT_GUARD_BYTES));
+        if (scanout == nullptr) {
+            return false;
+        }
+
+        string::memset(scanout, SCANOUT_FILL, bytes + SCANOUT_GUARD_BYTES);
+        scanout_bytes = bytes;
+
+        return true;
+    }
+
+    int32_t allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) override {
+        if (use == vram_use::scanout) {
+            scanout_requests++;
+            scanout_size = size;
+            scanout_alignment = alignment;
+            if (scanout_allocate_result != OK) {
+                return scanout_allocate_result;
+            }
+
+            if (size > scanout_bytes) {
+                return ERR_NO_MEMORY;
+            }
+
+            out = {.offset = SCANOUT_OFFSET, .size = size};
+            return OK;
+        }
+
         if (size > sizeof(g_video_memory)) {
             return ERR_NO_MEMORY;
         }
 
         out = {.offset = 0, .size = size};
+
         return OK;
     }
 
-    void release(const vram_range&) override {}
+    void release(const vram_range& range) override {
+        if (range.offset == SCANOUT_OFFSET) {
+            scanout_releases++;
+        }
+    }
 
-    int32_t map_for_cpu(const vram_range&, cpu_mapping& out) override {
-        out.virt = reinterpret_cast<uintptr_t>(g_video_memory);
+    int32_t map_for_cpu(const vram_range& range, cpu_mapping& out) override {
+        if (range.offset != SCANOUT_OFFSET) {
+            out.virt = reinterpret_cast<uintptr_t>(g_video_memory);
+            out.phys = 0;
+            return OK;
+        }
+
+        scanout_maps++;
+        if (scanout_map_result != OK) {
+            return scanout_map_result;
+        }
+
+        out.virt = reinterpret_cast<uintptr_t>(scanout);
         out.phys = 0;
+
         return OK;
     }
 
-    void unmap_for_cpu(const vram_range&) override {}
+    void unmap_for_cpu(const vram_range& range) override {
+        if (range.offset == SCANOUT_OFFSET) {
+            scanout_unmaps++;
+        }
+    }
 };
 
 // An engine over `fw` and `memory`, built in `g_engine_bytes`
@@ -1052,7 +1128,7 @@ TEST(nvidia_display_engine, set_up_failing_at_an_active_heads_link_keeps_the_cor
 }
 
 // The text logged while `ENGINE_LOG_BACKEND` is set
-static char     s_engine_log[8192] = {};
+static char     s_engine_log[16384] = {};
 static uint32_t s_engine_log_bytes = 0;
 
 // Keeps each logged line's text, up to the buffer's end
@@ -1603,8 +1679,8 @@ TEST(nvidia_display_engine, set_up_allocates_the_chosen_windows_channel_and_writ
     EXPECT_TRUE(is_push_buffer_blank(fw.push_buffer_address));
 }
 
-// The present windows lacking the chosen window leave it with no channel, logged, the set-up `OK` and neither its push
-// buffer given nor its channel allocated
+// The present windows lacking the chosen window leave it with no channel, logged, the set-up `OK`, neither its push
+// buffer given nor its channel allocated, and no base buffer asked for
 TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_not_reported_present) {
     engine_firmware fw;
     show_output_0_on_head_1(fw);
@@ -1618,6 +1694,7 @@ TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_not_reported_pre
     ));
     EXPECT_EQ(fw.push_buffer_class, TEST_CORE_CHANNEL_CLASS);
     EXPECT_EQ(fw.allocated(TEST_WINDOW_CHANNEL_CLASS), 0u);
+    EXPECT_EQ(memory.scanout_requests, 0u);
 }
 
 // A chip whose heads report no output scaler leaves the chosen window with no channel, logged ahead of the window not
@@ -1695,8 +1772,8 @@ TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_whose_allocation
     }
 }
 
-// A window channel allocation failing in a way that may leave the firmware holding the channel fails the set-up with
-// its error, and the release then sends what `release_display_channel` sends for the window channel, then the core's
+// A window channel allocation that may leave the firmware holding the channel fails the set-up with its error, no base
+// buffer asked for, and the release sends what `release_display_channel` sends for the window channel, then the core's
 TEST(nvidia_display_engine, set_up_failing_at_the_window_channel_leaves_it_to_release_before_the_core_channel) {
     const int32_t errors[] = {ERR_TIMEOUT, ERR_BAD_MESSAGE};
     for (int32_t error : errors) {
@@ -1714,6 +1791,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_window_channel_leaves_it_to_re
 
         EXPECT_EQ(set_up(engine), error);
         EXPECT_EQ(fw.release_count(), 0u);
+        EXPECT_EQ(memory.scanout_requests, 0u);
 
         rm::handle display = fw.allocated(TEST_DISPLAY_CLASS);
         engine_firmware channel_releases;
@@ -1757,4 +1835,143 @@ TEST(nvidia_display_engine, release_returns_the_window_channels_error_ahead_of_t
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_WINDOW_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+}
+
+// Either AOC timing's base buffer, 1440 rows of 2560 4-byte pixels, 10240 bytes already a multiple of 256, and NVIDIA's
+// alignment of the surfaces the display engine scans out
+static constexpr uint64_t AOC_BASE_BUFFER_BYTES    = 0xE10000;
+static constexpr uint64_t NVIDIA_SURFACE_ALIGNMENT = 0x1000;
+
+// An 18-byte timing descriptor of 1366 by 768, an 85.5 MHz pixel clock over 1792 by 798 pixels, with the AOC's image
+// size and sync flags
+static constexpr uint8_t TIMING_1366_BY_768[] = {
+    0x66, 0x21, 0x56, 0xAA, 0x51, 0x00, 0x1E, 0x30, 0x46, 0x8F, 0x33, 0x00, 0x0F, 0x8C, 0x21, 0x00, 0x00, 0x1E,
+};
+
+// `TIMING_1366_BY_768`'s base buffer, 768 rows of 1366 4-byte pixels, 5464 bytes rounded up to 5632
+static constexpr uint64_t BASE_BUFFER_1366_BYTES = 0x420000;
+
+// Replaces the AOC's first timing in `g_edid`, the preferred one, with `TIMING_1366_BY_768`, which stays preferred
+static void put_1366_pixel_timing_first() {
+    uint8_t replaced_sum = 0;
+    for (uint32_t i = 0; i < sizeof(TIMING_1366_BY_768); i++) {
+        replaced_sum = static_cast<uint8_t>(replaced_sum + g_edid[TIMING_DESCRIPTORS_BYTE + i] - TIMING_1366_BY_768[i]);
+    }
+
+    string::memcpy(g_edid + TIMING_DESCRIPTORS_BYTE, TIMING_1366_BY_768, sizeof(TIMING_1366_BY_768));
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] + replaced_sum);
+}
+
+// Whether each of the `bytes` bytes of the scanout backing from `start` holds `value`
+static bool scanout_holds(const engine_video_memory& memory, uint64_t start, uint64_t bytes, uint8_t value) {
+    for (uint64_t i = start; i < start + bytes; i++) {
+        if (memory.scanout[i] != value) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Output 0's 1366 by 768 timing gets 768 rows 5632 bytes apart, rounded up from 5464, as scanout memory at NVIDIA's
+// alignment, cleared through one mapping with the bytes past it left as they were, logged, and kept by the release
+TEST(nvidia_display_engine, set_up_allocates_and_clears_the_chosen_outputs_base_buffer) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    put_1366_pixel_timing_first();
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(memory.scanout_requests, 1u);
+    EXPECT_EQ(memory.scanout_size, BASE_BUFFER_1366_BYTES);
+    EXPECT_EQ(memory.scanout_alignment, NVIDIA_SURFACE_ALIGNMENT);
+
+    EXPECT_EQ(memory.scanout_maps, 1u);
+    EXPECT_EQ(memory.scanout_unmaps, 1u);
+    EXPECT_TRUE(scanout_holds(memory, 0, BASE_BUFFER_1366_BYTES, 0));
+    EXPECT_TRUE(scanout_holds(memory, BASE_BUFFER_1366_BYTES, SCANOUT_GUARD_BYTES, SCANOUT_FILL));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's base buffer lies at 0x1000000 in video memory, its 768 rows 5632 bytes apart, and is "
+        "cleared to black"
+    ));
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(memory.scanout_releases, 0u);
+}
+
+// Scanout memory the video memory has no room for leaves output 0 with no base buffer, logged, the set-up `OK` and
+// nothing mapped
+TEST(nvidia_display_engine, set_up_gives_no_base_buffer_to_an_output_whose_memory_cannot_be_allocated) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 has no base buffer, as 0xE10000 bytes of video memory for it cannot be allocated"
+    ));
+    EXPECT_EQ(memory.scanout_requests, 1u);
+    EXPECT_EQ(memory.scanout_maps, 0u);
+}
+
+// A scanout allocation failing other than for room fails the set-up with its error, logged, with nothing mapped
+TEST(nvidia_display_engine, set_up_fails_with_the_error_of_a_base_buffer_allocation_failing_otherwise) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    engine_video_memory memory;
+    memory.scanout_allocate_result = ERR_INVALID_ARG;
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), ERR_INVALID_ARG);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: allocating 0xE10000 bytes of video memory for output 0's base buffer failed: -13"
+    ));
+    EXPECT_EQ(memory.scanout_maps, 0u);
+}
+
+// A mapping of the base buffer finding no room leaves output 0 with no base buffer and the set-up `OK`, and one failing
+// otherwise fails the set-up with its error, each logged, with the memory released and never unmapped
+TEST(nvidia_display_engine, set_up_releases_a_base_buffer_it_cannot_map) {
+    struct failure {
+        int32_t     error;
+        int32_t     result;
+        const char* line;
+    };
+
+    const failure failures[] = {
+        {ERR_NO_MEMORY,
+         OK,
+         "nvidia: output 0 has no base buffer, as mapping it for the CPU to clear it found no room, so its video "
+         "memory is released"},
+        {ERR_TIMEOUT,
+         ERR_TIMEOUT,
+         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for the CPU to clear it failed: -4, so "
+         "the memory is released"},
+        {ERR_BAD_STATE,
+         ERR_BAD_STATE,
+         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for the CPU to clear it failed: -5, so "
+         "the memory is released"},
+        {ERR_INVALID_ARG,
+         ERR_INVALID_ARG,
+         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for the CPU to clear it failed: -13, so "
+         "the memory is released"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        show_output_0_on_head_1(fw);
+        engine_video_memory memory;
+        memory.scanout_bytes = AOC_BASE_BUFFER_BYTES;
+        memory.scanout_map_result = failed.error;
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        EXPECT_EQ(memory.scanout_maps, 1u);
+        EXPECT_EQ(memory.scanout_releases, 1u);
+        EXPECT_EQ(memory.scanout_unmaps, 0u);
+    }
 }

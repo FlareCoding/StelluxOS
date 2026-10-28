@@ -1976,13 +1976,17 @@ src/nvidia-modeset/src/nvkms-rm.c
     common reports a crossbar, in display_active_heads.h,
     display_active_heads.cpp,
     kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it keeps the
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it keeps the
     display id of a head whose output resource request fails or whose display id
     names no connector, recording no connector or output resource for it, and
     once it finds the connector asserts the reply names an output resource when
     display common reports a crossbar and otherwise that the reply names the
     connector's output resource, then marks the head in the connector's owner
-    mask at the reply's index, past the mask's end, in display_active_heads.h
+    mask at the reply's index, past the mask's end, in display_active_heads.h,
+    and that it refuses to register a surface laid out as rows of pixels in
+    order unless its pitch is a multiple of 256 bytes, in display_light.h,
+    display_light.cpp, kernel/tests/graphics/nvidia_display_engine.test.cpp and
+    kernel/tests/graphics/nvidia_display_light.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2995,9 +2999,12 @@ src/nvidia-modeset/include/nvkms-types.h
     kernel/tests/graphics/nvidia_display_engine.test.cpp,
     NV_EVO_SCALE_FACTOR_1X, 1024, a scale factor of one, and
     NVEvoScalerTapsToNum's 2 for NV_EVO_SCALER_2TAPS, in display_light.cpp and
-    kernel/tests/graphics/nvidia_display_light.test.cpp, and that a head's
-    raster holds its size and positions as NvKmsPoint, in display_light.h and
-    kernel/tests/graphics/nvidia_display_light.test.cpp
+    kernel/tests/graphics/nvidia_display_light.test.cpp, that a head's raster
+    holds its size and positions as NvKmsPoint, in display_light.h and
+    kernel/tests/graphics/nvidia_display_light.test.cpp, and
+    NV_EVO_SURFACE_ALIGNMENT, 4 KiB, the alignment of every surface the display
+    engine scans out, in display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/interface/nvkms-api-types.h
