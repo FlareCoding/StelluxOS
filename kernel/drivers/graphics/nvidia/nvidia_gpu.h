@@ -31,8 +31,8 @@ namespace drivers {
  * `nvidia::bar1_video_memory`, which hands out the card's video memory and
  * maps it for the CPU through BAR1, and whose records are freed with the
  * driver, and its `nvidia::display_engine`, which never releases the instance
- * memory once cleared or the core channel's push buffer once allocated, as it
- * describes.
+ * memory once cleared or the core channel's push buffer or completion notifier
+ * once allocated, as it describes.
  *
  * `attach()` declines the card when a driver display is already registered
  * with gfxfb, when the chip table does not list the card's chip, or when a
@@ -369,10 +369,11 @@ namespace drivers {
  * display engine under the device with `nvidia::display_engine::set_up`, and
  * otherwise logs that it skips the display's windows, instance memory,
  * objects, capabilities, heads, display ids, outputs, EDIDs, DPCD, core
- * channel and its initial methods. When the set-up fails, as it always does
- * when BAR1 is not mapped, since `nvidia::bar1_video_memory::map_for_cpu` then
- * has no window to clear the display's instance memory through, `attach()`
- * fails as `nvidia::display_engine::set_up` describes, before MSI is set up.
+ * channel, its completion notifier and its initial methods. When the set-up
+ * fails, as it always does when BAR1 is not mapped, since
+ * `nvidia::bar1_video_memory::map_for_cpu` then has no window to clear the
+ * display's instance memory through, `attach()` fails as
+ * `nvidia::display_engine::set_up` describes, before MSI is set up.
  * Once `attach()` has enabled the GSP's vector, `detach()` first disables
  * every vector of the CPU interrupt tree as
  * `nvidia::disable_cpu_interrupt_tree` describes, so that the GSP's vector

@@ -885,7 +885,8 @@ int32_t nvidia_gpu_driver::attach() {
     } else {
         log::info(
             "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory, "
-            "objects, capabilities, heads, display ids, outputs, EDIDs, DPCD, core channel and its initial methods"
+            "objects, capabilities, heads, display ids, outputs, EDIDs, DPCD, core channel, its completion notifier "
+            "and its initial methods"
         );
     }
 

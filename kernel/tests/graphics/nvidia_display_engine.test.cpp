@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "common/string.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/core_channel.h"
 #include "drivers/graphics/nvidia/core_methods.h"
@@ -63,6 +64,21 @@ static constexpr uint8_t  DOUBLE_HEADS        = 2;
 static constexpr uint32_t INITIAL_METHODS_END = CORE_INITIAL_METHODS_PER_HEAD * DOUBLE_HEADS * 2 * sizeof(uint32_t);
 static constexpr uint32_t BAD_GET             = 0xFFFFFFFF;
 
+// NVIDIA's instance memory layout, restated: 8-byte hash table entries whose second word holds the client's low 14
+// bits, from bit 14 the record's offset in 32-byte units, 0x101 at 0x2020, and from bit 25 the channel's number
+static constexpr uint32_t NVIDIA_HASH_ENTRIES        = 1024;
+static constexpr uint64_t NVIDIA_ENTRY_BYTES         = 8;
+static constexpr uint32_t NVIDIA_CLIENT_MASK         = 0x3FFF;
+static constexpr uint32_t NVIDIA_RECORD_FIELD_SHIFT  = 14;
+static constexpr uint32_t NVIDIA_FIRST_RECORD_FIELD  = 0x101;
+static constexpr uint64_t NVIDIA_FIRST_RECORD_OFFSET = 0x2020;
+
+// A record's first word for snooped pages, read and write and pitch, the bytes of a record's address unit and NVIDIA's
+// 4 KiB notifier in those units
+static constexpr uint32_t NVIDIA_SNOOPED_PAGES_WORD_0 = 7;
+static constexpr uint64_t NVIDIA_RECORD_UNIT_BYTES    = 256;
+static constexpr uint64_t NVIDIA_NOTIFIER_UNITS       = 16;
+
 // The memory the video memory double maps, and the words standing in for the core channel's PUT and GET
 static uint8_t  g_video_memory[INSTANCE_MEMORY_BYTES];
 static uint32_t g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t) + 1];
@@ -92,11 +108,13 @@ public:
         int32_t    result;
     };
 
-    call     calls[MAX_CALLS] = {};
-    uint32_t call_count = 0;
-    uint32_t handle_count = 0;
-    refusal  refusals[2] = {};
-    uint8_t  heads = DOUBLE_HEADS;
+    call       calls[MAX_CALLS] = {};
+    uint32_t   call_count = 0;
+    uint32_t   handle_count = 0;
+    refusal    refusals[2] = {};
+    uint8_t    heads = DOUBLE_HEADS;
+    rm::handle reported_client = TEST_CLIENT; // the client `client()` reports, 0 making `bind` refuse
+    uint64_t   push_buffer_address = 0;       // the address `CONTROL_SET_DISPLAY_PUSH_BUFFER` last carried
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
         return answer(kind::allocation, object, class_id);
@@ -115,7 +133,11 @@ public:
         return answer(kind::release, object, 0);
     }
 
-    int32_t internal_control(uint32_t command, void*, size_t) override {
+    int32_t internal_control(uint32_t command, void* params, size_t) override {
+        if (command == rm::CONTROL_SET_DISPLAY_PUSH_BUFFER) {
+            push_buffer_address = static_cast<rm::display_push_buffer_params*>(params)->address;
+        }
+
         return answer(kind::internal_control, 0, command);
     }
 
@@ -124,7 +146,7 @@ public:
     }
 
     rm::handle client() const override {
-        return TEST_CLIENT;
+        return reported_client;
     }
 
     // The handle of the allocation of `class_id`, or 0 when none was made
@@ -253,7 +275,7 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
 }
 
 // Sets up `engine` under `TEST_DEVICE` for a card driving `address_bits` physical address bits, with four heads and
-// eight windows. PUT and GET are in `g_core_channel_registers`, GET reading `get`, and no push buffer page is freed
+// eight windows. PUT and GET are in `g_core_channel_registers`, GET reading `get`, and no DMA page is freed
 static int32_t set_up(
     display_engine& engine,
     uint8_t address_bits = FULL_ADDRESS_BITS,
@@ -273,6 +295,43 @@ static int32_t set_up(
     };
 
     return engine.set_up(regs, card, chip, TEST_DEVICE);
+}
+
+// The 32-bit word at `offset` in the instance memory, which the video memory double maps over `g_video_memory`
+static uint32_t instance_word(uint64_t offset) {
+    uint32_t word = 0;
+    string::memcpy(&word, g_video_memory + offset, sizeof(word));
+    return word;
+}
+
+// How many hash table entries name a context DMA
+static uint32_t used_entry_count() {
+    uint32_t used = 0;
+    for (uint32_t entry = 0; entry < NVIDIA_HASH_ENTRIES; entry++) {
+        if (instance_word(entry * NVIDIA_ENTRY_BYTES) != 0) {
+            used++;
+        }
+    }
+
+    return used;
+}
+
+// The first hash table entry naming `object`, or `NVIDIA_HASH_ENTRIES` when none does
+static uint32_t entry_of(rm::handle object) {
+    for (uint32_t entry = 0; entry < NVIDIA_HASH_ENTRIES; entry++) {
+        if (instance_word(entry * NVIDIA_ENTRY_BYTES) == object) {
+            return entry;
+        }
+    }
+
+    return NVIDIA_HASH_ENTRIES;
+}
+
+// The 256-byte unit the first record's words `index` and `index + 1` name, low word first
+static uint64_t first_record_unit(uint32_t index) {
+    uint64_t low = instance_word(NVIDIA_FIRST_RECORD_OFFSET + index * sizeof(uint32_t));
+    uint64_t high = instance_word(NVIDIA_FIRST_RECORD_OFFSET + (index + 1) * sizeof(uint32_t));
+    return low | (high << 32);
 }
 
 // An engine that has set up nothing sends no request on its release, which returns `OK`
@@ -436,6 +495,58 @@ TEST(nvidia_display_engine, set_up_failing_at_the_push_buffer_keeps_the_objects_
 
     EXPECT_EQ(engine.release(), OK);
     ASSERT_EQ(fw.call_count, first + 3);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+}
+
+// A set-up binds the notifier's context DMA, a new handle, to the core channel under the driver's client in the
+// instance memory's only entry, its first record naming one snooped page other than the push buffer's
+TEST(nvidia_display_engine, set_up_binds_the_completion_notifier_to_the_core_channel) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    rm::handle context_dma = FIRST_HANDLE + fw.handle_count - 1;
+    EXPECT_NE(context_dma, fw.allocated(TEST_CORE_CHANNEL_CLASS));
+
+    uint32_t entry = entry_of(context_dma);
+    ASSERT_NE(entry, NVIDIA_HASH_ENTRIES);
+    EXPECT_EQ(used_entry_count(), 1u);
+
+    uint32_t client_bits = TEST_CLIENT & NVIDIA_CLIENT_MASK;
+    uint32_t record_bits = NVIDIA_FIRST_RECORD_FIELD << NVIDIA_RECORD_FIELD_SHIFT;
+    EXPECT_EQ(instance_word(entry * NVIDIA_ENTRY_BYTES + sizeof(uint32_t)), client_bits | record_bits);
+
+    uint64_t first_unit = first_record_unit(1);
+    EXPECT_EQ(instance_word(NVIDIA_FIRST_RECORD_OFFSET), NVIDIA_SNOOPED_PAGES_WORD_0);
+    EXPECT_NE(first_unit, 0u);
+    EXPECT_EQ(first_unit % NVIDIA_NOTIFIER_UNITS, 0u);
+    EXPECT_EQ(first_record_unit(3), first_unit + NVIDIA_NOTIFIER_UNITS - 1);
+
+    ASSERT_NE(fw.push_buffer_address, 0u);
+    EXPECT_NE(first_unit, fw.push_buffer_address / NVIDIA_RECORD_UNIT_BYTES);
+}
+
+// The double's client of 0, which `bind` refuses, stands for a refused binding: the set-up fails with `ERR_BAD_STATE`
+// before any kick, writing no entry, and the core channel and the objects stay allocated until the release frees them
+TEST(nvidia_display_engine, set_up_failing_at_the_notifiers_binding_kicks_nothing_and_keeps_the_core_channel) {
+    engine_firmware fw;
+    fw.reported_client = 0;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)] = 0;
+
+    EXPECT_EQ(set_up(engine), ERR_BAD_STATE);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], 0u);
+    EXPECT_EQ(used_entry_count(), 0u);
+    EXPECT_EQ(fw.release_count(), 0u);
+    uint32_t first = fw.call_count;
+
+    EXPECT_EQ(engine.release(), OK);
+    ASSERT_EQ(fw.call_count, first + 5);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));

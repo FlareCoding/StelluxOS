@@ -340,6 +340,30 @@ int32_t display_engine::set_up(
         regs.read(CORE_CHANNEL_AREA + CHANNEL_GET)
     );
 
+    rc = m_core_notifier.allocate(card);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rm::handle notifier_context_dma = m_firmware.new_handle();
+    context_dma_memory notifier_memory = {
+        .in_video_memory = false,
+        .address = m_core_notifier.physical_address(),
+        .bytes = COMPLETION_NOTIFIER_BYTES,
+    };
+
+    rc = m_instance_memory.bind(notifier_context_dma, CORE_CHANNEL_NUMBER, notifier_memory);
+    if (rc != OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: the core channel's completion notifier lies at physical address 0x%lX, and its context DMA 0x%X is "
+        "bound to the core channel",
+        notifier_memory.address,
+        notifier_context_dma
+    );
+
     uint32_t* push_buffer = reinterpret_cast<uint32_t*>(m_core_push_buffer.virt);
     m_core_queue = new (m_core_queue_bytes) display_channel(push_buffer, regs.at(CORE_CHANNEL_AREA));
 
