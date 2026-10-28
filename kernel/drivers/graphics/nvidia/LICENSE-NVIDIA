@@ -2389,7 +2389,10 @@ src/common/inc/displayport/dpcd.h
     the link status's four bytes and the bits for a lane's clock recovery,
     equalization and symbol lock, the lanes' alignment and the first port's
     sync, in displayport.h, displayport.cpp and
-    kernel/tests/graphics/nvidia_displayport.test.cpp
+    kernel/tests/graphics/nvidia_displayport.test.cpp, and NV_DPCD_REV and
+    NV_DPCD_TRAINING_AUX_RD_INTERVAL, 0x00000 and 0x0000E, the receiver
+    capability field's address and the byte read before it, in display_dpcd.h
+    and kernel/tests/graphics/nvidia_display_dpcd.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_linkconfig.h
@@ -2409,18 +2412,30 @@ src/common/displayport/src/dp_connectorimpl.cpp
     displayport.h, displayport.cpp and
     kernel/tests/graphics/nvidia_displayport.test.cpp, enhanced framing run when
     the monitor takes it, a mode without a pixel clock taken as carried and 4
-    lanes taken for a monitor reporting 0, in displayport.h, and a connector
-    asking for its display id's digital facts as it is made and going on when
-    they are refused, in display_outputs.h
+    lanes taken for a monitor reporting 0, in displayport.h, a connector asking
+    for its display id's digital facts as it is made and going on when they are
+    refused, in display_outputs.h, and a connector asking display common for the
+    GPU's DisplayPort capabilities as it is made, before any DPCD read, and
+    handing the library whether the GPU trains PHY repeaters, in display_dpcd.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_configcaps.cpp
     a link taken as trained when each of its lanes has its clock recovered, its
     equalization done and its symbols locked and the lanes are aligned with each
     other, in displayport.h, displayport.cpp and
-    kernel/tests/graphics/nvidia_displayport.test.cpp, and a monitor's lane
-    count or rate code it does not take mapped onto one it does, in
-    displayport.h
+    kernel/tests/graphics/nvidia_displayport.test.cpp, a monitor's lane count or
+    rate code it does not take mapped onto one it does, in displayport.h, that
+    the DisplayPort library reads the byte at 0x0000E, then the receiver
+    capability field's 16 bytes from its extended copy when that byte's bit 7 is
+    set and from 0x00000 otherwise, then the PHY repeaters' 8 bytes, in
+    display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that it takes the
+    field from 0x00000 when the byte cannot be read, reads the field and the PHY
+    repeaters' bytes with a retry count of 16, reads the PHY repeaters' bytes
+    unless display common reports that the GPU does not train PHY repeaters,
+    going on without them when that read fails, and makes the reads again up to
+    3 more times while the field cannot be read, taking the DPCD as offline when
+    it never can, in display_dpcd.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_evoadapter.h
@@ -2431,9 +2446,17 @@ src/common/displayport/inc/dp_evoadapter.h
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
     the GPU's reports that its links support forward error correction and take
     the increased watermark limits, in displayport.h and
-    kernel/tests/graphics/nvidia_displayport.test.cpp, and the transfer unit
-    size, watermark and horizontal and vertical blanking symbols a single
-    stream's configuration takes, in displayport.h
+    kernel/tests/graphics/nvidia_displayport.test.cpp, the transfer unit size,
+    watermark and horizontal and vertical blanking symbols a single stream's
+    configuration takes, in displayport.h, NV0073_CTRL_CMD_DP_AUXCH_CTRL,
+    0x731341, the control sending one transaction over a display id's AUX
+    channel, its parameters' layout, the most bytes one transaction carries, the
+    command of a native read, the reply types and the size sent as the bytes
+    asked for less 1 and given back as the bytes the transaction moved, in rm.h,
+    display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that
+    NV0073_CTRL_CMD_DP_SET_MANUAL_DISPLAYPORT turns off the firmware's own
+    retries of a deferred reply, in display_dpcd.h
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/dp/nvdp-connector.cpp
@@ -2774,7 +2797,16 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dfp.h
 src/common/displayport/src/dp_evoadapter.cpp
     that the DisplayPort library asks display common for a display id's digital
     facts and returns without them when the request is refused, in
-    display_outputs.h
+    display_outputs.h, that it sends an AUX transaction with its parameters
+    zeroed but for the subdevice, the display id, the command, the address and
+    the size, in display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that it sends each
+    AUX transaction up to 3 times, sleeping as long as the firmware says after
+    each, while the firmware fails it and names a time to retry after, takes the
+    firmware's timeout as a deferred reply, tells the firmware to leave the
+    DisplayPort hardware to the library as it is made and takes the GPU as
+    training PHY repeaters unless display common reports that it does not, in
+    display_dpcd.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-dpy.c
@@ -2799,6 +2831,27 @@ src/common/displayport/inc/dp_edid.h
     timeout for reading the EDID again, and ddcAddrList, its three bus addresses
     for the EDID, in display_edid.h
     SPDX-FileCopyrightText: Copyright (c) 2010-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/displayport/dpcd14.h
+    NV_DPCD14_TRAINING_AUX_RD_INTERVAL_EXTENDED_RX_CAP, bit 7 of the byte at
+    0x0000E, set when the receiver capability field has an extended copy,
+    NV_DPCD14_EXTENDED_REV, 0x02200, the extended copy's address, and
+    NV_DPCD14_LT_TUNABLE_PHY_REPEATER_REV, 0xF0000, the PHY repeaters' first
+    capability byte, in display_dpcd.h and
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/src/dp_auxretry.cpp
+    that the DisplayPort library asks again for an AUX read the monitor defers
+    or acknowledges with some but not all of the bytes, up to the retry count
+    its caller names, and without counting it for as long as the monitor
+    acknowledges more bytes than asked for, in display_dpcd.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/inc/dp_auxretry.h
+    minimumRetriesOnDefer, 7, the retry count of an AUX read whose caller names
+    none, in display_dpcd.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,

@@ -339,6 +339,38 @@ struct edid_params {
 
 static_assert(sizeof(edid_params) == 2064, "NVIDIA's layout of GET_EDID_V2's parameters");
 
+// NVIDIA's NV0073_CTRL_CMD_DP_AUXCH_CTRL, the control to display common that sends one transaction over a DisplayPort
+// display id's AUX channel, the side channel to the monitor's DPCD registers
+constexpr uint32_t CONTROL_DP_AUX = 0x731341;
+
+// NVIDIA's NV0073_CTRL_DP_AUXCH_MAX_DATA_SIZE, the most bytes one AUX transaction carries
+constexpr uint32_t AUX_DATA_MAX_BYTES = 16;
+
+// The parameters of `CONTROL_DP_AUX`, whose reply fills `data`, `size` and `reply`
+struct aux_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t display_id;      // a single bit
+    uint8_t  is_address_only; // NVIDIA's bAddrOnly, for I2C transactions only
+    uint32_t command;
+    uint32_t address;         // a DPCD address, 20 bits
+    uint8_t  data[AUX_DATA_MAX_BYTES];
+    uint32_t size;            // sent as the bytes asked for less 1, and given back as the bytes the transaction moved
+    uint32_t reply;           // NVIDIA's replyType, how the transaction ended
+    uint32_t retry_time_ms;   // NVIDIA's retryTimeMs
+};
+
+// `aux_params::command` for a DPCD read, NVIDIA's AUXCH_CMD_TYPE_AUX (bit 3) with AUXCH_CMD_REQ_TYPE_READ (bits 1 to 0)
+constexpr uint32_t AUX_COMMAND_DPCD_READ = 0x9;
+
+// `aux_params::reply`'s values, NVIDIA's NV0073_CTRL_DP_AUXCH_REPLYTYPE_*: the monitor acknowledged the transaction,
+// refused it, asked for it again later, or did not answer in time
+constexpr uint32_t AUX_REPLY_ACK     = 0;
+constexpr uint32_t AUX_REPLY_NACK    = 1;
+constexpr uint32_t AUX_REPLY_DEFER   = 2;
+constexpr uint32_t AUX_REPLY_TIMEOUT = 3;
+
+static_assert(sizeof(aux_params) == 48, "NVIDIA's layout of DP_AUXCH_CTRL's parameters");
+
 // NVIDIA's NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, the control that gives the firmware where a display
 // channel's push buffer lies, sent before the channel's allocation
 constexpr uint32_t CONTROL_SET_DISPLAY_PUSH_BUFFER = 0x20800A58;

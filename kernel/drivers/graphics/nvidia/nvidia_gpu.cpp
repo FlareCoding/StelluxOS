@@ -9,6 +9,7 @@
 #include "drivers/graphics/nvidia/core_channel.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/display_channel.h"
+#include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_edid.h"
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_ids.h"
@@ -282,8 +283,45 @@ static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
     }
 }
 
-// Reads the EDID of each connected output's monitor into one `edid::monitor` on the unprivileged heap, as it is too
-// large for the stack, and logs each EDID that parses
+// Writes each of `count` bytes, at least one, into `text` as two hex digits, with a space between bytes and a null
+// character after the last, so `text` holds 3 characters per byte
+static void format_bytes(const uint8_t* bytes, uint32_t count, char* text) {
+    static constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
+    for (uint32_t index = 0; index < count; index++) {
+        uint8_t byte = bytes[index];
+        char* pair = text + index * 3;
+        pair[0] = HEX_DIGITS[byte >> 4];
+        pair[1] = HEX_DIGITS[byte & 0xF];
+        pair[2] = index + 1 < count ? ' ' : '\0';
+    }
+}
+
+// Logs the bytes of the DPCD capabilities an output's monitor reports, with its PHY repeaters'
+static void log_dpcd(uint8_t output_index, const nvidia::dpcd_capabilities& dpcd) {
+    char receiver[nvidia::DPCD_RECEIVER_CAPABILITY_BYTES * 3];
+    char phy_repeaters[nvidia::DPCD_PHY_REPEATER_CAPABILITY_BYTES * 3];
+    format_bytes(dpcd.receiver, nvidia::DPCD_RECEIVER_CAPABILITY_BYTES, receiver);
+    format_bytes(dpcd.phy_repeaters, nvidia::DPCD_PHY_REPEATER_CAPABILITY_BYTES, phy_repeaters);
+    uint32_t receiver_address = dpcd.is_extended
+        ? nvidia::DPCD_EXTENDED_RECEIVER_CAPABILITIES
+        : nvidia::DPCD_RECEIVER_CAPABILITIES;
+
+    log::info(
+        "nvidia: output %u's monitor reports the DPCD capabilities %s from 0x%05X",
+        output_index,
+        receiver,
+        receiver_address
+    );
+    log::info(
+        "nvidia: output %u's PHY repeater capabilities from 0x%05X are %s",
+        output_index,
+        nvidia::DPCD_PHY_REPEATER_CAPABILITIES,
+        phy_repeaters
+    );
+}
+
+// Reads the EDID and the DPCD capabilities of each connected output's monitor, the EDID into one `edid::monitor` on the
+// unprivileged heap, as it is too large for the stack, and logs each EDID that parses and the capabilities read
 static int32_t read_connected_monitors(
     nvidia::firmware& fw,
     nvidia::rm::handle display_common,
@@ -311,6 +349,17 @@ static int32_t read_connected_monitors(
 
         if (is_parsed) {
             log_monitor(index, *monitor);
+        }
+
+        nvidia::dpcd_capabilities dpcd = {};
+        bool is_read = false;
+        rc = nvidia::read_output_dpcd(fw, display_common, output.display_id, dpcd, is_read);
+        if (rc != nvidia::OK) {
+            break;
+        }
+
+        if (is_read) {
+            log_dpcd(index, dpcd);
         }
     }
 
@@ -1094,7 +1143,7 @@ int32_t nvidia_gpu_driver::attach() {
     } else {
         log::info(
             "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory, "
-            "objects, capabilities, heads, display ids, outputs, EDIDs and core channel"
+            "objects, capabilities, heads, display ids, outputs, EDIDs, DPCD and core channel"
         );
     }
 
