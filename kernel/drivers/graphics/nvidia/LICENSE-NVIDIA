@@ -1932,6 +1932,9 @@ src/nvidia-modeset/src/nvkms-rm.c
     and kernel/tests/graphics/nvidia_core_channel.test.cpp, that it allocates
     the core channel as instance 0 with PUT and GET at offset 0, in rm.h,
     core_channel.h, core_channel.cpp and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, that it allocates each
+    window's channel as the window's instance, of the first window channel class
+    its class list holds, in core_channel.h, core_channel.cpp and
     kernel/tests/graphics/nvidia_core_channel.test.cpp, that it sets PRESERVE_HW
     on the display before releasing its core, base and window channels once it
     has restored the console itself, so that they stay allocated, releasing each
@@ -2605,9 +2608,12 @@ src/nvidia/src/kernel/gpu/disp/kern_disp.c
 
 src/nvidia/src/kernel/gpu/disp/arch/v03/kern_disp_0300.c
     the rule that NVIDIA's driver allows a window's channel only for a window
-    the static information's windowPresentMask names, in display_info.h, and
-    that the core channel's area spans 64 KiB, 32 KiB for the assembled state
-    and 32 KiB for the armed state, in core_channel.h
+    the static information's windowPresentMask names, in display_info.h,
+    core_channel.h, display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that the core
+    channel's area spans 64 KiB, 32 KiB for the assembled state and 32 KiB for
+    the armed state, and that a window channel's area spans 4 KiB, in
+    core_channel.h
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kern_disp_nvoc.c
@@ -2641,6 +2647,8 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     kernel/tests/graphics/nvidia_instance_memory.test.cpp,
     NV_UDISP_FE_CHN_ASSY_BASEADR_CORE, where the core channel's area begins, in
     core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp,
+    NV_UDISP_FE_CHN_ASSY_BASEADR_WIN, where each window's channel's area begins,
+    in core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp,
     NV_UDISP_FE_CHN_ARMED_BASEADR_CORE, where its armed state begins, in
     core_channel.h, NV_PDISP_CHN_NUM_CORE, the core channel's number, in
     core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
@@ -2809,10 +2817,10 @@ src/nvidia/src/kernel/gpu/disp/disp_channel.c
     channel's push buffer with DISPLAY_CHANNEL_PUSHBUFFER before allocating the
     channel, marked valid, with its address space, address, limit and snooping
     and the channel's class and instance, in rm.h, core_channel.h,
-    core_channel.cpp and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
-    that it builds that control from the push buffer's context DMA that the
-    allocation names, drops the control's result and allocates the channel, in
-    core_channel.h
+    core_channel.cpp, kernel/tests/graphics/nvidia_core_channel.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it builds
+    that control from the push buffer's context DMA that the allocation names,
+    drops the control's result and allocates the channel, in core_channel.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/rmapi/resource_list.h
@@ -2849,9 +2857,12 @@ src/nvidia-modeset/src/nvkms-evo.c
     kernel/tests/graphics/nvidia_display_light.test.cpp, that a scaler that does
     not scale takes the fewest taps its display class allows, in
     display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp,
-    and that when the bandwidth check refuses a mode it lowers the heads' usage
+    that when the bandwidth check refuses a mode it lowers the heads' usage
     bounds a step at a time, removing the base layer's formats of 4, then 2,
-    then 1 bytes a pixel last, before refusing the mode, in display_light.h
+    then 1 bytes a pixel last, before refusing the mode, in display_light.h,
+    and that it frees the window channels before the core channel, in
+    display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-evo3.c
@@ -2873,8 +2884,12 @@ src/nvidia-modeset/src/nvkms-evo3.c
     display classes' scalers 2 taps at the fewest, takes any failed request as a
     refused mode and asks about a mode whose sync and back porch take no line,
     in display_light.h, display_light.cpp and
-    kernel/tests/graphics/nvidia_display_light.test.cpp, and that it names a
-    window for each usable layer of every head it asks about, in display_light.h
+    kernel/tests/graphics/nvidia_display_light.test.cpp, that it names a window
+    for each usable layer of every head it asks about, in display_light.h, and
+    that it loads a window channel's input scaler's coefficients only for a
+    window reporting an input scaler while no usable head reports an output
+    scaler, and its color conversion tables, curves for HDR monitors, only for a
+    window reporting them, in chip.h and display_engine.h
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-modeset.c
@@ -2942,7 +2957,9 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     (NV_DISP_NOTIFIER), in latch_rules.h, its not begun status, in
     kernel/tests/graphics/nvidia_latch_rules.test.cpp, the class number
     NVC67D_CORE_CHANNEL_DMA, which chip.cpp gives GA102's core channel, in
-    chip.cpp and kernel/tests/graphics/nvidia.test.cpp, and the methods
+    chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_core_channel.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the methods
     NVC67D_HEAD_SET_OUTPUT_SCALER_COEFF_VALUE,
     NVC67D_HEAD_SET_DESKTOP_COLOR_ALPHA_RED and
     NVC67D_HEAD_SET_DESKTOP_COLOR_GREEN_BLUE for head 0, the stride of 0x400 to
@@ -2950,6 +2967,14 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     bits 19:12 and ALPHA_RED's ALPHA in bits 7:0, in rm.h, core_methods.cpp and
     kernel/tests/graphics/nvidia_core_methods.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/clc67e.h
+    the class number NVC67E_WINDOW_CHANNEL_DMA, which chip.cpp gives GA102's
+    window channels, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_core_channel.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+
 src/nvidia-modeset/include/nvkms-types.h
     the size of a display channel's push buffer, 4 KiB, in display_channel.h,
     kernel/tests/graphics/nvidia_display_channel.test.cpp and

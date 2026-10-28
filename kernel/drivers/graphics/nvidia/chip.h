@@ -86,6 +86,9 @@ struct chip_display {
     uint32_t display_class;      // NVIDIA's class of the display object, the parent of the display engine's channels
     uint32_t core_channel_class; // NVIDIA's class of the core channel, which sets up heads, links and windows' heads
 
+    uint32_t window_channel_class;      // NVIDIA's class of a window channel, which sets up what its window scans out
+    bool     heads_have_output_scalers; // the heads report output scalers, so a window takes no scaler coefficients
+
     chip_displayport displayport;
 };
 

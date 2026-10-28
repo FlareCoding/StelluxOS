@@ -38,10 +38,12 @@ namespace drivers::nvidia {
  * is built with, and the display engine's registers only through the
  * `registers` passed to `set_up`, whose core channel area it keeps until
  * `release`. The instance memory is never released once cleared, and nothing
- * frees the push buffer once allocated, since the display engine's registers
+ * frees any push buffer once allocated, since the display engine's registers
  * may name either from the moment its address is sent, and a channel released
  * with the hardware kept as it is stays allocated in the hardware. The
  * notifier's page is never freed either, as `completion_notifier` describes.
+ * The engine also owns the channel of the window chosen to light first and
+ * that channel's push buffer.
  */
 class display_engine {
 public:
@@ -115,27 +117,42 @@ public:
      * 0, on the boot head, else head 0, with that head's lowest window, as
      * `find_light_target` gives them, and log the choice or why none is made:
      * no connected output having a mode, every mode being refused, or the
-     * request not being allocated. Each output's modes are kept on the
-     * unprivileged heap from the monitors' reads to the choice, or to
-     * `release` when the set-up fails before it, and the other facts read are
-     * not kept. Each request spins on the calling CPU, waiting for its reply
-     * as `firmware` describes, and so does each wait for GET, for at most 5
-     * seconds. `read_output_edid` also spins before each reread of an EDID as
-     * it describes. `set_up` must be called at most once, as
+     * request not being allocated. Then, when an output is chosen, allocate
+     * the channel of its window: check that the chip's heads report output
+     * scalers and that the window is among the present windows read, allocate
+     * a push buffer in DMA pages for the channel, then the channel with
+     * `allocate_window_channel`, and log the channel's handle, where its push
+     * buffer lies and one read of its PUT and GET. The channel takes no
+     * initial method. NVIDIA writes a window channel's scaler coefficients
+     * only for a window reporting an input scaler while no usable head reports
+     * an output scaler, and the chip table says whether the chip's heads
+     * report one. The driver also leaves out the color tables NVIDIA writes
+     * for a window reporting them, since they are curves for HDR monitors.
+     * When the chip's heads report no output scaler, the window is not among
+     * those read, its push buffer's pages cannot be allocated, or a request
+     * for its channel is refused or cannot be allocated, log why the window
+     * has no channel and return `OK`, which leaves the driver attached as when
+     * no output is chosen. Each output's modes are kept on the unprivileged
+     * heap from the monitors' reads to the choice, or to `release` when the
+     * set-up fails before it, and the other facts read are not kept. Each
+     * request spins on the calling CPU, waiting for its reply as `firmware`
+     * describes, and so does each wait for GET, for at most 5 seconds.
+     * `read_output_edid` also spins before each reread of an EDID as it
+     * describes. `set_up` must be called at most once, as
      * `instance_memory::set_up` must, and since it waits on video memory's
      * lock and on the card as `instance_memory` describes, it must never run
      * in an interrupt handler or under a spinlock, and on a thread that cannot
      * sleep, such as the boot thread, must run only while no other thread can
      * call into video memory or the firmware.
      * @param regs The card's BAR0 registers, through which the core channel's
-     * methods are kicked and its PUT and GET read. BAR0 must stay mapped until
-     * `release` returns, since the engine keeps a view of the channel's area
-     * until then.
+     * methods are kicked and its PUT and GET read, and the window channel's
+     * PUT and GET read. BAR0 must stay mapped until `release` returns, since
+     * the engine keeps a view of the core channel's area until then.
      * @param card The card's DMA profile, for the push buffer's pages and the
      * notifier's page.
      * @param chip The chip table's entry for the card's chip, whose display
-     * entry gives the display's limits and classes and what the chip's
-     * DisplayPort links can do.
+     * entry gives the display's limits and classes, whether its heads report
+     * output scalers and what the chip's DisplayPort links can do.
      * @param device The driver's device, the parent of the display's objects.
      * @return `OK`, with the firmware holding the instance memory's address,
      * the display's objects, the core channel and its push buffer's address,
@@ -166,10 +183,13 @@ public:
      * multiple of 4, `ERR_BAD_STATE`, each logged as `display_channel`
      * describes and here. When a request to the bandwidth check fails other
      * than with `ERR_FIRMWARE` or `ERR_NO_MEMORY`, the set-up fails with its
-     * error, logged as `choose_first_light` describes. The display's objects
-     * and the core channel stay allocated once allocated, even after a later
-     * step fails, until `release`, and the completion notifier stays bound to
-     * the core channel once bound.
+     * error, logged as `choose_first_light` describes, and when the window
+     * channel's allocation fails other than with `ERR_FIRMWARE` or
+     * `ERR_NO_MEMORY`, the set-up fails with that error, logged as
+     * `allocate_window_channel` describes. The display's objects and the
+     * channels stay allocated once allocated, even after a later step fails,
+     * until `release`, and the completion notifier stays bound to the core
+     * channel once bound.
      */
     int32_t set_up(
         registers& regs,
@@ -181,17 +201,20 @@ public:
     /**
      * @brief Drop the core channel's queue of methods, so nothing writes the
      * released channel's area, free the outputs' modes if `set_up` kept them,
-     * then release the core channel, once `set_up` allocated it or the
-     * firmware may hold it after a failed allocation, as
-     * `release_core_channel` describes, then the display's objects, once
-     * `set_up` allocated them, as `release_display_objects` describes. The
-     * core channel is released first, with the hardware kept as it is, so the
-     * heads the boot firmware lit keep scanning out the boot framebuffer. Its
-     * requests spin on the calling CPU as `set_up`'s do.
+     * then release the chosen window's channel and then the core channel, each
+     * once `set_up` allocated it or the firmware may hold it after a failed
+     * allocation, as `release_display_channel` describes, then the display's
+     * objects, once `set_up` allocated them, as `release_display_objects`
+     * describes. The channels are released first, with the hardware kept as it
+     * is, so the heads the boot firmware lit keep scanning out the boot
+     * framebuffer, and the window's before the core's, as NVIDIA's modesetting
+     * module releases them. Its requests spin on the calling CPU as `set_up`'s
+     * do.
      * @return `OK` when every release succeeds or nothing is allocated, else
-     * the core channel's error ahead of the objects', each logged as the
-     * release describes. The objects are released whatever the core channel's
-     * release returns, and a later call releases nothing and returns `OK`.
+     * the window channel's error ahead of the core channel's and the core
+     * channel's ahead of the objects', each logged as the release describes.
+     * The channels and the objects are released whatever an earlier release
+     * returns, and a later call releases nothing and returns `OK`.
      */
     int32_t release();
 
@@ -201,6 +224,8 @@ private:
     display_objects m_objects = {};           // all 0 before `set_up` allocates them and after `release`
     rm::handle      m_core_channel = 0;       // 0 before `set_up` allocates it and after `release`
     dma::buffer     m_core_push_buffer = {};
+    rm::handle      m_window_channel = 0;     // the chosen window's, 0 before `set_up` allocates it and after `release`
+    dma::buffer     m_window_push_buffer = {};
     output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
 
     // The core channel's completion notifier, its page allocated and its context DMA bound to the channel by `set_up`

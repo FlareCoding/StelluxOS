@@ -48,11 +48,13 @@ static constexpr uint8_t NVIDIA_MAX_HEADS = 4;
 // left 0, as reading the heads never uses them
 static constexpr rm::handle   TEST_DISPLAY_COMMON = 0x0005000B;
 static constexpr chip_display TEST_DISPLAY        = {
-    .head_count         = 4,
-    .window_count       = 8,
-    .display_class      = 0,
-    .core_channel_class = 0,
-    .displayport        = {},
+    .head_count                = 4,
+    .window_count              = 8,
+    .display_class             = 0,
+    .core_channel_class        = 0,
+    .window_channel_class      = 0,
+    .heads_have_output_scalers = false,
+    .displayport               = {},
 };
 
 // A firmware that records the controls sent to it in order and answers each with its own entry of `results`, and `OK`
@@ -463,11 +465,13 @@ TEST(nvidia_display_heads, the_first_check_a_report_fails_refuses_it) {
 
 // A chip of 2 heads, fewer than `DISPLAY_HEADS_MAX`, with the classes left 0
 static constexpr chip_display TWO_HEAD_DISPLAY = {
-    .head_count         = 2,
-    .window_count       = 8,
-    .display_class      = 0,
-    .core_channel_class = 0,
-    .displayport        = {},
+    .head_count                = 2,
+    .window_count              = 8,
+    .display_class             = 0,
+    .core_channel_class        = 0,
+    .window_channel_class      = 0,
+    .heads_have_output_scalers = false,
+    .displayport               = {},
 };
 
 // The chip's own head count, not `DISPLAY_HEADS_MAX`, bounds the count, the head mask and a fixed window's head

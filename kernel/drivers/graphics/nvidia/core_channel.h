@@ -17,6 +17,16 @@ constexpr uint32_t CORE_CHANNEL_AREA = 0x680000;
 // `instance_memory::bind` takes to bind a context DMA to the core channel
 constexpr uint32_t CORE_CHANNEL_NUMBER = 0;
 
+// NVIDIA's NV_UDISP_FE_CHN_ASSY_BASEADR_WIN(0), where window 0's channel's 4 KiB area in BAR0 begins: PUT and GET and
+// the state its methods assemble. Each next window's channel's area follows the one before
+constexpr uint32_t WINDOW_CHANNEL_AREAS = 0x690000;
+constexpr uint32_t WINDOW_CHANNEL_AREA_BYTES = 0x1000;
+
+// Where `window`'s channel's area begins in BAR0, NVIDIA's NV_UDISP_FE_CHN_ASSY_BASEADR_WIN(window)
+constexpr uint32_t window_channel_area(uint8_t window) {
+    return WINDOW_CHANNEL_AREAS + window * WINDOW_CHANNEL_AREA_BYTES;
+}
+
 /**
  * @brief Give the firmware the core channel's push buffer, then allocate the
  * core channel under the display, in the order NVIDIA's kernel-side driver
@@ -43,7 +53,7 @@ constexpr uint32_t CORE_CHANNEL_NUMBER = 0;
  * when the allocation fails.
  * @param out Receives the channel's handle, from `firmware::new_handle()`, on
  * `OK` and on the allocation's `ERR_TIMEOUT` or `ERR_BAD_MESSAGE`, after which
- * the firmware may hold the channel, so that `release_core_channel` can
+ * the firmware may hold the channel, so that `release_display_channel` can
  * release it, where NVIDIA's modesetting module releases no channel whose
  * allocation failed. It is left unchanged on any other error.
  * @return `OK`, or the error `firmware::internal_control` returns for the push
@@ -61,23 +71,56 @@ int32_t allocate_core_channel(
 );
 
 /**
- * @brief Release the core channel after asking the display to keep the display
- * engine's hardware as it is through the release, so the heads the boot
- * firmware lit keep scanning out the boot framebuffer. NVIDIA's modesetting
- * module asks the same before releasing its core, base and window channels,
- * but only once it has restored the console itself. A channel released that
- * way stays allocated in the hardware, so its push buffer must stay allocated
- * for good, where NVIDIA's modesetting module frees the push buffer right
- * after the release.
+ * @brief Give the firmware a window channel's push buffer, then allocate the
+ * channel under the display, as `allocate_core_channel` does the core
+ * channel's, with the chip's window channel class and the window as the
+ * instance in both requests, as NVIDIA's modesetting module allocates each
+ * window's channel. A window channel is the display channel that sets up what
+ * its window scans out. The caller must check first that the window is among
+ * those `read_present_windows` reports present, as NVIDIA's kernel-side driver
+ * checks each window channel's instance against those windows and refuses any
+ * other.
+ * @param fw The driver's firmware, whose client must be allocated.
+ * @param display The display object, the parent of the display engine's
+ * channels.
+ * @param chip The chip table's display entry, which gives the window channel's
+ * class, where NVIDIA's modesetting module takes the first window channel
+ * class the GPU's class list holds.
+ * @param window The window whose channel is allocated, below the chip's window
+ * count.
+ * @param push_buffer The physical address of the channel's push buffer, which
+ * must be as `allocate_core_channel` asks of the core channel's.
+ * @param out Receives the channel's handle as `allocate_core_channel`'s does.
+ * @return What `allocate_core_channel` returns, for this channel's requests.
+ */
+int32_t allocate_window_channel(
+    firmware& fw,
+    rm::handle display,
+    const chip_display& chip,
+    uint8_t window,
+    uint64_t push_buffer,
+    rm::handle& out
+);
+
+/**
+ * @brief Release a display channel, the core channel or a window channel,
+ * after asking the display to keep the display engine's hardware as it is
+ * through the release, so the heads the boot firmware lit keep scanning out
+ * the boot framebuffer. NVIDIA's modesetting module asks the same before
+ * releasing its core, base and window channels, but only once it has restored
+ * the console itself. A channel released that way stays allocated in the
+ * hardware, so its push buffer must stay allocated for good, where NVIDIA's
+ * modesetting module frees the push buffer right after the release.
  * @param fw The driver's firmware.
  * @param display The display object the channel was allocated under.
- * @param channel The handle `allocate_core_channel` gave.
+ * @param channel The handle `allocate_core_channel` or
+ * `allocate_window_channel` gave.
  * @return `OK`, or the first error of `firmware::control` for the flag and
  * `firmware::release` for the channel, each logged as it describes. The
  * channel is released even when the flag fails, as NVIDIA's modesetting module
  * releases it, and the boot framebuffer may then go dark.
  */
-int32_t release_core_channel(firmware& fw, rm::handle display, rm::handle channel);
+int32_t release_display_channel(firmware& fw, rm::handle display, rm::handle channel);
 
 } // namespace drivers::nvidia
 

@@ -12,6 +12,7 @@
 TEST_SUITE(nvidia_core_channel);
 
 using drivers::nvidia::allocate_core_channel;
+using drivers::nvidia::allocate_window_channel;
 using drivers::nvidia::chip_display;
 using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_FIRMWARE;
@@ -21,11 +22,12 @@ using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::firmware;
 using drivers::nvidia::OK;
-using drivers::nvidia::release_core_channel;
+using drivers::nvidia::release_display_channel;
+using drivers::nvidia::window_channel_area;
 namespace rm = drivers::nvidia::rm;
 
-// NVIDIA's commands, their parameters' sizes, the offsets of their fields and the values the driver sends in them, and
-// where the core channel's area begins and the channel's number, restated to hold the requests to NVIDIA's layouts
+// NVIDIA's commands, their parameters' sizes and fields' offsets, the values the driver sends, the core and window
+// channels' areas in BAR0 and the core channel's number, restated to hold the requests to NVIDIA's layouts
 static constexpr uint32_t NVIDIA_PUSH_BUFFER_CONTROL    = 0x20800A58;
 static constexpr size_t   NVIDIA_PUSH_BUFFER_BYTES      = 40;
 static constexpr uint32_t ADDRESS_SPACE_OFFSET          = 0;
@@ -38,29 +40,35 @@ static constexpr uint32_t VALID_OFFSET                  = 36;
 static constexpr uint32_t NVIDIA_SYSTEM_MEMORY          = 1;
 static constexpr uint64_t NVIDIA_PUSH_BUFFER_LIMIT      = 0xFFF;
 static constexpr size_t   NVIDIA_CHANNEL_PARAMS_BYTES   = 32;
+static constexpr uint32_t CHANNEL_INSTANCE_OFFSET       = 0;
 static constexpr uint32_t NVIDIA_RELEASE_FLAGS_CONTROL  = 0x50700117;
 static constexpr size_t   NVIDIA_RELEASE_FLAGS_BYTES    = 8;
 static constexpr uint32_t RELEASE_FLAGS_OFFSET          = 4;
 static constexpr uint32_t NVIDIA_PRESERVE_HW            = 1;
 static constexpr uint32_t NVIDIA_CORE_CHANNEL_AREA      = 0x680000;
 static constexpr uint32_t NVIDIA_CORE_CHANNEL_NUMBER    = 0;
+static constexpr uint32_t NVIDIA_WINDOW_CHANNEL_AREAS   = 0x690000;
+static constexpr uint32_t NVIDIA_WINDOW_AREA_BYTES      = 4096;
 
-// The double's client, the display's handle and the first handle the double gives, a made-up push buffer address and a
-// handle no call gives
+// The double's client, the display's handle and the first handle the double gives, a made-up push buffer address, a
+// handle no call gives and a window other than window 0
 static constexpr rm::handle TEST_CLIENT      = 0xC1D0000B;
 static constexpr rm::handle TEST_DISPLAY     = 0x0005000B;
 static constexpr rm::handle FIRST_HANDLE     = 0x0005000D;
 static constexpr uint64_t   TEST_PUSH_BUFFER = 0x1234567000;
 static constexpr rm::handle UNTOUCHED        = 0xDEAD0001;
+static constexpr uint8_t    TEST_WINDOW      = 6;
 
-// GA102's heads and windows with the display class left 0, as the core channel's calls never use it, and a core channel
-// class no chip has, so the test sees the class comes from the entry
+// GA102's heads and windows with the display class left 0, as the channels' calls never use it, and core and window
+// channel classes swapped from GA102's, so the test sees each class comes from its own field of the entry
 static constexpr chip_display TEST_ENTRY = {
-    .head_count         = 4,
-    .window_count       = 8,
-    .display_class      = 0,
-    .core_channel_class = 0xC67E,
-    .displayport        = {},
+    .head_count                = 4,
+    .window_count              = 8,
+    .display_class             = 0,
+    .core_channel_class        = 0xC67E,
+    .window_channel_class      = 0xC67D,
+    .heads_have_output_scalers = false,
+    .displayport               = {},
 };
 
 // A firmware that records its allocations, controls, releases and internal controls in order and answers each with its
@@ -167,6 +175,42 @@ TEST(nvidia_core_channel, number_is_nvidias) {
     EXPECT_EQ(drivers::nvidia::CORE_CHANNEL_NUMBER, NVIDIA_CORE_CHANNEL_NUMBER);
 }
 
+// Each window's channel's area begins where NVIDIA's NV_UDISP_FE_CHN_ASSY_BASEADR_WIN places it, up to the last of
+// NVIDIA's most windows
+TEST(nvidia_core_channel, window_channel_areas_begin_at_nvidias_offsets) {
+    EXPECT_EQ(window_channel_area(0), NVIDIA_WINDOW_CHANNEL_AREAS);
+    EXPECT_EQ(window_channel_area(TEST_WINDOW), NVIDIA_WINDOW_CHANNEL_AREAS + TEST_WINDOW * NVIDIA_WINDOW_AREA_BYTES);
+    EXPECT_EQ(window_channel_area(31), NVIDIA_WINDOW_CHANNEL_AREAS + 31 * NVIDIA_WINDOW_AREA_BYTES);
+}
+
+// A window channel's push buffer and allocation name the entry's window channel class and the window as the instance,
+// as NVIDIA's modesetting module allocates each window's channel
+TEST(nvidia_core_channel, window_channel_requests_name_its_class_and_window) {
+    channel_firmware fw;
+    rm::handle channel = UNTOUCHED;
+
+    ASSERT_EQ(allocate_window_channel(fw, TEST_DISPLAY, TEST_ENTRY, TEST_WINDOW, TEST_PUSH_BUFFER, channel), OK);
+    ASSERT_EQ(fw.call_count, 2u);
+
+    const channel_firmware::call& location = fw.calls[0];
+    EXPECT_TRUE(location.made == channel_firmware::kind::internal_control);
+    EXPECT_EQ(location.number, NVIDIA_PUSH_BUFFER_CONTROL);
+    EXPECT_EQ(quad_at(location, ADDRESS_OFFSET), TEST_PUSH_BUFFER);
+    EXPECT_EQ(word_at(location, CLASS_OFFSET), TEST_ENTRY.window_channel_class);
+    EXPECT_EQ(word_at(location, INSTANCE_OFFSET), uint32_t{TEST_WINDOW});
+
+    const channel_firmware::call& allocation = fw.calls[1];
+    EXPECT_TRUE(allocation.made == channel_firmware::kind::allocation);
+    EXPECT_EQ(allocation.parent, TEST_DISPLAY);
+    EXPECT_EQ(allocation.object, FIRST_HANDLE);
+    EXPECT_EQ(allocation.number, TEST_ENTRY.window_channel_class);
+
+    EXPECT_EQ(allocation.size, NVIDIA_CHANNEL_PARAMS_BYTES);
+    EXPECT_EQ(word_at(allocation, CHANNEL_INSTANCE_OFFSET), uint32_t{TEST_WINDOW});
+
+    EXPECT_EQ(channel, FIRST_HANDLE);
+}
+
 // The push buffer goes to the internal subdevice first in NVIDIA's layout, then the channel goes under the display with
 // the next handle, the entry's class and its parameters zeroed at NVIDIA's size
 TEST(nvidia_core_channel, push_buffer_goes_to_the_firmware_before_the_channel_in_nvidias_layout) {
@@ -263,8 +307,8 @@ TEST(nvidia_core_channel, release_asks_to_keep_the_hardware_then_releases_the_ch
 
     // The earlier release's reply fills the stack the next release's request is expected to reuse, so a request not
     // zeroed would likely carry it
-    ASSERT_EQ(release_core_channel(earlier, TEST_DISPLAY, FIRST_HANDLE), OK);
-    EXPECT_EQ(release_core_channel(fw, TEST_DISPLAY, FIRST_HANDLE), OK);
+    ASSERT_EQ(release_display_channel(earlier, TEST_DISPLAY, FIRST_HANDLE), OK);
+    EXPECT_EQ(release_display_channel(fw, TEST_DISPLAY, FIRST_HANDLE), OK);
 
     ASSERT_EQ(fw.call_count, 2u);
     const channel_firmware::call& flags = fw.calls[0];
@@ -293,9 +337,9 @@ TEST(nvidia_core_channel, release_follows_a_refused_flag_and_returns_the_first_e
     failing_both.results[0] = ERR_TIMEOUT;
     failing_both.results[1] = ERR_FIRMWARE;
 
-    EXPECT_EQ(release_core_channel(refusing_flag, TEST_DISPLAY, FIRST_HANDLE), ERR_FIRMWARE);
-    EXPECT_EQ(release_core_channel(failing_release, TEST_DISPLAY, FIRST_HANDLE), ERR_TIMEOUT);
-    EXPECT_EQ(release_core_channel(failing_both, TEST_DISPLAY, FIRST_HANDLE), ERR_TIMEOUT);
+    EXPECT_EQ(release_display_channel(refusing_flag, TEST_DISPLAY, FIRST_HANDLE), ERR_FIRMWARE);
+    EXPECT_EQ(release_display_channel(failing_release, TEST_DISPLAY, FIRST_HANDLE), ERR_TIMEOUT);
+    EXPECT_EQ(release_display_channel(failing_both, TEST_DISPLAY, FIRST_HANDLE), ERR_TIMEOUT);
 
     const channel_firmware* released[] = {&refusing_flag, &failing_release, &failing_both};
     for (const channel_firmware* fw : released) {

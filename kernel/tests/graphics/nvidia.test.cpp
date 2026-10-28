@@ -63,11 +63,16 @@ static constexpr uint64_t GA102_PRESCRUBBED_TOP_BYTES  = 0x10000000;
 // NVIDIA's headers for GA102 give them
 static constexpr uint8_t GA102_INTERRUPT_LEAF_COUNT = 8;
 
-// GA102's heads, as many as the RTX 3080's firmware reports usable, and NVIDIA's classes of its display object and
-// core channel, NVC670_DISPLAY and NVC67D_CORE_CHANNEL_DMA
-static constexpr uint8_t  GA102_HEAD_COUNT         = 4;
-static constexpr uint32_t GA102_DISPLAY_CLASS      = 0xC670;
-static constexpr uint32_t GA102_CORE_CHANNEL_CLASS = 0xC67D;
+// GA102's heads, as many as the RTX 3080's firmware reports usable, and NVIDIA's classes of its display object, core
+// channel and window channels, NVC670_DISPLAY, NVC67D_CORE_CHANNEL_DMA and NVC67E_WINDOW_CHANNEL_DMA
+static constexpr uint8_t  GA102_HEAD_COUNT           = 4;
+static constexpr uint32_t GA102_DISPLAY_CLASS        = 0xC670;
+static constexpr uint32_t GA102_CORE_CHANNEL_CLASS   = 0xC67D;
+static constexpr uint32_t GA102_WINDOW_CHANNEL_CLASS = 0xC67E;
+
+// Whether GA102's heads report output scalers, as every usable head of the RTX 3080 reports one in the display engine's
+// capabilities
+static constexpr bool GA102_HEADS_HAVE_OUTPUT_SCALERS = true;
 
 // Whether GA102's firmware trains PHY repeaters, as the RTX 3080's firmware reports for each of its links 0 to 3
 static constexpr bool GA102_TRAINS_PHY_REPEATERS = true;
@@ -102,6 +107,8 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(chip->display.head_count, GA102_HEAD_COUNT);
     EXPECT_EQ(chip->display.display_class, GA102_DISPLAY_CLASS);
     EXPECT_EQ(chip->display.core_channel_class, GA102_CORE_CHANNEL_CLASS);
+    EXPECT_EQ(chip->display.window_channel_class, GA102_WINDOW_CHANNEL_CLASS);
+    EXPECT_EQ(chip->display.heads_have_output_scalers, GA102_HEADS_HAVE_OUTPUT_SCALERS);
 
     EXPECT_EQ(chip->display.displayport.trains_phy_repeaters, GA102_TRAINS_PHY_REPEATERS);
     EXPECT_EQ(static_cast<uint8_t>(chip->display.displayport.max_rate), GA102_MAX_RATE);

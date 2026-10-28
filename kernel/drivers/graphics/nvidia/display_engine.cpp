@@ -424,7 +424,9 @@ static int32_t choose_and_log_first_light(
     const display_heads& heads,
     const active_heads& active,
     const display_outputs& outputs,
-    const output_modes* modes
+    const output_modes* modes,
+    first_light& light,
+    bool& is_chosen
 ) {
     uint8_t outputs_with_modes = 0;
     for (uint8_t index = 0; index < outputs.count; index++) {
@@ -439,8 +441,6 @@ static int32_t choose_and_log_first_light(
     }
 
     light_target target = find_light_target(heads, active, outputs);
-    first_light light = {};
-    bool is_chosen = false;
     int32_t rc = choose_first_light(fw, bandwidth_check, modes, outputs.count, target, light, is_chosen);
 
     // Lighting nothing leaves the driver attached, so a request that cannot be allocated ends only the choice
@@ -474,6 +474,79 @@ static int32_t choose_and_log_first_light(
         millihertz % 1000,
         light.head,
         light.window
+    );
+
+    return OK;
+}
+
+// Allocates a channel's push buffer in DMA pages the card reaches, cached only when the card's DMA is coherent
+static int32_t allocate_push_buffer(const dma::device_profile& card, dma::buffer& out) {
+    size_t pages = pmm::page_align_up(PUSH_BUFFER_BYTES) / pmm::PAGE_SIZE;
+    int32_t rc = dma::OK;
+    RUN_ELEVATED(rc = dma::alloc_pages(card, pages, dma::caching::cached_when_coherent, paging::PAGE_USER, out));
+
+    return rc;
+}
+
+// Allocates the chosen window's channel with its push buffer and logs it, or returns `OK` with why the window has no
+// channel logged, for each reason `display_engine::set_up` lists, else the error of the request that failed
+static int32_t set_up_window_channel(
+    firmware& fw,
+    registers& regs,
+    const dma::device_profile& card,
+    rm::handle display,
+    const chip_display& chip,
+    uint32_t present_windows,
+    uint8_t window,
+    dma::buffer& push_buffer,
+    rm::handle& channel
+) {
+    if (!chip.heads_have_output_scalers) {
+        log::error(
+            "nvidia: window %u has no channel, as the chip's heads report no output scaler, and the driver loads no "
+            "window's scaler coefficients",
+            window
+        );
+        return OK;
+    }
+
+    if ((present_windows & (1u << window)) == 0) {
+        log::error(
+            "nvidia: window %u has no channel, as the GSP's firmware does not report the window present",
+            window
+        );
+        return OK;
+    }
+
+    int32_t rc = allocate_push_buffer(card, push_buffer);
+    if (rc != dma::OK) {
+        log::error("nvidia: window %u has no channel, as allocating its push buffer failed: %d", window, rc);
+        return OK;
+    }
+
+    rc = allocate_window_channel(fw, display, chip, window, push_buffer.phys, channel);
+    if (rc == ERR_FIRMWARE) {
+        log::error("nvidia: window %u has no channel, as the GSP's firmware refused a request for it", window);
+        return OK;
+    }
+
+    if (rc == ERR_NO_MEMORY) {
+        log::error("nvidia: window %u has no channel, as a request for it cannot be allocated", window);
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: the GSP's firmware keeps window %u's channel 0x%X, whose push buffer lies at physical address 0x%lX, "
+        "and the channel takes no initial method, its PUT and GET reading 0x%X and 0x%X, offsets into the push buffer",
+        window,
+        channel,
+        push_buffer.phys,
+        regs.read(window_channel_area(window) + CHANNEL_PUT),
+        regs.read(window_channel_area(window) + CHANNEL_GET)
     );
 
     return OK;
@@ -572,16 +645,7 @@ int32_t display_engine::set_up(
         return rc;
     }
 
-    size_t push_buffer_pages = pmm::page_align_up(PUSH_BUFFER_BYTES) / pmm::PAGE_SIZE;
-    RUN_ELEVATED(
-        rc = dma::alloc_pages(
-            card,
-            push_buffer_pages,
-            dma::caching::cached_when_coherent,
-            paging::PAGE_USER,
-            m_core_push_buffer
-        )
-    );
+    rc = allocate_push_buffer(card, m_core_push_buffer);
     if (rc != dma::OK) {
         log::error("nvidia: allocating the core channel's push buffer failed: %d", rc);
         return ERR_NO_MEMORY;
@@ -661,11 +725,35 @@ int32_t display_engine::set_up(
     }
 
     log_active_heads(active, outputs);
-    rc = choose_and_log_first_light(m_firmware, m_objects.bandwidth_check, heads, active, outputs, m_output_modes);
+    first_light light = {};
+    bool is_chosen = false;
+    rc = choose_and_log_first_light(
+        m_firmware,
+        m_objects.bandwidth_check,
+        heads,
+        active,
+        outputs,
+        m_output_modes,
+        light,
+        is_chosen
+    );
 
     free_output_modes(m_output_modes);
+    if (rc != OK || !is_chosen) {
+        return rc;
+    }
 
-    return rc;
+    return set_up_window_channel(
+        m_firmware,
+        regs,
+        card,
+        m_objects.display,
+        display,
+        present_windows,
+        light.window,
+        m_window_push_buffer,
+        m_window_channel
+    );
 }
 
 int32_t display_engine::release() {
@@ -673,9 +761,15 @@ int32_t display_engine::release() {
 
     free_output_modes(m_output_modes);
 
+    int32_t window_channel_rc = OK;
+    if (m_window_channel != 0) {
+        window_channel_rc = release_display_channel(m_firmware, m_objects.display, m_window_channel);
+        m_window_channel = 0;
+    }
+
     int32_t core_channel_rc = OK;
     if (m_core_channel != 0) {
-        core_channel_rc = release_core_channel(m_firmware, m_objects.display, m_core_channel);
+        core_channel_rc = release_display_channel(m_firmware, m_objects.display, m_core_channel);
         m_core_channel = 0;
     }
 
@@ -683,6 +777,10 @@ int32_t display_engine::release() {
     if (m_objects.display_common != 0) {
         objects_rc = release_display_objects(m_firmware, m_objects);
         m_objects = {};
+    }
+
+    if (window_channel_rc != OK) {
+        return window_channel_rc;
     }
 
     if (core_channel_rc != OK) {
