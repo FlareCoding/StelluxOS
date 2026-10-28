@@ -13,6 +13,7 @@
 #include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_modes.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
+#include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "clock/clock.h"
@@ -637,6 +638,29 @@ static void log_core_channel_idle(bool is_idle) {
     }
 }
 
+// Logs the owner of each present window in the core channel's armed state, warning of one naming a head the chip lacks
+static void log_window_owners(const window_owners& owners, uint32_t present_windows, uint8_t head_count) {
+    for (uint8_t window = 0; window < DISPLAY_WINDOWS_MAX; window++) {
+        bool is_present = (present_windows & (1u << window)) != 0;
+        if (!is_present) {
+            continue;
+        }
+
+        uint8_t owner = owners.owners[window];
+        if (owner == WINDOW_OWNER_NONE) {
+            log::info("nvidia: no head owns window %u in the core channel's armed state", window);
+        } else if (owner < head_count) {
+            log::info("nvidia: head %u owns window %u in the core channel's armed state", owner, window);
+        } else {
+            log::warn(
+                "nvidia: window %u's owner in the core channel's armed state reads %u, a head the chip lacks",
+                window,
+                owner
+            );
+        }
+    }
+}
+
 // Writes `method` into `queue`, and when `write` returns `ERR_QUEUE_FULL`, kicks, waits for GET to reach PUT and writes
 // it again, as `display_channel::write` asks of a writer that may wait. One wait makes room for a method of one value
 static int32_t write_waiting(display_channel& queue, const display_method& method) {
@@ -856,6 +880,9 @@ int32_t display_engine::set_up(
     }
 
     log_core_channel_idle(is_core_channel_idle);
+
+    window_owners owners = read_window_owners(regs, present_windows);
+    log_window_owners(owners, present_windows, display.head_count);
 
     return OK;
 }

@@ -13,6 +13,7 @@
 #include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_engine.h"
+#include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -52,6 +53,7 @@ using drivers::nvidia::video_memory;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
 using drivers::nvidia::window_channel_area;
+using drivers::nvidia::WINDOW_OWNER_NONE;
 namespace displayport = drivers::nvidia::displayport;
 namespace rm = drivers::nvidia::rm;
 
@@ -121,6 +123,11 @@ static constexpr uint32_t NVIDIA_CHANNEL_STATE_BUSY = 0x40;
 // still running a second after its first request fails instead of hanging the suite
 static constexpr uint64_t LATE_STATE_REQUEST_NS = 1000 * NS_PER_MS;
 
+// Where window 0's control lies in the core channel's area, at 0x1000 in NVIDIA's armed state from 0x8000, and the
+// stride between two windows' controls, restated
+static constexpr uint32_t NVIDIA_ARMED_WINDOW_CONTROL = 0x9000;
+static constexpr uint32_t NVIDIA_WINDOW_STRIDE        = 0x80;
+
 // The memory the video memory double maps, and the words standing in for BAR0 from the core channel's area to the end
 // of the last window channel's
 static uint8_t  g_video_memory[INSTANCE_MEMORY_BYTES];
@@ -132,7 +139,7 @@ static constexpr uint64_t SCANOUT_OFFSET      = 0x1000000;
 static constexpr uint64_t SCANOUT_GUARD_BYTES = 0x1000;
 static constexpr uint8_t  SCANOUT_FILL        = 0xA5;
 
-// The core channel's area, where `g_channel_areas` begins, holding its PUT and GET
+// The core channel's area, where `g_channel_areas` begins, holding its PUT, GET and armed state
 static uint32_t* const g_core_channel_registers = g_channel_areas;
 
 // The object under test, which its instance memory's copy of the hash table makes too large for a test's stack
@@ -238,6 +245,7 @@ public:
     bool       is_channel_busy = false;       // whether each channel state reply names the busy state, else idle
     bool       has_state_request = false;     // whether a channel state request has come
     uint64_t   first_state_request_ns = 0;    // when the first channel state request came
+    uint32_t   armed_control_at_reply = 0;    // window 0's armed control after each state request, 0 leaving it alone
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
         return answer(kind::allocation, object, class_id);
@@ -260,6 +268,11 @@ public:
         int32_t rc = answer(kind::control, object, command);
         if (is_late_state_request) {
             return ERR_TIMEOUT;
+        }
+
+        bool arms_window_0 = is_state_request && armed_control_at_reply != 0;
+        if (arms_window_0) {
+            g_core_channel_registers[NVIDIA_ARMED_WINDOW_CONTROL / sizeof(uint32_t)] = armed_control_at_reply;
         }
 
         if (rc != OK || params == nullptr) {
@@ -2102,4 +2115,83 @@ TEST(nvidia_display_engine, set_up_logs_an_error_for_a_core_channel_never_report
         "nvidia: the GSP's firmware did not report the core channel idle within 100 milliseconds"
     ));
     EXPECT_FALSE(engine_log_contains("reports the core channel idle"));
+}
+
+// Sets window `window`'s control in the core channel's armed state to `control`
+static void set_armed_control(uint8_t window, uint32_t control) {
+    uint32_t offset = NVIDIA_ARMED_WINDOW_CONTROL + window * NVIDIA_WINDOW_STRIDE;
+    g_core_channel_registers[offset / sizeof(uint32_t)] = control;
+}
+
+// Once the core channel's wait ends, a set-up logs the owner of each present window from its control in the armed
+// state: a head of the chip's, no head, or a warning for an owner naming a head the chip lacks
+TEST(nvidia_display_engine, set_up_logs_each_present_windows_owner_from_the_armed_state) {
+    const uint32_t controls[CHIP_WINDOWS] = {0x0, 0xFFFFFFF3, 0x1, 0x7, 0x4, 0xE, WINDOW_OWNER_NONE, 0x3};
+    for (uint8_t window = 0; window < CHIP_WINDOWS; window++) {
+        set_armed_control(window, controls[window]);
+    }
+
+    engine_firmware fw;
+    fw.present_windows = 0x7F;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: head 0 owns window 0 in the core channel's armed state"));
+    EXPECT_TRUE(engine_log_contains("nvidia: head 3 owns window 1 in the core channel's armed state"));
+    EXPECT_TRUE(engine_log_contains("nvidia: head 1 owns window 2 in the core channel's armed state"));
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: window 3's owner in the core channel's armed state reads 7, a head the chip lacks"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: window 4's owner in the core channel's armed state reads 4, a head the chip lacks"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: window 5's owner in the core channel's armed state reads 14, a head the chip lacks"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: no head owns window 6 in the core channel's armed state"));
+    EXPECT_FALSE(engine_log_contains("window 7"));
+}
+
+// With the firmware reporting the core channel busy at every request, a set-up whose wait gives up reads the owners
+// after the wait, logging window 0's owner as the state requests left its armed control, not as it was before them
+TEST(nvidia_display_engine, set_up_reads_the_owners_after_a_core_channel_never_reported_idle) {
+    set_armed_control(0, 0x0);
+    set_armed_control(5, 0x2);
+
+    engine_firmware fw;
+    fw.is_channel_busy = true;
+    fw.armed_control_at_reply = 0x1;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("did not report the core channel idle within 100 milliseconds"));
+    EXPECT_TRUE(engine_log_contains("nvidia: head 1 owns window 0 in the core channel's armed state"));
+    EXPECT_FALSE(engine_log_contains("head 0 owns window 0"));
+    EXPECT_TRUE(engine_log_contains("nvidia: head 2 owns window 5 in the core channel's armed state"));
+}
+
+// A set-up whose request for the core channel's state fails returns that error and logs no window's owner
+TEST(nvidia_display_engine, set_up_failing_at_the_core_channels_idle_wait_logs_no_window_owner) {
+    set_armed_control(0, 0x0);
+    engine_firmware fw;
+    fw.refusals[0] = {
+        .made = engine_firmware::kind::control,
+        .number = rm::CONTROL_GET_DISPLAY_CHANNEL_STATE,
+        .object = 0,
+        .result = ERR_TIMEOUT,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), ERR_TIMEOUT);
+    EXPECT_FALSE(engine_log_contains("owns window"));
+    EXPECT_FALSE(engine_log_contains("a head the chip lacks"));
+    EXPECT_EQ(engine.release(), OK);
 }
