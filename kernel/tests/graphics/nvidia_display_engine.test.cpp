@@ -161,7 +161,7 @@ static constexpr uint8_t TIMING_1080_AT_60_HZ[] = {
 static uint8_t g_edid[edid::BLOCK_BYTES];
 
 // A firmware that records the kind, object and number of each request in order, answers a request a refusal matches
-// with its result, the head, display common's capability, active head and output reads from its fields, others as sent
+// with its result, the head, crossbar, active head, output and bandwidth check replies from its fields, others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 64;
@@ -197,6 +197,7 @@ public:
     uint32_t   digital_facts = DISPLAYPORT_FACTS; // the digital facts of every supported display id
     uint32_t   connected_ids = 0;             // those reported connected, the only ones with a monitor, giving `g_edid`
     const uint8_t* dpcd_receiver = DPCD_RECEIVER; // the receiver capability field of every connected monitor
+    uint32_t   refused_modes = 0;             // how many of the first bandwidth check requests the check refuses
     uint32_t   put_at_first_active_read = 0;  // the core channel's PUT when a head's display id was first asked
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
@@ -220,6 +221,7 @@ public:
 
         fill_reply(command, params);
         fill_output_reply(command, params);
+        fill_check_reply(command, params);
 
         return OK;
     }
@@ -430,6 +432,14 @@ private:
             string::memcpy(reply->edid, g_edid, sizeof(g_edid));
         } else if (command == rm::CONTROL_DP_AUX) {
             fill_aux_reply(*static_cast<rm::aux_params*>(params));
+        }
+    }
+
+    // Answers the bandwidth check, refusing the first `refused_modes` requests
+    void fill_check_reply(uint32_t command, void* params) const {
+        if (command == rm::CONTROL_IS_MODE_POSSIBLE) {
+            bool is_refused = control_count(rm::CONTROL_IS_MODE_POSSIBLE) <= refused_modes;
+            static_cast<rm::mode_possible_params*>(params)->is_possible = is_refused ? 0 : 1;
         }
     }
 };
@@ -1192,7 +1202,7 @@ TEST(nvidia_display_engine, set_up_gives_no_mode_to_an_output_whose_dpcd_is_not_
 }
 
 // A DPCD below revision 1.0 with one lane at RBR gives its output no mode for its revision, checked before its link,
-// and a set-up logs that reason and that no output is chosen to light
+// and a set-up logs that reason and that no output is chosen to light, asking the bandwidth check nothing
 TEST(nvidia_display_engine, set_up_gives_no_mode_to_an_output_whose_dpcd_is_below_revision_1_0) {
     engine_firmware fw;
     fw.supported_ids = OUTPUT_0_ID;
@@ -1208,6 +1218,7 @@ TEST(nvidia_display_engine, set_up_gives_no_mode_to_an_output_whose_dpcd_is_belo
     EXPECT_FALSE(engine_log_contains("its link carries none"));
     EXPECT_FALSE(engine_log_contains("nvidia: output 0's mode"));
     EXPECT_TRUE(engine_log_contains("nvidia: no output is chosen to light, as no connected output has a mode"));
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 0u);
 }
 
 // Links without FEC give no output a mode, which a set-up logs once for all outputs rather than for each
@@ -1320,7 +1331,27 @@ TEST(nvidia_display_engine, set_up_names_the_chosen_mode_by_its_edid_index) {
     ASSERT_EQ(set_up_logged(engine), OK);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: output 0 is chosen to light first, at its EDID's timing 1, 2560 by 1440 at 143.911 Hz, on head 0 with "
-        "window 0"
+        "window 0, which the bandwidth check accepts"
+    ));
+}
+
+// The bandwidth check refusing the AOC's EDID timing 1, ranked first, leaves the choice to EDID timing 0, ranked
+// second, which a set-up names by that index
+TEST(nvidia_display_engine, set_up_names_the_next_ranked_mode_by_its_edid_index_once_the_first_is_refused) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.refused_modes = 1;
+
+    copy_aoc_edid(false);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 2u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 is chosen to light first, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 0 with "
+        "window 0, which the bandwidth check accepts"
     ));
 }
 
@@ -1337,12 +1368,12 @@ TEST(nvidia_display_engine, set_up_chooses_the_only_output_with_modes_past_outpu
     EXPECT_EQ(fw.control_count(rm::CONTROL_GET_EDID), 1u);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: output 1 is chosen to light first, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 0 with "
-        "window 0"
+        "window 0, which the bandwidth check accepts"
     ));
 }
 
 // With both outputs given modes and head 0 showing output 1, a set-up chooses output 1 alone, the boot output being
-// tried before output 0
+// tried before output 0, and asks the bandwidth check once
 TEST(nvidia_display_engine, set_up_chooses_the_boot_output_alone_of_two_with_modes) {
     engine_firmware fw;
     fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
@@ -1354,10 +1385,11 @@ TEST(nvidia_display_engine, set_up_chooses_the_boot_output_alone_of_two_with_mod
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 1u);
     EXPECT_EQ(engine_log_count("is chosen to light first"), 1u);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: output 1 is chosen to light first, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 0 with "
-        "window 0"
+        "window 0, which the bandwidth check accepts"
     ));
 }
 
@@ -1378,6 +1410,97 @@ TEST(nvidia_display_engine, set_up_failing_at_the_push_buffer_with_modes_kept_le
 
     EXPECT_EQ(engine.release(), OK);
     ASSERT_EQ(fw.call_count, first + 3);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+}
+
+// The bandwidth check refusing both of the AOC's modes leaves no output chosen, logged, and the set-up `OK`
+TEST(nvidia_display_engine, set_up_logs_every_mode_refused) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.refused_modes = 2;
+
+    copy_aoc_edid(true);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 2u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: no output is chosen to light, as every mode of the 1 output with modes is refused"
+    ));
+    EXPECT_FALSE(engine_log_contains("is chosen to light first"));
+}
+
+// The bandwidth check refusing the 4 modes of two outputs on the AOC leaves no output chosen, logged with the count of
+// outputs with modes
+TEST(nvidia_display_engine, set_up_logs_every_mode_of_two_outputs_refused) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.refused_modes = 4;
+
+    copy_aoc_edid(true);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 4u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: no output is chosen to light, as every mode of the 2 outputs with modes is refused"
+    ));
+}
+
+// A bandwidth check request failing with `ERR_NO_MEMORY` ends the choice, logged, and leaves the set-up `OK`
+TEST(nvidia_display_engine, set_up_lights_nothing_when_the_bandwidth_check_request_cannot_be_allocated) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.refusals[0] = {
+        .made = engine_firmware::kind::control,
+        .number = rm::CONTROL_IS_MODE_POSSIBLE,
+        .object = 0,
+        .result = ERR_NO_MEMORY,
+    };
+
+    copy_aoc_edid(true);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 1u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: no output is chosen to light, as the bandwidth check's request cannot be allocated"
+    ));
+}
+
+// A bandwidth check request timing out fails the set-up with `ERR_TIMEOUT`, and the core channel and the objects stay
+// allocated until the release frees them
+TEST(nvidia_display_engine, set_up_failing_at_the_bandwidth_check_keeps_the_core_channel_until_release) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.refusals[0] = {
+        .made = engine_firmware::kind::control,
+        .number = rm::CONTROL_IS_MODE_POSSIBLE,
+        .object = 0,
+        .result = ERR_TIMEOUT,
+    };
+
+    copy_aoc_edid(true);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up(engine), ERR_TIMEOUT);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 1u);
+    EXPECT_EQ(fw.release_count(), 0u);
+    uint32_t first = fw.call_count;
+
+    EXPECT_EQ(engine.release(), OK);
+    ASSERT_EQ(fw.call_count, first + 5);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));

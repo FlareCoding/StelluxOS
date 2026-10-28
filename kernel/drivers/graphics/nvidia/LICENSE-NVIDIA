@@ -1409,9 +1409,11 @@ src/common/sdk/nvidia/inc/nvtypes.h
     static information's two booleans take, in rm.h and
     kernel/tests/graphics/nvidia_display_info.test.cpp, which the two booleans
     of a display id's output resource facts take, in rm.h and
-    kernel/tests/graphics/nvidia_display_ids.test.cpp, and which the push buffer
+    kernel/tests/graphics/nvidia_display_ids.test.cpp, which the push buffer
     control's valid flag takes, in rm.h and
-    kernel/tests/graphics/nvidia_core_channel.test.cpp, the 32 bits of NVIDIA's
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, and which the booleans
+    of the bandwidth check's request take, in rm.h and
+    kernel/tests/graphics/nvidia_display_light.test.cpp, the 32 bits of NVIDIA's
     handles, which the static configuration's three handles take, in gsp_info.h,
     gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, which
     `rm::handle` takes, in rm.h, which a control request's client and object
@@ -2743,6 +2745,33 @@ src/common/sdk/nvidia/inc/class/clc372sw.h
     rm.h and kernel/tests/graphics/nvidia_display_objects.test.cpp
     Copyright (c) 2015, NVIDIA CORPORATION. All rights reserved.
 
+src/common/sdk/nvidia/inc/ctrl/ctrlc372/ctrlc372chnc.h
+    NVC372_CTRL_CMD_IS_MODE_POSSIBLE, 0xC3720101, the control that asks whether
+    the display engine has the memory bandwidth and clocks to scan out at once
+    the heads and windows its parameters name, the layouts of its parameters
+    (NVC372_CTRL_IS_MODE_POSSIBLE_PARAMS, with NVC372_CTRL_IMP_HEAD and
+    NVC372_CTRL_IMP_WINDOW), NVC372_CTRL_MAX_POSSIBLE_HEADS, 8, and
+    NVC372_CTRL_MAX_POSSIBLE_WINDOWS, 32, the heads and windows a request can
+    name, NVC372_CTRL_IMP_LUT_USAGE_1025, 2,
+    NVC372_CTRL_FORMAT_RGB_PACKED_4_BPP, 0x4, that the reply fills the fields
+    from bIsPossible on but bUseCachedPerfState, that options of 0 ask for no
+    margin and no lowest performance state, that a downscale factor counts
+    1024ths and that cursorSize32p counts 32 pixels, in rm.h, display_light.cpp
+    and kernel/tests/graphics/nvidia_display_light.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2015-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrlc372/ctrlc372base.h
+    the layout of NVC372_CTRL_CMD_BASE_PARAMS, the subdevice's index that begins
+    the parameters of the bandwidth check's controls, in rm.h and
+    kernel/tests/graphics/nvidia_display_light.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/nvdisptypes.h
+    NV_DISP_LOCK_MODE_NO_LOCK, 0x0, and NV_DISP_LOCK_PIN_UNSPECIFIED, 0x10, each
+    32 bits, in rm.h, display_light.cpp and
+    kernel/tests/graphics/nvidia_display_light.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2016 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/common/sdk/nvidia/inc/class/clc670.h
     the class number NVC670_DISPLAY, which chip.cpp gives GA102's display, in
     chip.cpp and kernel/tests/graphics/nvidia.test.cpp
@@ -2810,22 +2839,48 @@ src/nvidia-modeset/src/nvkms-evo.c
     coordinates of a mode that is not interlaced, in which rasterSize.y less
     rasterBlankStart.y (the last visible line) is the vertical front porch and
     one line, in latch_rules.h, latch_rules.cpp and
-    kernel/tests/graphics/nvidia_latch_rules.test.cpp, and that it sets a mode
-    only on a display id of digital or analog kind, in display_ids.h
+    kernel/tests/graphics/nvidia_latch_rules.test.cpp, that it sets a mode only
+    on a display id of digital or analog kind, in display_ids.h, a head's raster
+    for a mode, its size the mode's totals, its positions counted from the start
+    of the sync, its blanking end the last pixel and line of the back porch, its
+    blanking start the last pixel and line of the visible area and
+    rasterVertBlank2 0 for a mode that is not interlaced, in rm.h,
+    display_light.h, display_light.cpp and
+    kernel/tests/graphics/nvidia_display_light.test.cpp, that a scaler that does
+    not scale takes the fewest taps its display class allows, in
+    display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp,
+    and that when the bandwidth check refuses a mode it lowers the heads' usage
+    bounds a step at a time, removing the base layer's formats of 4, then 2,
+    then 1 bytes a pixel last, before refusing the mode, in display_light.h
     SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-evo3.c
     that the modesetting module allocates the bandwidth check's object under
     its device with no parameters, in display_objects.h, display_objects.cpp
-    and kernel/tests/graphics/nvidia_display_objects.test.cpp, and that the core
+    and kernel/tests/graphics/nvidia_display_objects.test.cpp, that the core
     channel's initial methods load the output scaler's coefficients (4 values
     for each of 16 phases of the ratios 1, 2 and 4, each row leaving out the
     center value the hardware derives, and phase 0's row ending with phase 16's
     two) into every head before the next coefficient, with its position in the
     table as its index, then set each head's desktop color to opaque black,
     ALPHA_RED's method before GREEN_BLUE's, in core_methods.h, core_methods.cpp
-    and kernel/tests/graphics/nvidia_core_methods.test.cpp
+    and kernel/tests/graphics/nvidia_core_methods.test.cpp, that the module asks
+    the bandwidth check about a head with no raster lock, 1025-entry look-up
+    tables, a 256-pixel cursor, its sync and back porch's lines (at least 2)
+    before the visible area and its vertical front porch's after it, and about a
+    window fetching (((width + 14) * downscale + 1023) >> 10) + 8 pixels a line,
+    downscale being the horizontal downscale factor in 1024ths, gives its
+    display classes' scalers 2 taps at the fewest, takes any failed request as a
+    refused mode and asks about a mode whose sync and back porch take no line,
+    in display_light.h, display_light.cpp and
+    kernel/tests/graphics/nvidia_display_light.test.cpp, and that it names a
+    window for each usable layer of every head it asks about, in display_light.h
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-modeset.c
+    that the modesetting module asks the bandwidth check about every lit head of
+    a display together, each with its guaranteed usage, in display_light.h
+    SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     the commands NV0073_CTRL_CMD_SPECIFIC_GET_ALL_HEAD_MASK and
@@ -2908,12 +2963,22 @@ src/nvidia-modeset/include/nvkms-types.h
     NV_DP_READ_EDID_RETRIES, 18, and NV_DP_REREAD_EDID_DELAY_USEC, 500
     microseconds, the most times the modesetting module asks again for a
     DisplayPort monitor's EDID and the wait before each, in display_edid.h,
-    display_edid.cpp and kernel/tests/graphics/nvidia_display_edid.test.cpp, and
+    display_edid.cpp and kernel/tests/graphics/nvidia_display_edid.test.cpp,
     NV_INVALID_OR, 0xFFFFFFFF, the output resource index naming none, in rm.h,
     display_active_heads.cpp,
     kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp,
+    NV_EVO_SCALE_FACTOR_1X, 1024, a scale factor of one, and
+    NVEvoScalerTapsToNum's 2 for NV_EVO_SCALER_2TAPS, in display_light.cpp and
+    kernel/tests/graphics/nvidia_display_light.test.cpp, and that a head's
+    raster holds its size and positions as NvKmsPoint, in display_light.h and
+    kernel/tests/graphics/nvidia_display_light.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/interface/nvkms-api-types.h
+    that NvKmsPoint's x and y are each 16 bits, in display_light.h and
+    kernel/tests/graphics/nvidia_display_light.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/include/nvkms-dma.h
     the layout of a display method's header (opcode 0 in bits 31:29, the count
