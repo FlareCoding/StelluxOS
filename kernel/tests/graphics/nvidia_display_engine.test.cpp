@@ -89,7 +89,7 @@ static uint32_t g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t) + 1];
 alignas(display_engine) static uint8_t g_engine_bytes[sizeof(display_engine)];
 
 // A firmware that records the kind, object and number of each request in order, answers a request a refusal matches
-// with its result, the head reads with `heads` heads, the active heads with `boot_display_id` and others as sent
+// with its result, the head, display common's capability and active head reads from its fields and others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 32;
@@ -118,6 +118,9 @@ public:
     rm::handle reported_client = TEST_CLIENT; // the client `client()` reports, 0 making `bind` refuse
     uint64_t   push_buffer_address = 0;       // the address `CONTROL_SET_DISPLAY_PUSH_BUFFER` last carried
     uint32_t   boot_display_id = 0;           // the display id head 0 shows, every other head showing none
+    uint32_t   boot_link_index = 0;           // the link index every link request's reply names
+    uint32_t   boot_link_type = 0;            // the link type every link request's reply names
+    bool       has_crossbar = false;          // whether display common's capabilities report a crossbar
     uint32_t   put_at_first_active_read = 0;  // the core channel's PUT when a head's display id was first asked
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
@@ -254,8 +257,8 @@ private:
         return OK;
     }
 
-    // Gives `heads` heads the display engine can use, from head 0, each served by the window of its number, and head 0
-    // showing `boot_display_id`
+    // Gives `heads` heads the display engine can use, from head 0, each served by the window of its number, head 0
+    // showing `boot_display_id`, link replies `boot_link_index` and `boot_link_type`, and a crossbar if `has_crossbar`
     void fill_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_GET_HEAD_COUNT) {
             static_cast<rm::head_count_params*>(params)->head_count = heads;
@@ -269,6 +272,13 @@ private:
         } else if (command == rm::CONTROL_GET_ACTIVE_DISPLAY) {
             rm::active_display_params* reply = static_cast<rm::active_display_params*>(params);
             reply->display_id = reply->head == 0 ? boot_display_id : 0;
+        } else if (command == rm::CONTROL_GET_OUTPUT_RESOURCE) {
+            rm::output_resource_params* reply = static_cast<rm::output_resource_params*>(params);
+            reply->index = boot_link_index;
+            reply->type = boot_link_type;
+        } else if (command == rm::CONTROL_GET_DISPLAY_COMMON_CAPABILITIES && has_crossbar) {
+            uint8_t* table = static_cast<rm::display_common_capabilities_params*>(params)->table;
+            table[rm::DISPLAY_COMMON_CROSSBAR_BYTE] = rm::DISPLAY_COMMON_CROSSBAR_BIT;
         }
     }
 };
@@ -636,7 +646,7 @@ TEST(nvidia_display_engine, set_up_failing_in_a_write_kicks_nothing_and_keeps_th
 }
 
 // A set-up asks display common for the display ids of the double's two heads, not the chip's four, only once the
-// initial methods are kicked
+// initial methods are kicked, and for the link of the one head showing a display id
 TEST(nvidia_display_engine, set_up_reads_the_active_heads_once_the_initial_methods_are_kicked) {
     engine_firmware fw;
     fw.boot_display_id = 0x1;
@@ -649,6 +659,9 @@ TEST(nvidia_display_engine, set_up_reads_the_active_heads_once_the_initial_metho
     EXPECT_EQ(fw.control_count(rm::CONTROL_GET_ACTIVE_DISPLAY), static_cast<uint32_t>(DOUBLE_HEADS));
     EXPECT_EQ(fw.control_count(rm::CONTROL_GET_ACTIVE_DISPLAY, display_common), static_cast<uint32_t>(DOUBLE_HEADS));
     EXPECT_EQ(fw.put_at_first_active_read, INITIAL_METHODS_END);
+
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_OUTPUT_RESOURCE), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_OUTPUT_RESOURCE, display_common), 1u);
 }
 
 // A head reported showing several display ids fails the set-up with `ERR_BAD_MESSAGE` once the initial methods are
@@ -671,6 +684,44 @@ TEST(nvidia_display_engine, set_up_failing_at_the_active_heads_keeps_the_core_ch
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+}
+
+// A refused link request and, without a crossbar, a link reply naming no link each fail the set-up once the initial
+// methods are kicked, and the core channel and the objects stay allocated until the release frees them
+TEST(nvidia_display_engine, set_up_failing_at_an_active_heads_link_keeps_the_core_channel_until_release) {
+    engine_firmware refusing;
+    refusing.boot_display_id = 0x1;
+    refusing.refusals[0] = {
+        .made = engine_firmware::kind::control,
+        .number = rm::CONTROL_GET_OUTPUT_RESOURCE,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_firmware linkless;
+    linkless.boot_display_id = 0x1;
+    linkless.boot_link_index = rm::NO_OUTPUT_RESOURCE;
+
+    engine_firmware* doubles[] = {&refusing, &linkless};
+    const int32_t errors[] = {ERR_FIRMWARE, ERR_BAD_MESSAGE};
+    for (uint32_t i = 0; i < 2; i++) {
+        engine_firmware& fw = *doubles[i];
+        engine_video_memory memory;
+        display_engine& engine = new_engine(fw, memory);
+        g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)] = 0;
+
+        EXPECT_EQ(set_up(engine), errors[i]);
+        EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
+        EXPECT_EQ(fw.release_count(), 0u);
+        uint32_t first = fw.call_count;
+
+        EXPECT_EQ(engine.release(), OK);
+        ASSERT_EQ(fw.call_count, first + 5);
+        EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
+        EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+        EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
+        EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+    }
 }
 
 // The text logged while `ENGINE_LOG_BACKEND` is set
@@ -709,15 +760,19 @@ static int32_t set_up_logged(display_engine& engine) {
 }
 
 // The double reports no supported display id, so the display id 0x1 that head 0 shows names no output, and a set-up
-// logs that head with it and as the boot head with no boot output
+// logs that head with it and its link, and as the boot head with no boot output
 TEST(nvidia_display_engine, set_up_logs_a_boot_head_whose_display_id_names_no_output) {
     engine_firmware fw;
     fw.boot_display_id = 0x1;
+    fw.boot_link_index = 3;
+    fw.boot_link_type = 2;
     engine_video_memory memory;
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    EXPECT_TRUE(engine_log_contains("nvidia: head 0 shows display id 0x1, which names no output"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: head 0 shows display id 0x1, which names no output, through link 3 of NVIDIA's output resource type 2"
+    ));
     EXPECT_TRUE(engine_log_contains(
         "nvidia: head 0 is the boot head, and its display id 0x1 names no output, so there is no boot output"
     ));
@@ -734,4 +789,23 @@ TEST(nvidia_display_engine, set_up_logs_that_no_head_is_active) {
     EXPECT_TRUE(engine_log_contains("nvidia: no head is active, so there is no boot head"));
     EXPECT_FALSE(engine_log_contains("shows display id"));
     EXPECT_FALSE(engine_log_contains("is the boot head"));
+}
+
+// With display common reporting a crossbar, a set-up counts a head whose link reply names no link as showing nothing,
+// so no head is active
+TEST(nvidia_display_engine, set_up_counts_a_linkless_head_as_showing_nothing_with_a_crossbar) {
+    engine_firmware fw;
+    fw.has_crossbar = true;
+    fw.boot_display_id = 0x1;
+    fw.boot_link_index = rm::NO_OUTPUT_RESOURCE;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine can reach push buffers"));
+    EXPECT_TRUE(engine_log_contains("and display common reports a crossbar"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: head 0 counts as showing nothing, as display common names no link for its display id 0x1"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: no head is active, so there is no boot head"));
 }

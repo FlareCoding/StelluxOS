@@ -268,8 +268,8 @@ constexpr uint32_t CONTROL_GET_OUTPUT_RESOURCE = 0x73028B;
 struct output_resource_params {
     uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
     uint32_t display_id;      // a single bit
-    uint32_t index;
-    uint32_t type;
+    uint32_t index;           // the output resource's number among those of its type, or `NO_OUTPUT_RESOURCE`
+    uint32_t type;            // NVIDIA's output resource type, such as 2 for a serial one (NVIDIA's SOR)
     uint32_t protocol;
     uint32_t dither_type;
     uint32_t dither_algorithm;
@@ -280,6 +280,9 @@ struct output_resource_params {
     uint8_t  is_lit_by_vbios;
     uint8_t  is_dynamic;      // NVIDIA's bIsDispDynamic, nonzero for a display id the firmware allocates dynamically
 };
+
+// NVIDIA's NV_INVALID_OR, the `output_resource_params::index` of a display id no output resource drives
+constexpr uint32_t NO_OUTPUT_RESOURCE = 0xFFFFFFFF;
 
 static_assert(sizeof(output_resource_params) == 56, "NVIDIA's layout of OR_GET_INFO's parameters");
 

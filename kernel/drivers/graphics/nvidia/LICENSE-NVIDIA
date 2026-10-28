@@ -1628,8 +1628,9 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073system.h
     NV0073_CTRL_CMD_SYSTEM_GET_CAPS_V2 (a control of display common), the
     layout of its parameters with NV0073_CTRL_SYSTEM_CAPS_TBL_SIZE and its
     NV0073_CTRL_SYSTEM_CAPS_CROSS_BAR_SUPPORTED bit, in rm.h,
-    display_objects.h, display_objects.cpp and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp, the command
+    display_objects.h, display_objects.cpp,
+    kernel/tests/graphics/nvidia_display_objects.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, the command
     NV0073_CTRL_CMD_SYSTEM_GET_NUM_HEADS (a control of display common), the
     layout of its parameters and
     NV0073_CTRL_SYSTEM_GET_NUM_HEADS_FLAGS_CLIENT_DISABLE, the flags that count
@@ -1960,9 +1961,23 @@ src/nvidia-modeset/src/nvkms-rm.c
     head whose request fails as showing nothing and asserts against a head
     showing several display ids, then goes on with the first of them, in
     display_active_heads.h, display_active_heads.cpp and
-    kernel/tests/graphics/nvidia_display_active_heads.test.cpp, and that it
-    takes a dynamic display id a head shows to name the connector of the static
-    display id the firmware reports as its root port, in display_active_heads.h
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp, that it takes a
+    dynamic display id a head shows to name the connector of the static display
+    id the firmware reports as its root port, in display_active_heads.h, that it
+    asks display common for the output resource driving the display id an active
+    head shows right after that head's display id, with the parameters zeroed
+    but for the display id, and, once it finds the display id's connector, takes
+    a head whose reply names NV_INVALID_OR as showing nothing when display
+    common reports a crossbar, in display_active_heads.h,
+    display_active_heads.cpp,
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it keeps the
+    display id of a head whose output resource request fails or whose display id
+    names no connector, recording no connector or output resource for it, and
+    once it finds the connector asserts the reply names an output resource when
+    display common reports a crossbar and otherwise that the reply names the
+    connector's output resource, then marks the head in the connector's owner
+    mask at the reply's index, past the mask's end, in display_active_heads.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2823,7 +2838,16 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     kernel/tests/graphics/nvidia_display_ids.test.cpp, its type field's
     NV0073_CTRL_SPECIFIC_OR_TYPE_SOR (a serial output resource) and its protocol
     field, in display_outputs.h, its rootPortId field, the root port's id for a
-    display id, in display_active_heads.h, and the command
+    display id, in display_active_heads.h, its index field (the output
+    resource's number among those of its type), its type field and
+    NV0073_CTRL_SPECIFIC_OR_TYPE_SOR (2), in rm.h, display_active_heads.h and
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp, that command,
+    the layout of its parameters and those two fields, in
+    display_active_heads.cpp,
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp,
+    NV0073_CTRL_SPECIFIC_OR_TYPE_DAC (1, an analog output resource), in
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp, and the command
     NV0073_CTRL_CMD_SPECIFIC_GET_EDID_V2 (a control of display common reading a
     monitor's EDID), the layout of its parameters,
     NV0073_CTRL_SPECIFIC_GET_EDID_MAX_EDID_BYTES, 2048, which the firmware
@@ -2871,11 +2895,15 @@ src/nvidia-modeset/include/nvkms-types.h
     channel's completion notifier, 4 KiB, in completion_notifier.h,
     completion_notifier.cpp,
     kernel/tests/graphics/nvidia_completion_notifier.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp,
     NV_DP_READ_EDID_RETRIES, 18, and NV_DP_REREAD_EDID_DELAY_USEC, 500
     microseconds, the most times the modesetting module asks again for a
     DisplayPort monitor's EDID and the wait before each, in display_edid.h,
-    display_edid.cpp and kernel/tests/graphics/nvidia_display_edid.test.cpp
+    display_edid.cpp and kernel/tests/graphics/nvidia_display_edid.test.cpp, and
+    NV_INVALID_OR, 0xFFFFFFFF, the output resource index naming none, in rm.h,
+    display_active_heads.cpp,
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/include/nvkms-dma.h
