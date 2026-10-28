@@ -6,15 +6,8 @@
 #include "drivers/graphics/nvidia/bar1_page_tables.h"
 #include "drivers/graphics/nvidia/boot_messages.h"
 #include "drivers/graphics/nvidia/chip.h"
-#include "drivers/graphics/nvidia/core_channel.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
-#include "drivers/graphics/nvidia/display_channel.h"
-#include "drivers/graphics/nvidia/display_dpcd.h"
-#include "drivers/graphics/nvidia/display_edid.h"
-#include "drivers/graphics/nvidia/display_heads.h"
-#include "drivers/graphics/nvidia/display_ids.h"
-#include "drivers/graphics/nvidia/display_info.h"
-#include "drivers/graphics/nvidia/display_outputs.h"
+#include "drivers/graphics/nvidia/display_engine.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
@@ -36,7 +29,6 @@
 #include "dynpriv/dynpriv.h"
 #include "hw/barrier.h"
 #include "hw/mmio.h"
-#include "mm/heap.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
 #include "pci/pci_class_codes.h"
@@ -251,121 +243,6 @@ static int32_t check_mapping_through_bar1(
         page.offset
     );
     return nvidia::OK;
-}
-
-// Logs the maker, name and timings an output's EDID gives
-static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
-    log::info(
-        "nvidia: output %u's monitor is %s \"%s\", its EDID giving %u timings, %s, with %u more that did not fit and "
-        "%u extension blocks skipped",
-        output_index,
-        monitor.maker,
-        monitor.name,
-        monitor.timing_count,
-        monitor.first_timing_is_preferred ? "the first preferred" : "none preferred",
-        monitor.dropped_timings,
-        monitor.skipped_extensions
-    );
-
-    for (uint32_t index = 0; index < monitor.timing_count; index++) {
-        const edid::timing& timing = monitor.timings[index];
-        uint64_t millihertz = timing.refresh_millihertz();
-        log::info(
-            "nvidia: output %u's timing %u is %u by %u at %lu.%03lu Hz, with a pixel clock of %u kHz",
-            output_index,
-            index,
-            timing.width,
-            timing.height,
-            millihertz / 1000,
-            millihertz % 1000,
-            timing.pixel_clock_khz
-        );
-    }
-}
-
-// Writes each of `count` bytes, at least one, into `text` as two hex digits, with a space between bytes and a null
-// character after the last, so `text` holds 3 characters per byte
-static void format_bytes(const uint8_t* bytes, uint32_t count, char* text) {
-    static constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
-    for (uint32_t index = 0; index < count; index++) {
-        uint8_t byte = bytes[index];
-        char* pair = text + index * 3;
-        pair[0] = HEX_DIGITS[byte >> 4];
-        pair[1] = HEX_DIGITS[byte & 0xF];
-        pair[2] = index + 1 < count ? ' ' : '\0';
-    }
-}
-
-// Logs the bytes of the DPCD capabilities an output's monitor reports, with its PHY repeaters'
-static void log_dpcd(uint8_t output_index, const nvidia::dpcd_capabilities& dpcd) {
-    char receiver[nvidia::DPCD_RECEIVER_CAPABILITY_BYTES * 3];
-    char phy_repeaters[nvidia::DPCD_PHY_REPEATER_CAPABILITY_BYTES * 3];
-    format_bytes(dpcd.receiver, nvidia::DPCD_RECEIVER_CAPABILITY_BYTES, receiver);
-    format_bytes(dpcd.phy_repeaters, nvidia::DPCD_PHY_REPEATER_CAPABILITY_BYTES, phy_repeaters);
-    uint32_t receiver_address = dpcd.is_extended
-        ? nvidia::DPCD_EXTENDED_RECEIVER_CAPABILITIES
-        : nvidia::DPCD_RECEIVER_CAPABILITIES;
-
-    log::info(
-        "nvidia: output %u's monitor reports the DPCD capabilities %s from 0x%05X",
-        output_index,
-        receiver,
-        receiver_address
-    );
-    log::info(
-        "nvidia: output %u's PHY repeater capabilities from 0x%05X are %s",
-        output_index,
-        nvidia::DPCD_PHY_REPEATER_CAPABILITIES,
-        phy_repeaters
-    );
-}
-
-// Reads the EDID and the DPCD capabilities of each connected output's monitor, the EDID into one `edid::monitor` on the
-// unprivileged heap, as it is too large for the stack, and logs each EDID that parses and the capabilities read
-static int32_t read_connected_monitors(
-    nvidia::firmware& fw,
-    nvidia::rm::handle display_common,
-    const nvidia::display_outputs& outputs
-) {
-    uint32_t monitor_bytes = sizeof(edid::monitor);
-    auto* monitor = static_cast<edid::monitor*>(heap::uzalloc(monitor_bytes));
-    if (monitor == nullptr) {
-        log::error("nvidia: allocating %u bytes for parsing the outputs' EDIDs failed", monitor_bytes);
-        return nvidia::ERR_NO_MEMORY;
-    }
-
-    int32_t rc = nvidia::OK;
-    for (uint8_t index = 0; index < outputs.count; index++) {
-        const nvidia::display_output& output = outputs.outputs[index];
-        if (!output.is_connected) {
-            continue;
-        }
-
-        bool is_parsed = false;
-        rc = nvidia::read_output_edid(fw, display_common, output.display_id, *monitor, is_parsed);
-        if (rc != nvidia::OK) {
-            break;
-        }
-
-        if (is_parsed) {
-            log_monitor(index, *monitor);
-        }
-
-        nvidia::dpcd_capabilities dpcd = {};
-        bool is_read = false;
-        rc = nvidia::read_output_dpcd(fw, display_common, output.display_id, dpcd, is_read);
-        if (rc != nvidia::OK) {
-            break;
-        }
-
-        if (is_read) {
-            log_dpcd(index, dpcd);
-        }
-    }
-
-    heap::ufree(monitor);
-
-    return rc;
 }
 
 int32_t nvidia_gpu_driver::attach() {
@@ -1001,145 +878,10 @@ int32_t nvidia_gpu_driver::attach() {
     );
 
     if (frts.has_display) {
-        uint32_t present_windows = 0;
-        rc = nvidia::read_present_windows(m_gsp, chip->display, present_windows);
+        rc = m_display_engine.set_up(regs, card_profile, *chip, m_gpu_objects.device);
         if (rc != nvidia::OK) {
             return rc;
         }
-
-        log::info(
-            "nvidia: the GSP's firmware reports windows 0x%X present, of the chip's %u windows",
-            present_windows,
-            chip->display.window_count
-        );
-
-        rc = m_instance_memory.set_up();
-        if (rc != nvidia::OK) {
-            return rc;
-        }
-
-        log::info(
-            "nvidia: the display's instance memory lies at 0x%lX in video memory, and the GSP's firmware accepted its "
-            "address",
-            m_instance_memory.range().offset
-        );
-
-        rc = nvidia::allocate_display_objects(m_gsp, m_gpu_objects.device, chip->display, m_display_objects);
-        if (rc != nvidia::OK) {
-            return rc;
-        }
-
-        log::info(
-            "nvidia: the GSP's firmware keeps the display engine's objects: display common 0x%X, the bandwidth check's "
-            "object 0x%X and the display 0x%X",
-            m_display_objects.display_common,
-            m_display_objects.bandwidth_check,
-            m_display_objects.display
-        );
-
-        bool has_crossbar = false;
-        rc = nvidia::read_display_capabilities(m_gsp, m_display_objects, has_crossbar);
-        if (rc != nvidia::OK) {
-            return rc;
-        }
-
-        log::info(
-            "nvidia: the display engine can reach push buffers, semaphores and notifiers in system memory, and display "
-            "common reports %s",
-            has_crossbar ? "a crossbar" : "no crossbar"
-        );
-
-        nvidia::display_heads heads = {};
-        rc = nvidia::read_display_heads(m_gsp, m_display_objects.display_common, chip->display, heads);
-        if (rc != nvidia::OK) {
-            return rc;
-        }
-
-        log::info(
-            "nvidia: display common's report leaves the display engine %u of the chip's %u heads",
-            heads.count,
-            chip->display.head_count
-        );
-        for (uint8_t head = 0; head < heads.count; head++) {
-            log::info("nvidia: head %u is served by windows 0x%X", head, nvidia::windows_of_head(heads, head));
-        }
-
-        nvidia::display_ids ids = {};
-        rc = nvidia::read_display_ids(m_gsp, m_display_objects.display_common, ids);
-        if (rc != nvidia::OK) {
-            return rc;
-        }
-
-        log::info(
-            "nvidia: display common reports display ids 0x%X supported, 0x%X of them connected, 0x%X digital and 0x%X "
-            "of the digital ones static",
-            ids.supported,
-            ids.connected,
-            ids.digital,
-            ids.static_digital
-        );
-
-        nvidia::display_outputs outputs = {};
-        rc = nvidia::read_display_outputs(m_gsp, m_display_objects.display_common, ids, outputs);
-        if (rc != nvidia::OK) {
-            return rc;
-        }
-
-        log::info("nvidia: the static digital display ids give DisplayPort outputs, %u of them", outputs.count);
-        for (uint8_t index = 0; index < outputs.count; index++) {
-            const nvidia::display_output& output = outputs.outputs[index];
-            log::info(
-                "nvidia: output %u is display id 0x%X, %s, %s and %s, with lane code %u and link rate code %u",
-                index,
-                output.display_id,
-                output.is_connected ? "connected" : "not connected",
-                output.is_limited_to_60_hz ? "limited to 60 Hz" : "not limited to 60 Hz",
-                output.prefers_rbr ? "preferring RBR" : "not preferring RBR",
-                output.lanes_code,
-                output.link_rate_code
-            );
-        }
-
-        rc = read_connected_monitors(m_gsp, m_display_objects.display_common, outputs);
-        if (rc != nvidia::OK) {
-            return rc;
-        }
-
-        size_t push_buffer_pages = pmm::page_align_up(nvidia::PUSH_BUFFER_BYTES) / pmm::PAGE_SIZE;
-        RUN_ELEVATED(
-            rc = dma::alloc_pages(
-                card_profile,
-                push_buffer_pages,
-                dma::caching::cached_when_coherent,
-                paging::PAGE_USER,
-                m_core_push_buffer
-            )
-        );
-        if (rc != dma::OK) {
-            log::error("nvidia: allocating the core channel's push buffer failed: %d", rc);
-            return nvidia::ERR_NO_MEMORY;
-        }
-
-        rc = nvidia::allocate_core_channel(
-            m_gsp,
-            m_display_objects.display,
-            chip->display,
-            m_core_push_buffer.phys,
-            m_core_channel
-        );
-        if (rc != nvidia::OK) {
-            return rc;
-        }
-
-        nvidia::registers core_area(registers_base + nvidia::CORE_CHANNEL_AREA);
-        log::info(
-            "nvidia: the GSP's firmware keeps the core channel 0x%X, whose push buffer lies at physical address 0x%lX, "
-            "and the channel's PUT and GET read 0x%X and 0x%X, offsets into the push buffer",
-            m_core_channel,
-            m_core_push_buffer.phys,
-            core_area.read(nvidia::CHANNEL_PUT),
-            core_area.read(nvidia::CHANNEL_GET)
-        );
     } else {
         log::info(
             "nvidia: the chip's fuses disable its display, so bring-up skips the display's windows, instance memory, "
@@ -1365,17 +1107,7 @@ void nvidia_gpu_driver::run_fwsec_sb(nvidia::registers& regs) {
 
 // The unload ends the firmware's service, so the objects it keeps for the driver are released first
 void nvidia_gpu_driver::release_firmware_objects() {
-    int32_t core_channel_rc = nvidia::OK;
-    if (m_core_channel != 0) {
-        core_channel_rc = nvidia::release_core_channel(m_gsp, m_display_objects.display, m_core_channel);
-        m_core_channel = 0;
-    }
-
-    int32_t display_rc = nvidia::OK;
-    if (m_display_objects.display_common != 0) {
-        display_rc = nvidia::release_display_objects(m_gsp, m_display_objects);
-        m_display_objects = {};
-    }
+    int32_t display_rc = m_display_engine.release();
 
     int32_t rc = nvidia::OK;
     if (m_gpu_objects.device != 0) {
@@ -1384,8 +1116,7 @@ void nvidia_gpu_driver::release_firmware_objects() {
     }
 
     int32_t client_rc = m_gsp.release_client();
-    bool all_released = core_channel_rc == nvidia::OK && display_rc == nvidia::OK && rc == nvidia::OK &&
-                        client_rc == nvidia::OK;
+    bool all_released = display_rc == nvidia::OK && rc == nvidia::OK && client_rc == nvidia::OK;
     if (all_released) {
         log::info("nvidia: the GSP's firmware released the objects it kept for the driver");
     }

@@ -1866,8 +1866,8 @@ src/nvidia-modeset/src/nvkms-rm.c
     engine reaches push buffers, semaphores and notifiers only in video memory
     when the display reports
     NV5070_CTRL_SYSTEM_CAPS_BUG_644815_DNISO_VIDMEM_ONLY, so that the
-    modesetting module places them there, in rm.h, display_objects.h,
-    display_objects.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    modesetting module places them there, in rm.h, display_engine.h,
+    display_engine.cpp, display_objects.h, display_objects.cpp and
     kernel/tests/graphics/nvidia_display_objects.test.cpp, that the modesetting
     module takes a window 0 mask of
     NV0073_CTRL_SPECIFIC_FLEXIBLE_HEAD_WINDOW_ASSIGNMENT to mean each window may
@@ -1924,13 +1924,13 @@ src/nvidia-modeset/src/nvkms-rm.c
     kernel/tests/graphics/nvidia_core_channel.test.cpp, that it sets PRESERVE_HW
     on the display before releasing its core, base and window channels once it
     has restored the console itself, so that they stay allocated, releasing each
-    even when the flag fails, in core_channel.h, core_channel.cpp, nvidia_gpu.h
-    and kernel/tests/graphics/nvidia_core_channel.test.cpp, and that it first
-    tries write-combined memory with snooping off for a push buffer when the bus
-    allows it, frees a channel's push buffer right after the channel or when the
-    channel's allocation fails, releases no channel whose allocation failed and
-    names the push buffer's context DMA in a channel's allocation, in
-    core_channel.h
+    even when the flag fails, in core_channel.h, core_channel.cpp,
+    display_engine.h and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
+    that it first tries write-combined memory with snooping off for a push
+    buffer when the bus allows it, frees a channel's push buffer right after the
+    channel or when the channel's allocation fails, releases no channel whose
+    allocation failed and names the push buffer's context DMA in a channel's
+    allocation, in core_channel.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -1953,14 +1953,14 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     and the layout of its parameters, in rm.h, display_info.h, display_info.cpp
     and kernel/tests/graphics/nvidia_display_info.test.cpp, that that command's
     windowPresentMask names the windows present on the chip, in rm.h, chip.h,
-    display_info.h, display_info.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
+    display_engine.h, display_engine.cpp, display_info.h, display_info.cpp and
     kernel/tests/graphics/nvidia_display_info.test.cpp, the command
     NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM, a control of a subdevice,
     and the layout of its parameters, in rm.h, instance_memory.h,
     instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp, that that command
     writes where the display's instance memory lies into the display engine's
-    registers, in rm.h, instance_memory.h and nvidia_gpu.h, and the command
+    registers, in rm.h, display_engine.h and instance_memory.h, and the command
     NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, a control of a
     subdevice, and the layout of its parameters, in rm.h, core_channel.cpp and
     kernel/tests/graphics/nvidia_core_channel.test.cpp
@@ -2470,9 +2470,9 @@ src/nvidia/src/kernel/gpu/disp/kern_disp.c
     the parameters zeroed, and keeps its windowPresentMask unchecked, in
     display_info.h, display_info.cpp and
     kernel/tests/graphics/nvidia_display_info.test.cpp, and that it sets up the
-    display's instance memory after reading that information, in nvidia_gpu.h
-    and nvidia_gpu.cpp, and as it initializes its display's state, in
-    instance_memory.h
+    display's instance memory after reading that information, in
+    display_engine.h and display_engine.cpp, and as it initializes its display's
+    state, in instance_memory.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/arch/v03/kern_disp_0300.c
@@ -2633,7 +2633,7 @@ src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070chnc.h
     asks the release to keep the hardware's configuration, and that the flags
     hold for the next release only, in rm.h, core_channel.h, core_channel.cpp
     and kernel/tests/graphics/nvidia_core_channel.test.cpp, PRESERVE_HW's
-    meaning alone, in nvidia_gpu.h, and that an update carries the state the
+    meaning alone, in display_engine.h, and that an update carries the state the
     methods assemble into the armed state, in core_channel.h
     SPDX-FileCopyrightText: Copyright (c) 2001-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -2667,8 +2667,8 @@ src/nvidia-modeset/src/nvkms-evo.c
     the display's capabilities with the table zeroed right after allocating
     it, and frees the display, the bandwidth check's object and display common
     in that order, each whatever the earlier frees return, in
-    display_objects.h, display_objects.cpp, nvidia_gpu.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_display_objects.test.cpp, the raster
+    display_engine.h, display_engine.cpp, display_objects.h, display_objects.cpp
+    and kernel/tests/graphics/nvidia_display_objects.test.cpp, the raster
     coordinates of a mode that is not interlaced, in which rasterSize.y less
     rasterBlankStart.y (the last visible line) is the vertical front porch and
     one line, in latch_rules.h, latch_rules.cpp and
