@@ -5,6 +5,7 @@
 
 #include "common/types.h"
 #include "drivers/graphics/nvidia/display_ids.h"
+#include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/firmware.h"
 
 namespace drivers::nvidia {
@@ -53,6 +54,23 @@ struct display_outputs {
  * describes, for any request but one the firmware refuses with `ERR_FIRMWARE`.
  */
 int32_t read_display_outputs(firmware& fw, rm::handle display_common, const display_ids& ids, display_outputs& out);
+
+/**
+ * @brief Give the most lanes and the highest rate a link on an output's
+ * connector takes, from the codes display common gave, the rate capped by the
+ * GPU's own highest.
+ * @param output The output, whose codes are read as their fields' 3 bits.
+ * @param gpu_max_rate The highest rate the GPU's links run at.
+ * @return 1, 2 or 4 lanes for a board supporting one, two or four, and 4 for
+ * one supporting eight, as no link trains more. A lane code for none, or one
+ * NVIDIA defines no count for, gives 0 lanes, which leaves the output no link
+ * configuration. A link rate code NVIDIA defines no rate for counts as RBR, as
+ * NVIDIA's DisplayPort library takes it. NVIDIA's library instead reads no
+ * connector's lanes, taking a link's from its monitor's DPCD alone, and caps
+ * the rate by the connector's only when the firmware or a registry key asks
+ * for it.
+ */
+displayport::link_limits connector_link_limits(const display_output& output, displayport::link_rate gpu_max_rate);
 
 } // namespace drivers::nvidia
 

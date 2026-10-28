@@ -8,6 +8,23 @@
 
 namespace drivers::nvidia {
 
+// The most lanes a link on a connector takes for each lane code `rm::DIGITAL_LANES_SHIFT`'s field holds: 0 for none,
+// 1, 2 and 4 for one, two and four, 4 for eight, and 0 for the codes NVIDIA defines no count for
+static constexpr uint8_t LANES_OF_CODE[rm::DIGITAL_LANES_MASK + 1] = {0, 1, 2, 4, 4, 0, 0, 0};
+
+// The rate each link rate code stands for, as `rm::DIGITAL_LINK_RATE_SHIFT`'s field codes it, and RBR for the codes
+// NVIDIA defines no rate for, as its DisplayPort library takes them
+static constexpr displayport::link_rate RATE_OF_CODE[rm::DIGITAL_LINK_RATE_MASK + 1] = {
+    displayport::link_rate::rbr,
+    displayport::link_rate::rbr,
+    displayport::link_rate::hbr,
+    displayport::link_rate::hbr2,
+    displayport::link_rate::hbr3,
+    displayport::link_rate::rbr,
+    displayport::link_rate::rbr,
+    displayport::link_rate::rbr,
+};
+
 // Sets `is_output` and fills `output` only for a display id whose signal is DisplayPort, and logs and returns `OK`
 // for one whose digital facts the firmware refuses or whose signal is another
 static int32_t read_output_facts(
@@ -76,6 +93,19 @@ int32_t read_display_outputs(firmware& fw, rm::handle display_common, const disp
     string::memcpy(&out, &outputs, sizeof(outputs));
 
     return OK;
+}
+
+displayport::link_limits connector_link_limits(const display_output& output, displayport::link_rate gpu_max_rate) {
+    // Reading each code as its field's 3 bits keeps it inside its table
+    displayport::link_rate rate = RATE_OF_CODE[output.link_rate_code & rm::DIGITAL_LINK_RATE_MASK];
+    if (static_cast<uint8_t>(gpu_max_rate) < static_cast<uint8_t>(rate)) {
+        rate = gpu_max_rate;
+    }
+
+    return {
+        .max_lanes = LANES_OF_CODE[output.lanes_code & rm::DIGITAL_LANES_MASK],
+        .max_rate = rate,
+    };
 }
 
 } // namespace drivers::nvidia

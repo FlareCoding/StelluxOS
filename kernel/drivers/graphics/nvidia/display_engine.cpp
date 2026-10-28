@@ -91,6 +91,22 @@ static void log_dpcd(uint8_t output_index, const dpcd_capabilities& dpcd) {
     );
 }
 
+// Logs the most lanes and the highest rate a link on an output's connector takes, the rate capped by the GPU's highest
+// and as DisplayPort codes it
+static void log_connector_link_limits(
+    uint8_t output_index,
+    const display_output& output,
+    displayport::link_rate gpu_max_rate
+) {
+    displayport::link_limits limits = connector_link_limits(output, gpu_max_rate);
+    log::info(
+        "nvidia: a link on output %u's connector takes up to %u lanes at DisplayPort rate 0x%02X",
+        output_index,
+        limits.max_lanes,
+        static_cast<uint32_t>(limits.max_rate)
+    );
+}
+
 // Logs the most lanes and the highest rate a link to an output's monitor takes, the rate as DisplayPort codes it, and
 // whether the monitor takes enhanced framing
 static void log_monitor_link_limits(uint8_t output_index, const dpcd_capabilities& dpcd) {
@@ -220,6 +236,8 @@ static int32_t read_display_facts(
             output.lanes_code,
             output.link_rate_code
         );
+
+        log_connector_link_limits(index, output, display.displayport.max_rate);
     }
 
     return read_connected_monitors(fw, objects.display_common, display.displayport, outputs);

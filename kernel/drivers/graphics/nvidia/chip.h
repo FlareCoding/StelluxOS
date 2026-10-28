@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_CHIP_H
 
 #include "common/types.h"
+#include "drivers/graphics/nvidia/displayport.h"
 
 namespace drivers::nvidia {
 
@@ -64,6 +65,8 @@ struct chip_gsp_reservation {
  */
 struct chip_displayport {
     bool trains_phy_repeaters; // the firmware trains PHY repeaters, chips regenerating the signal before the monitor
+
+    displayport::link_rate max_rate; // the highest rate a link runs at
 };
 
 /**

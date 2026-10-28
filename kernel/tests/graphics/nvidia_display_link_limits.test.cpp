@@ -4,10 +4,13 @@
 
 #include "stlx_unit_test.h"
 #include "drivers/graphics/nvidia/display_dpcd.h"
+#include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/displayport.h"
 
 TEST_SUITE(nvidia_display_link_limits);
 
+using drivers::nvidia::connector_link_limits;
+using drivers::nvidia::display_output;
 using drivers::nvidia::dpcd_capabilities;
 using drivers::nvidia::monitor_link_limits;
 using drivers::nvidia::takes_enhanced_framing;
@@ -46,6 +49,17 @@ static constexpr dpcd_capabilities IOC_25G2S_DPCD = {
 // One PHY repeater of revision 1.4 taking 5.4 Gbps and 2 lanes
 static constexpr uint8_t TWO_LANE_REPEATER[8] = {0x14, NVIDIA_HBR2, 0x80, 0x00, 0x02, 0x00, 0x00, 0x00};
 
+// The RTX 3080's output 0 as display common reports it, its board supporting four lanes (lane code 3) at 8.1 Gbps
+// (link rate code 4)
+static constexpr display_output RTX_3080_OUTPUT = {
+    .display_id          = 0x100,
+    .is_connected        = true,
+    .lanes_code          = 3,
+    .link_rate_code      = 4,
+    .is_limited_to_60_hz = false,
+    .prefers_rbr         = false,
+};
+
 // A monitor taking `rate_code` and `lane_byte`, read with the PHY repeaters' bytes `repeaters`, none read when null
 static dpcd_capabilities monitor_dpcd(uint8_t rate_code, uint8_t lane_byte, const uint8_t* repeaters) {
     dpcd_capabilities dpcd = {};
@@ -63,6 +77,76 @@ static dpcd_capabilities monitor_dpcd(uint8_t rate_code, uint8_t lane_byte, cons
 // Whether `limits` holds `lanes` lanes at `rate`
 static bool limits_equal(const link_limits& limits, uint8_t lanes, link_rate rate) {
     return limits.max_lanes == lanes && limits.max_rate == rate;
+}
+
+TEST(nvidia_display_link_limits, rtx_3080_connector_takes_four_lanes_at_hbr3) {
+    link_limits limits = connector_link_limits(RTX_3080_OUTPUT, link_rate::hbr3);
+    EXPECT_TRUE(limits_equal(limits, 4, link_rate::hbr3));
+}
+
+// DFP_GET_INFO's LANE and DP_LINK_BW fields are 3 bits wide, so each holds one of 8 codes
+static constexpr uint8_t DFP_FIELD_CODES = 8;
+
+// The most lanes a link takes for each lane code, NVIDIA's LANE values: 0 for NONE, 1 for SINGLE, 2 for DUAL, 4 for
+// QUAD and for OCT, as no link trains more than 4, and 0 for the codes 5 to 7 NVIDIA defines no count for
+static constexpr uint8_t CONNECTOR_LANES[DFP_FIELD_CODES] = {0, 1, 2, 4, 4, 0, 0, 0};
+
+TEST(nvidia_display_link_limits, connector_lanes_follow_the_lane_code) {
+    for (uint8_t code = 0; code < DFP_FIELD_CODES; code++) {
+        display_output output = RTX_3080_OUTPUT;
+        output.lanes_code = code;
+
+        link_limits limits = connector_link_limits(output, link_rate::hbr3);
+
+        EXPECT_TRUE(limits_equal(limits, CONNECTOR_LANES[code], link_rate::hbr3));
+    }
+}
+
+// The rate each link rate code stands for: RBR for 0, NVIDIA's DP_LINK_BW values 1 to 4 for 1.62, 2.70, 5.40 and 8.10
+// Gbps, and RBR for 5 to 7, as NVIDIA's DisplayPort library takes 0 and 5 to 7, the codes NVIDIA defines no rate for
+static constexpr link_rate CONNECTOR_RATES[DFP_FIELD_CODES] = {
+    link_rate::rbr,
+    link_rate::rbr,
+    link_rate::hbr,
+    link_rate::hbr2,
+    link_rate::hbr3,
+    link_rate::rbr,
+    link_rate::rbr,
+    link_rate::rbr,
+};
+
+TEST(nvidia_display_link_limits, connector_rate_follows_the_link_rate_code) {
+    for (uint8_t code = 0; code < DFP_FIELD_CODES; code++) {
+        display_output output = RTX_3080_OUTPUT;
+        output.link_rate_code = code;
+
+        link_limits limits = connector_link_limits(output, link_rate::hbr3);
+
+        EXPECT_TRUE(limits_equal(limits, 4, CONNECTOR_RATES[code]));
+    }
+}
+
+// Codes with bit 3 set read as their low 3 bits, a lane code of 0x0C as 4 lanes and a link rate code of 0x0C as HBR3
+TEST(nvidia_display_link_limits, connector_codes_read_as_their_fields_3_bits) {
+    display_output output = RTX_3080_OUTPUT;
+    output.lanes_code = 0x0C;
+    output.link_rate_code = 0x0C;
+
+    link_limits limits = connector_link_limits(output, link_rate::hbr3);
+
+    EXPECT_TRUE(limits_equal(limits, 4, link_rate::hbr3));
+}
+
+// The lower of the connector's rate and the GPU's highest is the connector's limit, whichever of the two it is
+TEST(nvidia_display_link_limits, the_gpu_rate_caps_the_connector_rate) {
+    display_output hbr_output = RTX_3080_OUTPUT;
+    hbr_output.link_rate_code = 2;
+
+    link_limits under_hbr2_gpu = connector_link_limits(RTX_3080_OUTPUT, link_rate::hbr2);
+    link_limits under_hbr3_gpu = connector_link_limits(hbr_output, link_rate::hbr3);
+
+    EXPECT_TRUE(limits_equal(under_hbr2_gpu, 4, link_rate::hbr2));
+    EXPECT_TRUE(limits_equal(under_hbr3_gpu, 4, link_rate::hbr));
 }
 
 TEST(nvidia_display_link_limits, ioc_25g2s_takes_four_lanes_at_hbr3_with_enhanced_framing) {

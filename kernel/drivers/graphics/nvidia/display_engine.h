@@ -68,7 +68,9 @@ public:
      * each supported one's kind and whether each digital one is dynamic with
      * `read_display_ids`, logging the supported, connected, digital and static
      * digital ones, then each static digital one's digital facts with
-     * `read_display_outputs`, logging the outputs with their facts, then for
+     * `read_display_outputs`, logging the outputs with their facts and the
+     * most lanes and the highest rate `connector_link_limits` gives for a link
+     * on each one's connector, the rate capped by the chip's highest, then for
      * each connected output's monitor its EDID (the monitor's description of
      * itself, with the timings it accepts) with `read_output_edid` into one
      * `edid::monitor` on the unprivileged heap, logging the maker, name and
