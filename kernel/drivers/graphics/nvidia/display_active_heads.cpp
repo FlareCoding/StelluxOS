@@ -4,6 +4,7 @@
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/rm.h"
 #include "common/logging.h"
+#include "common/string.h"
 
 namespace drivers::nvidia {
 
@@ -38,16 +39,84 @@ static int32_t read_shown_display(firmware& fw, rm::handle display_common, uint8
     return OK;
 }
 
-int32_t read_active_heads(firmware& fw, rm::handle display_common, uint8_t head_count, active_heads& out) {
+// Gives the link driving the display id a head shows, or counts the head as showing nothing for a reply naming no link
+// with a crossbar, and fails on a refused request or such a reply without one, logging each
+static int32_t read_head_link(
+    firmware& fw,
+    rm::handle display_common,
+    uint8_t head,
+    bool has_crossbar,
+    active_head& state
+) {
+    rm::output_resource_params params = {};
+    params.display_id = state.display_id;
+    int32_t rc = fw.control(display_common, rm::CONTROL_GET_OUTPUT_RESOURCE, &params, sizeof(params));
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display common refused to name the link driving head %u's display id 0x%X",
+            head,
+            state.display_id
+        );
+        return rc;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    bool names_link = params.index != rm::NO_OUTPUT_RESOURCE;
+    if (!names_link && has_crossbar) {
+        log::error(
+            "nvidia: head %u counts as showing nothing, as display common names no link for its display id 0x%X",
+            head,
+            state.display_id
+        );
+        state = {};
+        return OK;
+    }
+
+    if (!names_link) {
+        log::error(
+            "nvidia: display common names no link for head %u's display id 0x%X and reports no crossbar",
+            head,
+            state.display_id
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    state.link_index = params.index;
+    state.link_type = params.type;
+
+    return OK;
+}
+
+int32_t read_active_heads(
+    firmware& fw,
+    rm::handle display_common,
+    uint8_t head_count,
+    bool has_crossbar,
+    active_heads& out
+) {
     active_heads heads = {};
     for (uint8_t head = 0; head < head_count; head++) {
-        int32_t rc = read_shown_display(fw, display_common, head, heads.heads[head].display_id);
+        active_head& state = heads.heads[head];
+        int32_t rc = read_shown_display(fw, display_common, head, state.display_id);
+        if (rc != OK) {
+            return rc;
+        }
+
+        if (state.display_id == 0) {
+            continue;
+        }
+
+        rc = read_head_link(fw, display_common, head, has_crossbar, state);
         if (rc != OK) {
             return rc;
         }
     }
 
-    out = heads;
+    // An assignment of this size may call `memcpy`, which the kernel does not define
+    string::memcpy(&out, &heads, sizeof(heads));
 
     return OK;
 }
