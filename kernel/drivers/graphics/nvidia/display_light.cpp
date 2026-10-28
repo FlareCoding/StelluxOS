@@ -25,6 +25,11 @@ constexpr uint8_t CURSOR_WIDTH_32 = 256 / 32;
 // module takes on every chip, (((width + 14) * 1024 + 1023) >> 10) + 8
 constexpr uint32_t PIXELS_FETCHED_BEYOND_WIDTH = 22;
 
+// The bytes of a pixel in the formats the bandwidth check is asked about, and the multiple NVIDIA's modesetting module
+// requires of the pitch of a surface laid out as rows of pixels in order
+constexpr uint32_t BASE_BUFFER_BYTES_PER_PIXEL = 4;
+constexpr uint32_t BASE_BUFFER_PITCH_ALIGNMENT = 256;
+
 // The output tried after `tried` others: `first_output` first, then the others in ascending order
 static uint8_t output_in_order(uint8_t tried, uint8_t first_output) {
     if (tried == 0) {
@@ -60,6 +65,11 @@ head_raster raster_of(const edid::timing& timing) {
         .blank_end_x = (h_total - h_sync_start) - 1,
         .blank_end_y = (v_total - v_sync_start) - 1,
     };
+}
+
+uint32_t base_buffer_pitch(uint32_t width) {
+    uint32_t row_bytes = width * BASE_BUFFER_BYTES_PER_PIXEL;
+    return (row_bytes + BASE_BUFFER_PITCH_ALIGNMENT - 1) & ~(BASE_BUFFER_PITCH_ALIGNMENT - 1);
 }
 
 // Fills `params` to ask whether `head` can show `timing` with `window` scanning it out, and gives whether its sync and

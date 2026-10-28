@@ -82,6 +82,18 @@ light_target find_light_target(const display_heads& heads, const active_heads& a
 head_raster raster_of(const edid::timing& timing);
 
 /**
+ * @brief Give the pitch of a base buffer, the bytes from the start of one row
+ * of its image to the next: `width` pixels of 4 bytes (the size of a pixel in
+ * the formats the bandwidth check is asked about), rounded up to a multiple of
+ * 256 bytes, since NVIDIA's modesetting module refuses to register, with any
+ * other pitch, a surface laid out as rows of pixels in order.
+ * @param width The image's width in pixels, at most 65,536, the widest an EDID
+ * timing gives (DisplayID's 16-bit width field plus 1).
+ * @return The pitch in bytes.
+ */
+uint32_t base_buffer_pitch(uint32_t width);
+
+/**
  * @brief Choose the output to light first and its mode, asking the bandwidth
  * check whether the target's head can show each mode with the target's window
  * scanning out an image of the mode's size, 4 bytes a pixel and unscaled. The

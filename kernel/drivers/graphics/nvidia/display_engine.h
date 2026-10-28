@@ -42,8 +42,11 @@ namespace drivers::nvidia {
  * may name either from the moment its address is sent, and a channel released
  * with the hardware kept as it is stays allocated in the hardware. The
  * notifier's page is never freed either, as `completion_notifier` describes.
- * The engine also owns the channel of the window chosen to light first and
- * that channel's push buffer.
+ * The engine also owns the channel of the window chosen to light first, that
+ * channel's push buffer and the chosen output's base buffer, the video memory
+ * the window is to scan out. `release` keeps the base buffer allocated too,
+ * though nothing binds it, so the display engine never reads it and keeping it
+ * costs only its bytes until the driver is freed.
  */
 class display_engine {
 public:
@@ -132,18 +135,27 @@ public:
      * those read, its push buffer's pages cannot be allocated, or a request
      * for its channel is refused or cannot be allocated, log why the window
      * has no channel and return `OK`, which leaves the driver attached as when
-     * no output is chosen. Each output's modes are kept on the unprivileged
-     * heap from the monitors' reads to the choice, or to `release` when the
-     * set-up fails before it, and the other facts read are not kept. Each
-     * request spins on the calling CPU, waiting for its reply as `firmware`
-     * describes, and so does each wait for GET, for at most 5 seconds.
-     * `read_output_edid` also spins before each reread of an EDID as it
-     * describes. `set_up` must be called at most once, as
-     * `instance_memory::set_up` must, and since it waits on video memory's
-     * lock and on the card as `instance_memory` describes, it must never run
-     * in an interrupt handler or under a spinlock, and on a thread that cannot
-     * sleep, such as the boot thread, must run only while no other thread can
-     * call into video memory or the firmware.
+     * no output is chosen. Then, once the window has its channel, allocate the
+     * chosen output's base buffer, the mode's rows `base_buffer_pitch` bytes
+     * apart in `vram_use::scanout` video memory 4 KiB aligned (as NVIDIA's
+     * modesetting module aligns the surfaces the display engine scans out),
+     * then map it with `video_memory::map_for_cpu`, clear it to black, unmap
+     * it with `video_memory::unmap_for_cpu`, which completes the writes, and
+     * log where it lies with its rows and pitch. When its memory cannot be
+     * allocated or mapping it finds no room, log why the output has no base
+     * buffer and return `OK`, releasing the memory after a failed mapping.
+     * Each output's modes are kept on the unprivileged heap from the monitors'
+     * reads to the choice, or to `release` when the set-up fails before it,
+     * and the other facts read are not kept. Each request spins on the calling
+     * CPU, waiting for its reply as `firmware` describes, and so does each
+     * wait for GET, for at most 5 seconds. `read_output_edid` also spins
+     * before each reread of an EDID as it describes. `set_up` must be called
+     * at most once, as `instance_memory::set_up` must, and since it waits on
+     * video memory's lock and on the card as `instance_memory` and
+     * `video_memory` describe, it must never run in an interrupt handler or
+     * under a spinlock, and on a thread that cannot sleep, such as the boot
+     * thread, must run only while no other thread can call into video memory
+     * or the firmware.
      * @param regs The card's BAR0 registers, through which the core channel's
      * methods are kicked and its PUT and GET read, and the window channel's
      * PUT and GET read. BAR0 must stay mapped until `release` returns, since
@@ -186,10 +198,13 @@ public:
      * error, logged as `choose_first_light` describes, and when the window
      * channel's allocation fails other than with `ERR_FIRMWARE` or
      * `ERR_NO_MEMORY`, the set-up fails with that error, logged as
-     * `allocate_window_channel` describes. The display's objects and the
-     * channels stay allocated once allocated, even after a later step fails,
-     * until `release`, and the completion notifier stays bound to the core
-     * channel once bound.
+     * `allocate_window_channel` describes. When the base buffer's allocation
+     * or mapping fails other than with `ERR_NO_MEMORY`, the set-up fails with
+     * that error, logged here and as `video_memory` describes, the memory
+     * released after a failed mapping. The display's objects and the channels
+     * stay allocated once allocated, even after a later step fails, until
+     * `release`, and the completion notifier stays bound to the core channel
+     * once bound.
      */
     int32_t set_up(
         registers& regs,
@@ -220,12 +235,14 @@ public:
 
 private:
     firmware&       m_firmware;
+    video_memory&   m_memory;
     instance_memory m_instance_memory;
     display_objects m_objects = {};           // all 0 before `set_up` allocates them and after `release`
     rm::handle      m_core_channel = 0;       // 0 before `set_up` allocates it and after `release`
     dma::buffer     m_core_push_buffer = {};
     rm::handle      m_window_channel = 0;     // the chosen window's, 0 before `set_up` allocates it and after `release`
     dma::buffer     m_window_push_buffer = {};
+    vram_range      m_base_buffer = {};       // the chosen output's, of 0 bytes until `set_up` clears its memory
     output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
 
     // The core channel's completion notifier, its page allocated and its context DMA bound to the channel by `set_up`

@@ -18,11 +18,15 @@
 #include "clock/clock.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
+#include "hw/mmio.h"
 #include "mm/heap.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
 
 namespace drivers::nvidia {
+
+// NVIDIA's NV_EVO_SURFACE_ALIGNMENT, the alignment of every surface the display engine scans out
+constexpr uint64_t BASE_BUFFER_ALIGNMENT = 0x1000;
 
 // Logs the maker, name and timings an output's EDID gives
 static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
@@ -552,6 +556,76 @@ static int32_t set_up_window_channel(
     return OK;
 }
 
+// Allocates the chosen output's base buffer at its mode's size and clears it through a mapping for the CPU, logging it,
+// or returns `OK` with why the output has no base buffer logged, else the error of the call that failed, logged
+static int32_t set_up_base_buffer(video_memory& memory, const first_light& light, vram_range& out) {
+    uint32_t pitch = base_buffer_pitch(light.timing.width);
+    uint64_t bytes = static_cast<uint64_t>(pitch) * light.timing.height;
+
+    vram_range allocated = {};
+    int32_t rc = memory.allocate(bytes, BASE_BUFFER_ALIGNMENT, vram_use::scanout, allocated);
+    if (rc == ERR_NO_MEMORY) {
+        log::error(
+            "nvidia: output %u has no base buffer, as 0x%lX bytes of video memory for it cannot be allocated",
+            light.output,
+            bytes
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: allocating 0x%lX bytes of video memory for output %u's base buffer failed: %d",
+            bytes,
+            light.output,
+            rc
+        );
+        return rc;
+    }
+
+    cpu_mapping mapping = {};
+    rc = memory.map_for_cpu(allocated, mapping);
+    if (rc == ERR_NO_MEMORY) {
+        log::error(
+            "nvidia: output %u has no base buffer, as mapping it for the CPU to clear it found no room, so its video "
+            "memory is released",
+            light.output
+        );
+        memory.release(allocated);
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: mapping output %u's base buffer at 0x%lX in video memory for the CPU to clear it failed: %d, so "
+            "the memory is released",
+            light.output,
+            allocated.offset,
+            rc
+        );
+        memory.release(allocated);
+        return rc;
+    }
+
+    for (uint64_t offset = 0; offset < allocated.size; offset += sizeof(uint64_t)) {
+        mmio::write64(mapping.virt + offset, 0);
+    }
+
+    memory.unmap_for_cpu(allocated);
+    out = allocated;
+
+    log::info(
+        "nvidia: output %u's base buffer lies at 0x%lX in video memory, its %u rows %u bytes apart, and is cleared to "
+        "black",
+        light.output,
+        allocated.offset,
+        light.timing.height,
+        pitch
+    );
+
+    return OK;
+}
+
 // Writes `method` into `queue`, and when `write` returns `ERR_QUEUE_FULL`, kicks, waits for GET to reach PUT and writes
 // it again, as `display_channel::write` asks of a writer that may wait. One wait makes room for a method of one value
 static int32_t write_waiting(display_channel& queue, const display_method& method) {
@@ -586,6 +660,7 @@ static int32_t write_core_initial_methods(display_channel& queue, uint8_t head_c
 
 display_engine::display_engine(firmware& fw, video_memory& memory)
     : m_firmware(fw)
+    , m_memory(memory)
     , m_instance_memory(memory, fw) {}
 
 int32_t display_engine::set_up(
@@ -743,7 +818,7 @@ int32_t display_engine::set_up(
         return rc;
     }
 
-    return set_up_window_channel(
+    rc = set_up_window_channel(
         m_firmware,
         regs,
         card,
@@ -754,6 +829,11 @@ int32_t display_engine::set_up(
         m_window_push_buffer,
         m_window_channel
     );
+    if (rc != OK || m_window_channel == 0) {
+        return rc;
+    }
+
+    return set_up_base_buffer(m_memory, light, m_base_buffer);
 }
 
 int32_t display_engine::release() {
