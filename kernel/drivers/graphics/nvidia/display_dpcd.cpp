@@ -29,15 +29,33 @@ static constexpr uint32_t REPEATER_COUNT        = 2;
 static constexpr uint32_t REPEATER_LANES        = 4;
 static constexpr uint8_t  REPEATER_REVISION_1_4 = 0x14;
 
+// NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer) and for each later read
+static constexpr uint32_t INTERVAL_REQUESTS   = 7;
+static constexpr uint32_t CAPABILITY_REQUESTS = 16;
+
+namespace {
+
+// How one AUX request of a DPCD read ended
+struct aux_answer {
+    bool     is_refused; // the firmware refused the request with `ERR_FIRMWARE`
+    uint32_t reply;      // NVIDIA's replyType, when not refused
+    uint32_t size;       // the bytes the transaction moved, when not refused
+};
+
+} // namespace
+
 // What the log says of an AUX reply other than an acknowledgment
 static const char* reply_meaning(uint32_t reply) {
     switch (reply) {
         case rm::AUX_REPLY_NACK:
             return "a refusal";
         case rm::AUX_REPLY_DEFER:
+        case rm::AUX_REPLY_I2C_DEFER:
             return "a request to ask again later";
         case rm::AUX_REPLY_TIMEOUT:
             return "no answer in time";
+        case rm::AUX_REPLY_I2C_NACK:
+            return "a refusal of an I2C transaction";
     }
 
     return "an unknown reply";
@@ -80,19 +98,29 @@ static uint8_t trained_lanes(uint8_t count) {
     return count >= 2 ? 2 : 1;
 }
 
-// Reads `bytes` bytes of the DPCD from `address` into `out` with one request, its parameters zeroed but for the display
-// id, the command, the address and the size, and logs why when the bytes cannot be read
-static int32_t read_dpcd(
+// Whether `answer` is the monitor's acknowledgment moving exactly the `bytes` bytes asked for
+static bool is_acknowledged_exactly(const aux_answer& answer, uint32_t bytes) {
+    bool is_acknowledged = !answer.is_refused && answer.reply == rm::AUX_REPLY_ACK;
+    return is_acknowledged && answer.size == bytes;
+}
+
+// Whether `answer` is the monitor's acknowledgment moving more than the `bytes` bytes asked for
+static bool is_acknowledged_with_more(const aux_answer& answer, uint32_t bytes) {
+    bool is_acknowledged = !answer.is_refused && answer.reply == rm::AUX_REPLY_ACK;
+    return is_acknowledged && answer.size > bytes;
+}
+
+// Sends one request reading `bytes` bytes of the DPCD from `address`, gives how it ended in `answer` and copies the
+// bytes into `out` when the monitor acknowledges it with exactly those
+static int32_t request_dpcd_read(
     firmware& fw,
     rm::handle display_common,
     uint32_t display_id,
     uint32_t address,
     uint32_t bytes,
     uint8_t* out,
-    bool& is_read
+    aux_answer& answer
 ) {
-    is_read = false;
-
     rm::aux_params params = {};
     params.display_id = display_id;
     params.command = rm::AUX_COMMAND_DPCD_READ;
@@ -100,7 +128,45 @@ static int32_t read_dpcd(
     params.size = bytes - 1;
 
     int32_t rc = fw.control(display_common, rm::CONTROL_DP_AUX, &params, sizeof(params));
-    if (rc == ERR_FIRMWARE) {
+    if (rc != OK && rc != ERR_FIRMWARE) {
+        return rc;
+    }
+
+    answer = {
+        .is_refused = rc == ERR_FIRMWARE,
+        .reply      = params.reply,
+        .size       = params.size,
+    };
+
+    if (is_acknowledged_exactly(answer, bytes)) {
+        string::memcpy(out, params.data, bytes);
+    }
+
+    return OK;
+}
+
+// Whether a read is asked again after `answer`: a deferred reply, or an acknowledgment moving some but not all of the
+// bytes asked for or more than those, which NVIDIA's library asks again on
+static bool is_asked_again(const aux_answer& answer, uint32_t bytes) {
+    if (answer.is_refused) {
+        return false;
+    }
+
+    bool is_deferred = answer.reply == rm::AUX_REPLY_DEFER || answer.reply == rm::AUX_REPLY_I2C_DEFER;
+    bool is_acknowledged = answer.reply == rm::AUX_REPLY_ACK;
+    bool moved_other_bytes = answer.size != 0 && answer.size != bytes;
+    return is_deferred || (is_acknowledged && moved_other_bytes);
+}
+
+// Logs why a read of `bytes` bytes at `address` gave none after `requests` requests
+static void log_unread(
+    uint32_t display_id,
+    uint32_t address,
+    uint32_t bytes,
+    const aux_answer& answer,
+    uint32_t requests
+) {
+    if (answer.is_refused) {
         log::error(
             "nvidia: display common refused display id 0x%X's %u-byte AUX read at 0x%05X, so no more of its DPCD is "
             "read",
@@ -108,40 +174,79 @@ static int32_t read_dpcd(
             bytes,
             address
         );
-        return OK;
+        return;
     }
 
-    if (rc != OK) {
-        return rc;
-    }
-
-    if (params.reply != rm::AUX_REPLY_ACK) {
+    const char* request_word = requests == 1 ? "request" : "requests";
+    if (answer.reply != rm::AUX_REPLY_ACK) {
         log::error(
-            "nvidia: display id 0x%X's %u-byte AUX read at 0x%05X ended with %s from its monitor (reply type %u), so "
-            "no more of its DPCD is read",
+            "nvidia: display id 0x%X's %u-byte AUX read at 0x%05X ended with %s from its monitor (reply type %u) after "
+            "%u %s, so no more of its DPCD is read",
             display_id,
             bytes,
             address,
-            reply_meaning(params.reply),
-            params.reply
+            reply_meaning(answer.reply),
+            answer.reply,
+            requests,
+            request_word
         );
-        return OK;
+        return;
     }
 
-    if (params.size != bytes) {
-        log::error(
-            "nvidia: display id 0x%X's monitor acknowledged the %u-byte AUX read at 0x%05X with a reply size of %u, so "
-            "no more of its DPCD is read",
-            display_id,
-            bytes,
-            address,
-            params.size
-        );
-        return OK;
+    const char* size_word = answer.size == 1 ? "byte" : "bytes";
+    log::error(
+        "nvidia: display id 0x%X's monitor acknowledged the %u-byte AUX read at 0x%05X with a reply size of %u %s "
+        "after %u %s, so no more of its DPCD is read",
+        display_id,
+        bytes,
+        address,
+        answer.size,
+        size_word,
+        requests,
+        request_word
+    );
+}
+
+// Reads `bytes` bytes of the DPCD from `address` into `out`, asking again while `is_asked_again` holds until `requests`
+// deferred or short replies or as many longer ones have come, and logs why when the bytes cannot be read
+static int32_t read_dpcd(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    uint32_t address,
+    uint32_t bytes,
+    uint32_t requests,
+    uint8_t* out,
+    bool& is_read
+) {
+    is_read = false;
+
+    aux_answer answer = {};
+    uint32_t made = 0;
+    uint32_t deferred_or_short = 0;
+    uint32_t longer = 0;
+    while (deferred_or_short < requests && longer < requests) {
+        int32_t rc = request_dpcd_read(fw, display_common, display_id, address, bytes, out, answer);
+        if (rc != OK) {
+            return rc;
+        }
+
+        made++;
+        if (!is_asked_again(answer, bytes)) {
+            break;
+        }
+
+        if (is_acknowledged_with_more(answer, bytes)) {
+            longer++;
+        } else {
+            deferred_or_short++;
+        }
     }
 
-    string::memcpy(out, params.data, bytes);
-    is_read = true;
+    is_read = is_acknowledged_exactly(answer, bytes);
+    if (!is_read) {
+        log_unread(display_id, address, bytes, answer, made);
+    }
 
     return OK;
 }
@@ -155,7 +260,16 @@ int32_t read_output_dpcd(
     bool& is_read
 ) {
     uint8_t interval = 0;
-    int32_t rc = read_dpcd(fw, display_common, display_id, DPCD_TRAINING_AUX_READ_INTERVAL, 1, &interval, is_read);
+    int32_t rc = read_dpcd(
+        fw,
+        display_common,
+        display_id,
+        DPCD_TRAINING_AUX_READ_INTERVAL,
+        1,
+        INTERVAL_REQUESTS,
+        &interval,
+        is_read
+    );
     if (rc != OK || !is_read) {
         return rc;
     }
@@ -171,6 +285,7 @@ int32_t read_output_dpcd(
         display_id,
         receiver_address,
         DPCD_RECEIVER_CAPABILITY_BYTES,
+        CAPABILITY_REQUESTS,
         capabilities.receiver,
         is_read
     );
@@ -185,6 +300,7 @@ int32_t read_output_dpcd(
             display_id,
             DPCD_PHY_REPEATER_CAPABILITIES,
             DPCD_PHY_REPEATER_CAPABILITY_BYTES,
+            CAPABILITY_REQUESTS,
             capabilities.phy_repeaters,
             is_read
         );

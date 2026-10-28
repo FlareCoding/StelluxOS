@@ -366,11 +366,13 @@ struct aux_params {
 constexpr uint32_t AUX_COMMAND_DPCD_READ = 0x9;
 
 // `aux_params::reply`'s values, NVIDIA's NV0073_CTRL_DP_AUXCH_REPLYTYPE_*: the monitor acknowledged the transaction,
-// refused it, asked for it again later, or did not answer in time
-constexpr uint32_t AUX_REPLY_ACK     = 0;
-constexpr uint32_t AUX_REPLY_NACK    = 1;
-constexpr uint32_t AUX_REPLY_DEFER   = 2;
-constexpr uint32_t AUX_REPLY_TIMEOUT = 3;
+// refused it, asked for it again later, did not answer in time, refused an I2C transaction or asked for one again later
+constexpr uint32_t AUX_REPLY_ACK       = 0;
+constexpr uint32_t AUX_REPLY_NACK      = 1;
+constexpr uint32_t AUX_REPLY_DEFER     = 2;
+constexpr uint32_t AUX_REPLY_TIMEOUT   = 3;
+constexpr uint32_t AUX_REPLY_I2C_NACK  = 4;
+constexpr uint32_t AUX_REPLY_I2C_DEFER = 8;
 
 static_assert(sizeof(aux_params) == 48, "NVIDIA's layout of DP_AUXCH_CTRL's parameters");
 
