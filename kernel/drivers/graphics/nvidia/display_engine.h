@@ -110,16 +110,18 @@ public:
      * output `find_shown_output` gives for it, or that the display id names no
      * output, then the boot head `find_boot_head` gives and the boot output
      * (the output it shows), or that there is none. Then choose the output to
-     * light first and its mode with `choose_first_light`, trying first the
-     * boot output, else output 0, on the boot head, else head 0, with that
-     * head's lowest window, as `find_light_target` gives them, and log the
-     * choice or that no connected output has a mode. Each output's modes are
-     * kept on the unprivileged heap from the monitors' reads to the choice, or
-     * to `release` when the set-up fails before it, and the other facts read
-     * are not kept. Each request spins on the calling CPU, waiting for its
-     * reply as `firmware` describes, and so does each wait for GET, for at
-     * most 5 seconds. `read_output_edid` also spins before each reread of an
-     * EDID as it describes. `set_up` must be called at most once, as
+     * light first and its mode with `choose_first_light`, asking the bandwidth
+     * check about each mode in turn, trying first the boot output, else output
+     * 0, on the boot head, else head 0, with that head's lowest window, as
+     * `find_light_target` gives them, and log the choice or why none is made:
+     * no connected output having a mode, every mode being refused, or the
+     * request not being allocated. Each output's modes are kept on the
+     * unprivileged heap from the monitors' reads to the choice, or to
+     * `release` when the set-up fails before it, and the other facts read are
+     * not kept. Each request spins on the calling CPU, waiting for its reply
+     * as `firmware` describes, and so does each wait for GET, for at most 5
+     * seconds. `read_output_edid` also spins before each reread of an EDID as
+     * it describes. `set_up` must be called at most once, as
      * `instance_memory::set_up` must, and since it waits on video memory's
      * lock and on the card as `instance_memory` describes, it must never run
      * in an interrupt handler or under a spinlock, and on a thread that cannot
@@ -162,10 +164,12 @@ public:
      * reach PUT within 5 seconds of a kick, the error is `ERR_TIMEOUT`, and
      * when a read of GET finds it past the push buffer's writable end or not a
      * multiple of 4, `ERR_BAD_STATE`, each logged as `display_channel`
-     * describes and here. The display's objects and the core channel stay
-     * allocated once allocated, even after a later step fails, until
-     * `release`, and the completion notifier stays bound to the core channel
-     * once bound.
+     * describes and here. When a request to the bandwidth check fails other
+     * than with `ERR_FIRMWARE` or `ERR_NO_MEMORY`, the set-up fails with its
+     * error, logged as `choose_first_light` describes. The display's objects
+     * and the core channel stay allocated once allocated, even after a later
+     * step fails, until `release`, and the completion notifier stays bound to
+     * the core channel once bound.
      */
     int32_t set_up(
         registers& regs,

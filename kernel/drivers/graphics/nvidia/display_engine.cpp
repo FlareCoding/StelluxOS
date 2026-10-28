@@ -418,23 +418,54 @@ static void log_active_heads(const active_heads& active, const display_outputs& 
 
 // Chooses the output to light first and its mode with `choose_first_light`, on the head and window `find_light_target`
 // gives, and logs the choice or why none is made
-static void choose_and_log_first_light(
+static int32_t choose_and_log_first_light(
+    firmware& fw,
+    rm::handle bandwidth_check,
     const display_heads& heads,
     const active_heads& active,
     const display_outputs& outputs,
     const output_modes* modes
 ) {
+    uint8_t outputs_with_modes = 0;
+    for (uint8_t index = 0; index < outputs.count; index++) {
+        if (modes[index].count > 0) {
+            outputs_with_modes++;
+        }
+    }
+
+    if (outputs_with_modes == 0) {
+        log::info("nvidia: no output is chosen to light, as no connected output has a mode");
+        return OK;
+    }
+
     light_target target = find_light_target(heads, active, outputs);
     first_light light = {};
-    if (!choose_first_light(modes, outputs.count, target, light)) {
-        log::info("nvidia: no output is chosen to light, as no connected output has a mode");
-        return;
+    bool is_chosen = false;
+    int32_t rc = choose_first_light(fw, bandwidth_check, modes, outputs.count, target, light, is_chosen);
+
+    // Lighting nothing leaves the driver attached, so a request that cannot be allocated ends only the choice
+    if (rc == ERR_NO_MEMORY) {
+        log::error("nvidia: no output is chosen to light, as the bandwidth check's request cannot be allocated");
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (!is_chosen) {
+        log::info(
+            "nvidia: no output is chosen to light, as every mode of the %u %s with modes is refused",
+            outputs_with_modes,
+            outputs_with_modes == 1 ? "output" : "outputs"
+        );
+        return OK;
     }
 
     uint64_t millihertz = light.timing.refresh_millihertz();
     log::info(
         "nvidia: output %u is chosen to light first, at its EDID's timing %u, %u by %u at %lu.%03lu Hz, on head %u "
-        "with window %u",
+        "with window %u, which the bandwidth check accepts",
         light.output,
         light.timing_index,
         light.timing.width,
@@ -444,6 +475,8 @@ static void choose_and_log_first_light(
         light.head,
         light.window
     );
+
+    return OK;
 }
 
 // Writes `method` into `queue`, and when `write` returns `ERR_QUEUE_FULL`, kicks, waits for GET to reach PUT and writes
@@ -628,11 +661,11 @@ int32_t display_engine::set_up(
     }
 
     log_active_heads(active, outputs);
-    choose_and_log_first_light(heads, active, outputs, m_output_modes);
+    rc = choose_and_log_first_light(m_firmware, m_objects.bandwidth_check, heads, active, outputs, m_output_modes);
 
     free_output_modes(m_output_modes);
 
-    return OK;
+    return rc;
 }
 
 int32_t display_engine::release() {

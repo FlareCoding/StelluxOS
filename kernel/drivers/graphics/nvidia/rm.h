@@ -454,6 +454,102 @@ struct active_display_params {
 
 static_assert(sizeof(active_display_params) == 16, "NVIDIA's layout of GET_ACTIVE's parameters");
 
+// NVIDIA's NVC372_CTRL_CMD_IS_MODE_POSSIBLE, the control to the bandwidth check's object that asks whether the display
+// engine has the memory bandwidth and clocks to scan out at once the heads and windows its parameters name
+constexpr uint32_t CONTROL_IS_MODE_POSSIBLE = 0xC3720101;
+
+// NVIDIA's NVC372_CTRL_MAX_POSSIBLE_HEADS and NVC372_CTRL_MAX_POSSIBLE_WINDOWS, the most heads and windows in a request
+constexpr uint32_t MODE_POSSIBLE_HEADS_MAX   = 8;
+constexpr uint32_t MODE_POSSIBLE_WINDOWS_MAX = 32;
+
+// NVIDIA's NV_DISP_LOCK_MODE_NO_LOCK and NV_DISP_LOCK_PIN_UNSPECIFIED, a head whose raster is locked to no other's
+constexpr uint32_t LOCK_MODE_NONE = 0x0;
+constexpr uint32_t LOCK_PIN_NONE  = 0x10;
+
+// NVIDIA's NVC372_CTRL_IMP_LUT_USAGE_1025, a look-up table of 1025 entries
+constexpr uint8_t LUT_USAGE_1025 = 2;
+
+// NVIDIA's NVC372_CTRL_FORMAT_RGB_PACKED_4_BPP, the formats of 4 bytes a pixel
+constexpr uint32_t FORMAT_RGB_PACKED_4_BPP = 0x4;
+
+// A head a request names, NVIDIA's NVC372_CTRL_IMP_HEAD. Raster positions count from the start of the sync, and a
+// downscale factor counts 1024ths
+struct mode_possible_head {
+    uint8_t  head;                         // NVIDIA's headIndex
+    uint32_t pixel_clock_khz;              // NVIDIA's maxPixelClkKHz
+    uint32_t raster_width;                 // NVIDIA's rasterSize
+    uint32_t raster_height;
+    uint32_t blank_start_x;                // NVIDIA's rasterBlankStart
+    uint32_t blank_start_y;
+    uint32_t blank_end_x;                  // NVIDIA's rasterBlankEnd
+    uint32_t blank_end_y;
+    uint32_t second_blank_start_y;         // NVIDIA's rasterVertBlank2, 0 for a progressive raster
+    uint32_t second_blank_end_y;
+    uint32_t master_lock_mode;             // NVIDIA's control
+    uint32_t master_lock_pin;
+    uint32_t slave_lock_mode;
+    uint32_t slave_lock_pin;
+    uint32_t max_downscale_x;              // NVIDIA's maxDownscaleFactorH
+    uint32_t max_downscale_y;              // NVIDIA's maxDownscaleFactorV
+    uint8_t  output_scaler_taps;           // NVIDIA's outputScalerVerticalTaps
+    uint8_t  allows_upscaling_y;           // NVIDIA's bUpscalingAllowedV
+    uint8_t  enables_overfetch;            // NVIDIA's bOverfetchEnabled
+    uint16_t leading_idle_lines;           // NVIDIA's minFrameIdle
+    uint16_t trailing_idle_lines;
+    uint8_t  lut;                          // the output look-up table's usage
+    uint8_t  cursor_width_32;              // NVIDIA's cursorSize32p, the cursor's width in units of 32 pixels
+    uint8_t  enables_dsc;                  // NVIDIA's bEnableDsc
+    uint8_t  is_yuv420;                    // NVIDIA's bYUV420Format
+    uint8_t  is_two_heads_one_or;          // NVIDIA's bIs2Head1Or
+    uint8_t  gets_osld_output;             // NVIDIA's bGetOSLDOutput
+    uint8_t  disables_mid_frame_watermark; // NVIDIA's bDisableMidFrameAndDWCFWatermark
+};
+
+// A window a request names, NVIDIA's NVC372_CTRL_IMP_WINDOW
+struct mode_possible_window {
+    uint32_t window;             // NVIDIA's windowIndex
+    uint32_t head;               // NVIDIA's owningHead
+    uint32_t formats;            // NVIDIA's formatUsageBound, the FORMAT_* bits of the formats the window scans out
+    uint32_t rotated_formats;    // NVIDIA's rotatedFormatUsageBound
+    uint32_t max_pixels_fetched; // NVIDIA's maxPixelsFetchedPerLine
+    uint32_t max_downscale_x;    // NVIDIA's maxDownscaleFactorH
+    uint32_t max_downscale_y;    // NVIDIA's maxDownscaleFactorV
+    uint8_t  input_scaler_taps;  // NVIDIA's inputScalerVerticalTaps
+    uint8_t  allows_upscaling_y; // NVIDIA's bUpscalingAllowedV
+    uint8_t  enables_overfetch;  // NVIDIA's bOverfetchEnabled
+    uint8_t  lut;                // the input look-up table's usage
+    uint8_t  tmo_lut;            // the tone-mapping output look-up table's usage
+};
+
+// The parameters of `CONTROL_IS_MODE_POSSIBLE`, whose reply fills every field from `is_possible` on but the last.
+// Options of 0 ask for no margin and no lowest performance state, and the fields from `is_osld_possible` are not read
+struct mode_possible_params {
+    uint32_t             subdevice_index;       // NVIDIA's base.subdeviceIndex, as in `display_capabilities_params`
+    uint8_t              head_count;            // NVIDIA's numHeads
+    uint8_t              window_count;          // NVIDIA's numWindows
+    mode_possible_head   heads[MODE_POSSIBLE_HEADS_MAX];
+    mode_possible_window windows[MODE_POSSIBLE_WINDOWS_MAX];
+    uint32_t             options;
+    uint32_t             test_memory_clock_khz; // NVIDIA's testMclkFreqKHz
+    uint8_t              is_possible;           // NVIDIA's bIsPossible
+    uint8_t              is_osld_possible[MODE_POSSIBLE_HEADS_MAX];
+    uint32_t             min_imp_vpstate;
+    uint32_t             min_pstate;
+    uint32_t             min_bandwidth_kbps;
+    uint32_t             floor_bandwidth_kbps;
+    uint32_t             min_hub_clock_khz;
+    uint32_t             osld_vblank_increase_lines[MODE_POSSIBLE_HEADS_MAX];
+    uint32_t             osld_wake_up_lines[MODE_POSSIBLE_HEADS_MAX];
+    uint32_t             worst_case_margin;
+    uint32_t             display_clock_khz;
+    char                 worst_case_domain[8];
+    uint8_t              uses_cached_perf_state; // NVIDIA's bUseCachedPerfState
+};
+
+static_assert(sizeof(mode_possible_head) == 80, "NVIDIA's layout of a head of IS_MODE_POSSIBLE");
+static_assert(sizeof(mode_possible_window) == 36, "NVIDIA's layout of a window of IS_MODE_POSSIBLE");
+static_assert(sizeof(mode_possible_params) == 1924, "NVIDIA's layout of IS_MODE_POSSIBLE's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H
