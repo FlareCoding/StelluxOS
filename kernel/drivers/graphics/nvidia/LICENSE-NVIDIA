@@ -2382,18 +2382,27 @@ src/common/inc/displayport/displayport.h
     kernel/tests/graphics/nvidia_displayport.test.cpp, the codes of the four
     standard rates and a lane's rate in units of 27 million symbols per second,
     in displayport.h, displayport.cpp and
-    kernel/tests/graphics/nvidia_displayport.test.cpp, and the lane counts a
-    link takes, 8 among them, in displayport.h
+    kernel/tests/graphics/nvidia_displayport.test.cpp, the lane counts a link
+    takes, 8 among them, in displayport.h, and the lane counts
+    IS_VALID_LANECOUNT passes, 0, 1, 2, 4 and 8, and a PHY repeater count byte
+    naming no count of 1 to 8 taken as 0, in display_dpcd.h, display_dpcd.cpp
+    and kernel/tests/graphics/nvidia_display_link_limits.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/displayport/dpcd.h
     the link status's four bytes and the bits for a lane's clock recovery,
     equalization and symbol lock, the lanes' alignment and the first port's
     sync, in displayport.h, displayport.cpp and
-    kernel/tests/graphics/nvidia_displayport.test.cpp, and NV_DPCD_REV and
+    kernel/tests/graphics/nvidia_displayport.test.cpp, NV_DPCD_REV and
     NV_DPCD_TRAINING_AUX_RD_INTERVAL, 0x00000 and 0x0000E, the receiver
     capability field's address and the byte read before it, in display_dpcd.h
-    and kernel/tests/graphics/nvidia_display_dpcd.test.cpp
+    and kernel/tests/graphics/nvidia_display_dpcd.test.cpp, the field's rate
+    code in bits 4:0 of its byte 1 with the codes of RBR, HBR and HBR2, its lane
+    count in bits 4:0 of its byte 2 with the counts 1, 2, 4 and 8, and enhanced
+    framing in bit 7 of that byte, in display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, and
+    NV_DPCD_EDP_CONFIG_CAP's bit 3, the field's byte 0x0D declaring eDP display
+    control, in kernel/tests/graphics/nvidia_display_link_limits.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_linkconfig.h
@@ -2412,12 +2421,22 @@ src/common/displayport/src/dp_connectorimpl.cpp
     calling the library sets a preferred configuration with it, in
     displayport.h, displayport.cpp and
     kernel/tests/graphics/nvidia_displayport.test.cpp, enhanced framing run when
-    the monitor takes it, a mode without a pixel clock taken as carried and 4
-    lanes taken for a monitor reporting 0, in displayport.h, a connector asking
-    for its display id's digital facts as it is made and going on when they are
-    refused, in display_outputs.h, and a connector asking display common for the
-    GPU's DisplayPort capabilities as it is made, before any DPCD read, and
-    handing the library whether the GPU trains PHY repeaters, in display_dpcd.h
+    the monitor takes it and a mode without a pixel clock taken as carried, in
+    displayport.h, 4 lanes taken for a monitor reporting 0, in displayport.h,
+    and for a lane count of 0 from the monitor or its PHY repeaters, in
+    display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, only 1, 2 and 4
+    lanes tried by the search for the lowest configuration, in display_dpcd.h,
+    display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, the search
+    skipped for a monitor the library's monitor database flags, training the
+    highest configuration within the monitor's limits and the GPU's with no
+    rounding of the lanes, in display_dpcd.h, a connector asking for its display
+    id's digital facts as it is made and going on when they are refused, in
+    display_outputs.h, a connector asking display common for the GPU's
+    DisplayPort capabilities as it is made, before any DPCD read, and handing
+    the library whether the GPU trains PHY repeaters, in display_dpcd.h, and no
+    monitor driven whose DPCD gives a revision below 1.0, in display_dpcd.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_configcaps.cpp
@@ -2430,14 +2449,49 @@ src/common/displayport/src/dp_configcaps.cpp
     capability field's 16 bytes from its extended copy when that byte's bit 7 is
     set and from 0x00000 otherwise, then the PHY repeaters' 8 bytes when the GPU
     trains PHY repeaters, in display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that it takes the
-    field from 0x00000 when the byte cannot be read, reads the field and the PHY
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it takes the field
+    from 0x00000 when the byte cannot be read, reads the field and the PHY
     repeaters' bytes with a retry count of 16, reads the PHY repeaters' bytes
     unless display common reports that the GPU does not train PHY repeaters,
     going on without them when that read fails, and makes the reads again up to
     3 more times while the field cannot be read, taking the DPCD as offline when
-    it never can, in display_dpcd.h
+    it never can, in display_dpcd.h, that it takes the field's rate as RBR, HBR
+    or HBR2 when the code's bits 4:0 name one and as HBR3 when the whole byte
+    does, else as HBR, a lane count other than 0, 1, 2, 4 and 8 as 1, and the
+    PHY repeaters' rate and lanes as caps on the monitor's when their bytes were
+    read, their revision passes 1.4 and their count byte names 1 to 8 of them,
+    taking a rate code of theirs DisplayPort does not define as HBR, in
+    display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, that without its
+    registry keys it takes the rate of a monitor whose field gives revision 1.2
+    or later and declares eDP display control at eDP 1.4 or later from its link
+    rate table when the table's first entry is not 0, in display_dpcd.h and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, and that an
+    override of a monitor's optimal configuration replaces its rate and lanes,
+    in display_dpcd.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/inc/dp_configcaps.h
+    that the DisplayPort library's test of the PHY repeaters' revision also
+    passes a major revision of 0 with a minor one of 4 or more, in
+    display_dpcd.h and kernel/tests/graphics/nvidia_display_link_limits.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/src/dp_deviceimpl.cpp
+    a monitor's limits replaced with the configuration its monitor database
+    entry gives, in display_dpcd.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/displayport/src/dp_wardatabase.cpp
+    two monitors flagged by maker and product to train at the highest
+    configuration within their limits and the GPU's, and the flag replacing a
+    monitor's limits flagging it the same way, in display_dpcd.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/dp/nvdp-evo-interface.cpp
+    two monitors, named by maker and product, whose limits are replaced with 4
+    lanes at HBR2, in display_dpcd.h
+    SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_evoadapter.h
     the GPU's own highest rate capping a link's, and the connector's where lower
@@ -2860,7 +2914,13 @@ src/common/inc/displayport/dpcd14.h
     NV_DPCD14_EXTENDED_REV, 0x02200, the extended copy's address, and
     NV_DPCD14_LT_TUNABLE_PHY_REPEATER_REV, 0xF0000, the PHY repeaters' first
     capability byte, in display_dpcd.h and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and HBR3's rate code
+    taking the whole byte, the PHY repeaters' revision with its minor part in
+    bits 3:0 and its major part in bits 7:4, their highest rate at 0xF0001,
+    their count at 0xF0002, one bit for each of 1 to 8 repeaters from bit 7
+    down, and their lane count in bits 4:0 at 0xF0004, in display_dpcd.h,
+    display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_auxretry.cpp

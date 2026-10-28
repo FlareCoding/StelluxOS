@@ -71,8 +71,10 @@ public:
      * timings of an EDID that parses, then the monitor's DPCD capabilities
      * (the link limits a DisplayPort monitor's registers report) and, when the
      * GPU trains PHY repeaters, those of any PHY repeater between the card and
-     * the monitor with `read_output_dpcd`, logging their bytes when it reads
-     * them all. Then allocate the core channel's push buffer in DMA pages and
+     * the monitor with `read_output_dpcd`, and when it reads them all, log
+     * their bytes, the most lanes and the highest rate `monitor_link_limits`
+     * gives for a link to the monitor, and whether the monitor takes enhanced
+     * framing. Then allocate the core channel's push buffer in DMA pages and
      * the core channel under the display with `allocate_core_channel`, and log
      * its handle, where its push buffer lies and one read of its PUT and GET.
      * Then write the core channel's initial methods, which

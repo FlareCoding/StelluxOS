@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_DISPLAY_DPCD_H
 
 #include "common/types.h"
+#include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/firmware.h"
 
 namespace drivers::nvidia {
@@ -86,6 +87,40 @@ int32_t read_output_dpcd(
     dpcd_capabilities& out,
     bool& is_read
 );
+
+/**
+ * @brief Give the most lanes and the highest rate a link to a monitor takes,
+ * as NVIDIA's DisplayPort library parses the monitor's capabilities. The
+ * receiver capability field's rate is RBR, HBR or HBR2 when its code's bits 4
+ * to 0 name one and HBR3 when the whole byte does, else HBR, and a lane count
+ * other than 0, 1, 2, 4 and 8 counts as 1. PHY repeaters of revision 1.4 or
+ * later whose count byte names 1 to 8 of them cap both, an undefined rate code
+ * of theirs as HBR. Their bytes are all 0, naming none, when
+ * `read_output_dpcd` did not read them, as NVIDIA's library reads none when
+ * display common reports that the GPU does not train them. The lanes left
+ * train at the most of 1, 2 and 4 within them, and at 4 for 0, so a repeater's
+ * 3 trains 2, as NVIDIA's search tries only those. NVIDIA's revision test also
+ * passes a major revision of 0 with a minor one of 4 or more, and without its
+ * registry keys NVIDIA takes the rate of a monitor whose field gives revision
+ * 1.2 or later and declares eDP display control at eDP 1.4 or later from its
+ * link rate table when the table's first entry is not 0, a table read nowhere
+ * here. NVIDIA also skips its search for four monitors it lists by maker and
+ * product, training each at the highest configuration within its limits and
+ * the GPU's, with no rounding of the lanes, and replaces the limits of two of
+ * them with 4 lanes at HBR2. NVIDIA drives no monitor whose field gives a
+ * revision below 1.0.
+ * @param dpcd The capabilities `read_output_dpcd` read.
+ * @return The most lanes, 1, 2 or 4, and the highest rate, RBR, HBR, HBR2 or
+ * HBR3.
+ */
+displayport::link_limits monitor_link_limits(const dpcd_capabilities& dpcd);
+
+/**
+ * @brief Whether a monitor takes enhanced framing.
+ * @param dpcd The capabilities `read_output_dpcd` read.
+ * @return Bit 7 of the receiver capability field's lane byte.
+ */
+bool takes_enhanced_framing(const dpcd_capabilities& dpcd);
 
 } // namespace drivers::nvidia
 
