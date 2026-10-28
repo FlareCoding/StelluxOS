@@ -36,6 +36,8 @@ constexpr chip_info CHIP_TABLE[] = {
             .displayport = {
                 .trains_phy_repeaters = true,
                 .max_rate = displayport::link_rate::hbr3,
+                .fec_supported = true,
+                .increased_watermark_limits = true,
             },
         },
     },

@@ -108,7 +108,7 @@ int32_t read_output_dpcd(
  * product, training each at the highest configuration within its limits and
  * the GPU's, with no rounding of the lanes, and replaces the limits of two of
  * them with 4 lanes at HBR2. NVIDIA drives no monitor whose field gives a
- * revision below 1.0.
+ * revision below 1.0 unless a registry key replaces the revision.
  * @param dpcd The capabilities `read_output_dpcd` read.
  * @return The most lanes, 1, 2 or 4, and the highest rate, RBR, HBR, HBR2 or
  * HBR3.
@@ -121,6 +121,16 @@ displayport::link_limits monitor_link_limits(const dpcd_capabilities& dpcd);
  * @return Bit 7 of the receiver capability field's lane byte.
  */
 bool takes_enhanced_framing(const dpcd_capabilities& dpcd);
+
+/**
+ * @brief Whether a monitor's DPCD gives a revision of 1.0 or later, as
+ * NVIDIA's DisplayPort library tests it before driving a monitor, without its
+ * registry keys.
+ * @param dpcd The capabilities `read_output_dpcd` read.
+ * @return Whether the receiver capability field's major revision, bits 7 to 4
+ * of its first byte, is 1 or more, whatever its minor revision.
+ */
+bool is_at_least_revision_1_0(const dpcd_capabilities& dpcd);
 
 } // namespace drivers::nvidia
 

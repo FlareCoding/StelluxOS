@@ -67,6 +67,9 @@ struct chip_displayport {
     bool trains_phy_repeaters; // the firmware trains PHY repeaters, chips regenerating the signal before the monitor
 
     displayport::link_rate max_rate; // the highest rate a link runs at
+
+    bool fec_supported;              // the links support FEC (forward error correction), as `compute_stream` requires
+    bool increased_watermark_limits; // the links take the increased watermark limits
 };
 
 /**
