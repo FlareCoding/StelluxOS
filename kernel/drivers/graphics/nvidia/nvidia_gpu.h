@@ -299,7 +299,8 @@ namespace drivers {
  * then fails as described below when allocating the driver's client, device or
  * subdevice fails, when the display engine's set-up fails, and with the error
  * `pci_driver::setup_msi` returns when MSI cannot be set up. Bring-up itself
- * never writes to the display engine, and the CPU sequencer's steps write only
+ * writes to the display engine only the core channel's initial methods and
+ * sends no update that applies them, and the CPU sequencer's steps write only
  * the registers the firmware names. Once the sequencer has resumed the GSP's
  * firmware, though, the firmware puts all of BAR1 (where the CPU reaches the
  * card's video memory) into virtual mode, translated through the firmware's
@@ -367,11 +368,11 @@ namespace drivers {
  * `nvidia::frts_region::has_display` records, bring-up then sets up the
  * display engine under the device with `nvidia::display_engine::set_up`, and
  * otherwise logs that it skips the display's windows, instance memory,
- * objects, capabilities, heads, display ids, outputs, EDIDs, DPCD and core
- * channel. When the set-up fails, as it always does when BAR1 is not mapped,
- * since `nvidia::bar1_video_memory::map_for_cpu` then has no window to clear
- * the display's instance memory through, `attach()` fails as
- * `nvidia::display_engine::set_up` describes, before MSI is set up.
+ * objects, capabilities, heads, display ids, outputs, EDIDs, DPCD, core
+ * channel and its initial methods. When the set-up fails, as it always does
+ * when BAR1 is not mapped, since `nvidia::bar1_video_memory::map_for_cpu` then
+ * has no window to clear the display's instance memory through, `attach()`
+ * fails as `nvidia::display_engine::set_up` describes, before MSI is set up.
  * Once `attach()` has enabled the GSP's vector, `detach()` first disables
  * every vector of the CPU interrupt tree as
  * `nvidia::disable_cpu_interrupt_tree` describes, so that the GSP's vector

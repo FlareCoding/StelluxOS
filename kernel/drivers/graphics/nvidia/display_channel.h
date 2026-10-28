@@ -21,6 +21,10 @@ constexpr uint32_t CHANNEL_GET = 0x4;
 // to offset 0 fit before the pad
 constexpr uint32_t METHOD_VALUES_MAX = (PUSH_BUFFER_BYTES - PUSH_BUFFER_PAD_BYTES) / 4 - 2;
 
+// The driver's bound on a wait for GET to reach PUT, 5 seconds, after which NVIDIA's driver logs a wait for room in a
+// push buffer as an error and waits on
+constexpr uint64_t IDLE_TIMEOUT_NS = 5000000000;
+
 /**
  * A display channel is a queue of methods that the display engine (the GPU's
  * unit that scans images out to monitors) reads from memory. This object is

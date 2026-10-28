@@ -1,8 +1,11 @@
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under drivers/graphics/nvidia/LICENSE-NVIDIA
+
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/core_channel.h"
+#include "drivers/graphics/nvidia/core_methods.h"
 #include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_engine.h"
 #include "drivers/graphics/nvidia/firmware.h"
@@ -17,10 +20,13 @@
 TEST_SUITE(nvidia_display_engine);
 
 using drivers::nvidia::CHANNEL_GET;
+using drivers::nvidia::CHANNEL_PUT;
 using drivers::nvidia::chip_info;
 using drivers::nvidia::CORE_CHANNEL_AREA;
+using drivers::nvidia::CORE_INITIAL_METHODS_PER_HEAD;
 using drivers::nvidia::cpu_mapping;
 using drivers::nvidia::display_engine;
+using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_FIRMWARE;
 using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
@@ -43,10 +49,21 @@ static constexpr rm::handle FIRST_HANDLE = 0x0005000D;
 static constexpr uint32_t TEST_DISPLAY_CLASS      = 0xC67F;
 static constexpr uint32_t TEST_CORE_CHANNEL_CLASS = 0xC67E;
 
-// An address limit `dma::alloc_pages` refuses, so a set-up for a card limited to it fails at the push buffer
+// A card's full address width, and a limit `dma::alloc_pages` refuses, so a set-up for a card limited to it fails at
+// the push buffer
+static constexpr uint8_t FULL_ADDRESS_BITS    = 64;
 static constexpr uint8_t REFUSED_ADDRESS_BITS = 16;
 
-// The memory the video memory double maps, and the words the core channel's PUT and GET are read from
+// The heads of the chip `set_up` describes, whose initial methods outgrow the push buffer
+static constexpr uint8_t CHIP_HEADS = 4;
+
+// The heads the double reports by default, where their initial methods (each a header and one value) end, so a GET
+// reading it has reached PUT, and a GET past the push buffer's writable end
+static constexpr uint8_t  DOUBLE_HEADS        = 2;
+static constexpr uint32_t INITIAL_METHODS_END = CORE_INITIAL_METHODS_PER_HEAD * DOUBLE_HEADS * 2 * sizeof(uint32_t);
+static constexpr uint32_t BAD_GET             = 0xFFFFFFFF;
+
+// The memory the video memory double maps, and the words standing in for the core channel's PUT and GET
 static uint8_t  g_video_memory[INSTANCE_MEMORY_BYTES];
 static uint32_t g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t) + 1];
 
@@ -54,7 +71,7 @@ static uint32_t g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t) + 1];
 alignas(display_engine) static uint8_t g_engine_bytes[sizeof(display_engine)];
 
 // A firmware that records the kind, object and number of each request in order, answers a request a refusal matches
-// with its result, the head reads with one head, served by window 0, and any other request with its parameters as sent
+// with its result, the head reads with `heads` heads, and others with their parameters as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 32;
@@ -79,6 +96,7 @@ public:
     uint32_t call_count = 0;
     uint32_t handle_count = 0;
     refusal  refusals[2] = {};
+    uint8_t  heads = DOUBLE_HEADS;
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
         return answer(kind::allocation, object, class_id);
@@ -190,14 +208,17 @@ private:
         return OK;
     }
 
-    // Gives one head the display engine can use, head 0, and has window 0 serve it
-    static void fill_head_reply(uint32_t command, void* params) {
+    // Gives `heads` heads the display engine can use, from head 0, each served by the window of its number
+    void fill_head_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_GET_HEAD_COUNT) {
-            static_cast<rm::head_count_params*>(params)->head_count = 1;
+            static_cast<rm::head_count_params*>(params)->head_count = heads;
         } else if (command == rm::CONTROL_GET_HEAD_MASK) {
-            static_cast<rm::head_mask_params*>(params)->head_mask = 1;
+            static_cast<rm::head_mask_params*>(params)->head_mask = (1u << heads) - 1;
         } else if (command == rm::CONTROL_GET_WINDOW_HEADS) {
-            static_cast<rm::window_heads_params*>(params)->window_heads[0] = 1;
+            rm::window_heads_params* reply = static_cast<rm::window_heads_params*>(params);
+            for (uint8_t head = 0; head < heads; head++) {
+                reply->window_heads[head] = static_cast<uint8_t>(1u << head);
+            }
         }
     }
 };
@@ -232,14 +253,19 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
 }
 
 // Sets up `engine` under `TEST_DEVICE` for a card driving `address_bits` physical address bits, with four heads and
-// eight windows. PUT and GET are read from `g_core_channel_registers`, and no push buffer page is ever freed
-static int32_t set_up(display_engine& engine, uint8_t address_bits = 64) {
+// eight windows. PUT and GET are in `g_core_channel_registers`, GET reading `get`, and no push buffer page is freed
+static int32_t set_up(
+    display_engine& engine,
+    uint8_t address_bits = FULL_ADDRESS_BITS,
+    uint32_t get = INITIAL_METHODS_END
+) {
+    g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)] = get;
     registers regs(reinterpret_cast<uintptr_t>(g_core_channel_registers) - CORE_CHANNEL_AREA);
     dma::device_profile card = dma::device_profile_test_access::build(address_bits, true);
 
     chip_info chip = {};
     chip.display = {
-        .head_count         = 4,
+        .head_count         = CHIP_HEADS,
         .window_count       = 8,
         .display_class      = TEST_DISPLAY_CLASS,
         .core_channel_class = TEST_CORE_CHANNEL_CLASS,
@@ -409,6 +435,60 @@ TEST(nvidia_display_engine, set_up_failing_at_the_push_buffer_keeps_the_objects_
 
     EXPECT_EQ(engine.release(), OK);
     ASSERT_EQ(fw.call_count, first + 3);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+}
+
+// A set-up kicks the core channel's initial methods for the double's two heads, its PUT left where they end
+TEST(nvidia_display_engine, set_up_kicks_the_initial_methods_of_the_heads_read) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)] = 0;
+
+    ASSERT_EQ(set_up(engine), OK);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
+}
+
+// A GET past the push buffer's writable end fails the set-up with `ERR_BAD_STATE` once the initial methods are kicked,
+// and the core channel and the objects stay allocated until the release frees them
+TEST(nvidia_display_engine, set_up_failing_at_the_initial_methods_keeps_the_core_channel_until_release) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)] = 0;
+
+    EXPECT_EQ(set_up(engine, FULL_ADDRESS_BITS, BAD_GET), ERR_BAD_STATE);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
+    EXPECT_EQ(fw.release_count(), 0u);
+    uint32_t first = fw.call_count;
+
+    EXPECT_EQ(engine.release(), OK);
+    ASSERT_EQ(fw.call_count, first + 5);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+}
+
+// The initial methods of four heads outgrow the push buffer, so a GET past its writable end fails the set-up with
+// `ERR_BAD_STATE` in a write, before any kick, and the core channel and the objects stay allocated until the release
+TEST(nvidia_display_engine, set_up_failing_in_a_write_kicks_nothing_and_keeps_the_core_channel) {
+    engine_firmware fw;
+    fw.heads = CHIP_HEADS;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)] = 0;
+
+    EXPECT_EQ(set_up(engine, FULL_ADDRESS_BITS, BAD_GET), ERR_BAD_STATE);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], 0u);
+    EXPECT_EQ(fw.release_count(), 0u);
+    uint32_t first = fw.call_count;
+
+    EXPECT_EQ(engine.release(), OK);
+    ASSERT_EQ(fw.call_count, first + 5);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
