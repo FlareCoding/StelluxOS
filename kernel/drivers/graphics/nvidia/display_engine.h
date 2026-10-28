@@ -70,8 +70,10 @@ public:
      * digital ones, then each static digital one's digital facts with
      * `read_display_outputs`, logging the outputs with their facts and the
      * most lanes and the highest rate `connector_link_limits` gives for a link
-     * on each one's connector, the rate capped by the chip's highest, then for
-     * each connected output's monitor its EDID (the monitor's description of
+     * on each one's connector, the rate capped by the chip's highest, then,
+     * when there are outputs, take the DisplayPort hardware from the firmware
+     * with `take_displayport_from_firmware` and log it, then for each
+     * connected output's monitor its EDID (the monitor's description of
      * itself, with the timings it accepts) with `read_output_edid` into one
      * `edid::monitor` on the unprivileged heap, logging the maker, name and
      * timings of an EDID that parses, then the monitor's DPCD capabilities

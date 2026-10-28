@@ -2569,17 +2569,22 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
     command of a native read, the reply types and the size sent as the bytes
     asked for less 1 and given back as the bytes the transaction moved, in rm.h,
     display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that
-    NV0073_CTRL_CMD_DP_SET_MANUAL_DISPLAYPORT turns off the firmware's own
-    retries of a deferred reply, in display_dpcd.h, and the GPU's reports of its
-    links' highest rate and of whether its firmware trains PHY repeaters, made
-    for the one link a request names, in chip.h, chip.cpp and
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp,
+    NV0073_CTRL_CMD_DP_SET_MANUAL_DISPLAYPORT, 0x731365, the control leaving the
+    DisplayPort hardware to the driver, its parameters' layout and that it turns
+    off the firmware's own watermark programming, DP IRQ (CP IRQ) handling and
+    retries of a deferred reply, in rm.h, display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and the GPU's reports of
+    its links' highest rate and of whether its firmware trains PHY repeaters,
+    made for the one link a request names, in chip.h, chip.cpp and
     kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/dp/nvdp-connector.cpp
     a mode's pixel clock in hertz, line total and visible width taken from its
-    timing, in displayport.cpp
+    timing, in displayport.cpp, and that nvkms makes each DisplayPort
+    connector's main link as it makes the connector, in display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/kern_disp.c
@@ -2972,15 +2977,20 @@ src/common/displayport/src/dp_evoadapter.cpp
     the size, in display_dpcd.h, display_dpcd.cpp and
     kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it takes an I2C
     transaction's deferral as a deferred reply, in display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it sends each AUX
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it tells the
+    firmware to leave the DisplayPort hardware to the library, the request's
+    parameters zeroed but for the subdevice, and goes on when the firmware
+    refuses, in display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it does so only as
+    it makes a connector's main link, in display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it sends each AUX
     transaction up to 3 times, sleeping as long as the firmware says after each,
     while the firmware fails it and names a time to retry after, takes the
-    firmware's timeout as a deferred reply, tells the firmware to leave the
-    DisplayPort hardware to the library as it is made and takes the GPU as
-    training PHY repeaters unless display common reports that it does not, in
-    display_dpcd.h, that it asks display common for the GPU's DisplayPort facts
-    naming one link, in chip.h, and that it takes a DP_LINK_BW value it does not
-    know as RBR, in display_outputs.h, display_outputs.cpp and
+    firmware's timeout as a deferred reply and takes the GPU as training PHY
+    repeaters unless display common reports that it does not, in display_dpcd.h,
+    that it asks display common for the GPU's DisplayPort facts naming one link,
+    in chip.h, and that it takes a DP_LINK_BW value it does not know as RBR, in
+    display_outputs.h, display_outputs.cpp and
     kernel/tests/graphics/nvidia_display_link_limits.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

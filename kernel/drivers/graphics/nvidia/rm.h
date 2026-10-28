@@ -376,6 +376,17 @@ constexpr uint32_t AUX_REPLY_I2C_DEFER = 8;
 
 static_assert(sizeof(aux_params) == 48, "NVIDIA's layout of DP_AUXCH_CTRL's parameters");
 
+// NVIDIA's NV0073_CTRL_CMD_DP_SET_MANUAL_DISPLAYPORT, the control to display common that leaves the driver the
+// DisplayPort hardware's watermark programming, DP IRQ (CP IRQ) handling and retries of a deferred AUX reply
+constexpr uint32_t CONTROL_SET_MANUAL_DISPLAYPORT = 0x731365;
+
+// The parameters of `CONTROL_SET_MANUAL_DISPLAYPORT`
+struct manual_displayport_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+};
+
+static_assert(sizeof(manual_displayport_params) == 4, "NVIDIA's layout of DP_SET_MANUAL_DISPLAYPORT's parameters");
+
 // NVIDIA's NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, the control that gives the firmware where a display
 // channel's push buffer lies, sent before the channel's allocation
 constexpr uint32_t CONTROL_SET_DISPLAY_PUSH_BUFFER = 0x20800A58;

@@ -28,6 +28,7 @@ using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::firmware;
 using drivers::nvidia::OK;
 using drivers::nvidia::read_output_dpcd;
+using drivers::nvidia::take_displayport_from_firmware;
 namespace rm = drivers::nvidia::rm;
 
 // NVIDIA's DP_AUXCH_CTRL, its parameters' size, the offsets of the fields sent or read in them, the data field's size,
@@ -48,6 +49,10 @@ static constexpr uint32_t NVIDIA_REPLY_DEFER         = 2;
 static constexpr uint32_t NVIDIA_REPLY_TIMEOUT       = 3;
 static constexpr uint32_t NVIDIA_REPLY_I2CNACK       = 4;
 static constexpr uint32_t NVIDIA_REPLY_I2CDEFER      = 8;
+
+// NVIDIA's DP_SET_MANUAL_DISPLAYPORT and its parameters' size, restated to hold its request to NVIDIA's layout
+static constexpr uint32_t NVIDIA_DP_SET_MANUAL_DISPLAYPORT       = 0x731365;
+static constexpr size_t   NVIDIA_DP_SET_MANUAL_DISPLAYPORT_BYTES = 4;
 
 // NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer), for the field and for the PHY
 // repeaters' bytes, and its passes, the first and the 3 more (faultyRetries) it makes while the field cannot be read
@@ -149,8 +154,19 @@ public:
     uint32_t later_reply = NVIDIA_REPLY_ACK;
     uint32_t later_size = 0;
 
+    // What DP_SET_MANUAL_DISPLAYPORT returns, and the subdevice its last request named
+    int32_t  manual_result = OK;
+    uint32_t manual_subdevice = 0xFFFFFFFF;
+
     int32_t control(rm::handle object, uint32_t command, void* params, size_t size) override {
         record(object, command, params, size);
+
+        bool is_manual_control = command == NVIDIA_DP_SET_MANUAL_DISPLAYPORT;
+        bool has_manual_params = params != nullptr && size == NVIDIA_DP_SET_MANUAL_DISPLAYPORT_BYTES;
+        if (is_manual_control && has_manual_params) {
+            manual_subdevice = field_at(static_cast<uint8_t*>(params), 0);
+            return manual_result;
+        }
 
         bool is_aux_control = command == NVIDIA_DP_AUXCH_CTRL;
         bool has_aux_params = params != nullptr && size == NVIDIA_DP_AUXCH_CTRL_BYTES;
@@ -411,6 +427,16 @@ static int32_t read_logged(
     s_dpcd_log_bytes = 0;
     log::set_backend(&DPCD_LOG_BACKEND);
     int32_t rc = read_output_dpcd(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, trains_phy_repeaters, out, is_read);
+    log::set_backend(nullptr);
+
+    return rc;
+}
+
+// Takes the DisplayPort hardware from `fw` with the log kept
+static int32_t take_logged(dpcd_firmware& fw) {
+    s_dpcd_log_bytes = 0;
+    log::set_backend(&DPCD_LOG_BACKEND);
+    int32_t rc = take_displayport_from_firmware(fw, TEST_DISPLAY_COMMON);
     log::set_backend(nullptr);
 
     return rc;
@@ -814,9 +840,53 @@ TEST(nvidia_display_dpcd, phy_repeaters_that_cannot_be_read_are_taken_as_none) {
     }
 }
 
-// The AUX control, its parameters' size, the most bytes a transaction carries, the read command, the reply types and
-// the DPCD addresses, bit and lengths are NVIDIA's
-TEST(nvidia_display_dpcd, aux_and_dpcd_constants_are_nvidias) {
+// Taking the DisplayPort hardware sends display common DP_SET_MANUAL_DISPLAYPORT for subdevice 0 in NVIDIA's layout,
+// as NVIDIA's library sends it, and logs it
+TEST(nvidia_display_dpcd, the_displayport_hardware_is_taken_with_nvidias_control) {
+    dpcd_firmware fw;
+
+    ASSERT_EQ(take_logged(fw), OK);
+
+    ASSERT_EQ(fw.call_count, 1u);
+    EXPECT_EQ(fw.stray_count, 0u);
+    EXPECT_EQ(fw.calls[0].object, TEST_DISPLAY_COMMON);
+    EXPECT_EQ(fw.calls[0].command, NVIDIA_DP_SET_MANUAL_DISPLAYPORT);
+    EXPECT_EQ(fw.calls[0].size, NVIDIA_DP_SET_MANUAL_DISPLAYPORT_BYTES);
+    EXPECT_EQ(fw.manual_subdevice, 0u);
+
+    EXPECT_TRUE(dpcd_log_contains("nvidia: display common leaves the DisplayPort hardware to the driver, "));
+}
+
+// A refusal is logged as the firmware keeping its own watermark programming, DP IRQ (CP IRQ) handling and retries of a
+// deferred AUX reply, and gives `OK`, as NVIDIA's library goes on past it
+TEST(nvidia_display_dpcd, a_refused_take_of_the_displayport_hardware_is_logged_and_goes_on) {
+    dpcd_firmware fw;
+    fw.manual_result = ERR_FIRMWARE;
+
+    ASSERT_EQ(take_logged(fw), OK);
+
+    EXPECT_EQ(fw.call_count, 1u);
+    EXPECT_TRUE(dpcd_log_contains("nvidia: display common refused to leave the DisplayPort hardware to the driver, "));
+    EXPECT_FALSE(dpcd_log_contains("leaves the DisplayPort hardware"));
+}
+
+// Any other error of the request is returned with nothing logged
+TEST(nvidia_display_dpcd, other_errors_of_taking_the_displayport_hardware_are_returned) {
+    const int32_t errors[] = {ERR_TIMEOUT, ERR_QUEUE_FULL, ERR_BAD_MESSAGE, ERR_NO_MEMORY, ERR_TOO_LARGE};
+    for (int32_t error : errors) {
+        dpcd_firmware fw;
+        fw.manual_result = error;
+
+        EXPECT_EQ(take_logged(fw), error);
+
+        EXPECT_EQ(fw.call_count, 1u);
+        EXPECT_EQ(s_dpcd_log_bytes, 0u);
+    }
+}
+
+// The AUX control, its parameters' size, the most bytes a transaction carries, the read command, the reply types,
+// DP_SET_MANUAL_DISPLAYPORT with its parameters' size, and the DPCD addresses, bit and lengths are NVIDIA's
+TEST(nvidia_display_dpcd, displayport_constants_are_nvidias) {
     EXPECT_EQ(rm::CONTROL_DP_AUX, NVIDIA_DP_AUXCH_CTRL);
     EXPECT_EQ(sizeof(rm::aux_params), NVIDIA_DP_AUXCH_CTRL_BYTES);
     EXPECT_EQ(rm::AUX_DATA_MAX_BYTES, DATA_BYTES);
@@ -828,6 +898,9 @@ TEST(nvidia_display_dpcd, aux_and_dpcd_constants_are_nvidias) {
     EXPECT_EQ(rm::AUX_REPLY_TIMEOUT, NVIDIA_REPLY_TIMEOUT);
     EXPECT_EQ(rm::AUX_REPLY_I2C_NACK, NVIDIA_REPLY_I2CNACK);
     EXPECT_EQ(rm::AUX_REPLY_I2C_DEFER, NVIDIA_REPLY_I2CDEFER);
+
+    EXPECT_EQ(rm::CONTROL_SET_MANUAL_DISPLAYPORT, NVIDIA_DP_SET_MANUAL_DISPLAYPORT);
+    EXPECT_EQ(sizeof(rm::manual_displayport_params), NVIDIA_DP_SET_MANUAL_DISPLAYPORT_BYTES);
 
     EXPECT_EQ(DPCD_TRAINING_AUX_READ_INTERVAL, NVIDIA_TRAINING_AUX_RD_INTERVAL);
     EXPECT_EQ(DPCD_RECEIVER_CAPABILITIES, NVIDIA_DPCD_REV);
