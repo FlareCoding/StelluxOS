@@ -6,6 +6,7 @@
 #include "common/types.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/firmware.h"
+#include "drivers/graphics/nvidia/nvidia.h"
 
 namespace drivers::nvidia {
 
@@ -16,6 +17,10 @@ constexpr uint32_t CORE_CHANNEL_AREA = 0x680000;
 // NVIDIA's NV_PDISP_CHN_NUM_CORE, the core channel's number among the display engine's channels, which
 // `instance_memory::bind` takes to bind a context DMA to the core channel
 constexpr uint32_t CORE_CHANNEL_NUMBER = 0;
+
+// How long the firmware may report the core channel busy before `wait_core_channel_idle` gives up, NVIDIA's 100
+// milliseconds
+constexpr uint64_t CORE_CHANNEL_IDLE_WAIT_NS = 100 * NS_PER_MS;
 
 // NVIDIA's NV_UDISP_FE_CHN_ASSY_BASEADR_WIN(0), where window 0's channel's 4 KiB area in BAR0 begins: PUT and GET and
 // the state its methods assemble. Each next window's channel's area follows the one before
@@ -121,6 +126,33 @@ int32_t allocate_window_channel(
  * releases it, and the boot framebuffer may then go dark.
  */
 int32_t release_display_channel(firmware& fw, rm::handle display, rm::handle channel);
+
+/**
+ * @brief Ask the display for the core channel's state until the firmware
+ * reports the channel idle, with no method pending, or more than
+ * `CORE_CHANNEL_IDLE_WAIT_NS` has passed since the first reply. NVIDIA's
+ * modesetting module waits this way before it reads the core channel's armed
+ * state ahead of its first update. Each request carries its parameters zeroed
+ * but for the core channel's class, so it names the channel's instance 0 on
+ * the device's first GPU. Only a reply naming the idle state alone reports the
+ * channel idle. A request that the firmware refuses with `ERR_FIRMWARE` counts
+ * as reporting the channel busy, as that module goes on past it, and any other
+ * error ends the wait, where that module goes on past every failed request.
+ * The requests follow one another with no pause, as that module sends them,
+ * and each spins as `firmware` describes, so a channel the firmware never
+ * reports idle keeps the calling CPU spinning for more than
+ * `CORE_CHANNEL_IDLE_WAIT_NS`.
+ * @param fw The driver's firmware.
+ * @param display The display object the core channel was allocated under, by
+ * `allocate_core_channel`.
+ * @param chip The chip table's display entry, which gives the core channel's
+ * class.
+ * @param is_idle Receives on `OK` whether a reply reported the core channel
+ * idle, false once the wait has given up. It is left unchanged on an error.
+ * @return `OK`, or the error `firmware::control` returns for a request that
+ * fails other than with `ERR_FIRMWARE`, logged as its doc describes.
+ */
+int32_t wait_core_channel_idle(firmware& fw, rm::handle display, const chip_display& chip, bool& is_idle);
 
 } // namespace drivers::nvidia
 

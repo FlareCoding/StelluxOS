@@ -2889,16 +2889,26 @@ src/nvidia-modeset/src/nvkms-evo3.c
     refused mode and asks about a mode whose sync and back porch take no line,
     in display_light.h, display_light.cpp and
     kernel/tests/graphics/nvidia_display_light.test.cpp, that it names a window
-    for each usable layer of every head it asks about, in display_light.h, and
-    that it loads a window channel's input scaler's coefficients only for a
-    window reporting an input scaler while no usable head reports an output
-    scaler, and its color conversion tables, curves for HDR monitors, only for a
-    window reporting them, in chip.h and display_engine.h
+    for each usable layer of every head it asks about, in display_light.h, that
+    it loads a window channel's input scaler's coefficients only for a window
+    reporting an input scaler while no usable head reports an output scaler, and
+    its color conversion tables, curves for HDR monitors, only for a window
+    reporting them, in chip.h and display_engine.h, and that before it reads the
+    core channel's armed state ahead of its first update the modesetting module
+    asks the display for the core channel's state, the request zeroed but for
+    the subdevice, the channel's class and its instance, again with no pause
+    until a reply names the idle state alone, going on past every failed request
+    and ending the wait once more than 100 milliseconds have passed since the
+    first reply, in core_channel.h, core_channel.cpp, display_engine.h,
+    display_engine.cpp, kernel/tests/graphics/nvidia_core_channel_idle.test.cpp
+    and kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-modeset.c
     that the modesetting module asks the bandwidth check about every lit head of
-    a display together, each with its guaranteed usage, in display_light.h
+    a display together, each with its guaranteed usage, in display_light.h, and
+    that it reads the core channel's armed state ahead of its first update, in
+    core_channel.h
     SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
@@ -3156,6 +3166,34 @@ src/nvidia-modeset/src/nvkms-modepool.c
     within the range, in display_modes.h and
     kernel/tests/graphics/nvidia_display_modes.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrlc370/ctrlc370chnc.h
+    the command NVC370_CTRL_CMD_GET_CHANNEL_INFO (a control of the display
+    giving the state of one of its channels), the layout of its parameters, that
+    the state is a mask with a bit for each state and
+    NVC370_CTRL_GET_CHANNEL_INFO_STATE_IDLE (bit 0), the state of a channel with
+    no method pending, every method it took having passed through the hardware's
+    internal queue, in rm.h, core_channel.h, core_channel.cpp and
+    kernel/tests/graphics/nvidia_core_channel_idle.test.cpp,
+    NVC370_CTRL_GET_CHANNEL_INFO_STATE_BUSY (bit 6), in
+    kernel/tests/graphics/nvidia_core_channel_idle.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and
+    NVC370_CTRL_CMD_CHANNEL_STATE_UNCONNECTED (bit 17), in
+    kernel/tests/graphics/nvidia_core_channel_idle.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2015-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrlc370/ctrlc370base.h
+    the layout of NVC370_CTRL_CMD_BASE_PARAMS, the subdevice's index that begins
+    the parameters of GET_CHANNEL_INFO, in rm.h, core_channel.h and
+    kernel/tests/graphics/nvidia_core_channel_idle.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/include/nvkms-utils.h
+    that a wait timed with nvExceedsTimeoutUSec starts its clock at the first
+    check and ends once more than its period has passed since, in
+    core_channel.h, core_channel.cpp, display_engine.h and
+    kernel/tests/graphics/nvidia_core_channel_idle.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,
