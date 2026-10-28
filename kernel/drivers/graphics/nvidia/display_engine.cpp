@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_ids.h"
 #include "drivers/graphics/nvidia/display_info.h"
+#include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_modes.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/displayport.h"
@@ -122,14 +123,15 @@ static void log_monitor_link_limits(uint8_t output_index, const dpcd_capabilitie
     );
 }
 
-// Logs an output's mode, the timing `find_mode_candidates` ranks first, with the lowest link configuration carrying it,
-// or why it has none, as for a monitor below DPCD revision 1.0, which NVIDIA drives only under a registry key
-static void log_output_mode(
+// Keeps the output's modes `find_mode_candidates` ranks, logs its mode, the first, with the lowest link configuration
+// carrying it, or why it has none, as for a monitor below DPCD 1.0, which NVIDIA drives only under a registry key
+static void keep_output_modes(
     uint8_t output_index,
     const display_output& output,
     const edid::monitor& monitor,
     const dpcd_capabilities& dpcd,
-    const chip_displayport& gpu
+    const chip_displayport& gpu,
+    output_modes& modes
 ) {
     if (!is_at_least_revision_1_0(dpcd)) {
         log::info("nvidia: output %u has no mode, as its monitor's DPCD gives a revision below 1.0", output_index);
@@ -167,6 +169,12 @@ static void log_output_mode(
         return;
     }
 
+    modes.count = candidates.count;
+    for (uint8_t rank = 0; rank < candidates.count; rank++) {
+        modes.indices[rank] = candidates.timings[rank];
+        modes.timings[rank] = monitor.timings[candidates.timings[rank]];
+    }
+
     // A candidate's timing always has a configuration, as `find_mode_candidates` keeps only those
     uint8_t timing_index = candidates.timings[0];
     const edid::timing& timing = monitor.timings[timing_index];
@@ -191,16 +199,28 @@ static void log_output_mode(
     );
 }
 
-// Reads the EDID and the DPCD capabilities of each connected output's monitor, the EDID into one `edid::monitor` on the
-// unprivileged heap, as the stack cannot hold it, and logs each parsed EDID, the capabilities read and the mode chosen
+// Reads each connected output's EDID and DPCD capabilities, logs them and its mode, and keeps its modes in `modes`, the
+// EDID parsed into one `edid::monitor`, both on the unprivileged heap, as the stack cannot hold them
 static int32_t read_connected_monitors(
     firmware& fw,
     rm::handle display_common,
     const chip_displayport& gpu,
-    const display_outputs& outputs
+    const display_outputs& outputs,
+    output_modes*& modes
 ) {
     if (!gpu.fec_supported) {
         log::info("nvidia: no output has a mode, as the GPU's links lack FEC support");
+    }
+
+    if (outputs.count == 0) {
+        return OK;
+    }
+
+    uint32_t modes_bytes = outputs.count * sizeof(output_modes);
+    modes = static_cast<output_modes*>(heap::uzalloc(modes_bytes));
+    if (modes == nullptr) {
+        log::error("nvidia: allocating %u bytes for the outputs' modes failed", modes_bytes);
+        return ERR_NO_MEMORY;
     }
 
     uint32_t monitor_bytes = sizeof(edid::monitor);
@@ -240,13 +260,23 @@ static int32_t read_connected_monitors(
         }
 
         if (is_parsed && is_read && gpu.fec_supported) {
-            log_output_mode(index, output, *monitor, dpcd, gpu);
+            keep_output_modes(index, output, *monitor, dpcd, gpu, modes[index]);
         }
     }
 
     heap::ufree(monitor);
 
     return rc;
+}
+
+// Frees the outputs' modes `read_connected_monitors` kept, if it kept any
+static void free_output_modes(output_modes*& modes) {
+    if (modes == nullptr) {
+        return;
+    }
+
+    heap::ufree(modes);
+    modes = nullptr;
 }
 
 static int32_t read_display_facts(
@@ -328,7 +358,7 @@ static int32_t read_display_facts(
         }
     }
 
-    return read_connected_monitors(fw, objects.display_common, display.displayport, outputs);
+    return OK;
 }
 
 // Logs each active head's display id and link with the output the head shows, or that the display id names no output,
@@ -383,6 +413,36 @@ static void log_active_heads(const active_heads& active, const display_outputs& 
         "nvidia: head %u is the boot head, and output %u, which it shows, is the boot output",
         boot_head,
         boot_output
+    );
+}
+
+// Chooses the output to light first and its mode with `choose_first_light`, on the head and window `find_light_target`
+// gives, and logs the choice or why none is made
+static void choose_and_log_first_light(
+    const display_heads& heads,
+    const active_heads& active,
+    const display_outputs& outputs,
+    const output_modes* modes
+) {
+    light_target target = find_light_target(heads, active, outputs);
+    first_light light = {};
+    if (!choose_first_light(modes, outputs.count, target, light)) {
+        log::info("nvidia: no output is chosen to light, as no connected output has a mode");
+        return;
+    }
+
+    uint64_t millihertz = light.timing.refresh_millihertz();
+    log::info(
+        "nvidia: output %u is chosen to light first, at its EDID's timing %u, %u by %u at %lu.%03lu Hz, on head %u "
+        "with window %u",
+        light.output,
+        light.timing_index,
+        light.timing.width,
+        light.timing.height,
+        millihertz / 1000,
+        millihertz % 1000,
+        light.head,
+        light.window
     );
 }
 
@@ -470,6 +530,11 @@ int32_t display_engine::set_up(
     display_heads heads = {};
     display_outputs outputs = {};
     rc = read_display_facts(m_firmware, m_objects, display, has_crossbar, heads, outputs);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = read_connected_monitors(m_firmware, m_objects.display_common, display.displayport, outputs, m_output_modes);
     if (rc != OK) {
         return rc;
     }
@@ -563,12 +628,17 @@ int32_t display_engine::set_up(
     }
 
     log_active_heads(active, outputs);
+    choose_and_log_first_light(heads, active, outputs, m_output_modes);
+
+    free_output_modes(m_output_modes);
 
     return OK;
 }
 
 int32_t display_engine::release() {
     m_core_queue = nullptr;
+
+    free_output_modes(m_output_modes);
 
     int32_t core_channel_rc = OK;
     if (m_core_channel != 0) {

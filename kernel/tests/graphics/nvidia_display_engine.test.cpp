@@ -1039,18 +1039,23 @@ static bool engine_log_contains(const char* text) {
     return engine_log_count(text) != 0;
 }
 
-// Sets up `engine` with the log kept, for a chip whose links do `links`
-static int32_t set_up_logged(display_engine& engine, const chip_displayport& links = CHIP_LINKS) {
+// Sets up `engine` with the log kept, for a chip whose links do `links` and a card driving `address_bits` physical
+// address bits
+static int32_t set_up_logged(
+    display_engine& engine,
+    const chip_displayport& links = CHIP_LINKS,
+    uint8_t address_bits = FULL_ADDRESS_BITS
+) {
     s_engine_log_bytes = 0;
     log::set_backend(&ENGINE_LOG_BACKEND);
-    int32_t rc = set_up(engine, FULL_ADDRESS_BITS, INITIAL_METHODS_END, links);
+    int32_t rc = set_up(engine, address_bits, INITIAL_METHODS_END, links);
     log::set_backend(nullptr);
 
     return rc;
 }
 
 // The double reports no supported display id, so the display id 0x1 that head 0 shows names no output, and a set-up
-// logs that head with it and its link, and as the boot head with no boot output
+// logs that head with it and its link, and as the boot head with no boot output, then that no output is chosen to light
 TEST(nvidia_display_engine, set_up_logs_a_boot_head_whose_display_id_names_no_output) {
     engine_firmware fw;
     fw.boot_display_id = 0x1;
@@ -1067,9 +1072,11 @@ TEST(nvidia_display_engine, set_up_logs_a_boot_head_whose_display_id_names_no_ou
         "nvidia: head 0 is the boot head, and its display id 0x1 names no output, so there is no boot output"
     ));
     EXPECT_FALSE(engine_log_contains("nvidia: head 1 shows"));
+    EXPECT_TRUE(engine_log_contains("nvidia: no output is chosen to light, as no connected output has a mode"));
 }
 
-// With no head showing a display id, a set-up logs that no head is active and names no boot head
+// With no head showing a display id, a set-up logs that no head is active and names no boot head, then that no output
+// is chosen to light
 TEST(nvidia_display_engine, set_up_logs_that_no_head_is_active) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -1079,6 +1086,7 @@ TEST(nvidia_display_engine, set_up_logs_that_no_head_is_active) {
     EXPECT_TRUE(engine_log_contains("nvidia: no head is active, so there is no boot head"));
     EXPECT_FALSE(engine_log_contains("shows display id"));
     EXPECT_FALSE(engine_log_contains("is the boot head"));
+    EXPECT_TRUE(engine_log_contains("nvidia: no output is chosen to light, as no connected output has a mode"));
 }
 
 // With display common reporting a crossbar, a set-up counts a head whose link reply names no link as showing nothing,
@@ -1184,7 +1192,7 @@ TEST(nvidia_display_engine, set_up_gives_no_mode_to_an_output_whose_dpcd_is_not_
 }
 
 // A DPCD below revision 1.0 with one lane at RBR gives its output no mode for its revision, checked before its link,
-// and a set-up logs that reason
+// and a set-up logs that reason and that no output is chosen to light
 TEST(nvidia_display_engine, set_up_gives_no_mode_to_an_output_whose_dpcd_is_below_revision_1_0) {
     engine_firmware fw;
     fw.supported_ids = OUTPUT_0_ID;
@@ -1199,6 +1207,7 @@ TEST(nvidia_display_engine, set_up_gives_no_mode_to_an_output_whose_dpcd_is_belo
     EXPECT_TRUE(engine_log_contains("nvidia: output 0 has no mode, as its monitor's DPCD gives a revision below 1.0"));
     EXPECT_FALSE(engine_log_contains("its link carries none"));
     EXPECT_FALSE(engine_log_contains("nvidia: output 0's mode"));
+    EXPECT_TRUE(engine_log_contains("nvidia: no output is chosen to light, as no connected output has a mode"));
 }
 
 // Links without FEC give no output a mode, which a set-up logs once for all outputs rather than for each
@@ -1297,4 +1306,79 @@ TEST(nvidia_display_engine, set_up_gives_a_limited_output_a_mode_below_60_600_hz
         "nvidia: output 0's mode is its EDID's timing 0, 2560 by 1440 at 59.950 Hz, over 1 lane at DisplayPort rate "
         "0x1E, ranked first of the 2 timings its link carries, counting only those below 60.600 Hz"
     ));
+}
+
+// With no timing preferred, the AOC's EDID timing 1 ranks first, so a set-up chooses it and names it by that index
+TEST(nvidia_display_engine, set_up_names_the_chosen_mode_by_its_edid_index) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    copy_aoc_edid(false);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 is chosen to light first, at its EDID's timing 1, 2560 by 1440 at 143.911 Hz, on head 0 with "
+        "window 0"
+    ));
+}
+
+// Output 0 is not connected, so a set-up keeps modes for output 1 alone and chooses it, tried after output 0
+TEST(nvidia_display_engine, set_up_chooses_the_only_output_with_modes_past_output_0) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_1_ID;
+    copy_aoc_edid(true);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_EDID), 1u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 is chosen to light first, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 0 with "
+        "window 0"
+    ));
+}
+
+// With both outputs given modes and head 0 showing output 1, a set-up chooses output 1 alone, the boot output being
+// tried before output 0
+TEST(nvidia_display_engine, set_up_chooses_the_boot_output_alone_of_two_with_modes) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.boot_display_id = OUTPUT_1_ID;
+
+    copy_aoc_edid(true);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(engine_log_count("is chosen to light first"), 1u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 is chosen to light first, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 0 with "
+        "window 0"
+    ));
+}
+
+// A set-up keeping output 0's modes and then failing at the push buffer leaves them to the release, which releases the
+// objects as when no output has modes
+TEST(nvidia_display_engine, set_up_failing_at_the_push_buffer_with_modes_kept_leaves_them_to_release) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    copy_aoc_edid(true);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine, CHIP_LINKS, REFUSED_ADDRESS_BITS), ERR_NO_MEMORY);
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0's mode is its EDID's timing 0, 2560 by 1440 at 59.950 Hz"));
+    EXPECT_FALSE(engine_log_contains("to light"));
+    uint32_t first = fw.call_count;
+
+    EXPECT_EQ(engine.release(), OK);
+    ASSERT_EQ(fw.call_count, first + 3);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
 }

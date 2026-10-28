@@ -8,6 +8,7 @@
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/completion_notifier.h"
 #include "drivers/graphics/nvidia/display_channel.h"
+#include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_objects.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
@@ -108,11 +109,17 @@ public:
      * crossbar, and log each active head with its display id, its link and the
      * output `find_shown_output` gives for it, or that the display id names no
      * output, then the boot head `find_boot_head` gives and the boot output
-     * (the output it shows), or that there is none. The facts read are not
-     * kept. Each request spins on the calling CPU, waiting for its reply as
-     * `firmware` describes, and so does each wait for GET, for at most 5
-     * seconds. `read_output_edid` also spins before each reread of an EDID as
-     * it describes. `set_up` must be called at most once, as
+     * (the output it shows), or that there is none. Then choose the output to
+     * light first and its mode with `choose_first_light`, trying first the
+     * boot output, else output 0, on the boot head, else head 0, with that
+     * head's lowest window, as `find_light_target` gives them, and log the
+     * choice or that no connected output has a mode. Each output's modes are
+     * kept on the unprivileged heap from the monitors' reads to the choice, or
+     * to `release` when the set-up fails before it, and the other facts read
+     * are not kept. Each request spins on the calling CPU, waiting for its
+     * reply as `firmware` describes, and so does each wait for GET, for at
+     * most 5 seconds. `read_output_edid` also spins before each reread of an
+     * EDID as it describes. `set_up` must be called at most once, as
      * `instance_memory::set_up` must, and since it waits on video memory's
      * lock and on the card as `instance_memory` describes, it must never run
      * in an interrupt handler or under a spinlock, and on a thread that cannot
@@ -144,10 +151,11 @@ public:
      * push buffers, semaphores and notifiers only in video memory, display
      * common's report leaves it no head, the firmware refuses to report the
      * supported or connected display ids or it refuses to name the link
-     * driving a display id a head shows. When the `edid::monitor` or the push
-     * buffer's pages cannot be allocated, the error is `ERR_NO_MEMORY`, logged
-     * here, and when the notifier's page cannot, `ERR_NO_MEMORY` too, logged
-     * as `completion_notifier::allocate` describes. A refused binding of the
+     * driving a display id a head shows. When the outputs' modes, the
+     * `edid::monitor` or the core channel's push buffer cannot be allocated,
+     * the error is `ERR_NO_MEMORY`, which is logged here, and when the
+     * completion notifier's page cannot, `ERR_NO_MEMORY` too, logged as
+     * `completion_notifier::allocate` describes. A refused binding of the
      * notifier fails the set-up with what `instance_memory::bind` returns,
      * such as `ERR_BAD_STATE` or `ERR_TIMEOUT` when the card does not take the
      * instance memory's mapping, logged as it describes. When GET does not
@@ -168,8 +176,9 @@ public:
 
     /**
      * @brief Drop the core channel's queue of methods, so nothing writes the
-     * released channel's area, then release the core channel, once `set_up`
-     * allocated it or the firmware may hold it after a failed allocation, as
+     * released channel's area, free the outputs' modes if `set_up` kept them,
+     * then release the core channel, once `set_up` allocated it or the
+     * firmware may hold it after a failed allocation, as
      * `release_core_channel` describes, then the display's objects, once
      * `set_up` allocated them, as `release_display_objects` describes. The
      * core channel is released first, with the hardware kept as it is, so the
@@ -185,9 +194,10 @@ public:
 private:
     firmware&       m_firmware;
     instance_memory m_instance_memory;
-    display_objects m_objects = {};     // all 0 before `set_up` allocates them and after `release`
-    rm::handle      m_core_channel = 0; // 0 before `set_up` allocates it and after `release`
+    display_objects m_objects = {};           // all 0 before `set_up` allocates them and after `release`
+    rm::handle      m_core_channel = 0;       // 0 before `set_up` allocates it and after `release`
     dma::buffer     m_core_push_buffer = {};
+    output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
 
     // The core channel's completion notifier, its page allocated and its context DMA bound to the channel by `set_up`
     completion_notifier m_core_notifier;
