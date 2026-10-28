@@ -4,6 +4,8 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_DISPLAY_OUTPUTS_H
 
 #include "common/types.h"
+#include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_ids.h"
 #include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/firmware.h"
@@ -20,7 +22,7 @@ struct display_output {
     bool     is_connected;        // among the connected display ids `read_display_ids` gave
     uint8_t  lanes_code;          // the lanes the board supports, as `rm::DIGITAL_LANES_SHIFT`'s field codes them
     uint8_t  link_rate_code;      // the highest link rate, as `rm::DIGITAL_LINK_RATE_SHIFT`'s field codes it
-    bool     is_limited_to_60_hz; // the display id may only show modes of a 60 Hz refresh rate
+    bool     is_limited_to_60_hz; // the firmware reports the display id as qualified only at 60 Hz refresh rates
     bool     prefers_rbr;         // the link must be trained at RBR (the reduced bit rate, 1.62 Gbps) whenever possible
 };
 
@@ -71,6 +73,23 @@ int32_t read_display_outputs(firmware& fw, rm::handle display_common, const disp
  * for it.
  */
 displayport::link_limits connector_link_limits(const display_output& output, displayport::link_rate gpu_max_rate);
+
+/**
+ * @brief Give the facts deciding which link configurations an output can run
+ * and how a stream fills each: its connector's limits from
+ * `connector_link_limits` with the GPU's highest rate, its monitor's from
+ * `monitor_link_limits`, whether the monitor takes enhanced framing, and
+ * whether the GPU's links support FEC and take the increased watermark limits.
+ * @param output The output.
+ * @param dpcd The capabilities `read_output_dpcd` read of its monitor.
+ * @param gpu The GPU's own DisplayPort facts.
+ * @return The output's link facts.
+ */
+displayport::link_facts output_link_facts(
+    const display_output& output,
+    const dpcd_capabilities& dpcd,
+    const chip_displayport& gpu
+);
 
 } // namespace drivers::nvidia
 

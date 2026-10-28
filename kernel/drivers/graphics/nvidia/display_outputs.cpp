@@ -108,4 +108,18 @@ displayport::link_limits connector_link_limits(const display_output& output, dis
     };
 }
 
+displayport::link_facts output_link_facts(
+    const display_output& output,
+    const dpcd_capabilities& dpcd,
+    const chip_displayport& gpu
+) {
+    return {
+        .connector = connector_link_limits(output, gpu.max_rate),
+        .monitor = monitor_link_limits(dpcd),
+        .enhanced_framing = takes_enhanced_framing(dpcd),
+        .fec_supported = gpu.fec_supported,
+        .increased_watermark_limits = gpu.increased_watermark_limits,
+    };
+}
+
 } // namespace drivers::nvidia

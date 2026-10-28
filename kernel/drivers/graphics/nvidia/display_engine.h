@@ -80,10 +80,16 @@ public:
      * the monitor with `read_output_dpcd`, and when it reads them all, log
      * their bytes, the most lanes and the highest rate `monitor_link_limits`
      * gives for a link to the monitor, and whether the monitor takes enhanced
-     * framing. Then allocate the core channel's push buffer in DMA pages and
-     * the core channel under the display with `allocate_core_channel`, and log
-     * its handle, where its push buffer lies and one read of its PUT and GET.
-     * Then allocate the core channel's completion notifier with
+     * framing, and when the EDID parsed too, log the output's mode, the timing
+     * `find_mode_candidates` ranks first for the output's link facts from
+     * `output_link_facts`, with the lowest link configuration carrying it, or
+     * why the output has none: its monitor's DPCD giving a revision below 1.0,
+     * or no timing kept. When the GPU's links lack FEC support, log once,
+     * before reading any monitor, that no output has a mode, and log no
+     * output's mode. Then allocate the core channel's push buffer in DMA pages
+     * and the core channel under the display with `allocate_core_channel`, and
+     * log its handle, where its push buffer lies and one read of its PUT and
+     * GET. Then allocate the core channel's completion notifier with
      * `completion_notifier::allocate`, where NVIDIA's modesetting module
      * allocates it before the push buffer, bind its context DMA to the core
      * channel under a new handle with `instance_memory::bind`, where that

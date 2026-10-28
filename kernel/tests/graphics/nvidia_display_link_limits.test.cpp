@@ -9,11 +9,15 @@
 
 TEST_SUITE(nvidia_display_link_limits);
 
+using drivers::nvidia::chip_displayport;
 using drivers::nvidia::connector_link_limits;
 using drivers::nvidia::display_output;
 using drivers::nvidia::dpcd_capabilities;
+using drivers::nvidia::is_at_least_revision_1_0;
 using drivers::nvidia::monitor_link_limits;
+using drivers::nvidia::output_link_facts;
 using drivers::nvidia::takes_enhanced_framing;
+using drivers::nvidia::displayport::link_facts;
 using drivers::nvidia::displayport::link_limits;
 using drivers::nvidia::displayport::link_rate;
 
@@ -27,6 +31,12 @@ struct rate_case {
 struct lanes_case {
     uint8_t lane_byte;
     uint8_t lanes;
+};
+
+// A receiver capability field's revision byte and whether it gives revision 1.0 or later
+struct revision_case {
+    uint8_t revision;
+    bool    is_at_least_1_0;
 };
 
 // DisplayPort's rate codes as NVIDIA's DPCD headers give them, restated so the tests hold the parse to NVIDIA's values
@@ -343,4 +353,75 @@ TEST(nvidia_display_link_limits, unknown_phy_repeater_rate_counts_as_hbr) {
 
         EXPECT_TRUE(limits_equal(limits, 4, link_rate::hbr));
     }
+}
+
+// Revision bytes and whether each gives revision 1.0 or later: the major revision in bits 7 to 4 decides, so 0.15 is
+// below 1.0 however high its minor revision, as NVIDIA's revision test compares the major revision first
+static constexpr revision_case RECEIVER_REVISIONS[] = {
+    {0x00, false},
+    {0x04, false},
+    {0x0F, false},
+    {0x10, true},
+    {0x11, true},
+    {0x14, true},
+    {0x20, true},
+};
+
+TEST(nvidia_display_link_limits, revision_1_0_or_later_follows_the_major_revision) {
+    for (const revision_case& entry : RECEIVER_REVISIONS) {
+        dpcd_capabilities dpcd = monitor_dpcd(NVIDIA_HBR3, 0x84, nullptr);
+        dpcd.receiver[0] = entry.revision;
+
+        EXPECT_EQ(is_at_least_revision_1_0(dpcd), entry.is_at_least_1_0);
+    }
+}
+
+// An output's link facts take each fact from its source, on three GPU and monitor pairs that no swap or negation of the
+// framing, FEC and watermark flags passes: the GPU's rate caps the connector's, a PHY repeater caps the monitor's
+TEST(nvidia_display_link_limits, output_link_facts_take_each_fact_from_its_source) {
+    chip_displayport fec_gpu = {
+        .trains_phy_repeaters       = true,
+        .max_rate                   = link_rate::hbr2,
+        .fec_supported              = true,
+        .increased_watermark_limits = false,
+    };
+
+    chip_displayport watermark_gpu = {
+        .trains_phy_repeaters       = true,
+        .max_rate                   = link_rate::hbr3,
+        .fec_supported              = false,
+        .increased_watermark_limits = true,
+    };
+
+    chip_displayport fec_and_watermark_gpu = {
+        .trains_phy_repeaters       = true,
+        .max_rate                   = link_rate::hbr3,
+        .fec_supported              = true,
+        .increased_watermark_limits = true,
+    };
+
+    dpcd_capabilities monitor_with_framing = monitor_dpcd(NVIDIA_HBR3, 0x84, nullptr);
+    dpcd_capabilities monitor_behind_repeater = monitor_dpcd(NVIDIA_HBR3, 0x84, TWO_LANE_REPEATER);
+    dpcd_capabilities monitor_without_framing = monitor_dpcd(NVIDIA_HBR3, 0x04, nullptr);
+
+    link_facts on_fec_gpu = output_link_facts(RTX_3080_OUTPUT, monitor_with_framing, fec_gpu);
+    EXPECT_TRUE(limits_equal(on_fec_gpu.connector, 4, link_rate::hbr2));
+    EXPECT_TRUE(limits_equal(on_fec_gpu.monitor, 4, link_rate::hbr3));
+    EXPECT_TRUE(on_fec_gpu.enhanced_framing);
+    EXPECT_TRUE(on_fec_gpu.fec_supported);
+    EXPECT_FALSE(on_fec_gpu.increased_watermark_limits);
+
+    link_facts on_watermark_gpu = output_link_facts(RTX_3080_OUTPUT, monitor_behind_repeater, watermark_gpu);
+    EXPECT_TRUE(limits_equal(on_watermark_gpu.connector, 4, link_rate::hbr3));
+    EXPECT_TRUE(limits_equal(on_watermark_gpu.monitor, 2, link_rate::hbr2));
+    EXPECT_TRUE(on_watermark_gpu.enhanced_framing);
+    EXPECT_FALSE(on_watermark_gpu.fec_supported);
+    EXPECT_TRUE(on_watermark_gpu.increased_watermark_limits);
+
+    link_facts on_both_gpu = output_link_facts(RTX_3080_OUTPUT, monitor_without_framing, fec_and_watermark_gpu);
+    EXPECT_TRUE(limits_equal(on_both_gpu.connector, 4, link_rate::hbr3));
+    EXPECT_TRUE(limits_equal(on_both_gpu.monitor, 4, link_rate::hbr3));
+    EXPECT_FALSE(on_both_gpu.enhanced_framing);
+    EXPECT_TRUE(on_both_gpu.fec_supported);
+    EXPECT_TRUE(on_both_gpu.increased_watermark_limits);
 }

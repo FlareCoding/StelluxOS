@@ -16,6 +16,11 @@ static constexpr uint8_t  RATE_CODE_MASK    = 0x1F;
 static constexpr uint8_t  LANE_COUNT_MASK   = 0x1F;
 static constexpr uint8_t  ENHANCED_FRAMING  = 0x80;
 
+// The receiver capability field's offset of its revision, and revision 1.0 as that byte codes it, the major revision in
+// bits 7 to 4 and the minor in bits 3 to 0, as NVIDIA's DPCD headers give them
+static constexpr uint32_t RECEIVER_REVISION     = 0;
+static constexpr uint8_t  RECEIVER_REVISION_1_0 = 0x10;
+
 // The PHY repeaters' offsets of their revision, highest rate, count and lane byte, and revision 1.4 as their revision
 // byte codes it, as NVIDIA's DPCD headers give them
 static constexpr uint32_t REPEATER_REVISION     = 0;
@@ -226,6 +231,10 @@ displayport::link_limits monitor_link_limits(const dpcd_capabilities& dpcd) {
 
 bool takes_enhanced_framing(const dpcd_capabilities& dpcd) {
     return (dpcd.receiver[RECEIVER_LANES] & ENHANCED_FRAMING) != 0;
+}
+
+bool is_at_least_revision_1_0(const dpcd_capabilities& dpcd) {
+    return dpcd.receiver[RECEIVER_REVISION] >= RECEIVER_REVISION_1_0;
 }
 
 } // namespace drivers::nvidia

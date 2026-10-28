@@ -2427,10 +2427,11 @@ src/common/inc/displayport/dpcd.h
     kernel/tests/graphics/nvidia_displayport.test.cpp, NV_DPCD_REV and
     NV_DPCD_TRAINING_AUX_RD_INTERVAL, 0x00000 and 0x0000E, the receiver
     capability field's address and the byte read before it, in display_dpcd.h
-    and kernel/tests/graphics/nvidia_display_dpcd.test.cpp, the field's rate
-    code in bits 4:0 of its byte 1 with the codes of RBR, HBR and HBR2, its lane
-    count in bits 4:0 of its byte 2 with the counts 1, 2, 4 and 8, and enhanced
-    framing in bit 7 of that byte, in display_dpcd.h, display_dpcd.cpp and
+    and kernel/tests/graphics/nvidia_display_dpcd.test.cpp, the field's major
+    and minor revisions in bits 7:4 and 3:0 of its byte 0, its rate code in bits
+    4:0 of its byte 1 with the codes of RBR, HBR and HBR2, its lane count in
+    bits 4:0 of its byte 2 with the counts 1, 2, 4 and 8, and enhanced framing
+    in bit 7 of that byte, in display_dpcd.h, display_dpcd.cpp and
     kernel/tests/graphics/nvidia_display_link_limits.test.cpp, and
     NV_DPCD_EDP_CONFIG_CAP's bit 3, the field's byte 0x0D declaring eDP display
     control, in kernel/tests/graphics/nvidia_display_link_limits.test.cpp
@@ -2467,9 +2468,9 @@ src/common/displayport/src/dp_connectorimpl.cpp
     display_outputs.h, a connector asking display common for the GPU's
     DisplayPort capabilities as it is made, before any DPCD read, and handing
     the library whether the GPU trains PHY repeaters, in display_dpcd.h, no
-    monitor driven whose DPCD gives a revision below 1.0, in display_dpcd.h, and
-    a link's lanes taken from its monitor's DPCD alone, no connector's lanes
-    read, in display_outputs.h
+    monitor driven whose DPCD gives a revision below 1.0, in display_dpcd.h,
+    display_engine.h and display_engine.cpp, and a link's lanes taken from its
+    monitor's DPCD alone, no connector's lanes read, in display_outputs.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_configcaps.cpp
@@ -2499,15 +2500,21 @@ src/common/displayport/src/dp_configcaps.cpp
     registry keys it takes the rate of a monitor whose field gives revision 1.2
     or later and declares eDP display control at eDP 1.4 or later from its link
     rate table when the table's first entry is not 0, in display_dpcd.h and
-    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, and that an
-    override of a monitor's optimal configuration replaces its rate and lanes,
-    in display_dpcd.h
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, that an override
+    of a monitor's optimal configuration replaces its rate and lanes, in
+    display_dpcd.h, and that a registry key, when set, replaces the revision a
+    monitor's field gives, in display_dpcd.h and display_engine.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_configcaps.h
     that the DisplayPort library's test of the PHY repeaters' revision also
     passes a major revision of 0 with a minor one of 4 or more, in
-    display_dpcd.h and kernel/tests/graphics/nvidia_display_link_limits.test.cpp
+    display_dpcd.h and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, and that its test
+    of the monitor's revision compares the major revision first, so revision 1.0
+    or later is any major revision of 1 or more, in display_dpcd.h,
+    display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_deviceimpl.cpp
@@ -2535,8 +2542,10 @@ src/common/displayport/inc/dp_evoadapter.h
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
     the GPU's reports that its links support forward error correction and take
-    the increased watermark limits, in displayport.h and
-    kernel/tests/graphics/nvidia_displayport.test.cpp, the transfer unit size,
+    the increased watermark limits, in displayport.h, chip.h, chip.cpp,
+    display_outputs.h, kernel/tests/graphics/nvidia_displayport.test.cpp,
+    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_display_modes.test.cpp, the transfer unit size,
     watermark and horizontal and vertical blanking symbols a single stream's
     configuration takes, in displayport.h, NV0073_CTRL_CMD_DP_AUXCH_CTRL,
     0x731341, the control sending one transaction over a display id's AUX
@@ -2919,9 +2928,11 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dfp.h
     display_outputs.cpp and
     kernel/tests/graphics/nvidia_display_outputs.test.cpp, the LANE and
     DP_LINK_BW fields' widths and values, in
-    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, and its flags'
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, its flags'
     HDMI_CAPABLE, LINK and DP_PHY_REPEATER_COUNT fields with a value each, in
-    kernel/tests/graphics/nvidia_display_outputs.test.cpp
+    kernel/tests/graphics/nvidia_display_outputs.test.cpp, and the LIMIT field's
+    rule, only 60 Hz modes for a display id qualified only at 60 Hz refresh
+    rates, in display_outputs.h and display_modes.h
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_evoadapter.cpp
@@ -2991,6 +3002,12 @@ src/common/displayport/inc/dp_auxretry.h
     minimumRetriesOnDefer, 7, the retry count of an AUX read whose caller names
     none, in display_dpcd.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-modepool.c
+    a refresh less than 1% above the top of a range of refresh rates taken as
+    within the range, in display_modes.h and
+    kernel/tests/graphics/nvidia_display_modes.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2005-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,

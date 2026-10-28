@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_ids.h"
 #include "drivers/graphics/nvidia/display_info.h"
+#include "drivers/graphics/nvidia/display_modes.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -121,14 +122,87 @@ static void log_monitor_link_limits(uint8_t output_index, const dpcd_capabilitie
     );
 }
 
+// Logs an output's mode, the timing `find_mode_candidates` ranks first, with the lowest link configuration carrying it,
+// or why it has none, as for a monitor below DPCD revision 1.0, which NVIDIA drives only under a registry key
+static void log_output_mode(
+    uint8_t output_index,
+    const display_output& output,
+    const edid::monitor& monitor,
+    const dpcd_capabilities& dpcd,
+    const chip_displayport& gpu
+) {
+    if (!is_at_least_revision_1_0(dpcd)) {
+        log::info("nvidia: output %u has no mode, as its monitor's DPCD gives a revision below 1.0", output_index);
+        return;
+    }
+
+    if (monitor.timing_count == 0) {
+        log::info("nvidia: output %u has no mode, as its EDID gives no timing", output_index);
+        return;
+    }
+
+    // A limited output also drops timings its link carries, so its mode line counts only the timings below the bound
+    static_assert(LIMITED_REFRESH_BOUND_MILLIHERTZ == 60600, "the lines give the bound as 60.600 Hz");
+    const char* counted = output.is_limited_to_60_hz ? ", counting only those below 60.600 Hz" : "";
+
+    displayport::link_facts facts = output_link_facts(output, dpcd, gpu);
+    mode_candidates candidates = {};
+    find_mode_candidates(monitor, facts, output.is_limited_to_60_hz, candidates);
+    if (candidates.count == 0 && output.is_limited_to_60_hz) {
+        log::info(
+            "nvidia: output %u has no mode, as none of its EDID's %u timings both refreshes below 60.600 Hz and is "
+            "carried by its link",
+            output_index,
+            monitor.timing_count
+        );
+        return;
+    }
+
+    if (candidates.count == 0) {
+        log::info(
+            "nvidia: output %u has no mode, as its link carries none of its EDID's %u timings",
+            output_index,
+            monitor.timing_count
+        );
+        return;
+    }
+
+    // A candidate's timing always has a configuration, as `find_mode_candidates` keeps only those
+    uint8_t timing_index = candidates.timings[0];
+    const edid::timing& timing = monitor.timings[timing_index];
+    displayport::link_configuration config = {};
+    displayport::find_lowest_configuration(facts, timing, config);
+
+    uint64_t millihertz = timing.refresh_millihertz();
+    log::info(
+        "nvidia: output %u's mode is its EDID's timing %u, %u by %u at %lu.%03lu Hz, over %u %s at DisplayPort rate "
+        "0x%02X, ranked first of the %u timings its link carries%s",
+        output_index,
+        timing_index,
+        timing.width,
+        timing.height,
+        millihertz / 1000,
+        millihertz % 1000,
+        config.lanes,
+        config.lanes == 1 ? "lane" : "lanes",
+        static_cast<uint32_t>(config.rate),
+        candidates.count,
+        counted
+    );
+}
+
 // Reads the EDID and the DPCD capabilities of each connected output's monitor, the EDID into one `edid::monitor` on the
-// unprivileged heap, as the stack cannot hold it, and logs each parsed EDID and the capabilities read with their limits
+// unprivileged heap, as the stack cannot hold it, and logs each parsed EDID, the capabilities read and the mode chosen
 static int32_t read_connected_monitors(
     firmware& fw,
     rm::handle display_common,
     const chip_displayport& gpu,
     const display_outputs& outputs
 ) {
+    if (!gpu.fec_supported) {
+        log::info("nvidia: no output has a mode, as the GPU's links lack FEC support");
+    }
+
     uint32_t monitor_bytes = sizeof(edid::monitor);
     auto* monitor = static_cast<edid::monitor*>(heap::uzalloc(monitor_bytes));
     if (monitor == nullptr) {
@@ -163,6 +237,10 @@ static int32_t read_connected_monitors(
         if (is_read) {
             log_dpcd(index, dpcd);
             log_monitor_link_limits(index, dpcd);
+        }
+
+        if (is_parsed && is_read && gpu.fec_supported) {
+            log_output_mode(index, output, *monitor, dpcd, gpu);
         }
     }
 
