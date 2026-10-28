@@ -32,6 +32,7 @@ constexpr uint32_t DPCD_PHY_REPEATER_CAPABILITY_BYTES = 8;
 // The bytes a monitor's DPCD reports of its capabilities and of any PHY repeater's, as read
 struct dpcd_capabilities {
     bool    is_extended;                                       // `receiver` holds the extended copy
+    bool    has_phy_repeater_bytes;                            // `phy_repeaters` was read, its bytes all 0 otherwise
     uint8_t receiver[DPCD_RECEIVER_CAPABILITY_BYTES];          // from the revision, highest rate and most lanes on
     uint8_t phy_repeaters[DPCD_PHY_REPEATER_CAPABILITY_BYTES]; // from the repeaters' revision, rate and count on
 };
@@ -42,34 +43,36 @@ struct dpcd_capabilities {
  * at `DPCD_TRAINING_AUX_READ_INTERVAL`, then the receiver capability field
  * from `DPCD_EXTENDED_RECEIVER_CAPABILITIES` when that byte has
  * `DPCD_EXTENDED_COPY_PRESENT` set or from `DPCD_RECEIVER_CAPABILITIES`
- * otherwise, then the PHY repeaters' capabilities. Each read is one request to
- * display common's AUX channel control, its parameters zeroed but for the
- * display id, the command, the address and the size. When the firmware refuses
- * a request with `ERR_FIRMWARE`, or a read ends with anything but the
- * monitor's acknowledgment carrying exactly the bytes asked for, the read logs
- * it, asks nothing more and leaves `is_read` cleared. NVIDIA's library instead
- * asks again for a read the monitor defers or acknowledges with some but not
- * all of the bytes, or the firmware fails with its timeout, making up to 7
- * requests for the first byte and 16 for each of the others, and beyond those
- * counts for as long as the monitor acknowledges a read with more bytes than
- * asked for, takes the field from `DPCD_RECEIVER_CAPABILITIES` when the first
- * byte cannot be read, reads the PHY repeaters' capabilities unless display
- * common reports that the GPU does not train PHY repeaters, going on without
- * them when that read fails, and makes the reads again up to 3 more times
- * while the field cannot be read, taking the DPCD as offline when it never
- * can. It also sends each request up to 3 times, sleeping as long as the
- * firmware says after each, while the firmware fails it and names a time to
- * retry after, and before its first read tells the firmware to leave the
- * DisplayPort hardware to it, which turns off the firmware's own retries of a
- * deferred reply, and asks display common for the GPU's DisplayPort
- * capabilities.
+ * otherwise, then the PHY repeaters' capabilities when `trains_phy_repeaters`
+ * is set. Each read is one request to display common's AUX channel control,
+ * its parameters zeroed but for the display id, the command, the address and
+ * the size. When the firmware refuses a request with `ERR_FIRMWARE`, or a read
+ * ends with anything but the monitor's acknowledgment carrying exactly the
+ * bytes asked for, the read logs it, asks nothing more and leaves `is_read`
+ * cleared. NVIDIA's library instead asks again for a read the monitor defers
+ * or acknowledges with some but not all of the bytes, or the firmware fails
+ * with its timeout, making up to 7 requests for the first byte and 16 for each
+ * of the others, and beyond those counts for as long as the monitor
+ * acknowledges a read with more bytes than asked for, takes the field from
+ * `DPCD_RECEIVER_CAPABILITIES` when the first byte cannot be read, reads the
+ * PHY repeaters' capabilities unless display common reports that the GPU does
+ * not train PHY repeaters, going on without them when that read fails, and
+ * makes the reads again up to 3 more times while the field cannot be read,
+ * taking the DPCD as offline when it never can. It also sends each request up
+ * to 3 times, sleeping as long as the firmware says after each, while the
+ * firmware fails it and names a time to retry after, and before its first read
+ * tells the firmware to leave the DisplayPort hardware to it, which turns off
+ * the firmware's own retries of a deferred reply, and asks display common for
+ * the GPU's DisplayPort capabilities.
  * @param fw The driver's firmware.
  * @param display_common The handle `allocate_display_objects` gave display
  * common.
  * @param display_id The display id of an output `read_display_outputs` marks
  * connected.
- * @param out Set when every read gives its bytes, and left unchanged
- * otherwise.
+ * @param trains_phy_repeaters Whether the GPU's firmware trains PHY repeaters.
+ * @param out Set when every read gives its bytes, with
+ * `has_phy_repeater_bytes` equal to `trains_phy_repeaters` and `phy_repeaters`
+ * all 0 when that is cleared, and left unchanged otherwise.
  * @param is_read Set when `out` holds the monitor's capabilities, and cleared
  * otherwise.
  * @return `OK`, or what `firmware::control` returns, logged as its doc
@@ -79,6 +82,7 @@ int32_t read_output_dpcd(
     firmware& fw,
     rm::handle display_common,
     uint32_t display_id,
+    bool trains_phy_repeaters,
     dpcd_capabilities& out,
     bool& is_read
 );

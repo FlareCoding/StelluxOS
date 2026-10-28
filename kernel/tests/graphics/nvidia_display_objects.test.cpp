@@ -46,6 +46,7 @@ static constexpr chip_display    TEST_DISPLAY = {
     .window_count       = 8,
     .display_class      = 0xC67F,
     .core_channel_class = 0,
+    .displayport        = {},
 };
 
 // Handles no call gives, filling `out` before a call so the test sees whether it wrote it

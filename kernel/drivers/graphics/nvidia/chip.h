@@ -58,6 +58,15 @@ struct chip_gsp_reservation {
 };
 
 /**
+ * What every DisplayPort link of the chip can do, as the firmware reports it
+ * for the one link a request names. Bring-up reads it for outputs it has
+ * assigned no link, so the driver takes it from the table.
+ */
+struct chip_displayport {
+    bool trains_phy_repeaters; // the firmware trains PHY repeaters, chips regenerating the signal before the monitor
+};
+
+/**
  * The chip's display engine, the part of the GPU that reads images from memory
  * and sends them to monitors, as far as the driver depends on it. Its channels
  * are the queues of commands it reads from memory. The firmware reports which
@@ -70,6 +79,8 @@ struct chip_display {
     uint8_t  window_count;       // the chip's windows, numbered from 0, at most `DISPLAY_WINDOWS_MAX`
     uint32_t display_class;      // NVIDIA's class of the display object, the parent of the display engine's channels
     uint32_t core_channel_class; // NVIDIA's class of the core channel, which sets up heads, links and windows' heads
+
+    chip_displayport displayport;
 };
 
 /**

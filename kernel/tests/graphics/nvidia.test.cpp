@@ -69,6 +69,9 @@ static constexpr uint8_t  GA102_HEAD_COUNT         = 4;
 static constexpr uint32_t GA102_DISPLAY_CLASS      = 0xC670;
 static constexpr uint32_t GA102_CORE_CHANNEL_CLASS = 0xC67D;
 
+// Whether GA102's firmware trains PHY repeaters, as the RTX 3080's firmware reports for each of its links 0 to 3
+static constexpr bool GA102_TRAINS_PHY_REPEATERS = true;
+
 // The RTX 3080's identity decodes to the GA102 entry of the chip table
 TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(decode_chip_id(RTX_3080_BOOT_0), GA102_CHIP_ID);
@@ -90,6 +93,7 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(chip->display.head_count, GA102_HEAD_COUNT);
     EXPECT_EQ(chip->display.display_class, GA102_DISPLAY_CLASS);
     EXPECT_EQ(chip->display.core_channel_class, GA102_CORE_CHANNEL_CLASS);
+    EXPECT_EQ(chip->display.displayport.trains_phy_repeaters, GA102_TRAINS_PHY_REPEATERS);
 }
 
 // GA104 shares GA102's architecture but has no chip table entry

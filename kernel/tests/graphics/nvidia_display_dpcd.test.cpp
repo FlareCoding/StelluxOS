@@ -300,11 +300,17 @@ static bool dpcd_log_contains(const char* text) {
     return false;
 }
 
-// Reads the test display id's capabilities into `out` with the log kept
-static int32_t read_logged(dpcd_firmware& fw, dpcd_capabilities& out, bool& is_read) {
+// Reads the test display id's capabilities into `out` with the log kept, for a GPU training PHY repeaters unless
+// `trains_phy_repeaters` is cleared
+static int32_t read_logged(
+    dpcd_firmware& fw,
+    dpcd_capabilities& out,
+    bool& is_read,
+    bool trains_phy_repeaters = true
+) {
     s_dpcd_log_bytes = 0;
     log::set_backend(&DPCD_LOG_BACKEND);
-    int32_t rc = read_output_dpcd(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, out, is_read);
+    int32_t rc = read_output_dpcd(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, trains_phy_repeaters, out, is_read);
     log::set_backend(nullptr);
 
     return rc;
@@ -322,8 +328,8 @@ TEST(nvidia_display_dpcd, reads_go_to_display_common_in_nvidias_layout_and_order
 
     // The earlier read fills the stack the next read's requests are expected to reuse, so a request not zeroed would
     // likely carry its replies
-    ASSERT_EQ(read_output_dpcd(earlier, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, earlier_out, is_read), OK);
-    ASSERT_EQ(read_output_dpcd(fw, TEST_DISPLAY_COMMON, 0x800, out, is_read), OK);
+    ASSERT_EQ(read_output_dpcd(earlier, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, earlier_out, is_read), OK);
+    ASSERT_EQ(read_output_dpcd(fw, TEST_DISPLAY_COMMON, 0x800, true, out, is_read), OK);
 
     ASSERT_EQ(fw.call_count, 3u);
     EXPECT_EQ(fw.stray_count, 0u);
@@ -341,7 +347,7 @@ TEST(nvidia_display_dpcd, reads_go_to_display_common_in_nvidias_layout_and_order
 }
 
 // A monitor whose byte at 0x0000E has bit 7 set gives the extended copy and the PHY repeaters' bytes as read, with
-// `is_read` set and nothing logged
+// `is_read` and `has_phy_repeater_bytes` set and nothing logged
 TEST(nvidia_display_dpcd, an_extended_copy_is_read_when_its_bit_is_set) {
     dpcd_firmware fw;
     dpcd_capabilities out = {};
@@ -353,6 +359,7 @@ TEST(nvidia_display_dpcd, an_extended_copy_is_read_when_its_bit_is_set) {
     EXPECT_EQ(s_dpcd_log_bytes, 0u);
     EXPECT_TRUE(out.is_extended);
     EXPECT_EQ(string::memcmp(out.receiver, MONITOR_EXTENDED_RECEIVER_CAPABILITIES, DATA_BYTES), 0);
+    EXPECT_TRUE(out.has_phy_repeater_bytes);
     EXPECT_EQ(string::memcmp(out.phy_repeaters, PHY_REPEATER_CAPABILITIES, sizeof(PHY_REPEATER_CAPABILITIES)), 0);
 }
 
@@ -373,6 +380,30 @@ TEST(nvidia_display_dpcd, the_field_is_read_from_0_when_the_bit_is_clear) {
     EXPECT_FALSE(out.is_extended);
     EXPECT_EQ(string::memcmp(out.receiver, BASE_ONLY_RECEIVER_CAPABILITIES, DATA_BYTES), 0);
     EXPECT_EQ(string::memcmp(out.phy_repeaters, PHY_REPEATER_CAPABILITIES, sizeof(PHY_REPEATER_CAPABILITIES)), 0);
+}
+
+// For a GPU that trains no PHY repeaters only the byte at 0x0000E and the field are read, with `is_read` set,
+// `has_phy_repeater_bytes` cleared, the PHY repeaters' bytes 0 and nothing logged
+TEST(nvidia_display_dpcd, phy_repeaters_are_not_read_when_the_gpu_trains_none) {
+    dpcd_firmware fw;
+    dpcd_capabilities out;
+    string::memset(&out, UNTOUCHED, sizeof(out));
+    bool is_read = false;
+
+    ASSERT_EQ(read_logged(fw, out, is_read, false), OK);
+
+    EXPECT_TRUE(is_read);
+    EXPECT_EQ(s_dpcd_log_bytes, 0u);
+    ASSERT_EQ(fw.call_count, 2u);
+    EXPECT_EQ(fw.calls[0].address, NVIDIA_TRAINING_AUX_RD_INTERVAL);
+    EXPECT_EQ(fw.calls[1].address, NVIDIA_EXTENDED_REV);
+
+    EXPECT_TRUE(out.is_extended);
+    EXPECT_EQ(string::memcmp(out.receiver, MONITOR_EXTENDED_RECEIVER_CAPABILITIES, DATA_BYTES), 0);
+    EXPECT_FALSE(out.has_phy_repeater_bytes);
+    for (uint8_t byte : out.phy_repeaters) {
+        EXPECT_EQ(byte, 0u);
+    }
 }
 
 // A read the firmware refuses is logged and ends the reads with `is_read` cleared, no later read and `out` as it was

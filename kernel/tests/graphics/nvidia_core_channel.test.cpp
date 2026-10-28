@@ -59,6 +59,7 @@ static constexpr chip_display TEST_ENTRY = {
     .window_count       = 8,
     .display_class      = 0,
     .core_channel_class = 0xC67E,
+    .displayport        = {},
 };
 
 // A firmware that records its allocations, controls, releases and internal controls in order and answers each with its

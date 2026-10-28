@@ -37,6 +37,7 @@ static constexpr chip_display GA102_DISPLAY     = {
     .window_count       = 8,
     .display_class      = 0,
     .core_channel_class = 0,
+    .displayport        = {},
 };
 
 // A firmware that answers internal controls with `result` and, on `OK`, the words of `reply`, recording what each
@@ -135,6 +136,7 @@ static constexpr chip_display ONE_SHORT_DISPLAY = {
     .window_count       = 31,
     .display_class      = 0,
     .core_channel_class = 0,
+    .displayport        = {},
 };
 
 // A chip of NVIDIA's most windows, with GA102's heads and the classes left 0
@@ -143,6 +145,7 @@ static constexpr chip_display MOST_WINDOWS_DISPLAY = {
     .window_count       = 32,
     .display_class      = 0,
     .core_channel_class = 0,
+    .displayport        = {},
 };
 
 // Every window of the chip or none is accepted, up to every bit on a chip of NVIDIA's most windows
