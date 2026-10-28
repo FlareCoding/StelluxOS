@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "drivers/graphics/edid.h"
@@ -42,6 +43,7 @@ using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::firmware;
 using drivers::nvidia::INSTANCE_MEMORY_BYTES;
+using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
 using drivers::nvidia::PUSH_BUFFER_BYTES;
 using drivers::nvidia::registers;
@@ -112,6 +114,13 @@ static constexpr uint32_t NVIDIA_SNOOPED_PAGES_WORD_0 = 7;
 static constexpr uint64_t NVIDIA_RECORD_UNIT_BYTES    = 256;
 static constexpr uint64_t NVIDIA_NOTIFIER_UNITS       = 16;
 
+// A display channel's busy state in NVIDIA's GET_CHANNEL_INFO reply, restated
+static constexpr uint32_t NVIDIA_CHANNEL_STATE_BUSY = 0x40;
+
+// How long after the first channel state request the double refuses every state request with `ERR_TIMEOUT`, so a wait
+// still running a second after its first request fails instead of hanging the suite
+static constexpr uint64_t LATE_STATE_REQUEST_NS = 1000 * NS_PER_MS;
+
 // The memory the video memory double maps, and the words standing in for BAR0 from the core channel's area to the end
 // of the last window channel's
 static uint8_t  g_video_memory[INSTANCE_MEMORY_BYTES];
@@ -181,8 +190,8 @@ static constexpr uint8_t TIMING_1080_AT_60_HZ[] = {
 // The EDID of every connected monitor, a copy of `AOC_BASE_BLOCK` a test may change
 static uint8_t g_edid[edid::BLOCK_BYTES];
 
-// A firmware that records the kind, object and number of each request in order, answers one a refusal matches with its
-// result, the head, window, crossbar, active head, output and bandwidth check replies from its fields, others as sent
+// A firmware that records each request in order, answers one a refusal matches with its result, the head, window,
+// crossbar, active head, output, bandwidth check and channel state replies from its fields, others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 64;
@@ -226,6 +235,9 @@ public:
     const uint8_t* dpcd_receiver = DPCD_RECEIVER; // the receiver capability field of every connected monitor
     uint32_t   refused_modes = 0;             // how many of the first bandwidth check requests the check refuses
     uint32_t   put_at_first_active_read = 0;  // the core channel's PUT when a head's display id was first asked
+    bool       is_channel_busy = false;       // whether each channel state reply names the busy state, else idle
+    bool       has_state_request = false;     // whether a channel state request has come
+    uint64_t   first_state_request_ns = 0;    // when the first channel state request came
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
         return answer(kind::allocation, object, class_id);
@@ -237,7 +249,19 @@ public:
             put_at_first_active_read = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
         }
 
+        bool is_state_request = command == rm::CONTROL_GET_DISPLAY_CHANNEL_STATE;
+        if (is_state_request && !has_state_request) {
+            has_state_request = true;
+            first_state_request_ns = clock::now_ns();
+        }
+
+        uint64_t since_first_state_request_ns = clock::now_ns() - first_state_request_ns;
+        bool is_late_state_request = is_state_request && since_first_state_request_ns > LATE_STATE_REQUEST_NS;
         int32_t rc = answer(kind::control, object, command);
+        if (is_late_state_request) {
+            return ERR_TIMEOUT;
+        }
+
         if (rc != OK || params == nullptr) {
             return rc;
         }
@@ -249,6 +273,7 @@ public:
         fill_reply(command, params);
         fill_output_reply(command, params);
         fill_check_reply(command, params);
+        fill_state_reply(command, params);
 
         return OK;
     }
@@ -478,6 +503,14 @@ private:
         if (command == rm::CONTROL_IS_MODE_POSSIBLE) {
             bool is_refused = control_count(rm::CONTROL_IS_MODE_POSSIBLE) <= refused_modes;
             static_cast<rm::mode_possible_params*>(params)->is_possible = is_refused ? 0 : 1;
+        }
+    }
+
+    // Answers a channel state request with the busy state if `is_channel_busy`, else the idle state
+    void fill_state_reply(uint32_t command, void* params) const {
+        if (command == rm::CONTROL_GET_DISPLAY_CHANNEL_STATE) {
+            uint32_t state = is_channel_busy ? NVIDIA_CHANNEL_STATE_BUSY : rm::CHANNEL_STATE_IDLE;
+            static_cast<rm::display_channel_state_params*>(params)->state = state;
         }
     }
 };
@@ -1974,4 +2007,99 @@ TEST(nvidia_display_engine, set_up_releases_a_base_buffer_it_cannot_map) {
         EXPECT_EQ(memory.scanout_releases, 1u);
         EXPECT_EQ(memory.scanout_unmaps, 0u);
     }
+}
+
+// Has the double report output 0 as `show_output_0_on_head_1` does, preferring `TIMING_1366_BY_768`, and backs its base
+// buffer, so a set-up clears it and goes on, or gives false when the unprivileged heap cannot back it
+static bool give_output_0_a_base_buffer(engine_firmware& fw, engine_video_memory& memory) {
+    show_output_0_on_head_1(fw);
+    put_1366_pixel_timing_first();
+    return memory.give_scanout(BASE_BUFFER_1366_BYTES);
+}
+
+// A set-up choosing no output, or leaving the chosen output with no base buffer for want of video memory, asks nothing
+// of the core channel's state and logs neither end of a wait for it
+TEST(nvidia_display_engine, set_up_without_a_base_buffer_asks_nothing_of_the_core_channels_state) {
+    const bool is_output_0_shown[] = {false, true};
+    for (bool is_shown : is_output_0_shown) {
+        engine_firmware fw;
+        if (is_shown) {
+            show_output_0_on_head_1(fw);
+        }
+
+        engine_video_memory memory;
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up_logged(engine), OK);
+        EXPECT_EQ(memory.scanout_requests, is_shown ? 1u : 0u);
+        EXPECT_EQ(memory.scanout_maps, 0u);
+        EXPECT_EQ(fw.control_count(rm::CONTROL_GET_DISPLAY_CHANNEL_STATE), 0u);
+        EXPECT_FALSE(engine_log_contains("the core channel idle"));
+    }
+}
+
+// A request for the core channel's state failing other than with `ERR_FIRMWARE` fails the set-up once the base buffer
+// is cleared, and both channels and the objects stay allocated until the release frees them
+TEST(nvidia_display_engine, set_up_failing_at_the_core_channels_idle_wait_keeps_both_channels_until_release) {
+    engine_firmware fw;
+    fw.refusals[0] = {
+        .made = engine_firmware::kind::control,
+        .number = rm::CONTROL_GET_DISPLAY_CHANNEL_STATE,
+        .object = 0,
+        .result = ERR_TIMEOUT,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up(engine), ERR_TIMEOUT);
+    EXPECT_EQ(memory.scanout_unmaps, 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_DISPLAY_CHANNEL_STATE), 1u);
+    EXPECT_EQ(fw.release_count(), 0u);
+    uint32_t first = fw.call_count;
+
+    EXPECT_EQ(engine.release(), OK);
+    ASSERT_EQ(fw.call_count, first + 7);
+
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_WINDOW_CHANNEL_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+}
+
+// A set-up that clears output 0's base buffer asks the display once for the core channel's state, and with the first
+// reply naming the idle state logs that the firmware reported the channel idle
+TEST(nvidia_display_engine, set_up_logs_that_the_firmware_reported_the_core_channel_idle) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    rm::handle display = fw.allocated(TEST_DISPLAY_CLASS);
+    EXPECT_EQ(memory.scanout_unmaps, 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_DISPLAY_CHANNEL_STATE), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_DISPLAY_CHANNEL_STATE, display), 1u);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the GSP's firmware reports the core channel idle"));
+    EXPECT_FALSE(engine_log_contains("did not report the core channel idle"));
+}
+
+// With the firmware reporting the core channel busy at every request, a set-up logs an error in place of the idle
+// line once the wait gives up, and goes on to succeed
+TEST(nvidia_display_engine, set_up_logs_an_error_for_a_core_channel_never_reported_idle) {
+    engine_firmware fw;
+    fw.is_channel_busy = true;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_GT(fw.control_count(rm::CONTROL_GET_DISPLAY_CHANNEL_STATE), 1u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the GSP's firmware did not report the core channel idle within 100 milliseconds"
+    ));
+    EXPECT_FALSE(engine_log_contains("reports the core channel idle"));
 }

@@ -58,7 +58,7 @@ constexpr int32_t ERR_INVALID_ARG    = -13; // a video memory allocation's size 
                                             // `METHOD_VALUES_MAX`
 
 // Nanoseconds per millisecond and per microsecond, for the sequencer's waits, the wait before each EDID reread, the
-// times the driver logs and mode times
+// core channel's idle wait, the times the driver logs and mode times
 constexpr uint64_t NS_PER_MS = 1000000;
 constexpr uint64_t NS_PER_US = 1000;
 

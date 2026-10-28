@@ -144,14 +144,20 @@ public:
      * log where it lies with its rows and pitch. When its memory cannot be
      * allocated or mapping it finds no room, log why the output has no base
      * buffer and return `OK`, releasing the memory after a failed mapping.
-     * Each output's modes are kept on the unprivileged heap from the monitors'
+     * Then, once the output has its base buffer, ask the display for the core
+     * channel's state with `wait_core_channel_idle` until the firmware reports
+     * the channel idle or more than `CORE_CHANNEL_IDLE_WAIT_NS` has passed
+     * since the first reply, and log which of the two ended the wait. Each
+     * output's modes are kept on the unprivileged heap from the monitors'
      * reads to the choice, or to `release` when the set-up fails before it,
      * and the other facts read are not kept. Each request spins on the calling
      * CPU, waiting for its reply as `firmware` describes, and so does each
-     * wait for GET, for at most 5 seconds. `read_output_edid` also spins
-     * before each reread of an EDID as it describes. `set_up` must be called
-     * at most once, as `instance_memory::set_up` must, and since it waits on
-     * video memory's lock and on the card as `instance_memory` and
+     * wait for GET, for at most 5 seconds. The requests for the core channel's
+     * state follow one another with no pause while the firmware reports the
+     * channel busy, as `wait_core_channel_idle` describes. `read_output_edid`
+     * also spins before each reread of an EDID as it describes. `set_up` must
+     * be called at most once, as `instance_memory::set_up` must, and since it
+     * waits on video memory's lock and on the card as `instance_memory` and
      * `video_memory` describe, it must never run in an interrupt handler or
      * under a spinlock, and on a thread that cannot sleep, such as the boot
      * thread, must run only while no other thread can call into video memory
@@ -201,10 +207,12 @@ public:
      * `allocate_window_channel` describes. When the base buffer's allocation
      * or mapping fails other than with `ERR_NO_MEMORY`, the set-up fails with
      * that error, logged here and as `video_memory` describes, the memory
-     * released after a failed mapping. The display's objects and the channels
-     * stay allocated once allocated, even after a later step fails, until
-     * `release`, and the completion notifier stays bound to the core channel
-     * once bound.
+     * released after a failed mapping. When a request for the core channel's
+     * state fails other than with `ERR_FIRMWARE`, the set-up fails with its
+     * error, logged as `wait_core_channel_idle` describes. The display's
+     * objects and the channels stay allocated once allocated, even after a
+     * later step fails, until `release`, and the completion notifier stays
+     * bound to the core channel once bound.
      */
     int32_t set_up(
         registers& regs,

@@ -626,6 +626,17 @@ static int32_t set_up_base_buffer(video_memory& memory, const first_light& light
     return OK;
 }
 
+// Logs whether the firmware reported the core channel idle before the wait for it gave up
+static void log_core_channel_idle(bool is_idle) {
+    static_assert(CORE_CHANNEL_IDLE_WAIT_NS == 100 * NS_PER_MS, "the line gives the wait as 100 milliseconds");
+
+    if (is_idle) {
+        log::info("nvidia: the GSP's firmware reports the core channel idle");
+    } else {
+        log::error("nvidia: the GSP's firmware did not report the core channel idle within 100 milliseconds");
+    }
+}
+
 // Writes `method` into `queue`, and when `write` returns `ERR_QUEUE_FULL`, kicks, waits for GET to reach PUT and writes
 // it again, as `display_channel::write` asks of a writer that may wait. One wait makes room for a method of one value
 static int32_t write_waiting(display_channel& queue, const display_method& method) {
@@ -833,7 +844,20 @@ int32_t display_engine::set_up(
         return rc;
     }
 
-    return set_up_base_buffer(m_memory, light, m_base_buffer);
+    rc = set_up_base_buffer(m_memory, light, m_base_buffer);
+    if (rc != OK || m_base_buffer.size == 0) {
+        return rc;
+    }
+
+    bool is_core_channel_idle = false;
+    rc = wait_core_channel_idle(m_firmware, m_objects.display, display, is_core_channel_idle);
+    if (rc != OK) {
+        return rc;
+    }
+
+    log_core_channel_idle(is_core_channel_idle);
+
+    return OK;
 }
 
 int32_t display_engine::release() {

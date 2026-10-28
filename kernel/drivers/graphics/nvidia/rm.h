@@ -440,6 +440,24 @@ static_assert(sizeof(display_push_buffer_params) == 40, "NVIDIA's layout of DISP
 static_assert(sizeof(display_channel_params) == 32, "NVIDIA's layout of a display channel's allocation parameters");
 static_assert(sizeof(display_release_flags_params) == 8, "NVIDIA's layout of SET_RMFREE_FLAGS's parameters");
 
+// NVIDIA's NVC370_CTRL_CMD_GET_CHANNEL_INFO, the control to the display that gives the state of one of its channels
+constexpr uint32_t CONTROL_GET_DISPLAY_CHANNEL_STATE = 0xC3700104;
+
+// The parameters of `CONTROL_GET_DISPLAY_CHANNEL_STATE`, whose reply fills `state`. `is_in_debug_mode` is not read
+struct display_channel_state_params {
+    uint32_t subdevice_index;  // as in `display_capabilities_params`
+    uint32_t channel_class;    // the class the channel was allocated with
+    uint32_t channel_instance; // 0 for the core channel
+    uint8_t  is_in_debug_mode; // NVIDIA's IsChannelInDebugMode
+    uint32_t state;            // NVIDIA's channelState, the channel's state as a mask with a bit for each state
+};
+
+// NVIDIA's NVC370_CTRL_GET_CHANNEL_INFO_STATE_IDLE, the state of a channel with no method pending, every method it
+// took having passed through the hardware's internal queue
+constexpr uint32_t CHANNEL_STATE_IDLE = 0x1;
+
+static_assert(sizeof(display_channel_state_params) == 20, "NVIDIA's layout of GET_CHANNEL_INFO's parameters");
+
 // NVIDIA's NV0073_CTRL_CMD_SYSTEM_GET_ACTIVE, the control to display common that gives the display id a head shows
 constexpr uint32_t CONTROL_GET_ACTIVE_DISPLAY = 0x730126;
 
