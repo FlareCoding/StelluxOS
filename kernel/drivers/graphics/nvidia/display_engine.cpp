@@ -63,12 +63,10 @@ static void format_bytes(const uint8_t* bytes, uint32_t count, char* text) {
     }
 }
 
-// Logs the bytes of the DPCD capabilities an output's monitor reports, with its PHY repeaters'
+// Logs the bytes of the DPCD capabilities an output's monitor reports, with its PHY repeaters' when they were read
 static void log_dpcd(uint8_t output_index, const dpcd_capabilities& dpcd) {
     char receiver[DPCD_RECEIVER_CAPABILITY_BYTES * 3];
-    char phy_repeaters[DPCD_PHY_REPEATER_CAPABILITY_BYTES * 3];
     format_bytes(dpcd.receiver, DPCD_RECEIVER_CAPABILITY_BYTES, receiver);
-    format_bytes(dpcd.phy_repeaters, DPCD_PHY_REPEATER_CAPABILITY_BYTES, phy_repeaters);
     uint32_t receiver_address = dpcd.is_extended ? DPCD_EXTENDED_RECEIVER_CAPABILITIES : DPCD_RECEIVER_CAPABILITIES;
 
     log::info(
@@ -77,6 +75,13 @@ static void log_dpcd(uint8_t output_index, const dpcd_capabilities& dpcd) {
         receiver,
         receiver_address
     );
+
+    if (!dpcd.has_phy_repeater_bytes) {
+        return;
+    }
+
+    char phy_repeaters[DPCD_PHY_REPEATER_CAPABILITY_BYTES * 3];
+    format_bytes(dpcd.phy_repeaters, DPCD_PHY_REPEATER_CAPABILITY_BYTES, phy_repeaters);
     log::info(
         "nvidia: output %u's PHY repeater capabilities from 0x%05X are %s",
         output_index,
@@ -87,7 +92,12 @@ static void log_dpcd(uint8_t output_index, const dpcd_capabilities& dpcd) {
 
 // Reads the EDID and the DPCD capabilities of each connected output's monitor, the EDID into one `edid::monitor` on the
 // unprivileged heap, as it is too large for the stack, and logs each EDID that parses and the capabilities read
-static int32_t read_connected_monitors(firmware& fw, rm::handle display_common, const display_outputs& outputs) {
+static int32_t read_connected_monitors(
+    firmware& fw,
+    rm::handle display_common,
+    const chip_displayport& gpu,
+    const display_outputs& outputs
+) {
     uint32_t monitor_bytes = sizeof(edid::monitor);
     auto* monitor = static_cast<edid::monitor*>(heap::uzalloc(monitor_bytes));
     if (monitor == nullptr) {
@@ -114,7 +124,7 @@ static int32_t read_connected_monitors(firmware& fw, rm::handle display_common, 
 
         dpcd_capabilities dpcd = {};
         bool is_read = false;
-        rc = read_output_dpcd(fw, display_common, output.display_id, dpcd, is_read);
+        rc = read_output_dpcd(fw, display_common, output.display_id, gpu.trains_phy_repeaters, dpcd, is_read);
         if (rc != OK) {
             break;
         }
@@ -197,7 +207,7 @@ static int32_t read_display_facts(
         );
     }
 
-    return read_connected_monitors(fw, objects.display_common, outputs);
+    return read_connected_monitors(fw, objects.display_common, display.displayport, outputs);
 }
 
 // Writes `method` into `queue`, and when `write` returns `ERR_QUEUE_FULL`, kicks, waits for GET to reach PUT and writes

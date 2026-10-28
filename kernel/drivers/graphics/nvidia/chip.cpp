@@ -33,6 +33,9 @@ constexpr chip_info CHIP_TABLE[] = {
             .window_count = 8,
             .display_class = 0xC670,
             .core_channel_class = 0xC67D,
+            .displayport = {
+                .trains_phy_repeaters = true,
+            },
         },
     },
 };

@@ -2428,8 +2428,8 @@ src/common/displayport/src/dp_configcaps.cpp
     rate code it does not take mapped onto one it does, in displayport.h, that
     the DisplayPort library reads the byte at 0x0000E, then the receiver
     capability field's 16 bytes from its extended copy when that byte's bit 7 is
-    set and from 0x00000 otherwise, then the PHY repeaters' 8 bytes, in
-    display_dpcd.h, display_dpcd.cpp and
+    set and from 0x00000 otherwise, then the PHY repeaters' 8 bytes when the GPU
+    trains PHY repeaters, in display_dpcd.h, display_dpcd.cpp and
     kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that it takes the
     field from 0x00000 when the byte cannot be read, reads the field and the PHY
     repeaters' bytes with a retry count of 16, reads the PHY repeaters' bytes
@@ -2455,9 +2455,11 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
     command of a native read, the reply types and the size sent as the bytes
     asked for less 1 and given back as the bytes the transaction moved, in rm.h,
     display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that
     NV0073_CTRL_CMD_DP_SET_MANUAL_DISPLAYPORT turns off the firmware's own
-    retries of a deferred reply, in display_dpcd.h
+    retries of a deferred reply, in display_dpcd.h, and the GPU's report of
+    whether its firmware trains PHY repeaters, made for the one link a request
+    names, in chip.h, chip.cpp and kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/dp/nvdp-connector.cpp
@@ -2819,13 +2821,14 @@ src/common/displayport/src/dp_evoadapter.cpp
     display_outputs.h, that it sends an AUX transaction with its parameters
     zeroed but for the subdevice, the display id, the command, the address and
     the size, in display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that it sends each
-    AUX transaction up to 3 times, sleeping as long as the firmware says after
-    each, while the firmware fails it and names a time to retry after, takes the
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it sends each AUX
+    transaction up to 3 times, sleeping as long as the firmware says after each,
+    while the firmware fails it and names a time to retry after, takes the
     firmware's timeout as a deferred reply, tells the firmware to leave the
     DisplayPort hardware to the library as it is made and takes the GPU as
     training PHY repeaters unless display common reports that it does not, in
-    display_dpcd.h
+    display_dpcd.h, and that it asks display common for the GPU's DisplayPort
+    facts naming one link, in chip.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-dpy.c

@@ -52,6 +52,7 @@ static constexpr chip_display TEST_DISPLAY        = {
     .window_count       = 8,
     .display_class      = 0,
     .core_channel_class = 0,
+    .displayport        = {},
 };
 
 // A firmware that records the controls sent to it in order and answers each with its own entry of `results`, and `OK`
@@ -466,6 +467,7 @@ static constexpr chip_display TWO_HEAD_DISPLAY = {
     .window_count       = 8,
     .display_class      = 0,
     .core_channel_class = 0,
+    .displayport        = {},
 };
 
 // The chip's own head count, not `DISPLAY_HEADS_MAX`, bounds the count, the head mask and a fixed window's head

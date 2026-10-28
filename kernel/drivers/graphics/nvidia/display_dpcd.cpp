@@ -92,6 +92,7 @@ int32_t read_output_dpcd(
     firmware& fw,
     rm::handle display_common,
     uint32_t display_id,
+    bool trains_phy_repeaters,
     dpcd_capabilities& out,
     bool& is_read
 ) {
@@ -119,17 +120,21 @@ int32_t read_output_dpcd(
         return rc;
     }
 
-    rc = read_dpcd(
-        fw,
-        display_common,
-        display_id,
-        DPCD_PHY_REPEATER_CAPABILITIES,
-        DPCD_PHY_REPEATER_CAPABILITY_BYTES,
-        capabilities.phy_repeaters,
-        is_read
-    );
-    if (rc != OK || !is_read) {
-        return rc;
+    if (trains_phy_repeaters) {
+        rc = read_dpcd(
+            fw,
+            display_common,
+            display_id,
+            DPCD_PHY_REPEATER_CAPABILITIES,
+            DPCD_PHY_REPEATER_CAPABILITY_BYTES,
+            capabilities.phy_repeaters,
+            is_read
+        );
+        if (rc != OK || !is_read) {
+            return rc;
+        }
+
+        capabilities.has_phy_repeater_bytes = true;
     }
 
     out = capabilities;

@@ -69,21 +69,21 @@ public:
      * itself, with the timings it accepts) with `read_output_edid` into one
      * `edid::monitor` on the unprivileged heap, logging the maker, name and
      * timings of an EDID that parses, then the monitor's DPCD capabilities
-     * (the link limits a DisplayPort monitor's registers report) and those of
-     * any PHY repeater between the card and the monitor with
-     * `read_output_dpcd`, logging their bytes when it reads them all. Then
-     * allocate the core channel's push buffer in DMA pages and the core
-     * channel under the display with `allocate_core_channel`, and log its
-     * handle, where its push buffer lies and one read of its PUT and GET. Then
-     * write the core channel's initial methods, which `core_initial_method`
-     * gives, for the heads read, kicking and waiting for GET to reach PUT
-     * whenever the push buffer has no room, kick the rest with no update, so
-     * nothing on screen changes, wait for GET to reach PUT, and log one read
-     * of PUT and GET with the count of methods written. The facts read are not
-     * kept. Each request spins on the calling CPU, waiting for its reply as
-     * `firmware` describes, and so does each wait for GET, for at most 5
-     * seconds. `read_output_edid` also spins before each reread of an EDID as
-     * it describes. `set_up` must be called at most once, as
+     * (the link limits a DisplayPort monitor's registers report) and, when the
+     * GPU trains PHY repeaters, those of any PHY repeater between the card and
+     * the monitor with `read_output_dpcd`, logging their bytes when it reads
+     * them all. Then allocate the core channel's push buffer in DMA pages and
+     * the core channel under the display with `allocate_core_channel`, and log
+     * its handle, where its push buffer lies and one read of its PUT and GET.
+     * Then write the core channel's initial methods, which
+     * `core_initial_method` gives, for the heads read, kicking and waiting for
+     * GET to reach PUT whenever the push buffer has no room, kick the rest
+     * with no update, so nothing on screen changes, wait for GET to reach PUT,
+     * and log one read of PUT and GET with the count of methods written. The
+     * facts read are not kept. Each request spins on the calling CPU, waiting
+     * for its reply as `firmware` describes, and so does each wait for GET,
+     * for at most 5 seconds. `read_output_edid` also spins before each reread
+     * of an EDID as it describes. `set_up` must be called at most once, as
      * `instance_memory::set_up` must, and since it waits on video memory's
      * lock and on the card as `instance_memory` describes, it must never run
      * in an interrupt handler or under a spinlock, and on a thread that cannot
@@ -95,7 +95,8 @@ public:
      * until then.
      * @param card The card's DMA profile, for the push buffer's pages.
      * @param chip The chip table's entry for the card's chip, whose display
-     * entry gives the display's limits and classes.
+     * entry gives the display's limits and classes and what the chip's
+     * DisplayPort links can do.
      * @param device The driver's device, the parent of the display's objects.
      * @return `OK`, with the firmware holding the instance memory's address,
      * the display's objects, the core channel and its push buffer's address,

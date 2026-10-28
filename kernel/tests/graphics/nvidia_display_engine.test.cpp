@@ -269,6 +269,7 @@ static int32_t set_up(
         .window_count       = 8,
         .display_class      = TEST_DISPLAY_CLASS,
         .core_channel_class = TEST_CORE_CHANNEL_CLASS,
+        .displayport        = {},
     };
 
     return engine.set_up(regs, card, chip, TEST_DEVICE);
