@@ -44,27 +44,25 @@ struct dpcd_capabilities {
  * at `DPCD_TRAINING_AUX_READ_INTERVAL`, then the receiver capability field
  * from `DPCD_EXTENDED_RECEIVER_CAPABILITIES` when that byte has
  * `DPCD_EXTENDED_COPY_PRESENT` set or from `DPCD_RECEIVER_CAPABILITIES`
- * otherwise, then the PHY repeaters' capabilities when `trains_phy_repeaters`
- * is set. Each read sends display common's AUX channel control a request, its
- * parameters zeroed but for the display id, the command, the address and the
- * size, and sends a fresh one while the monitor defers it or acknowledges it
- * with some but not all of the bytes or with more than those. A read stops at
- * its 7th deferral or acknowledgment of too few bytes for the first byte and
- * its 16th for each of the others, NVIDIA's counts, or at as many
- * acknowledgments of too many bytes. When the firmware refuses a request with
- * `ERR_FIRMWARE`, the monitor answers with anything but an acknowledgment of
- * exactly the bytes asked for or an answer it is asked again on, or a read
- * stops at a count, the read logs it, asks nothing more and leaves `is_read`
- * cleared. NVIDIA's library counts no acknowledgment of too many bytes, asking
- * again for as long as the monitor sends them, and asks again when the
- * firmware's status for a request is its timeout, which `firmware::control`
- * gives as `ERR_FIRMWARE`. It takes the field from
- * `DPCD_RECEIVER_CAPABILITIES` when the first byte cannot be read, reads the
- * PHY repeaters' capabilities unless display common reports that the GPU does
- * not train PHY repeaters, going on without them when that read fails, and
- * makes the reads again up to 3 more times while the field cannot be read,
- * taking the DPCD as offline when it never can. It also sends each request up
- * to 3 times, sleeping as long as the firmware says after each, while the
+ * otherwise or when that byte cannot be read, then the PHY repeaters'
+ * capabilities, when `trains_phy_repeaters` is set, a failed read of which
+ * means no PHY repeater. Each read sends display common's AUX channel control
+ * a request, its parameters zeroed but for the display id, the command, the
+ * address and the size, and sends a fresh one while the monitor defers it or
+ * acknowledges it with some but not all of the bytes or with more than those.
+ * A read stops at its 7th deferral or acknowledgment of too few bytes for the
+ * first byte and its 16th for each of the others, NVIDIA's counts, or at as
+ * many acknowledgments of too many bytes, and the reads are made again up to 3
+ * more times while the field cannot be read. A read gives no bytes, and is
+ * logged, when the firmware refuses a request with `ERR_FIRMWARE`, when the
+ * monitor answers with anything but an acknowledgment of exactly the bytes
+ * asked for or an answer it is asked again on, or when it stops at a count.
+ * NVIDIA's library counts no acknowledgment of too many bytes, asking again
+ * for as long as the monitor sends them, and asks again when the firmware's
+ * status for a request is its timeout, which `firmware::control` gives as
+ * `ERR_FIRMWARE`. It also reads the PHY repeaters' capabilities unless display
+ * common reports that the GPU does not train PHY repeaters, sends each request
+ * up to 3 times, sleeping as long as the firmware says after each, while the
  * firmware fails it and names a time to retry after, and before its first read
  * tells the firmware to leave the DisplayPort hardware to it, which turns off
  * the firmware's own retries of a deferred reply, and asks display common for
@@ -75,9 +73,9 @@ struct dpcd_capabilities {
  * @param display_id The display id of an output `read_display_outputs` marks
  * connected.
  * @param trains_phy_repeaters Whether the GPU's firmware trains PHY repeaters.
- * @param out Set when every read gives its bytes, with
- * `has_phy_repeater_bytes` equal to `trains_phy_repeaters` and `phy_repeaters`
- * all 0 when that is cleared, and left unchanged otherwise.
+ * @param out Set when the field is read, with `has_phy_repeater_bytes` set
+ * when the PHY repeaters' capabilities are read too and `phy_repeaters` all 0
+ * otherwise, and left unchanged otherwise.
  * @param is_read Set when `out` holds the monitor's capabilities, and cleared
  * otherwise.
  * @return `OK`, or what `firmware::control` returns, logged as its doc

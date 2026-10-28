@@ -29,9 +29,17 @@ static constexpr uint32_t REPEATER_COUNT        = 2;
 static constexpr uint32_t REPEATER_LANES        = 4;
 static constexpr uint8_t  REPEATER_REVISION_1_4 = 0x14;
 
-// NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer) and for each later read
+// NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer) and for each later read, and its passes,
+// the first and the 3 more (faultyRetries) it makes while the field cannot be read
 static constexpr uint32_t INTERVAL_REQUESTS   = 7;
 static constexpr uint32_t CAPABILITY_REQUESTS = 16;
+static constexpr uint32_t PASSES              = 4;
+
+// How the line logged for a read that gives no bytes ends, for each read and pass
+static constexpr const char* FIELD_FROM_BASE = ", so its receiver capability field is read from 0x00000";
+static constexpr const char* READ_AGAIN      = ", so its DPCD is read again";
+static constexpr const char* NO_MORE_READ    = ", so no more of its DPCD is read";
+static constexpr const char* NO_PHY_REPEATER = ", so its link is taken to have no PHY repeater";
 
 namespace {
 
@@ -158,21 +166,22 @@ static bool is_asked_again(const aux_answer& answer, uint32_t bytes) {
     return is_deferred || (is_acknowledged && moved_other_bytes);
 }
 
-// Logs why a read of `bytes` bytes at `address` gave none after `requests` requests
+// Logs why a read of `bytes` bytes at `address` gave none after `requests` requests, the line ending with `outcome`
 static void log_unread(
     uint32_t display_id,
     uint32_t address,
     uint32_t bytes,
     const aux_answer& answer,
-    uint32_t requests
+    uint32_t requests,
+    const char* outcome
 ) {
     if (answer.is_refused) {
         log::error(
-            "nvidia: display common refused display id 0x%X's %u-byte AUX read at 0x%05X, so no more of its DPCD is "
-            "read",
+            "nvidia: display common refused display id 0x%X's %u-byte AUX read at 0x%05X%s",
             display_id,
             bytes,
-            address
+            address,
+            outcome
         );
         return;
     }
@@ -181,14 +190,15 @@ static void log_unread(
     if (answer.reply != rm::AUX_REPLY_ACK) {
         log::error(
             "nvidia: display id 0x%X's %u-byte AUX read at 0x%05X ended with %s from its monitor (reply type %u) after "
-            "%u %s, so no more of its DPCD is read",
+            "%u %s%s",
             display_id,
             bytes,
             address,
             reply_meaning(answer.reply),
             answer.reply,
             requests,
-            request_word
+            request_word,
+            outcome
         );
         return;
     }
@@ -196,19 +206,20 @@ static void log_unread(
     const char* size_word = answer.size == 1 ? "byte" : "bytes";
     log::error(
         "nvidia: display id 0x%X's monitor acknowledged the %u-byte AUX read at 0x%05X with a reply size of %u %s "
-        "after %u %s, so no more of its DPCD is read",
+        "after %u %s%s",
         display_id,
         bytes,
         address,
         answer.size,
         size_word,
         requests,
-        request_word
+        request_word,
+        outcome
     );
 }
 
 // Reads `bytes` bytes of the DPCD from `address` into `out`, asking again while `is_asked_again` holds until `requests`
-// deferred or short replies or as many longer ones have come, and logs why when the bytes cannot be read
+// deferred or short replies or as many longer ones have come, and logs a failed read in a line ending with `outcome`
 static int32_t read_dpcd(
     firmware& fw,
     rm::handle display_common,
@@ -216,6 +227,7 @@ static int32_t read_dpcd(
     uint32_t address,
     uint32_t bytes,
     uint32_t requests,
+    const char* outcome,
     uint8_t* out,
     bool& is_read
 ) {
@@ -245,10 +257,78 @@ static int32_t read_dpcd(
 
     is_read = is_acknowledged_exactly(answer, bytes);
     if (!is_read) {
-        log_unread(display_id, address, bytes, answer, made);
+        log_unread(display_id, address, bytes, answer, made, outcome);
     }
 
     return OK;
+}
+
+// Makes one pass of NVIDIA's reads into `capabilities`, reading the PHY repeaters' bytes only once the field is read
+// and leaving them all 0 when they cannot be read
+static int32_t read_capabilities(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    bool trains_phy_repeaters,
+    bool is_last_pass,
+    dpcd_capabilities& capabilities,
+    bool& is_field_read
+) {
+    is_field_read = false;
+    capabilities = {};
+
+    uint8_t interval = 0;
+    bool is_interval_read = false;
+    int32_t rc = read_dpcd(
+        fw,
+        display_common,
+        display_id,
+        DPCD_TRAINING_AUX_READ_INTERVAL,
+        1,
+        INTERVAL_REQUESTS,
+        FIELD_FROM_BASE,
+        &interval,
+        is_interval_read
+    );
+    if (rc != OK) {
+        return rc;
+    }
+
+    capabilities.is_extended = is_interval_read && (interval & DPCD_EXTENDED_COPY_PRESENT) != 0;
+    uint32_t receiver_address = capabilities.is_extended
+        ? DPCD_EXTENDED_RECEIVER_CAPABILITIES
+        : DPCD_RECEIVER_CAPABILITIES;
+    const char* field_outcome = is_last_pass ? NO_MORE_READ : READ_AGAIN;
+    rc = read_dpcd(
+        fw,
+        display_common,
+        display_id,
+        receiver_address,
+        DPCD_RECEIVER_CAPABILITY_BYTES,
+        CAPABILITY_REQUESTS,
+        field_outcome,
+        capabilities.receiver,
+        is_field_read
+    );
+    if (rc != OK || !is_field_read) {
+        return rc;
+    }
+
+    if (!trains_phy_repeaters) {
+        return OK;
+    }
+
+    return read_dpcd(
+        fw,
+        display_common,
+        display_id,
+        DPCD_PHY_REPEATER_CAPABILITIES,
+        DPCD_PHY_REPEATER_CAPABILITY_BYTES,
+        CAPABILITY_REQUESTS,
+        NO_PHY_REPEATER,
+        capabilities.phy_repeaters,
+        capabilities.has_phy_repeater_bytes
+    );
 }
 
 int32_t read_output_dpcd(
@@ -259,59 +339,31 @@ int32_t read_output_dpcd(
     dpcd_capabilities& out,
     bool& is_read
 ) {
-    uint8_t interval = 0;
-    int32_t rc = read_dpcd(
-        fw,
-        display_common,
-        display_id,
-        DPCD_TRAINING_AUX_READ_INTERVAL,
-        1,
-        INTERVAL_REQUESTS,
-        &interval,
-        is_read
-    );
-    if (rc != OK || !is_read) {
-        return rc;
-    }
+    is_read = false;
 
     dpcd_capabilities capabilities = {};
-    capabilities.is_extended = (interval & DPCD_EXTENDED_COPY_PRESENT) != 0;
-    uint32_t receiver_address = capabilities.is_extended
-        ? DPCD_EXTENDED_RECEIVER_CAPABILITIES
-        : DPCD_RECEIVER_CAPABILITIES;
-    rc = read_dpcd(
-        fw,
-        display_common,
-        display_id,
-        receiver_address,
-        DPCD_RECEIVER_CAPABILITY_BYTES,
-        CAPABILITY_REQUESTS,
-        capabilities.receiver,
-        is_read
-    );
-    if (rc != OK || !is_read) {
-        return rc;
-    }
-
-    if (trains_phy_repeaters) {
-        rc = read_dpcd(
+    for (uint32_t pass = 0; pass < PASSES; pass++) {
+        bool is_field_read = false;
+        bool is_last_pass = pass + 1 == PASSES;
+        int32_t rc = read_capabilities(
             fw,
             display_common,
             display_id,
-            DPCD_PHY_REPEATER_CAPABILITIES,
-            DPCD_PHY_REPEATER_CAPABILITY_BYTES,
-            CAPABILITY_REQUESTS,
-            capabilities.phy_repeaters,
-            is_read
+            trains_phy_repeaters,
+            is_last_pass,
+            capabilities,
+            is_field_read
         );
-        if (rc != OK || !is_read) {
+        if (rc != OK) {
             return rc;
         }
 
-        capabilities.has_phy_repeater_bytes = true;
+        if (is_field_read) {
+            string::memcpy(&out, &capabilities, sizeof(out));
+            is_read = true;
+            return OK;
+        }
     }
-
-    out = capabilities;
 
     return OK;
 }

@@ -49,10 +49,11 @@ static constexpr uint32_t NVIDIA_REPLY_TIMEOUT       = 3;
 static constexpr uint32_t NVIDIA_REPLY_I2CNACK       = 4;
 static constexpr uint32_t NVIDIA_REPLY_I2CDEFER      = 8;
 
-// NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer) and for the field and the PHY
-// repeaters' bytes
+// NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer), for the field and for the PHY
+// repeaters' bytes, and its passes, the first and the 3 more (faultyRetries) it makes while the field cannot be read
 static constexpr uint32_t NVIDIA_INTERVAL_REQUESTS   = 7;
 static constexpr uint32_t NVIDIA_CAPABILITY_REQUESTS = 16;
+static constexpr uint32_t NVIDIA_PASSES              = 4;
 
 // NVIDIA's DPCD addresses of the byte read first, the receiver capability field, its extended copy and the PHY
 // repeaters' capabilities, the bit saying the extended copy is present, and the bytes NVIDIA reads of each field
@@ -345,8 +346,12 @@ struct asked_again_read {
 // The byte every byte of a test's capabilities holds before a read, so a test sees whether the read wrote them
 static constexpr uint8_t UNTOUCHED = 0xEE;
 
-// How each line logged for a read that cannot be made ends
-static constexpr const char* NO_MORE_READ = ", so no more of its DPCD is read";
+// How the line logged for a read that gives no bytes ends: for the byte at 0x0000E, for the field in a pass but the
+// last and in the last, and for the PHY repeaters' bytes
+static constexpr const char* FIELD_FROM_BASE = ", so its receiver capability field is read from 0x00000";
+static constexpr const char* READ_AGAIN      = ", so its DPCD is read again";
+static constexpr const char* NO_MORE_READ    = ", so no more of its DPCD is read";
+static constexpr const char* NO_PHY_REPEATER = ", so its link is taken to have no PHY repeater";
 
 // How the log names a read whose one request the monitor answers with reply type 4, NVIDIA's I2CNACK
 static constexpr const char* I2C_REFUSAL_LOGGED =
@@ -377,16 +382,22 @@ static void keep_dpcd_log(const char* data, size_t len) {
 
 static constexpr log::backend DPCD_LOG_BACKEND = {.write = keep_dpcd_log};
 
-// Whether the kept text holds `text` anywhere
-static bool dpcd_log_contains(const char* text) {
+// How many times the kept text holds `text`
+static uint32_t dpcd_log_count(const char* text) {
+    uint32_t count = 0;
     size_t text_bytes = string::strlen(text);
     for (uint32_t start = 0; start + text_bytes <= s_dpcd_log_bytes; start++) {
         if (string::memcmp(s_dpcd_log + start, text, text_bytes) == 0) {
-            return true;
+            count++;
         }
     }
 
-    return false;
+    return count;
+}
+
+// Whether the kept text holds `text` anywhere
+static bool dpcd_log_contains(const char* text) {
+    return dpcd_log_count(text) != 0;
 }
 
 // Reads the test display id's capabilities into `out` with the log kept, for a GPU training PHY repeaters unless
@@ -600,28 +611,31 @@ TEST(nvidia_display_dpcd, deferrals_and_acknowledgments_of_too_many_bytes_are_co
 }
 
 // A byte at 0x0000E acknowledged with 2 bytes by its first 7 requests ends its read at the 7th, though the monitor
-// would answer an 8th with the byte
+// would answer an 8th with the byte, and has the field read from 0x00000
 TEST(nvidia_display_dpcd, acknowledgments_of_too_many_bytes_end_a_read_at_its_count) {
     dpcd_firmware fw;
     fw.scripted_address = NVIDIA_TRAINING_AUX_RD_INTERVAL;
     fw.scripted_requests = NVIDIA_INTERVAL_REQUESTS;
     fw.scripted_size = 2;
 
-    dpcd_capabilities out;
-    string::memset(&out, UNTOUCHED, sizeof(out));
-    bool is_read = true;
+    dpcd_capabilities out = {};
+    bool is_read = false;
 
     ASSERT_EQ(read_logged(fw, out, is_read), OK);
 
     EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), NVIDIA_INTERVAL_REQUESTS);
-    EXPECT_EQ(fw.call_count, NVIDIA_INTERVAL_REQUESTS);
-    EXPECT_FALSE(is_read);
-    EXPECT_TRUE(capabilities_untouched(out));
+    EXPECT_EQ(fw.requests_at(NVIDIA_DPCD_REV), 1u);
+    EXPECT_EQ(fw.requests_at(NVIDIA_EXTENDED_REV), 0u);
+
+    EXPECT_TRUE(is_read);
+    EXPECT_FALSE(out.is_extended);
+
     EXPECT_TRUE(dpcd_log_contains("with a reply size of 2 bytes after 7 requests,"));
+    EXPECT_TRUE(dpcd_log_contains(FIELD_FROM_BASE));
 }
 
 // Deferrals and acknowledgments of some but not all of the bytes share NVIDIA's count, so a field deferred 8 times and
-// then acknowledged with 15 bytes 8 times ends its read at the 16th request, though the monitor would answer a 17th
+// then acknowledged with 15 bytes 8 times ends a pass at its 16th request and is read at the 17th, in the next pass
 TEST(nvidia_display_dpcd, deferrals_and_acknowledgments_of_some_of_the_bytes_share_a_count) {
     dpcd_firmware fw;
     fw.scripted_address = NVIDIA_EXTENDED_REV;
@@ -630,17 +644,20 @@ TEST(nvidia_display_dpcd, deferrals_and_acknowledgments_of_some_of_the_bytes_sha
     fw.later_requests = 8;
     fw.later_size = 15;
 
-    dpcd_capabilities out;
-    string::memset(&out, UNTOUCHED, sizeof(out));
-    bool is_read = true;
+    dpcd_capabilities out = {};
+    bool is_read = false;
 
     ASSERT_EQ(read_logged(fw, out, is_read), OK);
 
-    EXPECT_EQ(fw.requests_at(NVIDIA_EXTENDED_REV), NVIDIA_CAPABILITY_REQUESTS);
-    EXPECT_EQ(fw.call_count, 1 + NVIDIA_CAPABILITY_REQUESTS);
-    EXPECT_FALSE(is_read);
-    EXPECT_TRUE(capabilities_untouched(out));
+    EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), 2u);
+    EXPECT_EQ(fw.requests_at(NVIDIA_EXTENDED_REV), NVIDIA_CAPABILITY_REQUESTS + 1);
+
+    EXPECT_TRUE(is_read);
+    EXPECT_TRUE(out.is_extended);
+    EXPECT_EQ(string::memcmp(out.receiver, MONITOR_EXTENDED_RECEIVER_CAPABILITIES, DATA_BYTES), 0);
+
     EXPECT_TRUE(dpcd_log_contains("with a reply size of 15 bytes after 16 requests,"));
+    EXPECT_EQ(dpcd_log_count(READ_AGAIN), 1u);
 }
 
 static constexpr failing_answer INTERVAL_FAILURES[] = {
@@ -656,29 +673,32 @@ static constexpr failing_answer INTERVAL_FAILURES[] = {
     {OK, NVIDIA_REPLY_ACK, 2, true, "with a reply size of 2 bytes after 7 requests,"},
 };
 
-// A byte at 0x0000E that cannot be read, after 7 requests for an answer it is asked again on and one for any
-// other, is logged and ends the reads with `is_read` cleared, no later read and `out` as it was
-TEST(nvidia_display_dpcd, a_byte_at_0x0000e_that_cannot_be_read_ends_the_reads) {
+// A byte at 0x0000E that cannot be read, after 7 requests for an answer it is asked again on and one for any other,
+// is logged and has the field read from 0x00000, then the PHY repeaters' bytes
+TEST(nvidia_display_dpcd, the_field_is_read_from_0_when_the_byte_at_0x0000e_cannot_be_read) {
     for (const failing_answer& answer : INTERVAL_FAILURES) {
         dpcd_firmware fw;
         script_every_request(fw, NVIDIA_TRAINING_AUX_RD_INTERVAL, answer);
-        dpcd_capabilities out;
-        string::memset(&out, UNTOUCHED, sizeof(out));
-        bool is_read = true;
+        dpcd_capabilities out = {};
+        bool is_read = false;
 
         ASSERT_EQ(read_logged(fw, out, is_read), OK);
 
         uint32_t interval_requests = answer.is_asked_again ? NVIDIA_INTERVAL_REQUESTS : 1;
         EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), interval_requests);
-        EXPECT_EQ(fw.call_count, interval_requests);
+        EXPECT_EQ(fw.requests_at(NVIDIA_DPCD_REV), 1u);
+        EXPECT_EQ(fw.requests_at(NVIDIA_EXTENDED_REV), 0u);
+        EXPECT_EQ(fw.requests_at(NVIDIA_LT_TUNABLE_PHY_REPEATER_REV), 1u);
 
-        EXPECT_FALSE(is_read);
-        EXPECT_TRUE(capabilities_untouched(out));
+        EXPECT_TRUE(is_read);
+        EXPECT_FALSE(out.is_extended);
+        EXPECT_EQ(string::memcmp(out.receiver, MONITOR_RECEIVER_CAPABILITIES, DATA_BYTES), 0);
+        EXPECT_TRUE(out.has_phy_repeater_bytes);
 
         EXPECT_TRUE(dpcd_log_contains("display id 0x100's "));
         EXPECT_TRUE(dpcd_log_contains(EXTENDED_READS[0].logged));
         EXPECT_TRUE(dpcd_log_contains(answer.logged));
-        EXPECT_TRUE(dpcd_log_contains(NO_MORE_READ));
+        EXPECT_TRUE(dpcd_log_contains(FIELD_FROM_BASE));
     }
 }
 
@@ -699,9 +719,9 @@ static constexpr failing_answer FIELD_FAILURES[] = {
     {OK, NVIDIA_REPLY_ACK, 0x10010, true, "with a reply size of 65552 bytes after 16 requests,"},
 };
 
-// A field that cannot be read, after 16 requests for an answer it is asked again on and one for any other, is
-// logged and ends the reads with `is_read` cleared, no later read and `out` as it was
-TEST(nvidia_display_dpcd, a_field_that_cannot_be_read_ends_the_reads) {
+// A field that cannot be read is logged and read again, the byte at 0x0000E before it, in each of NVIDIA's 3 more
+// passes, leaving `is_read` cleared, `out` as it was and the PHY repeaters' bytes unread
+TEST(nvidia_display_dpcd, a_field_that_cannot_be_read_is_read_again_in_3_more_passes) {
     for (const failing_answer& answer : FIELD_FAILURES) {
         dpcd_firmware fw;
         script_every_request(fw, NVIDIA_EXTENDED_REV, answer);
@@ -712,17 +732,43 @@ TEST(nvidia_display_dpcd, a_field_that_cannot_be_read_ends_the_reads) {
         ASSERT_EQ(read_logged(fw, out, is_read), OK);
 
         uint32_t field_requests = answer.is_asked_again ? NVIDIA_CAPABILITY_REQUESTS : 1;
-        EXPECT_EQ(fw.requests_at(NVIDIA_EXTENDED_REV), field_requests);
-        EXPECT_EQ(fw.call_count, 1 + field_requests);
+        EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), NVIDIA_PASSES);
+        EXPECT_EQ(fw.requests_at(NVIDIA_DPCD_REV), 0u);
+        EXPECT_EQ(fw.requests_at(NVIDIA_EXTENDED_REV), NVIDIA_PASSES * field_requests);
+        EXPECT_EQ(fw.requests_at(NVIDIA_LT_TUNABLE_PHY_REPEATER_REV), 0u);
 
         EXPECT_FALSE(is_read);
         EXPECT_TRUE(capabilities_untouched(out));
 
         EXPECT_TRUE(dpcd_log_contains("display id 0x100's "));
         EXPECT_TRUE(dpcd_log_contains(EXTENDED_READS[1].logged));
-        EXPECT_TRUE(dpcd_log_contains(answer.logged));
-        EXPECT_TRUE(dpcd_log_contains(NO_MORE_READ));
+        EXPECT_EQ(dpcd_log_count(answer.logged), NVIDIA_PASSES);
+        EXPECT_EQ(dpcd_log_count(READ_AGAIN), NVIDIA_PASSES - 1);
+        EXPECT_EQ(dpcd_log_count(NO_MORE_READ), 1u);
     }
+}
+
+// A field the monitor defers through a whole pass is read in the next, the byte at 0x0000E read again before it
+TEST(nvidia_display_dpcd, a_field_read_in_a_later_pass_is_kept) {
+    dpcd_firmware fw;
+    fw.scripted_address = NVIDIA_EXTENDED_REV;
+    fw.scripted_requests = NVIDIA_CAPABILITY_REQUESTS;
+    fw.scripted_reply = NVIDIA_REPLY_DEFER;
+    dpcd_capabilities out = {};
+    bool is_read = false;
+
+    ASSERT_EQ(read_logged(fw, out, is_read), OK);
+
+    EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), 2u);
+    EXPECT_EQ(fw.requests_at(NVIDIA_EXTENDED_REV), NVIDIA_CAPABILITY_REQUESTS + 1);
+    EXPECT_EQ(fw.requests_at(NVIDIA_LT_TUNABLE_PHY_REPEATER_REV), 1u);
+
+    EXPECT_TRUE(is_read);
+    EXPECT_TRUE(out.is_extended);
+    EXPECT_EQ(string::memcmp(out.receiver, MONITOR_EXTENDED_RECEIVER_CAPABILITIES, DATA_BYTES), 0);
+    EXPECT_TRUE(out.has_phy_repeater_bytes);
+    EXPECT_EQ(dpcd_log_count(READ_AGAIN), 1u);
+    EXPECT_EQ(dpcd_log_count(NO_MORE_READ), 0u);
 }
 
 static constexpr failing_answer REPEATER_FAILURES[] = {
@@ -736,29 +782,35 @@ static constexpr failing_answer REPEATER_FAILURES[] = {
     {OK, NVIDIA_REPLY_ACK, 9, true, "with a reply size of 9 bytes after 16 requests,"},
 };
 
-// PHY repeaters' bytes that cannot be read, after 16 requests for an answer they are asked again on and one for any
-// other, are logged and end the reads with `is_read` cleared and `out` as it was
-TEST(nvidia_display_dpcd, phy_repeaters_that_cannot_be_read_end_the_reads) {
+// PHY repeaters' bytes that cannot be read are logged and taken as no PHY repeater, the monitor's capabilities read
+// with `has_phy_repeater_bytes` cleared and the PHY repeaters' bytes 0
+TEST(nvidia_display_dpcd, phy_repeaters_that_cannot_be_read_are_taken_as_none) {
     for (const failing_answer& answer : REPEATER_FAILURES) {
         dpcd_firmware fw;
         script_every_request(fw, NVIDIA_LT_TUNABLE_PHY_REPEATER_REV, answer);
         dpcd_capabilities out;
         string::memset(&out, UNTOUCHED, sizeof(out));
-        bool is_read = true;
+        bool is_read = false;
 
         ASSERT_EQ(read_logged(fw, out, is_read), OK);
 
         uint32_t repeater_requests = answer.is_asked_again ? NVIDIA_CAPABILITY_REQUESTS : 1;
+        EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), 1u);
+        EXPECT_EQ(fw.requests_at(NVIDIA_EXTENDED_REV), 1u);
         EXPECT_EQ(fw.requests_at(NVIDIA_LT_TUNABLE_PHY_REPEATER_REV), repeater_requests);
-        EXPECT_EQ(fw.call_count, 2 + repeater_requests);
 
-        EXPECT_FALSE(is_read);
-        EXPECT_TRUE(capabilities_untouched(out));
+        EXPECT_TRUE(is_read);
+        EXPECT_TRUE(out.is_extended);
+        EXPECT_EQ(string::memcmp(out.receiver, MONITOR_EXTENDED_RECEIVER_CAPABILITIES, DATA_BYTES), 0);
+        EXPECT_FALSE(out.has_phy_repeater_bytes);
+        for (uint8_t byte : out.phy_repeaters) {
+            EXPECT_EQ(byte, 0u);
+        }
 
         EXPECT_TRUE(dpcd_log_contains("display id 0x100's "));
         EXPECT_TRUE(dpcd_log_contains(EXTENDED_READS[2].logged));
         EXPECT_TRUE(dpcd_log_contains(answer.logged));
-        EXPECT_TRUE(dpcd_log_contains(NO_MORE_READ));
+        EXPECT_TRUE(dpcd_log_contains(NO_PHY_REPEATER));
     }
 }
 
