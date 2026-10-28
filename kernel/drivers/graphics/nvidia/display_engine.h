@@ -77,7 +77,7 @@ public:
      * timings of an EDID that parses, then the monitor's DPCD capabilities
      * (the link limits a DisplayPort monitor's registers report) and, when the
      * GPU trains PHY repeaters, those of any PHY repeater between the card and
-     * the monitor with `read_output_dpcd`, and when it reads them all, log
+     * the monitor with `read_output_dpcd`, and if it reads the monitor's, log
      * their bytes, the most lanes and the highest rate `monitor_link_limits`
      * gives for a link to the monitor, and whether the monitor takes enhanced
      * framing, and when the EDID parsed too, log the output's mode, the timing

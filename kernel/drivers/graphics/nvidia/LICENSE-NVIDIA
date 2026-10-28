@@ -2498,14 +2498,14 @@ src/common/displayport/src/dp_configcaps.cpp
     capability field's 16 bytes from its extended copy when that byte's bit 7 is
     set and from 0x00000 otherwise, then the PHY repeaters' 8 bytes when the GPU
     trains PHY repeaters, in display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it reads the field
-    and the PHY repeaters' bytes with a retry count of 16, in display_dpcd.h,
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it takes the field
+    from 0x00000 when the byte cannot be read, reads the field and the PHY
+    repeaters' bytes with a retry count of 16, goes on without the PHY
+    repeaters' bytes when their read fails, and makes the reads again up to 3
+    more times while the field cannot be read, in display_dpcd.h,
     display_dpcd.cpp and kernel/tests/graphics/nvidia_display_dpcd.test.cpp,
-    that it takes the field from 0x00000 when the byte cannot be read, reads the
-    PHY repeaters' bytes unless display common reports that the GPU does not
-    train PHY repeaters, going on without them when that read fails, and makes
-    the reads again up to 3 more times while the field cannot be read, taking
-    the DPCD as offline when it never can, in display_dpcd.h, that it takes the
+    that it reads the PHY repeaters' bytes unless display common reports that
+    the GPU does not train PHY repeaters, in display_dpcd.h, that it takes the
     field's rate as RBR, HBR or HBR2 when the code's bits 4:0 name one and as
     HBR3 when the whole byte does, else as HBR, a lane count other than 0, 1, 2,
     4 and 8 as 1, and the PHY repeaters' rate and lanes as caps on the monitor's
