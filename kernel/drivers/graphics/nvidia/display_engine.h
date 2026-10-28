@@ -147,25 +147,28 @@ public:
      * Then, once the output has its base buffer, ask the display for the core
      * channel's state with `wait_core_channel_idle` until the firmware reports
      * the channel idle or more than `CORE_CHANNEL_IDLE_WAIT_NS` has passed
-     * since the first reply, and log which of the two ended the wait. Each
-     * output's modes are kept on the unprivileged heap from the monitors'
-     * reads to the choice, or to `release` when the set-up fails before it,
-     * and the other facts read are not kept. Each request spins on the calling
-     * CPU, waiting for its reply as `firmware` describes, and so does each
-     * wait for GET, for at most 5 seconds. The requests for the core channel's
-     * state follow one another with no pause while the firmware reports the
-     * channel busy, as `wait_core_channel_idle` describes. `read_output_edid`
-     * also spins before each reread of an EDID as it describes. `set_up` must
-     * be called at most once, as `instance_memory::set_up` must, and since it
-     * waits on video memory's lock and on the card as `instance_memory` and
+     * since the first reply, and log which of the two ended the wait. Then
+     * read each present window's owner from the core channel's armed state
+     * with `read_window_owners`, and log each one's owner. Each output's modes
+     * are kept on the unprivileged heap from the monitors' reads to the
+     * choice, or to `release` when the set-up fails before it, and the other
+     * facts read are not kept. Each request spins on the calling CPU, waiting
+     * for its reply as `firmware` describes, and so does each wait for GET,
+     * for at most 5 seconds. The requests for the core channel's state follow
+     * one another with no pause while the firmware reports the channel busy,
+     * as `wait_core_channel_idle` describes. `read_output_edid` also spins
+     * before each reread of an EDID as it describes. `set_up` must be called
+     * at most once, as `instance_memory::set_up` must, and since it waits on
+     * video memory's lock and on the card as `instance_memory` and
      * `video_memory` describe, it must never run in an interrupt handler or
      * under a spinlock, and on a thread that cannot sleep, such as the boot
      * thread, must run only while no other thread can call into video memory
      * or the firmware.
      * @param regs The card's BAR0 registers, through which the core channel's
-     * methods are kicked and its PUT and GET read, and the window channel's
-     * PUT and GET read. BAR0 must stay mapped until `release` returns, since
-     * the engine keeps a view of the core channel's area until then.
+     * methods are kicked and its PUT, GET and armed state read, and the window
+     * channel's PUT and GET read. BAR0 must stay mapped until `release`
+     * returns, since the engine keeps a view of the core channel's area until
+     * then.
      * @param card The card's DMA profile, for the push buffer's pages and the
      * notifier's page.
      * @param chip The chip table's entry for the card's chip, whose display

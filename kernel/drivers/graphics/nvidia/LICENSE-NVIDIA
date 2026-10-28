@@ -2650,16 +2650,18 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp,
     NV_UDISP_FE_CHN_ASSY_BASEADR_CORE, where the core channel's area begins, in
-    core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp,
+    core_channel.h, kernel/tests/graphics/nvidia_core_channel.test.cpp and
+    kernel/tests/graphics/nvidia_display_window_owners.test.cpp,
     NV_UDISP_FE_CHN_ASSY_BASEADR_WIN, where each window's channel's area begins,
     in core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp,
-    NV_UDISP_FE_CHN_ARMED_BASEADR_CORE, where its armed state begins, in
-    core_channel.h, NV_PDISP_CHN_NUM_CORE, the core channel's number, in
-    core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
-    the hash table's size, the client, record and channel fields of an entry's
-    second word and the target, access, kind, base and limit of a record naming
-    pages read with snooping on, in
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    NV_UDISP_FE_CHN_ARMED_BASEADR_CORE, where the core channel's armed state
+    begins, in core_channel.h and
+    kernel/tests/graphics/nvidia_display_window_owners.test.cpp,
+    NV_PDISP_CHN_NUM_CORE, the core channel's number, in core_channel.h and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, and the hash table's
+    size, the client, record and channel fields of an entry's second word and
+    the target, access, kind, base and limit of a record naming pages read with
+    snooping on, in kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
@@ -2812,8 +2814,9 @@ src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070chnc.h
     and kernel/tests/graphics/nvidia_core_channel.test.cpp, PRESERVE_HW's
     meaning alone, in display_engine.h, that an update carries the state the
     methods assemble into the armed state, in core_channel.h, core_methods.h,
-    completion_notifier.h and display_engine.h, and that the completion notifier
-    is associated with an update, in completion_notifier.h and display_engine.h
+    completion_notifier.h, display_engine.h and display_window_owners.h, and
+    that the completion notifier is associated with an update, in
+    completion_notifier.h and display_engine.h
     SPDX-FileCopyrightText: Copyright (c) 2001-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/disp_channel.c
@@ -2893,7 +2896,7 @@ src/nvidia-modeset/src/nvkms-evo3.c
     it loads a window channel's input scaler's coefficients only for a window
     reporting an input scaler while no usable head reports an output scaler, and
     its color conversion tables, curves for HDR monitors, only for a window
-    reporting them, in chip.h and display_engine.h, and that before it reads the
+    reporting them, in chip.h and display_engine.h, that before it reads the
     core channel's armed state ahead of its first update the modesetting module
     asks the display for the core channel's state, the request zeroed but for
     the subdevice, the channel's class and its instance, again with no pause
@@ -2901,14 +2904,24 @@ src/nvidia-modeset/src/nvkms-evo3.c
     and ending the wait once more than 100 milliseconds have passed since the
     first reply, in core_channel.h, core_channel.cpp, display_engine.h,
     display_engine.cpp, kernel/tests/graphics/nvidia_core_channel_idle.test.cpp
-    and kernel/tests/graphics/nvidia_display_engine.test.cpp
+    and kernel/tests/graphics/nvidia_display_engine.test.cpp, that it then reads
+    each window's owner from the core channel's armed state whether or not the
+    channel went idle, reading the usable windows the display engine's
+    capabilities give, in display_window_owners.h, display_window_owners.cpp,
+    display_engine.h, display_engine.cpp,
+    kernel/tests/graphics/nvidia_display_window_owners.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that this update
+    sets every window's owner and leaves each window whose owner it changes out
+    of its interlock, in display_window_owners.h
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-modeset.c
     that the modesetting module asks the bandwidth check about every lit head of
-    a display together, each with its guaranteed usage, in display_light.h, and
-    that it reads the core channel's armed state ahead of its first update, in
-    core_channel.h
+    a display together, each with its guaranteed usage, in display_light.h, that
+    it reads the core channel's armed state ahead of its first update, in
+    core_channel.h and display_window_owners.h, and that an update changing a
+    window's owner must not be interlocked with that window's channel, in
+    display_window_owners.h
     SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
@@ -2973,13 +2986,19 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     NVC67D_CORE_CHANNEL_DMA, which chip.cpp gives GA102's core channel, in
     chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
     kernel/tests/graphics/nvidia_core_channel.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the methods
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, the methods
     NVC67D_HEAD_SET_OUTPUT_SCALER_COEFF_VALUE,
     NVC67D_HEAD_SET_DESKTOP_COLOR_ALPHA_RED and
     NVC67D_HEAD_SET_DESKTOP_COLOR_GREEN_BLUE for head 0, the stride of 0x400 to
     each later head's methods, the coefficient's DATA in bits 9:0 and INDEX in
     bits 19:12 and ALPHA_RED's ALPHA in bits 7:0, in rm.h, core_methods.cpp and
-    kernel/tests/graphics/nvidia_core_methods.test.cpp
+    kernel/tests/graphics/nvidia_core_methods.test.cpp, and the method
+    NVC67D_WINDOW_SET_CONTROL for window 0, the stride of 0x80 to each later
+    window's method, its OWNER in bits 3:0, which holds the number of the head
+    owning the window or OWNER_NONE, 0xF, for none, in rm.h,
+    display_window_owners.h, display_window_owners.cpp, display_engine.cpp,
+    kernel/tests/graphics/nvidia_display_window_owners.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc67e.h
@@ -3194,6 +3213,13 @@ src/nvidia-modeset/include/nvkms-utils.h
     core_channel.h, core_channel.cpp, display_engine.h and
     kernel/tests/graphics/nvidia_core_channel_idle.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-hal.c
+    NVD_CORE_CHANNEL_DMA_ARMED_OFFSET, 0x8000, where the armed state begins in
+    the core channel's area, in core_channel.h,
+    kernel/tests/graphics/nvidia_display_window_owners.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2016 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,

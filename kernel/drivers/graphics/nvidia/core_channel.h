@@ -14,6 +14,9 @@ namespace drivers::nvidia {
 // the state its methods assemble, then from the area's middle the armed state, what the last update took
 constexpr uint32_t CORE_CHANNEL_AREA = 0x680000;
 
+// NVIDIA's NVD_CORE_CHANNEL_DMA_ARMED_OFFSET, where the armed state begins in the core channel's area, its middle
+constexpr uint32_t CORE_CHANNEL_ARMED_STATE = 0x8000;
+
 // NVIDIA's NV_PDISP_CHN_NUM_CORE, the core channel's number among the display engine's channels, which
 // `instance_memory::bind` takes to bind a context DMA to the core channel
 constexpr uint32_t CORE_CHANNEL_NUMBER = 0;

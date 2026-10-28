@@ -436,6 +436,12 @@ constexpr uint32_t CORE_HEAD_DESKTOP_COLOR_GREEN_BLUE  = 0x2224;
 constexpr uint32_t SCALER_COEFFICIENT_DATA_MASK        = 0x3FF;
 constexpr uint32_t SCALER_COEFFICIENT_INDEX_SHIFT      = 12;
 
+// The core channel's method naming window 0's owner (the head it scans out onto), NVIDIA's
+// NVC67D_WINDOW_SET_CONTROL(0), and the stride between two windows' methods. OWNER, bits 3:0, names the head or none
+constexpr uint32_t CORE_WINDOW_CONTROL        = 0x1000;
+constexpr uint32_t CORE_WINDOW_METHODS_STRIDE = 0x80;
+constexpr uint32_t WINDOW_CONTROL_OWNER_MASK  = 0xF;
+
 static_assert(sizeof(display_push_buffer_params) == 40, "NVIDIA's layout of DISPLAY_CHANNEL_PUSHBUFFER's parameters");
 static_assert(sizeof(display_channel_params) == 32, "NVIDIA's layout of a display channel's allocation parameters");
 static_assert(sizeof(display_release_flags_params) == 8, "NVIDIA's layout of SET_RMFREE_FLAGS's parameters");
