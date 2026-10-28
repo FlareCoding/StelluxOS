@@ -1930,8 +1930,19 @@ src/nvidia-modeset/src/nvkms-rm.c
     buffer when the bus allows it, frees a channel's push buffer right after the
     channel or when the channel's allocation fails, releases no channel whose
     allocation failed and names the push buffer's context DMA in a channel's
-    allocation, in core_channel.h, and that it writes a channel's initial
-    methods right after allocating the channel, in core_methods.h
+    allocation, in core_channel.h, that it writes a channel's initial methods
+    right after allocating the channel, in core_methods.h, that it allocates the
+    core channel's completion notifier before its push buffer, in
+    display_engine.h, that it first tries write-combined memory with snooping
+    off for the notifier as for a push buffer, in completion_notifier.h, that it
+    binds the notifier's context DMA to the core channel, in
+    completion_notifier.h, display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it binds it only
+    after writing the channel's initial methods, in display_engine.h, that it
+    frees the core channel with its notifier at once when that binding fails, in
+    completion_notifier.h and display_engine.h, and that it frees the notifier
+    and its context DMA after the channel's release and the push buffer's, in
+    completion_notifier.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2569,9 +2580,14 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp,
     NV_UDISP_FE_CHN_ASSY_BASEADR_CORE, where the core channel's area begins, in
-    core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
+    core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp,
     NV_UDISP_FE_CHN_ARMED_BASEADR_CORE, where its armed state begins, in
-    core_channel.h
+    core_channel.h, NV_PDISP_CHN_NUM_CORE, the core channel's number, in
+    core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp, and
+    the hash table's size, the client, record and channel fields of an entry's
+    second word and the target, access, kind, base and limit of a record naming
+    pages read with snooping on, in
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
@@ -2583,11 +2599,11 @@ src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
     subdevice, in rm.h, instance_memory.h, instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp, that it writes
     nothing into that memory before giving the firmware its address, in
-    instance_memory.h, and that it keeps its own copy of the hash table, gives
-    the bindings of a context DMA one record, allocated from its heap of the
-    memory after the hash table in 32-byte slots past a first 16 bytes it
-    reserves as its NULL instance, counts the bindings sharing each record,
-    frees a record once the last of them is undone, writing into it only through
+    instance_memory.h, that it keeps its own copy of the hash table, gives the
+    bindings of a context DMA one record, allocated from its heap of the memory
+    after the hash table in 32-byte slots past a first 16 bytes it reserves as
+    its NULL instance, counts the bindings sharing each record, frees a record
+    once the last of them is undone, writing into it only through
     instmemDecommitContextDma, refuses a second binding of a context DMA to a
     channel before reserving a record or seeking an entry, writes a binding's
     record before its entry, writes an entry as 8 bytes (the context DMA's
@@ -2598,7 +2614,10 @@ src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
     does not hold and clears an undone binding's entry to zeros, dropping the
     binding from its copy and its count even when writing the entry fails, in
     instance_memory.h, instance_memory.cpp and
-    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and that it writes an
+    entry as 8 bytes, the context DMA's handle first, and places the first
+    record past the NULL instance, in
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/inst_mem/arch/v03/disp_inst_mem_0300.c
@@ -2611,7 +2630,9 @@ src/nvidia/src/kernel/gpu/disp/inst_mem/arch/v03/disp_inst_mem_0300.c
     PHYSICAL_NVM and pages read with snooping on as PHYSICAL_PCI_COHERENT,
     pitch-laid and readable and writable, with the first and last 256-byte unit
     of its memory, in instance_memory.h, instance_memory.cpp and
-    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and the second word
+    of a hash table entry and the words of a record naming pages read with
+    snooping on, in kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_disp_inst_mem_nvoc.h
@@ -2690,8 +2711,10 @@ src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070chnc.h
     asks the release to keep the hardware's configuration, and that the flags
     hold for the next release only, in rm.h, core_channel.h, core_channel.cpp
     and kernel/tests/graphics/nvidia_core_channel.test.cpp, PRESERVE_HW's
-    meaning alone, in display_engine.h, and that an update carries the state the
-    methods assemble into the armed state, in core_channel.h and core_methods.h
+    meaning alone, in display_engine.h, that an update carries the state the
+    methods assemble into the armed state, in core_channel.h, core_methods.h,
+    completion_notifier.h and display_engine.h, and that the completion notifier
+    is associated with an update, in completion_notifier.h and display_engine.h
     SPDX-FileCopyrightText: Copyright (c) 2001-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/disp_channel.c
@@ -2809,7 +2832,11 @@ src/nvidia-modeset/include/nvkms-types.h
     kernel/tests/graphics/nvidia_display_channel.test.cpp and
     kernel/tests/graphics/nvidia_core_channel.test.cpp, the size of the pad at
     its end, 48 bytes, in display_channel.h and
-    kernel/tests/graphics/nvidia_display_channel.test.cpp, and
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, the size of a display
+    channel's completion notifier, 4 KiB, in completion_notifier.h,
+    completion_notifier.cpp,
+    kernel/tests/graphics/nvidia_completion_notifier.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and
     NV_DP_READ_EDID_RETRIES, 18, and NV_DP_REREAD_EDID_DELAY_USEC, 500
     microseconds, the most times the modesetting module asks again for a
     DisplayPort monitor's EDID and the wait before each, in display_edid.h,

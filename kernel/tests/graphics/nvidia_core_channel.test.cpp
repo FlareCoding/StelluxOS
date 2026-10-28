@@ -25,7 +25,7 @@ using drivers::nvidia::release_core_channel;
 namespace rm = drivers::nvidia::rm;
 
 // NVIDIA's commands, their parameters' sizes, the offsets of their fields and the values the driver sends in them, and
-// where the core channel's area begins, restated here so the tests hold the requests to NVIDIA's layouts
+// where the core channel's area begins and the channel's number, restated to hold the requests to NVIDIA's layouts
 static constexpr uint32_t NVIDIA_PUSH_BUFFER_CONTROL    = 0x20800A58;
 static constexpr size_t   NVIDIA_PUSH_BUFFER_BYTES      = 40;
 static constexpr uint32_t ADDRESS_SPACE_OFFSET          = 0;
@@ -43,6 +43,7 @@ static constexpr size_t   NVIDIA_RELEASE_FLAGS_BYTES    = 8;
 static constexpr uint32_t RELEASE_FLAGS_OFFSET          = 4;
 static constexpr uint32_t NVIDIA_PRESERVE_HW            = 1;
 static constexpr uint32_t NVIDIA_CORE_CHANNEL_AREA      = 0x680000;
+static constexpr uint32_t NVIDIA_CORE_CHANNEL_NUMBER    = 0;
 
 // The double's client, the display's handle and the first handle the double gives, a made-up push buffer address and a
 // handle no call gives
@@ -159,6 +160,11 @@ static uint64_t quad_at(const channel_firmware::call& made, uint32_t offset) {
 // The core channel's area begins where NVIDIA's NV_UDISP_FE_CHN_ASSY_BASEADR_CORE places it
 TEST(nvidia_core_channel, area_begins_at_nvidias_offset) {
     EXPECT_EQ(drivers::nvidia::CORE_CHANNEL_AREA, NVIDIA_CORE_CHANNEL_AREA);
+}
+
+// The core channel's number is NVIDIA's NV_PDISP_CHN_NUM_CORE
+TEST(nvidia_core_channel, number_is_nvidias) {
+    EXPECT_EQ(drivers::nvidia::CORE_CHANNEL_NUMBER, NVIDIA_CORE_CHANNEL_NUMBER);
 }
 
 // The push buffer goes to the internal subdevice first in NVIDIA's layout, then the channel goes under the display with
