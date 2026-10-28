@@ -33,11 +33,13 @@ static constexpr uint32_t PRESENT_WINDOWS_WORD           = 1;
 static constexpr uint32_t     SPARSE_WINDOWS    = 0xA5;
 static constexpr uint32_t     UNTOUCHED_WINDOWS = 0xDEADBEEF;
 static constexpr chip_display GA102_DISPLAY     = {
-    .head_count         = 4,
-    .window_count       = 8,
-    .display_class      = 0,
-    .core_channel_class = 0,
-    .displayport        = {},
+    .head_count                = 4,
+    .window_count              = 8,
+    .display_class             = 0,
+    .core_channel_class        = 0,
+    .window_channel_class      = 0,
+    .heads_have_output_scalers = false,
+    .displayport               = {},
 };
 
 // A firmware that answers internal controls with `result` and, on `OK`, the words of `reply`, recording what each
@@ -132,20 +134,24 @@ TEST(nvidia_display_info, windows_come_from_nvidias_field_of_one_zeroed_request)
 
 // A chip one window short of NVIDIA's most windows, with GA102's heads and the classes left 0
 static constexpr chip_display ONE_SHORT_DISPLAY = {
-    .head_count         = 4,
-    .window_count       = 31,
-    .display_class      = 0,
-    .core_channel_class = 0,
-    .displayport        = {},
+    .head_count                = 4,
+    .window_count              = 31,
+    .display_class             = 0,
+    .core_channel_class        = 0,
+    .window_channel_class      = 0,
+    .heads_have_output_scalers = false,
+    .displayport               = {},
 };
 
 // A chip of NVIDIA's most windows, with GA102's heads and the classes left 0
 static constexpr chip_display MOST_WINDOWS_DISPLAY = {
-    .head_count         = 4,
-    .window_count       = 32,
-    .display_class      = 0,
-    .core_channel_class = 0,
-    .displayport        = {},
+    .head_count                = 4,
+    .window_count              = 32,
+    .display_class             = 0,
+    .core_channel_class        = 0,
+    .window_channel_class      = 0,
+    .heads_have_output_scalers = false,
+    .displayport               = {},
 };
 
 // Every window of the chip or none is accepted, up to every bit on a chip of NVIDIA's most windows

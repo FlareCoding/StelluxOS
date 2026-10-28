@@ -37,16 +37,18 @@ static constexpr uint32_t CROSSBAR_OFFSET                   = 1;
 static constexpr uint8_t  CROSSBAR_BIT                      = 0x08;
 
 // The double's client, device and first handle (unlike those `gsp` gives), and a display class no chip has so the test
-// sees it comes from the entry, with the core channel class left 0, as the display's objects never use it
+// sees it comes from the entry, with the channel classes left 0, as the display's objects never use them
 static constexpr rm::handle      TEST_CLIENT  = 0xC1D0000B;
 static constexpr rm::handle      TEST_DEVICE  = 0x00050003;
 static constexpr rm::handle      FIRST_HANDLE = 0x00050007;
 static constexpr chip_display    TEST_DISPLAY = {
-    .head_count         = 4,
-    .window_count       = 8,
-    .display_class      = 0xC67F,
-    .core_channel_class = 0,
-    .displayport        = {},
+    .head_count                = 4,
+    .window_count              = 8,
+    .display_class             = 0xC67F,
+    .core_channel_class        = 0,
+    .window_channel_class      = 0,
+    .heads_have_output_scalers = false,
+    .displayport               = {},
 };
 
 // Handles no call gives, filling `out` before a call so the test sees whether it wrote it

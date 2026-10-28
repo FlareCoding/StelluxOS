@@ -19,6 +19,7 @@
 #include "drivers/graphics/nvidia/rm.h"
 #include "drivers/graphics/nvidia/video_memory.h"
 #include "drivers/graphics/nvidia/vram_allocator.h"
+#include "mm/paging.h"
 #include "tests/memory/dma_test_access.h"
 
 TEST_SUITE(nvidia_display_engine);
@@ -40,11 +41,13 @@ using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::firmware;
 using drivers::nvidia::INSTANCE_MEMORY_BYTES;
 using drivers::nvidia::OK;
+using drivers::nvidia::PUSH_BUFFER_BYTES;
 using drivers::nvidia::registers;
-using drivers::nvidia::release_core_channel;
+using drivers::nvidia::release_display_channel;
 using drivers::nvidia::video_memory;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
+using drivers::nvidia::window_channel_area;
 namespace displayport = drivers::nvidia::displayport;
 namespace rm = drivers::nvidia::rm;
 
@@ -53,17 +56,23 @@ static constexpr rm::handle TEST_CLIENT  = 0xC1D0000B;
 static constexpr rm::handle TEST_DEVICE  = 0x0005000A;
 static constexpr rm::handle FIRST_HANDLE = 0x0005000D;
 
-// A display class and a core channel class no chip has, so each allocation's class names its object
-static constexpr uint32_t TEST_DISPLAY_CLASS      = 0xC67F;
-static constexpr uint32_t TEST_CORE_CHANNEL_CLASS = 0xC67E;
+// A display class no chip has and GA102's channel classes swapped, so each allocation's class names its object
+static constexpr uint32_t TEST_DISPLAY_CLASS        = 0xC67F;
+static constexpr uint32_t TEST_CORE_CHANNEL_CLASS   = 0xC67E;
+static constexpr uint32_t TEST_WINDOW_CHANNEL_CLASS = 0xC67D;
 
 // A card's full address width, and a limit `dma::alloc_pages` refuses, so a set-up for a card limited to it fails at
 // the push buffer
 static constexpr uint8_t FULL_ADDRESS_BITS    = 64;
 static constexpr uint8_t REFUSED_ADDRESS_BITS = 16;
 
-// The heads of the chip `set_up` describes, whose initial methods outgrow the push buffer
-static constexpr uint8_t CHIP_HEADS = 4;
+// The heads of the chip `set_up` describes, whose initial methods outgrow the push buffer, and its windows
+static constexpr uint8_t CHIP_HEADS   = 4;
+static constexpr uint8_t CHIP_WINDOWS = 8;
+
+// Whether the heads of the chip `set_up` describes report output scalers, as GA102's do, or none
+static constexpr bool HEADS_WITH_OUTPUT_SCALERS    = true;
+static constexpr bool HEADS_WITHOUT_OUTPUT_SCALERS = false;
 
 // The links of the chip `set_up` describes by default, which run up to HBR3 with FEC, and the same links without FEC
 static constexpr chip_displayport CHIP_LINKS = {
@@ -101,9 +110,13 @@ static constexpr uint32_t NVIDIA_SNOOPED_PAGES_WORD_0 = 7;
 static constexpr uint64_t NVIDIA_RECORD_UNIT_BYTES    = 256;
 static constexpr uint64_t NVIDIA_NOTIFIER_UNITS       = 16;
 
-// The memory the video memory double maps, and the words standing in for the core channel's PUT and GET
+// The memory the video memory double maps, and the words standing in for BAR0 from the core channel's area to the end
+// of the last window channel's
 static uint8_t  g_video_memory[INSTANCE_MEMORY_BYTES];
-static uint32_t g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t) + 1];
+static uint32_t g_channel_areas[(window_channel_area(CHIP_WINDOWS) - CORE_CHANNEL_AREA) / sizeof(uint32_t)];
+
+// The core channel's area, where `g_channel_areas` begins, holding its PUT and GET
+static uint32_t* const g_core_channel_registers = g_channel_areas;
 
 // The object under test, which its instance memory's copy of the hash table makes too large for a test's stack
 alignas(display_engine) static uint8_t g_engine_bytes[sizeof(display_engine)];
@@ -160,8 +173,8 @@ static constexpr uint8_t TIMING_1080_AT_60_HZ[] = {
 // The EDID of every connected monitor, a copy of `AOC_BASE_BLOCK` a test may change
 static uint8_t g_edid[edid::BLOCK_BYTES];
 
-// A firmware that records the kind, object and number of each request in order, answers a request a refusal matches
-// with its result, the head, crossbar, active head, output and bandwidth check replies from its fields, others as sent
+// A firmware that records the kind, object and number of each request in order, answers one a refusal matches with its
+// result, the head, window, crossbar, active head, output and bandwidth check replies from its fields, others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 64;
@@ -187,9 +200,15 @@ public:
     uint32_t   handle_count = 0;
     refusal    refusals[2] = {};
     uint8_t    heads = DOUBLE_HEADS;
+    uint8_t    windows_per_head = 1;          // the windows each head has, head 0's first, then head 1's and so on
+    uint32_t   present_windows = (1u << CHIP_WINDOWS) - 1; // the windows reported present
     rm::handle reported_client = TEST_CLIENT; // the client `client()` reports, 0 making `bind` refuse
     uint64_t   push_buffer_address = 0;       // the address `CONTROL_SET_DISPLAY_PUSH_BUFFER` last carried
-    uint32_t   boot_display_id = 0;           // the display id head 0 shows, every other head showing none
+    uint32_t   push_buffer_class = 0;         // and the channel class and instance it carried with it
+    uint32_t   push_buffer_instance = 0;
+    uint32_t   refused_push_buffer_class = 0; // a class whose push buffer is refused with `ERR_FIRMWARE`, 0 for none
+    uint8_t    boot_head = 0;                 // the head showing `boot_display_id`, every other head showing none
+    uint32_t   boot_display_id = 0;
     uint32_t   boot_link_index = 0;           // the link index every link request's reply names
     uint32_t   boot_link_type = 0;            // the link type every link request's reply names
     bool       has_crossbar = false;          // whether display common's capabilities report a crossbar
@@ -231,11 +250,22 @@ public:
     }
 
     int32_t internal_control(uint32_t command, void* params, size_t) override {
-        if (command == rm::CONTROL_SET_DISPLAY_PUSH_BUFFER) {
-            push_buffer_address = static_cast<rm::display_push_buffer_params*>(params)->address;
+        int32_t rc = answer(kind::internal_control, 0, command);
+        if (rc == OK && command == rm::CONTROL_GET_DISPLAY_STATIC_INFO) {
+            static_cast<rm::display_static_info_params*>(params)->present_windows = present_windows;
         }
 
-        return answer(kind::internal_control, 0, command);
+        if (command != rm::CONTROL_SET_DISPLAY_PUSH_BUFFER) {
+            return rc;
+        }
+
+        const rm::display_push_buffer_params* location = static_cast<rm::display_push_buffer_params*>(params);
+        push_buffer_address = location->address;
+        push_buffer_class = location->channel_class;
+        push_buffer_instance = location->channel_instance;
+
+        bool is_refused_class = refused_push_buffer_class != 0 && push_buffer_class == refused_push_buffer_class;
+        return is_refused_class ? ERR_FIRMWARE : rc;
     }
 
     rm::handle new_handle() override {
@@ -390,7 +420,7 @@ private:
         reply.reply = rm::AUX_REPLY_ACK;
     }
 
-    // Gives `heads` heads the display engine can use, from head 0, each served by the window of its number, head 0
+    // Gives `heads` heads the display engine can use, from head 0, each with `windows_per_head` windows, `boot_head`
     // showing `boot_display_id`, link replies `boot_link_index` and `boot_link_type`, and a crossbar if `has_crossbar`
     void fill_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_GET_HEAD_COUNT) {
@@ -399,12 +429,12 @@ private:
             static_cast<rm::head_mask_params*>(params)->head_mask = (1u << heads) - 1;
         } else if (command == rm::CONTROL_GET_WINDOW_HEADS) {
             rm::window_heads_params* reply = static_cast<rm::window_heads_params*>(params);
-            for (uint8_t head = 0; head < heads; head++) {
-                reply->window_heads[head] = static_cast<uint8_t>(1u << head);
+            for (uint8_t window = 0; window < heads * windows_per_head; window++) {
+                reply->window_heads[window] = static_cast<uint8_t>(1u << (window / windows_per_head));
             }
         } else if (command == rm::CONTROL_GET_ACTIVE_DISPLAY) {
             rm::active_display_params* reply = static_cast<rm::active_display_params*>(params);
-            reply->display_id = reply->head == 0 ? boot_display_id : 0;
+            reply->display_id = reply->head == boot_head ? boot_display_id : 0;
         } else if (command == rm::CONTROL_GET_OUTPUT_RESOURCE) {
             rm::output_resource_params* reply = static_cast<rm::output_resource_params*>(params);
             reply->index = boot_link_index;
@@ -473,13 +503,14 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
     return *new (g_engine_bytes) display_engine(fw, memory);
 }
 
-// Sets up `engine` under `TEST_DEVICE` for a card driving `address_bits` physical address bits, with four heads, eight
-// windows and links doing `links`. PUT and GET are in `g_core_channel_registers`, GET reading `get`, no DMA page freed
+// Sets up `engine` for a card driving `address_bits` physical address bits, with four heads, eight windows, links doing
+// `links` and output scalers when `heads_have_output_scalers`, the core channel's GET reading `get`, no DMA page freed
 static int32_t set_up(
     display_engine& engine,
     uint8_t address_bits = FULL_ADDRESS_BITS,
     uint32_t get = INITIAL_METHODS_END,
-    const chip_displayport& links = CHIP_LINKS
+    const chip_displayport& links = CHIP_LINKS,
+    bool heads_have_output_scalers = HEADS_WITH_OUTPUT_SCALERS
 ) {
     g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)] = get;
     registers regs(reinterpret_cast<uintptr_t>(g_core_channel_registers) - CORE_CHANNEL_AREA);
@@ -487,11 +518,13 @@ static int32_t set_up(
 
     chip_info chip = {};
     chip.display = {
-        .head_count         = CHIP_HEADS,
-        .window_count       = 8,
-        .display_class      = TEST_DISPLAY_CLASS,
-        .core_channel_class = TEST_CORE_CHANNEL_CLASS,
-        .displayport        = links,
+        .head_count                = CHIP_HEADS,
+        .window_count              = CHIP_WINDOWS,
+        .display_class             = TEST_DISPLAY_CLASS,
+        .core_channel_class        = TEST_CORE_CHANNEL_CLASS,
+        .window_channel_class      = TEST_WINDOW_CHANNEL_CLASS,
+        .heads_have_output_scalers = heads_have_output_scalers,
+        .displayport               = links,
     };
 
     return engine.set_up(regs, card, chip, TEST_DEVICE);
@@ -584,8 +617,8 @@ TEST(nvidia_display_engine, release_before_set_up_sends_nothing) {
     EXPECT_EQ(fw.call_count, 0u);
 }
 
-// After a full set-up the release first sends what `release_core_channel` sends for the channel and the display it was
-// allocated under, then releases each of the display's objects once, and a second release sends nothing
+// After a full set-up the release first sends what `release_display_channel` sends for the core channel and the display
+// it was allocated under, then releases each of the display's objects once, and a second release sends nothing
 TEST(nvidia_display_engine, release_frees_the_core_channel_before_the_objects_once) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -600,7 +633,7 @@ TEST(nvidia_display_engine, release_frees_the_core_channel_before_the_objects_on
     uint32_t first = fw.call_count;
 
     engine_firmware channel_release;
-    EXPECT_EQ(release_core_channel(channel_release, display, channel), OK);
+    EXPECT_EQ(release_display_channel(channel_release, display, channel), OK);
 
     EXPECT_EQ(engine.release(), OK);
     ASSERT_EQ(fw.call_count, first + 5);
@@ -1049,16 +1082,17 @@ static bool engine_log_contains(const char* text) {
     return engine_log_count(text) != 0;
 }
 
-// Sets up `engine` with the log kept, for a chip whose links do `links` and a card driving `address_bits` physical
-// address bits
+// Sets up `engine` with the log kept, for a chip whose links do `links` and whose heads report output scalers when
+// `heads_have_output_scalers`, and a card driving `address_bits` physical address bits
 static int32_t set_up_logged(
     display_engine& engine,
     const chip_displayport& links = CHIP_LINKS,
-    uint8_t address_bits = FULL_ADDRESS_BITS
+    uint8_t address_bits = FULL_ADDRESS_BITS,
+    bool heads_have_output_scalers = HEADS_WITH_OUTPUT_SCALERS
 ) {
     s_engine_log_bytes = 0;
     log::set_backend(&ENGINE_LOG_BACKEND);
-    int32_t rc = set_up(engine, address_bits, INITIAL_METHODS_END, links);
+    int32_t rc = set_up(engine, address_bits, INITIAL_METHODS_END, links, heads_have_output_scalers);
     log::set_backend(nullptr);
 
     return rc;
@@ -1504,4 +1538,223 @@ TEST(nvidia_display_engine, set_up_failing_at_the_bandwidth_check_keeps_the_core
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+}
+
+// The window a set-up chooses when head 1 shows output 0 with each head having three windows, neither twice the head's
+// number nor one above it
+static constexpr uint8_t HEAD_1_WINDOW = 3;
+
+// Words put in that window's PUT and GET before a set-up, which one writing nothing into its channel leaves as they are
+static constexpr uint32_t WINDOW_PUT_WORD = 0x40;
+static constexpr uint32_t WINDOW_GET_WORD = 0x80;
+
+// Has the double report output 0, on the AOC, as the one connected output and the one head 1 shows, each head having
+// three windows, so a set-up chooses it on head 1 with `HEAD_1_WINDOW`
+static void show_output_0_on_head_1(engine_firmware& fw) {
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.windows_per_head = 3;
+    fw.boot_head = 1;
+    fw.boot_display_id = OUTPUT_0_ID;
+    copy_aoc_edid(true);
+}
+
+// The word at `offset` in `window`'s channel's area of `g_channel_areas`
+static uint32_t& window_channel_word(uint8_t window, uint32_t offset) {
+    return g_channel_areas[(window_channel_area(window) + offset - CORE_CHANNEL_AREA) / sizeof(uint32_t)];
+}
+
+// Whether the push buffer at physical address `address` holds only zeros, read through the kernel's mapping of all
+// physical memory
+static bool is_push_buffer_blank(uint64_t address) {
+    const uint8_t* bytes = static_cast<const uint8_t*>(paging::phys_to_virt(address));
+    for (uint32_t i = 0; i < PUSH_BUFFER_BYTES; i++) {
+        if (bytes[i] != 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// A set-up choosing output 0 on head 1 gives the firmware the push buffer of window 3, that head's lowest window, and
+// allocates its channel, logging its PUT and GET as read, and writes nothing into the channel or its push buffer
+TEST(nvidia_display_engine, set_up_allocates_the_chosen_windows_channel_and_writes_nothing_into_it) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    window_channel_word(HEAD_1_WINDOW, CHANNEL_PUT) = WINDOW_PUT_WORD;
+    window_channel_word(HEAD_1_WINDOW, CHANNEL_GET) = WINDOW_GET_WORD;
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 is chosen to light first, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 1 with "
+        "window 3, which the bandwidth check accepts"
+    ));
+    EXPECT_NE(fw.allocated(TEST_WINDOW_CHANNEL_CLASS), 0u);
+    EXPECT_EQ(fw.push_buffer_class, TEST_WINDOW_CHANNEL_CLASS);
+    EXPECT_EQ(fw.push_buffer_instance, static_cast<uint32_t>(HEAD_1_WINDOW));
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the GSP's firmware keeps window 3's channel 0x"));
+    EXPECT_TRUE(engine_log_contains("its PUT and GET reading 0x40 and 0x80, offsets into the push buffer"));
+    EXPECT_EQ(window_channel_word(HEAD_1_WINDOW, CHANNEL_PUT), WINDOW_PUT_WORD);
+    EXPECT_EQ(window_channel_word(HEAD_1_WINDOW, CHANNEL_GET), WINDOW_GET_WORD);
+    EXPECT_TRUE(is_push_buffer_blank(fw.push_buffer_address));
+}
+
+// The present windows lacking the chosen window leave it with no channel, logged, the set-up `OK` and neither its push
+// buffer given nor its channel allocated
+TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_not_reported_present) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.present_windows &= ~(1u << HEAD_1_WINDOW);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: window 3 has no channel, as the GSP's firmware does not report the window present"
+    ));
+    EXPECT_EQ(fw.push_buffer_class, TEST_CORE_CHANNEL_CLASS);
+    EXPECT_EQ(fw.allocated(TEST_WINDOW_CHANNEL_CLASS), 0u);
+}
+
+// A chip whose heads report no output scaler leaves the chosen window with no channel, logged ahead of the window not
+// being present, the set-up `OK` and neither its push buffer given nor its channel allocated
+TEST(nvidia_display_engine, set_up_gives_no_window_channel_when_the_heads_report_no_output_scaler) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.present_windows &= ~(1u << HEAD_1_WINDOW);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine, CHIP_LINKS, FULL_ADDRESS_BITS, HEADS_WITHOUT_OUTPUT_SCALERS), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: window 3 has no channel, as the chip's heads report no output scaler, and the driver loads no "
+        "window's scaler coefficients"
+    ));
+    EXPECT_FALSE(engine_log_contains("does not report the window present"));
+    EXPECT_EQ(fw.push_buffer_class, TEST_CORE_CHANNEL_CLASS);
+    EXPECT_EQ(fw.allocated(TEST_WINDOW_CHANNEL_CLASS), 0u);
+}
+
+// The firmware refusing the chosen window's push buffer leaves the window with no channel, logged, the set-up `OK` and
+// no channel asked for, so the release frees the core channel and the objects alone
+TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_whose_push_buffer_is_refused) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.refused_push_buffer_class = TEST_WINDOW_CHANNEL_CLASS;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: window 3 has no channel, as the GSP's firmware refused a request for it"));
+    EXPECT_EQ(fw.allocated(TEST_WINDOW_CHANNEL_CLASS), 0u);
+    uint32_t first = fw.call_count;
+
+    EXPECT_EQ(engine.release(), OK);
+    ASSERT_EQ(fw.call_count, first + 5);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
+}
+
+// A window channel allocation the firmware refuses, or one whose request cannot be allocated, leaves the window with no
+// channel, logged, and the set-up `OK`, and the release frees the core channel and the objects alone
+TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_whose_allocation_request_is_refused_or_unallocated) {
+    struct failure {
+        int32_t     error;
+        const char* line;
+    };
+
+    const failure failures[] = {
+        {ERR_FIRMWARE, "nvidia: window 3 has no channel, as the GSP's firmware refused a request for it"},
+        {ERR_NO_MEMORY, "nvidia: window 3 has no channel, as a request for it cannot be allocated"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        show_output_0_on_head_1(fw);
+        fw.refusals[0] = {
+            .made   = engine_firmware::kind::allocation,
+            .number = TEST_WINDOW_CHANNEL_CLASS,
+            .object = 0,
+            .result = failed.error,
+        };
+
+        engine_video_memory memory;
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up_logged(engine), OK);
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        uint32_t first = fw.call_count;
+
+        EXPECT_EQ(engine.release(), OK);
+        ASSERT_EQ(fw.call_count, first + 5);
+        EXPECT_FALSE(fw.releases_once(first, fw.allocated(TEST_WINDOW_CHANNEL_CLASS)));
+        EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
+    }
+}
+
+// A window channel allocation failing in a way that may leave the firmware holding the channel fails the set-up with
+// its error, and the release then sends what `release_display_channel` sends for the window channel, then the core's
+TEST(nvidia_display_engine, set_up_failing_at_the_window_channel_leaves_it_to_release_before_the_core_channel) {
+    const int32_t errors[] = {ERR_TIMEOUT, ERR_BAD_MESSAGE};
+    for (int32_t error : errors) {
+        engine_firmware fw;
+        show_output_0_on_head_1(fw);
+        fw.refusals[0] = {
+            .made   = engine_firmware::kind::allocation,
+            .number = TEST_WINDOW_CHANNEL_CLASS,
+            .object = 0,
+            .result = error,
+        };
+
+        engine_video_memory memory;
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up(engine), error);
+        EXPECT_EQ(fw.release_count(), 0u);
+
+        rm::handle display = fw.allocated(TEST_DISPLAY_CLASS);
+        engine_firmware channel_releases;
+        EXPECT_EQ(release_display_channel(channel_releases, display, fw.allocated(TEST_WINDOW_CHANNEL_CLASS)), OK);
+        EXPECT_EQ(release_display_channel(channel_releases, display, fw.allocated(TEST_CORE_CHANNEL_CLASS)), OK);
+        uint32_t first = fw.call_count;
+
+        EXPECT_EQ(engine.release(), OK);
+        ASSERT_EQ(fw.call_count, first + 7);
+        EXPECT_TRUE(fw.begins_with(first, channel_releases));
+    }
+}
+
+// A release whose window channel release times out and whose core channel release is refused still sends every
+// request, and returns the window channel's error ahead of the core channel's
+TEST(nvidia_display_engine, release_returns_the_window_channels_error_ahead_of_the_core_channels) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::release,
+        .number = 0,
+        .object = fw.allocated(TEST_WINDOW_CHANNEL_CLASS),
+        .result = ERR_TIMEOUT,
+    };
+
+    fw.refusals[1] = {
+        .made   = engine_firmware::kind::release,
+        .number = 0,
+        .object = fw.allocated(TEST_CORE_CHANNEL_CLASS),
+        .result = ERR_FIRMWARE,
+    };
+
+    uint32_t first = fw.call_count;
+
+    EXPECT_EQ(engine.release(), ERR_TIMEOUT);
+    ASSERT_EQ(fw.call_count, first + 7);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_WINDOW_CHANNEL_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
 }
