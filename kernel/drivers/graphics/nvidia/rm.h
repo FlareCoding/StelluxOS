@@ -424,6 +424,20 @@ static_assert(sizeof(display_push_buffer_params) == 40, "NVIDIA's layout of DISP
 static_assert(sizeof(display_channel_params) == 32, "NVIDIA's layout of a display channel's allocation parameters");
 static_assert(sizeof(display_release_flags_params) == 8, "NVIDIA's layout of SET_RMFREE_FLAGS's parameters");
 
+// NVIDIA's NV0073_CTRL_CMD_SYSTEM_GET_ACTIVE, the control to display common that gives the display id a head shows
+constexpr uint32_t CONTROL_GET_ACTIVE_DISPLAY = 0x730126;
+
+// The parameters of `CONTROL_GET_ACTIVE_DISPLAY`, whose reply fills `display_id`. Flags of 0 (NVIDIA's
+// NV0073_CTRL_SYSTEM_GET_ACTIVE_FLAGS_CLIENT_DISABLE) find a display the boot firmware lit, not only a client's
+struct active_display_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t head;
+    uint32_t flags;
+    uint32_t display_id;      // the display id the head shows, 0 for none
+};
+
+static_assert(sizeof(active_display_params) == 16, "NVIDIA's layout of GET_ACTIVE's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H

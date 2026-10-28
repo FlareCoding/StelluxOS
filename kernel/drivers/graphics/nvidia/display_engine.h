@@ -94,11 +94,15 @@ public:
      * the heads read, kicking and waiting for GET to reach PUT whenever the
      * push buffer has no room, kick the rest with no update, so nothing on
      * screen changes, wait for GET to reach PUT, and log one read of PUT and
-     * GET with the count of methods written. The facts read are not kept. Each
-     * request spins on the calling CPU, waiting for its reply as `firmware`
-     * describes, and so does each wait for GET, for at most 5 seconds.
-     * `read_output_edid` also spins before each reread of an EDID as it
-     * describes. `set_up` must be called at most once, as
+     * GET with the count of methods written. Then read the display id each
+     * head shows with `read_active_heads`, and log each active head with its
+     * display id and the output `find_shown_output` gives for it, or that the
+     * display id names no output, then the boot head `find_boot_head` gives
+     * and the boot output (the output it shows), or that there is none. The
+     * facts read are not kept. Each request spins on the calling CPU, waiting
+     * for its reply as `firmware` describes, and so does each wait for GET,
+     * for at most 5 seconds. `read_output_edid` also spins before each reread
+     * of an EDID as it describes. `set_up` must be called at most once, as
      * `instance_memory::set_up` must, and since it waits on video memory's
      * lock and on the card as `instance_memory` describes, it must never run
      * in an interrupt handler or under a spinlock, and on a thread that cannot
@@ -120,28 +124,28 @@ public:
      * core channel, the display engine having read the core channel's initial
      * methods, and the firmware having reported only the chip's windows, a
      * display engine that can reach push buffers, semaphores and notifiers in
-     * system memory, connected display ids among the supported ones, and heads
+     * system memory, connected display ids among the supported ones, heads
      * within the chip's, head 0 usable and served, with nonzero masks only for
      * the chip's windows, each naming one of the chip's heads outside a
-     * flexible mapping. Otherwise the error of the first step that fails,
-     * logged as that step describes, such as when the firmware reports a
-     * window the chip lacks, the display engine reaches push buffers,
-     * semaphores and notifiers only in video memory, display common's report
-     * leaves it no head or the firmware refuses to report the supported or
-     * connected display ids. When the `edid::monitor` or the push buffer's
-     * pages cannot be allocated, the error is `ERR_NO_MEMORY`, logged here,
-     * and when the notifier's page cannot, `ERR_NO_MEMORY` too, logged as
-     * `completion_notifier::allocate` describes. A refused binding of the
-     * notifier fails the set-up with what `instance_memory::bind` returns,
-     * such as `ERR_BAD_STATE` or `ERR_TIMEOUT` when the card does not take the
-     * instance memory's mapping, logged as it describes. When GET does not
-     * reach PUT within 5 seconds of a kick, the error is `ERR_TIMEOUT`, and
-     * when a read of GET finds it past the push buffer's writable end or not a
-     * multiple of 4, `ERR_BAD_STATE`, each logged as `display_channel`
-     * describes and here. The display's objects and the core channel stay
-     * allocated once allocated, even after a later step fails, until
-     * `release`, and the completion notifier stays bound to the core channel
-     * once bound.
+     * flexible mapping, and at most one display id shown by each head.
+     * Otherwise the error of the first step that fails, logged as that step
+     * describes, such as when the firmware reports a window the chip lacks,
+     * the display engine reaches push buffers, semaphores and notifiers only
+     * in video memory, display common's report leaves it no head or the
+     * firmware refuses to report the supported or connected display ids. When
+     * the `edid::monitor` or the push buffer's pages cannot be allocated, the
+     * error is `ERR_NO_MEMORY`, logged here, and when the notifier's page
+     * cannot, `ERR_NO_MEMORY` too, logged as `completion_notifier::allocate`
+     * describes. A refused binding of the notifier fails the set-up with what
+     * `instance_memory::bind` returns, such as `ERR_BAD_STATE` or
+     * `ERR_TIMEOUT` when the card does not take the instance memory's mapping,
+     * logged as it describes. When GET does not reach PUT within 5 seconds of
+     * a kick, the error is `ERR_TIMEOUT`, and when a read of GET finds it past
+     * the push buffer's writable end or not a multiple of 4, `ERR_BAD_STATE`,
+     * each logged as `display_channel` describes and here. The display's
+     * objects and the core channel stay allocated once allocated, even after a
+     * later step fails, until `release`, and the completion notifier stays
+     * bound to the core channel once bound.
      */
     int32_t set_up(
         registers& regs,

@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "common/logging.h"
 #include "common/string.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/core_channel.h"
@@ -27,6 +28,7 @@ using drivers::nvidia::CORE_CHANNEL_AREA;
 using drivers::nvidia::CORE_INITIAL_METHODS_PER_HEAD;
 using drivers::nvidia::cpu_mapping;
 using drivers::nvidia::display_engine;
+using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_FIRMWARE;
 using drivers::nvidia::ERR_NO_MEMORY;
@@ -87,7 +89,7 @@ static uint32_t g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t) + 1];
 alignas(display_engine) static uint8_t g_engine_bytes[sizeof(display_engine)];
 
 // A firmware that records the kind, object and number of each request in order, answers a request a refusal matches
-// with its result, the head reads with `heads` heads, and others with their parameters as sent
+// with its result, the head reads with `heads` heads, the active heads with `boot_display_id` and others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 32;
@@ -115,15 +117,22 @@ public:
     uint8_t    heads = DOUBLE_HEADS;
     rm::handle reported_client = TEST_CLIENT; // the client `client()` reports, 0 making `bind` refuse
     uint64_t   push_buffer_address = 0;       // the address `CONTROL_SET_DISPLAY_PUSH_BUFFER` last carried
+    uint32_t   boot_display_id = 0;           // the display id head 0 shows, every other head showing none
+    uint32_t   put_at_first_active_read = 0;  // the core channel's PUT when a head's display id was first asked
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
         return answer(kind::allocation, object, class_id);
     }
 
     int32_t control(rm::handle object, uint32_t command, void* params, size_t) override {
+        bool is_first_active_read = command == rm::CONTROL_GET_ACTIVE_DISPLAY && control_count(command) == 0;
+        if (is_first_active_read) {
+            put_at_first_active_read = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
+        }
+
         int32_t rc = answer(kind::control, object, command);
         if (rc == OK && params != nullptr) {
-            fill_head_reply(command, params);
+            fill_reply(command, params);
         }
 
         return rc;
@@ -158,6 +167,21 @@ public:
         }
 
         return 0;
+    }
+
+    // How many of the calls so far are controls of `command` sent to `object`, an `object` of 0 matching any
+    uint32_t control_count(uint32_t command, rm::handle object = 0) const {
+        uint32_t controls = 0;
+        for (uint32_t i = 0; i < recorded(); i++) {
+            bool is_control = calls[i].made == kind::control;
+            bool is_command = calls[i].number == command;
+            bool is_object = object == 0 || calls[i].object == object;
+            if (is_control && is_command && is_object) {
+                controls++;
+            }
+        }
+
+        return controls;
     }
 
     // How many of the calls so far release an object
@@ -230,8 +254,9 @@ private:
         return OK;
     }
 
-    // Gives `heads` heads the display engine can use, from head 0, each served by the window of its number
-    void fill_head_reply(uint32_t command, void* params) const {
+    // Gives `heads` heads the display engine can use, from head 0, each served by the window of its number, and head 0
+    // showing `boot_display_id`
+    void fill_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_GET_HEAD_COUNT) {
             static_cast<rm::head_count_params*>(params)->head_count = heads;
         } else if (command == rm::CONTROL_GET_HEAD_MASK) {
@@ -241,6 +266,9 @@ private:
             for (uint8_t head = 0; head < heads; head++) {
                 reply->window_heads[head] = static_cast<uint8_t>(1u << head);
             }
+        } else if (command == rm::CONTROL_GET_ACTIVE_DISPLAY) {
+            rm::active_display_params* reply = static_cast<rm::active_display_params*>(params);
+            reply->display_id = reply->head == 0 ? boot_display_id : 0;
         }
     }
 };
@@ -564,7 +592,7 @@ TEST(nvidia_display_engine, set_up_kicks_the_initial_methods_of_the_heads_read) 
 }
 
 // A GET past the push buffer's writable end fails the set-up with `ERR_BAD_STATE` once the initial methods are kicked,
-// and the core channel and the objects stay allocated until the release frees them
+// before any head's display id is asked, and the core channel and the objects stay allocated until the release
 TEST(nvidia_display_engine, set_up_failing_at_the_initial_methods_keeps_the_core_channel_until_release) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -573,6 +601,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_initial_methods_keeps_the_core
 
     EXPECT_EQ(set_up(engine, FULL_ADDRESS_BITS, BAD_GET), ERR_BAD_STATE);
     EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_ACTIVE_DISPLAY), 0u);
     EXPECT_EQ(fw.release_count(), 0u);
     uint32_t first = fw.call_count;
 
@@ -604,4 +633,105 @@ TEST(nvidia_display_engine, set_up_failing_in_a_write_kicks_nothing_and_keeps_th
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+}
+
+// A set-up asks display common for the display ids of the double's two heads, not the chip's four, only once the
+// initial methods are kicked
+TEST(nvidia_display_engine, set_up_reads_the_active_heads_once_the_initial_methods_are_kicked) {
+    engine_firmware fw;
+    fw.boot_display_id = 0x1;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)] = 0;
+
+    ASSERT_EQ(set_up(engine), OK);
+    rm::handle display_common = fw.allocated(rm::CLASS_DISPLAY_COMMON);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_ACTIVE_DISPLAY), static_cast<uint32_t>(DOUBLE_HEADS));
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_ACTIVE_DISPLAY, display_common), static_cast<uint32_t>(DOUBLE_HEADS));
+    EXPECT_EQ(fw.put_at_first_active_read, INITIAL_METHODS_END);
+}
+
+// A head reported showing several display ids fails the set-up with `ERR_BAD_MESSAGE` once the initial methods are
+// kicked, and the core channel and the objects stay allocated until the release frees them
+TEST(nvidia_display_engine, set_up_failing_at_the_active_heads_keeps_the_core_channel_until_release) {
+    engine_firmware fw;
+    fw.boot_display_id = 0x3;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)] = 0;
+
+    EXPECT_EQ(set_up(engine), ERR_BAD_MESSAGE);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
+    EXPECT_EQ(fw.release_count(), 0u);
+    uint32_t first = fw.call_count;
+
+    EXPECT_EQ(engine.release(), OK);
+    ASSERT_EQ(fw.call_count, first + 5);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
+}
+
+// The text logged while `ENGINE_LOG_BACKEND` is set
+static char     s_engine_log[8192] = {};
+static uint32_t s_engine_log_bytes = 0;
+
+// Keeps each logged line's text, up to the buffer's end
+static void keep_engine_log(const char* data, size_t len) {
+    for (size_t i = 0; i < len && s_engine_log_bytes < sizeof(s_engine_log); i++) {
+        s_engine_log[s_engine_log_bytes++] = data[i];
+    }
+}
+
+static constexpr log::backend ENGINE_LOG_BACKEND = {.write = keep_engine_log};
+
+// Whether the kept text holds `text` anywhere
+static bool engine_log_contains(const char* text) {
+    size_t text_bytes = string::strlen(text);
+    for (uint32_t start = 0; start + text_bytes <= s_engine_log_bytes; start++) {
+        if (string::memcmp(s_engine_log + start, text, text_bytes) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Sets up `engine` with the log kept
+static int32_t set_up_logged(display_engine& engine) {
+    s_engine_log_bytes = 0;
+    log::set_backend(&ENGINE_LOG_BACKEND);
+    int32_t rc = set_up(engine);
+    log::set_backend(nullptr);
+
+    return rc;
+}
+
+// The double reports no supported display id, so the display id 0x1 that head 0 shows names no output, and a set-up
+// logs that head with it and as the boot head with no boot output
+TEST(nvidia_display_engine, set_up_logs_a_boot_head_whose_display_id_names_no_output) {
+    engine_firmware fw;
+    fw.boot_display_id = 0x1;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: head 0 shows display id 0x1, which names no output"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: head 0 is the boot head, and its display id 0x1 names no output, so there is no boot output"
+    ));
+    EXPECT_FALSE(engine_log_contains("nvidia: head 1 shows"));
+}
+
+// With no head showing a display id, a set-up logs that no head is active and names no boot head
+TEST(nvidia_display_engine, set_up_logs_that_no_head_is_active) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: no head is active, so there is no boot head"));
+    EXPECT_FALSE(engine_log_contains("shows display id"));
+    EXPECT_FALSE(engine_log_contains("is the boot head"));
 }

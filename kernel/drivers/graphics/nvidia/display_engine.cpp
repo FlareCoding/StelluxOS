@@ -3,6 +3,7 @@
 #include "drivers/graphics/nvidia/display_engine.h"
 #include "drivers/graphics/nvidia/core_channel.h"
 #include "drivers/graphics/nvidia/core_methods.h"
+#include "drivers/graphics/nvidia/display_active_heads.h"
 #include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_edid.h"
@@ -174,7 +175,8 @@ static int32_t read_display_facts(
     firmware& fw,
     const display_objects& objects,
     const chip_display& display,
-    display_heads& heads
+    display_heads& heads,
+    display_outputs& outputs
 ) {
     bool has_crossbar = false;
     int32_t rc = read_display_capabilities(fw, objects, has_crossbar);
@@ -217,7 +219,6 @@ static int32_t read_display_facts(
         ids.static_digital
     );
 
-    display_outputs outputs = {};
     rc = read_display_outputs(fw, objects.display_common, ids, outputs);
     if (rc != OK) {
         return rc;
@@ -241,6 +242,46 @@ static int32_t read_display_facts(
     }
 
     return read_connected_monitors(fw, objects.display_common, display.displayport, outputs);
+}
+
+// Logs each active head's display id with the output it shows, or that the display id names no output, then the boot
+// head and the boot output, or that there is none
+static void log_active_heads(const active_heads& active, const display_outputs& outputs) {
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        uint32_t display_id = active.heads[head].display_id;
+        if (display_id == 0) {
+            continue;
+        }
+
+        uint8_t output = 0;
+        if (find_shown_output(active, head, outputs, output)) {
+            log::info("nvidia: head %u shows display id 0x%X, which is output %u", head, display_id, output);
+        } else {
+            log::info("nvidia: head %u shows display id 0x%X, which names no output", head, display_id);
+        }
+    }
+
+    uint8_t boot_head = 0;
+    if (!find_boot_head(active, boot_head)) {
+        log::info("nvidia: no head is active, so there is no boot head");
+        return;
+    }
+
+    uint8_t boot_output = 0;
+    if (!find_shown_output(active, boot_head, outputs, boot_output)) {
+        log::info(
+            "nvidia: head %u is the boot head, and its display id 0x%X names no output, so there is no boot output",
+            boot_head,
+            active.heads[boot_head].display_id
+        );
+        return;
+    }
+
+    log::info(
+        "nvidia: head %u is the boot head, and output %u, which it shows, is the boot output",
+        boot_head,
+        boot_output
+    );
 }
 
 // Writes `method` into `queue`, and when `write` returns `ERR_QUEUE_FULL`, kicks, waits for GET to reach PUT and writes
@@ -324,7 +365,8 @@ int32_t display_engine::set_up(
     );
 
     display_heads heads = {};
-    rc = read_display_facts(m_firmware, m_objects, display, heads);
+    display_outputs outputs = {};
+    rc = read_display_facts(m_firmware, m_objects, display, heads, outputs);
     if (rc != OK) {
         return rc;
     }
@@ -410,6 +452,14 @@ int32_t display_engine::set_up(
         regs.read(CORE_CHANNEL_AREA + CHANNEL_PUT),
         regs.read(CORE_CHANNEL_AREA + CHANNEL_GET)
     );
+
+    active_heads active = {};
+    rc = read_active_heads(m_firmware, m_objects.display_common, heads.count, active);
+    if (rc != OK) {
+        return rc;
+    }
+
+    log_active_heads(active, outputs);
 
     return OK;
 }
