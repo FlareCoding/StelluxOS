@@ -45,16 +45,20 @@ struct dpcd_capabilities {
  * from `DPCD_EXTENDED_RECEIVER_CAPABILITIES` when that byte has
  * `DPCD_EXTENDED_COPY_PRESENT` set or from `DPCD_RECEIVER_CAPABILITIES`
  * otherwise, then the PHY repeaters' capabilities when `trains_phy_repeaters`
- * is set. Each read is one request to display common's AUX channel control,
- * its parameters zeroed but for the display id, the command, the address and
- * the size. When the firmware refuses a request with `ERR_FIRMWARE`, or a read
- * ends with anything but the monitor's acknowledgment carrying exactly the
- * bytes asked for, the read logs it, asks nothing more and leaves `is_read`
- * cleared. NVIDIA's library instead asks again for a read the monitor defers
- * or acknowledges with some but not all of the bytes, or the firmware fails
- * with its timeout, making up to 7 requests for the first byte and 16 for each
- * of the others, and beyond those counts for as long as the monitor
- * acknowledges a read with more bytes than asked for, takes the field from
+ * is set. Each read sends display common's AUX channel control a request, its
+ * parameters zeroed but for the display id, the command, the address and the
+ * size, and sends a fresh one while the monitor defers it or acknowledges it
+ * with some but not all of the bytes or with more than those. A read stops at
+ * its 7th deferral or acknowledgment of too few bytes for the first byte and
+ * its 16th for each of the others, NVIDIA's counts, or at as many
+ * acknowledgments of too many bytes. When the firmware refuses a request with
+ * `ERR_FIRMWARE`, the monitor answers with anything but an acknowledgment of
+ * exactly the bytes asked for or an answer it is asked again on, or a read
+ * stops at a count, the read logs it, asks nothing more and leaves `is_read`
+ * cleared. NVIDIA's library counts no acknowledgment of too many bytes, asking
+ * again for as long as the monitor sends them, and asks again when the
+ * firmware's status for a request is its timeout, which `firmware::control`
+ * gives as `ERR_FIRMWARE`. It takes the field from
  * `DPCD_RECEIVER_CAPABILITIES` when the first byte cannot be read, reads the
  * PHY repeaters' capabilities unless display common reports that the GPU does
  * not train PHY repeaters, going on without them when that read fails, and
