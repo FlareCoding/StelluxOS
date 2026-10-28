@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/display_ids.h"
 #include "drivers/graphics/nvidia/display_info.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
+#include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "clock/clock.h"
 #include "common/logging.h"
@@ -90,8 +91,21 @@ static void log_dpcd(uint8_t output_index, const dpcd_capabilities& dpcd) {
     );
 }
 
+// Logs the most lanes and the highest rate a link to an output's monitor takes, the rate as DisplayPort codes it, and
+// whether the monitor takes enhanced framing
+static void log_monitor_link_limits(uint8_t output_index, const dpcd_capabilities& dpcd) {
+    displayport::link_limits limits = monitor_link_limits(dpcd);
+    log::info(
+        "nvidia: output %u's link to its monitor takes up to %u lanes at DisplayPort rate 0x%02X %s enhanced framing",
+        output_index,
+        limits.max_lanes,
+        static_cast<uint32_t>(limits.max_rate),
+        takes_enhanced_framing(dpcd) ? "with" : "without"
+    );
+}
+
 // Reads the EDID and the DPCD capabilities of each connected output's monitor, the EDID into one `edid::monitor` on the
-// unprivileged heap, as it is too large for the stack, and logs each EDID that parses and the capabilities read
+// unprivileged heap, as the stack cannot hold it, and logs each parsed EDID and the capabilities read with their limits
 static int32_t read_connected_monitors(
     firmware& fw,
     rm::handle display_common,
@@ -131,6 +145,7 @@ static int32_t read_connected_monitors(
 
         if (is_read) {
             log_dpcd(index, dpcd);
+            log_monitor_link_limits(index, dpcd);
         }
     }
 
