@@ -331,6 +331,29 @@ static int32_t read_capabilities(
     );
 }
 
+int32_t take_displayport_from_firmware(firmware& fw, rm::handle display_common) {
+    rm::manual_displayport_params params = {};
+    int32_t rc = fw.control(display_common, rm::CONTROL_SET_MANUAL_DISPLAYPORT, &params, sizeof(params));
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display common refused to leave the DisplayPort hardware to the driver, so the firmware keeps its "
+            "own watermark programming, DP IRQ (CP IRQ) handling and retries of a deferred AUX reply"
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: display common leaves the DisplayPort hardware to the driver, turning off the firmware's own "
+        "watermark programming, DP IRQ (CP IRQ) handling and retries of a deferred AUX reply"
+    );
+
+    return OK;
+}
+
 int32_t read_output_dpcd(
     firmware& fw,
     rm::handle display_common,

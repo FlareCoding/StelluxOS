@@ -368,9 +368,9 @@ namespace drivers {
  * `nvidia::frts_region::has_display` records, bring-up then sets up the
  * display engine under the device with `nvidia::display_engine::set_up`, and
  * otherwise logs that it skips the display's windows, instance memory,
- * objects, capabilities, heads, display ids, outputs, EDIDs, DPCD, core
- * channel, its completion notifier and its initial methods. When the set-up
- * fails, as it always does when BAR1 is not mapped, since
+ * objects, capabilities, heads, display ids, outputs, DisplayPort hand-off,
+ * EDIDs, DPCD, core channel, its completion notifier and its initial methods.
+ * When the set-up fails, as it always does when BAR1 is not mapped, since
  * `nvidia::bar1_video_memory::map_for_cpu` then has no window to clear the
  * display's instance memory through, `attach()` fails as
  * `nvidia::display_engine::set_up` describes, before MSI is set up.

@@ -319,6 +319,15 @@ static int32_t read_display_facts(
         log_connector_link_limits(index, output, display.displayport.max_rate);
     }
 
+    // NVIDIA's library takes the DisplayPort hardware only as it makes a DisplayPort connector's main link (its link to
+    // the monitor)
+    if (outputs.count != 0) {
+        rc = take_displayport_from_firmware(fw, objects.display_common);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
     return read_connected_monitors(fw, objects.display_common, display.displayport, outputs);
 }
 

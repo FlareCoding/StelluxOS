@@ -60,6 +60,10 @@ static constexpr uint8_t REFUSED_ADDRESS_BITS = 16;
 // The heads of the chip `set_up` describes, whose initial methods outgrow the push buffer
 static constexpr uint8_t CHIP_HEADS = 4;
 
+// The display ids of the DisplayPort outputs the double reports when a test asks for them, made up
+static constexpr uint32_t TEST_OUTPUT_DISPLAY_ID        = 0x4;
+static constexpr uint32_t TEST_SECOND_OUTPUT_DISPLAY_ID = 0x8;
+
 // The heads the double reports by default, where their initial methods (each a header and one value) end, so a GET
 // reading it has reached PUT, and a GET past the push buffer's writable end
 static constexpr uint8_t  DOUBLE_HEADS        = 2;
@@ -89,10 +93,10 @@ static uint32_t g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t) + 1];
 alignas(display_engine) static uint8_t g_engine_bytes[sizeof(display_engine)];
 
 // A firmware that records the kind, object and number of each request in order, answers a request a refusal matches
-// with its result, the head, display common's capability and active head reads from its fields and others as sent
+// with its result, the head, display common's capability, active head and output reads from its fields, others as sent
 class engine_firmware : public firmware {
 public:
-    static constexpr uint32_t MAX_CALLS = 32;
+    static constexpr uint32_t MAX_CALLS = 64;
 
     enum class kind { allocation, control, release, internal_control };
 
@@ -122,6 +126,8 @@ public:
     uint32_t   boot_link_type = 0;            // the link type every link request's reply names
     bool       has_crossbar = false;          // whether display common's capabilities report a crossbar
     uint32_t   put_at_first_active_read = 0;  // the core channel's PUT when a head's display id was first asked
+    uint32_t   output_display_ids = 0;        // the DisplayPort outputs' display ids, 0 reporting no output
+    bool       is_output_connected = true;    // whether a monitor is reported connected to each of those outputs
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
         return answer(kind::allocation, object, class_id);
@@ -136,6 +142,7 @@ public:
         int32_t rc = answer(kind::control, object, command);
         if (rc == OK && params != nullptr) {
             fill_reply(command, params);
+            fill_output_reply(command, params);
         }
 
         return rc;
@@ -185,6 +192,29 @@ public:
         }
 
         return controls;
+    }
+
+    // The index of the first of the calls so far that is a control of `command`, or `MAX_CALLS` when none is
+    uint32_t first_control(uint32_t command) const {
+        for (uint32_t i = 0; i < recorded(); i++) {
+            if (calls[i].made == kind::control && calls[i].number == command) {
+                return i;
+            }
+        }
+
+        return MAX_CALLS;
+    }
+
+    // The index of the last of the calls so far that is a control of `command`, or `MAX_CALLS` when none is
+    uint32_t last_control(uint32_t command) const {
+        uint32_t last = MAX_CALLS;
+        for (uint32_t i = 0; i < recorded(); i++) {
+            if (calls[i].made == kind::control && calls[i].number == command) {
+                last = i;
+            }
+        }
+
+        return last;
     }
 
     // How many of the calls so far release an object
@@ -279,6 +309,24 @@ private:
         } else if (command == rm::CONTROL_GET_DISPLAY_COMMON_CAPABILITIES && has_crossbar) {
             uint8_t* table = static_cast<rm::display_common_capabilities_params*>(params)->table;
             table[rm::DISPLAY_COMMON_CROSSBAR_BYTE] = rm::DISPLAY_COMMON_CROSSBAR_BIT;
+        }
+    }
+
+    // Reports `output_display_ids` as static digital DisplayPort display ids, connected when `is_output_connected`,
+    // whose EDIDs read as no bytes and whose AUX reads are acknowledged with the bytes asked for, all 0
+    void fill_output_reply(uint32_t command, void* params) const {
+        if (command == rm::CONTROL_GET_SUPPORTED_DISPLAYS) {
+            static_cast<rm::supported_displays_params*>(params)->display_mask = output_display_ids;
+        } else if (command == rm::CONTROL_GET_CONNECTED_DISPLAYS) {
+            uint32_t connected = is_output_connected ? output_display_ids : 0;
+            static_cast<rm::connected_displays_params*>(params)->display_mask = connected;
+        } else if (command == rm::CONTROL_GET_DISPLAY_KIND) {
+            static_cast<rm::display_kind_params*>(params)->display_kind = rm::DISPLAY_KIND_DIGITAL;
+        } else if (command == rm::CONTROL_GET_DIGITAL_DISPLAY_FACTS) {
+            uint32_t displayport = rm::DIGITAL_SIGNAL_DISPLAYPORT << rm::DIGITAL_SIGNAL_SHIFT;
+            static_cast<rm::digital_display_facts_params*>(params)->flags = displayport;
+        } else if (command == rm::CONTROL_DP_AUX) {
+            static_cast<rm::aux_params*>(params)->size++;
         }
     }
 };
@@ -599,6 +647,94 @@ TEST(nvidia_display_engine, set_up_kicks_the_initial_methods_of_the_heads_read) 
 
     ASSERT_EQ(set_up(engine), OK);
     EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
+}
+
+// A set-up whose display ids give no outputs leaves the DisplayPort hardware to the firmware, as NVIDIA's library takes
+// it only as it makes a connector's main link (its link to the monitor)
+TEST(nvidia_display_engine, set_up_without_outputs_leaves_the_displayport_hardware_to_the_firmware) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_MANUAL_DISPLAYPORT), 0u);
+}
+
+// With two connected DisplayPort outputs, set-up tells display common once to leave the DisplayPort hardware to the
+// driver, after the outputs' facts are read and before the monitors' EDIDs and DPCDs are
+TEST(nvidia_display_engine, set_up_takes_the_displayport_hardware_before_the_monitors_are_read) {
+    engine_firmware fw;
+    fw.output_display_ids = TEST_OUTPUT_DISPLAY_ID | TEST_SECOND_OUTPUT_DISPLAY_ID;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    rm::handle display_common = fw.allocated(rm::CLASS_DISPLAY_COMMON);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_MANUAL_DISPLAYPORT), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_MANUAL_DISPLAYPORT, display_common), 1u);
+
+    uint32_t take = fw.first_control(rm::CONTROL_SET_MANUAL_DISPLAYPORT);
+    EXPECT_LT(fw.last_control(rm::CONTROL_GET_DIGITAL_DISPLAY_FACTS), take);
+    EXPECT_LT(take, fw.first_control(rm::CONTROL_GET_EDID));
+    EXPECT_LT(take, fw.first_control(rm::CONTROL_DP_AUX));
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_EDID), 2u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_DP_AUX), 4u);
+}
+
+// A refusal to leave the DisplayPort hardware to the driver is no failure, so the monitor's EDID and DPCD are still
+// read and the set-up succeeds
+TEST(nvidia_display_engine, set_up_reads_the_monitors_after_a_refused_take_of_the_displayport_hardware) {
+    engine_firmware fw;
+    fw.output_display_ids = TEST_OUTPUT_DISPLAY_ID;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_SET_MANUAL_DISPLAYPORT,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_MANUAL_DISPLAYPORT), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_EDID), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_DP_AUX), 2u);
+}
+
+// Another error of the take fails the set-up with it, before any monitor is read or the core channel allocated
+TEST(nvidia_display_engine, set_up_failing_at_the_take_of_the_displayport_hardware_reads_no_monitor) {
+    engine_firmware fw;
+    fw.output_display_ids = TEST_OUTPUT_DISPLAY_ID;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_SET_MANUAL_DISPLAYPORT,
+        .object = 0,
+        .result = ERR_TIMEOUT,
+    };
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up(engine), ERR_TIMEOUT);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_EDID), 0u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_DP_AUX), 0u);
+    EXPECT_EQ(fw.allocated(TEST_CORE_CHANNEL_CLASS), 0u);
+}
+
+// An output with no monitor connected still has set-up take the DisplayPort hardware, which NVIDIA's library takes for
+// every DisplayPort connector, while no EDID or DPCD is read
+TEST(nvidia_display_engine, set_up_takes_the_displayport_hardware_for_an_output_with_no_monitor) {
+    engine_firmware fw;
+    fw.output_display_ids = TEST_OUTPUT_DISPLAY_ID;
+    fw.is_output_connected = false;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_MANUAL_DISPLAYPORT), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_EDID), 0u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_DP_AUX), 0u);
 }
 
 // A GET past the push buffer's writable end fails the set-up with `ERR_BAD_STATE` once the initial methods are kicked,

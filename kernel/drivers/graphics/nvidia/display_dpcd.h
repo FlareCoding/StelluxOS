@@ -39,6 +39,23 @@ struct dpcd_capabilities {
 };
 
 /**
+ * @brief Tell the GSP's firmware to leave the DisplayPort hardware to the
+ * driver, as NVIDIA's DisplayPort library does before its first AUX read.
+ * Leaving it turns off the firmware's own watermark programming, its handling
+ * of the DP IRQs that NVIDIA names CP IRQ (a monitor's content protection
+ * requests for the card's attention), and its retries of a deferred AUX reply,
+ * all three the driver's from then on. A success is logged, and a refusal with
+ * `ERR_FIRMWARE` is logged as leaving all three to the firmware, as NVIDIA's
+ * library goes on past it.
+ * @param fw The driver's firmware.
+ * @param display_common The handle `allocate_display_objects` gave display
+ * common.
+ * @return `OK`, after a refusal too, or what `firmware::control` returns,
+ * logged as its doc describes, for an error other than `ERR_FIRMWARE`.
+ */
+int32_t take_displayport_from_firmware(firmware& fw, rm::handle display_common);
+
+/**
  * @brief Read the DisplayPort capabilities of the monitor on a connected
  * output from its DPCD, as NVIDIA's DisplayPort library reads them: the byte
  * at `DPCD_TRAINING_AUX_READ_INTERVAL`, then the receiver capability field
@@ -64,9 +81,9 @@ struct dpcd_capabilities {
  * common reports that the GPU does not train PHY repeaters, sends each request
  * up to 3 times, sleeping as long as the firmware says after each, while the
  * firmware fails it and names a time to retry after, and before its first read
- * tells the firmware to leave the DisplayPort hardware to it, which turns off
- * the firmware's own retries of a deferred reply, and asks display common for
- * the GPU's DisplayPort capabilities.
+ * asks display common for the GPU's DisplayPort capabilities. The counts here
+ * are the only retries of a deferred reply once
+ * `take_displayport_from_firmware` has turned off the firmware's own.
  * @param fw The driver's firmware.
  * @param display_common The handle `allocate_display_objects` gave display
  * common.
