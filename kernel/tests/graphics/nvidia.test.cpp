@@ -72,6 +72,10 @@ static constexpr uint32_t GA102_CORE_CHANNEL_CLASS = 0xC67D;
 // Whether GA102's firmware trains PHY repeaters, as the RTX 3080's firmware reports for each of its links 0 to 3
 static constexpr bool GA102_TRAINS_PHY_REPEATERS = true;
 
+// The highest rate of GA102's links as DisplayPort codes it, HBR3 (8.1 Gbps per lane), as the RTX 3080's firmware
+// reports for each of its links 0 to 3
+static constexpr uint8_t GA102_MAX_RATE = 0x1E;
+
 // The RTX 3080's identity decodes to the GA102 entry of the chip table
 TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(decode_chip_id(RTX_3080_BOOT_0), GA102_CHIP_ID);
@@ -94,6 +98,7 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(chip->display.display_class, GA102_DISPLAY_CLASS);
     EXPECT_EQ(chip->display.core_channel_class, GA102_CORE_CHANNEL_CLASS);
     EXPECT_EQ(chip->display.displayport.trains_phy_repeaters, GA102_TRAINS_PHY_REPEATERS);
+    EXPECT_EQ(static_cast<uint8_t>(chip->display.displayport.max_rate), GA102_MAX_RATE);
 }
 
 // GA104 shares GA102's architecture but has no chip table entry

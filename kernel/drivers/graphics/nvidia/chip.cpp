@@ -35,6 +35,7 @@ constexpr chip_info CHIP_TABLE[] = {
             .core_channel_class = 0xC67D,
             .displayport = {
                 .trains_phy_repeaters = true,
+                .max_rate = displayport::link_rate::hbr3,
             },
         },
     },

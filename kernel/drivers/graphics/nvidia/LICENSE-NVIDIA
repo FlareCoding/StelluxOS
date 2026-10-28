@@ -2438,7 +2438,7 @@ src/common/displayport/src/dp_connectorimpl.cpp
     display_dpcd.h, display_dpcd.cpp and
     kernel/tests/graphics/nvidia_display_link_limits.test.cpp, only 1, 2 and 4
     lanes tried by the search for the lowest configuration, in display_dpcd.h,
-    display_dpcd.cpp and
+    display_dpcd.cpp, display_outputs.h, display_outputs.cpp and
     kernel/tests/graphics/nvidia_display_link_limits.test.cpp, the search
     skipped for a monitor the library's monitor database flags, training the
     highest configuration within the monitor's limits and the GPU's with no
@@ -2446,8 +2446,10 @@ src/common/displayport/src/dp_connectorimpl.cpp
     id's digital facts as it is made and going on when they are refused, in
     display_outputs.h, a connector asking display common for the GPU's
     DisplayPort capabilities as it is made, before any DPCD read, and handing
-    the library whether the GPU trains PHY repeaters, in display_dpcd.h, and no
-    monitor driven whose DPCD gives a revision below 1.0, in display_dpcd.h
+    the library whether the GPU trains PHY repeaters, in display_dpcd.h, no
+    monitor driven whose DPCD gives a revision below 1.0, in display_dpcd.h, and
+    a link's lanes taken from its monitor's DPCD alone, no connector's lanes
+    read, in display_outputs.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_configcaps.cpp
@@ -2506,7 +2508,9 @@ src/nvidia-modeset/src/dp/nvdp-evo-interface.cpp
 
 src/common/displayport/inc/dp_evoadapter.h
     the GPU's own highest rate capping a link's, and the connector's where lower
-    only when the firmware or a registry key asks for it, in displayport.h
+    only when the firmware or a registry key asks for it, in displayport.h,
+    display_outputs.h, display_outputs.cpp and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
@@ -2522,9 +2526,10 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
     display_dpcd.h, display_dpcd.cpp and
     kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that
     NV0073_CTRL_CMD_DP_SET_MANUAL_DISPLAYPORT turns off the firmware's own
-    retries of a deferred reply, in display_dpcd.h, and the GPU's report of
-    whether its firmware trains PHY repeaters, made for the one link a request
-    names, in chip.h, chip.cpp and kernel/tests/graphics/nvidia.test.cpp
+    retries of a deferred reply, in display_dpcd.h, and the GPU's reports of its
+    links' highest rate and of whether its firmware trains PHY repeaters, made
+    for the one link a request names, in chip.h, chip.cpp and
+    kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/dp/nvdp-connector.cpp
@@ -2891,7 +2896,9 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dfp.h
     of the digital kind, and its flags' SIGNAL, LANE, LIMIT, DP_LINK_CONSTRAINT
     and DP_LINK_BW fields with their values, in rm.h, display_outputs.h,
     display_outputs.cpp and
-    kernel/tests/graphics/nvidia_display_outputs.test.cpp, and its flags'
+    kernel/tests/graphics/nvidia_display_outputs.test.cpp, the LANE and
+    DP_LINK_BW fields' widths and values, in
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, and its flags'
     HDMI_CAPABLE, LINK and DP_PHY_REPEATER_COUNT fields with a value each, in
     kernel/tests/graphics/nvidia_display_outputs.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -2908,8 +2915,10 @@ src/common/displayport/src/dp_evoadapter.cpp
     firmware's timeout as a deferred reply, tells the firmware to leave the
     DisplayPort hardware to the library as it is made and takes the GPU as
     training PHY repeaters unless display common reports that it does not, in
-    display_dpcd.h, and that it asks display common for the GPU's DisplayPort
-    facts naming one link, in chip.h
+    display_dpcd.h, that it asks display common for the GPU's DisplayPort facts
+    naming one link, in chip.h, and that it takes a DP_LINK_BW value it does not
+    know as RBR, in display_outputs.h, display_outputs.cpp and
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-dpy.c
