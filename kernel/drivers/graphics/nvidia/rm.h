@@ -284,6 +284,9 @@ struct output_resource_params {
 // NVIDIA's NV_INVALID_OR, the `output_resource_params::index` of a display id no output resource drives
 constexpr uint32_t NO_OUTPUT_RESOURCE = 0xFFFFFFFF;
 
+// NVIDIA's NV0073_CTRL_SPECIFIC_OR_TYPE_SOR, the `output_resource_params::type` of a serial output resource
+constexpr uint32_t OUTPUT_RESOURCE_TYPE_SERIAL = 2;
+
 static_assert(sizeof(output_resource_params) == 56, "NVIDIA's layout of OR_GET_INFO's parameters");
 
 // NVIDIA's NV0073_CTRL_CMD_DFP_GET_INFO, the control to display common that gives a digital display id's facts, which

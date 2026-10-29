@@ -999,7 +999,14 @@ int32_t display_engine::set_up(
     );
 
     active_heads active = {};
-    rc = read_active_heads(m_firmware, m_objects.display_common, heads.count, has_crossbar, active);
+    rc = read_active_heads(
+        m_firmware,
+        m_objects.display_common,
+        heads.count,
+        has_crossbar,
+        display.serial_link_count,
+        active
+    );
     if (rc != OK) {
         return rc;
     }

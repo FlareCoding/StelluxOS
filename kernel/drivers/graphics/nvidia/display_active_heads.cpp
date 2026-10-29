@@ -39,13 +39,14 @@ static int32_t read_shown_display(firmware& fw, rm::handle display_common, uint8
     return OK;
 }
 
-// Gives the link driving the display id a head shows, or counts the head as showing nothing for a reply naming no link
-// with a crossbar, and fails on a refused request or such a reply without one, logging each
+// Gives the serial link driving a head's display id, or counts the head as showing nothing for no link with a crossbar,
+// failing, logged, on a refused request, on no link without a crossbar and on a link not among the chip's serial links
 static int32_t read_head_link(
     firmware& fw,
     rm::handle display_common,
     uint8_t head,
     bool has_crossbar,
+    uint8_t serial_link_count,
     active_head& state
 ) {
     rm::output_resource_params params = {};
@@ -84,6 +85,20 @@ static int32_t read_head_link(
         return ERR_BAD_MESSAGE;
     }
 
+    bool is_serial_link = params.type == rm::OUTPUT_RESOURCE_TYPE_SERIAL && params.index < serial_link_count;
+    if (!is_serial_link) {
+        log::error(
+            "nvidia: display common names link %u of NVIDIA's output resource type %u for head %u's display id 0x%X, "
+            "not one of the chip's %u serial links",
+            params.index,
+            params.type,
+            head,
+            state.display_id,
+            serial_link_count
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
     state.link_index = params.index;
     state.link_type = params.type;
 
@@ -95,6 +110,7 @@ int32_t read_active_heads(
     rm::handle display_common,
     uint8_t head_count,
     bool has_crossbar,
+    uint8_t serial_link_count,
     active_heads& out
 ) {
     active_heads heads = {};
@@ -109,7 +125,7 @@ int32_t read_active_heads(
             continue;
         }
 
-        rc = read_head_link(fw, display_common, head, has_crossbar, state);
+        rc = read_head_link(fw, display_common, head, has_crossbar, serial_link_count, state);
         if (rc != OK) {
             return rc;
         }

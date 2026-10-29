@@ -36,7 +36,7 @@ static constexpr uint32_t HEAD_OFFSET             = 4;
 static constexpr uint32_t SHOWN_DISPLAY_ID_OFFSET = 12;
 
 // NVIDIA's OR_GET_INFO, its parameters' size, the offsets of the fields sent in them or read from them, the output
-// resource types DAC and SOR, and NV_INVALID_OR (the index naming no output resource), restated likewise
+// resource types DAC, SOR, PIOR and DSI, and NV_INVALID_OR (the index naming no output resource), restated likewise
 static constexpr uint32_t NVIDIA_OR_GET_INFO       = 0x73028B;
 static constexpr size_t   NVIDIA_OR_GET_INFO_BYTES = 56;
 static constexpr uint32_t DISPLAY_ID_OFFSET        = 4;
@@ -44,10 +44,21 @@ static constexpr uint32_t LINK_INDEX_OFFSET        = 8;
 static constexpr uint32_t LINK_TYPE_OFFSET         = 12;
 static constexpr uint32_t OR_TYPE_DAC              = 1;
 static constexpr uint32_t OR_TYPE_SOR              = 2;
+static constexpr uint32_t OR_TYPE_PIOR             = 3;
+static constexpr uint32_t OR_TYPE_DSI              = 5;
 static constexpr uint32_t NO_LINK                  = 0xFFFFFFFF;
 
-// A handle for display common unlike those `gsp` gives
+// A handle for display common unlike those `gsp` gives, and GA102's serial links, the chip table's four
 static constexpr rm::handle TEST_DISPLAY_COMMON = 0x0005000B;
+static constexpr uint8_t    TEST_SERIAL_LINKS   = 4;
+
+// A link reply's index and type naming a link other than one of the chip's serial links, and the words its refusal
+// logs for them
+struct foreign_link {
+    uint32_t    index;
+    uint32_t    type;
+    const char* logged;
+};
 
 // A firmware that answers GET_ACTIVE by the head a request names and OR_GET_INFO by the head showing the display id it
 // names, from its fields, writing a reply only on `OK`, and records the first `MAX_CALLS` controls sent to it in order
@@ -74,7 +85,7 @@ public:
     bool     fills_replies = false;         // set every reply byte after the head or display id to 0xFF, then answer
 
     uint32_t link_index[DISPLAY_HEADS_MAX] = {}; // entry i answers the link request for head i's display id
-    uint32_t link_type[DISPLAY_HEADS_MAX] = {};
+    uint32_t link_type[DISPLAY_HEADS_MAX] = {OR_TYPE_SOR, OR_TYPE_SOR, OR_TYPE_SOR, OR_TYPE_SOR};
     uint32_t failed_link_heads = 0;              // bit i fails head i's OR_GET_INFO with `failed_link_result`
     int32_t  failed_link_result = ERR_FIRMWARE;
 
@@ -248,7 +259,7 @@ static bool active_heads_log_contains(const char* text) {
 static int32_t read_logged(active_heads_firmware& fw, uint8_t head_count, bool has_crossbar, active_heads& out) {
     s_active_heads_log_bytes = 0;
     log::set_backend(&ACTIVE_HEADS_LOG_BACKEND);
-    int32_t rc = read_active_heads(fw, TEST_DISPLAY_COMMON, head_count, has_crossbar, out);
+    int32_t rc = read_active_heads(fw, TEST_DISPLAY_COMMON, head_count, has_crossbar, TEST_SERIAL_LINKS, out);
     log::set_backend(nullptr);
 
     return rc;
@@ -305,8 +316,8 @@ TEST(nvidia_display_active_heads, requests_go_to_display_common_head_by_head_in_
 
     // The earlier read fills the stack the next read's requests are expected to reuse, so a request not zeroed would
     // likely carry its replies
-    ASSERT_EQ(read_active_heads(earlier, TEST_DISPLAY_COMMON, 3, true, earlier_heads), OK);
-    ASSERT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, 3, true, heads), OK);
+    ASSERT_EQ(read_active_heads(earlier, TEST_DISPLAY_COMMON, 3, true, TEST_SERIAL_LINKS, earlier_heads), OK);
+    ASSERT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, 3, true, TEST_SERIAL_LINKS, heads), OK);
 
     ASSERT_EQ(fw.call_count, 4u);
     EXPECT_EQ(fw.stray_count, 0u);
@@ -316,26 +327,26 @@ TEST(nvidia_display_active_heads, requests_go_to_display_common_head_by_head_in_
     expect_request(fw.calls[3], 2);
 }
 
-// With or without a crossbar, each head shows the display id and the link the firmware reports for it, the link's index
-// and type kept whole whatever the replies' other bytes hold, and a head showing none or past the count is all 0
+// With or without a crossbar, each head shows the display id and the link the firmware reports for it whatever the
+// replies' other bytes hold, and a head showing none or past the count is all 0
 TEST(nvidia_display_active_heads, heads_show_the_display_ids_and_links_the_firmware_reports) {
     const bool crossbars[] = {true, false};
     for (bool has_crossbar : crossbars) {
         active_heads_firmware fw;
         fw.fills_replies = true;
-        fw.show(0, 0x100, 0xFFFFFFFE, OR_TYPE_SOR);
-        fw.show(2, 0x80000000, 0x7FFFFFFF, 0x10002);
+        fw.show(0, 0x100, 3, OR_TYPE_SOR);
+        fw.show(2, 0x80000000, 0, OR_TYPE_SOR);
         fw.show(3, 0x4, 2, OR_TYPE_SOR);
 
         active_heads heads = {};
         fill_untouched(heads);
 
-        ASSERT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, 3, has_crossbar, heads), OK);
+        ASSERT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, 3, has_crossbar, TEST_SERIAL_LINKS, heads), OK);
 
         EXPECT_EQ(fw.call_count, 5u);
-        expect_head(heads.heads[0], 0x100, 0xFFFFFFFE, OR_TYPE_SOR);
+        expect_head(heads.heads[0], 0x100, 3, OR_TYPE_SOR);
         expect_head(heads.heads[1], 0, 0, 0);
-        expect_head(heads.heads[2], 0x80000000, 0x7FFFFFFF, 0x10002);
+        expect_head(heads.heads[2], 0x80000000, 0, OR_TYPE_SOR);
         expect_head(heads.heads[3], 0, 0, 0);
     }
 }
@@ -372,7 +383,7 @@ TEST(nvidia_display_active_heads, other_errors_of_a_head_report_end_the_read) {
         active_heads heads = {};
         fill_untouched(heads);
 
-        EXPECT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, 3, true, heads), error);
+        EXPECT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, 3, true, TEST_SERIAL_LINKS, heads), error);
 
         EXPECT_EQ(fw.call_count, 3u);
         EXPECT_TRUE(is_untouched(heads));
@@ -394,7 +405,7 @@ TEST(nvidia_display_active_heads, other_errors_of_a_link_request_end_the_read) {
         active_heads heads = {};
         fill_untouched(heads);
 
-        EXPECT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, 3, true, heads), error);
+        EXPECT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, 3, true, TEST_SERIAL_LINKS, heads), error);
 
         EXPECT_EQ(fw.call_count, 4u);
         EXPECT_TRUE(is_untouched(heads));
@@ -445,15 +456,15 @@ TEST(nvidia_display_active_heads, refused_link_request_fails_the_read) {
 // the reply gives, and the heads after it are still read
 TEST(nvidia_display_active_heads, linkless_head_counts_as_showing_nothing_with_a_crossbar) {
     active_heads_firmware fw;
-    fw.show(0, 0x1, NO_LINK, OR_TYPE_SOR);
-    fw.show(1, 0x100, 0xFFFFFFFE, OR_TYPE_DAC);
+    fw.show(0, 0x1, NO_LINK, OR_TYPE_DAC);
+    fw.show(1, 0x100, 1, OR_TYPE_SOR);
     active_heads heads = {};
 
     ASSERT_EQ(read_logged(fw, 2, true, heads), OK);
 
     EXPECT_EQ(fw.call_count, 4u);
     expect_head(heads.heads[0], 0, 0, 0);
-    expect_head(heads.heads[1], 0x100, 0xFFFFFFFE, OR_TYPE_DAC);
+    expect_head(heads.heads[1], 0x100, 1, OR_TYPE_SOR);
     EXPECT_TRUE(active_heads_log_contains(
         "nvidia: head 0 counts as showing nothing, as display common names no link for its display id 0x1"
     ));
@@ -478,6 +489,37 @@ TEST(nvidia_display_active_heads, linkless_head_without_a_crossbar_is_refused_as
     ));
 }
 
+// A link reply naming a DAC, PIOR or DSI, a type NVIDIA lacks or a serial link past the chip's four, even a bit from
+// the no-link index or past a byte, is refused as malformed with a crossbar, logged, no later request, `out` kept
+TEST(nvidia_display_active_heads, links_not_among_the_chips_serial_links_are_refused_as_malformed) {
+    const foreign_link links[] = {
+        {0, OR_TYPE_DAC, "names link 0 of NVIDIA's output resource type 1 for"},
+        {0, OR_TYPE_PIOR, "names link 0 of NVIDIA's output resource type 3 for"},
+        {0, OR_TYPE_DSI, "names link 0 of NVIDIA's output resource type 5 for"},
+        {0, 0x10002, "names link 0 of NVIDIA's output resource type 65538 for"},
+        {TEST_SERIAL_LINKS, OR_TYPE_SOR, "names link 4 of NVIDIA's output resource type 2 for"},
+        {0xFFFFFFFE, OR_TYPE_SOR, "names link 4294967294 of NVIDIA's output resource type 2 for"},
+        {0x7FFFFFFF, OR_TYPE_SOR, "names link 2147483647 of NVIDIA's output resource type 2 for"},
+        {0x100, OR_TYPE_SOR, "names link 256 of NVIDIA's output resource type 2 for"},
+    };
+
+    for (const foreign_link& link : links) {
+        active_heads_firmware fw;
+        fw.show(0, 0x1, 2, OR_TYPE_SOR);
+        fw.show(1, 0x100, link.index, link.type);
+        fw.shown[2] = 0x4;
+        active_heads heads = {};
+        fill_untouched(heads);
+
+        EXPECT_EQ(read_logged(fw, 3, true, heads), ERR_BAD_MESSAGE);
+
+        EXPECT_EQ(fw.call_count, 4u);
+        EXPECT_TRUE(is_untouched(heads));
+        EXPECT_TRUE(active_heads_log_contains(link.logged));
+        EXPECT_TRUE(active_heads_log_contains("for head 1's display id 0x100, not one of the chip's 4 serial links"));
+    }
+}
+
 // With `DISPLAY_HEADS_MAX` heads, the most NVIDIA's driver allows on one GPU, every head can show a display id through
 // its link
 TEST(nvidia_display_active_heads, every_head_can_show_a_display_id) {
@@ -488,7 +530,7 @@ TEST(nvidia_display_active_heads, every_head_can_show_a_display_id) {
 
     active_heads heads = {};
 
-    ASSERT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, DISPLAY_HEADS_MAX, true, heads), OK);
+    ASSERT_EQ(read_active_heads(fw, TEST_DISPLAY_COMMON, DISPLAY_HEADS_MAX, true, TEST_SERIAL_LINKS, heads), OK);
 
     EXPECT_EQ(fw.call_count, 2u * DISPLAY_HEADS_MAX);
     for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {

@@ -75,9 +75,10 @@ static constexpr uint32_t TEST_WINDOW_CHANNEL_CLASS = 0xC67D;
 static constexpr uint8_t FULL_ADDRESS_BITS    = 64;
 static constexpr uint8_t REFUSED_ADDRESS_BITS = 16;
 
-// The heads of the chip `set_up` describes, whose initial methods outgrow the push buffer, and its windows
-static constexpr uint8_t CHIP_HEADS   = 4;
-static constexpr uint8_t CHIP_WINDOWS = 8;
+// The heads, windows and serial links of the chip `set_up` describes, whose initial methods outgrow the push buffer
+static constexpr uint8_t CHIP_HEADS        = 4;
+static constexpr uint8_t CHIP_WINDOWS      = 8;
+static constexpr uint8_t CHIP_SERIAL_LINKS = 4;
 
 // Whether the heads of the chip `set_up` describes report output scalers, as GA102's do, or none
 static constexpr bool HEADS_WITH_OUTPUT_SCALERS    = true;
@@ -256,7 +257,7 @@ public:
     uint8_t    boot_head = 0;                 // the head showing `boot_display_id`, every other head showing none
     uint32_t   boot_display_id = 0;
     uint32_t   boot_link_index = 0;           // the link index every link request's reply names
-    uint32_t   boot_link_type = 0;            // the link type every link request's reply names
+    uint32_t   boot_link_type = rm::OUTPUT_RESOURCE_TYPE_SERIAL; // the link type every link request's reply names
     bool       has_crossbar = false;          // whether display common's capabilities report a crossbar
     uint32_t   supported_ids = 0;             // the display ids reported supported, each a DisplayPort output
     uint32_t   digital_facts = DISPLAYPORT_FACTS; // the digital facts of every supported display id
@@ -729,6 +730,7 @@ static int32_t set_up(
     chip.display = {
         .head_count                = CHIP_HEADS,
         .window_count              = CHIP_WINDOWS,
+        .serial_link_count         = CHIP_SERIAL_LINKS,
         .display_class             = TEST_DISPLAY_CLASS,
         .core_channel_class        = TEST_CORE_CHANNEL_CLASS,
         .window_channel_class      = TEST_WINDOW_CHANNEL_CLASS,
