@@ -35,15 +35,17 @@ constexpr uint64_t SURFACE_ALIGNMENT = 0x1000;
 // Logs the maker, name and timings an output's EDID gives
 static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
     log::info(
-        "nvidia: output %u's monitor is %s \"%s\", its EDID giving %u timings, %s, with %u more that did not fit and "
-        "%u extension blocks skipped",
+        "nvidia: output %u's monitor is %s \"%s\", its EDID giving %u %s, %s, with %u more that did not fit and %u "
+        "extension %s skipped",
         output_index,
         monitor.maker,
         monitor.name,
         monitor.timing_count,
+        monitor.timing_count == 1 ? "timing" : "timings",
         monitor.first_timing_is_preferred ? "the first preferred" : "none preferred",
         monitor.dropped_timings,
-        monitor.skipped_extensions
+        monitor.skipped_extensions,
+        monitor.skipped_extensions == 1 ? "block" : "blocks"
     );
 
     for (uint32_t index = 0; index < monitor.timing_count; index++) {
@@ -111,9 +113,10 @@ static void log_connector_link_limits(
 ) {
     displayport::link_limits limits = connector_link_limits(output, gpu_max_rate);
     log::info(
-        "nvidia: a link on output %u's connector takes up to %u lanes at DisplayPort rate 0x%02X",
+        "nvidia: a link on output %u's connector takes up to %u %s at DisplayPort rate 0x%02X",
         output_index,
         limits.max_lanes,
+        limits.max_lanes == 1 ? "lane" : "lanes",
         static_cast<uint32_t>(limits.max_rate)
     );
 }
@@ -123,9 +126,10 @@ static void log_connector_link_limits(
 static void log_monitor_link_limits(uint8_t output_index, const dpcd_capabilities& dpcd) {
     displayport::link_limits limits = monitor_link_limits(dpcd);
     log::info(
-        "nvidia: output %u's link to its monitor takes up to %u lanes at DisplayPort rate 0x%02X %s enhanced framing",
+        "nvidia: output %u's link to its monitor takes up to %u %s at DisplayPort rate 0x%02X %s enhanced framing",
         output_index,
         limits.max_lanes,
+        limits.max_lanes == 1 ? "lane" : "lanes",
         static_cast<uint32_t>(limits.max_rate),
         takes_enhanced_framing(dpcd) ? "with" : "without"
     );
@@ -160,19 +164,20 @@ static void keep_output_modes(
     find_mode_candidates(monitor, facts, output.is_limited_to_60_hz, candidates);
     if (candidates.count == 0 && output.is_limited_to_60_hz) {
         log::info(
-            "nvidia: output %u has no mode, as none of its EDID's %u timings both refreshes below 60.600 Hz and is "
-            "carried by its link",
+            "nvidia: output %u has no mode, as its EDID gives %u %s and its link carries none below 60.600 Hz",
             output_index,
-            monitor.timing_count
+            monitor.timing_count,
+            monitor.timing_count == 1 ? "timing" : "timings"
         );
         return;
     }
 
     if (candidates.count == 0) {
         log::info(
-            "nvidia: output %u has no mode, as its link carries none of its EDID's %u timings",
+            "nvidia: output %u has no mode, as its EDID gives %u %s and its link carries none",
             output_index,
-            monitor.timing_count
+            monitor.timing_count,
+            monitor.timing_count == 1 ? "timing" : "timings"
         );
         return;
     }
@@ -193,7 +198,7 @@ static void keep_output_modes(
     uint64_t millihertz = timing.refresh_millihertz();
     log::info(
         "nvidia: output %u's mode is its EDID's timing %u, %u by %u at %lu.%03lu Hz, over %u %s at DisplayPort rate "
-        "0x%02X, ranked first of the %u timings its link carries%s",
+        "0x%02X, ranked first of the %u %s its link carries%s",
         output_index,
         timing_index,
         timing.width,
@@ -204,6 +209,7 @@ static void keep_output_modes(
         config.lanes == 1 ? "lane" : "lanes",
         static_cast<uint32_t>(config.rate),
         candidates.count,
+        candidates.count == 1 ? "timing" : "timings",
         counted
     );
 }
@@ -341,7 +347,11 @@ static int32_t read_display_facts(
         return rc;
     }
 
-    log::info("nvidia: the static digital display ids give DisplayPort outputs, %u of them", outputs.count);
+    log::info(
+        "nvidia: the static digital display ids give %u DisplayPort %s",
+        outputs.count,
+        outputs.count == 1 ? "output" : "outputs"
+    );
     for (uint8_t index = 0; index < outputs.count; index++) {
         const display_output& output = outputs.outputs[index];
         log::info(
@@ -620,11 +630,11 @@ static int32_t set_up_base_buffer(video_memory& memory, const first_light& light
     out = allocated;
 
     log::info(
-        "nvidia: output %u's base buffer lies at 0x%lX in video memory, its %u rows %u bytes apart, and is cleared to "
-        "black",
+        "nvidia: output %u's base buffer lies at 0x%lX in video memory, its %u %s of %u bytes, and is cleared to black",
         light.output,
         allocated.offset,
         light.timing.height,
+        light.timing.height == 1 ? "row" : "rows",
         pitch
     );
 

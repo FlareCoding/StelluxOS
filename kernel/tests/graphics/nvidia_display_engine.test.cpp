@@ -210,9 +210,13 @@ static constexpr uint32_t FEATURES_BYTE   = 24;
 static constexpr uint8_t  FIRST_PREFERRED = 0x02;
 static constexpr uint32_t CHECKSUM_BYTE   = 127;
 
-// A byte of the header every EDID starts with, where the AOC's two 18-byte timing descriptors start and their bytes,
-// and where its third descriptor, its range limits, starts
+// The base block's byte counting the extension blocks after it
+static constexpr uint32_t EXTENSION_COUNT_BYTE = 126;
+
+// A byte of the header every EDID starts with, the bytes of each descriptor, where the AOC's two timing descriptors
+// start and their bytes, and where its third descriptor, its range limits, starts
 static constexpr uint32_t HEADER_FF_BYTE           = 1;
+static constexpr uint32_t DESCRIPTOR_BYTES         = 18;
 static constexpr uint32_t TIMING_DESCRIPTORS_BYTE  = 54;
 static constexpr uint32_t TIMING_DESCRIPTORS_BYTES = 36;
 static constexpr uint32_t RANGE_DESCRIPTOR_BYTE    = 90;
@@ -973,18 +977,29 @@ static void copy_aoc_edid(bool is_first_preferred) {
     g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] + FIRST_PREFERRED);
 }
 
-// Copies `AOC_BASE_BLOCK` into `g_edid` with its timing descriptors zeroed into display descriptors of a kind the
-// parser passes over, so the EDID parses with no timing
-static void copy_aoc_edid_without_timings() {
-    copy_aoc_edid(true);
-
+// Zeroes `bytes` bytes of `g_edid` from `first`, keeping its checksum right, so timing descriptors there become display
+// descriptors of a kind the parser passes over
+static void zero_edid_bytes(uint32_t first, uint32_t bytes) {
     uint8_t zeroed_sum = 0;
-    for (uint32_t i = 0; i < TIMING_DESCRIPTORS_BYTES; i++) {
-        zeroed_sum = static_cast<uint8_t>(zeroed_sum + g_edid[TIMING_DESCRIPTORS_BYTE + i]);
+    for (uint32_t i = 0; i < bytes; i++) {
+        zeroed_sum = static_cast<uint8_t>(zeroed_sum + g_edid[first + i]);
     }
 
-    string::memset(g_edid + TIMING_DESCRIPTORS_BYTE, 0, TIMING_DESCRIPTORS_BYTES);
+    string::memset(g_edid + first, 0, bytes);
     g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] + zeroed_sum);
+}
+
+// Copies `AOC_BASE_BLOCK` into `g_edid` with its timing descriptors zeroed, so the EDID parses with no timing
+static void copy_aoc_edid_without_timings() {
+    copy_aoc_edid(true);
+    zero_edid_bytes(TIMING_DESCRIPTORS_BYTE, TIMING_DESCRIPTORS_BYTES);
+}
+
+// Copies `AOC_BASE_BLOCK` into `g_edid` with its second timing descriptor zeroed, so the EDID gives only its preferred
+// 59.950 Hz timing
+static void copy_aoc_edid_with_one_timing() {
+    copy_aoc_edid(true);
+    zero_edid_bytes(TIMING_DESCRIPTORS_BYTE + DESCRIPTOR_BYTES, DESCRIPTOR_BYTES);
 }
 
 // Copies `AOC_BASE_BLOCK` into `g_edid` with no timing preferred and its range limits replaced by a third timing, 1920
@@ -1599,7 +1614,7 @@ TEST(nvidia_display_engine, set_up_gives_no_mode_to_an_output_whose_edid_does_no
 
     ASSERT_EQ(set_up_logged(engine), OK);
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: display id 0x100's EDID of 128 bytes does not start with the EDID header"
+        "nvidia: display id 0x100's 128-byte EDID does not start with the EDID header"
     ));
     EXPECT_FALSE(engine_log_contains("nvidia: output 0's mode"));
     EXPECT_FALSE(engine_log_contains("nvidia: output 0 has no mode"));
@@ -1707,7 +1722,9 @@ TEST(nvidia_display_engine, set_up_gives_no_mode_to_an_output_whose_link_carries
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    EXPECT_TRUE(engine_log_contains("nvidia: output 0 has no mode, as its link carries none of its EDID's 2 timings"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 has no mode, as its EDID gives 2 timings and its link carries none\r\n"
+    ));
 }
 
 // An output limited to 60 Hz whose link carries neither timing has no mode, which a set-up logs with the limit
@@ -1724,8 +1741,7 @@ TEST(nvidia_display_engine, set_up_gives_no_mode_to_a_limited_output_whose_link_
 
     ASSERT_EQ(set_up_logged(engine), OK);
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: output 0 has no mode, as none of its EDID's 2 timings both refreshes below 60.600 Hz and is carried "
-        "by its link"
+        "nvidia: output 0 has no mode, as its EDID gives 2 timings and its link carries none below 60.600 Hz\r\n"
     ));
 }
 
@@ -1745,6 +1761,150 @@ TEST(nvidia_display_engine, set_up_gives_a_limited_output_a_mode_below_60_600_hz
     EXPECT_TRUE(engine_log_contains(
         "nvidia: output 0's mode is its EDID's timing 0, 2560 by 1440 at 59.950 Hz, over 1 lane at DisplayPort rate "
         "0x1E, ranked first of the 2 timings its link carries, counting only those below 60.600 Hz"
+    ));
+}
+
+// The default digital facts but for lane code 1, so a link on the connector takes one lane
+static constexpr uint32_t DISPLAYPORT_FACTS_ONE_LANE = (rm::DIGITAL_SIGNAL_DISPLAYPORT << rm::DIGITAL_SIGNAL_SHIFT) |
+                                                       (1u << rm::DIGITAL_LANES_SHIFT) |
+                                                       (4u << rm::DIGITAL_LINK_RATE_SHIFT);
+
+// The receiver capability field of a monitor taking one lane at HBR3, enough for the AOC's 59.950 Hz timing
+static constexpr uint8_t DPCD_RECEIVER_ONE_HBR3_LANE[DPCD_RECEIVER_CAPABILITY_BYTES] = {0x14, 0x1E, 0x81};
+
+// One output, one lane at each end of its link and an EDID giving one timing and counting one extension block its 128
+// bytes do not hold make a set-up log each one in the singular, the mode line's counts of lanes and timings included
+TEST(nvidia_display_engine, set_up_logs_counts_of_1_in_the_singular) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.digital_facts = DISPLAYPORT_FACTS_ONE_LANE;
+    fw.dpcd_receiver = DPCD_RECEIVER_ONE_HBR3_LANE;
+
+    copy_aoc_edid_with_one_timing();
+    g_edid[EXTENSION_COUNT_BYTE] = 1;
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] - 1);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: the static digital display ids give 1 DisplayPort output\r\n"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: a link on output 0's connector takes up to 1 lane at DisplayPort rate 0x1E\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's link to its monitor takes up to 1 lane at DisplayPort rate 0x1E with enhanced framing\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's monitor is AOC \"AG241QG4\", its EDID giving 1 timing, the first preferred, with 0 more "
+        "that did not fit and 1 extension block skipped\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's mode is its EDID's timing 0, 2560 by 1440 at 59.950 Hz, over 1 lane at DisplayPort rate "
+        "0x1E, ranked first of the 1 timing its link carries\r\n"
+    ));
+}
+
+// Two outputs, four lanes at each end of a link and an EDID giving two timings and counting two extension blocks its
+// 128 bytes do not hold make a set-up log each of those counts in the plural
+TEST(nvidia_display_engine, set_up_logs_counts_past_1_in_the_plural) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+
+    copy_aoc_edid(true);
+    g_edid[EXTENSION_COUNT_BYTE] = 2;
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] - 2);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: the static digital display ids give 2 DisplayPort outputs\r\n"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: a link on output 0's connector takes up to 4 lanes at DisplayPort rate 0x1E\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's link to its monitor takes up to 4 lanes at DisplayPort rate 0x1E with enhanced framing\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's monitor is AOC \"AG241QG4\", its EDID giving 2 timings, the first preferred, with 0 more "
+        "that did not fit and 2 extension blocks skipped\r\n"
+    ));
+}
+
+// An EDID giving one timing and counting two extension blocks its 128 bytes do not hold makes a set-up log "1 timing"
+// and "2 extension blocks", each word chosen by its own count
+TEST(nvidia_display_engine, set_up_chooses_each_counted_word_of_the_monitor_line_by_its_own_count) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+
+    copy_aoc_edid_with_one_timing();
+    g_edid[EXTENSION_COUNT_BYTE] = 2;
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] - 2);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's monitor is AOC \"AG241QG4\", its EDID giving 1 timing, the first preferred, with 0 more "
+        "that did not fit and 2 extension blocks skipped\r\n"
+    ));
+}
+
+// An output limited to 60 Hz keeps the AOC's 59.950 Hz timing alone of its 2, so its mode line counts it in the
+// singular
+TEST(nvidia_display_engine, set_up_counts_the_lone_timing_a_limited_output_keeps_in_the_singular) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.digital_facts = DISPLAYPORT_FACTS | rm::DIGITAL_LIMITED_TO_60_HZ;
+
+    copy_aoc_edid(true);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's mode is its EDID's timing 0, 2560 by 1440 at 59.950 Hz, over 1 lane at DisplayPort rate "
+        "0x1E, ranked first of the 1 timing its link carries, counting only those below 60.600 Hz\r\n"
+    ));
+}
+
+// One lane at RBR cannot carry the AOC's 59.950 Hz timing, so when the EDID gives that timing alone, the line saying
+// why the output has no mode counts it in the singular
+TEST(nvidia_display_engine, set_up_counts_the_lone_timing_a_link_cannot_carry_in_the_singular) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.dpcd_receiver = DPCD_RECEIVER_ONE_RBR_LANE;
+
+    copy_aoc_edid_with_one_timing();
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 has no mode, as its EDID gives 1 timing and its link carries none\r\n"
+    ));
+}
+
+// One lane at RBR cannot carry the AOC's 59.950 Hz timing, so when the EDID gives that timing alone, the line saying
+// why an output limited to 60 Hz has no mode counts it in the singular
+TEST(nvidia_display_engine, set_up_counts_the_lone_timing_of_a_limited_output_without_a_mode_in_the_singular) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.digital_facts = DISPLAYPORT_FACTS | rm::DIGITAL_LIMITED_TO_60_HZ;
+    fw.dpcd_receiver = DPCD_RECEIVER_ONE_RBR_LANE;
+
+    copy_aoc_edid_with_one_timing();
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 has no mode, as its EDID gives 1 timing and its link carries none below 60.600 Hz\r\n"
     ));
 }
 
@@ -2171,16 +2331,17 @@ static constexpr uint8_t TIMING_1366_BY_768[] = {
 };
 
 // `TIMING_1366_BY_768`'s base buffer, 768 rows of 1366 4-byte pixels, 5464 bytes rounded up to 5632
-static constexpr uint64_t BASE_BUFFER_1366_BYTES = 0x420000;
+static constexpr uint64_t BASE_BUFFER_1366_BY_768_BYTES = 0x420000;
 
-// Replaces the AOC's first timing in `g_edid`, the preferred one, with `TIMING_1366_BY_768`, which stays preferred
-static void put_1366_pixel_timing_first() {
+// Replaces the AOC's first timing in `g_edid`, the preferred one, with the timing descriptor `timing`, which stays
+// preferred
+static void put_timing_first(const uint8_t (&timing)[DESCRIPTOR_BYTES]) {
     uint8_t replaced_sum = 0;
-    for (uint32_t i = 0; i < sizeof(TIMING_1366_BY_768); i++) {
-        replaced_sum = static_cast<uint8_t>(replaced_sum + g_edid[TIMING_DESCRIPTORS_BYTE + i] - TIMING_1366_BY_768[i]);
+    for (uint32_t i = 0; i < DESCRIPTOR_BYTES; i++) {
+        replaced_sum = static_cast<uint8_t>(replaced_sum + g_edid[TIMING_DESCRIPTORS_BYTE + i] - timing[i]);
     }
 
-    string::memcpy(g_edid + TIMING_DESCRIPTORS_BYTE, TIMING_1366_BY_768, sizeof(TIMING_1366_BY_768));
+    string::memcpy(g_edid + TIMING_DESCRIPTORS_BYTE, timing, DESCRIPTOR_BYTES);
     g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] + replaced_sum);
 }
 
@@ -2195,33 +2356,58 @@ static bool scanout_holds(const engine_video_memory& memory, uint64_t start, uin
     return true;
 }
 
-// Output 0's 1366 by 768 timing gets 768 rows 5632 bytes apart, rounded up from 5464, as scanout memory at NVIDIA's
+// Output 0's 1366 by 768 timing gets 768 rows of 5632 bytes, rounded up from 5464, as scanout memory at NVIDIA's
 // alignment, cleared through one mapping taken down after, the bytes past it untouched, logged, and kept by the release
 TEST(nvidia_display_engine, set_up_allocates_and_clears_the_chosen_outputs_base_buffer) {
     engine_firmware fw;
     show_output_0_on_head_1(fw);
-    put_1366_pixel_timing_first();
+    put_timing_first(TIMING_1366_BY_768);
     engine_video_memory memory;
-    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
     EXPECT_EQ(memory.scanout_requests, 1u);
-    EXPECT_EQ(memory.scanout_size, BASE_BUFFER_1366_BYTES);
+    EXPECT_EQ(memory.scanout_size, BASE_BUFFER_1366_BY_768_BYTES);
     EXPECT_EQ(memory.scanout_alignment, NVIDIA_SURFACE_ALIGNMENT);
 
     EXPECT_EQ(memory.scanout_maps, 1u);
     EXPECT_EQ(memory.scanout_unmaps, 1u);
     EXPECT_EQ(memory.scanout_fill_words, 0u);
-    EXPECT_TRUE(scanout_holds(memory, 0, BASE_BUFFER_1366_BYTES, 0));
-    EXPECT_TRUE(scanout_holds(memory, BASE_BUFFER_1366_BYTES, SCANOUT_GUARD_BYTES, SCANOUT_FILL));
+    EXPECT_TRUE(scanout_holds(memory, 0, BASE_BUFFER_1366_BY_768_BYTES, 0));
+    EXPECT_TRUE(scanout_holds(memory, BASE_BUFFER_1366_BY_768_BYTES, SCANOUT_GUARD_BYTES, SCANOUT_FILL));
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: output 0's base buffer lies at 0x1000000 in video memory, its 768 rows 5632 bytes apart, and is "
-        "cleared to black"
+        "nvidia: output 0's base buffer lies at 0x1000000 in video memory, its 768 rows of 5632 bytes, and is cleared "
+        "to black\r\n"
     ));
 
     EXPECT_EQ(engine.release(), OK);
     EXPECT_EQ(memory.scanout_releases, 0u);
+}
+
+// `TIMING_1366_BY_768` cut to one row, 1366 by 1 over 1792 by 31 pixels, its 30 lines of blanking kept
+static constexpr uint8_t TIMING_1366_BY_1[] = {
+    0x66, 0x21, 0x56, 0xAA, 0x51, 0x01, 0x1E, 0x00, 0x46, 0x8F, 0x33, 0x00, 0x0F, 0x8C, 0x21, 0x00, 0x00, 0x1E,
+};
+
+// `TIMING_1366_BY_1`'s base buffer, one row of 1366 4-byte pixels, 5464 bytes rounded up to 5632
+static constexpr uint64_t BASE_BUFFER_1366_BY_1_BYTES = 0x1600;
+
+// Output 0's timing one row high gets a base buffer of one row, which the set-up logs in the singular
+TEST(nvidia_display_engine, set_up_counts_the_lone_row_of_a_base_buffer_in_the_singular) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    put_timing_first(TIMING_1366_BY_1);
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_1_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(memory.scanout_size, BASE_BUFFER_1366_BY_1_BYTES);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's base buffer lies at 0x1000000 in video memory, its 1 row of 5632 bytes, and is cleared to "
+        "black\r\n"
+    ));
 }
 
 // Scanout memory the video memory has no room for leaves output 0 with no base buffer, logged, the set-up `OK` and
@@ -2322,7 +2508,7 @@ static void connect_output_1_alone(engine_firmware& fw) {
     fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
     fw.connected_ids = OUTPUT_1_ID;
     copy_aoc_edid(true);
-    put_1366_pixel_timing_first();
+    put_timing_first(TIMING_1366_BY_768);
 }
 
 // Whether the hash table entry naming `object` binds it under the double's client to `hardware_channel` with the
@@ -2356,7 +2542,7 @@ TEST(nvidia_display_engine, set_up_binds_the_base_buffer_and_the_look_up_table_s
     engine_firmware fw;
     connect_output_1_alone(fw);
     engine_video_memory memory;
-    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
@@ -2384,9 +2570,9 @@ TEST(nvidia_display_engine, set_up_binds_the_base_buffer_and_the_look_up_table_s
 TEST(nvidia_display_engine, set_up_binds_head_1s_surfaces_to_window_3s_channel) {
     engine_firmware fw;
     show_output_0_on_head_1(fw);
-    put_1366_pixel_timing_first();
+    put_timing_first(TIMING_1366_BY_768);
     engine_video_memory memory;
-    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
@@ -2409,7 +2595,7 @@ TEST(nvidia_display_engine, set_up_fills_the_look_up_table_surface_with_nvidias_
     engine_firmware fw;
     connect_output_1_alone(fw);
     engine_video_memory memory;
-    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
@@ -2461,7 +2647,7 @@ TEST(nvidia_display_engine, set_up_releases_a_base_buffer_whose_binding_fails) {
         connect_output_1_alone(fw);
 
         engine_video_memory memory;
-        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
         memory.failing_general_map = BASE_BUFFER_BINDING_MAP;
         memory.general_map_result = failed.error;
         display_engine& engine = new_engine(fw, memory);
@@ -2500,7 +2686,7 @@ TEST(nvidia_display_engine, set_up_gives_no_look_up_table_surface_when_its_alloc
         connect_output_1_alone(fw);
 
         engine_video_memory memory;
-        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
         memory.failing_general_request = TABLE_REQUEST;
         memory.general_allocate_result = failed.error;
         display_engine& engine = new_engine(fw, memory);
@@ -2553,7 +2739,7 @@ TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fi
         connect_output_1_alone(fw);
 
         engine_video_memory memory;
-        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
         memory.failing_general_map = failed.map;
         memory.general_map_result = failed.error;
         display_engine& engine = new_engine(fw, memory);
@@ -2596,7 +2782,7 @@ TEST(nvidia_display_engine, set_up_without_both_surfaces_bound_asks_nothing_of_t
         memory.general_allocate_result = ERR_NO_MEMORY;
         memory.failing_general_map = missing.map;
         memory.general_map_result = ERR_NO_MEMORY;
-        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
 
         display_engine& engine = new_engine(fw, memory);
         ASSERT_EQ(set_up_logged(engine), OK);
@@ -2609,8 +2795,8 @@ TEST(nvidia_display_engine, set_up_without_both_surfaces_bound_asks_nothing_of_t
 // buffer, so a set-up clears it and goes on, or gives false when the unprivileged heap cannot back it
 static bool give_output_0_a_base_buffer(engine_firmware& fw, engine_video_memory& memory) {
     show_output_0_on_head_1(fw);
-    put_1366_pixel_timing_first();
-    return memory.give_scanout(BASE_BUFFER_1366_BYTES);
+    put_timing_first(TIMING_1366_BY_768);
+    return memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES);
 }
 
 // A set-up choosing no output, or leaving the chosen output with no base buffer for want of video memory, asks nothing
