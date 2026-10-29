@@ -20,14 +20,24 @@ static constexpr uint8_t  ENHANCED_FRAMING  = 0x80;
 // bits 7 to 4 and the minor in bits 3 to 0, as NVIDIA's DPCD headers give them
 static constexpr uint32_t RECEIVER_REVISION     = 0;
 static constexpr uint8_t  RECEIVER_REVISION_1_0 = 0x10;
+static constexpr uint8_t  RECEIVER_REVISION_1_2 = 0x12;
 
-// The PHY repeaters' offsets of their revision, highest rate, count and lane byte, and revision 1.4 as their revision
-// byte codes it, as NVIDIA's DPCD headers give them
+// The PHY repeaters' offsets of their revision, highest rate, count and lane byte, revision 1.4 as their revision
+// byte codes it, and the count byte's bit for one repeater, as NVIDIA's DPCD headers give them
 static constexpr uint32_t REPEATER_REVISION     = 0;
 static constexpr uint32_t REPEATER_MAX_RATE     = 1;
 static constexpr uint32_t REPEATER_COUNT        = 2;
 static constexpr uint32_t REPEATER_LANES        = 4;
 static constexpr uint8_t  REPEATER_REVISION_1_4 = 0x14;
+static constexpr uint8_t  REPEATER_COUNT_FIRST  = 0x80;
+
+// The link status bytes NVIDIA's library reads, lanes 0 and 1, lanes 2 and 3 and the interlane alignment, from the
+// sink's field, its copy among the event status indicators, and PHY repeater 1's, each higher-numbered one 0x50 on
+static constexpr uint32_t LINK_STATUS_BYTES           = 3;
+static constexpr uint32_t SINK_LINK_STATUS            = 0x00202; // NV_DPCD_LANE0_1_STATUS
+static constexpr uint32_t SINK_LINK_STATUS_INDICATORS = 0x0200C; // NV_DPCD_LANE0_1_STATUS_ESI
+static constexpr uint32_t REPEATER_LINK_STATUS        = 0xF0030; // NV_DPCD14_PHY_REPEATER_START(0) + 0x20
+static constexpr uint32_t REPEATER_LINK_STATUS_STRIDE = 0x50;
 
 // NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer) and for each later read, and its passes,
 // the first and the 3 more (faultyRetries) it makes while the field cannot be read
@@ -399,10 +409,7 @@ displayport::link_limits monitor_link_limits(const dpcd_capabilities& dpcd) {
         lanes = 1;
     }
 
-    uint8_t count = dpcd.phy_repeaters[REPEATER_COUNT];
-    bool names_one_count = count != 0 && (count & (count - 1)) == 0;
-    bool is_at_least_revision_1_4 = dpcd.phy_repeaters[REPEATER_REVISION] >= REPEATER_REVISION_1_4;
-    if (is_at_least_revision_1_4 && names_one_count) {
+    if (phy_repeater_count(dpcd) != 0) {
         displayport::link_rate repeaters_highest_rate = repeater_rate(dpcd.phy_repeaters[REPEATER_MAX_RATE]);
         uint8_t repeaters_most_lanes = dpcd.phy_repeaters[REPEATER_LANES] & LANE_COUNT_MASK;
         if (static_cast<uint8_t>(repeaters_highest_rate) < static_cast<uint8_t>(rate)) {
@@ -426,6 +433,91 @@ bool takes_enhanced_framing(const dpcd_capabilities& dpcd) {
 
 bool is_at_least_revision_1_0(const dpcd_capabilities& dpcd) {
     return dpcd.receiver[RECEIVER_REVISION] >= RECEIVER_REVISION_1_0;
+}
+
+uint8_t phy_repeater_count(const dpcd_capabilities& dpcd) {
+    uint8_t count = dpcd.phy_repeaters[REPEATER_COUNT];
+    bool names_one_count = count != 0 && (count & (count - 1)) == 0;
+    bool is_at_least_revision_1_4 = dpcd.phy_repeaters[REPEATER_REVISION] >= REPEATER_REVISION_1_4;
+    if (!is_at_least_revision_1_4 || !names_one_count) {
+        return 0;
+    }
+
+    uint8_t repeaters = 1;
+    for (uint8_t bit = REPEATER_COUNT_FIRST; (count & bit) == 0; bit >>= 1) {
+        repeaters++;
+    }
+
+    return repeaters;
+}
+
+int32_t read_link_status(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    const dpcd_capabilities& dpcd,
+    bool gpu_supports_1_2,
+    displayport::link_status& out,
+    bool& is_read
+) {
+    is_read = false;
+
+    uint8_t combined[LINK_STATUS_BYTES] = {0xFF, 0xFF, 0xFF};
+    // Reads every repeater the DPCD counts, as NVIDIA's library does, even one `train_link` left out
+    uint8_t repeaters = phy_repeater_count(dpcd);
+    for (uint8_t target = repeaters; target > 0; target--) {
+        uint32_t address = REPEATER_LINK_STATUS + REPEATER_LINK_STATUS_STRIDE * (target - 1);
+        uint8_t status[LINK_STATUS_BYTES] = {};
+        bool is_status_read = false;
+        int32_t rc = read_dpcd(
+            fw,
+            display_common,
+            display_id,
+            address,
+            LINK_STATUS_BYTES,
+            CAPABILITY_REQUESTS,
+            LINK_UNCHECKED,
+            status,
+            is_status_read
+        );
+        if (rc != OK || !is_status_read) {
+            return rc;
+        }
+
+        for (uint32_t i = 0; i < LINK_STATUS_BYTES; i++) {
+            combined[i] &= status[i];
+        }
+    }
+
+    bool reads_indicators = gpu_supports_1_2 && dpcd.receiver[RECEIVER_REVISION] >= RECEIVER_REVISION_1_2;
+    uint32_t sink_address = reads_indicators ? SINK_LINK_STATUS_INDICATORS : SINK_LINK_STATUS;
+    uint8_t status[LINK_STATUS_BYTES] = {};
+    bool is_status_read = false;
+    int32_t rc = read_dpcd(
+        fw,
+        display_common,
+        display_id,
+        sink_address,
+        LINK_STATUS_BYTES,
+        CAPABILITY_REQUESTS,
+        LINK_UNCHECKED,
+        status,
+        is_status_read
+    );
+    if (rc != OK || !is_status_read) {
+        return rc;
+    }
+
+    out = {
+        .lanes_0_1   = static_cast<uint8_t>(combined[0] & status[0]),
+        .lanes_2_3   = static_cast<uint8_t>(combined[1] & status[1]),
+        .lane_align  = static_cast<uint8_t>(combined[2] & status[2]),
+        .sink_status = 0,
+    };
+
+    is_read = true;
+
+    return OK;
 }
 
 } // namespace drivers::nvidia

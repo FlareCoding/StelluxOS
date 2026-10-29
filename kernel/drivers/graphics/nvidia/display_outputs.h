@@ -24,6 +24,7 @@ struct display_output {
     uint8_t  link_rate_code;      // the highest link rate, as `rm::DIGITAL_LINK_RATE_SHIFT`'s field codes it
     bool     is_limited_to_60_hz; // the firmware reports the display id as qualified only at 60 Hz refresh rates
     bool     prefers_rbr;         // the link must be trained at RBR (the reduced bit rate, 1.62 Gbps) whenever possible
+    uint8_t  phy_repeaters;       // the PHY repeaters the firmware found on the link
 };
 
 /**

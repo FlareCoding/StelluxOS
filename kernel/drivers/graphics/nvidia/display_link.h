@@ -5,7 +5,10 @@
 
 #include "common/types.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/display_dpcd.h"
+#include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
+#include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/rm.h"
 
@@ -80,14 +83,57 @@ int32_t read_link_capabilities(
 );
 
 /**
- * @brief Find the chosen output's link, logging each step: assign its display
- * id an output resource and read the resource's DisplayPort facts. A step
- * that fails is logged, and the steps after it are not taken.
+ * @brief Train a display id's link at a configuration, as NVIDIA's
+ * DisplayPort library asks display common to: setting the lane count and the
+ * rate, turning on enhanced framing when the link runs it and training the
+ * PHY repeaters when the GPU trains them and the firmware counts as many as
+ * the DPCD does, one request for each repeater from the one closest to the
+ * GPU, then one for the sink. After an accepted reply naming a wait, the
+ * calling CPU spins for that wait, as NVIDIA's library does after any reply
+ * naming one. A refused request is logged and leaves the link untrained,
+ * where NVIDIA's library sends a refused request naming a wait again, up to 3
+ * times in all, since `firmware::control` gives no refused request's reply.
+ * @param fw The bound firmware.
+ * @param display_common The display common object.
+ * @param output The output the link drives.
+ * @param dpcd The capabilities `read_output_dpcd` read for its monitor, from
+ * which the caller leaves out the PHY repeaters when the output resource's
+ * DisplayPort facts say the firmware trains none.
+ * @param trains_phy_repeaters Whether the GPU trains PHY repeaters.
+ * @param config The configuration.
+ * @param enhanced_framing Whether the link runs enhanced framing.
+ * @param is_trained Set to whether every request succeeded.
+ * @return `OK`, including when the link is untrained, or what
+ * `firmware::control` returns, logged as its doc describes, for an error
+ * other than `ERR_FIRMWARE`.
+ */
+int32_t train_link(
+    firmware& fw,
+    rm::handle display_common,
+    const display_output& output,
+    const dpcd_capabilities& dpcd,
+    bool trains_phy_repeaters,
+    const displayport::link_configuration& config,
+    bool enhanced_framing,
+    bool& is_trained
+);
+
+/**
+ * @brief Train the chosen output's link for its mode, logging each step:
+ * assign its display id an output resource, read the resource's DisplayPort
+ * facts, find the lowest configuration carrying the mode under them, train
+ * the link there and check the training against the status bytes NVIDIA's
+ * library reads. When the facts say the firmware trains no PHY repeaters, the
+ * configuration, the training and the check leave out any the DPCD counts, as
+ * NVIDIA's library then reads none. A step that fails is logged, and the
+ * steps after it are not taken.
  * @param fw The bound firmware.
  * @param display_common The display common object.
  * @param has_crossbar Whether display common reports the crossbar.
  * @param output The chosen output.
- * @param is_set_up Set to whether every step succeeded.
+ * @param dpcd The capabilities `read_output_dpcd` read for its monitor.
+ * @param light The output's light, whose mode the link must carry.
+ * @param is_set_up Set to whether every step succeeded, the check included.
  * @return `OK`, including when a step fails, or what `firmware::control`
  * returns, logged as its doc describes, for an error other than
  * `ERR_FIRMWARE`.
@@ -97,6 +143,8 @@ int32_t set_up_output_link(
     rm::handle display_common,
     bool has_crossbar,
     const display_output& output,
+    const dpcd_capabilities& dpcd,
+    const first_light& light,
     bool& is_set_up
 );
 

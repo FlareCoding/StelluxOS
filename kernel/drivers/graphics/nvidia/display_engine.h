@@ -9,6 +9,7 @@
 #include "drivers/graphics/nvidia/completion_notifier.h"
 #include "drivers/graphics/nvidia/display_active_heads.h"
 #include "drivers/graphics/nvidia/display_channel.h"
+#include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_objects.h"
@@ -184,29 +185,32 @@ public:
      * the same methods again, with the windows' heads only when no update was
      * kicked, an update naming no notifier and a wait for GET to reach PUT,
      * logging whether the take-down succeeds. Once the core channel has read
-     * the shutdown update, or with no head active, find the output's
+     * the shutdown update, or with no head active, train the output's
      * DisplayPort link with `set_up_output_link`: assign the display id an
-     * output resource when display common reports a crossbar, then read the
-     * resource's DisplayPort facts, logging each step. When a step fails, the
-     * steps after it are not taken: log that the link is not set up and take
-     * the engine down the same way. Then send the mode set's end. A refused
-     * start is logged and nothing is written to the core channel, the set-up
-     * returning `OK`, and a refused end is logged, changing nothing. Each
-     * output's modes are kept on the unprivileged heap from the monitors'
-     * reads to the choice, or to `release` when the set-up fails before it,
-     * and the other facts read are not kept. Each request spins on the calling
-     * CPU, waiting for its reply as `firmware` describes, and so does each
-     * wait for GET, for at most 5 seconds, and the wait for the completion
-     * notifier, for at most `COMPLETION_NOTIFIER_WAIT_NS`. The requests for
-     * the core channel's state follow one another with no pause while the
-     * firmware reports the channel busy, as `wait_core_channel_idle`
-     * describes. `read_output_edid` also spins before each reread of an EDID
-     * as it describes. `set_up` must be called at most once, as
-     * `instance_memory::set_up` must, and since it waits on video memory's
-     * lock and on the card as `instance_memory` and `video_memory` describe,
-     * it must never run in an interrupt handler or under a spinlock, and on a
-     * thread that cannot sleep, such as the boot thread, must run only while
-     * no other thread can call into video memory or the firmware.
+     * output resource when display common reports a crossbar, read the
+     * resource's DisplayPort facts, train the link at the lowest configuration
+     * carrying the mode under them and check the training against the link's
+     * status bytes, logging each step. When a step fails, the steps after it
+     * are not taken: log that the link is not set up and take the engine down
+     * the same way. Then send the mode set's end. A refused start is logged
+     * and nothing is written to the core channel, the set-up returning `OK`,
+     * and a refused end is logged, changing nothing. Each output's modes are
+     * kept on the unprivileged heap from the monitors' reads to the choice, or
+     * to `release` when the set-up fails before it, and the other facts read
+     * are not kept. Each request spins on the calling CPU, waiting for its
+     * reply as `firmware` describes, and so does each wait for GET, for at
+     * most 5 seconds, and the wait for the completion notifier, for at most
+     * `COMPLETION_NOTIFIER_WAIT_NS`. The requests for the core channel's state
+     * follow one another with no pause while the firmware reports the channel
+     * busy, as `wait_core_channel_idle` describes. `read_output_edid` also
+     * spins before each reread of an EDID as it describes, and `train_link`
+     * for each wait an accepted training reply asks for. `set_up` must be
+     * called at most once, as `instance_memory::set_up` must, and since it
+     * waits on video memory's lock and on the card as `instance_memory` and
+     * `video_memory` describe, it must never run in an interrupt handler or
+     * under a spinlock, and on a thread that cannot sleep, such as the boot
+     * thread, must run only while no other thread can call into video memory
+     * or the firmware.
      * @param regs The card's BAR0 registers, through which the core channel's
      * methods are kicked and its PUT, GET and armed state read, and the window
      * channel's PUT and GET read. BAR0 must stay mapped until `release`
@@ -334,7 +338,9 @@ private:
         uint32_t present_windows,
         const active_heads& active,
         bool has_crossbar,
-        const display_output& output
+        const display_output& output,
+        const dpcd_capabilities& dpcd,
+        const first_light& light
     );
 
     // Writes the shutdown update naming the notifier, waits for it and stops later updates from writing the notifier

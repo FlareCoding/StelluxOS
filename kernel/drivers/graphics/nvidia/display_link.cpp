@@ -2,12 +2,16 @@
 
 #include "drivers/graphics/nvidia/display_link.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "clock/clock.h"
 #include "common/logging.h"
+#include "common/string.h"
+#include "hw/cpu.h"
 
 namespace drivers::nvidia {
 
-// The step a stop before the DisplayPort facts leaves undone, ending its log line
-static constexpr const char* NO_FACTS = ", so the link's DisplayPort facts are not read";
+// The steps a stop leaves undone, ending its log line: before the facts are read and before the training
+static constexpr const char* UNREAD    = ", so the link's DisplayPort facts are not read and the link is not trained";
+static constexpr const char* UNTRAINED = ", so the link is not trained";
 
 // The letter NVIDIA's names give an output resource's link
 static char link_letter(uint8_t sublink) {
@@ -54,7 +58,7 @@ int32_t assign_output_link(
             log::error(
                 "nvidia: display common refused to assign display id 0x%X an output resource%s",
                 display_id,
-                NO_FACTS
+                UNREAD
             );
             return OK;
         }
@@ -68,7 +72,7 @@ int32_t assign_output_link(
                 "nvidia: display common's assignment for display id 0x%X names no output resource driving it on its "
                 "own or as primary%s",
                 display_id,
-                NO_FACTS
+                UNREAD
             );
             return OK;
         }
@@ -81,7 +85,7 @@ int32_t assign_output_link(
         log::error(
             "nvidia: display common refused the output resource facts of display id 0x%X%s",
             display_id,
-            NO_FACTS
+            UNREAD
         );
         return OK;
     }
@@ -97,7 +101,7 @@ int32_t assign_output_link(
                 display_id,
                 facts.index,
                 facts.type,
-                NO_FACTS
+                UNREAD
             );
             return OK;
         }
@@ -108,7 +112,7 @@ int32_t assign_output_link(
                 display_id,
                 facts.index,
                 rm::ASSIGNED_RESOURCES_MAX,
-                NO_FACTS
+                UNREAD
             );
             return OK;
         }
@@ -124,7 +128,7 @@ int32_t assign_output_link(
             display_id,
             index,
             facts.protocol,
-            NO_FACTS
+            UNREAD
         );
         return OK;
     }
@@ -161,7 +165,11 @@ int32_t read_link_capabilities(
     params.resource_index = resource_index;
     int32_t rc = fw.control(display_common, rm::CONTROL_GET_LINK_CAPABILITIES, &params, sizeof(params));
     if (rc == ERR_FIRMWARE) {
-        log::error("nvidia: display common refused the DisplayPort facts of output resource %u", resource_index);
+        log::error(
+            "nvidia: display common refused the DisplayPort facts of output resource %u%s",
+            resource_index,
+            UNTRAINED
+        );
         return OK;
     }
 
@@ -193,11 +201,143 @@ int32_t read_link_capabilities(
     return OK;
 }
 
+// Spins on the calling CPU for `ms` milliseconds, since `display_engine::set_up` may run on a thread that cannot sleep
+static void spin_for_ms(uint64_t ms) {
+    uint64_t end = clock::now_ns() + ms * NS_PER_MS;
+    while (clock::now_ns() < end) {
+        cpu::relax();
+    }
+}
+
+// Sends one training request and, after an accepted reply asking for a wait, spins for that wait, as NVIDIA's library
+// does after any reply asking for one
+static int32_t request_training(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    uint32_t command,
+    uint32_t data
+) {
+    rm::train_link_params params = {};
+    params.display_id = display_id;
+    params.command = command;
+    params.data = data;
+    int32_t rc = fw.control(display_common, rm::CONTROL_TRAIN_LINK, &params, sizeof(params));
+    if (rc == OK && params.retry_time_ms > 0) {
+        spin_for_ms(params.retry_time_ms);
+    }
+
+    return rc;
+}
+
+int32_t train_link(
+    firmware& fw,
+    rm::handle display_common,
+    const display_output& output,
+    const dpcd_capabilities& dpcd,
+    bool trains_phy_repeaters,
+    const displayport::link_configuration& config,
+    bool enhanced_framing,
+    bool& is_trained
+) {
+    is_trained = false;
+
+    uint8_t repeaters = phy_repeater_count(dpcd);
+    bool trains_repeaters_first = trains_phy_repeaters && output.phy_repeaters == repeaters;
+
+    uint32_t command = rm::TRAIN_SET_LANES | rm::TRAIN_SET_RATE;
+    if (enhanced_framing) {
+        command |= rm::TRAIN_ENHANCED_FRAMING;
+    }
+
+    if (trains_repeaters_first) {
+        command |= rm::TRAIN_PHY_REPEATER;
+    }
+
+    uint8_t first_target = trains_repeaters_first ? repeaters : 0;
+    for (int32_t target = first_target; target >= 0; target--) {
+        uint32_t data = (static_cast<uint32_t>(config.rate) << rm::TRAIN_DATA_RATE_SHIFT)
+            | config.lanes
+            | (static_cast<uint32_t>(target) << rm::TRAIN_DATA_TARGET_SHIFT);
+
+        int32_t rc = request_training(fw, display_common, output.display_id, command, data);
+        if (rc == ERR_FIRMWARE) {
+            log::error(
+                "nvidia: display common refused to train display id 0x%X's link at %u %s at DisplayPort rate 0x%02X "
+                "(command 0x%X, data 0x%X)%s",
+                output.display_id,
+                config.lanes,
+                config.lanes == 1 ? "lane" : "lanes",
+                static_cast<uint32_t>(config.rate),
+                command,
+                data,
+                LINK_UNCHECKED
+            );
+            return OK;
+        }
+
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    is_trained = true;
+
+    log::info(
+        "nvidia: display common trained display id 0x%X's link at %u %s at DisplayPort rate 0x%02X (command 0x%X, "
+        "%u PHY %s trained first)",
+        output.display_id,
+        config.lanes,
+        config.lanes == 1 ? "lane" : "lanes",
+        static_cast<uint32_t>(config.rate),
+        command,
+        first_target,
+        first_target == 1 ? "repeater" : "repeaters"
+    );
+
+    return OK;
+}
+
+// Whether the status read after training shows the link trained at `config`, logging what it shows
+static bool is_training_checked(
+    uint32_t display_id,
+    const displayport::link_status& status,
+    const displayport::link_configuration& config
+) {
+    bool is_trained = displayport::is_trained(status, config.lanes);
+    if (is_trained) {
+        log::info(
+            "nvidia: display id 0x%X's link status reads 0x%02X 0x%02X 0x%02X, so its %u %s trained",
+            display_id,
+            status.lanes_0_1,
+            status.lanes_2_3,
+            status.lane_align,
+            config.lanes,
+            config.lanes == 1 ? "lane is" : "lanes are"
+        );
+        return true;
+    }
+
+    log::error(
+        "nvidia: display id 0x%X's link is not trained at %u %s, its link status reading 0x%02X 0x%02X 0x%02X",
+        display_id,
+        config.lanes,
+        config.lanes == 1 ? "lane" : "lanes",
+        status.lanes_0_1,
+        status.lanes_2_3,
+        status.lane_align
+    );
+
+    return false;
+}
+
 int32_t set_up_output_link(
     firmware& fw,
     rm::handle display_common,
     bool has_crossbar,
     const display_output& output,
+    const dpcd_capabilities& dpcd,
+    const first_light& light,
     bool& is_set_up
 ) {
     is_set_up = false;
@@ -211,7 +351,58 @@ int32_t set_up_output_link(
 
     chip_displayport gpu = {};
     bool supports_1_2 = false;
-    return read_link_capabilities(fw, display_common, link.index, gpu, supports_1_2, is_set_up);
+    bool is_read = false;
+    rc = read_link_capabilities(fw, display_common, link.index, gpu, supports_1_2, is_read);
+    if (rc != OK || !is_read) {
+        return rc;
+    }
+
+    dpcd_capabilities link_dpcd = {};
+    string::memcpy(&link_dpcd, &dpcd, sizeof(link_dpcd));
+
+    // NVIDIA's library reads no PHY repeater when the facts say the firmware trains none
+    if (!gpu.trains_phy_repeaters) {
+        link_dpcd.has_phy_repeater_bytes = false;
+        string::memset(link_dpcd.phy_repeaters, 0, sizeof(link_dpcd.phy_repeaters));
+    }
+
+    displayport::link_facts facts = output_link_facts(output, link_dpcd, gpu);
+    displayport::link_configuration config = {};
+    if (!displayport::find_lowest_configuration(facts, light.timing, config)) {
+        log::error(
+            "nvidia: no link configuration carries display id 0x%X's mode within output resource %u's DisplayPort "
+            "facts%s",
+            output.display_id,
+            link.index,
+            UNTRAINED
+        );
+        return OK;
+    }
+
+    bool is_trained = false;
+    rc = train_link(
+        fw,
+        display_common,
+        output,
+        link_dpcd,
+        gpu.trains_phy_repeaters,
+        config,
+        facts.enhanced_framing,
+        is_trained
+    );
+    if (rc != OK || !is_trained) {
+        return rc;
+    }
+
+    displayport::link_status status = {};
+    bool is_status_read = false;
+    rc = read_link_status(fw, display_common, output.display_id, link_dpcd, supports_1_2, status, is_status_read);
+    if (rc != OK || !is_status_read) {
+        return rc;
+    }
+
+    is_set_up = is_training_checked(output.display_id, status, config);
+    return OK;
 }
 
 } // namespace drivers::nvidia
