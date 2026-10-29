@@ -6,6 +6,7 @@
 #include "common/types.h"
 #include "drivers/graphics/edid.h"
 #include "drivers/graphics/nvidia/display_active_heads.h"
+#include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/firmware.h"
@@ -19,12 +20,14 @@ constexpr uint64_t LOOK_UP_TABLE_SURFACE_BYTES = 0x4200;
 
 /**
  * A connected output's modes, the timings of its EDID that may be its mode in
- * the order `find_mode_candidates` ranks them.
+ * the order `find_mode_candidates` ranks them, and the DPCD capabilities they
+ * were ranked under.
  */
 struct output_modes {
-    uint8_t      count;
-    uint8_t      indices[edid::TIMINGS_MAX]; // each mode's index in the EDID, the first `count` entries
-    edid::timing timings[edid::TIMINGS_MAX]; // each mode's timing, the first `count` entries
+    uint8_t           count;
+    uint8_t           indices[edid::TIMINGS_MAX]; // each mode's index in the EDID, the first `count` entries
+    edid::timing      timings[edid::TIMINGS_MAX]; // each mode's timing, the first `count` entries
+    dpcd_capabilities dpcd;
 };
 
 /**

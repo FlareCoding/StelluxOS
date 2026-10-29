@@ -30,6 +30,9 @@ constexpr uint32_t DPCD_PHY_REPEATER_CAPABILITIES = 0xF0000;
 constexpr uint32_t DPCD_RECEIVER_CAPABILITY_BYTES     = 16;
 constexpr uint32_t DPCD_PHY_REPEATER_CAPABILITY_BYTES = 8;
 
+// How the line logged for a refused training or a failed status read ends, naming the steps it leaves undone
+constexpr const char* LINK_UNCHECKED = ", so its link is not checked";
+
 // The bytes a monitor's DPCD reports of its capabilities and of any PHY repeater's, as read
 struct dpcd_capabilities {
     bool    is_extended;                                       // `receiver` holds the extended copy
@@ -150,6 +153,53 @@ bool takes_enhanced_framing(const dpcd_capabilities& dpcd);
  * of its first byte, is 1 or more, whatever its minor revision.
  */
 bool is_at_least_revision_1_0(const dpcd_capabilities& dpcd);
+
+/**
+ * @brief The PHY repeaters on a monitor's link, as NVIDIA's DisplayPort
+ * library counts them from the count byte of their capability field, which
+ * sets one bit, 0x80 for one repeater down to 0x01 for eight.
+ * @param dpcd The capabilities `read_output_dpcd` read.
+ * @return The repeaters, 1 to 8, or 0 when the field was not read, gives a
+ * revision below 1.4 or sets no single bit, as `monitor_link_limits` counts no
+ * repeater then.
+ */
+uint8_t phy_repeater_count(const dpcd_capabilities& dpcd);
+
+/**
+ * @brief Read the status of a trained link, as NVIDIA's DisplayPort library
+ * reads it: the three bytes from 0x0200C, the copy among the monitor's event
+ * status indicators, when the monitor's DPCD gives revision 1.2 or later and
+ * the GPU supports DisplayPort 1.2, else the three from 0x00202, and the same
+ * three bytes of each PHY repeater `dpcd` counts, whether or not `train_link`
+ * trained it, from the one closest to the GPU, each ANDed into the sink's, so
+ * an untrained repeater's status can fail the training check and stop the
+ * link. NVIDIA's library also reads 0x00202 for an eDP 1.4 or 1.4a panel and
+ * for a monitor whose revision its workaround lowers to 1.1. Each read is sent
+ * again as often as `read_output_dpcd` sends one, and a read that fails is
+ * logged and leaves the status unread.
+ * @param fw The bound firmware.
+ * @param display_common The display common object.
+ * @param display_id The display id the link drives, a single bit.
+ * @param dpcd The capabilities `read_output_dpcd` read, from which the caller
+ * leaves out the PHY repeaters when the output resource's DisplayPort facts
+ * say the firmware trains none.
+ * @param gpu_supports_1_2 Whether the GPU's link supports DisplayPort 1.2.
+ * @param out Set to the status, its in-sync byte 0, when every read succeeds,
+ * and left unchanged otherwise.
+ * @param is_read Set to whether every read succeeded.
+ * @return `OK`, including when a read fails, or what `firmware::control`
+ * returns, logged as its doc describes, for an error other than
+ * `ERR_FIRMWARE`.
+ */
+int32_t read_link_status(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    const dpcd_capabilities& dpcd,
+    bool gpu_supports_1_2,
+    displayport::link_status& out,
+    bool& is_read
+);
 
 } // namespace drivers::nvidia
 

@@ -101,8 +101,8 @@ struct stream_parameters {
     uint32_t vblank_symbols;        // symbols per lane each line of vertical blanking leaves for packets
 };
 
-// A link's status, the four bytes of the monitor's DPCD from 0x202. A lane's bits 0, 1 and 2 are set once its clock is
-// recovered, its equalization done and its symbols locked
+// A link's status, laid out as the four bytes of the monitor's DPCD from 0x202. A lane's bits 0, 1 and 2 are set once
+// its clock is recovered, its equalization done and its symbols locked
 struct link_status {
     uint8_t lanes_0_1;   // 0x202, lane 0 in bits 2 to 0 and lane 1 in bits 6 to 4
     uint8_t lanes_2_3;   // 0x203, lane 2 in bits 2 to 0 and lane 3 in bits 6 to 4

@@ -328,6 +328,10 @@ constexpr uint32_t DIGITAL_PREFERS_RBR = 1u << 16;
 constexpr uint32_t DIGITAL_LINK_RATE_SHIFT = 17;
 constexpr uint32_t DIGITAL_LINK_RATE_MASK  = 0x7;
 
+// DP_PHY_REPEATER_COUNT, bits 29 to 26, the PHY repeaters the firmware found on a DisplayPort display id's link
+constexpr uint32_t DIGITAL_PHY_REPEATERS_SHIFT = 26;
+constexpr uint32_t DIGITAL_PHY_REPEATERS_MASK  = 0xF;
+
 static_assert(sizeof(digital_display_facts_params) == 16, "NVIDIA's layout of DFP_GET_INFO's parameters");
 
 // NVIDIA's NV0073_CTRL_CMD_SPECIFIC_GET_EDID_V2, the control to display common that reads the EDID of the monitor on a
@@ -456,6 +460,34 @@ struct link_capabilities_params {
 constexpr uint32_t LINK_VERSION_1_2 = 1u << 0;
 
 static_assert(sizeof(link_capabilities_params) == 56, "NVIDIA's layout of DP_GET_CAPS's parameters");
+
+// NVIDIA's NV0073_CTRL_CMD_DP_CTRL, the control to display common that trains a DisplayPort display id's link
+constexpr uint32_t CONTROL_TRAIN_LINK = 0x731343;
+
+// The parameters of `CONTROL_TRAIN_LINK`, whose reply fills `error` and `retry_time_ms`
+struct train_link_params {
+    uint32_t subdevice_index;     // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t display_id;          // a single bit
+    uint32_t command;             // NVIDIA's cmd, holding the `TRAIN_*` bits
+    uint32_t data;                // holding the `TRAIN_DATA_*` fields
+    uint32_t error;               // NVIDIA's err, the failed steps' bits and the lanes done with each training phase
+    uint32_t retry_time_ms;       // NVIDIA's retryTimeMs, the wait before the request is sent again, 0 for none
+    uint32_t eight_lane_address;  // NVIDIA's eightLaneDpcdBaseAddr
+};
+
+// `train_link_params::command`'s bits, NVIDIA's NV0073_CTRL_DP_CMD_*: set the lane count and the rate `data` names,
+// turn on enhanced framing and mark each request of a training through the PHY repeaters, the sink's included
+constexpr uint32_t TRAIN_SET_LANES        = 1u << 0;
+constexpr uint32_t TRAIN_SET_RATE         = 1u << 1;
+constexpr uint32_t TRAIN_ENHANCED_FRAMING = 1u << 7;
+constexpr uint32_t TRAIN_PHY_REPEATER     = 1u << 13;
+
+// NVIDIA's NV0073_CTRL_DP_DATA_* fields of `train_link_params::data`: the lane count in bits 4:0, the rate's code in
+// bits 15:8 and the target in bits 22:19, 0 for the sink, else a repeater's number from 1, highest nearest the GPU
+constexpr uint32_t TRAIN_DATA_RATE_SHIFT   = 8;
+constexpr uint32_t TRAIN_DATA_TARGET_SHIFT = 19;
+
+static_assert(sizeof(train_link_params) == 28, "NVIDIA's layout of DP_CTRL's parameters");
 
 // NVIDIA's NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, the control that gives the firmware where a display
 // channel's push buffer lies, sent before the channel's allocation

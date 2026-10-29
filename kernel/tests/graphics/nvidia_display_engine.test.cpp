@@ -39,6 +39,8 @@ using drivers::nvidia::CORE_INITIAL_METHODS_PER_HEAD;
 using drivers::nvidia::cpu_mapping;
 using drivers::nvidia::display_engine;
 using drivers::nvidia::display_heads;
+using drivers::nvidia::DPCD_PHY_REPEATER_CAPABILITIES;
+using drivers::nvidia::DPCD_PHY_REPEATER_CAPABILITY_BYTES;
 using drivers::nvidia::DPCD_RECEIVER_CAPABILITY_BYTES;
 using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_BAD_STATE;
@@ -224,8 +226,13 @@ static constexpr uint8_t TIMING_1080_AT_60_HZ[] = {
 // The EDID of every connected monitor, a copy of `AOC_BASE_BLOCK` a test may change
 static uint8_t g_edid[edid::BLOCK_BYTES];
 
-// A firmware that records each request in order, answers one a refusal matches with its result, the replies its fields
-// describe from them, and others as sent
+// The link status's copy among a monitor's event status indicators, NVIDIA's NV_DPCD_LANE0_1_STATUS_ESI, and its 3
+// bytes once 1 lane is trained: its clock recovered, its equalization done, its symbols locked, lanes aligned
+static constexpr uint32_t DPCD_LINK_STATUS_INDICATORS = 0x0200C;
+static constexpr uint8_t  ONE_LANE_TRAINED[]          = {0x07, 0x00, 0x01};
+
+// A firmware that records each request in order, its repeater status reads and the last training's command and data,
+// answers one a refusal matches with its result, the replies its fields describe from them, and others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 64;
@@ -270,6 +277,16 @@ public:
     uint32_t   digital_facts = DISPLAYPORT_FACTS; // the digital facts of every supported display id
     uint32_t   connected_ids = 0;             // those reported connected, the only ones with a monitor, giving `g_edid`
     const uint8_t* dpcd_receiver = DPCD_RECEIVER; // the receiver capability field of every connected monitor
+    const uint8_t* link_status = ONE_LANE_TRAINED; // the 3 link status bytes every connected monitor gives, if any
+    uint32_t   link_status_address = DPCD_LINK_STATUS_INDICATORS; // where it gives them
+    bool       refuses_link_status = false;   // whether reads of them are refused with `ERR_FIRMWARE`
+    const uint8_t* phy_repeater_capabilities = nullptr; // the PHY repeater bytes every connected monitor gives, if any
+    uint32_t   repeater_status_reads = 0;     // the DPCD reads past those bytes, where the repeaters' status lies
+    uint32_t   displayport_max_rate = 4;      // the highest rate code the DisplayPort facts give, the RTX 3080's HBR3
+    uint32_t   displayport_versions = 0x3;    // the DisplayPort versions they give, the RTX 3080's 1.2 and 1.4
+    uint8_t    displayport_trains_phy_repeaters = 1; // whether they give the firmware as training PHY repeaters
+    uint32_t   training_command = 0;          // the command of the last training request
+    uint32_t   training_data = 0;             // and its data
     uint32_t   refused_modes = 0;             // how many of the first bandwidth check requests the check refuses
     uint32_t   put_at_first_active_read = 0;  // the core channel's PUT when a head's display id was first asked
     bool       is_channel_busy = false;       // whether each channel state reply names the busy state, else idle
@@ -328,7 +345,8 @@ public:
             return rc;
         }
 
-        if (reads_unconnected_monitor(command, params)) {
+        bool is_refused_status_read = refuses_link_status && reads_link_status(command, params);
+        if (reads_unconnected_monitor(command, params) || is_refused_status_read) {
             return ERR_FIRMWARE;
         }
 
@@ -341,6 +359,9 @@ public:
         fill_check_reply(command, params);
         fill_state_reply(command, params);
         fill_link_reply(command, params);
+
+        keep_training(command, params);
+        count_repeater_status_read(command, params);
 
         return OK;
     }
@@ -552,11 +573,49 @@ private:
         return (display_id & connected_ids) == 0;
     }
 
-    // Acknowledges a DPCD read with the bytes of `dpcd_receiver` from its address, every other byte reading 0
+    // Whether `command` is a DPCD read from `link_status_address`
+    bool reads_link_status(uint32_t command, const void* params) const {
+        bool is_aux = command == rm::CONTROL_DP_AUX;
+        return is_aux && static_cast<const rm::aux_params*>(params)->address == link_status_address;
+    }
+
+    // Counts a DPCD read past the PHY repeaters' capability bytes
+    void count_repeater_status_read(uint32_t command, const void* params) {
+        uint32_t capabilities_end = DPCD_PHY_REPEATER_CAPABILITIES + DPCD_PHY_REPEATER_CAPABILITY_BYTES;
+        bool is_aux = command == rm::CONTROL_DP_AUX;
+        if (is_aux && static_cast<const rm::aux_params*>(params)->address >= capabilities_end) {
+            repeater_status_reads++;
+        }
+    }
+
+    // Keeps the command and data of a training request
+    void keep_training(uint32_t command, const void* params) {
+        if (command != rm::CONTROL_TRAIN_LINK) {
+            return;
+        }
+
+        const rm::train_link_params* training = static_cast<const rm::train_link_params*>(params);
+        training_command = training->command;
+        training_data = training->data;
+    }
+
+    // Acknowledges a DPCD read with the bytes of `dpcd_receiver` from its address, of `link_status` from
+    // `link_status_address` and of `phy_repeater_capabilities` from theirs, every other byte reading 0
     void fill_aux_reply(rm::aux_params& reply) const {
         uint32_t bytes = reply.size + 1;
-        for (uint32_t i = 0; i < bytes && reply.address + i < DPCD_RECEIVER_CAPABILITY_BYTES; i++) {
-            reply.data[i] = dpcd_receiver[reply.address + i];
+        for (uint32_t i = 0; i < bytes; i++) {
+            uint32_t address = reply.address + i;
+            uint32_t status_byte = address - link_status_address;
+            uint32_t repeater_byte = address - DPCD_PHY_REPEATER_CAPABILITIES;
+            bool is_repeater_byte = address >= DPCD_PHY_REPEATER_CAPABILITIES;
+            is_repeater_byte = is_repeater_byte && repeater_byte < DPCD_PHY_REPEATER_CAPABILITY_BYTES;
+            if (address < DPCD_RECEIVER_CAPABILITY_BYTES) {
+                reply.data[i] = dpcd_receiver[address];
+            } else if (link_status != nullptr && address >= link_status_address && status_byte < 3) {
+                reply.data[i] = link_status[status_byte];
+            } else if (phy_repeater_capabilities != nullptr && is_repeater_byte) {
+                reply.data[i] = phy_repeater_capabilities[repeater_byte];
+            }
         }
 
         reply.size = bytes;
@@ -626,18 +685,18 @@ private:
     }
 
     // Answers an assignment with `assigned_resource` driving the display id alone, and a request for an output
-    // resource's DisplayPort facts with the RTX 3080's: HBR3, DisplayPort 1.2 and 1.4, and every flag set
+    // resource's DisplayPort facts from the `displayport_*` fields, with FEC and the increased watermark limits
     void fill_link_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_ASSIGN_OUTPUT_RESOURCE) {
             rm::assign_output_resource_params* reply = static_cast<rm::assign_output_resource_params*>(params);
             reply->resources[assigned_resource] = {.display_mask = reply->display_id, .type = rm::ASSIGNED_SINGLE};
         } else if (command == rm::CONTROL_GET_LINK_CAPABILITIES) {
             rm::link_capabilities_params* reply = static_cast<rm::link_capabilities_params*>(params);
-            reply->max_rate = 4;
-            reply->versions = 0x3;
+            reply->max_rate = displayport_max_rate;
+            reply->versions = displayport_versions;
             reply->increased_watermark_limits = 1;
             reply->fec_supported = 1;
-            reply->trains_phy_repeaters = 1;
+            reply->trains_phy_repeaters = displayport_trains_phy_repeaters;
         }
     }
 };
@@ -3244,4 +3303,295 @@ TEST(nvidia_display_engine, set_up_finds_no_link_without_a_base_buffer) {
     EXPECT_EQ(fw.control_count(rm::CONTROL_GET_OUTPUT_RESOURCE), 2u);
     EXPECT_EQ(fw.control_count(rm::CONTROL_ASSIGN_OUTPUT_RESOURCE), 0u);
     EXPECT_EQ(fw.control_count(rm::CONTROL_GET_LINK_CAPABILITIES), 0u);
+}
+
+// Once the link's facts are read, a set-up trains it and reads its status at 0x0200C, once each and in that order,
+// logging each
+TEST(nvidia_display_engine, set_up_trains_the_chosen_outputs_link_after_reading_its_facts) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_TRUE(fw.call_count <= engine_firmware::MAX_CALLS);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_DP_AUX), 3u);
+
+    uint32_t training = fw.first_control(rm::CONTROL_TRAIN_LINK);
+    EXPECT_LT(fw.first_control(rm::CONTROL_GET_LINK_CAPABILITIES), training);
+    EXPECT_LT(training, fw.last_control(rm::CONTROL_DP_AUX));
+
+    EXPECT_EQ(fw.training_command, 0x2083u);
+    EXPECT_EQ(fw.training_data, 0x1E01u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common trained display id 0x100's link at 1 lane at DisplayPort rate 0x1E (command 0x2083, 0 "
+        "PHY repeaters trained first)\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link status reads 0x07 0x00 0x01, so its 1 lane is trained\r\n"
+    ));
+    EXPECT_FALSE(engine_log_contains("taken down"));
+}
+
+// A refused request for the link's DisplayPort facts stops the link before its configuration is found, so no training
+// is asked for
+TEST(nvidia_display_engine, set_up_trains_no_link_whose_displayport_facts_are_refused) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_GET_LINK_CAPABILITIES,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 0u);
+    EXPECT_TRUE(engine_log_contains("nvidia: display common refused the DisplayPort facts of output resource 0, so "));
+    EXPECT_FALSE(engine_log_contains("link configuration"));
+}
+
+// A refused training stops the link before its status is read, logged without the training's own outcome
+TEST(nvidia_display_engine, set_up_reads_no_status_of_a_link_whose_training_is_refused) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_TRAIN_LINK,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_LT(fw.last_control(rm::CONTROL_DP_AUX), fw.first_control(rm::CONTROL_TRAIN_LINK));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common refused to train display id 0x100's link at 1 lane at DisplayPort rate 0x1E (command "
+        "0x2083, data 0x1E01), so "
+    ));
+    EXPECT_FALSE(engine_log_contains("trained display id"));
+}
+
+// A training whose reply never arrives fails the set-up with its error, and the link's status is not read
+TEST(nvidia_display_engine, set_up_fails_with_the_error_of_a_training_failing_other_than_by_a_refusal) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_TRAIN_LINK,
+        .object = 0,
+        .result = ERR_TIMEOUT,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), ERR_TIMEOUT);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_LT(fw.last_control(rm::CONTROL_DP_AUX), fw.first_control(rm::CONTROL_TRAIN_LINK));
+}
+
+// A status read showing the lane untrained is logged as such, without the trained line, and takes the engine down
+// before the mode set's end
+TEST(nvidia_display_engine, set_up_logs_a_link_whose_status_shows_it_untrained) {
+    static constexpr uint8_t CLOCK_RECOVERED_ONLY[] = {0x01, 0x00, 0x00};
+
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.link_status = CLOCK_RECOVERED_ONLY;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link is not trained at 1 lane, its link status reading 0x01 0x00 0x00"
+    ));
+    EXPECT_FALSE(engine_log_contains("lane is trained"));
+
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100's link is not set up, so bring-up takes the display"));
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], LINK_TAKE_DOWN_END);
+    EXPECT_EQ(fw.mode_set_puts[1], LINK_TAKE_DOWN_END);
+}
+
+// DisplayPort facts capping the links at HBR2, below the chip table's HBR3 that chose the mode, train the link at 2
+// lanes at HBR2, and a status showing lane 0 trained but not lane 1 is logged as untrained
+TEST(nvidia_display_engine, set_up_trains_at_the_lowest_configuration_the_displayport_facts_allow) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.displayport_max_rate = 3;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_EQ(fw.training_data, 0x1402u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common trained display id 0x100's link at 2 lanes at DisplayPort rate 0x14 (command 0x2083, "
+        "0 PHY repeaters trained first)\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link is not trained at 2 lanes, its link status reading 0x07 0x00 0x01"
+    ));
+}
+
+// DisplayPort facts capping the links at RBR leave no configuration carrying the mode, which stops the link before any
+// training
+TEST(nvidia_display_engine, set_up_trains_no_link_its_displayport_facts_leave_no_configuration) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.displayport_max_rate = 1;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_LINK_CAPABILITIES), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 0u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: no link configuration carries display id 0x100's mode within output resource 0's DisplayPort facts, "
+        "so "
+    ));
+    EXPECT_FALSE(engine_log_contains("trained display id"));
+}
+
+// DisplayPort facts giving the firmware as not training PHY repeaters train the link without the repeater bit
+TEST(nvidia_display_engine, set_up_trains_without_the_phy_repeater_bit_when_the_firmware_trains_none) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.displayport_trains_phy_repeaters = 0;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_EQ(fw.training_command, 0x83u);
+    EXPECT_EQ(fw.training_data, 0x1E01u);
+}
+
+// The links of a chip whose table gives its firmware as training PHY repeaters, as GA102's table does
+static constexpr chip_displayport CHIP_LINKS_TRAINING_PHY_REPEATERS = {
+    .trains_phy_repeaters       = true,
+    .max_rate                   = displayport::link_rate::hbr3,
+    .fec_supported              = true,
+    .increased_watermark_limits = false,
+};
+
+// The capability bytes of one PHY repeater of revision 1.4 running up to HBR2 over four lanes, below the monitor's
+// HBR3, so a configuration it capped would take 2 lanes for the mode
+static constexpr uint8_t ONE_PHY_REPEATER[DPCD_PHY_REPEATER_CAPABILITY_BYTES] = {0x14, 0x14, 0x80, 0x00, 0x04};
+
+// DisplayPort facts saying the firmware trains no PHY repeaters leave out one read under a chip table saying it does:
+// the sink alone is trained, at 1 lane at HBR3 above the repeater's HBR2 and without the repeater bit, and checked
+TEST(nvidia_display_engine, set_up_leaves_out_phy_repeaters_when_the_displayport_facts_say_the_firmware_trains_none) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.phy_repeater_capabilities = ONE_PHY_REPEATER;
+    fw.displayport_trains_phy_repeaters = 0;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine, CHIP_LINKS_TRAINING_PHY_REPEATERS), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0's PHY repeater capabilities from 0xF0000 are 14 14 80 00 04"));
+
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_EQ(fw.training_command, 0x83u);
+    EXPECT_EQ(fw.training_data, 0x1E01u);
+
+    EXPECT_EQ(fw.repeater_status_reads, 0u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link status reads 0x07 0x00 0x01, so its 1 lane is trained\r\n"
+    ));
+    EXPECT_FALSE(engine_log_contains("taken down"));
+}
+
+// A chip table saying the firmware trains no PHY repeaters leaves out a repeater NVIDIA's library would read under
+// DisplayPort facts saying it trains them: the sink alone is trained, with the repeater bit, and checked
+TEST(nvidia_display_engine, set_up_leaves_out_phy_repeaters_when_the_chip_table_says_the_firmware_trains_none) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.phy_repeater_capabilities = ONE_PHY_REPEATER;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_FALSE(engine_log_contains("PHY repeater capabilities"));
+
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_EQ(fw.training_command, 0x2083u);
+    EXPECT_EQ(fw.training_data, 0x1E01u);
+
+    EXPECT_EQ(fw.repeater_status_reads, 0u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link status reads 0x07 0x00 0x01, so its 1 lane is trained\r\n"
+    ));
+    EXPECT_FALSE(engine_log_contains("taken down"));
+}
+
+// The sink's own link status field, NVIDIA's NV_DPCD_LANE0_1_STATUS, read when either end lacks DisplayPort 1.2
+static constexpr uint32_t DPCD_SINK_LINK_STATUS = 0x00202;
+
+// DisplayPort facts without DisplayPort 1.2 have the status read from the sink's own field, so a monitor giving the
+// trained bytes only there has its link found trained
+TEST(nvidia_display_engine, set_up_reads_the_sinks_status_field_when_the_links_lack_displayport_1_2) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.displayport_versions = 0x2;
+    fw.link_status_address = DPCD_SINK_LINK_STATUS;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link status reads 0x07 0x00 0x01, so its 1 lane is trained\r\n"
+    ));
+}
+
+// A refused status read is logged with the set-up `OK` and the link stopped before its check
+TEST(nvidia_display_engine, set_up_checks_no_link_whose_status_read_is_refused) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.refuses_link_status = true;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common refused display id 0x100's 3-byte AUX read at 0x0200C, so "
+    ));
+    EXPECT_FALSE(engine_log_contains("link status read"));
 }

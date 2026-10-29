@@ -19,6 +19,7 @@
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "clock/clock.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "dynpriv/dynpriv.h"
 #include "hw/mmio.h"
 #include "mm/heap.h"
@@ -177,6 +178,7 @@ static void keep_output_modes(
     }
 
     modes.count = candidates.count;
+    string::memcpy(&modes.dpcd, &dpcd, sizeof(modes.dpcd));
     for (uint8_t rank = 0; rank < candidates.count; rank++) {
         modes.indices[rank] = candidates.timings[rank];
         modes.timings[rank] = monitor.timings[candidates.timings[rank]];
@@ -1126,6 +1128,11 @@ int32_t display_engine::set_up(
         is_chosen
     );
 
+    dpcd_capabilities light_dpcd = {};
+    if (rc == OK && is_chosen) {
+        string::memcpy(&light_dpcd, &m_output_modes[light.output].dpcd, sizeof(light_dpcd));
+    }
+
     free_output_modes(m_output_modes);
     if (rc != OK || !is_chosen) {
         return rc;
@@ -1177,7 +1184,16 @@ int32_t display_engine::set_up(
     window_owners owners = read_window_owners(regs, present_windows);
     log_window_owners(owners, present_windows, display.head_count);
 
-    return bring_up(regs, heads, present_windows, active, has_crossbar, outputs.outputs[light.output]);
+    return bring_up(
+        regs,
+        heads,
+        present_windows,
+        active,
+        has_crossbar,
+        outputs.outputs[light.output],
+        light_dpcd,
+        light
+    );
 }
 
 int32_t display_engine::bring_up(
@@ -1186,7 +1202,9 @@ int32_t display_engine::bring_up(
     uint32_t present_windows,
     const active_heads& active,
     bool has_crossbar,
-    const display_output& output
+    const display_output& output,
+    const dpcd_capabilities& dpcd,
+    const first_light& light
 ) {
     rm::handle display_common = m_objects.display_common;
     uint32_t display_id = output.display_id;
@@ -1207,7 +1225,7 @@ int32_t display_engine::bring_up(
     if (rc != OK) {
         log::error("nvidia: the shutdown update failed: %d, so bring-up takes the display engine down", rc);
     } else {
-        link_rc = set_up_output_link(m_firmware, display_common, has_crossbar, output, is_link_set_up);
+        link_rc = set_up_output_link(m_firmware, display_common, has_crossbar, output, dpcd, light, is_link_set_up);
         if (!is_link_set_up) {
             log::error(
                 "nvidia: display id 0x%X's link is not set up, so bring-up takes the display engine down",

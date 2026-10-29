@@ -63,6 +63,9 @@ static int32_t read_output_facts(
         static_cast<uint8_t>((params.flags >> rm::DIGITAL_LINK_RATE_SHIFT) & rm::DIGITAL_LINK_RATE_MASK);
     output.is_limited_to_60_hz = (params.flags & rm::DIGITAL_LIMITED_TO_60_HZ) != 0;
     output.prefers_rbr = (params.flags & rm::DIGITAL_PREFERS_RBR) != 0;
+    output.phy_repeaters =
+        static_cast<uint8_t>((params.flags >> rm::DIGITAL_PHY_REPEATERS_SHIFT) & rm::DIGITAL_PHY_REPEATERS_MASK);
+
     is_output = true;
 
     return OK;

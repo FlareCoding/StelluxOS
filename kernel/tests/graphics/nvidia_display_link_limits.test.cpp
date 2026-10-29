@@ -68,6 +68,7 @@ static constexpr display_output RTX_3080_OUTPUT = {
     .link_rate_code      = 4,
     .is_limited_to_60_hz = false,
     .prefers_rbr         = false,
+    .phy_repeaters       = 0,
 };
 
 // A monitor taking `rate_code` and `lane_byte`, read with the PHY repeaters' bytes `repeaters`, none read when null
