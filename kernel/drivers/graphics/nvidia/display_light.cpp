@@ -8,10 +8,9 @@
 
 namespace drivers::nvidia {
 
-// NVIDIA's NV_EVO_SCALE_FACTOR_1X, a scale factor of one in 1024ths, and NVEvoScalerTapsToNum of NV_EVO_SCALER_2TAPS,
-// the fewest taps NVIDIA's display classes give a scaler, which a scaler that does not scale takes
-constexpr uint32_t SCALE_FACTOR_ONE = 1024;
-constexpr uint8_t  UNSCALED_TAPS    = 2;
+// NVIDIA's NVEvoScalerTapsToNum of NV_EVO_SCALER_2TAPS, the fewest taps NVIDIA's display classes give a scaler, which a
+// scaler that does not scale takes
+constexpr uint8_t UNSCALED_TAPS = 2;
 
 // The fewest lines the sync and back porch may take together, as each needs at least one, below which a mode is refused
 // without asking the bandwidth check, as NVIDIA's modesetting module refuses a mode of 1 line but asks about one of 0
@@ -20,10 +19,6 @@ constexpr uint32_t LEADING_IDLE_LINES_MIN = 2;
 // NVIDIA's cursorSize32p for a 256-pixel cursor, in units of 32 pixels, the largest size, which NVIDIA's modesetting
 // module assumes
 constexpr uint8_t CURSOR_WIDTH_32 = 256 / 32;
-
-// The pixels a window fetches a line beyond its width when it does not scale, the worst case NVIDIA's modesetting
-// module takes on every chip, (((width + 14) * 1024 + 1023) >> 10) + 8
-constexpr uint32_t PIXELS_FETCHED_BEYOND_WIDTH = 22;
 
 // The bytes of a pixel in the formats the bandwidth check is asked about, and the multiple NVIDIA's modesetting module
 // requires of the pitch of a surface laid out as rows of pixels in order
@@ -65,14 +60,20 @@ head_raster raster_of(const edid::timing& timing) {
     uint32_t v_total = timing.v_total();
     uint32_t h_sync_start = timing.width + timing.h_front_porch;
     uint32_t v_sync_start = timing.height + timing.v_front_porch;
+    uint32_t blank_end_y = (v_total - v_sync_start) - 1;
+    uint32_t leading_idle_lines = blank_end_y + 1;
 
     return {
         .width = h_total,
         .height = v_total,
         .blank_start_x = timing.width + (h_total - h_sync_start) - 1,
-        .blank_start_y = timing.height + (v_total - v_sync_start) - 1,
+        .blank_start_y = timing.height + blank_end_y,
         .blank_end_x = (h_total - h_sync_start) - 1,
-        .blank_end_y = (v_total - v_sync_start) - 1,
+        .blank_end_y = blank_end_y,
+        .sync_end_x = timing.h_sync_width - 1,
+        .sync_end_y = timing.v_sync_width - 1,
+        .leading_idle_lines = leading_idle_lines,
+        .trailing_idle_lines = v_total - (leading_idle_lines + timing.height),
     };
 }
 
@@ -113,8 +114,7 @@ uint64_t look_up_table_word(uint32_t index) {
 // back porch take enough lines for a request
 static bool fill_request(const edid::timing& timing, uint8_t head, uint8_t window, rm::mode_possible_params& params) {
     head_raster raster = raster_of(timing);
-    uint32_t leading_lines = raster.blank_end_y + 1;
-    if (leading_lines < LEADING_IDLE_LINES_MIN) {
+    if (raster.leading_idle_lines < LEADING_IDLE_LINES_MIN) {
         return false;
     }
 
@@ -142,8 +142,8 @@ static bool fill_request(const edid::timing& timing, uint8_t head, uint8_t windo
     asked_head.max_downscale_y = SCALE_FACTOR_ONE;
     asked_head.output_scaler_taps = UNSCALED_TAPS;
 
-    asked_head.leading_idle_lines = static_cast<uint16_t>(leading_lines);
-    asked_head.trailing_idle_lines = static_cast<uint16_t>(raster.height - (leading_lines + timing.height));
+    asked_head.leading_idle_lines = static_cast<uint16_t>(raster.leading_idle_lines);
+    asked_head.trailing_idle_lines = static_cast<uint16_t>(raster.trailing_idle_lines);
     asked_head.lut = rm::LUT_USAGE_1025;
     asked_head.cursor_width_32 = CURSOR_WIDTH_32;
 

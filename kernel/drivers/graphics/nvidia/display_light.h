@@ -22,6 +22,13 @@ constexpr uint64_t LOOK_UP_TABLE_SURFACE_BYTES = 0x4200;
 constexpr uint32_t LOOK_UP_TABLE_HEADER_ENTRIES = 4;
 constexpr uint32_t LOOK_UP_TABLE_ENTRIES        = 1025;
 
+// NVIDIA's NV_EVO_SCALE_FACTOR_1X, a scale factor of one in 1024ths
+constexpr uint32_t SCALE_FACTOR_ONE = 1024;
+
+// The pixels a window fetches a line beyond its width when it does not scale, the worst case NVIDIA's modesetting
+// module takes on every chip, (((width + 14) * 1024 + 1023) >> 10) + 8
+constexpr uint32_t PIXELS_FETCHED_BEYOND_WIDTH = 22;
+
 /**
  * A connected output's modes, the timings of its EDID that may be its mode in
  * the order `find_mode_candidates` ranks them, and the DPCD capabilities they
@@ -58,11 +65,14 @@ struct first_light {
 
 /**
  * A head's raster for a timing, as NVIDIA's modesetting module derives it, its
- * positions counting pixels and lines from the start of the sync. The blanking
- * end is the last pixel and line of the back porch, and the blanking start the
- * last pixel and line of the visible area. Each value takes 32 bits, so a
- * blanking end with no sync or back porch before it is 0xFFFFFFFF, where that
- * module's 16-bit positions give 0xFFFF.
+ * positions counting pixels and lines from the start of the sync. The sync end
+ * is the last pixel and line of the sync, the blanking end the last pixel and
+ * line of the back porch, and the blanking start the last pixel and line of
+ * the visible area. Each value takes 32 bits, so a sync end with no sync, or a
+ * blanking end with no sync or back porch before it, is 0xFFFFFFFF, where that
+ * module's 16-bit positions give 0xFFFF. The idle lines are those that module
+ * counts before and after a frame's visible lines when the head does not
+ * scale: the sync's and back porch's before, the front porch's after.
  */
 struct head_raster {
     uint32_t width;  // the pixels of a line, the timing's total
@@ -71,6 +81,10 @@ struct head_raster {
     uint32_t blank_start_y;
     uint32_t blank_end_x;
     uint32_t blank_end_y;
+    uint32_t sync_end_x;
+    uint32_t sync_end_y;
+    uint32_t leading_idle_lines;
+    uint32_t trailing_idle_lines;
 };
 
 /**
