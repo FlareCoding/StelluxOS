@@ -872,6 +872,96 @@ static int32_t send_display_change(firmware& fw, rm::handle display_common, uint
     return fw.control(display_common, rm::CONTROL_DISPLAY_CHANGE, &params, sizeof(params));
 }
 
+// Writes `count` of `methods` into `queue` with `write_waiting`
+static int32_t write_methods(display_channel& queue, const display_method* methods, uint32_t count) {
+    for (uint32_t index = 0; index < count; index++) {
+        int32_t rc = write_waiting(queue, methods[index]);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    return OK;
+}
+
+// Writes and kicks the update applying the methods before it with no channel or cursor interlocked, naming the
+// completion notifier's context DMA `notifier_context_dma` with write-awaken, or no notifier for 0
+static int32_t write_update(display_channel& queue, rm::handle notifier_context_dma) {
+    uint32_t notifier_control = 0;
+    if (notifier_context_dma != 0) {
+        notifier_control = rm::NOTIFIER_CONTROL_MODE_WRITE_AWAKEN | rm::NOTIFIER_CONTROL_NOTIFY;
+    }
+
+    const display_method methods[] = {
+        {rm::CORE_SET_NOTIFIER_CONTEXT_DMA, notifier_context_dma},
+        {rm::CORE_SET_NOTIFIER_CONTROL, notifier_control},
+        {rm::CORE_SET_INTERLOCK_FLAGS, 0},
+        {rm::CORE_SET_WINDOW_INTERLOCK_FLAGS, 0},
+        {rm::CORE_UPDATE, rm::CORE_UPDATE_RELEASE_ELV},
+    };
+
+    int32_t rc = write_methods(queue, methods, sizeof(methods) / sizeof(methods[0]));
+    if (rc != OK) {
+        return rc;
+    }
+
+    queue.kick();
+    return OK;
+}
+
+// Stops later updates from writing the completion notifier, kicked with no update of their own, as NVIDIA's modesetting
+// module does after each wait for the notifier, since the hardware may otherwise write it again
+static int32_t stop_notifier_writes(display_channel& queue) {
+    const display_method methods[] = {
+        {rm::CORE_SET_NOTIFIER_CONTEXT_DMA, 0},
+        {rm::CORE_SET_NOTIFIER_CONTROL, 0},
+    };
+
+    int32_t rc = write_methods(queue, methods, sizeof(methods) / sizeof(methods[0]));
+    if (rc != OK) {
+        return rc;
+    }
+
+    queue.kick();
+    return OK;
+}
+
+// Counts the heads `read_active_heads` found showing a display
+static uint8_t count_active_heads(const active_heads& active) {
+    uint8_t count = 0;
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        if (active.heads[head].display_id != 0) {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+// Logs each active head's display id and its link's control as the core channel's armed state reads them, both 0 once
+// the shutdown update took effect
+static void log_heads_after_shutdown(const registers& regs, const active_heads& active) {
+    static constexpr uint32_t ARMED_STATE = CORE_CHANNEL_AREA + CORE_CHANNEL_ARMED_STATE;
+
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        const active_head& state = active.heads[head];
+        if (state.display_id == 0) {
+            continue;
+        }
+
+        uint32_t display_id_method = rm::CORE_HEAD_DISPLAY_ID + head * rm::CORE_HEAD_METHODS_STRIDE;
+        uint32_t link_method = rm::CORE_SERIAL_LINK_CONTROL + state.link_index * rm::CORE_SERIAL_LINK_METHODS_STRIDE;
+        log::info(
+            "nvidia: after the shutdown update, head %u's display id reads 0x%X and serial link %u's control 0x%X in "
+            "the core channel's armed state",
+            head,
+            regs.read(ARMED_STATE + display_id_method),
+            state.link_index,
+            regs.read(ARMED_STATE + link_method)
+        );
+    }
+}
+
 display_engine::display_engine(firmware& fw, video_memory& memory)
     : m_firmware(fw)
     , m_memory(memory)
@@ -971,6 +1061,7 @@ int32_t display_engine::set_up(
         return rc;
     }
 
+    m_notifier_context_dma = notifier_context_dma;
     log::info(
         "nvidia: the core channel's completion notifier lies at physical address 0x%lX, and its context DMA 0x%X is "
         "bound to the core channel",
@@ -1085,10 +1176,16 @@ int32_t display_engine::set_up(
     window_owners owners = read_window_owners(regs, present_windows);
     log_window_owners(owners, present_windows, display.head_count);
 
-    return bring_up(outputs.outputs[light.output].display_id);
+    return bring_up(regs, heads, present_windows, active, outputs.outputs[light.output].display_id);
 }
 
-int32_t display_engine::bring_up(uint32_t display_id) {
+int32_t display_engine::bring_up(
+    const registers& regs,
+    const display_heads& heads,
+    uint32_t present_windows,
+    const active_heads& active,
+    uint32_t display_id
+) {
     rm::handle display_common = m_objects.display_common;
     int32_t rc = send_display_change(m_firmware, display_common, display_id, rm::DISPLAY_CHANGE_START);
     if (rc == ERR_FIRMWARE) {
@@ -1101,6 +1198,15 @@ int32_t display_engine::bring_up(uint32_t display_id) {
     }
 
     log::info("nvidia: display common took the start of the mode set naming display id 0x%X", display_id);
+    rc = count_active_heads(active) > 0 ? shut_down_heads(regs, heads, present_windows, active) : OK;
+    if (rc != OK) {
+        log::error("nvidia: the shutdown update failed: %d, so bring-up takes the display engine down", rc);
+        rc = take_down(heads, present_windows, active);
+        if (rc != OK) {
+            log::error("nvidia: taking the display engine down failed: %d, so its heads may still scan out", rc);
+        }
+    }
+
     rc = send_display_change(m_firmware, display_common, display_id, rm::DISPLAY_CHANGE_END);
     if (rc == ERR_FIRMWARE) {
         log::error("nvidia: display common refused the end of the mode set naming display id 0x%X", display_id);
@@ -1115,20 +1221,89 @@ int32_t display_engine::bring_up(uint32_t display_id) {
     return OK;
 }
 
+int32_t display_engine::shut_down_heads(
+    const registers& regs,
+    const display_heads& heads,
+    uint32_t present_windows,
+    const active_heads& active
+) {
+    shutdown_methods methods = {};
+    build_shutdown_methods(heads, present_windows, active, true, methods);
+
+    int32_t rc = write_methods(*m_core_queue, methods.methods, methods.count);
+    if (rc != OK) {
+        return rc;
+    }
+
+    m_core_notifier.clear();
+    rc = write_update(*m_core_queue, m_notifier_context_dma);
+    if (rc != OK) {
+        return rc;
+    }
+
+    m_has_sent_update = true;
+    rc = m_core_notifier.wait_finished(*m_core_queue, clock::now_ns() + m_notifier_wait_ns);
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint32_t status_word = m_core_notifier.status_word();
+    rc = stop_notifier_writes(*m_core_queue);
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint8_t active_count = count_active_heads(active);
+    log::info(
+        "nvidia: the core channel read the shutdown update for %u active %s, its completion notifier reading 0x%08X",
+        active_count,
+        active_count == 1 ? "head" : "heads",
+        status_word
+    );
+    log_heads_after_shutdown(regs, active);
+
+    return OK;
+}
+
+int32_t display_engine::take_down(const display_heads& heads, uint32_t present_windows, const active_heads& active) {
+    shutdown_methods methods = {};
+    build_shutdown_methods(heads, present_windows, active, !m_has_sent_update, methods);
+
+    int32_t rc = write_methods(*m_core_queue, methods.methods, methods.count);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = write_update(*m_core_queue, 0);
+    if (rc != OK) {
+        return rc;
+    }
+
+    m_has_sent_update = true;
+    rc = m_core_queue->wait_idle(clock::now_ns() + IDLE_TIMEOUT_NS);
+    if (rc != OK) {
+        return rc;
+    }
+
+    log::info("nvidia: the display engine is taken down, its update read by the core channel");
+    return OK;
+}
+
 int32_t display_engine::release() {
     m_core_queue = nullptr;
 
     free_output_modes(m_output_modes);
 
+    bool keeps_hardware = !m_has_sent_update;
     int32_t window_channel_rc = OK;
     if (m_window_channel != 0) {
-        window_channel_rc = release_display_channel(m_firmware, m_objects.display, m_window_channel);
+        window_channel_rc = release_display_channel(m_firmware, m_objects.display, m_window_channel, keeps_hardware);
         m_window_channel = 0;
     }
 
     int32_t core_channel_rc = OK;
     if (m_core_channel != 0) {
-        core_channel_rc = release_display_channel(m_firmware, m_objects.display, m_core_channel);
+        core_channel_rc = release_display_channel(m_firmware, m_objects.display, m_core_channel, keeps_hardware);
         m_core_channel = 0;
     }
 

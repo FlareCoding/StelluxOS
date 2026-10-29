@@ -1,6 +1,7 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
 
 #include "drivers/graphics/nvidia/core_methods.h"
+#include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/rm.h"
 
 namespace drivers::nvidia {
@@ -93,6 +94,62 @@ bool core_initial_method(uint8_t head_count, uint32_t index, display_method& out
     }
 
     return true;
+}
+
+// Appends one method to `out`, which `SHUTDOWN_METHODS_MAX` keeps from overflowing
+static void append_method(shutdown_methods& out, uint32_t method, uint32_t value) {
+    out.methods[out.count] = {.method = method, .value = value};
+    out.count++;
+}
+
+// Appends each present window's control naming the head it serves, or none, then each one's default usage bounds
+static void append_window_mapping(const display_heads& heads, uint32_t present_windows, shutdown_methods& out) {
+    for (uint8_t window = 0; window < DISPLAY_WINDOWS_MAX; window++) {
+        if ((present_windows & (1u << window)) == 0) {
+            continue;
+        }
+
+        uint8_t head = heads.window_head[window];
+        uint32_t owner = head == NO_HEAD ? WINDOW_OWNER_NONE : head;
+        append_method(out, rm::CORE_WINDOW_CONTROL + window * rm::CORE_WINDOW_METHODS_STRIDE, owner);
+    }
+
+    for (uint8_t window = 0; window < DISPLAY_WINDOWS_MAX; window++) {
+        if ((present_windows & (1u << window)) == 0) {
+            continue;
+        }
+
+        uint32_t method = rm::CORE_WINDOW_USAGE_BOUNDS + window * rm::CORE_WINDOW_METHODS_STRIDE;
+        append_method(out, method, rm::DEFAULT_WINDOW_USAGE_BOUNDS);
+    }
+}
+
+void build_shutdown_methods(
+    const display_heads& heads,
+    uint32_t present_windows,
+    const active_heads& active,
+    bool maps_windows,
+    shutdown_methods& out
+) {
+    out.count = 0;
+    if (maps_windows) {
+        append_window_mapping(heads, present_windows, out);
+    }
+
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        const active_head& state = active.heads[head];
+        if (state.display_id == 0) {
+            continue;
+        }
+
+        uint32_t head_methods = head * rm::CORE_HEAD_METHODS_STRIDE;
+        uint32_t link_method = rm::CORE_SERIAL_LINK_CONTROL + state.link_index * rm::CORE_SERIAL_LINK_METHODS_STRIDE;
+
+        append_method(out, rm::CORE_HEAD_CURSOR_CONTEXT_DMA + head_methods, 0);
+        append_method(out, rm::CORE_HEAD_CURSOR_CONTROL + head_methods, rm::CURSOR_CONTROL_DISABLED);
+        append_method(out, link_method, 0);
+        append_method(out, rm::CORE_HEAD_DISPLAY_ID + head_methods, 0);
+    }
 }
 
 } // namespace drivers::nvidia

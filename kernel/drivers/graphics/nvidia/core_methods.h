@@ -4,6 +4,9 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_CORE_METHODS_H
 
 #include "common/types.h"
+#include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/display_active_heads.h"
+#include "drivers/graphics/nvidia/display_heads.h"
 
 namespace drivers::nvidia {
 
@@ -43,6 +46,45 @@ constexpr uint32_t CORE_INITIAL_METHODS_PER_HEAD = SCALER_COEFFICIENTS + DESKTOP
  * `CORE_INITIAL_METHODS_PER_HEAD` times `head_count`, and false otherwise.
  */
 bool core_initial_method(uint8_t head_count, uint32_t index, display_method& out);
+
+// The most methods `build_shutdown_methods` gives: a control and usage bounds for each window, then four for each head
+constexpr uint32_t SHUTDOWN_METHODS_MAX = DISPLAY_WINDOWS_MAX * 2 + DISPLAY_HEADS_MAX * 4;
+
+// The core channel's methods of a shutdown update, the first `count` of `methods` in the order they are written
+struct shutdown_methods {
+    display_method methods[SHUTDOWN_METHODS_MAX];
+    uint32_t       count;
+};
+
+/**
+ * @brief Give the core channel's methods that stop every active head, ahead of
+ * the update that applies them, in the order NVIDIA's modesetting module
+ * writes them at its first mode set after boot. When `maps_windows` is set,
+ * since the update is the first since the core channel's allocation, each
+ * present window first gets its head, or none, before any gets NVIDIA's
+ * default usage bounds. Then each active head in ascending order has its
+ * cursor disabled with no context DMA (part of NVIDIA's blank of a head), the
+ * serial link it feeds set to carry no head, and its display id cleared. A
+ * link two active heads share is set twice, each time to carry no head, where
+ * NVIDIA's first write keeps the other head: the update applies the last
+ * write, which carries no head in NVIDIA's sequence as in the driver's.
+ * @param heads The heads `read_display_heads` gave, with the head each window
+ * serves.
+ * @param present_windows The windows `read_present_windows` gave, bit i for
+ * window i.
+ * @param active The heads `read_active_heads` gave, each active one's link a
+ * serial link of the chip's.
+ * @param maps_windows Whether the update is the first since the core channel's
+ * allocation, so the windows' heads and usage bounds go first.
+ * @param out Receives the methods.
+ */
+void build_shutdown_methods(
+    const display_heads& heads,
+    uint32_t present_windows,
+    const active_heads& active,
+    bool maps_windows,
+    shutdown_methods& out
+);
 
 } // namespace drivers::nvidia
 

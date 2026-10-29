@@ -82,10 +82,13 @@ int32_t allocate_window_channel(
     return allocate_channel(fw, display, chip.window_channel_class, window, push_buffer, out);
 }
 
-int32_t release_display_channel(firmware& fw, rm::handle display, rm::handle channel) {
-    rm::display_release_flags_params flags = {};
-    flags.flags = rm::RELEASE_PRESERVES_HARDWARE;
-    int32_t flags_rc = fw.control(display, rm::CONTROL_SET_DISPLAY_RELEASE_FLAGS, &flags, sizeof(flags));
+int32_t release_display_channel(firmware& fw, rm::handle display, rm::handle channel, bool keeps_hardware) {
+    int32_t flags_rc = OK;
+    if (keeps_hardware) {
+        rm::display_release_flags_params flags = {};
+        flags.flags = rm::RELEASE_PRESERVES_HARDWARE;
+        flags_rc = fw.control(display, rm::CONTROL_SET_DISPLAY_RELEASE_FLAGS, &flags, sizeof(flags));
+    }
 
     int32_t release_rc = fw.release(channel);
 

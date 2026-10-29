@@ -118,23 +118,27 @@ int32_t allocate_window_channel(
 
 /**
  * @brief Release a display channel, the core channel or a window channel,
- * after asking the display to keep the display engine's hardware as it is
- * through the release, so the heads the boot firmware lit keep scanning out
- * the boot framebuffer. NVIDIA's modesetting module asks the same before
- * releasing its core, base and window channels, but only once it has restored
- * the console itself. A channel released that way stays allocated in the
- * hardware, so its push buffer must stay allocated for good, where NVIDIA's
- * modesetting module frees the push buffer right after the release.
+ * first asking the display, when `keeps_hardware` is set, to keep the display
+ * engine's hardware as it is through the release, so the heads the boot
+ * firmware lit keep scanning out the boot framebuffer. NVIDIA's modesetting
+ * module asks the same before releasing its core, base and window channels,
+ * but only once it has restored the console itself. A channel released that
+ * way stays allocated in the hardware, so its push buffer must stay allocated
+ * for good, where NVIDIA's modesetting module frees the push buffer right
+ * after the release.
  * @param fw The driver's firmware.
  * @param display The display object the channel was allocated under.
  * @param channel The handle `allocate_core_channel` or
  * `allocate_window_channel` gave.
+ * @param keeps_hardware Whether to ask for the hardware kept, which the caller
+ * must ask only while no update has been sent on the core channel, since an
+ * update has changed the boot firmware's state.
  * @return `OK`, or the first error of `firmware::control` for the flag and
  * `firmware::release` for the channel, each logged as it describes. The
  * channel is released even when the flag fails, as NVIDIA's modesetting module
  * releases it, and the boot framebuffer may then go dark.
  */
-int32_t release_display_channel(firmware& fw, rm::handle display, rm::handle channel);
+int32_t release_display_channel(firmware& fw, rm::handle display, rm::handle channel, bool keeps_hardware);
 
 /**
  * @brief Ask the display for the core channel's state until the firmware
