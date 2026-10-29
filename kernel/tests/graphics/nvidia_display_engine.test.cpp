@@ -13,6 +13,7 @@
 #include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_engine.h"
+#include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
@@ -44,6 +45,8 @@ using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::firmware;
 using drivers::nvidia::INSTANCE_MEMORY_BYTES;
+using drivers::nvidia::LOOK_UP_TABLE_SURFACE_BYTES;
+using drivers::nvidia::look_up_table_word;
 using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
 using drivers::nvidia::PUSH_BUFFER_BYTES;
@@ -107,12 +110,15 @@ static constexpr uint32_t NVIDIA_HASH_ENTRIES        = 1024;
 static constexpr uint64_t NVIDIA_ENTRY_BYTES         = 8;
 static constexpr uint32_t NVIDIA_CLIENT_MASK         = 0x3FFF;
 static constexpr uint32_t NVIDIA_RECORD_FIELD_SHIFT  = 14;
+static constexpr uint32_t NVIDIA_CHANNEL_SHIFT       = 25;
 static constexpr uint32_t NVIDIA_FIRST_RECORD_FIELD  = 0x101;
 static constexpr uint64_t NVIDIA_FIRST_RECORD_OFFSET = 0x2020;
+static constexpr uint64_t NVIDIA_RECORD_BYTES        = 32;
 
-// A record's first word for snooped pages, read and write and pitch, the bytes of a record's address unit and NVIDIA's
-// 4 KiB notifier in those units
+// A record's first word for snooped pages and for video memory, read and write and pitch, the bytes of a record's
+// address unit and NVIDIA's 4 KiB notifier in those units
 static constexpr uint32_t NVIDIA_SNOOPED_PAGES_WORD_0 = 7;
+static constexpr uint32_t NVIDIA_VIDEO_MEMORY_WORD_0  = 5;
 static constexpr uint64_t NVIDIA_RECORD_UNIT_BYTES    = 256;
 static constexpr uint64_t NVIDIA_NOTIFIER_UNITS       = 16;
 
@@ -128,16 +134,32 @@ static constexpr uint64_t LATE_STATE_REQUEST_NS = 1000 * NS_PER_MS;
 static constexpr uint32_t NVIDIA_ARMED_WINDOW_CONTROL = 0x9000;
 static constexpr uint32_t NVIDIA_WINDOW_STRIDE        = 0x80;
 
-// The memory the video memory double maps, and the words standing in for BAR0 from the core channel's area to the end
-// of the last window channel's
-static uint8_t  g_video_memory[INSTANCE_MEMORY_BYTES];
+// The look-up table surface's whole pages, which the video memory double hands out after the instance memory
+static constexpr uint64_t LOOK_UP_TABLE_OFFSET     = INSTANCE_MEMORY_BYTES;
+static constexpr uint64_t LOOK_UP_TABLE_PAGE_BYTES = 0x5000;
+
+// The bytes past each general mapping that the video memory double backs, so a write running past the range shows
+static constexpr uint64_t GENERAL_GUARD_BYTES = 0x1000;
+
+// The general memory the video memory double hands out, and the copy a CPU mapping reaches until its unmap writes the
+// range back, so a write after the unmap is lost as through BAR1
+static uint8_t g_video_memory[INSTANCE_MEMORY_BYTES + LOOK_UP_TABLE_PAGE_BYTES];
+static uint8_t g_mapped_video_memory[sizeof(g_video_memory) + GENERAL_GUARD_BYTES];
+
+// The words standing in for BAR0 from the core channel's area to the end of the last window channel's
 static uint32_t g_channel_areas[(window_channel_area(CHIP_WINDOWS) - CORE_CHANNEL_AREA) / sizeof(uint32_t)];
 
 // Where the video memory double hands out scanout memory, the bytes past it the double backs too, so a write running
-// past the range shows, and the byte the double fills them all with
+// past the range shows, and the byte the double fills them with, as it fills each general range and guard
 static constexpr uint64_t SCANOUT_OFFSET      = 0x1000000;
 static constexpr uint64_t SCANOUT_GUARD_BYTES = 0x1000;
 static constexpr uint8_t  SCANOUT_FILL        = 0xA5;
+
+// `SCANOUT_FILL` in each byte of a 64-bit word, as the video memory double finds it in scanout words left unwritten
+static constexpr uint64_t SCANOUT_FILL_WORD = 0xA5A5A5A5A5A5A5A5;
+
+// The pages the video memory double hands general memory out in, as the allocator rounds each request to them
+static constexpr uint64_t DOUBLE_PAGE_BYTES = 0x1000;
 
 // The core channel's area, where `g_channel_areas` begins, holding its PUT, GET and armed state
 static uint32_t* const g_core_channel_registers = g_channel_areas;
@@ -197,8 +219,8 @@ static constexpr uint8_t TIMING_1080_AT_60_HZ[] = {
 // The EDID of every connected monitor, a copy of `AOC_BASE_BLOCK` a test may change
 static uint8_t g_edid[edid::BLOCK_BYTES];
 
-// A firmware that records each request in order, answers one a refusal matches with its result, the head, window,
-// crossbar, active head, output, bandwidth check and channel state replies from its fields, others as sent
+// A firmware that records each request in order, answers one a refusal matches with its result, the push buffer, head,
+// window, crossbar, active head, output, bandwidth check and channel state replies from its fields, others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 64;
@@ -528,10 +550,22 @@ private:
     }
 };
 
-// A video memory handing out general memory at offset 0 over `g_video_memory` and up to `scanout_bytes` of scanout
-// memory at `SCANOUT_OFFSET` over `scanout`, counting and failing scanout calls as set
+// A video memory giving general memory in whole pages from offset 0 of `g_video_memory`, mapped one range at a time
+// through its copy, and scanout memory at `SCANOUT_OFFSET` over `scanout`, counting calls and failing them as set
 class engine_video_memory : public video_memory {
 public:
+    int32_t  general_allocate_result = OK;
+    uint32_t failing_general_request = 0;       // the number, from 1, of the general request failing, 0 for none
+    int32_t  general_map_result      = OK;
+    uint32_t failing_general_map     = 0;       // the number, from 1, of the general mapping failing, 0 for none
+    uint64_t general_bytes           = 0;       // handed out from offset 0
+    uint64_t general_size            = 0;       // of the last general request
+    uint64_t general_alignment       = 0;       // of the last general request
+    uint32_t general_requests        = 0;
+    uint32_t general_maps            = 0;
+    uint32_t general_unmaps          = 0;
+    uint32_t general_releases        = 0;
+    uint32_t general_overruns        = 0;       // general unmaps finding the guard past the range written
     int32_t  scanout_allocate_result = OK;
     int32_t  scanout_map_result      = OK;
     uint64_t scanout_bytes           = 0;       // backed by `scanout` once `give_scanout` sets it
@@ -541,7 +575,11 @@ public:
     uint32_t scanout_requests        = 0;
     uint32_t scanout_maps            = 0;
     uint32_t scanout_unmaps          = 0;
+    uint64_t scanout_fill_words      = 0;       // 64-bit words of the scanout range left unwritten at its last unmap
     uint32_t scanout_releases        = 0;
+
+    vram_range general_mapped   = {}; // the general range mapped, of 0 bytes while none is
+    vram_range general_released = {}; // the last general range released
 
     ~engine_video_memory() override {
         if (scanout != nullptr) {
@@ -580,11 +618,21 @@ public:
             return OK;
         }
 
-        if (size > sizeof(g_video_memory)) {
+        general_requests++;
+        general_size = size;
+        general_alignment = alignment;
+        if (general_requests == failing_general_request) {
+            return general_allocate_result;
+        }
+
+        uint64_t pages_bytes = (size + DOUBLE_PAGE_BYTES - 1) & ~(DOUBLE_PAGE_BYTES - 1);
+        if (pages_bytes > sizeof(g_video_memory) - general_bytes) {
             return ERR_NO_MEMORY;
         }
 
-        out = {.offset = 0, .size = size};
+        out = {.offset = general_bytes, .size = pages_bytes};
+        general_bytes += pages_bytes;
+        string::memset(g_video_memory + out.offset, SCANOUT_FILL, pages_bytes);
 
         return OK;
     }
@@ -592,12 +640,25 @@ public:
     void release(const vram_range& range) override {
         if (range.offset == SCANOUT_OFFSET) {
             scanout_releases++;
+        } else {
+            general_releases++;
+            general_released = range;
         }
     }
 
     int32_t map_for_cpu(const vram_range& range, cpu_mapping& out) override {
         if (range.offset != SCANOUT_OFFSET) {
-            out.virt = reinterpret_cast<uintptr_t>(g_video_memory);
+            general_maps++;
+            if (general_maps == failing_general_map) {
+                return general_map_result;
+            }
+
+            uint8_t* view = g_mapped_video_memory + range.offset;
+            string::memcpy(view, g_video_memory + range.offset, range.size);
+            string::memset(view + range.size, SCANOUT_FILL, GENERAL_GUARD_BYTES);
+            general_mapped = range;
+
+            out.virt = reinterpret_cast<uintptr_t>(view);
             out.phys = 0;
             return OK;
         }
@@ -616,6 +677,32 @@ public:
     void unmap_for_cpu(const vram_range& range) override {
         if (range.offset == SCANOUT_OFFSET) {
             scanout_unmaps++;
+            scanout_fill_words = 0;
+            for (uint64_t offset = 0; offset < range.size; offset += sizeof(uint64_t)) {
+                uint64_t word = 0;
+                string::memcpy(&word, scanout + offset, sizeof(word));
+                if (word == SCANOUT_FILL_WORD) {
+                    scanout_fill_words++;
+                }
+            }
+
+            return;
+        }
+
+        general_unmaps++;
+        bool is_mapped = general_mapped.size != 0 && range.offset == general_mapped.offset;
+        if (!is_mapped) {
+            return;
+        }
+
+        general_mapped = {};
+        uint8_t* view = g_mapped_video_memory + range.offset;
+        string::memcpy(g_video_memory + range.offset, view, range.size);
+        for (uint64_t index = 0; index < GENERAL_GUARD_BYTES; index++) {
+            if (view[range.size + index] != SCANOUT_FILL) {
+                general_overruns++;
+                return;
+            }
         }
     }
 };
@@ -652,7 +739,7 @@ static int32_t set_up(
     return engine.set_up(regs, card, chip, TEST_DEVICE);
 }
 
-// The 32-bit word at `offset` in the instance memory, which the video memory double maps over `g_video_memory`
+// The 32-bit word at `offset` in the instance memory, as the last unmap wrote it back to `g_video_memory`
 static uint32_t instance_word(uint64_t offset) {
     uint32_t word = 0;
     string::memcpy(&word, g_video_memory + offset, sizeof(word));
@@ -1884,7 +1971,7 @@ TEST(nvidia_display_engine, release_returns_the_window_channels_error_ahead_of_t
 }
 
 // Either AOC timing's base buffer, 1440 rows of 2560 4-byte pixels, 10240 bytes already a multiple of 256, and NVIDIA's
-// alignment of the surfaces the display engine scans out
+// alignment of the surfaces its modesetting module scans out and of its look-up table surfaces
 static constexpr uint64_t AOC_BASE_BUFFER_BYTES    = 0xE10000;
 static constexpr uint64_t NVIDIA_SURFACE_ALIGNMENT = 0x1000;
 
@@ -1920,7 +2007,7 @@ static bool scanout_holds(const engine_video_memory& memory, uint64_t start, uin
 }
 
 // Output 0's 1366 by 768 timing gets 768 rows 5632 bytes apart, rounded up from 5464, as scanout memory at NVIDIA's
-// alignment, cleared through one mapping with the bytes past it left as they were, logged, and kept by the release
+// alignment, cleared through one mapping taken down after, the bytes past it untouched, logged, and kept by the release
 TEST(nvidia_display_engine, set_up_allocates_and_clears_the_chosen_outputs_base_buffer) {
     engine_firmware fw;
     show_output_0_on_head_1(fw);
@@ -1936,6 +2023,7 @@ TEST(nvidia_display_engine, set_up_allocates_and_clears_the_chosen_outputs_base_
 
     EXPECT_EQ(memory.scanout_maps, 1u);
     EXPECT_EQ(memory.scanout_unmaps, 1u);
+    EXPECT_EQ(memory.scanout_fill_words, 0u);
     EXPECT_TRUE(scanout_holds(memory, 0, BASE_BUFFER_1366_BYTES, 0));
     EXPECT_TRUE(scanout_holds(memory, BASE_BUFFER_1366_BYTES, SCANOUT_GUARD_BYTES, SCANOUT_FILL));
     EXPECT_TRUE(engine_log_contains(
@@ -2022,6 +2110,312 @@ TEST(nvidia_display_engine, set_up_releases_a_base_buffer_it_cannot_map) {
     }
 }
 
+// The numbers of the channels of window 0, which a set-up chooses for output 1 as the only connected output, and of
+// window 3, which it chooses for output 0 on head 1, NVIDIA's NV_PDISP_CHN_NUM_WIN(0) and NV_PDISP_CHN_NUM_WIN(3)
+static constexpr uint32_t OUTPUT_1_WINDOW_CHANNEL = 1;
+static constexpr uint32_t HEAD_1_WINDOW_CHANNEL   = 4;
+
+// A set-up's general mappings by number when it chooses an output, after the instance memory's clear and the
+// notifier's binding, and the table's general request, after the instance memory's
+static constexpr uint32_t BASE_BUFFER_BINDING_MAP = 3;
+static constexpr uint32_t TABLE_FILL_MAP          = 4;
+static constexpr uint32_t TABLE_BINDING_MAP       = 5;
+static constexpr uint32_t TABLE_REQUEST           = 2;
+
+// The records of a binding of `TIMING_1366_BY_768`'s base buffer at `SCANOUT_OFFSET` and of the table at
+// `LOOK_UP_TABLE_OFFSET`, each naming its first and last 256-byte unit
+static constexpr uint32_t BASE_BUFFER_RECORD[] = {NVIDIA_VIDEO_MEMORY_WORD_0, 0x10000, 0, 0x141FF, 0};
+static constexpr uint32_t TABLE_RECORD[]       = {NVIDIA_VIDEO_MEMORY_WORD_0, 0x100, 0, 0x14F, 0};
+
+// Has the double report output 1, on the AOC with `TIMING_1366_BY_768` first, as the one connected output of two, so
+// a set-up chooses it on head 0 with window 0
+static void connect_output_1_alone(engine_firmware& fw) {
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_1_ID;
+    copy_aoc_edid(true);
+    put_1366_pixel_timing_first();
+}
+
+// Whether the hash table entry naming `object` binds it under the double's client to `hardware_channel` with the
+// record `record`, from 0 the lowest, whose words are `words`
+static bool binds(rm::handle object, uint32_t hardware_channel, uint32_t record, const uint32_t (&words)[5]) {
+    uint32_t entry = entry_of(object);
+    if (entry == NVIDIA_HASH_ENTRIES) {
+        return false;
+    }
+
+    uint32_t client_bits = TEST_CLIENT & NVIDIA_CLIENT_MASK;
+    uint32_t record_bits = (NVIDIA_FIRST_RECORD_FIELD + record) << NVIDIA_RECORD_FIELD_SHIFT;
+    uint32_t channel_bits = hardware_channel << NVIDIA_CHANNEL_SHIFT;
+    if (instance_word(entry * NVIDIA_ENTRY_BYTES + sizeof(uint32_t)) != (client_bits | record_bits | channel_bits)) {
+        return false;
+    }
+
+    uint64_t record_offset = NVIDIA_FIRST_RECORD_OFFSET + record * NVIDIA_RECORD_BYTES;
+    for (uint32_t index = 0; index < 5; index++) {
+        if (instance_word(record_offset + index * sizeof(uint32_t)) != words[index]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Output 1 on window 0 has its base buffer, then the look-up table surface, bound to the window's channel, number 1,
+// each under a new handle with the next record naming its memory and logged, and the release keeps both bound
+TEST(nvidia_display_engine, set_up_binds_the_base_buffer_and_the_look_up_table_surface_to_the_windows_channel) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    rm::handle base_buffer_context_dma = FIRST_HANDLE + fw.handle_count - 2;
+    rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 1;
+    EXPECT_EQ(used_entry_count(), 3u);
+    EXPECT_TRUE(binds(base_buffer_context_dma, OUTPUT_1_WINDOW_CHANNEL, 1, BASE_BUFFER_RECORD));
+    EXPECT_TRUE(binds(table_context_dma, OUTPUT_1_WINDOW_CHANNEL, 2, TABLE_RECORD));
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1's base buffer is bound to window 0's channel as context DMA 0x"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the look-up table surface is bound to window 0's channel as context DMA 0x"
+    ));
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(used_entry_count(), 3u);
+    EXPECT_EQ(memory.scanout_releases, 0u);
+    EXPECT_EQ(memory.general_releases, 0u);
+}
+
+// Output 0 on head 1 has both surfaces bound to its window's channel, window 3's, number 4, rather than head 1's or
+// window 0's
+TEST(nvidia_display_engine, set_up_binds_head_1s_surfaces_to_window_3s_channel) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    put_1366_pixel_timing_first();
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    rm::handle base_buffer_context_dma = FIRST_HANDLE + fw.handle_count - 2;
+    rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 1;
+    EXPECT_TRUE(binds(base_buffer_context_dma, HEAD_1_WINDOW_CHANNEL, 1, BASE_BUFFER_RECORD));
+    EXPECT_TRUE(binds(table_context_dma, HEAD_1_WINDOW_CHANNEL, 2, TABLE_RECORD));
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's base buffer is bound to window 3's channel as context DMA 0x"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the look-up table surface is bound to window 3's channel as context DMA 0x"
+    ));
+}
+
+// The table takes `LOOK_UP_TABLE_SURFACE_BYTES` of general memory at NVIDIA's alignment, its whole pages and nothing
+// past them written as `look_up_table_word` gives through one mapping taken down after, and where it lies logged
+TEST(nvidia_display_engine, set_up_fills_the_look_up_table_surface_with_nvidias_identity) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(memory.general_requests, TABLE_REQUEST);
+    EXPECT_EQ(memory.general_size, LOOK_UP_TABLE_SURFACE_BYTES);
+    EXPECT_EQ(memory.general_alignment, NVIDIA_SURFACE_ALIGNMENT);
+    EXPECT_EQ(memory.general_maps, TABLE_BINDING_MAP);
+    EXPECT_EQ(memory.general_unmaps, TABLE_BINDING_MAP);
+
+    EXPECT_EQ(memory.general_overruns, 0u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the look-up table surface lies at 0x10000 in video memory, its input table passing each color through "
+        "unchanged"
+    ));
+
+    uint32_t wrong_words = 0;
+    for (uint32_t index = 0; index < LOOK_UP_TABLE_PAGE_BYTES / sizeof(uint64_t); index++) {
+        uint64_t word = 0;
+        string::memcpy(&word, g_video_memory + LOOK_UP_TABLE_OFFSET + index * sizeof(uint64_t), sizeof(word));
+        if (word != look_up_table_word(index)) {
+            wrong_words++;
+        }
+    }
+
+    EXPECT_EQ(wrong_words, 0u);
+}
+
+// A base buffer binding finding no room leaves output 1 with no base buffer and the set-up `OK`, and one failing
+// otherwise fails the set-up with its error, each logged, not as bound, the buffer released and no table allocated
+TEST(nvidia_display_engine, set_up_releases_a_base_buffer_whose_binding_fails) {
+    struct failure {
+        int32_t     error;
+        int32_t     result;
+        const char* line;
+    };
+
+    const failure failures[] = {
+        {ERR_NO_MEMORY,
+         OK,
+         "nvidia: output 1 has no base buffer, as binding it to window 0's channel found no room, so its video memory "
+         "is released"},
+        {ERR_TIMEOUT,
+         ERR_TIMEOUT,
+         "nvidia: binding output 1's base buffer to window 0's channel failed: -4, so its video memory is released"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        connect_output_1_alone(fw);
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+        memory.failing_general_map = BASE_BUFFER_BINDING_MAP;
+        memory.general_map_result = failed.error;
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        EXPECT_FALSE(engine_log_contains("nvidia: output 1's base buffer is bound"));
+
+        EXPECT_EQ(used_entry_count(), 1u);
+        EXPECT_EQ(memory.scanout_releases, 1u);
+        EXPECT_EQ(memory.general_requests, 1u);
+    }
+}
+
+// A table allocation finding no room leaves the engine with none and the set-up `OK`, and one failing otherwise fails
+// the set-up with its error, each logged, not as filled or bound, nothing mapped for it and the base buffer kept bound
+TEST(nvidia_display_engine, set_up_gives_no_look_up_table_surface_when_its_allocation_fails) {
+    struct failure {
+        int32_t     error;
+        int32_t     result;
+        const char* line;
+    };
+
+    const failure failures[] = {
+        {ERR_NO_MEMORY,
+         OK,
+         "nvidia: the display engine has no look-up table surface, as 0x4200 bytes of video memory for it cannot be "
+         "allocated"},
+        {ERR_INVALID_ARG,
+         ERR_INVALID_ARG,
+         "nvidia: allocating 0x4200 bytes of video memory for the look-up table surface failed: -13"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        connect_output_1_alone(fw);
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+        memory.failing_general_request = TABLE_REQUEST;
+        memory.general_allocate_result = failed.error;
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        EXPECT_FALSE(engine_log_contains("nvidia: the look-up table surface lies at"));
+        EXPECT_FALSE(engine_log_contains("nvidia: the look-up table surface is bound"));
+
+        EXPECT_EQ(memory.general_maps, BASE_BUFFER_BINDING_MAP);
+        EXPECT_EQ(used_entry_count(), 2u);
+        EXPECT_EQ(memory.scanout_releases, 0u);
+    }
+}
+
+// A table mapping or binding finding no room leaves the engine with none and the set-up `OK`, and one failing otherwise
+// fails the set-up with its error, each logged, not as bound, the table released and the base buffer kept bound
+TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fill_or_bind) {
+    struct failure {
+        uint32_t    map;
+        int32_t     error;
+        int32_t     result;
+        const char* line;
+    };
+
+    const failure failures[] = {
+        {TABLE_FILL_MAP,
+         ERR_NO_MEMORY,
+         OK,
+         "nvidia: the display engine has no look-up table surface, as mapping it for the CPU to fill it found no room, "
+         "so its video memory is released"},
+        {TABLE_FILL_MAP,
+         ERR_TIMEOUT,
+         ERR_TIMEOUT,
+         "nvidia: mapping the look-up table surface at 0x10000 in video memory for the CPU to fill it failed: -4, so "
+         "the memory is released"},
+        {TABLE_BINDING_MAP,
+         ERR_NO_MEMORY,
+         OK,
+         "nvidia: the display engine has no look-up table surface, as binding it to window 0's channel found no room, "
+         "so its video memory is released"},
+        {TABLE_BINDING_MAP,
+         ERR_TIMEOUT,
+         ERR_TIMEOUT,
+         "nvidia: binding the look-up table surface to window 0's channel failed: -4, so its video memory is released"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        connect_output_1_alone(fw);
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+        memory.failing_general_map = failed.map;
+        memory.general_map_result = failed.error;
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        EXPECT_FALSE(engine_log_contains("nvidia: the look-up table surface is bound"));
+        if (failed.map == TABLE_FILL_MAP) {
+            EXPECT_FALSE(engine_log_contains("nvidia: the look-up table surface lies at"));
+        }
+
+        EXPECT_EQ(memory.general_releases, 1u);
+        EXPECT_EQ(memory.general_released.offset, LOOK_UP_TABLE_OFFSET);
+        EXPECT_EQ(used_entry_count(), 2u);
+        EXPECT_EQ(memory.scanout_releases, 0u);
+    }
+}
+
+// A set-up whose base buffer binding or table allocation, mapping or binding finds no room asks nothing of the core
+// channel's state and logs neither end of a wait for it, since the wait follows both surfaces' bindings
+TEST(nvidia_display_engine, set_up_without_both_surfaces_bound_asks_nothing_of_the_core_channels_state) {
+    struct no_room {
+        uint32_t request;
+        uint32_t map;
+    };
+
+    const no_room cases[] = {
+        {0, BASE_BUFFER_BINDING_MAP},
+        {TABLE_REQUEST, 0},
+        {0, TABLE_FILL_MAP},
+        {0, TABLE_BINDING_MAP},
+    };
+
+    for (const no_room& missing : cases) {
+        engine_firmware fw;
+        connect_output_1_alone(fw);
+
+        engine_video_memory memory;
+        memory.failing_general_request = missing.request;
+        memory.general_allocate_result = ERR_NO_MEMORY;
+        memory.failing_general_map = missing.map;
+        memory.general_map_result = ERR_NO_MEMORY;
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BYTES));
+
+        display_engine& engine = new_engine(fw, memory);
+        ASSERT_EQ(set_up_logged(engine), OK);
+        EXPECT_EQ(fw.control_count(rm::CONTROL_GET_DISPLAY_CHANNEL_STATE), 0u);
+        EXPECT_FALSE(engine_log_contains("the core channel idle"));
+    }
+}
+
 // Has the double report output 0 as `show_output_0_on_head_1` does, preferring `TIMING_1366_BY_768`, and backs its base
 // buffer, so a set-up clears it and goes on, or gives false when the unprivileged heap cannot back it
 static bool give_output_0_a_base_buffer(engine_firmware& fw, engine_video_memory& memory) {
@@ -2051,8 +2445,8 @@ TEST(nvidia_display_engine, set_up_without_a_base_buffer_asks_nothing_of_the_cor
     }
 }
 
-// A request for the core channel's state failing other than with `ERR_FIRMWARE` fails the set-up once the base buffer
-// is cleared, and both channels and the objects stay allocated until the release frees them
+// A request for the core channel's state failing other than with `ERR_FIRMWARE` fails the set-up once both surfaces are
+// bound, and both channels and the objects stay allocated until the release frees them
 TEST(nvidia_display_engine, set_up_failing_at_the_core_channels_idle_wait_keeps_both_channels_until_release) {
     engine_firmware fw;
     fw.refusals[0] = {
@@ -2082,8 +2476,8 @@ TEST(nvidia_display_engine, set_up_failing_at_the_core_channels_idle_wait_keeps_
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
 }
 
-// A set-up that clears output 0's base buffer asks the display once for the core channel's state, and with the first
-// reply naming the idle state logs that the firmware reported the channel idle
+// A set-up binding output 0's base buffer and the look-up table surface asks the display once for the core channel's
+// state, and with the first reply naming the idle state logs that the firmware reported the channel idle
 TEST(nvidia_display_engine, set_up_logs_that_the_firmware_reported_the_core_channel_idle) {
     engine_firmware fw;
     engine_video_memory memory;

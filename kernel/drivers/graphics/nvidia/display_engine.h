@@ -43,10 +43,14 @@ namespace drivers::nvidia {
  * with the hardware kept as it is stays allocated in the hardware. The
  * notifier's page is never freed either, as `completion_notifier` describes.
  * The engine also owns the channel of the window chosen to light first, that
- * channel's push buffer and the chosen output's base buffer, the video memory
- * the window is to scan out. `release` keeps the base buffer allocated too,
- * though nothing binds it, so the display engine never reads it and keeping it
- * costs only its bytes until the driver is freed.
+ * channel's push buffer, the chosen output's base buffer (the video memory the
+ * window is to scan out) and the look-up table surface (the video memory
+ * holding the window's input table, which converts its colors into the
+ * half-precision floats the display engine computes with). `set_up` binds each
+ * surface it keeps to the window's channel, and nothing frees a bound surface,
+ * since the display engine may read it through the binding from then on, and
+ * the window's channel, released with the hardware kept as it is, stays
+ * allocated in the hardware.
  */
 class display_engine {
 public:
@@ -141,29 +145,41 @@ public:
      * modesetting module aligns the surfaces the display engine scans out),
      * then map it with `video_memory::map_for_cpu`, clear it to black, unmap
      * it with `video_memory::unmap_for_cpu`, which completes the writes, and
-     * log where it lies with its rows and pitch. When its memory cannot be
-     * allocated or mapping it finds no room, log why the output has no base
-     * buffer and return `OK`, releasing the memory after a failed mapping.
-     * Then, once the output has its base buffer, ask the display for the core
-     * channel's state with `wait_core_channel_idle` until the firmware reports
-     * the channel idle or more than `CORE_CHANNEL_IDLE_WAIT_NS` has passed
-     * since the first reply, and log which of the two ended the wait. Then
-     * read each present window's owner from the core channel's armed state
-     * with `read_window_owners`, and log each one's owner. Each output's modes
-     * are kept on the unprivileged heap from the monitors' reads to the
-     * choice, or to `release` when the set-up fails before it, and the other
-     * facts read are not kept. Each request spins on the calling CPU, waiting
-     * for its reply as `firmware` describes, and so does each wait for GET,
-     * for at most 5 seconds. The requests for the core channel's state follow
-     * one another with no pause while the firmware reports the channel busy,
-     * as `wait_core_channel_idle` describes. `read_output_edid` also spins
-     * before each reread of an EDID as it describes. `set_up` must be called
-     * at most once, as `instance_memory::set_up` must, and since it waits on
-     * video memory's lock and on the card as `instance_memory` and
-     * `video_memory` describe, it must never run in an interrupt handler or
-     * under a spinlock, and on a thread that cannot sleep, such as the boot
-     * thread, must run only while no other thread can call into video memory
-     * or the firmware.
+     * log where it lies with its rows and pitch. Then bind its context DMA to
+     * the window's channel under a new handle with `instance_memory::bind`,
+     * naming its video memory, and log the handle, where NVIDIA's modesetting
+     * module binds each surface's context DMA to the core channel and every
+     * window's channel. Then allocate the look-up table surface,
+     * `LOOK_UP_TABLE_SURFACE_BYTES` of `vram_use::general` video memory 4 KiB
+     * aligned, as NVIDIA's modesetting module allocates it, write each of its
+     * words as `look_up_table_word` gives it through a mapping for the CPU,
+     * unmap it, log where it lies, then bind its context DMA to the window's
+     * channel as the base buffer's, naming its whole pages, where that
+     * module's context DMA ends at the table's last byte, and log the handle.
+     * When a surface's memory cannot be allocated, mapping it finds no room or
+     * its binding finds no room in the instance memory or in the mapping it
+     * writes through, log why the output has no base buffer or the display
+     * engine no look-up table surface and return `OK`, releasing the memory
+     * after a failed mapping or binding, since nothing names it then. Then,
+     * once both surfaces are bound, ask the display for the core channel's
+     * state with `wait_core_channel_idle` until the firmware reports the
+     * channel idle or more than `CORE_CHANNEL_IDLE_WAIT_NS` has passed since
+     * the first reply, and log which of the two ended the wait. Then read each
+     * present window's owner from the core channel's armed state with
+     * `read_window_owners`, and log each one's owner. Each output's modes are
+     * kept on the unprivileged heap from the monitors' reads to the choice, or
+     * to `release` when the set-up fails before it, and the other facts read
+     * are not kept. Each request spins on the calling CPU, waiting for its
+     * reply as `firmware` describes, and so does each wait for GET, for at
+     * most 5 seconds. The requests for the core channel's state follow one
+     * another with no pause while the firmware reports the channel busy, as
+     * `wait_core_channel_idle` describes. `read_output_edid` also spins before
+     * each reread of an EDID as it describes. `set_up` must be called at most
+     * once, as `instance_memory::set_up` must, and since it waits on video
+     * memory's lock and on the card as `instance_memory` and `video_memory`
+     * describe, it must never run in an interrupt handler or under a spinlock,
+     * and on a thread that cannot sleep, such as the boot thread, must run
+     * only while no other thread can call into video memory or the firmware.
      * @param regs The card's BAR0 registers, through which the core channel's
      * methods are kicked and its PUT, GET and armed state read, and the window
      * channel's PUT and GET read. BAR0 must stay mapped until `release`
@@ -207,15 +223,16 @@ public:
      * error, logged as `choose_first_light` describes, and when the window
      * channel's allocation fails other than with `ERR_FIRMWARE` or
      * `ERR_NO_MEMORY`, the set-up fails with that error, logged as
-     * `allocate_window_channel` describes. When the base buffer's allocation
-     * or mapping fails other than with `ERR_NO_MEMORY`, the set-up fails with
-     * that error, logged here and as `video_memory` describes, the memory
-     * released after a failed mapping. When a request for the core channel's
-     * state fails other than with `ERR_FIRMWARE`, the set-up fails with its
-     * error, logged as `wait_core_channel_idle` describes. The display's
-     * objects and the channels stay allocated once allocated, even after a
-     * later step fails, until `release`, and the completion notifier stays
-     * bound to the core channel once bound.
+     * `allocate_window_channel` describes. When a surface's allocation,
+     * mapping or binding fails other than with `ERR_NO_MEMORY`, the set-up
+     * fails with that error, logged here and as `video_memory` or
+     * `instance_memory::bind` describes, the memory released after a failed
+     * mapping or binding. When a request for the core channel's state fails
+     * other than with `ERR_FIRMWARE`, the set-up fails with its error, logged
+     * as `wait_core_channel_idle` describes. The display's objects and the
+     * channels stay allocated once allocated, even after a later step fails,
+     * until `release`, the completion notifier stays bound to the core channel
+     * once bound, and each surface to the window's channel.
      */
     int32_t set_up(
         registers& regs,
@@ -253,7 +270,8 @@ private:
     dma::buffer     m_core_push_buffer = {};
     rm::handle      m_window_channel = 0;     // the chosen window's, 0 before `set_up` allocates it and after `release`
     dma::buffer     m_window_push_buffer = {};
-    vram_range      m_base_buffer = {};       // the chosen output's, of 0 bytes until `set_up` clears its memory
+    vram_range      m_base_buffer = {};       // the chosen output's, of 0 bytes while none is allocated
+    vram_range      m_look_up_table = {};     // the look-up table surface, of 0 bytes while none is allocated
     output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
 
     // The core channel's completion notifier, its page allocated and its context DMA bound to the channel by `set_up`

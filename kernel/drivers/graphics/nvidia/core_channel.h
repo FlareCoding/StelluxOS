@@ -21,6 +21,12 @@ constexpr uint32_t CORE_CHANNEL_ARMED_STATE = 0x8000;
 // `instance_memory::bind` takes to bind a context DMA to the core channel
 constexpr uint32_t CORE_CHANNEL_NUMBER = 0;
 
+// NVIDIA's NV_PDISP_CHN_NUM_WIN(window), `window`'s channel's number among the display engine's channels, which
+// `instance_memory::bind` takes to bind a context DMA to that window's channel
+constexpr uint32_t window_channel_number(uint8_t window) {
+    return 1 + window;
+}
+
 // How long the firmware may report the core channel busy before `wait_core_channel_idle` gives up, NVIDIA's 100
 // milliseconds
 constexpr uint64_t CORE_CHANNEL_IDLE_WAIT_NS = 100 * NS_PER_MS;

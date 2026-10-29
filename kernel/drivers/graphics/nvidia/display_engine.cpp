@@ -26,8 +26,9 @@
 
 namespace drivers::nvidia {
 
-// NVIDIA's NV_EVO_SURFACE_ALIGNMENT, the alignment of every surface the display engine scans out
-constexpr uint64_t BASE_BUFFER_ALIGNMENT = 0x1000;
+// NVIDIA's NV_EVO_SURFACE_ALIGNMENT, the alignment of the surfaces NVIDIA's modesetting module scans out and the least
+// alignment of its look-up table surfaces, which it aligns to 4 KiB in any case
+constexpr uint64_t SURFACE_ALIGNMENT = 0x1000;
 
 // Logs the maker, name and timings an output's EDID gives
 static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
@@ -564,7 +565,7 @@ static int32_t set_up_base_buffer(video_memory& memory, const first_light& light
     uint64_t bytes = static_cast<uint64_t>(pitch) * light.timing.height;
 
     vram_range allocated = {};
-    int32_t rc = memory.allocate(bytes, BASE_BUFFER_ALIGNMENT, vram_use::scanout, allocated);
+    int32_t rc = memory.allocate(bytes, SURFACE_ALIGNMENT, vram_use::scanout, allocated);
     if (rc == ERR_NO_MEMORY) {
         log::error(
             "nvidia: output %u has no base buffer, as 0x%lX bytes of video memory for it cannot be allocated",
@@ -622,6 +623,175 @@ static int32_t set_up_base_buffer(video_memory& memory, const first_light& light
         allocated.offset,
         light.timing.height,
         pitch
+    );
+
+    return OK;
+}
+
+// Binds `surface`, video memory for `window` to read, to the window's channel under a new handle given in
+// `context_dma`, and when the binding fails releases the memory and empties `surface`, since nothing names it then
+static int32_t bind_to_window_channel(
+    firmware& fw,
+    instance_memory& instances,
+    video_memory& memory,
+    uint8_t window,
+    vram_range& surface,
+    rm::handle& context_dma
+) {
+    context_dma = fw.new_handle();
+    context_dma_memory surface_memory = {
+        .in_video_memory = true,
+        .address = surface.offset,
+        .bytes = surface.size,
+    };
+
+    int32_t rc = instances.bind(context_dma, window_channel_number(window), surface_memory);
+    if (rc != OK) {
+        memory.release(surface);
+        surface = {};
+    }
+
+    return rc;
+}
+
+// Binds the chosen output's base buffer to its window's channel, or releases and empties it and returns `OK` when the
+// binding finds no room, else releases and empties it and returns the binding's error, each outcome logged
+static int32_t bind_base_buffer(
+    firmware& fw,
+    instance_memory& instances,
+    video_memory& memory,
+    const first_light& light,
+    vram_range& base_buffer
+) {
+    rm::handle context_dma = 0;
+    int32_t rc = bind_to_window_channel(fw, instances, memory, light.window, base_buffer, context_dma);
+    if (rc == ERR_NO_MEMORY) {
+        log::error(
+            "nvidia: output %u has no base buffer, as binding it to window %u's channel found no room, so its video "
+            "memory is released",
+            light.output,
+            light.window
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: binding output %u's base buffer to window %u's channel failed: %d, so its video memory is "
+            "released",
+            light.output,
+            light.window,
+            rc
+        );
+        return rc;
+    }
+
+    log::info(
+        "nvidia: output %u's base buffer is bound to window %u's channel as context DMA 0x%X",
+        light.output,
+        light.window,
+        context_dma
+    );
+
+    return OK;
+}
+
+// Allocates the look-up table surface and writes `look_up_table_word`'s words through a mapping for the CPU, or
+// returns `OK` when a call finds no room, else its error, each logged, the memory released after a failed mapping
+static int32_t set_up_look_up_table(video_memory& memory, vram_range& out) {
+    vram_range allocated = {};
+    int32_t rc = memory.allocate(LOOK_UP_TABLE_SURFACE_BYTES, SURFACE_ALIGNMENT, vram_use::general, allocated);
+    if (rc == ERR_NO_MEMORY) {
+        log::error(
+            "nvidia: the display engine has no look-up table surface, as 0x%lX bytes of video memory for it cannot be "
+            "allocated",
+            LOOK_UP_TABLE_SURFACE_BYTES
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: allocating 0x%lX bytes of video memory for the look-up table surface failed: %d",
+            LOOK_UP_TABLE_SURFACE_BYTES,
+            rc
+        );
+        return rc;
+    }
+
+    cpu_mapping mapping = {};
+    rc = memory.map_for_cpu(allocated, mapping);
+    if (rc == ERR_NO_MEMORY) {
+        log::error(
+            "nvidia: the display engine has no look-up table surface, as mapping it for the CPU to fill it found no "
+            "room, so its video memory is released"
+        );
+        memory.release(allocated);
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: mapping the look-up table surface at 0x%lX in video memory for the CPU to fill it failed: %d, so "
+            "the memory is released",
+            allocated.offset,
+            rc
+        );
+        memory.release(allocated);
+        return rc;
+    }
+
+    uint64_t words = allocated.size / sizeof(uint64_t);
+    for (uint32_t index = 0; index < words; index++) {
+        mmio::write64(mapping.virt + index * sizeof(uint64_t), look_up_table_word(index));
+    }
+
+    memory.unmap_for_cpu(allocated);
+    out = allocated;
+
+    log::info(
+        "nvidia: the look-up table surface lies at 0x%lX in video memory, its input table passing each color through "
+        "unchanged",
+        allocated.offset
+    );
+
+    return OK;
+}
+
+// Binds the look-up table surface to `window`'s channel, or releases and empties it and returns `OK` when the binding
+// finds no room, else releases and empties it and returns the binding's error, each outcome logged
+static int32_t bind_look_up_table(
+    firmware& fw,
+    instance_memory& instances,
+    video_memory& memory,
+    uint8_t window,
+    vram_range& table
+) {
+    rm::handle context_dma = 0;
+    int32_t rc = bind_to_window_channel(fw, instances, memory, window, table, context_dma);
+    if (rc == ERR_NO_MEMORY) {
+        log::error(
+            "nvidia: the display engine has no look-up table surface, as binding it to window %u's channel found no "
+            "room, so its video memory is released",
+            window
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: binding the look-up table surface to window %u's channel failed: %d, so its video memory is "
+            "released",
+            window,
+            rc
+        );
+        return rc;
+    }
+
+    log::info(
+        "nvidia: the look-up table surface is bound to window %u's channel as context DMA 0x%X",
+        window,
+        context_dma
     );
 
     return OK;
@@ -870,6 +1040,21 @@ int32_t display_engine::set_up(
 
     rc = set_up_base_buffer(m_memory, light, m_base_buffer);
     if (rc != OK || m_base_buffer.size == 0) {
+        return rc;
+    }
+
+    rc = bind_base_buffer(m_firmware, m_instance_memory, m_memory, light, m_base_buffer);
+    if (rc != OK || m_base_buffer.size == 0) {
+        return rc;
+    }
+
+    rc = set_up_look_up_table(m_memory, m_look_up_table);
+    if (rc != OK || m_look_up_table.size == 0) {
+        return rc;
+    }
+
+    rc = bind_look_up_table(m_firmware, m_instance_memory, m_memory, light.window, m_look_up_table);
+    if (rc != OK || m_look_up_table.size == 0) {
         return rc;
     }
 
