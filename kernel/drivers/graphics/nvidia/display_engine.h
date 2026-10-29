@@ -50,12 +50,14 @@ namespace drivers::nvidia {
  * channel's push buffer and queue of methods, the chosen output's base buffer
  * (the video memory the window is to scan out) and the look-up table surface
  * (the video memory holding the window's input table, which converts its
- * colors into the half-precision floats the display engine computes with).
- * `set_up` binds each surface it keeps to the window's channel, keeping the
- * context DMA it binds for the methods naming it, and nothing frees a bound
- * surface, since the display engine may read it through the binding from then
- * on, and the window's channel, while released with the hardware kept as it
- * is, stays allocated in the hardware.
+ * colors into the half-precision floats the display engine computes with, and
+ * the head's output table, which converts them back for the link). `set_up`
+ * binds each surface it keeps to the window's channel, and the look-up table
+ * surface to the core channel too, keeping the context DMA it binds for the
+ * methods naming it, and nothing frees a bound surface, since the display
+ * engine may read it through the binding from then on, and the window's
+ * channel, while released with the hardware kept as it is, stays allocated in
+ * the hardware.
  */
 class display_engine {
 public:
@@ -158,14 +160,20 @@ public:
      * `LOOK_UP_TABLE_SURFACE_BYTES` of `vram_use::general` video memory 4 KiB
      * aligned, as NVIDIA's modesetting module allocates it, write each of its
      * words as `look_up_table_word` gives it through a mapping for the CPU,
-     * unmap it, log where it lies, then bind its context DMA to the window's
-     * channel as the base buffer's, naming its whole pages, where that
-     * module's context DMA ends at the table's last byte, and log the handle.
-     * When a surface's memory cannot be allocated, mapping it finds no room or
-     * its binding finds no room in the instance memory or in the mapping it
-     * writes through, log why the output has no base buffer or the display
-     * engine no look-up table surface and return `OK`, releasing the memory
-     * after a failed mapping or binding, since nothing names it then. Then,
+     * unmap it, log where it lies, then bind its context DMA under a new
+     * handle to the core channel, whose heads read its output table, and then
+     * to the window's channel, as that module binds it, naming its whole
+     * pages, where that module's context DMA ends at the table's last byte,
+     * and log the handle. When a surface's memory cannot be allocated, mapping
+     * it finds no room or its binding finds no room in the instance memory or
+     * in the mapping it writes through, log why the output has no base buffer
+     * or the display engine no look-up table surface and return `OK`,
+     * releasing the memory after a failed mapping or binding, since nothing
+     * names it then. A failed binding of the table to the window's channel
+     * first undoes the table's binding to the core channel. When undoing it
+     * fails, the memory stays allocated and still bound to the core channel,
+     * logged as such, and the engine keeps neither the table nor its context
+     * DMA. The set-up then returns `OK` only when both found no room. Then,
      * once both surfaces are bound, ask the display for the core channel's
      * state with `wait_core_channel_idle` until the firmware reports the
      * channel idle or more than `CORE_CHANNEL_IDLE_WAIT_NS` has passed since
@@ -263,9 +271,13 @@ public:
      * mapping or binding fails other than with `ERR_NO_MEMORY`, the set-up
      * fails with that error, logged here and as `video_memory` or
      * `instance_memory::bind` describes, the memory released after a failed
-     * mapping or binding. When a request for the core channel's state fails
-     * other than with `ERR_FIRMWARE`, the set-up fails with its error, logged
-     * as `wait_core_channel_idle` describes. When the mode set's start or end
+     * mapping or binding unless undoing the table's binding to the core
+     * channel fails. When that undoing fails after the window's binding found
+     * no room, the set-up fails with the undoing's error unless it is
+     * `ERR_NO_MEMORY`, logged here and as `instance_memory::unbind` describes.
+     * When a request for the core channel's state fails other than with
+     * `ERR_FIRMWARE`, the set-up fails with its error, logged as
+     * `wait_core_channel_idle` describes. When the mode set's start or end
      * fails other than with `ERR_FIRMWARE`, the set-up fails with its error,
      * logged as `firmware::control` describes. When a request for the chosen
      * output's link fails other than with `ERR_FIRMWARE`, the set-up fails
@@ -276,8 +288,10 @@ public:
      * `OK` unless the mode set's end fails other than with `ERR_FIRMWARE`. The
      * display's objects and the channels stay allocated once allocated, even
      * after a later step fails, until `release`, the completion notifier stays
-     * bound to the core channel once bound, and each surface to the window's
-     * channel.
+     * bound to the core channel once bound, each surface to the window's
+     * channel, and the look-up table surface to the core channel as well
+     * unless the set-up undoes that binding after a failed binding to the
+     * window's channel.
      */
     int32_t set_up(
         registers& regs,
@@ -319,11 +333,11 @@ private:
     rm::handle      m_window_channel = 0;     // the chosen window's, 0 before `set_up` allocates it and after `release`
     dma::buffer     m_window_push_buffer = {};
     vram_range      m_base_buffer = {};       // the chosen output's, of 0 bytes while none is allocated
-    vram_range      m_look_up_table = {};     // the look-up table surface, of 0 bytes while none is allocated
+    vram_range      m_look_up_table = {};     // the look-up table surface, of 0 bytes while the engine keeps none
     output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
 
-    // The context DMAs binding the base buffer and the look-up table surface to the window's channel, each 0 until
-    // `set_up` binds it
+    // The context DMAs binding the base buffer and the look-up table surface to the window's channel, the table's to
+    // the core channel too, each 0 until `set_up` binds it
     rm::handle m_base_buffer_context_dma = 0;
     rm::handle m_look_up_table_context_dma = 0;
 

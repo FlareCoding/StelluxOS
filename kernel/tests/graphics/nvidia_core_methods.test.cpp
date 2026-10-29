@@ -268,6 +268,9 @@ TEST(nvidia_core_methods, no_active_head_after_the_first_update_gives_no_methods
 // The IOC 25G2S's preferred timing, 2560 by 1440 at 60 Hz with a positive horizontal and negative vertical sync
 static constexpr edid::timing IOC_25G2S_PREFERRED = {241700, 2560, 48, 32, 80, 1440, 3, 5, 33, true, false};
 
+// The look-up table surface's context DMA, bound to the core channel for the head's output table
+static constexpr uint32_t TABLE_HANDLE = 0xB2;
+
 // Head 0 lit at `IOC_25G2S_PREFERRED` for windows 0 and 1, showing `SHOWN_DISPLAY` on link A of serial link 2
 static constexpr head_light HEAD_0_LIGHT = {
     .head = 0,
@@ -275,10 +278,16 @@ static constexpr head_light HEAD_0_LIGHT = {
     .timing = IOC_25G2S_PREFERRED,
     .display_id = SHOWN_DISPLAY,
     .link = {.index = SHOWN_LINK, .sublink = 0},
+    .output_table_context_dma = TABLE_HANDLE,
 };
 
 // NVIDIA's methods and values lighting `HEAD_0_LIGHT`, in the order NVIDIA's modesetting module writes them
 static constexpr display_method HEAD_0_LIT[] = {
+    {0x2280, 0x00040508}, // HEAD_SET_OLUT_CONTROL, DIRECT10 with 1029 entries
+    {0x228C, 0x21},       // HEAD_SET_OFFSET_OLUT, byte 8448 in 256-byte units
+    {0x2284, 0xFFFFFFFF}, // HEAD_SET_OLUT_FP_NORM_SCALE
+    {0x2288, 0xB2},       // HEAD_SET_CONTEXT_DMA_OLUT
+    {0x2240, 0x1},        // HEAD_SET_OCSC0CONTROL, enabled
     {0x2078, 0},          // HEAD_SET_OVERSCAN_COLOR, black
     {0x2064, 0x05C90AA0}, // HEAD_SET_RASTER_SIZE, 2720 by 1481
     {0x2068, 0x0004001F}, // HEAD_SET_RASTER_SYNC_END, 31 and 4
@@ -300,6 +309,18 @@ static constexpr display_method HEAD_0_LIT[] = {
     {0x22D8, 0},          // HEAD_SET_DSC_PPS_CONTROL
     {0x2004, 0xFC000049}, // HEAD_SET_CONTROL_OUTPUT_RESOURCE, negative vertical sync and 24 bits a pixel
     {0x2000, 0},          // HEAD_SET_PROCAMP
+    {0x2244, 0x10000},    // HEAD_SET_OCSC0COEFFICIENT_C00, 1
+    {0x2248, 0},          // HEAD_SET_OCSC0COEFFICIENT_C01
+    {0x224C, 0},          // HEAD_SET_OCSC0COEFFICIENT_C02
+    {0x2250, 0x20},       // HEAD_SET_OCSC0COEFFICIENT_C03, 1/2048
+    {0x2254, 0},          // HEAD_SET_OCSC0COEFFICIENT_C10
+    {0x2258, 0x10000},    // HEAD_SET_OCSC0COEFFICIENT_C11
+    {0x225C, 0},          // HEAD_SET_OCSC0COEFFICIENT_C12
+    {0x2260, 0x20},       // HEAD_SET_OCSC0COEFFICIENT_C13
+    {0x2264, 0},          // HEAD_SET_OCSC0COEFFICIENT_C20
+    {0x2268, 0},          // HEAD_SET_OCSC0COEFFICIENT_C21
+    {0x226C, 0x10000},    // HEAD_SET_OCSC0COEFFICIENT_C22
+    {0x2270, 0x20},       // HEAD_SET_OCSC0COEFFICIENT_C23
     {0x2238, 0x0FFF0000}, // HEAD_SET_CLAMP_RANGE_GREEN, 0 to 0xFFF
     {0x223C, 0x0FFF0000}, // HEAD_SET_CLAMP_RANGE_RED_BLUE
     {0x229C, 0},          // HEAD_SET_OCSC1CONTROL
@@ -311,24 +332,25 @@ static constexpr display_method HEAD_0_LIT[] = {
     {0x202C, 0x04000400}, // HEAD_SET_MAX_OUTPUT_SCALE_FACTOR, 1024 1024ths each way
     {0x1010, 0x10110A16}, // WINDOW_SET_WINDOW_USAGE_BOUNDS(0), 2560 + 22 pixels fetched a line
     {0x1090, 0x10110A16}, // WINDOW_SET_WINDOW_USAGE_BOUNDS(1)
+    {0x2030, 0x1014},     // HEAD_SET_HEAD_USAGE_BOUNDS, a 256 by 256 cursor, the output table and 2 scaler taps
     {0x2048, 0},          // HEAD_SET_VIEWPORT_POINT_IN
     {0x2014, 0x11},       // HEAD_SET_CONTROL_OUTPUT_SCALER, 2 taps each way
 };
 
-// Lighting `HEAD_0_LIGHT` gives NVIDIA's 34 methods and values in NVIDIA's order
+// Lighting `HEAD_0_LIGHT` gives NVIDIA's 52 methods and values in NVIDIA's order
 TEST(nvidia_core_methods, head_light_methods_follow_nvidias_order_and_values) {
     head_light_methods methods = {};
 
     build_head_light_methods(HEAD_0_LIGHT, methods);
 
-    ASSERT_EQ(methods.count, 34u);
-    expect_methods(methods, 0, HEAD_0_LIT, 34);
+    ASSERT_EQ(methods.count, 52u);
+    expect_methods(methods, 0, HEAD_0_LIT, 52);
 }
 
 // The indices in `HEAD_0_LIT` of the methods that are not a head's: the flip lock pins, the link and the windows
-static constexpr uint32_t SET_CONTROL_INDEX  = 14;
-static constexpr uint32_t LINK_INDEX         = 24;
-static constexpr uint32_t FIRST_WINDOW_INDEX = 30;
+static constexpr uint32_t SET_CONTROL_INDEX  = 19;
+static constexpr uint32_t LINK_INDEX         = 41;
+static constexpr uint32_t FIRST_WINDOW_INDEX = 47;
 
 // Head 3 lit through link B of serial link 0 for windows 6 and 7 takes each head method at head 3's, the link carrying
 // head 3 in DP_B, while the flip lock pins' method stays the channel's own
@@ -339,14 +361,15 @@ TEST(nvidia_core_methods, head_light_methods_follow_the_head_link_and_windows) {
         .timing = IOC_25G2S_PREFERRED,
         .display_id = 0x800,
         .link = {.index = 0, .sublink = 1},
+        .output_table_context_dma = TABLE_HANDLE,
     };
 
     head_light_methods methods = {};
 
     build_head_light_methods(light, methods);
 
-    ASSERT_EQ(methods.count, 34u);
-    for (uint32_t index = 0; index < 34; index++) {
+    ASSERT_EQ(methods.count, 52u);
+    for (uint32_t index = 0; index < 52; index++) {
         bool is_flip_lock_pins = index == SET_CONTROL_INDEX;
         bool is_link = index == LINK_INDEX;
         bool is_window = index == FIRST_WINDOW_INDEX || index == FIRST_WINDOW_INDEX + 1;
@@ -363,7 +386,7 @@ TEST(nvidia_core_methods, head_light_methods_follow_the_head_link_and_windows) {
     EXPECT_EQ(methods.methods[FIRST_WINDOW_INDEX + 1].method, NVIDIA_USAGE_BOUNDS + 7 * NVIDIA_WINDOW_STRIDE);
 }
 
-// A head serving no window gets no usage bounds, its viewport's origin following its output scale factor
+// A head serving no window gets no window usage bounds, its own following its output scale factor
 TEST(nvidia_core_methods, head_light_methods_bound_no_window_for_a_head_serving_none) {
     head_light light = HEAD_0_LIGHT;
     light.windows = 0;
@@ -371,15 +394,16 @@ TEST(nvidia_core_methods, head_light_methods_bound_no_window_for_a_head_serving_
 
     build_head_light_methods(light, methods);
 
-    ASSERT_EQ(methods.count, 32u);
-    EXPECT_EQ(methods.methods[29].method, 0x202Cu);
-    EXPECT_EQ(methods.methods[30].method, 0x2048u);
-    EXPECT_EQ(methods.methods[31].method, 0x2014u);
+    ASSERT_EQ(methods.count, 50u);
+    EXPECT_EQ(methods.methods[46].method, 0x202Cu);
+    EXPECT_EQ(methods.methods[47].method, 0x2030u);
+    EXPECT_EQ(methods.methods[48].method, 0x2048u);
+    EXPECT_EQ(methods.methods[49].method, 0x2014u);
 }
 
 // A negative sync sets its polarity, bit 2 for the horizontal and bit 3 for the vertical, each alone or both
 TEST(nvidia_core_methods, head_light_output_resource_takes_each_negative_sync) {
-    static constexpr uint32_t OUTPUT_RESOURCE_INDEX = 19;
+    static constexpr uint32_t OUTPUT_RESOURCE_INDEX = 24;
     head_light light = HEAD_0_LIGHT;
     head_light_methods methods = {};
 
@@ -413,15 +437,15 @@ TEST(nvidia_core_methods, head_light_raster_keeps_15_bits_of_each_position) {
 
     build_head_light_methods(light, methods);
 
-    EXPECT_EQ(methods.methods[2].value, 0x7FFF7FFFu);
-    EXPECT_EQ(methods.methods[3].value, 0x00017FFFu);
+    EXPECT_EQ(methods.methods[7].value, 0x7FFF7FFFu);
+    EXPECT_EQ(methods.methods[8].value, 0x00017FFFu);
 }
 
 // A pixel clock of 3,300,000 kHz, 0xC4B20100 Hz, gives both frequencies its low 31 bits, HERTZ's field, so bit 30
 // stays set and bit 31, ADJ1000DIV1001, clear
 TEST(nvidia_core_methods, head_light_pixel_clock_keeps_31_bits_of_its_hertz) {
-    static constexpr uint32_t PIXEL_CLOCK_INDEX     = 6;
-    static constexpr uint32_t PIXEL_CLOCK_MAX_INDEX = 8;
+    static constexpr uint32_t PIXEL_CLOCK_INDEX     = 11;
+    static constexpr uint32_t PIXEL_CLOCK_MAX_INDEX = 13;
     head_light light = HEAD_0_LIGHT;
     light.timing.pixel_clock_khz = 3300000;
     head_light_methods methods = {};

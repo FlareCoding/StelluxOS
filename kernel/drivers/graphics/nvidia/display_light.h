@@ -18,9 +18,14 @@ namespace drivers::nvidia {
 // input table of 1029 8-byte entries, then a head's output table of as many, each padded to the next multiple of 256
 constexpr uint64_t LOOK_UP_TABLE_SURFACE_BYTES = 0x4200;
 
-// NVIDIA's NV_LUT_VSS_HEADER_SIZE and NV_NUM_EVO_LUT_ENTRIES: a look-up table's header entries, then its entries
+// NVIDIA's NV_LUT_VSS_HEADER_SIZE and NV_NUM_EVO_LUT_ENTRIES: a look-up table's header entries, then its entries, and
+// their sum, the SIZE NVIDIA writes in a table's control
 constexpr uint32_t LOOK_UP_TABLE_HEADER_ENTRIES = 4;
 constexpr uint32_t LOOK_UP_TABLE_ENTRIES        = 1025;
+constexpr uint32_t LOOK_UP_TABLE_SIZE           = LOOK_UP_TABLE_HEADER_ENTRIES + LOOK_UP_TABLE_ENTRIES;
+
+// Where the head's output table begins in the look-up table surface, NVEvoLutDataRec's output, 256-byte aligned
+constexpr uint64_t OUTPUT_TABLE_OFFSET = 0x2100;
 
 // NVIDIA's NV_EVO_SCALE_FACTOR_1X, a scale factor of one in 1024ths
 constexpr uint32_t SCALE_FACTOR_ONE = 1024;
@@ -125,13 +130,14 @@ uint32_t base_buffer_pitch(uint32_t width);
  * their sizes, then 1025 entries holding NVIDIA's identity, each but the last
  * holding its place among them over 1024 as a half-precision float in red,
  * green and blue, 16 bits each from bit 0, and the last repeating the one
- * before. Each entry's top 16 bits, which NVIDIA names unused, are 0, and so
- * is every other word: the header entries, the output table, which a head
- * could read only through a binding to the core channel, the padding that
- * places the output table at byte 8448 and ends NVEvoLutDataRec at
- * `LOOK_UP_TABLE_SURFACE_BYTES`, and the words past that the allocation's
- * whole pages add. NVIDIA's default table, the one a window with no table of
- * its own reads, holds NVIDIA's output identity in its output table as well.
+ * before. The head's output table, at `OUTPUT_TABLE_OFFSET`, is laid out the
+ * same way and holds NVIDIA's output identity, each entry but the last holding
+ * its place among them as a 10-bit level in the top 10 bits of 16 in red,
+ * green and blue, and the last repeating the one before. Each entry's top 16
+ * bits, which NVIDIA names unused, are 0, and so is every other word: the
+ * header entries, the padding that places the output table at byte 8448 and
+ * ends NVEvoLutDataRec at `LOOK_UP_TABLE_SURFACE_BYTES`, and the words past
+ * that the allocation's whole pages add.
  * @param index The word's place in the surface's memory.
  * @return The word.
  */

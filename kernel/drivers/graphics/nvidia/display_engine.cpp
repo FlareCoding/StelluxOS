@@ -767,16 +767,16 @@ static int32_t set_up_look_up_table(video_memory& memory, vram_range& out) {
     out = allocated;
 
     log::info(
-        "nvidia: the look-up table surface lies at 0x%lX in video memory, its input table passing each color through "
-        "unchanged",
+        "nvidia: the look-up table surface lies at 0x%lX in video memory, its input and output tables passing each "
+        "color through unchanged",
         allocated.offset
     );
 
     return OK;
 }
 
-// Binds the look-up table surface to `window`'s channel as `bind_to_window_channel` binds a surface, returning `OK`
-// when the binding finds no room and its error when it fails otherwise, each outcome logged
+// Binds `table` under one new handle to the core channel, then `window`'s, returning the first error that is not
+// `ERR_NO_MEMORY` or else `OK`, each outcome logged. On failure the handle is 0 and `table` empty, released if unbound
 static int32_t bind_look_up_table(
     firmware& fw,
     instance_memory& instances,
@@ -785,33 +785,65 @@ static int32_t bind_look_up_table(
     vram_range& table,
     rm::handle& context_dma
 ) {
-    int32_t rc = bind_to_window_channel(fw, instances, memory, window, table, context_dma);
-    if (rc == ERR_NO_MEMORY) {
-        log::error(
-            "nvidia: the display engine has no look-up table surface, as binding it to window %u's channel found no "
-            "room, so its video memory is released",
-            window
+    context_dma = fw.new_handle();
+    context_dma_memory table_memory = {
+        .in_video_memory = true,
+        .address = table.offset,
+        .bytes = table.size,
+    };
+
+    int32_t rc = instances.bind(context_dma, CORE_CHANNEL_NUMBER, table_memory);
+    bool is_core_bound = rc == OK;
+    if (is_core_bound) {
+        rc = instances.bind(context_dma, window_channel_number(window), table_memory);
+    }
+
+    if (rc == OK) {
+        log::info(
+            "nvidia: the look-up table surface is bound to the core channel and window %u's channel as context DMA "
+            "0x%X",
+            window,
+            context_dma
         );
         return OK;
     }
 
-    if (rc != OK) {
+    // No method has named the context DMA, so the core channel's binding can be undone before the memory goes
+    int32_t unbind_rc = is_core_bound ? instances.unbind(context_dma, CORE_CHANNEL_NUMBER) : OK;
+    bool is_unbound = unbind_rc == OK;
+    if (is_unbound) {
+        memory.release(table);
+    }
+
+    const char* failed_channel = is_core_bound ? "window's channel" : "core channel";
+    const char* memory_outcome = is_unbound ? "its video memory is released"
+                                            : "its video memory stays allocated, still bound to the core channel";
+    if (rc == ERR_NO_MEMORY) {
         log::error(
-            "nvidia: binding the look-up table surface to window %u's channel failed: %d, so its video memory is "
-            "released",
+            "nvidia: the display engine has no look-up table surface for window %u, as binding it to the %s found no "
+            "room, so %s",
             window,
-            rc
+            failed_channel,
+            memory_outcome
         );
+    } else {
+        log::error(
+            "nvidia: binding the look-up table surface for window %u to the %s failed: %d, so %s",
+            window,
+            failed_channel,
+            rc,
+            memory_outcome
+        );
+    }
+
+    table = {};
+    context_dma = 0;
+
+    if (rc != ERR_NO_MEMORY) {
         return rc;
     }
 
-    log::info(
-        "nvidia: the look-up table surface is bound to window %u's channel as context DMA 0x%X",
-        window,
-        context_dma
-    );
-
-    return OK;
+    return unbind_rc == ERR_NO_MEMORY ? OK : unbind_rc;
 }
 
 // Logs whether the firmware reported the core channel idle before the wait for it gave up

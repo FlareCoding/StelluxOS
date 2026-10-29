@@ -25,7 +25,8 @@ constexpr uint8_t CURSOR_WIDTH_32 = 256 / 32;
 constexpr uint32_t BASE_BUFFER_BYTES_PER_PIXEL = 4;
 constexpr uint32_t BASE_BUFFER_PITCH_ALIGNMENT = 256;
 
-// The levels of a 10-bit color, which NVIDIA's identity divides each entry's place by
+// The levels of a 10-bit color, the entries each of NVIDIA's identities gives before repeating its last, and what the
+// input identity divides each entry's place by
 constexpr uint32_t COLOR_LEVELS = 1024;
 
 // A half-precision float's fraction bits and its exponent's bias, and where an entry's green and blue begin
@@ -33,6 +34,11 @@ constexpr uint32_t HALF_FRACTION_BITS = 10;
 constexpr uint32_t HALF_EXPONENT_BIAS = 15;
 constexpr uint32_t ENTRY_GREEN_SHIFT  = 16;
 constexpr uint32_t ENTRY_BLUE_SHIFT   = 32;
+
+// Where an output table entry's 16-bit colors hold a 10-bit level, NVIDIA's 16 - 10, and the surface's word where the
+// output table begins
+constexpr uint32_t OUTPUT_LEVEL_SHIFT      = 6;
+constexpr uint32_t OUTPUT_TABLE_FIRST_WORD = OUTPUT_TABLE_OFFSET / sizeof(uint64_t);
 
 // The output tried after `tried` others: `first_output` first, then the others in ascending order
 static uint8_t output_in_order(uint8_t tried, uint8_t first_output) {
@@ -97,15 +103,18 @@ static uint16_t half_of_level(uint32_t level) {
 }
 
 uint64_t look_up_table_word(uint32_t index) {
-    bool is_header = index < LOOK_UP_TABLE_HEADER_ENTRIES;
-    bool is_past_input_table = index >= LOOK_UP_TABLE_HEADER_ENTRIES + LOOK_UP_TABLE_ENTRIES;
-    if (is_header || is_past_input_table) {
+    bool is_output_table = index >= OUTPUT_TABLE_FIRST_WORD;
+    uint32_t entry = is_output_table ? index - OUTPUT_TABLE_FIRST_WORD : index;
+    bool is_header = entry < LOOK_UP_TABLE_HEADER_ENTRIES;
+    bool is_past_table = entry >= LOOK_UP_TABLE_SIZE;
+    if (is_header || is_past_table) {
         return 0;
     }
 
-    // The last entry repeats the one before, as NVIDIA's identity ends
-    uint32_t level = index - LOOK_UP_TABLE_HEADER_ENTRIES;
-    uint64_t color = half_of_level(level < COLOR_LEVELS ? level : COLOR_LEVELS - 1);
+    // The last entry repeats the one before, as both of NVIDIA's identities end
+    uint32_t place = entry - LOOK_UP_TABLE_HEADER_ENTRIES;
+    uint32_t level = place < COLOR_LEVELS ? place : COLOR_LEVELS - 1;
+    uint64_t color = is_output_table ? level << OUTPUT_LEVEL_SHIFT : half_of_level(level);
 
     return color | color << ENTRY_GREEN_SHIFT | color << ENTRY_BLUE_SHIFT;
 }

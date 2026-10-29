@@ -9,6 +9,7 @@
 #include "drivers/graphics/nvidia/display_active_heads.h"
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_link.h"
+#include "drivers/graphics/nvidia/rm.h"
 
 namespace drivers::nvidia {
 
@@ -88,17 +89,19 @@ void build_shutdown_methods(
     shutdown_methods& out
 );
 
-// What one head is lit with: its mode, the display id it shows, the serial link it feeds and the windows it serves
+// What one head is lit with: its mode, the display id it shows, the serial link it feeds, the windows it serves and the
+// look-up table surface holding its output table
 struct head_light {
     uint8_t      head;
-    uint32_t     windows;    // bit i for window i, each window serving `head`
-    edid::timing timing;     // a progressive timing whose raster has 2 or more leading idle lines
-    uint32_t     display_id; // the display id the head shows, a single bit
-    output_link  link;       // the serial link the head feeds and the sublink the display id takes
+    uint32_t     windows;                  // bit i for window i, each window serving `head`
+    edid::timing timing;                   // a progressive timing whose raster has 2 or more leading idle lines
+    uint32_t     display_id;               // the display id the head shows, a single bit
+    output_link  link;                     // the serial link the head feeds and the sublink the display id takes
+    rm::handle   output_table_context_dma; // names the look-up table surface, bound to the core channel
 };
 
-// The most methods `build_head_light_methods` gives: 32 for the head and its link and one for each window it serves
-constexpr uint32_t HEAD_LIGHT_FIXED_METHODS = 32;
+// The most methods `build_head_light_methods` gives: 50 for the head and its link and one for each window it serves
+constexpr uint32_t HEAD_LIGHT_FIXED_METHODS = 50;
 constexpr uint32_t HEAD_LIGHT_METHODS_MAX   = HEAD_LIGHT_FIXED_METHODS + DISPLAY_WINDOWS_MAX;
 
 // The core channel's methods lighting one head, the first `count` of `methods` in the order they are written
@@ -120,26 +123,36 @@ struct window_usage_methods {
  * through its serial link, ahead of the update that applies them, in the order
  * NVIDIA's modesetting module writes them for a head it lights with RGB at 8
  * bits a color, at full range and with no scaling, compression, stereo or
- * lock. First the raster: a black overscan, the totals, sync end, blanking end
- * and start and idle lines `raster_of` gives, the pixel clock as both its
- * frequency and its highest frequency, with no hopping between frequencies,
- * and no frame packing color, HDMI video format, tile or blanking delay. Then
- * the head's control written whole, at 0, no flip lock pin, lock chain or lock
- * offset and no compression. Then the output resource's control, which takes a
- * CRC over the whole raster, the mode's sync polarities, 24 bits a pixel and
- * no packet window. Then RGB at full range with no output CSC (OCSC1) matrix.
- * Then the serial link set to carry the head alone in DisplayPort on the
- * display id's sublink, and the head's display id. Then a viewport the size of
- * the mode and unscaled, each window serving the head given NVIDIA's default
- * usage bounds for a line of the mode's width, and the viewport's origin at
- * 0, 0. Last the output scaler's two taps. Unlike that module, which also
- * writes the head's output table (a window's input table going with its
- * image), its OCSC0 matrix, the head's own usage bounds and its dither, these
- * methods leave those as they are, and they write the color controls once
- * where that module writes them again for its digital vibrance.
- * @param light The head, mode, display id, link and windows. The head must be
- * below the chip's heads, the link's index below its serial links and its
- * sublink 0 or 1.
+ * lock. First the head's output table (a window's input table goes with its
+ * image instead), NVIDIA's output identity at `OUTPUT_TABLE_OFFSET` of the
+ * surface `output_table_context_dma` names, read directly by a color's top 10
+ * bits with no interpolation or mirroring at NVIDIA's norm scale outside HDR,
+ * then OCSC0, the first of the head's two output color space conversion (CSC)
+ * matrices, turned on, which NVIDIA does only after the table. Then the
+ * raster: a black overscan, the totals, sync end, blanking end and start and
+ * idle lines `raster_of` gives, the pixel clock as both its frequency and its
+ * highest frequency, with no hopping between frequencies, and no frame packing
+ * color, HDMI video format, tile or blanking delay. Then the head's control
+ * written whole, at 0, no flip lock pin, lock chain or lock offset and no
+ * compression. Then the output resource's control, which takes a CRC over the
+ * whole raster, the mode's sync polarities, 24 bits a pixel and no packet
+ * window. Then RGB at full range, the OCSC0 matrix NVIDIA computes for RGB at
+ * the default saturation (the identity, each row adding 1/2048 for NVIDIA's
+ * output rounding) and no output CSC (OCSC1) matrix. Then the serial link set
+ * to carry the head alone in DisplayPort on the display id's sublink, and the
+ * head's display id. Then a viewport the size of the mode and unscaled, each
+ * window serving the head given NVIDIA's default usage bounds for a line of
+ * the mode's width, the head's own usage bounds as NVIDIA's mode set writes
+ * them for that viewport, which allow its output table, and the viewport's
+ * origin at 0, 0. Last the output scaler's two taps. Unlike that module, which
+ * also writes the head's dither, these methods leave it as it is, and they
+ * write the color controls once where that module writes them again for its
+ * digital vibrance. That module turns off the table's interpolation and adds
+ * the 1/2048 only with its output rounding fix on, as these methods always do.
+ * @param light The head, mode, display id, link, windows and output table's
+ * context DMA, which must be nonzero, name the look-up table surface and be
+ * bound to the core channel. The head must be below the chip's heads, the
+ * link's index below its serial links and its sublink 0 or 1.
  * @param out Receives the methods.
  */
 void build_head_light_methods(const head_light& light, head_light_methods& out);

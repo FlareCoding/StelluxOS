@@ -640,6 +640,11 @@ constexpr uint32_t DEFAULT_WINDOW_USAGE_BOUNDS = 0x10110000;
 // The usage bounds' MAX_PIXELS_FETCHED_PER_LINE, the most pixels the window fetches for a line, in bits 14:0
 constexpr uint32_t USAGE_PIXELS_FETCHED_MASK = 0x7FFF;
 
+// NVIDIA's NVC67D_HEAD_SET_HEAD_USAGE_BOUNDS(0) as its mode set writes it for an unscaled viewport: a 256 by 256 cursor
+// (bits 2:0 as 4), the output table allowed (bit 4), two output scaler taps (bits 14:12 as 1) and no upscaling
+constexpr uint32_t CORE_HEAD_USAGE_BOUNDS     = 0x2030;
+constexpr uint32_t UNSCALED_HEAD_USAGE_BOUNDS = 0x1014;
+
 // NVIDIA's NVC67D_WINDOW_SET_WINDOW_FORMAT_USAGE_BOUNDS(0), the formats window 0 may scan, RGB_PACKED4BPP (bit 2)
 // those of 4 bytes a pixel, and _MAX_INPUT_SCALE_FACTOR(0), with HORIZONTAL and VERTICAL in bits 15:0 and 31:16
 constexpr uint32_t CORE_WINDOW_FORMAT_USAGE_BOUNDS    = 0x1004;
@@ -704,6 +709,23 @@ constexpr uint32_t CORE_HEAD_CLAMP_GREEN    = 0x2238;
 constexpr uint32_t CORE_HEAD_CLAMP_RED_BLUE = 0x223C;
 constexpr uint32_t CORE_HEAD_OCSC1_CONTROL  = 0x229C;
 constexpr uint32_t CLAMP_FULL_RANGE         = 0x0FFF0000;
+
+// NVIDIA's NVC67D_HEAD_SET_OLUT_CONTROL(0), _OFFSET_OLUT(0), _OLUT_FP_NORM_SCALE(0) and _CONTEXT_DMA_OLUT(0), with the
+// control's MODE DIRECT10 in bits 3:2 and SIZE in 18:8, the ORIGIN in 256-byte units and NVIDIA's scale outside HDR
+constexpr uint32_t CORE_HEAD_OUTPUT_TABLE_CONTROL     = 0x2280;
+constexpr uint32_t CORE_HEAD_OUTPUT_TABLE_OFFSET      = 0x228C;
+constexpr uint32_t CORE_HEAD_OUTPUT_TABLE_NORM_SCALE  = 0x2284;
+constexpr uint32_t CORE_HEAD_OUTPUT_TABLE_CONTEXT_DMA = 0x2288;
+constexpr uint32_t OUTPUT_TABLE_MODE_DIRECT10         = 0x8;
+constexpr uint32_t OUTPUT_TABLE_SIZE_SHIFT            = 8;
+constexpr uint32_t OUTPUT_TABLE_OFFSET_SHIFT          = 8;
+constexpr uint32_t OUTPUT_TABLE_NORM_SCALE            = 0xFFFFFFFF;
+
+// NVIDIA's NVC67D_HEAD_SET_OCSC0CONTROL(0), whose ENABLE is bit 0, and _OCSC0COEFFICIENT_C00(0), the first of the OCSC0
+// matrix's 12 coefficients, row by row and 4 bytes apart, each VALUE (bits 20:0) S5.14 from bit 2, so 1 is 0x10000
+constexpr uint32_t CORE_HEAD_OCSC0_CONTROL      = 0x2240;
+constexpr uint32_t CORE_HEAD_OCSC0_COEFFICIENTS = 0x2244;
+constexpr uint32_t OCSC0_ENABLE                 = 0x1;
 
 // NVIDIA's NVC67D_SOR_SET_CONTROL's PROTOCOL (bits 11:8) DP_A, link A's DisplayPort, with DP_B one more. Its
 // DE_SYNC_POLARITY POSITIVE_TRUE and PIXEL_REPLICATE_MODE OFF are both 0
