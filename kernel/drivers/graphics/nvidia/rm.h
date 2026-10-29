@@ -287,6 +287,11 @@ constexpr uint32_t NO_OUTPUT_RESOURCE = 0xFFFFFFFF;
 // NVIDIA's NV0073_CTRL_SPECIFIC_OR_TYPE_SOR, the `output_resource_params::type` of a serial output resource
 constexpr uint32_t OUTPUT_RESOURCE_TYPE_SERIAL = 2;
 
+// NVIDIA's NV0073_CTRL_SPECIFIC_OR_PROTOCOL_SOR_DP_A and _SOR_DP_B, the `output_resource_params::protocol`s of a
+// serial output resource driving its first or second DisplayPort link
+constexpr uint32_t PROTOCOL_DISPLAYPORT_A = 8;
+constexpr uint32_t PROTOCOL_DISPLAYPORT_B = 9;
+
 static_assert(sizeof(output_resource_params) == 56, "NVIDIA's layout of OR_GET_INFO's parameters");
 
 // NVIDIA's NV0073_CTRL_CMD_DFP_GET_INFO, the control to display common that gives a digital display id's facts, which
@@ -389,6 +394,68 @@ struct manual_displayport_params {
 };
 
 static_assert(sizeof(manual_displayport_params) == 4, "NVIDIA's layout of DP_SET_MANUAL_DISPLAYPORT's parameters");
+
+// NVIDIA's NV0073_CTRL_CMD_DFP_ASSIGN_SOR, the control to display common that assigns a display id an output resource
+// on a GPU whose display engine routes any of its output resources to any display id (NVIDIA's crossbar)
+constexpr uint32_t CONTROL_ASSIGN_OUTPUT_RESOURCE = 0x731152;
+
+// NVIDIA's NV0073_CTRL_CMD_DFP_ASSIGN_SOR_MAX_SORS, the output resources a reply describes
+constexpr uint32_t ASSIGNED_RESOURCES_MAX = 4;
+
+// An output resource's assignment in a reply of `CONTROL_ASSIGN_OUTPUT_RESOURCE`, NVIDIA's ASSIGN_SOR_INFO
+struct assigned_resource {
+    uint32_t display_mask; // the display ids the output resource drives
+    uint32_t type;         // NVIDIA's sorType, how the output resource drives them
+};
+
+// `assigned_resource::type`s naming an output resource that drives a display id on its own or as the primary of two
+// output resources fed by two heads (NVIDIA's SOR_TYPE_SINGLE and SOR_TYPE_2H1OR_PRIMARY)
+constexpr uint32_t ASSIGNED_SINGLE  = 1;
+constexpr uint32_t ASSIGNED_PRIMARY = 2;
+
+// The parameters of `CONTROL_ASSIGN_OUTPUT_RESOURCE`, whose reply fills `assignments`, `resources` and `reserved_mask`
+struct assign_output_resource_params {
+    uint32_t          subdevice_index;      // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t          display_id;           // a single bit
+    uint8_t           excluded_mask;        // NVIDIA's sorExcludeMask, output resources the firmware must not assign
+    uint32_t          slave_display_id;
+    uint32_t          sublink_config;       // NVIDIA's forceSublinkConfig
+    uint8_t           is_two_heads;         // NVIDIA's bIs2Head1Or
+    uint32_t          assignments[ASSIGNED_RESOURCES_MAX]; // NVIDIA's sorAssignList, the display mask of each resource
+    assigned_resource resources[ASSIGNED_RESOURCES_MAX];   // NVIDIA's sorAssignListWithTag
+    uint8_t           reserved_mask;        // NVIDIA's reservedSorMask
+    uint32_t          flags;
+};
+
+static_assert(sizeof(assign_output_resource_params) == 80, "NVIDIA's layout of DFP_ASSIGN_SOR's parameters");
+
+// NVIDIA's NV0073_CTRL_CMD_DP_GET_CAPS, the control to display common that gives the DisplayPort facts of an output
+// resource's links
+constexpr uint32_t CONTROL_GET_LINK_CAPABILITIES = 0x731369;
+
+// The parameters of `CONTROL_GET_LINK_CAPABILITIES`, whose reply fills all but `subdevice_index` and `resource_index`.
+// Each boolean counts as set only when it is 1, NVIDIA's NV_TRUE
+struct link_capabilities_params {
+    uint32_t subdevice_index;            // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t resource_index;             // NVIDIA's sorIndex, the output resource's number
+    uint32_t max_rate;                   // NVIDIA's maxLinkRate, a link rate code in bits 2 to 0
+    uint32_t versions;                   // NVIDIA's dpVersionsSupported, holding `LINK_VERSION_1_2`
+    uint32_t uhbr_rates;                 // NVIDIA's UHBRSupported
+    uint8_t  supports_multistream;       // NVIDIA's bIsMultistreamSupported
+    uint8_t  clones_streams;             // NVIDIA's bIsSCEnabled
+    uint8_t  increased_watermark_limits; // NVIDIA's bHasIncreasedWatermarkLimits
+    uint8_t  is_pc2_disabled;            // NVIDIA's bIsPC2Disabled
+    uint8_t  single_head_multistream;    // NVIDIA's isSingleHeadMSTSupported
+    uint8_t  fec_supported;              // NVIDIA's bFECSupported
+    uint8_t  trains_phy_repeaters;       // NVIDIA's bIsTrainPhyRepeater
+    uint8_t  honors_board_link_limits;   // NVIDIA's bOverrideLinkBw, set when the board's DCB limits must be honored
+    uint32_t compression[7];             // NVIDIA's DSC, the display stream compression facts the driver does not read
+};
+
+// `link_capabilities_params::versions`'s bit set when the GPU supports DisplayPort 1.2
+constexpr uint32_t LINK_VERSION_1_2 = 1u << 0;
+
+static_assert(sizeof(link_capabilities_params) == 56, "NVIDIA's layout of DP_GET_CAPS's parameters");
 
 // NVIDIA's NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, the control that gives the firmware where a display
 // channel's push buffer lies, sent before the channel's allocation

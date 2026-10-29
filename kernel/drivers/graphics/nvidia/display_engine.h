@@ -12,6 +12,7 @@
 #include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_objects.h"
+#include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
 #include "drivers/graphics/nvidia/registers.h"
@@ -182,10 +183,16 @@ public:
      * notifier's wait or the stop of its writes fails, take the engine down:
      * the same methods again, with the windows' heads only when no update was
      * kicked, an update naming no notifier and a wait for GET to reach PUT,
-     * logging whether the take-down succeeds. Then send the mode set's end. A
-     * refused start is logged and nothing is written to the core channel, the
-     * set-up returning `OK`, and a refused end is logged, changing nothing.
-     * Each output's modes are kept on the unprivileged heap from the monitors'
+     * logging whether the take-down succeeds. Once the core channel has read
+     * the shutdown update, or with no head active, find the output's
+     * DisplayPort link with `set_up_output_link`: assign the display id an
+     * output resource when display common reports a crossbar, then read the
+     * resource's DisplayPort facts, logging each step. When a step fails, the
+     * steps after it are not taken: log that the link is not set up and take
+     * the engine down the same way. Then send the mode set's end. A refused
+     * start is logged and nothing is written to the core channel, the set-up
+     * returning `OK`, and a refused end is logged, changing nothing. Each
+     * output's modes are kept on the unprivileged heap from the monitors'
      * reads to the choice, or to `release` when the set-up fails before it,
      * and the other facts read are not kept. Each request spins on the calling
      * CPU, waiting for its reply as `firmware` describes, and so does each
@@ -252,8 +259,12 @@ public:
      * other than with `ERR_FIRMWARE`, the set-up fails with its error, logged
      * as `wait_core_channel_idle` describes. When the mode set's start or end
      * fails other than with `ERR_FIRMWARE`, the set-up fails with its error,
-     * logged as `firmware::control` describes. A failed shutdown update or
-     * take-down is logged and does not fail the set-up, which then returns
+     * logged as `firmware::control` describes. When a request for the chosen
+     * output's link fails other than with `ERR_FIRMWARE`, the set-up fails
+     * with its error, logged as `firmware::control` describes, after the
+     * take-down and the mode set's end, whose own failure then changes
+     * nothing. A failed shutdown update or take-down, or a link left not set
+     * up otherwise, is logged and does not fail the set-up, which then returns
      * `OK` unless the mode set's end fails other than with `ERR_FIRMWARE`. The
      * display's objects and the channels stay allocated once allocated, even
      * after a later step fails, until `release`, the completion notifier stays
@@ -322,7 +333,8 @@ private:
         const display_heads& heads,
         uint32_t present_windows,
         const active_heads& active,
-        uint32_t display_id
+        bool has_crossbar,
+        const display_output& output
     );
 
     // Writes the shutdown update naming the notifier, waits for it and stops later updates from writing the notifier
