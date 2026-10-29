@@ -1983,10 +1983,12 @@ src/nvidia-modeset/src/nvkms-rm.c
     display common reports a crossbar and otherwise that the reply names the
     connector's output resource, then marks the head in the connector's owner
     mask at the reply's index, past the mask's end, in display_active_heads.h,
-    and that it refuses to register a surface laid out as rows of pixels in
-    order unless its pitch is a multiple of 256 bytes, in display_light.h,
+    that it refuses to register a surface laid out as rows of pixels in order
+    unless its pitch is a multiple of 256 bytes, in display_light.h,
     display_light.cpp, kernel/tests/graphics/nvidia_display_engine.test.cpp and
-    kernel/tests/graphics/nvidia_display_light.test.cpp
+    kernel/tests/graphics/nvidia_display_light.test.cpp, and that it binds each
+    surface's context DMA to the core channel and every window's channel, in
+    display_engine.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2658,10 +2660,14 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     begins, in core_channel.h and
     kernel/tests/graphics/nvidia_display_window_owners.test.cpp,
     NV_PDISP_CHN_NUM_CORE, the core channel's number, in core_channel.h and
-    kernel/tests/graphics/nvidia_core_channel.test.cpp, and the hash table's
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, NV_PDISP_CHN_NUM_WIN,
+    each window's channel's number, in core_channel.h,
+    kernel/tests/graphics/nvidia_core_channel.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the hash table's
     size, the client, record and channel fields of an entry's second word and
     the target, access, kind, base and limit of a record naming pages read with
-    snooping on, in kernel/tests/graphics/nvidia_display_engine.test.cpp
+    snooping on or video memory, in
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
@@ -2690,7 +2696,7 @@ src/nvidia/src/kernel/gpu/disp/inst_mem/disp_inst_mem.c
     instance_memory.h, instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp, and that it writes an
     entry as 8 bytes, the context DMA's handle first, and places the first
-    record past the NULL instance, in
+    record past the NULL instance and each record in a 32-byte slot, in
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -2706,7 +2712,8 @@ src/nvidia/src/kernel/gpu/disp/inst_mem/arch/v03/disp_inst_mem_0300.c
     of its memory, in instance_memory.h, instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp, and the second word
     of a hash table entry and the words of a record naming pages read with
-    snooping on, in kernel/tests/graphics/nvidia_display_engine.test.cpp
+    snooping on or video memory, in
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_disp_inst_mem_nvoc.h
@@ -2731,7 +2738,9 @@ src/nvidia/src/libraries/containers/eheap/eheap_old.c
     the lowest free block that fits and keeps its free blocks in address order
     when it frees a block, so a context DMA's first binding takes the lowest
     free record, a freed one included, in instance_memory.h, instance_memory.cpp
-    and kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    and kernel/tests/graphics/nvidia_instance_memory.test.cpp, and so bindings
+    with no record freed take the records in order, in
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2015-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_mem_desc_nvoc.h
@@ -2896,15 +2905,26 @@ src/nvidia-modeset/src/nvkms-evo3.c
     it loads a window channel's input scaler's coefficients only for a window
     reporting an input scaler while no usable head reports an output scaler, and
     its color conversion tables, curves for HDR monitors, only for a window
-    reporting them, in chip.h and display_engine.h, that before it reads the
-    core channel's armed state ahead of its first update the modesetting module
-    asks the display for the core channel's state, the request zeroed but for
-    the subdevice, the channel's class and its instance, again with no pause
-    until a reply names the idle state alone, going on past every failed request
-    and ending the wait once more than 100 milliseconds have passed since the
-    first reply, in core_channel.h, core_channel.cpp, display_engine.h,
-    display_engine.cpp, kernel/tests/graphics/nvidia_core_channel_idle.test.cpp
-    and kernel/tests/graphics/nvidia_display_engine.test.cpp, that it then reads
+    reporting them, in chip.h and display_engine.h, that a window's input table
+    turns its colors into the half-precision floats the display engine computes
+    with, in display_engine.h, that its identity look-up table
+    (EvoSetupIdentityBaseLutC5) gives each of the 1024 entries after the header
+    nvUnorm10ToFp16 of its place among them in red, green and blue and repeats
+    the last of them in the entry after, in display_light.h, display_light.cpp
+    and kernel/tests/graphics/nvidia_display_light.test.cpp, that the core
+    channel's methods name a head's output table, in display_light.h, that its
+    default look-up table (EvoInitDefaultLutC5), which a window with no table of
+    its own reads, holds the output table's identity
+    (EvoSetupIdentityOutputLutC5) as well as the input table's, in
+    display_light.h, that before it reads the core channel's armed state ahead
+    of its first update the modesetting module asks the display for the core
+    channel's state, the request zeroed but for the subdevice, the channel's
+    class and its instance, again with no pause until a reply names the idle
+    state alone, going on past every failed request and ending the wait once
+    more than 100 milliseconds have passed since the first reply, in
+    core_channel.h, core_channel.cpp, display_engine.h, display_engine.cpp,
+    kernel/tests/graphics/nvidia_core_channel_idle.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it then reads
     each window's owner from the core channel's armed state whether or not the
     channel went idle, reading the usable windows the display engine's
     capabilities give, in display_window_owners.h, display_window_owners.cpp,
@@ -3030,10 +3050,17 @@ src/nvidia-modeset/include/nvkms-types.h
     NVEvoScalerTapsToNum's 2 for NV_EVO_SCALER_2TAPS, in display_light.cpp and
     kernel/tests/graphics/nvidia_display_light.test.cpp, that a head's raster
     holds its size and positions as NvKmsPoint, in display_light.h and
-    kernel/tests/graphics/nvidia_display_light.test.cpp, and
-    NV_EVO_SURFACE_ALIGNMENT, 4 KiB, the alignment of every surface the display
-    engine scans out, in display_engine.h, display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_light.test.cpp,
+    NV_EVO_SURFACE_ALIGNMENT, 4 KiB, the alignment of the surfaces the
+    modesetting module scans out, in display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp,
+    NV_LUT_VSS_HEADER_SIZE, 4, the entries before a look-up table's, where a
+    table of segments keeps their sizes, NV_NUM_EVO_LUT_ENTRIES, 1025, a look-up
+    table's entries, and the layouts of NVEvoLutEntryRec (red, green, blue and
+    an unused value, 16 bits each) and NVEvoLutDataRec (a window's input table,
+    then from a multiple of 256 bytes a head's output table, each of the
+    header's entries and a table's), in display_light.h, display_light.cpp and
+    kernel/tests/graphics/nvidia_display_light.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/interface/nvkms-api-types.h
@@ -3220,6 +3247,21 @@ src/nvidia-modeset/src/nvkms-hal.c
     kernel/tests/graphics/nvidia_display_window_owners.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2016 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-lut.c
+    that the modesetting module allocates each look-up table surface in video
+    memory as an image, of NVEvoLutDataRec's size rounded up to a multiple of 64
+    bytes and aligned to 4 KiB, in display_light.h, display_engine.h,
+    display_engine.cpp, kernel/tests/graphics/nvidia_display_light.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that its context
+    DMA ends at the table's last byte, in display_engine.h
+    SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/softfloat/nvidia/nv-softfloat.h
+    that nvUnorm10ToFp16 gives a 10-bit level over 1024 as a half-precision
+    float, in display_light.h, display_light.cpp and
+    kernel/tests/graphics/nvidia_display_light.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2017 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,

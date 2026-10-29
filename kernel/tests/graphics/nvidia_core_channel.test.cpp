@@ -24,10 +24,11 @@ using drivers::nvidia::firmware;
 using drivers::nvidia::OK;
 using drivers::nvidia::release_display_channel;
 using drivers::nvidia::window_channel_area;
+using drivers::nvidia::window_channel_number;
 namespace rm = drivers::nvidia::rm;
 
 // NVIDIA's commands, their parameters' sizes and fields' offsets, the values the driver sends, the core and window
-// channels' areas in BAR0 and the core channel's number, restated to hold the requests to NVIDIA's layouts
+// channels' areas in BAR0 and their numbers, restated to hold the requests to NVIDIA's layouts
 static constexpr uint32_t NVIDIA_PUSH_BUFFER_CONTROL    = 0x20800A58;
 static constexpr size_t   NVIDIA_PUSH_BUFFER_BYTES      = 40;
 static constexpr uint32_t ADDRESS_SPACE_OFFSET          = 0;
@@ -49,6 +50,7 @@ static constexpr uint32_t NVIDIA_CORE_CHANNEL_AREA      = 0x680000;
 static constexpr uint32_t NVIDIA_CORE_CHANNEL_NUMBER    = 0;
 static constexpr uint32_t NVIDIA_WINDOW_CHANNEL_AREAS   = 0x690000;
 static constexpr uint32_t NVIDIA_WINDOW_AREA_BYTES      = 4096;
+static constexpr uint32_t NVIDIA_WINDOW_CHANNEL_NUMBERS = 1;
 
 // The double's client, the display's handle and the first handle the double gives, a made-up push buffer address, a
 // handle no call gives and a window other than window 0
@@ -181,6 +183,14 @@ TEST(nvidia_core_channel, window_channel_areas_begin_at_nvidias_offsets) {
     EXPECT_EQ(window_channel_area(0), NVIDIA_WINDOW_CHANNEL_AREAS);
     EXPECT_EQ(window_channel_area(TEST_WINDOW), NVIDIA_WINDOW_CHANNEL_AREAS + TEST_WINDOW * NVIDIA_WINDOW_AREA_BYTES);
     EXPECT_EQ(window_channel_area(31), NVIDIA_WINDOW_CHANNEL_AREAS + 31 * NVIDIA_WINDOW_AREA_BYTES);
+}
+
+// Each window's channel's number is NVIDIA's NV_PDISP_CHN_NUM_WIN, the numbers following the core channel's, up to
+// window 31, the last of the 32 windows NVIDIA numbers
+TEST(nvidia_core_channel, window_channel_numbers_are_nvidias) {
+    EXPECT_EQ(window_channel_number(0), NVIDIA_WINDOW_CHANNEL_NUMBERS);
+    EXPECT_EQ(window_channel_number(TEST_WINDOW), NVIDIA_WINDOW_CHANNEL_NUMBERS + TEST_WINDOW);
+    EXPECT_EQ(window_channel_number(31), NVIDIA_WINDOW_CHANNEL_NUMBERS + 31);
 }
 
 // A window channel's push buffer and allocation name the entry's window channel class and the window as the instance,

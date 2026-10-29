@@ -30,6 +30,19 @@ constexpr uint32_t PIXELS_FETCHED_BEYOND_WIDTH = 22;
 constexpr uint32_t BASE_BUFFER_BYTES_PER_PIXEL = 4;
 constexpr uint32_t BASE_BUFFER_PITCH_ALIGNMENT = 256;
 
+// NVIDIA's NV_LUT_VSS_HEADER_SIZE and NV_NUM_EVO_LUT_ENTRIES: a look-up table's header entries, then its entries
+constexpr uint32_t LOOK_UP_TABLE_HEADER_ENTRIES = 4;
+constexpr uint32_t LOOK_UP_TABLE_ENTRIES        = 1025;
+
+// The levels of a 10-bit color, which NVIDIA's identity divides each entry's place by
+constexpr uint32_t COLOR_LEVELS = 1024;
+
+// A half-precision float's fraction bits and its exponent's bias, and where an entry's green and blue begin
+constexpr uint32_t HALF_FRACTION_BITS = 10;
+constexpr uint32_t HALF_EXPONENT_BIAS = 15;
+constexpr uint32_t ENTRY_GREEN_SHIFT  = 16;
+constexpr uint32_t ENTRY_BLUE_SHIFT   = 32;
+
 // The output tried after `tried` others: `first_output` first, then the others in ascending order
 static uint8_t output_in_order(uint8_t tried, uint8_t first_output) {
     if (tried == 0) {
@@ -70,6 +83,34 @@ head_raster raster_of(const edid::timing& timing) {
 uint32_t base_buffer_pitch(uint32_t width) {
     uint32_t row_bytes = width * BASE_BUFFER_BYTES_PER_PIXEL;
     return (row_bytes + BASE_BUFFER_PITCH_ALIGNMENT - 1) & ~(BASE_BUFFER_PITCH_ALIGNMENT - 1);
+}
+
+// NVIDIA's nvUnorm10ToFp16: `level` / 1024 as a half-precision float, exact for every `level` below 1024, the only
+// levels it takes. A `level` of 0 returns first, since `__builtin_clz` of 0 is undefined
+static uint16_t half_of_level(uint32_t level) {
+    if (level == 0) {
+        return 0;
+    }
+
+    uint32_t top_bit = 31 - static_cast<uint32_t>(__builtin_clz(level));
+    uint32_t exponent = top_bit + HALF_EXPONENT_BIAS - HALF_FRACTION_BITS;
+    uint32_t fraction = (level << (HALF_FRACTION_BITS - top_bit)) & ((1u << HALF_FRACTION_BITS) - 1);
+
+    return static_cast<uint16_t>(exponent << HALF_FRACTION_BITS | fraction);
+}
+
+uint64_t look_up_table_word(uint32_t index) {
+    bool is_header = index < LOOK_UP_TABLE_HEADER_ENTRIES;
+    bool is_past_input_table = index >= LOOK_UP_TABLE_HEADER_ENTRIES + LOOK_UP_TABLE_ENTRIES;
+    if (is_header || is_past_input_table) {
+        return 0;
+    }
+
+    // The last entry repeats the one before, as NVIDIA's identity ends
+    uint32_t level = index - LOOK_UP_TABLE_HEADER_ENTRIES;
+    uint64_t color = half_of_level(level < COLOR_LEVELS ? level : COLOR_LEVELS - 1);
+
+    return color | color << ENTRY_GREEN_SHIFT | color << ENTRY_BLUE_SHIFT;
 }
 
 // Fills `params` to ask whether `head` can show `timing` with `window` scanning it out, and gives whether its sync and

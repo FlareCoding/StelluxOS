@@ -13,6 +13,10 @@
 
 namespace drivers::nvidia {
 
+// The bytes of NVIDIA's look-up table surface, its NVEvoLutDataRec's size rounded up to a multiple of 64: a window's
+// input table of 1029 8-byte entries, then a head's output table of as many, each padded to the next multiple of 256
+constexpr uint64_t LOOK_UP_TABLE_SURFACE_BYTES = 0x4200;
+
 /**
  * A connected output's modes, the timings of its EDID that may be its mode in
  * the order `find_mode_candidates` ranks them.
@@ -92,6 +96,25 @@ head_raster raster_of(const edid::timing& timing);
  * @return The pitch in bytes.
  */
 uint32_t base_buffer_pitch(uint32_t width);
+
+/**
+ * @brief Give the 8-byte word at `index` of the look-up table surface, as
+ * `display_engine::set_up` writes it. The surface's first 1029 entries are
+ * the window's input table: 4 header entries, where a table of segments keeps
+ * their sizes, then 1025 entries holding NVIDIA's identity, each but the last
+ * holding its place among them over 1024 as a half-precision float in red,
+ * green and blue, 16 bits each from bit 0, and the last repeating the one
+ * before. Each entry's top 16 bits, which NVIDIA names unused, are 0, and so
+ * is every other word: the header entries, the output table, which a head
+ * could read only through a binding to the core channel, the padding that
+ * places the output table at byte 8448 and ends NVEvoLutDataRec at
+ * `LOOK_UP_TABLE_SURFACE_BYTES`, and the words past that the allocation's
+ * whole pages add. NVIDIA's default table, the one a window with no table of
+ * its own reads, holds NVIDIA's output identity in its output table as well.
+ * @param index The word's place in the surface's memory.
+ * @return The word.
+ */
+uint64_t look_up_table_word(uint32_t index);
 
 /**
  * @brief Choose the output to light first and its mode, asking the bandwidth

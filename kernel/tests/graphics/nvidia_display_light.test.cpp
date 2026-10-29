@@ -21,6 +21,7 @@ using drivers::nvidia::firmware;
 using drivers::nvidia::first_light;
 using drivers::nvidia::head_raster;
 using drivers::nvidia::light_target;
+using drivers::nvidia::look_up_table_word;
 using drivers::nvidia::NO_HEAD;
 using drivers::nvidia::OK;
 using drivers::nvidia::output_modes;
@@ -42,6 +43,24 @@ static constexpr edid::timing NO_LEADING_LINES = {148500, 1920, 88, 44, 148, 108
 static constexpr edid::timing ONE_LEADING_LINE = {148500, 1920, 88, 44, 148, 1080, 4, 1, 0, true, true};
 static constexpr edid::timing TWO_LEADING_LINES = {148500, 1920, 88, 44, 148, 1080, 4, 1, 1, true, true};
 static constexpr edid::timing NO_LEADING_PIXELS = {148500, 1920, 88, 0, 0, 1080, 4, 5, 36, true, true};
+
+// NVIDIA's NV_LUT_VSS_HEADER_SIZE and NV_NUM_EVO_LUT_ENTRIES, a look-up table's header entries and its entries
+static constexpr uint32_t NVIDIA_LUT_HEADER_ENTRIES = 4;
+static constexpr uint32_t NVIDIA_LUT_ENTRIES        = 1025;
+
+// NVIDIA's NVEvoLutEntryRec, an entry's red, green, blue and unused value, and NVIDIA's NVEvoLutDataRec, a look-up
+// table surface's input and output tables, each of 4 header entries and 1025 entries, the second aligned to 256 bytes
+struct nvidia_lut_entry {
+    uint16_t red;
+    uint16_t green;
+    uint16_t blue;
+    uint16_t unused;
+};
+
+struct nvidia_lut_data {
+    nvidia_lut_entry base[NVIDIA_LUT_HEADER_ENTRIES + NVIDIA_LUT_ENTRIES];
+    alignas(0x100) nvidia_lut_entry output[NVIDIA_LUT_HEADER_ENTRIES + NVIDIA_LUT_ENTRIES];
+};
 
 // The parameters of the first requests the double takes, which the stack cannot hold
 static constexpr uint32_t MAX_REQUESTS = 4;
@@ -255,6 +274,78 @@ TEST(nvidia_display_light, base_buffer_pitch_rounds_rows_of_4_byte_pixels_up_to_
     EXPECT_EQ(base_buffer_pitch(65), 512u);
     EXPECT_EQ(base_buffer_pitch(1), 256u);
     EXPECT_EQ(base_buffer_pitch(65536), 262144u);
+}
+
+// The words of the look-up table surface's whole pages
+static constexpr uint32_t LOOK_UP_TABLE_PAGE_WORDS = 0x5000 / sizeof(uint64_t);
+
+// Whether `half` is exactly `level` / 1024: a positive normal half-precision float is (1024 + fraction) times
+// 2^(exponent - 25), which is level * 2^-10 when (1024 + fraction) << exponent is level << 15
+static bool is_half_of_level(uint16_t half, uint32_t level) {
+    if (level == 0) {
+        return half == 0;
+    }
+
+    uint32_t sign = half >> 15;
+    uint32_t exponent = (half >> 10) & 0x1F;
+    uint32_t fraction = half & 0x3FF;
+    uint64_t scaled_half = static_cast<uint64_t>(1024 + fraction) << exponent;
+    uint64_t scaled_level = static_cast<uint64_t>(level) << 15;
+    bool is_positive_normal = sign == 0 && exponent != 0 && exponent != 0x1F;
+
+    return is_positive_normal && scaled_half == scaled_level;
+}
+
+// NVIDIA's modesetting module allocates its NVEvoLutDataRec's size rounded up to a multiple of 64 bytes
+TEST(nvidia_display_light, look_up_table_surface_bytes_are_nvidias) {
+    EXPECT_EQ(drivers::nvidia::LOOK_UP_TABLE_SURFACE_BYTES, (sizeof(nvidia_lut_data) + 63) & ~static_cast<size_t>(63));
+}
+
+// NVIDIA's nvUnorm10ToFp16 gives levels 0, 1, 2, 3, 511, 512, 1000 and 1023 these halves, each held in an entry's
+// red, green and blue, the entry after level 1023's repeating it, and every entry holds its level over 1024
+TEST(nvidia_display_light, look_up_table_input_entries_hold_nvidias_identity) {
+    EXPECT_EQ(look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + 0), 0ULL);
+    EXPECT_EQ(look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + 1), 0x140014001400ULL);
+    EXPECT_EQ(look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + 2), 0x180018001800ULL);
+    EXPECT_EQ(look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + 3), 0x1A001A001A00ULL);
+
+    EXPECT_EQ(look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + 511), 0x37FC37FC37FCULL);
+    EXPECT_EQ(look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + 512), 0x380038003800ULL);
+    EXPECT_EQ(look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + 1000), 0x3BD03BD03BD0ULL);
+    EXPECT_EQ(look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + 1023), 0x3BFE3BFE3BFEULL);
+    EXPECT_EQ(look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + 1024), 0x3BFE3BFE3BFEULL);
+
+    uint32_t wrong_entries = 0;
+    for (uint32_t level = 0; level < NVIDIA_LUT_ENTRIES; level++) {
+        nvidia_lut_entry entry = {};
+        uint64_t word = look_up_table_word(NVIDIA_LUT_HEADER_ENTRIES + level);
+        string::memcpy(&entry, &word, sizeof(entry));
+
+        uint32_t expected_level = level < 1024 ? level : 1023;
+        bool is_identity = is_half_of_level(entry.red, expected_level);
+        bool is_gray = entry.green == entry.red && entry.blue == entry.red;
+        if (!is_identity || !is_gray || entry.unused != 0) {
+            wrong_entries++;
+        }
+    }
+
+    EXPECT_EQ(wrong_entries, 0u);
+}
+
+// Every word outside the input table's entries is 0 up to the surface's last page's end: the header entries, the
+// padding around the output table, the output table and the words past NVIDIA's structure
+TEST(nvidia_display_light, look_up_table_words_outside_the_input_entries_are_0) {
+    uint32_t nonzero_words = 0;
+    for (uint32_t index = 0; index < LOOK_UP_TABLE_PAGE_WORDS; index++) {
+        bool is_header = index < NVIDIA_LUT_HEADER_ENTRIES;
+        bool is_past_input_table = index >= NVIDIA_LUT_HEADER_ENTRIES + NVIDIA_LUT_ENTRIES;
+        bool is_outside = is_header || is_past_input_table;
+        if (is_outside && look_up_table_word(index) != 0) {
+            nonzero_words++;
+        }
+    }
+
+    EXPECT_EQ(nonzero_words, 0u);
 }
 
 // The request NVIDIA's modesetting module would send for this head and window alone, unscaled and 4 bytes a pixel
