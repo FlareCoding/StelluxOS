@@ -119,24 +119,68 @@ int32_t train_link(
 );
 
 /**
- * @brief Train the chosen output's link for its mode, logging each step:
- * assign its display id an output resource, read the resource's DisplayPort
- * facts, find the lowest configuration carrying the mode under them, train
- * the link there and check the training against the status bytes NVIDIA's
- * library reads. When the facts say the firmware trains no PHY repeaters, the
- * configuration, the training and the check leave out any the DPCD counts, as
- * NVIDIA's library then reads none. A step that fails is logged, and the
- * steps after it are not taken.
+ * @brief Ask display common to program a head's single stream on its link
+ * with the given parameters, as NVIDIA's DisplayPort library does after
+ * training, overriding what the firmware would compute. A refused request is
+ * logged, where NVIDIA's library ignores its status.
+ * @param fw The bound firmware.
+ * @param display_common The display common object.
+ * @param head The head sending the stream.
+ * @param link The output resource and link carrying it.
+ * @param enhanced_framing Whether the link runs enhanced framing.
+ * @param stream The parameters `compute_stream` gave for the trained link.
+ * @param is_configured Set to whether display common took the request.
+ * @return `OK`, including when it is refused, or what `firmware::control`
+ * returns, logged as its doc describes, for an error other than
+ * `ERR_FIRMWARE`.
+ */
+int32_t configure_stream(
+    firmware& fw,
+    rm::handle display_common,
+    uint8_t head,
+    const output_link& link,
+    bool enhanced_framing,
+    const displayport::stream_parameters& stream,
+    bool& is_configured
+);
+
+/**
+ * @brief Ask display common to override a display id's main stream attributes
+ * as NVIDIA's DisplayPort library does unless its caller asks for in-band
+ * stereo signaling, which the driver never does, clearing the MISC1 byte's
+ * stereo bits and keeping the override for the next mode. A refusal is logged
+ * and the stream keeps the attributes the firmware sets, as NVIDIA's library
+ * goes on after one.
+ * @param fw The bound firmware.
+ * @param display_common The display common object.
+ * @param display_id The display id, a single bit.
+ * @return `OK`, including when the request is refused, or what
+ * `firmware::control` returns, logged as its doc describes, for an error
+ * other than `ERR_FIRMWARE`.
+ */
+int32_t set_stream_attributes(firmware& fw, rm::handle display_common, uint32_t display_id);
+
+/**
+ * @brief Make the chosen output's link ready to carry its mode, logging each
+ * step: assign its display id an output resource, read the resource's
+ * DisplayPort facts, find the lowest configuration carrying the mode under
+ * them, train the link there and check the training against the status bytes
+ * NVIDIA's library reads, then program the head's stream and its attributes.
+ * When the facts say the firmware trains no PHY repeaters, the configuration,
+ * the training and the check leave out any the DPCD counts, as NVIDIA's
+ * library then reads none. A step that fails is logged and leaves the link
+ * not ready, except a refused override of the attributes, which leaves it
+ * ready with those the firmware sets.
  * @param fw The bound firmware.
  * @param display_common The display common object.
  * @param has_crossbar Whether display common reports the crossbar.
  * @param output The chosen output.
  * @param dpcd The capabilities `read_output_dpcd` read for its monitor.
- * @param light The output's light, whose mode the link must carry.
- * @param is_set_up Set to whether every step succeeded, the check included.
- * @return `OK`, including when a step fails, or what `firmware::control`
- * returns, logged as its doc describes, for an error other than
- * `ERR_FIRMWARE`.
+ * @param light The output's head and mode.
+ * @param is_set_up Set to whether the link is ready.
+ * @return `OK`, including when the link is not ready, or what
+ * `firmware::control` returns, logged as its doc describes, for an error
+ * other than `ERR_FIRMWARE`.
  */
 int32_t set_up_output_link(
     firmware& fw,

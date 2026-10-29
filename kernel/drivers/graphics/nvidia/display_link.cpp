@@ -9,9 +9,13 @@
 
 namespace drivers::nvidia {
 
-// The steps a stop leaves undone, ending its log line: before the facts are read and before the training
-static constexpr const char* UNREAD    = ", so the link's DisplayPort facts are not read and the link is not trained";
-static constexpr const char* UNTRAINED = ", so the link is not trained";
+// The steps a stop leaves undone, ending its log line: before the facts are read, before the training, at a failed
+// check and at a refused stream
+static constexpr const char* UNREAD        = ", so the link's DisplayPort facts are not read and the link is neither "
+                                             "trained nor given a stream";
+static constexpr const char* UNTRAINED     = ", so the link is neither trained nor given a stream";
+static constexpr const char* NO_STREAM     = ", so the link is given no stream";
+static constexpr const char* NO_ATTRIBUTES = ", so the stream's attributes are not overridden";
 
 // The letter NVIDIA's names give an output resource's link
 static char link_letter(uint8_t sublink) {
@@ -298,6 +302,90 @@ int32_t train_link(
     return OK;
 }
 
+int32_t configure_stream(
+    firmware& fw,
+    rm::handle display_common,
+    uint8_t head,
+    const output_link& link,
+    bool enhanced_framing,
+    const displayport::stream_parameters& stream,
+    bool& is_configured
+) {
+    is_configured = false;
+
+    rm::configure_stream_params params = {};
+    params.head = head;
+    params.resource_index = link.index;
+    params.sublink = link.sublink;
+    params.overrides = 1;
+
+    params.hblank_symbols = stream.hblank_symbols;
+    params.vblank_symbols = stream.vblank_symbols;
+    params.color_format = rm::STREAM_RGB;
+
+    params.single.enhanced_framing = enhanced_framing ? 1 : 0;
+    params.single.transfer_unit_symbols = stream.transfer_unit_symbols;
+    params.single.watermark = stream.watermark;
+
+    int32_t rc = fw.control(display_common, rm::CONTROL_CONFIGURE_STREAM, &params, sizeof(params));
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display common refused head %u's DisplayPort stream on output resource %u's link %c%s",
+            head,
+            link.index,
+            link_letter(link.sublink),
+            NO_ATTRIBUTES
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    is_configured = true;
+
+    log::info(
+        "nvidia: display common programmed head %u's DisplayPort stream on output resource %u's link %c: transfer "
+        "units of %u symbols, a watermark of %u symbols, %u symbols of horizontal blanking and %u of vertical",
+        head,
+        link.index,
+        link_letter(link.sublink),
+        stream.transfer_unit_symbols,
+        stream.watermark,
+        stream.hblank_symbols,
+        stream.vblank_symbols
+    );
+
+    return OK;
+}
+
+int32_t set_stream_attributes(firmware& fw, rm::handle display_common, uint32_t display_id) {
+    rm::stream_attributes_params params = {};
+    params.display_id = display_id;
+    params.overrides = 1;
+    params.keeps_for_next_mode = 1;
+    params.mask[rm::STREAM_ATTRIBUTE_MISC1] = rm::STREAM_ATTRIBUTE_STEREO;
+
+    int32_t rc = fw.control(display_common, rm::CONTROL_SET_STREAM_ATTRIBUTES, &params, sizeof(params));
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display common refused to clear the stereo bits of display id 0x%X's main stream attributes, so "
+            "the stream keeps those the firmware sets",
+            display_id
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    log::info("nvidia: display common clears the stereo bits of display id 0x%X's main stream attributes", display_id);
+
+    return OK;
+}
+
 // Whether the status read after training shows the link trained at `config`, logging what it shows
 static bool is_training_checked(
     uint32_t display_id,
@@ -319,13 +407,14 @@ static bool is_training_checked(
     }
 
     log::error(
-        "nvidia: display id 0x%X's link is not trained at %u %s, its link status reading 0x%02X 0x%02X 0x%02X",
+        "nvidia: display id 0x%X's link is not trained at %u %s, its link status reading 0x%02X 0x%02X 0x%02X%s",
         display_id,
         config.lanes,
         config.lanes == 1 ? "lane" : "lanes",
         status.lanes_0_1,
         status.lanes_2_3,
-        status.lane_align
+        status.lane_align,
+        NO_STREAM
     );
 
     return false;
@@ -401,8 +490,23 @@ int32_t set_up_output_link(
         return rc;
     }
 
-    is_set_up = is_training_checked(output.display_id, status, config);
-    return OK;
+    if (!is_training_checked(output.display_id, status, config)) {
+        return OK;
+    }
+
+    // A configuration `find_lowest_configuration` gives always has a stream, as it tries only those
+    displayport::stream_parameters stream = {};
+    displayport::compute_stream(facts, config, light.timing, stream);
+
+    bool is_configured = false;
+    rc = configure_stream(fw, display_common, light.head, link, facts.enhanced_framing, stream, is_configured);
+    if (rc != OK || !is_configured) {
+        return rc;
+    }
+
+    rc = set_stream_attributes(fw, display_common, output.display_id);
+    is_set_up = rc == OK;
+    return rc;
 }
 
 } // namespace drivers::nvidia

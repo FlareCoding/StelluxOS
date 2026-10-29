@@ -489,6 +489,65 @@ constexpr uint32_t TRAIN_DATA_TARGET_SHIFT = 19;
 
 static_assert(sizeof(train_link_params) == 28, "NVIDIA's layout of DP_CTRL's parameters");
 
+// NVIDIA's NV0073_CTRL_CMD_DP_CONFIG_STREAM, the control to display common that sets a head's DisplayPort stream on
+// the link it feeds
+constexpr uint32_t CONTROL_CONFIGURE_STREAM = 0x731362;
+
+// NVIDIA's dpColorFormat_RGB, the stream's pixels as red, green and blue
+constexpr uint32_t STREAM_RGB = 0;
+
+// The parameters of `CONTROL_CONFIGURE_STREAM`, of which a single stream fills those up to `multistream` and `single`
+struct configure_stream_params {
+    uint32_t subdevice_index;       // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t head;
+    uint32_t resource_index;        // NVIDIA's sorIndex, the output resource's number
+    uint32_t sublink;               // NVIDIA's dpLink, 0 for `PROTOCOL_DISPLAYPORT_A` and 1 for `_B`
+    uint8_t  overrides;             // NVIDIA's bEnableOverride, set to have the firmware program these parameters
+    uint8_t  is_multistream;        // NVIDIA's bMST
+    uint32_t single_head_multistream_mode;
+    uint32_t hblank_symbols;        // NVIDIA's hBlankSym
+    uint32_t vblank_symbols;        // NVIDIA's vBlankSym
+    uint32_t color_format;          // NVIDIA's colorFormat
+    uint8_t  is_two_heads;          // NVIDIA's bEnableTwoHeadOneOr
+    uint32_t multistream[7];        // NVIDIA's MST, which a single stream leaves 0
+    struct {
+        uint8_t  enhanced_framing;  // NVIDIA's bEnhancedFraming
+        uint32_t transfer_unit_symbols; // NVIDIA's tuSize
+        uint32_t watermark;         // NVIDIA's waterMark
+        uint32_t pixel_clock_hz;    // NVIDIA's actualPclkHz
+        uint32_t link_clock_hz;     // NVIDIA's linkClkFreqHz
+        uint8_t  audio_on_right_panel; // NVIDIA's bEnableAudioOverRightPanel
+        uint32_t legacy[6];         // NVIDIA's Legacy, which the driver leaves 0
+    } single;                       // NVIDIA's SST
+};
+
+static_assert(sizeof(configure_stream_params) == 116, "NVIDIA's layout of DP_CONFIG_STREAM's parameters");
+
+// NVIDIA's NV0073_CTRL_CMD_DP_SET_MSA_PROPERTIES_V2, the only form of DP_SET_MSA_PROPERTIES display common takes, which
+// overrides fields of a DisplayPort stream's main stream attributes (MSA), the facts about its mode sent to the monitor
+constexpr uint32_t CONTROL_SET_STREAM_ATTRIBUTES = 0x731381;
+
+// The parameters of `CONTROL_SET_STREAM_ATTRIBUTES`, `mask` choosing the bits and fields `values` overrides
+struct stream_attributes_params {
+    uint32_t subdevice_index;       // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t display_id;            // a single bit
+    uint8_t  overrides;             // NVIDIA's bEnableMSA, set to have the firmware apply `mask` and `values`
+    uint8_t  inverts_stereo_phase;  // NVIDIA's bStereoPhaseInverse
+    uint8_t  keeps_for_next_mode;   // NVIDIA's bCacheMsaOverrideForNextModeset
+    uint8_t  mask[15];              // NVIDIA's featureMask, the MISC bits in its first two bytes
+    uint8_t  values[26];            // NVIDIA's featureValues, the MISC bytes in its first two
+    uint8_t  returns_values;        // NVIDIA's bDebugValues, set to have the reply give the values written
+    uint16_t written_values[13];    // NVIDIA's featureDebugValues, as 16-bit words for NVIDIA's alignment
+};
+
+// The MISC1 byte's stereo video bits, bits 2 to 1, NVIDIA's NV_DP_MSA_PROPERTIES_MISC1_STEREO
+constexpr uint8_t STREAM_ATTRIBUTE_STEREO = 0x06;
+
+// The index of `stream_attributes_params::mask`'s MISC1 byte
+constexpr uint32_t STREAM_ATTRIBUTE_MISC1 = 1;
+
+static_assert(sizeof(stream_attributes_params) == 80, "NVIDIA's layout of DP_SET_MSA_PROPERTIES_V2's parameters");
+
 // NVIDIA's NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, the control that gives the firmware where a display
 // channel's push buffer lies, sent before the channel's allocation
 constexpr uint32_t CONTROL_SET_DISPLAY_PUSH_BUFFER = 0x20800A58;

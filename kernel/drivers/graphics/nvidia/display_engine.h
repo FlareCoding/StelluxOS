@@ -185,21 +185,24 @@ public:
      * the same methods again, with the windows' heads only when no update was
      * kicked, an update naming no notifier and a wait for GET to reach PUT,
      * logging whether the take-down succeeds. Once the core channel has read
-     * the shutdown update, or with no head active, train the output's
-     * DisplayPort link with `set_up_output_link`: assign the display id an
-     * output resource when display common reports a crossbar, read the
+     * the shutdown update, or with no head active, make the output's
+     * DisplayPort link ready with `set_up_output_link`: assign the display id
+     * an output resource when display common reports a crossbar, read the
      * resource's DisplayPort facts, train the link at the lowest configuration
-     * carrying the mode under them and check the training against the link's
-     * status bytes, logging each step. When a step fails, the steps after it
+     * carrying the mode under them, check the training against the link's
+     * status bytes, then program the head's stream and the stream's attributes
+     * on the link, logging each step. When a step fails, the steps after it
      * are not taken: log that the link is not set up and take the engine down
-     * the same way. Then send the mode set's end. A refused start is logged
-     * and nothing is written to the core channel, the set-up returning `OK`,
-     * and a refused end is logged, changing nothing. Each output's modes are
-     * kept on the unprivileged heap from the monitors' reads to the choice, or
-     * to `release` when the set-up fails before it, and the other facts read
-     * are not kept. Each request spins on the calling CPU, waiting for its
-     * reply as `firmware` describes, and so does each wait for GET, for at
-     * most 5 seconds, and the wait for the completion notifier, for at most
+     * the same way, except that a refused override of the stream's attributes,
+     * the last step, leaves the link set up with the attributes the firmware
+     * sets. Then send the mode set's end. A refused start is logged and
+     * nothing is written to the core channel, the set-up returning `OK`, and a
+     * refused end is logged, changing nothing. Each output's modes are kept on
+     * the unprivileged heap from the monitors' reads to the choice, or to
+     * `release` when the set-up fails before it, and the other facts read are
+     * not kept. Each request spins on the calling CPU, waiting for its reply
+     * as `firmware` describes, and so does each wait for GET, for at most 5
+     * seconds, and the wait for the completion notifier, for at most
      * `COMPLETION_NOTIFIER_WAIT_NS`. The requests for the core channel's state
      * follow one another with no pause while the firmware reports the channel
      * busy, as `wait_core_channel_idle` describes. `read_output_edid` also

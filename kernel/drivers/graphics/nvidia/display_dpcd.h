@@ -31,7 +31,7 @@ constexpr uint32_t DPCD_RECEIVER_CAPABILITY_BYTES     = 16;
 constexpr uint32_t DPCD_PHY_REPEATER_CAPABILITY_BYTES = 8;
 
 // How the line logged for a refused training or a failed status read ends, naming the steps it leaves undone
-constexpr const char* LINK_UNCHECKED = ", so its link is not checked";
+constexpr const char* LINK_UNCHECKED = ", so its link is neither checked nor given a stream";
 
 // The bytes a monitor's DPCD reports of its capabilities and of any PHY repeater's, as read
 struct dpcd_capabilities {
