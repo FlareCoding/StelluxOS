@@ -16,6 +16,10 @@ constexpr uint8_t UNSCALED_TAPS = 2;
 // without asking the bandwidth check, as NVIDIA's modesetting module refuses a mode of 1 line but asks about one of 0
 constexpr uint32_t LEADING_IDLE_LINES_MIN = 2;
 
+// NVIDIA's maxRasterWidth and maxRasterHeight, the largest totals a head's raster methods take, past which a mode is
+// refused without asking the bandwidth check, as NVIDIA's modesetting module refuses it
+constexpr uint32_t RASTER_SIZE_MAX = rm::HEAD_PAIR_MASK;
+
 // NVIDIA's cursorSize32p for a 256-pixel cursor, in units of 32 pixels, the largest size, which NVIDIA's modesetting
 // module assumes
 constexpr uint8_t CURSOR_WIDTH_32 = 256 / 32;
@@ -185,8 +189,29 @@ static int32_t check_mode(
 ) {
     const edid::timing& timing = modes.timings[rank];
     uint64_t millihertz = timing.refresh_millihertz();
+    uint32_t h_total = timing.h_total();
+    uint32_t v_total = timing.v_total();
 
     is_possible = false;
+    bool fits_raster = h_total <= RASTER_SIZE_MAX && v_total <= RASTER_SIZE_MAX;
+    if (!fits_raster) {
+        log::info(
+            "nvidia: output %u's timing %u, %u by %u at %lu.%03lu Hz, is refused, as its totals of %u by %u pass a "
+            "head's largest raster, %u by %u",
+            output,
+            modes.indices[rank],
+            timing.width,
+            timing.height,
+            millihertz / 1000,
+            millihertz % 1000,
+            h_total,
+            v_total,
+            RASTER_SIZE_MAX,
+            RASTER_SIZE_MAX
+        );
+        return OK;
+    }
+
     if (!fill_request(timing, target.head, target.window, params)) {
         log::info(
             "nvidia: output %u's timing %u, %u by %u at %lu.%03lu Hz, is refused, as its sync and back porch take "

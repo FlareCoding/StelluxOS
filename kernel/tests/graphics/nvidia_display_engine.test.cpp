@@ -22,6 +22,7 @@
 #include "drivers/graphics/nvidia/rm.h"
 #include "drivers/graphics/nvidia/video_memory.h"
 #include "drivers/graphics/nvidia/vram_allocator.h"
+#include "drivers/graphics/nvidia/window_methods.h"
 #include "mm/heap.h"
 #include "mm/paging.h"
 #include "tests/memory/dma_test_access.h"
@@ -29,6 +30,8 @@
 TEST_SUITE(nvidia_display_engine);
 
 using drivers::nvidia::active_heads;
+using drivers::nvidia::base_buffer_pitch;
+using drivers::nvidia::build_window_usage_methods;
 using drivers::nvidia::CHANNEL_GET;
 using drivers::nvidia::CHANNEL_PUT;
 using drivers::nvidia::chip_displayport;
@@ -50,6 +53,7 @@ using drivers::nvidia::ERR_INVALID_ARG;
 using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::firmware;
+using drivers::nvidia::HEAD_LIGHT_FIXED_METHODS;
 using drivers::nvidia::INSTANCE_MEMORY_BYTES;
 using drivers::nvidia::LOOK_UP_TABLE_SURFACE_BYTES;
 using drivers::nvidia::look_up_table_word;
@@ -63,7 +67,10 @@ using drivers::nvidia::video_memory;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
 using drivers::nvidia::window_channel_area;
+using drivers::nvidia::WINDOW_IMAGE_METHODS;
 using drivers::nvidia::WINDOW_OWNER_NONE;
+using drivers::nvidia::window_usage_methods;
+using drivers::nvidia::WINDOW_USAGE_METHODS;
 namespace displayport = drivers::nvidia::displayport;
 namespace rm = drivers::nvidia::rm;
 
@@ -308,6 +315,7 @@ public:
     uint32_t   get_at_mode_set_start = 0;     // the core channel's GET from the mode set's start, 0 for the default
     uint32_t   get_at_link = 0;               // the core channel's GET from the mode set's first link request, if set
     uint32_t   put_at_link = 0;               // the core channel's PUT when that request came
+    uint32_t   get_at_stream = 0;             // the core channel's GET from the stream's attributes, 0 for the default
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
         return answer(kind::allocation, object, class_id);
@@ -326,6 +334,10 @@ public:
             if (get_at_link != 0) {
                 g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)] = get_at_link;
             }
+        }
+
+        if (command == rm::CONTROL_SET_STREAM_ATTRIBUTES) {
+            move_get_past_light();
         }
 
         bool is_state_request = command == rm::CONTROL_GET_DISPLAY_CHANNEL_STATE;
@@ -517,6 +529,34 @@ private:
 
         uint32_t methods = window_count * 2 + stopped_heads * 4 + 5;
         return methods * 2 * sizeof(uint32_t);
+    }
+
+    // The bytes of the light's update on `head` after a shutdown update: the head's fixed methods, a usage bound for
+    // each present window serving it, the lit window's three usage methods and the update's five
+    static uint32_t light_update_bytes(uint32_t windows, uint8_t windows_per_head, uint8_t head) {
+        uint32_t served = 0;
+        for (uint8_t window = 0; window < CHIP_WINDOWS; window++) {
+            bool is_present = (windows & (1u << window)) != 0;
+            if (is_present && window / windows_per_head == head) {
+                served++;
+            }
+        }
+
+        uint32_t methods = HEAD_LIGHT_FIXED_METHODS + served + WINDOW_USAGE_METHODS + 5;
+
+        return methods * 2 * sizeof(uint32_t);
+    }
+
+    // From the stream's attributes, the link's last request ahead of the light, leaves the core channel's GET at
+    // `get_at_stream`, or, with a head showing a display, where the light's update after the shutdown update ends
+    void move_get_past_light() const {
+        uint32_t& get = g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)];
+        uint32_t put = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
+        if (get_at_stream != 0) {
+            get = get_at_stream;
+        } else if (boot_display_id != 0) {
+            get = put + light_update_bytes(present_windows, windows_per_head, boot_head);
+        }
     }
 
     // Records the mode set's start or end, answering the end with `mode_set_end_result`, and from the start leaves the
@@ -906,9 +946,10 @@ struct display_engine_test_access {
         display_engine& engine,
         const display_heads& heads,
         uint32_t present_windows,
-        const active_heads& active
+        const active_heads& active,
+        const active_heads& lit
     ) {
-        return engine.take_down(heads, present_windows, active);
+        return engine.take_down(heads, present_windows, active, lit);
     }
 };
 
@@ -3114,10 +3155,18 @@ TEST(nvidia_display_engine, set_up_failing_at_the_core_channels_idle_wait_logs_n
     EXPECT_EQ(engine.release(), OK);
 }
 
-// With no head active, the set-up sends the mode set's start and end naming the chosen output's display id with no
-// method between them, and the release still keeps the hardware as it is
+// The light's first update on head 0 with no head active, the 8 windows mapped ahead of head 0's methods, where it
+// ends, and where the second core update ends after the notifier's stop: window 0's usage methods and the update's five
+static constexpr uint32_t FIRST_LIGHT_METHODS = 8 * 2 + HEAD_LIGHT_FIXED_METHODS + 3 + 5;
+static constexpr uint32_t FIRST_LIGHT_END     = INITIAL_METHODS_END + FIRST_LIGHT_METHODS * 2 * sizeof(uint32_t);
+static constexpr uint32_t SECOND_UPDATE_BYTES = (WINDOW_USAGE_METHODS + 5) * 2 * sizeof(uint32_t);
+static constexpr uint32_t SECOND_UPDATE_END   = FIRST_LIGHT_END + 16 + SECOND_UPDATE_BYTES;
+
+// With no head active, the set-up sends the mode set's start and end naming the chosen output's display id around the
+// light's updates, and the release then asks to keep nothing
 TEST(nvidia_display_engine, set_up_brackets_the_chosen_outputs_mode_set_with_no_head_active) {
     engine_firmware fw;
+    fw.get_at_stream = FIRST_LIGHT_END;
     engine_video_memory memory;
     ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
     fw.boot_display_id = 0;
@@ -3131,16 +3180,16 @@ TEST(nvidia_display_engine, set_up_brackets_the_chosen_outputs_mode_set_with_no_
     EXPECT_EQ(fw.mode_set_phases[1], 0u);
 
     EXPECT_EQ(fw.mode_set_puts[0], INITIAL_METHODS_END);
-    EXPECT_EQ(fw.mode_set_puts[1], INITIAL_METHODS_END);
+    EXPECT_EQ(fw.mode_set_puts[1], SECOND_UPDATE_END);
 
     uint32_t start = fw.first_control(rm::CONTROL_DISPLAY_CHANGE);
     EXPECT_TRUE(start > fw.last_control(rm::CONTROL_GET_DISPLAY_CHANNEL_STATE));
-    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], SECOND_UPDATE_END);
     EXPECT_TRUE(engine_log_contains("display common took the start of the mode set naming display id 0x100"));
     EXPECT_TRUE(engine_log_contains("display common took the end of the mode set naming display id 0x100"));
 
     EXPECT_EQ(engine.release(), OK);
-    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_DISPLAY_RELEASE_FLAGS), 2u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_DISPLAY_RELEASE_FLAGS), 0u);
 }
 
 // A refused start of the mode set is logged, and then no end is sent, no method written, no link facts asked for, and
@@ -3174,6 +3223,11 @@ TEST(nvidia_display_engine, set_up_writes_nothing_and_sends_no_end_after_a_refus
 static constexpr uint32_t SHUTDOWN_UPDATE_END = INITIAL_METHODS_END + (8 * 2 + 4 + 5) * 2 * sizeof(uint32_t);
 static constexpr uint32_t TAKE_DOWN_END       = SHUTDOWN_UPDATE_END + (4 + 5) * 2 * sizeof(uint32_t);
 
+// The methods of the light's update on head 1 after the shutdown update, head 1's fixed methods, a usage bound for each
+// of its three windows, window 3's usage methods and the update's five, and where they end after the notifier's stop
+static constexpr uint32_t LIGHT_METHODS = HEAD_LIGHT_FIXED_METHODS + 3 + WINDOW_USAGE_METHODS + 5;
+static constexpr uint32_t LIGHT_END     = SHUTDOWN_UPDATE_END + 16 + LIGHT_METHODS * 2 * sizeof(uint32_t);
+
 // A start of the mode set failing otherwise fails the set-up with its error, writing nothing and sending no end, and
 // the release then asks to keep the hardware
 TEST(nvidia_display_engine, set_up_fails_with_the_error_of_a_mode_set_start_failing_otherwise) {
@@ -3199,7 +3253,7 @@ TEST(nvidia_display_engine, set_up_fails_with_the_error_of_a_mode_set_start_fail
 }
 
 // A refused end of the mode set is logged and changes nothing, while an end missing its deadline fails the set-up,
-// each sent after the shutdown update and the stop of the notifier's writes, with no take-down or other method after
+// each sent after the light's update and the stop of the notifier's writes, with no take-down or other method after
 TEST(nvidia_display_engine, set_up_logs_a_refused_mode_set_end_and_fails_on_a_late_one) {
     const int32_t results[] = {ERR_FIRMWARE, ERR_TIMEOUT};
     for (int32_t result : results) {
@@ -3212,8 +3266,8 @@ TEST(nvidia_display_engine, set_up_logs_a_refused_mode_set_end_and_fails_on_a_la
         bool is_refused = result == ERR_FIRMWARE;
         EXPECT_EQ(set_up_logged(engine), is_refused ? OK : ERR_TIMEOUT);
         EXPECT_EQ(fw.mode_set_requests, 2u);
-        EXPECT_EQ(fw.mode_set_puts[1], SHUTDOWN_UPDATE_END + 16);
-        EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], SHUTDOWN_UPDATE_END + 16);
+        EXPECT_EQ(fw.mode_set_puts[1], LIGHT_END + 16);
+        EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], LIGHT_END + 16);
 
         EXPECT_EQ(engine_log_contains("nvidia: display common refused the end of the mode set"), is_refused);
         EXPECT_FALSE(engine_log_contains("display common took the end"));
@@ -3254,13 +3308,14 @@ static void expect_core_method(const engine_firmware& fw, uint32_t offset, uint3
     EXPECT_EQ(words[offset / sizeof(uint32_t) + 1], value);
 }
 
-// Expects `head`'s four stopping methods from `offset`: its cursor disabled, link 3 carrying no head, no display id
-static void expect_head_stopped(const engine_firmware& fw, uint32_t offset, uint8_t head) {
+// Expects `head`'s four stopping methods from `offset`: its cursor disabled, the link whose control method is
+// `link_control` carrying no head, no display id
+static void expect_head_stopped(const engine_firmware& fw, uint32_t offset, uint8_t head, uint32_t link_control) {
     uint32_t head_methods = head * NVIDIA_HEAD_STRIDE;
 
     expect_core_method(fw, offset, HEAD_0_CURSOR_CONTEXT + head_methods, 0);
     expect_core_method(fw, offset + 8, HEAD_0_CURSOR_CONTROL + head_methods, NVIDIA_CURSOR_DISABLED);
-    expect_core_method(fw, offset + 16, LINK_3_CONTROL, 0);
+    expect_core_method(fw, offset + 16, link_control, 0);
     expect_core_method(fw, offset + 24, HEAD_0_DISPLAY_ID + head_methods, 0);
 }
 
@@ -3293,7 +3348,7 @@ TEST(nvidia_display_engine, set_up_stops_the_active_head_with_the_shutdown_updat
     }
 
     uint32_t update = INITIAL_METHODS_END + CHIP_WINDOWS * 2 * 8;
-    expect_head_stopped(fw, update, 1);
+    expect_head_stopped(fw, update, 1, LINK_3_CONTROL);
     rm::handle notifier = display_engine_test_access::notifier_context_dma(engine);
     EXPECT_NE(notifier, 0u);
     expect_core_method(fw, update + 32, NVIDIA_NOTIFIER_CONTEXT_DMA, notifier);
@@ -3305,11 +3360,11 @@ TEST(nvidia_display_engine, set_up_stops_the_active_head_with_the_shutdown_updat
 
     expect_core_method(fw, SHUTDOWN_UPDATE_END, NVIDIA_NOTIFIER_CONTEXT_DMA, 0);
     expect_core_method(fw, SHUTDOWN_UPDATE_END + 8, NVIDIA_NOTIFIER_CONTROL, 0);
-    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], SHUTDOWN_UPDATE_END + 16);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], LIGHT_END + 16);
 
     ASSERT_EQ(fw.mode_set_requests, 2u);
     EXPECT_EQ(fw.mode_set_puts[0], INITIAL_METHODS_END);
-    EXPECT_EQ(fw.mode_set_puts[1], SHUTDOWN_UPDATE_END + 16);
+    EXPECT_EQ(fw.mode_set_puts[1], LIGHT_END + 16);
 
     EXPECT_TRUE(engine_log_contains("the core channel's completion notifier reads 0x00000000, a lost notification"));
     EXPECT_TRUE(engine_log_contains("nvidia: the core channel read the shutdown update for 1 active head,"));
@@ -3335,10 +3390,10 @@ TEST(nvidia_display_engine, set_up_stops_two_active_heads_with_one_shutdown_upda
 
     ASSERT_EQ(set_up_logged(engine), OK);
     uint32_t head_stops = INITIAL_METHODS_END + CHIP_WINDOWS * 2 * 8;
-    expect_head_stopped(fw, head_stops, 0);
-    expect_head_stopped(fw, head_stops + 32, 1);
+    expect_head_stopped(fw, head_stops, 0, LINK_3_CONTROL);
+    expect_head_stopped(fw, head_stops + 32, 1, LINK_3_CONTROL);
     expect_core_method(fw, head_stops + 96, NVIDIA_UPDATE, NVIDIA_RELEASE_ELV);
-    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], SHUTDOWN_UPDATE_END + 32 + 16);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], LIGHT_END + 32 + 16);
 
     EXPECT_TRUE(engine_log_contains("nvidia: the core channel read the shutdown update for 2 active heads"));
     EXPECT_TRUE(engine_log_contains("after the shutdown update, head 0's display id reads 0x0 and serial link 3's"));
@@ -3356,7 +3411,7 @@ TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_failed_notifier
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    expect_head_stopped(fw, SHUTDOWN_UPDATE_END, 1);
+    expect_head_stopped(fw, SHUTDOWN_UPDATE_END, 1, LINK_3_CONTROL);
     expect_core_method(fw, SHUTDOWN_UPDATE_END + 32, NVIDIA_NOTIFIER_CONTEXT_DMA, 0);
     expect_core_method(fw, SHUTDOWN_UPDATE_END + 40, NVIDIA_NOTIFIER_CONTROL, 0);
     expect_core_method(fw, SHUTDOWN_UPDATE_END + 48, NVIDIA_INTERLOCK_FLAGS, 0);
@@ -3400,9 +3455,15 @@ TEST(nvidia_display_engine, set_up_ends_the_mode_set_after_a_failed_take_down) {
 // notifier, and the release then asks to keep nothing
 TEST(nvidia_display_engine, take_down_as_the_first_update_maps_the_windows) {
     engine_firmware fw;
+    fw.refusals[0] = {
+        .made = engine_firmware::kind::control,
+        .number = rm::CONTROL_DISPLAY_CHANGE,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
     engine_video_memory memory;
     ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
-    fw.boot_display_id = 0;
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
@@ -3421,14 +3482,14 @@ TEST(nvidia_display_engine, take_down_as_the_first_update_maps_the_windows) {
     uint32_t end = INITIAL_METHODS_END + (2 * 2 + 4 + 5) * 2 * sizeof(uint32_t);
     g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)] = end;
 
-    EXPECT_EQ(display_engine_test_access::take_down(engine, heads, 0x3, active), OK);
+    EXPECT_EQ(display_engine_test_access::take_down(engine, heads, 0x3, active, {}), OK);
     expect_core_method(fw, INITIAL_METHODS_END, NVIDIA_WINDOW_CONTROL, 0);
     expect_core_method(fw, INITIAL_METHODS_END + 8, NVIDIA_WINDOW_CONTROL + NVIDIA_WINDOW_STRIDE, 1);
     expect_core_method(fw, INITIAL_METHODS_END + 16, NVIDIA_WINDOW_USAGE_BOUNDS, NVIDIA_DEFAULT_USAGE_BOUNDS);
     uint32_t window_1_bounds = NVIDIA_WINDOW_USAGE_BOUNDS + NVIDIA_WINDOW_STRIDE;
     expect_core_method(fw, INITIAL_METHODS_END + 24, window_1_bounds, NVIDIA_DEFAULT_USAGE_BOUNDS);
 
-    expect_head_stopped(fw, INITIAL_METHODS_END + 32, 1);
+    expect_head_stopped(fw, INITIAL_METHODS_END + 32, 1, LINK_3_CONTROL);
     expect_core_method(fw, INITIAL_METHODS_END + 64, NVIDIA_NOTIFIER_CONTEXT_DMA, 0);
     expect_core_method(fw, INITIAL_METHODS_END + 96, NVIDIA_UPDATE, NVIDIA_RELEASE_ELV);
     EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], end);
@@ -3489,7 +3550,7 @@ TEST(nvidia_display_engine, set_up_finds_the_chosen_outputs_link_between_the_shu
     EXPECT_LT(link_facts, fw.last_control(rm::CONTROL_DISPLAY_CHANGE));
 
     EXPECT_EQ(fw.put_at_link, SHUTDOWN_UPDATE_END + 16);
-    EXPECT_EQ(fw.mode_set_puts[1], SHUTDOWN_UPDATE_END + 16);
+    EXPECT_EQ(fw.mode_set_puts[1], LIGHT_END + 16);
 
     EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100 is driven by output resource 3 through its link A\r\n"));
     EXPECT_TRUE(engine_log_contains(
@@ -3603,7 +3664,7 @@ TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_failed_link_fac
         display_engine& engine = new_engine(fw, memory);
 
         EXPECT_EQ(set_up_logged(engine), failed.result);
-        expect_head_stopped(fw, SHUTDOWN_UPDATE_END + 16, 1);
+        expect_head_stopped(fw, SHUTDOWN_UPDATE_END + 16, 1, LINK_3_CONTROL);
         expect_core_method(fw, SHUTDOWN_UPDATE_END + 48, NVIDIA_NOTIFIER_CONTEXT_DMA, 0);
         expect_core_method(fw, SHUTDOWN_UPDATE_END + 80, NVIDIA_UPDATE, NVIDIA_RELEASE_ELV);
         EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], LINK_TAKE_DOWN_END);
@@ -4100,9 +4161,10 @@ TEST(nvidia_display_engine, set_up_gives_no_stream_to_a_link_whose_status_read_i
 TEST(nvidia_display_engine, set_up_takes_the_engine_down_only_after_a_late_attributes_request) {
     const int32_t results[] = {ERR_FIRMWARE, ERR_TIMEOUT};
     for (int32_t result : results) {
+        bool is_refused = result == ERR_FIRMWARE;
         engine_firmware fw;
         show_output_0_on_head_1(fw);
-        fw.get_at_link = LINK_TAKE_DOWN_END;
+        fw.get_at_stream = is_refused ? 0 : LINK_TAKE_DOWN_END;
         fw.refusals[0] = {
             .made   = engine_firmware::kind::control,
             .number = rm::CONTROL_SET_STREAM_ATTRIBUTES,
@@ -4114,7 +4176,6 @@ TEST(nvidia_display_engine, set_up_takes_the_engine_down_only_after_a_late_attri
         ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
         display_engine& engine = new_engine(fw, memory);
 
-        bool is_refused = result == ERR_FIRMWARE;
         EXPECT_EQ(set_up_logged(engine), is_refused ? OK : ERR_TIMEOUT);
         EXPECT_EQ(fw.control_count(rm::CONTROL_SET_STREAM_ATTRIBUTES), 1u);
 
@@ -4133,6 +4194,328 @@ TEST(nvidia_display_engine, set_up_takes_the_engine_down_only_after_a_late_attri
             !is_refused
         );
         EXPECT_EQ(engine_log_contains("bring-up takes the display engine down"), !is_refused);
-        EXPECT_EQ(fw.mode_set_puts[1], is_refused ? SHUTDOWN_UPDATE_END + 16 : LINK_TAKE_DOWN_END);
+        EXPECT_EQ(fw.mode_set_puts[1], is_refused ? LIGHT_END + 16 : LINK_TAKE_DOWN_END);
     }
+}
+
+// A window's first image in its push buffer, `WINDOW_IMAGE_METHODS` methods carrying 55 values
+static constexpr uint32_t WINDOW_IMAGE_BYTES = (WINDOW_IMAGE_METHODS + 55) * sizeof(uint32_t);
+
+// Where the core channel's armed state lies in its area, head 1's display id method, serial link 3's control naming
+// head 1 over link B (NVIDIA's protocol 9), and serial link 2's control method
+static constexpr uint32_t NVIDIA_ARMED_STATE = NVIDIA_ARMED_WINDOW_CONTROL - NVIDIA_WINDOW_CONTROL;
+static constexpr uint32_t HEAD_1_DISPLAY_ID  = HEAD_0_DISPLAY_ID + NVIDIA_HEAD_STRIDE;
+static constexpr uint32_t HEAD_1_ON_LINK_3_B = 0x902;
+static constexpr uint32_t LINK_2_CONTROL     = 0x340;
+
+// What `core_method_value` and `window_method_value` give for a method nothing writes
+static constexpr uint32_t NO_VALUE = 0xFFFFFFFF;
+
+// The value of the last one-value method writing `method` in the core channel's push buffer from `first` to `end`
+static uint32_t core_method_value(const engine_firmware& fw, uint32_t first, uint32_t end, uint32_t method) {
+    const uint32_t* words = static_cast<const uint32_t*>(paging::phys_to_virt(fw.core_push_buffer_address));
+    uint32_t value = NO_VALUE;
+    for (uint32_t offset = first; offset < end; offset += 2 * sizeof(uint32_t)) {
+        if (words[offset / sizeof(uint32_t)] == ((1u << NVIDIA_COUNT_SHIFT) | method)) {
+            value = words[offset / sizeof(uint32_t) + 1];
+        }
+    }
+
+    return value;
+}
+
+// The value of the last method writing `method` in the window channel's push buffer before `end`, stepping by each
+// method's count of values
+static uint32_t window_method_value(const engine_firmware& fw, uint32_t end, uint32_t method) {
+    const uint32_t* words = static_cast<const uint32_t*>(paging::phys_to_virt(fw.push_buffer_address));
+    uint32_t value = NO_VALUE;
+    for (uint32_t word = 0; word < end / sizeof(uint32_t); word += 1 + (words[word] >> NVIDIA_COUNT_SHIFT)) {
+        if ((words[word] & ((1u << NVIDIA_COUNT_SHIFT) - 1)) == method) {
+            value = words[word + 1];
+        }
+    }
+
+    return value;
+}
+
+// Expects the chosen window's first image in its push buffer and its usage bounds among the core methods before
+// `update`: the image interlocked with the core channel, naming the base buffer and look-up table, 1366 by 768
+static void expect_first_image(const engine_firmware& fw, display_engine& engine, uint8_t window, uint32_t update) {
+    window_usage_methods usage = {};
+    build_window_usage_methods(window, 1366, usage);
+    uint32_t bounds_method = NVIDIA_WINDOW_USAGE_BOUNDS + window * NVIDIA_WINDOW_STRIDE;
+    uint32_t bounds = usage.methods[WINDOW_USAGE_METHODS - 1].value;
+    EXPECT_EQ(core_method_value(fw, update - 8, update, bounds_method), bounds);
+
+    rm::handle surface = display_engine_test_access::base_buffer_context_dma(engine);
+    rm::handle look_up_table = display_engine_test_access::look_up_table_context_dma(engine);
+    uint32_t end = WINDOW_IMAGE_BYTES;
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_INTERLOCK_FLAGS), rm::WINDOW_INTERLOCK_WITH_CORE);
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_SURFACE_CONTEXT_DMA), surface);
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_INPUT_TABLE_CONTEXT_DMA), look_up_table);
+
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_SIZE), 1366u | 768u << rm::SIZE_HEIGHT_SHIFT);
+    uint32_t pitch = base_buffer_pitch(1366) / rm::PLANE_PITCH_UNIT_BYTES;
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_PLANE_STORAGE), pitch);
+}
+
+// Expects an update's five methods from `offset`: the notifier named or 0, no cursor interlocked, the window interlocks
+// and the update with RELEASE_ELV
+static void expect_update(const engine_firmware& fw, uint32_t offset, rm::handle notifier, uint32_t window_interlocks) {
+    uint32_t notifier_control = notifier != 0 ? NVIDIA_AWAKEN_AND_NOTIFY : 0;
+
+    expect_core_method(fw, offset, NVIDIA_NOTIFIER_CONTEXT_DMA, notifier);
+    expect_core_method(fw, offset + 8, NVIDIA_NOTIFIER_CONTROL, notifier_control);
+    expect_core_method(fw, offset + 16, NVIDIA_INTERLOCK_FLAGS, 0);
+    expect_core_method(fw, offset + 24, NVIDIA_WINDOW_INTERLOCKS, window_interlocks);
+    expect_core_method(fw, offset + 32, NVIDIA_UPDATE, NVIDIA_RELEASE_ELV);
+}
+
+// After the shutdown update, head 1 lights output 0 on output resource 3's link B in one update naming the notifier and
+// interlocked with window 3, whose first image shows the base buffer, and the armed state is logged
+TEST(nvidia_display_engine, set_up_lights_the_boot_head_in_one_update_interlocked_with_its_window) {
+    g_core_channel_registers[(NVIDIA_ARMED_STATE + HEAD_1_DISPLAY_ID) / sizeof(uint32_t)] = OUTPUT_0_ID;
+    g_core_channel_registers[(NVIDIA_ARMED_STATE + LINK_3_CONTROL) / sizeof(uint32_t)] = HEAD_1_ON_LINK_3_B;
+
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+    fw.boot_link_protocol = rm::PROTOCOL_DISPLAYPORT_B;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    uint32_t light = SHUTDOWN_UPDATE_END + 16;
+    EXPECT_EQ(core_method_value(fw, light, LIGHT_END, HEAD_1_DISPLAY_ID), OUTPUT_0_ID);
+    EXPECT_EQ(core_method_value(fw, light, LIGHT_END, LINK_3_CONTROL), HEAD_1_ON_LINK_3_B);
+    expect_first_image(fw, engine, HEAD_1_WINDOW, LIGHT_END - 40);
+
+    rm::handle look_up_table = display_engine_test_access::look_up_table_context_dma(engine);
+    uint32_t head_1_output_table_context_dma = rm::CORE_HEAD_OUTPUT_TABLE_CONTEXT_DMA + NVIDIA_HEAD_STRIDE;
+    EXPECT_EQ(core_method_value(fw, light, LIGHT_END, head_1_output_table_context_dma), look_up_table);
+
+    rm::handle notifier = display_engine_test_access::notifier_context_dma(engine);
+    expect_update(fw, LIGHT_END - 40, notifier, 1u << HEAD_1_WINDOW);
+    expect_core_method(fw, LIGHT_END, NVIDIA_NOTIFIER_CONTEXT_DMA, 0);
+    expect_core_method(fw, LIGHT_END + 8, NVIDIA_NOTIFIER_CONTROL, 0);
+    EXPECT_EQ(fw.mode_set_puts[1], LIGHT_END + 16);
+    EXPECT_EQ(window_channel_word(HEAD_1_WINDOW, CHANNEL_PUT), WINDOW_IMAGE_BYTES);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the core channel read the update lighting head 1, its completion notifier reading 0x00000000\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: after the light, head 1's display id reads 0x100 and serial link 3's control 0x902 in the core "
+        "channel's armed state\r\n"
+    ));
+    EXPECT_FALSE(engine_log_contains("an update of its own"));
+    EXPECT_FALSE(engine_log_contains("taken down"));
+
+    g_core_channel_registers[(NVIDIA_ARMED_STATE + HEAD_1_DISPLAY_ID) / sizeof(uint32_t)] = 0;
+    g_core_channel_registers[(NVIDIA_ARMED_STATE + LINK_3_CONTROL) / sizeof(uint32_t)] = 0;
+}
+
+// The armed owners giving windows 0 to 5 the heads they serve, 0 for windows 0 to 2 and 1 for windows 3 to 5
+static constexpr uint32_t SERVED_OWNERS[] = {0, 0, 0, 1, 1, 1};
+
+// Arms windows 0 to 5 with the owners `owners` gives
+static void arm_owners(const uint32_t (&owners)[6]) {
+    for (uint8_t window = 0; window < 6; window++) {
+        set_armed_control(window, owners[window]);
+    }
+}
+
+// With no head active the light's update is the first, and windows 6 and 7 alone change owner, serving no head, so it
+// interlocks no window and window 0's usage bounds and first image follow in an update of their own naming no notifier
+TEST(nvidia_display_engine, set_up_lights_window_0_apart_when_the_first_update_changes_an_owner) {
+    arm_owners(SERVED_OWNERS);
+    engine_firmware fw;
+    fw.get_at_stream = FIRST_LIGHT_END;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+    fw.boot_display_id = 0;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    uint32_t window_6_control = NVIDIA_WINDOW_CONTROL + 6 * NVIDIA_WINDOW_STRIDE;
+    expect_core_method(fw, INITIAL_METHODS_END + 6 * 8, window_6_control, WINDOW_OWNER_NONE);
+
+    rm::handle notifier = display_engine_test_access::notifier_context_dma(engine);
+    expect_update(fw, FIRST_LIGHT_END - 40, notifier, 0);
+    expect_core_method(fw, FIRST_LIGHT_END, NVIDIA_NOTIFIER_CONTEXT_DMA, 0);
+    expect_core_method(fw, FIRST_LIGHT_END + 8, NVIDIA_NOTIFIER_CONTROL, 0);
+
+    expect_first_image(fw, engine, 0, SECOND_UPDATE_END - 40);
+    expect_update(fw, SECOND_UPDATE_END - 40, 0, 1u << 0);
+    EXPECT_EQ(fw.mode_set_puts[1], SECOND_UPDATE_END);
+    EXPECT_EQ(window_channel_word(0, CHANNEL_PUT), WINDOW_IMAGE_BYTES);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the core channel read the update lighting head 0, its completion"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: window 0's first image follows in an update of its own naming no notifier, since the update lighting "
+        "head 0 changed a window's owner or a present window serves no head\r\n"
+    ));
+    EXPECT_FALSE(engine_log_contains("taken down"));
+    arm_owners({});
+}
+
+// Window 0's image follows in an update of its own when a present window is armed to a head it does not serve, or
+// serves none even armed to none, as NVIDIA compares the owner field with the head it gives
+TEST(nvidia_display_engine, set_up_lights_window_0_apart_for_a_changed_owner_or_a_window_serving_none) {
+    struct change {
+        uint32_t present_windows;
+        uint8_t  mapped_windows;
+        uint8_t  window;
+        uint32_t control;
+    };
+
+    const change changes[] = {
+        {0x3F, 6, 4, 0x0},
+        {0x7F, 7, 6, WINDOW_OWNER_NONE},
+    };
+
+    for (const change& changed : changes) {
+        arm_owners(SERVED_OWNERS);
+        set_armed_control(changed.window, changed.control);
+
+        uint32_t first_update_methods = changed.mapped_windows * 2 + HEAD_LIGHT_FIXED_METHODS + 3 + 5;
+        uint32_t first_update_end = INITIAL_METHODS_END + first_update_methods * 2 * sizeof(uint32_t);
+        engine_firmware fw;
+        fw.present_windows = changed.present_windows;
+        fw.get_at_stream = first_update_end;
+
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+        fw.boot_display_id = 0;
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up_logged(engine), OK);
+        rm::handle notifier = display_engine_test_access::notifier_context_dma(engine);
+        expect_update(fw, first_update_end - 40, notifier, 0);
+        EXPECT_TRUE(engine_log_contains("an update of its own"));
+        EXPECT_FALSE(engine_log_contains("taken down"));
+    }
+
+    set_armed_control(6, 0);
+    arm_owners({});
+}
+
+// The light's first update with windows 0 to 5 present, mapped ahead of head 0's fixed methods, a usage bound for each
+// of its three windows, window 0's usage methods and the update's five, and where it ends
+static constexpr uint32_t MAPPED_LIGHT_METHODS = 6 * 2 + HEAD_LIGHT_FIXED_METHODS + 3 + WINDOW_USAGE_METHODS + 5;
+static constexpr uint32_t MAPPED_LIGHT_END     = INITIAL_METHODS_END + MAPPED_LIGHT_METHODS * 2 * sizeof(uint32_t);
+
+// With no head active and each present window armed to the head it serves, the light's first update changes no owner,
+// so it carries window 0's usage bounds and first image, interlocked with window 0's, and nothing follows it
+TEST(nvidia_display_engine, set_up_lights_in_one_first_update_when_no_owner_changes) {
+    arm_owners(SERVED_OWNERS);
+    engine_firmware fw;
+    fw.present_windows = 0x3F;
+    fw.get_at_stream = MAPPED_LIGHT_END;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+    fw.boot_display_id = 0;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    rm::handle notifier = display_engine_test_access::notifier_context_dma(engine);
+    expect_update(fw, MAPPED_LIGHT_END - 40, notifier, 1u << 0);
+    expect_first_image(fw, engine, 0, MAPPED_LIGHT_END - 40);
+    EXPECT_EQ(fw.mode_set_puts[1], MAPPED_LIGHT_END + 16);
+    EXPECT_EQ(window_channel_word(0, CHANNEL_PUT), WINDOW_IMAGE_BYTES);
+
+    EXPECT_FALSE(engine_log_contains("an update of its own"));
+    EXPECT_FALSE(engine_log_contains("taken down"));
+    arm_owners({});
+}
+
+// Where a take-down after a failed light ends: head 1's four methods for the active head, four again for the lit head,
+// and the update's five after the light's update
+static constexpr uint32_t LIGHT_TAKE_DOWN_END = LIGHT_END + (4 + 4 + 5) * 2 * sizeof(uint32_t);
+
+// A light whose notifier wait fails takes the engine down, stopping the active head and the lit head on link 3 ahead of
+// an update naming no notifier, and logs neither the light's read nor the armed state
+TEST(nvidia_display_engine, set_up_takes_the_lit_head_down_after_a_failed_light) {
+    engine_firmware fw;
+    fw.get_at_stream = LIGHT_TAKE_DOWN_END;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+    fw.boot_link_protocol = rm::PROTOCOL_DISPLAYPORT_B;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    expect_head_stopped(fw, LIGHT_END, 1, LINK_3_CONTROL);
+    expect_head_stopped(fw, LIGHT_END + 32, 1, LINK_3_CONTROL);
+    expect_update(fw, LIGHT_END + 64, 0, 0);
+    EXPECT_EQ(fw.mode_set_puts[1], LIGHT_TAKE_DOWN_END);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: lighting head 1 failed: -4, so bring-up takes the display engine down"));
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+    EXPECT_FALSE(engine_log_contains("the core channel read the update lighting head"));
+    EXPECT_FALSE(engine_log_contains("after the light"));
+}
+
+// With the crossbar assigning output resource 2, a light whose notifier wait fails detaches link 3 from the active head
+// and link 2 from the lit head ahead of an update naming no notifier
+TEST(nvidia_display_engine, set_up_detaches_the_lit_heads_own_link_after_a_failed_light) {
+    engine_firmware fw;
+    fw.get_at_stream = LIGHT_TAKE_DOWN_END;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+    fw.has_crossbar = true;
+    fw.assigned_resource = 2;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    expect_head_stopped(fw, LIGHT_END, 1, LINK_3_CONTROL);
+    expect_head_stopped(fw, LIGHT_END + 32, 1, LINK_2_CONTROL);
+    expect_update(fw, LIGHT_END + 64, 0, 0);
+    EXPECT_EQ(fw.mode_set_puts[1], LIGHT_TAKE_DOWN_END);
+}
+
+// A first light whose notifier wait fails with no head active stops the lit head 0 alone, without mapping the windows
+// again since its update was kicked, and writes nothing into window 0's channel
+TEST(nvidia_display_engine, set_up_takes_down_the_lit_head_alone_after_a_failed_first_light) {
+    engine_firmware fw;
+    fw.get_at_stream = FIRST_LIGHT_END + (4 + 5) * 2 * sizeof(uint32_t);
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+    fw.boot_display_id = 0;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    expect_head_stopped(fw, FIRST_LIGHT_END, 0, LINK_3_CONTROL);
+    expect_update(fw, FIRST_LIGHT_END + 32, 0, 0);
+    EXPECT_EQ(fw.mode_set_puts[1], fw.get_at_stream);
+    EXPECT_TRUE(is_push_buffer_blank(fw.push_buffer_address));
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+}
+
+// A refused stream on output resource 3's link B leaves the link not ready, so nothing is lit and the take-down stops
+// the active head alone right after the shutdown update
+TEST(nvidia_display_engine, set_up_lights_nothing_after_a_refused_stream) {
+    engine_firmware fw;
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_CONFIGURE_STREAM,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+    fw.boot_link_protocol = rm::PROTOCOL_DISPLAYPORT_B;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    expect_head_stopped(fw, SHUTDOWN_UPDATE_END + 16, 1, LINK_3_CONTROL);
+    expect_update(fw, SHUTDOWN_UPDATE_END + 48, 0, 0);
+    EXPECT_EQ(fw.mode_set_puts[1], LINK_TAKE_DOWN_END);
+    EXPECT_TRUE(is_push_buffer_blank(fw.push_buffer_address));
+
+    EXPECT_FALSE(engine_log_contains("lighting head"));
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
 }

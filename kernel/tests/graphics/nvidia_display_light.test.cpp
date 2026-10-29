@@ -55,6 +55,13 @@ static constexpr edid::timing ONE_LEADING_LINE = {148500, 1920, 88, 44, 148, 108
 static constexpr edid::timing TWO_LEADING_LINES = {148500, 1920, 88, 44, 148, 1080, 4, 1, 1, true, true};
 static constexpr edid::timing NO_LEADING_PIXELS = {148500, 1920, 88, 0, 0, 1080, 4, 5, 36, true, true};
 
+// That timing with its back porches stretched to totals of 32,767 by 32,767, a head's largest raster, one pixel wider
+// or one line taller than that raster, and a line of 67,736 pixels, which a total cut to 16 bits would read as 2,200
+static constexpr edid::timing LARGEST_RASTER = {148500, 1920, 88, 44, 30715, 1080, 4, 5, 31678, true, true};
+static constexpr edid::timing WIDER_THAN_A_RASTER = {148500, 1920, 88, 44, 30716, 1080, 4, 5, 31678, true, true};
+static constexpr edid::timing TALLER_THAN_A_RASTER = {148500, 1920, 88, 44, 30715, 1080, 4, 5, 31679, true, true};
+static constexpr edid::timing WIDER_THAN_16_BITS = {148500, 1920, 88, 44, 65684, 1080, 4, 5, 31678, true, true};
+
 // NVIDIA's NV_LUT_VSS_HEADER_SIZE and NV_NUM_EVO_LUT_ENTRIES, a look-up table's header entries and its entries
 static constexpr uint32_t NVIDIA_LUT_HEADER_ENTRIES = 4;
 static constexpr uint32_t NVIDIA_LUT_ENTRIES        = 1025;
@@ -687,6 +694,44 @@ TEST(nvidia_display_light, modes_with_fewer_than_2_lines_of_sync_and_back_porch_
     EXPECT_EQ(s_requests[0].heads[0].trailing_idle_lines, 4u);
     ASSERT_TRUE(is_chosen);
     EXPECT_EQ(light.timing_index, 2u);
+}
+
+// A mode whose totals pass a head's largest raster, 32,767 by 32,767, is refused without asking the bandwidth check, as
+// NVIDIA's modesetting module refuses it, and a mode of exactly that raster is asked
+TEST(nvidia_display_light, modes_with_totals_past_a_head_s_largest_raster_are_refused_unasked) {
+    clear_modes();
+    add_mode(0, 0, WIDER_THAN_16_BITS);
+    add_mode(0, 1, WIDER_THAN_A_RASTER);
+    add_mode(0, 2, TALLER_THAN_A_RASTER);
+    add_mode(0, 3, LARGEST_RASTER);
+
+    light_firmware fw;
+    first_light light = {};
+    bool is_chosen = false;
+    ASSERT_EQ(choose(fw, 1, 0, light, is_chosen), OK);
+
+    ASSERT_EQ(fw.request_count, 1u);
+    EXPECT_EQ(s_requests[0].heads[0].raster_width, 32767u);
+    EXPECT_EQ(s_requests[0].heads[0].raster_height, 32767u);
+    ASSERT_TRUE(is_chosen);
+    EXPECT_EQ(light.timing_index, 3u);
+}
+
+// Modes whose totals all pass a head's largest raster choose nothing with nothing asked, leaving the choice as it was
+TEST(nvidia_display_light, modes_all_past_a_head_s_largest_raster_choose_nothing) {
+    clear_modes();
+    add_mode(0, 0, WIDER_THAN_A_RASTER);
+    add_mode(0, 1, TALLER_THAN_A_RASTER);
+
+    light_firmware fw;
+    first_light light = {};
+    light.output = 7;
+    bool is_chosen = true;
+    ASSERT_EQ(choose(fw, 1, 0, light, is_chosen), OK);
+
+    EXPECT_EQ(fw.request_count, 0u);
+    EXPECT_FALSE(is_chosen);
+    EXPECT_EQ(light.output, 7u);
 }
 
 TEST(nvidia_display_light, every_mode_refused_chooses_nothing) {

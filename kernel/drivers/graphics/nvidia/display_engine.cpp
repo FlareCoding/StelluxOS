@@ -17,6 +17,7 @@
 #include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "drivers/graphics/nvidia/window_methods.h"
 #include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
@@ -34,6 +35,9 @@ constexpr uint64_t SURFACE_ALIGNMENT = 0x1000;
 
 // An update's window interlocks naming no window channel, so the update takes effect with no window channel's update
 constexpr uint32_t NO_WINDOW_INTERLOCKS = 0;
+
+// Where the core channel's armed state lies in BAR0, the methods the display engine took at its last update
+constexpr uint32_t CORE_ARMED_STATE = CORE_CHANNEL_AREA + CORE_CHANNEL_ARMED_STATE;
 
 // Logs the maker, name and timings an output's EDID gives
 static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
@@ -880,10 +884,10 @@ static void log_window_owners(const window_owners& owners, uint32_t present_wind
     }
 }
 
-// Writes `method` into `queue`, and when `write` returns `ERR_QUEUE_FULL`, kicks, waits for GET to reach PUT and writes
-// it again, as `display_channel::write` asks of a writer that may wait. One wait makes room for a method of one value
-static int32_t write_waiting(display_channel& queue, const display_method& method) {
-    int32_t rc = queue.write(method.method, &method.value, 1);
+// Writes `method` with its `count` values into `queue`, and on `ERR_QUEUE_FULL` kicks, waits for GET to reach PUT and
+// writes it again, as `display_channel::write` asks of a writer that may wait, one wait sufficing up to 504 values
+static int32_t write_waiting(display_channel& queue, uint32_t method, const uint32_t* values, uint32_t count) {
+    int32_t rc = queue.write(method, values, count);
     if (rc != ERR_QUEUE_FULL) {
         return rc;
     }
@@ -894,7 +898,12 @@ static int32_t write_waiting(display_channel& queue, const display_method& metho
         return rc;
     }
 
-    return queue.write(method.method, &method.value, 1);
+    return queue.write(method, values, count);
+}
+
+// Writes a core channel method of one value into `queue`, kicking and waiting once when the queue is full
+static int32_t write_waiting(display_channel& queue, const display_method& method) {
+    return write_waiting(queue, method.method, &method.value, 1);
 }
 
 // Writes the core channel's initial methods for `head_count` heads, counting them in `written`
@@ -975,6 +984,44 @@ static int32_t stop_notifier_writes(display_channel& queue) {
     return OK;
 }
 
+// Writes a window image's methods into `queue` with `write_waiting`, kicking only on a wrap or a full queue
+static int32_t write_window_methods(display_channel& queue, const window_image_methods& image) {
+    for (const window_method& method : image.methods) {
+        int32_t rc = write_waiting(queue, method.method, method.values, method.count);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    return OK;
+}
+
+// Whether giving each present window its head changes any window's owner in the armed state, a window with no head
+// always counting as changed, as NVIDIA's modesetting module compares the owner field with the head it gives
+static bool changes_window_owners(const display_heads& heads, uint32_t present_windows, const window_owners& owners) {
+    for (uint8_t window = 0; window < DISPLAY_WINDOWS_MAX; window++) {
+        bool is_present = (present_windows & (1u << window)) != 0;
+        if (is_present && owners.owners[window] != heads.window_head[window]) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The present windows serving `head`, bit i for window i
+static uint32_t served_windows(const display_heads& heads, uint32_t present_windows, uint8_t head) {
+    uint32_t windows = 0;
+    for (uint8_t window = 0; window < DISPLAY_WINDOWS_MAX; window++) {
+        bool is_present = (present_windows & (1u << window)) != 0;
+        if (is_present && heads.window_head[window] == head) {
+            windows |= 1u << window;
+        }
+    }
+
+    return windows;
+}
+
 // Counts the heads `read_active_heads` found showing a display
 static uint8_t count_active_heads(const active_heads& active) {
     uint8_t count = 0;
@@ -990,8 +1037,6 @@ static uint8_t count_active_heads(const active_heads& active) {
 // Logs each active head's display id and its link's control as the core channel's armed state reads them, both 0 once
 // the shutdown update took effect
 static void log_heads_after_shutdown(const registers& regs, const active_heads& active) {
-    static constexpr uint32_t ARMED_STATE = CORE_CHANNEL_AREA + CORE_CHANNEL_ARMED_STATE;
-
     for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
         const active_head& state = active.heads[head];
         if (state.display_id == 0) {
@@ -1004,11 +1049,26 @@ static void log_heads_after_shutdown(const registers& regs, const active_heads& 
             "nvidia: after the shutdown update, head %u's display id reads 0x%X and serial link %u's control 0x%X in "
             "the core channel's armed state",
             head,
-            regs.read(ARMED_STATE + display_id_method),
+            regs.read(CORE_ARMED_STATE + display_id_method),
             state.link_index,
-            regs.read(ARMED_STATE + link_method)
+            regs.read(CORE_ARMED_STATE + link_method)
         );
     }
+}
+
+// Logs the lit head's display id and its link's control as the core channel's armed state reads them once the light's
+// update finished, which hold the light's display id and the lit head in the link's owner mask once it took effect
+static void log_lit_head(const registers& regs, const head_light& light) {
+    uint32_t display_id_method = rm::CORE_HEAD_DISPLAY_ID + light.head * rm::CORE_HEAD_METHODS_STRIDE;
+    uint32_t link_method = rm::CORE_SERIAL_LINK_CONTROL + light.link.index * rm::CORE_SERIAL_LINK_METHODS_STRIDE;
+    log::info(
+        "nvidia: after the light, head %u's display id reads 0x%X and serial link %u's control 0x%X in the core "
+        "channel's armed state",
+        light.head,
+        regs.read(CORE_ARMED_STATE + display_id_method),
+        light.link.index,
+        regs.read(CORE_ARMED_STATE + link_method)
+    );
 }
 
 display_engine::display_engine(firmware& fw, video_memory& memory)
@@ -1245,6 +1305,7 @@ int32_t display_engine::set_up(
         regs,
         heads,
         present_windows,
+        owners,
         active,
         has_crossbar,
         outputs.outputs[light.output],
@@ -1257,6 +1318,7 @@ int32_t display_engine::bring_up(
     const registers& regs,
     const display_heads& heads,
     uint32_t present_windows,
+    const window_owners& owners,
     const active_heads& active,
     bool has_crossbar,
     const display_output& output,
@@ -1301,8 +1363,37 @@ int32_t display_engine::bring_up(
         }
     }
 
-    if (!is_link_set_up) {
-        rc = take_down(heads, present_windows, active);
+    bool is_lit = false;
+    active_heads lit_heads = {};
+    if (is_link_set_up) {
+        head_light head_lighting = {
+            .head                     = light.head,
+            .windows                  = served_windows(heads, present_windows, light.head),
+            .timing                   = light.timing,
+            .display_id               = display_id,
+            .link                     = link,
+            .output_table_context_dma = m_look_up_table_context_dma,
+        };
+
+        lit_heads.heads[light.head] = {
+            .display_id = display_id,
+            .link_index = link.index,
+            .link_type  = rm::OUTPUT_RESOURCE_TYPE_SERIAL,
+        };
+
+        rc = light_head(regs, heads, present_windows, owners, head_lighting, light.window);
+        is_lit = rc == OK;
+        if (!is_lit) {
+            log::error(
+                "nvidia: lighting head %u failed: %d, so bring-up takes the display engine down",
+                light.head,
+                rc
+            );
+        }
+    }
+
+    if (!is_lit) {
+        rc = take_down(heads, present_windows, active, lit_heads);
         if (rc != OK) {
             log::error("nvidia: taking the display engine down failed: %d, so its heads may still scan out", rc);
         }
@@ -1322,6 +1413,28 @@ int32_t display_engine::bring_up(
     return link_rc;
 }
 
+int32_t display_engine::send_notified_update(uint32_t window_interlocks, uint32_t& status_word) {
+    m_core_notifier.clear();
+    int32_t rc = write_update(*m_core_queue, m_notifier_context_dma, window_interlocks);
+    if (rc != OK) {
+        return rc;
+    }
+
+    m_has_sent_update = true;
+    if (window_interlocks != NO_WINDOW_INTERLOCKS) {
+        m_window_queue->kick();
+    }
+
+    rc = m_core_notifier.wait_finished(*m_core_queue, clock::now_ns() + m_notifier_wait_ns);
+    if (rc != OK) {
+        return rc;
+    }
+
+    status_word = m_core_notifier.status_word();
+
+    return stop_notifier_writes(*m_core_queue);
+}
+
 int32_t display_engine::shut_down_heads(
     const registers& regs,
     const display_heads& heads,
@@ -1336,20 +1449,8 @@ int32_t display_engine::shut_down_heads(
         return rc;
     }
 
-    m_core_notifier.clear();
-    rc = write_update(*m_core_queue, m_notifier_context_dma, NO_WINDOW_INTERLOCKS);
-    if (rc != OK) {
-        return rc;
-    }
-
-    m_has_sent_update = true;
-    rc = m_core_notifier.wait_finished(*m_core_queue, clock::now_ns() + m_notifier_wait_ns);
-    if (rc != OK) {
-        return rc;
-    }
-
-    uint32_t status_word = m_core_notifier.status_word();
-    rc = stop_notifier_writes(*m_core_queue);
+    uint32_t status_word = 0;
+    rc = send_notified_update(NO_WINDOW_INTERLOCKS, status_word);
     if (rc != OK) {
         return rc;
     }
@@ -1366,11 +1467,123 @@ int32_t display_engine::shut_down_heads(
     return OK;
 }
 
-int32_t display_engine::take_down(const display_heads& heads, uint32_t present_windows, const active_heads& active) {
+int32_t display_engine::write_first_image(uint8_t window, const edid::timing& timing) {
+    window_usage_methods usage = {};
+    build_window_usage_methods(window, timing.width, usage);
+
+    int32_t rc = write_methods(*m_core_queue, usage.methods, WINDOW_USAGE_METHODS);
+    if (rc != OK) {
+        return rc;
+    }
+
+    window_image image = {
+        .window                    = window,
+        .surface_context_dma       = m_base_buffer_context_dma,
+        .width                     = timing.width,
+        .height                    = timing.height,
+        .pitch                     = base_buffer_pitch(timing.width),
+        .look_up_table_context_dma = m_look_up_table_context_dma,
+    };
+
+    window_image_update update = {.notifier_context_dma = 0, .notifier_slot = 0, .interlocks_core = true};
+    window_image_methods methods = {};
+    build_window_image_methods(image, update, methods);
+
+    return write_window_methods(*m_window_queue, methods);
+}
+
+int32_t display_engine::light_head(
+    const registers& regs,
+    const display_heads& heads,
+    uint32_t present_windows,
+    const window_owners& owners,
+    const head_light& light,
+    uint8_t window
+) {
+    bool is_first_update = !m_has_sent_update;
+    bool is_image_apart = is_first_update && changes_window_owners(heads, present_windows, owners);
+    uint32_t window_interlock = 1u << window;
+
+    if (is_first_update) {
+        // The first update since the channel's allocation gives every present window its head, with no head to stop
+        shutdown_methods mapping = {};
+        build_shutdown_methods(heads, present_windows, {}, true, mapping);
+
+        int32_t rc = write_methods(*m_core_queue, mapping.methods, mapping.count);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    head_light_methods methods = {};
+    build_head_light_methods(light, methods);
+
+    int32_t rc = write_methods(*m_core_queue, methods.methods, methods.count);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (!is_image_apart) {
+        rc = write_first_image(window, light.timing);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    uint32_t status_word = 0;
+    rc = send_notified_update(is_image_apart ? NO_WINDOW_INTERLOCKS : window_interlock, status_word);
+    if (rc != OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: the core channel read the update lighting head %u, its completion notifier reading 0x%08X",
+        light.head,
+        status_word
+    );
+    log_lit_head(regs, light);
+
+    if (!is_image_apart) {
+        return OK;
+    }
+
+    rc = write_first_image(window, light.timing);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = write_update(*m_core_queue, 0, window_interlock);
+    if (rc != OK) {
+        return rc;
+    }
+
+    m_window_queue->kick();
+    log::info(
+        "nvidia: window %u's first image follows in an update of its own naming no notifier, since the update "
+        "lighting head %u changed a window's owner or a present window serves no head",
+        window,
+        light.head
+    );
+
+    return OK;
+}
+
+int32_t display_engine::take_down(
+    const display_heads& heads,
+    uint32_t present_windows,
+    const active_heads& active,
+    const active_heads& lit
+) {
     shutdown_methods methods = {};
     build_shutdown_methods(heads, present_windows, active, !m_has_sent_update, methods);
 
     int32_t rc = write_methods(*m_core_queue, methods.methods, methods.count);
+    if (rc != OK) {
+        return rc;
+    }
+
+    build_shutdown_methods(heads, present_windows, lit, false, methods);
+    rc = write_methods(*m_core_queue, methods.methods, methods.count);
     if (rc != OK) {
         return rc;
     }
