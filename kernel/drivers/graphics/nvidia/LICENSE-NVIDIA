@@ -3028,15 +3028,15 @@ src/nvidia-modeset/src/nvkms-evo3.c
     blue and repeats the last of them in the entry after, in display_light.h,
     display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp,
     that the core channel's methods name a head's output table, in
-    display_engine.h, that before it reads the core channel's armed state ahead
-    of its first update the modesetting module asks the display for the core
-    channel's state, the request zeroed but for the subdevice, the channel's
-    class and its instance, again with no pause until a reply names the idle
-    state alone, going on past every failed request and ending the wait once
-    more than 100 milliseconds have passed since the first reply, in
-    core_channel.h, core_channel.cpp, display_engine.h, display_engine.cpp,
-    kernel/tests/graphics/nvidia_core_channel_idle.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it then reads
+    display_engine.h and display_engine.cpp, that before it reads the core
+    channel's armed state ahead of its first update the modesetting module asks
+    the display for the core channel's state, the request zeroed but for the
+    subdevice, the channel's class and its instance, again with no pause until a
+    reply names the idle state alone, going on past every failed request and
+    ending the wait once more than 100 milliseconds have passed since the first
+    reply, in core_channel.h, core_channel.cpp, display_engine.h,
+    display_engine.cpp, kernel/tests/graphics/nvidia_core_channel_idle.test.cpp
+    and kernel/tests/graphics/nvidia_display_engine.test.cpp, that it then reads
     each window's owner from the core channel's armed state whether or not the
     channel went idle, reading the usable windows the display engine's
     capabilities give, in display_window_owners.h, display_window_owners.cpp,
@@ -3044,13 +3044,19 @@ src/nvidia-modeset/src/nvkms-evo3.c
     kernel/tests/graphics/nvidia_display_window_owners.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that this update
     sets every window's owner and leaves each window whose owner it changes out
-    of its interlock, in display_window_owners.h, that this update also gives
-    every window NVIDIA's default usage bounds (its input and tone mapping
-    tables allowed, two input scaler taps and no upscaling), that a head is
-    blanked in part by disabling its cursor with no context DMA, that a serial
-    link carrying no head takes a control of 0, that an update naming the
-    notifier sets it with write-awaken and notify on, that an update's interlock
-    words name the cursors and window channels it takes effect with, in rm.h,
+    of its interlock, in display_window_owners.h, display_engine.h,
+    display_engine.cpp and kernel/tests/graphics/nvidia_display_engine.test.cpp,
+    that it finds those windows by comparing each window's owner field with the
+    head it gives the window, in display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that an update kicks
+    the core channel before each window channel it interlocks, in
+    display_engine.h and display_engine.cpp, that this update also gives every
+    window NVIDIA's default usage bounds (its input and tone mapping tables
+    allowed, two input scaler taps and no upscaling), that a head is blanked in
+    part by disabling its cursor with no context DMA, that a serial link
+    carrying no head takes a control of 0, that an update naming the notifier
+    sets it with write-awaken and notify on, that an update's interlock words
+    name the cursors and window channels it takes effect with, in rm.h,
     core_methods.h, core_methods.cpp, display_engine.cpp,
     kernel/tests/graphics/nvidia_core_methods.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that a flip writes a
@@ -3111,9 +3117,15 @@ src/nvidia-modeset/src/nvkms-modeset.c
     it reads the core channel's armed state ahead of its first update, in
     core_channel.h and display_window_owners.h, that an update changing a
     window's owner must not be interlocked with that window's channel, in
-    display_window_owners.h, that a mode set sends display common its start
-    before any method and its end after the last, naming the displays of the
-    configuration it is for, in display_engine.h, display_engine.cpp and
+    display_window_owners.h, display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that a mode set's
+    update changing a window's owner is kicked before the flip showing a
+    window's first image, which then follows in an update of its own that
+    nothing waits on, in display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that a mode set sends
+    display common its start before any method and its end after the last,
+    naming the displays of the configuration it is for, in display_engine.h,
+    display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that the first mode
     set after boot stops every head the boot firmware lit with the window
     mapping in the same update, in core_methods.h, display_engine.h,
@@ -3523,7 +3535,10 @@ src/common/displayport/inc/dp_auxretry.h
 src/nvidia-modeset/src/nvkms-modepool.c
     a refresh less than 1% above the top of a range of refresh rates taken as
     within the range, in display_modes.h and
-    kernel/tests/graphics/nvidia_display_modes.test.cpp
+    kernel/tests/graphics/nvidia_display_modes.test.cpp, and that the
+    modesetting module refuses a mode whose totals pass a head's largest
+    raster before asking the bandwidth check about it, in display_light.h,
+    display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrlc370/ctrlc370chnc.h
@@ -3559,7 +3574,10 @@ src/nvidia-modeset/src/nvkms-hal.c
     NVD_CORE_CHANNEL_DMA_ARMED_OFFSET, 0x8000, where the armed state begins in
     the core channel's area, in core_channel.h,
     kernel/tests/graphics/nvidia_display_window_owners.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that a head's
+    largest raster, maxRasterWidth and maxRasterHeight, is the mask of
+    NVC67D_HEAD_SET_RASTER_SIZE's width and height fields, in display_light.h,
+    display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2016 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-lut.c

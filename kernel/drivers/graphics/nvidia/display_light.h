@@ -157,7 +157,9 @@ uint64_t look_up_table_word(uint32_t index);
  * request the firmware refuses with `ERR_FIRMWARE` is refused, as in that
  * module, and so is a mode whose sync and back porch take fewer than 2 lines,
  * without asking the check, as that module refuses a mode of 1 line but asks
- * about one of 0 lines. Each refusal is logged.
+ * about one of 0 lines. A mode whose totals pass 32,767 pixels or lines, the
+ * largest raster a head takes, is refused without asking too, as that module
+ * refuses it. Each refusal is logged.
  * @param fw The driver's firmware.
  * @param bandwidth_check The handle `allocate_display_objects` gave the
  * bandwidth check's object.

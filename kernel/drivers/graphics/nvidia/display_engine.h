@@ -7,6 +7,7 @@
 #include "dma/dma.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/completion_notifier.h"
+#include "drivers/graphics/nvidia/core_methods.h"
 #include "drivers/graphics/nvidia/display_active_heads.h"
 #include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_dpcd.h"
@@ -14,6 +15,7 @@
 #include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_objects.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
+#include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
 #include "drivers/graphics/nvidia/registers.h"
@@ -204,14 +206,31 @@ public:
      * are not taken: log that the link is not set up and take the engine down
      * the same way, except that a refused override of the stream's attributes,
      * the last step, leaves the link set up with the attributes the firmware
-     * sets. Then send the mode set's end. A refused start is logged and
-     * nothing is written to the core channel, the set-up returning `OK`, and a
-     * refused end is logged, changing nothing. Each output's modes are kept on
-     * the unprivileged heap from the monitors' reads to the choice, or to
+     * sets. With the link ready, light the head: the methods
+     * `build_head_light_methods` gives for the chosen timing, the display id
+     * on that link and the head's output table, which the look-up table
+     * surface holds, after the windows' heads when no update was kicked, then
+     * the window's usage bounds and, into the window's channel, its first
+     * image (the base buffer shown through the look-up table), the notifier
+     * cleared and one update naming it and interlocked with the window
+     * channel's update, the core channel kicked before the window's channel.
+     * Wait for the notifier, stop its writes and log its word with the lit
+     * head's display id and link control as the armed state reads them. When
+     * the update is the first kicked and changes a present window's owner from
+     * what the armed state reads, a present window serving no head always
+     * counting as changed, it interlocks no window, and the window's usage
+     * bounds and first image follow in a second update naming no notifier and
+     * awaited by nothing, as NVIDIA's modesetting module orders them. When a
+     * write, the wait or the stop fails, log it and take the engine down the
+     * same way, stopping the lit head too, after the heads found active. Then
+     * send the mode set's end. A refused start is logged and nothing is
+     * written to the core channel, the set-up returning `OK`, and a refused
+     * end is logged, changing nothing. Each output's modes are kept on the
+     * unprivileged heap from the monitors' reads to the choice, or to
      * `release` when the set-up fails before it, and the other facts read are
      * not kept. Each request spins on the calling CPU, waiting for its reply
      * as `firmware` describes, and so does each wait for GET, for at most 5
-     * seconds, and the wait for the completion notifier, for at most
+     * seconds, and each wait for the completion notifier, for at most
      * `COMPLETION_NOTIFIER_WAIT_NS`. The requests for the core channel's state
      * follow one another with no pause while the firmware reports the channel
      * busy, as `wait_core_channel_idle` describes. `read_output_edid` also
@@ -225,9 +244,9 @@ public:
      * or the firmware.
      * @param regs The card's BAR0 registers, through which the core channel's
      * methods are kicked and its PUT, GET and armed state read, and the window
-     * channel's PUT and GET read. BAR0 must stay mapped until `release`
-     * returns, since the engine keeps a view of each of its channels' areas
-     * until then.
+     * channel's methods kicked and its PUT and GET read. BAR0 must stay mapped
+     * until `release` returns, since the engine keeps a view of each of its
+     * channels' areas until then.
      * @param card The card's DMA profile, for the push buffer's pages and the
      * notifier's page.
      * @param chip The chip table's entry for the card's chip, whose display
@@ -283,15 +302,15 @@ public:
      * output's link fails other than with `ERR_FIRMWARE`, the set-up fails
      * with its error, logged as `firmware::control` describes, after the
      * take-down and the mode set's end, whose own failure then changes
-     * nothing. A failed shutdown update or take-down, or a link left not set
-     * up otherwise, is logged and does not fail the set-up, which then returns
-     * `OK` unless the mode set's end fails other than with `ERR_FIRMWARE`. The
-     * display's objects and the channels stay allocated once allocated, even
-     * after a later step fails, until `release`, the completion notifier stays
-     * bound to the core channel once bound, each surface to the window's
-     * channel, and the look-up table surface to the core channel as well
-     * unless the set-up undoes that binding after a failed binding to the
-     * window's channel.
+     * nothing. A failed shutdown update, light or take-down, or a link left
+     * not set up otherwise, is logged and does not fail the set-up, which then
+     * returns `OK` unless the mode set's end fails other than with
+     * `ERR_FIRMWARE`. The display's objects and the channels stay allocated
+     * once allocated, even after a later step fails, until `release`, the
+     * completion notifier stays bound to the core channel once bound, each
+     * surface to the window's channel, and the look-up table surface to the
+     * core channel as well unless the set-up undoes that binding after a
+     * failed binding to the window's channel.
      */
     int32_t set_up(
         registers& regs,
@@ -342,7 +361,7 @@ private:
     rm::handle m_look_up_table_context_dma = 0;
 
     // The core channel's completion notifier, its page allocated and its context DMA bound to the channel by `set_up`,
-    // and the wait `shut_down_heads` gives it, 0 in tests that skip it
+    // and the wait `send_notified_update` gives it for the shutdown update and the light, 0 in tests that skip it
     completion_notifier m_core_notifier;
     rm::handle          m_notifier_context_dma = 0; // 0 until `set_up` binds the notifier's context DMA
     uint64_t            m_notifier_wait_ns = COMPLETION_NOTIFIER_WAIT_NS;
@@ -364,12 +383,17 @@ private:
         const registers& regs,
         const display_heads& heads,
         uint32_t present_windows,
+        const window_owners& owners,
         const active_heads& active,
         bool has_crossbar,
         const display_output& output,
         const dpcd_capabilities& dpcd,
         const first_light& light
     );
+
+    // Writes an update naming the cleared notifier, interlocked with the window channels of `window_interlocks`, kicks
+    // the window's channel next if named, waits, reads the notifier's status into `status_word` and stops its writes
+    int32_t send_notified_update(uint32_t window_interlocks, uint32_t& status_word);
 
     // Writes the shutdown update naming the notifier, waits for it and stops later updates from writing the notifier
     int32_t shut_down_heads(
@@ -379,9 +403,29 @@ private:
         const active_heads& active
     );
 
-    // Writes the shutdown methods again, with the windows' heads only when no update was kicked, then an update
-    // naming no notifier, and waits for GET to reach PUT
-    int32_t take_down(const display_heads& heads, uint32_t present_windows, const active_heads& active);
+    // Writes the lit window's usage bounds into the core channel, then its first image into the window's own channel,
+    // naming the base buffer and the look-up table surface by the context DMAs `set_up` bound, so neither handle is 0
+    int32_t write_first_image(uint8_t window, const edid::timing& timing);
+
+    // Lights `light` with `window`'s first image in one update interlocking both channels, or in two when the update
+    // is the first and changes a window's owner or a present window serves no head, and logs what the armed state reads
+    int32_t light_head(
+        const registers& regs,
+        const display_heads& heads,
+        uint32_t present_windows,
+        const window_owners& owners,
+        const head_light& light,
+        uint8_t window
+    );
+
+    // Writes the shutdown methods for the heads found active, with the windows' heads only when no update was kicked,
+    // then those for the lit head, then an update naming no notifier, and waits for GET to reach PUT
+    int32_t take_down(
+        const display_heads& heads,
+        uint32_t present_windows,
+        const active_heads& active,
+        const active_heads& lit
+    );
 };
 
 } // namespace drivers::nvidia
