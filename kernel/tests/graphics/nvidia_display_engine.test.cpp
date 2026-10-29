@@ -37,6 +37,7 @@ using drivers::nvidia::COMPLETION_NOTIFIER_WAIT_NS;
 using drivers::nvidia::CORE_CHANNEL_AREA;
 using drivers::nvidia::CORE_INITIAL_METHODS_PER_HEAD;
 using drivers::nvidia::cpu_mapping;
+using drivers::nvidia::display_channel;
 using drivers::nvidia::display_engine;
 using drivers::nvidia::display_heads;
 using drivers::nvidia::DPCD_PHY_REPEATER_CAPABILITIES;
@@ -865,7 +866,7 @@ public:
 namespace drivers::nvidia {
 
 // Sets the wait an engine gives the completion notifier, since no display engine writes the notifier, and reaches the
-// engine's notifier state and its take-down
+// engine's notifier state, its surfaces' context DMAs, its window queue and its take-down
 struct display_engine_test_access {
     static void set_notifier_wait(display_engine& engine, uint64_t wait_ns) {
         engine.m_notifier_wait_ns = wait_ns;
@@ -877,6 +878,18 @@ struct display_engine_test_access {
 
     static rm::handle notifier_context_dma(const display_engine& engine) {
         return engine.m_notifier_context_dma;
+    }
+
+    static rm::handle base_buffer_context_dma(const display_engine& engine) {
+        return engine.m_base_buffer_context_dma;
+    }
+
+    static rm::handle look_up_table_context_dma(const display_engine& engine) {
+        return engine.m_look_up_table_context_dma;
+    }
+
+    static display_channel* window_queue(display_engine& engine) {
+        return engine.m_window_queue;
     }
 
     static int32_t take_down(
@@ -2158,8 +2171,38 @@ TEST(nvidia_display_engine, set_up_allocates_the_chosen_windows_channel_and_writ
     EXPECT_TRUE(is_push_buffer_blank(fw.push_buffer_address));
 }
 
-// The present windows lacking the chosen window leave it with no channel, logged, the set-up `OK`, neither its push
-// buffer given nor its channel allocated, and no base buffer asked for
+// A method and value written through the chosen window's queue, any method of its class and any value but 0
+static constexpr uint32_t WINDOW_QUEUE_METHOD = 0x308;
+static constexpr uint32_t WINDOW_QUEUE_VALUE = 0x1;
+
+// The chosen window's channel takes its queue of methods once allocated, writing into the window's push buffer and
+// kicking that channel's PUT alone, and the release drops it
+TEST(nvidia_display_engine, set_up_gives_the_windows_channel_a_queue_the_release_drops) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    EXPECT_EQ(display_engine_test_access::window_queue(engine), nullptr);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    display_channel* queue = display_engine_test_access::window_queue(engine);
+    ASSERT_NE(queue, nullptr);
+
+    uint32_t core_put = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
+    ASSERT_EQ(queue->write(WINDOW_QUEUE_METHOD, &WINDOW_QUEUE_VALUE, 1), OK);
+    queue->kick();
+
+    const uint32_t* words = static_cast<const uint32_t*>(paging::phys_to_virt(fw.push_buffer_address));
+    EXPECT_EQ(words[1], WINDOW_QUEUE_VALUE);
+    EXPECT_EQ(window_channel_word(HEAD_1_WINDOW, CHANNEL_PUT), 2 * sizeof(uint32_t));
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], core_put);
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(display_engine_test_access::window_queue(engine), nullptr);
+}
+
+// The present windows lacking the chosen window leave it with no channel or queue, logged, the set-up `OK`, neither its
+// push buffer given nor its channel allocated, and no base buffer asked for
 TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_not_reported_present) {
     engine_firmware fw;
     show_output_0_on_head_1(fw);
@@ -2173,6 +2216,7 @@ TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_not_reported_pre
     ));
     EXPECT_EQ(fw.push_buffer_class, TEST_CORE_CHANNEL_CLASS);
     EXPECT_EQ(fw.allocated(TEST_WINDOW_CHANNEL_CLASS), 0u);
+    EXPECT_EQ(display_engine_test_access::window_queue(engine), nullptr);
     EXPECT_EQ(memory.scanout_requests, 0u);
 }
 
@@ -2537,7 +2581,7 @@ static bool binds(rm::handle object, uint32_t hardware_channel, uint32_t record,
 }
 
 // Output 1 on window 0 has its base buffer, then the look-up table surface, bound to the window's channel, number 1,
-// each under a new handle with the next record naming its memory and logged, and the release keeps both bound
+// each under a new handle the engine keeps, the next record naming its memory, logged, and the release keeps both bound
 TEST(nvidia_display_engine, set_up_binds_the_base_buffer_and_the_look_up_table_surface_to_the_windows_channel) {
     engine_firmware fw;
     connect_output_1_alone(fw);
@@ -2551,6 +2595,9 @@ TEST(nvidia_display_engine, set_up_binds_the_base_buffer_and_the_look_up_table_s
     EXPECT_EQ(used_entry_count(), 3u);
     EXPECT_TRUE(binds(base_buffer_context_dma, OUTPUT_1_WINDOW_CHANNEL, 1, BASE_BUFFER_RECORD));
     EXPECT_TRUE(binds(table_context_dma, OUTPUT_1_WINDOW_CHANNEL, 2, TABLE_RECORD));
+
+    EXPECT_EQ(display_engine_test_access::base_buffer_context_dma(engine), base_buffer_context_dma);
+    EXPECT_EQ(display_engine_test_access::look_up_table_context_dma(engine), table_context_dma);
 
     EXPECT_TRUE(engine_log_contains(
         "nvidia: output 1's base buffer is bound to window 0's channel as context DMA 0x"
@@ -2623,8 +2670,8 @@ TEST(nvidia_display_engine, set_up_fills_the_look_up_table_surface_with_nvidias_
     EXPECT_EQ(wrong_words, 0u);
 }
 
-// A base buffer binding finding no room leaves output 1 with no base buffer and the set-up `OK`, and one failing
-// otherwise fails the set-up with its error, each logged, not as bound, the buffer released and no table allocated
+// A base buffer binding finding no room leaves output 1 with no base buffer, the set-up `OK`, and one failing otherwise
+// fails it with its error, each logged, not as bound, the buffer released with its context DMA 0 and no table asked for
 TEST(nvidia_display_engine, set_up_releases_a_base_buffer_whose_binding_fails) {
     struct failure {
         int32_t     error;
@@ -2655,6 +2702,7 @@ TEST(nvidia_display_engine, set_up_releases_a_base_buffer_whose_binding_fails) {
         EXPECT_EQ(set_up_logged(engine), failed.result);
         EXPECT_TRUE(engine_log_contains(failed.line));
         EXPECT_FALSE(engine_log_contains("nvidia: output 1's base buffer is bound"));
+        EXPECT_EQ(display_engine_test_access::base_buffer_context_dma(engine), 0u);
 
         EXPECT_EQ(used_entry_count(), 1u);
         EXPECT_EQ(memory.scanout_releases, 1u);
@@ -2702,8 +2750,8 @@ TEST(nvidia_display_engine, set_up_gives_no_look_up_table_surface_when_its_alloc
     }
 }
 
-// A table mapping or binding finding no room leaves the engine with none and the set-up `OK`, and one failing otherwise
-// fails the set-up with its error, each logged, not as bound, the table released and the base buffer kept bound
+// A table mapping or binding finding no room leaves no table and the set-up `OK`, and one failing otherwise fails it
+// with its error, each logged, not as bound, the table released with its context DMA 0 and the base buffer kept bound
 TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fill_or_bind) {
     struct failure {
         uint32_t    map;
@@ -2755,6 +2803,8 @@ TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fi
         EXPECT_EQ(memory.general_released.offset, LOOK_UP_TABLE_OFFSET);
         EXPECT_EQ(used_entry_count(), 2u);
         EXPECT_EQ(memory.scanout_releases, 0u);
+        EXPECT_EQ(display_engine_test_access::look_up_table_context_dma(engine), 0u);
+        EXPECT_NE(display_engine_test_access::base_buffer_context_dma(engine), 0u);
     }
 }
 

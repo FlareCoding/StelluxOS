@@ -40,21 +40,22 @@ namespace drivers::nvidia {
  * applies the methods written before it. The engine reaches the firmware only
  * through the `firmware` and video memory only through the `video_memory` it
  * is built with, and the display engine's registers only through the
- * `registers` passed to `set_up`, whose core channel area it keeps until
+ * `registers` passed to `set_up`, whose areas of its channels it keeps until
  * `release`. The instance memory is never released once cleared, and nothing
  * frees any push buffer once allocated, since the display engine's registers
  * may name either from the moment its address is sent, and a channel released
  * with the hardware kept as it is stays allocated in the hardware. The
  * notifier's page is never freed either, as `completion_notifier` describes.
  * The engine also owns the channel of the window chosen to light first, that
- * channel's push buffer, the chosen output's base buffer (the video memory the
- * window is to scan out) and the look-up table surface (the video memory
- * holding the window's input table, which converts its colors into the
- * half-precision floats the display engine computes with). `set_up` binds each
- * surface it keeps to the window's channel, and nothing frees a bound surface,
- * since the display engine may read it through the binding from then on, and
- * the window's channel, while released with the hardware kept as it is, stays
- * allocated in the hardware.
+ * channel's push buffer and queue of methods, the chosen output's base buffer
+ * (the video memory the window is to scan out) and the look-up table surface
+ * (the video memory holding the window's input table, which converts its
+ * colors into the half-precision floats the display engine computes with).
+ * `set_up` binds each surface it keeps to the window's channel, keeping the
+ * context DMA it binds for the methods naming it, and nothing frees a bound
+ * surface, since the display engine may read it through the binding from then
+ * on, and the window's channel, while released with the hardware kept as it
+ * is, stays allocated in the hardware.
  */
 class display_engine {
 public:
@@ -217,8 +218,8 @@ public:
      * @param regs The card's BAR0 registers, through which the core channel's
      * methods are kicked and its PUT, GET and armed state read, and the window
      * channel's PUT and GET read. BAR0 must stay mapped until `release`
-     * returns, since the engine keeps a view of the core channel's area until
-     * then.
+     * returns, since the engine keeps a view of each of its channels' areas
+     * until then.
      * @param card The card's DMA profile, for the push buffer's pages and the
      * notifier's page.
      * @param chip The chip table's entry for the card's chip, whose display
@@ -286,7 +287,7 @@ public:
     );
 
     /**
-     * @brief Drop the core channel's queue of methods, so nothing writes the
+     * @brief Drop the channels' queues of methods, so nothing writes a
      * released channel's area, free the outputs' modes if `set_up` kept them,
      * then release the chosen window's channel and then the core channel, each
      * once `set_up` allocated it or the firmware may hold it after a failed
@@ -321,6 +322,11 @@ private:
     vram_range      m_look_up_table = {};     // the look-up table surface, of 0 bytes while none is allocated
     output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
 
+    // The context DMAs binding the base buffer and the look-up table surface to the window's channel, each 0 until
+    // `set_up` binds it
+    rm::handle m_base_buffer_context_dma = 0;
+    rm::handle m_look_up_table_context_dma = 0;
+
     // The core channel's completion notifier, its page allocated and its context DMA bound to the channel by `set_up`,
     // and the wait `shut_down_heads` gives it, 0 in tests that skip it
     completion_notifier m_core_notifier;
@@ -333,6 +339,11 @@ private:
     // then and after `release`
     display_channel*                 m_core_queue = nullptr;
     alignas(display_channel) uint8_t m_core_queue_bytes[sizeof(display_channel)];
+
+    // The chosen window's channel's queue of methods, built in `m_window_queue_bytes` once that channel is allocated,
+    // null until then and after `release`
+    display_channel*                 m_window_queue = nullptr;
+    alignas(display_channel) uint8_t m_window_queue_bytes[sizeof(display_channel)];
 
     // Brings the engine up for the chosen output as `set_up` describes, from the mode set's start to its end
     int32_t bring_up(
