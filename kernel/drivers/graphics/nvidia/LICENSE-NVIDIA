@@ -1988,12 +1988,19 @@ src/nvidia-modeset/src/nvkms-rm.c
     display_light.cpp, kernel/tests/graphics/nvidia_display_engine.test.cpp and
     kernel/tests/graphics/nvidia_display_light.test.cpp, that it binds each
     surface's context DMA to the core channel and every window's channel, in
-    display_engine.h, and that it brackets a mode set with
+    display_engine.h, that it brackets a mode set with
     NV0073_CTRL_CMD_SPECIFIC_DISPLAY_CHANGE, its start before the mode set's
     first method and its end after its last update, each naming the display ids
     of the configuration the mode set is for, with properties 0, and goes on
     past a refusal of either, in rm.h, display_engine.h, display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that on a GPU with the
+    crossbar it keeps no output resource index from a display id's output
+    resource facts, as several display ids may report one resource, while
+    keeping their protocol, in display_link.h, display_link.cpp,
+    kernel/tests/graphics/nvidia_display_link.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it keeps the
+    facts' type, and without the crossbar their index, whatever they hold, in
+    display_link.h
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2564,7 +2571,11 @@ src/common/displayport/src/dp_wardatabase.cpp
 
 src/nvidia-modeset/src/dp/nvdp-evo-interface.cpp
     two monitors, named by maker and product, whose limits are replaced with 4
-    lanes at HBR2, in display_dpcd.h
+    lanes at HBR2, in display_dpcd.h, an output resource's link taken as 0 for
+    its SOR_DP_A protocol and 1 for SOR_DP_B, in display_link.h,
+    display_link.cpp, kernel/tests/graphics/nvidia_display_link.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and an assertion
+    against any other protocol, in display_link.h
     SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_evoadapter.h
@@ -2593,10 +2604,18 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
     DisplayPort hardware to the driver, its parameters' layout and that it turns
     off the firmware's own watermark programming, DP IRQ (CP IRQ) handling and
     retries of a deferred reply, in rm.h, display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and the GPU's reports of
-    its links' highest rate and of whether its firmware trains PHY repeaters,
-    made for the one link a request names, in chip.h, chip.cpp and
-    kernel/tests/graphics/nvidia.test.cpp
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, the GPU's reports of its
+    links' highest rate and of whether its firmware trains PHY repeaters, made
+    for the one link a request names, in chip.h, chip.cpp and
+    kernel/tests/graphics/nvidia.test.cpp, NV0073_CTRL_CMD_DP_GET_CAPS,
+    0x731369, the control giving an output resource's DisplayPort facts, its
+    parameters' layout, its highest rate field in bits 2:0 with the codes 1 to 4
+    and the bit for DisplayPort 1.2 among the versions, in rm.h, display_link.h,
+    display_link.cpp and kernel/tests/graphics/nvidia_display_link.test.cpp, the
+    rates DP_GET_CAPS's highest rate codes 1 to 4 stand for, in
+    display_outputs.h and display_outputs.cpp, and DP_GET_CAPS's highest rate
+    code 4 for HBR3 and its bits for DisplayPort 1.2 and 1.4 among the versions,
+    in kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/dp/nvdp-connector.cpp
@@ -2883,15 +2902,20 @@ src/nvidia-modeset/src/nvkms-evo.c
     then 1 bytes a pixel last, before refusing the mode, in display_light.h,
     that it frees the window channels before the core channel, in
     display_engine.h, display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it detaches
-    a head from its link by blanking the head, setting the link's control
-    without it and clearing its display id, waits on an update by clearing the
-    notifier, naming it, kicking the update and waiting for it, then stops
-    later updates from writing the notifier with methods kicked with no update,
-    and sends a mode set's update with release ELV and waits on it, in rm.h,
-    core_methods.h, core_methods.cpp, completion_notifier.h, display_engine.h,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it detaches a
+    head from its link by blanking the head, setting the link's control without
+    it and clearing its display id, waits on an update by clearing the notifier,
+    naming it, kicking the update and waiting for it, then stops later updates
+    from writing the notifier with methods kicked with no update, and sends a
+    mode set's update with release ELV and waits on it, in rm.h, core_methods.h,
+    core_methods.cpp, completion_notifier.h, display_engine.h,
     display_engine.cpp, kernel/tests/graphics/nvidia_core_methods.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it asks
+    display common to assign a display id an output resource only when display
+    common reports the crossbar, excluding no resource and for one head, and
+    takes the last resource whose entry in the reply holds the display id with
+    the SINGLE or 2H1OR_PRIMARY type, in display_link.h, display_link.cpp and
+    kernel/tests/graphics/nvidia_display_link.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-evo3.c
@@ -3013,11 +3037,15 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     READ_MODE_COOKED and DISPMUX_READ_MODE_DEFAULT, each 0, which have the
     firmware read the EDID from the monitor rather than copy its last one, in
     rm.h, display_edid.h, display_edid.cpp and
-    kernel/tests/graphics/nvidia_display_edid.test.cpp, and the command
+    kernel/tests/graphics/nvidia_display_edid.test.cpp, the command
     NV0073_CTRL_CMD_SPECIFIC_DISPLAY_CHANGE (a control of display common
     bracketing a mode set), the layout of its parameters and its enable values
     START (1) and END (0), in rm.h, display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and
+    NV0073_CTRL_SPECIFIC_OR_TYPE_SOR (2) with the protocols
+    NV0073_CTRL_SPECIFIC_OR_PROTOCOL_SOR_DP_A and _SOR_DP_B (8 and 9, a serial
+    output resource driving its first or second DisplayPort link), in rm.h,
+    display_link.cpp and kernel/tests/graphics/nvidia_display_link.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-headsurface.c
@@ -3183,9 +3211,17 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dfp.h
     kernel/tests/graphics/nvidia_display_engine.test.cpp and
     kernel/tests/graphics/nvidia_display_link_limits.test.cpp, its flags'
     HDMI_CAPABLE, LINK and DP_PHY_REPEATER_COUNT fields with a value each, in
-    kernel/tests/graphics/nvidia_display_outputs.test.cpp, and the LIMIT field's
+    kernel/tests/graphics/nvidia_display_outputs.test.cpp, the LIMIT field's
     rule, only 60 Hz modes for a display id qualified only at 60 Hz refresh
-    rates, in display_outputs.h and display_modes.h
+    rates, in display_outputs.h and display_modes.h,
+    NV0073_CTRL_CMD_DFP_ASSIGN_SOR, 0x731152, the control assigning a display id
+    an output resource, its parameters' layout, the 4 output resources its reply
+    describes and the SINGLE and 2H1OR_PRIMARY types of a resource driving a
+    display id on its own or as the primary of two output resources fed by two
+    heads, in rm.h, display_link.cpp and
+    kernel/tests/graphics/nvidia_display_link.test.cpp, the 4 resources and
+    those two types' meaning, in display_link.h, and the 2H1OR_SECONDARY type,
+    3, in kernel/tests/graphics/nvidia_display_link.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_evoadapter.cpp
@@ -3208,9 +3244,18 @@ src/common/displayport/src/dp_evoadapter.cpp
     firmware's timeout as a deferred reply and takes the GPU as training PHY
     repeaters unless display common reports that it does not, in display_dpcd.h,
     that it asks display common for the GPU's DisplayPort facts naming one link,
-    in chip.h, and that it takes a DP_LINK_BW value it does not know as RBR, in
+    in chip.h, that it takes a DP_LINK_BW value it does not know as RBR, in
     display_outputs.h, display_outputs.cpp and
-    kernel/tests/graphics/nvidia_display_link_limits.test.cpp
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, and that it asks
+    display common for the DisplayPort facts of the output resource it was
+    assigned, counts FEC support, the increased watermark limits and PHY
+    repeater training as set only when their bytes are NV_TRUE, and asserts and
+    goes on with the facts it held before when the request is refused, in
+    display_link.h, display_link.cpp and
+    kernel/tests/graphics/nvidia_display_link.test.cpp, and that it takes a
+    highest rate code outside 1 to 4 in an output resource's DisplayPort facts
+    as RBR, in display_link.h, display_outputs.h, display_outputs.cpp and
+    kernel/tests/graphics/nvidia_display_link.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-dpy.c

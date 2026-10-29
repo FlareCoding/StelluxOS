@@ -11,6 +11,7 @@
 #include "drivers/graphics/nvidia/display_ids.h"
 #include "drivers/graphics/nvidia/display_info.h"
 #include "drivers/graphics/nvidia/display_light.h"
+#include "drivers/graphics/nvidia/display_link.h"
 #include "drivers/graphics/nvidia/display_modes.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/display_window_owners.h"
@@ -1176,7 +1177,7 @@ int32_t display_engine::set_up(
     window_owners owners = read_window_owners(regs, present_windows);
     log_window_owners(owners, present_windows, display.head_count);
 
-    return bring_up(regs, heads, present_windows, active, outputs.outputs[light.output].display_id);
+    return bring_up(regs, heads, present_windows, active, has_crossbar, outputs.outputs[light.output]);
 }
 
 int32_t display_engine::bring_up(
@@ -1184,9 +1185,11 @@ int32_t display_engine::bring_up(
     const display_heads& heads,
     uint32_t present_windows,
     const active_heads& active,
-    uint32_t display_id
+    bool has_crossbar,
+    const display_output& output
 ) {
     rm::handle display_common = m_objects.display_common;
+    uint32_t display_id = output.display_id;
     int32_t rc = send_display_change(m_firmware, display_common, display_id, rm::DISPLAY_CHANGE_START);
     if (rc == ERR_FIRMWARE) {
         log::error("nvidia: display common refused the start of the mode set naming display id 0x%X", display_id);
@@ -1198,9 +1201,22 @@ int32_t display_engine::bring_up(
     }
 
     log::info("nvidia: display common took the start of the mode set naming display id 0x%X", display_id);
+    int32_t link_rc = OK;
+    bool is_link_set_up = false;
     rc = count_active_heads(active) > 0 ? shut_down_heads(regs, heads, present_windows, active) : OK;
     if (rc != OK) {
         log::error("nvidia: the shutdown update failed: %d, so bring-up takes the display engine down", rc);
+    } else {
+        link_rc = set_up_output_link(m_firmware, display_common, has_crossbar, output, is_link_set_up);
+        if (!is_link_set_up) {
+            log::error(
+                "nvidia: display id 0x%X's link is not set up, so bring-up takes the display engine down",
+                display_id
+            );
+        }
+    }
+
+    if (!is_link_set_up) {
         rc = take_down(heads, present_windows, active);
         if (rc != OK) {
             log::error("nvidia: taking the display engine down failed: %d, so its heads may still scan out", rc);
@@ -1210,15 +1226,15 @@ int32_t display_engine::bring_up(
     rc = send_display_change(m_firmware, display_common, display_id, rm::DISPLAY_CHANGE_END);
     if (rc == ERR_FIRMWARE) {
         log::error("nvidia: display common refused the end of the mode set naming display id 0x%X", display_id);
-        return OK;
+        return link_rc;
     }
 
     if (rc != OK) {
-        return rc;
+        return link_rc != OK ? link_rc : rc;
     }
 
     log::info("nvidia: display common took the end of the mode set naming display id 0x%X", display_id);
-    return OK;
+    return link_rc;
 }
 
 int32_t display_engine::shut_down_heads(

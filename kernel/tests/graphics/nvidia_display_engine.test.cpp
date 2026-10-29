@@ -224,8 +224,8 @@ static constexpr uint8_t TIMING_1080_AT_60_HZ[] = {
 // The EDID of every connected monitor, a copy of `AOC_BASE_BLOCK` a test may change
 static uint8_t g_edid[edid::BLOCK_BYTES];
 
-// A firmware that records each request in order, answers one a refusal matches with its result, the push buffer, head,
-// window, crossbar, active head, output, bandwidth check, channel state and mode set ones by its fields, others as sent
+// A firmware that records each request in order, answers one a refusal matches with its result, the replies its fields
+// describe from them, and others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 64;
@@ -263,6 +263,8 @@ public:
     uint32_t   other_display_id = 0;          // the display id every other head shows, 0 for none
     uint32_t   boot_link_index = 0;           // the link index every link request's reply names
     uint32_t   boot_link_type = rm::OUTPUT_RESOURCE_TYPE_SERIAL; // the link type every link request's reply names
+    uint32_t   boot_link_protocol = rm::PROTOCOL_DISPLAYPORT_A; // the protocol every link request's reply names
+    uint8_t    assigned_resource = 0;         // the output resource an assignment's reply names for the display id
     bool       has_crossbar = false;          // whether display common's capabilities report a crossbar
     uint32_t   supported_ids = 0;             // the display ids reported supported, each a DisplayPort output
     uint32_t   digital_facts = DISPLAYPORT_FACTS; // the digital facts of every supported display id
@@ -282,6 +284,8 @@ public:
     uint32_t   mode_set_requests = 0;
     int32_t    mode_set_end_result = OK;      // the result of the mode set's end
     uint32_t   get_at_mode_set_start = 0;     // the core channel's GET from the mode set's start, 0 for the default
+    uint32_t   get_at_link = 0;               // the core channel's GET from the mode set's first link request, if set
+    uint32_t   put_at_link = 0;               // the core channel's PUT when that request came
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
         return answer(kind::allocation, object, class_id);
@@ -291,6 +295,15 @@ public:
         bool is_first_active_read = command == rm::CONTROL_GET_ACTIVE_DISPLAY && control_count(command) == 0;
         if (is_first_active_read) {
             put_at_first_active_read = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
+        }
+
+        bool is_link_request = command == rm::CONTROL_ASSIGN_OUTPUT_RESOURCE;
+        is_link_request = is_link_request || command == rm::CONTROL_GET_OUTPUT_RESOURCE;
+        if (is_link_request && mode_set_requests == 1 && put_at_link == 0) {
+            put_at_link = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
+            if (get_at_link != 0) {
+                g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)] = get_at_link;
+            }
         }
 
         bool is_state_request = command == rm::CONTROL_GET_DISPLAY_CHANNEL_STATE;
@@ -327,6 +340,7 @@ public:
         fill_output_reply(command, params);
         fill_check_reply(command, params);
         fill_state_reply(command, params);
+        fill_link_reply(command, params);
 
         return OK;
     }
@@ -550,7 +564,7 @@ private:
     }
 
     // Gives `heads` heads the display engine can use, from head 0, each with `windows_per_head` windows, the display
-    // ids the fields name, link replies `boot_link_index` and `boot_link_type`, and a crossbar if `has_crossbar`
+    // ids the fields name, link replies from the `boot_link_*` fields, and a crossbar if `has_crossbar`
     void fill_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_GET_HEAD_COUNT) {
             static_cast<rm::head_count_params*>(params)->head_count = heads;
@@ -568,6 +582,7 @@ private:
             rm::output_resource_params* reply = static_cast<rm::output_resource_params*>(params);
             reply->index = boot_link_index;
             reply->type = boot_link_type;
+            reply->protocol = boot_link_protocol;
         } else if (command == rm::CONTROL_GET_DISPLAY_COMMON_CAPABILITIES && has_crossbar) {
             uint8_t* table = static_cast<rm::display_common_capabilities_params*>(params)->table;
             table[rm::DISPLAY_COMMON_CROSSBAR_BYTE] = rm::DISPLAY_COMMON_CROSSBAR_BIT;
@@ -607,6 +622,22 @@ private:
         if (command == rm::CONTROL_GET_DISPLAY_CHANNEL_STATE) {
             uint32_t state = is_channel_busy ? NVIDIA_CHANNEL_STATE_BUSY : rm::CHANNEL_STATE_IDLE;
             static_cast<rm::display_channel_state_params*>(params)->state = state;
+        }
+    }
+
+    // Answers an assignment with `assigned_resource` driving the display id alone, and a request for an output
+    // resource's DisplayPort facts with the RTX 3080's: HBR3, DisplayPort 1.2 and 1.4, and every flag set
+    void fill_link_reply(uint32_t command, void* params) const {
+        if (command == rm::CONTROL_ASSIGN_OUTPUT_RESOURCE) {
+            rm::assign_output_resource_params* reply = static_cast<rm::assign_output_resource_params*>(params);
+            reply->resources[assigned_resource] = {.display_mask = reply->display_id, .type = rm::ASSIGNED_SINGLE};
+        } else if (command == rm::CONTROL_GET_LINK_CAPABILITIES) {
+            rm::link_capabilities_params* reply = static_cast<rm::link_capabilities_params*>(params);
+            reply->max_rate = 4;
+            reply->versions = 0x3;
+            reply->increased_watermark_limits = 1;
+            reply->fec_supported = 1;
+            reply->trains_phy_repeaters = 1;
         }
     }
 };
@@ -2718,8 +2749,8 @@ TEST(nvidia_display_engine, set_up_brackets_the_chosen_outputs_mode_set_with_no_
     EXPECT_EQ(fw.control_count(rm::CONTROL_SET_DISPLAY_RELEASE_FLAGS), 2u);
 }
 
-// A refused start of the mode set is logged, and then no end is sent, no method written, and the release keeps the
-// hardware
+// A refused start of the mode set is logged, and then no end is sent, no method written, no link facts asked for, and
+// the release keeps the hardware
 TEST(nvidia_display_engine, set_up_writes_nothing_and_sends_no_end_after_a_refused_start) {
     engine_firmware fw;
     fw.refusals[0] = {
@@ -2735,6 +2766,7 @@ TEST(nvidia_display_engine, set_up_writes_nothing_and_sends_no_end_after_a_refus
 
     ASSERT_EQ(set_up_logged(engine), OK);
     EXPECT_EQ(fw.control_count(rm::CONTROL_DISPLAY_CHANGE), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_LINK_CAPABILITIES), 0u);
     EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
     EXPECT_TRUE(engine_log_contains("display common refused the start of the mode set naming display id 0x100"));
     EXPECT_FALSE(engine_log_contains("display common took the start"));
@@ -2944,6 +2976,7 @@ TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_failed_notifier
     EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
     EXPECT_FALSE(engine_log_contains("nvidia: the core channel read the shutdown update"));
     EXPECT_FALSE(engine_log_contains("after the shutdown update, head"));
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_LINK_CAPABILITIES), 0u);
 
     ASSERT_EQ(fw.mode_set_requests, 2u);
     EXPECT_EQ(fw.mode_set_phases[1], 0u);
@@ -3039,4 +3072,176 @@ TEST(nvidia_display_engine, constructed_engine_waits_for_the_notifier_for_nvidia
     display_engine& engine = *new (g_engine_bytes) display_engine(fw, memory);
 
     EXPECT_EQ(display_engine_test_access::notifier_wait_ns(engine), COMPLETION_NOTIFIER_WAIT_NS);
+}
+
+// After the shutdown update and the notifier's stop, a set-up asks for output 0's resource facts a third time, then for
+// the resource's DisplayPort facts, both before the mode set's end, logging both and taking nothing down
+TEST(nvidia_display_engine, set_up_finds_the_chosen_outputs_link_between_the_shutdown_update_and_the_end) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_TRUE(fw.call_count <= engine_firmware::MAX_CALLS);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_ASSIGN_OUTPUT_RESOURCE), 0u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_OUTPUT_RESOURCE), 3u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_LINK_CAPABILITIES), 1u);
+
+    uint32_t facts = fw.last_control(rm::CONTROL_GET_OUTPUT_RESOURCE);
+    uint32_t link_facts = fw.first_control(rm::CONTROL_GET_LINK_CAPABILITIES);
+    EXPECT_LT(fw.first_control(rm::CONTROL_DISPLAY_CHANGE), facts);
+    EXPECT_LT(facts, link_facts);
+    EXPECT_LT(link_facts, fw.last_control(rm::CONTROL_DISPLAY_CHANGE));
+
+    EXPECT_EQ(fw.put_at_link, SHUTDOWN_UPDATE_END + 16);
+    EXPECT_EQ(fw.mode_set_puts[1], SHUTDOWN_UPDATE_END + 16);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100 is driven by output resource 3 through its link A\r\n"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output resource 3's DisplayPort links run up to DisplayPort rate 0x1E, support FEC, take the "
+        "increased watermark limits and support DisplayPort 1.2, and the firmware trains PHY repeaters\r\n"
+    ));
+    EXPECT_FALSE(engine_log_contains("taken down"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With the crossbar, the set-up asks display common to assign display id 0x100 an output resource after the mode set's
+// start and before its facts, taking resource 2, the one the reply names, through link B, the facts' protocol
+TEST(nvidia_display_engine, set_up_assigns_the_chosen_outputs_link_through_the_crossbar) {
+    engine_firmware fw;
+    fw.has_crossbar = true;
+    fw.assigned_resource = 2;
+    fw.boot_link_protocol = rm::PROTOCOL_DISPLAYPORT_B;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    uint32_t assignment = fw.first_control(rm::CONTROL_ASSIGN_OUTPUT_RESOURCE);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_ASSIGN_OUTPUT_RESOURCE), 1u);
+    EXPECT_LT(fw.first_control(rm::CONTROL_DISPLAY_CHANGE), assignment);
+    EXPECT_LT(assignment, fw.last_control(rm::CONTROL_GET_OUTPUT_RESOURCE));
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100 is driven by output resource 2 through its link B, as display common assigned it\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: output resource 2's DisplayPort links run up to DisplayPort rate 0x1E"));
+    EXPECT_FALSE(engine_log_contains("taken down"));
+}
+
+// Where a take-down after the shutdown update of one head and the notifier's stop ends, and where one with no head
+// active ends, the 8 windows mapped ahead of its update
+static constexpr uint32_t LINK_TAKE_DOWN_END    = TAKE_DOWN_END + 16;
+static constexpr uint32_t NO_HEAD_TAKE_DOWN_END = INITIAL_METHODS_END + (8 * 2 + 5) * 2 * sizeof(uint32_t);
+
+// A refused assignment leaves the link not set up, with no DisplayPort facts asked for, so a set-up with no head active
+// takes the engine down, mapping the windows ahead of an update naming no notifier, then ends the mode set
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_refused_assignment) {
+    engine_firmware fw;
+    fw.has_crossbar = true;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_ASSIGN_OUTPUT_RESOURCE,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    fw.boot_display_id = 0;
+    fw.get_at_mode_set_start = NO_HEAD_TAKE_DOWN_END;
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_LINK_CAPABILITIES), 0u);
+
+    expect_core_method(fw, INITIAL_METHODS_END, NVIDIA_WINDOW_CONTROL, 0);
+    expect_core_method(fw, INITIAL_METHODS_END + 128, NVIDIA_NOTIFIER_CONTEXT_DMA, 0);
+    expect_core_method(fw, INITIAL_METHODS_END + 160, NVIDIA_UPDATE, NVIDIA_RELEASE_ELV);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], NO_HEAD_TAKE_DOWN_END);
+
+    ASSERT_EQ(fw.mode_set_requests, 2u);
+    EXPECT_EQ(fw.mode_set_puts[1], NO_HEAD_TAKE_DOWN_END);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common refused to assign display id 0x100 an output resource, so "
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link is not set up, so bring-up takes the display engine down\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+    EXPECT_FALSE(engine_log_contains("is driven by output resource"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A refused or late DisplayPort facts request after the shutdown update stops head 1 again and ends the mode set, a
+// late one failing the set-up with its error even when the end is refused or fails too
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_failed_link_facts_request) {
+    struct failure {
+        int32_t facts_result;
+        int32_t end_result;
+        int32_t result;
+    };
+
+    const failure failures[] = {
+        {ERR_FIRMWARE, OK, OK},
+        {ERR_TIMEOUT, OK, ERR_TIMEOUT},
+        {ERR_TIMEOUT, ERR_FIRMWARE, ERR_TIMEOUT},
+        {ERR_TIMEOUT, ERR_BAD_STATE, ERR_TIMEOUT},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        fw.refusals[0] = {
+            .made   = engine_firmware::kind::control,
+            .number = rm::CONTROL_GET_LINK_CAPABILITIES,
+            .object = 0,
+            .result = failed.facts_result,
+        };
+
+        fw.get_at_link = LINK_TAKE_DOWN_END;
+        fw.mode_set_end_result = failed.end_result;
+
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        expect_head_stopped(fw, SHUTDOWN_UPDATE_END + 16, 1);
+        expect_core_method(fw, SHUTDOWN_UPDATE_END + 48, NVIDIA_NOTIFIER_CONTEXT_DMA, 0);
+        expect_core_method(fw, SHUTDOWN_UPDATE_END + 80, NVIDIA_UPDATE, NVIDIA_RELEASE_ELV);
+        EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], LINK_TAKE_DOWN_END);
+
+        ASSERT_EQ(fw.mode_set_requests, 2u);
+        EXPECT_EQ(fw.mode_set_puts[1], LINK_TAKE_DOWN_END);
+
+        bool is_refused = failed.facts_result == ERR_FIRMWARE;
+        const char* refusal = "nvidia: display common refused the DisplayPort facts of output resource 3";
+        EXPECT_EQ(engine_log_contains(refusal), is_refused);
+
+        EXPECT_TRUE(engine_log_contains(
+            "nvidia: display id 0x100's link is not set up, so bring-up takes the display engine down\r\n"
+        ));
+        EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core"));
+        EXPECT_FALSE(engine_log_contains("DisplayPort links run up to"));
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// A base buffer that cannot be allocated leaves the link alone: no output resource facts past the active head's and
+// static check's, no assignment and no DisplayPort facts
+TEST(nvidia_display_engine, set_up_finds_no_link_without_a_base_buffer) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.has_crossbar = true;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(memory.scanout_requests, 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_OUTPUT_RESOURCE), 2u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_ASSIGN_OUTPUT_RESOURCE), 0u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_LINK_CAPABILITIES), 0u);
 }

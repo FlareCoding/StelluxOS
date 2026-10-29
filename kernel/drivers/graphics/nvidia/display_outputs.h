@@ -58,6 +58,16 @@ struct display_outputs {
 int32_t read_display_outputs(firmware& fw, rm::handle display_common, const display_ids& ids, display_outputs& out);
 
 /**
+ * @brief Give the rate a link rate code stands for, as display common codes a
+ * highest rate both in a display id's digital facts and in an output
+ * resource's DisplayPort facts.
+ * @param code The code, read as its field's 3 bits.
+ * @return The rate, RBR for a code NVIDIA defines no rate for, as NVIDIA's
+ * DisplayPort library takes it.
+ */
+displayport::link_rate link_rate_of_code(uint32_t code);
+
+/**
  * @brief Give the most lanes and the highest rate a link on an output's
  * connector takes, from the codes display common gave, the rate capped by the
  * GPU's own highest.
