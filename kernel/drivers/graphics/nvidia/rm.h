@@ -445,6 +445,40 @@ constexpr uint32_t CORE_WINDOW_CONTROL        = 0x1000;
 constexpr uint32_t CORE_WINDOW_METHODS_STRIDE = 0x80;
 constexpr uint32_t WINDOW_CONTROL_OWNER_MASK  = 0xF;
 
+// The core channel's update, NVIDIA's NVC67D_UPDATE, which applies the methods written before it. RELEASE_ELV, bit 0,
+// is set in every update of a mode set, and no flip lock pin is named
+constexpr uint32_t CORE_UPDATE             = 0x200;
+constexpr uint32_t CORE_UPDATE_RELEASE_ELV = 0x1;
+
+// NVIDIA's NVC67D_SET_CONTEXT_DMA_NOTIFIER (the notifier's context DMA, 0 for none) and NVC67D_SET_NOTIFIER_CONTROL,
+// whose MODE bit 0 set is WRITE_AWAKEN and NOTIFY bit 12 set has each later update write the notifier at OFFSET 0
+constexpr uint32_t CORE_SET_NOTIFIER_CONTEXT_DMA      = 0x208;
+constexpr uint32_t CORE_SET_NOTIFIER_CONTROL          = 0x20C;
+constexpr uint32_t NOTIFIER_CONTROL_MODE_WRITE_AWAKEN = 0x1;
+constexpr uint32_t NOTIFIER_CONTROL_NOTIFY            = 0x1000;
+
+// NVIDIA's NVC67D_SET_INTERLOCK_FLAGS (bit i head i's cursor) and NVC67D_SET_WINDOW_INTERLOCK_FLAGS (bit i window i's
+// channel), the channels the next update takes effect together with
+constexpr uint32_t CORE_SET_INTERLOCK_FLAGS        = 0x218;
+constexpr uint32_t CORE_SET_WINDOW_INTERLOCK_FLAGS = 0x21C;
+
+// NVIDIA's NVC67D_SOR_SET_CONTROL(0), serial link 0's control, and the stride to the next link's. OWNER_MASK, bits 7:0,
+// names the heads the link carries, so a control of 0, NVIDIA's for a link with no head, carries none
+constexpr uint32_t CORE_SERIAL_LINK_CONTROL        = 0x300;
+constexpr uint32_t CORE_SERIAL_LINK_METHODS_STRIDE = 0x20;
+
+// NVIDIA's NVC67D_HEAD_SET_DISPLAY_ID(0, 0), _CONTEXT_DMA_CURSOR(0, 0) and _CONTROL_CURSOR(0), and NVIDIA's disabled
+// cursor control, ENABLE (bit 31) clear with FORMAT (bits 7:0) as A8R8G8B8
+constexpr uint32_t CORE_HEAD_DISPLAY_ID         = 0x2020;
+constexpr uint32_t CORE_HEAD_CURSOR_CONTEXT_DMA = 0x2088;
+constexpr uint32_t CORE_HEAD_CURSOR_CONTROL     = 0x209C;
+constexpr uint32_t CURSOR_CONTROL_DISABLED      = 0xCF;
+
+// NVIDIA's NVC67D_WINDOW_SET_WINDOW_USAGE_BOUNDS(0) and its default for every window in the first update: the input and
+// tone mapping tables allowed (bits 16 and 28), two input scaler taps (bits 22:20 as 1) and no upscaling
+constexpr uint32_t CORE_WINDOW_USAGE_BOUNDS    = 0x1010;
+constexpr uint32_t DEFAULT_WINDOW_USAGE_BOUNDS = 0x10110000;
+
 // NVIDIA's NV0073_CTRL_CMD_SPECIFIC_DISPLAY_CHANGE, the control to display common that brackets a mode set, sent before
 // its first method with START and after its last with END
 constexpr uint32_t CONTROL_DISPLAY_CHANGE = 0x7302A4;

@@ -2881,8 +2881,16 @@ src/nvidia-modeset/src/nvkms-evo.c
     that when the bandwidth check refuses a mode it lowers the heads' usage
     bounds a step at a time, removing the base layer's formats of 4, then 2,
     then 1 bytes a pixel last, before refusing the mode, in display_light.h,
-    and that it frees the window channels before the core channel, in
+    that it frees the window channels before the core channel, in
     display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it detaches
+    a head from its link by blanking the head, setting the link's control
+    without it and clearing its display id, waits on an update by clearing the
+    notifier, naming it, kicking the update and waiting for it, then stops
+    later updates from writing the notifier with methods kicked with no update,
+    and sends a mode set's update with release ELV and waits on it, in rm.h,
+    core_methods.h, core_methods.cpp, completion_notifier.h, display_engine.h,
+    display_engine.cpp, kernel/tests/graphics/nvidia_core_methods.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -2935,9 +2943,18 @@ src/nvidia-modeset/src/nvkms-evo3.c
     capabilities give, in display_window_owners.h, display_window_owners.cpp,
     display_engine.h, display_engine.cpp,
     kernel/tests/graphics/nvidia_display_window_owners.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that this update
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that this update
     sets every window's owner and leaves each window whose owner it changes out
-    of its interlock, in display_window_owners.h
+    of its interlock, in display_window_owners.h, that this update also gives
+    every window NVIDIA's default usage bounds (its input and tone mapping
+    tables allowed, two input scaler taps and no upscaling), that a head is
+    blanked in part by disabling its cursor with no context DMA, that a serial
+    link carrying no head takes a control of 0, that an update naming the
+    notifier sets it with write-awaken and notify on, and that an update's
+    interlock words name the cursors and window channels it takes effect with,
+    in rm.h, core_methods.h, core_methods.cpp, display_engine.cpp,
+    kernel/tests/graphics/nvidia_core_methods.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-modeset.c
@@ -2946,9 +2963,13 @@ src/nvidia-modeset/src/nvkms-modeset.c
     it reads the core channel's armed state ahead of its first update, in
     core_channel.h and display_window_owners.h, that an update changing a
     window's owner must not be interlocked with that window's channel, in
-    display_window_owners.h, and that a mode set sends display common its start
+    display_window_owners.h, that a mode set sends display common its start
     before any method and its end after the last, naming the displays of the
     configuration it is for, in display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that the first
+    mode set after boot stops every head the boot firmware lit with the window
+    mapping in the same update, in core_methods.h, display_engine.h,
+    display_engine.cpp, kernel/tests/graphics/nvidia_core_methods.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -2976,6 +2997,7 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     resource's number among those of its type), its type field and
     NV0073_CTRL_SPECIFIC_OR_TYPE_SOR (2), in rm.h, display_active_heads.h,
     display_active_heads.cpp,
+    kernel/tests/graphics/nvidia_core_methods.test.cpp,
     kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that command, the
     layout of its parameters and those two fields, in display_active_heads.cpp,
@@ -3026,12 +3048,31 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     NVC67D_HEAD_SET_DESKTOP_COLOR_GREEN_BLUE for head 0, the stride of 0x400 to
     each later head's methods, the coefficient's DATA in bits 9:0 and INDEX in
     bits 19:12 and ALPHA_RED's ALPHA in bits 7:0, in rm.h, core_methods.cpp and
-    kernel/tests/graphics/nvidia_core_methods.test.cpp, and the method
+    kernel/tests/graphics/nvidia_core_methods.test.cpp, the method
     NVC67D_WINDOW_SET_CONTROL for window 0, the stride of 0x80 to each later
     window's method, its OWNER in bits 3:0, which holds the number of the head
     owning the window or OWNER_NONE, 0xF, for none, in rm.h,
     display_window_owners.h, display_window_owners.cpp, display_engine.cpp,
-    kernel/tests/graphics/nvidia_display_window_owners.test.cpp and
+    core_methods.cpp,
+    kernel/tests/graphics/nvidia_display_window_owners.test.cpp,
+    kernel/tests/graphics/nvidia_core_methods.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, a display notifier's
+    status in bits 31:30 of its first word and its not begun (0), begun (1) and
+    finished (2) statuses, in completion_notifier.h, completion_notifier.cpp and
+    kernel/tests/graphics/nvidia_completion_notifier.test.cpp, and the methods
+    NVC67D_UPDATE with its RELEASE_ELV in bit 0,
+    NVC67D_SET_CONTEXT_DMA_NOTIFIER, NVC67D_SET_NOTIFIER_CONTROL with its MODE
+    (WRITE_AWAKEN, 1), OFFSET and NOTIFY fields, NVC67D_SET_INTERLOCK_FLAGS,
+    NVC67D_SET_WINDOW_INTERLOCK_FLAGS, NVC67D_SOR_SET_CONTROL for serial link 0
+    with the stride of 0x20 to each later link's method and its OWNER_MASK in
+    bits 7:0, the head methods NVC67D_HEAD_SET_DISPLAY_ID,
+    NVC67D_HEAD_SET_CONTEXT_DMA_CURSOR and NVC67D_HEAD_SET_CONTROL_CURSOR with
+    its ENABLE in bit 31 and FORMAT in bits 7:0 (A8R8G8B8, 0xCF), all three for
+    head 0 with the stride of 0x400 to each later head's method, and
+    NVC67D_WINDOW_SET_WINDOW_USAGE_BOUNDS with its ILUT_ALLOWED,
+    INPUT_SCALER_TAPS, UPSCALING_ALLOWED and TMO_LUT_ALLOWED fields, in rm.h,
+    core_methods.cpp, display_engine.cpp,
+    kernel/tests/graphics/nvidia_core_methods.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
@@ -3093,7 +3134,7 @@ src/nvidia-modeset/include/nvkms-dma.h
     words, is at most the words a method takes, in display_channel.h,
     display_channel.cpp and
     kernel/tests/graphics/nvidia_display_channel.test.cpp, and that a method of
-    one value takes its header and the value, in
+    one value takes its header and the value, with its count in bits 27:18, in
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -3113,10 +3154,15 @@ src/nvidia-modeset/src/nvkms-dma.c
     module takes a GET past the pad's start, while GET lies ahead of the written
     end, as the pad's start, and kicks the methods written so far and waits
     while GET is at offset 0 and a method does not fit, in
-    kernel/tests/graphics/nvidia_display_channel.test.cpp, and that it logs an
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, that it logs an
     error once a wait for room in a push buffer has run 5 seconds and waits on,
     in display_channel.h and
-    kernel/tests/graphics/nvidia_display_channel.test.cpp
+    kernel/tests/graphics/nvidia_display_channel.test.cpp, and that a wait for a
+    notifier, once NV_EVO_NOTIFIER_SHORT_TIMEOUT_USEC (3 seconds) has passed,
+    takes the notifier as finished while GET reads PUT, logging the lost
+    notification, and otherwise waits on, in completion_notifier.h,
+    completion_notifier.cpp and
+    kernel/tests/graphics/nvidia_completion_notifier.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2013 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/cl917d.h

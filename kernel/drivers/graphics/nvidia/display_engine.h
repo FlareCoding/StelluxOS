@@ -7,7 +7,9 @@
 #include "dma/dma.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/completion_notifier.h"
+#include "drivers/graphics/nvidia/display_active_heads.h"
 #include "drivers/graphics/nvidia/display_channel.h"
+#include "drivers/graphics/nvidia/display_heads.h"
 #include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_objects.h"
 #include "drivers/graphics/nvidia/firmware.h"
@@ -49,7 +51,7 @@ namespace drivers::nvidia {
  * half-precision floats the display engine computes with). `set_up` binds each
  * surface it keeps to the window's channel, and nothing frees a bound surface,
  * since the display engine may read it through the binding from then on, and
- * the window's channel, released with the hardware kept as it is, stays
+ * the window's channel, while released with the hardware kept as it is, stays
  * allocated in the hardware.
  */
 class display_engine {
@@ -166,25 +168,38 @@ public:
      * channel idle or more than `CORE_CHANNEL_IDLE_WAIT_NS` has passed since
      * the first reply, and log which of the two ended the wait. Then read each
      * present window's owner from the core channel's armed state with
-     * `read_window_owners`, and log each one's owner. Then send display common
-     * the start of a mode set (the programming of heads to drive monitors)
-     * naming the output's display id, then the mode set's end. A refused start
-     * is logged and nothing is written to the core channel, the set-up
-     * returning `OK`, and a refused end is logged, changing nothing. Each
-     * output's modes are kept on the unprivileged heap from the monitors'
+     * `read_window_owners`, and log each one's owner. Then bring the display
+     * engine up for the chosen output in a mode set (the programming of heads
+     * to drive monitors): send display common the start of the mode set naming
+     * the output's display id, and when a head is active, send the shutdown
+     * update (the methods `build_shutdown_methods` gives with the windows'
+     * heads, the completion notifier cleared and an update naming it with no
+     * channel interlocked), wait for the notifier with
+     * `completion_notifier::wait_finished` for `COMPLETION_NOTIFIER_WAIT_NS`,
+     * stop later updates from writing the notifier, and log that the core
+     * channel read the update, with each active head's display id and link
+     * control as the armed state reads them. When a method's write, the
+     * notifier's wait or the stop of its writes fails, take the engine down:
+     * the same methods again, with the windows' heads only when no update was
+     * kicked, an update naming no notifier and a wait for GET to reach PUT,
+     * logging whether the take-down succeeds. Then send the mode set's end. A
+     * refused start is logged and nothing is written to the core channel, the
+     * set-up returning `OK`, and a refused end is logged, changing nothing.
+     * Each output's modes are kept on the unprivileged heap from the monitors'
      * reads to the choice, or to `release` when the set-up fails before it,
      * and the other facts read are not kept. Each request spins on the calling
      * CPU, waiting for its reply as `firmware` describes, and so does each
-     * wait for GET, for at most 5 seconds. The requests for the core channel's
-     * state follow one another with no pause while the firmware reports the
-     * channel busy, as `wait_core_channel_idle` describes. `read_output_edid`
-     * also spins before each reread of an EDID as it describes. `set_up` must
-     * be called at most once, as `instance_memory::set_up` must, and since it
-     * waits on video memory's lock and on the card as `instance_memory` and
-     * `video_memory` describe, it must never run in an interrupt handler or
-     * under a spinlock, and on a thread that cannot sleep, such as the boot
-     * thread, must run only while no other thread can call into video memory
-     * or the firmware.
+     * wait for GET, for at most 5 seconds, and the wait for the completion
+     * notifier, for at most `COMPLETION_NOTIFIER_WAIT_NS`. The requests for
+     * the core channel's state follow one another with no pause while the
+     * firmware reports the channel busy, as `wait_core_channel_idle`
+     * describes. `read_output_edid` also spins before each reread of an EDID
+     * as it describes. `set_up` must be called at most once, as
+     * `instance_memory::set_up` must, and since it waits on video memory's
+     * lock and on the card as `instance_memory` and `video_memory` describe,
+     * it must never run in an interrupt handler or under a spinlock, and on a
+     * thread that cannot sleep, such as the boot thread, must run only while
+     * no other thread can call into video memory or the firmware.
      * @param regs The card's BAR0 registers, through which the core channel's
      * methods are kicked and its PUT, GET and armed state read, and the window
      * channel's PUT and GET read. BAR0 must stay mapped until `release`
@@ -237,10 +252,13 @@ public:
      * other than with `ERR_FIRMWARE`, the set-up fails with its error, logged
      * as `wait_core_channel_idle` describes. When the mode set's start or end
      * fails other than with `ERR_FIRMWARE`, the set-up fails with its error,
-     * logged as `firmware::control` describes. The display's objects and the
-     * channels stay allocated once allocated, even after a later step fails,
-     * until `release`, the completion notifier stays bound to the core channel
-     * once bound, and each surface to the window's channel.
+     * logged as `firmware::control` describes. A failed shutdown update or
+     * take-down is logged and does not fail the set-up, which then returns
+     * `OK` unless the mode set's end fails other than with `ERR_FIRMWARE`. The
+     * display's objects and the channels stay allocated once allocated, even
+     * after a later step fails, until `release`, the completion notifier stays
+     * bound to the core channel once bound, and each surface to the window's
+     * channel.
      */
     int32_t set_up(
         registers& regs,
@@ -256,11 +274,12 @@ public:
      * once `set_up` allocated it or the firmware may hold it after a failed
      * allocation, as `release_display_channel` describes, then the display's
      * objects, once `set_up` allocated them, as `release_display_objects`
-     * describes. The channels are released first, with the hardware kept as it
-     * is, so the heads the boot firmware lit keep scanning out the boot
-     * framebuffer, and the window's before the core's, as NVIDIA's modesetting
-     * module releases them. Its requests spin on the calling CPU as `set_up`'s
-     * do.
+     * describes. The channels are released first, the window's before the
+     * core's, as NVIDIA's modesetting module releases them. While no update
+     * has been kicked, each is released with the hardware kept as it is, so
+     * the heads the boot firmware lit keep scanning out the boot framebuffer,
+     * and once one has, without keeping it, since the update changed the boot
+     * firmware's state. Its requests spin on the calling CPU as `set_up`'s do.
      * @return `OK` when every release succeeds or nothing is allocated, else
      * the window channel's error ahead of the core channel's and the core
      * channel's ahead of the objects', each logged as the release describes.
@@ -270,6 +289,8 @@ public:
     int32_t release();
 
 private:
+    friend struct display_engine_test_access;
+
     firmware&       m_firmware;
     video_memory&   m_memory;
     instance_memory m_instance_memory;
@@ -282,15 +303,39 @@ private:
     vram_range      m_look_up_table = {};     // the look-up table surface, of 0 bytes while none is allocated
     output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
 
-    // The core channel's completion notifier, its page allocated and its context DMA bound to the channel by `set_up`
+    // The core channel's completion notifier, its page allocated and its context DMA bound to the channel by `set_up`,
+    // and the wait `shut_down_heads` gives it, 0 in tests that skip it
     completion_notifier m_core_notifier;
+    rm::handle          m_notifier_context_dma = 0; // 0 until `set_up` binds the notifier's context DMA
+    uint64_t            m_notifier_wait_ns = COMPLETION_NOTIFIER_WAIT_NS;
+
+    bool m_has_sent_update = false; // set once an update is kicked on the core channel
 
     // The core channel's queue of methods, built in `m_core_queue_bytes` once the channel is allocated, null until
     // then and after `release`
     display_channel*                 m_core_queue = nullptr;
     alignas(display_channel) uint8_t m_core_queue_bytes[sizeof(display_channel)];
 
-    int32_t bring_up(uint32_t display_id);
+    // Brings the engine up for the chosen output as `set_up` describes, from the mode set's start to its end
+    int32_t bring_up(
+        const registers& regs,
+        const display_heads& heads,
+        uint32_t present_windows,
+        const active_heads& active,
+        uint32_t display_id
+    );
+
+    // Writes the shutdown update naming the notifier, waits for it and stops later updates from writing the notifier
+    int32_t shut_down_heads(
+        const registers& regs,
+        const display_heads& heads,
+        uint32_t present_windows,
+        const active_heads& active
+    );
+
+    // Writes the shutdown methods again, with the windows' heads only when no update was kicked, then an update
+    // naming no notifier, and waits for GET to reach PUT
+    int32_t take_down(const display_heads& heads, uint32_t present_windows, const active_heads& active);
 };
 
 } // namespace drivers::nvidia

@@ -318,8 +318,8 @@ TEST(nvidia_core_channel, release_asks_to_keep_the_hardware_then_releases_the_ch
 
     // The earlier release's reply fills the stack the next release's request is expected to reuse, so a request not
     // zeroed would likely carry it
-    ASSERT_EQ(release_display_channel(earlier, TEST_DISPLAY, FIRST_HANDLE), OK);
-    EXPECT_EQ(release_display_channel(fw, TEST_DISPLAY, FIRST_HANDLE), OK);
+    ASSERT_EQ(release_display_channel(earlier, TEST_DISPLAY, FIRST_HANDLE, true), OK);
+    EXPECT_EQ(release_display_channel(fw, TEST_DISPLAY, FIRST_HANDLE, true), OK);
 
     ASSERT_EQ(fw.call_count, 2u);
     const channel_firmware::call& flags = fw.calls[0];
@@ -336,6 +336,17 @@ TEST(nvidia_core_channel, release_asks_to_keep_the_hardware_then_releases_the_ch
     EXPECT_EQ(release.object, FIRST_HANDLE);
 }
 
+// A release keeping nothing asks for no flag, as the engine's does once an update changed the boot firmware's state
+TEST(nvidia_core_channel, release_without_keeping_the_hardware_asks_for_no_flag) {
+    channel_firmware fw;
+
+    EXPECT_EQ(release_display_channel(fw, TEST_DISPLAY, FIRST_HANDLE, false), OK);
+
+    ASSERT_EQ(fw.call_count, 1u);
+    EXPECT_TRUE(fw.calls[0].made == channel_firmware::kind::release);
+    EXPECT_EQ(fw.calls[0].object, FIRST_HANDLE);
+}
+
 // The channel is released even after a refused flag, and the first failure's error is the one returned
 TEST(nvidia_core_channel, release_follows_a_refused_flag_and_returns_the_first_error) {
     channel_firmware refusing_flag;
@@ -348,9 +359,9 @@ TEST(nvidia_core_channel, release_follows_a_refused_flag_and_returns_the_first_e
     failing_both.results[0] = ERR_TIMEOUT;
     failing_both.results[1] = ERR_FIRMWARE;
 
-    EXPECT_EQ(release_display_channel(refusing_flag, TEST_DISPLAY, FIRST_HANDLE), ERR_FIRMWARE);
-    EXPECT_EQ(release_display_channel(failing_release, TEST_DISPLAY, FIRST_HANDLE), ERR_TIMEOUT);
-    EXPECT_EQ(release_display_channel(failing_both, TEST_DISPLAY, FIRST_HANDLE), ERR_TIMEOUT);
+    EXPECT_EQ(release_display_channel(refusing_flag, TEST_DISPLAY, FIRST_HANDLE, true), ERR_FIRMWARE);
+    EXPECT_EQ(release_display_channel(failing_release, TEST_DISPLAY, FIRST_HANDLE, true), ERR_TIMEOUT);
+    EXPECT_EQ(release_display_channel(failing_both, TEST_DISPLAY, FIRST_HANDLE, true), ERR_TIMEOUT);
 
     const channel_firmware* released[] = {&refusing_flag, &failing_release, &failing_both};
     for (const channel_firmware* fw : released) {
