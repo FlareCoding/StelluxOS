@@ -32,6 +32,9 @@ namespace drivers::nvidia {
 // alignment of its look-up table surfaces, which it aligns to 4 KiB in any case
 constexpr uint64_t SURFACE_ALIGNMENT = 0x1000;
 
+// An update's window interlocks naming no window channel, so the update takes effect with no window channel's update
+constexpr uint32_t NO_WINDOW_INTERLOCKS = 0;
+
 // Logs the maker, name and timings an output's EDID gives
 static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
     log::info(
@@ -642,7 +645,7 @@ static int32_t set_up_base_buffer(video_memory& memory, const first_light& light
 }
 
 // Binds `surface`, video memory for `window` to read, to the window's channel under a new handle given in
-// `context_dma`, and when the binding fails releases the memory and empties `surface`, since nothing names it then
+// `context_dma`, or on a failed binding gives 0 there and releases and empties `surface`, since nothing names it then
 static int32_t bind_to_window_channel(
     firmware& fw,
     instance_memory& instances,
@@ -662,21 +665,22 @@ static int32_t bind_to_window_channel(
     if (rc != OK) {
         memory.release(surface);
         surface = {};
+        context_dma = 0;
     }
 
     return rc;
 }
 
-// Binds the chosen output's base buffer to its window's channel, or releases and empties it and returns `OK` when the
-// binding finds no room, else releases and empties it and returns the binding's error, each outcome logged
+// Binds the chosen output's base buffer to its window's channel as `bind_to_window_channel` binds a surface, returning
+// `OK` when the binding finds no room and its error when it fails otherwise, each outcome logged
 static int32_t bind_base_buffer(
     firmware& fw,
     instance_memory& instances,
     video_memory& memory,
     const first_light& light,
-    vram_range& base_buffer
+    vram_range& base_buffer,
+    rm::handle& context_dma
 ) {
-    rm::handle context_dma = 0;
     int32_t rc = bind_to_window_channel(fw, instances, memory, light.window, base_buffer, context_dma);
     if (rc == ERR_NO_MEMORY) {
         log::error(
@@ -771,16 +775,16 @@ static int32_t set_up_look_up_table(video_memory& memory, vram_range& out) {
     return OK;
 }
 
-// Binds the look-up table surface to `window`'s channel, or releases and empties it and returns `OK` when the binding
-// finds no room, else releases and empties it and returns the binding's error, each outcome logged
+// Binds the look-up table surface to `window`'s channel as `bind_to_window_channel` binds a surface, returning `OK`
+// when the binding finds no room and its error when it fails otherwise, each outcome logged
 static int32_t bind_look_up_table(
     firmware& fw,
     instance_memory& instances,
     video_memory& memory,
     uint8_t window,
-    vram_range& table
+    vram_range& table,
+    rm::handle& context_dma
 ) {
-    rm::handle context_dma = 0;
     int32_t rc = bind_to_window_channel(fw, instances, memory, window, table, context_dma);
     if (rc == ERR_NO_MEMORY) {
         log::error(
@@ -897,9 +901,9 @@ static int32_t write_methods(display_channel& queue, const display_method* metho
     return OK;
 }
 
-// Writes and kicks the update applying the methods before it with no channel or cursor interlocked, naming the
-// completion notifier's context DMA `notifier_context_dma` with write-awaken, or no notifier for 0
-static int32_t write_update(display_channel& queue, rm::handle notifier_context_dma) {
+// Writes and kicks an update interlocked with no cursor and with the window channels of `window_interlocks`, bit i for
+// window i, naming the notifier's context DMA `notifier_context_dma` with write-awaken, or none for 0
+static int32_t write_update(display_channel& queue, rm::handle notifier_context_dma, uint32_t window_interlocks) {
     uint32_t notifier_control = 0;
     if (notifier_context_dma != 0) {
         notifier_control = rm::NOTIFIER_CONTROL_MODE_WRITE_AWAKEN | rm::NOTIFIER_CONTROL_NOTIFY;
@@ -909,7 +913,7 @@ static int32_t write_update(display_channel& queue, rm::handle notifier_context_
         {rm::CORE_SET_NOTIFIER_CONTEXT_DMA, notifier_context_dma},
         {rm::CORE_SET_NOTIFIER_CONTROL, notifier_control},
         {rm::CORE_SET_INTERLOCK_FLAGS, 0},
-        {rm::CORE_SET_WINDOW_INTERLOCK_FLAGS, 0},
+        {rm::CORE_SET_WINDOW_INTERLOCK_FLAGS, window_interlocks},
         {rm::CORE_UPDATE, rm::CORE_UPDATE_RELEASE_ELV},
     };
 
@@ -1163,12 +1167,16 @@ int32_t display_engine::set_up(
         return rc;
     }
 
+    uint32_t* window_push_buffer = reinterpret_cast<uint32_t*>(m_window_push_buffer.virt);
+    registers window_area = regs.at(window_channel_area(light.window));
+    m_window_queue = new (m_window_queue_bytes) display_channel(window_push_buffer, window_area);
+
     rc = set_up_base_buffer(m_memory, light, m_base_buffer);
     if (rc != OK || m_base_buffer.size == 0) {
         return rc;
     }
 
-    rc = bind_base_buffer(m_firmware, m_instance_memory, m_memory, light, m_base_buffer);
+    rc = bind_base_buffer(m_firmware, m_instance_memory, m_memory, light, m_base_buffer, m_base_buffer_context_dma);
     if (rc != OK || m_base_buffer.size == 0) {
         return rc;
     }
@@ -1178,7 +1186,14 @@ int32_t display_engine::set_up(
         return rc;
     }
 
-    rc = bind_look_up_table(m_firmware, m_instance_memory, m_memory, light.window, m_look_up_table);
+    rc = bind_look_up_table(
+        m_firmware,
+        m_instance_memory,
+        m_memory,
+        light.window,
+        m_look_up_table,
+        m_look_up_table_context_dma
+    );
     if (rc != OK || m_look_up_table.size == 0) {
         return rc;
     }
@@ -1230,12 +1245,22 @@ int32_t display_engine::bring_up(
 
     log::info("nvidia: display common took the start of the mode set naming display id 0x%X", display_id);
     int32_t link_rc = OK;
+    output_link link = {};
     bool is_link_set_up = false;
     rc = count_active_heads(active) > 0 ? shut_down_heads(regs, heads, present_windows, active) : OK;
     if (rc != OK) {
         log::error("nvidia: the shutdown update failed: %d, so bring-up takes the display engine down", rc);
     } else {
-        link_rc = set_up_output_link(m_firmware, display_common, has_crossbar, output, dpcd, light, is_link_set_up);
+        link_rc = set_up_output_link(
+            m_firmware,
+            display_common,
+            has_crossbar,
+            output,
+            dpcd,
+            light,
+            link,
+            is_link_set_up
+        );
         if (!is_link_set_up) {
             log::error(
                 "nvidia: display id 0x%X's link is not set up, so bring-up takes the display engine down",
@@ -1280,7 +1305,7 @@ int32_t display_engine::shut_down_heads(
     }
 
     m_core_notifier.clear();
-    rc = write_update(*m_core_queue, m_notifier_context_dma);
+    rc = write_update(*m_core_queue, m_notifier_context_dma, NO_WINDOW_INTERLOCKS);
     if (rc != OK) {
         return rc;
     }
@@ -1318,7 +1343,7 @@ int32_t display_engine::take_down(const display_heads& heads, uint32_t present_w
         return rc;
     }
 
-    rc = write_update(*m_core_queue, 0);
+    rc = write_update(*m_core_queue, 0, NO_WINDOW_INTERLOCKS);
     if (rc != OK) {
         return rc;
     }
@@ -1335,6 +1360,7 @@ int32_t display_engine::take_down(const display_heads& heads, uint32_t present_w
 
 int32_t display_engine::release() {
     m_core_queue = nullptr;
+    m_window_queue = nullptr;
 
     free_output_modes(m_output_modes);
 

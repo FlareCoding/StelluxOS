@@ -428,8 +428,10 @@ int32_t set_up_output_link(
     const display_output& output,
     const dpcd_capabilities& dpcd,
     const first_light& light,
+    output_link& ready_link,
     bool& is_set_up
 ) {
+    ready_link = {};
     is_set_up = false;
 
     output_link link = {};
@@ -506,8 +508,14 @@ int32_t set_up_output_link(
     }
 
     rc = set_stream_attributes(fw, display_common, output.display_id);
-    is_set_up = rc == OK;
-    return rc;
+    if (rc != OK) {
+        return rc;
+    }
+
+    ready_link = link;
+    is_set_up = true;
+
+    return OK;
 }
 
 } // namespace drivers::nvidia

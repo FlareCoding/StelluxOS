@@ -177,6 +177,10 @@ int32_t set_stream_attributes(firmware& fw, rm::handle display_common, uint32_t 
  * @param output The chosen output.
  * @param dpcd The capabilities `read_output_dpcd` read for its monitor.
  * @param light The output's head and mode.
+ * @param ready_link Set to the output resource and link driving the display id
+ * when the link is ready, the resource one of the 4 display common assigns,
+ * else to all 0, which also names output resource 0's link A, so a caller must
+ * read it only when `is_set_up` is set.
  * @param is_set_up Set to whether the link is ready.
  * @return `OK`, including when the link is not ready, or what
  * `firmware::control` returns, logged as its doc describes, for an error
@@ -189,6 +193,7 @@ int32_t set_up_output_link(
     const display_output& output,
     const dpcd_capabilities& dpcd,
     const first_light& light,
+    output_link& ready_link,
     bool& is_set_up
 );
 
