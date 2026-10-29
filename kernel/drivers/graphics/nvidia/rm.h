@@ -637,6 +637,91 @@ constexpr uint32_t CURSOR_CONTROL_DISABLED      = 0xCF;
 constexpr uint32_t CORE_WINDOW_USAGE_BOUNDS    = 0x1010;
 constexpr uint32_t DEFAULT_WINDOW_USAGE_BOUNDS = 0x10110000;
 
+// The usage bounds' MAX_PIXELS_FETCHED_PER_LINE, the most pixels the window fetches for a line, in bits 14:0
+constexpr uint32_t USAGE_PIXELS_FETCHED_MASK = 0x7FFF;
+
+// NVIDIA's NVC67D_WINDOW_SET_WINDOW_FORMAT_USAGE_BOUNDS(0), the formats window 0 may scan, RGB_PACKED4BPP (bit 2)
+// those of 4 bytes a pixel, and _MAX_INPUT_SCALE_FACTOR(0), with HORIZONTAL and VERTICAL in bits 15:0 and 31:16
+constexpr uint32_t CORE_WINDOW_FORMAT_USAGE_BOUNDS    = 0x1004;
+constexpr uint32_t CORE_WINDOW_MAX_INPUT_SCALE_FACTOR = 0x100C;
+constexpr uint32_t FORMAT_USAGE_RGB_PACKED_4_BPP      = 0x4;
+
+// Where the VERTICAL half of a window's input or a head's output scale factor begins, HORIZONTAL taking bits 15:0
+constexpr uint32_t SCALE_FACTOR_VERTICAL_SHIFT = 16;
+
+// NVIDIA's NVC67D_HEAD_SET_OVERSCAN_COLOR(0), _RASTER_SIZE(0), _RASTER_SYNC_END(0), _RASTER_BLANK_END(0),
+// _RASTER_BLANK_START(0) and _MIN_FRAME_IDLE(0), each but the color a pair with its first in bits 14:0, second 30:16
+constexpr uint32_t CORE_HEAD_OVERSCAN_COLOR     = 0x2078;
+constexpr uint32_t CORE_HEAD_RASTER_SIZE        = 0x2064;
+constexpr uint32_t CORE_HEAD_RASTER_SYNC_END    = 0x2068;
+constexpr uint32_t CORE_HEAD_RASTER_BLANK_END   = 0x206C;
+constexpr uint32_t CORE_HEAD_RASTER_BLANK_START = 0x2070;
+constexpr uint32_t CORE_HEAD_MIN_FRAME_IDLE     = 0x2218;
+constexpr uint32_t HEAD_PAIR_MASK               = 0x7FFF;
+constexpr uint32_t HEAD_PAIR_SECOND_SHIFT       = 16;
+
+// NVIDIA's NVC67D_HEAD_SET_PIXEL_CLOCK_FREQUENCY(0) and _PIXEL_CLOCK_FREQUENCY_MAX(0), HERTZ in bits 30:0 with no
+// ADJ1000DIV1001 in bit 31, and _PIXEL_CLOCK_CONFIGURATION(0), 0 for NOT_DRIVER false, HOPPING DISABLE, VBLANK mode
+constexpr uint32_t CORE_HEAD_PIXEL_CLOCK               = 0x200C;
+constexpr uint32_t CORE_HEAD_PIXEL_CLOCK_CONFIGURATION = 0x201C;
+constexpr uint32_t CORE_HEAD_PIXEL_CLOCK_MAX           = 0x2028;
+constexpr uint32_t PIXEL_CLOCK_HERTZ_MASK              = 0x7FFFFFFF;
+
+// NVIDIA's NVC67D_HEAD_SET_FRAME_PACKED_VACTIVE_COLOR(0), _HDMI_CTRL(0), _TILE_POSITION(0) and _RASTER_HBLANK_DELAY(0),
+// each 0 here: black as outside NVIDIA's debug builds, no HDMI video format, the first tile and no blanking delay
+constexpr uint32_t CORE_HEAD_FRAME_PACKED_COLOR  = 0x207C;
+constexpr uint32_t CORE_HEAD_HDMI_CONTROL        = 0x2080;
+constexpr uint32_t CORE_HEAD_TILE_POSITION       = 0x22D0;
+constexpr uint32_t CORE_HEAD_RASTER_HBLANK_DELAY = 0x2364;
+
+// NVIDIA's NVC67D_HEAD_SET_CONTROL(0), 0 for a progressive raster with no lock, stereo or YUV420 packing,
+// NVC67D_SET_CONTROL, 0 for no flip lock pin, and NVC67D_HEAD_SET_LOCK_CHAIN(0), 0 for no lock chain
+constexpr uint32_t CORE_HEAD_CONTROL    = 0x2008;
+constexpr uint32_t CORE_SET_CONTROL     = 0x210;
+constexpr uint32_t CORE_HEAD_LOCK_CHAIN = 0x2044;
+
+// NVIDIA's own NVC37D_HEAD_SET_LOCK_OFFSET(0), which its class headers lack, 0 for no lock offset
+constexpr uint32_t CORE_HEAD_LOCK_OFFSET = 0x2040;
+
+// NVIDIA's NVC67D_HEAD_SET_DSC_CONTROL(0) and _DSC_PPS_CONTROL(0), 0 for no compression and no PPS (picture parameter
+// set) packet
+constexpr uint32_t CORE_HEAD_DSC_CONTROL     = 0x22D4;
+constexpr uint32_t CORE_HEAD_DSC_PPS_CONTROL = 0x22D8;
+
+// NVIDIA's NVC67D_HEAD_SET_CONTROL_OUTPUT_RESOURCE(0) and its fields: CRC_MODE COMPLETE_RASTER, HSYNC_POLARITY and
+// VSYNC_POLARITY NEGATIVE_TRUE, PIXEL_DEPTH BPP_24_444 (bits 7:4 as 4) and EXT_PACKET_WIN NONE (bits 31:26 as 0x3F)
+constexpr uint32_t CORE_HEAD_OUTPUT_RESOURCE_CONTROL = 0x2004;
+constexpr uint32_t OUTPUT_RESOURCE_CRC_WHOLE_RASTER  = 0x1;
+constexpr uint32_t OUTPUT_RESOURCE_HSYNC_NEGATIVE    = 0x4;
+constexpr uint32_t OUTPUT_RESOURCE_VSYNC_NEGATIVE    = 0x8;
+constexpr uint32_t OUTPUT_RESOURCE_24_BITS_444       = 0x40;
+constexpr uint32_t OUTPUT_RESOURCE_NO_PACKET_WINDOW  = 0xFC000000;
+
+// NVIDIA's NVC67D_HEAD_SET_PROCAMP(0), 0 for full-range RGB with no chroma filters, _CLAMP_RANGE_GREEN(0) and
+// _CLAMP_RANGE_RED_BLUE(0), full range as LOW 0 (bits 11:0) and HIGH 0xFFF (27:16), and _OCSC1CONTROL(0), 0 disabled
+constexpr uint32_t CORE_HEAD_PROCAMP        = 0x2000;
+constexpr uint32_t CORE_HEAD_CLAMP_GREEN    = 0x2238;
+constexpr uint32_t CORE_HEAD_CLAMP_RED_BLUE = 0x223C;
+constexpr uint32_t CORE_HEAD_OCSC1_CONTROL  = 0x229C;
+constexpr uint32_t CLAMP_FULL_RANGE         = 0x0FFF0000;
+
+// NVIDIA's NVC67D_SOR_SET_CONTROL's PROTOCOL (bits 11:8) DP_A, link A's DisplayPort, with DP_B one more. Its
+// DE_SYNC_POLARITY POSITIVE_TRUE and PIXEL_REPLICATE_MODE OFF are both 0
+constexpr uint32_t SERIAL_LINK_PROTOCOL_SHIFT = 8;
+constexpr uint32_t SERIAL_LINK_PROTOCOL_DP_A  = 8;
+
+// NVIDIA's NVC67D_HEAD_SET_VIEWPORT_SIZE_IN(0), _VIEWPORT_POINT_OUT_ADJUST(0), _VIEWPORT_SIZE_OUT(0),
+// _MAX_OUTPUT_SCALE_FACTOR(0) and _VIEWPORT_POINT_IN(0), the sizes' WIDTH and HEIGHT laid out as a raster's pairs
+constexpr uint32_t CORE_HEAD_VIEWPORT_SIZE_IN          = 0x204C;
+constexpr uint32_t CORE_HEAD_VIEWPORT_POINT_OUT_ADJUST = 0x205C;
+constexpr uint32_t CORE_HEAD_VIEWPORT_SIZE_OUT         = 0x2058;
+constexpr uint32_t CORE_HEAD_MAX_OUTPUT_SCALE_FACTOR   = 0x202C;
+constexpr uint32_t CORE_HEAD_VIEWPORT_POINT_IN         = 0x2048;
+
+// NVIDIA's NVC67D_HEAD_SET_CONTROL_OUTPUT_SCALER(0), 2 taps vertically (bits 2:0 as 1) and horizontally (bits 6:4 as 1)
+constexpr uint32_t CORE_HEAD_OUTPUT_SCALER_CONTROL = 0x2014;
+constexpr uint32_t OUTPUT_SCALER_TWO_TAPS          = 0x11;
+
 // A window channel's update, NVIDIA's NVC67E_UPDATE, with RELEASE_ELV (bit 0) set as in every window update, no flip
 // lock pin and no window immediate channel interlocked
 constexpr uint32_t WINDOW_UPDATE             = 0x200;

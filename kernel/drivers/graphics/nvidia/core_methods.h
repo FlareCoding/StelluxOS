@@ -4,9 +4,11 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_CORE_METHODS_H
 
 #include "common/types.h"
+#include "drivers/graphics/edid.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/display_active_heads.h"
 #include "drivers/graphics/nvidia/display_heads.h"
+#include "drivers/graphics/nvidia/display_link.h"
 
 namespace drivers::nvidia {
 
@@ -85,6 +87,76 @@ void build_shutdown_methods(
     bool maps_windows,
     shutdown_methods& out
 );
+
+// What one head is lit with: its mode, the display id it shows, the serial link it feeds and the windows it serves
+struct head_light {
+    uint8_t      head;
+    uint32_t     windows;    // bit i for window i, each window serving `head`
+    edid::timing timing;     // a progressive timing whose raster has 2 or more leading idle lines
+    uint32_t     display_id; // the display id the head shows, a single bit
+    output_link  link;       // the serial link the head feeds and the sublink the display id takes
+};
+
+// The most methods `build_head_light_methods` gives: 32 for the head and its link and one for each window it serves
+constexpr uint32_t HEAD_LIGHT_FIXED_METHODS = 32;
+constexpr uint32_t HEAD_LIGHT_METHODS_MAX   = HEAD_LIGHT_FIXED_METHODS + DISPLAY_WINDOWS_MAX;
+
+// The core channel's methods lighting one head, the first `count` of `methods` in the order they are written
+struct head_light_methods {
+    display_method methods[HEAD_LIGHT_METHODS_MAX];
+    uint32_t       count;
+};
+
+// The methods `build_window_usage_methods` gives: the formats, input scale factor and usage bounds of one window
+constexpr uint32_t WINDOW_USAGE_METHODS = 3;
+
+// The core channel's methods bounding what a window scans out for its first image
+struct window_usage_methods {
+    display_method methods[WINDOW_USAGE_METHODS];
+};
+
+/**
+ * @brief Give the core channel's methods that light one head at its mode
+ * through its serial link, ahead of the update that applies them, in the order
+ * NVIDIA's modesetting module writes them for a head it lights with RGB at 8
+ * bits a color, at full range and with no scaling, compression, stereo or
+ * lock. First the raster: a black overscan, the totals, sync end, blanking end
+ * and start and idle lines `raster_of` gives, the pixel clock as both its
+ * frequency and its highest frequency, with no hopping between frequencies,
+ * and no frame packing color, HDMI video format, tile or blanking delay. Then
+ * the head's control written whole, at 0, no flip lock pin, lock chain or lock
+ * offset and no compression. Then the output resource's control, which takes a
+ * CRC over the whole raster, the mode's sync polarities, 24 bits a pixel and
+ * no packet window. Then RGB at full range with no output CSC (OCSC1) matrix.
+ * Then the serial link set to carry the head alone in DisplayPort on the
+ * display id's sublink, and the head's display id. Then a viewport the size of
+ * the mode and unscaled, each window serving the head given NVIDIA's default
+ * usage bounds for a line of the mode's width, and the viewport's origin at
+ * 0, 0. Last the output scaler's two taps. Unlike that module, which also
+ * writes the head's output table (a window's input table going with its
+ * image), its OCSC0 matrix, the head's own usage bounds and its dither, these
+ * methods leave those as they are, and they write the color controls once
+ * where that module writes them again for its digital vibrance.
+ * @param light The head, mode, display id, link and windows. The head must be
+ * below the chip's heads, the link's index below its serial links and its
+ * sublink 0 or 1.
+ * @param out Receives the methods.
+ */
+void build_head_light_methods(const head_light& light, head_light_methods& out);
+
+/**
+ * @brief Give the core channel's methods that bound what a window scans out
+ * for its first image, as NVIDIA's modesetting module writes them with the
+ * image: the formats it may scan, an input scale factor of one both ways and
+ * NVIDIA's default usage bounds for a line of its head's viewport. Where that
+ * module allows each format the window's usage names, these allow only those
+ * of 4 bytes a pixel, the formats the bandwidth check is asked about.
+ * @param window The window, below the chip's windows.
+ * @param viewport_width The width of the viewport of the head the window
+ * serves, the mode's width when the head does not scale.
+ * @param out Receives the methods.
+ */
+void build_window_usage_methods(uint8_t window, uint32_t viewport_width, window_usage_methods& out);
 
 } // namespace drivers::nvidia
 

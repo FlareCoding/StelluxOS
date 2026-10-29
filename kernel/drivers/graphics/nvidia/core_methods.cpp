@@ -1,6 +1,7 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under the notice in LICENSE-NVIDIA
 
 #include "drivers/graphics/nvidia/core_methods.h"
+#include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/rm.h"
 
@@ -8,6 +9,12 @@ namespace drivers::nvidia {
 
 // The ALPHA of an opaque desktop color, in bits 7:0 of ALPHA_RED, black with its red, green and blue left 0
 constexpr uint32_t OPAQUE_ALPHA = 255;
+
+// The hertz of a kilohertz, a timing's pixel clock being in kilohertz and the method's in hertz
+constexpr uint32_t HERTZ_PER_KILOHERTZ = 1000;
+
+// A scale factor of one both across and down, in the two halves of a scale factor method
+constexpr uint32_t UNSCALED_FACTORS = SCALE_FACTOR_ONE | SCALE_FACTOR_ONE << rm::SCALE_FACTOR_VERTICAL_SHIFT;
 
 // NVIDIA's output scaler coefficients by ratio, phase and value, each one's position its index. Each row omits the
 // center value, which the hardware derives, and phase 0's row holds phase 0's two values, then edge phase 16's two
@@ -96,10 +103,27 @@ bool core_initial_method(uint8_t head_count, uint32_t index, display_method& out
     return true;
 }
 
-// Appends one method to `out`, which `SHUTDOWN_METHODS_MAX` keeps from overflowing
-static void append_method(shutdown_methods& out, uint32_t method, uint32_t value) {
+// Appends one method to `out`, whose array `SHUTDOWN_METHODS_MAX` or `HEAD_LIGHT_METHODS_MAX` keeps from overflowing
+template <typename method_list>
+static void append_method(method_list& out, uint32_t method, uint32_t value) {
     out.methods[out.count] = {.method = method, .value = value};
     out.count++;
+}
+
+// Appends one of `head`'s methods, given by its offset for head 0
+static void append_head_method(head_light_methods& out, uint8_t head, uint32_t method, uint32_t value) {
+    append_method(out, method + head * rm::CORE_HEAD_METHODS_STRIDE, value);
+}
+
+// Packs two values into one head method as NVIDIA lays out a raster's pairs, the first in bits 14:0, the second 30:16
+static uint32_t head_pair(uint32_t first, uint32_t second) {
+    return (first & rm::HEAD_PAIR_MASK) | (second & rm::HEAD_PAIR_MASK) << rm::HEAD_PAIR_SECOND_SHIFT;
+}
+
+// NVIDIA's default usage bounds for a window that does not scale, fetching a line of a viewport `viewport_width` wide
+static uint32_t window_usage_bounds(uint32_t viewport_width) {
+    uint32_t pixels_fetched = (viewport_width + PIXELS_FETCHED_BEYOND_WIDTH) & rm::USAGE_PIXELS_FETCHED_MASK;
+    return rm::DEFAULT_WINDOW_USAGE_BOUNDS | pixels_fetched;
 }
 
 // Appends each present window's control naming the head it serves, or none, then each one's default usage bounds
@@ -150,6 +174,121 @@ void build_shutdown_methods(
         append_method(out, link_method, 0);
         append_method(out, rm::CORE_HEAD_DISPLAY_ID + head_methods, 0);
     }
+}
+
+// Appends the head's raster and pixel clock, then the raster features it goes without, as NVIDIA's raster setting does
+static void append_raster(const head_light& light, head_light_methods& out) {
+    head_raster raster = raster_of(light.timing);
+    uint32_t pixel_clock = (light.timing.pixel_clock_khz * HERTZ_PER_KILOHERTZ) & rm::PIXEL_CLOCK_HERTZ_MASK;
+
+    uint32_t size = head_pair(raster.width, raster.height);
+    uint32_t sync_end = head_pair(raster.sync_end_x, raster.sync_end_y);
+    uint32_t blank_end = head_pair(raster.blank_end_x, raster.blank_end_y);
+    uint32_t blank_start = head_pair(raster.blank_start_x, raster.blank_start_y);
+    uint32_t frame_idle = head_pair(raster.leading_idle_lines, raster.trailing_idle_lines);
+
+    append_head_method(out, light.head, rm::CORE_HEAD_OVERSCAN_COLOR, 0);
+    append_head_method(out, light.head, rm::CORE_HEAD_RASTER_SIZE, size);
+    append_head_method(out, light.head, rm::CORE_HEAD_RASTER_SYNC_END, sync_end);
+    append_head_method(out, light.head, rm::CORE_HEAD_RASTER_BLANK_END, blank_end);
+    append_head_method(out, light.head, rm::CORE_HEAD_RASTER_BLANK_START, blank_start);
+    append_head_method(out, light.head, rm::CORE_HEAD_MIN_FRAME_IDLE, frame_idle);
+
+    append_head_method(out, light.head, rm::CORE_HEAD_PIXEL_CLOCK, pixel_clock);
+    append_head_method(out, light.head, rm::CORE_HEAD_PIXEL_CLOCK_CONFIGURATION, 0);
+    append_head_method(out, light.head, rm::CORE_HEAD_PIXEL_CLOCK_MAX, pixel_clock);
+
+    append_head_method(out, light.head, rm::CORE_HEAD_FRAME_PACKED_COLOR, 0);
+    append_head_method(out, light.head, rm::CORE_HEAD_HDMI_CONTROL, 0);
+    append_head_method(out, light.head, rm::CORE_HEAD_TILE_POSITION, 0);
+    append_head_method(out, light.head, rm::CORE_HEAD_RASTER_HBLANK_DELAY, 0);
+}
+
+// Appends the head's control written whole, then no flip lock pin, lock chain or lock offset
+static void append_head_control(uint8_t head, head_light_methods& out) {
+    append_head_method(out, head, rm::CORE_HEAD_CONTROL, 0);
+    append_method(out, rm::CORE_SET_CONTROL, 0);
+    append_head_method(out, head, rm::CORE_HEAD_LOCK_CHAIN, 0);
+    append_head_method(out, head, rm::CORE_HEAD_LOCK_OFFSET, 0);
+}
+
+// Appends the head's compression turned off, with no PPS packet
+static void append_compression(uint8_t head, head_light_methods& out) {
+    append_head_method(out, head, rm::CORE_HEAD_DSC_CONTROL, 0);
+    append_head_method(out, head, rm::CORE_HEAD_DSC_PPS_CONTROL, 0);
+}
+
+// Appends the output resource's control for the mode's sync polarities
+static void append_output_resource(const head_light& light, head_light_methods& out) {
+    uint32_t hsync_polarity = light.timing.h_sync_positive ? 0 : rm::OUTPUT_RESOURCE_HSYNC_NEGATIVE;
+    uint32_t vsync_polarity = light.timing.v_sync_positive ? 0 : rm::OUTPUT_RESOURCE_VSYNC_NEGATIVE;
+    uint32_t fixed_fields =
+        rm::OUTPUT_RESOURCE_CRC_WHOLE_RASTER | rm::OUTPUT_RESOURCE_24_BITS_444 | rm::OUTPUT_RESOURCE_NO_PACKET_WINDOW;
+    uint32_t control = fixed_fields | hsync_polarity | vsync_polarity;
+
+    append_head_method(out, light.head, rm::CORE_HEAD_OUTPUT_RESOURCE_CONTROL, control);
+}
+
+// Appends full-range RGB with no chroma filters and no OCSC1 matrix
+static void append_colors(uint8_t head, head_light_methods& out) {
+    append_head_method(out, head, rm::CORE_HEAD_PROCAMP, 0);
+    append_head_method(out, head, rm::CORE_HEAD_CLAMP_GREEN, rm::CLAMP_FULL_RANGE);
+    append_head_method(out, head, rm::CORE_HEAD_CLAMP_RED_BLUE, rm::CLAMP_FULL_RANGE);
+    append_head_method(out, head, rm::CORE_HEAD_OCSC1_CONTROL, 0);
+}
+
+// Appends the serial link's control carrying the head alone in DisplayPort on its sublink, then the head's display id
+static void append_link(const head_light& light, head_light_methods& out) {
+    uint32_t link_method = rm::CORE_SERIAL_LINK_CONTROL + light.link.index * rm::CORE_SERIAL_LINK_METHODS_STRIDE;
+    uint32_t protocol = rm::SERIAL_LINK_PROTOCOL_DP_A + light.link.sublink;
+    uint32_t link_control = 1u << light.head | protocol << rm::SERIAL_LINK_PROTOCOL_SHIFT;
+
+    append_method(out, link_method, link_control);
+    append_head_method(out, light.head, rm::CORE_HEAD_DISPLAY_ID, light.display_id);
+}
+
+// Appends a viewport the size of the mode and unscaled, the usage bounds of each window serving the head, then the
+// viewport's origin
+static void append_viewport(const head_light& light, head_light_methods& out) {
+    uint32_t mode_size = head_pair(light.timing.width, light.timing.height);
+    uint32_t usage_bounds = window_usage_bounds(light.timing.width);
+
+    append_head_method(out, light.head, rm::CORE_HEAD_VIEWPORT_SIZE_IN, mode_size);
+    append_head_method(out, light.head, rm::CORE_HEAD_VIEWPORT_POINT_OUT_ADJUST, 0);
+    append_head_method(out, light.head, rm::CORE_HEAD_VIEWPORT_SIZE_OUT, mode_size);
+    append_head_method(out, light.head, rm::CORE_HEAD_MAX_OUTPUT_SCALE_FACTOR, UNSCALED_FACTORS);
+
+    for (uint8_t window = 0; window < DISPLAY_WINDOWS_MAX; window++) {
+        if ((light.windows & (1u << window)) == 0) {
+            continue;
+        }
+
+        append_method(out, rm::CORE_WINDOW_USAGE_BOUNDS + window * rm::CORE_WINDOW_METHODS_STRIDE, usage_bounds);
+    }
+
+    append_head_method(out, light.head, rm::CORE_HEAD_VIEWPORT_POINT_IN, 0);
+}
+
+void build_head_light_methods(const head_light& light, head_light_methods& out) {
+    out.count = 0;
+
+    append_raster(light, out);
+    append_head_control(light.head, out);
+    append_compression(light.head, out);
+
+    append_output_resource(light, out);
+    append_colors(light.head, out);
+    append_link(light, out);
+    append_viewport(light, out);
+    append_head_method(out, light.head, rm::CORE_HEAD_OUTPUT_SCALER_CONTROL, rm::OUTPUT_SCALER_TWO_TAPS);
+}
+
+void build_window_usage_methods(uint8_t window, uint32_t viewport_width, window_usage_methods& out) {
+    uint32_t window_methods = window * rm::CORE_WINDOW_METHODS_STRIDE;
+
+    out.methods[0] = {rm::CORE_WINDOW_FORMAT_USAGE_BOUNDS + window_methods, rm::FORMAT_USAGE_RGB_PACKED_4_BPP};
+    out.methods[1] = {rm::CORE_WINDOW_MAX_INPUT_SCALE_FACTOR + window_methods, UNSCALED_FACTORS};
+    out.methods[2] = {rm::CORE_WINDOW_USAGE_BOUNDS + window_methods, window_usage_bounds(viewport_width)};
 }
 
 } // namespace drivers::nvidia

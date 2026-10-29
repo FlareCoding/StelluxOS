@@ -2954,11 +2954,12 @@ src/nvidia-modeset/src/nvkms-evo.c
     kernel/tests/graphics/nvidia_latch_rules.test.cpp, that it sets a mode only
     on a display id of digital or analog kind, in display_ids.h, a head's raster
     for a mode, its size the mode's totals, its positions counted from the start
-    of the sync, its blanking end the last pixel and line of the back porch, its
-    blanking start the last pixel and line of the visible area and
-    rasterVertBlank2 0 for a mode that is not interlaced, in rm.h,
-    display_light.h, display_light.cpp and
-    kernel/tests/graphics/nvidia_display_light.test.cpp, that a scaler that does
+    of the sync, its sync end the last pixel and line of the sync, its blanking
+    end the last pixel and line of the back porch, its blanking start the last
+    pixel and line of the visible area and rasterVertBlank2 0 for a mode that is
+    not interlaced, in rm.h, display_light.h, display_light.cpp,
+    kernel/tests/graphics/nvidia_display_light.test.cpp and
+    kernel/tests/graphics/nvidia_core_methods.test.cpp, that a scaler that does
     not scale takes the fewest taps its display class allows, in
     display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp,
     that when the bandwidth check refuses a mode it lowers the heads' usage
@@ -2974,12 +2975,19 @@ src/nvidia-modeset/src/nvkms-evo.c
     mode set's update with release ELV and waits on it, in rm.h, core_methods.h,
     core_methods.cpp, completion_notifier.h, display_engine.h,
     display_engine.cpp, kernel/tests/graphics/nvidia_core_methods.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it asks
-    display common to assign a display id an output resource only when display
-    common reports the crossbar, excluding no resource and for one head, and
-    takes the last resource whose entry in the reply holds the display id with
-    the SINGLE or 2H1OR_PRIMARY type, in display_link.h, display_link.cpp and
-    kernel/tests/graphics/nvidia_display_link.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it asks display
+    common to assign a display id an output resource only when display common
+    reports the crossbar, excluding no resource and for one head, and takes the
+    last resource whose entry in the reply holds the display id with the SINGLE
+    or 2H1OR_PRIMARY type, in display_link.h, display_link.cpp and
+    kernel/tests/graphics/nvidia_display_link.test.cpp, and that it lights a
+    head by setting its timings, a black overscan outside its debug builds
+    before the raster and then the head's control and compression, then later
+    its attach to a serial link, the link's owner mask taking the head before
+    the link's control is set and the head's display id after it, then its
+    viewports with their origin at 0, 0, then its output scaler for its
+    sharpening and its colors again for its digital vibrance, in core_methods.h,
+    core_methods.cpp and kernel/tests/graphics/nvidia_core_methods.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-evo3.c
@@ -3059,10 +3067,30 @@ src/nvidia-modeset/src/nvkms-evo3.c
     it and always the window's own, and the update releasing ELV, in rm.h,
     window_methods.h, window_methods.cpp and
     kernel/tests/graphics/nvidia_window_methods.test.cpp, that the format
-    matrix's coefficients are signed with 16 fraction bits, in rm.h, and that a
+    matrix's coefficients are signed with 16 fraction bits, in rm.h, that a
     window neither scaling nor mapping tones takes its colors to the head's
     through CSC11 alone, the other CSC stages written disabled and only for a
-    window whose capabilities report them, in rm.h and window_methods.h
+    window whose capabilities report them, in rm.h and window_methods.h, that it
+    sets a lit head's raster with its overscan color, size, sync end, blanking
+    end and start, the idle lines before its visible ones (its blanking end's
+    line and one more) and after them (the rest), its pixel clock in hertz as
+    both its frequency and its highest with no hopping, a frame packing color of
+    0 outside its debug builds and no HDMI video format, tile or blanking delay,
+    that it writes the head's control whole with no flip lock pin, lock chain or
+    lock offset, the offset's method NVC37D_HEAD_SET_LOCK_OFFSET being its own
+    definition, and no compression, that it writes the output resource's control
+    (a CRC over the whole raster, the mode's sync polarities, 24 bits a pixel
+    and no packet window), RGB at full range (a procamp of 0, each clamp from 0
+    to 0xFFF and OCSC1 disabled, after OCSC0), the serial link carrying the head
+    alone in DisplayPort on its display id's sublink, the head's display id, its
+    viewport in and out at the mode's size with an output scale factor of one,
+    each window it serves given the default usage bounds fetching the pixels a
+    line the bandwidth check is asked about, then the head's own usage bounds,
+    the viewport's origin at 0, 0 and the output scaler's two taps, and that a
+    window's first image bounds its formats, its input scale factor at one and
+    its usage bounds the same way for the width of its head's viewport, in rm.h,
+    core_methods.h, core_methods.cpp, display_light.h, display_light.cpp and
+    kernel/tests/graphics/nvidia_core_methods.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-modeset.c
@@ -3074,11 +3102,16 @@ src/nvidia-modeset/src/nvkms-modeset.c
     display_window_owners.h, that a mode set sends display common its start
     before any method and its end after the last, naming the displays of the
     configuration it is for, in display_engine.h, display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that the first
-    mode set after boot stops every head the boot firmware lit with the window
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that the first mode
+    set after boot stops every head the boot firmware lit with the window
     mapping in the same update, in core_methods.h, display_engine.h,
     display_engine.cpp, kernel/tests/graphics/nvidia_core_methods.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it writes a
+    lit head's methods ahead of the update in this order: its output table, its
+    timings, its dithering, its output resource's control, its colors, its
+    attach to its serial link, its viewports, its sharpening, its digital
+    vibrance and its HDMI FRL configuration, in core_methods.h, core_methods.cpp
+    and kernel/tests/graphics/nvidia_core_methods.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
@@ -3171,7 +3204,7 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     kernel/tests/graphics/nvidia_display_engine.test.cpp, a display notifier's
     status in bits 31:30 of its first word and its not begun (0), begun (1) and
     finished (2) statuses, in completion_notifier.h, completion_notifier.cpp and
-    kernel/tests/graphics/nvidia_completion_notifier.test.cpp, and the methods
+    kernel/tests/graphics/nvidia_completion_notifier.test.cpp, the methods
     NVC67D_UPDATE with its RELEASE_ELV in bit 0,
     NVC67D_SET_CONTEXT_DMA_NOTIFIER, NVC67D_SET_NOTIFIER_CONTROL with its MODE
     (WRITE_AWAKEN, 1), OFFSET and NOTIFY fields, NVC67D_SET_INTERLOCK_FLAGS,
@@ -3185,7 +3218,27 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     INPUT_SCALER_TAPS, UPSCALING_ALLOWED and TMO_LUT_ALLOWED fields, in rm.h,
     core_methods.cpp, display_engine.cpp,
     kernel/tests/graphics/nvidia_core_methods.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the methods a lit
+    head takes, NVC67D_HEAD_SET_OVERSCAN_COLOR, _RASTER_SIZE, _RASTER_SYNC_END,
+    _RASTER_BLANK_END, _RASTER_BLANK_START and _MIN_FRAME_IDLE, all but the
+    color with their fields in bits 14:0 and 30:16, _PIXEL_CLOCK_FREQUENCY and
+    _PIXEL_CLOCK_FREQUENCY_MAX with their HERTZ in bits 30:0 and ADJ1000DIV1001
+    in bit 31, _PIXEL_CLOCK_CONFIGURATION with its NOT_DRIVER, HOPPING and
+    HOPPING_MODE, _FRAME_PACKED_VACTIVE_COLOR, _HDMI_CTRL, _TILE_POSITION,
+    _RASTER_HBLANK_DELAY, _CONTROL, _LOCK_CHAIN, _DSC_CONTROL, _DSC_PPS_CONTROL,
+    _CONTROL_OUTPUT_RESOURCE with its CRC_MODE, HSYNC_POLARITY, VSYNC_POLARITY,
+    PIXEL_DEPTH and EXT_PACKET_WIN, _PROCAMP, _CLAMP_RANGE_GREEN and
+    _CLAMP_RANGE_RED_BLUE with their LOW and HIGH, _OCSC1CONTROL,
+    _VIEWPORT_SIZE_IN and _VIEWPORT_SIZE_OUT with their WIDTH and HEIGHT,
+    _VIEWPORT_POINT_OUT_ADJUST, _MAX_OUTPUT_SCALE_FACTOR with its HORIZONTAL and
+    VERTICAL, _VIEWPORT_POINT_IN and _CONTROL_OUTPUT_SCALER with its
+    VERTICAL_TAPS and HORIZONTAL_TAPS, all for head 0, NVC67D_SET_CONTROL,
+    NVC67D_SOR_SET_CONTROL's PROTOCOL DP_A and DP_B, DE_SYNC_POLARITY and
+    PIXEL_REPLICATE_MODE, and for window 0
+    NVC67D_WINDOW_SET_WINDOW_FORMAT_USAGE_BOUNDS with its RGB_PACKED4BPP,
+    NVC67D_WINDOW_SET_MAX_INPUT_SCALE_FACTOR with its HORIZONTAL and VERTICAL
+    and the usage bounds' MAX_PIXELS_FETCHED_PER_LINE, in rm.h, core_methods.h,
+    core_methods.cpp and kernel/tests/graphics/nvidia_core_methods.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc67e.h
@@ -3234,11 +3287,15 @@ src/nvidia-modeset/include/nvkms-types.h
     display_active_heads.cpp,
     kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp,
-    NV_EVO_SCALE_FACTOR_1X, 1024, a scale factor of one, and
-    NVEvoScalerTapsToNum's 2 for NV_EVO_SCALER_2TAPS, in display_light.cpp and
+    NV_EVO_SCALE_FACTOR_1X, 1024, a scale factor of one, in display_light.h,
+    display_light.cpp, core_methods.cpp,
+    kernel/tests/graphics/nvidia_display_light.test.cpp and
+    kernel/tests/graphics/nvidia_core_methods.test.cpp, NVEvoScalerTapsToNum's 2
+    for NV_EVO_SCALER_2TAPS, in display_light.cpp and
     kernel/tests/graphics/nvidia_display_light.test.cpp, that a head's raster
-    holds its size and positions as NvKmsPoint, in display_light.h and
-    kernel/tests/graphics/nvidia_display_light.test.cpp,
+    holds its size and positions as NvKmsPoint, in display_light.h,
+    kernel/tests/graphics/nvidia_display_light.test.cpp and
+    kernel/tests/graphics/nvidia_core_methods.test.cpp,
     NV_EVO_SURFACE_ALIGNMENT, 4 KiB, the alignment of the surfaces the
     modesetting module scans out, in display_engine.h, display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp,
@@ -3254,8 +3311,9 @@ src/nvidia-modeset/include/nvkms-types.h
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/interface/nvkms-api-types.h
-    that NvKmsPoint's x and y are each 16 bits, in display_light.h and
-    kernel/tests/graphics/nvidia_display_light.test.cpp, NVKMS_MAX_EYES, 2, and
+    that NvKmsPoint's x and y are each 16 bits, in display_light.h,
+    kernel/tests/graphics/nvidia_display_light.test.cpp and
+    kernel/tests/graphics/nvidia_core_methods.test.cpp, NVKMS_MAX_EYES, 2, and
     NVKMS_MAX_PLANES_PER_SURFACE, 3, the most eyes and planes a surface has, in
     rm.h, window_methods.cpp and
     kernel/tests/graphics/nvidia_window_methods.test.cpp, NVKMS_LEFT, 0, the

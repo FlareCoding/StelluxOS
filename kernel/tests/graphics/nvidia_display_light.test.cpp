@@ -31,10 +31,21 @@ namespace rm = drivers::nvidia::rm;
 // A made-up handle for the bandwidth check's object
 static constexpr rm::handle TEST_BANDWIDTH_CHECK = 0x0005000E;
 
-// The IOC 25G2S's preferred timing, 2560 by 1440 at 60 Hz, and NVIDIA's raster for it: totals of 2720 by 1481, the
-// blanking ending 32 + 80 - 1 pixels and 5 + 33 - 1 lines from the sync's start and starting 2560 and 1440 after that
+// The IOC 25G2S's preferred timing, 2560 by 1440 at 60 Hz, and NVIDIA's raster for it: totals of 2720 by 1481, the sync
+// ending at 31 and 4, the blanking ending 80 and 33 later and starting 2560 and 1440 later, and 38 and 3 idle lines
 static constexpr edid::timing IOC_25G2S_PREFERRED = {241700, 2560, 48, 32, 80, 1440, 3, 5, 33, true, false};
-static constexpr head_raster  IOC_25G2S_RASTER = {2720, 1481, 2671, 1477, 111, 37};
+static constexpr head_raster  IOC_25G2S_RASTER = {
+    .width = 2720,
+    .height = 1481,
+    .blank_start_x = 2671,
+    .blank_start_y = 1477,
+    .blank_end_x = 111,
+    .blank_end_y = 37,
+    .sync_end_x = 31,
+    .sync_end_y = 4,
+    .leading_idle_lines = 38,
+    .trailing_idle_lines = 3,
+};
 
 // The IOC 25G2S's 1920 by 1080 timing, that timing with its vertical sync and back porch cut to 0, 1 and 2 lines, and
 // with its horizontal ones cut to 0 pixels
@@ -251,10 +262,16 @@ TEST(nvidia_display_light, raster_of_follows_nvidias_derivation) {
 
     EXPECT_EQ(raster.width, IOC_25G2S_RASTER.width);
     EXPECT_EQ(raster.height, IOC_25G2S_RASTER.height);
+    EXPECT_EQ(raster.sync_end_x, IOC_25G2S_RASTER.sync_end_x);
+    EXPECT_EQ(raster.sync_end_y, IOC_25G2S_RASTER.sync_end_y);
+
     EXPECT_EQ(raster.blank_start_x, IOC_25G2S_RASTER.blank_start_x);
     EXPECT_EQ(raster.blank_start_y, IOC_25G2S_RASTER.blank_start_y);
     EXPECT_EQ(raster.blank_end_x, IOC_25G2S_RASTER.blank_end_x);
     EXPECT_EQ(raster.blank_end_y, IOC_25G2S_RASTER.blank_end_y);
+
+    EXPECT_EQ(raster.leading_idle_lines, IOC_25G2S_RASTER.leading_idle_lines);
+    EXPECT_EQ(raster.trailing_idle_lines, IOC_25G2S_RASTER.trailing_idle_lines);
 }
 
 // A line with no sync or back porch pixel ends its blanking at 0xFFFFFFFF, where NVIDIA's 16-bit positions give 0xFFFF
