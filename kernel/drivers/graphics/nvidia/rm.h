@@ -445,6 +445,21 @@ constexpr uint32_t CORE_WINDOW_CONTROL        = 0x1000;
 constexpr uint32_t CORE_WINDOW_METHODS_STRIDE = 0x80;
 constexpr uint32_t WINDOW_CONTROL_OWNER_MASK  = 0xF;
 
+// NVIDIA's NV0073_CTRL_CMD_SPECIFIC_DISPLAY_CHANGE, the control to display common that brackets a mode set, sent before
+// its first method with START and after its last with END
+constexpr uint32_t CONTROL_DISPLAY_CHANGE = 0x7302A4;
+constexpr uint32_t DISPLAY_CHANGE_END     = 0;
+constexpr uint32_t DISPLAY_CHANGE_START   = 1;
+
+// The parameters of `CONTROL_DISPLAY_CHANGE`
+struct display_change_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t display_ids;     // NVIDIA's newDevices, the display ids of the display configuration the mode set is for
+    uint32_t properties;      // unused, 0
+    uint32_t phase;           // NVIDIA's enable, `DISPLAY_CHANGE_START` or `DISPLAY_CHANGE_END`
+};
+
+static_assert(sizeof(display_change_params) == 16, "NVIDIA's layout of DISPLAY_CHANGE's parameters");
 static_assert(sizeof(display_push_buffer_params) == 40, "NVIDIA's layout of DISPLAY_CHANNEL_PUSHBUFFER's parameters");
 static_assert(sizeof(display_channel_params) == 32, "NVIDIA's layout of a display channel's allocation parameters");
 static_assert(sizeof(display_release_flags_params) == 8, "NVIDIA's layout of SET_RMFREE_FLAGS's parameters");

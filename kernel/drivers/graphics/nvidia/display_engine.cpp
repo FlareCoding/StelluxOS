@@ -863,6 +863,15 @@ static int32_t write_core_initial_methods(display_channel& queue, uint8_t head_c
     return OK;
 }
 
+// Sends the start or the end, `phase`, of the mode set, naming `display_id`
+static int32_t send_display_change(firmware& fw, rm::handle display_common, uint32_t display_id, uint32_t phase) {
+    rm::display_change_params params = {};
+    params.display_ids = display_id;
+    params.phase = phase;
+
+    return fw.control(display_common, rm::CONTROL_DISPLAY_CHANGE, &params, sizeof(params));
+}
+
 display_engine::display_engine(firmware& fw, video_memory& memory)
     : m_firmware(fw)
     , m_memory(memory)
@@ -1076,6 +1085,33 @@ int32_t display_engine::set_up(
     window_owners owners = read_window_owners(regs, present_windows);
     log_window_owners(owners, present_windows, display.head_count);
 
+    return bring_up(outputs.outputs[light.output].display_id);
+}
+
+int32_t display_engine::bring_up(uint32_t display_id) {
+    rm::handle display_common = m_objects.display_common;
+    int32_t rc = send_display_change(m_firmware, display_common, display_id, rm::DISPLAY_CHANGE_START);
+    if (rc == ERR_FIRMWARE) {
+        log::error("nvidia: display common refused the start of the mode set naming display id 0x%X", display_id);
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    log::info("nvidia: display common took the start of the mode set naming display id 0x%X", display_id);
+    rc = send_display_change(m_firmware, display_common, display_id, rm::DISPLAY_CHANGE_END);
+    if (rc == ERR_FIRMWARE) {
+        log::error("nvidia: display common refused the end of the mode set naming display id 0x%X", display_id);
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    log::info("nvidia: display common took the end of the mode set naming display id 0x%X", display_id);
     return OK;
 }
 
