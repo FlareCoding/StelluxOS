@@ -3038,11 +3038,31 @@ src/nvidia-modeset/src/nvkms-evo3.c
     tables allowed, two input scaler taps and no upscaling), that a head is
     blanked in part by disabling its cursor with no context DMA, that a serial
     link carrying no head takes a control of 0, that an update naming the
-    notifier sets it with write-awaken and notify on, and that an update's
-    interlock words name the cursors and window channels it takes effect with,
-    in rm.h, core_methods.h, core_methods.cpp, display_engine.cpp,
+    notifier sets it with write-awaken and notify on, that an update's interlock
+    words name the cursors and window channels it takes effect with, in rm.h,
+    core_methods.h, core_methods.cpp, display_engine.cpp,
     kernel/tests/graphics/nvidia_core_methods.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that a flip writes a
+    window's image in this order: the scan direction from the top left, the
+    notifier's context DMA and its control (its slot in 16-byte units with the
+    write mode, both 0 for none), the present control (an image taken only at a
+    vertical blank, untimed and in mono, kept at least the frames asked), the
+    surface's six slots eye by eye and plane by plane, each context DMA before
+    its offset in 256-byte units, the size, SIZE_IN and SIZE_OUT, the storage in
+    rows of pixels, each plane's pitch in 64-byte units, the update timestamp's
+    two halves in one method, the format, then the color pipeline, the identity
+    format matrix, two input scaler taps each way, CSC11's matrix disabled, the
+    input look-up table read directly by 10-bit color and sized with its header,
+    its offset and context DMA, and an opaque composition at the layer's depth
+    with no color key and a constant alpha of 0, then no semaphore to acquire or
+    release, the interlock flags, the core channel's only when interlocked with
+    it and always the window's own, and the update releasing ELV, in rm.h,
+    window_methods.h, window_methods.cpp and
+    kernel/tests/graphics/nvidia_window_methods.test.cpp, that the format
+    matrix's coefficients are signed with 16 fraction bits, in rm.h, and that a
+    window neither scaling nor mapping tones takes its colors to the head's
+    through CSC11 alone, the other CSC stages written disabled and only for a
+    window whose capabilities report them, in rm.h and window_methods.h
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-modeset.c
@@ -3172,7 +3192,28 @@ src/common/sdk/nvidia/inc/class/clc67e.h
     the class number NVC67E_WINDOW_CHANNEL_DMA, which chip.cpp gives GA102's
     window channels, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
     kernel/tests/graphics/nvidia_core_channel.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the window
+    channel's methods and fields that a window's image writes: NVC67E_UPDATE and
+    its RELEASE_ELV, FLIP_LOCK_PIN and INTERLOCK_WITH_WIN_IMM,
+    SET_INTERLOCK_FLAGS and its INTERLOCK_WITH_CORE, SET_WINDOW_INTERLOCK_FLAGS
+    and its INTERLOCK_WITH_WINDOW bits, SET_CONTEXT_DMA_NOTIFIER,
+    SET_NOTIFIER_CONTROL and its MODE and OFFSET, SET_SCAN_DIRECTION and its
+    HORIZONTAL_DIRECTION and VERTICAL_DIRECTION, SET_PRESENT_CONTROL and its
+    MIN_PRESENT_INTERVAL, BEGIN_MODE, TIMESTAMP_MODE and STEREO_MODE,
+    SET_CONTEXT_DMA_ISO, SET_OFFSET, SET_PLANAR_STORAGE and its PITCH, all three
+    with the stride of 4 to each later slot's or plane's, SET_SIZE, SET_SIZE_IN
+    and SET_SIZE_OUT and their WIDTH and HEIGHT, SET_STORAGE,
+    SET_UPDATE_TIMESTAMP_LO and _HI, SET_PARAMS and its FORMAT X8R8G8B8,
+    SET_FMT_COEFFICIENT_C00 to C23, 4 apart, and their VALUE,
+    SET_CONTROL_INPUT_SCALER and its VERTICAL_TAPS and HORIZONTAL_TAPS,
+    SET_CSC11CONTROL and its ENABLE, SET_ILUT_CONTROL and its MODE DIRECT10 and
+    SIZE, SET_CONTEXT_DMA_ILUT, SET_OFFSET_ILUT, SET_COMPOSITION_CONTROL and its
+    COLOR_KEY_SELECT and DEPTH, SET_COMPOSITION_CONSTANT_ALPHA,
+    SET_COMPOSITION_FACTOR_SELECT and its color factor fields,
+    SET_CONTEXT_DMA_ACQ_SEMAPHORE, SET_ACQ_SEMAPHORE_CONTROL,
+    SET_ACQ_SEMAPHORE_VALUE, SET_CONTEXT_DMA_SEMAPHORE, SET_SEMAPHORE_CONTROL
+    and SET_SEMAPHORE_RELEASE, in rm.h, window_methods.h, window_methods.cpp and
+    kernel/tests/graphics/nvidia_window_methods.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/nvidia-modeset/include/nvkms-types.h
@@ -3214,7 +3255,13 @@ src/nvidia-modeset/include/nvkms-types.h
 
 src/nvidia-modeset/interface/nvkms-api-types.h
     that NvKmsPoint's x and y are each 16 bits, in display_light.h and
-    kernel/tests/graphics/nvidia_display_light.test.cpp
+    kernel/tests/graphics/nvidia_display_light.test.cpp, NVKMS_MAX_EYES, 2, and
+    NVKMS_MAX_PLANES_PER_SURFACE, 3, the most eyes and planes a surface has, in
+    rm.h, window_methods.cpp and
+    kernel/tests/graphics/nvidia_window_methods.test.cpp, NVKMS_LEFT, 0, the
+    left eye, in rm.h and window_methods.cpp, NVKMS_MAX_LAYERS_PER_HEAD, 8, and
+    NVKMS_MAIN_LAYER, 0, in window_methods.cpp, and that a layer of a smaller
+    composition depth lies closer to the top, in rm.h
     SPDX-FileCopyrightText: Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/include/nvkms-dma.h
@@ -3428,7 +3475,8 @@ src/nvidia-modeset/include/nvkms-utils.h
     that a wait timed with nvExceedsTimeoutUSec starts its clock at the first
     check and ends once more than its period has passed since, in
     core_channel.h, core_channel.cpp, display_engine.h and
-    kernel/tests/graphics/nvidia_core_channel_idle.test.cpp
+    kernel/tests/graphics/nvidia_core_channel_idle.test.cpp, and that
+    nvCtxDmaOffsetFromBytes gives a surface's offset in 256-byte units, in rm.h
     SPDX-FileCopyrightText: Copyright (c) 2014-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-hal.c
@@ -3445,6 +3493,12 @@ src/nvidia-modeset/src/nvkms-lut.c
     display_engine.cpp, kernel/tests/graphics/nvidia_display_light.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, and that its context
     DMA ends at the table's last byte, in display_engine.h
+    SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-hw-flip.c
+    that a layer given no composition depth takes NVKMS_MAX_LAYERS_PER_HEAD less
+    its index, in window_methods.cpp and
+    kernel/tests/graphics/nvidia_window_methods.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/softfloat/nvidia/nv-softfloat.h

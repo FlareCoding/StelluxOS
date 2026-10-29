@@ -18,6 +18,10 @@ namespace drivers::nvidia {
 // input table of 1029 8-byte entries, then a head's output table of as many, each padded to the next multiple of 256
 constexpr uint64_t LOOK_UP_TABLE_SURFACE_BYTES = 0x4200;
 
+// NVIDIA's NV_LUT_VSS_HEADER_SIZE and NV_NUM_EVO_LUT_ENTRIES: a look-up table's header entries, then its entries
+constexpr uint32_t LOOK_UP_TABLE_HEADER_ENTRIES = 4;
+constexpr uint32_t LOOK_UP_TABLE_ENTRIES        = 1025;
+
 /**
  * A connected output's modes, the timings of its EDID that may be its mode in
  * the order `find_mode_candidates` ranks them, and the DPCD capabilities they

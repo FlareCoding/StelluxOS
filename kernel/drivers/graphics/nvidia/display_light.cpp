@@ -30,10 +30,6 @@ constexpr uint32_t PIXELS_FETCHED_BEYOND_WIDTH = 22;
 constexpr uint32_t BASE_BUFFER_BYTES_PER_PIXEL = 4;
 constexpr uint32_t BASE_BUFFER_PITCH_ALIGNMENT = 256;
 
-// NVIDIA's NV_LUT_VSS_HEADER_SIZE and NV_NUM_EVO_LUT_ENTRIES: a look-up table's header entries, then its entries
-constexpr uint32_t LOOK_UP_TABLE_HEADER_ENTRIES = 4;
-constexpr uint32_t LOOK_UP_TABLE_ENTRIES        = 1025;
-
 // The levels of a 10-bit color, which NVIDIA's identity divides each entry's place by
 constexpr uint32_t COLOR_LEVELS = 1024;
 
