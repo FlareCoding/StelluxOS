@@ -2454,10 +2454,14 @@ src/common/inc/displayport/displayport.h
     kernel/tests/graphics/nvidia_displayport.test.cpp, the lane counts a link
     takes, 8 among them, in displayport.h, the lane counts IS_VALID_LANECOUNT
     passes, 0, 1, 2, 4 and 8, in display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, and a PHY
-    repeater count byte naming no count of 1 to 8 taken as 0, in display_dpcd.h,
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, a PHY repeater
+    count byte naming no count of 1 to 8 taken as 0, in display_dpcd.h,
     display_dpcd.cpp, kernel/tests/graphics/nvidia_display_link.test.cpp and
-    kernel/tests/graphics/nvidia_display_link_limits.test.cpp
+    kernel/tests/graphics/nvidia_display_link_limits.test.cpp, the MISC1 byte's
+    stereo bits 2:1, NV_DP_MSA_PROPERTIES_MISC1_STEREO, in rm.h,
+    display_link.cpp and kernel/tests/graphics/nvidia_display_link.test.cpp, and
+    dpColorFormat_RGB, 0, a stream's pixels as red, green and blue, in rm.h and
+    display_link.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/displayport/dpcd.h
@@ -2519,8 +2523,12 @@ src/common/displayport/src/dp_connectorimpl.cpp
     DisplayPort capabilities as it is made, before any DPCD read, and handing
     the library whether the GPU trains PHY repeaters, in display_dpcd.h, no
     monitor driven whose DPCD gives a revision below 1.0, in display_dpcd.h,
-    display_engine.h and display_engine.cpp, and a link's lanes taken from its
-    monitor's DPCD alone, no connector's lanes read, in display_outputs.h
+    display_engine.h and display_engine.cpp, a link's lanes taken from its
+    monitor's DPCD alone, no connector's lanes read, in display_outputs.h, and a
+    single stream's link trained first, then its stream's parameters set and
+    then its main stream attributes overridden, the stereo bits cleared unless
+    the code calling the library asks for in-band stereo signaling, in
+    display_link.h and display_link.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/src/dp_configcaps.cpp
@@ -2596,10 +2604,12 @@ src/common/displayport/src/dp_wardatabase.cpp
 src/nvidia-modeset/src/dp/nvdp-evo-interface.cpp
     two monitors, named by maker and product, whose limits are replaced with 4
     lanes at HBR2, in display_dpcd.h, an output resource's link taken as 0 for
-    its SOR_DP_A protocol and 1 for SOR_DP_B, in display_link.h,
+    its SOR_DP_A protocol and 1 for SOR_DP_B, in rm.h, display_link.h,
     display_link.cpp, kernel/tests/graphics/nvidia_display_link.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and an assertion
-    against any other protocol, in display_link.h
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, an assertion against
+    any other protocol, in display_link.h, and in-band stereo signaling taken as
+    unsupported unless the code calling the library asks for it, in
+    display_link.h
     SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_evoadapter.h
@@ -2638,13 +2648,18 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
     kernel/tests/graphics/nvidia.test.cpp, NV0073_CTRL_CMD_DP_GET_CAPS,
     0x731369, the control giving an output resource's DisplayPort facts, its
     parameters' layout, its highest rate field in bits 2:0 with the codes 1 to 4
-    and the bit for DisplayPort 1.2 among the versions, and
-    NV0073_CTRL_CMD_DP_CTRL, 0x731343, the control training a display id's link,
-    its parameters' layout, its command's bits setting the lane count and the
-    rate, turning on enhanced framing and training a PHY repeater, its data's
-    lane count in bits 4:0, rate code in bits 15:8 and target in bits 22:19, 0
-    for the sink and a PHY repeater's number from 1, and the reply's wait before
-    the request is sent again, in rm.h, display_link.h, display_link.cpp and
+    and the bit for DisplayPort 1.2 among the versions, NV0073_CTRL_CMD_DP_CTRL,
+    0x731343, the control training a display id's link, its parameters' layout,
+    its command's bits setting the lane count and the rate, turning on enhanced
+    framing and training a PHY repeater, its data's lane count in bits 4:0, rate
+    code in bits 15:8 and target in bits 22:19, 0 for the sink and a PHY
+    repeater's number from 1, and the reply's wait before the request is sent
+    again, NV0073_CTRL_CMD_DP_CONFIG_STREAM, 0x731362, the control setting a
+    head's stream on its link, its parameters' layout and bEnableOverride having
+    the firmware program the parameters sent, and
+    NV0073_CTRL_CMD_DP_SET_MSA_PROPERTIES_V2, 0x731381, the control overriding a
+    stream's main stream attributes, and its parameters' layout, in rm.h,
+    display_link.h, display_link.cpp and
     kernel/tests/graphics/nvidia_display_link.test.cpp, the rates DP_GET_CAPS's
     highest rate codes 1 to 4 stand for, in display_outputs.h and
     display_outputs.cpp, DP_GET_CAPS's highest rate codes 3 for HBR2 and 4 for
@@ -2653,6 +2668,19 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
     with and without the PHY repeater bit, in
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/interface/deprecated/rmapi_deprecated_control.c
+    that NVIDIA's resource manager sends NV0073_CTRL_CMD_DP_SET_MSA_PROPERTIES
+    to display common as NV0073_CTRL_CMD_DP_SET_MSA_PROPERTIES_V2, each field
+    copied, in rm.h and kernel/tests/graphics/nvidia_display_link.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_disp_objs_nvoc.c
+    that display common's controls hold NV0073_CTRL_CMD_DP_SET_MSA_PROPERTIES_V2
+    and not NV0073_CTRL_CMD_DP_SET_MSA_PROPERTIES, in rm.h
+    It carries no notice of its own and is covered by the package's COPYING,
+    which gives the notice below and this copyright line:
+    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/dp/nvdp-connector.cpp
     a mode's pixel clock in hertz, line total and visible width taken from its
@@ -3287,18 +3315,23 @@ src/common/displayport/src/dp_evoadapter.cpp
     display common for the DisplayPort facts of the output resource it was
     assigned, counts FEC support, the increased watermark limits and PHY
     repeater training as set only when their bytes are NV_TRUE, and asserts and
-    goes on with the facts it held before when the request is refused, and that
-    it trains a link with one request per target, each PHY repeater from the one
+    goes on with the facts it held before when the request is refused, that it
+    trains a link with one request per target, each PHY repeater from the one
     closest to the GPU, which it numbers highest, and then the sink, training
     the repeaters only when the GPU trains them and the firmware counts as many
     as the DPCD does, setting the lane count, the rate and enhanced framing when
     the link runs it, sends each request up to 3 times while the firmware
     refuses it and names a wait, waits as long after any reply naming one, and
-    judges the training by the requests' status alone, in rm.h, display_link.h,
-    display_link.cpp and kernel/tests/graphics/nvidia_display_link.test.cpp, and
-    that it takes a highest rate code outside 1 to 4 in an output resource's
-    DisplayPort facts as RBR, in display_link.h, display_outputs.h,
-    display_outputs.cpp and kernel/tests/graphics/nvidia_display_link.test.cpp
+    judges the training by the requests' status alone, that it sets a single
+    stream with the firmware's override on, its head, output resource, link,
+    blanking symbols, RGB, enhanced framing, transfer unit size and watermark,
+    ignoring the request's status, that it overrides the main stream attributes'
+    stereo bits with their value 0, keeping the override for the next mode and
+    ignoring a NOT_SUPPORTED refusal, in rm.h, display_link.h, display_link.cpp
+    and kernel/tests/graphics/nvidia_display_link.test.cpp, and that it takes a
+    highest rate code outside 1 to 4 in an output resource's DisplayPort facts
+    as RBR, in display_link.h, display_outputs.h, display_outputs.cpp and
+    kernel/tests/graphics/nvidia_display_link.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-dpy.c
@@ -3422,8 +3455,8 @@ src/common/softfloat/nvidia/nv-softfloat.h
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,
-g_disp_inst_mem_nvoc.c, rpc_global_enums.h, g_rpc_private.h and
-nvUnixVersion.h the package's COPYING, carries this permission notice:
+g_disp_inst_mem_nvoc.c, g_disp_objs_nvoc.c, rpc_global_enums.h, g_rpc_private.h
+and nvUnixVersion.h the package's COPYING, carries this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),

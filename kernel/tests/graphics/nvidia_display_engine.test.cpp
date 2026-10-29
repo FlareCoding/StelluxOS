@@ -3595,3 +3595,209 @@ TEST(nvidia_display_engine, set_up_checks_no_link_whose_status_read_is_refused) 
     ));
     EXPECT_FALSE(engine_log_contains("link status read"));
 }
+
+// Once the link's status shows it trained, a set-up programs the head's stream on it and then the stream's attributes,
+// once each, logging each
+TEST(nvidia_display_engine, set_up_programs_the_stream_and_its_attributes_once_the_link_is_trained) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_CONFIGURE_STREAM), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_STREAM_ATTRIBUTES), 1u);
+
+    uint32_t stream = fw.first_control(rm::CONTROL_CONFIGURE_STREAM);
+    EXPECT_LT(fw.last_control(rm::CONTROL_DP_AUX), stream);
+    EXPECT_LT(stream, fw.first_control(rm::CONTROL_SET_STREAM_ATTRIBUTES));
+
+    // The values `compute_stream` gives the AOC's 59.950 Hz timing at 1 lane at HBR3
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common programmed head 1's DisplayPort stream on output resource 0's link A: transfer units "
+        "of 64 symbols, a watermark of 29 symbols, 499 symbols of horizontal blanking and 8534 of vertical\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common clears the stereo bits of display id 0x100's main stream attributes\r\n"
+    ));
+}
+
+// With the crossbar, the stream goes on the output resource and link display common assigned, resource 2's link B
+TEST(nvidia_display_engine, set_up_programs_the_stream_on_the_link_the_crossbar_assigns) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.has_crossbar = true;
+    fw.assigned_resource = 2;
+    fw.boot_link_protocol = rm::PROTOCOL_DISPLAYPORT_B;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_CONFIGURE_STREAM), 1u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common programmed head 1's DisplayPort stream on output resource 2's link B: "
+    ));
+}
+
+// A refused assignment, DisplayPort facts request, training or stream stops the link there with the set-up `OK`,
+// logged with every step it skips and without the step's own outcome, and sends none of the later requests
+TEST(nvidia_display_engine, set_up_stops_the_link_at_its_first_refused_step) {
+    struct stop {
+        uint32_t    command;
+        uint32_t    skipped;
+        const char* line;
+        const char* outcome;
+    };
+
+    const stop stops[] = {
+        {rm::CONTROL_ASSIGN_OUTPUT_RESOURCE,
+         rm::CONTROL_GET_LINK_CAPABILITIES,
+         "nvidia: display common refused to assign display id 0x100 an output resource, so the link's DisplayPort "
+         "facts are not read and the link is neither trained nor given a stream\r\n",
+         "is driven by output resource"},
+        {rm::CONTROL_GET_LINK_CAPABILITIES,
+         rm::CONTROL_TRAIN_LINK,
+         "nvidia: display common refused the DisplayPort facts of output resource 0, so the link is neither trained "
+         "nor given a stream\r\n",
+         "DisplayPort links run up to"},
+        {rm::CONTROL_TRAIN_LINK,
+         rm::CONTROL_CONFIGURE_STREAM,
+         "nvidia: display common refused to train display id 0x100's link at 1 lane at DisplayPort rate 0x1E (command "
+         "0x2083, data 0x1E01), so its link is neither checked nor given a stream\r\n",
+         "trained display id"},
+        {rm::CONTROL_CONFIGURE_STREAM,
+         rm::CONTROL_SET_STREAM_ATTRIBUTES,
+         "nvidia: display common refused head 1's DisplayPort stream on output resource 0's link A, so the stream's "
+         "attributes are not overridden\r\n",
+         "programmed head"},
+    };
+
+    for (const stop& stopped : stops) {
+        engine_firmware fw;
+        show_output_0_on_head_1(fw);
+        fw.has_crossbar = true;
+        fw.get_at_link = LINK_TAKE_DOWN_END;
+        fw.refusals[0] = {
+            .made   = engine_firmware::kind::control,
+            .number = stopped.command,
+            .object = 0,
+            .result = ERR_FIRMWARE,
+        };
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), OK);
+        EXPECT_EQ(fw.control_count(stopped.command), 1u);
+        EXPECT_EQ(fw.control_count(stopped.skipped), 0u);
+        EXPECT_TRUE(engine_log_contains(stopped.line));
+        EXPECT_FALSE(engine_log_contains(stopped.outcome));
+        EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core"));
+    }
+}
+
+// A status read showing the lane untrained is logged with the stream it skips, and sends no stream
+TEST(nvidia_display_engine, set_up_gives_no_stream_to_a_link_whose_status_shows_it_untrained) {
+    static constexpr uint8_t CLOCK_RECOVERED_ONLY[] = {0x01, 0x00, 0x00};
+
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.link_status = CLOCK_RECOVERED_ONLY;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_CONFIGURE_STREAM), 0u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_STREAM_ATTRIBUTES), 0u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link is not trained at 1 lane, its link status reading 0x01 0x00 0x00, so the "
+        "link is given no stream\r\n"
+    ));
+}
+
+// A mode no configuration carries is logged with the training and stream it skips, and sends no stream
+TEST(nvidia_display_engine, set_up_gives_no_stream_to_a_link_its_displayport_facts_leave_no_configuration) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.displayport_max_rate = 1;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_CONFIGURE_STREAM), 0u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: no link configuration carries display id 0x100's mode within output resource 0's DisplayPort facts, "
+        "so the link is neither trained nor given a stream\r\n"
+    ));
+}
+
+// A refused status read is logged with the check and stream it skips, and sends no stream
+TEST(nvidia_display_engine, set_up_gives_no_stream_to_a_link_whose_status_read_is_refused) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+    fw.refuses_link_status = true;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_CONFIGURE_STREAM), 0u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common refused display id 0x100's 3-byte AUX read at 0x0200C, so its link is neither checked "
+        "nor given a stream\r\n"
+    ));
+}
+
+// A refused override of the stream's attributes is logged and leaves the link ready with nothing taken down, while a
+// late one takes the engine down and fails the set-up with its error, neither logging the stereo bits cleared
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_only_after_a_late_attributes_request) {
+    const int32_t results[] = {ERR_FIRMWARE, ERR_TIMEOUT};
+    for (int32_t result : results) {
+        engine_firmware fw;
+        show_output_0_on_head_1(fw);
+        fw.get_at_link = LINK_TAKE_DOWN_END;
+        fw.refusals[0] = {
+            .made   = engine_firmware::kind::control,
+            .number = rm::CONTROL_SET_STREAM_ATTRIBUTES,
+            .object = 0,
+            .result = result,
+        };
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+        display_engine& engine = new_engine(fw, memory);
+
+        bool is_refused = result == ERR_FIRMWARE;
+        EXPECT_EQ(set_up_logged(engine), is_refused ? OK : ERR_TIMEOUT);
+        EXPECT_EQ(fw.control_count(rm::CONTROL_SET_STREAM_ATTRIBUTES), 1u);
+
+        EXPECT_FALSE(engine_log_contains("clears the stereo bits"));
+        EXPECT_EQ(
+            engine_log_contains(
+                "nvidia: display common refused to clear the stereo bits of display id 0x100's main stream attributes, "
+                "so the stream keeps those the firmware sets\r\n"
+            ),
+            is_refused
+        );
+        EXPECT_EQ(
+            engine_log_contains(
+                "nvidia: display id 0x100's link is not set up, so bring-up takes the display engine down\r\n"
+            ),
+            !is_refused
+        );
+        EXPECT_EQ(engine_log_contains("bring-up takes the display engine down"), !is_refused);
+        EXPECT_EQ(fw.mode_set_puts[1], is_refused ? SHUTDOWN_UPDATE_END + 16 : LINK_TAKE_DOWN_END);
+    }
+}

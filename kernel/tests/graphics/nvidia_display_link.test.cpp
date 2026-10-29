@@ -15,6 +15,7 @@ TEST_SUITE(nvidia_display_link);
 
 using drivers::nvidia::assign_output_link;
 using drivers::nvidia::chip_displayport;
+using drivers::nvidia::configure_stream;
 using drivers::nvidia::display_output;
 using drivers::nvidia::dpcd_capabilities;
 using drivers::nvidia::ERR_FIRMWARE;
@@ -25,6 +26,7 @@ using drivers::nvidia::output_link;
 using drivers::nvidia::phy_repeater_count;
 using drivers::nvidia::read_link_capabilities;
 using drivers::nvidia::read_link_status;
+using drivers::nvidia::set_stream_attributes;
 using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::train_link;
 namespace displayport = drivers::nvidia::displayport;
@@ -72,6 +74,29 @@ static constexpr uint32_t NVIDIA_TRAIN_PHY_REPEATER = 1u << 13;
 // training, and the data for 1 lane at HBR3 toward the sink, as the card trained the IOC 25G2S
 static constexpr uint32_t NVIDIA_CARD_COMMAND = 0x2083;
 static constexpr uint32_t ONE_HBR3_LANE_DATA  = 0x1E01;
+
+// NVIDIA's NV0073_CTRL_CMD_DP_CONFIG_STREAM and its parameters' size and offsets
+static constexpr uint32_t NVIDIA_DP_CONFIG_STREAM       = 0x731362;
+static constexpr size_t   NVIDIA_DP_CONFIG_STREAM_BYTES = 116;
+static constexpr uint32_t STREAM_HEAD_OFFSET            = 4;
+static constexpr uint32_t STREAM_SOR_INDEX_OFFSET       = 8;
+static constexpr uint32_t STREAM_DP_LINK_OFFSET         = 12;
+static constexpr uint32_t STREAM_OVERRIDE_OFFSET        = 16;
+static constexpr uint32_t STREAM_HBLANK_OFFSET          = 24;
+static constexpr uint32_t STREAM_VBLANK_OFFSET          = 28;
+static constexpr uint32_t STREAM_ENHANCED_OFFSET        = 68;
+static constexpr uint32_t STREAM_TU_SIZE_OFFSET         = 72;
+static constexpr uint32_t STREAM_WATERMARK_OFFSET       = 76;
+
+// NVIDIA's NV0073_CTRL_CMD_DP_SET_MSA_PROPERTIES_V2, the form of DP_SET_MSA_PROPERTIES its resource manager sends
+// display common, and its parameters' size and offsets, the reply's values asked for at 52
+static constexpr uint32_t NVIDIA_DP_SET_MSA_PROPERTIES_V2       = 0x731381;
+static constexpr size_t   NVIDIA_DP_SET_MSA_PROPERTIES_V2_BYTES = 80;
+static constexpr uint32_t MSA_ENABLE_OFFSET                     = 8;
+static constexpr uint32_t MSA_CACHE_OFFSET                      = 10;
+static constexpr uint32_t MSA_MISC1_MASK_OFFSET                 = 12;
+static constexpr uint32_t MSA_DEBUG_VALUES_OFFSET               = 52;
+static constexpr uint8_t  NVIDIA_MISC1_STEREO                   = 0x06;
 
 // NVIDIA's NV0073_CTRL_CMD_DP_AUXCH_CTRL, its parameters' offsets and the most data bytes a read gives
 static constexpr uint32_t NVIDIA_DP_AUXCH_CTRL = 0x731341;
@@ -862,6 +887,129 @@ TEST(nvidia_display_link, waits_out_the_wait_an_accepted_training_reply_asks_for
     EXPECT_TRUE(is_trained);
     EXPECT_EQ(accepted.call_count, 1u);
     EXPECT_GE(elapsed, TRAIN_WAIT_MS * NS_PER_MS);
+}
+
+TEST(nvidia_display_link, configures_the_stream_in_nvidias_layout) {
+    link_firmware earlier;
+    bool earlier_is_configured = false;
+
+    link_firmware fw;
+    bool is_configured = false;
+    output_link link = {.index = 2, .sublink = 1};
+    displayport::stream_parameters stream = {
+        .transfer_unit_symbols = 64,
+        .watermark             = 24,
+        .hblank_symbols        = 0x4E,
+        .vblank_symbols        = 0x8FB,
+    };
+
+    // The earlier configuration leaves its dirtied reply in the frame the next one's request takes, so a request not
+    // zeroed carries it
+    ASSERT_EQ(configure_stream(earlier, TEST_DISPLAY_COMMON, 1, link, true, stream, earlier_is_configured), OK);
+    ASSERT_EQ(configure_stream(fw, TEST_DISPLAY_COMMON, 1, link, true, stream, is_configured), OK);
+
+    EXPECT_TRUE(is_configured);
+    ASSERT_EQ(fw.call_count, 1u);
+    EXPECT_EQ(fw.calls[0].command, NVIDIA_DP_CONFIG_STREAM);
+    EXPECT_EQ(fw.calls[0].size, NVIDIA_DP_CONFIG_STREAM_BYTES);
+
+    const uint8_t* params = fw.calls[0].params;
+    EXPECT_EQ(read_u32(params, 0), 0u);
+    EXPECT_EQ(read_u32(params, STREAM_HEAD_OFFSET), 1u);
+    EXPECT_EQ(read_u32(params, STREAM_SOR_INDEX_OFFSET), 2u);
+    EXPECT_EQ(read_u32(params, STREAM_DP_LINK_OFFSET), 1u);
+
+    EXPECT_EQ(params[STREAM_OVERRIDE_OFFSET], 1u);
+    for (uint32_t offset = STREAM_OVERRIDE_OFFSET + 1; offset < STREAM_HBLANK_OFFSET; offset++) {
+        EXPECT_EQ(params[offset], 0u);
+    }
+
+    EXPECT_EQ(read_u32(params, STREAM_HBLANK_OFFSET), 0x4Eu);
+    EXPECT_EQ(read_u32(params, STREAM_VBLANK_OFFSET), 0x8FBu);
+    for (uint32_t offset = STREAM_VBLANK_OFFSET + 4; offset < STREAM_ENHANCED_OFFSET; offset++) {
+        EXPECT_EQ(params[offset], 0u);
+    }
+
+    EXPECT_EQ(params[STREAM_ENHANCED_OFFSET], 1u);
+    for (uint32_t offset = STREAM_ENHANCED_OFFSET + 1; offset < STREAM_TU_SIZE_OFFSET; offset++) {
+        EXPECT_EQ(params[offset], 0u);
+    }
+
+    EXPECT_EQ(read_u32(params, STREAM_TU_SIZE_OFFSET), 64u);
+    EXPECT_EQ(read_u32(params, STREAM_WATERMARK_OFFSET), 24u);
+    for (uint32_t offset = STREAM_WATERMARK_OFFSET + 4; offset < NVIDIA_DP_CONFIG_STREAM_BYTES; offset++) {
+        EXPECT_EQ(params[offset], 0u);
+    }
+
+    link_firmware refusing;
+    refusing.refused_command = NVIDIA_DP_CONFIG_STREAM;
+    ASSERT_EQ(configure_stream(refusing, TEST_DISPLAY_COMMON, 1, link, true, stream, is_configured), OK);
+    EXPECT_FALSE(is_configured);
+}
+
+TEST(nvidia_display_link, configures_the_stream_without_enhanced_framing_on_a_link_running_none) {
+    link_firmware fw;
+    output_link link = {.index = 0, .sublink = 0};
+    displayport::stream_parameters stream = {};
+
+    bool is_configured = false;
+    ASSERT_EQ(configure_stream(fw, TEST_DISPLAY_COMMON, 0, link, false, stream, is_configured), OK);
+
+    EXPECT_TRUE(is_configured);
+    ASSERT_EQ(fw.call_count, 1u);
+    EXPECT_EQ(fw.calls[0].params[STREAM_ENHANCED_OFFSET], 0u);
+}
+
+TEST(nvidia_display_link, clears_the_stereo_attributes_in_nvidias_second_layout_and_goes_on_when_refused) {
+    link_firmware earlier;
+    link_firmware fw;
+
+    // The earlier override leaves its dirtied reply in the frame the next one's request takes, so a request not zeroed
+    // carries it
+    ASSERT_EQ(set_stream_attributes(earlier, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID), OK);
+    ASSERT_EQ(set_stream_attributes(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID), OK);
+
+    ASSERT_EQ(fw.call_count, 1u);
+    EXPECT_EQ(fw.calls[0].command, NVIDIA_DP_SET_MSA_PROPERTIES_V2);
+    EXPECT_EQ(fw.calls[0].size, NVIDIA_DP_SET_MSA_PROPERTIES_V2_BYTES);
+
+    const uint8_t* params = fw.calls[0].params;
+    EXPECT_EQ(read_u32(params, 0), 0u);
+    EXPECT_EQ(read_u32(params, 4), TEST_DISPLAY_ID);
+
+    EXPECT_EQ(params[MSA_ENABLE_OFFSET], 1u);
+    EXPECT_EQ(params[MSA_ENABLE_OFFSET + 1], 0u);
+    EXPECT_EQ(params[MSA_CACHE_OFFSET], 1u);
+
+    EXPECT_EQ(params[MSA_MISC1_MASK_OFFSET - 1], 0u);
+    EXPECT_EQ(params[MSA_MISC1_MASK_OFFSET], NVIDIA_MISC1_STEREO);
+    for (uint32_t offset = MSA_MISC1_MASK_OFFSET + 1; offset < NVIDIA_DP_SET_MSA_PROPERTIES_V2_BYTES; offset++) {
+        EXPECT_EQ(params[offset], 0u);
+    }
+
+    EXPECT_EQ(params[MSA_DEBUG_VALUES_OFFSET], 0u);
+
+    link_firmware refusing;
+    refusing.refused_command = NVIDIA_DP_SET_MSA_PROPERTIES_V2;
+    EXPECT_EQ(set_stream_attributes(refusing, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID), OK);
+}
+
+// A stream or attributes request failing other than by display common's refusal gives its error
+TEST(nvidia_display_link, gives_the_error_of_a_stream_or_attributes_request_failing_other_than_by_a_refusal) {
+    link_firmware stream;
+    stream.refused_command = NVIDIA_DP_CONFIG_STREAM;
+    stream.refusal = ERR_TIMEOUT;
+
+    output_link link = {.index = 0, .sublink = 0};
+    displayport::stream_parameters parameters = {};
+    bool is_configured = true;
+    EXPECT_EQ(configure_stream(stream, TEST_DISPLAY_COMMON, 1, link, true, parameters, is_configured), ERR_TIMEOUT);
+    EXPECT_FALSE(is_configured);
+
+    link_firmware attributes;
+    attributes.refused_command = NVIDIA_DP_SET_MSA_PROPERTIES_V2;
+    attributes.refusal = ERR_TIMEOUT;
+    EXPECT_EQ(set_stream_attributes(attributes, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID), ERR_TIMEOUT);
 }
 
 TEST(nvidia_display_link, counts_the_phy_repeaters_nvidia_counts) {
