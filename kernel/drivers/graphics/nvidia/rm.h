@@ -637,6 +637,101 @@ constexpr uint32_t CURSOR_CONTROL_DISABLED      = 0xCF;
 constexpr uint32_t CORE_WINDOW_USAGE_BOUNDS    = 0x1010;
 constexpr uint32_t DEFAULT_WINDOW_USAGE_BOUNDS = 0x10110000;
 
+// A window channel's update, NVIDIA's NVC67E_UPDATE, with RELEASE_ELV (bit 0) set as in every window update, no flip
+// lock pin and no window immediate channel interlocked
+constexpr uint32_t WINDOW_UPDATE             = 0x200;
+constexpr uint32_t WINDOW_UPDATE_RELEASE_ELV = 0x1;
+
+// NVIDIA's NVC67E_SET_INTERLOCK_FLAGS, whose INTERLOCK_WITH_CORE (bit 0) has the window's update take effect with the
+// core channel's, and NVC67E_SET_WINDOW_INTERLOCK_FLAGS, bit i window i's channel
+constexpr uint32_t WINDOW_SET_INTERLOCK_FLAGS        = 0x370;
+constexpr uint32_t WINDOW_SET_WINDOW_INTERLOCK_FLAGS = 0x374;
+constexpr uint32_t WINDOW_INTERLOCK_WITH_CORE        = 0x1;
+
+// NVIDIA's NVC67E_SET_CONTEXT_DMA_NOTIFIER (0 for none) and NVC67E_SET_NOTIFIER_CONTROL, whose OFFSET (bits 11:4) names
+// the notifier's 16-byte slot and whose MODE (bit 0) clear is WRITE
+constexpr uint32_t WINDOW_SET_NOTIFIER_CONTEXT_DMA = 0x21C;
+constexpr uint32_t WINDOW_SET_NOTIFIER_CONTROL     = 0x220;
+constexpr uint32_t NOTIFIER_CONTROL_OFFSET_SHIFT   = 4;
+
+// NVIDIA's NVC67E_SET_SCAN_DIRECTION, 0 scanning from the top left, and NVC67E_SET_PRESENT_CONTROL, whose 1 takes an
+// image only at a vertical blank and keeps it at least a frame (MIN_PRESENT_INTERVAL, bits 3:0), untimed and in mono
+constexpr uint32_t WINDOW_SET_SCAN_DIRECTION      = 0x33C;
+constexpr uint32_t WINDOW_SET_PRESENT_CONTROL     = 0x308;
+constexpr uint32_t SCAN_FROM_TOP_LEFT             = 0;
+constexpr uint32_t PRESENT_MIN_INTERVAL_ONE_FRAME = 0x1;
+
+// NVIDIA's NVC67E_SET_CONTEXT_DMA_ISO(0) and NVC67E_SET_OFFSET(0), the context DMA and offset in 256-byte units of a
+// surface's slot 0, each later slot's 4 bytes on: slot i holds eye i % 2 (0 the left or only one) of plane i / 2
+constexpr uint32_t WINDOW_SET_SURFACE_CONTEXT_DMA = 0x240;
+constexpr uint32_t WINDOW_SET_SURFACE_OFFSET      = 0x260;
+
+// NVIDIA's NVKMS_MAX_EYES and NVKMS_MAX_PLANES_PER_SURFACE, the most eyes and planes a surface has
+constexpr uint32_t SURFACE_EYES_MAX   = 2;
+constexpr uint32_t SURFACE_PLANES_MAX = 3;
+
+// NVIDIA's NVC67E_SET_SIZE (the surface's), NVC67E_SET_SIZE_IN (what the window reads of it) and NVC67E_SET_SIZE_OUT
+// (what it shows), each the width in bits 15:0 and the height in bits 31:16
+constexpr uint32_t WINDOW_SET_SIZE     = 0x224;
+constexpr uint32_t WINDOW_SET_SIZE_IN  = 0x298;
+constexpr uint32_t WINDOW_SET_SIZE_OUT = 0x2A4;
+constexpr uint32_t SIZE_HEIGHT_SHIFT   = 16;
+
+// NVIDIA's NVC67E_SET_STORAGE, 0 for a surface in rows of pixels, and NVC67E_SET_PLANAR_STORAGE(0), plane 0's pitch in
+// 64-byte units in bits 12:0, each later plane's 4 bytes on
+constexpr uint32_t WINDOW_SET_STORAGE       = 0x228;
+constexpr uint32_t WINDOW_SET_PLANE_STORAGE = 0x230;
+constexpr uint32_t STORAGE_ROWS_OF_PIXELS   = 0;
+constexpr uint32_t PLANE_PITCH_UNIT_BYTES   = 64;
+
+// NVIDIA's NVC67E_SET_UPDATE_TIMESTAMP_LO, then _HI 4 bytes on, a time not to show the image before, 0 for none
+constexpr uint32_t WINDOW_SET_UPDATE_TIMESTAMP = 0x348;
+
+// NVIDIA's NVC67E_SET_PARAMS, whose FORMAT (bits 7:0) X8R8G8B8 is 4 bytes a pixel, blue in the lowest byte, then green
+// and red, the top byte unused
+constexpr uint32_t WINDOW_SET_PARAMS = 0x22C;
+constexpr uint32_t FORMAT_X8R8G8B8   = 0xE6;
+
+// NVIDIA's NVC67E_SET_FMT_COEFFICIENT_C00, the first of the format matrix's 12 coefficients (3 rows of 4), each later
+// one's 4 bytes on, signed with 16 fraction bits in bits 20:0, so one is 0x10000
+constexpr uint32_t WINDOW_SET_FORMAT_MATRIX = 0x400;
+constexpr uint32_t FORMAT_MATRIX_ROWS       = 3;
+constexpr uint32_t FORMAT_MATRIX_COLUMNS    = 4;
+constexpr uint32_t FORMAT_MATRIX_ONE        = 0x10000;
+
+// NVIDIA's NVC67E_SET_CONTROL_INPUT_SCALER, 2 taps vertically (bits 2:0 as 1) and horizontally (bits 6:4 as 1)
+constexpr uint32_t WINDOW_SET_INPUT_SCALER_CONTROL = 0x2A8;
+constexpr uint32_t INPUT_SCALER_TWO_TAPS           = 0x11;
+
+// NVIDIA's NVC67E_SET_CSC11CONTROL, the last matrix of the window's color space conversion (CSC) stages, taking its
+// colors to the head's, 0 disabled
+constexpr uint32_t WINDOW_SET_CSC11_CONTROL = 0x59C;
+
+// NVIDIA's NVC67E_SET_ILUT_CONTROL, _CONTEXT_DMA_ILUT and _OFFSET_ILUT, the input look-up table's control, surface and
+// offset. The control's MODE (bits 3:2) DIRECT10 indexes it by 10-bit color, and SIZE (bits 18:8) counts entries
+constexpr uint32_t WINDOW_SET_INPUT_TABLE_CONTROL     = 0x440;
+constexpr uint32_t WINDOW_SET_INPUT_TABLE_CONTEXT_DMA = 0x444;
+constexpr uint32_t WINDOW_SET_INPUT_TABLE_OFFSET      = 0x448;
+constexpr uint32_t INPUT_TABLE_MODE_DIRECT10          = 0x8;
+constexpr uint32_t INPUT_TABLE_SIZE_SHIFT             = 8;
+
+// NVIDIA's NVC67E_SET_COMPOSITION_CONTROL (no color key, DEPTH in bits 11:4, a smaller depth closer to the top),
+// _CONSTANT_ALPHA and _FACTOR_SELECT, whose 0x11 takes each pixel's color whole over what lies below, NVIDIA's opaque
+constexpr uint32_t WINDOW_SET_COMPOSITION_CONTROL        = 0x2EC;
+constexpr uint32_t WINDOW_SET_COMPOSITION_CONSTANT_ALPHA = 0x2F0;
+constexpr uint32_t WINDOW_SET_COMPOSITION_FACTORS        = 0x2F4;
+constexpr uint32_t COMPOSITION_DEPTH_SHIFT               = 4;
+constexpr uint32_t COMPOSITION_FACTORS_OPAQUE            = 0x11;
+
+// NVIDIA's NVC67E_SET_CONTEXT_DMA_ACQ_SEMAPHORE, _ACQ_SEMAPHORE_CONTROL and _ACQ_SEMAPHORE_VALUE, a semaphore an update
+// waits on, then _CONTEXT_DMA_SEMAPHORE, _SEMAPHORE_CONTROL and _SEMAPHORE_RELEASE, one it writes, each 0 for none
+constexpr uint32_t WINDOW_SET_ACQUIRE_SEMAPHORE_CONTEXT_DMA = 0x338;
+constexpr uint32_t WINDOW_SET_ACQUIRE_SEMAPHORE_CONTROL     = 0x330;
+constexpr uint32_t WINDOW_SET_ACQUIRE_SEMAPHORE_VALUE       = 0x334;
+constexpr uint32_t WINDOW_SET_SEMAPHORE_CONTEXT_DMA         = 0x218;
+constexpr uint32_t WINDOW_SET_SEMAPHORE_CONTROL             = 0x20C;
+constexpr uint32_t WINDOW_SET_SEMAPHORE_RELEASE             = 0x214;
+
 // NVIDIA's NV0073_CTRL_CMD_SPECIFIC_DISPLAY_CHANGE, the control to display common that brackets a mode set, sent before
 // its first method with START and after its last with END
 constexpr uint32_t CONTROL_DISPLAY_CHANGE = 0x7302A4;
