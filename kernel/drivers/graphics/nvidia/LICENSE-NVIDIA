@@ -1987,16 +1987,17 @@ src/nvidia-modeset/src/nvkms-rm.c
     unless its pitch is a multiple of 256 bytes, in display_light.h,
     display_light.cpp, kernel/tests/graphics/nvidia_display_engine.test.cpp and
     kernel/tests/graphics/nvidia_display_light.test.cpp, that it binds each
-    surface's context DMA to the core channel and every window's channel, in
-    display_engine.h, that it brackets a mode set with
-    NV0073_CTRL_CMD_SPECIFIC_DISPLAY_CHANGE, its start before the mode set's
-    first method and its end after its last update, each naming the display ids
-    of the configuration the mode set is for, with properties 0, and goes on
-    past a refusal of either, in rm.h, display_engine.h, display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, that on a GPU with the
-    crossbar it keeps no output resource index from a display id's output
-    resource facts, as several display ids may report one resource, while
-    keeping their protocol, in display_link.h, display_link.cpp,
+    surface's context DMA to the core channel first and then to every window's
+    channel, in display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it brackets a
+    mode set with NV0073_CTRL_CMD_SPECIFIC_DISPLAY_CHANGE, its start before the
+    mode set's first method and its end after its last update, each naming the
+    display ids of the configuration the mode set is for, with properties 0, and
+    goes on past a refusal of either, in rm.h, display_engine.h,
+    display_engine.cpp and kernel/tests/graphics/nvidia_display_engine.test.cpp,
+    that on a GPU with the crossbar it keeps no output resource index from a
+    display id's output resource facts, as several display ids may report one
+    resource, while keeping their protocol, in display_link.h, display_link.cpp,
     kernel/tests/graphics/nvidia_display_link.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it keeps the
     facts' type, and without the crossbar their index, whatever they hold, in
@@ -2747,8 +2748,9 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     NV_UDISP_FE_CHN_ARMED_BASEADR_CORE, where the core channel's armed state
     begins, in core_channel.h and
     kernel/tests/graphics/nvidia_display_window_owners.test.cpp,
-    NV_PDISP_CHN_NUM_CORE, the core channel's number, in core_channel.h and
-    kernel/tests/graphics/nvidia_core_channel.test.cpp, NV_PDISP_CHN_NUM_WIN,
+    NV_PDISP_CHN_NUM_CORE, the core channel's number, in core_channel.h,
+    kernel/tests/graphics/nvidia_core_channel.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, NV_PDISP_CHN_NUM_WIN,
     each window's channel's number, in core_channel.h,
     kernel/tests/graphics/nvidia_core_channel.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, and the hash table's
@@ -3020,12 +3022,13 @@ src/nvidia-modeset/src/nvkms-evo3.c
     (EvoSetupIdentityBaseLutC5) gives each of the 1024 entries after the header
     nvUnorm10ToFp16 of its place among them in red, green and blue and repeats
     the last of them in the entry after, in display_light.h, display_light.cpp
-    and kernel/tests/graphics/nvidia_display_light.test.cpp, that the core
-    channel's methods name a head's output table, in display_light.h, that its
-    default look-up table (EvoInitDefaultLutC5), which a window with no table of
-    its own reads, holds the output table's identity
-    (EvoSetupIdentityOutputLutC5) as well as the input table's, in
-    display_light.h, that before it reads the core channel's armed state ahead
+    and kernel/tests/graphics/nvidia_display_light.test.cpp, that its output
+    identity (EvoSetupIdentityOutputLutC5) gives each of the 1024 entries after
+    the header its place among them in the top 10 bits of 16 in red, green and
+    blue and repeats the last of them in the entry after, in display_light.h,
+    display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp,
+    that the core channel's methods name a head's output table, in
+    display_engine.h, that before it reads the core channel's armed state ahead
     of its first update the modesetting module asks the display for the core
     channel's state, the request zeroed but for the subdevice, the channel's
     class and its instance, again with no pause until a reply names the idle
@@ -3071,25 +3074,34 @@ src/nvidia-modeset/src/nvkms-evo3.c
     window neither scaling nor mapping tones takes its colors to the head's
     through CSC11 alone, the other CSC stages written disabled and only for a
     window whose capabilities report them, in rm.h and window_methods.h, that it
-    sets a lit head's raster with its overscan color, size, sync end, blanking
-    end and start, the idle lines before its visible ones (its blanking end's
-    line and one more) and after them (the rest), its pixel clock in hertz as
-    both its frequency and its highest with no hopping, a frame packing color of
-    0 outside its debug builds and no HDMI video format, tile or blanking delay,
-    that it writes the head's control whole with no flip lock pin, lock chain or
-    lock offset, the offset's method NVC37D_HEAD_SET_LOCK_OFFSET being its own
-    definition, and no compression, that it writes the output resource's control
-    (a CRC over the whole raster, the mode's sync polarities, 24 bits a pixel
-    and no packet window), RGB at full range (a procamp of 0, each clamp from 0
-    to 0xFFF and OCSC1 disabled, after OCSC0), the serial link carrying the head
-    alone in DisplayPort on its display id's sublink, the head's display id, its
-    viewport in and out at the mode's size with an output scale factor of one,
-    each window it serves given the default usage bounds fetching the pixels a
-    line the bandwidth check is asked about, then the head's own usage bounds,
-    the viewport's origin at 0, 0 and the output scaler's two taps, and that a
-    window's first image bounds its formats, its input scale factor at one and
-    its usage bounds the same way for the width of its head's viewport, in rm.h,
-    core_methods.h, core_methods.cpp, display_light.h, display_light.cpp and
+    sets a lit head's output table, read directly by 10-bit color with no
+    mirroring, with no interpolation when its output rounding fix is on, and
+    sized with its header, its offset in 256-byte units, a norm scale of
+    0xFFFFFFFF and its context DMA, then enables OCSC0, only after the output
+    table, that it sets the head's raster with its overscan color, size, sync
+    end, blanking end and start, the idle lines before its visible ones (its
+    blanking end's line and one more) and after them (the rest), its pixel clock
+    in hertz as both its frequency and its highest with no hopping, a frame
+    packing color of 0 outside its debug builds and no HDMI video format, tile
+    or blanking delay, that it writes the head's control whole with no flip lock
+    pin, lock chain or lock offset, the offset's method
+    NVC37D_HEAD_SET_LOCK_OFFSET being its own definition, and no compression,
+    that it writes the output resource's control (a CRC over the whole raster,
+    the mode's sync polarities, 24 bits a pixel and no packet window), RGB at
+    full range (a procamp of 0, the OCSC0 matrix it computes for RGB at the
+    default saturation between its RGB and 709 YCbCr matrices, in S5.14 the
+    identity with each row adding 1/2048 when its output rounding fix is on,
+    each clamp from 0 to 0xFFF and OCSC1 disabled), the serial link carrying the
+    head alone in DisplayPort on its display id's sublink, the head's display
+    id, its viewport in and out at the mode's size with an output scale factor
+    of one, each window it serves given the default usage bounds fetching the
+    pixels a line the bandwidth check is asked about, then the head's own usage
+    bounds (a 256 by 256 cursor, the output table allowed, two output scaler
+    taps for a viewport of two vertical taps and no upscaling), the viewport's
+    origin at 0, 0 and the output scaler's two taps, and that a window's first
+    image bounds its formats, its input scale factor at one and its usage bounds
+    the same way for the width of its head's viewport, in rm.h, core_methods.h,
+    core_methods.cpp, display_light.h, display_light.cpp and
     kernel/tests/graphics/nvidia_core_methods.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -3229,12 +3241,17 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     _CONTROL_OUTPUT_RESOURCE with its CRC_MODE, HSYNC_POLARITY, VSYNC_POLARITY,
     PIXEL_DEPTH and EXT_PACKET_WIN, _PROCAMP, _CLAMP_RANGE_GREEN and
     _CLAMP_RANGE_RED_BLUE with their LOW and HIGH, _OCSC1CONTROL,
-    _VIEWPORT_SIZE_IN and _VIEWPORT_SIZE_OUT with their WIDTH and HEIGHT,
-    _VIEWPORT_POINT_OUT_ADJUST, _MAX_OUTPUT_SCALE_FACTOR with its HORIZONTAL and
-    VERTICAL, _VIEWPORT_POINT_IN and _CONTROL_OUTPUT_SCALER with its
-    VERTICAL_TAPS and HORIZONTAL_TAPS, all for head 0, NVC67D_SET_CONTROL,
-    NVC67D_SOR_SET_CONTROL's PROTOCOL DP_A and DP_B, DE_SYNC_POLARITY and
-    PIXEL_REPLICATE_MODE, and for window 0
+    _OLUT_CONTROL with its INTERPOLATE, MIRROR, MODE and SIZE, _OFFSET_OLUT with
+    its ORIGIN, _OLUT_FP_NORM_SCALE, _CONTEXT_DMA_OLUT, _OCSC0CONTROL with its
+    ENABLE, _OCSC0COEFFICIENT_C00 with its VALUE in bits 20:0 and the stride of
+    4 to each later coefficient's method, _VIEWPORT_SIZE_IN and
+    _VIEWPORT_SIZE_OUT with their WIDTH and HEIGHT, _VIEWPORT_POINT_OUT_ADJUST,
+    _MAX_OUTPUT_SCALE_FACTOR with its HORIZONTAL and VERTICAL,
+    _HEAD_USAGE_BOUNDS with its CURSOR (USAGE_W256_H256), OLUT_ALLOWED,
+    OUTPUT_SCALER_TAPS (TAPS_2) and UPSCALING_ALLOWED, _VIEWPORT_POINT_IN and
+    _CONTROL_OUTPUT_SCALER with its VERTICAL_TAPS and HORIZONTAL_TAPS, all for
+    head 0, NVC67D_SET_CONTROL, NVC67D_SOR_SET_CONTROL's PROTOCOL DP_A and DP_B,
+    DE_SYNC_POLARITY and PIXEL_REPLICATE_MODE, and for window 0
     NVC67D_WINDOW_SET_WINDOW_FORMAT_USAGE_BOUNDS with its RGB_PACKED4BPP,
     NVC67D_WINDOW_SET_MAX_INPUT_SCALE_FACTOR with its HORIZONTAL and VERTICAL
     and the usage bounds' MAX_PIXELS_FETCHED_PER_LINE, in rm.h, core_methods.h,
@@ -3304,9 +3321,10 @@ src/nvidia-modeset/include/nvkms-types.h
     table's entries, and the layouts of NVEvoLutEntryRec (red, green, blue and
     an unused value, 16 bits each) and NVEvoLutDataRec (a window's input table,
     then from a multiple of 256 bytes a head's output table, each of the
-    header's entries and a table's), in display_light.h, display_light.cpp and
-    kernel/tests/graphics/nvidia_display_light.test.cpp, and NV_EVO_MAX_ORS,
-    the most serial links NVIDIA's driver allows on one GPU, 8, in chip.h and
+    header's entries and a table's), in display_light.h, display_light.cpp,
+    kernel/tests/graphics/nvidia_display_light.test.cpp and
+    kernel/tests/graphics/nvidia_core_methods.test.cpp, and NV_EVO_MAX_ORS, the
+    most serial links NVIDIA's driver allows on one GPU, 8, in chip.h and
     chip.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

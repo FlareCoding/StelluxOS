@@ -714,6 +714,8 @@ public:
     uint32_t failing_general_request = 0;       // the number, from 1, of the general request failing, 0 for none
     int32_t  general_map_result      = OK;
     uint32_t failing_general_map     = 0;       // the number, from 1, of the general mapping failing, 0 for none
+    int32_t  second_map_result       = OK;
+    uint32_t second_failing_map      = 0;       // a later general mapping failing with `second_map_result`, 0 for none
     uint64_t general_bytes           = 0;       // handed out from offset 0
     uint64_t general_size            = 0;       // of the last general request
     uint64_t general_alignment       = 0;       // of the last general request
@@ -809,6 +811,10 @@ public:
                 return general_map_result;
             }
 
+            if (general_maps == second_failing_map) {
+                return second_map_result;
+            }
+
             uint8_t* view = g_mapped_video_memory + range.offset;
             string::memcpy(view, g_video_memory + range.offset, range.size);
             string::memset(view + range.size, SCANOUT_FILL, GENERAL_GUARD_BYTES);
@@ -866,7 +872,7 @@ public:
 namespace drivers::nvidia {
 
 // Sets the wait an engine gives the completion notifier, since no display engine writes the notifier, and reaches the
-// engine's notifier state, its surfaces' context DMAs, its window queue and its take-down
+// engine's notifier state, its look-up table surface, its surfaces' context DMAs, its window queue and its take-down
 struct display_engine_test_access {
     static void set_notifier_wait(display_engine& engine, uint64_t wait_ns) {
         engine.m_notifier_wait_ns = wait_ns;
@@ -882,6 +888,10 @@ struct display_engine_test_access {
 
     static rm::handle base_buffer_context_dma(const display_engine& engine) {
         return engine.m_base_buffer_context_dma;
+    }
+
+    static const vram_range& look_up_table(const display_engine& engine) {
+        return engine.m_look_up_table;
     }
 
     static rm::handle look_up_table_context_dma(const display_engine& engine) {
@@ -2529,17 +2539,20 @@ TEST(nvidia_display_engine, set_up_releases_a_base_buffer_it_cannot_map) {
     }
 }
 
-// The numbers of the channels of window 0, which a set-up chooses for output 1 as the only connected output, and of
-// window 3, which it chooses for output 0 on head 1, NVIDIA's NV_PDISP_CHN_NUM_WIN(0) and NV_PDISP_CHN_NUM_WIN(3)
+// The numbers of the core channel and of window 0's and window 3's channels, which a set-up chooses for output 1 alone
+// and for output 0 on head 1: NVIDIA's NV_PDISP_CHN_NUM_CORE, NV_PDISP_CHN_NUM_WIN(0) and NV_PDISP_CHN_NUM_WIN(3)
+static constexpr uint32_t CORE_CHANNEL            = 0;
 static constexpr uint32_t OUTPUT_1_WINDOW_CHANNEL = 1;
 static constexpr uint32_t HEAD_1_WINDOW_CHANNEL   = 4;
 
-// A set-up's general mappings by number when it chooses an output, after the instance memory's clear and the
-// notifier's binding, and the table's general request, after the instance memory's
-static constexpr uint32_t BASE_BUFFER_BINDING_MAP = 3;
-static constexpr uint32_t TABLE_FILL_MAP          = 4;
-static constexpr uint32_t TABLE_BINDING_MAP       = 5;
-static constexpr uint32_t TABLE_REQUEST           = 2;
+// A set-up's general mappings by number for a chosen output, after the instance memory's clear and the notifier's
+// binding, the core channel's table binding undone after a failed one to the window's, and its table's general request
+static constexpr uint32_t BASE_BUFFER_BINDING_MAP  = 3;
+static constexpr uint32_t TABLE_FILL_MAP           = 4;
+static constexpr uint32_t TABLE_CORE_BINDING_MAP   = 5;
+static constexpr uint32_t TABLE_WINDOW_BINDING_MAP = 6;
+static constexpr uint32_t TABLE_CORE_UNBINDING_MAP = 7;
+static constexpr uint32_t TABLE_REQUEST            = 2;
 
 // The records of a binding of `TIMING_1366_BY_768`'s base buffer at `SCANOUT_OFFSET` and of the table at
 // `LOOK_UP_TABLE_OFFSET`, each naming its first and last 256-byte unit
@@ -2555,18 +2568,23 @@ static void connect_output_1_alone(engine_firmware& fw) {
     put_timing_first(TIMING_1366_BY_768);
 }
 
-// Whether the hash table entry naming `object` binds it under the double's client to `hardware_channel` with the
-// record `record`, from 0 the lowest, whose words are `words`
+// Whether a hash table entry naming `object` binds it under the double's client to `hardware_channel` with the record
+// `record`, from 0 the lowest, whose words are `words`
 static bool binds(rm::handle object, uint32_t hardware_channel, uint32_t record, const uint32_t (&words)[5]) {
-    uint32_t entry = entry_of(object);
-    if (entry == NVIDIA_HASH_ENTRIES) {
-        return false;
-    }
-
     uint32_t client_bits = TEST_CLIENT & NVIDIA_CLIENT_MASK;
     uint32_t record_bits = (NVIDIA_FIRST_RECORD_FIELD + record) << NVIDIA_RECORD_FIELD_SHIFT;
     uint32_t channel_bits = hardware_channel << NVIDIA_CHANNEL_SHIFT;
-    if (instance_word(entry * NVIDIA_ENTRY_BYTES + sizeof(uint32_t)) != (client_bits | record_bits | channel_bits)) {
+    bool is_bound = false;
+    for (uint32_t entry = 0; entry < NVIDIA_HASH_ENTRIES; entry++) {
+        bool is_object = instance_word(entry * NVIDIA_ENTRY_BYTES) == object;
+        uint32_t context = instance_word(entry * NVIDIA_ENTRY_BYTES + sizeof(uint32_t));
+        bool is_binding = context == (client_bits | record_bits | channel_bits);
+        if (is_object && is_binding) {
+            is_bound = true;
+        }
+    }
+
+    if (!is_bound) {
         return false;
     }
 
@@ -2580,9 +2598,9 @@ static bool binds(rm::handle object, uint32_t hardware_channel, uint32_t record,
     return true;
 }
 
-// Output 1 on window 0 has its base buffer, then the look-up table surface, bound to the window's channel, number 1,
-// each under a new handle the engine keeps, the next record naming its memory, logged, and the release keeps both bound
-TEST(nvidia_display_engine, set_up_binds_the_base_buffer_and_the_look_up_table_surface_to_the_windows_channel) {
+// Output 1's base buffer and then the look-up table surface are bound to window 0's channel, number 1, each under a new
+// handle the engine keeps and the next record, logged, the table to the core channel as well, and the release keeps all
+TEST(nvidia_display_engine, set_up_binds_both_surfaces_to_the_windows_channel_and_the_table_to_the_core_channel_too) {
     engine_firmware fw;
     connect_output_1_alone(fw);
     engine_video_memory memory;
@@ -2592,8 +2610,10 @@ TEST(nvidia_display_engine, set_up_binds_the_base_buffer_and_the_look_up_table_s
     ASSERT_EQ(set_up_logged(engine), OK);
     rm::handle base_buffer_context_dma = FIRST_HANDLE + fw.handle_count - 2;
     rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 1;
-    EXPECT_EQ(used_entry_count(), 3u);
+
+    EXPECT_EQ(used_entry_count(), 4u);
     EXPECT_TRUE(binds(base_buffer_context_dma, OUTPUT_1_WINDOW_CHANNEL, 1, BASE_BUFFER_RECORD));
+    EXPECT_TRUE(binds(table_context_dma, CORE_CHANNEL, 2, TABLE_RECORD));
     EXPECT_TRUE(binds(table_context_dma, OUTPUT_1_WINDOW_CHANNEL, 2, TABLE_RECORD));
 
     EXPECT_EQ(display_engine_test_access::base_buffer_context_dma(engine), base_buffer_context_dma);
@@ -2603,17 +2623,17 @@ TEST(nvidia_display_engine, set_up_binds_the_base_buffer_and_the_look_up_table_s
         "nvidia: output 1's base buffer is bound to window 0's channel as context DMA 0x"
     ));
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: the look-up table surface is bound to window 0's channel as context DMA 0x"
+        "nvidia: the look-up table surface is bound to the core channel and window 0's channel as context DMA 0x"
     ));
 
     EXPECT_EQ(engine.release(), OK);
-    EXPECT_EQ(used_entry_count(), 3u);
+    EXPECT_EQ(used_entry_count(), 4u);
     EXPECT_EQ(memory.scanout_releases, 0u);
     EXPECT_EQ(memory.general_releases, 0u);
 }
 
 // Output 0 on head 1 has both surfaces bound to its window's channel, window 3's, number 4, rather than head 1's or
-// window 0's
+// window 0's, the table bound to the core channel as well
 TEST(nvidia_display_engine, set_up_binds_head_1s_surfaces_to_window_3s_channel) {
     engine_firmware fw;
     show_output_0_on_head_1(fw);
@@ -2626,13 +2646,14 @@ TEST(nvidia_display_engine, set_up_binds_head_1s_surfaces_to_window_3s_channel) 
     rm::handle base_buffer_context_dma = FIRST_HANDLE + fw.handle_count - 2;
     rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 1;
     EXPECT_TRUE(binds(base_buffer_context_dma, HEAD_1_WINDOW_CHANNEL, 1, BASE_BUFFER_RECORD));
+    EXPECT_TRUE(binds(table_context_dma, CORE_CHANNEL, 2, TABLE_RECORD));
     EXPECT_TRUE(binds(table_context_dma, HEAD_1_WINDOW_CHANNEL, 2, TABLE_RECORD));
 
     EXPECT_TRUE(engine_log_contains(
         "nvidia: output 0's base buffer is bound to window 3's channel as context DMA 0x"
     ));
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: the look-up table surface is bound to window 3's channel as context DMA 0x"
+        "nvidia: the look-up table surface is bound to the core channel and window 3's channel as context DMA 0x"
     ));
 }
 
@@ -2649,13 +2670,13 @@ TEST(nvidia_display_engine, set_up_fills_the_look_up_table_surface_with_nvidias_
     EXPECT_EQ(memory.general_requests, TABLE_REQUEST);
     EXPECT_EQ(memory.general_size, LOOK_UP_TABLE_SURFACE_BYTES);
     EXPECT_EQ(memory.general_alignment, NVIDIA_SURFACE_ALIGNMENT);
-    EXPECT_EQ(memory.general_maps, TABLE_BINDING_MAP);
-    EXPECT_EQ(memory.general_unmaps, TABLE_BINDING_MAP);
+    EXPECT_EQ(memory.general_maps, TABLE_WINDOW_BINDING_MAP);
+    EXPECT_EQ(memory.general_unmaps, TABLE_WINDOW_BINDING_MAP);
 
     EXPECT_EQ(memory.general_overruns, 0u);
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: the look-up table surface lies at 0x10000 in video memory, its input table passing each color through "
-        "unchanged"
+        "nvidia: the look-up table surface lies at 0x10000 in video memory, its input and output tables passing each "
+        "color through unchanged"
     ));
 
     uint32_t wrong_words = 0;
@@ -2750,8 +2771,8 @@ TEST(nvidia_display_engine, set_up_gives_no_look_up_table_surface_when_its_alloc
     }
 }
 
-// A table mapping or binding finding no room leaves no table and the set-up `OK`, and one failing otherwise fails it
-// with its error, each logged, not as bound, the table released with its context DMA 0 and the base buffer kept bound
+// A table mapping or binding, to either channel, finding no room leaves no table and the set-up `OK`, and one failing
+// otherwise fails it with its error, logged, the table released once unbound and the base buffer kept bound
 TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fill_or_bind) {
     struct failure {
         uint32_t    map;
@@ -2760,7 +2781,7 @@ TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fi
         const char* line;
     };
 
-    const failure failures[] = {
+    static constexpr failure failures[] = {
         {TABLE_FILL_MAP,
          ERR_NO_MEMORY,
          OK,
@@ -2771,15 +2792,26 @@ TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fi
          ERR_TIMEOUT,
          "nvidia: mapping the look-up table surface at 0x10000 in video memory for the CPU to fill it failed: -4, so "
          "the memory is released"},
-        {TABLE_BINDING_MAP,
+        {TABLE_CORE_BINDING_MAP,
          ERR_NO_MEMORY,
          OK,
-         "nvidia: the display engine has no look-up table surface, as binding it to window 0's channel found no room, "
-         "so its video memory is released"},
-        {TABLE_BINDING_MAP,
+         "nvidia: the display engine has no look-up table surface for window 0, as binding it to the core channel "
+         "found no room, so its video memory is released"},
+        {TABLE_CORE_BINDING_MAP,
          ERR_TIMEOUT,
          ERR_TIMEOUT,
-         "nvidia: binding the look-up table surface to window 0's channel failed: -4, so its video memory is released"},
+         "nvidia: binding the look-up table surface for window 0 to the core channel failed: -4, so its video memory "
+         "is released"},
+        {TABLE_WINDOW_BINDING_MAP,
+         ERR_NO_MEMORY,
+         OK,
+         "nvidia: the display engine has no look-up table surface for window 0, as binding it to the window's channel "
+         "found no room, so its video memory is released"},
+        {TABLE_WINDOW_BINDING_MAP,
+         ERR_TIMEOUT,
+         ERR_TIMEOUT,
+         "nvidia: binding the look-up table surface for window 0 to the window's channel failed: -4, so its video "
+         "memory is released"},
     };
 
     for (const failure& failed : failures) {
@@ -2803,8 +2835,74 @@ TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fi
         EXPECT_EQ(memory.general_released.offset, LOOK_UP_TABLE_OFFSET);
         EXPECT_EQ(used_entry_count(), 2u);
         EXPECT_EQ(memory.scanout_releases, 0u);
+
+        EXPECT_EQ(display_engine_test_access::look_up_table(engine).size, 0u);
         EXPECT_EQ(display_engine_test_access::look_up_table_context_dma(engine), 0u);
         EXPECT_NE(display_engine_test_access::base_buffer_context_dma(engine), 0u);
+
+        if (failed.map == TABLE_WINDOW_BINDING_MAP) {
+            EXPECT_EQ(memory.general_maps, TABLE_CORE_UNBINDING_MAP);
+        }
+    }
+}
+
+// A table whose window binding fails and whose core binding cannot then be undone stays bound to the core channel,
+// logged and forgotten, the set-up failing with the first of the two errors other than no room, else `OK`
+TEST(nvidia_display_engine, set_up_keeps_a_look_up_table_surface_it_cannot_unbind_from_the_core_channel) {
+    struct failure {
+        int32_t     binding_error;
+        int32_t     undoing_error;
+        int32_t     result;
+        const char* line;
+    };
+
+    static constexpr failure failures[] = {
+        {ERR_TIMEOUT,
+         ERR_BAD_STATE,
+         ERR_TIMEOUT,
+         "nvidia: binding the look-up table surface for window 0 to the window's channel failed: -4, so its video "
+         "memory stays allocated, still bound to the core channel"},
+        {ERR_TIMEOUT,
+         ERR_NO_MEMORY,
+         ERR_TIMEOUT,
+         "nvidia: binding the look-up table surface for window 0 to the window's channel failed: -4, so its video "
+         "memory stays allocated, still bound to the core channel"},
+        {ERR_NO_MEMORY,
+         ERR_TIMEOUT,
+         ERR_TIMEOUT,
+         "nvidia: the display engine has no look-up table surface for window 0, as binding it to the window's channel "
+         "found no room, so its video memory stays allocated, still bound to the core channel"},
+        {ERR_NO_MEMORY,
+         ERR_NO_MEMORY,
+         OK,
+         "nvidia: the display engine has no look-up table surface for window 0, as binding it to the window's channel "
+         "found no room, so its video memory stays allocated, still bound to the core channel"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        connect_output_1_alone(fw);
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
+        memory.failing_general_map = TABLE_WINDOW_BINDING_MAP;
+        memory.general_map_result = failed.binding_error;
+        memory.second_failing_map = TABLE_CORE_UNBINDING_MAP;
+        memory.second_map_result = failed.undoing_error;
+
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        EXPECT_FALSE(engine_log_contains("nvidia: the look-up table surface is bound"));
+
+        rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 1;
+        EXPECT_TRUE(binds(table_context_dma, CORE_CHANNEL, 2, TABLE_RECORD));
+        EXPECT_EQ(used_entry_count(), 3u);
+        EXPECT_EQ(memory.general_releases, 0u);
+
+        EXPECT_EQ(display_engine_test_access::look_up_table(engine).size, 0u);
+        EXPECT_EQ(display_engine_test_access::look_up_table_context_dma(engine), 0u);
     }
 }
 
@@ -2820,7 +2918,8 @@ TEST(nvidia_display_engine, set_up_without_both_surfaces_bound_asks_nothing_of_t
         {0, BASE_BUFFER_BINDING_MAP},
         {TABLE_REQUEST, 0},
         {0, TABLE_FILL_MAP},
-        {0, TABLE_BINDING_MAP},
+        {0, TABLE_CORE_BINDING_MAP},
+        {0, TABLE_WINDOW_BINDING_MAP},
     };
 
     for (const no_room& missing : cases) {

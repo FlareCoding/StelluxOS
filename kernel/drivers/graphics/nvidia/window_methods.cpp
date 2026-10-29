@@ -10,8 +10,8 @@ namespace drivers::nvidia {
 constexpr uint32_t MAIN_LAYER_DEPTH = 8;
 
 // The input look-up table's control: read directly by a color's top 10 bits, its size counting the header's entries
-constexpr uint32_t INPUT_TABLE_SIZE    = LOOK_UP_TABLE_HEADER_ENTRIES + LOOK_UP_TABLE_ENTRIES;
-constexpr uint32_t INPUT_TABLE_CONTROL = rm::INPUT_TABLE_MODE_DIRECT10 | INPUT_TABLE_SIZE << rm::INPUT_TABLE_SIZE_SHIFT;
+constexpr uint32_t INPUT_TABLE_CONTROL =
+    rm::INPUT_TABLE_MODE_DIRECT10 | LOOK_UP_TABLE_SIZE << rm::INPUT_TABLE_SIZE_SHIFT;
 
 namespace {
 

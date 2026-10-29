@@ -349,14 +349,48 @@ TEST(nvidia_display_light, look_up_table_input_entries_hold_nvidias_identity) {
     EXPECT_EQ(wrong_entries, 0u);
 }
 
-// Every word outside the input table's entries is 0 up to the surface's last page's end: the header entries, the
-// padding around the output table, the output table and the words past NVIDIA's structure
-TEST(nvidia_display_light, look_up_table_words_outside_the_input_entries_are_0) {
+// The surface's word where NVIDIA's structure places the output table
+static constexpr uint32_t OUTPUT_TABLE_WORD = __builtin_offsetof(nvidia_lut_data, output) / sizeof(uint64_t);
+
+// NVIDIA's output identity holds each level from 0 to 1023 in the top 10 bits of 16 in an entry's red, green and blue,
+// the entry after level 1023's repeating it, in the output table NVIDIA's structure places at byte 8448
+TEST(nvidia_display_light, look_up_table_output_entries_hold_nvidias_output_identity) {
+    EXPECT_EQ(OUTPUT_TABLE_WORD * sizeof(uint64_t), 8448u);
+
+    uint32_t first_entry = OUTPUT_TABLE_WORD + NVIDIA_LUT_HEADER_ENTRIES;
+    EXPECT_EQ(look_up_table_word(first_entry + 0), 0ULL);
+    EXPECT_EQ(look_up_table_word(first_entry + 1), 0x004000400040ULL);
+    EXPECT_EQ(look_up_table_word(first_entry + 512), 0x800080008000ULL);
+    EXPECT_EQ(look_up_table_word(first_entry + 1023), 0xFFC0FFC0FFC0ULL);
+    EXPECT_EQ(look_up_table_word(first_entry + 1024), 0xFFC0FFC0FFC0ULL);
+
+    uint32_t wrong_entries = 0;
+    for (uint32_t level = 0; level < NVIDIA_LUT_ENTRIES; level++) {
+        nvidia_lut_entry entry = {};
+        uint64_t word = look_up_table_word(first_entry + level);
+        string::memcpy(&entry, &word, sizeof(entry));
+
+        uint32_t expected_level = level < 1024 ? level : 1023;
+        bool is_identity = entry.red == expected_level << 6;
+        bool is_gray = entry.green == entry.red && entry.blue == entry.red;
+        if (!is_identity || !is_gray || entry.unused != 0) {
+            wrong_entries++;
+        }
+    }
+
+    EXPECT_EQ(wrong_entries, 0u);
+}
+
+// Every word outside the two tables' entries is 0 up to the surface's last page's end: both tables' header entries, the
+// padding before and after the output table and the words past NVIDIA's structure
+TEST(nvidia_display_light, look_up_table_words_outside_the_entries_are_0) {
     uint32_t nonzero_words = 0;
     for (uint32_t index = 0; index < LOOK_UP_TABLE_PAGE_WORDS; index++) {
-        bool is_header = index < NVIDIA_LUT_HEADER_ENTRIES;
-        bool is_past_input_table = index >= NVIDIA_LUT_HEADER_ENTRIES + NVIDIA_LUT_ENTRIES;
-        bool is_outside = is_header || is_past_input_table;
+        bool is_output_table = index >= OUTPUT_TABLE_WORD;
+        uint32_t table_index = is_output_table ? index - OUTPUT_TABLE_WORD : index;
+        bool is_header = table_index < NVIDIA_LUT_HEADER_ENTRIES;
+        bool is_past_table = table_index >= NVIDIA_LUT_HEADER_ENTRIES + NVIDIA_LUT_ENTRIES;
+        bool is_outside = is_header || is_past_table;
         if (is_outside && look_up_table_word(index) != 0) {
             nonzero_words++;
         }

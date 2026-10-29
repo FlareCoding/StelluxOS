@@ -16,6 +16,22 @@ constexpr uint32_t HERTZ_PER_KILOHERTZ = 1000;
 // A scale factor of one both across and down, in the two halves of a scale factor method
 constexpr uint32_t UNSCALED_FACTORS = SCALE_FACTOR_ONE | SCALE_FACTOR_ONE << rm::SCALE_FACTOR_VERTICAL_SHIFT;
 
+// The head's output table control, its size counting the header's entries, and where the table lies in its surface
+constexpr uint32_t OUTPUT_TABLE_CONTROL =
+    rm::OUTPUT_TABLE_MODE_DIRECT10 | LOOK_UP_TABLE_SIZE << rm::OUTPUT_TABLE_SIZE_SHIFT;
+constexpr uint32_t OUTPUT_TABLE_ORIGIN = static_cast<uint32_t>(OUTPUT_TABLE_OFFSET >> rm::OUTPUT_TABLE_OFFSET_SHIFT);
+
+// The OCSC0 matrix NVIDIA computes for RGB at the default saturation, through 709 YCbCr and back, rounded to S5.14: the
+// identity, each row adding the 1/2048 NVIDIA adds only with its output rounding fix on
+constexpr uint32_t OCSC0_COEFFICIENTS = 12;
+constexpr uint32_t OCSC0_ONE          = 0x10000;
+constexpr uint32_t OCSC0_ROUNDING     = 0x20;
+static const uint32_t OCSC0_RGB_MATRIX[OCSC0_COEFFICIENTS] = {
+    OCSC0_ONE, 0,         0,         OCSC0_ROUNDING,
+    0,         OCSC0_ONE, 0,         OCSC0_ROUNDING,
+    0,         0,         OCSC0_ONE, OCSC0_ROUNDING,
+};
+
 // NVIDIA's output scaler coefficients by ratio, phase and value, each one's position its index. Each row omits the
 // center value, which the hardware derives, and phase 0's row holds phase 0's two values, then edge phase 16's two
 static const int16_t SCALER_COEFFICIENT_VALUES[SCALER_COEFFICIENTS] = {
@@ -176,6 +192,15 @@ void build_shutdown_methods(
     }
 }
 
+// Appends the head's output table, read through the light's context DMA, then OCSC0 turned on after it
+static void append_output_table(const head_light& light, head_light_methods& out) {
+    append_head_method(out, light.head, rm::CORE_HEAD_OUTPUT_TABLE_CONTROL, OUTPUT_TABLE_CONTROL);
+    append_head_method(out, light.head, rm::CORE_HEAD_OUTPUT_TABLE_OFFSET, OUTPUT_TABLE_ORIGIN);
+    append_head_method(out, light.head, rm::CORE_HEAD_OUTPUT_TABLE_NORM_SCALE, rm::OUTPUT_TABLE_NORM_SCALE);
+    append_head_method(out, light.head, rm::CORE_HEAD_OUTPUT_TABLE_CONTEXT_DMA, light.output_table_context_dma);
+    append_head_method(out, light.head, rm::CORE_HEAD_OCSC0_CONTROL, rm::OCSC0_ENABLE);
+}
+
 // Appends the head's raster and pixel clock, then the raster features it goes without, as NVIDIA's raster setting does
 static void append_raster(const head_light& light, head_light_methods& out) {
     head_raster raster = raster_of(light.timing);
@@ -229,9 +254,14 @@ static void append_output_resource(const head_light& light, head_light_methods& 
     append_head_method(out, light.head, rm::CORE_HEAD_OUTPUT_RESOURCE_CONTROL, control);
 }
 
-// Appends full-range RGB with no chroma filters and no OCSC1 matrix
+// Appends full-range RGB with no chroma filters, NVIDIA's OCSC0 matrix for it and no OCSC1 matrix
 static void append_colors(uint8_t head, head_light_methods& out) {
     append_head_method(out, head, rm::CORE_HEAD_PROCAMP, 0);
+    for (uint32_t index = 0; index < OCSC0_COEFFICIENTS; index++) {
+        uint32_t method = rm::CORE_HEAD_OCSC0_COEFFICIENTS + index * sizeof(uint32_t);
+        append_head_method(out, head, method, OCSC0_RGB_MATRIX[index]);
+    }
+
     append_head_method(out, head, rm::CORE_HEAD_CLAMP_GREEN, rm::CLAMP_FULL_RANGE);
     append_head_method(out, head, rm::CORE_HEAD_CLAMP_RED_BLUE, rm::CLAMP_FULL_RANGE);
     append_head_method(out, head, rm::CORE_HEAD_OCSC1_CONTROL, 0);
@@ -247,8 +277,8 @@ static void append_link(const head_light& light, head_light_methods& out) {
     append_head_method(out, light.head, rm::CORE_HEAD_DISPLAY_ID, light.display_id);
 }
 
-// Appends a viewport the size of the mode and unscaled, the usage bounds of each window serving the head, then the
-// viewport's origin
+// Appends a viewport the size of the mode and unscaled, the usage bounds of each window serving the head and then the
+// head's own, then the viewport's origin
 static void append_viewport(const head_light& light, head_light_methods& out) {
     uint32_t mode_size = head_pair(light.timing.width, light.timing.height);
     uint32_t usage_bounds = window_usage_bounds(light.timing.width);
@@ -266,12 +296,14 @@ static void append_viewport(const head_light& light, head_light_methods& out) {
         append_method(out, rm::CORE_WINDOW_USAGE_BOUNDS + window * rm::CORE_WINDOW_METHODS_STRIDE, usage_bounds);
     }
 
+    append_head_method(out, light.head, rm::CORE_HEAD_USAGE_BOUNDS, rm::UNSCALED_HEAD_USAGE_BOUNDS);
     append_head_method(out, light.head, rm::CORE_HEAD_VIEWPORT_POINT_IN, 0);
 }
 
 void build_head_light_methods(const head_light& light, head_light_methods& out) {
     out.count = 0;
 
+    append_output_table(light, out);
     append_raster(light, out);
     append_head_control(light.head, out);
     append_compression(light.head, out);
