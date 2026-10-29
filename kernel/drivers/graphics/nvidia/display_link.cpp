@@ -347,13 +347,14 @@ int32_t configure_stream(
 
     log::info(
         "nvidia: display common programmed head %u's DisplayPort stream on output resource %u's link %c: transfer "
-        "units of %u symbols, a watermark of %u symbols, %u symbols of horizontal blanking and %u of vertical",
+        "units of %u symbols, a watermark of %u symbols, %u %s of horizontal blanking and %u of vertical",
         head,
         link.index,
         link_letter(link.sublink),
         stream.transfer_unit_symbols,
         stream.watermark,
         stream.hblank_symbols,
+        stream.hblank_symbols == 1 ? "symbol" : "symbols",
         stream.vblank_symbols
     );
 

@@ -290,7 +290,7 @@ TEST(nvidia_display_edid, the_parse_takes_the_bytes_the_reply_reports) {
 
     ASSERT_EQ(read_logged(short_by_one, is_parsed), OK);
     EXPECT_FALSE(is_parsed);
-    EXPECT_TRUE(edid_log_contains("nvidia: display id 0x100's EDID of 127 bytes is shorter than one block"));
+    EXPECT_TRUE(edid_log_contains("nvidia: display id 0x100's 127-byte EDID is shorter than one block"));
 }
 
 // A refused request is logged and leaves `is_parsed` cleared, with `out` as it was
@@ -375,9 +375,9 @@ TEST(nvidia_display_edid, an_edid_failing_another_check_is_logged_and_not_read_a
     };
 
     const bad_edid cases[] = {
-        {AOC_BASE_BLOCK, 0, "display id 0x100's EDID of 0 bytes is shorter than one block"},
-        {bad_header, edid::BLOCK_BYTES, "display id 0x100's EDID of 128 bytes does not start with the EDID header"},
-        {bad_version, edid::BLOCK_BYTES, "display id 0x100's EDID of 128 bytes is not of version 1"},
+        {AOC_BASE_BLOCK, 0, "display id 0x100's 0-byte EDID is shorter than one block"},
+        {bad_header, edid::BLOCK_BYTES, "display id 0x100's 128-byte EDID does not start with the EDID header"},
+        {bad_version, edid::BLOCK_BYTES, "display id 0x100's 128-byte EDID is not of version 1"},
     };
 
     for (const bad_edid& bad : cases) {

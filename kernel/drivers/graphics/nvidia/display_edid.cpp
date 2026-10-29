@@ -83,7 +83,7 @@ static int32_t read_once(
         result = read_result::bad_checksum;
     } else {
         log::error(
-            "nvidia: display id 0x%X's EDID of %u bytes %s",
+            "nvidia: display id 0x%X's %u-byte EDID %s",
             display_id,
             params.edid_bytes,
             parse_failure(parse_rc)

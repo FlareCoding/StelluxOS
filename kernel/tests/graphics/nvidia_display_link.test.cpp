@@ -960,6 +960,45 @@ TEST(nvidia_display_link, configures_the_stream_without_enhanced_framing_on_a_li
     EXPECT_EQ(fw.calls[0].params[STREAM_ENHANCED_OFFSET], 0u);
 }
 
+// Configures head 1's stream on output resource 2's link B with `stream`, with the log kept
+static int32_t configure_logged(const displayport::stream_parameters& stream, bool& is_configured) {
+    link_firmware fw;
+    output_link link = {.index = 2, .sublink = 1};
+
+    s_link_log_bytes = 0;
+    log::set_backend(&LINK_LOG_BACKEND);
+    int32_t rc = configure_stream(fw, TEST_DISPLAY_COMMON, 1, link, true, stream, is_configured);
+    log::set_backend(nullptr);
+
+    return rc;
+}
+
+// A stream whose horizontal blanking leaves 1 symbol for packets logs it in the singular, and one leaving none in the
+// plural
+TEST(nvidia_display_link, logs_1_symbol_of_horizontal_blanking_in_the_singular_and_0_in_the_plural) {
+    displayport::stream_parameters stream = {
+        .transfer_unit_symbols = 64,
+        .watermark             = 24,
+        .hblank_symbols        = 1,
+        .vblank_symbols        = 0x8FB,
+    };
+
+    bool is_configured = false;
+    ASSERT_EQ(configure_logged(stream, is_configured), OK);
+    EXPECT_TRUE(is_configured);
+    EXPECT_TRUE(link_log_contains(
+        "nvidia: display common programmed head 1's DisplayPort stream on output resource 2's link B: transfer units "
+        "of 64 symbols, a watermark of 24 symbols, 1 symbol of horizontal blanking and 2299 of vertical\r\n"
+    ));
+
+    stream.hblank_symbols = 0;
+    ASSERT_EQ(configure_logged(stream, is_configured), OK);
+    EXPECT_TRUE(link_log_contains(
+        "nvidia: display common programmed head 1's DisplayPort stream on output resource 2's link B: transfer units "
+        "of 64 symbols, a watermark of 24 symbols, 0 symbols of horizontal blanking and 2299 of vertical\r\n"
+    ));
+}
+
 TEST(nvidia_display_link, clears_the_stereo_attributes_in_nvidias_second_layout_and_goes_on_when_refused) {
     link_firmware earlier;
     link_firmware fw;
