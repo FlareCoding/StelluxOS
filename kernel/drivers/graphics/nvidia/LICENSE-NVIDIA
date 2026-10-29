@@ -1986,9 +1986,14 @@ src/nvidia-modeset/src/nvkms-rm.c
     that it refuses to register a surface laid out as rows of pixels in order
     unless its pitch is a multiple of 256 bytes, in display_light.h,
     display_light.cpp, kernel/tests/graphics/nvidia_display_engine.test.cpp and
-    kernel/tests/graphics/nvidia_display_light.test.cpp, and that it binds each
+    kernel/tests/graphics/nvidia_display_light.test.cpp, that it binds each
     surface's context DMA to the core channel and every window's channel, in
-    display_engine.h
+    display_engine.h, and that it brackets a mode set with
+    NV0073_CTRL_CMD_SPECIFIC_DISPLAY_CHANGE, its start before the mode set's
+    first method and its end after its last update, each naming the display ids
+    of the configuration the mode set is for, with properties 0, and goes on
+    past a refusal of either, in rm.h, display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2939,9 +2944,12 @@ src/nvidia-modeset/src/nvkms-modeset.c
     that the modesetting module asks the bandwidth check about every lit head of
     a display together, each with its guaranteed usage, in display_light.h, that
     it reads the core channel's armed state ahead of its first update, in
-    core_channel.h and display_window_owners.h, and that an update changing a
+    core_channel.h and display_window_owners.h, that an update changing a
     window's owner must not be interlocked with that window's channel, in
-    display_window_owners.h
+    display_window_owners.h, and that a mode set sends display common its start
+    before any method and its end after the last, naming the displays of the
+    configuration it is for, in display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
@@ -2975,7 +2983,7 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     kernel/tests/graphics/nvidia_display_engine.test.cpp,
     NV0073_CTRL_SPECIFIC_OR_TYPE_DAC (1, an analog output resource), PIOR (3, a
     parallel input output resource) and DSI (5, a display serial interface), in
-    kernel/tests/graphics/nvidia_display_active_heads.test.cpp, and the command
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp, the command
     NV0073_CTRL_CMD_SPECIFIC_GET_EDID_V2 (a control of display common reading a
     monitor's EDID), the layout of its parameters,
     NV0073_CTRL_SPECIFIC_GET_EDID_MAX_EDID_BYTES, 2048, which the firmware
@@ -2983,7 +2991,11 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     READ_MODE_COOKED and DISPMUX_READ_MODE_DEFAULT, each 0, which have the
     firmware read the EDID from the monitor rather than copy its last one, in
     rm.h, display_edid.h, display_edid.cpp and
-    kernel/tests/graphics/nvidia_display_edid.test.cpp
+    kernel/tests/graphics/nvidia_display_edid.test.cpp, and the command
+    NV0073_CTRL_CMD_SPECIFIC_DISPLAY_CHANGE (a control of display common
+    bracketing a mode set), the layout of its parameters and its enable values
+    START (1) and END (0), in rm.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-headsurface.c

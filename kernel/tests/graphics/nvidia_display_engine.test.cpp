@@ -221,7 +221,7 @@ static constexpr uint8_t TIMING_1080_AT_60_HZ[] = {
 static uint8_t g_edid[edid::BLOCK_BYTES];
 
 // A firmware that records each request in order, answers one a refusal matches with its result, the push buffer, head,
-// window, crossbar, active head, output, bandwidth check and channel state replies from its fields, others as sent
+// window, crossbar, active head, output, bandwidth check, channel state and mode set ones by its fields, others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 64;
@@ -269,6 +269,11 @@ public:
     bool       has_state_request = false;     // whether a channel state request has come
     uint64_t   first_state_request_ns = 0;    // when the first channel state request came
     uint32_t   armed_control_at_reply = 0;    // window 0's armed control after each state request, 0 leaving it alone
+    uint32_t   mode_set_ids[2] = {};          // the display ids the mode set's first two requests named
+    uint32_t   mode_set_phases[2] = {};       // and their phases, start or end
+    uint32_t   mode_set_puts[2] = {};         // and the core channel's PUT when each came
+    uint32_t   mode_set_requests = 0;
+    int32_t    mode_set_end_result = OK;      // the result of the mode set's end
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
         return answer(kind::allocation, object, class_id);
@@ -304,6 +309,10 @@ public:
 
         if (reads_unconnected_monitor(command, params)) {
             return ERR_FIRMWARE;
+        }
+
+        if (command == rm::CONTROL_DISPLAY_CHANGE) {
+            return answer_mode_set(*static_cast<const rm::display_change_params*>(params));
         }
 
         fill_reply(command, params);
@@ -443,6 +452,22 @@ private:
     // How many calls `calls` holds
     uint32_t recorded() const {
         return call_count < MAX_CALLS ? call_count : MAX_CALLS;
+    }
+
+    // Records the mode set's start or end, answering the end with `mode_set_end_result`
+    int32_t answer_mode_set(const rm::display_change_params& params) {
+        if (mode_set_requests < 2) {
+            mode_set_ids[mode_set_requests] = params.display_ids;
+            mode_set_phases[mode_set_requests] = params.phase;
+            mode_set_puts[mode_set_requests] = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
+        }
+
+        mode_set_requests++;
+        if (params.phase == rm::DISPLAY_CHANGE_END) {
+            return mode_set_end_result;
+        }
+
+        return OK;
     }
 
     // Records the call and gives the result of the first refusal matching it, else `OK`
@@ -2590,4 +2615,97 @@ TEST(nvidia_display_engine, set_up_failing_at_the_core_channels_idle_wait_logs_n
     EXPECT_FALSE(engine_log_contains("owns window"));
     EXPECT_FALSE(engine_log_contains("a head the chip lacks"));
     EXPECT_EQ(engine.release(), OK);
+}
+
+// With no head active, the set-up sends the mode set's start and end naming the chosen output's display id with no
+// method between them, and the release still keeps the hardware as it is
+TEST(nvidia_display_engine, set_up_brackets_the_chosen_outputs_mode_set_with_no_head_active) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    fw.boot_display_id = 0;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_EQ(fw.mode_set_requests, 2u);
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID);
+    EXPECT_EQ(fw.mode_set_phases[0], 1u);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID);
+    EXPECT_EQ(fw.mode_set_phases[1], 0u);
+
+    EXPECT_EQ(fw.mode_set_puts[0], INITIAL_METHODS_END);
+    EXPECT_EQ(fw.mode_set_puts[1], INITIAL_METHODS_END);
+
+    uint32_t start = fw.first_control(rm::CONTROL_DISPLAY_CHANGE);
+    EXPECT_TRUE(start > fw.last_control(rm::CONTROL_GET_DISPLAY_CHANNEL_STATE));
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
+    EXPECT_TRUE(engine_log_contains("display common took the start of the mode set naming display id 0x100"));
+    EXPECT_TRUE(engine_log_contains("display common took the end of the mode set naming display id 0x100"));
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_DISPLAY_RELEASE_FLAGS), 2u);
+}
+
+// A refused start of the mode set is logged, and then no end is sent, no method written, and the release keeps the
+// hardware
+TEST(nvidia_display_engine, set_up_writes_nothing_and_sends_no_end_after_a_refused_start) {
+    engine_firmware fw;
+    fw.refusals[0] = {
+        .made = engine_firmware::kind::control,
+        .number = rm::CONTROL_DISPLAY_CHANGE,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_DISPLAY_CHANGE), 1u);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], INITIAL_METHODS_END);
+    EXPECT_TRUE(engine_log_contains("display common refused the start of the mode set naming display id 0x100"));
+    EXPECT_FALSE(engine_log_contains("display common took the start"));
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_DISPLAY_RELEASE_FLAGS), 2u);
+}
+
+// A start of the mode set failing otherwise fails the set-up with its error, sending no end
+TEST(nvidia_display_engine, set_up_fails_with_the_error_of_a_mode_set_start_failing_otherwise) {
+    engine_firmware fw;
+    fw.refusals[0] = {
+        .made = engine_firmware::kind::control,
+        .number = rm::CONTROL_DISPLAY_CHANGE,
+        .object = 0,
+        .result = ERR_TIMEOUT,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), ERR_TIMEOUT);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_DISPLAY_CHANGE), 1u);
+    EXPECT_FALSE(engine_log_contains("display common took the start"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A refused end of the mode set is logged and changes nothing, while an end missing its deadline fails the set-up
+TEST(nvidia_display_engine, set_up_logs_a_refused_mode_set_end_and_fails_on_a_late_one) {
+    const int32_t results[] = {ERR_FIRMWARE, ERR_TIMEOUT};
+    for (int32_t result : results) {
+        engine_firmware fw;
+        fw.mode_set_end_result = result;
+        engine_video_memory memory;
+        ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), result == ERR_FIRMWARE ? OK : ERR_TIMEOUT);
+        EXPECT_EQ(fw.mode_set_requests, 2u);
+        bool is_refused = result == ERR_FIRMWARE;
+        EXPECT_EQ(engine_log_contains("nvidia: display common refused the end of the mode set"), is_refused);
+        EXPECT_FALSE(engine_log_contains("display common took the end"));
+        EXPECT_EQ(engine.release(), OK);
+    }
 }
