@@ -44,8 +44,9 @@ constexpr int32_t ERR_BAD_MESSAGE    = -11; // a message from the GSP's firmware
                                             // or carries a display report that exceeds the chip table's display limits,
                                             // leaves the display engine no head, names several heads for a window that
                                             // may serve only one, names a connected display id that is not supported,
-                                            // several display ids reported for one head or no link for a head's display
-                                            // id while display common reports no crossbar
+                                            // several display ids reported for one head, no link for a head's display
+                                            // id while display common reports no crossbar, or a head's link that is not
+                                            // one of the chip's serial links
 constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a failure through a ready message's or reply's
                                             // result or a control's status, or does not take the driver's VGX version,
                                             // as a reply shows by a private result other than 0 or another version

@@ -44,6 +44,7 @@ static constexpr rm::handle      FIRST_HANDLE = 0x00050007;
 static constexpr chip_display    TEST_DISPLAY = {
     .head_count                = 4,
     .window_count              = 8,
+    .serial_link_count         = 4,
     .display_class             = 0xC67F,
     .core_channel_class        = 0,
     .window_channel_class      = 0,

@@ -62,7 +62,10 @@ struct active_heads {
  * fails the read, since a mode set (programming a head to drive a monitor)
  * must know a head's link to detach the head from it. For a refused link
  * request or a display id that names no connector, that module keeps the
- * head's display id but records no connector or link for it.
+ * head's display id but records no connector or link for it. A link reply
+ * naming a link other than one of the chip's serial links is refused as
+ * malformed, a rule of the driver's own, since detaching a head writes its
+ * link's methods, which must not name a link past the chip's serial links.
  * @param fw The driver's firmware.
  * @param display_common The handle `allocate_display_objects` gave display
  * common.
@@ -70,20 +73,24 @@ struct active_heads {
  * which must be at most `DISPLAY_HEADS_MAX`.
  * @param has_crossbar Whether display common reports a crossbar, as
  * `read_display_capabilities` gives it.
+ * @param serial_link_count The chip's serial links, as the chip table gives
+ * them.
  * @param out Receives on `OK` the heads, each showing nothing or one display
- * id through a link, those from `head_count` on showing nothing, and is left
- * unchanged on an error.
+ * id through one of the chip's serial links, those from `head_count` on
+ * showing nothing, and is left unchanged on an error.
  * @return `OK`, what `firmware::control` returns for a request that fails
  * other than with `ERR_FIRMWARE` (logged as its doc describes), `ERR_FIRMWARE`
  * for a link request the firmware refuses (logged here), or `ERR_BAD_MESSAGE`
- * for a head reported showing several display ids or a link reply naming no
- * link while display common reports no crossbar (logged here).
+ * for a head reported showing several display ids, a link reply naming no link
+ * while display common reports no crossbar, or a link reply naming a link that
+ * is not one of the chip's serial links (logged here).
  */
 int32_t read_active_heads(
     firmware& fw,
     rm::handle display_common,
     uint8_t head_count,
     bool has_crossbar,
+    uint8_t serial_link_count,
     active_heads& out
 );
 

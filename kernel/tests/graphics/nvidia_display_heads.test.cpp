@@ -50,6 +50,7 @@ static constexpr rm::handle   TEST_DISPLAY_COMMON = 0x0005000B;
 static constexpr chip_display TEST_DISPLAY        = {
     .head_count                = 4,
     .window_count              = 8,
+    .serial_link_count         = 4,
     .display_class             = 0,
     .core_channel_class        = 0,
     .window_channel_class      = 0,
@@ -467,6 +468,7 @@ TEST(nvidia_display_heads, the_first_check_a_report_fails_refuses_it) {
 static constexpr chip_display TWO_HEAD_DISPLAY = {
     .head_count                = 2,
     .window_count              = 8,
+    .serial_link_count         = 4,
     .display_class             = 0,
     .core_channel_class        = 0,
     .window_channel_class      = 0,

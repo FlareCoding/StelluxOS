@@ -2966,13 +2966,15 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073specific.h
     field, in display_outputs.h, its rootPortId field, the root port's id for a
     display id, in display_active_heads.h, its index field (the output
     resource's number among those of its type), its type field and
-    NV0073_CTRL_SPECIFIC_OR_TYPE_SOR (2), in rm.h, display_active_heads.h and
-    kernel/tests/graphics/nvidia_display_active_heads.test.cpp, that command,
-    the layout of its parameters and those two fields, in
+    NV0073_CTRL_SPECIFIC_OR_TYPE_SOR (2), in rm.h, display_active_heads.h,
     display_active_heads.cpp,
     kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that command, the
+    layout of its parameters and those two fields, in display_active_heads.cpp,
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp,
-    NV0073_CTRL_SPECIFIC_OR_TYPE_DAC (1, an analog output resource), in
+    NV0073_CTRL_SPECIFIC_OR_TYPE_DAC (1, an analog output resource), PIOR (3, a
+    parallel input output resource) and DSI (5, a display serial interface), in
     kernel/tests/graphics/nvidia_display_active_heads.test.cpp, and the command
     NV0073_CTRL_CMD_SPECIFIC_GET_EDID_V2 (a control of display common reading a
     monitor's EDID), the layout of its parameters,
@@ -3060,7 +3062,9 @@ src/nvidia-modeset/include/nvkms-types.h
     an unused value, 16 bits each) and NVEvoLutDataRec (a window's input table,
     then from a multiple of 256 bytes a head's output table, each of the
     header's entries and a table's), in display_light.h, display_light.cpp and
-    kernel/tests/graphics/nvidia_display_light.test.cpp
+    kernel/tests/graphics/nvidia_display_light.test.cpp, and NV_EVO_MAX_ORS,
+    the most serial links NVIDIA's driver allows on one GPU, 8, in chip.h and
+    chip.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/interface/nvkms-api-types.h

@@ -23,6 +23,10 @@ constexpr uint8_t DISPLAY_HEADS_MAX = 4;
 // NV_PDISP_CHN_NUM_WIN__SIZE_1, one bit each in the 32-bit mask the firmware reports them in
 constexpr uint8_t DISPLAY_WINDOWS_MAX = 32;
 
+// The most serial links (NVIDIA's SORs, the units each driving one DisplayPort, HDMI or DVI connector) NVIDIA's driver
+// allows on one GPU, NV_EVO_MAX_ORS
+constexpr uint8_t SERIAL_LINKS_MAX = 8;
+
 /**
  * The names of a chip's firmware files, which `open_firmware_files` looks up
  * in the version's directory, nvidia/<FIRMWARE_VERSION>/ in `fw::DIRECTORY`,
@@ -83,6 +87,7 @@ struct chip_displayport {
 struct chip_display {
     uint8_t  head_count;         // the chip's heads, numbered from 0, at most `DISPLAY_HEADS_MAX`
     uint8_t  window_count;       // the chip's windows, numbered from 0, at most `DISPLAY_WINDOWS_MAX`
+    uint8_t  serial_link_count;  // the chip's serial links, numbered from 0, at most `SERIAL_LINKS_MAX`
     uint32_t display_class;      // NVIDIA's class of the display object, the parent of the display engine's channels
     uint32_t core_channel_class; // NVIDIA's class of the core channel, which sets up heads, links and windows' heads
 

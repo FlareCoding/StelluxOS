@@ -114,8 +114,8 @@ public:
      * screen changes, wait for GET to reach PUT, and log one read of PUT and
      * GET with the count of methods written. Then read the display id each
      * head shows and the link driving that display id with
-     * `read_active_heads`, which takes whether display common reports a
-     * crossbar, and log each active head with its display id, its link and the
+     * `read_active_heads`, which takes `has_crossbar` and the chip's serial
+     * links, and log each active head with its display id, its link and the
      * output `find_shown_output` gives for it, or that the display id names no
      * output, then the boot head `find_boot_head` gives and the boot output
      * (the output it shows), or that there is none. Then choose the output to
@@ -200,10 +200,11 @@ public:
      * system memory, connected display ids among the supported ones, heads
      * within the chip's, head 0 usable and served, with nonzero masks only for
      * the chip's windows, each naming one of the chip's heads outside a
-     * flexible mapping, at most one display id shown by each head and, without
-     * a crossbar, a link driving each display id shown. Otherwise the error of
-     * the first step that fails, logged as that step describes, such as when
-     * the firmware reports a window the chip lacks, the display engine reaches
+     * flexible mapping, at most one display id shown by each head, each link
+     * read for a head one of the chip's serial links and, without a crossbar,
+     * a link driving each display id shown. Otherwise the error of the first
+     * step that fails, logged as that step describes, such as when the
+     * firmware reports a window the chip lacks, the display engine reaches
      * push buffers, semaphores and notifiers only in video memory, display
      * common's report leaves it no head, the firmware refuses to report the
      * supported or connected display ids or it refuses to name the link
