@@ -1004,8 +1004,8 @@ int32_t virtio_gpu_driver::create_buffer(uint32_t width, uint32_t height, uint32
     return is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
 }
 
-// Runs under `m_batch_lock`. The device runs every command of a batch, so the scanout switches to the buffer's resource
-// in a batch after the copies, which leaves the scanout on the resource it showed when a copy is refused
+// Runs under `m_batch_lock`. Copies run before the scanout switch, so a refused copy leaves the previous resource
+// showing. A flush reaches the display only while the scanout shows that resource, so the switch flushes the whole buffer
 int32_t virtio_gpu_driver::show_buffer(
     virtio_gpu_scanout& scanout,
     const virtio_gpu_buffer& buf,
@@ -1034,6 +1034,15 @@ int32_t virtio_gpu_driver::show_buffer(
     }
 
     if (queue_set_scanout(scanout.index, buf) != OK) {
+        return ERR_IO;
+    }
+
+    virtio_gpu_resource_flush show = {};
+    show.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+    show.r           = { 0, 0, buf.width, buf.height };
+    show.resource_id = buf.resource_id;
+
+    if (queue_command(show) != OK) {
         return ERR_IO;
     }
 
