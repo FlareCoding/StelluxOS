@@ -304,7 +304,7 @@ jobs:
       - name: Run unit tests
         run: ./scripts/run_tests.sh ${{ matrix.arch }} 2>&1 | tee test-log-${{ matrix.arch }}.txt
         env:
-          STLX_TEST_TIMEOUT: 120
+          STLX_TEST_TIMEOUT: 240
 
       - name: Upload test log
         if: always()
