@@ -57,6 +57,9 @@ constexpr int32_t ERR_INVALID_ARG    = -13; // a video memory allocation's size 
                                             // display channel or memory its record cannot name, or a display channel's
                                             // method has a register offset no header names, no values or more than
                                             // `METHOD_VALUES_MAX`
+constexpr int32_t ERR_NOT_REGISTERED = -14; // gfxfb refuses the display engine as its display, as when it cannot
+                                            // create or publish its node or no memory is left for its records of the
+                                            // lit outputs' base buffers
 
 // Nanoseconds per millisecond and per microsecond, for the sequencer's waits, the wait before each EDID reread, the
 // core channel's idle wait, the times the driver logs and mode times

@@ -442,6 +442,19 @@ static void log_active_heads(const active_heads& active, const display_outputs& 
     );
 }
 
+// A bit for each output an active head shows, bit 0 for output 0
+static uint32_t find_boot_outputs(const active_heads& active, const display_outputs& outputs) {
+    uint32_t boot_outputs = 0;
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        uint8_t output = 0;
+        if (find_shown_output(active, head, outputs, output)) {
+            boot_outputs |= 1u << output;
+        }
+    }
+
+    return boot_outputs;
+}
+
 // Chooses the output to light first and its mode with `choose_first_light`, on the head and window `find_light_target`
 // gives, and logs the choice or why none is made
 static int32_t choose_and_log_first_light(
@@ -712,6 +725,65 @@ static int32_t bind_base_buffer(
         light.output,
         light.window,
         context_dma
+    );
+
+    return OK;
+}
+
+// Maps the chosen output's bound base buffer for userland, describing the mapping in `out`, or returns `OK` with `out`
+// unchanged when the mapping finds no room or has no physical address, else its error, each logged, the memory bound
+static int32_t map_base_buffer_for_userland(
+    video_memory& memory,
+    const first_light& light,
+    const vram_range& base_buffer,
+    gfxfb::buffer& out
+) {
+    cpu_mapping mapping = {};
+    int32_t rc = memory.map_for_cpu(base_buffer, mapping);
+    if (rc == ERR_NO_MEMORY) {
+        log::error(
+            "nvidia: output %u cannot light, as mapping its base buffer for userland found no room, so its video "
+            "memory stays bound and unused",
+            light.output
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: mapping output %u's base buffer at 0x%lX in video memory for userland failed: %d, so its video "
+            "memory stays bound and unused",
+            light.output,
+            base_buffer.offset,
+            rc
+        );
+        return rc;
+    }
+
+    if (mapping.phys == 0) {
+        memory.unmap_for_cpu(base_buffer);
+        log::error(
+            "nvidia: output %u cannot light, as the mapping of its base buffer for userland has no physical address, "
+            "so its video memory stays bound and unused",
+            light.output
+        );
+        return OK;
+    }
+
+    out = {
+        .width     = light.timing.width,
+        .height    = light.timing.height,
+        .pitch     = base_buffer_pitch(light.timing.width),
+        .size      = base_buffer.size,
+        .phys      = mapping.phys,
+        .cacheable = false,
+    };
+
+    log::info(
+        "nvidia: output %u's base buffer is mapped for userland at physical address 0x%lX in BAR1, 0x%lX bytes",
+        light.output,
+        mapping.phys,
+        base_buffer.size
     );
 
     return OK;
@@ -1128,6 +1200,9 @@ int32_t display_engine::set_up(
         return rc;
     }
 
+    bool fits_gfxfb = outputs.count <= gfxfb::GFXFB_OUTPUTS_MAX;
+    m_output_count = fits_gfxfb ? outputs.count : static_cast<uint8_t>(gfxfb::GFXFB_OUTPUTS_MAX);
+
     rc = read_connected_monitors(m_firmware, m_objects.display_common, display.displayport, outputs, m_output_modes);
     if (rc != OK) {
         return rc;
@@ -1221,6 +1296,8 @@ int32_t display_engine::set_up(
     }
 
     log_active_heads(active, outputs);
+    m_boot_outputs = find_boot_outputs(active, outputs);
+
     first_light light = {};
     bool is_chosen = false;
     rc = choose_and_log_first_light(
@@ -1272,6 +1349,18 @@ int32_t display_engine::set_up(
     if (rc != OK || m_base_buffer.size == 0) {
         return rc;
     }
+
+    rc = map_base_buffer_for_userland(m_memory, light, m_base_buffer, m_userland_base_buffer);
+    if (rc != OK || m_userland_base_buffer.size == 0) {
+        return rc;
+    }
+
+    m_chosen_output = light.output;
+    m_chosen_mode = {
+        .width              = light.timing.width,
+        .height             = light.timing.height,
+        .refresh_millihertz = light.timing.refresh_millihertz(),
+    };
 
     rc = set_up_look_up_table(m_memory, m_look_up_table);
     if (rc != OK || m_look_up_table.size == 0) {
@@ -1392,7 +1481,13 @@ int32_t display_engine::bring_up(
         }
     }
 
-    if (!is_lit) {
+    if (is_lit) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+            m_is_lit = true;
+            sync::spin_unlock_irqrestore(m_output_lock, irq);
+        });
+    } else {
         rc = take_down(heads, present_windows, active, lit_heads);
         if (rc != OK) {
             log::error("nvidia: taking the display engine down failed: %d, so its heads may still scan out", rc);
@@ -1604,6 +1699,13 @@ int32_t display_engine::take_down(
 }
 
 int32_t display_engine::release() {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        m_is_lit = false;
+        m_is_released = true;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
     m_core_queue = nullptr;
     m_window_queue = nullptr;
 
@@ -1637,6 +1739,62 @@ int32_t display_engine::release() {
     }
 
     return objects_rc;
+}
+
+int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
+    if (output >= m_output_count) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    bool is_lit = false;
+    gfxfb::gfxfb_mode mode = {};
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        is_lit = m_is_lit && output == m_chosen_output;
+        mode = m_chosen_mode;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    // No output relights or has a hardware cursor, so `relighting` stays false and the cursor maximum 0 by 0
+    out = {};
+    out.lit = is_lit;
+    out.boot_output = (m_boot_outputs & (1u << output)) != 0;
+    if (is_lit) {
+        out.current = mode;
+    }
+
+    return gfxfb::OK;
+}
+
+gfxfb::buffer* display_engine::base_buffer(uint32_t output) {
+    gfxfb::buffer* base = nullptr;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        if (m_is_lit && output == m_chosen_output) {
+            base = &m_userland_base_buffer;
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    return base;
+}
+
+int32_t display_engine::flush(uint32_t output, const gfxfb::gfxfb_rect*, uint32_t) {
+    bool is_released = false;
+    bool is_lit = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        is_released = m_is_released;
+        is_lit = m_is_lit && output == m_chosen_output;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (is_released) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    return is_lit ? gfxfb::OK : gfxfb::ERR_DARK;
 }
 
 } // namespace drivers::nvidia

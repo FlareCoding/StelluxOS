@@ -14,6 +14,7 @@
 #include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_engine.h"
 #include "drivers/graphics/nvidia/display_light.h"
+#include "drivers/graphics/nvidia/display_registration.h"
 #include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
@@ -51,6 +52,7 @@ using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_FIRMWARE;
 using drivers::nvidia::ERR_INVALID_ARG;
 using drivers::nvidia::ERR_NO_MEMORY;
+using drivers::nvidia::ERR_NOT_REGISTERED;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::firmware;
 using drivers::nvidia::HEAD_LIGHT_FIXED_METHODS;
@@ -61,6 +63,7 @@ using drivers::nvidia::NO_HEAD;
 using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
 using drivers::nvidia::PUSH_BUFFER_BYTES;
+using drivers::nvidia::register_display_engine;
 using drivers::nvidia::registers;
 using drivers::nvidia::release_display_channel;
 using drivers::nvidia::video_memory;
@@ -172,6 +175,14 @@ static constexpr uint8_t  SCANOUT_FILL        = 0xA5;
 
 // `SCANOUT_FILL` in each byte of a 64-bit word, as the video memory double finds it in scanout words left unwritten
 static constexpr uint64_t SCANOUT_FILL_WORD = 0xA5A5A5A5A5A5A5A5;
+
+// The physical addresses in BAR1 the video memory double gives its scanout mappings, the first at
+// `SCANOUT_BAR1_ADDRESS` and each later one `SCANOUT_BAR1_STRIDE` past the one before
+static constexpr uint64_t SCANOUT_BAR1_ADDRESS = 0x6001000000;
+static constexpr uint64_t SCANOUT_BAR1_STRIDE  = 0x1000000;
+
+// Where the double maps the base buffer the second time, for userland, after the mapping that clears it
+static constexpr uint64_t USERLAND_BAR1_ADDRESS = SCANOUT_BAR1_ADDRESS + SCANOUT_BAR1_STRIDE;
 
 // The pages the video memory double hands general memory out in, as the allocator rounds each request to them
 static constexpr uint64_t DOUBLE_PAGE_BYTES = 0x1000;
@@ -747,7 +758,7 @@ private:
 };
 
 // A video memory giving general memory in whole pages from offset 0 of `g_video_memory`, mapped one range at a time
-// through its copy, and scanout memory at `SCANOUT_OFFSET` over `scanout`, counting calls and failing them as set
+// through its copy, and whole scanout pages at `SCANOUT_OFFSET` over `scanout`, counting calls and failing them as set
 class engine_video_memory : public video_memory {
 public:
     int32_t  general_allocate_result = OK;
@@ -766,6 +777,8 @@ public:
     uint32_t general_overruns        = 0;       // general unmaps finding the guard past the range written
     int32_t  scanout_allocate_result = OK;
     int32_t  scanout_map_result      = OK;
+    uint32_t failing_scanout_map     = 0;       // the number, from 1, of the scanout mapping failing, 0 for every one
+    uint32_t physless_scanout_map    = 0;       // which scanout mapping, from 1, gets no physical address, 0 for none
     uint64_t scanout_bytes           = 0;       // backed by `scanout` once `give_scanout` sets it
     uint8_t* scanout                 = nullptr; // `scanout_bytes` and their guard, on the unprivileged heap, else null
     uint64_t scanout_size            = 0;       // of the last scanout request
@@ -808,11 +821,12 @@ public:
                 return scanout_allocate_result;
             }
 
-            if (size > scanout_bytes) {
+            uint64_t pages_bytes = (size + DOUBLE_PAGE_BYTES - 1) & ~(DOUBLE_PAGE_BYTES - 1);
+            if (pages_bytes > scanout_bytes) {
                 return ERR_NO_MEMORY;
             }
 
-            out = {.offset = SCANOUT_OFFSET, .size = size};
+            out = {.offset = SCANOUT_OFFSET, .size = pages_bytes};
             return OK;
         }
 
@@ -866,12 +880,14 @@ public:
         }
 
         scanout_maps++;
-        if (scanout_map_result != OK) {
+        bool is_failing = failing_scanout_map == 0 || scanout_maps == failing_scanout_map;
+        if (scanout_map_result != OK && is_failing) {
             return scanout_map_result;
         }
 
+        bool is_physless = scanout_maps == physless_scanout_map;
         out.virt = reinterpret_cast<uintptr_t>(scanout);
-        out.phys = 0;
+        out.phys = is_physless ? 0 : SCANOUT_BAR1_ADDRESS + (scanout_maps - 1) * SCANOUT_BAR1_STRIDE;
 
         return OK;
     }
@@ -1554,6 +1570,18 @@ static uint32_t engine_log_count(const char* text) {
 // Whether the kept text holds `text` anywhere
 static bool engine_log_contains(const char* text) {
     return engine_log_count(text) != 0;
+}
+
+// Where `text` first begins in the kept text, or the kept text's length when it never does
+static uint32_t engine_log_offset(const char* text) {
+    size_t text_bytes = string::strlen(text);
+    for (uint32_t start = 0; start + text_bytes <= s_engine_log_bytes; start++) {
+        if (string::memcmp(s_engine_log + start, text, text_bytes) == 0) {
+            return start;
+        }
+    }
+
+    return s_engine_log_bytes;
 }
 
 // Sets up `engine` with the log kept, for a chip whose links do `links` and whose heads report output scalers when
@@ -2428,8 +2456,13 @@ static constexpr uint8_t TIMING_1366_BY_768[] = {
 // `TIMING_1366_BY_768`'s base buffer, 768 rows of 1366 4-byte pixels, 5464 bytes rounded up to 5632
 static constexpr uint64_t BASE_BUFFER_1366_BY_768_BYTES = 0x420000;
 
-// Replaces the AOC's first timing in `g_edid`, the preferred one, with the timing descriptor `timing`, which stays
-// preferred
+// `TIMING_1366_BY_768` with 767 rows, which at 5632 bytes apart end inside a page
+static constexpr uint8_t TIMING_1366_BY_767[] = {
+    0x66, 0x21, 0x56, 0xAA, 0x51, 0xFF, 0x1E, 0x20, 0x46, 0x8F, 0x33, 0x00, 0x0F, 0x8C, 0x21, 0x00, 0x00, 0x1E,
+};
+
+// Replaces the first timing in `g_edid`, the preferred one (the AOC's or one put there before), with the timing
+// descriptor `timing`, which stays preferred
 static void put_timing_first(const uint8_t (&timing)[DESCRIPTOR_BYTES]) {
     uint8_t replaced_sum = 0;
     for (uint32_t i = 0; i < DESCRIPTOR_BYTES; i++) {
@@ -2452,7 +2485,7 @@ static bool scanout_holds(const engine_video_memory& memory, uint64_t start, uin
 }
 
 // Output 0's 1366 by 768 timing gets 768 rows of 5632 bytes, rounded up from 5464, as scanout memory at NVIDIA's
-// alignment, cleared through one mapping taken down after, the bytes past it untouched, logged, and kept by the release
+// alignment, cleared through a mapping taken down after, the bytes past it untouched, logged, and kept by the release
 TEST(nvidia_display_engine, set_up_allocates_and_clears_the_chosen_outputs_base_buffer) {
     engine_firmware fw;
     show_output_0_on_head_1(fw);
@@ -2466,7 +2499,7 @@ TEST(nvidia_display_engine, set_up_allocates_and_clears_the_chosen_outputs_base_
     EXPECT_EQ(memory.scanout_size, BASE_BUFFER_1366_BY_768_BYTES);
     EXPECT_EQ(memory.scanout_alignment, NVIDIA_SURFACE_ALIGNMENT);
 
-    EXPECT_EQ(memory.scanout_maps, 1u);
+    EXPECT_EQ(memory.scanout_maps, 2u);
     EXPECT_EQ(memory.scanout_unmaps, 1u);
     EXPECT_EQ(memory.scanout_fill_words, 0u);
     EXPECT_TRUE(scanout_holds(memory, 0, BASE_BUFFER_1366_BY_768_BYTES, 0));
@@ -2488,13 +2521,16 @@ static constexpr uint8_t TIMING_1366_BY_1[] = {
 // `TIMING_1366_BY_1`'s base buffer, one row of 1366 4-byte pixels, 5464 bytes rounded up to 5632
 static constexpr uint64_t BASE_BUFFER_1366_BY_1_BYTES = 0x1600;
 
+// The two 4 KiB pages video memory hands out for `BASE_BUFFER_1366_BY_1_BYTES`, as `allocate` rounds a request up
+static constexpr uint64_t BASE_BUFFER_1366_BY_1_PAGES_BYTES = 0x2000;
+
 // Output 0's timing one row high gets a base buffer of one row, which the set-up logs in the singular
 TEST(nvidia_display_engine, set_up_counts_the_lone_row_of_a_base_buffer_in_the_singular) {
     engine_firmware fw;
     show_output_0_on_head_1(fw);
     put_timing_first(TIMING_1366_BY_1);
     engine_video_memory memory;
-    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_1_BYTES));
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_1_PAGES_BYTES));
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
@@ -4518,4 +4554,504 @@ TEST(nvidia_display_engine, set_up_lights_nothing_after_a_refused_stream) {
 
     EXPECT_FALSE(engine_log_contains("lighting head"));
     EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+}
+
+// Once output 0's base buffer is bound, a set-up maps it again and keeps that mapping, logging its BAR1 address and
+// size, and the release leaves it mapped and allocated
+TEST(nvidia_display_engine, set_up_maps_the_bound_base_buffer_for_userland_and_keeps_the_mapping) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(memory.scanout_maps, 2u);
+    EXPECT_EQ(memory.scanout_unmaps, 1u);
+
+    const char* mapped =
+        "nvidia: output 0's base buffer is mapped for userland at physical address 0x6002000000 in BAR1, 0x420000 "
+        "bytes";
+    const char* bound = "nvidia: output 0's base buffer is bound to window 3's channel";
+    EXPECT_TRUE(engine_log_contains(mapped));
+    EXPECT_LT(engine_log_offset(bound), engine_log_offset(mapped));
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(memory.scanout_unmaps, 1u);
+    EXPECT_EQ(memory.scanout_releases, 0u);
+}
+
+// A mapping for userland finding no room leaves the set-up `OK` and one failing otherwise fails it, each logged, with
+// the base buffer kept bound, no look-up table allocated and no output lit
+TEST(nvidia_display_engine, set_up_keeps_bound_a_base_buffer_it_cannot_map_for_userland) {
+    struct failure {
+        int32_t     error;
+        int32_t     result;
+        const char* line;
+    };
+
+    const failure failures[] = {
+        {ERR_NO_MEMORY,
+         OK,
+         "nvidia: output 0 cannot light, as mapping its base buffer for userland found no room, so its video memory "
+         "stays bound and unused"},
+        {ERR_TIMEOUT,
+         ERR_TIMEOUT,
+         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for userland failed: -4, so its video "
+         "memory stays bound and unused"},
+        {ERR_BAD_STATE,
+         ERR_BAD_STATE,
+         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for userland failed: -5, so its video "
+         "memory stays bound and unused"},
+        {ERR_INVALID_ARG,
+         ERR_INVALID_ARG,
+         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for userland failed: -13, so its video "
+         "memory stays bound and unused"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+        memory.failing_scanout_map = 2;
+        memory.scanout_map_result = failed.error;
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        EXPECT_TRUE(engine_log_contains("nvidia: output 0's base buffer is bound to window 3's channel"));
+        EXPECT_FALSE(engine_log_contains("nvidia: output 0's base buffer is mapped for userland"));
+
+        EXPECT_EQ(memory.scanout_maps, 2u);
+        EXPECT_EQ(memory.scanout_releases, 0u);
+        EXPECT_EQ(memory.general_requests, 1u);
+
+        EXPECT_FALSE(engine.has_lit_output());
+        EXPECT_NULL(engine.base_buffer(0));
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// A mapping for userland at no physical address is taken down and leaves the set-up `OK`, logged, with the base
+// buffer kept bound, no look-up table allocated and no output lit
+TEST(nvidia_display_engine, set_up_unmaps_and_keeps_bound_a_base_buffer_mapped_at_no_physical_address) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    memory.physless_scanout_map = 2;
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 cannot light, as the mapping of its base buffer for userland has no physical address, so its "
+        "video memory stays bound and unused"
+    ));
+    EXPECT_FALSE(engine_log_contains("nvidia: output 0's base buffer is mapped for userland"));
+
+    EXPECT_EQ(memory.scanout_maps, 2u);
+    EXPECT_EQ(memory.scanout_unmaps, 2u);
+    EXPECT_EQ(memory.scanout_releases, 0u);
+    EXPECT_EQ(memory.general_requests, 1u);
+
+    EXPECT_FALSE(engine.has_lit_output());
+    EXPECT_NULL(engine.base_buffer(0));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// An output state relighting at 1 by 1 with a cursor, as a reused one may hold, for `read_output` to clear
+static gfxfb::output_state stale_output_state() {
+    gfxfb::output_state state = {};
+    state.relighting = true;
+    state.current = {.width = 1, .height = 1, .refresh_millihertz = 1};
+    state.cursor_max_width = 0xFFFF;
+    state.cursor_max_height = 0xFFFF;
+
+    return state;
+}
+
+// Has the double move GET past the light's update to where the take-down after it ends, so the light's wait fails and
+// the engine is taken down with no output lit
+static void fail_the_light(engine_firmware& fw) {
+    fw.get_at_stream = LIGHT_TAKE_DOWN_END;
+}
+
+// After a failed light, gfxfb reads the chosen output 0 as dark with no mode, relight, cursor or base buffer, its
+// `boot_output` set since the boot head showed it, and a flush of it returns `gfxfb::ERR_DARK`
+TEST(nvidia_display_engine, gfxfb_reads_the_chosen_output_dark_after_a_failed_light) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    fail_the_light(fw);
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    gfxfb::output_state state = stale_output_state();
+    ASSERT_EQ(engine.read_output(0, state), gfxfb::OK);
+    EXPECT_FALSE(state.lit);
+    EXPECT_FALSE(state.relighting);
+    EXPECT_TRUE(state.boot_output);
+
+    EXPECT_EQ(state.current.width, 0u);
+    EXPECT_EQ(state.current.height, 0u);
+    EXPECT_EQ(state.current.refresh_millihertz, 0u);
+    EXPECT_EQ(state.cursor_max_width, 0u);
+    EXPECT_EQ(state.cursor_max_height, 0u);
+
+    EXPECT_FALSE(engine.has_lit_output());
+    EXPECT_NULL(engine.base_buffer(0));
+    EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::ERR_DARK);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Once lit, output 0 reads as lit at its 1366 by 768 timing with `boot_output` set and no relight or cursor, its base
+// buffer the mapping for userland, write-combining, and a flush of it returns `gfxfb::OK`
+TEST(nvidia_display_engine, gfxfb_reads_the_lit_output_at_its_mode_with_its_base_buffer) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_TRUE(engine.has_lit_output());
+    EXPECT_EQ(engine.output_count(), 1u);
+    EXPECT_FALSE(engine.needs_flush());
+
+    gfxfb::output_state state = stale_output_state();
+    ASSERT_EQ(engine.read_output(0, state), gfxfb::OK);
+    EXPECT_TRUE(state.lit);
+    EXPECT_FALSE(state.relighting);
+    EXPECT_TRUE(state.boot_output);
+
+    EXPECT_EQ(state.current.width, 1366u);
+    EXPECT_EQ(state.current.height, 768u);
+    EXPECT_EQ(state.current.refresh_millihertz, 59789u);
+    EXPECT_EQ(state.cursor_max_width, 0u);
+    EXPECT_EQ(state.cursor_max_height, 0u);
+
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    EXPECT_EQ(base->width, 1366u);
+    EXPECT_EQ(base->height, 768u);
+    EXPECT_EQ(base->pitch, 5632u);
+
+    EXPECT_EQ(base->size, BASE_BUFFER_1366_BY_768_BYTES);
+    EXPECT_EQ(base->phys, USERLAND_BAR1_ADDRESS);
+    EXPECT_FALSE(base->cacheable);
+
+    EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::OK);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A refused mode set end after the light changes nothing, so gfxfb still reads output 0 as lit with its base buffer
+TEST(nvidia_display_engine, gfxfb_reads_the_output_lit_after_a_refused_mode_set_end) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    fw.mode_set_end_result = ERR_FIRMWARE;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: display common refused the end of the mode set naming display id 0x100"));
+
+    gfxfb::output_state state = {};
+    ASSERT_EQ(engine.read_output(0, state), gfxfb::OK);
+    EXPECT_TRUE(state.lit);
+    EXPECT_NOT_NULL(engine.base_buffer(0));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A frame ending inside a page gets a base buffer of the whole pages its range holds, not of the frame's bytes
+TEST(nvidia_display_engine, gfxfb_reads_a_base_buffer_of_the_whole_pages_its_range_holds) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    put_timing_first(TIMING_1366_BY_767);
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    EXPECT_EQ(memory.scanout_size, 0x41EA00u);
+
+    EXPECT_EQ(base->height, 767u);
+    EXPECT_EQ(base->pitch, 5632u);
+    EXPECT_EQ(base->size, 0x41F000u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With output 1 lit and output 0, which head 1 showed, dark, gfxfb reads `boot_output` set only on output 0 and only
+// output 1 as lit with a base buffer, and the engine refuses output 2 with `gfxfb::ERR_INVALID_ARG`
+TEST(nvidia_display_engine, gfxfb_reads_boot_output_only_on_an_output_an_active_head_showed) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    fw.boot_head = 1;
+    fw.boot_display_id = OUTPUT_0_ID;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_EQ(engine.output_count(), 2u);
+
+    gfxfb::output_state lit = {};
+    ASSERT_EQ(engine.read_output(1, lit), gfxfb::OK);
+    EXPECT_TRUE(lit.lit);
+    EXPECT_FALSE(lit.boot_output);
+    EXPECT_EQ(lit.current.width, 1366u);
+
+    EXPECT_NOT_NULL(engine.base_buffer(1));
+    EXPECT_EQ(engine.flush(1, nullptr, 0), gfxfb::OK);
+
+    gfxfb::output_state dark = {};
+    ASSERT_EQ(engine.read_output(0, dark), gfxfb::OK);
+    EXPECT_FALSE(dark.lit);
+    EXPECT_TRUE(dark.boot_output);
+    EXPECT_EQ(dark.current.width, 0u);
+
+    EXPECT_NULL(engine.base_buffer(0));
+    EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::ERR_DARK);
+
+    gfxfb::output_state past = {};
+    EXPECT_EQ(engine.read_output(2, past), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With head 0 showing output 1 and head 1 output 0, gfxfb reads `boot_output` set on both, output 1 lit and output 0
+// dark
+TEST(nvidia_display_engine, gfxfb_reads_boot_output_on_every_output_an_active_head_showed) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    fw.boot_display_id = OUTPUT_1_ID;
+    fw.other_display_id = OUTPUT_0_ID;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    gfxfb::output_state lit = {};
+    ASSERT_EQ(engine.read_output(1, lit), gfxfb::OK);
+    EXPECT_TRUE(lit.lit);
+    EXPECT_TRUE(lit.boot_output);
+
+    gfxfb::output_state dark = {};
+    ASSERT_EQ(engine.read_output(0, dark), gfxfb::OK);
+    EXPECT_FALSE(dark.lit);
+    EXPECT_TRUE(dark.boot_output);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Of 17 outputs set up, gfxfb reads the first `gfxfb::GFXFB_OUTPUTS_MAX` and the engine refuses the 17th with
+// `gfxfb::ERR_INVALID_ARG`
+TEST(nvidia_display_engine, gfxfb_reads_at_most_gfxfb_outputs_max_outputs) {
+    engine_firmware fw;
+    fw.supported_ids = (1u << 17) - 1;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_EQ(engine.output_count(), gfxfb::GFXFB_OUTPUTS_MAX);
+    gfxfb::output_state state = {};
+    EXPECT_EQ(engine.read_output(gfxfb::GFXFB_OUTPUTS_MAX - 1, state), gfxfb::OK);
+    EXPECT_EQ(engine.read_output(gfxfb::GFXFB_OUTPUTS_MAX, state), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The engine returns `gfxfb::ERR_UNSUPPORTED` for buffers, presents and the cursor, and a release of the base buffer
+// frees and unmaps nothing, leaving it the lit output's
+TEST(nvidia_display_engine, buffers_presents_and_the_cursor_are_unsupported_and_release_buffer_frees_nothing) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+
+    gfxfb::buffer* created = nullptr;
+    gfxfb::cursor_image image = {};
+    EXPECT_EQ(engine.create_buffer(64, 64, 0, &created), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_NULL(created);
+
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_EQ(engine.set_cursor(0, image), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_EQ(engine.move_cursor(0, 1, 1), gfxfb::ERR_UNSUPPORTED);
+
+    engine.release_buffer(base);
+    EXPECT_EQ(engine.base_buffer(0), base);
+    EXPECT_EQ(memory.scanout_unmaps, 1u);
+    EXPECT_EQ(memory.scanout_releases, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Once released, the lit output reads as dark with no base buffer and its flush fails with `gfxfb::ERR_DEVICE`,
+// while the base buffer stays mapped and allocated
+TEST(nvidia_display_engine, gfxfb_reads_the_lit_output_dark_and_its_flush_fails_once_released) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_EQ(engine.release(), OK);
+
+    gfxfb::output_state state = {};
+    ASSERT_EQ(engine.read_output(0, state), gfxfb::OK);
+    EXPECT_FALSE(state.lit);
+    EXPECT_TRUE(state.boot_output);
+
+    EXPECT_FALSE(engine.has_lit_output());
+    EXPECT_NULL(engine.base_buffer(0));
+    EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::ERR_DEVICE);
+
+    EXPECT_EQ(memory.scanout_unmaps, 1u);
+    EXPECT_EQ(memory.scanout_releases, 0u);
+}
+
+// How many calls `count_registration` has taken, the display it was last handed, and the result it answers each with
+static uint32_t        s_registration_calls = 0;
+static gfxfb::display* s_registered_display = nullptr;
+static int32_t         s_registration_result = gfxfb::OK;
+
+// gfxfb's registration call as the registration tests give it, counting its calls, keeping the display it is handed and
+// answering each with `s_registration_result`
+static int32_t count_registration(gfxfb::display* display) {
+    s_registration_calls++;
+    s_registered_display = display;
+    return s_registration_result;
+}
+
+// Runs `register_display_engine` on `engine` with `count_registration` answering `result`, the log kept
+static int32_t register_logged(display_engine& engine, bool is_boot_display_shown, int32_t result = gfxfb::OK) {
+    s_registration_calls = 0;
+    s_registered_display = nullptr;
+    s_registration_result = result;
+    s_engine_log_bytes = 0;
+
+    log::set_backend(&ENGINE_LOG_BACKEND);
+    int32_t rc = register_display_engine(engine, is_boot_display_shown, count_registration);
+    log::set_backend(nullptr);
+
+    return rc;
+}
+
+// While gfxfb shows the boot framebuffer, an engine that has lit no output is left unregistered, which is logged
+TEST(nvidia_display_engine, registration_leaves_the_boot_framebuffer_while_the_engine_has_lit_no_output) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    fail_the_light(fw);
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_EQ(register_logged(engine, true), OK);
+    EXPECT_EQ(s_registration_calls, 0u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display engine has lit no output, so it is not registered and gfxfb keeps the boot framebuffer"
+    ));
+    EXPECT_FALSE(engine_log_contains("is gfxfb's display"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With no boot framebuffer, an engine that has lit no output is registered, logging its one output as dark
+TEST(nvidia_display_engine, registration_without_a_boot_framebuffer_registers_an_engine_that_has_lit_no_output) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    fail_the_light(fw);
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_EQ(register_logged(engine, false), OK);
+    EXPECT_EQ(s_registration_calls, 1u);
+    EXPECT_EQ(s_registered_display, &engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is gfxfb's display, of 1 output"));
+    EXPECT_FALSE(engine_log_contains("of 1 outputs"));
+    EXPECT_TRUE(engine_log_contains("nvidia: gfxfb reads output 0, an output the boot firmware lit, as dark"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With output 0 lit, the registration logs it at its mode with its base buffer's BAR1 address and layout
+TEST(nvidia_display_engine, registration_logs_the_lit_output_at_its_mode_with_its_base_buffer) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_EQ(register_logged(engine, true), OK);
+    EXPECT_EQ(s_registration_calls, 1u);
+    EXPECT_EQ(s_registered_display, &engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is gfxfb's display, of 1 output"));
+    EXPECT_FALSE(engine_log_contains("of 1 outputs"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: gfxfb reads output 0, an output the boot firmware lit, as lit at 1366 by 768 at 59.789 Hz with its "
+        "base buffer at physical address 0x6002000000 in BAR1, 768 rows of 5632 bytes"
+    ));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With output 0 lit at a timing one row high, the registration logs its base buffer's lone row in the singular
+TEST(nvidia_display_engine, registration_counts_the_lone_row_of_the_lit_outputs_base_buffer_in_the_singular) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    put_timing_first(TIMING_1366_BY_1);
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_1_PAGES_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_EQ(register_logged(engine, true), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: gfxfb reads output 0, an output the boot firmware lit, as lit at 1366 by 1 at 1539.098 Hz with its "
+        "base buffer at physical address 0x6002000000 in BAR1, 1 row of 5632 bytes"
+    ));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With output 1 lit and output 0, which head 1 showed, dark, the registration logs both as gfxfb reads them
+TEST(nvidia_display_engine, registration_logs_every_output_as_gfxfb_reads_it) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    fw.boot_head = 1;
+    fw.boot_display_id = OUTPUT_0_ID;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_EQ(register_logged(engine, true), OK);
+    EXPECT_EQ(s_registration_calls, 1u);
+    EXPECT_EQ(s_registered_display, &engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is gfxfb's display, of 2 outputs"));
+    EXPECT_TRUE(engine_log_contains("nvidia: gfxfb reads output 0, an output the boot firmware lit, as dark"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: gfxfb reads output 1, an output the boot firmware did not light, as lit at 1366 by 768 at 59.789 Hz "
+        "with its base buffer at physical address 0x6002000000 in BAR1, 768 rows of 5632 bytes"
+    ));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A registration gfxfb refuses fails with `ERR_NOT_REGISTERED`, logged, and logs no output
+TEST(nvidia_display_engine, refused_registration_fails_with_err_not_registered) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    EXPECT_EQ(register_logged(engine, true, gfxfb::ERR), ERR_NOT_REGISTERED);
+    EXPECT_EQ(s_registration_calls, 1u);
+    EXPECT_EQ(s_registered_display, &engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: gfxfb refused the display engine as its display"));
+    EXPECT_FALSE(engine_log_contains("is gfxfb's display"));
+    EXPECT_FALSE(engine_log_contains("nvidia: gfxfb reads output"));
+    EXPECT_EQ(engine.release(), OK);
 }
