@@ -8,6 +8,7 @@
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/display_engine.h"
+#include "drivers/graphics/nvidia/display_registration.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
@@ -243,6 +244,13 @@ static int32_t check_mapping_through_bar1(
         page.offset
     );
     return nvidia::OK;
+}
+
+// Registers `display` with gfxfb, elevated, as the registration call `attach` passes `nvidia::register_display_engine`
+static int32_t register_elevated(gfxfb::display* display) {
+    int32_t rc = gfxfb::ERR;
+    RUN_ELEVATED(rc = gfxfb::register_display(display));
+    return rc;
 }
 
 int32_t nvidia_gpu_driver::attach() {
@@ -904,6 +912,15 @@ int32_t nvidia_gpu_driver::attach() {
 
     nvidia::enable_cpu_interrupt_tree(regs, chip->interrupt_leaf_count, gsp_vector);
     m_is_gsp_interrupt_enabled = true;
+
+    if (frts.has_display) {
+        bool is_boot_display_shown = false;
+        RUN_ELEVATED(is_boot_display_shown = gfxfb::has_boot_display());
+        rc = nvidia::register_display_engine(m_display_engine, is_boot_display_shown, register_elevated);
+        if (rc != nvidia::OK) {
+            return rc;
+        }
+    }
 
     uint32_t msi_vector = 0;
     RUN_ELEVATED({

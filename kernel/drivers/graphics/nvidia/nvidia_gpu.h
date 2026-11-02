@@ -199,7 +199,8 @@ namespace drivers {
  * raises an interrupt before the GSP's is enabled. It then sets up MSI with
  * one vector, re-arms it as `nvidia::rearm_msi` describes, as NVIDIA's driver
  * re-arms MSI once after initializing the GPU's state, enables the GSP's
- * vector as `nvidia::enable_cpu_interrupt_tree` describes, and `attach()`
+ * vector as `nvidia::enable_cpu_interrupt_tree` describes, then, with the
+ * display engine set up, registers it with gfxfb as below, and `attach()`
  * returns `OK` with the firmware running. From the enable on, the handler
  * acknowledges each interrupt as `on_interrupt` describes, and the driver task
  * the framework starts after `OK` reads the firmware's messages and checks the
@@ -297,8 +298,9 @@ namespace drivers {
  * when the check reads another value or either mapping lies elsewhere than at
  * the window's first offset past the console. Whether or not it maps BAR1, it
  * then fails as described below when allocating the driver's client, device or
- * subdevice fails, when the display engine's set-up fails, and with the error
- * `pci_driver::setup_msi` returns when MSI cannot be set up. Bring-up itself
+ * subdevice fails, when the display engine's set-up fails, with the error
+ * `pci_driver::setup_msi` returns when MSI cannot be set up, and with
+ * `nvidia::ERR_NOT_REGISTERED` when gfxfb refuses the engine. Bring-up itself
  * writes to the display engine only the core channel's initial methods and
  * sends no update that applies them, and the CPU sequencer's steps write only
  * the registers the firmware names. Once the sequencer has resumed the GSP's
@@ -340,13 +342,14 @@ namespace drivers {
  * the firmware also holds the driver's client, device and subdevice, MSI was
  * set up and re-armed, and the GSP's vector enabled. With the display enabled,
  * the display engine is also set up as `nvidia::display_engine::set_up`
- * describes for `OK`. Whenever BAR1 is assigned and leaves a window, BAR1 is
- * also mapped into the kernel's address space, BAR1's tables lie in video
- * memory, the root page directory's first entry names them and no mapping is
- * left from the check. Nothing frees the tables' video memory, which BAR1
- * translates through until `detach()` writes BAR1's block register back, and
- * for good when it is not written back. A failure after the first entry is
- * written leaves the entry and the tables as they are, and a failed
+ * describes for `OK` and is gfxfb's display, unless it has lit no output while
+ * gfxfb shows the boot framebuffer. Whenever BAR1 is assigned and leaves a
+ * window, BAR1 is also mapped into the kernel's address space, BAR1's tables
+ * lie in video memory, the root page directory's first entry names them and no
+ * mapping is left from the check. Nothing frees the tables' video memory,
+ * which BAR1 translates through until `detach()` writes BAR1's block register
+ * back, and for good when it is not written back. A failure after the first
+ * entry is written leaves the entry and the tables as they are, and a failed
  * `nvidia::bar1_video_memory::set_up_bar1` leaves BAR1 unmapped. A mapping
  * check whose write or map fails leaves its page allocated and not mapped
  * until the driver is freed, and one whose reads differ or whose mappings lie
@@ -373,7 +376,14 @@ namespace drivers {
  * When the set-up fails, as it always does when BAR1 is not mapped, since
  * `nvidia::bar1_video_memory::map_for_cpu` then has no window to clear the
  * display's instance memory through, `attach()` fails as
- * `nvidia::display_engine::set_up` describes, before MSI is set up.
+ * `nvidia::display_engine::set_up` describes, before MSI is set up. Once the
+ * GSP's vector is enabled and the display engine is set up, bring-up registers
+ * it with gfxfb as `nvidia::register_display_engine` describes, through
+ * `gfxfb::register_display`, holding no lock, and logs each output as gfxfb
+ * reads it, unless the display engine has lit no output while gfxfb shows the
+ * boot framebuffer, which bring-up then leaves to userland, logging that the
+ * display engine is not registered. When gfxfb refuses the display engine,
+ * which is logged, `attach()` fails with `nvidia::ERR_NOT_REGISTERED`.
  * Once `attach()` has enabled the GSP's vector, `detach()` first disables
  * every vector of the CPU interrupt tree as
  * `nvidia::disable_cpu_interrupt_tree` describes, so that the GSP's vector

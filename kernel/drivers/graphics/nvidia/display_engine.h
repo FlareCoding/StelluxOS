@@ -5,6 +5,7 @@
 
 #include "common/types.h"
 #include "dma/dma.h"
+#include "drivers/graphics/gfxfb.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/completion_notifier.h"
 #include "drivers/graphics/nvidia/core_methods.h"
@@ -20,6 +21,7 @@
 #include "drivers/graphics/nvidia/instance_memory.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/video_memory.h"
+#include "sync/spinlock.h"
 
 namespace drivers::nvidia {
 
@@ -28,13 +30,13 @@ namespace drivers::nvidia {
  * reads images from memory and sends them to monitors. The driver object holds
  * one for its life, sets it up in `attach()` once the driver's device is
  * allocated, when the chip's fuses leave its display enabled, and releases it
- * in `detach()` before the GSP's firmware unloads. The engine's calls must
- * come from one thread at a time, since it takes no lock of its own. It owns
- * the display's instance memory, the objects the firmware keeps for the
- * display (display common, the bandwidth check's object and the display) and
- * the core channel with its push buffer, the queue of methods written into it
- * and its completion notifier. The instance memory is the video memory where
- * the display engine looks up the memory its channels may read. The core
+ * in `detach()` before the GSP's firmware unloads. `set_up` and `release` must
+ * come from one thread at a time, since neither holds a lock across its steps.
+ * It owns the display's instance memory, the objects the firmware keeps for
+ * the display (display common, the bandwidth check's object and the display)
+ * and the core channel with its push buffer, the queue of methods written into
+ * it and its completion notifier. The instance memory is the video memory
+ * where the display engine looks up the memory its channels may read. The core
  * channel is the display channel that sets up heads, links and which head owns
  * each window. The core channel's push buffer is the memory it takes its
  * commands from, and its completion notifier is the page where the display
@@ -60,8 +62,30 @@ namespace drivers::nvidia {
  * engine may read it through the binding from then on, and the window's
  * channel, while released with the hardware kept as it is, stays allocated in
  * the hardware.
+ *
+ * The engine is also a `gfxfb::display`, which the driver registers with gfxfb
+ * as `nvidia_gpu_driver` describes. Its outputs are the first
+ * `gfxfb::GFXFB_OUTPUTS_MAX` of the outputs `set_up` reads, each a static
+ * DisplayPort display id, and gfxfb reads each one an active head showed with
+ * `boot_output` set. The chosen output reads as lit once the light lights it,
+ * at the mode chosen for it, and its base buffer as gfxfb reads it is the
+ * mapping `set_up` keeps for userland, at that mapping's physical address in
+ * BAR1 with `cacheable` false, so userland maps it write-combining. Every
+ * other output reads as dark. No output relights or reports a cursor, and
+ * `flush()` returns at once on the lit output, since its head scans the base
+ * buffer itself. `create_buffer()`, `present()`, `set_cursor()` and
+ * `move_cursor()` are unsupported, and `release_buffer()` frees nothing, since
+ * the only buffer handed out is the chosen output's base buffer, a bound
+ * surface, which nothing frees. `read_output()`, `base_buffer()` and `flush()`
+ * read the chosen output's state under its spinlock, which no holder keeps
+ * across a wait, so they never sleep or wait on the card. Once `release` runs,
+ * `read_output()` reads every output as dark and `flush()` fails with
+ * `gfxfb::ERR_DEVICE`, but gfxfb keeps its record of the base buffer, since
+ * `detach()` runs on the boot thread and only a task may report an output gone
+ * dark, while BAR1 stops translating that buffer's address once `detach()`
+ * restores BAR1's block register.
  */
-class display_engine {
+class display_engine : public gfxfb::display {
 public:
     /**
      * @brief An engine that has set up nothing.
@@ -158,15 +182,18 @@ public:
      * the window's channel under a new handle with `instance_memory::bind`,
      * naming its video memory, and log the handle, where NVIDIA's modesetting
      * module binds each surface's context DMA to the core channel and every
-     * window's channel. Then allocate the look-up table surface,
-     * `LOOK_UP_TABLE_SURFACE_BYTES` of `vram_use::general` video memory 4 KiB
-     * aligned, as NVIDIA's modesetting module allocates it, write each of its
-     * words as `look_up_table_word` gives it through a mapping for the CPU,
-     * unmap it, log where it lies, then bind its context DMA under a new
-     * handle to the core channel, whose heads read its output table, and then
-     * to the window's channel, as that module binds it, naming its whole
-     * pages, where that module's context DMA ends at the table's last byte,
-     * and log the handle. When a surface's memory cannot be allocated, mapping
+     * window's channel. Then map the bound base buffer for the CPU again,
+     * keeping that mapping while the driver is attached, for userland to draw
+     * through as gfxfb's base buffer, and log its physical address in BAR1.
+     * Then allocate the look-up table surface, `LOOK_UP_TABLE_SURFACE_BYTES`
+     * of `vram_use::general` video memory 4 KiB aligned, as NVIDIA's
+     * modesetting module allocates it, write each of its words as
+     * `look_up_table_word` gives it through a mapping for the CPU, unmap it,
+     * log where it lies, then bind its context DMA under a new handle to the
+     * core channel, whose heads read its output table, and then to the
+     * window's channel, as that module binds it, naming its whole pages, where
+     * that module's context DMA ends at the table's last byte, and log the
+     * handle. When a surface's memory cannot be allocated, mapping it to write
      * it finds no room or its binding finds no room in the instance memory or
      * in the mapping it writes through, log why the output has no base buffer
      * or the display engine no look-up table surface and return `OK`,
@@ -175,19 +202,22 @@ public:
      * first undoes the table's binding to the core channel. When undoing it
      * fails, the memory stays allocated and still bound to the core channel,
      * logged as such, and the engine keeps neither the table nor its context
-     * DMA. The set-up then returns `OK` only when both found no room. Then,
-     * once both surfaces are bound, ask the display for the core channel's
-     * state with `wait_core_channel_idle` until the firmware reports the
-     * channel idle or more than `CORE_CHANNEL_IDLE_WAIT_NS` has passed since
-     * the first reply, and log which of the two ended the wait. Then read each
-     * present window's owner from the core channel's armed state with
-     * `read_window_owners`, and log each one's owner. Then bring the display
-     * engine up for the chosen output in a mode set (the programming of heads
-     * to drive monitors): send display common the start of the mode set naming
-     * the output's display id, and when a head is active, send the shutdown
-     * update (the methods `build_shutdown_methods` gives with the windows'
-     * heads, the completion notifier cleared and an update naming it with no
-     * channel interlocked), wait for the notifier with
+     * DMA. The set-up then returns `OK` only when both found no room. When the
+     * base buffer's mapping for userland finds no room, or maps it at no
+     * physical address, after which it is unmapped, log that the output cannot
+     * light and return `OK`, the memory staying bound. Then, once both
+     * surfaces are bound, ask the display for the core channel's state with
+     * `wait_core_channel_idle` until the firmware reports the channel idle or
+     * more than `CORE_CHANNEL_IDLE_WAIT_NS` has passed since the first reply,
+     * and log which of the two ended the wait. Then read each present window's
+     * owner from the core channel's armed state with `read_window_owners`, and
+     * log each one's owner. Then bring the display engine up for the chosen
+     * output in a mode set (the programming of heads to drive monitors): send
+     * display common the start of the mode set naming the output's display id,
+     * and when a head is active, send the shutdown update (the methods
+     * `build_shutdown_methods` gives with the windows' heads, the completion
+     * notifier cleared and an update naming it with no channel interlocked),
+     * wait for the notifier with
      * `completion_notifier::wait_finished` for `COMPLETION_NOTIFIER_WAIT_NS`,
      * stop later updates from writing the notifier, and log that the core
      * channel read the update, with each active head's display id and link
@@ -222,26 +252,29 @@ public:
      * bounds and first image follow in a second update naming no notifier and
      * awaited by nothing, as NVIDIA's modesetting module orders them. When a
      * write, the wait or the stop fails, log it and take the engine down the
-     * same way, stopping the lit head too, after the heads found active. Then
-     * send the mode set's end. A refused start is logged and nothing is
-     * written to the core channel, the set-up returning `OK`, and a refused
-     * end is logged, changing nothing. Each output's modes are kept on the
-     * unprivileged heap from the monitors' reads to the choice, or to
-     * `release` when the set-up fails before it, and the other facts read are
-     * not kept. Each request spins on the calling CPU, waiting for its reply
-     * as `firmware` describes, and so does each wait for GET, for at most 5
-     * seconds, and each wait for the completion notifier, for at most
-     * `COMPLETION_NOTIFIER_WAIT_NS`. The requests for the core channel's state
-     * follow one another with no pause while the firmware reports the channel
-     * busy, as `wait_core_channel_idle` describes. `read_output_edid` also
-     * spins before each reread of an EDID as it describes, and `train_link`
-     * for each wait an accepted training reply asks for. `set_up` must be
-     * called at most once, as `instance_memory::set_up` must, and since it
-     * waits on video memory's lock and on the card as `instance_memory` and
-     * `video_memory` describe, it must never run in an interrupt handler or
-     * under a spinlock, and on a thread that cannot sleep, such as the boot
-     * thread, must run only while no other thread can call into video memory
-     * or the firmware.
+     * same way, stopping the lit head too, after the heads found active, and
+     * otherwise mark the chosen output lit under its spinlock. Then send the
+     * mode set's end. A refused start is logged and nothing is written to the
+     * core channel, the set-up returning `OK`, and a refused end is logged,
+     * changing nothing. Each output's modes are kept on the unprivileged heap
+     * from the monitors' reads to the choice, or to `release` when the set-up
+     * fails before it, and of the other facts read only those that gfxfb reads
+     * are kept: the count of outputs up to `gfxfb::GFXFB_OUTPUTS_MAX`, which
+     * ones an active head shows, and the chosen output with its mode once its
+     * base buffer is mapped for userland. Each request spins on the calling
+     * CPU, waiting for its reply as `firmware` describes, and so does each
+     * wait for GET, for at most 5 seconds, and each wait for the completion
+     * notifier, for at most `COMPLETION_NOTIFIER_WAIT_NS`. The requests for
+     * the core channel's state follow one another with no pause while the
+     * firmware reports the channel busy, as `wait_core_channel_idle`
+     * describes. `read_output_edid` also spins before each reread of an EDID
+     * as it describes, and `train_link` for each wait an accepted training
+     * reply asks for. `set_up` must be called at most once, as
+     * `instance_memory::set_up` must, and since it waits on video memory's
+     * lock and on the card as `instance_memory` and `video_memory` describe,
+     * it must never run in an interrupt handler or under a spinlock, and on a
+     * thread that cannot sleep, such as the boot thread, must run only while
+     * no other thread can call into video memory or the firmware.
      * @param regs The card's BAR0 registers, through which the core channel's
      * methods are kicked and its PUT, GET and armed state read, and the window
      * channel's methods kicked and its PUT and GET read. BAR0 must stay mapped
@@ -294,7 +327,8 @@ public:
      * channel fails. When that undoing fails after the window's binding found
      * no room, the set-up fails with the undoing's error unless it is
      * `ERR_NO_MEMORY`, logged here and as `instance_memory::unbind` describes.
-     * When a request for the core channel's state fails other than with
+     * The base buffer stays bound, though, after its mapping for userland
+     * fails. When a request for the core channel's state fails other than with
      * `ERR_FIRMWARE`, the set-up fails with its error, logged as
      * `wait_core_channel_idle` describes. When the mode set's start or end
      * fails other than with `ERR_FIRMWARE`, the set-up fails with its error,
@@ -320,7 +354,9 @@ public:
     );
 
     /**
-     * @brief Drop the channels' queues of methods, so nothing writes a
+     * @brief Mark the engine released under the chosen output's spinlock, so
+     * `read_output()` reads every output as dark and `flush()` fails from then
+     * on, then drop the channels' queues of methods, so nothing writes a
      * released channel's area, free the outputs' modes if `set_up` kept them,
      * then release the chosen window's channel and then the core channel, each
      * once `set_up` allocated it or the firmware may hold it after a failed
@@ -339,6 +375,33 @@ public:
      * returns, and a later call releases nothing and returns `OK`.
      */
     int32_t release();
+
+    /**
+     * @brief Whether the chosen output is lit, as gfxfb reads it, which holds
+     * from when the light lights it until `release`. It must be called only
+     * before the driver task starts, while the boot thread alone lights
+     * outputs, since it takes no lock.
+     * @return true while the chosen output is lit.
+     */
+    bool has_lit_output() const { return m_is_lit; }
+
+    uint32_t output_count() const override { return m_output_count; }
+    bool needs_flush() const override { return false; }
+    int32_t read_output(uint32_t output, gfxfb::output_state& out) override;
+    gfxfb::buffer* base_buffer(uint32_t output) override;
+    int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override;
+
+    int32_t create_buffer(uint32_t, uint32_t, uint32_t, gfxfb::buffer**) override {
+        return gfxfb::ERR_UNSUPPORTED;
+    }
+
+    int32_t present(uint32_t, gfxfb::buffer*, const gfxfb::gfxfb_rect*, uint32_t) override {
+        return gfxfb::ERR_UNSUPPORTED;
+    }
+
+    int32_t set_cursor(uint32_t, const gfxfb::cursor_image&) override { return gfxfb::ERR_UNSUPPORTED; }
+    int32_t move_cursor(uint32_t, int32_t, int32_t) override { return gfxfb::ERR_UNSUPPORTED; }
+    void release_buffer(gfxfb::buffer*) override {}
 
 private:
     friend struct display_engine_test_access;
@@ -377,6 +440,17 @@ private:
     // null until then and after `release`
     display_channel*                 m_window_queue = nullptr;
     alignas(display_channel) uint8_t m_window_queue_bytes[sizeof(display_channel)];
+
+    // What gfxfb reads: `set_up` records all but the two flags before registration, never to change, and the light and
+    // `release` write them under `m_output_lock`, which gfxfb's calls take to read them
+    uint8_t           m_output_count = 0;             // at most `gfxfb::GFXFB_OUTPUTS_MAX`
+    uint32_t          m_boot_outputs = 0;             // a bit for each output an active head showed, bit 0 output 0's
+    uint8_t           m_chosen_output = 0;
+    gfxfb::gfxfb_mode m_chosen_mode = {};
+    gfxfb::buffer     m_userland_base_buffer = {};    // the base buffer as userland maps it, of 0 bytes while unmapped
+    bool              m_is_lit = false;               // set by the light, read bare only before the driver task starts
+    bool              m_is_released = false;          // set by `release`, after which `flush()` fails
+    sync::spinlock    m_output_lock = sync::SPINLOCK_INIT;
 
     // Brings the engine up for the chosen output as `set_up` describes, from the mode set's start to its end
     int32_t bring_up(
