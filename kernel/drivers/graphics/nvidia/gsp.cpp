@@ -127,8 +127,11 @@ int32_t gsp::await(uint32_t function, received_message& out, uint64_t timeout_ns
 
 int32_t gsp::drain() {
     m_sequencer.deadline_ns = clock::now_ns() + DEFAULT_TIMEOUT_NS;
+    return drain_status_queue(m_queues, m_regs, m_sequencer, m_payload, MESSAGE_PAYLOAD_MAX_BYTES, m_is_in_lockdown);
+}
 
-    return drain_status_queue(m_queues, m_regs, m_sequencer, m_payload, MESSAGE_PAYLOAD_MAX_BYTES);
+bool gsp::is_in_lockdown() const {
+    return m_is_in_lockdown;
 }
 
 void gsp::check_health() {
@@ -292,6 +295,8 @@ void gsp::stop() {
     m_queues = message_queues();
     m_regs = registers(0);
     m_sequencer = {};
+    m_is_in_lockdown = false;
+
     m_client = 0;
     m_internal_client = 0;
     m_internal_subdevice = 0;
@@ -494,7 +499,8 @@ int32_t gsp::await_since(uint32_t function, received_message& out, uint64_t star
         out,
         m_payload,
         MESSAGE_PAYLOAD_MAX_BYTES,
-        start_ns + timeout_ns
+        start_ns + timeout_ns,
+        m_is_in_lockdown
     );
 }
 

@@ -36,7 +36,7 @@ constexpr uint32_t RECEIVE_TRIES = 3;
 // NVIDIA's number for the message in which the GSP's firmware reports that its initialization is done
 constexpr uint32_t FUNCTION_GSP_INIT_DONE = 0x1001;
 
-// The most passed-over messages a wait for one message logs once it ends, counting the rest
+// The most passed-over messages a wait or a drain logs once it ends, counting the rest
 constexpr uint32_t PASSED_MESSAGES_LOGGED = 16;
 
 // What `message_queues::receive` reports of a message the firmware wrote
@@ -286,50 +286,16 @@ int32_t receive_within(
 );
 
 /**
- * @brief Receive the next message carrying `function` from the status queue,
- * running or logging each message before it. A CPU sequencer (the steps the
- * firmware sends for the driver to run) runs with `run_cpu_sequencer` as soon
- * as its message is read, with no log line first, as `run_cpu_sequencer`
- * requires, since the window in which its first poll finds its bit counts from
- * the firmware's send. A sequencer that fails is logged and the wait goes on,
- * as in NVIDIA's driver, whose wait hands each message but the awaited one to
- * its event handler. The other messages are passed over, where NVIDIA's
- * handler acts on the events it knows, and logged with their function, result
- * and payload size, and the function awaited, once the wait ends, the first
- * `PASSED_MESSAGES_LOGGED` of them with a count of the rest. The lines a
- * refused read or a sequencer's run writes still come during the wait.
- * NVIDIA's wait also reads the GSP's log after each read of the queue, checks
- * the GSP's health whenever its reads stop, the awaited message's arrival
- * included, checks the GPU's state on each turn that ends without the awaited
- * message and reports a timeout as Xid 119, all of which this wait leaves out.
- * Each read waits as `receive_within` waits, for what is left until
- * `deadline_ns`, so the messages and the sequencer's runs share one deadline,
- * which a run counts against without being cut short, and the wait goes on
- * past it for as long as each read finds a message. The call spins on the
- * calling CPU without sleeping, holding it until the message arrives or a read
- * fails.
- * @param queues The message queues, whose status queue must be linked.
- * @param regs A view of BAR0, for the sequencer's steps. Booter load must have
- * run on SEC2's falcon, with nothing resetting SEC2 since, as
- * `run_cpu_sequencer` requires.
- * @param sequencer What the sequencer's steps take, kept from bring-up.
- * @param function NVIDIA's number for the message awaited.
- * @param out Receives the awaited message's function, results and payload
- * size, which never exceeds `payload_capacity` or `MESSAGE_PAYLOAD_MAX_BYTES`,
- * on `OK`, and is left unchanged on an error.
- * @param payload Where each message's payload is copied, the awaited message's
- * last.
- * @param payload_capacity How many bytes `payload` holds. A capacity of
- * `MESSAGE_PAYLOAD_MAX_BYTES` takes any message, and a smaller one ends the
- * wait at the first message larger than it, whatever its function.
- * @param deadline_ns A time as `clock::now_ns` reads it. The queue is read at
- * least once, even when `deadline_ns` passed before the call.
- * @return `OK`, or the first error a read returns, which ends the wait:
- * `ERR_TIMEOUT` when a read begun after `deadline_ns` finds no message, logged
- * with `function`, `ERR_BAD_MESSAGE`, each refused read logged, when a message
- * fails a check on each of `RECEIVE_TRIES` reads in a row, `ERR_TOO_LARGE`,
- * logged and leaving the message in place as `receive_within` describes, or
- * `ERR_NOT_LINKED`, unlogged, when the status queue is not linked.
+ * @brief Receive the next message carrying `function` from the linked status
+ * queue as `receive_within` receives one, every message's payload copied into
+ * `payload`, the awaited one's last. It spins without sleeping, past
+ * `deadline_ns` while reads find messages, and reads the queue at least once.
+ * A CPU sequencer runs as soon as it is read, with no log line first, on
+ * `regs` and `sequencer` as `run_cpu_sequencer` requires them, and a failed
+ * run is logged and the wait goes on. A lockdown notice with a payload sets
+ * `is_in_lockdown` to whether it engages a lockdown, as `gsp::is_in_lockdown`
+ * reports it.
+ * @return `OK`, or the first error a read returns, with `ERR_TIMEOUT` logged.
  */
 int32_t receive_awaited(
     message_queues& queues,
@@ -339,50 +305,27 @@ int32_t receive_awaited(
     received_message& out,
     uint8_t* payload,
     uint32_t payload_capacity,
-    uint64_t deadline_ns
+    uint64_t deadline_ns,
+    bool& is_in_lockdown
 );
 
 /**
- * @brief Read every message the status queue holds through the loop
- * `receive_awaited` waits in, awaiting a function outside NVIDIA's numbering
- * until a deadline already passed, so the drain ends once a read finds the
- * queue empty, waiting for no message. A CPU sequencer runs as soon as its
- * message is read, as in `receive_awaited`, and the other messages, which the
- * firmware sent unasked, are logged with their function, result and payload
- * size once the drain ends, the first `PASSED_MESSAGES_LOGGED` of them with a
- * count of the rest. NVIDIA's driver reads its queue one message at a time the
- * same way until it is empty, hands each message to its event handler, reads
- * the GSP's log after each read and checks the GSP's health once the reads
- * stop, while this drain only runs CPU sequencers and logs the other messages.
- * A message a read fails on stays in the queue, so each later drain starts
- * with it, while a message of the function the drain awaits is consumed. A
- * message of NVIDIA's count of functions, at which NVIDIA's drain stops and
- * asserts, is logged as any other unasked message. The call spins on the
- * calling CPU without sleeping, for as long as each read finds a message and
- * through each CPU sequencer's run, whose waits count against
- * `sequencer.deadline_ns`. The driver task, `nvidia_gpu_driver::run`, drains
- * the queue and then checks the GSP's health with `gsp::check_health` each
- * time the GSP's interrupt wakes it, unless the GSP falcon's interrupt
- * registers read all ones.
- * @param queues The message queues, whose status queue must be linked.
- * @param regs A view of BAR0, for the sequencer's steps, as `receive_awaited`
- * requires it.
- * @param sequencer What the sequencer's steps take, kept from bring-up.
- * @param payload Where each message's payload is copied.
- * @param payload_capacity How many bytes `payload` holds, as `receive_awaited`
- * takes it.
+ * @brief Read every message the linked status queue holds, waiting for none,
+ * through the loop that `receive_awaited` waits in, so CPU sequencers run and
+ * lockdown notices set `is_in_lockdown` as they do there. A message a read
+ * fails on stays in the queue. The call spins without sleeping while reads
+ * find messages, a sequencer's waits counting against `sequencer.deadline_ns`.
  * @return `OK` once a read finds the queue empty, `ERR_BAD_MESSAGE`, logged,
- * for a message of the function the drain awaits, or the first other error a
- * read returns, as `receive_awaited` returns and logs it. NVIDIA's drain
- * awaits its count of functions instead, so it would log a message of the
- * function this drain awaits as an unexpected event and read on.
+ * for a message of function 0xFFFFFFFF, which is consumed, or the first error
+ * a read returns, as `receive_within` returns it.
  */
 int32_t drain_status_queue(
     message_queues& queues,
     registers& regs,
     const cpu_sequencer_context& sequencer,
     uint8_t* payload,
-    uint32_t payload_capacity
+    uint32_t payload_capacity,
+    bool& is_in_lockdown
 );
 
 } // namespace drivers::nvidia

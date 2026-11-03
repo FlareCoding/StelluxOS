@@ -21,14 +21,18 @@ constexpr uint32_t LEAVES_PER_SUBTREE = 2;
 // firmware raises when it queues a message it sends unasked (NVIDIA's SWGEN0)
 constexpr uint32_t GSP_MESSAGE_SOURCE = 1u << 6;
 
-// What `acknowledge_gsp_interrupt` returns for a card that has stopped responding, whose registers then read all ones
-constexpr uint32_t UNRESPONSIVE_CARD_SOURCES = 0xFFFFFFFF;
-
 // The GPU interrupt vectors the driver services, each below the tree's leaves times `VECTORS_PER_LEAF`
 struct interrupt_vectors {
     uint32_t gsp;         // the GSP's, on which its firmware signals the driver
     uint32_t display;     // the display's, on which the heads' vertical blanks arrive, read only with `has_display`
     bool     has_display; // whether the driver services the display's vector
+};
+
+// What `take_gsp_interrupt` found of the GSP's vector
+enum class gsp_vector_reading : uint8_t {
+    idle,     // not pending
+    taken,    // pending, then disabled and cleared for the driver task
+    all_ones, // its leaf read all ones, as on a card that stopped responding, and was left unwritten
 };
 
 /**
@@ -74,30 +78,28 @@ void enable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count, const inter
 void disable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count);
 
 /**
- * @brief Acknowledge the GSP's interrupt from the card's interrupt handler:
- * clear the vector's pending bit in its leaf, as NVIDIA's driver clears an
- * engine's vector before servicing the engine, then read the sources the GSP's
- * falcon has pending for the host (the CPU). A source is pending for the host
- * when it is set in the falcon's status and passed by both the falcon core's
- * mask and destination, or by both the RISC-V core's. When a source is
- * pending, write the sources read to the falcon's clear register and retrigger
- * the falcon's interrupt, which sends the interrupt again if any source is
- * still pending. NVIDIA's driver clears only HALT (the source the firmware
- * raises when its crash report needs the host) and SWGEN0 of the sources it
- * reads, while every source read is written to the clear here, since a source
- * left pending would send the interrupt again at the retrigger and raise the
- * next one at once. NVIDIA's driver reads the firmware's messages between the
- * clear and the retrigger, while the caller must read them after the call.
- * That loses none, since a message the firmware sends unasked after the clear
- * raises SWGEN0 again. The call touches only BAR0 and takes no lock.
- * @param regs A view of BAR0.
- * @param vector The GSP's vector, as `enable_cpu_interrupt_tree` took it.
- * @return The sources written to the clear, 0 when none was pending.
- * `GSP_MESSAGE_SOURCE` among them means the firmware signalled a message,
- * unless they are `UNRESPONSIVE_CARD_SOURCES`, every bit set, which means the
- * card has stopped responding, as its registers then read all ones.
+ * @brief Take the GSP's interrupt for the driver task, from the card's
+ * interrupt handler: when the GSP's vector is pending in a leaf not reading
+ * all ones, disable it and then clear it, writing only its bit, and leave the
+ * GSP's falcon to the task, since a CPU sequencer the task runs can hold the
+ * falcon in reset. The vector stays disabled until `service_gsp_interrupt`
+ * enables it again. The call touches only BAR0 and takes no lock.
+ * @return Whether the vector was idle or taken, or its leaf read all ones.
  */
-uint32_t acknowledge_gsp_interrupt(registers& regs, uint32_t vector);
+gsp_vector_reading take_gsp_interrupt(registers& regs, uint32_t vector);
+
+/**
+ * @brief Service the GSP's interrupt from the driver task, once
+ * `take_gsp_interrupt` has taken it or found its leaf reading all ones. When
+ * the GSP's falcon has sources pending for the host (the CPU), clear them,
+ * read the firmware's messages with `gsp::drain`, check the GSP's health, and
+ * retrigger the falcon's interrupt unless `gsp::is_in_lockdown`. Then enable
+ * the GSP's vector, which raises the interrupt at once if it is pending again.
+ * Sources reading all ones, as on a card that stopped responding, are logged
+ * and nothing is written. The call spins without sleeping as `gsp::drain`
+ * does.
+ */
+void service_gsp_interrupt(registers& regs, gsp& conversation, uint32_t vector);
 
 /**
  * @brief Clear the display's vector in its leaf when it is pending, from the

@@ -69,25 +69,24 @@ public:
 
     /**
      * @brief The driver task, which the framework starts once `attach()`
-     * returns `OK`. Each time an interrupt or a queued operation wakes it and
-     * the card still responds, it reads the messages the GSP's firmware
-     * queued, checks the GSP's health, then logs the light's first second of
-     * vertical blanks at the first wake after the handler has serviced it. So
-     * a failure the GSP reports without a message is looked for only at the
-     * next wake. Every wake then runs the operations other contexts queued.
-     * It never returns.
+     * returns `OK`. It calls `nvidia::service_gsp_interrupt` for each GSP
+     * interrupt the handler takes, then logs the light's first second of
+     * vertical blanks at the first wake after the handler has serviced it.
+     * Every wake then runs the operations other contexts queued. It never
+     * returns.
      */
     void run() override;
 
     /**
      * @brief The handler of the card's one MSI vector, which the GSP's
-     * interrupt and, with flips on, the display's raise. It records the GSP's
-     * sources it cleared for the driver task and services the heads' vertical
-     * blanks as `nvidia::display_engine::service_vertical_blanks` describes.
-     * It can run before `attach()` returns, as soon as the GSP's interrupt is
-     * enabled, and once more after `detach()` disables it.
-     * @return true when the GSP's acknowledge returned a source, all ones from
-     * a stopped card among them, or a service completed the first second.
+     * interrupt and, with flips on, the display's raise. It takes the GSP's
+     * interrupt for the driver task, leaving the GSP's falcon alone, and
+     * services the heads' vertical blanks as
+     * `nvidia::display_engine::service_vertical_blanks` describes. It can run
+     * before `attach()` returns, as soon as the GSP's interrupt is enabled,
+     * and once more after `detach()` disables it.
+     * @return true when the GSP's vector was taken, its leaf read all ones or
+     * a service completed the first second.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE bool on_interrupt(uint32_t vector) override;
@@ -120,8 +119,8 @@ private:
     uint32_t                      m_boot0 = 0;
     uint32_t                      m_bar1_block = 0;
     nvidia::interrupt_vectors     m_interrupt_vectors = {};
-    uint32_t                      m_gsp_sources = 0;       // sources the handler cleared since the task's last wake
-    uint64_t                      m_last_interrupt_ns = 0; // when the handler last cleared one
+    uint64_t                      m_last_interrupt_ns = 0;    // when the handler last set `m_must_service_gsp`
+    bool                          m_must_service_gsp = false; // set by the handler for the task's next wake
     bool                          m_must_stop_gsp = false;
     bool                          m_must_stop_sec2 = false;
     bool                          m_must_unload = false;

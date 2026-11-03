@@ -123,14 +123,14 @@ src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
     register, in kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the
     interrupt clear, status, mask and destination registers and the first
     interrupt retrigger register with its trigger bit, in interrupts.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, the interrupt status,
-    mask and destination registers, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the interrupt clear
+    and status registers and the first interrupt retrigger register, in
     kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, the interrupt clear,
-    status, mask, destination and retrigger registers, in interrupts.h, the
-    status's SWGEN0 bit, in interrupts.h,
+    status and retrigger registers, in interrupts.h, the status's SWGEN0 bit, in
+    interrupts.h, interrupts.cpp,
     kernel/tests/graphics/nvidia_message_queues.test.cpp and
     kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, and the status's HALT
-    bit, in interrupts.h
+    bit, in interrupts.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_falcon_second_pri.h
@@ -217,8 +217,8 @@ src/common/inc/swref/published/ampere/ga102/dev_riscv_pri.h
     kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the RISC-V boot control
     register, in kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the
-    RISC-V core's interrupt mask and destination registers, in interrupts.h,
-    interrupts.cpp, kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    RISC-V core's interrupt mask and destination registers, in interrupts.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
     kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -785,8 +785,8 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     steps that reset the GSP's falcon and then let its DMA engine run with no
     address space bound, start the falcon and wait for it to halt, in falcon.h
     and cpu_sequencer.h, that the driver runs a CPU sequencer the firmware
-    sends, which may reset the GSP's falcon, in nvidia_gpu.cpp, that the halt
-    step waits with the default timeout, in falcon.h, cpu_sequencer.cpp and
+    sends, which may reset the GSP's falcon, in interrupts.h, that the halt step
+    waits with the default timeout, in falcon.h, cpu_sequencer.cpp and
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the CPU sequencer's
     checks that its buffer holds more words than its steps take, that each
     step's arguments end within the words its steps take and that a store's
@@ -803,24 +803,21 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     fails is logged and the wait for messages goes on, in message_queues.h,
     message_queues.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
     that the sequencer runs inside the wait for the firmware's messages, which
-    takes the messages before it and counts the run against its deadline, in
-    message_queues.h, message_queues.cpp, gsp.h, gsp.cpp and
+    takes the messages before it, in message_queues.h, message_queues.cpp,
+    gsp.h, gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    counts the run against its deadline, in message_queues.cpp, gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that the thread-state
     budget is started again just before the wait for the ready message, in
     cpu_sequencer.h, gsp.h and gsp.cpp, that the handler of the firmware's event
     messages runs the sequencer straight from the message carrying it, after an
     info-level print, in cpu_sequencer.h, that a wait for one message hands each
-    other message it receives to that handler, in message_queues.h and
-    message_queues.cpp, that such a wait reads the GSP's log after each read of
-    the queue, checks the GSP's health whenever its reads stop, checks the GPU's
-    state on each turn that ends without the awaited message and reports a
-    timeout as Xid 119, in message_queues.h, that bring-up waits for the
-    firmware's ready message, whose result fails the boot when it is not NV_OK,
-    in nvidia.h, gsp.h and nvidia_gpu.cpp, that a failed ready message's status
-    is handed up whatever its value, in gsp.h, that the request to unload asks
-    for no power transition, no entry into GC6 and power level 0 and is followed
-    by the wait for the GSP to suspend whatever the request's result, in
-    gsp_unload.h, gsp_unload.cpp and
+    other message it receives to that handler, in message_queues.cpp, that
+    bring-up waits for the firmware's ready message, whose result fails the boot
+    when it is not NV_OK, in nvidia.h, gsp.h and nvidia_gpu.cpp, that a failed
+    ready message's status is handed up whatever its value, in gsp.h, that the
+    request to unload asks for no power transition, no entry into GC6 and power
+    level 0 and is followed by the wait for the GSP to suspend whatever the
+    request's result, in gsp_unload.h, gsp_unload.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that a request is
     skipped when the GSP has crashed or the GPU is in reset, lost, shut down,
     below full power or without access to system memory, in gsp.h, that the
@@ -832,20 +829,20 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     for the static configuration, failing the boot when either fails, in
     gsp_info.h, nvidia_gpu.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that NVIDIA's driver
-    drains its queue one message at a time until it is empty, handing each
-    message to its event handler, reading the GSP's log after each read and
-    checking the GSP's health once the reads stop, in message_queues.h, that it
-    checks once the reads stop whatever they returned, in nvidia_gpu.h and
-    nvidia_gpu.cpp, that its drain awaits its count of functions and asserts
-    that no event carries it, in message_queues.h and message_queues.cpp, that
-    the drain stops at a message of that count, in message_queues.h, that its
-    event handler logs a message of a function it does not know and the drain
-    reads on, in message_queues.h, that NVIDIA's driver drains in the bottom
-    half of its interrupt handler, in gsp.h, that it drains holding the GPUs
-    lock, in nvidia_gpu.cpp, and that NVIDIA's handling of the GSP's failure
-    halts every user channel and notifies it of the error and that the log
-    NVIDIA's driver then writes holds the most recent messages it sent and the
-    firmware's most recent unasked messages, in gsp.h
+    checks the GSP's health once its drain's reads stop, whatever they returned,
+    in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that its drain awaits
+    its count of functions and asserts that no event carries it, in
+    message_queues.cpp, that NVIDIA's driver drains in the bottom half of its
+    interrupt handler, in gsp.h, that a lockdown notice the firmware sends
+    unasked sets whether a lockdown is engaged from the notice's flag, in
+    message_queues.h, message_queues.cpp, gsp.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that in a lockdown the
+    host cannot reach some of the GSP's registers, its interrupt status and
+    control among them, in gsp.h, and that NVIDIA's handling of the GSP's
+    failure halts every user channel and notifies it of the error and that the
+    log NVIDIA's driver then writes holds the most recent messages it sent and
+    the firmware's most recent unasked messages, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -1056,12 +1053,15 @@ src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
     falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the rules that the
     GSP's interrupt service reads the GSP falcon's pending sources directed to
-    the host and returns at once when none is pending, that it clears only HALT
-    (the source the firmware raises when its crash report needs the host) and
-    SWGEN0, SWGEN0 before it receives the messages the firmware sends unasked,
-    and that it then retriggers the falcon's interrupt, in interrupts.h,
-    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
-    rule that the check of the GSP's health reads only CrashCat's reports when
+    the host and returns at once when none is pending, that it clears SWGEN0
+    before it receives the messages the firmware sends unasked and then
+    retriggers the falcon's interrupt, and that after receiving them it skips
+    the retrigger while a lockdown notice has a lockdown engaged, in
+    interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that it
+    clears only HALT (the source the firmware raises when its crash report needs
+    the host) and SWGEN0 of the sources it reads, in interrupts.cpp, the rule
+    that the check of the GSP's health reads only CrashCat's reports when
     CrashCat (NVIDIA's interface for the GSP's crash reports) is set up, in
     gsp.h, the rules that, without CrashCat, the first of the GSP's four mailbox
     registers reports a failure when its bits 31:28 hold the error tag and that
@@ -1423,6 +1423,8 @@ src/common/sdk/nvidia/inc/nvtypes.h
     gsp_boot_memory.cpp, which the system information's flags take, in
     boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,
     which the two flags of the request to unload take, in gsp_unload.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, which the lockdown
+    notice's flag takes, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, which the static
     configuration's booleans take, a video memory region's flags among them, in
     gsp_info.h, gsp_info.cpp and
@@ -1766,6 +1768,8 @@ src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
     function number, in gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the function numbers
     of the requests allocating and releasing an object, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the lockdown notice's
+    function number, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and the numbering of
     functions from 0 and of events from 0x1000, fewer than 0x1000 of each, in
     message_queues.cpp
@@ -1797,9 +1801,12 @@ src/nvidia/generated/g_rpc-structures.h
     control request's header, with the control's status in it, in gsp.h, gsp.cpp
     and kernel/tests/graphics/nvidia_message_queues.test.cpp, the layout of an
     allocation request's header, with the allocation's status in it, in gsp.h,
-    gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and that a
+    gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, that a
     release request's payload holds NVOS00_PARAMETERS_v03_00 alone, in gsp.cpp
-    and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the
+    lockdown notice's payload starts with its flag of whether a lockdown
+    engages, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_sdk-structures.h
@@ -2108,8 +2115,12 @@ src/nvidia/src/kernel/gpu/intr/arch/turing/intr_tu102.c
     vector's bit to its leaf's enable set register and clears a vector's pending
     bit by writing the bit to its leaf, that it clears every top-level enable
     and then every leaf's enable as it unloads, in interrupts.h, interrupts.cpp
-    and kernel/tests/graphics/nvidia_message_queues.test.cpp, and that an
-    earlier driver can leave enables set, in nvidia_gpu.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, that an earlier
+    driver can leave enables set, in nvidia_gpu.cpp, and that it disables one
+    vector by writing the vector's bit to its leaf's enable clear register, in
+    interrupts.h, interrupts.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_intr_nvoc.h
@@ -2126,8 +2137,8 @@ src/common/inc/swref/published/ampere/ga102/dev_vm.h
     block of a virtual function's registers of the tree's leaves and of their
     enables' set and clear registers, 4 bytes apart, and of the top level's
     first enable set and clear registers, in interrupts.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, the leaves' offset
-    with their 4-byte stride, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the offsets of the
+    leaves and of their enables' clear registers with their 4-byte stride, in
     kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, that a second top-level
     enable set or clear register would lie 4 bytes after the first, in
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the tree has
@@ -2245,10 +2256,10 @@ src/nvidia/arch/nvalloc/unix/src/unix_intr.c
     interrupt handler while the GPU's state is loaded and its interrupts are
     enabled in hardware, whether or not it found an interrupt pending, in
     interrupts.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, that holding the GPUs
-    lock disables the interrupts of every GPU it has initialized, in
-    nvidia_gpu.cpp, and that the bottom half of its interrupt handler runs with
-    the thread state of a deferred interrupt handler, in gsp.h
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, that its interrupt
+    handler disables the GPU's interrupts until the handler's bottom half ends,
+    in interrupts.cpp, and that the bottom half of its interrupt handler runs
+    with the thread state of a deferred interrupt handler, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 kernel-open/nvidia/nv-pci.c
