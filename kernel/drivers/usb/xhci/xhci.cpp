@@ -1170,10 +1170,7 @@ uint64_t xhci_hcd::_queue_hub_event(const xhci::hub_event& evt) {
         }
         sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
 
-        sync::irq_state irq2 = sync::spin_lock_irqsave(m_irq_lock);
-        m_event_pending = true;
-        sync::spin_unlock_irqrestore(m_irq_lock, irq2);
-        sync::wake_one(m_irq_wq);
+        notify_event();
     });
 
     return seq;

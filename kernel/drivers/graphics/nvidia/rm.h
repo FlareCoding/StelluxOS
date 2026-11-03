@@ -786,6 +786,7 @@ constexpr uint32_t WINDOW_SET_SIZE     = 0x224;
 constexpr uint32_t WINDOW_SET_SIZE_IN  = 0x298;
 constexpr uint32_t WINDOW_SET_SIZE_OUT = 0x2A4;
 constexpr uint32_t SIZE_HEIGHT_SHIFT   = 16;
+constexpr uint32_t SIZE_FIELD_MAX      = 0xFFFF;
 
 // NVIDIA's NVC67E_SET_STORAGE, 0 for a surface in rows of pixels, and NVC67E_SET_PLANAR_STORAGE(0), plane 0's pitch in
 // 64-byte units in bits 12:0, each later plane's 4 bytes on
@@ -816,6 +817,14 @@ constexpr uint32_t INPUT_SCALER_TWO_TAPS           = 0x11;
 // NVIDIA's NVC67E_SET_CSC11CONTROL, the last matrix of the window's color space conversion (CSC) stages, taking its
 // colors to the head's, 0 disabled
 constexpr uint32_t WINDOW_SET_CSC11_CONTROL = 0x59C;
+
+// NVIDIA's NVC67E_SET_CSC00CONTROL, _CSC0LUT_CONTROL and _CSC01CONTROL, the controls of the window's CSC0 stage, and
+// _CSC10CONTROL and _CSC1LUT_CONTROL, those of CSC1 ahead of CSC11, each 0 disabled
+constexpr uint32_t WINDOW_SET_CSC00_CONTROL      = 0x45C;
+constexpr uint32_t WINDOW_SET_CSC0_TABLE_CONTROL = 0x4A0;
+constexpr uint32_t WINDOW_SET_CSC01_CONTROL      = 0x4BC;
+constexpr uint32_t WINDOW_SET_CSC10_CONTROL      = 0x53C;
+constexpr uint32_t WINDOW_SET_CSC1_TABLE_CONTROL = 0x580;
 
 // NVIDIA's NVC67E_SET_ILUT_CONTROL, _CONTEXT_DMA_ILUT and _OFFSET_ILUT, the input look-up table's control, surface and
 // offset. The control's MODE (bits 3:2) DIRECT10 indexes it by 10-bit color, and SIZE (bits 18:8) counts entries

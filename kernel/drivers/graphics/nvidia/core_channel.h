@@ -32,9 +32,10 @@ constexpr uint32_t window_channel_number(uint8_t window) {
 constexpr uint64_t CORE_CHANNEL_IDLE_WAIT_NS = 100 * NS_PER_MS;
 
 // NVIDIA's NV_UDISP_FE_CHN_ASSY_BASEADR_WIN(0), where window 0's channel's 4 KiB area in BAR0 begins: PUT and GET and
-// the state its methods assemble. Each next window's channel's area follows the one before
+// the state its methods assemble, then the armed state. Each next window's channel's area follows the one before
 constexpr uint32_t WINDOW_CHANNEL_AREAS = 0x690000;
 constexpr uint32_t WINDOW_CHANNEL_AREA_BYTES = 0x1000;
+constexpr uint32_t WINDOW_CHANNEL_ARMED_STATE = 0x800; // the upper half, inferred from the core channel's layout
 
 // Where `window`'s channel's area begins in BAR0, NVIDIA's NV_UDISP_FE_CHN_ASSY_BASEADR_WIN(window)
 constexpr uint32_t window_channel_area(uint8_t window) {

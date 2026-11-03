@@ -694,6 +694,52 @@ static int32_t bind_to_window_channel(
     return rc;
 }
 
+static int32_t set_up_scanout_buffer(video_memory& memory, uint32_t width, uint32_t height, scanout_buffer& buffer) {
+    uint32_t pitch = base_buffer_pitch(width);
+    uint64_t bytes = static_cast<uint64_t>(pitch) * height;
+
+    vram_range range = {};
+    int32_t rc = memory.allocate(bytes, SURFACE_ALIGNMENT, vram_use::scanout, range);
+    if (rc != OK) {
+        return rc == ERR_NO_MEMORY ? gfxfb::ERR_NO_MEMORY : gfxfb::ERR_REFUSED;
+    }
+
+    cpu_mapping mapping = {};
+    rc = memory.map_for_cpu(range, mapping);
+    if (rc == OK) {
+        for (uint64_t offset = 0; offset < range.size; offset += sizeof(uint64_t)) {
+            mmio::write64(mapping.virt + offset, 0);
+        }
+
+        // Taking the mapping down completes the clear before the head can scan the buffer
+        memory.unmap_for_cpu(range);
+        rc = memory.map_for_cpu(range, mapping);
+    }
+
+    bool is_mapped_without_address = rc == OK && mapping.phys == 0;
+    if (is_mapped_without_address) {
+        memory.unmap_for_cpu(range);
+    }
+
+    if (rc != OK || is_mapped_without_address) {
+        memory.release(range);
+        return rc == ERR_NO_MEMORY ? gfxfb::ERR_NO_MEMORY : gfxfb::ERR_REFUSED;
+    }
+
+    static_cast<gfxfb::buffer&>(buffer) = {
+        .width     = width,
+        .height    = height,
+        .pitch     = pitch,
+        .size      = range.size,
+        .phys      = mapping.phys,
+        .cacheable = false,
+    };
+
+    buffer.range = range;
+
+    return gfxfb::OK;
+}
+
 // Binds the chosen output's base buffer to its window's channel as `bind_to_window_channel` binds a surface, returning
 // `OK` when the binding finds no room and its error when it fails otherwise, each outcome logged
 static int32_t bind_base_buffer(
@@ -1171,10 +1217,35 @@ static void log_lit_head(const registers& regs, const head_light& light) {
     );
 }
 
-display_engine::display_engine(firmware& fw, video_memory& memory)
+static void log_lit_color_controls(const registers& regs, const head_light& light, uint8_t window) {
+    uint32_t head_state = CORE_ARMED_STATE + light.head * rm::CORE_HEAD_METHODS_STRIDE;
+    log::info(
+        "nvidia: after the light, head %u's output table control reads 0x%X and its OCSC0 control 0x%X in the core "
+        "channel's armed state",
+        light.head,
+        regs.read(head_state + rm::CORE_HEAD_OUTPUT_TABLE_CONTROL),
+        regs.read(head_state + rm::CORE_HEAD_OCSC0_CONTROL)
+    );
+
+    uint32_t window_state = window_channel_area(window) + WINDOW_CHANNEL_ARMED_STATE;
+    log::info(
+        "nvidia: after the light, window %u's size reads 0x%X, its CSC0 controls 0x%X, 0x%X and 0x%X and its CSC1 "
+        "controls 0x%X and 0x%X in its channel's armed state",
+        window,
+        regs.read(window_state + rm::WINDOW_SET_SIZE),
+        regs.read(window_state + rm::WINDOW_SET_CSC00_CONTROL),
+        regs.read(window_state + rm::WINDOW_SET_CSC0_TABLE_CONTROL),
+        regs.read(window_state + rm::WINDOW_SET_CSC01_CONTROL),
+        regs.read(window_state + rm::WINDOW_SET_CSC10_CONTROL),
+        regs.read(window_state + rm::WINDOW_SET_CSC1_TABLE_CONTROL)
+    );
+}
+
+display_engine::display_engine(firmware& fw, video_memory& memory, operation_queue& operations)
     : m_firmware(fw)
     , m_memory(memory)
-    , m_instance_memory(memory, fw) {
+    , m_instance_memory(memory, fw)
+    , m_operations(operations) {
     for (uint8_t& output : m_head_outputs) {
         output = NO_OUTPUT;
     }
@@ -1733,6 +1804,7 @@ int32_t display_engine::light_head(
         status_word
     );
     log_lit_head(regs, light);
+    log_lit_color_controls(regs, light, window);
 
     if (!is_image_apart) {
         return OK;
@@ -1854,6 +1926,11 @@ bool display_engine::are_flips_on() const {
     return m_are_flips_on.load_acquire();
 }
 
+bool display_engine::are_presents_supported() const {
+    // `set_up` binds the notifier before flips turn on, so reading flips with acquire orders this bare read
+    return are_flips_on() && m_window_notifier_context_dma != 0;
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -1886,6 +1963,7 @@ __PRIVILEGED_CODE bool display_engine::service_vertical_blanks(registers& regs, 
 bool display_engine::count_vertical_blank(uint64_t now_ns, uint32_t position) {
     m_frame_count++;
     m_vertical_blank_ns = now_ns;
+    m_serviced_frame = raster_frame(position);
     if (m_frame_count > m_frames_per_second) {
         return false;
     }
@@ -2099,8 +2177,7 @@ gfxfb::buffer* display_engine::base_buffer(uint32_t output) {
 }
 
 int32_t display_engine::present(uint32_t output, gfxfb::buffer* buf, const gfxfb::gfxfb_rect*, uint32_t) {
-    // `set_up` binds the notifier before flips turn on, so reading flips with acquire orders this bare read
-    if (!are_flips_on() || m_window_notifier_context_dma == 0) {
+    if (!are_presents_supported()) {
         return gfxfb::ERR_UNSUPPORTED;
     }
 
@@ -2145,13 +2222,21 @@ __PRIVILEGED_CODE int32_t display_engine::queue_present(
         return gfxfb::ERR_INVALID_ARG;
     }
 
+    // gfxfb presents only buffers `base_buffer()` and `create_buffer()` handed out
+    rm::handle surface_context_dma = m_base_buffer_context_dma;
     if (&buf != &m_userland_base_buffer) {
-        return gfxfb::ERR_REFUSED;
+        const auto& created = static_cast<const scanout_buffer&>(buf);
+        bool is_bound_to_lit_window = (created.bound_windows & (1u << m_lit_window)) != 0;
+        if (!is_bound_to_lit_window) {
+            return gfxfb::ERR_REFUSED;
+        }
+
+        surface_context_dma = created.context_dma;
     }
 
     window_image image = {
         .window                    = m_lit_window,
-        .surface_context_dma       = m_base_buffer_context_dma,
+        .surface_context_dma       = surface_context_dma,
         .width                     = buf.width,
         .height                    = buf.height,
         .pitch                     = buf.pitch,
@@ -2210,6 +2295,183 @@ int32_t display_engine::flush(uint32_t output, const gfxfb::gfxfb_rect*, uint32_
     }
 
     return is_lit ? gfxfb::OK : gfxfb::ERR_DARK;
+}
+
+int32_t display_engine::create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) {
+    if (!are_presents_supported()) {
+        return gfxfb::ERR_UNSUPPORTED;
+    }
+
+    bool is_released = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        is_released = m_is_released;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (is_released || m_is_display_failed.load_acquire()) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    bool fits_the_window = width <= rm::SIZE_FIELD_MAX && height <= rm::SIZE_FIELD_MAX;
+    if (format != gfxfb::GFXFB_FORMAT_XRGB8888 || !fits_the_window) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    auto* buffer = heap::ualloc_new<scanout_buffer>();
+    if (buffer == nullptr) {
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    int32_t rc = set_up_scanout_buffer(m_memory, width, height, *buffer);
+    if (rc != gfxfb::OK) {
+        heap::ufree_delete(buffer);
+        return rc;
+    }
+
+    buffer->task_operation.work = bind_buffer;
+    buffer->task_operation.engine = this;
+    buffer->task_operation.buffer = buffer;
+    RUN_ELEVATED(rc = m_operations.run_on_task(buffer->task_operation));
+    if (rc != gfxfb::OK) {
+        m_memory.unmap_for_cpu(buffer->range);
+        m_memory.release(buffer->range);
+        heap::ufree_delete(buffer);
+        return rc;
+    }
+
+    *out = buffer;
+
+    return gfxfb::OK;
+}
+
+void display_engine::bind_buffer(operation& op) {
+    auto& binding = static_cast<buffer_operation&>(op);
+    display_engine& engine = *binding.engine;
+    scanout_buffer& buffer = *binding.buffer;
+
+    bool is_released = false;
+    bool is_lit = false;
+    uint8_t window = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
+        is_released = engine.m_is_released;
+        is_lit = engine.m_is_lit;
+        window = engine.m_lit_window;
+        sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
+    });
+
+    if (is_released || engine.m_is_display_failed.load_acquire()) {
+        op.result = gfxfb::ERR_DEVICE;
+        return;
+    }
+
+    if (!is_lit) {
+        op.result = gfxfb::OK;
+        return;
+    }
+
+    rm::handle context_dma = engine.m_firmware.new_handle();
+    context_dma_memory buffer_memory = {
+        .in_video_memory = true,
+        .address = buffer.range.offset,
+        .bytes = buffer.range.size,
+    };
+
+    int32_t rc = engine.m_instance_memory.bind(context_dma, window_channel_number(window), buffer_memory);
+    if (rc != OK) {
+        op.result = rc == ERR_NO_MEMORY ? gfxfb::ERR_NO_MEMORY : gfxfb::ERR_REFUSED;
+        return;
+    }
+
+    buffer.context_dma = context_dma;
+    buffer.bound_windows = 1u << window;
+    op.result = gfxfb::OK;
+
+    log::info(
+        "nvidia: a display buffer of %ux%u pixels at 0x%lX in video memory is bound to window %u's channel as context "
+        "DMA 0x%X",
+        buffer.width,
+        buffer.height,
+        buffer.range.offset,
+        window,
+        context_dma
+    );
+}
+
+void display_engine::release_buffer(gfxfb::buffer* buf) {
+    if (buf == &m_userland_base_buffer) {
+        return;
+    }
+
+    auto* buffer = static_cast<scanout_buffer*>(buf);
+    buffer->task_operation.work = release_scanout_buffer;
+    RUN_ELEVATED(m_operations.post_to_task(buffer->task_operation));
+}
+
+void display_engine::release_scanout_buffer(operation& op) {
+    auto& release = static_cast<buffer_operation&>(op);
+    display_engine& engine = *release.engine;
+    scanout_buffer* buffer = release.buffer;
+
+    bool is_released = false;
+    uint8_t head = 0;
+    uint64_t serviced = 0;
+    uint16_t head_frames = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
+        is_released = engine.m_is_released;
+        head = engine.m_lit_head;
+        serviced = engine.m_frame_count;
+        head_frames = static_cast<uint16_t>(engine.m_serviced_frame - engine.m_first_second.start_frame);
+        sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
+    });
+
+    if (is_released) {
+        log::warn(
+            "nvidia: the display buffer at 0x%lX in video memory is kept for good, as the engine was released",
+            buffer->range.offset
+        );
+        return;
+    }
+
+    if (engine.m_is_display_failed.load_acquire()) {
+        log::warn(
+            "nvidia: the display buffer at 0x%lX in video memory is kept for good, as the display failed",
+            buffer->range.offset
+        );
+        return;
+    }
+
+    while (buffer->bound_windows != 0) {
+        uint8_t window = static_cast<uint8_t>(__builtin_ctz(buffer->bound_windows));
+        int32_t rc = engine.m_instance_memory.unbind(buffer->context_dma, window_channel_number(window));
+        if (rc != OK) {
+            log::error(
+                "nvidia: unbinding the display buffer at 0x%lX in video memory from window %u's channel failed: %d, "
+                "so the buffer is kept for good",
+                buffer->range.offset,
+                window,
+                rc
+            );
+            return;
+        }
+
+        buffer->bound_windows &= ~(1u << window);
+        log::info(
+            "nvidia: the display buffer at 0x%lX in video memory is unbound from window %u's channel, once the handler "
+            "serviced head %u's vertical blanks 1 to %lu since the light while the head's own frame count advanced %u",
+            buffer->range.offset,
+            window,
+            head,
+            serviced,
+            head_frames
+        );
+    }
+
+    engine.m_memory.unmap_for_cpu(buffer->range);
+    engine.m_memory.release(buffer->range);
+    heap::ufree_delete(buffer);
 }
 
 } // namespace drivers::nvidia

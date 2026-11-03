@@ -11,6 +11,7 @@
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
 #include "drivers/graphics/nvidia/gsp_info.h"
 #include "drivers/graphics/nvidia/interrupts.h"
+#include "drivers/graphics/nvidia/operation_queue.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/video_memory.h"
 #include "drivers/pci_driver.h"
@@ -38,7 +39,8 @@ class nvidia_gpu_driver : public pci_driver {
 public:
     nvidia_gpu_driver(pci::device* dev)
         : pci_driver("nvidia_gpu", dev)
-        , m_display_engine(m_gsp, m_video_memory) {}
+        , m_operations(*this)
+        , m_display_engine(m_gsp, m_video_memory, m_operations) {}
 
     /**
      * @brief Boot the GSP's firmware and, unless the chip's fuses disable its
@@ -67,12 +69,13 @@ public:
 
     /**
      * @brief The driver task, which the framework starts once `attach()`
-     * returns `OK`. Each time an interrupt wakes it and the card still
-     * responds, it reads the messages the GSP's firmware queued, checks the
-     * GSP's health, then logs the light's first second of vertical blanks at
-     * the first wake after the handler has serviced it. So a failure the GSP
-     * reports without a message is looked for only at the next wake. It never
-     * returns.
+     * returns `OK`. Each time an interrupt or a queued operation wakes it and
+     * the card still responds, it reads the messages the GSP's firmware
+     * queued, checks the GSP's health, then logs the light's first second of
+     * vertical blanks at the first wake after the handler has serviced it. So
+     * a failure the GSP reports without a message is looked for only at the
+     * next wake. Every wake then runs the operations other contexts queued.
+     * It never returns.
      */
     void run() override;
 
@@ -107,6 +110,7 @@ private:
     nvidia::gsp                   m_gsp;
     nvidia::gpu_objects           m_gpu_objects = {}; // both 0 before `attach()` allocates them and after `detach()`
     nvidia::bar1_video_memory     m_video_memory;
+    nvidia::operation_queue       m_operations;
     nvidia::display_engine        m_display_engine;
     nvidia::fwsec_layout          m_fwsec = {};
     nvidia::fwsec_signature       m_fwsec_signature = {};

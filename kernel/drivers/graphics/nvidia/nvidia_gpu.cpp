@@ -1193,6 +1193,9 @@ void nvidia_gpu_driver::run() {
                 "nvidia: the GSP falcon's interrupt registers read all ones, as on a card that stopped responding, so "
                 "no message is read and the GSP's health is not checked"
             );
+
+            // A caller waits for its operation without a deadline, so no wake skips the queue
+            m_operations.serve();
             continue;
         }
 
@@ -1224,6 +1227,7 @@ void nvidia_gpu_driver::run() {
         }
 
         m_display_engine.log_first_second();
+        m_operations.serve();
     }
 }
 

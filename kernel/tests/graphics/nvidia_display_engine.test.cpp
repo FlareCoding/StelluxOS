@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
@@ -27,6 +28,8 @@
 #include "dynpriv/dynpriv.h"
 #include "mm/heap.h"
 #include "mm/paging.h"
+#include "sched/sched.h"
+#include "sched/task.h"
 #include "tests/memory/dma_test_access.h"
 
 TEST_SUITE(nvidia_display_engine);
@@ -67,10 +70,12 @@ using drivers::nvidia::NO_OUTPUT;
 using drivers::nvidia::NOTIFIER_SLOTS;
 using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
+using drivers::nvidia::operation_queue;
 using drivers::nvidia::PUSH_BUFFER_BYTES;
 using drivers::nvidia::register_display_engine;
 using drivers::nvidia::registers;
 using drivers::nvidia::release_display_channel;
+using drivers::nvidia::scanout_buffer;
 using drivers::nvidia::video_memory;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
@@ -202,10 +207,24 @@ static constexpr uint64_t DOUBLE_PAGE_BYTES = 0x1000;
 // The core channel's area, where `g_channel_areas` begins, holding its PUT, GET and armed state
 static uint32_t* const g_core_channel_registers = g_channel_areas;
 
+// A driver whose task the tests play, serving the engines' operation queue themselves
+class engine_task_driver : public drivers::device_driver {
+public:
+    engine_task_driver() : device_driver("engine_task") {}
+
+    int32_t attach() override { return 0; }
+    void run() override {}
+};
+
 // The object under test, which its instance memory's copy of the hash table makes too large for a test's stack, and
 // the engine last built there, null before the first
 alignas(display_engine) static uint8_t g_engine_bytes[sizeof(display_engine)];
 static display_engine* g_built_engine = nullptr;
+
+// The operation queue every engine built here takes and its driver, built in place at the first engine
+alignas(engine_task_driver) static uint8_t g_task_driver_bytes[sizeof(engine_task_driver)];
+alignas(operation_queue) static uint8_t g_operations_bytes[sizeof(operation_queue)];
+static operation_queue* g_engine_operations = nullptr;
 
 // Two display ids, which are outputs 0 and 1 when both are supported
 static constexpr uint32_t OUTPUT_0_ID = 0x100;
@@ -1060,6 +1079,11 @@ struct display_engine_test_access {
         return was_scheduled;
     }
 
+    // Marks the display failed, as a refused GET or a missed deadline does
+    static void fail_display(display_engine& engine) {
+        engine.m_is_display_failed.store_release(true);
+    }
+
     static uint64_t queued_deadline_ns(const display_engine& engine) {
         return engine.m_queued_deadline_ns;
     }
@@ -1113,6 +1137,16 @@ struct display_engine_test_access {
 
 using drivers::nvidia::display_engine_test_access;
 
+// The queue every engine built here takes, building it and its driver at the first call
+static operation_queue& engine_operations() {
+    if (g_engine_operations == nullptr) {
+        auto* driver = new (g_task_driver_bytes) engine_task_driver();
+        g_engine_operations = new (g_operations_bytes) operation_queue(*driver);
+    }
+
+    return *g_engine_operations;
+}
+
 // An engine over `fw` and `memory`, built in `g_engine_bytes` once the timers of the engine built there before are
 // cancelled, so neither fires into it, giving its wait for the notifier no time
 static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memory) {
@@ -1120,7 +1154,7 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
         display_engine_test_access::cancel_timers(*g_built_engine);
     }
 
-    g_built_engine = new (g_engine_bytes) display_engine(fw, memory);
+    g_built_engine = new (g_engine_bytes) display_engine(fw, memory, engine_operations());
     display_engine& engine = *g_built_engine;
     display_engine_test_access::set_notifier_wait(engine, 0);
     return engine;
@@ -2884,7 +2918,7 @@ TEST(nvidia_display_engine, set_up_binds_the_window_notifier_to_the_lit_windows_
 }
 
 // A window notifier binding finding no room lights output 0, the boot head's, on head 1 through window 3 with presents
-// unsupported and no notifier, logged, and one failing otherwise fails the set-up with its error
+// and buffers unsupported and no notifier, logged, and one failing otherwise fails the set-up with its error
 TEST(nvidia_display_engine, set_up_lights_with_presents_unsupported_when_the_window_notifier_finds_no_room) {
     struct failure {
         int32_t error;
@@ -2923,6 +2957,9 @@ TEST(nvidia_display_engine, set_up_lights_with_presents_unsupported_when_the_win
             ASSERT_NOT_NULL(base);
             EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
             EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::OK);
+
+            gfxfb::buffer* created = nullptr;
+            EXPECT_EQ(engine.create_buffer(64, 64, gfxfb::GFXFB_FORMAT_XRGB8888, &created), gfxfb::ERR_UNSUPPORTED);
         }
 
         EXPECT_EQ(engine.release(), OK);
@@ -3792,7 +3829,7 @@ TEST(nvidia_display_engine, set_up_waits_for_the_notifier_for_the_engines_time) 
 TEST(nvidia_display_engine, constructed_engine_waits_for_the_notifier_for_nvidias_time) {
     engine_firmware fw;
     engine_video_memory memory;
-    display_engine& engine = *new (g_engine_bytes) display_engine(fw, memory);
+    display_engine& engine = *new (g_engine_bytes) display_engine(fw, memory, engine_operations());
 
     EXPECT_EQ(display_engine_test_access::notifier_wait_ns(engine), COMPLETION_NOTIFIER_WAIT_NS);
 }
@@ -5089,9 +5126,9 @@ TEST(nvidia_display_engine, gfxfb_reads_at_most_gfxfb_outputs_max_outputs) {
     EXPECT_EQ(engine.release(), OK);
 }
 
-// The engine returns `gfxfb::ERR_UNSUPPORTED` for buffers and the cursor, and for presents while flips are off, even
+// The engine returns `gfxfb::ERR_UNSUPPORTED` for the cursor, and for buffers and presents while flips are off, even
 // once released, and a release of the base buffer frees and unmaps nothing, leaving it the lit output's
-TEST(nvidia_display_engine, buffers_cursors_and_flips_off_presents_are_unsupported_and_release_buffer_frees_nothing) {
+TEST(nvidia_display_engine, cursors_and_flips_off_buffers_and_presents_are_unsupported_and_the_base_buffer_is_kept) {
     engine_firmware fw;
     engine_video_memory memory;
     ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
@@ -5114,8 +5151,10 @@ TEST(nvidia_display_engine, buffers_cursors_and_flips_off_presents_are_unsupport
     EXPECT_EQ(engine.base_buffer(0), base);
     EXPECT_EQ(memory.scanout_unmaps, 1u);
     EXPECT_EQ(memory.scanout_releases, 0u);
+
     EXPECT_EQ(engine.release(), OK);
     EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_EQ(engine.create_buffer(64, 64, 0, &created), gfxfb::ERR_UNSUPPORTED);
 }
 
 // Once released, the lit output reads as dark with no base buffer and its flush fails with `gfxfb::ERR_DEVICE`,
@@ -5620,9 +5659,11 @@ TEST(nvidia_display_engine, a_present_refuses_in_gfxfbs_order_with_nothing_writt
     shorter.height--;
     gfxfb::buffer taller = *base;
     taller.height++;
-    gfxfb::buffer unbound = *base;
+    scanout_buffer unbound = {};
+    static_cast<gfxfb::buffer&>(unbound) = *base;
 
     uint8_t window = display_engine_test_access::lit_window(engine);
+    unbound.bound_windows = ~(1u << window);
     uint32_t put = window_channel_word(window, CHANNEL_PUT);
     EXPECT_EQ(engine.present(1, &narrower, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
 
@@ -5938,4 +5979,554 @@ TEST(nvidia_display_engine, a_present_on_lit_output_1_ends_on_output_1) {
     uint64_t blank_ns = display_engine_test_access::vertical_blank_ns(engine);
     expect_last_present_end(1, 1, gfxfb::GFXFB_PRESENT_LATCHED, 1, blank_ns);
     EXPECT_EQ(engine.release(), OK);
+}
+
+// Whether a hash table entry names `object`
+static bool has_entry_for(rm::handle object) {
+    for (uint32_t entry = 0; entry < NVIDIA_HASH_ENTRIES; entry++) {
+        if (instance_word(entry * NVIDIA_ENTRY_BYTES) == object) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static display_engine* g_creating_engine;
+static uint32_t g_create_width;
+static uint32_t g_create_height;
+static gfxfb::buffer* g_created;
+static int32_t g_create_result;
+static sync::atomic<uint32_t> g_create_returned;
+
+// Creates a `g_create_width` by `g_create_height` buffer as a caller of gfxfb does, then ends its task
+static void create_requested_buffer(void*) {
+    g_create_result = g_creating_engine->create_buffer(
+        g_create_width,
+        g_create_height,
+        gfxfb::GFXFB_FORMAT_XRGB8888,
+        &g_created
+    );
+    g_create_returned.store_release(1);
+    sched::exit(0);
+}
+
+// Creates a `width` by `height` buffer from a task of its own, runs any `before_serve` once it waits, then serves its
+// binding as the driver task would and gives `create_buffer`'s result. False when the task never waited or returned
+static bool create_served_buffer_of_size(
+    display_engine& engine,
+    uint32_t width,
+    uint32_t height,
+    gfxfb::buffer*& out,
+    int32_t& rc,
+    void (*before_serve)(display_engine&) = nullptr
+) {
+    g_creating_engine = &engine;
+    g_create_width = width;
+    g_create_height = height;
+    g_created = nullptr;
+    g_create_result = gfxfb::ERR_DEVICE;
+    g_create_returned.store_relaxed(0);
+
+    sched::task* caller = test_helpers::start_pinned_task(create_requested_buffer, nullptr, "create_buffer");
+    if (caller == nullptr) {
+        return false;
+    }
+
+    bool has_waited = test_helpers::blocks_before_deadline(caller);
+    if (before_serve != nullptr) {
+        before_serve(engine);
+    }
+
+    engine_operations().serve();
+    bool has_returned = test_helpers::spin_wait(g_create_returned);
+    test_helpers::unpin(caller);
+
+    out = g_created;
+    rc = g_create_result;
+
+    return has_waited && has_returned;
+}
+
+// `create_served_buffer_of_size` for a buffer the size of `engine`'s mode
+static bool create_served_buffer(
+    display_engine& engine,
+    gfxfb::buffer*& out,
+    int32_t& rc,
+    void (*before_serve)(display_engine&) = nullptr
+) {
+    gfxfb::buffer* base = engine.base_buffer(0);
+    return base != nullptr && create_served_buffer_of_size(engine, base->width, base->height, out, rc, before_serve);
+}
+
+// Serves the driver task's queue with the log kept
+static void serve_logged() {
+    s_engine_log_bytes = 0;
+    log::set_backend(&ENGINE_LOG_BACKEND);
+    engine_operations().serve();
+    log::set_backend(nullptr);
+}
+
+// A created buffer is cleared through one mapping and handed to userland through a second, then bound on the driver
+// task to the lit window's channel, so a present shows it through its own context DMA
+TEST(nvidia_display_engine, a_created_buffer_is_cleared_bound_on_the_task_and_presented) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    string::memset(memory.scanout, SCANOUT_FILL, memory.scanout_bytes);
+    uint32_t maps = memory.scanout_maps;
+    uint32_t unmaps = memory.scanout_unmaps;
+
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    ASSERT_NOT_NULL(created);
+
+    EXPECT_EQ(created->width, base->width);
+    EXPECT_EQ(created->height, base->height);
+    EXPECT_EQ(created->pitch, base->pitch);
+    EXPECT_EQ(created->size, base->size);
+    EXPECT_EQ(created->phys, SCANOUT_BAR1_ADDRESS + (maps + 1) * SCANOUT_BAR1_STRIDE);
+    EXPECT_FALSE(created->cacheable);
+
+    EXPECT_EQ(memory.scanout_maps, maps + 2);
+    EXPECT_EQ(memory.scanout_unmaps, unmaps + 1);
+    EXPECT_EQ(memory.scanout_fill_words, 0u);
+
+    rm::handle context_dma = static_cast<scanout_buffer*>(created)->context_dma;
+    EXPECT_NE(context_dma, 0u);
+    EXPECT_NE(context_dma, display_engine_test_access::base_buffer_context_dma(engine));
+    EXPECT_TRUE(has_entry_for(context_dma));
+
+    uint8_t window = display_engine_test_access::lit_window(engine);
+    rm::handle notifier = display_engine_test_access::window_notifier_context_dma(engine);
+    window_channel_word(window, CHANNEL_GET) = 0;
+    ASSERT_EQ(engine.present(0, created, nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine));
+
+    uint32_t end = 2 * WINDOW_IMAGE_BYTES;
+    EXPECT_EQ(window_channel_word(window, CHANNEL_PUT), end);
+    expect_present_image(fw, end, window, context_dma, notifier, 0);
+    EXPECT_EQ(engine.release(), OK);
+    heap::ufree_delete(static_cast<scanout_buffer*>(created));
+}
+
+// `create_buffer` refuses in `present`'s order with nothing allocated: flips off, a released engine even for a bad
+// format, then a format other than XRGB8888 or a size past the 16-bit fields, while their limit reaches the allocation
+TEST(nvidia_display_engine, create_buffer_refuses_in_presents_order_with_nothing_allocated) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    uint32_t requests = memory.scanout_requests;
+    uint32_t xrgb = gfxfb::GFXFB_FORMAT_XRGB8888;
+    gfxfb::buffer* created = nullptr;
+    EXPECT_EQ(engine.create_buffer(64, 64, xrgb, &created), gfxfb::ERR_UNSUPPORTED);
+
+    engine.turn_on_flips();
+    EXPECT_EQ(engine.create_buffer(64, 64, 0, &created), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.create_buffer(64, 64, xrgb + 1, &created), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.create_buffer(0x10000, 64, xrgb, &created), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.create_buffer(64, 0x10000, xrgb, &created), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(memory.scanout_requests, requests);
+
+    EXPECT_EQ(engine.create_buffer(0xFFFF, 64, xrgb, &created), gfxfb::ERR_NO_MEMORY);
+    EXPECT_EQ(engine.create_buffer(64, 0xFFFF, xrgb, &created), gfxfb::ERR_NO_MEMORY);
+    EXPECT_EQ(memory.scanout_requests, requests + 2);
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(engine.create_buffer(64, 64, 0, &created), gfxfb::ERR_DEVICE);
+    EXPECT_NULL(created);
+    EXPECT_EQ(memory.scanout_requests, requests + 2);
+}
+
+// A scanout buffer whose allocation or either mapping is refused, or whose userland mapping has no physical address,
+// is undone before anything is queued, no room returned as gfxfb's no room and the rest as a refusal
+TEST(nvidia_display_engine, create_buffer_undoes_a_refused_allocation_or_mapping) {
+    struct refusal {
+        int32_t  allocate_result;
+        int32_t  map_result;
+        uint32_t failing_map;   // which of the buffer's two mappings `map_result` fails, from 1
+        uint32_t physless_map;  // which of them gets no physical address, from 1, 0 for neither
+        int32_t  result;
+        uint32_t unmaps;
+    };
+
+    const refusal refusals[] = {
+        {ERR_NO_MEMORY, OK, 0, 0, gfxfb::ERR_NO_MEMORY, 0},
+        {ERR_INVALID_ARG, OK, 0, 0, gfxfb::ERR_REFUSED, 0},
+        {OK, ERR_NO_MEMORY, 1, 0, gfxfb::ERR_NO_MEMORY, 0},
+        {OK, ERR_TIMEOUT, 2, 0, gfxfb::ERR_REFUSED, 1},
+        {OK, OK, 0, 2, gfxfb::ERR_REFUSED, 2},
+    };
+
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    for (const refusal& refused : refusals) {
+        uint32_t maps = memory.scanout_maps;
+        uint32_t unmaps = memory.scanout_unmaps;
+        uint32_t releases = memory.scanout_releases;
+
+        memory.scanout_allocate_result = refused.allocate_result;
+        memory.scanout_map_result = refused.map_result;
+        memory.failing_scanout_map = maps + refused.failing_map;
+        memory.physless_scanout_map = refused.physless_map == 0 ? 0 : maps + refused.physless_map;
+
+        bool is_allocated = refused.allocate_result == OK;
+        gfxfb::buffer* created = nullptr;
+        EXPECT_EQ(engine.create_buffer(64, 64, gfxfb::GFXFB_FORMAT_XRGB8888, &created), refused.result);
+        EXPECT_NULL(created);
+        EXPECT_EQ(memory.scanout_unmaps, unmaps + refused.unmaps);
+        EXPECT_EQ(memory.scanout_releases, releases + (is_allocated ? 1 : 0));
+    }
+
+    memory.scanout_allocate_result = OK;
+    memory.scanout_map_result = OK;
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A binding the card refuses, or one the display fails before, is undone: the buffer is unmapped and its memory
+// released, and `create_buffer` returns the refusal as gfxfb's error
+TEST(nvidia_display_engine, create_buffer_undoes_a_refused_or_failed_binding) {
+    struct failure {
+        int32_t map_error;   // the binding's mapping's error, OK for none
+        int32_t result;
+    };
+
+    const failure failures[] = {
+        {ERR_NO_MEMORY, gfxfb::ERR_NO_MEMORY},
+        {ERR_TIMEOUT, gfxfb::ERR_REFUSED},
+        {OK, gfxfb::ERR_DEVICE},
+    };
+
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    for (const failure& failed : failures) {
+        uint32_t unmaps = memory.scanout_unmaps;
+        uint32_t releases = memory.scanout_releases;
+        memory.failing_general_map = failed.map_error == OK ? 0 : memory.general_maps + 1;
+        memory.general_map_result = failed.map_error;
+
+        bool fails_the_display = failed.map_error == OK;
+        void (*before_serve)(display_engine&) = fails_the_display ? display_engine_test_access::fail_display : nullptr;
+        gfxfb::buffer* created = nullptr;
+        int32_t rc = gfxfb::OK;
+        ASSERT_TRUE(create_served_buffer(engine, created, rc, before_serve));
+
+        EXPECT_EQ(rc, failed.result);
+        EXPECT_NULL(created);
+        EXPECT_EQ(memory.scanout_unmaps, unmaps + 2);
+        EXPECT_EQ(memory.scanout_releases, releases + 1);
+    }
+
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Releases `engine` while a caller of `create_buffer` waits for its binding
+static void release_engine(display_engine& engine) {
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A binding served once the engine is released while its caller waits is refused and its buffer undone, as when the
+// display fails before it
+TEST(nvidia_display_engine, a_binding_after_the_engine_is_released_undoes_the_buffer) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::OK;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc, release_engine));
+
+    EXPECT_EQ(rc, gfxfb::ERR_DEVICE);
+    EXPECT_NULL(created);
+    EXPECT_EQ(memory.scanout_unmaps, unmaps + 2);
+    EXPECT_EQ(memory.scanout_releases, releases + 1);
+}
+
+// A release is queued without waiting, and the next serve unbinds the buffer, unmaps it and releases its memory
+TEST(nvidia_display_engine, release_buffer_queues_a_release_the_task_runs_later) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    rm::handle context_dma = static_cast<scanout_buffer*>(created)->context_dma;
+
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    engine.release_buffer(created);
+    EXPECT_EQ(memory.scanout_unmaps, unmaps);
+    EXPECT_EQ(memory.scanout_releases, releases);
+    EXPECT_TRUE(has_entry_for(context_dma));
+
+    engine_operations().serve();
+    EXPECT_FALSE(has_entry_for(context_dma));
+    EXPECT_EQ(memory.scanout_unmaps, unmaps + 1);
+    EXPECT_EQ(memory.scanout_releases, releases + 1);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Once the display failed, a release keeps the buffer bound, mapped and allocated for good, logged, since the head may
+// still scan it, and no further buffer is created
+TEST(nvidia_display_engine, a_release_on_a_failed_display_keeps_the_buffer_for_good) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    auto* kept = static_cast<scanout_buffer*>(created);
+
+    uint32_t requests = memory.scanout_requests;
+    gfxfb::buffer* refused = nullptr;
+    display_engine_test_access::fail_display(engine);
+    EXPECT_EQ(engine.present(0, created, nullptr, 0), gfxfb::ERR_DEVICE);
+    EXPECT_EQ(engine.create_buffer(64, 64, gfxfb::GFXFB_FORMAT_XRGB8888, &refused), gfxfb::ERR_DEVICE);
+    EXPECT_EQ(memory.scanout_requests, requests);
+
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    engine.release_buffer(created);
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display buffer at 0x1000000 in video memory is kept for good, as the display failed"
+    ));
+    EXPECT_TRUE(has_entry_for(kept->context_dma));
+    EXPECT_EQ(memory.scanout_unmaps, unmaps);
+    EXPECT_EQ(memory.scanout_releases, releases);
+    EXPECT_EQ(engine.release(), OK);
+    heap::ufree_delete(kept);
+}
+
+// Once the engine is released, a release keeps the buffer for good too, logged
+TEST(nvidia_display_engine, a_release_after_the_engine_is_released_keeps_the_buffer_for_good) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+
+    auto* kept = static_cast<scanout_buffer*>(created);
+    uint8_t window = display_engine_test_access::lit_window(engine);
+    ASSERT_EQ(engine.release(), OK);
+
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    engine.release_buffer(created);
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display buffer at 0x1000000 in video memory is kept for good, as the engine was released"
+    ));
+    EXPECT_EQ(kept->bound_windows, 1u << window);
+    EXPECT_EQ(memory.scanout_unmaps, unmaps);
+    EXPECT_EQ(memory.scanout_releases, releases);
+    heap::ufree_delete(kept);
+}
+
+// An unbinding the card refuses keeps the buffer bound, mapped and allocated for good, logged with its error
+TEST(nvidia_display_engine, a_refused_unbinding_keeps_the_buffer_for_good) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    auto* kept = static_cast<scanout_buffer*>(created);
+
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    memory.failing_general_map = memory.general_maps + 1;
+    memory.general_map_result = ERR_TIMEOUT;
+    engine.release_buffer(created);
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: unbinding the display buffer at 0x1000000 in video memory from window 3's channel failed: -4, so the "
+        "buffer is kept for good"
+    ));
+
+    EXPECT_TRUE(has_entry_for(kept->context_dma));
+    EXPECT_EQ(kept->bound_windows, 1u << 3);
+    EXPECT_EQ(memory.scanout_unmaps, unmaps);
+    EXPECT_EQ(memory.scanout_releases, releases);
+
+    EXPECT_EQ(engine.release(), OK);
+    heap::ufree_delete(kept);
+}
+
+// The unbinding logs the vertical blanks the handler serviced since the light, past the first second too, and the
+// head's own frame count's advance over them, which wraps past its 16 bits
+TEST(nvidia_display_engine, a_buffers_unbinding_logs_both_frame_counts) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+
+    registers regs = engine_registers();
+    uint8_t head = display_engine_test_access::lit_head(engine);
+    uint32_t blanks = display_engine_test_access::frames_per_second(engine) + 3;
+    for (uint32_t blank = 0; blank < blanks; blank++) {
+        head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
+        raster_register(head) = (((0xFFF0 + 2 * blank) & 0xFFFF) << 16) | 770;
+        service_elevated(engine, regs, 1u << head);
+    }
+
+    engine.release_buffer(created);
+    serve_logged();
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display buffer at 0x1000000 in video memory is unbound from window 3's channel, once the handler "
+        "serviced head 1's vertical blanks 1 to 63 since the light while the head's own frame count advanced 124"
+    ));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A buffer created after a failed light binds no window, since no output is lit, so a present refuses it as dark and
+// its release unbinds nothing before unmapping it and releasing its memory
+TEST(nvidia_display_engine, a_buffer_created_after_a_failed_light_binds_no_window) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    fail_the_light(fw);
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer_of_size(engine, 64, 64, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    ASSERT_NOT_NULL(created);
+
+    auto* dark = static_cast<scanout_buffer*>(created);
+    EXPECT_EQ(dark->bound_windows, 0u);
+    EXPECT_EQ(dark->context_dma, 0u);
+    EXPECT_EQ(engine.present(0, created, nullptr, 0), gfxfb::ERR_DARK);
+
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    engine.release_buffer(created);
+    serve_logged();
+
+    EXPECT_FALSE(engine_log_contains("unbound"));
+    EXPECT_EQ(memory.scanout_unmaps, unmaps + 1);
+    EXPECT_EQ(memory.scanout_releases, releases + 1);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Where the light reads a window's controls back, at 0x800 in its channel's area
+static constexpr uint32_t WINDOW_ARMED_STATE_START = 0x800;
+
+// The light logs the lit head's output table and OCSC0 controls from the core channel's armed state and the lit
+// window's size and CSC controls from its channel's, never from the assembled halves below them
+TEST(nvidia_display_engine, the_light_reads_its_controls_back_from_the_armed_states) {
+    const uint8_t head = 1;
+    const uint8_t window = 3;
+    const uint32_t head_controls[] = {rm::CORE_HEAD_OUTPUT_TABLE_CONTROL, rm::CORE_HEAD_OCSC0_CONTROL};
+    const uint32_t window_controls[] = {
+        rm::WINDOW_SET_SIZE,
+        rm::WINDOW_SET_CSC00_CONTROL,
+        rm::WINDOW_SET_CSC0_TABLE_CONTROL,
+        rm::WINDOW_SET_CSC01_CONTROL,
+        rm::WINDOW_SET_CSC10_CONTROL,
+        rm::WINDOW_SET_CSC1_TABLE_CONTROL,
+    };
+
+    uint32_t number = 1;
+    for (uint32_t control : head_controls) {
+        uint32_t method = head * NVIDIA_HEAD_STRIDE + control;
+        g_core_channel_registers[(NVIDIA_ARMED_STATE + method) / sizeof(uint32_t)] = 0xA0 + number;
+        g_core_channel_registers[method / sizeof(uint32_t)] = 0xB0 + number;
+        number++;
+    }
+
+    for (uint32_t control : window_controls) {
+        window_channel_word(window, WINDOW_ARMED_STATE_START + control) = 0xA0 + number;
+        window_channel_word(window, control) = 0xB0 + number;
+        number++;
+    }
+
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up_logged(engine), OK);
+
+    EXPECT_EQ(display_engine_test_access::lit_head(engine), head);
+    EXPECT_EQ(display_engine_test_access::lit_window(engine), window);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: after the light, head 1's output table control reads 0xA1 and its OCSC0 control 0xA2 in the core "
+        "channel's armed state"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: after the light, window 3's size reads 0xA3, its CSC0 controls 0xA4, 0xA5 and 0xA6 and its CSC1 "
+        "controls 0xA7 and 0xA8 in its channel's armed state"
+    ));
+    EXPECT_EQ(engine.release(), OK);
+
+    for (uint32_t control : head_controls) {
+        uint32_t method = head * NVIDIA_HEAD_STRIDE + control;
+        g_core_channel_registers[(NVIDIA_ARMED_STATE + method) / sizeof(uint32_t)] = 0;
+        g_core_channel_registers[method / sizeof(uint32_t)] = 0;
+    }
+
+    for (uint32_t control : window_controls) {
+        window_channel_word(window, WINDOW_ARMED_STATE_START + control) = 0;
+        window_channel_word(window, control) = 0;
+    }
 }

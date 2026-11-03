@@ -2,8 +2,6 @@
 #define STELLUX_DRIVERS_PLATFORM_DRIVER_H
 
 #include "drivers/device_driver.h"
-#include "sync/spinlock.h"
-#include "sync/wait_queue.h"
 
 namespace drivers {
 
@@ -19,12 +17,9 @@ public:
         , m_reg_phys(reg_phys)
         , m_reg_size(reg_size)
         , m_reg_va(0)
-        , m_reg_map_base(0)
-        , m_event_pending(false) {
+        , m_reg_map_base(0) {
         m_irq[0] = irq0;
         m_irq[1] = irq1;
-        m_irq_wq.init();
-        m_irq_lock = sync::SPINLOCK_INIT;
     }
 
     int32_t attach() override = 0;
@@ -41,26 +36,11 @@ protected:
      */
     __PRIVILEGED_CODE uintptr_t map_regs();
 
-    /**
-     * Block the driver task until an interrupt or other event wakes it.
-     * Multiple interrupts may coalesce into a single wake.
-     */
-    void wait_for_event();
-
-    /**
-     * Signal that an event is pending (called from ISR context).
-     * @note Privilege: **required**
-     */
-    __PRIVILEGED_CODE void notify_event();
-
-    uint64_t         m_reg_phys;
-    uint64_t         m_reg_size;
-    uintptr_t        m_reg_va;
-    uintptr_t        m_reg_map_base;
-    uint32_t         m_irq[2];
-    sync::wait_queue m_irq_wq;
-    sync::spinlock   m_irq_lock;
-    bool             m_event_pending;
+    uint64_t  m_reg_phys;
+    uint64_t  m_reg_size;
+    uintptr_t m_reg_va;
+    uintptr_t m_reg_map_base;
+    uint32_t  m_irq[2];
 
     /** @note Privilege: **required** */
     friend __PRIVILEGED_CODE int32_t platform_init();
