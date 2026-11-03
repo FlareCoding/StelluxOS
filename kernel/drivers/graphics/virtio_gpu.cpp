@@ -1294,17 +1294,19 @@ int32_t virtio_gpu_driver::flush(uint32_t output, const gfxfb::gfxfb_rect* rects
     return is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
 }
 
-__PRIVILEGED_CODE void virtio_gpu_driver::on_interrupt(uint32_t vector) {
+__PRIVILEGED_CODE bool virtio_gpu_driver::on_interrupt(uint32_t vector) {
     ack_interrupt();
 
     if (vector != CONFIG_VECTOR) {
-        return;
+        return true;
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(m_work_lock);
     m_has_config_change = true;
     sync::wake_one(m_work_wq);
     sync::spin_unlock_irqrestore(m_work_lock, irq);
+
+    return true;
 }
 
 REGISTER_PCI_DRIVER(virtio_gpu_driver,

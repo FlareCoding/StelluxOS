@@ -91,9 +91,10 @@ public:
     /**
      * Called from interrupt context when an MSI/MSI-X vector fires.
      * @param vector 0-based MSI vector index relative to this driver's allocation.
+     * @return true when the driver's task has work, which wakes the task.
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE virtual void on_interrupt(uint32_t vector) = 0;
+    __PRIVILEGED_CODE virtual bool on_interrupt(uint32_t vector) = 0;
 
     /**
      * Tears down MSI and unmaps all BARs. Concrete drivers that override
@@ -146,8 +147,9 @@ protected:
     int32_t setup_msix(uint32_t count);
 
     /**
-     * Block until an interrupt arrives. One task may wait at a time, and it
-     * must drain all pending work on return since interrupts coalesce.
+     * Block until an interrupt whose `on_interrupt` returns true arrives. One
+     * task may wait at a time, and it must drain all pending work on return
+     * since interrupts coalesce.
      */
     void wait_for_event();
 
@@ -160,6 +162,14 @@ protected:
      * @param deadline_ns The time on `clock::now_ns()` at which to stop waiting.
      */
     void wait_for_event_until(uint64_t deadline_ns);
+
+    /**
+     * Runs `on_interrupt` and, only when it returns true, marks the event
+     * pending and wakes the task waiting for it.
+     * @param vector 0-based MSI vector index, as `on_interrupt` takes it.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void handle_interrupt(uint32_t vector);
 
     pci::device* m_dev;
     sync::wait_queue m_irq_wq;

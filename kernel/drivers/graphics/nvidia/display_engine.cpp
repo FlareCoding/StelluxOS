@@ -14,6 +14,7 @@
 #include "drivers/graphics/nvidia/display_link.h"
 #include "drivers/graphics/nvidia/display_modes.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
+#include "drivers/graphics/nvidia/display_vertical_blank.h"
 #include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -38,6 +39,8 @@ constexpr uint32_t NO_WINDOW_INTERLOCKS = 0;
 
 // Where the core channel's armed state lies in BAR0, the methods the display engine took at its last update
 constexpr uint32_t CORE_ARMED_STATE = CORE_CHANNEL_AREA + CORE_CHANNEL_ARMED_STATE;
+
+constexpr uint64_t MILLIHERTZ_PER_HERTZ = 1000;
 
 // Logs the maker, name and timings an output's EDID gives
 static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
@@ -1146,7 +1149,11 @@ static void log_lit_head(const registers& regs, const head_light& light) {
 display_engine::display_engine(firmware& fw, video_memory& memory)
     : m_firmware(fw)
     , m_memory(memory)
-    , m_instance_memory(memory, fw) {}
+    , m_instance_memory(memory, fw) {
+    for (uint8_t& output : m_head_outputs) {
+        output = NO_OUTPUT;
+    }
+}
 
 int32_t display_engine::set_up(
     registers& regs,
@@ -1155,6 +1162,12 @@ int32_t display_engine::set_up(
     rm::handle device
 ) {
     const chip_display& display = chip.display;
+
+    // The boot firmware or an earlier driver can leave a head's interrupt enabled or pending
+    m_head_count = display.head_count;
+    for (uint8_t head = 0; head < display.head_count; head++) {
+        disable_vertical_blank(regs, head);
+    }
 
     uint32_t present_windows = 0;
     int32_t rc = read_present_windows(m_firmware, display, present_windows);
@@ -1404,7 +1417,7 @@ int32_t display_engine::set_up(
 }
 
 int32_t display_engine::bring_up(
-    const registers& regs,
+    registers& regs,
     const display_heads& heads,
     uint32_t present_windows,
     const window_owners& owners,
@@ -1482,9 +1495,18 @@ int32_t display_engine::bring_up(
     }
 
     if (is_lit) {
+        uint64_t frames_per_second =
+            (m_chosen_mode.refresh_millihertz + MILLIHERTZ_PER_HERTZ / 2) / MILLIHERTZ_PER_HERTZ;
+
+        // The handler counts a head's frames once its entry names the output, so the entry precedes the enable
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
             m_is_lit = true;
+            m_lit_head = light.head;
+            m_frames_per_second = static_cast<uint32_t>(frames_per_second);
+
+            sync::atomic_ref<uint8_t>{m_head_outputs[light.head]}.store_release(m_chosen_output);
+            enable_vertical_blank(regs, light.head);
             sync::spin_unlock_irqrestore(m_output_lock, irq);
         });
     } else {
@@ -1739,6 +1761,104 @@ int32_t display_engine::release() {
     }
 
     return objects_rc;
+}
+
+void display_engine::turn_on_flips() {
+    m_are_flips_on.store_release(true);
+}
+
+bool display_engine::are_flips_on() const {
+    return m_are_flips_on.load_acquire();
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool display_engine::service_vertical_blanks(registers& regs, uint32_t pending_heads) {
+    bool completes_first_second = false;
+    for (uint8_t head = 0; head < m_head_count; head++) {
+        // Clearing each event before its count, not after as NVIDIA's driver does, keeps one arriving meanwhile pending
+        bool is_pending = (pending_heads & (1u << head)) != 0;
+        if (!is_pending || !take_vertical_blank(regs, head)) {
+            continue;
+        }
+
+        uint8_t output = sync::atomic_ref<uint8_t>{m_head_outputs[head]}.load_acquire();
+        if (output == NO_OUTPUT) {
+            continue;
+        }
+
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        if (m_is_lit && output == m_chosen_output) {
+            completes_first_second |= count_vertical_blank(clock::now_ns(), raster_position(regs, head));
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    }
+
+    return completes_first_second;
+}
+
+bool display_engine::count_vertical_blank(uint64_t now_ns, uint32_t position) {
+    m_frame_count++;
+    m_vertical_blank_ns = now_ns;
+    if (m_frame_count > m_frames_per_second) {
+        return false;
+    }
+
+    uint16_t line = raster_line(position);
+    uint16_t frame = raster_frame(position);
+    if (m_frame_count == 1) {
+        m_first_second = {now_ns, now_ns, frame, frame, line, line};
+    }
+
+    m_first_second.end_ns = now_ns;
+    m_first_second.end_frame = frame;
+    m_first_second.lowest_line = line < m_first_second.lowest_line ? line : m_first_second.lowest_line;
+    m_first_second.highest_line = line > m_first_second.highest_line ? line : m_first_second.highest_line;
+
+    return m_frame_count == m_frames_per_second;
+}
+
+void display_engine::log_first_second() {
+    bool must_log = false;
+    uint8_t head = 0;
+    uint32_t frames = 0;
+    uint64_t millihertz = 0;
+    first_second_statistics statistics = {};
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        bool has_first_second = m_frames_per_second != 0 && m_frame_count >= m_frames_per_second;
+        must_log = has_first_second && !m_has_logged_first_second;
+        if (must_log) {
+            m_has_logged_first_second = true;
+            head = m_lit_head;
+            frames = m_frames_per_second;
+            millihertz = m_chosen_mode.refresh_millihertz;
+            statistics = m_first_second;
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (!must_log) {
+        return;
+    }
+
+    // The head's frame count has 16 bits and starts anywhere, so its advance wraps
+    uint16_t head_frames = static_cast<uint16_t>(statistics.end_frame - statistics.start_frame);
+    log::info(
+        "nvidia: the handler serviced head %u's vertical blanks 1 to %u since the light over %lu us, at its mode's "
+        "%lu.%03lu Hz, at raster lines %u to %u, while the head's own frame count advanced %u",
+        head,
+        frames,
+        (statistics.end_ns - statistics.start_ns) / NS_PER_US,
+        millihertz / MILLIHERTZ_PER_HERTZ,
+        millihertz % MILLIHERTZ_PER_HERTZ,
+        statistics.lowest_line,
+        statistics.highest_line,
+        head_frames
+    );
 }
 
 int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {

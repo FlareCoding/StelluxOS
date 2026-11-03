@@ -60,7 +60,7 @@ public:
     int32_t transmit(net::packet* pkt) override;
 
     /** @note Privilege: **required** */
-    __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
+    __PRIVILEGED_CODE bool on_interrupt(uint32_t vector) override;
 
 private:
     // Virtio initialization helpers

@@ -24,6 +24,7 @@
 #include "drivers/graphics/nvidia/video_memory.h"
 #include "drivers/graphics/nvidia/vram_allocator.h"
 #include "drivers/graphics/nvidia/window_methods.h"
+#include "dynpriv/dynpriv.h"
 #include "mm/heap.h"
 #include "mm/paging.h"
 #include "tests/memory/dma_test_access.h"
@@ -55,11 +56,13 @@ using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_NOT_REGISTERED;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::firmware;
+using drivers::nvidia::first_second_statistics;
 using drivers::nvidia::HEAD_LIGHT_FIXED_METHODS;
 using drivers::nvidia::INSTANCE_MEMORY_BYTES;
 using drivers::nvidia::LOOK_UP_TABLE_SURFACE_BYTES;
 using drivers::nvidia::look_up_table_word;
 using drivers::nvidia::NO_HEAD;
+using drivers::nvidia::NO_OUTPUT;
 using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
 using drivers::nvidia::PUSH_BUFFER_BYTES;
@@ -164,8 +167,15 @@ static constexpr uint64_t GENERAL_GUARD_BYTES = 0x1000;
 static uint8_t g_video_memory[INSTANCE_MEMORY_BYTES + LOOK_UP_TABLE_PAGE_BYTES];
 static uint8_t g_mapped_video_memory[sizeof(g_video_memory) + GENERAL_GUARD_BYTES];
 
-// The words standing in for BAR0 from the core channel's area to the end of the last window channel's
-static uint32_t g_channel_areas[(window_channel_area(CHIP_WINDOWS) - CORE_CHANNEL_AREA) / sizeof(uint32_t)];
+// The first display register the engine reaches, head 0's timing event (NVIDIA's NV_PDISP_FE_EVT_STAT_HEAD_TIMING)
+static constexpr uint32_t DISPLAY_REGISTERS_START = 0x611800;
+
+// The words standing in for BAR0 from the heads' timing registers to the end of the last window channel's area
+static uint32_t g_display_registers[(window_channel_area(CHIP_WINDOWS) - DISPLAY_REGISTERS_START) / sizeof(uint32_t)];
+
+// The words from the core channel's area to the end of the last window channel's, within `g_display_registers`
+static uint32_t* const g_channel_areas =
+    g_display_registers + (CORE_CHANNEL_AREA - DISPLAY_REGISTERS_START) / sizeof(uint32_t);
 
 // Where the video memory double hands out scanout memory, the bytes past it the double backs too, so a write running
 // past the range shows, and the byte the double fills them with, as it fills each general range and guard
@@ -927,8 +937,8 @@ public:
 
 namespace drivers::nvidia {
 
-// Sets the wait an engine gives the completion notifier, since no display engine writes the notifier, and reaches the
-// engine's notifier state, its look-up table surface, its surfaces' context DMAs, its window queue and its take-down
+// Sets the wait an engine gives the completion notifier, which no display engine writes, and reaches the engine's
+// notifier, look-up table, context DMAs, window queue, take-down and lit output's vertical blanks
 struct display_engine_test_access {
     static void set_notifier_wait(display_engine& engine, uint64_t wait_ns) {
         engine.m_notifier_wait_ns = wait_ns;
@@ -956,6 +966,26 @@ struct display_engine_test_access {
 
     static display_channel* window_queue(display_engine& engine) {
         return engine.m_window_queue;
+    }
+
+    static uint8_t lit_head(const display_engine& engine) {
+        return engine.m_lit_head;
+    }
+
+    static uint8_t head_output(const display_engine& engine, uint8_t head) {
+        return engine.m_head_outputs[head];
+    }
+
+    static uint32_t frames_per_second(const display_engine& engine) {
+        return engine.m_frames_per_second;
+    }
+
+    static uint64_t frame_count(const display_engine& engine) {
+        return engine.m_frame_count;
+    }
+
+    static const first_second_statistics& first_second(const display_engine& engine) {
+        return engine.m_first_second;
     }
 
     static int32_t take_down(
@@ -5053,5 +5083,230 @@ TEST(nvidia_display_engine, refused_registration_fails_with_err_not_registered) 
     EXPECT_TRUE(engine_log_contains("nvidia: gfxfb refused the display engine as its display"));
     EXPECT_FALSE(engine_log_contains("is gfxfb's display"));
     EXPECT_FALSE(engine_log_contains("nvidia: gfxfb reads output"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A head's timing event, interrupt status and interrupt enable and its raster position, as NVIDIA's headers give
+// them, and LAST_DATA's bit, which written to the event clears it
+static constexpr uint32_t NVIDIA_HEAD_TIMING_EVENT  = 0x611800;
+static constexpr uint32_t NVIDIA_HEAD_TIMING_STATUS = 0x611C00;
+static constexpr uint32_t NVIDIA_HEAD_TIMING_ENABLE = 0x611D80;
+static constexpr uint32_t NVIDIA_RG_DPCA            = 0x616330;
+static constexpr uint32_t NVIDIA_RG_DPCA_STRIDE     = 0x800;
+static constexpr uint32_t NVIDIA_LAST_DATA          = 1u << 1;
+
+// A word the engine never writes, so a write that lands on it fails
+static constexpr uint32_t STALE_HEAD_WORD = 0xA5A5A5A5;
+
+// The word of `g_display_registers` standing in for the display register at `offset`
+static uint32_t& display_register(uint32_t offset) {
+    return g_display_registers[(offset - DISPLAY_REGISTERS_START) / sizeof(uint32_t)];
+}
+
+// `head`'s word in the array of per-head words starting at `first`
+static uint32_t& head_register(uint32_t first, uint8_t head) {
+    return display_register(first + head * sizeof(uint32_t));
+}
+
+// `head`'s raster position in `g_display_registers`
+static uint32_t& raster_register(uint8_t head) {
+    return display_register(NVIDIA_RG_DPCA + head * NVIDIA_RG_DPCA_STRIDE);
+}
+
+// A view of BAR0 whose display registers are `g_display_registers`
+static registers engine_registers() {
+    return registers(reinterpret_cast<uintptr_t>(g_display_registers) - DISPLAY_REGISTERS_START);
+}
+
+// Services the vertical blanks of `pending_heads` elevated, as the card's interrupt handler does
+static bool service_elevated(display_engine& engine, registers& regs, uint32_t pending_heads) {
+    bool completes_first_second = false;
+    RUN_ELEVATED(completes_first_second = engine.service_vertical_blanks(regs, pending_heads));
+    return completes_first_second;
+}
+
+// Has `engine` log its first second with the log kept
+static void log_first_second_logged(display_engine& engine) {
+    s_engine_log_bytes = 0;
+    log::set_backend(&ENGINE_LOG_BACKEND);
+    engine.log_first_second();
+    log::set_backend(nullptr);
+}
+
+// `set_up` disables every head's vertical blank with its event cleared, leaving those past the chip's heads, and the
+// light enables its own head's, keeping the enables' other bits, while flips stay off until the driver turns them on
+TEST(nvidia_display_engine, set_up_disables_every_heads_vertical_blank_and_the_light_enables_its_heads) {
+    for (uint8_t head = 0; head < CHIP_HEADS; head++) {
+        head_register(NVIDIA_HEAD_TIMING_ENABLE, head) = 0xFFFFFFFF;
+        head_register(NVIDIA_HEAD_TIMING_EVENT, head) = STALE_HEAD_WORD;
+    }
+
+    head_register(NVIDIA_HEAD_TIMING_ENABLE, CHIP_HEADS) = STALE_HEAD_WORD;
+    head_register(NVIDIA_HEAD_TIMING_EVENT, CHIP_HEADS) = STALE_HEAD_WORD;
+
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(engine.has_lit_output());
+
+    uint8_t lit_head = display_engine_test_access::lit_head(engine);
+    for (uint8_t head = 0; head < CHIP_HEADS; head++) {
+        uint32_t expected_enable = head == lit_head ? 0xFFFFFFFF : ~NVIDIA_LAST_DATA;
+        EXPECT_EQ(head_register(NVIDIA_HEAD_TIMING_ENABLE, head), expected_enable);
+        EXPECT_EQ(head_register(NVIDIA_HEAD_TIMING_EVENT, head), NVIDIA_LAST_DATA);
+    }
+
+    EXPECT_EQ(head_register(NVIDIA_HEAD_TIMING_ENABLE, CHIP_HEADS), STALE_HEAD_WORD);
+    EXPECT_EQ(head_register(NVIDIA_HEAD_TIMING_EVENT, CHIP_HEADS), STALE_HEAD_WORD);
+    EXPECT_FALSE(engine.are_flips_on());
+    engine.turn_on_flips();
+    EXPECT_TRUE(engine.are_flips_on());
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Each vertical blank on the lit head counts a frame, and the service completing the 59.789 Hz mode's 60 frames
+// returns true once, keeping the first second's raster lines and the head's frame counts, which wrap
+TEST(nvidia_display_engine, vertical_blanks_on_the_lit_head_complete_the_first_second_once) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    registers regs = engine_registers();
+    uint8_t head = display_engine_test_access::lit_head(engine);
+    uint32_t frames = display_engine_test_access::frames_per_second(engine);
+    ASSERT_EQ(frames, 60u);
+
+    uint32_t completions = 0;
+    uint32_t completing_frame = 0;
+    for (uint32_t frame = 1; frame <= frames + 2; frame++) {
+        head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
+        raster_register(head) = ((0xFFF0 + frame) << 16) | (770 + frame % 3);
+
+        if (service_elevated(engine, regs, 1u << head)) {
+            completions++;
+            completing_frame = frame;
+        }
+    }
+
+    EXPECT_EQ(completions, 1u);
+    EXPECT_EQ(completing_frame, frames);
+    EXPECT_EQ(display_engine_test_access::frame_count(engine), frames + 2);
+
+    const first_second_statistics& statistics = display_engine_test_access::first_second(engine);
+    EXPECT_EQ(statistics.start_frame, 0xFFF1u);
+    EXPECT_EQ(statistics.end_frame, 0x002Cu);
+    EXPECT_EQ(statistics.lowest_line, 770u);
+    EXPECT_EQ(statistics.highest_line, 772u);
+    EXPECT_LE(statistics.start_ns, statistics.end_ns);
+
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A pending head driving no output has its event cleared and counts no frame, as does the lit head once released,
+// while a head lacking LAST_DATA or its dispatch bit keeps its event, as does one past the chip's heads
+TEST(nvidia_display_engine, vertical_blanks_off_the_lit_output_count_no_frame) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    registers regs = engine_registers();
+    uint8_t lit_head = display_engine_test_access::lit_head(engine);
+    uint8_t other_head = (lit_head + 1) % CHIP_HEADS;
+    uint8_t unpending_head = (lit_head + 2) % CHIP_HEADS;
+    uint32_t past_the_heads = ~((1u << CHIP_HEADS) - 1);
+
+    head_register(NVIDIA_HEAD_TIMING_STATUS, other_head) = NVIDIA_LAST_DATA;
+    head_register(NVIDIA_HEAD_TIMING_EVENT, other_head) = STALE_HEAD_WORD;
+    head_register(NVIDIA_HEAD_TIMING_STATUS, lit_head) = ~NVIDIA_LAST_DATA;
+    head_register(NVIDIA_HEAD_TIMING_EVENT, lit_head) = STALE_HEAD_WORD;
+
+    head_register(NVIDIA_HEAD_TIMING_STATUS, unpending_head) = NVIDIA_LAST_DATA;
+    head_register(NVIDIA_HEAD_TIMING_EVENT, unpending_head) = STALE_HEAD_WORD;
+    head_register(NVIDIA_HEAD_TIMING_STATUS, CHIP_HEADS) = NVIDIA_LAST_DATA;
+    head_register(NVIDIA_HEAD_TIMING_EVENT, CHIP_HEADS) = STALE_HEAD_WORD;
+
+    uint32_t pending_heads = (1u << other_head) | (1u << lit_head) | past_the_heads;
+    EXPECT_FALSE(service_elevated(engine, regs, pending_heads));
+    EXPECT_EQ(display_engine_test_access::frame_count(engine), 0u);
+
+    EXPECT_EQ(head_register(NVIDIA_HEAD_TIMING_EVENT, other_head), NVIDIA_LAST_DATA);
+    EXPECT_EQ(head_register(NVIDIA_HEAD_TIMING_EVENT, lit_head), STALE_HEAD_WORD);
+    EXPECT_EQ(head_register(NVIDIA_HEAD_TIMING_EVENT, unpending_head), STALE_HEAD_WORD);
+    EXPECT_EQ(head_register(NVIDIA_HEAD_TIMING_EVENT, CHIP_HEADS), STALE_HEAD_WORD);
+
+    EXPECT_EQ(engine.release(), OK);
+    head_register(NVIDIA_HEAD_TIMING_STATUS, lit_head) = NVIDIA_LAST_DATA;
+    EXPECT_FALSE(service_elevated(engine, regs, 1u << lit_head));
+    EXPECT_EQ(head_register(NVIDIA_HEAD_TIMING_EVENT, lit_head), NVIDIA_LAST_DATA);
+    EXPECT_EQ(display_engine_test_access::frame_count(engine), 0u);
+}
+
+// The first second is logged once it is serviced and only once, with its head, frames, mode, lines and the head's
+// own frame count's advance, and nothing is logged before it
+TEST(nvidia_display_engine, first_second_is_logged_once_after_its_last_frame) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    registers regs = engine_registers();
+    uint8_t head = display_engine_test_access::lit_head(engine);
+    uint32_t frames = display_engine_test_access::frames_per_second(engine);
+    ASSERT_EQ(head, 1u);
+    for (uint32_t frame = 1; frame < frames; frame++) {
+        head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
+        raster_register(head) = (frame << 16) | 770;
+        service_elevated(engine, regs, 1u << head);
+    }
+
+    log_first_second_logged(engine);
+    EXPECT_FALSE(engine_log_contains("vertical blanks"));
+
+    head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
+    raster_register(head) = (frames << 16) | 771;
+    EXPECT_TRUE(service_elevated(engine, regs, 1u << head));
+
+    log_first_second_logged(engine);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the handler serviced head 1's vertical blanks 1 to 60 since the light over "
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        " us, at its mode's 59.789 Hz, at raster lines 770 to 771, while the head's own frame count advanced 59"
+    ));
+
+    log_first_second_logged(engine);
+    EXPECT_FALSE(engine_log_contains("vertical blanks"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The light gives its head the chosen output, here output 1 on head 0, which showed it, and a vertical blank there
+// counts a frame
+TEST(nvidia_display_engine, vertical_blanks_count_on_the_head_lighting_output_1) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    fw.boot_display_id = OUTPUT_1_ID;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(engine.has_lit_output());
+
+    registers regs = engine_registers();
+    uint8_t head = display_engine_test_access::lit_head(engine);
+    ASSERT_EQ(head, 0u);
+    EXPECT_EQ(display_engine_test_access::head_output(engine, head), 1u);
+    EXPECT_EQ(display_engine_test_access::head_output(engine, 1), NO_OUTPUT);
+
+    head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
+    EXPECT_FALSE(service_elevated(engine, regs, 1u << head));
+    EXPECT_EQ(display_engine_test_access::frame_count(engine), 1u);
     EXPECT_EQ(engine.release(), OK);
 }

@@ -18,7 +18,7 @@ using test_helpers::spin_wait;
 constexpr uint64_t SHORT_DEADLINE_NS = 20000000ULL; // 20ms
 constexpr uint64_t LONG_DEADLINE_NS  = 10000000000ULL; // 10s
 
-// A driver with no device, so attaching, running and handling an interrupt have no work. A test raises its event the
+// A driver with no device, whose interrupt handler counts its calls and returns `has_work`. A test raises its event the
 // way an interrupt does
 class event_test_driver : public drivers::pci_driver {
 public:
@@ -28,9 +28,16 @@ public:
     void run() override {}
 
     /** @note Privilege: **required** */
-    __PRIVILEGED_CODE void on_interrupt(uint32_t) override {}
+    __PRIVILEGED_CODE bool on_interrupt(uint32_t) override {
+        handled++;
+        return has_work;
+    }
 
+    using pci_driver::handle_interrupt;
     using pci_driver::wait_for_event_until;
+
+    bool     has_work = false;
+    uint32_t handled = 0;
 
     // Marks the event pending and wakes a waiter, as `pci_driver` does once a driver's interrupt is handled
     void raise_event() {
@@ -79,6 +86,49 @@ static bool wait_on_task(event_test_driver* driver, uint64_t deadline) {
     });
 
     return started && spin_wait(g_returned);
+}
+
+// A handler with no work leaves the event clear, and one with work marks it pending for the next wait to take
+TEST(pci_driver_events, handle_interrupt_marks_the_event_only_with_work) {
+    auto* driver = heap::ualloc_new<event_test_driver>();
+    ASSERT_NOT_NULL(driver);
+
+    RUN_ELEVATED(driver->handle_interrupt(0));
+    EXPECT_EQ(driver->handled, 1u);
+    EXPECT_FALSE(driver->is_event_pending());
+
+    driver->has_work = true;
+    RUN_ELEVATED(driver->handle_interrupt(0));
+    EXPECT_EQ(driver->handled, 2u);
+    EXPECT_TRUE(driver->is_event_pending());
+    heap::ufree_delete(driver);
+}
+
+// A waiting task sleeps through a handler with no work and wakes, long before its deadline, on one with work
+TEST(pci_driver_events, handle_interrupt_wakes_the_waiter_only_with_work) {
+    auto* driver = heap::ualloc_new<event_test_driver>();
+    ASSERT_NOT_NULL(driver);
+    g_driver = driver;
+    g_deadline = clock::now_ns() + LONG_DEADLINE_NS;
+    g_returned.store_relaxed(0);
+
+    sched::task* waiter = test_helpers::start_pinned_task(waiter_fn, nullptr, "pci_event_wait");
+    ASSERT_NOT_NULL(waiter);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(waiter));
+
+    RUN_ELEVATED(driver->handle_interrupt(0));
+    test_helpers::brief_delay();
+    EXPECT_EQ(g_returned.load_acquire(), 0u);
+    EXPECT_EQ(waiter->state.load_acquire(), sched::TASK_STATE_BLOCKED);
+
+    driver->has_work = true;
+    RUN_ELEVATED(driver->handle_interrupt(0));
+    ASSERT_TRUE(spin_wait(g_returned));
+
+    EXPECT_LT(g_returned_at, g_deadline);
+    EXPECT_FALSE(driver->is_event_pending());
+    test_helpers::unpin(waiter);
+    heap::ufree_delete(driver);
 }
 
 // Nothing raises the event, so only the deadline ends the wait

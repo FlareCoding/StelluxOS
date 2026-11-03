@@ -123,10 +123,13 @@ src/common/inc/swref/published/ampere/ga102/dev_falcon_v4.h
     register, in kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the
     interrupt clear, status, mask and destination registers and the first
     interrupt retrigger register with its trigger bit, in interrupts.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, the interrupt clear,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the interrupt status,
+    mask and destination registers, in
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, the interrupt clear,
     status, mask, destination and retrigger registers, in interrupts.h, the
-    status's SWGEN0 bit, in interrupts.h and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the status's HALT
+    status's SWGEN0 bit, in interrupts.h,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, and the status's HALT
     bit, in interrupts.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -189,10 +192,11 @@ src/common/inc/swref/published/ampere/ga102/dev_gsp.h
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the base of the GSP's
     registers, the first of the GSP's queue head registers and the GSP falcon's
     first mailbox register, in
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, the GSP's four mailbox
-    registers, apart from the GSP falcon's two, in gsp.h, gsp.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the first two, 4
-    bytes apart, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the base of the GSP's
+    registers, in kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, the GSP's
+    four mailbox registers, apart from the GSP falcon's two, in gsp.h, gsp.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, and the first two,
+    4 bytes apart, in gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
@@ -205,15 +209,17 @@ src/common/inc/swref/published/ampere/ga102/dev_gsp_addendum.h
 src/common/inc/swref/published/ampere/ga102/dev_riscv_pri.h
     the base of the GSP's second register block, in falcon.h, falcon.cpp,
     interrupts.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp,
-    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, the RISC-V boot
-    control register with its valid, core select and BRFETCH fields and the
-    RISC-V control register with its active field, in falcon.cpp,
+    kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, the RISC-V boot control
+    register with its valid, core select and BRFETCH fields and the RISC-V
+    control register with its active field, in falcon.cpp,
     kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_cpu_sequencer.test.cpp, the RISC-V boot control
     register, in kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the
     RISC-V core's interrupt mask and destination registers, in interrupts.h,
-    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    interrupts.cpp, kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga102/dev_sec_pri.h
@@ -237,9 +243,28 @@ src/common/inc/swref/published/nvswitch/lr10/dev_soe_ip.h
 src/common/inc/swref/published/disp/v04_00/dev_disp.h
     the VGA workspace register and its valid bit, in protected_memory.cpp and
     kernel/tests/graphics/nvidia_protected_memory.test.cpp, its start field, in
-    kernel/tests/graphics/nvidia_protected_memory.test.cpp, and the name
-    LAST_DATA of a head's timing event, in latch_rules.h
+    kernel/tests/graphics/nvidia_protected_memory.test.cpp, the name LAST_DATA
+    of a head's timing event, in latch_rules.h, a head's timing event, interrupt
+    status and interrupt enable with their LAST_DATA bit and the display's
+    interrupt dispatch, in display_vertical_blank.h, display_vertical_blank.cpp,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp and
+    kernel/tests/graphics/nvidia_display_vertical_blank.test.cpp, and the
+    dispatch alone, in kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/disp/head/arch/v04/kernel_head_0400.c
+    that NVIDIA's driver reads a head's timing event before clearing it, keeps
+    the enable's other bits as it sets or clears LAST_DATA and clears a pending
+    event first, in display_vertical_blank.h, display_vertical_blank.cpp,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp and
+    kernel/tests/graphics/nvidia_display_vertical_blank.test.cpp, and that it
+    takes a head's vertical blank only when the display's interrupt dispatch has
+    the head's bit and the head's interrupt status shows LAST_DATA, in
+    display_vertical_blank.h, display_vertical_blank.cpp, display_engine.h,
+    display_engine.cpp, nvidia_gpu.cpp,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp and
+    kernel/tests/graphics/nvidia_display_vertical_blank.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/maxwell/gm107/dev_bus.h
     the BAR0 window register, its base field of 64 KiB steps in bits 23:0 and
@@ -467,6 +492,7 @@ src/common/inc/swref/published/maxwell/gm107/dev_fb.h
 src/common/inc/swref/published/turing/tu102/dev_vm.h
     the offset 0xB80000 of the block of a virtual function's registers, in
     bar1.cpp, interrupts.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp,
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp,
     kernel/tests/graphics/nvidia_message_queues.test.cpp and
     kernel/tests/graphics/nvidia_video_memory.test.cpp, the offsets in it of the
     invalidate's three registers and the third's trigger in bit 31, which the
@@ -1223,7 +1249,8 @@ src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga100.c
 src/nvidia/src/kernel/gpu/falcon/arch/ampere/kernel_falcon_ga102.c
     the rules that a falcon's pending sources directed to the host are its
     status masked by the falcon core's mask and destination or by the RISC-V
-    core's, in interrupts.h, interrupts.cpp and
+    core's, in interrupts.h, interrupts.cpp,
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that a falcon is given
     150 us to report it is ready for a reset and that the waits for the memories
     and for the core selection take the default timeout, in falcon.h and
@@ -1987,9 +2014,9 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     7, and that only the rows their count gives are valid, in rm.h,
     interrupts.h, interrupts.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that they give the
-    interrupt table for NVIDIA's kernel-side driver, in rm.h and interrupts.h,
-    that their subtree map gives the first and last of the top-level bits a
-    category of interrupts takes, in rm.h, the command
+    interrupt table for NVIDIA's kernel-side driver, in rm.h, that their subtree
+    map gives the first and last of the top-level bits a category of interrupts
+    takes, in rm.h, the command
     NV2080_CTRL_CMD_INTERNAL_DISPLAY_GET_STATIC_INFO, a control of a subdevice,
     and the layout of its parameters, in rm.h, display_info.h, display_info.cpp
     and kernel/tests/graphics/nvidia_display_info.test.cpp, that that command's
@@ -2008,26 +2035,25 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/intr/engine_idx.h
-    the GSP's engine number MC_ENGINE_IDX_GSP, 49, in rm.h and
+    the GSP's engine number MC_ENGINE_IDX_GSP, 49, and the display's
+    MC_ENGINE_IDX_DISP, 2, in rm.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and that its engines
-    are those NVIDIA's interrupt code serves, in rm.h and interrupts.h
+    are those NVIDIA's interrupt code serves, in rm.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/intr/intr.c
     that NVIDIA's driver asks for the kernel interrupt table on the internal
     client and subdevice as it starts the GPU, sending its parameters unzeroed,
     refuses a table counting more rows than it holds and copies each row's
-    vectors and PMC mask into its table unchecked, in rm.h, interrupts.h,
-    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
-    that it looks an engine's vector up in the first row of that engine,
-    returning NV_INTR_VECTOR_INVALID without one, in interrupts.h,
-    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
-    that it services an engine's stall interrupts with the engine's handler and
-    its nonstall interrupts as notifications, in rm.h and interrupts.h, that it
-    services the GSP's as stall interrupts, keeps every row of the GSP's engine
-    and accepts a table without a row for the GSP, in interrupts.h, and that it
-    clears an engine's interrupt before it services the engine, in interrupts.h
-    and interrupts.cpp
+    vectors and PMC mask into its table unchecked, in rm.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it looks an
+    engine's vector up in the first row of that engine, returning
+    NV_INTR_VECTOR_INVALID without one, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it services an
+    engine's stall interrupts with the engine's handler and its nonstall
+    interrupts as notifications, in rm.h, that it services the GSP's as stall
+    interrupts, in interrupts.h, and that it clears an engine's interrupt before
+    it services the engine, in interrupts.h and interrupts.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/intr/intr_service.c
@@ -2043,25 +2069,21 @@ src/nvidia/src/kernel/gpu/intr/arch/turing/intr_tu102.c
     that NVIDIA's driver never enables a vector of the kernel interrupt table
     past the leaves of the CPU interrupt tree, which has no leaf register for
     it, in interrupts.h, interrupts.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it takes
-    0xFFFFFFFF for no vector, in interrupts.h, that the subtree map's ranges are
-    of the CPU interrupt tree's top-level bits, in rm.h, that the subtree map
-    gives the subtrees of NVIDIA's nonstall interrupts, in interrupts.h, that a
-    row's PMC mask holds the engine's bits in the GPU's PMC interrupt register,
-    which is not part of the CPU interrupt tree, in rm.h, interrupts.h and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the subtree map's
+    ranges are of the CPU interrupt tree's top-level bits, in rm.h, that a row's
+    PMC mask holds the engine's bits in the GPU's PMC interrupt register, which
+    is not part of the CPU interrupt tree, in rm.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that it never enables,
     but for the timer's row, the vectors of a row with a PMC mask, in
     interrupts.h, interrupts.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it enables at
-    their leaves the vectors of the remaining rows and at the top level every
-    subtree but those of its nonstall interrupts, in interrupts.h, that it
-    clears every bit of each leaf's enable before it enables any vector, since
-    an earlier driver can leave enables set, that it enables a vector by writing
-    the vector's bit to its leaf's enable set register and clears a vector's
-    pending bit by writing the bit to its leaf, that it clears every top-level
-    enable and then every leaf's enable as it unloads, in interrupts.h,
-    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
-    that an earlier driver can leave enables set, in nvidia_gpu.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that it clears every
+    bit of each leaf's enable before it enables any vector, since an earlier
+    driver can leave enables set, that it enables a vector by writing the
+    vector's bit to its leaf's enable set register and clears a vector's pending
+    bit by writing the bit to its leaf, that it clears every top-level enable
+    and then every leaf's enable as it unloads, in interrupts.h, interrupts.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, and that an
+    earlier driver can leave enables set, in nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_intr_nvoc.h
@@ -2078,8 +2100,10 @@ src/common/inc/swref/published/ampere/ga102/dev_vm.h
     block of a virtual function's registers of the tree's leaves and of their
     enables' set and clear registers, 4 bytes apart, and of the top level's
     first enable set and clear registers, in interrupts.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a second
-    top-level enable set or clear register would lie 4 bytes after the first, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the leaves' offset
+    with their 4-byte stride, in
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, that a second top-level
+    enable set or clear register would lie 4 bytes after the first, in
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the tree has
     8 leaf registers on GA102, in chip.cpp,
     kernel/tests/graphics/nvidia.test.cpp and
@@ -2089,17 +2113,18 @@ src/common/inc/swref/published/ampere/ga102/dev_vm.h
 src/nvidia/arch/nvalloc/common/inc/dev_ctrl_defines.h
     that interrupt vector `i` is bit `i % 32` of leaf `i / 32`, in chip.h,
     interrupts.h, interrupts.cpp, nvidia_gpu.cpp,
-    kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that a GPU interrupt
     vector numbers a bit of an interrupt tree's leaves, in interrupts.h and
     nvidia_gpu.cpp, the invalid interrupt vector NV_INTR_VECTOR_INVALID,
-    0xFFFFFFFF, in interrupts.h and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a subtree is the
-    two leaves reporting to one bit of the tree's top level and that subtree `i`
-    is bit `i % 32` of the top level's register `i / 32`, in interrupts.h,
-    interrupts.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
-    the most leaf registers NVIDIA's driver expects a chip's tree to have,
-    NV_MAX_INTR_LEAVES, 16, in chip.h, chip.cpp, interrupts.cpp and
+    0xFFFFFFFF, in kernel/tests/graphics/nvidia_message_queues.test.cpp, that a
+    subtree is the two leaves reporting to one bit of the tree's top level and
+    that subtree `i` is bit `i % 32` of the top level's register `i / 32`, in
+    interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and the most leaf
+    registers NVIDIA's driver expects a chip's tree to have, NV_MAX_INTR_LEAVES,
+    16, in chip.h, chip.cpp, interrupts.cpp and
     kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -2126,10 +2151,12 @@ kernel-open/common/inc/nv-hypervisor.h
 src/common/inc/swref/published/maxwell/gm107/dev_nv_xve.h
     where BAR0 mirrors the card's PCI configuration space, in nvidia.h,
     boot_messages.cpp, interrupts.cpp,
-    kernel/tests/graphics/nvidia_boot_messages.test.cpp and
+    kernel/tests/graphics/nvidia_boot_messages.test.cpp,
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and the offset 0x704
-    in it of NV_XVE_CYA_2, in interrupts.h, interrupts.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    in it of NV_XVE_CYA_2, in interrupts.h, interrupts.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp and
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/bif/kernel_bif.c
@@ -2142,10 +2169,11 @@ src/nvidia/src/kernel/gpu/bif/arch/maxwell/kernel_bif_gm107.c
     whole of NV_PCFG's range, in nvidia.h, boot_messages.cpp and
     kernel/tests/graphics/nvidia_boot_messages.test.cpp, that MSI is re-armed by
     writing 0 to NV_XVE_CYA_2 through that mirror, a value the card ignores, in
-    interrupts.h, interrupts.cpp and
+    interrupts.h, interrupts.cpp,
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the write is
-    skipped when NVIDIA's check of register access fails, in interrupts.h and
-    nvidia_gpu.cpp
+    skipped when NVIDIA's check of register access fails, in interrupts.h,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_bif_nvoc.c
@@ -2190,10 +2218,11 @@ src/nvidia/arch/nvalloc/unix/src/unix_intr.c
     the rules that NVIDIA's driver re-arms MSI at the end of each run of its
     interrupt handler while the GPU's state is loaded and its interrupts are
     enabled in hardware, whether or not it found an interrupt pending, in
-    interrupts.h and nvidia_gpu.cpp, that holding the GPUs lock disables the
-    interrupts of every GPU it has initialized, in nvidia_gpu.cpp, and that the
-    bottom half of its interrupt handler runs with the thread state of a
-    deferred interrupt handler, in gsp.h
+    interrupts.h, nvidia_gpu.cpp and
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, that holding the GPUs
+    lock disables the interrupts of every GPU it has initialized, in
+    nvidia_gpu.cpp, and that the bottom half of its interrupt handler runs with
+    the thread state of a deferred interrupt handler, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 kernel-open/nvidia/nv-pci.c
@@ -2652,10 +2681,11 @@ src/nvidia/src/kernel/gpu/disp/kern_disp.c
     initializes its display's state, on the internal client and subdevice with
     the parameters zeroed, and keeps its windowPresentMask unchecked, in
     display_info.h, display_info.cpp and
-    kernel/tests/graphics/nvidia_display_info.test.cpp, and that it sets up the
+    kernel/tests/graphics/nvidia_display_info.test.cpp, that it sets up the
     display's instance memory after reading that information, in
     display_engine.h and display_engine.cpp, and as it initializes its display's
-    state, in instance_memory.h
+    state, in instance_memory.h, and that it clears a head's pending vertical
+    blank after counting it, in display_engine.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/arch/v03/kern_disp_0300.c
@@ -2710,10 +2740,15 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     kernel/tests/graphics/nvidia_display_engine.test.cpp, NV_PDISP_CHN_NUM_WIN,
     each window's channel's number, in core_channel.h,
     kernel/tests/graphics/nvidia_core_channel.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the hash table's
-    size, the client, record and channel fields of an entry's second word and
-    the target, access, kind, base and limit of a record naming pages read with
-    snooping on or video memory, in
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, NV_PDISP_RG_DPCA, a
+    head's raster position, at 0x616330 and 2 KiB further for each head, with
+    its line field LINE_CNT and its frame field FRM_CNT, in
+    display_vertical_blank.h, display_vertical_blank.cpp,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp and
+    kernel/tests/graphics/nvidia_display_vertical_blank.test.cpp, and the hash
+    table's size, the client, record and channel fields of an entry's second
+    word and the target, access, kind, base and limit of a record naming pages
+    read with snooping on or video memory, in
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 

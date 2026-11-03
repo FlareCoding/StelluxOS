@@ -35,6 +35,7 @@ using drivers::nvidia::QUEUE_MEMORY_BYTES;
 using drivers::nvidia::RECEIVE_TIMEOUT_NS;
 using drivers::nvidia::RECEIVE_TRIES;
 using drivers::nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS;
+using drivers::nvidia::acknowledge_display_interrupt;
 using drivers::nvidia::acknowledge_gsp_interrupt;
 using drivers::nvidia::confirm_message_version;
 using drivers::nvidia::cpu_sequencer_context;
@@ -42,9 +43,10 @@ using drivers::nvidia::disable_cpu_interrupt_tree;
 using drivers::nvidia::drain_status_queue;
 using drivers::nvidia::enable_cpu_interrupt_tree;
 using drivers::nvidia::gsp;
+using drivers::nvidia::interrupt_vectors;
 using drivers::nvidia::link_status_queue_within;
 using drivers::nvidia::message_queues;
-using drivers::nvidia::read_gsp_interrupt_vector;
+using drivers::nvidia::read_interrupt_vectors;
 using drivers::nvidia::read_static_configuration;
 using drivers::nvidia::rearm_msi;
 using drivers::nvidia::receive_awaited;
@@ -3051,6 +3053,19 @@ static void fill_interrupt_table_reply(queue_test_payload& reply, uint32_t row_c
     }
 }
 
+// The fuses' display state every read passes but the one of a display the fuses disable
+static constexpr bool DISPLAY_ENABLED = true;
+
+// Vectors seeded stale, so a read that fills them on a failure fails
+static constexpr interrupt_vectors STALE_VECTORS = {STALE_WORD, STALE_WORD, true};
+
+static bool is_stale(const interrupt_vectors& vectors) {
+    return vectors.gsp == STALE_WORD && vectors.display == STALE_WORD && vectors.has_display;
+}
+
+// NVIDIA's MC_ENGINE_IDX_DISP, the display's engine number, restated
+static constexpr uint16_t NVIDIA_ENGINE_DISPLAY = 2;
+
 // The table is asked for on the internal subdevice with 2068 zero bytes. The GSP's vector is the stall vector of the
 // GSP's first row, not its nonstall vector, a later GSP row's or that of engine 48 or of one equal in its low byte
 TEST(nvidia_message_queues, gsp_interrupt_vector_is_read_from_the_kernel_interrupt_table) {
@@ -3073,16 +3088,17 @@ TEST(nvidia_message_queues, gsp_interrupt_vector_is_read_from_the_kernel_interru
     store_function_message(memory, message, 0, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
     memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
     ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
-    uint32_t vector = STALE_WORD;
+    interrupt_vectors vectors = STALE_VECTORS;
 
     EXPECT_EQ(
-        read_gsp_interrupt_vector(
+        read_interrupt_vectors(
             conversation,
             INTERNAL_CLIENT,
             INTERNAL_SUBDEVICE,
             INTERRUPT_LEAF_COUNT,
+            DISPLAY_ENABLED,
             LONG_TIMEOUT_NS,
-            vector
+            vectors
         ),
         OK
     );
@@ -3099,11 +3115,11 @@ TEST(nvidia_message_queues, gsp_interrupt_vector_is_read_from_the_kernel_interru
     EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_COMMAND_FIELD), NVIDIA_GET_KERNEL_INTERRUPT_TABLE);
     EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_PARAMS_BYTES_FIELD), INTERRUPT_TABLE_BYTES);
     EXPECT_EQ(nonzero_param_bytes, 0u);
-    EXPECT_EQ(vector, 155u);
+    EXPECT_EQ(vectors.gsp, 155u);
 }
 
 // With 8 leaves, 129 or 0x10001 rows, a GSP row only past the count or a GSP vector of 256 (also before one of 9),
-// 0x1009B or 0xFFFFFFFF fails, the vector unchanged, and 255 and 0 pass, as 159 does with 5 leaves while 160 fails
+// 0x1009B or 0xFFFFFFFF fails, the vectors unchanged, and 255 and 0 pass, as 159 does with 5 leaves while 160 fails
 TEST(nvidia_message_queues, gsp_interrupt_vector_refused_or_missing_fails) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
@@ -3149,75 +3165,80 @@ TEST(nvidia_message_queues, gsp_interrupt_vector_refused_or_missing_fails) {
     store_function_message(memory, message, 10, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
     memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 11);
     ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
-    uint32_t vector = STALE_WORD;
+    interrupt_vectors vectors = STALE_VECTORS;
 
     for (uint32_t i = 0; i < 7; i++) {
         EXPECT_EQ(
-            read_gsp_interrupt_vector(
+            read_interrupt_vectors(
                 conversation,
                 INTERNAL_CLIENT,
                 INTERNAL_SUBDEVICE,
                 INTERRUPT_LEAF_COUNT,
+                DISPLAY_ENABLED,
                 LONG_TIMEOUT_NS,
-                vector
+                vectors
             ),
             ERR_BAD_MESSAGE
         );
     }
 
-    EXPECT_EQ(vector, STALE_WORD);
+    EXPECT_TRUE(is_stale(vectors));
     EXPECT_EQ(
-        read_gsp_interrupt_vector(
+        read_interrupt_vectors(
             conversation,
             INTERNAL_CLIENT,
             INTERNAL_SUBDEVICE,
             INTERRUPT_LEAF_COUNT,
+            DISPLAY_ENABLED,
             LONG_TIMEOUT_NS,
-            vector
+            vectors
         ),
         OK
     );
-    EXPECT_EQ(vector, INTERRUPT_VECTORS - 1);
+    EXPECT_EQ(vectors.gsp, INTERRUPT_VECTORS - 1);
     EXPECT_EQ(
-        read_gsp_interrupt_vector(
+        read_interrupt_vectors(
             conversation,
             INTERNAL_CLIENT,
             INTERNAL_SUBDEVICE,
             INTERRUPT_LEAF_COUNT,
+            DISPLAY_ENABLED,
             LONG_TIMEOUT_NS,
-            vector
+            vectors
         ),
         OK
     );
-    EXPECT_EQ(vector, 0u);
+    EXPECT_EQ(vectors.gsp, 0u);
     EXPECT_EQ(
-        read_gsp_interrupt_vector(
+        read_interrupt_vectors(
             conversation,
             INTERNAL_CLIENT,
             INTERNAL_SUBDEVICE,
             SMALL_INTERRUPT_LEAF_COUNT,
+            DISPLAY_ENABLED,
             LONG_TIMEOUT_NS,
-            vector
+            vectors
         ),
         ERR_BAD_MESSAGE
     );
-    EXPECT_EQ(vector, 0u);
+    EXPECT_EQ(vectors.gsp, 0u);
     EXPECT_EQ(
-        read_gsp_interrupt_vector(
+        read_interrupt_vectors(
             conversation,
             INTERNAL_CLIENT,
             INTERNAL_SUBDEVICE,
             SMALL_INTERRUPT_LEAF_COUNT,
+            DISPLAY_ENABLED,
             LONG_TIMEOUT_NS,
-            vector
+            vectors
         ),
         OK
     );
-    EXPECT_EQ(vector, SMALL_INTERRUPT_VECTORS - 1);
+    EXPECT_EQ(vectors.gsp, SMALL_INTERRUPT_VECTORS - 1);
 }
 
 // The table's control waits for its reply only as long as its caller gives, failing with the wait's timeout on a queue
-// that stays empty, the vector left unchanged
+// that stays empty, the vectors left unchanged
 TEST(nvidia_message_queues, gsp_interrupt_vector_waits_out_its_timeout) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
@@ -3227,17 +3248,18 @@ TEST(nvidia_message_queues, gsp_interrupt_vector_waits_out_its_timeout) {
     ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
     MOVED_HEADER.write_to(memory);
     ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
-    uint32_t vector = STALE_WORD;
+    interrupt_vectors vectors = STALE_VECTORS;
 
     uint64_t start = clock::now_ns();
     EXPECT_EQ(
-        read_gsp_interrupt_vector(
+        read_interrupt_vectors(
             conversation,
             INTERNAL_CLIENT,
             INTERNAL_SUBDEVICE,
             INTERRUPT_LEAF_COUNT,
+            DISPLAY_ENABLED,
             SHORT_TIMEOUT_NS,
-            vector
+            vectors
         ),
         ERR_TIMEOUT
     );
@@ -3245,7 +3267,7 @@ TEST(nvidia_message_queues, gsp_interrupt_vector_waits_out_its_timeout) {
 
     EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
     EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
-    EXPECT_EQ(vector, STALE_WORD);
+    EXPECT_TRUE(is_stale(vectors));
 }
 
 // Where a row of the kernel interrupt table holds its PMC mask (NVIDIA's pmcIntrMask, the engine's bits in the GPU's
@@ -3287,30 +3309,92 @@ TEST(nvidia_message_queues, gsp_interrupt_vector_with_a_pmc_mask_fails) {
     ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
 
     for (uint32_t i = 0; i < 2; i++) {
-        uint32_t vector = STALE_WORD;
-        int32_t rc = read_gsp_interrupt_vector(
+        interrupt_vectors vectors = STALE_VECTORS;
+        int32_t rc = read_interrupt_vectors(
             conversation,
             INTERNAL_CLIENT,
             INTERNAL_SUBDEVICE,
             INTERRUPT_LEAF_COUNT,
+            DISPLAY_ENABLED,
             LONG_TIMEOUT_NS,
-            vector
+            vectors
         );
         EXPECT_EQ(rc, ERR_BAD_MESSAGE);
-        EXPECT_EQ(vector, STALE_WORD);
+        EXPECT_TRUE(is_stale(vectors));
     }
 
-    uint32_t vector = STALE_WORD;
-    int32_t rc = read_gsp_interrupt_vector(
+    interrupt_vectors vectors = STALE_VECTORS;
+    int32_t rc = read_interrupt_vectors(
         conversation,
         INTERNAL_CLIENT,
         INTERNAL_SUBDEVICE,
         INTERRUPT_LEAF_COUNT,
+        DISPLAY_ENABLED,
         LONG_TIMEOUT_NS,
-        vector
+        vectors
     );
     EXPECT_EQ(rc, OK);
-    EXPECT_EQ(vector, 155u);
+    EXPECT_EQ(vectors.gsp, 155u);
+}
+
+// The display's vector is the stall vector of the display's first row. A display row missing, past the vectors or with
+// a PMC mask, or any row on a display the fuses disable, leaves `has_display` false with the GSP's vector read
+TEST(nvidia_message_queues, display_interrupt_vector_is_read_or_left_unserviced) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    status_test_message message(1);
+    queue_test_payload reply(INTERRUPT_TABLE_REPLY_BYTES);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_NOT_NULL(reply.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+
+    fill_interrupt_table_reply(reply, 3);
+    put_interrupt_row(reply, 0, NVIDIA_ENGINE_DISPLAY, 70);
+    put_interrupt_row(reply, 1, NVIDIA_ENGINE_GSP, 155);
+    put_interrupt_row(reply, 2, NVIDIA_ENGINE_DISPLAY, 71);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+
+    put_interrupt_row(reply, 0, FIRST_OTHER_ENGINE, 70);
+    put_interrupt_row(reply, 2, FIRST_OTHER_ENGINE, 71);
+    store_function_message(memory, message, 1, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+
+    put_interrupt_row(reply, 0, NVIDIA_ENGINE_DISPLAY, INTERRUPT_VECTORS);
+    store_function_message(memory, message, 2, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+
+    put_interrupt_row(reply, 0, NVIDIA_ENGINE_DISPLAY, 70);
+    put_interrupt_row_pmc_mask(reply, 0, 0x1);
+    store_function_message(memory, message, 3, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+
+    put_interrupt_row_pmc_mask(reply, 0, 0);
+    store_function_message(memory, message, 4, NVIDIA_GSP_RM_CONTROL, reply.bytes, reply.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 5);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    bool is_display_enabled[] = {true, true, true, true, false};
+    bool has_display[] = {true, false, false, false, false};
+    for (uint32_t i = 0; i < 5; i++) {
+        interrupt_vectors vectors = STALE_VECTORS;
+        int32_t rc = read_interrupt_vectors(
+            conversation,
+            INTERNAL_CLIENT,
+            INTERNAL_SUBDEVICE,
+            INTERRUPT_LEAF_COUNT,
+            is_display_enabled[i],
+            LONG_TIMEOUT_NS,
+            vectors
+        );
+
+        EXPECT_EQ(rc, OK);
+        EXPECT_EQ(vectors.gsp, 155u);
+        EXPECT_EQ(vectors.has_display, has_display[i]);
+        if (has_display[i]) {
+            EXPECT_EQ(vectors.display, 70u);
+        }
+    }
 }
 
 // GA102's CPU interrupt tree registers (NVIDIA's NV_VIRTUAL_FUNCTION_PRIV_CPU_INTR_*), as NVIDIA's headers give them,
@@ -3382,7 +3466,7 @@ TEST(nvidia_message_queues, cpu_interrupt_tree_enable_sets_the_gsp_vector_alone)
         bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, vector_leaf), ALL_BITS_SET);
         bar0.write(NVIDIA_CPU_TOP_EN_SET, ALL_BITS_SET);
 
-        enable_cpu_interrupt_tree(bar0.regs, INTERRUPT_LEAF_COUNT, vectors[i]);
+        enable_cpu_interrupt_tree(bar0.regs, INTERRUPT_LEAF_COUNT, {vectors[i], STALE_WORD, false});
 
         for (uint32_t leaf = 0; leaf < INTERRUPT_LEAF_COUNT; leaf++) {
             EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, leaf)), ALL_BITS_SET);
@@ -3437,7 +3521,7 @@ TEST(nvidia_message_queues, cpu_interrupt_tree_enables_are_cleared_up_to_the_lea
     ASSERT_NOT_NULL(bar0.bytes);
     bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT), STALE_WORD);
 
-    enable_cpu_interrupt_tree(bar0.regs, SMALL_INTERRUPT_LEAF_COUNT, CARD_GSP_VECTOR);
+    enable_cpu_interrupt_tree(bar0.regs, SMALL_INTERRUPT_LEAF_COUNT, {CARD_GSP_VECTOR, STALE_WORD, false});
     EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT - 1)), ALL_BITS_SET);
     EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT)), STALE_WORD);
 
@@ -3445,6 +3529,43 @@ TEST(nvidia_message_queues, cpu_interrupt_tree_enables_are_cleared_up_to_the_lea
     disable_cpu_interrupt_tree(bar0.regs, SMALL_INTERRUPT_LEAF_COUNT);
     EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT - 1)), ALL_BITS_SET);
     EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, SMALL_INTERRUPT_LEAF_COUNT)), STALE_WORD);
+}
+
+// A display vector in another leaf and subtree than the GSP's, bit 6 of leaf 2 in subtree 1
+static constexpr uint32_t TEST_DISPLAY_VECTOR = 70;
+static constexpr uint32_t TEST_DISPLAY_LEAF   = 2;
+
+// With `has_display`, `enable_cpu_interrupt_tree` also sets the display's bit in its leaf's enable and its subtree's
+// bit beside the GSP's in the top level's, while without it the display's leaf enable stays unwritten
+TEST(nvidia_message_queues, cpu_interrupt_tree_enable_sets_the_display_vector_with_has_display) {
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, TEST_DISPLAY_LEAF), STALE_WORD);
+
+    enable_cpu_interrupt_tree(bar0.regs, INTERRUPT_LEAF_COUNT, {CARD_GSP_VECTOR, TEST_DISPLAY_VECTOR, false});
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, TEST_DISPLAY_LEAF)), STALE_WORD);
+    EXPECT_EQ(bar0.read(NVIDIA_CPU_TOP_EN_SET), 1u << 2);
+
+    enable_cpu_interrupt_tree(bar0.regs, INTERRUPT_LEAF_COUNT, {CARD_GSP_VECTOR, TEST_DISPLAY_VECTOR, true});
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF)), 1u << 27);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, TEST_DISPLAY_LEAF)), 1u << 6);
+    EXPECT_EQ(bar0.read(NVIDIA_CPU_TOP_EN_SET), (1u << 2) | (1u << 1));
+}
+
+// `acknowledge_display_interrupt` writes the display's bit alone to its leaf when that bit is pending, and writes
+// nothing when only the leaf's other bits are
+TEST(nvidia_message_queues, display_interrupt_acknowledge_clears_its_pending_bit_alone) {
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    uint32_t display_leaf = cpu_leaf_register(NVIDIA_CPU_LEAF, TEST_DISPLAY_LEAF);
+    bar0.write(display_leaf, ~(1u << 6));
+
+    EXPECT_FALSE(acknowledge_display_interrupt(bar0.regs, TEST_DISPLAY_VECTOR));
+    EXPECT_EQ(bar0.read(display_leaf), ~(1u << 6));
+
+    bar0.write(display_leaf, ALL_BITS_SET);
+    EXPECT_TRUE(acknowledge_display_interrupt(bar0.regs, TEST_DISPLAY_VECTOR));
+    EXPECT_EQ(bar0.read(display_leaf), 1u << 6);
 }
 
 // `acknowledge_gsp_interrupt` clears the pending bit alone, writes to the clear exactly the sources either core's mask

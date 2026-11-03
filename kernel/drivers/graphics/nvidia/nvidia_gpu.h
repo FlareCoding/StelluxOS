@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/gsp.h"
 #include "drivers/graphics/nvidia/gsp_boot_memory.h"
 #include "drivers/graphics/nvidia/gsp_info.h"
+#include "drivers/graphics/nvidia/interrupts.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/video_memory.h"
 #include "drivers/pci_driver.h"
@@ -67,22 +68,26 @@ public:
     /**
      * @brief The driver task, which the framework starts once `attach()`
      * returns `OK`. Each time an interrupt wakes it and the card still
-     * responds, it reads the messages the GSP's firmware queued, then checks
-     * the GSP's health. So a failure the GSP reports without a message is
-     * looked for only at the next interrupt. It never returns.
+     * responds, it reads the messages the GSP's firmware queued, checks the
+     * GSP's health, then logs the light's first second of vertical blanks at
+     * the first wake after the handler has serviced it. So a failure the GSP
+     * reports without a message is looked for only at the next wake. It never
+     * returns.
      */
     void run() override;
 
     /**
-     * @brief The handler of the card's one MSI vector, which only the GSP's
-     * interrupt raises. It acknowledges that interrupt and records the
-     * interrupt sources it cleared, which the driver task reads after the
-     * framework wakes it. It can run before `attach()` returns, as soon as the
-     * GSP's interrupt is enabled, and one more time after `detach()` disables
-     * it, for an interrupt raised just before.
+     * @brief The handler of the card's one MSI vector, which the GSP's
+     * interrupt and, with flips on, the display's raise. It records the GSP's
+     * sources it cleared for the driver task and services the heads' vertical
+     * blanks as `nvidia::display_engine::service_vertical_blanks` describes.
+     * It can run before `attach()` returns, as soon as the GSP's interrupt is
+     * enabled, and once more after `detach()` disables it.
+     * @return true when the GSP's acknowledge returned a source, all ones from
+     * a stopped card among them, or a service completed the first second.
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
+    __PRIVILEGED_CODE bool on_interrupt(uint32_t vector) override;
 
 private:
     int32_t bring_up_bar1(
@@ -110,14 +115,16 @@ private:
     const nvidia::chip_info*      m_chip = nullptr;
     uint32_t                      m_boot0 = 0;
     uint32_t                      m_bar1_block = 0;
-    uint32_t                      m_gsp_vector = 0;
+    nvidia::interrupt_vectors     m_interrupt_vectors = {};
     uint32_t                      m_gsp_sources = 0;       // sources the handler cleared since the task's last wake
-    uint64_t                      m_last_interrupt_ns = 0; // when the handler last ran
+    uint64_t                      m_last_interrupt_ns = 0; // when the handler last cleared one
     bool                          m_must_stop_gsp = false;
     bool                          m_must_stop_sec2 = false;
     bool                          m_must_unload = false;
     bool                          m_must_run_fwsec_sb = false;
     bool                          m_is_gsp_interrupt_enabled = false;
+
+    friend struct nvidia_gpu_test_access;
 };
 
 } // namespace drivers

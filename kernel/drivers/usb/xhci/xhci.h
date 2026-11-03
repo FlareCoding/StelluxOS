@@ -64,7 +64,7 @@ public:
     void run() override;
 
     /** @note Privilege: **required** */
-    __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
+    __PRIVILEGED_CODE bool on_interrupt(uint32_t vector) override;
 
     // Public transfer API for USB Core
     int32_t usb_control_transfer(xhci::xhci_device* device,

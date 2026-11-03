@@ -9,6 +9,7 @@
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
 #include "drivers/graphics/nvidia/display_engine.h"
 #include "drivers/graphics/nvidia/display_registration.h"
+#include "drivers/graphics/nvidia/display_vertical_blank.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
@@ -808,14 +809,15 @@ int32_t nvidia_gpu_driver::attach() {
         first_entry
     );
 
-    uint32_t gsp_vector = 0;
-    rc = nvidia::read_gsp_interrupt_vector(
+    nvidia::interrupt_vectors vectors = {};
+    rc = nvidia::read_interrupt_vectors(
         m_gsp,
         configuration.internal_client,
         configuration.internal_subdevice,
         chip->interrupt_leaf_count,
+        frts.has_display,
         nvidia::RECEIVE_TIMEOUT_NS,
-        gsp_vector
+        vectors
     );
     if (rc != nvidia::OK) {
         return rc;
@@ -824,12 +826,21 @@ int32_t nvidia_gpu_driver::attach() {
     log::info(
         "nvidia: the GSP's firmware signals the driver on GPU interrupt vector %u, bit %u of the CPU interrupt tree's "
         "leaf %u, as the kernel interrupt table read from subdevice 0x%X of internal client 0x%X gives",
-        gsp_vector,
-        gsp_vector % nvidia::VECTORS_PER_LEAF,
-        gsp_vector / nvidia::VECTORS_PER_LEAF,
+        vectors.gsp,
+        vectors.gsp % nvidia::VECTORS_PER_LEAF,
+        vectors.gsp / nvidia::VECTORS_PER_LEAF,
         configuration.internal_subdevice,
         configuration.internal_client
     );
+    if (vectors.has_display) {
+        log::info(
+            "nvidia: the heads' vertical blanks arrive on GPU interrupt vector %u, bit %u of the CPU interrupt tree's "
+            "leaf %u, as the same table gives",
+            vectors.display,
+            vectors.display % nvidia::VECTORS_PER_LEAF,
+            vectors.display / nvidia::VECTORS_PER_LEAF
+        );
+    }
 
     rc = m_video_memory.init(configuration, frts.video_memory_size);
     if (rc != nvidia::OK) {
@@ -902,7 +913,7 @@ int32_t nvidia_gpu_driver::attach() {
     // An earlier driver can leave vectors of the tree enabled, which would raise MSI before the GSP's is enabled
     nvidia::disable_cpu_interrupt_tree(regs, chip->interrupt_leaf_count);
 
-    m_gsp_vector = gsp_vector;
+    m_interrupt_vectors = vectors;
     rc = setup_msi(1);
     if (rc != OK) {
         log::error("nvidia: setting up MSI for the GSP's interrupt failed: %d", rc);
@@ -911,7 +922,12 @@ int32_t nvidia_gpu_driver::attach() {
 
     nvidia::rearm_msi(regs);
 
-    nvidia::enable_cpu_interrupt_tree(regs, chip->interrupt_leaf_count, gsp_vector);
+    // Flips turn on before the display's vector can raise an interrupt
+    if (vectors.has_display) {
+        m_display_engine.turn_on_flips();
+    }
+
+    nvidia::enable_cpu_interrupt_tree(regs, chip->interrupt_leaf_count, vectors);
     m_is_gsp_interrupt_enabled = true;
 
     if (frts.has_display) {
@@ -930,7 +946,7 @@ int32_t nvidia_gpu_driver::attach() {
 
     log::info(
         "nvidia: bring-up ends with the driver attached, GPU interrupt vector %u raising MSI vector %u",
-        gsp_vector,
+        vectors.gsp,
         msi_vector
     );
 
@@ -1206,21 +1222,38 @@ void nvidia_gpu_driver::run() {
         if (rc != nvidia::OK) {
             log::error("nvidia: reading the GSP firmware's messages failed: %d", rc);
         }
+
+        m_display_engine.log_first_second();
     }
 }
 
-__PRIVILEGED_CODE void nvidia_gpu_driver::on_interrupt(uint32_t vector) {
-    // The card's one MSI vector, which only the GSP's vector raises
+__PRIVILEGED_CODE bool nvidia_gpu_driver::on_interrupt(uint32_t vector) {
+    // The card's one MSI vector, which the GSP's and the display's vectors raise
     (void)vector;
 
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
-    uint32_t sources = nvidia::acknowledge_gsp_interrupt(regs, m_gsp_vector);
-    if (sources != nvidia::UNRESPONSIVE_CARD_SOURCES) {
+    uint32_t sources = nvidia::acknowledge_gsp_interrupt(regs, m_interrupt_vectors.gsp);
+    bool is_card_gone = sources == nvidia::UNRESPONSIVE_CARD_SOURCES;
+    if (sources != 0) {
+        sync::atomic_ref<uint32_t>{m_gsp_sources}.fetch_or_relaxed(sources);
+        sync::atomic_ref<uint64_t>{m_last_interrupt_ns}.store_relaxed(clock::now_ns());
+    }
+
+    bool completes_first_second = false;
+    bool may_service_display = !is_card_gone && m_display_engine.are_flips_on();
+    if (may_service_display && nvidia::acknowledge_display_interrupt(regs, m_interrupt_vectors.display)) {
+        uint32_t pending_heads = nvidia::pending_vertical_blanks(regs);
+        is_card_gone = pending_heads == nvidia::UNRESPONSIVE_DISPATCH;
+        if (!is_card_gone) {
+            completes_first_second = m_display_engine.service_vertical_blanks(regs, pending_heads);
+        }
+    }
+
+    if (!is_card_gone) {
         nvidia::rearm_msi(regs);
     }
 
-    sync::atomic_ref<uint32_t>{m_gsp_sources}.fetch_or_relaxed(sources);
-    sync::atomic_ref<uint64_t>{m_last_interrupt_ns}.store_relaxed(clock::now_ns());
+    return sources != 0 || completes_first_second;
 }
 
 // Any subclass, so VGA compatible and 3D controllers both bind

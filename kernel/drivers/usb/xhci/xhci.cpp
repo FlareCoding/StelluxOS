@@ -221,13 +221,14 @@ void xhci_hcd::run() {
     }
 }
 
-__PRIVILEGED_CODE void xhci_hcd::on_interrupt(uint32_t) {
+__PRIVILEGED_CODE bool xhci_hcd::on_interrupt(uint32_t) {
     // Clear USBSTS.EINT first, then IMAN.IP (RW1C). Clearing IP allows the
     // 0->1 transition needed to generate the next MSI.
     m_xhc_op_regs->usbsts = XHCI_USBSTS_EINT;
     volatile xhci::xhci_interrupter_registers* ir = &m_xhc_runtime_regs->ir[0];
     ir->iman = XHCI_IMAN_INTERRUPT_PENDING | XHCI_IMAN_INTERRUPT_ENABLE;
     (void)ir->iman; // read-back flushes posted PCIe write
+    return true;
 }
 
 void xhci_hcd::_parse_extended_capabilities() {

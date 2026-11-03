@@ -41,49 +41,86 @@ constexpr uint32_t TRIGGER_BIT = 1;
 constexpr uint32_t MSI_REARM       = PCI_CONFIG_MIRROR_OFFSET + 0x704;
 constexpr uint32_t MSI_REARM_VALUE = 0;
 
-// Finds the GSP's vector in the table the reply filled
+// The first of the table's counted rows for `engine`, or null when it has none
+static const rm::kernel_interrupt_row* find_first_row(const rm::kernel_interrupt_table_params& table, uint16_t engine) {
+    for (uint32_t i = 0; i < table.row_count; i++) {
+        if (table.rows[i].engine == engine) {
+            return &table.rows[i];
+        }
+    }
+
+    return nullptr;
+}
+
+// Finds the GSP's vector in the table the reply filled, whose count must already be checked
 static int32_t find_gsp_vector(const rm::kernel_interrupt_table_params& table, uint32_t leaf_count, uint32_t& vector) {
-    if (table.row_count > rm::KERNEL_INTERRUPT_ROWS_MAX) {
+    const rm::kernel_interrupt_row* row = find_first_row(table, rm::ENGINE_GSP);
+    if (row == nullptr) {
         log::error(
-            "nvidia: the GSP firmware's kernel interrupt table counts %u rows, more than the %u it has room for",
-            table.row_count,
-            rm::KERNEL_INTERRUPT_ROWS_MAX
+            "nvidia: the GSP firmware's kernel interrupt table counts %u rows, none for the GSP",
+            table.row_count
         );
         return ERR_BAD_MESSAGE;
     }
 
     uint32_t vector_count = leaf_count * VECTORS_PER_LEAF;
-    for (uint32_t i = 0; i < table.row_count; i++) {
-        const rm::kernel_interrupt_row& row = table.rows[i];
-        if (row.engine != rm::ENGINE_GSP) {
-            continue;
-        }
-
-        if (row.stall_vector >= vector_count) {
-            log::error(
-                "nvidia: the GSP firmware's kernel interrupt table gives the GSP vector %u, outside the %u vectors "
-                "of the CPU interrupt tree",
-                row.stall_vector,
-                vector_count
-            );
-            return ERR_BAD_MESSAGE;
-        }
-
-        if (row.pmc_interrupt_mask != 0) {
-            log::error(
-                "nvidia: the GSP firmware's kernel interrupt table gives the GSP's row the PMC mask 0x%X, and "
-                "NVIDIA's driver never enables the vector of a row with one",
-                row.pmc_interrupt_mask
-            );
-            return ERR_BAD_MESSAGE;
-        }
-
-        vector = row.stall_vector;
-        return OK;
+    if (row->stall_vector >= vector_count) {
+        log::error(
+            "nvidia: the GSP firmware's kernel interrupt table gives the GSP vector %u, outside the %u vectors "
+            "of the CPU interrupt tree",
+            row->stall_vector,
+            vector_count
+        );
+        return ERR_BAD_MESSAGE;
     }
 
-    log::error("nvidia: the GSP firmware's kernel interrupt table counts %u rows, none for the GSP", table.row_count);
-    return ERR_BAD_MESSAGE;
+    if (row->pmc_interrupt_mask != 0) {
+        log::error(
+            "nvidia: the GSP firmware's kernel interrupt table gives the GSP's row the PMC mask 0x%X, and "
+            "NVIDIA's driver never enables the vector of a row with one",
+            row->pmc_interrupt_mask
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    vector = row->stall_vector;
+    return OK;
+}
+
+// Finds the display's vector in the table the reply filled, logging why the display has none
+static bool find_display_vector(const rm::kernel_interrupt_table_params& table, uint32_t leaf_count, uint32_t& vector) {
+    const rm::kernel_interrupt_row* row = find_first_row(table, rm::ENGINE_DISPLAY);
+    if (row == nullptr) {
+        log::warn(
+            "nvidia: the GSP firmware's kernel interrupt table counts %u rows, none for the display, so the heads' "
+            "vertical blanks are not serviced",
+            table.row_count
+        );
+        return false;
+    }
+
+    uint32_t vector_count = leaf_count * VECTORS_PER_LEAF;
+    if (row->stall_vector >= vector_count) {
+        log::warn(
+            "nvidia: the GSP firmware's kernel interrupt table gives the display vector %u, outside the %u vectors "
+            "of the CPU interrupt tree, so the heads' vertical blanks are not serviced",
+            row->stall_vector,
+            vector_count
+        );
+        return false;
+    }
+
+    if (row->pmc_interrupt_mask != 0) {
+        log::warn(
+            "nvidia: the GSP firmware's kernel interrupt table gives the display's row the PMC mask 0x%X, so the "
+            "heads' vertical blanks are not serviced",
+            row->pmc_interrupt_mask
+        );
+        return false;
+    }
+
+    vector = row->stall_vector;
+    return true;
 }
 
 static uint32_t leaf_of(uint32_t vector) {
@@ -115,13 +152,41 @@ static void clear_leaf_enables(registers& regs, uint32_t leaf_count) {
     }
 }
 
-int32_t read_gsp_interrupt_vector(
+// Reads the GSP's vector and, when `is_display_enabled`, the display's from the table the reply filled
+static int32_t find_vectors(
+    const rm::kernel_interrupt_table_params& table,
+    uint32_t leaf_count,
+    bool is_display_enabled,
+    interrupt_vectors& vectors
+) {
+    if (table.row_count > rm::KERNEL_INTERRUPT_ROWS_MAX) {
+        log::error(
+            "nvidia: the GSP firmware's kernel interrupt table counts %u rows, more than the %u it has room for",
+            table.row_count,
+            rm::KERNEL_INTERRUPT_ROWS_MAX
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    interrupt_vectors found = {};
+    int32_t rc = find_gsp_vector(table, leaf_count, found.gsp);
+    if (rc != OK) {
+        return rc;
+    }
+
+    found.has_display = is_display_enabled && find_display_vector(table, leaf_count, found.display);
+    vectors = found;
+    return OK;
+}
+
+int32_t read_interrupt_vectors(
     gsp& conversation,
     rm::handle client,
     rm::handle subdevice,
     uint32_t leaf_count,
+    bool is_display_enabled,
     uint64_t timeout_ns,
-    uint32_t& vector
+    interrupt_vectors& vectors
 ) {
     uint32_t table_bytes = sizeof(rm::kernel_interrupt_table_params);
     auto* table = static_cast<rm::kernel_interrupt_table_params*>(heap::uzalloc(table_bytes));
@@ -139,7 +204,7 @@ int32_t read_gsp_interrupt_vector(
         timeout_ns
     );
     if (rc == OK) {
-        rc = find_gsp_vector(*table, leaf_count, vector);
+        rc = find_vectors(*table, leaf_count, is_display_enabled, vectors);
     }
 
     heap::ufree(table);
@@ -147,11 +212,18 @@ int32_t read_gsp_interrupt_vector(
     return rc;
 }
 
-void enable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count, uint32_t gsp_vector) {
+void enable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count, const interrupt_vectors& vectors) {
     clear_leaf_enables(regs, leaf_count);
 
-    regs.write(leaf_register(CPU_INTERRUPT_LEAF_ENABLE_SET, leaf_of(gsp_vector)), vector_bit(gsp_vector));
-    regs.write(CPU_INTERRUPT_TOP_ENABLE_SET, subtree_bit(gsp_vector));
+    uint32_t subtree_bits = subtree_bit(vectors.gsp);
+    regs.write(leaf_register(CPU_INTERRUPT_LEAF_ENABLE_SET, leaf_of(vectors.gsp)), vector_bit(vectors.gsp));
+    if (vectors.has_display) {
+        uint32_t display_leaf = leaf_of(vectors.display);
+        regs.write(leaf_register(CPU_INTERRUPT_LEAF_ENABLE_SET, display_leaf), vector_bit(vectors.display));
+        subtree_bits |= subtree_bit(vectors.display);
+    }
+
+    regs.write(CPU_INTERRUPT_TOP_ENABLE_SET, subtree_bits);
 }
 
 void disable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count) {
@@ -174,6 +246,17 @@ uint32_t acknowledge_gsp_interrupt(registers& regs, uint32_t vector) {
     regs.write(GSP_INTERRUPT_RETRIGGER, TRIGGER_BIT);
 
     return sources;
+}
+
+bool acknowledge_display_interrupt(registers& regs, uint32_t vector) {
+    uint32_t leaf = leaf_register(CPU_INTERRUPT_LEAF, leaf_of(vector));
+    uint32_t bit = vector_bit(vector);
+    if ((regs.read(leaf) & bit) == 0) {
+        return false;
+    }
+
+    regs.write(leaf, bit);
+    return true;
 }
 
 void rearm_msi(registers& regs) {
