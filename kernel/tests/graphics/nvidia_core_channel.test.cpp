@@ -61,8 +61,8 @@ static constexpr uint64_t   TEST_PUSH_BUFFER = 0x1234567000;
 static constexpr rm::handle UNTOUCHED        = 0xDEAD0001;
 static constexpr uint8_t    TEST_WINDOW      = 6;
 
-// GA102's heads and windows with the display class left 0, as the channels' calls never use it, and core and window
-// channel classes swapped from GA102's, so the test sees each class comes from its own field of the entry
+// GA102's heads and windows with the display and cursor channel classes left 0, as the channels' calls never use them,
+// and core and window channel classes swapped from GA102's, so the test sees each class comes from its own field
 static constexpr chip_display TEST_ENTRY = {
     .head_count                = 4,
     .window_count              = 8,
@@ -71,6 +71,7 @@ static constexpr chip_display TEST_ENTRY = {
     .core_channel_class        = 0xC67E,
     .window_channel_class      = 0xC67D,
     .heads_have_output_scalers = false,
+    .cursor_channel_class      = 0,
     .displayport               = {},
 };
 

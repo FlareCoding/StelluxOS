@@ -93,6 +93,7 @@ struct chip_display {
 
     uint32_t window_channel_class;      // NVIDIA's class of a window channel, which sets up what its window scans out
     bool     heads_have_output_scalers; // the heads report output scalers, so a window takes no scaler coefficients
+    uint32_t cursor_channel_class;      // NVIDIA's class of a head's cursor channel, which places the head's cursor
 
     chip_displayport displayport;
 };

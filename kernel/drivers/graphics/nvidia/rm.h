@@ -580,6 +580,13 @@ struct display_channel_params {
     uint32_t flags;
 };
 
+// NVIDIA's NV50VAIO_CHANNELPIO_ALLOCATION_PARAMETERS, the parameters of a cursor channel's allocation under the display
+struct cursor_channel_params {
+    uint32_t channel_instance;     // the head
+    handle   notifier_context_dma; // NVIDIA's hObjectNotify, 0 for no notifier
+    uint64_t control;              // NVIDIA's pControl, never read
+};
+
 // NVIDIA's NV5070_CTRL_CMD_SET_RMFREE_FLAGS, the control to the display setting flags for the next release only, and
 // NVIDIA's NV5070_CTRL_SET_RMFREE_FLAGS_PRESERVE_HW, the flag keeping the hardware as it is through that release
 constexpr uint32_t CONTROL_SET_DISPLAY_RELEASE_FLAGS = 0x50700117;
@@ -868,6 +875,7 @@ struct display_change_params {
 static_assert(sizeof(display_change_params) == 16, "NVIDIA's layout of DISPLAY_CHANGE's parameters");
 static_assert(sizeof(display_push_buffer_params) == 40, "NVIDIA's layout of DISPLAY_CHANNEL_PUSHBUFFER's parameters");
 static_assert(sizeof(display_channel_params) == 32, "NVIDIA's layout of a display channel's allocation parameters");
+static_assert(sizeof(cursor_channel_params) == 16, "NVIDIA's layout of a cursor channel's allocation parameters");
 static_assert(sizeof(display_release_flags_params) == 8, "NVIDIA's layout of SET_RMFREE_FLAGS's parameters");
 
 // NVIDIA's NVC370_CTRL_CMD_GET_CHANNEL_INFO, the control to the display that gives the state of one of its channels

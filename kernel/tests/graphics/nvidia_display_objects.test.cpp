@@ -49,6 +49,7 @@ static constexpr chip_display    TEST_DISPLAY = {
     .core_channel_class        = 0,
     .window_channel_class      = 0,
     .heads_have_output_scalers = false,
+    .cursor_channel_class      = 0,
     .displayport               = {},
 };
 
