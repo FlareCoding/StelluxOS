@@ -20,6 +20,31 @@ struct cpu_mapping {
     pmm::phys_addr_t phys; // where the range starts in physical addresses, or 0 when the implementation has none
 };
 
+// Consecutive entries of one table of a GPU context's page tables, which `video_memory::update_context_tables` writes
+// and which must lie in that one 4 KiB table
+struct entry_run {
+    uint64_t        vram_offset; // the first entry's offset in video memory, a multiple of 8 below `BAR0_WINDOW_REACH`
+    const uint64_t* entries;     // the values to write
+    uint64_t        count;       // not 0
+};
+
+// The runs of one update of a GPU context's page tables, handed out in the order they must reach video memory, under
+// `video_memory`'s mutex, so `next` must not block or call `video_memory`
+class table_writes {
+public:
+    virtual ~table_writes() = default;
+
+    // Fills `out` with the next run and returns true, or returns false once no run is left. The run's entries stay
+    // valid until the next call
+    virtual bool next(entry_run& out) = 0;
+};
+
+// Whether an update of a GPU context's page tables ends with an invalidate of the context's cached translations
+enum class context_tlbs : uint8_t {
+    kept,        // for tables no TLB can have cached a translation through
+    invalidated, // in the engines' TLBs as well as the hub's, as `invalidate_context_tlbs` does
+};
+
 /**
  * The card's video memory as the driver's parts use it: ranges handed out for
  * a `vram_use`, each its caller's until the caller releases it, and mappings
@@ -80,6 +105,18 @@ public:
      * @param range The range as `map_for_cpu` mapped it.
      */
     virtual void unmap_for_cpu(const vram_range& range) = 0;
+
+    /**
+     * @brief Write the runs `writes` hands out into a GPU context's page
+     * tables, in order, read the last entry back and then, when `tlbs` says
+     * so, invalidate the context's cached translations through its root page
+     * directory at `directory_offset`, with no other update in between.
+     * @return `OK`, `ERR_BAD_STATE` when the last entry reads back as another
+     * value or the object cannot reach video memory, or `ERR_TIMEOUT` when the
+     * invalidate times out, each logged. On an error the card may translate
+     * through any entry written or through a translation cached before it.
+     */
+    virtual int32_t update_context_tables(uint64_t directory_offset, table_writes& writes, context_tlbs tlbs) = 0;
 };
 
 /**
@@ -125,14 +162,15 @@ public:
  * The object keeps one record per mapping, sorted by BAR1 offset, on the
  * unprivileged heap, and frees them when it drops the window or is destroyed,
  * leaving BAR1's tables in video memory. Its mutex covers its mappings and the
- * uses of BAR0's window that `map_for_cpu`, `unmap_for_cpu` and `release`
- * make, taken outside the allocator's, so its calls can block as the
- * allocator's do: none may run in an interrupt handler or under a spinlock,
- * and a thread that cannot sleep, such as the boot thread, must call only
- * while no other thread can. `map_for_cpu`, `unmap_for_cpu` and a `release` of
- * a mapped range also spin with the mutex held for up to `DEFAULT_TIMEOUT_NS`
- * in an invalidate's two waits. `set_up_bar1` writes through BAR0's window
- * without it, as the boot thread alone calls it.
+ * uses of BAR0's window that `map_for_cpu`, `unmap_for_cpu`, `release` and
+ * `update_context_tables` make, taken outside the allocator's, so its calls
+ * can block as the allocator's do: none may run in an interrupt handler or
+ * under a spinlock, and a thread that cannot sleep, such as the boot thread,
+ * must call only while no other thread can. `map_for_cpu`, `unmap_for_cpu`,
+ * `update_context_tables` and a `release` of a mapped range also spin with the
+ * mutex held for up to `DEFAULT_TIMEOUT_NS` in an invalidate's two waits.
+ * `set_up_bar1` writes through BAR0's window without it, as the boot thread
+ * alone calls it.
  */
 class bar1_video_memory : public video_memory {
 public:
@@ -261,10 +299,22 @@ public:
     void unmap_for_cpu(const vram_range& range) override;
 
     /**
+     * @brief Update a GPU context's page tables through BAR0's window as
+     * `video_memory::update_context_tables` describes, invalidating with
+     * `invalidate_context_tlbs`. The object reaches no video memory before
+     * `set_up_bar1` succeeds and after `drop_window`.
+     * @return What `video_memory::update_context_tables` returns, and
+     * `ERR_BAD_STATE`, logged, for an empty run, one whose offset is not a
+     * multiple of 8 or one that does not lie in one 4 KiB table.
+     */
+    int32_t update_context_tables(uint64_t directory_offset, table_writes& writes, context_tlbs tlbs) override;
+
+    /**
      * @brief Forget BAR1's window, so no later call of the object reaches BAR0
-     * or BAR1. `map_for_cpu` then fails as before `open_window`, and the
-     * mappings' records are freed, their entries left in video memory as they
-     * are. Allocations stay handed out. It must be called before either BAR is
+     * or BAR1. `map_for_cpu` then fails as before `open_window`,
+     * `update_context_tables` fails as before `set_up_bar1`, and the mappings'
+     * records are freed, their entries left in video memory as they are.
+     * Allocations stay handed out. It must be called before either BAR is
      * unmapped.
      */
     void drop_window();
@@ -312,6 +362,9 @@ private:
 
     // Writes the run's entries, reads the last one back and invalidates, with the mutex held
     int32_t update_run(const mapping& held, bool maps_range);
+
+    // `update_context_tables` with the mutex held
+    int32_t update_context_tables_locked(uint64_t directory_offset, table_writes& writes, context_tlbs tlbs);
 
     vram_allocator                      m_allocator;
     registers                           m_regs{0};

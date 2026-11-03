@@ -22,8 +22,11 @@ constexpr int32_t ERR_BAD_STATE      = -5; // the card's registers or memory, or
                                            // notifiers only in video memory, the display's instance memory lacks a
                                            // binding it is asked to undo, a binding of a context DMA to a channel
                                            // repeats one, comes before that memory is set up or comes while the driver
-                                           // has no client, or a display channel's GET reads past its push buffer's
-                                           // writable end or not a multiple of 4
+                                           // has no client, a display channel's GET reads past its push buffer's
+                                           // writable end or not a multiple of 4, a GPU context's page tables are
+                                           // created while they exist, used while they do not or given a table no
+                                           // directory entry can name, or their update is refused or reads back as
+                                           // another value
 constexpr int32_t ERR_NO_MEMORY      = -6; // allocating system memory for the card to reach or for the driver's copies
                                            // and records failed, video memory has no free range for an allocation,
                                            // BAR1's window has no free run for a mapping, or the display's hash table
@@ -54,12 +57,15 @@ constexpr int32_t ERR_INVALID_ARG    = -13; // a video memory allocation's size 
                                             // pages, its alignment is 0 or not a power of two, a range to map through
                                             // BAR1 is not a whole allocation, is mapped already or ends past what a
                                             // page table entry can name, a context DMA's binding names handle 0, no
-                                            // display channel or memory its record cannot name, or a display channel's
+                                            // display channel or memory its record cannot name, a display channel's
                                             // method has a register offset no header names, no values or more than
-                                            // `METHOD_VALUES_MAX`
+                                            // `METHOD_VALUES_MAX`, or a GPU context's range to map or unmap is empty or
+                                            // not whole 4 KiB pages inside its addresses, or a run to map is empty, not
+                                            // whole pages or names memory or a kind its page table entries cannot
 constexpr int32_t ERR_NOT_REGISTERED = -14; // gfxfb refuses the display engine as its display, as when it cannot
                                             // create or publish its node or no memory is left for its records of the
                                             // lit outputs' base buffers
+constexpr int32_t ERR_GPU_FAILED     = -15; // the GPU is marked failed, as a GPU context's page table update failed
 
 // Nanoseconds per millisecond and per microsecond, for the sequencer's waits, the wait before each EDID reread, the
 // core channel's idle wait, the times the driver logs and mode times

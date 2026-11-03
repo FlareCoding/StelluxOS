@@ -67,6 +67,15 @@ void restore_bar1_block(registers& regs, uint32_t saved_block);
 int32_t invalidate_bar1_tlb(registers& regs, uint64_t root_offset, uint64_t timeout_ns);
 
 /**
+ * @brief Invalidate a GPU context's cached translations through the page
+ * tables whose root page directory lies `root_offset` bytes into video memory,
+ * in the engines' TLBs as well as the hub's, with the steps, waits and limits
+ * of `invalidate_bar1_tlb`.
+ * @return `OK`, or `ERR_TIMEOUT`, logged, as `invalidate_bar1_tlb` returns it.
+ */
+int32_t invalidate_context_tlbs(registers& regs, uint64_t root_offset, uint64_t timeout_ns);
+
+/**
  * @brief Link BAR1's tables into the page tables the firmware binds BAR1 to:
  * write `root_entry` as the first entry of BAR1's root page directory through
  * BAR0's window, read the entry back through the window, and invalidate BAR1's

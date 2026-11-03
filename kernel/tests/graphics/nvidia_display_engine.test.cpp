@@ -42,6 +42,7 @@ using drivers::nvidia::CHANNEL_PUT;
 using drivers::nvidia::chip_displayport;
 using drivers::nvidia::chip_info;
 using drivers::nvidia::COMPLETION_NOTIFIER_WAIT_NS;
+using drivers::nvidia::context_tlbs;
 using drivers::nvidia::CORE_CHANNEL_AREA;
 using drivers::nvidia::CORE_INITIAL_METHODS_PER_HEAD;
 using drivers::nvidia::cpu_mapping;
@@ -76,6 +77,7 @@ using drivers::nvidia::register_display_engine;
 using drivers::nvidia::registers;
 using drivers::nvidia::release_display_channel;
 using drivers::nvidia::scanout_buffer;
+using drivers::nvidia::table_writes;
 using drivers::nvidia::video_memory;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
@@ -791,7 +793,8 @@ private:
 };
 
 // A video memory giving general memory in whole pages from offset 0 of `g_video_memory`, mapped one range at a time
-// through its copy, and whole scanout pages at `SCANOUT_OFFSET` over `scanout`, counting calls and failing them as set
+// through its copy, and whole scanout pages at `SCANOUT_OFFSET` over `scanout`, counting calls and failing them as set,
+// and refusing every `update_context_tables` uncounted
 class engine_video_memory : public video_memory {
 public:
     int32_t  general_allocate_result = OK;
@@ -955,6 +958,10 @@ public:
                 return;
             }
         }
+    }
+
+    int32_t update_context_tables(uint64_t, table_writes&, context_tlbs) override {
+        return ERR_BAD_STATE;
     }
 };
 

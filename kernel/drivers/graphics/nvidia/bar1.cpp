@@ -91,19 +91,30 @@ void restore_bar1_block(registers& regs, uint32_t saved_block) {
     );
 }
 
-int32_t invalidate_bar1_tlb(registers& regs, uint64_t root_offset, uint64_t timeout_ns) {
+static int32_t invalidate_tlbs(
+    registers& regs,
+    uint64_t root_offset,
+    bool is_hub_tlb_only,
+    uint64_t timeout_ns,
+    const char* translations
+) {
     uint64_t deadline = clock::now_ns() + timeout_ns;
     uint64_t root_unit = root_offset >> PDB_UNIT_SHIFT;
     uint32_t pdb_address_field = static_cast<uint32_t>(root_unit & PDB_LOW_UNIT_MASK) << PDB_ADDRESS_FIELD_SHIFT;
     uint32_t pdb = pdb_address_field | PDB_APERTURE_VIDEO << PDB_APERTURE_FIELD_SHIFT;
     uint32_t upper_pdb = static_cast<uint32_t>(root_unit >> PDB_LOW_UNIT_BITS);
-    uint32_t invalidate = INVALIDATE_TRIGGER | INVALIDATE_ALL_VA | INVALIDATE_HUB_TLB_ONLY | INVALIDATE_NON_LINK;
+
+    uint32_t invalidate = INVALIDATE_TRIGGER | INVALIDATE_ALL_VA | INVALIDATE_NON_LINK;
+    if (is_hub_tlb_only) {
+        invalidate |= INVALIDATE_HUB_TLB_ONLY;
+    }
 
     if (!wait_for_invalidate(regs, deadline)) {
         log::error(
             "nvidia: the invalidate register's trigger bit still reads set after %lu ms of waiting for an earlier "
-            "invalidate to finish, so BAR1's cached translations are not invalidated",
-            timeout_ns / NS_PER_MS
+            "invalidate to finish, so %s are not invalidated",
+            timeout_ns / NS_PER_MS,
+            translations
         );
         return ERR_TIMEOUT;
     }
@@ -115,15 +126,24 @@ int32_t invalidate_bar1_tlb(registers& regs, uint64_t root_offset, uint64_t time
     if (!wait_for_invalidate(regs, deadline)) {
         log::error(
             "nvidia: the invalidate register's trigger bit still reads set %lu ms after the wait for an earlier "
-            "invalidate began, with the invalidate of BAR1's cached translations through the root page directory at "
-            "0x%lX in video memory asked for",
+            "invalidate began, with the invalidate of %s through the root page directory at 0x%lX in video memory "
+            "asked for",
             timeout_ns / NS_PER_MS,
+            translations,
             root_offset
         );
         return ERR_TIMEOUT;
     }
 
     return OK;
+}
+
+int32_t invalidate_bar1_tlb(registers& regs, uint64_t root_offset, uint64_t timeout_ns) {
+    return invalidate_tlbs(regs, root_offset, true, timeout_ns, "BAR1's cached translations");
+}
+
+int32_t invalidate_context_tlbs(registers& regs, uint64_t root_offset, uint64_t timeout_ns) {
+    return invalidate_tlbs(regs, root_offset, false, timeout_ns, "a GPU context's cached translations");
 }
 
 int32_t link_bar1_page_tables(registers& regs, uint64_t root_offset, uint64_t root_entry, uint64_t timeout_ns) {

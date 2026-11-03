@@ -17,10 +17,13 @@ using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::OK;
 using drivers::nvidia::bar1_video_memory;
+using drivers::nvidia::context_tlbs;
 using drivers::nvidia::cpu_mapping;
+using drivers::nvidia::entry_run;
 using drivers::nvidia::page_entry;
 using drivers::nvidia::registers;
 using drivers::nvidia::static_configuration;
+using drivers::nvidia::table_writes;
 using drivers::nvidia::video_memory_region;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
@@ -37,6 +40,9 @@ static constexpr uint64_t OFFSET_IN_STEP_MASK = 0xFFFF;
 static constexpr uint32_t INVALIDATE_PDB  = 0xB830A0;
 static constexpr uint32_t INVALIDATE      = 0xB830B0;
 static constexpr uint32_t BAR1_INVALIDATE = 0x80010005;
+
+// BAR1's invalidate value without bit 2, which limits an invalidate to the hub's TLB
+static constexpr uint32_t CONTEXT_INVALIDATE = 0x80010001;
 
 // NVIDIA's sparse value, which a page table entry holds when it names nothing and an access through it does not fault
 static constexpr uint64_t SPARSE_ENTRY = 0x8;
@@ -84,9 +90,31 @@ struct mapping_bar0 {
     // The page table entry for BAR1's page at `bar1_offset` as BAR0's window last showed it, which holds every write of
     // the tests' mappings, since none spans two 64 KiB steps
     uint64_t entry(uint64_t bar1_offset) const {
-        uint64_t entry_offset = TABLES_OFFSET + DIRECTORY_BYTES + bar1_offset / PAGE_BYTES * sizeof(uint64_t);
-        uint32_t low_word = PRAMIN + static_cast<uint32_t>(entry_offset & OFFSET_IN_STEP_MASK);
+        return video_memory_word(TABLES_OFFSET + DIRECTORY_BYTES + bar1_offset / PAGE_BYTES * sizeof(uint64_t));
+    }
+
+    // The 8 bytes at `vram_offset` in video memory as BAR0's window last showed them
+    uint64_t video_memory_word(uint64_t vram_offset) const {
+        uint32_t low_word = PRAMIN + static_cast<uint32_t>(vram_offset & OFFSET_IN_STEP_MASK);
         return static_cast<uint64_t>(read(low_word + sizeof(uint32_t))) << 32 | read(low_word);
+    }
+};
+
+// Hands out `count` runs from `runs` in order
+struct listed_writes : table_writes {
+    const entry_run* runs;
+    size_t           count;
+    size_t           handed_out = 0;
+
+    listed_writes(const entry_run* listed, size_t listed_count) : runs(listed), count(listed_count) {}
+
+    bool next(entry_run& out) override {
+        if (handed_out == count) {
+            return false;
+        }
+
+        out = runs[handed_out++];
+        return true;
     }
 };
 
@@ -588,6 +616,12 @@ TEST(nvidia_video_memory, a_dropped_window_maps_nothing_and_forgets_its_mappings
     memory.drop_window();
     ASSERT_EQ(video_memory_test_access::window_bytes(memory), 0u);
 
+    // A GPU context's update is refused as before `set_up_bar1`
+    uint64_t context_entry = 1;
+    entry_run context_run = {.vram_offset = 0x300000, .entries = &context_entry, .count = 1};
+    listed_writes context_writes(&context_run, 1);
+    EXPECT_EQ(memory.update_context_tables(0x300000, context_writes, context_tlbs::invalidated), ERR_BAD_STATE);
+
     // A forgotten mapping is no longer refused as mapped already, before any call can reach BAR0
     cpu_mapping out = UNTOUCHED;
     ASSERT_EQ(memory.map_for_cpu(live, out), ERR_NO_MEMORY);
@@ -595,5 +629,90 @@ TEST(nvidia_video_memory, a_dropped_window_maps_nothing_and_forgets_its_mappings
     memory.unmap_for_cpu(live);
     EXPECT_EQ(bar0.entry(CONSOLE_BYTES), 0u);
     EXPECT_EQ(bar0.entry(CONSOLE_BYTES + PAGE_BYTES), 0u);
+    EXPECT_EQ(bar0.read(INVALIDATE), 0u);
+}
+
+// A GPU context's root page directory at the start of a 64 KiB step, its offset in 4 KiB units in bits 31:4 of the
+// invalidate's first register, a table after it, and entries no table of the tests holds
+static constexpr uint64_t CONTEXT_DIRECTORY_OFFSET = 0x300000;
+static constexpr uint32_t CONTEXT_DIRECTORY_PDB    = 0x3000;
+static constexpr uint64_t CONTEXT_TABLE_OFFSET     = 0x301000;
+static constexpr uint64_t CONTEXT_ENTRIES[]        = {0x1111000000000001, 0x2222000000000001, 0x3333000000000001};
+
+TEST(nvidia_video_memory, a_context_update_writes_its_runs_in_order_and_keeps_the_tlbs_when_asked) {
+    mapping_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+
+    bar1_video_memory memory;
+    ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
+    video_memory_test_access::record_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
+
+    // The second run rewrites the first run's second entry
+    entry_run runs[] = {
+        {.vram_offset = CONTEXT_DIRECTORY_OFFSET, .entries = &CONTEXT_ENTRIES[0], .count = 2},
+        {.vram_offset = CONTEXT_DIRECTORY_OFFSET + sizeof(uint64_t), .entries = &CONTEXT_ENTRIES[2], .count = 1},
+    };
+
+    listed_writes writes(runs, 2);
+    EXPECT_EQ(memory.update_context_tables(CONTEXT_DIRECTORY_OFFSET, writes, context_tlbs::kept), OK);
+
+    EXPECT_EQ(bar0.video_memory_word(CONTEXT_DIRECTORY_OFFSET), CONTEXT_ENTRIES[0]);
+    EXPECT_EQ(bar0.video_memory_word(CONTEXT_DIRECTORY_OFFSET + sizeof(uint64_t)), CONTEXT_ENTRIES[2]);
+    EXPECT_EQ(bar0.read(INVALIDATE), 0u);
+}
+
+TEST(nvidia_video_memory, a_context_invalidate_names_its_directory_for_every_tlb_and_reports_a_timeout) {
+    mapping_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+
+    bar1_video_memory memory;
+    ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
+    video_memory_test_access::record_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
+
+    entry_run run = {.vram_offset = CONTEXT_TABLE_OFFSET, .entries = CONTEXT_ENTRIES, .count = 1};
+    listed_writes writes(&run, 1);
+    EXPECT_EQ(memory.update_context_tables(CONTEXT_DIRECTORY_OFFSET, writes, context_tlbs::invalidated), ERR_TIMEOUT);
+
+    EXPECT_EQ(bar0.video_memory_word(CONTEXT_TABLE_OFFSET), CONTEXT_ENTRIES[0]);
+    EXPECT_EQ(bar0.read(INVALIDATE_PDB), CONTEXT_DIRECTORY_PDB);
+    EXPECT_EQ(bar0.read(INVALIDATE), CONTEXT_INVALIDATE);
+}
+
+TEST(nvidia_video_memory, a_context_update_before_bar1_is_set_up_or_of_a_run_not_of_entries_in_one_table_is_refused) {
+    mapping_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+
+    bar1_video_memory memory;
+    ASSERT_EQ(memory.init(two_region_configuration(), VIDEO_MEMORY_BYTES), OK);
+
+    uint64_t directory = CONTEXT_DIRECTORY_OFFSET;
+    entry_run first = {.vram_offset = directory, .entries = CONTEXT_ENTRIES, .count = 1};
+    listed_writes before_set_up(&first, 1);
+    EXPECT_EQ(memory.update_context_tables(directory, before_set_up, context_tlbs::invalidated), ERR_BAD_STATE);
+
+    // A run ending at its table's last word is written
+    video_memory_test_access::record_window(memory, bar0.regs, BAR1_BYTES, CONSOLE_BYTES);
+    uint64_t last_word_offset = directory + PAGE_BYTES - sizeof(uint64_t);
+    entry_run last_word = {.vram_offset = last_word_offset, .entries = &CONTEXT_ENTRIES[1], .count = 1};
+    listed_writes last_word_writes(&last_word, 1);
+    EXPECT_EQ(memory.update_context_tables(directory, last_word_writes, context_tlbs::kept), OK);
+
+    // A run past its table's end, an empty one and one not starting on an entry, each after a first run the call writes
+    entry_run crossing[] = {first, {.vram_offset = last_word_offset, .entries = CONTEXT_ENTRIES, .count = 2}};
+    listed_writes crossing_writes(crossing, 2);
+    EXPECT_EQ(memory.update_context_tables(directory, crossing_writes, context_tlbs::invalidated), ERR_BAD_STATE);
+
+    entry_run empty[] = {first, {.vram_offset = last_word_offset, .entries = CONTEXT_ENTRIES, .count = 0}};
+    listed_writes empty_writes(empty, 2);
+    EXPECT_EQ(memory.update_context_tables(directory, empty_writes, context_tlbs::invalidated), ERR_BAD_STATE);
+
+    entry_run misaligned[] = {first, {.vram_offset = directory + 0x104, .entries = CONTEXT_ENTRIES, .count = 1}};
+    listed_writes misaligned_writes(misaligned, 2);
+    EXPECT_EQ(memory.update_context_tables(directory, misaligned_writes, context_tlbs::invalidated), ERR_BAD_STATE);
+
+    EXPECT_EQ(bar0.video_memory_word(CONTEXT_DIRECTORY_OFFSET), CONTEXT_ENTRIES[0]);
+    EXPECT_EQ(bar0.video_memory_word(last_word_offset), CONTEXT_ENTRIES[1]);
+    EXPECT_EQ(bar0.video_memory_word(directory + 0x100), 0u);
+    EXPECT_EQ(bar0.video_memory_word(directory + 0x108), 0u);
     EXPECT_EQ(bar0.read(INVALIDATE), 0u);
 }

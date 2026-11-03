@@ -8,12 +8,16 @@
 
 TEST_SUITE(nvidia_page_tables);
 
+using drivers::nvidia::ADDRESS_SPACE_BYTES;
 using drivers::nvidia::ENTRY_REACH_BYTES;
 using drivers::nvidia::TABLE_BYTES;
 using drivers::nvidia::directory_entry;
+using drivers::nvidia::entry_bytes;
 using drivers::nvidia::entry_span;
+using drivers::nvidia::page_aperture;
 using drivers::nvidia::page_entry;
 using drivers::nvidia::page_level;
+using drivers::nvidia::page_mapping;
 using drivers::nvidia::sparse_page_entry;
 using drivers::nvidia::table_entry_offset;
 using drivers::nvidia::write_directory_entry;
@@ -67,8 +71,8 @@ TEST(nvidia_page_tables, a_table_takes_4_kib_and_an_entry_reaches_128_gib) {
     EXPECT_EQ(ENTRY_REACH_BYTES, ADDRESS_FIELD_REACH);
 }
 
-// An address whose index is 3 at level 2, 5 at level 1, 7 at level 0 and 9 in its page table, with bits below the page
-// and above level 2 that no index of these levels reads
+// An address whose index is 1 in the root directory, 3 at level 2, 5 at level 1, 7 at level 0 and 9 in its page table,
+// with bits below the page that no index reads
 static constexpr uint64_t INDEXED_ADDRESS = 1ULL << 47 | 3ULL << 38 | 5ULL << 29 | 7ULL << 21 | 9ULL << 12 | 0x123;
 
 // An address whose index is the last entry at levels 2, 1 and 0 and in its page table
@@ -200,4 +204,44 @@ TEST(nvidia_page_tables, a_refused_name_leaves_the_whole_copy_unwritten) {
 
     EXPECT_EQ(wrong_words, static_cast<uint64_t>(0));
     heap::ufree(table);
+}
+
+// The root page directory's 4 entries each cover 128 TiB, indexed by bits 48:47, and a level 0 entry takes 16 bytes
+TEST(nvidia_page_tables, the_root_directorys_4_entries_cover_the_512_tib_of_a_context) {
+    EXPECT_EQ(entry_span(page_level::root), 1ULL << 47);
+    EXPECT_EQ(ADDRESS_SPACE_BYTES, 4 * entry_span(page_level::root));
+    EXPECT_EQ(table_entry_offset(page_level::root, INDEXED_ADDRESS), static_cast<uint64_t>(8));
+    EXPECT_EQ(table_entry_offset(page_level::root, ADDRESS_SPACE_BYTES - 1), static_cast<uint64_t>(3 * 8));
+    EXPECT_EQ(table_entry_offset(page_level::root, ADDRESS_SPACE_BYTES | 1ULL << 47), static_cast<uint64_t>(8));
+
+    EXPECT_EQ(entry_bytes(page_level::root), static_cast<uint64_t>(8));
+    EXPECT_EQ(entry_bytes(page_level::directory_2), static_cast<uint64_t>(8));
+    EXPECT_EQ(entry_bytes(page_level::directory_0), static_cast<uint64_t>(16));
+    EXPECT_EQ(entry_bytes(page_level::page_table), static_cast<uint64_t>(8));
+}
+
+// Kind 6, NVIDIA's kind for generic memory, in bits 63:56, and the read-only bit, bit 6
+static constexpr uint8_t  GENERIC_MEMORY_KIND = 6;
+static constexpr uint64_t GENERIC_KIND_FIELD  = 6ULL << 56;
+static constexpr uint64_t READ_ONLY_BIT       = 1ULL << 6;
+
+TEST(nvidia_page_tables, a_page_entry_takes_its_kind_and_read_only_bit_and_refuses_kinds_past_6) {
+    EXPECT_EQ(page_entry(0x1235000, {.kind = GENERIC_MEMORY_KIND}), 0x123501 | GENERIC_KIND_FIELD);
+    EXPECT_EQ(page_entry(0x1235000, {.read_only = true}), 0x123501 | READ_ONLY_BIT);
+
+    // Kind 7, NVIDIA's invalid kind
+    EXPECT_EQ(page_entry(0x1235000, {.kind = 7}), static_cast<uint64_t>(0));
+    EXPECT_EQ(page_entry(0x1235000, {.kind = 0xFE}), static_cast<uint64_t>(0));
+}
+
+// The valid bit, aperture 2 (the coherent one) in bits 2:1 and the volatile bit, bit 3, of a system memory entry
+static constexpr uint64_t SYSTEM_PAGE_BITS = 0x1 | 0x4 | 0x8;
+
+TEST(nvidia_page_tables, a_page_entry_maps_system_memory_coherent_and_volatile_below_2_to_the_58) {
+    page_mapping system_memory = {.aperture = page_aperture::system_memory};
+    EXPECT_EQ(page_entry(0x1235000, system_memory), 0x123500 | SYSTEM_PAGE_BITS);
+    EXPECT_EQ(page_entry(ADDRESS_FIELD_REACH, system_memory), (ADDRESS_FIELD_REACH >> 4) | SYSTEM_PAGE_BITS);
+    EXPECT_EQ(page_entry((1ULL << 58) - 0x1000, system_memory), 0x3FFFFFFFFFFF00 | SYSTEM_PAGE_BITS);
+    EXPECT_EQ(page_entry(1ULL << 58, system_memory), static_cast<uint64_t>(0));
+    EXPECT_EQ(page_entry(0x1008, system_memory), static_cast<uint64_t>(0));
 }
