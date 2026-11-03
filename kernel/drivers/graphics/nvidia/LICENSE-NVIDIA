@@ -3136,10 +3136,16 @@ src/nvidia-modeset/src/nvkms-evo3.c
     pixels a line the bandwidth check is asked about, then the head's own usage
     bounds (a 256 by 256 cursor, the output table allowed, two output scaler
     taps for a viewport of two vertical taps and no upscaling), the viewport's
-    origin at 0, 0 and the output scaler's two taps, and that a window's first
-    image bounds its formats, its input scale factor at one and its usage bounds
-    the same way for the width of its head's viewport, in rm.h, core_methods.h,
+    origin at 0, 0 and the output scaler's two taps, that a window's first image
+    bounds its formats, its input scale factor at one and its usage bounds the
+    same way for the width of its head's viewport, in rm.h, core_methods.h,
     core_methods.cpp, display_light.h, display_light.cpp and
+    kernel/tests/graphics/nvidia_core_methods.test.cpp, and that it sets a
+    head's cursor with its present control, both eyes' context DMAs and offsets,
+    its control and its composition in that order, a straight alpha picture
+    blended with K1 255, the cursor's color times K1 and its alpha and the
+    viewport's times the rest, and no picture as a disabled control keeping
+    A8R8G8B8 with no context DMA, in rm.h, core_methods.h, core_methods.cpp and
     kernel/tests/graphics/nvidia_core_methods.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -3306,9 +3312,16 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     NVC67D_WINDOW_SET_MAX_INPUT_SCALE_FACTOR with its HORIZONTAL and VERTICAL
     and the usage bounds' MAX_PIXELS_FETCHED_PER_LINE, in rm.h, core_methods.h,
     core_methods.cpp and kernel/tests/graphics/nvidia_core_methods.test.cpp,
-    and NVC67D_HEAD_SET_OLUT_CONTROL and _OCSC0CONTROL again, which the light
-    reads back for the lit head, in display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    NVC67D_HEAD_SET_OLUT_CONTROL and _OCSC0CONTROL again, which the light reads
+    back for the lit head, in display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and for head 0
+    NVC67D_HEAD_SET_OFFSET_CURSOR, the stride of 4 to the second eye's context
+    DMA and offset, NVC67D_HEAD_SET_PRESENT_CONTROL_CURSOR with its MODE MONO,
+    NVC67D_HEAD_SET_CONTROL_CURSOR with its ENABLE, SIZE W256_H256, HOT_SPOT_X
+    and HOT_SPOT_Y, and NVC67D_HEAD_SET_CONTROL_CURSOR_COMPOSITION with its K1,
+    CURSOR_COLOR_FACTOR_SELECT K1_TIMES_SRC, VIEWPORT_COLOR_FACTOR_SELECT
+    NEG_K1_TIMES_SRC and MODE BLEND, in rm.h, core_methods.h, core_methods.cpp
+    and kernel/tests/graphics/nvidia_core_methods.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc67e.h

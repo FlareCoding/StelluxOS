@@ -171,6 +171,25 @@ void build_head_light_methods(const head_light& light, head_light_methods& out);
  */
 void build_window_usage_methods(uint8_t window, uint32_t viewport_width, window_usage_methods& out);
 
+// The methods `build_cursor_methods` gives: present control, both eyes' context DMAs and offsets, control, composition
+constexpr uint32_t CURSOR_METHODS = 7;
+
+// The core channel's methods choosing what a head's cursor shows
+struct cursor_methods {
+    display_method methods[CURSOR_METHODS];
+};
+
+/**
+ * @brief Give the core channel's methods that show a head's cursor from the
+ * 256 by 256 picture at the start of the memory `context_dma` names, blended
+ * by its straight alpha, or that show no cursor when `context_dma` is 0.
+ * @param head The head, below the chip's heads.
+ * @param context_dma Names the picture's memory, bound to the core channel,
+ * or 0 for no cursor.
+ * @param out Receives the methods.
+ */
+void build_cursor_methods(uint8_t head, rm::handle context_dma, cursor_methods& out);
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_CORE_METHODS_H

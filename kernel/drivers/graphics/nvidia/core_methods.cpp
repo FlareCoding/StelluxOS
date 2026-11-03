@@ -323,4 +323,19 @@ void build_window_usage_methods(uint8_t window, uint32_t viewport_width, window_
     out.methods[2] = {rm::CORE_WINDOW_USAGE_BOUNDS + window_methods, window_usage_bounds(viewport_width)};
 }
 
+void build_cursor_methods(uint8_t head, rm::handle context_dma, cursor_methods& out) {
+    uint32_t head_methods = head * rm::CORE_HEAD_METHODS_STRIDE;
+    uint32_t control = context_dma != 0 ? rm::CURSOR_CONTROL_SHOWN : rm::CURSOR_CONTROL_DISABLED;
+
+    out.methods[0] = {rm::CORE_HEAD_CURSOR_PRESENT_CONTROL + head_methods, 0};
+
+    out.methods[1] = {rm::CORE_HEAD_CURSOR_CONTEXT_DMA + head_methods, context_dma};
+    out.methods[2] = {rm::CORE_HEAD_CURSOR_CONTEXT_DMA + rm::CURSOR_SECOND_EYE + head_methods, context_dma};
+    out.methods[3] = {rm::CORE_HEAD_CURSOR_OFFSET + head_methods, 0};
+    out.methods[4] = {rm::CORE_HEAD_CURSOR_OFFSET + rm::CURSOR_SECOND_EYE + head_methods, 0};
+
+    out.methods[5] = {rm::CORE_HEAD_CURSOR_CONTROL + head_methods, control};
+    out.methods[6] = {rm::CORE_HEAD_CURSOR_COMPOSITION + head_methods, rm::CURSOR_COMPOSITION_BLENDED};
+}
+
 } // namespace drivers::nvidia

@@ -642,6 +642,18 @@ constexpr uint32_t CORE_HEAD_CURSOR_CONTEXT_DMA = 0x2088;
 constexpr uint32_t CORE_HEAD_CURSOR_CONTROL     = 0x209C;
 constexpr uint32_t CURSOR_CONTROL_DISABLED      = 0xCF;
 
+// NVIDIA's NVC67D_HEAD_SET_OFFSET_CURSOR(0, 0), in 256-byte units, NVC67D_HEAD_SET_PRESENT_CONTROL_CURSOR(0) and
+// _CONTROL_CURSOR_COMPOSITION(0). Each of the context DMA and the offset has a second eye's method 4 bytes on
+constexpr uint32_t CORE_HEAD_CURSOR_OFFSET          = 0x2090;
+constexpr uint32_t CORE_HEAD_CURSOR_PRESENT_CONTROL = 0x2098;
+constexpr uint32_t CORE_HEAD_CURSOR_COMPOSITION     = 0x20A0;
+constexpr uint32_t CURSOR_SECOND_EYE                = 0x4;
+
+// NVIDIA's cursor control showing a 256 by 256 A8R8G8B8 picture with its hotspot at 0, 0, and its composition
+// blending a straight alpha picture over the viewport
+constexpr uint32_t CURSOR_CONTROL_SHOWN       = 0x800003CF; // ENABLE 1 in bit 31 and SIZE W256_H256 3 in bits 9:8
+constexpr uint32_t CURSOR_COMPOSITION_BLENDED = 0x75FF;     // K1 255, K1_TIMES_SRC 5, NEG_K1_TIMES_SRC 7 and BLEND 0
+
 // NVIDIA's NVC67D_WINDOW_SET_WINDOW_USAGE_BOUNDS(0) and its default for every window in the first update: the input and
 // tone mapping tables allowed (bits 16 and 28), two input scaler taps (bits 22:20 as 1) and no upscaling
 constexpr uint32_t CORE_WINDOW_USAGE_BOUNDS    = 0x1010;
