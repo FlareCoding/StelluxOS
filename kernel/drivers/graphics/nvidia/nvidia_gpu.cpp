@@ -1179,30 +1179,19 @@ int32_t nvidia_gpu_driver::unload_firmware(nvidia::registers& regs) {
 }
 
 void nvidia_gpu_driver::run() {
+    nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
     bool has_woken = false;
     while (true) {
         wait_for_event();
 
         uint64_t handled_ns = sync::atomic_ref<uint64_t>{m_last_interrupt_ns}.load_relaxed();
         uint64_t woken_ns = clock::now_ns();
-        uint32_t sources = sync::atomic_ref<uint32_t>{m_gsp_sources}.exchange_relaxed(0);
+        bool must_service_gsp = sync::atomic_ref<bool>{m_must_service_gsp}.exchange_acquire(false);
         bool is_first_wake = !has_woken;
         has_woken = true;
-        if (sources == nvidia::UNRESPONSIVE_CARD_SOURCES) {
-            log::error(
-                "nvidia: the GSP falcon's interrupt registers read all ones, as on a card that stopped responding, so "
-                "no message is read and the GSP's health is not checked"
-            );
-
-            // A caller waits for its operation without a deadline, so no wake skips the queue
-            m_operations.serve();
-            continue;
+        if (must_service_gsp) {
+            nvidia::service_gsp_interrupt(regs, m_gsp, m_interrupt_vectors.gsp);
         }
-
-        // A CPU sequencer the drain reads must run before any log line. The handler may write to the GSP's falcon while
-        // a sequencer resets it, where NVIDIA's driver drains holding a lock that disables the interrupts of every GPU
-        int32_t rc = m_gsp.drain();
-        m_gsp.check_health();
 
         if (is_first_wake) {
             // The load does not order the clock's read, so a handler on another CPU can store a time after `woken_ns`
@@ -1211,19 +1200,6 @@ void nvidia_gpu_driver::run() {
                 "nvidia: the driver task first woke %lu us after the GSP interrupt's handler last ran",
                 waited_ns / nvidia::NS_PER_US
             );
-        }
-
-        uint32_t other_sources = sources & ~nvidia::GSP_MESSAGE_SOURCE;
-        if (other_sources != 0) {
-            log::warn(
-                "nvidia: the GSP's falcon raised interrupt sources 0x%X besides the firmware's message signal SWGEN0, "
-                "cleared by the handler",
-                other_sources
-            );
-        }
-
-        if (rc != nvidia::OK) {
-            log::error("nvidia: reading the GSP firmware's messages failed: %d", rc);
         }
 
         m_display_engine.log_first_second();
@@ -1236,10 +1212,23 @@ __PRIVILEGED_CODE bool nvidia_gpu_driver::on_interrupt(uint32_t vector) {
     (void)vector;
 
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
-    uint32_t sources = nvidia::acknowledge_gsp_interrupt(regs, m_interrupt_vectors.gsp);
-    bool is_card_gone = sources == nvidia::UNRESPONSIVE_CARD_SOURCES;
-    if (sources != 0) {
-        sync::atomic_ref<uint32_t>{m_gsp_sources}.fetch_or_relaxed(sources);
+    bool is_card_gone = false;
+    bool must_service_gsp = false;
+    switch (nvidia::take_gsp_interrupt(regs, m_interrupt_vectors.gsp)) {
+        case nvidia::gsp_vector_reading::idle:
+            break;
+        case nvidia::gsp_vector_reading::taken:
+            must_service_gsp = true;
+            break;
+        case nvidia::gsp_vector_reading::all_ones:
+            is_card_gone = true;
+            must_service_gsp = true;
+            break;
+    }
+
+    if (must_service_gsp) {
+        // The flag, not the wake, orders the take's disable before the service's enable, as wakes coalesce
+        sync::atomic_ref<bool>{m_must_service_gsp}.store_release(true);
         sync::atomic_ref<uint64_t>{m_last_interrupt_ns}.store_relaxed(clock::now_ns());
     }
 
@@ -1257,7 +1246,7 @@ __PRIVILEGED_CODE bool nvidia_gpu_driver::on_interrupt(uint32_t vector) {
         nvidia::rearm_msi(regs);
     }
 
-    return sources != 0 || completes_first_second;
+    return must_service_gsp || completes_first_second;
 }
 
 // Any subclass, so VGA compatible and 3D controllers both bind

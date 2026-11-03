@@ -39,7 +39,10 @@ namespace drivers::nvidia {
  * for the internal client go to the subdevice `set_internal_client` names. A
  * message the firmware sends unasked, such as its ready message, is awaited
  * with `await` during bring-up and read with `drain` once bring-up ends. A
- * failure the firmware reports is looked for with `check_health`.
+ * failure the firmware reports is looked for with `check_health`. The firmware
+ * sends a lockdown notice unasked when a lockdown engages or ends. In a
+ * lockdown, the host cannot reach some of the GSP's registers, its interrupt
+ * status and control among them.
  *
  *   driver --- send, request ----------> command queue ---> GSP's firmware
  *   driver <-- await, request, drain --- status queue  <--- GSP's firmware
@@ -152,6 +155,13 @@ public:
      * @return What `drain_status_queue` returns, logged as its doc describes.
      */
     int32_t drain();
+
+    /**
+     * @brief Whether the last lockdown notice the waits and `drain` read
+     * engaged a lockdown. It is false before the first notice and after
+     * `stop`, and a notice without a payload leaves it as it was.
+     */
+    bool is_in_lockdown() const;
 
     /**
      * @brief Check the GSP's health as NVIDIA's driver does when CrashCat
@@ -424,6 +434,7 @@ private:
     rm::handle            m_internal_client = 0;
     rm::handle            m_internal_subdevice = 0;
     uint32_t              m_handle_count = 0; // handles `new_handle` has given since the last `stop`
+    bool                  m_is_in_lockdown = false;
 };
 
 } // namespace drivers::nvidia

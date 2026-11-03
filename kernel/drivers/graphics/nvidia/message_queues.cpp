@@ -80,6 +80,10 @@ constexpr uint32_t NO_FUNCTION = 0xFFFFFFFF;
 // The deadline a drain waits until, already passed when it begins, so it waits for no message
 constexpr uint64_t DRAIN_DEADLINE_NS = 0;
 
+// NVIDIA's number for the notice in which the firmware reports that a lockdown engages or ends, which its payload's
+// first byte tells apart, nonzero as one engages
+constexpr uint32_t FUNCTION_GSP_LOCKDOWN_NOTICE = 0x101D;
+
 // The checksum covers the message in 8-byte words, the last one filled out by the bytes that follow the message
 constexpr uint32_t CHECKSUM_WORD_BYTES = 8;
 
@@ -493,6 +497,7 @@ static int32_t receive_awaited_unlogged(
     uint8_t* payload,
     uint32_t payload_capacity,
     uint64_t deadline_ns,
+    bool& is_in_lockdown,
     received_message (&passed)[PASSED_MESSAGES_LOGGED],
     uint32_t& passed_count
 ) {
@@ -515,6 +520,10 @@ static int32_t receive_awaited_unlogged(
             }
 
             continue;
+        }
+
+        if (message.function == FUNCTION_GSP_LOCKDOWN_NOTICE && message.payload_bytes != 0) {
+            is_in_lockdown = payload[0] != 0;
         }
 
         if (passed_count < PASSED_MESSAGES_LOGGED) {
@@ -575,7 +584,8 @@ int32_t receive_awaited(
     received_message& out,
     uint8_t* payload,
     uint32_t payload_capacity,
-    uint64_t deadline_ns
+    uint64_t deadline_ns,
+    bool& is_in_lockdown
 ) {
     received_message passed[PASSED_MESSAGES_LOGGED] = {};
     uint32_t passed_count = 0;
@@ -588,6 +598,7 @@ int32_t receive_awaited(
         payload,
         payload_capacity,
         deadline_ns,
+        is_in_lockdown,
         passed,
         passed_count
     );
@@ -605,7 +616,8 @@ int32_t drain_status_queue(
     registers& regs,
     const cpu_sequencer_context& sequencer,
     uint8_t* payload,
-    uint32_t payload_capacity
+    uint32_t payload_capacity,
+    bool& is_in_lockdown
 ) {
     received_message passed[PASSED_MESSAGES_LOGGED] = {};
     uint32_t passed_count = 0;
@@ -619,6 +631,7 @@ int32_t drain_status_queue(
         payload,
         payload_capacity,
         DRAIN_DEADLINE_NS,
+        is_in_lockdown,
         passed,
         passed_count
     );

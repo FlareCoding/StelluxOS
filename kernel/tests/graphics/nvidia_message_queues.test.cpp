@@ -36,13 +36,13 @@ using drivers::nvidia::RECEIVE_TIMEOUT_NS;
 using drivers::nvidia::RECEIVE_TRIES;
 using drivers::nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS;
 using drivers::nvidia::acknowledge_display_interrupt;
-using drivers::nvidia::acknowledge_gsp_interrupt;
 using drivers::nvidia::confirm_message_version;
 using drivers::nvidia::cpu_sequencer_context;
 using drivers::nvidia::disable_cpu_interrupt_tree;
 using drivers::nvidia::drain_status_queue;
 using drivers::nvidia::enable_cpu_interrupt_tree;
 using drivers::nvidia::gsp;
+using drivers::nvidia::gsp_vector_reading;
 using drivers::nvidia::interrupt_vectors;
 using drivers::nvidia::link_status_queue_within;
 using drivers::nvidia::message_queues;
@@ -53,7 +53,9 @@ using drivers::nvidia::receive_awaited;
 using drivers::nvidia::receive_within;
 using drivers::nvidia::received_message;
 using drivers::nvidia::registers;
+using drivers::nvidia::service_gsp_interrupt;
 using drivers::nvidia::static_configuration;
+using drivers::nvidia::take_gsp_interrupt;
 using drivers::nvidia::unload_gsp_firmware;
 using drivers::nvidia::video_memory_region;
 
@@ -241,10 +243,11 @@ struct queue_test_payload {
     ~queue_test_payload() { heap::ufree(bytes); }
 };
 
-// NVIDIA's numbers for the ready message and the CPU sequencer's, restated here so the tests hold the wait to NVIDIA's
-// numbers rather than to the driver's constants
-static constexpr uint32_t NVIDIA_GSP_INIT_DONE     = 0x1001;
-static constexpr uint32_t NVIDIA_RUN_CPU_SEQUENCER = 0x1002;
+// NVIDIA's numbers for the ready message, the CPU sequencer's and the lockdown notice's, restated here so the tests
+// hold the wait to NVIDIA's numbers rather than to the driver's constants
+static constexpr uint32_t NVIDIA_GSP_INIT_DONE       = 0x1001;
+static constexpr uint32_t NVIDIA_RUN_CPU_SEQUENCER   = 0x1002;
+static constexpr uint32_t NVIDIA_GSP_LOCKDOWN_NOTICE = 0x101D;
 
 // The words of the CPU sequencer's save area, and the opcodes of its register write and register poll
 static constexpr uint32_t SEQUENCER_SAVE_AREA_WORDS = 8;
@@ -1124,6 +1127,9 @@ static void store_function_message(
     message.store(memory, MOVED_HEADER, index);
 }
 
+// The lockdown state the waits and drains below keep, as a `gsp` keeps its own
+static bool s_is_in_lockdown = false;
+
 // Waits for the ready message until `deadline_ns`, the sequencer's waits bound by a deadline the long timeout later,
 // so a wait that ends at the sequencer's deadline instead of its own fails a test
 static int32_t await_ready(
@@ -1150,7 +1156,8 @@ static int32_t await_ready(
         out,
         buffer,
         sizeof(buffer),
-        deadline_ns
+        deadline_ns,
+        s_is_in_lockdown
     );
 }
 
@@ -3568,45 +3575,42 @@ TEST(nvidia_message_queues, display_interrupt_acknowledge_clears_its_pending_bit
     EXPECT_EQ(bar0.read(display_leaf), 1u << 6);
 }
 
-// `acknowledge_gsp_interrupt` clears the pending bit alone, writes to the clear exactly the sources either core's mask
-// and destination pass to the host and retriggers, or writes neither with none passed. SWGEN0 is the message source
-TEST(nvidia_message_queues, gsp_interrupt_acknowledge_clears_the_sources_directed_to_the_host) {
+// `take_gsp_interrupt` disables and clears the GSP's bit alone when it is pending, so the display's bit beside it stays
+// enabled and the GSP's stays disabled, and writes nothing when the bit is not pending or the leaf reads all ones
+TEST(nvidia_message_queues, gsp_interrupt_take_disables_and_clears_the_vector_alone) {
     request_test_bar0 bar0;
     ASSERT_NOT_NULL(bar0.bytes);
     uint32_t gsp_leaf = cpu_leaf_register(NVIDIA_CPU_LEAF, CARD_GSP_LEAF);
+    uint32_t gsp_leaf_enable_clear = cpu_leaf_register(NVIDIA_CPU_LEAF_EN_CLEAR, CARD_GSP_LEAF);
+    uint32_t gsp_leaf_enable_set = cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF);
+    bar0.write(gsp_leaf_enable_set, STALE_WORD);
+
+    // The display's bit 26 pending beside the GSP's, as on the RTX 3080, then leaves one bit short of all ones
+    uint32_t pending_leaves[] = {(1u << 27) | (1u << 26), 0xFFFFFFFE, 0x7FFFFFFF};
+    for (uint32_t pending_leaf : pending_leaves) {
+        bar0.write(gsp_leaf, pending_leaf);
+        bar0.write(gsp_leaf_enable_clear, STALE_WORD);
+        EXPECT_TRUE(take_gsp_interrupt(bar0.regs, CARD_GSP_VECTOR) == gsp_vector_reading::taken);
+        EXPECT_EQ(bar0.read(gsp_leaf_enable_clear), 1u << 27);
+        EXPECT_EQ(bar0.read(gsp_leaf), 1u << 27);
+    }
+
+    EXPECT_EQ(bar0.read(gsp_leaf_enable_set), STALE_WORD);
+
+    uint32_t idle_leaves[] = {0, ~(1u << 27)};
+    for (uint32_t idle_leaf : idle_leaves) {
+        bar0.write(gsp_leaf, idle_leaf);
+        bar0.write(gsp_leaf_enable_clear, STALE_WORD);
+        EXPECT_TRUE(take_gsp_interrupt(bar0.regs, CARD_GSP_VECTOR) == gsp_vector_reading::idle);
+        EXPECT_EQ(bar0.read(gsp_leaf), idle_leaf);
+        EXPECT_EQ(bar0.read(gsp_leaf_enable_clear), STALE_WORD);
+    }
+
     bar0.write(gsp_leaf, ALL_BITS_SET);
-    bar0.write(NVIDIA_GSP_IRQSCLR, ALL_BITS_SET);
-    bar0.write(NVIDIA_GSP_INTR_RETRIGGER, ALL_BITS_SET);
-
-    // The RTX 3080's routing, SWGEN0 and bit 24 directed to the host by the RISC-V core's mask and destination
-    bar0.write(NVIDIA_GSP_IRQMASK, 0x1000000);
-    bar0.write(NVIDIA_GSP_IRQDEST, 0);
-    bar0.write(NVIDIA_GSP_RISCV_IRQMASK, 0x1049042);
-    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, 0x1000040);
-    bar0.write(NVIDIA_GSP_IRQSTAT, 0x10000D2);
-    EXPECT_EQ(acknowledge_gsp_interrupt(bar0.regs, CARD_GSP_VECTOR), 0x1000040u);
-    EXPECT_EQ(bar0.read(gsp_leaf), 1u << 27);
-    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), 0x1000040u);
-    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), 1u);
-
-    // Each mask passes a pending source its destination keeps from the host, and each destination one its mask keeps
-    bar0.write(NVIDIA_GSP_IRQMASK, 0x30);
-    bar0.write(NVIDIA_GSP_IRQDEST, 0x18);
-    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, 0x1000240);
-    bar0.write(NVIDIA_GSP_IRQSTAT, 0x100027A);
-    EXPECT_EQ(acknowledge_gsp_interrupt(bar0.regs, CARD_GSP_VECTOR), 0x1000050u);
-    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), 0x1000050u);
-
-    bar0.write(gsp_leaf, ALL_BITS_SET);
-    bar0.write(NVIDIA_GSP_IRQSCLR, STALE_WORD);
-    bar0.write(NVIDIA_GSP_INTR_RETRIGGER, STALE_WORD);
-    bar0.write(NVIDIA_GSP_IRQSTAT, 0x280);
-    EXPECT_EQ(acknowledge_gsp_interrupt(bar0.regs, CARD_GSP_VECTOR), 0u);
-    EXPECT_EQ(bar0.read(gsp_leaf), 1u << 27);
-    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), STALE_WORD);
-    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), STALE_WORD);
-
-    EXPECT_EQ(GSP_MESSAGE_SOURCE, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    EXPECT_TRUE(take_gsp_interrupt(bar0.regs, CARD_GSP_VECTOR) == gsp_vector_reading::all_ones);
+    EXPECT_EQ(bar0.read(gsp_leaf), ALL_BITS_SET);
+    EXPECT_EQ(bar0.read(gsp_leaf_enable_clear), STALE_WORD);
+    EXPECT_EQ(bar0.read(gsp_leaf_enable_set), STALE_WORD);
 }
 
 // `rearm_msi` writes 0 to NV_XVE_CYA_2 in BAR0's mirror of the PCI configuration space
@@ -3631,7 +3635,7 @@ static int32_t drain(message_queues& queues, awaited_test_bar0& bar0, uint8_t (&
         .deadline_ns             = clock::now_ns() + LONG_TIMEOUT_NS,
     };
 
-    return drain_status_queue(queues, bar0.regs, context, buffer, sizeof(buffer));
+    return drain_status_queue(queues, bar0.regs, context, buffer, sizeof(buffer), s_is_in_lockdown);
 }
 
 // The drain runs the sequencer between two unasked messages before any log line, logs each unasked message with its
@@ -3918,4 +3922,329 @@ TEST(nvidia_message_queues, health_check_leaves_a_word_without_the_error_tag) {
     }
 
     EXPECT_EQ(s_logged_bytes, 0u);
+}
+
+// Starts a conversation whose moved status queue holds lockdown notices with these first payload bytes, of which the
+// firmware's write pointer shows the first `shown_count`
+static void start_with_lockdown_notices(
+    gsp& conversation,
+    fake_queue_memory& memory,
+    request_test_bar0& bar0,
+    status_test_message& message,
+    const uint8_t* engaging,
+    uint32_t notice_count,
+    uint32_t shown_count
+) {
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    for (uint32_t i = 0; i < notice_count; i++) {
+        store_function_message(memory, message, i, NVIDIA_GSP_LOCKDOWN_NOTICE, &engaging[i], 1);
+    }
+
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, shown_count);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+}
+
+// Seeds the registers the service writes with `seed` and services the GSP's interrupt, keeping the lines logged
+static void service_with_seeded_writes(request_test_bar0& bar0, gsp& conversation, uint32_t seed) {
+    bar0.write(NVIDIA_GSP_IRQSCLR, seed);
+    bar0.write(NVIDIA_GSP_INTR_RETRIGGER, seed);
+    bar0.write(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF), seed);
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    service_gsp_interrupt(bar0.regs, conversation, CARD_GSP_VECTOR);
+    log::set_backend(nullptr);
+}
+
+// The service clears exactly the sources either core's mask and destination pass to the host, retriggers, enables the
+// GSP's vector and warns of the sources besides SWGEN0, and with none passed only enables the vector
+TEST(nvidia_message_queues, gsp_interrupt_service_clears_the_sources_directed_to_the_host) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    start_with_lockdown_notices(conversation, memory, bar0, message, nullptr, 0, 0);
+    uint32_t gsp_leaf_enable_set = cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF);
+
+    // The RTX 3080's routing, SWGEN0 and bit 24 directed to the host by the RISC-V core's mask and destination
+    bar0.write(NVIDIA_GSP_IRQMASK, 0x1000000);
+    bar0.write(NVIDIA_GSP_IRQDEST, 0);
+    bar0.write(NVIDIA_GSP_RISCV_IRQMASK, 0x1049042);
+    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, 0x1000040);
+    bar0.write(NVIDIA_GSP_IRQSTAT, 0x10000D2);
+    service_with_seeded_writes(bar0, conversation, ALL_BITS_SET);
+
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), 0x1000040u);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), 1u);
+    EXPECT_EQ(bar0.read(gsp_leaf_enable_set), 1u << 27);
+    EXPECT_EQ(logged_line_count(), 1u);
+    EXPECT_TRUE(logged_text_contains("[WARN]  nvidia: the GSP falcon's interrupt registers read sources 0x1000000"));
+
+    // Each mask passes a pending source its destination keeps from the host, and each destination one its mask keeps
+    bar0.write(NVIDIA_GSP_IRQMASK, 0x30);
+    bar0.write(NVIDIA_GSP_IRQDEST, 0x18);
+    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, 0x1000240);
+    bar0.write(NVIDIA_GSP_IRQSTAT, 0x100027A);
+    service_with_seeded_writes(bar0, conversation, ALL_BITS_SET);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), 0x1000050u);
+
+    bar0.write(NVIDIA_GSP_IRQSTAT, 0x280);
+    service_with_seeded_writes(bar0, conversation, STALE_WORD);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), STALE_WORD);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), STALE_WORD);
+    EXPECT_EQ(bar0.read(gsp_leaf_enable_set), 1u << 27);
+    EXPECT_EQ(s_logged_bytes, 0u);
+
+    // Sources one bit short of all ones come from a card that still responds
+    bar0.write(NVIDIA_GSP_IRQMASK, ALL_BITS_SET);
+    bar0.write(NVIDIA_GSP_IRQDEST, ALL_BITS_SET);
+    uint32_t responding_sources[] = {0xFFFFFFFE, 0x7FFFFFFF};
+    for (uint32_t sources : responding_sources) {
+        bar0.write(NVIDIA_GSP_IRQSTAT, sources);
+        service_with_seeded_writes(bar0, conversation, STALE_WORD);
+        EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), sources);
+        EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), 1u);
+    }
+
+    EXPECT_EQ(GSP_MESSAGE_SOURCE, NVIDIA_GSP_IRQSTAT_SWGEN0);
+}
+
+// With no source pending the service reads no message and leaves the GSP's health unchecked, while any source, here bit
+// 24 alone, drains a CPU sequencer that runs before any log line and then checks the health, clearing the report
+TEST(nvidia_message_queues, gsp_interrupt_service_drains_and_then_checks_the_health) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    poll_then_write_sequencer sequencer;
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_RUN_CPU_SEQUENCER, &sequencer, sizeof(sequencer));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    bar0.write(POLLED_REGISTER, POLLED_BIT);
+    bar0.write(NVIDIA_GSP_MAILBOX_0, REPORT_WITH_0_SKIPPED);
+    service_with_seeded_writes(bar0, conversation, STALE_WORD);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 0u);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), REPORT_WITH_0_SKIPPED);
+    EXPECT_EQ(s_logged_bytes, 0u);
+
+    bar0.write(NVIDIA_GSP_RISCV_IRQMASK, 0x1000000);
+    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, 0x1000000);
+    bar0.write(NVIDIA_GSP_IRQSTAT, 0x1000000);
+    service_with_seeded_writes(bar0, conversation, STALE_WORD);
+
+    EXPECT_EQ(bar0.read(WRITTEN_REGISTER), WRITTEN_VALUE);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 1u);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), 0u);
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the GSP's firmware reports error code 0xA5 for reason 0x1A"));
+    EXPECT_TRUE(logged_text_contains("[WARN]  nvidia: the GSP falcon's interrupt registers read sources 0x1000000"));
+}
+
+// The service clears the sources before its drain and retriggers and enables the GSP's vector after it: the drained
+// sequencers find the clear written and zero the retrigger and the enable set, which the service then writes again
+TEST(nvidia_message_queues, gsp_interrupt_service_clears_before_the_drain_and_enables_after_it) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    poll_then_write_sequencer zeroes_retrigger;
+    zeroes_retrigger.poll_register = NVIDIA_GSP_IRQSCLR;
+    zeroes_retrigger.poll_mask = NVIDIA_GSP_IRQSTAT_SWGEN0;
+    zeroes_retrigger.poll_value = NVIDIA_GSP_IRQSTAT_SWGEN0;
+    zeroes_retrigger.write[1] = NVIDIA_GSP_INTR_RETRIGGER;
+    zeroes_retrigger.write[2] = 0;
+
+    poll_then_write_sequencer zeroes_enable = zeroes_retrigger;
+    zeroes_enable.write[1] = cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF);
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_RUN_CPU_SEQUENCER, &zeroes_retrigger, sizeof(zeroes_retrigger));
+    store_function_message(memory, message, 1, NVIDIA_RUN_CPU_SEQUENCER, &zeroes_enable, sizeof(zeroes_enable));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    bar0.write(NVIDIA_GSP_RISCV_IRQMASK, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    bar0.write(NVIDIA_GSP_IRQSTAT, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    service_with_seeded_writes(bar0, conversation, 0);
+
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 2u);
+    EXPECT_FALSE(logged_text_contains("the CPU sequencer failed"));
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), 1u);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF)), 1u << 27);
+}
+
+// A failed drain, here of a message of function 0xFFFFFFFF, still has the service check the GSP's health, retrigger and
+// enable the GSP's vector, and the drain's error is logged
+TEST(nvidia_message_queues, gsp_interrupt_service_goes_on_after_a_failed_drain) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, DRAIN_AWAITED_FUNCTION, nullptr, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    bar0.write(NVIDIA_GSP_RISCV_IRQMASK, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    bar0.write(NVIDIA_GSP_IRQSTAT, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    bar0.write(NVIDIA_GSP_MAILBOX_0, REPORT_WITH_0_SKIPPED);
+    service_with_seeded_writes(bar0, conversation, STALE_WORD);
+
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 1u);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), 0u);
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the GSP's firmware reports error code 0xA5 for reason 0x1A"));
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), 1u);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF)), 1u << 27);
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: reading the GSP firmware's messages failed: -11"));
+}
+
+// A drained notice engaging a lockdown keeps the service from retriggering, while it still clears SWGEN0 and enables
+// the GSP's vector, and a notice ending it lets the next service retrigger
+TEST(nvidia_message_queues, gsp_interrupt_service_skips_the_retrigger_in_a_lockdown) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    uint8_t notices[] = {0x80, 0};
+    start_with_lockdown_notices(conversation, memory, bar0, message, notices, 2, 1);
+
+    bar0.write(NVIDIA_GSP_RISCV_IRQMASK, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    bar0.write(NVIDIA_GSP_RISCV_IRQDEST, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    bar0.write(NVIDIA_GSP_IRQSTAT, NVIDIA_GSP_IRQSTAT_SWGEN0);
+    EXPECT_FALSE(conversation.is_in_lockdown());
+
+    service_with_seeded_writes(bar0, conversation, STALE_WORD);
+    EXPECT_TRUE(conversation.is_in_lockdown());
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), NVIDIA_GSP_IRQSTAT_SWGEN0);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), STALE_WORD);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF)), 1u << 27);
+    EXPECT_TRUE(logged_text_contains("sent a message of function 0x101D unasked, with result 0x0 and 1 payload bytes"));
+
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    service_with_seeded_writes(bar0, conversation, STALE_WORD);
+    EXPECT_FALSE(conversation.is_in_lockdown());
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), 1u);
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 2u);
+}
+
+// GSP falcon registers reading all ones are a card that stopped responding: the service logs it, writes nothing and
+// reads no message
+TEST(nvidia_message_queues, gsp_interrupt_service_leaves_a_card_that_stopped_responding) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    uint8_t notices[] = {1};
+    start_with_lockdown_notices(conversation, memory, bar0, message, notices, 1, 1);
+
+    bar0.write(NVIDIA_GSP_IRQSTAT, ALL_BITS_SET);
+    bar0.write(NVIDIA_GSP_IRQMASK, ALL_BITS_SET);
+    bar0.write(NVIDIA_GSP_IRQDEST, ALL_BITS_SET);
+
+    service_with_seeded_writes(bar0, conversation, STALE_WORD);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_IRQSCLR), STALE_WORD);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_INTR_RETRIGGER), STALE_WORD);
+    EXPECT_EQ(bar0.read(cpu_leaf_register(NVIDIA_CPU_LEAF_EN_SET, CARD_GSP_LEAF)), STALE_WORD);
+
+    EXPECT_EQ(memory.read(MOVED_HEADER.driver_read_pointer()), 0u);
+    EXPECT_FALSE(conversation.is_in_lockdown());
+    EXPECT_EQ(logged_line_count(), 1u);
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the GSP falcon's interrupt registers read all ones"));
+}
+
+// A wait records each lockdown notice it passes over by the notice's first payload byte, while a notice without a
+// payload, read after another message left a 0 in the payload buffer, changes nothing
+TEST(nvidia_message_queues, receive_awaited_records_the_lockdown_notices_it_passes_over) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    awaited_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+    uint8_t engaging = 1;
+    uint8_t ending = 0;
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_LOCKDOWN_NOTICE, &engaging, 1);
+    store_function_message(memory, message, 1, FUNCTION + 1, &ending, 1);
+    store_function_message(memory, message, 2, NVIDIA_GSP_LOCKDOWN_NOTICE, nullptr, 0);
+    store_function_message(memory, message, 3, NVIDIA_GSP_INIT_DONE, nullptr, 0);
+
+    store_function_message(memory, message, 4, NVIDIA_GSP_LOCKDOWN_NOTICE, &ending, 1);
+    store_function_message(memory, message, 5, NVIDIA_GSP_INIT_DONE, nullptr, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 6);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    s_is_in_lockdown = false;
+    received_message out = {};
+    EXPECT_EQ(await_ready(queues, bar0, out, buffer, clock::now_ns() + LONG_TIMEOUT_NS), OK);
+    EXPECT_TRUE(s_is_in_lockdown);
+
+    EXPECT_EQ(await_ready(queues, bar0, out, buffer, clock::now_ns() + LONG_TIMEOUT_NS), OK);
+    EXPECT_FALSE(s_is_in_lockdown);
+}
+
+// A conversation's waits record the lockdown notices they pass over, and `stop` clears the record
+TEST(nvidia_message_queues, gsp_await_records_a_lockdown_that_stop_clears) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    uint8_t engaging = 1;
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_LOCKDOWN_NOTICE, &engaging, 1);
+    store_function_message(memory, message, 1, NVIDIA_GSP_INIT_DONE, nullptr, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    received_message out = {};
+    EXPECT_EQ(conversation.await(FUNCTION_GSP_INIT_DONE, out, SHORT_TIMEOUT_NS), OK);
+    EXPECT_TRUE(conversation.is_in_lockdown());
+
+    conversation.stop();
+    EXPECT_FALSE(conversation.is_in_lockdown());
 }

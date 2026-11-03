@@ -23,6 +23,10 @@ constexpr uint32_t LEAF_REGISTER_BYTES = 4;
 // The value written to an enable's clear register to clear every enable bit at once
 constexpr uint32_t EVERY_BIT = 0xFFFFFFFF;
 
+// What a leaf and the GSP falcon's pending sources read on a card that has stopped responding
+constexpr uint32_t UNRESPONSIVE_CARD_LEAF    = 0xFFFFFFFF;
+constexpr uint32_t UNRESPONSIVE_CARD_SOURCES = 0xFFFFFFFF;
+
 // The GSP falcon's interrupt registers: its pending sources, their clear, each core's mask and destination, which pass
 // a source to the host (the CPU), and the retrigger, which sends the falcon's interrupt again if a source is pending
 constexpr uint32_t GSP_IRQ_CLEAR             = GSP_FALCON_BASE + 0x004;
@@ -231,21 +235,66 @@ void disable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count) {
     clear_leaf_enables(regs, leaf_count);
 }
 
-uint32_t acknowledge_gsp_interrupt(registers& regs, uint32_t vector) {
-    regs.write(leaf_register(CPU_INTERRUPT_LEAF, leaf_of(vector)), vector_bit(vector));
+gsp_vector_reading take_gsp_interrupt(registers& regs, uint32_t vector) {
+    uint32_t leaf = leaf_of(vector);
+    uint32_t bit = vector_bit(vector);
+    uint32_t pending = regs.read(leaf_register(CPU_INTERRUPT_LEAF, leaf));
+    if (pending == UNRESPONSIVE_CARD_LEAF) {
+        return gsp_vector_reading::all_ones;
+    }
 
+    if ((pending & bit) == 0) {
+        return gsp_vector_reading::idle;
+    }
+
+    // NVIDIA's driver disables the GPU's interrupts until its bottom half ends, but the display's vertical blanks must
+    // keep arriving while the task runs
+    regs.write(leaf_register(CPU_INTERRUPT_LEAF_ENABLE_CLEAR, leaf), bit);
+    regs.write(leaf_register(CPU_INTERRUPT_LEAF, leaf), bit);
+
+    return gsp_vector_reading::taken;
+}
+
+void service_gsp_interrupt(registers& regs, gsp& conversation, uint32_t vector) {
     uint32_t status = regs.read(GSP_IRQ_STATUS);
     uint32_t falcon_sources = status & regs.read(GSP_IRQ_MASK) & regs.read(GSP_IRQ_DESTINATION);
     uint32_t riscv_sources = status & regs.read(GSP_RISCV_IRQ_MASK) & regs.read(GSP_RISCV_IRQ_DESTINATION);
     uint32_t sources = falcon_sources | riscv_sources;
-    if (sources == 0) {
-        return 0;
+    if (sources == UNRESPONSIVE_CARD_SOURCES) {
+        log::error(
+            "nvidia: the GSP falcon's interrupt registers read all ones, as on a card that stopped responding, so "
+            "no message is read, the GSP's health is not checked and no register is written"
+        );
+        return;
     }
 
-    regs.write(GSP_IRQ_CLEAR, sources);
-    regs.write(GSP_INTERRUPT_RETRIGGER, TRIGGER_BIT);
+    int32_t rc = OK;
+    if (sources != 0) {
+        // NVIDIA's driver clears only SWGEN0 and HALT, but a source left pending would re-raise the interrupt at once
+        regs.write(GSP_IRQ_CLEAR, sources);
 
-    return sources;
+        // A CPU sequencer the drain reads must run before any log line
+        rc = conversation.drain();
+        conversation.check_health();
+        if (!conversation.is_in_lockdown()) {
+            regs.write(GSP_INTERRUPT_RETRIGGER, TRIGGER_BIT);
+        }
+    }
+
+    regs.write(leaf_register(CPU_INTERRUPT_LEAF_ENABLE_SET, leaf_of(vector)), vector_bit(vector));
+
+    uint32_t other_sources = sources & ~GSP_MESSAGE_SOURCE;
+    if (other_sources != 0) {
+        log::warn(
+            "nvidia: the GSP falcon's interrupt registers read sources 0x%X pending for the host besides the "
+            "firmware's message signal SWGEN0, cleared by the driver task",
+            other_sources
+        );
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: reading the GSP firmware's messages failed: %d", rc);
+    }
 }
 
 bool acknowledge_display_interrupt(registers& regs, uint32_t vector) {
