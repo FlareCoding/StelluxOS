@@ -3670,9 +3670,10 @@ src/nvidia-modeset/src/nvkms-cursor3.c
     that the modesetting module reads a cursor channel's free register whole,
     any value but 0 showing room for a method, in cursor_channel.h,
     cursor_channel.cpp and kernel/tests/graphics/nvidia_cursor_channel.test.cpp,
-    and that it moves a cursor with its position and then an update, waiting for
-    room before each, in display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    that it moves a cursor with its position and then an update, waiting for
+    room before each, in display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that the register
+    reads 0 while the front end takes a method, in display_engine.cpp
     SPDX-FileCopyrightText: Copyright (c) 2016 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,

@@ -1021,9 +1021,64 @@ public:
 
 namespace drivers::nvidia {
 
-// Sets the wait an engine gives the completion notifier, which no display engine writes, and reaches the engine's
-// notifier, look-up table, context DMAs, window queue, take-down and lit output's vertical blanks
+// Sets the engine's waits and cursor step seam, reaches its notifier, cursor state, look-up table, context DMAs, window
+// queue, take-down and lit output's vertical blanks, and darkens, relights and fails it for those states' tests
 struct display_engine_test_access {
+    static void set_cursor_step_seam(display_engine& engine, void (*seam)(display_engine& engine)) {
+        engine.m_cursor_step_seam = seam;
+    }
+
+    static bool is_cursor_shown(const display_engine& engine) {
+        return engine.m_is_cursor_shown;
+    }
+
+    static bool is_cursor_update_owed(const display_engine& engine) {
+        return engine.m_is_cursor_update_owed;
+    }
+
+    static void owe_cursor_update(display_engine& engine, uint32_t position) {
+        engine.m_is_cursor_update_owed = true;
+        engine.m_owed_cursor_position = position;
+    }
+
+    static int32_t cursor_x(const display_engine& engine) {
+        return engine.m_cursor_x;
+    }
+
+    static int32_t cursor_y(const display_engine& engine) {
+        return engine.m_cursor_y;
+    }
+
+    static uint32_t cursor_hot_x(const display_engine& engine) {
+        return engine.m_cursor_hot_x;
+    }
+
+    static uint32_t cursor_hot_y(const display_engine& engine) {
+        return engine.m_cursor_hot_y;
+    }
+
+    static uint32_t light_generation(const display_engine& engine) {
+        return engine.m_light_generation;
+    }
+
+    static bool is_display_failed(const display_engine& engine) {
+        return engine.m_is_display_failed.load_acquire();
+    }
+
+    static void darken_output(display_engine& engine) {
+        engine.m_is_lit = false;
+        engine.m_is_cursor_shown = false;
+    }
+
+    static void relight_output(display_engine& engine) {
+        engine.m_is_cursor_shown = false;
+        engine.m_is_cursor_update_owed = false;
+        engine.m_cursor_hot_x = 0;
+        engine.m_cursor_hot_y = 0;
+        engine.m_light_generation++;
+        engine.m_is_lit = true;
+    }
+
     static void set_notifier_wait(display_engine& engine, uint64_t wait_ns) {
         engine.m_notifier_wait_ns = wait_ns;
     }
@@ -1156,7 +1211,7 @@ struct display_engine_test_access {
         return was_scheduled;
     }
 
-    // Marks the display failed, as a refused GET or a missed deadline does
+    // Marks the display failed, as a refused GET, a missed deadline or a cursor write reading all ones does
     static void fail_display(display_engine& engine) {
         engine.m_is_display_failed.store_release(true);
     }
@@ -5402,8 +5457,8 @@ static void fail_the_light(engine_firmware& fw) {
     fw.get_at_stream = LIGHT_TAKE_DOWN_END;
 }
 
-// After a failed light, gfxfb reads the chosen output 0 as dark with no mode, relight, cursor or base buffer, its
-// `boot_output` set since the boot head showed it, and a flush of it returns `gfxfb::ERR_DARK`
+// After a failed light, gfxfb reads the chosen output 0 as dark with no mode, relight or base buffer, a cursor maximum
+// of 256 by 256, its `boot_output` set since the boot head showed it, and a flush of it returns `gfxfb::ERR_DARK`
 TEST(nvidia_display_engine, gfxfb_reads_the_chosen_output_dark_after_a_failed_light) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -5421,8 +5476,8 @@ TEST(nvidia_display_engine, gfxfb_reads_the_chosen_output_dark_after_a_failed_li
     EXPECT_EQ(state.current.width, 0u);
     EXPECT_EQ(state.current.height, 0u);
     EXPECT_EQ(state.current.refresh_millihertz, 0u);
-    EXPECT_EQ(state.cursor_max_width, 0u);
-    EXPECT_EQ(state.cursor_max_height, 0u);
+    EXPECT_EQ(state.cursor_max_width, 256u);
+    EXPECT_EQ(state.cursor_max_height, 256u);
 
     EXPECT_FALSE(engine.has_lit_output());
     EXPECT_NULL(engine.base_buffer(0));
@@ -5430,8 +5485,8 @@ TEST(nvidia_display_engine, gfxfb_reads_the_chosen_output_dark_after_a_failed_li
     EXPECT_EQ(engine.release(), OK);
 }
 
-// Once lit, output 0 reads as lit at its 1366 by 768 timing with `boot_output` set and no relight or cursor, its base
-// buffer the mapping for userland, write-combining, and a flush of it returns `gfxfb::OK`
+// Once lit without a cursor, output 0 reads as lit at its 1366 by 768 timing with `boot_output` set and no relight or
+// cursor, its base buffer the mapping for userland, write-combining, and a flush of it returns `gfxfb::OK`
 TEST(nvidia_display_engine, gfxfb_reads_the_lit_output_at_its_mode_with_its_base_buffer) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -5585,8 +5640,8 @@ TEST(nvidia_display_engine, gfxfb_reads_at_most_gfxfb_outputs_max_outputs) {
     EXPECT_EQ(engine.release(), OK);
 }
 
-// The engine returns `gfxfb::ERR_UNSUPPORTED` for the cursor, and for buffers and presents while flips are off, even
-// once released, and a release of the base buffer frees and unmaps nothing, leaving it the lit output's
+// The engine returns `gfxfb::ERR_UNSUPPORTED` for the cursor of a light without one, and for buffers and presents with
+// flips off, even once released, and a release of the base buffer frees and unmaps nothing, leaving it the lit output's
 TEST(nvidia_display_engine, cursors_and_flips_off_buffers_and_presents_are_unsupported_and_the_base_buffer_is_kept) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -5638,6 +5693,666 @@ TEST(nvidia_display_engine, gfxfb_reads_the_lit_output_dark_and_its_flush_fails_
 
     EXPECT_EQ(memory.scanout_unmaps, 1u);
     EXPECT_EQ(memory.scanout_releases, 0u);
+}
+
+// What the cursor memory holds before the pictures the tests copy into it, and a wait for the free register longer
+// than any test runs
+static constexpr uint8_t  CURSOR_FILL = 0xAB;
+static constexpr uint64_t LONG_CURSOR_WAIT_NS = 10000000000;
+
+// A 3 by 2 picture whose pixels name their row and column from 1, its hotspot at its bottom right
+static constexpr uint32_t SMALL_PICTURE[] = {0x11, 0x12, 0x13, 0x21, 0x22, 0x23};
+static constexpr gfxfb::cursor_image SMALL_CURSOR = {
+    .pixels = SMALL_PICTURE,
+    .width  = 3,
+    .height = 2,
+    .hot_x  = 2,
+    .hot_y  = 1,
+};
+
+// How many times the cursor step seam has run, and the run at which it gives head 1's cursor channel room, darkens
+// output 0, darkens and relights it or fails the display, each 0 for none
+static uint32_t s_cursor_steps = 0;
+static uint32_t s_room_at_step = 0;
+static uint32_t s_dark_at_step = 0;
+static uint32_t s_relight_at_step = 0;
+static uint32_t s_failure_at_step = 0;
+
+// Counts a cursor step and makes the change set for it
+static void step_cursor_call(display_engine& engine) {
+    s_cursor_steps++;
+    if (s_cursor_steps == s_room_at_step) {
+        cursor_word(1, cursor_channel::FREE) = 1;
+    }
+
+    if (s_cursor_steps == s_dark_at_step || s_cursor_steps == s_relight_at_step) {
+        display_engine_test_access::darken_output(engine);
+    }
+
+    if (s_cursor_steps == s_relight_at_step) {
+        display_engine_test_access::relight_output(engine);
+    }
+
+    if (s_cursor_steps == s_failure_at_step) {
+        display_engine_test_access::fail_display(engine);
+    }
+}
+
+// Runs `step_cursor_call` between `engine`'s cursor steps, counting from 0 and changing nothing until a test sets a run
+static void watch_cursor_steps(display_engine& engine) {
+    s_cursor_steps = 0;
+    s_room_at_step = 0;
+    s_dark_at_step = 0;
+    s_relight_at_step = 0;
+    s_failure_at_step = 0;
+    display_engine_test_access::set_cursor_step_seam(engine, step_cursor_call);
+}
+
+// Fills the chosen output's cursor memory with `CURSOR_FILL`, so a test sees which pixels a picture writes
+static void fill_cursor_memory(engine_video_memory& memory) {
+    string::memset(memory.scanout + BASE_BUFFER_1366_BY_768_BYTES, CURSOR_FILL, CURSOR_MEMORY_BYTES);
+}
+
+// Records output 0's cursor at (100, 50) while hidden, then shows `SMALL_CURSOR` there over a filled cursor memory,
+// leaving head 1's channel room and its position and update registers `UNWRITTEN`
+static bool show_small_cursor(display_engine& engine, engine_video_memory& memory) {
+    fill_cursor_memory(memory);
+    bool is_shown = engine.move_cursor(0, 100, 50) == gfxfb::OK && engine.set_cursor(0, SMALL_CURSOR) == gfxfb::OK;
+    give_cursor_room(1, 1);
+
+    return is_shown;
+}
+
+// Moves output 0's cursor with the log kept after what it already holds
+static int32_t move_cursor_logged(display_engine& engine, int32_t x, int32_t y) {
+    log::set_backend(&ENGINE_LOG_BACKEND);
+    int32_t rc = engine.move_cursor(0, x, y);
+    log::set_backend(nullptr);
+
+    return rc;
+}
+
+// Sets output 0's cursor picture to `image`, hiding it for a width of 0, with the log kept after what it already holds
+static int32_t set_cursor_logged(display_engine& engine, const gfxfb::cursor_image& image) {
+    log::set_backend(&ENGINE_LOG_BACKEND);
+    int32_t rc = engine.set_cursor(0, image);
+    log::set_backend(nullptr);
+
+    return rc;
+}
+
+// The pixel at (`column`, `row`) of the chosen output's cursor memory
+static uint32_t cursor_memory_pixel(const engine_video_memory& memory, uint32_t column, uint32_t row) {
+    uint32_t pixel = 0;
+    uint64_t offset = BASE_BUFFER_1366_BY_768_BYTES + (row * 256 + column) * sizeof(uint32_t);
+    string::memcpy(&pixel, memory.scanout + offset, sizeof(pixel));
+
+    return pixel;
+}
+
+// Whether the chosen output's cursor memory holds `value` in each byte of `pixels` pixels from (`column`, `row`) on
+static bool cursor_memory_holds(
+    const engine_video_memory& memory,
+    uint32_t column,
+    uint32_t row,
+    uint32_t pixels,
+    uint8_t value
+) {
+    uint64_t offset = BASE_BUFFER_1366_BY_768_BYTES + (row * 256 + column) * sizeof(uint32_t);
+    return scanout_holds(memory, offset, pixels * sizeof(uint32_t), value);
+}
+
+// Expects head 1's cursor channel to hold `position` and an update, then gives it room and its registers `UNWRITTEN`
+static void expect_cursor_written(uint32_t position) {
+    EXPECT_EQ(cursor_word(1, cursor_channel::HOT_SPOT_POINT), position);
+    EXPECT_EQ(cursor_word(1, cursor_channel::UPDATE), 0u);
+    give_cursor_room(1, 1);
+}
+
+// Expects head 1's cursor channel to hold no write since `give_cursor_room`
+static void expect_cursor_unwritten() {
+    EXPECT_EQ(cursor_word(1, cursor_channel::HOT_SPOT_POINT), UNWRITTEN);
+    EXPECT_EQ(cursor_word(1, cursor_channel::UPDATE), UNWRITTEN);
+}
+
+// The light records output 0's cursor hidden with hotspot 0 and no update owed under light generation 1 and reports 256
+// by 256, so a move only records its position and writes nothing
+TEST(nvidia_display_engine, a_light_records_the_cursor_hidden_so_a_move_only_records_its_position) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    display_engine_test_access::owe_cursor_update(engine, 0x00320064);
+
+    ASSERT_EQ(set_up(engine), OK);
+    give_cursor_room(1, 1);
+    gfxfb::output_state state = stale_output_state();
+    ASSERT_EQ(engine.read_output(0, state), gfxfb::OK);
+
+    EXPECT_TRUE(state.lit);
+    EXPECT_EQ(state.cursor_max_width, 256u);
+    EXPECT_EQ(state.cursor_max_height, 256u);
+
+    EXPECT_FALSE(display_engine_test_access::is_cursor_shown(engine));
+    EXPECT_FALSE(display_engine_test_access::is_cursor_update_owed(engine));
+    EXPECT_EQ(display_engine_test_access::cursor_hot_x(engine), 0u);
+    EXPECT_EQ(display_engine_test_access::cursor_hot_y(engine), 0u);
+    EXPECT_EQ(display_engine_test_access::light_generation(engine), 1u);
+
+    EXPECT_EQ(engine.move_cursor(0, 100, 50), gfxfb::OK);
+    EXPECT_EQ(display_engine_test_access::cursor_x(engine), 100);
+    EXPECT_EQ(display_engine_test_access::cursor_y(engine), 50);
+    expect_cursor_unwritten();
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// An output lit without a cursor reports 0 by 0 and its cursor calls return `gfxfb::ERR_UNSUPPORTED`, even once the
+// display failed, ahead of every other refusal
+TEST(nvidia_display_engine, cursor_calls_on_an_output_lit_without_a_cursor_are_unsupported_first) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    give_cursor_room(1, 0);
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    gfxfb::output_state state = stale_output_state();
+    ASSERT_EQ(engine.read_output(0, state), gfxfb::OK);
+    EXPECT_TRUE(state.lit);
+    EXPECT_EQ(state.cursor_max_width, 0u);
+    EXPECT_EQ(state.cursor_max_height, 0u);
+
+    display_engine_test_access::fail_display(engine);
+    EXPECT_EQ(engine.move_cursor(0, 1, 1), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_EQ(engine.set_cursor(0, SMALL_CURSOR), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_EQ(engine.set_cursor(0, {}), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A dark output reports 256 by 256 and its cursor calls return `gfxfb::ERR_DARK` ahead of a picture's size, and once
+// released `gfxfb::ERR_DEVICE` ahead of the dark, all writing nothing
+TEST(nvidia_display_engine, cursor_calls_on_a_dark_output_are_dark_and_once_released_fail) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    display_engine_test_access::darken_output(engine);
+    give_cursor_room(1, 1);
+    gfxfb::output_state state = stale_output_state();
+    ASSERT_EQ(engine.read_output(0, state), gfxfb::OK);
+
+    EXPECT_FALSE(state.lit);
+    EXPECT_EQ(state.cursor_max_width, 256u);
+    EXPECT_EQ(state.cursor_max_height, 256u);
+
+    gfxfb::cursor_image too_wide = SMALL_CURSOR;
+    too_wide.width = 257;
+    EXPECT_EQ(engine.move_cursor(0, 1, 1), gfxfb::ERR_DARK);
+    EXPECT_EQ(engine.set_cursor(0, SMALL_CURSOR), gfxfb::ERR_DARK);
+    EXPECT_EQ(engine.set_cursor(0, too_wide), gfxfb::ERR_DARK);
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(engine.move_cursor(0, 1, 1), gfxfb::ERR_DEVICE);
+    EXPECT_EQ(engine.set_cursor(0, SMALL_CURSOR), gfxfb::ERR_DEVICE);
+    EXPECT_EQ(engine.set_cursor(0, {}), gfxfb::ERR_DEVICE);
+    expect_cursor_unwritten();
+}
+
+// A picture wider or taller than 256 returns `gfxfb::ERR_INVALID_ARG` and writes neither the memory nor the channel
+TEST(nvidia_display_engine, set_cursor_refuses_a_picture_larger_than_the_cursor) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    fill_cursor_memory(memory);
+    give_cursor_room(1, 1);
+
+    gfxfb::cursor_image too_wide = SMALL_CURSOR;
+    too_wide.width = 257;
+    gfxfb::cursor_image too_tall = SMALL_CURSOR;
+    too_tall.height = 257;
+    EXPECT_EQ(engine.set_cursor(0, too_wide), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.set_cursor(0, too_tall), gfxfb::ERR_INVALID_ARG);
+
+    EXPECT_TRUE(cursor_memory_holds(memory, 0, 0, 256 * 256, CURSOR_FILL));
+    EXPECT_FALSE(display_engine_test_access::is_cursor_shown(engine));
+    expect_cursor_unwritten();
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A picture fills each of its rows out to 256 pixels with transparent ones and every row below it, then writes the
+// recorded position less its hotspot and an update, recording its hotspot and the cursor shown
+TEST(nvidia_display_engine, set_cursor_copies_the_picture_with_a_transparent_rest_and_shows_it) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    fill_cursor_memory(memory);
+    ASSERT_EQ(engine.move_cursor(0, 100, 50), gfxfb::OK);
+    give_cursor_room(1, 1);
+
+    ASSERT_EQ(engine.set_cursor(0, SMALL_CURSOR), gfxfb::OK);
+    for (uint32_t row = 0; row < 2; row++) {
+        for (uint32_t column = 0; column < 3; column++) {
+            EXPECT_EQ(cursor_memory_pixel(memory, column, row), (row + 1) * 0x10 + column + 1);
+        }
+
+        EXPECT_TRUE(cursor_memory_holds(memory, 3, row, 253, 0));
+    }
+
+    EXPECT_TRUE(cursor_memory_holds(memory, 0, 2, 254 * 256, 0));
+    uint64_t guard = BASE_BUFFER_1366_BY_768_BYTES + CURSOR_MEMORY_BYTES;
+    EXPECT_TRUE(scanout_holds(memory, guard, SCANOUT_GUARD_BYTES, SCANOUT_FILL));
+
+    expect_cursor_written(0x00310062);
+    EXPECT_TRUE(display_engine_test_access::is_cursor_shown(engine));
+    EXPECT_EQ(display_engine_test_access::cursor_hot_x(engine), 2u);
+    EXPECT_EQ(display_engine_test_access::cursor_hot_y(engine), 1u);
+
+    uint32_t wide_row[256] = {};
+    for (uint32_t column = 0; column < 256; column++) {
+        wide_row[column] = column + 1;
+    }
+
+    gfxfb::cursor_image wide = {.pixels = wide_row, .width = 256, .height = 1, .hot_x = 0, .hot_y = 0};
+    ASSERT_EQ(engine.set_cursor(0, wide), gfxfb::OK);
+    EXPECT_EQ(cursor_memory_pixel(memory, 0, 0), 1u);
+    EXPECT_EQ(cursor_memory_pixel(memory, 254, 0), 255u);
+    EXPECT_EQ(cursor_memory_pixel(memory, 255, 0), 256u);
+    EXPECT_TRUE(cursor_memory_holds(memory, 0, 1, 255 * 256, 0));
+
+    expect_cursor_written(0x00320064);
+
+    uint32_t tall_column[256] = {};
+    for (uint32_t row = 0; row < 256; row++) {
+        tall_column[row] = row + 1;
+    }
+
+    gfxfb::cursor_image tall = {.pixels = tall_column, .width = 1, .height = 256, .hot_x = 0, .hot_y = 0};
+    ASSERT_EQ(engine.set_cursor(0, tall), gfxfb::OK);
+    EXPECT_EQ(cursor_memory_pixel(memory, 0, 0), 1u);
+    EXPECT_TRUE(cursor_memory_holds(memory, 1, 0, 255, 0));
+    EXPECT_EQ(cursor_memory_pixel(memory, 0, 255), 256u);
+    EXPECT_TRUE(cursor_memory_holds(memory, 1, 255, 255, 0));
+
+    expect_cursor_written(0x00320064);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A move of the shown cursor writes its position less the hotspot, computed in 64 bits and clamped to -256 through
+// 32767, x in bits 15:0 and y in bits 31:16, then an update
+TEST(nvidia_display_engine, move_cursor_writes_the_position_less_the_hotspot_clamped) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(show_small_cursor(engine, memory));
+
+    EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::OK);
+    expect_cursor_written(0x00130008);
+    EXPECT_EQ(engine.move_cursor(0, -254, 32768), gfxfb::OK);
+    expect_cursor_written(0x7FFFFF00);
+    EXPECT_EQ(engine.move_cursor(0, -253, 32767), gfxfb::OK);
+    expect_cursor_written(0x7FFEFF01);
+
+    EXPECT_EQ(engine.move_cursor(0, -2147483647 - 1, 2147483647), gfxfb::OK);
+    expect_cursor_written(0x7FFFFF00);
+    EXPECT_EQ(engine.move_cursor(0, 2147483647, -2147483647 - 1), gfxfb::OK);
+    expect_cursor_written(0xFF007FFF);
+    EXPECT_EQ(display_engine_test_access::cursor_x(engine), 2147483647);
+    EXPECT_EQ(display_engine_test_access::cursor_y(engine), -2147483647 - 1);
+
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A move finding the channel full yields and tries again, its checks with it, until the free register shows room
+TEST(nvidia_display_engine, move_cursor_tries_a_full_channel_again_until_it_has_room) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(show_small_cursor(engine, memory));
+    display_engine_test_access::set_cursor_wait(engine, LONG_CURSOR_WAIT_NS);
+    watch_cursor_steps(engine);
+    s_room_at_step = 3;
+    give_cursor_room(1, 0);
+
+    EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::OK);
+    EXPECT_EQ(s_cursor_steps, 3u);
+    expect_cursor_written(0x00130008);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A move returns `gfxfb::ERR_REFUSED`, its position recorded, once a try past the wait after its first refusal is
+// refused too, while such a try finding room writes, the refusal logged once until a write succeeds
+TEST(nvidia_display_engine, move_cursor_refuses_once_a_try_past_its_deadline_is_refused) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_TRUE(show_small_cursor(engine, memory));
+    watch_cursor_steps(engine);
+    s_room_at_step = 1;
+    give_cursor_room(1, 0);
+
+    EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::OK);
+    EXPECT_EQ(s_cursor_steps, 1u);
+    expect_cursor_written(0x00130008);
+
+    static constexpr uint64_t WAIT_NS = 2000000;
+    display_engine_test_access::set_cursor_wait(engine, WAIT_NS);
+    watch_cursor_steps(engine);
+    give_cursor_room(1, 0);
+    uint64_t start_ns = clock::now_ns();
+    EXPECT_EQ(move_cursor_logged(engine, 30, 40), gfxfb::ERR_REFUSED);
+
+    EXPECT_TRUE(clock::now_ns() - start_ns >= WAIT_NS);
+    EXPECT_TRUE(s_cursor_steps >= 1);
+    EXPECT_EQ(display_engine_test_access::cursor_x(engine), 30);
+    EXPECT_EQ(display_engine_test_access::cursor_y(engine), 40);
+    expect_cursor_unwritten();
+
+    const char* refusal = "nvidia: output 0's cursor move is refused, as its cursor channel found no room in time\r\n";
+    display_engine_test_access::set_cursor_wait(engine, 0);
+    give_cursor_room(1, 0);
+    EXPECT_EQ(move_cursor_logged(engine, 30, 40), gfxfb::ERR_REFUSED);
+    EXPECT_EQ(engine_log_count(refusal), 1u);
+
+    display_engine_test_access::darken_output(engine);
+    EXPECT_EQ(move_cursor_logged(engine, 30, 40), gfxfb::ERR_DARK);
+    display_engine_test_access::relight_output(engine);
+
+    EXPECT_EQ(set_cursor_logged(engine, {}), gfxfb::OK);
+    EXPECT_EQ(move_cursor_logged(engine, 30, 40), gfxfb::OK);
+    expect_cursor_unwritten();
+
+    const char* any_refusal = " is refused, as its cursor channel found no room in time";
+    EXPECT_EQ(set_cursor_logged(engine, SMALL_CURSOR), gfxfb::ERR_REFUSED);
+    EXPECT_EQ(engine_log_count(any_refusal), 1u);
+
+    give_cursor_room(1, 1);
+    EXPECT_EQ(move_cursor_logged(engine, 30, 40), gfxfb::OK);
+    give_cursor_room(1, 0);
+    EXPECT_EQ(move_cursor_logged(engine, 30, 40), gfxfb::ERR_REFUSED);
+    EXPECT_EQ(engine_log_count(refusal), 2u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A move to the position an owed update follows writes the update alone and a move elsewhere writes both, a written
+// update ending what is owed and a refused position leaving it
+TEST(nvidia_display_engine, move_cursor_writes_an_owed_update_alone_for_the_position_it_follows) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(show_small_cursor(engine, memory));
+    EXPECT_FALSE(display_engine_test_access::is_cursor_update_owed(engine));
+
+    display_engine_test_access::owe_cursor_update(engine, 0x00130008);
+    EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::OK);
+    EXPECT_EQ(cursor_word(1, cursor_channel::HOT_SPOT_POINT), UNWRITTEN);
+    EXPECT_EQ(cursor_word(1, cursor_channel::UPDATE), 0u);
+    EXPECT_FALSE(display_engine_test_access::is_cursor_update_owed(engine));
+
+    give_cursor_room(1, 1);
+    display_engine_test_access::owe_cursor_update(engine, 0x00130008);
+    EXPECT_EQ(engine.move_cursor(0, 30, 40), gfxfb::OK);
+    expect_cursor_written(0x0027001C);
+    EXPECT_FALSE(display_engine_test_access::is_cursor_update_owed(engine));
+
+    display_engine_test_access::owe_cursor_update(engine, 0x00130008);
+    display_engine_test_access::set_cursor_wait(engine, 0);
+    give_cursor_room(1, 0);
+    EXPECT_EQ(move_cursor_logged(engine, 30, 40), gfxfb::ERR_REFUSED);
+
+    give_cursor_room(1, 1);
+    EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::OK);
+    EXPECT_EQ(cursor_word(1, cursor_channel::HOT_SPOT_POINT), UNWRITTEN);
+    EXPECT_EQ(cursor_word(1, cursor_channel::UPDATE), 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A dark during a move's retries returns `gfxfb::ERR_DARK`, and a dark and a relight, which hides the cursor, end the
+// move with `gfxfb::OK` and its position recorded, neither writing the channel
+TEST(nvidia_display_engine, move_cursor_after_a_dark_in_its_retries_is_dark_and_after_a_relight_records) {
+    static constexpr bool relights[] = {false, true};
+    for (bool relights_output : relights) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up(engine), OK);
+        ASSERT_TRUE(show_small_cursor(engine, memory));
+        display_engine_test_access::set_cursor_wait(engine, LONG_CURSOR_WAIT_NS);
+        watch_cursor_steps(engine);
+        s_dark_at_step = relights_output ? 0 : 2;
+        s_relight_at_step = relights_output ? 2 : 0;
+
+        give_cursor_room(1, 0);
+        EXPECT_EQ(engine.move_cursor(0, 10, 20), relights_output ? gfxfb::OK : gfxfb::ERR_DARK);
+        EXPECT_EQ(s_cursor_steps, 2u);
+        EXPECT_EQ(display_engine_test_access::cursor_x(engine), 10);
+        EXPECT_EQ(display_engine_test_access::cursor_y(engine), 20);
+        EXPECT_FALSE(display_engine_test_access::is_cursor_shown(engine));
+
+        expect_cursor_unwritten();
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// A free register reading all ones fails the display, logged naming the call: the move, picture or hide returns
+// `gfxfb::ERR_DEVICE`, and later cursor calls and flushes fail with it before reading the channel
+TEST(nvidia_display_engine, a_cursor_call_fails_the_display_when_the_free_register_reads_all_ones) {
+    struct failing_call {
+        const gfxfb::cursor_image* picture; // the picture a picture or a hide sets, null for a move
+        const char*                logged;
+    };
+
+    static constexpr gfxfb::cursor_image HIDDEN = {};
+    static constexpr failing_call calls[] = {
+        {
+            .picture = nullptr,
+            .logged = "nvidia: output 0's cursor move found its cursor channel's free register reading all ones, so "
+                      "the display failed\r\n",
+        },
+        {
+            .picture = &SMALL_CURSOR,
+            .logged = "nvidia: output 0's cursor picture found its cursor channel's free register reading all ones, "
+                      "so the display failed\r\n",
+        },
+        {
+            .picture = &HIDDEN,
+            .logged = "nvidia: output 0's cursor hide found its cursor channel's free register reading all ones, so "
+                      "the display failed\r\n",
+        },
+    };
+
+    for (const failing_call& failing : calls) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up_logged(engine), OK);
+        ASSERT_TRUE(show_small_cursor(engine, memory));
+        give_cursor_room(1, 0xFFFFFFFF);
+
+        bool is_move = failing.picture == nullptr;
+        int32_t rc = is_move ? move_cursor_logged(engine, 10, 20) : set_cursor_logged(engine, *failing.picture);
+        EXPECT_EQ(rc, gfxfb::ERR_DEVICE);
+        EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+        EXPECT_TRUE(engine_log_contains(failing.logged));
+
+        give_cursor_room(1, 1);
+        EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::ERR_DEVICE);
+        EXPECT_EQ(engine.set_cursor(0, SMALL_CURSOR), gfxfb::ERR_DEVICE);
+        EXPECT_EQ(engine.set_cursor(0, {}), gfxfb::ERR_DEVICE);
+        EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::ERR_DEVICE);
+        expect_cursor_unwritten();
+
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// A hide parks the shown cursor and records it hidden once the update is written, a refused one, logged, leaving it
+// shown so the next move writes, and a hide of the hidden cursor writes nothing
+TEST(nvidia_display_engine, set_cursor_hides_by_parking_and_a_refused_hide_leaves_the_cursor_shown) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_TRUE(show_small_cursor(engine, memory));
+    give_cursor_room(1, 0);
+    EXPECT_EQ(set_cursor_logged(engine, {}), gfxfb::ERR_REFUSED);
+    EXPECT_TRUE(display_engine_test_access::is_cursor_shown(engine));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's cursor hide is refused, as its cursor channel found no room in time\r\n"
+    ));
+
+    give_cursor_room(1, 1);
+    EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::OK);
+    expect_cursor_written(0x00130008);
+
+    EXPECT_EQ(engine.set_cursor(0, {}), gfxfb::OK);
+    EXPECT_FALSE(display_engine_test_access::is_cursor_shown(engine));
+    expect_cursor_written(PARKED_POSITION);
+
+    EXPECT_EQ(engine.set_cursor(0, {}), gfxfb::OK);
+    EXPECT_EQ(engine.move_cursor(0, 30, 40), gfxfb::OK);
+    expect_cursor_unwritten();
+    EXPECT_EQ(cursor_memory_pixel(memory, 0, 0), 0x11u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A relight after the first row, after the last or in the position's retries, a dark after the first row, or a failed
+// display after it or in the retries ends the picture, `gfxfb::ERR_DEVICE` for the failure, else `gfxfb::ERR_DARK`
+TEST(nvidia_display_engine, set_cursor_stops_at_a_dark_or_failed_display_between_rows_or_in_the_positions_retries) {
+    enum class change { dark, relight, failure };
+
+    struct stop {
+        change   made;
+        uint32_t step;
+        uint32_t rows;             // the rows written before the change
+        bool     is_shown = false; // whether the picture recorded the cursor shown before the change
+    };
+
+    static constexpr stop stops[] = {
+        {.made = change::relight, .step = 1, .rows = 1},
+        {.made = change::relight, .step = 256, .rows = 256},
+        {.made = change::relight, .step = 257, .rows = 256},
+        {.made = change::dark, .step = 1, .rows = 1},
+        {.made = change::failure, .step = 1, .rows = 1},
+        {.made = change::failure, .step = 257, .rows = 256, .is_shown = true},
+    };
+
+    for (const stop& stopped : stops) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up(engine), OK);
+        fill_cursor_memory(memory);
+        display_engine_test_access::set_cursor_wait(engine, LONG_CURSOR_WAIT_NS);
+        give_cursor_room(1, 0);
+
+        watch_cursor_steps(engine);
+        s_dark_at_step = stopped.made == change::dark ? stopped.step : 0;
+        s_relight_at_step = stopped.made == change::relight ? stopped.step : 0;
+        s_failure_at_step = stopped.made == change::failure ? stopped.step : 0;
+
+        int32_t result = stopped.made == change::failure ? gfxfb::ERR_DEVICE : gfxfb::ERR_DARK;
+        EXPECT_EQ(engine.set_cursor(0, SMALL_CURSOR), result);
+        EXPECT_EQ(s_cursor_steps, stopped.step);
+
+        EXPECT_EQ(cursor_memory_pixel(memory, 0, 0), 0x11u);
+        uint32_t transparent_rows = stopped.rows > 2 ? stopped.rows - 2 : 0;
+        EXPECT_TRUE(cursor_memory_holds(memory, 0, 2, transparent_rows * 256, 0));
+        EXPECT_TRUE(cursor_memory_holds(memory, 0, stopped.rows, (256 - stopped.rows) * 256, CURSOR_FILL));
+
+        EXPECT_EQ(display_engine_test_access::is_cursor_shown(engine), stopped.is_shown);
+        expect_cursor_unwritten();
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// A picture whose position stays refused past its deadline returns `gfxfb::ERR_REFUSED`, logged, with the cursor
+// recorded shown at the picture's hotspot, so the next move writes its position less that hotspot
+TEST(nvidia_display_engine, set_cursor_refused_past_its_deadline_leaves_the_cursor_recorded_shown) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_EQ(engine.move_cursor(0, 100, 50), gfxfb::OK);
+    give_cursor_room(1, 0);
+    EXPECT_EQ(set_cursor_logged(engine, SMALL_CURSOR), gfxfb::ERR_REFUSED);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's cursor picture is refused, as its cursor channel found no room in time\r\n"
+    ));
+
+    EXPECT_TRUE(display_engine_test_access::is_cursor_shown(engine));
+    EXPECT_EQ(display_engine_test_access::cursor_hot_x(engine), 2u);
+    EXPECT_EQ(display_engine_test_access::cursor_hot_y(engine), 1u);
+    expect_cursor_unwritten();
+
+    give_cursor_room(1, 1);
+    EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::OK);
+    expect_cursor_written(0x00130008);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With output 1 lit alone on head 0, a move, a picture and a hide on output 0 return `gfxfb::ERR_DARK` and write
+// neither the cursor channel nor the cursor memory, while on output 1 they write head 0's channel
+TEST(nvidia_display_engine, cursor_calls_reach_the_chosen_outputs_head_alone) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    fw.boot_display_id = OUTPUT_1_ID;
+    fw.present_heads = PRESENT_HEADS;
+    give_cursor_room(0, 1);
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES + CURSOR_MEMORY_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    fill_cursor_memory(memory);
+    give_cursor_room(0, 1);
+
+    EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::ERR_DARK);
+    EXPECT_EQ(engine.set_cursor(0, SMALL_CURSOR), gfxfb::ERR_DARK);
+    EXPECT_EQ(engine.set_cursor(0, {}), gfxfb::ERR_DARK);
+    EXPECT_TRUE(cursor_memory_holds(memory, 0, 0, 256 * 256, CURSOR_FILL));
+    EXPECT_EQ(cursor_word(0, cursor_channel::HOT_SPOT_POINT), UNWRITTEN);
+    EXPECT_EQ(cursor_word(0, cursor_channel::UPDATE), UNWRITTEN);
+
+    EXPECT_EQ(engine.move_cursor(1, 10, 20), gfxfb::OK);
+    EXPECT_EQ(engine.set_cursor(1, SMALL_CURSOR), gfxfb::OK);
+    EXPECT_EQ(cursor_memory_pixel(memory, 0, 0), 0x11u);
+    EXPECT_EQ(cursor_word(0, cursor_channel::HOT_SPOT_POINT), 0x00130008u);
+    EXPECT_EQ(cursor_word(0, cursor_channel::UPDATE), 0u);
+
+    give_cursor_room(0, 1);
+    EXPECT_EQ(engine.set_cursor(1, {}), gfxfb::OK);
+    EXPECT_EQ(cursor_word(0, cursor_channel::HOT_SPOT_POINT), PARKED_POSITION);
+    EXPECT_EQ(engine.release(), OK);
 }
 
 // How many calls `count_registration` has taken, the display it was last handed, and the result it answers each with
@@ -6408,6 +7123,38 @@ TEST(nvidia_display_engine, release_ends_the_queued_present_and_cancels_its_time
     EXPECT_FALSE(display_engine_test_access::is_latch_check_scheduled(engine));
     EXPECT_FALSE(display_engine_test_access::is_deadline_scheduled(engine));
     expect_last_present_end(1, 0, gfxfb::GFXFB_PRESENT_FAILED, 0, 0);
+}
+
+// A cursor move finding the free register all ones fails the display and ends the queued present failed at once,
+// cancelling both timers, as a release does
+TEST(nvidia_display_engine, a_cursor_move_reading_all_ones_ends_the_queued_present_and_cancels_its_timers) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_TRUE(show_small_cursor(engine, memory));
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    display_engine_test_access::set_mode_times(engine, SLOW_MODE_TIMES);
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+
+    ASSERT_EQ(present_base_buffer(engine, base), gfxfb::OK);
+    service_lit_head(engine);
+    EXPECT_TRUE(display_engine_test_access::is_latch_check_scheduled(engine));
+    EXPECT_TRUE(display_engine_test_access::is_deadline_scheduled(engine));
+
+    give_cursor_room(1, 0xFFFFFFFF);
+    EXPECT_EQ(move_cursor_logged(engine, 10, 20), gfxfb::ERR_DEVICE);
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+    EXPECT_FALSE(display_engine_test_access::is_latch_check_scheduled(engine));
+    EXPECT_FALSE(display_engine_test_access::is_deadline_scheduled(engine));
+    expect_last_present_end(1, 0, gfxfb::GFXFB_PRESENT_FAILED, 0, 0);
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(g_present_end_count, 1u);
 }
 
 // Presents follow the lit output, here output 1 on head 0: one on output 0 is refused as dark, and one on output 1

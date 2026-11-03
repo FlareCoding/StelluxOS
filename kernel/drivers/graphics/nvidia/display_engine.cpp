@@ -28,6 +28,7 @@
 #include "mm/heap.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
+#include "sched/sched.h"
 
 namespace drivers::nvidia {
 
@@ -36,7 +37,12 @@ namespace drivers::nvidia {
 constexpr uint64_t SURFACE_ALIGNMENT = 0x1000;
 
 // The cursor memory holds the 256 by 256 pixels of 4 bytes the cursor's control shows
-constexpr uint64_t CURSOR_MEMORY_BYTES = 256 * 256 * 4;
+constexpr uint32_t CURSOR_DIMENSION = 256;
+constexpr uint64_t CURSOR_MEMORY_BYTES = CURSOR_DIMENSION * CURSOR_DIMENSION * sizeof(uint32_t);
+
+// The cursor's coordinates past which none of its pixels shows on any mode, to which a written position is clamped
+constexpr int64_t CURSOR_COORDINATE_MIN = -256;
+constexpr int64_t CURSOR_COORDINATE_MAX = 32767;
 
 // The cursor's position at (-256, -256), x in bits 15:0 and y in bits 31:16, where none of its pixels shows
 constexpr uint32_t PARKED_CURSOR_POSITION = 0xFF00FF00;
@@ -1136,6 +1142,43 @@ static int32_t write_when_free(cursor_channel& channel, uint32_t offset, uint32_
     }
 }
 
+// One coordinate of the cursor's top left pixel as `HOT_SPOT_POINT` takes it, clamped to where none of it shows
+static uint32_t cursor_coordinate(int64_t coordinate) {
+    if (coordinate < CURSOR_COORDINATE_MIN) {
+        return static_cast<uint16_t>(CURSOR_COORDINATE_MIN);
+    }
+
+    if (coordinate > CURSOR_COORDINATE_MAX) {
+        return static_cast<uint16_t>(CURSOR_COORDINATE_MAX);
+    }
+
+    return static_cast<uint16_t>(coordinate);
+}
+
+// The `HOT_SPOT_POINT` value putting the hotspot (`hot_x`, `hot_y`) at (`x`, `y`)
+static uint32_t cursor_position(int32_t x, int32_t y, uint32_t hot_x, uint32_t hot_y) {
+    uint32_t column = cursor_coordinate(static_cast<int64_t>(x) - hot_x);
+    uint32_t row = cursor_coordinate(static_cast<int64_t>(y) - hot_y);
+
+    return row << 16 | column;
+}
+
+// The pixel of `image` at (`column`, `row`), transparent outside it
+static uint32_t cursor_pixel(const gfxfb::cursor_image& image, uint32_t column, uint32_t row) {
+    bool is_inside = column < image.width && row < image.height;
+    return is_inside ? image.pixels[row * image.width + column] : 0;
+}
+
+// Writes `row` of the cursor memory mapped at `cursor` from `image`, two pixels a write to halve the row's lock hold
+static void write_cursor_row(uintptr_t cursor, const gfxfb::cursor_image& image, uint32_t row) {
+    uintptr_t row_start = cursor + static_cast<uintptr_t>(row) * CURSOR_DIMENSION * sizeof(uint32_t);
+    for (uint32_t column = 0; column < CURSOR_DIMENSION; column += 2) {
+        uint64_t left = cursor_pixel(image, column, row);
+        uint64_t right = cursor_pixel(image, column + 1, row);
+        mmio::write64(row_start + column * sizeof(uint32_t), right << 32 | left);
+    }
+}
+
 // Writes a window image's methods into `queue` with `write_waiting`, kicking only on a wrap or a full queue
 static int32_t write_window_methods(display_channel& queue, const window_image_methods& image) {
     for (const window_method& method : image.methods) {
@@ -1634,6 +1677,7 @@ int32_t display_engine::bring_up(
     }
 
     bool is_lit = false;
+    bool has_cursor = false;
     active_heads lit_heads = {};
     if (is_link_set_up) {
         head_light head_lighting = {
@@ -1651,7 +1695,7 @@ int32_t display_engine::bring_up(
             .link_type  = rm::OUTPUT_RESOURCE_TYPE_SERIAL,
         };
 
-        rc = light_head(regs, heads, present_windows, owners, head_lighting, light.window);
+        rc = light_head(regs, heads, present_windows, owners, head_lighting, light.window, has_cursor);
         is_lit = rc == OK;
         if (!is_lit) {
             log::error(
@@ -1679,6 +1723,14 @@ int32_t display_engine::bring_up(
         // The handler counts a head's frames once its entry names the output, so the entry precedes the enable
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+            m_has_cursor = has_cursor;
+            m_light_generation++;
+
+            m_is_cursor_shown = false;
+            m_is_cursor_update_owed = false;
+            m_cursor_hot_x = 0;
+            m_cursor_hot_y = 0;
+
             m_is_lit = true;
             m_lit_head = light.head;
             m_lit_window = light.window;
@@ -1966,13 +2018,16 @@ int32_t display_engine::light_head(
     uint32_t present_windows,
     const window_owners& owners,
     const head_light& light,
-    uint8_t window
+    uint8_t window,
+    bool& shows_cursor_memory
 ) {
     rm::handle cursor_context_dma = 0;
     int32_t rc = prepare_cursor(light.head, cursor_context_dma);
     if (rc != OK) {
         return rc;
     }
+
+    shows_cursor_memory = cursor_context_dma != 0;
 
     bool is_first_update = !m_has_sent_update;
     bool is_image_apart = is_first_update && changes_window_owners(heads, present_windows, owners);
@@ -2365,21 +2420,27 @@ int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
     }
 
     bool is_lit = false;
+    bool has_cursor = false;
     gfxfb::gfxfb_mode mode = {};
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
         is_lit = m_is_lit && output == m_chosen_output;
+        has_cursor = m_has_cursor;
         mode = m_chosen_mode;
         sync::spin_unlock_irqrestore(m_output_lock, irq);
     });
 
-    // No output relights or has a hardware cursor, so `relighting` stays false and the cursor maximum 0 by 0
+    // No output relights, so `relighting` stays false
     out = {};
     out.lit = is_lit;
     out.boot_output = (m_boot_outputs & (1u << output)) != 0;
     if (is_lit) {
         out.current = mode;
     }
+
+    uint32_t cursor_max = is_lit && !has_cursor ? 0 : CURSOR_DIMENSION;
+    out.cursor_max_width = cursor_max;
+    out.cursor_max_height = cursor_max;
 
     return gfxfb::OK;
 }
@@ -2694,6 +2755,237 @@ void display_engine::release_scanout_buffer(operation& op) {
     engine.m_memory.unmap_for_cpu(buffer->range);
     engine.m_memory.release(buffer->range);
     heap::ufree_delete(buffer);
+}
+
+int32_t display_engine::set_cursor(uint32_t output, const gfxfb::cursor_image& image) {
+    if (image.width == 0) {
+        return hide_cursor(output);
+    }
+
+    return show_cursor_picture(output, image);
+}
+
+int32_t display_engine::move_cursor(uint32_t output, int32_t x, int32_t y) {
+    uint64_t deadline_ns = 0;
+    while (true) {
+        int32_t rc = gfxfb::OK;
+        int32_t write_rc = OK;
+        uint64_t tried_ns = clock::now_ns();
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+            rc = check_cursor_call(output);
+            if (rc == gfxfb::OK) {
+                m_cursor_x = x;
+                m_cursor_y = y;
+            }
+
+            if (rc == gfxfb::OK && m_is_cursor_shown) {
+                write_rc = write_cursor_position(cursor_position(x, y, m_cursor_hot_x, m_cursor_hot_y));
+            }
+
+            sync::spin_unlock_irqrestore(m_output_lock, irq);
+        });
+
+        if (write_rc != ERR_QUEUE_FULL || !retries_cursor_write(tried_ns, deadline_ns)) {
+            return end_cursor_call(output, "move", rc, write_rc);
+        }
+    }
+}
+
+int32_t display_engine::hide_cursor(uint32_t output) {
+    uint64_t deadline_ns = 0;
+    while (true) {
+        int32_t rc = gfxfb::OK;
+        int32_t write_rc = OK;
+        uint64_t tried_ns = clock::now_ns();
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+            rc = check_cursor_call(output);
+            if (rc == gfxfb::OK && m_is_cursor_shown) {
+                write_rc = write_cursor_position(PARKED_CURSOR_POSITION);
+                m_is_cursor_shown = write_rc != OK;
+            }
+
+            sync::spin_unlock_irqrestore(m_output_lock, irq);
+        });
+
+        if (write_rc != ERR_QUEUE_FULL || !retries_cursor_write(tried_ns, deadline_ns)) {
+            return end_cursor_call(output, "hide", rc, write_rc);
+        }
+    }
+}
+
+int32_t display_engine::show_cursor_picture(uint32_t output, const gfxfb::cursor_image& image) {
+    int32_t rc = gfxfb::OK;
+    uint32_t generation = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        rc = check_cursor_call(output);
+        generation = m_light_generation;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    bool fits = image.width <= CURSOR_DIMENSION && image.height <= CURSOR_DIMENSION;
+    if (rc == gfxfb::OK && !fits) {
+        rc = gfxfb::ERR_INVALID_ARG;
+    }
+
+    if (rc != gfxfb::OK) {
+        return rc;
+    }
+
+    // Each row's fence keeps its writes ahead of whatever the spinlock's next holder writes to the card
+    for (uint32_t row = 0; row < CURSOR_DIMENSION; row++) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+            rc = check_picture(output, generation);
+            if (rc == gfxfb::OK) {
+                write_cursor_row(m_cursor_mapping.virt, image, row);
+                barrier::io_full();
+            }
+
+            sync::spin_unlock_irqrestore(m_output_lock, irq);
+        });
+
+        if (rc != gfxfb::OK) {
+            return rc;
+        }
+
+        if (m_cursor_step_seam != nullptr) {
+            m_cursor_step_seam(*this);
+        }
+    }
+
+    // The read back waits for every row's writes to reach video memory, so it runs outside the spinlock
+    mmio::read64(m_cursor_mapping.virt);
+    uint64_t deadline_ns = clock::now_ns() + m_cursor_wait_ns;
+    while (true) {
+        int32_t write_rc = OK;
+        uint64_t tried_ns = clock::now_ns();
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+            rc = check_picture(output, generation);
+            if (rc == gfxfb::OK) {
+                m_cursor_hot_x = image.hot_x;
+                m_cursor_hot_y = image.hot_y;
+                m_is_cursor_shown = true;
+                write_rc = write_cursor_position(cursor_position(m_cursor_x, m_cursor_y, image.hot_x, image.hot_y));
+            }
+
+            sync::spin_unlock_irqrestore(m_output_lock, irq);
+        });
+
+        if (write_rc != ERR_QUEUE_FULL || !retries_cursor_write(tried_ns, deadline_ns)) {
+            return end_cursor_call(output, "picture", rc, write_rc);
+        }
+    }
+}
+
+int32_t display_engine::check_cursor_call(uint32_t output) const {
+    bool is_lit = m_is_lit && output == m_chosen_output;
+    if (is_lit && !m_has_cursor) {
+        return gfxfb::ERR_UNSUPPORTED;
+    }
+
+    if (m_is_released || m_is_display_failed.load_acquire()) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    return is_lit ? gfxfb::OK : gfxfb::ERR_DARK;
+}
+
+int32_t display_engine::check_picture(uint32_t output, uint32_t generation) const {
+    if (m_is_released || m_is_display_failed.load_acquire()) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    bool is_lit_since_call = m_is_lit && output == m_chosen_output && m_light_generation == generation;
+    return is_lit_since_call ? gfxfb::OK : gfxfb::ERR_DARK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t display_engine::write_cursor_position(uint32_t position) {
+    // The free register reads 0 while the front end takes a method, so a try after a refused `UPDATE` resumes there
+    bool is_update_owed = m_is_cursor_update_owed && m_owed_cursor_position == position;
+    int32_t rc = OK;
+    if (!is_update_owed) {
+        rc = m_cursor_channel.write(cursor_channel::HOT_SPOT_POINT, position);
+    }
+
+    if (rc == OK) {
+        m_is_cursor_update_owed = true;
+        m_owed_cursor_position = position;
+        rc = m_cursor_channel.write(cursor_channel::UPDATE, 0);
+    }
+
+    if (rc == OK) {
+        m_is_cursor_update_owed = false;
+        m_has_logged_cursor_refusal = false;
+    } else if (rc == ERR_BAD_STATE) {
+        m_is_display_failed.store_release(true);
+        if (m_has_queued_present) {
+            timer::cancel(&m_latch_check_timer);
+            timer::cancel(&m_deadline_timer);
+            end_present(gfxfb::GFXFB_PRESENT_FAILED, {});
+        }
+    }
+
+    return rc;
+}
+
+bool display_engine::retries_cursor_write(uint64_t tried_ns, uint64_t& deadline_ns) {
+    if (deadline_ns == 0) {
+        deadline_ns = tried_ns + m_cursor_wait_ns;
+    } else if (tried_ns > deadline_ns) {
+        return false;
+    }
+
+    sched::yield();
+    if (m_cursor_step_seam != nullptr) {
+        m_cursor_step_seam(*this);
+    }
+
+    return true;
+}
+
+int32_t display_engine::end_cursor_call(uint32_t output, const char* call, int32_t rc, int32_t write_rc) {
+    if (rc != gfxfb::OK) {
+        return rc;
+    }
+
+    if (write_rc == ERR_BAD_STATE) {
+        log::error(
+            "nvidia: output %u's cursor %s found its cursor channel's free register reading all ones, so the display "
+            "failed",
+            output,
+            call
+        );
+        return gfxfb::ERR_DEVICE;
+    }
+
+    if (write_rc != ERR_QUEUE_FULL) {
+        return gfxfb::OK;
+    }
+
+    bool is_first_refusal = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        is_first_refusal = !m_has_logged_cursor_refusal;
+        m_has_logged_cursor_refusal = true;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (is_first_refusal) {
+        log::error(
+            "nvidia: output %u's cursor %s is refused, as its cursor channel found no room in time",
+            output,
+            call
+        );
+    }
+
+    return gfxfb::ERR_REFUSED;
 }
 
 } // namespace drivers::nvidia
