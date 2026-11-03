@@ -14,6 +14,14 @@ constexpr uint64_t ADDRESS_FIELD_SHIFT = 8;
 constexpr uint64_t DIRECTORY_IN_VIDEO_MEMORY = 1ULL << 1;
 constexpr uint64_t PAGE_VALID                = 1;
 
+// A page table entry mapping system memory takes aperture 2, the coherent one, with its volatile bit set
+constexpr uint64_t PAGE_IN_SYSTEM_MEMORY = 2ULL << 1;
+constexpr uint64_t PAGE_VOLATILE         = 1ULL << 3;
+
+// A page table entry's read-only bit, and the first bit of its kind field
+constexpr uint64_t PAGE_READ_ONLY  = 1ULL << 6;
+constexpr uint64_t PAGE_KIND_SHIFT = 56;
+
 // The sparse value sets the volatile bit, bit 3, in an entry naming nothing
 constexpr uint64_t SPARSE_ENTRY = 1ULL << 3;
 
@@ -32,10 +40,17 @@ struct level_layout {
     bool names_tables;
 };
 
+struct aperture_layout {
+    uint64_t reach;
+    uint64_t page_bits;
+};
+
 } // namespace
 
 static level_layout layout_of(page_level level) {
     switch (level) {
+        case page_level::root:
+            return {.index_shift = 47, .entries = 4, .entry_words = 1, .names_tables = true};
         case page_level::directory_2:
             return {.index_shift = 38, .entries = 512, .entry_words = 1, .names_tables = true};
         case page_level::directory_1:
@@ -49,16 +64,31 @@ static level_layout layout_of(page_level level) {
     return {.index_shift = 12, .entries = 512, .entry_words = 1, .names_tables = false};
 }
 
-static bool is_nameable(uint64_t vram_offset) {
-    return vram_offset % ADDRESS_UNIT_BYTES == 0 && vram_offset < ENTRY_REACH_BYTES;
+static aperture_layout layout_of(page_aperture aperture) {
+    switch (aperture) {
+        case page_aperture::system_memory:
+            return {.reach = SYSTEM_ENTRY_REACH_BYTES, .page_bits = PAGE_IN_SYSTEM_MEMORY | PAGE_VOLATILE};
+        case page_aperture::video_memory:
+            break;
+    }
+
+    return {.reach = ENTRY_REACH_BYTES, .page_bits = 0};
 }
 
-static uint64_t address_field(uint64_t vram_offset) {
-    return (vram_offset >> ADDRESS_UNIT_SHIFT) << ADDRESS_FIELD_SHIFT;
+static bool is_nameable(uint64_t address, uint64_t reach) {
+    return address % ADDRESS_UNIT_BYTES == 0 && address < reach;
+}
+
+static uint64_t address_field(uint64_t address) {
+    return (address >> ADDRESS_UNIT_SHIFT) << ADDRESS_FIELD_SHIFT;
 }
 
 uint64_t entry_span(page_level level) {
     return 1ULL << layout_of(level).index_shift;
+}
+
+uint64_t entry_bytes(page_level level) {
+    return layout_of(level).entry_words * sizeof(uint64_t);
 }
 
 uint64_t table_entry_offset(page_level level, uint64_t address) {
@@ -68,19 +98,23 @@ uint64_t table_entry_offset(page_level level, uint64_t address) {
 }
 
 uint64_t directory_entry(uint64_t table_offset) {
-    if (!is_nameable(table_offset)) {
+    if (!is_nameable(table_offset, ENTRY_REACH_BYTES)) {
         return 0;
     }
 
     return address_field(table_offset) | DIRECTORY_IN_VIDEO_MEMORY;
 }
 
-uint64_t page_entry(uint64_t vram_offset) {
-    if (!is_nameable(vram_offset)) {
+uint64_t page_entry(uint64_t address, const page_mapping& mapping) {
+    aperture_layout layout = layout_of(mapping.aperture);
+    if (!is_nameable(address, layout.reach) || mapping.kind > LAST_UNCOMPRESSED_KIND) {
         return 0;
     }
 
-    return address_field(vram_offset) | PAGE_VALID;
+    uint64_t kind_field = static_cast<uint64_t>(mapping.kind) << PAGE_KIND_SHIFT;
+    uint64_t read_only_bit = mapping.read_only ? PAGE_READ_ONLY : 0;
+
+    return address_field(address) | layout.page_bits | kind_field | read_only_bit | PAGE_VALID;
 }
 
 uint64_t sparse_page_entry() {

@@ -152,6 +152,16 @@ void bar1_video_memory::unmap_for_cpu(const vram_range& range) {
     }
 }
 
+int32_t bar1_video_memory::update_context_tables(uint64_t directory_offset, table_writes& writes, context_tlbs tlbs) {
+    RUN_ELEVATED(sync::mutex_lock(m_lock));
+
+    int32_t rc = update_context_tables_locked(directory_offset, writes, tlbs);
+
+    RUN_ELEVATED(sync::mutex_unlock(m_lock));
+
+    return rc;
+}
+
 void bar1_video_memory::drop_window() {
     RUN_ELEVATED(sync::mutex_lock(m_lock));
 
@@ -377,6 +387,86 @@ int32_t bar1_video_memory::update_run(const mapping& held, bool maps_range) {
     // A read through the write-combining mapping could otherwise happen before the read that saw the invalidate finish
     barrier::dma_read();
     return OK;
+}
+
+int32_t bar1_video_memory::update_context_tables_locked(
+    uint64_t directory_offset,
+    table_writes& writes,
+    context_tlbs tlbs
+) {
+    if (m_bar1_bytes == 0) {
+        log::error(
+            "nvidia: a GPU context's page tables are not updated, as BAR1 is not set up or its window is dropped"
+        );
+        return ERR_BAD_STATE;
+    }
+
+    entry_run run = {};
+    uint64_t last_entry_offset = 0;
+    uint64_t last_entry = 0;
+    bool is_written = false;
+    while (writes.next(run)) {
+        if (run.count == 0) {
+            log::error(
+                "nvidia: a run of a GPU context's page tables at 0x%lX in video memory is not written, as it holds no "
+                "entry",
+                run.vram_offset
+            );
+            return ERR_BAD_STATE;
+        }
+
+        if (run.vram_offset % sizeof(uint64_t) != 0) {
+            log::error(
+                "nvidia: a run of a GPU context's page tables at 0x%lX in video memory is not written, as its offset "
+                "is not a multiple of 8",
+                run.vram_offset
+            );
+            return ERR_BAD_STATE;
+        }
+
+        uint64_t table_bytes_left = TABLE_BYTES - run.vram_offset % TABLE_BYTES;
+        if (run.count > table_bytes_left / sizeof(uint64_t)) {
+            log::error(
+                "nvidia: %lu entries of a GPU context's page tables at 0x%lX in video memory are not written, as "
+                "they do not lie in one 4 KiB table",
+                run.count,
+                run.vram_offset
+            );
+            return ERR_BAD_STATE;
+        }
+
+        int32_t rc = write_video_memory(m_regs, run.vram_offset, run.entries, run.count);
+        if (rc != OK) {
+            return rc;
+        }
+
+        last_entry_offset = run.vram_offset + (run.count - 1) * sizeof(uint64_t);
+        last_entry = run.entries[run.count - 1];
+        is_written = true;
+    }
+
+    if (is_written) {
+        uint64_t found = read_video_memory_u64(m_regs, last_entry_offset);
+        if (found != last_entry) {
+            log::error(
+                "nvidia: a GPU context's page table entry at 0x%lX in video memory reads back as 0x%lX after 0x%lX "
+                "was written",
+                last_entry_offset,
+                found,
+                last_entry
+            );
+            return ERR_BAD_STATE;
+        }
+    }
+
+    switch (tlbs) {
+        case context_tlbs::kept:
+            return OK;
+        case context_tlbs::invalidated:
+            break;
+    }
+
+    return invalidate_context_tlbs(m_regs, directory_offset, m_invalidate_timeout_ns);
 }
 
 } // namespace drivers::nvidia

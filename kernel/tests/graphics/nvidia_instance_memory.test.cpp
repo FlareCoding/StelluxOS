@@ -13,6 +13,7 @@
 TEST_SUITE(nvidia_instance_memory);
 
 using drivers::nvidia::context_dma_memory;
+using drivers::nvidia::context_tlbs;
 using drivers::nvidia::cpu_mapping;
 using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_BAD_STATE;
@@ -25,6 +26,7 @@ using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::firmware;
 using drivers::nvidia::instance_memory;
 using drivers::nvidia::OK;
+using drivers::nvidia::table_writes;
 using drivers::nvidia::video_memory;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
@@ -143,8 +145,9 @@ static uint64_t           g_copy_at_unmap[INSTANCE_MEMORY_WORDS];
 // The object under test, which its copy of the hash table makes too large for a test's stack
 alignas(instance_memory) static uint8_t g_instance_bytes[sizeof(instance_memory)];
 
-// A video memory that hands out `HANDED_OUT` and maps it over `g_backing`, recording each call, whether the memory was
-// cleared at each unmap and, when asked, a copy of it, and refusing `allocate` or `map_for_cpu` with the result set
+// A video memory that hands out `HANDED_OUT` and maps it over `g_backing`, recording each call but
+// `update_context_tables`, whether the memory was cleared at each unmap and, when asked, a copy of it, and refusing
+// `allocate` or `map_for_cpu` with the result set and every `update_context_tables` with `ERR_BAD_STATE`
 class recording_video_memory : public video_memory {
 public:
     int32_t    allocate_result = OK;
@@ -225,6 +228,10 @@ public:
         if (keeps_copy_at_unmap) {
             string::memcpy(g_copy_at_unmap, g_backing, sizeof(g_copy_at_unmap));
         }
+    }
+
+    int32_t update_context_tables(uint64_t, table_writes&, context_tlbs) override {
+        return ERR_BAD_STATE;
     }
 };
 
