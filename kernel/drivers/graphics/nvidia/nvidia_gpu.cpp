@@ -749,7 +749,8 @@ int32_t nvidia_gpu_driver::attach() {
         return rc;
     }
 
-    // From the ready message on, whatever its result, `detach()` asks the firmware to unload before the resets
+    // From the ready message on, whatever its result, `detach()` asks the firmware to unload. NVIDIA's driver asks
+    // without that message too, but a firmware that never reported itself ready is not known to answer
     m_must_unload = true;
 
     rc = nvidia::gsp::to_error(ready.result);
@@ -951,6 +952,8 @@ int32_t nvidia_gpu_driver::bring_up_bar1(
         return rc;
     }
 
+    // Mapped only once `set_up_bar1` has linked the tables, since the CPU may read ahead through a write-combining
+    // mapping and such a read could fault the card's MMU before then
     uintptr_t bar1_base = 0;
     rc = map_bar(VIDEO_MEMORY_BAR, bar1_base, paging::PAGE_USER | paging::PAGE_WC);
     if (rc != OK) {
@@ -1025,6 +1028,8 @@ int32_t nvidia_gpu_driver::tear_down_gsp() {
 
     int32_t rc = nvidia::OK;
     if (m_must_stop_sec2) {
+        // Once the CPU sequencer's resume has started SEC2 again, SEC2 might not read as halted after its reset, so the
+        // stop can fail, leaving protected memory set up until the card is reset
         rc = m_boot_memory.release_after_sec2_and_gsp_stops(
             regs,
             m_boot0,
@@ -1108,6 +1113,8 @@ void nvidia_gpu_driver::run_fwsec_sb(nvidia::registers& regs) {
         kept_copy
     );
     if (rc == nvidia::ERR_TIMEOUT) {
+        // FWSEC's copy stays allocated, since freeing it needs a reset of the GSP's falcon, which NVIDIA's driver never
+        // makes after the SB command and which could stop a running FWSEC before it finishes
         log::error(
             "nvidia: FWSEC's copy for the SB command stays allocated for good, since the GSP's falcon may still read it"
         );
@@ -1133,6 +1140,8 @@ void nvidia_gpu_driver::release_firmware_objects() {
         m_gpu_objects = {};
     }
 
+    // Released even after the device's release fails, since the unload follows either way. NVIDIA's driver keeps the
+    // client after that failure
     int32_t client_rc = m_gsp.release_client();
     bool all_released = display_rc == nvidia::OK && rc == nvidia::OK && client_rc == nvidia::OK;
     if (all_released) {
@@ -1171,6 +1180,8 @@ void nvidia_gpu_driver::run() {
             continue;
         }
 
+        // A CPU sequencer the drain reads must run before any log line. The handler may write to the GSP's falcon while
+        // a sequencer resets it, where NVIDIA's driver drains holding a lock that disables the interrupts of every GPU
         int32_t rc = m_gsp.drain();
         m_gsp.check_health();
 
