@@ -5,6 +5,7 @@
 #include "stlx_unit_test.h"
 #include "drivers/graphics/nvidia/bar1_page_tables.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "drivers/graphics/nvidia/page_tables.h"
 #include "drivers/graphics/nvidia/vram_allocator.h"
 #include "mm/heap.h"
 
@@ -12,10 +13,8 @@ TEST_SUITE(nvidia_bar1_page_tables);
 
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::OK;
-using drivers::nvidia::bar1_page_entry;
 using drivers::nvidia::bar1_page_entry_offset;
 using drivers::nvidia::bar1_page_table_bytes;
-using drivers::nvidia::bar1_sparse_page_entry;
 using drivers::nvidia::bar1_window_bytes;
 using drivers::nvidia::check_console_region;
 using drivers::nvidia::static_configuration;
@@ -79,13 +78,13 @@ static uint64_t written_words(const uint64_t* copy, uint64_t first_page, uint64_
 
 // A directory entry naming the table at `offset` in video memory: the offset in 4 KiB units in the address field, and
 // aperture 1 (video memory) in bits 2:1
-static uint64_t directory_entry(uint64_t offset) {
+static uint64_t expected_directory_entry(uint64_t offset) {
     return (offset / PAGE_BYTES) << ADDRESS_FIELD_SHIFT | 0x2;
 }
 
 // A page table entry mapping the 4 KiB page at `offset` in video memory: the offset in 4 KiB units in the address
 // field, aperture 0 (video memory) in bits 2:1, and its valid bit set in bit 0
-static uint64_t page_entry(uint64_t offset) {
+static uint64_t expected_page_entry(uint64_t offset) {
     return (offset / PAGE_BYTES) << ADDRESS_FIELD_SHIFT | 0x1;
 }
 
@@ -150,8 +149,8 @@ static uint64_t count_wrong_words(
     const uint64_t* page_table_words = level_0 + TABLE_WORDS;
 
     uint64_t wrong_words = 0;
-    wrong_words += level_2[0] != directory_entry(tables_offset + PAGE_BYTES);
-    wrong_words += level_1[0] != directory_entry(tables_offset + 2 * PAGE_BYTES);
+    wrong_words += level_2[0] != expected_directory_entry(tables_offset + PAGE_BYTES);
+    wrong_words += level_1[0] != expected_directory_entry(tables_offset + 2 * PAGE_BYTES);
     for (uint64_t i = 1; i < TABLE_WORDS; i++) {
         wrong_words += level_2[i] != SPARSE_ENTRY;
         wrong_words += level_1[i] != SPARSE_ENTRY;
@@ -161,13 +160,15 @@ static uint64_t count_wrong_words(
         const uint64_t* entry = level_0 + k * LEVEL_0_ENTRY_WORDS;
         bool names_page_table = k < page_tables;
         uint64_t page_table_offset = tables_offset + (DIRECTORY_PAGES + k) * PAGE_BYTES;
+        uint64_t small_pages_word = names_page_table ? expected_directory_entry(page_table_offset) : 0;
 
         wrong_words += entry[LARGE_PAGES_WORD] != (names_page_table ? 0 : SPARSE_ENTRY);
-        wrong_words += entry[SMALL_PAGES_WORD] != (names_page_table ? directory_entry(page_table_offset) : 0);
+        wrong_words += entry[SMALL_PAGES_WORD] != small_pages_word;
     }
 
     for (uint64_t page = 0; page < page_tables * TABLE_WORDS; page++) {
-        wrong_words += page_table_words[page] != (page < console_pages ? page_entry(page * PAGE_BYTES) : SPARSE_ENTRY);
+        uint64_t page_word = page < console_pages ? expected_page_entry(page * PAGE_BYTES) : SPARSE_ENTRY;
+        wrong_words += page_table_words[page] != page_word;
     }
 
     return wrong_words;
@@ -220,21 +221,13 @@ TEST(nvidia_bar1_page_tables, page_entries_and_their_offsets_match_the_tables_wr
         uint64_t bar1_offset = page * PAGE_BYTES;
         uint64_t entry_offset = bar1_page_entry_offset(TABLES_OFFSET, bar1_offset);
         EXPECT_EQ(entry_offset, TABLES_OFFSET + DIRECTORY_PAGES * PAGE_BYTES + page * sizeof(uint64_t));
-        EXPECT_EQ(bar1_page_entry(bar1_offset), tables[(entry_offset - TABLES_OFFSET) / sizeof(uint64_t)]);
+        EXPECT_EQ(drivers::nvidia::page_entry(bar1_offset), tables[(entry_offset - TABLES_OFFSET) / sizeof(uint64_t)]);
     }
 
     uint64_t past_console = bar1_page_entry_offset(TABLES_OFFSET, RTX_3080_CONSOLE_BYTES);
-    EXPECT_EQ(bar1_sparse_page_entry(), tables[(past_console - TABLES_OFFSET) / sizeof(uint64_t)]);
-    EXPECT_EQ(bar1_sparse_page_entry(), SPARSE_ENTRY);
+    EXPECT_EQ(drivers::nvidia::sparse_page_entry(), tables[(past_console - TABLES_OFFSET) / sizeof(uint64_t)]);
 
     heap::ufree(tables);
-}
-
-TEST(nvidia_bar1_page_tables, a_page_entry_names_every_page_below_128_gib_and_refuses_the_rest) {
-    uint64_t last_page = ADDRESS_FIELD_REACH - PAGE_BYTES;
-    EXPECT_EQ(bar1_page_entry(last_page), (last_page >> 12) << ADDRESS_FIELD_SHIFT | 1);
-    EXPECT_EQ(bar1_page_entry(ADDRESS_FIELD_REACH), 0u);
-    EXPECT_EQ(bar1_page_entry(PAGE_BYTES + 8), 0u);
 }
 
 // Tables for the RTX 3080's window with its console map the console's pages and leave every page past the console
@@ -249,8 +242,8 @@ TEST(nvidia_bar1_page_tables, tables_for_the_rtx_3080_window_map_the_console_and
     uint64_t* page_tables = tables + DIRECTORY_PAGES * TABLE_WORDS;
     uint64_t console_pages = RTX_3080_CONSOLE_BYTES / PAGE_BYTES;
 
-    EXPECT_EQ(root_entry, directory_entry(TABLES_OFFSET));
-    EXPECT_EQ(page_tables[console_pages - 1], page_entry(RTX_3080_CONSOLE_BYTES - PAGE_BYTES));
+    EXPECT_EQ(root_entry, expected_directory_entry(TABLES_OFFSET));
+    EXPECT_EQ(page_tables[console_pages - 1], expected_page_entry(RTX_3080_CONSOLE_BYTES - PAGE_BYTES));
     EXPECT_EQ(page_tables[RTX_3080_BAR1_BYTES / PAGE_BYTES - 1], SPARSE_ENTRY);
     EXPECT_EQ(
         count_wrong_words(tables, TABLES_OFFSET, RTX_3080_WINDOW_PAGE_TABLES, console_pages),
@@ -301,8 +294,8 @@ TEST(nvidia_bar1_page_tables, page_entries_past_a_console_ending_inside_a_larger
 
     uint64_t* page_tables = tables + DIRECTORY_PAGES * TABLE_WORDS;
 
-    EXPECT_EQ(root_entry, directory_entry(TABLES_OFFSET));
-    EXPECT_EQ(page_tables[TABLE_WORDS], page_entry(TABLE_SPAN));
+    EXPECT_EQ(root_entry, expected_directory_entry(TABLES_OFFSET));
+    EXPECT_EQ(page_tables[TABLE_WORDS], expected_page_entry(TABLE_SPAN));
     EXPECT_EQ(page_tables[TABLE_WORDS + 1], SPARSE_ENTRY);
     EXPECT_EQ(page_tables[2 * TABLE_WORDS - 1], SPARSE_ENTRY);
     EXPECT_EQ(written_words(tables, table_pages, 1), static_cast<uint64_t>(0));

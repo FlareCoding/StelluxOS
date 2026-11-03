@@ -4,6 +4,7 @@
 #include "drivers/graphics/nvidia/bar0_window.h"
 #include "drivers/graphics/nvidia/bar1.h"
 #include "drivers/graphics/nvidia/bar1_page_tables.h"
+#include "drivers/graphics/nvidia/page_tables.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
 #include "hw/barrier.h"
@@ -206,7 +207,7 @@ int32_t bar1_video_memory::map_locked(const vram_range& range, cpu_mapping& out)
     }
 
     uint64_t last_page_offset = range.offset + range.size - SMALL_PAGE_BYTES;
-    if (bar1_page_entry(last_page_offset) == 0) {
+    if (page_entry(last_page_offset) == 0) {
         log::error(
             "nvidia: mapping 0x%lX bytes of video memory at 0x%lX for the CPU was refused, as they end past 128 GiB, "
             "the reach of a page table entry's address field",
@@ -335,7 +336,7 @@ int32_t bar1_video_memory::write_run_entries(const mapping& held, bool maps_rang
         uint64_t count = pages - first < ENTRIES_PER_WRITE ? pages - first : ENTRIES_PER_WRITE;
         for (uint64_t i = 0; i < count; i++) {
             uint64_t page_offset = held.range.offset + (first + i) * SMALL_PAGE_BYTES;
-            entries[i] = maps_range ? bar1_page_entry(page_offset) : bar1_sparse_page_entry();
+            entries[i] = maps_range ? page_entry(page_offset) : sparse_page_entry();
         }
 
         uint64_t entries_offset = bar1_page_entry_offset(m_tables_offset, held.bar1_offset + first * SMALL_PAGE_BYTES);
@@ -356,7 +357,7 @@ int32_t bar1_video_memory::update_run(const mapping& held, bool maps_range) {
 
     uint64_t last_page_offset = held.range.size - SMALL_PAGE_BYTES;
     uint64_t last_entry_offset = bar1_page_entry_offset(m_tables_offset, held.bar1_offset + last_page_offset);
-    uint64_t expected = maps_range ? bar1_page_entry(held.range.offset + last_page_offset) : bar1_sparse_page_entry();
+    uint64_t expected = maps_range ? page_entry(held.range.offset + last_page_offset) : sparse_page_entry();
     uint64_t found = read_video_memory_u64(m_regs, last_entry_offset);
     if (found != expected) {
         log::error(

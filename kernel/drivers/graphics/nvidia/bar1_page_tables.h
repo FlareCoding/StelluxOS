@@ -9,57 +9,22 @@
 namespace drivers::nvidia {
 
 /*
- * BAR1 is where the CPU reaches the card's video memory. Once the GSP, the
- * GPU's system processor, runs its firmware, BAR1 reaches video memory through
- * page tables the firmware binds BAR1 to. When an offset into BAR1 lies in a 4
- * KiB page, the card translates the offset by reading one entry from each of
- * five levels in turn: the root page directory the firmware places, then the
- * directories of levels 2, 1 and 0, then a page table, whose entry maps the
- * page. NVIDIA's diagram of the format numbers the root page directory 3 and
- * each directory after it one less. Each directory entry names the next
- * level's table by the table's offset in video memory. The card caches the
- * translations it reads, so a change to any table BAR1 translates through
- * takes effect only once BAR1's cached translations are invalidated, as
- * NVIDIA's driver does after it replaces its own root page directory for BAR1
- * with the firmware's.
+ * BAR1 is where the CPU reaches the card's video memory. Once the GSP runs its
+ * firmware, BAR1 translates through the firmware's root page directory, and
+ * below its entry 0 through the driver's own tables, written with the page
+ * table builder (page_tables.h). They lie in video memory as one block: the
+ * directories of levels 2, 1 and 0, then a page table for each 2 MiB of BAR1's
+ * window or part of it, so a mapping only writes page table entries. The
+ * window is BAR1 less its last 4 KiB, at most the 512 MiB one level 0
+ * directory covers. A boot console is a boot framebuffer that may still be
+ * drawn in. When bring-up keeps one, the tables map its bytes from the start
+ * of BAR1 onto the same offsets of video memory. Every other entry is sparse.
  *
- * BAR1's tables are this driver's own. They map pages only in BAR1's window,
- * the part of BAR1 a mapping may use. The window is BAR1 less its last 4 KiB,
- * which NVIDIA's driver never maps, and, by this driver's own limit, at most
- * the 512 MiB that the tables' one level 0 directory covers. The tables hold a
- * page table for each 2 MiB of the window or part of it, so a later mapping
- * only writes page table entries, where NVIDIA's driver allocates each page
- * table only once a mapping needs it. A boot console is a boot framebuffer
- * that may still be drawn in. When bring-up keeps one, the tables map its
- * bytes from the start of BAR1 onto the same offsets of video memory, so a
- * boot console lying at the start of both stays reachable at the start of BAR1
- * while the firmware runs. The tables take effect once they lie in video
- * memory, entry 0 of the firmware's root page directory names their level 2
- * directory and BAR1's cached translations are invalidated, in that order.
- * Since entry 0 covers far more than BAR1, the tables then translate every
- * offset of BAR1. An entry is sparse when it names nothing and an access
- * through it does not fault. Every page table entry mapping no console byte is
- * sparse, as is every directory entry the window does not use, so an access to
- * BAR1 past the console does not fault, as NVIDIA's driver makes sparse every
- * part of BAR1 it does not map.
- *
- *   root page directory   the firmware's, entry 0 covers 128 TiB
- *   level 2 directory     entry 0 covers 256 GiB
- *   level 1 directory     entry 0 covers 512 MiB
- *   level 0 directory     entry k covers 2 MiB, in 16 bytes
- *   page table k          entry j maps 4 KiB
- *
- * The tables must lie in video memory, since every directory entry names its
- * table there. NVIDIA's driver keeps BAR1's directories and page tables in
- * video memory by default and notes that a BAR's directories and page tables
- * in system memory can deadlock PCIe transactions. `write_bar1_page_tables`
- * builds a copy of the tables for its caller to write into video memory, one
- * block of 4 KiB tables in the diagram's order: the directories of levels 2, 1
- * and 0, then the page tables in the order of the 2 MiB they cover. Each page
- * table maps 4 KiB pages, the size NVIDIA's driver maps the console with. A
- * page table of larger pages maps 64 KiB or 128 KiB pages, whichever size BAR1
- * is set up with, and the layout of a page table of 4 KiB pages does not
- * depend on that size, which this driver does not read.
+ * The tables take effect once they lie in video memory, entry 0 of the
+ * firmware's root page directory names their level 2 directory and BAR1's
+ * cached translations are invalidated, in that order. Entry 0 covers far more
+ * than BAR1, so the tables then translate every offset of BAR1 and no access
+ * to BAR1 faults.
  */
 
 /**
@@ -128,24 +93,6 @@ uint64_t write_bar1_page_tables(
     uint64_t window_bytes,
     uint64_t console_bytes
 );
-
-/**
- * @brief The page table entry of BAR1's tables mapping the 4 KiB page at
- * `vram_offset` in video memory, as `write_bar1_page_tables` writes an entry
- * mapping a console page. The call never blocks.
- * @param vram_offset The page's offset in video memory.
- * @return The entry, or 0 when `vram_offset` is not a multiple of 4 KiB or
- * lies at or past 128 GiB, which the entry's address field cannot name. No
- * entry naming a page is 0.
- */
-uint64_t bar1_page_entry(uint64_t vram_offset);
-
-/**
- * @brief The page table entry of BAR1's tables mapping nothing, NVIDIA's
- * sparse value, as `write_bar1_page_tables` writes it. The call never blocks.
- * @return The entry.
- */
-uint64_t bar1_sparse_page_entry();
 
 /**
  * @brief Where in video memory the page table entry lies that maps BAR1's

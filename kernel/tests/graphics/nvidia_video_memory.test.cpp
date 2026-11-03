@@ -3,8 +3,8 @@
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
-#include "drivers/graphics/nvidia/bar1_page_tables.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "drivers/graphics/nvidia/page_tables.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/video_memory.h"
 #include "mm/heap.h"
@@ -16,9 +16,9 @@ using drivers::nvidia::ERR_INVALID_ARG;
 using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::OK;
-using drivers::nvidia::bar1_page_entry;
 using drivers::nvidia::bar1_video_memory;
 using drivers::nvidia::cpu_mapping;
+using drivers::nvidia::page_entry;
 using drivers::nvidia::registers;
 using drivers::nvidia::static_configuration;
 using drivers::nvidia::video_memory_region;
@@ -336,7 +336,7 @@ TEST(nvidia_video_memory, the_entries_of_a_run_name_its_ranges_pages_in_order) {
     static constexpr uint64_t CHECKED_PAGES[] = {0, 63, 64};
     for (uint64_t page : CHECKED_PAGES) {
         uint64_t page_offset = page * PAGE_BYTES;
-        EXPECT_EQ(bar0.entry(CONSOLE_BYTES + page_offset), bar1_page_entry(range.offset + page_offset));
+        EXPECT_EQ(bar0.entry(CONSOLE_BYTES + page_offset), page_entry(range.offset + page_offset));
     }
 
     EXPECT_EQ(bar0.entry(CONSOLE_BYTES + 65 * PAGE_BYTES), 0u);
