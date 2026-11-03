@@ -110,6 +110,7 @@ struct monitor {
     bool     first_timing_is_preferred; // `timings[0]` is the timing the monitor's maker recommends
     uint32_t dropped_timings;           // timings found with `timings` full that equal no listed timing
     uint32_t skipped_extensions;        // extension blocks cut short, and CTA-861 or DisplayID ones failing a check
+    uint32_t bad_checksum_extensions;   // of those, the CTA-861 or DisplayID blocks failing their checksum
 };
 
 /**
@@ -221,8 +222,9 @@ struct monitor {
  * block.
  * @return OK, or the first base block check that fails, in this order:
  * ERR_TOO_SHORT, ERR_BAD_HEADER, ERR_BAD_CHECKSUM, ERR_BAD_VERSION. A read
- * over the cable may have corrupted bytes, so ERR_BAD_CHECKSUM is worth one
- * more read.
+ * over the cable may have cut the base block short or corrupted a block, so
+ * ERR_TOO_SHORT, ERR_BAD_HEADER and ERR_BAD_CHECKSUM are worth one more read,
+ * as is OK with `bad_checksum_extensions` nonzero.
  */
 int32_t parse(const uint8_t* bytes, size_t size, monitor& out);
 

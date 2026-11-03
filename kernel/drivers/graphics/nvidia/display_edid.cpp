@@ -11,17 +11,6 @@
 
 namespace drivers::nvidia {
 
-namespace {
-
-// What one read of an output's EDID gives
-enum class read_result {
-    parsed,
-    bad_checksum,
-    failed,
-};
-
-} // namespace
-
 // What the log says of an EDID `edid::parse` refuses with `rc`
 static const char* parse_failure(int32_t rc) {
     switch (rc) {
@@ -29,11 +18,27 @@ static const char* parse_failure(int32_t rc) {
             return "is shorter than one block";
         case edid::ERR_BAD_HEADER:
             return "does not start with the EDID header";
+        case edid::ERR_BAD_CHECKSUM:
+            return "fails its checksum";
         case edid::ERR_BAD_VERSION:
             return "is not of version 1";
     }
 
     return "fails to parse";
+}
+
+// A base block cut short or corrupted, or a CTA-861 or DisplayID block failing its checksum, may be the cable's doing
+static bool is_worth_rereading(int32_t parse_rc, const edid::monitor& monitor) {
+    switch (parse_rc) {
+        case edid::OK:
+            return monitor.bad_checksum_extensions > 0;
+        case edid::ERR_TOO_SHORT:
+        case edid::ERR_BAD_HEADER:
+        case edid::ERR_BAD_CHECKSUM:
+            return true;
+    }
+
+    return false;
 }
 
 static void wait_before_reread() {
@@ -43,20 +48,23 @@ static void wait_before_reread() {
     }
 }
 
-// Asks once for the EDID, the parameters zeroed but for the display id, and parses the reply's EDID into `out`, logging
-// why the EDID cannot be used unless it parses or fails only its checksum
+// Sets `parse_rc` only along with `has_edid`, for a reply holding all the EDID bytes it reports
 static int32_t read_once(
     firmware& fw,
     rm::handle display_common,
     uint32_t display_id,
     rm::edid_params& params,
     edid::monitor& out,
-    read_result& result
+    bool& has_edid,
+    int32_t& parse_rc
 ) {
-    result = read_result::failed;
+    has_edid = false;
     string::memset(&params, 0, sizeof(params));
     params.display_id = display_id;
     int32_t rc = fw.control(display_common, rm::CONTROL_GET_EDID, &params, sizeof(params));
+
+    // A refusal ends the read, where NVIDIA's modesetting module asks again for a DisplayPort monitor, since the
+    // rereads are for bytes the cable may spoil and a refusal brings none
     if (rc == ERR_FIRMWARE) {
         log::error("nvidia: display common refused display id 0x%X's EDID", display_id);
         return OK;
@@ -76,21 +84,54 @@ static int32_t read_once(
         return OK;
     }
 
-    int32_t parse_rc = edid::parse(params.edid, params.edid_bytes, out);
-    if (parse_rc == edid::OK) {
-        result = read_result::parsed;
-    } else if (parse_rc == edid::ERR_BAD_CHECKSUM) {
-        result = read_result::bad_checksum;
-    } else {
-        log::error(
-            "nvidia: display id 0x%X's %u-byte EDID %s",
-            display_id,
-            params.edid_bytes,
-            parse_failure(parse_rc)
-        );
-    }
+    has_edid = true;
+    parse_rc = edid::parse(params.edid, params.edid_bytes, out);
 
     return OK;
+}
+
+// Only the last read is logged, since each read's cause may differ and the last one decides
+static void log_last_read(
+    uint32_t display_id,
+    uint32_t edid_bytes,
+    int32_t parse_rc,
+    const edid::monitor& monitor,
+    uint32_t reads
+) {
+    if (parse_rc != edid::OK && reads == 1) {
+        log::error("nvidia: display id 0x%X's %u-byte EDID %s", display_id, edid_bytes, parse_failure(parse_rc));
+        return;
+    }
+
+    if (parse_rc != edid::OK) {
+        log::error(
+            "nvidia: display id 0x%X's %u-byte EDID %s on read %u, the last",
+            display_id,
+            edid_bytes,
+            parse_failure(parse_rc),
+            reads
+        );
+        return;
+    }
+
+    if (monitor.bad_checksum_extensions > 0) {
+        log::warn(
+            "nvidia: display id 0x%X's EDID parsed with %u %s skipped for a bad checksum on read %u, the last",
+            display_id,
+            monitor.bad_checksum_extensions,
+            monitor.bad_checksum_extensions == 1 ? "extension block" : "extension blocks",
+            reads
+        );
+        return;
+    }
+
+    if (reads > 1) {
+        log::info(
+            "nvidia: display id 0x%X's EDID parsed with no block skipped for a bad checksum on read %u",
+            display_id,
+            reads
+        );
+    }
 }
 
 int32_t read_output_edid(
@@ -111,41 +152,33 @@ int32_t read_output_edid(
     }
 
     int32_t rc = OK;
-    read_result result = read_result::failed;
+    bool has_edid = false;
+    int32_t parse_rc = edid::OK;
     uint32_t reads = 0;
     while (true) {
         reads++;
-        rc = read_once(fw, display_common, display_id, *params, out, result);
-        bool failed_only_checksum = rc == OK && result == read_result::bad_checksum;
+        rc = read_once(fw, display_common, display_id, *params, out, has_edid, parse_rc);
+        bool should_reread = rc == OK && has_edid && is_worth_rereading(parse_rc, out);
         bool has_reread_left = reads <= EDID_REREADS_MAX;
-        if (!failed_only_checksum || !has_reread_left) {
+        if (!should_reread || !has_reread_left) {
             break;
         }
 
         wait_before_reread();
     }
 
+    uint32_t edid_bytes = params->edid_bytes;
     heap::ufree(params);
 
-    if (rc != OK) {
+    if (rc != OK || !has_edid) {
         return rc;
     }
 
-    switch (result) {
-        case read_result::parsed:
-            if (reads > 1) {
-                log::info("nvidia: display id 0x%X's EDID passed its checksum on read %u", display_id, reads);
-            }
+    log_last_read(display_id, edid_bytes, parse_rc, out, reads);
 
-            break;
-        case read_result::bad_checksum:
-            log::error("nvidia: display id 0x%X's EDID fails its checksum on each of its %u reads", display_id, reads);
-            break;
-        case read_result::failed:
-            break;
-    }
-
-    is_parsed = result == read_result::parsed;
+    // A base block failing its checksum on the last read leaves `is_parsed` cleared, since a corrupted base block could
+    // drive the monitor out of range
+    is_parsed = parse_rc == edid::OK;
 
     return OK;
 }

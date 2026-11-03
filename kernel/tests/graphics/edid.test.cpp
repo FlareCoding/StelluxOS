@@ -883,6 +883,7 @@ TEST(edid, counts_the_extension_blocks_the_bytes_do_not_hold_whole) {
 
     ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES - 1), edid::OK);
     EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+    EXPECT_EQ(g_monitor.bad_checksum_extensions, 0u);
 
     ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
     EXPECT_EQ(g_monitor.skipped_extensions, 0u);
@@ -896,6 +897,7 @@ TEST(edid, counts_the_extension_blocks_the_bytes_do_not_hold_whole) {
     block_at(2)[CHECKSUM_OFFSET]++;
     ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
     EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+    EXPECT_EQ(g_monitor.bad_checksum_extensions, 0u);
 
     set_extension_count(0xFF);
     ASSERT_EQ(parse_edid(edid::BLOCK_BYTES), edid::OK);
@@ -914,11 +916,13 @@ TEST(edid, counts_cta_861_and_displayid_extension_blocks_failing_their_checksum)
         write_extension(1, tag);
         ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
         EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+        EXPECT_EQ(g_monitor.bad_checksum_extensions, 0u);
 
         // The base block's timing stays listed when the extension block is skipped
         block_at(1)[CHECKSUM_OFFSET]++;
         ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
         EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+        EXPECT_EQ(g_monitor.bad_checksum_extensions, 1u);
         ASSERT_EQ(g_monitor.timing_count, 1u);
         expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
 
@@ -926,6 +930,7 @@ TEST(edid, counts_cta_861_and_displayid_extension_blocks_failing_their_checksum)
         block_at(1)[CHECKSUM_OFFSET] ^= 0x80;
         ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
         EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+        EXPECT_EQ(g_monitor.bad_checksum_extensions, 1u);
     }
 }
 
@@ -943,6 +948,7 @@ TEST(edid, counts_no_extension_block_of_another_kind_failing_its_checksum) {
 
         ASSERT_EQ(parse_edid(2 * edid::BLOCK_BYTES), edid::OK);
         EXPECT_EQ(g_monitor.skipped_extensions, 0u);
+        EXPECT_EQ(g_monitor.bad_checksum_extensions, 0u);
     }
 }
 
@@ -962,10 +968,12 @@ TEST(edid, counts_failing_blocks_up_to_the_extension_count_and_none_past_it) {
     set_extension_count(3);
     ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
     EXPECT_EQ(g_monitor.skipped_extensions, 2u);
+    EXPECT_EQ(g_monitor.bad_checksum_extensions, 2u);
 
     set_extension_count(4);
     ASSERT_EQ(parse_edid(sizeof(g_edid)), edid::OK);
     EXPECT_EQ(g_monitor.skipped_extensions, 3u);
+    EXPECT_EQ(g_monitor.bad_checksum_extensions, 3u);
 }
 
 // The start of a CTA-861 block whose one data block (a tagged field before the block's descriptors) is the HDMI Forum's
@@ -1272,16 +1280,27 @@ TEST(edid, skips_a_displayid_block_whose_section_fails_its_checksum) {
         block[section_checksum_offset]++;
         ASSERT_EQ(parse_edid(4 * edid::BLOCK_BYTES), edid::OK);
         EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+        EXPECT_EQ(g_monitor.bad_checksum_extensions, 1u);
 
-        // With the block's checksum right, the section check alone skips the DisplayID block, and the CTA-861 blocks on
-        // either side keep their timings listed
+        // With the block's checksum right, the section check alone skips the DisplayID block, which is not counted as
+        // failing its checksum
         seal(block);
         ASSERT_EQ(parse_edid(4 * edid::BLOCK_BYTES), edid::OK);
         EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+        EXPECT_EQ(g_monitor.bad_checksum_extensions, 0u);
+
+        // The CTA-861 blocks on either side keep their timings listed
         ASSERT_EQ(g_monitor.timing_count, 3u);
         expect_timing(g_monitor.timings[0], FULL_HD_TIMING);
         EXPECT_EQ(g_monitor.timings[1].pixel_clock_khz, 148510u);
         EXPECT_EQ(g_monitor.timings[2].pixel_clock_khz, 148520u);
+
+        // With the section still failing, only the CTA-861 block made to fail its checksum is counted as failing it
+        block_at(3)[CHECKSUM_OFFSET]++;
+        ASSERT_EQ(parse_edid(4 * edid::BLOCK_BYTES), edid::OK);
+        EXPECT_EQ(g_monitor.skipped_extensions, 2u);
+        EXPECT_EQ(g_monitor.bad_checksum_extensions, 1u);
+        block_at(3)[CHECKSUM_OFFSET]--;
 
         // The byte after the section's checksum byte is not part of the section
         block[section_checksum_offset]--;
