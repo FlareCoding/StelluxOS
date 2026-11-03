@@ -103,7 +103,7 @@ static_assert(sizeof(kernel_interrupt_table_params) == 2068, "NVIDIA's layout of
 // (fixed facts about the display engine, such as its windows)
 constexpr uint32_t CONTROL_GET_DISPLAY_STATIC_INFO = 0x20800A01;
 
-// The parameters of `CONTROL_GET_DISPLAY_STATIC_INFO`, which the reply fills. Only the present windows are read
+// The parameters of `CONTROL_GET_DISPLAY_STATIC_INFO`, filled by the reply. Only the present heads and windows are read
 struct display_static_info_params {
     uint32_t system_capabilities; // NVIDIA's feHwSysCap, a copy of the display engine's capability register
     uint32_t present_windows;     // bit i set when this GPU has window i

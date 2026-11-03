@@ -92,9 +92,7 @@ int32_t allocate_core_channel(
  * instance in both requests, as NVIDIA's modesetting module allocates each
  * window's channel. A window channel is the display channel that sets up what
  * its window scans out. The caller must check first that the window is among
- * those `read_present_windows` reports present, as NVIDIA's kernel-side driver
- * checks each window channel's instance against those windows and refuses any
- * other.
+ * those `read_present_heads_and_windows` reports present.
  * @param fw The driver's firmware, whose client must be allocated.
  * @param display The display object, the parent of the display engine's
  * channels.

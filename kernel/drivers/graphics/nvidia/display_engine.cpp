@@ -23,6 +23,7 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
+#include "hw/barrier.h"
 #include "hw/mmio.h"
 #include "mm/heap.h"
 #include "mm/paging_types.h"
@@ -33,6 +34,12 @@ namespace drivers::nvidia {
 // NVIDIA's NV_EVO_SURFACE_ALIGNMENT, the alignment of the surfaces NVIDIA's modesetting module scans out and the least
 // alignment of its look-up table surfaces, which it aligns to 4 KiB in any case
 constexpr uint64_t SURFACE_ALIGNMENT = 0x1000;
+
+// The cursor memory holds the 256 by 256 pixels of 4 bytes the cursor's control shows
+constexpr uint64_t CURSOR_MEMORY_BYTES = 256 * 256 * 4;
+
+// The cursor's position at (-256, -256), x in bits 15:0 and y in bits 31:16, where none of its pixels shows
+constexpr uint32_t PARKED_CURSOR_POSITION = 0xFF00FF00;
 
 // An update's window interlocks naming no window channel, so the update takes effect with no window channel's update
 constexpr uint32_t NO_WINDOW_INTERLOCKS = 0;
@@ -1108,6 +1115,27 @@ static int32_t stop_notifier_writes(display_channel& queue) {
     return OK;
 }
 
+// Writes `head`'s cursor methods into `queue`, showing the cursor memory `context_dma` names, or no cursor for 0
+static int32_t write_cursor_methods(display_channel& queue, uint8_t head, rm::handle context_dma) {
+    cursor_methods methods = {};
+    build_cursor_methods(head, context_dma, methods);
+
+    return write_methods(queue, methods.methods, CURSOR_METHODS);
+}
+
+// Writes one method once `channel`'s free register shows room, its last try coming once `wait_ns` has passed
+static int32_t write_when_free(cursor_channel& channel, uint32_t offset, uint32_t value, uint64_t wait_ns) {
+    uint64_t deadline_ns = clock::now_ns() + wait_ns;
+
+    while (true) {
+        bool is_last_try = clock::now_ns() > deadline_ns;
+        int32_t rc = channel.write(offset, value);
+        if (rc != ERR_QUEUE_FULL || is_last_try) {
+            return rc;
+        }
+    }
+}
+
 // Writes a window image's methods into `queue` with `write_waiting`, kicking only on a wrap or a full queue
 static int32_t write_window_methods(display_channel& queue, const window_image_methods& image) {
     for (const window_method& method : image.methods) {
@@ -1268,8 +1296,9 @@ int32_t display_engine::set_up(
         disable_vertical_blank(regs, head);
     }
 
+    uint32_t present_heads = 0;
     uint32_t present_windows = 0;
-    int32_t rc = read_present_windows(m_firmware, display, present_windows);
+    int32_t rc = read_present_heads_and_windows(m_firmware, display, present_heads, present_windows);
     if (rc != OK) {
         return rc;
     }
@@ -1279,6 +1308,7 @@ int32_t display_engine::set_up(
         present_windows,
         display.window_count
     );
+    log::info("nvidia: the GSP's firmware reports heads 0x%X present", present_heads);
 
     rc = m_instance_memory.set_up();
     if (rc != OK) {
@@ -1525,6 +1555,11 @@ int32_t display_engine::set_up(
         return rc;
     }
 
+    rc = set_up_cursor(regs, display, present_heads, light);
+    if (rc != OK) {
+        return rc;
+    }
+
     bool is_core_channel_idle = false;
     rc = wait_core_channel_idle(m_firmware, m_objects.display, display, is_core_channel_idle);
     if (rc != OK) {
@@ -1729,15 +1764,186 @@ int32_t display_engine::shut_down_heads(
     return OK;
 }
 
-int32_t display_engine::write_first_image(uint8_t window, const edid::timing& timing) {
-    window_usage_methods usage = {};
-    build_window_usage_methods(window, timing.width, usage);
+int32_t display_engine::set_up_cursor(
+    registers& regs,
+    const chip_display& display,
+    uint32_t present_heads,
+    const first_light& light
+) {
+    int32_t rc = m_cursor_channel.allocate(m_firmware, regs, m_objects.display, display, light.head, present_heads);
+    if (rc == ERR_INVALID_ARG) {
+        log::error("nvidia: head %u has no cursor, as the GSP's firmware does not report the head present", light.head);
+        return OK;
+    }
 
-    int32_t rc = write_methods(*m_core_queue, usage.methods, WINDOW_USAGE_METHODS);
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: head %u has no cursor, as the GSP's firmware refused a request for its channel",
+            light.head
+        );
+        return OK;
+    }
+
+    if (rc == ERR_NO_MEMORY) {
+        log::error("nvidia: head %u has no cursor, as a request for its channel cannot be allocated", light.head);
+        return OK;
+    }
+
     if (rc != OK) {
         return rc;
     }
 
+    vram_range memory = {};
+    rc = m_memory.allocate(CURSOR_MEMORY_BYTES, SURFACE_ALIGNMENT, vram_use::scanout, memory);
+    if (rc == ERR_NO_MEMORY) {
+        log::error(
+            "nvidia: head %u has no cursor, as 0x%lX bytes of video memory for output %u's cursor cannot be allocated",
+            light.head,
+            CURSOR_MEMORY_BYTES,
+            light.output
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: allocating 0x%lX bytes of video memory for output %u's cursor failed: %d",
+            CURSOR_MEMORY_BYTES,
+            light.output,
+            rc
+        );
+        return rc;
+    }
+
+    cpu_mapping mapping = {};
+    rc = m_memory.map_for_cpu(memory, mapping);
+    if (rc == ERR_NO_MEMORY) {
+        m_memory.release(memory);
+        log::error(
+            "nvidia: head %u has no cursor, as mapping output %u's cursor memory for the CPU found no room, so the "
+            "memory is released",
+            light.head,
+            light.output
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        m_memory.release(memory);
+        log::error(
+            "nvidia: mapping output %u's cursor memory at 0x%lX in video memory for the CPU failed: %d, so the memory "
+            "is released",
+            light.output,
+            memory.offset,
+            rc
+        );
+        return rc;
+    }
+
+    rm::handle context_dma = m_firmware.new_handle();
+    context_dma_memory cursor_memory = {
+        .in_video_memory = true,
+        .address = memory.offset,
+        .bytes = memory.size,
+    };
+
+    rc = m_instance_memory.bind(context_dma, CORE_CHANNEL_NUMBER, cursor_memory);
+    if (rc == ERR_NO_MEMORY) {
+        m_memory.release(memory);
+        log::error(
+            "nvidia: head %u has no cursor, as binding output %u's cursor memory to the core channel found no room, so "
+            "the memory is released",
+            light.head,
+            light.output
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        m_memory.release(memory);
+        log::error(
+            "nvidia: binding output %u's cursor memory to the core channel failed: %d, so the memory is released",
+            light.output,
+            rc
+        );
+        return rc;
+    }
+
+    m_cursor_memory = memory;
+    m_cursor_mapping = mapping;
+    m_cursor_context_dma = context_dma;
+    log::info(
+        "nvidia: head %u has a cursor channel, and output %u's cursor memory lies at 0x%lX in video memory, mapped for "
+        "the CPU and bound to the core channel as context DMA 0x%X",
+        light.head,
+        light.output,
+        memory.offset,
+        context_dma
+    );
+
+    return OK;
+}
+
+int32_t display_engine::prepare_cursor(uint8_t head, rm::handle& cursor_context_dma) {
+    cursor_context_dma = 0;
+    if (m_cursor_context_dma == 0) {
+        return OK;
+    }
+
+    for (uint64_t offset = 0; offset < m_cursor_memory.size; offset += sizeof(uint64_t)) {
+        mmio::write64(m_cursor_mapping.virt + offset, 0);
+    }
+
+    // The read back through BAR1 completes the clear's writes before an update can show the memory
+    barrier::dma_full();
+    mmio::read64(m_cursor_mapping.virt);
+
+    int32_t rc = write_when_free(
+        m_cursor_channel,
+        cursor_channel::HOT_SPOT_POINT,
+        PARKED_CURSOR_POSITION,
+        m_cursor_wait_ns
+    );
+    if (rc == OK) {
+        rc = write_when_free(m_cursor_channel, cursor_channel::UPDATE, 0, m_cursor_wait_ns);
+    }
+
+    if (rc == ERR_QUEUE_FULL) {
+        log::error("nvidia: head %u has no cursor, as its cursor channel found no room to park it", head);
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: parking head %u's cursor failed, as its cursor channel's free register reads all ones",
+            head
+        );
+        return rc;
+    }
+
+    cursor_context_dma = m_cursor_context_dma;
+    return OK;
+}
+
+int32_t display_engine::write_first_image(
+    uint8_t window,
+    const head_light& light,
+    rm::handle cursor_context_dma
+) {
+    int32_t rc = write_cursor_methods(*m_core_queue, light.head, cursor_context_dma);
+    if (rc != OK) {
+        return rc;
+    }
+
+    window_usage_methods usage = {};
+    build_window_usage_methods(window, light.timing.width, usage);
+
+    rc = write_methods(*m_core_queue, usage.methods, WINDOW_USAGE_METHODS);
+    if (rc != OK) {
+        return rc;
+    }
+
+    const edid::timing& timing = light.timing;
     window_image image = {
         .window                    = window,
         .surface_context_dma       = m_base_buffer_context_dma,
@@ -1762,6 +1968,12 @@ int32_t display_engine::light_head(
     const head_light& light,
     uint8_t window
 ) {
+    rm::handle cursor_context_dma = 0;
+    int32_t rc = prepare_cursor(light.head, cursor_context_dma);
+    if (rc != OK) {
+        return rc;
+    }
+
     bool is_first_update = !m_has_sent_update;
     bool is_image_apart = is_first_update && changes_window_owners(heads, present_windows, owners);
     uint32_t window_interlock = 1u << window;
@@ -1771,7 +1983,7 @@ int32_t display_engine::light_head(
         shutdown_methods mapping = {};
         build_shutdown_methods(heads, present_windows, {}, true, mapping);
 
-        int32_t rc = write_methods(*m_core_queue, mapping.methods, mapping.count);
+        rc = write_methods(*m_core_queue, mapping.methods, mapping.count);
         if (rc != OK) {
             return rc;
         }
@@ -1780,16 +1992,20 @@ int32_t display_engine::light_head(
     head_light_methods methods = {};
     build_head_light_methods(light, methods);
 
-    int32_t rc = write_methods(*m_core_queue, methods.methods, methods.count);
+    rc = write_methods(*m_core_queue, methods.methods, methods.count);
     if (rc != OK) {
         return rc;
     }
 
-    if (!is_image_apart) {
-        rc = write_first_image(window, light.timing);
-        if (rc != OK) {
-            return rc;
-        }
+    if (is_image_apart) {
+        // An update showing no window image shows no cursor either
+        rc = write_cursor_methods(*m_core_queue, light.head, 0);
+    } else {
+        rc = write_first_image(window, light, cursor_context_dma);
+    }
+
+    if (rc != OK) {
+        return rc;
     }
 
     uint32_t status_word = 0;
@@ -1810,7 +2026,7 @@ int32_t display_engine::light_head(
         return OK;
     }
 
-    rc = write_first_image(window, light.timing);
+    rc = write_first_image(window, light, cursor_context_dma);
     if (rc != OK) {
         return rc;
     }
@@ -1888,6 +2104,8 @@ int32_t display_engine::release() {
 
     free_output_modes(m_output_modes);
 
+    int32_t cursor_channel_rc = m_cursor_channel.release(m_firmware);
+
     bool keeps_hardware = !m_has_sent_update;
     int32_t window_channel_rc = OK;
     if (m_window_channel != 0) {
@@ -1905,6 +2123,10 @@ int32_t display_engine::release() {
     if (m_objects.display_common != 0) {
         objects_rc = release_display_objects(m_firmware, m_objects);
         m_objects = {};
+    }
+
+    if (cursor_channel_rc != OK) {
+        return cursor_channel_rc;
     }
 
     if (window_channel_rc != OK) {

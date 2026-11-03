@@ -37,8 +37,8 @@ struct window_owners {
  * read.
  * @param bar0 The card's BAR0 registers, in which the core channel's area
  * lies.
- * @param present_windows The windows `read_present_windows` gave, bit i for
- * window i.
+ * @param present_windows The windows `read_present_heads_and_windows` gave,
+ * bit i for window i.
  * @return For each window `present_windows` names, entry i holding the 4-bit
  * owner field of window i's control, kept as read, and 0 in every other entry.
  */

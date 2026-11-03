@@ -11,25 +11,20 @@ namespace drivers::nvidia {
 
 /**
  * @brief Ask the GSP's firmware for the display's static information (fixed
- * facts about the display engine, such as its windows) and give the mask of
- * the windows it reports present, those of the chip's windows this GPU has.
- * NVIDIA's driver asks for it when it initializes its display's state, and
- * later allows a window's channel (the queue of commands that sets up what the
- * window scans out) only for a window the mask names. The request carries the
- * information's 28 bytes, zeroed, through `firmware::internal_control`.
- * NVIDIA's driver keeps the mask unchecked, while here a mask naming a window
- * at or past the chip's `window_count` is refused, so a caller can take every
- * window the mask names as one the chip table describes.
- * @param fw The driver's firmware.
- * @param display The chip table's display entry for this GPU's chip.
- * @param present_windows Receives on `OK` the mask of present windows, bit i
- * for window i, each below `display.window_count`. It is left unchanged on an
- * error.
- * @return `OK`, what `firmware::internal_control` returns, logged as its doc
- * describes, or `ERR_BAD_MESSAGE`, logged here, when the mask names a window
- * the chip lacks.
+ * facts about the display engine) and give the heads, among the first 8, and
+ * the windows it reports present on this GPU, bit i for head or window i. A
+ * window mask naming a window at or past the chip's `window_count` is refused,
+ * so every window it names is one the chip table describes. Neither mask
+ * changes on an error.
+ * @return `OK`, what `firmware::internal_control` returns, logged as it
+ * describes, or `ERR_BAD_MESSAGE`, logged, for a window the chip lacks.
  */
-int32_t read_present_windows(firmware& fw, const chip_display& display, uint32_t& present_windows);
+int32_t read_present_heads_and_windows(
+    firmware& fw,
+    const chip_display& display,
+    uint32_t& present_heads,
+    uint32_t& present_windows
+);
 
 } // namespace drivers::nvidia
 

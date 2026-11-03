@@ -73,8 +73,8 @@ struct shutdown_methods {
  * write, which carries no head in NVIDIA's sequence as in the driver's.
  * @param heads The heads `read_display_heads` gave, with the head each window
  * serves.
- * @param present_windows The windows `read_present_windows` gave, bit i for
- * window i.
+ * @param present_windows The windows `read_present_heads_and_windows` gave,
+ * bit i for window i.
  * @param active The heads `read_active_heads` gave, each active one's link a
  * serial link of the chip's.
  * @param maps_windows Whether the update is the first since the core channel's
