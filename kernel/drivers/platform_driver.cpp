@@ -35,24 +35,6 @@ __PRIVILEGED_CODE uintptr_t platform_driver::map_regs() {
     return m_reg_va;
 }
 
-void platform_driver::wait_for_event() {
-    RUN_ELEVATED({
-        sync::irq_state irq = sync::spin_lock_irqsave(m_irq_lock);
-        while (!m_event_pending) {
-            irq = sync::wait(m_irq_wq, m_irq_lock, irq);
-        }
-        m_event_pending = false;
-        sync::spin_unlock_irqrestore(m_irq_lock, irq);
-    });
-}
-
-__PRIVILEGED_CODE void platform_driver::notify_event() {
-    sync::irq_state irq = sync::spin_lock_irqsave(m_irq_lock);
-    m_event_pending = true;
-    sync::spin_unlock_irqrestore(m_irq_lock, irq);
-    sync::wake_one(m_irq_wq);
-}
-
 // Platform device discovery and initialization
 
 static void platform_task_entry(void* arg) {

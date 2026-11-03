@@ -18,8 +18,7 @@ using test_helpers::spin_wait;
 constexpr uint64_t SHORT_DEADLINE_NS = 20000000ULL; // 20ms
 constexpr uint64_t LONG_DEADLINE_NS  = 10000000000ULL; // 10s
 
-// A driver with no device, whose interrupt handler counts its calls and returns `has_work`. A test raises its event the
-// way an interrupt does
+// A driver with no device, whose interrupt handler counts its calls and returns `has_work`
 class event_test_driver : public drivers::pci_driver {
 public:
     event_test_driver() : pci_driver("event_test", nullptr) {}
@@ -38,16 +37,6 @@ public:
 
     bool     has_work = false;
     uint32_t handled = 0;
-
-    // Marks the event pending and wakes a waiter, as `pci_driver` does once a driver's interrupt is handled
-    void raise_event() {
-        RUN_ELEVATED({
-            sync::irq_state irq = sync::spin_lock_irqsave(m_irq_lock);
-            m_event_pending = true;
-            sync::wake_one(m_irq_wq);
-            sync::spin_unlock_irqrestore(m_irq_lock, irq);
-        });
-    }
 
     // Whether the event is still pending, which a wait clears when it returns
     bool is_event_pending() const { return m_event_pending; }
@@ -148,7 +137,7 @@ TEST(pci_driver_events, wait_until_takes_a_pending_event_at_once) {
     auto* driver = heap::ualloc_new<event_test_driver>();
     ASSERT_NOT_NULL(driver);
 
-    driver->raise_event();
+    RUN_ELEVATED(driver->notify_event());
     ASSERT_TRUE(wait_on_task(driver, clock::now_ns() + LONG_DEADLINE_NS));
 
     EXPECT_LT(g_returned_at - g_called_at, SHORT_DEADLINE_NS);

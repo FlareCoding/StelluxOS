@@ -2694,8 +2694,9 @@ src/nvidia/src/kernel/gpu/disp/arch/v03/kern_disp_0300.c
     core_channel.h, display_engine.h, display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that the core
     channel's area spans 64 KiB, 32 KiB for the assembled state and 32 KiB for
-    the armed state, and that a window channel's area spans 4 KiB, in
-    core_channel.h
+    the armed state, and that a window channel's area spans 4 KiB, 2 KiB for
+    the assembled state and 2 KiB for the armed state, in core_channel.h,
+    display_engine.cpp and kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kern_disp_nvoc.c
@@ -2733,7 +2734,8 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     NV_UDISP_FE_CHN_ASSY_BASEADR_WIN, where each window's channel's area begins,
     in core_channel.h and kernel/tests/graphics/nvidia_core_channel.test.cpp,
     NV_UDISP_FE_CHN_ARMED_BASEADR_CORE, where the core channel's armed state
-    begins, in core_channel.h and
+    begins, in core_channel.h,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp and
     kernel/tests/graphics/nvidia_display_window_owners.test.cpp,
     NV_PDISP_CHN_NUM_CORE, the core channel's number, in core_channel.h,
     kernel/tests/graphics/nvidia_core_channel.test.cpp and
@@ -2742,8 +2744,8 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     kernel/tests/graphics/nvidia_core_channel.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, NV_PDISP_RG_DPCA, a
     head's raster position, at 0x616330 and 2 KiB further for each head, with
-    its line field LINE_CNT and its frame field FRM_CNT, in
-    display_vertical_blank.h, display_vertical_blank.cpp,
+    its line field LINE_CNT and its frame field FRM_CNT of 16 bits, in
+    display_vertical_blank.h, display_vertical_blank.cpp, display_engine.cpp,
     kernel/tests/graphics/nvidia_display_engine.test.cpp and
     kernel/tests/graphics/nvidia_display_vertical_blank.test.cpp, and the hash
     table's size, the client, record and channel fields of an entry's second
@@ -3240,7 +3242,7 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     INPUT_SCALER_TAPS, UPSCALING_ALLOWED and TMO_LUT_ALLOWED fields, in rm.h,
     core_methods.cpp, display_engine.cpp,
     kernel/tests/graphics/nvidia_core_methods.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the methods a lit
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, the methods a lit
     head takes, NVC67D_HEAD_SET_OVERSCAN_COLOR, _RASTER_SIZE, _RASTER_SYNC_END,
     _RASTER_BLANK_END, _RASTER_BLANK_START and _MIN_FRAME_IDLE, all but the
     color with their fields in bits 14:0 and 30:16, _PIXEL_CLOCK_FREQUENCY and
@@ -3265,14 +3267,17 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     NVC67D_WINDOW_SET_WINDOW_FORMAT_USAGE_BOUNDS with its RGB_PACKED4BPP,
     NVC67D_WINDOW_SET_MAX_INPUT_SCALE_FACTOR with its HORIZONTAL and VERTICAL
     and the usage bounds' MAX_PIXELS_FETCHED_PER_LINE, in rm.h, core_methods.h,
-    core_methods.cpp and kernel/tests/graphics/nvidia_core_methods.test.cpp
+    core_methods.cpp and kernel/tests/graphics/nvidia_core_methods.test.cpp,
+    and NVC67D_HEAD_SET_OLUT_CONTROL and _OCSC0CONTROL again, which the light
+    reads back for the lit head, in display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc67e.h
     the class number NVC67E_WINDOW_CHANNEL_DMA, which chip.cpp gives GA102's
     window channels, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
     kernel/tests/graphics/nvidia_core_channel.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the window
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, the window
     channel's methods and fields that a window's image writes: NVC67E_UPDATE and
     its RELEASE_ELV, FLIP_LOCK_PIN and INTERLOCK_WITH_WIN_IMM,
     SET_INTERLOCK_FLAGS and its INTERLOCK_WITH_CORE, SET_WINDOW_INTERLOCK_FLAGS
@@ -3293,7 +3298,14 @@ src/common/sdk/nvidia/inc/class/clc67e.h
     SET_CONTEXT_DMA_ACQ_SEMAPHORE, SET_ACQ_SEMAPHORE_CONTROL,
     SET_ACQ_SEMAPHORE_VALUE, SET_CONTEXT_DMA_SEMAPHORE, SET_SEMAPHORE_CONTROL
     and SET_SEMAPHORE_RELEASE, in rm.h, window_methods.h, window_methods.cpp and
-    kernel/tests/graphics/nvidia_window_methods.test.cpp
+    kernel/tests/graphics/nvidia_window_methods.test.cpp, the CSC0 and CSC1
+    controls SET_CSC00CONTROL, SET_CSC0LUT_CONTROL, SET_CSC01CONTROL,
+    SET_CSC10CONTROL and SET_CSC1LUT_CONTROL and their ENABLE, which the light
+    reads back with SET_SIZE, in rm.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the 16 bits of
+    SET_SIZE's WIDTH and HEIGHT, which bound the buffers create_buffer makes,
+    in rm.h, display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/nvidia-modeset/include/nvkms-types.h

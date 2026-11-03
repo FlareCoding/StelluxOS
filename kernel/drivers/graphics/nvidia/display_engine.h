@@ -20,6 +20,7 @@
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
 #include "drivers/graphics/nvidia/latch_rules.h"
+#include "drivers/graphics/nvidia/operation_queue.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/video_memory.h"
 #include "drivers/graphics/nvidia/window_notifier.h"
@@ -40,6 +41,28 @@ struct first_second_statistics {
     uint16_t end_frame;    // the head's own frame count at the last service
     uint16_t lowest_line;  // the lowest raster line a service read
     uint16_t highest_line; // the highest raster line a service read
+};
+
+class display_engine;
+struct scanout_buffer;
+
+// A buffer's binding and later its release on the driver task, kept in the buffer so its release allocates nothing
+struct buffer_operation : operation {
+    display_engine* engine;
+    scanout_buffer* buffer;
+};
+
+/**
+ * A buffer `create_buffer()` made, in `vram_use::scanout` video memory and
+ * mapped for userland at the buffer's physical address. Only the driver task
+ * binds or unbinds it, before `create_buffer()` returns and once gfxfb
+ * releases it, so `present()` reads `bound_windows` without a lock.
+ */
+struct scanout_buffer : gfxfb::buffer {
+    vram_range       range;
+    rm::handle       context_dma;    // the context DMA naming `range`, 0 when no output was lit
+    uint32_t         bound_windows;  // a bit for each window whose channel `context_dma` is bound to
+    buffer_operation task_operation; // the binding, then the release
 };
 
 /**
@@ -90,19 +113,19 @@ struct first_second_statistics {
  * BAR1 with `cacheable` false, so userland maps it write-combining. Every
  * other output reads as dark. No output relights or reports a cursor, and
  * `flush()` returns at once on the lit output, since its head scans the base
- * buffer itself. `present()` takes only that base buffer, the one buffer bound
- * to the window's channel. `create_buffer()`, `set_cursor()` and
- * `move_cursor()` are unsupported, and `release_buffer()` frees nothing, since
- * the only buffer handed out is the chosen output's base buffer, a bound
- * surface, which nothing frees. `read_output()`, `base_buffer()` and `flush()`
- * read the chosen output's state under its spinlock, which no holder keeps
- * across a wait, so they never sleep or wait on the card. Once the display
- * fails, as `present()` says, or `release` runs, `flush()` and a supported
- * `present()` fail with `gfxfb::ERR_DEVICE`. After `release`, `read_output()`
- * reads every output as dark too, but gfxfb keeps its record of the base
- * buffer, since `detach()` runs on the boot thread and only a task may report
- * an output gone dark, while BAR1 stops translating that buffer's address
- * once `detach()` restores BAR1's block register.
+ * buffer itself. `create_buffer()` makes `scanout_buffer`s, which the driver
+ * task binds to the lit window's channel, if any, and `present()` takes those
+ * and the base buffer. `set_cursor()` and `move_cursor()` are unsupported, and
+ * `release_buffer()` keeps the base buffer, a bound surface, for good.
+ * `read_output()`, `base_buffer()` and `flush()` read the chosen output's
+ * state under its spinlock, which no holder keeps across a wait, so they never
+ * sleep or wait on the card. Once the display fails, as `present()` says, or
+ * `release` runs, `flush()` and a supported `present()` or `create_buffer()`
+ * fail with `gfxfb::ERR_DEVICE`. After `release`, `read_output()` reads every
+ * output as dark too, but gfxfb keeps its record of the base buffer, since
+ * `detach()` runs on the boot thread and only a task may report an output gone
+ * dark, while BAR1 stops translating that buffer's address once `detach()`
+ * restores BAR1's block register.
  */
 class display_engine : public gfxfb::display {
 public:
@@ -111,8 +134,9 @@ public:
      * @param fw The firmware the driver's requests go to, which must outlive
      * the engine.
      * @param memory The driver's video memory, which must outlive the engine.
+     * @param operations The driver task's queue, which must outlive the engine.
      */
-    display_engine(firmware& fw, video_memory& memory);
+    display_engine(firmware& fw, video_memory& memory, operation_queue& operations);
 
     display_engine(const display_engine&) = delete;
     display_engine& operator=(const display_engine&) = delete;
@@ -378,13 +402,13 @@ public:
      * @brief Under the chosen output's spinlock, cancel the latch check and
      * deadline timers, end a queued present with `GFXFB_PRESENT_FAILED`,
      * marking the display failed, and mark the engine released, so
-     * `read_output()` reads every output as dark and `flush()` and `present()`
-     * fail from then on, then drop the channels' queues of methods, so nothing
-     * writes a released channel's area, free the outputs' modes if `set_up`
-     * kept them, then release the chosen window's channel and then the core
-     * channel, each once `set_up` allocated it or the firmware may hold it
-     * after a failed allocation, as `release_display_channel` describes, then
-     * the display's objects, once `set_up` allocated them, as
+     * `read_output()` reads every output as dark and `flush()`, `present()`
+     * and `create_buffer()` fail, then drop the channels' queues of methods,
+     * so nothing writes a released channel's area, free the outputs' modes if
+     * `set_up` kept them, then release the chosen window's channel and then
+     * the core channel, each once `set_up` allocated it or the firmware may
+     * hold it after a failed allocation, as `release_display_channel`
+     * describes, then the display's objects, once `set_up` allocated them, as
      * `release_display_objects` describes. The channels are released first,
      * the window's before the core's, as NVIDIA's modesetting module releases
      * them. While no update has been kicked, each is released with the
@@ -443,9 +467,17 @@ public:
     gfxfb::buffer* base_buffer(uint32_t output) override;
     int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override;
 
-    int32_t create_buffer(uint32_t, uint32_t, uint32_t, gfxfb::buffer**) override {
-        return gfxfb::ERR_UNSUPPORTED;
-    }
+    /**
+     * @brief Allocate a buffer in scanout video memory, cleared to black and
+     * mapped for userland, then wait for the driver task to bind it to the lit
+     * window's channel, if any, so it must not run in an interrupt handler.
+     * @return `ERR_UNSUPPORTED` and `ERR_DEVICE` as `present()` returns them,
+     * then `ERR_INVALID_ARG` for a format other than XRGB8888 or a size past
+     * the window's 16-bit fields, all unlogged, then `ERR_NO_MEMORY` when
+     * memory runs short and `ERR_REFUSED` when the buffer cannot be allocated,
+     * mapped or bound, the engine itself logging neither.
+     */
+    int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
 
     /**
      * @brief Write an update showing `buf` into the lit window's channel, for
@@ -462,10 +494,27 @@ public:
 
     int32_t set_cursor(uint32_t, const gfxfb::cursor_image&) override { return gfxfb::ERR_UNSUPPORTED; }
     int32_t move_cursor(uint32_t, int32_t, int32_t) override { return gfxfb::ERR_UNSUPPORTED; }
-    void release_buffer(gfxfb::buffer*) override {}
+
+    /**
+     * @brief Queue the driver task's release of a buffer `create_buffer()`
+     * made and return without waiting. The task unbinds, unmaps and frees it,
+     * or keeps it all for good once the display failed, the engine was
+     * released or unbinding it failed, since the head may still scan it. The
+     * base buffer is kept for good.
+     * @param buf The base buffer or a buffer `create_buffer()` made, which
+     * nothing refers to any longer.
+     */
+    void release_buffer(gfxfb::buffer* buf) override;
 
 private:
     friend struct display_engine_test_access;
+
+    // Whether flips are on with the lit window's notifier bound, which `present()` and `create_buffer()` need first
+    bool are_presents_supported() const;
+
+    // The driver task's halves of `create_buffer()` and `release_buffer()`, each given the buffer's `task_operation`
+    static void bind_buffer(operation& op);
+    static void release_scanout_buffer(operation& op);
 
     firmware&       m_firmware;
     video_memory&   m_memory;
@@ -478,6 +527,8 @@ private:
     vram_range      m_base_buffer = {};       // the chosen output's, of 0 bytes while none is allocated
     vram_range      m_look_up_table = {};     // the look-up table surface, of 0 bytes while the engine keeps none
     output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
+
+    operation_queue& m_operations;
 
     // The context DMAs binding the base buffer and the look-up table surface to the window's channel, the table's to
     // the core channel too, each 0 until `set_up` binds it
@@ -510,7 +561,7 @@ private:
     gfxfb::gfxfb_mode m_chosen_mode = {};
     gfxfb::buffer     m_userland_base_buffer = {};    // the base buffer as userland maps it, of 0 bytes while unmapped
     bool              m_is_lit = false;               // set by the light, read bare only before the driver task starts
-    bool              m_is_released = false;          // set by `release`, after which `flush()` and `present()` fail
+    bool              m_is_released = false;          // set by `release`, failing flushes, presents and buffer creation
     sync::spinlock    m_output_lock = sync::SPINLOCK_INIT;
 
     // The lit output's vertical blanks, which the light starts and the interrupt handler counts under `m_output_lock`
@@ -518,6 +569,7 @@ private:
     uint32_t                m_frames_per_second = 0;  // the mode's refresh rate rounded, 0 until the light
     uint64_t                m_frame_count = 0;        // the vertical blanks serviced since the light
     uint64_t                m_vertical_blank_ns = 0;  // when the handler serviced the last of them
+    uint16_t                m_serviced_frame = 0;     // the head's own frame count at that service
     first_second_statistics m_first_second = {};
     bool                    m_has_logged_first_second = false;
 

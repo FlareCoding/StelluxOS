@@ -4,7 +4,6 @@
 #include "pci/pci.h"
 #include "dma/dma.h"
 #include "drivers/device_driver.h"
-#include "sync/wait_queue.h"
 #include "mm/paging_types.h"
 
 namespace drivers {
@@ -78,9 +77,7 @@ __PRIVILEGED_CODE int32_t init();
 class pci_driver : public device_driver {
 public:
     pci_driver(const char* name, pci::device* dev)
-        : device_driver(name), m_dev(dev), m_event_pending(false) {
-        m_irq_wq.init();
-        m_irq_lock = sync::SPINLOCK_INIT;
+        : device_driver(name), m_dev(dev) {
         for (uint8_t i = 0; i < pci::MAX_BARS; i++) {
             m_bar_mappings[i] = { 0, 0 };
         }
@@ -147,34 +144,14 @@ protected:
     int32_t setup_msix(uint32_t count);
 
     /**
-     * Block until an interrupt whose `on_interrupt` returns true arrives. One
-     * task may wait at a time, and it must drain all pending work on return
-     * since interrupts coalesce.
-     */
-    void wait_for_event();
-
-    /**
-     * Block like `wait_for_event()`, but return once the clock reaches
-     * `deadline_ns` too. Only one task at a time may wait in this call and
-     * `wait_for_event()` together, since both take the same pending event. The
-     * caller checks its work and the clock to tell an interrupt from the
-     * deadline.
-     * @param deadline_ns The time on `clock::now_ns()` at which to stop waiting.
-     */
-    void wait_for_event_until(uint64_t deadline_ns);
-
-    /**
-     * Runs `on_interrupt` and, only when it returns true, marks the event
-     * pending and wakes the task waiting for it.
+     * Runs `on_interrupt` and, only when it returns true, calls
+     * `notify_event()`.
      * @param vector 0-based MSI vector index, as `on_interrupt` takes it.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void handle_interrupt(uint32_t vector);
 
     pci::device* m_dev;
-    sync::wait_queue m_irq_wq;
-    sync::spinlock m_irq_lock;
-    bool m_event_pending;
 
     struct bar_mapping {
         uintptr_t base; // for vmm::free()

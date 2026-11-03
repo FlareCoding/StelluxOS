@@ -1,5 +1,4 @@
 #include "drivers/pci_driver.h"
-#include "clock/clock.h"
 #include "mm/vmm.h"
 #include "mm/heap.h"
 #include "mm/paging_types.h"
@@ -33,14 +32,9 @@ __PRIVILEGED_CODE void pci_driver::notify_interrupt(uint32_t global_vector) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void pci_driver::handle_interrupt(uint32_t vector) {
-    if (!on_interrupt(vector)) {
-        return;
+    if (on_interrupt(vector)) {
+        notify_event();
     }
-
-    sync::irq_state irq = sync::spin_lock_irqsave(m_irq_lock);
-    m_event_pending = true;
-    sync::wake_one(m_irq_wq);
-    sync::spin_unlock_irqrestore(m_irq_lock, irq);
 }
 
 static void pci_task_entry(void* arg) {
@@ -168,29 +162,6 @@ int32_t pci_driver::setup_msix(uint32_t count) {
     }
 
     return register_msi_handlers();
-}
-
-void pci_driver::wait_for_event() {
-    RUN_ELEVATED({
-        sync::irq_state irq = sync::spin_lock_irqsave(m_irq_lock);
-        while (!m_event_pending) {
-            irq = sync::wait(m_irq_wq, m_irq_lock, irq);
-        }
-        m_event_pending = false;
-        sync::spin_unlock_irqrestore(m_irq_lock, irq);
-    });
-}
-
-void pci_driver::wait_for_event_until(uint64_t deadline_ns) {
-    RUN_ELEVATED({
-        sync::irq_state irq = sync::spin_lock_irqsave(m_irq_lock);
-        while (!m_event_pending && clock::now_ns() < deadline_ns) {
-            irq = sync::wait_until(m_irq_wq, m_irq_lock, irq, deadline_ns);
-        }
-
-        m_event_pending = false;
-        sync::spin_unlock_irqrestore(m_irq_lock, irq);
-    });
 }
 
 /**
