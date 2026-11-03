@@ -115,21 +115,36 @@ struct scanout_buffer : gfxfb::buffer {
  * at the mode chosen for it, and its base buffer as gfxfb reads it is the
  * mapping `set_up` keeps for userland, at that mapping's physical address in
  * BAR1 with `cacheable` false, so userland maps it write-combining. Every
- * other output reads as dark. No output relights or reports a cursor, and
- * `flush()` returns at once on the lit output, since its head scans the base
- * buffer itself. `create_buffer()` makes `scanout_buffer`s, which the driver
- * task binds to the lit window's channel, if any, and `present()` takes those
- * and the base buffer. `set_cursor()` and `move_cursor()` are unsupported, and
- * `release_buffer()` keeps the base buffer, a bound surface, for good.
+ * other output reads as dark. No output relights, and `flush()` returns at
+ * once on the lit output, since its head scans the base buffer itself.
+ * `create_buffer()` makes `scanout_buffer`s, which the driver task binds to
+ * the lit window's channel, if any, and `present()` takes those and the base
+ * buffer. `release_buffer()` keeps the base buffer, a bound surface, for good.
  * `read_output()`, `base_buffer()` and `flush()` read the chosen output's
  * state under its spinlock, which no holder keeps across a wait, so they never
- * sleep or wait on the card. Once the display fails, as `present()` says, or
- * `release` runs, `flush()` and a supported `present()` or `create_buffer()`
- * fail with `gfxfb::ERR_DEVICE`. After `release`, `read_output()` reads every
- * output as dark too, but gfxfb keeps its record of the base buffer, since
- * `detach()` runs on the boot thread and only a task may report an output gone
- * dark, while BAR1 stops translating that buffer's address once `detach()`
- * restores BAR1's block register.
+ * sleep or wait on the card.
+ *
+ * The lit output has a hardware cursor of up to 256 by 256 pixels unless its
+ * light found none for its head, when it reports a cursor maximum of 0 by 0,
+ * and every other output reports 256 by 256. `move_cursor()` places the
+ * cursor's hotspot at the position, only recording it while the cursor is
+ * hidden, and `set_cursor()` shows the picture with its hotspot there. A
+ * cursor call whose write finds no room in the cursor channel returns
+ * `gfxfb::ERR_REFUSED` once a try `gfxfb::GFXFB_PRESENT_TIMEOUT_NS` past the
+ * first refusal, or past a picture's read back, is refused too, so it returns
+ * within a picture's copy and read back, that wait and one wait for the CPU
+ * after it when its task waited for the CPU. Measured on one card, a copy took
+ * up to 0.51 ms, holding the output's spinlock for one row at a time, up to
+ * 0.19 ms. A cursor call's write finding the free register all ones, as a card
+ * gone reads, fails the display.
+ *
+ * Once the display fails, as `present()` says, or `release` runs, `flush()`
+ * and a supported `present()`, `create_buffer()` or cursor call fail with
+ * `gfxfb::ERR_DEVICE`. After `release`, `read_output()` reads every output as
+ * dark too, but gfxfb keeps its record of the base buffer, since `detach()`
+ * runs on the boot thread and only a task may report an output gone dark,
+ * while BAR1 stops translating that buffer's address once `detach()` restores
+ * BAR1's block register.
  */
 class display_engine : public gfxfb::display {
 public:
@@ -425,13 +440,13 @@ public:
      * @brief Under the chosen output's spinlock, cancel the latch check and
      * deadline timers, end a queued present with `GFXFB_PRESENT_FAILED`,
      * marking the display failed, and mark the engine released, so
-     * `read_output()` reads every output as dark and `flush()`, `present()`
-     * and `create_buffer()` fail, then drop the channels' queues of methods,
-     * so nothing writes a released channel's area, free the outputs' modes if
-     * `set_up` kept them, then release the lit head's cursor channel as
-     * `cursor_channel::release` describes, then the chosen window's channel
-     * and then the core channel, each once `set_up` allocated it or the
-     * firmware may hold it after a failed allocation, as
+     * `read_output()` reads every output as dark and `flush()`, `present()`,
+     * `create_buffer()` and the cursor calls fail, then drop the channels'
+     * queues of methods, so nothing writes a released channel's area, free the
+     * outputs' modes if `set_up` kept them, then release the lit head's cursor
+     * channel as `cursor_channel::release` describes, then the chosen window's
+     * channel and then the core channel, each once `set_up` allocated it or
+     * the firmware may hold it after a failed allocation, as
      * `release_display_channel` describes, then the display's objects, once
      * `set_up` allocated them, as `release_display_objects` describes. While
      * no update has been kicked, the window's and the core's are released with
@@ -505,18 +520,20 @@ public:
     /**
      * @brief Write an update showing `buf` into the lit window's channel, for
      * its head to take at a vertical blank, ignoring the regions and waiting
-     * only for the output's spinlock. The interrupt handler or a timer ends the
-     * present by the latch rules (latch_rules.h), or `release` ends it failed.
+     * only for the output's spinlock. The interrupt handler or a timer ends
+     * the present by the latch rules (latch_rules.h), or `release` or a cursor
+     * call failing the display ends it failed.
      * @return gfxfb's errors in its order: `ERR_UNSUPPORTED` with flips off or
-     * no window notifier, `ERR_DEVICE` once released or failed (a refused GET
-     * or a missed deadline fails the display), `ERR_DARK` off the lit output,
-     * `ERR_INVALID_ARG` off its mode's size, and `ERR_REFUSED` for a buffer
-     * not bound to the window's channel or a full push buffer.
+     * no window notifier, `ERR_DEVICE` once released or failed (a refused GET,
+     * a missed deadline or a cursor write finding the free register all ones
+     * fails the display), `ERR_DARK` off the lit output, `ERR_INVALID_ARG` off
+     * its mode's size, and `ERR_REFUSED` for a buffer not bound to the
+     * window's channel or a full push buffer.
      */
     int32_t present(uint32_t output, gfxfb::buffer* buf, const gfxfb::gfxfb_rect* regions, uint32_t count) override;
 
-    int32_t set_cursor(uint32_t, const gfxfb::cursor_image&) override { return gfxfb::ERR_UNSUPPORTED; }
-    int32_t move_cursor(uint32_t, int32_t, int32_t) override { return gfxfb::ERR_UNSUPPORTED; }
+    int32_t set_cursor(uint32_t output, const gfxfb::cursor_image& image) override;
+    int32_t move_cursor(uint32_t output, int32_t x, int32_t y) override;
 
     /**
      * @brief Queue the driver task's release of a buffer `create_buffer()`
@@ -567,12 +584,12 @@ private:
     bool m_has_sent_update = false; // set once an update is kicked on the core channel
 
     // The lit head's cursor channel and the chosen output's cursor memory, mapped and bound under a context DMA, 0
-    // until bound. The mapping and the wait are set before registration for good
+    // until bound. The mapping and the wait change only while no cursor call runs, so the calls read them bare
     cursor_channel m_cursor_channel;
     vram_range     m_cursor_memory = {};
     cpu_mapping    m_cursor_mapping = {};
     rm::handle     m_cursor_context_dma = 0;
-    uint64_t       m_cursor_wait_ns = gfxfb::GFXFB_PRESENT_TIMEOUT_NS; // the park's wait for room
+    uint64_t       m_cursor_wait_ns = gfxfb::GFXFB_PRESENT_TIMEOUT_NS; // the park and cursor calls' wait for room
 
     // The core channel's queue of methods, built in `m_core_queue_bytes` once the channel is allocated, null until
     // then and after `release`
@@ -592,8 +609,24 @@ private:
     gfxfb::gfxfb_mode m_chosen_mode = {};
     gfxfb::buffer     m_userland_base_buffer = {};    // the base buffer as userland maps it, of 0 bytes while unmapped
     bool              m_is_lit = false;               // set by the light, read bare only before the driver task starts
-    bool              m_is_released = false;          // set by `release`, failing flushes, presents and buffer creation
+    bool              m_is_released = false;          // set by `release`, failing the calls the class comment names
     sync::spinlock    m_output_lock = sync::SPINLOCK_INIT;
+
+    // The chosen output's cursor, which each light and the cursor calls write under `m_output_lock`
+    bool     m_has_cursor = false;
+    bool     m_is_cursor_shown = false;
+    int32_t  m_cursor_x = 0;
+    int32_t  m_cursor_y = 0;
+    uint32_t m_cursor_hot_x = 0;
+    uint32_t m_cursor_hot_y = 0;
+    uint32_t m_light_generation = 0;              // raised by each light, so a picture's copy can tell a relight
+    bool     m_has_logged_cursor_refusal = false; // set by a logged refusal, cleared by a cursor write succeeding
+    bool     m_is_cursor_update_owed = false;     // an `UPDATE` refused after its position, owed until one is written
+    uint32_t m_owed_cursor_position = 0;          // the position the owed `UPDATE` follows
+
+    // Run between a cursor call's locked steps, after each row of a picture and each yield, null outside tests, which
+    // set it before their calls, so the calls read it bare
+    void (*m_cursor_step_seam)(display_engine& engine) = nullptr;
 
     // The lit output's vertical blanks, which the light starts and the interrupt handler counts under `m_output_lock`
     uint8_t                 m_lit_head = 0;
@@ -709,14 +742,15 @@ private:
     int32_t write_first_image(uint8_t window, const head_light& light, rm::handle cursor_context_dma);
 
     // Clears and parks the cursor with `prepare_cursor`, then lights `light` with `window`'s first image as `set_up`
-    // describes and logs what the armed state reads
+    // describes and logs what the armed state reads, giving in `shows_cursor_memory` whether it shows the cursor memory
     int32_t light_head(
         const registers& regs,
         const display_heads& heads,
         uint32_t present_windows,
         const window_owners& owners,
         const head_light& light,
-        uint8_t window
+        uint8_t window,
+        bool& shows_cursor_memory
     );
 
     // Writes the shutdown methods for the heads found active, with the windows' heads only when no update was kicked,
@@ -727,6 +761,36 @@ private:
         const active_heads& active,
         const active_heads& lit
     );
+
+    // Hides the cursor as `set_cursor` does for a width of 0, parking it while it shows
+    int32_t hide_cursor(uint32_t output);
+
+    // Copies `image` into the cursor memory a row at a time, then shows it at the recorded position
+    int32_t show_cursor_picture(uint32_t output, const gfxfb::cursor_image& image);
+
+    // gfxfb's refusal of a cursor call on `output`, else `gfxfb::OK`. The caller must hold `m_output_lock`
+    int32_t check_cursor_call(uint32_t output) const;
+
+    // gfxfb's refusal of a picture's next step, the display failed or the output not lit at `generation`, else
+    // `gfxfb::OK`. The caller must hold `m_output_lock`
+    int32_t check_picture(uint32_t output, uint32_t generation) const;
+
+    /**
+     * @brief Write `position` and then `UPDATE`, `UPDATE` alone when it is
+     * owed for `position`, failing the display and its queued present when
+     * the free register reads all ones. The caller must hold `m_output_lock`.
+     * @return As `cursor_channel::write` returns.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t write_cursor_position(uint32_t position);
+
+    // Whether a cursor call tries a write refused at `tried_ns` again, after a yield: until a try past `deadline_ns`,
+    // which a deadline of 0 sets to `m_cursor_wait_ns` past this first refusal
+    bool retries_cursor_write(uint64_t tried_ns, uint64_t& deadline_ns);
+
+    // gfxfb's result for the cursor `call` on `output` whose checks gave `rc` and whose last write gave `write_rc`,
+    // a refusal logged once until a cursor write succeeds and a card gone logged
+    int32_t end_cursor_call(uint32_t output, const char* call, int32_t rc, int32_t write_rc);
 };
 
 } // namespace drivers::nvidia
