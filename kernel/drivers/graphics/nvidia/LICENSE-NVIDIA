@@ -296,11 +296,8 @@ src/nvidia/src/kernel/gpu/bus/arch/maxwell/kern_bus_gm107.c
     bar0_window.h and bar0_window.cpp, that it reads the word at the offset as
     the value's low half, in bar0_window.h, bar0_window.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, that it reads that word first,
-    in bar0_window.h and bar0_window.cpp, that NVIDIA's driver asks for no page
-    size when it maps memory into BAR1, a boot console's included, in
-    bar1_page_tables.h, that NVIDIA's driver sets up BAR1's address space with
-    one size of larger pages, in bar1_page_tables.h, that NVIDIA's driver makes
-    sparse every part of BAR1 it does not map, to keep the CPU's accesses from
+    in bar0_window.h and bar0_window.cpp, that NVIDIA's driver makes sparse
+    every part of BAR1 it does not map, to keep the CPU's accesses from
     faulting, in bar1_page_tables.h and bar1_page_tables.cpp, that the function
     writes 8 bytes as two 32-bit words, in bar0_window.h and bar0_window.cpp,
     that it writes the value's low half as the word at the offset, in
@@ -336,10 +333,10 @@ src/nvidia/src/kernel/gpu/bus/kern_bus.c
     places that root page directory, in bar1_page_tables.h, that NVIDIA's driver
     uses the offset with no check, in gsp_info.h, that NVIDIA's driver
     invalidates BAR1's cached translations after it replaces its own root page
-    directory for BAR1 with the firmware's, in bar1_page_tables.h, bar1.h and
-    bar1.cpp, and that the replacement makes the firmware's root page directory
-    the one NVIDIA's driver holds for BAR1, so its invalidates for BAR1 name the
-    firmware's, in bar1.h, bar1.cpp, nvidia_gpu.cpp, video_memory.cpp,
+    directory for BAR1 with the firmware's, in bar1.h and bar1.cpp, and that the
+    replacement makes the firmware's root page directory the one NVIDIA's driver
+    holds for BAR1, so its invalidates for BAR1 name the firmware's, in bar1.h,
+    bar1.cpp, nvidia_gpu.cpp, video_memory.cpp,
     kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_video_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -352,70 +349,81 @@ src/nvidia/src/libraries/mmu/mmu_walk_migrate.c
 
 src/common/inc/swref/published/pascal/gp100/dev_mmu.h
     the 8 bytes of an entry of a version 2 page directory, in gsp_info.h,
-    gsp_info.cpp, nvidia_gpu.cpp, bar1_page_tables.cpp,
-    kernel/tests/graphics/nvidia_message_queues.test.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 8 bytes of a
-    page table entry, in bar1_page_tables.h, bar1_page_tables.cpp,
-    video_memory.cpp, kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    gsp_info.cpp, nvidia_gpu.cpp, page_tables.cpp,
+    kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, the 8 bytes of a page
+    table entry, in bar1_page_tables.h, bar1_page_tables.cpp, page_tables.cpp,
+    video_memory.cpp, kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp,
+    kernel/tests/graphics/nvidia_page_tables.test.cpp and
     kernel/tests/graphics/nvidia_video_memory.test.cpp, the 16 bytes of an entry
-    of a level 0 directory, in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, its first half
-    naming a page table of larger pages and its second half, laid out as a
-    directory entry, naming a page table of 4 KiB pages, in bar1_page_tables.cpp
-    and kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the address
-    field of a directory entry and of a page table entry (bits 32:8, counting 4
-    KiB units) with their aperture field (bits 2:1), in bar1_page_tables.h,
-    bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 25 bits of the
+    of a level 0 directory, in page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, its first half naming a
+    page table of larger pages and its second half, laid out as a directory
+    entry, naming a page table of 4 KiB pages, in page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, the address field of a
+    directory entry and of a page table entry (bits 32:8, counting 4 KiB units)
+    with their aperture field (bits 2:1), in bar1_page_tables.h,
+    page_tables.cpp, kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, the 25 bits of the
     address field and their reach of 128 GiB, in bar1_page_tables.h,
-    bar1_page_tables.cpp, video_memory.h, video_memory.cpp,
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    page_tables.h, video_memory.h, video_memory.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp,
+    kernel/tests/graphics/nvidia_page_tables.test.cpp and
     kernel/tests/graphics/nvidia_video_memory.test.cpp, a page table entry's
-    valid bit in bit 0, in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the volatile bit in
-    bit 3 of a directory entry and of the first half of a level 0 directory
-    entry, in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the same bit of a
-    page table entry, in bar1_page_tables.h, bar1_page_tables.cpp,
+    valid bit in bit 0, in bar1_page_tables.h, page_tables.cpp,
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, the volatile bit in bit 3
+    of a directory entry and of the first half of a level 0 directory entry, in
+    bar1_page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, the same bit of a page
+    table entry, in bar1_page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp,
+    kernel/tests/graphics/nvidia_page_tables.test.cpp and
     kernel/tests/graphics/nvidia_video_memory.test.cpp, and a page table entry's
-    kind field, in bar1_page_tables.h
+    kind field, in bar1_page_tables.h and page_tables.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 kernel-open/nvidia-uvm/hwref/pascal/gp100/dev_mmu.h
     the aperture values for video memory (1 in a directory entry and 0 in a page
-    table entry), in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, that an aperture of
-    0 is invalid, leaving a directory entry or a half of a level 0 directory
-    entry naming nothing, in bar1_page_tables.cpp, that bit 0 of a directory
-    entry is 0 when the entry names a table rather than mapping a page, in
-    bar1_page_tables.cpp, and that a volatile bit of 1 marks an entry volatile,
-    in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    table entry), in bar1_page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, that an aperture of 0 is
+    invalid, leaving a directory entry or a half of a level 0 directory entry
+    naming nothing, in page_tables.cpp, that bit 0 of a directory entry is 0
+    when the entry names a table rather than mapping a page, in page_tables.cpp,
+    and that a volatile bit of 1 marks an entry volatile, in bar1_page_tables.h,
+    page_tables.cpp, kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp
     Copyright (c) 2003-2016 NVIDIA Corporation
 
 src/nvidia/src/kernel/gpu/mmu/arch/pascal/kern_gmmu_fmt_gp10x.c
     the levels of version 2 tables (the root page directory, which NVIDIA's
     diagram numbers 3, then page directories 2, 1 and 0, then page tables) and
-    the bits of an offset into BAR1 each level resolves, from which come the
-    bytes an entry of each covers, in bar1_page_tables.h, the 512 entries of a
+    the bits of an address each level resolves, from which come the bytes an
+    entry of each covers, in bar1_page_tables.h, page_tables.h, page_tables.cpp
+    and kernel/tests/graphics/nvidia_page_tables.test.cpp, the 512 entries of a
     level 2 or level 1 directory and of a page table of 4 KiB pages, 4 KiB in
-    all, in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, the 256 entries of a
-    level 0 directory, in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, that a level 0
+    all, in bar1_page_tables.h, bar1_page_tables.cpp, page_tables.h,
+    page_tables.cpp, kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, the 256 entries of a
+    level 0 directory, in bar1_page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, and that a level 0
     directory entry may map a 2 MiB page instead of naming a table, in
-    bar1_page_tables.cpp, and that a page table of larger pages maps 64 KiB or
-    128 KiB pages, a size its layout depends on and that of a page table of 4
-    KiB pages does not, in bar1_page_tables.h and bar1_page_tables.cpp
+    page_tables.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mmu/arch/ampere/kern_gmmu_fmt_ga10x.c
     that its function sets up the levels kern_gmmu_fmt_gp10x.c sets up, in
-    bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and then lets a
-    level 1 directory entry map a 512 MiB page instead of naming a table, in
-    bar1_page_tables.cpp
+    bar1_page_tables.h, bar1_page_tables.cpp, page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, and then lets a level 1
+    directory entry map a 512 MiB page instead of naming a table, in
+    page_tables.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mmu/arch/maxwell/kern_gmmu_gm200.c
@@ -423,18 +431,19 @@ src/nvidia/src/kernel/gpu/mmu/arch/maxwell/kern_gmmu_gm200.c
     volatile bit set: a page table entry whose valid bit is 0, a directory entry
     whose aperture is 0, and a level 0 directory entry whose two apertures are
     0, with the volatile bit of its first half set, in bar1_page_tables.h,
-    bar1_page_tables.cpp, kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
-    and, for a page table entry, in
-    kernel/tests/graphics/nvidia_video_memory.test.cpp
+    page_tables.cpp, kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp,
+    kernel/tests/graphics/nvidia_page_tables.test.cpp and, for a page table
+    entry, in kernel/tests/graphics/nvidia_video_memory.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kern_gmmu_nvoc.c
     the rule that GA102 sets up its levels with the function of
     kern_gmmu_fmt_ga10x.c, and the sparse values of its entries with TU102's
     function, whose step for GA100 alone does nothing on GA102, in
-    bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and the rule that
-    GA102 sets an invalidate's scope with GA100's function and its system memory
+    bar1_page_tables.h, page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, and the rule that GA102
+    sets an invalidate's scope with GA100's function and its system memory
     barrier and acknowledgement with a stub, in bar1.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp
     It carries no notice of its own and is covered by the package's COPYING,
@@ -443,8 +452,9 @@ src/nvidia/generated/g_kern_gmmu_nvoc.c
 
 src/nvidia/src/kernel/gpu/mmu/arch/turing/kern_gmmu_tu102.c
     that TU102's function for the sparse values of entries leaves them to
-    GV100's, in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and the steps of an
+    GV100's, in bar1_page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp, and the steps of an
     invalidate of one root page directory's cached translations: a wait for any
     invalidate still running, the root's offset in 4 KiB units written to the
     first two registers with its aperture in the first, the invalidate's value
@@ -517,27 +527,22 @@ src/common/inc/swref/published/ampere/ga100/dev_vm.h
 
 src/nvidia/src/kernel/gpu/mmu/arch/volta/kern_gmmu_gv100.c
     that GV100's function for the sparse values of entries leaves them to
-    GM200's, in bar1_page_tables.h, bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    GM200's, in bar1_page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/turing/tu102/dev_mmu.h
     the page kind 0, NVIDIA's kind for memory laid out row by row, in
-    bar1_page_tables.h
+    bar1_page_tables.h and page_tables.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
-
-src/nvidia/src/kernel/gpu/mmu/kern_gmmu.c
-    that NVIDIA's driver places BAR1's page directories and page tables in video
-    memory by default, in bar1_page_tables.h
-    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/mem_mgr/gpu_vaspace.c
     that NVIDIA's driver makes sparse all of BAR1's address space when it sets
-    the space up, and each range of it the driver reserves or unmaps, in
-    bar1_page_tables.h, that NVIDIA's driver flushes a BAR's address space
-    before it unmaps a range of it, in video_memory.h, that NVIDIA's driver
-    invalidates an address space's cached translations through the root page
-    directory it holds for the space, in bar1.h, bar1.cpp,
+    the space up, in bar1_page_tables.h, that NVIDIA's driver flushes a BAR's
+    address space before it unmaps a range of it, in video_memory.h, that
+    NVIDIA's driver invalidates an address space's cached translations through
+    the root page directory it holds for the space, in bar1.h, bar1.cpp,
     kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_video_memory.test.cpp, and that it gives the
     invalidate the scope of every TLB but those of NVLink for a space not marked
@@ -547,25 +552,18 @@ src/nvidia/src/kernel/mem_mgr/gpu_vaspace.c
     SPDX-FileCopyrightText: Copyright (c) 2013-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mmu/gmmu_walk.c
-    NVIDIA's note that a BAR's directories and page tables in system memory can
-    deadlock PCIe transactions, in bar1_page_tables.h, that NVIDIA's driver sets
-    a directory entry's volatile bit from the memory of the table it names, in
-    bar1_page_tables.h, and that NVIDIA's driver writes the sparse value of an
-    entry with two halves to make a level 0 directory entry sparse, in
-    bar1_page_tables.cpp and
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    that NVIDIA's driver sets a directory entry's volatile bit from the memory
+    of the table it names, in bar1_page_tables.h, and that NVIDIA's driver
+    writes the sparse value of an entry with two halves to make a level 0
+    directory entry sparse, in page_tables.cpp,
+    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_page_tables.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-src/nvidia/src/libraries/mmu/mmu_walk.c
-    that NVIDIA's driver allocates each page table only once a mapping needs it,
-    in bar1_page_tables.h
-    SPDX-FileCopyrightText: Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-
 src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c
-    that NVIDIA's driver gives a boot console's memory 4 KiB pages, in
-    bar1_page_tables.h, that when it keeps video memory for a boot console it
-    takes the firmware's region 0 whole, from wherever region 0 starts, as the
-    console's memory, in bar1_page_tables.h, bar1_page_tables.cpp and
+    that when NVIDIA's driver keeps video memory for a boot console it takes the
+    firmware's region 0 whole, from wherever region 0 starts, as the console's
+    memory, in bar1_page_tables.h, bar1_page_tables.cpp and
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp, and that it takes
     region 0 whether or not the firmware reports it reserved, in
     bar1_page_tables.h
@@ -573,19 +571,15 @@ src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c
 
 src/nvidia/src/kernel/gpu/mem_mgr/mem_desc.c
     that NVIDIA's driver takes memory as volatile only when it is system memory
-    the card does not cache, so never video memory, and that a part of memory it
-    describes keeps the page size of the memory it is part of, in
-    bar1_page_tables.h
+    the card does not cache, so never video memory, in bar1_page_tables.h
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mem_mgr/arch/maxwell/virt_mem_allocator_gm107.c
-    that a mapping asking for no page size maps memory of 4 KiB pages in 4 KiB
-    pages, in bar1_page_tables.h, that NVIDIA's driver sets the volatile bit of
-    a page table entry only for memory the card does not cache, so never for
-    video memory, in bar1_page_tables.h, and that NVIDIA's driver maps BAR1 in
-    whole pages of 64 KiB or 128 KiB, mapping the rest of the last onto the
-    memory's first pages, in
-    kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
+    that NVIDIA's driver sets the volatile bit of a page table entry only for
+    memory the card does not cache, so never for video memory, in
+    bar1_page_tables.h, and that NVIDIA's driver maps BAR1 in whole pages of 64
+    KiB or 128 KiB, mapping the rest of the last onto the memory's first pages,
+    in kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/turing/tu102/dev_bus.h
