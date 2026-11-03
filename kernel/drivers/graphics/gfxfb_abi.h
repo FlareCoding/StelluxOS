@@ -310,14 +310,15 @@ struct gfxfb_cursor_position {
     uint32_t reserved; // must be zero
 };
 
-// One event as `read` returns it. An output event holds its type and output, with every other field zero
+// An event as `read` returns it. An output event is zero but for its type and output. A latched present's frame exceeds
+// the last report since its output lit, and its frame and time are estimates when no serviced vertical blank carried it
 struct gfxfb_event {
     uint32_t type;         // GFXFB_EVENT_*
     uint32_t output;       // the output the present was for, or the output that changed
     uint32_t status;       // GFXFB_PRESENT_* in a present event, how the present ended
     uint32_t handle;       // the handle the present named, 0 for the output's base buffer
-    uint64_t frame;        // the output's vertical blanks since it was lit, counted at the latch, 0 unless latched
-    uint64_t timestamp_ns; // when the latching vertical blank began, on the kernel's monotonic clock, 0 unless latched
+    uint64_t frame;        // at the latch, the output's vertical blanks since it was lit, as above, 0 unless latched
+    uint64_t timestamp_ns; // when the latching vertical blank began, as above, on the monotonic clock, 0 unless latched
 };
 
 static_assert(sizeof(gfxfb_info) == 40, "gfxfb_info layout");

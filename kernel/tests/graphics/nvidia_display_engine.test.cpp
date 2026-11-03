@@ -61,8 +61,10 @@ using drivers::nvidia::HEAD_LIGHT_FIXED_METHODS;
 using drivers::nvidia::INSTANCE_MEMORY_BYTES;
 using drivers::nvidia::LOOK_UP_TABLE_SURFACE_BYTES;
 using drivers::nvidia::look_up_table_word;
+using drivers::nvidia::mode_times;
 using drivers::nvidia::NO_HEAD;
 using drivers::nvidia::NO_OUTPUT;
+using drivers::nvidia::NOTIFIER_SLOTS;
 using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
 using drivers::nvidia::PUSH_BUFFER_BYTES;
@@ -200,8 +202,10 @@ static constexpr uint64_t DOUBLE_PAGE_BYTES = 0x1000;
 // The core channel's area, where `g_channel_areas` begins, holding its PUT, GET and armed state
 static uint32_t* const g_core_channel_registers = g_channel_areas;
 
-// The object under test, which its instance memory's copy of the hash table makes too large for a test's stack
+// The object under test, which its instance memory's copy of the hash table makes too large for a test's stack, and
+// the engine last built there, null before the first
 alignas(display_engine) static uint8_t g_engine_bytes[sizeof(display_engine)];
+static display_engine* g_built_engine = nullptr;
 
 // Two display ids, which are outputs 0 and 1 when both are supported
 static constexpr uint32_t OUTPUT_0_ID = 0x100;
@@ -997,15 +1001,127 @@ struct display_engine_test_access {
     ) {
         return engine.take_down(heads, present_windows, active, lit);
     }
+
+    static uint8_t lit_window(const display_engine& engine) {
+        return engine.m_lit_window;
+    }
+
+    static rm::handle window_notifier_context_dma(const display_engine& engine) {
+        return engine.m_window_notifier_context_dma;
+    }
+
+    static uint64_t window_notifier_address(const display_engine& engine) {
+        return engine.m_window_notifier.physical_address();
+    }
+
+    static bool has_queued_present(const display_engine& engine) {
+        return engine.m_has_queued_present;
+    }
+
+    static uint64_t last_reported_frame(const display_engine& engine) {
+        return engine.m_last_reported_frame;
+    }
+
+    static bool is_latch_check_scheduled(const display_engine& engine) {
+        return timer::is_pending(&engine.m_latch_check_timer);
+    }
+
+    static bool is_deadline_scheduled(const display_engine& engine) {
+        return timer::is_pending(&engine.m_deadline_timer);
+    }
+
+    static void set_mode_times(display_engine& engine, const mode_times& times) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
+            engine.m_mode_times = times;
+            sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
+        });
+    }
+
+    // Moves the queued present's deadline to `deadline_ns` but not its timer, for `run_deadline` to decide by
+    static void move_deadline(display_engine& engine, uint64_t deadline_ns) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
+            engine.m_queued_deadline_ns = deadline_ns;
+            sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
+        });
+    }
+
+    // Moves the queued present's deadline and its timer out of reach, so only the test ends the present. True when
+    // the timer was scheduled
+    static bool hold_deadline(display_engine& engine) {
+        bool was_scheduled = false;
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
+            engine.m_queued_deadline_ns = ~0ull;
+            was_scheduled = timer::schedule(&engine.m_deadline_timer, ~0ull);
+            sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
+        });
+        return was_scheduled;
+    }
+
+    static uint64_t queued_deadline_ns(const display_engine& engine) {
+        return engine.m_queued_deadline_ns;
+    }
+
+    static uint64_t deadline_timer_ns(const display_engine& engine) {
+        return engine.m_deadline_timer.deadline_ns;
+    }
+
+    static uint64_t latch_check_timer_ns(const display_engine& engine) {
+        return engine.m_latch_check_timer.deadline_ns;
+    }
+
+    static uint64_t vertical_blank_ns(const display_engine& engine) {
+        return engine.m_vertical_blank_ns;
+    }
+
+    static void set_last_estimate_log_ns(display_engine& engine, uint64_t log_ns) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
+            engine.m_last_estimate_log_ns = log_ns;
+            sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
+        });
+    }
+
+    // Has `engine` report the presents it ends to `record` in place of gfxfb
+    static void set_present_done(
+        display_engine& engine,
+        void (*record)(gfxfb::display*, uint32_t, const gfxfb::present_result&)
+    ) {
+        engine.m_present_done = record;
+    }
+
+    // Cancels both timers of an engine about to be rebuilt over, so neither fires into the next
+    static void cancel_timers(display_engine& engine) {
+        RUN_ELEVATED({
+            timer::cancel(&engine.m_latch_check_timer);
+            timer::cancel(&engine.m_deadline_timer);
+        });
+    }
+
+    static void run_latch_check(display_engine& engine) {
+        display_engine::check_latch(&engine.m_latch_check_timer);
+    }
+
+    static void run_deadline(display_engine& engine) {
+        display_engine::expire_deadline(&engine.m_deadline_timer);
+    }
 };
 
 } // namespace drivers::nvidia
 
 using drivers::nvidia::display_engine_test_access;
 
-// An engine over `fw` and `memory`, built in `g_engine_bytes`, giving its wait for the notifier no time
+// An engine over `fw` and `memory`, built in `g_engine_bytes` once the timers of the engine built there before are
+// cancelled, so neither fires into it, giving its wait for the notifier no time
 static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memory) {
-    display_engine& engine = *new (g_engine_bytes) display_engine(fw, memory);
+    if (g_built_engine != nullptr) {
+        display_engine_test_access::cancel_timers(*g_built_engine);
+    }
+
+    g_built_engine = new (g_engine_bytes) display_engine(fw, memory);
+    display_engine& engine = *g_built_engine;
     display_engine_test_access::set_notifier_wait(engine, 0);
     return engine;
 }
@@ -2661,6 +2777,9 @@ static constexpr uint32_t TABLE_WINDOW_BINDING_MAP = 6;
 static constexpr uint32_t TABLE_CORE_UNBINDING_MAP = 7;
 static constexpr uint32_t TABLE_REQUEST            = 2;
 
+// The window notifier's binding, the mapping after the table's window binding when that succeeds
+static constexpr uint32_t WINDOW_NOTIFIER_BINDING_MAP = TABLE_WINDOW_BINDING_MAP + 1;
+
 // The records of a binding of `TIMING_1366_BY_768`'s base buffer at `SCANOUT_OFFSET` and of the table at
 // `LOOK_UP_TABLE_OFFSET`, each naming its first and last 256-byte unit
 static constexpr uint32_t BASE_BUFFER_RECORD[] = {NVIDIA_VIDEO_MEMORY_WORD_0, 0x10000, 0, 0x141FF, 0};
@@ -2715,10 +2834,10 @@ TEST(nvidia_display_engine, set_up_binds_both_surfaces_to_the_windows_channel_an
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    rm::handle base_buffer_context_dma = FIRST_HANDLE + fw.handle_count - 2;
-    rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 1;
+    rm::handle base_buffer_context_dma = FIRST_HANDLE + fw.handle_count - 3;
+    rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 2;
 
-    EXPECT_EQ(used_entry_count(), 4u);
+    EXPECT_EQ(used_entry_count(), 5u);
     EXPECT_TRUE(binds(base_buffer_context_dma, OUTPUT_1_WINDOW_CHANNEL, 1, BASE_BUFFER_RECORD));
     EXPECT_TRUE(binds(table_context_dma, CORE_CHANNEL, 2, TABLE_RECORD));
     EXPECT_TRUE(binds(table_context_dma, OUTPUT_1_WINDOW_CHANNEL, 2, TABLE_RECORD));
@@ -2734,13 +2853,84 @@ TEST(nvidia_display_engine, set_up_binds_both_surfaces_to_the_windows_channel_an
     ));
 
     EXPECT_EQ(engine.release(), OK);
-    EXPECT_EQ(used_entry_count(), 4u);
+    EXPECT_EQ(used_entry_count(), 5u);
     EXPECT_EQ(memory.scanout_releases, 0u);
     EXPECT_EQ(memory.general_releases, 0u);
 }
 
-// Output 0 on head 1 has both surfaces bound to its window's channel, window 3's, number 4, rather than head 1's or
-// window 0's, the table bound to the core channel as well
+// The window notifier's context DMA, the set-up's last new handle, is bound to the lit window's channel in the record
+// after the surfaces', a snooped system memory page as the core channel's notifier is, and logged
+TEST(nvidia_display_engine, set_up_binds_the_window_notifier_to_the_lit_windows_channel) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up_logged(engine), OK);
+
+    rm::handle notifier_context_dma = FIRST_HANDLE + fw.handle_count - 1;
+    EXPECT_EQ(display_engine_test_access::window_notifier_context_dma(engine), notifier_context_dma);
+    uint32_t entry = entry_of(notifier_context_dma);
+    ASSERT_NE(entry, NVIDIA_HASH_ENTRIES);
+
+    uint32_t client_bits = TEST_CLIENT & NVIDIA_CLIENT_MASK;
+    uint32_t record_bits = (NVIDIA_FIRST_RECORD_FIELD + 3) << NVIDIA_RECORD_FIELD_SHIFT;
+    uint32_t channel_bits = OUTPUT_1_WINDOW_CHANNEL << NVIDIA_CHANNEL_SHIFT;
+    EXPECT_EQ(instance_word(entry * NVIDIA_ENTRY_BYTES + sizeof(uint32_t)), client_bits | record_bits | channel_bits);
+    EXPECT_EQ(instance_word(NVIDIA_FIRST_RECORD_OFFSET + 3 * NVIDIA_RECORD_BYTES), NVIDIA_SNOOPED_PAGES_WORD_0);
+    EXPECT_TRUE(engine_log_contains("nvidia: window 0's notifier lies at physical address 0x"));
+
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A window notifier binding finding no room lights output 0, the boot head's, on head 1 through window 3 with presents
+// unsupported and no notifier, logged, and one failing otherwise fails the set-up with its error
+TEST(nvidia_display_engine, set_up_lights_with_presents_unsupported_when_the_window_notifier_finds_no_room) {
+    struct failure {
+        int32_t error;
+        int32_t result;
+    };
+
+    const failure failures[] = {
+        {ERR_NO_MEMORY, OK},
+        {ERR_TIMEOUT, ERR_TIMEOUT},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        show_output_0_on_head_1(fw);
+        put_timing_first(TIMING_1366_BY_768);
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
+        memory.failing_general_map = WINDOW_NOTIFIER_BINDING_MAP;
+        memory.general_map_result = failed.error;
+        display_engine& engine = new_engine(fw, memory);
+
+        bool is_shortage = failed.error == ERR_NO_MEMORY;
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_EQ(engine.has_lit_output(), is_shortage);
+        EXPECT_EQ(display_engine_test_access::window_notifier_context_dma(engine), 0u);
+        EXPECT_FALSE(engine_log_contains("nvidia: window 3's notifier lies at"));
+        EXPECT_EQ(
+            engine_log_contains("nvidia: window 3 has no notifier, so presents on its output are unsupported"),
+            is_shortage
+        );
+
+        if (is_shortage) {
+            engine.turn_on_flips();
+            gfxfb::buffer* base = engine.base_buffer(0);
+            ASSERT_NOT_NULL(base);
+            EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
+            EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::OK);
+        }
+
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// Output 0 on head 1 has both surfaces and the window notifier bound to its window's channel, window 3's, number 4,
+// rather than head 1's or window 0's, the table bound to the core channel as well
 TEST(nvidia_display_engine, set_up_binds_head_1s_surfaces_to_window_3s_channel) {
     engine_firmware fw;
     show_output_0_on_head_1(fw);
@@ -2750,8 +2940,8 @@ TEST(nvidia_display_engine, set_up_binds_head_1s_surfaces_to_window_3s_channel) 
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    rm::handle base_buffer_context_dma = FIRST_HANDLE + fw.handle_count - 2;
-    rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 1;
+    rm::handle base_buffer_context_dma = FIRST_HANDLE + fw.handle_count - 3;
+    rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 2;
     EXPECT_TRUE(binds(base_buffer_context_dma, HEAD_1_WINDOW_CHANNEL, 1, BASE_BUFFER_RECORD));
     EXPECT_TRUE(binds(table_context_dma, CORE_CHANNEL, 2, TABLE_RECORD));
     EXPECT_TRUE(binds(table_context_dma, HEAD_1_WINDOW_CHANNEL, 2, TABLE_RECORD));
@@ -2762,6 +2952,18 @@ TEST(nvidia_display_engine, set_up_binds_head_1s_surfaces_to_window_3s_channel) 
     EXPECT_TRUE(engine_log_contains(
         "nvidia: the look-up table surface is bound to the core channel and window 3's channel as context DMA 0x"
     ));
+
+    rm::handle notifier_context_dma = FIRST_HANDLE + fw.handle_count - 1;
+    EXPECT_EQ(display_engine_test_access::window_notifier_context_dma(engine), notifier_context_dma);
+    uint32_t entry = entry_of(notifier_context_dma);
+    ASSERT_NE(entry, NVIDIA_HASH_ENTRIES);
+
+    uint32_t client_bits = TEST_CLIENT & NVIDIA_CLIENT_MASK;
+    uint32_t record_bits = (NVIDIA_FIRST_RECORD_FIELD + 3) << NVIDIA_RECORD_FIELD_SHIFT;
+    uint32_t channel_bits = HEAD_1_WINDOW_CHANNEL << NVIDIA_CHANNEL_SHIFT;
+    EXPECT_EQ(instance_word(entry * NVIDIA_ENTRY_BYTES + sizeof(uint32_t)), client_bits | record_bits | channel_bits);
+    EXPECT_EQ(instance_word(NVIDIA_FIRST_RECORD_OFFSET + 3 * NVIDIA_RECORD_BYTES), NVIDIA_SNOOPED_PAGES_WORD_0);
+    EXPECT_TRUE(engine_log_contains("nvidia: window 3's notifier lies at physical address 0x"));
 }
 
 // The table takes `LOOK_UP_TABLE_SURFACE_BYTES` of general memory at NVIDIA's alignment, its whole pages and nothing
@@ -2777,8 +2979,8 @@ TEST(nvidia_display_engine, set_up_fills_the_look_up_table_surface_with_nvidias_
     EXPECT_EQ(memory.general_requests, TABLE_REQUEST);
     EXPECT_EQ(memory.general_size, LOOK_UP_TABLE_SURFACE_BYTES);
     EXPECT_EQ(memory.general_alignment, NVIDIA_SURFACE_ALIGNMENT);
-    EXPECT_EQ(memory.general_maps, TABLE_WINDOW_BINDING_MAP);
-    EXPECT_EQ(memory.general_unmaps, TABLE_WINDOW_BINDING_MAP);
+    EXPECT_EQ(memory.general_maps, WINDOW_NOTIFIER_BINDING_MAP);
+    EXPECT_EQ(memory.general_unmaps, WINDOW_NOTIFIER_BINDING_MAP);
 
     EXPECT_EQ(memory.general_overruns, 0u);
     EXPECT_TRUE(engine_log_contains(
@@ -4887,9 +5089,9 @@ TEST(nvidia_display_engine, gfxfb_reads_at_most_gfxfb_outputs_max_outputs) {
     EXPECT_EQ(engine.release(), OK);
 }
 
-// The engine returns `gfxfb::ERR_UNSUPPORTED` for buffers, presents and the cursor, and a release of the base buffer
-// frees and unmaps nothing, leaving it the lit output's
-TEST(nvidia_display_engine, buffers_presents_and_the_cursor_are_unsupported_and_release_buffer_frees_nothing) {
+// The engine returns `gfxfb::ERR_UNSUPPORTED` for buffers and the cursor, and for presents while flips are off, even
+// once released, and a release of the base buffer frees and unmaps nothing, leaving it the lit output's
+TEST(nvidia_display_engine, buffers_cursors_and_flips_off_presents_are_unsupported_and_release_buffer_frees_nothing) {
     engine_firmware fw;
     engine_video_memory memory;
     ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
@@ -4913,6 +5115,7 @@ TEST(nvidia_display_engine, buffers_presents_and_the_cursor_are_unsupported_and_
     EXPECT_EQ(memory.scanout_unmaps, 1u);
     EXPECT_EQ(memory.scanout_releases, 0u);
     EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
 }
 
 // Once released, the lit output reads as dark with no base buffer and its flush fails with `gfxfb::ERR_DEVICE`,
@@ -5308,5 +5511,431 @@ TEST(nvidia_display_engine, vertical_blanks_count_on_the_head_lighting_output_1)
     head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
     EXPECT_FALSE(service_elevated(engine, regs, 1u << head));
     EXPECT_EQ(display_engine_test_access::frame_count(engine), 1u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A window notifier slot's begun and finished statuses in bits 31:30 of its first word, NVIDIA's
+// NV_DISP_NOTIFIER__0_STATUS values
+static constexpr uint32_t NVIDIA_SLOT_BEGUN    = 0x40000000;
+static constexpr uint32_t NVIDIA_SLOT_FINISHED = 0x80000000;
+
+// Mode times whose latch check falls 10 seconds after a vertical blank, within half of a 100-second period, so no
+// check a test schedules fires while it runs
+static constexpr mode_times SLOW_MODE_TIMES = {
+    .period_ns            = 100000000000,
+    .latch_check_delay_ns = 10000000000,
+    .has_latch_check      = true,
+};
+
+// The presents an engine ended since `start_recording_present_ends`, and the display, output and result of the last
+static uint32_t              g_present_end_count   = 0;
+static gfxfb::display*       g_present_end_display = nullptr;
+static uint32_t              g_present_end_output  = 0;
+static gfxfb::present_result g_present_end         = {};
+
+// Records a present's end where gfxfb's `present_done` would take it
+static void record_present_end(gfxfb::display* display, uint32_t output, const gfxfb::present_result& result) {
+    g_present_end_count++;
+    g_present_end_display = display;
+    g_present_end_output = output;
+    g_present_end = result;
+}
+
+// Has `engine` report the presents it ends to `record_present_end`, counting from 0
+static void start_recording_present_ends(display_engine& engine) {
+    g_present_end_count = 0;
+    display_engine_test_access::set_present_done(engine, record_present_end);
+}
+
+// Expects `count` ends recorded, the last from `g_built_engine` on `output` with `status`, `frame` and `timestamp_ns`
+static void expect_last_present_end(
+    uint32_t count,
+    uint32_t output,
+    uint32_t status,
+    uint64_t frame,
+    uint64_t timestamp_ns
+) {
+    EXPECT_EQ(g_present_end_count, count);
+    EXPECT_EQ(g_present_end_display, static_cast<gfxfb::display*>(g_built_engine));
+    EXPECT_EQ(g_present_end_output, output);
+    EXPECT_EQ(g_present_end.status, status);
+    EXPECT_EQ(g_present_end.frame, frame);
+    EXPECT_EQ(g_present_end.timestamp_ns, timestamp_ns);
+}
+
+// The first word of the lit window's notifier slot `slot`, through the kernel's mapping of all physical memory
+static uint32_t& notifier_slot_word(const display_engine& engine, uint32_t slot) {
+    uint64_t address = display_engine_test_access::window_notifier_address(engine);
+    uint32_t* words = static_cast<uint32_t*>(paging::phys_to_virt(address));
+    return words[slot * 4];
+}
+
+// Presents `base` on output 0 and holds the present's deadline out of reach, so only the test ends it
+static int32_t present_base_buffer(display_engine& engine, gfxfb::buffer* base) {
+    int32_t rc = engine.present(0, base, nullptr, 0);
+    if (rc == gfxfb::OK) {
+        EXPECT_TRUE(display_engine_test_access::hold_deadline(engine));
+    }
+
+    return rc;
+}
+
+// Services one vertical blank of the lit head, as its interrupt does
+static void service_lit_head(display_engine& engine) {
+    registers regs = engine_registers();
+    uint8_t head = display_engine_test_access::lit_head(engine);
+    head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
+    service_elevated(engine, regs, 1u << head);
+}
+
+// Starts keeping the log from an empty text, for a test to read the engine's lines
+static void start_keeping_engine_log() {
+    s_engine_log_bytes = 0;
+    log::set_backend(&ENGINE_LOG_BACKEND);
+}
+
+// Ends what `start_keeping_engine_log` began, leaving the kept text for the test to read
+static void stop_keeping_engine_log() {
+    log::set_backend(nullptr);
+}
+
+// A present refuses with nothing written: flips off, an output not lit, a size off the mode and a buffer not bound to
+// the window's channel in gfxfb's order, then a released engine
+TEST(nvidia_display_engine, a_present_refuses_in_gfxfbs_order_with_nothing_written) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+
+    gfxfb::buffer narrower = *base;
+    narrower.width--;
+    gfxfb::buffer wider = *base;
+    wider.width++;
+
+    gfxfb::buffer shorter = *base;
+    shorter.height--;
+    gfxfb::buffer taller = *base;
+    taller.height++;
+    gfxfb::buffer unbound = *base;
+
+    uint8_t window = display_engine_test_access::lit_window(engine);
+    uint32_t put = window_channel_word(window, CHANNEL_PUT);
+    EXPECT_EQ(engine.present(1, &narrower, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
+
+    engine.turn_on_flips();
+    EXPECT_EQ(engine.present(1, &narrower, nullptr, 0), gfxfb::ERR_DARK);
+
+    EXPECT_EQ(engine.present(0, &narrower, nullptr, 0), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.present(0, &wider, nullptr, 0), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.present(0, &shorter, nullptr, 0), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.present(0, &taller, nullptr, 0), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.present(0, &unbound, nullptr, 0), gfxfb::ERR_REFUSED);
+
+    EXPECT_EQ(window_channel_word(window, CHANNEL_PUT), put);
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+    EXPECT_FALSE(display_engine_test_access::is_deadline_scheduled(engine));
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(engine.present(1, &narrower, nullptr, 0), gfxfb::ERR_DEVICE);
+}
+
+// Expects the window image a present wrote before `end` to show `surface` with the window's own interlock, naming
+// `slot` of the window notifier whose context DMA is `notifier`
+static void expect_present_image(
+    const engine_firmware& fw,
+    uint32_t end,
+    uint8_t window,
+    rm::handle surface,
+    rm::handle notifier,
+    uint32_t slot
+) {
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_SURFACE_CONTEXT_DMA), surface);
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_INTERLOCK_FLAGS), 0u);
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_WINDOW_INTERLOCK_FLAGS), 1u << window);
+
+    uint32_t notifier_control = slot << rm::NOTIFIER_CONTROL_OFFSET_SHIFT;
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_NOTIFIER_CONTEXT_DMA), notifier);
+    EXPECT_EQ(window_method_value(fw, end, rm::WINDOW_SET_NOTIFIER_CONTROL), notifier_control);
+}
+
+// Presents take the notifier's slots in turn, each kicked to the end of its image and ended latched at the vertical
+// blank finding its slot written, until the ninth needs GET: refused at offset 0, failing the display at GET all ones
+TEST(nvidia_display_engine, presents_take_the_notifier_slots_in_turn_until_the_push_buffer_needs_get) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    uint8_t window = display_engine_test_access::lit_window(engine);
+    window_channel_word(window, CHANNEL_GET) = 0;
+
+    rm::handle notifier = display_engine_test_access::window_notifier_context_dma(engine);
+    rm::handle surface = display_engine_test_access::base_buffer_context_dma(engine);
+    ASSERT_NE(notifier, 0u);
+
+    // The first image and eight presents leave 31 of the push buffer's 1012 writable words, too few for a ninth
+    for (uint32_t present = 0; present < 8; present++) {
+        uint32_t slot = present % NOTIFIER_SLOTS;
+        notifier_slot_word(engine, slot) = NVIDIA_SLOT_FINISHED;
+        uint64_t before_ns = clock::now_ns();
+        ASSERT_EQ(engine.present(0, base, nullptr, 0), gfxfb::OK);
+        uint64_t after_ns = clock::now_ns();
+        EXPECT_EQ(notifier_slot_word(engine, slot), 0u);
+
+        uint64_t deadline_ns = display_engine_test_access::queued_deadline_ns(engine);
+        EXPECT_TRUE(display_engine_test_access::is_deadline_scheduled(engine));
+        EXPECT_EQ(display_engine_test_access::deadline_timer_ns(engine), deadline_ns);
+        EXPECT_GE(deadline_ns, before_ns + gfxfb::GFXFB_PRESENT_TIMEOUT_NS);
+        EXPECT_LE(deadline_ns, after_ns + gfxfb::GFXFB_PRESENT_TIMEOUT_NS);
+        EXPECT_TRUE(display_engine_test_access::hold_deadline(engine));
+
+        uint32_t end = (present + 2) * WINDOW_IMAGE_BYTES;
+        EXPECT_EQ(window_channel_word(window, CHANNEL_PUT), end);
+        expect_present_image(fw, end, window, surface, notifier, slot);
+
+        notifier_slot_word(engine, slot) = NVIDIA_SLOT_BEGUN;
+        service_lit_head(engine);
+        EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+        EXPECT_FALSE(display_engine_test_access::is_deadline_scheduled(engine));
+        uint64_t blank_ns = display_engine_test_access::vertical_blank_ns(engine);
+        expect_last_present_end(present + 1, 0, gfxfb::GFXFB_PRESENT_LATCHED, present + 1, blank_ns);
+    }
+
+    uint32_t put = window_channel_word(window, CHANNEL_PUT);
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_REFUSED);
+    EXPECT_EQ(window_channel_word(window, CHANNEL_PUT), put);
+    EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::OK);
+
+    window_channel_word(window, CHANNEL_GET) = 0xFFFFFFFF;
+    start_keeping_engine_log();
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_DEVICE);
+    stop_keeping_engine_log();
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: writing a present into window 3's channel failed: -5, so the display failed"
+    ));
+    EXPECT_EQ(window_channel_word(window, CHANNEL_PUT), put);
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+    EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::ERR_DEVICE);
+
+    window_channel_word(window, CHANNEL_GET) = 0;
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_DEVICE);
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(g_present_end_count, 8u);
+}
+
+// A vertical blank finding the slot unwritten schedules the latch check, which leaves the present queued while the slot
+// stays unwritten and then ends it latched at that blank's frame and time, cancelling the deadline
+TEST(nvidia_display_engine, a_latch_check_ends_the_present_its_vertical_blank_found_unwritten) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    display_engine_test_access::set_mode_times(engine, SLOW_MODE_TIMES);
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+
+    ASSERT_EQ(present_base_buffer(engine, base), gfxfb::OK);
+    service_lit_head(engine);
+    uint64_t blank_ns = display_engine_test_access::vertical_blank_ns(engine);
+    EXPECT_TRUE(display_engine_test_access::has_queued_present(engine));
+    EXPECT_TRUE(display_engine_test_access::is_latch_check_scheduled(engine));
+    EXPECT_EQ(
+        display_engine_test_access::latch_check_timer_ns(engine),
+        blank_ns + SLOW_MODE_TIMES.latch_check_delay_ns
+    );
+
+    display_engine_test_access::run_latch_check(engine);
+    EXPECT_TRUE(display_engine_test_access::has_queued_present(engine));
+    EXPECT_EQ(g_present_end_count, 0u);
+
+    notifier_slot_word(engine, 0) = NVIDIA_SLOT_FINISHED;
+    display_engine_test_access::run_latch_check(engine);
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+    EXPECT_FALSE(display_engine_test_access::is_deadline_scheduled(engine));
+    expect_last_present_end(1, 0, gfxfb::GFXFB_PRESENT_LATCHED, 1, blank_ns);
+
+    // A vertical blank that reports cancels the check an earlier one scheduled
+    ASSERT_EQ(present_base_buffer(engine, base), gfxfb::OK);
+    service_lit_head(engine);
+    EXPECT_TRUE(display_engine_test_access::is_latch_check_scheduled(engine));
+
+    notifier_slot_word(engine, 1) = NVIDIA_SLOT_BEGUN;
+    service_lit_head(engine);
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+    EXPECT_FALSE(display_engine_test_access::is_latch_check_scheduled(engine));
+
+    blank_ns = display_engine_test_access::vertical_blank_ns(engine);
+    expect_last_present_end(2, 0, gfxfb::GFXFB_PRESENT_LATCHED, 3, blank_ns);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Before its deadline the timer leaves a present queued. At it, a present whose slot reads begun ends latched one past
+// the last report at the time the timer runs, with no vertical blank serviced, logging so at most once a second
+TEST(nvidia_display_engine, a_deadline_ends_a_present_its_head_took_latched_at_an_estimated_frame) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+
+    // The second estimate falls within a second of the last log, and the third two seconds after it
+    const uint64_t last_log_ago_ns[] = {0, 0, 2000 * NS_PER_MS};
+
+    // The frame each estimate's log names, one past the report before it
+    const char* const estimated_frames[] = {
+        "ended latched at an estimated frame 1 and time ",
+        "ended latched at an estimated frame 2 and time ",
+        "ended latched at an estimated frame 3 and time ",
+    };
+
+    for (uint32_t present = 0; present < 3; present++) {
+        ASSERT_EQ(present_base_buffer(engine, base), gfxfb::OK);
+        display_engine_test_access::run_deadline(engine);
+        EXPECT_TRUE(display_engine_test_access::has_queued_present(engine));
+
+        if (present > 0) {
+            uint64_t now_ns = clock::now_ns();
+            ASSERT_TRUE(now_ns > last_log_ago_ns[present]);
+            display_engine_test_access::set_last_estimate_log_ns(engine, now_ns - last_log_ago_ns[present]);
+        }
+
+        notifier_slot_word(engine, present) = NVIDIA_SLOT_BEGUN;
+        display_engine_test_access::move_deadline(engine, 0);
+
+        start_keeping_engine_log();
+        uint64_t before_ns = clock::now_ns();
+        display_engine_test_access::run_deadline(engine);
+        uint64_t after_ns = clock::now_ns();
+        stop_keeping_engine_log();
+
+        EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+        EXPECT_EQ(g_present_end_count, present + 1);
+        EXPECT_EQ(g_present_end_display, static_cast<gfxfb::display*>(&engine));
+        EXPECT_EQ(g_present_end_output, 0u);
+
+        EXPECT_EQ(g_present_end.status, gfxfb::GFXFB_PRESENT_LATCHED);
+        EXPECT_EQ(g_present_end.frame, present + 1);
+        EXPECT_GE(g_present_end.timestamp_ns, before_ns);
+        EXPECT_LE(g_present_end.timestamp_ns, after_ns);
+
+        bool must_log = present != 1;
+        EXPECT_EQ(engine_log_contains("output 0's present reached its deadline with its head holding"), must_log);
+        EXPECT_EQ(engine_log_contains(estimated_frames[present]), must_log);
+    }
+
+    EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::OK);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// At its deadline a present whose slot reads unwritten ends failed, cancelling its latch check, and fails the display,
+// so presents and flushes return `ERR_DEVICE`
+TEST(nvidia_display_engine, a_deadline_fails_the_display_for_a_present_its_head_never_took) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    display_engine_test_access::set_mode_times(engine, SLOW_MODE_TIMES);
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+
+    ASSERT_EQ(present_base_buffer(engine, base), gfxfb::OK);
+    service_lit_head(engine);
+    EXPECT_TRUE(display_engine_test_access::is_latch_check_scheduled(engine));
+
+    display_engine_test_access::move_deadline(engine, 0);
+    start_keeping_engine_log();
+    display_engine_test_access::run_deadline(engine);
+    stop_keeping_engine_log();
+
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+    EXPECT_FALSE(display_engine_test_access::is_latch_check_scheduled(engine));
+    expect_last_present_end(1, 0, gfxfb::GFXFB_PRESENT_FAILED, 0, 0);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0's present reached its deadline before its head took the buffer, so the display failed"
+    ));
+
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_DEVICE);
+    EXPECT_EQ(engine.present(1, base, nullptr, 0), gfxfb::ERR_DEVICE);
+    EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::ERR_DEVICE);
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(g_present_end_count, 1u);
+}
+
+// A release ends the queued present failed and cancels both timers
+TEST(nvidia_display_engine, release_ends_the_queued_present_and_cancels_its_timers) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    display_engine_test_access::set_mode_times(engine, SLOW_MODE_TIMES);
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+
+    ASSERT_EQ(present_base_buffer(engine, base), gfxfb::OK);
+    service_lit_head(engine);
+    EXPECT_TRUE(display_engine_test_access::is_latch_check_scheduled(engine));
+    EXPECT_TRUE(display_engine_test_access::is_deadline_scheduled(engine));
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+    EXPECT_FALSE(display_engine_test_access::is_latch_check_scheduled(engine));
+    EXPECT_FALSE(display_engine_test_access::is_deadline_scheduled(engine));
+    expect_last_present_end(1, 0, gfxfb::GFXFB_PRESENT_FAILED, 0, 0);
+}
+
+// Presents follow the lit output, here output 1 on head 0: one on output 0 is refused as dark, and one on output 1
+// ends there, latched at its head's vertical blank
+TEST(nvidia_display_engine, a_present_on_lit_output_1_ends_on_output_1) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    fw.boot_display_id = OUTPUT_1_ID;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(engine.has_lit_output());
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    gfxfb::buffer* base = engine.base_buffer(1);
+    ASSERT_NOT_NULL(base);
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_DARK);
+
+    ASSERT_EQ(engine.present(1, base, nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine));
+    notifier_slot_word(engine, 0) = NVIDIA_SLOT_BEGUN;
+    service_lit_head(engine);
+
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine));
+    uint64_t blank_ns = display_engine_test_access::vertical_blank_ns(engine);
+    expect_last_present_end(1, 1, gfxfb::GFXFB_PRESENT_LATCHED, 1, blank_ns);
     EXPECT_EQ(engine.release(), OK);
 }

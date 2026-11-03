@@ -3187,8 +3187,9 @@ src/nvidia-modeset/src/nvkms-headsurface.c
     flip completes, the vertical blank's callback able to run before LOADV sets
     it, so that a swapgroup flip's slot is read in a callback at RG line 1
     instead, and the slots flips take in turn, wrapping after the last, in
-    latch_rules.h, latch_rules.cpp and
-    kernel/tests/graphics/nvidia_latch_rules.test.cpp
+    latch_rules.h, latch_rules.cpp, window_notifier.h, display_engine.cpp,
+    kernel/tests/graphics/nvidia_latch_rules.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/include/nvkms-headsurface-priv.h
@@ -3198,8 +3199,11 @@ src/nvidia-modeset/include/nvkms-headsurface-priv.h
 
 src/common/sdk/nvidia/inc/class/clc67d.h
     the not begun, begun and finished statuses of a display notifier
-    (NV_DISP_NOTIFIER), in latch_rules.h, its not begun status, in
-    kernel/tests/graphics/nvidia_latch_rules.test.cpp, the class number
+    (NV_DISP_NOTIFIER), in latch_rules.h and window_notifier.cpp, its not begun
+    status, in kernel/tests/graphics/nvidia_latch_rules.test.cpp, a display
+    notifier's 16 bytes (NV_DISP_NOTIFIER_SIZEOF), in window_notifier.h,
+    kernel/tests/graphics/nvidia_window_notifier.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, the class number
     NVC67D_CORE_CHANNEL_DMA, which chip.cpp gives GA102's core channel, in
     chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
     kernel/tests/graphics/nvidia_core_channel.test.cpp and
@@ -3219,8 +3223,10 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     kernel/tests/graphics/nvidia_core_methods.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, a display notifier's
     status in bits 31:30 of its first word and its not begun (0), begun (1) and
-    finished (2) statuses, in completion_notifier.h, completion_notifier.cpp and
-    kernel/tests/graphics/nvidia_completion_notifier.test.cpp, the methods
+    finished (2) statuses, in completion_notifier.h, completion_notifier.cpp,
+    kernel/tests/graphics/nvidia_completion_notifier.test.cpp,
+    kernel/tests/graphics/nvidia_window_notifier.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, the methods
     NVC67D_UPDATE with its RELEASE_ELV in bit 0,
     NVC67D_SET_CONTEXT_DMA_NOTIFIER, NVC67D_SET_NOTIFIER_CONTROL with its MODE
     (WRITE_AWAKEN, 1), OFFSET and NOTIFY fields, NVC67D_SET_INTERLOCK_FLAGS,
@@ -3299,7 +3305,9 @@ src/nvidia-modeset/include/nvkms-types.h
     channel's completion notifier, 4 KiB, in completion_notifier.h,
     completion_notifier.cpp,
     kernel/tests/graphics/nvidia_completion_notifier.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and of a window
+    channel's notifier, in window_notifier.h and
+    kernel/tests/graphics/nvidia_window_notifier.test.cpp,
     NV_DP_READ_EDID_RETRIES, 18, and NV_DP_REREAD_EDID_DELAY_USEC, 500
     microseconds, the most times the modesetting module asks again for a
     DisplayPort monitor's EDID and the wait before each, in display_edid.h,

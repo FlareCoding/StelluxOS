@@ -19,10 +19,13 @@
 #include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
+#include "drivers/graphics/nvidia/latch_rules.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/video_memory.h"
+#include "drivers/graphics/nvidia/window_notifier.h"
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
+#include "timer/timer.h"
 
 namespace drivers::nvidia {
 
@@ -62,20 +65,20 @@ struct first_second_statistics {
  * `release`. The instance memory is never released once cleared, and nothing
  * frees any push buffer once allocated, since the display engine's registers
  * may name either from the moment its address is sent, and a channel released
- * with the hardware kept as it is stays allocated in the hardware. The
- * notifier's page is never freed either, as `completion_notifier` describes.
+ * with the hardware kept as it is stays allocated in the hardware. The two
+ * notifiers' pages are never freed either, as each notifier's class describes.
  * The engine also owns the channel of the window chosen to light first, that
- * channel's push buffer and queue of methods, the chosen output's base buffer
- * (the video memory the window is to scan out) and the look-up table surface
- * (the video memory holding the window's input table, which converts its
- * colors into the half-precision floats the display engine computes with, and
- * the head's output table, which converts them back for the link). `set_up`
- * binds each surface it keeps to the window's channel, and the look-up table
- * surface to the core channel too, keeping the context DMA it binds for the
- * methods naming it, and nothing frees a bound surface, since the display
- * engine may read it through the binding from then on, and the window's
- * channel, while released with the hardware kept as it is, stays allocated in
- * the hardware.
+ * channel's push buffer, queue of methods and notifier, the chosen output's
+ * base buffer (the video memory the window is to scan out) and the look-up
+ * table surface (the video memory holding the window's input table, which
+ * converts its colors into the half-precision floats the display engine
+ * computes with, and the head's output table, which converts them back for
+ * the link). `set_up` binds each surface it keeps to the window's channel,
+ * and the look-up table surface to the core channel too, keeping the context
+ * DMA it binds for the methods naming it, and nothing frees a bound surface,
+ * since the display engine may read it through the binding from then on, and
+ * the window's channel, while released with the hardware kept as it is, stays
+ * allocated in the hardware.
  *
  * The engine is also a `gfxfb::display`, which the driver registers with gfxfb
  * as `nvidia_gpu_driver` describes. Its outputs are the first
@@ -87,17 +90,19 @@ struct first_second_statistics {
  * BAR1 with `cacheable` false, so userland maps it write-combining. Every
  * other output reads as dark. No output relights or reports a cursor, and
  * `flush()` returns at once on the lit output, since its head scans the base
- * buffer itself. `create_buffer()`, `present()`, `set_cursor()` and
+ * buffer itself. `present()` takes only that base buffer, the one buffer bound
+ * to the window's channel. `create_buffer()`, `set_cursor()` and
  * `move_cursor()` are unsupported, and `release_buffer()` frees nothing, since
  * the only buffer handed out is the chosen output's base buffer, a bound
  * surface, which nothing frees. `read_output()`, `base_buffer()` and `flush()`
  * read the chosen output's state under its spinlock, which no holder keeps
- * across a wait, so they never sleep or wait on the card. Once `release` runs,
- * `read_output()` reads every output as dark and `flush()` fails with
- * `gfxfb::ERR_DEVICE`, but gfxfb keeps its record of the base buffer, since
- * `detach()` runs on the boot thread and only a task may report an output gone
- * dark, while BAR1 stops translating that buffer's address once `detach()`
- * restores BAR1's block register.
+ * across a wait, so they never sleep or wait on the card. Once the display
+ * fails, as `present()` says, or `release` runs, `flush()` and a supported
+ * `present()` fail with `gfxfb::ERR_DEVICE`. After `release`, `read_output()`
+ * reads every output as dark too, but gfxfb keeps its record of the base
+ * buffer, since `detach()` runs on the boot thread and only a task may report
+ * an output gone dark, while BAR1 stops translating that buffer's address
+ * once `detach()` restores BAR1's block register.
  */
 class display_engine : public gfxfb::display {
 public:
@@ -295,7 +300,7 @@ public:
      * until `release` returns, since the engine keeps a view of each of its
      * channels' areas until then.
      * @param card The card's DMA profile, for the push buffer's pages and the
-     * notifier's page.
+     * notifiers' pages.
      * @param chip The chip table's entry for the card's chip, whose display
      * entry gives the display's limits and classes, whether its heads report
      * output scalers and what the chip's DisplayPort links can do.
@@ -321,7 +326,9 @@ public:
      * `edid::monitor` or the core channel's push buffer cannot be allocated,
      * the error is `ERR_NO_MEMORY`, which is logged here, and when the
      * completion notifier's page cannot, `ERR_NO_MEMORY` too, logged as
-     * `completion_notifier::allocate` describes. A refused binding of the
+     * `completion_notifier::allocate` describes. When the window notifier's
+     * page or room for its binding cannot be had, the light goes on with
+     * presents unsupported, logged here. Any other refused binding of either
      * notifier fails the set-up with what `instance_memory::bind` returns,
      * such as `ERR_BAD_STATE` or `ERR_TIMEOUT` when the card does not take the
      * instance memory's mapping, logged as it describes. When GET does not
@@ -355,10 +362,10 @@ public:
      * returns `OK` unless the mode set's end fails other than with
      * `ERR_FIRMWARE`. The display's objects and the channels stay allocated
      * once allocated, even after a later step fails, until `release`, the
-     * completion notifier stays bound to the core channel once bound, each
-     * surface to the window's channel, and the look-up table surface to the
-     * core channel as well unless the set-up undoes that binding after a
-     * failed binding to the window's channel.
+     * completion notifier stays bound to the core channel once bound, the
+     * window notifier and each surface to the window's channel, and the
+     * look-up table surface to the core channel as well unless the set-up
+     * undoes that binding after a failed binding to the window's channel.
      */
     int32_t set_up(
         registers& regs,
@@ -368,20 +375,23 @@ public:
     );
 
     /**
-     * @brief Mark the engine released under the chosen output's spinlock, so
-     * `read_output()` reads every output as dark and `flush()` fails from then
-     * on, then drop the channels' queues of methods, so nothing writes a
-     * released channel's area, free the outputs' modes if `set_up` kept them,
-     * then release the chosen window's channel and then the core channel, each
-     * once `set_up` allocated it or the firmware may hold it after a failed
-     * allocation, as `release_display_channel` describes, then the display's
-     * objects, once `set_up` allocated them, as `release_display_objects`
-     * describes. The channels are released first, the window's before the
-     * core's, as NVIDIA's modesetting module releases them. While no update
-     * has been kicked, each is released with the hardware kept as it is, so
-     * the heads the boot firmware lit keep scanning out the boot framebuffer,
-     * and once one has, without keeping it, since the update changed the boot
-     * firmware's state. Its requests spin on the calling CPU as `set_up`'s do.
+     * @brief Under the chosen output's spinlock, cancel the latch check and
+     * deadline timers, end a queued present with `GFXFB_PRESENT_FAILED`,
+     * marking the display failed, and mark the engine released, so
+     * `read_output()` reads every output as dark and `flush()` and `present()`
+     * fail from then on, then drop the channels' queues of methods, so nothing
+     * writes a released channel's area, free the outputs' modes if `set_up`
+     * kept them, then release the chosen window's channel and then the core
+     * channel, each once `set_up` allocated it or the firmware may hold it
+     * after a failed allocation, as `release_display_channel` describes, then
+     * the display's objects, once `set_up` allocated them, as
+     * `release_display_objects` describes. The channels are released first,
+     * the window's before the core's, as NVIDIA's modesetting module releases
+     * them. While no update has been kicked, each is released with the
+     * hardware kept as it is, so the heads the boot firmware lit keep scanning
+     * out the boot framebuffer, and once one has, without keeping it, since
+     * the update changed the boot firmware's state. Its requests spin on the
+     * calling CPU as `set_up`'s do.
      * @return `OK` when every release succeeds or nothing is allocated, else
      * the window channel's error ahead of the core channel's and the core
      * channel's ahead of the objects', each logged as the release describes.
@@ -415,8 +425,10 @@ public:
      * @brief Service the vertical blanks pending on the heads whose bits are
      * set in `pending_heads`, as `pending_vertical_blanks` reads them, from
      * the card's interrupt handler. Each is cleared, and one on the lit
-     * output's head counts a frame, none after `release`, which leaves the lit
-     * head's interrupt enabled. Takes the output's spinlock and never sleeps.
+     * output's head counts a frame and runs the latch step, ending the queued
+     * present latched or scheduling the latch check, none after `release`,
+     * which leaves the lit head's interrupt enabled. Takes the output's
+     * spinlock and never sleeps.
      * @return true once, at the service completing the light's first second.
      * @note Privilege: **required**
      */
@@ -435,9 +447,18 @@ public:
         return gfxfb::ERR_UNSUPPORTED;
     }
 
-    int32_t present(uint32_t, gfxfb::buffer*, const gfxfb::gfxfb_rect*, uint32_t) override {
-        return gfxfb::ERR_UNSUPPORTED;
-    }
+    /**
+     * @brief Write an update showing `buf` into the lit window's channel, for
+     * its head to take at a vertical blank, ignoring the regions and waiting
+     * only for the output's spinlock. The interrupt handler or a timer ends the
+     * present by the latch rules (latch_rules.h), or `release` ends it failed.
+     * @return gfxfb's errors in its order: `ERR_UNSUPPORTED` with flips off or
+     * no window notifier, `ERR_DEVICE` once released or failed (a refused GET
+     * or a missed deadline fails the display), `ERR_DARK` off the lit output,
+     * `ERR_INVALID_ARG` off its mode's size, and `ERR_REFUSED` for a buffer
+     * not bound to the window's channel or a full push buffer.
+     */
+    int32_t present(uint32_t output, gfxfb::buffer* buf, const gfxfb::gfxfb_rect* regions, uint32_t count) override;
 
     int32_t set_cursor(uint32_t, const gfxfb::cursor_image&) override { return gfxfb::ERR_UNSUPPORTED; }
     int32_t move_cursor(uint32_t, int32_t, int32_t) override { return gfxfb::ERR_UNSUPPORTED; }
@@ -489,7 +510,7 @@ private:
     gfxfb::gfxfb_mode m_chosen_mode = {};
     gfxfb::buffer     m_userland_base_buffer = {};    // the base buffer as userland maps it, of 0 bytes while unmapped
     bool              m_is_lit = false;               // set by the light, read bare only before the driver task starts
-    bool              m_is_released = false;          // set by `release`, after which `flush()` fails
+    bool              m_is_released = false;          // set by `release`, after which `flush()` and `present()` fail
     sync::spinlock    m_output_lock = sync::SPINLOCK_INIT;
 
     // The lit output's vertical blanks, which the light starts and the interrupt handler counts under `m_output_lock`
@@ -506,9 +527,61 @@ private:
     uint8_t            m_head_count = 0;
     sync::atomic<bool> m_are_flips_on; // stored with release, loaded with acquire
 
+    // The lit window's notifier, its page allocated and its context DMA bound to the window's channel by `set_up`
+    window_notifier m_window_notifier;
+    rm::handle      m_window_notifier_context_dma = 0; // 0 until `set_up` binds it
+
+    // The lit output's queued present and the latch rules' state, which the light and `present` set and the handler's
+    // latch step, the two timers' callbacks and `release` end, all under `m_output_lock`
+    uint8_t               m_lit_window = 0;
+    mode_times            m_mode_times = {};
+    bool                  m_has_queued_present = false;
+    uint32_t              m_queued_slot = 0;
+    uint64_t              m_queued_deadline_ns = 0;
+    uint32_t              m_next_slot = 0;
+    uint64_t              m_check_frame = 0;
+    uint64_t              m_last_reported_frame = 0;
+    uint64_t              m_last_estimate_log_ns = 0; // when the deadline last logged an estimated latch, 0 if never
+    sync::atomic<bool>    m_is_display_failed;        // set once for good, stored with release, loaded with acquire
+    timer::deadline_timer m_latch_check_timer;
+    timer::deadline_timer m_deadline_timer;
+
+    // Where each ended present is reported, gfxfb's `present_done` outside tests
+    void (*m_present_done)(gfxfb::display*, uint32_t, const gfxfb::present_result&) = gfxfb::present_done;
+
     // Counts a vertical blank of the lit output serviced at `now_ns`, under `m_output_lock`, and returns whether it
     // completes the light's first second
     bool count_vertical_blank(uint64_t now_ns, uint32_t position);
+
+    /**
+     * @brief Write `buf`'s present for `present`, under `m_output_lock`,
+     * setting `write_rc` to the channel's error when a write fails the
+     * display, for `present` to log once unlocked.
+     * @return As `present` returns.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t queue_present(uint32_t output, const gfxfb::buffer& buf, int32_t& write_rc);
+
+    // The lit output's flip state as the latch rules read it, under `m_output_lock`
+    latch_inputs read_latch_inputs() const;
+
+    /**
+     * @brief Apply the latch step to the vertical blank just counted, under
+     * `m_output_lock`.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void run_latch_step();
+
+    /**
+     * @brief End the queued present with `status`, recording a latch's report
+     * as the last, under `m_output_lock`.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void end_present(uint32_t status, const latch_report& report);
+
+    // The two timers' callbacks, each taking `m_output_lock` elevated
+    static void check_latch(timer::deadline_timer* timer);
+    static void expire_deadline(timer::deadline_timer* timer);
 
     // Brings the engine up for the chosen output as `set_up` describes, from the mode set's start to its end
     int32_t bring_up(
