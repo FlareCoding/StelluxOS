@@ -80,9 +80,10 @@ struct chip_displayport {
  * The chip's display engine, the part of the GPU that reads images from memory
  * and sends them to monitors, as far as the driver depends on it. Its channels
  * are the queues of commands it reads from memory. The firmware reports which
- * of the chip's windows this GPU has, as `read_present_windows` reads them,
- * and which of its heads the engine can use and the heads each window may
- * serve, as `read_display_heads` reads them.
+ * of the chip's heads and windows this GPU has, as
+ * `read_present_heads_and_windows` reads them, and which of its heads the
+ * engine can use and the heads each window may serve, as `read_display_heads`
+ * reads them.
  */
 struct chip_display {
     uint8_t  head_count;         // the chip's heads, numbered from 0, at most `DISPLAY_HEADS_MAX`

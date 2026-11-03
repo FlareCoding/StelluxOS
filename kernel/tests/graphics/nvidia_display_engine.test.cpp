@@ -11,6 +11,7 @@
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/core_channel.h"
 #include "drivers/graphics/nvidia/core_methods.h"
+#include "drivers/graphics/nvidia/cursor_channel.h"
 #include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_engine.h"
@@ -36,6 +37,7 @@ TEST_SUITE(nvidia_display_engine);
 
 using drivers::nvidia::active_heads;
 using drivers::nvidia::base_buffer_pitch;
+using drivers::nvidia::build_cursor_methods;
 using drivers::nvidia::build_window_usage_methods;
 using drivers::nvidia::CHANNEL_GET;
 using drivers::nvidia::CHANNEL_PUT;
@@ -46,6 +48,10 @@ using drivers::nvidia::context_tlbs;
 using drivers::nvidia::CORE_CHANNEL_AREA;
 using drivers::nvidia::CORE_INITIAL_METHODS_PER_HEAD;
 using drivers::nvidia::cpu_mapping;
+using drivers::nvidia::cursor_channel;
+using drivers::nvidia::cursor_control_page;
+using drivers::nvidia::CURSOR_METHODS;
+using drivers::nvidia::cursor_methods;
 using drivers::nvidia::display_channel;
 using drivers::nvidia::display_engine;
 using drivers::nvidia::display_heads;
@@ -98,6 +104,7 @@ static constexpr rm::handle FIRST_HANDLE = 0x0005000D;
 static constexpr uint32_t TEST_DISPLAY_CLASS        = 0xC67F;
 static constexpr uint32_t TEST_CORE_CHANNEL_CLASS   = 0xC67E;
 static constexpr uint32_t TEST_WINDOW_CHANNEL_CLASS = 0xC67D;
+static constexpr uint32_t TEST_CURSOR_CHANNEL_CLASS = 0xC67A;
 
 // A card's full address width, and a limit `dma::alloc_pages` refuses, so a set-up for a card limited to it fails at
 // the push buffer
@@ -179,10 +186,10 @@ static uint8_t g_mapped_video_memory[sizeof(g_video_memory) + GENERAL_GUARD_BYTE
 // The first display register the engine reaches, head 0's timing event (NVIDIA's NV_PDISP_FE_EVT_STAT_HEAD_TIMING)
 static constexpr uint32_t DISPLAY_REGISTERS_START = 0x611800;
 
-// The words standing in for BAR0 from the heads' timing registers to the end of the last window channel's area
-static uint32_t g_display_registers[(window_channel_area(CHIP_WINDOWS) - DISPLAY_REGISTERS_START) / sizeof(uint32_t)];
+// The words standing in for BAR0 from the heads' timing registers to the end of the last head's cursor control page
+static uint32_t g_display_registers[(cursor_control_page(CHIP_HEADS) - DISPLAY_REGISTERS_START) / sizeof(uint32_t)];
 
-// The words from the core channel's area to the end of the last window channel's, within `g_display_registers`
+// The words from the core channel's area to the end of the last head's cursor control page, in `g_display_registers`
 static uint32_t* const g_channel_areas =
     g_display_registers + (CORE_CHANNEL_AREA - DISPLAY_REGISTERS_START) / sizeof(uint32_t);
 
@@ -318,6 +325,8 @@ public:
     uint8_t    heads = DOUBLE_HEADS;
     uint8_t    windows_per_head = 1;          // the windows each head has, head 0's first, then head 1's and so on
     uint32_t   present_windows = (1u << CHIP_WINDOWS) - 1; // the windows reported present
+    uint32_t   present_heads = 0;             // the heads reported present, none so only cursor tests get a cursor
+    uint32_t   cursor_instance = 0;           // the instance the last cursor channel's allocation carried
     rm::handle reported_client = TEST_CLIENT; // the client `client()` reports, 0 making `bind` refuse
     uint64_t   push_buffer_address = 0;       // the address `CONTROL_SET_DISPLAY_PUSH_BUFFER` last carried
     uint32_t   push_buffer_class = 0;         // and the channel class and instance it carried with it
@@ -363,7 +372,11 @@ public:
     uint32_t   put_at_link = 0;               // the core channel's PUT when that request came
     uint32_t   get_at_stream = 0;             // the core channel's GET from the stream's attributes, 0 for the default
 
-    int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void*, size_t) override {
+    int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void* params, size_t) override {
+        if (class_id == TEST_CURSOR_CHANNEL_CLASS) {
+            cursor_instance = static_cast<rm::cursor_channel_params*>(params)->channel_instance;
+        }
+
         return answer(kind::allocation, object, class_id);
     }
 
@@ -436,14 +449,22 @@ public:
     int32_t internal_control(uint32_t command, void* params, size_t) override {
         int32_t rc = answer(kind::internal_control, 0, command);
         if (rc == OK && command == rm::CONTROL_GET_DISPLAY_STATIC_INFO) {
-            static_cast<rm::display_static_info_params*>(params)->present_windows = present_windows;
+            rm::display_static_info_params* info = static_cast<rm::display_static_info_params*>(params);
+            info->system_capabilities = present_heads;
+            info->present_windows = present_windows;
         }
 
         if (command != rm::CONTROL_SET_DISPLAY_PUSH_BUFFER) {
             return rc;
         }
 
+        // A cursor channel's control names no push buffer, so it leaves the recorded one alone
         const rm::display_push_buffer_params* location = static_cast<rm::display_push_buffer_params*>(params);
+        bool is_refused_class = refused_push_buffer_class != 0 && location->channel_class == refused_push_buffer_class;
+        if (location->channel_class == TEST_CURSOR_CHANNEL_CLASS) {
+            return is_refused_class ? ERR_FIRMWARE : rc;
+        }
+
         push_buffer_address = location->address;
         push_buffer_class = location->channel_class;
         push_buffer_instance = location->channel_instance;
@@ -451,7 +472,6 @@ public:
             core_push_buffer_address = location->address;
         }
 
-        bool is_refused_class = refused_push_buffer_class != 0 && push_buffer_class == refused_push_buffer_class;
         return is_refused_class ? ERR_FIRMWARE : rc;
     }
 
@@ -524,6 +544,28 @@ public:
         return releases;
     }
 
+    // The index of the first allocation of `class_id`, or `MAX_CALLS` when none was made
+    uint32_t allocation_index(uint32_t class_id) const {
+        for (uint32_t i = 0; i < recorded(); i++) {
+            if (calls[i].made == kind::allocation && calls[i].number == class_id) {
+                return i;
+            }
+        }
+
+        return MAX_CALLS;
+    }
+
+    // The index of the first release of `object`, or `MAX_CALLS` when none was made
+    uint32_t release_index(rm::handle object) const {
+        for (uint32_t i = 0; i < recorded(); i++) {
+            if (calls[i].made == kind::release && calls[i].object == object) {
+                return i;
+            }
+        }
+
+        return MAX_CALLS;
+    }
+
     // Whether the calls from `first` on release `object` exactly once
     bool releases_once(uint32_t first, rm::handle object) const {
         uint32_t releases = 0;
@@ -578,7 +620,7 @@ private:
     }
 
     // The bytes of the light's update on `head` after a shutdown update: the head's fixed methods, a usage bound for
-    // each present window serving it, the lit window's three usage methods and the update's five
+    // each present window serving it, its cursor's methods, the lit window's three usage methods and the update's five
     static uint32_t light_update_bytes(uint32_t windows, uint8_t windows_per_head, uint8_t head) {
         uint32_t served = 0;
         for (uint8_t window = 0; window < CHIP_WINDOWS; window++) {
@@ -588,7 +630,7 @@ private:
             }
         }
 
-        uint32_t methods = HEAD_LIGHT_FIXED_METHODS + served + WINDOW_USAGE_METHODS + 5;
+        uint32_t methods = HEAD_LIGHT_FIXED_METHODS + served + CURSOR_METHODS + WINDOW_USAGE_METHODS + 5;
 
         return methods * 2 * sizeof(uint32_t);
     }
@@ -812,10 +854,12 @@ public:
     uint32_t general_releases        = 0;
     uint32_t general_overruns        = 0;       // general unmaps finding the guard past the range written
     int32_t  scanout_allocate_result = OK;
+    uint32_t failing_scanout_request = 0;       // the number, from 1, of the scanout request failing, 0 for every one
     int32_t  scanout_map_result      = OK;
     uint32_t failing_scanout_map     = 0;       // the number, from 1, of the scanout mapping failing, 0 for every one
     uint32_t physless_scanout_map    = 0;       // which scanout mapping, from 1, gets no physical address, 0 for none
     uint64_t scanout_bytes           = 0;       // backed by `scanout` once `give_scanout` sets it
+    uint64_t scanout_handed          = 0;       // of `scanout_bytes`, handed out one range after another
     uint8_t* scanout                 = nullptr; // `scanout_bytes` and their guard, on the unprivileged heap, else null
     uint64_t scanout_size            = 0;       // of the last scanout request
     uint64_t scanout_alignment       = 0;       // of the last scanout request
@@ -827,6 +871,12 @@ public:
 
     vram_range general_mapped   = {}; // the general range mapped, of 0 bytes while none is
     vram_range general_released = {}; // the last general range released
+    vram_range scanout_released = {}; // the last scanout range released
+
+    // Whether `range` is scanout memory, which the double hands out from `SCANOUT_OFFSET` on
+    static bool is_scanout(const vram_range& range) {
+        return range.offset >= SCANOUT_OFFSET;
+    }
 
     ~engine_video_memory() override {
         if (scanout != nullptr) {
@@ -853,16 +903,18 @@ public:
             scanout_requests++;
             scanout_size = size;
             scanout_alignment = alignment;
-            if (scanout_allocate_result != OK) {
+            bool is_failing = failing_scanout_request == 0 || scanout_requests == failing_scanout_request;
+            if (scanout_allocate_result != OK && is_failing) {
                 return scanout_allocate_result;
             }
 
             uint64_t pages_bytes = (size + DOUBLE_PAGE_BYTES - 1) & ~(DOUBLE_PAGE_BYTES - 1);
-            if (pages_bytes > scanout_bytes) {
+            if (pages_bytes > scanout_bytes - scanout_handed) {
                 return ERR_NO_MEMORY;
             }
 
-            out = {.offset = SCANOUT_OFFSET, .size = pages_bytes};
+            out = {.offset = SCANOUT_OFFSET + scanout_handed, .size = pages_bytes};
+            scanout_handed += pages_bytes;
             return OK;
         }
 
@@ -886,8 +938,9 @@ public:
     }
 
     void release(const vram_range& range) override {
-        if (range.offset == SCANOUT_OFFSET) {
+        if (is_scanout(range)) {
             scanout_releases++;
+            scanout_released = range;
         } else {
             general_releases++;
             general_released = range;
@@ -895,7 +948,7 @@ public:
     }
 
     int32_t map_for_cpu(const vram_range& range, cpu_mapping& out) override {
-        if (range.offset != SCANOUT_OFFSET) {
+        if (!is_scanout(range)) {
             general_maps++;
             if (general_maps == failing_general_map) {
                 return general_map_result;
@@ -922,19 +975,20 @@ public:
         }
 
         bool is_physless = scanout_maps == physless_scanout_map;
-        out.virt = reinterpret_cast<uintptr_t>(scanout);
+        out.virt = reinterpret_cast<uintptr_t>(scanout + (range.offset - SCANOUT_OFFSET));
         out.phys = is_physless ? 0 : SCANOUT_BAR1_ADDRESS + (scanout_maps - 1) * SCANOUT_BAR1_STRIDE;
 
         return OK;
     }
 
     void unmap_for_cpu(const vram_range& range) override {
-        if (range.offset == SCANOUT_OFFSET) {
+        if (is_scanout(range)) {
             scanout_unmaps++;
             scanout_fill_words = 0;
+            uint8_t* view = scanout + (range.offset - SCANOUT_OFFSET);
             for (uint64_t offset = 0; offset < range.size; offset += sizeof(uint64_t)) {
                 uint64_t word = 0;
-                string::memcpy(&word, scanout + offset, sizeof(word));
+                string::memcpy(&word, view + offset, sizeof(word));
                 if (word == SCANOUT_FILL_WORD) {
                     scanout_fill_words++;
                 }
@@ -972,6 +1026,22 @@ namespace drivers::nvidia {
 struct display_engine_test_access {
     static void set_notifier_wait(display_engine& engine, uint64_t wait_ns) {
         engine.m_notifier_wait_ns = wait_ns;
+    }
+
+    static void set_cursor_wait(display_engine& engine, uint64_t wait_ns) {
+        engine.m_cursor_wait_ns = wait_ns;
+    }
+
+    static uint64_t cursor_wait_ns(const display_engine& engine) {
+        return engine.m_cursor_wait_ns;
+    }
+
+    static rm::handle cursor_context_dma(const display_engine& engine) {
+        return engine.m_cursor_context_dma;
+    }
+
+    static const vram_range& cursor_memory(const display_engine& engine) {
+        return engine.m_cursor_memory;
     }
 
     static uint64_t notifier_wait_ns(const display_engine& engine) {
@@ -1155,7 +1225,7 @@ static operation_queue& engine_operations() {
 }
 
 // An engine over `fw` and `memory`, built in `g_engine_bytes` once the timers of the engine built there before are
-// cancelled, so neither fires into it, giving its wait for the notifier no time
+// cancelled, so neither fires into it, giving its waits for the notifier and for room in the cursor channel no time
 static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memory) {
     if (g_built_engine != nullptr) {
         display_engine_test_access::cancel_timers(*g_built_engine);
@@ -1164,6 +1234,7 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
     g_built_engine = new (g_engine_bytes) display_engine(fw, memory, engine_operations());
     display_engine& engine = *g_built_engine;
     display_engine_test_access::set_notifier_wait(engine, 0);
+    display_engine_test_access::set_cursor_wait(engine, 0);
     return engine;
 }
 
@@ -1189,7 +1260,7 @@ static int32_t set_up(
         .core_channel_class        = TEST_CORE_CHANNEL_CLASS,
         .window_channel_class      = TEST_WINDOW_CHANNEL_CLASS,
         .heads_have_output_scalers = heads_have_output_scalers,
-        .cursor_channel_class      = 0,
+        .cursor_channel_class      = TEST_CURSOR_CHANNEL_CLASS,
         .displayport               = links,
     };
 
@@ -3295,11 +3366,11 @@ TEST(nvidia_display_engine, set_up_without_both_surfaces_bound_asks_nothing_of_t
 }
 
 // Has the double report output 0 as `show_output_0_on_head_1` does, preferring `TIMING_1366_BY_768`, and backs its base
-// buffer, so a set-up clears it and goes on, or gives false when the unprivileged heap cannot back it
-static bool give_output_0_a_base_buffer(engine_firmware& fw, engine_video_memory& memory) {
+// buffer and `buffers` more of up to its size after it, or gives false when the unprivileged heap cannot back them
+static bool give_output_0_a_base_buffer(engine_firmware& fw, engine_video_memory& memory, uint32_t buffers = 0) {
     show_output_0_on_head_1(fw);
     put_timing_first(TIMING_1366_BY_768);
-    return memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES);
+    return memory.give_scanout((1 + buffers) * BASE_BUFFER_1366_BY_768_BYTES);
 }
 
 // A set-up choosing no output, or leaving the chosen output with no base buffer for want of video memory, asks nothing
@@ -3468,11 +3539,11 @@ TEST(nvidia_display_engine, set_up_failing_at_the_core_channels_idle_wait_logs_n
     EXPECT_EQ(engine.release(), OK);
 }
 
-// The light's first update on head 0 with no head active, the 8 windows mapped ahead of head 0's methods, where it
-// ends, and where the second core update ends after the notifier's stop: window 0's usage methods and the update's five
-static constexpr uint32_t FIRST_LIGHT_METHODS = 8 * 2 + HEAD_LIGHT_FIXED_METHODS + 3 + 5;
+// The first update lighting head 0 with no head active, the 8 windows mapped ahead of head 0's methods and cursor's,
+// where it ends, and where the second, of cursor, window 0's usage and update methods, ends after the notifier's stop
+static constexpr uint32_t FIRST_LIGHT_METHODS = 8 * 2 + HEAD_LIGHT_FIXED_METHODS + 3 + CURSOR_METHODS + 5;
 static constexpr uint32_t FIRST_LIGHT_END     = INITIAL_METHODS_END + FIRST_LIGHT_METHODS * 2 * sizeof(uint32_t);
-static constexpr uint32_t SECOND_UPDATE_BYTES = (WINDOW_USAGE_METHODS + 5) * 2 * sizeof(uint32_t);
+static constexpr uint32_t SECOND_UPDATE_BYTES = (CURSOR_METHODS + WINDOW_USAGE_METHODS + 5) * 2 * sizeof(uint32_t);
 static constexpr uint32_t SECOND_UPDATE_END   = FIRST_LIGHT_END + 16 + SECOND_UPDATE_BYTES;
 
 // With no head active, the set-up sends the mode set's start and end naming the chosen output's display id around the
@@ -3536,9 +3607,9 @@ TEST(nvidia_display_engine, set_up_writes_nothing_and_sends_no_end_after_a_refus
 static constexpr uint32_t SHUTDOWN_UPDATE_END = INITIAL_METHODS_END + (8 * 2 + 4 + 5) * 2 * sizeof(uint32_t);
 static constexpr uint32_t TAKE_DOWN_END       = SHUTDOWN_UPDATE_END + (4 + 5) * 2 * sizeof(uint32_t);
 
-// The methods of the light's update on head 1 after the shutdown update, head 1's fixed methods, a usage bound for each
-// of its three windows, window 3's usage methods and the update's five, and where they end after the notifier's stop
-static constexpr uint32_t LIGHT_METHODS = HEAD_LIGHT_FIXED_METHODS + 3 + WINDOW_USAGE_METHODS + 5;
+// The light's update on head 1 after the shutdown update: head 1's fixed methods, a usage bound for each of its three
+// windows, its cursor's, window 3's usage methods and the update's five, and where they end after the notifier's stop
+static constexpr uint32_t LIGHT_METHODS = HEAD_LIGHT_FIXED_METHODS + 3 + CURSOR_METHODS + WINDOW_USAGE_METHODS + 5;
 static constexpr uint32_t LIGHT_END     = SHUTDOWN_UPDATE_END + 16 + LIGHT_METHODS * 2 * sizeof(uint32_t);
 
 // A start of the mode set failing otherwise fails the set-up with its error, writing nothing and sending no end, and
@@ -3601,6 +3672,7 @@ static constexpr uint32_t NVIDIA_RELEASE_ELV          = 0x1;
 static constexpr uint32_t NVIDIA_WINDOW_USAGE_BOUNDS  = 0x1010;
 static constexpr uint32_t NVIDIA_DEFAULT_USAGE_BOUNDS = 0x10110000;
 static constexpr uint32_t NVIDIA_CURSOR_DISABLED      = 0xCF;
+static constexpr uint32_t NVIDIA_CURSOR_SHOWN         = 0x800003CF;
 static constexpr uint32_t NVIDIA_WINDOW_CONTROL       = 0x1000;
 static constexpr uint32_t NVIDIA_COUNT_SHIFT          = 18;
 
@@ -4691,7 +4763,7 @@ TEST(nvidia_display_engine, set_up_lights_window_0_apart_for_a_changed_owner_or_
         arm_owners(SERVED_OWNERS);
         set_armed_control(changed.window, changed.control);
 
-        uint32_t first_update_methods = changed.mapped_windows * 2 + HEAD_LIGHT_FIXED_METHODS + 3 + 5;
+        uint32_t first_update_methods = changed.mapped_windows * 2 + HEAD_LIGHT_FIXED_METHODS + 3 + CURSOR_METHODS + 5;
         uint32_t first_update_end = INITIAL_METHODS_END + first_update_methods * 2 * sizeof(uint32_t);
         engine_firmware fw;
         fw.present_windows = changed.present_windows;
@@ -4714,8 +4786,9 @@ TEST(nvidia_display_engine, set_up_lights_window_0_apart_for_a_changed_owner_or_
 }
 
 // The light's first update with windows 0 to 5 present, mapped ahead of head 0's fixed methods, a usage bound for each
-// of its three windows, window 0's usage methods and the update's five, and where it ends
-static constexpr uint32_t MAPPED_LIGHT_METHODS = 6 * 2 + HEAD_LIGHT_FIXED_METHODS + 3 + WINDOW_USAGE_METHODS + 5;
+// of its three windows, its cursor's methods, window 0's usage methods and the update's five, and where it ends
+static constexpr uint32_t MAPPED_LIGHT_METHODS =
+    6 * 2 + HEAD_LIGHT_FIXED_METHODS + 3 + CURSOR_METHODS + WINDOW_USAGE_METHODS + 5;
 static constexpr uint32_t MAPPED_LIGHT_END     = INITIAL_METHODS_END + MAPPED_LIGHT_METHODS * 2 * sizeof(uint32_t);
 
 // With no head active and each present window armed to the head it serves, the light's first update changes no owner,
@@ -4831,6 +4904,384 @@ TEST(nvidia_display_engine, set_up_lights_nothing_after_a_refused_stream) {
 
     EXPECT_FALSE(engine_log_contains("lighting head"));
     EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+}
+
+// The heads the double reports for the cursor's tests, GA102's four, the cursor memory a light allocates, 256 by 256
+// pixels of 4 bytes, and what a cursor register holds until the engine writes it
+static constexpr uint32_t PRESENT_HEADS       = 0xF;
+static constexpr uint64_t CURSOR_MEMORY_BYTES = 0x40000;
+static constexpr uint32_t UNWRITTEN           = 0xDEADBEEF;
+
+// The cursor's position at (-256, -256) as `HOT_SPOT_POINT` takes it, x in bits 15:0 and y in bits 31:16
+static constexpr uint32_t PARKED_POSITION = 0xFF00FF00;
+
+// The record of a binding of the cursor memory after `TIMING_1366_BY_768`'s base buffer, naming its first and last
+// 256-byte unit, the general mapping that binding writes through, and the memory's scanout request and mapping
+static constexpr uint32_t CURSOR_RECORD[]    = {NVIDIA_VIDEO_MEMORY_WORD_0, 0x14200, 0, 0x145FF, 0};
+static constexpr uint32_t CURSOR_BINDING_MAP = WINDOW_NOTIFIER_BINDING_MAP + 1;
+static constexpr uint32_t CURSOR_ALLOCATION  = 2;
+static constexpr uint32_t CURSOR_MAP         = 3;
+
+// Where the cursor's methods begin in the update lighting head 1 after the shutdown update, ahead of window 3's usage
+// methods, and where a take-down after a light failing before its methods ends
+static constexpr uint32_t LIGHT_CURSOR_METHODS = LIGHT_END - 40 - (CURSOR_METHODS + WINDOW_USAGE_METHODS) * 8;
+static constexpr uint32_t PARK_TAKE_DOWN_END   = SHUTDOWN_UPDATE_END + 16 + (4 + 4 + 5) * 2 * sizeof(uint32_t);
+
+// The word at `offset` in `head`'s cursor control page of `g_channel_areas`
+static uint32_t& cursor_word(uint8_t head, uint32_t offset) {
+    return g_channel_areas[(cursor_control_page(head) + offset - CORE_CHANNEL_AREA) / sizeof(uint32_t)];
+}
+
+// Gives `head`'s cursor channel `free` in its free register and `UNWRITTEN` in its position and update registers
+static void give_cursor_room(uint8_t head, uint32_t free) {
+    cursor_word(head, cursor_channel::FREE) = free;
+    cursor_word(head, cursor_channel::HOT_SPOT_POINT) = UNWRITTEN;
+    cursor_word(head, cursor_channel::UPDATE) = UNWRITTEN;
+}
+
+// Has the double show output 0 on head 1 over serial link 3 with every head present, backs output 0's base buffer and
+// cursor memory, and gives head 1's cursor channel room
+static bool show_output_0_with_a_cursor(engine_firmware& fw, engine_video_memory& memory) {
+    fw.present_heads = PRESENT_HEADS;
+    fw.boot_link_index = BOOT_LINK;
+    fw.boot_link_type = SERIAL_LINK_TYPE;
+    show_output_0_on_head_1(fw);
+    put_timing_first(TIMING_1366_BY_768);
+
+    give_cursor_room(1, 1);
+    return memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES + CURSOR_MEMORY_BYTES);
+}
+
+// Expects `head`'s cursor methods naming `context_dma` from `offset`, in the order `build_cursor_methods` gives them
+static void expect_cursor_methods(const engine_firmware& fw, uint32_t offset, uint8_t head, rm::handle context_dma) {
+    cursor_methods expected = {};
+    build_cursor_methods(head, context_dma, expected);
+    for (uint32_t index = 0; index < CURSOR_METHODS; index++) {
+        expect_core_method(fw, offset + index * 8, expected.methods[index].method, expected.methods[index].value);
+    }
+}
+
+// The set-up allocates head 1's cursor channel after the window's and ahead of the mode set's start, then output 0's
+// cursor memory after its base buffer, 256 KiB of scanout memory 4 KiB aligned bound to the core channel, all logged
+TEST(nvidia_display_engine, set_up_gives_the_lit_head_a_cursor_channel_and_bound_cursor_memory) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    uint32_t cursor_allocation = fw.allocation_index(TEST_CURSOR_CHANNEL_CLASS);
+    EXPECT_TRUE(cursor_allocation > fw.allocation_index(TEST_WINDOW_CHANNEL_CLASS));
+    EXPECT_TRUE(cursor_allocation < fw.first_control(rm::CONTROL_DISPLAY_CHANGE));
+    EXPECT_EQ(fw.cursor_instance, 1u);
+
+    EXPECT_EQ(memory.scanout_requests, 2u);
+    EXPECT_EQ(memory.scanout_size, CURSOR_MEMORY_BYTES);
+    EXPECT_EQ(memory.scanout_alignment, NVIDIA_SURFACE_ALIGNMENT);
+
+    const vram_range& cursor_memory = display_engine_test_access::cursor_memory(engine);
+    EXPECT_EQ(cursor_memory.offset, SCANOUT_OFFSET + BASE_BUFFER_1366_BY_768_BYTES);
+    EXPECT_EQ(cursor_memory.size, CURSOR_MEMORY_BYTES);
+    EXPECT_EQ(memory.scanout_unmaps, 1u);
+
+    rm::handle cursor_context_dma = display_engine_test_access::cursor_context_dma(engine);
+    EXPECT_TRUE(binds(cursor_context_dma, CORE_CHANNEL, 4, CURSOR_RECORD));
+    EXPECT_TRUE(engine_log_contains("nvidia: the GSP's firmware reports heads 0xF present\r\n"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: head 1 has a cursor channel, and output 0's cursor memory lies at 0x1420000 in video memory, mapped "
+        "for the CPU and bound to the core channel as context DMA 0x"
+    ));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The light clears the cursor memory to transparent, parks the cursor at (-256, -256) with an update of its own, and
+// shows the memory in the update lighting head 1, the cursor's methods between the head's and window 3's
+TEST(nvidia_display_engine, set_up_parks_the_cursor_and_shows_its_cleared_memory_in_the_light) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(scanout_holds(memory, BASE_BUFFER_1366_BY_768_BYTES, CURSOR_MEMORY_BYTES, 0));
+    uint64_t guard = BASE_BUFFER_1366_BY_768_BYTES + CURSOR_MEMORY_BYTES;
+    EXPECT_TRUE(scanout_holds(memory, guard, SCANOUT_GUARD_BYTES, SCANOUT_FILL));
+    EXPECT_EQ(cursor_word(1, cursor_channel::HOT_SPOT_POINT), PARKED_POSITION);
+    EXPECT_EQ(cursor_word(1, cursor_channel::UPDATE), 0u);
+
+    rm::handle cursor_context_dma = display_engine_test_access::cursor_context_dma(engine);
+    expect_cursor_methods(fw, LIGHT_CURSOR_METHODS, 1, cursor_context_dma);
+    expect_first_image(fw, engine, HEAD_1_WINDOW, LIGHT_END - 40);
+
+    uint32_t head_1_cursor_context = HEAD_0_CURSOR_CONTEXT + NVIDIA_HEAD_STRIDE;
+    uint32_t head_1_cursor_control = HEAD_0_CURSOR_CONTROL + NVIDIA_HEAD_STRIDE;
+    EXPECT_EQ(core_method_value(fw, LIGHT_CURSOR_METHODS, LIGHT_END, head_1_cursor_context), cursor_context_dma);
+    EXPECT_EQ(core_method_value(fw, LIGHT_CURSOR_METHODS, LIGHT_END, head_1_cursor_control), NVIDIA_CURSOR_SHOWN);
+
+    EXPECT_TRUE(engine.has_lit_output());
+    EXPECT_FALSE(engine_log_contains("no cursor"));
+    EXPECT_FALSE(engine_log_contains("without a cursor"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A light whose window image follows apart shows no cursor in its first update, and the cursor memory in the second
+// ahead of window 0's usage methods
+TEST(nvidia_display_engine, set_up_shows_the_cursor_only_in_the_update_carrying_the_first_image) {
+    arm_owners(SERVED_OWNERS);
+    engine_firmware fw;
+    fw.get_at_stream = FIRST_LIGHT_END;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    fw.boot_display_id = 0;
+    give_cursor_room(0, 1);
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("an update of its own"));
+    expect_cursor_methods(fw, FIRST_LIGHT_END - 40 - CURSOR_METHODS * 8, 0, 0);
+
+    rm::handle cursor_context_dma = display_engine_test_access::cursor_context_dma(engine);
+    expect_cursor_methods(fw, FIRST_LIGHT_END + 16, 0, cursor_context_dma);
+    expect_first_image(fw, engine, 0, SECOND_UPDATE_END - 40);
+    EXPECT_EQ(cursor_word(0, cursor_channel::HOT_SPOT_POINT), PARKED_POSITION);
+
+    arm_owners({});
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A head not reported present, its channel refused or not allocated, or no room for the cursor memory, its mapping,
+// binding or park each leave the light without a cursor, logged, the memory released after a failed mapping or binding
+TEST(nvidia_display_engine, set_up_lights_without_a_cursor_after_a_cursor_refusal) {
+    struct refusal_case {
+        uint32_t    present_heads             = PRESENT_HEADS;
+        uint32_t    refused_push_buffer_class = 0;
+        int32_t     allocation_result         = OK;
+        uint64_t    scanout_bytes             = BASE_BUFFER_1366_BY_768_BYTES + CURSOR_MEMORY_BYTES;
+        int32_t     cursor_map_result         = OK;
+        int32_t     binding_map_result        = OK;
+        uint32_t    free                      = 1;
+        bool        releases_memory           = false;
+        const char* logged                    = nullptr;
+    };
+
+    static constexpr refusal_case cases[] = {
+        {
+            .present_heads = 0x1,
+            .logged = "nvidia: head 1 has no cursor, as the GSP's firmware does not report the head present\r\n",
+        },
+        {
+            .refused_push_buffer_class = TEST_CURSOR_CHANNEL_CLASS,
+            .logged = "nvidia: head 1 has no cursor, as the GSP's firmware refused a request for its channel\r\n",
+        },
+        {
+            .allocation_result = ERR_FIRMWARE,
+            .logged = "nvidia: head 1 has no cursor, as the GSP's firmware refused a request for its channel\r\n",
+        },
+        {
+            .allocation_result = ERR_NO_MEMORY,
+            .logged = "nvidia: head 1 has no cursor, as a request for its channel cannot be allocated\r\n",
+        },
+        {
+            .scanout_bytes = BASE_BUFFER_1366_BY_768_BYTES,
+            .logged = "nvidia: head 1 has no cursor, as 0x40000 bytes of video memory for output 0's cursor cannot be "
+                      "allocated\r\n",
+        },
+        {
+            .cursor_map_result = ERR_NO_MEMORY,
+            .releases_memory = true,
+            .logged = "nvidia: head 1 has no cursor, as mapping output 0's cursor memory for the CPU found no room, so "
+                      "the memory is released\r\n",
+        },
+        {
+            .binding_map_result = ERR_NO_MEMORY,
+            .releases_memory = true,
+            .logged = "nvidia: head 1 has no cursor, as binding output 0's cursor memory to the core channel found no "
+                      "room, so the memory is released\r\n",
+        },
+        {
+            .free = 0,
+            .logged = "nvidia: head 1 has no cursor, as its cursor channel found no room to park it\r\n",
+        },
+    };
+
+    for (const refusal_case& refused : cases) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+        fw.present_heads = refused.present_heads;
+        fw.refused_push_buffer_class = refused.refused_push_buffer_class;
+        fw.refusals[0] = {
+            .made = engine_firmware::kind::allocation,
+            .number = TEST_CURSOR_CHANNEL_CLASS,
+            .object = 0,
+            .result = refused.allocation_result,
+        };
+
+        memory.scanout_bytes = refused.scanout_bytes;
+        memory.scanout_map_result = refused.cursor_map_result;
+        memory.failing_scanout_map = CURSOR_MAP;
+        memory.general_map_result = refused.binding_map_result;
+        memory.failing_general_map = refused.binding_map_result != OK ? CURSOR_BINDING_MAP : 0;
+
+        give_cursor_room(1, refused.free);
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up_logged(engine), OK);
+        EXPECT_TRUE(engine.has_lit_output());
+        EXPECT_TRUE(engine_log_contains(refused.logged));
+        expect_cursor_methods(fw, LIGHT_CURSOR_METHODS, 1, 0);
+        EXPECT_EQ(cursor_word(1, cursor_channel::HOT_SPOT_POINT), UNWRITTEN);
+
+        EXPECT_EQ(memory.scanout_releases, refused.releases_memory ? 1u : 0u);
+        if (refused.releases_memory) {
+            EXPECT_EQ(memory.scanout_released.offset, SCANOUT_OFFSET + BASE_BUFFER_1366_BY_768_BYTES);
+        }
+
+        bool keeps_cursor_memory = refused.free == 0;
+        EXPECT_EQ(display_engine_test_access::cursor_context_dma(engine) != 0, keeps_cursor_memory);
+        EXPECT_EQ(engine_log_contains("nvidia: head 1 has a cursor channel"), keeps_cursor_memory);
+        if (keeps_cursor_memory) {
+            EXPECT_TRUE(scanout_holds(memory, BASE_BUFFER_1366_BY_768_BYTES, CURSOR_MEMORY_BYTES, 0));
+        }
+
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// A park reading the cursor channel's free register all ones, as a card gone reads, fails the light after the clear
+// and ahead of its methods, so the take-down stops head 1 right after the shutdown update and nothing is lit
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_when_the_park_reads_all_ones) {
+    engine_firmware fw;
+    fw.get_at_stream = PARK_TAKE_DOWN_END;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    give_cursor_room(1, 0xFFFFFFFF);
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    expect_head_stopped(fw, SHUTDOWN_UPDATE_END + 16, 1, LINK_3_CONTROL);
+    expect_head_stopped(fw, SHUTDOWN_UPDATE_END + 48, 1, LINK_3_CONTROL);
+    expect_update(fw, SHUTDOWN_UPDATE_END + 80, 0, 0);
+    EXPECT_EQ(fw.mode_set_puts[1], PARK_TAKE_DOWN_END);
+
+    EXPECT_EQ(cursor_word(1, cursor_channel::HOT_SPOT_POINT), UNWRITTEN);
+    EXPECT_TRUE(scanout_holds(memory, BASE_BUFFER_1366_BY_768_BYTES, CURSOR_MEMORY_BYTES, 0));
+    EXPECT_FALSE(engine.has_lit_output());
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: parking head 1's cursor failed, as its cursor channel's free register reads all ones\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: lighting head 1 failed: "));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A cursor channel request past its deadline, or the cursor memory's allocation, mapping or binding failing other than
+// for room, fails the set-up with that error before the mode set, what it allocated freed once, the channel by release
+TEST(nvidia_display_engine, set_up_fails_with_a_cursor_requests_or_memorys_other_error) {
+    struct failure {
+        int32_t     allocation_result      = OK;
+        int32_t     cursor_allocate_result = OK;
+        int32_t     cursor_map_result      = OK;
+        int32_t     binding_map_result     = OK;
+        int32_t     result                 = OK;
+        const char* logged                 = nullptr;
+    };
+
+    static constexpr failure failures[] = {
+        {.allocation_result = ERR_TIMEOUT, .result = ERR_TIMEOUT},
+        {
+            .cursor_allocate_result = ERR_INVALID_ARG,
+            .result = ERR_INVALID_ARG,
+            .logged = "nvidia: allocating 0x40000 bytes of video memory for output 0's cursor failed: -13\r\n",
+        },
+        {
+            .cursor_map_result = ERR_BAD_STATE,
+            .result = ERR_BAD_STATE,
+            .logged = "nvidia: mapping output 0's cursor memory at 0x1420000 in video memory for the CPU failed: -5, "
+                      "so the memory is released\r\n",
+        },
+        {
+            .binding_map_result = ERR_TIMEOUT,
+            .result = ERR_TIMEOUT,
+            .logged = "nvidia: binding output 0's cursor memory to the core channel failed: -4, so the memory is "
+                      "released\r\n",
+        },
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+        fw.refusals[0] = {
+            .made = engine_firmware::kind::allocation,
+            .number = TEST_CURSOR_CHANNEL_CLASS,
+            .object = 0,
+            .result = failed.allocation_result,
+        };
+
+        memory.scanout_allocate_result = failed.cursor_allocate_result;
+        memory.failing_scanout_request = CURSOR_ALLOCATION;
+        memory.scanout_map_result = failed.cursor_map_result;
+        memory.failing_scanout_map = CURSOR_MAP;
+
+        memory.general_map_result = failed.binding_map_result;
+        memory.failing_general_map = failed.binding_map_result != OK ? CURSOR_BINDING_MAP : 0;
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_EQ(fw.mode_set_requests, 0u);
+        EXPECT_FALSE(engine_log_contains("nvidia: head 1 has a cursor channel"));
+        if (failed.logged != nullptr) {
+            EXPECT_TRUE(engine_log_contains(failed.logged));
+        }
+
+        bool releases_memory = failed.cursor_map_result != OK || failed.binding_map_result != OK;
+        EXPECT_EQ(memory.scanout_releases, releases_memory ? 1u : 0u);
+
+        uint32_t first = fw.call_count;
+        EXPECT_EQ(engine.release(), OK);
+        EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CURSOR_CHANNEL_CLASS)));
+    }
+}
+
+// The release frees head 1's cursor channel first, with no flag keeping the hardware even while the window and core
+// channels keep it, and passes the cursor channel's error up ahead of the window channel's
+TEST(nvidia_display_engine, release_frees_the_cursor_channel_first_and_passes_its_error_first) {
+    engine_firmware fw;
+    fw.refusals[0] = {
+        .made = engine_firmware::kind::control,
+        .number = rm::CONTROL_DISPLAY_CHANGE,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_with_a_cursor(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up_logged(engine), OK);
+
+    rm::handle cursor_channel_handle = fw.allocated(TEST_CURSOR_CHANNEL_CLASS);
+    rm::handle window_channel_handle = fw.allocated(TEST_WINDOW_CHANNEL_CLASS);
+    fw.refusals[0] = {
+        .made = engine_firmware::kind::release,
+        .number = 0,
+        .object = cursor_channel_handle,
+        .result = ERR_TIMEOUT,
+    };
+
+    fw.refusals[1] = {
+        .made = engine_firmware::kind::release,
+        .number = 0,
+        .object = window_channel_handle,
+        .result = ERR_FIRMWARE,
+    };
+
+    uint32_t first = fw.call_count;
+    EXPECT_EQ(engine.release(), ERR_TIMEOUT);
+    EXPECT_EQ(fw.release_index(cursor_channel_handle), first);
+    EXPECT_TRUE(fw.release_index(window_channel_handle) > first);
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
+    EXPECT_EQ(fw.control_count(rm::CONTROL_SET_DISPLAY_RELEASE_FLAGS), 2u);
 }
 
 // Once output 0's base buffer is bound, a set-up maps it again and keeps that mapping, logging its BAR1 address and
@@ -6080,7 +6531,7 @@ static void serve_logged() {
 TEST(nvidia_display_engine, a_created_buffer_is_cleared_bound_on_the_task_and_presented) {
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 1));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6131,7 +6582,7 @@ TEST(nvidia_display_engine, a_created_buffer_is_cleared_bound_on_the_task_and_pr
 TEST(nvidia_display_engine, create_buffer_refuses_in_presents_order_with_nothing_allocated) {
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 1));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6179,7 +6630,7 @@ TEST(nvidia_display_engine, create_buffer_undoes_a_refused_allocation_or_mapping
 
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 3));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6223,7 +6674,7 @@ TEST(nvidia_display_engine, create_buffer_undoes_a_refused_or_failed_binding) {
 
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 3));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6259,7 +6710,7 @@ static void release_engine(display_engine& engine) {
 TEST(nvidia_display_engine, a_binding_after_the_engine_is_released_undoes_the_buffer) {
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 1));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6280,7 +6731,7 @@ TEST(nvidia_display_engine, a_binding_after_the_engine_is_released_undoes_the_bu
 TEST(nvidia_display_engine, release_buffer_queues_a_release_the_task_runs_later) {
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 1));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6310,7 +6761,7 @@ TEST(nvidia_display_engine, release_buffer_queues_a_release_the_task_runs_later)
 TEST(nvidia_display_engine, a_release_on_a_failed_display_keeps_the_buffer_for_good) {
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 1));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6334,7 +6785,7 @@ TEST(nvidia_display_engine, a_release_on_a_failed_display_keeps_the_buffer_for_g
     serve_logged();
 
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: the display buffer at 0x1000000 in video memory is kept for good, as the display failed"
+        "nvidia: the display buffer at 0x1420000 in video memory is kept for good, as the display failed"
     ));
     EXPECT_TRUE(has_entry_for(kept->context_dma));
     EXPECT_EQ(memory.scanout_unmaps, unmaps);
@@ -6347,7 +6798,7 @@ TEST(nvidia_display_engine, a_release_on_a_failed_display_keeps_the_buffer_for_g
 TEST(nvidia_display_engine, a_release_after_the_engine_is_released_keeps_the_buffer_for_good) {
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 1));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6367,7 +6818,7 @@ TEST(nvidia_display_engine, a_release_after_the_engine_is_released_keeps_the_buf
     serve_logged();
 
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: the display buffer at 0x1000000 in video memory is kept for good, as the engine was released"
+        "nvidia: the display buffer at 0x1420000 in video memory is kept for good, as the engine was released"
     ));
     EXPECT_EQ(kept->bound_windows, 1u << window);
     EXPECT_EQ(memory.scanout_unmaps, unmaps);
@@ -6379,7 +6830,7 @@ TEST(nvidia_display_engine, a_release_after_the_engine_is_released_keeps_the_buf
 TEST(nvidia_display_engine, a_refused_unbinding_keeps_the_buffer_for_good) {
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 1));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6398,7 +6849,7 @@ TEST(nvidia_display_engine, a_refused_unbinding_keeps_the_buffer_for_good) {
     serve_logged();
 
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: unbinding the display buffer at 0x1000000 in video memory from window 3's channel failed: -4, so the "
+        "nvidia: unbinding the display buffer at 0x1420000 in video memory from window 3's channel failed: -4, so the "
         "buffer is kept for good"
     ));
 
@@ -6416,7 +6867,7 @@ TEST(nvidia_display_engine, a_refused_unbinding_keeps_the_buffer_for_good) {
 TEST(nvidia_display_engine, a_buffers_unbinding_logs_both_frame_counts) {
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 1));
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
@@ -6438,7 +6889,7 @@ TEST(nvidia_display_engine, a_buffers_unbinding_logs_both_frame_counts) {
     engine.release_buffer(created);
     serve_logged();
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: the display buffer at 0x1000000 in video memory is unbound from window 3's channel, once the handler "
+        "nvidia: the display buffer at 0x1420000 in video memory is unbound from window 3's channel, once the handler "
         "serviced head 1's vertical blanks 1 to 63 since the light while the head's own frame count advanced 124"
     ));
     EXPECT_EQ(engine.release(), OK);
@@ -6449,7 +6900,7 @@ TEST(nvidia_display_engine, a_buffers_unbinding_logs_both_frame_counts) {
 TEST(nvidia_display_engine, a_buffer_created_after_a_failed_light_binds_no_window) {
     engine_firmware fw;
     engine_video_memory memory;
-    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 1));
     fail_the_light(fw);
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);

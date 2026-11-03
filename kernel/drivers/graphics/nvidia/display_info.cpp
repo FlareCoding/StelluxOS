@@ -7,7 +7,15 @@
 
 namespace drivers::nvidia {
 
-int32_t read_present_windows(firmware& fw, const chip_display& display, uint32_t& present_windows) {
+// NVIDIA's NV_PDISP_FE_HW_SYS_CAP_HEAD_EXISTS(i), bit i of feHwSysCap for each of heads 0 to 7
+constexpr uint32_t HEAD_EXISTS_BITS = 0xFF;
+
+int32_t read_present_heads_and_windows(
+    firmware& fw,
+    const chip_display& display,
+    uint32_t& present_heads,
+    uint32_t& present_windows
+) {
     rm::display_static_info_params info = {};
     int32_t rc = fw.internal_control(rm::CONTROL_GET_DISPLAY_STATIC_INFO, &info, sizeof(info));
     if (rc != OK) {
@@ -26,6 +34,7 @@ int32_t read_present_windows(firmware& fw, const chip_display& display, uint32_t
         return ERR_BAD_MESSAGE;
     }
 
+    present_heads = info.system_capabilities & HEAD_EXISTS_BITS;
     present_windows = info.present_windows;
 
     return OK;

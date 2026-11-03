@@ -9,6 +9,7 @@
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/completion_notifier.h"
 #include "drivers/graphics/nvidia/core_methods.h"
+#include "drivers/graphics/nvidia/cursor_channel.h"
 #include "drivers/graphics/nvidia/display_active_heads.h"
 #include "drivers/graphics/nvidia/display_channel.h"
 #include "drivers/graphics/nvidia/display_dpcd.h"
@@ -101,7 +102,10 @@ struct scanout_buffer : gfxfb::buffer {
  * DMA it binds for the methods naming it, and nothing frees a bound surface,
  * since the display engine may read it through the binding from then on, and
  * the window's channel, while released with the hardware kept as it is, stays
- * allocated in the hardware.
+ * allocated in the hardware. It also owns the lit head's cursor channel and
+ * the chosen output's cursor memory (the video memory holding the cursor's
+ * picture), which stays mapped for the CPU and bound to the core channel, and
+ * which nothing frees either.
  *
  * The engine is also a `gfxfb::display`, which the driver registers with gfxfb
  * as `nvidia_gpu_driver` describes. Its outputs are the first
@@ -142,8 +146,9 @@ public:
     display_engine& operator=(const display_engine&) = delete;
 
     /**
-     * @brief Read the windows this GPU has with `read_present_windows` and log
-     * them with the chip's window count, set up the instance memory with
+     * @brief Read the heads and windows this GPU has with
+     * `read_present_heads_and_windows` and log them, the windows with the
+     * chip's window count, set up the instance memory with
      * `instance_memory::set_up` and log where it lies in video memory,
      * allocate the display's objects under `device` with
      * `allocate_display_objects` and log their handles, then read their
@@ -248,11 +253,17 @@ public:
      * DMA. The set-up then returns `OK` only when both found no room. When the
      * base buffer's mapping for userland finds no room, or maps it at no
      * physical address, after which it is unmapped, log that the output cannot
-     * light and return `OK`, the memory staying bound. Then, once both
-     * surfaces are bound, ask the display for the core channel's state with
-     * `wait_core_channel_idle` until the firmware reports the channel idle or
-     * more than `CORE_CHANNEL_IDLE_WAIT_NS` has passed since the first reply,
-     * and log which of the two ended the wait. Then read each present window's
+     * light and return `OK`, the memory staying bound. Then give the lit head
+     * a cursor and log it: its channel, as `cursor_channel::allocate`
+     * allocates it, and 256 KiB of video memory for its picture, mapped for
+     * the CPU and bound to the core channel. When the head is not present, its
+     * channel is refused or cannot be allocated, or the memory, its mapping or
+     * its binding finds no room, log why and go on without a cursor, releasing
+     * the memory after a failed mapping or binding. Then ask the display for
+     * the core channel's state with `wait_core_channel_idle` until the
+     * firmware reports the channel idle or more than
+     * `CORE_CHANNEL_IDLE_WAIT_NS` has passed since the first reply, and log
+     * which of the two ended the wait. Then read each present window's
      * owner from the core channel's armed state with `read_window_owners`, and
      * log each one's owner. Then bring the display engine up for the chosen
      * output in a mode set (the programming of heads to drive monitors): send
@@ -279,23 +290,28 @@ public:
      * are not taken: log that the link is not set up and take the engine down
      * the same way, except that a refused override of the stream's attributes,
      * the last step, leaves the link set up with the attributes the firmware
-     * sets. With the link ready, light the head: the methods
-     * `build_head_light_methods` gives for the chosen timing, the display id
-     * on that link and the head's output table, which the look-up table
-     * surface holds, after the windows' heads when no update was kicked, then
-     * the window's usage bounds and, into the window's channel, its first
-     * image (the base buffer shown through the look-up table), the notifier
-     * cleared and one update naming it and interlocked with the window
-     * channel's update, the core channel kicked before the window's channel.
-     * Wait for the notifier, stop its writes and log its word with the lit
-     * head's display id and link control as the armed state reads them. When
-     * the update is the first kicked and changes a present window's owner from
-     * what the armed state reads, a present window serving no head always
-     * counting as changed, it interlocks no window, and the window's usage
+     * sets. With the link ready, clear the cursor memory to transparent and
+     * park the cursor where none of it shows, when the head has a cursor, then
+     * light the head: the methods `build_head_light_methods` gives for the
+     * chosen timing, the display id on that link and the head's output table,
+     * which the look-up table surface holds, after the windows' heads when no
+     * update was kicked, then the head's cursor methods, which show the cursor
+     * memory only once the park succeeded, the window's usage bounds and, into
+     * the window's channel, its first image (the base buffer shown through the
+     * look-up table), the notifier cleared and one update naming it and
+     * interlocked with the window channel's update, the core channel kicked
+     * before the window's channel. Wait for the notifier, stop its writes and
+     * log its word with the lit head's display id and link control as the
+     * armed state reads them. When the update is the first kicked and changes
+     * a present window's owner from what the armed state reads, a present
+     * window serving no head always counting as changed, it interlocks no
+     * window and shows no cursor, and the cursor methods, the window's usage
      * bounds and first image follow in a second update naming no notifier and
-     * awaited by nothing, as NVIDIA's modesetting module orders them. When a
-     * write, the wait or the stop fails, log it and take the engine down the
-     * same way, stopping the lit head too, after the heads found active, and
+     * awaited by nothing. Either park write finding no room within
+     * `gfxfb::GFXFB_PRESENT_TIMEOUT_NS` lights the head without a cursor,
+     * logged. When the park reads all ones, as a card gone reads, or a write,
+     * the wait or the stop fails, log it and take the engine down the same
+     * way, stopping the lit head too, after the heads found active, and
      * otherwise mark the chosen output lit under its spinlock. Then send the
      * mode set's end. A refused start is logged and nothing is written to the
      * core channel, the set-up returning `OK`, and a refused end is logged,
@@ -373,9 +389,15 @@ public:
      * no room, the set-up fails with the undoing's error unless it is
      * `ERR_NO_MEMORY`, logged here and as `instance_memory::unbind` describes.
      * The base buffer stays bound, though, after its mapping for userland
-     * fails. When a request for the core channel's state fails other than with
-     * `ERR_FIRMWARE`, the set-up fails with its error, logged as
-     * `wait_core_channel_idle` describes. When the mode set's start or end
+     * fails. When the cursor channel's allocation fails other than with
+     * `ERR_INVALID_ARG`, `ERR_FIRMWARE` or `ERR_NO_MEMORY`, the set-up fails
+     * with that error, logged as `firmware` describes, and when the cursor
+     * memory's allocation, mapping or binding fails other than with
+     * `ERR_NO_MEMORY`, with that error, logged here and as `video_memory` or
+     * `instance_memory::bind` describes, the memory released after a failed
+     * mapping or binding. When a request for the core channel's state fails
+     * other than with `ERR_FIRMWARE`, the set-up fails with its error, logged
+     * as `wait_core_channel_idle` describes. When the mode set's start or end
      * fails other than with `ERR_FIRMWARE`, the set-up fails with its error,
      * logged as `firmware::control` describes. When a request for the chosen
      * output's link fails other than with `ERR_FIRMWARE`, the set-up fails
@@ -389,7 +411,8 @@ public:
      * completion notifier stays bound to the core channel once bound, the
      * window notifier and each surface to the window's channel, and the
      * look-up table surface to the core channel as well unless the set-up
-     * undoes that binding after a failed binding to the window's channel.
+     * undoes that binding after a failed binding to the window's channel. The
+     * cursor memory stays mapped and bound to the core channel once bound.
      */
     int32_t set_up(
         registers& regs,
@@ -405,22 +428,22 @@ public:
      * `read_output()` reads every output as dark and `flush()`, `present()`
      * and `create_buffer()` fail, then drop the channels' queues of methods,
      * so nothing writes a released channel's area, free the outputs' modes if
-     * `set_up` kept them, then release the chosen window's channel and then
-     * the core channel, each once `set_up` allocated it or the firmware may
-     * hold it after a failed allocation, as `release_display_channel`
-     * describes, then the display's objects, once `set_up` allocated them, as
-     * `release_display_objects` describes. The channels are released first,
-     * the window's before the core's, as NVIDIA's modesetting module releases
-     * them. While no update has been kicked, each is released with the
-     * hardware kept as it is, so the heads the boot firmware lit keep scanning
-     * out the boot framebuffer, and once one has, without keeping it, since
-     * the update changed the boot firmware's state. Its requests spin on the
-     * calling CPU as `set_up`'s do.
+     * `set_up` kept them, then release the lit head's cursor channel as
+     * `cursor_channel::release` describes, then the chosen window's channel
+     * and then the core channel, each once `set_up` allocated it or the
+     * firmware may hold it after a failed allocation, as
+     * `release_display_channel` describes, then the display's objects, once
+     * `set_up` allocated them, as `release_display_objects` describes. While
+     * no update has been kicked, the window's and the core's are released with
+     * the hardware kept as it is, so the heads the boot firmware lit keep
+     * scanning out the boot framebuffer, and once one has, without keeping it,
+     * since the update changed the boot firmware's state. Its requests spin on
+     * the calling CPU as `set_up`'s do.
      * @return `OK` when every release succeeds or nothing is allocated, else
-     * the window channel's error ahead of the core channel's and the core
-     * channel's ahead of the objects', each logged as the release describes.
-     * The channels and the objects are released whatever an earlier release
-     * returns, and a later call releases nothing and returns `OK`.
+     * the error of the first release to fail in that order, each logged as the
+     * release describes. The channels and the objects are released whatever an
+     * earlier release returns, and a later call releases nothing and returns
+     * `OK`.
      */
     int32_t release();
 
@@ -543,6 +566,14 @@ private:
 
     bool m_has_sent_update = false; // set once an update is kicked on the core channel
 
+    // The lit head's cursor channel and the chosen output's cursor memory, mapped and bound under a context DMA, 0
+    // until bound. The mapping and the wait are set before registration for good
+    cursor_channel m_cursor_channel;
+    vram_range     m_cursor_memory = {};
+    cpu_mapping    m_cursor_mapping = {};
+    rm::handle     m_cursor_context_dma = 0;
+    uint64_t       m_cursor_wait_ns = gfxfb::GFXFB_PRESENT_TIMEOUT_NS; // the park's wait for room
+
     // The core channel's queue of methods, built in `m_core_queue_bytes` once the channel is allocated, null until
     // then and after `release`
     display_channel*                 m_core_queue = nullptr;
@@ -660,12 +691,25 @@ private:
         const active_heads& active
     );
 
-    // Writes the lit window's usage bounds into the core channel, then its first image into the window's own channel,
-    // naming the base buffer and the look-up table surface by the context DMAs `set_up` bound, so neither handle is 0
-    int32_t write_first_image(uint8_t window, const edid::timing& timing);
+    // Allocates the lit head's cursor channel and the chosen output's cursor memory, mapped and bound as `set_up`
+    // describes, or returns `OK` with why the head has no cursor logged, else the error of the call that failed
+    int32_t set_up_cursor(
+        registers& regs,
+        const chip_display& display,
+        uint32_t present_heads,
+        const first_light& light
+    );
 
-    // Lights `light` with `window`'s first image in one update interlocking both channels, or in two when the update
-    // is the first and changes a window's owner or a present window serves no head, and logs what the armed state reads
+    // Clears the cursor memory and parks the cursor, giving in `cursor_context_dma` the context DMA the light's cursor
+    // methods name, 0 without cursor memory or room to park, and returning `OK` or the park's error, logged
+    int32_t prepare_cursor(uint8_t head, rm::handle& cursor_context_dma);
+
+    // Writes the head's cursor methods and the window's usage bounds into the core channel, then the window's first
+    // image into its own channel, naming the base buffer and look-up table by context DMAs `set_up` bound, never 0
+    int32_t write_first_image(uint8_t window, const head_light& light, rm::handle cursor_context_dma);
+
+    // Clears and parks the cursor with `prepare_cursor`, then lights `light` with `window`'s first image as `set_up`
+    // describes and logs what the armed state reads
     int32_t light_head(
         const registers& regs,
         const display_heads& heads,

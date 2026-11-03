@@ -2703,21 +2703,19 @@ src/nvidia-modeset/src/dp/nvdp-connector.cpp
     SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/kern_disp.c
-    that NVIDIA's driver asks for the display's static information when it
-    initializes its display's state, on the internal client and subdevice with
-    the parameters zeroed, and keeps its windowPresentMask unchecked, in
-    display_info.h, display_info.cpp and
-    kernel/tests/graphics/nvidia_display_info.test.cpp, that it sets up the
-    display's instance memory after reading that information, in
-    display_engine.h and display_engine.cpp, and as it initializes its display's
-    state, in instance_memory.h, and that it clears a head's pending vertical
-    blank after counting it, in display_engine.cpp
+    that NVIDIA's driver asks for the display's static information on the
+    internal client and subdevice with the parameters zeroed, in
+    display_info.cpp and kernel/tests/graphics/nvidia_display_info.test.cpp,
+    that it sets up the display's instance memory after reading that
+    information, in display_engine.h and display_engine.cpp, and as it
+    initializes its display's state, in instance_memory.h, and that it clears a
+    head's pending vertical blank after counting it, in display_engine.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/arch/v03/kern_disp_0300.c
     the rule that NVIDIA's driver allows a window's channel only for a window
-    the static information's windowPresentMask names, in display_info.h,
-    core_channel.h, display_engine.h, display_engine.cpp and
+    the static information's windowPresentMask names, in core_channel.h,
+    display_engine.h, display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that the core
     channel's area spans 64 KiB, 32 KiB for the assembled state and 32 KiB for
     the armed state, that a window channel's area spans 4 KiB, 2 KiB for the
@@ -2727,13 +2725,6 @@ src/nvidia/src/kernel/gpu/disp/arch/v03/kern_disp_0300.c
     bit the static information's feHwSysCap sets, in cursor_channel.h,
     cursor_channel.cpp and kernel/tests/graphics/nvidia_cursor_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-
-src/nvidia/generated/g_kern_disp_nvoc.c
-    that NVIDIA's driver binds kdispGetChannelNum_v03_00 for every display
-    version but DISPv0000, in display_info.h
-    It carries no notice of its own and is covered by the package's COPYING,
-    which gives the notice below and this copyright line:
-    Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/disp/v03_00/dev_disp.h
     NV_PDISP_CHN_NUM_WIN__SIZE_1, the most windows a display engine numbers, 32,
@@ -2781,7 +2772,11 @@ src/common/inc/swref/published/disp/v03_00/dev_disp.h
     begins, NV_PDISP_CHN_NUM_CURS__SIZE_1, the count of cursor channel numbers,
     and NV_PDISP_FE_HW_SYS_CAP_HEAD_EXISTS__SIZE_1, the count of feHwSysCap's
     head bits, in cursor_channel.h, cursor_channel.cpp and
-    kernel/tests/graphics/nvidia_cursor_channel.test.cpp, and the hash table's
+    kernel/tests/graphics/nvidia_cursor_channel.test.cpp,
+    NV_PDISP_FE_HW_SYS_CAP_HEAD_EXISTS(i), head i's bit of feHwSysCap, in
+    display_info.h, display_info.cpp,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp and
+    kernel/tests/graphics/nvidia_display_info.test.cpp, and the hash table's
     size, the client, record and channel fields of an entry's second word and
     the target, access, kind, base and limit of a record naming pages read with
     snooping on or video memory, in
@@ -2957,8 +2952,9 @@ src/nvidia/src/kernel/gpu/disp/disp_channel.c
     the control's result and allocates the channel, in core_channel.h and
     cursor_channel.cpp, and that it gives a channel of programmed I/O the
     control marked not valid, with only the channel's class and instance, in
-    cursor_channel.h, cursor_channel.cpp and
-    kernel/tests/graphics/nvidia_cursor_channel.test.cpp
+    cursor_channel.h, cursor_channel.cpp,
+    kernel/tests/graphics/nvidia_cursor_channel.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/rmapi/resource_list.h
@@ -2999,8 +2995,8 @@ src/nvidia-modeset/src/nvkms-evo.c
     that when the bandwidth check refuses a mode it lowers the heads' usage
     bounds a step at a time, removing the base layer's formats of 4, then 2,
     then 1 bytes a pixel last, before refusing the mode, in display_light.h,
-    that it frees the window channels before the core channel, in
-    display_engine.h, display_engine.cpp and
+    that it frees the cursor channels, then the window channels and then the
+    core channel, in display_engine.h, display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that it detaches a
     head from its link by blanking the head, setting the link's control without
     it and clearing its display id, waits on an update by clearing the notifier,
@@ -3320,8 +3316,9 @@ src/common/sdk/nvidia/inc/class/clc67d.h
     NVC67D_HEAD_SET_CONTROL_CURSOR with its ENABLE, SIZE W256_H256, HOT_SPOT_X
     and HOT_SPOT_Y, and NVC67D_HEAD_SET_CONTROL_CURSOR_COMPOSITION with its K1,
     CURSOR_COLOR_FACTOR_SELECT K1_TIMES_SRC, VIEWPORT_COLOR_FACTOR_SELECT
-    NEG_K1_TIMES_SRC and MODE BLEND, in rm.h, core_methods.h, core_methods.cpp
-    and kernel/tests/graphics/nvidia_core_methods.test.cpp
+    NEG_K1_TIMES_SRC and MODE BLEND, in rm.h, core_methods.h, core_methods.cpp,
+    display_engine.cpp, kernel/tests/graphics/nvidia_core_methods.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc67e.h
@@ -3637,7 +3634,9 @@ src/nvidia-modeset/src/nvkms-lut.c
 src/nvidia-modeset/src/nvkms-hw-flip.c
     that a layer given no composition depth takes NVKMS_MAX_LAYERS_PER_HEAD less
     its index, in window_methods.cpp and
-    kernel/tests/graphics/nvidia_window_methods.test.cpp
+    kernel/tests/graphics/nvidia_window_methods.test.cpp, and that a flip writes
+    a head's cursor methods ahead of its layers', in display_engine.h,
+    display_engine.cpp and kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/softfloat/nvidia/nv-softfloat.h
@@ -3650,27 +3649,34 @@ src/common/sdk/nvidia/inc/class/clc67a.h
     the class number NVC67A_CURSOR_IMM_CHANNEL_PIO, which chip.cpp gives GA102's
     cursor channel, in chip.cpp, and the cursor channel's registers NVC67A_FREE,
     NVC67A_UPDATE and NVC67A_SET_CURSOR_HOT_SPOT_POINT_OUT with its X in bits
-    15:0 and Y in bits 31:16, in cursor_channel.h and
-    kernel/tests/graphics/nvidia_cursor_channel.test.cpp, and NVC67A_FREE_COUNT,
+    15:0 and Y in bits 31:16, in cursor_channel.h, display_engine.cpp,
+    kernel/tests/graphics/nvidia_cursor_channel.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and NVC67A_FREE_COUNT,
     the free register's count in bits 5:0, in
     kernel/tests/graphics/nvidia_cursor_channel.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-cursor.c
     that the modesetting module allocates a head's cursor channel under the
-    display with the head as the instance and no notifier, and frees it with no
-    flag asking for the hardware kept, in rm.h, cursor_channel.h,
-    cursor_channel.cpp and kernel/tests/graphics/nvidia_cursor_channel.test.cpp
+    display with the head as the instance and no notifier, in rm.h,
+    cursor_channel.h, cursor_channel.cpp and
+    kernel/tests/graphics/nvidia_cursor_channel.test.cpp, and frees it with no
+    flag asking for the hardware kept, in cursor_channel.h, cursor_channel.cpp,
+    kernel/tests/graphics/nvidia_cursor_channel.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-cursor3.c
     that the modesetting module reads a cursor channel's free register whole,
     any value but 0 showing room for a method, in cursor_channel.h,
-    cursor_channel.cpp and kernel/tests/graphics/nvidia_cursor_channel.test.cpp
+    cursor_channel.cpp and kernel/tests/graphics/nvidia_cursor_channel.test.cpp,
+    and that it moves a cursor with its position and then an update, waiting for
+    room before each, in display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2016 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
-g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c, g_kern_disp_nvoc.c,
+g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c,
 g_disp_inst_mem_nvoc.c, g_disp_objs_nvoc.c, rpc_global_enums.h, g_rpc_private.h
 and nvUnixVersion.h the package's COPYING, carries this permission notice:
 

@@ -18,21 +18,23 @@ using drivers::nvidia::ERR_FIRMWARE;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::firmware;
 using drivers::nvidia::OK;
-using drivers::nvidia::read_present_windows;
+using drivers::nvidia::read_present_heads_and_windows;
 namespace rm = drivers::nvidia::rm;
 
-// NVIDIA's command for the display's static information, the information's size and the word holding the present
-// windows, restated here so the tests hold the request to NVIDIA's layout rather than to the driver's
+// NVIDIA's command for the display's static information, the information's size and the words holding feHwSysCap and
+// the present windows, restated here so the tests hold the request to NVIDIA's layout rather than to the driver's
 static constexpr uint32_t NVIDIA_GET_DISPLAY_STATIC_INFO = 0x20800A01;
 static constexpr size_t   DISPLAY_STATIC_INFO_BYTES      = 28;
 static constexpr uint32_t DISPLAY_STATIC_INFO_WORDS      = DISPLAY_STATIC_INFO_BYTES / 4;
+static constexpr uint32_t SYSTEM_CAPABILITIES_WORD       = 0;
 static constexpr uint32_t PRESENT_WINDOWS_WORD           = 1;
 
-// A mask naming only some of the windows, a value each call's output holds before the call, so a test sees whether the
-// call wrote it, and GA102's heads and windows, with the classes left 0, as reading the windows never uses them
-static constexpr uint32_t     SPARSE_WINDOWS    = 0xA5;
-static constexpr uint32_t     UNTOUCHED_WINDOWS = 0xDEADBEEF;
-static constexpr chip_display GA102_DISPLAY     = {
+// Some of the windows, feHwSysCap naming heads 1, 3, 4 and 6 under other bits, what each output holds until the call
+// writes it, and GA102's heads and windows with the classes left 0, as reading the masks never uses them
+static constexpr uint32_t     SPARSE_WINDOWS      = 0xA5;
+static constexpr uint32_t     SYSTEM_CAPABILITIES = 0xA5A5A55A;
+static constexpr uint32_t     UNTOUCHED           = 0xDEADBEEF;
+static constexpr chip_display GA102_DISPLAY       = {
     .head_count                = 4,
     .window_count              = 8,
     .serial_link_count         = 4,
@@ -109,21 +111,28 @@ public:
     }
 };
 
-// One request goes out, NVIDIA's command with the information's 28 bytes zeroed, and the windows come from NVIDIA's
-// field of the reply
-TEST(nvidia_display_info, windows_come_from_nvidias_field_of_one_zeroed_request) {
+// One request goes out, NVIDIA's command with the information's 28 bytes zeroed, the windows come from NVIDIA's field
+// of the reply and the heads from bits 7:0 of its feHwSysCap
+TEST(nvidia_display_info, heads_and_windows_come_from_nvidias_fields_of_one_zeroed_request) {
     static_info_firmware earlier(SPARSE_WINDOWS);
     static_info_firmware fw(SPARSE_WINDOWS);
-    uint32_t earlier_windows = UNTOUCHED_WINDOWS;
-    uint32_t present_windows = UNTOUCHED_WINDOWS;
+    fw.reply[SYSTEM_CAPABILITIES_WORD] = SYSTEM_CAPABILITIES;
+
+    uint32_t earlier_heads = UNTOUCHED;
+    uint32_t earlier_windows = UNTOUCHED;
+    uint32_t present_heads = UNTOUCHED;
+    uint32_t present_windows = UNTOUCHED;
 
     // The earlier read leaves its reply in the frame the next read's request takes, so a request not zeroed carries it
-    int32_t earlier_rc = read_present_windows(earlier, GA102_DISPLAY, earlier_windows);
-    int32_t rc = read_present_windows(fw, GA102_DISPLAY, present_windows);
+    int32_t earlier_rc = read_present_heads_and_windows(earlier, GA102_DISPLAY, earlier_heads, earlier_windows);
+    int32_t rc = read_present_heads_and_windows(fw, GA102_DISPLAY, present_heads, present_windows);
 
     EXPECT_EQ(earlier_rc, OK);
     EXPECT_EQ(rc, OK);
+    EXPECT_EQ(earlier_heads, 0xFFu);
+    EXPECT_EQ(present_heads, 0x5Au);
     EXPECT_EQ(present_windows, SPARSE_WINDOWS);
+
     EXPECT_EQ(fw.control_count, 1u);
     EXPECT_EQ(fw.other_count, 0u);
     EXPECT_EQ(fw.command, NVIDIA_GET_DISPLAY_STATIC_INFO);
@@ -166,15 +175,17 @@ TEST(nvidia_display_info, every_window_of_the_chip_or_none_is_accepted) {
     static_info_firmware none(0);
     static_info_firmware one_short(0x7FFFFFFF);
     static_info_firmware widest(0xFFFFFFFF);
-    uint32_t every_windows = UNTOUCHED_WINDOWS;
-    uint32_t no_windows = UNTOUCHED_WINDOWS;
-    uint32_t one_short_windows = UNTOUCHED_WINDOWS;
-    uint32_t widest_windows = UNTOUCHED_WINDOWS;
 
-    EXPECT_EQ(read_present_windows(every, GA102_DISPLAY, every_windows), OK);
-    EXPECT_EQ(read_present_windows(none, GA102_DISPLAY, no_windows), OK);
-    EXPECT_EQ(read_present_windows(one_short, ONE_SHORT_DISPLAY, one_short_windows), OK);
-    EXPECT_EQ(read_present_windows(widest, MOST_WINDOWS_DISPLAY, widest_windows), OK);
+    uint32_t every_windows = UNTOUCHED;
+    uint32_t no_windows = UNTOUCHED;
+    uint32_t one_short_windows = UNTOUCHED;
+    uint32_t widest_windows = UNTOUCHED;
+    uint32_t heads = UNTOUCHED;
+
+    EXPECT_EQ(read_present_heads_and_windows(every, GA102_DISPLAY, heads, every_windows), OK);
+    EXPECT_EQ(read_present_heads_and_windows(none, GA102_DISPLAY, heads, no_windows), OK);
+    EXPECT_EQ(read_present_heads_and_windows(one_short, ONE_SHORT_DISPLAY, heads, one_short_windows), OK);
+    EXPECT_EQ(read_present_heads_and_windows(widest, MOST_WINDOWS_DISPLAY, heads, widest_windows), OK);
 
     EXPECT_EQ(every_windows, 0xFFu);
     EXPECT_EQ(no_windows, 0u);
@@ -208,20 +219,23 @@ static bool logged_text_contains(const char* text) {
 }
 
 // The window just past GA102's, bit 31 on GA102 and bit 31 on a chip one window short of NVIDIA's most are each refused
-// with the mask and the chip's count logged, leaving each output unwritten
+// with the mask and the chip's count logged, leaving both outputs unwritten
 TEST(nvidia_display_info, a_window_past_the_chips_is_refused_and_logged) {
     static_info_firmware next(0x1A5);
     static_info_firmware top(0x80000000);
     static_info_firmware top_of_one_short(0x80000000);
-    uint32_t next_windows = UNTOUCHED_WINDOWS;
-    uint32_t top_windows = UNTOUCHED_WINDOWS;
-    uint32_t top_of_one_short_windows = UNTOUCHED_WINDOWS;
+
+    uint32_t heads = UNTOUCHED;
+    uint32_t next_windows = UNTOUCHED;
+    uint32_t top_windows = UNTOUCHED;
+    uint32_t top_of_one_short_windows = UNTOUCHED;
 
     s_logged_bytes = 0;
     log::set_backend(&TEXT_KEEPING_BACKEND);
-    int32_t next_rc = read_present_windows(next, GA102_DISPLAY, next_windows);
-    int32_t top_rc = read_present_windows(top, GA102_DISPLAY, top_windows);
-    int32_t top_of_one_short_rc = read_present_windows(top_of_one_short, ONE_SHORT_DISPLAY, top_of_one_short_windows);
+    int32_t next_rc = read_present_heads_and_windows(next, GA102_DISPLAY, heads, next_windows);
+    int32_t top_rc = read_present_heads_and_windows(top, GA102_DISPLAY, heads, top_windows);
+    int32_t top_of_one_short_rc =
+        read_present_heads_and_windows(top_of_one_short, ONE_SHORT_DISPLAY, heads, top_of_one_short_windows);
     log::set_backend(nullptr);
 
     EXPECT_EQ(next_rc, ERR_BAD_MESSAGE);
@@ -230,25 +244,30 @@ TEST(nvidia_display_info, a_window_past_the_chips_is_refused_and_logged) {
     EXPECT_TRUE(logged_text_contains("reports windows 0x1A5 present, some past the chip's 8 windows"));
     EXPECT_TRUE(logged_text_contains("reports windows 0x80000000 present, some past the chip's 8 windows"));
     EXPECT_TRUE(logged_text_contains("reports windows 0x80000000 present, some past the chip's 31 windows"));
-    EXPECT_EQ(next_windows, UNTOUCHED_WINDOWS);
-    EXPECT_EQ(top_windows, UNTOUCHED_WINDOWS);
-    EXPECT_EQ(top_of_one_short_windows, UNTOUCHED_WINDOWS);
+
+    EXPECT_EQ(heads, UNTOUCHED);
+    EXPECT_EQ(next_windows, UNTOUCHED);
+    EXPECT_EQ(top_windows, UNTOUCHED);
+    EXPECT_EQ(top_of_one_short_windows, UNTOUCHED);
 }
 
-// A refused or unanswered control passes its error up, leaving each output unwritten
+// A refused or unanswered control passes its error up, leaving both outputs unwritten
 TEST(nvidia_display_info, a_failed_control_passes_its_error_up) {
     static_info_firmware refused(SPARSE_WINDOWS);
     static_info_firmware unanswered(SPARSE_WINDOWS);
     refused.result = ERR_FIRMWARE;
     unanswered.result = ERR_TIMEOUT;
-    uint32_t refused_windows = UNTOUCHED_WINDOWS;
-    uint32_t unanswered_windows = UNTOUCHED_WINDOWS;
 
-    EXPECT_EQ(read_present_windows(refused, GA102_DISPLAY, refused_windows), ERR_FIRMWARE);
-    EXPECT_EQ(read_present_windows(unanswered, GA102_DISPLAY, unanswered_windows), ERR_TIMEOUT);
+    uint32_t heads = UNTOUCHED;
+    uint32_t refused_windows = UNTOUCHED;
+    uint32_t unanswered_windows = UNTOUCHED;
 
-    EXPECT_EQ(refused_windows, UNTOUCHED_WINDOWS);
-    EXPECT_EQ(unanswered_windows, UNTOUCHED_WINDOWS);
+    EXPECT_EQ(read_present_heads_and_windows(refused, GA102_DISPLAY, heads, refused_windows), ERR_FIRMWARE);
+    EXPECT_EQ(read_present_heads_and_windows(unanswered, GA102_DISPLAY, heads, unanswered_windows), ERR_TIMEOUT);
+
+    EXPECT_EQ(heads, UNTOUCHED);
+    EXPECT_EQ(refused_windows, UNTOUCHED);
+    EXPECT_EQ(unanswered_windows, UNTOUCHED);
     EXPECT_EQ(refused.control_count, 1u);
     EXPECT_EQ(unanswered.control_count, 1u);
 }
