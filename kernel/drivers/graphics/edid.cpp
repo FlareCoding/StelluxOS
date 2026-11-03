@@ -561,6 +561,7 @@ static void read_extensions(const uint8_t* bytes, size_t size, monitor& out) {
         bool is_checked_kind = tag == EXTENSION_TAG_CTA_861 || tag == EXTENSION_TAG_DISPLAYID;
         if (is_checked_kind && !has_valid_checksum(block, BLOCK_BYTES)) {
             out.skipped_extensions++;
+            out.bad_checksum_extensions++;
             continue;
         }
 
