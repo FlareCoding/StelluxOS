@@ -21,9 +21,23 @@
 #include "drivers/graphics/nvidia/instance_memory.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/video_memory.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 
 namespace drivers::nvidia {
+
+// A head table entry for a head the light has given no output
+constexpr uint8_t NO_OUTPUT = 0xFF;
+
+// The lit head's first second of vertical blanks as the interrupt handler serviced them, which the driver task logs
+struct first_second_statistics {
+    uint64_t start_ns;     // when the handler serviced the light's first vertical blank
+    uint64_t end_ns;       // when it serviced the one completing the mode's refresh rate in frames
+    uint16_t start_frame;  // the head's own frame count at the first service
+    uint16_t end_frame;    // the head's own frame count at the last service
+    uint16_t lowest_line;  // the lowest raster line a service read
+    uint16_t highest_line; // the highest raster line a service read
+};
 
 /**
  * The card's display engine as the driver sets it up, the part of the GPU that
@@ -385,6 +399,32 @@ public:
      */
     bool has_lit_output() const { return m_is_lit; }
 
+    /**
+     * @brief Turn flips on, letting the card's interrupt handler service the
+     * heads' vertical blanks. `set_up` disables every head's vertical blank
+     * interrupt as it starts, and the light enables its head's once the head
+     * table names the output. `attach()` must call this once `set_up` has run
+     * and before it enables the display's vector.
+     */
+    void turn_on_flips();
+
+    // Safe to call from any context, the card's interrupt handler among them
+    bool are_flips_on() const;
+
+    /**
+     * @brief Service the vertical blanks pending on the heads whose bits are
+     * set in `pending_heads`, as `pending_vertical_blanks` reads them, from
+     * the card's interrupt handler. Each is cleared, and one on the lit
+     * output's head counts a frame, none after `release`, which leaves the lit
+     * head's interrupt enabled. Takes the output's spinlock and never sleeps.
+     * @return true once, at the service completing the light's first second.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool service_vertical_blanks(registers& regs, uint32_t pending_heads);
+
+    // Logs the light's first second of vertical blanks at most once, after its last service, from the driver task
+    void log_first_second();
+
     uint32_t output_count() const override { return m_output_count; }
     bool needs_flush() const override { return false; }
     int32_t read_output(uint32_t output, gfxfb::output_state& out) override;
@@ -452,9 +492,27 @@ private:
     bool              m_is_released = false;          // set by `release`, after which `flush()` fails
     sync::spinlock    m_output_lock = sync::SPINLOCK_INIT;
 
+    // The lit output's vertical blanks, which the light starts and the interrupt handler counts under `m_output_lock`
+    uint8_t                 m_lit_head = 0;
+    uint32_t                m_frames_per_second = 0;  // the mode's refresh rate rounded, 0 until the light
+    uint64_t                m_frame_count = 0;        // the vertical blanks serviced since the light
+    uint64_t                m_vertical_blank_ns = 0;  // when the handler serviced the last of them
+    first_second_statistics m_first_second = {};
+    bool                    m_has_logged_first_second = false;
+
+    // For each head, the output the light gave it, kept after `release`, or `NO_OUTPUT`, stored with release under
+    // `m_output_lock` and loaded with acquire by the handler. `set_up` records the head count before flips turn on
+    uint8_t            m_head_outputs[DISPLAY_HEADS_MAX];
+    uint8_t            m_head_count = 0;
+    sync::atomic<bool> m_are_flips_on; // stored with release, loaded with acquire
+
+    // Counts a vertical blank of the lit output serviced at `now_ns`, under `m_output_lock`, and returns whether it
+    // completes the light's first second
+    bool count_vertical_blank(uint64_t now_ns, uint32_t position);
+
     // Brings the engine up for the chosen output as `set_up` describes, from the mode set's start to its end
     int32_t bring_up(
-        const registers& regs,
+        registers& regs,
         const display_heads& heads,
         uint32_t present_windows,
         const window_owners& owners,

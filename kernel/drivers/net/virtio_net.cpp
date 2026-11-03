@@ -179,9 +179,10 @@ int32_t virtio_net_driver::detach() {
     return pci_driver::detach();
 }
 
-__PRIVILEGED_CODE void virtio_net_driver::on_interrupt(uint32_t vector) {
+__PRIVILEGED_CODE bool virtio_net_driver::on_interrupt(uint32_t vector) {
     (void)vector;
     ack_interrupt();
+    return true;
 }
 
 void virtio_net_driver::drain_rx_locked(rx_batch& batch) {

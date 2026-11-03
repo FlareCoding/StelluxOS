@@ -597,11 +597,12 @@ void rtl8168_driver::recycle_rx_locked(const rx_batch& batch) {
  * The main loop re-enables IMR after draining all work.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void rtl8168_driver::on_interrupt(uint32_t) {
+__PRIVILEGED_CODE bool rtl8168_driver::on_interrupt(uint32_t) {
     reg_write16(REG_IMR, 0);
     uint16_t status = reg_read16(REG_ISR);
     if (status)
         reg_write16(REG_ISR, status);
+    return true;
 }
 
 void rtl8168_driver::enable_interrupts() {

@@ -311,7 +311,7 @@ public:
     void release_buffer(gfxfb::buffer* buf) override;
 
     /** @note Privilege: **required** */
-    __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
+    __PRIVILEGED_CODE bool on_interrupt(uint32_t vector) override;
 
 private:
     static constexpr uint32_t MAX_BATCH_COMMANDS = 64;

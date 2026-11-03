@@ -65,6 +65,9 @@ constexpr uint32_t KERNEL_INTERRUPT_ROWS_MAX = 128;
 // which the GSP's row in the kernel interrupt table gives
 constexpr uint16_t ENGINE_GSP = 49;
 
+// NVIDIA's MC_ENGINE_IDX_DISP, the display's number among the engines, which the display's row gives
+constexpr uint16_t ENGINE_DISPLAY = 2;
+
 // A row of the kernel interrupt table: an engine, its PMC mask (NVIDIA's pmcIntrMask) and two GPU interrupt vectors
 // (NVIDIA's numbers for the GPU's interrupts)
 struct kernel_interrupt_row {

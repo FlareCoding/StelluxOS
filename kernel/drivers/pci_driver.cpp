@@ -26,7 +26,16 @@ __PRIVILEGED_CODE void pci_driver::isr_trampoline(uint32_t vector, void* context
  */
 __PRIVILEGED_CODE void pci_driver::notify_interrupt(uint32_t global_vector) {
     uint32_t local = global_vector - m_dev->get_msi_state().base_vector;
-    on_interrupt(local);
+    handle_interrupt(local);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void pci_driver::handle_interrupt(uint32_t vector) {
+    if (!on_interrupt(vector)) {
+        return;
+    }
 
     sync::irq_state irq = sync::spin_lock_irqsave(m_irq_lock);
     m_event_pending = true;

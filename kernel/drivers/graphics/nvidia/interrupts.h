@@ -24,92 +24,42 @@ constexpr uint32_t GSP_MESSAGE_SOURCE = 1u << 6;
 // What `acknowledge_gsp_interrupt` returns for a card that has stopped responding, whose registers then read all ones
 constexpr uint32_t UNRESPONSIVE_CARD_SOURCES = 0xFFFFFFFF;
 
+// The GPU interrupt vectors the driver services, each below the tree's leaves times `VECTORS_PER_LEAF`
+struct interrupt_vectors {
+    uint32_t gsp;         // the GSP's, on which its firmware signals the driver
+    uint32_t display;     // the display's, on which the heads' vertical blanks arrive, read only with `has_display`
+    bool     has_display; // whether the driver services the display's vector
+};
+
 /**
- * @brief Ask the GSP's firmware for the kernel interrupt table (for each GPU
- * unit whose interrupts NVIDIA's driver services, the vectors on which they
- * arrive) and find in it the GSP's own vector, on which the firmware signals
- * the driver. An engine is one of the GPU's units that NVIDIA's interrupt code
- * serves, and a vector here is a GPU interrupt vector, NVIDIA's number for one
- * of the GPU's interrupts, not an MSI vector of the PCI layer. NVIDIA's driver
- * sends this control (a command to an object the firmware keeps) as it starts
- * the GPU and builds its interrupt table from the reply. The control goes
- * through `gsp::control` to the internal subdevice (the object standing for
- * this GPU) of the internal client (the client the firmware keeps for the
- * controls NVIDIA's driver sends on its own behalf). Its 2068 bytes of
- * parameters are zeroed and allocated on the unprivileged heap for the call,
- * where NVIDIA's driver sends an allocation it has not zeroed. The table's
- * count of rows may not exceed `rm::KERNEL_INTERRUPT_ROWS_MAX`, as NVIDIA's
- * driver requires. Each row gives an engine's stall vector, on which the
- * interrupts NVIDIA's driver services with the engine's handler arrive, and
- * its nonstall vector, on which the engine's notifications arrive. The GSP's
- * vector is the stall vector of the first row of the GSP's engine, the vector
- * NVIDIA's driver clears as it services the GSP's interrupts, which it
- * services as stall interrupts. NVIDIA's driver keeps every row of the GSP's
- * engine and accepts a table without such a row. It copies each row's vectors
- * into its table unchecked and takes 0xFFFFFFFF for no vector, but never
- * enables a vector past the leaves of the CPU interrupt tree, which has no
- * leaf register for it, nor, but for the timer's row, the vectors of a row
- * with a PMC mask (the engine's bits in the GPU's PMC interrupt register,
- * which is not part of the CPU interrupt tree). Here later rows of the GSP's
- * engine are not read, and a table without a row for the GSP fails the call,
- * as does a GSP vector past those leaves, 0xFFFFFFFF included, or a PMC mask
- * in the GSP's row, which NVIDIA's driver accepts. The call spins on the
- * calling CPU without sleeping, through the wait for the reply, which
- * `gsp::request` bounds.
- * @param conversation The driver's `gsp`, whose status queue must be linked.
- * @param client The internal client's handle, as `static_configuration` holds
- * it.
- * @param subdevice The internal subdevice's handle, as `static_configuration`
- * holds it.
- * @param leaf_count How many leaves the chip's CPU interrupt tree has, as
- * `chip_info::interrupt_leaf_count` gives it.
- * @param timeout_ns How long the wait for the reply may take, as
- * `gsp::request` takes it, `RECEIVE_TIMEOUT_NS` at bring-up.
- * @param vector Receives the GSP's vector, below `leaf_count` times
- * `VECTORS_PER_LEAF`, on `OK`, and is left unchanged on an error.
- * @return `OK`, `ERR_NO_MEMORY` when the parameters cannot be allocated, what
- * `gsp::control` returns when the control fails, logged as its doc describes,
- * or `ERR_BAD_MESSAGE` when the table counts more than
- * `rm::KERNEL_INTERRUPT_ROWS_MAX` rows, holds no row for the GSP within its
- * count, gives the GSP a vector at or above `leaf_count` times
- * `VECTORS_PER_LEAF` or gives the GSP's row a PMC mask. Every error but the
- * control's is logged here.
+ * @brief Read the GSP's and the display's vectors from the kernel interrupt
+ * table the firmware returns, each the stall vector of its engine's first row,
+ * usable below `leaf_count` times `VECTORS_PER_LEAF` and without a PMC mask.
+ * Spins until the reply or `timeout_ns`, and fills `vectors` only on `OK`.
+ * @return `OK`, with `has_display` false when `is_display_enabled` (whether
+ * the fuses leave the display enabled) is false or no usable display row
+ * exists, `ERR_NO_MEMORY`, what `gsp::control` returns, or `ERR_BAD_MESSAGE`
+ * for a table past `rm::KERNEL_INTERRUPT_ROWS_MAX` rows or without a usable
+ * GSP row. Every error but the control's is logged here.
  */
-int32_t read_gsp_interrupt_vector(
+int32_t read_interrupt_vectors(
     gsp& conversation,
     rm::handle client,
     rm::handle subdevice,
     uint32_t leaf_count,
+    bool is_display_enabled,
     uint64_t timeout_ns,
-    uint32_t& vector
+    interrupt_vectors& vectors
 );
 
 /**
- * @brief Let the GSP's vector alone raise the card's interrupt: clear every
- * bit of each leaf's enable, then set the vector's bit in its leaf's enable
- * and its subtree's bit in the enable of the tree's top level. A pending
- * vector raises the card's interrupt only while both of those bits are set.
- * NVIDIA's driver clears each leaf's enable the same way before it enables any
- * vector, since an earlier driver can leave enables set, then enables at their
- * leaves the vectors of its table but those `read_gsp_interrupt_vector` says
- * it never enables, and enables its stall interrupts by setting at the top
- * level every subtree but those of its nonstall interrupts. As no other vector
- * is enabled at any leaf, setting the GSP's subtree alone raises the same
- * interrupts, unless the kernel interrupt table's subtree map, which this
- * driver does not read, gives that subtree to NVIDIA's nonstall interrupts.
- * This call and `disable_cpu_interrupt_tree` own every enable of the tree, so
- * any other vector the driver services must be enabled here with the GSP's.
- * The interrupt masks and destinations of the GSP's falcon, which decide which
- * of its interrupt sources reach the tree, are left as the firmware sets them,
- * as NVIDIA's driver only reads them. A vector already pending raises the
- * card's interrupt at once. The call touches only BAR0 and takes no lock.
- * @param regs A view of BAR0.
- * @param leaf_count How many leaves the chip's CPU interrupt tree has, as
- * `chip_info::interrupt_leaf_count` gives it.
- * @param gsp_vector The GSP's vector, which must be below `leaf_count` times
- * `VECTORS_PER_LEAF`, as `read_gsp_interrupt_vector` gives it.
+ * @brief Let only the driver's vectors raise the card's interrupt: clear every
+ * leaf's enable, then enable the GSP's vector and, with `has_display`, the
+ * display's, each in its leaf and its subtree's bit of the top level. A vector
+ * already pending raises the interrupt at once. Owns every enable of the tree
+ * with `disable_cpu_interrupt_tree`, touches only BAR0 and takes no lock.
  */
-void enable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count, uint32_t gsp_vector);
+void enable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count, const interrupt_vectors& vectors);
 
 /**
  * @brief Stop every vector of the CPU interrupt tree from raising the card's
@@ -148,6 +98,14 @@ void disable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count);
  * card has stopped responding, as its registers then read all ones.
  */
 uint32_t acknowledge_gsp_interrupt(registers& regs, uint32_t vector);
+
+/**
+ * @brief Clear the display's vector in its leaf when it is pending, from the
+ * card's interrupt handler, before the heads' interrupts are serviced. The
+ * call touches only BAR0 and takes no lock.
+ * @return true when the vector was pending.
+ */
+bool acknowledge_display_interrupt(registers& regs, uint32_t vector);
 
 /**
  * @brief Re-arm the card's MSI at the end of the card's interrupt handler, as
