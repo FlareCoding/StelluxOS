@@ -8,10 +8,12 @@
 TEST_SUITE(nvidia_core_methods);
 
 using drivers::nvidia::active_heads;
+using drivers::nvidia::build_cursor_methods;
 using drivers::nvidia::build_head_light_methods;
 using drivers::nvidia::build_shutdown_methods;
 using drivers::nvidia::build_window_usage_methods;
 using drivers::nvidia::core_initial_method;
+using drivers::nvidia::cursor_methods;
 using drivers::nvidia::display_heads;
 using drivers::nvidia::display_method;
 using drivers::nvidia::DISPLAY_WINDOWS_MAX;
@@ -480,4 +482,43 @@ TEST(nvidia_core_methods, window_usage_methods_keep_15_bits_of_the_pixels_fetche
     build_window_usage_methods(1, 49130, methods);
 
     EXPECT_EQ(methods.methods[2].value, 0x10114000u);
+}
+
+// Head 2's cursor shows the 256 by 256 picture at the start of the memory its context DMA names, for both eyes,
+// blended by the picture's straight alpha
+TEST(nvidia_core_methods, cursor_methods_show_the_picture_blended) {
+    static constexpr display_method HEAD_2_CURSOR[] = {
+        {0x2898, 0x0},        // HEAD_SET_PRESENT_CONTROL_CURSOR(2), MONO
+        {0x2888, 0xC0DE0001}, // HEAD_SET_CONTEXT_DMA_CURSOR(2, 0)
+        {0x288C, 0xC0DE0001}, // HEAD_SET_CONTEXT_DMA_CURSOR(2, 1)
+        {0x2890, 0x0},        // HEAD_SET_OFFSET_CURSOR(2, 0)
+        {0x2894, 0x0},        // HEAD_SET_OFFSET_CURSOR(2, 1)
+        {0x289C, 0x800003CF}, // HEAD_SET_CONTROL_CURSOR(2), ENABLE, W256_H256, A8R8G8B8 and the hotspot at 0, 0
+        {0x28A0, 0x75FF},     // HEAD_SET_CONTROL_CURSOR_COMPOSITION(2), K1 255, K1_TIMES_SRC, NEG_K1_TIMES_SRC, BLEND
+    };
+
+    cursor_methods methods = {};
+
+    build_cursor_methods(2, 0xC0DE0001, methods);
+
+    expect_methods(methods, 0, HEAD_2_CURSOR, 7);
+}
+
+// Without a context DMA head 0's cursor shows nothing, its control disabled with the A8R8G8B8 format NVIDIA keeps
+TEST(nvidia_core_methods, cursor_methods_without_a_picture_disable_the_cursor) {
+    static constexpr display_method HEAD_0_NO_CURSOR[] = {
+        {0x2098, 0x0},
+        {0x2088, 0x0},
+        {0x208C, 0x0},
+        {0x2090, 0x0},
+        {0x2094, 0x0},
+        {0x209C, NVIDIA_CURSOR_DISABLED},
+        {0x20A0, 0x75FF},
+    };
+
+    cursor_methods methods = {};
+
+    build_cursor_methods(0, 0, methods);
+
+    expect_methods(methods, 0, HEAD_0_NO_CURSOR, 7);
 }
