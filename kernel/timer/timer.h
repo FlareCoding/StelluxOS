@@ -120,14 +120,16 @@ __PRIVILEGED_CODE void cancel_sleep(sched::task* task);
  * Safe against a concurrent `schedule` or `cancel` of the same timer from any
  * CPU. A running timer may schedule itself again from its own callback,
  * elevated like every privileged call made lowered, which is how a periodic
- * timer is written.
+ * timer is written. Never waits, so it is safe from any context, interrupt
+ * handlers included.
  * @return true when a scheduled timer was moved, false when one was started.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE bool schedule(deadline_timer* timer, uint64_t deadline_ns);
 
 /**
- * @brief Removes `timer` from the tree holding it. Never waits.
+ * @brief Removes `timer` from the tree holding it. Never waits, so it is safe
+ * from any context, interrupt handlers included.
  * @return `removed` when a scheduled timer was stopped, `not_scheduled` when
  *         there was nothing to stop, `running` when the callback has already
  *         started and will finish on its own. An owner that must outlive a

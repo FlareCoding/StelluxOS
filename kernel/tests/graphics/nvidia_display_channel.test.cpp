@@ -448,3 +448,40 @@ TEST(nvidia_display_channel, wait_idle_reads_get_at_least_once_and_times_out_sho
     g_area[GET_WORD] = 8;
     EXPECT_EQ(channel.wait_idle(0), OK);
 }
+
+// A reservation reads GET only for room not counted free, as `write` does, writing no method, so with GET reading all
+// ones a fresh channel refuses as many words as it counts free and then takes the method it reserved
+TEST(nvidia_display_channel, reserve_reads_get_only_for_room_not_counted_free_and_writes_no_method) {
+    reset_memory();
+    g_area[GET_WORD] = 0xFFFFFFFF;
+    display_channel channel(g_push_buffer, area_view());
+
+    EXPECT_EQ(channel.reserve(1010 * 4), ERR_BAD_STATE);
+    EXPECT_EQ(channel.reserve(1009 * 4), OK);
+    EXPECT_EQ(g_push_buffer[0], STALE_PATTERN);
+
+    EXPECT_EQ(channel.write(METHOD, VALUES, 1008), OK);
+    EXPECT_EQ(g_push_buffer[0], nvidia_header(METHOD, 1008));
+}
+
+// With GET at offset 0 a reservation needing a wrap is `ERR_QUEUE_FULL` with nothing written, and once GET moves on it
+// wraps with NVIDIA's jump, leaving room for the methods it reserved at offset 0
+TEST(nvidia_display_channel, reserve_refuses_a_full_push_buffer_and_wraps_once_get_moves_on) {
+    reset_memory();
+    display_channel channel(g_push_buffer, area_view());
+    EXPECT_EQ(channel.write(METHOD, VALUES, 999), OK);
+    channel.kick();
+    EXPECT_EQ(g_area[PUT_WORD], 0xFA0u);
+
+    EXPECT_EQ(channel.reserve(100), ERR_QUEUE_FULL);
+    EXPECT_EQ(g_push_buffer[0xFA0 / 4], STALE_PATTERN);
+    EXPECT_EQ(g_area[PUT_WORD], 0xFA0u);
+
+    g_area[GET_WORD] = 0xFA0;
+    EXPECT_EQ(channel.reserve(100), OK);
+    EXPECT_EQ(g_push_buffer[0xFA0 / 4], NVIDIA_JUMP_TO_START);
+    EXPECT_EQ(g_area[PUT_WORD], 0u);
+
+    EXPECT_EQ(channel.write(METHOD, VALUES, 24), OK);
+    EXPECT_EQ(g_push_buffer[0], nvidia_header(METHOD, 24));
+}

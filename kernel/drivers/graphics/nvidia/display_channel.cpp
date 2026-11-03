@@ -73,6 +73,15 @@ int32_t display_channel::write(uint32_t method, const uint32_t* values, uint32_t
     return OK;
 }
 
+int32_t display_channel::reserve(uint32_t bytes) {
+    uint32_t words = bytes / 4;
+    if (m_free_words > words) {
+        return OK;
+    }
+
+    return make_room(words);
+}
+
 void display_channel::kick() {
     if (m_put == m_end) {
         return;

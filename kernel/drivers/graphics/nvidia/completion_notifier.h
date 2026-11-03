@@ -14,8 +14,9 @@ namespace drivers::nvidia {
 constexpr uint64_t COMPLETION_NOTIFIER_BYTES = 0x1000;
 
 // NVIDIA's NV_DISP_NOTIFIER__0_STATUS, bits 31:30 of the notifier's first word, and its values: NOT_BEGUN 0, which
-// `clear` writes, and FINISHED 2, which the display engine writes once an update naming the notifier has finished
+// `clear` writes, BEGUN 1 once a head takes an update's state, and FINISHED 2 once that update has finished
 constexpr uint32_t NOTIFIER_STATUS_SHIFT    = 30;
+constexpr uint32_t NOTIFIER_STATUS_BEGUN    = 1;
 constexpr uint32_t NOTIFIER_STATUS_FINISHED = 2;
 
 // NVIDIA's NV_EVO_NOTIFIER_SHORT_TIMEOUT_USEC, 3 seconds, the wait a caller of `wait_finished` gives an update

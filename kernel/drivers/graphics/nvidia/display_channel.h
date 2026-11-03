@@ -112,6 +112,17 @@ public:
     int32_t write(uint32_t method, const uint32_t* values, uint32_t count);
 
     /**
+     * @brief Make room for `bytes` of methods at the written end, counting
+     * free words as `write` does, so the writes that follow, up to `bytes` of
+     * headers and values, never read GET or return `ERR_QUEUE_FULL`. It writes
+     * no method, though it may wrap as `write` does. Never waits.
+     * @param bytes A multiple of 4.
+     * @return `OK`, or `ERR_QUEUE_FULL` or `ERR_BAD_STATE` as `write` returns
+     * them.
+     */
+    int32_t reserve(uint32_t bytes);
+
+    /**
      * @brief Make PUT the written end, after a full barrier, so the display
      * engine finds every method written before the kick. Writes nothing while
      * the written end is the last PUT kicked.

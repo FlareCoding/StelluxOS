@@ -42,6 +42,9 @@ constexpr uint32_t CORE_ARMED_STATE = CORE_CHANNEL_AREA + CORE_CHANNEL_ARMED_STA
 
 constexpr uint64_t MILLIHERTZ_PER_HERTZ = 1000;
 
+// The least time between two logs of a latch the deadline estimated, which repeats while the interrupt stays stopped
+constexpr uint64_t ESTIMATE_LOG_INTERVAL_NS = 1000 * NS_PER_MS;
+
 // Logs the maker, name and timings an output's EDID gives
 static void log_monitor(uint8_t output_index, const edid::monitor& monitor) {
     log::info(
@@ -1071,6 +1074,28 @@ static int32_t write_window_methods(display_channel& queue, const window_image_m
     return OK;
 }
 
+// The push buffer bytes a window image's methods take, a header and the values for each method
+static uint32_t window_image_bytes(const window_image_methods& image) {
+    uint32_t words = 0;
+    for (const window_method& method : image.methods) {
+        words += 1 + method.count;
+    }
+
+    return words * 4;
+}
+
+// Writes a window image's methods into room `display_channel::reserve` made, so no write reads GET or waits
+static int32_t write_reserved_window_methods(display_channel& queue, const window_image_methods& image) {
+    for (const window_method& method : image.methods) {
+        int32_t rc = queue.write(method.method, method.values, method.count);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    return OK;
+}
+
 // Whether giving each present window its head changes any window's owner in the armed state, a window with no head
 // always counting as changed, as NVIDIA's modesetting module compares the owner field with the head it gives
 static bool changes_window_owners(const display_heads& heads, uint32_t present_windows, const window_owners& owners) {
@@ -1153,6 +1178,9 @@ display_engine::display_engine(firmware& fw, video_memory& memory)
     for (uint8_t& output : m_head_outputs) {
         output = NO_OUTPUT;
     }
+
+    timer::init_deadline_timer(&m_latch_check_timer, check_latch);
+    timer::init_deadline_timer(&m_deadline_timer, expire_deadline);
 }
 
 int32_t display_engine::set_up(
@@ -1392,6 +1420,40 @@ int32_t display_engine::set_up(
         return rc;
     }
 
+    // Only presents need the window notifier, so a shortage of it leaves the light on with presents unsupported
+    rc = m_window_notifier.allocate(card);
+    if (rc == OK) {
+        for (uint32_t slot = 0; slot < NOTIFIER_SLOTS; slot++) {
+            m_window_notifier.clear(slot);
+        }
+
+        rm::handle window_notifier_context_dma = m_firmware.new_handle();
+        context_dma_memory window_notifier_memory = {
+            .in_video_memory = false,
+            .address = m_window_notifier.physical_address(),
+            .bytes = WINDOW_NOTIFIER_BYTES,
+        };
+
+        uint32_t window_channel = window_channel_number(light.window);
+        rc = m_instance_memory.bind(window_notifier_context_dma, window_channel, window_notifier_memory);
+        if (rc == OK) {
+            m_window_notifier_context_dma = window_notifier_context_dma;
+            log::info(
+                "nvidia: window %u's notifier lies at physical address 0x%lX, and its context DMA 0x%X is bound to "
+                "the window's channel",
+                light.window,
+                window_notifier_memory.address,
+                window_notifier_context_dma
+            );
+        }
+    }
+
+    if (rc == ERR_NO_MEMORY) {
+        log::warn("nvidia: window %u has no notifier, so presents on its output are unsupported", light.window);
+    } else if (rc != OK) {
+        return rc;
+    }
+
     bool is_core_channel_idle = false;
     rc = wait_core_channel_idle(m_firmware, m_objects.display, display, is_core_channel_idle);
     if (rc != OK) {
@@ -1498,11 +1560,23 @@ int32_t display_engine::bring_up(
         uint64_t frames_per_second =
             (m_chosen_mode.refresh_millihertz + MILLIHERTZ_PER_HERTZ / 2) / MILLIHERTZ_PER_HERTZ;
 
+        mode_times times = {};
+        bool has_times = compute_mode_times(light.timing, times);
+        if (!has_times || !times.has_latch_check) {
+            log::warn(
+                "nvidia: head %u's mode leaves no time for a latch check, so a present its vertical blank finds "
+                "unlatched is reported at the next",
+                light.head
+            );
+        }
+
         // The handler counts a head's frames once its entry names the output, so the entry precedes the enable
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
             m_is_lit = true;
             m_lit_head = light.head;
+            m_lit_window = light.window;
+            m_mode_times = times;
             m_frames_per_second = static_cast<uint32_t>(frames_per_second);
 
             sync::atomic_ref<uint8_t>{m_head_outputs[light.head]}.store_release(m_chosen_output);
@@ -1721,8 +1795,17 @@ int32_t display_engine::take_down(
 }
 
 int32_t display_engine::release() {
+    // Nothing ends a present once the engine is released, so the queued one ends here, failed, and a timer callback
+    // already running finds none
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        timer::cancel(&m_latch_check_timer);
+        timer::cancel(&m_deadline_timer);
+        if (m_has_queued_present) {
+            m_is_display_failed.store_release(true);
+            end_present(gfxfb::GFXFB_PRESENT_FAILED, {});
+        }
+
         m_is_lit = false;
         m_is_released = true;
         sync::spin_unlock_irqrestore(m_output_lock, irq);
@@ -1791,6 +1874,7 @@ __PRIVILEGED_CODE bool display_engine::service_vertical_blanks(registers& regs, 
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
         if (m_is_lit && output == m_chosen_output) {
             completes_first_second |= count_vertical_blank(clock::now_ns(), raster_position(regs, head));
+            run_latch_step();
         }
 
         sync::spin_unlock_irqrestore(m_output_lock, irq);
@@ -1818,6 +1902,120 @@ bool display_engine::count_vertical_blank(uint64_t now_ns, uint32_t position) {
     m_first_second.highest_line = line > m_first_second.highest_line ? line : m_first_second.highest_line;
 
     return m_frame_count == m_frames_per_second;
+}
+
+latch_inputs display_engine::read_latch_inputs() const {
+    return {
+        .present_queued      = m_has_queued_present,
+        .slot_written        = m_has_queued_present && m_window_notifier.written(m_queued_slot),
+        .frame               = m_frame_count,
+        .vertical_blank_ns   = m_vertical_blank_ns,
+        .check_frame         = m_check_frame,
+        .last_reported_frame = m_last_reported_frame,
+        .deadline_ns         = m_queued_deadline_ns,
+    };
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void display_engine::run_latch_step() {
+    latch_step_decision decision = decide_latch_step(read_latch_inputs(), m_mode_times);
+    switch (decision.action) {
+        case latch_step_action::none:
+            break;
+        case latch_step_action::report:
+            timer::cancel(&m_latch_check_timer);
+            timer::cancel(&m_deadline_timer);
+            end_present(gfxfb::GFXFB_PRESENT_LATCHED, decision.report);
+            break;
+        case latch_step_action::schedule_check:
+            m_check_frame = m_frame_count;
+            timer::schedule(&m_latch_check_timer, decision.check_ns);
+            break;
+    }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void display_engine::end_present(uint32_t status, const latch_report& report) {
+    gfxfb::present_result result = {};
+    result.status = status;
+    if (status == gfxfb::GFXFB_PRESENT_LATCHED) {
+        result.frame = report.frame;
+        result.timestamp_ns = report.timestamp_ns;
+        m_last_reported_frame = report.frame;
+    }
+
+    m_has_queued_present = false;
+    m_present_done(this, m_chosen_output, result);
+}
+
+void display_engine::check_latch(timer::deadline_timer* timer) {
+    display_engine* engine = timer::owner_of<display_engine, &display_engine::m_latch_check_timer>(timer);
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(engine->m_output_lock);
+        latch_report report = {};
+        if (decide_latch_check(engine->read_latch_inputs(), engine->m_mode_times, clock::now_ns(), report)) {
+            timer::cancel(&engine->m_deadline_timer);
+            engine->end_present(gfxfb::GFXFB_PRESENT_LATCHED, report);
+        }
+
+        sync::spin_unlock_irqrestore(engine->m_output_lock, irq);
+    });
+}
+
+void display_engine::expire_deadline(timer::deadline_timer* timer) {
+    display_engine* engine = timer::owner_of<display_engine, &display_engine::m_deadline_timer>(timer);
+    uint8_t output = 0;
+    deadline_decision decision = {};
+    bool must_log_estimate = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(engine->m_output_lock);
+        uint64_t now_ns = clock::now_ns();
+        output = engine->m_chosen_output;
+        decision = decide_deadline(engine->read_latch_inputs(), now_ns);
+        switch (decision.action) {
+            case deadline_action::none:
+                break;
+            case deadline_action::report:
+                timer::cancel(&engine->m_latch_check_timer);
+                engine->end_present(gfxfb::GFXFB_PRESENT_LATCHED, decision.report);
+                must_log_estimate = engine->m_last_estimate_log_ns == 0 ||
+                                    now_ns - engine->m_last_estimate_log_ns >= ESTIMATE_LOG_INTERVAL_NS;
+                if (must_log_estimate) {
+                    engine->m_last_estimate_log_ns = now_ns;
+                }
+
+                break;
+            case deadline_action::fail:
+                timer::cancel(&engine->m_latch_check_timer);
+                engine->m_is_display_failed.store_release(true);
+                engine->end_present(gfxfb::GFXFB_PRESENT_FAILED, decision.report);
+                break;
+        }
+
+        sync::spin_unlock_irqrestore(engine->m_output_lock, irq);
+    });
+
+    if (must_log_estimate) {
+        log::error(
+            "nvidia: output %u's present reached its deadline with its head holding the buffer but no vertical blank "
+            "serviced, so the vertical blank interrupt stopped, and it ended latched at an estimated frame %lu and "
+            "time %lu ns",
+            output,
+            decision.report.frame,
+            decision.report.timestamp_ns
+        );
+    }
+
+    if (decision.action == deadline_action::fail) {
+        log::error(
+            "nvidia: output %u's present reached its deadline before its head took the buffer, so the display failed",
+            output
+        );
+    }
 }
 
 void display_engine::log_first_second() {
@@ -1900,6 +2098,103 @@ gfxfb::buffer* display_engine::base_buffer(uint32_t output) {
     return base;
 }
 
+int32_t display_engine::present(uint32_t output, gfxfb::buffer* buf, const gfxfb::gfxfb_rect*, uint32_t) {
+    // `set_up` binds the notifier before flips turn on, so reading flips with acquire orders this bare read
+    if (!are_flips_on() || m_window_notifier_context_dma == 0) {
+        return gfxfb::ERR_UNSUPPORTED;
+    }
+
+    int32_t rc = gfxfb::OK;
+    int32_t write_rc = OK;
+    uint8_t window = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        rc = queue_present(output, *buf, write_rc);
+        window = m_lit_window;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (write_rc != OK) {
+        log::error(
+            "nvidia: writing a present into window %u's channel failed: %d, so the display failed",
+            window,
+            write_rc
+        );
+    }
+
+    return rc;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t display_engine::queue_present(
+    uint32_t output,
+    const gfxfb::buffer& buf,
+    int32_t& write_rc
+) {
+    if (m_is_released || m_is_display_failed.load_acquire()) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    if (!m_is_lit || output != m_chosen_output) {
+        return gfxfb::ERR_DARK;
+    }
+
+    if (buf.width != m_chosen_mode.width || buf.height != m_chosen_mode.height) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    if (&buf != &m_userland_base_buffer) {
+        return gfxfb::ERR_REFUSED;
+    }
+
+    window_image image = {
+        .window                    = m_lit_window,
+        .surface_context_dma       = m_base_buffer_context_dma,
+        .width                     = buf.width,
+        .height                    = buf.height,
+        .pitch                     = buf.pitch,
+        .look_up_table_context_dma = m_look_up_table_context_dma,
+    };
+
+    uint32_t slot = m_next_slot;
+    window_image_update update = {
+        .notifier_context_dma = m_window_notifier_context_dma,
+        .notifier_slot        = slot,
+        .interlocks_core      = false,
+    };
+
+    window_image_methods methods = {};
+    build_window_image_methods(image, update, methods);
+
+    // The whole present fits before anything is written, so a full push buffer never holds part of one
+    int32_t rc = m_window_queue->reserve(window_image_bytes(methods));
+    if (rc == ERR_QUEUE_FULL) {
+        return gfxfb::ERR_REFUSED;
+    }
+
+    if (rc == OK) {
+        m_window_notifier.clear(slot);
+        rc = write_reserved_window_methods(*m_window_queue, methods);
+    }
+
+    if (rc != OK) {
+        write_rc = rc;
+        m_is_display_failed.store_release(true);
+        return gfxfb::ERR_DEVICE;
+    }
+
+    m_window_queue->kick();
+    m_next_slot = next_notifier_slot(slot);
+
+    m_has_queued_present = true;
+    m_queued_slot = slot;
+    m_queued_deadline_ns = clock::now_ns() + gfxfb::GFXFB_PRESENT_TIMEOUT_NS;
+    timer::schedule(&m_deadline_timer, m_queued_deadline_ns);
+    return gfxfb::OK;
+}
+
 int32_t display_engine::flush(uint32_t output, const gfxfb::gfxfb_rect*, uint32_t) {
     bool is_released = false;
     bool is_lit = false;
@@ -1910,7 +2205,7 @@ int32_t display_engine::flush(uint32_t output, const gfxfb::gfxfb_rect*, uint32_
         sync::spin_unlock_irqrestore(m_output_lock, irq);
     });
 
-    if (is_released) {
+    if (is_released || m_is_display_failed.load_acquire()) {
         return gfxfb::ERR_DEVICE;
     }
 

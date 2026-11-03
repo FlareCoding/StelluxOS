@@ -100,7 +100,7 @@ struct latch_step_decision {
 enum class deadline_action : uint8_t {
     none,   // no present is queued, or its deadline is still ahead, so the timer ran for an earlier present
     report, // end the present latched with the report, an estimate, and log that the vertical blank interrupt stopped
-    fail,   // end the present failed, mark the display failed and wake the driver's task
+    fail,   // end the present failed and mark the display failed
 };
 
 // The deadline timer's action, with the report it needs

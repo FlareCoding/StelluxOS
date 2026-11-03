@@ -109,12 +109,15 @@ struct buffer {
  * How a present the display accepted ended, as it reports to `present_done()`.
  * gfxfb reads `frame` and `timestamp_ns` only when the present latched. A
  * display whose hardware has no vertical blanks counts boundaries of its own
- * in their place, as `display::present()` says.
+ * in their place, as `display::present()` says. A display raises `frame` to
+ * one past its last report since the output lit when it would not increase,
+ * and reports estimates of both, logged, when no vertical blank it serviced
+ * carried the latch.
  */
 struct present_result {
     uint32_t status;       // GFXFB_PRESENT_*
-    uint64_t frame;        // the output's vertical blanks since it was lit, counted at the latch
-    uint64_t timestamp_ns; // when the latching vertical blank began, on the kernel's monotonic clock
+    uint64_t frame;        // at the latch, the output's vertical blanks since it was lit, as above
+    uint64_t timestamp_ns; // when the latching vertical blank began, as above, on the kernel's monotonic clock
 };
 
 /**
