@@ -1189,6 +1189,7 @@ static int32_t set_up(
         .core_channel_class        = TEST_CORE_CHANNEL_CLASS,
         .window_channel_class      = TEST_WINDOW_CHANNEL_CLASS,
         .heads_have_output_scalers = heads_have_output_scalers,
+        .cursor_channel_class      = 0,
         .displayport               = links,
     };
 
