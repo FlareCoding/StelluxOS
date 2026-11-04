@@ -25,6 +25,7 @@ using drivers::nvidia::cpu_mapping;
 using drivers::nvidia::directory_entry;
 using drivers::nvidia::entry_run;
 using drivers::nvidia::failed_mark;
+using drivers::nvidia::memory_report;
 using drivers::nvidia::memory_run;
 using drivers::nvidia::page_aperture;
 using drivers::nvidia::page_entry;
@@ -81,6 +82,10 @@ public:
     }
 
     ~table_video_memory() override { heap::ufree(words); }
+
+    void report(memory_report& out) override {
+        out = {};
+    }
 
     int32_t allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) override {
         bool is_table = size == TABLE_BYTES && alignment == TABLE_BYTES && use == vram_use::general;

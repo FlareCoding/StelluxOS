@@ -22,6 +22,9 @@ constexpr uint32_t VGX_VERSION_MINOR = 0x05;
 // The most video memory regions NVIDIA's driver keeps, the number of entries in NVIDIA's table of them
 constexpr uint32_t VIDEO_MEMORY_REGIONS_MAX = 16;
 
+// The bytes of the product name in the static configuration, its NUL included
+constexpr uint32_t GPU_NAME_BYTES = 64;
+
 // A range of video memory the GSP's firmware reports, with what NVIDIA's driver may place in it
 struct video_memory_region {
     uint64_t offset;               // the region's first byte, counted from the start of video memory
@@ -47,6 +50,9 @@ struct static_configuration {
                                                            // driver sends on its own behalf
     rm::handle          internal_subdevice;                // that client's subdevice (its object standing for this
                                                            // GPU), to which the driver sends its first control
+    uint32_t            gpc_count;                         // the enabled GPCs (the GPU's graphics clusters)
+    uint32_t            tpc_count;                         // the enabled TPCs (the units that run shaders) across them
+    char                name[GPU_NAME_BYTES];              // the product name, NUL terminated
 };
 
 /**
@@ -84,13 +90,9 @@ int32_t confirm_message_version(gsp& conversation, uint64_t timeout_ns);
  * @brief Ask the GSP's firmware for its static configuration (the facts about
  * the GPU the firmware gathers as it starts), as NVIDIA's driver does with its
  * second request once the firmware is ready, and read from it the members
- * `static_configuration` holds: the video memory regions the firmware reports,
- * where BAR1's root page directory lies, and the handles of the internal
- * client and subdevice. BAR1 is where the CPU reaches the card's video memory,
- * and its root page directory is the top level of the page tables the firmware
- * binds BAR1 to. The request carries 2168 zero bytes, the size of NVIDIA's
- * static configuration for this firmware, from a buffer allocated on the
- * unprivileged heap for the call, and `gsp::request` copies the reply's
+ * `static_configuration` holds. The request carries 2168 zero bytes, the size
+ * of NVIDIA's static configuration for this firmware, from a buffer allocated
+ * on the unprivileged heap for the call, and `gsp::request` copies the reply's
  * payload back over those bytes. NVIDIA's driver checks only the reply's
  * result before copying the whole configuration, while here the reply's
  * payload must also extend to byte 2164, where the field holding the internal
@@ -119,8 +121,8 @@ int32_t confirm_message_version(gsp& conversation, uint64_t timeout_ns);
  * multiple of 8 below `BAR0_WINDOW_REACH`, with the directory's first entry
  * ending at or below `video_memory_size`), the regions in the firmware's order
  * with their count (1 to `VIDEO_MEMORY_REGIONS_MAX`), the entries past the
- * count left unchanged, and the internal client's and subdevice's handles. It
- * is left unchanged on an error.
+ * count left unchanged, the internal client's and subdevice's handles, the GPC
+ * and TPC counts and the product name. It is left unchanged on an error.
  * @return `OK`, `ERR_NO_MEMORY` when the buffer cannot be allocated, what
  * `gsp::request` returns when the request fails, logged as its doc describes,
  * or `ERR_BAD_MESSAGE` when the reply's payload ends before byte 2164, when

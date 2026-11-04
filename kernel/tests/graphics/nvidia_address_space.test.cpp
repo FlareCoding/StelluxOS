@@ -19,6 +19,7 @@ using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::failed_mark;
 using drivers::nvidia::firmware;
 using drivers::nvidia::gpu_objects;
+using drivers::nvidia::memory_report;
 using drivers::nvidia::OK;
 using drivers::nvidia::table_writes;
 using drivers::nvidia::video_memory;
@@ -114,6 +115,10 @@ class counting_video_memory : public video_memory {
 public:
     uint64_t next_offset = ROOT_OFFSET;
     uint32_t releases = 0;
+
+    void report(memory_report& out) override {
+        out = {};
+    }
 
     int32_t allocate(uint64_t size, uint64_t, vram_use, vram_range& out) override {
         out = {.offset = next_offset, .size = size};

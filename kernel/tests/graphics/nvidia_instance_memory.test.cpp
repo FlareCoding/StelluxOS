@@ -25,6 +25,7 @@ using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::firmware;
 using drivers::nvidia::instance_memory;
+using drivers::nvidia::memory_report;
 using drivers::nvidia::OK;
 using drivers::nvidia::table_writes;
 using drivers::nvidia::video_memory;
@@ -189,6 +190,10 @@ public:
         }
 
         return true;
+    }
+
+    void report(memory_report& out) override {
+        out = {};
     }
 
     int32_t allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) override {

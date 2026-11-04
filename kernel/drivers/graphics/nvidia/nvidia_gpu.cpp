@@ -28,12 +28,14 @@
 #include "boot/boot_services.h"
 #include "clock/clock.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "dma/dma.h"
 #include "dynpriv/dynpriv.h"
 #include "hw/barrier.h"
 #include "hw/mmio.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
+#include "pci/pci.h"
 #include "pci/pci_class_codes.h"
 #include "sync/atomic.h"
 
@@ -782,6 +784,17 @@ int32_t nvidia_gpu_driver::attach() {
 
     m_gsp.set_internal_client(configuration.internal_client, configuration.internal_subdevice);
 
+    m_card_identity.vendor_id = m_dev->vendor_id();
+    m_card_identity.device_id = m_dev->device_id();
+    m_card_identity.bus = m_dev->bus();
+    m_card_identity.slot = m_dev->slot();
+    m_card_identity.function = m_dev->func();
+    RUN_ELEVATED(m_card_identity.revision = m_dev->config_read8(pci::CFG_REVISION));
+
+    m_card_identity.gpc_count = configuration.gpc_count;
+    m_card_identity.tpc_count = configuration.tpc_count;
+    string::memcpy(m_card_identity.name, configuration.name, sizeof(m_card_identity.name));
+
     for (uint32_t i = 0; i < configuration.region_count; i++) {
         const nvidia::video_memory_region& region = configuration.regions[i];
         uint64_t last_byte = region.offset + region.size - 1;
@@ -1184,8 +1197,10 @@ void nvidia_gpu_driver::run() {
     dma::device_profile card_profile = dma::uncached_profile(m_chip->dma_address_bits);
     RUN_ELEVATED(card_profile = dma_profile(m_chip->dma_address_bits));
 
-    // Every failure is logged, and the display runs on without the engines
-    m_engines.bring_up(regs, card_profile, *m_chip);
+    // Every failure is logged, and the display runs on without the engines or the GPU core's device
+    if (m_engines.bring_up(regs, card_profile, *m_chip) == nvidia::OK) {
+        m_engines.register_gpu(m_card_identity);
+    }
 
     bool has_woken = false;
     while (true) {

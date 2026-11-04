@@ -45,6 +45,14 @@ enum class context_tlbs : uint8_t {
     invalidated, // in the engines' TLBs as well as the hub's, as `invalidate_context_tlbs` does
 };
 
+// The bytes of video memory allocations may use and of the CPU's window, and those no allocation or mapping holds
+struct memory_report {
+    uint64_t video_bytes;
+    uint64_t video_free_bytes;
+    uint64_t window_bytes; // the window's bytes a mapping may use, past a kept console
+    uint64_t window_free_bytes;
+};
+
 /**
  * The card's video memory as the driver's parts use it: ranges handed out for
  * a `vram_use`, each its caller's until the caller releases it, and mappings
@@ -57,6 +65,9 @@ enum class context_tlbs : uint8_t {
 class video_memory {
 public:
     virtual ~video_memory() = default;
+
+    // Fills `out` with the memory and window as they are at the call
+    virtual void report(memory_report& out) = 0;
 
     /**
      * @brief Hand out `size` bytes of video memory for `use` at a multiple of
@@ -244,6 +255,8 @@ public:
      * @param bar1_virt Where the kernel's mapping of BAR1 starts.
      */
     void open_window(uintptr_t bar1_virt);
+
+    void report(memory_report& out) override;
 
     /**
      * @brief Hand out `size` bytes of video memory for `use` at a multiple of

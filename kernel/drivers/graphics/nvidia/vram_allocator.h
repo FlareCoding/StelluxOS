@@ -137,6 +137,9 @@ public:
      */
     bool is_handed_out(const vram_range& range);
 
+    // Gives the bytes of the regions allocations may lie in, and how many of them no allocation holds
+    void count_bytes(uint64_t& total_out, uint64_t& free_out);
+
 private:
     // The record of one allocation
     struct record {

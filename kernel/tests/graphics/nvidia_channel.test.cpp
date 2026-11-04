@@ -29,6 +29,7 @@ using drivers::nvidia::firmware;
 using drivers::nvidia::GPFIFO_ENTRIES;
 using drivers::nvidia::gpfifo_entry;
 using drivers::nvidia::gpu_objects;
+using drivers::nvidia::memory_report;
 using drivers::nvidia::OK;
 using drivers::nvidia::registers;
 using drivers::nvidia::table_writes;
@@ -190,6 +191,10 @@ public:
     uint32_t   releases = 0;
     uint32_t   unmaps_for_cpu = 0;
     int32_t    update_result = OK;
+
+    void report(memory_report& out) override {
+        out = {};
+    }
 
     int32_t allocate(uint64_t size, uint64_t, vram_use, vram_range& out) override {
         out = {.offset = next_offset, .size = size};

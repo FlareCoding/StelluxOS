@@ -203,6 +203,25 @@ bool vram_allocator::is_handed_out(const vram_range& range) {
     return is_found;
 }
 
+void vram_allocator::count_bytes(uint64_t& total_out, uint64_t& free_out) {
+    uint64_t total = 0;
+    uint64_t held_bytes = 0;
+
+    RUN_ELEVATED(sync::mutex_lock(m_lock));
+    for (uint32_t i = 0; i < m_region_count; i++) {
+        total += m_regions[i].size;
+    }
+
+    for (record& held : m_records) {
+        held_bytes += held.size;
+    }
+
+    RUN_ELEVATED(sync::mutex_unlock(m_lock));
+
+    total_out = total;
+    free_out = total - held_bytes;
+}
+
 int32_t vram_allocator::place_range(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) {
     uint64_t offset = 0;
     bool is_found = false;

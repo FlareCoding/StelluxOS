@@ -15,6 +15,7 @@
 
 TEST_SUITE(nvidia_engines);
 
+using drivers::nvidia::card_identity;
 using drivers::nvidia::channel_test_access;
 using drivers::nvidia::chip_info;
 using drivers::nvidia::copy_channel;
@@ -28,8 +29,8 @@ using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::failed_mark;
 using drivers::nvidia::firmware;
-using drivers::nvidia::GPU_SUBMIT_TIMEOUT_NS;
 using drivers::nvidia::gpu_objects;
+using drivers::nvidia::memory_report;
 using drivers::nvidia::OK;
 using drivers::nvidia::registers;
 using drivers::nvidia::table_writes;
@@ -116,6 +117,13 @@ struct engines_test_access {
     }
 
     static copy_channel* copy_channel_of(engines& gpu_engines) { return gpu_engines.m_copy_channel; }
+
+    // Gives `gpu_engines` the BAR0, chip and card that bring-up and registration would, without either
+    static void describe(engines& gpu_engines, registers bar0, const chip_info& chip, const card_identity& identity) {
+        gpu_engines.m_bar0 = bar0;
+        gpu_engines.m_chip = &chip;
+        gpu_engines.m_identity = identity;
+    }
 };
 
 } // namespace drivers::nvidia
@@ -206,11 +214,17 @@ alignas(4096) static uint8_t s_engines_instance_block[4096];
 // onto `s_engines_instance_block`, and counts the check range's unmaps and releases
 class engines_video_memory : public video_memory {
 public:
+    memory_report reported = {};
+
     uint64_t next_offset = 0x400000;
     uint64_t check_offset = 0;
     uint32_t allocations = 0;
     uint32_t check_unmaps = 0;
     uint32_t check_releases = 0;
+
+    void report(memory_report& out) override {
+        out = reported;
+    }
 
     int32_t allocate(uint64_t size, uint64_t, vram_use, vram_range& out) override {
         allocations++;
@@ -628,4 +642,136 @@ TEST(nvidia_engines, bring_up_keeps_the_checks_memory_when_a_copy_hangs) {
     EXPECT_EQ(fixture.memory.check_releases, 0u);
     EXPECT_EQ(fixture.fw.releases, 0u);
     EXPECT_EQ(bar0_word(CPU_INTR_LEAF_EN_CLEAR), COPY_VECTOR_BIT);
+}
+
+// GA102's chip as the driver's chip table names it, set by each facts test
+static chip_info s_ga102_chip;
+
+// Gives the fixture's engines GA102's chip and an RTX 3080's identity, without bring-up or registration
+static void describe_rtx_3080(engines_fixture& fixture) {
+    s_ga102_chip.id = 0x172;
+    s_ga102_chip.channel_class = 0xC56F;
+    s_ga102_chip.copy_class = 0xC7B5;
+
+    card_identity identity = {};
+
+    identity.vendor_id = 0x10DE;
+    identity.device_id = 0x2206;
+    identity.bus = 1;
+    identity.slot = 2;
+    identity.function = 3;
+    identity.revision = 0xA1;
+
+    identity.gpc_count = 6;
+    identity.tpc_count = 34;
+    const char name[] = "NVIDIA GeForce RTX 3080";
+    string::memcpy(identity.name, name, sizeof(name));
+
+    engines_test_access::describe(fixture.gpu_engines, fixture.bar0, s_ga102_chip, identity);
+}
+
+// A video memory report whose four figures differ, so one read for another fails
+static constexpr memory_report REPORTED_MEMORY = {0x25F800000, 0x251000000, 0xEF00000, 0xD300000};
+
+// The facts describe the card from its identity, chip and memory, with no queue kind, NVK's user range, and the
+// command bytes a queue's GPFIFO holds less one entry per running submission and the entry kept empty
+TEST(nvidia_engines, facts_describe_the_card) {
+    engines_fixture fixture;
+    fixture.memory.reported = REPORTED_MEMORY;
+    describe_rtx_3080(fixture);
+    gpu::device_facts facts = {};
+
+    fixture.gpu_engines.read_facts(facts);
+
+    EXPECT_EQ(facts.info.backend, static_cast<uint32_t>(GPU_BACKEND_NVIDIA));
+    EXPECT_EQ(facts.info.queue_kinds, 0u);
+    EXPECT_EQ(string::strcmp(facts.info.name, "NVIDIA GeForce RTX 3080"), 0);
+
+    EXPECT_EQ(facts.info.vendor_id, static_cast<uint16_t>(0x10DE));
+    EXPECT_EQ(facts.info.device_id, static_cast<uint16_t>(0x2206));
+    EXPECT_EQ(facts.info.pci_bus, static_cast<uint8_t>(1));
+    EXPECT_EQ(facts.info.pci_slot, static_cast<uint8_t>(2));
+    EXPECT_EQ(facts.info.pci_function, static_cast<uint8_t>(3));
+    EXPECT_EQ(facts.info.pci_revision, static_cast<uint8_t>(0xA1));
+
+    EXPECT_EQ(facts.info.video_size, REPORTED_MEMORY.video_bytes);
+    EXPECT_EQ(facts.info.mappable_video_size, REPORTED_MEMORY.window_bytes);
+    EXPECT_EQ(facts.info.va_start, 4096u);
+    EXPECT_EQ(facts.info.va_end, 1ULL << 39);
+    EXPECT_EQ(facts.info.page_size, 4096u);
+    EXPECT_EQ(facts.info.placements, (1u << GPU_PLACEMENT_VIDEO) | (1u << GPU_PLACEMENT_SYSTEM));
+
+    EXPECT_EQ(facts.info.nvidia.chipset, 0x172u);
+    EXPECT_EQ(facts.info.nvidia.class_gpfifo, static_cast<uint16_t>(0xC56F));
+    EXPECT_EQ(facts.info.nvidia.class_copy, static_cast<uint16_t>(0xC7B5));
+    EXPECT_EQ(facts.info.nvidia.gpc_count, static_cast<uint16_t>(6));
+    EXPECT_EQ(facts.info.nvidia.tpc_count, static_cast<uint16_t>(34));
+
+    EXPECT_EQ(facts.submit_timeout_ns, 7000000000ULL);
+    EXPECT_EQ(facts.running_bytes_max, 261104ULL);
+}
+
+// The free memory is the video memory's report at the call, which moves as allocations come and go
+TEST(nvidia_engines, free_memory_follows_the_video_memorys_report) {
+    engines_fixture fixture;
+    fixture.memory.reported = REPORTED_MEMORY;
+    describe_rtx_3080(fixture);
+    gpu_memory first = {};
+    gpu_memory second = {};
+
+    fixture.gpu_engines.read_memory(first);
+    fixture.memory.reported.video_free_bytes -= 0x200000;
+    fixture.memory.reported.window_free_bytes -= 0x10000;
+    fixture.gpu_engines.read_memory(second);
+
+    EXPECT_EQ(first.video_free, REPORTED_MEMORY.video_free_bytes);
+    EXPECT_EQ(first.mappable_video_free, REPORTED_MEMORY.window_free_bytes);
+    EXPECT_EQ(second.video_free, REPORTED_MEMORY.video_free_bytes - 0x200000);
+    EXPECT_EQ(second.mappable_video_free, REPORTED_MEMORY.window_free_bytes - 0x10000);
+}
+
+// NVIDIA's NV_VIRTUAL_FUNCTION_TIME_0 and TIME_1, the GPU's clock in nanoseconds
+static constexpr uint32_t GPU_TIME_LOW  = 0xBB0080;
+static constexpr uint32_t GPU_TIME_HIGH = 0xBB0084;
+
+// The clock joins the high word's 29 bits above the low word as read, dropping the high word's top three bits
+TEST(nvidia_engines, timestamp_joins_the_clocks_two_words) {
+    engines_fixture fixture;
+    describe_rtx_3080(fixture);
+    bar0_word(GPU_TIME_LOW) = 0x89ABCDE0;
+    bar0_word(GPU_TIME_HIGH) = 0xE0000012;
+    uint64_t gpu_ns = 0;
+    uint64_t all_ones_low_ns = 0;
+
+    EXPECT_EQ(fixture.gpu_engines.read_timestamp(gpu_ns), gpu::OK);
+    bar0_word(GPU_TIME_LOW) = 0xFFFFFFFF;
+    EXPECT_EQ(fixture.gpu_engines.read_timestamp(all_ones_low_ns), gpu::OK);
+
+    EXPECT_EQ(gpu_ns, 0x1289ABCDE0ULL);
+    EXPECT_EQ(all_ones_low_ns, 0x12FFFFFFFFULL);
+}
+
+// A failed GPU's clock is not read, so the call reports the loss instead of what the registers hold
+TEST(nvidia_engines, timestamp_refuses_once_the_gpu_failed) {
+    engines_fixture fixture;
+    describe_rtx_3080(fixture);
+    bar0_word(GPU_TIME_LOW) = 0x89ABCDE0;
+    bar0_word(GPU_TIME_HIGH) = 0x12;
+    fixture.failed.set();
+    uint64_t gpu_ns = 0;
+
+    EXPECT_EQ(fixture.gpu_engines.read_timestamp(gpu_ns), gpu::ERR_DEVICE);
+
+    EXPECT_EQ(gpu_ns, 0u);
+}
+
+// The facts offer no queue kind, so every command list is refused, and a failed GPU reports its loss instead
+TEST(nvidia_engines, check_commands_refuses_every_list_and_reports_a_failed_gpu) {
+    engines_fixture fixture;
+    const uint8_t commands[16] = {};
+    ASSERT_EQ(fixture.gpu_engines.check_commands(commands, sizeof(commands)), gpu::ERR_REFUSED);
+
+    fixture.failed.set();
+
+    EXPECT_EQ(fixture.gpu_engines.check_commands(commands, sizeof(commands)), gpu::ERR_DEVICE);
 }
