@@ -84,7 +84,7 @@ struct backend_space : gpu::space {
     space_operation task_operation = {}; // the creation, then the destroy
 };
 
-// A queue's creation on the driver task, kept in the queue
+// A queue's work on the driver task, kept in the queue so its stop and destroy allocate nothing
 struct queue_operation : operation {
     engines*       owner;
     backend_queue* queue;
@@ -103,10 +103,11 @@ struct backend_queue : gpu::queue {
 
     channel         user_channel;
     backend_space*  space = nullptr;
-    dma::buffer     push_buffer = {};    // a release sequence per submission the queue may hold, and one more
-    uint32_t        slot = 0;            // its semaphore and window in the space
-    uint32_t        channel_id = 0;      // on the copy engine's runlist
-    queue_operation task_operation = {}; // the creation
+    dma::buffer     push_buffer = {};       // a release sequence per submission the queue may hold, and one more
+    uint32_t        slot = 0;               // its semaphore and window in the space
+    uint32_t        channel_id = 0;         // on the copy engine's runlist
+    queue_operation task_operation = {};    // the creation, then the stop
+    queue_operation destroy_operation = {}; // the destroy, kept apart from the stop's, which may still be queued
 
     gpu::core_queue*       core = nullptr;
     list::node             link;              // on the handler's list until its stop or the failure's report
@@ -127,14 +128,14 @@ using backend_queue_list = list::head<backend_queue, &backend_queue::link>;
  * must call it, and only once.
  *
  * After a timeout the hung channel and the memory it fills stay for good. A
- * hung zeroing for the GPU core or an unmap the page tables refuse fails the
- * core's device while the display runs on. Once that device or the GPU failed,
- * every backend call that can fail, except a wrap the card cannot reach
- * coherently or the heap refuses, returns `gpu::ERR_DEVICE`, a release or a
- * space's destroy frees only a record that holds no pin, and the driver task
- * reports the failure to the core. After another error, only what a refused
- * release or a refused take-back of a page directory leaves the firmware or
- * the GPU able to reach stays.
+ * hung zeroing for the GPU core, an unmap the page tables refuse or a failed
+ * release of a queue's channel fails the core's device while the display runs
+ * on. Once that device or the GPU failed, every backend call that can fail,
+ * except a wrap the card cannot reach coherently or the heap refuses, returns
+ * `gpu::ERR_DEVICE`, a release or a space's destroy frees only a record that
+ * holds no pin, and the driver task reports the failure to the core. After
+ * another error, only what a refused release or a refused take-back of a page
+ * directory leaves the firmware or the GPU able to reach stays.
  */
 class engines : public gpu::backend {
 public:
@@ -267,8 +268,11 @@ private:
     static void create_space_on_task(operation& op);
     static void destroy_space_on_task(operation& op);
 
-    // The driver task's half of `create_queue()`, given the queue's `task_operation`
+    // The driver task's halves of `create_queue()` and `stop_queue()`, given the queue's `task_operation`, and of
+    // `destroy_queue()`, given its `destroy_operation`
     static void create_queue_on_task(operation& op);
+    static void stop_queue_on_task(operation& op);
+    static void destroy_queue_on_task(operation& op);
 
     // Creates `queue`'s channel and push buffer in its space, on the driver task
     int32_t start_queue(backend_queue& queue);
@@ -276,8 +280,8 @@ private:
     // Maps `space`'s semaphores writable, allocating their page for the space's first queue
     int32_t map_semaphores(backend_space& space);
 
-    // Gives back the push buffer, slot and id of a queue whose channel was not created, unmapping the push buffer
-    // first when `is_mapped`, unless the firmware or the GPU may still reach them
+    // Gives back the push buffer, slot and id of a queue whose channel was not created or was destroyed, unmapping the
+    // push buffer first when `is_mapped`, unless the firmware or the GPU may still reach them
     void release_queue(backend_queue& queue, bool is_mapped);
 
     // Takes the lowest id free on the copy engine's runlist above the kernel's copy channel's, or returns false
