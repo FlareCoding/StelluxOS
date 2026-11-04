@@ -82,14 +82,54 @@ typedef enum {
     STLXWIN_EVT_FRAME,           /* a WANT_FRAME commit was presented */
     STLXWIN_EVT_POPUP_DISMISSED, /* a grabbing child popup was dismissed */
     STLXWIN_EVT_DISCONNECTED,    /* the display manager is gone */
+    STLXWIN_EVT_MODES,           /* a watched output's modes arrived, read them with stlxwin_modes_get */
+    STLXWIN_EVT_MODE_RESULT,     /* the display manager's answer to a mode request or keep */
 } stlxwin_event_type;
+
+#define STLXWIN_MODES_MAX   32u  /* the most modes an output lists */
+#define STLXWIN_OUTPUTS_MAX 16u  /* the most outputs a display drives */
+
+enum {
+    STLXWIN_OUTPUT_LIT     = 1u << 0,  /* the output shows a picture */
+    STLXWIN_OUTPUT_PRIMARY = 1u << 1,  /* the desktop's output */
+};
+
+enum {
+    STLXWIN_SET_MODE_TRIAL = 1u << 0,  /* set back after 15 seconds unless kept */
+};
+
+/* What the display manager did for a mode request or keep */
+enum {
+    STLXWIN_MODE_SET        = 1,  /* asked without a trial */
+    STLXWIN_MODE_TRIAL      = 2,  /* asked as a trial, its timer running when the result is 0 */
+    STLXWIN_MODE_KEPT       = 3,  /* the trial's mode kept, nothing asked */
+    STLXWIN_MODE_SET_BACK   = 4,  /* the trial's previous mode asked for again */
+    STLXWIN_MODE_DEFAULT    = 5,  /* a set-back failed, so the output's default was asked for */
+    STLXWIN_MODE_NO_BUFFERS = 6,  /* no desktop buffers at the new size, so the previous mode was asked for */
+    STLXWIN_MODE_BUSY       = 7,  /* refused, nothing asked: a trial is running */
+    STLXWIN_MODE_NO_TRIAL   = 8,  /* refused, nothing asked: no trial of this connection's on the output */
+    STLXWIN_MODE_INVALID    = 9,  /* refused, nothing asked: an unknown flag or keep value */
+};
+
+/* A picture size and refresh rate an output can light at */
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint64_t refresh_millihertz; /* 0 when unknown */
+} stlxwin_mode;
+
+typedef struct {
+    uint32_t     output_count;
+    uint32_t     flags;   /* STLXWIN_OUTPUT_* */
+    stlxwin_mode current; /* zero while the output is dark */
+} stlxwin_modes_info;
 
 /* Key events carry the raw HID usage and the translated UTF-32
  * codepoint (0 when the key produces no character). Coordinates are
  * window content local. */
 typedef struct {
     stlxwin_event_type type;
-    stlxwin_window*    window;   /* NULL for DISCONNECTED */
+    stlxwin_window*    window;   /* NULL for DISCONNECTED, MODES and MODE_RESULT */
     union {
         struct { uint16_t usage; uint8_t modifiers; uint32_t ch; } key;
         struct { int32_t x, y; } motion;
@@ -97,6 +137,13 @@ typedef struct {
         struct { int32_t x, y; int16_t dy; } scroll;
         struct { uint32_t width, height; } configure;
         struct { uint64_t time_ns; } frame;
+        struct { uint32_t output; } modes;
+        struct {
+            uint32_t     output;
+            int32_t      result;   /* 0, or the negative errno the display gave the last mode asked for */
+            uint32_t     outcome;  /* STLXWIN_MODE_* */
+            stlxwin_mode mode;     /* the mode the output is lit at when answered, zero while it is dark */
+        } mode_result;
     };
 } stlxwin_event;
 
@@ -227,6 +274,46 @@ int stlxwin_clipboard_set(stlxwin_conn* conn, const char* text, size_t len);
  * @return Length, 0 if empty, -1 on failure.
  */
 long stlxwin_clipboard_get(stlxwin_conn* conn, char** out_text);
+
+/**
+ * @brief Ask for an output's modes. The connection keeps the latest
+ * modes the display manager sends, at once and after each change of
+ * the output, and queues STLXWIN_EVT_MODES for each.
+ * @return 0, or -1 for an output of STLXWIN_OUTPUTS_MAX or more, when
+ * no memory is left to keep the modes, or when the message cannot be
+ * sent.
+ */
+int stlxwin_modes_watch(stlxwin_conn* conn, uint32_t output);
+
+/**
+ * @brief Copy a watched output's latest state into info and up to
+ * capacity of its modes, the default first, into modes.
+ * @return The output's mode count, 0 while it is dark or past the
+ * output count, or -1 before its first STLXWIN_EVT_MODES.
+ */
+long stlxwin_modes_get(stlxwin_conn* conn, uint32_t output,
+                       stlxwin_modes_info* info, stlxwin_mode* modes,
+                       size_t capacity);
+
+/**
+ * @brief Ask the display manager to light an output at one of its
+ * listed modes. It answers with one STLXWIN_EVT_MODE_RESULT. For a
+ * trial (STLXWIN_SET_MODE_TRIAL) it answers again when the timer sets
+ * the previous mode back, but not when the output goes dark or
+ * changes mode first.
+ * @return 0, or -1 when the message cannot be sent.
+ */
+int stlxwin_mode_set(stlxwin_conn* conn, uint32_t output,
+                     const stlxwin_mode* mode, uint32_t flags);
+
+/**
+ * @brief End this connection's trial on an output: keep 1 keeps its
+ * mode, 0 sets the previous one back now, and any other keep is
+ * answered STLXWIN_MODE_INVALID. The display manager answers with one
+ * STLXWIN_EVT_MODE_RESULT.
+ * @return 0, or -1 when the message cannot be sent.
+ */
+int stlxwin_mode_keep(stlxwin_conn* conn, uint32_t output, int keep);
 
 #ifdef __cplusplus
 }

@@ -124,10 +124,12 @@ static uint64_t start_serving(const presenter& pres) {
     return refresh_interval_ns(compose_millihertz);
 }
 
-/* Calls `update_output()` after an output event and returns its result, redrawing the desktop on `CHANGED`. After a
- * `DARK`, which a failure on a lit output also returns, nothing composes until a later `CHANGED` */
+/* Calls `update_output()` after output events, tells the server the outputs they named and redraws on `CHANGED`. After
+ * a `DARK`, which a failure on a lit output also returns, nothing composes until a later `CHANGED` */
 static presenter::output_state follow_output(presenter& pres, server& srv, input& inp, screen_state& screen) {
     presenter::output_state state = pres.update_output();
+    srv.outputs_changed(pres.take_event_outputs());
+
     if (state == presenter::output_state::DARK) {
         if (screen.showing) {
             printf("stlxdm: drawing nothing until the display changes an output\r\n");
@@ -145,6 +147,19 @@ static presenter::output_state follow_output(presenter& pres, server& srv, input
     }
 
     return state;
+}
+
+/* Makes the waiting mode requests one at a time and follows each one's output events before the server answers it, so
+ * a client hears an answer only once the desktop has followed the relight */
+static void run_mode_requests(presenter& pres, server& srv, input& inp, screen_state& screen) {
+    while (srv.start_mode_request()) {
+        presenter::output_state state = presenter::output_state::UNCHANGED;
+        if (pres.output_changed()) {
+            state = follow_output(pres, srv, inp, screen);
+        }
+
+        srv.finish_mode_request(state);
+    }
 }
 
 int main() {
@@ -255,6 +270,11 @@ int main() {
             next_ns = perf_ns;
         }
 
+        int64_t trial_ns = srv.mode_timeout_ns(now);
+        if (trial_ns >= 0 && (next_ns < 0 || trial_ns < next_ns)) {
+            next_ns = trial_ns;
+        }
+
         bool may_compose = screen.showing && !pres->present_pending();
         if (srv.compose_pending() && may_compose) {
             uint64_t deadline = last_compose_ns + screen.compose_interval_ns;
@@ -327,6 +347,9 @@ int main() {
         if (pres->output_changed()) {
             follow_output(*pres, srv, inp, screen);
         }
+
+        srv.mode_tick(now);
+        run_mode_requests(*pres, srv, inp, screen);
 
         now = now_ns();
         srv.perf_tick(now);

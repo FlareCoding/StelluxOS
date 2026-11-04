@@ -87,6 +87,14 @@ public:
      * the primary output, so frames may no longer reach the screen. */
     virtual bool output_changed() const = 0;
 
+    /* Returns one bit per output that output events named since the last
+     * call, and clears them. */
+    virtual uint32_t take_event_outputs() = 0;
+
+    /* The /dev/gfxfb descriptor for `GFXFB_GET_MODES` and `GFXFB_SET_MODE`,
+     * which its own control of the buffers never makes fail with EBUSY. */
+    virtual int display_fd() const = 0;
+
     /* Reads the primary output again after an output changed, first
      * waiting for a pending present's end, and clears
      * `output_changed()`. After `CHANGED`, `width()`, `height()` and
@@ -164,6 +172,8 @@ public:
     bool present_pending() const override { return false; }
     void take_events() override;
     bool output_changed() const override { return m_output_changed; }
+    uint32_t take_event_outputs() override;
+    int display_fd() const override { return m_fd; }
 
     /* Reads the framebuffer's layout and maps it again, since the primary
      * output may hold other pixels after any output event, and returns
@@ -200,6 +210,7 @@ private:
     bool      m_needs_flush = false;
     bool      m_last_flush_failed = false;
     bool      m_output_changed = false;
+    uint32_t  m_event_outputs = 0;
 };
 
 /* Composes into one cached buffer, copies each frame's changes into the
@@ -230,6 +241,8 @@ public:
     bool present_pending() const override { return m_present_pending; }
     void take_events() override;
     bool output_changed() const override { return m_output_changed; }
+    uint32_t take_event_outputs() override;
+    int display_fd() const override { return m_fd; }
 
     /* Returns `CHANGED` when the primary output is another output, at
      * another size or named by an output event since the last read, or lit
@@ -301,6 +314,9 @@ private:
      * the primary output, and one bit per output those events named. */
     bool           m_output_changed = false;
     uint32_t       m_changed_outputs = 0;
+
+    /* The same bits, kept until `take_event_outputs()`. */
+    uint32_t       m_event_outputs = 0;
 
     /* When acquire() handed out the target of the frame being composed and
      * of the pending one, whether a latch is kept to count from and its

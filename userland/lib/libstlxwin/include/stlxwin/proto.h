@@ -23,6 +23,8 @@
 #define SWP_COMMIT_MAX_RECTS 8u
 #define SWP_EVENTS_MAX_BATCH 64u
 #define SWP_CLIPBOARD_MAX    4096u
+#define SWP_MODES_MAX        32u  /* the most modes an output lists */
+#define SWP_OUTPUTS_MAX      16u  /* the most outputs a display drives */
 
 /* Client to DM types are 0x01xx, DM to client are 0x02xx */
 enum {
@@ -36,6 +38,9 @@ enum {
     SWP_MSG_CLIPBOARD_SET  = 0x0108,
     SWP_MSG_CLIPBOARD_GET  = 0x0109,
     SWP_MSG_CAPTURE        = 0x010A,
+    SWP_MSG_GET_MODES      = 0x010B,
+    SWP_MSG_SET_MODE       = 0x010C,
+    SWP_MSG_KEEP_MODE      = 0x010D,
 
     SWP_MSG_HELLO_REPLY    = 0x0201,
     SWP_MSG_CONFIGURE      = 0x0202,
@@ -43,6 +48,8 @@ enum {
     SWP_MSG_FRAME_DONE     = 0x0204,
     SWP_MSG_EVENT          = 0x0205,
     SWP_MSG_CLIPBOARD_DATA = 0x0206,
+    SWP_MSG_MODES          = 0x0207,
+    SWP_MSG_MODE_RESULT    = 0x0208,
 };
 
 typedef struct {
@@ -57,6 +64,14 @@ typedef struct {
     int32_t w, h;
 } swp_rect;
 _Static_assert(sizeof(swp_rect) == 16, "wire layout");
+
+/* A picture size and refresh rate an output can light at */
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint64_t refresh_millihertz; /* 0 when unknown */
+} swp_mode;
+_Static_assert(sizeof(swp_mode) == 16, "wire layout");
 
 /* ---- client to DM ---- */
 
@@ -157,6 +172,32 @@ typedef struct {
 } swp_capture;
 _Static_assert(sizeof(swp_capture) == 4, "wire layout");
 
+/* Answered by the output's MODES, and for an output below output_count
+ * by MODES again after each change until the client disconnects */
+typedef struct {
+    uint32_t output;        /* the display's index of the output */
+} swp_get_modes;
+_Static_assert(sizeof(swp_get_modes) == 4, "wire layout");
+
+enum {
+    SWP_SET_MODE_TRIAL = 1u << 0,  /* set back after 15 seconds unless kept */
+};
+
+/* SET_MODE and KEEP_MODE are each answered by one MODE_RESULT. The DM
+ * asks the display for the mode on behalf of any client. */
+typedef struct {
+    uint32_t output;
+    uint32_t flags;         /* SWP_SET_MODE_* */
+    swp_mode mode;          /* one the output's MODES lists */
+} swp_set_mode;
+_Static_assert(sizeof(swp_set_mode) == 24, "wire layout");
+
+typedef struct {
+    uint32_t output;
+    uint32_t keep;          /* 1 keeps the trial's mode, 0 sets the previous one back now */
+} swp_keep_mode;
+_Static_assert(sizeof(swp_keep_mode) == 8, "wire layout");
+
 /* ---- DM to client ---- */
 
 enum {
@@ -242,6 +283,46 @@ typedef struct {
     uint32_t len;           /* followed by len UTF-8 bytes */
 } swp_clipboard_data;
 _Static_assert(sizeof(swp_clipboard_data) == 4, "wire layout");
+
+enum {
+    SWP_OUTPUT_LIT     = 1u << 0,  /* the output shows a picture */
+    SWP_OUTPUT_PRIMARY = 1u << 1,  /* the desktop's output */
+};
+
+/* An output's state and modes, the default first. An output of
+ * output_count or more gets output_count alone. */
+typedef struct {
+    uint32_t output;
+    uint32_t output_count;
+    uint32_t flags;         /* SWP_OUTPUT_* */
+    uint32_t count;         /* entries of modes in use, 0 while the output is dark */
+    swp_mode current;       /* zero while the output is dark */
+    swp_mode modes[SWP_MODES_MAX];
+} swp_modes;
+_Static_assert(sizeof(swp_modes) == 544, "wire layout");
+
+/* What the DM did. A trial's timer answers SET_BACK or DEFAULT
+ * unasked, and a trial that an output event ends gets no answer. */
+enum {
+    SWP_MODE_SET        = 1,  /* asked without a trial */
+    SWP_MODE_TRIAL      = 2,  /* asked as a trial, its timer running when the result is 0 */
+    SWP_MODE_KEPT       = 3,  /* the trial's mode kept, nothing asked */
+    SWP_MODE_SET_BACK   = 4,  /* the trial's previous mode asked for again */
+    SWP_MODE_DEFAULT    = 5,  /* a set-back failed, so the output's default was asked for */
+    SWP_MODE_NO_BUFFERS = 6,  /* no DM buffers at the new size, so the previous mode was asked for */
+    SWP_MODE_BUSY       = 7,  /* refused, nothing asked: a trial is running */
+    SWP_MODE_NO_TRIAL   = 8,  /* refused, nothing asked: no trial of this client's on the output */
+    SWP_MODE_INVALID    = 9,  /* refused, nothing asked: an unknown flag or keep value */
+};
+
+typedef struct {
+    uint32_t output;
+    int32_t  result;        /* GFXFB_SET_MODE's last result, 0 or a negative errno, 0 when nothing was asked */
+    uint32_t outcome;       /* SWP_MODE_* */
+    uint32_t reserved;      /* zero */
+    swp_mode mode;          /* the mode the output is lit at, zero while it is dark */
+} swp_mode_result;
+_Static_assert(sizeof(swp_mode_result) == 32, "wire layout");
 
 /* Read buffer bound for either side of the socket */
 #define SWP_MAX_MSG_SIZE \

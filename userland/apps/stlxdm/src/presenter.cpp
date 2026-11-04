@@ -252,10 +252,25 @@ void memcpy_presenter::take_events() {
     gfxfb::gfxfb_event events[EVENTS_PER_READ];
     int count = read_events(m_fd, events);
     for (int i = 0; i < count; i++) {
-        if (events[i].type == gfxfb::GFXFB_EVENT_OUTPUT) {
-            m_output_changed = true;
+        if (events[i].type != gfxfb::GFXFB_EVENT_OUTPUT) {
+            continue;
+        }
+
+        m_output_changed = true;
+
+        /* No device drives output `GFXFB_OUTPUTS_MAX` or above, and leaving an event naming one out of the bits keeps
+         * the shift defined */
+        if (events[i].output < gfxfb::GFXFB_OUTPUTS_MAX) {
+            m_event_outputs |= 1u << events[i].output;
         }
     }
+}
+
+uint32_t memcpy_presenter::take_event_outputs() {
+    uint32_t outputs = m_event_outputs;
+    m_event_outputs = 0;
+
+    return outputs;
 }
 
 /* Maps the pixels again before unmapping the earlier mapping, so a failure leaves the presenter as it was */
@@ -550,8 +565,16 @@ void flip_presenter::take_events() {
         } else if (event.type == gfxfb::GFXFB_EVENT_OUTPUT && event.output < gfxfb::GFXFB_OUTPUTS_MAX) {
             m_output_changed = true;
             m_changed_outputs |= 1u << event.output;
+            m_event_outputs |= 1u << event.output;
         }
     }
+}
+
+uint32_t flip_presenter::take_event_outputs() {
+    uint32_t outputs = m_event_outputs;
+    m_event_outputs = 0;
+
+    return outputs;
 }
 
 /* A latched present put the back buffer on screen, so the other one becomes the back buffer. A present that

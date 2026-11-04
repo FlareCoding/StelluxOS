@@ -10,6 +10,21 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+_Static_assert(STLXWIN_MODES_MAX == SWP_MODES_MAX, "stlxwin.h names proto.h's limit");
+_Static_assert(STLXWIN_OUTPUTS_MAX == SWP_OUTPUTS_MAX, "stlxwin.h names proto.h's limit");
+_Static_assert(STLXWIN_OUTPUT_LIT == SWP_OUTPUT_LIT, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_OUTPUT_PRIMARY == SWP_OUTPUT_PRIMARY, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_SET_MODE_TRIAL == SWP_SET_MODE_TRIAL, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_MODE_SET == SWP_MODE_SET, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_MODE_TRIAL == SWP_MODE_TRIAL, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_MODE_KEPT == SWP_MODE_KEPT, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_MODE_SET_BACK == SWP_MODE_SET_BACK, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_MODE_DEFAULT == SWP_MODE_DEFAULT, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_MODE_NO_BUFFERS == SWP_MODE_NO_BUFFERS, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_MODE_BUSY == SWP_MODE_BUSY, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_MODE_NO_TRIAL == SWP_MODE_NO_TRIAL, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_MODE_INVALID == SWP_MODE_INVALID, "stlxwin.h names proto.h's outcome");
+
 /* Blocking exact-count read, used only for the connect handshake */
 static int read_full(int fd, void* dst, size_t len) {
     uint8_t* p = dst;
@@ -230,6 +245,41 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
         conn->clip_pending = 0;
         return;
     }
+    case SWP_MSG_MODES: {
+        /* A payload may sit at any offset of the read buffer, so it is copied rather than cast */
+        swp_modes m;
+        if (hdr->length != sizeof(m) || !conn->modes) {
+            return;
+        }
+
+        memcpy(&m, payload, sizeof(m));
+        if (m.output >= SWP_OUTPUTS_MAX || m.count > SWP_MODES_MAX) {
+            return;
+        }
+
+        conn->modes[m.output] = m;
+        conn->modes_kept |= 1u << m.output;
+        ev.type = STLXWIN_EVT_MODES;
+        ev.modes.output = m.output;
+        stlxwin_evq_push(conn, &ev);
+        return;
+    }
+    case SWP_MSG_MODE_RESULT: {
+        swp_mode_result m;
+        if (hdr->length != sizeof(m)) {
+            return;
+        }
+
+        memcpy(&m, payload, sizeof(m));
+        ev.type = STLXWIN_EVT_MODE_RESULT;
+        ev.mode_result.output = m.output;
+        ev.mode_result.result = m.result;
+        ev.mode_result.outcome = m.outcome;
+        ev.mode_result.mode = stlxwin_mode_from_swp(&m.mode);
+
+        stlxwin_evq_push(conn, &ev);
+        return;
+    }
     default:
         return;
     }
@@ -447,6 +497,7 @@ void stlxwin_disconnect(stlxwin_conn* conn) {
 
     close(conn->fd);
     free(conn->clip_text);
+    free(conn->modes);
     free(conn->evq);
     free(conn);
 }
