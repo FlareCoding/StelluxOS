@@ -16,7 +16,7 @@ __PRIVILEGED_CODE void buffer::release_memory() {
     heap::ufree_delete(this);
 }
 
-__PRIVILEGED_CODE static void drop_buffer(buffer* buf) {
+__PRIVILEGED_CODE void drop_buffer(buffer* buf) {
     if (buf->release()) {
         mm::device_backing::ref_destroy(buf);
     }
@@ -78,26 +78,23 @@ static const resource::resource_ops g_buffer_ops = {
 };
 
 static bool valid_create(const device& dev, const gpu_buffer_args& args) {
-    bool known_placement = args.placement == GPU_PLACEMENT_VIDEO || args.placement == GPU_PLACEMENT_SYSTEM;
+    bool known_placement = args.placement >= GPU_PLACEMENT_VIDEO && args.placement <= GPU_PLACEMENT_CONTEXT;
     bool offered = known_placement && (dev.info().placements & (1u << args.placement)) != 0;
     bool known_flags = (args.flags & ~KNOWN_BUFFER_FLAGS) == 0;
     bool scanout_outside_video = (args.flags & GPU_BUFFER_SCANOUT) != 0 && args.placement != GPU_PLACEMENT_VIDEO;
-    bool reserved_clear = args.source == 0 && args.context == 0 && args.backend_id == 0;
+    bool by_context = args.placement == GPU_PLACEMENT_CONTEXT;
+    bool context_clear = by_context || (args.context == 0 && args.backend_id == 0);
 
-    return args.size != 0 && offered && known_flags && !scanout_outside_video && reserved_clear;
+    return args.size != 0 && offered && known_flags && !scanout_outside_video && args.source == 0 && context_clear;
 }
 
-__PRIVILEGED_CODE int32_t create_buffer(device& dev, uint64_t arg) {
-    gpu_buffer_args args = {};
-    if (copy_in(&args, arg, sizeof(args)) != fs::OK) {
-        return fs::ERR_INVAL;
-    }
-
-    uint64_t size = pmm::page_align_up(args.size);
-    if (!valid_create(dev, args) || size < args.size) {
-        return fs::ERR_INVAL;
-    }
-
+__PRIVILEGED_CODE static int32_t new_buffer(
+    device& dev,
+    const gpu_buffer_args& args,
+    uint64_t size,
+    space* s,
+    uint64_t arg
+) {
     auto* buf = heap::ualloc_new<buffer>(dev, size, args.flags);
     if (!buf) {
         return fs::ERR_NOMEM;
@@ -111,14 +108,22 @@ __PRIVILEGED_CODE int32_t create_buffer(device& dev, uint64_t arg) {
 
     memory* mem = nullptr;
     uint32_t device_id = 0;
-    int32_t rc = dev.get_backend().create_memory(size, args.placement, args.flags, &mem, &device_id);
+    int32_t rc = dev.get_backend().create_memory(
+        size,
+        args.placement,
+        args.flags,
+        s,
+        args.backend_id,
+        &mem,
+        &device_id
+    );
     if (rc != OK) {
         heap::kfree_delete(obj);
         heap::ufree_delete(buf);
         return to_fs_error(rc);
     }
 
-    buf->take(mem);
+    buf->take(mem, device_id);
     obj->type = resource::resource_type::GPU_BUFFER;
     obj->ops = &g_buffer_ops;
     obj->impl = buf;
@@ -129,6 +134,34 @@ __PRIVILEGED_CODE int32_t create_buffer(device& dev, uint64_t arg) {
         rc = install_handle(obj, resource::RIGHT_READ | resource::RIGHT_WRITE, user_handle);
     }
 
+    resource::resource_release(obj);
+
+    return rc;
+}
+
+__PRIVILEGED_CODE int32_t create_buffer(device& dev, uint64_t arg) {
+    gpu_buffer_args args = {};
+    if (copy_in(&args, arg, sizeof(args)) != fs::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    uint64_t size = pmm::page_align_up(args.size);
+    if (!valid_create(dev, args) || size < args.size) {
+        return fs::ERR_INVAL;
+    }
+
+    if (args.placement != GPU_PLACEMENT_CONTEXT) {
+        return new_buffer(dev, args, size, nullptr, arg);
+    }
+
+    // The call's context reference keeps the space until the backend returns, and the buffer holds none
+    resource::resource_object* obj = nullptr;
+    int32_t rc = lookup_on_device(dev, args.context, resource::resource_type::GPU_CONTEXT, resource::RIGHT_WRITE, &obj);
+    if (rc != fs::OK) {
+        return rc;
+    }
+
+    rc = new_buffer(dev, args, size, static_cast<context*>(obj->impl)->backend_space, arg);
     resource::resource_release(obj);
 
     return rc;
