@@ -91,7 +91,7 @@ __PRIVILEGED_CODE bool wait_fin_acknowledged(tcp_conn* conn, uint64_t timeout_ns
         return false;
     }
 
-    uint64_t deadline_ns = clock::now_ns() + timeout_ns;
+    uint64_t deadline_ns = clock::deadline_after_ns(timeout_ns);
     sync::poll_table pt;
     pt.init(task);
     sync::poll_subscribe(pt, conn->conn_wq);

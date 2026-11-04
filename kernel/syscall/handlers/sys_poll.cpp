@@ -88,7 +88,7 @@ __PRIVILEGED_CODE static int64_t poll_rounds(
 ) {
     uint64_t deadline_ns = 0;
     if (!infinite && !immediate) {
-        deadline_ns = clock::now_ns() + timeout_ns;
+        deadline_ns = clock::deadline_after_ns(timeout_ns);
     }
 
     while (true) {
