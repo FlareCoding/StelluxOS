@@ -132,8 +132,8 @@ TEST(gpu_device, restrict_narrows_a_handle_and_refuses_to_widen_or_to_take_an_in
 static gpu_test::fake_backend g_owning_fake;
 static gpu_test::fake_backend g_other_fake;
 
-// A buffer is restricted only through its own device's file
-TEST(gpu_device, restrict_refuses_another_devices_buffer) {
+// A buffer is restricted only through its own device's file, and a timeline through any GPU's file
+TEST(gpu_device, restrict_takes_a_buffer_only_through_its_own_device_and_a_timeline_through_any) {
     session owner(g_owning_fake);
     session other(g_other_fake);
     ASSERT_TRUE(owner.ready());
@@ -141,13 +141,19 @@ TEST(gpu_device, restrict_refuses_another_devices_buffer) {
 
     int32_t buffer = owner.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, 0);
     ASSERT_TRUE(buffer >= 0);
+    int32_t timeline = owner.new_timeline(0);
+    ASSERT_TRUE(timeline >= 0);
 
     EXPECT_EQ(other.restrict_to(buffer, GPU_RIGHT_READ), syscall::EINVAL);
 
     int32_t own_reader = owner.restrict_to(buffer, GPU_RIGHT_READ);
     EXPECT_TRUE(own_reader >= 0);
+    int32_t timeline_reader = other.restrict_to(timeline, GPU_RIGHT_READ);
+    EXPECT_TRUE(timeline_reader >= 0);
 
+    close_handle(timeline_reader);
     close_handle(own_reader);
+    close_handle(timeline);
     close_handle(buffer);
 }
 
@@ -179,6 +185,7 @@ TEST(gpu_device, a_full_handle_table_fails_each_new_handle_with_enomem) {
     EXPECT_EQ(g_full_table_fake.last_released, static_cast<gpu::memory*>(g_full_table_fake.last_created));
 
     EXPECT_EQ(s.restrict_to(buffer, GPU_RIGHT_READ), static_cast<int32_t>(syscall::ENOMEM));
+    EXPECT_EQ(s.new_timeline(0), static_cast<int32_t>(syscall::ENOMEM));
 
     for (uint32_t i = 0; i < filled; i++) {
         close_handle(g_fillers[i]);
@@ -212,6 +219,7 @@ TEST(gpu_device, an_argument_the_kernel_cannot_write_back_leaves_no_handle) {
     gpu_buffer_args created = gpu_test::buffer_request(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, 0);
     EXPECT_EQ(s.call(GPU_BUFFER_CREATE, created), syscall::EINVAL);
     EXPECT_EQ(s.restrict_to(buffer, GPU_RIGHT_READ), static_cast<int32_t>(syscall::EINVAL));
+    EXPECT_EQ(s.new_timeline(0), static_cast<int32_t>(syscall::EINVAL));
     ASSERT_EQ(protect_page(s, PROT_READ_WRITE_ARG), static_cast<int64_t>(0));
 
     EXPECT_TRUE(spin_wait_ge(g_read_only_fake.released_count, 1));

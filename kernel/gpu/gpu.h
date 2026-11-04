@@ -12,10 +12,11 @@
  * Userland calls the core, and the core calls the backend in the core's own vocabulary, the codes below, which the core
  * translates once into the file layer's.
  *
- *   process --ioctl, mmap--> GPU core (handles, rights, buffers) --gpu::backend--> driver
+ *   process --ioctl, mmap--> GPU core (handles, rights, buffers, timelines) --gpu::backend--> driver
  *
  * A buffer is GPU memory the core counts as one object. Its backend allocates the memory in `create_memory()` and gets
- * it back in `release_memory()` once no handle and no CPU mapping refer to it.
+ * it back in `release_memory()` once no handle and no CPU mapping refer to it. A timeline is a 64-bit counter that only
+ * rises, which processes signal, read and wait for, and which no backend sees.
  */
 
 namespace gpu {

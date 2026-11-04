@@ -43,6 +43,8 @@ static int32_t map_fs_error_to_resource(int32_t fs_err) {
             return ERR_INTR;
         case fs::ERR_PIPE:
             return ERR_PIPE;
+        case fs::ERR_TIMEDOUT:
+            return ERR_TIMEDOUT;
         default:
             return ERR_IO;
     }

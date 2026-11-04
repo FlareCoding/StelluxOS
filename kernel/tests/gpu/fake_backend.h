@@ -26,6 +26,8 @@ constexpr uint16_t FAKE_VENDOR_ID = 0x1D17;
 constexpr uint64_t FAKE_VIDEO_SIZE = 64ull * 1024 * 1024;
 constexpr size_t   PATH_BYTES = 32;
 constexpr size_t   ARGS_AT = 0;
+constexpr size_t   POINTS_AT = 512;
+constexpr uint64_t QUERY_FAILED = ~static_cast<uint64_t>(0);
 
 // One buffer's memory, physically contiguous pages, so its CPU view is one contiguous range
 struct fake_memory : gpu::memory {
@@ -157,8 +159,16 @@ inline gpu_buffer_args buffer_request(uint64_t size, uint32_t placement, uint32_
             .context = 0, .backend_id = 0};
 }
 
+inline gpu_timeline_args timeline_args(int32_t timeline, uint64_t value) {
+    return {.timeline = timeline, .flags = 0, .value = value};
+}
+
 inline gpu_restrict_args restrict_args(int32_t handle, uint32_t rights) {
     return {.handle = handle, .rights = rights, .restricted = -1, .padding = 0};
+}
+
+inline gpu_point point(int32_t timeline, uint64_t value) {
+    return {.timeline = timeline, .padding = 0, .value = value};
 }
 
 /**
@@ -216,13 +226,51 @@ struct session {
         return rc == 0 ? args.buffer : static_cast<int32_t>(rc);
     }
 
+    int32_t new_timeline(uint64_t value) {
+        gpu_timeline_args args = timeline_args(-1, value);
+        int64_t rc = call(GPU_TIMELINE_CREATE, args);
+
+        return rc == 0 ? args.timeline : static_cast<int32_t>(rc);
+    }
+
     int32_t restrict_to(int32_t handle, uint32_t rights) {
         gpu_restrict_args args = restrict_args(handle, rights);
         int64_t rc = call(GPU_HANDLE_RESTRICT, args);
 
         return rc == 0 ? args.restricted : static_cast<int32_t>(rc);
     }
+
+    // Returns 0 or a negative syscall code
+    int64_t signal(int32_t timeline, uint64_t value) {
+        gpu_timeline_args args = timeline_args(timeline, value);
+        return call(GPU_TIMELINE_SIGNAL, args);
+    }
+
+    // QUERY_FAILED when the call fails
+    uint64_t query(int32_t timeline) {
+        gpu_timeline_args args = timeline_args(timeline, 0);
+        return call(GPU_TIMELINE_QUERY, args) == 0 ? args.value : QUERY_FAILED;
+    }
 };
+
+// Writes a wait for `count` points at the page's start, the points at POINTS_AT
+inline gpu_wait_args* write_wait(
+    test_helpers::user_page& page,
+    const gpu_point* points,
+    uint32_t count,
+    uint32_t flags,
+    uint64_t deadline
+) {
+    for (uint32_t i = 0; i < count; i++) {
+        page.at<gpu_point>(POINTS_AT)[i] = points[i];
+    }
+
+    gpu_wait_args* args = page.at<gpu_wait_args>(ARGS_AT);
+    *args = {.points = page.addr + POINTS_AT, .deadline_ns = deadline, .count = count, .flags = flags, .reached = 0,
+             .padding = 0};
+
+    return args;
+}
 
 } // namespace gpu_test
 

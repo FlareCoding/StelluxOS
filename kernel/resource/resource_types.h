@@ -17,6 +17,7 @@ enum class resource_type : uint16_t {
     EVENTFD  = 8,
     EPOLL    = 9,
     GPU_BUFFER = 10,
+    GPU_TIMELINE = 11,
 };
 
 using handle_t = int32_t;
