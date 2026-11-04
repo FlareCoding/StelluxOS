@@ -4,18 +4,25 @@
 #include "common/types.h"
 #include "dma/dma.h"
 #include "drivers/graphics/nvidia/chip.h"
+#include "drivers/graphics/nvidia/context_page_tables.h"
 #include "drivers/graphics/nvidia/copy_channel.h"
 #include "drivers/graphics/nvidia/engine_table.h"
 #include "drivers/graphics/nvidia/failed_mark.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/gpu_objects.h"
 #include "drivers/graphics/nvidia/gsp_info.h"
+#include "drivers/graphics/nvidia/operation_queue.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/video_memory.h"
 #include "gpu/gpu.h"
+#include "mm/shmem.h"
+#include "rc/reaper.h"
 #include "sync/atomic.h"
 
 namespace drivers::nvidia {
+
+class engines;
+struct backend_memory;
 
 // The card as its PCI function and the firmware's static configuration describe it, which the GPU core reports
 struct card_identity {
@@ -30,6 +37,31 @@ struct card_identity {
     char     name[GPU_NAME_BYTES]; // NUL terminated
 };
 
+// A memory object's release on the driver task, kept in the object so its release allocates nothing
+struct memory_operation : operation {
+    engines*        owner;
+    backend_memory* memory;
+};
+
+// The record of memory the engines created or wrapped for the GPU core, on the unprivileged heap, since its release
+// runs on the lowered driver task
+struct backend_memory : gpu::memory {
+    uint32_t         placement;      // `GPU_PLACEMENT_VIDEO` or `GPU_PLACEMENT_SYSTEM`
+    vram_range       range;          // video memory
+    cpu_mapping      mapping;        // video memory's mapping through BAR1 for its whole life, all 0 when unmapped
+    dma::buffer      pages;          // system memory the engines allocated
+    memory_operation task_operation; // the release
+
+    memory_run*           wrapped_pages; // a shared memory object's pages, one run each, or null
+    mm::shmem_mapping     pin;           // keeps the wrapped pages allocated
+    rc::reaper::dead_node pin_release;   // the pin's release with the record, on the reaper
+};
+
+// The report of the GPU's failure on the driver task, kept in the engines
+struct failure_operation : operation {
+    engines* owner;
+};
+
 /**
  * The GPU's engines as the driver task brings them up once `attach()` has
  * returned `OK`: the engine table, the kernel's copy channel on the first
@@ -40,14 +72,24 @@ struct card_identity {
  * `bring_up` waits for the firmware and for video memory, so the driver task
  * must call it, and only once.
  *
- * After a timeout the hung channel and the memory it fills stay for good.
- * After another error, only what a refused release or a failed unmap leaves
- * the firmware or the GPU able to reach stays.
+ * After a timeout the hung channel and the memory it fills stay for good. A
+ * hung zeroing for the GPU core fails the core's device while the display runs
+ * on. Once that device or the GPU failed, every backend call that can fail,
+ * except a wrap the heap refuses, returns `gpu::ERR_DEVICE`, a release frees
+ * only a record that holds no pin, and the driver task reports the failure to
+ * the core. After another error, only what a refused release or a failed unmap
+ * leaves the firmware or the GPU able to reach stays.
  */
 class engines : public gpu::backend {
 public:
-    // Engines holding nothing, using `fw`, `objects`, `memory` and `failed`, which must outlive them
-    engines(firmware& fw, const gpu_objects& objects, video_memory& memory, failed_mark& failed);
+    // Engines holding nothing, using `fw`, `objects`, `memory`, `operations` and `failed`, which must outlive them
+    engines(
+        firmware& fw,
+        const gpu_objects& objects,
+        video_memory& memory,
+        operation_queue& operations,
+        failed_mark& failed
+    );
 
     engines(const engines&) = delete;
     engines& operator=(const engines&) = delete;
@@ -135,16 +177,46 @@ private:
     // Has the copy channel fill the checked bytes with `value`, then reads them and the page after them back
     int32_t fill_and_compare(const vram_range& range, uintptr_t virt, uint32_t value, uint64_t& took_ns);
 
+    // Whether the GPU failed for the whole driver or for the GPU core's device alone
+    bool has_failed() const;
+
+    // Allocates and zeroes `mem`'s video memory, mapped for the CPU when `flags` hold `GPU_BUFFER_MAPPABLE`
+    int32_t create_video_memory(uint64_t size, uint32_t flags, backend_memory& mem);
+
+    // Has the copy channel zero `range`, in as few fills as their size limit allows
+    int32_t zero_video_memory(const vram_range& range);
+
+    // Fails the GPU core's device, logging `reason` once, and has the driver task report it
+    void fail_device(const char* reason);
+
+    // Has the driver task report the failed GPU to the core, once, from any thread
+    void report_failure();
+
+    // The driver task's half of `report_failure()`
+    static void report_failure_on_task(operation& op);
+
+    // The driver task's half of `release_memory()`, given the memory's `task_operation`
+    static void release_on_task(operation& op);
+
+    // The reaper's half of a wrapped memory's release, which frees the record and so releases its pin
+    static rc::reaper::cleanup_result release_on_reaper(backend_memory* mem);
+
     firmware&          m_firmware;
     const gpu_objects& m_objects;
     video_memory&      m_memory;
+    operation_queue&   m_operations;
     failed_mark&       m_failed;
     engine_table       m_table;
 
-    registers          m_bar0{0};          // the card's registers, set by `bring_up`
-    const chip_info*   m_chip = nullptr;   // set by `bring_up`
-    card_identity      m_identity = {};    // set by `register_gpu`
-    gpu::device*       m_device = nullptr; // the core's device once `register_gpu` succeeds
+    registers           m_bar0{0};                          // the card's registers, set by `bring_up`
+    const chip_info*    m_chip = nullptr;                   // set by `bring_up`
+    dma::device_profile m_card = dma::uncached_profile(32); // replaced by the card's in `bring_up`
+    card_identity       m_identity = {};                    // set by `register_gpu`
+    gpu::device*        m_device = nullptr;                 // the core's device once `register_gpu` succeeds
+    sync::atomic<bool>  m_is_device_failed{false};          // set by `fail_device`
+
+    failure_operation  m_failure_report = {};        // posted once by `report_failure()`
+    sync::atomic<bool> m_is_failure_reported{false}; // set once `m_failure_report` is posted
 
     // The kernel's copy channel in `m_copy_channel_bytes`, never destructed, since the handler may still reach it
     copy_channel*                 m_copy_channel = nullptr;
