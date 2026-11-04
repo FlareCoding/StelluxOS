@@ -197,12 +197,6 @@ TEST(gpu_device, a_full_handle_table_fails_each_new_handle_with_enomem) {
 
 static gpu_test::fake_backend g_read_only_fake;
 
-// Sets the protection of the session's page through the mprotect syscall
-static int64_t protect_page(session& s, uint64_t prot) {
-    user_space_scope scope(s.page.ctx);
-    return sys_mprotect(s.page.addr, pmm::PAGE_SIZE, prot, 0, 0, 0);
-}
-
 // With the argument's page read-only, each call that makes a handle fails with EINVAL and leaves no handle open, and
 // the backend gets back the memory of the create that failed
 TEST(gpu_device, an_argument_the_kernel_cannot_write_back_leaves_no_handle) {
@@ -215,12 +209,12 @@ TEST(gpu_device, an_argument_the_kernel_cannot_write_back_leaves_no_handle) {
     ASSERT_TRUE(next >= 0);
     close_handle(next);
 
-    ASSERT_EQ(protect_page(s, PROT_READ_ARG), static_cast<int64_t>(0));
+    ASSERT_EQ(s.protect_page(PROT_READ_ARG), static_cast<int64_t>(0));
     gpu_buffer_args created = gpu_test::buffer_request(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, 0);
     EXPECT_EQ(s.call(GPU_BUFFER_CREATE, created), syscall::EINVAL);
     EXPECT_EQ(s.restrict_to(buffer, GPU_RIGHT_READ), static_cast<int32_t>(syscall::EINVAL));
     EXPECT_EQ(s.new_timeline(0), static_cast<int32_t>(syscall::EINVAL));
-    ASSERT_EQ(protect_page(s, PROT_READ_WRITE_ARG), static_cast<int64_t>(0));
+    ASSERT_EQ(s.protect_page(PROT_READ_WRITE_ARG), static_cast<int64_t>(0));
 
     EXPECT_TRUE(spin_wait_ge(g_read_only_fake.released_count, 1));
     int32_t after = s.restrict_to(buffer, GPU_RIGHT_READ);

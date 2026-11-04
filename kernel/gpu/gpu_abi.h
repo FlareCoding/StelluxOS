@@ -6,16 +6,16 @@
  * the copy libstlx installs as <stlx/gpu_abi.h>, take the fixed-width integer types from different headers, so the
  * header includes nothing and an includer must provide those types first.
  *
- * A buffer is GPU memory, and a timeline is a 64-bit counter that only rises. A point (a timeline and a value) is
- * reached once the timeline's value is at least the point's. A process names buffers and timelines by resource
- * handles, which it can send to other processes over unix sockets with their rights. Neither has a destroy call: each
- * lives until its last handle closes and, for a buffer, its last CPU mapping is unmapped and, for a timeline, every
- * wait naming it returns. A `GPU_BUFFER_MAPPABLE` buffer maps through a shared mmap of a handle with `GPU_RIGHT_READ`,
- * writable only when the handle has `GPU_RIGHT_WRITE` too.
+ * A context is a GPU address space with its queues, a buffer is GPU memory, and a timeline is a 64-bit counter that
+ * only rises. A point (a timeline and a value) is reached once the timeline's value is at least the point's. A process
+ * names contexts, buffers and timelines by resource handles, which it can send to other processes over unix sockets
+ * with their rights. None has a destroy call: each lives until its last handle closes and, for a buffer, its last CPU
+ * and GPU mapping is gone and, for a timeline, every wait naming it returns. A `GPU_BUFFER_MAPPABLE` buffer maps
+ * through a shared mmap of a handle with `GPU_RIGHT_READ`, writable only when the handle has `GPU_RIGHT_WRITE` too.
  *
  * Each call takes the address of its argument structure and fails with
  * - EINVAL for an argument the kernel cannot read or write, a field outside what its comment allows (an unknown flag
- *   and a nonzero reserved or padding field included) or a buffer of another device than the file's,
+ *   and a nonzero reserved or padding field included) or a context or buffer of another device than the file's,
  * - EBADF for a handle that names no object of the kind the call needs or lacks the right its use needs,
  * - ENOMEM when the kernel or the GPU has no memory left for the call, a full handle table included,
  * - EIO when the GPU fails,
@@ -35,7 +35,13 @@
 #define GPU_GET_INFO        0x4800u
 #define GPU_GET_MEMORY      0x4801u
 #define GPU_READ_TIMESTAMP  0x4802u
+#define GPU_CONTEXT_CREATE  0x4803u
+#define GPU_CONTEXT_QUERY   0x4804u
+#define GPU_QUEUE_CREATE    0x4805u
+#define GPU_QUEUE_DESTROY   0x4806u
 #define GPU_BUFFER_CREATE   0x4807u
+#define GPU_MAP             0x4809u
+#define GPU_UNMAP           0x480Au
 #define GPU_TIMELINE_CREATE 0x480Bu
 #define GPU_TIMELINE_SIGNAL 0x480Cu
 #define GPU_TIMELINE_QUERY  0x480Du
@@ -53,14 +59,26 @@
 #define GPU_QUEUE_GRAPHICS 1u // 3D, compute and copy commands
 #define GPU_QUEUE_COPY     2u // copy commands
 
-#define GPU_PLACEMENT_VIDEO  1u // the GPU's own memory
-#define GPU_PLACEMENT_SYSTEM 2u // system memory the CPU caches and the GPU reads coherently
+#define GPU_PLACEMENT_VIDEO   1u // the GPU's own memory
+#define GPU_PLACEMENT_SYSTEM  2u // system memory the CPU caches and the GPU reads coherently
+#define GPU_PLACEMENT_CONTEXT 3u // memory a context's commands allocated, where the host allocates it (virtio-gpu)
 
 #define GPU_BUFFER_MAPPABLE 0x1u // the CPU may map it
 #define GPU_BUFFER_SCANOUT  0x2u // placed where the display can scan it out, in video memory only
 
+#define GPU_MAP_READ_ONLY 0x1u
+
 #define GPU_WAIT_ALL 0x1u // wait until every point is reached instead of any one
 
+// Why a context was lost, 0 while it is live
+#define GPU_LOST_FAULT  1u // its work reached memory not mapped for it
+#define GPU_LOST_ENGINE 2u // an engine reported an error in its work
+#define GPU_LOST_HUNG   3u // a submission ran past GPU_SUBMIT_TIMEOUT_NS
+#define GPU_LOST_DEVICE 4u // the GPU failed
+
+#define GPU_SUBMIT_TIMEOUT_NS 7000000000ull
+
+#define GPU_QUEUES_MAX 8u  // queues one context holds at once
 #define GPU_POINTS_MAX 32u // the most points one wait names
 
 // NVIDIA facts NVK needs, zero on other backends
@@ -118,7 +136,26 @@ struct gpu_timestamp {
     uint64_t cpu_ns;
 };
 
-// GPU_BUFFER_CREATE argument: size, placement and flags in, buffer and device_id out
+// GPU_CONTEXT_CREATE (lost and fault_va zero in, context out, with both rights) and GPU_CONTEXT_QUERY (context in, the
+// rest out). A lost context never runs work again, so its process must create another to run more
+struct gpu_context_args {
+    int32_t  context;
+    uint32_t lost;     // GPU_LOST_*, 0 while live
+    uint64_t fault_va; // the faulting address when lost to a fault and the backend knows it, else 0
+};
+
+// GPU_QUEUE_CREATE (context and kind in, queue out) and GPU_QUEUE_DESTROY (context, queue and a zero kind in). A
+// create fails with EBUSY while the context holds GPU_QUEUES_MAX queues. A destroy frees the queue's index once the
+// queue stopped
+struct gpu_queue_args {
+    int32_t  context;
+    uint32_t kind;    // GPU_QUEUE_*, one the device offers
+    uint32_t queue;   // the queue's index in its context
+    uint32_t padding;
+};
+
+// GPU_BUFFER_CREATE argument: size, placement and flags in, and context and backend_id for GPU_PLACEMENT_CONTEXT, with
+// buffer and device_id out
 struct gpu_buffer_args {
     uint64_t size;       // bytes, nonzero, rounded up to page_size
     uint32_t placement;  // GPU_PLACEMENT_*, one the device offers
@@ -126,8 +163,23 @@ struct gpu_buffer_args {
     int32_t  source;     // reserved
     int32_t  buffer;     // the new handle, with both rights
     uint32_t device_id;  // the backend's name for the memory in command lists, 0 where commands use addresses
-    int32_t  context;    // reserved
-    uint64_t backend_id; // reserved
+    int32_t  context;    // GPU_PLACEMENT_CONTEXT only: the context whose commands allocated the memory, with write
+    uint64_t backend_id; // GPU_PLACEMENT_CONTEXT only: the backend's name for that memory, venus's memory id
+};
+
+// GPU_MAP and GPU_UNMAP argument. Unmap ignores buffer, offset, kind and flags. Map fails with EBUSY on a range another
+// mapping holds, and unmap splits the mappings its range cuts. An unmap whose backend call fails returns EIO and
+// removes the range all the same. On a device without user addresses (va_start and va_end 0) map takes va, offset, size
+// and kind as 0, maps the whole buffer and fails with EBUSY on a buffer the context maps already, and unmap names the
+// mapping by the buffer's device_id in va and ignores size. The field comments hold for a device with user addresses
+struct gpu_map_args {
+    int32_t  context;
+    int32_t  buffer;  // read, and write unless GPU_MAP_READ_ONLY
+    uint64_t va;      // page aligned, the range inside [va_start, va_end)
+    uint64_t offset;  // into the buffer, page aligned, the range inside the buffer
+    uint64_t size;    // page aligned, nonzero
+    uint32_t kind;    // the backend's layout code, 0 for linear memory
+    uint32_t flags;   // GPU_MAP_*
 };
 
 struct gpu_point {
@@ -155,7 +207,8 @@ struct gpu_wait_args {
     uint32_t padding;
 };
 
-// GPU_HANDLE_RESTRICT argument: a new handle to the same buffer or timeline with a subset of the source's rights
+// GPU_HANDLE_RESTRICT argument: a new handle to the same context, buffer or timeline with a subset of the source's
+// rights
 struct gpu_restrict_args {
     int32_t  handle;     // the source handle
     uint32_t rights;     // GPU_RIGHT_*, a nonempty subset of the source's
@@ -168,7 +221,10 @@ GPU_ABI_ASSERT(sizeof(struct gpu_virtio_info) == 16, "gpu_virtio_info layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_info) == 168, "gpu_info layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_memory) == 16, "gpu_memory layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_timestamp) == 16, "gpu_timestamp layout");
+GPU_ABI_ASSERT(sizeof(struct gpu_context_args) == 16, "gpu_context_args layout");
+GPU_ABI_ASSERT(sizeof(struct gpu_queue_args) == 16, "gpu_queue_args layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_buffer_args) == 40, "gpu_buffer_args layout");
+GPU_ABI_ASSERT(sizeof(struct gpu_map_args) == 40, "gpu_map_args layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_point) == 16, "gpu_point layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_timeline_args) == 16, "gpu_timeline_args layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_wait_args) == 32, "gpu_wait_args layout");

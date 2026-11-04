@@ -20,10 +20,23 @@ static_assert(resource::RIGHT_MASK == (GPU_RIGHT_READ | GPU_RIGHT_WRITE));
 
 __PRIVILEGED_DATA static sync::mutex g_registration_lock;
 __PRIVILEGED_BSS static uint32_t g_next_device_number;
+static sync::atomic<bool> g_fail_next_allocation;
 
 device::device(const char* name, backend* b, const device_facts& facts)
     : fs::node(fs::node_type::char_device, nullptr, name), m_backend(b) {
     string::memcpy(&m_facts, &facts, sizeof(m_facts));
+}
+
+void* allocate(size_t bytes) {
+    if (g_fail_next_allocation.exchange_relaxed(false)) {
+        return nullptr;
+    }
+
+    return heap::uzalloc(bytes);
+}
+
+void __dbg_test_fail_next_allocation() {
+    g_fail_next_allocation.store_relaxed(true);
 }
 
 static int32_t get_info(device& dev, uint64_t arg) {
@@ -49,6 +62,19 @@ static int32_t read_timestamp(device& dev, uint64_t arg) {
     return copy_out(arg, &stamp, sizeof(stamp));
 }
 
+// The device a context or buffer belongs to, null for a timeline
+static const device* device_of(const resource::resource_object& obj) {
+    if (obj.type == resource::resource_type::GPU_CONTEXT) {
+        return &static_cast<const context*>(obj.impl)->dev;
+    }
+
+    if (obj.type == resource::resource_type::GPU_BUFFER) {
+        return &static_cast<const buffer*>(obj.impl)->owner();
+    }
+
+    return nullptr;
+}
+
 static int32_t restrict_handle(device& dev, uint64_t arg) {
     gpu_restrict_args args = {};
     if (copy_in(&args, arg, sizeof(args)) != fs::OK) {
@@ -66,14 +92,15 @@ static int32_t restrict_handle(device& dev, uint64_t arg) {
         return fs::ERR_BADF;
     }
 
+    bool is_context = obj->type == resource::resource_type::GPU_CONTEXT;
     bool is_buffer = obj->type == resource::resource_type::GPU_BUFFER;
     bool is_timeline = obj->type == resource::resource_type::GPU_TIMELINE;
     bool narrows = (args.rights & ~held) == 0;
 
     int32_t rc = fs::OK;
-    if (!is_buffer && !is_timeline) {
+    if (!is_context && !is_buffer && !is_timeline) {
         rc = fs::ERR_BADF;
-    } else if (is_buffer && &static_cast<buffer*>(obj->impl)->owner() != &dev) {
+    } else if (!is_timeline && device_of(*obj) != &dev) {
         rc = fs::ERR_INVAL;
     } else if (!narrows) {
         rc = fs::ERR_INVAL;
@@ -91,7 +118,13 @@ int32_t device::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
     case GPU_GET_INFO:        return get_info(*this, arg);
     case GPU_GET_MEMORY:      return get_memory(*this, arg);
     case GPU_READ_TIMESTAMP:  return read_timestamp(*this, arg);
+    case GPU_CONTEXT_CREATE:  return create_context(*this, arg);
+    case GPU_CONTEXT_QUERY:   return query_context(*this, arg);
+    case GPU_QUEUE_CREATE:    return create_queue(*this, arg);
+    case GPU_QUEUE_DESTROY:   return destroy_queue(*this, arg);
     case GPU_BUFFER_CREATE:   return create_buffer(*this, arg);
+    case GPU_MAP:             return map_buffer(*this, arg);
+    case GPU_UNMAP:           return unmap_range(*this, arg);
     case GPU_TIMELINE_CREATE: return create_timeline(arg);
     case GPU_TIMELINE_SIGNAL: return signal_timeline(arg);
     case GPU_TIMELINE_QUERY:  return query_timeline(arg);
@@ -107,6 +140,7 @@ int32_t to_fs_error(int32_t rc) {
     case ERR_NO_MEMORY:   return fs::ERR_NOMEM;
     case ERR_UNSUPPORTED: return fs::ERR_NOSYS;
     case ERR_DEVICE:      return fs::ERR_IO;
+    case ERR_REFUSED:     return fs::ERR_INVAL;
     default:              return fs::ERR_IO;
     }
 }
@@ -140,6 +174,22 @@ __PRIVILEGED_CODE int32_t lookup_object(
     *out = obj;
 
     return fs::OK;
+}
+
+__PRIVILEGED_CODE int32_t lookup_on_device(
+    device& dev,
+    int32_t handle,
+    resource::resource_type type,
+    uint32_t rights,
+    resource::resource_object** out
+) {
+    int32_t rc = lookup_object(handle, type, rights, out);
+    if (rc == fs::OK && device_of(**out) != &dev) {
+        resource::resource_release(*out);
+        return fs::ERR_INVAL;
+    }
+
+    return rc;
 }
 
 __PRIVILEGED_CODE int32_t install_handle(resource::resource_object* obj, uint32_t rights, uint64_t user_handle) {
