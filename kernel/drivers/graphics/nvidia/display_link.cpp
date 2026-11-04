@@ -302,6 +302,74 @@ int32_t train_link(
     return OK;
 }
 
+// Trains a display id's link to zero lanes at `rate`, which shuts its training down, and logs the result
+static int32_t train_to_zero_lanes(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    displayport::link_rate rate
+) {
+    // Display common refuses zero lanes at a rate of 0, so the request names a rate the link takes
+    uint32_t command = rm::TRAIN_SET_LANES | rm::TRAIN_SET_RATE;
+    uint32_t rate_code = static_cast<uint32_t>(rate);
+    uint32_t data = rate_code << rm::TRAIN_DATA_RATE_SHIFT;
+
+    int32_t rc = request_training(fw, display_common, display_id, command, data);
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display common refused to train display id 0x%X's link to zero lanes at DisplayPort rate 0x%02X",
+            display_id,
+            rate_code
+        );
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: training display id 0x%X's link to zero lanes at DisplayPort rate 0x%02X failed: %d",
+            display_id,
+            rate_code,
+            rc
+        );
+        return rc;
+    }
+
+    log::info(
+        "nvidia: display common trained display id 0x%X's link to zero lanes at DisplayPort rate 0x%02X",
+        display_id,
+        rate_code
+    );
+
+    return OK;
+}
+
+int32_t power_down_link(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    displayport::link_rate rate,
+    bool sets_monitor_to_d3,
+    bool may_run_fec
+) {
+    if (sets_monitor_to_d3 && !may_run_fec) {
+        int32_t rc = set_monitor_to_d3(fw, display_common, display_id);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    int32_t rc = train_to_zero_lanes(fw, display_common, display_id, rate);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (sets_monitor_to_d3 && may_run_fec) {
+        return set_monitor_to_d3(fw, display_common, display_id);
+    }
+
+    return OK;
+}
+
 int32_t configure_stream(
     firmware& fw,
     rm::handle display_common,

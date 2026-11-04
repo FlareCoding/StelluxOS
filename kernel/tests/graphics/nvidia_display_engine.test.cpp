@@ -235,9 +235,20 @@ alignas(engine_task_driver) static uint8_t g_task_driver_bytes[sizeof(engine_tas
 alignas(operation_queue) static uint8_t g_operations_bytes[sizeof(operation_queue)];
 static operation_queue* g_engine_operations = nullptr;
 
-// Two display ids, which are outputs 0 and 1 when both are supported
+// Three display ids, which are outputs 0, 1 and 2 when all three are supported
 static constexpr uint32_t OUTPUT_0_ID = 0x100;
 static constexpr uint32_t OUTPUT_1_ID = 0x200;
+static constexpr uint32_t OUTPUT_2_ID = 0x400;
+
+// NVIDIA's DPCD address of a monitor's power state and the value setting D3
+static constexpr uint32_t NVIDIA_DPCD_SET_POWER = 0x00600;
+static constexpr uint8_t  NVIDIA_D3_PWRDWN      = 2;
+
+// NVIDIA's NV0073_CTRL_DP_DATA_SET_LANE_COUNT and NV0073_CTRL_DP_DATA_SET_LINK_BW, the fields of DP_CTRL's data holding
+// the lane count in bits 4:0 and the rate's code in bits 15:8
+static constexpr uint32_t NVIDIA_DP_DATA_LANE_COUNT_MASK = 0x1F;
+static constexpr uint32_t NVIDIA_DP_DATA_LINK_BW_SHIFT   = 8;
+static constexpr uint32_t NVIDIA_DP_DATA_LINK_BW_MASK    = 0xFF;
 
 // The digital facts a supported display id gives by default: a DisplayPort signal, lane code 3 for four lanes and link
 // rate code 4 for HBR3
@@ -310,6 +321,15 @@ public:
         uint32_t   number; // the class of an allocation or the command of a control, else 0
     };
 
+    // A training to zero lanes or an AUX write of D3, with its display id, the rate code a training names, and whether
+    // it came in the mode set before its first link request
+    struct power_down {
+        uint32_t command;
+        uint32_t display_id;
+        uint32_t rate;
+        bool     is_before_link;
+    };
+
     // Matches the calls of its kind whose number and object equal its own, each 0 matching any
     struct refusal {
         kind       made;
@@ -347,6 +367,7 @@ public:
     const uint8_t* link_status = ONE_LANE_TRAINED; // the 3 link status bytes every connected monitor gives, if any
     uint32_t   link_status_address = DPCD_LINK_STATUS_INDICATORS; // where it gives them
     bool       refuses_link_status = false;   // whether reads of them are refused with `ERR_FIRMWARE`
+    uint32_t   refused_aux_display_id = 0;    // a display id whose AUX requests fail with `ERR_FIRMWARE`, 0 for none
     const uint8_t* phy_repeater_capabilities = nullptr; // the PHY repeater bytes every connected monitor gives, if any
     uint32_t   repeater_status_reads = 0;     // the DPCD reads past those bytes, where the repeaters' status lies
     uint32_t   displayport_max_rate = 4;      // the highest rate code the DisplayPort facts give, the RTX 3080's HBR3
@@ -354,6 +375,8 @@ public:
     uint8_t    displayport_trains_phy_repeaters = 1; // whether they give the firmware as training PHY repeaters
     uint32_t   training_command = 0;          // the command of the last training request
     uint32_t   training_data = 0;             // and its data
+    power_down power_downs[4] = {};           // the first trainings to zero lanes and AUX writes of D3, in order
+    uint32_t   power_down_count = 0;          // how many came, the 4 kept and any past them
     uint32_t   refused_modes = 0;             // how many of the first bandwidth check requests the check refuses
     uint32_t   put_at_first_active_read = 0;  // the core channel's PUT when a head's display id was first asked
     bool       is_channel_busy = false;       // whether each channel state reply names the busy state, else idle
@@ -371,6 +394,7 @@ public:
     uint32_t   get_at_link = 0;               // the core channel's GET from the mode set's first link request, if set
     uint32_t   put_at_link = 0;               // the core channel's PUT when that request came
     uint32_t   get_at_stream = 0;             // the core channel's GET from the stream's attributes, 0 for the default
+    uint32_t   get_at_power_down = 0;         // the core channel's GET from the first power-down request, if set
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void* params, size_t) override {
         if (class_id == TEST_CURSOR_CHANNEL_CLASS) {
@@ -381,6 +405,8 @@ public:
     }
 
     int32_t control(rm::handle object, uint32_t command, void* params, size_t) override {
+        keep_power_down(command, params);
+
         bool is_first_active_read = command == rm::CONTROL_GET_ACTIVE_DISPLAY && control_count(command) == 0;
         if (is_first_active_read) {
             put_at_first_active_read = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
@@ -421,8 +447,11 @@ public:
             return rc;
         }
 
+        bool is_unconnected_read = reads_unconnected_monitor(command, params);
         bool is_refused_status_read = refuses_link_status && reads_link_status(command, params);
-        if (reads_unconnected_monitor(command, params) || is_refused_status_read) {
+        bool is_refused_power_down = trains_zero_lanes_at_rate_0(command, params);
+        bool is_refused_aux = names_refused_aux_display_id(command, params);
+        if (is_unconnected_read || is_refused_status_read || is_refused_power_down || is_refused_aux) {
             return ERR_FIRMWARE;
         }
 
@@ -712,6 +741,24 @@ private:
         return is_aux && static_cast<const rm::aux_params*>(params)->address == link_status_address;
     }
 
+    // Whether `command` is an AUX request naming `refused_aux_display_id`, which no request names while it is 0
+    bool names_refused_aux_display_id(uint32_t command, const void* params) const {
+        bool is_aux = command == rm::CONTROL_DP_AUX;
+        return is_aux && static_cast<const rm::aux_params*>(params)->display_id == refused_aux_display_id;
+    }
+
+    // Whether `command` trains a link to zero lanes at rate 0, which display common refuses on the card
+    static bool trains_zero_lanes_at_rate_0(uint32_t command, const void* params) {
+        if (command != rm::CONTROL_TRAIN_LINK) {
+            return false;
+        }
+
+        uint32_t data = static_cast<const rm::train_link_params*>(params)->data;
+        bool is_zero_lanes = (data & NVIDIA_DP_DATA_LANE_COUNT_MASK) == 0;
+        bool is_rate_0 = ((data >> NVIDIA_DP_DATA_LINK_BW_SHIFT) & NVIDIA_DP_DATA_LINK_BW_MASK) == 0;
+        return is_zero_lanes && is_rate_0;
+    }
+
     // Counts a DPCD read past the PHY repeaters' capability bytes
     void count_repeater_status_read(uint32_t command, const void* params) {
         uint32_t capabilities_end = DPCD_PHY_REPEATER_CAPABILITIES + DPCD_PHY_REPEATER_CAPABILITY_BYTES;
@@ -719,6 +766,43 @@ private:
         if (is_aux && static_cast<const rm::aux_params*>(params)->address >= capabilities_end) {
             repeater_status_reads++;
         }
+    }
+
+    // Keeps a training to zero lanes or an AUX write of D3, 2 at 0x00600, the first leaving the core channel's GET at
+    // `get_at_power_down` if set
+    void keep_power_down(uint32_t command, const void* params) {
+        uint32_t display_id = 0;
+        uint32_t rate = 0;
+        if (params != nullptr && command == rm::CONTROL_TRAIN_LINK) {
+            const rm::train_link_params* training = static_cast<const rm::train_link_params*>(params);
+            bool is_zero_lanes = (training->data & NVIDIA_DP_DATA_LANE_COUNT_MASK) == 0;
+            display_id = is_zero_lanes ? training->display_id : 0;
+            rate = (training->data >> NVIDIA_DP_DATA_LINK_BW_SHIFT) & NVIDIA_DP_DATA_LINK_BW_MASK;
+        } else if (params != nullptr && command == rm::CONTROL_DP_AUX) {
+            const rm::aux_params* aux = static_cast<const rm::aux_params*>(params);
+            bool is_write = aux->command == rm::AUX_COMMAND_DPCD_WRITE && aux->size == 0;
+            bool is_d3 = is_write && aux->address == NVIDIA_DPCD_SET_POWER && aux->data[0] == NVIDIA_D3_PWRDWN;
+            display_id = is_d3 ? aux->display_id : 0;
+        }
+
+        if (display_id == 0) {
+            return;
+        }
+
+        if (power_down_count == 0 && get_at_power_down != 0) {
+            g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)] = get_at_power_down;
+        }
+
+        if (power_down_count < sizeof(power_downs) / sizeof(power_downs[0])) {
+            power_downs[power_down_count] = {
+                .command        = command,
+                .display_id     = display_id,
+                .rate           = rate,
+                .is_before_link = mode_set_requests == 1 && put_at_link == 0,
+            };
+        }
+
+        power_down_count++;
     }
 
     // Keeps the command and data of a training request
@@ -3838,6 +3922,251 @@ TEST(nvidia_display_engine, set_up_stops_two_active_heads_with_one_shutdown_upda
     EXPECT_TRUE(engine_log_contains("nvidia: the core channel read the shutdown update for 2 active heads"));
     EXPECT_TRUE(engine_log_contains("after the shutdown update, head 0's display id reads 0x0 and serial link 3's"));
     EXPECT_TRUE(engine_log_contains("after the shutdown update, head 1's display id reads 0x0 and serial link 3's"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Has the double show output 0 as `show_output_0_on_link_3` does but on head 0, which a set-up lights first, and output
+// 1, connected too, on every other head
+static bool show_output_1_on_the_other_heads(engine_firmware& fw, engine_video_memory& memory) {
+    bool is_backed = show_output_0_on_link_3(fw, memory);
+    fw.boot_head = 0;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.other_display_id = OUTPUT_1_ID;
+    return is_backed;
+}
+
+// After the shutdown update, output 1's link, which the boot firmware lit and which stays dark, is trained to zero
+// lanes and then its monitor set to D3, before output 0's link is set up, and output 0 lights
+TEST(nvidia_display_engine, set_up_powers_down_the_link_of_a_boot_output_staying_dark) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_1_on_the_other_heads(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_EQ(fw.power_down_count, 2u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_1_ID);
+    EXPECT_EQ(fw.power_downs[0].rate, static_cast<uint32_t>(displayport::link_rate::hbr3));
+    EXPECT_TRUE(fw.power_downs[0].is_before_link);
+
+    EXPECT_EQ(fw.power_downs[1].command, rm::CONTROL_DP_AUX);
+    EXPECT_EQ(fw.power_downs[1].display_id, OUTPUT_1_ID);
+    EXPECT_TRUE(fw.power_downs[1].is_before_link);
+
+    const char* shut_down = "nvidia: the core channel read the shutdown update for ";
+    const char* powered_down = "nvidia: output 1 stays dark, so bring-up powers down its link, display id 0x200's";
+    ASSERT_TRUE(engine_log_contains(shut_down));
+    ASSERT_TRUE(engine_log_contains(powered_down));
+    EXPECT_LT(engine_log_offset(shut_down), engine_log_offset(powered_down));
+
+    EXPECT_FALSE(engine_log_contains("left out of D3"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common trained display id 0x200's link to zero lanes at DisplayPort rate 0x1E"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x200's monitor took D3 over AUX"));
+
+    gfxfb::output_state lit = {};
+    ASSERT_EQ(engine.read_output(0, lit), gfxfb::OK);
+    EXPECT_TRUE(lit.lit);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A receiver capability field of revision 1.0, below the 1.1 that holds a power state, at HBR3 over four lanes
+static constexpr uint8_t DPCD_RECEIVER_1_0[DPCD_RECEIVER_CAPABILITY_BYTES] = {0x10, 0x1E, 0xC4};
+
+// Output 1's monitor is left out of D3 when its DPCD gives revision 1.0 or when it is unplugged, its link still trained
+// to zero lanes at HBR3, the rate both ends take or the connector's with no DPCD read, and the log says why
+TEST(nvidia_display_engine, set_up_leaves_a_dark_boot_outputs_monitor_below_dpcd_1_1_or_unplugged_out_of_d3) {
+    const bool is_unplugged_cases[] = {false, true};
+    for (bool is_unplugged : is_unplugged_cases) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_1_on_the_other_heads(fw, memory));
+        if (is_unplugged) {
+            fw.connected_ids = OUTPUT_0_ID;
+        } else {
+            fw.dpcd_receiver = DPCD_RECEIVER_1_0;
+        }
+
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up_logged(engine), OK);
+        ASSERT_EQ(fw.power_down_count, 1u);
+        EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+        EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_1_ID);
+        EXPECT_EQ(fw.power_downs[0].rate, static_cast<uint32_t>(displayport::link_rate::hbr3));
+        EXPECT_TRUE(fw.power_downs[0].is_before_link);
+
+        EXPECT_TRUE(engine_log_contains(", its monitor left out of D3 as no DPCD of revision 1.1 or later was read"));
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// The default digital facts but for link rate code 3, so a link on the connector runs up to HBR2
+static constexpr uint32_t DISPLAYPORT_FACTS_HBR2 = (rm::DIGITAL_SIGNAL_DISPLAYPORT << rm::DIGITAL_SIGNAL_SHIFT) |
+                                                   (3u << rm::DIGITAL_LANES_SHIFT) |
+                                                   (3u << rm::DIGITAL_LINK_RATE_SHIFT);
+
+// The default receiver capability field but at HBR2
+static constexpr uint8_t DPCD_RECEIVER_HBR2[DPCD_RECEIVER_CAPABILITY_BYTES] = {0x14, 0x14, 0xC4};
+
+// Output 1's link is trained to zero lanes at the highest rate both ends take, or at its connector's with its monitor
+// unplugged or its DPCD read refused, which leaves the monitor out of D3, whatever rate output 0's monitor takes
+TEST(nvidia_display_engine, set_up_powers_a_dark_boot_outputs_link_down_at_the_highest_rate_both_ends_take) {
+    struct rate_case {
+        uint32_t               digital_facts;
+        const uint8_t*         dpcd_receiver;
+        bool                   is_unplugged;
+        bool                   is_dpcd_refused;
+        displayport::link_rate rate;
+        const char*            logged;
+    };
+
+    const char* at_hbr2 = "display common trained display id 0x200's link to zero lanes at DisplayPort rate 0x14";
+    const char* at_hbr3 = "display common trained display id 0x200's link to zero lanes at DisplayPort rate 0x1E";
+    const rate_case cases[] = {
+        {DISPLAYPORT_FACTS, DPCD_RECEIVER_HBR2, false, false, displayport::link_rate::hbr2, at_hbr2},
+        {DISPLAYPORT_FACTS_HBR2, DPCD_RECEIVER, false, false, displayport::link_rate::hbr2, at_hbr2},
+        {DISPLAYPORT_FACTS_HBR2, DPCD_RECEIVER, true, false, displayport::link_rate::hbr2, at_hbr2},
+        {DISPLAYPORT_FACTS, DPCD_RECEIVER_HBR2, true, false, displayport::link_rate::hbr3, at_hbr3},
+        {DISPLAYPORT_FACTS, DPCD_RECEIVER_HBR2, false, true, displayport::link_rate::hbr3, at_hbr3},
+    };
+
+    for (const rate_case& tried : cases) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_1_on_the_other_heads(fw, memory));
+        fw.digital_facts = tried.digital_facts;
+        fw.dpcd_receiver = tried.dpcd_receiver;
+        if (tried.is_unplugged) {
+            fw.connected_ids = OUTPUT_0_ID;
+        }
+
+        if (tried.is_dpcd_refused) {
+            fw.refused_aux_display_id = OUTPUT_1_ID;
+        }
+
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up_logged(engine), OK);
+        ASSERT_TRUE(fw.power_down_count > 0);
+        EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+        EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_1_ID);
+        EXPECT_EQ(fw.power_downs[0].rate, static_cast<uint32_t>(tried.rate));
+        EXPECT_TRUE(engine_log_contains(tried.logged));
+
+        bool is_left_out_of_d3 = tried.is_unplugged || tried.is_dpcd_refused;
+        EXPECT_EQ(fw.power_down_count, is_left_out_of_d3 ? 1u : 2u);
+        EXPECT_EQ(
+            engine_log_contains(", its monitor left out of D3 as no DPCD of revision 1.1 or later was read"),
+            is_left_out_of_d3
+        );
+
+        gfxfb::output_state lit = {};
+        ASSERT_EQ(engine.read_output(0, lit), gfxfb::OK);
+        EXPECT_TRUE(lit.lit);
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// With head 0 showing output 1 and every other head output 2, both unplugged, output 0 lights and the link of each
+// dark boot output is trained to zero lanes, in output order
+TEST(nvidia_display_engine, set_up_powers_down_the_link_of_each_dark_boot_output) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+
+    fw.boot_head = 0;
+    fw.boot_display_id = OUTPUT_1_ID;
+    fw.other_display_id = OUTPUT_2_ID;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID | OUTPUT_2_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_EQ(fw.power_down_count, 2u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_1_ID);
+    EXPECT_EQ(fw.power_downs[1].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[1].display_id, OUTPUT_2_ID);
+
+    gfxfb::output_state lit = {};
+    ASSERT_EQ(engine.read_output(0, lit), gfxfb::OK);
+    EXPECT_TRUE(lit.lit);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A shutdown update whose notifier wait fails leaves output 1's link as the boot firmware lit it, as a head may still
+// drive it
+TEST(nvidia_display_engine, set_up_powers_down_no_link_after_a_failed_shutdown_update) {
+    engine_firmware fw;
+    fw.get_at_mode_set_start = BAD_GET;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_1_on_the_other_heads(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("the shutdown update failed: "));
+    EXPECT_EQ(fw.power_down_count, 0u);
+    EXPECT_FALSE(engine_log_contains("stays dark"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A head showing a display id that names no output, as an HDMI link's would, leaves that link detached
+TEST(nvidia_display_engine, set_up_powers_down_no_link_of_a_display_id_naming_no_output) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_on_link_3(fw, memory));
+    fw.other_display_id = OUTPUT_1_ID;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.power_down_count, 0u);
+    EXPECT_FALSE(engine_log_contains("stays dark"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Where a take-down after the shutdown update of two heads and the notifier's stop ends: a second head's four methods
+// and the stop's two past `SHUTDOWN_UPDATE_END`, then both heads' four and the update's five
+static constexpr uint32_t TWO_HEAD_TAKE_DOWN_END = SHUTDOWN_UPDATE_END + (4 + 2 + 2 * 4 + 5) * 2 * sizeof(uint32_t);
+
+// Output 1's zero-lane training failing other than by a refusal ends the power-down with no D3, and the set-up takes
+// the engine down before assigning output 0 an output resource, failing with the training's error
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_failed_power_down_request) {
+    engine_firmware fw;
+    fw.has_crossbar = true;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_TRAIN_LINK,
+        .object = 0,
+        .result = ERR_TIMEOUT,
+    };
+
+    fw.get_at_power_down = TWO_HEAD_TAKE_DOWN_END;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_1_on_the_other_heads(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), ERR_TIMEOUT);
+    ASSERT_EQ(fw.power_down_count, 1u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_1_ID);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_ASSIGN_OUTPUT_RESOURCE), 0u);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: training display id 0x200's link to zero lanes at DisplayPort rate 0x1E failed: "
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x200's link is not powered down, nor is the link of any dark output after it, so bring-up "
+        "takes the display engine down\r\n"
+    ));
+    EXPECT_FALSE(engine_log_contains("link is not set up"));
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+
+    ASSERT_EQ(fw.mode_set_requests, 2u);
+    EXPECT_EQ(fw.mode_set_puts[1], TWO_HEAD_TAKE_DOWN_END);
     EXPECT_EQ(engine.release(), OK);
 }
 

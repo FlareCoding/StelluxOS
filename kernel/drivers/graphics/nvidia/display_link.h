@@ -161,6 +161,25 @@ int32_t configure_stream(
 int32_t set_stream_attributes(firmware& fw, rm::handle display_common, uint32_t display_id);
 
 /**
+ * @brief Power down a DisplayPort link no head drives: set its monitor to D3
+ * when `sets_monitor_to_d3` (plugged in, its DPCD giving revision 1.1 or
+ * later), then train the link to zero lanes at `rate`, its highest, since
+ * display common refuses zero lanes at a rate of 0. When `may_run_fec`, D3
+ * follows the training, as the monitor must see FEC stop as the link goes down.
+ * @param display_id The link's display id, a single bit.
+ * @return `OK` once every step ran or was refused, else the error of the first
+ * request failing otherwise, with no later step sent, each step logged.
+ */
+int32_t power_down_link(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    displayport::link_rate rate,
+    bool sets_monitor_to_d3,
+    bool may_run_fec
+);
+
+/**
  * @brief Make the chosen output's link ready to carry its mode, logging each
  * step: assign its display id an output resource, read the resource's
  * DisplayPort facts, find the lowest configuration carrying the mode under

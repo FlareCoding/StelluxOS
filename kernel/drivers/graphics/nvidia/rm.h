@@ -383,6 +383,10 @@ struct aux_params {
 // `aux_params::command` for a DPCD read, NVIDIA's AUXCH_CMD_TYPE_AUX (bit 3) with AUXCH_CMD_REQ_TYPE_READ (bits 1 to 0)
 constexpr uint32_t AUX_COMMAND_DPCD_READ = 0x9;
 
+// `aux_params::command` for a DPCD write, NVIDIA's AUXCH_CMD_TYPE_AUX (bit 3) with AUXCH_CMD_REQ_TYPE_WRITE, 0 in
+// bits 1 to 0
+constexpr uint32_t AUX_COMMAND_DPCD_WRITE = 0x8;
+
 // `aux_params::reply`'s values, NVIDIA's NV0073_CTRL_DP_AUXCH_REPLYTYPE_*: the monitor acknowledged the transaction,
 // refused it, asked for it again later, did not answer in time, refused an I2C transaction or asked for one again later
 constexpr uint32_t AUX_REPLY_ACK       = 0;
