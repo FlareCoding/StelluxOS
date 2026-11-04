@@ -1018,6 +1018,44 @@ static_assert(sizeof(mode_possible_head) == 80, "NVIDIA's layout of a head of IS
 static_assert(sizeof(mode_possible_window) == 36, "NVIDIA's layout of a window of IS_MODE_POSSIBLE");
 static_assert(sizeof(mode_possible_params) == 1924, "NVIDIA's layout of IS_MODE_POSSIBLE's parameters");
 
+// NVIDIA's NV2080_CTRL_CMD_FIFO_GET_DEVICE_INFO_TABLE, the control that lists the GPU's engines by page
+constexpr uint32_t CONTROL_GET_DEVICE_INFO_TABLE = 0x20801112;
+
+// NVIDIA's NV2080_CTRL_FIFO_GET_DEVICE_INFO_TABLE_MAX_ENTRIES and _MAX_DEVICES, the entries of a page and of the table
+constexpr uint32_t DEVICE_INFO_PAGE_ENTRIES = 32;
+constexpr uint32_t DEVICE_INFO_ENTRIES_MAX  = 256;
+
+// NVIDIA's NV2080_CTRL_FIFO_DEVICE_ENTRY, an engine's entry, whose `data` words NVIDIA's ENGINE_INFO_TYPE numbers
+struct device_info_entry {
+    uint32_t data[16];
+    uint32_t pbdma_ids[2];
+    uint32_t pbdma_fault_ids[2];
+    uint32_t pbdma_count;
+    char     name[16];
+};
+
+// NVIDIA's ENGINE_INFO_TYPE_RM_ENGINE_TYPE and ENGINE_INFO_TYPE_RUNLIST, the `data` words holding the engine's type and
+// its runlist
+constexpr uint32_t DEVICE_INFO_ENGINE_TYPE = 2;
+constexpr uint32_t DEVICE_INFO_RUNLIST     = 3;
+
+// NVIDIA's NV2080_CTRL_FIFO_GET_DEVICE_INFO_TABLE_PARAMS. A page starts at a multiple of `DEVICE_INFO_PAGE_ENTRIES`
+struct device_info_table_params {
+    uint32_t          first_entry;  // NVIDIA's baseIndex
+    uint32_t          entry_count;  // NVIDIA's numEntries
+    uint8_t           has_more;     // NVIDIA's bMore, set when the next page holds entries
+    device_info_entry entries[DEVICE_INFO_PAGE_ENTRIES];
+};
+
+static_assert(sizeof(device_info_entry) == 100, "NVIDIA's layout of a device info table entry");
+static_assert(sizeof(device_info_table_params) == 3212, "NVIDIA's layout of GET_DEVICE_INFO_TABLE's parameters");
+
+// NVIDIA's RM_ENGINE_TYPE_GR0 and RM_ENGINE_TYPE_COPY0 to _COPY9, the engine types of the graphics engine and of the
+// copy engines, which a channel's allocation names its engine by
+constexpr uint32_t ENGINE_TYPE_GRAPHICS   = 0x1;
+constexpr uint32_t ENGINE_TYPE_FIRST_COPY = 0x9;
+constexpr uint32_t ENGINE_TYPE_LAST_COPY  = 0x12;
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H
