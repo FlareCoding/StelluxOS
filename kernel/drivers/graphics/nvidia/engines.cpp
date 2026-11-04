@@ -1,4 +1,5 @@
 #include "drivers/graphics/nvidia/engines.h"
+#include "drivers/graphics/nvidia/channel_methods.h"
 #include "drivers/graphics/nvidia/interrupts.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "clock/clock.h"
@@ -7,6 +8,7 @@
 #include "dynpriv/dynpriv.h"
 #include "hw/barrier.h"
 #include "hw/mmio.h"
+#include "mm/heap.h"
 #include "mm/pmm_types.h"
 
 namespace drivers::nvidia {
@@ -51,12 +53,22 @@ static uint64_t find_differing_word(uintptr_t virt, uint64_t first, uint64_t end
     return end;
 }
 
-engines::engines(firmware& fw, const gpu_objects& objects, video_memory& memory, failed_mark& failed)
-    : m_firmware(fw), m_objects(objects), m_memory(memory), m_failed(failed) {}
+engines::engines(
+    firmware& fw,
+    const gpu_objects& objects,
+    video_memory& memory,
+    operation_queue& operations,
+    failed_mark& failed
+)
+    : m_firmware(fw), m_objects(objects), m_memory(memory), m_operations(operations), m_failed(failed) {
+    m_failure_report.work = report_failure_on_task;
+    m_failure_report.owner = this;
+}
 
 int32_t engines::bring_up(registers& bar0, const dma::device_profile& card, const chip_info& chip) {
     m_bar0 = bar0;
     m_chip = &chip;
+    m_card = card;
 
     int32_t rc = m_table.read(m_firmware, m_objects.subdevice);
     if (rc != OK) {
@@ -178,7 +190,7 @@ void engines::read_memory(gpu_memory& out) {
 }
 
 int32_t engines::read_timestamp(uint64_t& gpu_ns) {
-    if (m_failed.is_set()) {
+    if (has_failed()) {
         return gpu::ERR_DEVICE;
     }
 
@@ -196,20 +208,109 @@ int32_t engines::read_timestamp(uint64_t& gpu_ns) {
     return gpu::OK;
 }
 
-int32_t engines::create_memory(uint64_t, uint32_t, uint32_t, gpu::space*, uint64_t, gpu::memory**, uint32_t*) {
-    return gpu::ERR_DEVICE;
+int32_t engines::create_memory(
+    uint64_t size,
+    uint32_t placement,
+    uint32_t flags,
+    gpu::space*,
+    uint64_t,
+    gpu::memory** out,
+    uint32_t* out_device_id
+) {
+    if (has_failed()) {
+        return gpu::ERR_DEVICE;
+    }
+
+    auto* mem = heap::ualloc_new<backend_memory>();
+    if (mem == nullptr) {
+        return gpu::ERR_NO_MEMORY;
+    }
+
+    mem->placement = placement;
+    mem->task_operation.work = release_on_task;
+    mem->task_operation.owner = this;
+    mem->task_operation.memory = mem;
+
+    int32_t rc = gpu::OK;
+    if (placement == GPU_PLACEMENT_SYSTEM) {
+        size_t pages = size / pmm::PAGE_SIZE;
+        int32_t dma_rc = dma::OK;
+        RUN_ELEVATED(dma_rc = dma::alloc_pages(m_card, pages, dma::caching::cached_when_coherent, 0, mem->pages));
+        rc = dma_rc == dma::OK ? gpu::OK : gpu::ERR_NO_MEMORY;
+    } else {
+        rc = create_video_memory(size, flags, *mem);
+    }
+
+    if (rc != gpu::OK) {
+        heap::ufree_delete(mem);
+        return rc;
+    }
+
+    *out = mem;
+    *out_device_id = 0;
+
+    return gpu::OK;
 }
 
-// `gpu::ERR_NO_MEMORY` is the one refusal that leaves the pin to the GPU core
-int32_t engines::wrap_pages(const pmm::phys_addr_t*, size_t, mm::shmem_mapping&&, gpu::memory**, uint32_t*) {
-    return gpu::ERR_NO_MEMORY;
+int32_t engines::wrap_pages(
+    const pmm::phys_addr_t* pages,
+    size_t count,
+    mm::shmem_mapping&& pin,
+    gpu::memory** out,
+    uint32_t* out_device_id
+) {
+    auto* mem = heap::ualloc_new<backend_memory>();
+    if (mem == nullptr) {
+        return gpu::ERR_NO_MEMORY;
+    }
+
+    mem->wrapped_pages = static_cast<memory_run*>(heap::ualloc(count * sizeof(memory_run)));
+    if (mem->wrapped_pages == nullptr) {
+        heap::ufree_delete(mem);
+        return gpu::ERR_NO_MEMORY;
+    }
+
+    // The GPU core counts the pin as taken when a wrap returns `gpu::ERR_DEVICE`, so the record keeps it for good
+    mem->pin = static_cast<mm::shmem_mapping&&>(pin);
+    if (has_failed()) {
+        return gpu::ERR_DEVICE;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        mem->wrapped_pages[i] = {.address = pages[i], .bytes = pmm::PAGE_SIZE};
+    }
+
+    mem->placement = GPU_PLACEMENT_SYSTEM;
+    mem->task_operation.work = release_on_task;
+    mem->task_operation.owner = this;
+    mem->task_operation.memory = mem;
+    mem->pin_release.init(rc::reaper::reaper_thunk<backend_memory, release_on_reaper, &backend_memory::pin_release>);
+
+    *out = mem;
+    *out_device_id = 0;
+
+    return gpu::OK;
 }
 
-int32_t engines::view_for_cpu(gpu::memory*, gpu::cpu_view&) {
-    return gpu::ERR_DEVICE;
+int32_t engines::view_for_cpu(gpu::memory* mem, gpu::cpu_view& out) {
+    if (has_failed()) {
+        return gpu::ERR_DEVICE;
+    }
+
+    auto* memory = static_cast<backend_memory*>(mem);
+    if (memory->placement == GPU_PLACEMENT_SYSTEM) {
+        out = {.phys = memory->pages.phys, .size = memory->pages.size, .cacheable = memory->pages.cached};
+    } else {
+        out = {.phys = memory->mapping.phys, .size = memory->range.size, .cacheable = false};
+    }
+
+    return gpu::OK;
 }
 
-void engines::release_memory(gpu::memory*) {}
+void engines::release_memory(gpu::memory* mem) {
+    auto* memory = static_cast<backend_memory*>(mem);
+    RUN_ELEVATED(m_operations.post_to_task(memory->task_operation));
+}
 
 int32_t engines::create_space(gpu::context*, gpu::space**) {
     return gpu::ERR_DEVICE;
@@ -235,7 +336,7 @@ void engines::stop_queue(gpu::queue*) {}
 void engines::destroy_queue(gpu::queue*) {}
 
 int32_t engines::check_commands(const void*, size_t) {
-    if (m_failed.is_set()) {
+    if (has_failed()) {
         return gpu::ERR_DEVICE;
     }
 
@@ -350,6 +451,118 @@ int32_t engines::fill_and_compare(const vram_range& range, uintptr_t virt, uint3
     }
 
     return OK;
+}
+
+bool engines::has_failed() const {
+    return m_failed.is_set() || m_is_device_failed.load_acquire();
+}
+
+int32_t engines::create_video_memory(uint64_t size, uint32_t flags, backend_memory& mem) {
+    vram_use use = (flags & GPU_BUFFER_SCANOUT) != 0 ? vram_use::scanout : vram_use::general;
+    if (m_memory.allocate(size, SMALL_PAGE_BYTES, use, mem.range) != OK) {
+        return gpu::ERR_NO_MEMORY;
+    }
+
+    // Mapped before the zeroing, so a full window refuses the create before a long copy. The core maps the CPU's view
+    // by physical address, so a mapping without one is refused
+    bool is_mappable = (flags & GPU_BUFFER_MAPPABLE) != 0;
+    if (is_mappable) {
+        int32_t rc = m_memory.map_for_cpu(mem.range, mem.mapping);
+        if (rc != OK || mem.mapping.phys == 0) {
+            m_memory.release(mem.range);
+            return gpu::ERR_NO_MEMORY;
+        }
+    }
+
+    int32_t rc = zero_video_memory(mem.range);
+    if (rc == ERR_TIMEOUT) {
+        if (is_mappable) {
+            m_memory.unmap_for_cpu(mem.range);
+        }
+
+        fail_device("the kernel's copy channel hung zeroing video memory");
+        log::error(
+            "nvidia: video memory at 0x%lX stays allocated for good, since the hung copy may still write it",
+            mem.range.offset
+        );
+        return gpu::ERR_DEVICE;
+    }
+
+    if (rc != OK) {
+        m_memory.release(mem.range);
+        return gpu::ERR_NO_MEMORY;
+    }
+
+    return gpu::OK;
+}
+
+int32_t engines::zero_video_memory(const vram_range& range) {
+    for (uint64_t done = 0; done < range.size; done += FILL_BYTES_MAX) {
+        uint64_t left = range.size - done;
+        uint64_t bytes = left < FILL_BYTES_MAX ? left : FILL_BYTES_MAX;
+        int32_t rc = m_copy_channel->fill(range.offset + done, bytes, 0);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    return OK;
+}
+
+void engines::fail_device(const char* reason) {
+    if (!m_is_device_failed.exchange_acq_rel(true)) {
+        log::error("nvidia: %s, so the GPU core's device failed while the display runs on", reason);
+    }
+
+    report_failure();
+}
+
+void engines::report_failure() {
+    if (!m_is_failure_reported.exchange_acq_rel(true)) {
+        RUN_ELEVATED(m_operations.post_to_task(m_failure_report));
+    }
+}
+
+void engines::report_failure_on_task(operation& op) {
+    engines& gpu_engines = *static_cast<failure_operation&>(op).owner;
+    RUN_ELEVATED(gpu::device_failed(gpu_engines.m_device));
+}
+
+void engines::release_on_task(operation& op) {
+    auto& release = static_cast<memory_operation&>(op);
+    engines& gpu_engines = *release.owner;
+    backend_memory* mem = release.memory;
+    bool is_wrapped = mem->wrapped_pages != nullptr;
+
+    // A failed GPU may still reach the memory, so it stays, and a wrapped memory's record stays to keep the pin
+    if (gpu_engines.has_failed()) {
+        if (!is_wrapped) {
+            heap::ufree_delete(mem);
+        }
+
+        return;
+    }
+
+    // The pin's release waits for the shared memory object's mutex, which the driver task must never wait for
+    if (is_wrapped) {
+        RUN_ELEVATED(rc::reaper::defer(&mem->pin_release));
+        return;
+    }
+
+    if (mem->placement == GPU_PLACEMENT_SYSTEM) {
+        RUN_ELEVATED(dma::free_pages(mem->pages));
+    } else {
+        gpu_engines.m_memory.release(mem->range);
+    }
+
+    heap::ufree_delete(mem);
+}
+
+rc::reaper::cleanup_result engines::release_on_reaper(backend_memory* mem) {
+    heap::ufree(mem->wrapped_pages);
+    heap::ufree_delete(mem);
+
+    return rc::reaper::DONE;
 }
 
 } // namespace drivers::nvidia

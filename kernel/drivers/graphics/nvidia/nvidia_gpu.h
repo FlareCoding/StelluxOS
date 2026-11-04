@@ -43,7 +43,7 @@ public:
         : pci_driver("nvidia_gpu", dev)
         , m_operations(*this)
         , m_display_engine(m_gsp, m_video_memory, m_operations, m_failed)
-        , m_engines(m_gsp, m_gpu_objects, m_video_memory, m_failed) {}
+        , m_engines(m_gsp, m_gpu_objects, m_video_memory, m_operations, m_failed) {}
 
     /**
      * @brief Boot the GSP's firmware and, unless the chip's fuses disable its

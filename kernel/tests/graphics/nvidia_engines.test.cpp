@@ -5,9 +5,12 @@
 #include "stlx_unit_test.h"
 #include "common/string.h"
 #include "dma/dma.h"
+#include "drivers/device_driver.h"
 #include "drivers/graphics/nvidia/engines.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "dynpriv/dynpriv.h"
+#include "gpu/core.h"
+#include "mm/shmem.h"
 #include "tests/framework/helpers.h"
 #include "tests/graphics/nvidia_channel_test_access.h"
 #include "tests/graphics/nvidia_copy_channel_test_access.h"
@@ -15,6 +18,7 @@
 
 TEST_SUITE(nvidia_engines);
 
+using drivers::nvidia::backend_memory;
 using drivers::nvidia::card_identity;
 using drivers::nvidia::channel_test_access;
 using drivers::nvidia::chip_info;
@@ -32,6 +36,7 @@ using drivers::nvidia::firmware;
 using drivers::nvidia::gpu_objects;
 using drivers::nvidia::memory_report;
 using drivers::nvidia::OK;
+using drivers::nvidia::operation_queue;
 using drivers::nvidia::registers;
 using drivers::nvidia::table_writes;
 using drivers::nvidia::video_memory;
@@ -124,6 +129,9 @@ struct engines_test_access {
         gpu_engines.m_chip = &chip;
         gpu_engines.m_identity = identity;
     }
+
+    // Gives `gpu_engines` the GPU core's device that registration would
+    static void register_with(engines& gpu_engines, gpu::device& dev) { gpu_engines.m_device = &dev; }
 };
 
 } // namespace drivers::nvidia
@@ -210,23 +218,39 @@ alignas(4096) static uint32_t s_check_memory[CHECK_WORDS];
 // The channel's instance block, which the channel clears through `map_for_cpu`
 alignas(4096) static uint8_t s_engines_instance_block[4096];
 
-// Hands out video memory from 4 MiB on, maps the check's range for the CPU onto `s_check_memory` and an instance block
-// onto `s_engines_instance_block`, and counts the check range's unmaps and releases
+// Where the double's BAR1 starts in physical addresses, for the memory the backend creates
+static constexpr uint64_t BAR1_PHYS = 0x80000000;
+
+// Hands out video memory from 4 MiB on, maps the check's range onto `s_check_memory`, an instance block onto
+// `s_engines_instance_block` and a created range at `BAR1_PHYS` past its offset, counting maps, unmaps and releases
 class engines_video_memory : public video_memory {
 public:
     memory_report reported = {};
+    bool          refuses_allocation = false;
+    bool          is_window_full = false;    // refuses to map a created range
+    bool          maps_without_phys = false; // maps a created range with no physical address
 
-    uint64_t next_offset = 0x400000;
-    uint64_t check_offset = 0;
-    uint32_t allocations = 0;
-    uint32_t check_unmaps = 0;
-    uint32_t check_releases = 0;
+    uint64_t   next_offset = 0x400000;
+    uint64_t   check_offset = 0;
+    uint32_t   allocations = 0;
+    vram_range last_allocated = {};
+    vram_use   last_use = vram_use::general;
+    uint32_t   check_unmaps = 0;
+    uint32_t   check_releases = 0;
+    uint32_t   created_maps = 0;
+    uint32_t   created_unmaps = 0;
+    uint32_t   created_releases = 0;
+    vram_range last_released = {};
 
     void report(memory_report& out) override {
         out = reported;
     }
 
-    int32_t allocate(uint64_t size, uint64_t, vram_use, vram_range& out) override {
+    int32_t allocate(uint64_t size, uint64_t, vram_use use, vram_range& out) override {
+        if (refuses_allocation) {
+            return ERR_NO_MEMORY;
+        }
+
         allocations++;
         out = {.offset = next_offset, .size = size};
         if (size == sizeof(s_check_memory)) {
@@ -234,12 +258,17 @@ public:
         }
 
         next_offset += size;
+        last_allocated = out;
+        last_use = use;
         return OK;
     }
 
     void release(const vram_range& range) override {
         if (is_check(range)) {
             check_releases++;
+        } else if (is_created(range)) {
+            created_releases++;
+            last_released = range;
         }
     }
 
@@ -249,17 +278,25 @@ public:
             return OK;
         }
 
-        if (range.size > sizeof(s_engines_instance_block)) {
+        if (!is_created(range)) {
+            out = {.virt = reinterpret_cast<uintptr_t>(s_engines_instance_block), .phys = 0};
+            return OK;
+        }
+
+        if (is_window_full) {
             return ERR_NO_MEMORY;
         }
 
-        out = {.virt = reinterpret_cast<uintptr_t>(s_engines_instance_block), .phys = 0};
+        created_maps++;
+        out = {.virt = 0, .phys = maps_without_phys ? 0 : BAR1_PHYS + range.offset};
         return OK;
     }
 
     void unmap_for_cpu(const vram_range& range) override {
         if (is_check(range)) {
             check_unmaps++;
+        } else if (is_created(range)) {
+            created_unmaps++;
         }
     }
 
@@ -269,7 +306,40 @@ private:
     bool is_check(const vram_range& range) const {
         return check_offset != 0 && range.offset == check_offset && range.size == sizeof(s_check_memory);
     }
+
+    // Not the check's range and larger than an instance block, a size only the backend's creates ask for
+    bool is_created(const vram_range& range) const {
+        return !is_check(range) && range.size > sizeof(s_engines_instance_block);
+    }
 };
+
+// A driver whose task the tests stand in for, serving its operation queue themselves
+class backend_task_driver : public drivers::device_driver {
+public:
+    backend_task_driver() : device_driver("backend_task") {}
+
+    int32_t attach() override { return 0; }
+    void run() override {}
+};
+
+// The operation queue every fixture's engines take and its driver, built in place at the first fixture
+alignas(backend_task_driver) static uint8_t s_task_driver_bytes[sizeof(backend_task_driver)];
+alignas(operation_queue) static uint8_t s_operations_bytes[sizeof(operation_queue)];
+static operation_queue* s_operations = nullptr;
+
+static operation_queue& engines_operations() {
+    if (s_operations == nullptr) {
+        auto* driver = new (s_task_driver_bytes) backend_task_driver();
+        s_operations = new (s_operations_bytes) operation_queue(*driver);
+    }
+
+    return *s_operations;
+}
+
+static constexpr gpu::device_facts NO_FACTS = {};
+
+// The GPU core's device each fixture's engines report to, never published, so each fixture builds it anew in place
+alignas(gpu::device) static uint8_t s_core_device_bytes[sizeof(gpu::device)];
 
 // BAR0 from the CPU interrupt tree's first leaf to the doorbell, the registers bring-up and the handler's service use
 static constexpr uint32_t BAR0_WORDS = (VIRTUAL_FUNCTION_DOORBELL - CPU_INTR_LEAF) / sizeof(uint32_t) + 1;
@@ -332,16 +402,21 @@ struct entry_methods {
     bool     raises_interrupt = false;
 };
 
-static constexpr uint32_t MAX_FILLS = 4;
+static constexpr uint32_t MAX_FILLS = 8;
 
-// Bring-up over doubles with the test runner as the GPU, running each entry the copy channel publishes and raising the
-// copy vector. Fill `faulty_fill`, counted from 1, has `fault` at word `fault_word` of the check's memory
+// The bytes a create asks for unless its test sets others, more than an instance block, so the double maps them at
+// `BAR1_PHYS`
+static constexpr uint64_t CREATED_BYTES = 128 * 1024;
+
+// The engines over doubles with the test runner as the GPU, running each entry the copy channel publishes and raising
+// the copy vector. Fill `faulty_fill`, counted from 1, has `fault` at word `fault_word` of the check's memory
 struct engines_fixture {
     engines_firmware     fw;
     engines_video_memory memory;
     failed_mark          failed;
     registers            bar0;
     engines              gpu_engines;
+    gpu::device&         core_device;
 
     copy_fault fault = copy_fault::none;
     uint32_t   faulty_fill = 0;
@@ -349,11 +424,22 @@ struct engines_fixture {
 
     ran_fill fills[MAX_FILLS] = {};
     uint32_t fill_count = 0;
-    uint32_t strays = 0; // entries outside the push buffer and fills outside the check's memory, which the double skips
+    uint32_t strays = 0; // entries outside the push buffer and fills past `MAX_FILLS`, which the double skips
     uint32_t acknowledged = 0;
+    uint32_t next_entry = 0; // the GPFIFO entry the GPU's double runs next
     uint64_t took_ns = 0;
 
-    engines_fixture() : bar0(fresh_bar0()), gpu_engines(fw, TEST_OBJECTS, memory, failed) {
+    // The create `create_on_gpu` makes, and the memory and device id it returned
+    uint64_t     create_size = CREATED_BYTES;
+    uint32_t     create_placement = GPU_PLACEMENT_VIDEO;
+    uint32_t     create_flags = 0;
+    gpu::memory* created = nullptr;
+    uint32_t     device_id = ~0u;
+
+    engines_fixture()
+        : bar0(fresh_bar0()), gpu_engines(fw, TEST_OBJECTS, memory, engines_operations(), failed),
+          core_device(*new (s_core_device_bytes) gpu::device("gpu_engines", &gpu_engines, NO_FACTS)) {
+        engines_test_access::register_with(gpu_engines, core_device);
         fw.engines = RTX_3080_FIRST_ENGINES;
         fw.engine_count = 4;
 
@@ -363,6 +449,9 @@ struct engines_fixture {
     }
 
     ~engines_fixture() {
+        // A record left queued would reach these engines from a later fixture's serve
+        engines_operations().serve();
+
         copy_channel* copier = engines_test_access::copy_channel_of(gpu_engines);
         if (copier != nullptr) {
             copier->destroy();
@@ -371,10 +460,13 @@ struct engines_fixture {
 
     int32_t bring_up() { return gpu_engines.bring_up(bar0, engines_test_card(), engines_test_chip()); }
 
-    // Runs each entry the copy channel publishes once bring-up's task waits for it, until the task ends
+    int32_t create() {
+        return gpu_engines.create_memory(create_size, create_placement, create_flags, nullptr, 0, &created, &device_id);
+    }
+
+    // Runs each entry the copy channel publishes once the task waits for it, until the task ends
     bool act_as_gpu(sched::task& task, const sync::atomic<uint32_t>& is_done) {
         uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
-        uint32_t get = 0;
         while (!is_done.load_acquire()) {
             if (clock::now_ns() > deadline) {
                 return false;
@@ -383,9 +475,9 @@ struct engines_fixture {
             // The channel is read only while the task waits, since a failed check destroys it
             bool is_waiting = task.state.load_acquire() == sched::TASK_STATE_BLOCKED;
             copy_channel* copier = is_waiting ? engines_test_access::published_copy_channel(gpu_engines) : nullptr;
-            if (copier != nullptr && put_of(*copier) != get) {
-                run_entry(*copier, get);
-                get++;
+            if (copier != nullptr && put_of(*copier) != next_entry) {
+                run_entry(*copier, next_entry);
+                next_entry++;
             }
         }
 
@@ -471,17 +563,22 @@ struct engines_fixture {
         }
     }
 
-    // Writes the fill into the check's memory as the copy engine would, with this fill's fault
+    // Records the fill and writes it as the copy engine would where it lies in the check's memory, with this fill's
+    // fault, since the double holds no other video memory
     void launch_fill(const entry_methods& methods, uint32_t fill_number) {
-        uint64_t first = (methods.fill_offset - memory.check_offset) / sizeof(uint32_t);
-        bool is_in_check = methods.fill_offset >= memory.check_offset && first + methods.fill_words <= CHECK_WORDS;
-        if (!is_in_check || fill_count == MAX_FILLS) {
+        if (fill_count == MAX_FILLS) {
             strays++;
             return;
         }
 
         fills[fill_count] = {.offset = methods.fill_offset, .words = methods.fill_words, .value = methods.fill_value};
         fill_count++;
+
+        uint64_t first = (methods.fill_offset - memory.check_offset) / sizeof(uint32_t);
+        bool is_in_check = methods.fill_offset >= memory.check_offset && first + methods.fill_words <= CHECK_WORDS;
+        if (!is_in_check) {
+            return;
+        }
 
         uint32_t skipped = s_check_memory[fault_word];
         for (uint64_t i = first; i < first + methods.fill_words; i++) {
@@ -499,32 +596,34 @@ struct engines_fixture {
     }
 };
 
-// Bring-up run by a task, since its fills sleep and the test runner, the boot CPU's idle task, must never block
-struct bring_up_task_state {
+// A step of the engines run by a task, since fills sleep and the test runner, the boot CPU's idle task, must not block
+struct engines_task_state {
     engines_fixture*       fixture;
+    int32_t                (*step)(engines_fixture&);
     int32_t                result;
     sync::atomic<uint32_t> is_done;
 };
 
-// What `bring_up_on_gpu` returns for a bring-up whose task did not finish, a value no error of the driver has
+// What `run_on_gpu` returns for a step whose task did not finish, a value no error of the driver has
 static constexpr int32_t NOT_FINISHED = 1;
 
-static void run_bring_up_task(void* arg) {
-    bring_up_task_state* state = static_cast<bring_up_task_state*>(arg);
-    state->result = state->fixture->bring_up();
+static void run_engines_task(void* arg) {
+    engines_task_state* state = static_cast<engines_task_state*>(arg);
+    state->result = state->step(*state->fixture);
     state->is_done.store_release(1);
     sched::exit(0);
 }
 
-// Runs bring-up in a task while the test runner acts as the GPU, and returns its result
-static int32_t bring_up_on_gpu(engines_fixture& fixture) {
-    bring_up_task_state state;
+// Runs `step` in a task while the test runner acts as the GPU, and returns its result
+static int32_t run_on_gpu(engines_fixture& fixture, int32_t (*step)(engines_fixture&)) {
+    engines_task_state state;
     state.fixture = &fixture;
+    state.step = step;
     state.result = NOT_FINISHED;
     state.is_done.store_relaxed(0);
 
     uint64_t start_ns = clock::now_ns();
-    sched::task* task = test_helpers::start_pinned_task(run_bring_up_task, &state, "engines_bring_up");
+    sched::task* task = test_helpers::start_pinned_task(run_engines_task, &state, "engines_step");
     if (task == nullptr) {
         return NOT_FINISHED;
     }
@@ -534,6 +633,23 @@ static int32_t bring_up_on_gpu(engines_fixture& fixture) {
     test_helpers::unpin(task);
 
     return is_done ? state.result : NOT_FINISHED;
+}
+
+// Brings the fixture's engines up in a task while the test runner acts as the GPU
+static int32_t bring_up_on_gpu(engines_fixture& fixture) {
+    return run_on_gpu(fixture, [](engines_fixture& f) { return f.bring_up(); });
+}
+
+// Creates the fixture's memory in a task while the test runner acts as the GPU
+static int32_t create_on_gpu(engines_fixture& fixture) {
+    return run_on_gpu(fixture, [](engines_fixture& f) { return f.create(); });
+}
+
+// Whether the driver task reported the GPU failed to the fixture's core device
+static bool has_device_failed(engines_fixture& fixture) {
+    bool is_failed = false;
+    RUN_ELEVATED(is_failed = fixture.core_device.failed());
+    return is_failed;
 }
 
 // Without an asynchronous copy engine, bring-up asks for no vector and creates nothing
@@ -774,4 +890,327 @@ TEST(nvidia_engines, check_commands_refuses_every_list_and_reports_a_failed_gpu)
     fixture.failed.set();
 
     EXPECT_EQ(fixture.gpu_engines.check_commands(commands, sizeof(commands)), gpu::ERR_DEVICE);
+}
+
+// Video memory is allocated for its use and zeroed whole by the copy channel before its create returns, with no
+// mapping for the CPU unless asked, and commands reach it by address, so its device id is 0
+TEST(nvidia_engines, video_memory_is_zeroed_by_the_copy_channel_before_its_create_returns) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    gpu::memory* general = fixture.created;
+    vram_range general_range = fixture.memory.last_allocated;
+    bool is_general = fixture.memory.last_use == vram_use::general;
+
+    fixture.create_flags = GPU_BUFFER_SCANOUT;
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    vram_range scanout_range = fixture.memory.last_allocated;
+
+    EXPECT_TRUE(is_general);
+    EXPECT_TRUE(fixture.memory.last_use == vram_use::scanout);
+    EXPECT_EQ(general_range.size, CREATED_BYTES);
+    EXPECT_EQ(fixture.device_id, 0u);
+    EXPECT_EQ(fixture.memory.created_maps, 0u);
+    EXPECT_EQ(fixture.strays, 0u);
+
+    ASSERT_EQ(fixture.fill_count, 4u);
+    EXPECT_EQ(fixture.fills[2].offset, general_range.offset);
+    EXPECT_EQ(fixture.fills[3].offset, scanout_range.offset);
+    for (uint32_t i = 2; i < 4; i++) {
+        EXPECT_EQ(fixture.fills[i].words, CREATED_BYTES / sizeof(uint32_t));
+        EXPECT_EQ(fixture.fills[i].value, 0u);
+    }
+
+    fixture.gpu_engines.release_memory(general);
+    fixture.gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// Video memory past one fill's limit, 4 bytes times its 32-bit line length, is zeroed by as few fills as that allows
+TEST(nvidia_engines, video_memory_past_one_fills_limit_is_zeroed_by_the_fewest_fills) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.create_size = 20ull << 30;
+
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    uint64_t offset = fixture.memory.last_allocated.offset;
+
+    ASSERT_EQ(fixture.fill_count, 4u);
+    EXPECT_EQ(fixture.fills[2].offset, offset);
+    EXPECT_EQ(fixture.fills[2].words, 0xFFFFFFFFu);
+    EXPECT_EQ(fixture.fills[3].offset, offset + 4ull * 0xFFFFFFFF);
+    EXPECT_EQ(fixture.fills[3].words, 0x40000001u);
+
+    fixture.gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// Mappable video memory stays mapped through BAR1 until its release, which waits for the driver task, and the CPU's
+// view is that mapping, write-combined
+TEST(nvidia_engines, mappable_video_memory_stays_mapped_until_the_driver_task_releases_it) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.create_flags = GPU_BUFFER_MAPPABLE;
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    vram_range range = fixture.memory.last_allocated;
+    gpu::cpu_view view = {};
+
+    EXPECT_EQ(fixture.gpu_engines.view_for_cpu(fixture.created, view), gpu::OK);
+    fixture.gpu_engines.release_memory(fixture.created);
+    uint32_t releases_before_task = fixture.memory.created_releases;
+    engines_operations().serve();
+
+    EXPECT_EQ(view.phys, BAR1_PHYS + range.offset);
+    EXPECT_EQ(view.size, CREATED_BYTES);
+    EXPECT_FALSE(view.cacheable);
+
+    EXPECT_EQ(fixture.memory.created_maps, 1u);
+    EXPECT_EQ(fixture.memory.created_unmaps, 0u);
+    EXPECT_EQ(releases_before_task, 0u);
+    EXPECT_EQ(fixture.memory.created_releases, 1u);
+    EXPECT_EQ(fixture.memory.last_released.offset, range.offset);
+}
+
+// System memory comes zeroed from the DMA layer, cached on a coherent card, with no video memory or fill
+TEST(nvidia_engines, system_memory_comes_zeroed_from_the_dma_layer) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    uint32_t allocations = fixture.memory.allocations;
+    fixture.create_placement = GPU_PLACEMENT_SYSTEM;
+    fixture.create_flags = GPU_BUFFER_MAPPABLE;
+
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    const dma::buffer& pages = static_cast<backend_memory*>(fixture.created)->pages;
+    const uint32_t* words = reinterpret_cast<const uint32_t*>(pages.virt);
+    gpu::cpu_view view = {};
+
+    EXPECT_EQ(fixture.gpu_engines.view_for_cpu(fixture.created, view), gpu::OK);
+    uint64_t nonzero_words = 0;
+    for (uint64_t i = 0; i < CREATED_BYTES / sizeof(uint32_t); i++) {
+        nonzero_words += words[i] != 0 ? 1 : 0;
+    }
+
+    EXPECT_EQ(view.phys, pages.phys);
+    EXPECT_EQ(view.size, CREATED_BYTES);
+    EXPECT_TRUE(view.cacheable);
+
+    EXPECT_EQ(nonzero_words, 0u);
+    EXPECT_EQ(fixture.device_id, 0u);
+    EXPECT_EQ(fixture.memory.allocations, allocations);
+    EXPECT_EQ(fixture.fill_count, 2u);
+
+    fixture.gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// Whether a mappable create, with a full BAR1 window or a mapping without a physical address, fails before its zeroing
+// and gives its video memory back
+static bool refuses_without_a_cpu_mapping(bool is_window_full) {
+    engines_fixture fixture;
+    fixture.memory.is_window_full = is_window_full;
+    fixture.memory.maps_without_phys = !is_window_full;
+    fixture.create_flags = GPU_BUFFER_MAPPABLE;
+    if (bring_up_on_gpu(fixture) != OK) {
+        return false;
+    }
+
+    int32_t rc = create_on_gpu(fixture);
+    bool has_released = fixture.memory.created_releases == 1;
+    bool is_same_range = fixture.memory.last_released.offset == fixture.memory.last_allocated.offset;
+    return rc == gpu::ERR_NO_MEMORY && has_released && is_same_range && fixture.fill_count == 2;
+}
+
+// The CPU's view is a mapping's physical address, so a mappable create refuses without one
+TEST(nvidia_engines, a_mappable_create_refuses_without_a_cpu_mapping) {
+    EXPECT_TRUE(refuses_without_a_cpu_mapping(true));
+    EXPECT_TRUE(refuses_without_a_cpu_mapping(false));
+}
+
+// A create the video memory refuses fills and maps nothing
+TEST(nvidia_engines, a_create_without_video_memory_fills_nothing) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.memory.refuses_allocation = true;
+    fixture.create_flags = GPU_BUFFER_MAPPABLE;
+
+    EXPECT_EQ(create_on_gpu(fixture), gpu::ERR_NO_MEMORY);
+
+    EXPECT_EQ(fixture.memory.created_maps, 0u);
+    EXPECT_EQ(fixture.fill_count, 2u);
+    EXPECT_TRUE(fixture.created == nullptr);
+}
+
+// A zeroing that hangs the copy channel fails and reports the GPU core's device but not the whole driver: its range
+// stays, unmapped from BAR1, later calls that can fail refuse without touching the GPU, and a release keeps its memory
+TEST(nvidia_engines, a_hung_zeroing_fails_the_device_and_keeps_its_range) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.create_flags = GPU_BUFFER_MAPPABLE;
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    gpu::memory* kept = fixture.created;
+    fixture.created = nullptr;
+
+    fixture.fault = copy_fault::hangs;
+    fixture.faulty_fill = 4;
+    uint64_t gpu_ns = 0;
+    gpu::cpu_view view = {};
+    const uint8_t commands[16] = {};
+
+    EXPECT_EQ(create_on_gpu(fixture), gpu::ERR_DEVICE);
+    uint32_t allocations = fixture.memory.allocations;
+    EXPECT_EQ(create_on_gpu(fixture), gpu::ERR_DEVICE);
+
+    EXPECT_EQ(fixture.memory.created_unmaps, 1u);
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+    EXPECT_EQ(fixture.memory.allocations, allocations);
+
+    EXPECT_EQ(fixture.gpu_engines.read_timestamp(gpu_ns), gpu::ERR_DEVICE);
+    EXPECT_EQ(fixture.gpu_engines.view_for_cpu(kept, view), gpu::ERR_DEVICE);
+    EXPECT_EQ(fixture.gpu_engines.check_commands(commands, sizeof(commands)), gpu::ERR_DEVICE);
+    EXPECT_FALSE(fixture.failed.is_set());
+    EXPECT_TRUE(fixture.created == nullptr);
+
+    fixture.gpu_engines.release_memory(kept);
+    engines_operations().serve();
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+    EXPECT_TRUE(has_device_failed(fixture));
+}
+
+// Once the GPU failed, the CPU's view refuses and a release keeps the memory, which the GPU may still reach
+TEST(nvidia_engines, memory_stays_once_the_gpu_failed) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.create_flags = GPU_BUFFER_MAPPABLE;
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    gpu::cpu_view view = {};
+
+    fixture.failed.set();
+    EXPECT_EQ(fixture.gpu_engines.view_for_cpu(fixture.created, view), gpu::ERR_DEVICE);
+    fixture.gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+    EXPECT_EQ(create_on_gpu(fixture), gpu::ERR_DEVICE);
+}
+
+// A shared memory object of two pages pinned as the GPU core's import pins it, and what a wrap of them gives
+struct pinned_pages {
+    mm::shmem*        object = mm::shmem_create(2 * pmm::PAGE_SIZE);
+    mm::shmem_mapping pin;
+    pmm::phys_addr_t  pages[2] = {};
+    gpu::memory*      wrapped = nullptr;
+    uint32_t          device_id = 1;
+
+    pinned_pages() {
+        if (object == nullptr) {
+            return;
+        }
+
+        RUN_ELEVATED(sync::mutex_lock(object->lock));
+        pin = mm::shmem_mapping::start_locked(object);
+        pages[0] = mm::shmem_get_page_locked(object, 0);
+        pages[1] = mm::shmem_get_page_locked(object, 1);
+        RUN_ELEVATED(sync::mutex_unlock(object->lock));
+    }
+
+    ~pinned_pages() {
+        if (object != nullptr && object->release()) {
+            mm::shmem::ref_destroy(object);
+        }
+    }
+
+    int32_t wrap(engines& gpu_engines) {
+        return gpu_engines.wrap_pages(pages, 2, static_cast<mm::shmem_mapping&&>(pin), &wrapped, &device_id);
+    }
+
+    // The object's mapping count, one for each pin while no CPU maps the object
+    size_t pins() const {
+        RUN_ELEVATED(sync::mutex_lock(object->lock));
+        size_t count = object->m_mapping_count;
+        RUN_ELEVATED(sync::mutex_unlock(object->lock));
+
+        return count;
+    }
+};
+
+// A reaper node that marks itself reached, then takes `hold`, waiting there while the test runner holds it. It never
+// spins, as the reaper shares the boot CPU with the runner, its idle task, which runs only while no other task can
+struct reaper_gate {
+    rc::reaper::dead_node  reaper_node;
+    sync::atomic<uint32_t> is_reached;
+    sync::mutex            hold;
+};
+
+static rc::reaper::cleanup_result pass_gate(reaper_gate* gate) {
+    gate->is_reached.store_release(1);
+    RUN_ELEVATED(sync::mutex_lock(gate->hold));
+    RUN_ELEVATED(sync::mutex_unlock(gate->hold));
+
+    return rc::reaper::DONE;
+}
+
+// Defers `gate` and returns whether the reaper reaches it within the spin timeout, past every node deferred before.
+// When `holds`, the caller must unlock `gate.hold` on every path, as the reaper waits there until it does
+static bool reaper_reaches(reaper_gate& gate, bool holds) {
+    gate.hold.init();
+    if (holds) {
+        RUN_ELEVATED(sync::mutex_lock(gate.hold));
+    }
+
+    gate.reaper_node.init(rc::reaper::reaper_thunk<reaper_gate, pass_gate>);
+    RUN_ELEVATED(rc::reaper::defer(&gate.reaper_node));
+
+    return test_helpers::spin_wait(gate.is_reached);
+}
+
+static reaper_gate s_reaper_held_for_a_wrap;
+static reaper_gate s_reaper_past_a_wrap;
+
+// A wrap gives the device id 0, makes one run of each page and takes the pin, which its release leaves to the reaper
+TEST(nvidia_engines, a_wrap_holds_the_pin_until_its_release_on_the_reaper) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    pinned_pages shared;
+    ASSERT_NOT_NULL(shared.object);
+
+    ASSERT_EQ(shared.wrap(fixture.gpu_engines), gpu::OK);
+    const drivers::nvidia::memory_run* runs = static_cast<backend_memory*>(shared.wrapped)->wrapped_pages;
+
+    EXPECT_TRUE(shared.pin.ptr() == nullptr);
+    EXPECT_EQ(shared.device_id, 0u);
+    EXPECT_EQ(runs[0].address, shared.pages[0]);
+    EXPECT_EQ(runs[1].address, shared.pages[1]);
+    EXPECT_EQ(runs[1].bytes, pmm::PAGE_SIZE);
+
+    EXPECT_TRUE(reaper_reaches(s_reaper_held_for_a_wrap, true));
+    fixture.gpu_engines.release_memory(shared.wrapped);
+    engines_operations().serve();
+    EXPECT_EQ(shared.pins(), 1u);
+    RUN_ELEVATED(sync::mutex_unlock(s_reaper_held_for_a_wrap.hold));
+
+    ASSERT_TRUE(reaper_reaches(s_reaper_past_a_wrap, false));
+    EXPECT_EQ(shared.pins(), 0u);
+}
+
+static reaper_gate s_reaper_past_a_failed_wrap;
+
+// Once the GPU failed, a wrap takes the pin and refuses, and a wrapped memory's release keeps its pin
+TEST(nvidia_engines, a_failed_gpu_keeps_each_wraps_pin) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    pinned_pages kept;
+    pinned_pages refused;
+    ASSERT_TRUE(kept.object != nullptr && refused.object != nullptr);
+    ASSERT_EQ(kept.wrap(fixture.gpu_engines), gpu::OK);
+
+    fixture.failed.set();
+    EXPECT_EQ(refused.wrap(fixture.gpu_engines), gpu::ERR_DEVICE);
+    fixture.gpu_engines.release_memory(kept.wrapped);
+    engines_operations().serve();
+
+    ASSERT_TRUE(reaper_reaches(s_reaper_past_a_failed_wrap, false));
+    EXPECT_TRUE(refused.pin.ptr() == nullptr);
+    EXPECT_EQ(kept.pins(), 1u);
+    EXPECT_EQ(refused.pins(), 1u);
 }
