@@ -3,6 +3,7 @@
 #include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/rm.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
 
@@ -16,11 +17,21 @@ static constexpr uint8_t  RATE_CODE_MASK    = 0x1F;
 static constexpr uint8_t  LANE_COUNT_MASK   = 0x1F;
 static constexpr uint8_t  ENHANCED_FRAMING  = 0x80;
 
-// The receiver capability field's offset of its revision, and revision 1.0 as that byte codes it, the major revision in
-// bits 7 to 4 and the minor in bits 3 to 0, as NVIDIA's DPCD headers give them
+// The receiver capability field's offset of its revision, and revisions 1.0, 1.1 and 1.2 as that byte codes them, the
+// major revision in bits 7 to 4 and the minor in bits 3 to 0, as NVIDIA's DPCD headers give them
 static constexpr uint32_t RECEIVER_REVISION     = 0;
 static constexpr uint8_t  RECEIVER_REVISION_1_0 = 0x10;
+static constexpr uint8_t  RECEIVER_REVISION_1_1 = 0x11;
 static constexpr uint8_t  RECEIVER_REVISION_1_2 = 0x12;
+
+// NVIDIA's NV_DPCD_SET_POWER, the byte holding a monitor's power state, and its value NV_DPCD_SET_POWER_VAL_D3_PWRDWN
+static constexpr uint32_t DPCD_SET_POWER      = 0x00600;
+static constexpr uint8_t  DPCD_POWER_STATE_D3 = 2;
+
+// The least time and tries NVIDIA's library spends on a power state write before giving up, each try here one request
+// where a try of NVIDIA's library sends a deferred request up to 7 times
+static constexpr uint64_t POWER_STATE_WRITE_NS    = 2 * NS_PER_MS;
+static constexpr uint32_t POWER_STATE_WRITE_TRIES = 40;
 
 // The PHY repeaters' offsets of their revision, highest rate, count and lane byte, revision 1.4 as their revision
 // byte codes it, and the count byte's bit for one repeater, as NVIDIA's DPCD headers give them
@@ -53,7 +64,7 @@ static constexpr const char* NO_PHY_REPEATER = ", so its link is taken to have n
 
 namespace {
 
-// How one AUX request of a DPCD read ended
+// How one AUX request of a DPCD read or write ended
 struct aux_answer {
     bool     is_refused; // the firmware refused the request with `ERR_FIRMWARE`
     uint32_t reply;      // NVIDIA's replyType, when not refused
@@ -163,6 +174,36 @@ static int32_t request_dpcd_read(
     return OK;
 }
 
+// Sends one request writing `value` into the DPCD byte at `address` and gives how it ended in `answer`
+static int32_t request_dpcd_write(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    uint32_t address,
+    uint8_t value,
+    aux_answer& answer
+) {
+    rm::aux_params params = {};
+    params.display_id = display_id;
+    params.command = rm::AUX_COMMAND_DPCD_WRITE;
+    params.address = address;
+    params.data[0] = value;
+    params.size = sizeof(value) - 1;
+
+    int32_t rc = fw.control(display_common, rm::CONTROL_DP_AUX, &params, sizeof(params));
+    if (rc != OK && rc != ERR_FIRMWARE) {
+        return rc;
+    }
+
+    answer = {
+        .is_refused = rc == ERR_FIRMWARE,
+        .reply      = params.reply,
+        .size       = params.size,
+    };
+
+    return OK;
+}
+
 // Whether a read is asked again after `answer`: a deferred reply, or an acknowledgment moving some but not all of the
 // bytes asked for or more than those, which NVIDIA's library asks again on
 static bool is_asked_again(const aux_answer& answer, uint32_t bytes) {
@@ -225,6 +266,41 @@ static void log_unread(
         requests,
         request_word,
         outcome
+    );
+}
+
+// Logs why a monitor took no D3 after `tries` writes, from how the last ended
+static void log_unwritten_power_state(uint32_t display_id, const aux_answer& answer, uint32_t tries) {
+    if (answer.is_refused) {
+        log::error(
+            "nvidia: display common refused display id 0x%X's AUX write of D3 at 0x%05X on the last of %u tries",
+            display_id,
+            DPCD_SET_POWER,
+            tries
+        );
+        return;
+    }
+
+    if (answer.reply != rm::AUX_REPLY_ACK) {
+        log::error(
+            "nvidia: display id 0x%X's AUX write of D3 at 0x%05X ended with %s from its monitor (reply type %u) after "
+            "%u tries",
+            display_id,
+            DPCD_SET_POWER,
+            reply_meaning(answer.reply),
+            answer.reply,
+            tries
+        );
+        return;
+    }
+
+    log::error(
+        "nvidia: display id 0x%X's monitor acknowledged the AUX write of D3 at 0x%05X with a reply size of %u bytes "
+        "after %u tries",
+        display_id,
+        DPCD_SET_POWER,
+        answer.size,
+        tries
     );
 }
 
@@ -433,6 +509,38 @@ bool takes_enhanced_framing(const dpcd_capabilities& dpcd) {
 
 bool is_at_least_revision_1_0(const dpcd_capabilities& dpcd) {
     return dpcd.receiver[RECEIVER_REVISION] >= RECEIVER_REVISION_1_0;
+}
+
+bool is_at_least_revision_1_1(const dpcd_capabilities& dpcd) {
+    return dpcd.receiver[RECEIVER_REVISION] >= RECEIVER_REVISION_1_1;
+}
+
+int32_t set_monitor_to_d3(firmware& fw, rm::handle display_common, uint32_t display_id) {
+    uint64_t end_ns = clock::now_ns() + POWER_STATE_WRITE_NS;
+    aux_answer answer = {};
+    uint32_t tries = 0;
+    while (tries < POWER_STATE_WRITE_TRIES || clock::now_ns() < end_ns) {
+        int32_t rc = request_dpcd_write(fw, display_common, display_id, DPCD_SET_POWER, DPCD_POWER_STATE_D3, answer);
+        if (rc != OK) {
+            log::error(
+                "nvidia: display id 0x%X's AUX write of D3 at 0x%05X failed: %d",
+                display_id,
+                DPCD_SET_POWER,
+                rc
+            );
+            return rc;
+        }
+
+        tries++;
+        if (is_acknowledged_exactly(answer, sizeof(DPCD_POWER_STATE_D3))) {
+            log::info("nvidia: display id 0x%X's monitor took D3 over AUX", display_id);
+            return OK;
+        }
+    }
+
+    log_unwritten_power_state(display_id, answer, tries);
+
+    return OK;
 }
 
 uint8_t phy_repeater_count(const dpcd_capabilities& dpcd) {

@@ -3,11 +3,13 @@
 #define STLX_TEST_TIER TIER_UTIL
 
 #include "stlx_unit_test.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/nvidia.h"
+#include "hw/delay.h"
 
 TEST_SUITE(nvidia_display_dpcd);
 
@@ -28,6 +30,7 @@ using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::firmware;
 using drivers::nvidia::OK;
 using drivers::nvidia::read_output_dpcd;
+using drivers::nvidia::set_monitor_to_d3;
 using drivers::nvidia::take_displayport_from_firmware;
 namespace rm = drivers::nvidia::rm;
 
@@ -53,6 +56,14 @@ static constexpr uint32_t NVIDIA_REPLY_I2CDEFER      = 8;
 // NVIDIA's DP_SET_MANUAL_DISPLAYPORT and its parameters' size, restated to hold its request to NVIDIA's layout
 static constexpr uint32_t NVIDIA_DP_SET_MANUAL_DISPLAYPORT       = 0x731365;
 static constexpr size_t   NVIDIA_DP_SET_MANUAL_DISPLAYPORT_BYTES = 4;
+
+// NVIDIA's command of a native write, its DPCD address of the power state and the value setting D3, and the least tries
+// and time its library spends on a power state write
+static constexpr uint32_t NVIDIA_NATIVE_WRITE            = 0x8;
+static constexpr uint32_t NVIDIA_DPCD_SET_POWER          = 0x00600;
+static constexpr uint8_t  NVIDIA_SET_POWER_VAL_D3_PWRDWN = 2;
+static constexpr uint32_t NVIDIA_POWER_STATE_TRIES       = 40;
+static constexpr uint64_t NVIDIA_POWER_STATE_NS          = 2000000;
 
 // NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer), for the field and for the PHY
 // repeaters' bytes, and its passes, the first and the 3 more (faultyRetries) it makes while the field cannot be read
@@ -123,7 +134,9 @@ public:
         uint32_t   aux_command;
         uint32_t   address;
         uint32_t   size_field;
-        bool       is_zero_but_sent; // every byte but the display id's, command's, address's and size's is 0
+        uint8_t    first_data_byte;
+        bool       is_zero_but_sent;    // every byte but the display id's, command's, address's and size's is 0
+        bool       is_zero_but_written; // the same, the first data byte also sent
     };
 
     call     calls[MAX_CALLS] = {};
@@ -154,6 +167,9 @@ public:
     uint32_t later_reply = NVIDIA_REPLY_ACK;
     uint32_t later_size = 0;
 
+    // How long each AUX request takes to answer
+    uint64_t answer_delay_us = 0;
+
     // What DP_SET_MANUAL_DISPLAYPORT returns, and the subdevice its last request named
     int32_t  manual_result = OK;
     uint32_t manual_subdevice = 0xFFFFFFFF;
@@ -174,6 +190,8 @@ public:
             stray_count++;
             return OK;
         }
+
+        delay::us(answer_delay_us);
 
         if (result != OK && call_count >= failing_call) {
             return result;
@@ -309,8 +327,10 @@ private:
         recorded.aux_command = field_at(bytes, COMMAND_OFFSET);
         recorded.address = field_at(bytes, ADDRESS_OFFSET);
         recorded.size_field = field_at(bytes, SIZE_OFFSET);
+        recorded.first_data_byte = bytes[DATA_OFFSET];
 
         recorded.is_zero_but_sent = true;
+        recorded.is_zero_but_written = true;
         for (size_t i = 0; i < size; i++) {
             bool is_sent = is_in_field(i, DISPLAY_ID_OFFSET)
                 || is_in_field(i, COMMAND_OFFSET)
@@ -318,6 +338,10 @@ private:
                 || is_in_field(i, SIZE_OFFSET);
             if (!is_sent && bytes[i] != 0) {
                 recorded.is_zero_but_sent = false;
+            }
+
+            if (!is_sent && i != DATA_OFFSET && bytes[i] != 0) {
+                recorded.is_zero_but_written = false;
             }
         }
     }
@@ -440,6 +464,14 @@ static int32_t take_logged(dpcd_firmware& fw) {
     log::set_backend(nullptr);
 
     return rc;
+}
+
+// Sets the test display id's monitor to D3 with the log kept
+static void set_d3_logged(dpcd_firmware& fw) {
+    s_dpcd_log_bytes = 0;
+    log::set_backend(&DPCD_LOG_BACKEND);
+    set_monitor_to_d3(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID);
+    log::set_backend(nullptr);
 }
 
 // Has every request at `address` get `answer`
@@ -884,13 +916,128 @@ TEST(nvidia_display_dpcd, other_errors_of_taking_the_displayport_hardware_are_re
     }
 }
 
-// The AUX control, its parameters' size, the most bytes a transaction carries, the read command, the reply types,
-// DP_SET_MANUAL_DISPLAYPORT with its parameters' size, and the DPCD addresses, bit and lengths are NVIDIA's
+// D3 is one native write of 2 at 0x00600 to display common in NVIDIA's layout, zeroed but for the fields it sends, and
+// its acknowledgment ends it and is logged
+TEST(nvidia_display_dpcd, d3_is_one_native_write_of_2_at_0x00600_in_nvidias_layout) {
+    dpcd_firmware fw;
+
+    set_d3_logged(fw);
+
+    ASSERT_EQ(fw.call_count, 1u);
+    EXPECT_EQ(fw.calls[0].object, TEST_DISPLAY_COMMON);
+    EXPECT_EQ(fw.calls[0].command, NVIDIA_DP_AUXCH_CTRL);
+    EXPECT_EQ(fw.calls[0].size, NVIDIA_DP_AUXCH_CTRL_BYTES);
+    EXPECT_EQ(fw.calls[0].display_id, TEST_DISPLAY_ID);
+
+    EXPECT_EQ(fw.calls[0].aux_command, NVIDIA_NATIVE_WRITE);
+    EXPECT_EQ(fw.calls[0].address, NVIDIA_DPCD_SET_POWER);
+    EXPECT_EQ(fw.calls[0].size_field, 0u);
+    EXPECT_EQ(fw.calls[0].first_data_byte, NVIDIA_SET_POWER_VAL_D3_PWRDWN);
+    EXPECT_TRUE(fw.calls[0].is_zero_but_written);
+
+    EXPECT_TRUE(dpcd_log_contains("nvidia: display id 0x100's monitor took D3 over AUX"));
+}
+
+// A write with no acknowledgment of its one byte is sent, one request a try, until at least 40 tries and 2 ms have
+// passed, and the last answer is logged: the firmware's refusal, the monitor's reply or the reply size
+TEST(nvidia_display_dpcd, an_unacknowledged_d3_write_is_sent_for_40_tries_and_2_ms_then_logged) {
+    const failing_answer answers[] = {
+        {ERR_FIRMWARE, NVIDIA_REPLY_ACK, 0, true, "refused display id 0x100's AUX write of D3 at 0x00600 "},
+        {OK, NVIDIA_REPLY_NACK, 0, true, "0x00600 ended with a refusal from its monitor (reply type 1) after "},
+        {OK, NVIDIA_REPLY_DEFER, 0, true, "ended with a request to ask again later from its monitor (reply type 2)"},
+        {OK, NVIDIA_REPLY_ACK, 0, true, "acknowledged the AUX write of D3 at 0x00600 with a reply size of 0 bytes"},
+        {OK, NVIDIA_REPLY_ACK, 2, true, "acknowledged the AUX write of D3 at 0x00600 with a reply size of 2 bytes"},
+    };
+
+    for (const failing_answer& answer : answers) {
+        dpcd_firmware fw;
+        script_every_request(fw, NVIDIA_DPCD_SET_POWER, answer);
+
+        uint64_t start_ns = clock::now_ns();
+        set_d3_logged(fw);
+        uint64_t elapsed_ns = clock::now_ns() - start_ns;
+
+        EXPECT_GE(fw.call_count, NVIDIA_POWER_STATE_TRIES);
+        EXPECT_GE(elapsed_ns, NVIDIA_POWER_STATE_NS);
+        EXPECT_TRUE(dpcd_log_contains(answer.logged));
+        EXPECT_FALSE(dpcd_log_contains("took D3"));
+    }
+}
+
+// An answer delay at which 40 tries take twice the 2 ms a power state write spends at least
+static constexpr uint64_t SLOW_ANSWER_US = 2 * NVIDIA_POWER_STATE_NS / NVIDIA_POWER_STATE_TRIES / 1000;
+
+// Answers slow enough that 40 tries outlast 2 ms end the write at its 40th try, the least NVIDIA's library makes
+TEST(nvidia_display_dpcd, a_slowly_answered_d3_write_is_sent_40_times) {
+    dpcd_firmware fw;
+    fw.answer_delay_us = SLOW_ANSWER_US;
+    fw.scripted_address = NVIDIA_DPCD_SET_POWER;
+    fw.scripted_requests = EVERY_REQUEST;
+    fw.scripted_reply = NVIDIA_REPLY_DEFER;
+
+    set_d3_logged(fw);
+
+    EXPECT_EQ(fw.call_count, NVIDIA_POWER_STATE_TRIES);
+    EXPECT_TRUE(dpcd_log_contains("(reply type 2) after 40 tries"));
+}
+
+// An acknowledgment after unacknowledged tries ends them, each try zeroed but for the fields it sends
+TEST(nvidia_display_dpcd, a_d3_write_acknowledged_after_deferrals_is_sent_no_more) {
+    dpcd_firmware fw;
+    fw.scripted_address = NVIDIA_DPCD_SET_POWER;
+    fw.scripted_requests = 3;
+    fw.scripted_reply = NVIDIA_REPLY_DEFER;
+
+    set_d3_logged(fw);
+
+    EXPECT_EQ(fw.call_count, 4u);
+    EXPECT_TRUE(dpcd_log_contains("nvidia: display id 0x100's monitor took D3 over AUX"));
+    for (uint32_t index = 0; index < fw.call_count; index++) {
+        EXPECT_TRUE(fw.calls[index].is_zero_but_written);
+    }
+}
+
+// An answer delay at which 40 tries take half the 2 ms a power state write spends at least
+static constexpr uint64_t QUICK_ANSWER_US = NVIDIA_POWER_STATE_NS / NVIDIA_POWER_STATE_TRIES / 2 / 1000;
+
+// Answers quick enough that 40 tries end before 2 ms have passed stop the write once they have, so a try lasting at
+// least the answer delay bounds the tries from above
+TEST(nvidia_display_dpcd, a_quickly_answered_d3_write_stops_once_2_ms_have_passed) {
+    dpcd_firmware fw;
+    fw.answer_delay_us = QUICK_ANSWER_US;
+    fw.scripted_address = NVIDIA_DPCD_SET_POWER;
+    fw.scripted_requests = EVERY_REQUEST;
+    fw.scripted_reply = NVIDIA_REPLY_DEFER;
+
+    set_d3_logged(fw);
+
+    EXPECT_GE(fw.call_count, NVIDIA_POWER_STATE_TRIES);
+    EXPECT_LE(fw.call_count, NVIDIA_POWER_STATE_NS / (QUICK_ANSWER_US * 1000) + 1);
+}
+
+// Any other error of a write ends the tries and is logged
+TEST(nvidia_display_dpcd, other_errors_of_a_d3_write_end_its_tries_and_are_logged) {
+    const int32_t errors[] = {ERR_TIMEOUT, ERR_QUEUE_FULL, ERR_BAD_MESSAGE, ERR_NO_MEMORY, ERR_TOO_LARGE};
+    for (int32_t error : errors) {
+        dpcd_firmware fw;
+        fw.result = error;
+
+        set_d3_logged(fw);
+
+        EXPECT_EQ(fw.call_count, 1u);
+        EXPECT_TRUE(dpcd_log_contains("nvidia: display id 0x100's AUX write of D3 at 0x00600 failed: "));
+        EXPECT_FALSE(dpcd_log_contains("took D3"));
+    }
+}
+
+// The AUX control, its parameters' size, the most bytes a transaction carries, the read and write commands, the reply
+// types, DP_SET_MANUAL_DISPLAYPORT with its parameters' size, and the DPCD addresses, bit and lengths are NVIDIA's
 TEST(nvidia_display_dpcd, displayport_constants_are_nvidias) {
     EXPECT_EQ(rm::CONTROL_DP_AUX, NVIDIA_DP_AUXCH_CTRL);
     EXPECT_EQ(sizeof(rm::aux_params), NVIDIA_DP_AUXCH_CTRL_BYTES);
     EXPECT_EQ(rm::AUX_DATA_MAX_BYTES, DATA_BYTES);
     EXPECT_EQ(rm::AUX_COMMAND_DPCD_READ, NVIDIA_NATIVE_READ);
+    EXPECT_EQ(rm::AUX_COMMAND_DPCD_WRITE, NVIDIA_NATIVE_WRITE);
 
     EXPECT_EQ(rm::AUX_REPLY_ACK, NVIDIA_REPLY_ACK);
     EXPECT_EQ(rm::AUX_REPLY_NACK, NVIDIA_REPLY_NACK);

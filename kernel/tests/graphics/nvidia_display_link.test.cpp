@@ -24,6 +24,7 @@ using drivers::nvidia::firmware;
 using drivers::nvidia::OK;
 using drivers::nvidia::output_link;
 using drivers::nvidia::phy_repeater_count;
+using drivers::nvidia::power_down_link;
 using drivers::nvidia::read_link_capabilities;
 using drivers::nvidia::read_link_status;
 using drivers::nvidia::set_stream_attributes;
@@ -65,6 +66,7 @@ static constexpr uint32_t CAPS_PHY_REPEATER_OFFSET  = 26;
 // NVIDIA's NV0073_CTRL_CMD_DP_CTRL and its parameters' size and offsets
 static constexpr uint32_t NVIDIA_DP_CTRL            = 0x731343;
 static constexpr size_t   NVIDIA_DP_CTRL_BYTES      = 28;
+static constexpr uint32_t CTRL_DISPLAY_ID_OFFSET    = 4;
 static constexpr uint32_t CTRL_CMD_OFFSET           = 8;
 static constexpr uint32_t CTRL_DATA_OFFSET          = 12;
 static constexpr uint32_t CTRL_RETRY_TIME_OFFSET    = 20;
@@ -99,12 +101,25 @@ static constexpr uint32_t MSA_DEBUG_VALUES_OFFSET               = 52;
 static constexpr uint8_t  NVIDIA_MISC1_STEREO                   = 0x06;
 
 // NVIDIA's NV0073_CTRL_CMD_DP_AUXCH_CTRL, its parameters' offsets and the most data bytes a read gives
-static constexpr uint32_t NVIDIA_DP_AUXCH_CTRL = 0x731341;
-static constexpr uint32_t AUX_ADDRESS_OFFSET   = 16;
-static constexpr uint32_t AUX_DATA_OFFSET      = 20;
-static constexpr uint32_t AUX_SIZE_OFFSET      = 36;
-static constexpr uint32_t AUX_REPLY_OFFSET     = 40;
-static constexpr size_t   AUX_DATA_BYTES       = 16;
+static constexpr uint32_t NVIDIA_DP_AUXCH_CTRL  = 0x731341;
+static constexpr uint32_t AUX_DISPLAY_ID_OFFSET = 4;
+static constexpr uint32_t AUX_COMMAND_OFFSET    = 12;
+static constexpr uint32_t AUX_ADDRESS_OFFSET    = 16;
+static constexpr uint32_t AUX_DATA_OFFSET       = 20;
+static constexpr uint32_t AUX_SIZE_OFFSET       = 36;
+static constexpr uint32_t AUX_REPLY_OFFSET      = 40;
+static constexpr size_t   AUX_DATA_BYTES        = 16;
+
+// NVIDIA's DP_CTRL command bits setting the lane count and the link rate, alone, and its native write of
+// NV_DPCD_SET_POWER_VAL_D3_PWRDWN at NV_DPCD_SET_POWER, which sets a monitor to D3
+static constexpr uint32_t NVIDIA_SET_LANES_AND_RATE = 0x3;
+static constexpr uint32_t NVIDIA_NATIVE_WRITE       = 0x8;
+static constexpr uint32_t NVIDIA_DPCD_SET_POWER     = 0x00600;
+static constexpr uint8_t  NVIDIA_D3_PWRDWN          = 2;
+
+// The data for zero lanes at HBR2 toward the sink, which display common took on the card after refusing zero lanes at
+// rate 0
+static constexpr uint32_t ZERO_HBR2_LANES_DATA = 0x1400;
 
 // The display common object and display id the tests use, the card's output 0's
 static constexpr rm::handle TEST_DISPLAY_COMMON = 0x0005000B;
@@ -1178,4 +1193,160 @@ TEST(nvidia_display_link, gives_no_status_when_its_read_is_refused) {
     EXPECT_FALSE(is_read);
     EXPECT_EQ(refusing.call_count, 1u);
     EXPECT_TRUE(link_log_contains("nvidia: display common refused display id 0x100's 3-byte AUX read at 0x0200C, so "));
+}
+
+// Powers down the test display id's link at `rate` with the log kept
+static int32_t power_down_logged(
+    link_firmware& fw,
+    bool sets_monitor_to_d3,
+    bool may_run_fec,
+    displayport::link_rate rate = displayport::link_rate::hbr2
+) {
+    s_link_log_bytes = 0;
+    log::set_backend(&LINK_LOG_BACKEND);
+    int32_t rc = power_down_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, rate, sets_monitor_to_d3, may_run_fec);
+    log::set_backend(nullptr);
+
+    return rc;
+}
+
+// Whether `recorded` is NVIDIA's native write of D3 to the test display id's monitor, one byte of 2 at 0x00600
+static bool is_d3_write(const link_firmware::call& recorded) {
+    bool is_aux = recorded.command == NVIDIA_DP_AUXCH_CTRL;
+    bool is_test_display = read_u32(recorded.params, AUX_DISPLAY_ID_OFFSET) == TEST_DISPLAY_ID;
+    bool is_write = read_u32(recorded.params, AUX_COMMAND_OFFSET) == NVIDIA_NATIVE_WRITE;
+    bool is_aux_write = is_aux && is_test_display && is_write;
+
+    bool is_one_byte = read_u32(recorded.params, AUX_SIZE_OFFSET) == 0;
+    bool is_d3 = recorded.params[AUX_DATA_OFFSET] == NVIDIA_D3_PWRDWN;
+    bool is_at_power_state = read_u32(recorded.params, AUX_ADDRESS_OFFSET) == NVIDIA_DPCD_SET_POWER;
+    return is_aux_write && is_one_byte && is_d3 && is_at_power_state;
+}
+
+// Whether `recorded` is NVIDIA's training of the test display id's link to zero lanes at HBR2 toward the sink: the
+// lane count and rate bits alone, with `ZERO_HBR2_LANES_DATA`
+static bool is_zero_lane_training(const link_firmware::call& recorded) {
+    bool is_training = recorded.command == NVIDIA_DP_CTRL && recorded.size == NVIDIA_DP_CTRL_BYTES;
+    bool is_lanes_and_rate = read_u32(recorded.params, CTRL_CMD_OFFSET) == NVIDIA_SET_LANES_AND_RATE;
+    bool is_zero_lanes = read_u32(recorded.params, CTRL_DATA_OFFSET) == ZERO_HBR2_LANES_DATA;
+    bool is_test_display = read_u32(recorded.params, CTRL_DISPLAY_ID_OFFSET) == TEST_DISPLAY_ID;
+    return is_training && is_lanes_and_rate && is_zero_lanes && is_test_display;
+}
+
+// Without FEC the monitor is set to D3 before its link is trained to zero lanes, and on a link that may run FEC after
+// it, each step logged
+TEST(nvidia_display_link, powers_a_link_down_with_d3_before_zero_lanes_or_after_them_when_it_may_run_fec) {
+    link_firmware without_fec;
+    power_down_logged(without_fec, true, false);
+
+    ASSERT_EQ(without_fec.call_count, 2u);
+    EXPECT_TRUE(is_d3_write(without_fec.calls[0]));
+    EXPECT_TRUE(is_zero_lane_training(without_fec.calls[1]));
+    EXPECT_TRUE(link_log_contains("nvidia: display id 0x100's monitor took D3 over AUX"));
+    EXPECT_TRUE(link_log_contains(
+        "nvidia: display common trained display id 0x100's link to zero lanes at DisplayPort rate 0x14"
+    ));
+
+    link_firmware with_fec;
+    power_down_logged(with_fec, true, true);
+
+    ASSERT_EQ(with_fec.call_count, 2u);
+    EXPECT_TRUE(is_zero_lane_training(with_fec.calls[0]));
+    EXPECT_TRUE(is_d3_write(with_fec.calls[1]));
+}
+
+// A monitor not to be set to D3 gets no AUX write, its link trained to zero lanes alone
+TEST(nvidia_display_link, powers_a_link_down_without_d3_when_its_monitor_is_not_set_to_d3) {
+    const bool fec_states[] = {false, true};
+    for (bool may_run_fec : fec_states) {
+        link_firmware fw;
+        power_down_logged(fw, false, may_run_fec);
+
+        ASSERT_EQ(fw.call_count, 1u);
+        EXPECT_TRUE(is_zero_lane_training(fw.calls[0]));
+        EXPECT_FALSE(link_log_contains("D3"));
+    }
+}
+
+// The training to zero lanes names the rate it is given, toward the sink, and its log line gives the rate's code
+TEST(nvidia_display_link, powers_a_link_down_at_the_rate_it_is_given) {
+    struct rate_case {
+        displayport::link_rate rate;
+        uint32_t               data;
+        const char*            logged;
+    };
+
+    const rate_case cases[] = {
+        {displayport::link_rate::rbr, 0x0600, "to zero lanes at DisplayPort rate 0x06"},
+        {displayport::link_rate::hbr, 0x0A00, "to zero lanes at DisplayPort rate 0x0A"},
+        {displayport::link_rate::hbr2, ZERO_HBR2_LANES_DATA, "to zero lanes at DisplayPort rate 0x14"},
+        {displayport::link_rate::hbr3, 0x1E00, "to zero lanes at DisplayPort rate 0x1E"},
+    };
+
+    for (const rate_case& tried : cases) {
+        link_firmware fw;
+        power_down_logged(fw, false, true, tried.rate);
+
+        ASSERT_EQ(fw.call_count, 1u);
+        EXPECT_EQ(read_u32(fw.calls[0].params, CTRL_CMD_OFFSET), NVIDIA_SET_LANES_AND_RATE);
+        EXPECT_EQ(read_u32(fw.calls[0].params, CTRL_DATA_OFFSET), tried.data);
+        EXPECT_TRUE(link_log_contains("nvidia: display common trained display id 0x100's link to zero lanes"));
+        EXPECT_TRUE(link_log_contains(tried.logged));
+    }
+}
+
+// A refused training is logged and D3 still follows it, and a write of D3 refused every try is logged and the training
+// still follows it, while a failed training or write is logged and ends the power-down with its error
+TEST(nvidia_display_link, logs_a_refused_or_failed_power_down_step_and_takes_the_next_only_after_a_refusal) {
+    link_firmware refused_training;
+    refused_training.refused_command = NVIDIA_DP_CTRL;
+    EXPECT_EQ(power_down_logged(refused_training, true, true), OK);
+
+    ASSERT_EQ(refused_training.call_count, 2u);
+    EXPECT_TRUE(is_d3_write(refused_training.calls[1]));
+    EXPECT_TRUE(link_log_contains(
+        "nvidia: display common refused to train display id 0x100's link to zero lanes at DisplayPort rate 0x14"
+    ));
+    EXPECT_FALSE(link_log_contains("nvidia: display common trained display id 0x100's link to zero lanes"));
+
+    link_firmware failed_training;
+    failed_training.refused_command = NVIDIA_DP_CTRL;
+    failed_training.refusal = ERR_TIMEOUT;
+    EXPECT_EQ(power_down_logged(failed_training, true, true), ERR_TIMEOUT);
+
+    ASSERT_EQ(failed_training.call_count, 1u);
+    EXPECT_TRUE(is_zero_lane_training(failed_training.calls[0]));
+    EXPECT_TRUE(link_log_contains(
+        "nvidia: training display id 0x100's link to zero lanes at DisplayPort rate 0x14 failed: "
+    ));
+    EXPECT_FALSE(link_log_contains("nvidia: display common trained display id 0x100's link to zero lanes"));
+    EXPECT_FALSE(link_log_contains("D3"));
+
+    link_firmware failed_write;
+    failed_write.refused_command = NVIDIA_DP_AUXCH_CTRL;
+    failed_write.refusal = ERR_TIMEOUT;
+    EXPECT_EQ(power_down_logged(failed_write, true, false), ERR_TIMEOUT);
+
+    ASSERT_EQ(failed_write.call_count, 1u);
+    EXPECT_TRUE(is_d3_write(failed_write.calls[0]));
+    EXPECT_TRUE(link_log_contains("nvidia: display id 0x100's AUX write of D3 at 0x00600 failed: "));
+    EXPECT_FALSE(link_log_contains("zero lanes"));
+
+    link_firmware failed_write_after_training;
+    failed_write_after_training.refused_command = NVIDIA_DP_AUXCH_CTRL;
+    failed_write_after_training.refusal = ERR_TIMEOUT;
+    EXPECT_EQ(power_down_logged(failed_write_after_training, true, true), ERR_TIMEOUT);
+
+    ASSERT_EQ(failed_write_after_training.call_count, 2u);
+    EXPECT_TRUE(is_zero_lane_training(failed_write_after_training.calls[0]));
+    EXPECT_TRUE(is_d3_write(failed_write_after_training.calls[1]));
+    EXPECT_TRUE(link_log_contains("nvidia: display id 0x100's AUX write of D3 at 0x00600 failed: "));
+
+    link_firmware refused_write;
+    refused_write.refused_command = NVIDIA_DP_AUXCH_CTRL;
+    EXPECT_EQ(power_down_logged(refused_write, true, false), OK);
+
+    EXPECT_GT(refused_write.call_count, 40u);
+    EXPECT_TRUE(link_log_contains("nvidia: display common refused display id 0x100's AUX write of D3 at 0x00600 "));
+    EXPECT_TRUE(link_log_contains("nvidia: display common trained display id 0x100's link to zero lanes"));
 }

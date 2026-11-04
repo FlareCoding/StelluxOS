@@ -14,6 +14,7 @@ using drivers::nvidia::connector_link_limits;
 using drivers::nvidia::display_output;
 using drivers::nvidia::dpcd_capabilities;
 using drivers::nvidia::is_at_least_revision_1_0;
+using drivers::nvidia::is_at_least_revision_1_1;
 using drivers::nvidia::monitor_link_limits;
 using drivers::nvidia::output_link_facts;
 using drivers::nvidia::takes_enhanced_framing;
@@ -33,10 +34,11 @@ struct lanes_case {
     uint8_t lanes;
 };
 
-// A receiver capability field's revision byte and whether it gives revision 1.0 or later
+// A receiver capability field's revision byte and whether it gives revision 1.0 or later, and 1.1 or later
 struct revision_case {
     uint8_t revision;
     bool    is_at_least_1_0;
+    bool    is_at_least_1_1;
 };
 
 // DisplayPort's rate codes as NVIDIA's DPCD headers give them, restated so the tests hold the parse to NVIDIA's values
@@ -356,16 +358,16 @@ TEST(nvidia_display_link_limits, unknown_phy_repeater_rate_counts_as_hbr) {
     }
 }
 
-// Revision bytes and whether each gives revision 1.0 or later: the major revision in bits 7 to 4 decides, so 0.15 is
-// below 1.0 however high its minor revision, as NVIDIA's revision test compares the major revision first
+// Revision bytes and whether each gives revision 1.0 or later and 1.1 or later, the major revision in bits 7 to 4
+// deciding first, so 0.15 is below 1.0 however high its minor revision, as NVIDIA's revision test compares it first
 static constexpr revision_case RECEIVER_REVISIONS[] = {
-    {0x00, false},
-    {0x04, false},
-    {0x0F, false},
-    {0x10, true},
-    {0x11, true},
-    {0x14, true},
-    {0x20, true},
+    {0x00, false, false},
+    {0x04, false, false},
+    {0x0F, false, false},
+    {0x10, true, false},
+    {0x11, true, true},
+    {0x14, true, true},
+    {0x20, true, true},
 };
 
 TEST(nvidia_display_link_limits, revision_1_0_or_later_follows_the_major_revision) {
@@ -374,6 +376,15 @@ TEST(nvidia_display_link_limits, revision_1_0_or_later_follows_the_major_revisio
         dpcd.receiver[0] = entry.revision;
 
         EXPECT_EQ(is_at_least_revision_1_0(dpcd), entry.is_at_least_1_0);
+    }
+}
+
+TEST(nvidia_display_link_limits, revision_1_1_or_later_follows_the_major_then_the_minor_revision) {
+    for (const revision_case& entry : RECEIVER_REVISIONS) {
+        dpcd_capabilities dpcd = monitor_dpcd(NVIDIA_HBR3, 0x84, nullptr);
+        dpcd.receiver[0] = entry.revision;
+
+        EXPECT_EQ(is_at_least_revision_1_1(dpcd), entry.is_at_least_1_1);
     }
 }
 

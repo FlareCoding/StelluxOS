@@ -67,6 +67,15 @@ struct scanout_buffer : gfxfb::buffer {
 };
 
 /**
+ * What powering down each output's link takes, read from its connector and its
+ * monitor's DPCD.
+ */
+struct power_down_facts {
+    uint32_t               d3_outputs;             // a bit for each output whose DPCD read gives revision 1.1 or later
+    displayport::link_rate rates[DISPLAY_IDS_MAX]; // each output's highest link rate, named by its zero-lane training
+};
+
+/**
  * The card's display engine as the driver sets it up, the part of the GPU that
  * reads images from memory and sends them to monitors. The driver object holds
  * one for its life, sets it up in `attach()` once the driver's device is
@@ -161,273 +170,15 @@ public:
     display_engine& operator=(const display_engine&) = delete;
 
     /**
-     * @brief Read the heads and windows this GPU has with
-     * `read_present_heads_and_windows` and log them, the windows with the
-     * chip's window count, set up the instance memory with
-     * `instance_memory::set_up` and log where it lies in video memory,
-     * allocate the display's objects under `device` with
-     * `allocate_display_objects` and log their handles, then read their
-     * capabilities with `read_display_capabilities` and log whether display
-     * common reports a crossbar, then the heads and each window's head with
-     * `read_display_heads`, logging the heads the display engine is left, with
-     * the windows serving each, then the supported and connected display ids,
-     * each supported one's kind and whether each digital one is dynamic with
-     * `read_display_ids`, logging the supported, connected, digital and static
-     * digital ones, then each static digital one's digital facts with
-     * `read_display_outputs`, logging the outputs with their facts and the
-     * most lanes and the highest rate `connector_link_limits` gives for a link
-     * on each one's connector, the rate capped by the chip's highest, then,
-     * when there are outputs, take the DisplayPort hardware from the firmware
-     * with `take_displayport_from_firmware` and log it, then for each
-     * connected output's monitor its EDID (the monitor's description of
-     * itself, with the timings it accepts) with `read_output_edid` into one
-     * `edid::monitor` on the unprivileged heap, logging the maker, name and
-     * timings of an EDID that parses, then the monitor's DPCD capabilities
-     * (the link limits a DisplayPort monitor's registers report) and, when the
-     * GPU trains PHY repeaters, those of any PHY repeater between the card and
-     * the monitor with `read_output_dpcd`, and if it reads the monitor's, log
-     * their bytes, the most lanes and the highest rate `monitor_link_limits`
-     * gives for a link to the monitor, and whether the monitor takes enhanced
-     * framing, and when the EDID parsed too, log the output's mode, the timing
-     * `find_mode_candidates` ranks first for the output's link facts from
-     * `output_link_facts`, with the lowest link configuration carrying it, or
-     * why the output has none: its monitor's DPCD giving a revision below 1.0,
-     * or no timing kept. When the GPU's links lack FEC support, log once,
-     * before reading any monitor, that no output has a mode, and log no
-     * output's mode. Then allocate the core channel's push buffer in DMA pages
-     * and the core channel under the display with `allocate_core_channel`, and
-     * log its handle, where its push buffer lies and one read of its PUT and
-     * GET. Then allocate the core channel's completion notifier with
-     * `completion_notifier::allocate`, where NVIDIA's modesetting module
-     * allocates it before the push buffer, bind its context DMA to the core
-     * channel under a new handle with `instance_memory::bind`, where that
-     * module binds it after writing the channel's initial methods and frees
-     * the core channel at once when the binding fails, and log the physical
-     * address of the notifier and the context DMA's handle. Then write the
-     * core channel's initial methods, which `core_initial_method` gives, for
-     * the heads read, kicking and waiting for GET to reach PUT whenever the
-     * push buffer has no room, kick the rest with no update, so nothing on
-     * screen changes, wait for GET to reach PUT, and log one read of PUT and
-     * GET with the count of methods written. Then read the display id each
-     * head shows and the link driving that display id with
-     * `read_active_heads`, which takes `has_crossbar` and the chip's serial
-     * links, and log each active head with its display id, its link and the
-     * output `find_shown_output` gives for it, or that the display id names no
-     * output, then the boot head `find_boot_head` gives and the boot output
-     * (the output it shows), or that there is none. Then choose the output to
-     * light first and its mode with `choose_first_light`, asking the bandwidth
-     * check about each mode in turn, trying first the boot output, else output
-     * 0, on the boot head, else head 0, with that head's lowest window, as
-     * `find_light_target` gives them, and log the choice or why none is made:
-     * no connected output having a mode, every mode being refused, or the
-     * request not being allocated. Then, when an output is chosen, allocate
-     * the channel of its window: check that the chip's heads report output
-     * scalers and that the window is among the present windows read, allocate
-     * a push buffer in DMA pages for the channel, then the channel with
-     * `allocate_window_channel`, and log the channel's handle, where its push
-     * buffer lies and one read of its PUT and GET. The channel takes no
-     * initial method. NVIDIA writes a window channel's scaler coefficients
-     * only for a window reporting an input scaler while no usable head reports
-     * an output scaler, and the chip table says whether the chip's heads
-     * report one. The driver also leaves out the color tables NVIDIA writes
-     * for a window reporting them, since they are curves for HDR monitors.
-     * When the chip's heads report no output scaler, the window is not among
-     * those read, its push buffer's pages cannot be allocated, or a request
-     * for its channel is refused or cannot be allocated, log why the window
-     * has no channel and return `OK`, which leaves the driver attached as when
-     * no output is chosen. Then, once the window has its channel, allocate the
-     * chosen output's base buffer, the mode's rows `base_buffer_pitch` bytes
-     * apart in `vram_use::scanout` video memory 4 KiB aligned (as NVIDIA's
-     * modesetting module aligns the surfaces the display engine scans out),
-     * then map it with `video_memory::map_for_cpu`, clear it to black, unmap
-     * it with `video_memory::unmap_for_cpu`, which completes the writes, and
-     * log where it lies with its rows and pitch. Then bind its context DMA to
-     * the window's channel under a new handle with `instance_memory::bind`,
-     * naming its video memory, and log the handle, where NVIDIA's modesetting
-     * module binds each surface's context DMA to the core channel and every
-     * window's channel. Then map the bound base buffer for the CPU again,
-     * keeping that mapping while the driver is attached, for userland to draw
-     * through as gfxfb's base buffer, and log its physical address in BAR1.
-     * Then allocate the look-up table surface, `LOOK_UP_TABLE_SURFACE_BYTES`
-     * of `vram_use::general` video memory 4 KiB aligned, as NVIDIA's
-     * modesetting module allocates it, write each of its words as
-     * `look_up_table_word` gives it through a mapping for the CPU, unmap it,
-     * log where it lies, then bind its context DMA under a new handle to the
-     * core channel, whose heads read its output table, and then to the
-     * window's channel, as that module binds it, naming its whole pages, where
-     * that module's context DMA ends at the table's last byte, and log the
-     * handle. When a surface's memory cannot be allocated, mapping it to write
-     * it finds no room or its binding finds no room in the instance memory or
-     * in the mapping it writes through, log why the output has no base buffer
-     * or the display engine no look-up table surface and return `OK`,
-     * releasing the memory after a failed mapping or binding, since nothing
-     * names it then. A failed binding of the table to the window's channel
-     * first undoes the table's binding to the core channel. When undoing it
-     * fails, the memory stays allocated and still bound to the core channel,
-     * logged as such, and the engine keeps neither the table nor its context
-     * DMA. The set-up then returns `OK` only when both found no room. When the
-     * base buffer's mapping for userland finds no room, or maps it at no
-     * physical address, after which it is unmapped, log that the output cannot
-     * light and return `OK`, the memory staying bound. Then give the lit head
-     * a cursor and log it: its channel, as `cursor_channel::allocate`
-     * allocates it, and 256 KiB of video memory for its picture, mapped for
-     * the CPU and bound to the core channel. When the head is not present, its
-     * channel is refused or cannot be allocated, or the memory, its mapping or
-     * its binding finds no room, log why and go on without a cursor, releasing
-     * the memory after a failed mapping or binding. Then ask the display for
-     * the core channel's state with `wait_core_channel_idle` until the
-     * firmware reports the channel idle or more than
-     * `CORE_CHANNEL_IDLE_WAIT_NS` has passed since the first reply, and log
-     * which of the two ended the wait. Then read each present window's
-     * owner from the core channel's armed state with `read_window_owners`, and
-     * log each one's owner. Then bring the display engine up for the chosen
-     * output in a mode set (the programming of heads to drive monitors): send
-     * display common the start of the mode set naming the output's display id,
-     * and when a head is active, send the shutdown update (the methods
-     * `build_shutdown_methods` gives with the windows' heads, the completion
-     * notifier cleared and an update naming it with no channel interlocked),
-     * wait for the notifier with
-     * `completion_notifier::wait_finished` for `COMPLETION_NOTIFIER_WAIT_NS`,
-     * stop later updates from writing the notifier, and log that the core
-     * channel read the update, with each active head's display id and link
-     * control as the armed state reads them. When a method's write, the
-     * notifier's wait or the stop of its writes fails, take the engine down:
-     * the same methods again, with the windows' heads only when no update was
-     * kicked, an update naming no notifier and a wait for GET to reach PUT,
-     * logging whether the take-down succeeds. Once the core channel has read
-     * the shutdown update, or with no head active, make the output's
-     * DisplayPort link ready with `set_up_output_link`: assign the display id
-     * an output resource when display common reports a crossbar, read the
-     * resource's DisplayPort facts, train the link at the lowest configuration
-     * carrying the mode under them, check the training against the link's
-     * status bytes, then program the head's stream and the stream's attributes
-     * on the link, logging each step. When a step fails, the steps after it
-     * are not taken: log that the link is not set up and take the engine down
-     * the same way, except that a refused override of the stream's attributes,
-     * the last step, leaves the link set up with the attributes the firmware
-     * sets. With the link ready, clear the cursor memory to transparent and
-     * park the cursor where none of it shows, when the head has a cursor, then
-     * light the head: the methods `build_head_light_methods` gives for the
-     * chosen timing, the display id on that link and the head's output table,
-     * which the look-up table surface holds, after the windows' heads when no
-     * update was kicked, then the head's cursor methods, which show the cursor
-     * memory only once the park succeeded, the window's usage bounds and, into
-     * the window's channel, its first image (the base buffer shown through the
-     * look-up table), the notifier cleared and one update naming it and
-     * interlocked with the window channel's update, the core channel kicked
-     * before the window's channel. Wait for the notifier, stop its writes and
-     * log its word with the lit head's display id and link control as the
-     * armed state reads them. When the update is the first kicked and changes
-     * a present window's owner from what the armed state reads, a present
-     * window serving no head always counting as changed, it interlocks no
-     * window and shows no cursor, and the cursor methods, the window's usage
-     * bounds and first image follow in a second update naming no notifier and
-     * awaited by nothing. Either park write finding no room within
-     * `gfxfb::GFXFB_PRESENT_TIMEOUT_NS` lights the head without a cursor,
-     * logged. When the park reads all ones, as a card gone reads, or a write,
-     * the wait or the stop fails, log it and take the engine down the same
-     * way, stopping the lit head too, after the heads found active, and
-     * otherwise mark the chosen output lit under its spinlock. Then send the
-     * mode set's end. A refused start is logged and nothing is written to the
-     * core channel, the set-up returning `OK`, and a refused end is logged,
-     * changing nothing. Each output's modes are kept on the unprivileged heap
-     * from the monitors' reads to the choice, or to `release` when the set-up
-     * fails before it, and of the other facts read only those that gfxfb reads
-     * are kept: the count of outputs up to `gfxfb::GFXFB_OUTPUTS_MAX`, which
-     * ones an active head shows, and the chosen output with its mode once its
-     * base buffer is mapped for userland. Each request spins on the calling
-     * CPU, waiting for its reply as `firmware` describes, and so does each
-     * wait for GET, for at most 5 seconds, and each wait for the completion
-     * notifier, for at most `COMPLETION_NOTIFIER_WAIT_NS`. The requests for
-     * the core channel's state follow one another with no pause while the
-     * firmware reports the channel busy, as `wait_core_channel_idle`
-     * describes. `read_output_edid` also spins before each reread of an EDID
-     * as it describes, and `train_link` for each wait an accepted training
-     * reply asks for. `set_up` must be called at most once, as
-     * `instance_memory::set_up` must, and since it waits on video memory's
-     * lock and on the card as `instance_memory` and `video_memory` describe,
-     * it must never run in an interrupt handler or under a spinlock, and on a
-     * thread that cannot sleep, such as the boot thread, must run only while
-     * no other thread can call into video memory or the firmware.
-     * @param regs The card's BAR0 registers, through which the core channel's
-     * methods are kicked and its PUT, GET and armed state read, and the window
-     * channel's methods kicked and its PUT and GET read. BAR0 must stay mapped
-     * until `release` returns, since the engine keeps a view of each of its
-     * channels' areas until then.
-     * @param card The card's DMA profile, for the push buffer's pages and the
-     * notifiers' pages.
-     * @param chip The chip table's entry for the card's chip, whose display
-     * entry gives the display's limits and classes, whether its heads report
-     * output scalers and what the chip's DisplayPort links can do.
-     * @param device The driver's device, the parent of the display's objects.
-     * @return `OK`, with the firmware holding the instance memory's address,
-     * the display's objects, the core channel and its push buffer's address,
-     * the instance memory binding the completion notifier's context DMA to the
-     * core channel, the display engine having read the core channel's initial
-     * methods, and the firmware having reported only the chip's windows, a
-     * display engine that can reach push buffers, semaphores and notifiers in
-     * system memory, connected display ids among the supported ones, heads
-     * within the chip's, head 0 usable and served, with nonzero masks only for
-     * the chip's windows, each naming one of the chip's heads outside a
-     * flexible mapping, at most one display id shown by each head, each link
-     * read for a head one of the chip's serial links and, without a crossbar,
-     * a link driving each display id shown. Otherwise the error of the first
-     * step that fails, logged as that step describes, such as when the
-     * firmware reports a window the chip lacks, the display engine reaches
-     * push buffers, semaphores and notifiers only in video memory, display
-     * common's report leaves it no head, the firmware refuses to report the
-     * supported or connected display ids or it refuses to name the link
-     * driving a display id a head shows. When the outputs' modes, the
-     * `edid::monitor` or the core channel's push buffer cannot be allocated,
-     * the error is `ERR_NO_MEMORY`, which is logged here, and when the
-     * completion notifier's page cannot, `ERR_NO_MEMORY` too, logged as
-     * `completion_notifier::allocate` describes. When the window notifier's
-     * page or room for its binding cannot be had, the light goes on with
-     * presents unsupported, logged here. Any other refused binding of either
-     * notifier fails the set-up with what `instance_memory::bind` returns,
-     * such as `ERR_BAD_STATE` or `ERR_TIMEOUT` when the card does not take the
-     * instance memory's mapping, logged as it describes. When GET does not
-     * reach PUT within 5 seconds of a kick, the error is `ERR_TIMEOUT`, and
-     * when a read of GET finds it past the push buffer's writable end or not a
-     * multiple of 4, `ERR_BAD_STATE`, each logged as `display_channel`
-     * describes and here. When a request to the bandwidth check fails other
-     * than with `ERR_FIRMWARE` or `ERR_NO_MEMORY`, the set-up fails with its
-     * error, logged as `choose_first_light` describes, and when the window
-     * channel's allocation fails other than with `ERR_FIRMWARE` or
-     * `ERR_NO_MEMORY`, the set-up fails with that error, logged as
-     * `allocate_window_channel` describes. When a surface's allocation,
-     * mapping or binding fails other than with `ERR_NO_MEMORY`, the set-up
-     * fails with that error, logged here and as `video_memory` or
-     * `instance_memory::bind` describes, the memory released after a failed
-     * mapping or binding unless undoing the table's binding to the core
-     * channel fails. When that undoing fails after the window's binding found
-     * no room, the set-up fails with the undoing's error unless it is
-     * `ERR_NO_MEMORY`, logged here and as `instance_memory::unbind` describes.
-     * The base buffer stays bound, though, after its mapping for userland
-     * fails. When the cursor channel's allocation fails other than with
-     * `ERR_INVALID_ARG`, `ERR_FIRMWARE` or `ERR_NO_MEMORY`, the set-up fails
-     * with that error, logged as `firmware` describes, and when the cursor
-     * memory's allocation, mapping or binding fails other than with
-     * `ERR_NO_MEMORY`, with that error, logged here and as `video_memory` or
-     * `instance_memory::bind` describes, the memory released after a failed
-     * mapping or binding. When a request for the core channel's state fails
-     * other than with `ERR_FIRMWARE`, the set-up fails with its error, logged
-     * as `wait_core_channel_idle` describes. When the mode set's start or end
-     * fails other than with `ERR_FIRMWARE`, the set-up fails with its error,
-     * logged as `firmware::control` describes. When a request for the chosen
-     * output's link fails other than with `ERR_FIRMWARE`, the set-up fails
-     * with its error, logged as `firmware::control` describes, after the
-     * take-down and the mode set's end, whose own failure then changes
-     * nothing. A failed shutdown update, light or take-down, or a link left
-     * not set up otherwise, is logged and does not fail the set-up, which then
-     * returns `OK` unless the mode set's end fails other than with
-     * `ERR_FIRMWARE`. The display's objects and the channels stay allocated
-     * once allocated, even after a later step fails, until `release`, the
-     * completion notifier stays bound to the core channel once bound, the
-     * window notifier and each surface to the window's channel, and the
-     * look-up table surface to the core channel as well unless the set-up
-     * undoes that binding after a failed binding to the window's channel. The
-     * cursor memory stays mapped and bound to the core channel once bound.
+     * @brief Light one connected monitor with a black base buffer at the first
+     * mode the bandwidth check accepts, powering down the link of each other
+     * output the boot firmware lit once the shutdown update stops its heads.
+     * Call it once, outside interrupts and spinlocks, while nothing else uses
+     * video memory or the firmware, with `regs` mapped until `release` returns.
+     * @return `OK`, also when nothing lights, else the logged error that ended
+     * the set-up: a refused binding, before the choice a refused request it
+     * needs or no memory, or a request or wait failing other than by a refusal
+     * or, before the core channel's idle wait, no room, but no failed update.
      */
     int32_t set_up(
         registers& regs,
@@ -453,7 +204,7 @@ public:
      * the hardware kept as it is, so the heads the boot firmware lit keep
      * scanning out the boot framebuffer, and once one has, without keeping it,
      * since the update changed the boot firmware's state. Its requests spin on
-     * the calling CPU as `set_up`'s do.
+     * the calling CPU, each waiting for its reply as `firmware` describes.
      * @return `OK` when every release succeeds or nothing is allocated, else
      * the error of the first release to fail in that order, each logged as the
      * release describes. The channels and the objects are released whatever an
@@ -699,7 +450,7 @@ private:
     static void check_latch(timer::deadline_timer* timer);
     static void expire_deadline(timer::deadline_timer* timer);
 
-    // Brings the engine up for the chosen output as `set_up` describes, from the mode set's start to its end
+    // Brings the engine up for the chosen output, from the mode set's start to its end
     int32_t bring_up(
         registers& regs,
         const display_heads& heads,
@@ -707,7 +458,8 @@ private:
         const window_owners& owners,
         const active_heads& active,
         bool has_crossbar,
-        const display_output& output,
+        const display_outputs& outputs,
+        const power_down_facts& power_down,
         const dpcd_capabilities& dpcd,
         const first_light& light
     );
@@ -724,8 +476,8 @@ private:
         const active_heads& active
     );
 
-    // Allocates the lit head's cursor channel and the chosen output's cursor memory, mapped and bound as `set_up`
-    // describes, or returns `OK` with why the head has no cursor logged, else the error of the call that failed
+    // Allocates the lit head's cursor channel and the chosen output's cursor memory, mapped for the CPU and bound to
+    // the core channel, or returns `OK`, logged, for an absent head, a refused channel or no room, else the error
     int32_t set_up_cursor(
         registers& regs,
         const chip_display& display,
@@ -741,8 +493,8 @@ private:
     // image into its own channel, naming the base buffer and look-up table by context DMAs `set_up` bound, never 0
     int32_t write_first_image(uint8_t window, const head_light& light, rm::handle cursor_context_dma);
 
-    // Clears and parks the cursor with `prepare_cursor`, then lights `light` with `window`'s first image as `set_up`
-    // describes and logs what the armed state reads, giving in `shows_cursor_memory` whether it shows the cursor memory
+    // Parks any cursor, then lights `light` with `window`'s first image, in two updates when the engine's first update
+    // changes a window's owner, a window serving no head counting, logs the armed state and sets `shows_cursor_memory`
     int32_t light_head(
         const registers& regs,
         const display_heads& heads,

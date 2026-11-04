@@ -240,15 +240,18 @@ static void keep_output_modes(
     );
 }
 
-// Reads each connected output's EDID and DPCD capabilities, logs them and its mode, and keeps its modes in `modes`, the
-// EDID parsed into one `edid::monitor`, both on the unprivileged heap, as the stack cannot hold them
+// Reads and logs each connected output's EDID, DPCD capabilities and mode, keeping its modes in `modes`, each EDID read
+// into one `edid::monitor`, too big for the stack, on the unprivileged heap, and fills `power_down` for every output
 static int32_t read_connected_monitors(
     firmware& fw,
     rm::handle display_common,
     const chip_displayport& gpu,
     const display_outputs& outputs,
-    output_modes*& modes
+    output_modes*& modes,
+    power_down_facts& power_down
 ) {
+    power_down = {};
+
     if (!gpu.fec_supported) {
         log::info("nvidia: no output has a mode, as the GPU's links lack FEC support");
     }
@@ -274,6 +277,8 @@ static int32_t read_connected_monitors(
     int32_t rc = OK;
     for (uint8_t index = 0; index < outputs.count; index++) {
         const display_output& output = outputs.outputs[index];
+        power_down.rates[index] = connector_link_limits(output, gpu.max_rate).max_rate;
+
         if (!output.is_connected) {
             continue;
         }
@@ -298,6 +303,15 @@ static int32_t read_connected_monitors(
         if (is_read) {
             log_dpcd(index, dpcd);
             log_monitor_link_limits(index, dpcd);
+
+            displayport::link_rate monitor_rate = monitor_link_limits(dpcd).max_rate;
+            if (static_cast<uint8_t>(monitor_rate) < static_cast<uint8_t>(power_down.rates[index])) {
+                power_down.rates[index] = monitor_rate;
+            }
+        }
+
+        if (is_read && is_at_least_revision_1_1(dpcd)) {
+            power_down.d3_outputs |= 1u << index;
         }
 
         if (is_parsed && is_read && gpu.fec_supported) {
@@ -546,8 +560,8 @@ static int32_t allocate_push_buffer(const dma::device_profile& card, dma::buffer
     return rc;
 }
 
-// Allocates the chosen window's channel with its push buffer and logs it, or returns `OK` with why the window has no
-// channel logged, for each reason `display_engine::set_up` lists, else the error of the request that failed
+// Allocates and logs the chosen window's channel and push buffer, or logs why it has none and returns `OK` (heads with
+// no output scaler, the window not present, no room or a refused request), else the failed request's error
 static int32_t set_up_window_channel(
     firmware& fw,
     registers& regs,
@@ -1251,6 +1265,44 @@ static uint8_t count_active_heads(const active_heads& active) {
     return count;
 }
 
+// Powers down the link of each output in `dark_outputs` as `power_down` gives it until one fails. The boot firmware lit
+// each of these links and the driver cannot tell their FEC, so each monitor is set to D3 after its link goes down
+static int32_t power_down_links(
+    firmware& fw,
+    rm::handle display_common,
+    const display_outputs& outputs,
+    uint32_t dark_outputs,
+    const power_down_facts& power_down
+) {
+    for (uint8_t index = 0; index < outputs.count; index++) {
+        uint32_t bit = 1u << index;
+        if ((dark_outputs & bit) == 0) {
+            continue;
+        }
+
+        uint32_t display_id = outputs.outputs[index].display_id;
+        bool sets_monitor_to_d3 = (power_down.d3_outputs & bit) != 0;
+        log::info(
+            "nvidia: output %u stays dark, so bring-up powers down its link, display id 0x%X's%s",
+            index,
+            display_id,
+            sets_monitor_to_d3 ? "" : ", its monitor left out of D3 as no DPCD of revision 1.1 or later was read"
+        );
+
+        int32_t rc = power_down_link(fw, display_common, display_id, power_down.rates[index], sets_monitor_to_d3, true);
+        if (rc != OK) {
+            log::error(
+                "nvidia: display id 0x%X's link is not powered down, nor is the link of any dark output after it, so "
+                "bring-up takes the display engine down",
+                display_id
+            );
+            return rc;
+        }
+    }
+
+    return OK;
+}
+
 // Logs each active head's display id and its link's control as the core channel's armed state reads them, both 0 once
 // the shutdown update took effect
 static void log_heads_after_shutdown(const registers& regs, const active_heads& active) {
@@ -1388,7 +1440,15 @@ int32_t display_engine::set_up(
     bool fits_gfxfb = outputs.count <= gfxfb::GFXFB_OUTPUTS_MAX;
     m_output_count = fits_gfxfb ? outputs.count : static_cast<uint8_t>(gfxfb::GFXFB_OUTPUTS_MAX);
 
-    rc = read_connected_monitors(m_firmware, m_objects.display_common, display.displayport, outputs, m_output_modes);
+    power_down_facts power_down = {};
+    rc = read_connected_monitors(
+        m_firmware,
+        m_objects.display_common,
+        display.displayport,
+        outputs,
+        m_output_modes,
+        power_down
+    );
     if (rc != OK) {
         return rc;
     }
@@ -1621,7 +1681,8 @@ int32_t display_engine::set_up(
         owners,
         active,
         has_crossbar,
-        outputs.outputs[light.output],
+        outputs,
+        power_down,
         light_dpcd,
         light
     );
@@ -1634,10 +1695,12 @@ int32_t display_engine::bring_up(
     const window_owners& owners,
     const active_heads& active,
     bool has_crossbar,
-    const display_output& output,
+    const display_outputs& outputs,
+    const power_down_facts& power_down,
     const dpcd_capabilities& dpcd,
     const first_light& light
 ) {
+    const display_output& output = outputs.outputs[light.output];
     rm::handle display_common = m_objects.display_common;
     uint32_t display_id = output.display_id;
     int32_t rc = send_display_change(m_firmware, display_common, display_id, rm::DISPLAY_CHANGE_START);
@@ -1658,21 +1721,26 @@ int32_t display_engine::bring_up(
     if (rc != OK) {
         log::error("nvidia: the shutdown update failed: %d, so bring-up takes the display engine down", rc);
     } else {
-        link_rc = set_up_output_link(
-            m_firmware,
-            display_common,
-            has_crossbar,
-            output,
-            dpcd,
-            light,
-            link,
-            is_link_set_up
-        );
-        if (!is_link_set_up) {
-            log::error(
-                "nvidia: display id 0x%X's link is not set up, so bring-up takes the display engine down",
-                display_id
+        // The chosen output's link is trained again at once, so it is not powered down
+        uint32_t dark_boot_outputs = m_boot_outputs & ~(1u << light.output);
+        link_rc = power_down_links(m_firmware, display_common, outputs, dark_boot_outputs, power_down);
+        if (link_rc == OK) {
+            link_rc = set_up_output_link(
+                m_firmware,
+                display_common,
+                has_crossbar,
+                output,
+                dpcd,
+                light,
+                link,
+                is_link_set_up
             );
+            if (!is_link_set_up) {
+                log::error(
+                    "nvidia: display id 0x%X's link is not set up, so bring-up takes the display engine down",
+                    display_id
+                );
+            }
         }
     }
 

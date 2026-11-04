@@ -155,6 +155,26 @@ bool takes_enhanced_framing(const dpcd_capabilities& dpcd);
 bool is_at_least_revision_1_0(const dpcd_capabilities& dpcd);
 
 /**
+ * @brief Whether a monitor's DPCD gives revision 1.1 or later, the revisions
+ * holding its power state at 0x00600.
+ * @param dpcd The capabilities `read_output_dpcd` read.
+ * @return Whether the receiver capability field's first byte is 0x11 or more.
+ */
+bool is_at_least_revision_1_1(const dpcd_capabilities& dpcd);
+
+/**
+ * @brief Set a monitor to D3, the DPCD power state in which its receiver
+ * sleeps, by an AUX write of 2 at 0x00600, sent again after any answer but an
+ * acknowledgment of its byte until at least 2 ms and 40 tries have passed.
+ * The outcome is logged, and a request failing other than with `ERR_FIRMWARE`
+ * ends the tries.
+ * @param display_id The monitor's display id, a single bit.
+ * @return `OK`, also when no try is acknowledged, else the error of the
+ * request that ended the tries.
+ */
+int32_t set_monitor_to_d3(firmware& fw, rm::handle display_common, uint32_t display_id);
+
+/**
  * @brief The PHY repeaters on a monitor's link, as NVIDIA's DisplayPort
  * library counts them from the count byte of their capability field, which
  * sets one bit, 0x80 for one repeater down to 0x01 for eight.
