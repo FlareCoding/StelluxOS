@@ -3710,6 +3710,82 @@ src/common/sdk/nvidia/inc/class/cl2080_notification.h
     info table gives, in rm.h
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/common/sdk/nvidia/inc/class/clc56f.h
+    the bytes of a GPFIFO entry, 8, its fields (the address of its method words
+    in bits 31:2 of its first word and 7:0 of its second, and their count in
+    bits 30:10 of its second, whose largest value bounds an entry's words), a
+    push buffer header's fields (DMA_SEC_OP INC_METHOD, 1, in bits 31:29, the
+    value count in 28:16, the subchannel in 15:13 and the method's word address
+    in 11:0), the host methods SET_OBJECT, 0, NON_STALL_INTERRUPT, 0x20,
+    MEM_OP_A to MEM_OP_D from 0x28, with MEM_OP_C's SYS_MEMBAR type 0 and
+    MEM_OP_D's OPERATION MEMBAR, 5, in bits 31:27, SEM_ADDR_LO to SEM_EXECUTE
+    from 0x5C, with SEM_EXECUTE's OPERATION RELEASE, 1, RELEASE_WFI DIS and
+    PAYLOAD_SIZE 32BIT, and WFI, 0x78, in channel_methods.h, channel_methods.cpp
+    and kernel/tests/graphics/nvidia_channel_methods.test.cpp, and that an
+    entry's FETCH UNCONDITIONAL, LEVEL MAIN and SYNC PROCEED are each 0, in
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/clc7b5.h
+    the class number AMPERE_DMA_COPY_B, 0xC7B5, in
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp, and its methods
+    SET_DST_PHYS_MODE, 0x264, with TARGET LOCAL_FB, 0, LAUNCH_DMA, 0x300, with
+    DATA_TRANSFER_TYPE NON_PIPELINED, 2, in bits 1:0, FLUSH_ENABLE in bit 2,
+    SRC_MEMORY_LAYOUT and DST_MEMORY_LAYOUT PITCH in bits 7 and 8, REMAP_ENABLE
+    in bit 10, DST_TYPE PHYSICAL in bit 13 and DISABLE_PLC TRUE in bit 26,
+    OFFSET_OUT_UPPER, 0x408, whose bits 16:0 hold a destination's address bits
+    48:32, OFFSET_OUT_LOWER, 0x40C, LINE_LENGTH_IN, 0x418, whose 32 bits bound a
+    fill's components, SET_REMAP_CONST_A, 0x700, and SET_REMAP_COMPONENTS,
+    0x708, with DST_X CONST_A, 4, COMPONENT_SIZE FOUR, 3, in bits 17:16 and
+    NUM_DST_COMPONENTS ONE, 0, in channel_methods.h, channel_methods.cpp and
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+
+src/nvidia/inc/kernel/gpu/mem_mgr/channel_utils.h
+    RM_SUBCHANNEL, 0, the subchannel NVIDIA's own copy channel sends its methods
+    on, in channel_methods.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/mem_mgr/channel_utils.c
+    that NVIDIA's scrub channel sends SET_OBJECT and every copy method on
+    subchannel 0 and fills by remapping CONST_A over the fill's bytes to a
+    physical destination with DISABLE_PLC set, in channel_methods.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/alloc/alloc_channel.h
+    the NVOS04 flags of a channel's allocation PRIVILEGED_CHANNEL, bit 5,
+    DELAY_CHANNEL_SCHEDULING, bit 6, DENY_PHYSICAL_MODE_CE, bit 7,
+    USERD_INDEX_VALUE, bits 10:8, USERD_INDEX_PAGE_VALUE, bits 20:12,
+    USERD_INDEX_PAGE_FIXED, bit 21, and DENY_AUTH_LEVEL_PRIV, bit 22, in
+    channel_methods.cpp and
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/fifo/kernel_channel.c
+    that NVIDIA's CPU side pins a GSP client's channel id through
+    USERD_INDEX_PAGE_FIXED, with the id over 8 as its page and the id modulo 8
+    as its index, and makes a kernel caller's channel a PRIVILEGED_CHANNEL, in
+    channel_methods.cpp and
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/ampere/ga100/dev_ctrl.h
+    the doorbell token's fields NV_CTRL_VF_DOORBELL_RUNLIST_ID, bits 22:16, and
+    NV_CTRL_VF_DOORBELL_VECTOR, bits 11:0, in channel_methods.cpp and
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/fifo/arch/ampere/kernel_fifo_ga100.c
+    that a channel's doorbell token holds its runlist in RUNLIST_ID and its id
+    in VECTOR, in channel_methods.cpp and
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/maxwell/gm107/dev_ram.h
+    NV_RAMUSERD_CHAN_SIZE, the 512 bytes of a USERD, so that a 4 KiB page holds
+    8, in channel_methods.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c,
 g_disp_inst_mem_nvoc.c, g_disp_objs_nvoc.c, rpc_global_enums.h, g_rpc_private.h
