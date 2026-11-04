@@ -58,7 +58,6 @@ int32_t copy_channel::create(
     });
 
     if (dma_rc != dma::OK) {
-        log::error("nvidia: allocating the copy channel's push buffer and semaphore failed: %d", dma_rc);
         rc = ERR_NO_MEMORY;
     }
 
@@ -204,11 +203,12 @@ __PRIVILEGED_CODE bool copy_channel::run_fill(uint64_t offset, uint64_t bytes, u
 
 void copy_channel::submit(uint64_t sequence, uint64_t offset, uint64_t bytes, uint32_t value) {
     uint64_t slot_offset = (sequence % COPY_SLOTS) * SLOT_BYTES;
+    uint64_t slot_address = PUSH_BUFFER_ADDRESS + slot_offset;
     uint32_t* words = reinterpret_cast<uint32_t*>(m_memory.virt + slot_offset);
     write_fill(words, m_copy_class, offset, bytes, value);
     write_release(words + FILL_WORDS, SEMAPHORE_ADDRESS, static_cast<uint32_t>(sequence));
 
-    m_channel.write_entry(make_gpfifo_entry(PUSH_BUFFER_ADDRESS + slot_offset, FILL_WORDS + RELEASE_WORDS));
+    m_channel.write_entry(make_gpfifo_entry(slot_address, FILL_WORDS + RELEASE_WORDS, gpfifo_fetch::ahead));
     m_channel.kick();
 
     if (sequence == m_completed + 1) {

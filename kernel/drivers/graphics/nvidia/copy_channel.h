@@ -53,8 +53,10 @@ public:
      * @return `OK`, `ERR_BAD_STATE` while the channel or its address space
      * exists, `ERR_NO_MEMORY`, or the error of the address space, a mapping or
      * the channel, logged but for `ERR_BAD_STATE`, the channel's
-     * `ERR_INVALID_ARG` and an `ERR_GPU_FAILED`. On an error what the firmware
-     * or the GPU may still reach stays for good, and the rest is released.
+     * `ERR_INVALID_ARG`, an `ERR_GPU_FAILED` and no room in video memory,
+     * system memory or BAR1's window, which the caller logs. On an error what
+     * the firmware or the GPU may still reach stays for good, and the rest is
+     * released.
      */
     int32_t create(const dma::device_profile& card, const chip_info& chip, const engine_info& engine, uint32_t id);
 

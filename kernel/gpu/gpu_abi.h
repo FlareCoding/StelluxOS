@@ -72,6 +72,10 @@
 
 #define GPU_MAP_READ_ONLY 0x1u
 
+// NVIDIA range flag: earlier work on the queue writes the range, so the GPU fetches it only once the commands before
+// it were processed. Their engine work may still run then, so the work writing it must be followed by a wait for idle
+#define GPU_COMMANDS_GPU_WRITTEN 0x1u
+
 #define GPU_WAIT_ALL 0x1u // wait until every point is reached instead of any one
 
 #define GPU_TIMELINE_FAILED 0x1u // a submission that would reach one of its points failed
@@ -219,6 +223,14 @@ struct gpu_wait_args {
     uint32_t padding;
 };
 
+// One NVIDIA command range: push buffer bytes at a GPU virtual address of the submitting context. An NVIDIA command
+// list is an array of them, run in order
+struct gpu_nvidia_range {
+    uint64_t va;    // a multiple of 4, the range inside [va_start, va_end)
+    uint32_t size;  // bytes, a nonzero multiple of 4 below 8 MiB
+    uint32_t flags; // GPU_COMMANDS_*
+};
+
 // GPU_SUBMIT argument. The submission runs after the queue's earlier submissions once every wait point is reached, and
 // reaches its signal points when it ends, with GPU_TIMELINE_FAILED when it failed. A wait point reached while its
 // timeline has that mark, which a timeline keeps for good, fails it without running. The call returns at once, with
@@ -256,6 +268,7 @@ GPU_ABI_ASSERT(sizeof(struct gpu_map_args) == 40, "gpu_map_args layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_point) == 16, "gpu_point layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_timeline_args) == 16, "gpu_timeline_args layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_wait_args) == 32, "gpu_wait_args layout");
+GPU_ABI_ASSERT(sizeof(struct gpu_nvidia_range) == 16, "gpu_nvidia_range layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_submit_args) == 48, "gpu_submit_args layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_restrict_args) == 16, "gpu_restrict_args layout");
 

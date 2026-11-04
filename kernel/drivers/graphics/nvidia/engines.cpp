@@ -9,6 +9,7 @@
 #include "hw/barrier.h"
 #include "hw/mmio.h"
 #include "mm/heap.h"
+#include "mm/paging_types.h"
 #include "mm/pmm_types.h"
 
 namespace drivers::nvidia {
@@ -27,7 +28,7 @@ constexpr uint32_t CHECK_FILL_PATTERN = 0xC3C3C3C3;
 
 constexpr uint64_t BYTES_PER_KIB = 1024;
 
-// The GPU addresses a context's own mappings may use, the range NVK's heaps use
+// The GPU addresses a context's own mappings may use, the range NVK's heaps use, with the kernel's mappings above it
 constexpr uint64_t USER_VA_START = 4096;
 constexpr uint64_t USER_VA_END   = 1ULL << 39;
 
@@ -36,6 +37,22 @@ constexpr uint64_t COMMAND_RANGE_BYTES = 16;
 
 // Each queue's GPFIFO keeps one entry per running submission for its release sequence, and one entry empty
 constexpr uint64_t RUNNING_BYTES_MAX = (GPFIFO_ENTRIES - GPU_QUEUE_PENDING_MAX - 1) * COMMAND_RANGE_BYTES;
+
+// A context's part above its user range: a page with a progress semaphore per queue slot, then a window per slot
+// holding its queue's GPFIFO and then its push buffer
+constexpr uint64_t SEMAPHORES_ADDRESS    = USER_VA_END;
+constexpr uint64_t QUEUE_WINDOW_BYTES    = 256 * BYTES_PER_KIB;
+constexpr uint64_t QUEUE_WINDOWS_ADDRESS = SEMAPHORES_ADDRESS + QUEUE_WINDOW_BYTES;
+
+// A release sequence per submission a queue may hold and one more, so a sequence is rewritten only once a later
+// release showed the GPU fetched it
+constexpr uint64_t RELEASE_SLOTS      = GPU_QUEUE_PENDING_MAX + 1;
+constexpr uint64_t RELEASE_SLOT_BYTES = 128;
+constexpr size_t   PUSH_BUFFER_PAGES  = (RELEASE_SLOTS * RELEASE_SLOT_BYTES + pmm::PAGE_SIZE - 1) / pmm::PAGE_SIZE;
+
+static_assert(RELEASE_WORDS * sizeof(uint32_t) <= RELEASE_SLOT_BYTES, "a release sequence fits its slot");
+static_assert(GPFIFO_BYTES + PUSH_BUFFER_PAGES * pmm::PAGE_SIZE <= QUEUE_WINDOW_BYTES, "the rings fit the window");
+static_assert(GPU_QUEUES_MAX < 32, "the shift building a space's slot mask stays defined");
 
 // The GPU's nanosecond clock: NVIDIA's NV_VIRTUAL_FUNCTION_TIME_0 is its low word and TIME_1's bits 28:0 its high word
 constexpr uint32_t TIME_LOW       = 0xBB0080;
@@ -66,6 +83,35 @@ static bool reaches_coherently(const dma::device_profile& card, const pmm::phys_
     }
 
     return true;
+}
+
+static uint64_t slot_semaphore_address(uint32_t slot) {
+    return SEMAPHORES_ADDRESS + slot * sizeof(uint32_t);
+}
+
+static uint64_t slot_gpfifo_address(uint32_t slot) {
+    return QUEUE_WINDOWS_ADDRESS + slot * QUEUE_WINDOW_BYTES;
+}
+
+static uint64_t slot_push_buffer_address(uint32_t slot) {
+    return slot_gpfifo_address(slot) + GPFIFO_BYTES;
+}
+
+// Copies out range `index` of a command list, which the GPU core hands over with no promise of alignment
+static gpu_nvidia_range range_at(const void* commands, size_t index) {
+    gpu_nvidia_range range;
+    string::memcpy(&range, static_cast<const uint8_t*>(commands) + index * sizeof(range), sizeof(range));
+    return range;
+}
+
+// Whether `check_commands` accepts `range`: whole words one GPFIFO entry counts, in the user range, known flags
+static bool is_runnable(const gpu_nvidia_range& range) {
+    uint32_t words = range.size / sizeof(uint32_t);
+    bool is_counted = range.size % sizeof(uint32_t) == 0 && words != 0 && words <= GPFIFO_ENTRY_WORDS_MAX;
+    bool is_in_user_range = range.va % sizeof(uint32_t) == 0 && range.va >= USER_VA_START &&
+                            range.va <= USER_VA_END && range.size <= USER_VA_END - range.va;
+
+    return is_counted && is_in_user_range && (range.flags & ~GPU_COMMANDS_GPU_WRITTEN) == 0;
 }
 
 engines::engines(
@@ -169,7 +215,7 @@ void engines::read_facts(gpu::device_facts& out) {
     m_memory.report(memory);
 
     out.info.backend = GPU_BACKEND_NVIDIA;
-    out.info.queue_kinds = 0;
+    out.info.queue_kinds = 1u << GPU_QUEUE_COPY;
     string::memcpy(out.info.name, m_identity.name, sizeof(out.info.name));
 
     out.info.vendor_id = m_identity.vendor_id;
@@ -433,24 +479,77 @@ int32_t engines::unmap(gpu::space* s, uint64_t va, uint64_t size) {
     return gpu::ERR_DEVICE;
 }
 
-// The facts offer no queue kind, so the core creates no queue, and every command list is refused
-int32_t engines::create_queue(gpu::space*, uint32_t, gpu::core_queue*, gpu::queue**) {
-    return gpu::ERR_DEVICE;
+int32_t engines::create_queue(gpu::space* s, uint32_t, gpu::core_queue*, gpu::queue** out) {
+    if (has_failed()) {
+        return gpu::ERR_DEVICE;
+    }
+
+    auto* queue = heap::ualloc_new<backend_queue>(m_firmware, m_objects, m_memory, m_bar0);
+    if (queue == nullptr) {
+        return gpu::ERR_NO_MEMORY;
+    }
+
+    queue->space = static_cast<backend_space*>(s);
+    queue->task_operation.work = create_queue_on_task;
+    queue->task_operation.owner = this;
+    queue->task_operation.queue = queue;
+
+    int32_t rc = OK;
+    RUN_ELEVATED(rc = m_operations.run_on_task(queue->task_operation));
+    if (rc != OK) {
+        heap::ufree_delete(queue);
+        return has_failed() ? gpu::ERR_DEVICE : gpu::ERR_NO_MEMORY;
+    }
+
+    *out = queue;
+
+    return gpu::OK;
 }
 
 void engines::stop_queue(gpu::queue*) {}
 
 void engines::destroy_queue(gpu::queue*) {}
 
-int32_t engines::check_commands(const void*, size_t) {
+int32_t engines::check_commands(const void* commands, size_t size) {
     if (has_failed()) {
         return gpu::ERR_DEVICE;
     }
 
-    return gpu::ERR_REFUSED;
+    if (size % sizeof(gpu_nvidia_range) != 0) {
+        return gpu::ERR_REFUSED;
+    }
+
+    for (size_t i = 0; i < size / sizeof(gpu_nvidia_range); i++) {
+        if (!is_runnable(range_at(commands, i))) {
+            return gpu::ERR_REFUSED;
+        }
+    }
+
+    return gpu::OK;
 }
 
-void engines::run(gpu::queue*, uint64_t, const void*, size_t) {}
+void engines::run(gpu::queue* q, uint64_t sequence, const void* commands, size_t size) {
+    if (has_failed()) {
+        return;
+    }
+
+    auto* queue = static_cast<backend_queue*>(q);
+    for (size_t i = 0; i < size / sizeof(gpu_nvidia_range); i++) {
+        gpu_nvidia_range range = range_at(commands, i);
+        bool is_gpu_written = (range.flags & GPU_COMMANDS_GPU_WRITTEN) != 0;
+        gpfifo_fetch fetch = is_gpu_written ? gpfifo_fetch::after_earlier : gpfifo_fetch::ahead;
+
+        queue->user_channel.write_entry(make_gpfifo_entry(range.va, range.size / sizeof(uint32_t), fetch));
+    }
+
+    uint64_t slot_offset = (sequence % RELEASE_SLOTS) * RELEASE_SLOT_BYTES;
+    uint64_t slot_address = slot_push_buffer_address(queue->slot) + slot_offset;
+    uint32_t* words = reinterpret_cast<uint32_t*>(queue->push_buffer.virt + slot_offset);
+    write_release(words, slot_semaphore_address(queue->slot), static_cast<uint32_t>(sequence));
+
+    queue->user_channel.write_entry(make_gpfifo_entry(slot_address, RELEASE_WORDS, gpfifo_fetch::ahead));
+    queue->user_channel.kick();
+}
 
 /**
  * @note Privilege: **required**
@@ -691,9 +790,10 @@ void engines::destroy_space_on_task(operation& op) {
     engines& gpu_engines = *destroy.owner;
     backend_space* space = destroy.space;
 
-    // A failed GPU may still walk the tables, so they stay in video memory with the firmware's object
-    if (!gpu_engines.has_failed()) {
-        space->addresses.destroy();
+    // A failed GPU may still walk the tables and write the semaphores, so they stay with the firmware's object
+    bool is_destroyed = !gpu_engines.has_failed() && space->addresses.destroy() == OK;
+    if (is_destroyed) {
+        RUN_ELEVATED(dma::free_pages(space->semaphores));
     }
 
     heap::ufree_delete(space);
@@ -701,6 +801,120 @@ void engines::destroy_space_on_task(operation& op) {
     if (gpu_engines.has_failed()) {
         gpu_engines.report_failure();
     }
+}
+
+void engines::create_queue_on_task(operation& op) {
+    auto& creation = static_cast<queue_operation&>(op);
+    op.result = creation.owner->start_queue(*creation.queue);
+}
+
+int32_t engines::start_queue(backend_queue& queue) {
+    backend_space& space = *queue.space;
+    int32_t rc = map_semaphores(space);
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint32_t free_slots = ~space.queue_slots & ((1u << GPU_QUEUES_MAX) - 1);
+    if (free_slots == 0 || !take_channel_id(queue.channel_id)) {
+        return ERR_NO_MEMORY;
+    }
+
+    queue.slot = static_cast<uint32_t>(__builtin_ctz(free_slots));
+    space.queue_slots |= 1u << queue.slot;
+
+    int32_t dma_rc = dma::OK;
+    RUN_ELEVATED({
+        dma_rc = dma::alloc_pages(
+            m_card, PUSH_BUFFER_PAGES, dma::caching::cached_when_coherent, paging::PAGE_USER, queue.push_buffer
+        );
+    });
+
+    rc = dma_rc == dma::OK ? OK : ERR_NO_MEMORY;
+    bool is_mapped = false;
+    if (rc == OK) {
+        memory_run push_buffer = {.address = queue.push_buffer.phys, .bytes = PUSH_BUFFER_PAGES * pmm::PAGE_SIZE};
+        page_mapping read_only = {.aperture = page_aperture::system_memory, .kind = 0, .read_only = true};
+        rc = space.addresses.page_tables().map(slot_push_buffer_address(queue.slot), &push_buffer, 1, read_only);
+        is_mapped = rc == OK;
+    }
+
+    if (rc == OK) {
+        channel_setup setup = {
+            .engine = *m_table.first_async_copy_engine(),
+            .id = queue.channel_id,
+            .gpfifo_address = slot_gpfifo_address(queue.slot),
+            .is_privileged = false,
+        };
+
+        rc = queue.user_channel.create(m_card, *m_chip, space.addresses, setup);
+    }
+
+    if (rc != OK) {
+        release_queue(queue, is_mapped);
+    }
+
+    return rc;
+}
+
+int32_t engines::map_semaphores(backend_space& space) {
+    if (space.semaphores.virt != 0) {
+        return OK;
+    }
+
+    int32_t dma_rc = dma::OK;
+    RUN_ELEVATED({
+        dma_rc = dma::alloc_pages(m_card, 1, dma::caching::cached_when_coherent, paging::PAGE_USER, space.semaphores);
+    });
+
+    if (dma_rc != dma::OK) {
+        return ERR_NO_MEMORY;
+    }
+
+    memory_run page = {.address = space.semaphores.phys, .bytes = pmm::PAGE_SIZE};
+    page_mapping writable = {.aperture = page_aperture::system_memory, .kind = 0, .read_only = false};
+    int32_t rc = space.addresses.page_tables().map(SEMAPHORES_ADDRESS, &page, 1, writable);
+
+    // A failed update set the failed mark, and the card may then write the page
+    if (rc != OK && !has_failed()) {
+        RUN_ELEVATED(dma::free_pages(space.semaphores));
+    }
+
+    return rc;
+}
+
+void engines::release_queue(backend_queue& queue, bool is_mapped) {
+    bool gpu_may_reach = queue.user_channel.keeps_memory() || has_failed();
+    if (is_mapped && !gpu_may_reach) {
+        uint64_t address = slot_push_buffer_address(queue.slot);
+        uint64_t bytes = PUSH_BUFFER_PAGES * pmm::PAGE_SIZE;
+        gpu_may_reach = queue.space->addresses.page_tables().unmap(address, bytes) != OK;
+    }
+
+    if (gpu_may_reach) {
+        return;
+    }
+
+    RUN_ELEVATED(dma::free_pages(queue.push_buffer));
+    queue.space->queue_slots &= ~(1u << queue.slot);
+    give_back_channel_id(queue.channel_id);
+}
+
+bool engines::take_channel_id(uint32_t& out) {
+    for (uint32_t id = COPY_CHANNEL_ID + 1; id < CHANNEL_IDS; id++) {
+        uint64_t bit = 1ULL << (id % CHANNEL_IDS_PER_WORD);
+        if ((m_channel_ids[id / CHANNEL_IDS_PER_WORD] & bit) == 0) {
+            m_channel_ids[id / CHANNEL_IDS_PER_WORD] |= bit;
+            out = id;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void engines::give_back_channel_id(uint32_t id) {
+    m_channel_ids[id / CHANNEL_IDS_PER_WORD] &= ~(1ULL << (id % CHANNEL_IDS_PER_WORD));
 }
 
 } // namespace drivers::nvidia
