@@ -46,7 +46,9 @@
  * An output's mode list holds the modes the output can light at in the
  * display's order of preference. Each mode appears once, the current mode is
  * among them, and a dark output lists none. Userland reads it with
- * `GFXFB_GET_MODES`, which gfxfb answers from the display's `read_modes()`.
+ * `GFXFB_GET_MODES`, which gfxfb answers from the display's `read_modes()`. A
+ * lit output whose list alone changed is reported to `output_changed()` the
+ * same way, and gfxfb keeps the record of its unchanged base buffer.
  *
  * Userland also creates buffers, which the display allocates in
  * `create_buffer()`, and presents buffers on outputs, which gfxfb hands to the
@@ -429,7 +431,9 @@ __PRIVILEGED_CODE void present_done(display* driver_display, uint32_t output, co
  * @brief Report that a display's output lit or went dark. gfxfb reads the
  * output again, records a lit output's base buffer, drops its references to a
  * dark output's buffers, moves the primary when it must and queues an output
- * event for every open file. The display must end an output's unended present
+ * event for every open file. A lit output whose mode list alone changed is
+ * reported the same way, with the base buffer gfxfb recorded for it, and gfxfb
+ * keeps the record as it was. The display must end an output's unended present
  * with `GFXFB_PRESENT_DARK` before reporting the output dark, so the
  * presenting file reads that end before the output event. The display's
  * hardware must have stopped reading the output's buffers by the dark report,

@@ -216,7 +216,9 @@ private:
  * drops a dark output's base and shown buffers, clears the stale mark whenever
  * the base buffer changes, and queues an output event for the output in every
  * client, behind the client's other events and in place of an output event it
- * holds for that output. The primary is the lit boot output as the node shows
+ * holds for that output. A lit output reported with the base buffer recorded
+ * for it, as when only its mode list changed, keeps every record and gets the
+ * output event as well. The primary is the lit boot output as the node shows
  * its display, else the lit output with the lowest index, and stays on an
  * output that relights, which reads primary but not lit meanwhile. A primary
  * output reported dark otherwise, or lit with no base buffer recorded, hands
