@@ -69,22 +69,22 @@
  * A program can also create buffers, each holding one picture of 32-bit
  * pixels. `GFXFB_CREATE_BUFFER` returns a new buffer's handle, its layout and
  * the mmap offset that maps it. An open file controls the buffers from its
- * first creation, present or cursor call that succeeds until it closes. A
- * creation fails with EINVAL when the kernel cannot read its argument, when
- * its width or height is zero or when its reserved field is set. Any other
- * creation, and any present or cursor call that passes the checks below, fails
- * with EBUSY while another open file controls the buffers or reserves control,
- * and otherwise reserves control for its file until the call returns, so two
- * files never control the buffers at once. A creation that reserves control
- * fails with ENOTTY on a device that cannot create buffers, with ENOMEM when
- * no memory is left or the file already holds `GFXFB_CLIENT_BUFFERS_MAX`
- * handles, with EIO when the device refuses the buffer or has failed, and with
- * EINVAL when the kernel cannot write its argument after the device created
- * the buffer. A handle names its buffer only within the open file that created
- * it. `GFXFB_DESTROY_BUFFER` drops a handle, failing with EINVAL for one the
- * file does not hold, and closing the file drops all of them. A buffer stays
- * allocated until its handle and its last mapping are gone and no output shows
- * it or holds it for a present.
+ * first creation, present, cursor call or mode request that succeeds until it
+ * closes. A creation fails with EINVAL when the kernel cannot read its
+ * argument, when its width or height is zero or when its reserved field is
+ * set. Any other creation, and any present, cursor call or mode request that
+ * passes the checks below, fails with EBUSY while another open file controls
+ * the buffers or reserves control, and otherwise reserves control for its file
+ * until the call returns, so two files never control the buffers at once. A
+ * creation that reserves control fails with ENOTTY on a device that cannot
+ * create buffers, with ENOMEM when no memory is left or the file already holds
+ * `GFXFB_CLIENT_BUFFERS_MAX` handles, with EIO when the device refuses the
+ * buffer or has failed, and with EINVAL when the kernel cannot write its
+ * argument after the device created the buffer. A handle names its buffer only
+ * within the open file that created it. `GFXFB_DESTROY_BUFFER` drops a handle,
+ * failing with EINVAL for one the file does not hold, and closing the file
+ * drops all of them. A buffer stays allocated until its handle and its last
+ * mapping are gone and no output shows it or holds it for a present.
  *
  * `GFXFB_PRESENT` asks for a buffer to replace what an output shows from the
  * output's next vertical blank and returns without waiting for it. The present
@@ -156,7 +156,9 @@
  * base buffer of each output showing another buffer, as a present of handle 0
  * naming no region, and hides each output's cursor. It also waits for the ends
  * of those presents the device accepts, and their events reach no file either.
- * It keeps control through both waits. An output where the base buffer's
+ * It keeps control through both waits, and before its control ends it asks the
+ * device, without waiting, to relight at the mode the device picks itself
+ * every output that a mode request changed. An output where the base buffer's
  * present does not latch keeps showing the buffer it showed, as on a failed
  * device, unless it went dark, since a dark output shows no buffer. An output
  * keeps showing its cursor when the device refuses the hide or the kernel has
@@ -190,6 +192,24 @@
  * dark output, EINVAL for a picture wider or taller than the output's largest,
  * and EIO when the device refused the call.
  *
+ * `GFXFB_SET_MODE` asks for an output to light at one of its listed modes and
+ * waits until the device has lit it or given up. A request fails with EINVAL
+ * when the kernel cannot read it, when its reserved field is set and for an
+ * output of `output_count` or more. Past those checks and control, it fails
+ * with EIO once the kernel has found the device failed, and otherwise with the
+ * first that applies of ENOTTY on a device that sets no modes, ENOMEM when no
+ * memory is left to take the request, EIO on a device that failed, EAGAIN on a
+ * dark output or one being taken dark, and EINVAL for a mode the output does
+ * not list. A request for the mode the output is lit at then succeeds and
+ * changes nothing. Any other request fails with EIO when the device refuses
+ * the mode, a new base buffer or taking the output dark, and with ENOMEM when
+ * no memory is left for that buffer, each with the output unchanged. Otherwise
+ * the device relights the output, and the relight reaches every open file as
+ * output events queued before the call returns. Once the output is dark, the
+ * request fails with EIO when the mode fails to light, the output then lit at
+ * its previous mode, or dark when that fails too or the device has failed.
+ * Requests reach the device one at a time.
+ *
  * The kernel and userland are built from one tree, so a structure may gain
  * fields when its call gains a feature. Each structure holds fixed-width
  * fields with explicit padding, so both builds lay it out alike on x86_64 and
@@ -208,6 +228,7 @@ constexpr uint32_t GFXFB_PRESENT        = 0x4705;
 constexpr uint32_t GFXFB_SET_CURSOR     = 0x4706;
 constexpr uint32_t GFXFB_MOVE_CURSOR    = 0x4707;
 constexpr uint32_t GFXFB_GET_MODES      = 0x4708;
+constexpr uint32_t GFXFB_SET_MODE       = 0x4709;
 
 constexpr uint8_t GFXFB_INFO_NEEDS_FLUSH = 0x01; // drawing reaches the screen only through GFXFB_FLUSH
 
@@ -291,6 +312,13 @@ struct gfxfb_mode_list {
     uint32_t reserved; // out: zero
 };
 
+// GFXFB_SET_MODE argument, asking for an output to light at one of its listed modes
+struct gfxfb_mode_request {
+    uint32_t   output;   // the output's index, EINVAL unless below `output_count`
+    uint32_t   reserved; // must be zero
+    gfxfb_mode mode;     // one of the modes GFXFB_GET_MODES lists for the output, field for field
+};
+
 // GFXFB_CREATE_BUFFER argument, filled with the new buffer's handle, layout and mmap offset
 struct gfxfb_buffer_args {
     uint32_t width;      // in: EINVAL when zero or past the device's limit
@@ -349,6 +377,7 @@ static_assert(sizeof(gfxfb_flush_args) == 16, "gfxfb_flush_args layout");
 static_assert(sizeof(gfxfb_mode) == 16, "gfxfb_mode layout");
 static_assert(sizeof(gfxfb_output_info) == 40, "gfxfb_output_info layout");
 static_assert(sizeof(gfxfb_mode_list) == 24, "gfxfb_mode_list layout");
+static_assert(sizeof(gfxfb_mode_request) == 24, "gfxfb_mode_request layout");
 static_assert(sizeof(gfxfb_buffer_args) == 40, "gfxfb_buffer_args layout");
 static_assert(sizeof(gfxfb_present_args) == 24, "gfxfb_present_args layout");
 static_assert(sizeof(gfxfb_cursor_args) == 32, "gfxfb_cursor_args layout");

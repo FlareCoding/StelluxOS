@@ -154,7 +154,17 @@ static constexpr uint32_t MODE_ENTRIES = gfxfb::GFXFB_MODES_MAX + 1;
 // A capacity above GFXFB_MODES_MAX whose low 16 bits alone make 1, so a capacity narrowed to 16 bits copies one entry
 static constexpr uint32_t WIDE_MODES_CAPACITY = 0x10001;
 
-// A display with two outputs, dark until a test lights them, that records its cursor calls, the first MAX_RECORDED
+// The refresh rate of the mode the SET_MODE tests ask for, above 0xFFFF and unlike either output's
+static constexpr uint64_t ASKED_REFRESH_MILLIHERTZ = 120000;
+
+// Where the SET_MODE tests place a request made on a task of its own, apart from the test's at ARGS_OFFSET
+static constexpr size_t TASK_REQUEST_OFFSET = 2048;
+
+// What the recording display's `set_mode()` changes before it returns its answer: nothing, the output relit at the
+// asked mode or at its previous mode, or the output left dark after its relight's darkening
+enum class mode_relight { none, asked_mode, previous_mode, dark };
+
+// A display with two outputs, dark until a test lights them, that records cursor and mode calls, the first MAX_RECORDED
 // rects of its flushes and regions of its last accepted present, creates write-combining buffers and counts releases
 class recording_display : public gfxfb::display {
 public:
@@ -162,6 +172,7 @@ public:
     static constexpr uint32_t MAX_RECORDED = 64;
     static constexpr uint32_t MAX_CREATED = gfxfb::GFXFB_CLIENT_BUFFERS_MAX + 2; // a full file, then two refills
     static constexpr uint32_t MAX_CURSOR_PIXELS = 8;
+    static constexpr uint32_t MAX_MODE_LIGHTS = 4;
 
     gfxfb::output_state states[OUTPUTS] = {};
     gfxfb::buffer       bases[OUTPUTS] = {};
@@ -210,6 +221,21 @@ public:
     gfxfb::gfxfb_mode modes[OUTPUTS][gfxfb::GFXFB_MODES_MAX] = {}; // each output's list, `mode_counts` entries long
     uint32_t          mode_counts[OUTPUTS] = {};
     uint32_t          modes_capacity = 0; // the capacity the last `read_modes()` got
+
+    int32_t            mode_answer = gfxfb::OK; // what `set_mode()` returns
+    mode_relight       relight = mode_relight::none; // what `set_mode()` changes first, reporting to `reporting_node`
+    gfxfb::gfxfb_node* reporting_node = nullptr;
+    void               (*while_setting_mode)() = nullptr; // run once by the next `set_mode()`, before any change
+    uint32_t           set_mode_calls = 0;
+    uint32_t           mode_output = OUTPUTS; // the output of the last `set_mode()`, OUTPUTS before any
+    gfxfb::gfxfb_mode  asked = {}; // the mode the last `set_mode()` got
+    gfxfb::buffer      mode_bases[MAX_MODE_LIGHTS] = {}; // the base buffers `set_mode()`'s lights take in turn
+    uint32_t           mode_lights = 0;
+
+    void     (*while_restoring)() = nullptr; // run once by the next `restore_modes()`
+    uint32_t restore_calls = 0;
+    uint32_t set_cursor_calls_at_restore = 0; // `set_cursor_calls` as the last `restore_modes()` began
+    uint32_t present_calls_at_restore = 0; // `present_calls` likewise
 
     uint32_t output_count() const override { return count; }
     bool needs_flush() const override { return flush_needed; }
@@ -278,6 +304,20 @@ public:
         return cursor_answer;
     }
 
+    int32_t set_mode(uint32_t output, const gfxfb::gfxfb_mode& mode) override;
+
+    void restore_modes() override {
+        restore_calls++;
+        set_cursor_calls_at_restore = set_cursor_calls;
+        present_calls_at_restore = present_calls;
+
+        if (while_restoring) {
+            void (*hook)() = while_restoring;
+            while_restoring = nullptr;
+            hook();
+        }
+    }
+
     void release_buffer(gfxfb::buffer* buf) override {
         last_released = buf;
         released_count.fetch_add_release(1);
@@ -330,6 +370,8 @@ public:
     int32_t present(uint32_t, gfxfb::buffer*, const gfxfb::gfxfb_rect*, uint32_t) override { return gfxfb::OK; }
     int32_t set_cursor(uint32_t, const gfxfb::cursor_image&) override { return gfxfb::ERR_UNSUPPORTED; }
     int32_t move_cursor(uint32_t, int32_t, int32_t) override { return gfxfb::ERR_UNSUPPORTED; }
+    int32_t set_mode(uint32_t, const gfxfb::gfxfb_mode&) override { return gfxfb::ERR_UNSUPPORTED; }
+    void restore_modes() override {}
     void release_buffer(gfxfb::buffer*) override {}
 };
 
@@ -368,6 +410,35 @@ struct task_move {
     fs::file*              file;
     user_page*             page;
     uint32_t               output;
+    int32_t                result;
+    sync::atomic<uint32_t> done;
+};
+
+// A request for `asked_mode()` run on a task of its own: the file and page it asks through, the output it names, its
+// result and the flag set once it returns
+struct task_set_mode {
+    fs::file*              file;
+    user_page*             page;
+    uint32_t               output;
+    int32_t                result;
+    sync::atomic<uint32_t> done;
+};
+
+// A present on output 0 run on a task of its own: the file and page it presents through, its handle, its result and
+// the flag set once it returns
+struct task_present {
+    fs::file*              file;
+    user_page*             page;
+    uint32_t               handle;
+    int32_t                result;
+    sync::atomic<uint32_t> done;
+};
+
+// A flush of one rect run on a task of its own: the node it flushes through, the page it asks with, its result and the
+// flag set once it returns
+struct task_flush {
+    const char*            path;
+    user_page*             page;
     int32_t                result;
     sync::atomic<uint32_t> done;
 };
@@ -832,6 +903,56 @@ static void relight_output(recording_display& fake, uint32_t output, gfxfb::buff
     fake.states[output].current.height = relit.height;
 }
 
+int32_t recording_display::set_mode(uint32_t output, const gfxfb::gfxfb_mode& mode) {
+    set_mode_calls++;
+    mode_output = output;
+    asked = mode;
+
+    if (while_setting_mode) {
+        void (*hook)() = while_setting_mode;
+        while_setting_mode = nullptr;
+        hook();
+    }
+
+    // A request past the output count changes nothing, so a gfxfb passing one fails a check instead of a write
+    bool changes_output = relight != mode_relight::none;
+    bool names_output = output < OUTPUTS;
+    bool has_light_left = mode_lights != MAX_MODE_LIGHTS;
+    if (!changes_output || !names_output || !has_light_left) {
+        return mode_answer;
+    }
+
+    gfxfb::gfxfb_mode previous = states[output].current;
+    states[output].lit = false;
+    states[output].relighting = true;
+    hidden_on[output] = true;
+    RUN_ELEVATED(reporting_node->output_changed(output));
+
+    states[output].relighting = false;
+    if (relight != mode_relight::dark) {
+        gfxfb::gfxfb_mode lit_mode = relight == mode_relight::asked_mode ? mode : previous;
+        uint32_t pitch = lit_mode.width * (DRIVER_BPP / 8);
+
+        gfxfb::buffer& base = mode_bases[mode_lights++];
+        base = {
+            .width     = lit_mode.width,
+            .height    = lit_mode.height,
+            .pitch     = pitch,
+            .size      = pmm::page_align_up(static_cast<uint64_t>(pitch) * lit_mode.height),
+            .phys      = g_buffer_phys,
+            .cacheable = false,
+        };
+
+        relit_bases[output] = &base;
+        states[output].lit = true;
+        states[output].current = lit_mode;
+    }
+
+    RUN_ELEVATED(reporting_node->output_changed(output));
+
+    return mode_answer;
+}
+
 // Gives every output of `fake` a base buffer of output 1's size, a page into the shared allocation, so each one is lit
 static void light_every_output(every_output_display& fake) {
     for (gfxfb::buffer& base : fake.bases) {
@@ -1109,6 +1230,32 @@ static bool holds_listed_modes(user_page& page, uint32_t output, uint32_t copied
     return true;
 }
 
+// The mode the SET_MODE tests ask for, output 1's size at ASKED_REFRESH_MILLIHERTZ
+static gfxfb::gfxfb_mode asked_mode() {
+    return {
+        .width              = static_cast<uint32_t>(OUTPUT_1_WIDTH),
+        .height             = static_cast<uint32_t>(OUTPUT_1_HEIGHT),
+        .refresh_millihertz = ASKED_REFRESH_MILLIHERTZ,
+    };
+}
+
+// Asks through GFXFB_SET_MODE on `file` for `output` to light at `mode`, writing the request at `offset` in the page
+static int32_t request_mode_at(
+    fs::file* file,
+    user_page& page,
+    size_t offset,
+    uint32_t output,
+    const gfxfb::gfxfb_mode& mode
+) {
+    *page.at<gfxfb::gfxfb_mode_request>(offset) = {.output = output, .reserved = 0, .mode = mode};
+    return file_ioctl(file, page, gfxfb::GFXFB_SET_MODE, page.addr + offset);
+}
+
+// Asks as `request_mode_at` does, writing the request at the page's start
+static int32_t request_mode(fs::file* file, user_page& page, uint32_t output, const gfxfb::gfxfb_mode& mode) {
+    return request_mode_at(file, page, ARGS_OFFSET, output, mode);
+}
+
 // Sends `args` through GFXFB_SET_CURSOR on `file`, writing them at the page's start
 static int32_t send_cursor_args(fs::file* file, user_page& page, const gfxfb::gfxfb_cursor_args& args) {
     *page.at<gfxfb::gfxfb_cursor_args>(ARGS_OFFSET) = args;
@@ -1203,6 +1350,63 @@ static sched::task* start_move(task_move& request, fs::file* file, user_page& pa
     request.done.store_relaxed(0);
 
     return test_helpers::start_pinned_task(move_on_a_task, &request, "gfxfb_move");
+}
+
+// Makes the request of `arg`, a `task_set_mode`, from TASK_REQUEST_OFFSET, then records the result and sets its flag
+static void set_mode_on_a_task(void* arg) {
+    task_set_mode* request = static_cast<task_set_mode*>(arg);
+    request->result = request_mode_at(
+        request->file, *request->page, TASK_REQUEST_OFFSET, request->output, asked_mode());
+    request->done.store_release(1);
+    sched::exit(0);
+}
+
+// Makes the present of `arg`, a `task_present`, then records the result and sets its flag
+static void present_on_a_task(void* arg) {
+    task_present* request = static_cast<task_present*>(arg);
+    request->result = present_buffer(request->file, *request->page, 0, request->handle);
+    request->done.store_release(1);
+    sched::exit(0);
+}
+
+// Starts presenting `handle` on output 0 through `file` on a task of its own, which sets `request.done` once the
+// present returns, or returns nullptr when the task cannot start
+static sched::task* start_present(task_present& request, fs::file* file, user_page& page, uint32_t handle) {
+    request.file = file;
+    request.page = &page;
+    request.handle = handle;
+    request.done.store_relaxed(0);
+
+    return test_helpers::start_pinned_task(present_on_a_task, &request, "gfxfb_present");
+}
+
+// Makes the flush of `arg`, a `task_flush`, then records the result and sets its flag
+static void flush_on_a_task(void* arg) {
+    task_flush* request = static_cast<task_flush*>(arg);
+    request->result = flush_one_rect(request->path, *request->page);
+    request->done.store_release(1);
+    sched::exit(0);
+}
+
+// Starts flushing one rect through the node at `path` on a task of its own, which sets `request.done` once the flush
+// returns, or returns nullptr when the task cannot start
+static sched::task* start_flush(task_flush& request, const char* path, user_page& page) {
+    request.path = path;
+    request.page = &page;
+    request.done.store_relaxed(0);
+
+    return test_helpers::start_pinned_task(flush_on_a_task, &request, "gfxfb_flush");
+}
+
+// Starts asking for `asked_mode()` on `output` through `file` on a task of its own, which sets `request.done` once the
+// request returns, or returns nullptr when the task cannot start
+static sched::task* start_set_mode(task_set_mode& request, fs::file* file, user_page& page, uint32_t output) {
+    request.file = file;
+    request.page = &page;
+    request.output = output;
+    request.done.store_relaxed(0);
+
+    return test_helpers::start_pinned_task(set_mode_on_a_task, &request, "gfxfb_set_mode");
 }
 
 // True when `rect` holds exactly the given position and size
@@ -4998,6 +5202,512 @@ TEST(gfxfb, boot_display_has_no_cursor) {
     EXPECT_EQ(move_cursor_to(other, page, 0, 0, 0), fs::ERR_NOSYS);
 
     ASSERT_TRUE(closes_before_deadline(other));
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_mode_relight_display;
+
+// A request the display lights reaches each file as one output event, its output keeps the primary and shows the new
+// base buffer, gfxfb hands the old one back, and the request takes control
+TEST(gfxfb, a_mode_request_relights_its_output_and_keeps_the_primary_there) {
+    light_output(g_mode_relight_display, 0, false);
+    light_output(g_mode_relight_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_mode_relight_display);
+    ASSERT_NOT_NULL(test.node);
+    g_mode_relight_display.reporting_node = test.node;
+    g_mode_relight_display.relight = mode_relight::asked_mode;
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* other = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(other);
+
+    ASSERT_EQ(request_mode(file, page, 0, asked_mode()), fs::OK);
+    EXPECT_EQ(g_mode_relight_display.set_mode_calls, static_cast<uint32_t>(1));
+    EXPECT_EQ(g_mode_relight_display.mode_output, static_cast<uint32_t>(0));
+    EXPECT_TRUE(modes_equal(g_mode_relight_display.asked, asked_mode()));
+
+    EXPECT_TRUE(reads_output_event(file, 0));
+    EXPECT_EQ(read_event(file).type, static_cast<uint32_t>(0));
+    EXPECT_TRUE(reads_output_event(other, 0));
+    EXPECT_EQ(read_event(other).type, static_cast<uint32_t>(0));
+
+    auto* output = page.at<gfxfb::gfxfb_output_info>(0);
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(output->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_TRUE(modes_equal(output->current, asked_mode()));
+
+    auto* info = page.at<gfxfb::gfxfb_info>(0);
+    ASSERT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_INFO, page.addr), fs::OK);
+    EXPECT_EQ(info->width, static_cast<uint32_t>(OUTPUT_1_WIDTH));
+    EXPECT_EQ(info->height, static_cast<uint32_t>(OUTPUT_1_HEIGHT));
+    ASSERT_TRUE(spin_wait_ge(g_mode_relight_display.released_count, 1));
+    EXPECT_EQ(g_mode_relight_display.last_released, &g_mode_relight_display.bases[0]);
+
+    EXPECT_EQ(request_mode(other, page, 1, asked_mode()), fs::ERR_BUSY);
+    EXPECT_EQ(g_mode_relight_display.set_mode_calls, static_cast<uint32_t>(1));
+
+    ASSERT_TRUE(closes_before_deadline(other));
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_mode_fallback_display;
+
+// A request whose mode fails to light returns ERR_IO with its output lit again at the previous mode, as one output
+// event, or dark when that fails too, which hands the primary to the other lit output and reports that output as well
+TEST(gfxfb, a_failed_mode_light_relights_the_previous_mode_or_leaves_the_output_dark) {
+    light_output(g_mode_fallback_display, 0, false);
+    light_output(g_mode_fallback_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_mode_fallback_display);
+    ASSERT_NOT_NULL(test.node);
+    g_mode_fallback_display.reporting_node = test.node;
+    g_mode_fallback_display.mode_answer = gfxfb::ERR_REFUSED;
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    auto* output = page.at<gfxfb::gfxfb_output_info>(0);
+    gfxfb::gfxfb_mode previous = g_mode_fallback_display.states[0].current;
+    g_mode_fallback_display.relight = mode_relight::previous_mode;
+    ASSERT_EQ(request_mode(file, page, 0, asked_mode()), fs::ERR_IO);
+    EXPECT_TRUE(reads_output_event(file, 0));
+    EXPECT_EQ(read_event(file).type, static_cast<uint32_t>(0));
+
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(output->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_TRUE(modes_equal(output->current, previous));
+
+    g_mode_fallback_display.relight = mode_relight::dark;
+    ASSERT_EQ(request_mode(file, page, 0, asked_mode()), fs::ERR_IO);
+    EXPECT_TRUE(reads_output_event(file, 0));
+    EXPECT_TRUE(reads_output_event(file, 1));
+    EXPECT_EQ(read_event(file).type, static_cast<uint32_t>(0));
+
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(output->flags, static_cast<uint32_t>(0));
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(output->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_mode_check_display;
+
+// A null or unreadable request, a set reserved field and an output of the output count or more fail with ERR_INVAL
+// even from a file that does not control the buffers, which then fails with ERR_BUSY, none of them reaching the display
+TEST(gfxfb, set_mode_refuses_bad_requests_before_control) {
+    light_output(g_mode_check_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_mode_check_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* controller = fs::open(test.path, fs::O_RDWR);
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(controller);
+    ASSERT_NOT_NULL(file);
+
+    ASSERT_NE(request_small_buffer(controller, page).handle, static_cast<uint32_t>(0));
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_SET_MODE, 0), fs::ERR_INVAL);
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_SET_MODE, page.addr + pmm::PAGE_SIZE), fs::ERR_INVAL);
+    EXPECT_EQ(request_mode(file, page, recording_display::OUTPUTS, asked_mode()), fs::ERR_INVAL);
+    EXPECT_EQ(request_mode(file, page, WIDE_OUTPUT_INDEX, asked_mode()), fs::ERR_INVAL);
+
+    // Only the low bit, then only the high bit, so a check of either half alone fails
+    const uint32_t set_reserved[] = {0x1, 0x80000000};
+    for (uint32_t reserved : set_reserved) {
+        *page.at<gfxfb::gfxfb_mode_request>(ARGS_OFFSET) = {.output = 0, .reserved = reserved, .mode = asked_mode()};
+        EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_SET_MODE, page.addr + ARGS_OFFSET), fs::ERR_INVAL);
+    }
+
+    EXPECT_EQ(request_mode(file, page, 0, asked_mode()), fs::ERR_BUSY);
+    EXPECT_EQ(g_mode_check_display.set_mode_calls, static_cast<uint32_t>(0));
+
+    // The controller never asked for a mode, and its close still asks the display to restore the modes it picks itself
+    ASSERT_TRUE(closes_before_deadline(file));
+    ASSERT_TRUE(closes_before_deadline(controller));
+    EXPECT_EQ(g_mode_check_display.restore_calls, static_cast<uint32_t>(1));
+}
+
+static recording_display g_mode_answer_display;
+
+// Each display refusal returns as its file error and takes no control, and ERR_DEVICE fails the display, so later
+// requests past control and flushes fail with ERR_IO without reaching it, while the controller's close restores modes
+TEST(gfxfb, set_mode_returns_the_display_results_as_file_errors) {
+    light_output(g_mode_answer_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_mode_answer_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(rival);
+
+    struct refusal {
+        int32_t answer;
+        int32_t error;
+    };
+
+    const refusal refusals[] = {
+        {gfxfb::ERR_UNSUPPORTED, fs::ERR_NOSYS},
+        {gfxfb::ERR_NO_MEMORY, fs::ERR_NOMEM},
+        {gfxfb::ERR_DARK, fs::ERR_AGAIN},
+        {gfxfb::ERR_INVALID_ARG, fs::ERR_INVAL},
+        {gfxfb::ERR_REFUSED, fs::ERR_IO},
+    };
+
+    for (const refusal& each : refusals) {
+        g_mode_answer_display.mode_answer = each.answer;
+        EXPECT_EQ(request_mode(file, page, 0, asked_mode()), each.error);
+    }
+
+    g_mode_answer_display.mode_answer = gfxfb::OK;
+    ASSERT_EQ(request_mode(rival, page, 0, asked_mode()), fs::OK);
+    EXPECT_EQ(request_mode(file, page, 0, asked_mode()), fs::ERR_BUSY);
+    EXPECT_EQ(g_mode_answer_display.set_mode_calls, static_cast<uint32_t>(6));
+
+    // The other file's request still fails with ERR_BUSY, since the rival keeps control on the failed display
+    g_mode_answer_display.mode_answer = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(request_mode(rival, page, 0, asked_mode()), fs::ERR_IO);
+    g_mode_answer_display.mode_answer = gfxfb::OK;
+    EXPECT_EQ(request_mode(rival, page, 0, asked_mode()), fs::ERR_IO);
+    EXPECT_EQ(request_mode(file, page, 0, asked_mode()), fs::ERR_BUSY);
+    EXPECT_EQ(flush_one_rect(test.path, page), fs::ERR_IO);
+
+    // The rival's failed requests left no reservation, so once it closes the other file's request fails with ERR_IO
+    // and takes no control, and that file's close restores nothing
+    ASSERT_TRUE(closes_before_deadline(rival));
+    EXPECT_EQ(g_mode_answer_display.restore_calls, static_cast<uint32_t>(1));
+    EXPECT_EQ(request_mode(file, page, 0, asked_mode()), fs::ERR_IO);
+    EXPECT_EQ(g_mode_answer_display.set_mode_calls, static_cast<uint32_t>(7));
+    ASSERT_TRUE(closes_before_deadline(file));
+    EXPECT_EQ(g_mode_answer_display.restore_calls, static_cast<uint32_t>(1));
+}
+
+static recording_display g_failing_mode_display;
+
+// The file and page the hook asks through, the request its task makes, and whether that request blocked
+static fs::file* g_failing_mode_file;
+static user_page* g_failing_mode_page;
+static task_set_mode g_queued_request;
+static sched::task* g_queued_requester;
+static bool g_queued_requester_blocked;
+
+// Runs inside the failing request's `set_mode()`: starts a second request and records whether it blocks
+static void queue_request_while_setting_mode() {
+    g_queued_requester = start_set_mode(g_queued_request, g_failing_mode_file, *g_failing_mode_page, 0);
+    g_queued_requester_blocked = g_queued_requester && test_helpers::blocks_before_deadline(g_queued_requester);
+}
+
+// A request waiting behind one whose display call fails the display returns ERR_IO without reaching the display
+TEST(gfxfb, a_mode_request_queued_behind_a_device_failure_never_reaches_the_display) {
+    light_output(g_failing_mode_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_failing_mode_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    g_failing_mode_file = file;
+    g_failing_mode_page = &page;
+    g_queued_requester = nullptr;
+    g_queued_requester_blocked = false;
+    g_failing_mode_display.mode_answer = gfxfb::ERR_DEVICE;
+    g_failing_mode_display.while_setting_mode = queue_request_while_setting_mode;
+
+    EXPECT_EQ(request_mode(file, page, 0, asked_mode()), fs::ERR_IO);
+    ASSERT_NOT_NULL(g_queued_requester);
+    EXPECT_TRUE(g_queued_requester_blocked);
+    ASSERT_TRUE(spin_wait(g_queued_request.done));
+    unpin(g_queued_requester);
+    EXPECT_EQ(g_queued_request.result, fs::ERR_IO);
+
+    EXPECT_EQ(g_failing_mode_display.set_mode_calls, static_cast<uint32_t>(1));
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+// The boot display sets no modes, so a request for its one mode fails with ERR_NOSYS and takes no control
+TEST(gfxfb, boot_display_sets_no_modes) {
+    gfxfb_test_node test = publish_boot_node();
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* other = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(other);
+
+    gfxfb::gfxfb_mode boot_mode = {
+        .width              = static_cast<uint32_t>(BOOT_WIDTH),
+        .height             = static_cast<uint32_t>(BOOT_HEIGHT),
+        .refresh_millihertz = 0,
+    };
+
+    EXPECT_EQ(request_mode(file, page, 0, boot_mode), fs::ERR_NOSYS);
+    EXPECT_EQ(request_mode(other, page, 0, boot_mode), fs::ERR_NOSYS);
+
+    ASSERT_TRUE(closes_before_deadline(other));
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_mode_reservation_display;
+
+// The files and page the hook moves through, the moves their tasks make, and what the hook saw of them
+static fs::file* g_mode_requester;
+static fs::file* g_mode_rival;
+static user_page* g_mode_page;
+static task_move g_requester_move;
+static task_move g_mode_rival_move;
+static bool g_rival_kept_out_before;
+static bool g_requester_move_refused;
+static bool g_rival_kept_out_after;
+
+// Moves output 0's cursor through `file` on a task of its own and returns whether the move returned `expected` in time
+static bool moves_before_deadline(task_move& request, fs::file* file, int32_t expected) {
+    sched::task* mover = start_move(request, file, *g_mode_page, 0);
+    if (!mover || !spin_wait(request.done)) {
+        return false;
+    }
+
+    unpin(mover);
+
+    return request.result == expected;
+}
+
+// Runs inside a request's `set_mode()`: the rival's move fails with ERR_BUSY before and after the display refuses a
+// move of the requester's own file, since the request still reserves control
+static void move_both_files_while_setting_mode() {
+    g_rival_kept_out_before = moves_before_deadline(g_mode_rival_move, g_mode_rival, fs::ERR_BUSY);
+    g_requester_move_refused = moves_before_deadline(g_requester_move, g_mode_requester, fs::ERR_IO);
+    g_rival_kept_out_after = moves_before_deadline(g_mode_rival_move, g_mode_rival, fs::ERR_BUSY);
+}
+
+// A request reserves control while in the display, which its file's refused call meanwhile keeps, and takes control
+// if it succeeds, as a creation does, while a request the display refuses takes none
+TEST(gfxfb, a_mode_request_takes_control_as_a_creation_does) {
+    light_output(g_mode_reservation_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_mode_reservation_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* requester = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(requester);
+    ASSERT_NOT_NULL(rival);
+
+    g_mode_requester = requester;
+    g_mode_rival = rival;
+    g_mode_page = &page;
+    g_rival_kept_out_before = false;
+    g_requester_move_refused = false;
+    g_rival_kept_out_after = false;
+
+    g_mode_reservation_display.cursor_answer = gfxfb::ERR_REFUSED;
+    g_mode_reservation_display.mode_answer = gfxfb::ERR_DARK;
+    g_mode_reservation_display.while_setting_mode = move_both_files_while_setting_mode;
+    EXPECT_EQ(request_mode(requester, page, 0, asked_mode()), fs::ERR_AGAIN);
+
+    EXPECT_TRUE(g_rival_kept_out_before);
+    EXPECT_TRUE(g_requester_move_refused);
+    EXPECT_TRUE(g_rival_kept_out_after);
+    EXPECT_EQ(g_mode_reservation_display.move_cursor_calls, static_cast<uint32_t>(1));
+
+    // The refused request left no file in control, so the rival's request takes it
+    g_mode_reservation_display.cursor_answer = gfxfb::OK;
+    g_mode_reservation_display.mode_answer = gfxfb::OK;
+    ASSERT_EQ(request_mode(rival, page, 0, asked_mode()), fs::OK);
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_mode(requester, page, 0, asked_mode()), fs::ERR_BUSY);
+    EXPECT_EQ(move_cursor_to(requester, page, 0, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(present_buffer(requester, page, 0, 0), fs::ERR_BUSY);
+    EXPECT_EQ(request_buffer(requester, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+    EXPECT_EQ(g_mode_reservation_display.set_mode_calls, static_cast<uint32_t>(2));
+
+    ASSERT_TRUE(closes_before_deadline(rival));
+    ASSERT_TRUE(closes_before_deadline(requester));
+}
+
+static recording_display g_mode_close_display;
+
+// The file the hook creates through, the page holding its request, and whether its creation returned ERR_BUSY in time
+static fs::file* g_restore_rival;
+static user_page* g_restore_page;
+static bool g_rival_kept_out_of_restore;
+
+// Runs inside the closing controller's `restore_modes()`: records whether a creation through the rival file fails with
+// ERR_BUSY before the deadline
+static void create_through_the_rival_while_restoring() {
+    g_rival_kept_out_of_restore = creates_before_deadline(g_restore_rival, *g_restore_page, fs::ERR_BUSY);
+}
+
+// A closing controller asks the display once to restore its modes, after its base buffer's present ended and its
+// cursors were hidden and before its control ends, while a closing file that never controlled asks nothing
+TEST(gfxfb, a_closing_controller_restores_the_modes) {
+    light_output(g_mode_close_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_mode_close_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    // A request the display refuses takes no control, so its file's close asks nothing
+    fs::file* refused = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(refused);
+    g_mode_close_display.mode_answer = gfxfb::ERR_INVALID_ARG;
+    EXPECT_EQ(request_mode(refused, page, 0, asked_mode()), fs::ERR_INVAL);
+    ASSERT_TRUE(closes_before_deadline(refused));
+    g_mode_close_display.mode_answer = gfxfb::OK;
+
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    fs::file* bystander = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+    ASSERT_NOT_NULL(bystander);
+    ASSERT_NOT_NULL(rival);
+
+    // The controller shows a buffer it created, so its close presents the base buffer and waits for that present
+    ASSERT_EQ(request_mode(file, page, 0, asked_mode()), fs::OK);
+    uint32_t handle = create_output_0_buffer(file, page);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(present_buffer(file, page, 0, handle), fs::OK);
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+
+    ASSERT_TRUE(closes_before_deadline(bystander));
+    EXPECT_EQ(g_mode_close_display.restore_calls, static_cast<uint32_t>(0));
+
+    g_restore_rival = rival;
+    g_restore_page = &page;
+    g_rival_kept_out_of_restore = false;
+    g_mode_close_display.while_restoring = create_through_the_rival_while_restoring;
+
+    sched::task* closer = start_close(g_deadline_close, file);
+    ASSERT_NOT_NULL(closer);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    EXPECT_EQ(g_mode_close_display.presented, &g_mode_close_display.bases[0]);
+    EXPECT_EQ(g_mode_close_display.restore_calls, static_cast<uint32_t>(0));
+
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+    ASSERT_TRUE(spin_wait(g_deadline_close.done));
+    unpin(closer);
+
+    EXPECT_EQ(g_mode_close_display.restore_calls, static_cast<uint32_t>(1));
+    EXPECT_EQ(g_mode_close_display.set_cursor_calls_at_restore, recording_display::OUTPUTS);
+    EXPECT_EQ(g_mode_close_display.present_calls_at_restore, g_mode_close_display.present_calls);
+    EXPECT_TRUE(g_rival_kept_out_of_restore);
+
+    ASSERT_TRUE(closes_before_deadline(rival));
+    EXPECT_EQ(g_mode_close_display.restore_calls, static_cast<uint32_t>(1));
+}
+
+static recording_display g_serialized_mode_display;
+
+// The node, file and page the hook goes through, the second request, the move, the flush and the present their tasks
+// make, and what the hook saw
+static const char* g_serialized_mode_path;
+static fs::file* g_serialized_mode_file;
+static user_page* g_serialized_mode_page;
+static task_set_mode g_second_request;
+static sched::task* g_second_requester;
+static bool g_second_requester_blocked;
+static uint32_t g_mode_calls_while_blocked;
+static task_move g_move_during_mode;
+static bool g_moved_during_mode;
+static task_flush g_flush_during_mode;
+static bool g_flushed_during_mode;
+static task_present g_present_during_mode;
+static bool g_presented_during_mode;
+static bool g_created_during_mode;
+
+// Runs inside the first request's `set_mode()`: records whether a second request blocks and how many requests the
+// display took meanwhile, then whether a cursor move, a flush, a present and a creation return before the deadline
+static void request_and_call_while_setting_mode() {
+    fs::file* file = g_serialized_mode_file;
+    user_page& page = *g_serialized_mode_page;
+    g_second_requester = start_set_mode(g_second_request, file, page, 1);
+    g_second_requester_blocked = g_second_requester && test_helpers::blocks_before_deadline(g_second_requester);
+    g_mode_calls_while_blocked = g_serialized_mode_display.set_mode_calls;
+
+    sched::task* mover = start_move(g_move_during_mode, file, page, 0);
+    g_moved_during_mode = mover && spin_wait(g_move_during_mode.done);
+    if (g_moved_during_mode) {
+        unpin(mover);
+    }
+
+    sched::task* flusher = start_flush(g_flush_during_mode, g_serialized_mode_path, page);
+    g_flushed_during_mode = flusher && spin_wait(g_flush_during_mode.done);
+    if (g_flushed_during_mode) {
+        unpin(flusher);
+    }
+
+    sched::task* presenter = start_present(g_present_during_mode, file, page, 0);
+    g_presented_during_mode = presenter && spin_wait(g_present_during_mode.done);
+    if (g_presented_during_mode) {
+        unpin(presenter);
+    }
+
+    g_created_during_mode = creates_before_deadline(file, page, fs::OK);
+}
+
+// A request waits for another's `set_mode()` display call, so the display never runs two at once, while a cursor move,
+// a flush, a present and a creation reach the display meanwhile
+TEST(gfxfb, mode_requests_reach_the_display_one_at_a_time) {
+    light_output(g_serialized_mode_display, 0, false);
+    light_output(g_serialized_mode_display, 1, false);
+    gfxfb_test_node test = publish_driver_node(&g_serialized_mode_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    g_serialized_mode_path = test.path;
+    g_serialized_mode_file = file;
+    g_serialized_mode_page = &page;
+
+    g_second_requester = nullptr;
+    g_second_requester_blocked = false;
+    g_mode_calls_while_blocked = 0;
+
+    g_moved_during_mode = false;
+    g_flushed_during_mode = false;
+    g_presented_during_mode = false;
+    g_created_during_mode = false;
+
+    g_serialized_mode_display.while_setting_mode = request_and_call_while_setting_mode;
+    ASSERT_EQ(request_mode(file, page, 0, asked_mode()), fs::OK);
+    ASSERT_NOT_NULL(g_second_requester);
+    EXPECT_TRUE(g_second_requester_blocked);
+    EXPECT_EQ(g_mode_calls_while_blocked, static_cast<uint32_t>(1));
+
+    EXPECT_TRUE(g_moved_during_mode);
+    EXPECT_EQ(g_move_during_mode.result, fs::OK);
+    EXPECT_TRUE(g_flushed_during_mode);
+    EXPECT_EQ(g_flush_during_mode.result, fs::OK);
+    EXPECT_EQ(g_serialized_mode_display.flushed_output, static_cast<uint32_t>(0));
+
+    EXPECT_TRUE(g_presented_during_mode);
+    EXPECT_EQ(g_present_during_mode.result, fs::OK);
+    EXPECT_TRUE(g_created_during_mode);
+
+    ASSERT_TRUE(spin_wait(g_second_request.done));
+    EXPECT_EQ(g_second_request.result, fs::OK);
+    EXPECT_EQ(g_serialized_mode_display.set_mode_calls, static_cast<uint32_t>(2));
+    EXPECT_EQ(g_serialized_mode_display.mode_output, static_cast<uint32_t>(1));
+    unpin(g_second_requester);
+
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
     ASSERT_TRUE(closes_before_deadline(file));
 }
 

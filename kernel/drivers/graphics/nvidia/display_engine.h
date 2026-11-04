@@ -157,12 +157,13 @@ struct engine_head {
  *
  * A lit output reads at its mode with its base buffer, mapped write-combining,
  * and a cursor of up to 256 by 256 pixels, 0 by 0 when its light found none,
- * and every other output reads dark. A lit output lists its mode alone. One
- * spinlock, the output lock, guards every head's state and is never held
- * across a wait. After `release`, every output reads dark and lists no mode,
- * and `flush()`, `present()`, `create_buffer()` and the cursor calls fail,
- * while gfxfb keeps the base buffers, which BAR1 stops translating once
- * `detach()` restores BAR1's block register.
+ * and every other output reads dark. A lit output lists its mode alone, and
+ * the engine refuses every mode request. One spinlock, the output lock, guards
+ * every head's state and is never held across a wait. After `release`, every
+ * output reads dark and lists no mode, and `flush()`, `present()`,
+ * `create_buffer()` and the cursor calls fail, while gfxfb keeps the base
+ * buffers, which BAR1 stops translating once `detach()` restores BAR1's block
+ * register.
  */
 class display_engine : public gfxfb::display {
 public:
@@ -281,6 +282,8 @@ public:
 
     int32_t set_cursor(uint32_t output, const gfxfb::cursor_image& image) override;
     int32_t move_cursor(uint32_t output, int32_t x, int32_t y) override;
+    int32_t set_mode(uint32_t, const gfxfb::gfxfb_mode&) override { return gfxfb::ERR_UNSUPPORTED; }
+    void restore_modes() override {}
 
     /**
      * @brief Queue the driver task's release of a buffer `create_buffer()`

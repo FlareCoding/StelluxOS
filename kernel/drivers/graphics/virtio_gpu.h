@@ -252,7 +252,8 @@ struct virtio_gpu_scanout {
  * device reports like any other. Without that interrupt, which the driver
  * logs, the scanouts stay as attach lit them. `read_output()`, `read_modes()`
  * and `base_buffer()` read the scanouts under a spinlock, so they never wait
- * behind a batch. A lit scanout lists only the mode it is lit at.
+ * behind a batch. A lit scanout lists only the mode it is lit at, and the
+ * driver refuses every mode request.
  *
  * Every scanout has a hardware cursor of up to 64 by 64 pixels, drawn from the
  * one cursor resource, which the driver shows on a lit scanout through
@@ -308,6 +309,8 @@ public:
 
     int32_t set_cursor(uint32_t output, const gfxfb::cursor_image& image) override;
     int32_t move_cursor(uint32_t output, int32_t x, int32_t y) override;
+    int32_t set_mode(uint32_t, const gfxfb::gfxfb_mode&) override { return gfxfb::ERR_UNSUPPORTED; }
+    void restore_modes() override {}
 
     void release_buffer(gfxfb::buffer* buf) override;
 

@@ -349,6 +349,7 @@ void gfxfb_node::init_locks_and_client_list() {
         lock.init();
     }
 
+    m_mode_lock.init();
     m_outputs_lock = sync::SPINLOCK_INIT;
     m_clients.init();
 }
@@ -462,9 +463,11 @@ int32_t gfxfb_node::on_close(fs::file* f) {
     bool is_controller = m_controller == closing;
     sync::mutex_unlock(m_clients_lock);
 
-    // Control ends only after waiting for the base buffers' presents, so no other client's present comes before theirs
+    // Control ends only after the base buffers' presents and the restore, so no other client's present or mode request
+    // comes before them
     if (is_controller) {
         give_outputs_back(*closing);
+        m_display->restore_modes();
 
         sync::mutex_lock(m_clients_lock);
         m_controller = nullptr;
@@ -603,6 +606,10 @@ int32_t gfxfb_node::ioctl(fs::file* f, uint32_t cmd, uint64_t arg) {
 
     if (cmd == GFXFB_MOVE_CURSOR) {
         return move_cursor(client_of(f), arg);
+    }
+
+    if (cmd == GFXFB_SET_MODE) {
+        return set_mode(client_of(f), arg);
     }
 
     return fs::ERR_NOSYS;
@@ -1140,6 +1147,40 @@ int32_t gfxfb_node::move_cursor(client& owner, uint64_t position_addr) {
     }
 
     sync::mutex_unlock(m_cursor_locks[position.output]);
+    end_controlled_call(rc == fs::OK);
+
+    return rc;
+}
+
+int32_t gfxfb_node::set_mode(client& owner, uint64_t request_addr) {
+    gfxfb_mode_request request{};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &request, reinterpret_cast<const void*>(request_addr), sizeof(request));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    bool is_reserved_clear = request.reserved == 0;
+    bool names_output = request.output < clamped_output_count(*m_display);
+    if (!is_reserved_clear || !names_output) {
+        return fs::ERR_INVAL;
+    }
+
+    if (!begin_controlled_call(owner)) {
+        return fs::ERR_BUSY;
+    }
+
+    sync::mutex_lock(m_mode_lock);
+
+    rc = fs::ERR_IO;
+    if (!has_display_failed()) {
+        int32_t display_rc = m_display->set_mode(request.output, request.mode);
+        mark_failed_on_device_error(display_rc);
+        rc = to_fs_error(display_rc);
+    }
+
+    sync::mutex_unlock(m_mode_lock);
     end_controlled_call(rc == fs::OK);
 
     return rc;
