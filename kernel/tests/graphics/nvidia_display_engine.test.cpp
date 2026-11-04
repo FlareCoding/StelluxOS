@@ -55,6 +55,7 @@ using drivers::nvidia::cursor_methods;
 using drivers::nvidia::display_channel;
 using drivers::nvidia::display_engine;
 using drivers::nvidia::display_heads;
+using drivers::nvidia::DISPLAY_HEADS_MAX;
 using drivers::nvidia::DPCD_PHY_REPEATER_CAPABILITIES;
 using drivers::nvidia::DPCD_PHY_REPEATER_CAPABILITY_BYTES;
 using drivers::nvidia::DPCD_RECEIVER_CAPABILITY_BYTES;
@@ -79,6 +80,7 @@ using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
 using drivers::nvidia::operation_queue;
 using drivers::nvidia::PUSH_BUFFER_BYTES;
+using drivers::nvidia::PUSH_BUFFER_PAD_BYTES;
 using drivers::nvidia::register_display_engine;
 using drivers::nvidia::registers;
 using drivers::nvidia::release_display_channel;
@@ -88,6 +90,7 @@ using drivers::nvidia::video_memory;
 using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
 using drivers::nvidia::window_channel_area;
+using drivers::nvidia::window_channel_number;
 using drivers::nvidia::WINDOW_IMAGE_METHODS;
 using drivers::nvidia::WINDOW_OWNER_NONE;
 using drivers::nvidia::window_usage_methods;
@@ -359,11 +362,16 @@ public:
     uint32_t   boot_link_type = rm::OUTPUT_RESOURCE_TYPE_SERIAL; // the link type every link request's reply names
     uint32_t   boot_link_protocol = rm::PROTOCOL_DISPLAYPORT_A; // the protocol every link request's reply names
     uint8_t    assigned_resource = 0;         // the output resource an assignment's reply names for the display id
+    uint32_t   assigned_ids[4] = {};          // the display ids of the first assignments, in order
+    uint8_t    assignment_excludes[4] = {};   // and the output resources each excluded
+    uint32_t   refused_assignment_ids = 0;    // the display ids whose assignment display common refuses
+    uint32_t   assignment_count = 0;
     bool       has_crossbar = false;          // whether display common's capabilities report a crossbar
     uint32_t   supported_ids = 0;             // the display ids reported supported, each a DisplayPort output
     uint32_t   digital_facts = DISPLAYPORT_FACTS; // the digital facts of every supported display id
     uint32_t   connected_ids = 0;             // those reported connected, the only ones with a monitor, giving `g_edid`
     const uint8_t* dpcd_receiver = DPCD_RECEIVER; // the receiver capability field of every connected monitor
+    const uint8_t* output_1_dpcd_receiver = nullptr; // the field output 1's monitor gives in its place, if set
     const uint8_t* link_status = ONE_LANE_TRAINED; // the 3 link status bytes every connected monitor gives, if any
     uint32_t   link_status_address = DPCD_LINK_STATUS_INDICATORS; // where it gives them
     bool       refuses_link_status = false;   // whether reads of them are refused with `ERR_FIRMWARE`
@@ -375,9 +383,13 @@ public:
     uint8_t    displayport_trains_phy_repeaters = 1; // whether they give the firmware as training PHY repeaters
     uint32_t   training_command = 0;          // the command of the last training request
     uint32_t   training_data = 0;             // and its data
+    uint32_t   streamed_heads = 0;            // a bit for each head a stream request named, bit 0 head 0's
     power_down power_downs[4] = {};           // the first trainings to zero lanes and AUX writes of D3, in order
     uint32_t   power_down_count = 0;          // how many came, the 4 kept and any past them
     uint32_t   refused_modes = 0;             // how many of the first bandwidth check requests the check refuses
+    uint32_t   accepted_modes = 0xFFFFFFFF;   // how many after those it accepts before refusing every later one
+    uint32_t   refused_checks = 0;            // a bit for each other request it refuses, bit 0 the first request's
+    uint32_t   check_heads[8] = {};           // a bit for each head the first requests name, bit 0 head 0's
     uint32_t   put_at_first_active_read = 0;  // the core channel's PUT when a head's display id was first asked
     bool       is_channel_busy = false;       // whether each channel state reply names the busy state, else idle
     bool       has_state_request = false;     // whether a channel state request has come
@@ -395,6 +407,7 @@ public:
     uint32_t   put_at_link = 0;               // the core channel's PUT when that request came
     uint32_t   get_at_stream = 0;             // the core channel's GET from the stream's attributes, 0 for the default
     uint32_t   get_at_power_down = 0;         // the core channel's GET from the first power-down request, if set
+    bool       reads_updates_whole = false;   // whether the core channel's GET reaches PUT at each notified update
 
     int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void* params, size_t) override {
         if (class_id == TEST_CURSOR_CHANNEL_CLASS) {
@@ -459,6 +472,17 @@ public:
             return answer_mode_set(*static_cast<const rm::display_change_params*>(params));
         }
 
+        if (command == rm::CONTROL_ASSIGN_OUTPUT_RESOURCE && assignment_count < 4) {
+            const auto* request = static_cast<const rm::assign_output_resource_params*>(params);
+            assigned_ids[assignment_count] = request->display_id;
+            assignment_excludes[assignment_count] = request->excluded_mask;
+            assignment_count++;
+            if ((request->display_id & refused_assignment_ids) != 0) {
+                return ERR_FIRMWARE;
+            }
+        }
+
+        keep_check(command, params);
         fill_reply(command, params);
         fill_output_reply(command, params);
         fill_check_reply(command, params);
@@ -466,6 +490,7 @@ public:
         fill_link_reply(command, params);
 
         keep_training(command, params);
+        keep_stream(command, params);
         count_repeater_status_read(command, params);
 
         return OK;
@@ -648,31 +673,30 @@ private:
         return methods * 2 * sizeof(uint32_t);
     }
 
-    // The bytes of the light's update on `head` after a shutdown update: the head's fixed methods, a usage bound for
-    // each present window serving it, its cursor's methods, the lit window's three usage methods and the update's five
-    static uint32_t light_update_bytes(uint32_t windows, uint8_t windows_per_head, uint8_t head) {
-        uint32_t served = 0;
+    // The bytes of the light's update on `lit_heads` after a shutdown update: each head's fixed and cursor methods, a
+    // usage bound for each present window serving it and its lit window's three usage methods, then the update's five
+    static uint32_t light_update_bytes(uint32_t windows, uint8_t windows_per_head, uint32_t lit_heads) {
+        uint32_t head_methods = HEAD_LIGHT_FIXED_METHODS + CURSOR_METHODS + WINDOW_USAGE_METHODS;
+        uint32_t methods = 5 + __builtin_popcount(lit_heads) * head_methods;
         for (uint8_t window = 0; window < CHIP_WINDOWS; window++) {
             bool is_present = (windows & (1u << window)) != 0;
-            if (is_present && window / windows_per_head == head) {
-                served++;
+            if (is_present && (lit_heads & (1u << (window / windows_per_head))) != 0) {
+                methods++;
             }
         }
-
-        uint32_t methods = HEAD_LIGHT_FIXED_METHODS + served + CURSOR_METHODS + WINDOW_USAGE_METHODS + 5;
 
         return methods * 2 * sizeof(uint32_t);
     }
 
-    // From the stream's attributes, the link's last request ahead of the light, leaves the core channel's GET at
-    // `get_at_stream`, or, with a head showing a display, where the light's update after the shutdown update ends
+    // From the stream's attributes, a link's last request ahead of the light, leaves the core channel's GET at
+    // `get_at_stream`, or, with a boot display and no update read whole, where the streamed heads' light update ends
     void move_get_past_light() const {
         uint32_t& get = g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)];
         uint32_t put = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
         if (get_at_stream != 0) {
             get = get_at_stream;
-        } else if (boot_display_id != 0) {
-            get = put + light_update_bytes(present_windows, windows_per_head, boot_head);
+        } else if (boot_display_id != 0 && !reads_updates_whole) {
+            get = put + light_update_bytes(present_windows, windows_per_head, streamed_heads);
         }
     }
 
@@ -816,9 +840,21 @@ private:
         training_data = training->data;
     }
 
-    // Acknowledges a DPCD read with the bytes of `dpcd_receiver` from its address, of `link_status` from
-    // `link_status_address` and of `phy_repeater_capabilities` from theirs, every other byte reading 0
+    // Keeps the head of a stream request the double took
+    void keep_stream(uint32_t command, const void* params) {
+        if (command == rm::CONTROL_CONFIGURE_STREAM) {
+            streamed_heads |= 1u << static_cast<const rm::configure_stream_params*>(params)->head;
+        }
+    }
+
+    // Acknowledges a DPCD read with its monitor's receiver capability bytes from its address, `link_status`'s from
+    // `link_status_address` and `phy_repeater_capabilities`'s from theirs, every other byte reading 0
     void fill_aux_reply(rm::aux_params& reply) const {
+        const uint8_t* receiver = dpcd_receiver;
+        if (reply.display_id == OUTPUT_1_ID && output_1_dpcd_receiver != nullptr) {
+            receiver = output_1_dpcd_receiver;
+        }
+
         uint32_t bytes = reply.size + 1;
         for (uint32_t i = 0; i < bytes; i++) {
             uint32_t address = reply.address + i;
@@ -827,7 +863,7 @@ private:
             bool is_repeater_byte = address >= DPCD_PHY_REPEATER_CAPABILITIES;
             is_repeater_byte = is_repeater_byte && repeater_byte < DPCD_PHY_REPEATER_CAPABILITY_BYTES;
             if (address < DPCD_RECEIVER_CAPABILITY_BYTES) {
-                reply.data[i] = dpcd_receiver[address];
+                reply.data[i] = receiver[address];
             } else if (link_status != nullptr && address >= link_status_address && status_byte < 3) {
                 reply.data[i] = link_status[status_byte];
             } else if (phy_repeater_capabilities != nullptr && is_repeater_byte) {
@@ -885,10 +921,26 @@ private:
         }
     }
 
-    // Answers the bandwidth check, refusing the first `refused_modes` requests
+    // Keeps the heads a bandwidth check request names
+    void keep_check(uint32_t command, const void* params) {
+        uint32_t request = control_count(rm::CONTROL_IS_MODE_POSSIBLE);
+        if (command != rm::CONTROL_IS_MODE_POSSIBLE || request > sizeof(check_heads) / sizeof(check_heads[0])) {
+            return;
+        }
+
+        const rm::mode_possible_params* check = static_cast<const rm::mode_possible_params*>(params);
+        for (uint8_t index = 0; index < check->head_count; index++) {
+            check_heads[request - 1] |= 1u << check->heads[index].head;
+        }
+    }
+
+    // Answers the bandwidth check, refusing the first `refused_modes` requests, those past `accepted_modes` after
+    // them and those of `refused_checks`
     void fill_check_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_IS_MODE_POSSIBLE) {
-            bool is_refused = control_count(rm::CONTROL_IS_MODE_POSSIBLE) <= refused_modes;
+            uint32_t request = control_count(rm::CONTROL_IS_MODE_POSSIBLE);
+            bool is_listed = request <= 32 && (refused_checks & (1u << (request - 1))) != 0;
+            bool is_refused = is_listed || request <= refused_modes || request - refused_modes > accepted_modes;
             static_cast<rm::mode_possible_params*>(params)->is_possible = is_refused ? 0 : 1;
         }
     }
@@ -901,12 +953,17 @@ private:
         }
     }
 
-    // Answers an assignment with `assigned_resource` driving the display id alone, and a request for an output
-    // resource's DisplayPort facts from the `displayport_*` fields, with FEC and the increased watermark limits
+    // Answers an assignment with the lowest resource from `assigned_resource` it does not exclude, and a request for
+    // a resource's DisplayPort facts from the `displayport_*` fields, with FEC and the increased watermark limits
     void fill_link_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_ASSIGN_OUTPUT_RESOURCE) {
             rm::assign_output_resource_params* reply = static_cast<rm::assign_output_resource_params*>(params);
-            reply->resources[assigned_resource] = {.display_mask = reply->display_id, .type = rm::ASSIGNED_SINGLE};
+            uint8_t resource = assigned_resource;
+            while (reply->excluded_mask & (1u << resource)) {
+                resource++;
+            }
+
+            reply->resources[resource] = {.display_mask = reply->display_id, .type = rm::ASSIGNED_SINGLE};
         } else if (command == rm::CONTROL_GET_LINK_CAPABILITIES) {
             rm::link_capabilities_params* reply = static_cast<rm::link_capabilities_params*>(params);
             reply->max_rate = displayport_max_rate;
@@ -1111,11 +1168,15 @@ public:
 
 namespace drivers::nvidia {
 
-// Sets the waits and cursor step seam, darkens, relights and fails the engine, reaches its look-up table and take-down,
-// a head's cursor memory, window queue and context DMAs on the lowest head holding them, the rest on the lit head
+// Sets the engine's waits and seams, darkens, relights and fails it, reaches its look-up table and take-down, a head's
+// state on a given head or the lit head, and its cursor memory, window queue and context DMAs on the lowest holder
 struct display_engine_test_access {
     static void set_cursor_step_seam(display_engine& engine, void (*seam)(display_engine& engine)) {
         engine.m_cursor_step_seam = seam;
+    }
+
+    static void set_update_seam(display_engine& engine, void (*seam)(display_engine& engine)) {
+        engine.m_update_seam = seam;
     }
 
     static bool is_cursor_shown(const display_engine& engine) {
@@ -1214,6 +1275,10 @@ struct display_engine_test_access {
         return engine.m_notifier_context_dma;
     }
 
+    static rm::handle base_buffer_context_dma(const display_engine& engine, uint8_t head) {
+        return engine.m_heads[head].base_buffer_context_dma;
+    }
+
     static rm::handle base_buffer_context_dma(const display_engine& engine) {
         for (uint8_t head = 0; head < drivers::nvidia::DISPLAY_HEADS_MAX; head++) {
             if (engine.m_heads[head].base_buffer_context_dma != 0) {
@@ -1230,6 +1295,14 @@ struct display_engine_test_access {
 
     static rm::handle look_up_table_context_dma(const display_engine& engine) {
         return engine.m_look_up_table_context_dma;
+    }
+
+    static uint8_t window(const display_engine& engine, uint8_t head) {
+        return engine.m_heads[head].window;
+    }
+
+    static display_channel* window_queue(display_engine& engine, uint8_t head) {
+        return engine.m_heads[head].window_queue;
     }
 
     static display_channel* window_queue(display_engine& engine) {
@@ -1305,8 +1378,16 @@ struct display_engine_test_access {
         return lit_state(engine).notifier.physical_address();
     }
 
+    static uint64_t window_notifier_address(const display_engine& engine, uint8_t head) {
+        return engine.m_heads[head].notifier.physical_address();
+    }
+
     static bool has_queued_present(const display_engine& engine) {
         return lit_state(engine).has_queued_present;
+    }
+
+    static bool has_queued_present(const display_engine& engine, uint8_t head) {
+        return engine.m_heads[head].has_queued_present;
     }
 
     static uint64_t last_reported_frame(const display_engine& engine) {
@@ -1317,14 +1398,26 @@ struct display_engine_test_access {
         return timer::is_pending(&lit_state(engine).latch_check_timer);
     }
 
+    static bool is_latch_check_scheduled(const display_engine& engine, uint8_t head) {
+        return timer::is_pending(&engine.m_heads[head].latch_check_timer);
+    }
+
     static bool is_deadline_scheduled(const display_engine& engine) {
         return timer::is_pending(&lit_state(engine).deadline_timer);
     }
 
+    static bool is_deadline_scheduled(const display_engine& engine, uint8_t head) {
+        return timer::is_pending(&engine.m_heads[head].deadline_timer);
+    }
+
     static void set_mode_times(display_engine& engine, const mode_times& times) {
+        set_mode_times(engine, lit_head(engine), times);
+    }
+
+    static void set_mode_times(display_engine& engine, uint8_t head, const mode_times& times) {
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
-            lit_state(engine).times = times;
+            engine.m_heads[head].times = times;
             sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
         });
     }
@@ -1341,11 +1434,15 @@ struct display_engine_test_access {
     // Moves the queued present's deadline and its timer out of reach, so only the test ends the present. True when
     // the timer was scheduled
     static bool hold_deadline(display_engine& engine) {
+        return hold_deadline(engine, lit_head(engine));
+    }
+
+    static bool hold_deadline(display_engine& engine, uint8_t head) {
         bool was_scheduled = false;
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
-            lit_state(engine).queued_deadline_ns = ~0ull;
-            was_scheduled = timer::schedule(&lit_state(engine).deadline_timer, ~0ull);
+            engine.m_heads[head].queued_deadline_ns = ~0ull;
+            was_scheduled = timer::schedule(&engine.m_heads[head].deadline_timer, ~0ull);
             sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
         });
         return was_scheduled;
@@ -1370,6 +1467,10 @@ struct display_engine_test_access {
 
     static uint64_t vertical_blank_ns(const display_engine& engine) {
         return lit_state(engine).vertical_blank_ns;
+    }
+
+    static uint64_t vertical_blank_ns(const display_engine& engine, uint8_t head) {
+        return engine.m_heads[head].vertical_blank_ns;
     }
 
     static void set_last_estimate_log_ns(display_engine& engine, uint64_t log_ns) {
@@ -1421,8 +1522,14 @@ static operation_queue& engine_operations() {
     return *g_engine_operations;
 }
 
-// An engine over `fw` and `memory`, built in `g_engine_bytes` once the timers of the engine built there before are
-// cancelled, so neither fires into it, giving its waits for the notifier and for room in the cursor channel no time
+// Moves the core channel's GET to its PUT, as the channel does once it reads a kicked update whole
+static void read_kicked_update(display_engine&) {
+    uint32_t put = g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)];
+    g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)] = put;
+}
+
+// An engine over `fw` and `memory`, built in `g_engine_bytes` once the earlier engine's timers are cancelled so none
+// fires into it, its notifier and cursor channel waits given no time, its updates read whole when `fw` says so
 static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memory) {
     if (g_built_engine != nullptr) {
         display_engine_test_access::cancel_timers(*g_built_engine);
@@ -1432,6 +1539,10 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
     display_engine& engine = *g_built_engine;
     display_engine_test_access::set_notifier_wait(engine, 0);
     display_engine_test_access::set_cursor_wait(engine, 0);
+    if (fw.reads_updates_whole) {
+        display_engine_test_access::set_update_seam(engine, read_kicked_update);
+    }
+
     return engine;
 }
 
@@ -2509,9 +2620,9 @@ TEST(nvidia_display_engine, set_up_chooses_the_only_output_with_modes_past_outpu
     ));
 }
 
-// With both outputs given modes and head 0 showing output 1, a set-up chooses output 1 alone, the boot output being
-// tried before output 0, and asks the bandwidth check once
-TEST(nvidia_display_engine, set_up_chooses_the_boot_output_alone_of_two_with_modes) {
+// With both outputs given modes and head 0 showing output 1, a set-up chooses output 1 first, the boot output being
+// tried before output 0, then output 0 on the lowest head left, asking the bandwidth check once for each
+TEST(nvidia_display_engine, set_up_chooses_the_boot_output_first_of_two_with_modes) {
     engine_firmware fw;
     fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
     fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
@@ -2522,11 +2633,39 @@ TEST(nvidia_display_engine, set_up_chooses_the_boot_output_alone_of_two_with_mod
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 1u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 2u);
     EXPECT_EQ(engine_log_count("is chosen to light first"), 1u);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: output 1 is chosen to light first, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 0 with "
         "window 0, which the bandwidth check accepts"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 is chosen to light next, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 1 with "
+        "window 1, which the bandwidth check accepts"
+    ));
+}
+
+// With head 0 showing output 1 and every other head output 0, output 0 is chosen first on head 0, the boot head, so
+// gfxfb's primary, the lowest lit output an active head showed, is the output lit first
+TEST(nvidia_display_engine, set_up_chooses_first_the_lowest_output_an_active_head_showed) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.boot_display_id = OUTPUT_1_ID;
+    fw.other_display_id = OUTPUT_0_ID;
+
+    copy_aoc_edid(true);
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 0 is chosen to light first, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 0 with "
+        "window 0, which the bandwidth check accepts"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 is chosen to light next, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 1 with "
+        "window 1, which the bandwidth check accepts"
     ));
 }
 
@@ -2588,6 +2727,8 @@ TEST(nvidia_display_engine, set_up_logs_every_mode_of_two_outputs_refused) {
     EXPECT_TRUE(engine_log_contains(
         "nvidia: no output is chosen to light, as every mode of the 2 outputs with modes is refused"
     ));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0 is not chosen to light, as every one of its modes is refused"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is not chosen to light, as every one of its modes is refused"));
 }
 
 // A bandwidth check request failing with `ERR_NO_MEMORY` ends the choice, logged, and leaves the set-up `OK`
@@ -2912,21 +3053,30 @@ static constexpr uint8_t TIMING_1366_BY_768[] = {
 // `TIMING_1366_BY_768`'s base buffer, 768 rows of 1366 4-byte pixels, 5464 bytes rounded up to 5632
 static constexpr uint64_t BASE_BUFFER_1366_BY_768_BYTES = 0x420000;
 
+// The scanout memory two outputs at 1366 by 768 take, one base buffer after the other
+static constexpr uint64_t TWO_OUTPUTS_SCANOUT_BYTES = 2 * BASE_BUFFER_1366_BY_768_BYTES;
+
 // `TIMING_1366_BY_768` with 767 rows, which at 5632 bytes apart end inside a page
 static constexpr uint8_t TIMING_1366_BY_767[] = {
     0x66, 0x21, 0x56, 0xAA, 0x51, 0xFF, 0x1E, 0x20, 0x46, 0x8F, 0x33, 0x00, 0x0F, 0x8C, 0x21, 0x00, 0x00, 0x1E,
 };
 
+// Replaces timing descriptor `descriptor` of `g_edid`, 0 for the first, with the timing descriptor `timing`
+static void put_timing(uint32_t descriptor, const uint8_t (&timing)[DESCRIPTOR_BYTES]) {
+    uint32_t first = TIMING_DESCRIPTORS_BYTE + descriptor * DESCRIPTOR_BYTES;
+    uint8_t replaced_sum = 0;
+    for (uint32_t i = 0; i < DESCRIPTOR_BYTES; i++) {
+        replaced_sum = static_cast<uint8_t>(replaced_sum + g_edid[first + i] - timing[i]);
+    }
+
+    string::memcpy(g_edid + first, timing, DESCRIPTOR_BYTES);
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] + replaced_sum);
+}
+
 // Replaces the first timing in `g_edid`, the preferred one (the AOC's or one put there before), with the timing
 // descriptor `timing`, which stays preferred
 static void put_timing_first(const uint8_t (&timing)[DESCRIPTOR_BYTES]) {
-    uint8_t replaced_sum = 0;
-    for (uint32_t i = 0; i < DESCRIPTOR_BYTES; i++) {
-        replaced_sum = static_cast<uint8_t>(replaced_sum + g_edid[TIMING_DESCRIPTORS_BYTE + i] - timing[i]);
-    }
-
-    string::memcpy(g_edid + TIMING_DESCRIPTORS_BYTE, timing, DESCRIPTOR_BYTES);
-    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] + replaced_sum);
+    put_timing(0, timing);
 }
 
 // Whether each of the `bytes` bytes of the scanout backing from `start` holds `value`
@@ -3132,6 +3282,210 @@ static bool binds(rm::handle object, uint32_t hardware_channel, uint32_t record,
     }
 
     return true;
+}
+
+// Whether a hash table entry binds `object` to `hardware_channel`, whatever its record
+static bool binds_to_channel(rm::handle object, uint32_t hardware_channel) {
+    for (uint32_t entry = 0; entry < NVIDIA_HASH_ENTRIES; entry++) {
+        bool is_object = instance_word(entry * NVIDIA_ENTRY_BYTES) == object;
+        uint32_t context = instance_word(entry * NVIDIA_ENTRY_BYTES + sizeof(uint32_t));
+        if (is_object && context >> NVIDIA_CHANNEL_SHIFT == hardware_channel) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The core channel's writable end, where two heads' first light wraps to the push buffer's start with only head 1's
+// last cursor methods and the update past it
+static constexpr uint32_t TWO_HEADS_LIGHT_WRAP = PUSH_BUFFER_BYTES - PUSH_BUFFER_PAD_BYTES;
+
+// One mode set lights both connected outputs, naming both display ids, the second assignment excluding the first's
+// resource, and binds each base buffer and the look-up table to both windows' channels
+TEST(nvidia_display_engine, set_up_lights_two_outputs_in_one_mode_set) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.present_windows = 0b11;
+    fw.reads_updates_whole = true;
+
+    fw.has_crossbar = true;
+    fw.assigned_resource = 2;
+
+    copy_aoc_edid(true);
+    put_timing_first(TIMING_1366_BY_768);
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_EQ(fw.mode_set_requests, 2u);
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID | OUTPUT_1_ID);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID | OUTPUT_1_ID);
+
+    ASSERT_EQ(fw.assignment_count, 2u);
+    EXPECT_EQ(fw.assigned_ids[0], OUTPUT_0_ID);
+    EXPECT_EQ(fw.assignment_excludes[0], 0u);
+    EXPECT_EQ(fw.assigned_ids[1], OUTPUT_1_ID);
+    EXPECT_EQ(fw.assignment_excludes[1], 1u << 2);
+
+    rm::handle table = display_engine_test_access::look_up_table_context_dma(engine);
+    for (uint8_t head = 0; head < 2; head++) {
+        uint32_t channel = window_channel_number(display_engine_test_access::window(engine, head));
+        EXPECT_TRUE(binds_to_channel(display_engine_test_access::base_buffer_context_dma(engine, 0), channel));
+        EXPECT_TRUE(binds_to_channel(display_engine_test_access::base_buffer_context_dma(engine, 1), channel));
+        EXPECT_TRUE(binds_to_channel(table, channel));
+    }
+
+    for (uint32_t output = 0; output < 2; output++) {
+        gfxfb::output_state state = {};
+        ASSERT_EQ(engine.read_output(output, state), gfxfb::OK);
+        EXPECT_TRUE(state.lit);
+        EXPECT_EQ(state.current.width, 1366u);
+        EXPECT_NOT_NULL(engine.base_buffer(output));
+    }
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0 is chosen to light first"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is chosen to light next"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Has the double report `ids` connected at 1366 by 768, output 0 shown by head 0 at boot, with the crossbar assigning
+// output resources from 2 up
+static void connect_outputs_at_1366_by_768(engine_firmware& fw, uint32_t ids) {
+    fw.supported_ids = ids;
+    fw.connected_ids = ids;
+    fw.boot_display_id = OUTPUT_0_ID;
+    fw.has_crossbar = true;
+    fw.assigned_resource = 2;
+
+    copy_aoc_edid(true);
+    put_timing_first(TIMING_1366_BY_768);
+}
+
+// Whether gfxfb reads `output` lit with a base buffer
+static bool reads_lit(display_engine& engine, uint32_t output) {
+    gfxfb::output_state state = {};
+    bool is_read = engine.read_output(output, state) == gfxfb::OK;
+    return is_read && state.lit && engine.base_buffer(output) != nullptr;
+}
+
+// With three connected outputs and two heads, outputs 0 and 1 light in one mode set and output 2 stays dark, logged,
+// its modes never asked about
+TEST(nvidia_display_engine, set_up_leaves_an_output_past_the_heads_dark) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID | OUTPUT_2_ID);
+    fw.boot_display_id = 0;
+    fw.present_windows = 0b11;
+    fw.reads_updates_whole = true;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 2u);
+    EXPECT_TRUE(engine_log_contains("nvidia: output 2 is not chosen to light, as no head is left for it"));
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID | OUTPUT_1_ID);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID | OUTPUT_1_ID);
+    EXPECT_EQ(fw.assignment_count, 2u);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_FALSE(reads_lit(engine, 2));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A later output refused at its first mode beside the first takes its next mode, the first keeping its own, and each
+// request after the first names both heads
+TEST(nvidia_display_engine, set_up_steps_a_later_output_down_its_modes_beside_the_first) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.refused_checks = 1u << 1;
+    copy_aoc_edid(false);
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 3u);
+    EXPECT_EQ(fw.check_heads[0], 1u << 0);
+    EXPECT_EQ(fw.check_heads[1], (1u << 0) | (1u << 1));
+    EXPECT_EQ(fw.check_heads[2], (1u << 0) | (1u << 1));
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0 is chosen to light first, at its EDID's timing 1, "));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 is chosen to light next, at its EDID's timing 0, 2560 by 1440 at 59.950 Hz, on head 1 with "
+        "window 1, which the bandwidth check accepts"
+    ));
+    EXPECT_TRUE(engine_log_contains("on head 1 with window 1, beside the output chosen before it"));
+}
+
+// With output 1 prepared after output 0, the number of the table's binding to its window channel, after output 0's
+// window notifier binding and output 1's base buffer binding, and of its buffer's clearing map, after output 0's two
+static constexpr uint32_t LATER_TABLE_BINDING_MAP = WINDOW_NOTIFIER_BINDING_MAP + 2;
+static constexpr uint32_t LATER_CLEARING_MAP      = 3;
+
+// Output 1 with its window not present, no room to map its base buffer, no room for the table's binding or that binding
+// failing leaves both dark, output 0's bindings kept, the set-up failing only on the binding's error
+TEST(nvidia_display_engine, set_up_lights_no_output_when_a_later_one_is_not_prepared) {
+    struct failure {
+        uint32_t    present_windows;
+        uint32_t    clearing_map;
+        uint32_t    general_map;
+        int32_t     error;
+        int32_t     result;
+        uint32_t    scanout_releases;
+        const char* line;
+    };
+
+    static constexpr failure failures[] = {
+        {0b01, 0, 0, OK, OK, 0,
+         "nvidia: window 1 has no channel, as the GSP's firmware does not report the window present"},
+        {0b11, LATER_CLEARING_MAP, 0, ERR_NO_MEMORY, OK, 1,
+         "nvidia: output 1 has no base buffer, as mapping it for the CPU to clear it found no room"},
+        {0b11, 0, LATER_TABLE_BINDING_MAP, ERR_NO_MEMORY, OK, 0,
+         "nvidia: output 1 cannot light, as binding the look-up table surface and the base buffers to the chosen "
+         "outputs' window channels found no room"},
+        {0b11, 0, LATER_TABLE_BINDING_MAP, ERR_TIMEOUT, ERR_TIMEOUT, 0,
+         "nvidia: binding the look-up table surface and the base buffers to the chosen outputs' window channels for "
+         "output 1 failed: -4"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+        fw.boot_display_id = 0;
+        fw.present_windows = failed.present_windows;
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+        memory.failing_scanout_map = failed.clearing_map;
+        memory.scanout_map_result = failed.clearing_map != 0 ? failed.error : OK;
+        memory.failing_general_map = failed.general_map;
+        memory.general_map_result = failed.general_map != 0 ? failed.error : OK;
+
+        display_engine& engine = new_engine(fw, memory);
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        EXPECT_TRUE(engine_log_contains(
+            "nvidia: no output lights, as output 1's window channel or a surface it scans out is not set up"
+        ));
+
+        EXPECT_EQ(fw.mode_set_requests, 0u);
+        EXPECT_FALSE(reads_lit(engine, 0));
+        EXPECT_FALSE(reads_lit(engine, 1));
+
+        uint32_t channel = window_channel_number(0);
+        EXPECT_TRUE(binds_to_channel(display_engine_test_access::base_buffer_context_dma(engine, 0), channel));
+        EXPECT_TRUE(binds_to_channel(display_engine_test_access::look_up_table_context_dma(engine), channel));
+        EXPECT_EQ(memory.scanout_releases, failed.scanout_releases);
+        EXPECT_EQ(memory.general_releases, 0u);
+        EXPECT_EQ(engine.release(), OK);
+    }
 }
 
 // Output 1's base buffer and then the look-up table surface are bound to window 0's channel, number 1, each under a new
@@ -3988,13 +4342,15 @@ TEST(nvidia_display_engine, set_up_stops_two_active_heads_with_one_shutdown_upda
 }
 
 // Has the double show output 0 as `show_output_0_on_link_3` does but on head 0, which a set-up lights first, and output
-// 1, connected too, on every other head
+// 1, connected too, on every other head, the bandwidth check refusing output 1's modes beside output 0's
 static bool show_output_1_on_the_other_heads(engine_firmware& fw, engine_video_memory& memory) {
     bool is_backed = show_output_0_on_link_3(fw, memory);
     fw.boot_head = 0;
     fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
     fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
     fw.other_display_id = OUTPUT_1_ID;
+
+    fw.accepted_modes = 1;
     return is_backed;
 }
 
@@ -4160,6 +4516,27 @@ TEST(nvidia_display_engine, set_up_powers_down_the_link_of_each_dark_boot_output
     EXPECT_EQ(engine.release(), OK);
 }
 
+// With head 0 showing output 0 and every other head output 1 at boot, the mode set lights both again, so neither link
+// is powered down
+TEST(nvidia_display_engine, set_up_powers_down_no_link_of_a_boot_output_the_mode_set_lights) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.present_windows = 0b11;
+    fw.reads_updates_whole = true;
+    fw.boot_head = 0;
+    fw.other_display_id = OUTPUT_1_ID;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_NE(fw.mode_set_requests, 0u);
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID | OUTPUT_1_ID);
+    EXPECT_EQ(fw.power_down_count, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
 // A shutdown update whose notifier wait fails leaves output 1's link as the boot firmware lit it, as a head may still
 // drive it
 TEST(nvidia_display_engine, set_up_powers_down_no_link_after_a_failed_shutdown_update) {
@@ -4172,7 +4549,7 @@ TEST(nvidia_display_engine, set_up_powers_down_no_link_after_a_failed_shutdown_u
     ASSERT_EQ(set_up_logged(engine), OK);
     EXPECT_TRUE(engine_log_contains("the shutdown update failed: "));
     EXPECT_EQ(fw.power_down_count, 0u);
-    EXPECT_FALSE(engine_log_contains("stays dark"));
+    EXPECT_FALSE(engine_log_contains("powers down its link"));
     EXPECT_EQ(engine.release(), OK);
 }
 
@@ -4459,6 +4836,47 @@ TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_refused_assignm
     ));
     EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
     EXPECT_FALSE(engine_log_contains("is driven by output resource"));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Where a take-down of head 0 ends with no head active and windows 0 and 1 present, both mapped ahead of its update
+static constexpr uint32_t HEAD_0_TAKE_DOWN_END = INITIAL_METHODS_END + (2 * 2 + 4 + 5) * 2 * sizeof(uint32_t);
+
+// Output 1's refused assignment after output 0's link is set up takes down head 0, which that link readied, and ends
+// the mode set naming both display ids, the set-up `OK` with neither output lit
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_later_outputs_refused_assignment) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.boot_display_id = 0;
+    fw.present_windows = 0b11;
+    fw.refused_assignment_ids = OUTPUT_1_ID;
+    fw.get_at_mode_set_start = HEAD_0_TAKE_DOWN_END;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), OK);
+    ASSERT_EQ(fw.assignment_count, 2u);
+    EXPECT_EQ(fw.assigned_ids[1], OUTPUT_1_ID);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], HEAD_0_TAKE_DOWN_END);
+
+    ASSERT_EQ(fw.mode_set_requests, 2u);
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID | OUTPUT_1_ID);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID | OUTPUT_1_ID);
+    EXPECT_EQ(fw.mode_set_puts[1], HEAD_0_TAKE_DOWN_END);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100 is driven by output resource 2"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common refused to assign display id 0x200 an output resource, so "
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x200's link is not set up, so bring-up takes the display engine down\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+
+    EXPECT_FALSE(reads_lit(engine, 0));
+    EXPECT_FALSE(reads_lit(engine, 1));
     EXPECT_EQ(engine.release(), OK);
 }
 
@@ -5132,17 +5550,107 @@ TEST(nvidia_display_engine, set_up_lights_the_boot_head_in_one_update_interlocke
     EXPECT_EQ(window_channel_word(HEAD_1_WINDOW, CHANNEL_PUT), WINDOW_IMAGE_BYTES);
 
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: the core channel read the update lighting head 1, its completion notifier reading 0x00000000\r\n"
+        "nvidia: the core channel read the mode set's update, lighting head 1, its completion notifier reading "
+        "0x00000000\r\n"
     ));
     EXPECT_TRUE(engine_log_contains(
         "nvidia: after the light, head 1's display id reads 0x100 and serial link 3's control 0x902 in the core "
         "channel's armed state\r\n"
     ));
-    EXPECT_FALSE(engine_log_contains("an update of its own"));
+    EXPECT_FALSE(engine_log_contains("the update after the light's"));
     EXPECT_FALSE(engine_log_contains("taken down"));
 
     g_core_channel_registers[(NVIDIA_ARMED_STATE + HEAD_1_DISPLAY_ID) / sizeof(uint32_t)] = 0;
     g_core_channel_registers[(NVIDIA_ARMED_STATE + LINK_3_CONTROL) / sizeof(uint32_t)] = 0;
+}
+
+// Two heads lit with no boot display each have their window's channel kicked to the end of its first image
+TEST(nvidia_display_engine, set_up_kicks_the_window_channel_of_each_lit_head) {
+    window_channel_word(0, CHANNEL_PUT) = 0;
+    window_channel_word(1, CHANNEL_PUT) = 0;
+
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.boot_display_id = 0;
+    fw.present_windows = 0b11;
+    fw.reads_updates_whole = true;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+
+    for (uint8_t head = 0; head < 2; head++) {
+        uint8_t window = display_engine_test_access::window(engine, head);
+        EXPECT_EQ(window, head);
+        EXPECT_EQ(window_channel_word(window, CHANNEL_PUT), WINDOW_IMAGE_BYTES);
+    }
+
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Serial link 3's control naming head 1 over link A (NVIDIA's protocol 8)
+static constexpr uint32_t HEAD_1_ON_LINK_3_A = 0x802;
+
+// The usage bounds the core methods give window `window` for images `width` pixels wide
+static uint32_t usage_bounds(uint8_t window, uint32_t width) {
+    window_usage_methods usage = {};
+    build_window_usage_methods(window, width, usage);
+    return usage.methods[WINDOW_USAGE_METHODS - 1].value;
+}
+
+// Output 0, refused at the AOC's 2560 by 1440, lights at 1366 by 768 on head 0 beside output 1 at 2560 by 1440 on head
+// 1, each head with its own display id, raster and window usage bounds, and head 1 with its own link and image
+TEST(nvidia_display_engine, set_up_lights_each_head_with_its_own_output_timing_and_window) {
+    engine_firmware fw;
+    fw.present_windows = 0b11;
+    fw.reads_updates_whole = true;
+
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.has_crossbar = true;
+    fw.assigned_resource = 2;
+
+    fw.dpcd_receiver = DPCD_RECEIVER_HBR2;
+    fw.output_1_dpcd_receiver = DPCD_RECEIVER;
+    fw.refused_modes = 1;
+    copy_aoc_edid(true);
+    put_timing(1, TIMING_1366_BY_768);
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES + AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(fw.training_data, 0x1E01u);
+
+    uint32_t lights_end = TWO_HEADS_LIGHT_WRAP;
+    EXPECT_EQ(core_method_value(fw, INITIAL_METHODS_END, lights_end, HEAD_0_DISPLAY_ID), OUTPUT_0_ID);
+    EXPECT_EQ(core_method_value(fw, INITIAL_METHODS_END, lights_end, HEAD_1_DISPLAY_ID), OUTPUT_1_ID);
+    EXPECT_EQ(core_method_value(fw, INITIAL_METHODS_END, lights_end, LINK_3_CONTROL), HEAD_1_ON_LINK_3_A);
+
+    uint32_t head_1_raster_size = rm::CORE_HEAD_RASTER_SIZE + NVIDIA_HEAD_STRIDE;
+    uint32_t head_0_raster = 1792u | 798u << rm::HEAD_PAIR_SECOND_SHIFT;
+    uint32_t head_1_raster = 2720u | 1481u << rm::HEAD_PAIR_SECOND_SHIFT;
+    EXPECT_EQ(core_method_value(fw, INITIAL_METHODS_END, lights_end, rm::CORE_HEAD_RASTER_SIZE), head_0_raster);
+    EXPECT_EQ(core_method_value(fw, INITIAL_METHODS_END, lights_end, head_1_raster_size), head_1_raster);
+
+    uint32_t window_1_usage_bounds = NVIDIA_WINDOW_USAGE_BOUNDS + NVIDIA_WINDOW_STRIDE;
+    uint32_t window_0_bounds = core_method_value(fw, INITIAL_METHODS_END, lights_end, NVIDIA_WINDOW_USAGE_BOUNDS);
+    uint32_t window_1_bounds = core_method_value(fw, INITIAL_METHODS_END, lights_end, window_1_usage_bounds);
+    EXPECT_EQ(window_0_bounds, usage_bounds(0, 1366));
+    EXPECT_EQ(window_1_bounds, usage_bounds(1, 2560));
+
+    rm::handle surface = display_engine_test_access::base_buffer_context_dma(engine, 1);
+    uint32_t pitch = base_buffer_pitch(2560) / rm::PLANE_PITCH_UNIT_BYTES;
+    EXPECT_EQ(window_method_value(fw, WINDOW_IMAGE_BYTES, rm::WINDOW_SET_SIZE), 2560u | 1440u << rm::SIZE_HEIGHT_SHIFT);
+    EXPECT_EQ(window_method_value(fw, WINDOW_IMAGE_BYTES, rm::WINDOW_SET_PLANE_STORAGE), pitch);
+    EXPECT_EQ(window_method_value(fw, WINDOW_IMAGE_BYTES, rm::WINDOW_SET_SURFACE_CONTEXT_DMA), surface);
+
+    EXPECT_EQ(engine.release(), OK);
 }
 
 // The armed owners giving windows 0 to 5 the heads they serve, 0 for windows 0 to 2 and 1 for windows 3 to 5
@@ -5181,10 +5689,10 @@ TEST(nvidia_display_engine, set_up_lights_window_0_apart_when_the_first_update_c
     EXPECT_EQ(fw.mode_set_puts[1], SECOND_UPDATE_END);
     EXPECT_EQ(window_channel_word(0, CHANNEL_PUT), WINDOW_IMAGE_BYTES);
 
-    EXPECT_TRUE(engine_log_contains("nvidia: the core channel read the update lighting head 0, its completion"));
+    EXPECT_TRUE(engine_log_contains("nvidia: the core channel read the mode set's update, lighting head 0,"));
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: window 0's first image follows in an update of its own naming no notifier, since the update lighting "
-        "head 0 changed a window's owner or a present window serves no head\r\n"
+        "nvidia: window 0's first image follows in the update after the light's, naming no notifier, since the "
+        "update lighting head 0 changed a window's owner or a present window serves no head\r\n"
     ));
     EXPECT_FALSE(engine_log_contains("taken down"));
     arm_owners({});
@@ -5223,7 +5731,7 @@ TEST(nvidia_display_engine, set_up_lights_window_0_apart_for_a_changed_owner_or_
         ASSERT_EQ(set_up_logged(engine), OK);
         rm::handle notifier = display_engine_test_access::notifier_context_dma(engine);
         expect_update(fw, first_update_end - 40, notifier, 0);
-        EXPECT_TRUE(engine_log_contains("an update of its own"));
+        EXPECT_TRUE(engine_log_contains("the update after the light's"));
         EXPECT_FALSE(engine_log_contains("taken down"));
     }
 
@@ -5257,7 +5765,7 @@ TEST(nvidia_display_engine, set_up_lights_in_one_first_update_when_no_owner_chan
     EXPECT_EQ(fw.mode_set_puts[1], MAPPED_LIGHT_END + 16);
     EXPECT_EQ(window_channel_word(0, CHANNEL_PUT), WINDOW_IMAGE_BYTES);
 
-    EXPECT_FALSE(engine_log_contains("an update of its own"));
+    EXPECT_FALSE(engine_log_contains("the update after the light's"));
     EXPECT_FALSE(engine_log_contains("taken down"));
     arm_owners({});
 }
@@ -5284,7 +5792,7 @@ TEST(nvidia_display_engine, set_up_takes_the_lit_head_down_after_a_failed_light)
 
     EXPECT_TRUE(engine_log_contains("nvidia: lighting head 1 failed: -4, so bring-up takes the display engine down"));
     EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
-    EXPECT_FALSE(engine_log_contains("the core channel read the update lighting head"));
+    EXPECT_FALSE(engine_log_contains("the core channel read the mode set's update"));
     EXPECT_FALSE(engine_log_contains("after the light"));
 }
 
@@ -5484,7 +5992,7 @@ TEST(nvidia_display_engine, set_up_shows_the_cursor_only_in_the_update_carrying_
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    EXPECT_TRUE(engine_log_contains("an update of its own"));
+    EXPECT_TRUE(engine_log_contains("the update after the light's"));
     expect_cursor_methods(fw, FIRST_LIGHT_END - 40 - CURSOR_METHODS * 8, 0, 0);
 
     rm::handle cursor_context_dma = display_engine_test_access::cursor_context_dma(engine);
@@ -5493,6 +6001,41 @@ TEST(nvidia_display_engine, set_up_shows_the_cursor_only_in_the_update_carrying_
     EXPECT_EQ(cursor_word(0, cursor_channel::HOT_SPOT_POINT), PARKED_POSITION);
 
     arm_owners({});
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Outputs 0 and 1, lit on heads 0 and 1 with their first images after the light's update, each get a cursor channel and
+// cursor memory of their own, each cursor parked, named by no cursor method in that update and read 256 by 256
+TEST(nvidia_display_engine, set_up_gives_each_lit_head_its_own_parked_cursor) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.boot_display_id = 0;
+    fw.present_windows = 0b11;
+    fw.present_heads = PRESENT_HEADS;
+    fw.reads_updates_whole = true;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES + 2 * CURSOR_MEMORY_BYTES));
+    give_cursor_room(0, 1);
+    give_cursor_room(1, 1);
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    for (uint8_t head = 0; head < 2; head++) {
+        EXPECT_EQ(cursor_word(head, cursor_channel::HOT_SPOT_POINT), PARKED_POSITION);
+        EXPECT_EQ(cursor_word(head, cursor_channel::UPDATE), 0u);
+
+        uint32_t cursor_context = HEAD_0_CURSOR_CONTEXT + head * NVIDIA_HEAD_STRIDE;
+        EXPECT_EQ(core_method_value(fw, INITIAL_METHODS_END, TWO_HEADS_LIGHT_WRAP, cursor_context), 0u);
+
+        gfxfb::output_state state = {};
+        ASSERT_EQ(engine.read_output(head, state), gfxfb::OK);
+        EXPECT_EQ(state.cursor_max_width, 256u);
+        EXPECT_EQ(state.cursor_max_height, 256u);
+    }
+
+    EXPECT_TRUE(engine_log_contains("nvidia: head 0 has a cursor channel, and output 0's cursor memory lies at 0x"));
+    EXPECT_TRUE(engine_log_contains("nvidia: head 1 has a cursor channel, and output 1's cursor memory lies at 0x"));
     EXPECT_EQ(engine.release(), OK);
 }
 
@@ -8149,4 +8692,376 @@ TEST(nvidia_display_engine, the_light_reads_its_controls_back_from_the_armed_sta
         window_channel_word(window, WINDOW_ARMED_STATE_START + control) = 0;
         window_channel_word(window, control) = 0;
     }
+}
+
+// The head the light gave `output`, or `DISPLAY_HEADS_MAX` when none
+static uint8_t head_of_output(const display_engine& engine, uint8_t output) {
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        if (display_engine_test_access::head_output(engine, head) == output) {
+            return head;
+        }
+    }
+
+    return DISPLAY_HEADS_MAX;
+}
+
+// Marks slot 0 of `head`'s window notifier begun and services one vertical blank of `head`, at raster frame `frame`
+static void service_head(display_engine& engine, uint8_t head, uint32_t frame) {
+    registers regs = engine_registers();
+    uint64_t address = display_engine_test_access::window_notifier_address(engine, head);
+    static_cast<uint32_t*>(paging::phys_to_virt(address))[0] = NVIDIA_SLOT_BEGUN;
+    head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
+    raster_register(head) = (frame << 16) | 770;
+    service_elevated(engine, regs, 1u << head);
+}
+
+// Connects outputs 0 and 1 at 1366 by 768 with no boot display and windows 0 and 1 present, so set-up lights both, and
+// backs their scanout memory and one buffer of their size more
+static bool connect_two_outputs(engine_firmware& fw, engine_video_memory& memory) {
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.boot_display_id = 0;
+    fw.present_windows = 0b11;
+    fw.reads_updates_whole = true;
+    return memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES + BASE_BUFFER_1366_BY_768_BYTES);
+}
+
+// Two lit outputs each take a present on their own window, and each present ends latched only at its own head's
+// vertical blank, those blanks counting toward the first second logged for each head
+TEST(nvidia_display_engine, two_lit_outputs_present_and_latch_on_their_own_vertical_blanks) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_TRUE(reads_lit(engine, 0));
+    ASSERT_TRUE(reads_lit(engine, 1));
+
+    uint8_t head_0 = head_of_output(engine, 0);
+    uint8_t head_1 = head_of_output(engine, 1);
+    ASSERT_NE(head_0, DISPLAY_HEADS_MAX);
+    ASSERT_NE(head_1, DISPLAY_HEADS_MAX);
+    ASSERT_EQ(head_0 + head_1, 1);
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    ASSERT_EQ(engine.present(0, engine.base_buffer(0), nullptr, 0), gfxfb::OK);
+    ASSERT_EQ(engine.present(1, engine.base_buffer(1), nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, head_0));
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, head_1));
+
+    service_head(engine, head_1, 1);
+    uint64_t blank_1_ns = display_engine_test_access::vertical_blank_ns(engine, head_1);
+    expect_last_present_end(1, 1, gfxfb::GFXFB_PRESENT_LATCHED, 1, blank_1_ns);
+    EXPECT_TRUE(display_engine_test_access::has_queued_present(engine, head_0));
+
+    service_head(engine, head_0, 1);
+    uint64_t blank_0_ns = display_engine_test_access::vertical_blank_ns(engine, head_0);
+    expect_last_present_end(2, 0, gfxfb::GFXFB_PRESENT_LATCHED, 1, blank_0_ns);
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine, head_1));
+
+    uint32_t frames = display_engine_test_access::frames_per_second(engine);
+    for (uint32_t frame = 2; frame <= frames; frame++) {
+        service_head(engine, head_0, frame);
+        service_head(engine, head_1, frame);
+    }
+
+    log_first_second_logged(engine);
+    EXPECT_TRUE(engine_log_contains("nvidia: the handler serviced head 0's vertical blanks 1 to 60 since the light"));
+    EXPECT_TRUE(engine_log_contains("nvidia: the handler serviced head 1's vertical blanks 1 to 60 since the light"));
+
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Head 0's present missing its deadline fails the display and ends head 1's queued present failed at once, cancelling
+// both of head 1's timers
+TEST(nvidia_display_engine, a_missed_deadline_ends_every_lit_heads_queued_present) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_EQ(display_engine_test_access::head_output(engine, 1), 1u);
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    display_engine_test_access::set_mode_times(engine, 1, SLOW_MODE_TIMES);
+    ASSERT_EQ(engine.present(1, engine.base_buffer(1), nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, 1));
+
+    registers regs = engine_registers();
+    head_register(NVIDIA_HEAD_TIMING_STATUS, 1) = NVIDIA_LAST_DATA;
+    service_elevated(engine, regs, 1u << 1);
+    EXPECT_TRUE(display_engine_test_access::is_latch_check_scheduled(engine, 1));
+
+    ASSERT_EQ(present_base_buffer(engine, engine.base_buffer(0)), gfxfb::OK);
+    display_engine_test_access::move_deadline(engine, 0);
+    display_engine_test_access::run_deadline(engine);
+
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine, 1));
+    EXPECT_FALSE(display_engine_test_access::is_latch_check_scheduled(engine, 1));
+    EXPECT_FALSE(display_engine_test_access::is_deadline_scheduled(engine, 1));
+    expect_last_present_end(2, 1, gfxfb::GFXFB_PRESENT_FAILED, 0, 0);
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(g_present_end_count, 2u);
+}
+
+// Output 0's cursor move finding its cursor channel's free register all ones fails the display and ends head 1's
+// queued present failed at once, cancelling both of head 1's timers
+TEST(nvidia_display_engine, a_cursor_move_reading_all_ones_ends_every_lit_heads_queued_present) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    fw.present_heads = PRESENT_HEADS;
+    give_cursor_room(0, 1);
+    give_cursor_room(1, 1);
+
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_EQ(display_engine_test_access::head_output(engine, 1), 1u);
+    ASSERT_EQ(engine.set_cursor(0, SMALL_CURSOR), gfxfb::OK);
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    display_engine_test_access::set_mode_times(engine, 1, SLOW_MODE_TIMES);
+    ASSERT_EQ(engine.present(1, engine.base_buffer(1), nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, 1));
+
+    registers regs = engine_registers();
+    head_register(NVIDIA_HEAD_TIMING_STATUS, 1) = NVIDIA_LAST_DATA;
+    service_elevated(engine, regs, 1u << 1);
+    EXPECT_TRUE(display_engine_test_access::is_latch_check_scheduled(engine, 1));
+
+    give_cursor_room(0, 0xFFFFFFFF);
+    EXPECT_EQ(engine.move_cursor(0, 10, 20), gfxfb::ERR_DEVICE);
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine, 1));
+    EXPECT_FALSE(display_engine_test_access::is_latch_check_scheduled(engine, 1));
+    EXPECT_FALSE(display_engine_test_access::is_deadline_scheduled(engine, 1));
+    expect_last_present_end(1, 1, gfxfb::GFXFB_PRESENT_FAILED, 0, 0);
+
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(g_present_end_count, 1u);
+}
+
+// Output 0's present finding its window channel's GET all ones fails the display and ends head 1's queued present
+// failed at once, cancelling both of head 1's timers
+TEST(nvidia_display_engine, a_present_reading_get_all_ones_ends_every_lit_heads_queued_present) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_EQ(display_engine_test_access::head_output(engine, 1), 1u);
+
+    engine.turn_on_flips();
+    start_recording_present_ends(engine);
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+
+    // The first image and eight presents leave 31 of the push buffer's 1012 writable words, too few for a ninth
+    for (uint32_t present = 0; present < 8; present++) {
+        ASSERT_EQ(present_base_buffer(engine, base), gfxfb::OK);
+        notifier_slot_word(engine, present % NOTIFIER_SLOTS) = NVIDIA_SLOT_BEGUN;
+        service_lit_head(engine);
+    }
+
+    display_engine_test_access::set_mode_times(engine, 1, SLOW_MODE_TIMES);
+    ASSERT_EQ(engine.present(1, engine.base_buffer(1), nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, 1));
+
+    registers regs = engine_registers();
+    head_register(NVIDIA_HEAD_TIMING_STATUS, 1) = NVIDIA_LAST_DATA;
+    service_elevated(engine, regs, 1u << 1);
+    EXPECT_TRUE(display_engine_test_access::is_latch_check_scheduled(engine, 1));
+
+    uint8_t window = display_engine_test_access::window(engine, 0);
+    window_channel_word(window, CHANNEL_GET) = BAD_GET;
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_DEVICE);
+    window_channel_word(window, CHANNEL_GET) = 0;
+
+    EXPECT_FALSE(display_engine_test_access::has_queued_present(engine, 1));
+    EXPECT_FALSE(display_engine_test_access::is_latch_check_scheduled(engine, 1));
+    EXPECT_FALSE(display_engine_test_access::is_deadline_scheduled(engine, 1));
+    expect_last_present_end(9, 1, gfxfb::GFXFB_PRESENT_FAILED, 0, 0);
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(g_present_end_count, 9u);
+}
+
+// Output 0's window notifier binding finding no room beside output 1's leaves presents on output 0 unsupported, ahead
+// of a failed display, while output 1 presents
+TEST(nvidia_display_engine, a_present_on_a_head_lit_without_its_window_notifier_is_unsupported) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    memory.failing_general_map = WINDOW_NOTIFIER_BINDING_MAP;
+    memory.general_map_result = ERR_NO_MEMORY;
+
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: window 0 has no notifier, so presents on its output are unsupported"));
+
+    engine.turn_on_flips();
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_EQ(engine.present(1, engine.base_buffer(1), nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, 1));
+
+    display_engine_test_access::fail_display(engine);
+    EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Two outputs lit in one mode set give the first images the interlock flags of both windows, the windows the core
+// channel's update names, as the last window channel's first image shows
+TEST(nvidia_display_engine, two_lit_outputs_interlock_each_first_image_with_both_windows) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    uint8_t head_0 = head_of_output(engine, 0);
+    uint8_t head_1 = head_of_output(engine, 1);
+    ASSERT_NE(head_0, DISPLAY_HEADS_MAX);
+    ASSERT_NE(head_1, DISPLAY_HEADS_MAX);
+
+    uint32_t windows = 1u << display_engine_test_access::window(engine, head_0);
+    windows |= 1u << display_engine_test_access::window(engine, head_1);
+    EXPECT_EQ(window_method_value(fw, WINDOW_IMAGE_BYTES, rm::WINDOW_SET_WINDOW_INTERLOCK_FLAGS), windows);
+
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A buffer created with two outputs lit is bound to both windows' channels under one context DMA, so either output
+// presents it
+TEST(nvidia_display_engine, a_created_buffer_is_bound_to_every_lit_window) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(reads_lit(engine, 1));
+
+    engine.turn_on_flips();
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+
+    auto* bound = static_cast<scanout_buffer*>(created);
+    EXPECT_EQ(bound->bound_windows, 0b11u);
+    EXPECT_TRUE(has_entry_for(bound->context_dma));
+
+    EXPECT_EQ(engine.present(0, created, nullptr, 0), gfxfb::OK);
+    EXPECT_EQ(engine.present(1, created, nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, head_of_output(engine, 0)));
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, head_of_output(engine, 1)));
+
+    EXPECT_EQ(engine.release(), OK);
+    heap::ufree_delete(bound);
+}
+
+// A buffer's release unbinds it from each lit window's channel, logging the head each window serves
+TEST(nvidia_display_engine, a_buffers_release_unbinds_it_from_every_lit_window) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(reads_lit(engine, 1));
+
+    engine.turn_on_flips();
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    rm::handle context_dma = static_cast<scanout_buffer*>(created)->context_dma;
+
+    uint32_t releases = memory.scanout_releases;
+    engine.release_buffer(created);
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display buffer at 0x1840000 in video memory is unbound from window 0's channel, once the handler "
+        "serviced head 0's"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display buffer at 0x1840000 in video memory is unbound from window 1's channel, once the handler "
+        "serviced head 1's"
+    ));
+
+    EXPECT_FALSE(has_entry_for(context_dma));
+    EXPECT_EQ(memory.scanout_releases, releases + 1);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A binding refused after another succeeded undoes that one, so no channel names the buffer `create_buffer` releases
+TEST(nvidia_display_engine, a_refused_binding_undoes_the_bindings_before_it) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(reads_lit(engine, 1));
+
+    engine.turn_on_flips();
+    uint32_t maps = memory.general_maps;
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    memory.failing_general_map = maps + 2;
+    memory.general_map_result = ERR_TIMEOUT;
+
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::OK;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+
+    EXPECT_EQ(rc, gfxfb::ERR_REFUSED);
+    EXPECT_NULL(created);
+    EXPECT_EQ(memory.general_maps, maps + 3);
+    EXPECT_FALSE(has_entry_for(FIRST_HANDLE + fw.handle_count - 1));
+
+    EXPECT_EQ(memory.scanout_unmaps, unmaps + 2);
+    EXPECT_EQ(memory.scanout_releases, releases + 1);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A binding finding no room whose undo fails too keeps the buffer bound, mapped and allocated for good, logged with its
+// error
+TEST(nvidia_display_engine, a_failed_undo_keeps_the_buffer_for_good) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(reads_lit(engine, 1));
+
+    engine.turn_on_flips();
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+
+    memory.failing_general_map = memory.general_maps + 2;
+    memory.general_map_result = ERR_NO_MEMORY;
+    memory.second_failing_map = memory.general_maps + 3;
+    memory.second_map_result = ERR_TIMEOUT;
+
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::OK;
+    s_engine_log_bytes = 0;
+    log::set_backend(&ENGINE_LOG_BACKEND);
+    bool has_served = create_served_buffer(engine, created, rc);
+    log::set_backend(nullptr);
+
+    ASSERT_TRUE(has_served);
+    EXPECT_EQ(rc, gfxfb::ERR_NO_MEMORY);
+    EXPECT_NULL(created);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: unbinding the display buffer at 0x1840000 in video memory from window 0's channel failed: -4, so the "
+        "buffer is kept for good"
+    ));
+
+    EXPECT_TRUE(has_entry_for(FIRST_HANDLE + fw.handle_count - 1));
+    EXPECT_EQ(memory.scanout_unmaps, unmaps + 1);
+    EXPECT_EQ(memory.scanout_releases, releases);
+    EXPECT_EQ(engine.release(), OK);
 }

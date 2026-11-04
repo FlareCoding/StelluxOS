@@ -47,25 +47,34 @@ struct output_modes {
 };
 
 /**
- * The head and window to show the output to light first, and the output tried
+ * The head and window to show the output to light first, and the outputs tried
  * first.
  */
 struct light_target {
-    uint8_t head;
-    uint8_t window;
-    uint8_t first_output;
+    uint8_t  head;
+    uint8_t  window;
+    uint32_t first_outputs; // a bit for each output tried before the others, bit 0 output 0's
 };
 
 /**
- * The output to light first, the mode to light it at and the head and window
- * to show it.
+ * An output to light, the mode to light it at and the head and window to show
+ * it.
  */
-struct first_light {
+struct output_light {
     uint8_t      output;
     uint8_t      timing_index; // the mode's index in the output's EDID
     edid::timing timing;
     uint8_t      head;
     uint8_t      window;
+};
+
+/**
+ * The outputs one mode set lights, each on its own head, in lighting order:
+ * the target's first outputs, then the others, each in ascending order.
+ */
+struct light_set {
+    uint8_t      count;
+    output_light lights[DISPLAY_HEADS_MAX];
 };
 
 /**
@@ -94,13 +103,13 @@ struct head_raster {
 
 /**
  * @brief Give the head and window to show the output to light first, the boot
- * head, else head 0, with that head's lowest window, and the output tried
- * first, the boot output, else output 0.
+ * head, else head 0, with that head's lowest window, and the outputs tried
+ * first, those an active head shows.
  * @param heads The heads `read_display_heads` gave.
  * @param active The heads `read_active_heads` gave for `heads.count` heads.
  * @param outputs The outputs `read_display_outputs` gave.
- * @return The head, below `heads.count`, the window, and the output tried
- * first, below `outputs.count` unless that is 0.
+ * @return The head, below `heads.count`, the window, and the outputs tried
+ * first, each below `outputs.count`.
  */
 light_target find_light_target(const display_heads& heads, const active_heads& active, const display_outputs& outputs);
 
@@ -144,45 +153,24 @@ uint32_t base_buffer_pitch(uint32_t width);
 uint64_t look_up_table_word(uint32_t index);
 
 /**
- * @brief Choose the output to light first and its mode, asking the bandwidth
- * check whether the target's head can show each mode with the target's window
- * scanning out an image of the mode's size, 4 bytes a pixel and unscaled. The
- * outputs are tried from the target's first output, then the others in
- * ascending order, each output's modes in order, and the first mode the check
- * accepts is chosen. The request names only that head and window, with the
- * look-up tables and the 256-pixel cursor NVIDIA's modesetting module assumes,
- * where that module names every window of every lit head and lowers what it
- * asks of them, finally below 4 bytes a pixel, before refusing a mode, so a
- * mode it accepts only below 4 bytes a pixel is refused here. A mode whose
- * request the firmware refuses with `ERR_FIRMWARE` is refused, as in that
- * module, and so is a mode whose sync and back porch take fewer than 2 lines,
- * without asking the check, as that module refuses a mode of 1 line but asks
- * about one of 0 lines. A mode whose totals pass 32,767 pixels or lines, the
- * largest raster a head takes, is refused without asking too, as that module
- * refuses it. Each refusal is logged.
- * @param fw The driver's firmware.
- * @param bandwidth_check The handle `allocate_display_objects` gave the
- * bandwidth check's object.
- * @param modes The modes of each of the `output_count` outputs.
- * @param output_count How many outputs `modes` holds.
- * @param target The head, window and first output `find_light_target` gave,
- * whose first output must be below `output_count` unless that is 0.
- * @param out Receives the choice when one is made, and is left unchanged
- * otherwise.
- * @param is_chosen Receives on `OK` whether a mode was chosen.
- * @return `OK`, `ERR_NO_MEMORY` when the request cannot be allocated on the
- * unprivileged heap, or what `firmware::control` returns for a request that
- * fails other than with `ERR_FIRMWARE`, logged, which ends the choice, where
- * NVIDIA's modesetting module refuses the mode.
+ * @brief Choose the outputs one mode set lights, in lighting order, up to
+ * `heads.count`, each at the first of its modes the bandwidth check accepts
+ * beside the outputs chosen before it, the first on the target's head and
+ * window and each later one on the lowest head left with its lowest window. An
+ * output refused at every mode or left without a head is not chosen, logged.
+ * @param target The head, window and first outputs `find_light_target` gave.
+ * @return `OK` with `out` holding the outputs chosen, `ERR_NO_MEMORY` when the
+ * request cannot be allocated, or the error of a request failing other than by
+ * a refusal, logged, which ends the choice with `out` empty.
  */
-int32_t choose_first_light(
+int32_t choose_lights(
     firmware& fw,
     rm::handle bandwidth_check,
+    const display_heads& heads,
     const output_modes* modes,
     uint8_t output_count,
     const light_target& target,
-    first_light& out,
-    bool& is_chosen
+    light_set& out
 );
 
 } // namespace drivers::nvidia

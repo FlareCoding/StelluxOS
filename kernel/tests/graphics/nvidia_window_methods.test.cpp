@@ -109,9 +109,14 @@ static window_image light_image() {
     };
 }
 
-// Gives the light's update: no notifier, interlocked with the core channel
+// Gives the light's update: no notifier, interlocked with the core channel and its own window alone
 static window_image_update light_update() {
-    return {.notifier_context_dma = 0, .notifier_slot = 0, .interlocks_core = true};
+    return {
+        .notifier_context_dma = 0,
+        .notifier_slot = 0,
+        .interlocks_core = true,
+        .window_interlocks = 1u << IMAGE_WINDOW,
+    };
 }
 
 // Gives the first value of the first of `methods` at register offset `method`, or `NO_METHOD` when none is
@@ -181,6 +186,7 @@ TEST(nvidia_window_methods, a_present_names_its_notifier_slot_and_no_core_interl
         .notifier_context_dma = NOTIFIER_HANDLE,
         .notifier_slot = 3,
         .interlocks_core = false,
+        .window_interlocks = 1u << IMAGE_WINDOW,
     };
 
     window_image_methods methods = {};
@@ -200,7 +206,9 @@ TEST(nvidia_window_methods, a_present_names_its_notifier_slot_and_no_core_interl
 
 // A slot given with no notifier's context DMA leaves the notifier's control 0, as NVIDIA writes it for none
 TEST(nvidia_window_methods, no_notifier_ignores_the_slot) {
-    window_image_update update = {.notifier_context_dma = 0, .notifier_slot = 3, .interlocks_core = true};
+    window_image_update update = light_update();
+    update.notifier_slot = 3;
+
     window_image_methods methods = {};
     build_window_image_methods(light_image(), update, methods);
 
@@ -208,9 +216,9 @@ TEST(nvidia_window_methods, no_notifier_ignores_the_slot) {
     EXPECT_EQ(value_of(methods, 0x220), 0u);
 }
 
-// A 1920 by 1080 image on window 5 gives its size with the height in the top 16 bits, its 16384-byte pitch, padded
-// past the 7680 bytes of a row's pixels, as 256 units of 64 bytes, and its own window's interlock bit
-TEST(nvidia_window_methods, the_size_pitch_and_interlock_follow_the_image) {
+// A 1920 by 1080 image on window 5 gives its size with the height in the top 16 bits and its 16384-byte pitch, padded
+// past the 7680 bytes of a row's pixels, as 256 units of 64 bytes
+TEST(nvidia_window_methods, the_size_and_pitch_follow_the_image) {
     window_image image = light_image();
     image.window = 5;
     image.width = 1920;
@@ -224,7 +232,18 @@ TEST(nvidia_window_methods, the_size_pitch_and_interlock_follow_the_image) {
     EXPECT_EQ(value_of(methods, 0x298), 0x04380780u);
     EXPECT_EQ(value_of(methods, 0x2A4), 0x04380780u);
     EXPECT_EQ(value_of(methods, 0x230), 0x100u);
-    EXPECT_EQ(value_of(methods, 0x374), 1u << 5);
+}
+
+// An image updated together with windows 0 and 4 names all three in its window interlock flags, its own window 2 among
+// them
+TEST(nvidia_window_methods, the_window_interlocks_follow_the_update) {
+    window_image_update update = light_update();
+    update.window_interlocks = 1u << 0 | 1u << IMAGE_WINDOW | 1u << 4;
+
+    window_image_methods methods = {};
+    build_window_image_methods(light_image(), update, methods);
+
+    EXPECT_EQ(value_of(methods, 0x374), 0x15u);
 }
 
 // The largest values within the bounds, a 65535 by 65535 image on window 31 at a pitch of 524,224 bytes and slot 255,
@@ -239,6 +258,7 @@ TEST(nvidia_window_methods, the_largest_values_fill_their_fields) {
     window_image_update update = light_update();
     update.notifier_context_dma = NOTIFIER_HANDLE;
     update.notifier_slot = 255;
+    update.window_interlocks = 1u << 31;
 
     window_image_methods methods = {};
     build_window_image_methods(image, update, methods);
