@@ -21,6 +21,7 @@
 
 #define NS_PER_SEC      1000000000ULL
 #define NS_PER_MS       1000000ULL
+#define NS_PER_US       1000ULL
 #define MIB             (1024ULL * 1024ULL)
 #define PAGE_BYTES      4096ULL
 #define PAGE_WORDS      (PAGE_BYTES / sizeof(uint32_t))
@@ -39,11 +40,13 @@
 #define WAITED_COPIES   1000000u
 #define HOLD_US         (20 * 1000)
 #define LOST_WAIT_NS    (GPU_SUBMIT_TIMEOUT_NS + 2 * NS_PER_SEC)
+#define STORM_METHODS   250000u
 
-// The copy part's buffers in its context: each queue's command words in a page of the first, with the word a
-// semaphore acquire reads in the page after them, then the memory they fill and copy
+// The copy part's buffers in its context: the first holds a page of command words per queue, the word a semaphore
+// acquire reads and an interrupt storm's words, and the next three the memory they fill and copy
 #define COMMANDS_VA  USER_VA_START
 #define SEMAPHORE_VA (COMMANDS_VA + QUEUE_COUNT * PAGE_BYTES)
+#define STORM_VA     (SEMAPHORE_VA + PAGE_BYTES)
 #define VIDEO_VA     (COMMANDS_VA + BUFFER_BYTES)
 #define SYSTEM_VA    (VIDEO_VA + BUFFER_BYTES)
 #define SHARED_VA    (SYSTEM_VA + BUFFER_BYTES)
@@ -53,12 +56,16 @@
 #define PUSH_HEADER_INCREASING  (1u << 29)
 #define PUSH_HEADER_COUNT_SHIFT 16
 
+// NVIDIA's NVC56F_DMA_SEC_OP_IMMD_DATA_METHOD, a push buffer word holding one method and its value from bit 16
+#define PUSH_IMMEDIATE (4u << 29)
+
 // NVIDIA's NVC56F host methods: SET_OBJECT (which binds the copy class to the subchannel), SEMAPHOREA to SEMAPHORED,
-// MEM_OP_A to MEM_OP_D (which run MEM_OP_D's operation) and SET_REFERENCE
-#define SET_OBJECT    0x0000u
-#define SEMAPHORE_A   0x0010u
-#define MEM_OP_A      0x0028u
-#define SET_REFERENCE 0x0050u
+// NON_STALL_INTERRUPT, MEM_OP_A to MEM_OP_D (which run MEM_OP_D's operation) and SET_REFERENCE
+#define SET_OBJECT          0x0000u
+#define SEMAPHORE_A         0x0010u
+#define NON_STALL_INTERRUPT 0x0020u
+#define MEM_OP_A            0x0028u
+#define SET_REFERENCE       0x0050u
 
 // NVIDIA's SEMAPHORED fields: OPERATION ACQUIRE, which waits for the word to equal the payload, and ACQUIRE_SWITCH
 // ENABLED, which lets other channels run meanwhile
@@ -636,21 +643,18 @@ static void close_copy_session(struct copy_session* s) {
     release(s->system, s->system_words);
 }
 
-// Submits `list` on `q` to signal its next point, held until `wait` is reached when one is given. Returns 0 or the
-// call's errno
-static int submit(
+// Submits the `count` command words at `va` on `q` to signal its next point, held until `wait` is reached when one is
+// given. Returns 0 or the call's errno
+static int submit_words(
     struct copy_session* s,
     struct copy_queue* q,
-    const struct command_list* list,
+    uint64_t va,
+    uint32_t count,
     const struct gpu_point* wait
 ) {
-    for (uint32_t i = 0; i < list->count; i++) {
-        q->words[i] = list->words[i];
-    }
-
     struct gpu_nvidia_range range = {0};
-    range.va = q->words_va;
-    range.size = list->count * sizeof(uint32_t);
+    range.va = va;
+    range.size = count * sizeof(uint32_t);
     struct gpu_point signal = {0};
     signal.timeline = q->timeline;
     signal.value = q->point + 1;
@@ -672,6 +676,20 @@ static int submit(
     }
 
     return error;
+}
+
+// Copies `list` into `q`'s command words and submits them, as submit_words() does
+static int submit(
+    struct copy_session* s,
+    struct copy_queue* q,
+    const struct command_list* list,
+    const struct gpu_point* wait
+) {
+    for (uint32_t i = 0; i < list->count; i++) {
+        q->words[i] = list->words[i];
+    }
+
+    return submit_words(s, q, q->words_va, list->count, wait);
 }
 
 // Waits for the last submission on `q` to end. Returns 0, or the wait's errno, ETIMEDOUT once `timeout_ns` passed
@@ -923,6 +941,39 @@ static void test_physical_copy(int fd, struct copy_session* live) {
     check("closing the lost context gives its memory back", memory_returns_to(fd, before));
 }
 
+// The NON_STALL_INTERRUPT methods raise the copy vector, those raised while one is pending merging into it, and no
+// handler pass they cost reports the queue's progress, so the wait ends only once the fill after them has run
+static void test_interrupt_storm(struct copy_session* s) {
+    struct copy_queue* q = &s->queues[0];
+    volatile uint32_t* storm = s->command_words + (STORM_VA - COMMANDS_VA) / sizeof(uint32_t);
+    for (uint32_t i = 0; i < STORM_METHODS; i++) {
+        storm[i] = PUSH_IMMEDIATE | (NON_STALL_INTERRUPT >> 2);
+    }
+
+    struct command_list system_fill = fill_commands(s->copy_class, SYSTEM_VA, ~FILL_WORD);
+    for (uint32_t i = 0; i < system_fill.count; i++) {
+        storm[STORM_METHODS + i] = system_fill.words[i];
+    }
+
+    fill(s->system_words, FILL_WORD);
+
+    uint64_t start_ns = monotonic_ns();
+    int error = submit_words(s, q, STORM_VA, STORM_METHODS + system_fill.count, NULL);
+    if (error == 0) {
+        error = wait_for(s, q, GPU_SUBMIT_TIMEOUT_NS);
+    }
+
+    uint64_t elapsed_us = (monotonic_ns() - start_ns) / NS_PER_US;
+    printf(
+        "gputest: %u NON_STALL_INTERRUPT methods and a fill took %llu us\n",
+        STORM_METHODS,
+        (unsigned long long)elapsed_us
+    );
+
+    bool filled = error == 0 && reads_as(s->system_words, ~FILL_WORD);
+    check("a user queue's wait for a storm of NON_STALL_INTERRUPT methods ends only after the fill behind it", filled);
+}
+
 static void test_session_end(struct copy_session* s, struct gpu_memory before) {
     check("the context stays live through every check on its queues", lost_reason(s) == 0);
 
@@ -959,6 +1010,7 @@ static void test_copy_queues(int fd, const struct gpu_info* info) {
     test_acquire(&s);
     test_tlb_invalidate(fd, &s);
     test_physical_copy(fd, &s);
+    test_interrupt_storm(&s);
 
     test_session_end(&s, before);
 }

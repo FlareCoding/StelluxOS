@@ -3924,12 +3924,14 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     SEM_PAYLOAD_LO, 0x64, and SEM_EXECUTE, and the words of a release holding
     the values of SEM_ADDR_LO, SEM_ADDR_HI and SEM_PAYLOAD_LO, in
     kernel/tests/graphics/nvidia_engines.test.cpp, and a push buffer header's
-    fields, SET_OBJECT, SEMAPHOREA to SEMAPHORED from 0x10 (SEMAPHORED's
+    fields, DMA_SEC_OP IMMD_DATA_METHOD, 4, whose word holds its method's value
+    in bits 28:16, SET_OBJECT, SEMAPHOREA to SEMAPHORED from 0x10 (SEMAPHORED's
     OPERATION ACQUIRE, 1, in bits 4:0 and ACQUIRE_SWITCH ENABLED in bit 12),
-    MEM_OP_A to MEM_OP_D (MEM_OP_C's MEMBAR_TYPE SYS_MEMBAR, 0, and
-    TLB_INVALIDATE_PDB ALL, 1, in bit 0, and MEM_OP_D's OPERATION MEMBAR, 5,
-    MMU_TLB_INVALIDATE, 9, and L2_SYSMEM_INVALIDATE, 0xE, in bits 31:27) and
-    SET_REFERENCE, 0x50, in userland/apps/gputest/src/gputest.c
+    NON_STALL_INTERRUPT, MEM_OP_A to MEM_OP_D (MEM_OP_C's MEMBAR_TYPE
+    SYS_MEMBAR, 0, and TLB_INVALIDATE_PDB ALL, 1, in bit 0, and MEM_OP_D's
+    OPERATION MEMBAR, 5, MMU_TLB_INVALIDATE, 9, and L2_SYSMEM_INVALIDATE, 0xE,
+    in bits 31:27) and SET_REFERENCE, 0x50, in
+    userland/apps/gputest/src/gputest.c
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 kernel-open/nvidia-uvm/uvm_hal_types.h
