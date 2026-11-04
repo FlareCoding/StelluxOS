@@ -26,17 +26,84 @@ __PRIVILEGED_CODE void timeline::ref_destroy(timeline* self) {
     heap::ufree_delete(self);
 }
 
+__PRIVILEGED_CODE void drop_timeline(timeline* tl) {
+    if (tl->release()) {
+        timeline::ref_destroy(tl);
+    }
+}
+
 __PRIVILEGED_CODE static uint64_t read_value(timeline& tl) {
     sync::irq_lock_guard guard(tl.lock);
     return tl.value;
 }
 
-__PRIVILEGED_CODE static void timeline_close(resource::resource_object* obj) {
-    auto* tl = static_cast<timeline*>(obj->impl);
-    if (tl->release()) {
-        timeline::ref_destroy(tl);
+// Under the timeline's lock: an entry reached while the timeline has the failed mark fails its submission's wait
+__PRIVILEGED_CODE static void unlink_reached(timeline& tl, collected_queues& ready) {
+    auto it = tl.entries.begin();
+    while (it != tl.entries.end()) {
+        wait_entry& entry = *it;
+        ++it;
+        if (entry.value > tl.value) {
+            continue;
+        }
+
+        // Once the wait counts as met the submission may run and end on another CPU, so its queue is referenced first
+        submission& sub = *entry.owner;
+        core_queue& q = *sub.queue;
+        q.add_ref();
+        tl.entries.remove(&entry);
+
+        if (tl.failed) {
+            sub.wait_failed.store_relaxed(1);
+        }
+
+        sub.unmet.fetch_sub_acq_rel(1);
+        collect(q, ready);
+    }
+}
+
+__PRIVILEGED_CODE void reach_point(timeline& tl, uint64_t value, bool failed, collected_queues& ready) {
+    bool rises = false;
+    {
+        sync::irq_lock_guard guard(tl.lock);
+        rises = value > tl.value;
+        tl.failed = tl.failed || failed;
+        if (rises) {
+            tl.value = value;
+            unlink_reached(tl, ready);
+        }
     }
 
+    if (rises) {
+        sync::wake_all(tl.waiters);
+    }
+}
+
+__PRIVILEGED_CODE bool link_wait(wait_entry& entry) {
+    timeline& tl = *entry.tl;
+    sync::irq_lock_guard guard(tl.lock);
+    if (tl.value < entry.value) {
+        tl.entries.push_back(&entry);
+        return false;
+    }
+
+    if (tl.failed) {
+        entry.owner->wait_failed.store_relaxed(1);
+    }
+
+    return true;
+}
+
+__PRIVILEGED_CODE void unlink_wait(wait_entry& entry) {
+    timeline& tl = *entry.tl;
+    sync::irq_lock_guard guard(tl.lock);
+    if (entry.link.is_linked()) {
+        tl.entries.remove(&entry);
+    }
+}
+
+__PRIVILEGED_CODE static void timeline_close(resource::resource_object* obj) {
+    drop_timeline(static_cast<timeline*>(obj->impl));
     obj->impl = nullptr;
 }
 
@@ -63,6 +130,8 @@ __PRIVILEGED_CODE int32_t create_timeline(uint64_t arg) {
 
     tl->lock = sync::SPINLOCK_INIT;
     tl->value = args.value;
+    tl->failed = false;
+    tl->entries.init();
     tl->waiters.init();
 
     auto* obj = heap::kalloc_new<resource::resource_object>();
@@ -96,12 +165,14 @@ __PRIVILEGED_CODE int32_t signal_timeline(uint64_t arg) {
     }
 
     auto* tl = static_cast<timeline*>(obj->impl);
+    collected_queues ready;
     bool rises = false;
     {
         sync::irq_lock_guard guard(tl->lock);
         rises = args.value > tl->value;
         if (rises) {
             tl->value = args.value;
+            unlink_reached(*tl, ready);
         }
     }
 
@@ -109,6 +180,7 @@ __PRIVILEGED_CODE int32_t signal_timeline(uint64_t arg) {
         sync::wake_all(tl->waiters);
     }
 
+    run_collected(ready);
     resource::resource_release(obj);
 
     return rises ? fs::OK : fs::ERR_INVAL;
@@ -126,8 +198,13 @@ __PRIVILEGED_CODE int32_t query_timeline(uint64_t arg) {
         return rc;
     }
 
-    args.flags = 0;
-    args.value = read_value(*static_cast<timeline*>(obj->impl));
+    auto* tl = static_cast<timeline*>(obj->impl);
+    {
+        sync::irq_lock_guard guard(tl->lock);
+        args.flags = tl->failed ? GPU_TIMELINE_FAILED : 0;
+        args.value = tl->value;
+    }
+
     resource::resource_release(obj);
 
     return copy_out(arg, &args, sizeof(args));

@@ -29,13 +29,19 @@ constexpr uint16_t FAKE_VENDOR_ID = 0x1D17;
 constexpr uint64_t FAKE_VIDEO_SIZE = 64ull * 1024 * 1024;
 constexpr uint64_t FAKE_VA_START = 1ull << 20;
 constexpr uint64_t FAKE_VA_END = 1ull << 32;
+constexpr uint64_t FAKE_TIMEOUT_NS = 10ull * 1000 * 1000 * 1000;
 constexpr uint32_t FAKE_RANGES_MAX = 16;
 constexpr uint32_t FAKE_SPACES_MAX = 4;
 constexpr uint32_t FAKE_QUEUES_MAX = 2 * GPU_QUEUES_MAX;
 constexpr size_t   PATH_BYTES = 32;
 constexpr size_t   ARGS_AT = 0;
 constexpr size_t   POINTS_AT = 512;
+constexpr size_t   SIGNALS_AT = 1024;
+constexpr size_t   COMMANDS_AT = 2048;
+constexpr size_t   COMMANDS_ROOM = pmm::PAGE_SIZE - COMMANDS_AT;
 constexpr uint64_t QUERY_FAILED = ~static_cast<uint64_t>(0);
+
+using stop_hook = void (*)(void* arg);
 
 // One buffer's memory, physically contiguous pages, so its CPU view is one contiguous range
 struct fake_memory : gpu::memory {
@@ -73,6 +79,10 @@ struct fake_queue : gpu::queue {
     gpu::core_queue* core = nullptr;
     fake_space*      space = nullptr;
     uint32_t         kind = 0;
+    uint32_t         runs = 0;
+    uint64_t         last_sequence = 0;
+    size_t           last_size = 0;
+    uint8_t          last_first_byte = 0;
     bool             stop_asked = false;
     bool             destroyed = false;
     rc::reaper::dead_node stop_node = {};
@@ -103,10 +113,18 @@ public:
     bool       cacheable = true;
     uint32_t   queue_kinds = BOTH_QUEUE_KINDS;
     bool       user_range = true; // false gives the device-id form of map and unmap
+    uint64_t   running_bytes_max = 2 * GPU_COMMANDS_BYTES_MAX;
+    uint64_t   submit_timeout_ns = FAKE_TIMEOUT_NS;
     int32_t    space_result = gpu::OK; // when not OK, what `create_space` returns
     int32_t    queue_result = gpu::OK; // when not OK, what `create_queue` returns
     int32_t    map_result = gpu::OK; // when not OK, what `map` returns without mapping
+    int32_t    check_result = gpu::OK; // what `check_commands` returns
+    bool       fail_unmap = false; // an unmap whose invalidate fails, failing the device
+    bool       fail_zeroing = false; // a create whose zeroing fails, failing the device
     bool       stops_on_reaper = true; // false leaves each stop to the test's queue_stopped
+    bool       create_waits_for_a_stop = false; // `create_queue` spins at most SPIN_TIMEOUT_NS for a stop request
+    stop_hook  on_stop = nullptr; // called once, from the next `stop_queue`, with `on_stop_arg`
+    void*      on_stop_arg = nullptr;
 
     // What the core asked of it
     uint32_t               facts_reads = 0;
@@ -115,6 +133,7 @@ public:
     gpu::space*            last_create_space = nullptr;
     uint64_t               last_backend_id = 0;
     sync::atomic<uint32_t> released_count{0}; // counted on the reaper, after `last_released` is written
+    sync::atomic<uint32_t> freed_count{0}; // releases that freed their memory, counted before `released_count`
     gpu::memory*           last_released = nullptr;
     fake_space             spaces[FAKE_SPACES_MAX] = {};
     uint32_t               space_count = 0;
@@ -127,6 +146,15 @@ public:
     fake_map_call          last_map = {};
     uint32_t               unmap_calls = 0;
     fake_range             last_unmap = {};
+    uint32_t               check_calls = 0;
+    size_t                 last_check_size = 0;
+    uint8_t                last_check_first_byte = 0;
+
+    // The device it reports to, and its failure, reported once from the reaper
+    gpu::device*           dev = nullptr;
+    bool                   failed = false;
+    rc::reaper::dead_node  fail_node = {};
+    sync::atomic<uint32_t> failures_reported{0};
 
     void read_facts(gpu::device_facts& out) override {
         facts_reads++;
@@ -146,6 +174,8 @@ public:
         out.info.queue_kinds = queue_kinds;
         out.info.va_start = user_range ? FAKE_VA_START : 0;
         out.info.va_end = user_range ? FAKE_VA_END : 0;
+        out.submit_timeout_ns = submit_timeout_ns;
+        out.running_bytes_max = running_bytes_max;
     }
 
     void read_memory(gpu_memory& out) override {
@@ -171,6 +201,11 @@ public:
         last_backend_id = backend_id;
         if (create_result != gpu::OK) {
             return create_result;
+        }
+
+        if (fail_zeroing) {
+            fail_device();
+            return gpu::ERR_DEVICE;
         }
 
         auto* mem = heap::ualloc_new<fake_memory>();
@@ -210,10 +245,14 @@ public:
         return view_result;
     }
 
+    // A failed fake keeps the memory, as a failed backend keeps what the GPU may still reach
     void release_memory(gpu::memory* mem) override {
-        auto* fake = static_cast<fake_memory*>(mem);
-        (void)vmm::free(fake->kernel_va);
-        heap::ufree_delete(fake);
+        if (!failed) {
+            auto* fake = static_cast<fake_memory*>(mem);
+            (void)vmm::free(fake->kernel_va);
+            heap::ufree_delete(fake);
+            freed_count.fetch_add_release(1);
+        }
 
         last_released = mem;
         released_count.fetch_add_release(1);
@@ -251,6 +290,10 @@ public:
     ) override {
         map_calls++;
         last_map = {.mem = mem, .va = va, .offset = offset, .size = size, .kind = kind, .read_only = read_only};
+        if (failed) {
+            return gpu::ERR_DEVICE;
+        }
+
         if (map_result != gpu::OK) {
             return map_result;
         }
@@ -277,11 +320,19 @@ public:
         unmap_calls++;
         last_unmap = {.va = va, .size = size};
         cut(*static_cast<fake_space*>(s), {.va = va, .size = user_range ? size : 1});
+        if (!fail_unmap) {
+            return failed ? gpu::ERR_DEVICE : gpu::OK;
+        }
 
-        return gpu::OK;
+        fail_device();
+        return gpu::ERR_DEVICE;
     }
 
     int32_t create_queue(gpu::space* s, uint32_t kind, gpu::core_queue* core, gpu::queue** out) override {
+        if (create_waits_for_a_stop) {
+            (void)test_helpers::spin_wait_ge(stops_asked, 1);
+        }
+
         if (queue_result != gpu::OK) {
             return queue_result;
         }
@@ -304,7 +355,15 @@ public:
         auto& fake = *static_cast<fake_queue*>(q);
         fake.stop_asked = true;
         stops_asked.fetch_add_release(1);
-        if (stops_on_reaper) {
+
+        stop_hook hook = on_stop;
+        on_stop = nullptr;
+        if (hook) {
+            hook(on_stop_arg);
+        }
+
+        // A failed GPU reports no stop, since its failure ends every queue
+        if (stops_on_reaper && !failed) {
             rc::reaper::defer(&fake.stop_node);
         }
     }
@@ -314,7 +373,42 @@ public:
         queues_destroyed.fetch_add_release(1);
     }
 
+    int32_t check_commands(const void* commands, size_t size) override {
+        check_calls++;
+        last_check_size = size;
+        last_check_first_byte = size != 0 ? *static_cast<const uint8_t*>(commands) : 0;
+
+        return check_result;
+    }
+
+    void run(gpu::queue* q, uint64_t sequence, const void* commands, size_t size) override {
+        auto& fake = *static_cast<fake_queue*>(q);
+        fake.runs++;
+        fake.last_sequence = sequence;
+        fake.last_size = size;
+        fake.last_first_byte = size != 0 ? *static_cast<const uint8_t*>(commands) : 0;
+    }
+
+    // The `n`th queue the core created on this fake, counting from 0, or null
+    fake_queue* queue_at(uint32_t n) {
+        return n < queue_count ? &queues[n] : nullptr;
+    }
+
 private:
+    // Fails the fake for good, as a zeroing or an invalidate past its deadline fails a GPU
+    void fail_device() {
+        failed = true;
+        fail_node.init(rc::reaper::reaper_thunk<fake_backend, report_failure, &fake_backend::fail_node>);
+        rc::reaper::defer(&fail_node);
+    }
+
+    // A backend reports its failure later from its own task, never from inside a call the core made
+    static rc::reaper::cleanup_result report_failure(fake_backend* fake) {
+        gpu::device_failed(fake->dev);
+        fake->failures_reported.fetch_add_release(1);
+        return rc::reaper::DONE;
+    }
+
     static bool overlap(const fake_range& a, const fake_range& b) {
         return a.va < b.va + b.size && b.va < a.va + a.size;
     }
@@ -389,6 +483,8 @@ struct session {
         if (gpu::register_backend(&fake, &registered) != gpu::OK) {
             return;
         }
+
+        fake.dev = registered;
 
         size_t pos = devfs::append_str(path, PATH_BYTES - 1, 0, "/dev/");
         devfs::append_str(path, PATH_BYTES - 1, pos, registered->name());
@@ -499,6 +595,34 @@ struct session {
         gpu_map_args args = {.context = context, .buffer = 0, .va = va, .offset = 0, .size = size, .kind = 0,
                              .flags = 0};
         return call(GPU_UNMAP, args);
+    }
+
+    // Submits `size` bytes whose first is `tag`, with the waits at POINTS_AT and the signals at SIGNALS_AT. A count or
+    // size past its limit names only what the page holds, since the call refuses it before reading
+    int64_t submit(
+        int32_t context,
+        uint32_t queue,
+        uint8_t tag,
+        uint32_t size,
+        const gpu_point* waits,
+        uint32_t wait_count,
+        const gpu_point* signals,
+        uint32_t signal_count
+    ) {
+        for (uint32_t i = 0; waits && i < wait_count; i++) {
+            page.at<gpu_point>(POINTS_AT)[i] = waits[i];
+        }
+
+        for (uint32_t i = 0; signals && i < signal_count; i++) {
+            page.at<gpu_point>(SIGNALS_AT)[i] = signals[i];
+        }
+
+        string::memset(page.at<uint8_t>(COMMANDS_AT), tag, size < COMMANDS_ROOM ? size : COMMANDS_ROOM);
+        gpu_submit_args args = {.context = context, .queue = queue, .commands = page.addr + COMMANDS_AT,
+                                .waits = page.addr + POINTS_AT, .signals = page.addr + SIGNALS_AT,
+                                .commands_size = size, .wait_count = wait_count, .signal_count = signal_count,
+                                .padding = 0};
+        return call(GPU_SUBMIT, args);
     }
 };
 

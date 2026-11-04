@@ -12,11 +12,13 @@
  * Userland calls the core, and the core calls the backend in the core's own vocabulary, the codes below, which the core
  * translates once into the file layer's.
  *
- *   process --ioctl, mmap--> GPU core (handles, rights, objects) --gpu::backend--> driver
+ *   process --ioctl, mmap--> GPU core (handles, rights, objects, order) --gpu::backend--> driver
  *
  * A buffer is GPU memory the core counts as one object. Its backend allocates the memory in `create_memory()` and gets
  * it back in `release_memory()` once nothing refers to it. A timeline is a 64-bit counter that only rises, which no
  * backend sees. A context holds one of the backend's address spaces and up to GPU_QUEUES_MAX of its hardware queues.
+ * The core holds each submission until its wait points are reached, hands it to `run()` in order with the queue's next
+ * sequence number, and ends it once the backend reports that number through `progress()`.
  */
 
 namespace gpu {
@@ -43,6 +45,8 @@ struct queue {};
 // What a backend reports about its GPU, once, at registration
 struct device_facts {
     gpu_info info;
+    uint64_t submit_timeout_ns; // how long a submission may run, GPU_SUBMIT_TIMEOUT_NS on hardware
+    uint64_t running_bytes_max; // command list bytes one queue may have running, at least GPU_COMMANDS_BYTES_MAX
 };
 
 // Memory the CPU may map, contiguous for `size` bytes
@@ -55,11 +59,13 @@ struct cpu_view {
 /**
  * One kind of GPU's driver half, which the core calls from the calling thread unless a call says otherwise.
  *
- * The backend calls the core's `queue_stopped()` from its interrupt handler or its own task, never from inside a call
- * the core made.
+ * The backend calls the core's `progress()`, `queue_stopped()`, `space_lost()` and `device_failed()` from its interrupt
+ * handler or its own task, never from inside a call the core made, and holding none of its locks that `run()` or
+ * `stop_queue()` take.
  *
  * Once its GPU failed, a backend must return ERR_DEVICE from every call that may fail and keep every memory object,
- * space and queue for good, since a failed GPU may still access their memory.
+ * space and queue for good, since a failed GPU may still access their memory. Its `run()` and `stop_queue()` must then
+ * do nothing.
  */
 class backend {
 public:
@@ -110,13 +116,13 @@ public:
     virtual int32_t view_for_cpu(memory* mem, cpu_view& out) = 0;
 
     /**
-     * @brief Take back memory that no handle and no CPU or GPU mapping refers to any more. Called from the reaper, so
-     * it must not wait for the hardware: a backend whose release needs it queues the release to a task of its own.
+     * @brief Take back memory that no handle, mapping or submission can reach any more. Called from the reaper, so it
+     * must not wait for the hardware: a backend whose release needs it queues the release to a task of its own.
      */
     virtual void release_memory(memory* mem) = 0;
 
     /**
-     * @brief Create an address space for the context `core`. May sleep.
+     * @brief Create an address space for `core`, the context `space_lost()` names. May sleep.
      * @return OK, ERR_NO_MEMORY with nothing created, or ERR_DEVICE.
      */
     virtual int32_t create_space(context* core, space** out) = 0;
@@ -153,8 +159,8 @@ public:
     virtual int32_t unmap(space* s, uint64_t va, uint64_t size) = 0;
 
     /**
-     * @brief Create a hardware queue of `kind` in `s` for `core`, which the backend names when it reports the queue's
-     * stop. May sleep.
+     * @brief Create a hardware queue of `kind` in `s` for `core`, which the backend names in `progress()` and
+     * `queue_stopped()` from the moment this returns OK until it reports the queue's stop. May sleep.
      * @return OK, ERR_NO_MEMORY with nothing created, or ERR_DEVICE.
      */
     virtual int32_t create_queue(space* s, uint32_t kind, core_queue* core, queue** out) = 0;
@@ -166,9 +172,26 @@ public:
     virtual void stop_queue(queue* q) = 0;
 
     /**
-     * @brief Free a queue whose stop was reported. Called from the reaper, so it must not wait.
+     * @brief Free a queue whose stop was reported, or any queue once the GPU failed. Called from the reaper, so it
+     * must not wait.
      */
     virtual void destroy_queue(queue* q) = 0;
+
+    /**
+     * @brief Check that the backend could run `size` bytes of commands, in GPU_SUBMIT's thread before the core queues
+     * them. May sleep.
+     * @return OK, ERR_REFUSED, or ERR_DEVICE.
+     */
+    virtual int32_t check_commands(const void* commands, size_t size) = 0;
+
+    /**
+     * @brief Hand a checked command list to the hardware as `q`'s submission `sequence`. Called under the queue's
+     * spinlock in sequence order, perhaps from an interrupt handler, only while the queue is not asked to stop and its
+     * running lists fit `running_bytes_max`, so it never sleeps and cannot fail. The bytes stay the core's until the
+     * submission ends, so a backend still holding them must drop them before it reports the queue's stop or the GPU
+     * failed.
+     */
+    virtual void run(queue* q, uint64_t sequence, const void* commands, size_t size) = 0;
 };
 
 /**
@@ -186,10 +209,33 @@ __PRIVILEGED_CODE void init();
 __PRIVILEGED_CODE int32_t register_backend(backend* b, device** out);
 
 /**
- * @brief Report that `q` runs nothing more after `stop_queue()`, as the backend's last call naming `q`. Never sleeps.
+ * @brief Report that `q` finished every submission up to the sequence number `finished`, never while the queue's
+ * `queue_stopped()` runs. A value past the last submission run counts as that one, and one at or below the last
+ * reported changes nothing. Never sleeps.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void progress(core_queue* q, uint64_t finished);
+
+/**
+ * @brief Report that `q` runs nothing more after `stop_queue()`, as the backend's last call naming `q`. The core then
+ * ends its running submissions failed. Never sleeps.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void queue_stopped(core_queue* q);
+
+/**
+ * @brief Lose `c` for `reason`, GPU_LOST_FAULT or GPU_LOST_ENGINE, with `fault_va` a fault's address when known, else
+ * 0, from the backend's task before it reported every queue of the context stopped. Never sleeps.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void space_lost(context* c, uint32_t reason, uint64_t fault_va);
+
+/**
+ * @brief Report that `d`'s GPU can run nothing more, from the backend's task once its interrupt handler and task name
+ * no queue or context, as the backend's last call naming any of them. Never sleeps.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void device_failed(device* d);
 
 } // namespace gpu
 
