@@ -173,6 +173,11 @@ struct virtio_gpu_scanout {
     virtio_gpu_buffer* base;          // the buffer the scanout was lit with, null while it is dark
     bool               is_relighting; // dark only while the task lights it again at another size
 
+    // Written at attach, otherwise only by the driver's task under `m_scanout_lock`, so the task reads them with no
+    // lock and `read_modes()` holds the lock
+    uint32_t default_width;
+    uint32_t default_height;
+
     // Read and written under `m_batch_lock` once the driver is attached
     uint64_t lit_ns;            // when the scanout was last lit, the first of its refresh boundaries
     uint32_t shown_resource_id; // the resource the scanout shows while lit
@@ -252,8 +257,24 @@ struct virtio_gpu_scanout {
  * device reports like any other. Without that interrupt, which the driver
  * logs, the scanouts stay as attach lit them. `read_output()`, `read_modes()`
  * and `base_buffer()` read the scanouts under a spinlock, so they never wait
- * behind a batch. A lit scanout lists only the mode it is lit at, and the
- * driver refuses every mode request.
+ * behind a batch.
+ *
+ * A lit scanout's default size is the size of the last device report the
+ * driver lit it at or found it lit at, or 1024 by 768 when attach lit it with
+ * no usable report. The scanout lists its default size, then the sizes of the
+ * driver's own table other than it, each at 60 Hz. A configuration change
+ * relights a scanout only for a usable size other than its default size, and a
+ * report of the size a request lit it at instead makes that size its default,
+ * reported as a change of its list alone.
+ *
+ * `set_mode()` sleeps until the driver's task serves the request. A new base
+ * buffer the device refuses leaves the scanout as it was, and when the device
+ * refuses to show it, the task lights the scanout at its previous size again,
+ * or reports it dark without `relighting` when that fails too.
+ * `restore_modes()` returns without waiting, and the task serves the restore
+ * ahead of any later request, relighting at its default size each scanout a
+ * request left at another size. One the task cannot take dark or find RAM for
+ * stays at that size, and the next restore tries it again.
  *
  * Every scanout has a hardware cursor of up to 64 by 64 pixels, drawn from the
  * one cursor resource, which the driver shows on a lit scanout through
@@ -281,6 +302,7 @@ public:
         m_work_lock = sync::SPINLOCK_INIT;
         m_releases.init();
         m_work_wq.init();
+        m_request_wq.init();
 
         for (uint32_t i = 0; i < virtio::VIRTIO_GPU_MAX_SCANOUTS; i++) {
             m_scanouts[i].driver = this;
@@ -309,8 +331,8 @@ public:
 
     int32_t set_cursor(uint32_t output, const gfxfb::cursor_image& image) override;
     int32_t move_cursor(uint32_t output, int32_t x, int32_t y) override;
-    int32_t set_mode(uint32_t, const gfxfb::gfxfb_mode&) override { return gfxfb::ERR_UNSUPPORTED; }
-    void restore_modes() override {}
+    int32_t set_mode(uint32_t output, const gfxfb::gfxfb_mode& mode) override;
+    void restore_modes() override;
 
     void release_buffer(gfxfb::buffer* buf) override;
 
@@ -325,9 +347,21 @@ private:
 
     using release_list = list::head<virtio_gpu_buffer, &virtio_gpu_buffer::release_link>;
 
-    // The work one pass of the task's loop takes: a configuration change the interrupt handler noted, the oldest buffer
-    // gfxfb handed back, or both
+    // A mode request `set_mode()` hands the task, in the caller's frame until `is_done`. That frame is on the caller's
+    // syscall stack, which lowered code cannot touch, so the task reads and writes it only elevated under `m_work_lock`
+    struct mode_request {
+        uint32_t          output;
+        gfxfb::gfxfb_mode mode;
+        int32_t           result;
+        bool              is_done;
+    };
+
+    // The work one pass of the task's loop takes, in the order the task serves it
     struct task_work {
+        bool               has_restore;
+        mode_request*      request;  // the request `set_mode()` waits on, or null
+        uint32_t           output;   // `request`'s output, copied while elevated
+        gfxfb::gfxfb_mode  mode;     // `request`'s mode, copied while elevated
         bool               has_config_change;
         virtio_gpu_buffer* released; // the oldest buffer gfxfb handed back, or null
     };
@@ -351,15 +385,24 @@ private:
     int32_t allocate_backing(virtio_gpu_buffer& buf, uint32_t width, uint32_t height, paging::page_flags_t access);
     int32_t create_resource(virtio_gpu_buffer& buf, uint32_t format, wait_mode mode);
     int32_t destroy_resource(const virtio_gpu_buffer& buf, wait_mode mode);
+    int32_t create_buffer_resource(virtio_gpu_buffer* buf);
+    void drop_buffer(virtio_gpu_buffer* buf);
     int32_t queue_set_scanout(uint32_t scanout, const virtio_gpu_buffer& buf);
     void set_scanout_base(virtio_gpu_scanout& scanout, virtio_gpu_buffer* base, bool relighting);
+    void set_default_size(virtio_gpu_scanout& scanout, uint32_t width, uint32_t height);
     virtio_gpu_buffer* allocate_base(uint32_t index, uint32_t width, uint32_t height);
+    int32_t show_base(uint32_t index, virtio_gpu_buffer& base, wait_mode mode);
     int32_t light_scanout(uint32_t index, virtio_gpu_buffer& base, wait_mode mode);
     int32_t light_at_attach(uint32_t index, uint32_t width, uint32_t height);
     int32_t light_enabled_scanouts(const virtio::virtio_gpu_display_one* modes);
     int32_t darken_scanout(uint32_t index, bool relighting);
+    bool light_dark_scanout(uint32_t index, virtio_gpu_buffer* new_base);
+    void light_at_default(uint32_t index, virtio_gpu_buffer* new_base);
     void update_scanout(uint32_t index, const virtio::virtio_gpu_display_one& reported);
     void apply_config_change();
+    int32_t serve_mode_request(uint32_t index, const gfxfb::gfxfb_mode& mode);
+    void restore_scanouts();
+    void finish_request(mode_request& request, int32_t result);
     int32_t create_cursor_resource();
     int32_t run_cursor_command(const virtio::virtio_gpu_update_cursor& command, uint64_t deadline_ns);
     int32_t update_cursor(virtio_gpu_scanout& scanout, const gfxfb::cursor_image& image, uint64_t deadline_ns);
@@ -378,6 +421,7 @@ private:
     );
     void set_latch_timer(virtio_gpu_scanout& scanout);
     static void report_latch(timer::deadline_timer* latch_timer);
+    bool has_task_work() const;
     task_work wait_for_work();
 
     virtio::virtqueue m_control_queue;
@@ -414,12 +458,15 @@ private:
     // A base buffer the device may still read after a failed attach, which `detach()` frees once it resets the device
     virtio_gpu_buffer* m_held_base = nullptr;
 
-    // The task's work: a configuration change the interrupt handler noted, and buffers gfxfb handed back, in order. The
-    // interrupt handler and the reaper take the lock, so a holder must never keep it across a wait
+    // The task's work, in the order it serves it: a restore, a mode request, a configuration change, released buffers.
+    // The interrupt handler and the reaper take the lock, so a holder must never keep it across a wait
     sync::spinlock   m_work_lock;
+    bool             m_has_restore = false;
+    mode_request*    m_request = nullptr;
     bool             m_has_config_change = false;
     release_list     m_releases;
     sync::wait_queue m_work_wq;
+    sync::wait_queue m_request_wq; // where `set_mode()` waits for the task to finish its request
 };
 
 } // namespace drivers

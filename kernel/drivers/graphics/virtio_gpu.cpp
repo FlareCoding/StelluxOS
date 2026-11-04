@@ -75,6 +75,25 @@ constexpr uint16_t COMPLETION_VECTOR = 0;
 constexpr uint16_t CONFIG_VECTOR = 1;
 constexpr uint32_t MSIX_VECTORS = 2;
 
+namespace {
+
+struct scanout_size {
+    uint32_t width;
+    uint32_t height;
+};
+
+} // namespace
+
+// The sizes a lit scanout lists after its default size, descending by pixel count
+constexpr scanout_size LISTED_SIZES[] = {
+    {3840, 2160}, {2560, 1600}, {2560, 1440}, {1920, 1200}, {1920, 1080},
+    {1680, 1050}, {1600, 900},  {1280, 1024}, {1440, 900},  {1366, 768},
+    {1280, 800},  {1280, 720},  {1024, 768},  {800, 600},   {640, 480},
+};
+
+constexpr uint32_t MAX_LISTED_MODES = 1 + sizeof(LISTED_SIZES) / sizeof(LISTED_SIZES[0]);
+static_assert(MAX_LISTED_MODES <= gfxfb::GFXFB_MODES_MAX, "a lit scanout's list fits GFXFB_GET_MODES");
+
 static uint32_t align_command_bytes(uint32_t size) {
     return (size + COMMAND_ALIGN - 1) & ~(COMMAND_ALIGN - 1);
 }
@@ -92,6 +111,44 @@ static bool is_ok_response(uint32_t type) {
 static bool is_usable_mode(const virtio_gpu_display_one& mode) {
     return mode.enabled && mode.r.width > 0 && mode.r.height > 0 &&
            mode.r.width <= MAX_DIMENSION && mode.r.height <= MAX_DIMENSION;
+}
+
+static gfxfb::gfxfb_mode scanout_mode(uint32_t width, uint32_t height) {
+    return {.width = width, .height = height, .refresh_millihertz = REFRESH_MILLIHERTZ};
+}
+
+static uint32_t list_scanout_modes(
+    uint32_t default_width,
+    uint32_t default_height,
+    gfxfb::gfxfb_mode (&out)[MAX_LISTED_MODES]
+) {
+    uint32_t count = 0;
+    out[count++] = scanout_mode(default_width, default_height);
+
+    for (const scanout_size& size : LISTED_SIZES) {
+        bool is_default = size.width == default_width && size.height == default_height;
+        if (!is_default) {
+            out[count++] = scanout_mode(size.width, size.height);
+        }
+    }
+
+    return count;
+}
+
+// Runs in the driver's task, the only writer of a scanout's default size once the driver is attached, so it reads the
+// size with no lock
+static bool lists_mode(const virtio_gpu_scanout& scanout, const gfxfb::gfxfb_mode& mode) {
+    gfxfb::gfxfb_mode listed[MAX_LISTED_MODES] = {};
+    uint32_t count = list_scanout_modes(scanout.default_width, scanout.default_height, listed);
+
+    for (uint32_t i = 0; i < count; i++) {
+        bool is_same_size = listed[i].width == mode.width && listed[i].height == mode.height;
+        if (is_same_size && listed[i].refresh_millihertz == mode.refresh_millihertz) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // `rect` cut to `buf`'s pixels, with a width and height of 0 when it lies wholly outside them
@@ -425,6 +482,48 @@ int32_t virtio_gpu_driver::destroy_resource(const virtio_gpu_buffer& buf, wait_m
     return OK;
 }
 
+// Runs with no lock held. Gives a new buffer a resource holding its RAM and returns gfxfb's result. On a failure the
+// buffer is freed, or its RAM kept for good when the device may still hold it
+int32_t virtio_gpu_driver::create_buffer_resource(virtio_gpu_buffer* buf) {
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    int32_t rc = create_resource(*buf, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, wait_mode::sleep);
+    bool is_broken = m_is_broken;
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    if (rc == OK) {
+        return gfxfb::OK;
+    }
+
+    if (rc == ERR_ATTACH_UNANSWERED) {
+        log_kept_ram(*buf);
+        return gfxfb::ERR_DEVICE;
+    }
+
+    free_buffer(buf);
+
+    if (rc == ERR_OUT_OF_DEVICE_MEMORY) {
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    // A device still answering refused the command, as it refuses a resource ID still in use once the IDs wrap
+    return is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
+}
+
+// Runs in the driver's task with no lock held
+void virtio_gpu_driver::drop_buffer(virtio_gpu_buffer* buf) {
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    int32_t rc = destroy_resource(*buf, wait_mode::sleep);
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    // Unless the device confirmed both commands, the resource may still hold the RAM
+    if (rc != OK) {
+        log_kept_ram(*buf);
+        return;
+    }
+
+    free_buffer(buf);
+}
+
 // Queues the command that makes `scanout` show the whole of `buf`'s resource
 int32_t virtio_gpu_driver::queue_set_scanout(uint32_t scanout, const virtio_gpu_buffer& buf) {
     virtio_gpu_set_scanout set_scanout = {};
@@ -447,6 +546,17 @@ void virtio_gpu_driver::set_scanout_base(virtio_gpu_scanout& scanout, virtio_gpu
     });
 }
 
+// Runs at attach or in the driver's task, only while the scanout is dark or lit at the new size, so its list always
+// holds the mode it is lit at
+void virtio_gpu_driver::set_default_size(virtio_gpu_scanout& scanout, uint32_t width, uint32_t height) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_scanout_lock);
+        scanout.default_width = width;
+        scanout.default_height = height;
+        sync::spin_unlock_irqrestore(m_scanout_lock, irq);
+    });
+}
+
 // Allocates a base buffer for a scanout at `width` by `height`, or logs an error and returns null. Runs with no lock
 // held, since the allocation zeroes the RAM, which under `m_batch_lock` would hold up every scanout's presents
 virtio_gpu_buffer* virtio_gpu_driver::allocate_base(uint32_t index, uint32_t width, uint32_t height) {
@@ -465,18 +575,9 @@ virtio_gpu_buffer* virtio_gpu_driver::allocate_base(uint32_t index, uint32_t wid
     return base;
 }
 
-// Runs under `m_batch_lock` once the driver is attached. Lights a dark scanout with a buffer from `allocate_base()`.
+// Runs under `m_batch_lock` once the driver is attached. Shows on a dark scanout a buffer whose resource holds its RAM.
 // After a failure the device holds none of the buffer's RAM unless the result is ERR_RAM_HELD
-int32_t virtio_gpu_driver::light_scanout(uint32_t index, virtio_gpu_buffer& base, wait_mode mode) {
-    int32_t rc = create_resource(base, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, mode);
-    if (rc == ERR_ATTACH_UNANSWERED) {
-        return ERR_RAM_HELD;
-    }
-
-    if (rc != OK) {
-        return ERR_IO;
-    }
-
+int32_t virtio_gpu_driver::show_base(uint32_t index, virtio_gpu_buffer& base, wait_mode mode) {
     if (queue_set_scanout(index, base) != OK || run_batch(mode) != OK) {
         return destroy_resource(base, mode) == OK ? ERR_IO : ERR_RAM_HELD;
     }
@@ -491,6 +592,21 @@ int32_t virtio_gpu_driver::light_scanout(uint32_t index, virtio_gpu_buffer& base
     return OK;
 }
 
+// Runs under `m_batch_lock` once the driver is attached. Lights a dark scanout with a buffer from `allocate_base()`.
+// After a failure the device holds none of the buffer's RAM unless the result is ERR_RAM_HELD
+int32_t virtio_gpu_driver::light_scanout(uint32_t index, virtio_gpu_buffer& base, wait_mode mode) {
+    int32_t rc = create_resource(base, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, mode);
+    if (rc == ERR_ATTACH_UNANSWERED) {
+        return ERR_RAM_HELD;
+    }
+
+    if (rc != OK) {
+        return ERR_IO;
+    }
+
+    return show_base(index, base, mode);
+}
+
 // Runs at attach, which takes no lock. Lights a scanout with a new base buffer, holding the buffer in `m_held_base`
 // when the device may still read it after a failed lighting, for `detach()` to free once it has reset the device
 int32_t virtio_gpu_driver::light_at_attach(uint32_t index, uint32_t width, uint32_t height) {
@@ -499,6 +615,7 @@ int32_t virtio_gpu_driver::light_at_attach(uint32_t index, uint32_t width, uint3
         return ERR_IO;
     }
 
+    set_default_size(m_scanouts[index], width, height);
     int32_t rc = light_scanout(index, *base, wait_mode::poll);
     if (rc == ERR_RAM_HELD) {
         m_held_base = base;
@@ -811,19 +928,32 @@ int32_t virtio_gpu_driver::detach() {
     return pci_driver::detach();
 }
 
-// Sleeps until the interrupt handler noted a configuration change or gfxfb handed a buffer back, then takes whichever
-// of the two it finds, the change and the oldest buffer
+// Runs under `m_work_lock`
+bool virtio_gpu_driver::has_task_work() const {
+    return m_has_restore || m_request || m_has_config_change || !m_releases.empty();
+}
+
 virtio_gpu_driver::task_work virtio_gpu_driver::wait_for_work() {
     task_work work = {};
 
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_work_lock);
-        while (!m_has_config_change && m_releases.empty()) {
+        while (!has_task_work()) {
             irq = sync::wait(m_work_wq, m_work_lock, irq);
         }
 
+        work.has_restore = m_has_restore;
+        work.request = m_request;
         work.has_config_change = m_has_config_change;
         work.released = m_releases.pop_front();
+
+        if (m_request) {
+            work.output = m_request->output;
+            work.mode = m_request->mode;
+        }
+
+        m_has_restore = false;
+        m_request = nullptr;
         m_has_config_change = false;
         sync::spin_unlock_irqrestore(m_work_lock, irq);
     });
@@ -831,38 +961,37 @@ virtio_gpu_driver::task_work virtio_gpu_driver::wait_for_work() {
     return work;
 }
 
-// Runs in the driver's task. Brings one scanout to what the device reports for it, reporting each change to gfxfb with
-// no lock held, since gfxfb reads the scanout back under `m_scanout_lock` and allocates before returning
-void virtio_gpu_driver::update_scanout(uint32_t index, const virtio_gpu_display_one& reported) {
+// Runs in the driver's task. Lights a dark scanout with a buffer from `allocate_base()`, and after a failed light
+// leaves it dark without `relighting`, freeing the buffer or keeping its RAM for good when the device may still read it
+bool virtio_gpu_driver::light_dark_scanout(uint32_t index, virtio_gpu_buffer* new_base) {
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    int32_t rc = light_scanout(index, *new_base, wait_mode::sleep);
+    if (rc != OK) {
+        set_scanout_base(m_scanouts[index], nullptr, false);
+    }
+
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    if (rc == OK) {
+        return true;
+    }
+
+    log::error("virtio-gpu: failed to light scanout %u at %ux%u", index, new_base->width, new_base->height);
+    if (rc == ERR_RAM_HELD) {
+        log_kept_ram(*new_base);
+    } else {
+        free_buffer(new_base);
+    }
+
+    return false;
+}
+
+// Runs in the driver's task with no lock held, since it reports each change to gfxfb
+void virtio_gpu_driver::light_at_default(uint32_t index, virtio_gpu_buffer* new_base) {
     virtio_gpu_scanout& scanout = m_scanouts[index];
-    uint32_t width = reported.r.width;
-    uint32_t height = reported.r.height;
-    bool is_usable = is_usable_mode(reported);
+    bool was_lit = scanout.base != nullptr;
 
-    // Only the task writes a scanout's base once the driver is attached, so it reads it with no lock
-    virtio_gpu_buffer* base = scanout.base;
-    bool has_reported_size = base && base->width == width && base->height == height;
-    bool is_unchanged = base ? is_usable && has_reported_size : !is_usable;
-    if (is_unchanged) {
-        return;
-    }
-
-    bool is_too_large = width > MAX_DIMENSION || height > MAX_DIMENSION;
-    if (reported.enabled && is_too_large) {
-        log::warn(
-            "virtio-gpu: scanout %u reported at %ux%u, past the driver's limit of %ux%u",
-            index,
-            width,
-            height,
-            MAX_DIMENSION,
-            MAX_DIMENSION
-        );
-    }
-
-    // Allocated before the darkening, so zeroing the RAM does not lengthen the time the scanout shows nothing
-    virtio_gpu_buffer* new_base = is_usable ? allocate_base(index, width, height) : nullptr;
-
-    if (base) {
+    if (was_lit) {
         RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
         int32_t rc = darken_scanout(index, new_base != nullptr);
         RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
@@ -884,28 +1013,54 @@ void virtio_gpu_driver::update_scanout(uint32_t index, const virtio_gpu_display_
         return;
     }
 
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
-    int32_t rc = light_scanout(index, *new_base, wait_mode::sleep);
-    if (rc != OK) {
-        set_scanout_base(scanout, nullptr, false);
-    }
-
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
-
-    if (rc != OK) {
-        log::error("virtio-gpu: failed to light scanout %u at %ux%u", index, width, height);
-    }
-
-    if (rc == ERR_RAM_HELD) {
-        log_kept_ram(*new_base);
-    } else if (rc != OK) {
-        free_buffer(new_base);
-    }
+    set_default_size(scanout, new_base->width, new_base->height);
+    bool is_lit = light_dark_scanout(index, new_base);
 
     // A scanout reported dark while relighting is reported again, lit or else dark without `relighting`
-    if (rc == OK || base) {
+    if (is_lit || was_lit) {
         RUN_ELEVATED(gfxfb::output_changed(this, index));
     }
+}
+
+// Runs in the driver's task. Brings one scanout to what the device reports for it, though a usable report of a lit
+// scanout's default size leaves a requested size in place
+void virtio_gpu_driver::update_scanout(uint32_t index, const virtio_gpu_display_one& reported) {
+    virtio_gpu_scanout& scanout = m_scanouts[index];
+    uint32_t width = reported.r.width;
+    uint32_t height = reported.r.height;
+    bool is_usable = is_usable_mode(reported);
+
+    // Only the task writes a scanout's base once the driver is attached, so it reads it with no lock
+    virtio_gpu_buffer* base = scanout.base;
+    bool is_default_size = width == scanout.default_width && height == scanout.default_height;
+    bool is_unchanged = base ? is_usable && is_default_size : !is_usable;
+    if (is_unchanged) {
+        return;
+    }
+
+    // A report of the size a request lit the scanout at changes only its list, so its base buffer stays
+    bool has_reported_size = base && base->width == width && base->height == height;
+    if (is_usable && has_reported_size) {
+        set_default_size(scanout, width, height);
+        RUN_ELEVATED(gfxfb::output_changed(this, index));
+        return;
+    }
+
+    bool is_too_large = width > MAX_DIMENSION || height > MAX_DIMENSION;
+    if (reported.enabled && is_too_large) {
+        log::warn(
+            "virtio-gpu: scanout %u reported at %ux%u, past the driver's limit of %ux%u",
+            index,
+            width,
+            height,
+            MAX_DIMENSION,
+            MAX_DIMENSION
+        );
+    }
+
+    // Allocated before the darkening, so zeroing the RAM does not lengthen the time the scanout shows nothing
+    virtio_gpu_buffer* new_base = is_usable ? allocate_base(index, width, height) : nullptr;
+    light_at_default(index, new_base);
 }
 
 // Runs in the driver's task. Clears the display event before reading the display info, so a change the read misses
@@ -934,32 +1089,192 @@ void virtio_gpu_driver::apply_config_change() {
     }
 }
 
-// Follows the device's configuration changes and releases the buffers gfxfb handed back, since both wait for the
-// device, which neither the interrupt handler nor the reaper may
+// Runs in the driver's task. A scanout it cannot take dark or find RAM for stays at its size for the next restore
+void virtio_gpu_driver::restore_scanouts() {
+    for (uint32_t i = 0; i < m_scanout_count; i++) {
+        virtio_gpu_scanout& scanout = m_scanouts[i];
+        const virtio_gpu_buffer* base = scanout.base;
+        if (!base) {
+            continue;
+        }
+
+        uint32_t width = scanout.default_width;
+        uint32_t height = scanout.default_height;
+        if (base->width == width && base->height == height) {
+            continue;
+        }
+
+        log::info("virtio-gpu: restoring scanout %u to %ux%u", i, width, height);
+        virtio_gpu_buffer* new_base = allocate_base(i, width, height);
+        if (new_base) {
+            light_at_default(i, new_base);
+        }
+    }
+}
+
+// Runs in the driver's task. Lights a scanout at a mode it lists, as `display::set_mode()` describes
+int32_t virtio_gpu_driver::serve_mode_request(uint32_t index, const gfxfb::gfxfb_mode& mode) {
+    virtio_gpu_scanout& scanout = m_scanouts[index];
+    virtio_gpu_buffer* base = scanout.base;
+
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    bool is_broken = m_is_broken;
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    if (is_broken) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    if (!base) {
+        return gfxfb::ERR_DARK;
+    }
+
+    if (!lists_mode(scanout, mode)) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    if (mode.width == base->width && mode.height == base->height) {
+        return gfxfb::OK;
+    }
+
+    virtio_gpu_buffer* new_base = allocate_base(index, mode.width, mode.height);
+    if (!new_base) {
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    // The new base buffer gets its resource before the darkening, so a refused buffer leaves the scanout as it was
+    int32_t created = create_buffer_resource(new_base);
+    if (created != gfxfb::OK) {
+        return created;
+    }
+
+    uint32_t previous_width = base->width;
+    uint32_t previous_height = base->height;
+
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    int32_t rc = darken_scanout(index, true);
+    is_broken = m_is_broken;
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    // The device may still show the base buffer, so the scanout stays lit at its mode
+    if (rc != OK) {
+        log::error(
+            "virtio-gpu: failed to take scanout %u dark for a mode request at %ux%u",
+            index,
+            mode.width,
+            mode.height
+        );
+        drop_buffer(new_base);
+        return is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
+    }
+
+    RUN_ELEVATED(gfxfb::output_changed(this, index));
+
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    rc = show_base(index, *new_base, wait_mode::sleep);
+    is_broken = m_is_broken;
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    if (rc == OK) {
+        RUN_ELEVATED(gfxfb::output_changed(this, index));
+        return gfxfb::OK;
+    }
+
+    log::error("virtio-gpu: failed to light scanout %u at %ux%u for a mode request", index, mode.width, mode.height);
+    if (rc == ERR_RAM_HELD) {
+        log_kept_ram(*new_base);
+    } else {
+        free_buffer(new_base);
+    }
+
+    bool is_relit = false;
+    if (!is_broken) {
+        virtio_gpu_buffer* previous_base = allocate_base(index, previous_width, previous_height);
+        is_relit = previous_base && light_dark_scanout(index, previous_base);
+    }
+
+    if (!is_relit) {
+        RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+        set_scanout_base(scanout, nullptr, false);
+        is_broken = m_is_broken;
+        RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    }
+
+    RUN_ELEVATED(gfxfb::output_changed(this, index));
+
+    return is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
+}
+
+// Runs in the driver's task. Once the lock is released, the waiting `set_mode()` may return and end the request's life
+void virtio_gpu_driver::finish_request(mode_request& request, int32_t result) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_work_lock);
+        request.result = result;
+        request.is_done = true;
+        sync::wake_all(m_request_wq);
+        sync::spin_unlock_irqrestore(m_work_lock, irq);
+    });
+}
+
+// Serves the close's restores, mode requests, configuration changes and released buffers, since only this task writes a
+// scanout's base once the driver is attached and neither the interrupt handler nor the reaper may wait for the device
 void virtio_gpu_driver::run() {
     while (true) {
         task_work work = wait_for_work();
+
+        if (work.has_restore) {
+            restore_scanouts();
+        }
+
+        if (work.request) {
+            int32_t rc = serve_mode_request(work.output, work.mode);
+            finish_request(*work.request, rc);
+        }
 
         if (work.has_config_change) {
             apply_config_change();
         }
 
-        if (!work.released) {
-            continue;
+        if (work.released) {
+            drop_buffer(work.released);
         }
-
-        RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
-        int32_t rc = destroy_resource(*work.released, wait_mode::sleep);
-        RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
-
-        // Unless the device confirmed both commands, the resource may still hold the RAM
-        if (rc != OK) {
-            log_kept_ram(*work.released);
-            continue;
-        }
-
-        free_buffer(work.released);
     }
+}
+
+int32_t virtio_gpu_driver::set_mode(uint32_t output, const gfxfb::gfxfb_mode& mode) {
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    bool is_broken = m_is_broken;
+    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+
+    // A driver detached after registering stays registered with gfxfb but has no task to serve the request
+    if (is_broken) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    mode_request request = {.output = output, .mode = mode, .result = gfxfb::OK, .is_done = false};
+
+    // Each batch of the task has a deadline of its own, so the wait needs none
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_work_lock);
+        m_request = &request;
+        sync::wake_one(m_work_wq);
+        while (!request.is_done) {
+            irq = sync::wait(m_request_wq, m_work_lock, irq);
+        }
+
+        sync::spin_unlock_irqrestore(m_work_lock, irq);
+    });
+
+    return request.result;
+}
+
+void virtio_gpu_driver::restore_modes() {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_work_lock);
+        m_has_restore = true;
+        sync::wake_one(m_work_wq);
+        sync::spin_unlock_irqrestore(m_work_lock, irq);
+    });
 }
 
 int32_t virtio_gpu_driver::create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) {
@@ -979,29 +1294,12 @@ int32_t virtio_gpu_driver::create_buffer(uint32_t width, uint32_t height, uint32
         return gfxfb::ERR_NO_MEMORY;
     }
 
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
-    int32_t rc = create_resource(*buf, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, wait_mode::sleep);
-    bool is_broken = m_is_broken;
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
-
-    if (rc == OK) {
+    int32_t rc = create_buffer_resource(buf);
+    if (rc == gfxfb::OK) {
         *out = buf;
-        return gfxfb::OK;
     }
 
-    if (rc == ERR_ATTACH_UNANSWERED) {
-        log_kept_ram(*buf);
-        return gfxfb::ERR_DEVICE;
-    }
-
-    free_buffer(buf);
-
-    if (rc == ERR_OUT_OF_DEVICE_MEMORY) {
-        return gfxfb::ERR_NO_MEMORY;
-    }
-
-    // A device still answering refused the command, as it refuses a resource ID still in use once the IDs wrap
-    return is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
+    return rc;
 }
 
 // Runs under `m_batch_lock`. Copies run before the scanout switch, so a refused copy leaves the previous resource
@@ -1251,15 +1549,28 @@ int32_t virtio_gpu_driver::read_output(uint32_t output, gfxfb::output_state& out
 }
 
 int32_t virtio_gpu_driver::read_modes(uint32_t output, gfxfb::gfxfb_mode* out, uint32_t capacity, uint32_t& count) {
-    gfxfb::output_state state = {};
-    int32_t rc = read_output(output, state);
-    if (rc != gfxfb::OK) {
-        return rc;
+    if (output >= m_scanout_count) {
+        return gfxfb::ERR_INVALID_ARG;
     }
 
-    count = state.lit ? 1 : 0;
-    if (count > 0 && capacity > 0) {
-        out[0] = state.current;
+    const virtio_gpu_scanout& scanout = m_scanouts[output];
+    bool is_lit = false;
+    uint32_t default_width = 0;
+    uint32_t default_height = 0;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_scanout_lock);
+        is_lit = scanout.base != nullptr;
+        default_width = scanout.default_width;
+        default_height = scanout.default_height;
+        sync::spin_unlock_irqrestore(m_scanout_lock, irq);
+    });
+
+    gfxfb::gfxfb_mode listed[MAX_LISTED_MODES] = {};
+    count = is_lit ? list_scanout_modes(default_width, default_height, listed) : 0;
+
+    for (uint32_t i = 0; i < count && i < capacity; i++) {
+        out[i] = listed[i];
     }
 
     return gfxfb::OK;

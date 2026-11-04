@@ -870,7 +870,8 @@ static void end_present(
     RUN_ELEVATED(test.node->present_done(output, {.status = status, .frame = frame, .timestamp_ns = timestamp_ns}));
 }
 
-// Reports a change of `output` to the test's node, as its display does once the output lit, went dark or relit
+// Reports a change of `output` to the test's node, as its display does once the output lit, went dark, relit or changed
+// its mode list
 static void report_change(const gfxfb_test_node& test, uint32_t output) {
     RUN_ELEVATED(test.node->output_changed(output));
 }
@@ -1834,6 +1835,44 @@ TEST(gfxfb, get_modes_lists_the_boot_displays_one_mode) {
     EXPECT_TRUE(modes_equal(entries[1], unwritten_mode()));
 
     ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_list_change_display;
+
+// A lit output reported with nothing changed but its mode list keeps its base buffer's record and reaches every file as
+// one output event
+TEST(gfxfb, a_changed_mode_list_reaches_every_file_as_an_output_event) {
+    light_output(g_list_change_display, 0, false);
+    list_modes(g_list_change_display, 0, 5);
+    gfxfb_test_node test = publish_driver_node(&g_list_change_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* controller = fs::open(test.path, fs::O_RDWR);
+    fs::file* watcher = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(controller);
+    ASSERT_NOT_NULL(watcher);
+
+    list_modes(g_list_change_display, 0, 3);
+    report_change(test, 0);
+
+    EXPECT_TRUE(reads_output_event(controller, 0));
+    EXPECT_EQ(poll_file(controller), static_cast<uint32_t>(0));
+    EXPECT_TRUE(reads_output_event(watcher, 0));
+    EXPECT_EQ(poll_file(watcher), static_cast<uint32_t>(0));
+
+    // The reaper hands buffers back in the order their last references went, so seeing only the spare buffer back shows
+    // the record was kept
+    gfxfb::gfxfb_buffer_args spare = request_small_buffer(controller, page);
+    ASSERT_NE(spare.handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(destroy_buffer(controller, page, spare.handle), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_list_change_display.released_count, 1));
+    EXPECT_EQ(g_list_change_display.last_released, &g_list_change_display.created[0]);
+    EXPECT_EQ(g_list_change_display.released_count.load_acquire(), static_cast<uint32_t>(1));
+
+    ASSERT_TRUE(closes_before_deadline(watcher));
+    ASSERT_TRUE(closes_before_deadline(controller));
 }
 
 static recording_display g_clip_display;
