@@ -1,6 +1,7 @@
 #ifndef STELLUX_GPU_CORE_H
 #define STELLUX_GPU_CORE_H
 
+#include "common/list.h"
 #include "common/rb_tree.h"
 #include "common/types.h"
 #include "fs/node.h"
@@ -13,15 +14,79 @@
 #include "sync/mutex.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
+#include "timer/timer.h"
 
 namespace gpu {
 
 class buffer;
+struct submission;
+struct timeline;
+struct unmap_marker;
+
+// A held submission's wait for one point, linked on its timeline's list until the point is reached
+struct wait_entry {
+    list::node  link;
+    submission* owner;
+    timeline*   tl; // a reference of the submission's
+    uint64_t    value;
+};
+
+// A point a submission reaches when it ends, with a reference to its timeline
+struct signal_point {
+    timeline* tl;
+    uint64_t  value;
+};
 
 /**
- * A context's queue on one of the backend's hardware queues. Its holders are GPU_QUEUE_CREATE until it returns, its
- * context's slot, the backend until its stop, and each path that asks it to stop. It lives on the unprivileged heap
- * until its last reference drops.
+ * One GPU_SUBMIT's work, held on its queue until `run()` gets it, then running until the backend reports its sequence
+ * number finished. The path that ends it frees it, with its command list, once it took it off the queue.
+ */
+struct submission {
+    list::node             link;        // on its queue's held or running list, then on the ending path's own
+    core_queue*            queue;
+    uint64_t               sequence;    // the number `run()` got
+    sync::atomic<uint32_t> unmet;       // waits whose point the timeline has not reached
+    sync::atomic<uint32_t> wait_failed; // nonzero once a wait was reached while its timeline had the failed mark
+    uint32_t               wait_count;
+    uint32_t               signal_count;
+    uint32_t               commands_size;
+    wait_entry*            waits;
+    signal_point*          signals;
+    uint8_t*               commands;
+};
+
+using submission_list = list::head<submission, &submission::link>;
+
+// An unmap marker's place on one queue, passed once the queue finished `sequence` or stopped
+struct marker_join {
+    list::node    link;
+    unmap_marker* marker;
+    uint64_t      sequence;
+};
+
+using marker_list = list::head<marker_join, &marker_join::link>;
+
+/**
+ * What one GPU_UNMAP cut out of its context: a reference to each buffer it cut, held until every queue that had work
+ * running at the unmap passed the marker, so no submission still running can reach memory that was released.
+ */
+struct unmap_marker {
+    sync::atomic<uint32_t> count; // the unmap's own and one per queue joined
+    marker_join            joins[GPU_QUEUES_MAX];
+    uint32_t               buffer_count;
+    buffer**               buffers;
+};
+
+// The queues a path collected, each with a reference the path drops once it ran the queue
+struct collected_queues {
+    core_queue* first = nullptr;
+};
+
+/**
+ * A context's queue, which runs its submissions in order on one of the backend's hardware queues. Its holders are
+ * GPU_QUEUE_CREATE until it returns, its context's slot, the backend until its stop, each scheduled deadline, each
+ * GPU_SUBMIT and GPU_UNMAP while it runs, and each path that collected it or asks it to stop. It lives on the
+ * unprivileged heap until its last reference drops.
  */
 struct core_queue : rc::ref_counted<core_queue> {
     core_queue(device& owner, context& in, uint32_t queue_kind);
@@ -31,17 +96,30 @@ struct core_queue : rc::ref_counted<core_queue> {
     uint32_t               kind;
     uint32_t               index = 0;
     queue*                 backend_queue = nullptr;
-    sync::spinlock         lock = sync::SPINLOCK_INIT; // the marks below, taken with interrupts off
+    sync::spinlock         lock = sync::SPINLOCK_INIT; // everything below up to `deadline`, taken with interrupts off
+    submission_list        held;                       // in submission order
+    submission_list        running;                    // in sequence order
+    marker_list            markers;                    // in sequence order
+    uint64_t               running_bytes = 0;
+    uint64_t               last_run = 0;      // the sequence number `run()` got last
+    uint64_t               last_finished = 0; // the highest the backend reported, clamped to `last_run`
+    uint64_t               deadline_ns = 0;   // when the oldest running submission passes its deadline
     bool                   asked_to_stop = false;
     bool                   stopped = false;
     bool                   destroying = false;
-    rc::reaper::dead_node  cleanup_node; // GPU_QUEUE_DESTROY's cleanup
+    timer::deadline_timer  deadline;
+    list::node             device_link;    // on the device's list while the backend may name the queue
+    core_queue*            collected_next = nullptr;
+    sync::atomic<uint32_t> collected{0};   // nonzero while a path holds the queue collected
+    rc::reaper::dead_node  cleanup_node;   // GPU_QUEUE_DESTROY's cleanup
 
     /**
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE static void ref_destroy(core_queue* self);
 };
+
+using queue_list = list::head<core_queue, &core_queue::device_link>;
 
 // One mapping in a context's range tree, holding a reference to its buffer
 struct mapping {
@@ -69,9 +147,10 @@ struct queue_slot {
 
 /**
  * The core's side of one backend address space, with its mappings and up to GPU_QUEUES_MAX queues. Its handles, each
- * call naming it and GPU_QUEUE_DESTROY's cleanups hold references. The last one starts teardown on the reaper: the
- * first stage asks every queue to stop, and the second, once every queue stopped, destroys the queues and the space,
- * drops the mappings' buffer references and frees the context. It lives on the unprivileged heap.
+ * call naming it, GPU_QUEUE_DESTROY's cleanups and a deadline callback losing it hold references. The last one starts
+ * teardown on the reaper: the first stage asks every queue to stop, and the second, once every queue stopped, destroys
+ * the queues and the space, drops the mappings' buffer references and frees the context. It lives on the unprivileged
+ * heap.
  */
 struct context : rc::ref_counted<context> {
     explicit context(device& owner);
@@ -80,8 +159,10 @@ struct context : rc::ref_counted<context> {
     space*                 backend_space = nullptr;
     sync::mutex            lock; // the space and the mappings, held across create_queue, map and unmap
     rbt::tree<mapping, &mapping::link, mapping_order> mappings;
-    sync::spinlock         slot_lock = sync::SPINLOCK_INIT; // the slots
+    sync::spinlock         slot_lock = sync::SPINLOCK_INIT; // the slots, the lost reason and the fault address
     queue_slot             slots[GPU_QUEUES_MAX];
+    uint32_t               lost_reason = 0;
+    uint64_t               fault_va = 0;
     sync::atomic<uint32_t> stop_count{1}; // one for the first stage and one per queue until it stops
     rc::reaper::dead_node  first_stage;
     rc::reaper::dead_node  second_stage;
@@ -104,16 +185,45 @@ public:
 
     backend& get_backend() const { return *m_backend; }
     const gpu_info& info() const { return m_facts.info; }
+    const device_facts& facts() const { return m_facts; }
+
+    /**
+     * @brief True once the backend reported its GPU failed.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool failed();
+
+    /**
+     * @brief List `q` as a queue the backend may name, taking the backend's reference, unless the GPU failed.
+     * @return false once the GPU failed, with nothing taken.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool list_queue(core_queue& q);
+
+    /**
+     * @brief Take `q` off the list once its stop was reported.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void unlist_queue(core_queue& q);
+
+    /**
+     * @brief Set the failed mark and move every listed queue, with the backend's reference, to `out`.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void mark_failed(queue_list& out);
 
 private:
-    backend*     m_backend;
-    device_facts m_facts;
+    backend*       m_backend;
+    device_facts   m_facts;
+    sync::spinlock m_lock = sync::SPINLOCK_INIT; // the failed mark and the queue list, taken with interrupts off
+    bool           m_failed = false;
+    queue_list     m_queues;
 };
 
 /**
- * GPU memory the core counts as one object. The resource object its handles name and each CPU and GPU mapping of it
- * hold a reference, and after the last one drops the reaper returns the memory to the device's backend and frees the
- * buffer. It lives on the unprivileged heap, and its device outlives it.
+ * GPU memory the core counts as one object. The resource object its handles name, each CPU and GPU mapping of it and
+ * each unmap marker that cut one hold a reference, and after the last one drops the reaper returns the memory to the
+ * device's backend and frees the buffer. It lives on the unprivileged heap, and its device outlives it.
  */
 class buffer final : public mm::device_backing {
 public:
@@ -145,13 +255,16 @@ private:
 };
 
 /**
- * A 64-bit counter that only rises, from the value its creator chose. The resource object its handles name holds a
- * reference. It lives on the unprivileged heap and belongs to no device, so a call on any GPU's file may name it.
+ * A 64-bit counter that only rises, from the value its creator chose. The resource object its handles name and each
+ * submission waiting for or reaching one of its points hold a reference. It lives on the unprivileged heap and belongs
+ * to no device, so a call on any GPU's file may name it.
  */
 struct timeline : rc::ref_counted<timeline> {
-    sync::spinlock   lock;    // guards the value, taken with interrupts off
-    uint64_t         value;
-    sync::wait_queue waiters; // CPU waiters, woken at each rise
+    sync::spinlock                              lock;    // everything below, taken with interrupts off
+    uint64_t                                    value;
+    bool                                        failed;  // set for good once work that would reach a point failed
+    list::head<wait_entry, &wait_entry::link>   entries; // held submissions' waits for points above its value
+    sync::wait_queue                            waiters; // CPU waiters, woken at each rise
 
     /**
      * @note Privilege: **required**
@@ -236,6 +349,11 @@ __PRIVILEGED_CODE void drop_buffer(buffer* buf);
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE void drop_timeline(timeline* tl);
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void drop_queue(core_queue* q);
 
 /**
@@ -244,16 +362,75 @@ __PRIVILEGED_CODE void drop_queue(core_queue* q);
 __PRIVILEGED_CODE void drop_context(context* c);
 
 /**
- * @brief Ask `q` to stop unless it was asked already, calling the backend's `stop_queue()`.
+ * @brief Raise `tl` to `value` when below it, with the failed mark when `failed`, collecting the queue of each wait
+ * entry this reaches into `ready`. Takes the timeline's lock, so a caller may hold a queue's.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void reach_point(timeline& tl, uint64_t value, bool failed, collected_queues& ready);
+
+/**
+ * @brief Link `entry` on its timeline unless its point is reached already.
+ * @return true when the point is reached already, with the submission's failed mark set when the timeline's is.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool link_wait(wait_entry& entry);
+
+/**
+ * @brief Unlink `entry` from its timeline if it is still linked.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void unlink_wait(wait_entry& entry);
+
+/**
+ * @brief Add `q` to `ready` with the reference the caller took on it, or drop that reference when another path holds
+ * the queue collected, which then runs it after the caller's change. Never sleeps.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void collect(core_queue& q, collected_queues& ready);
+
+/**
+ * @brief Run each collected queue's held head while it may run, holding no other core lock, and drop the queue.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void run_collected(collected_queues& ready);
+
+/**
+ * @brief Ask `q` to stop unless it was asked already: end its held submissions failed and, unless the GPU failed,
+ * call the backend's `stop_queue()`.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void ask_to_stop(core_queue& q);
+
+/**
+ * @brief Join `join`'s marker to `q` at its last sequence number run, when `q` has work running.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void join_marker(core_queue& q, marker_join& join);
+
+/**
+ * @brief Drop one count of `marker`, and at the last its buffer references.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void drop_marker(unmap_marker* marker);
 
 /**
  * @brief Drop one of `c`'s stop counts, deferring teardown's second stage at the last.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void drop_stop_count(context& c);
+
+/**
+ * @brief The context's lost reason, GPU_LOST_DEVICE once the GPU failed unless it was lost before, else 0. `fault_va`
+ * gets the fault address that came with the reason, else 0.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t lost_state(context& c, uint64_t* fault_va);
+
+/**
+ * @brief Lose `c` for `reason` unless it is lost already, asking each of its queues to stop. Never sleeps.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void lose_context(context& c, uint32_t reason, uint64_t fault_va);
 
 /**
  * @brief Reserve a free slot of `c` for a queue under creation and count that queue's stop.
@@ -270,9 +447,16 @@ __PRIVILEGED_CODE void unreserve_slot(context& c, uint32_t index);
 
 /**
  * @brief Publish `q` in its reserved slot with a reference of the slot's.
+ * @return true when `c` was lost to a fault, an engine error or a hung submission.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void publish_queue(context& c, core_queue& q);
+__PRIVILEGED_CODE bool publish_queue(context& c, core_queue& q);
+
+/**
+ * @brief The published queue at `index`, with a reference, or null for none.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE core_queue* find_queue(context& c, uint32_t index);
 
 /**
  * @brief Mark the published queue at `index` destroying, taking a queue reference for the caller and a context
@@ -331,8 +515,8 @@ __PRIVILEGED_CODE int32_t unmap_range(device& dev, uint64_t arg);
 __PRIVILEGED_CODE int32_t create_timeline(uint64_t arg);
 
 /**
- * @brief `GPU_TIMELINE_SIGNAL`: raise the value, waking every CPU waiter, or return fs::ERR_INVAL for a value at or
- * below the current one.
+ * @brief `GPU_TIMELINE_SIGNAL`: raise the value, waking every CPU waiter and running each queue a reached point
+ * readied, or return fs::ERR_INVAL for a value at or below the current one.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t signal_timeline(uint64_t arg);
@@ -348,6 +532,11 @@ __PRIVILEGED_CODE int32_t query_timeline(uint64_t arg);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t wait_timelines(uint64_t arg);
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t submit(device& dev, uint64_t arg);
 
 } // namespace gpu
 

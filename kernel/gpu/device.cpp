@@ -25,6 +25,37 @@ static sync::atomic<bool> g_fail_next_allocation;
 device::device(const char* name, backend* b, const device_facts& facts)
     : fs::node(fs::node_type::char_device, nullptr, name), m_backend(b) {
     string::memcpy(&m_facts, &facts, sizeof(m_facts));
+    m_queues.init();
+}
+
+__PRIVILEGED_CODE bool device::failed() {
+    sync::irq_lock_guard guard(m_lock);
+    return m_failed;
+}
+
+__PRIVILEGED_CODE bool device::list_queue(core_queue& q) {
+    sync::irq_lock_guard guard(m_lock);
+    if (m_failed) {
+        return false;
+    }
+
+    q.add_ref();
+    m_queues.push_back(&q);
+
+    return true;
+}
+
+__PRIVILEGED_CODE void device::unlist_queue(core_queue& q) {
+    sync::irq_lock_guard guard(m_lock);
+    m_queues.remove(&q);
+}
+
+__PRIVILEGED_CODE void device::mark_failed(queue_list& out) {
+    sync::irq_lock_guard guard(m_lock);
+    m_failed = true;
+    while (core_queue* q = m_queues.pop_front()) {
+        out.push_back(q);
+    }
 }
 
 void* allocate(size_t bytes) {
@@ -129,6 +160,7 @@ int32_t device::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
     case GPU_TIMELINE_SIGNAL: return signal_timeline(arg);
     case GPU_TIMELINE_QUERY:  return query_timeline(arg);
     case GPU_TIMELINE_WAIT:   return wait_timelines(arg);
+    case GPU_SUBMIT:          return submit(*this, arg);
     case GPU_HANDLE_RESTRICT: return restrict_handle(*this, arg);
     default:                  return fs::ERR_NOSYS;
     }

@@ -150,6 +150,10 @@ __PRIVILEGED_CODE int32_t create_buffer(device& dev, uint64_t arg) {
         return fs::ERR_INVAL;
     }
 
+    if (dev.failed()) {
+        return fs::ERR_IO;
+    }
+
     if (args.placement != GPU_PLACEMENT_CONTEXT) {
         return new_buffer(dev, args, size, nullptr, arg);
     }
@@ -161,7 +165,9 @@ __PRIVILEGED_CODE int32_t create_buffer(device& dev, uint64_t arg) {
         return rc;
     }
 
-    rc = new_buffer(dev, args, size, static_cast<context*>(obj->impl)->backend_space, arg);
+    auto& c = *static_cast<context*>(obj->impl);
+    uint64_t fault_va = 0;
+    rc = lost_state(c, &fault_va) != 0 ? fs::ERR_IO : new_buffer(dev, args, size, c.backend_space, arg);
     resource::resource_release(obj);
 
     return rc;
