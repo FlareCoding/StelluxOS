@@ -1056,6 +1056,57 @@ constexpr uint32_t ENGINE_TYPE_GRAPHICS   = 0x1;
 constexpr uint32_t ENGINE_TYPE_FIRST_COPY = 0x9;
 constexpr uint32_t ENGINE_TYPE_LAST_COPY  = 0x12;
 
+// NVIDIA's FERMI_VASPACE_A, the class of a GPU address space, allocated under the device
+constexpr uint32_t CLASS_ADDRESS_SPACE = 0x90F1;
+
+// NVIDIA's NV_VASPACE_ALLOCATION_PARAMETERS. An index of 0 (NVIDIA's NV_VASPACE_ALLOCATION_INDEX_GPU_NEW) asks for a
+// new address space, and a size of 0 asks for the default size
+struct address_space_params {
+    uint32_t index;
+    uint32_t flags;
+    uint64_t size;           // NVIDIA's vaSize
+    uint64_t internal_start; // NVIDIA's vaStartInternal
+    uint64_t internal_limit; // NVIDIA's vaLimitInternal
+    uint32_t big_page_size;  // NVIDIA's bigPageSize
+    uint64_t base;           // NVIDIA's vaBase
+};
+
+// NVIDIA's NV_VASPACE_ALLOCATION_FLAGS_IS_EXTERNALLY_OWNED, an address space whose page tables the client owns
+constexpr uint32_t EXTERNALLY_OWNED_ADDRESS_SPACE = 1u << 3;
+
+static_assert(sizeof(address_space_params) == 48, "NVIDIA's layout of FERMI_VASPACE_A's parameters");
+
+// NVIDIA's NV0080_CTRL_CMD_DMA_SET_PAGE_DIRECTORY, the control to the device that hands an address space its directory
+constexpr uint32_t CONTROL_SET_PAGE_DIRECTORY = 0x801813;
+
+// NVIDIA's NV0080_CTRL_DMA_SET_PAGE_DIRECTORY_PARAMS
+struct set_page_directory_params {
+    uint64_t address;       // NVIDIA's physAddress
+    uint32_t entry_count;   // NVIDIA's numEntries, the root's entries in use
+    uint32_t flags;
+    handle   address_space; // NVIDIA's hVASpace
+    uint32_t channel_id;    // NVIDIA's chId, unused with `PAGE_DIRECTORY_ALL_CHANNELS`
+    uint32_t subdevice_id;  // NVIDIA's subDeviceId, the subdevice's instance plus 1
+    uint32_t pasid;
+};
+
+// NVIDIA's NV0080_CTRL_DMA_SET_PAGE_DIRECTORY_FLAGS_APERTURE_VIDMEM and _ALL_CHANNELS_TRUE: the directory lies in video
+// memory and serves every channel of the address space
+constexpr uint32_t PAGE_DIRECTORY_IN_VIDEO_MEMORY = 0x0;
+constexpr uint32_t PAGE_DIRECTORY_ALL_CHANNELS    = 1u << 3;
+
+// NVIDIA's NV0080_CTRL_CMD_DMA_UNSET_PAGE_DIRECTORY, the control to the device that takes the directory back
+constexpr uint32_t CONTROL_UNSET_PAGE_DIRECTORY = 0x801814;
+
+// NVIDIA's NV0080_CTRL_DMA_UNSET_PAGE_DIRECTORY_PARAMS
+struct unset_page_directory_params {
+    handle   address_space; // NVIDIA's hVASpace
+    uint32_t subdevice_id;  // NVIDIA's subDeviceId, as in `set_page_directory_params`
+};
+
+static_assert(sizeof(set_page_directory_params) == 32, "NVIDIA's layout of SET_PAGE_DIRECTORY's parameters");
+static_assert(sizeof(unset_page_directory_params) == 8, "NVIDIA's layout of UNSET_PAGE_DIRECTORY's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H

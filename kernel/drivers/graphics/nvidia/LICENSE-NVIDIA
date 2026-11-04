@@ -1888,11 +1888,18 @@ src/common/sdk/nvidia/inc/nvos.h
     virtual address space of its own, in rm.h and gpu_objects.h, the layout of
     NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS, a display channel's allocation
     parameters, in rm.h, core_channel.cpp and
-    kernel/tests/graphics/nvidia_core_channel.test.cpp, that pControl receives
-    a virtual address of the channel's PUT and GET, in rm.h, and the layout of
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, that pControl receives a
+    virtual address of the channel's PUT and GET, in rm.h, the layout of
     NV50VAIO_CHANNELPIO_ALLOCATION_PARAMETERS, a cursor channel's allocation
     parameters, in rm.h, cursor_channel.cpp and
-    kernel/tests/graphics/nvidia_cursor_channel.test.cpp
+    kernel/tests/graphics/nvidia_cursor_channel.test.cpp, the layout of
+    NV_VASPACE_ALLOCATION_PARAMETERS, an address space's allocation parameters,
+    with the index NV_VASPACE_ALLOCATION_INDEX_GPU_NEW, 0, asking for a new
+    address space, the vaSize of 0 for the default size and the flag
+    NV_VASPACE_ALLOCATION_FLAGS_IS_EXTERNALLY_OWNED, bit 3, of an address space
+    whose page tables its client owns, in rm.h, and the parameters' size, the
+    flags' word and the flag, in
+    kernel/tests/graphics/nvidia_address_space.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-rm.c
@@ -3785,6 +3792,29 @@ src/common/inc/swref/published/maxwell/gm107/dev_ram.h
     NV_RAMUSERD_CHAN_SIZE, the 512 bytes of a USERD, so that a 4 KiB page holds
     8, in channel_methods.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
+src/common/sdk/nvidia/inc/class/cl90f1.h
+    the class FERMI_VASPACE_A, 0x90F1, of a GPU address space, in rm.h and
+    kernel/tests/graphics/nvidia_address_space.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080dma.h
+    the commands NV0080_CTRL_CMD_DMA_SET_PAGE_DIRECTORY and
+    NV0080_CTRL_CMD_DMA_UNSET_PAGE_DIRECTORY, controls of a device, the layouts
+    of their parameters, that their subDeviceId names the subdevice by its
+    instance plus 1, and the flags APERTURE_VIDMEM, 0 in bits 1:0, and
+    ALL_CHANNELS_TRUE, bit 3, in rm.h, the commands, the sizes of their
+    parameters and the two flags, in
+    kernel/tests/graphics/nvidia_address_space.test.cpp, and that
+    UNSET_PAGE_DIRECTORY gives every channel of the address space the firmware's
+    own page directory back, in address_space.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2006-2018 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/rmapi/nv_gpu_ops.c
+    that NVIDIA's UVM hands an address space its root page directory through the
+    device's SET_PAGE_DIRECTORY, in video memory for every channel, and names
+    the subdevice by its instance plus 1, in rm.h and address_space.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2013-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c,
