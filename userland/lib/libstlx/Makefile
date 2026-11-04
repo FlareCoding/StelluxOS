@@ -20,6 +20,9 @@ KTRACE_FORMAT_HEADER := $(USERLAND_ROOT)/../kernel/trace/ktrace_format.h
 # The kernel owns /dev/gfxfb's ioctl definitions, which userland includes as <stlx/gfxfb_abi.h>
 GFXFB_ABI_HEADER := $(USERLAND_ROOT)/../kernel/drivers/graphics/gfxfb_abi.h
 
+# The kernel owns /dev/gpuN's ioctl definitions, which userland includes as <stlx/gpu_abi.h>
+GPU_ABI_HEADER := $(USERLAND_ROOT)/../kernel/gpu/gpu_abi.h
+
 SOURCES := $(wildcard $(SRC_DIR)/*.c)
 OBJECTS := $(SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
@@ -38,6 +41,7 @@ install-headers:
 	$(UQ)cp -p $(INCLUDE_DIR)/stlx/*.h $(SYSROOT_INC)/
 	$(UQ)cp -p $(KTRACE_FORMAT_HEADER) $(SYSROOT_INC)/
 	$(UQ)cp -p $(GFXFB_ABI_HEADER) $(SYSROOT_INC)/
+	$(UQ)cp -p $(GPU_ABI_HEADER) $(SYSROOT_INC)/
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(UQ)mkdir -p $(dir $@)

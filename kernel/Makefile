@@ -90,6 +90,7 @@ CXX_SOURCES += $(shell find net -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find random -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find sysstat -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find drivers -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find gpu -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find arch/$(ARCH) -name '*.cpp' 2>/dev/null | sort)
 
 # Unit test sources (only when STLX_UNIT_TESTS_ENABLED=1)
