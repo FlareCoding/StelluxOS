@@ -34,24 +34,40 @@
 #define CONTEXT_COUNT   16
 #define FILL_WORD       0xA5C3E10Fu
 #define QUEUE_COUNT     2
-#define LIST_WORDS_MAX  16
+#define LIST_WORDS_MAX  32
 #define WAIT_NS         (100 * NS_PER_MS)
 #define WAITED_COPIES   1000000u
+#define HOLD_US         (20 * 1000)
 
-// The copy part's buffers in its context: each queue's command words in a page of the first, then the memory they
-// fill and copy
-#define COMMANDS_VA USER_VA_START
-#define VIDEO_VA    (COMMANDS_VA + BUFFER_BYTES)
-#define SYSTEM_VA   (VIDEO_VA + BUFFER_BYTES)
-#define SHARED_VA   (SYSTEM_VA + BUFFER_BYTES)
+// The copy part's buffers in its context: each queue's command words in a page of the first, with the word a
+// semaphore acquire reads in the page after them, then the memory they fill and copy
+#define COMMANDS_VA  USER_VA_START
+#define SEMAPHORE_VA (COMMANDS_VA + QUEUE_COUNT * PAGE_BYTES)
+#define VIDEO_VA     (COMMANDS_VA + BUFFER_BYTES)
+#define SYSTEM_VA    (VIDEO_VA + BUFFER_BYTES)
+#define SHARED_VA    (SYSTEM_VA + BUFFER_BYTES)
 
 // NVIDIA's NVC56F_DMA_SEC_OP_INC_METHOD, a push buffer header whose values go to consecutive methods, with the value
 // count from bit 16, here on subchannel 0
 #define PUSH_HEADER_INCREASING  (1u << 29)
 #define PUSH_HEADER_COUNT_SHIFT 16
 
-// NVIDIA's NVC56F_SET_OBJECT, which binds the copy class to the subchannel, and NVIDIA's NVC7B5 copy methods
-#define SET_OBJECT           0x0000u
+// NVIDIA's NVC56F host methods: SET_OBJECT (which binds the copy class to the subchannel), SEMAPHOREA to SEMAPHORED,
+// MEM_OP_A to MEM_OP_D (which run MEM_OP_D's operation) and SET_REFERENCE
+#define SET_OBJECT    0x0000u
+#define SEMAPHORE_A   0x0010u
+#define MEM_OP_A      0x0028u
+#define SET_REFERENCE 0x0050u
+
+// NVIDIA's SEMAPHORED fields: OPERATION ACQUIRE, which waits for the word to equal the payload, and ACQUIRE_SWITCH
+// ENABLED, which lets other channels run meanwhile
+#define SEMAPHORE_ACQUIRE (0x1u | (1u << 12))
+
+// NVIDIA's MEM_OP_D operations in bits 31:27. MEMBAR takes MEM_OP_C's SYS_MEMBAR type, 0
+#define MEM_OP_MEMBAR               (0x05u << 27)
+#define MEM_OP_L2_SYSMEM_INVALIDATE (0x0Eu << 27)
+
+// NVIDIA's NVC7B5 copy methods
 #define LAUNCH_DMA           0x0300u
 #define OFFSET_IN_UPPER      0x0400u
 #define OFFSET_OUT_UPPER     0x0408u
@@ -476,17 +492,38 @@ static void push_address(struct command_list* list, uint32_t upper_method, uint6
 }
 
 // Has the copy engine write `value` to every word of the buffer at `va`
+static void push_fill(struct command_list* list, uint32_t copy_class, uint64_t va, uint32_t value) {
+    push_method(list, SET_OBJECT, copy_class);
+    push_method(list, SET_REMAP_CONST_A, value);
+    push_method(list, SET_REMAP_COMPONENTS, REMAP_FILL_ELEMENTS);
+
+    push_address(list, OFFSET_OUT_UPPER, va);
+    push_method(list, LINE_LENGTH_IN, (uint32_t)BUFFER_WORDS);
+    push_method(list, LAUNCH_DMA, LAUNCH_FILL);
+}
+
 static struct command_list fill_commands(uint32_t copy_class, uint64_t va, uint32_t value) {
     struct command_list list = {0};
-    push_method(&list, SET_OBJECT, copy_class);
-    push_method(&list, SET_REMAP_CONST_A, value);
-    push_method(&list, SET_REMAP_COMPONENTS, REMAP_FILL_ELEMENTS);
-
-    push_address(&list, OFFSET_OUT_UPPER, va);
-    push_method(&list, LINE_LENGTH_IN, (uint32_t)BUFFER_WORDS);
-    push_method(&list, LAUNCH_DMA, LAUNCH_FILL);
-
+    push_fill(&list, copy_class, va, value);
     return list;
+}
+
+// Runs MEM_OP_D's `operation` with MEM_OP_A to MEM_OP_C left 0
+static void push_memory_operation(struct command_list* list, uint32_t operation) {
+    list->words[list->count++] = method_header(MEM_OP_A, 4);
+    list->words[list->count++] = 0;
+    list->words[list->count++] = 0;
+    list->words[list->count++] = 0;
+    list->words[list->count++] = operation;
+}
+
+// Holds the methods after it until the word at `va` equals `value`
+static void push_acquire(struct command_list* list, uint64_t va, uint32_t value) {
+    list->words[list->count++] = method_header(SEMAPHORE_A, 4);
+    list->words[list->count++] = (uint32_t)(va >> 32);
+    list->words[list->count++] = (uint32_t)va;
+    list->words[list->count++] = value;
+    list->words[list->count++] = SEMAPHORE_ACQUIRE;
 }
 
 // Has the copy engine copy `bytes` from `from` to `to`
@@ -721,11 +758,42 @@ static void test_waited_copies(struct copy_session* s) {
     check("a million copies on one queue, each waited for with a 100 ms deadline, end and read back", copied_all);
 }
 
+// The host methods a user queue may use, NVK's invalidate of the GPU's cache of system memory among them
+static void test_host_methods(struct copy_session* s) {
+    struct copy_queue* q = &s->queues[0];
+    struct command_list list = {0};
+    push_method(&list, SET_REFERENCE, 1);
+    push_memory_operation(&list, MEM_OP_L2_SYSMEM_INVALIDATE);
+    push_memory_operation(&list, MEM_OP_MEMBAR);
+    push_fill(&list, s->copy_class, SYSTEM_VA, FILL_WORD);
+
+    bool ran = run(s, q, &list) == 0 && reads_as(s->system_words, FILL_WORD);
+    check("SET_REFERENCE, L2_SYSMEM_INVALIDATE and MEMBAR run on a user queue ahead of its fill", ran);
+}
+
+static void test_acquire(struct copy_session* s) {
+    struct copy_queue* q = &s->queues[0];
+    volatile uint32_t* semaphore = s->command_words + QUEUE_COUNT * PAGE_WORDS;
+    struct command_list list = {0};
+    push_acquire(&list, SEMAPHORE_VA, 1);
+    push_fill(&list, s->copy_class, SYSTEM_VA, ~FILL_WORD);
+
+    bool submitted = submit(s, q, &list, NULL) == 0;
+    usleep(HOLD_US);
+    bool held = reads_as(s->system_words, FILL_WORD);
+
+    // Written even when the fill ran early, so the queue is never left waiting for the checks after this one
+    *semaphore = 1;
+    __sync_synchronize();
+    bool filled = submitted && wait_for(s, q) == 0 && reads_as(s->system_words, ~FILL_WORD);
+    check("a semaphore acquire holds a user queue's fill until the CPU writes the word it waits for", held && filled);
+}
+
 static void test_session_end(struct copy_session* s, struct gpu_memory before) {
     struct gpu_context_args query = {0};
     query.context = s->context;
     bool live = gpu_call(s->fd, GPU_CONTEXT_QUERY, &query) == 0 && query.lost == 0;
-    check("the context stays live through its fills and copies", live);
+    check("the context stays live through every check on its queues", live);
 
     struct gpu_queue_args second = {0};
     second.context = s->context;
@@ -755,6 +823,9 @@ static void test_copy_queues(int fd, const struct gpu_info* info) {
     test_copies(&s);
     test_held_copy(&s);
     test_waited_copies(&s);
+
+    test_host_methods(&s);
+    test_acquire(&s);
     test_session_end(&s, before);
 }
 
