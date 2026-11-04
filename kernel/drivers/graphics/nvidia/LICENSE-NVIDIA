@@ -537,7 +537,8 @@ src/common/inc/swref/published/turing/tu102/dev_vm.h
     field (the offset's other bits in bits 19:0), in bar1.h, bar1.cpp and
     kernel/tests/graphics/nvidia_falcon.test.cpp, and the doorbell
     NV_VIRTUAL_FUNCTION_DOORBELL at 0x30090 in the block, so 0xBB0090 in BAR0,
-    in channel.cpp and kernel/tests/graphics/nvidia_channel.test.cpp
+    in channel.cpp, kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga100/dev_vm.h
@@ -3756,17 +3757,21 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     PAYLOAD_SIZE 32BIT, and WFI, 0x78, in channel_methods.h, channel_methods.cpp
     and kernel/tests/graphics/nvidia_channel_methods.test.cpp, that an entry's
     FETCH UNCONDITIONAL, LEVEL MAIN and SYNC PROCEED are each 0, in
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp, and the class number
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp, the class number
     AMPERE_CHANNEL_GPFIFO_A, 0xC56F, which chip.cpp gives GA102's channels, in
-    chip.cpp, kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_channel.test.cpp
+    chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp, and SET_OBJECT's header
+    and SEM_ADDR_LO's header for its five values, in
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc7b5.h
     the class number AMPERE_DMA_COPY_B, 0xC7B5, which chip.cpp gives GA102's
     copy objects, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp and
-    kernel/tests/graphics/nvidia_channel.test.cpp, and its methods
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp,
+    kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp, and its methods
     SET_DST_PHYS_MODE, 0x264, with TARGET LOCAL_FB, 0, LAUNCH_DMA, 0x300, with
     DATA_TRANSFER_TYPE NON_PIPELINED, 2, in bits 1:0, FLUSH_ENABLE in bit 2,
     SRC_MEMORY_LAYOUT and DST_MEMORY_LAYOUT PITCH in bits 7 and 8, REMAP_ENABLE
@@ -3798,9 +3803,11 @@ src/common/sdk/nvidia/inc/alloc/alloc_channel.h
     channel_methods.cpp and
     kernel/tests/graphics/nvidia_channel_methods.test.cpp, and the layouts of
     NV_CHANNEL_ALLOC_PARAMS, a channel's allocation parameters, and of
-    NV_MEMORY_DESC_PARAMS, memory a CPU side allocated, in rm.h, and the
-    parameters' size and the offsets of the fields a kernel channel sets, in
-    kernel/tests/graphics/nvidia_channel.test.cpp
+    NV_MEMORY_DESC_PARAMS, memory a CPU side allocated, in rm.h, the parameters'
+    size and the offsets of the fields a kernel channel sets, in
+    kernel/tests/graphics/nvidia_channel.test.cpp, and the parameters' size and
+    the offsets of gpFifoOffset, the flags and internalFlags, in
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/fifo/kernel_channel.c
@@ -3835,8 +3842,9 @@ src/common/inc/swref/published/maxwell/gm107/dev_ram.h
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/common/sdk/nvidia/inc/class/cl90f1.h
-    the class FERMI_VASPACE_A, 0x90F1, of a GPU address space, in rm.h and
-    kernel/tests/graphics/nvidia_address_space.test.cpp
+    the class FERMI_VASPACE_A, 0x90F1, of a GPU address space, in rm.h,
+    kernel/tests/graphics/nvidia_address_space.test.cpp and
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080dma.h
@@ -3846,7 +3854,8 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080dma.h
     instance plus 1, and the flags APERTURE_VIDMEM, 0 in bits 1:0, and
     ALL_CHANNELS_TRUE, bit 3, in rm.h, the commands, the sizes of their
     parameters and the two flags, in
-    kernel/tests/graphics/nvidia_address_space.test.cpp, and that
+    kernel/tests/graphics/nvidia_address_space.test.cpp, the commands in
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp, and that
     UNSET_PAGE_DIRECTORY gives every channel of the address space the firmware's
     own page directory back, in address_space.cpp
     SPDX-FileCopyrightText: Copyright (c) 2006-2018 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -3858,20 +3867,23 @@ src/nvidia/src/kernel/rmapi/nv_gpu_ops.c
     SPDX-FileCopyrightText: Copyright (c) 2013-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/cla06c.h
-    the class KEPLER_CHANNEL_GROUP_A, 0xA06C, of a channel group, in rm.h and
-    kernel/tests/graphics/nvidia_channel.test.cpp
+    the class KEPLER_CHANNEL_GROUP_A, 0xA06C, of a channel group, in rm.h,
+    kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrla06f/ctrla06fgpfifo.h
     the commands NVA06F_CTRL_CMD_BIND and NVA06F_CTRL_CMD_GPFIFO_SCHEDULE,
     controls of a channel, and the layouts of their parameters, in rm.h, and the
-    commands in kernel/tests/graphics/nvidia_channel.test.cpp
+    commands in kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2007-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080ce.h
     the command NV2080_CTRL_CMD_CE_GET_FAULT_METHOD_BUFFER_SIZE, a control of a
     subdevice, and the layout of its parameters, in rm.h, and the command in
-    kernel/tests/graphics/nvidia_channel.test.cpp
+    kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clb0b5sw.h
@@ -3889,7 +3901,9 @@ src/nvidia/src/kernel/gpu/ce/kernel_ce_context.c
 src/nvidia/generated/g_kernel_channel_nvoc.h
     the privileges NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_USER, 0, and
     NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_KERNEL, 2, of a channel's
-    internal flags, in rm.h and kernel/tests/graphics/nvidia_channel.test.cpp
+    internal flags, in rm.h and kernel/tests/graphics/nvidia_channel.test.cpp,
+    and NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_KERNEL in
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/fifo/arch/maxwell/kernel_channel_gm107.c
@@ -3906,7 +3920,8 @@ src/nvidia/src/kernel/gpu/fifo/arch/maxwell/kernel_fifo_gm107.c
 src/common/inc/swref/published/ampere/ga100/dev_ram.h
     NV_RAMIN_ALLOC_SIZE, the 4096 bytes of an instance block, and the USERD's
     GP_PUT, word 35 at byte 0x8C, in channel.cpp, and GP_PUT's offset in
-    kernel/tests/graphics/nvidia_channel.test.cpp
+    kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/src/kernel/gpu/fifo/arch/volta/kernel_channel_group_gv100.c
