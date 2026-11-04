@@ -4,6 +4,7 @@
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_INTERRUPTS_H
 
 #include "common/types.h"
+#include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/gsp.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/rm.h"
@@ -57,11 +58,25 @@ int32_t read_interrupt_vectors(
 );
 
 /**
+ * @brief Read into `vector` the nonstall vector of the copy engine of engine
+ * type `engine_type`, from the engine's first row in the kernel interrupt table
+ * asked for through `fw`'s internal client.
+ * @return `OK`, `ERR_INVALID_ARG` for a type of no copy engine,
+ * `ERR_NO_MEMORY`, the control's error, or `ERR_BAD_MESSAGE` for a table of too
+ * many rows, no row for the engine, or a row with a PMC mask or a vector
+ * outside the `leaf_count` leaves. Every error but the control's is logged
+ * here, and `vector` changes only on `OK`.
+ */
+int32_t read_copy_vector(firmware& fw, uint32_t engine_type, uint32_t leaf_count, uint32_t& vector);
+
+/**
  * @brief Let only the driver's vectors raise the card's interrupt: clear every
  * leaf's enable, then enable the GSP's vector and, with `has_display`, the
  * display's, each in its leaf and its subtree's bit of the top level. A vector
- * already pending raises the interrupt at once. Owns every enable of the tree
- * with `disable_cpu_interrupt_tree`, touches only BAR0 and takes no lock.
+ * already pending raises the interrupt at once. Only this call,
+ * `enable_vector`, `mask_vector`, `take_gsp_interrupt`,
+ * `service_gsp_interrupt` and `disable_cpu_interrupt_tree` write the tree's
+ * enables. The call touches only BAR0 and takes no lock.
  */
 void enable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count, const interrupt_vectors& vectors);
 
@@ -76,6 +91,27 @@ void enable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count, const inter
  * `enable_cpu_interrupt_tree` took it.
  */
 void disable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count);
+
+/**
+ * @brief Let `vector` raise the card's interrupt too, setting its bit in its
+ * leaf's enable and its subtree's bit in the top level's. A vector already
+ * pending raises the interrupt at once. The call touches only BAR0 and takes
+ * no lock.
+ * @param regs A view of BAR0.
+ * @param vector A vector inside the CPU interrupt tree, as `read_copy_vector`
+ * gives it.
+ */
+void enable_vector(registers& regs, uint32_t vector);
+
+/**
+ * @brief Stop `vector` from raising the card's interrupt, clearing its bit in
+ * its leaf's enable and leaving the top level's, which the other vectors of
+ * its subtree may need. The call touches only BAR0 and takes no lock.
+ * @param regs A view of BAR0.
+ * @param vector A vector inside the CPU interrupt tree, as `read_copy_vector`
+ * gives it.
+ */
+void mask_vector(registers& regs, uint32_t vector);
 
 /**
  * @brief Take the GSP's interrupt for the driver task, from the card's
@@ -108,6 +144,16 @@ void service_gsp_interrupt(registers& regs, gsp& conversation, uint32_t vector);
  * @return true when the vector was pending.
  */
 bool acknowledge_display_interrupt(registers& regs, uint32_t vector);
+
+/**
+ * @brief Clear the nonstall `vector`, as `read_copy_vector` gives it, in its
+ * leaf when it is pending, from the card's interrupt handler, then read the
+ * leaf back so the clear lands before the handler reads the semaphores, since a
+ * release after the clear raises the vector again. The call touches only BAR0
+ * and takes no lock.
+ * @return true when the vector was pending.
+ */
+bool acknowledge_nonstall_interrupt(registers& regs, uint32_t vector);
 
 /**
  * @brief Re-arm the card's MSI at the end of the card's interrupt handler, as
