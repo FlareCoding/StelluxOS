@@ -310,8 +310,11 @@ static uint8_t g_edid[edid::BLOCK_BYTES];
 static constexpr uint32_t DPCD_LINK_STATUS_INDICATORS = 0x0200C;
 static constexpr uint8_t  ONE_LANE_TRAINED[]          = {0x07, 0x00, 0x01};
 
-// A firmware that records each request in order, its repeater status reads and the last training's command and data,
-// answers one a refusal matches with its result, the replies its fields describe from them, and others as sent
+// The sink's own link status field, NVIDIA's NV_DPCD_LANE0_1_STATUS, read when either end lacks DisplayPort 1.2
+static constexpr uint32_t DPCD_SINK_LINK_STATUS = 0x00202;
+
+// A firmware that records each request in order, its status reads and trainings at one or more lanes with the last's
+// data, answers one a refusal matches with its result, the replies its fields describe from them, and others as sent
 class engine_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 64;
@@ -365,6 +368,7 @@ public:
     uint32_t   assigned_ids[4] = {};          // the display ids of the first assignments, in order
     uint8_t    assignment_excludes[4] = {};   // and the output resources each excluded
     uint32_t   refused_assignment_ids = 0;    // the display ids whose assignment display common refuses
+    int32_t    assignment_result = ERR_FIRMWARE; // what an assignment of those display ids returns
     uint32_t   assignment_count = 0;
     bool       has_crossbar = false;          // whether display common's capabilities report a crossbar
     uint32_t   supported_ids = 0;             // the display ids reported supported, each a DisplayPort output
@@ -381,15 +385,22 @@ public:
     uint32_t   displayport_max_rate = 4;      // the highest rate code the DisplayPort facts give, the RTX 3080's HBR3
     uint32_t   displayport_versions = 0x3;    // the DisplayPort versions they give, the RTX 3080's 1.2 and 1.4
     uint8_t    displayport_trains_phy_repeaters = 1; // whether they give the firmware as training PHY repeaters
-    uint32_t   training_command = 0;          // the command of the last training request
+    uint32_t   training_command = 0;          // the command of the last training request at one or more lanes
     uint32_t   training_data = 0;             // and its data
+    uint32_t   trainings = 0;                 // the training requests at one or more lanes, refused ones included
+    uint32_t   link_status_reads = 0;         // the reads from `link_status_address`, refused ones included
     uint32_t   streamed_heads = 0;            // a bit for each head a stream request named, bit 0 head 0's
     power_down power_downs[4] = {};           // the first trainings to zero lanes and AUX writes of D3, in order
     uint32_t   power_down_count = 0;          // how many came, the 4 kept and any past them
     uint32_t   refused_modes = 0;             // how many of the first bandwidth check requests the check refuses
     uint32_t   accepted_modes = 0xFFFFFFFF;   // how many after those it accepts before refusing every later one
     uint32_t   refused_checks = 0;            // a bit for each other request it refuses, bit 0 the first request's
+    uint32_t   failing_check = 0;             // the request, from 1, that fails with `check_result`, 0 for none
+    int32_t    check_result = OK;             // the error that request fails with
     uint32_t   check_heads[8] = {};           // a bit for each head the first requests name, bit 0 head 0's
+    uint32_t   untrained_ids = 0;             // display ids whose trainings at one or more lanes are refused
+    uint32_t   refused_facts_resources = 0;   // a bit for each output resource whose DisplayPort facts are refused
+    uint32_t   refused_stream_heads = 0;      // a bit for each head whose stream request is refused
     uint32_t   put_at_first_active_read = 0;  // the core channel's PUT when a head's display id was first asked
     bool       is_channel_busy = false;       // whether each channel state reply names the busy state, else idle
     bool       has_state_request = false;     // whether a channel state request has come
@@ -419,6 +430,7 @@ public:
 
     int32_t control(rm::handle object, uint32_t command, void* params, size_t) override {
         keep_power_down(command, params);
+        count_link_request(command, params);
 
         bool is_first_active_read = command == rm::CONTROL_GET_ACTIVE_DISPLAY && control_count(command) == 0;
         if (is_first_active_read) {
@@ -460,11 +472,18 @@ public:
             return rc;
         }
 
-        bool is_unconnected_read = reads_unconnected_monitor(command, params);
+        bool is_failing_check = command == rm::CONTROL_IS_MODE_POSSIBLE && control_count(command) == failing_check;
+        if (is_failing_check) {
+            return check_result;
+        }
+
+        bool is_refused_read =
+            reads_unconnected_monitor(command, params) || names_refused_aux_display_id(command, params);
         bool is_refused_status_read = refuses_link_status && reads_link_status(command, params);
         bool is_refused_power_down = trains_zero_lanes_at_rate_0(command, params);
-        bool is_refused_aux = names_refused_aux_display_id(command, params);
-        if (is_unconnected_read || is_refused_status_read || is_refused_power_down || is_refused_aux) {
+        bool is_refused_training = is_refused_power_down || refuses_training(command, params);
+        bool is_refused_link_step = is_refused_training || refuses_facts_or_stream(command, params);
+        if (is_refused_read || is_refused_status_read || is_refused_link_step) {
             return ERR_FIRMWARE;
         }
 
@@ -478,7 +497,7 @@ public:
             assignment_excludes[assignment_count] = request->excluded_mask;
             assignment_count++;
             if ((request->display_id & refused_assignment_ids) != 0) {
-                return ERR_FIRMWARE;
+                return assignment_result;
             }
         }
 
@@ -561,6 +580,12 @@ public:
         }
 
         return controls;
+    }
+
+    // How many link requests of `command` came, a training counting only at one or more lanes, so a power-down's
+    // training to zero lanes is left out
+    uint32_t link_request_count(uint32_t command) const {
+        return command == rm::CONTROL_TRAIN_LINK ? trainings : control_count(command);
     }
 
     // The index of the first of the calls so far that is a control of `command`, or `MAX_CALLS` when none is
@@ -829,13 +854,39 @@ private:
         power_down_count++;
     }
 
-    // Keeps the command and data of a training request
+    // Whether a training's `params` set one or more lanes
+    static bool sets_lanes(const void* params) {
+        uint32_t data = static_cast<const rm::train_link_params*>(params)->data;
+        return (data & NVIDIA_DP_DATA_LANE_COUNT_MASK) != 0;
+    }
+
+    // Counts a training at one or more lanes and a read of the link status bytes, each before its answer
+    void count_link_request(uint32_t command, const void* params) {
+        if (params == nullptr) {
+            return;
+        }
+
+        bool is_training = command == rm::CONTROL_TRAIN_LINK;
+        if (is_training && sets_lanes(params)) {
+            trainings++;
+        }
+
+        if (reads_link_status(command, params)) {
+            link_status_reads++;
+        }
+    }
+
+    // Keeps the command and data of a training request at one or more lanes
     void keep_training(uint32_t command, const void* params) {
         if (command != rm::CONTROL_TRAIN_LINK) {
             return;
         }
 
         const rm::train_link_params* training = static_cast<const rm::train_link_params*>(params);
+        if (!sets_lanes(training)) {
+            return;
+        }
+
         training_command = training->command;
         training_data = training->data;
     }
@@ -919,6 +970,32 @@ private:
         } else if (command == rm::CONTROL_DP_AUX) {
             fill_aux_reply(*static_cast<rm::aux_params*>(params));
         }
+    }
+
+    // Whether `command` trains a link of `untrained_ids` at one or more lanes
+    bool refuses_training(uint32_t command, const void* params) const {
+        if (command != rm::CONTROL_TRAIN_LINK) {
+            return false;
+        }
+
+        const rm::train_link_params* training = static_cast<const rm::train_link_params*>(params);
+        return sets_lanes(training) && (training->display_id & untrained_ids) != 0;
+    }
+
+    // Whether `command` asks for the DisplayPort facts of a resource of `refused_facts_resources` or programs the
+    // stream of a head of `refused_stream_heads`
+    bool refuses_facts_or_stream(uint32_t command, const void* params) const {
+        if (command == rm::CONTROL_GET_LINK_CAPABILITIES) {
+            uint32_t resource = static_cast<const rm::link_capabilities_params*>(params)->resource_index;
+            return (refused_facts_resources & (1u << resource)) != 0;
+        }
+
+        if (command == rm::CONTROL_CONFIGURE_STREAM) {
+            uint32_t head = static_cast<const rm::configure_stream_params*>(params)->head;
+            return (refused_stream_heads & (1u << head)) != 0;
+        }
+
+        return false;
     }
 
     // Keeps the heads a bandwidth check request names
@@ -3237,6 +3314,10 @@ static constexpr uint32_t TABLE_WINDOW_BINDING_MAP = 6;
 static constexpr uint32_t TABLE_CORE_UNBINDING_MAP = 7;
 static constexpr uint32_t TABLE_REQUEST            = 2;
 
+// The general mapping that undoes the base buffer's binding when its userland mapping or the table's allocation fails,
+// the one after the binding's own
+static constexpr uint32_t BASE_BUFFER_UNBINDING_MAP = BASE_BUFFER_BINDING_MAP + 1;
+
 // The window notifier's binding, the mapping after the table's window binding when that succeeds
 static constexpr uint32_t WINDOW_NOTIFIER_BINDING_MAP = TABLE_WINDOW_BINDING_MAP + 1;
 
@@ -3429,9 +3510,9 @@ TEST(nvidia_display_engine, set_up_steps_a_later_output_down_its_modes_beside_th
 static constexpr uint32_t LATER_TABLE_BINDING_MAP = WINDOW_NOTIFIER_BINDING_MAP + 2;
 static constexpr uint32_t LATER_CLEARING_MAP      = 3;
 
-// Output 1 with its window not present, no room to map its base buffer, no room for the table's binding or that binding
-// failing leaves both dark, output 0's bindings kept, the set-up failing only on the binding's error
-TEST(nvidia_display_engine, set_up_lights_no_output_when_a_later_one_is_not_prepared) {
+// Output 1 with its window absent or no room to map its base buffer or bind a surface to its window is left out, no
+// binding kept, and output 0 lit alone, while the table's binding failing otherwise fails the set-up, each logged
+TEST(nvidia_display_engine, set_up_leaves_out_a_later_output_that_is_not_prepared) {
     struct failure {
         uint32_t    present_windows;
         uint32_t    clearing_map;
@@ -3447,18 +3528,20 @@ TEST(nvidia_display_engine, set_up_lights_no_output_when_a_later_one_is_not_prep
          "nvidia: window 1 has no channel, as the GSP's firmware does not report the window present"},
         {0b11, LATER_CLEARING_MAP, 0, ERR_NO_MEMORY, OK, 1,
          "nvidia: output 1 has no base buffer, as mapping it for the CPU to clear it found no room"},
-        {0b11, 0, LATER_TABLE_BINDING_MAP, ERR_NO_MEMORY, OK, 0,
+        {0b11, 0, LATER_TABLE_BINDING_MAP, ERR_NO_MEMORY, OK, 1,
          "nvidia: output 1 cannot light, as binding the look-up table surface and the base buffers to the chosen "
          "outputs' window channels found no room"},
-        {0b11, 0, LATER_TABLE_BINDING_MAP, ERR_TIMEOUT, ERR_TIMEOUT, 0,
+        {0b11, 0, LATER_TABLE_BINDING_MAP, ERR_TIMEOUT, ERR_TIMEOUT, 1,
          "nvidia: binding the look-up table surface and the base buffers to the chosen outputs' window channels for "
          "output 1 failed: -4"},
+        {0b11, 0, LATER_TABLE_BINDING_MAP + 2, ERR_NO_MEMORY, OK, 1,
+         "nvidia: output 1 cannot light, as binding the look-up table surface and the base buffers to the chosen "
+         "outputs' window channels found no room"},
     };
 
     for (const failure& failed : failures) {
         engine_firmware fw;
         connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
-        fw.boot_display_id = 0;
         fw.present_windows = failed.present_windows;
 
         engine_video_memory memory;
@@ -3469,23 +3552,90 @@ TEST(nvidia_display_engine, set_up_lights_no_output_when_a_later_one_is_not_prep
         memory.general_map_result = failed.general_map != 0 ? failed.error : OK;
 
         display_engine& engine = new_engine(fw, memory);
+        bool is_left_out = failed.result == OK;
         EXPECT_EQ(set_up_logged(engine), failed.result);
         EXPECT_TRUE(engine_log_contains(failed.line));
-        EXPECT_TRUE(engine_log_contains(
-            "nvidia: no output lights, as output 1's window channel or a surface it scans out is not set up"
-        ));
+        EXPECT_EQ(
+            engine_log_contains(
+                "nvidia: output 1 is left out of the mode set, as its window channel or a surface it scans out is "
+                "not set up"
+            ),
+            is_left_out
+        );
 
-        EXPECT_EQ(fw.mode_set_requests, 0u);
-        EXPECT_FALSE(reads_lit(engine, 0));
+        EXPECT_EQ(fw.mode_set_requests, is_left_out ? 2u : 0u);
+        EXPECT_EQ(reads_lit(engine, 0), is_left_out);
         EXPECT_FALSE(reads_lit(engine, 1));
 
         uint32_t channel = window_channel_number(0);
         EXPECT_TRUE(binds_to_channel(display_engine_test_access::base_buffer_context_dma(engine, 0), channel));
         EXPECT_TRUE(binds_to_channel(display_engine_test_access::look_up_table_context_dma(engine), channel));
+        EXPECT_EQ(used_entry_count(), 5u);
+
         EXPECT_EQ(memory.scanout_releases, failed.scanout_releases);
         EXPECT_EQ(memory.general_releases, 0u);
         EXPECT_EQ(engine.release(), OK);
     }
+}
+
+// Output 1's base buffer finding no room for userland drops it before the mode set, its buffer unbound and released,
+// and output 0 lights alone once the bandwidth check accepts it alone
+TEST(nvidia_display_engine, set_up_lights_the_rest_when_a_later_candidates_base_buffer_finds_no_room) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    memory.failing_scanout_map = 4;
+    memory.scanout_map_result = ERR_NO_MEMORY;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 cannot light, as mapping its base buffer for userland found no"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 is left out of the mode set, as its window channel or a surface it scans out is not set up"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1's base buffer is unbound and released"));
+    EXPECT_EQ(memory.scanout_releases, 1u);
+
+    ASSERT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 3u);
+    EXPECT_EQ(fw.check_heads[2], 1u << 0);
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Output 0's base buffer finding no room for userland drops it, and output 1 sets up the look-up table surface and
+// lights alone, while output 0's link, which the boot firmware lit, is powered down before output 1's link is set up
+TEST(nvidia_display_engine, set_up_lights_the_next_candidate_when_the_first_ones_base_buffer_finds_no_room) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    memory.failing_scanout_map = 2;
+    memory.scanout_map_result = ERR_NO_MEMORY;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0's base buffer is unbound and released"));
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_1_ID);
+
+    rm::handle table = display_engine_test_access::look_up_table_context_dma(engine);
+    EXPECT_NE(table, 0u);
+    EXPECT_TRUE(binds_to_channel(table, window_channel_number(display_engine_test_access::window(engine, 1))));
+
+    ASSERT_EQ(fw.power_down_count, 2u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_0_ID);
+    EXPECT_TRUE(fw.power_downs[0].is_before_link);
+
+    EXPECT_FALSE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.release(), OK);
 }
 
 // Output 1's base buffer and then the look-up table surface are bound to window 0's channel, number 1, each under a new
@@ -3711,8 +3861,8 @@ TEST(nvidia_display_engine, set_up_releases_a_base_buffer_whose_binding_fails) {
     }
 }
 
-// A table allocation finding no room leaves the engine with none and the set-up `OK`, and one failing otherwise fails
-// the set-up with its error, each logged, not as filled or bound, nothing mapped for it and the base buffer kept bound
+// A table allocation finding no room leaves no table and the set-up `OK`, one failing otherwise fails the set-up with
+// its error, each logged, nothing mapped for the table and the base buffer unbound and released
 TEST(nvidia_display_engine, set_up_gives_no_look_up_table_surface_when_its_allocation_fails) {
     struct failure {
         int32_t     error;
@@ -3745,14 +3895,15 @@ TEST(nvidia_display_engine, set_up_gives_no_look_up_table_surface_when_its_alloc
         EXPECT_FALSE(engine_log_contains("nvidia: the look-up table surface lies at"));
         EXPECT_FALSE(engine_log_contains("nvidia: the look-up table surface is bound"));
 
-        EXPECT_EQ(memory.general_maps, BASE_BUFFER_BINDING_MAP);
-        EXPECT_EQ(used_entry_count(), 2u);
-        EXPECT_EQ(memory.scanout_releases, 0u);
+        EXPECT_EQ(memory.general_maps, BASE_BUFFER_UNBINDING_MAP);
+        EXPECT_EQ(used_entry_count(), 1u);
+        EXPECT_EQ(memory.scanout_releases, 1u);
+        EXPECT_TRUE(engine_log_contains("nvidia: output 1's base buffer is unbound and released"));
     }
 }
 
 // A table mapping or binding, to either channel, finding no room leaves no table and the set-up `OK`, and one failing
-// otherwise fails it with its error, logged, the table released once unbound and the base buffer kept bound
+// otherwise fails it with its error, logged, the table released once unbound and the base buffer unbound and released
 TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fill_or_bind) {
     struct failure {
         uint32_t    map;
@@ -3813,15 +3964,15 @@ TEST(nvidia_display_engine, set_up_releases_a_look_up_table_surface_it_cannot_fi
 
         EXPECT_EQ(memory.general_releases, 1u);
         EXPECT_EQ(memory.general_released.offset, LOOK_UP_TABLE_OFFSET);
-        EXPECT_EQ(used_entry_count(), 2u);
-        EXPECT_EQ(memory.scanout_releases, 0u);
+        EXPECT_EQ(used_entry_count(), 1u);
+        EXPECT_EQ(memory.scanout_releases, 1u);
 
         EXPECT_EQ(display_engine_test_access::look_up_table(engine).size, 0u);
         EXPECT_EQ(display_engine_test_access::look_up_table_context_dma(engine), 0u);
-        EXPECT_NE(display_engine_test_access::base_buffer_context_dma(engine), 0u);
+        EXPECT_EQ(display_engine_test_access::base_buffer_context_dma(engine), 0u);
 
         if (failed.map == TABLE_WINDOW_BINDING_MAP) {
-            EXPECT_EQ(memory.general_maps, TABLE_CORE_UNBINDING_MAP);
+            EXPECT_EQ(memory.general_maps, TABLE_CORE_UNBINDING_MAP + 1);
         }
     }
 }
@@ -3878,8 +4029,9 @@ TEST(nvidia_display_engine, set_up_keeps_a_look_up_table_surface_it_cannot_unbin
 
         rm::handle table_context_dma = FIRST_HANDLE + fw.handle_count - 1;
         EXPECT_TRUE(binds(table_context_dma, CORE_CHANNEL, 2, TABLE_RECORD));
-        EXPECT_EQ(used_entry_count(), 3u);
+        EXPECT_EQ(used_entry_count(), 2u);
         EXPECT_EQ(memory.general_releases, 0u);
+        EXPECT_EQ(memory.scanout_releases, 1u);
 
         EXPECT_EQ(display_engine_test_access::look_up_table(engine).size, 0u);
         EXPECT_EQ(display_engine_test_access::look_up_table_context_dma(engine), 0u);
@@ -4394,8 +4546,8 @@ TEST(nvidia_display_engine, set_up_powers_down_the_link_of_a_boot_output_staying
 // A receiver capability field of revision 1.0, below the 1.1 that holds a power state, at HBR3 over four lanes
 static constexpr uint8_t DPCD_RECEIVER_1_0[DPCD_RECEIVER_CAPABILITY_BYTES] = {0x10, 0x1E, 0xC4};
 
-// Output 1's monitor is left out of D3 when its DPCD gives revision 1.0 or when it is unplugged, its link still trained
-// to zero lanes at HBR3, the rate both ends take or the connector's with no DPCD read, and the log says why
+// Output 1's monitor is left out of D3 when its DPCD gives revision 1.0 or it is unplugged, its link still trained to
+// zero lanes at HBR3 with the log saying why, and in the 1.0 case output 0's link status lies in the sink's own field
 TEST(nvidia_display_engine, set_up_leaves_a_dark_boot_outputs_monitor_below_dpcd_1_1_or_unplugged_out_of_d3) {
     const bool is_unplugged_cases[] = {false, true};
     for (bool is_unplugged : is_unplugged_cases) {
@@ -4406,6 +4558,7 @@ TEST(nvidia_display_engine, set_up_leaves_a_dark_boot_outputs_monitor_below_dpcd
             fw.connected_ids = OUTPUT_0_ID;
         } else {
             fw.dpcd_receiver = DPCD_RECEIVER_1_0;
+            fw.link_status_address = DPCD_SINK_LINK_STATUS;
         }
 
         display_engine& engine = new_engine(fw, memory);
@@ -4839,18 +4992,12 @@ TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_refused_assignm
     EXPECT_EQ(engine.release(), OK);
 }
 
-// Where a take-down of head 0 ends with no head active and windows 0 and 1 present, both mapped ahead of its update
-static constexpr uint32_t HEAD_0_TAKE_DOWN_END = INITIAL_METHODS_END + (2 * 2 + 4 + 5) * 2 * sizeof(uint32_t);
-
-// Output 1's refused assignment after output 0's link is set up takes down head 0, which that link readied, and ends
-// the mode set naming both display ids, the set-up `OK` with neither output lit
-TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_later_outputs_refused_assignment) {
+// Output 1's refused assignment after output 0's link is set up leaves output 1 out with no link to power down, and
+// output 0 lights alone once the bandwidth check accepts it alone, the mode set ending naming it
+TEST(nvidia_display_engine, set_up_lights_the_rest_after_a_later_outputs_refused_assignment) {
     engine_firmware fw;
     connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
-    fw.boot_display_id = 0;
-    fw.present_windows = 0b11;
     fw.refused_assignment_ids = OUTPUT_1_ID;
-    fw.get_at_mode_set_start = HEAD_0_TAKE_DOWN_END;
 
     engine_video_memory memory;
     ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
@@ -4859,6 +5006,48 @@ TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_later_outputs_r
     EXPECT_EQ(set_up_logged(engine), OK);
     ASSERT_EQ(fw.assignment_count, 2u);
     EXPECT_EQ(fw.assigned_ids[1], OUTPUT_1_ID);
+    EXPECT_EQ(fw.power_down_count, 0u);
+
+    ASSERT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 3u);
+    EXPECT_EQ(fw.check_heads[2], 1u << 0);
+    ASSERT_EQ(fw.mode_set_requests, 2u);
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID | OUTPUT_1_ID);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display common refused to assign display id 0x200 an output resource, so "
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x200's link is not set up, so output 1 stays dark"));
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Where a take-down of head 0 ends with no head active and windows 0 and 1 present, both mapped ahead of its update
+static constexpr uint32_t HEAD_0_TAKE_DOWN_END = INITIAL_METHODS_END + (2 * 2 + 4 + 5) * 2 * sizeof(uint32_t);
+
+// Output 1's assignment failing past its deadline after output 0's link is set up takes down head 0, which that link
+// readied, with no power-down, fails the set-up with its error and ends the mode set naming both display ids
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_later_outputs_late_assignment) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.boot_display_id = 0;
+    fw.present_windows = 0b11;
+    fw.get_at_mode_set_start = HEAD_0_TAKE_DOWN_END;
+
+    fw.refused_assignment_ids = OUTPUT_1_ID;
+    fw.assignment_result = ERR_TIMEOUT;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), ERR_TIMEOUT);
+    ASSERT_EQ(fw.assignment_count, 2u);
+    EXPECT_EQ(fw.assigned_ids[1], OUTPUT_1_ID);
+    EXPECT_EQ(fw.power_down_count, 0u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 2u);
     EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], HEAD_0_TAKE_DOWN_END);
 
     ASSERT_EQ(fw.mode_set_requests, 2u);
@@ -4868,10 +5057,41 @@ TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_later_outputs_r
 
     EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100 is driven by output resource 2"));
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: display common refused to assign display id 0x200 an output resource, so "
-    ));
-    EXPECT_TRUE(engine_log_contains(
         "nvidia: display id 0x200's link is not set up, so bring-up takes the display engine down\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+
+    EXPECT_FALSE(reads_lit(engine, 0));
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Output 0's assignment failing past its deadline takes the engine down before any head is readied, with no power-down
+// and no later assignment, and fails the set-up with its error
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_the_first_outputs_late_assignment) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.boot_display_id = 0;
+    fw.get_at_mode_set_start = NO_HEAD_TAKE_DOWN_END;
+
+    fw.refused_assignment_ids = OUTPUT_0_ID;
+    fw.assignment_result = ERR_TIMEOUT;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), ERR_TIMEOUT);
+    ASSERT_EQ(fw.assignment_count, 1u);
+    EXPECT_EQ(fw.assigned_ids[0], OUTPUT_0_ID);
+    EXPECT_EQ(fw.power_down_count, 0u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 2u);
+    EXPECT_EQ(g_core_channel_registers[CHANNEL_PUT / sizeof(uint32_t)], NO_HEAD_TAKE_DOWN_END);
+
+    ASSERT_EQ(fw.mode_set_requests, 2u);
+    EXPECT_EQ(fw.mode_set_puts[1], NO_HEAD_TAKE_DOWN_END);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link is not set up, so bring-up takes the display engine down\r\n"
     ));
     EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
 
@@ -4998,7 +5218,7 @@ TEST(nvidia_display_engine, set_up_trains_no_link_whose_displayport_facts_are_re
     display_engine& engine = new_engine(fw, memory);
 
     EXPECT_EQ(set_up_logged(engine), OK);
-    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 0u);
+    EXPECT_EQ(fw.trainings, 0u);
     EXPECT_TRUE(engine_log_contains("nvidia: display common refused the DisplayPort facts of output resource 0, so "));
     EXPECT_FALSE(engine_log_contains("link configuration"));
 }
@@ -5020,13 +5240,13 @@ TEST(nvidia_display_engine, set_up_reads_no_status_of_a_link_whose_training_is_r
     display_engine& engine = new_engine(fw, memory);
 
     EXPECT_EQ(set_up_logged(engine), OK);
-    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
-    EXPECT_LT(fw.last_control(rm::CONTROL_DP_AUX), fw.first_control(rm::CONTROL_TRAIN_LINK));
+    EXPECT_EQ(fw.trainings, 1u);
+    EXPECT_EQ(fw.link_status_reads, 0u);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: display common refused to train display id 0x100's link at 1 lane at DisplayPort rate 0x1E (command "
         "0x2083, data 0x1E01), so "
     ));
-    EXPECT_FALSE(engine_log_contains("trained display id"));
+    EXPECT_FALSE(engine_log_contains("trained display id 0x100's link at"));
 }
 
 // A training whose reply never arrives fails the set-up with its error, and the link's status is not read
@@ -5047,7 +5267,8 @@ TEST(nvidia_display_engine, set_up_fails_with_the_error_of_a_training_failing_ot
 
     EXPECT_EQ(set_up_logged(engine), ERR_TIMEOUT);
     EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
-    EXPECT_LT(fw.last_control(rm::CONTROL_DP_AUX), fw.first_control(rm::CONTROL_TRAIN_LINK));
+    EXPECT_EQ(fw.power_down_count, 0u);
+    EXPECT_EQ(fw.link_status_reads, 0u);
 }
 
 // A status read showing the lane untrained is logged as such, without the trained line, and takes the engine down
@@ -5065,7 +5286,7 @@ TEST(nvidia_display_engine, set_up_logs_a_link_whose_status_shows_it_untrained) 
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_EQ(fw.trainings, 1u);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: display id 0x100's link is not trained at 1 lane, its link status reading 0x01 0x00 0x00"
     ));
@@ -5089,7 +5310,7 @@ TEST(nvidia_display_engine, set_up_trains_at_the_lowest_configuration_the_displa
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_EQ(fw.trainings, 1u);
     EXPECT_EQ(fw.training_data, 0x1402u);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: display common trained display id 0x100's link at 2 lanes at DisplayPort rate 0x14 (command 0x2083, "
@@ -5114,12 +5335,12 @@ TEST(nvidia_display_engine, set_up_trains_no_link_its_displayport_facts_leave_no
 
     ASSERT_EQ(set_up_logged(engine), OK);
     EXPECT_EQ(fw.control_count(rm::CONTROL_GET_LINK_CAPABILITIES), 1u);
-    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 0u);
+    EXPECT_EQ(fw.trainings, 0u);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: no link configuration carries display id 0x100's mode within output resource 0's DisplayPort facts, "
         "so "
     ));
-    EXPECT_FALSE(engine_log_contains("trained display id"));
+    EXPECT_FALSE(engine_log_contains("trained display id 0x100's link at"));
 }
 
 // DisplayPort facts giving the firmware as not training PHY repeaters train the link without the repeater bit
@@ -5201,9 +5422,6 @@ TEST(nvidia_display_engine, set_up_leaves_out_phy_repeaters_when_the_chip_table_
     EXPECT_FALSE(engine_log_contains("taken down"));
 }
 
-// The sink's own link status field, NVIDIA's NV_DPCD_LANE0_1_STATUS, read when either end lacks DisplayPort 1.2
-static constexpr uint32_t DPCD_SINK_LINK_STATUS = 0x00202;
-
 // DisplayPort facts without DisplayPort 1.2 have the status read from the sink's own field, so a monitor giving the
 // trained bytes only there has its link found trained
 TEST(nvidia_display_engine, set_up_reads_the_sinks_status_field_when_the_links_lack_displayport_1_2) {
@@ -5234,7 +5452,7 @@ TEST(nvidia_display_engine, set_up_checks_no_link_whose_status_read_is_refused) 
     display_engine& engine = new_engine(fw, memory);
 
     ASSERT_EQ(set_up_logged(engine), OK);
-    EXPECT_EQ(fw.control_count(rm::CONTROL_TRAIN_LINK), 1u);
+    EXPECT_EQ(fw.trainings, 1u);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: display common refused display id 0x100's 3-byte AUX read at 0x0200C, so "
     ));
@@ -5287,8 +5505,8 @@ TEST(nvidia_display_engine, set_up_programs_the_stream_on_the_link_the_crossbar_
     ));
 }
 
-// A refused assignment, DisplayPort facts request, training or stream stops the link there with the set-up `OK`,
-// logged with every step it skips and without the step's own outcome, and sends none of the later requests
+// A refused link step stops the link there with the set-up `OK`, logged with every step it skips and without its own
+// outcome, sends none of the later requests, and powers down the boot output's link, assigned or not, zero lanes first
 TEST(nvidia_display_engine, set_up_stops_the_link_at_its_first_refused_step) {
     struct stop {
         uint32_t    command;
@@ -5312,7 +5530,7 @@ TEST(nvidia_display_engine, set_up_stops_the_link_at_its_first_refused_step) {
          rm::CONTROL_CONFIGURE_STREAM,
          "nvidia: display common refused to train display id 0x100's link at 1 lane at DisplayPort rate 0x1E (command "
          "0x2083, data 0x1E01), so its link is neither checked nor given a stream\r\n",
-         "trained display id"},
+         "trained display id 0x100's link at"},
         {rm::CONTROL_CONFIGURE_STREAM,
          rm::CONTROL_SET_STREAM_ATTRIBUTES,
          "nvidia: display common refused head 1's DisplayPort stream on output resource 0's link A, so the stream's "
@@ -5337,11 +5555,297 @@ TEST(nvidia_display_engine, set_up_stops_the_link_at_its_first_refused_step) {
         display_engine& engine = new_engine(fw, memory);
 
         EXPECT_EQ(set_up_logged(engine), OK);
-        EXPECT_EQ(fw.control_count(stopped.command), 1u);
-        EXPECT_EQ(fw.control_count(stopped.skipped), 0u);
+        EXPECT_EQ(fw.link_request_count(stopped.command), 1u);
+        EXPECT_EQ(fw.link_request_count(stopped.skipped), 0u);
         EXPECT_TRUE(engine_log_contains(stopped.line));
         EXPECT_FALSE(engine_log_contains(stopped.outcome));
         EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core"));
+
+        ASSERT_EQ(fw.power_down_count, 2u);
+        EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+        EXPECT_EQ(fw.power_downs[1].command, rm::CONTROL_DP_AUX);
+        EXPECT_EQ(fw.power_downs[1].display_id, OUTPUT_0_ID);
+    }
+}
+
+// A refused request for output 0's DisplayPort facts, training or stream drops it, its link powered down, no buffer or
+// table left on its window's channel and its resource still excluded from output 1's assignment, and output 1 lit alone
+TEST(nvidia_display_engine, set_up_lights_the_rest_when_one_outputs_link_step_is_refused) {
+    struct refused_step {
+        uint32_t    facts_resources;
+        uint32_t    untrained_ids;
+        uint32_t    stream_heads;
+        const char* line;
+    };
+
+    const refused_step steps[] = {
+        {1u << 2, 0, 0, "nvidia: display common refused the DisplayPort facts of output resource 2,"},
+        {0, OUTPUT_0_ID, 0, "nvidia: display common refused to train display id 0x100's link"},
+        {0, 0, 1u << 0, "nvidia: display common refused head 0's DisplayPort stream"},
+    };
+
+    for (const refused_step& refused : steps) {
+        engine_firmware fw;
+        connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+        fw.refused_facts_resources = refused.facts_resources;
+        fw.untrained_ids = refused.untrained_ids;
+        fw.refused_stream_heads = refused.stream_heads;
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up_logged(engine), OK);
+        EXPECT_TRUE(engine_log_contains(refused.line));
+        EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100's link is not set up, so output 0 stays dark"));
+
+        ASSERT_EQ(fw.power_down_count, 2u);
+        EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+        EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_0_ID);
+        EXPECT_EQ(fw.power_downs[0].rate, static_cast<uint32_t>(displayport::link_rate::hbr3));
+        EXPECT_EQ(fw.power_downs[1].command, rm::CONTROL_DP_AUX);
+
+        ASSERT_EQ(fw.assignment_count, 2u);
+        EXPECT_EQ(fw.assigned_ids[1], OUTPUT_1_ID);
+        EXPECT_EQ(fw.assignment_excludes[1], 1u << 2);
+        EXPECT_EQ(memory.scanout_releases, 1u);
+        EXPECT_EQ(used_entry_count(), 6u);
+
+        uint32_t dropped_channel = window_channel_number(display_engine_test_access::window(engine, 0));
+        rm::handle base_buffer_1 = display_engine_test_access::base_buffer_context_dma(engine, 1);
+        rm::handle table = display_engine_test_access::look_up_table_context_dma(engine);
+        EXPECT_FALSE(binds_to_channel(base_buffer_1, dropped_channel));
+        EXPECT_FALSE(binds_to_channel(table, dropped_channel));
+
+        ASSERT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 3u);
+        EXPECT_EQ(fw.check_heads[2], 1u << 1);
+        EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID | OUTPUT_1_ID);
+        EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_1_ID);
+
+        EXPECT_FALSE(reads_lit(engine, 0));
+        EXPECT_TRUE(reads_lit(engine, 1));
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// The link status's 3 bytes once 2 lanes are trained, each lane's clock recovered, equalization done, symbols locked
+static constexpr uint8_t TWO_LANES_TRAINED[] = {0x77, 0x00, 0x01};
+
+// DisplayPort facts capping the links at RBR leave output 0's one-lane monitor no configuration, which drops output 0,
+// its link powered down, while output 1 trains at 2 lanes at RBR and lights alone
+TEST(nvidia_display_engine, set_up_lights_the_rest_when_one_outputs_displayport_facts_leave_no_configuration) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.displayport_max_rate = 1;
+    fw.dpcd_receiver = DPCD_RECEIVER_ONE_HBR3_LANE;
+    fw.output_1_dpcd_receiver = DPCD_RECEIVER;
+    fw.link_status = TWO_LANES_TRAINED;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: no link configuration carries display id 0x100's mode within output resource 2's DisplayPort facts"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100's link is not set up, so output 0 stays dark"));
+
+    ASSERT_EQ(fw.power_down_count, 2u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_0_ID);
+    EXPECT_EQ(fw.power_downs[1].command, rm::CONTROL_DP_AUX);
+
+    EXPECT_EQ(fw.trainings, 1u);
+    EXPECT_EQ(fw.training_data, 0x0602u);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_1_ID);
+    EXPECT_FALSE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Output 1's refused training drops it, and as the boot firmware did not light its link, its monitor is set to D3
+// unless its DPCD gives revision 1.0, before the link trains to zero lanes at its rate, while output 0 lights alone
+TEST(nvidia_display_engine, set_up_sets_d3_before_zero_lanes_on_a_dropped_link_the_boot_firmware_left_dark) {
+    struct monitor {
+        const uint8_t*         receiver;
+        bool                   sets_d3;
+        displayport::link_rate rate;
+    };
+
+    static constexpr monitor monitors[] = {
+        {DPCD_RECEIVER_HBR2, true, displayport::link_rate::hbr2},
+        {DPCD_RECEIVER_1_0, false, displayport::link_rate::hbr3},
+    };
+
+    for (const monitor& dropped : monitors) {
+        engine_firmware fw;
+        connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+        fw.untrained_ids = OUTPUT_1_ID;
+        fw.output_1_dpcd_receiver = dropped.receiver;
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+        display_engine& engine = new_engine(fw, memory);
+
+        ASSERT_EQ(set_up_logged(engine), OK);
+        EXPECT_TRUE(engine_log_contains("nvidia: display id 0x200's link is not set up, so output 1 stays dark"));
+
+        uint32_t training = dropped.sets_d3 ? 1 : 0;
+        ASSERT_EQ(fw.power_down_count, training + 1);
+        EXPECT_EQ(fw.power_downs[0].command, dropped.sets_d3 ? rm::CONTROL_DP_AUX : rm::CONTROL_TRAIN_LINK);
+        EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_1_ID);
+
+        EXPECT_EQ(fw.power_downs[training].command, rm::CONTROL_TRAIN_LINK);
+        EXPECT_EQ(fw.power_downs[training].display_id, OUTPUT_1_ID);
+        EXPECT_EQ(fw.power_downs[training].rate, static_cast<uint32_t>(dropped.rate));
+
+        EXPECT_TRUE(reads_lit(engine, 0));
+        EXPECT_FALSE(reads_lit(engine, 1));
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// Output 0's refused assignment drops it, and its link's zero-lane training failing other than by a refusal takes the
+// engine down before output 1 is assigned an output resource, failing the set-up with the training's error
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_after_a_dropped_outputs_failed_power_down_request) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.refused_assignment_ids = OUTPUT_0_ID;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_TRAIN_LINK,
+        .object = 0,
+        .result = ERR_TIMEOUT,
+    };
+
+    fw.get_at_power_down = LINK_TAKE_DOWN_END;
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), ERR_TIMEOUT);
+    ASSERT_EQ(fw.assignment_count, 1u);
+    EXPECT_EQ(fw.assigned_ids[0], OUTPUT_0_ID);
+    ASSERT_EQ(fw.power_down_count, 1u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_0_ID);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100's link is not set up, so output 0 stays dark"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link is not powered down, so bring-up takes the display engine down\r\n"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+
+    ASSERT_EQ(fw.mode_set_requests, 2u);
+    EXPECT_EQ(fw.mode_set_puts[1], LINK_TAKE_DOWN_END);
+    EXPECT_FALSE(reads_lit(engine, 0));
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The default receiver capability field but at RBR, so 1366 by 768 takes 2 lanes where the default's takes 1 at HBR
+static constexpr uint8_t DPCD_RECEIVER_RBR[DPCD_RECEIVER_CAPABILITY_BYTES] = {0x14, 0x06, 0xC4};
+
+// Output 0's base buffer finding no room for userland drops it, and output 1, taking its place in the set, trains its
+// link at the lowest configuration its own monitor takes, 1 lane at HBR, where output 0's RBR monitor takes 2 lanes
+TEST(nvidia_display_engine, set_up_trains_the_next_candidate_for_its_own_monitor_when_the_first_drops) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.dpcd_receiver = DPCD_RECEIVER_RBR;
+    fw.output_1_dpcd_receiver = DPCD_RECEIVER;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    memory.failing_scanout_map = 2;
+    memory.scanout_map_result = ERR_NO_MEMORY;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0's base buffer is unbound and released"));
+    EXPECT_EQ(fw.trainings, 1u);
+    EXPECT_EQ(fw.training_data, 0x0A01u);
+
+    EXPECT_FALSE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Where a take-down after the shutdown update of one head and the notifier's stop ends when one head was set up to
+// light: the active head's four methods, the lit head's four and the update's five
+static constexpr uint32_t SET_TAKE_DOWN_END = LINK_TAKE_DOWN_END + 4 * 2 * sizeof(uint32_t);
+
+// The bandwidth check refusing output 0 alone, once output 1 dropped, takes the engine down with nothing lit and the
+// mode set ending naming the displays it started with
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_when_the_set_left_is_refused) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.refused_checks = 1u << 2;
+    fw.get_at_stream = SET_TAKE_DOWN_END;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    memory.failing_scanout_map = 4;
+    memory.scanout_map_result = ERR_NO_MEMORY;
+    display_engine& engine = new_engine(fw, memory);
+
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 3u);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the bandwidth check does not accept the 1 output left, so bring-up takes the display engine down"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID);
+
+    EXPECT_FALSE(engine.has_lit_output());
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The request about the set left failing takes the engine down as the set's refusal does: a refused request leaves
+// the set-up `OK`, and any other error, no room among them, fails the set-up with it
+TEST(nvidia_display_engine, set_up_takes_the_engine_down_when_the_request_about_the_set_left_fails) {
+    struct failure {
+        int32_t     error;
+        int32_t     result;
+        const char* line;
+    };
+
+    const failure failures[] = {
+        {ERR_FIRMWARE, OK, "nvidia: the firmware refuses the bandwidth check's request about the 1 output left"},
+        {ERR_NO_MEMORY, ERR_NO_MEMORY, "nvidia: asking the bandwidth check about the 1 output left failed: -6"},
+        {ERR_TIMEOUT, ERR_TIMEOUT, "nvidia: asking the bandwidth check about the 1 output left failed: -4"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+        fw.failing_check = 3;
+        fw.check_result = failed.error;
+        fw.get_at_stream = SET_TAKE_DOWN_END;
+
+        engine_video_memory memory;
+        ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+        memory.failing_scanout_map = 4;
+        memory.scanout_map_result = ERR_NO_MEMORY;
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), failed.result);
+        EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 3u);
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core"));
+
+        bool is_answered = failed.error == ERR_FIRMWARE;
+        EXPECT_EQ(engine_log_contains("nvidia: the bandwidth check does not accept the 1 output left"), is_answered);
+        EXPECT_EQ(
+            engine_log_contains(
+                "nvidia: the bandwidth check gives no answer about the 1 output left, so bring-up takes the display "
+                "engine down"
+            ),
+            !is_answered
+        );
+
+        EXPECT_FALSE(engine.has_lit_output());
+        EXPECT_EQ(engine.release(), OK);
     }
 }
 
@@ -6298,8 +6802,8 @@ TEST(nvidia_display_engine, set_up_maps_the_bound_base_buffer_for_userland_and_k
 }
 
 // A mapping for userland finding no room leaves the set-up `OK` and one failing otherwise fails it, each logged, with
-// the base buffer kept bound, no look-up table allocated and no output lit
-TEST(nvidia_display_engine, set_up_keeps_bound_a_base_buffer_it_cannot_map_for_userland) {
+// the base buffer unbound and released, no look-up table allocated and no output lit
+TEST(nvidia_display_engine, set_up_unbinds_and_releases_a_base_buffer_it_cannot_map_for_userland) {
     struct failure {
         int32_t     error;
         int32_t     result;
@@ -6309,20 +6813,16 @@ TEST(nvidia_display_engine, set_up_keeps_bound_a_base_buffer_it_cannot_map_for_u
     const failure failures[] = {
         {ERR_NO_MEMORY,
          OK,
-         "nvidia: output 0 cannot light, as mapping its base buffer for userland found no room, so its video memory "
-         "stays bound and unused"},
+         "nvidia: output 0 cannot light, as mapping its base buffer for userland found no room"},
         {ERR_TIMEOUT,
          ERR_TIMEOUT,
-         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for userland failed: -4, so its video "
-         "memory stays bound and unused"},
+         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for userland failed: -4"},
         {ERR_BAD_STATE,
          ERR_BAD_STATE,
-         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for userland failed: -5, so its video "
-         "memory stays bound and unused"},
+         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for userland failed: -5"},
         {ERR_INVALID_ARG,
          ERR_INVALID_ARG,
-         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for userland failed: -13, so its video "
-         "memory stays bound and unused"},
+         "nvidia: mapping output 0's base buffer at 0x1000000 in video memory for userland failed: -13"},
     };
 
     for (const failure& failed : failures) {
@@ -6339,8 +6839,9 @@ TEST(nvidia_display_engine, set_up_keeps_bound_a_base_buffer_it_cannot_map_for_u
         EXPECT_FALSE(engine_log_contains("nvidia: output 0's base buffer is mapped for userland"));
 
         EXPECT_EQ(memory.scanout_maps, 2u);
-        EXPECT_EQ(memory.scanout_releases, 0u);
+        EXPECT_EQ(memory.scanout_releases, 1u);
         EXPECT_EQ(memory.general_requests, 1u);
+        EXPECT_TRUE(engine_log_contains("nvidia: output 0's base buffer is unbound and released"));
 
         EXPECT_FALSE(engine.has_lit_output());
         EXPECT_NULL(engine.base_buffer(0));
@@ -6348,9 +6849,97 @@ TEST(nvidia_display_engine, set_up_keeps_bound_a_base_buffer_it_cannot_map_for_u
     }
 }
 
+// An undoing of the base buffer's binding failing with any error its mapping returns keeps the buffer for good,
+// logged, as the display engine may read it through the binding left, the set-up `OK` with no output lit
+TEST(nvidia_display_engine, set_up_keeps_a_base_buffer_whose_binding_is_not_undone) {
+    struct failure {
+        int32_t     error;
+        const char* line;
+    };
+
+    const failure failures[] = {
+        {ERR_INVALID_ARG, "'s binding to window 3's channel failed: -13"},
+        {ERR_NO_MEMORY, "'s binding to window 3's channel failed: -6"},
+        {ERR_BAD_STATE, "'s binding to window 3's channel failed: -5"},
+        {ERR_TIMEOUT, "'s binding to window 3's channel failed: -4"},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
+
+        memory.failing_scanout_map = 2;
+        memory.scanout_map_result = ERR_NO_MEMORY;
+        memory.failing_general_map = BASE_BUFFER_UNBINDING_MAP;
+        memory.general_map_result = failed.error;
+        display_engine& engine = new_engine(fw, memory);
+
+        EXPECT_EQ(set_up_logged(engine), OK);
+        EXPECT_TRUE(engine_log_contains("nvidia: output 0's base buffer stays allocated, as undoing context DMA 0x"));
+        EXPECT_TRUE(engine_log_contains(failed.line));
+        EXPECT_FALSE(engine_log_contains("nvidia: output 0's base buffer is unbound and released"));
+        EXPECT_FALSE(engine.has_lit_output());
+
+        EXPECT_EQ(engine.release(), OK);
+        EXPECT_EQ(memory.scanout_releases, 0u);
+    }
+}
+
+// Both outputs' refused trainings drop each in turn, its bindings undone and its base buffer released, nothing lit
+// and the bandwidth check asked nothing about an empty set
+TEST(nvidia_display_engine, set_up_releases_both_base_buffers_when_both_outputs_drop) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.untrained_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0's base buffer is unbound and released"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1's base buffer is unbound and released"));
+    EXPECT_EQ(memory.scanout_releases, 2u);
+    EXPECT_EQ(used_entry_count(), 4u);
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 2u);
+
+    EXPECT_FALSE(engine.has_lit_output());
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Output 0's drop failing to undo output 1's buffer's binding to window 0 keeps output 0's buffer bound, and output 1's
+// drop then undoes its own bindings and both cross bindings with output 0 before its buffer is released
+TEST(nvidia_display_engine, set_up_undoes_a_binding_a_failed_drop_left_when_the_next_output_drops) {
+    engine_firmware fw;
+    connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
+    fw.untrained_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.get_at_link = LINK_TAKE_DOWN_END;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES));
+    memory.failing_general_map = LATER_TABLE_BINDING_MAP + 4;
+    memory.general_map_result = ERR_TIMEOUT;
+    display_engine& engine = new_engine(fw, memory);
+
+    EXPECT_EQ(set_up_logged(engine), OK);
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0's base buffer stays allocated, as undoing context DMA 0x"));
+    EXPECT_TRUE(engine_log_contains("'s binding to window 0's channel failed: -4"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1's base buffer is unbound and released"));
+    EXPECT_EQ(memory.scanout_releases, 1u);
+    EXPECT_EQ(used_entry_count(), 6u);
+
+    rm::handle base_buffer_0 = display_engine_test_access::base_buffer_context_dma(engine, 0);
+    EXPECT_TRUE(binds_to_channel(base_buffer_0, window_channel_number(0)));
+    EXPECT_FALSE(binds_to_channel(base_buffer_0, window_channel_number(1)));
+    EXPECT_FALSE(engine.has_lit_output());
+    EXPECT_EQ(engine.release(), OK);
+}
+
 // A mapping for userland at no physical address is taken down and leaves the set-up `OK`, logged, with the base
-// buffer kept bound, no look-up table allocated and no output lit
-TEST(nvidia_display_engine, set_up_unmaps_and_keeps_bound_a_base_buffer_mapped_at_no_physical_address) {
+// buffer unbound and released, no look-up table allocated and no output lit
+TEST(nvidia_display_engine, set_up_unmaps_and_releases_a_base_buffer_mapped_at_no_physical_address) {
     engine_firmware fw;
     engine_video_memory memory;
     ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
@@ -6359,14 +6948,13 @@ TEST(nvidia_display_engine, set_up_unmaps_and_keeps_bound_a_base_buffer_mapped_a
 
     EXPECT_EQ(set_up_logged(engine), OK);
     EXPECT_TRUE(engine_log_contains(
-        "nvidia: output 0 cannot light, as the mapping of its base buffer for userland has no physical address, so its "
-        "video memory stays bound and unused"
+        "nvidia: output 0 cannot light, as the mapping of its base buffer for userland has no physical address"
     ));
     EXPECT_FALSE(engine_log_contains("nvidia: output 0's base buffer is mapped for userland"));
 
     EXPECT_EQ(memory.scanout_maps, 2u);
     EXPECT_EQ(memory.scanout_unmaps, 2u);
-    EXPECT_EQ(memory.scanout_releases, 0u);
+    EXPECT_EQ(memory.scanout_releases, 1u);
     EXPECT_EQ(memory.general_requests, 1u);
 
     EXPECT_FALSE(engine.has_lit_output());

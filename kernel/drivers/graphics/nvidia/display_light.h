@@ -173,6 +173,16 @@ int32_t choose_lights(
     light_set& out
 );
 
+/**
+ * @brief Ask the bandwidth check once whether every head of `set` can show its
+ * output's mode at once, as `choose_lights` asks, for a set that lost an
+ * output after the choice. `set` must hold lights `choose_lights` chose.
+ * @return `OK` with `is_possible` set to the answer, false after a refused
+ * request, `ERR_NO_MEMORY` when the request cannot be allocated, or the error
+ * of a request failing other than by a refusal, each logged.
+ */
+int32_t check_light_set(firmware& fw, rm::handle bandwidth_check, const light_set& set, bool& is_possible);
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_DISPLAY_LIGHT_H

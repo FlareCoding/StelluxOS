@@ -92,6 +92,7 @@ struct engine_head {
     gfxfb::gfxfb_mode mode;
     vram_range        base_buffer;             // of 0 bytes while none is allocated
     rm::handle        base_buffer_context_dma; // 0 until bound
+    uint32_t          base_buffer_windows;     // a bit for each window whose channel the base buffer is bound to
     gfxfb::buffer     userland_base_buffer;    // the base buffer as userland maps it, of 0 bytes while unmapped
     bool              is_lit;                  // set by the light under the engine's output lock
 
@@ -177,16 +178,17 @@ public:
     display_engine& operator=(const display_engine&) = delete;
 
     /**
-     * @brief Light every connected monitor it can in one mode set, or none
-     * after a later failure. Once its shutdown update succeeds, it powers down
-     * the link of each output the boot firmware lit that the set leaves out.
+     * @brief Light every monitor it can in one mode set, powering down any link
+     * an output left out holds once its shutdown update succeeds. An output
+     * past the heads, refused at every mode, without a window channel or a
+     * surface it scans out, or whose link is refused or untrained is left out.
      * Call it once, outside interrupts and spinlocks, while nothing else uses
      * video memory or the firmware, with `regs` mapped until `release` returns.
      * @return `OK`, also when nothing lights, else the logged error that ended
      * the set-up: a refused binding, before the choice a refused request it
      * needs or no memory, else a request, binding, allocation, mapping or wait
      * failing other than by a refusal or, before the core channel's idle wait,
-     * no room, but not a failed update.
+     * no room, but not a failed update or a dropped output's failed undoing.
      */
     int32_t set_up(
         registers& regs,
@@ -402,15 +404,16 @@ private:
     // mode's latch times, its head table entry and its interrupt, taking `m_output_lock` itself
     void mark_head_lit(registers& regs, const head_light& light, bool has_cursor);
 
-    // Allocates each light's window channel, base buffer, notifier and cursor, binding each base buffer and the look-up
-    // table to every prepared light's window channel, and empties `set` once a channel or surface is not set up
+    // Allocates each light's window channel, base buffer, notifier and cursor, binding the base buffers and the look-up
+    // table across, dropping a light whose channel or a surface is not set up, else returning a failing step's error
     int32_t prepare_lights(
         registers& regs,
         const dma::device_profile& card,
         const chip_display& display,
         uint32_t present_heads,
         uint32_t present_windows,
-        light_set& set
+        light_set& set,
+        dpcd_capabilities* dpcds
     );
 
     // Gives `light` its head's window channel and base buffer, mapped for userland, binding the table and every earlier
@@ -425,7 +428,8 @@ private:
         bool& is_prepared
     );
 
-    // Runs the mode set for `set`: the shutdown update, the links and the light, the engine taken down when one fails
+    // Runs the mode set for `set`: the shutdown update, the links, the bandwidth check asked again when `set` lost an
+    // output and the light, the engine taken down when the start is accepted and no output lights
     int32_t bring_up(
         registers& regs,
         const display_heads& heads,
@@ -435,20 +439,26 @@ private:
         bool has_crossbar,
         const display_outputs& outputs,
         const power_down_facts& power_down,
-        const light_set& set,
-        const dpcd_capabilities* dpcds
+        light_set& set,
+        const dpcd_capabilities* dpcds,
+        bool is_set_reduced
     );
 
-    // Readies each output's link in lighting order, excluding links assigned before, until one fails, giving the
-    // `ready_count` lights readied in `lights`
+    // Readies each output's link in lighting order, excluding links assigned before, leaving `ready_count` in `set` and
+    // `lights`. One refused or untrained drops, any link it holds powered down, and another step's error returns
     int32_t set_up_links(
         bool has_crossbar,
         const display_outputs& outputs,
-        const light_set& set,
+        const power_down_facts& power_down,
+        light_set& set,
         const dpcd_capabilities* dpcds,
         head_light* lights,
         uint8_t& ready_count
     );
+
+    // Undoes the bindings of `dropped`'s base buffer, the table's to its window and each other base buffer's there, as
+    // the heads' masks record them, then releases its base buffer unless an undoing fails
+    void drop_prepared_light(const output_light& dropped);
 
     // Writes an update naming the cleared notifier, interlocked with the window channels of `window_interlocks`, then
     // kicks each of those channels, waits, reads the notifier's status into `status_word` and stops its writes
