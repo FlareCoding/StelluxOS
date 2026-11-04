@@ -33,7 +33,8 @@ struct memory_run {
  * GPU's failed mark, as the card may then translate through entries the object
  * no longer knows. From then on the tables stay in video memory, and `create`,
  * `map`, `unmap` and a `destroy` of existing tables return `ERR_GPU_FAILED`.
- * Every other error is logged.
+ * Every other error is logged except no room in video memory for a table,
+ * which is left to the caller.
  */
 class context_page_tables : private table_writes {
 public:

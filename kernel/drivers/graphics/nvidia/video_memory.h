@@ -103,7 +103,8 @@ public:
      * @return `OK`, `ERR_INVALID_ARG` when `range` is not such a range or lies
      * where no mapping reaches, `ERR_NO_MEMORY` when there is no room for the
      * mapping or its record, or `ERR_BAD_STATE` or `ERR_TIMEOUT` when the card
-     * does not take the mapping, each logged.
+     * does not take the mapping, each logged except no room for the mapping,
+     * which is left to the caller.
      */
     virtual int32_t map_for_cpu(const vram_range& range, cpu_mapping& out) = 0;
 
@@ -292,8 +293,9 @@ public:
      * window, open or not, has no free run of the range's size or the
      * mapping's record cannot be allocated, `ERR_BAD_STATE` when the last
      * entry reads back as another value, or `ERR_TIMEOUT` when the invalidate
-     * times out, each logged. On `ERR_BAD_STATE` and `ERR_TIMEOUT` the entries
-     * are rewritten sparse with no invalidate, and the run is free again. On
+     * times out, each logged except a window with no free run, which is left
+     * to the caller. On `ERR_BAD_STATE` and `ERR_TIMEOUT` the entries are
+     * rewritten sparse with no invalidate, and the run is free again. On
      * `ERR_INVALID_ARG` and `ERR_NO_MEMORY` BAR1's tables are left unwritten.
      */
     int32_t map_for_cpu(const vram_range& range, cpu_mapping& out) override;

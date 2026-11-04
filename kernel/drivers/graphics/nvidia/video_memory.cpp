@@ -245,14 +245,6 @@ int32_t bar1_video_memory::map_locked(const vram_range& range, cpu_mapping& out)
 
     uint64_t bar1_offset = 0;
     if (!find_free_run(range.size, bar1_offset)) {
-        log::error(
-            "nvidia: BAR1's window of 0x%lX bytes has no stretch of 0x%lX unmapped bytes past the console's 0x%lX to "
-            "map video memory at 0x%lX for the CPU",
-            m_window_bytes,
-            range.size,
-            m_console_bytes,
-            range.offset
-        );
         return ERR_NO_MEMORY;
     }
 

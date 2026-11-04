@@ -194,6 +194,7 @@ static int32_t check_mapping_through_bar1(
     nvidia::cpu_mapping first = {};
     rc = memory.map_for_cpu(page, first);
     if (rc != nvidia::OK) {
+        log::error("nvidia: mapping the page for the check of a mapping through BAR1 failed: %d", rc);
         return rc;
     }
 
@@ -210,6 +211,7 @@ static int32_t check_mapping_through_bar1(
     nvidia::cpu_mapping second = {};
     rc = memory.map_for_cpu(page, second);
     if (rc != nvidia::OK) {
+        log::error("nvidia: mapping the page again for the check of a mapping through BAR1 failed: %d", rc);
         return rc;
     }
 
