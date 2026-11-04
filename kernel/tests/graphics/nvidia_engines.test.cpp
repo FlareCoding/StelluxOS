@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "dynpriv/dynpriv.h"
 #include "gpu/core.h"
+#include "mm/heap.h"
 #include "mm/shmem.h"
 #include "tests/framework/helpers.h"
 #include "tests/graphics/nvidia_channel_test_access.h"
@@ -19,6 +20,8 @@
 TEST_SUITE(nvidia_engines);
 
 using drivers::nvidia::backend_memory;
+using drivers::nvidia::backend_queue;
+using drivers::nvidia::backend_space;
 using drivers::nvidia::card_identity;
 using drivers::nvidia::channel_test_access;
 using drivers::nvidia::chip_info;
@@ -134,6 +137,12 @@ struct engines_test_access {
 
     // Gives `gpu_engines` the GPU core's device that registration would
     static void register_with(engines& gpu_engines, gpu::device& dev) { gpu_engines.m_device = &dev; }
+
+    static void hold_every_channel_id(engines& gpu_engines) {
+        for (uint64_t& word : gpu_engines.m_channel_ids) {
+            word = ~0ULL;
+        }
+    }
 };
 
 } // namespace drivers::nvidia
@@ -148,6 +157,8 @@ public:
     uint32_t           engine_count = 0;
     int32_t            kernel_table_result = OK;
     int32_t            allocation_result = OK; // what every allocation answers
+    uint32_t           refused_class = ~0u;    // a class whose allocations the firmware refuses
+    int32_t            release_result = OK;    // what every release answers
     uint32_t           table_reads = 0;
     uint32_t           other_controls = 0;
     uint32_t           allocations = 0;
@@ -156,12 +167,17 @@ public:
     uint32_t           internal_command = 0;
     uint32_t           last_class = 0;
     uint32_t           last_command = 0; // of the controls other than the table's read
+    rm::channel_params last_channel = {};
     rm::handle         next_handle = FIRST_HANDLE;
 
-    int32_t allocate(rm::handle, rm::handle, uint32_t class_id, void*, size_t) override {
+    int32_t allocate(rm::handle, rm::handle, uint32_t class_id, void* params, size_t size) override {
         allocations++;
         last_class = class_id;
-        return allocation_result;
+        if (size == sizeof(rm::channel_params)) {
+            string::memcpy(&last_channel, params, size);
+        }
+
+        return class_id == refused_class ? ERR_FIRMWARE : allocation_result;
     }
 
     int32_t control(rm::handle object, uint32_t command, void* params, size_t size) override {
@@ -184,7 +200,7 @@ public:
 
     int32_t release(rm::handle) override {
         releases++;
-        return OK;
+        return release_result;
     }
 
     rm::handle new_handle() override { return next_handle++; }
@@ -452,6 +468,7 @@ struct engines_fixture {
     engines_video_memory memory;
     failed_mark          failed;
     registers            bar0;
+    chip_info            chip = engines_test_chip(); // outlives the engines, which keep it
     dma::device_profile  card = engines_test_card();
     engines              gpu_engines;
     gpu::device&         core_device;
@@ -474,8 +491,9 @@ struct engines_fixture {
     gpu::memory* created = nullptr;
     uint32_t     device_id = ~0u;
 
-    // The space `create_space_on_gpu` creates
+    // The space `create_space_on_gpu` creates, and the queue `create_queue_on_gpu` creates in it
     gpu::space* space = nullptr;
+    gpu::queue* queue = nullptr;
 
     engines_fixture()
         : bar0(fresh_bar0()), gpu_engines(fw, TEST_OBJECTS, memory, engines_operations(), failed),
@@ -503,7 +521,7 @@ struct engines_fixture {
         }
     }
 
-    int32_t bring_up() { return gpu_engines.bring_up(bar0, card, engines_test_chip()); }
+    int32_t bring_up() { return gpu_engines.bring_up(bar0, card, chip); }
 
     int32_t create() {
         return gpu_engines.create_memory(create_size, create_placement, create_flags, nullptr, 0, &created, &device_id);
@@ -861,7 +879,7 @@ static void describe_rtx_3080(engines_fixture& fixture) {
 // A video memory report whose four figures differ, so one read for another fails
 static constexpr memory_report REPORTED_MEMORY = {0x25F800000, 0x251000000, 0xEF00000, 0xD300000};
 
-// The facts describe the card from its identity, chip and memory, with no queue kind, NVK's user range, and the
+// The facts describe the card from its identity, chip and memory, with copy queues only, NVK's user range, and the
 // command bytes a queue's GPFIFO holds less one entry per running submission and the entry kept empty
 TEST(nvidia_engines, facts_describe_the_card) {
     engines_fixture fixture;
@@ -872,7 +890,7 @@ TEST(nvidia_engines, facts_describe_the_card) {
     fixture.gpu_engines.read_facts(facts);
 
     EXPECT_EQ(facts.info.backend, static_cast<uint32_t>(GPU_BACKEND_NVIDIA));
-    EXPECT_EQ(facts.info.queue_kinds, 0u);
+    EXPECT_EQ(facts.info.queue_kinds, 1u << GPU_QUEUE_COPY);
     EXPECT_EQ(string::strcmp(facts.info.name, "NVIDIA GeForce RTX 3080"), 0);
 
     EXPECT_EQ(facts.info.vendor_id, static_cast<uint16_t>(0x10DE));
@@ -951,17 +969,6 @@ TEST(nvidia_engines, timestamp_refuses_once_the_gpu_failed) {
     EXPECT_EQ(fixture.gpu_engines.read_timestamp(gpu_ns), gpu::ERR_DEVICE);
 
     EXPECT_EQ(gpu_ns, 0u);
-}
-
-// The facts offer no queue kind, so every command list is refused, and a failed GPU reports its loss instead
-TEST(nvidia_engines, check_commands_refuses_every_list_and_reports_a_failed_gpu) {
-    engines_fixture fixture;
-    const uint8_t commands[16] = {};
-    ASSERT_EQ(fixture.gpu_engines.check_commands(commands, sizeof(commands)), gpu::ERR_REFUSED);
-
-    fixture.failed.set();
-
-    EXPECT_EQ(fixture.gpu_engines.check_commands(commands, sizeof(commands)), gpu::ERR_DEVICE);
 }
 
 // Video memory is allocated for its use and zeroed whole by the copy channel before its create returns, with no
@@ -1614,4 +1621,338 @@ TEST(nvidia_engines, spaces_stay_once_a_hung_zeroing_failed_the_device) {
 
     gpu_engines.release_memory(system_memory);
     engines_operations().serve();
+}
+
+// The firmware objects a queue's channel allocates: its channel group, channel and copy object
+static constexpr uint32_t QUEUE_CHANNEL_OBJECTS = 3;
+
+// NVIDIA's allocation flags for unprivileged channels 1 and 2, with physical copies and privileged MEM_OPs denied,
+// scheduling delayed and the id's USERD slot on page 0 fixed, and NVIDIA's internal privilege of a user's channel
+static constexpr uint32_t USER_CHANNEL_1_FLAGS = 0x0060'01C0;
+static constexpr uint32_t USER_CHANNEL_2_FLAGS = 0x0060'02C0;
+static constexpr uint32_t PRIVILEGE_USER       = 0x0;
+
+// A context's part above its user range: its semaphores, then a 256 KiB window per queue holding the queue's 128 KiB
+// GPFIFO and then its push buffer, three pages of 128-byte release sequences
+static constexpr uint64_t SEMAPHORES_VA      = 1ULL << 39;
+static constexpr uint64_t WINDOW_BYTES       = 256 * 1024;
+static constexpr uint64_t FIRST_GPFIFO_VA    = SEMAPHORES_VA + WINDOW_BYTES;
+static constexpr uint64_t FIRST_PUSH_VA      = FIRST_GPFIFO_VA + 128 * 1024;
+static constexpr uint64_t PUSH_BUFFER_PAGES  = 3;
+static constexpr uint64_t RELEASE_SLOT_BYTES = 128;
+
+// A release sequence's words, and those holding its semaphore's address and its payload
+static constexpr uint32_t RELEASE_WORDS             = 20;
+static constexpr uint32_t RELEASE_ADDRESS_LOW_WORD  = 8;
+static constexpr uint32_t RELEASE_ADDRESS_HIGH_WORD = 9;
+static constexpr uint32_t RELEASE_PAYLOAD_WORD      = 10;
+
+// A GPFIFO entry's word count from bit 10 of its second word, and NVIDIA's SYNC_WAIT bit there
+static constexpr uint32_t GPFIFO_LENGTH_SHIFT = 10;
+static constexpr uint32_t GPFIFO_SYNC_WAIT    = 1u << 31;
+
+// Copy engine 2's runlist on the RTX 3080, which a doorbell token holds from bit 16
+static constexpr uint32_t COPY_RUNLIST_TOKEN = 1u << 16;
+
+static int32_t create_queue_step(engines_fixture& fixture) {
+    return fixture.gpu_engines.create_queue(fixture.space, GPU_QUEUE_COPY, nullptr, &fixture.queue);
+}
+
+static int32_t create_queue_on_gpu(engines_fixture& fixture) {
+    return run_on_gpu(fixture, create_queue_step);
+}
+
+static backend_queue& backend_of(gpu::queue* queue) {
+    return *static_cast<backend_queue*>(queue);
+}
+
+static uint32_t gpfifo_word_of(gpu::queue* queue, uint32_t entry, uint32_t word) {
+    return channel_test_access::gpfifo_word(backend_of(queue).user_channel, entry, word);
+}
+
+static uint32_t put_of_queue(gpu::queue* queue) {
+    return channel_test_access::userd_word(backend_of(queue).user_channel, USERD_GP_PUT);
+}
+
+static uint32_t release_word_of(gpu::queue* queue, uint64_t slot, uint32_t word) {
+    uintptr_t release = backend_of(queue).push_buffer.virt + slot * RELEASE_SLOT_BYTES;
+    return reinterpret_cast<const uint32_t*>(release)[word];
+}
+
+static uint64_t semaphores_of(engines_fixture& fixture) {
+    return static_cast<backend_space*>(fixture.space)->semaphores.phys;
+}
+
+// Tears a queue down: its channel, then its push buffer and the queue itself
+static void tear_down_queue(gpu::queue* queue) {
+    backend_queue& backend = backend_of(queue);
+    backend.user_channel.destroy();
+    RUN_ELEVATED(dma::free_pages(backend.push_buffer));
+    heap::ufree_delete(&backend);
+}
+
+// Destroys the space and releases the memory `sets_up_system_memory_and_a_space` created
+static void tear_down_space(engines_fixture& fixture) {
+    fixture.gpu_engines.destroy_space(fixture.space);
+    fixture.gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// A queue is an unprivileged channel on the copy engine's runlist with the lowest id above the kernel's copy channel,
+// created by the driver task, with its rings mapped read-only and the semaphores writable above the user range
+TEST(nvidia_engines, a_queue_is_an_unprivileged_channel_with_its_rings_above_the_user_range) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    uint32_t allocations = fixture.fw.allocations;
+    engines_task_state state;
+
+    sched::task* task = start_step(fixture, state, create_queue_step);
+    ASSERT_NOT_NULL(task);
+    bool waits_for_the_task = test_helpers::blocks_before_deadline(task) && fixture.fw.allocations == allocations;
+    ASSERT_EQ(finish_step(fixture, state, task), gpu::OK);
+
+    EXPECT_TRUE(waits_for_the_task);
+    EXPECT_EQ(fixture.fw.allocations, allocations + QUEUE_CHANNEL_OBJECTS);
+
+    const rm::channel_params& params = fixture.fw.last_channel;
+    EXPECT_EQ(params.flags, USER_CHANNEL_1_FLAGS);
+    EXPECT_EQ(params.internal_flags, PRIVILEGE_USER);
+    EXPECT_EQ(params.engine_type, CE2);
+    EXPECT_EQ(params.gpfifo_address, FIRST_GPFIFO_VA);
+
+    backend_queue& queue = backend_of(fixture.queue);
+    uint64_t gpfifo = channel_test_access::gpfifo_phys(queue.user_channel);
+    uint64_t read_only_system = PAGE_READ_ONLY | PAGE_SYSTEM_BITS | PAGE_VALID;
+    EXPECT_EQ(page_entry_at(SEMAPHORES_VA), address_field(semaphores_of(fixture)) | PAGE_SYSTEM_BITS | PAGE_VALID);
+    EXPECT_EQ(page_entry_at(FIRST_GPFIFO_VA), address_field(gpfifo) | read_only_system);
+    for (uint64_t page = 0; page < PUSH_BUFFER_PAGES; page++) {
+        uint64_t phys = queue.push_buffer.phys + page * 4096;
+        EXPECT_EQ(page_entry_at(FIRST_PUSH_VA + page * 4096), address_field(phys) | read_only_system);
+    }
+
+    EXPECT_EQ(page_entry_at(FIRST_PUSH_VA + PUSH_BUFFER_PAGES * 4096), 0u);
+
+    tear_down_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A run takes a GPFIFO entry per range, one flagged GPU written fetched only once the host processed the entries before
+// it, then an entry for its release in its sequence's push buffer slot, and rings the queue's doorbell
+TEST(nvidia_engines, run_writes_an_entry_per_range_then_its_release_and_rings_the_doorbell) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    gpu_nvidia_range ranges[] = {
+        {.va = 0x10000, .size = 0x40, .flags = 0},
+        {.va = 0x7F'FFFF'F000, .size = 0x1000, .flags = GPU_COMMANDS_GPU_WRITTEN},
+    };
+
+    fixture.gpu_engines.run(fixture.queue, 1, ranges, sizeof(ranges));
+
+    EXPECT_EQ(gpfifo_word_of(fixture.queue, 0, 0), 0x10000u);
+    EXPECT_EQ(gpfifo_word_of(fixture.queue, 0, 1), 0x10u << GPFIFO_LENGTH_SHIFT);
+    EXPECT_EQ(gpfifo_word_of(fixture.queue, 1, 0), 0xFFFF'F000u);
+    EXPECT_EQ(gpfifo_word_of(fixture.queue, 1, 1), 0x7Fu | (0x400u << GPFIFO_LENGTH_SHIFT) | GPFIFO_SYNC_WAIT);
+    EXPECT_EQ(gpfifo_word_of(fixture.queue, 2, 0), static_cast<uint32_t>(FIRST_PUSH_VA + RELEASE_SLOT_BYTES));
+    EXPECT_EQ(gpfifo_word_of(fixture.queue, 2, 1), 0x80u | (RELEASE_WORDS << GPFIFO_LENGTH_SHIFT));
+
+    EXPECT_EQ(release_word_of(fixture.queue, 1, RELEASE_ADDRESS_LOW_WORD), 0u);
+    EXPECT_EQ(release_word_of(fixture.queue, 1, RELEASE_ADDRESS_HIGH_WORD), 0x80u);
+    EXPECT_EQ(release_word_of(fixture.queue, 1, RELEASE_PAYLOAD_WORD), 1u);
+    EXPECT_EQ(put_of_queue(fixture.queue), 3u);
+    EXPECT_EQ(bar0_word(VIRTUAL_FUNCTION_DOORBELL), COPY_RUNLIST_TOKEN | 1);
+
+    tear_down_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A submission without ranges runs its release alone, in push buffer slot `sequence % 65` with the sequence's low 32
+// bits as its payload
+TEST(nvidia_engines, an_empty_submission_runs_its_release_alone_in_its_sequences_slot) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+
+    fixture.gpu_engines.run(fixture.queue, (1ULL << 32) + 65, nullptr, 0);
+
+    uint64_t slot = 61; // (2^32 + 65) % 65
+    EXPECT_EQ(gpfifo_word_of(fixture.queue, 0, 0), static_cast<uint32_t>(FIRST_PUSH_VA + slot * RELEASE_SLOT_BYTES));
+    EXPECT_EQ(release_word_of(fixture.queue, slot, RELEASE_PAYLOAD_WORD), 65u);
+    EXPECT_EQ(put_of_queue(fixture.queue), 1u);
+
+    tear_down_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A second queue takes the next id, window and semaphore, in the semaphores' page the first queue mapped
+TEST(nvidia_engines, a_second_queue_takes_the_next_id_window_and_semaphore) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    gpu::queue* first = fixture.queue;
+    uint64_t semaphores = semaphores_of(fixture);
+
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    fixture.gpu_engines.run(fixture.queue, 1, nullptr, 0);
+
+    EXPECT_EQ(fixture.fw.last_channel.flags, USER_CHANNEL_2_FLAGS);
+    EXPECT_EQ(fixture.fw.last_channel.gpfifo_address, FIRST_GPFIFO_VA + WINDOW_BYTES);
+    EXPECT_EQ(semaphores_of(fixture), semaphores);
+
+    uint64_t release_va = FIRST_PUSH_VA + WINDOW_BYTES + RELEASE_SLOT_BYTES;
+    EXPECT_EQ(gpfifo_word_of(fixture.queue, 0, 0), static_cast<uint32_t>(release_va));
+    EXPECT_EQ(release_word_of(fixture.queue, 1, RELEASE_ADDRESS_LOW_WORD), 4u);
+    EXPECT_EQ(bar0_word(VIRTUAL_FUNCTION_DOORBELL), COPY_RUNLIST_TOKEN | 2);
+
+    tear_down_queue(fixture.queue);
+    tear_down_queue(first);
+    tear_down_space(fixture);
+}
+
+// A command list is whole ranges, each whole words one GPFIFO entry can count, at a word-aligned address inside the
+// context's user range, flagged at most GPU_COMMANDS_GPU_WRITTEN
+TEST(nvidia_engines, check_commands_refuses_ranges_of_bad_size_address_or_flags) {
+    engines_fixture fixture;
+    engines& gpu_engines = fixture.gpu_engines;
+    uint32_t words_max = (1u << 21) - 1;
+
+    gpu_nvidia_range refused[] = {
+        {.va = 0x10000, .size = 0, .flags = 0},
+        {.va = 0x10000, .size = 6, .flags = 0},
+        {.va = 0x10000, .size = (words_max + 1) * 4, .flags = 0},
+        {.va = 0x10002, .size = 4, .flags = 0},
+        {.va = 0xFFC, .size = 4, .flags = 0},
+        {.va = 0x7F'FFFF'FFFC, .size = 8, .flags = 0},
+        {.va = 0xFFFF'FFFF'FFFF'FFF0, .size = 0x20, .flags = 0},
+        {.va = 0x10000, .size = 4, .flags = 0x2},
+        {.va = 0x10000, .size = 4, .flags = 0x8000'0001},
+    };
+
+    gpu_nvidia_range accepted[] = {
+        {.va = 0x1000, .size = words_max * 4, .flags = 0},
+        {.va = 0x7F'FFFF'FFFC, .size = 4, .flags = GPU_COMMANDS_GPU_WRITTEN},
+    };
+
+    for (const gpu_nvidia_range& range : refused) {
+        gpu_nvidia_range list[] = {accepted[0], range};
+        EXPECT_EQ(gpu_engines.check_commands(&range, sizeof(range)), gpu::ERR_REFUSED);
+        EXPECT_EQ(gpu_engines.check_commands(list, sizeof(list)), gpu::ERR_REFUSED);
+    }
+
+    EXPECT_EQ(gpu_engines.check_commands(accepted, sizeof(accepted)), gpu::OK);
+    EXPECT_EQ(gpu_engines.check_commands(accepted, 0), gpu::OK);
+    EXPECT_EQ(gpu_engines.check_commands(accepted, sizeof(accepted) - 8), gpu::ERR_REFUSED);
+}
+
+// A failed GPU runs no list, so a list a working one accepts reports the loss instead
+TEST(nvidia_engines, check_commands_refuses_once_the_gpu_failed) {
+    engines_fixture fixture;
+    gpu_nvidia_range range = {.va = 0x10000, .size = 4, .flags = 0};
+    ASSERT_EQ(fixture.gpu_engines.check_commands(&range, sizeof(range)), gpu::OK);
+
+    fixture.failed.set();
+
+    EXPECT_EQ(fixture.gpu_engines.check_commands(&range, sizeof(range)), gpu::ERR_DEVICE);
+}
+
+// A queue whose channel the firmware refuses unmaps its push buffer and gives back its window and id, which the next
+// queue takes, while the space keeps its semaphores
+TEST(nvidia_engines, a_queue_the_firmware_refuses_gives_back_its_window_and_id) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    fixture.fw.allocation_result = ERR_FIRMWARE;
+
+    EXPECT_EQ(create_queue_on_gpu(fixture), gpu::ERR_NO_MEMORY);
+
+    EXPECT_TRUE(fixture.queue == nullptr);
+    EXPECT_EQ(page_entry_at(FIRST_GPFIFO_VA), 0u);
+    EXPECT_EQ(page_entry_at(FIRST_PUSH_VA), 0u);
+    EXPECT_EQ(page_entry_at(SEMAPHORES_VA), address_field(semaphores_of(fixture)) | PAGE_SYSTEM_BITS | PAGE_VALID);
+    EXPECT_FALSE(fixture.failed.is_set());
+
+    fixture.fw.allocation_result = OK;
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+
+    EXPECT_EQ(fixture.fw.last_channel.flags, USER_CHANNEL_1_FLAGS);
+    EXPECT_EQ(fixture.fw.last_channel.gpfifo_address, FIRST_GPFIFO_VA);
+
+    tear_down_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A queue whose channel keeps its memory, after the firmware refused to release the channel's group, keeps its push
+// buffer mapped and its window and id held, since the firmware may still reach them
+TEST(nvidia_engines, a_queue_whose_channel_keeps_its_memory_keeps_its_window_and_id) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    fixture.fw.refused_class = fixture.chip.channel_class;
+    fixture.fw.release_result = ERR_FIRMWARE;
+
+    EXPECT_EQ(create_queue_on_gpu(fixture), gpu::ERR_NO_MEMORY);
+
+    uint64_t read_only_system = PAGE_READ_ONLY | PAGE_SYSTEM_BITS | PAGE_VALID;
+    EXPECT_TRUE(fixture.queue == nullptr);
+    EXPECT_EQ(page_entry_at(FIRST_GPFIFO_VA) & read_only_system, read_only_system);
+    EXPECT_EQ(page_entry_at(FIRST_PUSH_VA) & read_only_system, read_only_system);
+
+    fixture.fw.refused_class = ~0u;
+    fixture.fw.release_result = OK;
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+
+    EXPECT_EQ(fixture.fw.last_channel.flags, USER_CHANNEL_2_FLAGS);
+    EXPECT_EQ(fixture.fw.last_channel.gpfifo_address, FIRST_GPFIFO_VA + WINDOW_BYTES);
+
+    tear_down_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A space whose eight windows are held, or a runlist whose channel ids are, refuses a queue before creating its channel
+TEST(nvidia_engines, a_queue_without_a_free_window_or_id_allocates_no_channel) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    gpu::queue* first = fixture.queue;
+    fixture.queue = nullptr;
+
+    auto* space = static_cast<backend_space*>(fixture.space);
+    uint32_t allocations = fixture.fw.allocations;
+    uint32_t video_allocations = fixture.memory.allocations;
+
+    space->queue_slots = 0xFF;
+    EXPECT_EQ(create_queue_on_gpu(fixture), gpu::ERR_NO_MEMORY);
+    space->queue_slots = 0x1;
+    engines_test_access::hold_every_channel_id(fixture.gpu_engines);
+    EXPECT_EQ(create_queue_on_gpu(fixture), gpu::ERR_NO_MEMORY);
+
+    EXPECT_TRUE(fixture.queue == nullptr);
+    EXPECT_EQ(fixture.fw.allocations, allocations);
+    EXPECT_EQ(fixture.memory.allocations, video_allocations);
+
+    tear_down_queue(first);
+    tear_down_space(fixture);
+}
+
+// Once the GPU failed, a queue is refused before the driver task sees it, and a run writes no entry and rings no
+// doorbell
+TEST(nvidia_engines, queues_are_refused_and_runs_ignored_once_the_gpu_failed) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    gpu::queue* first = fixture.queue;
+    fixture.queue = nullptr;
+
+    uint32_t allocations = fixture.fw.allocations;
+    uint32_t doorbell = bar0_word(VIRTUAL_FUNCTION_DOORBELL);
+    fixture.failed.set();
+
+    EXPECT_EQ(create_queue_on_gpu(fixture), gpu::ERR_DEVICE);
+    fixture.gpu_engines.run(first, 1, nullptr, 0);
+
+    EXPECT_TRUE(fixture.queue == nullptr);
+    EXPECT_EQ(fixture.fw.allocations, allocations);
+    EXPECT_EQ(put_of_queue(first), 0u);
+    EXPECT_EQ(bar0_word(VIRTUAL_FUNCTION_DOORBELL), doorbell);
+
+    tear_down_queue(first);
+    tear_down_space(fixture);
 }

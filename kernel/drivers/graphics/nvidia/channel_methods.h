@@ -36,14 +36,21 @@ struct gpfifo_entry {
     uint32_t words[2];
 };
 
+// When the GPU's host may fetch an entry's method words. Processing an entry's methods does not wait for the engine
+// work they start, unless they wait for idle
+enum class gpfifo_fetch : uint8_t {
+    ahead,         // while the host still processes the entries before it
+    after_earlier, // once the host processed the entries before it
+};
+
 /**
  * @brief The GPFIFO entry running the `word_count` method words at
- * `gpu_address` in the channel's address space.
+ * `gpu_address` in the channel's address space, fetched as `fetch` says.
  * @return The entry, as the GPU reads it from the GPFIFO.
  * @note `gpu_address` must be 4-byte aligned and below 2^40, and `word_count`
  * at most `GPFIFO_ENTRY_WORDS_MAX`, since the entry has no bits for more.
  */
-gpfifo_entry make_gpfifo_entry(uint64_t gpu_address, uint32_t word_count);
+gpfifo_entry make_gpfifo_entry(uint64_t gpu_address, uint32_t word_count, gpfifo_fetch fetch);
 
 /**
  * @brief Write to `words` the `FILL_WORDS` method words that bind `copy_class`

@@ -67,8 +67,9 @@ public:
      * @return `OK`, `ERR_BAD_STATE` while the channel exists, `ERR_INVALID_ARG`
      * for an id from `CHANNEL_IDS` on, `ERR_NO_MEMORY`, `ERR_BAD_MESSAGE` for a
      * fault method buffer size of 0, or the error of video memory, the mapping
-     * or the firmware. Every error but `ERR_BAD_STATE`, the id's
-     * `ERR_INVALID_ARG` and the mapping's `ERR_GPU_FAILED` is logged.
+     * or the firmware. Every error is logged but `ERR_BAD_STATE`, the id's
+     * `ERR_INVALID_ARG`, the mapping's `ERR_GPU_FAILED` and no room in video
+     * memory, system memory or BAR1's window, which the caller logs.
      */
     int32_t create(
         const dma::device_profile& card,

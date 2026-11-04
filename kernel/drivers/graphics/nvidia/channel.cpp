@@ -139,7 +139,6 @@ int32_t channel::allocate_memory(const dma::device_profile& card) {
     vram_range block = {};
     int32_t rc = m_video_memory.allocate(INSTANCE_BLOCK_BYTES, INSTANCE_BLOCK_BYTES, vram_use::general, block);
     if (rc != OK) {
-        log::error("nvidia: allocating a channel's instance block in video memory failed: %d", rc);
         return rc;
     }
 
@@ -148,7 +147,6 @@ int32_t channel::allocate_memory(const dma::device_profile& card) {
     cpu_mapping mapping = {};
     rc = m_video_memory.map_for_cpu(m_instance_block, mapping);
     if (rc != OK) {
-        log::error("nvidia: mapping a channel's instance block for the CPU to clear it failed: %d", rc);
         return rc;
     }
 
@@ -171,18 +169,15 @@ int32_t channel::allocate_memory(const dma::device_profile& card) {
     }
 
     if (allocate_system_memory(card, USERD_BYTES, m_userd) != OK) {
-        log::error("nvidia: allocating a channel's USERD failed");
         return ERR_NO_MEMORY;
     }
 
     if (allocate_system_memory(card, GPFIFO_BYTES, m_gpfifo) != OK) {
-        log::error("nvidia: allocating a channel's GPFIFO failed");
         return ERR_NO_MEMORY;
     }
 
     for (dma::buffer& buffer : m_method_buffers) {
         if (allocate_system_memory(card, size.size, buffer) != OK) {
-            log::error("nvidia: allocating a channel group's fault method buffer of %u bytes failed", size.size);
             return ERR_NO_MEMORY;
         }
     }

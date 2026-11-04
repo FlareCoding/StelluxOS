@@ -4,6 +4,7 @@
 #include "common/types.h"
 #include "dma/dma.h"
 #include "drivers/graphics/nvidia/address_space.h"
+#include "drivers/graphics/nvidia/channel.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/context_page_tables.h"
 #include "drivers/graphics/nvidia/copy_channel.h"
@@ -25,6 +26,10 @@ namespace drivers::nvidia {
 class engines;
 struct backend_memory;
 struct backend_space;
+struct backend_queue;
+
+// The channel ids one word of the engines' id bitmap holds
+constexpr uint32_t CHANNEL_IDS_PER_WORD = 64;
 
 // The card as its PCI function and the firmware's static configuration describe it, which the GPU core reports
 struct card_identity {
@@ -72,12 +77,34 @@ struct backend_space : gpu::space {
         : addresses(fw, objects, memory, failed) {}
 
     address_space   addresses;
+    dma::buffer     semaphores = {};     // a progress semaphore per queue slot, allocated for the first queue
+    uint32_t        queue_slots = 0;     // a bit per slot a queue holds, each a semaphore and a window for its rings
     space_operation task_operation = {}; // the creation, then the destroy
+};
+
+// A queue's creation on the driver task, kept in the queue
+struct queue_operation : operation {
+    engines*       owner;
+    backend_queue* queue;
 };
 
 // The report of the GPU's failure on the driver task, kept in the engines
 struct failure_operation : operation {
     engines* owner;
+};
+
+// A hardware queue the engines created for the GPU core: an unprivileged channel in its context's space, allocated on
+// the unprivileged heap, since the lowered driver task writes it
+struct backend_queue : gpu::queue {
+    backend_queue(firmware& fw, const gpu_objects& objects, video_memory& memory, registers bar0)
+        : user_channel(fw, objects, memory, bar0) {}
+
+    channel         user_channel;
+    backend_space*  space = nullptr;
+    dma::buffer     push_buffer = {};    // a release sequence per submission the queue may hold, and one more
+    uint32_t        slot = 0;            // its semaphore and window in the space
+    uint32_t        channel_id = 0;      // on the copy engine's runlist
+    queue_operation task_operation = {}; // the creation
 };
 
 /**
@@ -229,6 +256,23 @@ private:
     static void create_space_on_task(operation& op);
     static void destroy_space_on_task(operation& op);
 
+    // The driver task's half of `create_queue()`, given the queue's `task_operation`
+    static void create_queue_on_task(operation& op);
+
+    // Creates `queue`'s channel and push buffer in its space, on the driver task
+    int32_t start_queue(backend_queue& queue);
+
+    // Maps `space`'s semaphores writable, allocating their page for the space's first queue
+    int32_t map_semaphores(backend_space& space);
+
+    // Gives back the push buffer, slot and id of a queue whose channel was not created, unmapping the push buffer
+    // first when `is_mapped`, unless the firmware or the GPU may still reach them
+    void release_queue(backend_queue& queue, bool is_mapped);
+
+    // Takes the lowest id free on the copy engine's runlist above the kernel's copy channel's, or returns false
+    bool take_channel_id(uint32_t& out);
+    void give_back_channel_id(uint32_t id);
+
     firmware&          m_firmware;
     const gpu_objects& m_objects;
     video_memory&      m_memory;
@@ -252,6 +296,9 @@ private:
 
     uint32_t           m_copy_vector = 0;
     sync::atomic<bool> m_is_copy_vector_on{false}; // stored with release once the channel exists, loaded with acquire
+
+    // A bit per channel id held on the copy engine's runlist, which only the driver task touches
+    uint64_t m_channel_ids[CHANNEL_IDS / CHANNEL_IDS_PER_WORD] = {};
 };
 
 } // namespace drivers::nvidia

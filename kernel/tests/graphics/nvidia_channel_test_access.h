@@ -6,11 +6,13 @@
 
 namespace drivers::nvidia {
 
-// Reads the channel's GPFIFO and USERD as the GPU would, and sets its next slot
+// Reads the channel's GPFIFO and USERD as the GPU would, finds the GPFIFO's pages, and sets its next slot
 struct channel_test_access {
     static uint32_t gpfifo_word(const channel& queue, uint32_t slot, uint32_t word) {
         return mmio::read32(queue.m_gpfifo.virt + slot * GPFIFO_ENTRY_BYTES + word * sizeof(uint32_t));
     }
+
+    static uint64_t gpfifo_phys(const channel& queue) { return queue.m_gpfifo.phys; }
 
     static uint32_t userd_word(const channel& queue, uint32_t offset) {
         return mmio::read32(queue.m_userd.virt + offset);

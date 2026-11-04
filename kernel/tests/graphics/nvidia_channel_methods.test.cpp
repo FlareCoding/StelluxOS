@@ -11,6 +11,7 @@ using drivers::nvidia::channel_allocation_flags;
 using drivers::nvidia::doorbell_token;
 using drivers::nvidia::FILL_WORDS;
 using drivers::nvidia::gpfifo_entry;
+using drivers::nvidia::gpfifo_fetch;
 using drivers::nvidia::make_gpfifo_entry;
 using drivers::nvidia::RELEASE_WORDS;
 using drivers::nvidia::write_fill;
@@ -86,10 +87,19 @@ TEST(nvidia_channel_methods, release_orders_barriers_around_the_payload) {
 // A GPFIFO entry carries the address's bits 31:2 in its first word, and bits 39:32 and the word count from bit 10 in
 // its second, with an unconditional fetch, the main level and no sync
 TEST(nvidia_channel_methods, gpfifo_entry_splits_address_and_length) {
-    gpfifo_entry entry = make_gpfifo_entry(0x12'3456'7894ull, 20);
+    gpfifo_entry entry = make_gpfifo_entry(0x12'3456'7894ull, 20, gpfifo_fetch::ahead);
 
     EXPECT_EQ(entry.words[0], 0x3456'7894u);
     EXPECT_EQ(entry.words[1], 0x12u | (20u << 10));
+}
+
+// An entry fetched only once the host processed the entries before it sets NVIDIA's SYNC_WAIT, bit 31 of its
+// second word
+TEST(nvidia_channel_methods, gpfifo_entry_waiting_for_earlier_entries_sets_sync) {
+    gpfifo_entry entry = make_gpfifo_entry(0x12'3456'7894ull, (1u << 21) - 1, gpfifo_fetch::after_earlier);
+
+    EXPECT_EQ(entry.words[0], 0x3456'7894u);
+    EXPECT_EQ(entry.words[1], 0x12u | (0x1F'FFFFu << 10) | (1u << 31));
 }
 
 // The doorbell's token holds the runlist from bit 16 and the channel id below it

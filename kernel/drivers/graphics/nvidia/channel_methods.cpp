@@ -44,8 +44,9 @@ constexpr uint32_t REMAP_FILL_ELEMENTS = 0x4u | (0x3u << 16);
 // PHYSICAL and DISABLE_PLC, without a semaphore or interrupt of the copy engine's own
 constexpr uint32_t LAUNCH_FILL = 0x2u | (1u << 2) | (1u << 7) | (1u << 8) | (1u << 10) | (1u << 13) | (1u << 26);
 
-// NVIDIA's NVC56F_GP_ENTRY1_LENGTH, from bit 10
+// NVIDIA's NVC56F_GP_ENTRY1_LENGTH, from bit 10, and NVC56F_GP_ENTRY1_SYNC_WAIT
 constexpr uint32_t GPFIFO_LENGTH_SHIFT = 10;
+constexpr uint32_t GPFIFO_SYNC_WAIT    = 1u << 31;
 
 // NVIDIA's NV_CTRL_VF_DOORBELL_RUNLIST_ID, from bit 16
 constexpr uint32_t DOORBELL_RUNLIST_SHIFT = 16;
@@ -90,10 +91,19 @@ static uint32_t high_word(uint64_t value) {
     return static_cast<uint32_t>(value >> 32);
 }
 
-gpfifo_entry make_gpfifo_entry(uint64_t gpu_address, uint32_t word_count) {
+gpfifo_entry make_gpfifo_entry(uint64_t gpu_address, uint32_t word_count, gpfifo_fetch fetch) {
+    uint32_t sync = 0;
+    switch (fetch) {
+        case gpfifo_fetch::ahead:
+            break;
+        case gpfifo_fetch::after_earlier:
+            sync = GPFIFO_SYNC_WAIT;
+            break;
+    }
+
     gpfifo_entry entry = {};
     entry.words[0] = low_word(gpu_address) & ~3u;
-    entry.words[1] = (high_word(gpu_address) & 0xFF) | (word_count << GPFIFO_LENGTH_SHIFT);
+    entry.words[1] = (high_word(gpu_address) & 0xFF) | (word_count << GPFIFO_LENGTH_SHIFT) | sync;
     return entry;
 }
 

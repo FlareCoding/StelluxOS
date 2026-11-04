@@ -1,11 +1,12 @@
 Some definitions in this directory and in the driver's tests in
 kernel/tests/graphics are re-declared from NVIDIA's open GPU kernel modules at
-release 535.183.01 (https://github.com/NVIDIA/open-gpu-kernel-modules), and
-each file holding one says so in its first line. The EDID parser
-(kernel/drivers/graphics/edid.h and edid.cpp) and its tests
-(kernel/tests/graphics/edid.test.cpp) restate rules and layouts from them too.
-Below are the files of the open kernel modules these definitions, rules and
-layouts come from, what each gives, and its copyright line.
+release 535.183.01 (https://github.com/NVIDIA/open-gpu-kernel-modules), and each
+file holding one says so in its first line. The EDID parser
+(kernel/drivers/graphics/edid.h and edid.cpp), its tests
+(kernel/tests/graphics/edid.test.cpp) and the GPU core's ABI header
+(kernel/gpu/gpu_abi.h) restate rules and layouts from them too. Below are the
+files of the open kernel modules these definitions, rules and layouts come from,
+what each gives, and its copyright line.
 
 src/common/modeset/timing/nvt_edid.c
     the polarities a timing descriptor's sync kind does not give (horizontal
@@ -3900,17 +3901,18 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080event.h
 
 src/common/sdk/nvidia/inc/class/clc56f.h
     the bytes of a GPFIFO entry, 8, its fields (the address of its method words
-    in bits 31:2 of its first word and 7:0 of its second, and their count in
-    bits 30:10 of its second, whose largest value bounds an entry's words), a
-    push buffer header's fields (DMA_SEC_OP INC_METHOD, 1, in bits 31:29, the
-    value count in 28:16, the subchannel in 15:13 and the method's word address
-    in 11:0), the host methods SET_OBJECT, 0, NON_STALL_INTERRUPT, 0x20,
-    MEM_OP_A to MEM_OP_D from 0x28, with MEM_OP_C's SYS_MEMBAR type 0 and
-    MEM_OP_D's OPERATION MEMBAR, 5, in bits 31:27, SEM_ADDR_LO to SEM_EXECUTE
-    from 0x5C, with SEM_EXECUTE's OPERATION RELEASE, 1, RELEASE_WFI DIS and
-    PAYLOAD_SIZE 32BIT, and WFI, 0x78, in channel_methods.h, channel_methods.cpp
-    and kernel/tests/graphics/nvidia_channel_methods.test.cpp, that an entry's
-    FETCH UNCONDITIONAL, LEVEL MAIN and SYNC PROCEED are each 0, in
+    in bits 31:2 of its first word and 7:0 of its second, their count in bits
+    30:10 of its second, whose largest value bounds an entry's words, and SYNC
+    in bit 31 of its second, with SYNC_WAIT 1), a push buffer header's fields
+    (DMA_SEC_OP INC_METHOD, 1, in bits 31:29, the value count in 28:16, the
+    subchannel in 15:13 and the method's word address in 11:0), the host methods
+    SET_OBJECT, 0, NON_STALL_INTERRUPT, 0x20, MEM_OP_A to MEM_OP_D from 0x28,
+    with MEM_OP_C's SYS_MEMBAR type 0 and MEM_OP_D's OPERATION MEMBAR, 5, in
+    bits 31:27, SEM_ADDR_LO to SEM_EXECUTE from 0x5C, with SEM_EXECUTE's
+    OPERATION RELEASE, 1, RELEASE_WFI DIS and PAYLOAD_SIZE 32BIT, and WFI, 0x78,
+    in channel_methods.h, channel_methods.cpp and
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp, that an entry's FETCH
+    UNCONDITIONAL, LEVEL MAIN and SYNC PROCEED are each 0, in
     kernel/tests/graphics/nvidia_channel_methods.test.cpp, the class number
     AMPERE_CHANNEL_GPFIFO_A, 0xC56F, which chip.cpp gives GA102's channels, in
     chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
@@ -3918,10 +3920,19 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     kernel/tests/graphics/nvidia_copy_channel.test.cpp, SET_OBJECT's header and
     SEM_ADDR_LO's header for its five values, in
     kernel/tests/graphics/nvidia_copy_channel.test.cpp, and a GPFIFO entry's
-    fields, a push buffer header's fields and the methods NON_STALL_INTERRUPT,
-    SEM_PAYLOAD_LO, 0x64, and SEM_EXECUTE, in
+    fields, a push buffer header's fields, the methods NON_STALL_INTERRUPT,
+    SEM_PAYLOAD_LO, 0x64, and SEM_EXECUTE, and the words of a release holding
+    the values of SEM_ADDR_LO, SEM_ADDR_HI and SEM_PAYLOAD_LO, in
     kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/nvidia-uvm/uvm_hal_types.h
+    that the host fetches a GPFIFO entry with SYNC_WAIT only once it processed
+    the entries before it, without waiting for the engine work they start unless
+    they wait for idle, in channel_methods.h, kernel/gpu/gpu_abi.h,
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
+    Copyright (c) 2016-2023 NVIDIA Corporation
 
 src/common/sdk/nvidia/inc/class/clc7b5.h
     the class number AMPERE_DMA_COPY_B, 0xC7B5, which chip.cpp gives GA102's
@@ -3964,9 +3975,11 @@ src/common/sdk/nvidia/inc/alloc/alloc_channel.h
     NV_CHANNEL_ALLOC_PARAMS, a channel's allocation parameters, and of
     NV_MEMORY_DESC_PARAMS, memory a CPU side allocated, in rm.h, the parameters'
     size and the offsets of the fields a kernel channel sets, in
-    kernel/tests/graphics/nvidia_channel.test.cpp, and the parameters' size and
-    the offsets of gpFifoOffset, the flags and internalFlags, in
-    kernel/tests/graphics/nvidia_copy_channel.test.cpp
+    kernel/tests/graphics/nvidia_channel.test.cpp, the parameters' size and the
+    offsets of gpFifoOffset, the flags and internalFlags, in
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp, and the flags of
+    unprivileged channels 1 and 2, in
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/fifo/kernel_channel.c
@@ -3974,23 +3987,26 @@ src/nvidia/src/kernel/gpu/fifo/kernel_channel.c
     USERD_INDEX_PAGE_FIXED, with the id over 8 as its page and the id modulo 8
     as its index, and makes a kernel caller's channel a PRIVILEGED_CHANNEL, in
     channel_methods.cpp and
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp, that it passes a
-    channel's privilege in its internal flags, trusted by the firmware, in rm.h,
-    and that it passes the group's fault method buffer of the runqueue in the
-    flags' GROUP_CHANNEL_RUNQUEUE field, 0 in flags leaving the field clear, in
-    channel.cpp
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp, the id's page and
+    index alone in kernel/tests/graphics/nvidia_engines.test.cpp, that it
+    passes a channel's privilege in its internal flags, trusted by the
+    firmware, in rm.h, and that it passes the group's fault method buffer of
+    the runqueue in the flags' GROUP_CHANNEL_RUNQUEUE field, 0 in flags leaving
+    the field clear, in channel.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/ampere/ga100/dev_ctrl.h
     the doorbell token's fields NV_CTRL_VF_DOORBELL_RUNLIST_ID, bits 22:16, and
-    NV_CTRL_VF_DOORBELL_VECTOR, bits 11:0, in channel_methods.cpp and
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    NV_CTRL_VF_DOORBELL_VECTOR, bits 11:0, in channel_methods.cpp,
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/src/kernel/gpu/fifo/arch/ampere/kernel_fifo_ga100.c
     that a channel's doorbell token holds its runlist in RUNLIST_ID and its id
-    in VECTOR, in channel_methods.cpp and
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    in VECTOR, in channel_methods.cpp,
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/maxwell/gm107/dev_ram.h
@@ -4064,8 +4080,10 @@ src/nvidia/generated/g_kernel_channel_nvoc.h
     the privileges NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_USER, 0, and
     NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_KERNEL, 2, of a channel's
     internal flags, in rm.h and kernel/tests/graphics/nvidia_channel.test.cpp,
-    and NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_KERNEL in
-    kernel/tests/graphics/nvidia_copy_channel.test.cpp
+    NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_KERNEL in
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp, and
+    NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_USER in
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/fifo/arch/maxwell/kernel_channel_gm107.c
