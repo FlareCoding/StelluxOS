@@ -245,10 +245,6 @@ int32_t context_page_tables::add_table(table* parent, page_level level, uint64_t
     vram_range range = {};
     int32_t rc = m_memory.allocate(TABLE_BYTES, TABLE_BYTES, vram_use::general, range);
     if (rc != OK) {
-        log::error(
-            "nvidia: a GPU context's table is not added, as allocating its 4 KiB of video memory failed: %d",
-            rc
-        );
         return rc;
     }
 
