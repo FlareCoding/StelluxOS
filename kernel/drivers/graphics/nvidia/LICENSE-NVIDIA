@@ -1,12 +1,12 @@
-Some definitions in this directory and in the driver's tests in
-kernel/tests/graphics are re-declared from NVIDIA's open GPU kernel modules at
-release 535.183.01 (https://github.com/NVIDIA/open-gpu-kernel-modules), and each
-file holding one says so in its first line. The EDID parser
-(kernel/drivers/graphics/edid.h and edid.cpp), its tests
-(kernel/tests/graphics/edid.test.cpp) and the GPU core's ABI header
-(kernel/gpu/gpu_abi.h) restate rules and layouts from them too. Below are the
-files of the open kernel modules these definitions, rules and layouts come from,
-what each gives, and its copyright line.
+Some definitions in this directory, in the driver's tests in
+kernel/tests/graphics and in the card test program userland/apps/gputest are
+re-declared from NVIDIA's open GPU kernel modules at release 535.183.01
+(https://github.com/NVIDIA/open-gpu-kernel-modules), and each file holding one
+says so in its first line. The EDID parser (kernel/drivers/graphics/edid.h and
+edid.cpp), its tests (kernel/tests/graphics/edid.test.cpp) and the GPU core's
+ABI header (kernel/gpu/gpu_abi.h) restate rules and layouts from them too. Below
+are the files of the open kernel modules these definitions, rules and layouts
+come from, what each gives, and its copyright line.
 
 src/common/modeset/timing/nvt_edid.c
     the polarities a timing descriptor's sync kind does not give (horizontal
@@ -3919,11 +3919,12 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     kernel/tests/graphics/nvidia_channel.test.cpp and
     kernel/tests/graphics/nvidia_copy_channel.test.cpp, SET_OBJECT's header and
     SEM_ADDR_LO's header for its five values, in
-    kernel/tests/graphics/nvidia_copy_channel.test.cpp, and a GPFIFO entry's
-    fields, a push buffer header's fields, the methods NON_STALL_INTERRUPT,
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp, a GPFIFO entry's fields,
+    a push buffer header's fields, the methods NON_STALL_INTERRUPT,
     SEM_PAYLOAD_LO, 0x64, and SEM_EXECUTE, and the words of a release holding
     the values of SEM_ADDR_LO, SEM_ADDR_HI and SEM_PAYLOAD_LO, in
-    kernel/tests/graphics/nvidia_engines.test.cpp
+    kernel/tests/graphics/nvidia_engines.test.cpp, and a push buffer header's
+    fields and SET_OBJECT, in userland/apps/gputest/src/gputest.c
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 kernel-open/nvidia-uvm/uvm_hal_types.h
@@ -3949,9 +3950,16 @@ src/common/sdk/nvidia/inc/class/clc7b5.h
     fill's components, SET_REMAP_CONST_A, 0x700, and SET_REMAP_COMPONENTS,
     0x708, with DST_X CONST_A, 4, COMPONENT_SIZE FOUR, 3, in bits 17:16 and
     NUM_DST_COMPONENTS ONE, 0, in channel_methods.h, channel_methods.cpp and
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp, and the methods
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp, the methods
     LAUNCH_DMA, OFFSET_OUT_UPPER and OFFSET_OUT_LOWER, LINE_LENGTH_IN and
-    SET_REMAP_CONST_A, in kernel/tests/graphics/nvidia_engines.test.cpp
+    SET_REMAP_CONST_A, in kernel/tests/graphics/nvidia_engines.test.cpp, and the
+    methods LAUNCH_DMA (DATA_TRANSFER_TYPE NON_PIPELINED, FLUSH_ENABLE,
+    SRC_MEMORY_LAYOUT and DST_MEMORY_LAYOUT PITCH, REMAP_ENABLE, DISABLE_PLC
+    TRUE, and SRC_TYPE and DST_TYPE VIRTUAL, 0, in bits 12 and 13),
+    OFFSET_IN_UPPER, 0x400, and OFFSET_IN_LOWER, 0x404, OFFSET_OUT_UPPER and
+    OFFSET_OUT_LOWER, LINE_LENGTH_IN, SET_REMAP_CONST_A and SET_REMAP_COMPONENTS
+    (DST_X CONST_A, COMPONENT_SIZE FOUR and NUM_DST_COMPONENTS ONE), in
+    userland/apps/gputest/src/gputest.c
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/mem_mgr/channel_utils.h
@@ -4111,6 +4119,20 @@ src/nvidia/src/kernel/gpu/fifo/arch/volta/kernel_channel_group_gv100.c
     kernel/tests/graphics/nvidia_channel.test.cpp, and that it allocates one for
     each runqueue, in channel.h and channel.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+kernel-open/nvidia-uvm/uvm_maxwell_ce.c
+    that a copy between virtual addresses gives its source and destination
+    through OFFSET_IN_UPPER to OFFSET_OUT_LOWER and its bytes through
+    LINE_LENGTH_IN, that a fill gives its count of 4-byte components through
+    LINE_LENGTH_IN with the remap's constant in place of a source, and that each
+    launches without the copy engine's flush when a host wait for idle and a
+    MEMBAR follow it, in userland/apps/gputest/src/gputest.c
+    Copyright (c) 2021-2023 NVIDIA Corporation
+
+kernel-open/nvidia-uvm/uvm_ampere_ce.c
+    that copies and fills on AMPERE_DMA_COPY_B launch with DISABLE_PLC TRUE, in
+    userland/apps/gputest/src/gputest.c
+    Copyright (c) 2018-2022 NVIDIA Corporation
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c,
