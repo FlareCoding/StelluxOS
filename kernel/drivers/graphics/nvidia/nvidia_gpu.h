@@ -5,6 +5,8 @@
 
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/display_engine.h"
+#include "drivers/graphics/nvidia/engines.h"
+#include "drivers/graphics/nvidia/failed_mark.h"
 #include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/gpu_objects.h"
 #include "drivers/graphics/nvidia/gsp.h"
@@ -40,7 +42,8 @@ public:
     nvidia_gpu_driver(pci::device* dev)
         : pci_driver("nvidia_gpu", dev)
         , m_operations(*this)
-        , m_display_engine(m_gsp, m_video_memory, m_operations) {}
+        , m_display_engine(m_gsp, m_video_memory, m_operations)
+        , m_engines(m_gsp, m_gpu_objects, m_video_memory, m_failed) {}
 
     /**
      * @brief Boot the GSP's firmware and, unless the chip's fuses disable its
@@ -69,22 +72,24 @@ public:
 
     /**
      * @brief The driver task, which the framework starts once `attach()`
-     * returns `OK`. It calls `nvidia::service_gsp_interrupt` for each GSP
-     * interrupt the handler takes, then logs the light's first second of
-     * vertical blanks at the first wake after the handler has serviced it.
-     * Every wake then runs the operations other contexts queued. It never
-     * returns.
+     * returns `OK`. Its first work is `nvidia::engines::bring_up`, whose
+     * failure leaves the display running. It then calls
+     * `nvidia::service_gsp_interrupt` for each GSP interrupt the handler
+     * takes, then logs the light's first second of vertical blanks at the
+     * first wake after the handler has serviced it. Every wake then runs the
+     * operations other contexts queued. It never returns.
      */
     void run() override;
 
     /**
      * @brief The handler of the card's one MSI vector, which the GSP's
-     * interrupt and, with flips on, the display's raise. It takes the GSP's
-     * interrupt for the driver task, leaving the GSP's falcon alone, and
-     * services the heads' vertical blanks as
-     * `nvidia::display_engine::service_vertical_blanks` describes. It can run
-     * before `attach()` returns, as soon as the GSP's interrupt is enabled,
-     * and once more after `detach()` disables it.
+     * interrupt raises, as do the display's with flips on and the kernel's
+     * copy channel's once the engines are up. It takes the GSP's interrupt for
+     * the driver task, leaving the GSP's falcon alone, services the heads'
+     * vertical blanks as `nvidia::display_engine::service_vertical_blanks`
+     * describes and the copy channel as `nvidia::engines::service_interrupt`
+     * does. It can run before `attach()` returns, as soon as the GSP's
+     * interrupt is enabled, and once more after `detach()` disables it.
      * @return true when the GSP's vector was taken, its leaf read all ones or
      * a service completed the first second.
      * @note Privilege: **required**
@@ -111,6 +116,8 @@ private:
     nvidia::bar1_video_memory     m_video_memory;
     nvidia::operation_queue       m_operations;
     nvidia::display_engine        m_display_engine;
+    nvidia::failed_mark           m_failed;
+    nvidia::engines               m_engines;
     nvidia::fwsec_layout          m_fwsec = {};
     nvidia::fwsec_signature       m_fwsec_signature = {};
     dma::buffer                   m_booter_unload_copy = {};
