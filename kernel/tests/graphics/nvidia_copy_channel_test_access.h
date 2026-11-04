@@ -3,6 +3,7 @@
 
 #include "drivers/graphics/nvidia/copy_channel.h"
 #include "clock/clock.h"
+#include "dynpriv/dynpriv.h"
 #include "hw/mmio.h"
 
 namespace drivers::nvidia {
@@ -37,6 +38,16 @@ struct copy_channel_test_access {
     static uint64_t deadline(const copy_channel& copier) { return copier.m_deadline_ns; }
 
     static const channel& queue(const copy_channel& copier) { return copier.m_channel; }
+
+    // Marks the channel hung and wakes its fills, as a fill past its deadline does
+    static void hang(copy_channel& copier) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(copier.m_lock);
+            copier.m_is_hung = true;
+            sync::wake_all(copier.m_waiters);
+            sync::spin_unlock_irqrestore(copier.m_lock, irq);
+        });
+    }
 };
 
 } // namespace drivers::nvidia

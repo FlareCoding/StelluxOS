@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/display_engine.h"
 #include "drivers/graphics/nvidia/display_registration.h"
 #include "drivers/graphics/nvidia/display_vertical_blank.h"
+#include "drivers/graphics/nvidia/engines.h"
 #include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/firmware_files.h"
 #include "drivers/graphics/nvidia/fwsec.h"
@@ -1180,6 +1181,12 @@ int32_t nvidia_gpu_driver::unload_firmware(nvidia::registers& regs) {
 
 void nvidia_gpu_driver::run() {
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
+    dma::device_profile card_profile = dma::uncached_profile(m_chip->dma_address_bits);
+    RUN_ELEVATED(card_profile = dma_profile(m_chip->dma_address_bits));
+
+    // Every failure is logged, and the display runs on without the engines
+    m_engines.bring_up(regs, card_profile, *m_chip);
+
     bool has_woken = false;
     while (true) {
         wait_for_event();
@@ -1208,7 +1215,7 @@ void nvidia_gpu_driver::run() {
 }
 
 __PRIVILEGED_CODE bool nvidia_gpu_driver::on_interrupt(uint32_t vector) {
-    // The card's one MSI vector, which the GSP's and the display's vectors raise
+    // The card's one MSI vector, which the GSP's, the display's and the copy engine's vectors raise
     (void)vector;
 
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);
@@ -1243,6 +1250,7 @@ __PRIVILEGED_CODE bool nvidia_gpu_driver::on_interrupt(uint32_t vector) {
     }
 
     if (!is_card_gone) {
+        m_engines.service_interrupt(regs);
         nvidia::rearm_msi(regs);
     }
 
