@@ -95,7 +95,6 @@ ssize_t node::read_at(file*, void*, size_t, uint64_t) { return ERR_SPIPE; }
 ssize_t node::write_at(file*, const void*, size_t, uint64_t) { return ERR_SPIPE; }
 ssize_t node::readdir(file*, dirent*, size_t)       { return ERR_NOSYS; }
 int32_t node::ioctl(file*, uint32_t, uint64_t)      { return ERR_NOSYS; }
-int32_t node::mmap(file*, mm::mm_context*, uintptr_t, size_t, uint32_t, uint32_t, uint64_t, uintptr_t*) { return ERR_NOSYS; }
 uint32_t node::poll(file*, sync::poll_table*)       { return sync::POLL_IN | sync::POLL_OUT; }
 int32_t node::open(file*, uint32_t)                 { return OK; }
 int32_t node::on_close(file*)                       { return OK; }
@@ -103,6 +102,10 @@ int32_t node::readlink(char*, size_t, size_t*)      { return ERR_NOSYS; }
 int32_t node::create_socket(const char*, size_t, uint32_t, node**) { return ERR_NOSYS; }
 int32_t node::truncate(size_t)                      { return ERR_NOSYS; }
 int32_t node::allocate(uint64_t, uint64_t)          { return ERR_NOSYS; }
+
+int32_t node::mmap(file*, mm::mm_context*, uintptr_t, size_t, uint32_t, uint32_t, uint32_t, uint64_t, uintptr_t*) {
+    return ERR_NOSYS;
+}
 
 int32_t node::getattr(vattr* attr) {
     if (!attr) return ERR_INVAL;
@@ -1064,12 +1067,12 @@ int32_t ioctl(file* f, uint32_t cmd, uint64_t arg) {
 }
 
 int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr, size_t length,
-             uint32_t prot, uint32_t map_flags, uint64_t offset, uintptr_t* out_addr) {
+             uint32_t prot, uint32_t max_prot, uint32_t map_flags, uint64_t offset, uintptr_t* out_addr) {
     if (!f || !mm_ctx || !out_addr) return ERR_INVAL;
 
     int32_t result;
     RUN_ELEVATED({
-        result = f->get_node()->mmap(f, mm_ctx, addr, length, prot, map_flags, offset, out_addr);
+        result = f->get_node()->mmap(f, mm_ctx, addr, length, prot, max_prot, map_flags, offset, out_addr);
     });
 
     return result;

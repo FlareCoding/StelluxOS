@@ -16,7 +16,7 @@ inline bool ranges_overlap(uintptr_t a_start, uintptr_t a_end,
 
 inline bool vma_can_merge(const vma& left, const vma& right) {
     if (left.end != right.start || left.prot != right.prot ||
-        left.flags != right.flags) {
+        left.max_prot != right.max_prot || left.flags != right.flags) {
         return false;
     }
 
@@ -60,7 +60,7 @@ paging::page_flags_t prot_to_page_flags(uint32_t prot) {
     return flags;
 }
 
-__PRIVILEGED_CODE vma* alloc_vma(uintptr_t start, uintptr_t end, uint32_t prot, uint32_t flags) {
+__PRIVILEGED_CODE vma* alloc_vma(uintptr_t start, uintptr_t end, uint32_t prot, uint32_t max_prot, uint32_t flags) {
     vma* node = heap::kalloc_new<vma>();
     if (!node) {
         return nullptr;
@@ -69,6 +69,8 @@ __PRIVILEGED_CODE vma* alloc_vma(uintptr_t start, uintptr_t end, uint32_t prot, 
     node->start = start;
     node->end = end;
     node->prot = prot;
+    node->max_prot = max_prot;
+
     node->flags = flags;
     node->addr_link = {};
     node->backing_offset = 0;
@@ -279,7 +281,7 @@ __PRIVILEGED_CODE vma* split_vma_locked(mm_context* mm_ctx, vma* node, uintptr_t
         return nullptr;
     }
 
-    vma* right = alloc_vma(split_addr, node->end, node->prot, node->flags);
+    vma* right = alloc_vma(split_addr, node->end, node->prot, node->max_prot, node->flags);
     if (!right) {
         return nullptr;
     }

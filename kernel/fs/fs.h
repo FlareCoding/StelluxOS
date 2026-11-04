@@ -75,7 +75,7 @@ int64_t seek(file* f, int64_t offset, int whence);
 int32_t close(file* f);
 int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);
 int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr, size_t length,
-             uint32_t prot, uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
+             uint32_t prot, uint32_t max_prot, uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
 
 // The mode an object of `type` has when its creator requests none
 uint32_t default_mode(node_type type);

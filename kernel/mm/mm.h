@@ -99,7 +99,9 @@ __PRIVILEGED_CODE void mm_context_release(mm_context* mm_ctx);
 
 /**
  * @brief Track an already-mapped user range as a VMA.
- * Does not map physical pages.
+ * Does not map physical pages. The range must be
+ * memory the mapping owns, since mprotect may give it
+ * any protection.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t mm_context_add_vma(
@@ -156,7 +158,12 @@ __PRIVILEGED_CODE int32_t mm_context_unmap(
 
 /**
  * @brief Change protection of an existing mapped range.
- * Returns ERR_NOT_MAPPED when any part of the range is unmapped.
+ * @return MM_CTX_OK, or the first that applies: ERR_INVALID_ARG
+ * for bad arguments, ERR_NOT_MAPPED when part of the range is
+ * unmapped, ERR_PROTECTION when `prot` holds a bit that a
+ * mapping in the range does not allow (none of the three
+ * changing anything), ERR_NO_MEM when a split fails, or
+ * ERR_MAP_FAILED when a page table update fails.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t mm_context_mprotect(
@@ -212,6 +219,9 @@ __PRIVILEGED_CODE int32_t mm_context_remap(
  * @param offset Byte offset into backing (must be page-aligned).
  * @param length Number of bytes to map (rounded up to page boundary).
  * @param prot MM_PROT_READ / MM_PROT_WRITE / MM_PROT_EXEC.
+ * @param max_prot The most protection mm_context_mprotect may give the mapping. A
+ *                 `prot` with a bit outside it, or a `max_prot` with a bit outside
+ *                 MM_PROT_MASK, fails with MM_CTX_ERR_INVALID_ARG.
  * @param map_flags MM_MAP_SHARED, optionally MM_MAP_FIXED / MM_MAP_FIXED_NOREPLACE.
  * @param addr Hint or fixed address.
  * @param out_addr Receives the mapped virtual address.
@@ -224,6 +234,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
     uint64_t offset,
     size_t length,
     uint32_t prot,
+    uint32_t max_prot,
     uint32_t map_flags,
     uintptr_t addr,
     uintptr_t* out_addr
@@ -242,6 +253,9 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
  * @param backing_offset Where `phys_base` lies in the owner's memory, in bytes,
  *                       unused without an owner.
  * @param prot MM_PROT_READ / MM_PROT_WRITE / MM_PROT_EXEC.
+ * @param max_prot The most protection mm_context_mprotect may give the mapping. A
+ *                 `prot` with a bit outside it, or a `max_prot` with a bit outside
+ *                 MM_PROT_MASK, fails with MM_CTX_ERR_INVALID_ARG.
  * @param cache_type Paging memory type (e.g. paging::PAGE_WC, paging::PAGE_DEVICE).
  * @param map_flags MM_MAP_SHARED, optionally MM_MAP_FIXED / MM_MAP_FIXED_NOREPLACE.
  * @param addr Hint or fixed address.
@@ -256,6 +270,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
     device_backing* backing,
     uint64_t backing_offset,
     uint32_t prot,
+    uint32_t max_prot,
     uint32_t cache_type,
     uint32_t map_flags,
     uintptr_t addr,

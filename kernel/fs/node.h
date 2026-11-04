@@ -51,8 +51,9 @@ public:
     virtual ssize_t write_at(file* f, const void* buf, size_t count, uint64_t offset);
     virtual ssize_t readdir(file* f, dirent* entries, size_t count);
     virtual int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);
+    // The mapping must never hold a protection bit outside `max_prot`, at mmap or after any later mprotect
     virtual int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr,
-                         size_t length, uint32_t prot, uint32_t map_flags,
+                         size_t length, uint32_t prot, uint32_t max_prot, uint32_t map_flags,
                          uint64_t offset, uintptr_t* out_addr);
     virtual uint32_t poll(file* f, sync::poll_table* pt);
 

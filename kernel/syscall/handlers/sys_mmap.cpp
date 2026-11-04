@@ -63,6 +63,16 @@ static inline uint32_t linux_prot_to_mm(uint64_t prot) {
     return mm_prot;
 }
 
+// mprotect may give a shared mapping only what mmap admits through its handle, whose rights must hold RIGHT_READ
+static inline uint32_t shared_mapping_max_prot(uint32_t rights) {
+    uint32_t max_prot = mm::MM_PROT_READ | mm::MM_PROT_EXEC;
+    if (rights & resource::RIGHT_WRITE) {
+        max_prot |= mm::MM_PROT_WRITE;
+    }
+
+    return max_prot;
+}
+
 static inline uint32_t linux_map_to_mm(uint64_t flags) {
     uint32_t mm_flags = 0;
     if (flags & LINUX_MAP_SHARED) mm_flags |= mm::MM_MAP_SHARED;
@@ -85,6 +95,8 @@ static inline int64_t mm_status_to_errno(int32_t status) {
             return syscall::ENOMEM;
         case mm::MM_CTX_ERR_CANNOT_GROW:
             return syscall::EFAULT;
+        case mm::MM_CTX_ERR_PROTECTION:
+            return syscall::EACCES;
         case mm::MM_CTX_ERR_NO_MEM:
         case mm::MM_CTX_ERR_NO_VIRT:
         case mm::MM_CTX_ERR_MAP_FAILED:
@@ -192,20 +204,18 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
             return syscall::EINVAL;
         }
 
-        // A private mapping never writes back, so it needs read access alone
-        uint32_t required_rights = 0;
-        if ((prot & LINUX_PROT_READ) || has_private) {
-            required_rights |= resource::RIGHT_READ;
-        }
-
+        // A handle without read access maps nothing, since a writable page can also be read and running an object's
+        // code reads the object. A private mapping never writes back, so it needs read access alone
+        uint32_t required_rights = resource::RIGHT_READ;
         if ((prot & LINUX_PROT_WRITE) && has_shared) {
             required_rights |= resource::RIGHT_WRITE;
         }
 
         resource::resource_object* obj = nullptr;
+        uint32_t rights = 0;
         int32_t rc = resource::get_handle_object(
             task->handles, static_cast<int32_t>(fd_val),
-            required_rights, &obj);
+            required_rights, &obj, nullptr, &rights);
         if (rc != resource::HANDLE_OK) {
             return (rc == resource::HANDLE_ERR_ACCESS) ?
                    syscall::EACCES : syscall::EBADF;
@@ -218,6 +228,7 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
         }
 
         uintptr_t mapped_addr = 0;
+        uint32_t max_prot = shared_mapping_max_prot(rights);
 
         if (obj->type == resource::resource_type::SHMEM) {
             mm::shmem* backing = resource::shmem_provider::get_shmem_backing(obj);
@@ -232,6 +243,7 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
                 static_cast<uint64_t>(offset),
                 static_cast<size_t>(length),
                 linux_prot_to_mm(prot),
+                max_prot,
                 linux_map_to_mm(flags),
                 static_cast<uintptr_t>(addr),
                 &mapped_addr
@@ -250,6 +262,7 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
                 static_cast<uintptr_t>(addr),
                 static_cast<size_t>(length),
                 linux_prot_to_mm(prot),
+                max_prot,
                 linux_map_to_mm(flags),
                 static_cast<uint64_t>(offset),
                 &mapped_addr);

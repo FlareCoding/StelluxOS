@@ -1331,7 +1331,7 @@ rc::strong_ref<buffer_record> gfxfb_node::find_buffer_at(
 }
 
 int32_t gfxfb_node::mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
-                         size_t length, uint32_t prot, uint32_t map_flags,
+                         size_t length, uint32_t prot, uint32_t max_prot, uint32_t map_flags,
                          uint64_t offset, uintptr_t* out_addr) {
     uint64_t offset_in_buffer = 0;
     rc::strong_ref<buffer_record> record = find_buffer_at(client_of(f), offset, offset_in_buffer);
@@ -1365,6 +1365,7 @@ int32_t gfxfb_node::mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
         record.ptr(),
         offset_in_buffer,
         prot,
+        max_prot,
         cache,
         map_flags,
         addr,

@@ -60,6 +60,7 @@ struct vma {
     uintptr_t start;
     uintptr_t end;
     uint32_t  prot;
+    uint32_t  max_prot; // the most protection the mapping allows, which mprotect never exceeds
     uint32_t  flags;
     rbt::node addr_link;
 
@@ -117,7 +118,7 @@ using vma_tree = rbt::tree<vma, &vma::addr_link, vma_addr_cmp>;
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE vma* alloc_vma(
-    uintptr_t start, uintptr_t end, uint32_t prot, uint32_t flags);
+    uintptr_t start, uintptr_t end, uint32_t prot, uint32_t max_prot, uint32_t flags);
 
 /**
  * @brief Free a VMA node previously returned by alloc_vma.
@@ -194,9 +195,10 @@ __PRIVILEGED_CODE void rollback_new_pages(
     mm_context* mm_ctx, uintptr_t start, uintptr_t mapped_end);
 
 /**
- * @brief Merge adjacent VMAs with identical prot/flags/backing.
- * Where a backing is set, their offsets must also continue.
- * Idempotent. Caller must hold mm_ctx->lock.
+ * @brief Merge adjacent VMAs with identical
+ * prot/max_prot/flags/backing. Where a backing is set, their
+ * offsets must also continue. Idempotent. Caller must hold
+ * mm_ctx->lock.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void coalesce_all_locked(mm_context* mm_ctx);

@@ -61,7 +61,7 @@ public:
     int32_t truncate(size_t size) override;
     int32_t allocate(uint64_t offset, uint64_t length) override;
     int32_t mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
-                 size_t length, uint32_t prot, uint32_t map_flags,
+                 size_t length, uint32_t prot, uint32_t max_prot, uint32_t map_flags,
                  uint64_t offset, uintptr_t* out_addr) override;
 
 private:

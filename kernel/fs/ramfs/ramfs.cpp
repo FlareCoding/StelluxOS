@@ -451,9 +451,9 @@ int32_t file_node::allocate(uint64_t offset, uint64_t length) {
 }
 
 int32_t file_node::mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
-                        size_t length, uint32_t prot, uint32_t map_flags,
+                        size_t length, uint32_t prot, uint32_t max_prot, uint32_t map_flags,
                         uint64_t offset, uintptr_t* out_addr) {
-    return mm::mm_context_map_shared(mm_ctx, m_backing.ptr(), offset, length, prot,
+    return mm::mm_context_map_shared(mm_ctx, m_backing.ptr(), offset, length, prot, max_prot,
                                      map_flags, addr, out_addr);
 }
 
