@@ -12,13 +12,11 @@
 #include "drivers/graphics/nvidia/gpu_objects.h"
 #include "drivers/graphics/nvidia/registers.h"
 #include "drivers/graphics/nvidia/video_memory.h"
+#include "gpu/gpu_abi.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 
 namespace drivers::nvidia {
-
-// How long the GPU may take with a submission before the driver counts its channel as hung
-constexpr uint64_t GPU_SUBMIT_TIMEOUT_NS = 7000000000;
 
 // The slots of the copy channel's push buffer (the memory holding its method words), each holding one fill
 constexpr uint32_t COPY_SLOTS = 16;

@@ -105,6 +105,22 @@ void bar1_video_memory::open_window(uintptr_t bar1_virt) {
     RUN_ELEVATED(sync::mutex_unlock(m_lock));
 }
 
+void bar1_video_memory::report(memory_report& out) {
+    m_allocator.count_bytes(out.video_bytes, out.video_free_bytes);
+
+    uint64_t mapped_bytes = 0;
+    RUN_ELEVATED(sync::mutex_lock(m_lock));
+    uint64_t window_bytes = m_window_bytes > m_console_bytes ? m_window_bytes - m_console_bytes : 0;
+    for (mapping& held : m_mappings) {
+        mapped_bytes += held.range.size;
+    }
+
+    RUN_ELEVATED(sync::mutex_unlock(m_lock));
+
+    out.window_bytes = window_bytes;
+    out.window_free_bytes = window_bytes - mapped_bytes;
+}
+
 int32_t bar1_video_memory::allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) {
     return m_allocator.allocate(size, alignment, use, out);
 }

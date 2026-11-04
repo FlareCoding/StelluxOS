@@ -57,6 +57,16 @@ constexpr uint32_t REGION_TABLE_OFFSET   = 840;
 constexpr uint32_t REGION_ENTRIES_OFFSET = REGION_TABLE_OFFSET + 8;
 constexpr uint32_t REGION_TABLE_END      = REGION_ENTRIES_OFFSET + VIDEO_MEMORY_REGIONS_MAX * sizeof(region_entry);
 
+// Where the mask of enabled GPCs, the entries of each GPC's id and mask of enabled TPCs (32 at most) and the name lie
+constexpr uint32_t GPC_MASK_FIELD_OFFSET = 292;
+constexpr uint32_t TPC_ENTRIES_OFFSET    = 296;
+constexpr uint32_t TPC_ENTRY_MASK_OFFSET = 4;
+constexpr uint32_t TPC_ENTRY_BYTES       = 8;
+constexpr uint32_t GPC_ENTRIES_MAX       = 32;
+constexpr uint32_t GPU_NAME_FIELD_OFFSET = 1820;
+
+static_assert(TPC_ENTRIES_OFFSET + GPC_ENTRIES_MAX * TPC_ENTRY_BYTES <= REGION_TABLE_OFFSET, "TPCs before regions");
+
 // Where the field holding the 64-bit offset of BAR1's root page directory and those holding the internal client's and
 // subdevice's handles lie in the static configuration, and where the last field read, the subdevice's, ends
 constexpr uint32_t BAR1_PAGE_DIRECTORY_FIELD_OFFSET = 2088;
@@ -64,7 +74,8 @@ constexpr uint32_t INTERNAL_CLIENT_FIELD_OFFSET     = 2152;
 constexpr uint32_t INTERNAL_SUBDEVICE_FIELD_OFFSET  = 2160;
 constexpr uint32_t READ_FIELDS_END                  = INTERNAL_SUBDEVICE_FIELD_OFFSET + sizeof(rm::handle);
 
-static_assert(REGION_TABLE_END <= BAR1_PAGE_DIRECTORY_FIELD_OFFSET, "the table of regions ends before the field");
+static_assert(REGION_TABLE_END <= GPU_NAME_FIELD_OFFSET, "the table of regions ends before the name");
+static_assert(GPU_NAME_FIELD_OFFSET + GPU_NAME_BYTES <= BAR1_PAGE_DIRECTORY_FIELD_OFFSET, "name before BAR1's field");
 static_assert(READ_FIELDS_END <= STATIC_INFO_BYTES, "the fields read lie inside the static configuration");
 
 int32_t confirm_message_version(gsp& conversation, uint64_t timeout_ns) {
@@ -190,6 +201,23 @@ static int32_t read_region_table(const uint8_t* info, static_configuration& conf
     return OK;
 }
 
+// Counts the GPCs the mask names and the TPCs of each, from the static configuration copied to `info`
+static void read_shader_counts(const uint8_t* info, static_configuration& configuration) {
+    uint32_t gpc_mask = read_u32(info + GPC_MASK_FIELD_OFFSET);
+    uint32_t tpc_count = 0;
+    for (uint32_t gpc = 0; gpc < GPC_ENTRIES_MAX; gpc++) {
+        if ((gpc_mask & (1u << gpc)) == 0) {
+            continue;
+        }
+
+        uint32_t entry = TPC_ENTRIES_OFFSET + gpc * TPC_ENTRY_BYTES;
+        tpc_count += static_cast<uint32_t>(__builtin_popcount(read_u32(info + entry + TPC_ENTRY_MASK_OFFSET)));
+    }
+
+    configuration.gpc_count = static_cast<uint32_t>(__builtin_popcount(gpc_mask));
+    configuration.tpc_count = tpc_count;
+}
+
 // Reads the members of `configuration` from the static configuration copied to `info`, of which the reply's payload
 // filled the first `info_bytes` bytes
 static int32_t read_configuration(
@@ -235,6 +263,10 @@ static int32_t read_configuration(
     configuration.bar1_page_directory_offset = page_directory_offset;
     configuration.internal_client = read_u32(info + INTERNAL_CLIENT_FIELD_OFFSET);
     configuration.internal_subdevice = read_u32(info + INTERNAL_SUBDEVICE_FIELD_OFFSET);
+    read_shader_counts(info, configuration);
+
+    string::memcpy(configuration.name, info + GPU_NAME_FIELD_OFFSET, GPU_NAME_BYTES);
+    configuration.name[GPU_NAME_BYTES - 1] = '\0';
 
     return OK;
 }

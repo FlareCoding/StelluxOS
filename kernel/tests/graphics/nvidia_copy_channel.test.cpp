@@ -33,7 +33,7 @@ using drivers::nvidia::FILL_BYTES_MAX;
 using drivers::nvidia::FILL_END_MAX;
 using drivers::nvidia::firmware;
 using drivers::nvidia::gpu_objects;
-using drivers::nvidia::GPU_SUBMIT_TIMEOUT_NS;
+using drivers::nvidia::memory_report;
 using drivers::nvidia::OK;
 using drivers::nvidia::page_aperture;
 using drivers::nvidia::page_entry;
@@ -177,6 +177,10 @@ public:
     uint64_t entries[MAX_ENTRIES] = {};
     uint32_t entry_count = 0;
     uint32_t releases = 0;
+
+    void report(memory_report& out) override {
+        out = {};
+    }
 
     int32_t allocate(uint64_t size, uint64_t, vram_use, vram_range& out) override {
         out = {.offset = next_offset, .size = size};

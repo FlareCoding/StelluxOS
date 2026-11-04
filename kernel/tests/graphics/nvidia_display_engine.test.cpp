@@ -77,6 +77,7 @@ using drivers::nvidia::HEAD_LIGHT_FIXED_METHODS;
 using drivers::nvidia::INSTANCE_MEMORY_BYTES;
 using drivers::nvidia::LOOK_UP_TABLE_SURFACE_BYTES;
 using drivers::nvidia::look_up_table_word;
+using drivers::nvidia::memory_report;
 using drivers::nvidia::mode_times;
 using drivers::nvidia::NO_HEAD;
 using drivers::nvidia::NO_OUTPUT;
@@ -1189,6 +1190,10 @@ public:
         scanout_bytes = bytes;
 
         return true;
+    }
+
+    void report(memory_report& out) override {
+        out = {};
     }
 
     int32_t allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) override {

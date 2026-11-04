@@ -535,12 +535,21 @@ src/common/inc/swref/published/turing/tu102/dev_vm.h
     bar1.h, bar1.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_video_memory.test.cpp, the second register's
     field (the offset's other bits in bits 19:0), in bar1.h, bar1.cpp and
-    kernel/tests/graphics/nvidia_falcon.test.cpp, and the doorbell
+    kernel/tests/graphics/nvidia_falcon.test.cpp, the doorbell
     NV_VIRTUAL_FUNCTION_DOORBELL at 0x30090 in the block, so 0xBB0090 in BAR0,
     in channel.cpp, kernel/tests/graphics/nvidia_channel.test.cpp,
     kernel/tests/graphics/nvidia_copy_channel.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp, and the GPU's clock
+    NV_VIRTUAL_FUNCTION_TIME_0 at 0x30080 and NV_VIRTUAL_FUNCTION_TIME_1 at
+    0x30084 in the block, so 0xBB0080 and 0xBB0084 in BAR0, with TIME_1's
+    nanoseconds in bits 28:0, in engines.cpp and
     kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/timer/arch/maxwell/timer_gm107.c
+    that a read of the GPU's clock reads TIME_1, then TIME_0, then TIME_1 again
+    until both reads of TIME_1 match, in engines.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/ampere/ga100/dev_vm.h
     the invalidate's scope field, in bar1.h, bar1.cpp and
@@ -1644,9 +1653,11 @@ src/nvidia/inc/kernel/gpu/gsp/gsp_static_config.h
     in gsp_info.h, gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that of
     hInternalDevice (2156), in
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the static
-    configuration holds the facts about the GPU the firmware gathers as it
-    starts, in gsp_info.h, and that its handles hInternalClient and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the offsets of its
+    fields gpcInfo (292), tpcInfo (296) and gpuNameString (1820), in
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, that
+    the static configuration holds the facts about the GPU the firmware gathers
+    as it starts, in gsp_info.h, and that its handles hInternalClient and
     hInternalSubdevice name the client and subdevice for internal RMAPI
     controls, in gsp_info.h, firmware.h, gsp.h and nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -2503,7 +2514,11 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gpu.h
     the sizes of the GPU's ID, GPC, TPC and ZCULL information, which the static
     configuration holds ahead of its table of video memory regions, and of the
     GPU's name strings, which it holds after the table, in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
+    GPC information's one field gpcMask, the TPC information's fields gpcId and
+    tpcMask, 4 bytes each, and NV2080_GPU_MAX_NAME_STRING_LENGTH, 0x40, the
+    bytes of the product name, in gsp_info.h, gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2006-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080bios.h

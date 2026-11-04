@@ -2176,6 +2176,51 @@ TEST(nvidia_message_queues, internal_handles_are_read_from_the_static_configurat
     EXPECT_EQ(configuration.internal_subdevice, INTERNAL_SUBDEVICE);
 }
 
+// Where the mask of enabled GPCs, each GPC's entry of its id and TPC mask, and the product name lie in the static
+// configuration, restated here so the tests hold them to NVIDIA's layout
+static constexpr uint32_t GPC_MASK_FIELD_OFFSET = 292;
+static constexpr uint32_t TPC_ENTRIES_OFFSET    = 296;
+static constexpr uint32_t TPC_ENTRY_BYTES       = 8;
+static constexpr uint32_t GPU_NAME_FIELD_OFFSET = 1820;
+static constexpr uint32_t GPU_NAME_FIELD_BYTES  = 64;
+
+// The counts take each enabled GPC's TPC mask, not a disabled GPC's, and a name filling its field loses its last byte
+TEST(nvidia_message_queues, shader_counts_and_name_are_read_from_the_static_configuration) {
+    fake_queue_memory memory;
+    request_test_bar0 bar0;
+    gsp conversation;
+    queue_test_payload info(STATIC_INFO_BYTES);
+    status_test_message message(1);
+
+    ASSERT_NOT_NULL(memory.bytes);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(info.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    fill_static_info(info, 1);
+    put_word(info.bytes, GPC_MASK_FIELD_OFFSET, 0xB);
+    put_word(info.bytes, TPC_ENTRIES_OFFSET + 0 * TPC_ENTRY_BYTES + 4, 0x3F);
+    put_word(info.bytes, TPC_ENTRIES_OFFSET + 1 * TPC_ENTRY_BYTES + 4, 0x1F);
+    put_word(info.bytes, TPC_ENTRIES_OFFSET + 2 * TPC_ENTRY_BYTES + 4, 0xFF);
+    put_word(info.bytes, TPC_ENTRIES_OFFSET + 3 * TPC_ENTRY_BYTES + 4, 0x7);
+
+    string::memset(info.bytes + GPU_NAME_FIELD_OFFSET, 'n', GPU_NAME_FIELD_BYTES);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GET_GSP_STATIC_INFO, info.bytes, info.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    static_configuration configuration = {};
+
+    EXPECT_EQ(read_static_configuration(conversation, LONG_TIMEOUT_NS, VIDEO_MEMORY_BYTES, configuration), OK);
+
+    EXPECT_EQ(configuration.gpc_count, 3u);
+    EXPECT_EQ(configuration.tpc_count, 14u);
+    EXPECT_EQ(configuration.name[0], 'n');
+    EXPECT_EQ(configuration.name[GPU_NAME_FIELD_BYTES - 2], 'n');
+    EXPECT_EQ(configuration.name[GPU_NAME_FIELD_BYTES - 1], '\0');
+}
+
 // A reply's payload 8 bytes longer than NVIDIA's static configuration for this firmware
 static constexpr uint32_t LONG_STATIC_INFO_BYTES = STATIC_INFO_BYTES + 8;
 

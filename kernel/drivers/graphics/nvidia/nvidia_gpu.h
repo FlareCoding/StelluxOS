@@ -118,6 +118,7 @@ private:
     nvidia::failed_mark           m_failed;
     nvidia::display_engine        m_display_engine;
     nvidia::engines               m_engines;
+    nvidia::card_identity         m_card_identity = {}; // filled by `attach()` for the engines' registration
     nvidia::fwsec_layout          m_fwsec = {};
     nvidia::fwsec_signature       m_fwsec_signature = {};
     dma::buffer                   m_booter_unload_copy = {};
