@@ -76,84 +76,91 @@ struct power_down_facts {
 };
 
 /**
- * The card's display engine as the driver sets it up, the part of the GPU that
- * reads images from memory and sends them to monitors. The driver object holds
- * one for its life, sets it up in `attach()` once the driver's device is
- * allocated, when the chip's fuses leave its display enabled, and releases it
- * in `detach()` before the GSP's firmware unloads. `set_up` and `release` must
- * come from one thread at a time, since neither holds a lock across its steps.
- * It owns the display's instance memory, the objects the firmware keeps for
- * the display (display common, the bandwidth check's object and the display)
- * and the core channel with its push buffer, the queue of methods written into
- * it and its completion notifier. The instance memory is the video memory
- * where the display engine looks up the memory its channels may read. The core
- * channel is the display channel that sets up heads, links and which head owns
- * each window. The core channel's push buffer is the memory it takes its
- * commands from, and its completion notifier is the page where the display
- * engine reports that an update has finished. An update is the method that
- * applies the methods written before it. The engine reaches the firmware only
- * through the `firmware` and video memory only through the `video_memory` it
- * is built with, and the display engine's registers only through the
- * `registers` passed to `set_up`, whose areas of its channels it keeps until
- * `release`. The instance memory is never released once cleared, and nothing
- * frees any push buffer once allocated, since the display engine's registers
- * may name either from the moment its address is sent, and a channel released
- * with the hardware kept as it is stays allocated in the hardware. The two
- * notifiers' pages are never freed either, as each notifier's class describes.
- * The engine also owns the channel of the window chosen to light first, that
- * channel's push buffer, queue of methods and notifier, the chosen output's
- * base buffer (the video memory the window is to scan out) and the look-up
- * table surface (the video memory holding the window's input table, which
- * converts its colors into the half-precision floats the display engine
- * computes with, and the head's output table, which converts them back for
- * the link). `set_up` binds each surface it keeps to the window's channel,
- * and the look-up table surface to the core channel too, keeping the context
- * DMA it binds for the methods naming it, and nothing frees a bound surface,
- * since the display engine may read it through the binding from then on, and
- * the window's channel, while released with the hardware kept as it is, stays
- * allocated in the hardware. It also owns the lit head's cursor channel and
- * the chosen output's cursor memory (the video memory holding the cursor's
- * picture), which stays mapped for the CPU and bound to the core channel, and
- * which nothing frees either.
+ * A head as the display engine lights it: the channel of its lowest window and
+ * its cursor channel, kept from their allocation in `set_up` until `release`,
+ * the output it lights with that output's base buffer and cursor memory, and
+ * that output's cursor and presents, guarded by the engine's output lock once
+ * the head is lit.
+ */
+struct engine_head {
+    display_engine*   engine;                  // set by the engine's constructor, so timer callbacks read it bare
+    uint8_t           window;
+    rm::handle        window_channel;          // 0 until allocated and after `release`
+    dma::buffer       window_push_buffer;
+    display_channel*  window_queue;            // built in `window_queue_bytes` with the channel, else null
+    uint8_t           output;
+    gfxfb::gfxfb_mode mode;
+    vram_range        base_buffer;             // of 0 bytes while none is allocated
+    rm::handle        base_buffer_context_dma; // 0 until bound
+    gfxfb::buffer     userland_base_buffer;    // the base buffer as userland maps it, of 0 bytes while unmapped
+    bool              is_lit;                  // set by the light under the engine's output lock
+
+    // The window's notifier, its page allocated and its context DMA bound to the window's channel before the light
+    window_notifier notifier;
+    rm::handle      notifier_context_dma; // 0 until bound, before flips turn on, so readers after flips read it bare
+
+    // The head's cursor channel and its output's cursor memory, mapped for the CPU and bound to the core channel, the
+    // mapping changing only while no cursor call runs, so the calls read it bare
+    cursor_channel cursor;
+    vram_range     cursor_memory;      // of 0 bytes while none is allocated
+    cpu_mapping    cursor_mapping;
+    rm::handle     cursor_context_dma; // 0 until bound
+
+    // The output's cursor, which each light and the cursor calls write
+    bool     has_cursor;
+    bool     is_cursor_shown;
+    int32_t  cursor_x;
+    int32_t  cursor_y;
+    uint32_t cursor_hot_x;
+    uint32_t cursor_hot_y;
+    uint32_t light_generation;          // raised by each light, so a picture's copy can tell a relight
+    bool     has_logged_cursor_refusal; // set by a logged refusal, cleared by a cursor write succeeding
+    bool     is_cursor_update_owed;     // an `UPDATE` refused after its position, owed until one is written
+    uint32_t owed_cursor_position;      // the position the owed `UPDATE` follows
+
+    // The output's vertical blanks, which the light starts and the interrupt handler counts
+    uint32_t                frames_per_second; // the mode's refresh rate rounded, 0 until the light
+    uint64_t                frame_count;       // the vertical blanks serviced since the light
+    uint64_t                vertical_blank_ns; // when the handler serviced the last of them
+    uint16_t                serviced_frame;    // the head's own frame count at that service
+    first_second_statistics first_second;
+    bool                    has_logged_first_second;
+
+    // The queued present and the latch rules' state, which the light and `present` set and the handler's latch step,
+    // the two timers' callbacks, `release` and a cursor write failing the display end
+    mode_times            times;
+    bool                  has_queued_present;
+    uint32_t              queued_slot;
+    uint64_t              queued_deadline_ns;
+    uint32_t              next_slot;
+    uint64_t              check_frame;
+    uint64_t              last_reported_frame;
+    uint64_t              last_estimate_log_ns; // when the deadline last logged an estimated latch, 0 if never
+    timer::deadline_timer latch_check_timer;
+    timer::deadline_timer deadline_timer;
+
+    alignas(display_channel) uint8_t window_queue_bytes[sizeof(display_channel)];
+};
+
+/**
+ * The card's display engine, the part of the GPU that reads images from memory
+ * and sends them to monitors, as gfxfb's display. The driver sets it up in
+ * `attach()` when the chip's fuses leave the display enabled and releases it in
+ * `detach()` before the GSP's firmware unloads, from one thread at a time.
  *
- * The engine is also a `gfxfb::display`, which the driver registers with gfxfb
- * as `nvidia_gpu_driver` describes. Its outputs are the first
- * `gfxfb::GFXFB_OUTPUTS_MAX` of the outputs `set_up` reads, each a static
- * DisplayPort display id, and gfxfb reads each one an active head showed with
- * `boot_output` set. The chosen output reads as lit once the light lights it,
- * at the mode chosen for it, and its base buffer as gfxfb reads it is the
- * mapping `set_up` keeps for userland, at that mapping's physical address in
- * BAR1 with `cacheable` false, so userland maps it write-combining. Every
- * other output reads as dark. No output relights, and `flush()` returns at
- * once on the lit output, since its head scans the base buffer itself.
- * `create_buffer()` makes `scanout_buffer`s, which the driver task binds to
- * the lit window's channel, if any, and `present()` takes those and the base
- * buffer. `release_buffer()` keeps the base buffer, a bound surface, for good.
- * `read_output()`, `base_buffer()` and `flush()` read the chosen output's
- * state under its spinlock, which no holder keeps across a wait, so they never
- * sleep or wait on the card.
+ * It owns the display's instance memory, the firmware's display objects, the
+ * core channel, one look-up table surface, and for each output it chose to
+ * light the window channel, window notifier, base buffer, cursor channel and
+ * cursor memory it allocates. It never frees memory the display engine may
+ * still read, such as a push buffer, a notifier's page or a bound surface.
  *
- * The lit output has a hardware cursor of up to 256 by 256 pixels unless its
- * light found none for its head, when it reports a cursor maximum of 0 by 0,
- * and every other output reports 256 by 256. `move_cursor()` places the
- * cursor's hotspot at the position, only recording it while the cursor is
- * hidden, and `set_cursor()` shows the picture with its hotspot there. A
- * cursor call whose write finds no room in the cursor channel returns
- * `gfxfb::ERR_REFUSED` once a try `gfxfb::GFXFB_PRESENT_TIMEOUT_NS` past the
- * first refusal, or past a picture's read back, is refused too, so it returns
- * within a picture's copy and read back, that wait and one wait for the CPU
- * after it when its task waited for the CPU. Measured on one card, a copy took
- * up to 0.51 ms, holding the output's spinlock for one row at a time, up to
- * 0.19 ms. A cursor call's write finding the free register all ones, as a card
- * gone reads, fails the display.
- *
- * Once the display fails, as `present()` says, or `release` runs, `flush()`
- * and a supported `present()`, `create_buffer()` or cursor call fail with
- * `gfxfb::ERR_DEVICE`. After `release`, `read_output()` reads every output as
- * dark too, but gfxfb keeps its record of the base buffer, since `detach()`
- * runs on the boot thread and only a task may report an output gone dark,
- * while BAR1 stops translating that buffer's address once `detach()` restores
- * BAR1's block register.
+ * A lit output reads at its mode with its base buffer, mapped write-combining,
+ * and a cursor of up to 256 by 256 pixels, 0 by 0 when its light found none,
+ * and every other output reads dark. One spinlock, the output lock, guards
+ * every head's state and is never held across a wait. After `release`, every
+ * output reads dark and `flush()`, `present()`, `create_buffer()` and the
+ * cursor calls fail, while gfxfb keeps the base buffers, which BAR1 stops
+ * translating once `detach()` restores BAR1's block register.
  */
 class display_engine : public gfxfb::display {
 public:
@@ -188,37 +195,24 @@ public:
     );
 
     /**
-     * @brief Under the chosen output's spinlock, cancel the latch check and
-     * deadline timers, end a queued present with `GFXFB_PRESENT_FAILED`,
-     * marking the display failed, and mark the engine released, so
-     * `read_output()` reads every output as dark and `flush()`, `present()`,
-     * `create_buffer()` and the cursor calls fail, then drop the channels'
-     * queues of methods, so nothing writes a released channel's area, free the
-     * outputs' modes if `set_up` kept them, then release the lit head's cursor
-     * channel as `cursor_channel::release` describes, then the chosen window's
-     * channel and then the core channel, each once `set_up` allocated it or
-     * the firmware may hold it after a failed allocation, as
-     * `release_display_channel` describes, then the display's objects, once
-     * `set_up` allocated them, as `release_display_objects` describes. While
-     * no update has been kicked, the window's and the core's are released with
-     * the hardware kept as it is, so the heads the boot firmware lit keep
-     * scanning out the boot framebuffer, and once one has, without keeping it,
-     * since the update changed the boot firmware's state. Its requests spin on
-     * the calling CPU, each waiting for its reply as `firmware` describes.
-     * @return `OK` when every release succeeds or nothing is allocated, else
-     * the error of the first release to fail in that order, each logged as the
-     * release describes. The channels and the objects are released whatever an
-     * earlier release returns, and a later call releases nothing and returns
-     * `OK`.
+     * @brief Release each cursor channel, then each window channel, then the
+     * core channel, then the display's objects, each whatever the releases
+     * before it return, and a second call releases nothing. From the start,
+     * every output reads dark, `flush()`, `present()`, `create_buffer()` and
+     * the cursor calls fail, and each queued present ends failed, failing the
+     * display. While no update has been sent, the window and core channels
+     * are released with the hardware kept as it is, so the boot firmware's
+     * heads keep scanning out. Its requests spin on the calling CPU.
+     * @return `OK`, else the logged error of the first release to fail.
      */
     int32_t release();
 
     /**
-     * @brief Whether the chosen output is lit, as gfxfb reads it, which holds
-     * from when the light lights it until `release`. It must be called only
+     * @brief Whether an output is lit, as gfxfb reads it, which holds from
+     * when the light lights one until `release`. It must be called only
      * before the driver task starts, while the boot thread alone lights
      * outputs, since it takes no lock.
-     * @return true while the chosen output is lit.
+     * @return true while an output is lit.
      */
     bool has_lit_output() const { return m_is_lit; }
 
@@ -237,17 +231,17 @@ public:
     /**
      * @brief Service the vertical blanks pending on the heads whose bits are
      * set in `pending_heads`, as `pending_vertical_blanks` reads them, from
-     * the card's interrupt handler. Each is cleared, and one on the lit
-     * output's head counts a frame and runs the latch step, ending the queued
-     * present latched or scheduling the latch check, none after `release`,
-     * which leaves the lit head's interrupt enabled. Takes the output's
-     * spinlock and never sleeps.
-     * @return true once, at the service completing the light's first second.
+     * the card's interrupt handler. Each is cleared, and one on a lit head
+     * counts a frame and runs the latch step, ending the head's queued present
+     * latched or scheduling its latch check, none after `release`, which
+     * leaves the lit heads' interrupts enabled. Takes the output lock and
+     * never sleeps.
+     * @return true at a service completing a lit head's first second.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE bool service_vertical_blanks(registers& regs, uint32_t pending_heads);
 
-    // Logs the light's first second of vertical blanks at most once, after its last service, from the driver task
+    // Logs each lit head's first second of vertical blanks at most once, after its last service, from the driver task
     void log_first_second();
 
     uint32_t output_count() const override { return m_output_count; }
@@ -269,17 +263,14 @@ public:
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
 
     /**
-     * @brief Write an update showing `buf` into the lit window's channel, for
-     * its head to take at a vertical blank, ignoring the regions and waiting
-     * only for the output's spinlock. The interrupt handler or a timer ends
-     * the present by the latch rules (latch_rules.h), or `release` or a cursor
-     * call failing the display ends it failed.
+     * @brief Write an update showing `buf` into the window channel of the head
+     * lighting `output`, for that head to take at a vertical blank, waiting
+     * only for the output lock. The present ends as the latch rules decide, or
+     * failed by `release` or a cursor call failing the display.
      * @return gfxfb's errors in its order: `ERR_UNSUPPORTED` with flips off or
-     * no window notifier, `ERR_DEVICE` once released or failed (a refused GET,
-     * a missed deadline or a cursor write finding the free register all ones
-     * fails the display), `ERR_DARK` off the lit output, `ERR_INVALID_ARG` off
-     * its mode's size, and `ERR_REFUSED` for a buffer not bound to the
-     * window's channel or a full push buffer.
+     * no window notifier, `ERR_DEVICE` once released or failed, `ERR_DARK` off
+     * a lit output, `ERR_INVALID_ARG` off its mode's size and `ERR_REFUSED` for
+     * a buffer not bound to that channel or a full push buffer.
      */
     int32_t present(uint32_t output, gfxfb::buffer* buf, const gfxfb::gfxfb_rect* regions, uint32_t count) override;
 
@@ -290,17 +281,17 @@ public:
      * @brief Queue the driver task's release of a buffer `create_buffer()`
      * made and return without waiting. The task unbinds, unmaps and frees it,
      * or keeps it all for good once the display failed, the engine was
-     * released or unbinding it failed, since the head may still scan it. The
-     * base buffer is kept for good.
-     * @param buf The base buffer or a buffer `create_buffer()` made, which
-     * nothing refers to any longer.
+     * released or unbinding it failed, since a head may still scan it. An
+     * output's base buffer is kept for good.
+     * @param buf An output's base buffer or a buffer `create_buffer()` made,
+     * which nothing refers to any longer.
      */
     void release_buffer(gfxfb::buffer* buf) override;
 
 private:
     friend struct display_engine_test_access;
 
-    // Whether flips are on with the lit window's notifier bound, which `present()` and `create_buffer()` need first
+    // Whether flips are on with a window's notifier bound, which `present()` and `create_buffer()` need first
     bool are_presents_supported() const;
 
     // The driver task's halves of `create_buffer()` and `release_buffer()`, each given the buffer's `task_operation`
@@ -313,18 +304,17 @@ private:
     display_objects m_objects = {};           // all 0 before `set_up` allocates them and after `release`
     rm::handle      m_core_channel = 0;       // 0 before `set_up` allocates it and after `release`
     dma::buffer     m_core_push_buffer = {};
-    rm::handle      m_window_channel = 0;     // the chosen window's, 0 before `set_up` allocates it and after `release`
-    dma::buffer     m_window_push_buffer = {};
-    vram_range      m_base_buffer = {};       // the chosen output's, of 0 bytes while none is allocated
     vram_range      m_look_up_table = {};     // the look-up table surface, of 0 bytes while the engine keeps none
     output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
 
     operation_queue& m_operations;
 
-    // The context DMAs binding the base buffer and the look-up table surface to the window's channel, the table's to
-    // the core channel too, each 0 until `set_up` binds it
-    rm::handle m_base_buffer_context_dma = 0;
+    // The context DMA binding the look-up table surface to the core channel and each chosen window's channel, 0 until
+    // `set_up` binds it
     rm::handle m_look_up_table_context_dma = 0;
+
+    // Entry i for head i, each lit output on its own head
+    engine_head m_heads[DISPLAY_HEADS_MAX] = {};
 
     // The core channel's completion notifier, its page allocated and its context DMA bound to the channel by `set_up`,
     // and the wait `send_notified_update` gives it for the shutdown update and the light, 0 in tests that skip it
@@ -334,121 +324,78 @@ private:
 
     bool m_has_sent_update = false; // set once an update is kicked on the core channel
 
-    // The lit head's cursor channel and the chosen output's cursor memory, mapped and bound under a context DMA, 0
-    // until bound. The mapping and the wait change only while no cursor call runs, so the calls read them bare
-    cursor_channel m_cursor_channel;
-    vram_range     m_cursor_memory = {};
-    cpu_mapping    m_cursor_mapping = {};
-    rm::handle     m_cursor_context_dma = 0;
-    uint64_t       m_cursor_wait_ns = gfxfb::GFXFB_PRESENT_TIMEOUT_NS; // the park and cursor calls' wait for room
+    // The park's and the cursor calls' wait for room, changed only while no cursor call runs, so the calls read it bare
+    uint64_t m_cursor_wait_ns = gfxfb::GFXFB_PRESENT_TIMEOUT_NS;
 
     // The core channel's queue of methods, built in `m_core_queue_bytes` once the channel is allocated, null until
     // then and after `release`
     display_channel*                 m_core_queue = nullptr;
     alignas(display_channel) uint8_t m_core_queue_bytes[sizeof(display_channel)];
 
-    // The chosen window's channel's queue of methods, built in `m_window_queue_bytes` once that channel is allocated,
-    // null until then and after `release`
-    display_channel*                 m_window_queue = nullptr;
-    alignas(display_channel) uint8_t m_window_queue_bytes[sizeof(display_channel)];
-
-    // What gfxfb reads: `set_up` records all but the two flags before registration, never to change, and the light and
-    // `release` write them under `m_output_lock`, which gfxfb's calls take to read them
-    uint8_t           m_output_count = 0;             // at most `gfxfb::GFXFB_OUTPUTS_MAX`
-    uint32_t          m_boot_outputs = 0;             // a bit for each output an active head showed, bit 0 output 0's
-    uint8_t           m_chosen_output = 0;
-    gfxfb::gfxfb_mode m_chosen_mode = {};
-    gfxfb::buffer     m_userland_base_buffer = {};    // the base buffer as userland maps it, of 0 bytes while unmapped
-    bool              m_is_lit = false;               // set by the light, read bare only before the driver task starts
-    bool              m_is_released = false;          // set by `release`, failing the calls the class comment names
-    sync::spinlock    m_output_lock = sync::SPINLOCK_INIT;
-
-    // The chosen output's cursor, which each light and the cursor calls write under `m_output_lock`
-    bool     m_has_cursor = false;
-    bool     m_is_cursor_shown = false;
-    int32_t  m_cursor_x = 0;
-    int32_t  m_cursor_y = 0;
-    uint32_t m_cursor_hot_x = 0;
-    uint32_t m_cursor_hot_y = 0;
-    uint32_t m_light_generation = 0;              // raised by each light, so a picture's copy can tell a relight
-    bool     m_has_logged_cursor_refusal = false; // set by a logged refusal, cleared by a cursor write succeeding
-    bool     m_is_cursor_update_owed = false;     // an `UPDATE` refused after its position, owed until one is written
-    uint32_t m_owed_cursor_position = 0;          // the position the owed `UPDATE` follows
+    // What gfxfb and `has_lit_output()` read beside each head's output: `set_up` records the output count and boot
+    // outputs before registration, never to change, and the light and `release` write the flags under `m_output_lock`
+    uint8_t        m_output_count = 0;    // at most `gfxfb::GFXFB_OUTPUTS_MAX`
+    uint32_t       m_boot_outputs = 0;    // a bit for each output an active head showed, bit 0 output 0's
+    bool           m_is_lit = false;      // set once an output lights, read bare only before the driver task starts
+    bool           m_is_released = false; // set by `release`, failing the calls the class comment names
+    sync::spinlock m_output_lock = sync::SPINLOCK_INIT;
 
     // Run between a cursor call's locked steps, after each row of a picture and each yield, null outside tests, which
     // set it before their calls, so the calls read it bare
     void (*m_cursor_step_seam)(display_engine& engine) = nullptr;
 
-    // The lit output's vertical blanks, which the light starts and the interrupt handler counts under `m_output_lock`
-    uint8_t                 m_lit_head = 0;
-    uint32_t                m_frames_per_second = 0;  // the mode's refresh rate rounded, 0 until the light
-    uint64_t                m_frame_count = 0;        // the vertical blanks serviced since the light
-    uint64_t                m_vertical_blank_ns = 0;  // when the handler serviced the last of them
-    uint16_t                m_serviced_frame = 0;     // the head's own frame count at that service
-    first_second_statistics m_first_second = {};
-    bool                    m_has_logged_first_second = false;
-
     // For each head, the output the light gave it, kept after `release`, or `NO_OUTPUT`, stored with release under
     // `m_output_lock` and loaded with acquire by the handler. `set_up` records the head count before flips turn on
     uint8_t            m_head_outputs[DISPLAY_HEADS_MAX];
     uint8_t            m_head_count = 0;
-    sync::atomic<bool> m_are_flips_on; // stored with release, loaded with acquire
-
-    // The lit window's notifier, its page allocated and its context DMA bound to the window's channel by `set_up`
-    window_notifier m_window_notifier;
-    rm::handle      m_window_notifier_context_dma = 0; // 0 until `set_up` binds it
-
-    // The lit output's queued present and the latch rules' state, which the light and `present` set and the handler's
-    // latch step, the two timers' callbacks and `release` end, all under `m_output_lock`
-    uint8_t               m_lit_window = 0;
-    mode_times            m_mode_times = {};
-    bool                  m_has_queued_present = false;
-    uint32_t              m_queued_slot = 0;
-    uint64_t              m_queued_deadline_ns = 0;
-    uint32_t              m_next_slot = 0;
-    uint64_t              m_check_frame = 0;
-    uint64_t              m_last_reported_frame = 0;
-    uint64_t              m_last_estimate_log_ns = 0; // when the deadline last logged an estimated latch, 0 if never
-    sync::atomic<bool>    m_is_display_failed;        // set once for good, stored with release, loaded with acquire
-    timer::deadline_timer m_latch_check_timer;
-    timer::deadline_timer m_deadline_timer;
+    sync::atomic<bool> m_are_flips_on;      // stored with release, loaded with acquire
+    sync::atomic<bool> m_is_display_failed; // set once for good, stored with release, loaded with acquire
 
     // Where each ended present is reported, gfxfb's `present_done` outside tests
     void (*m_present_done)(gfxfb::display*, uint32_t, const gfxfb::present_result&) = gfxfb::present_done;
 
-    // Counts a vertical blank of the lit output serviced at `now_ns`, under `m_output_lock`, and returns whether it
-    // completes the light's first second
-    bool count_vertical_blank(uint64_t now_ns, uint32_t position);
-
     /**
      * @brief Write `buf`'s present for `present`, under `m_output_lock`,
-     * setting `write_rc` to the channel's error when a write fails the
-     * display, for `present` to log once unlocked.
+     * setting `window` to the window it names and `write_rc` to the channel's
+     * error when a write fails the display, for `present` to log unlocked.
      * @return As `present` returns.
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE int32_t queue_present(uint32_t output, const gfxfb::buffer& buf, int32_t& write_rc);
-
-    // The lit output's flip state as the latch rules read it, under `m_output_lock`
-    latch_inputs read_latch_inputs() const;
-
-    /**
-     * @brief Apply the latch step to the vertical blank just counted, under
-     * `m_output_lock`.
-     * @note Privilege: **required**
-     */
-    __PRIVILEGED_CODE void run_latch_step();
+    __PRIVILEGED_CODE int32_t queue_present(
+        uint32_t output,
+        const gfxfb::buffer& buf,
+        uint8_t& window,
+        int32_t& write_rc
+    );
 
     /**
-     * @brief End the queued present with `status`, recording a latch's report
-     * as the last, under `m_output_lock`.
+     * @brief Apply the latch step to the vertical blank just counted on
+     * `head`, under `m_output_lock`.
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE void end_present(uint32_t status, const latch_report& report);
+    __PRIVILEGED_CODE void run_latch_step(engine_head& head);
+
+    /**
+     * @brief End `head`'s queued present with `status`, recording a latch's
+     * report as the last, under `m_output_lock`.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void end_present(engine_head& head, uint32_t status, const latch_report& report);
+
+    /**
+     * @brief Cancel each head's timers and end its queued present failed,
+     * failing the display. The caller must hold `m_output_lock`.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void fail_queued_presents();
 
     // The two timers' callbacks, each taking `m_output_lock` elevated
     static void check_latch(timer::deadline_timer* timer);
     static void expire_deadline(timer::deadline_timer* timer);
+
+    // Marks `light`'s head lit with `has_cursor` and its cursor hidden, and starts its output's vertical blanks: its
+    // mode's latch times, its head table entry and its interrupt, taking `m_output_lock` itself
+    void mark_head_lit(registers& regs, const head_light& light, bool has_cursor);
 
     // Brings the engine up for the chosen output, from the mode set's start to its end
     int32_t bring_up(
@@ -464,8 +411,8 @@ private:
         const first_light& light
     );
 
-    // Writes an update naming the cleared notifier, interlocked with the window channels of `window_interlocks`, kicks
-    // the window's channel next if named, waits, reads the notifier's status into `status_word` and stops its writes
+    // Writes an update naming the cleared notifier, interlocked with the window channels of `window_interlocks`, then
+    // kicks each of those channels, waits, reads the notifier's status into `status_word` and stops its writes
     int32_t send_notified_update(uint32_t window_interlocks, uint32_t& status_word);
 
     // Writes the shutdown update naming the notifier, waits for it and stops later updates from writing the notifier
@@ -476,7 +423,13 @@ private:
         const active_heads& active
     );
 
-    // Allocates the lit head's cursor channel and the chosen output's cursor memory, mapped for the CPU and bound to
+    // The lit head showing `output`, or null, for a caller holding `m_output_lock`
+    engine_head* find_lit_head(uint32_t output);
+
+    // Kicks the queue of each window channel `window_interlocks` names
+    void kick_window_queues(uint32_t window_interlocks);
+
+    // Allocates the cursor channel of `light`'s head and its output's cursor memory, mapped for the CPU and bound to
     // the core channel, or returns `OK`, logged, for an absent head, a refused channel or no room, else the error
     int32_t set_up_cursor(
         registers& regs,
@@ -485,15 +438,15 @@ private:
         const first_light& light
     );
 
-    // Clears the cursor memory and parks the cursor, giving in `cursor_context_dma` the context DMA the light's cursor
-    // methods name, 0 without cursor memory or room to park, and returning `OK` or the park's error, logged
+    // Clears the head's cursor memory and parks its cursor, giving in `cursor_context_dma` the context DMA the light's
+    // cursor methods name, 0 without cursor memory or room to park, and returning `OK` or the park's error, logged
     int32_t prepare_cursor(uint8_t head, rm::handle& cursor_context_dma);
 
-    // Writes the head's cursor methods and the window's usage bounds into the core channel, then the window's first
-    // image into its own channel, naming the base buffer and look-up table by context DMAs `set_up` bound, never 0
-    int32_t write_first_image(uint8_t window, const head_light& light, rm::handle cursor_context_dma);
+    // Writes the head's cursor methods and its window's usage bounds into the core channel, then the window's first
+    // image into its own channel, naming the head's base buffer and the look-up table by their context DMAs, never 0
+    int32_t write_first_image(const head_light& light, rm::handle cursor_context_dma);
 
-    // Parks any cursor, then lights `light` with `window`'s first image, in two updates when the engine's first update
+    // Parks any cursor, lights `light` with its window's first image, in two updates when the engine's first update
     // changes a window's owner, a window serving no head counting, logs the armed state and sets `shows_cursor_memory`
     int32_t light_head(
         const registers& regs,
@@ -501,7 +454,6 @@ private:
         uint32_t present_windows,
         const window_owners& owners,
         const head_light& light,
-        uint8_t window,
         bool& shows_cursor_memory
     );
 
@@ -520,29 +472,31 @@ private:
     // Copies `image` into the cursor memory a row at a time, then shows it at the recorded position
     int32_t show_cursor_picture(uint32_t output, const gfxfb::cursor_image& image);
 
-    // gfxfb's refusal of a cursor call on `output`, else `gfxfb::OK`. The caller must hold `m_output_lock`
-    int32_t check_cursor_call(uint32_t output) const;
+    // gfxfb's refusal of a cursor call on `output`, else `gfxfb::OK` with `head` the lit head showing it. The caller
+    // must hold `m_output_lock`
+    int32_t check_cursor_call(uint32_t output, engine_head*& head);
 
-    // gfxfb's refusal of a picture's next step, the display failed or the output not lit at `generation`, else
-    // `gfxfb::OK`. The caller must hold `m_output_lock`
-    int32_t check_picture(uint32_t output, uint32_t generation) const;
+    // gfxfb's refusal of a picture's next step on `head`, the display failed or `output` not lit there at `generation`,
+    // else `gfxfb::OK`. The caller must hold `m_output_lock`
+    int32_t check_picture(const engine_head& head, uint32_t output, uint32_t generation) const;
 
     /**
-     * @brief Write `position` and then `UPDATE`, `UPDATE` alone when it is
-     * owed for `position`, failing the display and its queued present when
-     * the free register reads all ones. The caller must hold `m_output_lock`.
+     * @brief Write `position` and then `UPDATE` into `head`'s cursor channel,
+     * `UPDATE` alone when it is owed for `position`, failing the display and
+     * the head's queued present when the free register reads all ones. The
+     * caller must hold `m_output_lock`.
      * @return As `cursor_channel::write` returns.
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE int32_t write_cursor_position(uint32_t position);
+    __PRIVILEGED_CODE int32_t write_cursor_position(engine_head& head, uint32_t position);
 
     // Whether a cursor call tries a write refused at `tried_ns` again, after a yield: until a try past `deadline_ns`,
     // which a deadline of 0 sets to `m_cursor_wait_ns` past this first refusal
     bool retries_cursor_write(uint64_t tried_ns, uint64_t& deadline_ns);
 
-    // gfxfb's result for the cursor `call` on `output` whose checks gave `rc` and whose last write gave `write_rc`,
-    // a refusal logged once until a cursor write succeeds and a card gone logged
-    int32_t end_cursor_call(uint32_t output, const char* call, int32_t rc, int32_t write_rc);
+    // gfxfb's result for the cursor `call` on `output` whose checks gave `rc` and whose last write on `head` gave
+    // `write_rc`, a refusal logged once until a cursor write succeeds and a card gone logged
+    int32_t end_cursor_call(uint32_t output, engine_head* head, const char* call, int32_t rc, int32_t write_rc);
 };
 
 } // namespace drivers::nvidia
