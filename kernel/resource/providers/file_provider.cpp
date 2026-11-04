@@ -147,7 +147,7 @@ __PRIVILEGED_CODE static int32_t file_ioctl(resource_object* obj, uint32_t cmd, 
 
 __PRIVILEGED_CODE static int32_t file_mmap(
     resource_object* obj, mm::mm_context* mm_ctx,
-    uintptr_t addr, size_t length, uint32_t prot,
+    uintptr_t addr, size_t length, uint32_t prot, uint32_t max_prot,
     uint32_t map_flags, uint64_t offset, uintptr_t* out_addr
 ) {
     if (!obj || !obj->impl) {
@@ -155,7 +155,7 @@ __PRIVILEGED_CODE static int32_t file_mmap(
     }
 
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
-    int32_t rc = fs::mmap(impl->file, mm_ctx, addr, length, prot, map_flags, offset, out_addr);
+    int32_t rc = fs::mmap(impl->file, mm_ctx, addr, length, prot, max_prot, map_flags, offset, out_addr);
     if (rc == 0) {
         return mm::MM_CTX_OK;
     }

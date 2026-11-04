@@ -2,6 +2,7 @@
 
 #include "stlx_unit_test.h"
 #include "mm/mm.h"
+#include "mm/shmem.h"
 #include "mm/vma.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
@@ -192,6 +193,216 @@ TEST(vma_test, prot_none_map_and_mprotect_roundtrip) {
     EXPECT_TRUE((flags & paging::PAGE_READ) != 0);
 
     mm::mm_context_release(mm_ctx);
+}
+
+TEST(vma_test, program_segments_allow_every_protection) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t start = mm::MMAP_BASE_DEFAULT + 4 * PAGE;
+    ASSERT_EQ(mm::mm_context_add_vma(
+        mm_ctx, start, PAGE,
+        mm::MM_PROT_READ, mm::VMA_FLAG_PRIVATE | mm::VMA_FLAG_ELF
+    ), mm::MM_CTX_OK);
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, start, PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE | mm::MM_PROT_EXEC
+    ), mm::MM_CTX_OK);
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(vma_test, map_and_mprotect_keep_prot_within_max_prot) {
+    mm::shmem* s = mm::shmem_create(PAGE);
+    ASSERT_NOT_NULL(s);
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t mapped = 0;
+    EXPECT_EQ(mm::mm_context_map_shared(
+        mm_ctx, s, 0, PAGE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, mm::MM_PROT_READ,
+        mm::MM_MAP_SHARED, 0, &mapped
+    ), mm::MM_CTX_ERR_INVALID_ARG);
+    EXPECT_EQ(mm::mm_context_vma_count(mm_ctx), static_cast<size_t>(0));
+
+    ASSERT_EQ(mm::mm_context_map_shared(
+        mm_ctx, s, 0, PAGE,
+        mm::MM_PROT_READ, mm::MM_PROT_READ | mm::MM_PROT_EXEC,
+        mm::MM_MAP_SHARED, 0, &mapped
+    ), mm::MM_CTX_OK);
+
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, mapped, PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE
+    ), mm::MM_CTX_ERR_PROTECTION);
+    paging::page_flags_t flags = paging::get_page_flags(mapped, mm_ctx->pt_root);
+    EXPECT_TRUE((flags & paging::PAGE_WRITE) == 0);
+
+    EXPECT_EQ(mm::mm_context_mprotect(mm_ctx, mapped, PAGE, 0), mm::MM_CTX_OK);
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, mapped, PAGE, mm::MM_PROT_READ | mm::MM_PROT_EXEC
+    ), mm::MM_CTX_OK);
+
+    mm::mm_context_release(mm_ctx);
+    mm::shmem::ref_destroy(s);
+}
+
+static constexpr uint32_t UNDEFINED_PROT_BIT = mm::MM_PROT_EXEC << 1;
+
+TEST(vma_test, map_calls_refuse_max_prot_outside_the_mask) {
+    mm::shmem* s = mm::shmem_create(PAGE);
+    ASSERT_NOT_NULL(s);
+    pmm::phys_addr_t frame = pmm::alloc_page();
+    ASSERT_NE(frame, static_cast<pmm::phys_addr_t>(0));
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uint32_t max_prot = mm::MM_PROT_READ | UNDEFINED_PROT_BIT;
+    uintptr_t mapped = 0;
+    EXPECT_EQ(mm::mm_context_map_shared(
+        mm_ctx, s, 0, PAGE,
+        mm::MM_PROT_READ, max_prot,
+        mm::MM_MAP_SHARED, 0, &mapped
+    ), mm::MM_CTX_ERR_INVALID_ARG);
+    EXPECT_EQ(mm::mm_context_map_device(
+        mm_ctx, frame, PAGE, nullptr, 0,
+        mm::MM_PROT_READ, max_prot,
+        paging::PAGE_DEVICE, mm::MM_MAP_SHARED, 0, &mapped
+    ), mm::MM_CTX_ERR_INVALID_ARG);
+    EXPECT_EQ(mm::mm_context_vma_count(mm_ctx), static_cast<size_t>(0));
+
+    mm::mm_context_release(mm_ctx);
+    pmm::free_page(frame);
+    mm::shmem::ref_destroy(s);
+}
+
+TEST(vma_test, split_parts_keep_max_prot) {
+    mm::shmem* s = mm::shmem_create(3 * PAGE);
+    ASSERT_NOT_NULL(s);
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t mapped = 0;
+    ASSERT_EQ(mm::mm_context_map_shared(
+        mm_ctx, s, 0, 3 * PAGE,
+        mm::MM_PROT_READ, mm::MM_PROT_READ,
+        mm::MM_MAP_SHARED, 0, &mapped
+    ), mm::MM_CTX_OK);
+
+    ASSERT_EQ(mm::mm_context_mprotect(mm_ctx, mapped + PAGE, PAGE, 0), mm::MM_CTX_OK);
+    EXPECT_EQ(mm::mm_context_vma_count(mm_ctx), static_cast<size_t>(3));
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, mapped + PAGE, PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE
+    ), mm::MM_CTX_ERR_PROTECTION);
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, mapped + 2 * PAGE, PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE
+    ), mm::MM_CTX_ERR_PROTECTION);
+
+    EXPECT_EQ(mm::mm_context_mprotect(mm_ctx, mapped + PAGE, PAGE, mm::MM_PROT_READ), mm::MM_CTX_OK);
+    EXPECT_EQ(mm::mm_context_vma_count(mm_ctx), static_cast<size_t>(1));
+
+    mm::mm_context_release(mm_ctx);
+    mm::shmem::ref_destroy(s);
+}
+
+TEST(vma_test, mappings_with_unequal_max_prot_never_merge) {
+    mm::shmem* s = mm::shmem_create(2 * PAGE);
+    ASSERT_NOT_NULL(s);
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t base = mm_ctx->mmap_base + 64 * PAGE;
+    uintptr_t mapped = 0;
+    ASSERT_EQ(mm::mm_context_map_shared(
+        mm_ctx, s, 0, PAGE,
+        mm::MM_PROT_READ, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+        mm::MM_MAP_SHARED | mm::MM_MAP_FIXED, base, &mapped
+    ), mm::MM_CTX_OK);
+    ASSERT_EQ(mm::mm_context_map_shared(
+        mm_ctx, s, PAGE, PAGE,
+        mm::MM_PROT_READ, mm::MM_PROT_READ,
+        mm::MM_MAP_SHARED | mm::MM_MAP_FIXED, base + PAGE, &mapped
+    ), mm::MM_CTX_OK);
+    EXPECT_EQ(mm::mm_context_vma_count(mm_ctx), static_cast<size_t>(2));
+
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, base, 2 * PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE
+    ), mm::MM_CTX_ERR_PROTECTION);
+    paging::page_flags_t flags = paging::get_page_flags(base, mm_ctx->pt_root);
+    EXPECT_TRUE((flags & paging::PAGE_WRITE) == 0);
+
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, base, PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE
+    ), mm::MM_CTX_OK);
+    flags = paging::get_page_flags(base, mm_ctx->pt_root);
+    EXPECT_TRUE((flags & paging::PAGE_WRITE) != 0);
+
+    mm::mm_context_release(mm_ctx);
+    mm::shmem::ref_destroy(s);
+}
+
+static void expect_two_unsplit_read_only_mappings(mm::mm_context* mm_ctx, uintptr_t base) {
+    EXPECT_EQ(mm::mm_context_vma_count(mm_ctx), static_cast<size_t>(2));
+    for (uintptr_t page = base; page < base + 4 * PAGE; page += PAGE) {
+        EXPECT_TRUE(paging::is_mapped(page, mm_ctx->pt_root));
+        EXPECT_TRUE((paging::get_page_flags(page, mm_ctx->pt_root) & paging::PAGE_WRITE) == 0);
+    }
+}
+
+TEST(vma_test, mprotect_checks_partly_covered_mappings_before_splitting) {
+    mm::shmem* s = mm::shmem_create(4 * PAGE);
+    ASSERT_NOT_NULL(s);
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t base = mm_ctx->mmap_base + 64 * PAGE;
+    uintptr_t mapped = 0;
+    ASSERT_EQ(mm::mm_context_map_shared(
+        mm_ctx, s, 0, 2 * PAGE,
+        mm::MM_PROT_READ, mm::MM_PROT_READ,
+        mm::MM_MAP_SHARED | mm::MM_MAP_FIXED, base, &mapped
+    ), mm::MM_CTX_OK);
+    ASSERT_EQ(mm::mm_context_map_shared(
+        mm_ctx, s, 2 * PAGE, 2 * PAGE,
+        mm::MM_PROT_READ, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+        mm::MM_MAP_SHARED | mm::MM_MAP_FIXED, base + 2 * PAGE, &mapped
+    ), mm::MM_CTX_OK);
+
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, base, PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE
+    ), mm::MM_CTX_ERR_PROTECTION);
+    expect_two_unsplit_read_only_mappings(mm_ctx, base);
+
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, base + PAGE, 2 * PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE
+    ), mm::MM_CTX_ERR_PROTECTION);
+    expect_two_unsplit_read_only_mappings(mm_ctx, base);
+
+    mm::mm_context_release(mm_ctx);
+    mm::shmem::ref_destroy(s);
+}
+
+TEST(vma_test, mprotect_reports_an_unmapped_part_before_a_max_prot_refusal) {
+    mm::shmem* s = mm::shmem_create(PAGE);
+    ASSERT_NOT_NULL(s);
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t base = mm_ctx->mmap_base + 64 * PAGE;
+    uintptr_t mapped = 0;
+    ASSERT_EQ(mm::mm_context_map_shared(
+        mm_ctx, s, 0, PAGE,
+        mm::MM_PROT_READ, mm::MM_PROT_READ,
+        mm::MM_MAP_SHARED | mm::MM_MAP_FIXED, base, &mapped
+    ), mm::MM_CTX_OK);
+
+    EXPECT_EQ(mm::mm_context_mprotect(
+        mm_ctx, base - PAGE, 2 * PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE
+    ), mm::MM_CTX_ERR_NOT_MAPPED);
+    EXPECT_EQ(mm::mm_context_vma_count(mm_ctx), static_cast<size_t>(1));
+    EXPECT_TRUE((paging::get_page_flags(base, mm_ctx->pt_root) & paging::PAGE_WRITE) == 0);
+
+    mm::mm_context_release(mm_ctx);
+    mm::shmem::ref_destroy(s);
 }
 
 TEST(vma_test, gap_search_topdown_prefers_highest_gap) {

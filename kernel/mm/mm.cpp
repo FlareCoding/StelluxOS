@@ -243,7 +243,7 @@ __PRIVILEGED_CODE int32_t mm_context_add_vma(
 
     sync::mutex_lock(mm_ctx->lock);
 
-    vma* node = alloc_vma(start, end, prot, vma_flags);
+    vma* node = alloc_vma(start, end, prot, MM_PROT_MASK, vma_flags);
     if (!node) {
         sync::mutex_unlock(mm_ctx->lock);
         return MM_CTX_ERR_NO_MEM;
@@ -385,7 +385,8 @@ __PRIVILEGED_CODE static int32_t map_private_pages(
         }
     }
 
-    vma* node = alloc_vma(start, end, prot, vma_flags);
+    // A private mapping's pages belong to it alone, so mprotect may give it any protection
+    vma* node = alloc_vma(start, end, prot, MM_PROT_MASK, vma_flags);
     if (!node) {
         rollback_new_pages(mm_ctx, start, end);
         sync::mutex_unlock(mm_ctx->lock);
@@ -477,6 +478,25 @@ __PRIVILEGED_CODE int32_t mm_context_unmap(
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE static bool range_allows_protection_locked(
+    mm_context* mm_ctx,
+    uintptr_t start,
+    uintptr_t end,
+    uint32_t prot
+) {
+    for (vma* node = vma_find_overlap_locked(mm_ctx, start, end); node && node->start < end;
+         node = mm_ctx->vmas.next(*node)) {
+        if ((prot & ~node->max_prot) != 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE int32_t mm_context_mprotect(
     mm_context* mm_ctx,
     uintptr_t addr,
@@ -502,6 +522,11 @@ __PRIVILEGED_CODE int32_t mm_context_mprotect(
     if (!range_fully_mapped_locked(mm_ctx, addr, end)) {
         sync::mutex_unlock(mm_ctx->lock);
         return MM_CTX_ERR_NOT_MAPPED;
+    }
+
+    if (!range_allows_protection_locked(mm_ctx, addr, end, prot)) {
+        sync::mutex_unlock(mm_ctx->lock);
+        return MM_CTX_ERR_PROTECTION;
     }
 
     vma* at_start = vma_find_locked(mm_ctx, addr);
@@ -612,7 +637,7 @@ __PRIVILEGED_CODE static int32_t move_vma_locked(
     uintptr_t new_start,
     size_t new_len
 ) {
-    vma* moved = alloc_vma(new_start, new_start + new_len, node->prot, node->flags);
+    vma* moved = alloc_vma(new_start, new_start + new_len, node->prot, node->max_prot, node->flags);
     if (!moved) {
         return MM_CTX_ERR_NO_MEM;
     }
@@ -810,6 +835,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
     uint64_t offset,
     size_t length,
     uint32_t prot,
+    uint32_t max_prot,
     uint32_t map_flags,
     uintptr_t addr,
     uintptr_t* out_addr
@@ -818,7 +844,11 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
         return MM_CTX_ERR_INVALID_ARG;
     }
 
-    if ((prot & ~MM_PROT_MASK) != 0) {
+    if (((prot | max_prot) & ~MM_PROT_MASK) != 0) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    if ((prot & ~max_prot) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
 
@@ -916,7 +946,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
     shmem_mapping mapping = shmem_mapping::start_locked(backing);
     sync::mutex_unlock(backing->lock);
 
-    vma* node = alloc_vma(start, end, prot, VMA_FLAG_SHARED);
+    vma* node = alloc_vma(start, end, prot, max_prot, VMA_FLAG_SHARED);
     if (!node) {
         unmap_pages_only(mm_ctx, start, end);
         sync::mutex_unlock(mm_ctx->lock);
@@ -950,6 +980,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
     device_backing* backing,
     uint64_t backing_offset,
     uint32_t prot,
+    uint32_t max_prot,
     uint32_t cache_type,
     uint32_t map_flags,
     uintptr_t addr,
@@ -959,7 +990,11 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
         return MM_CTX_ERR_INVALID_ARG;
     }
 
-    if ((prot & ~MM_PROT_MASK) != 0) {
+    if (((prot | max_prot) & ~MM_PROT_MASK) != 0) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    if ((prot & ~max_prot) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
 
@@ -1029,7 +1064,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
         return MM_CTX_ERR_MAP_FAILED;
     }
 
-    vma* node = alloc_vma(start, end, prot, VMA_FLAG_DEVICE);
+    vma* node = alloc_vma(start, end, prot, max_prot, VMA_FLAG_DEVICE);
     if (!node) {
         unmap_pages_only(mm_ctx, start, end);
         sync::mutex_unlock(mm_ctx->lock);

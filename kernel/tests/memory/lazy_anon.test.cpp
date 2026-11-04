@@ -346,7 +346,7 @@ TEST(lazy_anon, discard_keeps_shared_pages) {
 
     uintptr_t addr = 0;
     ASSERT_EQ(mm::mm_context_map_shared(mm_ctx, s, 0, PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
-                                        mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
+                                        mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
     mapped_page_bytes(mm_ctx, addr)[0] = 0x33;
 
     EXPECT_EQ(mm::mm_context_discard(mm_ctx, addr, PAGE), mm::MM_CTX_OK);
@@ -364,8 +364,8 @@ TEST(lazy_anon, discard_rejects_device_mappings) {
     ASSERT_NOT_NULL(mm_ctx);
 
     uintptr_t addr = 0;
-    ASSERT_EQ(mm::mm_context_map_device(mm_ctx, frame, PAGE, nullptr, 0, mm::MM_PROT_READ, paging::PAGE_DEVICE,
-                                        mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
+    ASSERT_EQ(mm::mm_context_map_device(mm_ctx, frame, PAGE, nullptr, 0, mm::MM_PROT_READ, mm::MM_PROT_MASK,
+                                        paging::PAGE_DEVICE, mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
 
     EXPECT_EQ(mm::mm_context_discard(mm_ctx, addr, PAGE), mm::MM_CTX_ERR_INVALID_ARG);
     EXPECT_EQ(paging::get_physical(addr, mm_ctx->pt_root), frame);
@@ -535,7 +535,7 @@ TEST(lazy_anon, remap_keeps_shared_mappings_in_place) {
 
     uintptr_t addr = 0;
     ASSERT_EQ(mm::mm_context_map_shared(mm_ctx, s, 0, 2 * PAGE, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
-                                        mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
+                                        mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
 
     uintptr_t result = 0;
     EXPECT_EQ(mm::mm_context_remap(mm_ctx, addr, 2 * PAGE, 3 * PAGE, mm::MM_REMAP_MAYMOVE, 0, &result),

@@ -26,7 +26,7 @@ using close_fn = void (*)(resource_object* obj);
 using handle_closed_fn = void (*)(resource_object* obj, const handle_table* table);
 using ioctl_fn = int32_t (*)(resource_object* obj, uint32_t cmd, uint64_t arg);
 using mmap_fn = int32_t (*)(resource_object* obj, mm::mm_context* mm_ctx,
-                            uintptr_t addr, size_t length, uint32_t prot,
+                            uintptr_t addr, size_t length, uint32_t prot, uint32_t max_prot,
                             uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
 using poll_fn = uint32_t (*)(resource_object* obj, sync::poll_table* pt);
 using visit_held_fn = void (*)(resource_object* holder, in_flight_walk& walk);
@@ -43,7 +43,9 @@ using visit_held_fn = void (*)(resource_object* holder, in_flight_walk& walk);
  * for a receiver that has not taken it yet, such as handles queued on a socket or
  * the table of a process that has not started. It runs under the object's own
  * locks and must not sleep. Only objects with it can take part in a reference
- * loop, and the operations that could close one refuse to.
+ * loop, and the operations that could close one refuse to. The mapping `mmap`
+ * makes must never hold a protection bit outside `max_prot`, at mmap or after any
+ * later mprotect.
  */
 struct resource_ops {
     read_fn  read = nullptr;

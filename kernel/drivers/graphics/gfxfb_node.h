@@ -312,7 +312,7 @@ public:
     uint32_t poll(fs::file*, sync::poll_table* pt) override;
     int32_t ioctl(fs::file*, uint32_t cmd, uint64_t arg) override;
     int32_t mmap(fs::file*, mm::mm_context* mm_ctx, uintptr_t addr,
-                 size_t length, uint32_t prot, uint32_t map_flags,
+                 size_t length, uint32_t prot, uint32_t max_prot, uint32_t map_flags,
                  uint64_t offset, uintptr_t* out_addr) override;
 
 private:

@@ -123,7 +123,7 @@ TEST(shmem_test, shared_map_two_contexts_same_backing) {
     uintptr_t addr_a = 0;
     int32_t rc = mm::mm_context_map_shared(
         ctx_a, s, 0, PAGE,
-        mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, mm::MM_PROT_MASK,
         mm::MM_MAP_SHARED, 0, &addr_a);
     ASSERT_EQ(rc, mm::MM_CTX_OK);
     EXPECT_NE(addr_a, static_cast<uintptr_t>(0));
@@ -131,7 +131,7 @@ TEST(shmem_test, shared_map_two_contexts_same_backing) {
     uintptr_t addr_b = 0;
     rc = mm::mm_context_map_shared(
         ctx_b, s, 0, PAGE,
-        mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, mm::MM_PROT_MASK,
         mm::MM_MAP_SHARED, 0, &addr_b);
     ASSERT_EQ(rc, mm::MM_CTX_OK);
     EXPECT_NE(addr_b, static_cast<uintptr_t>(0));
@@ -173,7 +173,7 @@ TEST(shmem_test, unmap_shared_does_not_free_pages) {
     uintptr_t addr = 0;
     int32_t rc = mm::mm_context_map_shared(
         ctx, s, 0, PAGE,
-        mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE, mm::MM_PROT_MASK,
         mm::MM_MAP_SHARED, 0, &addr);
     ASSERT_EQ(rc, mm::MM_CTX_OK);
 
@@ -208,7 +208,7 @@ static int32_t shrink(mm::shmem* s, size_t size) {
 
 static int32_t map_whole(mm::mm_context* ctx, mm::shmem* s, size_t length, uintptr_t* addr) {
     return mm::mm_context_map_shared(ctx, s, 0, length, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
-                                     mm::MM_MAP_SHARED, 0, addr);
+                                     mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, addr);
 }
 
 TEST(shmem_test, shrinking_an_unmapped_object_frees_its_tail_pages) {
@@ -280,7 +280,7 @@ TEST(shmem_test, map_shared_rejects_hole) {
     uintptr_t addr = 0;
     int32_t rc = mm::mm_context_map_shared(
         ctx, s, 0, PAGE,
-        mm::MM_PROT_READ, mm::MM_MAP_SHARED, 0, &addr);
+        mm::MM_PROT_READ, mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, &addr);
     EXPECT_NE(rc, mm::MM_CTX_OK);
 
     mm::mm_context_release(ctx);

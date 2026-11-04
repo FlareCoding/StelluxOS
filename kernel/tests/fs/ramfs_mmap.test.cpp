@@ -73,7 +73,7 @@ TEST(ramfs_mmap, mapping_shares_bytes_with_read_and_write) {
     ASSERT_NOT_NULL(mm_ctx);
 
     uintptr_t addr = 0;
-    ASSERT_EQ(fs::mmap(f, mm_ctx, 0, 2 * PAGE, PROT_RW, mm::MM_MAP_SHARED, 0, &addr),
+    ASSERT_EQ(fs::mmap(f, mm_ctx, 0, 2 * PAGE, PROT_RW, mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, &addr),
               mm::MM_CTX_OK);
     EXPECT_TRUE(mapping_matches_pattern(mm_ctx, addr, 2 * PAGE));
 
@@ -107,8 +107,8 @@ TEST(ramfs_mmap, mapping_outlives_unlink_and_close) {
     ASSERT_NOT_NULL(mm_ctx);
 
     uintptr_t addr = 0;
-    ASSERT_EQ(fs::mmap(f, mm_ctx, 0, FILE_PAGES * PAGE, mm::MM_PROT_READ, mm::MM_MAP_SHARED,
-                       0, &addr),
+    ASSERT_EQ(fs::mmap(f, mm_ctx, 0, FILE_PAGES * PAGE, mm::MM_PROT_READ, mm::MM_PROT_MASK,
+                       mm::MM_MAP_SHARED, 0, &addr),
               mm::MM_CTX_OK);
 
     EXPECT_EQ(fs::unlink("/ramfs_mmap_orphan"), fs::OK);
@@ -128,7 +128,7 @@ TEST(ramfs_mmap, truncate_keeps_mapped_pages_valid) {
     ASSERT_NOT_NULL(mm_ctx);
 
     uintptr_t addr = 0;
-    ASSERT_EQ(fs::mmap(f, mm_ctx, 0, 2 * PAGE, PROT_RW, mm::MM_MAP_SHARED, 0, &addr),
+    ASSERT_EQ(fs::mmap(f, mm_ctx, 0, 2 * PAGE, PROT_RW, mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, &addr),
               mm::MM_CTX_OK);
 
     fs::node* node = f->get_node();
@@ -173,7 +173,7 @@ TEST(ramfs_mmap, mapping_past_end_of_file_fails) {
     ASSERT_NOT_NULL(mm_ctx);
 
     uintptr_t addr = 0;
-    EXPECT_EQ(fs::mmap(f, mm_ctx, 0, 2 * PAGE, mm::MM_PROT_READ, mm::MM_MAP_SHARED, 0, &addr),
+    EXPECT_EQ(fs::mmap(f, mm_ctx, 0, 2 * PAGE, mm::MM_PROT_READ, mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, &addr),
               mm::MM_CTX_ERR_INVALID_ARG);
 
     mm::mm_context_release(mm_ctx);

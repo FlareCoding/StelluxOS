@@ -953,7 +953,7 @@ static bool creates_before_deadline(fs::file* file, user_page& page, int32_t exp
 static uintptr_t map_file(fs::file* file, mm::mm_context* ctx, uint64_t offset, size_t length) {
     uintptr_t addr = 0;
     uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
-    if (fs::mmap(file, ctx, 0, length, prot, mm::MM_MAP_SHARED, offset, &addr) != mm::MM_CTX_OK) {
+    if (fs::mmap(file, ctx, 0, length, prot, mm::MM_PROT_MASK, mm::MM_MAP_SHARED, offset, &addr) != mm::MM_CTX_OK) {
         return 0;
     }
 
@@ -1494,12 +1494,40 @@ TEST(gfxfb, mmap_maps_the_primary_base_buffer) {
 
     uintptr_t addr = 0;
     uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
-    EXPECT_EQ(fs::mmap(file, ctx, 0, OUTPUT_0_SIZE, prot, mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
+    EXPECT_EQ(fs::mmap(file, ctx, 0, OUTPUT_0_SIZE, prot, mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, &addr),
+              mm::MM_CTX_OK);
     EXPECT_EQ(paging::get_physical(addr, ctx->pt_root), g_buffer_phys);
     EXPECT_EQ(paging::get_physical(addr + pmm::PAGE_SIZE, ctx->pt_root), g_buffer_phys + pmm::PAGE_SIZE);
 
     paging::page_flags_t flags = paging::get_page_flags(addr, ctx->pt_root);
     EXPECT_EQ(flags & paging::PAGE_TYPE_MASK, paging::PAGE_NORMAL);
+
+    fs::close(file);
+    mm::mm_context_release(ctx);
+}
+
+static recording_display g_capped_mmap_display;
+
+// A mapping of the node never holds a bit outside the `max_prot` passed to mmap, at mmap or after mprotect
+TEST(gfxfb, mmap_keeps_the_callers_max_prot) {
+    light_output(g_capped_mmap_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_capped_mmap_display);
+    ASSERT_NOT_NULL(test.node);
+
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uintptr_t addr = 0;
+    EXPECT_EQ(fs::mmap(file, ctx, 0, OUTPUT_0_SIZE, mm::MM_PROT_READ | mm::MM_PROT_WRITE, mm::MM_PROT_READ,
+                       mm::MM_MAP_SHARED, 0, &addr),
+              mm::MM_CTX_ERR_INVALID_ARG);
+    EXPECT_EQ(fs::mmap(file, ctx, 0, OUTPUT_0_SIZE, mm::MM_PROT_READ, mm::MM_PROT_READ, mm::MM_MAP_SHARED, 0, &addr),
+              mm::MM_CTX_OK);
+    EXPECT_EQ(mm::mm_context_mprotect(ctx, addr, OUTPUT_0_SIZE, mm::MM_PROT_READ | mm::MM_PROT_WRITE),
+              mm::MM_CTX_ERR_PROTECTION);
 
     fs::close(file);
     mm::mm_context_release(ctx);
@@ -1539,7 +1567,8 @@ TEST(gfxfb, primary_is_the_lit_boot_output) {
 
     uintptr_t addr = 0;
     uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
-    EXPECT_EQ(fs::mmap(file, ctx, 0, OUTPUT_1_SIZE, prot, mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_OK);
+    EXPECT_EQ(fs::mmap(file, ctx, 0, OUTPUT_1_SIZE, prot, mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, &addr),
+              mm::MM_CTX_OK);
     EXPECT_EQ(paging::get_physical(addr, ctx->pt_root), g_buffer_phys + OUTPUT_1_OFFSET);
 
     paging::page_flags_t flags = paging::get_page_flags(addr, ctx->pt_root);
@@ -1624,7 +1653,8 @@ TEST(gfxfb, display_with_every_output_dark_has_no_primary) {
 
     uintptr_t addr = 0;
     uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
-    EXPECT_EQ(fs::mmap(file, ctx, 0, pmm::PAGE_SIZE, prot, mm::MM_MAP_SHARED, 0, &addr), mm::MM_CTX_ERR_INVALID_ARG);
+    EXPECT_EQ(fs::mmap(file, ctx, 0, pmm::PAGE_SIZE, prot, mm::MM_PROT_MASK, mm::MM_MAP_SHARED, 0, &addr),
+              mm::MM_CTX_ERR_INVALID_ARG);
 
     fs::close(file);
     mm::mm_context_release(ctx);
