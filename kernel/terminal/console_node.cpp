@@ -4,6 +4,7 @@
 #include "serial/serial.h"
 #include "fs/file.h"
 #include "fs/fs.h"
+#include "sync/poll.h"
 
 namespace terminal {
 
@@ -33,6 +34,10 @@ ssize_t console_node::write(fs::file*, const void* buf, size_t count, uint32_t) 
 
 int32_t console_node::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
     return terminal::console_ioctl(cmd, arg);
+}
+
+uint32_t console_node::poll(fs::file*, sync::poll_table* pt) {
+    return ring_buffer_poll_read(console_input_rb(), pt) | sync::POLL_OUT;
 }
 
 } // namespace terminal

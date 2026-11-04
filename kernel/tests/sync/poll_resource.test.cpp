@@ -9,6 +9,8 @@
 #include "sync/wait_queue.h"
 #include "common/ring_buffer.h"
 #include "resource/resource.h"
+#include "fs/fstypes.h"
+#include "terminal/terminal.h"
 #include "pty/pty.h"
 #include "socket/unix_socket.h"
 #include "mm/heap.h"
@@ -251,6 +253,121 @@ TEST(poll_resource, unix_socket_poll_readable) {
         resource::resource_release(a);
         resource::resource_release(b);
     });
+}
+
+// console_polls_readable_only_with_queued_input
+
+static void drain_console() {
+    uint8_t buf[64];
+    ssize_t n = 0;
+    do {
+        RUN_ELEVATED({ n = ring_buffer_read(terminal::console_input_rb(), buf, sizeof(buf), true); });
+    } while (n > 0);
+}
+
+static void queue_console_input() {
+    const uint8_t input[] = {'x'};
+    RUN_ELEVATED({ (void)ring_buffer_write(terminal::console_input_rb(), input, sizeof(input), true); });
+}
+
+static resource::resource_object* open_console(resource::handle_t& h) {
+    sched::task* task = sched::current();
+    resource::resource_object* console = nullptr;
+    RUN_ELEVATED({
+        if (resource::open(task, "/dev/console", fs::O_RDONLY, &h) == resource::OK) {
+            (void)resource::get_handle_object(task->handles, h, 0, &console);
+        }
+    });
+
+    return console;
+}
+
+static void close_console(resource::handle_t h, resource::resource_object* console) {
+    RUN_ELEVATED({
+        resource::resource_release(console);
+        (void)resource::close(sched::current(), h);
+    });
+}
+
+TEST(poll_resource, console_polls_readable_only_with_queued_input) {
+    resource::handle_t h = -1;
+    resource::resource_object* console = open_console(h);
+    ASSERT_NOT_NULL(console);
+
+    drain_console();
+
+    uint32_t drained_mask = 0;
+    RUN_ELEVATED({ drained_mask = console->ops->poll(console, nullptr); });
+    EXPECT_EQ(drained_mask, sync::POLL_OUT);
+
+    queue_console_input();
+
+    uint32_t queued_mask = 0;
+    RUN_ELEVATED({ queued_mask = console->ops->poll(console, nullptr); });
+    EXPECT_EQ(queued_mask, sync::POLL_IN | sync::POLL_OUT);
+
+    drain_console();
+    close_console(h, console);
+}
+
+// console_poll_wakes_when_input_is_queued
+
+static sync::atomic<uint32_t> g_console_poll_waiting;
+static sync::atomic<uint32_t> g_console_poll_result;
+static sync::atomic<uint32_t> g_console_poll_done;
+
+static void console_poll_waiter_fn(void* arg) {
+    auto* console = static_cast<resource::resource_object*>(arg);
+    RUN_ELEVATED({
+        sync::poll_table pt;
+        pt.init(sched::current());
+
+        uint32_t mask = console->ops->poll(console, &pt);
+        if ((mask & sync::POLL_IN) == 0) {
+            g_console_poll_waiting.store_release(1);
+            sync::poll_wait(pt, 0);
+            mask = console->ops->poll(console, nullptr);
+        }
+
+        g_console_poll_result.store_release((mask & sync::POLL_IN) ? 1 : 0);
+        sync::poll_cleanup(pt);
+    });
+
+    g_console_poll_done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(poll_resource, console_poll_wakes_when_input_is_queued) {
+    g_console_poll_waiting.store_relaxed(0);
+    g_console_poll_result.store_relaxed(0);
+    g_console_poll_done.store_relaxed(0);
+
+    resource::handle_t h = -1;
+    resource::resource_object* console = open_console(h);
+    ASSERT_NOT_NULL(console);
+
+    drain_console();
+
+    sched::task* waiter = nullptr;
+    RUN_ELEVATED({
+        waiter = sched::create_kernel_task(console_poll_waiter_fn, console, "console_poll");
+        if (waiter) {
+            sched::enqueue(waiter);
+        }
+    });
+    ASSERT_NOT_NULL(waiter);
+
+    ASSERT_TRUE(test_helpers::spin_wait(g_console_poll_waiting));
+    test_helpers::brief_delay();
+
+    queue_console_input();
+
+    bool waiter_done = test_helpers::spin_wait(g_console_poll_done);
+    drain_console();
+    ASSERT_TRUE(waiter_done);
+    EXPECT_EQ(g_console_poll_result.load_acquire(), 1u);
+
+    close_console(h, console);
 }
 
 // null_poll_table_just_probes
