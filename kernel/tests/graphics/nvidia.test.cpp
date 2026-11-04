@@ -63,6 +63,10 @@ static constexpr uint64_t GA102_PRESCRUBBED_TOP_BYTES  = 0x10000000;
 // NVIDIA's headers for GA102 give them
 static constexpr uint8_t GA102_INTERRUPT_LEAF_COUNT = 8;
 
+// NVIDIA's classes of GA102's channels and of the copy objects on them, AMPERE_CHANNEL_GPFIFO_A and AMPERE_DMA_COPY_B
+static constexpr uint32_t GA102_CHANNEL_CLASS = 0xC56F;
+static constexpr uint32_t GA102_COPY_CLASS    = 0xC7B5;
+
 // GA102's heads, as many as the RTX 3080's firmware reports usable, and NVIDIA's classes of its display object, core
 // channel and window channels, NVC670_DISPLAY, NVC67D_CORE_CHANNEL_DMA and NVC67E_WINDOW_CHANNEL_DMA
 static constexpr uint8_t  GA102_HEAD_COUNT           = 4;
@@ -103,6 +107,9 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(chip->gsp_reservation.unprotected_heap_bytes, GA102_UNPROTECTED_HEAP_BYTES);
     EXPECT_EQ(chip->gsp_reservation.prescrubbed_top_bytes, GA102_PRESCRUBBED_TOP_BYTES);
     EXPECT_EQ(chip->interrupt_leaf_count, GA102_INTERRUPT_LEAF_COUNT);
+
+    EXPECT_EQ(chip->channel_class, GA102_CHANNEL_CLASS);
+    EXPECT_EQ(chip->copy_class, GA102_COPY_CLASS);
 
     EXPECT_EQ(chip->display.head_count, GA102_HEAD_COUNT);
     EXPECT_EQ(chip->display.display_class, GA102_DISPLAY_CLASS);
