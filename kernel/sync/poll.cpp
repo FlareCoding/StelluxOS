@@ -56,7 +56,7 @@ __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
     }
 
     bool timed = timeout_ns > 0;
-    uint64_t deadline = timed ? clock::now_ns() + timeout_ns : 0;
+    uint64_t deadline = timed ? clock::deadline_after_ns(timeout_ns) : 0;
 
     sched::prepare_to_block_task();
     if (timed) {

@@ -246,6 +246,48 @@ TEST(poll, timeout_no_trigger) {
     EXPECT_EQ(g_timeout_result.load_acquire(), 0u);
 }
 
+// the_longest_timeout_sleeps_until_a_source_fires
+// A wait with a timeout of UINT64_MAX ns, whose deadline would pass UINT64_MAX, neither returns at once nor spins.
+
+static sync::wait_queue g_longest_wq;
+static sync::atomic<uint32_t> g_longest_result;
+static sync::atomic<uint32_t> g_longest_done;
+
+static void longest_timeout_fn(void*) {
+    RUN_ELEVATED({
+        sync::poll_table pt;
+        pt.init(sched::current());
+        sync::poll_subscribe(pt, g_longest_wq);
+
+        bool triggered = sync::poll_wait(pt, ~0ULL);
+        g_longest_result.store_release(triggered ? 1 : 0);
+
+        sync::poll_cleanup(pt);
+    });
+    g_longest_done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(poll, the_longest_timeout_sleeps_until_a_source_fires) {
+    g_longest_wq.init();
+    g_longest_result.store_relaxed(0);
+    g_longest_done.store_relaxed(0);
+
+    sched::task* t = test_helpers::start_pinned_task_on_another_cpu(longest_timeout_fn, nullptr, "poll_longest", 0);
+    ASSERT_NOT_NULL(t);
+    bool slept = test_helpers::stays_asleep(t);
+
+    RUN_ELEVATED({
+        sync::wake_one(g_longest_wq);
+    });
+
+    EXPECT_TRUE(test_helpers::finish_or_kill(t, g_longest_done));
+    test_helpers::unpin(t);
+
+    EXPECT_TRUE(slept);
+    EXPECT_EQ(g_longest_result.load_acquire(), 1u);
+}
+
 // immediate_trigger_no_block
 // Fire the source before poll_wait, should return immediately.
 

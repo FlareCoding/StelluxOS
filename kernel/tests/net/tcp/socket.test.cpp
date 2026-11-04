@@ -541,18 +541,14 @@ static void wait_for_fin_ack(void*) {
     sched::exit(0);
 }
 
-static void start_fin_wait(tcp_conn* conn, uint64_t timeout_ns) {
+static sched::task* start_fin_wait(tcp_conn* conn, uint64_t timeout_ns) {
     g_fin_wait.conn = conn;
     g_fin_wait.timeout_ns = timeout_ns;
     g_fin_wait.elapsed_ns = 0;
     g_fin_wait.acknowledged = false;
     g_fin_wait.done.store_relaxed(0);
 
-    RUN_ELEVATED({
-        sched::task* t = sched::create_kernel_task(wait_for_fin_ack, nullptr, "tcp_fin_wait");
-        ASSERT_NOT_NULL(t);
-        sched::enqueue(t);
-    });
+    return test_helpers::start_pinned_task_on_another_cpu(wait_for_fin_ack, nullptr, "tcp_fin_wait", 0);
 }
 
 TEST(tcp_socket, waiting_for_the_fin_to_be_acknowledged_ends_when_the_ack_arrives) {
@@ -566,16 +562,43 @@ TEST(tcp_socket, waiting_for_the_fin_to_be_acknowledged_ends_when_the_ack_arrive
     close_connection(conn.ptr());
     EXPECT_EQ(conn->state, tcp_state::fin_wait_1);
 
-    start_fin_wait(conn.ptr(), 5 * SECOND_NS);
+    sched::task* t = start_fin_wait(conn.ptr(), 5 * SECOND_NS);
+    ASSERT_NOT_NULL(t);
     RUN_ELEVATED(sched::sleep_ms(30));
     EXPECT_EQ(g_fin_wait.done.load_acquire(), 0u);
 
     EXPECT_EQ(input(remote.segment(FLAG_ACK, 7001, iss + 2)), OK);
     EXPECT_TRUE(test_helpers::spin_wait(g_fin_wait.done));
+    test_helpers::unpin(t);
 
     EXPECT_TRUE(g_fin_wait.acknowledged);
     EXPECT_EQ(conn->state, tcp_state::fin_wait_2);
     EXPECT_TRUE(g_fin_wait.elapsed_ns < 5 * SECOND_NS);
+
+    abort_connection(conn.ptr());
+}
+
+// A wait with a timeout of UINT64_MAX ns, whose deadline would pass UINT64_MAX, neither gives up at once nor spins
+TEST(tcp_socket, waiting_for_the_fin_to_be_acknowledged_with_the_longest_timeout_sleeps_until_the_ack_arrives) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+    uint32_t iss = 0;
+    peer remote = sock.establish(lp, &iss);
+
+    rc::strong_ref<tcp_conn> conn = sock.impl()->conn;
+    close_connection(conn.ptr());
+
+    sched::task* t = start_fin_wait(conn.ptr(), ~0ULL);
+    ASSERT_NOT_NULL(t);
+    bool slept = test_helpers::stays_asleep(t);
+
+    EXPECT_EQ(input(remote.segment(FLAG_ACK, 7001, iss + 2)), OK);
+    EXPECT_TRUE(test_helpers::finish_or_kill(t, g_fin_wait.done));
+    test_helpers::unpin(t);
+
+    EXPECT_TRUE(slept);
+    EXPECT_TRUE(g_fin_wait.acknowledged);
 
     abort_connection(conn.ptr());
 }
@@ -590,8 +613,10 @@ TEST(tcp_socket, waiting_for_the_fin_to_be_acknowledged_gives_up_when_the_time_p
     rc::strong_ref<tcp_conn> conn = sock.impl()->conn;
     close_connection(conn.ptr());
 
-    start_fin_wait(conn.ptr(), SECOND_NS / 20);
+    sched::task* t = start_fin_wait(conn.ptr(), SECOND_NS / 20);
+    ASSERT_NOT_NULL(t);
     EXPECT_TRUE(test_helpers::spin_wait(g_fin_wait.done));
+    test_helpers::unpin(t);
 
     EXPECT_FALSE(g_fin_wait.acknowledged);
     EXPECT_TRUE(g_fin_wait.elapsed_ns >= SECOND_NS / 20);

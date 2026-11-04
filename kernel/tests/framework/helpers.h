@@ -14,11 +14,16 @@
 #include "mm/paging.h"
 #include "mm/pmm.h"
 #include "dynpriv/dynpriv.h"
+#include "percpu/percpu.h"
+#include "smp/smp.h"
 
 namespace test_helpers {
 
 // Wall-clock bound: iteration counts vary ~100x across hosts and emulators.
 constexpr uint64_t SPIN_TIMEOUT_NS = 20000000000ULL; // 20s
+
+// How long `stays_asleep` watches a task, many ticks so CPU time read up to a tick behind tells sleeping from spinning
+constexpr uint64_t SLEEP_WATCH_NS = 200000000ULL; // 200ms
 
 // Runs the calling task under a user address space so copies reach it the
 // way a syscall body does, then puts the task's own root back
@@ -118,6 +123,28 @@ inline sched::task* start_pinned_task(void (*entry)(void*), void* arg, const cha
     return t;
 }
 
+// Starts a kernel task with `flags` on the CPU after the caller's, held until `unpin` as `start_pinned_task`'s is.
+// A test runs on its CPU's idle task, so a task spinning there would hang the run instead of failing its test
+inline sched::task* start_pinned_task_on_another_cpu(
+    void (*entry)(void*),
+    void* arg,
+    const char* name,
+    uint32_t flags
+) {
+    sched::task* t = nullptr;
+    RUN_ELEVATED({
+        uint32_t cpu = (percpu::current_cpu_id() + 1) % smp::cpu_count();
+
+        t = sched::create_kernel_task(entry, arg, name, flags);
+        if (t) {
+            t->add_ref();
+            sched::enqueue_on(t, cpu);
+        }
+    });
+
+    return t;
+}
+
 inline void unpin(sched::task* t) {
     RUN_ELEVATED({
         if (t->release()) {
@@ -126,15 +153,53 @@ inline void unpin(sched::task* t) {
     });
 }
 
+// True when `t` is seen blocked, false when it is seen dead or `SPIN_TIMEOUT_NS` passes first
 inline bool blocks_before_deadline(sched::task* t) {
     uint64_t deadline = clock::now_ns() + SPIN_TIMEOUT_NS;
-    while (t->state.load_acquire() != sched::TASK_STATE_BLOCKED) {
-        if (clock::now_ns() > deadline) {
+    uint32_t state = t->state.load_acquire();
+    while (state != sched::TASK_STATE_BLOCKED) {
+        if (state == sched::TASK_STATE_DEAD || clock::now_ns() > deadline) {
             return false;
         }
+
+        state = t->state.load_acquire();
     }
 
     return true;
+}
+
+// True when `t` is seen blocked and then runs for under a quarter of `SLEEP_WATCH_NS`. A task that spins instead of
+// sleeping runs for nearly all of the watch
+inline bool stays_asleep(sched::task* t) {
+    if (!blocks_before_deadline(t)) {
+        return false;
+    }
+
+    uint64_t ran_before = 0;
+    RUN_ELEVATED(ran_before = sched::read_task_cpu_time_ns(t));
+
+    uint64_t watch_start = clock::now_ns();
+    while (clock::now_ns() - watch_start < SLEEP_WATCH_NS) {
+        brief_delay();
+    }
+
+    uint64_t ran_after = 0;
+    RUN_ELEVATED(ran_after = sched::read_task_cpu_time_ns(t));
+
+    return ran_after - ran_before < SLEEP_WATCH_NS / 4;
+}
+
+// Waits for `done` as `spin_wait` does, and when that gives up, marks `t` for a kill, waits again and returns false.
+// `t` must be pinned and must set `done` once a kill ends its wait, so that it stops using what its test frees
+inline bool finish_or_kill(sched::task* t, const sync::atomic<uint32_t>& done) {
+    if (spin_wait(done)) {
+        return true;
+    }
+
+    RUN_ELEVATED(sched::force_wake_for_kill(t));
+    (void)spin_wait(done);
+
+    return false;
 }
 
 // A process loaded from the program at `path` and not yet started, or null when it cannot be loaded

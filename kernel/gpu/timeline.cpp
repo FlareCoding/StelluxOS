@@ -11,9 +11,6 @@ namespace gpu {
 
 constexpr uint64_t NO_DEADLINE = ~static_cast<uint64_t>(0);
 
-// `poll_wait` adds its timeout to the clock unchecked, so each sleep stays short enough that the sum cannot wrap
-constexpr uint64_t MAX_SLEEP_NS = static_cast<uint64_t>(1) << 62;
-
 namespace {
 
 // The points of one GPU_TIMELINE_WAIT, with a reference to each point's timeline
@@ -211,7 +208,7 @@ __PRIVILEGED_CODE static int32_t wait_on(const wait_set& set, bool want_all, uin
             rc = fs::ERR_INTR;
         } else {
             uint64_t sleep_ns = deadline_ns == NO_DEADLINE ? 0 : deadline_ns - now;
-            sync::poll_wait(pt, sleep_ns < MAX_SLEEP_NS ? sleep_ns : MAX_SLEEP_NS);
+            sync::poll_wait(pt, sleep_ns);
             slept = true;
         }
 

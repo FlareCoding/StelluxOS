@@ -25,6 +25,7 @@ using test_helpers::user_space_scope;
 TEST_SUITE(select_syscall);
 
 constexpr uint64_t MS          = 1000000ULL;
+constexpr uint64_t NS_PER_SEC  = 1000 * MS;
 constexpr uint64_t WAIT_NS     = 200 * MS;
 constexpr uint32_t STRAY_WAKES = 3;
 constexpr size_t   FDSET_BYTES = 128;
@@ -198,6 +199,74 @@ TEST(select_syscall, data_after_stray_wakes_still_ends_the_wait_early) {
     EXPECT_EQ(g_select.result, 1);
     EXPECT_LT(g_select.elapsed_ns, WAIT_NS);
     EXPECT_TRUE(g_select.readable);
+}
+
+// UINT64_MAX ns, the longest timeout whose count of nanoseconds fits in 64 bits
+constexpr select_timespec LONGEST_TIMEOUT = {
+    static_cast<int64_t>(~0ULL / NS_PER_SEC),
+    static_cast<int64_t>(~0ULL % NS_PER_SEC)
+};
+
+static select_run g_longest_pselect;
+
+static void pselect6_with_uint64_max_ns(void* arg) {
+    select_run& run = *static_cast<select_run*>(arg);
+    sched::task* self = sched::current();
+    resource::handle_t h = -1;
+    run.result = syscall::EBADF;
+
+    if (resource::alloc_handle(self->handles, run.reader, resource::resource_type::PIPE, resource::RIGHT_READ,
+                               &h) == resource::HANDLE_OK) {
+        uint64_t* set = run.page->at<uint64_t>(0);
+        for (size_t i = 0; i < FDSET_BYTES / sizeof(uint64_t); i++) {
+            set[i] = 0;
+        }
+
+        set[h / WORD_BITS] |= 1ULL << (h % WORD_BITS);
+        *run.page->at<select_timespec>(TIMESPEC_AT) = LONGEST_TIMEOUT;
+
+        {
+            user_space_scope scope(run.page->ctx);
+            run.result = sys_pselect6(static_cast<uint64_t>(h + 1), run.page->addr, 0, 0,
+                                      run.page->addr + TIMESPEC_AT, 0);
+        }
+
+        run.readable = (set[h / WORD_BITS] >> (h % WORD_BITS)) & 1;
+        (void)resource::close(self, h);
+    }
+
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+// A wait with a timeout whose deadline would pass UINT64_MAX neither returns at once nor spins
+TEST(select_syscall, pselect6_with_a_timeout_of_uint64_max_ns_sleeps_until_a_descriptor_is_ready) {
+    selected_pipe pipe;
+    ASSERT_TRUE(pipe.ready());
+
+    g_longest_pselect.page = &pipe.page;
+    g_longest_pselect.reader = pipe.reader;
+    g_longest_pselect.result = 0;
+    g_longest_pselect.readable = false;
+    g_longest_pselect.done.store_relaxed(0);
+
+    sched::task* t = test_helpers::start_pinned_task_on_another_cpu(
+        pselect6_with_uint64_max_ns,
+        &g_longest_pselect,
+        "pselect_longest",
+        sched::TASK_FLAG_ELEVATED
+    );
+    ASSERT_NOT_NULL(t);
+    bool slept = test_helpers::stays_asleep(t);
+
+    uint8_t byte = 1;
+    (void)ring_buffer_write(pipe.rb, &byte, 1, true);
+    EXPECT_TRUE(test_helpers::finish_or_kill(t, g_longest_pselect.done));
+    unpin(t);
+
+    EXPECT_TRUE(slept);
+    EXPECT_EQ(g_longest_pselect.result, 1);
+    EXPECT_TRUE(g_longest_pselect.readable);
 }
 
 // A probe whose queue outlives it, so an early close is counted rather than crashing

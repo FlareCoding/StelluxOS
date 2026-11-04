@@ -2,26 +2,33 @@
 
 #include "stlx_unit_test.h"
 #include "helpers.h"
+#include "syscall/handlers/sys_fd.h"
 #include "syscall/handlers/sys_pipe.h"
 #include "syscall/handlers/sys_poll.h"
 #include "resource/resource.h"
+#include "resource/handle_table.h"
 #include "sync/poll.h"
+#include "sync/atomic.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "signals/signal.h"
 #include "mm/pmm.h"
 
+using test_helpers::unpin;
 using test_helpers::user_page;
 using test_helpers::user_space_scope;
 
 TEST_SUITE(poll_syscall);
 
-constexpr int64_t  NS_PER_SEC  = 1000000000LL;
-constexpr size_t   PIPE_FDS_AT = 0;
-constexpr size_t   POLL_FD_AT  = 64;
-constexpr size_t   TIMEOUT_AT  = 128;
-constexpr size_t   SIGSET_AT   = 192;
-constexpr uint64_t SIGSET_SIZE = sizeof(signals::sig_set_t);
+constexpr int64_t  NS_PER_SEC        = 1000000000LL;
+constexpr size_t   PIPE_FDS_AT       = 0;
+constexpr size_t   POLL_FD_AT        = 64;
+constexpr size_t   TIMEOUT_AT        = 128;
+constexpr size_t   SIGSET_AT         = 192;
+constexpr size_t   WAITER_POLL_FD_AT = 256;
+constexpr size_t   WAITER_TIMEOUT_AT = 320;
+constexpr size_t   BYTE_AT           = 384;
+constexpr uint64_t SIGSET_SIZE       = sizeof(signals::sig_set_t);
 
 // Long enough that each round subscribes, although the polled end is always ready
 constexpr uint64_t WAIT_MS = 1000;
@@ -37,12 +44,21 @@ struct user_timespec {
     int64_t tv_nsec;
 };
 
+// A ppoll on a pipe's read end, issued from a task of its own since the test body must never block
+struct read_end_ppoll {
+    user_page*                 page;
+    resource::resource_object* reader;
+    int64_t                    result;
+    sync::atomic<uint32_t>     done;
+};
+
 // A pipe polled on its write end, which is always ready, since the test body must never block
 struct polled_pipe {
-    sched::task* task;
-    user_page    page;
-    int32_t      read_fd  = -1;
-    int32_t      write_fd = -1;
+    sched::task*               task;
+    user_page                  page;
+    int32_t                    read_fd  = -1;
+    int32_t                    write_fd = -1;
+    resource::resource_object* reader   = nullptr;
 
     polled_pipe() : task(sched::current()) {
         if (!page.ready()) {
@@ -58,10 +74,15 @@ struct polled_pipe {
 
         read_fd = page.at<int32_t>(PIPE_FDS_AT)[0];
         write_fd = page.at<int32_t>(PIPE_FDS_AT)[1];
+        (void)resource::get_handle_object(task->handles, read_fd, resource::RIGHT_READ, &reader);
         *page.at<user_pollfd>(POLL_FD_AT) = {write_fd, static_cast<int16_t>(sync::POLL_OUT), 0};
     }
 
     ~polled_pipe() {
+        if (reader) {
+            resource::resource_release(reader);
+        }
+
         if (read_fd >= 0) {
             (void)resource::close(task, read_fd);
             (void)resource::close(task, write_fd);
@@ -86,6 +107,73 @@ TEST(poll_syscall, ppoll_reports_a_ready_descriptor) {
 
     EXPECT_EQ(ppoll_write_end(pipe, NS_PER_SEC - 1), 1);
     EXPECT_EQ(pipe.revents(), static_cast<int16_t>(sync::POLL_OUT));
+}
+
+// UINT64_MAX ns, the longest timeout whose count of nanoseconds fits in 64 bits
+constexpr user_timespec LONGEST_TIMEOUT = {
+    static_cast<int64_t>(~0ULL / NS_PER_SEC),
+    static_cast<int64_t>(~0ULL % NS_PER_SEC)
+};
+
+static read_end_ppoll g_longest_ppoll;
+
+static void ppoll_read_end_with_uint64_max_ns(void* arg) {
+    read_end_ppoll& run = *static_cast<read_end_ppoll*>(arg);
+    sched::task* self = sched::current();
+    resource::handle_t h = -1;
+    run.result = syscall::EBADF;
+
+    if (resource::alloc_handle(self->handles, run.reader, resource::resource_type::PIPE, resource::RIGHT_READ,
+                               &h) == resource::HANDLE_OK) {
+        *run.page->at<user_pollfd>(WAITER_POLL_FD_AT) = {h, static_cast<int16_t>(sync::POLL_IN), 0};
+        *run.page->at<user_timespec>(WAITER_TIMEOUT_AT) = LONGEST_TIMEOUT;
+
+        {
+            user_space_scope scope(run.page->ctx);
+            run.result = sys_ppoll(run.page->addr + WAITER_POLL_FD_AT, 1, run.page->addr + WAITER_TIMEOUT_AT, 0, 0, 0);
+        }
+
+        (void)resource::close(self, h);
+    }
+
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+// A wait with a timeout whose deadline would pass UINT64_MAX neither returns at once nor spins
+TEST(poll_syscall, ppoll_with_a_timeout_of_uint64_max_ns_sleeps_until_a_descriptor_is_ready) {
+    polled_pipe pipe;
+    ASSERT_TRUE(pipe.ready());
+    ASSERT_NOT_NULL(pipe.reader);
+
+    g_longest_ppoll.page = &pipe.page;
+    g_longest_ppoll.reader = pipe.reader;
+    g_longest_ppoll.result = 0;
+    g_longest_ppoll.done.store_relaxed(0);
+
+    sched::task* t = test_helpers::start_pinned_task_on_another_cpu(
+        ppoll_read_end_with_uint64_max_ns,
+        &g_longest_ppoll,
+        "ppoll_longest",
+        sched::TASK_FLAG_ELEVATED
+    );
+    ASSERT_NOT_NULL(t);
+    bool slept = test_helpers::stays_asleep(t);
+
+    *pipe.page.at<uint8_t>(BYTE_AT) = 1;
+    int64_t written = 0;
+    {
+        user_space_scope scope(pipe.page.ctx);
+        written = sys_write(static_cast<uint64_t>(pipe.write_fd), pipe.page.addr + BYTE_AT, 1, 0, 0, 0);
+    }
+
+    EXPECT_TRUE(test_helpers::finish_or_kill(t, g_longest_ppoll.done));
+    unpin(t);
+
+    EXPECT_TRUE(slept);
+    EXPECT_EQ(written, 1);
+    EXPECT_EQ(g_longest_ppoll.result, 1);
+    EXPECT_EQ(pipe.page.at<user_pollfd>(WAITER_POLL_FD_AT)->revents, static_cast<int16_t>(sync::POLL_IN));
 }
 
 TEST(poll_syscall, ppoll_refuses_out_of_range_nanoseconds) {

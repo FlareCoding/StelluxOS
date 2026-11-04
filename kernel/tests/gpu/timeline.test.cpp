@@ -4,8 +4,6 @@
 #include "fake_backend.h"
 #include "clock/clock.h"
 #include "fs/fs.h"
-#include "percpu/percpu.h"
-#include "smp/smp.h"
 
 TEST_SUITE(gpu_timeline);
 
@@ -13,6 +11,8 @@ using gpu_test::close_handle;
 using gpu_test::session;
 using gpu_test::write_wait;
 using test_helpers::spin_wait;
+using test_helpers::start_pinned_task_on_another_cpu;
+using test_helpers::stays_asleep;
 using test_helpers::unpin;
 using test_helpers::user_page;
 using test_helpers::user_space_scope;
@@ -22,9 +22,6 @@ constexpr uint64_t PASSED_DEADLINE = 0;
 constexpr uint64_t SHORT_WAIT_NS = 100 * 1000 * 1000;
 constexpr uint32_t WAIT_ANY = 0;
 constexpr uint32_t UNKNOWN_WAIT_FLAG = 0x2u;
-
-// Many scheduler ticks long, so a waiter's CPU time read up to a tick behind still tells sleeping from spinning
-constexpr uint64_t SLEEP_WATCH_NS = 200 * 1000 * 1000;
 
 // A wait issued from a task of its own, through its own file, page and handles, since the test body must never block.
 // Static per test, since a task that never finishes keeps using it
@@ -75,23 +72,6 @@ static void run_wait_on_its_task(void* arg) {
     sched::exit(0);
 }
 
-// Starts `run`'s task as `start_pinned_task` does, on a CPU other than the test task's. The test task is its CPU's idle
-// task, so a wait that spins there rather than sleeps would hang the run, not fail its test
-static sched::task* start_waiter_task(gpu_waiter& run) {
-    sched::task* t = nullptr;
-    RUN_ELEVATED({
-        uint32_t cpu = (percpu::current_cpu_id() + 1) % smp::cpu_count();
-
-        t = sched::create_kernel_task(run_wait_on_its_task, &run, "gpu_wait", sched::TASK_FLAG_ELEVATED);
-        if (t) {
-            t->add_ref();
-            sched::enqueue_on(t, cpu);
-        }
-    });
-
-    return t;
-}
-
 // Starts `run` waiting for each of `handles` to reach its target, and with no deadline waits until it blocks
 static bool start_wait(
     session& s,
@@ -119,29 +99,8 @@ static bool start_wait(
         run.targets[i] = targets[i];
     }
 
-    run.task = start_waiter_task(run);
+    run.task = start_pinned_task_on_another_cpu(run_wait_on_its_task, &run, "gpu_wait", sched::TASK_FLAG_ELEVATED);
     return run.task && (deadline != NO_DEADLINE || test_helpers::blocks_before_deadline(run.task));
-}
-
-// True when `t` blocks and then runs for under a quarter of SLEEP_WATCH_NS. A wait that spins instead of sleeping runs
-// for nearly all of it
-static bool stays_asleep(sched::task* t) {
-    if (!test_helpers::blocks_before_deadline(t)) {
-        return false;
-    }
-
-    uint64_t ran_before = 0;
-    RUN_ELEVATED(ran_before = sched::read_task_cpu_time_ns(t));
-
-    uint64_t watch_start = clock::now_ns();
-    while (clock::now_ns() - watch_start < SLEEP_WATCH_NS) {
-        test_helpers::brief_delay();
-    }
-
-    uint64_t ran_after = 0;
-    RUN_ELEVATED(ran_after = sched::read_task_cpu_time_ns(t));
-
-    return ran_after - ran_before < SLEEP_WATCH_NS / 4;
 }
 
 // Waits for the task to finish, false when it has not by the spin deadline

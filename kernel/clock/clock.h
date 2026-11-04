@@ -38,6 +38,17 @@ __PRIVILEGED_CODE int32_t init_ap();
 uint64_t now_ns();
 
 /**
+ * @brief now_ns() plus `timeout_ns`, or UINT64_MAX when that sum would pass
+ * UINT64_MAX. The clock never reaches UINT64_MAX, so a wait for that deadline
+ * has no time limit.
+ */
+inline uint64_t deadline_after_ns(uint64_t timeout_ns) {
+    uint64_t now = now_ns();
+    bool sum_would_wrap = timeout_ns > ~0ULL - now;
+    return sum_would_wrap ? ~0ULL : now + timeout_ns;
+}
+
+/**
  * @brief Counter frequency in Hz (for debug/logging).
  */
 uint64_t freq_hz();
