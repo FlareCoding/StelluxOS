@@ -1,6 +1,7 @@
 #ifndef STELLUX_DRIVERS_GRAPHICS_NVIDIA_ENGINES_H
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_ENGINES_H
 
+#include "common/list.h"
 #include "common/types.h"
 #include "dma/dma.h"
 #include "drivers/graphics/nvidia/address_space.h"
@@ -20,6 +21,7 @@
 #include "mm/shmem.h"
 #include "rc/reaper.h"
 #include "sync/atomic.h"
+#include "sync/spinlock.h"
 
 namespace drivers::nvidia {
 
@@ -105,7 +107,14 @@ struct backend_queue : gpu::queue {
     uint32_t        slot = 0;            // its semaphore and window in the space
     uint32_t        channel_id = 0;      // on the copy engine's runlist
     queue_operation task_operation = {}; // the creation
+
+    gpu::core_queue*       core = nullptr;
+    list::node             link;              // on the handler's list until its stop or the failure's report
+    sync::atomic<uint64_t> last_run{0};       // the sequence number `run` got last
+    uint64_t               last_reported = 0; // the last finished one reported to the core, under the list's lock
 };
+
+using backend_queue_list = list::head<backend_queue, &backend_queue::link>;
 
 /**
  * The GPU's engines as the driver task brings them up once `attach()` has
@@ -207,10 +216,12 @@ public:
     void run(gpu::queue* q, uint64_t sequence, const void* commands, size_t size) override;
 
     /**
-     * @brief Clear the copy engine's nonstall vector when it is pending and
-     * have the copy channel read its semaphore, from the card's interrupt
+     * @brief When the copy engine's nonstall vector is pending, clear it, have
+     * the copy channel read its semaphore, and report to the GPU core each
+     * listed queue's last finished submission, from the card's interrupt
      * handler. Does nothing before `bring_up` creates the copy channel or after
-     * it masks the vector. Takes the copy channel's spinlock and never sleeps.
+     * it masks the vector. Takes the copy channel's and the queue list's
+     * spinlocks, calls `gpu::progress` under the list's, and never sleeps.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void service_interrupt(registers& bar0);
@@ -239,7 +250,7 @@ private:
     // Has the driver task report the failed GPU to the core, once, from any thread
     void report_failure();
 
-    // The driver task's half of `report_failure()`
+    // The driver task's half of `report_failure()`, which empties the handler's list before `gpu::device_failed`
     static void report_failure_on_task(operation& op);
 
     // A creation's error once the driver task refused it: `gpu::ERR_DEVICE`, reported, once the GPU failed, else
@@ -299,6 +310,11 @@ private:
 
     // A bit per channel id held on the copy engine's runlist, which only the driver task touches
     uint64_t m_channel_ids[CHANNEL_IDS / CHANNEL_IDS_PER_WORD] = {};
+
+    // The queues whose semaphores the handler reads, from their creation until their stop or the failure's report,
+    // under the spinlock taken with interrupts off
+    sync::spinlock     m_queues_lock = sync::SPINLOCK_INIT;
+    backend_queue_list m_queues;
 };
 
 } // namespace drivers::nvidia

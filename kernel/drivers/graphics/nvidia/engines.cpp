@@ -97,6 +97,27 @@ static uint64_t slot_push_buffer_address(uint32_t slot) {
     return slot_gpfifo_address(slot) + GPFIFO_BYTES;
 }
 
+static uintptr_t semaphore_virt(const backend_queue& queue) {
+    return queue.space->semaphores.virt + queue.slot * sizeof(uint32_t);
+}
+
+// Reports to the GPU core the last submission `queue`'s semaphore shows finished, under the queue list's lock
+__PRIVILEGED_CODE static void report_progress(backend_queue& queue) {
+    // Read before `last_run`, which `run` stores before its doorbell, so a release seen never meets an older last run
+    uint32_t released = mmio::read32(semaphore_virt(queue));
+    uint64_t last_run = queue.last_run.load_relaxed();
+
+    // The low 32 bits of a sequence number at most GPU_QUEUE_PENDING_MAX behind the last run. Widening against the last
+    // run rather than the last reported keeps a value the queue's own commands wrote at or below the last run
+    uint32_t behind = static_cast<uint32_t>(last_run) - released;
+    if (behind >= last_run - queue.last_reported) {
+        return;
+    }
+
+    queue.last_reported = last_run - behind;
+    gpu::progress(queue.core, queue.last_reported);
+}
+
 // Copies out range `index` of a command list, which the GPU core hands over with no promise of alignment
 static gpu_nvidia_range range_at(const void* commands, size_t index) {
     gpu_nvidia_range range;
@@ -124,6 +145,7 @@ engines::engines(
     : m_firmware(fw), m_objects(objects), m_memory(memory), m_operations(operations), m_failed(failed) {
     m_failure_report.work = report_failure_on_task;
     m_failure_report.owner = this;
+    m_queues.init();
 }
 
 int32_t engines::bring_up(registers& bar0, const dma::device_profile& card, const chip_info& chip) {
@@ -479,7 +501,7 @@ int32_t engines::unmap(gpu::space* s, uint64_t va, uint64_t size) {
     return gpu::ERR_DEVICE;
 }
 
-int32_t engines::create_queue(gpu::space* s, uint32_t, gpu::core_queue*, gpu::queue** out) {
+int32_t engines::create_queue(gpu::space* s, uint32_t, gpu::core_queue* core, gpu::queue** out) {
     if (has_failed()) {
         return gpu::ERR_DEVICE;
     }
@@ -490,6 +512,7 @@ int32_t engines::create_queue(gpu::space* s, uint32_t, gpu::core_queue*, gpu::qu
     }
 
     queue->space = static_cast<backend_space*>(s);
+    queue->core = core;
     queue->task_operation.work = create_queue_on_task;
     queue->task_operation.owner = this;
     queue->task_operation.queue = queue;
@@ -548,6 +571,9 @@ void engines::run(gpu::queue* q, uint64_t sequence, const void* commands, size_t
     write_release(words, slot_semaphore_address(queue->slot), static_cast<uint32_t>(sequence));
 
     queue->user_channel.write_entry(make_gpfifo_entry(slot_address, RELEASE_WORDS, gpfifo_fetch::ahead));
+
+    // Stored before the doorbell, so the handler never reads this release with an older last run
+    queue->last_run.store_relaxed(sequence);
     queue->user_channel.kick();
 }
 
@@ -559,9 +585,18 @@ __PRIVILEGED_CODE void engines::service_interrupt(registers& bar0) {
         return;
     }
 
-    if (acknowledge_nonstall_interrupt(bar0, m_copy_vector)) {
-        m_copy_channel->service();
+    if (!acknowledge_nonstall_interrupt(bar0, m_copy_vector)) {
+        return;
     }
+
+    m_copy_channel->service();
+
+    sync::irq_state irq = sync::spin_lock_irqsave(m_queues_lock);
+    for (backend_queue& queue : m_queues) {
+        report_progress(queue);
+    }
+
+    sync::spin_unlock_irqrestore(m_queues_lock, irq);
 }
 
 int32_t engines::check_copy_channel() {
@@ -731,6 +766,16 @@ void engines::report_failure() {
 
 void engines::report_failure_on_task(operation& op) {
     engines& gpu_engines = *static_cast<failure_operation&>(op).owner;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(gpu_engines.m_queues_lock);
+        while (!gpu_engines.m_queues.empty()) {
+            gpu_engines.m_queues.pop_front();
+        }
+
+        sync::spin_unlock_irqrestore(gpu_engines.m_queues_lock, irq);
+    });
+
     RUN_ELEVATED(gpu::device_failed(gpu_engines.m_device));
 }
 
@@ -805,7 +850,17 @@ void engines::destroy_space_on_task(operation& op) {
 
 void engines::create_queue_on_task(operation& op) {
     auto& creation = static_cast<queue_operation&>(op);
-    op.result = creation.owner->start_queue(*creation.queue);
+    engines& gpu_engines = *creation.owner;
+    op.result = gpu_engines.start_queue(*creation.queue);
+    if (op.result != OK) {
+        return;
+    }
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(gpu_engines.m_queues_lock);
+        gpu_engines.m_queues.push_back(creation.queue);
+        sync::spin_unlock_irqrestore(gpu_engines.m_queues_lock, irq);
+    });
 }
 
 int32_t engines::start_queue(backend_queue& queue) {
@@ -822,6 +877,9 @@ int32_t engines::start_queue(backend_queue& queue) {
 
     queue.slot = static_cast<uint32_t>(__builtin_ctz(free_slots));
     space.queue_slots |= 1u << queue.slot;
+
+    // The slot's semaphore may hold a value written before this queue took the slot
+    mmio::write32(semaphore_virt(queue), 0);
 
     int32_t dma_rc = dma::OK;
     RUN_ELEVATED({
