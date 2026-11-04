@@ -574,6 +574,27 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
         /* Deferred until the screenshot consumer exists, the wire needs
          * a completion message first */
         return;
+    case SWP_MSG_GET_MODES:
+        if (hdr.length != sizeof(swp_get_modes)) {
+            break;
+        }
+
+        handle_get_modes(c, payload);
+        return;
+    case SWP_MSG_SET_MODE:
+        if (hdr.length != sizeof(swp_set_mode)) {
+            break;
+        }
+
+        queue_mode_message(c, hdr.type, payload);
+        return;
+    case SWP_MSG_KEEP_MODE:
+        if (hdr.length != sizeof(swp_keep_mode)) {
+            break;
+        }
+
+        queue_mode_message(c, hdr.type, payload);
+        return;
     default:
         break;
     }
@@ -582,6 +603,8 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
 }
 
 void server::drop_client(dm_client& c) {
+    forget_mode_client(c);
+
     while (!c.windows.empty()) {
         destroy_window_tree(c, c.windows.back()->win_id);
     }
@@ -616,7 +639,7 @@ bool server::send_to(dm_client& c, uint16_t type,
 
     /* Queued bytes must go first to preserve message order */
     if (c.out_q.empty()) {
-        ssize_t n = write(c.fd, msg, total);
+        ssize_t n = send(c.fd, msg, total, MSG_NOSIGNAL);
         if (n == static_cast<ssize_t>(total)) {
             return true;
         }
@@ -722,7 +745,7 @@ void server::flush_client(dm_client& c) {
         return;
     }
 
-    ssize_t n = write(c.fd, c.out_q.data(), c.out_q.size());
+    ssize_t n = send(c.fd, c.out_q.data(), c.out_q.size(), MSG_NOSIGNAL);
     if (n < 0) {
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
             c.dead = true;

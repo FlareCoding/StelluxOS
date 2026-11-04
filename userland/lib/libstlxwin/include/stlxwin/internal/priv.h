@@ -59,6 +59,10 @@ struct stlxwin_conn {
     char*  clip_text;
     size_t clip_len;
     int    clip_pending;        /* a CLIPBOARD_GET answer is outstanding */
+
+    /* Last MODES of each output, allocated at the first watch */
+    swp_modes* modes;
+    uint32_t   modes_kept;      /* one bit per output whose MODES arrived */
 };
 
 /* conn.c */
@@ -75,5 +79,8 @@ void stlxwin_window_free(struct stlxwin_window* win);
 void stlxwin_buffers_release_slot(struct stlxwin_window* win,
                                   uint32_t buf_id);
 void stlxwin_buffers_free_all(struct stlxwin_window* win);
+
+/* modes.c */
+stlxwin_mode stlxwin_mode_from_swp(const swp_mode* mode);
 
 #endif /* STLXWIN_INTERNAL_PRIV_H */

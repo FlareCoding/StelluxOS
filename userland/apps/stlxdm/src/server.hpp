@@ -121,7 +121,42 @@ struct dm_client {
      * in flight are ignored until the client learns and destroys them */
     std::vector<uint32_t> dismissed_windows;
 
+    /* One bit per output whose MODES the client asked for */
+    uint32_t mode_watches = 0;
+
     explicit dm_client(int sock) : fd(sock) {}
+};
+
+/* A client's SET_MODE or KEEP_MODE, kept until the main loop has read
+ * the wakeup's messages, since a request waits for a relight */
+struct dm_mode_message {
+    dm_client* client = nullptr;
+    uint16_t   type = 0;        /* SWP_MSG_SET_MODE or SWP_MSG_KEEP_MODE */
+    uint32_t   output = 0;
+    uint32_t   value = 0;       /* SET_MODE's flags or KEEP_MODE's keep */
+    swp_mode   mode = {};
+};
+
+/* A mode request waiting to be made or being followed, from a
+ * client's message or from stlxdm itself */
+struct dm_mode_request {
+    dm_client* client = nullptr;  /* null when nobody waits for the answer */
+    uint32_t   output = 0;
+    uint32_t   outcome = 0;       /* the SWP_MODE_* it answers */
+    int32_t    result = 0;        /* GFXFB_SET_MODE's, once made */
+    swp_mode   mode = {};
+    swp_mode   previous = {};     /* the output's mode before a client's request */
+};
+
+/* The one trial at a time, on any output, from the answer to its lit
+ * request until it is kept, set back or ended by an output event */
+struct dm_trial {
+    bool       running = false;
+    dm_client* client = nullptr;  /* the asking client, valid only while running */
+    uint32_t   output = 0;
+    swp_mode   mode = {};
+    swp_mode   previous = {};
+    uint64_t   deadline_ns = 0;
 };
 
 /* The protocol server: listens, accepts, pumps client sockets, routes
@@ -217,6 +252,23 @@ public:
      * wakeup after input, protocol, and compose work. */
     void flush_events();
 
+    /* Answers the messages queued ahead of the next request, then makes
+     * it and reads its output events. Returns false if none waits. */
+    bool start_mode_request();
+
+    /* Answers the started request, starting a lit trial's timer, or
+     * leaves the previous mode or the default as the next request. */
+    void finish_mode_request(presenter::output_state state);
+
+    /* Sends the watchers of `outputs`, one bit each, their MODES, and
+     * ends a trial whose output went dark or to another mode. */
+    void outputs_changed(uint32_t outputs);
+
+    /* The trial timer's poll bound and tick, which leaves the trial's
+     * set-back waiting once it runs out. */
+    int64_t mode_timeout_ns(uint64_t now) const;
+    void mode_tick(uint64_t now);
+
     /* Input routing entry points, fed by the input layer. */
     void route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
                    bool repeat);
@@ -282,6 +334,16 @@ private:
     void scene_map(dm_window* w);
     void scene_raise(dm_window* w);
     void scene_damage_window(dm_window* w);
+
+    /* modes.cpp */
+    void handle_get_modes(dm_client& c, const uint8_t* payload);
+    void queue_mode_message(dm_client& c, uint16_t type, const uint8_t* payload);
+    void take_mode_message(const dm_mode_message& m);
+    void make_mode_request(dm_mode_request& request);
+    void answer_mode(dm_client* c, uint32_t output, int32_t result, uint32_t outcome);
+    void send_modes(dm_client& c, uint32_t output);
+    void end_trial_with_set_back(dm_client* answer_to);
+    void forget_mode_client(dm_client& c);
 
     bool has_latch_work() const;
     bool has_configure_work() const;
@@ -380,6 +442,15 @@ private:
 
     /* One shared text clipboard, last writer wins */
     std::vector<char> m_clipboard;
+
+    /* Mode messages in arrival order, and the next request to make, a
+     * message's or stlxdm's own, made before any later message */
+    std::vector<dm_mode_message> m_mode_messages;
+    dm_mode_request m_next_request;
+    bool m_next_request_waiting = false;
+
+    dm_mode_request m_request;  /* the one being followed */
+    dm_trial m_trial;
 };
 
 #endif
