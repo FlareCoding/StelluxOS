@@ -312,17 +312,105 @@ void engines::release_memory(gpu::memory* mem) {
     RUN_ELEVATED(m_operations.post_to_task(memory->task_operation));
 }
 
-int32_t engines::create_space(gpu::context*, gpu::space**) {
-    return gpu::ERR_DEVICE;
+int32_t engines::create_space(gpu::context*, gpu::space** out) {
+    if (has_failed()) {
+        return gpu::ERR_DEVICE;
+    }
+
+    auto* space = heap::ualloc_new<backend_space>(m_firmware, m_objects, m_memory, m_failed);
+    if (space == nullptr) {
+        return gpu::ERR_NO_MEMORY;
+    }
+
+    space->task_operation.work = create_space_on_task;
+    space->task_operation.owner = this;
+    space->task_operation.space = space;
+
+    int32_t rc = OK;
+    RUN_ELEVATED(rc = m_operations.run_on_task(space->task_operation));
+    if (rc != OK) {
+        heap::ufree_delete(space);
+        return refused_creation();
+    }
+
+    *out = space;
+
+    return gpu::OK;
 }
 
-void engines::destroy_space(gpu::space*) {}
-
-int32_t engines::map(gpu::space*, uint64_t, gpu::memory*, uint64_t, uint64_t, uint32_t, bool) {
-    return gpu::ERR_DEVICE;
+void engines::destroy_space(gpu::space* s) {
+    auto* space = static_cast<backend_space*>(s);
+    space->task_operation.work = destroy_space_on_task;
+    RUN_ELEVATED(m_operations.post_to_task(space->task_operation));
 }
 
-int32_t engines::unmap(gpu::space*, uint64_t, uint64_t) {
+int32_t engines::map(
+    gpu::space* s,
+    uint64_t va,
+    gpu::memory* mem,
+    uint64_t offset,
+    uint64_t size,
+    uint32_t kind,
+    bool read_only
+) {
+    if (has_failed()) {
+        return gpu::ERR_DEVICE;
+    }
+
+    if (kind > LAST_UNCOMPRESSED_KIND) {
+        return gpu::ERR_REFUSED;
+    }
+
+    auto* space = static_cast<backend_space*>(s);
+    auto* memory = static_cast<backend_memory*>(mem);
+    bool is_system = memory->placement == GPU_PLACEMENT_SYSTEM;
+    uint64_t start = is_system ? memory->pages.phys : memory->range.offset;
+    memory_run run = {.address = start + offset, .bytes = size};
+    page_mapping mapping = {
+        .aperture = is_system ? page_aperture::system_memory : page_aperture::video_memory,
+        .kind = static_cast<uint8_t>(kind),
+        .read_only = read_only,
+    };
+
+    // The GPU core maps whole pages inside the memory, so the range lies inside the runs
+    const memory_run* runs = &run;
+    size_t run_count = 1;
+    if (memory->wrapped_pages != nullptr) {
+        runs = memory->wrapped_pages + offset / pmm::PAGE_SIZE;
+        run_count = size / pmm::PAGE_SIZE;
+    }
+
+    int32_t rc = space->addresses.page_tables().map(va, runs, run_count, mapping);
+    if (rc == OK) {
+        return gpu::OK;
+    }
+
+    // A failed update set the failed mark, and the card may then translate the range
+    if (has_failed()) {
+        report_failure();
+        return gpu::ERR_DEVICE;
+    }
+
+    return rc == ERR_NO_MEMORY ? gpu::ERR_NO_MEMORY : gpu::ERR_REFUSED;
+}
+
+int32_t engines::unmap(gpu::space* s, uint64_t va, uint64_t size) {
+    if (has_failed()) {
+        return gpu::ERR_DEVICE;
+    }
+
+    auto* space = static_cast<backend_space*>(s);
+    if (space->addresses.page_tables().unmap(va, size) == OK) {
+        return gpu::OK;
+    }
+
+    // The range may stay translated, so an unmap the tables refuse fails the device unless the GPU already failed
+    if (has_failed()) {
+        report_failure();
+    } else {
+        fail_device("the page tables refused an unmap");
+    }
+
     return gpu::ERR_DEVICE;
 }
 
@@ -528,6 +616,15 @@ void engines::report_failure_on_task(operation& op) {
     RUN_ELEVATED(gpu::device_failed(gpu_engines.m_device));
 }
 
+int32_t engines::refused_creation() {
+    if (!has_failed()) {
+        return gpu::ERR_NO_MEMORY;
+    }
+
+    report_failure();
+    return gpu::ERR_DEVICE;
+}
+
 void engines::release_on_task(operation& op) {
     auto& release = static_cast<memory_operation&>(op);
     engines& gpu_engines = *release.owner;
@@ -563,6 +660,28 @@ rc::reaper::cleanup_result engines::release_on_reaper(backend_memory* mem) {
     heap::ufree_delete(mem);
 
     return rc::reaper::DONE;
+}
+
+void engines::create_space_on_task(operation& op) {
+    auto& creation = static_cast<space_operation&>(op);
+    op.result = creation.space->addresses.create();
+}
+
+void engines::destroy_space_on_task(operation& op) {
+    auto& destroy = static_cast<space_operation&>(op);
+    engines& gpu_engines = *destroy.owner;
+    backend_space* space = destroy.space;
+
+    // A failed GPU may still walk the tables, so they stay in video memory with the firmware's object
+    if (!gpu_engines.has_failed()) {
+        space->addresses.destroy();
+    }
+
+    heap::ufree_delete(space);
+
+    if (gpu_engines.has_failed()) {
+        gpu_engines.report_failure();
+    }
 }
 
 } // namespace drivers::nvidia
