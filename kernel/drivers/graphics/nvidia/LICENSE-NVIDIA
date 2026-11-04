@@ -533,9 +533,11 @@ src/common/inc/swref/published/turing/tu102/dev_vm.h
     fields (the low 28 bits of the root page directory's offset in 4 KiB units
     in bits 31:4 and the aperture in bit 1, which is 0 for video memory), in
     bar1.h, bar1.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_video_memory.test.cpp, and the second
-    register's field (the offset's other bits in bits 19:0), in bar1.h, bar1.cpp
-    and kernel/tests/graphics/nvidia_falcon.test.cpp
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, the second register's
+    field (the offset's other bits in bits 19:0), in bar1.h, bar1.cpp and
+    kernel/tests/graphics/nvidia_falcon.test.cpp, and the doorbell
+    NV_VIRTUAL_FUNCTION_DOORBELL at 0x30090 in the block, so 0xBB0090 in BAR0,
+    in channel.cpp and kernel/tests/graphics/nvidia_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
 src/common/inc/swref/published/ampere/ga100/dev_vm.h
@@ -1834,10 +1836,11 @@ src/common/sdk/nvidia/inc/class/cl2080.h
 
 src/common/sdk/nvidia/inc/nvlimits.h
     the length of the process name in a client's allocation parameters, 100, in
-    rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
-    NV_MAX_HEADS, the most heads NVIDIA's driver allows on one GPU, 4, in
-    chip.h, chip.cpp, kernel/tests/graphics/nvidia_display_heads.test.cpp and
-    kernel/tests/graphics/nvidia_display_active_heads.test.cpp
+    rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp, NV_MAX_HEADS,
+    the most heads NVIDIA's driver allows on one GPU, 4, in chip.h, chip.cpp,
+    kernel/tests/graphics/nvidia_display_heads.test.cpp and
+    kernel/tests/graphics/nvidia_display_active_heads.test.cpp, and
+    NV_MAX_SUBDEVICES, 8, the most subdevices one device holds, in rm.h
     SPDX-FileCopyrightText: Copyright (c) 2017 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/kernel/inc/vgpu/rpc.h
@@ -1858,10 +1861,11 @@ src/nvidia/src/kernel/gpu/device.c
 
 src/nvidia/generated/g_kernel_fifo_nvoc.h
     KERNEL_PID, NVIDIA's process number for the kernel, in rm.h and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the data
-    words of a device info table entry hold the engine's
-    ENGINE_INFO_TYPE_RM_ENGINE_TYPE at index 2 and its ENGINE_INFO_TYPE_RUNLIST
-    at index 3, in rm.h and kernel/tests/graphics/nvidia_engine_table.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the data words of
+    a device info table entry hold the engine's ENGINE_INFO_TYPE_RM_ENGINE_TYPE
+    at index 2 and its ENGINE_INFO_TYPE_RUNLIST at index 3, in rm.h and
+    kernel/tests/graphics/nvidia_engine_table.test.cpp, and the 2 runqueues a
+    channel group's channels can be fetched on, in channel.h
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/libraries/resserv/resserv.h
@@ -1897,9 +1901,11 @@ src/common/sdk/nvidia/inc/nvos.h
     with the index NV_VASPACE_ALLOCATION_INDEX_GPU_NEW, 0, asking for a new
     address space, the vaSize of 0 for the default size and the flag
     NV_VASPACE_ALLOCATION_FLAGS_IS_EXTERNALLY_OWNED, bit 3, of an address space
-    whose page tables its client owns, in rm.h, and the parameters' size, the
-    flags' word and the flag, in
-    kernel/tests/graphics/nvidia_address_space.test.cpp
+    whose page tables its client owns, in rm.h, the parameters' size, the flags'
+    word and the flag, in kernel/tests/graphics/nvidia_address_space.test.cpp,
+    the layout of NV_CHANNEL_GROUP_ALLOCATION_PARAMETERS, a channel group's
+    allocation parameters, in rm.h, and its size in
+    kernel/tests/graphics/nvidia_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-rm.c
@@ -2886,14 +2892,18 @@ src/nvidia/generated/g_mem_desc_nvoc.h
     is an offset from video memory's start, in rm.h, instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp, ADDR_SYSMEM, the
     address space of system memory, 1, in rm.h, core_channel.cpp and
-    kernel/tests/graphics/nvidia_core_channel.test.cpp, and that an address in
-    it is a physical address on the system bus, in rm.h
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, that an address in it is
+    a physical address on the system bus, in rm.h, and ADDR_SYSMEM and
+    ADDR_FBMEM in kernel/tests/graphics/nvidia_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/os/nv_memory_type.h
     NV_MEMORY_WRITECOMBINED, the caching of memory the CPU maps write-combined,
     2, in rm.h, instance_memory.cpp and
-    kernel/tests/graphics/nvidia_instance_memory.test.cpp
+    kernel/tests/graphics/nvidia_instance_memory.test.cpp, and NV_MEMORY_CACHED,
+    0, and NV_MEMORY_UNCACHED, 1, the caching of memory the CPU caches and of
+    memory it maps uncached, in rm.h and
+    kernel/tests/graphics/nvidia_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/cl0073.h
@@ -3728,14 +3738,19 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     MEM_OP_D's OPERATION MEMBAR, 5, in bits 31:27, SEM_ADDR_LO to SEM_EXECUTE
     from 0x5C, with SEM_EXECUTE's OPERATION RELEASE, 1, RELEASE_WFI DIS and
     PAYLOAD_SIZE 32BIT, and WFI, 0x78, in channel_methods.h, channel_methods.cpp
-    and kernel/tests/graphics/nvidia_channel_methods.test.cpp, and that an
-    entry's FETCH UNCONDITIONAL, LEVEL MAIN and SYNC PROCEED are each 0, in
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    and kernel/tests/graphics/nvidia_channel_methods.test.cpp, that an entry's
+    FETCH UNCONDITIONAL, LEVEL MAIN and SYNC PROCEED are each 0, in
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp, and the class number
+    AMPERE_CHANNEL_GPFIFO_A, 0xC56F, which chip.cpp gives GA102's channels, in
+    chip.cpp, kernel/tests/graphics/nvidia.test.cpp and
+    kernel/tests/graphics/nvidia_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc7b5.h
-    the class number AMPERE_DMA_COPY_B, 0xC7B5, in
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp, and its methods
+    the class number AMPERE_DMA_COPY_B, 0xC7B5, which chip.cpp gives GA102's
+    copy objects, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp and
+    kernel/tests/graphics/nvidia_channel.test.cpp, and its methods
     SET_DST_PHYS_MODE, 0x264, with TARGET LOCAL_FB, 0, LAUNCH_DMA, 0x300, with
     DATA_TRANSFER_TYPE NON_PIPELINED, 2, in bits 1:0, FLUSH_ENABLE in bit 2,
     SRC_MEMORY_LAYOUT and DST_MEMORY_LAYOUT PITCH in bits 7 and 8, REMAP_ENABLE
@@ -3765,7 +3780,11 @@ src/common/sdk/nvidia/inc/alloc/alloc_channel.h
     USERD_INDEX_VALUE, bits 10:8, USERD_INDEX_PAGE_VALUE, bits 20:12,
     USERD_INDEX_PAGE_FIXED, bit 21, and DENY_AUTH_LEVEL_PRIV, bit 22, in
     channel_methods.cpp and
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp, and the layouts of
+    NV_CHANNEL_ALLOC_PARAMS, a channel's allocation parameters, and of
+    NV_MEMORY_DESC_PARAMS, memory a CPU side allocated, in rm.h, and the
+    parameters' size and the offsets of the fields a kernel channel sets, in
+    kernel/tests/graphics/nvidia_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/fifo/kernel_channel.c
@@ -3773,7 +3792,11 @@ src/nvidia/src/kernel/gpu/fifo/kernel_channel.c
     USERD_INDEX_PAGE_FIXED, with the id over 8 as its page and the id modulo 8
     as its index, and makes a kernel caller's channel a PRIVILEGED_CHANNEL, in
     channel_methods.cpp and
-    kernel/tests/graphics/nvidia_channel_methods.test.cpp
+    kernel/tests/graphics/nvidia_channel_methods.test.cpp, that it passes a
+    channel's privilege in its internal flags, trusted by the firmware, in rm.h,
+    and that it passes the group's fault method buffer of the runqueue in the
+    flags' GROUP_CHANNEL_RUNQUEUE field, 0 in flags leaving the field clear, in
+    channel.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/ampere/ga100/dev_ctrl.h
@@ -3790,7 +3813,9 @@ src/nvidia/src/kernel/gpu/fifo/arch/ampere/kernel_fifo_ga100.c
 
 src/common/inc/swref/published/maxwell/gm107/dev_ram.h
     NV_RAMUSERD_CHAN_SIZE, the 512 bytes of a USERD, so that a 4 KiB page holds
-    8, in channel_methods.cpp
+    8, in channel_methods.cpp, the 512 bytes alone in channel.cpp,
+    NV_RAMIN_BASE_SHIFT, 12, in channel.cpp, and NV_RAMIN_RAMFC, bits 4095:0 of
+    an instance block, in channel.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/common/sdk/nvidia/inc/class/cl90f1.h
@@ -3815,6 +3840,65 @@ src/nvidia/src/kernel/rmapi/nv_gpu_ops.c
     device's SET_PAGE_DIRECTORY, in video memory for every channel, and names
     the subdevice by its instance plus 1, in rm.h and address_space.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cla06c.h
+    the class KEPLER_CHANNEL_GROUP_A, 0xA06C, of a channel group, in rm.h and
+    kernel/tests/graphics/nvidia_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrla06f/ctrla06fgpfifo.h
+    the commands NVA06F_CTRL_CMD_BIND and NVA06F_CTRL_CMD_GPFIFO_SCHEDULE,
+    controls of a channel, and the layouts of their parameters, in rm.h, and the
+    commands in kernel/tests/graphics/nvidia_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2007-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080ce.h
+    the command NV2080_CTRL_CMD_CE_GET_FAULT_METHOD_BUFFER_SIZE, a control of a
+    subdevice, and the layout of its parameters, in rm.h, and the command in
+    kernel/tests/graphics/nvidia_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/clb0b5sw.h
+    the layout of NVB0B5_ALLOCATION_PARAMETERS, a copy object's allocation
+    parameters, in rm.h, its version NVB0B5_ALLOCATION_PARAMETERS_VERSION_1, 1,
+    in rm.h and channel.cpp, and the parameters' size in
+    kernel/tests/graphics/nvidia_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2012-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/ce/kernel_ce_context.c
+    that a copy object's parameters at version 1 name its copy engine by the
+    engine's type, in rm.h and channel.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_channel_nvoc.h
+    the privileges NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_USER, 0, and
+    NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_KERNEL, 2, of a channel's
+    internal flags, in rm.h and kernel/tests/graphics/nvidia_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/fifo/arch/maxwell/kernel_channel_gm107.c
+    that RAMFC, a channel's state, is the first 512 bytes of its instance block,
+    in channel.cpp, and that NVIDIA's CPU side fills a channel's instance block
+    with zeros, in channel.h and channel.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/fifo/arch/maxwell/kernel_fifo_gm107.c
+    that an instance block is aligned to 1 << NV_RAMIN_BASE_SHIFT bytes, in
+    channel.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/inc/swref/published/ampere/ga100/dev_ram.h
+    NV_RAMIN_ALLOC_SIZE, the 4096 bytes of an instance block, and the USERD's
+    GP_PUT, word 35 at byte 0x8C, in channel.cpp, and GP_PUT's offset in
+    kernel/tests/graphics/nvidia_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
+src/nvidia/src/kernel/gpu/fifo/arch/volta/kernel_channel_group_gv100.c
+    that NVIDIA's CPU side allocates a channel group's fault method buffers in
+    system memory it caches, in channel.h, channel.cpp and
+    kernel/tests/graphics/nvidia_channel.test.cpp, and that it allocates one for
+    each runqueue, in channel.h and channel.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c,

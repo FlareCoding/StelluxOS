@@ -28,6 +28,8 @@ constexpr chip_info CHIP_TABLE[] = {
             .prescrubbed_top_bytes = 0x10000000,
         },
         .interrupt_leaf_count = 8,
+        .channel_class = 0xC56F,
+        .copy_class = 0xC7B5,
         .display = {
             .head_count = 4,
             .window_count = 8,

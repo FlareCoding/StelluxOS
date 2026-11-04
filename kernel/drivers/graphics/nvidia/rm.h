@@ -1107,6 +1107,113 @@ struct unset_page_directory_params {
 static_assert(sizeof(set_page_directory_params) == 32, "NVIDIA's layout of SET_PAGE_DIRECTORY's parameters");
 static_assert(sizeof(unset_page_directory_params) == 8, "NVIDIA's layout of UNSET_PAGE_DIRECTORY's parameters");
 
+// NVIDIA's KEPLER_CHANNEL_GROUP_A, the class of a channel group, allocated under the device
+constexpr uint32_t CLASS_CHANNEL_GROUP = 0xA06C;
+
+// NVIDIA's NV_CHANNEL_GROUP_ALLOCATION_PARAMETERS
+struct channel_group_params {
+    handle   error_notifier;     // NVIDIA's hObjectError
+    handle   ecc_error_notifier; // NVIDIA's hObjectEccError
+    handle   address_space;      // NVIDIA's hVASpace
+    uint32_t engine_type;        // NVIDIA's engineType, the engine every channel of the group runs on
+    uint8_t  is_vgpu_plugin;     // NVIDIA's bIsCallingContextVgpuPlugin
+};
+
+static_assert(sizeof(channel_group_params) == 20, "NVIDIA's layout of KEPLER_CHANNEL_GROUP_A's parameters");
+
+// NVIDIA's NV_MAX_SUBDEVICES, the subdevices a channel's allocation gives a USERD each
+constexpr uint32_t SUBDEVICES_MAX = 8;
+
+// NVIDIA's NV_MEMORY_DESC_PARAMS, memory the CPU side allocated and hands the firmware by address
+struct memory_desc_params {
+    uint64_t base;
+    uint64_t size;
+    uint32_t address_space; // NVIDIA's addressSpace, as `ADDRESS_SPACE_*`
+    uint32_t cpu_caching;   // NVIDIA's cacheAttrib, as `CPU_CACHING_*`
+};
+
+// NVIDIA's NV_MEMORY_CACHED and NV_MEMORY_UNCACHED, the `memory_desc_params::cpu_caching` of memory the CPU caches and
+// of memory it maps uncached
+constexpr uint32_t CPU_CACHING_CACHED   = 0;
+constexpr uint32_t CPU_CACHING_UNCACHED = 1;
+
+// NVIDIA's NV_CHANNEL_ALLOC_PARAMS. The CPU side allocates the instance block, USERD and RAMFC (the channel's state
+// within the instance block) and passes the fault method buffer of runqueue 0, so the firmware allocates none of them
+struct channel_params {
+    handle             error_notifier;  // NVIDIA's hObjectError
+    handle             unused_buffer;   // NVIDIA's hObjectBuffer
+    uint64_t           gpfifo_address;  // NVIDIA's gpFifoOffset, in the channel's address space
+    uint32_t           gpfifo_entries;  // NVIDIA's gpFifoEntries
+    uint32_t           flags;           // NVIDIA's NVOS04 flags
+    handle             context_share;   // NVIDIA's hContextShare
+    handle             address_space;   // NVIDIA's hVASpace
+    handle             userd_memory[SUBDEVICES_MAX];
+    uint64_t           userd_offset[SUBDEVICES_MAX];
+    uint32_t           engine_type;     // NVIDIA's engineType
+    uint32_t           cid;             // NVIDIA's cid, which the firmware accepts as 0
+    uint32_t           subdevice_mask;  // NVIDIA's subDeviceId, a one-hot mask
+    handle             ecc_error_notifier;
+    memory_desc_params instance_block;  // NVIDIA's instanceMem
+    memory_desc_params userd;           // NVIDIA's userdMem
+    memory_desc_params ramfc;           // NVIDIA's ramfcMem
+    memory_desc_params method_buffer;   // NVIDIA's mthdbufMem
+    handle             physical_group;  // NVIDIA's hPhysChannelGroup
+    uint32_t           internal_flags;  // NVIDIA's internalFlags
+    memory_desc_params error_notifier_memory;
+    memory_desc_params ecc_error_notifier_memory;
+    uint32_t           process_id;      // NVIDIA's ProcessID
+    uint32_t           subprocess_id;   // NVIDIA's SubProcessID
+    uint32_t           encrypt_iv[3];
+    uint32_t           decrypt_iv[3];
+    uint32_t           hmac_nonce[8];
+};
+
+// NVIDIA's NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_USER and _KERNEL, a channel's privilege in its internal
+// flags, which the firmware trusts the CPU side for
+constexpr uint32_t CHANNEL_PRIVILEGE_USER   = 0x0;
+constexpr uint32_t CHANNEL_PRIVILEGE_KERNEL = 0x2;
+
+static_assert(sizeof(memory_desc_params) == 24, "NVIDIA's layout of NV_MEMORY_DESC_PARAMS");
+static_assert(sizeof(channel_params) == 360, "NVIDIA's layout of NV_CHANNEL_ALLOC_PARAMS");
+
+// NVIDIA's NVA06F_CTRL_CMD_BIND, the control to a channel that binds it to its engine's runlist
+constexpr uint32_t CONTROL_BIND_CHANNEL = 0xA06F0104;
+
+// NVIDIA's NVA06F_CTRL_BIND_PARAMS
+struct bind_channel_params {
+    uint32_t engine_type; // NVIDIA's engineType
+};
+
+// NVIDIA's NVA06F_CTRL_CMD_GPFIFO_SCHEDULE, the control to a channel that has the scheduler run it
+constexpr uint32_t CONTROL_SCHEDULE_CHANNEL = 0xA06F0103;
+
+// NVIDIA's NVA06F_CTRL_GPFIFO_SCHEDULE_PARAMS
+struct schedule_channel_params {
+    uint8_t enable;      // NVIDIA's bEnable
+    uint8_t skip_submit; // NVIDIA's bSkipSubmit
+};
+
+static_assert(sizeof(bind_channel_params) == 4, "NVIDIA's layout of BIND's parameters");
+static_assert(sizeof(schedule_channel_params) == 2, "NVIDIA's layout of GPFIFO_SCHEDULE's parameters");
+
+// NVIDIA's NV2080_CTRL_CMD_CE_GET_FAULT_METHOD_BUFFER_SIZE, the control that gives a fault method buffer's bytes
+constexpr uint32_t CONTROL_GET_FAULT_METHOD_BUFFER_SIZE = 0x20802A08;
+
+// NVIDIA's NV2080_CTRL_CE_GET_FAULT_METHOD_BUFFER_SIZE_PARAMS
+struct fault_method_buffer_size_params {
+    uint32_t size;
+};
+
+static_assert(sizeof(fault_method_buffer_size_params) == 4, "NVIDIA's layout of GET_FAULT_METHOD_BUFFER_SIZE's reply");
+
+// NVIDIA's NVB0B5_ALLOCATION_PARAMETERS for the copy class, allocated under a channel, naming its copy engine
+struct copy_object_params {
+    uint32_t version;     // NVIDIA's NVB0B5_ALLOCATION_PARAMETERS_VERSION_1, 1
+    uint32_t engine_type; // NVIDIA's engineType
+};
+
+static_assert(sizeof(copy_object_params) == 8, "NVIDIA's layout of the copy class's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H
