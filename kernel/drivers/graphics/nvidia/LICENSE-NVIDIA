@@ -3019,9 +3019,9 @@ src/common/sdk/nvidia/inc/ctrl/ctrl5070/ctrl5070chnc.h
     and kernel/tests/graphics/nvidia_core_channel.test.cpp, PRESERVE_HW's
     meaning alone, in display_engine.h, that an update carries the state the
     methods assemble into the armed state, in core_channel.h, core_methods.h,
-    completion_notifier.h, display_engine.h and display_window_owners.h, and
-    that the completion notifier is associated with an update, in
-    completion_notifier.h and display_engine.h
+    completion_notifier.h and display_window_owners.h, and that the completion
+    notifier is associated with an update, in completion_notifier.h and
+    display_engine.h
     SPDX-FileCopyrightText: Copyright (c) 2001-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/disp/disp_channel.c
@@ -3059,8 +3059,8 @@ src/nvidia-modeset/src/nvkms-evo.c
     the display's capabilities with the table zeroed right after allocating
     it, and frees the display, the bandwidth check's object and display common
     in that order, each whatever the earlier frees return, in
-    display_engine.h, display_engine.cpp, display_objects.h, display_objects.cpp
-    and kernel/tests/graphics/nvidia_display_objects.test.cpp, the raster
+    display_engine.cpp, display_objects.h, display_objects.cpp and
+    kernel/tests/graphics/nvidia_display_objects.test.cpp, the raster
     coordinates of a mode that is not interlaced, in which rasterSize.y less
     rasterBlankStart.y (the last visible line) is the vertical front porch and
     one line, in latch_rules.h, latch_rules.cpp and
@@ -3127,9 +3127,7 @@ src/nvidia-modeset/src/nvkms-evo3.c
     it loads a window channel's input scaler's coefficients only for a window
     reporting an input scaler while no usable head reports an output scaler, and
     its color conversion tables, curves for HDR monitors, only for a window
-    reporting them, in chip.h, that a window's input table turns its colors into
-    the half-precision floats the display engine computes with, in
-    display_engine.h, that its identity look-up table
+    reporting them, in chip.h, that its identity look-up table
     (EvoSetupIdentityBaseLutC5) gives each of the 1024 entries after the header
     nvUnorm10ToFp16 of its place among them in red, green and blue and repeats
     the last of them in the entry after, in display_light.h, display_light.cpp
@@ -3139,13 +3137,13 @@ src/nvidia-modeset/src/nvkms-evo3.c
     blue and repeats the last of them in the entry after, in display_light.h,
     display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp,
     that the core channel's methods name a head's output table, in
-    display_engine.h and display_engine.cpp, that before it reads the core
-    channel's armed state ahead of its first update the modesetting module asks
-    the display for the core channel's state, the request zeroed but for the
-    subdevice, the channel's class and its instance, again with no pause until a
-    reply names the idle state alone, going on past every failed request and
-    ending the wait once more than 100 milliseconds have passed since the first
-    reply, in core_channel.h, core_channel.cpp, display_engine.cpp,
+    display_engine.cpp, that before it reads the core channel's armed state
+    ahead of its first update the modesetting module asks the display for the
+    core channel's state, the request zeroed but for the subdevice, the
+    channel's class and its instance, again with no pause until a reply names
+    the idle state alone, going on past every failed request and ending the wait
+    once more than 100 milliseconds have passed since the first reply, in
+    core_channel.h, core_channel.cpp, display_engine.cpp,
     kernel/tests/graphics/nvidia_core_channel_idle.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that it then reads
     each window's owner from the core channel's armed state whether or not the

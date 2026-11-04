@@ -1373,8 +1373,11 @@ display_engine::display_engine(firmware& fw, video_memory& memory, operation_que
         output = NO_OUTPUT;
     }
 
-    timer::init_deadline_timer(&m_latch_check_timer, check_latch);
-    timer::init_deadline_timer(&m_deadline_timer, expire_deadline);
+    for (engine_head& head : m_heads) {
+        head.engine = this;
+        timer::init_deadline_timer(&head.latch_check_timer, check_latch);
+        timer::init_deadline_timer(&head.deadline_timer, expire_deadline);
+    }
 }
 
 int32_t display_engine::set_up(
@@ -1566,6 +1569,10 @@ int32_t display_engine::set_up(
         return rc;
     }
 
+    engine_head& head = m_heads[light.head];
+    head.window = light.window;
+    head.output = light.output;
+
     rc = set_up_window_channel(
         m_firmware,
         regs,
@@ -1574,34 +1581,40 @@ int32_t display_engine::set_up(
         display,
         present_windows,
         light.window,
-        m_window_push_buffer,
-        m_window_channel
+        head.window_push_buffer,
+        head.window_channel
     );
-    if (rc != OK || m_window_channel == 0) {
+    if (rc != OK || head.window_channel == 0) {
         return rc;
     }
 
-    uint32_t* window_push_buffer = reinterpret_cast<uint32_t*>(m_window_push_buffer.virt);
+    uint32_t* window_push_buffer = reinterpret_cast<uint32_t*>(head.window_push_buffer.virt);
     registers window_area = regs.at(window_channel_area(light.window));
-    m_window_queue = new (m_window_queue_bytes) display_channel(window_push_buffer, window_area);
+    head.window_queue = new (head.window_queue_bytes) display_channel(window_push_buffer, window_area);
 
-    rc = set_up_base_buffer(m_memory, light, m_base_buffer);
-    if (rc != OK || m_base_buffer.size == 0) {
+    rc = set_up_base_buffer(m_memory, light, head.base_buffer);
+    if (rc != OK || head.base_buffer.size == 0) {
         return rc;
     }
 
-    rc = bind_base_buffer(m_firmware, m_instance_memory, m_memory, light, m_base_buffer, m_base_buffer_context_dma);
-    if (rc != OK || m_base_buffer.size == 0) {
+    rc = bind_base_buffer(
+        m_firmware,
+        m_instance_memory,
+        m_memory,
+        light,
+        head.base_buffer,
+        head.base_buffer_context_dma
+    );
+    if (rc != OK || head.base_buffer.size == 0) {
         return rc;
     }
 
-    rc = map_base_buffer_for_userland(m_memory, light, m_base_buffer, m_userland_base_buffer);
-    if (rc != OK || m_userland_base_buffer.size == 0) {
+    rc = map_base_buffer_for_userland(m_memory, light, head.base_buffer, head.userland_base_buffer);
+    if (rc != OK || head.userland_base_buffer.size == 0) {
         return rc;
     }
 
-    m_chosen_output = light.output;
-    m_chosen_mode = {
+    head.mode = {
         .width              = light.timing.width,
         .height             = light.timing.height,
         .refresh_millihertz = light.timing.refresh_millihertz(),
@@ -1625,23 +1638,23 @@ int32_t display_engine::set_up(
     }
 
     // Only presents need the window notifier, so a shortage of it leaves the light on with presents unsupported
-    rc = m_window_notifier.allocate(card);
+    rc = head.notifier.allocate(card);
     if (rc == OK) {
         for (uint32_t slot = 0; slot < NOTIFIER_SLOTS; slot++) {
-            m_window_notifier.clear(slot);
+            head.notifier.clear(slot);
         }
 
         rm::handle window_notifier_context_dma = m_firmware.new_handle();
         context_dma_memory window_notifier_memory = {
             .in_video_memory = false,
-            .address = m_window_notifier.physical_address(),
+            .address = head.notifier.physical_address(),
             .bytes = WINDOW_NOTIFIER_BYTES,
         };
 
         uint32_t window_channel = window_channel_number(light.window);
         rc = m_instance_memory.bind(window_notifier_context_dma, window_channel, window_notifier_memory);
         if (rc == OK) {
-            m_window_notifier_context_dma = window_notifier_context_dma;
+            head.notifier_context_dma = window_notifier_context_dma;
             log::info(
                 "nvidia: window %u's notifier lies at physical address 0x%lX, and its context DMA 0x%X is bound to "
                 "the window's channel",
@@ -1747,8 +1760,9 @@ int32_t display_engine::bring_up(
     bool is_lit = false;
     bool has_cursor = false;
     active_heads lit_heads = {};
+    head_light head_lighting = {};
     if (is_link_set_up) {
-        head_light head_lighting = {
+        head_lighting = {
             .head                     = light.head,
             .windows                  = served_windows(heads, present_windows, light.head),
             .timing                   = light.timing,
@@ -1763,7 +1777,7 @@ int32_t display_engine::bring_up(
             .link_type  = rm::OUTPUT_RESOURCE_TYPE_SERIAL,
         };
 
-        rc = light_head(regs, heads, present_windows, owners, head_lighting, light.window, has_cursor);
+        rc = light_head(regs, heads, present_windows, owners, head_lighting, has_cursor);
         is_lit = rc == OK;
         if (!is_lit) {
             log::error(
@@ -1775,40 +1789,7 @@ int32_t display_engine::bring_up(
     }
 
     if (is_lit) {
-        uint64_t frames_per_second =
-            (m_chosen_mode.refresh_millihertz + MILLIHERTZ_PER_HERTZ / 2) / MILLIHERTZ_PER_HERTZ;
-
-        mode_times times = {};
-        bool has_times = compute_mode_times(light.timing, times);
-        if (!has_times || !times.has_latch_check) {
-            log::warn(
-                "nvidia: head %u's mode leaves no time for a latch check, so a present its vertical blank finds "
-                "unlatched is reported at the next",
-                light.head
-            );
-        }
-
-        // The handler counts a head's frames once its entry names the output, so the entry precedes the enable
-        RUN_ELEVATED({
-            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-            m_has_cursor = has_cursor;
-            m_light_generation++;
-
-            m_is_cursor_shown = false;
-            m_is_cursor_update_owed = false;
-            m_cursor_hot_x = 0;
-            m_cursor_hot_y = 0;
-
-            m_is_lit = true;
-            m_lit_head = light.head;
-            m_lit_window = light.window;
-            m_mode_times = times;
-            m_frames_per_second = static_cast<uint32_t>(frames_per_second);
-
-            sync::atomic_ref<uint8_t>{m_head_outputs[light.head]}.store_release(m_chosen_output);
-            enable_vertical_blank(regs, light.head);
-            sync::spin_unlock_irqrestore(m_output_lock, irq);
-        });
+        mark_head_lit(regs, head_lighting, has_cursor);
     } else {
         rc = take_down(heads, present_windows, active, lit_heads);
         if (rc != OK) {
@@ -1838,9 +1819,7 @@ int32_t display_engine::send_notified_update(uint32_t window_interlocks, uint32_
     }
 
     m_has_sent_update = true;
-    if (window_interlocks != NO_WINDOW_INTERLOCKS) {
-        m_window_queue->kick();
-    }
+    kick_window_queues(window_interlocks);
 
     rc = m_core_notifier.wait_finished(*m_core_queue, clock::now_ns() + m_notifier_wait_ns);
     if (rc != OK) {
@@ -1884,13 +1863,24 @@ int32_t display_engine::shut_down_heads(
     return OK;
 }
 
+void display_engine::kick_window_queues(uint32_t window_interlocks) {
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        const engine_head& state = m_heads[head];
+        bool is_named = state.window_queue != nullptr && (window_interlocks & (1u << state.window)) != 0;
+        if (is_named) {
+            state.window_queue->kick();
+        }
+    }
+}
+
 int32_t display_engine::set_up_cursor(
     registers& regs,
     const chip_display& display,
     uint32_t present_heads,
     const first_light& light
 ) {
-    int32_t rc = m_cursor_channel.allocate(m_firmware, regs, m_objects.display, display, light.head, present_heads);
+    engine_head& head = m_heads[light.head];
+    int32_t rc = head.cursor.allocate(m_firmware, regs, m_objects.display, display, light.head, present_heads);
     if (rc == ERR_INVALID_ARG) {
         log::error("nvidia: head %u has no cursor, as the GSP's firmware does not report the head present", light.head);
         return OK;
@@ -1989,9 +1979,9 @@ int32_t display_engine::set_up_cursor(
         return rc;
     }
 
-    m_cursor_memory = memory;
-    m_cursor_mapping = mapping;
-    m_cursor_context_dma = context_dma;
+    head.cursor_memory = memory;
+    head.cursor_mapping = mapping;
+    head.cursor_context_dma = context_dma;
     log::info(
         "nvidia: head %u has a cursor channel, and output %u's cursor memory lies at 0x%lX in video memory, mapped for "
         "the CPU and bound to the core channel as context DMA 0x%X",
@@ -2006,26 +1996,27 @@ int32_t display_engine::set_up_cursor(
 
 int32_t display_engine::prepare_cursor(uint8_t head, rm::handle& cursor_context_dma) {
     cursor_context_dma = 0;
-    if (m_cursor_context_dma == 0) {
+    engine_head& state = m_heads[head];
+    if (state.cursor_context_dma == 0) {
         return OK;
     }
 
-    for (uint64_t offset = 0; offset < m_cursor_memory.size; offset += sizeof(uint64_t)) {
-        mmio::write64(m_cursor_mapping.virt + offset, 0);
+    for (uint64_t offset = 0; offset < state.cursor_memory.size; offset += sizeof(uint64_t)) {
+        mmio::write64(state.cursor_mapping.virt + offset, 0);
     }
 
     // The read back through BAR1 completes the clear's writes before an update can show the memory
     barrier::dma_full();
-    mmio::read64(m_cursor_mapping.virt);
+    mmio::read64(state.cursor_mapping.virt);
 
     int32_t rc = write_when_free(
-        m_cursor_channel,
+        state.cursor,
         cursor_channel::HOT_SPOT_POINT,
         PARKED_CURSOR_POSITION,
         m_cursor_wait_ns
     );
     if (rc == OK) {
-        rc = write_when_free(m_cursor_channel, cursor_channel::UPDATE, 0, m_cursor_wait_ns);
+        rc = write_when_free(state.cursor, cursor_channel::UPDATE, 0, m_cursor_wait_ns);
     }
 
     if (rc == ERR_QUEUE_FULL) {
@@ -2041,22 +2032,19 @@ int32_t display_engine::prepare_cursor(uint8_t head, rm::handle& cursor_context_
         return rc;
     }
 
-    cursor_context_dma = m_cursor_context_dma;
+    cursor_context_dma = state.cursor_context_dma;
     return OK;
 }
 
-int32_t display_engine::write_first_image(
-    uint8_t window,
-    const head_light& light,
-    rm::handle cursor_context_dma
-) {
+int32_t display_engine::write_first_image(const head_light& light, rm::handle cursor_context_dma) {
     int32_t rc = write_cursor_methods(*m_core_queue, light.head, cursor_context_dma);
     if (rc != OK) {
         return rc;
     }
 
+    const engine_head& head = m_heads[light.head];
     window_usage_methods usage = {};
-    build_window_usage_methods(window, light.timing.width, usage);
+    build_window_usage_methods(head.window, light.timing.width, usage);
 
     rc = write_methods(*m_core_queue, usage.methods, WINDOW_USAGE_METHODS);
     if (rc != OK) {
@@ -2065,8 +2053,8 @@ int32_t display_engine::write_first_image(
 
     const edid::timing& timing = light.timing;
     window_image image = {
-        .window                    = window,
-        .surface_context_dma       = m_base_buffer_context_dma,
+        .window                    = head.window,
+        .surface_context_dma       = head.base_buffer_context_dma,
         .width                     = timing.width,
         .height                    = timing.height,
         .pitch                     = base_buffer_pitch(timing.width),
@@ -2077,7 +2065,7 @@ int32_t display_engine::write_first_image(
     window_image_methods methods = {};
     build_window_image_methods(image, update, methods);
 
-    return write_window_methods(*m_window_queue, methods);
+    return write_window_methods(*head.window_queue, methods);
 }
 
 int32_t display_engine::light_head(
@@ -2086,7 +2074,6 @@ int32_t display_engine::light_head(
     uint32_t present_windows,
     const window_owners& owners,
     const head_light& light,
-    uint8_t window,
     bool& shows_cursor_memory
 ) {
     rm::handle cursor_context_dma = 0;
@@ -2097,9 +2084,10 @@ int32_t display_engine::light_head(
 
     shows_cursor_memory = cursor_context_dma != 0;
 
+    const engine_head& head = m_heads[light.head];
     bool is_first_update = !m_has_sent_update;
     bool is_image_apart = is_first_update && changes_window_owners(heads, present_windows, owners);
-    uint32_t window_interlock = 1u << window;
+    uint32_t window_interlock = 1u << head.window;
 
     if (is_first_update) {
         // The first update since the channel's allocation gives every present window its head, with no head to stop
@@ -2124,7 +2112,7 @@ int32_t display_engine::light_head(
         // An update showing no window image shows no cursor either
         rc = write_cursor_methods(*m_core_queue, light.head, 0);
     } else {
-        rc = write_first_image(window, light, cursor_context_dma);
+        rc = write_first_image(light, cursor_context_dma);
     }
 
     if (rc != OK) {
@@ -2143,13 +2131,13 @@ int32_t display_engine::light_head(
         status_word
     );
     log_lit_head(regs, light);
-    log_lit_color_controls(regs, light, window);
+    log_lit_color_controls(regs, light, head.window);
 
     if (!is_image_apart) {
         return OK;
     }
 
-    rc = write_first_image(window, light, cursor_context_dma);
+    rc = write_first_image(light, cursor_context_dma);
     if (rc != OK) {
         return rc;
     }
@@ -2159,11 +2147,11 @@ int32_t display_engine::light_head(
         return rc;
     }
 
-    m_window_queue->kick();
+    kick_window_queues(window_interlock);
     log::info(
         "nvidia: window %u's first image follows in an update of its own naming no notifier, since the update "
         "lighting head %u changed a window's owner or a present window serves no head",
-        window,
+        head.window,
         light.head
     );
 
@@ -2206,15 +2194,13 @@ int32_t display_engine::take_down(
 }
 
 int32_t display_engine::release() {
-    // Nothing ends a present once the engine is released, so the queued one ends here, failed, and a timer callback
+    // Nothing ends a present once the engine is released, so each queued one ends here, failed, and a timer callback
     // already running finds none
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-        timer::cancel(&m_latch_check_timer);
-        timer::cancel(&m_deadline_timer);
-        if (m_has_queued_present) {
-            m_is_display_failed.store_release(true);
-            end_present(gfxfb::GFXFB_PRESENT_FAILED, {});
+        fail_queued_presents();
+        for (engine_head& head : m_heads) {
+            head.is_lit = false;
         }
 
         m_is_lit = false;
@@ -2223,17 +2209,26 @@ int32_t display_engine::release() {
     });
 
     m_core_queue = nullptr;
-    m_window_queue = nullptr;
-
     free_output_modes(m_output_modes);
 
-    int32_t cursor_channel_rc = m_cursor_channel.release(m_firmware);
+    int32_t cursor_channel_rc = OK;
+    for (engine_head& head : m_heads) {
+        int32_t rc = head.cursor.release(m_firmware);
+        cursor_channel_rc = cursor_channel_rc != OK ? cursor_channel_rc : rc;
+    }
 
     bool keeps_hardware = !m_has_sent_update;
     int32_t window_channel_rc = OK;
-    if (m_window_channel != 0) {
-        window_channel_rc = release_display_channel(m_firmware, m_objects.display, m_window_channel, keeps_hardware);
-        m_window_channel = 0;
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        engine_head& state = m_heads[head];
+        state.window_queue = nullptr;
+        if (state.window_channel == 0) {
+            continue;
+        }
+
+        int32_t rc = release_display_channel(m_firmware, m_objects.display, state.window_channel, keeps_hardware);
+        window_channel_rc = window_channel_rc != OK ? window_channel_rc : rc;
+        state.window_channel = 0;
     }
 
     int32_t core_channel_rc = OK;
@@ -2272,8 +2267,92 @@ bool display_engine::are_flips_on() const {
 }
 
 bool display_engine::are_presents_supported() const {
-    // `set_up` binds the notifier before flips turn on, so reading flips with acquire orders this bare read
-    return are_flips_on() && m_window_notifier_context_dma != 0;
+    if (!are_flips_on()) {
+        return false;
+    }
+
+    // `set_up` binds the notifiers before flips turn on, so reading flips with acquire orders these bare reads
+    for (const engine_head& head : m_heads) {
+        if (head.notifier_context_dma != 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void display_engine::mark_head_lit(registers& regs, const head_light& light, bool has_cursor) {
+    engine_head& head = m_heads[light.head];
+    mode_times times = {};
+    bool has_times = compute_mode_times(light.timing, times);
+    if (!has_times || !times.has_latch_check) {
+        log::warn(
+            "nvidia: head %u's mode leaves no time for a latch check, so a present its vertical blank finds "
+            "unlatched is reported at the next",
+            light.head
+        );
+    }
+
+    uint64_t millihertz = head.mode.refresh_millihertz;
+    uint64_t frames_per_second = (millihertz + MILLIHERTZ_PER_HERTZ / 2) / MILLIHERTZ_PER_HERTZ;
+
+    // The handler counts a head's frames once its entry names the output, so the entry precedes the enable
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        head.has_cursor = has_cursor;
+        head.light_generation++;
+
+        head.is_cursor_shown = false;
+        head.is_cursor_update_owed = false;
+        head.cursor_hot_x = 0;
+        head.cursor_hot_y = 0;
+
+        head.is_lit = true;
+        head.times = times;
+        head.frames_per_second = static_cast<uint32_t>(frames_per_second);
+        m_is_lit = true;
+
+        sync::atomic_ref<uint8_t>{m_head_outputs[light.head]}.store_release(head.output);
+        enable_vertical_blank(regs, light.head);
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+}
+
+// Counts a vertical blank of `head` serviced at `now_ns`, under the output lock, and returns whether it completes the
+// head's first second
+static bool count_vertical_blank(engine_head& head, uint64_t now_ns, uint32_t position) {
+    head.frame_count++;
+    head.vertical_blank_ns = now_ns;
+    head.serviced_frame = raster_frame(position);
+    if (head.frame_count > head.frames_per_second) {
+        return false;
+    }
+
+    uint16_t line = raster_line(position);
+    uint16_t frame = raster_frame(position);
+    if (head.frame_count == 1) {
+        head.first_second = {now_ns, now_ns, frame, frame, line, line};
+    }
+
+    head.first_second.end_ns = now_ns;
+    head.first_second.end_frame = frame;
+    head.first_second.lowest_line = line < head.first_second.lowest_line ? line : head.first_second.lowest_line;
+    head.first_second.highest_line = line > head.first_second.highest_line ? line : head.first_second.highest_line;
+
+    return head.frame_count == head.frames_per_second;
+}
+
+// `head`'s flip state as the latch rules read it, under the output lock
+static latch_inputs read_latch_inputs(const engine_head& head) {
+    return {
+        .present_queued      = head.has_queued_present,
+        .slot_written        = head.has_queued_present && head.notifier.written(head.queued_slot),
+        .frame               = head.frame_count,
+        .vertical_blank_ns   = head.vertical_blank_ns,
+        .check_frame         = head.check_frame,
+        .last_reported_frame = head.last_reported_frame,
+        .deadline_ns         = head.queued_deadline_ns,
+    };
 }
 
 /**
@@ -2294,9 +2373,10 @@ __PRIVILEGED_CODE bool display_engine::service_vertical_blanks(registers& regs, 
         }
 
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-        if (m_is_lit && output == m_chosen_output) {
-            completes_first_second |= count_vertical_blank(clock::now_ns(), raster_position(regs, head));
-            run_latch_step();
+        engine_head& state = m_heads[head];
+        if (state.is_lit && state.output == output) {
+            completes_first_second |= count_vertical_blank(state, clock::now_ns(), raster_position(regs, head));
+            run_latch_step(state);
         }
 
         sync::spin_unlock_irqrestore(m_output_lock, irq);
@@ -2305,56 +2385,22 @@ __PRIVILEGED_CODE bool display_engine::service_vertical_blanks(registers& regs, 
     return completes_first_second;
 }
 
-bool display_engine::count_vertical_blank(uint64_t now_ns, uint32_t position) {
-    m_frame_count++;
-    m_vertical_blank_ns = now_ns;
-    m_serviced_frame = raster_frame(position);
-    if (m_frame_count > m_frames_per_second) {
-        return false;
-    }
-
-    uint16_t line = raster_line(position);
-    uint16_t frame = raster_frame(position);
-    if (m_frame_count == 1) {
-        m_first_second = {now_ns, now_ns, frame, frame, line, line};
-    }
-
-    m_first_second.end_ns = now_ns;
-    m_first_second.end_frame = frame;
-    m_first_second.lowest_line = line < m_first_second.lowest_line ? line : m_first_second.lowest_line;
-    m_first_second.highest_line = line > m_first_second.highest_line ? line : m_first_second.highest_line;
-
-    return m_frame_count == m_frames_per_second;
-}
-
-latch_inputs display_engine::read_latch_inputs() const {
-    return {
-        .present_queued      = m_has_queued_present,
-        .slot_written        = m_has_queued_present && m_window_notifier.written(m_queued_slot),
-        .frame               = m_frame_count,
-        .vertical_blank_ns   = m_vertical_blank_ns,
-        .check_frame         = m_check_frame,
-        .last_reported_frame = m_last_reported_frame,
-        .deadline_ns         = m_queued_deadline_ns,
-    };
-}
-
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void display_engine::run_latch_step() {
-    latch_step_decision decision = decide_latch_step(read_latch_inputs(), m_mode_times);
+__PRIVILEGED_CODE void display_engine::run_latch_step(engine_head& head) {
+    latch_step_decision decision = decide_latch_step(read_latch_inputs(head), head.times);
     switch (decision.action) {
         case latch_step_action::none:
             break;
         case latch_step_action::report:
-            timer::cancel(&m_latch_check_timer);
-            timer::cancel(&m_deadline_timer);
-            end_present(gfxfb::GFXFB_PRESENT_LATCHED, decision.report);
+            timer::cancel(&head.latch_check_timer);
+            timer::cancel(&head.deadline_timer);
+            end_present(head, gfxfb::GFXFB_PRESENT_LATCHED, decision.report);
             break;
         case latch_step_action::schedule_check:
-            m_check_frame = m_frame_count;
-            timer::schedule(&m_latch_check_timer, decision.check_ns);
+            head.check_frame = head.frame_count;
+            timer::schedule(&head.latch_check_timer, decision.check_ns);
             break;
     }
 }
@@ -2362,27 +2408,42 @@ __PRIVILEGED_CODE void display_engine::run_latch_step() {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void display_engine::end_present(uint32_t status, const latch_report& report) {
+__PRIVILEGED_CODE void display_engine::end_present(engine_head& head, uint32_t status, const latch_report& report) {
     gfxfb::present_result result = {};
     result.status = status;
     if (status == gfxfb::GFXFB_PRESENT_LATCHED) {
         result.frame = report.frame;
         result.timestamp_ns = report.timestamp_ns;
-        m_last_reported_frame = report.frame;
+        head.last_reported_frame = report.frame;
     }
 
-    m_has_queued_present = false;
-    m_present_done(this, m_chosen_output, result);
+    head.has_queued_present = false;
+    m_present_done(this, head.output, result);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void display_engine::fail_queued_presents() {
+    for (engine_head& head : m_heads) {
+        timer::cancel(&head.latch_check_timer);
+        timer::cancel(&head.deadline_timer);
+        if (head.has_queued_present) {
+            m_is_display_failed.store_release(true);
+            end_present(head, gfxfb::GFXFB_PRESENT_FAILED, {});
+        }
+    }
 }
 
 void display_engine::check_latch(timer::deadline_timer* timer) {
-    display_engine* engine = timer::owner_of<display_engine, &display_engine::m_latch_check_timer>(timer);
+    engine_head* head = timer::owner_of<engine_head, &engine_head::latch_check_timer>(timer);
+    display_engine* engine = head->engine;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(engine->m_output_lock);
         latch_report report = {};
-        if (decide_latch_check(engine->read_latch_inputs(), engine->m_mode_times, clock::now_ns(), report)) {
-            timer::cancel(&engine->m_deadline_timer);
-            engine->end_present(gfxfb::GFXFB_PRESENT_LATCHED, report);
+        if (decide_latch_check(read_latch_inputs(*head), head->times, clock::now_ns(), report)) {
+            timer::cancel(&head->deadline_timer);
+            engine->end_present(*head, gfxfb::GFXFB_PRESENT_LATCHED, report);
         }
 
         sync::spin_unlock_irqrestore(engine->m_output_lock, irq);
@@ -2390,32 +2451,33 @@ void display_engine::check_latch(timer::deadline_timer* timer) {
 }
 
 void display_engine::expire_deadline(timer::deadline_timer* timer) {
-    display_engine* engine = timer::owner_of<display_engine, &display_engine::m_deadline_timer>(timer);
+    engine_head* head = timer::owner_of<engine_head, &engine_head::deadline_timer>(timer);
+    display_engine* engine = head->engine;
     uint8_t output = 0;
     deadline_decision decision = {};
     bool must_log_estimate = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(engine->m_output_lock);
         uint64_t now_ns = clock::now_ns();
-        output = engine->m_chosen_output;
-        decision = decide_deadline(engine->read_latch_inputs(), now_ns);
+        output = head->output;
+        decision = decide_deadline(read_latch_inputs(*head), now_ns);
         switch (decision.action) {
             case deadline_action::none:
                 break;
             case deadline_action::report:
-                timer::cancel(&engine->m_latch_check_timer);
-                engine->end_present(gfxfb::GFXFB_PRESENT_LATCHED, decision.report);
-                must_log_estimate = engine->m_last_estimate_log_ns == 0 ||
-                                    now_ns - engine->m_last_estimate_log_ns >= ESTIMATE_LOG_INTERVAL_NS;
+                timer::cancel(&head->latch_check_timer);
+                engine->end_present(*head, gfxfb::GFXFB_PRESENT_LATCHED, decision.report);
+                must_log_estimate = head->last_estimate_log_ns == 0 ||
+                                    now_ns - head->last_estimate_log_ns >= ESTIMATE_LOG_INTERVAL_NS;
                 if (must_log_estimate) {
-                    engine->m_last_estimate_log_ns = now_ns;
+                    head->last_estimate_log_ns = now_ns;
                 }
 
                 break;
             case deadline_action::fail:
-                timer::cancel(&engine->m_latch_check_timer);
+                timer::cancel(&head->latch_check_timer);
                 engine->m_is_display_failed.store_release(true);
-                engine->end_present(gfxfb::GFXFB_PRESENT_FAILED, decision.report);
+                engine->end_present(*head, gfxfb::GFXFB_PRESENT_FAILED, decision.report);
                 break;
         }
 
@@ -2441,45 +2503,56 @@ void display_engine::expire_deadline(timer::deadline_timer* timer) {
     }
 }
 
-void display_engine::log_first_second() {
-    bool must_log = false;
-    uint8_t head = 0;
-    uint32_t frames = 0;
-    uint64_t millihertz = 0;
-    first_second_statistics statistics = {};
-    RUN_ELEVATED({
-        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-        bool has_first_second = m_frames_per_second != 0 && m_frame_count >= m_frames_per_second;
-        must_log = has_first_second && !m_has_logged_first_second;
-        if (must_log) {
-            m_has_logged_first_second = true;
-            head = m_lit_head;
-            frames = m_frames_per_second;
-            millihertz = m_chosen_mode.refresh_millihertz;
-            statistics = m_first_second;
+engine_head* display_engine::find_lit_head(uint32_t output) {
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        if (m_heads[head].is_lit && m_heads[head].output == output) {
+            return &m_heads[head];
         }
-
-        sync::spin_unlock_irqrestore(m_output_lock, irq);
-    });
-
-    if (!must_log) {
-        return;
     }
 
-    // The head's frame count has 16 bits and starts anywhere, so its advance wraps
-    uint16_t head_frames = static_cast<uint16_t>(statistics.end_frame - statistics.start_frame);
-    log::info(
-        "nvidia: the handler serviced head %u's vertical blanks 1 to %u since the light over %lu us, at its mode's "
-        "%lu.%03lu Hz, at raster lines %u to %u, while the head's own frame count advanced %u",
-        head,
-        frames,
-        (statistics.end_ns - statistics.start_ns) / NS_PER_US,
-        millihertz / MILLIHERTZ_PER_HERTZ,
-        millihertz % MILLIHERTZ_PER_HERTZ,
-        statistics.lowest_line,
-        statistics.highest_line,
-        head_frames
-    );
+    return nullptr;
+}
+
+void display_engine::log_first_second() {
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        bool must_log = false;
+        uint32_t frames = 0;
+        uint64_t millihertz = 0;
+        first_second_statistics statistics = {};
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+            engine_head& state = m_heads[head];
+            bool has_first_second = state.frames_per_second != 0 && state.frame_count >= state.frames_per_second;
+            must_log = has_first_second && !state.has_logged_first_second;
+            if (must_log) {
+                state.has_logged_first_second = true;
+                frames = state.frames_per_second;
+                millihertz = state.mode.refresh_millihertz;
+                statistics = state.first_second;
+            }
+
+            sync::spin_unlock_irqrestore(m_output_lock, irq);
+        });
+
+        if (!must_log) {
+            continue;
+        }
+
+        // The head's frame count has 16 bits and starts anywhere, so its advance wraps
+        uint16_t head_frames = static_cast<uint16_t>(statistics.end_frame - statistics.start_frame);
+        log::info(
+            "nvidia: the handler serviced head %u's vertical blanks 1 to %u since the light over %lu us, at its "
+            "mode's %lu.%03lu Hz, at raster lines %u to %u, while the head's own frame count advanced %u",
+            head,
+            frames,
+            (statistics.end_ns - statistics.start_ns) / NS_PER_US,
+            millihertz / MILLIHERTZ_PER_HERTZ,
+            millihertz % MILLIHERTZ_PER_HERTZ,
+            statistics.lowest_line,
+            statistics.highest_line,
+            head_frames
+        );
+    }
 }
 
 int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
@@ -2492,9 +2565,13 @@ int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
     gfxfb::gfxfb_mode mode = {};
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-        is_lit = m_is_lit && output == m_chosen_output;
-        has_cursor = m_has_cursor;
-        mode = m_chosen_mode;
+        const engine_head* head = find_lit_head(output);
+        is_lit = head != nullptr;
+        if (is_lit) {
+            mode = head->mode;
+            has_cursor = head->has_cursor;
+        }
+
         sync::spin_unlock_irqrestore(m_output_lock, irq);
     });
 
@@ -2517,8 +2594,9 @@ gfxfb::buffer* display_engine::base_buffer(uint32_t output) {
     gfxfb::buffer* base = nullptr;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-        if (m_is_lit && output == m_chosen_output) {
-            base = &m_userland_base_buffer;
+        engine_head* head = find_lit_head(output);
+        if (head != nullptr) {
+            base = &head->userland_base_buffer;
         }
 
         sync::spin_unlock_irqrestore(m_output_lock, irq);
@@ -2533,12 +2611,11 @@ int32_t display_engine::present(uint32_t output, gfxfb::buffer* buf, const gfxfb
     }
 
     int32_t rc = gfxfb::OK;
-    int32_t write_rc = OK;
     uint8_t window = 0;
+    int32_t write_rc = OK;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-        rc = queue_present(output, *buf, write_rc);
-        window = m_lit_window;
+        rc = queue_present(output, *buf, window, write_rc);
         sync::spin_unlock_irqrestore(m_output_lock, irq);
     });
 
@@ -2559,34 +2636,37 @@ int32_t display_engine::present(uint32_t output, gfxfb::buffer* buf, const gfxfb
 __PRIVILEGED_CODE int32_t display_engine::queue_present(
     uint32_t output,
     const gfxfb::buffer& buf,
+    uint8_t& window,
     int32_t& write_rc
 ) {
     if (m_is_released || m_is_display_failed.load_acquire()) {
         return gfxfb::ERR_DEVICE;
     }
 
-    if (!m_is_lit || output != m_chosen_output) {
+    engine_head* head = find_lit_head(output);
+    if (head == nullptr) {
         return gfxfb::ERR_DARK;
     }
 
-    if (buf.width != m_chosen_mode.width || buf.height != m_chosen_mode.height) {
+    if (buf.width != head->mode.width || buf.height != head->mode.height) {
         return gfxfb::ERR_INVALID_ARG;
     }
 
     // gfxfb presents only buffers `base_buffer()` and `create_buffer()` handed out
-    rm::handle surface_context_dma = m_base_buffer_context_dma;
-    if (&buf != &m_userland_base_buffer) {
+    rm::handle surface_context_dma = head->base_buffer_context_dma;
+    if (&buf != &head->userland_base_buffer) {
         const auto& created = static_cast<const scanout_buffer&>(buf);
-        bool is_bound_to_lit_window = (created.bound_windows & (1u << m_lit_window)) != 0;
-        if (!is_bound_to_lit_window) {
+        bool is_bound_to_window = (created.bound_windows & (1u << head->window)) != 0;
+        if (!is_bound_to_window) {
             return gfxfb::ERR_REFUSED;
         }
 
         surface_context_dma = created.context_dma;
     }
 
+    window = head->window;
     window_image image = {
-        .window                    = m_lit_window,
+        .window                    = head->window,
         .surface_context_dma       = surface_context_dma,
         .width                     = buf.width,
         .height                    = buf.height,
@@ -2594,9 +2674,9 @@ __PRIVILEGED_CODE int32_t display_engine::queue_present(
         .look_up_table_context_dma = m_look_up_table_context_dma,
     };
 
-    uint32_t slot = m_next_slot;
+    uint32_t slot = head->next_slot;
     window_image_update update = {
-        .notifier_context_dma = m_window_notifier_context_dma,
+        .notifier_context_dma = head->notifier_context_dma,
         .notifier_slot        = slot,
         .interlocks_core      = false,
     };
@@ -2605,14 +2685,14 @@ __PRIVILEGED_CODE int32_t display_engine::queue_present(
     build_window_image_methods(image, update, methods);
 
     // The whole present fits before anything is written, so a full push buffer never holds part of one
-    int32_t rc = m_window_queue->reserve(window_image_bytes(methods));
+    int32_t rc = head->window_queue->reserve(window_image_bytes(methods));
     if (rc == ERR_QUEUE_FULL) {
         return gfxfb::ERR_REFUSED;
     }
 
     if (rc == OK) {
-        m_window_notifier.clear(slot);
-        rc = write_reserved_window_methods(*m_window_queue, methods);
+        head->notifier.clear(slot);
+        rc = write_reserved_window_methods(*head->window_queue, methods);
     }
 
     if (rc != OK) {
@@ -2621,13 +2701,14 @@ __PRIVILEGED_CODE int32_t display_engine::queue_present(
         return gfxfb::ERR_DEVICE;
     }
 
-    m_window_queue->kick();
-    m_next_slot = next_notifier_slot(slot);
+    head->window_queue->kick();
+    head->next_slot = next_notifier_slot(slot);
 
-    m_has_queued_present = true;
-    m_queued_slot = slot;
-    m_queued_deadline_ns = clock::now_ns() + gfxfb::GFXFB_PRESENT_TIMEOUT_NS;
-    timer::schedule(&m_deadline_timer, m_queued_deadline_ns);
+    head->has_queued_present = true;
+    head->queued_slot = slot;
+    head->queued_deadline_ns = clock::now_ns() + gfxfb::GFXFB_PRESENT_TIMEOUT_NS;
+    timer::schedule(&head->deadline_timer, head->queued_deadline_ns);
+
     return gfxfb::OK;
 }
 
@@ -2637,7 +2718,7 @@ int32_t display_engine::flush(uint32_t output, const gfxfb::gfxfb_rect*, uint32_
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
         is_released = m_is_released;
-        is_lit = m_is_lit && output == m_chosen_output;
+        is_lit = find_lit_head(output) != nullptr;
         sync::spin_unlock_irqrestore(m_output_lock, irq);
     });
 
@@ -2707,8 +2788,13 @@ void display_engine::bind_buffer(operation& op) {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
         is_released = engine.m_is_released;
-        is_lit = engine.m_is_lit;
-        window = engine.m_lit_window;
+        for (const engine_head& head : engine.m_heads) {
+            if (head.is_lit) {
+                is_lit = true;
+                window = head.window;
+            }
+        }
+
         sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
     });
 
@@ -2751,8 +2837,10 @@ void display_engine::bind_buffer(operation& op) {
 }
 
 void display_engine::release_buffer(gfxfb::buffer* buf) {
-    if (buf == &m_userland_base_buffer) {
-        return;
+    for (const engine_head& head : m_heads) {
+        if (buf == &head.userland_base_buffer) {
+            return;
+        }
     }
 
     auto* buffer = static_cast<scanout_buffer*>(buf);
@@ -2766,15 +2854,9 @@ void display_engine::release_scanout_buffer(operation& op) {
     scanout_buffer* buffer = release.buffer;
 
     bool is_released = false;
-    uint8_t head = 0;
-    uint64_t serviced = 0;
-    uint16_t head_frames = 0;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
         is_released = engine.m_is_released;
-        head = engine.m_lit_head;
-        serviced = engine.m_frame_count;
-        head_frames = static_cast<uint16_t>(engine.m_serviced_frame - engine.m_first_second.start_frame);
         sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
     });
 
@@ -2796,6 +2878,23 @@ void display_engine::release_scanout_buffer(operation& op) {
 
     while (buffer->bound_windows != 0) {
         uint8_t window = static_cast<uint8_t>(__builtin_ctz(buffer->bound_windows));
+        uint8_t head = 0;
+        uint64_t serviced = 0;
+        uint16_t head_frames = 0;
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
+            for (uint8_t index = 0; index < DISPLAY_HEADS_MAX; index++) {
+                const engine_head& state = engine.m_heads[index];
+                if (state.is_lit && state.window == window) {
+                    head = index;
+                    serviced = state.frame_count;
+                    head_frames = static_cast<uint16_t>(state.serviced_frame - state.first_second.start_frame);
+                }
+            }
+
+            sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
+        });
+
         int32_t rc = engine.m_instance_memory.unbind(buffer->context_dma, window_channel_number(window));
         if (rc != OK) {
             log::error(
@@ -2838,24 +2937,26 @@ int32_t display_engine::move_cursor(uint32_t output, int32_t x, int32_t y) {
     while (true) {
         int32_t rc = gfxfb::OK;
         int32_t write_rc = OK;
+        engine_head* head = nullptr;
         uint64_t tried_ns = clock::now_ns();
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-            rc = check_cursor_call(output);
+            rc = check_cursor_call(output, head);
             if (rc == gfxfb::OK) {
-                m_cursor_x = x;
-                m_cursor_y = y;
+                head->cursor_x = x;
+                head->cursor_y = y;
             }
 
-            if (rc == gfxfb::OK && m_is_cursor_shown) {
-                write_rc = write_cursor_position(cursor_position(x, y, m_cursor_hot_x, m_cursor_hot_y));
+            if (rc == gfxfb::OK && head->is_cursor_shown) {
+                uint32_t position = cursor_position(x, y, head->cursor_hot_x, head->cursor_hot_y);
+                write_rc = write_cursor_position(*head, position);
             }
 
             sync::spin_unlock_irqrestore(m_output_lock, irq);
         });
 
         if (write_rc != ERR_QUEUE_FULL || !retries_cursor_write(tried_ns, deadline_ns)) {
-            return end_cursor_call(output, "move", rc, write_rc);
+            return end_cursor_call(output, head, "move", rc, write_rc);
         }
     }
 }
@@ -2865,31 +2966,36 @@ int32_t display_engine::hide_cursor(uint32_t output) {
     while (true) {
         int32_t rc = gfxfb::OK;
         int32_t write_rc = OK;
+        engine_head* head = nullptr;
         uint64_t tried_ns = clock::now_ns();
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-            rc = check_cursor_call(output);
-            if (rc == gfxfb::OK && m_is_cursor_shown) {
-                write_rc = write_cursor_position(PARKED_CURSOR_POSITION);
-                m_is_cursor_shown = write_rc != OK;
+            rc = check_cursor_call(output, head);
+            if (rc == gfxfb::OK && head->is_cursor_shown) {
+                write_rc = write_cursor_position(*head, PARKED_CURSOR_POSITION);
+                head->is_cursor_shown = write_rc != OK;
             }
 
             sync::spin_unlock_irqrestore(m_output_lock, irq);
         });
 
         if (write_rc != ERR_QUEUE_FULL || !retries_cursor_write(tried_ns, deadline_ns)) {
-            return end_cursor_call(output, "hide", rc, write_rc);
+            return end_cursor_call(output, head, "hide", rc, write_rc);
         }
     }
 }
 
 int32_t display_engine::show_cursor_picture(uint32_t output, const gfxfb::cursor_image& image) {
     int32_t rc = gfxfb::OK;
+    engine_head* head = nullptr;
     uint32_t generation = 0;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-        rc = check_cursor_call(output);
-        generation = m_light_generation;
+        rc = check_cursor_call(output, head);
+        if (rc == gfxfb::OK) {
+            generation = head->light_generation;
+        }
+
         sync::spin_unlock_irqrestore(m_output_lock, irq);
     });
 
@@ -2906,9 +3012,9 @@ int32_t display_engine::show_cursor_picture(uint32_t output, const gfxfb::cursor
     for (uint32_t row = 0; row < CURSOR_DIMENSION; row++) {
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-            rc = check_picture(output, generation);
+            rc = check_picture(*head, output, generation);
             if (rc == gfxfb::OK) {
-                write_cursor_row(m_cursor_mapping.virt, image, row);
+                write_cursor_row(head->cursor_mapping.virt, image, row);
                 barrier::io_full();
             }
 
@@ -2925,33 +3031,35 @@ int32_t display_engine::show_cursor_picture(uint32_t output, const gfxfb::cursor
     }
 
     // The read back waits for every row's writes to reach video memory, so it runs outside the spinlock
-    mmio::read64(m_cursor_mapping.virt);
+    mmio::read64(head->cursor_mapping.virt);
     uint64_t deadline_ns = clock::now_ns() + m_cursor_wait_ns;
     while (true) {
         int32_t write_rc = OK;
         uint64_t tried_ns = clock::now_ns();
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-            rc = check_picture(output, generation);
+            rc = check_picture(*head, output, generation);
             if (rc == gfxfb::OK) {
-                m_cursor_hot_x = image.hot_x;
-                m_cursor_hot_y = image.hot_y;
-                m_is_cursor_shown = true;
-                write_rc = write_cursor_position(cursor_position(m_cursor_x, m_cursor_y, image.hot_x, image.hot_y));
+                head->cursor_hot_x = image.hot_x;
+                head->cursor_hot_y = image.hot_y;
+                head->is_cursor_shown = true;
+
+                uint32_t position = cursor_position(head->cursor_x, head->cursor_y, image.hot_x, image.hot_y);
+                write_rc = write_cursor_position(*head, position);
             }
 
             sync::spin_unlock_irqrestore(m_output_lock, irq);
         });
 
         if (write_rc != ERR_QUEUE_FULL || !retries_cursor_write(tried_ns, deadline_ns)) {
-            return end_cursor_call(output, "picture", rc, write_rc);
+            return end_cursor_call(output, head, "picture", rc, write_rc);
         }
     }
 }
 
-int32_t display_engine::check_cursor_call(uint32_t output) const {
-    bool is_lit = m_is_lit && output == m_chosen_output;
-    if (is_lit && !m_has_cursor) {
+int32_t display_engine::check_cursor_call(uint32_t output, engine_head*& head) {
+    head = find_lit_head(output);
+    if (head != nullptr && !head->has_cursor) {
         return gfxfb::ERR_UNSUPPORTED;
     }
 
@@ -2959,44 +3067,44 @@ int32_t display_engine::check_cursor_call(uint32_t output) const {
         return gfxfb::ERR_DEVICE;
     }
 
-    return is_lit ? gfxfb::OK : gfxfb::ERR_DARK;
+    return head != nullptr ? gfxfb::OK : gfxfb::ERR_DARK;
 }
 
-int32_t display_engine::check_picture(uint32_t output, uint32_t generation) const {
+int32_t display_engine::check_picture(const engine_head& head, uint32_t output, uint32_t generation) const {
     if (m_is_released || m_is_display_failed.load_acquire()) {
         return gfxfb::ERR_DEVICE;
     }
 
-    bool is_lit_since_call = m_is_lit && output == m_chosen_output && m_light_generation == generation;
+    bool is_lit_since_call = head.is_lit && head.output == output && head.light_generation == generation;
     return is_lit_since_call ? gfxfb::OK : gfxfb::ERR_DARK;
 }
 
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t display_engine::write_cursor_position(uint32_t position) {
+__PRIVILEGED_CODE int32_t display_engine::write_cursor_position(engine_head& head, uint32_t position) {
     // The free register reads 0 while the front end takes a method, so a try after a refused `UPDATE` resumes there
-    bool is_update_owed = m_is_cursor_update_owed && m_owed_cursor_position == position;
+    bool is_update_owed = head.is_cursor_update_owed && head.owed_cursor_position == position;
     int32_t rc = OK;
     if (!is_update_owed) {
-        rc = m_cursor_channel.write(cursor_channel::HOT_SPOT_POINT, position);
+        rc = head.cursor.write(cursor_channel::HOT_SPOT_POINT, position);
     }
 
     if (rc == OK) {
-        m_is_cursor_update_owed = true;
-        m_owed_cursor_position = position;
-        rc = m_cursor_channel.write(cursor_channel::UPDATE, 0);
+        head.is_cursor_update_owed = true;
+        head.owed_cursor_position = position;
+        rc = head.cursor.write(cursor_channel::UPDATE, 0);
     }
 
     if (rc == OK) {
-        m_is_cursor_update_owed = false;
-        m_has_logged_cursor_refusal = false;
+        head.is_cursor_update_owed = false;
+        head.has_logged_cursor_refusal = false;
     } else if (rc == ERR_BAD_STATE) {
         m_is_display_failed.store_release(true);
-        if (m_has_queued_present) {
-            timer::cancel(&m_latch_check_timer);
-            timer::cancel(&m_deadline_timer);
-            end_present(gfxfb::GFXFB_PRESENT_FAILED, {});
+        if (head.has_queued_present) {
+            timer::cancel(&head.latch_check_timer);
+            timer::cancel(&head.deadline_timer);
+            end_present(head, gfxfb::GFXFB_PRESENT_FAILED, {});
         }
     }
 
@@ -3018,7 +3126,13 @@ bool display_engine::retries_cursor_write(uint64_t tried_ns, uint64_t& deadline_
     return true;
 }
 
-int32_t display_engine::end_cursor_call(uint32_t output, const char* call, int32_t rc, int32_t write_rc) {
+int32_t display_engine::end_cursor_call(
+    uint32_t output,
+    engine_head* head,
+    const char* call,
+    int32_t rc,
+    int32_t write_rc
+) {
     if (rc != gfxfb::OK) {
         return rc;
     }
@@ -3040,8 +3154,8 @@ int32_t display_engine::end_cursor_call(uint32_t output, const char* call, int32
     bool is_first_refusal = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-        is_first_refusal = !m_has_logged_cursor_refusal;
-        m_has_logged_cursor_refusal = true;
+        is_first_refusal = !head->has_logged_cursor_refusal;
+        head->has_logged_cursor_refusal = true;
         sync::spin_unlock_irqrestore(m_output_lock, irq);
     });
 

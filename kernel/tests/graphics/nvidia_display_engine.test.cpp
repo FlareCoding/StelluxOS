@@ -918,9 +918,8 @@ private:
     }
 };
 
-// A video memory giving general memory in whole pages from offset 0 of `g_video_memory`, mapped one range at a time
-// through its copy, and whole scanout pages at `SCANOUT_OFFSET` over `scanout`, counting calls and failing them as set,
-// and refusing every `update_context_tables` uncounted
+// A video memory giving whole pages of `g_video_memory`, mapped one range at a time through its copy, and of `scanout`
+// at `SCANOUT_OFFSET`, counting, failing and hooking calls as set, and refusing every `update_context_tables` uncounted
 class engine_video_memory : public video_memory {
 public:
     int32_t  general_allocate_result = OK;
@@ -929,6 +928,7 @@ public:
     uint32_t failing_general_map     = 0;       // the number, from 1, of the general mapping failing, 0 for none
     int32_t  second_map_result       = OK;
     uint32_t second_failing_map      = 0;       // a later general mapping failing with `second_map_result`, 0 for none
+    uint32_t hooked_general_map      = 0;       // a general mapping, from 1, running `during_map` first, 0 for none
     uint64_t general_bytes           = 0;       // handed out from offset 0
     uint64_t general_size            = 0;       // of the last general request
     uint64_t general_alignment       = 0;       // of the last general request
@@ -956,6 +956,8 @@ public:
     vram_range general_mapped   = {}; // the general range mapped, of 0 bytes while none is
     vram_range general_released = {}; // the last general range released
     vram_range scanout_released = {}; // the last scanout range released
+
+    void (*during_map)() = nullptr; // run inside the general mapping `hooked_general_map` names, before it maps
 
     // Whether `range` is scanout memory, which the double hands out from `SCANOUT_OFFSET` on
     static bool is_scanout(const vram_range& range) {
@@ -1034,6 +1036,10 @@ public:
     int32_t map_for_cpu(const vram_range& range, cpu_mapping& out) override {
         if (!is_scanout(range)) {
             general_maps++;
+            if (general_maps == hooked_general_map && during_map != nullptr) {
+                during_map();
+            }
+
             if (general_maps == failing_general_map) {
                 return general_map_result;
             }
@@ -1105,44 +1111,47 @@ public:
 
 namespace drivers::nvidia {
 
-// Sets the engine's waits and cursor step seam, reaches its notifier, cursor state, look-up table, context DMAs, window
-// queue, take-down and lit output's vertical blanks, and darkens, relights and fails it for those states' tests
+// Sets the waits and cursor step seam, darkens, relights and fails the engine, reaches its look-up table and take-down,
+// a head's cursor memory, window queue and context DMAs on the lowest head holding them, the rest on the lit head
 struct display_engine_test_access {
     static void set_cursor_step_seam(display_engine& engine, void (*seam)(display_engine& engine)) {
         engine.m_cursor_step_seam = seam;
     }
 
     static bool is_cursor_shown(const display_engine& engine) {
-        return engine.m_is_cursor_shown;
+        return lit_state(engine).is_cursor_shown;
     }
 
     static bool is_cursor_update_owed(const display_engine& engine) {
-        return engine.m_is_cursor_update_owed;
+        return lit_state(engine).is_cursor_update_owed;
     }
 
+    // Every head owes the update, so a light clearing it is seen on whichever head it takes
     static void owe_cursor_update(display_engine& engine, uint32_t position) {
-        engine.m_is_cursor_update_owed = true;
-        engine.m_owed_cursor_position = position;
+        for (engine_head& head : engine.m_heads) {
+            head.is_cursor_update_owed = true;
+            head.owed_cursor_position = position;
+        }
     }
 
     static int32_t cursor_x(const display_engine& engine) {
-        return engine.m_cursor_x;
+        return lit_state(engine).cursor_x;
     }
 
     static int32_t cursor_y(const display_engine& engine) {
-        return engine.m_cursor_y;
+        return lit_state(engine).cursor_y;
     }
 
     static uint32_t cursor_hot_x(const display_engine& engine) {
-        return engine.m_cursor_hot_x;
+        return lit_state(engine).cursor_hot_x;
     }
 
     static uint32_t cursor_hot_y(const display_engine& engine) {
-        return engine.m_cursor_hot_y;
+        return lit_state(engine).cursor_hot_y;
     }
 
     static uint32_t light_generation(const display_engine& engine) {
-        return engine.m_light_generation;
+        return lit_state(engine).light_generation;
     }
 
     static bool is_display_failed(const display_engine& engine) {
@@ -1150,17 +1159,19 @@ struct display_engine_test_access {
     }
 
     static void darken_output(display_engine& engine) {
-        engine.m_is_lit = false;
-        engine.m_is_cursor_shown = false;
+        lit_state(engine).is_lit = false;
+        lit_state(engine).is_cursor_shown = false;
     }
 
     static void relight_output(display_engine& engine) {
-        engine.m_is_cursor_shown = false;
-        engine.m_is_cursor_update_owed = false;
-        engine.m_cursor_hot_x = 0;
-        engine.m_cursor_hot_y = 0;
-        engine.m_light_generation++;
-        engine.m_is_lit = true;
+        engine_head& head = lit_state(engine);
+
+        head.is_cursor_shown = false;
+        head.is_cursor_update_owed = false;
+        head.cursor_hot_x = 0;
+        head.cursor_hot_y = 0;
+        head.light_generation++;
+        head.is_lit = true;
     }
 
     static void set_notifier_wait(display_engine& engine, uint64_t wait_ns) {
@@ -1176,11 +1187,23 @@ struct display_engine_test_access {
     }
 
     static rm::handle cursor_context_dma(const display_engine& engine) {
-        return engine.m_cursor_context_dma;
+        for (uint8_t head = 0; head < drivers::nvidia::DISPLAY_HEADS_MAX; head++) {
+            if (engine.m_heads[head].cursor_context_dma != 0) {
+                return engine.m_heads[head].cursor_context_dma;
+            }
+        }
+
+        return 0;
     }
 
     static const vram_range& cursor_memory(const display_engine& engine) {
-        return engine.m_cursor_memory;
+        for (uint8_t head = 0; head < drivers::nvidia::DISPLAY_HEADS_MAX; head++) {
+            if (engine.m_heads[head].cursor_memory.size != 0) {
+                return engine.m_heads[head].cursor_memory;
+            }
+        }
+
+        return engine.m_heads[0].cursor_memory;
     }
 
     static uint64_t notifier_wait_ns(const display_engine& engine) {
@@ -1192,7 +1215,13 @@ struct display_engine_test_access {
     }
 
     static rm::handle base_buffer_context_dma(const display_engine& engine) {
-        return engine.m_base_buffer_context_dma;
+        for (uint8_t head = 0; head < drivers::nvidia::DISPLAY_HEADS_MAX; head++) {
+            if (engine.m_heads[head].base_buffer_context_dma != 0) {
+                return engine.m_heads[head].base_buffer_context_dma;
+            }
+        }
+
+        return 0;
     }
 
     static const vram_range& look_up_table(const display_engine& engine) {
@@ -1204,11 +1233,32 @@ struct display_engine_test_access {
     }
 
     static display_channel* window_queue(display_engine& engine) {
-        return engine.m_window_queue;
+        for (uint8_t head = 0; head < drivers::nvidia::DISPLAY_HEADS_MAX; head++) {
+            if (engine.m_heads[head].window_queue != nullptr) {
+                return engine.m_heads[head].window_queue;
+            }
+        }
+
+        return nullptr;
     }
 
+    // The lowest head the light gave an output, else head 0 when it gave none
     static uint8_t lit_head(const display_engine& engine) {
-        return engine.m_lit_head;
+        for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+            if (engine.m_head_outputs[head] != NO_OUTPUT) {
+                return head;
+            }
+        }
+
+        return 0;
+    }
+
+    static engine_head& lit_state(display_engine& engine) {
+        return engine.m_heads[lit_head(engine)];
+    }
+
+    static const engine_head& lit_state(const display_engine& engine) {
+        return engine.m_heads[lit_head(engine)];
     }
 
     static uint8_t head_output(const display_engine& engine, uint8_t head) {
@@ -1216,15 +1266,15 @@ struct display_engine_test_access {
     }
 
     static uint32_t frames_per_second(const display_engine& engine) {
-        return engine.m_frames_per_second;
+        return lit_state(engine).frames_per_second;
     }
 
     static uint64_t frame_count(const display_engine& engine) {
-        return engine.m_frame_count;
+        return lit_state(engine).frame_count;
     }
 
     static const first_second_statistics& first_second(const display_engine& engine) {
-        return engine.m_first_second;
+        return lit_state(engine).first_second;
     }
 
     static int32_t take_down(
@@ -1238,37 +1288,43 @@ struct display_engine_test_access {
     }
 
     static uint8_t lit_window(const display_engine& engine) {
-        return engine.m_lit_window;
+        return lit_state(engine).window;
     }
 
     static rm::handle window_notifier_context_dma(const display_engine& engine) {
-        return engine.m_window_notifier_context_dma;
+        for (uint8_t head = 0; head < drivers::nvidia::DISPLAY_HEADS_MAX; head++) {
+            if (engine.m_heads[head].notifier_context_dma != 0) {
+                return engine.m_heads[head].notifier_context_dma;
+            }
+        }
+
+        return 0;
     }
 
     static uint64_t window_notifier_address(const display_engine& engine) {
-        return engine.m_window_notifier.physical_address();
+        return lit_state(engine).notifier.physical_address();
     }
 
     static bool has_queued_present(const display_engine& engine) {
-        return engine.m_has_queued_present;
+        return lit_state(engine).has_queued_present;
     }
 
     static uint64_t last_reported_frame(const display_engine& engine) {
-        return engine.m_last_reported_frame;
+        return lit_state(engine).last_reported_frame;
     }
 
     static bool is_latch_check_scheduled(const display_engine& engine) {
-        return timer::is_pending(&engine.m_latch_check_timer);
+        return timer::is_pending(&lit_state(engine).latch_check_timer);
     }
 
     static bool is_deadline_scheduled(const display_engine& engine) {
-        return timer::is_pending(&engine.m_deadline_timer);
+        return timer::is_pending(&lit_state(engine).deadline_timer);
     }
 
     static void set_mode_times(display_engine& engine, const mode_times& times) {
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
-            engine.m_mode_times = times;
+            lit_state(engine).times = times;
             sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
         });
     }
@@ -1277,7 +1333,7 @@ struct display_engine_test_access {
     static void move_deadline(display_engine& engine, uint64_t deadline_ns) {
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
-            engine.m_queued_deadline_ns = deadline_ns;
+            lit_state(engine).queued_deadline_ns = deadline_ns;
             sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
         });
     }
@@ -1288,8 +1344,8 @@ struct display_engine_test_access {
         bool was_scheduled = false;
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
-            engine.m_queued_deadline_ns = ~0ull;
-            was_scheduled = timer::schedule(&engine.m_deadline_timer, ~0ull);
+            lit_state(engine).queued_deadline_ns = ~0ull;
+            was_scheduled = timer::schedule(&lit_state(engine).deadline_timer, ~0ull);
             sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
         });
         return was_scheduled;
@@ -1301,25 +1357,25 @@ struct display_engine_test_access {
     }
 
     static uint64_t queued_deadline_ns(const display_engine& engine) {
-        return engine.m_queued_deadline_ns;
+        return lit_state(engine).queued_deadline_ns;
     }
 
     static uint64_t deadline_timer_ns(const display_engine& engine) {
-        return engine.m_deadline_timer.deadline_ns;
+        return lit_state(engine).deadline_timer.deadline_ns;
     }
 
     static uint64_t latch_check_timer_ns(const display_engine& engine) {
-        return engine.m_latch_check_timer.deadline_ns;
+        return lit_state(engine).latch_check_timer.deadline_ns;
     }
 
     static uint64_t vertical_blank_ns(const display_engine& engine) {
-        return engine.m_vertical_blank_ns;
+        return lit_state(engine).vertical_blank_ns;
     }
 
     static void set_last_estimate_log_ns(display_engine& engine, uint64_t log_ns) {
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(engine.m_output_lock);
-            engine.m_last_estimate_log_ns = log_ns;
+            lit_state(engine).last_estimate_log_ns = log_ns;
             sync::spin_unlock_irqrestore(engine.m_output_lock, irq);
         });
     }
@@ -1332,20 +1388,22 @@ struct display_engine_test_access {
         engine.m_present_done = record;
     }
 
-    // Cancels both timers of an engine about to be rebuilt over, so neither fires into the next
+    // Cancels each head's two timers of an engine about to be rebuilt over, so none fires into the next
     static void cancel_timers(display_engine& engine) {
         RUN_ELEVATED({
-            timer::cancel(&engine.m_latch_check_timer);
-            timer::cancel(&engine.m_deadline_timer);
+            for (engine_head& head : engine.m_heads) {
+                timer::cancel(&head.latch_check_timer);
+                timer::cancel(&head.deadline_timer);
+            }
         });
     }
 
     static void run_latch_check(display_engine& engine) {
-        display_engine::check_latch(&engine.m_latch_check_timer);
+        display_engine::check_latch(&lit_state(engine).latch_check_timer);
     }
 
     static void run_deadline(display_engine& engine) {
-        display_engine::expire_deadline(&engine.m_deadline_timer);
+        display_engine::expire_deadline(&lit_state(engine).deadline_timer);
     }
 };
 
@@ -3174,13 +3232,17 @@ TEST(nvidia_display_engine, set_up_lights_with_presents_unsupported_when_the_win
             gfxfb::buffer* base = engine.base_buffer(0);
             ASSERT_NOT_NULL(base);
             EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
+            EXPECT_EQ(engine.present(1, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
             EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::OK);
 
             gfxfb::buffer* created = nullptr;
             EXPECT_EQ(engine.create_buffer(64, 64, gfxfb::GFXFB_FORMAT_XRGB8888, &created), gfxfb::ERR_UNSUPPORTED);
-        }
 
-        EXPECT_EQ(engine.release(), OK);
+            EXPECT_EQ(engine.release(), OK);
+            EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
+        } else {
+            EXPECT_EQ(engine.release(), OK);
+        }
     }
 }
 
@@ -7938,8 +8000,27 @@ TEST(nvidia_display_engine, a_refused_unbinding_keeps_the_buffer_for_good) {
     heap::ufree_delete(kept);
 }
 
-// The unbinding logs the vertical blanks the handler serviced since the light, past the first second too, and the
-// head's own frame count's advance over them, which wraps past its 16 bits
+// Services `head`'s vertical blank number `blank` from 0, at its own frame count 0xFFF0 + 2 * `blank` in 16 bits
+static void service_counted_blank(display_engine& engine, uint8_t head, uint32_t blank) {
+    registers regs = engine_registers();
+    head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
+    raster_register(head) = (((0xFFF0 + 2 * blank) & 0xFFFF) << 16) | 770;
+    service_elevated(engine, regs, 1u << head);
+}
+
+// The engine and head whose counted blank `s_unbinding_blank` the unbinding's hook services next
+static display_engine* s_unbinding_engine = nullptr;
+static uint8_t         s_unbinding_head = 0;
+static uint32_t        s_unbinding_blank = 0;
+
+// Services the next counted blank while the unbinding's request maps the hash table
+static void service_a_blank_during_the_unbinding() {
+    service_counted_blank(*s_unbinding_engine, s_unbinding_head, s_unbinding_blank);
+    s_unbinding_blank++;
+}
+
+// The unbinding logs the vertical blanks the handler serviced since the light and before its request, past the first
+// second too, and the head's own frame count's advance over them, which wraps past its 16 bits
 TEST(nvidia_display_engine, a_buffers_unbinding_logs_both_frame_counts) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -7953,17 +8034,21 @@ TEST(nvidia_display_engine, a_buffers_unbinding_logs_both_frame_counts) {
     ASSERT_TRUE(create_served_buffer(engine, created, rc));
     ASSERT_EQ(rc, gfxfb::OK);
 
-    registers regs = engine_registers();
     uint8_t head = display_engine_test_access::lit_head(engine);
     uint32_t blanks = display_engine_test_access::frames_per_second(engine) + 3;
     for (uint32_t blank = 0; blank < blanks; blank++) {
-        head_register(NVIDIA_HEAD_TIMING_STATUS, head) = NVIDIA_LAST_DATA;
-        raster_register(head) = (((0xFFF0 + 2 * blank) & 0xFFFF) << 16) | 770;
-        service_elevated(engine, regs, 1u << head);
+        service_counted_blank(engine, head, blank);
     }
+
+    s_unbinding_engine = &engine;
+    s_unbinding_head = head;
+    s_unbinding_blank = blanks;
+    memory.hooked_general_map = memory.general_maps + 1;
+    memory.during_map = service_a_blank_during_the_unbinding;
 
     engine.release_buffer(created);
     serve_logged();
+    EXPECT_EQ(s_unbinding_blank, blanks + 1);
     EXPECT_TRUE(engine_log_contains(
         "nvidia: the display buffer at 0x1420000 in video memory is unbound from window 3's channel, once the handler "
         "serviced head 1's vertical blanks 1 to 63 since the light while the head's own frame count advanced 124"

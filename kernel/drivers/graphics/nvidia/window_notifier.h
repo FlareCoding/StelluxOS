@@ -18,11 +18,11 @@ constexpr uint32_t WINDOW_NOTIFIER_SLOT_BYTES = 16;
  * window's updates that name them: begun once a head takes the update's state
  * at a vertical blank, finished once the update completes. Presents take the
  * first `NOTIFIER_SLOTS` slots in turn, each cleared before its update is
- * written. `display_engine` holds the lit window's, allocating its page and
- * binding its context DMA to the window's channel in `set_up`, and never frees
- * the page, as `completion_notifier` describes for the core channel's. A page
- * whose binding finds no room is kept too, unused, rather than freed by a call
- * made only for that path.
+ * written. `display_engine` holds one for each window it chose to light,
+ * allocating its page and binding its context DMA to the window's channel in
+ * `set_up`, and never frees the page, as `completion_notifier` describes for
+ * the core channel's. A page whose binding finds no room is kept too, unused,
+ * rather than freed by a call made only for that path.
  */
 class window_notifier {
 public:
