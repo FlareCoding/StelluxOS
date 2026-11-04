@@ -38,11 +38,13 @@ struct window_image {
     rm::handle look_up_table_context_dma; // the look-up table surface's, bound to the window's channel
 };
 
-// How the update showing a window image reports and takes effect. The slot must fit its method's field, below 256
+// How the update showing a window image reports and takes effect. The slot must fit its method's field, below 256,
+// and windows updated together must each name all of them, or the update may never take effect
 struct window_image_update {
     rm::handle notifier_context_dma; // the window notifier's context DMA, 0 for none
     uint32_t   notifier_slot;        // the 16-byte slot of the window notifier the update writes, unused for none
     bool       interlocks_core;      // whether the update takes effect only with the core channel's next update
+    uint32_t   window_interlocks;    // the windows whose updates take effect together, bit i for window i
 };
 
 /**
@@ -62,12 +64,12 @@ struct window_image_update {
  * disabled, the input look-up table read directly by 10-bit color, and the
  * window's pixels covering what lies below at the depth of a head's main
  * layer. Then no semaphores, the interlock flags (the core channel's when
- * `update` asks, and the window's own channel's) and the update. The other CSC
- * stages' controls are not written, so they keep what the window holds: NVIDIA
- * writes them disabled only for a window whose capabilities report those
- * stages, and the driver reads no window capabilities.
+ * `update` asks, and the window channels it names) and the update. The other
+ * CSC stages' controls are not written, so they keep what the window holds:
+ * NVIDIA writes them disabled only for a window whose capabilities report
+ * those stages, and the driver reads no window capabilities.
  * @param image The image, within the bounds `window_image` gives.
- * @param update The update's notifier and interlock with the core channel.
+ * @param update The update's notifier and the channels it interlocks with.
  * @param out Receives the methods.
  */
 void build_window_image_methods(

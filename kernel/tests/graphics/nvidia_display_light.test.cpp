@@ -11,19 +11,20 @@ TEST_SUITE(nvidia_display_light);
 
 using drivers::nvidia::active_heads;
 using drivers::nvidia::base_buffer_pitch;
-using drivers::nvidia::choose_first_light;
+using drivers::nvidia::choose_lights;
 using drivers::nvidia::display_heads;
 using drivers::nvidia::display_outputs;
 using drivers::nvidia::ERR_FIRMWARE;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::find_light_target;
 using drivers::nvidia::firmware;
-using drivers::nvidia::first_light;
 using drivers::nvidia::head_raster;
+using drivers::nvidia::light_set;
 using drivers::nvidia::light_target;
 using drivers::nvidia::look_up_table_word;
 using drivers::nvidia::NO_HEAD;
 using drivers::nvidia::OK;
+using drivers::nvidia::output_light;
 using drivers::nvidia::output_modes;
 using drivers::nvidia::raster_of;
 namespace rm = drivers::nvidia::rm;
@@ -188,16 +189,48 @@ static void clear_modes() {
     string::memset(s_modes, 0, sizeof(s_modes));
 }
 
-// Chooses among the first `output_count` outputs from `first_output`, on head 1 with window 2
+// Chooses among the first `output_count` outputs, those `first_outputs` holds tried first, with `head_count` heads
+// served flexibly, the first light on `target_head` with its lowest window
+static int32_t choose_set(
+    light_firmware& fw,
+    uint8_t head_count,
+    uint8_t target_head,
+    uint8_t output_count,
+    uint32_t first_outputs,
+    light_set& set
+) {
+    clear_target_facts(head_count, output_count);
+    serve_heads_flexibly();
+    light_target target = {
+        .head = target_head,
+        .window = static_cast<uint8_t>(target_head * 2),
+        .first_outputs = first_outputs,
+    };
+
+    return choose_lights(fw, TEST_BANDWIDTH_CHECK, s_heads, s_modes, output_count, target, set);
+}
+
+// Chooses as `choose_set` does with one head, giving the one light chosen in `light` and leaving `light` and
+// `is_chosen` as they were when the choice fails
 static int32_t choose(
     light_firmware& fw,
     uint8_t output_count,
-    uint8_t first_output,
-    first_light& light,
+    uint32_t first_outputs,
+    output_light& light,
     bool& is_chosen
 ) {
-    light_target target = {.head = 1, .window = 2, .first_output = first_output};
-    return choose_first_light(fw, TEST_BANDWIDTH_CHECK, s_modes, output_count, target, light, is_chosen);
+    light_set set = {};
+    int32_t rc = choose_set(fw, 1, 0, output_count, first_outputs, set);
+    if (rc != OK) {
+        return rc;
+    }
+
+    is_chosen = set.count > 0;
+    if (is_chosen) {
+        light = set.lights[0];
+    }
+
+    return rc;
 }
 
 // Whether each of the `size` bytes at `bytes` is 0
@@ -222,11 +255,25 @@ TEST(nvidia_display_light, targets_the_boot_head_with_its_lowest_window_and_its_
 
     EXPECT_EQ(target.head, 1u);
     EXPECT_EQ(target.window, 2u);
-    EXPECT_EQ(target.first_output, 2u);
+    EXPECT_EQ(target.first_outputs, 1u << 2);
+}
+
+// Head 1 shows output 2 and head 2 output 0, so both are tried first and head 1, the lowest active, is targeted
+TEST(nvidia_display_light, targets_every_output_an_active_head_shows) {
+    clear_target_facts(3, 3);
+    serve_heads_flexibly();
+    s_active.heads[1].display_id = 0x400;
+    s_active.heads[2].display_id = 0x100;
+
+    light_target target = find_light_target(s_heads, s_active, s_outputs);
+
+    EXPECT_EQ(target.head, 1u);
+    EXPECT_EQ(target.window, 2u);
+    EXPECT_EQ(target.first_outputs, 1u << 2 | 1u << 0);
 }
 
 // Head 1 shows display id 0x1000, which names no output
-TEST(nvidia_display_light, targets_output_0_when_the_boot_head_shows_no_output) {
+TEST(nvidia_display_light, targets_no_output_first_when_the_boot_head_shows_no_output) {
     clear_target_facts(2, 3);
     serve_heads_flexibly();
     s_active.heads[1].display_id = 0x1000;
@@ -235,10 +282,10 @@ TEST(nvidia_display_light, targets_output_0_when_the_boot_head_shows_no_output) 
 
     EXPECT_EQ(target.head, 1u);
     EXPECT_EQ(target.window, 2u);
-    EXPECT_EQ(target.first_output, 0u);
+    EXPECT_EQ(target.first_outputs, 0u);
 }
 
-TEST(nvidia_display_light, targets_head_0_and_output_0_when_no_head_is_active) {
+TEST(nvidia_display_light, targets_head_0_and_no_output_first_when_no_head_is_active) {
     clear_target_facts(2, 3);
     serve_heads_flexibly();
 
@@ -246,7 +293,7 @@ TEST(nvidia_display_light, targets_head_0_and_output_0_when_no_head_is_active) {
 
     EXPECT_EQ(target.head, 0u);
     EXPECT_EQ(target.window, 0u);
-    EXPECT_EQ(target.first_output, 0u);
+    EXPECT_EQ(target.first_outputs, 0u);
 }
 
 // Windows 3 and 5 serve head 1 and window 4 head 0, so head 1's lowest window is neither 2 nor 1
@@ -261,7 +308,7 @@ TEST(nvidia_display_light, targets_the_lowest_window_of_the_head_outside_a_flexi
 
     EXPECT_EQ(target.head, 1u);
     EXPECT_EQ(target.window, 3u);
-    EXPECT_EQ(target.first_output, 1u);
+    EXPECT_EQ(target.first_outputs, 1u << 1);
 }
 
 TEST(nvidia_display_light, raster_of_follows_nvidias_derivation) {
@@ -412,7 +459,7 @@ TEST(nvidia_display_light, fills_the_one_head_and_window_as_nvidia_would) {
     add_mode(0, 0, IOC_25G2S_PREFERRED);
 
     light_firmware fw;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
     ASSERT_EQ(choose(fw, 1, 0, light, is_chosen), OK);
 
@@ -431,7 +478,7 @@ TEST(nvidia_display_light, fills_the_one_head_and_window_as_nvidia_would) {
     EXPECT_EQ(request.uses_cached_perf_state, 0u);
 
     const rm::mode_possible_head& head = request.heads[0];
-    EXPECT_EQ(head.head, 1u);
+    EXPECT_EQ(head.head, 0u);
     EXPECT_EQ(head.pixel_clock_khz, 241700u);
     EXPECT_EQ(head.raster_width, IOC_25G2S_RASTER.width);
     EXPECT_EQ(head.raster_height, IOC_25G2S_RASTER.height);
@@ -466,8 +513,8 @@ TEST(nvidia_display_light, fills_the_one_head_and_window_as_nvidia_would) {
     EXPECT_EQ(head.disables_mid_frame_watermark, 0u);
 
     const rm::mode_possible_window& window = request.windows[0];
-    EXPECT_EQ(window.window, 2u);
-    EXPECT_EQ(window.head, 1u);
+    EXPECT_EQ(window.window, 0u);
+    EXPECT_EQ(window.head, 0u);
     EXPECT_EQ(window.formats, 0x4u);
     EXPECT_EQ(window.rotated_formats, 0u);
 
@@ -485,8 +532,8 @@ TEST(nvidia_display_light, fills_the_one_head_and_window_as_nvidia_would) {
     EXPECT_EQ(light.output, 0u);
     EXPECT_EQ(light.timing_index, 0u);
     EXPECT_TRUE(light.timing == IOC_25G2S_PREFERRED);
-    EXPECT_EQ(light.head, 1u);
-    EXPECT_EQ(light.window, 2u);
+    EXPECT_EQ(light.head, 0u);
+    EXPECT_EQ(light.window, 0u);
 }
 
 TEST(nvidia_display_light, takes_the_output_s_first_mode_on_the_head_and_window) {
@@ -495,7 +542,7 @@ TEST(nvidia_display_light, takes_the_output_s_first_mode_on_the_head_and_window)
     add_mode(0, 1, IOC_25G2S_1080P);
 
     light_firmware fw;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
     ASSERT_EQ(choose(fw, 1, 0, light, is_chosen), OK);
     ASSERT_TRUE(is_chosen);
@@ -503,8 +550,8 @@ TEST(nvidia_display_light, takes_the_output_s_first_mode_on_the_head_and_window)
     EXPECT_EQ(light.output, 0u);
     EXPECT_EQ(light.timing_index, 3u);
     EXPECT_TRUE(light.timing == IOC_25G2S_PREFERRED);
-    EXPECT_EQ(light.head, 1u);
-    EXPECT_EQ(light.window, 2u);
+    EXPECT_EQ(light.head, 0u);
+    EXPECT_EQ(light.window, 0u);
 }
 
 TEST(nvidia_display_light, tries_the_first_output_before_lower_ones) {
@@ -514,9 +561,9 @@ TEST(nvidia_display_light, tries_the_first_output_before_lower_ones) {
     add_mode(2, 1, IOC_25G2S_1080P);
 
     light_firmware fw;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
-    ASSERT_EQ(choose(fw, 3, 2, light, is_chosen), OK);
+    ASSERT_EQ(choose(fw, 3, 1u << 2, light, is_chosen), OK);
     ASSERT_TRUE(is_chosen);
 
     EXPECT_EQ(fw.request_count, 1u);
@@ -530,9 +577,9 @@ TEST(nvidia_display_light, goes_on_in_ascending_order_past_outputs_without_a_mod
     add_mode(2, 1, IOC_25G2S_1080P);
 
     light_firmware fw;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
-    ASSERT_EQ(choose(fw, 3, 1, light, is_chosen), OK);
+    ASSERT_EQ(choose(fw, 3, 1u << 1, light, is_chosen), OK);
     ASSERT_TRUE(is_chosen);
 
     EXPECT_EQ(fw.request_count, 1u);
@@ -547,9 +594,9 @@ TEST(nvidia_display_light, takes_the_lowest_output_with_a_mode_after_the_first_o
     add_mode(2, 1, IOC_25G2S_1080P);
 
     light_firmware fw;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
-    ASSERT_EQ(choose(fw, 3, 1, light, is_chosen), OK);
+    ASSERT_EQ(choose(fw, 3, 1u << 1, light, is_chosen), OK);
     ASSERT_TRUE(is_chosen);
 
     EXPECT_EQ(light.output, 0u);
@@ -559,7 +606,7 @@ TEST(nvidia_display_light, chooses_nothing_when_no_output_has_a_mode) {
     clear_modes();
 
     light_firmware fw;
-    first_light light = {};
+    output_light light = {};
     light.output = 7;
     bool is_chosen = true;
     ASSERT_EQ(choose(fw, 3, 0, light, is_chosen), OK);
@@ -578,9 +625,9 @@ TEST(nvidia_display_light, goes_on_to_the_others_in_ascending_order_after_a_refu
     light_firmware fw;
     fw.answers[0] = {OK, false};
     fw.answer_count = 1;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
-    ASSERT_EQ(choose(fw, 3, 1, light, is_chosen), OK);
+    ASSERT_EQ(choose(fw, 3, 1u << 1, light, is_chosen), OK);
 
     ASSERT_EQ(fw.request_count, 2u);
     EXPECT_EQ(s_requests[0].heads[0].pixel_clock_khz, IOC_25G2S_PREFERRED.pixel_clock_khz);
@@ -599,7 +646,7 @@ TEST(nvidia_display_light, goes_on_to_the_output_s_next_mode_after_a_refused_one
     light_firmware fw;
     fw.answers[0] = {OK, false};
     fw.answer_count = 1;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
     ASSERT_EQ(choose(fw, 2, 0, light, is_chosen), OK);
 
@@ -621,7 +668,7 @@ TEST(nvidia_display_light, refills_the_whole_request_for_each_mode) {
     light_firmware fw;
     fw.answers[0] = {OK, false};
     fw.answer_count = 1;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
     ASSERT_EQ(choose(fw, 1, 0, light, is_chosen), OK);
 
@@ -647,7 +694,7 @@ TEST(nvidia_display_light, request_the_firmware_refuses_refuses_the_mode) {
     light_firmware fw;
     fw.answers[0] = {ERR_FIRMWARE, true};
     fw.answer_count = 1;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
     ASSERT_EQ(choose(fw, 1, 0, light, is_chosen), OK);
 
@@ -656,7 +703,8 @@ TEST(nvidia_display_light, request_the_firmware_refuses_refuses_the_mode) {
     EXPECT_EQ(light.timing_index, 1u);
 }
 
-// A request timing out ends the choice and leaves `out` unchanged, where NVIDIA's modesetting module refuses the mode
+// A request timing out ends the choice with its error, no later mode asked about, where NVIDIA's modesetting module
+// refuses the mode
 TEST(nvidia_display_light, request_failing_otherwise_ends_the_choice) {
     clear_modes();
     add_mode(0, 0, IOC_25G2S_PREFERRED);
@@ -666,7 +714,7 @@ TEST(nvidia_display_light, request_failing_otherwise_ends_the_choice) {
     fw.answers[0] = {ERR_TIMEOUT, true};
     fw.answer_count = 1;
 
-    first_light light = {};
+    output_light light = {};
     light.output = 7;
     bool is_chosen = true;
     EXPECT_EQ(choose(fw, 2, 0, light, is_chosen), ERR_TIMEOUT);
@@ -685,7 +733,7 @@ TEST(nvidia_display_light, modes_with_fewer_than_2_lines_of_sync_and_back_porch_
     add_mode(0, 2, TWO_LEADING_LINES);
 
     light_firmware fw;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
     ASSERT_EQ(choose(fw, 1, 0, light, is_chosen), OK);
 
@@ -706,7 +754,7 @@ TEST(nvidia_display_light, modes_with_totals_past_a_head_s_largest_raster_are_re
     add_mode(0, 3, LARGEST_RASTER);
 
     light_firmware fw;
-    first_light light = {};
+    output_light light = {};
     bool is_chosen = false;
     ASSERT_EQ(choose(fw, 1, 0, light, is_chosen), OK);
 
@@ -724,7 +772,7 @@ TEST(nvidia_display_light, modes_all_past_a_head_s_largest_raster_choose_nothing
     add_mode(0, 1, TALLER_THAN_A_RASTER);
 
     light_firmware fw;
-    first_light light = {};
+    output_light light = {};
     light.output = 7;
     bool is_chosen = true;
     ASSERT_EQ(choose(fw, 1, 0, light, is_chosen), OK);
@@ -744,7 +792,7 @@ TEST(nvidia_display_light, every_mode_refused_chooses_nothing) {
     fw.answers[1] = {ERR_FIRMWARE, false};
     fw.answer_count = 2;
 
-    first_light light = {};
+    output_light light = {};
     light.output = 7;
     bool is_chosen = true;
     ASSERT_EQ(choose(fw, 2, 0, light, is_chosen), OK);
@@ -752,4 +800,147 @@ TEST(nvidia_display_light, every_mode_refused_chooses_nothing) {
     EXPECT_EQ(fw.request_count, 2u);
     EXPECT_FALSE(is_chosen);
     EXPECT_EQ(light.output, 7u);
+}
+
+// Output 1 first on the target's head 1, then outputs 0 and 2 on the lowest heads left, each asked beside the outputs
+// chosen before it at their modes, every request listing its heads in ascending order
+TEST(nvidia_display_light, lights_each_output_in_lighting_order_on_its_own_head) {
+    clear_modes();
+    add_mode(0, 0, IOC_25G2S_1080P);
+    add_mode(1, 2, IOC_25G2S_PREFERRED);
+    add_mode(2, 1, IOC_25G2S_1080P);
+
+    light_firmware fw;
+    light_set set = {};
+    ASSERT_EQ(choose_set(fw, 3, 1, 3, 1u << 1, set), OK);
+
+    ASSERT_EQ(set.count, 3u);
+    EXPECT_EQ(set.lights[0].output, 1u);
+    EXPECT_EQ(set.lights[0].timing_index, 2u);
+    EXPECT_EQ(set.lights[0].head, 1u);
+    EXPECT_EQ(set.lights[0].window, 2u);
+
+    EXPECT_EQ(set.lights[1].output, 0u);
+    EXPECT_EQ(set.lights[1].head, 0u);
+    EXPECT_EQ(set.lights[1].window, 0u);
+
+    EXPECT_EQ(set.lights[2].output, 2u);
+    EXPECT_EQ(set.lights[2].head, 2u);
+    EXPECT_EQ(set.lights[2].window, 4u);
+
+    const uint8_t asked_lights[3][3] = {{0}, {1, 0}, {1, 0, 2}};
+    ASSERT_EQ(fw.request_count, 3u);
+    for (uint32_t index = 0; index < 3; index++) {
+        const rm::mode_possible_params& request = s_requests[index];
+        EXPECT_EQ(request.head_count, index + 1);
+        EXPECT_EQ(request.window_count, index + 1);
+        for (uint32_t slot = 0; slot <= index; slot++) {
+            const output_light& light = set.lights[asked_lights[index][slot]];
+            EXPECT_EQ(request.heads[slot].head, light.head);
+            EXPECT_EQ(request.heads[slot].pixel_clock_khz, light.timing.pixel_clock_khz);
+            EXPECT_EQ(request.windows[slot].window, light.window);
+            EXPECT_EQ(request.windows[slot].head, light.head);
+        }
+    }
+}
+
+// Outputs 2 and 0 tried first, so output 0 lights first on the target's head 1, then output 2 and output 1 on the
+// lowest heads left
+TEST(nvidia_display_light, lights_the_outputs_tried_first_in_ascending_order_before_the_others) {
+    clear_modes();
+    add_mode(0, 0, IOC_25G2S_1080P);
+    add_mode(1, 0, IOC_25G2S_1080P);
+    add_mode(2, 0, IOC_25G2S_1080P);
+
+    light_firmware fw;
+    light_set set = {};
+    ASSERT_EQ(choose_set(fw, 3, 1, 3, 1u << 2 | 1u << 0, set), OK);
+
+    ASSERT_EQ(set.count, 3u);
+    EXPECT_EQ(set.lights[0].output, 0u);
+    EXPECT_EQ(set.lights[0].head, 1u);
+
+    EXPECT_EQ(set.lights[1].output, 2u);
+    EXPECT_EQ(set.lights[1].head, 0u);
+
+    EXPECT_EQ(set.lights[2].output, 1u);
+    EXPECT_EQ(set.lights[2].head, 2u);
+}
+
+TEST(nvidia_display_light, an_output_past_the_head_count_stays_dark_unasked) {
+    clear_modes();
+    add_mode(0, 0, IOC_25G2S_1080P);
+    add_mode(1, 0, IOC_25G2S_1080P);
+    add_mode(2, 0, IOC_25G2S_1080P);
+
+    light_firmware fw;
+    light_set set = {};
+    ASSERT_EQ(choose_set(fw, 2, 0, 3, 0, set), OK);
+
+    EXPECT_EQ(fw.request_count, 2u);
+    ASSERT_EQ(set.count, 2u);
+    EXPECT_EQ(set.lights[0].output, 0u);
+    EXPECT_EQ(set.lights[1].output, 1u);
+    EXPECT_EQ(set.lights[1].head, 1u);
+}
+
+// Output 1 refused at its one mode is not chosen, so output 2 takes head 1, the head output 1 would have taken
+TEST(nvidia_display_light, an_output_refused_at_every_mode_leaves_its_head_to_the_next) {
+    clear_modes();
+    add_mode(0, 0, IOC_25G2S_1080P);
+    add_mode(1, 0, IOC_25G2S_PREFERRED);
+    add_mode(2, 0, IOC_25G2S_1080P);
+
+    light_firmware fw;
+    fw.answers[0] = {OK, true};
+    fw.answers[1] = {OK, false};
+    fw.answer_count = 2;
+    light_set set = {};
+    ASSERT_EQ(choose_set(fw, 3, 0, 3, 0, set), OK);
+
+    EXPECT_EQ(fw.request_count, 3u);
+    ASSERT_EQ(set.count, 2u);
+    EXPECT_EQ(set.lights[1].output, 2u);
+    EXPECT_EQ(set.lights[1].head, 1u);
+    EXPECT_EQ(set.lights[1].window, 2u);
+}
+
+// The first output keeps its preferred mode and the second steps down to its next one beside it
+TEST(nvidia_display_light, a_later_output_steps_down_its_modes_beside_the_earlier_ones) {
+    clear_modes();
+    add_mode(0, 0, IOC_25G2S_PREFERRED);
+    add_mode(1, 0, IOC_25G2S_PREFERRED);
+    add_mode(1, 1, IOC_25G2S_1080P);
+
+    light_firmware fw;
+    fw.answers[0] = {OK, true};
+    fw.answers[1] = {OK, false};
+    fw.answer_count = 2;
+    light_set set = {};
+    ASSERT_EQ(choose_set(fw, 2, 0, 2, 0, set), OK);
+
+    ASSERT_EQ(fw.request_count, 3u);
+    EXPECT_EQ(s_requests[2].head_count, 2u);
+    EXPECT_EQ(s_requests[2].heads[0].pixel_clock_khz, IOC_25G2S_PREFERRED.pixel_clock_khz);
+    EXPECT_EQ(s_requests[2].heads[1].pixel_clock_khz, IOC_25G2S_1080P.pixel_clock_khz);
+
+    ASSERT_EQ(set.count, 2u);
+    EXPECT_EQ(set.lights[0].timing_index, 0u);
+    EXPECT_EQ(set.lights[1].timing_index, 1u);
+}
+
+TEST(nvidia_display_light, a_request_failing_after_a_choice_empties_the_set) {
+    clear_modes();
+    add_mode(0, 0, IOC_25G2S_1080P);
+    add_mode(1, 0, IOC_25G2S_1080P);
+
+    light_firmware fw;
+    fw.answers[0] = {OK, true};
+    fw.answers[1] = {ERR_TIMEOUT, true};
+    fw.answer_count = 2;
+    light_set set = {};
+    EXPECT_EQ(choose_set(fw, 2, 0, 2, 0, set), ERR_TIMEOUT);
+
+    EXPECT_EQ(fw.request_count, 2u);
+    EXPECT_EQ(set.count, 0u);
 }

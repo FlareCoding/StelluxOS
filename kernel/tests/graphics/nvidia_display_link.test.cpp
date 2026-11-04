@@ -366,10 +366,10 @@ TEST(nvidia_display_link, assigns_through_the_crossbar_in_nvidias_layout) {
     // The earlier assignment leaves its dirtied replies in the frame the next one's requests take, so a request not
     // zeroed carries them
     ASSERT_EQ(
-        assign_output_link(earlier, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, earlier_link, earlier_is_assigned),
+        assign_output_link(earlier, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, earlier_link, earlier_is_assigned),
         OK
     );
-    ASSERT_EQ(assign_output_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, link, is_assigned), OK);
 
     EXPECT_TRUE(is_assigned);
     EXPECT_EQ(link.index, 2u);
@@ -409,11 +409,26 @@ TEST(nvidia_display_link, takes_the_resource_driving_the_display_id_alone_or_as_
 
     output_link link = {};
     bool is_assigned = false;
-    ASSERT_EQ(assign_output_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, link, is_assigned), OK);
 
     EXPECT_TRUE(is_assigned);
     EXPECT_EQ(link.index, 3u);
     EXPECT_EQ(link.sublink, 0u);
+}
+
+// The links assigned earlier in the mode set are named in the request's exclude mask, NVIDIA's sorExcludeMask at byte 8
+TEST(nvidia_display_link, names_the_excluded_links_in_the_assignment) {
+    link_firmware fw;
+    output_link link = {};
+    bool is_assigned = false;
+    ASSERT_EQ(assign_output_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0x5, link, is_assigned), OK);
+
+    ASSERT_EQ(fw.call_count, 2u);
+    EXPECT_EQ(fw.calls[0].command, NVIDIA_DFP_ASSIGN_SOR);
+    EXPECT_EQ(fw.calls[0].params[8], 0x5u);
+    for (uint32_t offset = 9; offset < NVIDIA_DFP_ASSIGN_SOR_BYTES; offset++) {
+        EXPECT_EQ(fw.calls[0].params[offset], 0u);
+    }
 }
 
 // The crossbar's first entry alone names the display id, then two entries do and the second is taken, the facts' index
@@ -426,7 +441,7 @@ TEST(nvidia_display_link, takes_the_last_entry_naming_a_resource_for_the_display
 
     output_link link = {};
     bool is_assigned = false;
-    ASSERT_EQ(assign_output_link(first, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(first, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, link, is_assigned), OK);
     EXPECT_TRUE(is_assigned);
     EXPECT_EQ(link.index, 0u);
 
@@ -438,7 +453,7 @@ TEST(nvidia_display_link, takes_the_last_entry_naming_a_resource_for_the_display
     two.assigned_types[2] = NVIDIA_SOR_TYPE_2H1OR_PRIMARY;
 
     is_assigned = false;
-    ASSERT_EQ(assign_output_link(two, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(two, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, link, is_assigned), OK);
     EXPECT_TRUE(is_assigned);
     EXPECT_EQ(link.index, 2u);
 }
@@ -449,21 +464,24 @@ TEST(nvidia_display_link, assigns_none_when_the_crossbar_names_no_resource_or_re
 
     link_firmware unnamed;
     unnamed.assigned_types[0] = NVIDIA_SOR_TYPE_2H1OR_SECONDARY;
-    ASSERT_EQ(assign_output_link(unnamed, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(unnamed, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, link, is_assigned), OK);
     EXPECT_FALSE(is_assigned);
     EXPECT_EQ(unnamed.call_count, 1u);
 
     link_firmware refusing;
     refusing.refused_command = NVIDIA_DFP_ASSIGN_SOR;
     is_assigned = true;
-    ASSERT_EQ(assign_output_link(refusing, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(refusing, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, link, is_assigned), OK);
     EXPECT_FALSE(is_assigned);
     EXPECT_EQ(refusing.call_count, 1u);
 
     link_firmware failing;
     failing.refused_command = NVIDIA_DFP_ASSIGN_SOR;
     failing.refusal = ERR_TIMEOUT;
-    EXPECT_EQ(assign_output_link(failing, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, link, is_assigned), ERR_TIMEOUT);
+    EXPECT_EQ(
+        assign_output_link(failing, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, link, is_assigned),
+        ERR_TIMEOUT
+    );
     EXPECT_FALSE(is_assigned);
 }
 
@@ -473,7 +491,7 @@ TEST(nvidia_display_link, takes_the_index_from_the_resource_facts_without_the_cr
 
     output_link link = {};
     bool is_assigned = false;
-    ASSERT_EQ(assign_output_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, false, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, false, 0, link, is_assigned), OK);
 
     EXPECT_TRUE(is_assigned);
     EXPECT_EQ(link.index, 3u);
@@ -488,14 +506,14 @@ TEST(nvidia_display_link, assigns_none_for_another_resource_type_index_or_protoc
 
     link_firmware other_type;
     other_type.resource_type = 1;
-    ASSERT_EQ(assign_output_link(other_type, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, false, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(other_type, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, false, 0, link, is_assigned), OK);
     EXPECT_FALSE(is_assigned);
 
     link_firmware past_the_resources;
     past_the_resources.resource_index = 4;
     is_assigned = true;
     ASSERT_EQ(
-        assign_output_link(past_the_resources, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, false, link, is_assigned),
+        assign_output_link(past_the_resources, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, false, 0, link, is_assigned),
         OK
     );
     EXPECT_FALSE(is_assigned);
@@ -503,13 +521,13 @@ TEST(nvidia_display_link, assigns_none_for_another_resource_type_index_or_protoc
     link_firmware other_protocol;
     other_protocol.protocol = 1;
     is_assigned = true;
-    ASSERT_EQ(assign_output_link(other_protocol, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(other_protocol, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, link, is_assigned), OK);
     EXPECT_FALSE(is_assigned);
 
     link_firmware refusing;
     refusing.refused_command = NVIDIA_OR_GET_INFO;
     is_assigned = true;
-    ASSERT_EQ(assign_output_link(refusing, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, link, is_assigned), OK);
+    ASSERT_EQ(assign_output_link(refusing, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, true, 0, link, is_assigned), OK);
     EXPECT_FALSE(is_assigned);
 }
 
@@ -517,7 +535,7 @@ TEST(nvidia_display_link, assigns_none_for_another_resource_type_index_or_protoc
 static int32_t assign_logged(link_firmware& fw, bool has_crossbar, output_link& link, bool& is_assigned) {
     s_link_log_bytes = 0;
     log::set_backend(&LINK_LOG_BACKEND);
-    int32_t rc = assign_output_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, has_crossbar, link, is_assigned);
+    int32_t rc = assign_output_link(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, has_crossbar, 0, link, is_assigned);
     log::set_backend(nullptr);
 
     return rc;
@@ -600,7 +618,10 @@ TEST(nvidia_display_link, gives_the_error_of_a_request_failing_other_than_by_a_r
 
     output_link link = {};
     bool is_assigned = true;
-    EXPECT_EQ(assign_output_link(facts, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, false, link, is_assigned), ERR_TIMEOUT);
+    EXPECT_EQ(
+        assign_output_link(facts, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, false, 0, link, is_assigned),
+        ERR_TIMEOUT
+    );
     EXPECT_FALSE(is_assigned);
 
     link_firmware capabilities;

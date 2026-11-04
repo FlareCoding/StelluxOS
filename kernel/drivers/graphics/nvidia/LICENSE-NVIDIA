@@ -3077,7 +3077,7 @@ src/nvidia-modeset/src/nvkms-evo.c
     display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp,
     that when the bandwidth check refuses a mode it lowers the heads' usage
     bounds a step at a time, removing the base layer's formats of 4, then 2,
-    then 1 bytes a pixel last, before refusing the mode, in display_light.h,
+    then 1 bytes a pixel last, before refusing the mode, in display_light.cpp,
     that it frees the cursor channels, then the window channels and then the
     core channel, in display_engine.h, display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that it detaches a
@@ -3090,9 +3090,9 @@ src/nvidia-modeset/src/nvkms-evo.c
     display_engine.cpp, kernel/tests/graphics/nvidia_core_methods.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that it asks display
     common to assign a display id an output resource only when display common
-    reports the crossbar, excluding no resource and for one head, and takes the
-    last resource whose entry in the reply holds the display id with the SINGLE
-    or 2H1OR_PRIMARY type, in display_link.h, display_link.cpp and
+    reports the crossbar, excluding what its caller names and for one head, and
+    takes the last resource whose entry in the reply holds the display id with
+    the SINGLE or 2H1OR_PRIMARY type, in display_link.h, display_link.cpp and
     kernel/tests/graphics/nvidia_display_link.test.cpp, and that it lights a
     head by setting its timings, a black overscan outside its debug builds
     before the raster and then the head's control and compression, then later
@@ -3121,13 +3121,15 @@ src/nvidia-modeset/src/nvkms-evo3.c
     downscale being the horizontal downscale factor in 1024ths, gives its
     display classes' scalers 2 taps at the fewest, takes any failed request as a
     refused mode and asks about a mode whose sync and back porch take no line,
-    in display_light.h, display_light.cpp and
+    in display_light.cpp and
+    kernel/tests/graphics/nvidia_display_light.test.cpp, that it asks about the
+    heads in ascending order, in display_light.cpp and
     kernel/tests/graphics/nvidia_display_light.test.cpp, that it names a window
-    for each usable layer of every head it asks about, in display_light.h, that
-    it loads a window channel's input scaler's coefficients only for a window
-    reporting an input scaler while no usable head reports an output scaler, and
-    its color conversion tables, curves for HDR monitors, only for a window
-    reporting them, in chip.h, that its identity look-up table
+    for each usable layer of every head it asks about, in display_light.cpp,
+    that it loads a window channel's input scaler's coefficients only for a
+    window reporting an input scaler while no usable head reports an output
+    scaler, and its color conversion tables, curves for HDR monitors, only for a
+    window reporting them, in chip.h, that its identity look-up table
     (EvoSetupIdentityBaseLutC5) gives each of the 1024 entries after the header
     nvUnorm10ToFp16 of its place among them in red, green and blue and repeats
     the last of them in the entry after, in display_light.h, display_light.cpp
@@ -3184,7 +3186,12 @@ src/nvidia-modeset/src/nvkms-evo3.c
     release, the interlock flags, the core channel's only when interlocked with
     it and always the window's own, and the update releasing ELV, in rm.h,
     window_methods.h, window_methods.cpp and
-    kernel/tests/graphics/nvidia_window_methods.test.cpp, that the format
+    kernel/tests/graphics/nvidia_window_methods.test.cpp, that each window an
+    update interlocks with the core channel names every window of that update in
+    its window interlock flags, its own among them, in window_methods.h,
+    display_engine.h, display_engine.cpp,
+    kernel/tests/graphics/nvidia_window_methods.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that the format
     matrix's coefficients are signed with 16 fraction bits, in rm.h, that a
     window neither scaling nor mapping tones takes its colors to the head's
     through CSC11 alone, the other CSC stages written disabled and only for a
@@ -3228,8 +3235,9 @@ src/nvidia-modeset/src/nvkms-evo3.c
 
 src/nvidia-modeset/src/nvkms-modeset.c
     that the modesetting module asks the bandwidth check about every lit head of
-    a display together, each with its guaranteed usage, in display_light.h, that
-    it reads the core channel's armed state ahead of its first update, in
+    a display together, each with its guaranteed usage, in display_light.h,
+    display_light.cpp and kernel/tests/graphics/nvidia_display_light.test.cpp,
+    that it reads the core channel's armed state ahead of its first update, in
     core_channel.h and display_window_owners.h, that an update changing a
     window's owner must not be interlocked with that window's channel, in
     display_window_owners.h, display_engine.cpp and
@@ -3249,9 +3257,14 @@ src/nvidia-modeset/src/nvkms-modeset.c
     timings, its dithering, its output resource's control, its colors, its
     attach to its serial link, its viewports, its sharpening, its digital
     vibrance and its HDMI FRL configuration, in core_methods.h, core_methods.cpp
-    and kernel/tests/graphics/nvidia_core_methods.test.cpp, and that the links
-    of the heads a mode set's update detached are powered down once that update
-    has completed, in display_engine.h, display_engine.cpp and
+    and kernel/tests/graphics/nvidia_core_methods.test.cpp, that the links of
+    the heads a mode set's update detached are powered down once that update has
+    completed, in display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it excludes
+    from each output resource assignment of a mode set the output resources
+    assigned earlier in it, in display_link.h, display_link.cpp,
+    display_engine.h, display_engine.cpp,
+    kernel/tests/graphics/nvidia_display_link.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

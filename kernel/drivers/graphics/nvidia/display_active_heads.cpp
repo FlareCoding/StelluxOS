@@ -160,4 +160,16 @@ bool find_shown_output(const active_heads& heads, uint8_t head, const display_ou
     return false;
 }
 
+uint32_t find_shown_outputs(const active_heads& heads, const display_outputs& outputs) {
+    uint32_t shown_outputs = 0;
+    for (uint8_t head = 0; head < DISPLAY_HEADS_MAX; head++) {
+        uint8_t output = 0;
+        if (find_shown_output(heads, head, outputs, output)) {
+            shown_outputs |= 1u << output;
+        }
+    }
+
+    return shown_outputs;
+}
+
 } // namespace drivers::nvidia

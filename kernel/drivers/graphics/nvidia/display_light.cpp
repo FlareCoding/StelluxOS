@@ -44,20 +44,28 @@ constexpr uint32_t ENTRY_BLUE_SHIFT   = 32;
 constexpr uint32_t OUTPUT_LEVEL_SHIFT      = 6;
 constexpr uint32_t OUTPUT_TABLE_FIRST_WORD = OUTPUT_TABLE_OFFSET / sizeof(uint64_t);
 
-// The output tried after `tried` others: `first_output` first, then the others in ascending order
-static uint8_t output_in_order(uint8_t tried, uint8_t first_output) {
-    if (tried == 0) {
-        return first_output;
+// Fills `order` with the outputs below `output_count` in lighting order
+static void fill_lighting_order(uint32_t first_outputs, uint8_t output_count, uint8_t* order) {
+    uint8_t placed = 0;
+    for (uint8_t output = 0; output < output_count; output++) {
+        if ((first_outputs & (1u << output)) != 0) {
+            order[placed] = output;
+            placed++;
+        }
     }
 
-    return tried <= first_output ? tried - 1 : tried;
+    for (uint8_t output = 0; output < output_count; output++) {
+        if ((first_outputs & (1u << output)) == 0) {
+            order[placed] = output;
+            placed++;
+        }
+    }
 }
 
 light_target find_light_target(const display_heads& heads, const active_heads& active, const display_outputs& outputs) {
     light_target target = {};
-    if (find_boot_head(active, target.head)) {
-        find_shown_output(active, target.head, outputs, target.first_output);
-    }
+    find_boot_head(active, target.head);
+    target.first_outputs = find_shown_outputs(active, outputs);
 
     // The boot head and head 0 are below `heads.count`, and `display_heads` promises each such head a window
     target.window = static_cast<uint8_t>(__builtin_ctz(windows_of_head(heads, target.head)));
@@ -123,19 +131,20 @@ uint64_t look_up_table_word(uint32_t index) {
     return color | color << ENTRY_GREEN_SHIFT | color << ENTRY_BLUE_SHIFT;
 }
 
-// Fills `params` to ask whether `head` can show `timing` with `window` scanning it out, and gives whether its sync and
-// back porch take enough lines for a request
-static bool fill_request(const edid::timing& timing, uint8_t head, uint8_t window, rm::mode_possible_params& params) {
+// Fills one head and its window of a request to show `timing` on `head` with `window` scanning it out, and gives
+// whether its sync and back porch take enough lines for a request
+static bool fill_head(
+    const edid::timing& timing,
+    uint8_t head,
+    uint8_t window,
+    rm::mode_possible_head& asked_head,
+    rm::mode_possible_window& asked_window
+) {
     head_raster raster = raster_of(timing);
     if (raster.leading_idle_lines < LEADING_IDLE_LINES_MIN) {
         return false;
     }
 
-    string::memset(&params, 0, sizeof(params));
-    params.head_count = 1;
-    params.window_count = 1;
-
-    rm::mode_possible_head& asked_head = params.heads[0];
     asked_head.head = head;
     asked_head.pixel_clock_khz = timing.pixel_clock_khz;
     asked_head.raster_width = raster.width;
@@ -160,7 +169,6 @@ static bool fill_request(const edid::timing& timing, uint8_t head, uint8_t windo
     asked_head.lut = rm::LUT_USAGE_1025;
     asked_head.cursor_width_32 = CURSOR_WIDTH_32;
 
-    rm::mode_possible_window& asked_window = params.windows[0];
     asked_window.window = window;
     asked_window.head = head;
     asked_window.formats = rm::FORMAT_RGB_PACKED_4_BPP;
@@ -175,15 +183,55 @@ static bool fill_request(const edid::timing& timing, uint8_t head, uint8_t windo
     return true;
 }
 
-// Asks the bandwidth check whether the target's head can show the output's mode `rank` with its window, logging a
-// refusal
+// Fills `params` in ascending head order to ask whether the heads of `chosen` can show their modes while `head` shows
+// `timing` with `window`, and gives whether that timing's sync and back porch take enough lines for a request
+static bool fill_request(
+    const light_set& chosen,
+    const edid::timing& timing,
+    uint8_t head,
+    uint8_t window,
+    rm::mode_possible_params& params
+) {
+    string::memset(&params, 0, sizeof(params));
+
+    uint8_t slot = 0;
+    for (uint8_t asked_head = 0; asked_head < DISPLAY_HEADS_MAX; asked_head++) {
+        if (asked_head == head) {
+            if (!fill_head(timing, head, window, params.heads[slot], params.windows[slot])) {
+                return false;
+            }
+
+            slot++;
+        }
+
+        for (uint8_t index = 0; index < chosen.count; index++) {
+            const output_light& light = chosen.lights[index];
+            if (light.head == asked_head) {
+                fill_head(light.timing, light.head, light.window, params.heads[slot], params.windows[slot]);
+                slot++;
+            }
+        }
+    }
+
+    // Each head names only the window the driver shows on it, where NVIDIA names a window for each of the head's
+    // usable layers, as windows the driver never shows need no bandwidth
+    params.head_count = slot;
+    params.window_count = slot;
+
+    return true;
+}
+
+// Asks the bandwidth check whether `head` can show the output's mode `rank` with `window` beside the outputs `chosen`
+// holds, logging a refusal
 static int32_t check_mode(
     firmware& fw,
     rm::handle bandwidth_check,
     uint8_t output,
     const output_modes& modes,
     uint8_t rank,
-    const light_target& target,
+    const light_set& chosen,
+    uint8_t head,
+    uint8_t window,
     rm::mode_possible_params& params,
     bool& is_possible
 ) {
@@ -212,7 +260,7 @@ static int32_t check_mode(
         return OK;
     }
 
-    if (!fill_request(timing, target.head, target.window, params)) {
+    if (!fill_request(chosen, timing, head, window, params)) {
         log::info(
             "nvidia: output %u's timing %u, %u by %u at %lu.%03lu Hz, is refused, as its sync and back porch take "
             "fewer than %u lines",
@@ -227,19 +275,27 @@ static int32_t check_mode(
         return OK;
     }
 
+    const char* beside = "";
+    if (chosen.count == 1) {
+        beside = ", beside the output chosen before it";
+    } else if (chosen.count > 1) {
+        beside = ", beside the outputs chosen before it";
+    }
+
     int32_t rc = fw.control(bandwidth_check, rm::CONTROL_IS_MODE_POSSIBLE, &params, sizeof(params));
     if (rc == ERR_FIRMWARE) {
         log::info(
             "nvidia: the firmware refuses the bandwidth check's request about output %u's timing %u, %u by %u at "
-            "%lu.%03lu Hz, on head %u with window %u, so the mode is refused",
+            "%lu.%03lu Hz, on head %u with window %u%s, so the mode is refused",
             output,
             modes.indices[rank],
             timing.width,
             timing.height,
             millihertz / 1000,
             millihertz % 1000,
-            target.head,
-            target.window
+            head,
+            window,
+            beside
         );
         return OK;
     }
@@ -258,34 +314,39 @@ static int32_t check_mode(
     if (!is_possible) {
         log::info(
             "nvidia: the bandwidth check refuses output %u's timing %u, %u by %u at %lu.%03lu Hz, on head %u with "
-            "window %u",
+            "window %u%s",
             output,
             modes.indices[rank],
             timing.width,
             timing.height,
             millihertz / 1000,
             millihertz % 1000,
-            target.head,
-            target.window
+            head,
+            window,
+            beside
         );
     }
 
     return OK;
 }
 
-// Asks about the output's modes in order until the bandwidth check accepts one, giving its rank
+// Asks about the output's modes in order until the bandwidth check accepts one beside `chosen`, giving its rank
 static int32_t find_possible_mode(
     firmware& fw,
     rm::handle bandwidth_check,
     uint8_t output,
     const output_modes& modes,
-    const light_target& target,
+    const light_set& chosen,
+    uint8_t head,
+    uint8_t window,
     rm::mode_possible_params& params,
     bool& is_found,
     uint8_t& rank
 ) {
+    // NVIDIA lowers the usage bounds it asks for before refusing a timing, where the driver writes fixed usage bounds,
+    // as its one window format, 4 bytes a pixel unscaled, leaves nothing to lower
     for (rank = 0; rank < modes.count; rank++) {
-        int32_t rc = check_mode(fw, bandwidth_check, output, modes, rank, target, params, is_found);
+        int32_t rc = check_mode(fw, bandwidth_check, output, modes, rank, chosen, head, window, params, is_found);
         if (rc != OK || is_found) {
             return rc;
         }
@@ -294,15 +355,28 @@ static int32_t find_possible_mode(
     return OK;
 }
 
-int32_t choose_first_light(
+// The lowest head below `head_count` that `chosen` leaves free, which the caller must know exists
+static uint8_t lowest_free_head(const light_set& chosen, uint8_t head_count) {
+    uint32_t taken = 0;
+    for (uint8_t index = 0; index < chosen.count; index++) {
+        taken |= 1u << chosen.lights[index].head;
+    }
+
+    uint32_t free_heads = ~taken & ((1u << head_count) - 1);
+    return static_cast<uint8_t>(__builtin_ctz(free_heads));
+}
+
+int32_t choose_lights(
     firmware& fw,
     rm::handle bandwidth_check,
+    const display_heads& heads,
     const output_modes* modes,
     uint8_t output_count,
     const light_target& target,
-    first_light& out,
-    bool& is_chosen
+    light_set& out
 ) {
+    string::memset(&out, 0, sizeof(out));
+
     uint32_t params_bytes = sizeof(rm::mode_possible_params);
     auto* params = static_cast<rm::mode_possible_params*>(heap::uzalloc(params_bytes));
     if (params == nullptr) {
@@ -310,33 +384,56 @@ int32_t choose_first_light(
         return ERR_NO_MEMORY;
     }
 
+    uint8_t order[DISPLAY_IDS_MAX] = {};
+    fill_lighting_order(target.first_outputs, output_count, order);
+
     int32_t rc = OK;
-    bool is_found = false;
     for (uint8_t tried = 0; tried < output_count; tried++) {
-        uint8_t output = output_in_order(tried, target.first_output);
+        uint8_t output = order[tried];
+        if (modes[output].count == 0) {
+            continue;
+        }
+
+        if (out.count == heads.count) {
+            log::info("nvidia: output %u is not chosen to light, as no head is left for it", output);
+            continue;
+        }
+
+        uint8_t head = target.head;
+        uint8_t window = target.window;
+        if (out.count > 0) {
+            // `display_heads` promises each head below its count a window
+            head = lowest_free_head(out, heads.count);
+            window = static_cast<uint8_t>(__builtin_ctz(windows_of_head(heads, head)));
+        }
+
+        bool is_found = false;
         uint8_t rank = 0;
-        rc = find_possible_mode(fw, bandwidth_check, output, modes[output], target, *params, is_found, rank);
+        rc = find_possible_mode(fw, bandwidth_check, output, modes[output], out, head, window, *params, is_found, rank);
         if (rc != OK) {
             break;
         }
 
-        if (is_found) {
-            out = {
-                .output = output,
-                .timing_index = modes[output].indices[rank],
-                .timing = modes[output].timings[rank],
-                .head = target.head,
-                .window = target.window,
-            };
-
-            break;
+        if (!is_found) {
+            log::info("nvidia: output %u is not chosen to light, as every one of its modes is refused", output);
+            continue;
         }
+
+        out.lights[out.count] = {
+            .output = output,
+            .timing_index = modes[output].indices[rank],
+            .timing = modes[output].timings[rank],
+            .head = head,
+            .window = window,
+        };
+
+        out.count++;
     }
 
     heap::ufree(params);
 
-    if (rc == OK) {
-        is_chosen = is_found;
+    if (rc != OK) {
+        string::memset(&out, 0, sizeof(out));
     }
 
     return rc;

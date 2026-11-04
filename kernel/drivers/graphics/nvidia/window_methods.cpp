@@ -88,8 +88,8 @@ static void append_color_pipeline(method_writer& writer, rm::handle look_up_tabl
 }
 
 // Appends no semaphore to wait on, then none to write, and the update with its interlock flags
-static void append_update(method_writer& writer, uint8_t window, bool interlocks_core) {
-    uint32_t core_interlock = interlocks_core ? rm::WINDOW_INTERLOCK_WITH_CORE : 0;
+static void append_update(method_writer& writer, const window_image_update& update) {
+    uint32_t core_interlock = update.interlocks_core ? rm::WINDOW_INTERLOCK_WITH_CORE : 0;
 
     append(writer, rm::WINDOW_SET_ACQUIRE_SEMAPHORE_CONTEXT_DMA, 0);
     append(writer, rm::WINDOW_SET_ACQUIRE_SEMAPHORE_CONTROL, 0);
@@ -99,7 +99,7 @@ static void append_update(method_writer& writer, uint8_t window, bool interlocks
     append(writer, rm::WINDOW_SET_SEMAPHORE_RELEASE, 0);
 
     append(writer, rm::WINDOW_SET_INTERLOCK_FLAGS, core_interlock);
-    append(writer, rm::WINDOW_SET_WINDOW_INTERLOCK_FLAGS, 1u << window);
+    append(writer, rm::WINDOW_SET_WINDOW_INTERLOCK_FLAGS, update.window_interlocks);
     append(writer, rm::WINDOW_UPDATE, rm::WINDOW_UPDATE_RELEASE_ELV);
 }
 
@@ -125,7 +125,7 @@ void build_window_image_methods(
     append(writer, rm::WINDOW_SET_PARAMS, rm::FORMAT_X8R8G8B8);
 
     append_color_pipeline(writer, image.look_up_table_context_dma);
-    append_update(writer, image.window, update.interlocks_core);
+    append_update(writer, update);
 }
 
 } // namespace drivers::nvidia

@@ -127,7 +127,7 @@ struct engine_head {
     bool                    has_logged_first_second;
 
     // The queued present and the latch rules' state, which the light and `present` set and the handler's latch step,
-    // the two timers' callbacks, `release` and a cursor write failing the display end
+    // the two timers' callbacks, `release` and a cursor write or present failing the display end
     mode_times            times;
     bool                  has_queued_present;
     uint32_t              queued_slot;
@@ -177,15 +177,16 @@ public:
     display_engine& operator=(const display_engine&) = delete;
 
     /**
-     * @brief Light one connected monitor with a black base buffer at the first
-     * mode the bandwidth check accepts, powering down the link of each other
-     * output the boot firmware lit once the shutdown update stops its heads.
+     * @brief Light every connected monitor it can in one mode set, or none
+     * after a later failure. Once its shutdown update succeeds, it powers down
+     * the link of each output the boot firmware lit that the set leaves out.
      * Call it once, outside interrupts and spinlocks, while nothing else uses
      * video memory or the firmware, with `regs` mapped until `release` returns.
      * @return `OK`, also when nothing lights, else the logged error that ended
      * the set-up: a refused binding, before the choice a refused request it
-     * needs or no memory, or a request or wait failing other than by a refusal
-     * or, before the core channel's idle wait, no room, but no failed update.
+     * needs or no memory, else a request, binding, allocation, mapping or wait
+     * failing other than by a refusal or, before the core channel's idle wait,
+     * no room, but not a failed update.
      */
     int32_t set_up(
         registers& regs,
@@ -252,25 +253,25 @@ public:
 
     /**
      * @brief Allocate a buffer in scanout video memory, cleared to black and
-     * mapped for userland, then wait for the driver task to bind it to the lit
-     * window's channel, if any, so it must not run in an interrupt handler.
-     * @return `ERR_UNSUPPORTED` and `ERR_DEVICE` as `present()` returns them,
-     * then `ERR_INVALID_ARG` for a format other than XRGB8888 or a size past
-     * the window's 16-bit fields, all unlogged, then `ERR_NO_MEMORY` when
-     * memory runs short and `ERR_REFUSED` when the buffer cannot be allocated,
-     * mapped or bound, the engine itself logging neither.
+     * mapped for userland, then wait for the driver task to bind it to every
+     * lit window's channel, so it must not run in an interrupt handler. A
+     * failed binding undoes the others, a failed undo keeping it for good.
+     * @return `ERR_UNSUPPORTED` and `ERR_DEVICE` as `present()` returns them
+     * for a dark output, then `ERR_INVALID_ARG` for a format other than
+     * XRGB8888 or a size past the window's 16-bit fields, then `ERR_NO_MEMORY`
+     * when memory runs short and `ERR_REFUSED` otherwise, none logged here.
      */
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
 
     /**
      * @brief Write an update showing `buf` into the window channel of the head
-     * lighting `output`, for that head to take at a vertical blank, waiting
-     * only for the output lock. The present ends as the latch rules decide, or
-     * failed by `release` or a cursor call failing the display.
+     * lighting `output`, waiting only for the output lock. The present ends as
+     * the latch rules decide, or failed by `release` or a display failure.
      * @return gfxfb's errors in its order: `ERR_UNSUPPORTED` with flips off or
-     * no window notifier, `ERR_DEVICE` once released or failed, `ERR_DARK` off
-     * a lit output, `ERR_INVALID_ARG` off its mode's size and `ERR_REFUSED` for
-     * a buffer not bound to that channel or a full push buffer.
+     * no window notifier, or none on that head's window, `ERR_DEVICE` once
+     * released or failed, `ERR_DARK` off a lit output, `ERR_INVALID_ARG` off
+     * its mode's size and `ERR_REFUSED` for a buffer not bound to that channel
+     * or a full push buffer.
      */
     int32_t present(uint32_t output, gfxfb::buffer* buf, const gfxfb::gfxfb_rect* regions, uint32_t count) override;
 
@@ -344,6 +345,10 @@ private:
     // set it before their calls, so the calls read it bare
     void (*m_cursor_step_seam)(display_engine& engine) = nullptr;
 
+    // Run after each notified update's kick and before its wait, null outside tests, which set it before `set_up`, so
+    // the engine reads it bare
+    void (*m_update_seam)(display_engine& engine) = nullptr;
+
     // For each head, the output the light gave it, kept after `release`, or `NO_OUTPUT`, stored with release under
     // `m_output_lock` and loaded with acquire by the handler. `set_up` records the head count before flips turn on
     uint8_t            m_head_outputs[DISPLAY_HEADS_MAX];
@@ -397,7 +402,30 @@ private:
     // mode's latch times, its head table entry and its interrupt, taking `m_output_lock` itself
     void mark_head_lit(registers& regs, const head_light& light, bool has_cursor);
 
-    // Brings the engine up for the chosen output, from the mode set's start to its end
+    // Allocates each light's window channel, base buffer, notifier and cursor, binding each base buffer and the look-up
+    // table to every prepared light's window channel, and empties `set` once a channel or surface is not set up
+    int32_t prepare_lights(
+        registers& regs,
+        const dma::device_profile& card,
+        const chip_display& display,
+        uint32_t present_heads,
+        uint32_t present_windows,
+        light_set& set
+    );
+
+    // Gives `light` its head's window channel and base buffer, mapped for userland, binding the table and every earlier
+    // light's base buffer to its channel and its base buffer to theirs, leaving `is_prepared` clear when a step fails
+    int32_t prepare_light(
+        registers& regs,
+        const dma::device_profile& card,
+        const chip_display& display,
+        uint32_t present_windows,
+        const light_set& prepared,
+        const output_light& light,
+        bool& is_prepared
+    );
+
+    // Runs the mode set for `set`: the shutdown update, the links and the light, the engine taken down when one fails
     int32_t bring_up(
         registers& regs,
         const display_heads& heads,
@@ -407,8 +435,19 @@ private:
         bool has_crossbar,
         const display_outputs& outputs,
         const power_down_facts& power_down,
-        const dpcd_capabilities& dpcd,
-        const first_light& light
+        const light_set& set,
+        const dpcd_capabilities* dpcds
+    );
+
+    // Readies each output's link in lighting order, excluding links assigned before, until one fails, giving the
+    // `ready_count` lights readied in `lights`
+    int32_t set_up_links(
+        bool has_crossbar,
+        const display_outputs& outputs,
+        const light_set& set,
+        const dpcd_capabilities* dpcds,
+        head_light* lights,
+        uint8_t& ready_count
     );
 
     // Writes an update naming the cleared notifier, interlocked with the window channels of `window_interlocks`, then
@@ -435,26 +474,36 @@ private:
         registers& regs,
         const chip_display& display,
         uint32_t present_heads,
-        const first_light& light
+        const output_light& light
     );
 
     // Clears the head's cursor memory and parks its cursor, giving in `cursor_context_dma` the context DMA the light's
     // cursor methods name, 0 without cursor memory or room to park, and returning `OK` or the park's error, logged
     int32_t prepare_cursor(uint8_t head, rm::handle& cursor_context_dma);
 
-    // Writes the head's cursor methods and its window's usage bounds into the core channel, then the window's first
-    // image into its own channel, naming the head's base buffer and the look-up table by their context DMAs, never 0
-    int32_t write_first_image(const head_light& light, rm::handle cursor_context_dma);
+    // Writes the head's cursor methods and window usage bounds into the core channel, then the window's first image,
+    // interlocked with the core and the windows of `window_interlocks`, naming the base buffer and look-up table
+    int32_t write_first_image(const head_light& light, rm::handle cursor_context_dma, uint32_t window_interlocks);
 
-    // Parks any cursor, lights `light` with its window's first image, in two updates when the engine's first update
-    // changes a window's owner, a window serving no head counting, logs the armed state and sets `shows_cursor_memory`
-    int32_t light_head(
+    // Writes the first image of each head of `lights` with `write_first_image`, each naming its own cursor context DMA
+    // and every window of the light, `window_interlocks`
+    int32_t write_first_images(
+        const head_light* lights,
+        const rm::handle* cursor_context_dmas,
+        uint8_t count,
+        uint32_t window_interlocks
+    );
+
+    // Parks any cursor, lights every head of `lights` with its window's first image, in two updates when the engine's
+    // first update changes a window's owner, a window serving no head counting, filling `shows_cursor_memory`
+    int32_t light_heads(
         const registers& regs,
         const display_heads& heads,
         uint32_t present_windows,
         const window_owners& owners,
-        const head_light& light,
-        bool& shows_cursor_memory
+        const head_light* lights,
+        uint8_t count,
+        bool* shows_cursor_memory
     );
 
     // Writes the shutdown methods for the heads found active, with the windows' heads only when no update was kicked,
@@ -483,7 +532,7 @@ private:
     /**
      * @brief Write `position` and then `UPDATE` into `head`'s cursor channel,
      * `UPDATE` alone when it is owed for `position`, failing the display and
-     * the head's queued present when the free register reads all ones. The
+     * every head's queued present when the free register reads all ones. The
      * caller must hold `m_output_lock`.
      * @return As `cursor_channel::write` returns.
      * @note Privilege: **required**

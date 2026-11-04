@@ -120,6 +120,15 @@ bool find_boot_head(const active_heads& heads, uint8_t& head);
  */
 bool find_shown_output(const active_heads& heads, uint8_t head, const display_outputs& outputs, uint8_t& index);
 
+/**
+ * @brief Give the outputs the active heads show, each as `find_shown_output`
+ * finds it.
+ * @param heads The heads `read_active_heads` gave.
+ * @param outputs The outputs `read_display_outputs` gave.
+ * @return A bit for each output an active head shows, bit 0 for output 0.
+ */
+uint32_t find_shown_outputs(const active_heads& heads, const display_outputs& outputs);
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_DISPLAY_ACTIVE_HEADS_H

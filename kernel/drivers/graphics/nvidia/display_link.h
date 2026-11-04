@@ -25,8 +25,8 @@ struct output_link {
 /**
  * @brief Give the output resource driving a display id's link, as NVIDIA's
  * modesetting module finds it. When display common reports the crossbar, ask
- * it to assign the display id an output resource, excluding none and for one
- * head, and take the last resource whose entry in the reply drives the
+ * it to assign the display id an output resource outside `excluded_links`,
+ * for one head, and take the last resource whose entry in the reply drives the
  * display id on its own or as the primary of two output resources fed by two
  * heads. Then ask for the display id's output resource facts, taking the
  * index from them without the crossbar and the link from the protocol either
@@ -40,6 +40,8 @@ struct output_link {
  * @param display_common The display common object.
  * @param display_id The display id, a single bit.
  * @param has_crossbar Whether display common reports the crossbar.
+ * @param excluded_links A bit for each output resource the assignment must not
+ * name, bit i for resource i.
  * @param out The output resource and link, when one is assigned.
  * @param is_assigned Set to whether one is.
  * @return `OK`, including when none is assigned, or what `firmware::control`
@@ -51,6 +53,7 @@ int32_t assign_output_link(
     rm::handle display_common,
     uint32_t display_id,
     bool has_crossbar,
+    uint8_t excluded_links,
     output_link& out,
     bool& is_assigned
 );
@@ -180,7 +183,7 @@ int32_t power_down_link(
 );
 
 /**
- * @brief Make the chosen output's link ready to carry its mode, logging each
+ * @brief Make an output's link ready to carry its mode, logging each
  * step: assign its display id an output resource, read the resource's
  * DisplayPort facts, find the lowest configuration carrying the mode under
  * them, train the link there and check the training against the status bytes
@@ -193,9 +196,12 @@ int32_t power_down_link(
  * @param fw The bound firmware.
  * @param display_common The display common object.
  * @param has_crossbar Whether display common reports the crossbar.
- * @param output The chosen output.
+ * @param output The output to light.
  * @param dpcd The capabilities `read_output_dpcd` read for its monitor.
  * @param light The output's head and mode.
+ * @param assigned_links The output resources assigned earlier in the mode set,
+ * bit i for resource i, which the assignment must not name and to which it
+ * adds the one it assigns.
  * @param ready_link Set to the output resource and link driving the display id
  * when the link is ready, the resource one of the 4 display common assigns,
  * else to all 0, which also names output resource 0's link A, so a caller must
@@ -211,7 +217,8 @@ int32_t set_up_output_link(
     bool has_crossbar,
     const display_output& output,
     const dpcd_capabilities& dpcd,
-    const first_light& light,
+    const output_light& light,
+    uint8_t& assigned_links,
     output_link& ready_link,
     bool& is_set_up
 );

@@ -48,6 +48,7 @@ int32_t assign_output_link(
     rm::handle display_common,
     uint32_t display_id,
     bool has_crossbar,
+    uint8_t excluded_links,
     output_link& out,
     bool& is_assigned
 ) {
@@ -57,6 +58,7 @@ int32_t assign_output_link(
     if (has_crossbar) {
         rm::assign_output_resource_params assignment = {};
         assignment.display_id = display_id;
+        assignment.excluded_mask = excluded_links;
         int32_t rc = fw.control(display_common, rm::CONTROL_ASSIGN_OUTPUT_RESOURCE, &assignment, sizeof(assignment));
         if (rc == ERR_FIRMWARE) {
             log::error(
@@ -495,7 +497,8 @@ int32_t set_up_output_link(
     bool has_crossbar,
     const display_output& output,
     const dpcd_capabilities& dpcd,
-    const first_light& light,
+    const output_light& light,
+    uint8_t& assigned_links,
     output_link& ready_link,
     bool& is_set_up
 ) {
@@ -504,10 +507,20 @@ int32_t set_up_output_link(
 
     output_link link = {};
     bool is_assigned = false;
-    int32_t rc = assign_output_link(fw, display_common, output.display_id, has_crossbar, link, is_assigned);
+    int32_t rc = assign_output_link(
+        fw,
+        display_common,
+        output.display_id,
+        has_crossbar,
+        assigned_links,
+        link,
+        is_assigned
+    );
     if (rc != OK || !is_assigned) {
         return rc;
     }
+
+    assigned_links |= static_cast<uint8_t>(1u << link.index);
 
     chip_displayport gpu = {};
     bool supports_1_2 = false;
