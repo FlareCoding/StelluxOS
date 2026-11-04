@@ -250,9 +250,9 @@ struct virtio_gpu_scanout {
  * When the device enables no scanout at a usable size at attach, the driver
  * lights scanout 0 at 1024 by 768 anyway, and a change brings it to what the
  * device reports like any other. Without that interrupt, which the driver
- * logs, the scanouts stay as attach lit them. `read_output()` and
- * `base_buffer()` read the scanouts under a spinlock, so they never wait
- * behind a batch.
+ * logs, the scanouts stay as attach lit them. `read_output()`, `read_modes()`
+ * and `base_buffer()` read the scanouts under a spinlock, so they never wait
+ * behind a batch. A lit scanout lists only the mode it is lit at.
  *
  * Every scanout has a hardware cursor of up to 64 by 64 pixels, drawn from the
  * one cursor resource, which the driver shows on a lit scanout through
@@ -295,6 +295,7 @@ public:
     uint32_t output_count() const override { return m_scanout_count; }
     bool needs_flush() const override { return true; }
     int32_t read_output(uint32_t output, gfxfb::output_state& out) override;
+    int32_t read_modes(uint32_t output, gfxfb::gfxfb_mode* out, uint32_t capacity, uint32_t& count) override;
     gfxfb::buffer* base_buffer(uint32_t output) override;
     int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override;
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;

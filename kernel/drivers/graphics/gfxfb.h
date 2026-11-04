@@ -43,6 +43,11 @@
  * output. Both rules treat a lit output whose base buffer gfxfb had no memory
  * to record as dark.
  *
+ * An output's mode list holds the modes the output can light at in the
+ * display's order of preference. Each mode appears once, the current mode is
+ * among them, and a dark output lists none. Userland reads it with
+ * `GFXFB_GET_MODES`, which gfxfb answers from the display's `read_modes()`.
+ *
  * Userland also creates buffers, which the display allocates in
  * `create_buffer()`, and presents buffers on outputs, which gfxfb hands to the
  * display's `present()`. The display reports to `present_done()` how each
@@ -141,21 +146,21 @@ struct cursor_image {
  * from `init()` and `register_display()`, on the boot thread, which cannot
  * sleep, so they must not wait, and from `output_changed()`, in the task that
  * reports the change. It calls `output_count()`, `read_output()`,
- * `needs_flush()`, `flush()`, `create_buffer()`, `present()`, `set_cursor()`
- * and `move_cursor()` from the tasks that use /dev/gfxfb, several tasks at
- * once, and `flush()`, `create_buffer()`, `present()` and the two cursor calls
- * may block the task that calls them. gfxfb never calls `present()` for one
- * output from two tasks at once, nor while a present the display accepted
- * there has not ended, and never makes two cursor calls for one output at
- * once, though a cursor call may run during a present for the same output. It
- * calls `release_buffer()` from the reaper, the kernel task that runs deferred
- * cleanup, and `release_buffer()` must never wait, since the reaper runs no
- * other cleanup until it returns. A display returns ERR_DEVICE only once its
- * hardware has failed for good, and from then on from every call that needs
- * the hardware, so a refusal that leaves the hardware usable is ERR_REFUSED,
- * or ERR_NO_MEMORY when the hardware has no memory left for a buffer. It
- * likewise ends a present with `GFXFB_PRESENT_FAILED` only once its hardware
- * has failed for good.
+ * `read_modes()`, `needs_flush()`, `flush()`, `create_buffer()`, `present()`,
+ * `set_cursor()` and `move_cursor()` from the tasks that use /dev/gfxfb,
+ * several tasks at once, and `flush()`, `create_buffer()`, `present()` and the
+ * two cursor calls may block the task that calls them. gfxfb never calls
+ * `present()` for one output from two tasks at once, nor while a present the
+ * display accepted there has not ended, and never makes two cursor calls for
+ * one output at once, though a cursor call may run during a present for the
+ * same output. It calls `release_buffer()` from the reaper, the kernel task
+ * that runs deferred cleanup, and `release_buffer()` must never wait, since
+ * the reaper runs no other cleanup until it returns. A display returns
+ * ERR_DEVICE only once its hardware has failed for good, and from then on from
+ * every call that needs the hardware, so a refusal that leaves the hardware
+ * usable is ERR_REFUSED, or ERR_NO_MEMORY when the hardware has no memory left
+ * for a buffer. It likewise ends a present with `GFXFB_PRESENT_FAILED` only
+ * once its hardware has failed for good.
  */
 class display {
 public:
@@ -182,6 +187,18 @@ public:
      * @return OK, or ERR_INVALID_ARG for an index of `output_count()` or more.
      */
     virtual int32_t read_output(uint32_t output, output_state& out) = 0;
+
+    /**
+     * @brief Copy an output's mode list without waiting for the display's task
+     * or hardware. The list may change only when the display reports the
+     * output to `output_changed()`.
+     * @param output Index of the output.
+     * @param out Gets the list's first `capacity` modes, or all when fewer.
+     * @param capacity Entries `out` holds, at most GFXFB_MODES_MAX.
+     * @param count Set to the list's length, at most GFXFB_MODES_MAX.
+     * @return OK, or ERR_INVALID_ARG for an index of `output_count()` or more.
+     */
+    virtual int32_t read_modes(uint32_t output, gfxfb_mode* out, uint32_t capacity, uint32_t& count) = 0;
 
     /**
      * @brief Return an output's base buffer, the buffer the output was lit

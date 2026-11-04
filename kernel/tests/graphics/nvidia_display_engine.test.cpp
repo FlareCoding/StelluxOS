@@ -7146,6 +7146,43 @@ TEST(nvidia_display_engine, gfxfb_reads_boot_output_on_every_output_an_active_he
     EXPECT_EQ(engine.release(), OK);
 }
 
+// Lit after head 0 showed it, output 1 lists its 1366 by 768 mode alone, copied only at a capacity above 0. The dark
+// output 0 and output 1 after `release` list none and write no entry, and output 2 gets `gfxfb::ERR_INVALID_ARG`
+TEST(nvidia_display_engine, gfxfb_reads_the_lit_outputs_mode_as_its_only_listed_mode) {
+    engine_firmware fw;
+    connect_output_1_alone(fw);
+    fw.boot_display_id = OUTPUT_1_ID;
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(BASE_BUFFER_1366_BY_768_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    gfxfb::gfxfb_mode modes[2] = {};
+    uint32_t count = 0;
+    ASSERT_EQ(engine.read_modes(1, modes, 0, count), gfxfb::OK);
+    EXPECT_EQ(count, 1u);
+    EXPECT_EQ(modes[0].width, 0u);
+
+    ASSERT_EQ(engine.read_modes(1, modes, 2, count), gfxfb::OK);
+    EXPECT_EQ(count, 1u);
+    EXPECT_EQ(modes[0].width, 1366u);
+    EXPECT_EQ(modes[0].height, 768u);
+    EXPECT_EQ(modes[0].refresh_millihertz, 59789u);
+    EXPECT_EQ(modes[1].width, 0u);
+
+    ASSERT_EQ(engine.read_modes(0, modes, 2, count), gfxfb::OK);
+    EXPECT_EQ(count, 0u);
+    EXPECT_EQ(modes[0].width, 1366u);
+    EXPECT_EQ(engine.read_modes(2, modes, 2, count), gfxfb::ERR_INVALID_ARG);
+
+    EXPECT_EQ(engine.release(), OK);
+    count = 1;
+    ASSERT_EQ(engine.read_modes(1, modes, 2, count), gfxfb::OK);
+    EXPECT_EQ(count, 0u);
+    EXPECT_EQ(modes[0].width, 1366u);
+}
+
 // Of 17 outputs set up, gfxfb reads the first `gfxfb::GFXFB_OUTPUTS_MAX` and the engine refuses the 17th with
 // `gfxfb::ERR_INVALID_ARG`
 TEST(nvidia_display_engine, gfxfb_reads_at_most_gfxfb_outputs_max_outputs) {

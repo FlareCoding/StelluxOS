@@ -115,7 +115,7 @@ struct output_records {
  * framebuffer's size with an unknown refresh rate. The display hardware scans
  * that memory out directly, so `flush()` has nothing to copy and returns `OK`.
  * It creates and presents no buffers, has no hardware cursor, and keeps the
- * boot framebuffer when gfxfb hands it back.
+ * boot framebuffer when gfxfb hands it back. The output lists only its mode.
  */
 class boot_display : public display {
 public:
@@ -125,6 +125,7 @@ public:
     uint32_t output_count() const override { return 1; }
     bool needs_flush() const override { return false; }
     int32_t read_output(uint32_t output, output_state& out) override;
+    int32_t read_modes(uint32_t output, gfxfb_mode* out, uint32_t capacity, uint32_t& count) override;
     buffer* base_buffer(uint32_t output) override;
     int32_t flush(uint32_t output, const gfxfb_rect* rects, uint32_t count) override;
     int32_t create_buffer(uint32_t, uint32_t, uint32_t, buffer**) override { return ERR_UNSUPPORTED; }
@@ -323,6 +324,7 @@ private:
     rc::strong_ref<buffer_record> primary_base();
     int32_t get_info(uint64_t info_addr);
     int32_t get_output(uint64_t info_addr);
+    int32_t get_modes(uint64_t list_addr);
     int32_t flush(uint64_t args_addr);
     int32_t create_buffer(client& owner, uint64_t args_addr);
     int32_t create_buffer_under_handle(client& owner, gfxfb_buffer_args& args, uint64_t args_addr);
