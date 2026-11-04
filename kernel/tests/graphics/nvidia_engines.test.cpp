@@ -143,6 +143,15 @@ struct engines_test_access {
             word = ~0ULL;
         }
     }
+
+    // Takes `queue` off the list the handler reads, before a test frees it
+    static void unlist_queue(engines& gpu_engines, backend_queue& queue) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(gpu_engines.m_queues_lock);
+            gpu_engines.m_queues.remove(&queue);
+            sync::spin_unlock_irqrestore(gpu_engines.m_queues_lock, irq);
+        });
+    }
 };
 
 } // namespace drivers::nvidia
@@ -491,9 +500,10 @@ struct engines_fixture {
     gpu::memory* created = nullptr;
     uint32_t     device_id = ~0u;
 
-    // The space `create_space_on_gpu` creates, and the queue `create_queue_on_gpu` creates in it
-    gpu::space* space = nullptr;
-    gpu::queue* queue = nullptr;
+    // The space `create_space_on_gpu` creates, and the queue `create_queue_on_gpu` creates in it for `core_queue`
+    gpu::space*      space = nullptr;
+    gpu::queue*      queue = nullptr;
+    gpu::core_queue* core_queue = nullptr;
 
     engines_fixture()
         : bar0(fresh_bar0()), gpu_engines(fw, TEST_OBJECTS, memory, engines_operations(), failed),
@@ -1655,7 +1665,7 @@ static constexpr uint32_t GPFIFO_SYNC_WAIT    = 1u << 31;
 static constexpr uint32_t COPY_RUNLIST_TOKEN = 1u << 16;
 
 static int32_t create_queue_step(engines_fixture& fixture) {
-    return fixture.gpu_engines.create_queue(fixture.space, GPU_QUEUE_COPY, nullptr, &fixture.queue);
+    return fixture.gpu_engines.create_queue(fixture.space, GPU_QUEUE_COPY, fixture.core_queue, &fixture.queue);
 }
 
 static int32_t create_queue_on_gpu(engines_fixture& fixture) {
@@ -1683,9 +1693,10 @@ static uint64_t semaphores_of(engines_fixture& fixture) {
     return static_cast<backend_space*>(fixture.space)->semaphores.phys;
 }
 
-// Tears a queue down: its channel, then its push buffer and the queue itself
-static void tear_down_queue(gpu::queue* queue) {
+// Tears a queue down: off the handler's list, then its channel, its push buffer and the queue itself
+static void tear_down_queue(engines_fixture& fixture, gpu::queue* queue) {
     backend_queue& backend = backend_of(queue);
+    engines_test_access::unlist_queue(fixture.gpu_engines, backend);
     backend.user_channel.destroy();
     RUN_ELEVATED(dma::free_pages(backend.push_buffer));
     heap::ufree_delete(&backend);
@@ -1732,7 +1743,7 @@ TEST(nvidia_engines, a_queue_is_an_unprivileged_channel_with_its_rings_above_the
 
     EXPECT_EQ(page_entry_at(FIRST_PUSH_VA + PUSH_BUFFER_PAGES * 4096), 0u);
 
-    tear_down_queue(fixture.queue);
+    tear_down_queue(fixture, fixture.queue);
     tear_down_space(fixture);
 }
 
@@ -1762,7 +1773,7 @@ TEST(nvidia_engines, run_writes_an_entry_per_range_then_its_release_and_rings_th
     EXPECT_EQ(put_of_queue(fixture.queue), 3u);
     EXPECT_EQ(bar0_word(VIRTUAL_FUNCTION_DOORBELL), COPY_RUNLIST_TOKEN | 1);
 
-    tear_down_queue(fixture.queue);
+    tear_down_queue(fixture, fixture.queue);
     tear_down_space(fixture);
 }
 
@@ -1780,7 +1791,7 @@ TEST(nvidia_engines, an_empty_submission_runs_its_release_alone_in_its_sequences
     EXPECT_EQ(release_word_of(fixture.queue, slot, RELEASE_PAYLOAD_WORD), 65u);
     EXPECT_EQ(put_of_queue(fixture.queue), 1u);
 
-    tear_down_queue(fixture.queue);
+    tear_down_queue(fixture, fixture.queue);
     tear_down_space(fixture);
 }
 
@@ -1804,8 +1815,8 @@ TEST(nvidia_engines, a_second_queue_takes_the_next_id_window_and_semaphore) {
     EXPECT_EQ(release_word_of(fixture.queue, 1, RELEASE_ADDRESS_LOW_WORD), 4u);
     EXPECT_EQ(bar0_word(VIRTUAL_FUNCTION_DOORBELL), COPY_RUNLIST_TOKEN | 2);
 
-    tear_down_queue(fixture.queue);
-    tear_down_queue(first);
+    tear_down_queue(fixture, fixture.queue);
+    tear_down_queue(fixture, first);
     tear_down_space(fixture);
 }
 
@@ -1876,7 +1887,7 @@ TEST(nvidia_engines, a_queue_the_firmware_refuses_gives_back_its_window_and_id) 
     EXPECT_EQ(fixture.fw.last_channel.flags, USER_CHANNEL_1_FLAGS);
     EXPECT_EQ(fixture.fw.last_channel.gpfifo_address, FIRST_GPFIFO_VA);
 
-    tear_down_queue(fixture.queue);
+    tear_down_queue(fixture, fixture.queue);
     tear_down_space(fixture);
 }
 
@@ -1902,7 +1913,7 @@ TEST(nvidia_engines, a_queue_whose_channel_keeps_its_memory_keeps_its_window_and
     EXPECT_EQ(fixture.fw.last_channel.flags, USER_CHANNEL_2_FLAGS);
     EXPECT_EQ(fixture.fw.last_channel.gpfifo_address, FIRST_GPFIFO_VA + WINDOW_BYTES);
 
-    tear_down_queue(fixture.queue);
+    tear_down_queue(fixture, fixture.queue);
     tear_down_space(fixture);
 }
 
@@ -1928,7 +1939,7 @@ TEST(nvidia_engines, a_queue_without_a_free_window_or_id_allocates_no_channel) {
     EXPECT_EQ(fixture.fw.allocations, allocations);
     EXPECT_EQ(fixture.memory.allocations, video_allocations);
 
-    tear_down_queue(first);
+    tear_down_queue(fixture, first);
     tear_down_space(fixture);
 }
 
@@ -1953,6 +1964,175 @@ TEST(nvidia_engines, queues_are_refused_and_runs_ignored_once_the_gpu_failed) {
     EXPECT_EQ(put_of_queue(first), 0u);
     EXPECT_EQ(bar0_word(VIRTUAL_FUNCTION_DOORBELL), doorbell);
 
-    tear_down_queue(first);
+    tear_down_queue(fixture, first);
+    tear_down_space(fixture);
+}
+
+// A GPU core's device, context and two copy queues the handler reports to, never published and holding nothing outside
+// themselves, so each test builds them anew in place
+struct progress_core {
+    explicit progress_core(engines& gpu_engines)
+        : dev("gpu_progress", &gpu_engines, NO_FACTS), ctx(dev), first(dev, ctx, GPU_QUEUE_COPY),
+          second(dev, ctx, GPU_QUEUE_COPY) {}
+
+    gpu::device     dev;
+    gpu::context    ctx;
+    gpu::core_queue first;
+    gpu::core_queue second;
+};
+
+alignas(progress_core) static uint8_t s_progress_core_bytes[sizeof(progress_core)];
+
+// Builds the GPU core the handler reports to, with its first queue the one `fixture` creates its next queue for
+static progress_core& build_progress_core(engines_fixture& fixture) {
+    auto* core = new (s_progress_core_bytes) progress_core(fixture.gpu_engines);
+    fixture.core_queue = &core->first;
+    return *core;
+}
+
+static uint32_t& semaphore_word(engines_fixture& fixture, uint32_t slot) {
+    return reinterpret_cast<uint32_t*>(static_cast<backend_space*>(fixture.space)->semaphores.virt)[slot];
+}
+
+// Raises `vectors` in the CPU interrupt tree's first leaf and runs the handler's service
+static void service_vectors(engines_fixture& fixture, uint32_t vectors) {
+    bar0_word(CPU_INTR_LEAF) = vectors;
+    RUN_ELEVATED(fixture.gpu_engines.service_interrupt(fixture.bar0));
+}
+
+// Releases `payload` in the semaphore of `slot` as the end of its queue's commands would, then raises the copy vector
+static void release(engines_fixture& fixture, uint32_t slot, uint32_t payload) {
+    semaphore_word(fixture, slot) = payload;
+    service_vectors(fixture, COPY_VECTOR_BIT);
+}
+
+// Runs sequence numbers `first` to `last` on `queue` as the GPU core does for `core_queue`
+static void run_sequences(
+    engines_fixture& fixture,
+    gpu::queue* queue,
+    gpu::core_queue& core_queue,
+    uint64_t first,
+    uint64_t last
+) {
+    for (uint64_t sequence = first; sequence <= last; sequence++) {
+        fixture.gpu_engines.run(queue, sequence, nullptr, 0);
+    }
+
+    core_queue.last_run = last;
+}
+
+// The handler reports a queue's release to its GPU core queue once the copy engine's vector is pending, and each later
+// release as it comes
+TEST(nvidia_engines, a_queues_release_reaches_the_core_once_the_copy_vector_is_pending) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    run_sequences(fixture, fixture.queue, core.first, 1, 3);
+
+    semaphore_word(fixture, 0) = 2;
+    service_vectors(fixture, OTHER_VECTOR_BIT);
+    EXPECT_EQ(core.first.last_finished, 0u);
+
+    service_vectors(fixture, COPY_VECTOR_BIT);
+    EXPECT_EQ(core.first.last_finished, 2u);
+
+    release(fixture, 0, 3);
+    EXPECT_EQ(core.first.last_finished, 3u);
+
+    tear_down_queue(fixture, fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A release holds a sequence number's low 32 bits, which the handler widens against the last run across 2^32
+TEST(nvidia_engines, a_release_widens_against_the_last_run_across_two_to_the_32) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    uint64_t last_run = (1ULL << 32) + 5;
+    run_sequences(fixture, fixture.queue, core.first, last_run, last_run);
+
+    release(fixture, 0, 0xFFFF'FFFC);
+    EXPECT_EQ(core.first.last_finished, (1ULL << 32) - 4);
+
+    release(fixture, 0, 3);
+    EXPECT_EQ(core.first.last_finished, (1ULL << 32) + 3);
+
+    tear_down_queue(fixture, fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A release past the last run or at most the last reported, as a queue's own commands may write, reports nothing
+TEST(nvidia_engines, a_release_outside_the_running_sequences_reports_nothing) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    run_sequences(fixture, fixture.queue, core.first, 1, 3);
+
+    release(fixture, 0, 2);
+    ASSERT_EQ(core.first.last_finished, 2u);
+
+    release(fixture, 0, 7);
+    EXPECT_EQ(core.first.last_finished, 2u);
+
+    release(fixture, 0, 1);
+    EXPECT_EQ(core.first.last_finished, 2u);
+
+    release(fixture, 0, 3);
+    EXPECT_EQ(core.first.last_finished, 3u);
+
+    tear_down_queue(fixture, fixture.queue);
+    tear_down_space(fixture);
+}
+
+// Each listed queue's release reaches its own GPU core queue from one service
+TEST(nvidia_engines, each_queues_release_reaches_its_own_core_queue) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    gpu::queue* first = fixture.queue;
+
+    fixture.core_queue = &core.second;
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    run_sequences(fixture, first, core.first, 1, 2);
+    run_sequences(fixture, fixture.queue, core.second, 1, 3);
+
+    semaphore_word(fixture, 0) = 1;
+    release(fixture, 1, 3);
+    EXPECT_EQ(core.first.last_finished, 1u);
+    EXPECT_EQ(core.second.last_finished, 3u);
+
+    release(fixture, 0, 2);
+    EXPECT_EQ(core.first.last_finished, 2u);
+    EXPECT_EQ(core.second.last_finished, 3u);
+
+    tear_down_queue(fixture, fixture.queue);
+    tear_down_queue(fixture, first);
+    tear_down_space(fixture);
+}
+
+// A queue's semaphore starts at zero whatever was written in its slot before, so no stale release ends its first
+// submission
+TEST(nvidia_engines, a_queues_semaphore_starts_at_zero) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    gpu::queue* first = fixture.queue;
+    semaphore_word(fixture, 1) = 1;
+
+    fixture.core_queue = &core.second;
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    run_sequences(fixture, fixture.queue, core.second, 1, 1);
+    service_vectors(fixture, COPY_VECTOR_BIT);
+
+    EXPECT_EQ(semaphore_word(fixture, 1), 0u);
+    EXPECT_EQ(core.second.last_finished, 0u);
+
+    tear_down_queue(fixture, fixture.queue);
+    tear_down_queue(fixture, first);
     tear_down_space(fixture);
 }
