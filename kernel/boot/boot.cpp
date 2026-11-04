@@ -28,6 +28,7 @@
 #include "drivers/platform_driver.h"
 #include "drivers/graphics/gfxfb.h"
 #include "drivers/input/input.h"
+#include "gpu/gpu.h"
 #include "random/random.h"
 #include "sysstat/sysstat.h"
 #include "sync/futex.h"
@@ -122,6 +123,7 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     sync::futex_init();
     resource::in_flight_init();
+    gpu::init();
 
     if (fs::init() != fs::OK) {
         log::fatal("fs::init failed");
