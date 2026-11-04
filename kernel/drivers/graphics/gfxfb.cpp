@@ -156,6 +156,11 @@ static uint32_t bounded_cursor_max(uint32_t reported) {
     return reported < CURSOR_DIMENSION_MAX ? reported : CURSOR_DIMENSION_MAX;
 }
 
+// A program's capacity or a display's mode count held to GFXFB_MODES_MAX, the most GFXFB_GET_MODES copies or reports
+static uint32_t bounded_mode_count(uint32_t count) {
+    return count < GFXFB_MODES_MAX ? count : GFXFB_MODES_MAX;
+}
+
 // Copies the picture `args` shows onto the unprivileged heap, as userland supplies it and it can fill 256 KiB, once its
 // hotspot lies inside it and it fits the output's cursor maximum. On OK the caller frees `pixels`
 static int32_t copy_cursor_picture(display& shown_display, const gfxfb_cursor_args& args, uint32_t*& pixels) {
@@ -294,6 +299,22 @@ int32_t boot_display::read_output(uint32_t output, output_state& out) {
         .height             = m_framebuffer.pixels.height,
         .refresh_millihertz = 0,
     };
+
+    return OK;
+}
+
+int32_t boot_display::read_modes(uint32_t output, gfxfb_mode* out, uint32_t capacity, uint32_t& count) {
+    output_state state = {};
+    int32_t rc = read_output(output, state);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (capacity > 0) {
+        out[0] = state.current;
+    }
+
+    count = 1;
 
     return OK;
 }
@@ -556,6 +577,10 @@ int32_t gfxfb_node::ioctl(fs::file* f, uint32_t cmd, uint64_t arg) {
         return get_output(arg);
     }
 
+    if (cmd == GFXFB_GET_MODES) {
+        return get_modes(arg);
+    }
+
     if (cmd == GFXFB_FLUSH) {
         return flush(arg);
     }
@@ -674,6 +699,48 @@ int32_t gfxfb_node::get_output(uint64_t info_addr) {
 
     rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(info_addr), &info, sizeof(info));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    return fs::OK;
+}
+
+int32_t gfxfb_node::get_modes(uint64_t list_addr) {
+    gfxfb_mode_list list{};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &list, reinterpret_cast<const void*>(list_addr), sizeof(list));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    uint32_t capacity = bounded_mode_count(list.capacity);
+    gfxfb_mode entries[GFXFB_MODES_MAX] = {};
+    uint32_t reported = 0;
+
+    rc = m_display->read_modes(list.output, entries, capacity, reported);
+    if (rc != OK) {
+        return to_fs_error(rc);
+    }
+
+    uint32_t count = bounded_mode_count(reported);
+    uint32_t copied = count < capacity ? count : capacity;
+    if (copied > 0) {
+        rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(list.modes), entries, copied * sizeof(gfxfb_mode));
+
+        if (rc != mm::uaccess::OK) {
+            return fs::ERR_INVAL;
+        }
+    }
+
+    list.count = count;
+    list.reserved = 0;
+
+    rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(list_addr), &list, sizeof(list));
 
     if (rc != mm::uaccess::OK) {
         return fs::ERR_INVAL;

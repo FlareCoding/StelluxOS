@@ -56,6 +56,16 @@
  * 0 again after an output event, while its earlier mapping keeps the pixels it
  * mapped, which no output shows any more.
  *
+ * `GFXFB_GET_MODES` copies an output's mode list, the modes the output can
+ * light at in the device's order of preference. Each mode appears once, the
+ * current mode is among them, and a dark output lists none. Until the kernel
+ * finds the device failed, a change of the list reaches every open file as an
+ * output event for its output, after which a program reads the list again. The
+ * call asks the device and may show a change before its output event. It takes
+ * no control of the buffers, as described below, and fails with EINVAL when
+ * the kernel cannot read or write its argument, for an output of
+ * `output_count` or more, and when it cannot write the entries it copies.
+ *
  * A program can also create buffers, each holding one picture of 32-bit
  * pixels. `GFXFB_CREATE_BUFFER` returns a new buffer's handle, its layout and
  * the mmap offset that maps it. An open file controls the buffers from its
@@ -197,12 +207,15 @@ constexpr uint32_t GFXFB_DESTROY_BUFFER = 0x4704; // the argument is the handle 
 constexpr uint32_t GFXFB_PRESENT        = 0x4705;
 constexpr uint32_t GFXFB_SET_CURSOR     = 0x4706;
 constexpr uint32_t GFXFB_MOVE_CURSOR    = 0x4707;
+constexpr uint32_t GFXFB_GET_MODES      = 0x4708;
 
 constexpr uint8_t GFXFB_INFO_NEEDS_FLUSH = 0x01; // drawing reaches the screen only through GFXFB_FLUSH
 
 constexpr uint32_t GFXFB_MAX_FLUSH_RECTS = 256; // the most regions one flush or present names
 
 constexpr uint32_t GFXFB_OUTPUTS_MAX = 16; // the most outputs a device drives
+
+constexpr uint32_t GFXFB_MODES_MAX = 32; // the most modes an output lists
 
 constexpr uint32_t GFXFB_OUTPUT_LIT     = 0x1; // the output shows a picture
 constexpr uint32_t GFXFB_OUTPUT_PRIMARY = 0x2; // offset 0 maps its pixels while lit, set without LIT as it relights
@@ -251,7 +264,7 @@ struct gfxfb_flush_args {
     uint32_t reserved; // must be zero
 };
 
-// The picture size and refresh rate an output is lit at
+// A picture size and refresh rate an output can light at
 struct gfxfb_mode {
     uint32_t width;
     uint32_t height;
@@ -267,6 +280,15 @@ struct gfxfb_output_info {
     gfxfb_mode current;           // out: the mode while lit, zero while dark
     uint32_t   cursor_max_width;  // out: the widest cursor picture the output shows, 0 without a hardware cursor
     uint32_t   cursor_max_height; // out: the tallest, 0 without a hardware cursor
+};
+
+// GFXFB_GET_MODES argument, filled with an output's mode list
+struct gfxfb_mode_list {
+    uint32_t output;   // in: the output's index, EINVAL unless below `output_count`
+    uint32_t capacity; // in: how many gfxfb_mode entries `modes` holds, read as GFXFB_MODES_MAX above it
+    uint64_t modes;    // in: user address of the entries, which get the list's first modes, never touched at capacity 0
+    uint32_t count;    // out: how many modes the output lists, at most GFXFB_MODES_MAX, 0 while it is dark
+    uint32_t reserved; // out: zero
 };
 
 // GFXFB_CREATE_BUFFER argument, filled with the new buffer's handle, layout and mmap offset
@@ -326,6 +348,7 @@ static_assert(sizeof(gfxfb_rect) == 16, "gfxfb_rect layout");
 static_assert(sizeof(gfxfb_flush_args) == 16, "gfxfb_flush_args layout");
 static_assert(sizeof(gfxfb_mode) == 16, "gfxfb_mode layout");
 static_assert(sizeof(gfxfb_output_info) == 40, "gfxfb_output_info layout");
+static_assert(sizeof(gfxfb_mode_list) == 24, "gfxfb_mode_list layout");
 static_assert(sizeof(gfxfb_buffer_args) == 40, "gfxfb_buffer_args layout");
 static_assert(sizeof(gfxfb_present_args) == 24, "gfxfb_present_args layout");
 static_assert(sizeof(gfxfb_cursor_args) == 32, "gfxfb_cursor_args layout");

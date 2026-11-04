@@ -1250,6 +1250,21 @@ int32_t virtio_gpu_driver::read_output(uint32_t output, gfxfb::output_state& out
     return gfxfb::OK;
 }
 
+int32_t virtio_gpu_driver::read_modes(uint32_t output, gfxfb::gfxfb_mode* out, uint32_t capacity, uint32_t& count) {
+    gfxfb::output_state state = {};
+    int32_t rc = read_output(output, state);
+    if (rc != gfxfb::OK) {
+        return rc;
+    }
+
+    count = state.lit ? 1 : 0;
+    if (count > 0 && capacity > 0) {
+        out[0] = state.current;
+    }
+
+    return gfxfb::OK;
+}
+
 gfxfb::buffer* virtio_gpu_driver::base_buffer(uint32_t output) {
     gfxfb::buffer* base = nullptr;
 

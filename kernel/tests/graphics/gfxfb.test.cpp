@@ -146,6 +146,14 @@ static constexpr uint32_t WIDE_HOTSPOT = 0x10000;
 static constexpr int32_t OFF_OUTPUT_X = -70000;
 static constexpr int32_t OFF_OUTPUT_Y = 70000;
 
+// Where `get_modes` places its entries in the user page, apart from a request at ARGS_OFFSET, and how many entries it
+// marks unwritten first, one more than a list holds, so an entry written past those the call copies fails
+static constexpr size_t MODES_OFFSET = 64;
+static constexpr uint32_t MODE_ENTRIES = gfxfb::GFXFB_MODES_MAX + 1;
+
+// A capacity above GFXFB_MODES_MAX whose low 16 bits alone make 1, so a capacity narrowed to 16 bits copies one entry
+static constexpr uint32_t WIDE_MODES_CAPACITY = 0x10001;
+
 // A display with two outputs, dark until a test lights them, that records its cursor calls, the first MAX_RECORDED
 // rects of its flushes and regions of its last accepted present, creates write-combining buffers and counts releases
 class recording_display : public gfxfb::display {
@@ -199,6 +207,10 @@ public:
     int32_t             cursor_x = 0; // the last move's position
     int32_t             cursor_y = 0;
 
+    gfxfb::gfxfb_mode modes[OUTPUTS][gfxfb::GFXFB_MODES_MAX] = {}; // each output's list, `mode_counts` entries long
+    uint32_t          mode_counts[OUTPUTS] = {};
+    uint32_t          modes_capacity = 0; // the capacity the last `read_modes()` got
+
     uint32_t output_count() const override { return count; }
     bool needs_flush() const override { return flush_needed; }
 
@@ -208,6 +220,26 @@ public:
         }
 
         out = states[output];
+        return gfxfb::OK;
+    }
+
+    int32_t read_modes(uint32_t output, gfxfb::gfxfb_mode* out, uint32_t capacity, uint32_t& listed) override {
+        modes_capacity = capacity;
+        if (output >= OUTPUTS) {
+            return gfxfb::ERR_INVALID_ARG;
+        }
+
+        listed = mode_counts[output];
+
+        // A null `out` gets no entries, so a gfxfb passing one fails a check instead of faulting the kernel
+        if (out == nullptr) {
+            return gfxfb::OK;
+        }
+
+        for (uint32_t i = 0; i < listed && i < capacity; i++) {
+            out[i] = modes[output][i];
+        }
+
         return gfxfb::OK;
     }
 
@@ -280,6 +312,12 @@ public:
             .cursor_max_height = 0,
         };
 
+        return gfxfb::OK;
+    }
+
+    // No test reads this display's mode lists
+    int32_t read_modes(uint32_t, gfxfb::gfxfb_mode*, uint32_t, uint32_t& count) override {
+        count = 0;
         return gfxfb::OK;
     }
 
@@ -996,6 +1034,81 @@ static int32_t get_output(const char* path, user_page& page, uint32_t output) {
     return call_gfxfb_ioctl(path, page, gfxfb::GFXFB_GET_OUTPUT, page.addr);
 }
 
+// The mode at `index` of `output`'s list in the GET_MODES tests, unlike every other listed mode in each field, so a
+// reply holding another output's mode or a mode out of place fails
+static gfxfb::gfxfb_mode listed_mode(uint32_t output, uint32_t index) {
+    uint32_t place = output * gfxfb::GFXFB_MODES_MAX + index;
+
+    return {
+        .width              = WIDE_MODE_WIDTH + place,
+        .height             = WIDE_MODE_HEIGHT + place,
+        .refresh_millihertz = OUTPUT_0_REFRESH_MILLIHERTZ + place,
+    };
+}
+
+// Gives `output` of `fake` a list of `count` modes, `listed_mode`'s in order
+static void list_modes(recording_display& fake, uint32_t output, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        fake.modes[output][i] = listed_mode(output, i);
+    }
+
+    fake.mode_counts[output] = count;
+}
+
+// An entry as `get_modes` marks it before the call
+static gfxfb::gfxfb_mode unwritten_mode() {
+    return {.width = UNWRITTEN_FIELD, .height = UNWRITTEN_FIELD, .refresh_millihertz = UNWRITTEN_RATE};
+}
+
+// True when `a` and `b` hold the same size and refresh rate
+static bool modes_equal(const gfxfb::gfxfb_mode& a, const gfxfb::gfxfb_mode& b) {
+    return a.width == b.width && a.height == b.height && a.refresh_millihertz == b.refresh_millihertz;
+}
+
+// Sends GFXFB_GET_MODES on `file` for `output` claiming room for `capacity` entries at `modes_addr`, its reply fields
+// marked unwritten first, so a field left unwritten fails its check
+static int32_t get_modes_at(
+    fs::file* file,
+    user_page& page,
+    uint32_t output,
+    uint32_t capacity,
+    uint64_t modes_addr
+) {
+    *page.at<gfxfb::gfxfb_mode_list>(ARGS_OFFSET) = {
+        .output   = output,
+        .capacity = capacity,
+        .modes    = modes_addr,
+        .count    = UNWRITTEN_FIELD,
+        .reserved = UNWRITTEN_FIELD,
+    };
+
+    return file_ioctl(file, page, gfxfb::GFXFB_GET_MODES, page.addr + ARGS_OFFSET);
+}
+
+// Sends GFXFB_GET_MODES as `get_modes_at` does, for entries at MODES_OFFSET, the MODE_ENTRIES there marked unwritten
+static int32_t get_modes(fs::file* file, user_page& page, uint32_t output, uint32_t capacity) {
+    auto* entries = page.at<gfxfb::gfxfb_mode>(MODES_OFFSET);
+    for (uint32_t i = 0; i < MODE_ENTRIES; i++) {
+        entries[i] = unwritten_mode();
+    }
+
+    return get_modes_at(file, page, output, capacity, page.addr + MODES_OFFSET);
+}
+
+// True when the entries at MODES_OFFSET hold `output`'s first `copied` listed modes in order, and the rest of the
+// MODE_ENTRIES stay unwritten
+static bool holds_listed_modes(user_page& page, uint32_t output, uint32_t copied) {
+    const auto* entries = page.at<gfxfb::gfxfb_mode>(MODES_OFFSET);
+    for (uint32_t i = 0; i < MODE_ENTRIES; i++) {
+        gfxfb::gfxfb_mode expected = i < copied ? listed_mode(output, i) : unwritten_mode();
+        if (!modes_equal(entries[i], expected)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // Sends `args` through GFXFB_SET_CURSOR on `file`, writing them at the page's start
 static int32_t send_cursor_args(fs::file* file, user_page& page, const gfxfb::gfxfb_cursor_args& args) {
     *page.at<gfxfb::gfxfb_cursor_args>(ARGS_OFFSET) = args;
@@ -1188,6 +1301,27 @@ TEST(gfxfb, boot_display_has_one_lit_boot_output) {
     EXPECT_NULL(boot.base_buffer(1));
 }
 
+// The boot display's output lists the boot framebuffer's size with an unknown refresh rate as its one mode, copied only
+// at a capacity above 0
+TEST(gfxfb, boot_display_lists_its_one_mode) {
+    gfxfb::boot_display boot(test_boot_framebuffer());
+
+    gfxfb::gfxfb_mode mode = unwritten_mode();
+    uint32_t count = UNWRITTEN_FIELD;
+    ASSERT_EQ(boot.read_modes(0, &mode, 0, count), gfxfb::OK);
+    EXPECT_EQ(count, static_cast<uint32_t>(1));
+    EXPECT_TRUE(modes_equal(mode, unwritten_mode()));
+
+    count = UNWRITTEN_FIELD;
+    ASSERT_EQ(boot.read_modes(0, &mode, 1, count), gfxfb::OK);
+    EXPECT_EQ(count, static_cast<uint32_t>(1));
+    EXPECT_EQ(mode.width, BOOT_WIDTH);
+    EXPECT_EQ(mode.height, BOOT_HEIGHT);
+    EXPECT_EQ(mode.refresh_millihertz, static_cast<uint64_t>(0));
+
+    EXPECT_EQ(boot.read_modes(1, &mode, 1, count), gfxfb::ERR_INVALID_ARG);
+}
+
 static recording_display g_outputs_display;
 
 // GFXFB_GET_OUTPUT writes every reply field, an output's mode only while it is lit, and refuses an index of the output
@@ -1315,6 +1449,187 @@ TEST(gfxfb, lit_output_without_a_base_buffer_is_not_primary) {
     ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
     EXPECT_EQ(page.at<gfxfb::gfxfb_output_info>(0)->flags, gfxfb::GFXFB_OUTPUT_LIT);
     EXPECT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_INFO, page.addr), fs::ERR_AGAIN);
+}
+
+static recording_display g_mode_list_display;
+
+// GFXFB_GET_MODES copies an output's listed modes up to the request's capacity and reports the list's full count, each
+// held to GFXFB_MODES_MAX, with `reserved` zeroed, touching no entry at capacity 0
+TEST(gfxfb, get_modes_copies_up_to_its_capacity_and_reports_the_count) {
+    light_output(g_mode_list_display, 0, false);
+    light_output(g_mode_list_display, 1, false);
+    list_modes(g_mode_list_display, 0, 5);
+    list_modes(g_mode_list_display, 1, gfxfb::GFXFB_MODES_MAX);
+    gfxfb_test_node test = publish_driver_node(&g_mode_list_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    auto* list = page.at<gfxfb::gfxfb_mode_list>(ARGS_OFFSET);
+
+    ASSERT_EQ(get_modes(file, page, 0, 5), fs::OK);
+    EXPECT_EQ(list->count, static_cast<uint32_t>(5));
+    EXPECT_EQ(list->reserved, static_cast<uint32_t>(0));
+    EXPECT_TRUE(holds_listed_modes(page, 0, 5));
+    EXPECT_EQ(g_mode_list_display.modes_capacity, static_cast<uint32_t>(5));
+
+    ASSERT_EQ(get_modes(file, page, 0, 2), fs::OK);
+    EXPECT_EQ(list->count, static_cast<uint32_t>(5));
+    EXPECT_TRUE(holds_listed_modes(page, 0, 2));
+
+    ASSERT_EQ(get_modes(file, page, 0, 7), fs::OK);
+    EXPECT_EQ(list->count, static_cast<uint32_t>(5));
+    EXPECT_TRUE(holds_listed_modes(page, 0, 5));
+
+    ASSERT_EQ(get_modes(file, page, 1, gfxfb::GFXFB_MODES_MAX + 1), fs::OK);
+    ASSERT_EQ(g_mode_list_display.modes_capacity, gfxfb::GFXFB_MODES_MAX);
+    EXPECT_EQ(list->count, gfxfb::GFXFB_MODES_MAX);
+    EXPECT_TRUE(holds_listed_modes(page, 1, gfxfb::GFXFB_MODES_MAX));
+
+    ASSERT_EQ(get_modes(file, page, 1, WIDE_MODES_CAPACITY), fs::OK);
+    ASSERT_EQ(g_mode_list_display.modes_capacity, gfxfb::GFXFB_MODES_MAX);
+    EXPECT_EQ(list->count, gfxfb::GFXFB_MODES_MAX);
+    EXPECT_TRUE(holds_listed_modes(page, 1, gfxfb::GFXFB_MODES_MAX));
+
+    // A count past GFXFB_MODES_MAX, which a display must not report, is held to it
+    g_mode_list_display.mode_counts[1] = gfxfb::GFXFB_MODES_MAX + 1;
+    ASSERT_EQ(get_modes(file, page, 1, gfxfb::GFXFB_MODES_MAX), fs::OK);
+    EXPECT_EQ(list->count, gfxfb::GFXFB_MODES_MAX);
+    EXPECT_TRUE(holds_listed_modes(page, 1, gfxfb::GFXFB_MODES_MAX));
+
+    // At capacity 0 the entries' address goes unused, so a request with a null one reads the count alone
+    ASSERT_EQ(get_modes_at(file, page, 0, 0, 0), fs::OK);
+    EXPECT_EQ(list->count, static_cast<uint32_t>(5));
+    EXPECT_EQ(list->reserved, static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_mode_refusal_display;
+
+// GFXFB_GET_MODES reports an empty list, and refuses with ERR_INVAL an output of the output count or more, a null or
+// unreadable request, one it cannot write back, and entries it cannot write, writing no more than the list holds
+TEST(gfxfb, get_modes_reports_an_empty_list_and_refuses_bad_requests) {
+    light_output(g_mode_refusal_display, 0, false);
+    list_modes(g_mode_refusal_display, 0, 5);
+    gfxfb_test_node test = publish_driver_node(&g_mode_refusal_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    auto* list = page.at<gfxfb::gfxfb_mode_list>(ARGS_OFFSET);
+
+    ASSERT_EQ(get_modes(file, page, 1, gfxfb::GFXFB_MODES_MAX), fs::OK);
+    EXPECT_EQ(list->count, static_cast<uint32_t>(0));
+    EXPECT_EQ(list->reserved, static_cast<uint32_t>(0));
+    EXPECT_TRUE(holds_listed_modes(page, 1, 0));
+
+    EXPECT_EQ(get_modes(file, page, recording_display::OUTPUTS, 1), fs::ERR_INVAL);
+    EXPECT_EQ(get_modes(file, page, WIDE_OUTPUT_INDEX, 1), fs::ERR_INVAL);
+
+    // A request gfxfb cannot read never reaches the display
+    g_mode_refusal_display.modes_capacity = UNWRITTEN_FIELD;
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_GET_MODES, 0), fs::ERR_INVAL);
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_GET_MODES, page.addr + pmm::PAGE_SIZE), fs::ERR_INVAL);
+    EXPECT_EQ(g_mode_refusal_display.modes_capacity, UNWRITTEN_FIELD);
+
+    // The list's five entries end where `page` does: a capacity of seven is accepted there and refused one entry
+    // higher, before the request is written back
+    uint64_t five_before_end = page.addr + pmm::PAGE_SIZE - 5 * sizeof(gfxfb::gfxfb_mode);
+    EXPECT_EQ(get_modes_at(file, page, 0, 7, five_before_end), fs::OK);
+    EXPECT_EQ(get_modes_at(file, page, 0, 7, five_before_end + sizeof(gfxfb::gfxfb_mode)), fs::ERR_INVAL);
+    EXPECT_EQ(list->count, UNWRITTEN_FIELD);
+
+    // A read-only page lets gfxfb read the request but not write the reply
+    ASSERT_EQ(mm::mm_context_mprotect(page.ctx, page.addr, pmm::PAGE_SIZE, mm::MM_PROT_READ), mm::MM_CTX_OK);
+    EXPECT_EQ(get_modes_at(file, page, 0, 0, 0), fs::ERR_INVAL);
+    EXPECT_EQ(list->count, UNWRITTEN_FIELD);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static recording_display g_mode_control_display;
+
+// GFXFB_GET_MODES takes no control: a file that read an output's modes leaves control to the next file that creates a
+// buffer, and still reads them while that file controls the buffers
+TEST(gfxfb, get_modes_takes_no_control) {
+    light_output(g_mode_control_display, 0, false);
+    list_modes(g_mode_control_display, 0, 1);
+    gfxfb_test_node test = publish_driver_node(&g_mode_control_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* reader = fs::open(test.path, fs::O_RDWR);
+    fs::file* creator = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(reader);
+    ASSERT_NOT_NULL(creator);
+
+    ASSERT_EQ(get_modes(reader, page, 0, 1), fs::OK);
+    ASSERT_NE(request_small_buffer(creator, page).handle, static_cast<uint32_t>(0));
+
+    ASSERT_EQ(get_modes(reader, page, 0, 1), fs::OK);
+    EXPECT_TRUE(holds_listed_modes(page, 0, 1));
+
+    uint32_t format = gfxfb::GFXFB_FORMAT_XRGB8888;
+    EXPECT_EQ(request_buffer(reader, page, SMALL_BUFFER_WIDTH, SMALL_BUFFER_HEIGHT, format), fs::ERR_BUSY);
+
+    ASSERT_TRUE(closes_before_deadline(creator));
+    ASSERT_TRUE(closes_before_deadline(reader));
+}
+
+static recording_display g_mode_failed_display;
+
+// GFXFB_GET_MODES still copies an output's list once a creation's ERR_DEVICE counts the display as failed
+TEST(gfxfb, get_modes_reads_a_failed_displays_list) {
+    light_output(g_mode_failed_display, 0, false);
+    list_modes(g_mode_failed_display, 0, 5);
+    gfxfb_test_node test = publish_driver_node(&g_mode_failed_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    g_mode_failed_display.create_result = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(request_small_buffer(file, page).handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(flush_one_rect(test.path, page), fs::ERR_IO);
+
+    ASSERT_EQ(get_modes(file, page, 0, 5), fs::OK);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_mode_list>(ARGS_OFFSET)->count, static_cast<uint32_t>(5));
+    EXPECT_TRUE(holds_listed_modes(page, 0, 5));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+// GFXFB_GET_MODES on a gfxfb showing the boot display copies its one mode, the boot framebuffer's size with an unknown
+// refresh rate
+TEST(gfxfb, get_modes_lists_the_boot_displays_one_mode) {
+    gfxfb_test_node test = publish_boot_node();
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    ASSERT_EQ(get_modes(file, page, 0, 2), fs::OK);
+    EXPECT_EQ(page.at<gfxfb::gfxfb_mode_list>(ARGS_OFFSET)->count, static_cast<uint32_t>(1));
+
+    const auto* entries = page.at<gfxfb::gfxfb_mode>(MODES_OFFSET);
+    EXPECT_EQ(entries[0].width, BOOT_WIDTH);
+    EXPECT_EQ(entries[0].height, BOOT_HEIGHT);
+    EXPECT_EQ(entries[0].refresh_millihertz, static_cast<uint64_t>(0));
+    EXPECT_TRUE(modes_equal(entries[1], unwritten_mode()));
+
+    ASSERT_TRUE(closes_before_deadline(file));
 }
 
 static recording_display g_clip_display;
