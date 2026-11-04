@@ -503,6 +503,7 @@ int32_t engines::unmap(gpu::space* s, uint64_t va, uint64_t size) {
 
 int32_t engines::create_queue(gpu::space* s, uint32_t, gpu::core_queue* core, gpu::queue** out) {
     if (has_failed()) {
+        report_failure();
         return gpu::ERR_DEVICE;
     }
 
@@ -521,7 +522,7 @@ int32_t engines::create_queue(gpu::space* s, uint32_t, gpu::core_queue* core, gp
     RUN_ELEVATED(rc = m_operations.run_on_task(queue->task_operation));
     if (rc != OK) {
         heap::ufree_delete(queue);
-        return has_failed() ? gpu::ERR_DEVICE : gpu::ERR_NO_MEMORY;
+        return refused_creation();
     }
 
     *out = queue;
@@ -529,9 +530,19 @@ int32_t engines::create_queue(gpu::space* s, uint32_t, gpu::core_queue* core, gp
     return gpu::OK;
 }
 
-void engines::stop_queue(gpu::queue*) {}
+void engines::stop_queue(gpu::queue* q) {
+    auto* queue = static_cast<backend_queue*>(q);
+    queue->task_operation.work = stop_queue_on_task;
+    RUN_ELEVATED(m_operations.post_to_task(queue->task_operation));
+}
 
-void engines::destroy_queue(gpu::queue*) {}
+void engines::destroy_queue(gpu::queue* q) {
+    auto* queue = static_cast<backend_queue*>(q);
+    queue->destroy_operation.work = destroy_queue_on_task;
+    queue->destroy_operation.owner = this;
+    queue->destroy_operation.queue = queue;
+    RUN_ELEVATED(m_operations.post_to_task(queue->destroy_operation));
+}
 
 int32_t engines::check_commands(const void* commands, size_t size) {
     if (has_failed()) {
@@ -851,6 +862,13 @@ void engines::destroy_space_on_task(operation& op) {
 void engines::create_queue_on_task(operation& op) {
     auto& creation = static_cast<queue_operation&>(op);
     engines& gpu_engines = *creation.owner;
+
+    // A queue listed after the failure's report would stay on the handler's list for good
+    if (gpu_engines.has_failed()) {
+        op.result = ERR_BAD_STATE;
+        return;
+    }
+
     op.result = gpu_engines.start_queue(*creation.queue);
     if (op.result != OK) {
         return;
@@ -861,6 +879,55 @@ void engines::create_queue_on_task(operation& op) {
         gpu_engines.m_queues.push_back(creation.queue);
         sync::spin_unlock_irqrestore(gpu_engines.m_queues_lock, irq);
     });
+}
+
+void engines::stop_queue_on_task(operation& op) {
+    auto& stop = static_cast<queue_operation&>(op);
+    engines& gpu_engines = *stop.owner;
+    backend_queue* queue = stop.queue;
+
+    // The failure's report ends the queue, as the GPU may still run it
+    if (gpu_engines.has_failed()) {
+        gpu_engines.report_failure();
+        return;
+    }
+
+    // A channel whose release failed may still run, so the device's failure ends the queue in place of its stop
+    if (queue->user_channel.destroy() != OK) {
+        if (gpu_engines.has_failed()) {
+            gpu_engines.report_failure();
+        } else {
+            gpu_engines.fail_device("releasing a queue's channel failed");
+        }
+
+        return;
+    }
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(gpu_engines.m_queues_lock);
+        gpu_engines.m_queues.remove(queue);
+        sync::spin_unlock_irqrestore(gpu_engines.m_queues_lock, irq);
+    });
+
+    RUN_ELEVATED(gpu::queue_stopped(queue->core));
+}
+
+void engines::destroy_queue_on_task(operation& op) {
+    auto& destroy = static_cast<queue_operation&>(op);
+    engines& gpu_engines = *destroy.owner;
+    backend_queue* queue = destroy.queue;
+
+    // The GPU may still reach the queue's memory, and a stop racing the failure may still be queued in `task_operation`
+    if (gpu_engines.has_failed()) {
+        return;
+    }
+
+    gpu_engines.release_queue(*queue, true);
+    heap::ufree_delete(queue);
+
+    if (gpu_engines.has_failed()) {
+        gpu_engines.report_failure();
+    }
 }
 
 int32_t engines::start_queue(backend_queue& queue) {

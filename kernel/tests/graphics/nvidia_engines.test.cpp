@@ -138,14 +138,28 @@ struct engines_test_access {
     // Gives `gpu_engines` the GPU core's device that registration would
     static void register_with(engines& gpu_engines, gpu::device& dev) { gpu_engines.m_device = &dev; }
 
+    static bool is_listed(engines& gpu_engines, backend_queue& queue) {
+        for (backend_queue& listed : gpu_engines.m_queues) {
+            if (&listed == &queue) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     static void hold_every_channel_id(engines& gpu_engines) {
         for (uint64_t& word : gpu_engines.m_channel_ids) {
             word = ~0ULL;
         }
     }
 
-    // Takes `queue` off the list the handler reads, before a test frees it
+    // Takes `queue` off the list the handler reads unless the failure's report did, before a test frees it
     static void unlist_queue(engines& gpu_engines, backend_queue& queue) {
+        if (!is_listed(gpu_engines, queue)) {
+            return;
+        }
+
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(gpu_engines.m_queues_lock);
             gpu_engines.m_queues.remove(&queue);
@@ -1943,8 +1957,8 @@ TEST(nvidia_engines, a_queue_without_a_free_window_or_id_allocates_no_channel) {
     tear_down_space(fixture);
 }
 
-// Once the GPU failed, a queue is refused before the driver task sees it, and a run writes no entry and rings no
-// doorbell
+// Once the GPU failed, a queue is refused before the driver task sees it and the task reports the failure, and a
+// run writes no entry and rings no doorbell
 TEST(nvidia_engines, queues_are_refused_and_runs_ignored_once_the_gpu_failed) {
     engines_fixture fixture;
     ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
@@ -1958,24 +1972,44 @@ TEST(nvidia_engines, queues_are_refused_and_runs_ignored_once_the_gpu_failed) {
 
     EXPECT_EQ(create_queue_on_gpu(fixture), gpu::ERR_DEVICE);
     fixture.gpu_engines.run(first, 1, nullptr, 0);
+    engines_operations().serve();
 
     EXPECT_TRUE(fixture.queue == nullptr);
     EXPECT_EQ(fixture.fw.allocations, allocations);
     EXPECT_EQ(put_of_queue(first), 0u);
     EXPECT_EQ(bar0_word(VIRTUAL_FUNCTION_DOORBELL), doorbell);
+    EXPECT_TRUE(has_device_failed(fixture));
 
     tear_down_queue(fixture, first);
     tear_down_space(fixture);
 }
 
-// A GPU core's device, context and two copy queues the handler reports to, never published and holding nothing outside
+// Once a hung zeroing failed the GPU core's device, the driver task refuses a queue before creating anything
+TEST(nvidia_engines, a_queue_is_refused_once_a_hung_zeroing_failed_the_device) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+
+    fixture.create_placement = GPU_PLACEMENT_VIDEO;
+    fixture.fault = copy_fault::hangs;
+    fixture.faulty_fill = 3;
+    ASSERT_EQ(create_on_gpu(fixture), gpu::ERR_DEVICE);
+    uint32_t allocations = fixture.fw.allocations;
+    gpu_nvidia_range range = {.va = 0x10000, .size = 4, .flags = 0};
+
+    EXPECT_EQ(create_queue_on_gpu(fixture), gpu::ERR_DEVICE);
+    EXPECT_EQ(fixture.gpu_engines.check_commands(&range, sizeof(range)), gpu::ERR_DEVICE);
+
+    EXPECT_TRUE(fixture.queue == nullptr);
+    EXPECT_EQ(fixture.fw.allocations, allocations);
+    tear_down_space(fixture);
+}
+
+// A GPU core context on the fixture's device and two copy queues the handler reports to, holding nothing outside
 // themselves, so each test builds them anew in place
 struct progress_core {
-    explicit progress_core(engines& gpu_engines)
-        : dev("gpu_progress", &gpu_engines, NO_FACTS), ctx(dev), first(dev, ctx, GPU_QUEUE_COPY),
-          second(dev, ctx, GPU_QUEUE_COPY) {}
+    explicit progress_core(gpu::device& dev)
+        : ctx(dev), first(dev, ctx, GPU_QUEUE_COPY), second(dev, ctx, GPU_QUEUE_COPY) {}
 
-    gpu::device     dev;
     gpu::context    ctx;
     gpu::core_queue first;
     gpu::core_queue second;
@@ -1985,7 +2019,7 @@ alignas(progress_core) static uint8_t s_progress_core_bytes[sizeof(progress_core
 
 // Builds the GPU core the handler reports to, with its first queue the one `fixture` creates its next queue for
 static progress_core& build_progress_core(engines_fixture& fixture) {
-    auto* core = new (s_progress_core_bytes) progress_core(fixture.gpu_engines);
+    auto* core = new (s_progress_core_bytes) progress_core(fixture.core_device);
     fixture.core_queue = &core->first;
     return *core;
 }
@@ -2135,4 +2169,188 @@ TEST(nvidia_engines, a_queues_semaphore_starts_at_zero) {
     tear_down_queue(fixture, fixture.queue);
     tear_down_queue(fixture, first);
     tear_down_space(fixture);
+}
+
+// Lists `queue` on its device and counts its stop, as GPU_QUEUE_CREATE does around the backend's create
+static bool track_on_core(gpu::core_queue& queue) {
+    bool is_listed = false;
+    RUN_ELEVATED(is_listed = queue.dev.list_queue(queue));
+    queue.ctx.stop_count.fetch_add_relaxed(1);
+    return is_listed;
+}
+
+// Whether the engines came up with a space over system memory and a queue for `core`'s first queue, tracked by `core`
+static bool sets_up_a_tracked_queue(engines_fixture& fixture, progress_core& core) {
+    return sets_up_system_memory_and_a_space(fixture) && create_queue_on_gpu(fixture) == gpu::OK &&
+           track_on_core(core.first);
+}
+
+// A stop frees the queue's channel objects on the driver task, never in the call, then takes the queue off the
+// handler's list and reports it stopped
+TEST(nvidia_engines, a_stop_frees_the_channel_on_the_task_then_reports_the_queue_stopped) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_a_tracked_queue(fixture, core));
+    backend_queue& queue = backend_of(fixture.queue);
+    uint32_t releases = fixture.fw.releases;
+
+    fixture.gpu_engines.stop_queue(fixture.queue);
+    EXPECT_EQ(fixture.fw.releases, releases);
+    EXPECT_FALSE(core.first.stopped);
+
+    engines_operations().serve();
+    EXPECT_EQ(fixture.fw.releases, releases + 3);
+    EXPECT_EQ(page_entry_at(FIRST_GPFIFO_VA), 0u);
+    EXPECT_FALSE(engines_test_access::is_listed(fixture.gpu_engines, queue));
+    EXPECT_TRUE(core.first.stopped);
+    EXPECT_FALSE(has_device_failed(fixture));
+
+    fixture.gpu_engines.destroy_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A destroy unmaps the stopped queue's push buffer and gives back its window and channel id, which the next queue takes
+TEST(nvidia_engines, a_destroy_gives_back_the_queues_window_and_channel_id) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_a_tracked_queue(fixture, core));
+    uint32_t channel_id = backend_of(fixture.queue).channel_id;
+    fixture.gpu_engines.stop_queue(fixture.queue);
+    engines_operations().serve();
+
+    fixture.gpu_engines.destroy_queue(fixture.queue);
+    engines_operations().serve();
+    EXPECT_EQ(page_entry_at(FIRST_PUSH_VA), 0u);
+
+    fixture.core_queue = &core.second;
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    EXPECT_EQ(fixture.fw.last_channel.gpfifo_address, FIRST_GPFIFO_VA);
+    EXPECT_EQ(backend_of(fixture.queue).channel_id, channel_id);
+
+    tear_down_queue(fixture, fixture.queue);
+    tear_down_space(fixture);
+}
+
+// Once the GPU failed, a stop frees nothing and has the driver task report the failure, which takes every queue off the
+// handler's list and ends each, and a destroy then keeps the queue's memory
+TEST(nvidia_engines, once_the_gpu_failed_a_stop_frees_nothing_and_the_failures_report_ends_the_queue) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_a_tracked_queue(fixture, core));
+    backend_queue& queue = backend_of(fixture.queue);
+    uint32_t releases = fixture.fw.releases;
+    uint32_t updates = fixture.memory.table_updates;
+
+    fixture.failed.set();
+    fixture.gpu_engines.stop_queue(fixture.queue);
+    engines_operations().serve();
+
+    EXPECT_FALSE(engines_test_access::is_listed(fixture.gpu_engines, queue));
+    EXPECT_TRUE(core.first.stopped);
+    EXPECT_TRUE(has_device_failed(fixture));
+
+    fixture.gpu_engines.destroy_queue(fixture.queue);
+    tear_down_space(fixture);
+
+    EXPECT_EQ(fixture.fw.releases, releases);
+    EXPECT_EQ(fixture.memory.table_updates, updates);
+    EXPECT_NE(page_entry_at(FIRST_PUSH_VA), 0u);
+}
+
+// A stop the driver task reaches after the GPU failed frees nothing, and the failure's report ends the queue
+TEST(nvidia_engines, a_stop_reached_after_the_gpu_failed_leaves_the_queue_to_the_failures_report) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_a_tracked_queue(fixture, core));
+    engines& gpu_engines = fixture.gpu_engines;
+    uint32_t releases = fixture.fw.releases;
+
+    gpu_engines.stop_queue(fixture.queue);
+    fixture.memory.update_result = ERR_TIMEOUT;
+    EXPECT_EQ(gpu_engines.map(fixture.space, MAPPED_VA, fixture.created, 0, 0x1000, 0, false), gpu::ERR_DEVICE);
+    engines_operations().serve();
+
+    EXPECT_EQ(fixture.fw.releases, releases);
+    EXPECT_TRUE(core.first.stopped);
+    EXPECT_TRUE(has_device_failed(fixture));
+
+    gpu_engines.destroy_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A stop whose GPFIFO unmap misses its invalidate's deadline fails the GPU, and the failure's report ends the queue in
+// place of its stop
+TEST(nvidia_engines, a_stop_whose_unmap_fails_the_gpu_leaves_the_queue_to_the_failures_report) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_a_tracked_queue(fixture, core));
+    backend_queue& queue = backend_of(fixture.queue);
+
+    fixture.memory.update_result = ERR_TIMEOUT;
+    fixture.gpu_engines.stop_queue(fixture.queue);
+    engines_operations().serve();
+
+    EXPECT_TRUE(fixture.failed.is_set());
+    EXPECT_TRUE(queue.user_channel.keeps_memory());
+    EXPECT_FALSE(engines_test_access::is_listed(fixture.gpu_engines, queue));
+    EXPECT_TRUE(core.first.stopped);
+    EXPECT_TRUE(has_device_failed(fixture));
+
+    fixture.gpu_engines.destroy_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A channel release the firmware refuses fails the GPU core's device in place of the queue's stop, since the channel
+// may still run, and the failure's report ends the queue
+TEST(nvidia_engines, a_refused_channel_release_fails_the_device_in_place_of_the_queues_stop) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_a_tracked_queue(fixture, core));
+    backend_queue& queue = backend_of(fixture.queue);
+    uint64_t gpu_ns = 0;
+
+    fixture.fw.release_result = ERR_FIRMWARE;
+    fixture.gpu_engines.stop_queue(fixture.queue);
+    engines_operations().serve();
+    fixture.fw.release_result = OK;
+
+    EXPECT_TRUE(queue.user_channel.keeps_memory());
+    EXPECT_FALSE(engines_test_access::is_listed(fixture.gpu_engines, queue));
+    EXPECT_TRUE(core.first.stopped);
+    EXPECT_TRUE(has_device_failed(fixture));
+    EXPECT_EQ(fixture.gpu_engines.read_timestamp(gpu_ns), gpu::ERR_DEVICE);
+    EXPECT_FALSE(fixture.failed.is_set());
+
+    fixture.gpu_engines.destroy_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
+// A destroy whose push buffer unmap misses its invalidate's deadline fails the GPU, which the driver task reports
+TEST(nvidia_engines, a_destroy_whose_unmap_fails_the_gpu_reports_it_to_the_core) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_a_tracked_queue(fixture, core));
+    fixture.gpu_engines.stop_queue(fixture.queue);
+    engines_operations().serve();
+
+    fixture.memory.update_result = ERR_TIMEOUT;
+    fixture.gpu_engines.destroy_queue(fixture.queue);
+    engines_operations().serve();
+
+    EXPECT_TRUE(fixture.failed.is_set());
+    EXPECT_TRUE(has_device_failed(fixture));
+
+    tear_down_space(fixture);
+}
+
+// A space destroy whose invalidate misses its deadline fails the GPU, which the driver task reports to the core
+TEST(nvidia_engines, a_space_destroy_that_fails_the_gpu_reports_it_to_the_core) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    fixture.memory.update_result = ERR_TIMEOUT;
+
+    tear_down_space(fixture);
+
+    EXPECT_TRUE(fixture.failed.is_set());
+    EXPECT_TRUE(has_device_failed(fixture));
 }
