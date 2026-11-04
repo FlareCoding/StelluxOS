@@ -67,12 +67,13 @@ static int32_t restrict_handle(device& dev, uint64_t arg) {
     }
 
     bool is_buffer = obj->type == resource::resource_type::GPU_BUFFER;
+    bool is_timeline = obj->type == resource::resource_type::GPU_TIMELINE;
     bool narrows = (args.rights & ~held) == 0;
 
     int32_t rc = fs::OK;
-    if (!is_buffer) {
+    if (!is_buffer && !is_timeline) {
         rc = fs::ERR_BADF;
-    } else if (&static_cast<buffer*>(obj->impl)->owner() != &dev) {
+    } else if (is_buffer && &static_cast<buffer*>(obj->impl)->owner() != &dev) {
         rc = fs::ERR_INVAL;
     } else if (!narrows) {
         rc = fs::ERR_INVAL;
@@ -91,6 +92,10 @@ int32_t device::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
     case GPU_GET_MEMORY:      return get_memory(*this, arg);
     case GPU_READ_TIMESTAMP:  return read_timestamp(*this, arg);
     case GPU_BUFFER_CREATE:   return create_buffer(*this, arg);
+    case GPU_TIMELINE_CREATE: return create_timeline(arg);
+    case GPU_TIMELINE_SIGNAL: return signal_timeline(arg);
+    case GPU_TIMELINE_QUERY:  return query_timeline(arg);
+    case GPU_TIMELINE_WAIT:   return wait_timelines(arg);
     case GPU_HANDLE_RESTRICT: return restrict_handle(*this, arg);
     default:                  return fs::ERR_NOSYS;
     }
@@ -114,6 +119,27 @@ __PRIVILEGED_CODE int32_t copy_in(void* dst, uint64_t src, size_t bytes) {
 __PRIVILEGED_CODE int32_t copy_out(uint64_t dst, const void* src, size_t bytes) {
     bool copied = mm::uaccess::copy_to_user(reinterpret_cast<void*>(dst), src, bytes) == mm::uaccess::OK;
     return copied ? fs::OK : fs::ERR_INVAL;
+}
+
+__PRIVILEGED_CODE int32_t lookup_object(
+    int32_t handle,
+    resource::resource_type type,
+    uint32_t rights,
+    resource::resource_object** out
+) {
+    resource::resource_object* obj = nullptr;
+    if (resource::get_handle_object(sched::current()->handles, handle, rights, &obj) != resource::HANDLE_OK) {
+        return fs::ERR_BADF;
+    }
+
+    if (obj->type != type) {
+        resource::resource_release(obj);
+        return fs::ERR_BADF;
+    }
+
+    *out = obj;
+
+    return fs::OK;
 }
 
 __PRIVILEGED_CODE int32_t install_handle(resource::resource_object* obj, uint32_t rights, uint64_t user_handle) {

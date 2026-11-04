@@ -6,9 +6,11 @@
  * the copy libstlx installs as <stlx/gpu_abi.h>, take the fixed-width integer types from different headers, so the
  * header includes nothing and an includer must provide those types first.
  *
- * A buffer is GPU memory. A process names buffers by resource handles, which it can send to other processes over unix
- * sockets with their rights. A buffer has no destroy call: it lives until its last handle closes and its last CPU
- * mapping is unmapped. A `GPU_BUFFER_MAPPABLE` buffer maps through a shared mmap of a handle with `GPU_RIGHT_READ`,
+ * A buffer is GPU memory, and a timeline is a 64-bit counter that only rises. A point (a timeline and a value) is
+ * reached once the timeline's value is at least the point's. A process names buffers and timelines by resource
+ * handles, which it can send to other processes over unix sockets with their rights. Neither has a destroy call: each
+ * lives until its last handle closes and, for a buffer, its last CPU mapping is unmapped and, for a timeline, every
+ * wait naming it returns. A `GPU_BUFFER_MAPPABLE` buffer maps through a shared mmap of a handle with `GPU_RIGHT_READ`,
  * writable only when the handle has `GPU_RIGHT_WRITE` too.
  *
  * Each call takes the address of its argument structure and fails with
@@ -34,6 +36,10 @@
 #define GPU_GET_MEMORY      0x4801u
 #define GPU_READ_TIMESTAMP  0x4802u
 #define GPU_BUFFER_CREATE   0x4807u
+#define GPU_TIMELINE_CREATE 0x480Bu
+#define GPU_TIMELINE_SIGNAL 0x480Cu
+#define GPU_TIMELINE_QUERY  0x480Du
+#define GPU_TIMELINE_WAIT   0x480Eu
 #define GPU_HANDLE_RESTRICT 0x4810u
 
 // A handle's rights, the values of RIGHT_READ and RIGHT_WRITE in kernel/resource/resource_types.h
@@ -52,6 +58,10 @@
 
 #define GPU_BUFFER_MAPPABLE 0x1u // the CPU may map it
 #define GPU_BUFFER_SCANOUT  0x2u // placed where the display can scan it out, in video memory only
+
+#define GPU_WAIT_ALL 0x1u // wait until every point is reached instead of any one
+
+#define GPU_POINTS_MAX 32u // the most points one wait names
 
 // NVIDIA facts NVK needs, zero on other backends
 struct gpu_nvidia_info {
@@ -120,7 +130,32 @@ struct gpu_buffer_args {
     uint64_t backend_id; // reserved
 };
 
-// GPU_HANDLE_RESTRICT argument: a new handle to the same buffer with a subset of the source's rights
+struct gpu_point {
+    int32_t  timeline;
+    uint32_t padding;
+    uint64_t value;
+};
+
+// GPU_TIMELINE_CREATE (value in, timeline out), GPU_TIMELINE_SIGNAL (both in, EINVAL for a value at or below the
+// timeline's) and GPU_TIMELINE_QUERY (timeline in, value out)
+struct gpu_timeline_args {
+    int32_t  timeline;
+    uint32_t flags;  // zero into a create or signal, and out of a query
+    uint64_t value;
+};
+
+// GPU_TIMELINE_WAIT argument. The wait fails with ETIMEDOUT once its deadline passes before it is satisfied, and with
+// EINTR when a signal with a handler arrives first, or restarts with the same deadline when the handler has SA_RESTART
+struct gpu_wait_args {
+    uint64_t points;      // the address of `count` gpu_point
+    uint64_t deadline_ns; // on the kernel's monotonic clock, UINT64_MAX for none
+    uint32_t count;       // 1 to GPU_POINTS_MAX
+    uint32_t flags;       // GPU_WAIT_*
+    uint32_t reached;     // out: the index of a reached point when waiting for any
+    uint32_t padding;
+};
+
+// GPU_HANDLE_RESTRICT argument: a new handle to the same buffer or timeline with a subset of the source's rights
 struct gpu_restrict_args {
     int32_t  handle;     // the source handle
     uint32_t rights;     // GPU_RIGHT_*, a nonempty subset of the source's
@@ -134,6 +169,9 @@ GPU_ABI_ASSERT(sizeof(struct gpu_info) == 168, "gpu_info layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_memory) == 16, "gpu_memory layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_timestamp) == 16, "gpu_timestamp layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_buffer_args) == 40, "gpu_buffer_args layout");
+GPU_ABI_ASSERT(sizeof(struct gpu_point) == 16, "gpu_point layout");
+GPU_ABI_ASSERT(sizeof(struct gpu_timeline_args) == 16, "gpu_timeline_args layout");
+GPU_ABI_ASSERT(sizeof(struct gpu_wait_args) == 32, "gpu_wait_args layout");
 GPU_ABI_ASSERT(sizeof(struct gpu_restrict_args) == 16, "gpu_restrict_args layout");
 
 #endif // STELLUX_GPU_GPU_ABI_H

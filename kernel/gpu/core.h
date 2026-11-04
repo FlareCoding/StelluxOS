@@ -5,7 +5,10 @@
 #include "fs/node.h"
 #include "gpu/gpu.h"
 #include "mm/device_backing.h"
+#include "rc/ref_counted.h"
 #include "resource/resource.h"
+#include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 
 namespace gpu {
 
@@ -57,6 +60,21 @@ private:
 };
 
 /**
+ * A 64-bit counter that only rises, from the value its creator chose. The resource object its handles name holds a
+ * reference. It lives on the unprivileged heap and belongs to no device, so a call on any GPU's file may name it.
+ */
+struct timeline : rc::ref_counted<timeline> {
+    sync::spinlock   lock;    // guards the value, taken with interrupts off
+    uint64_t         value;
+    sync::wait_queue waiters; // CPU waiters, woken at each rise
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static void ref_destroy(timeline* self);
+};
+
+/**
  * @brief Translate a backend's code into the file layer's, any code outside the backend's contract as ERR_IO.
  */
 int32_t to_fs_error(int32_t rc);
@@ -76,6 +94,19 @@ __PRIVILEGED_CODE int32_t copy_in(void* dst, uint64_t src, size_t bytes);
 __PRIVILEGED_CODE int32_t copy_out(uint64_t dst, const void* src, size_t bytes);
 
 /**
+ * @brief Look `handle` up in the calling process as an object of `type` whose handle holds `rights`, taking a
+ * reference the caller must release.
+ * @return fs::OK with the object in `*out`, or fs::ERR_BADF.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t lookup_object(
+    int32_t handle,
+    resource::resource_type type,
+    uint32_t rights,
+    resource::resource_object** out
+);
+
+/**
  * @brief Install a handle to `obj` with `rights` in the calling process and write it to the user address
  * `user_handle`, closing the handle again when the write fails. The handle takes a reference of its own.
  * @return fs::OK, fs::ERR_NOMEM when the handle table is full or cannot grow, or fs::ERR_INVAL when the write fails.
@@ -89,6 +120,30 @@ __PRIVILEGED_CODE int32_t install_handle(resource::resource_object* obj, uint32_
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t create_buffer(device& dev, uint64_t arg);
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t create_timeline(uint64_t arg);
+
+/**
+ * @brief `GPU_TIMELINE_SIGNAL`: raise the value, waking every CPU waiter, or return fs::ERR_INVAL for a value at or
+ * below the current one.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t signal_timeline(uint64_t arg);
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t query_timeline(uint64_t arg);
+
+/**
+ * @brief `GPU_TIMELINE_WAIT`: sleep until every point, or any one, is reached, returning fs::ERR_TIMEDOUT at the
+ * deadline or fs::ERR_INTR when a signal interrupts the caller.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t wait_timelines(uint64_t arg);
 
 } // namespace gpu
 

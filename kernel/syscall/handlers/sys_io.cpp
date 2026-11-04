@@ -334,5 +334,8 @@ DEFINE_SYSCALL3(ioctl, fd, cmd, arg) {
     // POSIX: an unsupported request on any fd is ENOTTY, not ENOSYS
     if (rc == resource::ERR_UNSUP) return syscall::ENOTTY;
 
+    // Here, not in map_resource_error, whose read and write callers report a timed-out TCP connection as EIO
+    if (rc == resource::ERR_TIMEDOUT) return syscall::ETIMEDOUT;
+
     return map_resource_error(rc);
 }
