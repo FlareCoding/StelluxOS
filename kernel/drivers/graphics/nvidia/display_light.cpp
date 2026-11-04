@@ -439,4 +439,52 @@ int32_t choose_lights(
     return rc;
 }
 
+int32_t check_light_set(firmware& fw, rm::handle bandwidth_check, const light_set& set, bool& is_possible) {
+    is_possible = false;
+
+    uint32_t params_bytes = sizeof(rm::mode_possible_params);
+    auto* params = static_cast<rm::mode_possible_params*>(heap::uzalloc(params_bytes));
+    if (params == nullptr) {
+        log::error("nvidia: allocating %u bytes for the bandwidth check's request failed", params_bytes);
+        return ERR_NO_MEMORY;
+    }
+
+    // Each timing of the set passed the raster checks when it was chosen, and its heads go in ascending order, as
+    // `choose_lights` names them
+    uint8_t slot = 0;
+    for (uint8_t asked_head = 0; asked_head < DISPLAY_HEADS_MAX; asked_head++) {
+        for (uint8_t index = 0; index < set.count; index++) {
+            const output_light& light = set.lights[index];
+            if (light.head == asked_head) {
+                fill_head(light.timing, light.head, light.window, params->heads[slot], params->windows[slot]);
+                slot++;
+            }
+        }
+    }
+
+    params->head_count = slot;
+    params->window_count = slot;
+
+    int32_t rc = fw.control(bandwidth_check, rm::CONTROL_IS_MODE_POSSIBLE, params, params_bytes);
+    if (rc == OK) {
+        is_possible = params->is_possible != 0;
+    }
+
+    heap::ufree(params);
+
+    const char* noun = set.count == 1 ? "output" : "outputs";
+    if (rc == ERR_FIRMWARE) {
+        log::info("nvidia: the firmware refuses the bandwidth check's request about the %u %s left", set.count, noun);
+        return OK;
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: asking the bandwidth check about the %u %s left failed: %d", set.count, noun, rc);
+        return rc;
+    }
+
+    log::info("nvidia: the bandwidth check %s the %u %s left", is_possible ? "accepts" : "refuses", set.count, noun);
+    return OK;
+}
+
 } // namespace drivers::nvidia

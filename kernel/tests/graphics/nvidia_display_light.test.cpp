@@ -11,6 +11,7 @@ TEST_SUITE(nvidia_display_light);
 
 using drivers::nvidia::active_heads;
 using drivers::nvidia::base_buffer_pitch;
+using drivers::nvidia::check_light_set;
 using drivers::nvidia::choose_lights;
 using drivers::nvidia::display_heads;
 using drivers::nvidia::display_outputs;
@@ -943,4 +944,37 @@ TEST(nvidia_display_light, a_request_failing_after_a_choice_empties_the_set) {
 
     EXPECT_EQ(fw.request_count, 2u);
     EXPECT_EQ(set.count, 0u);
+}
+
+// The set is asked about in one request naming each head in ascending order with its window and mode, and a refused
+// request answers no
+TEST(nvidia_display_light, checks_the_set_left_in_one_request) {
+    light_set set = {};
+    set.lights[0] = {.output = 1, .timing_index = 0, .timing = IOC_25G2S_PREFERRED, .head = 1, .window = 2};
+    set.lights[1] = {.output = 0, .timing_index = 0, .timing = IOC_25G2S_1080P, .head = 0, .window = 0};
+    set.count = 2;
+
+    light_firmware fw;
+    fw.answers[0] = {OK, false};
+    fw.answer_count = 1;
+    bool is_possible = true;
+    ASSERT_EQ(check_light_set(fw, TEST_BANDWIDTH_CHECK, set, is_possible), OK);
+
+    EXPECT_FALSE(is_possible);
+    ASSERT_EQ(fw.request_count, 1u);
+    EXPECT_EQ(s_requests[0].head_count, 2u);
+    EXPECT_EQ(s_requests[0].window_count, 2u);
+
+    EXPECT_EQ(s_requests[0].heads[0].head, 0u);
+    EXPECT_EQ(s_requests[0].heads[0].pixel_clock_khz, IOC_25G2S_1080P.pixel_clock_khz);
+    EXPECT_EQ(s_requests[0].windows[0].window, 0u);
+    EXPECT_EQ(s_requests[0].heads[1].head, 1u);
+    EXPECT_EQ(s_requests[0].windows[1].window, 2u);
+
+    light_firmware refusing_fw;
+    refusing_fw.answers[0] = {ERR_FIRMWARE, true};
+    refusing_fw.answer_count = 1;
+    is_possible = true;
+    ASSERT_EQ(check_light_set(refusing_fw, TEST_BANDWIDTH_CHECK, set, is_possible), OK);
+    EXPECT_FALSE(is_possible);
 }
