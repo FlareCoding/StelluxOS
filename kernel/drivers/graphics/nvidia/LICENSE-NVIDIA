@@ -2076,18 +2076,22 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     instance_memory.cpp and
     kernel/tests/graphics/nvidia_instance_memory.test.cpp, that that command
     writes where the display's instance memory lies into the display engine's
-    registers, in rm.h, display_engine.h and instance_memory.h, and the command
+    registers, in rm.h, display_engine.h and instance_memory.h, the command
     NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, a control of a
     subdevice, and the layout of its parameters, in rm.h, core_channel.cpp,
     cursor_channel.cpp, kernel/tests/graphics/nvidia_core_channel.test.cpp and
-    kernel/tests/graphics/nvidia_cursor_channel.test.cpp
+    kernel/tests/graphics/nvidia_cursor_channel.test.cpp, and the command
+    NV2080_CTRL_CMD_INTERNAL_INTR_GET_KERNEL_TABLE in
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/intr/engine_idx.h
     the GSP's engine number MC_ENGINE_IDX_GSP, 49, and the display's
     MC_ENGINE_IDX_DISP, 2, in rm.h and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that its engines
-    are those NVIDIA's interrupt code serves, in rm.h
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that its engines are
+    those NVIDIA's interrupt code serves, in rm.h, and the first copy engine's
+    number MC_ENGINE_IDX_CE0, 15, copy engine n taking 15 plus n, in rm.h and
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/intr/intr.c
@@ -2101,8 +2105,11 @@ src/nvidia/src/kernel/gpu/intr/intr.c
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that it services an
     engine's stall interrupts with the engine's handler and its nonstall
     interrupts as notifications, in rm.h, that it services the GSP's as stall
-    interrupts, in interrupts.h, and that it clears an engine's interrupt before
-    it services the engine, in interrupts.h and interrupts.cpp
+    interrupts, in interrupts.h, that it clears an engine's interrupt before it
+    services the engine, in interrupts.h and interrupts.cpp, and that it looks a
+    copy engine's nonstall vector up in the first row of that engine, in
+    interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/intr/intr_service.c
@@ -2132,11 +2139,16 @@ src/nvidia/src/kernel/gpu/intr/arch/turing/intr_tu102.c
     bit by writing the bit to its leaf, that it clears every top-level enable
     and then every leaf's enable as it unloads, in interrupts.h, interrupts.cpp
     and kernel/tests/graphics/nvidia_message_queues.test.cpp, that an earlier
-    driver can leave enables set, in nvidia_gpu.cpp, and that it disables one
-    vector by writing the vector's bit to its leaf's enable clear register, in
+    driver can leave enables set, in nvidia_gpu.cpp, that it disables one vector
+    by writing the vector's bit to its leaf's enable clear register, in
     interrupts.h, interrupts.cpp,
     kernel/tests/graphics/nvidia_message_queues.test.cpp and
-    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp
+    kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, and that it never
+    enables a copy engine's nonstall vector past the leaves or in a row with a
+    PMC mask, enables it through its leaf's enable set register, clears its
+    pending bit by writing the bit to its leaf and disables it through its
+    leaf's enable clear register, in interrupts.h, interrupts.cpp and
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_intr_nvoc.h
@@ -2157,10 +2169,12 @@ src/common/inc/swref/published/ampere/ga102/dev_vm.h
     leaves and of their enables' clear registers with their 4-byte stride, in
     kernel/tests/graphics/nvidia_gpu_interrupt.test.cpp, that a second top-level
     enable set or clear register would lie 4 bytes after the first, in
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the tree has
-    8 leaf registers on GA102, in chip.cpp,
-    kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the tree has 8
+    leaf registers on GA102, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, and the offsets of
+    the leaves, of their enables' set and clear registers and of the top level's
+    first enable set and clear registers, in
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
 
 src/nvidia/arch/nvalloc/common/inc/dev_ctrl_defines.h
@@ -2466,8 +2480,10 @@ src/nvidia/inc/kernel/gpu/gpu_engine_type.h
     memory regions, in gsp_info.h, gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the engine types
     RM_ENGINE_TYPE_GR0, 0x1, and RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY9,
-    0x9 to 0x12, in rm.h, and RM_ENGINE_TYPE_GR0, RM_ENGINE_TYPE_COPY0 to
-    RM_ENGINE_TYPE_COPY4 and RM_ENGINE_TYPE_NVDEC0, 0x1D, in
+    0x9 to 0x12, in rm.h, RM_ENGINE_TYPE_GR0 and RM_ENGINE_TYPE_COPY2 in
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp, and
+    RM_ENGINE_TYPE_GR0, RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY4 and
+    RM_ENGINE_TYPE_NVDEC0, 0x1D, in
     kernel/tests/graphics/nvidia_engine_table.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

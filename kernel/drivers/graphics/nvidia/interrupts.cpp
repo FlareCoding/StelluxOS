@@ -127,6 +127,63 @@ static bool find_display_vector(const rm::kernel_interrupt_table_params& table, 
     return true;
 }
 
+// Finds a copy engine's nonstall vector in the table the reply filled, whose count must already be checked
+static int32_t find_copy_vector(
+    const rm::kernel_interrupt_table_params& table,
+    uint32_t copy_index,
+    uint32_t leaf_count,
+    uint32_t& vector
+) {
+    uint16_t engine = static_cast<uint16_t>(rm::ENGINE_FIRST_COPY + copy_index);
+    const rm::kernel_interrupt_row* row = find_first_row(table, engine);
+    if (row == nullptr) {
+        log::error(
+            "nvidia: the GSP firmware's kernel interrupt table counts %u rows, none for copy engine %u",
+            table.row_count,
+            copy_index
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    uint32_t vector_count = leaf_count * VECTORS_PER_LEAF;
+    if (row->nonstall_vector >= vector_count) {
+        log::error(
+            "nvidia: the GSP firmware's kernel interrupt table gives copy engine %u the nonstall vector %u, outside "
+            "the %u vectors of the CPU interrupt tree",
+            copy_index,
+            row->nonstall_vector,
+            vector_count
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    if (row->pmc_interrupt_mask != 0) {
+        log::error(
+            "nvidia: the GSP firmware's kernel interrupt table gives copy engine %u's row the PMC mask 0x%X, and "
+            "NVIDIA's driver never enables the vector of a row with one",
+            copy_index,
+            row->pmc_interrupt_mask
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    vector = row->nonstall_vector;
+    return OK;
+}
+
+static int32_t check_row_count(const rm::kernel_interrupt_table_params& table) {
+    if (table.row_count > rm::KERNEL_INTERRUPT_ROWS_MAX) {
+        log::error(
+            "nvidia: the GSP firmware's kernel interrupt table counts %u rows, more than the %u it has room for",
+            table.row_count,
+            rm::KERNEL_INTERRUPT_ROWS_MAX
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    return OK;
+}
+
 static uint32_t leaf_of(uint32_t vector) {
     return vector / VECTORS_PER_LEAF;
 }
@@ -163,17 +220,13 @@ static int32_t find_vectors(
     bool is_display_enabled,
     interrupt_vectors& vectors
 ) {
-    if (table.row_count > rm::KERNEL_INTERRUPT_ROWS_MAX) {
-        log::error(
-            "nvidia: the GSP firmware's kernel interrupt table counts %u rows, more than the %u it has room for",
-            table.row_count,
-            rm::KERNEL_INTERRUPT_ROWS_MAX
-        );
-        return ERR_BAD_MESSAGE;
+    int32_t rc = check_row_count(table);
+    if (rc != OK) {
+        return rc;
     }
 
     interrupt_vectors found = {};
-    int32_t rc = find_gsp_vector(table, leaf_count, found.gsp);
+    rc = find_gsp_vector(table, leaf_count, found.gsp);
     if (rc != OK) {
         return rc;
     }
@@ -216,6 +269,34 @@ int32_t read_interrupt_vectors(
     return rc;
 }
 
+int32_t read_copy_vector(firmware& fw, uint32_t engine_type, uint32_t leaf_count, uint32_t& vector) {
+    bool is_copy_engine = engine_type >= rm::ENGINE_TYPE_FIRST_COPY && engine_type <= rm::ENGINE_TYPE_LAST_COPY;
+    if (!is_copy_engine) {
+        log::error("nvidia: engine type 0x%X names no copy engine, so it has no copy engine's vector", engine_type);
+        return ERR_INVALID_ARG;
+    }
+
+    uint32_t table_bytes = sizeof(rm::kernel_interrupt_table_params);
+    auto* table = static_cast<rm::kernel_interrupt_table_params*>(heap::uzalloc(table_bytes));
+    if (table == nullptr) {
+        log::error("nvidia: allocating %u bytes for the GSP firmware's kernel interrupt table failed", table_bytes);
+        return ERR_NO_MEMORY;
+    }
+
+    int32_t rc = fw.internal_control(rm::CONTROL_GET_KERNEL_INTERRUPT_TABLE, table, table_bytes);
+    if (rc == OK) {
+        rc = check_row_count(*table);
+    }
+
+    if (rc == OK) {
+        rc = find_copy_vector(*table, engine_type - rm::ENGINE_TYPE_FIRST_COPY, leaf_count, vector);
+    }
+
+    heap::ufree(table);
+
+    return rc;
+}
+
 void enable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count, const interrupt_vectors& vectors) {
     clear_leaf_enables(regs, leaf_count);
 
@@ -233,6 +314,15 @@ void enable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count, const inter
 void disable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count) {
     regs.write(CPU_INTERRUPT_TOP_ENABLE_CLEAR, EVERY_BIT);
     clear_leaf_enables(regs, leaf_count);
+}
+
+void enable_vector(registers& regs, uint32_t vector) {
+    regs.write(leaf_register(CPU_INTERRUPT_LEAF_ENABLE_SET, leaf_of(vector)), vector_bit(vector));
+    regs.write(CPU_INTERRUPT_TOP_ENABLE_SET, subtree_bit(vector));
+}
+
+void mask_vector(registers& regs, uint32_t vector) {
+    regs.write(leaf_register(CPU_INTERRUPT_LEAF_ENABLE_CLEAR, leaf_of(vector)), vector_bit(vector));
 }
 
 gsp_vector_reading take_gsp_interrupt(registers& regs, uint32_t vector) {
@@ -305,6 +395,18 @@ bool acknowledge_display_interrupt(registers& regs, uint32_t vector) {
     }
 
     regs.write(leaf, bit);
+    return true;
+}
+
+bool acknowledge_nonstall_interrupt(registers& regs, uint32_t vector) {
+    uint32_t leaf = leaf_register(CPU_INTERRUPT_LEAF, leaf_of(vector));
+    uint32_t bit = vector_bit(vector);
+    if ((regs.read(leaf) & bit) == 0) {
+        return false;
+    }
+
+    regs.write(leaf, bit);
+    (void)regs.read(leaf);
     return true;
 }
 
