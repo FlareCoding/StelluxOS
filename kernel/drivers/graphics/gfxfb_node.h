@@ -114,8 +114,9 @@ struct output_records {
  * output, whose base buffer is the boot framebuffer. The output's mode is the
  * framebuffer's size with an unknown refresh rate. The display hardware scans
  * that memory out directly, so `flush()` has nothing to copy and returns `OK`.
- * It creates and presents no buffers, has no hardware cursor, and keeps the
- * boot framebuffer when gfxfb hands it back. The output lists only its mode.
+ * It creates and presents no buffers, sets no modes, has no hardware cursor,
+ * and keeps the boot framebuffer when gfxfb hands it back. The output lists
+ * only its mode.
  */
 class boot_display : public display {
 public:
@@ -132,6 +133,8 @@ public:
     int32_t present(uint32_t, buffer*, const gfxfb_rect*, uint32_t) override { return ERR_UNSUPPORTED; }
     int32_t set_cursor(uint32_t, const cursor_image&) override { return ERR_UNSUPPORTED; }
     int32_t move_cursor(uint32_t, int32_t, int32_t) override { return ERR_UNSUPPORTED; }
+    int32_t set_mode(uint32_t, const gfxfb_mode&) override { return ERR_UNSUPPORTED; }
+    void restore_modes() override {}
     void release_buffer(buffer*) override {}
 
     const boot_framebuffer& framebuffer() const { return m_framebuffer; }
@@ -156,7 +159,7 @@ private:
  * offset 0 is refused, while `GFXFB_GET_OUTPUT` still reports every output.
  * Each open file is a client, whose buffers mmap maps at the offsets their
  * creation returned, above the primary output's base buffer at offset 0. A
- * client controls the buffers from its first creation, present or cursor
+ * client controls the buffers from its first creation, present, cursor or mode
  * request that succeeds until the client closes. Before control is checked, a
  * creation request fails with `fs::ERR_INVAL` when gfxfb cannot read it, when
  * its width or height is zero or when its reserved field is set, and a present
@@ -237,6 +240,16 @@ private:
  * present there. A closing client that controls the buffers hides each
  * output's cursor before its control ends, unless the display has failed, and
  * an output whose hide the display refuses keeps showing its cursor.
+ *
+ * A mode request fails with `fs::ERR_INVAL` when gfxfb cannot read it, when
+ * its reserved field is set or when it names an output of the display's output
+ * count or more, then reserves and takes control as a creation does, fails
+ * with `fs::ERR_IO` once the display has failed, and otherwise returns the
+ * display's result. Mode requests reach the display one at a time, and gfxfb
+ * never makes one wait for a present or cursor call. A closing client that
+ * controls the buffers calls the display's `restore_modes()` after its base
+ * buffers' presents and its cursor hides, before its control ends, even once
+ * the display has failed.
  */
 class gfxfb_node : public fs::node {
 public:
@@ -275,10 +288,11 @@ public:
      * output shows the present's buffer and drops the one it replaced, on GFXFB_PRESENT_DARK it drops the present's
      * buffer, and on GFXFB_PRESENT_FAILED it keeps both, since the failed hardware may still read either, and counts
      * the display as failed, so every later `GFXFB_FLUSH` past its request checks, present request reaching an output
-     * and cursor request past control fails with `fs::ERR_IO`. The display must report each present its `present()`
-     * accepted as `display::present()` requires, through `gfxfb::present_done()`, which calls this. The display must
-     * report GFXFB_PRESENT_LATCHED only once the hardware no longer reads the replaced buffer and GFXFB_PRESENT_DARK
-     * only once the hardware can no longer latch the present. The call never sleeps or calls the display.
+     * and cursor or mode request past control fails with `fs::ERR_IO`. The display must report each present its
+     * `present()` accepted as `display::present()` requires, through `gfxfb::present_done()`, which calls this. The
+     * display must report GFXFB_PRESENT_LATCHED only once the hardware no longer reads the replaced buffer and
+     * GFXFB_PRESENT_DARK only once the hardware can no longer latch the present. The call never sleeps or calls the
+     * display.
      * @param output Index of the output the present was for. The call drops the end, logging an error, when the
      * output holds no unended present, as once that present has ended or for an index of the display's output count
      * or more.
@@ -342,6 +356,7 @@ private:
     int32_t set_cursor(client& owner, uint64_t args_addr);
     int32_t give_cursor_image(uint32_t output, const cursor_image& image);
     int32_t move_cursor(client& owner, uint64_t position_addr);
+    int32_t set_mode(client& owner, uint64_t request_addr);
     bool has_display_failed();
     void mark_failed_on_device_error(int32_t rc);
     bool holds_unended_present(const client& owner) const;
@@ -365,6 +380,7 @@ private:
 
     sync::mutex    m_present_locks[GFXFB_OUTPUTS_MAX]; // so presents for one output reach the display one at a time
     sync::mutex    m_cursor_locks[GFXFB_OUTPUTS_MAX];  // likewise for cursor calls, which never wait for a present lock
+    sync::mutex    m_mode_lock;                        // so mode requests reach the display one at a time
     sync::spinlock m_outputs_lock;                     // over the members below, taken with interrupts disabled
     output_records m_outputs[GFXFB_OUTPUTS_MAX];       // written unlocked only by `show()`, before the node is opened
     uint32_t       m_primary = NO_OUTPUT;              // an output with a base recorded, one relighting, or NO_OUTPUT

@@ -54,15 +54,17 @@
  * present it accepted ended, and gfxfb queues the end as an event for the open
  * file that presented. Userland gives an output's hardware cursor a picture
  * and moves it, which gfxfb hands to the display's `set_cursor()` and
- * `move_cursor()`. One open file at a time controls the buffers, from its
- * first creation, present or cursor call that succeeds until it closes. gfxfb
- * keeps a reference-counted record of each buffer, every lit output's base
- * buffer included, and hands the buffer back to the display's
- * `release_buffer()` once no handle, output or mapping refers to it. Once a
- * display call returns ERR_DEVICE or a present ends with
- * `GFXFB_PRESENT_FAILED`, gfxfb fails every later `GFXFB_FLUSH`,
- * `GFXFB_PRESENT`, `GFXFB_SET_CURSOR` and `GFXFB_MOVE_CURSOR` without handing
- * it to the display.
+ * `move_cursor()`. Userland asks for one of an output's listed modes with
+ * `GFXFB_SET_MODE`, which gfxfb hands to the display's `set_mode()`. One open
+ * file at a time controls the buffers, from its first creation, present,
+ * cursor call or mode request that succeeds until it closes, and its close
+ * calls the display's `restore_modes()` before its control ends. gfxfb keeps a
+ * reference-counted record of each buffer, every lit output's base buffer
+ * included, and hands the buffer back to the display's `release_buffer()` once
+ * no handle, output or mapping refers to it. Once a display call returns
+ * ERR_DEVICE or a present ends with `GFXFB_PRESENT_FAILED`, gfxfb fails every
+ * later `GFXFB_FLUSH`, `GFXFB_PRESENT`, `GFXFB_SET_CURSOR`,
+ * `GFXFB_MOVE_CURSOR` and `GFXFB_SET_MODE` without handing it to the display.
  */
 
 namespace gfxfb {
@@ -73,7 +75,7 @@ constexpr int32_t ERR_INVALID_ARG = -2;
 constexpr int32_t ERR_DARK        = -3; // the output is not lit
 constexpr int32_t ERR_DEVICE      = -4; // the display's hardware failed for good
 constexpr int32_t ERR_NO_MEMORY   = -5;
-constexpr int32_t ERR_UNSUPPORTED = -6; // the display creates or presents no buffers, or the output has no cursor
+constexpr int32_t ERR_UNSUPPORTED = -6; // the display or output does not offer the call
 constexpr int32_t ERR_REFUSED     = -7; // the hardware refused the call and stays usable
 
 // The widest and tallest cursor picture a display may report for an output, which bounds the pictures gfxfb copies
@@ -147,20 +149,22 @@ struct cursor_image {
  * sleep, so they must not wait, and from `output_changed()`, in the task that
  * reports the change. It calls `output_count()`, `read_output()`,
  * `read_modes()`, `needs_flush()`, `flush()`, `create_buffer()`, `present()`,
- * `set_cursor()` and `move_cursor()` from the tasks that use /dev/gfxfb,
- * several tasks at once, and `flush()`, `create_buffer()`, `present()` and the
- * two cursor calls may block the task that calls them. gfxfb never calls
- * `present()` for one output from two tasks at once, nor while a present the
- * display accepted there has not ended, and never makes two cursor calls for
- * one output at once, though a cursor call may run during a present for the
- * same output. It calls `release_buffer()` from the reaper, the kernel task
- * that runs deferred cleanup, and `release_buffer()` must never wait, since
- * the reaper runs no other cleanup until it returns. A display returns
- * ERR_DEVICE only once its hardware has failed for good, and from then on from
- * every call that needs the hardware, so a refusal that leaves the hardware
- * usable is ERR_REFUSED, or ERR_NO_MEMORY when the hardware has no memory left
- * for a buffer. It likewise ends a present with `GFXFB_PRESENT_FAILED` only
- * once its hardware has failed for good.
+ * `set_cursor()`, `move_cursor()`, `set_mode()` and `restore_modes()` from the
+ * tasks that use /dev/gfxfb, several tasks at once, and `flush()`,
+ * `create_buffer()`, `present()`, the two cursor calls and `set_mode()` may
+ * block the task that calls them. gfxfb never calls `present()` for one output
+ * from two tasks at once, nor while a present the display accepted there has
+ * not ended, and never makes two cursor calls for one output at once, though a
+ * cursor call may run during a present for the same output. It never makes two
+ * `set_mode()` calls at once, and flushes, creations, presents and cursor
+ * calls may run during one. It calls `release_buffer()` from the reaper, the
+ * kernel task that runs deferred cleanup, and `release_buffer()` must never
+ * wait, since the reaper runs no other cleanup until it returns. A display
+ * returns ERR_DEVICE only once its hardware has failed for good, and from then
+ * on from every call that needs the hardware, so a refusal that leaves the
+ * hardware usable is ERR_REFUSED, or ERR_NO_MEMORY when the hardware has no
+ * memory left for a buffer. It likewise ends a present with
+ * `GFXFB_PRESENT_FAILED` only once its hardware has failed for good.
  */
 class display {
 public:
@@ -199,6 +203,36 @@ public:
      * @return OK, or ERR_INVALID_ARG for an index of `output_count()` or more.
      */
     virtual int32_t read_modes(uint32_t output, gfxfb_mode* out, uint32_t capacity, uint32_t& count) = 0;
+
+    /**
+     * @brief Light an output at one of its listed modes, relighting it as
+     * `output_changed()` describes, and return after the last report, once the
+     * output is lit at the mode or the display gave up.
+     * @param output Index of the output, below the count.
+     * @param mode The mode userland asked for, which the display checks
+     * against the output's list.
+     * @return In this order, ERR_UNSUPPORTED on a display that sets no modes,
+     * ERR_NO_MEMORY for no memory to take the request, ERR_DEVICE once the
+     * hardware failed, ERR_DARK for an output dark or being taken dark,
+     * ERR_INVALID_ARG for an unlisted mode, and OK at once for the mode the
+     * output is lit at. Otherwise ERR_REFUSED for a mode or base buffer the
+     * hardware refused and ERR_NO_MEMORY for no memory for that buffer, then
+     * ERR_REFUSED or ERR_DEVICE for a darkening the hardware refused or failed
+     * in, all with the output unchanged. Once the output is dark, ERR_REFUSED
+     * for a failed light (the output lit at its previous mode or dark) or
+     * ERR_DEVICE (the output dark), and otherwise OK once it is lit at `mode`.
+     */
+    virtual int32_t set_mode(uint32_t output, const gfxfb_mode& mode) = 0;
+
+    /**
+     * @brief Relight at the mode the display picks itself every output a
+     * `set_mode()` lit, without waiting. A display that can tell an output is
+     * at that mode already may leave it lit, and one that sets no modes does
+     * nothing. gfxfb calls it from the close of the open file that controls
+     * the buffers, before control ends, even once the display has failed, and
+     * the display must serve it ahead of any `set_mode()` that comes after it.
+     */
+    virtual void restore_modes() = 0;
 
     /**
      * @brief Return an output's base buffer, the buffer the output was lit
@@ -404,15 +438,19 @@ __PRIVILEGED_CODE void present_done(display* driver_display, uint32_t output, co
  * `relighting` set, since the primary stays on a relighting output, then
  * report it lit with a base buffer gfxfb holds no record of, as
  * `base_buffer()` states, or dark without `relighting` when it cannot light
- * the output at that mode. Once gfxfb has found the display failed, as the
- * overview describes, it records nothing and queues no event, keeping every
- * reference, since the failed hardware may still read any buffer. The display
- * must call it from a task, since gfxfb allocates in it, and only once
- * `register_display()` has returned, since gfxfb records the display's outputs
- * unlocked as it registers. It must make one call at a time, since two calls
- * could record what they read out of order, and must hold none of the locks
- * that its `output_count()`, `read_output()` and `base_buffer()` take, since
- * gfxfb calls them before returning.
+ * the output at that mode. After a `set_mode()` whose mode fails to light, the
+ * display first lights the output at its previous mode, and after a relight of
+ * its own fails on an output a `set_mode()` lit, it may first light the output
+ * at the mode it picks itself, each reporting the output dark without
+ * `relighting` only when that light fails too. Once gfxfb has found the
+ * display failed, as the overview describes, it records nothing and queues no
+ * event, keeping every reference, since the failed hardware may still read any
+ * buffer. The display must call it from a task, since gfxfb allocates in it,
+ * and only once `register_display()` has returned, since gfxfb records the
+ * display's outputs unlocked as it registers. It must make one call at a time,
+ * since two calls could record what they read out of order, and must hold none
+ * of the locks that its `output_count()`, `read_output()` and `base_buffer()`
+ * take, since gfxfb calls them before returning.
  * @param driver_display The display. gfxfb drops the report, logging an error,
  * when /dev/gfxfb does not show it.
  * @param output Index of the output. gfxfb drops the report, logging an error,
