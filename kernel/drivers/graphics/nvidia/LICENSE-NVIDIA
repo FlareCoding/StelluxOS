@@ -1858,7 +1858,10 @@ src/nvidia/src/kernel/gpu/device.c
 
 src/nvidia/generated/g_kernel_fifo_nvoc.h
     KERNEL_PID, NVIDIA's process number for the kernel, in rm.h and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the data
+    words of a device info table entry hold the engine's
+    ENGINE_INFO_TYPE_RM_ENGINE_TYPE at index 2 and its ENGINE_INFO_TYPE_RUNLIST
+    at index 3, in rm.h and kernel/tests/graphics/nvidia_engine_table.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/libraries/resserv/resserv.h
@@ -2448,7 +2451,11 @@ src/nvidia/inc/kernel/gpu/gpu_engine_type.h
     the number of engine types, 0x3e, from which the length of the static
     configuration's engine capabilities is made, held after its table of video
     memory regions, in gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the engine types
+    RM_ENGINE_TYPE_GR0, 0x1, and RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY9,
+    0x9 to 0x12, in rm.h, and RM_ENGINE_TYPE_GR0, RM_ENGINE_TYPE_COPY0 to
+    RM_ENGINE_TYPE_COPY4 and RM_ENGINE_TYPE_NVDEC0, 0x1D, in
+    kernel/tests/graphics/nvidia_engine_table.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/nvbitmask.h
@@ -3686,6 +3693,22 @@ src/nvidia-modeset/src/nvkms-cursor3.c
     kernel/tests/graphics/nvidia_display_engine.test.cpp, and that the register
     reads 0 while the front end takes a method, in display_engine.cpp
     SPDX-FileCopyrightText: Copyright (c) 2016 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080fifo.h
+    the command NV2080_CTRL_CMD_FIFO_GET_DEVICE_INFO_TABLE, a control of a
+    subdevice, the layout of its parameters and of their entries, the 32 entries
+    a page holds and the 256 the table holds at most, that a page starts at a
+    multiple of 32, and that bMore says the next page holds entries, in rm.h,
+    and the command, the layouts' sizes and offsets and a page's 32 entries, in
+    kernel/tests/graphics/nvidia_engine_table.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2006-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cl2080_notification.h
+    that NV2080_ENGINE_TYPE_GRAPHICS and NV2080_ENGINE_TYPE_COPY0 to
+    NV2080_ENGINE_TYPE_COPY9, the engine types a channel's allocation names its
+    engine by, take the values of the matching RM engine types, which the device
+    info table gives, in rm.h
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c,
