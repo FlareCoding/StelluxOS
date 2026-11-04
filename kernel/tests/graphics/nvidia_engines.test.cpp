@@ -22,11 +22,13 @@ using drivers::nvidia::backend_memory;
 using drivers::nvidia::card_identity;
 using drivers::nvidia::channel_test_access;
 using drivers::nvidia::chip_info;
+using drivers::nvidia::context_tlbs;
 using drivers::nvidia::copy_channel;
 using drivers::nvidia::copy_channel_test_access;
 using drivers::nvidia::cpu_mapping;
 using drivers::nvidia::engine_info;
 using drivers::nvidia::engines;
+using drivers::nvidia::entry_run;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_FIRMWARE;
 using drivers::nvidia::ERR_NO_MEMORY;
@@ -145,17 +147,21 @@ public:
     const engine_info* engines = nullptr;
     uint32_t           engine_count = 0;
     int32_t            kernel_table_result = OK;
+    int32_t            allocation_result = OK; // what every allocation answers
     uint32_t           table_reads = 0;
     uint32_t           other_controls = 0;
     uint32_t           allocations = 0;
     uint32_t           releases = 0;
     uint32_t           internal_controls = 0;
     uint32_t           internal_command = 0;
+    uint32_t           last_class = 0;
+    uint32_t           last_command = 0; // of the controls other than the table's read
     rm::handle         next_handle = FIRST_HANDLE;
 
-    int32_t allocate(rm::handle, rm::handle, uint32_t, void*, size_t) override {
+    int32_t allocate(rm::handle, rm::handle, uint32_t class_id, void*, size_t) override {
         allocations++;
-        return OK;
+        last_class = class_id;
+        return allocation_result;
     }
 
     int32_t control(rm::handle object, uint32_t command, void* params, size_t size) override {
@@ -167,6 +173,7 @@ public:
         }
 
         other_controls++;
+        last_command = command;
         if (command == GET_FAULT_METHOD_BUFFER_SIZE && size == sizeof(uint32_t)) {
             uint32_t bytes = 20480;
             string::memcpy(params, &bytes, sizeof(bytes));
@@ -221,6 +228,14 @@ alignas(4096) static uint8_t s_engines_instance_block[4096];
 // Where the double's BAR1 starts in physical addresses, for the memory the backend creates
 static constexpr uint64_t BAR1_PHYS = 0x80000000;
 
+// Where a test's space places its tables once the test moves the double's next offset there, past every other
+// allocation, and the eight 4 KiB tables from there as the updates of GPU context tables wrote them
+static constexpr uint64_t TABLES_OFFSET   = 0x40000000;
+static constexpr uint64_t TABLE_WORDS     = 512;
+static constexpr uint64_t IMAGE_WORDS     = 8 * TABLE_WORDS;
+static constexpr uint64_t UNWRITTEN_ENTRY = 0xA5A5A5A5A5A5A5A5;
+static uint64_t           s_tables_image[IMAGE_WORDS];
+
 // Hands out video memory from 4 MiB on, maps the check's range onto `s_check_memory`, an instance block onto
 // `s_engines_instance_block` and a created range at `BAR1_PHYS` past its offset, counting maps, unmaps and releases
 class engines_video_memory : public video_memory {
@@ -229,6 +244,7 @@ public:
     bool          refuses_allocation = false;
     bool          is_window_full = false;    // refuses to map a created range
     bool          maps_without_phys = false; // maps a created range with no physical address
+    int32_t       update_result = OK;        // what table updates answer once they wrote `s_tables_image`
 
     uint64_t   next_offset = 0x400000;
     uint64_t   check_offset = 0;
@@ -241,6 +257,10 @@ public:
     uint32_t   created_unmaps = 0;
     uint32_t   created_releases = 0;
     vram_range last_released = {};
+
+    uint32_t table_updates = 0;
+    uint32_t table_releases = 0;        // of tables from `TABLES_OFFSET` on
+    uint64_t invalidated_directory = 0; // the root directory of the last update that invalidated
 
     void report(memory_report& out) override {
         out = reported;
@@ -269,6 +289,8 @@ public:
         } else if (is_created(range)) {
             created_releases++;
             last_released = range;
+        } else if (range.offset >= TABLES_OFFSET) {
+            table_releases++;
         }
     }
 
@@ -300,7 +322,22 @@ public:
         }
     }
 
-    int32_t update_context_tables(uint64_t, table_writes&, drivers::nvidia::context_tlbs) override { return OK; }
+    int32_t update_context_tables(uint64_t directory_offset, table_writes& writes, context_tlbs tlbs) override {
+        table_updates++;
+        if (tlbs == context_tlbs::invalidated) {
+            invalidated_directory = directory_offset;
+        }
+
+        entry_run run = {};
+        while (writes.next(run)) {
+            uint64_t first = (run.vram_offset - TABLES_OFFSET) / sizeof(uint64_t);
+            if (run.vram_offset >= TABLES_OFFSET && first + run.count <= IMAGE_WORDS) {
+                string::memcpy(&s_tables_image[first], run.entries, run.count * sizeof(uint64_t));
+            }
+        }
+
+        return update_result;
+    }
 
 private:
     bool is_check(const vram_range& range) const {
@@ -436,6 +473,9 @@ struct engines_fixture {
     gpu::memory* created = nullptr;
     uint32_t     device_id = ~0u;
 
+    // The space `create_space_on_gpu` creates
+    gpu::space* space = nullptr;
+
     engines_fixture()
         : bar0(fresh_bar0()), gpu_engines(fw, TEST_OBJECTS, memory, engines_operations(), failed),
           core_device(*new (s_core_device_bytes) gpu::device("gpu_engines", &gpu_engines, NO_FACTS)) {
@@ -445,6 +485,10 @@ struct engines_fixture {
 
         for (uint64_t i = 0; i < CHECK_WORDS; i++) {
             s_check_memory[i] = STALE_WORD;
+        }
+
+        for (uint64_t i = 0; i < IMAGE_WORDS; i++) {
+            s_tables_image[i] = UNWRITTEN_ENTRY;
         }
     }
 
@@ -464,7 +508,8 @@ struct engines_fixture {
         return gpu_engines.create_memory(create_size, create_placement, create_flags, nullptr, 0, &created, &device_id);
     }
 
-    // Runs each entry the copy channel publishes once the task waits for it, until the task ends
+    // Runs each entry the copy channel publishes and serves the driver task's operations once the task waits for them,
+    // until the task ends
     bool act_as_gpu(sched::task& task, const sync::atomic<uint32_t>& is_done) {
         uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
         while (!is_done.load_acquire()) {
@@ -478,6 +523,10 @@ struct engines_fixture {
             if (copier != nullptr && put_of(*copier) != next_entry) {
                 run_entry(*copier, next_entry);
                 next_entry++;
+            }
+
+            if (is_waiting) {
+                engines_operations().serve();
             }
         }
 
@@ -614,25 +663,37 @@ static void run_engines_task(void* arg) {
     sched::exit(0);
 }
 
-// Runs `step` in a task while the test runner acts as the GPU, and returns its result
-static int32_t run_on_gpu(engines_fixture& fixture, int32_t (*step)(engines_fixture&)) {
-    engines_task_state state;
+// Starts `step` in a task, pinned until `finish_step`
+static sched::task* start_step(engines_fixture& fixture, engines_task_state& state, int32_t (*step)(engines_fixture&)) {
     state.fixture = &fixture;
     state.step = step;
     state.result = NOT_FINISHED;
     state.is_done.store_relaxed(0);
 
-    uint64_t start_ns = clock::now_ns();
-    sched::task* task = test_helpers::start_pinned_task(run_engines_task, &state, "engines_step");
+    return test_helpers::start_pinned_task(run_engines_task, &state, "engines_step");
+}
+
+// Acts as the GPU and the driver task until the step's task ends, and returns the step's result
+static int32_t finish_step(engines_fixture& fixture, engines_task_state& state, sched::task* task) {
     if (task == nullptr) {
         return NOT_FINISHED;
     }
 
     bool is_done = fixture.act_as_gpu(*task, state.is_done);
-    fixture.took_ns = clock::now_ns() - start_ns;
     test_helpers::unpin(task);
 
     return is_done ? state.result : NOT_FINISHED;
+}
+
+// Runs `step` in a task while the test runner acts as the GPU and the driver task, and returns its result
+static int32_t run_on_gpu(engines_fixture& fixture, int32_t (*step)(engines_fixture&)) {
+    engines_task_state state;
+    uint64_t start_ns = clock::now_ns();
+    sched::task* task = start_step(fixture, state, step);
+    int32_t rc = finish_step(fixture, state, task);
+    fixture.took_ns = clock::now_ns() - start_ns;
+
+    return rc;
 }
 
 // Brings the fixture's engines up in a task while the test runner acts as the GPU
@@ -650,6 +711,16 @@ static bool has_device_failed(engines_fixture& fixture) {
     bool is_failed = false;
     RUN_ELEVATED(is_failed = fixture.core_device.failed());
     return is_failed;
+}
+
+// Creates a space into `fixture.space`, as a step `run_on_gpu` or `start_step` runs
+static int32_t create_space_step(engines_fixture& fixture) {
+    return fixture.gpu_engines.create_space(nullptr, &fixture.space);
+}
+
+// Creates a space in a task while the test runner acts as the GPU and the driver task
+static int32_t create_space_on_gpu(engines_fixture& fixture) {
+    return run_on_gpu(fixture, create_space_step);
 }
 
 // Without an asynchronous copy engine, bring-up asks for no vector and creates nothing
@@ -1213,4 +1284,297 @@ TEST(nvidia_engines, a_failed_gpu_keeps_each_wraps_pin) {
     EXPECT_TRUE(refused.pin.ptr() == nullptr);
     EXPECT_EQ(kept.pins(), 1u);
     EXPECT_EQ(refused.pins(), 1u);
+}
+
+// NVIDIA's address space class and the device's controls that hand it a page directory and take it back
+static constexpr uint32_t FERMI_VASPACE_A      = 0x90F1;
+static constexpr uint32_t SET_PAGE_DIRECTORY   = 0x801813;
+static constexpr uint32_t UNSET_PAGE_DIRECTORY = 0x801814;
+
+// A space is created by the driver task as the firmware's object over the space's own root directory, and its destroy
+// waits for nothing, leaving the take-back and both releases to the task
+TEST(nvidia_engines, a_space_is_created_and_destroyed_by_the_driver_task) {
+    engines_fixture fixture;
+    fixture.memory.next_offset = TABLES_OFFSET;
+    engines_task_state state;
+
+    sched::task* task = start_step(fixture, state, create_space_step);
+    ASSERT_NOT_NULL(task);
+    bool waits_for_the_task = test_helpers::blocks_before_deadline(task) && fixture.fw.allocations == 0;
+    ASSERT_EQ(finish_step(fixture, state, task), gpu::OK);
+
+    EXPECT_TRUE(waits_for_the_task);
+    EXPECT_EQ(fixture.fw.last_class, FERMI_VASPACE_A);
+    EXPECT_EQ(fixture.fw.last_command, SET_PAGE_DIRECTORY);
+    EXPECT_EQ(fixture.memory.last_allocated.offset, TABLES_OFFSET);
+
+    fixture.gpu_engines.destroy_space(fixture.space);
+    uint32_t releases_before_task = fixture.fw.releases;
+    engines_operations().serve();
+
+    EXPECT_EQ(releases_before_task, 0u);
+    EXPECT_EQ(fixture.fw.last_command, UNSET_PAGE_DIRECTORY);
+    EXPECT_EQ(fixture.fw.releases, 1u);
+    EXPECT_EQ(fixture.memory.table_releases, 1u);
+}
+
+// A space whose address space object the firmware refuses gives its root directory back and is not created
+TEST(nvidia_engines, a_space_the_firmware_refuses_is_not_created) {
+    engines_fixture fixture;
+    fixture.memory.next_offset = TABLES_OFFSET;
+    fixture.fw.allocation_result = ERR_FIRMWARE;
+
+    EXPECT_EQ(create_space_on_gpu(fixture), gpu::ERR_NO_MEMORY);
+
+    EXPECT_TRUE(fixture.space == nullptr);
+    EXPECT_EQ(fixture.memory.table_releases, 1u);
+    EXPECT_FALSE(fixture.failed.is_set());
+}
+
+// A space whose root directory is not written fails the GPU before the firmware sees it, keeping the root
+TEST(nvidia_engines, a_space_whose_root_directory_is_not_written_fails_the_gpu) {
+    engines_fixture fixture;
+    fixture.memory.next_offset = TABLES_OFFSET;
+    fixture.memory.update_result = ERR_BAD_STATE;
+
+    EXPECT_EQ(create_space_on_gpu(fixture), gpu::ERR_DEVICE);
+    engines_operations().serve();
+
+    EXPECT_TRUE(fixture.failed.is_set());
+    EXPECT_TRUE(has_device_failed(fixture));
+    EXPECT_TRUE(fixture.space == nullptr);
+    EXPECT_EQ(fixture.fw.allocations, 0u);
+    EXPECT_EQ(fixture.memory.table_releases, 0u);
+}
+
+// A page table entry's valid bit, read-only bit and kind field, the coherent system memory aperture with the volatile
+// bit, and NVIDIA's kind for generic memory
+static constexpr uint64_t PAGE_VALID       = 0x1;
+static constexpr uint64_t PAGE_READ_ONLY   = 1ULL << 6;
+static constexpr uint32_t PAGE_KIND_SHIFT  = 56;
+static constexpr uint64_t PAGE_SYSTEM_BITS = 0x4 | 0x8;
+static constexpr uint32_t GENERIC_KIND     = 6;
+
+// A GPU address in a context's user range, the fourth page of a 2 MiB page table
+static constexpr uint64_t MAPPED_VA = 0x40000000 + 3 * 4096;
+
+// An entry's address field, the page's number from bit 8
+static uint64_t address_field(uint64_t address) {
+    return address >> 12 << 8;
+}
+
+// The entry a map wrote for `va` into the page table a space adds fifth, after its root and three directories
+static uint64_t page_entry_at(uint64_t va) {
+    return s_tables_image[4 * TABLE_WORDS + (va >> 12) % TABLE_WORDS];
+}
+
+// Whether the engines came up with system memory created and a space whose tables start at `TABLES_OFFSET`
+static bool sets_up_system_memory_and_a_space(engines_fixture& fixture) {
+    fixture.create_placement = GPU_PLACEMENT_SYSTEM;
+    if (bring_up_on_gpu(fixture) != OK || create_on_gpu(fixture) != gpu::OK) {
+        return false;
+    }
+
+    fixture.memory.next_offset = TABLES_OFFSET;
+    return create_space_on_gpu(fixture) == gpu::OK;
+}
+
+// Video memory maps at its offset with the kind and access asked, its entries written with the space's TLBs
+// invalidated, and an unmap clears them the same way
+TEST(nvidia_engines, video_memory_maps_at_its_offset_with_the_kind_and_access_asked) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    uint64_t offset = fixture.memory.last_allocated.offset;
+    fixture.memory.next_offset = TABLES_OFFSET;
+    ASSERT_EQ(create_space_on_gpu(fixture), gpu::OK);
+
+    engines& gpu_engines = fixture.gpu_engines;
+    EXPECT_EQ(gpu_engines.map(fixture.space, MAPPED_VA, fixture.created, 0x1000, 0x2000, GENERIC_KIND, true), gpu::OK);
+    uint64_t mapped_directory = fixture.memory.invalidated_directory;
+    EXPECT_EQ(gpu_engines.map(fixture.space, MAPPED_VA + 0x2000, fixture.created, 0, 0x1000, 0, false), gpu::OK);
+
+    uint64_t read_only_generic = PAGE_READ_ONLY | static_cast<uint64_t>(GENERIC_KIND) << PAGE_KIND_SHIFT | PAGE_VALID;
+    EXPECT_EQ(mapped_directory, TABLES_OFFSET);
+    EXPECT_EQ(page_entry_at(MAPPED_VA), address_field(offset + 0x1000) | read_only_generic);
+    EXPECT_EQ(page_entry_at(MAPPED_VA + 0x1000), address_field(offset + 0x2000) | read_only_generic);
+    EXPECT_EQ(page_entry_at(MAPPED_VA + 0x2000), address_field(offset) | PAGE_VALID);
+    EXPECT_EQ(page_entry_at(MAPPED_VA + 0x3000), 0u);
+
+    fixture.memory.invalidated_directory = 0;
+    EXPECT_EQ(gpu_engines.unmap(fixture.space, MAPPED_VA, 0x3000), gpu::OK);
+
+    EXPECT_EQ(fixture.memory.invalidated_directory, TABLES_OFFSET);
+    for (uint64_t page = 0; page < 3; page++) {
+        EXPECT_EQ(page_entry_at(MAPPED_VA + page * 0x1000), 0u);
+    }
+
+    gpu_engines.destroy_space(fixture.space);
+    gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// System memory maps by its physical address, coherent with the CPU's caches and volatile
+TEST(nvidia_engines, system_memory_maps_by_its_physical_address) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    uint64_t phys = static_cast<backend_memory*>(fixture.created)->pages.phys;
+
+    EXPECT_EQ(fixture.gpu_engines.map(fixture.space, MAPPED_VA, fixture.created, 0x1000, 0x1000, 0, false), gpu::OK);
+
+    EXPECT_EQ(page_entry_at(MAPPED_VA), address_field(phys + 0x1000) | PAGE_SYSTEM_BITS | PAGE_VALID);
+
+    fixture.gpu_engines.destroy_space(fixture.space);
+    fixture.gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// Wrapped memory maps each page at its own address, from the page the offset names
+TEST(nvidia_engines, wrapped_memory_maps_each_page_at_its_own_address) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    const pmm::phys_addr_t pages[] = {0x7000000, 0x3000000, 0x5000000};
+    gpu::memory* wrapped = nullptr;
+    uint32_t device_id = 1;
+    ASSERT_EQ(fixture.gpu_engines.wrap_pages(pages, 3, mm::shmem_mapping(), &wrapped, &device_id), gpu::OK);
+
+    EXPECT_EQ(fixture.gpu_engines.map(fixture.space, MAPPED_VA, wrapped, 0x1000, 0x2000, 0, false), gpu::OK);
+
+    EXPECT_EQ(page_entry_at(MAPPED_VA), address_field(pages[1]) | PAGE_SYSTEM_BITS | PAGE_VALID);
+    EXPECT_EQ(page_entry_at(MAPPED_VA + 0x1000), address_field(pages[2]) | PAGE_SYSTEM_BITS | PAGE_VALID);
+    EXPECT_EQ(page_entry_at(MAPPED_VA + 0x2000), 0u);
+
+    fixture.gpu_engines.destroy_space(fixture.space);
+    fixture.gpu_engines.release_memory(wrapped);
+    fixture.gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// A kind past the uncompressed ones, however many bits it has, and a map without room for its tables write nothing
+TEST(nvidia_engines, a_refused_map_writes_nothing) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    engines& gpu_engines = fixture.gpu_engines;
+    uint32_t updates = fixture.memory.table_updates;
+    uint32_t allocations = fixture.memory.allocations;
+
+    EXPECT_EQ(gpu_engines.map(fixture.space, MAPPED_VA, fixture.created, 0, 0x1000, 7, false), gpu::ERR_REFUSED);
+    EXPECT_EQ(gpu_engines.map(fixture.space, MAPPED_VA, fixture.created, 0, 0x1000, 0x106, false), gpu::ERR_REFUSED);
+    fixture.memory.refuses_allocation = true;
+    EXPECT_EQ(gpu_engines.map(fixture.space, MAPPED_VA, fixture.created, 0, 0x1000, 0, false), gpu::ERR_NO_MEMORY);
+
+    EXPECT_EQ(fixture.memory.table_updates, updates);
+    EXPECT_EQ(fixture.memory.allocations, allocations);
+    EXPECT_FALSE(fixture.failed.is_set());
+
+    gpu_engines.destroy_space(fixture.space);
+    gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// A map whose invalidate misses its deadline fails the GPU, after which an unmap writes nothing and a destroyed space
+// keeps its tables and its firmware object, since the GPU may still walk them
+TEST(nvidia_engines, a_map_whose_invalidate_misses_its_deadline_fails_the_gpu) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    engines& gpu_engines = fixture.gpu_engines;
+    fixture.memory.update_result = ERR_TIMEOUT;
+
+    EXPECT_EQ(gpu_engines.map(fixture.space, MAPPED_VA, fixture.created, 0, 0x1000, 0, false), gpu::ERR_DEVICE);
+    engines_operations().serve();
+    EXPECT_TRUE(has_device_failed(fixture));
+
+    uint32_t updates = fixture.memory.table_updates;
+    uint32_t controls = fixture.fw.other_controls;
+    EXPECT_EQ(gpu_engines.unmap(fixture.space, MAPPED_VA, 0x1000), gpu::ERR_DEVICE);
+    gpu_engines.destroy_space(fixture.space);
+    engines_operations().serve();
+
+    EXPECT_TRUE(fixture.failed.is_set());
+    EXPECT_EQ(fixture.memory.table_updates, updates);
+    EXPECT_EQ(fixture.fw.other_controls, controls);
+    EXPECT_EQ(fixture.fw.releases, 0u);
+    EXPECT_EQ(fixture.memory.table_releases, 0u);
+
+    gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// An unmap whose invalidate misses its deadline fails the GPU, since the card may still translate the range
+TEST(nvidia_engines, an_unmap_whose_invalidate_misses_its_deadline_fails_the_gpu) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    engines& gpu_engines = fixture.gpu_engines;
+    ASSERT_EQ(gpu_engines.map(fixture.space, MAPPED_VA, fixture.created, 0, 0x1000, 0, false), gpu::OK);
+    fixture.memory.update_result = ERR_TIMEOUT;
+
+    EXPECT_EQ(gpu_engines.unmap(fixture.space, MAPPED_VA, 0x1000), gpu::ERR_DEVICE);
+    engines_operations().serve();
+
+    EXPECT_TRUE(fixture.failed.is_set());
+    EXPECT_TRUE(has_device_failed(fixture));
+
+    gpu_engines.destroy_space(fixture.space);
+    gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+}
+
+// An unmap the page tables refuse fails the GPU core's device but not the whole driver, since the range stays
+// translated, and a release then keeps the memory it maps
+TEST(nvidia_engines, a_refused_unmap_fails_the_device_and_keeps_the_memory) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    uint64_t offset = fixture.memory.last_allocated.offset;
+
+    fixture.memory.next_offset = TABLES_OFFSET;
+    ASSERT_EQ(create_space_on_gpu(fixture), gpu::OK);
+    engines& gpu_engines = fixture.gpu_engines;
+    ASSERT_EQ(gpu_engines.map(fixture.space, MAPPED_VA, fixture.created, 0, 0x1000, 0, false), gpu::OK);
+
+    EXPECT_EQ(gpu_engines.unmap(fixture.space, MAPPED_VA, 0), gpu::ERR_DEVICE);
+    gpu_engines.release_memory(fixture.created);
+    engines_operations().serve();
+
+    EXPECT_FALSE(fixture.failed.is_set());
+    EXPECT_TRUE(has_device_failed(fixture));
+    EXPECT_EQ(page_entry_at(MAPPED_VA), address_field(offset) | PAGE_VALID);
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+
+    gpu_engines.destroy_space(fixture.space);
+    engines_operations().serve();
+}
+
+// Once a hung zeroing failed the GPU core's device, a space is neither created, mapped into nor unmapped from, and a
+// destroyed one keeps its tables and its firmware object
+TEST(nvidia_engines, spaces_stay_once_a_hung_zeroing_failed_the_device) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    engines& gpu_engines = fixture.gpu_engines;
+    gpu::memory* system_memory = fixture.created;
+    gpu::space* space = fixture.space;
+    fixture.space = nullptr;
+
+    fixture.create_placement = GPU_PLACEMENT_VIDEO;
+    fixture.fault = copy_fault::hangs;
+    fixture.faulty_fill = 3;
+    ASSERT_EQ(create_on_gpu(fixture), gpu::ERR_DEVICE);
+    uint32_t updates = fixture.memory.table_updates;
+    uint32_t controls = fixture.fw.other_controls;
+
+    EXPECT_EQ(gpu_engines.map(space, MAPPED_VA, system_memory, 0, 0x1000, 0, false), gpu::ERR_DEVICE);
+    EXPECT_EQ(gpu_engines.unmap(space, MAPPED_VA, 0x1000), gpu::ERR_DEVICE);
+    EXPECT_EQ(create_space_on_gpu(fixture), gpu::ERR_DEVICE);
+    gpu_engines.destroy_space(space);
+    engines_operations().serve();
+
+    EXPECT_TRUE(fixture.space == nullptr);
+    EXPECT_EQ(fixture.memory.table_updates, updates);
+    EXPECT_EQ(fixture.fw.other_controls, controls);
+    EXPECT_EQ(fixture.fw.releases, 0u);
+    EXPECT_EQ(fixture.memory.table_releases, 0u);
+    EXPECT_FALSE(fixture.failed.is_set());
+
+    gpu_engines.release_memory(system_memory);
+    engines_operations().serve();
 }

@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "dma/dma.h"
+#include "drivers/graphics/nvidia/address_space.h"
 #include "drivers/graphics/nvidia/chip.h"
 #include "drivers/graphics/nvidia/context_page_tables.h"
 #include "drivers/graphics/nvidia/copy_channel.h"
@@ -23,6 +24,7 @@ namespace drivers::nvidia {
 
 class engines;
 struct backend_memory;
+struct backend_space;
 
 // The card as its PCI function and the firmware's static configuration describe it, which the GPU core reports
 struct card_identity {
@@ -57,6 +59,22 @@ struct backend_memory : gpu::memory {
     rc::reaper::dead_node pin_release;   // the pin's release with the record, on the reaper
 };
 
+// A space's creation and destroy on the driver task, kept in the space so its destroy allocates nothing
+struct space_operation : operation {
+    engines*       owner;
+    backend_space* space;
+};
+
+// A GPU context's address space the engines created for the GPU core, on the unprivileged heap, since the lowered
+// driver task creates and destroys it
+struct backend_space : gpu::space {
+    backend_space(firmware& fw, const gpu_objects& objects, video_memory& memory, failed_mark& failed)
+        : addresses(fw, objects, memory, failed) {}
+
+    address_space   addresses;
+    space_operation task_operation = {}; // the creation, then the destroy
+};
+
 // The report of the GPU's failure on the driver task, kept in the engines
 struct failure_operation : operation {
     engines* owner;
@@ -73,12 +91,13 @@ struct failure_operation : operation {
  * must call it, and only once.
  *
  * After a timeout the hung channel and the memory it fills stay for good. A
- * hung zeroing for the GPU core fails the core's device while the display runs
- * on. Once that device or the GPU failed, every backend call that can fail,
- * except a wrap the heap refuses, returns `gpu::ERR_DEVICE`, a release frees
- * only a record that holds no pin, and the driver task reports the failure to
- * the core. After another error, only what a refused release or a failed unmap
- * leaves the firmware or the GPU able to reach stays.
+ * hung zeroing for the GPU core or an unmap the page tables refuse fails the
+ * core's device while the display runs on. Once that device or the GPU failed,
+ * every backend call that can fail, except a wrap the heap refuses, returns
+ * `gpu::ERR_DEVICE`, a release or a space's destroy frees only a record that
+ * holds no pin, and the driver task reports the failure to the core. After
+ * another error, only what a refused release or a refused take-back of a page
+ * directory leaves the firmware or the GPU able to reach stays.
  */
 class engines : public gpu::backend {
 public:
@@ -195,11 +214,19 @@ private:
     // The driver task's half of `report_failure()`
     static void report_failure_on_task(operation& op);
 
+    // A creation's error once the driver task refused it: `gpu::ERR_DEVICE`, reported, once the GPU failed, else
+    // `gpu::ERR_NO_MEMORY`
+    int32_t refused_creation();
+
     // The driver task's half of `release_memory()`, given the memory's `task_operation`
     static void release_on_task(operation& op);
 
     // The reaper's half of a wrapped memory's release, which frees the record and so releases its pin
     static rc::reaper::cleanup_result release_on_reaper(backend_memory* mem);
+
+    // The driver task's halves of `create_space()` and `destroy_space()`, given the space's `task_operation`
+    static void create_space_on_task(operation& op);
+    static void destroy_space_on_task(operation& op);
 
     firmware&          m_firmware;
     const gpu_objects& m_objects;
