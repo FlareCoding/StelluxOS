@@ -42,7 +42,7 @@ public:
     nvidia_gpu_driver(pci::device* dev)
         : pci_driver("nvidia_gpu", dev)
         , m_operations(*this)
-        , m_display_engine(m_gsp, m_video_memory, m_operations)
+        , m_display_engine(m_gsp, m_video_memory, m_operations, m_failed)
         , m_engines(m_gsp, m_gpu_objects, m_video_memory, m_failed) {}
 
     /**
@@ -115,8 +115,8 @@ private:
     nvidia::gpu_objects           m_gpu_objects = {}; // both 0 before `attach()` allocates them and after `detach()`
     nvidia::bar1_video_memory     m_video_memory;
     nvidia::operation_queue       m_operations;
-    nvidia::display_engine        m_display_engine;
     nvidia::failed_mark           m_failed;
+    nvidia::display_engine        m_display_engine;
     nvidia::engines               m_engines;
     nvidia::fwsec_layout          m_fwsec = {};
     nvidia::fwsec_signature       m_fwsec_signature = {};

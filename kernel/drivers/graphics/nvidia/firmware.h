@@ -6,16 +6,44 @@
 
 namespace drivers::nvidia {
 
+// An event the GSP's firmware posts when one of the driver's event objects fires, as `gsp` decodes it
+struct firmware_event {
+    rm::handle client;             // the client the event object belongs to
+    rm::handle event;              // the event object posted for
+    uint32_t   notifier;           // the notifier that fired
+    bool       is_for_notify_list; // `event` stands for its parent's list of event objects on `notifier`
+};
+
+/**
+ * The receiver of each event the GSP's firmware posts, called on the context
+ * reading the firmware's messages and inside the wait or drain that reads the
+ * event.
+ */
+class firmware_event_sink {
+public:
+    virtual ~firmware_event_sink() = default;
+
+    /**
+     * @brief Take `event`. A log line here can outlast a CPU sequencer's poll
+     * window, so the call must not log, sleep or send a request.
+     * @return Whether the event is the sink's, else the wait or drain that
+     * read it logs it as any other message it reads.
+     */
+    virtual bool on_firmware_event(const firmware_event& event) = 0;
+};
+
 /**
  * The driver's requests to the GSP's firmware: to allocate and release objects
  * it keeps under the driver's own client (the owner of a tree of objects), to
  * send those objects controls (commands to an object), and to send controls to
  * the subdevice of the firmware's internal client, which the firmware keeps
  * for the controls NVIDIA's driver sends on its own behalf. `gsp` implements
- * it, and tests replace it with a double. `allocate`, `control`, `release` and
- * `internal_control` each spin on the calling CPU, once their request is sent,
- * until the firmware's reply arrives or `RECEIVE_TIMEOUT_NS` passes, and only
- * one thread may make the calls at a time, as only one may use a `gsp`.
+ * it, and tests replace it with a double. It also hands each event the
+ * firmware posts to the sink `set_event_sink` names. `allocate`, `control`,
+ * `release` and `internal_control` each spin on the calling CPU, once their
+ * request is sent, until the firmware's reply arrives or `RECEIVE_TIMEOUT_NS`
+ * passes, and only one thread may make the calls at a time, as only one may
+ * use a `gsp`.
  */
 class firmware {
 public:
@@ -106,6 +134,13 @@ public:
      * checks. Every error is logged.
      */
     virtual int32_t internal_control(uint32_t command, void* params, size_t size) = 0;
+
+    /**
+     * @brief Hand each event the firmware posts to `sink` from this call on.
+     * A null sink takes none, so each is logged as before any sink is set.
+     * @param sink The sink, which must stay alive while it is set.
+     */
+    virtual void set_event_sink(firmware_event_sink* sink) = 0;
 };
 
 } // namespace drivers::nvidia

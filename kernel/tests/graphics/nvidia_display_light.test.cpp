@@ -138,6 +138,8 @@ public:
         return OK;
     }
 
+    void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
+
     rm::handle new_handle() override {
         return 0;
     }

@@ -65,6 +65,17 @@ constexpr uint32_t DISPLAY_IDS_MAX = 32;
  */
 int32_t read_display_ids(firmware& fw, rm::handle display_common, display_ids& out);
 
+/**
+ * @brief Ask display common which of `asked_ids` have a monitor connected, as
+ * `read_display_ids` asks about the supported ones.
+ * @param connected_ids Receives on `OK` the connected display ids, and is
+ * left unchanged on an error.
+ * @return `OK`, what `firmware::control` returns, logged as its doc describes,
+ * or `ERR_BAD_MESSAGE`, logged here, for a reply naming a display id outside
+ * `asked_ids`.
+ */
+int32_t read_connected_ids(firmware& fw, rm::handle display_common, uint32_t asked_ids, uint32_t& connected_ids);
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_DISPLAY_IDS_H

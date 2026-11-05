@@ -18,7 +18,9 @@
 #include "drivers/graphics/nvidia/display_objects.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/display_window_owners.h"
+#include "drivers/graphics/nvidia/failed_mark.h"
 #include "drivers/graphics/nvidia/firmware.h"
+#include "drivers/graphics/nvidia/gpu_objects.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
 #include "drivers/graphics/nvidia/latch_rules.h"
 #include "drivers/graphics/nvidia/operation_queue.h"
@@ -51,6 +53,12 @@ struct scanout_buffer;
 struct buffer_operation : operation {
     display_engine* engine;
     scanout_buffer* buffer;
+};
+
+// The pending record of one kind of firmware event, served once on the driver task for every event since the task last
+// took it, kept in the engine so queuing it allocates nothing
+struct event_record : operation {
+    display_engine* engine;
 };
 
 /**
@@ -150,10 +158,11 @@ struct engine_head {
  * `detach()` before the GSP's firmware unloads, from one thread at a time.
  *
  * It owns the display's instance memory, the firmware's display objects, the
- * core channel, one look-up table surface, and for each output it chose to
- * light the window channel, window notifier, base buffer, cursor channel and
- * cursor memory it allocates. It never frees memory the display engine may
- * still read, such as a push buffer, a notifier's page or a bound surface.
+ * hotplug and short pulse event objects, the core channel, one look-up table
+ * surface, and for each output it chose to light the window channel, window
+ * notifier, base buffer, cursor channel and cursor memory it allocates. It
+ * never frees memory the display engine may still read, such as a push buffer,
+ * a notifier's page or a bound surface.
  *
  * A lit output reads at its mode with its base buffer, mapped write-combining,
  * and a cursor of up to 256 by 256 pixels, 0 by 0 when its light found none,
@@ -164,8 +173,13 @@ struct engine_head {
  * `create_buffer()` and the cursor calls fail, while gfxfb keeps the base
  * buffers, which BAR1 stops translating once `detach()` restores BAR1's block
  * register.
+ *
+ * From `set_up` until `release` it takes the firmware's hotplug and short pulse
+ * events and serves them on the driver task, a hotplug updating and logging the
+ * outputs' connected records unless the display or the GPU failed, and a short
+ * pulse only logged.
  */
-class display_engine : public gfxfb::display {
+class display_engine : public gfxfb::display, public firmware_event_sink {
 public:
     /**
      * @brief An engine that has set up nothing.
@@ -173,8 +187,9 @@ public:
      * the engine.
      * @param memory The driver's video memory, which must outlive the engine.
      * @param operations The driver task's queue, which must outlive the engine.
+     * @param failed The GPU's failed mark, which must outlive the engine.
      */
-    display_engine(firmware& fw, video_memory& memory, operation_queue& operations);
+    display_engine(firmware& fw, video_memory& memory, operation_queue& operations, const failed_mark& failed);
 
     display_engine(const display_engine&) = delete;
     display_engine& operator=(const display_engine&) = delete;
@@ -186,6 +201,8 @@ public:
      * surface it scans out, or whose link is refused or untrained is left out.
      * Call it once, outside interrupts and spinlocks, while nothing else uses
      * video memory or the firmware, with `regs` mapped until `release` returns.
+     * Once the display's objects exist it subscribes to the subdevice's
+     * hotplug and short pulse events, a refusal logged and leaving it off.
      * @return `OK`, also when nothing lights, else the logged error that ended
      * the set-up: a refused binding, before the choice a refused request it
      * needs or no memory, else a request, binding, allocation, mapping or wait
@@ -196,12 +213,13 @@ public:
         registers& regs,
         const dma::device_profile& card,
         const chip_info& chip,
-        rm::handle device
+        const gpu_objects& gpu
     );
 
     /**
-     * @brief Release each cursor channel, then each window channel, then the
-     * core channel, then the display's objects, each whatever the releases
+     * @brief Stop taking the firmware's events, then release each cursor
+     * channel, then each window channel, then the core channel, then the
+     * event objects, then the display's objects, each whatever the releases
      * before it return, and a second call releases nothing. From the start,
      * every output reads dark, `flush()`, `present()`, `create_buffer()` and
      * the cursor calls fail, and each queued present ends failed, failing the
@@ -296,8 +314,27 @@ public:
      */
     void release_buffer(gfxfb::buffer* buf) override;
 
+    // Queues the hotplug's or the short pulse's record when `event` is one of them, returning false for any other event
+    bool on_firmware_event(const firmware_event& event) override;
+
 private:
     friend struct display_engine_test_access;
+
+    // Allocates and arms an event object on the subdevice's `notifier`, a refused step logged and returning `OK` with
+    // that event off, and `event` left 0 when the object is refused
+    int32_t subscribe_to_event(rm::handle subdevice, uint32_t notifier, const char* name, rm::handle& event);
+
+    // The driver task's services of the hotplug and short pulse records, each given its record
+    static void serve_hotplug_record(operation& op);
+    static void serve_short_pulse_record(operation& op);
+
+    // Unless the display is released or failed or the GPU failed, reads the display ids plugged in and unplugged, from
+    // the connect state when both masks read 0, and updates the connected records unless a read fails, which is logged
+    void serve_hotplug();
+
+    // Clears the connected record of each output unplugged and not plugged in, then sets that of each plugged in,
+    // logging each
+    void update_connected_records(uint32_t plugged_ids, uint32_t unplugged_ids);
 
     // Whether flips are on with a window's notifier bound, which `present()` and `create_buffer()` need first
     bool are_presents_supported() const;
@@ -315,7 +352,17 @@ private:
     vram_range      m_look_up_table = {};     // the look-up table surface, of 0 bytes while the engine keeps none
     output_modes*   m_output_modes = nullptr; // one per output from the monitors' reads until freed, else null
 
-    operation_queue& m_operations;
+    operation_queue&   m_operations;
+    const failed_mark& m_failed;
+
+    // The event objects and their records, each object 0 while it is not allocated
+    rm::handle   m_hotplug_event = 0;
+    rm::handle   m_short_pulse_event = 0;
+    event_record m_hotplug_record = {};
+    event_record m_short_pulse_record = {};
+
+    // Each output's facts as `set_up` read them, the connected records then kept by the driver task's hotplug services
+    display_outputs m_outputs = {};
 
     // The context DMA binding the look-up table surface to the core channel and each chosen window's channel, 0 until
     // `set_up` binds it

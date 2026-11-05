@@ -7,33 +7,6 @@
 
 namespace drivers::nvidia {
 
-static int32_t read_connected_ids(
-    firmware& fw,
-    rm::handle display_common,
-    uint32_t supported_ids,
-    uint32_t& connected_ids
-) {
-    rm::connected_displays_params params = {};
-    params.display_mask = supported_ids;
-    int32_t rc = fw.control(display_common, rm::CONTROL_GET_CONNECTED_DISPLAYS, &params, sizeof(params));
-    if (rc != OK) {
-        return rc;
-    }
-
-    if ((params.display_mask & ~supported_ids) != 0) {
-        log::error(
-            "nvidia: display common reports display ids 0x%X connected, some of them outside the supported 0x%X",
-            params.display_mask,
-            supported_ids
-        );
-        return ERR_BAD_MESSAGE;
-    }
-
-    connected_ids = params.display_mask;
-
-    return OK;
-}
-
 // Sets `is_digital` only for a digital display id, and logs and returns `OK` for one whose kind the firmware
 // refuses or is not digital
 static int32_t read_is_digital(firmware& fw, rm::handle display_common, uint32_t display_id, bool& is_digital) {
@@ -94,6 +67,28 @@ static int32_t read_is_static(firmware& fw, rm::handle display_common, uint32_t 
     }
 
     is_static = true;
+
+    return OK;
+}
+
+int32_t read_connected_ids(firmware& fw, rm::handle display_common, uint32_t asked_ids, uint32_t& connected_ids) {
+    rm::connected_displays_params params = {};
+    params.display_mask = asked_ids;
+    int32_t rc = fw.control(display_common, rm::CONTROL_GET_CONNECTED_DISPLAYS, &params, sizeof(params));
+    if (rc != OK) {
+        return rc;
+    }
+
+    if ((params.display_mask & ~asked_ids) != 0) {
+        log::error(
+            "nvidia: display common reports display ids 0x%X connected, some of them outside the 0x%X asked about",
+            params.display_mask,
+            asked_ids
+        );
+        return ERR_BAD_MESSAGE;
+    }
+
+    connected_ids = params.display_mask;
 
     return OK;
 }

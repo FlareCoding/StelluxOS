@@ -89,6 +89,8 @@ public:
         return OK;
     }
 
+    void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
+
 private:
     int32_t record(kind what, rm::handle parent, rm::handle object, uint32_t number, void* params, size_t size) {
         uint32_t index = call_count++;

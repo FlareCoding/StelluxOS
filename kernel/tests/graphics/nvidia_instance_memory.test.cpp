@@ -264,6 +264,8 @@ public:
         return result;
     }
 
+    void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
+
     int32_t allocate(rm::handle, rm::handle, uint32_t, void*, size_t) override {
         other_count++;
         return OK;

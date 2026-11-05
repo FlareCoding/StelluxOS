@@ -843,10 +843,17 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     message_queues.h, message_queues.cpp, gsp.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that in a lockdown the
     host cannot reach some of the GSP's registers, its interrupt status and
-    control among them, in gsp.h, and that NVIDIA's handling of the GSP's
-    failure halts every user channel and notifies it of the error and that the
-    log NVIDIA's driver then writes holds the most recent messages it sent and
-    the firmware's most recent unasked messages, in gsp.h
+    control among them, in gsp.h, that NVIDIA's driver hands each event the
+    firmware posts to its event objects as soon as a wait or drain reads it, in
+    firmware.h, message_queues.h, message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that an event posted
+    with bNotifyList set goes to every event object on its parent's list with
+    the event's notifier and any other to the event object it names, in
+    firmware.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that NVIDIA's
+    handling of the GSP's failure halts every user channel and notifies it of
+    the error and that the log NVIDIA's driver then writes holds the most recent
+    messages it sent and the firmware's most recent unasked messages, in gsp.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -1438,18 +1445,24 @@ src/common/sdk/nvidia/inc/nvtypes.h
     of a display id's output resource facts take, in rm.h and
     kernel/tests/graphics/nvidia_display_ids.test.cpp, which the push buffer
     control's valid flag takes, in rm.h and
-    kernel/tests/graphics/nvidia_core_channel.test.cpp, and which the booleans
-    of the bandwidth check's request take, in rm.h and
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, which a posted event's
+    notify list flag takes, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, which the
+    set-notification control's notify state takes, in rm.h, and which the
+    booleans of the bandwidth check's request take, in rm.h and
     kernel/tests/graphics/nvidia_display_light.test.cpp, the 32 bits of NVIDIA's
     handles, which the static configuration's three handles take, in gsp_info.h,
     gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, which
     `rm::handle` takes, in rm.h, which a control request's client and object
     take, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, which a posted event's
+    client and event object take, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and which a display
     channel's allocation parameters' two context DMA handles take, in
     kernel/tests/graphics/nvidia_core_channel.test.cpp, the 64 bits of NVIDIA's
     pointers (NvP64), which those parameters' pControl takes, in rm.h and
-    kernel/tests/graphics/nvidia_core_channel.test.cpp, and that NV_TRUE,
+    kernel/tests/graphics/nvidia_core_channel.test.cpp, and which an event
+    object's allocation parameters' data takes, in rm.h, and that NV_TRUE,
     NVIDIA's value for true, is 1, in
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -1670,13 +1683,17 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073system.h
     layouts of their parameters and the connect state's flags of 0, NVIDIA's
     METHOD_DEFAULT, DDC_DEFAULT, LOAD_DEFAULT and VBLANK_DEFAULT, in rm.h,
     display_ids.h, display_ids.cpp and
-    kernel/tests/graphics/nvidia_display_ids.test.cpp, and the command
+    kernel/tests/graphics/nvidia_display_ids.test.cpp, the command
     NV0073_CTRL_CMD_SYSTEM_GET_ACTIVE (a control of display common), the layout
     of its parameters, its displayId (the one display active on the head, 0 for
     none) and NV0073_CTRL_SYSTEM_GET_ACTIVE_FLAGS_CLIENT_DISABLE, the flags that
     find a display the boot firmware lit, not only a client's, in rm.h,
     display_active_heads.h, display_active_heads.cpp,
     kernel/tests/graphics/nvidia_display_active_heads.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the command
+    NV0073_CTRL_CMD_SYSTEM_GET_HOTPLUG_UNPLUG_STATE (a control of display
+    common), which reports each display id plugged in or unplugged once, and the
+    layout of its parameters, in rm.h, display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -1774,6 +1791,8 @@ src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
     of the requests allocating and releasing an object, in gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the lockdown notice's
     function number, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the posted event's
+    function number, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and the numbering of
     functions from 0 and of events from 0x1000, fewer than 0x1000 of each, in
     message_queues.cpp
@@ -1807,9 +1826,11 @@ src/nvidia/generated/g_rpc-structures.h
     allocation request's header, with the allocation's status in it, in gsp.h,
     gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, that a
     release request's payload holds NVOS00_PARAMETERS_v03_00 alone, in gsp.cpp
-    and kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the
-    lockdown notice's payload starts with its flag of whether a lockdown
-    engages, in message_queues.cpp and
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, that the lockdown
+    notice's payload starts with its flag of whether a lockdown engages, in
+    message_queues.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    and the layout of rpc_post_event_v17_00, a posted event's payload, up to its
+    event data, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -1849,9 +1870,13 @@ src/nvidia/kernel/inc/vgpu/rpc.h
     that NVIDIA's driver allocates the firmware's copy of a client with no
     parent and no object, the client's handle in its parameters and, for a
     client of the kernel, KERNEL_PID as its process number, in gsp.h, gsp.cpp,
-    rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp, and that it
-    sends the firmware the handle its own resource server gave the client, in
-    gsp.h
+    rm.h and kernel/tests/graphics/nvidia_message_queues.test.cpp, that it sends
+    the firmware the handle its own resource server gave the client, in gsp.h,
+    and that it allocates the firmware's copy of an event object, under the
+    object whose notifier fires it, with hSrcResource 0, the event object's
+    class, the notifier with NV01_EVENT_CLIENT_RM set as notifyIndex and data 0,
+    in rm.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/device.c
@@ -1907,8 +1932,12 @@ src/common/sdk/nvidia/inc/nvos.h
     whose page tables its client owns, in rm.h, the parameters' size, the flags'
     word and the flag, in kernel/tests/graphics/nvidia_address_space.test.cpp,
     the layout of NV_CHANNEL_GROUP_ALLOCATION_PARAMETERS, a channel group's
-    allocation parameters, in rm.h, and its size in
-    kernel/tests/graphics/nvidia_channel.test.cpp
+    allocation parameters, in rm.h, its size in
+    kernel/tests/graphics/nvidia_channel.test.cpp, and
+    NV01_EVENT_KERNEL_CALLBACK_EX, the class of an event object, and
+    NV01_EVENT_CLIENT_RM, the flag asking the firmware to post its events back
+    to the driver, in rm.h and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-rm.c
@@ -2044,10 +2073,28 @@ src/nvidia-modeset/src/nvkms-rm.c
     resource facts, as several display ids may report one resource, while
     keeping their protocol, in display_link.h, display_link.cpp,
     kernel/tests/graphics/nvidia_display_link.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it keeps the
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it keeps the
     facts' type, and without the crossbar their index, whatever they hold, in
-    display_link.h
+    display_link.h, and that before it probes the boot displays it allocates an
+    event object of class NV01_EVENT_KERNEL_CALLBACK_EX under its subdevice for
+    NV2080_NOTIFIERS_HOTPLUG, with its own client as hParentClient, hSrcResource
+    0 and its callback in data, then arms that notifier with
+    NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_REPEAT, does the same for
+    NV2080_NOTIFIERS_DP_IRQ, and logs a failed allocation or arming and goes on,
+    in rm.h, display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia-modeset/src/nvkms-event.c
+    that NVIDIA's modesetting module serves a hotplug event by asking display
+    common for the hotplug state and ends the service when that request fails,
+    that the firmware can post a hotplug event while both of the state's masks
+    read 0, the module then asking for the connect state and taking the display
+    ids connected and not recorded as plugged in and those recorded and not
+    connected as unplugged, and that it serves the unplugged display ids before
+    the plugged ones, in display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2008-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
     that RMAPI_RPC_FLAGS_NONE, the flags of a control neither serialized nor
@@ -3791,8 +3838,39 @@ src/common/sdk/nvidia/inc/class/cl2080_notification.h
     that NV2080_ENGINE_TYPE_GRAPHICS and NV2080_ENGINE_TYPE_COPY0 to
     NV2080_ENGINE_TYPE_COPY9, the engine types a channel's allocation names its
     engine by, take the values of the matching RM engine types, which the device
-    info table gives, in rm.h
+    info table gives, in rm.h, NV2080_NOTIFIERS_HOTPLUG and
+    NV2080_NOTIFIERS_DP_IRQ, a subdevice's notifiers for a hotplug and for a
+    DisplayPort short pulse, in rm.h and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the 8 bytes of
+    Nv2080HotplugNotification, a hotplug event's data of two display masks, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cl0005.h
+    the layout of NV0005_ALLOC_PARAMETERS, an event object's allocation
+    parameters, in rm.h and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that its
+    notifyIndex holds the notifier in bits 15 to 0, in rm.h, message_queues.cpp,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2001-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/rmapi/alloc_free.c
+    that NVIDIA's allocation of an event object replaces hSrcResource with the
+    object it is allocated under, in rm.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/rmapi/event.c
+    that an event object's hParentClient names the client of the object whose
+    notifier fires it, in rm.h
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080event.h
+    the command NV2080_CTRL_CMD_EVENT_SET_NOTIFICATION (a control of a
+    subdevice), the layout of its parameters and
+    NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_REPEAT, in rm.h,
+    display_engine.cpp and kernel/tests/graphics/nvidia_display_engine.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2006-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc56f.h
     the bytes of a GPFIFO entry, 8, its fields (the address of its method words

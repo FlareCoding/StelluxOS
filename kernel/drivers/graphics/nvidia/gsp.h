@@ -404,12 +404,14 @@ public:
      */
     int32_t internal_control(uint32_t command, void* params, size_t size) override;
 
+    void set_event_sink(firmware_event_sink* sink) override;
+
     /**
      * @brief Free the payload buffer and drop the queues, the view of BAR0,
      * the sequencer's context, the driver's client, the internal client's
-     * handles and the count of handles, leaving the object as the default
-     * constructor makes it. The queues' memory is left as it is, and the
-     * firmware is not asked to release the client.
+     * handles, the event sink and the count of handles, leaving the object as
+     * the default constructor makes it. The queues' memory is left as it is,
+     * and the firmware is not asked to release the client.
      */
     void stop();
 
@@ -433,6 +435,7 @@ private:
     rm::handle            m_client = 0;
     rm::handle            m_internal_client = 0;
     rm::handle            m_internal_subdevice = 0;
+    firmware_event_sink*  m_event_sink = nullptr;
     uint32_t              m_handle_count = 0; // handles `new_handle` has given since the last `stop`
     bool                  m_is_in_lockdown = false;
 };

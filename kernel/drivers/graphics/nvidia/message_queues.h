@@ -5,6 +5,7 @@
 
 #include "common/types.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
+#include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/registers.h"
 
@@ -292,9 +293,11 @@ int32_t receive_within(
  * `deadline_ns` while reads find messages, and reads the queue at least once.
  * A CPU sequencer runs as soon as it is read, with no log line first, on
  * `regs` and `sequencer` as `run_cpu_sequencer` requires them, and a failed
- * run is logged and the wait goes on. A lockdown notice with a payload sets
- * `is_in_lockdown` to whether it engages a lockdown, as `gsp::is_in_lockdown`
- * reports it.
+ * run is logged and the wait goes on. A posted event whose payload holds its
+ * 29 bytes of fields goes to `event_sink` as soon as it is read, unless the
+ * sink is null, and one the sink takes is not logged. A lockdown notice with
+ * a payload sets `is_in_lockdown` to whether it engages a lockdown, as
+ * `gsp::is_in_lockdown` reports it.
  * @return `OK`, or the first error a read returns, with `ERR_TIMEOUT` logged.
  */
 int32_t receive_awaited(
@@ -306,15 +309,17 @@ int32_t receive_awaited(
     uint8_t* payload,
     uint32_t payload_capacity,
     uint64_t deadline_ns,
+    firmware_event_sink* event_sink,
     bool& is_in_lockdown
 );
 
 /**
  * @brief Read every message the linked status queue holds, waiting for none,
- * through the loop that `receive_awaited` waits in, so CPU sequencers run and
- * lockdown notices set `is_in_lockdown` as they do there. A message a read
- * fails on stays in the queue. The call spins without sleeping while reads
- * find messages, a sequencer's waits counting against `sequencer.deadline_ns`.
+ * through the loop that `receive_awaited` waits in, so CPU sequencers run,
+ * events go to `event_sink` and lockdown notices set `is_in_lockdown` as they
+ * do there. A message a read fails on stays in the queue. The call spins
+ * without sleeping while reads find messages, a sequencer's waits counting
+ * against `sequencer.deadline_ns`.
  * @return `OK` once a read finds the queue empty, `ERR_BAD_MESSAGE`, logged,
  * for a message of function 0xFFFFFFFF, which is consumed, or the first error
  * a read returns, as `receive_within` returns it.
@@ -325,6 +330,7 @@ int32_t drain_status_queue(
     const cpu_sequencer_context& sequencer,
     uint8_t* payload,
     uint32_t payload_capacity,
+    firmware_event_sink* event_sink,
     bool& is_in_lockdown
 );
 

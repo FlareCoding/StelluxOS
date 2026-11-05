@@ -18,6 +18,7 @@
 #include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_registration.h"
 #include "drivers/graphics/nvidia/display_window_owners.h"
+#include "drivers/graphics/nvidia/failed_mark.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -66,8 +67,12 @@ using drivers::nvidia::ERR_INVALID_ARG;
 using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_NOT_REGISTERED;
 using drivers::nvidia::ERR_TIMEOUT;
+using drivers::nvidia::failed_mark;
 using drivers::nvidia::firmware;
+using drivers::nvidia::firmware_event;
+using drivers::nvidia::firmware_event_sink;
 using drivers::nvidia::first_second_statistics;
+using drivers::nvidia::gpu_objects;
 using drivers::nvidia::HEAD_LIGHT_FIXED_METHODS;
 using drivers::nvidia::INSTANCE_MEMORY_BYTES;
 using drivers::nvidia::LOOK_UP_TABLE_SURFACE_BYTES;
@@ -78,6 +83,7 @@ using drivers::nvidia::NO_OUTPUT;
 using drivers::nvidia::NOTIFIER_SLOTS;
 using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
+using drivers::nvidia::operation;
 using drivers::nvidia::operation_queue;
 using drivers::nvidia::PUSH_BUFFER_BYTES;
 using drivers::nvidia::PUSH_BUFFER_PAD_BYTES;
@@ -98,10 +104,11 @@ using drivers::nvidia::WINDOW_USAGE_METHODS;
 namespace displayport = drivers::nvidia::displayport;
 namespace rm = drivers::nvidia::rm;
 
-// The driver's client and device and the first handle the double gives, made up
-static constexpr rm::handle TEST_CLIENT  = 0xC1D0000B;
-static constexpr rm::handle TEST_DEVICE  = 0x0005000A;
-static constexpr rm::handle FIRST_HANDLE = 0x0005000D;
+// The driver's client, device and subdevice and the first handle the double gives, made up
+static constexpr rm::handle TEST_CLIENT    = 0xC1D0000B;
+static constexpr rm::handle TEST_DEVICE    = 0x0005000A;
+static constexpr rm::handle TEST_SUBDEVICE = 0x0005000B;
+static constexpr rm::handle FIRST_HANDLE   = 0x0005000D;
 
 // A display class no chip has and GA102's channel classes swapped, so each allocation's class names its object
 static constexpr uint32_t TEST_DISPLAY_CLASS        = 0xC67F;
@@ -233,7 +240,11 @@ public:
 alignas(display_engine) static uint8_t g_engine_bytes[sizeof(display_engine)];
 static display_engine* g_built_engine = nullptr;
 
-// The operation queue every engine built here takes and its driver, built in place at the first engine
+// The GPU's failed mark the engine last built here takes, built clear in place with each engine
+alignas(failed_mark) static uint8_t g_failed_mark_bytes[sizeof(failed_mark)];
+static failed_mark* g_failed_mark = nullptr;
+
+// The operation queue the engine last built here takes and its driver, built in place afresh with each engine
 alignas(engine_task_driver) static uint8_t g_task_driver_bytes[sizeof(engine_task_driver)];
 alignas(operation_queue) static uint8_t g_operations_bytes[sizeof(operation_queue)];
 static operation_queue* g_engine_operations = nullptr;
@@ -317,7 +328,7 @@ static constexpr uint32_t DPCD_SINK_LINK_STATUS = 0x00202;
 // data, answers one a refusal matches with its result, the replies its fields describe from them, and others as sent
 class engine_firmware : public firmware {
 public:
-    static constexpr uint32_t MAX_CALLS = 64;
+    static constexpr uint32_t MAX_CALLS = 80;
 
     enum class kind { allocation, control, release, internal_control };
 
@@ -347,7 +358,7 @@ public:
     call       calls[MAX_CALLS] = {};
     uint32_t   call_count = 0;
     uint32_t   handle_count = 0;
-    refusal    refusals[2] = {};
+    refusal    refusals[3] = {};
     uint8_t    heads = DOUBLE_HEADS;
     uint8_t    windows_per_head = 1;          // the windows each head has, head 0's first, then head 1's and so on
     uint32_t   present_windows = (1u << CHIP_WINDOWS) - 1; // the windows reported present
@@ -419,13 +430,44 @@ public:
     uint32_t   get_at_stream = 0;             // the core channel's GET from the stream's attributes, 0 for the default
     uint32_t   get_at_power_down = 0;         // the core channel's GET from the first power-down request, if set
     bool       reads_updates_whole = false;   // whether the core channel's GET reaches PUT at each notified update
+    firmware_event_sink* event_sink = nullptr; // the sink `set_event_sink` last set
+    uint32_t   sink_cleared_at = 0;           // `call_count` when `set_event_sink` last cleared the sink
+    uint32_t   refused_event_notifier = 0;    // the notifier whose event object is refused with `ERR_FIRMWARE`, if set
+    rm::handle event_objects[2] = {};         // the first two event objects allocated, refused ones included
+    rm::handle event_parents[2] = {};         // and the objects each was allocated under
+    rm::event_params event_allocations[2] = {}; // and their allocation parameters
+    uint32_t   event_allocated_at[2] = {};    // and `call_count` at each
+    uint32_t   event_allocation_count = 0;
+    rm::event_notification_params armings[2] = {}; // the first two armings' parameters
+    uint32_t   armed_at[2] = {};              // and `call_count` at each
+    uint32_t   arming_count = 0;
+    uint32_t   plugged_ids = 0;               // the display ids every hotplug state read reports plugged in
+    uint32_t   unplugged_ids = 0;             // and those it reports unplugged
+    rm::hotplug_state_params hotplug_state_request = {}; // the last hotplug state read's parameters as sent
+    firmware_event event_in_hotplug_read = {}; // the first hotplug state read hands it to the sink if its client is set
+    uint32_t   sinkless_event_count = 0;      // events the hotplug read had no sink to hand to
 
-    int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void* params, size_t) override {
+    int32_t allocate(rm::handle parent, rm::handle object, uint32_t class_id, void* params, size_t) override {
         if (class_id == TEST_CURSOR_CHANNEL_CLASS) {
             cursor_instance = static_cast<rm::cursor_channel_params*>(params)->channel_instance;
         }
 
-        return answer(kind::allocation, object, class_id);
+        int32_t rc = answer(kind::allocation, object, class_id);
+        if (class_id != rm::CLASS_EVENT) {
+            return rc;
+        }
+
+        const rm::event_params& allocation = *static_cast<const rm::event_params*>(params);
+        if (event_allocation_count < 2) {
+            event_objects[event_allocation_count] = object;
+            event_parents[event_allocation_count] = parent;
+            event_allocations[event_allocation_count] = allocation;
+            event_allocated_at[event_allocation_count] = call_count;
+            event_allocation_count++;
+        }
+
+        bool is_refused_event = allocation.notify_index == (refused_event_notifier | rm::EVENT_POSTED_TO_DRIVER);
+        return is_refused_event ? ERR_FIRMWARE : rc;
     }
 
     int32_t control(rm::handle object, uint32_t command, void* params, size_t) override {
@@ -491,6 +533,30 @@ public:
             return answer_mode_set(*static_cast<const rm::display_change_params*>(params));
         }
 
+        if (command == rm::CONTROL_SET_EVENT_NOTIFICATION && arming_count < 2) {
+            armings[arming_count] = *static_cast<const rm::event_notification_params*>(params);
+            armed_at[arming_count] = call_count;
+            arming_count++;
+        }
+
+        if (command == rm::CONTROL_GET_HOTPLUG_STATE) {
+            rm::hotplug_state_params* state = static_cast<rm::hotplug_state_params*>(params);
+            hotplug_state_request = *state;
+            state->plugged_ids = plugged_ids;
+            state->unplugged_ids = unplugged_ids;
+        }
+
+        // An event read inside the read's wait, as `gsp` hands the sink one
+        if (command == rm::CONTROL_GET_HOTPLUG_STATE && event_in_hotplug_read.client != 0) {
+            if (event_sink == nullptr) {
+                sinkless_event_count++;
+            } else {
+                event_sink->on_firmware_event(event_in_hotplug_read);
+            }
+
+            event_in_hotplug_read = {};
+        }
+
         if (command == rm::CONTROL_ASSIGN_OUTPUT_RESOURCE && assignment_count < 4) {
             const auto* request = static_cast<const rm::assign_output_resource_params*>(params);
             assigned_ids[assignment_count] = request->display_id;
@@ -554,6 +620,13 @@ public:
 
     rm::handle client() const override {
         return reported_client;
+    }
+
+    void set_event_sink(firmware_event_sink* sink) override {
+        event_sink = sink;
+        if (sink == nullptr) {
+            sink_cleared_at = call_count;
+        }
     }
 
     // The handle of the allocation of `class_id`, or 0 when none was made
@@ -1296,6 +1369,19 @@ struct display_engine_test_access {
         return engine.m_is_display_failed.load_acquire();
     }
 
+    // Whether `output`'s connected record says a monitor is connected
+    static bool is_connected(const display_engine& engine, uint8_t output) {
+        return engine.m_outputs.outputs[output].is_connected;
+    }
+
+    static operation& hotplug_record(display_engine& engine) {
+        return engine.m_hotplug_record;
+    }
+
+    static operation& short_pulse_record(display_engine& engine) {
+        return engine.m_short_pulse_record;
+    }
+
     static void darken_output(display_engine& engine) {
         lit_state(engine).is_lit = false;
         lit_state(engine).is_cursor_shown = false;
@@ -1589,7 +1675,7 @@ struct display_engine_test_access {
 
 using drivers::nvidia::display_engine_test_access;
 
-// The queue every engine built here takes, building it and its driver at the first call
+// The queue the engine last built here takes, building it and its driver when `g_engine_operations` is null
 static operation_queue& engine_operations() {
     if (g_engine_operations == nullptr) {
         auto* driver = new (g_task_driver_bytes) engine_task_driver();
@@ -1612,7 +1698,10 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
         display_engine_test_access::cancel_timers(*g_built_engine);
     }
 
-    g_built_engine = new (g_engine_bytes) display_engine(fw, memory, engine_operations());
+    g_engine_operations = nullptr;
+    g_failed_mark = new (g_failed_mark_bytes) failed_mark();
+    g_built_engine = new (g_engine_bytes) display_engine(fw, memory, engine_operations(), *g_failed_mark);
+
     display_engine& engine = *g_built_engine;
     display_engine_test_access::set_notifier_wait(engine, 0);
     display_engine_test_access::set_cursor_wait(engine, 0);
@@ -1649,7 +1738,9 @@ static int32_t set_up(
         .displayport               = links,
     };
 
-    return engine.set_up(regs, card, chip, TEST_DEVICE);
+    gpu_objects gpu = {.device = TEST_DEVICE, .subdevice = TEST_SUBDEVICE};
+
+    return engine.set_up(regs, card, chip, gpu);
 }
 
 // The 32-bit word at `offset` in the instance memory, as the last unmap wrote it back to `g_video_memory`
@@ -1750,8 +1841,8 @@ TEST(nvidia_display_engine, release_before_set_up_sends_nothing) {
     EXPECT_EQ(fw.call_count, 0u);
 }
 
-// After a full set-up the release first sends what `release_display_channel` sends for the core channel and the display
-// it was allocated under, then releases each of the display's objects once, and a second release sends nothing
+// After a full set-up the release sends what `release_display_channel` sends for the core channel, then releases both
+// event objects and each of the display's objects once, and a second release sends nothing
 TEST(nvidia_display_engine, release_frees_the_core_channel_before_the_objects_once) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -1769,20 +1860,22 @@ TEST(nvidia_display_engine, release_frees_the_core_channel_before_the_objects_on
     EXPECT_EQ(release_display_channel(channel_release, display, channel, true), OK);
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 5);
+    ASSERT_EQ(fw.call_count, first + 7);
     EXPECT_TRUE(fw.begins_with(first, channel_release));
 
     EXPECT_TRUE(fw.releases_once(first, channel));
+    EXPECT_TRUE(fw.releases_once(first, fw.event_objects[0]));
+    EXPECT_TRUE(fw.releases_once(first, fw.event_objects[1]));
     EXPECT_TRUE(fw.releases_once(first, display));
     EXPECT_TRUE(fw.releases_once(first, bandwidth_check));
     EXPECT_TRUE(fw.releases_once(first, display_common));
 
     EXPECT_EQ(engine.release(), OK);
-    EXPECT_EQ(fw.call_count, first + 5);
+    EXPECT_EQ(fw.call_count, first + 7);
 }
 
 // A refused release of the core channel still releases the objects, and the release returns the channel's error rather
-// than a refused object release's
+// than a refused event object release's or object release's
 TEST(nvidia_display_engine, refused_core_channel_release_still_releases_the_objects) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -1801,8 +1894,15 @@ TEST(nvidia_display_engine, refused_core_channel_release_still_releases_the_obje
         .result = ERR_FIRMWARE,
     };
 
+    fw.refusals[2] = {
+        .made   = engine_firmware::kind::release,
+        .number = 0,
+        .object = fw.event_objects[0],
+        .result = ERR_FIRMWARE,
+    };
+
     EXPECT_EQ(engine.release(), ERR_TIMEOUT);
-    ASSERT_EQ(fw.call_count, first + 5);
+    ASSERT_EQ(fw.call_count, first + 7);
     EXPECT_TRUE(fw.releases_once(first, channel));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
@@ -1854,7 +1954,7 @@ TEST(nvidia_display_engine, failed_core_channel_is_released_only_when_the_firmwa
         uint32_t first = fw.call_count;
 
         EXPECT_EQ(engine.release(), OK);
-        ASSERT_EQ(fw.call_count, first + (failed.is_channel_released ? 5 : 3));
+        ASSERT_EQ(fw.call_count, first + (failed.is_channel_released ? 7 : 5));
         EXPECT_EQ(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)), failed.is_channel_released);
         EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
         EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
@@ -1881,7 +1981,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_capabilities_keeps_the_objects
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 3);
+    ASSERT_EQ(fw.call_count, first + 5);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
@@ -1900,7 +2000,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_push_buffer_keeps_the_objects_
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 3);
+    ASSERT_EQ(fw.call_count, first + 5);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
@@ -1952,7 +2052,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_notifiers_binding_kicks_nothin
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 5);
+    ASSERT_EQ(fw.call_count, first + 7);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
@@ -2077,7 +2177,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_initial_methods_keeps_the_core
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 5);
+    ASSERT_EQ(fw.call_count, first + 7);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
@@ -2099,7 +2199,7 @@ TEST(nvidia_display_engine, set_up_failing_in_a_write_kicks_nothing_and_keeps_th
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 5);
+    ASSERT_EQ(fw.call_count, first + 7);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
@@ -2140,7 +2240,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_active_heads_keeps_the_core_ch
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 5);
+    ASSERT_EQ(fw.call_count, first + 7);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
@@ -2177,7 +2277,7 @@ TEST(nvidia_display_engine, set_up_failing_at_an_active_heads_link_keeps_the_cor
         uint32_t first = fw.call_count;
 
         EXPECT_EQ(engine.release(), OK);
-        ASSERT_EQ(fw.call_count, first + 5);
+        ASSERT_EQ(fw.call_count, first + 7);
         EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
         EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
         EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
@@ -2762,7 +2862,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_push_buffer_with_modes_kept_le
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 3);
+    ASSERT_EQ(fw.call_count, first + 5);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_COMMON)));
@@ -2854,7 +2954,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_bandwidth_check_keeps_the_core
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 5);
+    ASSERT_EQ(fw.call_count, first + 7);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
@@ -3007,7 +3107,7 @@ TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_whose_push_buffe
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 5);
+    ASSERT_EQ(fw.call_count, first + 7);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
 }
 
@@ -3042,7 +3142,7 @@ TEST(nvidia_display_engine, set_up_gives_no_channel_to_a_window_whose_allocation
         uint32_t first = fw.call_count;
 
         EXPECT_EQ(engine.release(), OK);
-        ASSERT_EQ(fw.call_count, first + 5);
+        ASSERT_EQ(fw.call_count, first + 7);
         EXPECT_FALSE(fw.releases_once(first, fw.allocated(TEST_WINDOW_CHANNEL_CLASS)));
         EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     }
@@ -3079,7 +3179,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_window_channel_leaves_it_to_re
         uint32_t first = fw.call_count;
 
         EXPECT_EQ(engine.release(), OK);
-        ASSERT_EQ(fw.call_count, first + 7);
+        ASSERT_EQ(fw.call_count, first + 9);
         EXPECT_TRUE(fw.begins_with(first, channel_releases));
     }
 }
@@ -3110,7 +3210,7 @@ TEST(nvidia_display_engine, release_returns_the_window_channels_error_ahead_of_t
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), ERR_TIMEOUT);
-    ASSERT_EQ(fw.call_count, first + 7);
+    ASSERT_EQ(fw.call_count, first + 9);
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_WINDOW_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
@@ -4123,7 +4223,7 @@ TEST(nvidia_display_engine, set_up_failing_at_the_core_channels_idle_wait_keeps_
     uint32_t first = fw.call_count;
 
     EXPECT_EQ(engine.release(), OK);
-    ASSERT_EQ(fw.call_count, first + 7);
+    ASSERT_EQ(fw.call_count, first + 9);
 
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_WINDOW_CHANNEL_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_CORE_CHANNEL_CLASS)));
@@ -4467,7 +4567,7 @@ TEST(nvidia_display_engine, set_up_stops_the_active_head_with_the_shutdown_updat
 
     EXPECT_EQ(engine.release(), OK);
     EXPECT_EQ(fw.control_count(rm::CONTROL_SET_DISPLAY_RELEASE_FLAGS), 0u);
-    EXPECT_EQ(fw.call_count, first + 5);
+    EXPECT_EQ(fw.call_count, first + 7);
 }
 
 // With heads 0 and 1 active, one shutdown update stops both ahead of its single update, and its log counts both heads
@@ -4885,7 +4985,9 @@ TEST(nvidia_display_engine, set_up_waits_for_the_notifier_for_the_engines_time) 
 TEST(nvidia_display_engine, constructed_engine_waits_for_the_notifier_for_nvidias_time) {
     engine_firmware fw;
     engine_video_memory memory;
-    display_engine& engine = *new (g_engine_bytes) display_engine(fw, memory, engine_operations());
+    g_engine_operations = nullptr;
+    g_failed_mark = new (g_failed_mark_bytes) failed_mark();
+    display_engine& engine = *new (g_engine_bytes) display_engine(fw, memory, engine_operations(), *g_failed_mark);
 
     EXPECT_EQ(display_engine_test_access::notifier_wait_ns(engine), COMPLETION_NOTIFIER_WAIT_NS);
 }
@@ -9689,4 +9791,493 @@ TEST(nvidia_display_engine, a_failed_undo_keeps_the_buffer_for_good) {
     EXPECT_EQ(memory.scanout_unmaps, unmaps + 1);
     EXPECT_EQ(memory.scanout_releases, releases);
     EXPECT_EQ(engine.release(), OK);
+}
+
+// NVIDIA's numbers for an event object's class and its flag posting events back to the driver, a subdevice's hotplug
+// and DP_IRQ notifiers, the arming control and its repeated action, and the hotplug state read
+static constexpr uint32_t NVIDIA_EVENT_KERNEL_CALLBACK_EX = 0x7E;
+static constexpr uint32_t NVIDIA_EVENT_CLIENT_RM          = 0x04000000;
+static constexpr uint32_t NVIDIA_NOTIFIERS_HOTPLUG        = 1;
+static constexpr uint32_t NVIDIA_NOTIFIERS_DP_IRQ         = 7;
+static constexpr uint32_t NVIDIA_EVENT_SET_NOTIFICATION   = 0x20800301;
+static constexpr uint32_t NVIDIA_NOTIFICATION_REPEAT      = 2;
+static constexpr uint32_t NVIDIA_GET_HOTPLUG_UNPLUG_STATE = 0x73017B;
+
+// An event the firmware posts for `object` itself, as `gsp` hands it on
+static firmware_event event_for(rm::handle object, uint32_t notifier) {
+    return {.client = TEST_CLIENT, .event = object, .notifier = notifier, .is_for_notify_list = false};
+}
+
+// An event the firmware posts for the subdevice's notify list on `notifier`, naming `object` as the list's
+static firmware_event list_event(rm::handle object, uint32_t notifier) {
+    return {.client = TEST_CLIENT, .event = object, .notifier = notifier, .is_for_notify_list = true};
+}
+
+// Set-up subscribes to the hotplug notifier and then the DP_IRQ one right after allocating display common, each with an
+// event object under the subdevice posting back to the driver's client and an arming to repeat, and takes the events
+TEST(nvidia_display_engine, set_up_subscribes_to_the_hotplug_and_short_pulse_events) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_EQ(fw.event_allocation_count, 2u);
+    const uint32_t notifiers[] = {NVIDIA_NOTIFIERS_HOTPLUG, NVIDIA_NOTIFIERS_DP_IRQ};
+    for (uint32_t i = 0; i < 2; i++) {
+        EXPECT_EQ(fw.event_parents[i], TEST_SUBDEVICE);
+        EXPECT_EQ(fw.event_allocations[i].parent_client, TEST_CLIENT);
+        EXPECT_EQ(fw.event_allocations[i].source, 0u);
+        EXPECT_EQ(fw.event_allocations[i].class_id, NVIDIA_EVENT_KERNEL_CALLBACK_EX);
+        EXPECT_EQ(fw.event_allocations[i].notify_index, notifiers[i] | NVIDIA_EVENT_CLIENT_RM);
+        EXPECT_EQ(fw.event_allocations[i].data, 0u);
+
+        EXPECT_EQ(fw.armings[i].notifier, notifiers[i]);
+        EXPECT_EQ(fw.armings[i].action, NVIDIA_NOTIFICATION_REPEAT);
+        EXPECT_EQ(fw.armings[i].notify_state, 0u);
+        EXPECT_EQ(fw.armings[i].info32, 0u);
+        EXPECT_EQ(fw.armings[i].info16, 0u);
+    }
+
+    EXPECT_EQ(fw.arming_count, 2u);
+    EXPECT_EQ(fw.control_count(NVIDIA_EVENT_SET_NOTIFICATION, TEST_SUBDEVICE), 2u);
+    EXPECT_LT(fw.event_allocated_at[0], fw.armed_at[0]);
+    EXPECT_LT(fw.armed_at[0], fw.event_allocated_at[1]);
+    EXPECT_LT(fw.event_allocated_at[1], fw.armed_at[1]);
+
+    EXPECT_LT(fw.allocation_index(rm::CLASS_DISPLAY_COMMON), fw.allocation_index(NVIDIA_EVENT_KERNEL_CALLBACK_EX));
+    EXPECT_LT(fw.last_control(NVIDIA_EVENT_SET_NOTIFICATION), fw.first_control(rm::CONTROL_GET_SUPPORTED_DISPLAYS));
+    EXPECT_EQ(fw.event_sink, static_cast<firmware_event_sink*>(&engine));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Refused event objects are logged at error level and leave their events off, with no arming sent and nothing to
+// release, the set-up going on
+TEST(nvidia_display_engine, refused_event_objects_leave_their_events_off) {
+    engine_firmware fw;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::allocation,
+        .number = NVIDIA_EVENT_KERNEL_CALLBACK_EX,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_EQ(fw.event_allocation_count, 2u);
+    EXPECT_EQ(fw.control_count(NVIDIA_EVENT_SET_NOTIFICATION), 0u);
+
+    EXPECT_TRUE(engine_log_contains("[ERROR] nvidia: the GSP's firmware refused the hotplug event's object, so that "
+                                    "event stays off"));
+    EXPECT_TRUE(engine_log_contains("[ERROR] nvidia: the GSP's firmware refused the short pulse event's object, so "
+                                    "that event stays off"));
+    EXPECT_FALSE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    EXPECT_FALSE(engine.on_firmware_event(list_event(fw.event_objects[1], NVIDIA_NOTIFIERS_DP_IRQ)));
+
+    uint32_t first = fw.call_count;
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(fw.release_index(fw.event_objects[0]), engine_firmware::MAX_CALLS);
+    EXPECT_EQ(fw.release_index(fw.event_objects[1]), engine_firmware::MAX_CALLS);
+    EXPECT_GT(fw.call_count, first);
+}
+
+// A refused arming is logged at error level and leaves that event off, its object kept until the release
+TEST(nvidia_display_engine, a_refused_arming_leaves_its_event_off) {
+    engine_firmware fw;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = NVIDIA_EVENT_SET_NOTIFICATION,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up_logged(engine), OK);
+    EXPECT_EQ(fw.control_count(NVIDIA_EVENT_SET_NOTIFICATION), 2u);
+    EXPECT_TRUE(engine_log_contains("[ERROR] nvidia: the GSP's firmware refused to arm the hotplug notifier, so that "
+                                    "event stays off"));
+    EXPECT_TRUE(engine_log_contains("[ERROR] nvidia: the GSP's firmware refused to arm the short pulse notifier, so "
+                                    "that event stays off"));
+
+    uint32_t first = fw.call_count;
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_TRUE(fw.releases_once(first, fw.event_objects[0]));
+    EXPECT_TRUE(fw.releases_once(first, fw.event_objects[1]));
+}
+
+// An event object's allocation or arming failing with an error other than `ERR_FIRMWARE`, such as a timeout, fails the
+// set-up with that error before the display ids are read
+TEST(nvidia_display_engine, a_timed_out_event_allocation_or_arming_fails_the_set_up) {
+    const engine_firmware::refusal failures[] = {
+        {
+            .made   = engine_firmware::kind::allocation,
+            .number = NVIDIA_EVENT_KERNEL_CALLBACK_EX,
+            .object = 0,
+            .result = ERR_TIMEOUT,
+        },
+        {
+            .made   = engine_firmware::kind::control,
+            .number = NVIDIA_EVENT_SET_NOTIFICATION,
+            .object = 0,
+            .result = ERR_TIMEOUT,
+        },
+    };
+
+    for (const engine_firmware::refusal& failure : failures) {
+        engine_firmware fw;
+        fw.refusals[0] = failure;
+
+        engine_video_memory memory;
+        display_engine& engine = new_engine(fw, memory);
+        EXPECT_EQ(set_up(engine), ERR_TIMEOUT);
+        EXPECT_EQ(fw.control_count(rm::CONTROL_GET_SUPPORTED_DISPLAYS), 0u);
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// An event for one of the engine's objects, by its handle or by the notify list's notifier, queues its record once
+// however often it comes and logs nothing, while one for another client, object or notifier is not the engine's
+TEST(nvidia_display_engine, firmware_events_queue_their_records_once) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    rm::handle hotplug = fw.event_objects[0];
+    rm::handle short_pulse = fw.event_objects[1];
+
+    start_keeping_engine_log();
+    firmware_event foreign = event_for(hotplug, NVIDIA_NOTIFIERS_HOTPLUG);
+    foreign.client = TEST_CLIENT + 1;
+    EXPECT_FALSE(engine.on_firmware_event(foreign));
+
+    EXPECT_FALSE(engine.on_firmware_event(event_for(hotplug + 0x100, NVIDIA_NOTIFIERS_HOTPLUG)));
+    EXPECT_FALSE(engine.on_firmware_event(list_event(hotplug + 0x100, NVIDIA_NOTIFIERS_HOTPLUG)));
+    EXPECT_FALSE(engine.on_firmware_event(list_event(hotplug, 3)));
+    EXPECT_FALSE(engine.on_firmware_event(event_for(0, NVIDIA_NOTIFIERS_HOTPLUG)));
+
+    EXPECT_TRUE(engine.on_firmware_event(event_for(hotplug, 0)));
+    EXPECT_TRUE(engine.on_firmware_event(list_event(short_pulse, NVIDIA_NOTIFIERS_HOTPLUG)));
+    EXPECT_TRUE(engine.on_firmware_event(list_event(hotplug, NVIDIA_NOTIFIERS_DP_IRQ)));
+    EXPECT_TRUE(engine.on_firmware_event(event_for(short_pulse, 0)));
+    stop_keeping_engine_log();
+    EXPECT_EQ(s_engine_log_bytes, 0u);
+
+    operation& hotplug_record = display_engine_test_access::hotplug_record(engine);
+    operation& short_pulse_record = display_engine_test_access::short_pulse_record(engine);
+    ASSERT_EQ(hotplug_record.next, &short_pulse_record);
+    ASSERT_NULL(short_pulse_record.next);
+    serve_logged();
+
+    EXPECT_EQ(fw.control_count(NVIDIA_GET_HOTPLUG_UNPLUG_STATE), 1u);
+    EXPECT_EQ(engine_log_count("nvidia: a DisplayPort short pulse event arrived, which is only logged"), 1u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With only the hotplug's object refused with `ERR_FIRMWARE`, a notify list's event naming the short pulse's object is
+// taken on the DP_IRQ notifier but not on the hotplug notifier
+TEST(nvidia_display_engine, a_list_event_on_a_refused_objects_notifier_is_not_taken) {
+    engine_firmware fw;
+    fw.refused_event_notifier = NVIDIA_NOTIFIERS_HOTPLUG;
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_EQ(fw.arming_count, 1u);
+    ASSERT_EQ(fw.armings[0].notifier, NVIDIA_NOTIFIERS_DP_IRQ);
+
+    rm::handle short_pulse = fw.event_objects[1];
+    EXPECT_FALSE(engine.on_firmware_event(list_event(short_pulse, NVIDIA_NOTIFIERS_HOTPLUG)));
+    EXPECT_TRUE(engine.on_firmware_event(list_event(short_pulse, NVIDIA_NOTIFIERS_DP_IRQ)));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// An event arriving while its record is served queues the record again, so the service runs once more
+TEST(nvidia_display_engine, an_event_during_its_service_queues_the_record_again) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    fw.event_in_hotplug_read = event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG);
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_EQ(fw.sinkless_event_count, 0u);
+    EXPECT_EQ(fw.control_count(NVIDIA_GET_HOTPLUG_UNPLUG_STATE), 2u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The text the operation below logs as the task serves it
+static constexpr const char* ARRIVAL_OPERATION_TEXT = "the operation between the events is served";
+
+static void log_arrival_operation(operation&) {
+    log::info("%s", ARRIVAL_OPERATION_TEXT);
+}
+
+// The task serves the records and the operations queued among them in arrival order
+TEST(nvidia_display_engine, records_and_operations_are_served_in_arrival_order) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    operation between = {};
+    between.work = log_arrival_operation;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[1], NVIDIA_NOTIFIERS_DP_IRQ)));
+    RUN_ELEVATED(engine_operations().post_to_task(between));
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    uint32_t short_pulse = engine_log_offset("a DisplayPort short pulse event arrived");
+    uint32_t operation_line = engine_log_offset(ARRIVAL_OPERATION_TEXT);
+    uint32_t hotplug = engine_log_offset("reports display ids 0x0 plugged in and 0x0 unplugged");
+    EXPECT_LT(short_pulse, operation_line);
+    EXPECT_LT(operation_line, hotplug);
+    EXPECT_LT(hotplug, s_engine_log_bytes);
+
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A hotplug's service logs the masks, then each unplugged output's record cleared before each plugged one's set, in
+// output order, with display ids naming no output logged and left and one in both masks taken as plugged in
+TEST(nvidia_display_engine, a_hotplug_updates_and_logs_the_connected_records) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID | OUTPUT_2_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_2_ID;
+    copy_aoc_edid(true);
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    fw.plugged_ids = OUTPUT_1_ID | OUTPUT_2_ID | 0x1;
+    fw.unplugged_ids = OUTPUT_0_ID | OUTPUT_2_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the GSP's firmware reports display ids 0x601 plugged in and 0x500 "
+                                    "unplugged"));
+    EXPECT_TRUE(engine_log_contains("nvidia: hotplugged display ids 0x1 name no output, so they are left"));
+    EXPECT_TRUE(engine_log_contains("nvidia: display ids 0x400 are both plugged in and unplugged, so taken as "
+                                    "plugged in"));
+    EXPECT_FALSE(engine_log_contains("display id 0x400, is unplugged"));
+
+    uint32_t unplugged = engine_log_offset("nvidia: output 0, display id 0x100, is unplugged");
+    uint32_t plugged = engine_log_offset("nvidia: output 1, display id 0x200, is plugged in");
+    uint32_t replugged = engine_log_offset("nvidia: output 2, display id 0x400, is plugged in");
+    EXPECT_LT(unplugged, plugged);
+    EXPECT_LT(plugged, replugged);
+    EXPECT_LT(replugged, s_engine_log_bytes);
+
+    EXPECT_FALSE(display_engine_test_access::is_connected(engine, 0));
+    EXPECT_TRUE(display_engine_test_access::is_connected(engine, 1));
+    EXPECT_TRUE(display_engine_test_access::is_connected(engine, 2));
+
+    EXPECT_EQ(fw.control_count(NVIDIA_GET_HOTPLUG_UNPLUG_STATE, fw.allocated(rm::CLASS_DISPLAY_COMMON)), 1u);
+    EXPECT_EQ(fw.hotplug_state_request.subdevice_index, 0u);
+    EXPECT_EQ(fw.hotplug_state_request.flags, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With both masks 0 the service reads the connect state of the outputs' display ids and takes each difference from the
+// connected records as a plug or an unplug, unplugs logged before plugs and no line for an output that stays connected
+TEST(nvidia_display_engine, a_hotplug_with_empty_masks_compares_the_connect_state) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID | OUTPUT_2_ID;
+    fw.connected_ids = OUTPUT_1_ID | OUTPUT_2_ID;
+    copy_aoc_edid(true);
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    uint32_t connect_reads = fw.control_count(rm::CONTROL_GET_CONNECTED_DISPLAYS);
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_2_ID;
+    EXPECT_TRUE(engine.on_firmware_event(list_event(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_CONNECTED_DISPLAYS), connect_reads + 1);
+    EXPECT_TRUE(engine_log_contains("nvidia: the connect state reports display ids 0x500 connected"));
+    EXPECT_LT(
+        engine_log_offset("nvidia: output 1, display id 0x200, is unplugged"),
+        engine_log_offset("nvidia: output 0, display id 0x100, is plugged in")
+    );
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0, display id 0x100, is plugged in"));
+    EXPECT_FALSE(engine_log_contains("output 2,"));
+    EXPECT_FALSE(engine_log_contains("both plugged in and unplugged"));
+
+    EXPECT_TRUE(display_engine_test_access::is_connected(engine, 0));
+    EXPECT_FALSE(display_engine_test_access::is_connected(engine, 1));
+    EXPECT_TRUE(display_engine_test_access::is_connected(engine, 2));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A hotplug state naming only an unplug or only a plug takes that mask without the connect state, a display id above
+// the outputs' logged and left
+TEST(nvidia_display_engine, a_hotplug_with_one_mask_set_takes_that_mask) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID | OUTPUT_2_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    copy_aoc_edid(true);
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    uint32_t connect_reads = fw.control_count(rm::CONTROL_GET_CONNECTED_DISPLAYS);
+    fw.plugged_ids = 0;
+    fw.unplugged_ids = OUTPUT_1_ID | 0x800;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the GSP's firmware reports display ids 0x0 plugged in and 0xA00 "
+                                    "unplugged"));
+    EXPECT_TRUE(engine_log_contains("nvidia: hotplugged display ids 0x800 name no output, so they are left"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1, display id 0x200, is unplugged"));
+
+    fw.plugged_ids = OUTPUT_2_ID;
+    fw.unplugged_ids = 0;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+    EXPECT_TRUE(engine_log_contains("nvidia: output 2, display id 0x400, is plugged in"));
+
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_CONNECTED_DISPLAYS), connect_reads);
+    EXPECT_TRUE(display_engine_test_access::is_connected(engine, 0));
+    EXPECT_FALSE(display_engine_test_access::is_connected(engine, 1));
+    EXPECT_TRUE(display_engine_test_access::is_connected(engine, 2));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A refused hotplug state read is logged and ends the service with the records as they were
+TEST(nvidia_display_engine, a_refused_hotplug_state_read_ends_the_service) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    copy_aoc_edid(true);
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    uint32_t connect_reads = fw.control_count(rm::CONTROL_GET_CONNECTED_DISPLAYS);
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = NVIDIA_GET_HOTPLUG_UNPLUG_STATE,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("[ERROR] nvidia: reading the hotplug state after a hotplug event failed: -12"));
+    EXPECT_EQ(fw.control_count(rm::CONTROL_GET_CONNECTED_DISPLAYS), connect_reads);
+    EXPECT_TRUE(display_engine_test_access::is_connected(engine, 0));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With both masks 0 a refused connect state read is logged and ends the service with the records as they were
+TEST(nvidia_display_engine, a_refused_connect_state_read_ends_the_service) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID;
+    fw.connected_ids = OUTPUT_0_ID;
+    copy_aoc_edid(true);
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_GET_CONNECTED_DISPLAYS,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("[ERROR] nvidia: reading the connect state after a hotplug event failed: -12"));
+    EXPECT_FALSE(engine_log_contains("is unplugged"));
+    EXPECT_TRUE(display_engine_test_access::is_connected(engine, 0));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A record served once the engine was released, the display failed or the GPU failed reads nothing, logging the first
+// of those that holds
+TEST(nvidia_display_engine, a_hotplug_after_a_display_failure_or_release_reads_nothing) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    g_failed_mark->set();
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+    EXPECT_TRUE(engine_log_contains("nvidia: a hotplug event arrived once the GPU failed, so nothing is read"));
+
+    display_engine_test_access::fail_display(engine);
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+    EXPECT_TRUE(engine_log_contains("nvidia: a hotplug event arrived once the display failed, so nothing is read"));
+    EXPECT_FALSE(engine_log_contains("once the GPU failed"));
+
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    EXPECT_EQ(engine.release(), OK);
+    serve_logged();
+    EXPECT_TRUE(engine_log_contains("nvidia: a hotplug event arrived once the display was released, so nothing is "
+                                    "read"));
+    EXPECT_FALSE(engine_log_contains("once the display failed"));
+    EXPECT_EQ(fw.control_count(NVIDIA_GET_HOTPLUG_UNPLUG_STATE), 0u);
+}
+
+// The release clears the sink before any request and releases both event objects once, before display common
+TEST(nvidia_display_engine, release_clears_the_sink_and_releases_the_event_objects) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    uint32_t first = fw.call_count;
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(fw.event_sink, nullptr);
+    EXPECT_EQ(fw.sink_cleared_at, first);
+    EXPECT_TRUE(fw.releases_once(first, fw.event_objects[0]));
+    EXPECT_TRUE(fw.releases_once(first, fw.event_objects[1]));
+
+    uint32_t display_common = fw.release_index(fw.allocated(rm::CLASS_DISPLAY_COMMON));
+    EXPECT_LT(fw.release_index(fw.event_objects[0]), display_common);
+    EXPECT_LT(fw.release_index(fw.event_objects[1]), display_common);
+}
+
+// A refused release of an event object still releases the other and the objects, and the release returns the event
+// object's error rather than a refused object release's
+TEST(nvidia_display_engine, event_object_release_error_is_returned_ahead_of_the_objects) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    rm::handle display_common = fw.allocated(rm::CLASS_DISPLAY_COMMON);
+    uint32_t first = fw.call_count;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::release,
+        .number = 0,
+        .object = fw.event_objects[0],
+        .result = ERR_TIMEOUT,
+    };
+
+    fw.refusals[1] = {
+        .made   = engine_firmware::kind::release,
+        .number = 0,
+        .object = display_common,
+        .result = ERR_FIRMWARE,
+    };
+
+    EXPECT_EQ(engine.release(), ERR_TIMEOUT);
+    EXPECT_TRUE(fw.releases_once(first, fw.event_objects[1]));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
+    EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
+    EXPECT_TRUE(fw.releases_once(first, display_common));
 }

@@ -43,7 +43,30 @@ struct message_headers {
     uint32_t spare;
 };
 
+// NVIDIA's rpc_post_event_v17_00, the payload of an event the firmware posts, up to the event's own data
+struct posted_event {
+    rm::handle client;
+    rm::handle event;
+    uint32_t   notify_index;  // the notifier in bits 15 to 0
+    uint32_t   data;
+    uint16_t   info16;
+    uint32_t   status;
+    uint32_t   event_bytes;   // of the event's own data
+    uint8_t    is_for_notify_list;
+};
+
 } // namespace
+
+// NVIDIA's NV_VGPU_MSG_EVENT_POST_EVENT, the number of the message carrying an event the firmware posts
+constexpr uint32_t FUNCTION_POST_EVENT = 0x1003;
+
+// The bytes of a posted event's fields, up to its own data
+constexpr uint32_t POSTED_EVENT_FIELD_BYTES = 29;
+
+static_assert(__builtin_offsetof(posted_event, is_for_notify_list) == 28, "NVIDIA's layout of rpc_post_event_v17_00");
+
+// The notifier bits of a notify index
+constexpr uint32_t NOTIFIER_MASK = 0xFFFF;
 
 // The queue memory's layout: a page table in the first page, then the command queue and the status queue
 constexpr uint32_t PAGE_BYTES  = 0x1000;
@@ -486,6 +509,25 @@ int32_t receive_within(
     }
 }
 
+// Returns whether `event_sink` took the event in `payload`, one too short to hold its notify list flag never handed on
+static bool hand_on_event(firmware_event_sink* event_sink, const uint8_t* payload, uint32_t payload_bytes) {
+    if (event_sink == nullptr || payload_bytes < POSTED_EVENT_FIELD_BYTES) {
+        return false;
+    }
+
+    posted_event posted = {};
+    string::memcpy(&posted, payload, POSTED_EVENT_FIELD_BYTES);
+
+    firmware_event event = {
+        .client = posted.client,
+        .event = posted.event,
+        .notifier = posted.notify_index & NOTIFIER_MASK,
+        .is_for_notify_list = posted.is_for_notify_list != 0,
+    };
+
+    return event_sink->on_firmware_event(event);
+}
+
 // Keeps the messages passed over for the caller to log, since a log line can outlast the window, counted from the
 // firmware's send of a sequencer's message, in which that sequencer's first poll finds its bit
 static int32_t receive_awaited_unlogged(
@@ -497,6 +539,7 @@ static int32_t receive_awaited_unlogged(
     uint8_t* payload,
     uint32_t payload_capacity,
     uint64_t deadline_ns,
+    firmware_event_sink* event_sink,
     bool& is_in_lockdown,
     received_message (&passed)[PASSED_MESSAGES_LOGGED],
     uint32_t& passed_count
@@ -519,6 +562,10 @@ static int32_t receive_awaited_unlogged(
                 log::error("nvidia: the CPU sequencer failed: %d", rc);
             }
 
+            continue;
+        }
+
+        if (message.function == FUNCTION_POST_EVENT && hand_on_event(event_sink, payload, message.payload_bytes)) {
             continue;
         }
 
@@ -585,6 +632,7 @@ int32_t receive_awaited(
     uint8_t* payload,
     uint32_t payload_capacity,
     uint64_t deadline_ns,
+    firmware_event_sink* event_sink,
     bool& is_in_lockdown
 ) {
     received_message passed[PASSED_MESSAGES_LOGGED] = {};
@@ -598,6 +646,7 @@ int32_t receive_awaited(
         payload,
         payload_capacity,
         deadline_ns,
+        event_sink,
         is_in_lockdown,
         passed,
         passed_count
@@ -617,6 +666,7 @@ int32_t drain_status_queue(
     const cpu_sequencer_context& sequencer,
     uint8_t* payload,
     uint32_t payload_capacity,
+    firmware_event_sink* event_sink,
     bool& is_in_lockdown
 ) {
     received_message passed[PASSED_MESSAGES_LOGGED] = {};
@@ -631,6 +681,7 @@ int32_t drain_status_queue(
         payload,
         payload_capacity,
         DRAIN_DEADLINE_NS,
+        event_sink,
         is_in_lockdown,
         passed,
         passed_count

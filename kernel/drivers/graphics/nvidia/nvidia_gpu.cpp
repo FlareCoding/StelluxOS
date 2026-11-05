@@ -899,7 +899,7 @@ int32_t nvidia_gpu_driver::attach() {
     );
 
     if (frts.has_display) {
-        rc = m_display_engine.set_up(regs, card_profile, *chip, m_gpu_objects.device);
+        rc = m_display_engine.set_up(regs, card_profile, *chip, m_gpu_objects);
         if (rc != nvidia::OK) {
             return rc;
         }
