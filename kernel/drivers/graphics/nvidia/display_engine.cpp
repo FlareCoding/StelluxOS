@@ -61,10 +61,10 @@ constexpr uint64_t ESTIMATE_LOG_INTERVAL_NS = 1000 * NS_PER_MS;
 // The bindings to window channels that dropping one light undoes, last first: its base buffer's to its own window's
 // channel, the look-up table's and two for each other head
 struct light_bindings {
-    uint8_t         count;
-    rm::handle      objects[2 * DISPLAY_HEADS_MAX];
-    uint8_t         windows[2 * DISPLAY_HEADS_MAX];
-    scanout_buffer* holders[2 * DISPLAY_HEADS_MAX]; // the base buffer each binds, null for the table's
+    uint8_t    count;
+    rm::handle objects[2 * DISPLAY_HEADS_MAX];
+    uint8_t    windows[2 * DISPLAY_HEADS_MAX];
+    uint32_t*  masks[2 * DISPLAY_HEADS_MAX]; // the bound windows of the surface each binds
 };
 
 // Logs the maker, name and timings an output's EDID gives
@@ -249,6 +249,56 @@ static void keep_output_modes(
     );
 }
 
+// Reads and logs connected output `index`'s EDID into `monitor`, its DPCD capabilities and its mode, keeping its modes
+// in `modes`, and lowers its rate in `power_down` to its monitor's, setting its D3 bit for DPCD 1.1 or later
+static int32_t read_connected_monitor(
+    firmware& fw,
+    rm::handle display_common,
+    const chip_displayport& gpu,
+    uint8_t index,
+    const display_output& output,
+    edid::monitor& monitor,
+    output_modes& modes,
+    power_down_facts& power_down
+) {
+    bool is_parsed = false;
+    int32_t rc = read_output_edid(fw, display_common, output.display_id, monitor, is_parsed);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (is_parsed) {
+        log_monitor(index, monitor);
+    }
+
+    dpcd_capabilities dpcd = {};
+    bool is_read = false;
+    rc = read_output_dpcd(fw, display_common, output.display_id, gpu.trains_phy_repeaters, dpcd, is_read);
+    if (rc != OK) {
+        return rc;
+    }
+
+    if (is_read) {
+        log_dpcd(index, dpcd);
+        log_monitor_link_limits(index, dpcd);
+
+        displayport::link_rate monitor_rate = monitor_link_limits(dpcd).max_rate;
+        if (static_cast<uint8_t>(monitor_rate) < static_cast<uint8_t>(power_down.rates[index])) {
+            power_down.rates[index] = monitor_rate;
+        }
+    }
+
+    if (is_read && is_at_least_revision_1_1(dpcd)) {
+        power_down.d3_outputs |= 1u << index;
+    }
+
+    if (is_parsed && is_read && gpu.fec_supported) {
+        keep_output_modes(index, output, monitor, dpcd, gpu, modes);
+    }
+
+    return OK;
+}
+
 // Reads and logs each connected output's EDID, DPCD capabilities and mode, keeping its modes in `modes`, each EDID read
 // into one `edid::monitor`, too big for the stack, on the unprivileged heap, and fills `power_down` for every output
 static int32_t read_connected_monitors(
@@ -292,39 +342,9 @@ static int32_t read_connected_monitors(
             continue;
         }
 
-        bool is_parsed = false;
-        rc = read_output_edid(fw, display_common, output.display_id, *monitor, is_parsed);
+        rc = read_connected_monitor(fw, display_common, gpu, index, output, *monitor, modes[index], power_down);
         if (rc != OK) {
             break;
-        }
-
-        if (is_parsed) {
-            log_monitor(index, *monitor);
-        }
-
-        dpcd_capabilities dpcd = {};
-        bool is_read = false;
-        rc = read_output_dpcd(fw, display_common, output.display_id, gpu.trains_phy_repeaters, dpcd, is_read);
-        if (rc != OK) {
-            break;
-        }
-
-        if (is_read) {
-            log_dpcd(index, dpcd);
-            log_monitor_link_limits(index, dpcd);
-
-            displayport::link_rate monitor_rate = monitor_link_limits(dpcd).max_rate;
-            if (static_cast<uint8_t>(monitor_rate) < static_cast<uint8_t>(power_down.rates[index])) {
-                power_down.rates[index] = monitor_rate;
-            }
-        }
-
-        if (is_read && is_at_least_revision_1_1(dpcd)) {
-            power_down.d3_outputs |= 1u << index;
-        }
-
-        if (is_parsed && is_read && gpu.fec_supported) {
-            keep_output_modes(index, output, *monitor, dpcd, gpu, modes[index]);
         }
     }
 
@@ -1261,14 +1281,15 @@ static uint8_t count_active_heads(const active_heads& active) {
     return count;
 }
 
-// Powers down the link of each output in `dark_outputs` as `power_down` gives it until one fails. The boot firmware lit
-// each of these links and the driver cannot tell their FEC, so each monitor is set to D3 after its link goes down
+// Powers down the link of each output in `dark_outputs` until one fails, logged ending with `outcome`, a monitor
+// marked for D3 entering it after its link goes down, as the driver cannot tell the FEC of links the boot firmware lit
 static int32_t power_down_links(
     firmware& fw,
     rm::handle display_common,
     const display_outputs& outputs,
     uint32_t dark_outputs,
-    const power_down_facts& power_down
+    const power_down_facts& power_down,
+    const char* outcome
 ) {
     for (uint8_t index = 0; index < outputs.count; index++) {
         uint32_t bit = 1u << index;
@@ -1278,19 +1299,27 @@ static int32_t power_down_links(
 
         uint32_t display_id = outputs.outputs[index].display_id;
         bool sets_monitor_to_d3 = (power_down.d3_outputs & bit) != 0;
+        const char* d3_clause = "";
+        if (!outputs.outputs[index].is_connected) {
+            d3_clause = ", with no monitor plugged in to set to D3";
+        } else if (!sets_monitor_to_d3) {
+            d3_clause = ", its monitor left out of D3 as no DPCD of revision 1.1 or later was read";
+        }
+
         log::info(
-            "nvidia: output %u stays dark, so bring-up powers down its link, display id 0x%X's%s",
+            "nvidia: output %u stays dark, so the driver powers down display id 0x%X's link%s",
             index,
             display_id,
-            sets_monitor_to_d3 ? "" : ", its monitor left out of D3 as no DPCD of revision 1.1 or later was read"
+            d3_clause
         );
 
         int32_t rc = power_down_link(fw, display_common, display_id, power_down.rates[index], sets_monitor_to_d3, true);
         if (rc != OK) {
             log::error(
-                "nvidia: display id 0x%X's link is not powered down, nor is the link of any dark output after it, so "
-                "bring-up takes the display engine down",
-                display_id
+                "nvidia: display id 0x%X's link is not powered down, nor is the link of any dark output after it, "
+                "so %s",
+                display_id,
+                outcome
             );
             return rc;
         }
@@ -1382,6 +1411,7 @@ display_engine::display_engine(
     }
 
     m_take_down_queue.init();
+    m_created_buffers.init();
     m_hotplug_record.work = serve_hotplug_record;
     m_hotplug_record.engine = this;
     m_short_pulse_record.work = serve_short_pulse_record;
@@ -1416,6 +1446,10 @@ int32_t display_engine::set_up(
         display.window_count
     );
     log::info("nvidia: the GSP's firmware reports heads 0x%X present", present_heads);
+    m_card = new (m_card_bytes) dma::device_profile(card);
+    m_display = display;
+    m_present_heads = present_heads;
+    m_present_windows = present_windows;
 
     rc = m_instance_memory.set_up();
     if (rc != OK) {
@@ -1461,6 +1495,8 @@ int32_t display_engine::set_up(
     }
 
     string::memcpy(&m_outputs, &outputs, sizeof(m_outputs));
+    string::memcpy(&m_display_heads, &heads, sizeof(m_display_heads));
+    m_has_crossbar = has_crossbar;
 
     bool fits_gfxfb = outputs.count <= gfxfb::GFXFB_OUTPUTS_MAX;
     m_output_count = fits_gfxfb ? outputs.count : static_cast<uint8_t>(gfxfb::GFXFB_OUTPUTS_MAX);
@@ -1566,6 +1602,7 @@ int32_t display_engine::set_up(
 
     log_active_heads(active, outputs);
     m_boot_outputs = find_shown_outputs(active, outputs);
+    string::memcpy(&m_running_heads, &active, sizeof(m_running_heads));
 
     light_set set = {};
     rc = choose_and_log_lights(m_firmware, m_objects.bandwidth_check, heads, active, outputs, m_output_modes, set);
@@ -1695,6 +1732,10 @@ int32_t display_engine::prepare_lights(
 
         prepared.lights[prepared.count++] = light;
         rc = set_up_window_notifier(m_firmware, m_instance_memory, card, m_heads[light.head]);
+        if (m_heads[light.head].notifier_context_dma != 0) {
+            m_has_window_notifier.store_release(true);
+        }
+
         if (rc == OK) {
             rc = set_up_cursor(regs, display, present_heads, light);
         }
@@ -1718,23 +1759,38 @@ static context_dma_memory base_buffer_memory(const scanout_buffer& buffer) {
     };
 }
 
-// Records in `made` that the surface `object` names, the base buffer `holder` or the table when null, is bound to
-// `window`'s channel
-static void record_binding(light_bindings& made, rm::handle object, uint8_t window, scanout_buffer* holder) {
+// Records in `made` that the surface `object` names, whose bound windows `mask` holds, is bound to `window`'s channel
+static void record_binding(light_bindings& made, rm::handle object, uint8_t window, uint32_t* mask) {
     made.objects[made.count] = object;
     made.windows[made.count] = window;
-    made.holders[made.count] = holder;
+    made.masks[made.count] = mask;
     made.count++;
 }
 
-// Binds the surface `object` names, lying in `memory`, to `window`'s channel and records the binding in `made`, and in
-// the mask of the base buffer `holder`, null when the surface is the table
+// Sets `window`'s bit in `mask` when `is_bound` and clears it otherwise, under `lock`, as presents read a handed-out
+// buffer's bits under it
+static void mark_window_bound(sync::spinlock& lock, uint32_t& mask, uint8_t window, bool is_bound) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(lock);
+        if (is_bound) {
+            mask |= 1u << window;
+        } else {
+            mask &= ~(1u << window);
+        }
+
+        sync::spin_unlock_irqrestore(lock, irq);
+    });
+}
+
+// Binds the surface `object` names, lying in `memory`, to `window`'s channel and records the binding in `made` and,
+// under `lock`, in the surface's `mask`
 static int32_t bind_for_light(
+    sync::spinlock& lock,
     instance_memory& instances,
     rm::handle object,
     const context_dma_memory& memory,
     uint8_t window,
-    scanout_buffer* holder,
+    uint32_t* mask,
     light_bindings& made
 ) {
     int32_t rc = instances.bind(object, window_channel_number(window), memory);
@@ -1742,17 +1798,16 @@ static int32_t bind_for_light(
         return rc;
     }
 
-    if (holder != nullptr) {
-        holder->bound_windows |= 1u << window;
-    }
+    mark_window_bound(lock, *mask, window, true);
+    record_binding(made, object, window, mask);
 
-    record_binding(made, object, window, holder);
     return OK;
 }
 
 // Takes down the userland mapping of `head`'s base buffer and undoes `made`'s bindings, last first, then releases its
 // memory and frees its record unless an undoing fails, as the display engine may read the memory through a binding left
 static void drop_base_buffer(
+    sync::spinlock& lock,
     instance_memory& instances,
     video_memory& memory,
     engine_head& head,
@@ -1767,7 +1822,6 @@ static void drop_base_buffer(
     for (uint8_t index = made.count; index > 0; index--) {
         rm::handle object = made.objects[index - 1];
         uint8_t window = made.windows[index - 1];
-        scanout_buffer* holder = made.holders[index - 1];
         int32_t rc = instances.unbind(object, window_channel_number(window));
         if (rc != OK) {
             log::error(
@@ -1781,9 +1835,7 @@ static void drop_base_buffer(
             return;
         }
 
-        if (holder != nullptr) {
-            holder->bound_windows &= ~(1u << window);
-        }
+        mark_window_bound(lock, *made.masks[index - 1], window, false);
     }
 
     memory.release(base.range);
@@ -1806,24 +1858,27 @@ int32_t display_engine::prepare_light(
     head.window = light.window;
     head.output = light.output;
 
-    int32_t rc = set_up_window_channel(
-        m_firmware,
-        regs,
-        card,
-        m_objects.display,
-        display,
-        present_windows,
-        light.window,
-        head.window_push_buffer,
-        head.window_channel
-    );
-    if (rc != OK || head.window_channel == 0) {
-        return rc;
-    }
+    // A head keeps the window channel an earlier light allocated, through a take-down or a dropped light
+    if (head.window_channel == 0) {
+        int32_t rc = set_up_window_channel(
+            m_firmware,
+            regs,
+            card,
+            m_objects.display,
+            display,
+            present_windows,
+            light.window,
+            head.window_push_buffer,
+            head.window_channel
+        );
+        if (rc != OK || head.window_channel == 0) {
+            return rc;
+        }
 
-    uint32_t* window_push_buffer = reinterpret_cast<uint32_t*>(head.window_push_buffer.virt);
-    registers window_area = regs.at(window_channel_area(light.window));
-    head.window_queue = new (head.window_queue_bytes) display_channel(window_push_buffer, window_area);
+        uint32_t* window_push_buffer = reinterpret_cast<uint32_t*>(head.window_push_buffer.virt);
+        registers window_area = regs.at(window_channel_area(light.window));
+        head.window_queue = new (head.window_queue_bytes) display_channel(window_push_buffer, window_area);
+    }
 
     auto* base = heap::ualloc_new<scanout_buffer>();
     if (base == nullptr) {
@@ -1834,7 +1889,7 @@ int32_t display_engine::prepare_light(
         return OK;
     }
 
-    rc = set_up_base_buffer(m_memory, light, base->range);
+    int32_t rc = set_up_base_buffer(m_memory, light, base->range);
     if (rc == OK && base->range.size != 0) {
         rc = bind_base_buffer(m_firmware, m_instance_memory, m_memory, light, base->range, base->context_dma);
     }
@@ -1850,11 +1905,11 @@ int32_t display_engine::prepare_light(
 
     light_bindings made = {};
     base->bound_windows |= 1u << light.window;
-    record_binding(made, base->context_dma, light.window, base);
+    record_binding(made, base->context_dma, light.window, &base->bound_windows);
 
     rc = map_base_buffer_for_userland(m_memory, light, base->range, *base);
     if (rc != OK || base->size == 0) {
-        drop_base_buffer(m_instance_memory, m_memory, head, made);
+        drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made);
         return rc;
     }
 
@@ -1864,8 +1919,10 @@ int32_t display_engine::prepare_light(
         .refresh_millihertz = light.timing.refresh_millihertz(),
     };
 
+    head.timing = light.timing;
+
     // The first light sets up the one look-up table surface, which every later light binds to its own window's channel
-    if (prepared.count == 0) {
+    if (m_look_up_table.size == 0) {
         rc = set_up_look_up_table(m_memory, m_look_up_table);
         if (rc == OK && m_look_up_table.size != 0) {
             rc = bind_look_up_table(
@@ -1879,12 +1936,11 @@ int32_t display_engine::prepare_light(
         }
 
         if (rc != OK || m_look_up_table.size == 0) {
-            drop_base_buffer(m_instance_memory, m_memory, head, made);
+            drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made);
             return rc;
         }
 
-        is_prepared = true;
-        return OK;
+        m_look_up_table_windows = 1u << light.window;
     }
 
     context_dma_memory table_memory = {
@@ -1893,21 +1949,43 @@ int32_t display_engine::prepare_light(
         .bytes = m_look_up_table.size,
     };
 
-    rc = bind_for_light(m_instance_memory, m_look_up_table_context_dma, table_memory, light.window, nullptr, made);
+    uint32_t window_bit = 1u << light.window;
+    if ((m_look_up_table_windows & window_bit) == 0) {
+        rc = bind_for_light(
+            m_output_lock,
+            m_instance_memory,
+            m_look_up_table_context_dma,
+            table_memory,
+            light.window,
+            &m_look_up_table_windows,
+            made
+        );
+    }
 
-    // gfxfb's `present()` may hand any base buffer to any output at its mode, so each is bound to every chosen
-    // window's channel
+    // gfxfb's `present()` may hand any base buffer to any output at its mode, so each is bound to every chosen window's
+    // channel once, a binding made for a head's earlier light staying until a failed light of that head undoes it
     for (uint8_t index = 0; rc == OK && index < prepared.count; index++) {
         engine_head& other = m_heads[prepared.lights[index].head];
-        rc = bind_for_light(m_instance_memory, base->context_dma, base_buffer_memory(*base), other.window, base, made);
-        if (rc == OK) {
-            scanout_buffer& other_base = *other.base_buffer;
+        rc = bind_for_light(
+            m_output_lock,
+            m_instance_memory,
+            base->context_dma,
+            base_buffer_memory(*base),
+            other.window,
+            &base->bound_windows,
+            made
+        );
+
+        scanout_buffer& other_base = *other.base_buffer;
+        bool lacks_binding = (other_base.bound_windows & window_bit) == 0;
+        if (rc == OK && lacks_binding) {
             rc = bind_for_light(
+                m_output_lock,
                 m_instance_memory,
                 other_base.context_dma,
                 base_buffer_memory(other_base),
                 light.window,
-                &other_base,
+                &other_base.bound_windows,
                 made
             );
         }
@@ -1928,12 +2006,61 @@ int32_t display_engine::prepare_light(
         );
     }
 
+    if (rc == OK) {
+        rc = bind_created_buffers(light.window);
+    }
+
     if (rc != OK) {
-        drop_base_buffer(m_instance_memory, m_memory, head, made);
+        drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made);
         return rc == ERR_NO_MEMORY ? OK : rc;
     }
 
     is_prepared = true;
+    return OK;
+}
+
+int32_t display_engine::bind_created_buffers(uint8_t window) {
+    for (scanout_buffer& buffer : m_created_buffers) {
+        if ((buffer.bound_windows & (1u << window)) != 0) {
+            continue;
+        }
+
+        rm::handle context_dma = buffer.context_dma != 0 ? buffer.context_dma : m_firmware.new_handle();
+        context_dma_memory buffer_memory = {
+            .in_video_memory = true,
+            .address = buffer.range.offset,
+            .bytes = buffer.range.size,
+        };
+
+        int32_t rc = m_instance_memory.bind(context_dma, window_channel_number(window), buffer_memory);
+        if (rc != OK) {
+            log::error(
+                "nvidia: binding the display buffer at 0x%lX in video memory to window %u's channel failed: %d",
+                buffer.range.offset,
+                window,
+                rc
+            );
+            return rc;
+        }
+
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+            buffer.context_dma = context_dma;
+            buffer.bound_windows |= 1u << window;
+            sync::spin_unlock_irqrestore(m_output_lock, irq);
+        });
+
+        log::info(
+            "nvidia: a display buffer of %ux%u pixels at 0x%lX in video memory is bound to window %u's channel as "
+            "context DMA 0x%X",
+            buffer.width,
+            buffer.height,
+            buffer.range.offset,
+            window,
+            context_dma
+        );
+    }
+
     return OK;
 }
 
@@ -1984,6 +2111,12 @@ int32_t display_engine::bring_up(
             display_ids_noun(started_ids),
             started_ids
         );
+
+        // No head scans a prepared base buffer before the light, so each is freed, leaving its head to a later light
+        for (uint8_t index = 0; index < set.count; index++) {
+            drop_prepared_light(set.lights[index]);
+        }
+
         return OK;
     }
 
@@ -2003,9 +2136,18 @@ int32_t display_engine::bring_up(
     if (rc != OK) {
         log::error("nvidia: the shutdown update failed: %d, so bring-up takes the display engine down", rc);
     } else {
+        m_running_heads = {};
+
         // The set's outputs have their links trained again at once, so they are not powered down
         uint32_t dark_boot_outputs = m_boot_outputs & ~light_set_outputs(set);
-        link_rc = power_down_links(m_firmware, display_common, outputs, dark_boot_outputs, power_down);
+        link_rc = power_down_links(
+            m_firmware,
+            display_common,
+            outputs,
+            dark_boot_outputs,
+            power_down,
+            "bring-up takes the display engine down"
+        );
         if (link_rc == OK) {
             uint8_t asked_count = set.count;
             link_rc = set_up_links(has_crossbar, outputs, power_down, set, dpcds, lights, ready_count);
@@ -2078,7 +2220,17 @@ int32_t display_engine::bring_up(
     } else {
         rc = take_down(heads, present_windows, active, lit_heads);
         if (rc != OK) {
-            log::error("nvidia: taking the display engine down failed: %d, so its heads may still scan out", rc);
+            log::error(
+                "nvidia: taking the display engine down failed: %d, so the display failed, as its heads may still "
+                "scan out",
+                rc
+            );
+            fail_display();
+        } else {
+            m_running_heads = {};
+            for (uint8_t index = 0; index < set.count; index++) {
+                drop_prepared_light(set.lights[index]);
+            }
         }
     }
 
@@ -2209,24 +2361,28 @@ void display_engine::drop_prepared_light(const output_light& dropped) {
     engine_head& head = m_heads[dropped.head];
     scanout_buffer& base = *head.base_buffer;
     light_bindings made = {};
-    record_binding(made, base.context_dma, dropped.window, &base);
-    record_binding(made, m_look_up_table_context_dma, dropped.window, nullptr);
+    uint32_t window_bit = 1u << dropped.window;
+    record_binding(made, base.context_dma, dropped.window, &base.bound_windows);
+    if ((m_look_up_table_windows & window_bit) != 0) {
+        record_binding(made, m_look_up_table_context_dma, dropped.window, &m_look_up_table_windows);
+    }
+
     for (uint8_t window = 0; window < DISPLAY_WINDOWS_MAX; window++) {
         bool binds_other_window = window != dropped.window && (base.bound_windows & (1u << window)) != 0;
         if (binds_other_window) {
-            record_binding(made, base.context_dma, window, &base);
+            record_binding(made, base.context_dma, window, &base.bound_windows);
         }
     }
 
     for (engine_head& other : m_heads) {
         scanout_buffer* other_base = &other != &head ? other.base_buffer : nullptr;
-        bool binds_dropped_window = other_base != nullptr && (other_base->bound_windows & (1u << dropped.window)) != 0;
+        bool binds_dropped_window = other_base != nullptr && (other_base->bound_windows & window_bit) != 0;
         if (binds_dropped_window) {
-            record_binding(made, other_base->context_dma, dropped.window, other_base);
+            record_binding(made, other_base->context_dma, dropped.window, &other_base->bound_windows);
         }
     }
 
-    drop_base_buffer(m_instance_memory, m_memory, head, made);
+    drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made);
 }
 
 int32_t display_engine::send_notified_update(uint32_t window_interlocks, uint32_t& status_word) {
@@ -2924,11 +3080,28 @@ void display_engine::update_connected_records(uint32_t plugged_ids, uint32_t unp
 
     for (uint8_t output = 0; output < m_outputs.count; output++) {
         display_output& entry = m_outputs.outputs[output];
-        if ((plugged_ids & entry.display_id) != 0) {
-            entry.is_connected = true;
-            log::info("nvidia: output %u, display id 0x%X, is plugged in", output, entry.display_id);
+        if ((plugged_ids & entry.display_id) == 0) {
+            continue;
+        }
+
+        entry.is_connected = true;
+        log::info("nvidia: output %u, display id 0x%X, is plugged in", output, entry.display_id);
+
+        bool is_lit = false;
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+            is_lit = find_lit_head(output) != nullptr;
+            sync::spin_unlock_irqrestore(m_output_lock, irq);
+        });
+
+        if (!is_lit) {
+            light_plugged_output(output);
         }
     }
+}
+
+void display_engine::mark_registered() {
+    m_is_registered = true;
 }
 
 void display_engine::take_down_output(uint8_t output) {
@@ -3141,6 +3314,384 @@ void display_engine::stop_dark_head(engine_head& head, uint32_t staying_ids) {
     }
 }
 
+void display_engine::light_plugged_output(uint8_t output) {
+    if (m_is_display_failed.load_acquire() || m_failed.is_set()) {
+        return;
+    }
+
+    if (!m_is_registered) {
+        log::info(
+            "nvidia: output %u stays dark, as the display engine is not registered while gfxfb keeps the boot "
+            "framebuffer",
+            output
+        );
+        return;
+    }
+
+    // The monitor plugged in may be another one, so its link's power-down facts start again from the connector's
+    const display_output& entry = m_outputs.outputs[output];
+    const chip_displayport& gpu = m_display.displayport;
+    m_power_down.rates[output] = connector_link_limits(entry, gpu.max_rate).max_rate;
+    m_power_down.d3_outputs &= ~(1u << output);
+
+    uint32_t modes_bytes = sizeof(output_modes);
+    auto* modes = static_cast<output_modes*>(heap::uzalloc(modes_bytes));
+    if (modes == nullptr) {
+        log::error("nvidia: output %u stays dark, as allocating %u bytes for its modes failed", output, modes_bytes);
+        return;
+    }
+
+    uint32_t monitor_bytes = sizeof(edid::monitor);
+    auto* monitor = static_cast<edid::monitor*>(heap::uzalloc(monitor_bytes));
+    if (monitor == nullptr) {
+        log::error(
+            "nvidia: output %u stays dark, as allocating %u bytes for parsing its EDID failed",
+            output,
+            monitor_bytes
+        );
+        heap::ufree(modes);
+        return;
+    }
+
+    rm::handle display_common = m_objects.display_common;
+    int32_t rc = read_connected_monitor(m_firmware, display_common, gpu, output, entry, *monitor, *modes, m_power_down);
+    heap::ufree(monitor);
+    if (rc == OK && modes->count > 0) {
+        light_output(output, *modes);
+    } else if (rc == OK) {
+        log::info("nvidia: output %u stays dark, as it has no mode", output);
+    }
+
+    heap::ufree(modes);
+    if (rc == ERR_NO_MEMORY) {
+        log::error("nvidia: output %u stays dark, as a request reading its monitor cannot be allocated", output);
+    } else if (rc != OK) {
+        log::error("nvidia: reading output %u's monitor failed: %d, so the display failed", output, rc);
+        fail_display();
+    }
+}
+
+void display_engine::light_output(uint8_t output, const output_modes& modes) {
+    light_set lit = {};
+    uint8_t head = NO_HEAD;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        for (uint8_t index = 0; index < m_display_heads.count; index++) {
+            const engine_head& state = m_heads[index];
+            if (state.is_lit) {
+                output_light& lit_light = lit.lights[lit.count++];
+                lit_light.output = state.output;
+                lit_light.timing = state.timing;
+                lit_light.head = index;
+                lit_light.window = state.window;
+            }
+
+            // A dark head holds a base buffer only when undoing one of its bindings failed, so no light reuses it
+            bool is_free = !state.is_lit && !state.is_closing && state.base_buffer == nullptr;
+            if (is_free && head == NO_HEAD) {
+                head = index;
+            }
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (head == NO_HEAD) {
+        log::info("nvidia: output %u stays dark, as no head is left for it", output);
+        return;
+    }
+
+    // `display_heads` promises each head below its count a window
+    uint8_t window = static_cast<uint8_t>(__builtin_ctz(windows_of_head(m_display_heads, head)));
+    output_light light = {};
+    bool is_chosen = false;
+    int32_t rc =
+        choose_light(m_firmware, m_objects.bandwidth_check, output, modes, lit, head, window, light, is_chosen);
+    if (rc == ERR_NO_MEMORY) {
+        log::error("nvidia: output %u stays dark, as the bandwidth check's request cannot be allocated", output);
+        return;
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: asking the bandwidth check about output %u failed: %d, so the display failed", output, rc);
+        fail_display();
+        return;
+    }
+
+    if (!is_chosen) {
+        log::info("nvidia: output %u stays dark, as every one of its modes is refused", output);
+        return;
+    }
+
+    const char* beside = "";
+    if (lit.count == 1) {
+        beside = " beside the lit output";
+    } else if (lit.count > 1) {
+        beside = " beside the lit outputs";
+    }
+
+    uint64_t millihertz = light.timing.refresh_millihertz();
+    log::info(
+        "nvidia: output %u is chosen to light at its EDID's timing %u, %u by %u at %lu.%03lu Hz, on head %u with "
+        "window %u, which the bandwidth check accepts%s",
+        output,
+        light.timing_index,
+        light.timing.width,
+        light.timing.height,
+        millihertz / 1000,
+        millihertz % 1000,
+        head,
+        window,
+        beside
+    );
+
+    // A head keeps the notifier and cursor channel an earlier light set up, as it keeps its window channel
+    bool is_prepared = false;
+    rc = prepare_light(m_registers, *m_card, m_display, m_present_windows, lit, light, is_prepared);
+    engine_head& state = m_heads[head];
+    bool lacks_notifier = state.notifier.physical_address() == 0;
+    if (rc == OK && is_prepared && lacks_notifier) {
+        rc = set_up_window_notifier(m_firmware, m_instance_memory, *m_card, state);
+    }
+
+    if (state.notifier_context_dma != 0) {
+        m_has_window_notifier.store_release(true);
+    }
+
+    bool lacks_cursor = !state.cursor.holds_channel();
+    if (rc == OK && is_prepared && lacks_cursor) {
+        rc = set_up_cursor(m_registers, m_display, m_present_heads, light);
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: setting up output %u's light failed: %d, so the display failed", output, rc);
+        fail_display();
+        return;
+    }
+
+    if (!is_prepared) {
+        log::error(
+            "nvidia: output %u stays dark, as its window channel or a surface it scans out is not set up",
+            output
+        );
+        return;
+    }
+
+    if (!run_light(light, modes.dpcd, lit)) {
+        return;
+    }
+
+    // gfxfb never reads an output past its count
+    if (output < m_output_count) {
+        RUN_ELEVATED(m_output_changed(this, output));
+    }
+}
+
+// Sends the end of output `output`'s light naming `ended_ids`, logged, returning false when the request fails other
+// than by a refusal
+static bool end_light(firmware& fw, rm::handle display_common, uint8_t output, uint32_t ended_ids) {
+    int32_t rc = send_display_change(fw, display_common, ended_ids, rm::DISPLAY_CHANGE_END);
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display common refused the end of output %u's light naming %s 0x%X",
+            output,
+            display_ids_noun(ended_ids),
+            ended_ids
+        );
+        return true;
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: the end of output %u's light failed: %d, leaving the display failed", output, rc);
+        return false;
+    }
+
+    log::info(
+        "nvidia: display common took the end of output %u's light naming %s 0x%X",
+        output,
+        display_ids_noun(ended_ids),
+        ended_ids
+    );
+
+    return true;
+}
+
+bool display_engine::run_light(const output_light& light, const dpcd_capabilities& dpcd, const light_set& lit) {
+    // As at bring-up, the core channel's first update follows a wait for that channel and a read of the window owners
+    window_owners owners = {};
+    if (!m_has_sent_update) {
+        bool is_idle = false;
+        int32_t rc = wait_core_channel_idle(m_firmware, m_objects.display, m_display, is_idle);
+        if (rc != OK) {
+            log::error(
+                "nvidia: waiting for the core channel before output %u's light failed: %d, so the display failed",
+                light.output,
+                rc
+            );
+            fail_display();
+            return false;
+        }
+
+        log_core_channel_idle(is_idle);
+        owners = read_window_owners(m_registers, m_present_windows);
+        log_window_owners(owners, m_present_windows, m_display.head_count);
+    }
+
+    rm::handle display_common = m_objects.display_common;
+    const display_output& output = m_outputs.outputs[light.output];
+    uint32_t lit_ids = light_set_display_ids(lit, m_outputs);
+    uint32_t started_ids = lit_ids | output.display_id;
+    int32_t rc = send_display_change(m_firmware, display_common, started_ids, rm::DISPLAY_CHANGE_START);
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display common refused the start of output %u's light naming %s 0x%X, so the output stays dark",
+            light.output,
+            display_ids_noun(started_ids),
+            started_ids
+        );
+        drop_prepared_light(light);
+        return false;
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: the start of output %u's light failed: %d, so the display failed", light.output, rc);
+        fail_display();
+        return false;
+    }
+
+    log::info(
+        "nvidia: display common took the start of output %u's light naming %s 0x%X",
+        light.output,
+        display_ids_noun(started_ids),
+        started_ids
+    );
+
+    uint32_t light_bit = 1u << light.output;
+    bool is_boot_output = false;
+    if (count_active_heads(m_running_heads) > 0) {
+        rc = shut_down_heads(m_registers, m_display_heads, m_present_windows, m_running_heads);
+        if (rc != OK) {
+            log::error(
+                "nvidia: the shutdown update before output %u's light failed: %d, so the display failed",
+                light.output,
+                rc
+            );
+            fail_display();
+            end_light(m_firmware, display_common, light.output, lit_ids);
+            return false;
+        }
+
+        m_running_heads = {};
+
+        // The light trains its own link again at once, so only the other boot outputs' links are powered down
+        is_boot_output = (m_boot_outputs & light_bit) != 0;
+        uint32_t dark_boot_outputs = m_boot_outputs & ~light_bit;
+        rc = power_down_links(
+            m_firmware,
+            display_common,
+            m_outputs,
+            dark_boot_outputs,
+            m_power_down,
+            "the display failed"
+        );
+        if (rc != OK) {
+            fail_display();
+
+            // As after a failed link request, no end follows
+            return false;
+        }
+    }
+
+    uint8_t assigned_links = 0;
+    output_link link = {};
+    bool is_set_up = false;
+    rc = set_up_output_link(
+        m_firmware,
+        display_common,
+        m_has_crossbar,
+        output,
+        dpcd,
+        light,
+        assigned_links,
+        link,
+        is_set_up
+    );
+    if (rc != OK) {
+        log::error("nvidia: display id 0x%X's link is not set up, so the display failed", output.display_id);
+        fail_display();
+
+        // No end follows, since it would wait on the firmware that just failed a request
+        return false;
+    }
+
+    if (!is_set_up) {
+        log::error(
+            "nvidia: display id 0x%X's link is not set up, so output %u stays dark",
+            output.display_id,
+            light.output
+        );
+
+        // The boot firmware's assignment still drives a boot output's link, so it is powered down unassigned too, and
+        // as the light trains with FEC off, only a boot output's link takes the FEC order
+        if (assigned_links != 0 || is_boot_output) {
+            bool sets_monitor_to_d3 = (m_power_down.d3_outputs & light_bit) != 0;
+            rc = power_down_link(
+                m_firmware,
+                display_common,
+                output.display_id,
+                m_power_down.rates[light.output],
+                sets_monitor_to_d3,
+                is_boot_output
+            );
+            if (rc != OK) {
+                log::error(
+                    "nvidia: display id 0x%X's link is not powered down, so the display failed",
+                    output.display_id
+                );
+                fail_display();
+
+                // As after a failed link request, no end follows
+                return false;
+            }
+        }
+
+        drop_prepared_light(light);
+        if (!end_light(m_firmware, display_common, light.output, lit_ids)) {
+            fail_display();
+        }
+
+        return false;
+    }
+
+    head_light lights[1] = {{
+        .head                     = light.head,
+        .windows                  = served_windows(m_display_heads, m_present_windows, light.head),
+        .timing                   = light.timing,
+        .display_id               = output.display_id,
+        .link                     = link,
+        .output_table_context_dma = m_look_up_table_context_dma,
+    }};
+
+    bool shows_cursor_memory = false;
+    rc = light_heads(m_registers, m_display_heads, m_present_windows, owners, lights, 1, &shows_cursor_memory);
+    if (rc != OK) {
+        log::error("nvidia: lighting head %u failed: %d, so the display failed", light.head, rc);
+        fail_display();
+        end_light(m_firmware, display_common, light.output, lit_ids);
+        return false;
+    }
+
+    if (!end_light(m_firmware, display_common, light.output, started_ids)) {
+        fail_display();
+        return false;
+    }
+
+    // Presents reach the head only once the mode set has ended
+    mark_head_lit(m_registers, lights[0], shows_cursor_memory);
+
+    return true;
+}
+
 void display_engine::fail_display() {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
@@ -3159,18 +3710,7 @@ bool display_engine::are_flips_on() const {
 }
 
 bool display_engine::are_presents_supported() const {
-    if (!are_flips_on()) {
-        return false;
-    }
-
-    // `set_up` binds the notifiers before flips turn on, so reading flips with acquire orders these bare reads
-    for (const engine_head& head : m_heads) {
-        if (head.notifier_context_dma != 0) {
-            return true;
-        }
-    }
-
-    return false;
+    return are_flips_on() && m_has_window_notifier.load_acquire();
 }
 
 void display_engine::mark_head_lit(registers& regs, const head_light& light, bool has_cursor) {
@@ -3200,6 +3740,15 @@ void display_engine::mark_head_lit(registers& regs, const head_light& light, boo
         head.is_cursor_update_owed = false;
         head.cursor_hot_x = 0;
         head.cursor_hot_y = 0;
+
+        head.frame_count = 0;
+        head.vertical_blank_ns = 0;
+        head.serviced_frame = 0;
+        head.first_second = {};
+        head.has_logged_first_second = false;
+
+        head.check_frame = 0;
+        head.last_reported_frame = 0;
 
         head.is_lit = true;
         head.times = times;
@@ -3743,6 +4292,7 @@ void display_engine::bind_buffer(operation& op) {
     }
 
     if (lit_windows == 0) {
+        engine.m_created_buffers.push_back(&buffer);
         op.result = gfxfb::OK;
         return;
     }
@@ -3775,6 +4325,7 @@ void display_engine::bind_buffer(operation& op) {
         );
     }
 
+    engine.m_created_buffers.push_back(&buffer);
     op.result = gfxfb::OK;
 }
 
@@ -3788,6 +4339,9 @@ void display_engine::release_scanout_buffer(operation& op) {
     auto& release = static_cast<buffer_operation&>(op);
     display_engine& engine = *release.engine;
     scanout_buffer* buffer = release.buffer;
+    if (buffer->created_link.is_linked()) {
+        engine.m_created_buffers.remove(buffer);
+    }
 
     bool is_released = false;
     RUN_ELEVATED({
@@ -3804,7 +4358,21 @@ void display_engine::release_scanout_buffer(operation& op) {
         return;
     }
 
-    if (engine.m_is_display_failed.load_acquire()) {
+    // No channel names a buffer bound to no window, so a failed display's head cannot read it
+    bool is_display_failed = engine.m_is_display_failed.load_acquire();
+    if (is_display_failed && buffer->bound_windows == 0) {
+        log::info(
+            "nvidia: the display buffer at 0x%lX in video memory is freed though the display failed, as no channel "
+            "names it",
+            buffer->range.offset
+        );
+        engine.m_memory.unmap_for_cpu(buffer->range);
+        engine.m_memory.release(buffer->range);
+        heap::ufree_delete(buffer);
+        return;
+    }
+
+    if (is_display_failed) {
         log::warn(
             "nvidia: the display buffer at 0x%lX in video memory is kept for good, as the display failed",
             buffer->range.offset

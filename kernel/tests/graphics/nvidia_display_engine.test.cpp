@@ -410,6 +410,7 @@ public:
     uint32_t   failing_check = 0;             // the request, from 1, that fails with `check_result`, 0 for none
     int32_t    check_result = OK;             // the error that request fails with
     uint32_t   check_heads[8] = {};           // a bit for each head the first requests name, bit 0 head 0's
+    uint32_t   check_clocks[8][DISPLAY_HEADS_MAX] = {}; // each head's pixel clock in kHz in the first requests
     uint32_t   untrained_ids = 0;             // display ids whose trainings at one or more lanes are refused
     uint32_t   refused_facts_resources = 0;   // a bit for each output resource whose DisplayPort facts are refused
     uint32_t   refused_stream_heads = 0;      // a bit for each head whose stream request is refused
@@ -1072,7 +1073,7 @@ private:
         return false;
     }
 
-    // Keeps the heads a bandwidth check request names
+    // Keeps the heads a bandwidth check request names and each one's pixel clock
     void keep_check(uint32_t command, const void* params) {
         uint32_t request = control_count(rm::CONTROL_IS_MODE_POSSIBLE);
         if (command != rm::CONTROL_IS_MODE_POSSIBLE || request > sizeof(check_heads) / sizeof(check_heads[0])) {
@@ -1082,6 +1083,7 @@ private:
         const rm::mode_possible_params* check = static_cast<const rm::mode_possible_params*>(params);
         for (uint8_t index = 0; index < check->head_count; index++) {
             check_heads[request - 1] |= 1u << check->heads[index].head;
+            check_clocks[request - 1][check->heads[index].head] = check->heads[index].pixel_clock_khz;
         }
     }
 
@@ -1516,6 +1518,18 @@ struct display_engine_test_access {
         return lit_state(engine).frame_count;
     }
 
+    static uint64_t frame_count(const display_engine& engine, uint8_t head) {
+        return engine.m_heads[head].frame_count;
+    }
+
+    static bool has_logged_first_second(const display_engine& engine, uint8_t head) {
+        return engine.m_heads[head].has_logged_first_second;
+    }
+
+    static void mark_first_second_logged(display_engine& engine, uint8_t head) {
+        engine.m_heads[head].has_logged_first_second = true;
+    }
+
     static const first_second_statistics& first_second(const display_engine& engine) {
         return lit_state(engine).first_second;
     }
@@ -1562,6 +1576,10 @@ struct display_engine_test_access {
 
     static uint64_t last_reported_frame(const display_engine& engine) {
         return lit_state(engine).last_reported_frame;
+    }
+
+    static uint64_t last_reported_frame(const display_engine& engine, uint8_t head) {
+        return engine.m_heads[head].last_reported_frame;
     }
 
     static bool is_latch_check_scheduled(const display_engine& engine) {
@@ -1728,11 +1746,11 @@ static void read_kicked_update(display_engine&) {
     g_core_channel_registers[CHANNEL_GET / sizeof(uint32_t)] = put;
 }
 
-// The outputs the engine last built reported taken down, and the last of them
+// The outputs the engine last built reported lit or taken down by its driver task, and the last of them
 static uint32_t g_output_change_count = 0;
 static uint32_t g_output_change_output = 0;
 
-// Records and logs an output taken down where gfxfb's `output_changed` would take it
+// Records and logs an output the driver task lit or took down where gfxfb's `output_changed` would take it
 static void record_output_change(gfxfb::display* display, uint32_t output) {
     EXPECT_EQ(display, static_cast<gfxfb::display*>(g_built_engine));
     g_output_change_count++;
@@ -4692,7 +4710,7 @@ TEST(nvidia_display_engine, set_up_powers_down_the_link_of_a_boot_output_staying
     EXPECT_TRUE(fw.power_downs[1].is_before_link);
 
     const char* shut_down = "nvidia: the core channel read the shutdown update for ";
-    const char* powered_down = "nvidia: output 1 stays dark, so bring-up powers down its link, display id 0x200's";
+    const char* powered_down = "nvidia: output 1 stays dark, so the driver powers down display id 0x200's link";
     ASSERT_TRUE(engine_log_contains(shut_down));
     ASSERT_TRUE(engine_log_contains(powered_down));
     EXPECT_LT(engine_log_offset(shut_down), engine_log_offset(powered_down));
@@ -4736,7 +4754,9 @@ TEST(nvidia_display_engine, set_up_leaves_a_dark_boot_outputs_monitor_below_dpcd
         EXPECT_EQ(fw.power_downs[0].rate, static_cast<uint32_t>(displayport::link_rate::hbr3));
         EXPECT_TRUE(fw.power_downs[0].is_before_link);
 
-        EXPECT_TRUE(engine_log_contains(", its monitor left out of D3 as no DPCD of revision 1.1 or later was read"));
+        const char* no_monitor = ", with no monitor plugged in to set to D3";
+        const char* below_1_1 = ", its monitor left out of D3 as no DPCD of revision 1.1 or later was read";
+        EXPECT_TRUE(engine_log_contains(is_unplugged ? no_monitor : below_1_1));
         EXPECT_EQ(engine.release(), OK);
     }
 }
@@ -4796,9 +4816,10 @@ TEST(nvidia_display_engine, set_up_powers_a_dark_boot_outputs_link_down_at_the_h
 
         bool is_left_out_of_d3 = tried.is_unplugged || tried.is_dpcd_refused;
         EXPECT_EQ(fw.power_down_count, is_left_out_of_d3 ? 1u : 2u);
+        EXPECT_EQ(engine_log_contains(", with no monitor plugged in to set to D3"), tried.is_unplugged);
         EXPECT_EQ(
             engine_log_contains(", its monitor left out of D3 as no DPCD of revision 1.1 or later was read"),
-            is_left_out_of_d3
+            tried.is_dpcd_refused
         );
 
         gfxfb::output_state lit = {};
@@ -6449,7 +6470,7 @@ TEST(nvidia_display_engine, set_up_lights_in_one_first_update_when_no_owner_chan
 static constexpr uint32_t LIGHT_TAKE_DOWN_END = LIGHT_END + (4 + 4 + 5) * 2 * sizeof(uint32_t);
 
 // A light whose notifier wait fails takes the engine down, stopping the active head and the lit head on link 3 ahead of
-// an update naming no notifier, and logs neither the light's read nor the armed state
+// an update naming no notifier, logs neither the light's read nor the armed state, and frees the light's base buffer
 TEST(nvidia_display_engine, set_up_takes_the_lit_head_down_after_a_failed_light) {
     engine_firmware fw;
     fw.get_at_stream = LIGHT_TAKE_DOWN_END;
@@ -6466,6 +6487,7 @@ TEST(nvidia_display_engine, set_up_takes_the_lit_head_down_after_a_failed_light)
 
     EXPECT_TRUE(engine_log_contains("nvidia: lighting head 1 failed: -4, so bring-up takes the display engine down"));
     EXPECT_TRUE(engine_log_contains("nvidia: the display engine is taken down, its update read by the core channel"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0's base buffer is unbound and released"));
     EXPECT_FALSE(engine_log_contains("the core channel read the mode set's update"));
     EXPECT_FALSE(engine_log_contains("after the light"));
 }
@@ -9507,13 +9529,13 @@ static void service_head(display_engine& engine, uint8_t head, uint32_t frame) {
 }
 
 // Connects outputs 0 and 1 at 1366 by 768 with no boot display and windows 0 and 1 present, so set-up lights both, and
-// backs their scanout memory and one buffer of their size more
-static bool connect_two_outputs(engine_firmware& fw, engine_video_memory& memory) {
+// backs their scanout memory and `spare_buffers` buffers of their size more
+static bool connect_two_outputs(engine_firmware& fw, engine_video_memory& memory, uint32_t spare_buffers = 1) {
     connect_outputs_at_1366_by_768(fw, OUTPUT_0_ID | OUTPUT_1_ID);
     fw.boot_display_id = 0;
     fw.present_windows = 0b11;
     fw.reads_updates_whole = true;
-    return memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES + BASE_BUFFER_1366_BY_768_BYTES);
+    return memory.give_scanout(TWO_OUTPUTS_SCANOUT_BYTES + spare_buffers * BASE_BUFFER_1366_BY_768_BYTES);
 }
 
 // Two lit outputs each take a present on their own window, and each present ends latched only at its own head's
@@ -10996,4 +11018,619 @@ TEST(nvidia_display_engine, event_object_release_error_is_returned_ahead_of_the_
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(TEST_DISPLAY_CLASS)));
     EXPECT_TRUE(fw.releases_once(first, fw.allocated(rm::CLASS_DISPLAY_BANDWIDTH_CHECK)));
     EXPECT_TRUE(fw.releases_once(first, display_common));
+}
+
+// Connects outputs 0 and 1 as `connect_two_outputs` does with only output 0's monitor plugged in, so set-up lights
+// output 0 alone, on head 0
+static bool connect_output_0_of_two(engine_firmware& fw, engine_video_memory& memory, uint32_t spare_buffers = 1) {
+    bool has_memory = connect_two_outputs(fw, memory, spare_buffers);
+    fw.connected_ids = OUTPUT_0_ID;
+    return has_memory;
+}
+
+// Plugs a monitor into output 1 and serves the hotplug with the log kept, clearing the recorded mode set requests
+// first, so set-up's ids cannot stand in for a request the plug never sent
+static void plug_output_1(engine_firmware& fw, display_engine& engine) {
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.plugged_ids = OUTPUT_1_ID;
+    fw.unplugged_ids = 0;
+
+    fw.mode_set_requests = 0;
+    fw.mode_set_ids[0] = 0;
+    fw.mode_set_ids[1] = 0;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+}
+
+// A monitor plugged into dark output 1 lights it on head 1 with window 1, asked about beside output 0's kept timing, in
+// a mode set naming both displays, its base buffer bound to windows 0 and 1, output 0's and the table to window 1
+TEST(nvidia_display_engine, a_plugged_monitor_lights_its_output_while_the_other_stays_lit) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_EQ(head_of_output(engine, 0), 0u);
+    ASSERT_FALSE(reads_lit(engine, 1));
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    plug_output_1(fw, engine);
+
+    ASSERT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), 2u);
+    EXPECT_EQ(fw.check_heads[1], (1u << 0) | (1u << 1));
+    EXPECT_NE(fw.check_clocks[0][0], 0u);
+    EXPECT_EQ(fw.check_clocks[1][0], fw.check_clocks[0][0]);
+
+    EXPECT_TRUE(
+        engine_log_contains("on head 1 with window 1, which the bandwidth check accepts beside the lit output"));
+    EXPECT_TRUE(engine_log_contains("nvidia: the GSP's firmware keeps window 1's channel"));
+    EXPECT_FALSE(engine_log_contains("core channel idle"));
+    EXPECT_TRUE(engine_log_contains("nvidia: display common took the start of output 1's light naming display ids "
+                                    "0x300"));
+    EXPECT_TRUE(
+        engine_log_contains("nvidia: display common took the end of output 1's light naming display ids 0x300"));
+
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID | OUTPUT_1_ID);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID | OUTPUT_1_ID);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(head_of_output(engine, 1), 1u);
+    EXPECT_EQ(g_output_change_count, 1u);
+    EXPECT_EQ(g_output_change_output, 1u);
+
+    rm::handle base_0 = display_engine_test_access::base_buffer_context_dma(engine, 0);
+    rm::handle base_1 = display_engine_test_access::base_buffer_context_dma(engine, 1);
+    rm::handle table = display_engine_test_access::look_up_table_context_dma(engine);
+
+    EXPECT_TRUE(binds_to_channel(base_0, window_channel_number(1)));
+    EXPECT_TRUE(binds_to_channel(base_1, window_channel_number(0)));
+    EXPECT_TRUE(binds_to_channel(base_1, window_channel_number(1)));
+    EXPECT_TRUE(binds_to_channel(table, window_channel_number(1)));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Output 1, unplugged after a latched present and replugged, relights on head 1 with the window channel and created
+// buffer binding its head kept, frame counts and first second reset and a new base buffer, as gfxfb may keep the old
+TEST(nvidia_display_engine, a_replugged_monitor_relights_its_head_with_the_channel_it_kept) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory, 2));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_EQ(head_of_output(engine, 1), 1u);
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    const auto* buffer = static_cast<const scanout_buffer*>(created);
+    ASSERT_EQ(buffer->bound_windows, 0b11u);
+
+    start_recording_present_ends(engine);
+    ASSERT_EQ(engine.present(1, engine.base_buffer(1), nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, 1));
+    service_head(engine, 1, 1);
+    ASSERT_EQ(display_engine_test_access::frame_count(engine, 1), 1u);
+    ASSERT_EQ(display_engine_test_access::last_reported_frame(engine, 1), 1u);
+
+    display_engine_test_access::mark_first_second_logged(engine, 1);
+
+    const display_channel* queue = display_engine_test_access::window_queue(engine, 1);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    fw.unplugged_ids = OUTPUT_1_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+    ASSERT_FALSE(reads_lit(engine, 1));
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(head_of_output(engine, 1), 1u);
+    EXPECT_EQ(display_engine_test_access::window_queue(engine, 1), queue);
+    EXPECT_EQ(display_engine_test_access::frame_count(engine, 1), 0u);
+    EXPECT_EQ(display_engine_test_access::last_reported_frame(engine, 1), 0u);
+
+    EXPECT_FALSE(engine_log_contains("nvidia: the GSP's firmware keeps window 1's channel"));
+    EXPECT_NE(engine.base_buffer(1), taken_down);
+    EXPECT_EQ(g_output_change_count, 2u);
+    EXPECT_EQ(buffer->bound_windows, 0b11u);
+    EXPECT_FALSE(display_engine_test_access::has_logged_first_second(engine, 1));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+    heap::ufree_delete(static_cast<scanout_buffer*>(created));
+}
+
+// Each buffer created while output 1 is dark is bound to window 1's channel as it lights, and the first presents there
+TEST(nvidia_display_engine, a_light_binds_every_created_buffer_to_its_window) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory, 2));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer(engine, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    const auto* buffer = static_cast<const scanout_buffer*>(created);
+    EXPECT_EQ(buffer->bound_windows, 0b01u);
+
+    gfxfb::buffer* second = nullptr;
+    ASSERT_TRUE(create_served_buffer(engine, second, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+
+    plug_output_1(fw, engine);
+
+    ASSERT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(buffer->bound_windows, 0b11u);
+    EXPECT_EQ(static_cast<const scanout_buffer*>(second)->bound_windows, 0b11u);
+    EXPECT_TRUE(binds_to_channel(buffer->context_dma, window_channel_number(1)));
+    EXPECT_EQ(engine.present(1, created, nullptr, 0), gfxfb::OK);
+
+    EXPECT_EQ(engine.release(), OK);
+    heap::ufree_delete(static_cast<scanout_buffer*>(created));
+    heap::ufree_delete(static_cast<scanout_buffer*>(second));
+}
+
+// A buffer created while output 0 is unplugged is bound to window 1 alone, and output 0's relight on head 0 binds it
+// to window 0 too, below the window it was bound to first
+TEST(nvidia_display_engine, a_light_binds_a_created_buffer_bound_only_to_a_higher_window) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory, 2));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_EQ(head_of_output(engine, 0), 0u);
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    gfxfb::buffer* taken_down = engine.base_buffer(0);
+    ASSERT_NOT_NULL(taken_down);
+    fw.unplugged_ids = OUTPUT_0_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+    ASSERT_FALSE(reads_lit(engine, 0));
+
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer_of_size(engine, taken_down->width, taken_down->height, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    const auto* buffer = static_cast<const scanout_buffer*>(created);
+    ASSERT_EQ(buffer->bound_windows, 0b10u);
+
+    fw.unplugged_ids = 0;
+    fw.plugged_ids = OUTPUT_0_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    ASSERT_TRUE(reads_lit(engine, 0));
+    EXPECT_EQ(head_of_output(engine, 0), 0u);
+    EXPECT_EQ(buffer->bound_windows, 0b11u);
+    EXPECT_TRUE(binds_to_channel(buffer->context_dma, window_channel_number(0)));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+    heap::ufree_delete(static_cast<scanout_buffer*>(created));
+}
+
+// While the engine is not registered, as when gfxfb keeps the boot framebuffer, the plugged output's connected
+// record is set, the log says why it stays dark, and nothing lights
+TEST(nvidia_display_engine, a_plugged_monitor_lights_nothing_while_the_engine_is_not_registered) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    engine.turn_on_flips();
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(display_engine_test_access::is_connected(engine, 1));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 stays dark, as the display engine is not registered while gfxfb "
+                                    "keeps the boot framebuffer"));
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A plugged output whose link assignment is refused stays dark: its base buffer is unbound and released, the mode set
+// ends naming output 0 alone, and nothing is reported
+TEST(nvidia_display_engine, a_plugged_output_whose_assignment_is_refused_stays_dark) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    uint32_t releases = memory.scanout_releases;
+    fw.refused_assignment_ids = OUTPUT_1_ID;
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x200's link is not set up, so output 1 stays dark"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1's base buffer is unbound and released"));
+    EXPECT_EQ(memory.scanout_releases, releases + 1);
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID | OUTPUT_1_ID);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID);
+
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A plug with no unplug since the last one reads the monitor again, so a DPCD 1.0 monitor in place of a later
+// revision's has its refused link powered down at its own rate and without D3, output 1 staying dark both times
+TEST(nvidia_display_engine, a_monitor_plugged_in_place_of_another_powers_its_link_down_by_its_own_dpcd) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    fw.untrained_ids = OUTPUT_1_ID;
+    fw.output_1_dpcd_receiver = DPCD_RECEIVER_HBR2;
+    plug_output_1(fw, engine);
+    ASSERT_EQ(fw.power_down_count, 2u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_DP_AUX);
+    EXPECT_EQ(fw.power_downs[1].rate, static_cast<uint32_t>(displayport::link_rate::hbr2));
+
+    fw.power_down_count = 0;
+    fw.output_1_dpcd_receiver = DPCD_RECEIVER_1_0;
+    plug_output_1(fw, engine);
+
+    ASSERT_EQ(fw.power_down_count, 1u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_1_ID);
+    EXPECT_EQ(fw.power_downs[0].rate, static_cast<uint32_t>(displayport::link_rate::hbr3));
+
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A light whose update the core channel never reads fails the display, ends the mode set naming output 0 alone and
+// reports nothing
+TEST(nvidia_display_engine, a_plugged_outputs_failed_update_fails_the_display) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    display_engine_test_access::set_update_seam(engine, nullptr);
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: lighting head 1 failed: -4, so the display failed"));
+    EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID);
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_EQ(g_output_change_count, 0u);
+
+    display_engine_test_access::set_update_seam(engine, read_kicked_update);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A light whose end fails other than by a refusal fails the display before output 1 is marked lit, so it reads dark
+// and nothing is reported
+TEST(nvidia_display_engine, a_plugged_outputs_failed_end_fails_the_display_before_it_is_marked_lit) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    fw.mode_set_end_result = ERR_TIMEOUT;
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the end of output 1's light failed: "));
+    EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_EQ(g_output_change_count, 0u);
+
+    fw.mode_set_end_result = OK;
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// With no monitor at set-up nothing lights, then output 0's plug lights it on head 0 in the first update, after a wait
+// for the core channel and a read of the window owners, setting up the look-up table surface, and a present is taken
+TEST(nvidia_display_engine, a_monitor_plugged_after_a_dark_set_up_lights_in_the_first_update) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    fw.connected_ids = 0;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_FALSE(engine.has_lit_output());
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    set_armed_control(0, 0x0);
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.plugged_ids = OUTPUT_0_ID;
+    fw.mode_set_requests = 0;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the GSP's firmware reports the core channel idle"));
+    EXPECT_TRUE(engine_log_contains("nvidia: head 0 owns window 0 in the core channel's armed state"));
+
+    EXPECT_TRUE(engine_log_contains("on head 0 with window 0, which the bandwidth check accepts\r\n"));
+    EXPECT_TRUE(engine_log_contains("nvidia: the look-up table surface lies at"));
+    EXPECT_NE(display_engine_test_access::look_up_table(engine).size, 0u);
+    EXPECT_EQ(fw.mode_set_ids[0], OUTPUT_0_ID);
+    EXPECT_EQ(fw.mode_set_ids[1], OUTPUT_0_ID);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_EQ(head_of_output(engine, 0), 0u);
+    EXPECT_EQ(g_output_change_count, 1u);
+
+    start_recording_present_ends(engine);
+    EXPECT_EQ(engine.present(0, engine.base_buffer(0), nullptr, 0), gfxfb::OK);
+    EXPECT_TRUE(display_engine_test_access::hold_deadline(engine));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A bring-up whose light and take-down both fail fails the display, as its heads may still scan out, so a monitor
+// plugged in later lights nothing
+TEST(nvidia_display_engine, a_failed_bring_up_take_down_fails_the_display_so_a_plug_lights_nothing) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    display_engine_test_access::set_update_seam(engine, nullptr);
+    ASSERT_EQ(set_up_logged(engine), OK);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: taking the display engine down failed: "));
+    EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+    display_engine_test_access::set_update_seam(engine, read_kicked_update);
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    plug_output_1(fw, engine);
+
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A bring-up whose start is refused frees the base buffers it prepared, so a monitor plugged into output 1 later lights
+// on head 0 though set-up prepared both heads
+TEST(nvidia_display_engine, a_plug_after_a_refused_bring_up_start_lights_on_a_head_bring_up_prepared) {
+    engine_firmware fw;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_DISPLAY_CHANGE,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_FALSE(engine.has_lit_output());
+    EXPECT_EQ(memory.scanout_releases, 2u);
+    fw.refusals[0] = {};
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(head_of_output(engine, 1), 0u);
+    EXPECT_EQ(g_output_change_count, 1u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Connects output 0 of two as the boot firmware's display with the mode set's start refused, so set-up lights nothing
+// and the boot firmware's head still runs
+static bool show_output_0_of_two_refusing_the_start(engine_firmware& fw, engine_video_memory& memory) {
+    bool has_memory = connect_output_0_of_two(fw, memory);
+    fw.boot_display_id = OUTPUT_0_ID;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_DISPLAY_CHANGE,
+        .object = 0,
+        .result = ERR_FIRMWARE,
+    };
+
+    return has_memory;
+}
+
+// A plug after a bring-up that lit nothing stops the boot firmware's head with the shutdown update, then powers down
+// the dark boot output's link in the FEC order before the plugged output's link is set up
+TEST(nvidia_display_engine, a_plug_after_a_dark_bring_up_powers_down_the_boot_outputs_link) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_of_two_refusing_the_start(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_FALSE(engine.has_lit_output());
+    fw.refusals[0] = {};
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    plug_output_1(fw, engine);
+
+    const char* shut_down = "nvidia: the core channel read the shutdown update for 1 active head";
+    const char* powered_down = "nvidia: output 0 stays dark, so the driver powers down display id 0x100's link\r\n";
+    ASSERT_TRUE(engine_log_contains(shut_down));
+    ASSERT_TRUE(engine_log_contains(powered_down));
+    EXPECT_LT(engine_log_offset(shut_down), engine_log_offset(powered_down));
+
+    ASSERT_EQ(fw.power_down_count, 2u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_0_ID);
+    EXPECT_TRUE(fw.power_downs[0].is_before_link);
+
+    EXPECT_EQ(fw.power_downs[1].command, rm::CONTROL_DP_AUX);
+    EXPECT_EQ(fw.power_downs[1].display_id, OUTPUT_0_ID);
+    EXPECT_TRUE(fw.power_downs[1].is_before_link);
+
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_FALSE(reads_lit(engine, 0));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The boot output plugged in after a bring-up that lit nothing has its link powered down in the FEC order when its
+// assignment is refused, as the boot firmware's assignment still drives it
+TEST(nvidia_display_engine, a_refused_boot_outputs_plug_powers_its_link_down_in_the_fec_order) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(show_output_0_of_two_refusing_the_start(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_FALSE(engine.has_lit_output());
+    fw.refusals[0] = {};
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    fw.refused_assignment_ids = OUTPUT_0_ID;
+    fw.plugged_ids = OUTPUT_0_ID;
+    fw.mode_set_requests = 0;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100's link is not set up, so output 0 stays dark"));
+    ASSERT_EQ(fw.power_down_count, 2u);
+    EXPECT_EQ(fw.power_downs[0].command, rm::CONTROL_TRAIN_LINK);
+    EXPECT_EQ(fw.power_downs[0].display_id, OUTPUT_0_ID);
+    EXPECT_EQ(fw.power_downs[1].command, rm::CONTROL_DP_AUX);
+    EXPECT_EQ(fw.power_downs[1].display_id, OUTPUT_0_ID);
+
+    EXPECT_FALSE(reads_lit(engine, 0));
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// After a bring-up that lit nothing, a plug's power-down failing other than by a refusal fails the display with no end
+// sent, both for the boot output's link after the shutdown update and for a refused boot output's own link
+TEST(nvidia_display_engine, a_plugs_failed_power_down_fails_the_display_without_an_end) {
+    struct failed_power_down {
+        uint32_t    plugged_ids;
+        uint32_t    refused_assignment_ids;
+        uint8_t     output;
+        const char* failure;
+    };
+
+    const failed_power_down cases[] = {
+        {
+            .plugged_ids            = OUTPUT_1_ID,
+            .refused_assignment_ids = 0,
+            .output                 = 1,
+            .failure                = "nvidia: display id 0x100's link is not powered down, nor is the link of any "
+                                      "dark output after it, so the display failed",
+        },
+        {
+            .plugged_ids            = OUTPUT_0_ID,
+            .refused_assignment_ids = OUTPUT_0_ID,
+            .output                 = 0,
+            .failure                = "nvidia: display id 0x100's link is not powered down, so the display failed",
+        },
+    };
+
+    for (const failed_power_down& failed : cases) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(show_output_0_of_two_refusing_the_start(fw, memory));
+        display_engine& engine = new_engine(fw, memory);
+        ASSERT_EQ(set_up(engine), OK);
+
+        ASSERT_FALSE(engine.has_lit_output());
+        engine.mark_registered();
+        engine.turn_on_flips();
+
+        fw.refusals[0] = {
+            .made   = engine_firmware::kind::control,
+            .number = rm::CONTROL_TRAIN_LINK,
+            .object = 0,
+            .result = ERR_TIMEOUT,
+        };
+
+        fw.refused_assignment_ids = failed.refused_assignment_ids;
+        fw.connected_ids = OUTPUT_0_ID | failed.plugged_ids;
+        fw.plugged_ids = failed.plugged_ids;
+        fw.mode_set_requests = 0;
+        EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+        serve_logged();
+
+        EXPECT_TRUE(engine_log_contains(failed.failure));
+        EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+        EXPECT_EQ(fw.mode_set_requests, 1u);
+        EXPECT_FALSE(engine_log_contains("took the end of output"));
+        EXPECT_FALSE(reads_lit(engine, failed.output));
+        EXPECT_EQ(g_output_change_count, 0u);
+
+        fw.refusals[0] = {};
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// On a failed display, the release of a buffer bound to no window's channel frees it, as no channel names it
+TEST(nvidia_display_engine, a_failed_displays_release_frees_a_buffer_bound_to_no_window) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    engine.turn_on_flips();
+
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    uint32_t width = base->width;
+    uint32_t height = base->height;
+
+    fw.unplugged_ids = OUTPUT_0_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+    ASSERT_FALSE(reads_lit(engine, 0));
+
+    gfxfb::buffer* created = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(create_served_buffer_of_size(engine, width, height, created, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    EXPECT_EQ(static_cast<const scanout_buffer*>(created)->bound_windows, 0u);
+
+    display_engine_test_access::mark_display_failed(engine);
+    uint32_t releases = memory.scanout_releases;
+    engine.release_buffer(created);
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("in video memory is freed though the display failed, as no channel names it"));
+    EXPECT_EQ(memory.scanout_releases, releases + 1);
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(base);
 }

@@ -439,6 +439,47 @@ int32_t choose_lights(
     return rc;
 }
 
+int32_t choose_light(
+    firmware& fw,
+    rm::handle bandwidth_check,
+    uint8_t output,
+    const output_modes& modes,
+    const light_set& lit,
+    uint8_t head,
+    uint8_t window,
+    output_light& out,
+    bool& is_chosen
+) {
+    is_chosen = false;
+
+    uint32_t params_bytes = sizeof(rm::mode_possible_params);
+    auto* params = static_cast<rm::mode_possible_params*>(heap::uzalloc(params_bytes));
+    if (params == nullptr) {
+        log::error("nvidia: allocating %u bytes for the bandwidth check's request failed", params_bytes);
+        return ERR_NO_MEMORY;
+    }
+
+    bool is_found = false;
+    uint8_t rank = 0;
+    int32_t rc = find_possible_mode(fw, bandwidth_check, output, modes, lit, head, window, *params, is_found, rank);
+    heap::ufree(params);
+    if (rc != OK || !is_found) {
+        return rc;
+    }
+
+    out = {
+        .output = output,
+        .timing_index = modes.indices[rank],
+        .timing = modes.timings[rank],
+        .head = head,
+        .window = window,
+    };
+
+    is_chosen = true;
+
+    return OK;
+}
+
 int32_t check_light_set(firmware& fw, rm::handle bandwidth_check, const light_set& set, bool& is_possible) {
     is_possible = false;
 
