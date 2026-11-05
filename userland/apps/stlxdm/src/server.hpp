@@ -109,6 +109,12 @@ struct dm_client {
     uint8_t  rd_buf[SWP_MAX_MSG_SIZE];
     uint32_t rd_have = 0;
 
+    /* Handles received for ATTACH_GPU_BUFFER messages not yet handled,
+     * oldest first. One read reaches into at most two attaches. */
+    static constexpr uint32_t QUEUED_HANDLES_MAX = 2 * SWP_GPU_HANDLES;
+    int      queued_handles[QUEUED_HANDLES_MAX] = {};
+    uint32_t queued_handle_count = 0;
+
     /* Outbound bytes the socket would not take, bounded, flushed on
      * POLLOUT. The tail marker enables in-place motion coalescing. */
     std::vector<uint8_t> out_q;
@@ -169,8 +175,9 @@ public:
      * desktop. Returns 0 or -1. */
     int init(presenter* pres, const stlxconf_t* conf);
 
-    /* Binds the protocol socket and spawns the config's autostart
-     * entries, the moment clients may exist. Returns 0 or -1. */
+    /* Raises the handle limit, binds the protocol socket and spawns the
+     * config's autostart entries, the moment clients may exist.
+     * Returns 0 or -1. */
     int serve();
 
     /* Shows the pointer on the primary output's hardware cursor when it
@@ -314,7 +321,8 @@ private:
     void adopt_conf_state(dm_conf_state&& next);
     void keep_windows_in_reach();
     bool send_to(dm_client& c, uint16_t type,
-                 const void* payload, uint32_t length);
+                 const void* payload, uint32_t length,
+                 uint16_t header_flags = 0);
     void flush_window_events(dm_client& c, dm_window& w);
     void flush_client(dm_client& c);
 
@@ -354,6 +362,9 @@ private:
     std::vector<std::unique_ptr<dm_client>> m_clients;
     uint32_t m_window_count = 0;
     damage_list m_damage;
+
+    /* The GPU_INFO every client gets after HELLO_REPLY */
+    swp_gpu_info m_gpu_info = {};
 
     /* The desktop's backdrop: wallpaper or flat color, with the panels
      * painted into their rows. Exposed pixels blit from here. */
