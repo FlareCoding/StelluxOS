@@ -227,15 +227,17 @@ private:
  */
 class buffer final : public mm::device_backing {
 public:
-    buffer(device& owner, uint64_t size, uint32_t flags) : m_device(owner), m_size(size), m_flags(flags) {}
+    buffer(device& owner, uint64_t size, uint32_t placement, uint32_t flags)
+        : m_device(owner), m_size(size), m_placement(placement), m_flags(flags) {}
 
     device& owner() const { return m_device; }
     uint64_t size() const { return m_size; }
+    uint32_t placement() const { return m_placement; }
     uint32_t flags() const { return m_flags; }
     memory* backend_memory() const { return m_memory; }
     uint32_t device_id() const { return m_device_id; }
 
-    // Hands the buffer the memory its backend created for it, returned to the backend after the last reference drops
+    // Hands the buffer the memory its backend made for it, returned to the backend after the last reference drops
     void take(memory* mem, uint32_t device_id) {
         m_memory = mem;
         m_device_id = device_id;
@@ -250,6 +252,7 @@ private:
     device&  m_device;
     memory*  m_memory = nullptr;
     uint64_t m_size;
+    uint32_t m_placement;
     uint32_t m_flags;
     uint32_t m_device_id = 0;
 };
@@ -498,6 +501,11 @@ __PRIVILEGED_CODE int32_t destroy_queue(device& dev, uint64_t arg);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t create_buffer(device& dev, uint64_t arg);
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t import_buffer(device& dev, uint64_t arg);
 
 /**
  * @note Privilege: **required**

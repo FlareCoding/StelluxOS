@@ -154,6 +154,7 @@ int32_t device::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
     case GPU_QUEUE_CREATE:    return create_queue(*this, arg);
     case GPU_QUEUE_DESTROY:   return destroy_queue(*this, arg);
     case GPU_BUFFER_CREATE:   return create_buffer(*this, arg);
+    case GPU_BUFFER_IMPORT:   return import_buffer(*this, arg);
     case GPU_MAP:             return map_buffer(*this, arg);
     case GPU_UNMAP:           return unmap_range(*this, arg);
     case GPU_TIMELINE_CREATE: return create_timeline(arg);

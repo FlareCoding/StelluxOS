@@ -161,10 +161,11 @@ static gpu_test::fake_backend g_full_table_fake;
 static resource::handle_t g_fillers[resource::DEFAULT_HANDLE_LIMIT];
 
 // With the handle table full, each call that makes a handle fails with ENOMEM, the create writing no handle, and the
-// backend gets back the memory of the create that failed
+// backend gets back the memory of the create and the shared memory import that failed, the import's pin released
 TEST(gpu_device, a_full_handle_table_fails_each_new_handle_with_enomem) {
     session s(g_full_table_fake);
-    ASSERT_TRUE(s.ready());
+    gpu_test::shared_memory shared(pmm::PAGE_SIZE, resource::RIGHT_READ | resource::RIGHT_WRITE);
+    ASSERT_TRUE(s.ready() && shared.ready());
     int32_t buffer = s.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, 0);
     ASSERT_TRUE(buffer >= 0);
 
@@ -186,6 +187,12 @@ TEST(gpu_device, a_full_handle_table_fails_each_new_handle_with_enomem) {
 
     EXPECT_EQ(s.restrict_to(buffer, GPU_RIGHT_READ), static_cast<int32_t>(syscall::ENOMEM));
     EXPECT_EQ(s.new_timeline(0), static_cast<int32_t>(syscall::ENOMEM));
+    EXPECT_EQ(s.import(buffer), static_cast<int32_t>(syscall::ENOMEM));
+
+    EXPECT_EQ(s.import(shared.handle), static_cast<int32_t>(syscall::ENOMEM));
+    EXPECT_TRUE(spin_wait_ge(g_full_table_fake.released_count, 2));
+    EXPECT_EQ(g_full_table_fake.last_released, static_cast<gpu::memory*>(g_full_table_fake.last_wrapped));
+    EXPECT_EQ(shared.pins(), static_cast<size_t>(0));
 
     for (uint32_t i = 0; i < filled; i++) {
         close_handle(g_fillers[i]);
@@ -198,10 +205,11 @@ TEST(gpu_device, a_full_handle_table_fails_each_new_handle_with_enomem) {
 static gpu_test::fake_backend g_read_only_fake;
 
 // With the argument's page read-only, each call that makes a handle fails with EINVAL and leaves no handle open, and
-// the backend gets back the memory of the create that failed
+// the backend gets back the memory of the create and the shared memory import that failed, the import's pin released
 TEST(gpu_device, an_argument_the_kernel_cannot_write_back_leaves_no_handle) {
     session s(g_read_only_fake);
-    ASSERT_TRUE(s.ready());
+    gpu_test::shared_memory shared(pmm::PAGE_SIZE, resource::RIGHT_READ | resource::RIGHT_WRITE);
+    ASSERT_TRUE(s.ready() && shared.ready());
     int32_t buffer = s.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, 0);
     ASSERT_TRUE(buffer >= 0);
 
@@ -214,9 +222,13 @@ TEST(gpu_device, an_argument_the_kernel_cannot_write_back_leaves_no_handle) {
     EXPECT_EQ(s.call(GPU_BUFFER_CREATE, created), syscall::EINVAL);
     EXPECT_EQ(s.restrict_to(buffer, GPU_RIGHT_READ), static_cast<int32_t>(syscall::EINVAL));
     EXPECT_EQ(s.new_timeline(0), static_cast<int32_t>(syscall::EINVAL));
+
+    EXPECT_EQ(s.import(buffer), static_cast<int32_t>(syscall::EINVAL));
+    EXPECT_EQ(s.import(shared.handle), static_cast<int32_t>(syscall::EINVAL));
     ASSERT_EQ(s.protect_page(PROT_READ_WRITE_ARG), static_cast<int64_t>(0));
 
-    EXPECT_TRUE(spin_wait_ge(g_read_only_fake.released_count, 1));
+    EXPECT_TRUE(spin_wait_ge(g_read_only_fake.released_count, 2));
+    EXPECT_EQ(shared.pins(), static_cast<size_t>(0));
     int32_t after = s.restrict_to(buffer, GPU_RIGHT_READ);
     EXPECT_EQ(after, next);
 
