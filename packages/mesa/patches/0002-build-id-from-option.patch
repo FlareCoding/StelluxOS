@@ -1,0 +1,79 @@
+Under nouveau-stellux, takes NVK's build-id from -Dnvk-build-id, which the
+option then requires. In a static musl program dladdr always fails, so the
+lookup by address finds no build-id note and instance creation fails.
+
+--- a/src/nouveau/vulkan/nvk_instance.c
++++ b/src/nouveau/vulkan/nvk_instance.c
+@@ -12,6 +12,7 @@
+ 
+ #include "util/build_id.h"
+ #include "util/detect_os.h"
++#include "util/hex.h"
+ #include "util/mesa-blake3.h"
+ #include "util/os_misc.h"
+ #include "util/u_debug.h"
+@@ -127,6 +128,38 @@ nvk_init_dri_options(struct nvk_instance *instance)
+       instance->debug_flags |= NVK_DEBUG_ZERO_MEMORY;
+ }
+ 
++static VkResult
++nvk_init_driver_build_sha(struct nvk_instance *instance)
++{
++   STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
++
++#ifdef NVK_STELLUX
++   /* In a static musl program dladdr fails, so the lookup finds no note */
++   STATIC_ASSERT(sizeof(NVK_BUILD_ID_OVERRIDE) ==
++                 2 * BUILD_ID_EXPECTED_HASH_LENGTH + 1);
++   memset(instance->driver_build_sha, 0, sizeof(instance->driver_build_sha));
++   mesa_hex_to_bytes(instance->driver_build_sha, NVK_BUILD_ID_OVERRIDE,
++                     BUILD_ID_EXPECTED_HASH_LENGTH);
++#else
++   const struct build_id_note *note =
++      build_id_find_nhdr_for_addr(nvk_CreateInstance);
++   if (!note) {
++      return vk_errorf(NULL, VK_ERROR_INITIALIZATION_FAILED,
++                       "Failed to find build-id");
++   }
++
++   unsigned build_id_len = build_id_length(note);
++   if (build_id_len < BUILD_ID_EXPECTED_HASH_LENGTH) {
++      return vk_errorf(NULL, VK_ERROR_INITIALIZATION_FAILED,
++                       "build-id too short.  It needs to be a SHA");
++   }
++
++   copy_build_id_to_sha1(instance->driver_build_sha, note);
++#endif
++
++   return VK_SUCCESS;
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+                    const VkAllocationCallbacks *pAllocator,
+@@ -164,23 +197,9 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+       nvk_create_drm_physical_device;
+    instance->vk.physical_devices.destroy = nvk_physical_device_destroy;
+ 
+-   const struct build_id_note *note =
+-      build_id_find_nhdr_for_addr(nvk_CreateInstance);
+-   if (!note) {
+-      result = vk_errorf(NULL, VK_ERROR_INITIALIZATION_FAILED,
+-                         "Failed to find build-id");
+-      goto fail_init;
+-   }
+-
+-   unsigned build_id_len = build_id_length(note);
+-   if (build_id_len < BUILD_ID_EXPECTED_HASH_LENGTH) {
+-      result = vk_errorf(NULL, VK_ERROR_INITIALIZATION_FAILED,
+-                        "build-id too short.  It needs to be a SHA");
++   result = nvk_init_driver_build_sha(instance);
++   if (result != VK_SUCCESS)
+       goto fail_init;
+-   }
+-
+-   STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
+-   copy_build_id_to_sha1(instance->driver_build_sha, note);
+ 
+    *pInstance = nvk_instance_to_handle(instance);
+    return VK_SUCCESS;

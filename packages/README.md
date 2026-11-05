@@ -105,6 +105,26 @@ relink them against a modified Qt. A run takes about 10 minutes per
 architecture on 16 cores, plus the sysroot and the host Qt on the first run,
 both kept in the `stellux-qt-work` volume.
 
+## The mesa recipe
+
+`mesa` is a `build` package: `lib/libvulkan.a`, the Vulkan library a program
+links, with Vulkan's headers and `share/stellux/vulkan.mk`, the flags a program
+compiles and links with. The library holds Mesa's Vulkan driver for NVIDIA GPUs,
+NVK, prelinked into one object whose only global symbols are the driver's entry
+points, beside a small loader in `loader/` that answers a program's global
+Vulkan commands and its `dlopen` of `libvulkan.so.1` or `libvulkan.so`. The
+recipe cross-builds Mesa with the tree's own compiler, C++ runtime and musl,
+against libdrm, zlib and elfutils' libelf built static in its container, after
+building Mesa's build-time tools natively. The patches in `patches/` apply to
+the pinned Mesa release in order. The license texts of every project besides
+Stellux that the library holds code from are under `mesa/LICENSES`. libelf is
+used under the LGPLv3, one of the two licenses elfutils offers it under: the
+recipe pins the exact upstream sources, and the programs linked against the kit
+are built from this tree, so anyone can rebuild the kit with a modified libelf
+and relink them. A run takes about 2 minutes per architecture on 8 cores, plus
+about 2 minutes for the sysroot and the build-time tools on the first run, both
+kept in the `stellux-mesa-kit-work` volume. `JOBS` caps its parallel jobs.
+
 ## The nvidia-firmware recipe
 
 `nvidia-firmware` is a `default` package holding NVIDIA's firmware for the
