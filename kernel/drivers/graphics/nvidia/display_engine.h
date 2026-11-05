@@ -66,16 +66,17 @@ struct event_record : operation {
 };
 
 /**
- * A buffer `create_buffer()` made, in `vram_use::scanout` video memory and
- * mapped for userland at the buffer's physical address. Only the driver task
- * binds or unbinds it, before `create_buffer()` returns and once gfxfb
- * releases it, so `present()` reads `bound_windows` without a lock.
+ * A buffer `create_buffer()` made, or an output's base buffer the light made,
+ * in `vram_use::scanout` video memory and mapped for userland at the buffer's
+ * physical address. It is bound and unbound only before it is handed out and
+ * once nothing refers to it, so `present()` reads `bound_windows` without a
+ * lock.
  */
 struct scanout_buffer : gfxfb::buffer {
     vram_range       range;
     rm::handle       context_dma;    // the context DMA naming `range`, 0 when no output was lit
     uint32_t         bound_windows;  // a bit for each window whose channel `context_dma` is bound to
-    buffer_operation task_operation; // the binding, then the release
+    buffer_operation task_operation; // a created buffer's binding, then any buffer's release
 };
 
 /**
@@ -104,10 +105,7 @@ struct engine_head {
     uint32_t          display_id;              // the display id the head shows while lit
     output_link       link;                    // the serial link the head feeds while lit
     gfxfb::gfxfb_mode mode;
-    vram_range        base_buffer;             // of 0 bytes while none is allocated
-    rm::handle        base_buffer_context_dma; // 0 until bound
-    uint32_t          base_buffer_windows;     // a bit for each window whose channel the base buffer is bound to
-    gfxfb::buffer     userland_base_buffer;    // the base buffer as userland maps it, of 0 bytes while unmapped
+    scanout_buffer*   base_buffer;             // null while none is allocated and once the head is marked dark
     bool              is_lit;                  // set by the light under the engine's output lock
     bool              is_closing;              // set while its output is taken down, cleared only once marked dark
 
@@ -312,13 +310,12 @@ public:
     void restore_modes() override {}
 
     /**
-     * @brief Queue the driver task's release of a buffer `create_buffer()`
-     * made and return without waiting. The task unbinds, unmaps and frees it,
-     * or keeps it all for good once the display failed, the engine was
-     * released or unbinding it failed, since a head may still scan it. An
-     * output's base buffer is kept for good.
-     * @param buf An output's base buffer or a buffer `create_buffer()` made,
-     * which nothing refers to any longer.
+     * @brief Queue the driver task's release of a buffer and return without
+     * waiting. The task unbinds, unmaps and frees it, or keeps it all for good
+     * once the display failed, the engine was released or unbinding it failed,
+     * since a head may still scan it.
+     * @param buf A buffer nothing refers to any longer, one `create_buffer()`
+     * made or the base buffer of an output read dark.
      */
     void release_buffer(gfxfb::buffer* buf) override;
 
@@ -344,21 +341,21 @@ private:
     // of each plugged in, logging each
     void update_connected_records(uint32_t plugged_ids, uint32_t unplugged_ids);
 
-    // Takes `output` down when lit while the other outputs stay lit and reports it to gfxfb when counted there unless
-    // the display failed, the output staying lit when it fails before the head is marked dark
+    // Takes `output` down when lit while the other outputs stay lit and, unless the display failed, reports it to gfxfb
+    // or, past gfxfb's count, releases its base buffer, a display failing before the head is marked dark leaving it lit
     void take_down_output(uint8_t output);
 
     /**
      * @brief Mark the lit head showing `output` closing and wait until its
      * queued present ends or `m_take_down_wait_ns` passes, then, unless the
-     * display failed, mark it dark, disable its vertical blank interrupt and
-     * clear its head table entry, setting `staying_ids` to the display ids
-     * the other lit heads show. It takes `m_output_lock` itself, which the
-     * wait releases while it sleeps.
+     * display failed, mark it dark, move its base buffer into `base`, disable
+     * its vertical blank interrupt and clear its head table entry, setting
+     * `staying_ids` to the display ids the other lit heads show. It takes
+     * `m_output_lock` itself, which the wait releases while it sleeps.
      * @return The head marked dark, else null.
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE engine_head* darken_head(uint8_t output, uint32_t& staying_ids);
+    __PRIVILEGED_CODE engine_head* darken_head(uint8_t output, uint32_t& staying_ids, scanout_buffer*& base);
 
     // Stops `head`, marked dark, while the heads showing `staying_ids` stay lit, then ends a present still queued dark
     // and powers its link down, a request or the core channel failing other than by a refusal failing the display
@@ -553,7 +550,7 @@ private:
     );
 
     // Undoes the bindings of `dropped`'s base buffer, the table's to its window and each other base buffer's there, as
-    // the heads' masks record them, then releases its base buffer unless an undoing fails
+    // the base buffers' masks record them, then frees that buffer and its record unless an undoing fails
     void drop_prepared_light(const output_light& dropped);
 
     // Writes an update naming the cleared notifier, interlocked with the window channels of `window_interlocks`, then

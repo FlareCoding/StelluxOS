@@ -61,10 +61,10 @@ constexpr uint64_t ESTIMATE_LOG_INTERVAL_NS = 1000 * NS_PER_MS;
 // The bindings to window channels that dropping one light undoes, last first: its base buffer's to its own window's
 // channel, the look-up table's and two for each other head
 struct light_bindings {
-    uint8_t      count;
-    rm::handle   objects[2 * DISPLAY_HEADS_MAX];
-    uint8_t      windows[2 * DISPLAY_HEADS_MAX];
-    engine_head* holders[2 * DISPLAY_HEADS_MAX]; // the head whose base buffer each binds, null for the table's
+    uint8_t         count;
+    rm::handle      objects[2 * DISPLAY_HEADS_MAX];
+    uint8_t         windows[2 * DISPLAY_HEADS_MAX];
+    scanout_buffer* holders[2 * DISPLAY_HEADS_MAX]; // the base buffer each binds, null for the table's
 };
 
 // Logs the maker, name and timings an output's EDID gives
@@ -1709,18 +1709,18 @@ int32_t display_engine::prepare_lights(
     return OK;
 }
 
-// The memory `head`'s base buffer lies in, as a context DMA names it
-static context_dma_memory base_buffer_memory(const engine_head& head) {
+// The memory `buffer` lies in, as a context DMA names it
+static context_dma_memory base_buffer_memory(const scanout_buffer& buffer) {
     return {
         .in_video_memory = true,
-        .address = head.base_buffer.offset,
-        .bytes = head.base_buffer.size,
+        .address = buffer.range.offset,
+        .bytes = buffer.range.size,
     };
 }
 
-// Records in `made` that the surface `object` names, `holder`'s base buffer or the table when null, is bound to
+// Records in `made` that the surface `object` names, the base buffer `holder` or the table when null, is bound to
 // `window`'s channel
-static void record_binding(light_bindings& made, rm::handle object, uint8_t window, engine_head* holder) {
+static void record_binding(light_bindings& made, rm::handle object, uint8_t window, scanout_buffer* holder) {
     made.objects[made.count] = object;
     made.windows[made.count] = window;
     made.holders[made.count] = holder;
@@ -1728,13 +1728,13 @@ static void record_binding(light_bindings& made, rm::handle object, uint8_t wind
 }
 
 // Binds the surface `object` names, lying in `memory`, to `window`'s channel and records the binding in `made`, and in
-// the mask of `holder` when that head's base buffer is the surface
+// the mask of the base buffer `holder`, null when the surface is the table
 static int32_t bind_for_light(
     instance_memory& instances,
     rm::handle object,
     const context_dma_memory& memory,
     uint8_t window,
-    engine_head* holder,
+    scanout_buffer* holder,
     light_bindings& made
 ) {
     int32_t rc = instances.bind(object, window_channel_number(window), memory);
@@ -1743,30 +1743,31 @@ static int32_t bind_for_light(
     }
 
     if (holder != nullptr) {
-        holder->base_buffer_windows |= 1u << window;
+        holder->bound_windows |= 1u << window;
     }
 
     record_binding(made, object, window, holder);
     return OK;
 }
 
-// Takes down the userland mapping of `head`'s base buffer and undoes `made`'s bindings, last first, then releases the
-// buffer unless an undoing fails, as the display engine may read the memory through a binding left
+// Takes down the userland mapping of `head`'s base buffer and undoes `made`'s bindings, last first, then releases its
+// memory and frees its record unless an undoing fails, as the display engine may read the memory through a binding left
 static void drop_base_buffer(
     instance_memory& instances,
     video_memory& memory,
     engine_head& head,
     const light_bindings& made
 ) {
-    if (head.userland_base_buffer.size != 0) {
-        memory.unmap_for_cpu(head.base_buffer);
-        head.userland_base_buffer = {};
+    scanout_buffer& base = *head.base_buffer;
+    if (base.size != 0) {
+        memory.unmap_for_cpu(base.range);
+        static_cast<gfxfb::buffer&>(base) = {};
     }
 
     for (uint8_t index = made.count; index > 0; index--) {
         rm::handle object = made.objects[index - 1];
         uint8_t window = made.windows[index - 1];
-        engine_head* holder = made.holders[index - 1];
+        scanout_buffer* holder = made.holders[index - 1];
         int32_t rc = instances.unbind(object, window_channel_number(window));
         if (rc != OK) {
             log::error(
@@ -1781,13 +1782,13 @@ static void drop_base_buffer(
         }
 
         if (holder != nullptr) {
-            holder->base_buffer_windows &= ~(1u << window);
+            holder->bound_windows &= ~(1u << window);
         }
     }
 
-    memory.release(head.base_buffer);
-    head.base_buffer = {};
-    head.base_buffer_context_dma = 0;
+    memory.release(base.range);
+    heap::ufree_delete(head.base_buffer);
+    head.base_buffer = nullptr;
     log::info("nvidia: output %u's base buffer is unbound and released", head.output);
 }
 
@@ -1824,29 +1825,35 @@ int32_t display_engine::prepare_light(
     registers window_area = regs.at(window_channel_area(light.window));
     head.window_queue = new (head.window_queue_bytes) display_channel(window_push_buffer, window_area);
 
-    rc = set_up_base_buffer(m_memory, light, head.base_buffer);
-    if (rc != OK || head.base_buffer.size == 0) {
+    auto* base = heap::ualloc_new<scanout_buffer>();
+    if (base == nullptr) {
+        log::error(
+            "nvidia: output %u has no base buffer, as the unprivileged heap has no room for its record",
+            light.output
+        );
+        return OK;
+    }
+
+    rc = set_up_base_buffer(m_memory, light, base->range);
+    if (rc == OK && base->range.size != 0) {
+        rc = bind_base_buffer(m_firmware, m_instance_memory, m_memory, light, base->range, base->context_dma);
+    }
+
+    if (rc != OK || base->range.size == 0) {
+        heap::ufree_delete(base);
         return rc;
     }
 
-    rc = bind_base_buffer(
-        m_firmware,
-        m_instance_memory,
-        m_memory,
-        light,
-        head.base_buffer,
-        head.base_buffer_context_dma
-    );
-    if (rc != OK || head.base_buffer.size == 0) {
-        return rc;
-    }
+    base->task_operation.engine = this;
+    base->task_operation.buffer = base;
+    head.base_buffer = base;
 
     light_bindings made = {};
-    head.base_buffer_windows |= 1u << light.window;
-    record_binding(made, head.base_buffer_context_dma, light.window, &head);
+    base->bound_windows |= 1u << light.window;
+    record_binding(made, base->context_dma, light.window, base);
 
-    rc = map_base_buffer_for_userland(m_memory, light, head.base_buffer, head.userland_base_buffer);
-    if (rc != OK || head.userland_base_buffer.size == 0) {
+    rc = map_base_buffer_for_userland(m_memory, light, base->range, *base);
+    if (rc != OK || base->size == 0) {
         drop_base_buffer(m_instance_memory, m_memory, head, made);
         return rc;
     }
@@ -1892,21 +1899,15 @@ int32_t display_engine::prepare_light(
     // window's channel
     for (uint8_t index = 0; rc == OK && index < prepared.count; index++) {
         engine_head& other = m_heads[prepared.lights[index].head];
-        rc = bind_for_light(
-            m_instance_memory,
-            head.base_buffer_context_dma,
-            base_buffer_memory(head),
-            other.window,
-            &head,
-            made
-        );
+        rc = bind_for_light(m_instance_memory, base->context_dma, base_buffer_memory(*base), other.window, base, made);
         if (rc == OK) {
+            scanout_buffer& other_base = *other.base_buffer;
             rc = bind_for_light(
                 m_instance_memory,
-                other.base_buffer_context_dma,
-                base_buffer_memory(other),
+                other_base.context_dma,
+                base_buffer_memory(other_base),
                 light.window,
-                &other,
+                &other_base,
                 made
             );
         }
@@ -2206,20 +2207,22 @@ int32_t display_engine::set_up_links(
 
 void display_engine::drop_prepared_light(const output_light& dropped) {
     engine_head& head = m_heads[dropped.head];
+    scanout_buffer& base = *head.base_buffer;
     light_bindings made = {};
-    record_binding(made, head.base_buffer_context_dma, dropped.window, &head);
+    record_binding(made, base.context_dma, dropped.window, &base);
     record_binding(made, m_look_up_table_context_dma, dropped.window, nullptr);
     for (uint8_t window = 0; window < DISPLAY_WINDOWS_MAX; window++) {
-        bool binds_other_window = window != dropped.window && (head.base_buffer_windows & (1u << window)) != 0;
+        bool binds_other_window = window != dropped.window && (base.bound_windows & (1u << window)) != 0;
         if (binds_other_window) {
-            record_binding(made, head.base_buffer_context_dma, window, &head);
+            record_binding(made, base.context_dma, window, &base);
         }
     }
 
     for (engine_head& other : m_heads) {
-        bool binds_dropped_window = &other != &head && (other.base_buffer_windows & (1u << dropped.window)) != 0;
+        scanout_buffer* other_base = &other != &head ? other.base_buffer : nullptr;
+        bool binds_dropped_window = other_base != nullptr && (other_base->bound_windows & (1u << dropped.window)) != 0;
         if (binds_dropped_window) {
-            record_binding(made, other.base_buffer_context_dma, dropped.window, &other);
+            record_binding(made, other_base->context_dma, dropped.window, other_base);
         }
     }
 
@@ -2476,7 +2479,7 @@ int32_t display_engine::write_first_image(
     const edid::timing& timing = light.timing;
     window_image image = {
         .window                    = head.window,
-        .surface_context_dma       = head.base_buffer_context_dma,
+        .surface_context_dma       = head.base_buffer->context_dma,
         .width                     = timing.width,
         .height                    = timing.height,
         .pitch                     = base_buffer_pitch(timing.width),
@@ -2930,8 +2933,9 @@ void display_engine::update_connected_records(uint32_t plugged_ids, uint32_t unp
 
 void display_engine::take_down_output(uint8_t output) {
     uint32_t staying_ids = 0;
+    scanout_buffer* base = nullptr;
     engine_head* head = nullptr;
-    RUN_ELEVATED(head = darken_head(output, staying_ids));
+    RUN_ELEVATED(head = darken_head(output, staying_ids, base));
     if (head == nullptr) {
         return;
     }
@@ -2939,17 +2943,29 @@ void display_engine::take_down_output(uint8_t output) {
     log::info("nvidia: output %u is marked dark, taking head %u down", output, static_cast<uint32_t>(head - m_heads));
     stop_dark_head(*head, staying_ids);
 
-    // gfxfb drops the output's buffers at the report, which a failed display's head may still read
-    bool is_reported = output < m_output_count && !m_is_display_failed.load_acquire();
-    if (is_reported) {
-        RUN_ELEVATED(m_output_changed(this, output));
+    // A failed display's head may still read the output's buffers, which gfxfb drops at the report and the release
+    // below frees for an output past gfxfb's count
+    if (m_is_display_failed.load_acquire()) {
+        return;
     }
+
+    // gfxfb never reads an output past its count, so nothing else holds that output's base buffer
+    if (output >= m_output_count) {
+        release_scanout_buffer(base->task_operation);
+        return;
+    }
+
+    RUN_ELEVATED(m_output_changed(this, output));
 }
 
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE engine_head* display_engine::darken_head(uint8_t output, uint32_t& staying_ids) {
+__PRIVILEGED_CODE engine_head* display_engine::darken_head(
+    uint8_t output,
+    uint32_t& staying_ids,
+    scanout_buffer*& base
+) {
     sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
     engine_head* head = find_lit_head(output);
     bool may_take_down = head != nullptr && !m_is_released && !m_is_display_failed.load_acquire();
@@ -2978,6 +2994,9 @@ __PRIVILEGED_CODE engine_head* display_engine::darken_head(uint8_t output, uint3
     head->is_lit = false;
     head->is_closing = false;
     head->is_cursor_shown = false;
+    base = head->base_buffer;
+    head->base_buffer = nullptr;
+
     disable_vertical_blank(m_registers, index);
     sync::atomic_ref<uint8_t>{m_head_outputs[index]}.store_release(NO_OUTPUT);
 
@@ -3493,7 +3512,7 @@ gfxfb::buffer* display_engine::base_buffer(uint32_t output) {
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
         engine_head* head = find_lit_head(output);
         if (head != nullptr) {
-            base = &head->userland_base_buffer;
+            base = head->base_buffer;
         }
 
         sync::spin_unlock_irqrestore(m_output_lock, irq);
@@ -3553,34 +3572,16 @@ __PRIVILEGED_CODE int32_t display_engine::queue_present(
         return gfxfb::ERR_INVALID_ARG;
     }
 
-    // gfxfb presents only buffers `base_buffer()` and `create_buffer()` handed out, a base buffer keeping its bindings
-    // once its output is taken down
-    const engine_head* source = nullptr;
-    for (const engine_head& candidate : m_heads) {
-        if (&buf == &candidate.userland_base_buffer) {
-            source = &candidate;
-        }
-    }
-
-    rm::handle surface_context_dma = 0;
-    uint32_t bound_windows = 0;
-    if (source != nullptr) {
-        surface_context_dma = source->base_buffer_context_dma;
-        bound_windows = source->base_buffer_windows;
-    } else {
-        const auto& created = static_cast<const scanout_buffer&>(buf);
-        surface_context_dma = created.context_dma;
-        bound_windows = created.bound_windows;
-    }
-
-    if ((bound_windows & (1u << head->window)) == 0) {
+    // gfxfb presents only buffers `base_buffer()` and `create_buffer()` handed out, each a `scanout_buffer`
+    const auto& source = static_cast<const scanout_buffer&>(buf);
+    if ((source.bound_windows & (1u << head->window)) == 0) {
         return gfxfb::ERR_REFUSED;
     }
 
     window = head->window;
     window_image image = {
         .window                    = head->window,
-        .surface_context_dma       = surface_context_dma,
+        .surface_context_dma       = source.context_dma,
         .width                     = buf.width,
         .height                    = buf.height,
         .pitch                     = buf.pitch,
@@ -3778,12 +3779,6 @@ void display_engine::bind_buffer(operation& op) {
 }
 
 void display_engine::release_buffer(gfxfb::buffer* buf) {
-    for (const engine_head& head : m_heads) {
-        if (buf == &head.userland_base_buffer) {
-            return;
-        }
-    }
-
     auto* buffer = static_cast<scanout_buffer*>(buf);
     buffer->task_operation.work = release_scanout_buffer;
     RUN_ELEVATED(m_operations.post_to_task(buffer->task_operation));

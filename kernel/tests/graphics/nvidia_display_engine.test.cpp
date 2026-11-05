@@ -1444,13 +1444,15 @@ struct display_engine_test_access {
     }
 
     static rm::handle base_buffer_context_dma(const display_engine& engine, uint8_t head) {
-        return engine.m_heads[head].base_buffer_context_dma;
+        const scanout_buffer* base = engine.m_heads[head].base_buffer;
+        return base != nullptr ? base->context_dma : 0;
     }
 
     static rm::handle base_buffer_context_dma(const display_engine& engine) {
         for (uint8_t head = 0; head < drivers::nvidia::DISPLAY_HEADS_MAX; head++) {
-            if (engine.m_heads[head].base_buffer_context_dma != 0) {
-                return engine.m_heads[head].base_buffer_context_dma;
+            rm::handle context_dma = base_buffer_context_dma(engine, head);
+            if (context_dma != 0) {
+                return context_dma;
             }
         }
 
@@ -1689,6 +1691,14 @@ struct display_engine_test_access {
         });
     }
 
+    // Frees the base buffer records the engine's heads still hold, as no gfxfb releases them in a test
+    static void free_base_buffers(display_engine& engine) {
+        for (engine_head& head : engine.m_heads) {
+            heap::ufree_delete(head.base_buffer);
+            head.base_buffer = nullptr;
+        }
+    }
+
     static void run_latch_check(display_engine& engine) {
         display_engine::check_latch(&lit_state(engine).latch_check_timer);
     }
@@ -1735,6 +1745,7 @@ static void record_output_change(gfxfb::display* display, uint32_t output) {
 static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memory) {
     if (g_built_engine != nullptr) {
         display_engine_test_access::cancel_timers(*g_built_engine);
+        display_engine_test_access::free_base_buffers(*g_built_engine);
     }
 
     g_engine_operations = nullptr;
@@ -1754,6 +1765,18 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
 
     return engine;
 }
+
+// Frees the base buffer records of the engine built last, which no later `new_engine` frees
+static int32_t free_last_engines_base_buffers() {
+    if (g_built_engine != nullptr) {
+        display_engine_test_access::cancel_timers(*g_built_engine);
+        display_engine_test_access::free_base_buffers(*g_built_engine);
+    }
+
+    return 0;
+}
+
+AFTER_ALL(nvidia_display_engine, free_last_engines_base_buffers);
 
 // Sets up `engine` for a card driving `address_bits` physical address bits, with four heads, eight windows, links doing
 // `links` and output scalers when `heads_have_output_scalers`, the core channel's GET reading `get`, no DMA page freed
@@ -7347,8 +7370,8 @@ TEST(nvidia_display_engine, gfxfb_reads_at_most_gfxfb_outputs_max_outputs) {
 }
 
 // The engine returns `gfxfb::ERR_UNSUPPORTED` for the cursor of a light without one, and for buffers and presents with
-// flips off, even once released, and a release of the base buffer frees and unmaps nothing, leaving it the lit output's
-TEST(nvidia_display_engine, cursors_and_flips_off_buffers_and_presents_are_unsupported_and_the_base_buffer_is_kept) {
+// flips off, even once released
+TEST(nvidia_display_engine, cursors_and_flips_off_buffers_and_presents_are_unsupported) {
     engine_firmware fw;
     engine_video_memory memory;
     ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory));
@@ -7366,11 +7389,6 @@ TEST(nvidia_display_engine, cursors_and_flips_off_buffers_and_presents_are_unsup
     EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
     EXPECT_EQ(engine.set_cursor(0, image), gfxfb::ERR_UNSUPPORTED);
     EXPECT_EQ(engine.move_cursor(0, 1, 1), gfxfb::ERR_UNSUPPORTED);
-
-    engine.release_buffer(base);
-    EXPECT_EQ(engine.base_buffer(0), base);
-    EXPECT_EQ(memory.scanout_unmaps, 1u);
-    EXPECT_EQ(memory.scanout_releases, 0u);
 
     EXPECT_EQ(engine.release(), OK);
     EXPECT_EQ(engine.present(0, base, nullptr, 0), gfxfb::ERR_UNSUPPORTED);
@@ -10315,6 +10333,11 @@ TEST(nvidia_display_engine, a_hotplug_read_past_its_deadline_fails_the_display) 
     }
 }
 
+// Frees the record of a taken-down output's base buffer, as no gfxfb releases the buffer in a test
+static void free_taken_down_base_buffer(gfxfb::buffer* base) {
+    heap::ufree_delete(static_cast<scanout_buffer*>(base));
+}
+
 // Unplugging lit output 0, on head 0 and then on head 1, disables that head's vertical blank, stops it in a mode set
 // naming output 1, powers its link down without D3 and reports it dark with no base buffer, output 1 taking that buffer
 TEST(nvidia_display_engine, an_unplugged_lit_output_is_taken_down_while_the_other_stays_lit) {
@@ -10409,6 +10432,7 @@ TEST(nvidia_display_engine, an_unplugged_lit_output_is_taken_down_while_the_othe
         ASSERT_EQ(engine.present(1, base, nullptr, 0), gfxfb::OK);
         EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, other_head));
         EXPECT_EQ(engine.release(), OK);
+        free_taken_down_base_buffer(base);
     }
 }
 
@@ -10425,7 +10449,8 @@ TEST(nvidia_display_engine, a_present_queued_past_the_wait_ends_dark_once_the_he
     engine.turn_on_flips();
     start_recording_present_ends(engine);
     display_engine_test_access::set_mode_times(engine, 0, SLOW_MODE_TIMES);
-    ASSERT_EQ(engine.present(0, engine.base_buffer(0), nullptr, 0), gfxfb::OK);
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_EQ(engine.present(0, base, nullptr, 0), gfxfb::OK);
     EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, 0));
 
     service_lit_head(engine);
@@ -10450,6 +10475,7 @@ TEST(nvidia_display_engine, a_present_queued_past_the_wait_ends_dark_once_the_he
         engine_log_offset("test: output 0 is reported changed")
     );
     EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(base);
 }
 
 // Set once `serve_take_down` served the queue
@@ -10527,6 +10553,7 @@ TEST(nvidia_display_engine, a_take_down_waits_for_the_queued_present_and_refuses
     EXPECT_FALSE(display_engine_test_access::is_closing(engine, 0));
     EXPECT_FALSE(reads_lit(engine, 0));
     EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(base);
 }
 
 // The display failing while the take-down waits for output 0's queued present ends the take-down there: the present
@@ -10617,6 +10644,7 @@ TEST(nvidia_display_engine, a_failed_take_down_update_fails_the_display_and_repo
     ASSERT_EQ(engine.present(1, engine.base_buffer(1), nullptr, 0), gfxfb::OK);
     EXPECT_TRUE(display_engine_test_access::hold_deadline(engine, 1));
 
+    gfxfb::buffer* base = engine.base_buffer(0);
     display_engine_test_access::set_update_seam(engine, nullptr);
     fw.mode_set_requests = 0;
     fw.unplugged_ids = OUTPUT_0_ID;
@@ -10636,6 +10664,7 @@ TEST(nvidia_display_engine, a_failed_take_down_update_fails_the_display_and_repo
 
     display_engine_test_access::set_update_seam(engine, read_kicked_update);
     EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(base);
 }
 
 // The take-down's start, its link's power-down or its end failing other than by a refusal fails the display: a failed
@@ -10685,6 +10714,7 @@ TEST(nvidia_display_engine, a_failed_take_down_start_power_down_or_end_fails_the
             fw.mode_set_end_result = ERR_TIMEOUT;
         }
 
+        gfxfb::buffer* base = engine.base_buffer(0);
         fw.mode_set_requests = 0;
         fw.unplugged_ids = OUTPUT_0_ID;
         EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
@@ -10704,6 +10734,7 @@ TEST(nvidia_display_engine, a_failed_take_down_start_power_down_or_end_fails_the
         fw.refusals[0] = {};
         fw.mode_set_end_result = OK;
         EXPECT_EQ(engine.release(), OK);
+        free_taken_down_base_buffer(base);
     }
 }
 
@@ -10731,6 +10762,7 @@ TEST(nvidia_display_engine, a_refused_take_down_start_or_end_is_logged_and_the_t
             fw.mode_set_end_result = ERR_FIRMWARE;
         }
 
+        gfxfb::buffer* base = engine.base_buffer(0);
         fw.unplugged_ids = OUTPUT_0_ID;
         EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
         serve_logged();
@@ -10752,6 +10784,7 @@ TEST(nvidia_display_engine, a_refused_take_down_start_or_end_is_logged_and_the_t
         fw.refusals[0] = {};
         fw.mode_set_end_result = OK;
         EXPECT_EQ(engine.release(), OK);
+        free_taken_down_base_buffer(base);
     }
 }
 
@@ -10771,6 +10804,7 @@ TEST(nvidia_display_engine, a_buffers_release_names_a_window_whose_head_is_dark)
     ASSERT_TRUE(create_served_buffer(engine, created, rc));
     ASSERT_EQ(rc, gfxfb::OK);
 
+    gfxfb::buffer* base = engine.base_buffer(0);
     fw.unplugged_ids = OUTPUT_0_ID;
     EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
     serve_logged();
@@ -10788,6 +10822,130 @@ TEST(nvidia_display_engine, a_buffers_release_names_a_window_whose_head_is_dark)
         "serviced head 1's"
     ));
     EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(base);
+}
+
+// Once output 0 is taken down, a release of its base buffer unbinds it from both windows' channels and frees its
+// memory, while output 1's base buffer stays bound
+TEST(nvidia_display_engine, a_taken_down_outputs_base_buffer_is_freed_once_released) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_EQ(head_of_output(engine, 0), 0u);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    rm::handle context_dma = static_cast<scanout_buffer*>(base)->context_dma;
+    rm::handle staying_context_dma = display_engine_test_access::base_buffer_context_dma(engine, 1);
+
+    fw.unplugged_ids = OUTPUT_0_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+    ASSERT_FALSE(reads_lit(engine, 0));
+    EXPECT_EQ(display_engine_test_access::base_buffer_context_dma(engine, 0), 0u);
+    EXPECT_TRUE(has_entry_for(context_dma));
+
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    engine.release_buffer(base);
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display buffer at 0x1000000 in video memory is unbound from window 0's channel, whose head is dark"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display buffer at 0x1000000 in video memory is unbound from window 1's channel, once the handler "
+        "serviced head 1's"
+    ));
+
+    EXPECT_FALSE(has_entry_for(context_dma));
+    EXPECT_TRUE(has_entry_for(staying_context_dma));
+    EXPECT_EQ(memory.scanout_unmaps, unmaps + 1);
+    EXPECT_EQ(memory.scanout_releases, releases + 1);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A lit output past gfxfb's count is reported to no one once taken down, and its take-down unbinds its base buffer from
+// both windows' channels and releases it after the head stops, as gfxfb never holds it
+TEST(nvidia_display_engine, an_output_past_gfxfbs_count_releases_its_base_buffer_at_its_take_down) {
+    const uint32_t uncounted_id = 1u << gfxfb::GFXFB_OUTPUTS_MAX;
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    fw.supported_ids = (uncounted_id << 1) - 1;
+    fw.connected_ids = OUTPUT_0_ID | uncounted_id;
+
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_EQ(display_engine_test_access::head_output(engine, 1), gfxfb::GFXFB_OUTPUTS_MAX);
+    uint8_t staying_output = display_engine_test_access::head_output(engine, 0);
+    rm::handle context_dma = display_engine_test_access::base_buffer_context_dma(engine, 1);
+    ASSERT_NE(context_dma, 0u);
+
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    fw.unplugged_ids = uncounted_id;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 16 is marked dark, taking head 1 down"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display buffer at 0x1420000 in video memory is unbound from window 1's channel, whose head is dark"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the display buffer at 0x1420000 in video memory is unbound from window 0's channel, once the handler "
+        "serviced head 0's"
+    ));
+    EXPECT_LT(
+        engine_log_offset("nvidia: display common took the end of head 1's take-down"),
+        engine_log_offset("nvidia: the display buffer at 0x1420000 in video memory is unbound from window 1's channel")
+    );
+    EXPECT_EQ(g_output_change_count, 0u);
+
+    EXPECT_FALSE(has_entry_for(context_dma));
+    EXPECT_EQ(memory.scanout_unmaps, unmaps + 1);
+    EXPECT_EQ(memory.scanout_releases, releases + 1);
+    EXPECT_TRUE(reads_lit(engine, staying_output));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A lit output past gfxfb's count whose take-down fails the display keeps its base buffer bound, mapped and
+// allocated, as the failed display's head may still scan it, and is reported to no one
+TEST(nvidia_display_engine, an_output_past_gfxfbs_count_keeps_its_base_buffer_when_its_take_down_fails) {
+    const uint32_t uncounted_id = 1u << gfxfb::GFXFB_OUTPUTS_MAX;
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    fw.supported_ids = (uncounted_id << 1) - 1;
+    fw.connected_ids = OUTPUT_0_ID | uncounted_id;
+
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_EQ(display_engine_test_access::head_output(engine, 1), gfxfb::GFXFB_OUTPUTS_MAX);
+    gfxfb::buffer* base = engine.base_buffer(gfxfb::GFXFB_OUTPUTS_MAX);
+    ASSERT_NOT_NULL(base);
+    rm::handle context_dma = static_cast<scanout_buffer*>(base)->context_dma;
+
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    display_engine_test_access::set_update_seam(engine, nullptr);
+    fw.unplugged_ids = uncounted_id;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the update taking head 1 down failed: -4, so the display failed"));
+    EXPECT_FALSE(engine_log_contains("nvidia: the display buffer at 0x1420000 in video memory is unbound"));
+    EXPECT_TRUE(has_entry_for(context_dma));
+    EXPECT_EQ(memory.scanout_unmaps, unmaps);
+    EXPECT_EQ(memory.scanout_releases, releases);
+    EXPECT_EQ(g_output_change_count, 0u);
+
+    display_engine_test_access::set_update_seam(engine, read_kicked_update);
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(base);
 }
 
 // The release clears the sink before any request and releases both event objects once, before display common
