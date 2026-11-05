@@ -6,11 +6,13 @@
  * library and the display manager.
  *
  * One unix stream socket per client carries every message in both
- * directions. Pixels travel separately through client-created shared
- * memory objects named in ATTACH_BUFFER. Each message is an swp_header
- * followed by header.length payload bytes. All structs are little
- * endian, naturally aligned, padding free, and size asserted so a
- * field edit fails the build instead of corrupting the wire.
+ * directions. Pictures stay outside it, in shared memory objects the
+ * client creates and names in ATTACH_BUFFER, or in GPU buffers whose
+ * handles ATTACH_GPU_BUFFER sends over the socket, which the DM takes
+ * when the GPU_INFO after HELLO_REPLY says so. Each message is an
+ * swp_header followed by header.length payload bytes. All structs are
+ * little endian, naturally aligned, padding free, and size asserted so
+ * a field edit fails the build instead of corrupting the wire.
  */
 
 #include <stdint.h>
@@ -25,6 +27,10 @@
 #define SWP_CLIPBOARD_MAX    4096u
 #define SWP_MODES_MAX        32u  /* the most modes an output lists */
 #define SWP_OUTPUTS_MAX      16u  /* the most outputs a display drives */
+
+#define SWP_GPU_HANDLES       3u      /* handles one ATTACH_GPU_BUFFER carries */
+#define SWP_GPU_BUFFERS_MAX   16u     /* GPU buffers one connection holds at once, shown detached ones included */
+#define SWP_GPU_DIMENSION_MAX 16384u  /* largest width or height of a GPU buffer's picture */
 
 /* Client to DM types are 0x01xx, DM to client are 0x02xx */
 enum {
@@ -42,6 +48,9 @@ enum {
     SWP_MSG_SET_MODE       = 0x010C,
     SWP_MSG_KEEP_MODE      = 0x010D,
 
+    SWP_MSG_ATTACH_GPU_BUFFER = 0x010E,
+    SWP_MSG_COMMIT_GPU        = 0x010F,
+
     SWP_MSG_HELLO_REPLY    = 0x0201,
     SWP_MSG_CONFIGURE      = 0x0202,
     SWP_MSG_RELEASE        = 0x0203,
@@ -50,6 +59,7 @@ enum {
     SWP_MSG_CLIPBOARD_DATA = 0x0206,
     SWP_MSG_MODES          = 0x0207,
     SWP_MSG_MODE_RESULT    = 0x0208,
+    SWP_MSG_GPU_INFO       = 0x0209,
 };
 
 typedef struct {
@@ -143,6 +153,8 @@ typedef struct {
 } swp_attach_buffer;
 _Static_assert(sizeof(swp_attach_buffer) == 96, "wire layout");
 
+/* A GPU buffer detached while shown stays shown and keeps its buf_id,
+ * counting toward SWP_GPU_BUFFERS_MAX, until the next picture latches */
 typedef struct {
     uint32_t win_id;
     uint32_t buf_id;
@@ -198,10 +210,50 @@ typedef struct {
 } swp_keep_mode;
 _Static_assert(sizeof(swp_keep_mode) == 8, "wire layout");
 
+/* Attaches a GPU buffer. The message must go in one sendmsg whose
+ * SCM_RIGHTS data holds exactly SWP_GPU_HANDLES handles: the buffer and
+ * its acquire timeline with read rights alone, then its release
+ * timeline with write rights alone. */
+typedef struct {
+    uint32_t win_id;
+    uint32_t buf_id;        /* unique among the window's buffers of both kinds */
+    uint32_t width, height; /* the picture's pixels, each 1 to SWP_GPU_DIMENSION_MAX */
+    uint32_t pitch;         /* bytes from row to row, a multiple of 4, at least width * 4, times height under 4 GiB */
+    uint32_t format;        /* SWP_FMT_XRGB8888 */
+    uint64_t offset;        /* bytes from the buffer's start to the picture, a multiple of 4 */
+} swp_attach_gpu_buffer;
+_Static_assert(sizeof(swp_attach_gpu_buffer) == 32, "wire layout");
+
+/* A COMMIT of a GPU buffer's picture. The DM latches it only once the
+ * acquire timeline reaches acquire_point, releasing it unshown if the
+ * point comes with GPU_TIMELINE_FAILED, and signals the release
+ * timeline instead of sending RELEASE. A buffer's release points must
+ * rise, a nonzero latch_point must lie between the buffer's last
+ * release point and release_point, and it must not be committed again
+ * while shown or pending. */
+typedef struct {
+    uint32_t win_id;
+    uint32_t buf_id;
+    uint32_t ack_serial;    /* the newest CONFIGURE of the picture's size, else the window's last ack */
+    uint32_t commit_flags;  /* reserved, must be 0 */
+    uint32_t n_damage;      /* 0 to SWP_COMMIT_MAX_RECTS */
+    uint32_t reserved;      /* keeps the points aligned, must be 0 */
+    uint64_t acquire_point; /* reached once the picture is drawn */
+    uint64_t latch_point;   /* 0, or reached by the DM on the release timeline once the picture is no longer pending */
+    uint64_t release_point; /* reached by the DM once it no longer reads the picture */
+    swp_rect damage[SWP_COMMIT_MAX_RECTS];
+} swp_commit_gpu;
+_Static_assert(sizeof(swp_commit_gpu) == 176, "wire layout");
+
 /* ---- DM to client ---- */
 
 enum {
     SWP_FMT_XRGB8888 = 1,   /* the only format, negotiation reserved */
+};
+
+/* HELLO_REPLY's header flags */
+enum {
+    SWP_HELLO_GPU_INFO = 1u << 0,  /* a GPU_INFO follows the reply */
 };
 
 typedef struct {
@@ -323,6 +375,20 @@ typedef struct {
     swp_mode mode;          /* the mode the output is lit at, zero while it is dark */
 } swp_mode_result;
 _Static_assert(sizeof(swp_mode_result) == 32, "wire layout");
+
+enum {
+    SWP_GPU_ACCEPTS   = 1u << 0,  /* the DM takes GPU buffers from /dev/gpuN, N being the device field */
+    SWP_GPU_CPU_READS = 1u << 1,  /* buffers must be mappable, and system memory reads fastest */
+};
+
+/* Sent after every HELLO_REPLY and again whenever it changes. A reader
+ * must accept a longer payload and use its first sizeof(swp_gpu_info)
+ * bytes, so fields can be appended. */
+typedef struct {
+    uint32_t flags;         /* SWP_GPU_* */
+    uint32_t device;        /* N of /dev/gpuN, 0 without SWP_GPU_ACCEPTS */
+} swp_gpu_info;
+_Static_assert(sizeof(swp_gpu_info) == 8, "wire layout");
 
 /* Read buffer bound for either side of the socket */
 #define SWP_MAX_MSG_SIZE \

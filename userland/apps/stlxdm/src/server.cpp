@@ -10,9 +10,18 @@
 #include <ctime>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+/* Each attached GPU buffer holds two of stlxdm's handles, and 16 on
+ * each of many clients pass the default limit */
+constexpr rlim_t HANDLE_LIMIT = 65536;
+
+/* Room for one attach's handles. The kernel fits (controllen -
+ * sizeof(cmsghdr)) / 4, so CMSG_SPACE's padding would fit a fourth. */
+constexpr size_t HANDLE_CONTROL_BYTES = CMSG_LEN(SWP_GPU_HANDLES * sizeof(int));
 
 /* Spawns a detached app. args is an optional space-separated argument
  * string tokenized into a scratch copy, no quoting support. */
@@ -33,6 +42,58 @@ static void spawn_app(const char* path, const char* args) {
 
     proc_detach(handle);
     printf("stlxdm: spawned %s\r\n", path);
+}
+
+/* Apps stlxdm spawns inherit the raised limits */
+static void raise_handle_limit() {
+    rlimit limit = { HANDLE_LIMIT, HANDLE_LIMIT };
+    if (setrlimit(RLIMIT_NOFILE, &limit) != 0) {
+        printf("stlxdm: raising the handle limit failed, errno %d, keeping the inherited limit\r\n", errno);
+    }
+}
+
+/* Queues the handles of a read's one SCM_RIGHTS message, closing any
+ * past the queue's room. Returns false when some were dropped. */
+static bool queue_received_handles(dm_client& c, const msghdr& msg) {
+    bool kept_all = (msg.msg_flags & MSG_CTRUNC) == 0;
+
+    const cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+    if (!cmsg || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
+        cmsg->cmsg_len < CMSG_LEN(0)) {
+        return kept_all;
+    }
+
+    size_t count = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+    for (size_t i = 0; i < count; i++) {
+        int handle;
+        memcpy(&handle, CMSG_DATA(cmsg) + i * sizeof(int), sizeof(handle));
+        if (c.queued_handle_count == dm_client::QUEUED_HANDLES_MAX) {
+            close(handle);
+            kept_all = false;
+            continue;
+        }
+
+        c.queued_handles[c.queued_handle_count++] = handle;
+    }
+
+    return kept_all;
+}
+
+/* Whether the unhandled bytes may begin the ATTACH_GPU_BUFFER that
+ * queued handles wait for. A lone byte, short of a type, may. */
+static bool may_begin_gpu_attach(const dm_client& c) {
+    if (c.rd_have == 0) {
+        return false;
+    }
+
+    if (c.rd_have < sizeof(uint16_t)) {
+        return true;
+    }
+
+    uint16_t type;
+    memcpy(&type, c.rd_buf, sizeof(type));
+
+    return type == SWP_MSG_ATTACH_GPU_BUFFER;
 }
 
 /* Builds the screen-sized backdrop: the configured wallpaper center
@@ -170,6 +231,8 @@ int server::init(presenter* pres, const stlxconf_t* conf) {
 }
 
 int server::serve() {
+    raise_handle_limit();
+
     m_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (m_listen_fd < 0) {
         return -1;
@@ -429,8 +492,16 @@ void server::accept_one() {
 
 void server::pump_client(dm_client& c) {
     while (true) {
-        ssize_t n = read(c.fd, c.rd_buf + c.rd_have,
-                         sizeof(c.rd_buf) - c.rd_have);
+        iovec iov = { c.rd_buf + c.rd_have, sizeof(c.rd_buf) - c.rd_have };
+        alignas(cmsghdr) uint8_t control[HANDLE_CONTROL_BYTES];
+
+        msghdr msg = {};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof(control);
+
+        ssize_t n = recvmsg(c.fd, &msg, 0);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
@@ -444,6 +515,11 @@ void server::pump_client(dm_client& c) {
             return;
         }
         if (n == 0) {
+            c.dead = true;
+            return;
+        }
+
+        if (!queue_received_handles(c, msg)) {
             c.dead = true;
             return;
         }
@@ -474,6 +550,13 @@ void server::pump_client(dm_client& c) {
             memmove(c.rd_buf, c.rd_buf + off, c.rd_have - off);
             c.rd_have -= off;
         }
+
+        /* Handles sent with any message but an attach, or more than an
+         * attach takes, are left over here */
+        if (c.queued_handle_count > 0 && !may_begin_gpu_attach(c)) {
+            c.dead = true;
+            return;
+        }
     }
 }
 
@@ -499,7 +582,8 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
         swp_hello_reply reply = { SWP_VERSION, SWP_FMT_XRGB8888,
                                   m_presenter->width(),
                                   m_presenter->height() };
-        if (!send_to(c, SWP_MSG_HELLO_REPLY, &reply, sizeof(reply))) {
+        if (!send_to(c, SWP_MSG_HELLO_REPLY, &reply, sizeof(reply), SWP_HELLO_GPU_INFO) ||
+            !send_to(c, SWP_MSG_GPU_INFO, &m_gpu_info, sizeof(m_gpu_info))) {
             c.dead = true;
         }
         return;
@@ -609,6 +693,12 @@ void server::drop_client(dm_client& c) {
         destroy_window_tree(c, c.windows.back()->win_id);
     }
 
+    for (uint32_t i = 0; i < c.queued_handle_count; i++) {
+        close(c.queued_handles[i]);
+    }
+
+    c.queued_handle_count = 0;
+
     close(c.fd);
     c.fd = -1;
 }
@@ -622,12 +712,13 @@ constexpr size_t OUT_Q_LIMIT = 64 * 1024;
 /* Nonblocking send that queues whatever the socket refuses. Overflow
  * means the client stopped reading long ago and it is disconnected. */
 bool server::send_to(dm_client& c, uint16_t type,
-                     const void* payload, uint32_t length) {
+                     const void* payload, uint32_t length,
+                     uint16_t header_flags) {
     if (c.dead) {
         return false;
     }
 
-    swp_header hdr = { type, 0, length };
+    swp_header hdr = { type, header_flags, length };
     uint8_t msg[SWP_MAX_MSG_SIZE];
     memcpy(msg, &hdr, sizeof(hdr));
     if (length > 0) {
