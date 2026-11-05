@@ -452,6 +452,7 @@ struct engines_fixture {
     engines_video_memory memory;
     failed_mark          failed;
     registers            bar0;
+    dma::device_profile  card = engines_test_card();
     engines              gpu_engines;
     gpu::device&         core_device;
 
@@ -502,7 +503,7 @@ struct engines_fixture {
         }
     }
 
-    int32_t bring_up() { return gpu_engines.bring_up(bar0, engines_test_card(), engines_test_chip()); }
+    int32_t bring_up() { return gpu_engines.bring_up(bar0, card, engines_test_chip()); }
 
     int32_t create() {
         return gpu_engines.create_memory(create_size, create_placement, create_flags, nullptr, 0, &created, &device_id);
@@ -1284,6 +1285,42 @@ TEST(nvidia_engines, a_failed_gpu_keeps_each_wraps_pin) {
     EXPECT_TRUE(refused.pin.ptr() == nullptr);
     EXPECT_EQ(kept.pins(), 1u);
     EXPECT_EQ(refused.pins(), 1u);
+}
+
+// On a card driving 40 address bits, a wrap is refused with nothing made when its first or last page ends past 1 TiB,
+// and goes through when its highest page ends at 1 TiB
+TEST(nvidia_engines, a_wrap_past_the_cards_address_limit_is_refused) {
+    engines_fixture fixture;
+    fixture.card = dma::device_profile_test_access::build(40, true);
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+
+    engines& gpu_engines = fixture.gpu_engines;
+    const pmm::phys_addr_t last_past[] = {0x7000000, 1ULL << 40};
+    const pmm::phys_addr_t first_past[] = {1ULL << 40, 0x7000000};
+    const pmm::phys_addr_t within[] = {0x7000000, (1ULL << 40) - pmm::PAGE_SIZE};
+    gpu::memory* wrapped = nullptr;
+    uint32_t device_id = 1;
+
+    EXPECT_EQ(gpu_engines.wrap_pages(last_past, 2, mm::shmem_mapping(), &wrapped, &device_id), gpu::ERR_NO_MEMORY);
+    EXPECT_EQ(gpu_engines.wrap_pages(first_past, 2, mm::shmem_mapping(), &wrapped, &device_id), gpu::ERR_NO_MEMORY);
+    EXPECT_NULL(wrapped);
+    ASSERT_EQ(gpu_engines.wrap_pages(within, 2, mm::shmem_mapping(), &wrapped, &device_id), gpu::OK);
+
+    gpu_engines.release_memory(wrapped);
+    engines_operations().serve();
+}
+
+// On a card that is not coherent every wrap is refused, the pin left to the core, as processes map shared memory cached
+TEST(nvidia_engines, every_wrap_on_a_card_that_is_not_coherent_is_refused) {
+    engines_fixture fixture;
+    fixture.card = dma::device_profile_test_access::build(64, false);
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    pinned_pages shared;
+    ASSERT_NOT_NULL(shared.object);
+
+    EXPECT_EQ(shared.wrap(fixture.gpu_engines), gpu::ERR_NO_MEMORY);
+    EXPECT_TRUE(shared.pin.ptr() == shared.object);
+    EXPECT_NULL(shared.wrapped);
 }
 
 // NVIDIA's address space class and the device's controls that hand it a page directory and take it back

@@ -48,6 +48,9 @@ public:
     uint8_t address_bits() const { return m_address_bits; }
     bool coherent() const { return m_coherent; }
 
+    // Whether the device drives every address below `end`
+    bool reaches(pmm::phys_addr_t end) const;
+
 private:
     friend class drivers::pci_driver;
     friend struct device_profile_test_access;
