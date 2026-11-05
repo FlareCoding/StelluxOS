@@ -332,7 +332,6 @@ src/nvidia/src/kernel/gpu/bus/kern_bus.c
     binds BAR1 to, in gsp_info.h, gsp_info.cpp, nvidia_gpu.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that the firmware
     places that root page directory, in bar1_page_tables.h, that NVIDIA's driver
-    uses the offset with no check, in gsp_info.h, that NVIDIA's driver
     invalidates BAR1's cached translations after it replaces its own root page
     directory for BAR1 with the firmware's, in bar1.h and bar1.cpp, and that the
     replacement makes the firmware's root page directory the one NVIDIA's driver
@@ -349,8 +348,8 @@ src/nvidia/src/libraries/mmu/mmu_walk_migrate.c
     SPDX-FileCopyrightText: Copyright (c) 2014-2018 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/pascal/gp100/dev_mmu.h
-    the 8 bytes of an entry of a version 2 page directory, in gsp_info.h,
-    gsp_info.cpp, nvidia_gpu.cpp, page_tables.cpp,
+    the 8 bytes of an entry of a version 2 page directory, in gsp_info.cpp,
+    nvidia_gpu.cpp, page_tables.cpp,
     kernel/tests/graphics/nvidia_message_queues.test.cpp,
     kernel/tests/graphics/nvidia_bar1_page_tables.test.cpp,
     kernel/tests/graphics/nvidia_page_tables.test.cpp and
@@ -1459,9 +1458,8 @@ src/common/sdk/nvidia/inc/nvtypes.h
     notice's flag takes, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, which the static
     configuration's booleans take, a video memory region's flags among them, in
-    gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, which the display's
-    static information's two booleans take, in rm.h and
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, which
+    the display's static information's two booleans take, in rm.h and
     kernel/tests/graphics/nvidia_display_info.test.cpp, which the two booleans
     of a display id's output resource facts take, in rm.h and
     kernel/tests/graphics/nvidia_display_ids.test.cpp, which the push buffer
@@ -1628,7 +1626,7 @@ src/nvidia/kernel/inc/vgpu/rpc_headers.h
     0xFF000000 are NVIDIA's status codes, in gsp.h, and the most GPCs (graphics
     processing clusters), 32, and the virtual display's parameters, which size
     members of the static configuration, the former ahead of its table of video
-    memory regions, in gsp_info.h, gsp_info.cpp and
+    memory regions, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2017-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -1646,12 +1644,11 @@ src/nvidia/src/kernel/rmapi/rpc_common.c
     kernel/tests/graphics/nvidia_boot_messages.test.cpp, the zeros after the
     driver's version string in the guest system information, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the zeros in the
-    arguments of the request for the static configuration, in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
-    zero in a control request's status, which NVIDIA's driver does not set, in
-    gsp.h, gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, and
-    that the RPC version the driver runs at is made from the VGX version, in
-    gsp_unload.cpp
+    arguments of the request for the static configuration, in gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the zero in a control
+    request's status, which NVIDIA's driver does not set, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the RPC
+    version the driver runs at is made from the VGX version, in gsp_unload.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/gsp/gsp_static_config.h
@@ -1659,11 +1656,10 @@ src/nvidia/inc/kernel/gpu/gsp/gsp_static_config.h
     boot_messages.cpp and kernel/tests/graphics/nvidia_boot_messages.test.cpp,
     the static configuration's members, their order and types, which give its
     size for this firmware (2168 bytes), the offset of its table of video memory
-    regions (840) and that of its field bar1PdeBase (2088), in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
-    offsets of its fields hInternalClient (2152) and hInternalSubdevice (2160),
-    in gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, that of
+    regions (840) and that of its field bar1PdeBase (2088), in gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the offsets of its
+    fields hInternalClient (2152) and hInternalSubdevice (2160), in gsp_info.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, that of
     hInternalDevice (2156), in
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the offsets of its
     fields gpcInfo (292), tpcInfo (296) and gpuNameString (1820), in
@@ -1769,15 +1765,15 @@ src/nvidia/kernel/vgpu/nv/rpc.c
     refusing reply back as its request when the version the reply gives differs
     from the version sent and is at least 0x18.00, in gsp_info.h and
     gsp_info.cpp, that the static configuration is asked for with its whole size
-    and that the reply's payload holds it from its first byte, in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, that
-    only the reply's result is checked before it is copied whole, in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, what
-    NVIDIA's driver writes in a control request's header (the client, the
-    object, the command, the parameters' size and no flags for a control neither
-    serialized nor marked to copy its parameters out on an error) with the
-    parameters after it, and that the control's own failing status skips the
-    copy of the parameters back, in gsp.h, gsp.cpp and
+    and that the reply's payload holds it from its first byte, in gsp_info.cpp
+    and kernel/tests/graphics/nvidia_message_queues.test.cpp, that only the
+    reply's result is checked before it is copied whole, in gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, what NVIDIA's driver
+    writes in a control request's header (the client, the object, the command,
+    the parameters' size and no flags for a control neither serialized nor
+    marked to copy its parameters out on an error) with the parameters after it,
+    and that the control's own failing status skips the copy of the parameters
+    back, in gsp.h, gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that a failed
     control's status is handed up whatever its value, the reply's flags can ask
     for a failed control's parameters to be copied out, a control marked
@@ -1842,14 +1838,14 @@ src/nvidia/generated/g_rpc-structures.h
     layout of version 0x1F07 of the request to unload's arguments, in
     gsp_unload.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
     that the reply's payload holds the static configuration from its first byte,
-    in gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, the layout of a
-    control request's header, with the control's status in it, in gsp.h, gsp.cpp
-    and kernel/tests/graphics/nvidia_message_queues.test.cpp, the layout of an
-    allocation request's header, with the allocation's status in it, in gsp.h,
-    gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, that a
-    release request's payload holds NVOS00_PARAMETERS_v03_00 alone, in gsp.cpp
-    and kernel/tests/graphics/nvidia_message_queues.test.cpp, that the lockdown
+    in gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    the layout of a control request's header, with the control's status in it,
+    in gsp.h, gsp.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    the layout of an allocation request's header, with the allocation's status
+    in it, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a release
+    request's payload holds NVOS00_PARAMETERS_v03_00 alone, in gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the lockdown
     notice's payload starts with its flag of whether a lockdown engages, in
     message_queues.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
     and the layout of rpc_post_event_v17_00, a posted event's payload, up to its
@@ -2280,8 +2276,7 @@ src/nvidia/generated/g_gpu_nvoc.h
     address's encoding of the domain, bus and device, in boot_messages.cpp and
     kernel/tests/graphics/nvidia_boot_messages.test.cpp, and the compute
     branding type, which one of the static configuration's members takes, in
-    gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2004-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 kernel-open/common/inc/nv-hypervisor.h
@@ -2423,9 +2418,7 @@ src/nvidia/src/kernel/virtualization/hypervisor/hypervisor.c
 src/nvidia/src/kernel/gpu/gpu.c
     the rule that the firmware is asked to unload as the GPU's state is
     destroyed, with no check that the firmware reported its initialization done,
-    in nvidia_gpu.cpp, and that NVIDIA's driver takes the static configuration's
-    handles as the firmware gives them for a GSP client other than T234D and
-    later, as GA102 is, in gsp_info.h
+    in nvidia_gpu.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc_private.h
@@ -2476,10 +2469,8 @@ src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr_gsp_client.c
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the rule that a region
     with reserved bytes counts as reserved rather than usable, in gsp_info.h,
     gsp_info.cpp, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, that the firmware
-    reserves some regions for its own use, in gsp_info.h and vram_allocator.h,
-    and that NVIDIA's driver takes each region's first and last bytes without
-    checking them against each other, in gsp_info.h
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that the firmware
+    reserves some regions for its own use, in gsp_info.h and vram_allocator.h
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_mem_mgr_nvoc.h
@@ -2518,44 +2509,44 @@ src/nvidia/src/kernel/gpu/mem_mgr/arch/maxwell/mem_mgr_gm107.c
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080gr.h
     the size of the graphics capabilities table, which the static configuration
-    holds ahead of its table of video memory regions, in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp
+    holds ahead of its table of video memory regions, in gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2004-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gpu.h
     the sizes of the GPU's ID, GPC, TPC and ZCULL information, which the static
     configuration holds ahead of its table of video memory regions, and of the
-    GPU's name strings, which it holds after the table, in gsp_info.h,
-    gsp_info.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp, the
-    GPC information's one field gpcMask, the TPC information's fields gpcId and
-    tpcMask, 4 bytes each, and NV2080_GPU_MAX_NAME_STRING_LENGTH, 0x40, the
-    bytes of the product name, in gsp_info.h, gsp_info.cpp and
+    GPU's name strings, which it holds after the table, in gsp_info.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the GPC information's
+    one field gpcMask, the TPC information's fields gpcId and tpcMask, 4 bytes
+    each, and NV2080_GPU_MAX_NAME_STRING_LENGTH, 0x40, the bytes of the product
+    name, in gsp_info.h, gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2006-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080bios.h
     the size of the SKU information, which the static configuration holds ahead
-    of its table of video memory regions, in gsp_info.h, gsp_info.cpp and
+    of its table of video memory regions, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2005-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080gpu.h
     the size of the SR-IOV capabilities, which the static configuration holds
-    after its table of video memory regions, in gsp_info.h, gsp_info.cpp and
+    after its table of video memory regions, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2004-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gr.h
     the length, 5, of the static configuration's arrays of the graphics engine's
     preemption buffer sizes and alignments, which it holds after its table of
-    video memory regions, in gsp_info.h, gsp_info.cpp and
+    video memory regions, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2006-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/gpu_engine_type.h
     the number of engine types, 0x3e, from which the length of the static
     configuration's engine capabilities is made, held after its table of video
-    memory regions, in gsp_info.h, gsp_info.cpp and
+    memory regions, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the engine types
     RM_ENGINE_TYPE_GR0, 0x1, and RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY9,
     0x9 to 0x12, in rm.h, RM_ENGINE_TYPE_GR0 and RM_ENGINE_TYPE_COPY2 in
@@ -2568,7 +2559,7 @@ src/nvidia/inc/kernel/gpu/gpu_engine_type.h
 
 src/nvidia/inc/kernel/gpu/nvbitmask.h
     the length of the static configuration's engine capabilities, in 32-bit
-    words made from the number of engine types, in gsp_info.h, gsp_info.cpp and
+    words made from the number of engine types, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
