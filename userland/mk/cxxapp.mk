@@ -7,7 +7,8 @@
 #
 # Handles both .c and .cpp sources. Links against libc++, libc++abi,
 # and libunwind in addition to musl libc. Requires 'make libcxx' to
-# have been run first. APP_QT := 1 builds the app on Qt, see qt.mk.
+# have been run first. APP_QT := 1 builds the app on Qt, see qt.mk, and
+# APP_VULKAN := 1 links the app with the Vulkan library, see vulkan.mk.
 #
 
 USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)
@@ -40,6 +41,15 @@ APP_CXXFLAGS := $(QT_CPPFLAGS)
 APP_LDLIBS   := -Wl,--whole-archive -lstlxqpa -Wl,--no-whole-archive -lstlxwin -lstlxconf $(QT_LDLIBS)
 OBJECTS      += $(QT_MOC_OBJECTS)
 LIB_ARCHIVES += $(SYSROOT)/lib/libstlxqpa.a $(SYSROOT)/lib/libstlxwin.a $(SYSROOT)/lib/libstlxconf.a
+endif
+
+# A Vulkan app's C++ sources compile against the kit's headers, and the app
+# links the Vulkan library
+ifdef APP_VULKAN
+include $(USERLAND_ROOT)/mk/vulkan.mk
+APP_CXXFLAGS += $(VULKAN_CPPFLAGS)
+APP_LDLIBS   += $(VULKAN_LIBS)
+LIB_ARCHIVES += $(VULKAN_LIBRARY)
 endif
 
 all: $(TARGET)
