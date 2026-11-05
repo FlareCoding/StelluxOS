@@ -29,12 +29,16 @@
 #include "drivers/graphics/nvidia/window_notifier.h"
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 #include "timer/timer.h"
 
 namespace drivers::nvidia {
 
-// A head table entry for a head the light has given no output
+// A head table entry for a head the light gave no output or a take-down marked dark
 constexpr uint8_t NO_OUTPUT = 0xFF;
+
+// How long past the present timeout taking an output down waits for its present, for a deadline timer running late
+constexpr uint64_t TAKE_DOWN_SLACK_NS = 10 * NS_PER_MS;
 
 // The lit head's first second of vertical blanks as the interrupt handler serviced them, which the driver task logs
 struct first_second_statistics {
@@ -97,12 +101,15 @@ struct engine_head {
     dma::buffer       window_push_buffer;
     display_channel*  window_queue;            // built in `window_queue_bytes` with the channel, else null
     uint8_t           output;
+    uint32_t          display_id;              // the display id the head shows while lit
+    output_link       link;                    // the serial link the head feeds while lit
     gfxfb::gfxfb_mode mode;
     vram_range        base_buffer;             // of 0 bytes while none is allocated
     rm::handle        base_buffer_context_dma; // 0 until bound
     uint32_t          base_buffer_windows;     // a bit for each window whose channel the base buffer is bound to
     gfxfb::buffer     userland_base_buffer;    // the base buffer as userland maps it, of 0 bytes while unmapped
     bool              is_lit;                  // set by the light under the engine's output lock
+    bool              is_closing;              // set while its output is taken down, cleared only once marked dark
 
     // The window's notifier, its page allocated and its context DMA bound to the window's channel before the light
     window_notifier notifier;
@@ -136,7 +143,7 @@ struct engine_head {
     bool                    has_logged_first_second;
 
     // The queued present and the latch rules' state, which the light and `present` set and the handler's latch step,
-    // the two timers' callbacks, `release` and a cursor write or present failing the display end
+    // the two timers' callbacks, `release`, a take-down and a display failure end
     mode_times            times;
     bool                  has_queued_present;
     uint32_t              queued_slot;
@@ -174,10 +181,10 @@ struct engine_head {
  * buffers, which BAR1 stops translating once `detach()` restores BAR1's block
  * register.
  *
- * From `set_up` until `release` it takes the firmware's hotplug and short pulse
- * events and serves them on the driver task, a hotplug updating and logging the
- * outputs' connected records unless the display or the GPU failed, and a short
- * pulse only logged.
+ * From `set_up` until `release` it serves hotplug and short pulse events on the
+ * driver task. A hotplug, unless the display or the GPU failed, updates the
+ * connected records and takes down each unplugged lit output, a take-down
+ * stopping its head alone, and a short pulse is only logged.
  */
 class display_engine : public gfxfb::display, public firmware_event_sink {
 public:
@@ -289,12 +296,13 @@ public:
     /**
      * @brief Write an update showing `buf` into the window channel of the head
      * lighting `output`, waiting only for the output lock. The present ends as
-     * the latch rules decide, or failed by `release` or a display failure.
+     * the latch rules decide, dark once a take-down stops its head, or failed
+     * by `release` or a display failure.
      * @return gfxfb's errors in its order: `ERR_UNSUPPORTED` with flips off or
      * no window notifier, or none on that head's window, `ERR_DEVICE` once
-     * released or failed, `ERR_DARK` off a lit output, `ERR_INVALID_ARG` off
-     * its mode's size and `ERR_REFUSED` for a buffer not bound to that channel
-     * or a full push buffer.
+     * released or failed, `ERR_DARK` off a lit output or on one being taken
+     * down, `ERR_INVALID_ARG` off its mode's size and `ERR_REFUSED` for a
+     * buffer not bound to that channel or a full push buffer.
      */
     int32_t present(uint32_t output, gfxfb::buffer* buf, const gfxfb::gfxfb_rect* regions, uint32_t count) override;
 
@@ -328,13 +336,36 @@ private:
     static void serve_hotplug_record(operation& op);
     static void serve_short_pulse_record(operation& op);
 
-    // Unless the display is released or failed or the GPU failed, reads the display ids plugged in and unplugged, from
-    // the connect state when both masks read 0, and updates the connected records unless a read fails, which is logged
+    // Unless the display is released or failed or the GPU failed, reads the hotplug state's masks, the connect state
+    // when both read 0, and updates the connected records, a failed read logged and failing the display unless refused
     void serve_hotplug();
 
-    // Clears the connected record of each output unplugged and not plugged in, then sets that of each plugged in,
-    // logging each
+    // Clears the connected record of each output unplugged and not plugged in, taking it down when lit, then sets that
+    // of each plugged in, logging each
     void update_connected_records(uint32_t plugged_ids, uint32_t unplugged_ids);
+
+    // Takes `output` down when lit while the other outputs stay lit and reports it to gfxfb when counted there unless
+    // the display failed, the output staying lit when it fails before the head is marked dark
+    void take_down_output(uint8_t output);
+
+    /**
+     * @brief Mark the lit head showing `output` closing and wait until its
+     * queued present ends or `m_take_down_wait_ns` passes, then, unless the
+     * display failed, mark it dark, disable its vertical blank interrupt and
+     * clear its head table entry, setting `staying_ids` to the display ids
+     * the other lit heads show. It takes `m_output_lock` itself, which the
+     * wait releases while it sleeps.
+     * @return The head marked dark, else null.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE engine_head* darken_head(uint8_t output, uint32_t& staying_ids);
+
+    // Stops `head`, marked dark, while the heads showing `staying_ids` stay lit, then ends a present still queued dark
+    // and powers its link down, a request or the core channel failing other than by a refusal failing the display
+    void stop_dark_head(engine_head& head, uint32_t staying_ids);
+
+    // Fails the display and ends every queued present failed, taking `m_output_lock` itself
+    void fail_display();
 
     // Whether flips are on with a window's notifier bound, which `present()` and `create_buffer()` need first
     bool are_presents_supported() const;
@@ -363,6 +394,16 @@ private:
 
     // Each output's facts as `set_up` read them, the connected records then kept by the driver task's hotplug services
     display_outputs m_outputs = {};
+
+    // What powering down each output's link takes, as `set_up` read it, an unplug clearing its output's D3 bit
+    power_down_facts m_power_down = {};
+
+    // The registers `set_up` was given, mapped until `release` returns, which a take-down writes
+    registers m_registers = registers(0);
+
+    // Woken by each end of a closing head's present, for the take-down waiting on it at most `m_take_down_wait_ns`
+    sync::wait_queue m_take_down_queue;
+    uint64_t         m_take_down_wait_ns = gfxfb::GFXFB_PRESENT_TIMEOUT_NS + TAKE_DOWN_SLACK_NS;
 
     // The context DMA binding the look-up table surface to the core channel and each chosen window's channel, 0 until
     // `set_up` binds it
@@ -413,6 +454,9 @@ private:
     // Where each ended present is reported, gfxfb's `present_done` outside tests
     void (*m_present_done)(gfxfb::display*, uint32_t, const gfxfb::present_result&) = gfxfb::present_done;
 
+    // Where each output taken down is reported, gfxfb's `output_changed` outside tests
+    void (*m_output_changed)(gfxfb::display*, uint32_t) = gfxfb::output_changed;
+
     /**
      * @brief Write `buf`'s present for `present`, under `m_output_lock`,
      * setting `window` to the window it names and `write_rc` to the channel's
@@ -452,8 +496,8 @@ private:
     static void check_latch(timer::deadline_timer* timer);
     static void expire_deadline(timer::deadline_timer* timer);
 
-    // Marks `light`'s head lit with `has_cursor` and its cursor hidden, and starts its output's vertical blanks: its
-    // mode's latch times, its head table entry and its interrupt, taking `m_output_lock` itself
+    // Marks `light`'s head lit with `has_cursor`, its display id, its link and its cursor hidden, and starts its
+    // output's vertical blanks: its mode's latch times, its head table entry and its interrupt, taking `m_output_lock`
     void mark_head_lit(registers& regs, const head_light& light, bool has_cursor);
 
     // Allocates each light's window channel, base buffer, notifier and cursor, binding the base buffers and the look-up

@@ -1381,6 +1381,7 @@ display_engine::display_engine(
         timer::init_deadline_timer(&head.deadline_timer, expire_deadline);
     }
 
+    m_take_down_queue.init();
     m_hotplug_record.work = serve_hotplug_record;
     m_hotplug_record.engine = this;
     m_short_pulse_record.work = serve_short_pulse_record;
@@ -1394,6 +1395,7 @@ int32_t display_engine::set_up(
     const gpu_objects& gpu
 ) {
     const chip_display& display = chip.display;
+    m_registers = regs;
 
     // The boot firmware or an earlier driver can leave a head's interrupt enabled or pending
     m_head_count = display.head_count;
@@ -1463,14 +1465,13 @@ int32_t display_engine::set_up(
     bool fits_gfxfb = outputs.count <= gfxfb::GFXFB_OUTPUTS_MAX;
     m_output_count = fits_gfxfb ? outputs.count : static_cast<uint8_t>(gfxfb::GFXFB_OUTPUTS_MAX);
 
-    power_down_facts power_down = {};
     rc = read_connected_monitors(
         m_firmware,
         m_objects.display_common,
         display.displayport,
         outputs,
         m_output_modes,
-        power_down
+        m_power_down
     );
     if (rc != OK) {
         return rc;
@@ -1604,7 +1605,7 @@ int32_t display_engine::set_up(
         active,
         has_crossbar,
         outputs,
-        power_down,
+        m_power_down,
         set,
         dpcds,
         set.count != chosen_count
@@ -2670,6 +2671,7 @@ int32_t display_engine::release() {
     });
 
     m_core_queue = nullptr;
+    m_registers = registers(0);
     free_output_modes(m_output_modes);
 
     int32_t cursor_channel_rc = OK;
@@ -2849,8 +2851,14 @@ void display_engine::serve_hotplug() {
 
     rm::hotplug_state_params state = {};
     int32_t rc = m_firmware.control(m_objects.display_common, rm::CONTROL_GET_HOTPLUG_STATE, &state, sizeof(state));
-    if (rc != OK) {
+    if (rc == ERR_FIRMWARE) {
         log::error("nvidia: reading the hotplug state after a hotplug event failed: %d", rc);
+        return;
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: reading the hotplug state after a hotplug event failed: %d, so the display failed", rc);
+        fail_display();
         return;
     }
 
@@ -2868,8 +2876,14 @@ void display_engine::serve_hotplug() {
     // so the connect state tells it
     uint32_t connected_ids = 0;
     rc = read_connected_ids(m_firmware, m_objects.display_common, display_ids_of(m_outputs), connected_ids);
-    if (rc != OK) {
+    if (rc == ERR_FIRMWARE) {
         log::error("nvidia: reading the connect state after a hotplug event failed: %d", rc);
+        return;
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: reading the connect state after a hotplug event failed: %d, so the display failed", rc);
+        fail_display();
         return;
     }
 
@@ -2899,7 +2913,9 @@ void display_engine::update_connected_records(uint32_t plugged_ids, uint32_t unp
         display_output& entry = m_outputs.outputs[output];
         if ((unplugged_ids & ~plugged_ids & entry.display_id) != 0) {
             entry.is_connected = false;
+            m_power_down.d3_outputs &= ~(1u << output);
             log::info("nvidia: output %u, display id 0x%X, is unplugged", output, entry.display_id);
+            take_down_output(output);
         }
     }
 
@@ -2910,6 +2926,209 @@ void display_engine::update_connected_records(uint32_t plugged_ids, uint32_t unp
             log::info("nvidia: output %u, display id 0x%X, is plugged in", output, entry.display_id);
         }
     }
+}
+
+void display_engine::take_down_output(uint8_t output) {
+    uint32_t staying_ids = 0;
+    engine_head* head = nullptr;
+    RUN_ELEVATED(head = darken_head(output, staying_ids));
+    if (head == nullptr) {
+        return;
+    }
+
+    log::info("nvidia: output %u is marked dark, taking head %u down", output, static_cast<uint32_t>(head - m_heads));
+    stop_dark_head(*head, staying_ids);
+
+    // gfxfb drops the output's buffers at the report, which a failed display's head may still read
+    bool is_reported = output < m_output_count && !m_is_display_failed.load_acquire();
+    if (is_reported) {
+        RUN_ELEVATED(m_output_changed(this, output));
+    }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE engine_head* display_engine::darken_head(uint8_t output, uint32_t& staying_ids) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+    engine_head* head = find_lit_head(output);
+    bool may_take_down = head != nullptr && !m_is_released && !m_is_display_failed.load_acquire();
+    if (!may_take_down) {
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+        return nullptr;
+    }
+
+    head->is_closing = true;
+    uint64_t deadline_ns = clock::now_ns() + m_take_down_wait_ns;
+    while (true) {
+        bool is_waiting = head->has_queued_present && !m_is_display_failed.load_acquire();
+        if (!is_waiting || clock::now_ns() >= deadline_ns) {
+            break;
+        }
+
+        irq = sync::wait_until(m_take_down_queue, m_output_lock, irq, deadline_ns);
+    }
+
+    if (m_is_display_failed.load_acquire()) {
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+        return nullptr;
+    }
+
+    uint8_t index = static_cast<uint8_t>(head - m_heads);
+    head->is_lit = false;
+    head->is_closing = false;
+    head->is_cursor_shown = false;
+    disable_vertical_blank(m_registers, index);
+    sync::atomic_ref<uint8_t>{m_head_outputs[index]}.store_release(NO_OUTPUT);
+
+    staying_ids = 0;
+    for (const engine_head& other : m_heads) {
+        staying_ids |= other.is_lit ? other.display_id : 0;
+    }
+
+    sync::spin_unlock_irqrestore(m_output_lock, irq);
+    return head;
+}
+
+// Sends the end of head `index`'s take-down naming `staying_ids`, logged, returning false when the request fails other
+// than by a refusal
+static bool end_take_down(firmware& fw, rm::handle display_common, uint8_t index, uint32_t staying_ids) {
+    int32_t rc = send_display_change(fw, display_common, staying_ids, rm::DISPLAY_CHANGE_END);
+    if (rc == ERR_FIRMWARE) {
+        log::error(
+            "nvidia: display common refused the end of head %u's take-down naming the %s 0x%X still lit",
+            index,
+            display_ids_noun(staying_ids),
+            staying_ids
+        );
+        return true;
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: the end of head %u's take-down failed: %d, leaving the display failed", index, rc);
+        return false;
+    }
+
+    log::info(
+        "nvidia: display common took the end of head %u's take-down naming the %s 0x%X still lit",
+        index,
+        display_ids_noun(staying_ids),
+        staying_ids
+    );
+    return true;
+}
+
+void display_engine::stop_dark_head(engine_head& head, uint32_t staying_ids) {
+    uint8_t index = static_cast<uint8_t>(&head - m_heads);
+    rm::handle display_common = m_objects.display_common;
+    int32_t rc = send_display_change(m_firmware, display_common, staying_ids, rm::DISPLAY_CHANGE_START);
+    if (rc != OK && rc != ERR_FIRMWARE) {
+        log::error("nvidia: the start of head %u's take-down failed: %d, so the display failed", index, rc);
+        fail_display();
+        return;
+    }
+
+    bool is_started = rc == OK;
+    if (is_started) {
+        log::info(
+            "nvidia: display common took the start of head %u's take-down naming the %s 0x%X still lit",
+            index,
+            display_ids_noun(staying_ids),
+            staying_ids
+        );
+    } else {
+        log::error(
+            "nvidia: display common refused the start of head %u's take-down naming the %s 0x%X still lit, so it "
+            "goes on with no end",
+            index,
+            display_ids_noun(staying_ids),
+            staying_ids
+        );
+    }
+
+    active_heads stopping = {};
+    stopping.heads[index] = {
+        .display_id = head.display_id,
+        .link_index = head.link.index,
+        .link_type  = rm::OUTPUT_RESOURCE_TYPE_SERIAL,
+    };
+
+    shutdown_methods methods = {};
+    build_shutdown_methods({}, 0, stopping, false, methods);
+
+    uint32_t status_word = 0;
+    rc = write_methods(*m_core_queue, methods.methods, methods.count);
+    if (rc == OK) {
+        rc = send_notified_update(NO_WINDOW_INTERLOCKS, status_word);
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: the update taking head %u down failed: %d, so the display failed", index, rc);
+        fail_display();
+        if (is_started) {
+            end_take_down(m_firmware, display_common, index, staying_ids);
+        }
+
+        return;
+    }
+
+    log::info(
+        "nvidia: the core channel read the update taking head %u down, its completion notifier reading 0x%08X",
+        index,
+        status_word
+    );
+
+    bool has_ended_dark = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        has_ended_dark = head.has_queued_present;
+        if (has_ended_dark) {
+            timer::cancel(&head.latch_check_timer);
+            timer::cancel(&head.deadline_timer);
+            end_present(head, gfxfb::GFXFB_PRESENT_DARK, {});
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (has_ended_dark) {
+        log::warn(
+            "nvidia: output %u's present was still queued once head %u stopped, so it ended dark",
+            head.output,
+            index
+        );
+    }
+
+    // The light trained the link with FEC off, so a monitor still marked for D3 sleeps before the link goes down
+    bool sets_monitor_to_d3 = (m_power_down.d3_outputs & (1u << head.output)) != 0;
+    rc = power_down_link(
+        m_firmware,
+        display_common,
+        head.display_id,
+        m_power_down.rates[head.output],
+        sets_monitor_to_d3,
+        false
+    );
+    if (rc != OK) {
+        log::error("nvidia: display id 0x%X's link is not powered down, so the display failed", head.display_id);
+        fail_display();
+
+        // Unlike after a failed update, no end follows, since it would wait on the firmware that just failed a request
+        return;
+    }
+
+    if (is_started && !end_take_down(m_firmware, display_common, index, staying_ids)) {
+        fail_display();
+    }
+}
+
+void display_engine::fail_display() {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        m_is_display_failed.store_release(true);
+        fail_queued_presents();
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
 }
 
 void display_engine::turn_on_flips() {
@@ -2955,6 +3174,8 @@ void display_engine::mark_head_lit(registers& regs, const head_light& light, boo
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
         head.has_cursor = has_cursor;
         head.light_generation++;
+        head.display_id = light.display_id;
+        head.link = light.link;
 
         head.is_cursor_shown = false;
         head.is_cursor_update_owed = false;
@@ -3073,6 +3294,9 @@ __PRIVILEGED_CODE void display_engine::end_present(engine_head& head, uint32_t s
 
     head.has_queued_present = false;
     m_present_done(this, head.output, result);
+    if (head.is_closing) {
+        sync::wake_all(m_take_down_queue);
+    }
 }
 
 /**
@@ -3095,7 +3319,7 @@ void display_engine::check_latch(timer::deadline_timer* timer) {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(engine->m_output_lock);
         latch_report report = {};
-        if (decide_latch_check(read_latch_inputs(*head), head->times, clock::now_ns(), report)) {
+        if (head->is_lit && decide_latch_check(read_latch_inputs(*head), head->times, clock::now_ns(), report)) {
             timer::cancel(&head->deadline_timer);
             engine->end_present(*head, gfxfb::GFXFB_PRESENT_LATCHED, report);
         }
@@ -3114,7 +3338,12 @@ void display_engine::expire_deadline(timer::deadline_timer* timer) {
         sync::irq_state irq = sync::spin_lock_irqsave(engine->m_output_lock);
         uint64_t now_ns = clock::now_ns();
         output = head->output;
-        decision = decide_deadline(read_latch_inputs(*head), now_ns);
+
+        // A take-down ends the present of a head it marked dark once the head stops, so the deadline ends nothing
+        if (head->is_lit) {
+            decision = decide_deadline(read_latch_inputs(*head), now_ns);
+        }
+
         switch (decision.action) {
             case deadline_action::none:
                 break;
@@ -3316,7 +3545,7 @@ __PRIVILEGED_CODE int32_t display_engine::queue_present(
         return gfxfb::ERR_DEVICE;
     }
 
-    if (head == nullptr) {
+    if (head == nullptr || head->is_closing) {
         return gfxfb::ERR_DARK;
     }
 
@@ -3324,24 +3553,28 @@ __PRIVILEGED_CODE int32_t display_engine::queue_present(
         return gfxfb::ERR_INVALID_ARG;
     }
 
-    // gfxfb presents only buffers `base_buffer()` and `create_buffer()` handed out, and every lit output's base buffer
-    // is bound to every lit window's channel
+    // gfxfb presents only buffers `base_buffer()` and `create_buffer()` handed out, a base buffer keeping its bindings
+    // once its output is taken down
     const engine_head* source = nullptr;
     for (const engine_head& candidate : m_heads) {
-        if (candidate.is_lit && &buf == &candidate.userland_base_buffer) {
+        if (&buf == &candidate.userland_base_buffer) {
             source = &candidate;
         }
     }
 
-    rm::handle surface_context_dma = source != nullptr ? source->base_buffer_context_dma : 0;
-    if (source == nullptr) {
+    rm::handle surface_context_dma = 0;
+    uint32_t bound_windows = 0;
+    if (source != nullptr) {
+        surface_context_dma = source->base_buffer_context_dma;
+        bound_windows = source->base_buffer_windows;
+    } else {
         const auto& created = static_cast<const scanout_buffer&>(buf);
-        bool is_bound_to_window = (created.bound_windows & (1u << head->window)) != 0;
-        if (!is_bound_to_window) {
-            return gfxfb::ERR_REFUSED;
-        }
-
         surface_context_dma = created.context_dma;
+        bound_windows = created.bound_windows;
+    }
+
+    if ((bound_windows & (1u << head->window)) == 0) {
+        return gfxfb::ERR_REFUSED;
     }
 
     window = head->window;
@@ -3586,6 +3819,7 @@ void display_engine::release_scanout_buffer(operation& op) {
 
     while (buffer->bound_windows != 0) {
         uint8_t window = static_cast<uint8_t>(__builtin_ctz(buffer->bound_windows));
+        bool is_shown = false;
         uint8_t head = 0;
         uint64_t serviced = 0;
         uint16_t head_frames = 0;
@@ -3594,6 +3828,7 @@ void display_engine::release_scanout_buffer(operation& op) {
             for (uint8_t index = 0; index < DISPLAY_HEADS_MAX; index++) {
                 const engine_head& state = engine.m_heads[index];
                 if (state.is_lit && state.window == window) {
+                    is_shown = true;
                     head = index;
                     serviced = state.frame_count;
                     head_frames = static_cast<uint16_t>(state.serviced_frame - state.first_second.start_frame);
@@ -3616,6 +3851,16 @@ void display_engine::release_scanout_buffer(operation& op) {
         }
 
         buffer->bound_windows &= ~(1u << window);
+        if (!is_shown) {
+            log::info(
+                "nvidia: the display buffer at 0x%lX in video memory is unbound from window %u's channel, whose head "
+                "is dark",
+                buffer->range.offset,
+                window
+            );
+            continue;
+        }
+
         log::info(
             "nvidia: the display buffer at 0x%lX in video memory is unbound from window %u's channel, once the handler "
             "serviced head %u's vertical blanks 1 to %lu since the light while the head's own frame count advanced %u",

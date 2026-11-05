@@ -74,7 +74,7 @@ namespace gfxfb {
 constexpr int32_t OK              = 0;
 constexpr int32_t ERR             = -1;
 constexpr int32_t ERR_INVALID_ARG = -2;
-constexpr int32_t ERR_DARK        = -3; // the output is not lit
+constexpr int32_t ERR_DARK        = -3; // the output is not lit, or is being taken dark
 constexpr int32_t ERR_DEVICE      = -4; // the display's hardware failed for good
 constexpr int32_t ERR_NO_MEMORY   = -5;
 constexpr int32_t ERR_UNSUPPORTED = -6; // the display or output does not offer the call
@@ -308,9 +308,10 @@ public:
      * @return OK once the hardware was given the buffer. Otherwise the display
      * must not have given it the buffer, and returns the first that holds of
      * ERR_UNSUPPORTED on a display that presents no buffers, ERR_DEVICE once
-     * the hardware has failed, ERR_DARK when the output is not lit,
-     * ERR_INVALID_ARG when the buffer's width or height differs from the
-     * output's mode, and ERR_REFUSED when the hardware refused the buffer.
+     * the hardware has failed, ERR_DARK when the output is not lit or is being
+     * taken dark, ERR_INVALID_ARG when the buffer's width or height differs
+     * from the output's mode, and ERR_REFUSED when the hardware refused the
+     * buffer.
      */
     virtual int32_t present(uint32_t output, buffer* buf, const gfxfb_rect* regions, uint32_t region_count) = 0;
 
