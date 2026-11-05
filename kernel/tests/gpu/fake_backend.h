@@ -10,11 +10,14 @@
 #include "mm/kva.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
+#include "mm/shmem.h"
 #include "mm/vmm.h"
+#include "resource/providers/shmem_provider.h"
 #include "resource/resource.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sync/atomic.h"
+#include "sync/mutex.h"
 #include "syscall/handlers/sys_io.h"
 #include "syscall/handlers/sys_mmap.h"
 #include "syscall/syscall_table.h"
@@ -33,6 +36,7 @@ constexpr uint64_t FAKE_TIMEOUT_NS = 10ull * 1000 * 1000 * 1000;
 constexpr uint32_t FAKE_RANGES_MAX = 16;
 constexpr uint32_t FAKE_SPACES_MAX = 4;
 constexpr uint32_t FAKE_QUEUES_MAX = 2 * GPU_QUEUES_MAX;
+constexpr size_t   FAKE_WRAP_PAGES_RECORDED = 2;
 constexpr size_t   PATH_BYTES = 32;
 constexpr size_t   ARGS_AT = 0;
 constexpr size_t   POINTS_AT = 512;
@@ -43,13 +47,15 @@ constexpr uint64_t QUERY_FAILED = ~static_cast<uint64_t>(0);
 
 using stop_hook = void (*)(void* arg);
 
-// One buffer's memory, physically contiguous pages, so its CPU view is one contiguous range
+// One buffer's memory: physically contiguous pages, whose CPU view is one contiguous range, or a shared memory object's
+// pages, which `pin` keeps and a `kernel_va` of 0 marks
 struct fake_memory : gpu::memory {
-    uintptr_t        kernel_va;
-    pmm::phys_addr_t phys;
-    uint64_t         size;
-    uint32_t         placement;
-    uint32_t         flags;
+    uintptr_t         kernel_va;
+    pmm::phys_addr_t  phys;
+    uint64_t          size;
+    uint32_t          placement;
+    uint32_t          flags;
+    mm::shmem_mapping pin;
 };
 
 struct fake_range {
@@ -121,6 +127,8 @@ public:
     int32_t    check_result = gpu::OK; // what `check_commands` returns
     bool       fail_unmap = false; // an unmap whose invalidate fails, failing the device
     bool       fail_zeroing = false; // a create whose zeroing fails, failing the device
+    int32_t    wrap_result = gpu::OK; // when not OK, what `wrap_pages` returns without taking the pin
+    bool       fail_wrap = false; // a wrap that fails at its deadline, failing the device and keeping the pin
     bool       stops_on_reaper = true; // false leaves each stop to the test's queue_stopped
     bool       create_waits_for_a_stop = false; // `create_queue` spins at most SPIN_TIMEOUT_NS for a stop request
     stop_hook  on_stop = nullptr; // called once, from the next `stop_queue`, with `on_stop_arg`
@@ -128,10 +136,14 @@ public:
 
     // What the core asked of it
     uint32_t               facts_reads = 0;
-    uint32_t               create_calls = 0; // refused calls included, and each id given is the count so far
+    uint32_t               create_calls = 0; // refused calls included, as for wraps
     fake_memory*           last_created = nullptr;
     gpu::space*            last_create_space = nullptr;
     uint64_t               last_backend_id = 0;
+    uint32_t               wrap_calls = 0; // each id a create or wrap gives is the count of both calls so far
+    fake_memory*           last_wrapped = nullptr;
+    size_t                 last_wrap_count = 0;
+    pmm::phys_addr_t       last_wrap_pages[FAKE_WRAP_PAGES_RECORDED] = {}; // the last wrap's first page addresses
     sync::atomic<uint32_t> released_count{0}; // counted on the reaper, after `last_released` is written
     sync::atomic<uint32_t> freed_count{0}; // releases that freed their memory, counted before `released_count`
     gpu::memory*           last_released = nullptr;
@@ -232,7 +244,48 @@ public:
         mem->flags = flags;
         last_created = mem;
         *out = mem;
-        *out_device_id = create_calls;
+        *out_device_id = create_calls + wrap_calls;
+
+        return gpu::OK;
+    }
+
+    // The fake keeps a failed wrap's memory and pin for good, as a backend past its command's deadline keeps the pages
+    int32_t wrap_pages(
+        const pmm::phys_addr_t* pages,
+        size_t count,
+        mm::shmem_mapping&& pin,
+        gpu::memory** out,
+        uint32_t* out_device_id
+    ) override {
+        wrap_calls++;
+        last_wrap_count = count;
+
+        // A null list reads as no pages, so a core that passes one fails a test instead of panicking the run
+        for (size_t i = 0; i < FAKE_WRAP_PAGES_RECORDED; i++) {
+            last_wrap_pages[i] = pages && i < count ? pages[i] : 0;
+        }
+
+        if (wrap_result != gpu::OK) {
+            return wrap_result;
+        }
+
+        auto* mem = heap::ualloc_new<fake_memory>();
+        if (!mem) {
+            return gpu::ERR_NO_MEMORY;
+        }
+
+        mem->pin = static_cast<mm::shmem_mapping&&>(pin);
+        if (fail_wrap) {
+            fail_device();
+            return gpu::ERR_DEVICE;
+        }
+
+        mem->phys = last_wrap_pages[0];
+        mem->size = count * pmm::PAGE_SIZE;
+        mem->placement = GPU_PLACEMENT_SYSTEM;
+        last_wrapped = mem;
+        *out = mem;
+        *out_device_id = create_calls + wrap_calls;
 
         return gpu::OK;
     }
@@ -245,11 +298,15 @@ public:
         return view_result;
     }
 
-    // A failed fake keeps the memory, as a failed backend keeps what the GPU may still reach
+    // A failed fake keeps the memory, a wrap's pin included, as a failed backend keeps what the GPU may still reach,
+    // and a live one frees it here on the reaper, releasing any pin
     void release_memory(gpu::memory* mem) override {
         if (!failed) {
             auto* fake = static_cast<fake_memory*>(mem);
-            (void)vmm::free(fake->kernel_va);
+            if (fake->kernel_va != 0) {
+                (void)vmm::free(fake->kernel_va);
+            }
+
             heap::ufree_delete(fake);
             freed_count.fetch_add_release(1);
         }
@@ -395,7 +452,7 @@ public:
     }
 
 private:
-    // Fails the fake for good, as a zeroing or an invalidate past its deadline fails a GPU
+    // Fails the fake for good, as a zeroing, an invalidate or a wrap past its deadline fails a GPU
     void fail_device() {
         failed = true;
         fail_node.init(rc::reaper::reaper_thunk<fake_backend, report_failure, &fake_backend::fail_node>);
@@ -449,11 +506,87 @@ inline void close_handle(int32_t handle) {
     resource::close(sched::current(), static_cast<resource::handle_t>(handle));
 }
 
-// Argument structures with each reserved and padding field zero. The out handles of buffer_request and restrict_args
-// read -1 until a call writes them
+/**
+ * A shared memory object of `bytes` bytes and the calling task's handle to it with `rights`, closed with the struct.
+ * The handle keeps the object, so `pins()`, `references()` and `page()` read it while the struct lives.
+ */
+struct shared_memory {
+    int32_t    handle = -1;
+    mm::shmem* object = nullptr;
+
+    shared_memory(uint64_t bytes, uint32_t rights) {
+        resource::resource_object* obj = nullptr;
+        if (resource::shmem_provider::create_shmem_resource(0, &obj) != resource::OK) {
+            return;
+        }
+
+        mm::shmem* made = resource::shmem_provider::get_shmem_backing(obj);
+        sync::mutex_lock(made->lock);
+        bool sized = mm::shmem_resize_locked(made, bytes) == mm::SHMEM_OK;
+        sync::mutex_unlock(made->lock);
+
+        resource::handle_t made_handle = -1;
+        int32_t rc = resource::alloc_task_handle(sched::current(), obj, obj->type, rights, &made_handle);
+        resource::resource_release(obj);
+        if (rc == resource::HANDLE_OK) {
+            handle = made_handle;
+            object = sized ? made : nullptr;
+        }
+    }
+
+    ~shared_memory() {
+        if (handle >= 0) {
+            close_handle(handle);
+        }
+    }
+
+    bool ready() const { return object != nullptr; }
+
+    // The object's mapping count, one for each pin while no CPU maps the object
+    size_t pins() const {
+        sync::mutex_lock(object->lock);
+        size_t count = object->m_mapping_count;
+        sync::mutex_unlock(object->lock);
+
+        return count;
+    }
+
+    // The references others hold on the object's resource, the handle's included
+    uint32_t references() const {
+        resource::resource_object* obj = nullptr;
+        resource::handle_t h = static_cast<resource::handle_t>(handle);
+        if (resource::get_handle_object(sched::current()->handles, h, 0, &obj) != resource::HANDLE_OK) {
+            return 0;
+        }
+
+        uint32_t count = obj->ref_count() - 1;
+        resource::resource_release(obj);
+
+        return count;
+    }
+
+    // The page in slot `index`, which a pin keeps past a shrink, or 0 once it is freed
+    pmm::phys_addr_t page(size_t index) const {
+        sync::mutex_lock(object->lock);
+        pmm::phys_addr_t phys = index < object->m_capacity ? object->m_pages[index] : 0;
+        sync::mutex_unlock(object->lock);
+
+        return phys;
+    }
+};
+
+// Argument structures with each reserved and padding field zero. The out handles of `buffer_request`, `import_request`
+// and `restrict_args` read -1 until a call writes them
 inline gpu_buffer_args buffer_request(uint64_t size, uint32_t placement, uint32_t flags) {
     return {.size = size, .placement = placement, .flags = flags, .source = 0, .buffer = -1, .device_id = 0,
             .context = 0, .backend_id = 0};
+}
+
+inline gpu_buffer_args import_request(int32_t source) {
+    gpu_buffer_args args = buffer_request(0, 0, 0);
+    args.source = source;
+
+    return args;
 }
 
 inline gpu_timeline_args timeline_args(int32_t timeline, uint64_t value) {
@@ -527,6 +660,13 @@ struct session {
     int32_t new_buffer(uint64_t size, uint32_t placement, uint32_t flags) {
         gpu_buffer_args args = buffer_request(size, placement, flags);
         int64_t rc = call(GPU_BUFFER_CREATE, args);
+
+        return rc == 0 ? args.buffer : static_cast<int32_t>(rc);
+    }
+
+    int32_t import(int32_t source) {
+        gpu_buffer_args args = import_request(source);
+        int64_t rc = call(GPU_BUFFER_IMPORT, args);
 
         return rc == 0 ? args.buffer : static_cast<int32_t>(rc);
     }

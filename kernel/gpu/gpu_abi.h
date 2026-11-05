@@ -42,6 +42,7 @@
 #define GPU_QUEUE_CREATE    0x4805u
 #define GPU_QUEUE_DESTROY   0x4806u
 #define GPU_BUFFER_CREATE   0x4807u
+#define GPU_BUFFER_IMPORT   0x4808u
 #define GPU_MAP             0x4809u
 #define GPU_UNMAP           0x480Au
 #define GPU_TIMELINE_CREATE 0x480Bu
@@ -161,14 +162,17 @@ struct gpu_queue_args {
     uint32_t padding;
 };
 
-// GPU_BUFFER_CREATE argument: size, placement and flags in, and context and backend_id for GPU_PLACEMENT_CONTEXT, with
-// buffer and device_id out
+// GPU_BUFFER_CREATE (size, placement and flags in, and context and backend_id for GPU_PLACEMENT_CONTEXT, with buffer
+// and device_id out) and GPU_BUFFER_IMPORT (source in, context and backend_id zero, the rest out). Importing a GPU
+// buffer gives another handle to it. Importing shared memory gives a GPU_PLACEMENT_SYSTEM buffer of the object's pages,
+// kept while the GPU may reach them however the object is resized, and fails with EINVAL for an empty object or on a
+// device without GPU_PLACEMENT_SYSTEM. The CPU maps those pages only through the shared memory handle
 struct gpu_buffer_args {
     uint64_t size;       // bytes, nonzero, rounded up to page_size
     uint32_t placement;  // GPU_PLACEMENT_*, one the device offers
     uint32_t flags;      // GPU_BUFFER_*
-    int32_t  source;     // reserved
-    int32_t  buffer;     // the new handle, with both rights
+    int32_t  source;     // import only: a GPU buffer or shared memory handle with read, whose rights the new one gets
+    int32_t  buffer;     // the new handle, with both rights from a create
     uint32_t device_id;  // the backend's name for the memory in command lists, 0 where commands use addresses
     int32_t  context;    // GPU_PLACEMENT_CONTEXT only: the context whose commands allocated the memory, with write
     uint64_t backend_id; // GPU_PLACEMENT_CONTEXT only: the backend's name for that memory, venus's memory id

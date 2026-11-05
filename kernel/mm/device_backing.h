@@ -48,7 +48,9 @@ private:
     /**
      * @brief Hand the memory back to its driver and free this object. Runs
      * once, in the reaper's task, after the last reference is dropped. It must
-     * not block, since the reaper runs no other cleanup until it returns.
+     * not block, since the reaper runs no other cleanup until it returns. The
+     * one exception is a wait for a mutex whose holders neither sleep nor wait
+     * for the hardware while they hold it, such as a shared memory object's.
      */
     virtual void release_memory() = 0;
 
