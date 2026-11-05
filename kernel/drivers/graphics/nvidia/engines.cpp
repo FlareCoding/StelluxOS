@@ -53,6 +53,21 @@ static uint64_t find_differing_word(uintptr_t virt, uint64_t first, uint64_t end
     return end;
 }
 
+// Whether `card` reaches each page and is coherent, as it must be to share pages that processes map cached
+static bool reaches_coherently(const dma::device_profile& card, const pmm::phys_addr_t* pages, size_t count) {
+    if (!card.coherent()) {
+        return false;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (!card.reaches(pages[i] + pmm::PAGE_SIZE)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 engines::engines(
     firmware& fw,
     const gpu_objects& objects,
@@ -259,6 +274,10 @@ int32_t engines::wrap_pages(
     gpu::memory** out,
     uint32_t* out_device_id
 ) {
+    if (!reaches_coherently(m_card, pages, count)) {
+        return gpu::ERR_NO_MEMORY;
+    }
+
     auto* mem = heap::ualloc_new<backend_memory>();
     if (mem == nullptr) {
         return gpu::ERR_NO_MEMORY;

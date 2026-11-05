@@ -166,7 +166,8 @@ struct gpu_queue_args {
 // and device_id out) and GPU_BUFFER_IMPORT (source in, context and backend_id zero, the rest out). Importing a GPU
 // buffer gives another handle to it. Importing shared memory gives a GPU_PLACEMENT_SYSTEM buffer of the object's pages,
 // kept while the GPU may reach them however the object is resized, and fails with EINVAL for an empty object or on a
-// device without GPU_PLACEMENT_SYSTEM. The CPU maps those pages only through the shared memory handle
+// device without GPU_PLACEMENT_SYSTEM, and with ENOMEM when the GPU cannot reach one of the pages coherently. The CPU
+// maps those pages only through the shared memory handle
 struct gpu_buffer_args {
     uint64_t size;       // bytes, nonzero, rounded up to page_size
     uint32_t placement;  // GPU_PLACEMENT_*, one the device offers

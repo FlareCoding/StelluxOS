@@ -93,11 +93,12 @@ struct failure_operation : operation {
  * After a timeout the hung channel and the memory it fills stay for good. A
  * hung zeroing for the GPU core or an unmap the page tables refuse fails the
  * core's device while the display runs on. Once that device or the GPU failed,
- * every backend call that can fail, except a wrap the heap refuses, returns
- * `gpu::ERR_DEVICE`, a release or a space's destroy frees only a record that
- * holds no pin, and the driver task reports the failure to the core. After
- * another error, only what a refused release or a refused take-back of a page
- * directory leaves the firmware or the GPU able to reach stays.
+ * every backend call that can fail, except a wrap the card cannot reach
+ * coherently or the heap refuses, returns `gpu::ERR_DEVICE`, a release or a
+ * space's destroy frees only a record that holds no pin, and the driver task
+ * reports the failure to the core. After another error, only what a refused
+ * release or a refused take-back of a page directory leaves the firmware or
+ * the GPU able to reach stays.
  */
 class engines : public gpu::backend {
 public:

@@ -28,12 +28,12 @@ static inline uint64_t make_bitmap(uint16_t count) {
     return (1ULL << count) - 1;
 }
 
-static bool reaches(uint8_t address_bits, pmm::phys_addr_t end) {
-    if (address_bits == MAX_ADDRESS_BITS) {
+bool device_profile::reaches(pmm::phys_addr_t end) const {
+    if (m_address_bits == MAX_ADDRESS_BITS) {
         return true;
     }
 
-    return end <= (1ULL << address_bits);
+    return end <= (1ULL << m_address_bits);
 }
 
 device_profile uncached_profile(uint8_t address_bits) {
@@ -79,7 +79,7 @@ device_profile uncached_profile(uint8_t address_bits) {
     }
 
     // A 32-bit limit is the only one with a zone of its own, so other limits are checked here
-    if (!reaches(address_bits, phys + size)) {
+    if (!device.reaches(phys + size)) {
         vmm::free(virt);
         return ERR_NO_MEM;
     }
