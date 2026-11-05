@@ -3,13 +3,42 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stlxwin/proto.h>
+
+#define PROTO_WINDOW_ID 1u  // the window id proto_create_window sends
 
 // Prints a PASS or FAIL line for one check and counts it
 void check(const char* name, bool cond);
 
 uint64_t monotonic_ns(void);
 
+// The window protocol spoken without libstlxwin, to break rules the library keeps or cannot check. Connects and runs
+// the handshake, filling `gpu_info` from the GPU_INFO the reply announces. Returns the socket or -1
+int proto_connect(swp_gpu_info* gpu_info);
+
+// Sends one message in one sendmsg, with `count` handles in its control data
+bool proto_send(int sock, uint16_t type, const void* payload, uint32_t length, const int32_t* handles, uint32_t count);
+
+// Sends CREATE_WINDOW for a window of 64 by 64 pixels, with `count` handles
+bool proto_create_window(int sock, const int32_t* handles, uint32_t count);
+
+// Reads whatever stlxdm sends until it closes the socket. Returns false if it is still open after 2 seconds
+bool proto_closes(int sock);
+
 // The window protocol's checks, which speak it over sockets of their own and need no GPU
 void run_proto_checks(void);
+
+// The window checks, which commit GPU buffers of the device `gpu`
+void run_window_checks(int gpu);
+
+// The resize check, run alone as `gputest resize`, since stlxdm cascades each window by how many it made before and the
+// card job drags at that place. Once its prompt prints, it waits two minutes for the job to drag its right edge
+void run_resize_check(int gpu);
+
+#define HELD_CHILD_ARG "held-child"
+
+// The child a window check kills, run as `gputest held-child`: it shows a GPU picture, leaves another pending, writes a
+// byte to handle 3 and sleeps. Returns 1 if it could not
+int run_held_child(void);
 
 #endif

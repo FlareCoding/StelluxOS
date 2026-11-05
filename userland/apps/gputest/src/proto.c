@@ -16,7 +16,6 @@
 
 #include "gputest.h"
 
-#define WINDOW_ID     1u
 #define WAIT_NS       (2 * 1000000000ULL)
 #define POLL_MS       100
 #define HANDLES_MAX   (SWP_GPU_HANDLES + 1)
@@ -63,7 +62,7 @@ static bool read_whole(int sock, void* bytes, size_t length) {
     return have == length;
 }
 
-static int proto_connect(swp_gpu_info* gpu_info) {
+int proto_connect(swp_gpu_info* gpu_info) {
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock < 0) {
         return -1;
@@ -140,15 +139,8 @@ static bool send_bytes(int sock, const void* bytes, uint32_t length, const int32
     return sendmsg(sock, &msg, MSG_NOSIGNAL) == (ssize_t)length;
 }
 
-static bool proto_send(
-    int sock,
-    uint16_t type,
-    const void* payload,
-    uint32_t length,
-    const int32_t* handles,
-    uint32_t count
-) {
-    uint8_t bytes[sizeof(swp_header) + sizeof(swp_create_window)];
+bool proto_send(int sock, uint16_t type, const void* payload, uint32_t length, const int32_t* handles, uint32_t count) {
+    uint8_t bytes[sizeof(swp_header) + sizeof(swp_commit_gpu)];
     if (length > sizeof(bytes) - sizeof(swp_header)) {
         return false;
     }
@@ -160,10 +152,10 @@ static bool proto_send(
     return send_bytes(sock, bytes, sizeof(header) + length, handles, count);
 }
 
-static bool proto_create_window(int sock, const int32_t* handles, uint32_t count) {
+bool proto_create_window(int sock, const int32_t* handles, uint32_t count) {
     swp_create_window create;
     memset(&create, 0, sizeof(create));
-    create.win_id = WINDOW_ID;
+    create.win_id = PROTO_WINDOW_ID;
     create.width = WINDOW_PIXELS;
     create.height = WINDOW_PIXELS;
     strncpy(create.title, "gputest", sizeof(create.title) - 1);
@@ -171,7 +163,7 @@ static bool proto_create_window(int sock, const int32_t* handles, uint32_t count
     return proto_send(sock, SWP_MSG_CREATE_WINDOW, &create, sizeof(create), handles, count);
 }
 
-static bool proto_closes(int sock) {
+bool proto_closes(int sock) {
     uint64_t deadline = monotonic_ns() + WAIT_NS;
     uint8_t bytes[READ_CHUNK];
 
@@ -193,7 +185,7 @@ static bool proto_closes(int sock) {
 static void fill_pipe_attach(attach_message* message) {
     memset(message, 0, sizeof(*message));
     message->header = (swp_header){ SWP_MSG_ATTACH_GPU_BUFFER, 0, sizeof(message->attach) };
-    message->attach.win_id = WINDOW_ID;
+    message->attach.win_id = PROTO_WINDOW_ID;
     message->attach.buf_id = 1;
 
     message->attach.width = WINDOW_PIXELS;

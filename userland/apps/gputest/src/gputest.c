@@ -1,8 +1,8 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under
 // kernel/drivers/graphics/nvidia/LICENSE-NVIDIA
 
-// Checks /dev/gpu0 on an NVIDIA card, then the window protocol, or with `proto` only the protocol checks, which need no
-// GPU. Prints a line per check and exits nonzero when any failed
+// Checks /dev/gpu0 on an NVIDIA card, then the window protocol and its GPU buffers, or with `proto` only the protocol
+// checks, which need no GPU, or with `resize` only the resize check. Exits nonzero when any check failed
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -1023,9 +1023,14 @@ static int report(void) {
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
+    if (argc == 2 && strcmp(argv[1], HELD_CHILD_ARG) == 0) {
+        return run_held_child();
+    }
+
     bool proto_only = argc == 2 && strcmp(argv[1], "proto") == 0;
-    if (argc > 1 && !proto_only) {
-        printf("usage: gputest [proto]\n");
+    bool resize_only = argc == 2 && strcmp(argv[1], "resize") == 0;
+    if (argc > 1 && !proto_only && !resize_only) {
+        printf("usage: gputest [proto | resize]\n");
         return 1;
     }
 
@@ -1038,6 +1043,12 @@ int main(int argc, char** argv) {
     if (fd < 0) {
         printf("gputest: /dev/gpu0 cannot be opened: %s\n", strerror(errno));
         return 1;
+    }
+
+    if (resize_only) {
+        run_resize_check(fd);
+        close(fd);
+        return report();
     }
 
     struct gpu_info info = {0};
@@ -1064,6 +1075,7 @@ int main(int argc, char** argv) {
     test_copy_queues(fd, &info);
 
     run_proto_checks();
+    run_window_checks(fd);
     close(fd);
 
     return report();
