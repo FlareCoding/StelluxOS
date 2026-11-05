@@ -39,13 +39,26 @@ struct dm_conf_state {
     std::vector<dm_hotkey> hotkeys;
 };
 
-/* One attached shared-memory buffer, mapped for the window's lifetime
- * or until the client detaches it. */
+/* One attached buffer. A GPU buffer holds its timelines and its newest
+ * commit's points, except that a release-only one, whose commits are
+ * released at once, holds no acquire timeline and no mapping.
+ * Every other buffer is mapped until it is dropped. */
 struct dm_buffer {
     uint32_t  buf_id = 0;
     uint32_t  width = 0, height = 0;
-    size_t    size = 0;
-    uint32_t* pixels = nullptr;
+    uint32_t  pitch = 0;            /* bytes from one row to the next */
+    void*     mapping = nullptr;
+    size_t    size = 0;             /* the mapping's bytes */
+    uint32_t* pixels = nullptr;     /* the picture's first pixel */
+
+    bool      is_gpu = false;
+    bool      is_release_only = false;
+    bool      is_detached = false;  /* shown until the next latch drops it */
+    int       acquire = -1;         /* read handle of the acquire timeline */
+    int       release = -1;         /* write handle of the release timeline */
+    uint64_t  acquire_point = 0;
+    uint64_t  latch_point = 0;      /* 0 when the commit named none */
+    uint64_t  release_point = 0;    /* the newest named, 0 before any commit */
 };
 
 /* One sent and not yet acked CONFIGURE, remembered so the acking
@@ -92,10 +105,23 @@ struct dm_window {
      * so this client's next commit can be matched to it */
     uint32_t event_seq = 0;
 
-    /* Damage carried by the pending commit, buffer coordinates.
-     * Zero rects means the whole buffer changed. */
+    /* Damage of the commits since the last latch, buffer coordinates,
+     * unless the whole buffer changed. */
     swp_rect pending_damage[SWP_COMMIT_MAX_RECTS];
     uint32_t pending_damage_count = 0;
+    bool     pending_damage_whole = false;
+
+    /* When a pending GPU commit arrived, and when its acquire point is
+     * next due a query once its first second of per-tick queries ends */
+    uint64_t pending_since_ns = 0;
+    uint64_t next_query_ns = 0;
+};
+
+/* A dismissed window's release-only record, kept until the client
+ * detaches it or destroys the window, as commits may still name it */
+struct dm_dismissed_buffer {
+    uint32_t  win_id = 0;
+    dm_buffer buffer;
 };
 
 /* One connected application. Owns the socket, the partial-message
@@ -104,6 +130,7 @@ struct dm_client {
     int      fd = -1;
     bool     hello_done = false;
     bool     dead = false;
+    bool     may_attach_gpu = false;  /* its first GPU_INFO offered GPU buffers */
     char     app_id[SWP_APP_ID_MAX] = {};
 
     uint8_t  rd_buf[SWP_MAX_MSG_SIZE];
@@ -126,6 +153,8 @@ struct dm_client {
     /* Windows the display manager destroyed on its own, whose messages
      * in flight are ignored until the client learns and destroys them */
     std::vector<uint32_t> dismissed_windows;
+
+    std::vector<dm_dismissed_buffer> dismissed_buffers;
 
     /* One bit per output whose MODES the client asked for */
     uint32_t mode_watches = 0;
@@ -175,9 +204,9 @@ public:
      * desktop. Returns 0 or -1. */
     int init(presenter* pres, const stlxconf_t* conf);
 
-    /* Raises the handle limit, binds the protocol socket and spawns the
-     * config's autostart entries, the moment clients may exist.
-     * Returns 0 or -1. */
+    /* Raises the handle limit, tries to open the GPU device, binds the
+     * protocol socket and spawns the config's autostart entries, the
+     * moment clients may exist. Returns 0 or -1. */
     int serve();
 
     /* Shows the pointer on the primary output's hardware cursor when it
@@ -227,6 +256,10 @@ public:
                has_configure_work() || m_panels->dirty() ||
                m_power->animating();
     }
+
+    /* The poll bound until the next query of a pending GPU commit older
+     * than a second, which the tick no longer runs for, or -1 if none. */
+    int64_t latch_timeout_ns(uint64_t now_ns) const;
 
     /* The bar clock's poll bound and tick, frozen while the overlay
      * dims the desktop. */
@@ -305,12 +338,21 @@ private:
     void handle_destroy_window(dm_client& c, const uint8_t* payload);
     void handle_set_window(dm_client& c, const uint8_t* payload);
     void handle_attach_buffer(dm_client& c, const uint8_t* payload);
+    void handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload);
     void handle_detach_buffer(dm_client& c, const uint8_t* payload);
     void handle_commit(dm_client& c, const uint8_t* payload);
+    void handle_commit_gpu(dm_client& c, const uint8_t* payload);
+    void replace_pending(dm_client& c, dm_window& w, int32_t index);
     void destroy_window_tree(dm_client& c, uint32_t win_id);
     void dismiss_window_tree(dm_client& c, uint32_t win_id);
     void note_dismissed_tree(dm_client& c, uint32_t win_id);
     void release_held_buffers(dm_client& c, const dm_window& w);
+    void drop_buffer(dm_client& c, dm_window& w, size_t index);
+    void keep_release_only_record(dm_client& c, dm_window& w, size_t index);
+    void signal_release(dm_client& c, const dm_buffer& b, uint64_t point);
+    void release_picture(dm_client& c, uint32_t win_id, const dm_buffer& b);
+    void stop_taking_gpu_buffers();
+    bool is_acquire_reached(dm_client& c, dm_window& w, uint64_t now);
     void latch_window(dm_client& c, dm_window& w);
     void flush_configures();
     void compose_rect(stlxgfx_surface_t* back, const damage_list::rect& r);
@@ -363,7 +405,9 @@ private:
     uint32_t m_window_count = 0;
     damage_list m_damage;
 
-    /* The GPU_INFO every client gets after HELLO_REPLY */
+    /* The GPU whose buffers clients may attach, -1 without one, and the
+     * GPU_INFO every client gets after HELLO_REPLY */
+    int m_gpu_fd = -1;
     swp_gpu_info m_gpu_info = {};
 
     /* The desktop's backdrop: wallpaper or flat color, with the panels

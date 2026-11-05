@@ -356,7 +356,7 @@ void blit_content(stlxgfx_surface_t* back, const dm_window& w,
 
     stlxgfx_surface_t* src = stlxgfx_surface_from_buffer(
         reinterpret_cast<uint8_t*>(b->pixels), b->width, b->height,
-        b->width * 4, 32, 16, 8, 0);
+        b->pitch, 32, 16, 8, 0);
     if (!src) {
         return;
     }
@@ -386,7 +386,8 @@ void blit_content(stlxgfx_surface_t* back, const dm_window& w,
         }
 
         uint32_t* dst_row = back_row(back, y);
-        const uint32_t* src_row = b->pixels + static_cast<uint32_t>(y - w.y) * b->width;
+        const uint32_t* src_row = reinterpret_cast<const uint32_t*>(
+            reinterpret_cast<const uint8_t*>(b->pixels) + static_cast<uint32_t>(y - w.y) * b->pitch);
         for (int32_t x = ix0; x < ix1; x++) {
             if (x >= mid0 && x < mid1) {
                 x = mid1 - 1;
