@@ -8,7 +8,11 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
+
+/* The longest a message waits for room in a full socket before the connection counts as dead */
+#define SEND_WAIT_NS 100000000ll
 
 _Static_assert(STLXWIN_MODES_MAX == SWP_MODES_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_OUTPUTS_MAX == SWP_OUTPUTS_MAX, "stlxwin.h names proto.h's limit");
@@ -24,6 +28,11 @@ _Static_assert(STLXWIN_MODE_NO_BUFFERS == SWP_MODE_NO_BUFFERS, "stlxwin.h names 
 _Static_assert(STLXWIN_MODE_BUSY == SWP_MODE_BUSY, "stlxwin.h names proto.h's outcome");
 _Static_assert(STLXWIN_MODE_NO_TRIAL == SWP_MODE_NO_TRIAL, "stlxwin.h names proto.h's outcome");
 _Static_assert(STLXWIN_MODE_INVALID == SWP_MODE_INVALID, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_GPU_ACCEPTS == SWP_GPU_ACCEPTS, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_GPU_CPU_READS == SWP_GPU_CPU_READS, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_GPU_BUFFERS_MAX == SWP_GPU_BUFFERS_MAX, "stlxwin.h names proto.h's limit");
+_Static_assert(STLXWIN_GPU_DIMENSION_MAX == SWP_GPU_DIMENSION_MAX, "stlxwin.h names proto.h's limit");
+_Static_assert(STLXWIN_FMT_XRGB8888 == SWP_FMT_XRGB8888, "stlxwin.h names proto.h's format");
 
 /* Blocking exact-count read, used only for the connect handshake */
 static int read_full(int fd, void* dst, size_t len) {
@@ -46,24 +55,72 @@ static int read_full(int fd, void* dst, size_t len) {
     return 0;
 }
 
-/* Blocking exact-count write. Client messages are small and the
- * display manager drains its socket every tick, so blocking here is
- * the simple and correct backpressure. */
-static int write_full(int fd, const void* src, size_t len) {
+static int64_t monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000ll + ts.tv_nsec;
+}
+
+static int wait_writable(int fd, int64_t* deadline_ns) {
+    int64_t now = monotonic_ns();
+    if (*deadline_ns == 0) {
+        *deadline_ns = now + SEND_WAIT_NS;
+    }
+
+    while (now < *deadline_ns) {
+        struct pollfd pfd = { fd, POLLOUT, 0 };
+        int rc = poll(&pfd, 1, (int)((*deadline_ns - now) / 1000000) + 1);
+        if (rc > 0) {
+            return (pfd.revents & POLLOUT) ? 0 : -1;
+        }
+
+        if (rc < 0 && errno != EINTR) {
+            return -1;
+        }
+
+        now = monotonic_ns();
+    }
+
+    return -1;
+}
+
+/* Exact-count write that waits for room in a full socket only until the message's deadline */
+static int write_all(int fd, const void* src, size_t len, int64_t* deadline_ns) {
     const uint8_t* p = src;
     size_t put = 0;
 
     while (put < len) {
-        ssize_t n = write(fd, p + put, len - put);
-        if (n <= 0) {
-            if (n < 0 && errno == EINTR) {
-                continue;
-            }
-
-            return -1;
+        ssize_t n = send(fd, p + put, len - put, MSG_NOSIGNAL);
+        if (n > 0) {
+            put += (size_t)n;
+            continue;
         }
 
-        put += (size_t)n;
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+
+        int is_full = n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+        if (!is_full || wait_writable(fd, deadline_ns) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int stlxwin_send_locked(stlxwin_conn* conn, uint16_t type,
+                        const void* payload, uint32_t length) {
+    if (conn->dead) {
+        return -1;
+    }
+
+    int64_t deadline_ns = 0;
+    swp_header hdr = { type, 0, length };
+    if (write_all(conn->fd, &hdr, sizeof(hdr), &deadline_ns) != 0 ||
+        (length > 0 && write_all(conn->fd, payload, length, &deadline_ns) != 0)) {
+        stlxwin_mark_dead_locked(conn);
+        return -1;
     }
 
     return 0;
@@ -71,18 +128,85 @@ static int write_full(int fd, const void* src, size_t len) {
 
 int stlxwin_send(stlxwin_conn* conn, uint16_t type,
                  const void* payload, uint32_t length) {
-    if (conn->dead) {
+    pthread_mutex_lock(&conn->lock);
+    int rc = stlxwin_send_locked(conn, type, payload, length);
+    pthread_mutex_unlock(&conn->lock);
+
+    return rc;
+}
+
+/* The handles go with the first byte that goes out, and a sendmsg
+ * refused whole is retried whole, since the kernel drops its batch */
+int stlxwin_send_handles_locked(stlxwin_conn* conn, uint16_t type,
+                                const void* payload, uint32_t length,
+                                const int handles[SWP_GPU_HANDLES]) {
+    if (conn->dead || length > SWP_MAX_MSG_SIZE - sizeof(swp_header)) {
         return -1;
     }
 
+    uint8_t bytes[SWP_MAX_MSG_SIZE];
     swp_header hdr = { type, 0, length };
-    if (write_full(conn->fd, &hdr, sizeof(hdr)) != 0 ||
-        (length > 0 && write_full(conn->fd, payload, length) != 0)) {
-        conn->dead = 1;
-        return -1;
+    memcpy(bytes, &hdr, sizeof(hdr));
+    memcpy(bytes + sizeof(hdr), payload, length);
+
+    union {
+        struct cmsghdr head;
+        uint8_t        space[CMSG_SPACE(SWP_GPU_HANDLES * sizeof(int))];
+    } control;
+    memset(&control, 0, sizeof(control));
+
+    struct iovec iov = { bytes, sizeof(hdr) + length };
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.space;
+    msg.msg_controllen = sizeof(control.space);
+
+    struct cmsghdr* head = CMSG_FIRSTHDR(&msg);
+    head->cmsg_level = SOL_SOCKET;
+    head->cmsg_type = SCM_RIGHTS;
+    head->cmsg_len = CMSG_LEN(SWP_GPU_HANDLES * sizeof(int));
+    memcpy(CMSG_DATA(head), handles, SWP_GPU_HANDLES * sizeof(int));
+
+    int64_t deadline_ns = 0;
+    while (1) {
+        ssize_t n = sendmsg(conn->fd, &msg, MSG_NOSIGNAL);
+        if (n > 0 && write_all(conn->fd, bytes + n, iov.iov_len - (size_t)n, &deadline_ns) == 0) {
+            return 0;
+        }
+
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+
+        int is_full = n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+        if (!is_full || wait_writable(conn->fd, &deadline_ns) != 0) {
+            break;
+        }
     }
 
-    return 0;
+    stlxwin_mark_dead_locked(conn);
+
+    return -1;
+}
+
+/* A renderer may wait on a release point the DM can no longer reach,
+ * so the library reaches every one it holds as the connection dies */
+void stlxwin_mark_dead_locked(stlxwin_conn* conn) {
+    if (conn->dead) {
+        return;
+    }
+
+    conn->dead = 1;
+    stlxwin_gpu_release_records_locked(conn, NULL);
+}
+
+void stlxwin_mark_dead(stlxwin_conn* conn) {
+    pthread_mutex_lock(&conn->lock);
+    stlxwin_mark_dead_locked(conn);
+    pthread_mutex_unlock(&conn->lock);
 }
 
 int stlxwin_evq_push(stlxwin_conn* conn, const stlxwin_event* ev) {
@@ -105,6 +229,27 @@ int stlxwin_evq_push(stlxwin_conn* conn, const stlxwin_event* ev) {
     uint32_t tail = (conn->evq_head + conn->evq_count) % conn->evq_cap;
     conn->evq[tail] = *ev;
     conn->evq_count++;
+    return 0;
+}
+
+/* Reads the GPU_INFO a HELLO_REPLY's flag announces. A longer one is
+ * taken, since proto.h lets fields be appended past swp_gpu_info's. */
+static int read_hello_gpu_info(int fd, swp_gpu_info* info) {
+    swp_header hdr;
+    if (read_full(fd, &hdr, sizeof(hdr)) != 0 ||
+        hdr.type != SWP_MSG_GPU_INFO ||
+        hdr.length < sizeof(*info) ||
+        hdr.length > SWP_MAX_MSG_SIZE - sizeof(hdr)) {
+        return -1;
+    }
+
+    uint8_t payload[SWP_MAX_MSG_SIZE];
+    if (read_full(fd, payload, hdr.length) != 0) {
+        return -1;
+    }
+
+    memcpy(info, payload, sizeof(*info));
+
     return 0;
 }
 
@@ -133,9 +278,10 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
             return;
         }
 
-        w->conf_w = m->width;
-        w->conf_h = m->height;
-        w->conf_serial = m->serial;
+        pthread_mutex_lock(&conn->lock);
+        stlxwin_window_keep_configure_locked(w, m);
+        pthread_mutex_unlock(&conn->lock);
+
         ev.type = STLXWIN_EVT_CONFIGURE;
         ev.window = w;
         ev.configure.width = m->width;
@@ -154,11 +300,19 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
     case SWP_MSG_FRAME_DONE: {
         const swp_frame_done* m = (const swp_frame_done*)payload;
         struct stlxwin_window* w = stlxwin_find_window(conn, m->win_id);
-        if (!w || !w->want_frame) {
+        if (!w) {
             return;
         }
 
+        pthread_mutex_lock(&conn->lock);
+        int wanted = w->want_frame;
         w->want_frame = 0;
+        pthread_mutex_unlock(&conn->lock);
+
+        if (!wanted) {
+            return;
+        }
+
         ev.type = STLXWIN_EVT_FRAME;
         ev.window = w;
         ev.frame.time_ns = m->time_ns;
@@ -280,21 +434,34 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
         stlxwin_evq_push(conn, &ev);
         return;
     }
+    case SWP_MSG_GPU_INFO: {
+        if (hdr->length < sizeof(conn->gpu_info)) {
+            return;
+        }
+
+        pthread_mutex_lock(&conn->lock);
+        memcpy(&conn->gpu_info, payload, sizeof(conn->gpu_info));
+        pthread_mutex_unlock(&conn->lock);
+
+        ev.type = STLXWIN_EVT_GPU_INFO;
+        stlxwin_evq_push(conn, &ev);
+        return;
+    }
     default:
         return;
     }
 }
 
 /* Pull everything available off the socket, assembling messages across
- * short reads. Returns events queued, or -1 when the connection died. */
+ * short reads */
 int stlxwin_dispatch(stlxwin_conn* conn) {
-    if (!conn || conn->dead) {
+    if (!conn || conn->disconnect_queued) {
         return -1;
     }
 
     uint32_t before = conn->evq_count;
 
-    while (1) {
+    while (!conn->dead) {
         ssize_t n = read(conn->fd, conn->rd_buf + conn->rd_have,
                          sizeof(conn->rd_buf) - conn->rd_have);
         if (n < 0) {
@@ -306,12 +473,12 @@ int stlxwin_dispatch(stlxwin_conn* conn) {
                 continue;
             }
 
-            conn->dead = 1;
+            stlxwin_mark_dead(conn);
             break;
         }
 
         if (n == 0) {
-            conn->dead = 1;
+            stlxwin_mark_dead(conn);
             break;
         }
 
@@ -323,7 +490,7 @@ int stlxwin_dispatch(stlxwin_conn* conn) {
             swp_header hdr;
             memcpy(&hdr, conn->rd_buf + off, sizeof(hdr));
             if (hdr.length > SWP_MAX_MSG_SIZE - sizeof(hdr)) {
-                conn->dead = 1;
+                stlxwin_mark_dead(conn);
                 break;
             }
 
@@ -345,7 +512,7 @@ int stlxwin_dispatch(stlxwin_conn* conn) {
         stlxwin_event ev;
         memset(&ev, 0, sizeof(ev));
         ev.type = STLXWIN_EVT_DISCONNECTED;
-        stlxwin_evq_push(conn, &ev);
+        conn->disconnect_queued = stlxwin_evq_push(conn, &ev) == 0;
     }
 
     return (int)(conn->evq_count - before);
@@ -363,7 +530,7 @@ int stlxwin_wait(stlxwin_conn* conn, int64_t timeout_ns) {
             return 1;
         }
         if (conn->dead) {
-            return -1;
+            return stlxwin_dispatch(conn) > 0 ? 1 : -1;
         }
 
         struct pollfd pfd = { conn->fd, POLLIN, 0 };
@@ -374,8 +541,8 @@ int stlxwin_wait(stlxwin_conn* conn, int64_t timeout_ns) {
 
         int rc = poll(&pfd, 1, timeout_ms);
         if (rc < 0 && errno != EINTR) {
-            conn->dead = 1;
-            return -1;
+            stlxwin_mark_dead(conn);
+            continue;
         }
 
         if (rc == 0) {
@@ -417,6 +584,21 @@ void stlxwin_screen_size(const stlxwin_conn* conn, uint32_t* w, uint32_t* h) {
     }
 }
 
+stlxwin_gpu_info stlxwin_gpu_info_get(stlxwin_conn* conn) {
+    stlxwin_gpu_info info;
+    memset(&info, 0, sizeof(info));
+    if (!conn) {
+        return info;
+    }
+
+    pthread_mutex_lock(&conn->lock);
+    info.flags = conn->gpu_info.flags;
+    info.device = conn->gpu_info.device;
+    pthread_mutex_unlock(&conn->lock);
+
+    return info;
+}
+
 stlxwin_conn* stlxwin_connect(const char* app_id) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -441,9 +623,10 @@ stlxwin_conn* stlxwin_connect(const char* app_id) {
         strncpy(hello.app_id, app_id, sizeof(hello.app_id) - 1);
     }
 
+    int64_t deadline_ns = 0;
     swp_header hdr = { SWP_MSG_HELLO, 0, sizeof(hello) };
-    if (write_full(fd, &hdr, sizeof(hdr)) != 0 ||
-        write_full(fd, &hello, sizeof(hello)) != 0) {
+    if (write_all(fd, &hdr, sizeof(hdr), &deadline_ns) != 0 ||
+        write_all(fd, &hello, sizeof(hello), &deadline_ns) != 0) {
         close(fd);
         return NULL;
     }
@@ -455,6 +638,13 @@ stlxwin_conn* stlxwin_connect(const char* app_id) {
         rhdr.length != sizeof(reply) ||
         read_full(fd, &reply, sizeof(reply)) != 0 ||
         reply.proto_version != SWP_VERSION) {
+        close(fd);
+        return NULL;
+    }
+
+    swp_gpu_info gpu_info;
+    memset(&gpu_info, 0, sizeof(gpu_info));
+    if ((rhdr.flags & SWP_HELLO_GPU_INFO) && read_hello_gpu_info(fd, &gpu_info) != 0) {
         close(fd);
         return NULL;
     }
@@ -473,12 +663,15 @@ stlxwin_conn* stlxwin_connect(const char* app_id) {
     }
 
     fcntl(fd, F_SETFL, O_NONBLOCK);
+    pthread_mutex_init(&conn->lock, NULL);
+    conn->gpu_fd = -1;
 
     conn->fd = fd;
     conn->evq_cap = STLXWIN_EVQ_INITIAL;
     conn->next_win_id = 1;
     conn->screen_w = reply.screen_w;
     conn->screen_h = reply.screen_h;
+    conn->gpu_info = gpu_info;
 
     return conn;
 }
@@ -488,6 +681,10 @@ void stlxwin_disconnect(stlxwin_conn* conn) {
         return;
     }
 
+    pthread_mutex_lock(&conn->lock);
+    stlxwin_gpu_release_records_locked(conn, NULL);
+    pthread_mutex_unlock(&conn->lock);
+
     while (conn->windows) {
         struct stlxwin_window* w = conn->windows;
         conn->windows = w->next;
@@ -496,6 +693,11 @@ void stlxwin_disconnect(stlxwin_conn* conn) {
     }
 
     close(conn->fd);
+    if (conn->gpu_fd >= 0) {
+        close(conn->gpu_fd);
+    }
+
+    pthread_mutex_destroy(&conn->lock);
     free(conn->clip_text);
     free(conn->modes);
     free(conn->evq);
