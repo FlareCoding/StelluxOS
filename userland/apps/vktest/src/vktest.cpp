@@ -1,11 +1,24 @@
 // Tests the Vulkan library a Stellux program links, one stage per part of the driver. Every
 // check prints a PASS or FAIL line, and the program exits with 1 when any check failed.
 
+#include <algorithm>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stlx/gpu_abi.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 #include <vector>
 #include <vulkan/vulkan.h>
+
+// What one /dev/gpuN reports, which NVK's physical device for that GPU must match
+struct gpu_node {
+    gpu_info   info;
+    gpu_memory memory;
+    bool       has_memory;
+};
 
 static int g_checks = 0;
 static int g_failed_checks = 0;
@@ -88,6 +101,297 @@ static void check_global_commands() {
     check("no headless surface is offered", !has_extension(extensions, VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME));
 }
 
+// Reads what /dev/gpu0 and each file after it report, up to the first file that does not open, leaving out, as
+// NVK does, any file whose GPU_GET_INFO fails
+static std::vector<gpu_node> read_gpu_nodes() {
+    std::vector<gpu_node> nodes;
+    for (uint32_t index = 0;; index++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/gpu%u", index);
+
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+            return nodes;
+        }
+
+        gpu_node node = {};
+        bool has_info = ioctl(fd, GPU_GET_INFO, &node.info) == 0;
+        node.has_memory = ioctl(fd, GPU_GET_MEMORY, &node.memory) == 0;
+        close(fd);
+
+        if (has_info) {
+            nodes.push_back(node);
+        }
+    }
+}
+
+static bool is_at_address(const gpu_info& info, const VkPhysicalDevicePCIBusInfoPropertiesEXT& pci_bus) {
+    return info.pci_segment == pci_bus.pciDomain && info.pci_bus == pci_bus.pciBus &&
+        info.pci_slot == pci_bus.pciDevice && info.pci_function == pci_bus.pciFunction;
+}
+
+static const gpu_node* find_gpu_node_at(
+    const std::vector<gpu_node>& nodes,
+    const VkPhysicalDevicePCIBusInfoPropertiesEXT& pci_bus
+) {
+    for (const gpu_node& node : nodes) {
+        if (is_at_address(node.info, pci_bus)) {
+            return &node;
+        }
+    }
+
+    return nullptr;
+}
+
+static VkPhysicalDevicePCIBusInfoPropertiesEXT read_pci_bus(
+    PFN_vkGetPhysicalDeviceProperties2 get_properties,
+    VkPhysicalDevice physical_device
+) {
+    VkPhysicalDevicePCIBusInfoPropertiesEXT pci_bus = {};
+    pci_bus.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT;
+    VkPhysicalDeviceProperties2 properties = {};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &pci_bus;
+    get_properties(physical_device, &properties);
+
+    return pci_bus;
+}
+
+// NVK accepts every chip the kernel drives, so its physical devices are the NVIDIA GPUs with a 3D class
+static bool lists_exactly_the_nvidia_3d_gpus(
+    VkInstance instance,
+    const std::vector<VkPhysicalDevice>& physical_devices,
+    const std::vector<gpu_node>& nodes
+) {
+    auto get_properties = find_command<PFN_vkGetPhysicalDeviceProperties2>(instance, "vkGetPhysicalDeviceProperties2");
+    if (!get_properties) {
+        return false;
+    }
+
+    std::vector<VkPhysicalDevicePCIBusInfoPropertiesEXT> addresses;
+    for (VkPhysicalDevice physical_device : physical_devices) {
+        addresses.push_back(read_pci_bus(get_properties, physical_device));
+    }
+
+    size_t nvidia_3d_gpu_count = 0;
+    for (const gpu_node& node : nodes) {
+        bool is_nvidia_3d = node.info.backend == GPU_BACKEND_NVIDIA && node.info.nvidia.class_3d != 0;
+        if (!is_nvidia_3d) {
+            continue;
+        }
+
+        size_t listings = 0;
+        for (const VkPhysicalDevicePCIBusInfoPropertiesEXT& address : addresses) {
+            listings += is_at_address(node.info, address) ? 1 : 0;
+        }
+
+        if (listings != 1) {
+            return false;
+        }
+
+        nvidia_3d_gpu_count++;
+    }
+
+    return nvidia_3d_gpu_count == addresses.size();
+}
+
+// Vulkan requires every device to support a sampled 2D R8G8B8A8_UNORM image with optimal tiling, so only the
+// sparse flags can refuse it
+static bool refuses_sparse_image(
+    PFN_vkGetPhysicalDeviceImageFormatProperties2 get_image_format,
+    VkPhysicalDevice physical_device,
+    VkImageCreateFlags flags
+) {
+    VkPhysicalDeviceImageFormatInfo2 format_info = {};
+    format_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+    format_info.flags = flags;
+
+    format_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    format_info.type = VK_IMAGE_TYPE_2D;
+    format_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    format_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+
+    VkImageFormatProperties2 properties = {};
+    properties.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+    VkResult result = get_image_format(physical_device, &format_info, &properties);
+
+    return result == VK_ERROR_FORMAT_NOT_SUPPORTED;
+}
+
+static void check_physical_device(
+    VkInstance instance,
+    VkPhysicalDevice physical_device,
+    const std::vector<gpu_node>& nodes
+) {
+    auto get_properties = find_command<PFN_vkGetPhysicalDeviceProperties2>(instance, "vkGetPhysicalDeviceProperties2");
+    auto get_features = find_command<PFN_vkGetPhysicalDeviceFeatures2>(instance, "vkGetPhysicalDeviceFeatures2");
+    auto get_memory_properties =
+        find_command<PFN_vkGetPhysicalDeviceMemoryProperties2>(instance, "vkGetPhysicalDeviceMemoryProperties2");
+    auto get_queue_families = find_command<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+        instance,
+        "vkGetPhysicalDeviceQueueFamilyProperties"
+    );
+    auto get_image_format = find_command<PFN_vkGetPhysicalDeviceImageFormatProperties2>(
+        instance,
+        "vkGetPhysicalDeviceImageFormatProperties2"
+    );
+
+    bool has_commands = get_properties && get_features && get_memory_properties && get_queue_families &&
+        get_image_format;
+    check("vkGetInstanceProcAddr finds the physical device commands vktest calls", has_commands);
+    if (!has_commands) {
+        return;
+    }
+
+    VkPhysicalDeviceShaderSMBuiltinsPropertiesNV sm_builtins = {};
+    sm_builtins.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_PROPERTIES_NV;
+    VkPhysicalDevicePCIBusInfoPropertiesEXT pci_bus = {};
+    pci_bus.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT;
+    pci_bus.pNext = &sm_builtins;
+
+    VkPhysicalDeviceProperties2 properties = {};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &pci_bus;
+    get_properties(physical_device, &properties);
+
+    const VkPhysicalDeviceProperties& device_properties = properties.properties;
+    printf(
+        "  %s at %04x:%02x:%02x.%x\n",
+        device_properties.deviceName,
+        pci_bus.pciDomain,
+        pci_bus.pciBus,
+        pci_bus.pciDevice,
+        pci_bus.pciFunction
+    );
+
+    const gpu_node* node = find_gpu_node_at(nodes, pci_bus);
+    bool has_gpu = node != nullptr && node->info.backend == GPU_BACKEND_NVIDIA;
+    check("a /dev/gpuN reports an NVIDIA GPU at the physical device's PCI address", has_gpu);
+    if (!has_gpu) {
+        return;
+    }
+
+    const gpu_info& info = node->info;
+    bool has_pci_ids = device_properties.vendorID == info.vendor_id && device_properties.deviceID == info.device_id;
+    bool has_identity = has_pci_ids && device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+    check("the physical device is a discrete GPU with GPU_GET_INFO's vendor and device ids", has_identity);
+
+    size_t name_length = strnlen(info.name, sizeof(info.name));
+    char expected_name_start[sizeof(info.name) + 8];
+    snprintf(expected_name_start, sizeof(expected_name_start), "%.*s (NVK ", static_cast<int>(name_length), info.name);
+    bool has_name = strncmp(device_properties.deviceName, expected_name_start, strlen(expected_name_start)) == 0;
+    check("deviceName starts with GPU_GET_INFO's name followed by \" (NVK \"", has_name);
+
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {};
+    budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+    VkPhysicalDeviceMemoryProperties2 memory = {};
+    memory.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+    memory.pNext = &budget;
+    get_memory_properties(physical_device, &memory);
+
+    // NVK lists video memory first and system memory last
+    const VkPhysicalDeviceMemoryProperties& memory_properties = memory.memoryProperties;
+    uint32_t heap_count = memory_properties.memoryHeapCount;
+    uint32_t system_heap_index = heap_count > 0 ? heap_count - 1 : 0;
+    const VkMemoryHeap& video_heap = memory_properties.memoryHeaps[0];
+    const VkMemoryHeap& system_heap = memory_properties.memoryHeaps[system_heap_index];
+
+    bool is_video_heap = heap_count >= 2 && (video_heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+    bool has_video_heap = is_video_heap && video_heap.size == info.video_size;
+    check("the first heap is device local and holds GPU_GET_INFO's video memory", has_video_heap);
+
+    uint64_t video_free = node->memory.video_free;
+    bool is_at_most_free = budget.heapBudget[0] <= video_free;
+    bool is_over_half_free = budget.heapBudget[0] > video_free / 2;
+    bool follows_free_memory = has_video_heap && node->has_memory && is_at_most_free && is_over_half_free;
+    check(
+        "the video memory heap's budget is over half of GPU_GET_MEMORY's free video memory and at most all of it",
+        follows_free_memory
+    );
+
+    bool has_system_heap = heap_count >= 2 && system_heap.flags == 0;
+    check(
+        "the last heap is system memory with a nonzero budget",
+        has_system_heap && budget.heapBudget[system_heap_index] > 0
+    );
+
+    printf(
+        "  heap budgets: video %llu of %llu MiB, system %llu of %llu MiB\n",
+        static_cast<unsigned long long>(budget.heapBudget[0] >> 20),
+        static_cast<unsigned long long>(video_heap.size >> 20),
+        static_cast<unsigned long long>(budget.heapBudget[system_heap_index] >> 20),
+        static_cast<unsigned long long>(system_heap.size >> 20)
+    );
+    printf("  SMs: %u, %u warps each\n", sm_builtins.shaderSMCount, sm_builtins.shaderWarpsPerSM);
+
+    uint64_t mappable_video_size = std::min(info.mappable_video_size, info.video_size);
+    bool has_mappable_heap = false;
+    for (uint32_t index = 0; index < heap_count; index++) {
+        const VkMemoryHeap& heap = memory_properties.memoryHeaps[index];
+        bool is_device_local = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+        has_mappable_heap |= is_device_local && heap.size == mappable_video_size;
+    }
+
+    check("a device local heap holds GPU_GET_INFO's mappable video memory", has_mappable_heap);
+
+    uint32_t family_count = 0;
+    get_queue_families(physical_device, &family_count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(family_count);
+    get_queue_families(physical_device, &family_count, families.data());
+
+    bool has_graphics_family = false;
+    bool has_transfer_only_family = false;
+    bool family_offers_sparse_binding = false;
+    for (const VkQueueFamilyProperties& family : families) {
+        bool is_transfer_only = (family.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0;
+        has_graphics_family |= (family.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
+        has_transfer_only_family |= is_transfer_only && (family.queueFlags & VK_QUEUE_TRANSFER_BIT) != 0;
+        family_offers_sparse_binding |= (family.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0;
+    }
+
+    bool reports_copy_queue = (info.queue_kinds & (1u << GPU_QUEUE_COPY)) != 0;
+    bool transfer_family_matches = has_transfer_only_family == reports_copy_queue;
+    check("a queue family offers graphics", has_graphics_family);
+    check("a transfer-only family exists exactly when GPU_GET_INFO reports a copy queue", transfer_family_matches);
+
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT float_atomics = {};
+    float_atomics.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+    VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT int64_atomics = {};
+    int64_atomics.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT;
+    int64_atomics.pNext = &float_atomics;
+
+    VkPhysicalDeviceFeatures2 features2 = {};
+    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features2.pNext = &int64_atomics;
+    get_features(physical_device, &features2);
+
+    const VkPhysicalDeviceFeatures& features = features2.features;
+    bool offers_sparse_residency = features.shaderResourceResidency || features.sparseResidencyBuffer ||
+        features.sparseResidencyImage2D || features.sparseResidencyImage3D || features.sparseResidency2Samples ||
+        features.sparseResidency4Samples || features.sparseResidency8Samples || features.sparseResidency16Samples ||
+        features.sparseResidencyAliased;
+    bool offers_sparse_atomics = float_atomics.sparseImageFloat32Atomics ||
+        float_atomics.sparseImageFloat32AtomicAdd || int64_atomics.sparseImageInt64Atomics;
+
+    const VkPhysicalDeviceSparseProperties& sparse_properties = device_properties.sparseProperties;
+    bool advertises_sparse_properties = device_properties.limits.sparseAddressSpaceSize != 0 ||
+        sparse_properties.residencyStandard2DBlockShape || sparse_properties.residencyStandard3DBlockShape ||
+        sparse_properties.residencyStandard2DMultisampleBlockShape || sparse_properties.residencyAlignedMipSize ||
+        sparse_properties.residencyNonResidentStrict;
+    bool advertises_sparse = family_offers_sparse_binding || features.sparseBinding || offers_sparse_residency ||
+        offers_sparse_atomics || advertises_sparse_properties;
+    check("no queue family, feature or property advertises sparse binding or residency", !advertises_sparse);
+
+    // The residency query leaves out the binding flag, since the binding refusal would also refuse a query with both
+    bool refuses_binding = refuses_sparse_image(get_image_format, physical_device, VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
+    bool refuses_residency =
+        refuses_sparse_image(get_image_format, physical_device, VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT);
+    check(
+        "the image format query refuses a sampled 2D R8G8B8A8_UNORM image with sparse binding or residency",
+        refuses_binding && refuses_residency
+    );
+}
+
 static void check_instance() {
     VkApplicationInfo application = {};
     application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -129,9 +433,27 @@ static void check_instance() {
     check("vkEnumeratePhysicalDevices succeeds", result == VK_SUCCESS);
     printf("  physical devices: %u\n", physical_device_count);
 
+    std::vector<VkPhysicalDevice> physical_devices(physical_device_count);
+    if (result == VK_SUCCESS && physical_device_count > 0) {
+        result = enumerate_physical_devices(instance, &physical_device_count, physical_devices.data());
+        check("vkEnumeratePhysicalDevices lists the devices it counted", result == VK_SUCCESS);
+        physical_devices.resize(physical_device_count);
+    }
+
+    std::vector<gpu_node> nodes = read_gpu_nodes();
+    check(
+        "one physical device per NVIDIA GPU whose GPU_GET_INFO reports a 3D class, and no other",
+        lists_exactly_the_nvidia_3d_gpus(instance, physical_devices, nodes)
+    );
+
     // Returning is the check, since a null device reaching NVK's dispatch ends the program before its summary
     destroy_device(VK_NULL_HANDLE, nullptr);
     check("vkDestroyDevice returns for a null device", true);
+
+    for (VkPhysicalDevice physical_device : physical_devices) {
+        printf("vktest: physical device\n");
+        check_physical_device(instance, physical_device, nodes);
+    }
 
     destroy_instance(instance, nullptr);
 }

@@ -17,4 +17,15 @@ endif
 
 include $(VULKAN_DIR)/share/stellux/vulkan.mk
 
+# A kit must record the GPU_ABI_VERSION of kernel/gpu/gpu_abi.h its library compiled against, equal to the tree's
+VULKAN_TREE_GPU_ABI_VERSION := $(shell awk \
+    '$$1 == "\043define" && $$2 == "GPU_ABI_VERSION" { v = $$3 } END { print v + 0 }' \
+    $(USERLAND_ROOT)/../kernel/gpu/gpu_abi.h)
+ifneq ($(VULKAN_GPU_ABI_VERSION),$(VULKAN_TREE_GPU_ABI_VERSION))
+  $(error The Vulkan kit was not built against GPU_ABI_VERSION $(VULKAN_TREE_GPU_ABI_VERSION) of \
+    kernel/gpu/gpu_abi.h. With the header committed, bump MESA_PKG_REL in packages/mesa/versions.sh if \
+    packages.lock pins the release versions.sh names, then run make packages-build PACKAGES="none mesa", and for \
+    CI publish that release and pin it)
+endif
+
 endif

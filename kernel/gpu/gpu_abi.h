@@ -28,6 +28,9 @@
  * the kernel has no memory left or the GPU failed.
  */
 
+// Raised by each change that breaks code compiled against the earlier header, such as the mesa kit's library
+#define GPU_ABI_VERSION 1u
+
 #ifdef __cplusplus
 #define GPU_ABI_ASSERT(x, m) static_assert(x, m)
 #else

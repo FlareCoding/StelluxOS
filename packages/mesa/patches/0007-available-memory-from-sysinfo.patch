@@ -1,0 +1,35 @@
+Takes the available memory from sysinfo() where /proc/meminfo cannot be read,
+as on Stellux, where NVK's system heap budget would otherwise be only the
+memory already allocated from that heap.
+
+--- a/src/util/os_misc.c
++++ b/src/util/os_misc.c
+@@ -85,6 +85,10 @@
+ #error unexpected platform in os_sysinfo.c
+ #endif
+ 
++#if DETECT_OS_LINUX
++#  include <sys/sysinfo.h>
++#endif
++
+ 
+ void
+ os_log_message(const char *message)
+@@ -418,8 +422,15 @@ os_get_available_system_memory(uint64_t *size)
+ {
+ #if DETECT_OS_LINUX
+    char *meminfo = os_read_file("/proc/meminfo", NULL);
+-   if (!meminfo)
+-      return false;
++   if (!meminfo) {
++      /* Without /proc/meminfo, sysinfo()'s free memory is the best guess */
++      struct sysinfo info;
++      if (sysinfo(&info) != 0)
++         return false;
++
++      *size = (uint64_t)info.freeram * info.mem_unit;
++      return true;
++   }
+ 
+    char *str = strstr(meminfo, "MemAvailable:");
+    if (!str) {

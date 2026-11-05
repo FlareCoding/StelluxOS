@@ -1,0 +1,177 @@
+Adds nvkmd_info.has_sparse, true on nouveau, and offers sparse binding and
+residency, and reports their address space and properties, only where it is
+set, since each queue of a family with sparse binding asks the nvkmd for a
+bind ctx (an nvkmd's object that binds memory to a sparse resource's pages).
+
+--- a/src/nouveau/vulkan/nvk_image.c
++++ b/src/nouveau/vulkan/nvk_image.c
+@@ -394,9 +394,11 @@ nvk_GetPhysicalDeviceImageFormatProperties2(
+    if (ycbcr_info && pImageFormatInfo->type != VK_IMAGE_TYPE_2D)
+       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ 
+-   /* Maxwell B and earlier don't support sparse residency */
++   /* GPUs before Maxwell B, and an nvkmd without sparse binding, don't
++    * support sparse residency
++    */
+    if ((pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT) &&
+-       pdev->info.cls_eng3d < MAXWELL_B)
++       (pdev->info.cls_eng3d < MAXWELL_B || !pdev->nvkmd->kmd_info.has_sparse))
+       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ 
+    /* Don't allow sparse on D32S8 cube maps.  The hardware doesn't seem to
+@@ -630,7 +632,8 @@ nvk_GetPhysicalDeviceImageFormatProperties2(
+       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ 
+    if ((pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) &&
+-       (pImageFormatInfo->usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT))
++       ((pImageFormatInfo->usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT) ||
++        !pdev->nvkmd->kmd_info.has_sparse))
+       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ 
+    pImageFormatProperties->imageFormatProperties = (VkImageFormatProperties) {
+--- a/src/nouveau/vulkan/nvk_physical_device.c
++++ b/src/nouveau/vulkan/nvk_physical_device.c
+@@ -329,6 +329,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
+ 
+ static void
+ nvk_get_device_features(const struct nv_device_info *info,
++                        bool has_sparse,
+                         const struct vk_device_extension_table *supported_extensions,
+                         struct vk_features *features)
+ {
+@@ -379,16 +380,16 @@ nvk_get_device_features(const struct nv_device_info *info,
+       .shaderFloat64 = true,
+       .shaderInt64 = true,
+       .shaderInt16 = true,
+-      .shaderResourceResidency = info->cls_eng3d >= VOLTA_A,
++      .shaderResourceResidency = has_sparse && info->cls_eng3d >= VOLTA_A,
+       .shaderResourceMinLod = info->cls_eng3d >= VOLTA_A,
+-      .sparseBinding = info->cls_eng3d >= MAXWELL_B,
+-      .sparseResidency2Samples = info->cls_eng3d >= MAXWELL_B,
+-      .sparseResidency4Samples = info->cls_eng3d >= MAXWELL_B,
+-      .sparseResidency8Samples = info->cls_eng3d >= MAXWELL_B,
+-      .sparseResidencyAliased = info->cls_eng3d >= MAXWELL_B,
+-      .sparseResidencyBuffer = info->cls_eng3d >= MAXWELL_B,
+-      .sparseResidencyImage2D = info->cls_eng3d >= MAXWELL_B,
+-      .sparseResidencyImage3D = info->cls_eng3d >= MAXWELL_B,
++      .sparseBinding = has_sparse && info->cls_eng3d >= MAXWELL_B,
++      .sparseResidency2Samples = has_sparse && info->cls_eng3d >= MAXWELL_B,
++      .sparseResidency4Samples = has_sparse && info->cls_eng3d >= MAXWELL_B,
++      .sparseResidency8Samples = has_sparse && info->cls_eng3d >= MAXWELL_B,
++      .sparseResidencyAliased = has_sparse && info->cls_eng3d >= MAXWELL_B,
++      .sparseResidencyBuffer = has_sparse && info->cls_eng3d >= MAXWELL_B,
++      .sparseResidencyImage2D = has_sparse && info->cls_eng3d >= MAXWELL_B,
++      .sparseResidencyImage3D = has_sparse && info->cls_eng3d >= MAXWELL_B,
+       .variableMultisampleRate = true,
+       .inheritedQueries = true,
+ 
+@@ -751,12 +752,12 @@ nvk_get_device_features(const struct nv_device_info *info,
+       .shaderSharedFloat64AtomicAdd = true,
+       .shaderImageFloat32Atomics = true,
+       .shaderImageFloat32AtomicAdd = true,
+-      .sparseImageFloat32Atomics = true,
+-      .sparseImageFloat32AtomicAdd = true,
++      .sparseImageFloat32Atomics = has_sparse,
++      .sparseImageFloat32AtomicAdd = has_sparse,
+ 
+       /* VK_EXT_shader_image_atomic_int64 */
+       .shaderImageInt64Atomics = info->cls_eng3d >= KEPLER_B,
+-      .sparseImageInt64Atomics = info->cls_eng3d >= MAXWELL_A,
++      .sparseImageInt64Atomics = has_sparse && info->cls_eng3d >= MAXWELL_A,
+ 
+       /* VK_EXT_shader_module_identifier */
+       .shaderModuleIdentifier = true,
+@@ -821,6 +822,7 @@ nvk_get_device_features(const struct nv_device_info *info,
+ static void
+ nvk_get_device_properties(const struct nvk_instance *instance,
+                           const struct nv_device_info *info,
++                          bool has_sparse,
+                           struct vk_properties *properties)
+ {
+    /* Note: update nir_shader_compiler_options.max_samples when changing this. */
+@@ -864,7 +866,7 @@ nvk_get_device_properties(const struct nvk_instance *instance,
+       .maxMemoryAllocationCount = 4096,
+       .maxSamplerAllocationCount = 4000,
+       .bufferImageGranularity = info->cls_eng3d >= MAXWELL_B ? 0x400 : 0x10000,
+-      .sparseAddressSpaceSize = NVK_SPARSE_ADDR_SPACE_SIZE,
++      .sparseAddressSpaceSize = has_sparse ? NVK_SPARSE_ADDR_SPACE_SIZE : 0,
+       .maxBoundDescriptorSets = NVK_MAX_SETS,
+       .maxPerStageDescriptorSamplers = NVK_MAX_DESCRIPTORS,
+       .maxPerStageDescriptorUniformBuffers = NVK_MAX_DESCRIPTORS,
+@@ -968,11 +970,11 @@ nvk_get_device_properties(const struct nvk_instance *instance,
+       .nonCoherentAtomSize = info->nc_atom_size_B ? info->nc_atom_size_B : 64,
+ 
+       /* Vulkan 1.0 sparse properties */
+-      .sparseResidencyNonResidentStrict = true,
+-      .sparseResidencyAlignedMipSize = info->cls_eng3d < MAXWELL_B, /* DXVK/vkd3d-proton requires this to be advertised as VK_FALSE for FL12 */
+-      .sparseResidencyStandard2DBlockShape = true,
+-      .sparseResidencyStandard2DMultisampleBlockShape = true,
+-      .sparseResidencyStandard3DBlockShape = true,
++      .sparseResidencyNonResidentStrict = has_sparse,
++      .sparseResidencyAlignedMipSize = has_sparse && info->cls_eng3d < MAXWELL_B, /* DXVK/vkd3d-proton requires this to be advertised as VK_FALSE for FL12 */
++      .sparseResidencyStandard2DBlockShape = has_sparse,
++      .sparseResidencyStandard2DMultisampleBlockShape = has_sparse,
++      .sparseResidencyStandard3DBlockShape = has_sparse,
+ 
+       /* Vulkan 1.1 properties */
+       .subgroupSize = 32,
+@@ -1537,11 +1539,12 @@ nvk_create_physical_device(struct nvk_instance *instance,
+                              &supported_extensions);
+ 
+    struct vk_features supported_features;
+-   nvk_get_device_features(&nvkmd->dev_info, &supported_extensions,
+-                           &supported_features);
++   nvk_get_device_features(&nvkmd->dev_info, nvkmd->kmd_info.has_sparse,
++                           &supported_extensions, &supported_features);
+ 
+    struct vk_properties properties;
+-   nvk_get_device_properties(instance, &nvkmd->dev_info, &properties);
++   nvk_get_device_properties(instance, &nvkmd->dev_info,
++                             nvkmd->kmd_info.has_sparse, &properties);
+ 
+    if (nvkmd->drm.render_dev) {
+       properties.drmHasRender = true;
+@@ -1664,17 +1667,20 @@ nvk_create_physical_device(struct nvk_instance *instance,
+    assert(pdev->mem_heap_count <= ARRAY_SIZE(pdev->mem_heaps));
+    assert(pdev->mem_type_count <= ARRAY_SIZE(pdev->mem_types));
+ 
++   /* Each queue of a family with sparse binding creates a bind ctx */
++   const VkQueueFlags sparse_flags =
++      nvkmd->kmd_info.has_sparse ? VK_QUEUE_SPARSE_BINDING_BIT : 0;
++
+    pdev->queue_families[pdev->queue_family_count++] = (struct nvk_queue_family) {
+       .queue_flags = VK_QUEUE_GRAPHICS_BIT |
+                      VK_QUEUE_COMPUTE_BIT |
+                      VK_QUEUE_TRANSFER_BIT |
+-                     VK_QUEUE_SPARSE_BINDING_BIT,
++                     sparse_flags,
+       .queue_count = 1,
+    };
+    if (pdev->info.has_transfer_queue) {
+       pdev->queue_families[pdev->queue_family_count++] = (struct nvk_queue_family) {
+-         .queue_flags = VK_QUEUE_TRANSFER_BIT |
+-                        VK_QUEUE_SPARSE_BINDING_BIT,
++         .queue_flags = VK_QUEUE_TRANSFER_BIT | sparse_flags,
+          .queue_count = 2,
+       };
+    }
+--- a/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/nouveau/nvkmd_nouveau_pdev.c
+@@ -106,6 +106,7 @@ nvkmd_nouveau_try_create_pdev(struct _drmDevice *drm_device,
+                           ws_dev->info.cls_eng3d >= TURING_A) ||
+                          (ws_dev->nouveau_version >= 0x01000402 &&
+                           ws_dev->info.cls_eng3d >= AMPERE_A),
++      .has_sparse = true,
+    };
+ 
+    /* We get this ourselves */
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -121,6 +121,7 @@ struct nvkmd_info {
+    bool has_map_fixed;
+    bool has_overmap;
+    bool has_compression;
++   bool has_sparse;
+ };
+ 
+ struct nvkmd_pdev_ops {

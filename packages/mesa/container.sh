@@ -67,6 +67,13 @@ build_sysroot() {
     echo "$key" > /work/sysroot/.key
 }
 
+# <stlx/gpu_abi.h>, the kernel interface NVK calls on Stellux, taken from the tree on every run
+# since the sysroot outlives the tree it was built from
+install_gpu_abi() {
+    mkdir -p "$SYSROOT/include/stlx"
+    tar -C "$SYSROOT/include/stlx" -xf /in/tree.tar --strip-components=2 kernel/gpu/gpu_abi.h
+}
+
 # A compiler driver for ARCH that compiles the way userland/mk/toolchain.mk does and links the way
 # userland/mk/cxxapp.mk does, since configure scripts and Meson link test programs
 write_driver() {
@@ -318,13 +325,21 @@ library_link_flags() {
     echo "$LOADER_WRAPS $native_libs"
 }
 
-# Vulkan's headers, the library, and share/stellux/vulkan.mk for the tree's Makefiles
+# Vulkan's headers, the library, and share/stellux/vulkan.mk for the tree's Makefiles, which records
+# the GPU_ABI_VERSION the library was compiled against for userland/mk/vulkan.mk to check
 install_kit() {
     rm -rf "$KIT"
     mkdir -p "$PREFIX/include/vulkan" "$PREFIX/include/vk_video" "$PREFIX/lib" "$PREFIX/share/stellux"
     cp "$MESA_SRC"/include/vulkan/*.h "$PREFIX/include/vulkan/"
     cp "$MESA_SRC"/include/vk_video/*.h "$PREFIX/include/vk_video/"
     cp "$BUILD/libvulkan.a" "$PREFIX/lib/"
+
+    gpu_abi_version="$(awk '$1 == "#define" && $2 == "GPU_ABI_VERSION" { v = $3 } END { print v + 0 }' \
+        "$SYSROOT/include/stlx/gpu_abi.h")"
+    [ "$gpu_abi_version" -gt 0 ] || {
+        echo "mesa: kernel/gpu/gpu_abi.h defines no positive decimal GPU_ABI_VERSION" >&2
+        exit 1
+    }
 
     LINK_FLAGS="$(library_link_flags)"
     cat > "$PREFIX/share/stellux/vulkan.mk" << EOF
@@ -333,6 +348,8 @@ install_kit() {
 VULKAN_LIBRARY := \$(VULKAN_DIR)/lib/libvulkan.a
 VULKAN_CPPFLAGS := -isystem \$(VULKAN_DIR)/include
 VULKAN_LIBS := \$(VULKAN_LIBRARY) $LINK_FLAGS
+# The GPU_ABI_VERSION of the kernel/gpu/gpu_abi.h the library was compiled against
+VULKAN_GPU_ABI_VERSION := $gpu_abi_version
 EOF
 }
 
@@ -410,6 +427,7 @@ package_kit() {
 }
 
 build_sysroot
+install_gpu_abi
 write_toolchain
 build_deps
 prepare_mesa
