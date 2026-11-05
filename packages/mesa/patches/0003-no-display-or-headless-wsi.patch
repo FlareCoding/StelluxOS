@@ -1,0 +1,37 @@
+Under nouveau-stellux, builds no display WSI, which drives displays through
+DRM, and offers no headless surface, whose swapchains export their images as
+dma-bufs. Stellux has neither.
+
+--- a/src/nouveau/vulkan/nvk_instance.c
++++ b/src/nouveau/vulkan/nvk_instance.c
+@@ -55,7 +55,7 @@ static const struct vk_instance_extension_table instance_extensions = {
+    .EXT_display_surface_counter = true,
+    .EXT_acquire_drm_display = true,
+ #endif
+-#ifndef VK_USE_PLATFORM_WIN32_KHR
++#if !defined(VK_USE_PLATFORM_WIN32_KHR) && !defined(NVK_STELLUX)
+    .EXT_headless_surface = true,
+ #endif
+    .KHR_device_group_creation = true,
+--- a/src/vulkan/meson.build
++++ b/src/vulkan/meson.build
+@@ -54,7 +54,7 @@ if with_platform_wayland
+   vulkan_wsi_deps += dep_wayland_client
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_WAYLAND_KHR'
+ endif
+-if system_has_kms_drm and not with_platform_android
++if system_has_kms_drm and not with_platform_android and not with_nouveau_stellux
+   vulkan_wsi_deps += [dep_libdrm, dep_display_info]
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_DISPLAY_KHR'
+ endif
+--- a/src/vulkan/wsi/meson.build
++++ b/src/vulkan/wsi/meson.build
+@@ -38,7 +38,7 @@ if with_platform_macos
+   files_vulkan_wsi += files('wsi_common_metal.c', 'wsi_common_metal_layer.m')
+ endif
+ 
+-if system_has_kms_drm and not with_platform_android
++if system_has_kms_drm and not with_platform_android and not with_nouveau_stellux
+   files_vulkan_wsi += files('wsi_common_display.c')
+ endif
+ 
