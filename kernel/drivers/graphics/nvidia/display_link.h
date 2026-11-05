@@ -23,6 +23,16 @@ struct output_link {
 };
 
 /**
+ * What `set_up_output_link` trained a link at and read its status by, for
+ * `check_link_training` to read that status again.
+ */
+struct link_training {
+    uint8_t lanes;                // the lane count it trained at
+    bool    supports_1_2;         // the output resource's DisplayPort facts give DisplayPort 1.2
+    bool    trains_phy_repeaters; // they say the firmware trains PHY repeaters
+};
+
+/**
  * @brief Give the output resource driving a display id's link, as NVIDIA's
  * modesetting module finds it. When display common reports the crossbar, ask
  * it to assign the display id an output resource outside `excluded_links`,
@@ -206,6 +216,8 @@ int32_t power_down_link(
  * when the link is ready, the resource one of the 4 display common assigns,
  * else to all 0, which also names output resource 0's link A, so a caller must
  * read it only when `is_set_up` is set.
+ * @param training Set to what the link trained at when it is ready, else to
+ * all 0.
  * @param is_set_up Set to whether the link is ready.
  * @return `OK`, including when the link is not ready, or what
  * `firmware::control` returns, logged as its doc describes, for an error
@@ -220,7 +232,29 @@ int32_t set_up_output_link(
     const output_light& light,
     uint8_t& assigned_links,
     output_link& ready_link,
+    link_training& training,
     bool& is_set_up
+);
+
+/**
+ * @brief Read the status of a link `set_up_output_link` readied, as its
+ * training check reads it, and judge whether the link is still trained, logged.
+ * @param display_id The display id the link drives, a single bit.
+ * @param training What `set_up_output_link` gave for the link.
+ * @param dpcd The capabilities `set_up_output_link` readied the link by.
+ * @param is_read Set to whether every status read succeeded.
+ * @param is_trained Set to whether the status shows the link trained.
+ * @return `OK`, including when a read fails, or what `firmware::control`
+ * returns, logged as its doc describes, for an error other than `ERR_FIRMWARE`.
+ */
+int32_t check_link_training(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    const link_training& training,
+    const dpcd_capabilities& dpcd,
+    bool& is_read,
+    bool& is_trained
 );
 
 } // namespace drivers::nvidia

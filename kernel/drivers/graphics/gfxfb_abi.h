@@ -36,8 +36,8 @@
  * is lit (showing a picture), the mode it is lit at (its picture size and
  * refresh rate), and whether it is the primary output, whose pixels
  * `GFXFB_GET_INFO` describes, offset 0 maps and `GFXFB_FLUSH` shows. The
- * device may light an output, take it dark, or relight it at another mode by
- * taking it dark and lighting it again, and each change reaches every open
+ * device may light an output, take it dark, or relight it at any of its modes
+ * by taking it dark and lighting it again, and each change reaches every open
  * file as an output event, as described below. The primary stays on an output
  * that relights, which reads primary but not lit meanwhile. A primary output
  * that goes dark otherwise hands the primary to the lit output with the lowest

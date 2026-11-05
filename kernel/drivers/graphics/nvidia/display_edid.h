@@ -6,6 +6,7 @@
 #include "common/types.h"
 #include "drivers/graphics/edid.h"
 #include "drivers/graphics/nvidia/firmware.h"
+#include "drivers/graphics/nvidia/rm.h"
 
 namespace drivers::nvidia {
 
@@ -13,12 +14,18 @@ namespace drivers::nvidia {
 constexpr uint32_t EDID_REREADS_MAX     = 18;
 constexpr uint32_t EDID_REREAD_DELAY_US = 500;
 
+// An EDID's bytes as display common gave them
+struct edid_copy {
+    uint32_t bytes; // how many bytes of `data` the EDID fills, 0 for no EDID
+    uint8_t  data[rm::EDID_BUFFER_BYTES];
+};
+
 /**
- * @brief Read and parse the EDID of the monitor on a connected output, setting
- * `is_parsed` only when the last read's EDID parsed into `out`.
- *
- * Reads again while `edid::parse`'s result is worth one more read, up to
- * `EDID_REREADS_MAX` more times, spinning `EDID_REREAD_DELAY_US` before each.
+ * @brief Read and parse the EDID of the monitor on a connected output into
+ * `out` and copy its bytes into `copy`, reading again while `edid::parse`'s
+ * result is worth one more read, up to `EDID_REREADS_MAX` more times, spinning
+ * `EDID_REREAD_DELAY_US` before each. `is_parsed` is set only when the last
+ * read's EDID parsed, and `copy` holds no bytes when that read gave no EDID.
  * @return `OK`, `ERR_NO_MEMORY` when the request cannot be allocated, or the
  * error of a request failing other than by `ERR_FIRMWARE`. Every error is
  * logged, as is a read leaving `is_parsed` cleared.
@@ -28,7 +35,8 @@ int32_t read_output_edid(
     rm::handle display_common,
     uint32_t display_id,
     edid::monitor& out,
-    bool& is_parsed
+    bool& is_parsed,
+    edid_copy& copy
 );
 
 } // namespace drivers::nvidia

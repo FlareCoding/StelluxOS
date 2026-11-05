@@ -96,7 +96,9 @@ struct power_down_facts {
  * its cursor channel, kept from their allocation by a light until `release`,
  * the output it lights with that output's base buffer and cursor memory, and
  * that output's cursor and presents, guarded by the engine's output lock once
- * the head is lit.
+ * the head is lit. The light's `display_id`, `training`, `lit_edid` and
+ * `lit_dpcd` are written before the head lights, by `set_up` or the driver
+ * task, and only the driver task reads them, so it may read them bare.
  */
 struct engine_head {
     display_engine*   engine;                  // set by the engine's constructor, so timer callbacks read it bare
@@ -107,8 +109,11 @@ struct engine_head {
     uint8_t           output;
     uint32_t          display_id;              // the display id the head shows while lit
     output_link       link;                    // the serial link the head feeds while lit
+    link_training     training;                // what that link trained at, which a later status read takes
     gfxfb::gfxfb_mode mode;
     edid::timing      timing;                  // the timing behind `mode`, which a later light's bandwidth check names
+    edid_copy         lit_edid;                // the EDID's bytes its output was lit with, which a later plug compares
+    dpcd_capabilities lit_dpcd;                // its monitor's DPCD capabilities then, which a later status read takes
     scanout_buffer*   base_buffer;             // null while none is allocated and once the head is marked dark
     bool              is_lit;                  // set by the light under the engine's output lock
     bool              is_closing;              // set while its output is taken down, cleared only once marked dark
@@ -186,9 +191,11 @@ struct engine_head {
  * From `set_up` until `release` it serves hotplug and short pulse events on the
  * driver task. A hotplug, unless the display or the GPU failed, updates the
  * connected records and takes down each unplugged lit output, a take-down
- * stopping its head alone. Once gfxfb shows the engine, it also lights each
- * plugged dark output on a head of its own while the others stay lit. A short
- * pulse is only logged.
+ * stopping its head alone. It relights a plugged lit output whose EDID's bytes
+ * differ from those it was lit with or whose link status reads untrained, or
+ * takes it down when its monitor gives no mode. Once gfxfb shows the engine, it
+ * also lights each plugged dark output on a head of its own while the others
+ * stay lit. A short pulse is only logged.
  */
 class display_engine : public gfxfb::display, public firmware_event_sink {
 public:
@@ -352,26 +359,41 @@ private:
     void serve_hotplug();
 
     // Clears the connected record of each output unplugged and not plugged in, taking it down when lit, then sets that
-    // of each plugged in, lighting it when dark, logging each
+    // of each plugged in and serves its plug, logging each
     void update_connected_records(uint32_t plugged_ids, uint32_t unplugged_ids);
 
-    // Takes `output` down when lit while the other outputs stay lit and, unless the display failed, reports it to gfxfb
-    // or, past gfxfb's count, releases its base buffer, a display failing before the head is marked dark leaving it lit
-    void take_down_output(uint8_t output);
+    // Takes `output` down when lit and, unless the display failed, reports it to gfxfb with `relighting` or, past
+    // gfxfb's count, releases its base buffer, a display failing before the head is marked dark leaving it lit
+    void take_down_output(uint8_t output, bool relighting);
 
     /**
-     * @brief Once gfxfb shows the engine, unless the display or the GPU
-     * failed, read the plugged dark `output`'s monitor and light it while the
-     * lit outputs stay lit. A refused step or one finding no room leaves the
-     * output dark, or lit without presents or a cursor when it is the
-     * notifier's or the cursor's, and a refused end is only logged. A request
-     * or a channel failing otherwise fails the display, each outcome logged.
+     * @brief Unless the display or the GPU failed, read the plugged `output`'s
+     * monitor and recheck the output when it is lit, or light it while the lit
+     * outputs stay lit when it is dark, a dark output's monitor read only once
+     * gfxfb shows the engine. A monitor read finding no room leaves a lit
+     * output lit. A refused step or one finding no room leaves a dark output
+     * dark, or lit without presents or a cursor when it is the notifier's or
+     * the cursor's, and a refused end is only logged. A request or a channel
+     * failing otherwise fails the display, each outcome logged.
      */
-    void light_plugged_output(uint8_t output);
+    void serve_plugged_output(uint8_t output);
+
+    // Leaves lit `output` as it is when `modes` holds the EDID bytes it was lit with and its link status reads trained
+    // or is not read, else calls `relight_output` with `modes`, a status request failing otherwise failing the display
+    void recheck_lit_output(uint8_t output, const output_modes& modes);
+
+    /**
+     * @brief Take lit `output` down with `relighting` set and, unless that
+     * fails the display, light it at `modes`, then report it dark without
+     * `relighting` when the light leaves it dark and the output lies within
+     * gfxfb's count. With no mode in `modes`, only take it down, without
+     * `relighting`.
+     */
+    void relight_output(uint8_t output, const output_modes& modes);
 
     // Chooses `output`'s mode beside the lit outputs on the lowest free head, prepares that head and lights it,
-    // reporting the output to gfxfb once lit unless it lies past gfxfb's count
-    void light_output(uint8_t output, const output_modes& modes);
+    // reporting the output to gfxfb once lit unless it lies past gfxfb's count, and returns whether it lit
+    bool light_output(uint8_t output, const output_modes& modes);
 
     /**
      * @brief Run the prepared `light`'s mode set beside `lit`'s outputs: the
@@ -389,16 +411,22 @@ private:
     int32_t bind_created_buffers(uint8_t window);
 
     /**
-     * @brief Mark the lit head showing `output` closing and wait until its
-     * queued present ends or `m_take_down_wait_ns` passes, then, unless the
-     * display failed, mark it dark, move its base buffer into `base`, disable
-     * its vertical blank interrupt and clear its head table entry, setting
-     * `staying_ids` to the display ids the other lit heads show. It takes
-     * `m_output_lock` itself, which the wait releases while it sleeps.
+     * @brief Mark the lit head showing `output` closing, recording `relighting`
+     * for its report, and wait until its queued present ends or
+     * `m_take_down_wait_ns` passes, then, unless the display failed, mark it
+     * dark, move its base buffer into `base`, disable its vertical blank
+     * interrupt and clear its head table entry, setting `staying_ids` to the
+     * display ids the other lit heads show. It takes `m_output_lock` itself,
+     * which the wait releases while it sleeps.
      * @return The head marked dark, else null.
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE engine_head* darken_head(uint8_t output, uint32_t& staying_ids, scanout_buffer*& base);
+    __PRIVILEGED_CODE engine_head* darken_head(
+        uint8_t output,
+        bool relighting,
+        uint32_t& staying_ids,
+        scanout_buffer*& base
+    );
 
     // Stops `head`, marked dark, while the heads showing `staying_ids` stay lit, then ends a present still queued dark
     // and powers its link down, a request or the core channel failing other than by a refusal failing the display
@@ -494,6 +522,10 @@ private:
     bool           m_is_lit = false;      // set once an output lights, read bare only before the driver task starts
     bool           m_is_released = false; // set by `release`, failing the calls the class comment names
     sync::spinlock m_output_lock = sync::SPINLOCK_INIT;
+
+    // A bit for each output a relight takes down, which gfxfb reads as `relighting` while the output is dark, set by
+    // the relight's take-down and cleared as the relight ends, both under `m_output_lock`
+    uint32_t m_relighting_outputs = 0;
 
     // Run between a cursor call's locked steps, after each row of a picture and each yield, null outside tests, which
     // set it before their calls, so the calls read it bare
