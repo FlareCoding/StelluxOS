@@ -62,6 +62,9 @@ public:
      */
     int32_t release(firmware& fw);
 
+    // Whether the firmware may hold the channel, until `release` frees it
+    bool holds_channel() const { return m_handle != 0; }
+
     /**
      * @brief Write one method into the control page when its free register
      * shows room. Never waits. The channel must be allocated.

@@ -174,6 +174,28 @@ int32_t choose_lights(
 );
 
 /**
+ * @brief Choose the mode `output` lights at on `head` with `window` while the
+ * outputs of `lit` stay lit at theirs: the first of its modes the bandwidth
+ * check accepts beside them, as `choose_lights` asks about a later output.
+ * @param lit The lit outputs, each on a head other than `head`.
+ * @return `OK` with `is_chosen` set and `out` holding the light when a mode is
+ * accepted, `OK` with `is_chosen` clear when every mode is refused, each
+ * refusal logged, `ERR_NO_MEMORY` when the request cannot be allocated, or the
+ * error of a request failing other than by a refusal, both logged.
+ */
+int32_t choose_light(
+    firmware& fw,
+    rm::handle bandwidth_check,
+    uint8_t output,
+    const output_modes& modes,
+    const light_set& lit,
+    uint8_t head,
+    uint8_t window,
+    output_light& out,
+    bool& is_chosen
+);
+
+/**
  * @brief Ask the bandwidth check once whether every head of `set` can show its
  * output's mode at once, as `choose_lights` asks, for a set that lost an
  * output after the choice. `set` must hold lights `choose_lights` chose.

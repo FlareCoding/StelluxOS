@@ -17,7 +17,8 @@ using register_display_call = int32_t (*)(gfxfb::display* display);
  * engine is not registered. With no boot framebuffer the engine registers
  * though it has lit no output, every output reading as dark. It must be called
  * from the driver's `attach()` before userland starts, as gfxfb requires, and
- * holding no lock, since gfxfb's reads take the engine's lock.
+ * holding no lock, since gfxfb's reads take the engine's lock. The engine is
+ * marked registered once `register_display` accepts it.
  * @param engine The set-up display engine. Once registered it must never be
  * freed, since gfxfb keeps it.
  * @param is_boot_display_shown Whether gfxfb shows the boot framebuffer.

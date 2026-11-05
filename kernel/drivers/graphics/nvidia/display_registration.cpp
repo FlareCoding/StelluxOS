@@ -53,6 +53,8 @@ int32_t register_display_engine(
         return ERR_NOT_REGISTERED;
     }
 
+    engine.mark_registered();
+
     uint32_t output_count = engine.output_count();
     const char* unit = output_count == 1 ? "output" : "outputs";
     log::info("nvidia: the display engine is gfxfb's display, of %u %s", output_count, unit);

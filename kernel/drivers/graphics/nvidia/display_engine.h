@@ -3,6 +3,7 @@
 #ifndef STELLUX_DRIVERS_GRAPHICS_NVIDIA_DISPLAY_ENGINE_H
 #define STELLUX_DRIVERS_GRAPHICS_NVIDIA_DISPLAY_ENGINE_H
 
+#include "common/list.h"
 #include "common/types.h"
 #include "dma/dma.h"
 #include "drivers/graphics/gfxfb.h"
@@ -68,15 +69,17 @@ struct event_record : operation {
 /**
  * A buffer `create_buffer()` made, or an output's base buffer the light made,
  * in `vram_use::scanout` video memory and mapped for userland at the buffer's
- * physical address. It is bound and unbound only before it is handed out and
- * once nothing refers to it, so `present()` reads `bound_windows` without a
- * lock.
+ * physical address. Once it is handed out, a light on the driver task binds it
+ * to that light's window while presents read it, so `context_dma` and
+ * `bound_windows` change only under the engine's output lock until nothing
+ * refers to the buffer.
  */
 struct scanout_buffer : gfxfb::buffer {
     vram_range       range;
-    rm::handle       context_dma;    // the context DMA naming `range`, 0 when no output was lit
+    rm::handle       context_dma;    // the context DMA naming `range`, 0 until its first binding
     uint32_t         bound_windows;  // a bit for each window whose channel `context_dma` is bound to
     buffer_operation task_operation; // a created buffer's binding, then any buffer's release
+    list::node       created_link;   // a created buffer's place among those each later light binds
 };
 
 /**
@@ -90,7 +93,7 @@ struct power_down_facts {
 
 /**
  * A head as the display engine lights it: the channel of its lowest window and
- * its cursor channel, kept from their allocation in `set_up` until `release`,
+ * its cursor channel, kept from their allocation by a light until `release`,
  * the output it lights with that output's base buffer and cursor memory, and
  * that output's cursor and presents, guarded by the engine's output lock once
  * the head is lit.
@@ -105,13 +108,14 @@ struct engine_head {
     uint32_t          display_id;              // the display id the head shows while lit
     output_link       link;                    // the serial link the head feeds while lit
     gfxfb::gfxfb_mode mode;
+    edid::timing      timing;                  // the timing behind `mode`, which a later light's bandwidth check names
     scanout_buffer*   base_buffer;             // null while none is allocated and once the head is marked dark
     bool              is_lit;                  // set by the light under the engine's output lock
     bool              is_closing;              // set while its output is taken down, cleared only once marked dark
 
     // The window's notifier, its page allocated and its context DMA bound to the window's channel before the light
     window_notifier notifier;
-    rm::handle      notifier_context_dma; // 0 until bound, before flips turn on, so readers after flips read it bare
+    rm::handle      notifier_context_dma; // 0 until bound before its head's light, then read under the output lock
 
     // The head's cursor channel and its output's cursor memory, mapped for the CPU and bound to the core channel, the
     // mapping changing only while no cursor call runs, so the calls read it bare
@@ -182,7 +186,9 @@ struct engine_head {
  * From `set_up` until `release` it serves hotplug and short pulse events on the
  * driver task. A hotplug, unless the display or the GPU failed, updates the
  * connected records and takes down each unplugged lit output, a take-down
- * stopping its head alone, and a short pulse is only logged.
+ * stopping its head alone. Once gfxfb shows the engine, it also lights each
+ * plugged dark output on a head of its own while the others stay lit. A short
+ * pulse is only logged.
  */
 class display_engine : public gfxfb::display, public firmware_event_sink {
 public:
@@ -243,6 +249,14 @@ public:
      * @return true while an output is lit.
      */
     bool has_lit_output() const { return m_is_lit; }
+
+    /**
+     * @brief Record that gfxfb shows the engine, letting a monitor plugged in
+     * later light. `register_display_engine` calls it once `register_display`
+     * accepts the engine. It must be called before the driver task starts,
+     * since the task reads the record without a lock.
+     */
+    void mark_registered();
 
     /**
      * @brief Turn flips on, letting the card's interrupt handler service the
@@ -312,8 +326,8 @@ public:
     /**
      * @brief Queue the driver task's release of a buffer and return without
      * waiting. The task unbinds, unmaps and frees it, or keeps it all for good
-     * once the display failed, the engine was released or unbinding it failed,
-     * since a head may still scan it.
+     * once the display failed while a window's channel names it, the engine
+     * was released or unbinding it failed, since a head may still scan it.
      * @param buf A buffer nothing refers to any longer, one `create_buffer()`
      * made or the base buffer of an output read dark.
      */
@@ -338,12 +352,41 @@ private:
     void serve_hotplug();
 
     // Clears the connected record of each output unplugged and not plugged in, taking it down when lit, then sets that
-    // of each plugged in, logging each
+    // of each plugged in, lighting it when dark, logging each
     void update_connected_records(uint32_t plugged_ids, uint32_t unplugged_ids);
 
     // Takes `output` down when lit while the other outputs stay lit and, unless the display failed, reports it to gfxfb
     // or, past gfxfb's count, releases its base buffer, a display failing before the head is marked dark leaving it lit
     void take_down_output(uint8_t output);
+
+    /**
+     * @brief Once gfxfb shows the engine, unless the display or the GPU
+     * failed, read the plugged dark `output`'s monitor and light it while the
+     * lit outputs stay lit. A refused step or one finding no room leaves the
+     * output dark, or lit without presents or a cursor when it is the
+     * notifier's or the cursor's, and a refused end is only logged. A request
+     * or a channel failing otherwise fails the display, each outcome logged.
+     */
+    void light_plugged_output(uint8_t output);
+
+    // Chooses `output`'s mode beside the lit outputs on the lowest free head, prepares that head and lights it,
+    // reporting the output to gfxfb once lit unless it lies past gfxfb's count
+    void light_output(uint8_t output, const output_modes& modes);
+
+    /**
+     * @brief Run the prepared `light`'s mode set beside `lit`'s outputs: the
+     * start, then, while a head that `set_up` found active still runs, the
+     * shutdown update and the power-down of the other boot outputs' links, then
+     * the link, the light and the end.
+     * @return true once the head is marked lit, false when the output stays
+     * dark or the display fails, the prepared light dropped unless the display
+     * failed first.
+     */
+    bool run_light(const output_light& light, const dpcd_capabilities& dpcd, const light_set& lit);
+
+    // Binds each created buffer not yet bound to `window`'s channel there, returning the first failed binding's error,
+    // logged, those bound before it staying bound
+    int32_t bind_created_buffers(uint8_t window);
 
     /**
      * @brief Mark the lit head showing `output` closing and wait until its
@@ -392,19 +435,38 @@ private:
     // Each output's facts as `set_up` read them, the connected records then kept by the driver task's hotplug services
     display_outputs m_outputs = {};
 
-    // What powering down each output's link takes, as `set_up` read it, an unplug clearing its output's D3 bit
+    // What powering down each output's link takes, as `set_up` or a later plug read it, an unplug clearing its D3 bit
     power_down_facts m_power_down = {};
 
     // The registers `set_up` was given, mapped until `release` returns, which a take-down writes
     registers m_registers = registers(0);
 
+    // What `set_up` took or read that a light on the driver task needs, the card's DMA profile built in `m_card_bytes`
+    const dma::device_profile*           m_card = nullptr;
+    alignas(dma::device_profile) uint8_t m_card_bytes[sizeof(dma::device_profile)];
+    chip_display                         m_display = {};
+    display_heads                        m_display_heads = {};
+    uint32_t                             m_present_heads = 0;
+    uint32_t                             m_present_windows = 0;
+    bool                                 m_has_crossbar = false;
+
+    // The heads `set_up` found active that no update has stopped since, which the next light's shutdown update stops
+    active_heads m_running_heads = {};
+
+    // Set by `mark_registered()` before the driver task starts, so the task reads it bare
+    bool m_is_registered = false;
+
+    // The buffers `create_buffer()` made, each from its binding operation until its release, walked by the task alone
+    list::head<scanout_buffer, &scanout_buffer::created_link> m_created_buffers;
+
     // Woken by each end of a closing head's present, for the take-down waiting on it at most `m_take_down_wait_ns`
     sync::wait_queue m_take_down_queue;
     uint64_t         m_take_down_wait_ns = gfxfb::GFXFB_PRESENT_TIMEOUT_NS + TAKE_DOWN_SLACK_NS;
 
-    // The context DMA binding the look-up table surface to the core channel and each chosen window's channel, 0 until
-    // `set_up` binds it
+    // The context DMA binding the look-up table surface to the core channel and to window channels, 0 until the first
+    // light binds it, and a bit for each window whose channel it binds
     rm::handle m_look_up_table_context_dma = 0;
+    uint32_t   m_look_up_table_windows = 0;
 
     // Entry i for head i, each lit output on its own head
     engine_head m_heads[DISPLAY_HEADS_MAX] = {};
@@ -445,13 +507,14 @@ private:
     // `m_output_lock` and loaded with acquire by the handler. `set_up` records the head count before flips turn on
     uint8_t            m_head_outputs[DISPLAY_HEADS_MAX];
     uint8_t            m_head_count = 0;
-    sync::atomic<bool> m_are_flips_on;      // stored with release, loaded with acquire
-    sync::atomic<bool> m_is_display_failed; // set once for good, stored with release, loaded with acquire
+    sync::atomic<bool> m_are_flips_on;        // stored with release, loaded with acquire
+    sync::atomic<bool> m_is_display_failed;   // set once for good, stored with release, loaded with acquire
+    sync::atomic<bool> m_has_window_notifier; // set once a notifier is bound, stored with release, loaded with acquire
 
     // Where each ended present is reported, gfxfb's `present_done` outside tests
     void (*m_present_done)(gfxfb::display*, uint32_t, const gfxfb::present_result&) = gfxfb::present_done;
 
-    // Where each output taken down is reported, gfxfb's `output_changed` outside tests
+    // Where each output the driver task lights or takes down is reported, gfxfb's `output_changed` outside tests
     void (*m_output_changed)(gfxfb::display*, uint32_t) = gfxfb::output_changed;
 
     /**
@@ -509,8 +572,14 @@ private:
         dpcd_capabilities* dpcds
     );
 
-    // Gives `light` its head's window channel and base buffer, mapped for userland, binding the table and every earlier
-    // light's base buffer to its channel and its base buffer to theirs, leaving `is_prepared` clear when a step fails
+    /**
+     * @brief Give `light` a base buffer and, unless the head kept one, a window
+     * channel, binding the look-up table surface, the created buffers and the
+     * base buffers of `prepared` to that channel and its own base buffer to
+     * theirs.
+     * @return `OK`, `is_prepared` set once the light is prepared and clear when
+     * a step is refused or finds no room, else the failed step's error.
+     */
     int32_t prepare_light(
         registers& regs,
         const dma::device_profile& card,
