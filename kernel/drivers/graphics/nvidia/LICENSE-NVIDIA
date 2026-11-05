@@ -3926,8 +3926,9 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     kernel/tests/graphics/nvidia_engines.test.cpp, and a push buffer header's
     fields, SET_OBJECT, SEMAPHOREA to SEMAPHORED from 0x10 (SEMAPHORED's
     OPERATION ACQUIRE, 1, in bits 4:0 and ACQUIRE_SWITCH ENABLED in bit 12),
-    MEM_OP_A to MEM_OP_D (MEM_OP_C's MEMBAR_TYPE SYS_MEMBAR, 0, and MEM_OP_D's
-    OPERATION MEMBAR, 5, and L2_SYSMEM_INVALIDATE, 0xE, in bits 31:27) and
+    MEM_OP_A to MEM_OP_D (MEM_OP_C's MEMBAR_TYPE SYS_MEMBAR, 0, and
+    TLB_INVALIDATE_PDB ALL, 1, in bit 0, and MEM_OP_D's OPERATION MEMBAR, 5,
+    MMU_TLB_INVALIDATE, 9, and L2_SYSMEM_INVALIDATE, 0xE, in bits 31:27) and
     SET_REFERENCE, 0x50, in userland/apps/gputest/src/gputest.c
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -3959,7 +3960,8 @@ src/common/sdk/nvidia/inc/class/clc7b5.h
     SET_REMAP_CONST_A, in kernel/tests/graphics/nvidia_engines.test.cpp, and the
     methods LAUNCH_DMA (DATA_TRANSFER_TYPE NON_PIPELINED, FLUSH_ENABLE,
     SRC_MEMORY_LAYOUT and DST_MEMORY_LAYOUT PITCH, REMAP_ENABLE, DISABLE_PLC
-    TRUE, and SRC_TYPE and DST_TYPE VIRTUAL, 0, in bits 12 and 13),
+    TRUE, SRC_TYPE and DST_TYPE VIRTUAL, 0, in bits 12 and 13, and SRC_TYPE
+    PHYSICAL, 1), SET_SRC_PHYS_MODE, 0x260 (TARGET LOCAL_FB, 0),
     OFFSET_IN_UPPER, 0x400, and OFFSET_IN_LOWER, 0x404, OFFSET_OUT_UPPER and
     OFFSET_OUT_LOWER, LINE_LENGTH_IN, SET_REMAP_CONST_A and SET_REMAP_COMPONENTS
     (DST_X CONST_A, COMPONENT_SIZE FOUR and NUM_DST_COMPONENTS ONE), in
@@ -3989,9 +3991,10 @@ src/common/sdk/nvidia/inc/alloc/alloc_channel.h
     size and the offsets of the fields a kernel channel sets, in
     kernel/tests/graphics/nvidia_channel.test.cpp, the parameters' size and the
     offsets of gpFifoOffset, the flags and internalFlags, in
-    kernel/tests/graphics/nvidia_copy_channel.test.cpp, and the flags of
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp, the flags of
     unprivileged channels 1 and 2, in
-    kernel/tests/graphics/nvidia_engines.test.cpp
+    kernel/tests/graphics/nvidia_engines.test.cpp, and that TLB_INVALIDATE is a
+    privileged host method, in userland/apps/gputest/src/gputest.c
     SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/fifo/kernel_channel.c
