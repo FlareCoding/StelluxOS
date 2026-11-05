@@ -1,0 +1,438 @@
+Adds the Stellux nvkmd's pdev over /dev/gpuN, an enumeration hook that hands
+NVK's physical device creation a pdev for each NVIDIA GPU, and a
+chipset-to-name table with the names nouveau's nvkmd reads from its kernel.
+A chip missing from the table gets the name NV<chipset in hex>.
+
+--- a/src/nouveau/headers/nv_device_info.c
++++ b/src/nouveau/headers/nv_device_info.c
+@@ -260,3 +260,66 @@ nv_init_shared_mem_sizes(struct nv_device_info *info)
+          info->sm_smem_sizes_kB[info->sm_smem_size_count - 1];
+    }
+ }
++
++/* The discrete chips from Kepler on, named as nouveau's nvkmd reports them,
++ * so that a chip has one name on every nvkmd
++ */
++static const struct {
++   uint16_t chipset;
++   const char *name;
++} chipset_names[] = {
++   { 0x0e4, "GK104" },
++   { 0x0e6, "GK106" },
++   { 0x0e7, "GK107" },
++   { 0x0f0, "GK110" },
++   { 0x0f1, "GK110B" },
++   { 0x106, "GK208B" },
++   { 0x108, "GK208" },
++   { 0x117, "GM107" },
++   { 0x118, "GM108" },
++   { 0x120, "GM200" },
++   { 0x124, "GM204" },
++   { 0x126, "GM206" },
++   { 0x130, "GP100" },
++   { 0x132, "GP102" },
++   { 0x134, "GP104" },
++   { 0x136, "GP106" },
++   { 0x137, "GP107" },
++   { 0x138, "GP108" },
++   { 0x140, "GV100" },
++   { 0x162, "TU102" },
++   { 0x164, "TU104" },
++   { 0x166, "TU106" },
++   { 0x167, "TU117" },
++   { 0x168, "TU116" },
++   { 0x170, "GA100" },
++   { 0x172, "GA102" },
++   { 0x173, "GA103" },
++   { 0x174, "GA104" },
++   { 0x176, "GA106" },
++   { 0x177, "GA107" },
++   { 0x180, "GH100" },
++   { 0x192, "AD102" },
++   { 0x193, "AD103" },
++   { 0x194, "AD104" },
++   { 0x196, "AD106" },
++   { 0x197, "AD107" },
++   { 0x1a0, "GB100" },
++   { 0x1a2, "GB102" },
++   { 0x1b2, "GB202" },
++   { 0x1b3, "GB203" },
++   { 0x1b5, "GB205" },
++   { 0x1b6, "GB206" },
++   { 0x1b7, "GB207" },
++};
++
++const char *
++nv_chipset_name(uint16_t chipset)
++{
++   for (uint32_t i = 0; i < ARRAY_SIZE(chipset_names); i++) {
++      if (chipset_names[i].chipset == chipset)
++         return chipset_names[i].name;
++   }
++
++   return NULL;
++}
+--- a/src/nouveau/headers/nv_device_info.h
++++ b/src/nouveau/headers/nv_device_info.h
+@@ -111,12 +111,14 @@ extern "C" {
+ #endif
+ 
+ /* Facts that follow from the chipset alone, for filling nv_device_info.
+- * nv_init_shared_mem_sizes reads info->sm, which must be set first.
++ * nv_init_shared_mem_sizes reads info->sm, which must be set first, and
++ * nv_chipset_name returns NULL for a chipset it does not name.
+  */
+ uint8_t nv_sm_for_chipset(uint16_t chipset);
+ uint8_t nv_max_warps_per_mp_for_sm(uint8_t sm);
+ uint8_t nv_mp_per_tpc_for_chipset(uint16_t chipset);
+ void nv_init_shared_mem_sizes(struct nv_device_info *info);
++const char *nv_chipset_name(uint16_t chipset);
+ 
+ #ifdef __cplusplus
+ }
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -160,6 +160,10 @@ endif
+ 
+ if with_nouveau_stellux
+   nvk_flags += '-DNVK_STELLUX'
++  nvk_files += files(
++    'nvkmd/stellux/nvkmd_stellux.h',
++    'nvkmd/stellux/nvkmd_stellux_pdev.c',
++  )
+ endif
+ 
+ if with_platform_android
+--- a/src/nouveau/vulkan/nvk_instance.c
++++ b/src/nouveau/vulkan/nvk_instance.c
+@@ -193,6 +193,10 @@ nvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+    nvk_init_experimental_flags(instance);
+    nvk_init_dri_options(instance);
+ 
++#ifdef NVK_STELLUX
++   instance->vk.physical_devices.enumerate =
++      nvk_enumerate_stellux_physical_devices;
++#endif
+    instance->vk.physical_devices.try_create_for_drm =
+       nvk_create_drm_physical_device;
+    instance->vk.physical_devices.destroy = nvk_physical_device_destroy;
+--- a/src/nouveau/vulkan/nvk_physical_device.c
++++ b/src/nouveau/vulkan/nvk_physical_device.c
+@@ -1725,6 +1725,50 @@ nvk_create_drm_physical_device(struct vk_instance *_instance,
+    return nvk_create_physical_device(instance, nvkmd, pdev_out);
+ }
+ 
++#ifdef NVK_STELLUX
++VkResult
++nvk_enumerate_stellux_physical_devices(struct vk_instance *_instance)
++{
++   struct nvk_instance *instance = (struct nvk_instance *)_instance;
++   VkResult result;
++
++   for (uint32_t gpu_index = 0;; gpu_index++) {
++      struct nvkmd_pdev *nvkmd;
++      result = nvkmd_try_create_pdev_for_stellux(gpu_index,
++                                                 &instance->vk.base,
++                                                 instance->debug_flags,
++                                                 &nvkmd);
++      if (result == VK_ERROR_INCOMPATIBLE_DRIVER)
++         continue;
++      if (result != VK_SUCCESS)
++         goto fail;
++      if (nvkmd == NULL)
++         return VK_SUCCESS;
++
++      struct vk_physical_device *pdev;
++      result = nvk_create_physical_device(instance, nvkmd, &pdev);
++      if (result == VK_ERROR_INCOMPATIBLE_DRIVER)
++         continue;
++      if (result != VK_SUCCESS)
++         goto fail;
++
++      list_addtail(&pdev->link, &instance->vk.physical_devices.list);
++   }
++
++fail:
++   /* The runtime keeps the devices a failed hook added and calls the hook
++    * again on the next enumeration
++    */
++   list_for_each_entry_safe(struct vk_physical_device, pdev,
++                            &instance->vk.physical_devices.list, link) {
++      list_del(&pdev->link);
++      nvk_physical_device_destroy(pdev);
++   }
++
++   return result;
++}
++#endif
++
+ void
+ nvk_physical_device_destroy(struct vk_physical_device *vk_pdev)
+ {
+--- a/src/nouveau/vulkan/nvk_physical_device.h
++++ b/src/nouveau/vulkan/nvk_physical_device.h
+@@ -85,6 +85,10 @@ VkResult nvk_create_drm_physical_device(struct vk_instance *vk_instance,
+                                         struct _drmDevice *drm_device,
+                                         struct vk_physical_device **pdev_out);
+ 
++#ifdef NVK_STELLUX
++VkResult nvk_enumerate_stellux_physical_devices(struct vk_instance *vk_instance);
++#endif
++
+ void nvk_physical_device_destroy(struct vk_physical_device *vk_device);
+ 
+ VkExtent2D nvk_max_shading_rate(const struct nvk_physical_device *pdev,
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.c
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.c
+@@ -5,6 +5,9 @@
+ 
+ #include "nvkmd.h"
+ #include "nouveau/nvkmd_nouveau.h"
++#ifdef NVK_STELLUX
++#include "stellux/nvkmd_stellux.h"
++#endif
+ #include "nv_push.h"
+ #include "util/cache_ops.h"
+ #include "util/u_math.h"
+@@ -92,6 +95,18 @@ nvkmd_try_create_pdev_for_drm(struct _drmDevice *drm_device,
+                                         debug_flags, pdev_out);
+ }
+ 
++#ifdef NVK_STELLUX
++VkResult MUST_CHECK
++nvkmd_try_create_pdev_for_stellux(uint32_t gpu_index,
++                                  struct vk_object_base *log_obj,
++                                  enum nvk_debug debug_flags,
++                                  struct nvkmd_pdev **pdev_out)
++{
++   return nvkmd_stellux_try_create_pdev(gpu_index, log_obj,
++                                        debug_flags, pdev_out);
++}
++#endif
++
+ VkResult MUST_CHECK
+ nvkmd_dev_alloc_mem(struct nvkmd_dev *dev,
+                     struct vk_object_base *log_obj,
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -385,6 +385,22 @@ nvkmd_try_create_pdev_for_drm(struct _drmDevice *drm_device,
+                               enum nvk_debug debug_flags,
+                               struct nvkmd_pdev **pdev_out);
+ 
++#ifdef NVK_STELLUX
++/* Creates a pdev for Stellux's /dev/gpu<gpu_index>, or sets *pdev_out to
++ * NULL when that file does not exist: Stellux numbers its GPUs from 0 with no
++ * gaps, so the first missing file ends them.  Returns
++ * VK_ERROR_INITIALIZATION_FAILED when the file exists but cannot be opened,
++ * VK_ERROR_INCOMPATIBLE_DRIVER when its GPU_GET_INFO fails or names a backend
++ * other than NVIDIA's, and VK_ERROR_OUT_OF_HOST_MEMORY when the pdev cannot be
++ * allocated.
++ */
++VkResult MUST_CHECK
++nvkmd_try_create_pdev_for_stellux(uint32_t gpu_index,
++                                  struct vk_object_base *log_obj,
++                                  enum nvk_debug debug_flags,
++                                  struct nvkmd_pdev **pdev_out);
++#endif
++
+ static inline void
+ nvkmd_pdev_destroy(struct nvkmd_pdev *pdev)
+ {
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux.h
+@@ -0,0 +1,29 @@
++/*
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef NVKMD_STELLUX_H
++#define NVKMD_STELLUX_H 1
++
++#include "nvkmd/nvkmd.h"
++
++#include <stdint.h>
++#include <stlx/gpu_abi.h>
++
++/* The nvkmd over Stellux's /dev/gpuN files, whose calls <stlx/gpu_abi.h>
++ * defines. A pdev owns its GPU's open file.
++ */
++
++struct nvkmd_stellux_pdev {
++   struct nvkmd_pdev base;
++
++   int fd;
++};
++
++NVKMD_DECL_SUBCLASS(pdev, stellux);
++
++VkResult nvkmd_stellux_try_create_pdev(uint32_t gpu_index,
++                                       struct vk_object_base *log_obj,
++                                       enum nvk_debug debug_flags,
++                                       struct nvkmd_pdev **pdev_out);
++
++#endif /* NVKMD_STELLUX_H */
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_pdev.c
+@@ -0,0 +1,163 @@
++/*
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_stellux.h"
++
++#include "util/cache_ops.h"
++#include "util/u_memory.h"
++#include "vk_log.h"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++/* A pdev offers no sync type, since it creates no dev */
++static const struct vk_sync_type *const nvkmd_stellux_sync_types[] = {
++   NULL,
++};
++
++static void
++nvkmd_stellux_fill_dev_info(const struct gpu_info *info,
++                            struct nv_device_info *dev_info)
++{
++   const uint16_t chipset = info->nvidia.chipset;
++   const uint8_t sm = nv_sm_for_chipset(chipset);
++
++   *dev_info = (struct nv_device_info) {
++      .type = NV_DEVICE_TYPE_DIS,
++      .device_id = info->device_id,
++      .chipset = chipset,
++      .pci = {
++         .domain = info->pci_segment,
++         .bus = info->pci_bus,
++         .dev = info->pci_slot,
++         .func = info->pci_function,
++         .revision_id = info->pci_revision,
++      },
++      .sm = sm,
++      .gpc_count = info->nvidia.gpc_count,
++      .tpc_count = info->nvidia.tpc_count,
++      .mp_per_tpc = nv_mp_per_tpc_for_chipset(chipset),
++      .max_warps_per_mp = nv_max_warps_per_mp_for_sm(sm),
++      .has_transfer_queue = (info->queue_kinds & (1u << GPU_QUEUE_COPY)) != 0,
++      .nc_atom_size_B = util_cache_granularity(),
++      .cls_copy = info->nvidia.class_copy,
++      .cls_eng2d = info->nvidia.class_2d,
++      .cls_eng3d = info->nvidia.class_3d,
++      .cls_m2mf = info->nvidia.class_m2mf,
++      .cls_compute = info->nvidia.class_compute,
++      .cls_gpfifo = info->nvidia.class_gpfifo,
++      .vram_size_B = info->video_size,
++      .bar_size_B = info->mappable_video_size,
++   };
++
++   STATIC_ASSERT(sizeof(dev_info->device_name) == sizeof(info->name));
++   memcpy(dev_info->device_name, info->name, sizeof(info->name));
++   dev_info->device_name[sizeof(dev_info->device_name) - 1] = '\0';
++
++   const char *chipset_name = nv_chipset_name(chipset);
++   if (chipset_name != NULL) {
++      snprintf(dev_info->chipset_name, sizeof(dev_info->chipset_name),
++               "%s", chipset_name);
++   } else {
++      snprintf(dev_info->chipset_name, sizeof(dev_info->chipset_name),
++               "NV%X", chipset);
++   }
++
++   nv_init_shared_mem_sizes(dev_info);
++}
++
++VkResult
++nvkmd_stellux_try_create_pdev(uint32_t gpu_index,
++                              struct vk_object_base *log_obj,
++                              enum nvk_debug debug_flags,
++                              struct nvkmd_pdev **pdev_out)
++{
++   char path[32];
++   snprintf(path, sizeof(path), "/dev/gpu%u", gpu_index);
++
++   int fd = open(path, O_RDWR | O_CLOEXEC);
++   if (fd < 0) {
++      if (errno == ENOENT) {
++         *pdev_out = NULL;
++         return VK_SUCCESS;
++      }
++
++      return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
++                       "open() failed on %s: %m", path);
++   }
++
++   struct gpu_info info = { 0 };
++   if (ioctl(fd, GPU_GET_INFO, &info) != 0) {
++      VkResult result = vk_errorf(log_obj, VK_ERROR_INCOMPATIBLE_DRIVER,
++                                  "GPU_GET_INFO failed on %s: %m", path);
++      close(fd);
++      return result;
++   }
++
++   if (info.backend != GPU_BACKEND_NVIDIA) {
++      close(fd);
++      return VK_ERROR_INCOMPATIBLE_DRIVER;
++   }
++
++   struct nvkmd_stellux_pdev *pdev = CALLOC_STRUCT(nvkmd_stellux_pdev);
++   if (pdev == NULL) {
++      close(fd);
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++   }
++
++   pdev->base.ops = &nvkmd_stellux_pdev_ops;
++   pdev->base.debug_flags = debug_flags;
++   nvkmd_stellux_fill_dev_info(&info, &pdev->base.dev_info);
++   pdev->base.kmd_info = (struct nvkmd_info) {
++      .has_get_vram_used = true,
++   };
++   pdev->base.bind_align_B = info.page_size;
++   pdev->base.sync_types = nvkmd_stellux_sync_types;
++   pdev->fd = fd;
++
++   *pdev_out = &pdev->base;
++
++   return VK_SUCCESS;
++}
++
++static void
++nvkmd_stellux_pdev_destroy(struct nvkmd_pdev *_pdev)
++{
++   struct nvkmd_stellux_pdev *pdev = nvkmd_stellux_pdev(_pdev);
++
++   close(pdev->fd);
++   FREE(pdev);
++}
++
++static uint64_t
++nvkmd_stellux_pdev_get_vram_used(struct nvkmd_pdev *_pdev)
++{
++   struct nvkmd_stellux_pdev *pdev = nvkmd_stellux_pdev(_pdev);
++   const uint64_t vram_size_B = pdev->base.dev_info.vram_size_B;
++
++   struct gpu_memory memory = { 0 };
++   if (ioctl(pdev->fd, GPU_GET_MEMORY, &memory) != 0)
++      return vram_size_B;
++
++   return vram_size_B - memory.video_free;
++}
++
++static VkResult
++nvkmd_stellux_create_dev(struct nvkmd_pdev *pdev,
++                         struct vk_object_base *log_obj,
++                         struct nvkmd_dev **dev_out)
++{
++   return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
++                    "The Stellux nvkmd cannot create a device");
++}
++
++const struct nvkmd_pdev_ops nvkmd_stellux_pdev_ops = {
++   .destroy = nvkmd_stellux_pdev_destroy,
++   .get_vram_used = nvkmd_stellux_pdev_get_vram_used,
++   .create_dev = nvkmd_stellux_create_dev,
++};

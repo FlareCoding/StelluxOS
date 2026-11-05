@@ -116,7 +116,10 @@ Vulkan commands and its `dlopen` of `libvulkan.so.1` or `libvulkan.so`. The
 recipe cross-builds Mesa with the tree's own compiler, C++ runtime and musl,
 against libdrm, zlib and elfutils' libelf built static in its container, after
 building Mesa's build-time tools natively. The patches in `patches/` apply to
-the pinned Mesa release in order. The license texts of every project besides
+the pinned Mesa release in order. The library's GPU calls compile against the
+committed `kernel/gpu/gpu_abi.h`, and the userland build refuses a kit that does
+not record the tree's `GPU_ABI_VERSION`, so raising it needs `MESA_PKG_REL`
+bumped like a recipe change. The license texts of every project besides
 Stellux that the library holds code from are under `mesa/LICENSES`. libelf is
 used under the LGPLv3, one of the two licenses elfutils offers it under: the
 recipe pins the exact upstream sources, and the programs linked against the kit
