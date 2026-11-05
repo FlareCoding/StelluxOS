@@ -15,6 +15,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+constexpr const char* GPU_DEVICE_PATH = "/dev/gpu0";
+
 /* Each attached GPU buffer holds two of stlxdm's handles, and 16 on
  * each of many clients pass the default limit */
 constexpr rlim_t HANDLE_LIMIT = 65536;
@@ -50,6 +52,18 @@ static void raise_handle_limit() {
     if (setrlimit(RLIMIT_NOFILE, &limit) != 0) {
         printf("stlxdm: raising the handle limit failed, errno %d, keeping the inherited limit\r\n", errno);
     }
+}
+
+static int open_gpu_device() {
+    int fd = open(GPU_DEVICE_PATH, O_RDWR);
+    if (fd < 0) {
+        printf("stlxdm: no GPU buffers, opening %s failed, errno %d\r\n", GPU_DEVICE_PATH, errno);
+        return -1;
+    }
+
+    printf("stlxdm: taking GPU buffers of %s\r\n", GPU_DEVICE_PATH);
+
+    return fd;
 }
 
 /* Queues the handles of a read's one SCM_RIGHTS message, closing any
@@ -232,6 +246,13 @@ int server::init(presenter* pres, const stlxconf_t* conf) {
 
 int server::serve() {
     raise_handle_limit();
+
+    m_gpu_fd = open_gpu_device();
+    if (m_gpu_fd >= 0) {
+        /* The CPU compositor maps every buffer, and reads system memory
+         * faster than video memory */
+        m_gpu_info.flags = SWP_GPU_ACCEPTS | SWP_GPU_CPU_READS;
+    }
 
     m_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (m_listen_fd < 0) {
@@ -578,6 +599,7 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
         memcpy(c.app_id, m->app_id, sizeof(c.app_id));
         c.app_id[sizeof(c.app_id) - 1] = '\0';
         c.hello_done = true;
+        c.may_attach_gpu = (m_gpu_info.flags & SWP_GPU_ACCEPTS) != 0;
 
         swp_hello_reply reply = { SWP_VERSION, SWP_FMT_XRGB8888,
                                   m_presenter->width(),
@@ -679,6 +701,20 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
 
         queue_mode_message(c, hdr.type, payload);
         return;
+    case SWP_MSG_ATTACH_GPU_BUFFER:
+        if (hdr.length != sizeof(swp_attach_gpu_buffer)) {
+            break;
+        }
+
+        handle_attach_gpu_buffer(c, payload);
+        return;
+    case SWP_MSG_COMMIT_GPU:
+        if (hdr.length != sizeof(swp_commit_gpu)) {
+            break;
+        }
+
+        handle_commit_gpu(c, payload);
+        return;
     default:
         break;
     }
@@ -692,6 +728,12 @@ void server::drop_client(dm_client& c) {
     while (!c.windows.empty()) {
         destroy_window_tree(c, c.windows.back()->win_id);
     }
+
+    for (const auto& d : c.dismissed_buffers) {
+        close(d.buffer.release);
+    }
+
+    c.dismissed_buffers.clear();
 
     for (uint32_t i = 0; i < c.queued_handle_count; i++) {
         close(c.queued_handles[i]);

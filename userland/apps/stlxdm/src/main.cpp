@@ -275,6 +275,11 @@ int main() {
             next_ns = trial_ns;
         }
 
+        int64_t latch_ns = srv.latch_timeout_ns(now);
+        if (latch_ns >= 0 && (next_ns < 0 || latch_ns < next_ns)) {
+            next_ns = latch_ns;
+        }
+
         bool may_compose = screen.showing && !pres->present_pending();
         if (srv.compose_pending() && may_compose) {
             uint64_t deadline = last_compose_ns + screen.compose_interval_ns;

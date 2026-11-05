@@ -1,12 +1,15 @@
 #include "decor.hpp"
 #include "server.hpp"
 
+#include <stlx/gpu_abi.h>
 #include <stlxgfx/surface.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -20,6 +23,19 @@ constexpr uint32_t CASCADE_WRAP = 10;
 /* Occlusion pieces per compose rect are bounded, a pathological
  * window arrangement falls back to overdraw instead of growing */
 constexpr size_t OCCLUDE_PIECE_CAP = 64;
+
+/* A pending GPU commit's acquire point is queried at every paced tick
+ * for its first second, then every 100 ms */
+constexpr uint64_t ACQUIRE_EVERY_TICK_NS = 1000000000ull;
+constexpr uint64_t ACQUIRE_QUERY_INTERVAL_NS = 100000000ull;
+
+/* How importing and mapping an attached GPU buffer went */
+enum class gpu_mapping {
+    MAPPED,     /* the whole buffer is mapped */
+    GPU_FAILED, /* the import found the GPU failed */
+    NO_MEMORY,  /* the mapping met ENOMEM, no memory or a GPU that failed after the import */
+    REFUSED,    /* a buffer the protocol does not take, or stlxdm out of memory */
+};
 
 static dm_window* find_window(dm_client& c, uint32_t win_id) {
     for (auto& w : c.windows) {
@@ -51,17 +67,209 @@ static dm_buffer* find_buffer(dm_window& w, uint32_t buf_id) {
     return nullptr;
 }
 
-static void unmap_buffer(dm_buffer& b) {
-    if (b.pixels) {
-        munmap(b.pixels, b.size);
+static dm_buffer* find_dismissed_buffer(dm_client& c, uint32_t win_id, uint32_t buf_id) {
+    for (auto& d : c.dismissed_buffers) {
+        if (d.win_id == win_id && d.buffer.buf_id == buf_id) {
+            return &d.buffer;
+        }
+    }
+
+    return nullptr;
+}
+
+static uint32_t count_gpu_buffers(const dm_client& c) {
+    uint32_t count = static_cast<uint32_t>(c.dismissed_buffers.size());
+    for (const auto& w : c.windows) {
+        for (const auto& b : w->buffers) {
+            count += b.is_gpu ? 1 : 0;
+        }
+    }
+
+    return count;
+}
+
+static bool is_held(const dm_window& w, size_t index) {
+    int32_t i = static_cast<int32_t>(index);
+    return i == w.current || i == w.pending;
+}
+
+static void close_buffer(dm_buffer& b) {
+    if (b.mapping) {
+        munmap(b.mapping, b.size);
+        b.mapping = nullptr;
         b.pixels = nullptr;
     }
+
+    for (int* handle : { &b.acquire, &b.release }) {
+        if (*handle >= 0) {
+            close(*handle);
+            *handle = -1;
+        }
+    }
+}
+
+static void drop_dismissed_buffer(dm_client& c, uint32_t win_id, uint32_t buf_id) {
+    for (size_t i = 0; i < c.dismissed_buffers.size(); i++) {
+        dm_dismissed_buffer& d = c.dismissed_buffers[i];
+        if (d.win_id == win_id && d.buffer.buf_id == buf_id) {
+            close_buffer(d.buffer);
+            c.dismissed_buffers.erase(c.dismissed_buffers.begin() + static_cast<long>(i));
+            return;
+        }
+    }
+}
+
+static void drop_dismissed_window_buffers(dm_client& c, uint32_t win_id) {
+    for (size_t i = c.dismissed_buffers.size(); i-- > 0;) {
+        if (c.dismissed_buffers[i].win_id == win_id) {
+            close_buffer(c.dismissed_buffers[i].buffer);
+            c.dismissed_buffers.erase(c.dismissed_buffers.begin() + static_cast<long>(i));
+        }
+    }
+}
+
+static void remove_buffer(dm_window& w, size_t index) {
+    close_buffer(w.buffers[index]);
+    w.buffers.erase(w.buffers.begin() + static_cast<long>(index));
+
+    int32_t removed = static_cast<int32_t>(index);
+    for (int32_t* slot : { &w.current, &w.pending }) {
+        if (*slot == removed) {
+            *slot = -1;
+        } else if (*slot > removed) {
+            (*slot)--;
+        }
+    }
+}
+
+/* An attach takes the oldest three queued handles: the buffer, then
+ * the acquire and release timelines */
+static bool take_gpu_handles(dm_client& c, int (&handles)[SWP_GPU_HANDLES]) {
+    if (c.queued_handle_count < SWP_GPU_HANDLES) {
+        return false;
+    }
+
+    memcpy(handles, c.queued_handles, sizeof(handles));
+    c.queued_handle_count -= SWP_GPU_HANDLES;
+    memmove(c.queued_handles, c.queued_handles + SWP_GPU_HANDLES, c.queued_handle_count * sizeof(int));
+
+    return true;
+}
+
+static bool is_valid_gpu_picture(const swp_attach_gpu_buffer& m) {
+    bool width_fits = m.width >= 1 && m.width <= SWP_GPU_DIMENSION_MAX;
+    bool height_fits = m.height >= 1 && m.height <= SWP_GPU_DIMENSION_MAX;
+    if (!width_fits || !height_fits) {
+        return false;
+    }
+
+    /* Composition offsets the picture's rows in 32 bits */
+    bool rows_fit = static_cast<uint64_t>(m.pitch) * m.height <= UINT32_MAX;
+    return m.pitch % 4 == 0 && m.pitch >= m.width * 4 && rows_fit && m.format == SWP_FMT_XRGB8888 &&
+           m.offset % 4 == 0;
+}
+
+/* Consumes the buffer handle. The restrict comes before the import,
+ * since an import would take a shared memory handle as a buffer */
+static gpu_mapping map_gpu_buffer(int gpu_fd, int handle, const swp_attach_gpu_buffer& m, dm_buffer& b) {
+    gpu_restrict_args narrowed = {};
+    narrowed.handle = handle;
+    narrowed.rights = GPU_RIGHT_READ;
+    int rc = ioctl(gpu_fd, GPU_HANDLE_RESTRICT, &narrowed);
+    close(handle);
+    if (rc != 0) {
+        return gpu_mapping::REFUSED;
+    }
+
+    gpu_buffer_args import = {};
+    import.source = narrowed.restricted;
+    rc = ioctl(gpu_fd, GPU_BUFFER_IMPORT, &import);
+    int import_error = errno;
+    close(narrowed.restricted);
+    if (rc != 0) {
+        return import_error == EIO ? gpu_mapping::GPU_FAILED : gpu_mapping::REFUSED;
+    }
+
+    uint64_t picture_bytes = static_cast<uint64_t>(m.pitch) * m.height;
+    bool picture_fits = m.offset <= import.size && picture_bytes <= import.size - m.offset;
+    if (!picture_fits || !(import.flags & GPU_BUFFER_MAPPABLE)) {
+        close(import.buffer);
+        return gpu_mapping::REFUSED;
+    }
+
+    void* mapping = mmap(nullptr, import.size, PROT_READ, MAP_SHARED, import.buffer, 0);
+    int map_error = errno;
+    close(import.buffer);
+    if (mapping == MAP_FAILED) {
+        return map_error == ENOMEM ? gpu_mapping::NO_MEMORY : gpu_mapping::REFUSED;
+    }
+
+    b.mapping = mapping;
+    b.size = import.size;
+    b.pixels = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(mapping) + m.offset);
+
+    return gpu_mapping::MAPPED;
+}
+
+/* A commit must arrive at the displayed size or at the size of the
+ * configure it acks, anything else is a client bug */
+static bool commit_size_fits(const dm_window& w, const dm_buffer& b, uint32_t ack_serial) {
+    if (w.current < 0) {
+        return true;
+    }
+
+    const dm_buffer& cur = w.buffers[static_cast<size_t>(w.current)];
+    bool ok = b.width == cur.width && b.height == cur.height;
+    for (uint32_t i = 0; !ok && i < w.sent_conf_count; i++) {
+        const dm_sent_conf& e = w.sent_confs[i];
+        ok = e.serial == ack_serial && e.w == b.width && e.h == b.height;
+    }
+
+    return ok;
+}
+
+/* Acks are protocol state, recorded at receipt. Configures older than
+ * the ack are history, the acked one stays for the latch. */
+static void record_ack(dm_window& w, uint32_t ack_serial) {
+    if (ack_serial > w.acked_serial) {
+        w.acked_serial = ack_serial;
+    }
+
+    uint32_t keep = 0;
+    for (uint32_t i = 0; i < w.sent_conf_count; i++) {
+        if (w.sent_confs[i].serial >= w.acked_serial) {
+            w.sent_confs[keep++] = w.sent_confs[i];
+        }
+    }
+
+    w.sent_conf_count = keep;
+}
+
+/* A commit's damage joins that of the commits since the last latch.
+ * No rects, or more than fit, damage the whole buffer. */
+static void add_commit_damage(dm_window& w, const swp_rect* rects, uint32_t count) {
+    bool fits = count > 0 && count <= SWP_COMMIT_MAX_RECTS - w.pending_damage_count;
+    if (w.pending_damage_whole || !fits) {
+        w.pending_damage_whole = true;
+        return;
+    }
+
+    memcpy(&w.pending_damage[w.pending_damage_count], rects, count * sizeof(swp_rect));
+    w.pending_damage_count += count;
 }
 
 static uint64_t now_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+static bool is_latch_due(const dm_window& w, uint64_t now) {
+    if (!w.buffers[static_cast<size_t>(w.pending)].is_gpu) {
+        return true;
+    }
+
+    return now < w.pending_since_ns + ACQUIRE_EVERY_TICK_NS || now >= w.next_query_ns;
 }
 
 void server::handle_create_window(dm_client& c, const uint8_t* payload) {
@@ -100,6 +308,77 @@ void server::handle_create_window(dm_client& c, const uint8_t* payload) {
     c.windows.push_back(std::move(w));
 }
 
+/* EINVAL means the timeline is at or past the point already */
+void server::signal_release(dm_client& c, const dm_buffer& b, uint64_t point) {
+    gpu_timeline_args signal = {};
+    signal.timeline = b.release;
+    signal.value = point;
+    if (ioctl(m_gpu_fd, GPU_TIMELINE_SIGNAL, &signal) == 0 || errno == EINVAL) {
+        return;
+    }
+
+    if (errno == EBADF) {
+        c.dead = true;
+        return;
+    }
+
+    printf("stlxdm: signaling a release timeline failed, errno %d, the point counts as reached\r\n", errno);
+}
+
+void server::release_picture(dm_client& c, uint32_t win_id, const dm_buffer& b) {
+    if (b.is_gpu) {
+        signal_release(c, b, b.release_point);
+        return;
+    }
+
+    swp_release rel = { win_id, b.buf_id };
+    send_to(c, SWP_MSG_RELEASE, &rel, sizeof(rel));
+}
+
+void server::stop_taking_gpu_buffers() {
+    if (m_gpu_info.flags == 0) {
+        return;
+    }
+
+    printf("stlxdm: the GPU failed, GPU buffers attached after it are released unshown\r\n");
+    m_gpu_info.flags = 0;
+    for (auto& c : m_clients) {
+        if (c->hello_done) {
+            send_to(*c, SWP_MSG_GPU_INFO, &m_gpu_info, sizeof(m_gpu_info));
+        }
+    }
+}
+
+/* A GPU picture the buffer shows or holds pending is released before
+ * the drop while its client stays connected, as it may still wait */
+void server::drop_buffer(dm_client& c, dm_window& w, size_t index) {
+    const dm_buffer& b = w.buffers[index];
+    if (b.is_gpu && is_held(w, index) && !c.dead) {
+        signal_release(c, b, b.release_point);
+    }
+
+    remove_buffer(w, index);
+}
+
+/* Commits to a dismissed window may still be in flight, so the buffer
+ * stays a release-only record until detached or its window destroyed */
+void server::keep_release_only_record(dm_client& c, dm_window& w, size_t index) {
+    dm_buffer& b = w.buffers[index];
+    if (is_held(w, index) && !c.dead) {
+        signal_release(c, b, b.release_point);
+    }
+
+    dm_dismissed_buffer record = { w.win_id, b };
+    record.buffer.mapping = nullptr;
+    record.buffer.pixels = nullptr;
+    record.buffer.acquire = -1;
+    record.buffer.is_release_only = true;
+    c.dismissed_buffers.push_back(record);
+
+    b.release = -1;
+    remove_buffer(w, index);
+}
+
 void server::destroy_window_tree(dm_client& c, uint32_t win_id) {
     /* Children go first, matching the client library's cascade */
     for (size_t i = c.windows.size(); i-- > 0;) {
@@ -117,8 +396,15 @@ void server::destroy_window_tree(dm_client& c, uint32_t win_id) {
         scene_damage_window(w);
 
         forget_window(w);
-        for (auto& b : c.windows[i]->buffers) {
-            unmap_buffer(b);
+        bool keeps_records = is_dismissed(c, win_id);
+        while (!w->buffers.empty()) {
+            size_t last = w->buffers.size() - 1;
+            const dm_buffer& b = w->buffers[last];
+            if (keeps_records && b.is_gpu && !b.is_detached) {
+                keep_release_only_record(c, *w, last);
+            } else {
+                drop_buffer(c, *w, last);
+            }
         }
         c.windows.erase(c.windows.begin() + static_cast<long>(i));
         return;
@@ -145,7 +431,7 @@ void server::note_dismissed_tree(dm_client& c, uint32_t win_id) {
 
 void server::release_held_buffers(dm_client& c, const dm_window& w) {
     for (int32_t held : { w.pending, w.current }) {
-        if (held >= 0) {
+        if (held >= 0 && !w.buffers[static_cast<size_t>(held)].is_gpu) {
             swp_release rel = { w.win_id, w.buffers[static_cast<size_t>(held)].buf_id };
             send_to(c, SWP_MSG_RELEASE, &rel, sizeof(rel));
         }
@@ -155,6 +441,7 @@ void server::release_held_buffers(dm_client& c, const dm_window& w) {
 void server::handle_destroy_window(dm_client& c, const uint8_t* payload) {
     const auto* m = reinterpret_cast<const swp_destroy_window*>(payload);
     std::erase(c.dismissed_windows, m->win_id);
+    drop_dismissed_window_buffers(c, m->win_id);
     destroy_window_tree(c, m->win_id);
 }
 
@@ -243,8 +530,88 @@ void server::handle_attach_buffer(dm_client& c, const uint8_t* payload) {
     b.buf_id = m->buf_id;
     b.width = m->width;
     b.height = m->height;
+    b.pitch = m->width * 4;
+
+    b.mapping = pixels;
     b.size = size;
     b.pixels = static_cast<uint32_t*>(pixels);
+    w->buffers.push_back(b);
+}
+
+void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
+    const auto* m = reinterpret_cast<const swp_attach_gpu_buffer*>(payload);
+    int handles[SWP_GPU_HANDLES];
+    if (!take_gpu_handles(c, handles)) {
+        c.dead = true;
+        return;
+    }
+
+    dm_window* w = find_window(c, m->win_id);
+    bool is_dismissed_window = !w && is_dismissed(c, m->win_id);
+    bool is_unused = w ? !find_buffer(*w, m->buf_id) : !find_dismissed_buffer(c, m->win_id, m->buf_id);
+    bool may_attach = c.may_attach_gpu && (w || is_dismissed_window) && is_unused &&
+                      count_gpu_buffers(c) < SWP_GPU_BUFFERS_MAX && is_valid_gpu_picture(*m);
+    if (!may_attach) {
+        for (int handle : handles) {
+            close(handle);
+        }
+
+        c.dead = true;
+        return;
+    }
+
+    dm_buffer b;
+    b.buf_id = m->buf_id;
+    b.width = m->width;
+    b.height = m->height;
+    b.pitch = m->pitch;
+
+    b.is_gpu = true;
+    b.release = handles[2];
+    if (is_dismissed_window) {
+        close(handles[0]);
+        close(handles[1]);
+        b.is_release_only = true;
+        c.dismissed_buffers.push_back({ m->win_id, b });
+        return;
+    }
+
+    bool is_release_only = false;
+    switch (map_gpu_buffer(m_gpu_fd, handles[0], *m, b)) {
+    case gpu_mapping::MAPPED:
+        break;
+    case gpu_mapping::GPU_FAILED:
+        stop_taking_gpu_buffers();
+        is_release_only = true;
+        break;
+    case gpu_mapping::NO_MEMORY:
+        printf("stlxdm: no memory or a failed GPU for a GPU buffer's mapping, its commits are released unshown\r\n");
+        is_release_only = true;
+        break;
+    case gpu_mapping::REFUSED:
+        close(handles[1]);
+        close(handles[2]);
+        c.dead = true;
+        return;
+    }
+
+    if (is_release_only) {
+        close(handles[1]);
+        b.is_release_only = true;
+        w->buffers.push_back(b);
+        return;
+    }
+
+    gpu_timeline_args query = {};
+    query.timeline = handles[1];
+    if (ioctl(m_gpu_fd, GPU_TIMELINE_QUERY, &query) != 0) {
+        close(handles[1]);
+        close_buffer(b);
+        c.dead = true;
+        return;
+    }
+
+    b.acquire = handles[1];
     w->buffers.push_back(b);
 }
 
@@ -252,28 +619,29 @@ void server::handle_detach_buffer(dm_client& c, const uint8_t* payload) {
     const auto* m = reinterpret_cast<const swp_detach_buffer*>(payload);
     dm_window* w = find_window(c, m->win_id);
     if (!w) {
+        drop_dismissed_buffer(c, m->win_id, m->buf_id);
         return;
     }
 
     for (size_t i = 0; i < w->buffers.size(); i++) {
-        if (w->buffers[i].buf_id != m->buf_id) {
+        dm_buffer& b = w->buffers[i];
+        if (b.buf_id != m->buf_id) {
             continue;
         }
 
-        /* Detaching the displayed or pending buffer is a client bug */
-        if (static_cast<int32_t>(i) == w->current || static_cast<int32_t>(i) == w->pending) {
+        /* A shared memory buffer detached while held is a client bug */
+        if (!b.is_gpu && is_held(*w, i)) {
             c.dead = true;
             return;
         }
 
-        unmap_buffer(w->buffers[i]);
-        w->buffers.erase(w->buffers.begin() + static_cast<long>(i));
-        if (w->current > static_cast<int32_t>(i)) {
-            w->current--;
+        /* Vulkan detaches a shown image before its successor presents */
+        if (static_cast<int32_t>(i) == w->current && b.is_gpu) {
+            b.is_detached = true;
+            return;
         }
-        if (w->pending > static_cast<int32_t>(i)) {
-            w->pending--;
-        }
+
+        drop_buffer(c, *w, i);
         return;
     }
 }
@@ -293,71 +661,116 @@ void server::handle_commit(dm_client& c, const uint8_t* payload) {
     }
 
     dm_buffer* b = find_buffer(*w, m->buf_id);
-    if (!b) {
+    if (!b || b->is_gpu || !commit_size_fits(*w, *b, m->ack_serial)) {
         c.dead = true;
         return;
     }
 
-    /* A commit must arrive at the displayed size or at the size of
-     * the configure it acks, anything else is a client bug */
-    if (w->current >= 0) {
-        const dm_buffer& cur = w->buffers[static_cast<size_t>(w->current)];
-        bool ok = b->width == cur.width && b->height == cur.height;
-        for (uint32_t i = 0; !ok && i < w->sent_conf_count; i++) {
-            const dm_sent_conf& e = w->sent_confs[i];
-            ok = e.serial == m->ack_serial &&
-                 e.w == b->width && e.h == b->height;
-        }
-        if (!ok) {
-            c.dead = true;
-            return;
-        }
+    record_ack(*w, m->ack_serial);
+    replace_pending(c, *w, static_cast<int32_t>(b - w->buffers.data()));
+    add_commit_damage(*w, m->damage, m->n_damage);
+}
+
+void server::handle_commit_gpu(dm_client& c, const uint8_t* payload) {
+    const auto* m = reinterpret_cast<const swp_commit_gpu*>(payload);
+    dm_window* w = find_window(c, m->win_id);
+    dm_buffer* b = w ? find_buffer(*w, m->buf_id) : find_dismissed_buffer(c, m->win_id, m->buf_id);
+    if (!b || !b->is_gpu || b->is_detached || m->commit_flags != 0 || m->reserved != 0) {
+        c.dead = true;
+        return;
     }
 
-    /* Acks are protocol state, recorded at receipt. Configures older
-     * than the ack are history, the acked one stays for the latch. */
-    if (m->ack_serial > w->acked_serial) {
-        w->acked_serial = m->ack_serial;
-    }
-    uint32_t keep = 0;
-    for (uint32_t i = 0; i < w->sent_conf_count; i++) {
-        if (w->sent_confs[i].serial >= w->acked_serial) {
-            w->sent_confs[keep++] = w->sent_confs[i];
-        }
-    }
-    w->sent_conf_count = keep;
-
-    /* Only the latest commit counts, a superseded one is released
-     * without ever reaching the screen */
-    if (w->pending >= 0) {
-        swp_release rel = { w->win_id, w->buffers[static_cast<size_t>(w->pending)].buf_id };
-        send_to(c, SWP_MSG_RELEASE, &rel, sizeof(rel));
+    bool points_rise = m->release_point > b->release_point &&
+                       (m->latch_point == 0 ||
+                        (m->latch_point > b->release_point && m->latch_point < m->release_point));
+    bool is_free = !w || !is_held(*w, static_cast<size_t>(b - w->buffers.data()));
+    if (!points_rise || !is_free || (w && !commit_size_fits(*w, *b, m->ack_serial))) {
+        c.dead = true;
+        return;
     }
 
-    for (size_t i = 0; i < w->buffers.size(); i++) {
-        if (&w->buffers[i] == b) {
-            w->pending = static_cast<int32_t>(i);
-            break;
-        }
+    b->acquire_point = m->acquire_point;
+    b->latch_point = m->latch_point;
+    b->release_point = m->release_point;
+    if (w) {
+        record_ack(*w, m->ack_serial);
+        add_commit_damage(*w, m->damage, m->n_damage);
     }
 
-    w->pending_damage_count =
-        m->n_damage <= SWP_COMMIT_MAX_RECTS ? m->n_damage : 0;
-    for (uint32_t i = 0; i < w->pending_damage_count; i++) {
-        w->pending_damage[i] = m->damage[i];
+    if (!w || b->is_release_only) {
+        signal_release(c, *b, b->release_point);
+        return;
     }
+
+    replace_pending(c, *w, static_cast<int32_t>(b - w->buffers.data()));
+    uint64_t now = now_ns();
+    w->pending_since_ns = now;
+    w->next_query_ns = now + ACQUIRE_EVERY_TICK_NS;
+}
+
+/* Only the latest commit counts, a superseded one is released without
+ * ever reaching the screen */
+void server::replace_pending(dm_client& c, dm_window& w, int32_t index) {
+    if (w.pending >= 0) {
+        release_picture(c, w.win_id, w.buffers[static_cast<size_t>(w.pending)]);
+    }
+
+    w.pending = index;
 }
 
 bool server::has_latch_work() const {
+    uint64_t now = now_ns();
     for (const auto& c : m_clients) {
         for (const auto& w : c->windows) {
-            if (w->pending >= 0) {
+            if (w->pending >= 0 && is_latch_due(*w, now)) {
                 return true;
             }
         }
     }
 
     return false;
+}
+
+int64_t server::latch_timeout_ns(uint64_t now) const {
+    int64_t timeout = -1;
+    for (const auto& c : m_clients) {
+        for (const auto& w : c->windows) {
+            if (w->pending < 0 || is_latch_due(*w, now)) {
+                continue;
+            }
+
+            int64_t wait = static_cast<int64_t>(w->next_query_ns - now);
+            if (timeout < 0 || wait < timeout) {
+                timeout = wait;
+            }
+        }
+    }
+
+    return timeout;
+}
+
+/* Whether the window's pending GPU commit may latch, releasing it
+ * unshown when its acquire point came with GPU_TIMELINE_FAILED */
+bool server::is_acquire_reached(dm_client& c, dm_window& w, uint64_t now) {
+    dm_buffer& b = w.buffers[static_cast<size_t>(w.pending)];
+    gpu_timeline_args query = {};
+    query.timeline = b.acquire;
+    bool reached = ioctl(m_gpu_fd, GPU_TIMELINE_QUERY, &query) == 0 && query.value >= b.acquire_point;
+    if (!reached) {
+        if (now >= w.pending_since_ns + ACQUIRE_EVERY_TICK_NS) {
+            w.next_query_ns = now + ACQUIRE_QUERY_INTERVAL_NS;
+        }
+
+        return false;
+    }
+
+    if (query.flags & GPU_TIMELINE_FAILED) {
+        signal_release(c, b, b.release_point);
+        w.pending = -1;
+        return false;
+    }
+
+    return true;
 }
 
 bool server::has_configure_work() const {
@@ -430,6 +843,12 @@ void server::latch_window(dm_client& c, dm_window& w) {
         m_perf.answer(win->event_seq);
     }
 
+    /* Clients may rely on the latch point coming before the replaced
+     * picture's release and FRAME_DONE */
+    if (nb.is_gpu && nb.latch_point != 0) {
+        signal_release(c, nb, nb.latch_point);
+    }
+
     if (w.current >= 0) {
         const dm_buffer& ob = w.buffers[static_cast<size_t>(w.current)];
         resized = ob.width != nb.width || ob.height != nb.height;
@@ -437,8 +856,7 @@ void server::latch_window(dm_client& c, dm_window& w) {
             scene_damage_window(&w);
         }
 
-        swp_release rel = { w.win_id, ob.buf_id };
-        send_to(c, SWP_MSG_RELEASE, &rel, sizeof(rel));
+        release_picture(c, w.win_id, ob);
     }
 
     /* A resize latch moves the window to the spot its configure
@@ -473,7 +891,7 @@ void server::latch_window(dm_client& c, dm_window& w) {
             nr = { w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height) };
         }
         m_damage.add(nr.x, nr.y, nr.w, nr.h);
-    } else if (w.pending_damage_count == 0) {
+    } else if (w.pending_damage_whole || w.pending_damage_count == 0) {
         m_damage.add(w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height));
     } else {
         for (uint32_t i = 0; i < w.pending_damage_count; i++) {
@@ -482,8 +900,15 @@ void server::latch_window(dm_client& c, dm_window& w) {
         }
     }
 
+    w.pending_damage_count = 0;
+    w.pending_damage_whole = false;
+
+    int32_t replaced = w.current;
     w.current = w.pending;
     w.pending = -1;
+    if (replaced >= 0 && w.buffers[static_cast<size_t>(replaced)].is_detached) {
+        drop_buffer(c, w, static_cast<size_t>(replaced));
+    }
 
     if (first_map) {
         w.mapped = true;
@@ -618,9 +1043,15 @@ void server::compose_rect(stlxgfx_surface_t* back,
 }
 
 void server::compose_tick() {
+    uint64_t now = now_ns();
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
-            if (w->pending >= 0) {
+            if (w->pending < 0 || !is_latch_due(*w, now)) {
+                continue;
+            }
+
+            bool is_gpu = w->buffers[static_cast<size_t>(w->pending)].is_gpu;
+            if (!is_gpu || is_acquire_reached(*c, *w, now)) {
                 latch_window(*c, *w);
             }
         }
