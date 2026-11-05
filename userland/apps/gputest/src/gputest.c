@@ -1,5 +1,5 @@
-// Checks /dev/gpu0 on an NVIDIA card: its facts, its clock, its buffers, shared memory it imports, and contexts with
-// their mappings. Prints a line per check and exits nonzero when any failed
+// Checks /dev/gpu0 on an NVIDIA card, then the window protocol, or with `proto` only the protocol checks, which need no
+// GPU. Prints a line per check and exits nonzero when any failed
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -13,6 +13,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <stlx/gpu_abi.h>
+
+#include "gputest.h"
 
 #define NS_PER_SEC      1000000000ULL
 #define MIB             (1024ULL * 1024ULL)
@@ -30,7 +32,7 @@
 static int passed = 0;
 static int failed = 0;
 
-static void check(const char* name, bool cond) {
+void check(const char* name, bool cond) {
     if (cond) {
         printf("  PASS: %s\n", name);
         passed++;
@@ -40,7 +42,7 @@ static void check(const char* name, bool cond) {
     }
 }
 
-static uint64_t monotonic_ns(void) {
+uint64_t monotonic_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * NS_PER_SEC + (uint64_t)ts.tv_nsec;
@@ -369,8 +371,24 @@ static void test_many_contexts(int fd) {
     check("closing them and the buffer gives their memory back", memory_returns_to(fd, before));
 }
 
-int main(void) {
+static int report(void) {
+    printf("gputest: %d passed, %d failed\n", passed, failed);
+    return failed > 0 ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    bool proto_only = argc == 2 && strcmp(argv[1], "proto") == 0;
+    if (argc > 1 && !proto_only) {
+        printf("usage: gputest [proto]\n");
+        return 1;
+    }
+
+    if (proto_only) {
+        run_proto_checks();
+        return report();
+    }
 
     int fd = open("/dev/gpu0", O_RDWR);
     if (fd < 0) {
@@ -400,8 +418,8 @@ int main(void) {
     test_shared_memory_import(fd);
     test_many_contexts(fd);
 
+    run_proto_checks();
     close(fd);
-    printf("gputest: %d passed, %d failed\n", passed, failed);
 
-    return failed > 0 ? 1 : 0;
+    return report();
 }
