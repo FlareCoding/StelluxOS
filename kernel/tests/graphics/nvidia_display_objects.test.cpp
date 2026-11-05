@@ -109,6 +109,8 @@ public:
         return answer(kind::internal_control, 0, 0, command, params, size);
     }
 
+    void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
+
     rm::handle new_handle() override {
         return FIRST_HANDLE + handle_count++;
     }

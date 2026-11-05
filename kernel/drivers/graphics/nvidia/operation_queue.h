@@ -9,9 +9,9 @@
 namespace drivers::nvidia {
 
 /**
- * Work another context hands the driver task, since only the task calls the
- * firmware and the display engine's instance memory once `attach()` has
- * returned. `work` runs on the task and sets `result`.
+ * Work handed to the driver task, since only the task calls the firmware and
+ * the display engine's instance memory once `attach()` has returned. `work`
+ * runs on the task, setting `result` when a caller waits.
  *
  * The record must be unprivileged memory, since the lowered task reads it and
  * `work` writes it. A caller that waits owns it again once the wait returns.
@@ -21,6 +21,7 @@ struct operation {
     int32_t    result;
     bool       is_waited; // a caller waits, so the queue marks the record done
     bool       is_done;   // set under the queue's lock once `work` returns
+    bool       is_queued; // set under the queue's lock from queuing until the task takes the record
     operation* next;
 };
 
@@ -63,6 +64,15 @@ public:
     __PRIVILEGED_CODE void post_to_task(operation& op);
 
     /**
+     * @brief Queue `op` unless it is queued already, then wake the task either
+     * way without waiting, which cannot fail. A record posted while its `work`
+     * runs is queued again.
+     * @param op The record, with `work` set, kept for the queue's life.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void post_unless_queued(operation& op);
+
+    /**
      * @brief Run the queued operations on the task until none is left, those
      * queued meanwhile included.
      */
@@ -70,11 +80,14 @@ public:
 
 private:
     /**
-     * @brief Mark `op` not done and link it last.
+     * @brief Mark `op` queued and not done and link it last.
      * @param op The record `run_on_task` or `post_to_task` was given.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void append(operation& op);
+
+    // Links `op` last, marked queued and not done. The caller must hold `m_lock`
+    void link_last(operation& op);
 
     operation* take_next();
 

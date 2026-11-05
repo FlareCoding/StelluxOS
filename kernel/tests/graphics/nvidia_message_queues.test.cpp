@@ -1130,6 +1130,9 @@ static void store_function_message(
 // The lockdown state the waits and drains below keep, as a `gsp` keeps its own
 static bool s_is_in_lockdown = false;
 
+// The sink the waits and drains below hand events to, null unless a test sets it
+static drivers::nvidia::firmware_event_sink* s_event_sink = nullptr;
+
 // Waits for the ready message until `deadline_ns`, the sequencer's waits bound by a deadline the long timeout later,
 // so a wait that ends at the sequencer's deadline instead of its own fails a test
 static int32_t await_ready(
@@ -1157,6 +1160,7 @@ static int32_t await_ready(
         buffer,
         sizeof(buffer),
         deadline_ns,
+        s_event_sink,
         s_is_in_lockdown
     );
 }
@@ -3635,7 +3639,7 @@ static int32_t drain(message_queues& queues, awaited_test_bar0& bar0, uint8_t (&
         .deadline_ns             = clock::now_ns() + LONG_TIMEOUT_NS,
     };
 
-    return drain_status_queue(queues, bar0.regs, context, buffer, sizeof(buffer), s_is_in_lockdown);
+    return drain_status_queue(queues, bar0.regs, context, buffer, sizeof(buffer), s_event_sink, s_is_in_lockdown);
 }
 
 // The drain runs the sequencer between two unasked messages before any log line, logs each unasked message with its
@@ -4247,4 +4251,224 @@ TEST(nvidia_message_queues, gsp_await_records_a_lockdown_that_stop_clears) {
 
     conversation.stop();
     EXPECT_FALSE(conversation.is_in_lockdown());
+}
+
+// NVIDIA's number for the message carrying a posted event, restated as the ready message's is above
+static constexpr uint32_t NVIDIA_POST_EVENT = 0x1003;
+
+// A posted event's bytes of fields, NVIDIA's rpc_post_event_v17_00, and with a hotplug's 8 bytes of masks
+static constexpr uint32_t POSTED_EVENT_FIELD_BYTES = 29;
+static constexpr uint32_t HOTPLUG_EVENT_BYTES      = POSTED_EVENT_FIELD_BYTES + 8;
+
+// The client the events below name, the driver's as `gsp` allocates it
+static constexpr uint32_t EVENT_CLIENT = 0xC1D00000;
+
+// A posted event's payload naming the driver's client, with a hotplug's data
+struct queue_test_event {
+    uint8_t bytes[HOTPLUG_EVENT_BYTES] = {};
+
+    queue_test_event(uint32_t event, uint32_t notify_index, bool is_for_notify_list) {
+        uint32_t client = EVENT_CLIENT;
+        uint32_t data_bytes = HOTPLUG_EVENT_BYTES - POSTED_EVENT_FIELD_BYTES;
+        string::memcpy(bytes, &client, sizeof(client));
+        string::memcpy(bytes + 4, &event, sizeof(event));
+        string::memcpy(bytes + 8, &notify_index, sizeof(notify_index));
+        string::memcpy(bytes + 24, &data_bytes, sizeof(data_bytes));
+
+        bytes[28] = is_for_notify_list ? 1 : 0;
+    }
+};
+
+// Keeps the events handed to it, taking them while `takes` is set
+class queue_test_event_sink : public drivers::nvidia::firmware_event_sink {
+public:
+    static constexpr uint32_t EVENTS_KEPT = 4;
+
+    drivers::nvidia::firmware_event events[EVENTS_KEPT] = {};
+    uint32_t                        count = 0;
+    bool                            takes = true;
+
+    bool on_firmware_event(const drivers::nvidia::firmware_event& event) override {
+        if (count < EVENTS_KEPT) {
+            events[count] = event;
+        }
+
+        count++;
+
+        return takes;
+    }
+};
+
+// Stores `count` copies of `event`'s first `bytes` bytes from element `first` of the moved status queue on
+static void store_events(
+    fake_queue_memory& memory,
+    status_test_message& message,
+    uint32_t first,
+    uint32_t count,
+    const queue_test_event& event,
+    uint32_t bytes
+) {
+    for (uint32_t i = first; i < first + count; i++) {
+        store_function_message(memory, message, i, NVIDIA_POST_EVENT, event.bytes, bytes);
+    }
+
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, first + count);
+}
+
+// Keeps what is logged from here on, the polled bit dropped in `bar0`'s registers at each line
+static void keep_log(registers& regs) {
+    s_dropping_registers = &regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+}
+
+// A wait hands the sink each posted event whose payload holds its 29 bytes of fields as it reads it, with the
+// notifier's low 16 bits and the notify list's flag, logs none the sink takes and logs a shorter one as passed over
+TEST(nvidia_message_queues, receive_awaited_hands_events_to_the_sink) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    awaited_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+    queue_test_event listed(0xCAF00015, 0x04010101, true);
+    queue_test_event direct(0xCAF00016, 7, false);
+    received_message out = {};
+    MOVED_HEADER.write_to(memory);
+
+    store_events(memory, message, 0, 1, listed, HOTPLUG_EVENT_BYTES);
+    store_events(memory, message, 1, 1, direct, POSTED_EVENT_FIELD_BYTES);
+    store_events(memory, message, 2, 1, direct, POSTED_EVENT_FIELD_BYTES - 1);
+    store_function_message(memory, message, 3, NVIDIA_GSP_INIT_DONE, nullptr, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 4);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    queue_test_event_sink sink;
+    s_event_sink = &sink;
+    keep_log(bar0.regs);
+    int32_t rc = await_ready(queues, bar0, out, buffer, clock::now_ns() + LONG_TIMEOUT_NS);
+    log::set_backend(nullptr);
+    s_event_sink = nullptr;
+
+    EXPECT_EQ(rc, OK);
+    ASSERT_EQ(sink.count, 2u);
+    EXPECT_EQ(sink.events[0].client, EVENT_CLIENT);
+    EXPECT_EQ(sink.events[0].event, 0xCAF00015u);
+    EXPECT_EQ(sink.events[0].notifier, 0x101u);
+    EXPECT_TRUE(sink.events[0].is_for_notify_list);
+
+    EXPECT_EQ(sink.events[1].event, 0xCAF00016u);
+    EXPECT_EQ(sink.events[1].notifier, 7u);
+    EXPECT_FALSE(sink.events[1].is_for_notify_list);
+    EXPECT_EQ(logged_line_count(), 1u);
+    EXPECT_TRUE(logged_text_contains("passed over a message of function 0x1003 from the GSP's firmware, with result "
+                                     "0x0 and 28 payload bytes"));
+}
+
+// A drain logs as unasked each event the sink declines and each read while no sink is set
+TEST(nvidia_message_queues, drain_logs_the_events_no_sink_takes) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    awaited_test_bar0 bar0;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+    queue_test_event hotplug(0xCAF00015, 1, true);
+    MOVED_HEADER.write_to(memory);
+    store_events(memory, message, 0, 2, hotplug, HOTPLUG_EVENT_BYTES);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    queue_test_event_sink sink;
+    sink.takes = false;
+    s_event_sink = &sink;
+    keep_log(bar0.regs);
+    EXPECT_EQ(drain(queues, bar0, buffer), OK);
+    log::set_backend(nullptr);
+
+    s_event_sink = nullptr;
+    EXPECT_EQ(sink.count, 2u);
+    EXPECT_EQ(logged_line_count(), 2u);
+    EXPECT_TRUE(logged_text_contains("sent a message of function 0x1003 unasked, with result 0x0 and 37 payload "
+                                     "bytes"));
+
+    store_events(memory, message, 2, 1, hotplug, HOTPLUG_EVENT_BYTES);
+    keep_log(bar0.regs);
+    EXPECT_EQ(drain(queues, bar0, buffer), OK);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(sink.count, 2u);
+    EXPECT_EQ(logged_line_count(), 1u);
+    EXPECT_TRUE(logged_text_contains("sent a message of function 0x1003 unasked"));
+}
+
+// A conversation's drain hands events to the sink it was given, and `stop` drops the sink
+TEST(nvidia_message_queues, gsp_drain_hands_events_to_its_sink_until_stop) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    queue_test_event hotplug(0xCAF00015, 1, true);
+    MOVED_HEADER.write_to(memory);
+    store_events(memory, message, 0, 1, hotplug, HOTPLUG_EVENT_BYTES);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    queue_test_event_sink sink;
+    conversation.set_event_sink(&sink);
+    keep_log(bar0.regs);
+    EXPECT_EQ(conversation.drain(), OK);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(sink.count, 1u);
+    EXPECT_EQ(sink.events[0].event, 0xCAF00015u);
+    EXPECT_EQ(logged_line_count(), 0u);
+
+    conversation.stop();
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    store_events(memory, message, 0, 1, hotplug, HOTPLUG_EVENT_BYTES);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    EXPECT_EQ(conversation.drain(), OK);
+    EXPECT_EQ(sink.count, 1u);
+    conversation.stop();
+}
+
+// A conversation's wait hands the events it reads before the awaited message to the sink it was given
+TEST(nvidia_message_queues, gsp_await_hands_events_to_its_sink) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    queue_test_event hotplug(0xCAF00015, 1, true);
+
+    MOVED_HEADER.write_to(memory);
+    store_events(memory, message, 0, 1, hotplug, HOTPLUG_EVENT_BYTES);
+    store_function_message(memory, message, 1, NVIDIA_GSP_INIT_DONE, nullptr, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    queue_test_event_sink sink;
+    conversation.set_event_sink(&sink);
+    received_message out = {};
+    EXPECT_EQ(conversation.await(FUNCTION_GSP_INIT_DONE, out, SHORT_TIMEOUT_NS), OK);
+
+    EXPECT_EQ(sink.count, 1u);
+    EXPECT_EQ(sink.events[0].event, 0xCAF00015u);
+    conversation.stop();
 }

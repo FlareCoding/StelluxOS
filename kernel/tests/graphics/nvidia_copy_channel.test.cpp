@@ -133,6 +133,8 @@ public:
 
     int32_t internal_control(uint32_t, void*, size_t) override { return OK; }
 
+    void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
+
     uint32_t channel_word(size_t offset) const {
         uint32_t word = 0;
         string::memcpy(&word, channel_params + offset, sizeof(word));

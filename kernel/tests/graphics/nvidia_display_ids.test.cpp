@@ -138,6 +138,8 @@ public:
         return OK;
     }
 
+    void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
+
     rm::handle new_handle() override {
         stray_count++;
         return 0;
@@ -551,26 +553,26 @@ TEST(nvidia_display_ids, connected_display_id_not_supported_is_refused) {
         {
             .supported_ids = 0x1,
             .connected_ids = 0x3,
-            .logged = "nvidia: display common reports display ids 0x3 connected, some of them outside the supported "
-                      "0x1",
+            .logged = "nvidia: display common reports display ids 0x3 connected, some of them outside the "
+                      "0x1 asked about",
         },
         {
             .supported_ids = 0xFF00,
             .connected_ids = 0x0101,
-            .logged = "nvidia: display common reports display ids 0x101 connected, some of them outside the supported "
-                      "0xFF00",
+            .logged = "nvidia: display common reports display ids 0x101 connected, some of them outside the "
+                      "0xFF00 asked about",
         },
         {
             .supported_ids = 0xFF00,
             .connected_ids = 0x80000100,
             .logged = "nvidia: display common reports display ids 0x80000100 connected, some of them outside the "
-                      "supported 0xFF00",
+                      "0xFF00 asked about",
         },
         {
             .supported_ids = 0x0F0F,
             .connected_ids = 0x0010,
-            .logged = "nvidia: display common reports display ids 0x10 connected, some of them outside the supported "
-                      "0xF0F",
+            .logged = "nvidia: display common reports display ids 0x10 connected, some of them outside the "
+                      "0xF0F asked about",
         },
     };
 

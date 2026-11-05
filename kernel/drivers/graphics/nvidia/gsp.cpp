@@ -127,7 +127,15 @@ int32_t gsp::await(uint32_t function, received_message& out, uint64_t timeout_ns
 
 int32_t gsp::drain() {
     m_sequencer.deadline_ns = clock::now_ns() + DEFAULT_TIMEOUT_NS;
-    return drain_status_queue(m_queues, m_regs, m_sequencer, m_payload, MESSAGE_PAYLOAD_MAX_BYTES, m_is_in_lockdown);
+    return drain_status_queue(
+        m_queues,
+        m_regs,
+        m_sequencer,
+        m_payload,
+        MESSAGE_PAYLOAD_MAX_BYTES,
+        m_event_sink,
+        m_is_in_lockdown
+    );
 }
 
 bool gsp::is_in_lockdown() const {
@@ -300,6 +308,7 @@ void gsp::stop() {
     m_client = 0;
     m_internal_client = 0;
     m_internal_subdevice = 0;
+    m_event_sink = nullptr;
     m_handle_count = 0;
 }
 
@@ -352,6 +361,10 @@ void gsp::set_internal_client(rm::handle client, rm::handle subdevice) {
 
 int32_t gsp::internal_control(uint32_t command, void* params, size_t size) {
     return request_control(m_internal_client, m_internal_subdevice, command, params, size);
+}
+
+void gsp::set_event_sink(firmware_event_sink* sink) {
+    m_event_sink = sink;
 }
 
 int32_t gsp::request_control(rm::handle client, rm::handle object, uint32_t command, void* params, size_t size) {
@@ -500,6 +513,7 @@ int32_t gsp::await_since(uint32_t function, received_message& out, uint64_t star
         m_payload,
         MESSAGE_PAYLOAD_MAX_BYTES,
         start_ns + timeout_ns,
+        m_event_sink,
         m_is_in_lockdown
     );
 }

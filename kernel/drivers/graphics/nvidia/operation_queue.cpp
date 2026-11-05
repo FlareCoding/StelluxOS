@@ -34,6 +34,20 @@ __PRIVILEGED_CODE void operation_queue::post_to_task(operation& op) {
     m_driver.notify_event();
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void operation_queue::post_unless_queued(operation& op) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
+    if (!op.is_queued) {
+        op.is_waited = false;
+        link_last(op);
+    }
+
+    sync::spin_unlock_irqrestore(m_lock, irq);
+    m_driver.notify_event();
+}
+
 void operation_queue::serve() {
     operation* op = take_next();
     while (op != nullptr) {
@@ -58,10 +72,15 @@ void operation_queue::serve() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void operation_queue::append(operation& op) {
-    op.is_done = false;
-    op.next = nullptr;
-
     sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
+    link_last(op);
+    sync::spin_unlock_irqrestore(m_lock, irq);
+}
+
+void operation_queue::link_last(operation& op) {
+    op.is_done = false;
+    op.is_queued = true;
+    op.next = nullptr;
     if (m_tail != nullptr) {
         m_tail->next = &op;
     } else {
@@ -69,7 +88,6 @@ __PRIVILEGED_CODE void operation_queue::append(operation& op) {
     }
 
     m_tail = &op;
-    sync::spin_unlock_irqrestore(m_lock, irq);
 }
 
 operation* operation_queue::take_next() {
@@ -78,6 +96,7 @@ operation* operation_queue::take_next() {
         sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
         op = m_head;
         if (op != nullptr) {
+            op->is_queued = false;
             m_head = op->next;
             if (m_head == nullptr) {
                 m_tail = nullptr;

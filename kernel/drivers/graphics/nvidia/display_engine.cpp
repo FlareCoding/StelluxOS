@@ -1360,11 +1360,17 @@ static void log_lit_color_controls(const registers& regs, const head_light& ligh
     );
 }
 
-display_engine::display_engine(firmware& fw, video_memory& memory, operation_queue& operations)
+display_engine::display_engine(
+    firmware& fw,
+    video_memory& memory,
+    operation_queue& operations,
+    const failed_mark& failed
+)
     : m_firmware(fw)
     , m_memory(memory)
     , m_instance_memory(memory, fw)
-    , m_operations(operations) {
+    , m_operations(operations)
+    , m_failed(failed) {
     for (uint8_t& output : m_head_outputs) {
         output = NO_OUTPUT;
     }
@@ -1374,13 +1380,18 @@ display_engine::display_engine(firmware& fw, video_memory& memory, operation_que
         timer::init_deadline_timer(&head.latch_check_timer, check_latch);
         timer::init_deadline_timer(&head.deadline_timer, expire_deadline);
     }
+
+    m_hotplug_record.work = serve_hotplug_record;
+    m_hotplug_record.engine = this;
+    m_short_pulse_record.work = serve_short_pulse_record;
+    m_short_pulse_record.engine = this;
 }
 
 int32_t display_engine::set_up(
     registers& regs,
     const dma::device_profile& card,
     const chip_info& chip,
-    rm::handle device
+    const gpu_objects& gpu
 ) {
     const chip_display& display = chip.display;
 
@@ -1415,7 +1426,7 @@ int32_t display_engine::set_up(
         m_instance_memory.range().offset
     );
 
-    rc = allocate_display_objects(m_firmware, device, display, m_objects);
+    rc = allocate_display_objects(m_firmware, gpu.device, display, m_objects);
     if (rc != OK) {
         return rc;
     }
@@ -1428,6 +1439,17 @@ int32_t display_engine::set_up(
         m_objects.display
     );
 
+    m_firmware.set_event_sink(this);
+    rc = subscribe_to_event(gpu.subdevice, rm::NOTIFIER_HOTPLUG, "hotplug", m_hotplug_event);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = subscribe_to_event(gpu.subdevice, rm::NOTIFIER_SHORT_PULSE, "short pulse", m_short_pulse_event);
+    if (rc != OK) {
+        return rc;
+    }
+
     bool has_crossbar = false;
     display_heads heads = {};
     display_outputs outputs = {};
@@ -1435,6 +1457,8 @@ int32_t display_engine::set_up(
     if (rc != OK) {
         return rc;
     }
+
+    string::memcpy(&m_outputs, &outputs, sizeof(m_outputs));
 
     bool fits_gfxfb = outputs.count <= gfxfb::GFXFB_OUTPUTS_MAX;
     m_output_count = fits_gfxfb ? outputs.count : static_cast<uint8_t>(gfxfb::GFXFB_OUTPUTS_MAX);
@@ -2629,6 +2653,8 @@ int32_t display_engine::take_down(
 }
 
 int32_t display_engine::release() {
+    m_firmware.set_event_sink(nullptr);
+
     // Nothing ends a present once the engine is released, so each queued one ends here, failed, and a timer callback
     // already running finds none
     RUN_ELEVATED({
@@ -2672,6 +2698,18 @@ int32_t display_engine::release() {
         m_core_channel = 0;
     }
 
+    int32_t events_rc = OK;
+    rm::handle* events[] = {&m_hotplug_event, &m_short_pulse_event};
+    for (rm::handle* event : events) {
+        if (*event == 0) {
+            continue;
+        }
+
+        int32_t rc = m_firmware.release(*event);
+        events_rc = events_rc != OK ? events_rc : rc;
+        *event = 0;
+    }
+
     int32_t objects_rc = OK;
     if (m_objects.display_common != 0) {
         objects_rc = release_display_objects(m_firmware, m_objects);
@@ -2690,7 +2728,188 @@ int32_t display_engine::release() {
         return core_channel_rc;
     }
 
+    if (events_rc != OK) {
+        return events_rc;
+    }
+
     return objects_rc;
+}
+
+int32_t display_engine::subscribe_to_event(
+    rm::handle subdevice,
+    uint32_t notifier,
+    const char* name,
+    rm::handle& event
+) {
+    rm::event_params params = {};
+    params.parent_client = m_firmware.client();
+    params.class_id = rm::CLASS_EVENT;
+    params.notify_index = notifier | rm::EVENT_POSTED_TO_DRIVER;
+
+    rm::handle object = m_firmware.new_handle();
+    int32_t rc = m_firmware.allocate(subdevice, object, rm::CLASS_EVENT, &params, sizeof(params));
+    if (rc == ERR_FIRMWARE) {
+        log::error("nvidia: the GSP's firmware refused the %s event's object, so that event stays off", name);
+        return OK;
+    }
+
+    if (rc != OK) {
+        return rc;
+    }
+
+    event = object;
+
+    rm::event_notification_params arming = {};
+    arming.notifier = notifier;
+    arming.action = rm::EVENT_NOTIFICATION_REPEAT;
+    rc = m_firmware.control(subdevice, rm::CONTROL_SET_EVENT_NOTIFICATION, &arming, sizeof(arming));
+    if (rc == ERR_FIRMWARE) {
+        log::error("nvidia: the GSP's firmware refused to arm the %s notifier, so that event stays off", name);
+        return OK;
+    }
+
+    return rc;
+}
+
+static uint32_t display_ids_of(const display_outputs& outputs) {
+    uint32_t display_ids = 0;
+    for (uint8_t output = 0; output < outputs.count; output++) {
+        display_ids |= outputs.outputs[output].display_id;
+    }
+
+    return display_ids;
+}
+
+// Whether `event` is for `object`, by the notifier when it stands for the notify list, never for an object of 0
+static bool is_event_for(const firmware_event& event, rm::handle object, uint32_t notifier) {
+    if (object == 0) {
+        return false;
+    }
+
+    return event.is_for_notify_list ? event.notifier == notifier : event.event == object;
+}
+
+bool display_engine::on_firmware_event(const firmware_event& event) {
+    if (event.client != m_firmware.client()) {
+        return false;
+    }
+
+    // A notify list's event names one of the event objects too, since NVIDIA finds the list through it
+    bool names_an_event_object = event.event == m_hotplug_event || event.event == m_short_pulse_event;
+    if (event.event == 0 || !names_an_event_object) {
+        return false;
+    }
+
+    event_record* record = nullptr;
+    if (is_event_for(event, m_hotplug_event, rm::NOTIFIER_HOTPLUG)) {
+        record = &m_hotplug_record;
+    } else if (is_event_for(event, m_short_pulse_event, rm::NOTIFIER_SHORT_PULSE)) {
+        record = &m_short_pulse_record;
+    }
+
+    if (record == nullptr) {
+        return false;
+    }
+
+    RUN_ELEVATED(m_operations.post_unless_queued(*record));
+
+    return true;
+}
+
+void display_engine::serve_hotplug_record(operation& op) {
+    static_cast<event_record&>(op).engine->serve_hotplug();
+}
+
+void display_engine::serve_short_pulse_record(operation&) {
+    log::info("nvidia: a DisplayPort short pulse event arrived, which is only logged");
+}
+
+void display_engine::serve_hotplug() {
+    bool is_released = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        is_released = m_is_released;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (is_released) {
+        log::info("nvidia: a hotplug event arrived once the display was released, so nothing is read");
+        return;
+    }
+
+    if (m_is_display_failed.load_acquire()) {
+        log::info("nvidia: a hotplug event arrived once the display failed, so nothing is read");
+        return;
+    }
+
+    if (m_failed.is_set()) {
+        log::info("nvidia: a hotplug event arrived once the GPU failed, so nothing is read");
+        return;
+    }
+
+    rm::hotplug_state_params state = {};
+    int32_t rc = m_firmware.control(m_objects.display_common, rm::CONTROL_GET_HOTPLUG_STATE, &state, sizeof(state));
+    if (rc != OK) {
+        log::error("nvidia: reading the hotplug state after a hotplug event failed: %d", rc);
+        return;
+    }
+
+    log::info(
+        "nvidia: the GSP's firmware reports display ids 0x%X plugged in and 0x%X unplugged",
+        state.plugged_ids,
+        state.unplugged_ids
+    );
+    if (state.plugged_ids != 0 || state.unplugged_ids != 0) {
+        update_connected_records(state.plugged_ids, state.unplugged_ids);
+        return;
+    }
+
+    // Both masks read 0 when an earlier read took the hotplug or the firmware posted the event without recording one,
+    // so the connect state tells it
+    uint32_t connected_ids = 0;
+    rc = read_connected_ids(m_firmware, m_objects.display_common, display_ids_of(m_outputs), connected_ids);
+    if (rc != OK) {
+        log::error("nvidia: reading the connect state after a hotplug event failed: %d", rc);
+        return;
+    }
+
+    uint32_t recorded_ids = 0;
+    for (uint8_t output = 0; output < m_outputs.count; output++) {
+        const display_output& entry = m_outputs.outputs[output];
+        recorded_ids |= entry.is_connected ? entry.display_id : 0;
+    }
+
+    log::info("nvidia: the connect state reports display ids 0x%X connected", connected_ids);
+    update_connected_records(connected_ids & ~recorded_ids, recorded_ids & ~connected_ids);
+}
+
+void display_engine::update_connected_records(uint32_t plugged_ids, uint32_t unplugged_ids) {
+    uint32_t output_ids = display_ids_of(m_outputs);
+    uint32_t stray_ids = (plugged_ids | unplugged_ids) & ~output_ids;
+    if (stray_ids != 0) {
+        log::info("nvidia: hotplugged display ids 0x%X name no output, so they are left", stray_ids);
+    }
+
+    uint32_t doubled_ids = plugged_ids & unplugged_ids & output_ids;
+    if (doubled_ids != 0) {
+        log::info("nvidia: display ids 0x%X are both plugged in and unplugged, so taken as plugged in", doubled_ids);
+    }
+
+    for (uint8_t output = 0; output < m_outputs.count; output++) {
+        display_output& entry = m_outputs.outputs[output];
+        if ((unplugged_ids & ~plugged_ids & entry.display_id) != 0) {
+            entry.is_connected = false;
+            log::info("nvidia: output %u, display id 0x%X, is unplugged", output, entry.display_id);
+        }
+    }
+
+    for (uint8_t output = 0; output < m_outputs.count; output++) {
+        display_output& entry = m_outputs.outputs[output];
+        if ((plugged_ids & entry.display_id) != 0) {
+            entry.is_connected = true;
+            log::info("nvidia: output %u, display id 0x%X, is plugged in", output, entry.display_id);
+        }
+    }
 }
 
 void display_engine::turn_on_flips() {

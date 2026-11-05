@@ -54,6 +54,47 @@ static_assert(sizeof(client_params) == 108, "NVIDIA's layout of a client's alloc
 static_assert(sizeof(device_params) == 56, "NVIDIA's layout of a device's allocation parameters");
 static_assert(sizeof(subdevice_params) == 4, "NVIDIA's layout of a subdevice's allocation parameters");
 
+// NVIDIA's NV01_EVENT_KERNEL_CALLBACK_EX, the class of an event object, which fires with one of its parent's notifiers
+// (the parent's numbered kinds of event)
+constexpr uint32_t CLASS_EVENT = 0x7E;
+
+// NVIDIA's NV01_EVENT_CLIENT_RM, the flag in an event object's notify index asking the firmware to post each of its
+// events back to the driver as a message
+constexpr uint32_t EVENT_POSTED_TO_DRIVER = 0x04000000;
+
+// NVIDIA's NV2080_NOTIFIERS_HOTPLUG and NV2080_NOTIFIERS_DP_IRQ, a subdevice's notifiers for a monitor plugged in or
+// unplugged and for a DisplayPort short pulse (a monitor's brief signal asking for its DPCD to be read)
+constexpr uint32_t NOTIFIER_HOTPLUG     = 1;
+constexpr uint32_t NOTIFIER_SHORT_PULSE = 7;
+
+// NVIDIA's NV0005_ALLOC_PARAMETERS, the parameters of an event object's allocation under the object whose notifier
+// fires it
+struct event_params {
+    handle   parent_client; // NVIDIA's hParentClient, the client of the object whose notifier fires the event
+    handle   source;        // NVIDIA's hSrcResource, replaced with the event object's parent as NVIDIA allocates it
+    uint32_t class_id;      // NVIDIA's hClass, the event object's class again
+    uint32_t notify_index;  // the notifier in bits 15 to 0, with flags such as `EVENT_POSTED_TO_DRIVER`
+    uint64_t data;          // NVIDIA's data, a kernel callback event's callback, 0 for an event posted to the driver
+};
+
+// NVIDIA's NV2080_CTRL_CMD_EVENT_SET_NOTIFICATION, the control to a subdevice that arms one of its notifiers
+constexpr uint32_t CONTROL_SET_EVENT_NOTIFICATION = 0x20800301;
+
+// NVIDIA's NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_REPEAT, arming a notifier to fire at every event
+constexpr uint32_t EVENT_NOTIFICATION_REPEAT = 2;
+
+// The parameters of `CONTROL_SET_EVENT_NOTIFICATION`, with the fields after `action` left 0
+struct event_notification_params {
+    uint32_t notifier; // NVIDIA's event
+    uint32_t action;
+    uint8_t  notify_state;
+    uint32_t info32;
+    uint16_t info16;
+};
+
+static_assert(sizeof(event_params) == 24, "NVIDIA's layout of an event object's allocation parameters");
+static_assert(sizeof(event_notification_params) == 20, "NVIDIA's layout of SET_NOTIFICATION's parameters");
+
 // NVIDIA's NV2080_CTRL_CMD_INTERNAL_INTR_GET_KERNEL_TABLE, the control that gives the kernel interrupt table (for each
 // GPU unit whose interrupts NVIDIA's driver services, the vectors on which they arrive)
 constexpr uint32_t CONTROL_GET_KERNEL_INTERRUPT_TABLE = 0x20800A5C;
@@ -262,9 +303,22 @@ struct display_kind_params {
 // NVIDIA's NV0073_CTRL_SPECIFIC_DISPLAY_TYPE_DFP, the kind of a digital display id
 constexpr uint32_t DISPLAY_KIND_DIGITAL = 2;
 
+// NVIDIA's NV0073_CTRL_CMD_SYSTEM_GET_HOTPLUG_UNPLUG_STATE, the control to display common that gives the display ids
+// plugged in and unplugged since its last reply
+constexpr uint32_t CONTROL_GET_HOTPLUG_STATE = 0x73017B;
+
+// The parameters of `CONTROL_GET_HOTPLUG_STATE`, which the reply fills
+struct hotplug_state_params {
+    uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
+    uint32_t flags;           // NVIDIA's flags, the lid state in bit 0, sent 0
+    uint32_t plugged_ids;     // NVIDIA's hotPlugMask
+    uint32_t unplugged_ids;   // NVIDIA's hotUnplugMask
+};
+
 static_assert(sizeof(supported_displays_params) == 12, "NVIDIA's layout of GET_SUPPORTED's parameters");
 static_assert(sizeof(connected_displays_params) == 16, "NVIDIA's layout of GET_CONNECT_STATE's parameters");
 static_assert(sizeof(display_kind_params) == 12, "NVIDIA's layout of GET_TYPE's parameters");
+static_assert(sizeof(hotplug_state_params) == 16, "NVIDIA's layout of GET_HOTPLUG_UNPLUG_STATE's parameters");
 
 // NVIDIA's NV0073_CTRL_CMD_SPECIFIC_OR_GET_INFO, the control to display common that gives facts about a display id's
 // output resource (the display engine's unit driving it) and whether the firmware allocates the display id dynamically

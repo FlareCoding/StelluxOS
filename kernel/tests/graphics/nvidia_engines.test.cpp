@@ -181,6 +181,8 @@ public:
         return OK;
     }
 
+    void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
+
 private:
     void write_table(uint8_t* bytes) const {
         for (uint32_t i = 0; i < engine_count; i++) {
