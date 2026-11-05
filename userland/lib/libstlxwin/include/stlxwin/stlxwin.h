@@ -7,11 +7,20 @@
  * An application connects to the display manager, creates windows,
  * paints frames into buffers, commits them with damage, and receives
  * events. Drawing is not provided here. A committed buffer is plain
- * pixels an app fills itself or through libstlxgfx.
+ * pixels an app fills itself or through libstlxgfx, or a GPU buffer
+ * the display manager reads only once its acquire point is reached
+ * and gives back by raising its release timeline.
  *
- * Everything an application waits on is the one connection fd, so the
- * whole library integrates into a poll loop alongside ptys, sockets,
- * and timers. The library never creates threads and never calls back.
+ * Everything an application waits on, except a GPU buffer's release,
+ * is the one connection fd, so the whole library integrates into a
+ * poll loop alongside ptys, sockets, and timers. The library never
+ * creates threads and never calls back.
+ *
+ * The GPU calls and stlxwin_window_configured may run on any thread,
+ * and a window or connection must outlive every such call on it.
+ * Every other call stays on the thread that dispatches, and events go
+ * only to it. A call that sends may wait up to 100 ms on a full
+ * socket, and others may wait behind it.
  */
 
 #include <stddef.h>
@@ -84,6 +93,7 @@ typedef enum {
     STLXWIN_EVT_DISCONNECTED,    /* the display manager is gone */
     STLXWIN_EVT_MODES,           /* a watched output's modes arrived, read them with stlxwin_modes_get */
     STLXWIN_EVT_MODE_RESULT,     /* the display manager's answer to a mode request or keep */
+    STLXWIN_EVT_GPU_INFO,        /* which GPU buffers the display manager takes changed, see stlxwin_gpu_info_get */
 } stlxwin_event_type;
 
 #define STLXWIN_MODES_MAX   32u  /* the most modes an output lists */
@@ -124,12 +134,42 @@ typedef struct {
     stlxwin_mode current; /* zero while the output is dark */
 } stlxwin_modes_info;
 
+enum {
+    STLXWIN_GPU_ACCEPTS   = 1u << 0,  /* the display manager takes buffers from /dev/gpuN, N being the device field */
+    STLXWIN_GPU_CPU_READS = 1u << 1,  /* buffers must be mappable, and system memory reads fastest */
+};
+
+/* Which GPU buffers the display manager takes */
+typedef struct {
+    uint32_t flags;   /* STLXWIN_GPU_* */
+    uint32_t device;  /* N of /dev/gpuN, 0 without STLXWIN_GPU_ACCEPTS */
+} stlxwin_gpu_info;
+
+#define STLXWIN_GPU_BUFFERS_MAX   16u     /* GPU buffers a connection holds, a detached one until released */
+#define STLXWIN_GPU_DIMENSION_MAX 16384u  /* largest width or height of a GPU buffer's picture */
+
+enum {
+    STLXWIN_FMT_XRGB8888 = 1,  /* 32-bit pixels, the top byte unused */
+};
+
+/* A GPU buffer's picture and the handles the display manager uses to
+ * show it. The caller keeps its handles, the library passes copies. */
+typedef struct {
+    int      buffer;         /* buffer handle, GPU_RIGHT_READ at least */
+    int      acquire;        /* timeline handle the client's rendering signals, GPU_RIGHT_READ at least */
+    int      release;        /* timeline handle the display manager signals, GPU_RIGHT_READ and GPU_RIGHT_WRITE */
+    uint32_t width, height;  /* the picture's pixels, each 1 to STLXWIN_GPU_DIMENSION_MAX */
+    uint32_t pitch;          /* bytes from row to row, a multiple of 4, at least width * 4, times height under 4 GiB */
+    uint32_t format;         /* STLXWIN_FMT_XRGB8888 */
+    uint64_t offset;         /* bytes from the buffer's start to the picture, a multiple of 4 */
+} stlxwin_gpu_buffer_desc;
+
 /* Key events carry the raw HID usage and the translated UTF-32
  * codepoint (0 when the key produces no character). Coordinates are
  * window content local. */
 typedef struct {
     stlxwin_event_type type;
-    stlxwin_window*    window;   /* NULL for DISCONNECTED, MODES and MODE_RESULT */
+    stlxwin_window*    window;   /* NULL for DISCONNECTED, MODES, MODE_RESULT and GPU_INFO */
     union {
         struct { uint16_t usage; uint8_t modifiers; uint32_t ch; } key;
         struct { int32_t x, y; } motion;
@@ -167,7 +207,9 @@ enum {
 stlxwin_conn* stlxwin_connect(const char* app_id);
 
 /**
- * @brief Destroy every window on the connection and disconnect.
+ * @brief Destroy every window on the connection and disconnect, first
+ * raising each GPU buffer's release timeline to its last committed
+ * point.
  */
 void stlxwin_disconnect(stlxwin_conn* conn);
 
@@ -184,15 +226,26 @@ int stlxwin_conn_fd(const stlxwin_conn* conn);
 void stlxwin_screen_size(const stlxwin_conn* conn, uint32_t* w, uint32_t* h);
 
 /**
- * @brief Drain protocol messages into the event queue. Never blocks.
- * @return Number of events queued, or -1 if the connection died.
+ * @brief Which GPU buffers the display manager takes, as the connect
+ * handshake read it or the newest STLXWIN_EVT_GPU_INFO changed it.
+ * Flags are 0 from a display manager that sends no GPU_INFO.
+ */
+stlxwin_gpu_info stlxwin_gpu_info_get(stlxwin_conn* conn);
+
+/**
+ * @brief Drain protocol messages into the event queue, never waiting
+ * on the socket. Whichever call found the connection dead, the next
+ * dispatch queues STLXWIN_EVT_DISCONNECTED once.
+ * @return Number of events queued, or -1 on any call after the one
+ * that queued the disconnect.
  */
 int stlxwin_dispatch(stlxwin_conn* conn);
 
 /**
  * @brief Block until an event is queued or the timeout expires.
  * @param timeout_ns Nanoseconds, negative waits forever, 0 polls.
- * @return 1 with events queued, 0 on timeout, -1 if the connection died.
+ * @return 1 with events queued, 0 on timeout, -1 once the connection
+ * is dead and no event is left.
  */
 int stlxwin_wait(stlxwin_conn* conn, int64_t timeout_ns);
 
@@ -222,7 +275,8 @@ stlxwin_window* stlxwin_popup_create(stlxwin_window* parent,
                                      uint32_t flags);
 
 /**
- * @brief Destroy a window and, for a parent, its popups.
+ * @brief Destroy a window and, for a parent, its popups, raising each
+ * of their GPU buffers' release timelines to its last committed point.
  */
 void stlxwin_window_destroy(stlxwin_window* win);
 
@@ -239,6 +293,14 @@ void stlxwin_window_get_size(const stlxwin_window* win,
                              uint32_t* w, uint32_t* h);
 
 /**
+ * @brief The size and serial of the newest configure, or the created
+ * size and serial 0 before any, for a renderer on another thread.
+ * Each of width, height and serial may be NULL.
+ */
+void stlxwin_window_configured(stlxwin_window* win, uint32_t* width,
+                               uint32_t* height, uint32_t* serial);
+
+/**
  * @brief Acquire a buffer for the next frame, sized to the current
  * configure. Blocks dispatching until one is free, which paces a
  * render loop to the display manager. Events arriving meanwhile are
@@ -248,7 +310,7 @@ void stlxwin_window_get_size(const stlxwin_window* win,
 stlxwin_buffer* stlxwin_begin_frame(stlxwin_window* win);
 
 /**
- * @brief Non-blocking begin_frame.
+ * @brief begin_frame that never waits for a free buffer.
  * @return Buffer, or NULL if none is currently free.
  */
 stlxwin_buffer* stlxwin_try_begin_frame(stlxwin_window* win);
@@ -262,6 +324,52 @@ stlxwin_buffer* stlxwin_try_begin_frame(stlxwin_window* win);
 int stlxwin_commit(stlxwin_window* win, stlxwin_buffer* buf,
                    const stlxwin_rect* damage, uint32_t n_damage,
                    uint32_t flags);
+
+/**
+ * @brief Attach a GPU buffer to a window. The display manager gets
+ * copies of the handles with only the rights it needs, and disconnects
+ * for a picture past the buffer's end.
+ * @return The buffer's id, or 0 when the display manager takes no GPU
+ * buffers, a field breaks its rule, the connection holds
+ * STLXWIN_GPU_BUFFERS_MAX, /dev/gpuN does not open, a handle cannot be
+ * narrowed to the rights its field names, or the connection is dead.
+ */
+uint32_t stlxwin_gpu_attach(stlxwin_window* win,
+                            const stlxwin_gpu_buffer_desc* desc);
+
+/**
+ * @brief Commit a GPU buffer's picture, acking the newest configure of
+ * its size, else the window's last ack. The display manager shows the
+ * picture only once the acquire timeline reaches acquire_point, raises
+ * the release timeline to latch_point, when not 0, once the picture is
+ * no longer pending, and to release_point once it no longer reads the
+ * buffer, which must not be committed again before then.
+ * @return 0, or -1 for an unknown or detached buffer, a dead
+ * connection, or points that do not rise from the last release point
+ * through latch_point, when not 0, to release_point.
+ */
+int stlxwin_gpu_commit(stlxwin_window* win, uint32_t buf_id,
+                       uint64_t acquire_point, uint64_t latch_point,
+                       uint64_t release_point, const stlxwin_rect* damage,
+                       uint32_t n_damage, uint32_t flags);
+
+/**
+ * @brief Detach a GPU buffer. The display manager may show it until
+ * its last release point is reached, and it counts toward
+ * STLXWIN_GPU_BUFFERS_MAX until then.
+ * @return 0, or -1 for an unknown or detached buffer or a dead
+ * connection.
+ */
+int stlxwin_gpu_detach(stlxwin_window* win, uint32_t buf_id);
+
+/**
+ * @brief Find, without reading the socket, a display manager that is
+ * gone. The library reaches every release point it holds once a call
+ * finds the connection dead, so a renderer waiting on one must wait in
+ * slices of at most 100 ms and call this between them.
+ * @return 0, or -1 once the connection is dead.
+ */
+int stlxwin_gpu_check(stlxwin_conn* conn);
 
 /**
  * @brief Replace the clipboard with UTF-8 text.

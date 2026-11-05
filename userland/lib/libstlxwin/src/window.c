@@ -49,6 +49,40 @@ static stlxwin_window* window_new(stlxwin_conn* conn, uint32_t parent_id,
     return win;
 }
 
+void stlxwin_window_keep_configure_locked(struct stlxwin_window* win,
+                                          const swp_configure* conf) {
+    win->conf_w = conf->width;
+    win->conf_h = conf->height;
+    win->conf_serial = conf->serial;
+
+    if (win->unacked_conf_count == STLXWIN_UNACKED_CONFS_MAX) {
+        memmove(&win->unacked_confs[0], &win->unacked_confs[1],
+                (STLXWIN_UNACKED_CONFS_MAX - 1) * sizeof(win->unacked_confs[0]));
+        win->unacked_conf_count--;
+    }
+
+    stlxwin_unacked_conf* kept = &win->unacked_confs[win->unacked_conf_count++];
+    kept->serial = conf->serial;
+    kept->width = conf->width;
+    kept->height = conf->height;
+}
+
+void stlxwin_window_record_ack_locked(struct stlxwin_window* win,
+                                      uint32_t serial) {
+    if (serial > win->acked_serial) {
+        win->acked_serial = serial;
+    }
+
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < win->unacked_conf_count; i++) {
+        if (win->unacked_confs[i].serial > win->acked_serial) {
+            win->unacked_confs[kept++] = win->unacked_confs[i];
+        }
+    }
+
+    win->unacked_conf_count = kept;
+}
+
 stlxwin_window* stlxwin_window_create(stlxwin_conn* conn,
                                       uint32_t width, uint32_t height,
                                       const char* title, uint32_t flags) {
@@ -105,8 +139,13 @@ void stlxwin_window_destroy(stlxwin_window* win) {
         w = next;
     }
 
+    /* The release points are reached only once the destroy is sent, so a
+     * picture drawn too early tears only a window that is going away */
     swp_destroy_window msg = { win->win_id };
-    stlxwin_send(conn, SWP_MSG_DESTROY_WINDOW, &msg, sizeof(msg));
+    pthread_mutex_lock(&conn->lock);
+    stlxwin_send_locked(conn, SWP_MSG_DESTROY_WINDOW, &msg, sizeof(msg));
+    stlxwin_gpu_release_records_locked(conn, win);
+    pthread_mutex_unlock(&conn->lock);
 
     stlxwin_window** link = &conn->windows;
     while (*link && *link != win) {
@@ -169,5 +208,31 @@ void stlxwin_window_get_size(const stlxwin_window* win,
     }
     if (h) {
         *h = win ? win->conf_h : 0;
+    }
+}
+
+void stlxwin_window_configured(stlxwin_window* win, uint32_t* width,
+                               uint32_t* height, uint32_t* serial) {
+    uint32_t conf_w = 0;
+    uint32_t conf_h = 0;
+    uint32_t conf_serial = 0;
+    if (win) {
+        pthread_mutex_lock(&win->conn->lock);
+        conf_w = win->conf_w;
+        conf_h = win->conf_h;
+        conf_serial = win->conf_serial;
+        pthread_mutex_unlock(&win->conn->lock);
+    }
+
+    if (width) {
+        *width = conf_w;
+    }
+
+    if (height) {
+        *height = conf_h;
+    }
+
+    if (serial) {
+        *serial = conf_serial;
     }
 }

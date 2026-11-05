@@ -37,7 +37,7 @@ long stlxwin_clipboard_get(stlxwin_conn* conn, char** out_text) {
         struct pollfd pfd = { conn->fd, POLLIN, 0 };
         int rc = poll(&pfd, 1, -1);
         if (rc < 0 && errno != EINTR) {
-            conn->dead = 1;
+            stlxwin_mark_dead(conn);
             break;
         }
 

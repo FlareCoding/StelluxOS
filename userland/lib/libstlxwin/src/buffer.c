@@ -66,7 +66,10 @@ static int slot_create(struct stlxwin_window* win, stlxwin_buf_slot* slot) {
         return -1;
     }
 
+    pthread_mutex_lock(&win->conn->lock);
     slot->buf_id = win->next_buf_id++;
+    pthread_mutex_unlock(&win->conn->lock);
+
     slot->width = win->conf_w;
     slot->height = win->conf_h;
     slot->size = size;
@@ -196,10 +199,27 @@ stlxwin_buffer* stlxwin_begin_frame(stlxwin_window* win) {
         struct pollfd pfd = { win->conn->fd, POLLIN, 0 };
         int rc = poll(&pfd, 1, -1);
         if (rc < 0 && errno != EINTR) {
-            win->conn->dead = 1;
+            stlxwin_mark_dead(win->conn);
             return NULL;
         }
     }
+}
+
+/* More rects than the wire carries means the whole buffer */
+uint32_t stlxwin_wire_damage(swp_rect* wire, const stlxwin_rect* damage,
+                             uint32_t n_damage) {
+    if (!damage || n_damage == 0 || n_damage > SWP_COMMIT_MAX_RECTS) {
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < n_damage; i++) {
+        wire[i].x = damage[i].x;
+        wire[i].y = damage[i].y;
+        wire[i].w = damage[i].w;
+        wire[i].h = damage[i].h;
+    }
+
+    return n_damage;
 }
 
 int stlxwin_commit(stlxwin_window* win, stlxwin_buffer* buf,
@@ -225,26 +245,21 @@ int stlxwin_commit(stlxwin_window* win, stlxwin_buffer* buf,
     msg.win_id = win->win_id;
     msg.buf_id = slot->buf_id;
     msg.ack_serial = win->conf_serial;
-
-    /* More rects than the wire carries means the whole buffer */
-    if (damage && n_damage > 0 && n_damage <= SWP_COMMIT_MAX_RECTS) {
-        msg.n_damage = n_damage;
-        for (uint32_t i = 0; i < n_damage; i++) {
-            msg.damage[i].x = damage[i].x;
-            msg.damage[i].y = damage[i].y;
-            msg.damage[i].w = damage[i].w;
-            msg.damage[i].h = damage[i].h;
-        }
-    }
+    msg.n_damage = stlxwin_wire_damage(msg.damage, damage, n_damage);
 
     slot->owned = 0;
+
+    pthread_mutex_lock(&win->conn->lock);
     if (flags & STLXWIN_COMMIT_WANT_FRAME) {
         win->want_frame = 1;
     }
 
-    if (stlxwin_send(win->conn, SWP_MSG_COMMIT, &msg, sizeof(msg)) != 0) {
-        return -1;
+    int rc = stlxwin_send_locked(win->conn, SWP_MSG_COMMIT, &msg, sizeof(msg));
+    if (rc == 0) {
+        stlxwin_window_record_ack_locked(win, msg.ack_serial);
     }
 
-    return 0;
+    pthread_mutex_unlock(&win->conn->lock);
+
+    return rc;
 }
