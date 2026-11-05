@@ -1,0 +1,84 @@
+Adds the nouveau-stellux option, which defines NVK_STELLUX for NVK's sources
+and builds no shared library and no ICD manifest, since Stellux links NVK into
+each program and loads no driver at run time.
+
+--- a/meson.build
++++ b/meson.build
+@@ -312,6 +312,7 @@ with_imagination_vk = _vulkan_drivers.contains('imagination')
+ with_imagination_srv = get_option('imagination-srv')
+ with_microsoft_vk = _vulkan_drivers.contains('microsoft-experimental')
+ with_nouveau_vk = _vulkan_drivers.contains('nouveau')
++with_nouveau_stellux = with_nouveau_vk and get_option('nouveau-stellux')
+ with_asahi_vk = _vulkan_drivers.contains('asahi')
+ with_gfxstream_vk = _vulkan_drivers.contains('gfxstream')
+ with_kosmickrisp_vk = _vulkan_drivers.contains('kosmickrisp')
+--- a/meson.options
++++ b/meson.options
+@@ -789,6 +789,15 @@ option(
+                 'Can be extracted with readelf -x .note.gnu.build-id'
+ )
+ 
++option(
++  'nouveau-stellux',
++  type : 'boolean',
++  value : false,
++  description : 'Build NVK for Stellux, which links it into each program ' +
++                'from a static library, with no shared library or ICD ' +
++                'manifest.'
++)
++
+ option(
+   'min-windows-version',
+   type : 'integer',
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -158,6 +158,10 @@ if nvk_build_id != ''
+   nvk_flags += '-DNVK_BUILD_ID_OVERRIDE="' + nvk_build_id + '"'
+ endif
+ 
++if with_nouveau_stellux
++  nvk_flags += '-DNVK_STELLUX'
++endif
++
+ if with_platform_android
+   nvk_files += files('nvk_android.c')
+ endif
+@@ -181,12 +185,15 @@ libnvk = static_library(
+   gnu_symbol_visibility : 'hidden',
+ )
+ 
++# Stellux's recipe reads this target's link line from build.ninja and links
++# its inputs into its own library
+ libvulkan_nouveau = shared_library(
+   'vulkan_nouveau',
+   link_whole : [libnvk],
+   link_args: [ld_args_build_id, ld_args_bsymbolic, ld_args_gc_sections],
+   gnu_symbol_visibility : 'hidden',
+-  install : true,
++  build_by_default : not with_nouveau_stellux,
++  install : not with_nouveau_stellux,
+ )
+ 
+ icd_file_name = libname_prefix + 'vulkan_nouveau.' + libname_suffix
+@@ -203,10 +210,10 @@ nouveau_icd = custom_target(
+     '--icd-filename', icd_file_name,
+     '--out', '@OUTPUT@',
+   ],
+-  build_by_default : true,
++  build_by_default : not with_nouveau_stellux,
+   install_dir : with_vulkan_icd_dir,
+   install_tag : 'runtime',
+-  install : true,
++  install : not with_nouveau_stellux,
+ )
+ 
+ _dev_icdname = 'nouveau_devenv_icd.@0@.json'.format(host_machine.cpu())
+@@ -222,7 +229,7 @@ _dev_icd = custom_target(
+     '--icd-filename', icd_file_name,
+     '--out', '@OUTPUT@',
+   ],
+-  build_by_default : true,
++  build_by_default : not with_nouveau_stellux,
+ )
+ 
+ devenv.append('VK_DRIVER_FILES', _dev_icd.full_path())
