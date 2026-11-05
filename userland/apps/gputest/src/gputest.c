@@ -38,6 +38,7 @@
 #define WAIT_NS         (100 * NS_PER_MS)
 #define WAITED_COPIES   1000000u
 #define HOLD_US         (20 * 1000)
+#define LOST_WAIT_NS    (GPU_SUBMIT_TIMEOUT_NS + 2 * NS_PER_SEC)
 
 // The copy part's buffers in its context: each queue's command words in a page of the first, with the word a
 // semaphore acquire reads in the page after them, then the memory they fill and copy
@@ -63,11 +64,15 @@
 // ENABLED, which lets other channels run meanwhile
 #define SEMAPHORE_ACQUIRE (0x1u | (1u << 12))
 
-// NVIDIA's MEM_OP_D operations in bits 31:27. MEMBAR takes MEM_OP_C's SYS_MEMBAR type, 0
+// NVIDIA's MEM_OP_D operations in bits 31:27, the privileged TLB invalidate among them, and MEM_OP_C's
+// TLB_INVALIDATE_PDB ALL. MEMBAR takes MEM_OP_C's SYS_MEMBAR type, 0
 #define MEM_OP_MEMBAR               (0x05u << 27)
+#define MEM_OP_TLB_INVALIDATE       (0x09u << 27)
 #define MEM_OP_L2_SYSMEM_INVALIDATE (0x0Eu << 27)
+#define TLB_INVALIDATE_ALL_PDBS     0x1u
 
 // NVIDIA's NVC7B5 copy methods
+#define SET_SRC_PHYS_MODE    0x0260u
 #define LAUNCH_DMA           0x0300u
 #define OFFSET_IN_UPPER      0x0400u
 #define OFFSET_OUT_UPPER     0x0408u
@@ -82,6 +87,11 @@
 // addresses. FLUSH_ENABLE stays clear, since the release ending each submission waits for idle and makes writes visible
 #define LAUNCH_COPY (0x2u | (1u << 7) | (1u << 8) | (1u << 26))
 #define LAUNCH_FILL (LAUNCH_COPY | (1u << 10)) // and REMAP_ENABLE, writing the remap's constant for each source word
+
+// NVIDIA's SET_SRC_PHYS_MODE TARGET LOCAL_FB, a source in video memory, and LAUNCH_DMA's SRC_TYPE PHYSICAL, which
+// reads the source there by its physical address
+#define PHYS_MODE_VIDEO_MEMORY 0x0u
+#define LAUNCH_FROM_PHYSICAL   (LAUNCH_COPY | (1u << 12))
 
 // Method words for the copy engine, which a submission copies to its queue's command words
 struct command_list {
@@ -508,12 +518,12 @@ static struct command_list fill_commands(uint32_t copy_class, uint64_t va, uint3
     return list;
 }
 
-// Runs MEM_OP_D's `operation` with MEM_OP_A to MEM_OP_C left 0
-static void push_memory_operation(struct command_list* list, uint32_t operation) {
+// Runs MEM_OP_D's `operation` with MEM_OP_C's `fields`, MEM_OP_A and MEM_OP_B left 0
+static void push_memory_operation(struct command_list* list, uint32_t fields, uint32_t operation) {
     list->words[list->count++] = method_header(MEM_OP_A, 4);
     list->words[list->count++] = 0;
     list->words[list->count++] = 0;
-    list->words[list->count++] = 0;
+    list->words[list->count++] = fields;
     list->words[list->count++] = operation;
 }
 
@@ -535,6 +545,24 @@ static struct command_list copy_commands(uint32_t copy_class, uint64_t from, uin
 
     push_method(&list, LINE_LENGTH_IN, bytes);
     push_method(&list, LAUNCH_DMA, LAUNCH_COPY);
+
+    return list;
+}
+
+// Has the copy engine copy the page at physical address 0 of video memory to `to` and to `other`. When the two hold
+// different words, a copy that ran changes one of them, whatever that page holds
+static struct command_list physical_copy_commands(uint32_t copy_class, uint64_t to, uint64_t other) {
+    struct command_list list = {0};
+    push_method(&list, SET_OBJECT, copy_class);
+    push_method(&list, SET_SRC_PHYS_MODE, PHYS_MODE_VIDEO_MEMORY);
+    push_address(&list, OFFSET_IN_UPPER, 0);
+    push_method(&list, LINE_LENGTH_IN, (uint32_t)PAGE_BYTES);
+
+    push_address(&list, OFFSET_OUT_UPPER, to);
+    push_method(&list, LAUNCH_DMA, LAUNCH_FROM_PHYSICAL);
+
+    push_address(&list, OFFSET_OUT_UPPER, other);
+    push_method(&list, LAUNCH_DMA, LAUNCH_FROM_PHYSICAL);
 
     return list;
 }
@@ -646,15 +674,15 @@ static int submit(
     return error;
 }
 
-// Waits for the last submission on `q` to end. Returns 0, or the wait's errno, ETIMEDOUT once WAIT_NS passed
-static int wait_for(struct copy_session* s, const struct copy_queue* q) {
+// Waits for the last submission on `q` to end. Returns 0, or the wait's errno, ETIMEDOUT once `timeout_ns` passed
+static int wait_for(struct copy_session* s, const struct copy_queue* q, uint64_t timeout_ns) {
     struct gpu_point point = {0};
     point.timeline = q->timeline;
     point.value = q->point;
 
     struct gpu_wait_args args = {0};
     args.points = (uint64_t)(uintptr_t)&point;
-    args.deadline_ns = monotonic_ns() + WAIT_NS;
+    args.deadline_ns = monotonic_ns() + timeout_ns;
     args.count = 1;
 
     return gpu_call(s->fd, GPU_TIMELINE_WAIT, &args);
@@ -662,7 +690,39 @@ static int wait_for(struct copy_session* s, const struct copy_queue* q) {
 
 static int run(struct copy_session* s, struct copy_queue* q, const struct command_list* list) {
     int error = submit(s, q, list, NULL);
-    return error != 0 ? error : wait_for(s, q);
+    return error != 0 ? error : wait_for(s, q, WAIT_NS);
+}
+
+// Whether `q`'s timeline reached its last point with GPU_TIMELINE_FAILED, false when the query fails
+static bool ended_failed(struct copy_session* s, const struct copy_queue* q) {
+    struct gpu_timeline_args query = {0};
+    query.timeline = q->timeline;
+    if (gpu_call(s->fd, GPU_TIMELINE_QUERY, &query) != 0) {
+        return false;
+    }
+
+    return query.value >= q->point && (query.flags & GPU_TIMELINE_FAILED) != 0;
+}
+
+// Returns the context's GPU_LOST_* reason, 0 while it is live, or UINT32_MAX when the query fails
+static uint32_t lost_reason(struct copy_session* s) {
+    struct gpu_context_args query = {0};
+    query.context = s->context;
+    return gpu_call(s->fd, GPU_CONTEXT_QUERY, &query) == 0 ? query.lost : UINT32_MAX;
+}
+
+// Whether `q`'s last submission, when `submitted`, stalls past WAIT_NS and then ends failed once its deadline loses the
+// context as GPU_LOST_HUNG, printing `what` with the context's GPU_LOST_* reason and the time waited
+static bool stalls_until_lost(struct copy_session* s, const struct copy_queue* q, bool submitted, const char* what) {
+    uint64_t start_ns = monotonic_ns();
+    bool stalled = submitted && wait_for(s, q, WAIT_NS) == ETIMEDOUT;
+    bool ended = stalled && wait_for(s, q, LOST_WAIT_NS) == 0;
+    uint64_t elapsed_ms = (monotonic_ns() - start_ns) / NS_PER_MS;
+
+    uint32_t lost = lost_reason(s);
+    printf("gputest: %s's context reads lost %u after %llu ms\n", what, lost, (unsigned long long)elapsed_ms);
+
+    return ended && ended_failed(s, q) && lost == GPU_LOST_HUNG;
 }
 
 static void test_fills(struct copy_session* s) {
@@ -725,7 +785,7 @@ static void test_held_copy(struct copy_session* s) {
     struct command_list copy = copy_commands(s->copy_class, VIDEO_VA, SYSTEM_VA, BUFFER_BYTES);
     struct command_list refill = fill_commands(s->copy_class, VIDEO_VA, ~FILL_WORD);
     bool submitted = submit(s, copier, &copy, &filled) == 0 && submit(s, filler, &refill, NULL) == 0;
-    bool copied = submitted && wait_for(s, copier) == 0 && reads_as(s->system_words, ~FILL_WORD);
+    bool copied = submitted && wait_for(s, copier, WAIT_NS) == 0 && reads_as(s->system_words, ~FILL_WORD);
     check("a copy held for another queue's fill runs after it and copies what the fill wrote", copied);
 }
 
@@ -763,8 +823,8 @@ static void test_host_methods(struct copy_session* s) {
     struct copy_queue* q = &s->queues[0];
     struct command_list list = {0};
     push_method(&list, SET_REFERENCE, 1);
-    push_memory_operation(&list, MEM_OP_L2_SYSMEM_INVALIDATE);
-    push_memory_operation(&list, MEM_OP_MEMBAR);
+    push_memory_operation(&list, 0, MEM_OP_L2_SYSMEM_INVALIDATE);
+    push_memory_operation(&list, 0, MEM_OP_MEMBAR);
     push_fill(&list, s->copy_class, SYSTEM_VA, FILL_WORD);
 
     bool ran = run(s, q, &list) == 0 && reads_as(s->system_words, FILL_WORD);
@@ -785,15 +845,86 @@ static void test_acquire(struct copy_session* s) {
     // Written even when the fill ran early, so the queue is never left waiting for the checks after this one
     *semaphore = 1;
     __sync_synchronize();
-    bool filled = submitted && wait_for(s, q) == 0 && reads_as(s->system_words, ~FILL_WORD);
+    bool filled = submitted && wait_for(s, q, WAIT_NS) == 0 && reads_as(s->system_words, ~FILL_WORD);
     check("a semaphore acquire holds a user queue's fill until the CPU writes the word it waits for", held && filled);
 }
 
+// A user queue's TLB invalidate of every page directory lets the rest of its submission run, but the queue runs no
+// later submission, so the next one's deadline loses the context, and the GPU runs on for other contexts
+static void test_tlb_invalidate(int fd, struct copy_session* live) {
+    struct gpu_memory before = read_memory(fd);
+    struct copy_session invalidating = {0};
+    invalidating.fd = fd;
+    invalidating.copy_class = live->copy_class;
+
+    struct copy_queue* q = &invalidating.queues[0];
+    struct command_list list = {0};
+    push_memory_operation(&list, TLB_INVALIDATE_ALL_PDBS, MEM_OP_TLB_INVALIDATE);
+    push_fill(&list, invalidating.copy_class, VIDEO_VA, FILL_WORD);
+
+    bool opened = open_copy_session(&invalidating);
+    bool ran = opened && run(&invalidating, q, &list) == 0 && reads_as(invalidating.video_words, FILL_WORD);
+    check(
+        "a user queue's submission runs on past an MMU_TLB_INVALIDATE to the fill after it, its context live",
+        ran && lost_reason(&invalidating) == 0
+    );
+
+    struct command_list system_fill = fill_commands(invalidating.copy_class, SYSTEM_VA, FILL_WORD);
+    bool submitted = ran && submit(&invalidating, q, &system_fill, NULL) == 0;
+    bool hung = stalls_until_lost(&invalidating, q, submitted, "the TLB invalidate");
+    check(
+        "a user queue's next submission after an MMU_TLB_INVALIDATE writes nothing, and its deadline loses the context",
+        hung && reads_as(invalidating.system_words, 0)
+    );
+
+    struct command_list live_fill = fill_commands(live->copy_class, VIDEO_VA, FILL_WORD);
+    bool filled = run(live, &live->queues[0], &live_fill) == 0 && reads_as(live->video_words, FILL_WORD);
+    check(
+        "another context's queue still fills memory once the TLB invalidate's context is lost",
+        filled && hung && lost_reason(live) == 0
+    );
+
+    close_copy_session(&invalidating);
+    check("closing the TLB invalidate's context gives its memory back", memory_returns_to(fd, before));
+}
+
+// A user queue's channel is denied physical addresses, so the copy stalls its queue with nothing written until the
+// queue's deadline loses its context, and the GPU runs on for other contexts
+static void test_physical_copy(int fd, struct copy_session* live) {
+    struct gpu_memory before = read_memory(fd);
+    struct copy_session denied = {0};
+    denied.fd = fd;
+    denied.copy_class = live->copy_class;
+
+    bool opened = open_copy_session(&denied);
+    if (opened) {
+        fill(denied.video_words, FILL_WORD);
+    }
+
+    struct copy_queue* q = &denied.queues[0];
+    struct command_list copy = physical_copy_commands(denied.copy_class, VIDEO_VA, SYSTEM_VA);
+
+    bool submitted = opened && submit(&denied, q, &copy, NULL) == 0;
+    bool hung = stalls_until_lost(&denied, q, submitted, "the physical copy");
+    bool wrote_nothing = opened && reads_as(denied.video_words, FILL_WORD) && reads_as(denied.system_words, 0);
+    check(
+        "a physical-mode copy from a user queue writes nothing, and its queue's deadline loses the context",
+        hung && wrote_nothing
+    );
+
+    struct command_list refill = fill_commands(live->copy_class, SYSTEM_VA, FILL_WORD);
+    bool filled = run(live, &live->queues[0], &refill) == 0 && reads_as(live->system_words, FILL_WORD);
+    check(
+        "another context's queue still fills memory once that context is lost",
+        filled && hung && lost_reason(live) == 0
+    );
+
+    close_copy_session(&denied);
+    check("closing the lost context gives its memory back", memory_returns_to(fd, before));
+}
+
 static void test_session_end(struct copy_session* s, struct gpu_memory before) {
-    struct gpu_context_args query = {0};
-    query.context = s->context;
-    bool live = gpu_call(s->fd, GPU_CONTEXT_QUERY, &query) == 0 && query.lost == 0;
-    check("the context stays live through every check on its queues", live);
+    check("the context stays live through every check on its queues", lost_reason(s) == 0);
 
     struct gpu_queue_args second = {0};
     second.context = s->context;
@@ -826,6 +957,9 @@ static void test_copy_queues(int fd, const struct gpu_info* info) {
 
     test_host_methods(&s);
     test_acquire(&s);
+    test_tlb_invalidate(fd, &s);
+    test_physical_copy(fd, &s);
+
     test_session_end(&s, before);
 }
 
