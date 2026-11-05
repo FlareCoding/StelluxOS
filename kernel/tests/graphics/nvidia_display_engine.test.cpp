@@ -386,11 +386,13 @@ public:
     uint32_t   supported_ids = 0;             // the display ids reported supported, each a DisplayPort output
     uint32_t   digital_facts = DISPLAYPORT_FACTS; // the digital facts of every supported display id
     uint32_t   connected_ids = 0;             // those reported connected, the only ones with a monitor, giving `g_edid`
+    const uint8_t* edid_extension = nullptr; // an extension block each connected monitor gives after `g_edid`, if set
     const uint8_t* dpcd_receiver = DPCD_RECEIVER; // the receiver capability field of every connected monitor
     const uint8_t* output_1_dpcd_receiver = nullptr; // the field output 1's monitor gives in its place, if set
     const uint8_t* link_status = ONE_LANE_TRAINED; // the 3 link status bytes every connected monitor gives, if any
     uint32_t   link_status_address = DPCD_LINK_STATUS_INDICATORS; // where it gives them
     bool       refuses_link_status = false;   // whether reads of them are refused with `ERR_FIRMWARE`
+    int32_t    link_status_error = OK;        // an error every read of them fails with, OK for none
     uint32_t   refused_aux_display_id = 0;    // a display id whose AUX requests fail with `ERR_FIRMWARE`, 0 for none
     const uint8_t* phy_repeater_capabilities = nullptr; // the PHY repeater bytes every connected monitor gives, if any
     uint32_t   repeater_status_reads = 0;     // the DPCD reads past those bytes, where the repeaters' status lies
@@ -519,6 +521,11 @@ public:
         bool is_failing_check = command == rm::CONTROL_IS_MODE_POSSIBLE && control_count(command) == failing_check;
         if (is_failing_check) {
             return check_result;
+        }
+
+        bool is_failing_status_read = link_status_error != OK && reads_link_status(command, params);
+        if (is_failing_status_read) {
+            return link_status_error;
         }
 
         bool is_refused_read =
@@ -1028,7 +1035,7 @@ private:
     }
 
     // Reports `supported_ids` as digital display ids giving `digital_facts`, those in `connected_ids` connected, each
-    // connected monitor giving `g_edid` as its EDID and `fill_aux_reply`'s bytes as its DPCD
+    // connected monitor giving `g_edid` and any `edid_extension` as its EDID and `fill_aux_reply`'s bytes as its DPCD
     void fill_output_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_GET_SUPPORTED_DISPLAYS) {
             static_cast<rm::supported_displays_params*>(params)->display_mask = supported_ids;
@@ -1042,6 +1049,10 @@ private:
             rm::edid_params* reply = static_cast<rm::edid_params*>(params);
             reply->edid_bytes = sizeof(g_edid);
             string::memcpy(reply->edid, g_edid, sizeof(g_edid));
+            if (edid_extension != nullptr) {
+                reply->edid_bytes += edid::BLOCK_BYTES;
+                string::memcpy(reply->edid + sizeof(g_edid), edid_extension, edid::BLOCK_BYTES);
+            }
         } else if (command == rm::CONTROL_DP_AUX) {
             fill_aux_reply(*static_cast<rm::aux_params*>(params));
         }
@@ -11597,6 +11608,490 @@ TEST(nvidia_display_engine, a_plugs_failed_power_down_fails_the_display_without_
         fw.refusals[0] = {};
         EXPECT_EQ(engine.release(), OK);
     }
+}
+
+// What `read_output` gave for the reported output at each of the first three reports, kept by `record_relight_report`
+static gfxfb::output_state g_relight_reports[3] = {};
+
+// Records a report as `record_output_change` does, keeping what `read_output` then gives for the output
+static void record_relight_report(gfxfb::display* display, uint32_t output) {
+    record_output_change(display, output);
+    if (g_output_change_count <= 3) {
+        EXPECT_EQ(g_built_engine->read_output(output, g_relight_reports[g_output_change_count - 1]), gfxfb::OK);
+    }
+}
+
+// Registers set-up `engine` with flips on and records its reports by `record_relight_report`
+static void record_relight_reports(display_engine& engine) {
+    engine.mark_registered();
+    engine.turn_on_flips();
+
+    string::memset(g_relight_reports, 0, sizeof(g_relight_reports));
+    display_engine_test_access::set_output_changed(engine, record_relight_report);
+}
+
+// Sets up an engine over `fw` and `memory` lighting outputs 0 and 1, output 1 on head 1, with its reports recorded by
+// `record_relight_reports`
+static display_engine& set_up_two_lit_outputs(engine_firmware& fw, engine_video_memory& memory) {
+    EXPECT_TRUE(connect_two_outputs(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    EXPECT_EQ(set_up(engine), OK);
+    EXPECT_EQ(head_of_output(engine, 1), 1u);
+
+    record_relight_reports(engine);
+    return engine;
+}
+
+// A monitor plugged again into lit output 1 with the EDID it was lit with and its link still trained leaves the output
+// as it is, after one link status read, with nothing taken down, lit or reported
+TEST(nvidia_display_engine, a_plugged_lit_output_with_its_edid_and_a_trained_link_is_left) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* base = engine.base_buffer(1);
+    uint32_t status_reads = fw.link_status_reads;
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x200's link status reads 0x07 0x00 0x01, so its link is still trained at 1 lane"));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 stays lit, as its EDID is the one it was lit with and its link is trained"));
+    EXPECT_EQ(fw.link_status_reads, status_reads + 1);
+
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.base_buffer(1), base);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The first byte of the EDID's serial number, which `AOC_BASE_BLOCK` zeroes
+static constexpr uint32_t SERIAL_NUMBER_BYTE = 12;
+
+// A monitor with another serial number plugged into lit output 1 relights it on head 1 with a new base buffer, reported
+// dark with `relighting` and then lit, its next plug leaves it, and its unplug reports it dark without `relighting`
+TEST(nvidia_display_engine, a_plugged_lit_output_with_another_edid_is_relit) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    g_edid[SERIAL_NUMBER_BYTE] = 1;
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] - 1);
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1's monitor does not give the EDID it was lit with"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is taken down to be relit"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is marked dark, taking head 1 down"));
+    EXPECT_TRUE(
+        engine_log_contains("on head 1 with window 1, which the bandwidth check accepts beside the lit output"));
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_EQ(g_output_change_output, 1u);
+    EXPECT_FALSE(g_relight_reports[0].lit);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_TRUE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(head_of_output(engine, 1), 1u);
+    EXPECT_NE(engine.base_buffer(1), taken_down);
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 stays lit, as its EDID is the one it was lit with and its link is trained"));
+    EXPECT_EQ(g_output_change_count, 2u);
+
+    gfxfb::buffer* relit = engine.base_buffer(1);
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.plugged_ids = 0;
+    fw.unplugged_ids = OUTPUT_1_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    ASSERT_EQ(g_output_change_count, 3u);
+    EXPECT_FALSE(g_relight_reports[2].lit);
+    EXPECT_FALSE(g_relight_reports[2].relighting);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+    free_taken_down_base_buffer(relit);
+}
+
+// An extension block of a kind `edid::parse` reads nothing from
+static constexpr uint8_t UNREAD_EXTENSION[edid::BLOCK_BYTES] = {};
+
+// A plug of lit output 1 whose EDID gives only the first of the two blocks it was lit with relights the output, as a
+// prefix of the bytes it was lit with is not those bytes
+TEST(nvidia_display_engine, a_plugged_lit_output_whose_edid_lost_its_extension_block_is_relit) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    g_edid[EXTENSION_COUNT_BYTE] = 1;
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] - 1);
+    fw.edid_extension = UNREAD_EXTENSION;
+
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    record_relight_reports(engine);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    fw.edid_extension = nullptr;
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1's monitor does not give the EDID it was lit with"));
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_TRUE(g_relight_reports[1].lit);
+    EXPECT_TRUE(reads_lit(engine, 1));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A monitor plugged again into lit output 1 whose link status shows the link lost relights it, and when the light's
+// training check finds the link untrained too, the output is reported dark again with `relighting` cleared
+TEST(nvidia_display_engine, a_plugged_lit_output_with_a_lost_link_is_relit_and_reported_dark_when_its_light_fails) {
+    static constexpr uint8_t CLOCK_RECOVERED_ONLY[] = {0x01, 0x00, 0x00};
+
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    fw.link_status = CLOCK_RECOVERED_ONLY;
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x200's link status reads 0x01 0x00 0x00, so its link is no longer trained at 1 lane"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is taken down to be relit"));
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x200's link is not trained at 1 lane"));
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_EQ(g_output_change_output, 1u);
+    EXPECT_FALSE(g_relight_reports[0].lit);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_FALSE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A monitor plugged into lit output 1 whose EDID gives no timing takes the output down without `relighting`, reported
+// dark once
+TEST(nvidia_display_engine, a_plugged_lit_output_with_no_mode_is_taken_down_without_relighting) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    copy_aoc_edid_without_timings();
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 has no mode, so it is taken down rather than relit"));
+    ASSERT_EQ(g_output_change_count, 1u);
+    EXPECT_EQ(g_output_change_output, 1u);
+    EXPECT_FALSE(g_relight_reports[0].lit);
+    EXPECT_FALSE(g_relight_reports[0].relighting);
+    EXPECT_FALSE(reads_lit(engine, 1));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A monitor lit by its plug into dark output 1 and plugged again is left, as the task's light kept its EDID bytes and
+// its link's training, and its unplug then reports the output dark without `relighting`
+TEST(nvidia_display_engine, a_monitor_lit_by_its_plug_and_plugged_again_is_left) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    record_relight_reports(engine);
+
+    plug_output_1(fw, engine);
+    ASSERT_TRUE(reads_lit(engine, 1));
+    gfxfb::buffer* base = engine.base_buffer(1);
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 stays lit, as its EDID is the one it was lit with and its link is trained"));
+    EXPECT_EQ(g_output_change_count, 1u);
+    EXPECT_EQ(engine.base_buffer(1), base);
+
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.plugged_ids = 0;
+    fw.unplugged_ids = OUTPUT_1_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_FALSE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(base);
+}
+
+// A refused link status read at a plug of lit output 1 with the EDID it was lit with is logged and leaves the output
+TEST(nvidia_display_engine, a_plugged_lit_output_whose_link_status_read_is_refused_is_left) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* base = engine.base_buffer(1);
+    fw.refuses_link_status = true;
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 stays lit, as its link status is not read"));
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.base_buffer(1), base);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A link status read failing other than by `ERR_FIRMWARE` at a plug of lit output 1 with the EDID it was lit with fails
+// the display, taking nothing down and reporting nothing
+TEST(nvidia_display_engine, a_plugged_lit_outputs_failing_link_status_read_fails_the_display) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    fw.link_status_error = ERR_TIMEOUT;
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: reading output 1's link status failed: -4, so the display failed"));
+    EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A plug of lit output 1 whose EDID request cannot be allocated is logged and leaves the output, with no link status
+// read and nothing taken down, lit or reported
+TEST(nvidia_display_engine, a_plugged_lit_output_whose_monitor_read_cannot_be_allocated_is_left) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* base = engine.base_buffer(1);
+    uint32_t status_reads = fw.link_status_reads;
+    fw.refusals[0] = {
+        .made   = engine_firmware::kind::control,
+        .number = rm::CONTROL_GET_EDID,
+        .object = 0,
+        .result = ERR_NO_MEMORY,
+    };
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 stays lit, as a request reading its monitor cannot be allocated"));
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(fw.link_status_reads, status_reads);
+
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.base_buffer(1), base);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A relight of lit output 1 whose take-down update the core channel never reads fails the display, sends no light's
+// bandwidth check and reports nothing, output 1 reading neither lit nor relighting
+TEST(nvidia_display_engine, a_relight_whose_take_down_fails_the_display_lights_and_reports_nothing) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    uint32_t checks = fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE);
+
+    g_edid[SERIAL_NUMBER_BYTE] = 1;
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] - 1);
+    display_engine_test_access::set_update_seam(engine, nullptr);
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the update taking head 1 down failed: -4, so the display failed"));
+    EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(fw.control_count(rm::CONTROL_IS_MODE_POSSIBLE), checks);
+    EXPECT_EQ(g_output_change_count, 0u);
+
+    gfxfb::output_state state = {};
+    EXPECT_EQ(engine.read_output(1, state), gfxfb::OK);
+    EXPECT_FALSE(state.lit);
+    EXPECT_FALSE(state.relighting);
+
+    display_engine_test_access::set_update_seam(engine, read_kicked_update);
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A relight of lit output 1 whose link assignment fails with `ERR_TIMEOUT` fails the display and reports the output
+// dark again, without `relighting`
+TEST(nvidia_display_engine, a_relight_whose_light_fails_the_display_reports_the_output_dark_without_relighting) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    g_edid[SERIAL_NUMBER_BYTE] = 1;
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] - 1);
+
+    fw.refused_assignment_ids = OUTPUT_1_ID;
+    fw.assignment_result = ERR_TIMEOUT;
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x200's link is not set up, so the display failed"));
+    EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_FALSE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A relight of a lit output past gfxfb's count whose light finds the link untrained reports nothing, as gfxfb never
+// reads that output
+TEST(nvidia_display_engine, a_failed_relight_of_an_output_past_gfxfbs_count_reports_nothing) {
+    static constexpr uint8_t CLOCK_RECOVERED_ONLY[] = {0x01, 0x00, 0x00};
+    const uint32_t uncounted_id = 1u << gfxfb::GFXFB_OUTPUTS_MAX;
+
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    fw.supported_ids = (uncounted_id << 1) - 1;
+    fw.connected_ids = OUTPUT_0_ID | uncounted_id;
+
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_EQ(display_engine_test_access::head_output(engine, 1), gfxfb::GFXFB_OUTPUTS_MAX);
+    record_relight_reports(engine);
+
+    fw.link_status = CLOCK_RECOVERED_ONLY;
+    fw.plugged_ids = uncounted_id;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 16 is taken down to be relit"));
+    EXPECT_TRUE(engine_log_contains("nvidia: display id 0x10000's link is not trained at 1 lane"));
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A plug of lit output 1 whose EDID's extension block differs from the one it was lit with only in its last byte, a
+// checksum `edid::parse` does not check in a block of no kind, relights the output
+TEST(nvidia_display_engine, a_plugged_lit_output_whose_edid_extension_differs_in_its_last_byte_is_relit) {
+    uint8_t other_extension[edid::BLOCK_BYTES] = {};
+    other_extension[CHECKSUM_BYTE] = 1;
+
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    g_edid[EXTENSION_COUNT_BYTE] = 1;
+    g_edid[CHECKSUM_BYTE] = static_cast<uint8_t>(g_edid[CHECKSUM_BYTE] - 1);
+    fw.edid_extension = UNREAD_EXTENSION;
+
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    record_relight_reports(engine);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    fw.edid_extension = other_extension;
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1's monitor does not give the EDID it was lit with"));
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_TRUE(g_relight_reports[1].lit);
+    EXPECT_TRUE(reads_lit(engine, 1));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A hotplug reporting lit output 1's display id both plugged in and unplugged while its monitor is gone, so its EDID
+// read is refused, takes the output down without `relighting`, reported dark once
+TEST(nvidia_display_engine, a_lit_output_plugged_and_unplugged_with_its_monitor_gone_is_taken_down) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.plugged_ids = OUTPUT_1_ID;
+    fw.unplugged_ids = OUTPUT_1_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display ids 0x200 are both plugged in and unplugged, so taken as plugged in"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1's monitor does not give the EDID it was lit with"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 has no mode, so it is taken down rather than relit"));
+
+    ASSERT_EQ(g_output_change_count, 1u);
+    EXPECT_FALSE(g_relight_reports[0].lit);
+    EXPECT_FALSE(g_relight_reports[0].relighting);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A plug of lit output 1 with the EDID it was lit with and a DPCD now giving revision 1.0 reads the link status by the
+// DPCD it was lit with, from the event status indicators, and leaves the output
+TEST(nvidia_display_engine, a_plugged_lit_outputs_link_status_is_read_by_the_dpcd_it_was_lit_with) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    uint32_t status_reads = fw.link_status_reads;
+    fw.output_1_dpcd_receiver = DPCD_RECEIVER_1_0;
+
+    plug_output_1(fw, engine);
+
+    EXPECT_EQ(fw.link_status_reads, status_reads + 1);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 stays lit, as its EDID is the one it was lit with and its link is trained"));
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A plug of lit output 1, lit past a PHY repeater its DisplayPort facts give the firmware as not training, reads the
+// link status without the repeater's, as its light did, and leaves the output
+TEST(nvidia_display_engine, a_plugged_lit_outputs_link_status_leaves_out_the_phy_repeater_its_light_left_out) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory));
+    fw.phy_repeater_capabilities = ONE_PHY_REPEATER;
+    fw.displayport_trains_phy_repeaters = 0;
+
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine, FULL_ADDRESS_BITS, INITIAL_METHODS_END, CHIP_LINKS_TRAINING_PHY_REPEATERS), OK);
+    ASSERT_TRUE(reads_lit(engine, 1));
+    record_relight_reports(engine);
+    uint32_t status_reads = fw.link_status_reads;
+
+    plug_output_1(fw, engine);
+
+    EXPECT_EQ(fw.repeater_status_reads, 0u);
+    EXPECT_EQ(fw.link_status_reads, status_reads + 1);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 stays lit, as its EDID is the one it was lit with and its link is trained"));
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(engine.release(), OK);
 }
 
 // On a failed display, the release of a buffer bound to no window's channel frees it, as no channel names it

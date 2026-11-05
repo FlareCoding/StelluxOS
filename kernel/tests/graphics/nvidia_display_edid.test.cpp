@@ -15,6 +15,7 @@ TEST_SUITE(nvidia_display_edid);
 
 using drivers::nvidia::EDID_REREAD_DELAY_US;
 using drivers::nvidia::EDID_REREADS_MAX;
+using drivers::nvidia::edid_copy;
 using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_FIRMWARE;
 using drivers::nvidia::ERR_NO_MEMORY;
@@ -181,8 +182,9 @@ private:
     }
 };
 
-// The monitor each test reads into, kept off the stack as `edid::monitor` asks
+// The monitor each test reads into, kept off the stack as `edid::monitor` asks, and the copy of its EDID's bytes
 static edid::monitor s_monitor = {};
+static edid_copy     s_copy = {};
 
 // The byte every byte of `s_monitor` holds before a read, so a test sees whether the read wrote it
 static constexpr uint8_t UNTOUCHED = 0xEE;
@@ -233,7 +235,7 @@ static bool edid_log_contains(const char* text) {
 static int32_t read_logged(edid_firmware& fw, bool& is_parsed) {
     s_edid_log_bytes = 0;
     log::set_backend(&EDID_LOG_BACKEND);
-    int32_t rc = read_output_edid(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, s_monitor, is_parsed);
+    int32_t rc = read_output_edid(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, s_monitor, is_parsed, s_copy);
     log::set_backend(nullptr);
 
     return rc;
@@ -245,7 +247,7 @@ TEST(nvidia_display_edid, request_goes_to_display_common_in_nvidias_layout) {
     edid_firmware fw;
     bool is_parsed = false;
 
-    ASSERT_EQ(read_output_edid(fw, TEST_DISPLAY_COMMON, 0x800, s_monitor, is_parsed), OK);
+    ASSERT_EQ(read_output_edid(fw, TEST_DISPLAY_COMMON, 0x800, s_monitor, is_parsed, s_copy), OK);
 
     ASSERT_EQ(fw.call_count, 1u);
     EXPECT_EQ(fw.stray_count, 0u);
@@ -257,7 +259,8 @@ TEST(nvidia_display_edid, request_goes_to_display_common_in_nvidias_layout) {
     EXPECT_TRUE(fw.calls[0].is_zero_but_display_id);
 }
 
-// An EDID that parses gives the monitor's maker, name and timings, with `is_parsed` set and nothing logged
+// An EDID that parses gives the monitor's maker, name and timings and a copy of its bytes, with `is_parsed` set and
+// nothing logged
 TEST(nvidia_display_edid, an_edid_that_parses_gives_the_monitor) {
     edid_firmware fw;
     bool is_parsed = false;
@@ -267,6 +270,8 @@ TEST(nvidia_display_edid, an_edid_that_parses_gives_the_monitor) {
 
     EXPECT_TRUE(is_parsed);
     EXPECT_EQ(s_edid_log_bytes, 0u);
+    ASSERT_EQ(s_copy.bytes, sizeof(AOC_BASE_BLOCK));
+    EXPECT_EQ(string::memcmp(s_copy.data, AOC_BASE_BLOCK, sizeof(AOC_BASE_BLOCK)), 0);
 
     EXPECT_STREQ(s_monitor.maker, "AOC");
     EXPECT_STREQ(s_monitor.name, "AG241QG4");
@@ -290,7 +295,7 @@ TEST(nvidia_display_edid, the_parse_takes_the_bytes_the_reply_reports) {
     filled.reply_edid_bytes = EDID_BUFFER_BYTES;
     bool is_parsed = false;
 
-    ASSERT_EQ(read_output_edid(filled, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, s_monitor, is_parsed), OK);
+    ASSERT_EQ(read_output_edid(filled, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, s_monitor, is_parsed, s_copy), OK);
     EXPECT_TRUE(is_parsed);
     EXPECT_EQ(s_monitor.timing_count, 2u);
 
@@ -302,16 +307,18 @@ TEST(nvidia_display_edid, the_parse_takes_the_bytes_the_reply_reports) {
     EXPECT_TRUE(edid_log_contains("nvidia: display id 0x100's 127-byte EDID is shorter than one block"));
 }
 
-// A refused request is logged and leaves `is_parsed` cleared, with `out` as it was
+// A refused request is logged and leaves `is_parsed` cleared and the copy empty, with `out` as it was
 TEST(nvidia_display_edid, a_refused_request_is_logged) {
     edid_firmware fw;
     fw.result = ERR_FIRMWARE;
     bool is_parsed = true;
     fill_monitor(UNTOUCHED);
+    s_copy.bytes = 1;
 
     ASSERT_EQ(read_logged(fw, is_parsed), OK);
 
     EXPECT_FALSE(is_parsed);
+    EXPECT_EQ(s_copy.bytes, 0u);
     EXPECT_EQ(fw.call_count, 1u);
     EXPECT_TRUE(monitor_holds_only(UNTOUCHED));
     EXPECT_TRUE(edid_log_contains("nvidia: display common refused display id 0x100's EDID"));
@@ -326,7 +333,7 @@ TEST(nvidia_display_edid, other_errors_of_the_request_end_the_read) {
         bool is_parsed = true;
         fill_monitor(UNTOUCHED);
 
-        EXPECT_EQ(read_output_edid(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, s_monitor, is_parsed), error);
+        EXPECT_EQ(read_output_edid(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, s_monitor, is_parsed, s_copy), error);
 
         EXPECT_FALSE(is_parsed);
         EXPECT_EQ(fw.call_count, 1u);

@@ -249,8 +249,8 @@ static void keep_output_modes(
     );
 }
 
-// Reads and logs connected output `index`'s EDID into `monitor`, its DPCD capabilities and its mode, keeping its modes
-// in `modes`, and lowers its rate in `power_down` to its monitor's, setting its D3 bit for DPCD 1.1 or later
+// Reads and logs connected output `index`'s EDID into `monitor`, DPCD capabilities and mode, keeping its modes and
+// EDID bytes in `modes`, and lowers its rate in `power_down` to its monitor's and sets its D3 bit for DPCD 1.1 or later
 static int32_t read_connected_monitor(
     firmware& fw,
     rm::handle display_common,
@@ -262,7 +262,7 @@ static int32_t read_connected_monitor(
     power_down_facts& power_down
 ) {
     bool is_parsed = false;
-    int32_t rc = read_output_edid(fw, display_common, output.display_id, monitor, is_parsed);
+    int32_t rc = read_output_edid(fw, display_common, output.display_id, monitor, is_parsed, modes.edid);
     if (rc != OK) {
         return rc;
     }
@@ -361,6 +361,18 @@ static void free_output_modes(output_modes*& modes) {
 
     heap::ufree(modes);
     modes = nullptr;
+}
+
+// Keeps in `head` the EDID bytes and DPCD capabilities its output lights with, which a later plug of that output
+// compares and reads its link status by
+static void keep_lit_monitor(engine_head& head, const output_modes& modes) {
+    string::memcpy(&head.lit_edid, &modes.edid, sizeof(head.lit_edid));
+    string::memcpy(&head.lit_dpcd, &modes.dpcd, sizeof(head.lit_dpcd));
+}
+
+// Whether `a` and `b` hold the same EDID bytes
+static bool is_same_edid(const edid_copy& a, const edid_copy& b) {
+    return a.bytes == b.bytes && string::memcmp(a.data, b.data, a.bytes) == 0;
 }
 
 static int32_t read_display_facts(
@@ -1609,7 +1621,9 @@ int32_t display_engine::set_up(
 
     dpcd_capabilities dpcds[DISPLAY_HEADS_MAX] = {};
     for (uint8_t index = 0; index < set.count; index++) {
-        string::memcpy(&dpcds[index], &m_output_modes[set.lights[index].output].dpcd, sizeof(dpcds[index]));
+        const output_modes& modes = m_output_modes[set.lights[index].output];
+        string::memcpy(&dpcds[index], &modes.dpcd, sizeof(dpcds[index]));
+        keep_lit_monitor(m_heads[set.lights[index].head], modes);
     }
 
     free_output_modes(m_output_modes);
@@ -2276,6 +2290,7 @@ int32_t display_engine::set_up_links(
         uint8_t links_before = assigned_links;
 
         output_link link = {};
+        link_training training = {};
         bool is_set_up = false;
         int32_t rc = set_up_output_link(
             m_firmware,
@@ -2286,6 +2301,7 @@ int32_t display_engine::set_up_links(
             light,
             assigned_links,
             link,
+            training,
             is_set_up
         );
         if (rc != OK) {
@@ -2298,6 +2314,7 @@ int32_t display_engine::set_up_links(
         }
 
         if (is_set_up) {
+            m_heads[light.head].training = training;
             set.lights[ready_count] = light;
             lights[ready_count] = {
                 .head                     = light.head,
@@ -3074,7 +3091,7 @@ void display_engine::update_connected_records(uint32_t plugged_ids, uint32_t unp
             entry.is_connected = false;
             m_power_down.d3_outputs &= ~(1u << output);
             log::info("nvidia: output %u, display id 0x%X, is unplugged", output, entry.display_id);
-            take_down_output(output);
+            take_down_output(output, false);
         }
     }
 
@@ -3086,17 +3103,7 @@ void display_engine::update_connected_records(uint32_t plugged_ids, uint32_t unp
 
         entry.is_connected = true;
         log::info("nvidia: output %u, display id 0x%X, is plugged in", output, entry.display_id);
-
-        bool is_lit = false;
-        RUN_ELEVATED({
-            sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-            is_lit = find_lit_head(output) != nullptr;
-            sync::spin_unlock_irqrestore(m_output_lock, irq);
-        });
-
-        if (!is_lit) {
-            light_plugged_output(output);
-        }
+        serve_plugged_output(output);
     }
 }
 
@@ -3104,11 +3111,11 @@ void display_engine::mark_registered() {
     m_is_registered = true;
 }
 
-void display_engine::take_down_output(uint8_t output) {
+void display_engine::take_down_output(uint8_t output, bool relighting) {
     uint32_t staying_ids = 0;
     scanout_buffer* base = nullptr;
     engine_head* head = nullptr;
-    RUN_ELEVATED(head = darken_head(output, staying_ids, base));
+    RUN_ELEVATED(head = darken_head(output, relighting, staying_ids, base));
     if (head == nullptr) {
         return;
     }
@@ -3136,6 +3143,7 @@ void display_engine::take_down_output(uint8_t output) {
  */
 __PRIVILEGED_CODE engine_head* display_engine::darken_head(
     uint8_t output,
+    bool relighting,
     uint32_t& staying_ids,
     scanout_buffer*& base
 ) {
@@ -3148,6 +3156,10 @@ __PRIVILEGED_CODE engine_head* display_engine::darken_head(
     }
 
     head->is_closing = true;
+    if (relighting) {
+        m_relighting_outputs |= 1u << output;
+    }
+
     uint64_t deadline_ns = clock::now_ns() + m_take_down_wait_ns;
     while (true) {
         bool is_waiting = head->has_queued_present && !m_is_display_failed.load_acquire();
@@ -3314,12 +3326,19 @@ void display_engine::stop_dark_head(engine_head& head, uint32_t staying_ids) {
     }
 }
 
-void display_engine::light_plugged_output(uint8_t output) {
+void display_engine::serve_plugged_output(uint8_t output) {
     if (m_is_display_failed.load_acquire() || m_failed.is_set()) {
         return;
     }
 
-    if (!m_is_registered) {
+    bool is_lit = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        is_lit = find_lit_head(output) != nullptr;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (!is_lit && !m_is_registered) {
         log::info(
             "nvidia: output %u stays dark, as the display engine is not registered while gfxfb keeps the boot "
             "framebuffer",
@@ -3334,10 +3353,16 @@ void display_engine::light_plugged_output(uint8_t output) {
     m_power_down.rates[output] = connector_link_limits(entry, gpu.max_rate).max_rate;
     m_power_down.d3_outputs &= ~(1u << output);
 
+    const char* kept = is_lit ? "lit" : "dark";
     uint32_t modes_bytes = sizeof(output_modes);
     auto* modes = static_cast<output_modes*>(heap::uzalloc(modes_bytes));
     if (modes == nullptr) {
-        log::error("nvidia: output %u stays dark, as allocating %u bytes for its modes failed", output, modes_bytes);
+        log::error(
+            "nvidia: output %u stays %s, as allocating %u bytes for its modes failed",
+            output,
+            kept,
+            modes_bytes
+        );
         return;
     }
 
@@ -3345,8 +3370,9 @@ void display_engine::light_plugged_output(uint8_t output) {
     auto* monitor = static_cast<edid::monitor*>(heap::uzalloc(monitor_bytes));
     if (monitor == nullptr) {
         log::error(
-            "nvidia: output %u stays dark, as allocating %u bytes for parsing its EDID failed",
+            "nvidia: output %u stays %s, as allocating %u bytes for parsing its EDID failed",
             output,
+            kept,
             monitor_bytes
         );
         heap::ufree(modes);
@@ -3356,7 +3382,9 @@ void display_engine::light_plugged_output(uint8_t output) {
     rm::handle display_common = m_objects.display_common;
     int32_t rc = read_connected_monitor(m_firmware, display_common, gpu, output, entry, *monitor, *modes, m_power_down);
     heap::ufree(monitor);
-    if (rc == OK && modes->count > 0) {
+    if (rc == OK && is_lit) {
+        recheck_lit_output(output, *modes);
+    } else if (rc == OK && modes->count > 0) {
         light_output(output, *modes);
     } else if (rc == OK) {
         log::info("nvidia: output %u stays dark, as it has no mode", output);
@@ -3364,14 +3392,90 @@ void display_engine::light_plugged_output(uint8_t output) {
 
     heap::ufree(modes);
     if (rc == ERR_NO_MEMORY) {
-        log::error("nvidia: output %u stays dark, as a request reading its monitor cannot be allocated", output);
+        log::error("nvidia: output %u stays %s, as a request reading its monitor cannot be allocated", output, kept);
     } else if (rc != OK) {
         log::error("nvidia: reading output %u's monitor failed: %d, so the display failed", output, rc);
         fail_display();
     }
 }
 
-void display_engine::light_output(uint8_t output, const output_modes& modes) {
+void display_engine::recheck_lit_output(uint8_t output, const output_modes& modes) {
+    const engine_head* head = nullptr;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        head = find_lit_head(output);
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (head == nullptr) {
+        return;
+    }
+
+    if (!is_same_edid(modes.edid, head->lit_edid)) {
+        log::info("nvidia: output %u's monitor does not give the EDID it was lit with", output);
+        relight_output(output, modes);
+        return;
+    }
+
+    bool is_read = false;
+    bool is_trained = false;
+    rm::handle display_common = m_objects.display_common;
+    int32_t rc = check_link_training(
+        m_firmware,
+        display_common,
+        head->display_id,
+        head->training,
+        head->lit_dpcd,
+        is_read,
+        is_trained
+    );
+    if (rc != OK) {
+        log::error("nvidia: reading output %u's link status failed: %d, so the display failed", output, rc);
+        fail_display();
+        return;
+    }
+
+    if (!is_read) {
+        log::info("nvidia: output %u stays lit, as its link status is not read", output);
+        return;
+    }
+
+    if (is_trained) {
+        log::info(
+            "nvidia: output %u stays lit, as its EDID is the one it was lit with and its link is trained",
+            output
+        );
+        return;
+    }
+
+    relight_output(output, modes);
+}
+
+void display_engine::relight_output(uint8_t output, const output_modes& modes) {
+    if (modes.count == 0) {
+        log::info("nvidia: output %u has no mode, so it is taken down rather than relit", output);
+        take_down_output(output, false);
+        return;
+    }
+
+    log::info("nvidia: output %u is taken down to be relit", output);
+    take_down_output(output, true);
+    bool is_taken_down = !m_is_display_failed.load_acquire();
+    bool is_lit = is_taken_down && light_output(output, modes);
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        m_relighting_outputs &= ~(1u << output);
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    // A take-down failing the display reports nothing, and gfxfb never reads an output past its count
+    bool is_reported_dark = is_taken_down && !is_lit && output < m_output_count;
+    if (is_reported_dark) {
+        RUN_ELEVATED(m_output_changed(this, output));
+    }
+}
+
+bool display_engine::light_output(uint8_t output, const output_modes& modes) {
     light_set lit = {};
     uint8_t head = NO_HEAD;
     RUN_ELEVATED({
@@ -3398,7 +3502,7 @@ void display_engine::light_output(uint8_t output, const output_modes& modes) {
 
     if (head == NO_HEAD) {
         log::info("nvidia: output %u stays dark, as no head is left for it", output);
-        return;
+        return false;
     }
 
     // `display_heads` promises each head below its count a window
@@ -3409,18 +3513,18 @@ void display_engine::light_output(uint8_t output, const output_modes& modes) {
         choose_light(m_firmware, m_objects.bandwidth_check, output, modes, lit, head, window, light, is_chosen);
     if (rc == ERR_NO_MEMORY) {
         log::error("nvidia: output %u stays dark, as the bandwidth check's request cannot be allocated", output);
-        return;
+        return false;
     }
 
     if (rc != OK) {
         log::error("nvidia: asking the bandwidth check about output %u failed: %d, so the display failed", output, rc);
         fail_display();
-        return;
+        return false;
     }
 
     if (!is_chosen) {
         log::info("nvidia: output %u stays dark, as every one of its modes is refused", output);
-        return;
+        return false;
     }
 
     const char* beside = "";
@@ -3466,7 +3570,7 @@ void display_engine::light_output(uint8_t output, const output_modes& modes) {
     if (rc != OK) {
         log::error("nvidia: setting up output %u's light failed: %d, so the display failed", output, rc);
         fail_display();
-        return;
+        return false;
     }
 
     if (!is_prepared) {
@@ -3474,17 +3578,20 @@ void display_engine::light_output(uint8_t output, const output_modes& modes) {
             "nvidia: output %u stays dark, as its window channel or a surface it scans out is not set up",
             output
         );
-        return;
+        return false;
     }
 
+    keep_lit_monitor(state, modes);
     if (!run_light(light, modes.dpcd, lit)) {
-        return;
+        return false;
     }
 
     // gfxfb never reads an output past its count
     if (output < m_output_count) {
         RUN_ELEVATED(m_output_changed(this, output));
     }
+
+    return true;
 }
 
 // Sends the end of output `output`'s light naming `ended_ids`, logged, returning false when the request fails other
@@ -3604,6 +3711,7 @@ bool display_engine::run_light(const output_light& light, const dpcd_capabilitie
 
     uint8_t assigned_links = 0;
     output_link link = {};
+    link_training training = {};
     bool is_set_up = false;
     rc = set_up_output_link(
         m_firmware,
@@ -3614,6 +3722,7 @@ bool display_engine::run_light(const output_light& light, const dpcd_capabilitie
         light,
         assigned_links,
         link,
+        training,
         is_set_up
     );
     if (rc != OK) {
@@ -3663,6 +3772,7 @@ bool display_engine::run_light(const output_light& light, const dpcd_capabilitie
         return false;
     }
 
+    m_heads[light.head].training = training;
     head_light lights[1] = {{
         .head                     = light.head,
         .windows                  = served_windows(m_display_heads, m_present_windows, light.head),
@@ -4011,6 +4121,7 @@ int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
     }
 
     bool is_lit = false;
+    bool is_relighting = false;
     bool has_cursor = false;
     gfxfb::gfxfb_mode mode = {};
     RUN_ELEVATED({
@@ -4022,12 +4133,13 @@ int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
             has_cursor = head->has_cursor;
         }
 
+        is_relighting = !is_lit && (m_relighting_outputs & (1u << output)) != 0;
         sync::spin_unlock_irqrestore(m_output_lock, irq);
     });
 
-    // No output relights, so `relighting` stays false
     out = {};
     out.lit = is_lit;
+    out.relighting = is_relighting;
     out.boot_output = (m_boot_outputs & (1u << output)) != 0;
     if (is_lit) {
         out.current = mode;

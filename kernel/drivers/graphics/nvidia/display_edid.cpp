@@ -139,9 +139,11 @@ int32_t read_output_edid(
     rm::handle display_common,
     uint32_t display_id,
     edid::monitor& out,
-    bool& is_parsed
+    bool& is_parsed,
+    edid_copy& copy
 ) {
     is_parsed = false;
+    copy.bytes = 0;
 
     // The parameters' 2 KiB of EDID would take too much of a kernel stack
     uint32_t params_bytes = sizeof(rm::edid_params);
@@ -168,6 +170,11 @@ int32_t read_output_edid(
     }
 
     uint32_t edid_bytes = params->edid_bytes;
+    if (rc == OK && has_edid) {
+        copy.bytes = edid_bytes;
+        string::memcpy(copy.data, params->edid, edid_bytes);
+    }
+
     heap::ufree(params);
 
     if (rc != OK || !has_edid) {

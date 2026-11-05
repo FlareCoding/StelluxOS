@@ -491,6 +491,15 @@ static bool is_training_checked(
     return false;
 }
 
+// Copies `dpcd` without PHY repeaters when the firmware trains none, as NVIDIA's library then reads none
+static void copy_link_dpcd(const dpcd_capabilities& dpcd, bool trains_phy_repeaters, dpcd_capabilities& out) {
+    string::memcpy(&out, &dpcd, sizeof(out));
+    if (!trains_phy_repeaters) {
+        out.has_phy_repeater_bytes = false;
+        string::memset(out.phy_repeaters, 0, sizeof(out.phy_repeaters));
+    }
+}
+
 int32_t set_up_output_link(
     firmware& fw,
     rm::handle display_common,
@@ -500,9 +509,11 @@ int32_t set_up_output_link(
     const output_light& light,
     uint8_t& assigned_links,
     output_link& ready_link,
+    link_training& training,
     bool& is_set_up
 ) {
     ready_link = {};
+    training = {};
     is_set_up = false;
 
     output_link link = {};
@@ -531,13 +542,7 @@ int32_t set_up_output_link(
     }
 
     dpcd_capabilities link_dpcd = {};
-    string::memcpy(&link_dpcd, &dpcd, sizeof(link_dpcd));
-
-    // NVIDIA's library reads no PHY repeater when the facts say the firmware trains none
-    if (!gpu.trains_phy_repeaters) {
-        link_dpcd.has_phy_repeater_bytes = false;
-        string::memset(link_dpcd.phy_repeaters, 0, sizeof(link_dpcd.phy_repeaters));
-    }
+    copy_link_dpcd(dpcd, gpu.trains_phy_repeaters, link_dpcd);
 
     displayport::link_facts facts = output_link_facts(output, link_dpcd, gpu);
     displayport::link_configuration config = {};
@@ -593,8 +598,49 @@ int32_t set_up_output_link(
         return rc;
     }
 
+    training = {
+        .lanes                = config.lanes,
+        .supports_1_2         = supports_1_2,
+        .trains_phy_repeaters = gpu.trains_phy_repeaters,
+    };
+
     ready_link = link;
     is_set_up = true;
+
+    return OK;
+}
+
+int32_t check_link_training(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    const link_training& training,
+    const dpcd_capabilities& dpcd,
+    bool& is_read,
+    bool& is_trained
+) {
+    is_trained = false;
+
+    dpcd_capabilities link_dpcd = {};
+    copy_link_dpcd(dpcd, training.trains_phy_repeaters, link_dpcd);
+
+    displayport::link_status status = {};
+    int32_t rc = read_link_status(fw, display_common, display_id, link_dpcd, training.supports_1_2, status, is_read);
+    if (rc != OK || !is_read) {
+        return rc;
+    }
+
+    is_trained = displayport::is_trained(status, training.lanes);
+    log::info(
+        "nvidia: display id 0x%X's link status reads 0x%02X 0x%02X 0x%02X, so its link %s trained at %u %s",
+        display_id,
+        status.lanes_0_1,
+        status.lanes_2_3,
+        status.lane_align,
+        is_trained ? "is still" : "is no longer",
+        training.lanes,
+        training.lanes == 1 ? "lane" : "lanes"
+    );
 
     return OK;
 }

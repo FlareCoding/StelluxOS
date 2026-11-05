@@ -90,7 +90,7 @@ constexpr uint32_t CURSOR_DIMENSION_MAX = 256;
  */
 struct output_state {
     bool       lit;
-    bool       relighting;        // its display is lighting it again at another mode, meaningful while dark
+    bool       relighting;        // its display is lighting it again, meaningful while dark
     bool       boot_output;       // the boot firmware lit this output
     gfxfb_mode current;           // the mode it is lit at, meaningful while lit
     uint32_t   cursor_max_width;  // the widest cursor picture it shows
