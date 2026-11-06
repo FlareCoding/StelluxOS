@@ -1,0 +1,178 @@
+Keeps a queue's replaced shader local memory area until the GPU has passed
+the work that may still read it. NVK replaces the area with a larger one when
+a shader needs more, and each queue dropped its reference to the old area at
+its next state update, while its earlier submissions may still run with it.
+A kernel driver that keeps a buffer mapped for the jobs submitted with it
+hides this, but where dropping the last reference unmaps the buffer, that
+work reads an unmapped area. A 3D or compute queue's push stream keeps the
+old area until the GPU passes the point of the stream's next flush, the one
+carrying the state push that moves the queue to the new area, or until the
+stream is finished, and an area it has no memory to keep leaks instead. A
+copy queue runs no shaders, so it drops the area at once.
+
+--- a/src/nouveau/vulkan/nvk_mem_stream.c
++++ b/src/nouveau/vulkan/nvk_mem_stream.c
+@@ -17,6 +17,16 @@ struct nvk_mem_stream_chunk {
+    uint64_t idle_time_point;
+ };
+ 
++struct nvk_mem_stream_held_mem {
++   struct nvkmd_mem *mem;
++
++   /** Link in nvk_mem_stream::held_mems */
++   struct list_head link;
++
++   /** Time point past which no work on the stream's context reads the mem */
++   uint64_t idle_time_point;
++};
++
+ static VkResult
+ nvk_mem_stream_chunk_create(struct nvk_device *dev,
+                             struct nvk_mem_stream_chunk **chunk_out)
+@@ -75,14 +85,28 @@ nvk_mem_stream_init(struct nvk_device *dev,
+    stream->chunk_alloc_B = NVK_MEM_STREAM_MAX_ALLOC_SIZE;
+ 
+    list_inithead(&stream->recycle);
++   list_inithead(&stream->held_mems);
+ 
+    return VK_SUCCESS;
+ }
+ 
++static void
++nvk_mem_stream_held_mem_destroy(struct nvk_device *dev,
++                                struct nvk_mem_stream_held_mem *held)
++{
++   list_del(&held->link);
++   nvkmd_mem_unref(held->mem);
++   vk_free(&dev->vk.alloc, held);
++}
++
+ void
+ nvk_mem_stream_finish(struct nvk_device *dev,
+                       struct nvk_mem_stream *stream)
+ {
++   list_for_each_entry_safe(struct nvk_mem_stream_held_mem, held,
++                            &stream->held_mems, link)
++      nvk_mem_stream_held_mem_destroy(dev, held);
++
+    list_for_each_entry_safe(struct nvk_mem_stream_chunk, chunk,
+                             &stream->recycle, link)
+       nvk_mem_stream_chunk_destroy(dev, chunk);
+@@ -279,3 +303,46 @@ nvk_mem_stream_sync(struct nvk_device *dev,
+    return vk_sync_wait(&dev->vk, stream->sync, time_point,
+                        VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+ }
++
++void
++nvk_mem_stream_hold_mem(struct nvk_device *dev,
++                        struct nvk_mem_stream *stream,
++                        struct nvkmd_mem *mem)
++{
++   /* Without memory for the entry the reference is never dropped, so the
++    * mem leaks rather than being freed under the work reading it
++    */
++   struct nvk_mem_stream_held_mem *held =
++      vk_zalloc(&dev->vk.alloc, sizeof(*held), 8,
++                VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (held == NULL)
++      return;
++
++   held->mem = mem;
++   held->idle_time_point = stream->next_time_point;
++   list_addtail(&held->link, &stream->held_mems);
++}
++
++void
++nvk_mem_stream_drop_held_mems(struct nvk_device *dev,
++                              struct nvk_mem_stream *stream)
++{
++   if (list_is_empty(&stream->held_mems))
++      return;
++
++   struct nvk_mem_stream_held_mem *first =
++      list_first_entry(&stream->held_mems, struct nvk_mem_stream_held_mem,
++                       link);
++   if (stream->time_point_passed < first->idle_time_point &&
++       vk_sync_get_value(&dev->vk, stream->sync,
++                         &stream->time_point_passed) != VK_SUCCESS)
++      return;
++
++   list_for_each_entry_safe(struct nvk_mem_stream_held_mem, held,
++                            &stream->held_mems, link) {
++      if (held->idle_time_point > stream->time_point_passed)
++         break;
++
++      nvk_mem_stream_held_mem_destroy(dev, held);
++   }
++}
+--- a/src/nouveau/vulkan/nvk_mem_stream.h
++++ b/src/nouveau/vulkan/nvk_mem_stream.h
+@@ -12,6 +12,7 @@
+ struct nvk_device;
+ struct nvk_mem_stream_chunk;
+ struct nvkmd_ctx;
++struct nvkmd_mem;
+ struct vk_sync;
+ struct vk_sync_wait;
+ 
+@@ -30,6 +31,9 @@ struct nvk_mem_stream {
+ 
+    /* list of nvk_mem_stream_chunk */
+    struct list_head recycle;
++
++   /* Mems kept by nvk_mem_stream_hold_mem() */
++   struct list_head held_mems;
+ };
+ 
+ VkResult nvk_mem_stream_init(struct nvk_device *dev,
+@@ -73,4 +77,21 @@ VkResult nvk_mem_stream_sync(struct nvk_device *dev,
+                              struct nvk_mem_stream *stream,
+                              struct nvkmd_ctx *ctx);
+ 
++/** Takes the caller's reference to mem and keeps it until
++ * nvk_mem_stream_drop_held_mems() finds the GPU past the time point of the
++ * stream's next flush, or until the stream is finished, or for good if no
++ * memory is left to record it. Every reader of mem must be work submitted
++ * before that flush on the context it goes to.
++ */
++void nvk_mem_stream_hold_mem(struct nvk_device *dev,
++                             struct nvk_mem_stream *stream,
++                             struct nvkmd_mem *mem);
++
++/** Drops the held mems whose time point is at most the stream's
++ * time_point_passed, which it reads again from the stream's sync first when
++ * the oldest held mem's is above it. A failed read drops none.
++ */
++void nvk_mem_stream_drop_held_mems(struct nvk_device *dev,
++                                   struct nvk_mem_stream *stream);
++
+ #endif /* NVK_STREAM_H */
+--- a/src/nouveau/vulkan/nvk_queue.c
++++ b/src/nouveau/vulkan/nvk_queue.c
+@@ -46,6 +46,8 @@ nvk_queue_state_update(struct nvk_queue *queue,
+    uint32_t alloc_count, bytes_per_warp, bytes_per_tpc;
+    bool dirty = false;
+ 
++   nvk_mem_stream_drop_held_mems(dev, &queue->push_stream);
++
+    alloc_count = nvk_descriptor_table_alloc_count(&dev->images);
+    if (qs->images.alloc_count != alloc_count) {
+       qs->images.alloc_count = alloc_count;
+@@ -61,8 +63,15 @@ nvk_queue_state_update(struct nvk_queue *queue,
+    mem = nvk_slm_area_get_mem_ref(&dev->slm, &bytes_per_warp, &bytes_per_tpc);
+    if (qs->slm.mem != mem || qs->slm.bytes_per_warp != bytes_per_warp ||
+        qs->slm.bytes_per_tpc != bytes_per_tpc) {
+-      if (qs->slm.mem)
+-         nvkmd_mem_unref(qs->slm.mem);
++      if (qs->slm.mem) {
++         /* Shaders of the queue's earlier work may still read the old area,
++          * and the push below runs after that work. Copy queues run none.
++          */
++         if (queue->engines & (NVKMD_ENGINE_3D | NVKMD_ENGINE_COMPUTE))
++            nvk_mem_stream_hold_mem(dev, &queue->push_stream, qs->slm.mem);
++         else
++            nvkmd_mem_unref(qs->slm.mem);
++      }
+       qs->slm.mem = mem;
+       qs->slm.bytes_per_warp = bytes_per_warp;
+       qs->slm.bytes_per_tpc = bytes_per_tpc;
