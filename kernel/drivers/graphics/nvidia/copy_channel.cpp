@@ -145,6 +145,15 @@ int32_t copy_channel::fill(uint64_t offset, uint64_t bytes, uint32_t value) {
     return is_done ? OK : ERR_TIMEOUT;
 }
 
+void copy_channel::mark_hung() {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
+        m_is_hung = true;
+        sync::wake_all(m_waiters);
+        sync::spin_unlock_irqrestore(m_lock, irq);
+    });
+}
+
 /**
  * @note Privilege: **required**
  */

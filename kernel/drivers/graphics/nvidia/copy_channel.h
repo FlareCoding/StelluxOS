@@ -32,11 +32,11 @@ constexpr uint32_t COPY_SLOTS = 16;
  * so it must not run in an interrupt handler or under a spinlock.
  *
  * A fill still running `GPU_SUBMIT_TIMEOUT_NS` after it became the oldest one
- * running marks the channel hung until `destroy`: every later fill, and every
- * waiting fill whose copy has not finished, returns `ERR_TIMEOUT`. A caller
- * given `ERR_TIMEOUT` must keep the memory it asked filled, since the GPU may
- * still write it. Memory the GPU may still reach after a refused release or a
- * failed unmap stays allocated for good.
+ * running, or `mark_hung`, marks the channel hung until `destroy`: every later
+ * fill, and every waiting fill whose copy has not finished, returns
+ * `ERR_TIMEOUT`. A caller given `ERR_TIMEOUT` must keep the memory it asked
+ * filled, since the GPU may still write it. Memory the GPU may still reach
+ * after a refused release or a failed unmap stays allocated for good.
  */
 class copy_channel {
 public:
@@ -80,6 +80,13 @@ public:
      * hung. Only the `ERR_TIMEOUT` of the fill that marks it hung is logged.
      */
     int32_t fill(uint64_t offset, uint64_t bytes, uint32_t value);
+
+    /**
+     * @brief Mark the channel hung at once, without waiting for a deadline, so
+     * no fill waits on a copy that may never be seen to finish. Takes the
+     * channel's spinlock and never sleeps.
+     */
+    void mark_hung();
 
     /**
      * @brief Read the semaphore and wake every waiting fill, from the card's

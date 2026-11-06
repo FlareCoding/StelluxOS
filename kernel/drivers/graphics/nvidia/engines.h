@@ -248,7 +248,8 @@ private:
     // Fails the GPU core's device, logging `reason` once, and has the driver task report it
     void fail_device(const char* reason);
 
-    // Has the driver task report the failed GPU to the core, once, from any thread
+    // Marks the copy channel hung, so no create waits for its zeroing, and has the driver task report the failed GPU
+    // to the core, once, from any thread
     void report_failure();
 
     // The driver task's half of `report_failure()`: has the firmware free the user channels unless the GPU failed,
