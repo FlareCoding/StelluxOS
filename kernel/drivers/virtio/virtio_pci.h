@@ -2,6 +2,7 @@
 #define STELLUX_DRIVERS_VIRTIO_VIRTIO_PCI_H
 
 #include "common/types.h"
+#include "pci/pci.h"
 
 namespace drivers::virtio {
 
@@ -18,6 +19,9 @@ constexpr uint8_t VIRTIO_PCI_CAP_ISR_CFG     = 3;
 constexpr uint8_t VIRTIO_PCI_CAP_DEVICE_CFG  = 4;
 constexpr uint8_t VIRTIO_PCI_CAP_PCI_CFG     = 5;
 
+// The capability type of a shared memory region, whose number is the capability's `id`
+constexpr uint8_t VIRTIO_PCI_CAP_SHARED_MEMORY_CFG = 8;
+
 // Virtio PCI capability structure (in PCI config space)
 struct virtio_pci_cap {
     uint8_t  cap_vndr; // 0x09
@@ -29,6 +33,13 @@ struct virtio_pci_cap {
     uint8_t  padding[2];
     uint32_t offset;
     uint32_t length;
+} __attribute__((packed));
+
+// A capability whose offset and length take 64 bits, as a shared memory region's does
+struct virtio_pci_cap64 {
+    virtio_pci_cap cap;
+    uint32_t       offset_hi;
+    uint32_t       length_hi;
 } __attribute__((packed));
 
 // Virtio common configuration structure (mapped via BAR MMIO)
@@ -88,6 +99,12 @@ struct virtio_pci_config {
     bool     has_isr;
     bool     has_device;
 };
+
+// Whether `bar` is an assigned memory BAR holding the `length` bytes at `offset`
+bool shared_memory_fits_bar(const pci::bar& bar, uint64_t offset, uint64_t length);
+
+// The 64-bit offset and length `cap` lists, or false when its `cap_len` is too short to hold their upper words
+bool decode_shared_memory_cap(const virtio_pci_cap64& cap, uint64_t* out_offset, uint64_t* out_length);
 
 } // namespace drivers::virtio
 
