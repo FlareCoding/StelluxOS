@@ -59,6 +59,11 @@ struct stlxwin_window {
     uint32_t conf_w, conf_h;
     uint32_t conf_serial;
 
+    /* The newest WINDOW_OUTPUT, for the dispatching thread alone */
+    int      has_output;
+    uint32_t output;
+    int32_t  desktop_x, desktop_y;
+
     stlxwin_unacked_conf unacked_confs[STLXWIN_UNACKED_CONFS_MAX];
     uint32_t unacked_conf_count;
     uint32_t acked_serial;      /* the newest serial a commit of this window acked */

@@ -64,6 +64,7 @@ enum {
     SWP_MSG_MODE_RESULT    = 0x0208,
     SWP_MSG_GPU_INFO       = 0x0209,
     SWP_MSG_OUTPUTS        = 0x020A,
+    SWP_MSG_WINDOW_OUTPUT  = 0x020B,
     SWP_MSG_LAYOUT_RESULT  = 0x020C,
 };
 
@@ -439,6 +440,18 @@ typedef struct {
     swp_desktop_output outputs[SWP_OUTPUTS_MAX]; /* ascending output index, `count` used, the rest zero */
 } swp_outputs;
 _Static_assert(sizeof(swp_outputs) == 1288, "wire layout");
+
+/* A toplevel's output and position, sent after its first FRAME_DONE and
+ * at the end of each DM wakeup that finds either changed since the last
+ * one sent, after any OUTPUTS. During a drag or resize of the window, a
+ * change of position alone is sent only once the drag or resize ends.
+ * Never sent for popups. */
+typedef struct {
+    uint32_t win_id;
+    uint32_t output;        /* the member holding the largest part of the window and its decorations */
+    int32_t  x, y;          /* the content's top-left in desktop coordinates, inside the decorations */
+} swp_window_output;
+_Static_assert(sizeof(swp_window_output) == 16, "wire layout");
 
 /* What the DM did with a SET_LAYOUT: a refused request changes nothing
  * and gets the first refusal below that applies */
