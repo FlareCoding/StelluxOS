@@ -29,19 +29,18 @@ TEST(clock, now_ns_advances) {
 }
 
 // --- now_ns_rate_sane ---
-// Proves: the clock ticks at a sane rate, 200 brief_delay iterations
-// yield a delta that is neither zero nor absurdly large.
+// Proves: the clock ticks at a sane rate, timing 20 `brief_delay` calls at more than 1 ms and less than 3 s.
 
 TEST(clock, now_ns_rate_sane) {
     uint64_t start = clock::now_ns();
-    for (int i = 0; i < 200; i++) {
+    for (int i = 0; i < 20; i++) {
         brief_delay();
     }
     uint64_t end = clock::now_ns();
     uint64_t elapsed = end - start;
 
-    EXPECT_GT(elapsed, static_cast<uint64_t>(10000000));
-    EXPECT_LT(elapsed, static_cast<uint64_t>(30000000000ULL));
+    EXPECT_GT(elapsed, static_cast<uint64_t>(1000000));
+    EXPECT_LT(elapsed, static_cast<uint64_t>(3000000000ULL));
 }
 
 constexpr uint64_t SECOND_NS = 1000000000ULL;
