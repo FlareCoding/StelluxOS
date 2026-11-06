@@ -295,9 +295,11 @@ int32_t receive_within(
  * `regs` and `sequencer` as `run_cpu_sequencer` requires them, and a failed
  * run is logged and the wait goes on. A posted event whose payload holds its
  * 29 bytes of fields goes to `event_sink` as soon as it is read, unless the
- * sink is null, and one the sink takes is not logged. A lockdown notice with
- * a payload sets `is_in_lockdown` to whether it engages a lockdown, as
- * `gsp::is_in_lockdown` reports it.
+ * sink is null, and one the sink takes is not logged. An engine error or a
+ * queued MMU fault goes to `error_sink` as soon as it is read, unless that
+ * sink is null, and is then not logged. A lockdown notice with a payload sets
+ * `is_in_lockdown` to whether it engages a lockdown, as `gsp::is_in_lockdown`
+ * reports it.
  * @return `OK`, or the first error a read returns, with `ERR_TIMEOUT` logged.
  */
 int32_t receive_awaited(
@@ -310,16 +312,17 @@ int32_t receive_awaited(
     uint32_t payload_capacity,
     uint64_t deadline_ns,
     firmware_event_sink* event_sink,
+    firmware_error_sink* error_sink,
     bool& is_in_lockdown
 );
 
 /**
  * @brief Read every message the linked status queue holds, waiting for none,
  * through the loop that `receive_awaited` waits in, so CPU sequencers run,
- * events go to `event_sink` and lockdown notices set `is_in_lockdown` as they
- * do there. A message a read fails on stays in the queue. The call spins
- * without sleeping while reads find messages, a sequencer's waits counting
- * against `sequencer.deadline_ns`.
+ * events go to `event_sink`, channel errors to `error_sink` and lockdown
+ * notices set `is_in_lockdown` as they do there. A message a read fails on
+ * stays in the queue. The call spins without sleeping while reads find
+ * messages, a sequencer's waits counting against `sequencer.deadline_ns`.
  * @return `OK` once a read finds the queue empty, `ERR_BAD_MESSAGE`, logged,
  * for a message of function 0xFFFFFFFF, which is consumed, or the first error
  * a read returns, as `receive_within` returns it.
@@ -331,6 +334,7 @@ int32_t drain_status_queue(
     uint8_t* payload,
     uint32_t payload_capacity,
     firmware_event_sink* event_sink,
+    firmware_error_sink* error_sink,
     bool& is_in_lockdown
 );
 

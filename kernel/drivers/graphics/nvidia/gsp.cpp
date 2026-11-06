@@ -134,6 +134,7 @@ int32_t gsp::drain() {
         m_payload,
         MESSAGE_PAYLOAD_MAX_BYTES,
         m_event_sink,
+        m_error_sink,
         m_is_in_lockdown
     );
 }
@@ -325,7 +326,9 @@ void gsp::stop() {
     m_client = 0;
     m_internal_client = 0;
     m_internal_subdevice = 0;
+
     m_event_sink = nullptr;
+    m_error_sink = nullptr;
     m_failed = nullptr;
     m_handle_count = 0;
 }
@@ -383,6 +386,10 @@ int32_t gsp::internal_control(uint32_t command, void* params, size_t size) {
 
 void gsp::set_event_sink(firmware_event_sink* sink) {
     m_event_sink = sink;
+}
+
+void gsp::set_error_sink(firmware_error_sink* sink) {
+    m_error_sink = sink;
 }
 
 void gsp::set_failed_mark(failed_mark& failed) {
@@ -536,6 +543,7 @@ int32_t gsp::await_since(uint32_t function, received_message& out, uint64_t star
         MESSAGE_PAYLOAD_MAX_BYTES,
         start_ns + timeout_ns,
         m_event_sink,
+        m_error_sink,
         m_is_in_lockdown
     );
 }

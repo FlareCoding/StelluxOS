@@ -681,6 +681,8 @@ public:
         }
     }
 
+    void set_error_sink(drivers::nvidia::firmware_error_sink*) override {}
+
     // The handle of the allocation of `class_id`, or 0 when none was made
     rm::handle allocated(uint32_t class_id) const {
         for (uint32_t i = 0; i < recorded(); i++) {

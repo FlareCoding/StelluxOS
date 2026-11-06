@@ -103,6 +103,8 @@ public:
 
     void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
 
+    void set_error_sink(drivers::nvidia::firmware_error_sink*) override {}
+
 private:
     call* record() {
         call_count++;

@@ -125,6 +125,8 @@ public:
     }
 
     void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
+
+    void set_error_sink(drivers::nvidia::firmware_error_sink*) override {}
 };
 
 // The 3080's table fits one page, asked of the subdevice at entry 0, and its first asynchronous copy engine is CE2,
