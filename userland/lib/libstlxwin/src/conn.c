@@ -33,6 +33,13 @@ _Static_assert(STLXWIN_GPU_CPU_READS == SWP_GPU_CPU_READS, "stlxwin.h names prot
 _Static_assert(STLXWIN_GPU_BUFFERS_MAX == SWP_GPU_BUFFERS_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_GPU_DIMENSION_MAX == SWP_GPU_DIMENSION_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_FMT_XRGB8888 == SWP_FMT_XRGB8888, "stlxwin.h names proto.h's format");
+_Static_assert(STLXWIN_DESKTOP_MAIN == SWP_DESKTOP_MAIN, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_LAYOUT_APPLIED == SWP_LAYOUT_APPLIED, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_LAYOUT_UNSAVED == SWP_LAYOUT_UNSAVED, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_LAYOUT_STALE == SWP_LAYOUT_STALE, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_LAYOUT_INVALID == SWP_LAYOUT_INVALID, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_LAYOUT_OVERLAP == SWP_LAYOUT_OVERLAP, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_LAYOUT_APART == SWP_LAYOUT_APART, "stlxwin.h names proto.h's outcome");
 
 /* Blocking exact-count read, used only for the connect handshake */
 static int read_full(int fd, void* dst, size_t len) {
@@ -253,6 +260,34 @@ static int read_hello_gpu_info(int fd, swp_gpu_info* info) {
     return 0;
 }
 
+/* Keeps an OUTPUTS whose count fits its list. Returns 0, or -1 when malformed */
+static int keep_outputs(swp_outputs* kept, const swp_header* hdr, const uint8_t* payload) {
+    swp_outputs m;
+    if (hdr->type != SWP_MSG_OUTPUTS || hdr->length != sizeof(m)) {
+        return -1;
+    }
+
+    memcpy(&m, payload, sizeof(m));
+    if (m.count > SWP_OUTPUTS_MAX) {
+        return -1;
+    }
+
+    *kept = m;
+
+    return 0;
+}
+
+static int read_hello_outputs(int fd, swp_outputs* outputs) {
+    swp_header hdr;
+    uint8_t payload[sizeof(*outputs)];
+    if (read_full(fd, &hdr, sizeof(hdr)) != 0 || hdr.length != sizeof(payload) ||
+        read_full(fd, payload, sizeof(payload)) != 0) {
+        return -1;
+    }
+
+    return keep_outputs(outputs, &hdr, payload);
+}
+
 struct stlxwin_window* stlxwin_find_window(stlxwin_conn* conn,
                                            uint32_t win_id) {
     for (struct stlxwin_window* w = conn->windows; w; w = w->next) {
@@ -447,6 +482,27 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
         stlxwin_evq_push(conn, &ev);
         return;
     }
+    case SWP_MSG_OUTPUTS:
+        if (keep_outputs(&conn->outputs, hdr, payload) != 0) {
+            return;
+        }
+
+        ev.type = STLXWIN_EVT_OUTPUTS;
+        stlxwin_evq_push(conn, &ev);
+        return;
+    case SWP_MSG_LAYOUT_RESULT: {
+        swp_layout_result m;
+        if (hdr->length != sizeof(m)) {
+            return;
+        }
+
+        memcpy(&m, payload, sizeof(m));
+        ev.type = STLXWIN_EVT_LAYOUT_RESULT;
+        ev.layout_result.outcome = m.outcome;
+        ev.layout_result.generation = m.generation;
+        stlxwin_evq_push(conn, &ev);
+        return;
+    }
     default:
         return;
     }
@@ -574,14 +630,85 @@ int stlxwin_conn_fd(const stlxwin_conn* conn) {
     return conn ? conn->fd : -1;
 }
 
+static const swp_desktop_output* main_output(const stlxwin_conn* conn) {
+    for (uint32_t i = 0; i < conn->outputs.count; i++) {
+        if ((conn->outputs.outputs[i].flags & SWP_DESKTOP_MAIN) != 0) {
+            return &conn->outputs.outputs[i];
+        }
+    }
+
+    return NULL;
+}
+
 void stlxwin_screen_size(const stlxwin_conn* conn, uint32_t* w, uint32_t* h) {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    const swp_desktop_output* main = conn ? main_output(conn) : NULL;
+    if (main) {
+        width = main->width;
+        height = main->height;
+    } else if (conn) {
+        width = conn->screen_w;
+        height = conn->screen_h;
+    }
+
     if (w) {
-        *w = conn ? conn->screen_w : 0;
+        *w = width;
     }
 
     if (h) {
-        *h = conn ? conn->screen_h : 0;
+        *h = height;
     }
+}
+
+long stlxwin_outputs_get(stlxwin_conn* conn, uint32_t* generation,
+                         stlxwin_output* outputs, size_t capacity) {
+    const swp_outputs* kept = conn ? &conn->outputs : NULL;
+    if (generation) {
+        *generation = kept ? kept->generation : 0;
+    }
+
+    if (!kept) {
+        return 0;
+    }
+
+    size_t copied = kept->count < capacity ? kept->count : capacity;
+    for (size_t i = 0; i < copied; i++) {
+        const swp_desktop_output* in = &kept->outputs[i];
+        stlxwin_output* out = &outputs[i];
+
+        out->output = in->output;
+        out->flags = in->flags;
+        out->x = in->x;
+        out->y = in->y;
+        out->width = in->width;
+        out->height = in->height;
+
+        out->refresh_millihertz = in->refresh_millihertz;
+        out->work = (stlxwin_rect){ in->work.x, in->work.y, in->work.w, in->work.h };
+        memcpy(out->monitor, in->monitor, sizeof(out->monitor));
+        out->monitor[sizeof(out->monitor) - 1] = '\0';
+    }
+
+    return (long)kept->count;
+}
+
+int stlxwin_layout_set(stlxwin_conn* conn, uint32_t generation, uint32_t main,
+                       const stlxwin_layout_entry* entries, uint32_t count) {
+    if (!conn || count > SWP_OUTPUTS_MAX) {
+        return -1;
+    }
+
+    swp_set_layout msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.generation = generation;
+    msg.main = main;
+    msg.count = count;
+    for (uint32_t i = 0; i < count; i++) {
+        msg.entries[i] = (swp_layout_entry){ entries[i].output, entries[i].x, entries[i].y };
+    }
+
+    return stlxwin_send(conn, SWP_MSG_SET_LAYOUT, &msg, sizeof(msg));
 }
 
 stlxwin_gpu_info stlxwin_gpu_info_get(stlxwin_conn* conn) {
@@ -649,6 +776,13 @@ stlxwin_conn* stlxwin_connect(const char* app_id) {
         return NULL;
     }
 
+    swp_outputs outputs;
+    memset(&outputs, 0, sizeof(outputs));
+    if ((rhdr.flags & SWP_HELLO_OUTPUTS) && read_hello_outputs(fd, &outputs) != 0) {
+        close(fd);
+        return NULL;
+    }
+
     stlxwin_conn* conn = calloc(1, sizeof(*conn));
     if (!conn) {
         close(fd);
@@ -669,9 +803,11 @@ stlxwin_conn* stlxwin_connect(const char* app_id) {
     conn->fd = fd;
     conn->evq_cap = STLXWIN_EVQ_INITIAL;
     conn->next_win_id = 1;
+
     conn->screen_w = reply.screen_w;
     conn->screen_h = reply.screen_h;
     conn->gpu_info = gpu_info;
+    conn->outputs = outputs;
 
     return conn;
 }

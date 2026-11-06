@@ -94,6 +94,8 @@ typedef enum {
     STLXWIN_EVT_MODES,           /* a watched output's modes arrived, read them with stlxwin_modes_get */
     STLXWIN_EVT_MODE_RESULT,     /* the display manager's answer to a mode request or keep */
     STLXWIN_EVT_GPU_INFO,        /* which GPU buffers the display manager takes changed, see stlxwin_gpu_info_get */
+    STLXWIN_EVT_OUTPUTS,         /* what stlxwin_outputs_get gives changed, read it again */
+    STLXWIN_EVT_LAYOUT_RESULT,   /* the display manager's answer to a layout request */
 } stlxwin_event_type;
 
 #define STLXWIN_MODES_MAX   32u  /* the most modes an output lists */
@@ -101,7 +103,7 @@ typedef enum {
 
 enum {
     STLXWIN_OUTPUT_LIT     = 1u << 0,  /* the output shows a picture */
-    STLXWIN_OUTPUT_PRIMARY = 1u << 1,  /* the desktop's output */
+    STLXWIN_OUTPUT_PRIMARY = 1u << 1,  /* gfxfb's primary output */
 };
 
 enum {
@@ -133,6 +135,39 @@ typedef struct {
     uint32_t     flags;   /* STLXWIN_OUTPUT_* */
     stlxwin_mode current; /* zero while the output is dark */
 } stlxwin_modes_info;
+
+enum {
+    STLXWIN_DESKTOP_MAIN = 1u << 0,  /* the main output, carrying the bar and the dock, its top-left at (0, 0) */
+};
+
+/* An output's place in desktop coordinates, which count monitor pixels
+ * right and down from the main output's top-left */
+typedef struct {
+    uint32_t     output;
+    uint32_t     flags;              /* STLXWIN_DESKTOP_* */
+    int32_t      x, y;
+    uint32_t     width, height;      /* the mode's size, the last one while the output relights */
+    uint64_t     refresh_millihertz; /* 0 when unknown */
+    stlxwin_rect work;               /* the main output's place less the bar and the dock, else the place */
+    char         monitor[32];        /* "maker name", NUL-terminated, empty when the output reports no identity */
+} stlxwin_output;
+
+/* One output's top-left in a layout request */
+typedef struct {
+    uint32_t output;
+    int32_t  x, y;
+} stlxwin_layout_entry;
+
+/* What the display manager did for a layout request, the first refusal
+ * that applies. A generation numbers each change of the outputs. */
+enum {
+    STLXWIN_LAYOUT_APPLIED = 1,  /* applied and stored */
+    STLXWIN_LAYOUT_UNSAVED = 2,  /* applied but not stored, so kept for its monitors until the display manager exits */
+    STLXWIN_LAYOUT_STALE   = 3,  /* the generation is not the current one: nothing changed */
+    STLXWIN_LAYOUT_INVALID = 4,  /* entries not exactly the listed outputs with one as main, or a corner past 1 << 20 */
+    STLXWIN_LAYOUT_OVERLAP = 5,  /* two places overlap */
+    STLXWIN_LAYOUT_APART   = 6,  /* an output does not connect to the main output */
+};
 
 enum {
     STLXWIN_GPU_ACCEPTS   = 1u << 0,  /* the display manager takes buffers from /dev/gpuN, N being the device field */
@@ -169,7 +204,7 @@ typedef struct {
  * window content local. */
 typedef struct {
     stlxwin_event_type type;
-    stlxwin_window*    window;   /* NULL for DISCONNECTED, MODES, MODE_RESULT and GPU_INFO */
+    stlxwin_window*    window;   /* NULL for DISCONNECTED, MODES, MODE_RESULT, GPU_INFO, OUTPUTS and LAYOUT_RESULT */
     union {
         struct { uint16_t usage; uint8_t modifiers; uint32_t ch; } key;
         struct { int32_t x, y; } motion;
@@ -184,6 +219,10 @@ typedef struct {
             uint32_t     outcome;  /* STLXWIN_MODE_* */
             stlxwin_mode mode;     /* the mode the output is lit at when answered, zero while it is dark */
         } mode_result;
+        struct {
+            uint32_t outcome;      /* STLXWIN_LAYOUT_* */
+            uint32_t generation;   /* the newest OUTPUTS' when answered */
+        } layout_result;
     };
 } stlxwin_event;
 
@@ -220,10 +259,34 @@ void stlxwin_disconnect(stlxwin_conn* conn);
 int stlxwin_conn_fd(const stlxwin_conn* conn);
 
 /**
- * @brief The screen size the display manager reported on connect, so
- * toolkits can size and place windows before any configure arrives.
+ * @brief The main output's size as the newest OUTPUTS gives it, or the
+ * screen size reported on connect by a display manager that sends no
+ * OUTPUTS, so toolkits can size and place windows before any configure
+ * arrives.
  */
 void stlxwin_screen_size(const stlxwin_conn* conn, uint32_t* w, uint32_t* h);
+
+/**
+ * @brief Copy the generation and up to capacity of the outputs, in
+ * ascending index, as the connect handshake read them or the newest
+ * STLXWIN_EVT_OUTPUTS changed them.
+ * @return The number of outputs listed, which may exceed capacity, or 0
+ * with *generation 0 from a display manager that sends no OUTPUTS.
+ */
+long stlxwin_outputs_get(stlxwin_conn* conn, uint32_t* generation,
+                         stlxwin_output* outputs, size_t capacity);
+
+/**
+ * @brief Ask the display manager to place each output at its entry's
+ * top-left, with main as the main output, each keeping its mode's size.
+ * The entries must name each output stlxwin_outputs_get lists once, and
+ * generation must be the one it gave with them. The request is answered
+ * with one STLXWIN_EVT_LAYOUT_RESULT.
+ * @return 0, or -1 for a count above STLXWIN_OUTPUTS_MAX or when the
+ * message cannot be sent.
+ */
+int stlxwin_layout_set(stlxwin_conn* conn, uint32_t generation, uint32_t main,
+                       const stlxwin_layout_entry* entries, uint32_t count);
 
 /**
  * @brief Which GPU buffers the display manager takes, as the connect
