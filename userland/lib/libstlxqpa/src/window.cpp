@@ -381,6 +381,9 @@ void QStelluxWindow::handle_event(const stlxwin_event& event) {
         case STLXWIN_EVT_POPUP_DISMISSED:
             close_dismissed_popups();
             break;
+        case STLXWIN_EVT_WINDOW_OUTPUT:
+            handle_window_output();
+            break;
         default:
             break;
     }
@@ -457,6 +460,25 @@ void QStelluxWindow::handle_configure(const stlxwin_event& event) {
     QPlatformWindow::setGeometry(configured);
     QWindowSystemInterface::handleGeometryChange(window(), configured);
     QWindowSystemInterface::handleExposeEvent(window(), QRect(QPoint(), size));
+}
+
+// stlxdm places toplevels itself, so a toplevel takes the screen and position stlxdm names
+void QStelluxWindow::handle_window_output() {
+    uint32_t output = 0;
+    int32_t x = 0;
+    int32_t y = 0;
+    if (stlxwin_window_get_output(m_handle, &output, &x, &y) != 0) {
+        return;
+    }
+
+    QStelluxScreen* screen = QStelluxIntegration::instance()->screen_of(output);
+    if (screen) {
+        QWindowSystemInterface::handleWindowScreenChanged(window(), screen->screen());
+    }
+
+    QRect placed(QPoint(x, y), geometry().size());
+    QPlatformWindow::setGeometry(placed);
+    QWindowSystemInterface::handleGeometryChange(window(), placed);
 }
 
 // stlxdm has destroyed a dismissed popup already, so its client side is freed

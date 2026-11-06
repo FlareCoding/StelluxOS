@@ -36,6 +36,7 @@ private:
     void handle_key(const stlxwin_event& event);
     void handle_pointer(const stlxwin_event& event);
     void handle_configure(const stlxwin_event& event);
+    void handle_window_output();
     QPointF global_position(const QPointF& local) const;
 
     stlxwin_window* m_handle = nullptr;
