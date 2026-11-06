@@ -178,6 +178,14 @@ int32_t gsp::request(
     received_message& reply,
     uint64_t timeout_ns
 ) {
+    if (m_failed != nullptr && m_failed->is_set()) {
+        log::error(
+            "nvidia: the request of function 0x%X is not sent to the GSP's firmware, as the GPU is marked failed",
+            function
+        );
+        return ERR_GPU_FAILED;
+    }
+
     uint64_t start_ns = clock::now_ns();
 
     int32_t rc = m_queues.send(function, arguments, argument_bytes);
@@ -190,6 +198,15 @@ int32_t gsp::request(
 
     received_message received = {};
     rc = await_since(function, received, start_ns, timeout_ns);
+    if (rc == ERR_TIMEOUT && m_failed != nullptr) {
+        m_failed->set();
+        log::error(
+            "nvidia: the GPU is marked failed, as the GSP's firmware did not reply to the request of function 0x%X by "
+            "its deadline",
+            function
+        );
+    }
+
     if (rc != OK) {
         return rc;
     }
@@ -309,6 +326,7 @@ void gsp::stop() {
     m_internal_client = 0;
     m_internal_subdevice = 0;
     m_event_sink = nullptr;
+    m_failed = nullptr;
     m_handle_count = 0;
 }
 
@@ -365,6 +383,10 @@ int32_t gsp::internal_control(uint32_t command, void* params, size_t size) {
 
 void gsp::set_event_sink(firmware_event_sink* sink) {
     m_event_sink = sink;
+}
+
+void gsp::set_failed_mark(failed_mark& failed) {
+    m_failed = &failed;
 }
 
 int32_t gsp::request_control(rm::handle client, rm::handle object, uint32_t command, void* params, size_t size) {

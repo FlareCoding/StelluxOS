@@ -5,6 +5,7 @@
 
 #include "common/types.h"
 #include "drivers/graphics/nvidia/cpu_sequencer.h"
+#include "drivers/graphics/nvidia/failed_mark.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/message_queues.h"
 #include "drivers/graphics/nvidia/registers.h"
@@ -235,7 +236,8 @@ public:
      * `message_queues::send` returns when the request cannot be queued, which
      * is logged, what `receive_awaited` returns when its wait ends without the
      * reply, logged as its doc describes, or what `to_error` returns for the
-     * reply's result, logged with the status.
+     * reply's result, logged with the status. While the mark `set_failed_mark`
+     * names is set, it sends nothing and returns `ERR_GPU_FAILED`, logged.
      */
     int32_t request(
         uint32_t function,
@@ -407,11 +409,18 @@ public:
     void set_event_sink(firmware_event_sink* sink) override;
 
     /**
-     * @brief Free the payload buffer and drop the queues, the view of BAR0,
-     * the sequencer's context, the driver's client, the internal client's
-     * handles, the event sink and the count of handles, leaving the object as
-     * the default constructor makes it. The queues' memory is left as it is,
-     * and the firmware is not asked to release the client.
+     * @brief From this call on, have a reply missing at its deadline set
+     * `failed`, and have `request` send nothing while `failed` is set,
+     * whichever part set it.
+     * @param failed The GPU's failed mark, which must stay alive until `stop`.
+     */
+    void set_failed_mark(failed_mark& failed);
+
+    /**
+     * @brief Free the payload buffer and drop the rest of the object's state,
+     * leaving the object as the default constructor makes it. The queues'
+     * memory is left as it is, and the firmware is not asked to release the
+     * client.
      */
     void stop();
 
@@ -436,6 +445,7 @@ private:
     rm::handle            m_internal_client = 0;
     rm::handle            m_internal_subdevice = 0;
     firmware_event_sink*  m_event_sink = nullptr;
+    failed_mark*          m_failed = nullptr;
     uint32_t              m_handle_count = 0; // handles `new_handle` has given since the last `stop`
     bool                  m_is_in_lockdown = false;
 };

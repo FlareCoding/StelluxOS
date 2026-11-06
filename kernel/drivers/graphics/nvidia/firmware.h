@@ -44,6 +44,10 @@ public:
  * request is sent, until the firmware's reply arrives or `RECEIVE_TIMEOUT_NS`
  * passes, and only one thread may make the calls at a time, as only one may
  * use a `gsp`.
+ *
+ * From the driver task's start, a reply missing at its deadline marks the GPU
+ * failed, and once the GPU is marked failed each of those four calls returns
+ * `ERR_GPU_FAILED` in place of sending its request.
  */
 class firmware {
 public:
@@ -68,7 +72,8 @@ public:
      * refuses the allocation, or `ERR_BAD_MESSAGE` when the reply ends before
      * the parameters or a message in the status queue fails its checks. After
      * `ERR_TIMEOUT` or `ERR_BAD_MESSAGE` the firmware may hold the object.
-     * Every error is logged.
+     * Every error is logged. Once the GPU is marked failed, the call returns
+     * `ERR_GPU_FAILED` in place of sending its request.
      */
     virtual int32_t allocate(rm::handle parent, rm::handle object, uint32_t class_id, void* params, size_t size) = 0;
 
@@ -88,7 +93,8 @@ public:
      * the reply does not arrive in time, `ERR_FIRMWARE` when the firmware
      * refuses the request or the control, or `ERR_BAD_MESSAGE` when the reply
      * ends before the parameters or a message in the status queue fails its
-     * checks. Every error is logged.
+     * checks. Every error is logged. Once the GPU is marked failed, the call
+     * returns `ERR_GPU_FAILED` in place of sending its request.
      */
     virtual int32_t control(rm::handle object, uint32_t command, void* params, size_t size) = 0;
 
@@ -100,7 +106,8 @@ public:
      * when a message in the status queue fails its checks, or `ERR_FIRMWARE`
      * when the firmware refuses the release. After `ERR_TIMEOUT` or
      * `ERR_BAD_MESSAGE` the firmware may have released the object. Every
-     * error is logged.
+     * error is logged. Once the GPU is marked failed, the call returns
+     * `ERR_GPU_FAILED` in place of sending its request.
      */
     virtual int32_t release(rm::handle object) = 0;
 
@@ -131,7 +138,8 @@ public:
      * the reply does not arrive in time, `ERR_FIRMWARE` when the firmware
      * refuses the request or the control, or `ERR_BAD_MESSAGE` when the reply
      * ends before the parameters or a message in the status queue fails its
-     * checks. Every error is logged.
+     * checks. Every error is logged. Once the GPU is marked failed, the call
+     * returns `ERR_GPU_FAILED` in place of sending its request.
      */
     virtual int32_t internal_control(uint32_t command, void* params, size_t size) = 0;
 

@@ -21,6 +21,7 @@ TEST_SUITE(nvidia_message_queues);
 
 using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_FIRMWARE;
+using drivers::nvidia::ERR_GPU_FAILED;
 using drivers::nvidia::ERR_NOT_LINKED;
 using drivers::nvidia::ERR_QUEUE_EMPTY;
 using drivers::nvidia::ERR_QUEUE_FULL;
@@ -42,6 +43,7 @@ using drivers::nvidia::cpu_sequencer_context;
 using drivers::nvidia::disable_cpu_interrupt_tree;
 using drivers::nvidia::drain_status_queue;
 using drivers::nvidia::enable_cpu_interrupt_tree;
+using drivers::nvidia::failed_mark;
 using drivers::nvidia::gsp;
 using drivers::nvidia::gsp_vector_reading;
 using drivers::nvidia::interrupt_vectors;
@@ -1877,6 +1879,93 @@ TEST(nvidia_message_queues, request_hands_its_caller_the_reply_and_the_payload_t
     EXPECT_TRUE(is_stale(unanswered_payload, sizeof(unanswered_payload)));
 }
 
+// Sends `FUNCTION`'s request with no arguments, keeping the text it logs
+static int32_t request_logged(
+    gsp& conversation,
+    request_test_bar0& bar0,
+    received_message& reply,
+    uint64_t timeout_ns
+) {
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t rc = conversation.request(FUNCTION, nullptr, 0, 0, reply, timeout_ns);
+    log::set_backend(nullptr);
+
+    return rc;
+}
+
+// From `set_failed_mark` on, a reply missing at its deadline marks the GPU failed, and the next request returns at once
+// with nothing queued, the firmware not told and its reply left alone, each logged at error level with the function
+TEST(nvidia_message_queues, a_missed_reply_marks_the_gpu_failed_and_no_later_request_is_sent) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    failed_mark failed;
+    gsp conversation;
+
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    conversation.set_failed_mark(failed);
+    received_message unanswered = {};
+
+    EXPECT_EQ(request_logged(conversation, bar0, unanswered, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_TRUE(failed.is_set());
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the GPU is marked failed, as the GSP's firmware did not reply"));
+    EXPECT_TRUE(logged_text_contains("did not reply to the request of function 0x12345 by its deadline"));
+
+    received_message refused = {STALE_WORD, STALE_WORD, STALE_WORD, STALE_WORD};
+    bar0.write(GSP_QUEUE_HEAD0, STALE_WORD);
+    uint64_t start = clock::now_ns();
+    int32_t refused_rc = request_logged(conversation, bar0, refused, LONG_TIMEOUT_NS);
+    uint64_t took_ns = clock::now_ns() - start;
+
+    EXPECT_EQ(refused_rc, ERR_GPU_FAILED);
+    EXPECT_LT(took_ns, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(logged_line_count(), 1u);
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the request of function 0x12345 is not sent"));
+    EXPECT_TRUE(logged_text_contains("is not sent to the GSP's firmware, as the GPU is marked failed"));
+
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 1u);
+    EXPECT_EQ(bar0.read(GSP_QUEUE_HEAD0), STALE_WORD);
+    EXPECT_EQ(refused.function, STALE_WORD);
+}
+
+// `stop` drops the mark `set_failed_mark` gave, so after the next `start`, as before any mark is given, a reply missing
+// at its deadline leaves the mark clear and the next request is still sent and takes its reply
+TEST(nvidia_message_queues, stop_drops_the_failed_mark_so_a_missed_reply_leaves_later_requests_sent) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    queue_test_payload payload(24);
+    ASSERT_NOT_NULL(payload.bytes);
+
+    status_test_message message(1);
+    ASSERT_NOT_NULL(message.bytes);
+    failed_mark failed;
+    gsp conversation;
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    conversation.set_failed_mark(failed);
+
+    conversation.stop();
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    received_message unanswered = {};
+    EXPECT_EQ(conversation.request(FUNCTION, nullptr, 0, 0, unanswered, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
+    EXPECT_FALSE(failed.is_set());
+    store_function_message(memory, message, 0, FUNCTION, payload.bytes, payload.count);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+
+    received_message answered = {};
+    EXPECT_EQ(conversation.request(FUNCTION, nullptr, 0, 0, answered, LONG_TIMEOUT_NS), OK);
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 2u);
+}
+
 // NVIDIA's number for the first request sent after the ready message and the layout of its arguments, restated here
 // so the tests hold the request to NVIDIA's number and layout rather than to the driver's constants
 static constexpr uint32_t NVIDIA_SET_GUEST_SYSTEM_INFO = 0x01;
@@ -2916,6 +3005,27 @@ TEST(nvidia_message_queues, releases_carry_nvidias_layout_and_only_an_accepted_o
     const uint8_t* client_request = memory.element(3);
     EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + RELEASE_CLIENT_FIELD), NVIDIA_FIRST_CLIENT);
     EXPECT_EQ(field_at(client_request, MESSAGE_PAYLOAD + RELEASE_OBJECT_FIELD), NVIDIA_FIRST_CLIENT);
+}
+
+// Once another part marked the GPU failed, a release returns at once with nothing queued and the firmware not told
+TEST(nvidia_message_queues, a_release_is_not_sent_once_another_part_marked_the_gpu_failed) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    ASSERT_NOT_NULL(bar0.bytes);
+    failed_mark failed;
+    gsp conversation;
+
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+    failed.set();
+    conversation.set_failed_mark(failed);
+    bar0.write(GSP_QUEUE_HEAD0, STALE_WORD);
+
+    EXPECT_EQ(conversation.release(TEST_OBJECT), ERR_GPU_FAILED);
+    EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 0u);
+    EXPECT_EQ(bar0.read(GSP_QUEUE_HEAD0), STALE_WORD);
 }
 
 // Handles count up from NVIDIA's first, and `stop` drops the client and starts the count again for the next `start`

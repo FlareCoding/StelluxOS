@@ -1199,6 +1199,9 @@ void nvidia_gpu_driver::run() {
     dma::device_profile card_profile = dma::uncached_profile(m_chip->dma_address_bits);
     RUN_ELEVATED(card_profile = dma_profile(m_chip->dma_address_bits));
 
+    // From the task's start alone, so `detach()` after a failed `attach()` still asks the firmware to unload
+    m_gsp.set_failed_mark(m_failed);
+
     // Every failure is logged, and the display runs on without the engines or the GPU core's device
     if (m_engines.bring_up(regs, card_profile, *m_chip) == nvidia::OK) {
         m_engines.register_gpu(m_card_identity);
@@ -1228,6 +1231,7 @@ void nvidia_gpu_driver::run() {
 
         m_display_engine.log_first_second();
         m_operations.serve();
+        m_engines.report_marked_failure();
     }
 }
 

@@ -44,7 +44,8 @@ constexpr int32_t ERR_INVALID_ARG    = -13; // an argument lies outside what the
 constexpr int32_t ERR_NOT_REGISTERED = -14; // gfxfb refuses the display engine as its display, as when it cannot
                                             // create or publish its node or no memory is left for its records of the
                                             // lit outputs' base buffers
-constexpr int32_t ERR_GPU_FAILED     = -15; // the GPU is marked failed, as a GPU context's page table update failed
+constexpr int32_t ERR_GPU_FAILED     = -15; // the GPU is marked failed, as after a failed update of a GPU context's
+                                            // page tables or a reply the GSP's firmware missed
 
 // Nanoseconds per millisecond and per microsecond, for the sequencer's waits, the wait before each EDID reread, the
 // core channel's idle wait, the times the driver logs and mode times

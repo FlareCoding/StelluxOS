@@ -174,6 +174,16 @@ public:
      */
     int32_t register_gpu(const card_identity& identity);
 
+    /**
+     * @brief When the GPU's failed mark is set, mark the copy channel hung, so
+     * no create waits for its zeroing, and have the failed GPU reported to the
+     * GPU core, once, as the engines' own calls do for a failure they meet.
+     * The driver task calls it after each wake's work, for a mark set outside
+     * those calls, as by a reply the firmware missed for the display. It does
+     * nothing before `register_gpu` returns `OK`.
+     */
+    void report_marked_failure();
+
     void read_facts(gpu::device_facts& out) override;
     void read_memory(gpu_memory& out) override;
     int32_t read_timestamp(uint64_t& gpu_ns) override;
