@@ -77,7 +77,8 @@ public:
      * `nvidia::service_gsp_interrupt` for each GSP interrupt the handler
      * takes, then logs the light's first second of vertical blanks at the
      * first wake after the handler has serviced it. Every wake then runs the
-     * operations other contexts queued. It never returns.
+     * operations other contexts queued and has the engines report a failure
+     * marked outside their calls. It never returns.
      */
     void run() override;
 

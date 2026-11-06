@@ -232,6 +232,12 @@ int32_t engines::register_gpu(const card_identity& identity) {
     return OK;
 }
 
+void engines::report_marked_failure() {
+    if (m_device != nullptr && m_failed.is_set()) {
+        report_failure();
+    }
+}
+
 void engines::read_facts(gpu::device_facts& out) {
     memory_report memory = {};
     m_memory.report(memory);

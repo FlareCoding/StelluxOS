@@ -139,6 +139,9 @@ struct engines_test_access {
     // Gives `gpu_engines` the GPU core's device that registration would
     static void register_with(engines& gpu_engines, gpu::device& dev) { gpu_engines.m_device = &dev; }
 
+    // Takes the device back, as engines whose registration failed hold none
+    static void unregister(engines& gpu_engines) { gpu_engines.m_device = nullptr; }
+
     static bool is_listed(engines& gpu_engines, backend_queue& queue) {
         for (backend_queue& listed : gpu_engines.m_queues) {
             if (&listed == &queue) {
@@ -1270,6 +1273,58 @@ TEST(nvidia_engines, a_create_whose_zeroing_runs_when_the_gpu_fails_returns_at_o
 
     EXPECT_TRUE(engines_log_contains("stays allocated for good, since its zeroing may still write it"));
     EXPECT_FALSE(engines_log_contains("hung zeroing video memory"));
+}
+
+// A mark set outside the engines' calls, as a reply the firmware missed for the display sets it, ends a create waiting
+// for its zeroing once the driver task has the engines report it, and a report while the mark is clear does nothing
+TEST(nvidia_engines, a_failure_marked_outside_the_engines_ends_a_waiting_create_once_reported) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    const copy_channel& copier = *engines_test_access::copy_channel_of(fixture.gpu_engines);
+    uint32_t zeroing_entries = fixture.next_entry + 1;
+
+    engines_task_state state;
+    uint64_t start_ns = clock::now_ns();
+    sched::task* task = start_step(fixture, state, [](engines_fixture& f) { return f.create(); });
+    ASSERT_NOT_NULL(task);
+    bool has_submitted = publishes_entries(copier, zeroing_entries);
+    bool waits_for_its_zeroing = has_submitted && test_helpers::blocks_before_deadline(task);
+
+    fixture.gpu_engines.report_marked_failure();
+    engines_operations().serve();
+    bool has_failed_unmarked = has_device_failed(fixture);
+
+    fixture.failed.set();
+    fixture.gpu_engines.report_marked_failure();
+    EXPECT_TRUE(test_helpers::spin_wait(state.is_done));
+    uint64_t took_ns = clock::now_ns() - start_ns;
+    test_helpers::unpin(task);
+    engines_operations().serve();
+
+    EXPECT_TRUE(waits_for_its_zeroing);
+    EXPECT_FALSE(has_failed_unmarked);
+    EXPECT_EQ(state.result, gpu::ERR_DEVICE);
+    EXPECT_LT(took_ns, GPU_SUBMIT_TIMEOUT_NS);
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+    EXPECT_TRUE(has_device_failed(fixture));
+}
+
+// Engines whose registration failed report no marked failure, as the GPU core holds no device of theirs to fail, and
+// keep their copy vector on
+TEST(nvidia_engines, a_marked_failure_is_not_reported_before_registration) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    engines_test_access::unregister(fixture.gpu_engines);
+
+    fixture.failed.set();
+    fixture.gpu_engines.report_marked_failure();
+    // Registered again before the serve, so a wrongly queued report fails the fixture's device, not a null one
+    engines_test_access::register_with(fixture.gpu_engines, fixture.core_device);
+    engines_operations().serve();
+
+    EXPECT_FALSE(copy_channel_test_access::is_hung(*engines_test_access::copy_channel_of(fixture.gpu_engines)));
+    EXPECT_NOT_NULL(engines_test_access::published_copy_channel(fixture.gpu_engines));
+    EXPECT_FALSE(has_device_failed(fixture));
 }
 
 // Once the GPU failed, the CPU's view refuses and a release keeps the memory, which the GPU may still reach

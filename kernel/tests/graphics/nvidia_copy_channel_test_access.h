@@ -8,7 +8,7 @@
 namespace drivers::nvidia {
 
 // Reads the copy channel's push buffer and channel as the GPU would, writes its semaphore as a release would, sets
-// its sequence numbers and fill timeout, and reads and sets its deadline
+// its sequence numbers and fill timeout, reads and sets its deadline, and reads whether it is hung
 struct copy_channel_test_access {
     // The words of a push buffer slot, and where the semaphore lies in the channel's memory
     static constexpr uint32_t SLOT_WORDS       = 64;
@@ -35,6 +35,8 @@ struct copy_channel_test_access {
     static void set_deadline(copy_channel& copier, uint64_t deadline_ns) { copier.m_deadline_ns = deadline_ns; }
 
     static uint64_t deadline(const copy_channel& copier) { return copier.m_deadline_ns; }
+
+    static bool is_hung(const copy_channel& copier) { return copier.m_is_hung; }
 
     static const channel& queue(const copy_channel& copier) { return copier.m_channel; }
 };
