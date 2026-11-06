@@ -301,10 +301,15 @@ jobs:
           name: test-image-${{ matrix.arch }}
           path: images
 
+      - name: Open KVM
+        if: matrix.arch == 'x86_64'
+        run: sudo chmod 666 /dev/kvm
+
       - name: Run unit tests
         run: ./scripts/run_tests.sh ${{ matrix.arch }} 2>&1 | tee test-log-${{ matrix.arch }}.txt
         env:
           STLX_TEST_TIMEOUT: 240
+          QEMU_X86_64_ACCEL: kvm
 
       - name: Upload test log
         if: always()
