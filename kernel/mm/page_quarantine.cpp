@@ -5,8 +5,15 @@
 #include "sched/sched.h"
 #include "sched/task_exec_core.h"
 #include "sync/atomic.h"
+#include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 #include "hw/cpu.h"
 #include "common/logging.h"
+
+#ifdef STLX_UNIT_TESTS_ENABLED
+#include "dynpriv/dynpriv.h"
+#include "tests/memory/page_quarantine_test_access.h"
+#endif
 
 namespace page_quarantine {
 
@@ -19,10 +26,14 @@ constexpr size_t RANGE_FLUSH_LIMIT = 32 * pmm::PAGE_SIZE;
 __PRIVILEGED_DATA static pmm::phys_addr_t g_kernel_root = 0;
 __PRIVILEGED_DATA static sync::atomic<size_t> g_held_pages{0};
 
-// One drain at a time. The drainer never waits for a drain in progress, which
-// may belong to a task that cannot run while the drainer spins, and which
-// takes everything pending anyway.
+// One drain at a time. The drainer and a free past the threshold skip a drain
+// in progress and leave what it missed to the next, as a free must not wait.
 __PRIVILEGED_DATA static sync::atomic<uint32_t> g_drain_busy{0};
+
+// Tasks in `drain` waiting for the drain in progress to end, and the lock a
+// waiter holds from its failed claim until it sleeps.
+__PRIVILEGED_DATA static sync::wait_queue g_drain_waiters;
+__PRIVILEGED_DATA static sync::spinlock g_drain_wait_lock = sync::SPINLOCK_INIT;
 
 // Span of the batch being drained, owned by the drain in progress
 __PRIVILEGED_DATA static uintptr_t g_batch_lo = 0;
@@ -98,8 +109,32 @@ __PRIVILEGED_CODE static bool try_claim_drain() {
     return g_drain_busy.cmpxchg_strong_acquire(idle, 1);
 }
 
+// The drain in progress may belong to this CPU's idle task, which runs only
+// once nothing else can, so a waiter sleeps. An idle task waiter yields.
+__PRIVILEGED_CODE static void claim_drain() {
+    if (sched::current()->exec.flags & sched::TASK_FLAG_IDLE) {
+        while (!try_claim_drain()) {
+            sched::yield();
+        }
+
+        return;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(g_drain_wait_lock);
+    while (!try_claim_drain()) {
+        irq = sync::wait(g_drain_waiters, g_drain_wait_lock, irq);
+    }
+
+    sync::spin_unlock_irqrestore(g_drain_wait_lock, irq);
+}
+
 __PRIVILEGED_CODE static void release_drain() {
     g_drain_busy.store_release(0);
+
+    // Under the lock, so a waiter that just failed its claim is still woken
+    sync::irq_state irq = sync::spin_lock_irqsave(g_drain_wait_lock);
+    sync::wake_all(g_drain_waiters);
+    sync::spin_unlock_irqrestore(g_drain_wait_lock, irq);
 }
 
 // The caller owns the drain. Every retired range is invalidated before the
@@ -148,6 +183,7 @@ __PRIVILEGED_CODE static void drainer_main(void*) {
 
 __PRIVILEGED_CODE void init(pmm::phys_addr_t kernel_root) {
     g_kernel_root = kernel_root;
+    g_drain_waiters.init();
 }
 
 __PRIVILEGED_CODE int32_t start() {
@@ -169,8 +205,11 @@ __PRIVILEGED_CODE int32_t admit(uintptr_t addr) {
 
     size_t pages = range.size / pmm::PAGE_SIZE;
     size_t held = g_held_pages.fetch_add_relaxed(pages) + pages;
-    if (held >= DRAIN_THRESHOLD_PAGES && cpu::irqs_enabled()) {
-        drain();
+
+    bool is_backlog_large = held >= DRAIN_THRESHOLD_PAGES;
+    if (is_backlog_large && cpu::irqs_enabled() && try_claim_drain()) {
+        flush_and_reclaim_retired();
+        release_drain();
     }
 
     return OK;
@@ -181,13 +220,19 @@ __PRIVILEGED_CODE void drain() {
         log::fatal("page_quarantine: drained with interrupts disabled");
     }
 
-    // Yielding lets a drain that was preempted on this CPU finish first
-    while (!try_claim_drain()) {
-        sched::yield();
-    }
-
+    claim_drain();
     flush_and_reclaim_retired();
     release_drain();
 }
+
+#ifdef STLX_UNIT_TESTS_ENABLED
+void drain_claim_test_access::hold() {
+    RUN_ELEVATED(claim_drain());
+}
+
+void drain_claim_test_access::release() {
+    RUN_ELEVATED(release_drain());
+}
+#endif
 
 } // namespace page_quarantine

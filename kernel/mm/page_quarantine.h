@@ -10,8 +10,7 @@ constexpr int32_t OK            = 0;
 constexpr int32_t ERR_NO_MEM    = -1; // the drainer task could not be created
 constexpr int32_t ERR_NOT_FOUND = -2; // not a live allocation, or freed already
 
-// A freer that can wait drains once this much is held, so the footprint
-// never depends on the drainer being scheduled
+// A free with interrupts enabled drains once this much is held, unless a drain is in progress
 constexpr size_t DRAIN_THRESHOLD_PAGES = 2048;
 
 /**
@@ -28,11 +27,11 @@ constexpr size_t DRAIN_THRESHOLD_PAGES = 2048;
  * flush, and only then returns frames to the PMM and addresses to the KVA
  * allocator. Page tables emptied by any unmap are retired the same way and
  * freed by a drain after a full flush, so no CPU can walk a reused table.
- * The `vmreclaimd` task drains periodically and a freer that can wait drains
- * once the backlog grows past a threshold, which bounds how much memory is
- * held. Correctness never depends on either: memory left in quarantine is
- * merely unavailable until the next drain, and `vmm` drains on demand when
- * an allocation would otherwise fail.
+ * The `vmreclaimd` task drains periodically and a free with interrupts
+ * enabled drains, if no drain is in progress, once the backlog grows past a
+ * threshold, which bounds how much memory is held. Correctness never depends
+ * on either: memory left in quarantine is merely unavailable until the next
+ * drain, and `vmm` drains on demand when an allocation would otherwise fail.
  */
 
 /**
@@ -63,7 +62,8 @@ __PRIVILEGED_CODE int32_t admit(uintptr_t addr);
  * @brief Flush every retired range on every CPU and return the ranges and
  * their frames to the allocators. On return, everything admitted before the
  * call is reusable. Requires interrupts enabled, like the system-wide flush
- * it performs.
+ * it performs. Sleeps while another drain is in progress, so the caller
+ * must be able to sleep. An idle task, which cannot sleep, yields instead.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void drain();
