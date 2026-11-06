@@ -83,6 +83,28 @@ struct user_page {
     T* at(size_t offset) { return reinterpret_cast<T*>(bytes + offset); }
 };
 
+// A zeroed buffer a suite's tests take in turn, so a large fake is allocated once per suite rather than per test. A
+// take while a test holds it, or of another size, gets a buffer of its own
+class shared_zeroed_buffer {
+public:
+    // `bytes` zeroed bytes, or null when they cannot be allocated
+    uint8_t* take(size_t bytes);
+
+    // Ends a take, freeing a buffer of the test's own or keeping the shared one for the next take, so nothing may
+    // reach the buffer afterwards
+    void give_back(uint8_t* buffer);
+
+    // Frees the shared buffer once no test holds it, from the suite's `AFTER_ALL`
+    void free();
+
+private:
+    void clear();
+
+    uint8_t* m_buffer   = nullptr;
+    size_t   m_bytes    = 0;
+    bool     m_is_taken = false;
+};
+
 inline bool spin_wait(const sync::atomic<uint32_t>& flag) {
     uint64_t deadline = clock::now_ns() + SPIN_TIMEOUT_NS;
     while (!flag.load_acquire()) {

@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
@@ -291,6 +292,16 @@ struct poll_then_write_sequencer {
 
     uint32_t write[3] = {SEQUENCER_WRITE, WRITTEN_REGISTER, WRITTEN_VALUE};
 };
+
+// The buffer a `request_test_bar0` takes while no other one holds it, freed after the suite's last test
+static test_helpers::shared_zeroed_buffer g_bar0_buffer;
+
+static int32_t free_bar0_buffer() {
+    g_bar0_buffer.free();
+    return 0;
+}
+
+AFTER_ALL(nvidia_message_queues, free_bar0_buffer);
 
 // NVIDIA's checksum of a message's first `bytes` bytes, which must be a multiple of 8: the XOR of its 8-byte words,
 // folded to 32 bits
@@ -1445,10 +1456,10 @@ static constexpr uint32_t PROCESSOR_SUSPENDED = 0x80000000;
 struct request_test_bar0 {
     static constexpr uint32_t BYTES = 0x1000000;
 
-    uint8_t*  bytes = static_cast<uint8_t*>(heap::uzalloc(BYTES));
+    uint8_t*  bytes = g_bar0_buffer.take(BYTES);
     registers regs{reinterpret_cast<uintptr_t>(bytes)};
 
-    ~request_test_bar0() { heap::ufree(bytes); }
+    ~request_test_bar0() { g_bar0_buffer.give_back(bytes); }
 
     uint32_t read(uint32_t offset) const { return *reinterpret_cast<uint32_t*>(bytes + offset); }
     void write(uint32_t offset, uint32_t value) { *reinterpret_cast<uint32_t*>(bytes + offset) = value; }

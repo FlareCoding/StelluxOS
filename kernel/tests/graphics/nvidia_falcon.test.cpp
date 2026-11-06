@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "clock/clock.h"
 #include "drivers/graphics/nvidia/bar0_window.h"
 #include "drivers/graphics/nvidia/bar1.h"
@@ -76,18 +77,28 @@ static constexpr uint64_t SHORT_TIMEOUT_NS = 1000000;
 // 1 ms
 static constexpr uint64_t RESET_TIME_LIMIT_NS = 100000000;
 
+// The buffer a `falcon_bar0` takes while no other one holds it, freed after the suite's last test
+static test_helpers::shared_zeroed_buffer g_bar0_buffer;
+
 // A zeroed fake of BAR0, all 16 MiB of it
 struct falcon_bar0 {
     static constexpr size_t BYTES = 0x1000000;
 
-    uint8_t*  bytes = static_cast<uint8_t*>(heap::uzalloc(BYTES));
+    uint8_t*  bytes = g_bar0_buffer.take(BYTES);
     registers regs{reinterpret_cast<uintptr_t>(bytes)};
 
-    ~falcon_bar0() { heap::ufree(bytes); }
+    ~falcon_bar0() { g_bar0_buffer.give_back(bytes); }
 
     uint32_t read(uint32_t offset) const { return *reinterpret_cast<uint32_t*>(bytes + offset); }
     void write(uint32_t offset, uint32_t value) { *reinterpret_cast<uint32_t*>(bytes + offset) = value; }
 };
+
+static int32_t free_bar0_buffer() {
+    g_bar0_buffer.free();
+    return 0;
+}
+
+AFTER_ALL(nvidia_falcon, free_bar0_buffer);
 
 // The registers as an RTX 3080 reports them before and after its GSP's falcon is reset, with a RISC-V core that is
 // not selected and a falcon that never reports it is ready for a reset, and the chip's `PMC_BOOT_0` value

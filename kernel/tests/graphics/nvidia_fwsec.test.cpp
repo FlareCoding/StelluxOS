@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "clock/clock.h"
 #include "common/string.h"
 #include "drivers/graphics/nvidia/falcon.h"
@@ -64,17 +65,27 @@ static constexpr uint32_t SIGNATURE_BYTES             = 384;
 // An interface entry id other than the DMEM mapper's
 static constexpr uint32_t OTHER_ENTRY_ID = 0x5;
 
+// The buffer a `fuse_bar0` takes while no other one holds it, freed after the suite's last test
+static test_helpers::shared_zeroed_buffer g_bar0_buffer;
+
 // A zeroed fake of BAR0, all 16 MiB of it
 struct fuse_bar0 {
     static constexpr size_t BYTES = 0x1000000;
 
-    uint8_t* bytes = static_cast<uint8_t*>(heap::uzalloc(BYTES));
+    uint8_t* bytes = g_bar0_buffer.take(BYTES);
     registers regs{reinterpret_cast<uintptr_t>(bytes)};
 
-    ~fuse_bar0() { heap::ufree(bytes); }
+    ~fuse_bar0() { g_bar0_buffer.give_back(bytes); }
 
     void write(uint32_t offset, uint32_t value) { *reinterpret_cast<uint32_t*>(bytes + offset) = value; }
 };
+
+static int32_t free_bar0_buffer() {
+    g_bar0_buffer.free();
+    return 0;
+}
+
+AFTER_ALL(nvidia_fwsec, free_bar0_buffer);
 
 // Writes the fuse register of the program with `ucode_id`, which may name a register just outside the 16
 static void put_fuses(fuse_bar0& bar0, uint32_t ucode_id, uint32_t fuses) {
@@ -844,6 +855,9 @@ TEST(nvidia_fwsec, sb_copy_is_kept_when_its_load_times_out) {
     ASSERT_NOT_NULL(expected_bar0.bytes);
     write_rtx_3080_fwsec(rom, RTX_3080_FWSEC);
     build_expected(rom, RTX_3080_FWSEC, RTX_3080_MAPPER, SB_COMMAND, RTX_3080_SIGNATURE, image.expected);
+
+    // Two fakes sharing their bytes would match whatever the run wrote
+    ASSERT_NE(bar0.bytes, expected_bar0.bytes);
 
     dma::buffer kept = {};
     uint64_t start = clock::now_ns();

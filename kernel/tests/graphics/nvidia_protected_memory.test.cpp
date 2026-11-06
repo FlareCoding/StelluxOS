@@ -3,11 +3,11 @@
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "clock/clock.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/protected_memory.h"
 #include "drivers/graphics/nvidia/registers.h"
-#include "mm/heap.h"
 
 TEST_SUITE(nvidia_protected_memory);
 
@@ -55,17 +55,27 @@ static constexpr uint64_t VALID_VGA_WORKSPACE_BYTES = 0x20000;
 // NVIDIA's deadline for the boot firmware: 50 ms to start and 2 s to finish
 static constexpr uint64_t NVIDIA_BOOT_FIRMWARE_TIMEOUT_NS = 2050000000;
 
+// The buffer a `fake_bar0` takes while no other one holds it, freed after the suite's last test
+static test_helpers::shared_zeroed_buffer g_bar0_buffer;
+
 // A zeroed fake of BAR0, all 16 MiB of it
 struct fake_bar0 {
     static constexpr size_t BYTES = 0x1000000;
 
-    uint8_t* bytes = static_cast<uint8_t*>(heap::uzalloc(BYTES));
+    uint8_t* bytes = g_bar0_buffer.take(BYTES);
     registers regs{reinterpret_cast<uintptr_t>(bytes)};
 
-    ~fake_bar0() { heap::ufree(bytes); }
+    ~fake_bar0() { g_bar0_buffer.give_back(bytes); }
 
     void write(uint32_t offset, uint32_t value) { *reinterpret_cast<uint32_t*>(bytes + offset) = value; }
 };
+
+static int32_t free_bar0_buffer() {
+    g_bar0_buffer.free();
+    return 0;
+}
+
+AFTER_ALL(nvidia_protected_memory, free_bar0_buffer);
 
 // The boot firmware's registers as an RTX 3080 reports them once its boot firmware has finished
 static constexpr uint32_t RTX_3080_READ_PROTECTION = 0x8B8F;
