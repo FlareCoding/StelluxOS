@@ -221,6 +221,23 @@ int32_t read_link_status(
     bool& is_read
 );
 
+/**
+ * @brief Clear the bit by which a monitor whose DPCD gives revision 1.2 or
+ * later says its link status changed, so it can pulse again for its next
+ * change: read its link service interrupt byte at 0x02005, logged, and write
+ * bit 1 back when it is set. A read or write left without an acknowledgment of
+ * its byte, a refused one included, is logged and leaves the bit.
+ * @param dpcd The capabilities `read_output_dpcd` read.
+ * @return `OK`, also after such a read or write, else the logged error of a
+ * request that `firmware::control` fails other than with `ERR_FIRMWARE`.
+ */
+int32_t clear_link_status_changed(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    const dpcd_capabilities& dpcd
+);
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_DISPLAY_DPCD_H
