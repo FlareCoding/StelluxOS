@@ -8,10 +8,15 @@ TEST_SUITE(virtio_gpu_backend);
 
 using drivers::context_id;
 using drivers::context_id_allocator;
+using drivers::free_returned_lists;
 using drivers::list_page_runs;
 using drivers::region_allocator;
 using drivers::region_range;
+using drivers::ring_placement;
+using drivers::send_ring;
 using drivers::virtio::virtio_gpu_mem_entry;
+using drivers::virtio_gpu_submission;
+using drivers::write_placed;
 
 static constexpr uint64_t PAGE_BYTES = 0x1000;
 
@@ -193,4 +198,182 @@ TEST(virtio_gpu_backend, page_runs_refuse_one_run_past_their_capacity) {
 
     EXPECT_EQ(list_page_runs(pages, 3, entries, 2), static_cast<size_t>(0));
     EXPECT_EQ(list_page_runs(pages, 3, entries, 3), static_cast<size_t>(3));
+}
+
+TEST(virtio_gpu_backend, send_ring_lists_follow_one_another_without_wrapping) {
+    send_ring ring = {};
+    ring.init(1000);
+
+    ring_placement first = ring.place(300);
+    EXPECT_FALSE(ring.wraps(700));
+    ring_placement second = ring.place(700);
+
+    EXPECT_EQ(first.offset, 0u);
+    EXPECT_EQ(first.first_bytes, 300u);
+    EXPECT_EQ(first.second_bytes, 0u);
+
+    EXPECT_EQ(second.offset, 300u);
+    EXPECT_EQ(second.first_bytes, 700u);
+    EXPECT_EQ(second.second_bytes, 0u);
+    EXPECT_FALSE(ring.has_room(1));
+}
+
+TEST(virtio_gpu_backend, a_send_ring_list_crossing_the_end_continues_at_the_start) {
+    send_ring ring = {};
+    ring.init(1000);
+
+    ring.place(600);
+    ring.place(300);
+    ring.free_oldest(600);
+
+    ASSERT_TRUE(ring.has_room(400));
+    EXPECT_TRUE(ring.wraps(400));
+    ring_placement wrapped = ring.place(400);
+
+    EXPECT_EQ(wrapped.offset, 900u);
+    EXPECT_EQ(wrapped.first_bytes, 100u);
+    EXPECT_EQ(wrapped.second_bytes, 300u);
+    EXPECT_FALSE(ring.has_room(301));
+    EXPECT_TRUE(ring.has_room(300));
+}
+
+TEST(virtio_gpu_backend, a_send_ring_list_ending_at_the_end_leaves_the_next_at_the_start) {
+    send_ring ring = {};
+    ring.init(1000);
+
+    ring.place(400);
+    ring.free_oldest(400);
+    ring_placement to_end = ring.place(600);
+
+    EXPECT_EQ(to_end.first_bytes, 600u);
+    EXPECT_EQ(to_end.second_bytes, 0u);
+    EXPECT_FALSE(ring.wraps(400));
+
+    ring_placement next = ring.place(400);
+    EXPECT_EQ(next.offset, 0u);
+    EXPECT_EQ(next.first_bytes, 400u);
+}
+
+TEST(virtio_gpu_backend, send_ring_room_returns_as_the_oldest_lists_free) {
+    send_ring ring = {};
+    ring.init(1000);
+
+    ring.place(500);
+    ring.place(500);
+    EXPECT_FALSE(ring.has_room(1));
+
+    ring.free_oldest(500);
+    EXPECT_TRUE(ring.has_room(500));
+    EXPECT_FALSE(ring.has_room(501));
+
+    ring.free_oldest(500);
+    EXPECT_TRUE(ring.has_room(1000));
+}
+
+// Three whole rings of a size that does not divide 2^32 carry an unreduced offset past 32 bits
+static constexpr uint32_t ODD_RING_BYTES = 0x7FFFFFFF;
+
+TEST(virtio_gpu_backend, send_ring_offsets_stay_in_the_ring_past_4_gib_of_lists) {
+    send_ring ring = {};
+    ring.init(ODD_RING_BYTES);
+
+    for (uint32_t i = 0; i < 3; i++) {
+        ring.place(ODD_RING_BYTES);
+        ring.free_oldest(ODD_RING_BYTES);
+    }
+
+    EXPECT_EQ(ring.place(1).offset, 0u);
+}
+
+TEST(virtio_gpu_backend, a_send_ring_write_crossing_the_end_continues_at_the_start) {
+    uint8_t ring[16] = {};
+    ring_placement placement = {12, 4, 6};
+    const uint8_t source[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+
+    // The first write copies its 3 bytes only, short of the ring's end
+    write_placed(ring, placement, 0, source, 3);
+    EXPECT_EQ(ring[15], 0);
+
+    write_placed(ring, placement, 3, source + 3, 7);
+    const uint8_t expected[16] = {5, 6, 7, 8, 9, 10, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4};
+    EXPECT_EQ(string::memcmp(ring, expected, sizeof(ring)), 0);
+}
+
+TEST(virtio_gpu_backend, a_send_ring_write_wholly_past_the_end_follows_the_bytes_wrapped_before_it) {
+    uint8_t ring[16] = {};
+    ring_placement placement = {12, 4, 8};
+    const uint8_t source[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+
+    write_placed(ring, placement, 0, source, 5);
+    write_placed(ring, placement, 5, source + 5, 7);
+
+    const uint8_t expected[16] = {5, 6, 7, 8, 9, 10, 11, 12, 0, 0, 0, 0, 1, 2, 3, 4};
+    EXPECT_EQ(string::memcmp(ring, expected, sizeof(ring)), 0);
+}
+
+static virtio_gpu_submission returning_slots[GPU_QUEUE_PENDING_MAX];
+
+TEST(virtio_gpu_backend, returned_lists_free_in_order_once_the_oldest_returns) {
+    send_ring ring = {};
+    ring.init(1000);
+    for (uint64_t sequence = 1; sequence <= 3; sequence++) {
+        returning_slots[sequence].ring_bytes = 300;
+        returning_slots[sequence].is_answered_ok = true;
+        ring.place(300);
+    }
+
+    returning_slots[2].has_returned = true;
+    bool is_refused = true;
+    EXPECT_EQ(free_returned_lists(returning_slots, ring, 0, 3, is_refused), static_cast<uint64_t>(0));
+    EXPECT_FALSE(is_refused);
+    EXPECT_FALSE(ring.has_room(101));
+
+    returning_slots[1].has_returned = true;
+    EXPECT_EQ(free_returned_lists(returning_slots, ring, 0, 3, is_refused), static_cast<uint64_t>(2));
+    EXPECT_TRUE(ring.has_room(700));
+    EXPECT_FALSE(ring.has_room(701));
+    EXPECT_FALSE(returning_slots[2].has_returned);
+}
+
+static virtio_gpu_submission refused_slots[GPU_QUEUE_PENDING_MAX];
+
+TEST(virtio_gpu_backend, returned_lists_from_a_refused_one_on_stay_unfinished) {
+    send_ring ring = {};
+    ring.init(1000);
+    for (uint64_t sequence = 1; sequence <= 5; sequence++) {
+        refused_slots[sequence].ring_bytes = 100;
+        refused_slots[sequence].has_returned = true;
+        refused_slots[sequence].is_answered_ok = sequence != 3;
+        ring.place(100);
+    }
+
+    bool is_refused = false;
+    EXPECT_EQ(free_returned_lists(refused_slots, ring, 0, 5, is_refused), static_cast<uint64_t>(2));
+    EXPECT_TRUE(is_refused);
+    EXPECT_TRUE(refused_slots[3].has_returned);
+
+    is_refused = false;
+    EXPECT_EQ(free_returned_lists(refused_slots, ring, 2, 5, is_refused), static_cast<uint64_t>(2));
+    EXPECT_TRUE(is_refused);
+    EXPECT_TRUE(ring.has_room(700));
+    EXPECT_FALSE(ring.has_room(701));
+}
+
+static virtio_gpu_submission wrapping_slots[GPU_QUEUE_PENDING_MAX];
+
+TEST(virtio_gpu_backend, returned_lists_finish_across_the_slots_wrap) {
+    send_ring ring = {};
+    ring.init(1000);
+    for (uint64_t sequence = 63; sequence <= 66; sequence++) {
+        virtio_gpu_submission& sub = wrapping_slots[sequence % GPU_QUEUE_PENDING_MAX];
+        sub.ring_bytes = 100;
+        sub.has_returned = true;
+        sub.is_answered_ok = true;
+        ring.place(100);
+    }
+
+    bool is_refused = true;
+    EXPECT_EQ(free_returned_lists(wrapping_slots, ring, 62, 66, is_refused), static_cast<uint64_t>(66));
+    EXPECT_FALSE(is_refused);
+    EXPECT_TRUE(ring.has_room(1000));
 }

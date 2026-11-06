@@ -33,6 +33,7 @@ constexpr uint32_t VIRTIO_GPU_CMD_CTX_CREATE          = 0x0200;
 constexpr uint32_t VIRTIO_GPU_CMD_CTX_DESTROY         = 0x0201;
 constexpr uint32_t VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE = 0x0202;
 constexpr uint32_t VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE = 0x0203;
+constexpr uint32_t VIRTIO_GPU_CMD_SUBMIT_3D           = 0x0207;
 constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB   = 0x0208;
 
 constexpr uint32_t VIRTIO_GPU_CMD_UPDATE_CURSOR = 0x0300;
@@ -238,6 +239,17 @@ struct virtio_gpu_ctx_resource {
     uint32_t padding;
 } __attribute__((packed));
 
+// Header flags asking the host to answer once the work completes, in order on `ring_idx`, a queue inside the context
+constexpr uint32_t VIRTIO_GPU_FLAG_FENCE         = 1u << 0;
+constexpr uint32_t VIRTIO_GPU_FLAG_INFO_RING_IDX = 1u << 1;
+
+// Hands `size` bytes of commands, which follow it, to the context the header names
+struct virtio_gpu_cmd_submit {
+    virtio_gpu_ctrl_hdr hdr;
+    uint32_t size;
+    uint32_t padding;
+} __attribute__((packed));
+
 } // namespace drivers::virtio
 
 namespace drivers {
@@ -381,7 +393,9 @@ struct virtio_gpu_scanout {
  * Before any other work, the task registers the device's 3D path with the GPU
  * core when the device offers what venus needs (`virtio_gpu_backend`). The 3D
  * path's commands share the control queue and the batch lock, and the task
- * serves the path's releases and destroys after the display's work.
+ * serves the path's command lists, releases and destroys after the display's
+ * work. The lists stay on the control queue outside any batch, in at most the
+ * descriptors a full batch leaves.
  */
 class virtio_gpu_driver : public virtio_pci_driver, public gfxfb::display {
 public:
@@ -519,8 +533,29 @@ private:
     );
     void set_latch_timer(virtio_gpu_scanout& scanout);
     static void report_latch(timer::deadline_timer* latch_timer);
-    bool has_task_work() const;
+    bool has_task_work();
     task_work wait_for_work();
+
+    /**
+     * Waits on `m_work_wq` under `m_work_lock`, until the 3D path's earliest
+     * stop deadline when it has one.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE sync::irq_state wait_for_wake(sync::irq_state irq);
+
+    bool is_on_task() const;
+
+    // The task only tries the lock, waiting for wakes between tries, so it checks stop deadlines while another holds
+    // it. Every holder must release it with `unlock_batch()`, which wakes a task waiting for it
+    void lock_batch();
+    void unlock_batch();
+    void lock_batch_on_task();
+
+    // Under `m_batch_lock`: sets the broken mark, waking the task to fail the 3D path
+    void mark_broken();
+
+    // Under `m_batch_lock`: frees every chain the control queue returned, recording the 3D path's submission chains
+    void drain_returned_chains();
 
     virtio::virtqueue m_control_queue;
     uintptr_t m_control_notify = 0;
@@ -567,6 +602,8 @@ private:
     mode_request*    m_request = nullptr;
     bool             m_has_config_change = false;
     release_list     m_releases;
+    bool             m_task_waits_for_batch = false; // the task found the batch lock held and waits for its release
+    bool             m_has_batch_release = false;    // the batch lock was released while the task waited for it
     sync::wait_queue m_work_wq;
     sync::wait_queue m_request_wq; // where `set_mode()` waits for the task to finish its request
 

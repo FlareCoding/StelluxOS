@@ -5,6 +5,7 @@
 #include "dynpriv/dynpriv.h"
 #include "hw/cpu.h"
 #include "mm/heap.h"
+#include "sched/sched.h"
 
 namespace drivers {
 
@@ -269,7 +270,8 @@ int32_t virtio_gpu_driver::queue_command(const void* request, uint32_t request_s
     return OK;
 }
 
-// Waits until the device hands back `count` requests on `queue`, freeing their descriptors, failing at `deadline_ns`
+// Waits until the device hands back `count` requests on `queue`, freeing their descriptors, failing at `deadline_ns`.
+// The 3D path's submission chains returning meanwhile are recorded for it and not counted
 int32_t virtio_gpu_driver::wait_for_used(virtqueue& queue, uint32_t count, wait_mode mode, uint64_t deadline_ns) {
     uint32_t completed = 0;
 
@@ -279,6 +281,10 @@ int32_t virtio_gpu_driver::wait_for_used(virtqueue& queue, uint32_t count, wait_
 
         while (queue.get_used(&head, &written)) {
             queue.free_desc(head);
+            if (&queue == &m_control_queue && m_backend.record_returned_chain(head)) {
+                continue;
+            }
+
             completed++;
         }
 
@@ -319,9 +325,14 @@ int32_t virtio_gpu_driver::run_batch_until(wait_mode mode, uint64_t deadline_ns,
 
     m_control_queue.kick(m_control_notify);
 
-    if (wait_for_used(m_control_queue, m_batch_commands, mode, answer_deadline(deadline_ns)) != OK) {
+    int32_t answered = wait_for_used(m_control_queue, m_batch_commands, mode, answer_deadline(deadline_ns));
+    if (is_on_task()) {
+        m_backend.check_stop_deadlines();
+    }
+
+    if (answered != OK) {
         log::error("virtio-gpu: device stopped answering commands");
-        m_is_broken = true;
+        mark_broken();
         return ERR_IO;
     }
 
@@ -502,10 +513,10 @@ int32_t virtio_gpu_driver::destroy_resource(const virtio_gpu_buffer& buf, wait_m
 // Runs with no lock held. Gives a new buffer a resource holding its RAM and returns gfxfb's result. On a failure the
 // buffer is freed, or its RAM kept for good when the device may still hold it
 int32_t virtio_gpu_driver::create_buffer_resource(virtio_gpu_buffer* buf) {
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     int32_t rc = create_resource(*buf, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, wait_mode::sleep);
     bool is_broken = m_is_broken;
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     if (rc == OK) {
         return gfxfb::OK;
@@ -528,9 +539,9 @@ int32_t virtio_gpu_driver::create_buffer_resource(virtio_gpu_buffer* buf) {
 
 // Runs in the driver's task with no lock held
 void virtio_gpu_driver::drop_buffer(virtio_gpu_buffer* buf) {
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     int32_t rc = destroy_resource(*buf, wait_mode::sleep);
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     // Unless the device confirmed both commands, the resource may still hold the RAM
     if (rc != OK) {
@@ -741,9 +752,14 @@ int32_t virtio_gpu_driver::run_cursor_command(const virtio_gpu_update_cursor& co
 
     m_cursor_queue.kick(m_cursor_notify);
 
-    if (wait_for_used(m_cursor_queue, 1, wait_mode::sleep, answer_deadline(deadline_ns)) != OK) {
+    int32_t answered = wait_for_used(m_cursor_queue, 1, wait_mode::sleep, answer_deadline(deadline_ns));
+    if (is_on_task()) {
+        m_backend.check_stop_deadlines();
+    }
+
+    if (answered != OK) {
         log::error("virtio-gpu: device stopped answering cursor commands");
-        m_is_broken = true;
+        mark_broken();
         return ERR_IO;
     }
 
@@ -948,9 +964,88 @@ int32_t virtio_gpu_driver::detach() {
 }
 
 // Runs under `m_work_lock`
-bool virtio_gpu_driver::has_task_work() const {
+bool virtio_gpu_driver::has_task_work() {
     bool has_display_work = m_has_restore || m_request || m_has_config_change || !m_releases.empty();
     return has_display_work || m_backend.has_task_work();
+}
+
+__PRIVILEGED_CODE sync::irq_state virtio_gpu_driver::wait_for_wake(sync::irq_state irq) {
+    uint64_t deadline_ns = 0;
+    if (m_backend.find_stop_deadline(deadline_ns)) {
+        return sync::wait_until(m_work_wq, m_work_lock, irq, deadline_ns);
+    }
+
+    return sync::wait(m_work_wq, m_work_lock, irq);
+}
+
+bool virtio_gpu_driver::is_on_task() const {
+    return sched::current() == task();
+}
+
+void virtio_gpu_driver::lock_batch() {
+    if (is_on_task()) {
+        lock_batch_on_task();
+        return;
+    }
+
+    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+}
+
+void virtio_gpu_driver::unlock_batch() {
+    RUN_ELEVATED({
+        sync::mutex_unlock(m_batch_lock);
+
+        sync::irq_state irq = sync::spin_lock_irqsave(m_work_lock);
+        if (m_task_waits_for_batch) {
+            m_has_batch_release = true;
+            sync::wake_one(m_work_wq);
+        }
+
+        sync::spin_unlock_irqrestore(m_work_lock, irq);
+    });
+}
+
+void virtio_gpu_driver::lock_batch_on_task() {
+    while (true) {
+        bool is_locked = false;
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_work_lock);
+            m_task_waits_for_batch = true;
+            m_has_batch_release = false;
+            sync::spin_unlock_irqrestore(m_work_lock, irq);
+
+            is_locked = sync::mutex_trylock(m_batch_lock);
+
+            irq = sync::spin_lock_irqsave(m_work_lock);
+            if (is_locked) {
+                m_task_waits_for_batch = false;
+            } else if (!m_has_batch_release) {
+                irq = wait_for_wake(irq);
+            }
+
+            sync::spin_unlock_irqrestore(m_work_lock, irq);
+        });
+
+        if (is_locked) {
+            return;
+        }
+
+        m_backend.check_stop_deadlines();
+    }
+}
+
+void virtio_gpu_driver::mark_broken() {
+    m_is_broken = true;
+    m_backend.wake_task();
+}
+
+void virtio_gpu_driver::drain_returned_chains() {
+    uint16_t head = 0;
+    uint32_t written = 0;
+    while (m_control_queue.get_used(&head, &written)) {
+        m_control_queue.free_desc(head);
+        m_backend.record_returned_chain(head);
+    }
 }
 
 virtio_gpu_driver::task_work virtio_gpu_driver::wait_for_work() {
@@ -959,7 +1054,7 @@ virtio_gpu_driver::task_work virtio_gpu_driver::wait_for_work() {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_work_lock);
         while (!has_task_work()) {
-            irq = sync::wait(m_work_wq, m_work_lock, irq);
+            irq = wait_for_wake(irq);
         }
 
         work.has_restore = m_has_restore;
@@ -984,13 +1079,13 @@ virtio_gpu_driver::task_work virtio_gpu_driver::wait_for_work() {
 // Runs in the driver's task. Lights a dark scanout with a buffer from `allocate_base()`, and after a failed light
 // leaves it dark without `relighting`, freeing the buffer or keeping its RAM for good when the device may still read it
 bool virtio_gpu_driver::light_dark_scanout(uint32_t index, virtio_gpu_buffer* new_base) {
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     int32_t rc = light_scanout(index, *new_base, wait_mode::sleep);
     if (rc != OK) {
         set_scanout_base(m_scanouts[index], nullptr, false);
     }
 
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     if (rc == OK) {
         return true;
@@ -1012,9 +1107,9 @@ void virtio_gpu_driver::light_at_default(uint32_t index, virtio_gpu_buffer* new_
     bool was_lit = scanout.base != nullptr;
 
     if (was_lit) {
-        RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+        lock_batch();
         int32_t rc = darken_scanout(index, new_base != nullptr);
-        RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+        unlock_batch();
 
         // The device may still show the base buffer, so the scanout stays lit
         if (rc != OK) {
@@ -1095,9 +1190,9 @@ void virtio_gpu_driver::apply_config_change() {
 
     virtio_gpu_display_one modes[VIRTIO_GPU_MAX_SCANOUTS] = {};
 
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     int32_t rc = read_display_info(wait_mode::sleep, modes);
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     if (rc != OK) {
         log::error("virtio-gpu: failed to read the scanouts after a configuration change");
@@ -1137,9 +1232,9 @@ int32_t virtio_gpu_driver::serve_mode_request(uint32_t index, const gfxfb::gfxfb
     virtio_gpu_scanout& scanout = m_scanouts[index];
     virtio_gpu_buffer* base = scanout.base;
 
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     bool is_broken = m_is_broken;
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     if (is_broken) {
         return gfxfb::ERR_DEVICE;
@@ -1171,10 +1266,10 @@ int32_t virtio_gpu_driver::serve_mode_request(uint32_t index, const gfxfb::gfxfb
     uint32_t previous_width = base->width;
     uint32_t previous_height = base->height;
 
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     int32_t rc = darken_scanout(index, true);
     is_broken = m_is_broken;
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     // The device may still show the base buffer, so the scanout stays lit at its mode
     if (rc != OK) {
@@ -1190,10 +1285,10 @@ int32_t virtio_gpu_driver::serve_mode_request(uint32_t index, const gfxfb::gfxfb
 
     RUN_ELEVATED(gfxfb::output_changed(this, index));
 
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     rc = show_base(index, *new_base, wait_mode::sleep);
     is_broken = m_is_broken;
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     if (rc == OK) {
         RUN_ELEVATED(gfxfb::output_changed(this, index));
@@ -1214,10 +1309,10 @@ int32_t virtio_gpu_driver::serve_mode_request(uint32_t index, const gfxfb::gfxfb
     }
 
     if (!is_relit) {
-        RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+        lock_batch();
         set_scanout_base(scanout, nullptr, false);
         is_broken = m_is_broken;
-        RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+        unlock_batch();
     }
 
     RUN_ELEVATED(gfxfb::output_changed(this, index));
@@ -1266,9 +1361,9 @@ void virtio_gpu_driver::run() {
 }
 
 int32_t virtio_gpu_driver::set_mode(uint32_t output, const gfxfb::gfxfb_mode& mode) {
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     bool is_broken = m_is_broken;
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     // A driver detached after registering stays registered with gfxfb but has no task to serve the request
     if (is_broken) {
@@ -1427,7 +1522,7 @@ int32_t virtio_gpu_driver::present(
     const auto& presented = *static_cast<virtio_gpu_buffer*>(buf);
     virtio_gpu_scanout& scanout = m_scanouts[output];
 
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
 
     const virtio_gpu_buffer* base = scanout.base;
     bool has_scanout_size = base && presented.width == base->width && presented.height == base->height;
@@ -1447,7 +1542,7 @@ int32_t virtio_gpu_driver::present(
         set_latch_timer(scanout);
     }
 
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     // The device was given the buffer and may still read it, so the present ends failed instead of being refused
     if (missed_deadline) {
@@ -1467,7 +1562,7 @@ int32_t virtio_gpu_driver::set_cursor(uint32_t output, const gfxfb::cursor_image
     bool fits = image.width <= CURSOR_DIMENSION && image.height <= CURSOR_DIMENSION;
     virtio_gpu_scanout& scanout = m_scanouts[output];
 
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     uint64_t deadline_ns = clock::now_ns() + gfxfb::GFXFB_PRESENT_TIMEOUT_NS;
 
     int32_t rc = gfxfb::OK;
@@ -1481,7 +1576,7 @@ int32_t virtio_gpu_driver::set_cursor(uint32_t output, const gfxfb::cursor_image
         rc = m_is_broken ? gfxfb::ERR_DEVICE : gfxfb::ERR_REFUSED;
     }
 
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     return rc;
 }
@@ -1489,7 +1584,7 @@ int32_t virtio_gpu_driver::set_cursor(uint32_t output, const gfxfb::cursor_image
 int32_t virtio_gpu_driver::move_cursor(uint32_t output, int32_t x, int32_t y) {
     virtio_gpu_scanout& scanout = m_scanouts[output];
 
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
     uint64_t deadline_ns = clock::now_ns() + gfxfb::GFXFB_PRESENT_TIMEOUT_NS;
 
     int32_t rc = gfxfb::OK;
@@ -1513,7 +1608,7 @@ int32_t virtio_gpu_driver::move_cursor(uint32_t output, int32_t x, int32_t y) {
         }
     }
 
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     return rc;
 }
@@ -1613,11 +1708,11 @@ gfxfb::buffer* virtio_gpu_driver::base_buffer(uint32_t output) {
 }
 
 int32_t virtio_gpu_driver::flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) {
-    RUN_ELEVATED(sync::mutex_lock(m_batch_lock));
+    lock_batch();
 
     const virtio_gpu_buffer* base = m_scanouts[output].base;
     if (!base) {
-        RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+        unlock_batch();
         return gfxfb::ERR_DARK;
     }
 
@@ -1635,7 +1730,7 @@ int32_t virtio_gpu_driver::flush(uint32_t output, const gfxfb::gfxfb_rect* rects
     }
 
     bool is_broken = m_is_broken;
-    RUN_ELEVATED(sync::mutex_unlock(m_batch_lock));
+    unlock_batch();
 
     if (rc == OK) {
         return gfxfb::OK;
@@ -1646,6 +1741,11 @@ int32_t virtio_gpu_driver::flush(uint32_t output, const gfxfb::gfxfb_rect* rects
 
 __PRIVILEGED_CODE bool virtio_gpu_driver::on_interrupt(uint32_t vector) {
     ack_interrupt();
+
+    // A batch's wait frees chains only while it runs, so the task drains the 3D path's chains returning between batches
+    if (vector == COMPLETION_VECTOR) {
+        m_backend.wake_for_completion();
+    }
 
     if (vector != CONFIG_VECTOR) {
         return true;
