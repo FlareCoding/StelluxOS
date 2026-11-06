@@ -285,12 +285,15 @@ void server::answer_mode(dm_client* c, uint32_t output, int32_t result, uint32_t
         return;
     }
 
-    swp_mode_result msg = {};
-    msg.output = output;
-    msg.result = result;
-    msg.outcome = outcome;
-    msg.mode = to_swp_mode(read_output(m_display->fd(), output).current);
-    send_to(*c, SWP_MSG_MODE_RESULT, &msg, sizeof(msg));
+    dm_answer answer;
+    answer.client = c;
+    answer.type = SWP_MSG_MODE_RESULT;
+
+    answer.mode.output = output;
+    answer.mode.result = result;
+    answer.mode.outcome = outcome;
+    answer.mode.mode = to_swp_mode(read_output(m_display->fd(), output).current);
+    m_answers.push_back(answer);
 }
 
 void server::end_trial_with_set_back(dm_client* answer_to) {

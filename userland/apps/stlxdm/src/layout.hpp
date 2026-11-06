@@ -46,15 +46,47 @@ public:
         damage_list::rect rect;
     };
 
-    /* Places `members`, which must name distinct outputs in ascending
-     * index, at most `MEMBERS_MAX`, each from 1 by 1 to `DESKTOP_LIMIT`
-     * by `DESKTOP_LIMIT`. The main output stays main while it is a member,
-     * else `primary` is main when it is a member, else the lowest member.
-     * The main output sits at (0, 0), and the other members form a row
-     * to its right in ascending index, each starting at the previous
-     * one's right edge, tops at 0. Returns false for no members, keeping
-     * the layout as it last was. */
-    bool rebuild(const member* members, uint32_t count, uint32_t primary);
+    /* A member's place in a stored layout or a request: its top-left and
+     * the size it was stored at, which a request leaves 0 by 0. */
+    struct entry {
+        uint32_t output = 0;
+        int32_t  x = 0;
+        int32_t  y = 0;
+        int32_t  width = 0;
+        int32_t  height = 0;
+    };
+
+    /* A stored layout or a request: its main output and entries. */
+    struct arrangement {
+        uint32_t main = 0;
+        uint32_t count = 0;
+        entry    entries[MEMBERS_MAX];
+    };
+
+    /* What `rebuild` did: nothing for no members, or placed them by the
+     * rules, or put the default in place of an invalid result. */
+    enum class outcome { kept, placed, defaulted };
+
+    /* Why `apply` refused a request. */
+    enum class fault { none, invalid, overlap, apart };
+
+    /* Places `members`, which must be distinct outputs in ascending index,
+     * at most `MEMBERS_MAX`, each 1 to `DESKTOP_LIMIT` wide and high.
+     * `stored`, whose main must be a member, gives the main output and
+     * places, shifted where a size differs. Else the main output stays
+     * while a member, else `primary` when one, else the lowest, and a
+     * default layout or none gives the default, any other the shift, drop
+     * and append rules. The main output then moves to (0, 0), the default
+     * replacing an invalid result. Returns `kept` for no members. */
+    outcome rebuild(const member* members, uint32_t count, uint32_t primary, const arrangement* stored);
+
+    /* Puts every member at `request`'s top-left for it, at its own size,
+     * with `request`'s main output moved to (0, 0), and returns `none`. A
+     * refused request changes nothing: `invalid` when its entries are not
+     * the members, each once, with a member as main, or a corner passes
+     * the limit, `overlap` when two places overlap and `apart` when one
+     * does not connect to the main output, checked in that order. */
+    fault apply(const arrangement& request);
 
     uint32_t count() const { return m_count; }
     const place& at(uint32_t index) const { return m_places[index]; }
@@ -112,6 +144,10 @@ public:
 private:
     uint32_t choose_main(const member* members, uint32_t count, uint32_t primary) const;
     int32_t index_at(int64_t x, int64_t y) const;
+
+    /* Whether the places are the default for their own outputs and sizes
+     * with the current main output, as they are while there are none. */
+    bool is_default() const;
 
     place    m_places[MEMBERS_MAX];
     uint32_t m_count = 0;
