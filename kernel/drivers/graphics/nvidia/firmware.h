@@ -32,6 +32,25 @@ public:
     virtual bool on_firmware_event(const firmware_event& event) = 0;
 };
 
+// A kind of channel error the GSP's firmware reports
+enum class channel_error : uint8_t {
+    fault,  // an MMU fault the firmware queued, NVIDIA's MMU_FAULT_QUEUED
+    engine, // an engine's error in a channel's work, NVIDIA's RC_TRIGGERED
+};
+
+/**
+ * The receiver of each channel error the GSP's firmware reports, called as a
+ * `firmware_event_sink` is and under its limits: the call must not log, sleep
+ * or send a request.
+ */
+class firmware_error_sink {
+public:
+    virtual ~firmware_error_sink() = default;
+
+    // Takes `error`, which the wait or drain that read it then does not log
+    virtual void on_channel_error(channel_error error) = 0;
+};
+
 /**
  * The driver's requests to the GSP's firmware: to allocate and release objects
  * it keeps under the driver's own client (the owner of a tree of objects), to
@@ -39,11 +58,11 @@ public:
  * the subdevice of the firmware's internal client, which the firmware keeps
  * for the controls NVIDIA's driver sends on its own behalf. `gsp` implements
  * it, and tests replace it with a double. It also hands each event the
- * firmware posts to the sink `set_event_sink` names. `allocate`, `control`,
- * `release` and `internal_control` each spin on the calling CPU, once their
- * request is sent, until the firmware's reply arrives or `RECEIVE_TIMEOUT_NS`
- * passes, and only one thread may make the calls at a time, as only one may
- * use a `gsp`.
+ * firmware posts to the sink `set_event_sink` names, and each channel error to
+ * the sink `set_error_sink` names. `allocate`, `control`, `release` and
+ * `internal_control` each spin on the calling CPU, once their request is sent,
+ * until the firmware's reply arrives or `RECEIVE_TIMEOUT_NS` passes, and only
+ * one thread may make the calls at a time, as only one may use a `gsp`.
  *
  * From the driver task's start, a reply missing at its deadline marks the GPU
  * failed, and once the GPU is marked failed each of those four calls returns
@@ -149,6 +168,14 @@ public:
      * @param sink The sink, which must stay alive while it is set.
      */
     virtual void set_event_sink(firmware_event_sink* sink) = 0;
+
+    /**
+     * @brief Hand each channel error the firmware reports to `sink` from
+     * this call on. A null sink takes none, so each is logged as before any
+     * sink is set.
+     * @param sink The sink, which must stay alive while it is set.
+     */
+    virtual void set_error_sink(firmware_error_sink* sink) = 0;
 };
 
 } // namespace drivers::nvidia

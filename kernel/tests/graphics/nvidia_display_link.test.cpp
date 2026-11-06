@@ -258,6 +258,8 @@ public:
 
     void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
 
+    void set_error_sink(drivers::nvidia::firmware_error_sink*) override {}
+
     // How many of the calls so far are controls of `command`
     uint32_t count(uint32_t command) const {
         uint32_t made = 0;

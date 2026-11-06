@@ -147,6 +147,8 @@ public:
 
     void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
 
+    void set_error_sink(drivers::nvidia::firmware_error_sink*) override {}
+
     uint32_t channel_word(size_t offset) const {
         uint32_t word = 0;
         string::memcpy(&word, channel_params + offset, sizeof(word));

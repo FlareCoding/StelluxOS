@@ -68,6 +68,11 @@ static_assert(__builtin_offsetof(posted_event, is_for_notify_list) == 28, "NVIDI
 // The notifier bits of a notify index
 constexpr uint32_t NOTIFIER_MASK = 0xFFFF;
 
+// NVIDIA's NV_VGPU_MSG_EVENT_RC_TRIGGERED and NV_VGPU_MSG_EVENT_MMU_FAULT_QUEUED, the numbers of the messages reporting
+// an engine's error in a channel's work and an MMU fault the firmware queued
+constexpr uint32_t FUNCTION_RC_TRIGGERED     = 0x1004;
+constexpr uint32_t FUNCTION_MMU_FAULT_QUEUED = 0x1005;
+
 // The queue memory's layout: a page table in the first page, then the command queue and the status queue
 constexpr uint32_t PAGE_BYTES  = 0x1000;
 constexpr uint32_t QUEUE_BYTES = 0x40000;
@@ -528,6 +533,19 @@ static bool hand_on_event(firmware_event_sink* event_sink, const uint8_t* payloa
     return event_sink->on_firmware_event(event);
 }
 
+// Returns whether `error_sink` took the channel error a message of `function` reports
+static bool hand_on_error(firmware_error_sink* error_sink, uint32_t function) {
+    bool is_fault = function == FUNCTION_MMU_FAULT_QUEUED;
+    bool is_engine_error = function == FUNCTION_RC_TRIGGERED;
+    if (error_sink == nullptr || (!is_fault && !is_engine_error)) {
+        return false;
+    }
+
+    error_sink->on_channel_error(is_fault ? channel_error::fault : channel_error::engine);
+
+    return true;
+}
+
 // Keeps the messages passed over for the caller to log, since a log line can outlast the window, counted from the
 // firmware's send of a sequencer's message, in which that sequencer's first poll finds its bit
 static int32_t receive_awaited_unlogged(
@@ -540,6 +558,7 @@ static int32_t receive_awaited_unlogged(
     uint32_t payload_capacity,
     uint64_t deadline_ns,
     firmware_event_sink* event_sink,
+    firmware_error_sink* error_sink,
     bool& is_in_lockdown,
     received_message (&passed)[PASSED_MESSAGES_LOGGED],
     uint32_t& passed_count
@@ -566,6 +585,10 @@ static int32_t receive_awaited_unlogged(
         }
 
         if (message.function == FUNCTION_POST_EVENT && hand_on_event(event_sink, payload, message.payload_bytes)) {
+            continue;
+        }
+
+        if (hand_on_error(error_sink, message.function)) {
             continue;
         }
 
@@ -633,6 +656,7 @@ int32_t receive_awaited(
     uint32_t payload_capacity,
     uint64_t deadline_ns,
     firmware_event_sink* event_sink,
+    firmware_error_sink* error_sink,
     bool& is_in_lockdown
 ) {
     received_message passed[PASSED_MESSAGES_LOGGED] = {};
@@ -647,6 +671,7 @@ int32_t receive_awaited(
         payload_capacity,
         deadline_ns,
         event_sink,
+        error_sink,
         is_in_lockdown,
         passed,
         passed_count
@@ -667,6 +692,7 @@ int32_t drain_status_queue(
     uint8_t* payload,
     uint32_t payload_capacity,
     firmware_event_sink* event_sink,
+    firmware_error_sink* error_sink,
     bool& is_in_lockdown
 ) {
     received_message passed[PASSED_MESSAGES_LOGGED] = {};
@@ -682,6 +708,7 @@ int32_t drain_status_queue(
         payload_capacity,
         DRAIN_DEADLINE_NS,
         event_sink,
+        error_sink,
         is_in_lockdown,
         passed,
         passed_count

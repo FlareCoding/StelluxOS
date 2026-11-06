@@ -1812,6 +1812,8 @@ src/nvidia/kernel/inc/vgpu/rpc_global_enums.h
     function number, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the posted event's
     function number, in message_queues.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the function numbers
+    of the RC_TRIGGERED and MMU_FAULT_QUEUED events, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, and the numbering of
     functions from 0 and of events from 0x1000, fewer than 0x1000 of each, in
     message_queues.cpp

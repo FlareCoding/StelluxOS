@@ -77,6 +77,8 @@ public:
 
     void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
 
+    void set_error_sink(drivers::nvidia::firmware_error_sink*) override {}
+
     void clear_rows() { string::memset(&table, 0, sizeof(table)); }
 
     void add_row(uint16_t engine, uint32_t pmc_interrupt_mask, uint32_t nonstall_vector) {

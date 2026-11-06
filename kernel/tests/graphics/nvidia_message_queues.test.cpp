@@ -1146,6 +1146,9 @@ static bool s_is_in_lockdown = false;
 // The sink the waits and drains below hand events to, null unless a test sets it
 static drivers::nvidia::firmware_event_sink* s_event_sink = nullptr;
 
+// The sink the waits and drains below hand channel errors to, null unless a test sets it
+static drivers::nvidia::firmware_error_sink* s_error_sink = nullptr;
+
 // Waits for the ready message until `deadline_ns`, the sequencer's waits bound by a deadline the long timeout later,
 // so a wait that ends at the sequencer's deadline instead of its own fails a test
 static int32_t await_ready(
@@ -1174,6 +1177,7 @@ static int32_t await_ready(
         sizeof(buffer),
         deadline_ns,
         s_event_sink,
+        s_error_sink,
         s_is_in_lockdown
     );
 }
@@ -3805,7 +3809,16 @@ static int32_t drain(message_queues& queues, awaited_test_bar0& bar0, uint8_t (&
         .deadline_ns             = clock::now_ns() + LONG_TIMEOUT_NS,
     };
 
-    return drain_status_queue(queues, bar0.regs, context, buffer, sizeof(buffer), s_event_sink, s_is_in_lockdown);
+    return drain_status_queue(
+        queues,
+        bar0.regs,
+        context,
+        buffer,
+        sizeof(buffer),
+        s_event_sink,
+        s_error_sink,
+        s_is_in_lockdown
+    );
 }
 
 // The drain runs the sequencer between two unasked messages before any log line, logs each unasked message with its
@@ -4636,5 +4649,114 @@ TEST(nvidia_message_queues, gsp_await_hands_events_to_its_sink) {
 
     EXPECT_EQ(sink.count, 1u);
     EXPECT_EQ(sink.events[0].event, 0xCAF00015u);
+    conversation.stop();
+}
+
+// NVIDIA's NV_VGPU_MSG_EVENT_RC_TRIGGERED and NV_VGPU_MSG_EVENT_MMU_FAULT_QUEUED, restated so the tests hold the
+// receive loop to NVIDIA's numbers
+static constexpr uint32_t NVIDIA_RC_TRIGGERED     = 0x1004;
+static constexpr uint32_t NVIDIA_MMU_FAULT_QUEUED = 0x1005;
+
+// Keeps the channel errors handed to it
+class queue_test_error_sink : public drivers::nvidia::firmware_error_sink {
+public:
+    static constexpr uint32_t ERRORS_KEPT = 4;
+
+    drivers::nvidia::channel_error errors[ERRORS_KEPT] = {};
+    uint32_t                       count = 0;
+
+    void on_channel_error(drivers::nvidia::channel_error error) override {
+        if (count < ERRORS_KEPT) {
+            errors[count] = error;
+        }
+
+        count++;
+    }
+};
+
+// A drain hands each engine error and queued MMU fault to the error sink as it reads it and logs neither, and logs
+// both as unasked while no error sink is set
+TEST(nvidia_message_queues, drain_hands_engine_errors_and_queued_faults_to_the_error_sink) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    awaited_test_bar0 bar0;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+
+    message_queues queues(memory.bytes, DMA_ADDRESS);
+    uint8_t buffer[AWAITED_BUFFER_BYTES];
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_RC_TRIGGERED, nullptr, 0);
+    store_function_message(memory, message, 1, NVIDIA_MMU_FAULT_QUEUED, nullptr, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 2);
+    ASSERT_EQ(queues.link_status_queue(), OK);
+
+    queue_test_error_sink sink;
+    s_error_sink = &sink;
+    keep_log(bar0.regs);
+    EXPECT_EQ(drain(queues, bar0, buffer), OK);
+    log::set_backend(nullptr);
+
+    s_error_sink = nullptr;
+    ASSERT_EQ(sink.count, 2u);
+    EXPECT_TRUE(sink.errors[0] == drivers::nvidia::channel_error::engine);
+    EXPECT_TRUE(sink.errors[1] == drivers::nvidia::channel_error::fault);
+    EXPECT_EQ(logged_line_count(), 0u);
+
+    store_function_message(memory, message, 2, NVIDIA_RC_TRIGGERED, nullptr, 0);
+    store_function_message(memory, message, 3, NVIDIA_MMU_FAULT_QUEUED, nullptr, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 4);
+    keep_log(bar0.regs);
+    EXPECT_EQ(drain(queues, bar0, buffer), OK);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(sink.count, 2u);
+    EXPECT_EQ(logged_line_count(), 2u);
+    EXPECT_TRUE(logged_text_contains("sent a message of function 0x1004 unasked"));
+    EXPECT_TRUE(logged_text_contains("sent a message of function 0x1005 unasked"));
+}
+
+// A conversation's drain and wait hand channel errors to the error sink it was given, and `stop` drops the sink
+TEST(nvidia_message_queues, gsp_hands_channel_errors_to_its_error_sink_until_stop) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_MMU_FAULT_QUEUED, nullptr, 0);
+    store_function_message(memory, message, 1, NVIDIA_RC_TRIGGERED, nullptr, 0);
+    store_function_message(memory, message, 2, NVIDIA_GSP_INIT_DONE, nullptr, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    queue_test_error_sink sink;
+    conversation.set_error_sink(&sink);
+    EXPECT_EQ(conversation.drain(), OK);
+    EXPECT_EQ(sink.count, 1u);
+
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+    received_message out = {};
+    EXPECT_EQ(conversation.await(FUNCTION_GSP_INIT_DONE, out, SHORT_TIMEOUT_NS), OK);
+    ASSERT_EQ(sink.count, 2u);
+    EXPECT_TRUE(sink.errors[0] == drivers::nvidia::channel_error::fault);
+    EXPECT_TRUE(sink.errors[1] == drivers::nvidia::channel_error::engine);
+
+    conversation.stop();
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_MMU_FAULT_QUEUED, nullptr, 0);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 1);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    EXPECT_EQ(conversation.drain(), OK);
+    EXPECT_EQ(sink.count, 2u);
     conversation.stop();
 }

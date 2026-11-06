@@ -408,6 +408,8 @@ public:
 
     void set_event_sink(firmware_event_sink* sink) override;
 
+    void set_error_sink(firmware_error_sink* sink) override;
+
     /**
      * @brief From this call on, have a reply missing at its deadline set
      * `failed`, and have `request` send nothing while `failed` is set,
@@ -445,6 +447,7 @@ private:
     rm::handle            m_internal_client = 0;
     rm::handle            m_internal_subdevice = 0;
     firmware_event_sink*  m_event_sink = nullptr;
+    firmware_error_sink*  m_error_sink = nullptr;
     failed_mark*          m_failed = nullptr;
     uint32_t              m_handle_count = 0; // handles `new_handle` has given since the last `stop`
     bool                  m_is_in_lockdown = false;
