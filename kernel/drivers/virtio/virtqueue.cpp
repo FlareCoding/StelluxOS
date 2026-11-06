@@ -181,6 +181,9 @@ bool virtqueue::get_used(uint16_t* out_id, uint32_t* out_len) {
         return false;
     }
 
+    // The entry and the buffers it returns are read after the used index that published them
+    sync::atomic_fence_acquire();
+
     uint16_t ring_idx = m_last_used_idx % m_size;
     *out_id = static_cast<uint16_t>(m_used->ring[ring_idx].id);
     *out_len = m_used->ring[ring_idx].len;

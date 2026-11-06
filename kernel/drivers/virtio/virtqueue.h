@@ -83,7 +83,8 @@ public:
     int32_t add_buf_chain(const chain_buffer* buffers, uint16_t count);
 
     /**
-     * Get the next used buffer.
+     * Get the next used buffer. Once it returns true, reads of the buffer see
+     * what the device wrote to it.
      * @param out_id   Receives the descriptor index.
      * @param out_len  Receives the number of bytes written by the device.
      * @return true if a used buffer was available, false otherwise.
