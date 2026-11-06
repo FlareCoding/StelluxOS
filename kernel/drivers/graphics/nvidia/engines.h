@@ -79,6 +79,7 @@ struct backend_space : gpu::space {
         : addresses(fw, objects, memory, failed) {}
 
     address_space   addresses;
+    gpu::context*   core = nullptr;      // the GPU core's context the space was created for
     dma::buffer     semaphores = {};     // a progress semaphore per queue slot, allocated for the first queue
     uint32_t        queue_slots = 0;     // a bit per slot a queue holds, each a semaphore and a window for its rings
     space_operation task_operation = {}; // the creation, then the destroy
@@ -93,6 +94,12 @@ struct queue_operation : operation {
 // The report of the GPU's failure on the driver task, kept in the engines
 struct failure_operation : operation {
     engines* owner;
+};
+
+// A channel error's attribution to the queues whose channels faulted, on the driver task, kept in the engines
+struct error_operation : operation {
+    engines* owner;
+    uint32_t reason; // what the GPU core is told each faulted queue's context is lost for, a GPU_LOST_* value
 };
 
 // A hardware queue the engines created for the GPU core: an unprivileged channel in its context's space, allocated on
@@ -137,7 +144,7 @@ using backend_queue_list = list::head<backend_queue, &backend_queue::link>;
  * another error, only what a refused release or a refused take-back of a page
  * directory leaves the firmware or the GPU able to reach stays.
  */
-class engines : public gpu::backend {
+class engines : public gpu::backend, public firmware_error_sink {
 public:
     // Engines holding nothing, using `fw`, `objects`, `memory`, `operations` and `failed`, which must outlive them
     engines(
@@ -238,6 +245,17 @@ public:
      */
     __PRIVILEGED_CODE void service_interrupt(registers& bar0);
 
+    /**
+     * @brief Once `bring_up` succeeds, have the driver task read each listed
+     * queue's channel RAM and lose the GPU core's context of each one marked
+     * faulted, for `GPU_LOST_FAULT` after an MMU fault or `GPU_LOST_ENGINE`
+     * after an engine error, with no fault address, unless the GPU or the GPU
+     * core's device failed. An error reported while an attribution of its kind
+     * is still queued is attributed with it.
+     * @param error The channel error the firmware reported.
+     */
+    void on_channel_error(channel_error error) override;
+
 private:
     friend struct engines_test_access;
 
@@ -269,6 +287,9 @@ private:
 
     // Has the firmware free each listed queue's channel, keeping its memory, until the GPU failed
     void free_user_channels();
+
+    // The driver task's half of `on_channel_error()`, given the error's attribution record
+    static void attribute_error_on_task(operation& op);
 
     // A creation's error once the driver task refused it: `gpu::ERR_DEVICE`, reported, once the GPU failed, else
     // `gpu::ERR_NO_MEMORY`
@@ -320,6 +341,10 @@ private:
 
     failure_operation  m_failure_report = {};        // posted once by `report_failure()`
     sync::atomic<bool> m_is_failure_reported{false}; // set once `m_failure_report` is posted
+
+    // Posted by `on_channel_error()` for an MMU fault and for an engine error
+    error_operation m_fault_attribution = {};
+    error_operation m_engine_error_attribution = {};
 
     // The kernel's copy channel in `m_copy_channel_bytes`, never destructed, since the handler may still reach it
     copy_channel*                 m_copy_channel = nullptr;

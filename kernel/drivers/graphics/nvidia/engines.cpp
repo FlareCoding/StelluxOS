@@ -146,6 +146,14 @@ engines::engines(
     m_failure_report.work = report_failure_on_task;
     m_failure_report.owner = this;
     m_queues.init();
+
+    m_fault_attribution.work = attribute_error_on_task;
+    m_fault_attribution.owner = this;
+    m_fault_attribution.reason = GPU_LOST_FAULT;
+
+    m_engine_error_attribution.work = attribute_error_on_task;
+    m_engine_error_attribution.owner = this;
+    m_engine_error_attribution.reason = GPU_LOST_ENGINE;
 }
 
 int32_t engines::bring_up(
@@ -218,6 +226,7 @@ int32_t engines::bring_up(
 
     rc = check_copy_channel();
     if (rc == OK) {
+        m_firmware.set_error_sink(this);
         log::info(
             "nvidia: the kernel's copy channel runs as channel %u on runlist %u of copy engine type 0x%X, and its "
             "releases raise GPU interrupt vector %u, bit %u of the CPU interrupt tree's leaf %u",
@@ -435,7 +444,7 @@ void engines::release_memory(gpu::memory* mem) {
     RUN_ELEVATED(m_operations.post_to_task(memory->task_operation));
 }
 
-int32_t engines::create_space(gpu::context*, gpu::space** out) {
+int32_t engines::create_space(gpu::context* core, gpu::space** out) {
     if (has_failed()) {
         return gpu::ERR_DEVICE;
     }
@@ -445,6 +454,7 @@ int32_t engines::create_space(gpu::context*, gpu::space** out) {
         return gpu::ERR_NO_MEMORY;
     }
 
+    space->core = core;
     space->task_operation.work = create_space_on_task;
     space->task_operation.owner = this;
     space->task_operation.space = space;
@@ -863,6 +873,53 @@ void engines::free_user_channels() {
             freed == 1 ? "channel" : "channels"
         );
     }
+}
+
+void engines::on_channel_error(channel_error error) {
+    error_operation* attribution = nullptr;
+    switch (error) {
+        case channel_error::fault:
+            attribution = &m_fault_attribution;
+            break;
+        case channel_error::engine:
+            attribution = &m_engine_error_attribution;
+            break;
+    }
+
+    RUN_ELEVATED(m_operations.post_unless_queued(*attribution));
+}
+
+void engines::attribute_error_on_task(operation& op) {
+    auto& attribution = static_cast<error_operation&>(op);
+    engines& gpu_engines = *attribution.owner;
+
+    // The failure's report ends every queue, and a failed GPU's channel RAM may read anything
+    if (gpu_engines.has_failed()) {
+        return;
+    }
+
+    uint32_t faulted = 0;
+    for (backend_queue& queue : gpu_engines.m_queues) {
+        if (queue.user_channel.has_faulted()) {
+            RUN_ELEVATED(gpu::space_lost(queue.space->core, attribution.reason, 0));
+            faulted++;
+        }
+    }
+
+    const char* reported = attribution.reason == GPU_LOST_FAULT ? "an MMU fault" : "an engine error";
+    if (faulted == 0) {
+        log::warn(
+            "nvidia: the firmware reported %s, but no queue's channel reads faulted, so the GPU core lost no context",
+            reported
+        );
+        return;
+    }
+
+    log::info(
+        "nvidia: the firmware reported %s, and the GPU core lost the context of each faulted queue, %u in all",
+        reported,
+        faulted
+    );
 }
 
 int32_t engines::refused_creation() {

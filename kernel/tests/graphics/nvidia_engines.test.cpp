@@ -25,6 +25,7 @@ using drivers::nvidia::backend_queue;
 using drivers::nvidia::backend_space;
 using drivers::nvidia::card_identity;
 using drivers::nvidia::channel;
+using drivers::nvidia::channel_error;
 using drivers::nvidia::CHANNEL_IDS;
 using drivers::nvidia::channel_test_access;
 using drivers::nvidia::chip_info;
@@ -180,6 +181,18 @@ struct engines_test_access {
             sync::spin_unlock_irqrestore(gpu_engines.m_queues_lock, irq);
         });
     }
+
+    // Whether the fault attribution's record is queued once. A record queued twice in a row links to itself, a link
+    // this cuts so that a later serve ends
+    static bool is_fault_attribution_queued_once(engines& gpu_engines) {
+        operation& record = gpu_engines.m_fault_attribution;
+        bool is_linked_to_itself = record.next == &record;
+        if (is_linked_to_itself) {
+            record.next = nullptr;
+        }
+
+        return record.is_queued && !is_linked_to_itself;
+    }
 };
 
 } // namespace drivers::nvidia
@@ -208,6 +221,9 @@ public:
     uint32_t           last_command = 0; // of the controls other than the table's read
     rm::channel_params last_channel = {};
     rm::handle         next_handle = FIRST_HANDLE;
+
+    // The sink `set_error_sink` named last
+    drivers::nvidia::firmware_error_sink* error_sink = nullptr;
 
     int32_t allocate(rm::handle, rm::handle, uint32_t class_id, void* params, size_t size) override {
         allocations++;
@@ -266,7 +282,7 @@ public:
 
     void set_event_sink(drivers::nvidia::firmware_event_sink*) override {}
 
-    void set_error_sink(drivers::nvidia::firmware_error_sink*) override {}
+    void set_error_sink(drivers::nvidia::firmware_error_sink* sink) override { error_sink = sink; }
 
 private:
     void write_table(uint8_t* bytes) const {
@@ -572,7 +588,9 @@ struct engines_fixture {
     gpu::memory* created = nullptr;
     uint32_t     device_id = ~0u;
 
-    // The space `create_space_on_gpu` creates, and the queue `create_queue_on_gpu` creates in it for `core_queue`
+    // The space `create_space_on_gpu` creates for `core_context`, and the queue `create_queue_on_gpu` creates in it for
+    // `core_queue`
+    gpu::context*    core_context = nullptr;
     gpu::space*      space = nullptr;
     gpu::queue*      queue = nullptr;
     gpu::core_queue* core_queue = nullptr;
@@ -816,7 +834,7 @@ static bool has_device_failed(engines_fixture& fixture) {
 
 // Creates a space into `fixture.space`, as a step `run_on_gpu` or `start_step` runs
 static int32_t create_space_step(engines_fixture& fixture) {
-    return fixture.gpu_engines.create_space(nullptr, &fixture.space);
+    return fixture.gpu_engines.create_space(fixture.core_context, &fixture.space);
 }
 
 // Creates a space in a task while the test runner acts as the GPU and the driver task
@@ -824,7 +842,7 @@ static int32_t create_space_on_gpu(engines_fixture& fixture) {
     return run_on_gpu(fixture, create_space_step);
 }
 
-// Without an asynchronous copy engine, bring-up asks for no vector and creates nothing
+// Without an asynchronous copy engine, bring-up asks for no vector, creates nothing and takes no channel error
 TEST(nvidia_engines, bring_up_refuses_a_table_without_an_asynchronous_copy_engine) {
     engines_fixture fixture;
     fixture.fw.engines = SHARED_COPY_ENGINES;
@@ -833,9 +851,11 @@ TEST(nvidia_engines, bring_up_refuses_a_table_without_an_asynchronous_copy_engin
     EXPECT_EQ(fixture.bring_up(), ERR_BAD_STATE);
     EXPECT_EQ(fixture.fw.table_reads, 1u);
     EXPECT_EQ(fixture.fw.internal_controls, 0u);
+
     EXPECT_EQ(fixture.fw.allocations, 0u);
     EXPECT_EQ(fixture.memory.allocations, 0u);
     EXPECT_TRUE(is_bar0_untouched());
+    EXPECT_TRUE(fixture.fw.error_sink == nullptr);
 }
 
 // Channel RAM off a word boundary, or whose last word lies past BAR0's mapping, is refused by a line naming its cause
@@ -907,7 +927,7 @@ TEST(nvidia_engines, service_interrupt_does_nothing_before_the_vector_is_enabled
 }
 
 // Bring-up zeroes and then fills the check's 64 KiB through the copy channel, each fill woken by the handler's service,
-// then releases the memory and leaves the channel running with its vector enabled
+// then releases the memory and leaves the channel running with its vector enabled and the engines taking channel errors
 TEST(nvidia_engines, bring_up_zeroes_and_fills_the_checks_memory_through_the_copy_channel) {
     engines_fixture fixture;
     ASSERT_EQ(bring_up_on_gpu(fixture), OK);
@@ -927,6 +947,7 @@ TEST(nvidia_engines, bring_up_zeroes_and_fills_the_checks_memory_through_the_cop
     EXPECT_EQ(fixture.fw.releases, 0u);
     EXPECT_EQ(bar0_word(CPU_INTR_LEAF_EN_SET), COPY_VECTOR_BIT);
     EXPECT_EQ(bar0_word(CPU_INTR_LEAF_EN_CLEAR), STALE_WORD);
+    EXPECT_TRUE(fixture.fw.error_sink == &fixture.gpu_engines);
 }
 
 // Whether bring-up, with `fault` at `word` in fill `fill_number`, fails the check after that fill's read back with the
@@ -2260,9 +2281,11 @@ struct progress_core {
 
 alignas(progress_core) static uint8_t s_progress_core_bytes[sizeof(progress_core)];
 
-// Builds the GPU core the handler reports to, with its first queue the one `fixture` creates its next queue for
+// Builds the GPU core the handler reports to, with its context the one `fixture` creates its next space for and its
+// first queue the one `fixture` creates its next queue for
 static progress_core& build_progress_core(engines_fixture& fixture) {
     auto* core = new (s_progress_core_bytes) progress_core(fixture.core_device);
+    fixture.core_context = &core->ctx;
     fixture.core_queue = &core->first;
     return *core;
 }
@@ -2471,6 +2494,185 @@ TEST(nvidia_engines, a_destroy_gives_back_the_queues_window_and_channel_id) {
     EXPECT_EQ(backend_of(fixture.queue).channel_id, channel_id);
 
     tear_down_queue(fixture, fixture.queue);
+    tear_down_space(fixture);
+}
+
+// The word of `queue`'s channel in the copy engine's channel RAM
+static uint32_t& channel_ram_word(gpu::queue* queue) {
+    return bar0_word(TEST_CHANNEL_RAM + backend_of(queue).user_channel.id() * CHANNEL_RAM_ENTRY_BYTES);
+}
+
+// A GPU core context with one queue, for a queue listed between two of `progress_core`'s in a space of its own, built
+// anew in place by each test
+struct lone_core {
+    explicit lone_core(gpu::device& dev) : ctx(dev), queue(dev, ctx, GPU_QUEUE_COPY) {}
+
+    gpu::context    ctx;
+    gpu::core_queue queue;
+};
+
+alignas(lone_core) static uint8_t s_lone_core_bytes[sizeof(lone_core)];
+
+// The backend's queues for `progress_core`'s first queue, `lone_core`'s and `progress_core`'s second, in the order the
+// handler's list holds them, and the space `lone_core`'s is in
+struct three_queues {
+    gpu::queue* first;
+    gpu::queue* middle;
+    gpu::queue* last;
+    gpu::space* middle_space;
+};
+
+// Whether the engines came up with system memory and `out`'s queues, each reading its fault bits from the word
+// `channel_ram_word` gives, which reads 0
+static bool sets_up_three_queues(engines_fixture& fixture, progress_core& core, lone_core& lone, three_queues& out) {
+    if (!sets_up_system_memory_and_a_space(fixture) || create_queue_on_gpu(fixture) != gpu::OK) {
+        return false;
+    }
+
+    gpu::space* shared_space = fixture.space;
+    out.first = fixture.queue;
+    fixture.core_context = &lone.ctx;
+    fixture.core_queue = &lone.queue;
+    if (create_space_on_gpu(fixture) != gpu::OK || create_queue_on_gpu(fixture) != gpu::OK) {
+        return false;
+    }
+
+    out.middle_space = fixture.space;
+    out.middle = fixture.queue;
+    fixture.space = shared_space;
+    fixture.core_queue = &core.second;
+    if (create_queue_on_gpu(fixture) != gpu::OK) {
+        return false;
+    }
+
+    out.last = fixture.queue;
+    gpu::queue* listed[] = {out.first, out.middle, out.last};
+    for (gpu::queue* queue : listed) {
+        const channel& user = backend_of(queue).user_channel;
+        bool reads_its_own_word =
+            channel_test_access::channel_ram_entry(user) == TEST_CHANNEL_RAM + user.id() * CHANNEL_RAM_ENTRY_BYTES;
+        if (!reads_its_own_word) {
+            return false;
+        }
+
+        channel_ram_word(queue) = 0;
+    }
+
+    return true;
+}
+
+// Tears down the three queues, then both spaces
+static void tear_down_three_queues(engines_fixture& fixture, const three_queues& queues) {
+    tear_down_queue(fixture, queues.last);
+    tear_down_queue(fixture, queues.middle);
+    tear_down_queue(fixture, queues.first);
+    fixture.gpu_engines.destroy_space(queues.middle_space);
+    tear_down_space(fixture);
+}
+
+// After an MMU fault's report the driver task, not the call, has the GPU core lose the context of each listed queue
+// whose channel reads faulted, here one between two of another context, at fault address 0, and logs how many it lost
+TEST(nvidia_engines, a_fault_report_loses_the_contexts_of_the_queues_whose_channels_read_faulted) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    lone_core& lone = *new (s_lone_core_bytes) lone_core(fixture.core_device);
+    three_queues queues = {};
+    ASSERT_TRUE(sets_up_three_queues(fixture, core, lone, queues));
+    channel_ram_word(queues.middle) = CHANNEL_RAM_ENG_FAULTED;
+
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+    uint32_t lost_in_the_call = lone.ctx.lost_reason;
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    const char* loss_line = "reported an MMU fault, and the GPU core lost the context of each faulted queue, 1 in all";
+    EXPECT_EQ(lost_in_the_call, 0u);
+    EXPECT_EQ(lone.ctx.lost_reason, GPU_LOST_FAULT);
+    EXPECT_EQ(lone.ctx.fault_va, 0u);
+    EXPECT_EQ(core.ctx.lost_reason, 0u);
+    EXPECT_TRUE(engines_log_contains(loss_line));
+
+    tear_down_three_queues(fixture, queues);
+}
+
+// An engine error's report while no channel reads faulted loses no context and warns, and a later one loses a faulted
+// queue's context for an engine error, here one listed between two of another context
+TEST(nvidia_engines, an_engine_error_report_loses_a_faulted_queues_context_for_an_engine_error) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    lone_core& lone = *new (s_lone_core_bytes) lone_core(fixture.core_device);
+    three_queues queues = {};
+    ASSERT_TRUE(sets_up_three_queues(fixture, core, lone, queues));
+
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::engine);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+    uint32_t lost_unfaulted = lone.ctx.lost_reason;
+    bool warns_unfaulted = engines_log_contains("reported an engine error, but no queue's channel reads faulted");
+
+    channel_ram_word(queues.middle) = CHANNEL_RAM_PBDMA_FAULTED;
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::engine);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(lost_unfaulted, 0u);
+    EXPECT_TRUE(warns_unfaulted);
+
+    const char* loss_line =
+        "reported an engine error, and the GPU core lost the context of each faulted queue, 1 in all";
+    EXPECT_EQ(lone.ctx.lost_reason, GPU_LOST_ENGINE);
+    EXPECT_EQ(lone.ctx.fault_va, 0u);
+    EXPECT_EQ(core.ctx.lost_reason, 0u);
+    EXPECT_TRUE(engines_log_contains(loss_line));
+
+    tear_down_three_queues(fixture, queues);
+}
+
+// Faults reported before the driver task serves the first are attributed together, here for queues of two contexts
+TEST(nvidia_engines, faults_reported_before_a_serve_are_attributed_together) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    lone_core& lone = *new (s_lone_core_bytes) lone_core(fixture.core_device);
+    three_queues queues = {};
+    ASSERT_TRUE(sets_up_three_queues(fixture, core, lone, queues));
+
+    channel_ram_word(queues.first) = CHANNEL_RAM_ENG_FAULTED;
+    channel_ram_word(queues.middle) = CHANNEL_RAM_ENG_FAULTED;
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+
+    // A record queued twice would link to itself, so the check runs before any serve and cuts such a link
+    EXPECT_TRUE(engines_test_access::is_fault_attribution_queued_once(fixture.gpu_engines));
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    const char* loss_line = "reported an MMU fault, and the GPU core lost the context of each faulted queue, 2 in all";
+    EXPECT_EQ(core.ctx.lost_reason, GPU_LOST_FAULT);
+    EXPECT_EQ(lone.ctx.lost_reason, GPU_LOST_FAULT);
+    EXPECT_TRUE(engines_log_contains(loss_line));
+
+    tear_down_three_queues(fixture, queues);
+}
+
+// Once the GPU failed, a channel error loses no context, since the failure's report ends every queue
+TEST(nvidia_engines, once_the_gpu_failed_a_channel_error_loses_no_context) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_a_tracked_queue(fixture, core));
+    channel_ram_word(fixture.queue) = CHANNEL_RAM_ENG_FAULTED;
+
+    fixture.failed.set();
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+    engines_operations().serve();
+    EXPECT_EQ(core.ctx.lost_reason, 0u);
+
+    fixture.gpu_engines.stop_queue(fixture.queue);
+    engines_operations().serve();
+    fixture.gpu_engines.destroy_queue(fixture.queue);
     tear_down_space(fixture);
 }
 
