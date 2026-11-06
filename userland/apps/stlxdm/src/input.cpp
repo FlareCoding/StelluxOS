@@ -7,12 +7,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-int input::init(uint32_t screen_w, uint32_t screen_h,
-                uint64_t repeat_delay_ns, uint64_t repeat_interval_ns) {
-    m_max_x = static_cast<int32_t>(screen_w) - 1;
-    m_max_y = static_cast<int32_t>(screen_h) - 1;
-    m_ptr_x = m_max_x / 2;
-    m_ptr_y = m_max_y / 2;
+int input::init(const layout* desktop, uint64_t repeat_delay_ns, uint64_t repeat_interval_ns) {
+    const damage_list::rect& main = desktop->find(desktop->main_output())->rect;
+    m_desktop = desktop;
+    m_pointer = { main.x + (main.w - 1) / 2, main.y + (main.h - 1) / 2 };
     m_repeat_delay_ns = repeat_delay_ns;
     m_repeat_interval_ns = repeat_interval_ns;
 
@@ -20,19 +18,6 @@ int input::init(uint32_t screen_w, uint32_t screen_h,
     m_mouse_fd = open("/dev/input/mouse", O_RDONLY | O_NONBLOCK);
 
     return (m_kbd_fd >= 0 || m_mouse_fd >= 0) ? 0 : -1;
-}
-
-void input::set_screen_size(uint32_t screen_w, uint32_t screen_h) {
-    m_max_x = static_cast<int32_t>(screen_w) - 1;
-    m_max_y = static_cast<int32_t>(screen_h) - 1;
-
-    if (m_ptr_x > m_max_x) {
-        m_ptr_x = m_max_x;
-    }
-
-    if (m_ptr_y > m_max_y) {
-        m_ptr_y = m_max_y;
-    }
 }
 
 void input::shutdown() {
@@ -76,23 +61,17 @@ void input::pump_mouse(server& srv) {
     stlx_input_mouse_event_t ev;
 
     while (read(m_mouse_fd, &ev, sizeof(ev)) == sizeof(ev)) {
+        /* An absolute report is taken as desktop coordinates, which on the main output are its pixels */
         if (ev.flags & STLX_INPUT_MOUSE_FLAG_RELATIVE) {
-            m_ptr_x += ev.x_value;
-            m_ptr_y += ev.y_value;
+            m_pointer = m_desktop->move_pointer(m_pointer, ev.x_value, ev.y_value);
         } else {
-            m_ptr_x = ev.x_value;
-            m_ptr_y = ev.y_value;
+            m_pointer = m_desktop->nearest_point({ ev.x_value, ev.y_value });
         }
-
-        if (m_ptr_x < 0) m_ptr_x = 0;
-        if (m_ptr_y < 0) m_ptr_y = 0;
-        if (m_ptr_x > m_max_x) m_ptr_x = m_max_x;
-        if (m_ptr_y > m_max_y) m_ptr_y = m_max_y;
 
         uint16_t changed = ev.buttons ^ m_buttons;
         m_buttons = ev.buttons;
 
-        srv.route_pointer(m_ptr_x, m_ptr_y, ev.buttons, changed, ev.wheel);
+        srv.route_pointer(m_pointer.x, m_pointer.y, ev.buttons, changed, ev.wheel);
     }
 }
 

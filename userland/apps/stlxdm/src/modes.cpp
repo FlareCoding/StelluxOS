@@ -97,7 +97,7 @@ void server::handle_get_modes(dm_client& c, const uint8_t* payload) {
     memcpy(&m, payload, sizeof(m));
 
     swp_modes msg;
-    read_modes(m_presenter->display_fd(), m.output, msg);
+    read_modes(m_display->fd(), m.output, msg);
     send_to(c, SWP_MSG_MODES, &msg, sizeof(msg));
 
     /* The display drives at most `SWP_OUTPUTS_MAX` outputs, and the second bound keeps the shift defined */
@@ -109,7 +109,7 @@ void server::handle_get_modes(dm_client& c, const uint8_t* payload) {
 
 void server::send_modes(dm_client& c, uint32_t output) {
     swp_modes msg;
-    read_modes(m_presenter->display_fd(), output, msg);
+    read_modes(m_display->fd(), output, msg);
     send_to(c, SWP_MSG_MODES, &msg, sizeof(msg));
 }
 
@@ -183,7 +183,7 @@ void server::take_mode_message(const dm_mode_message& m) {
     }
 
     bool is_trial = (m.value & SWP_SET_MODE_TRIAL) != 0;
-    gfxfb::gfxfb_output_info info = read_output(m_presenter->display_fd(), m.output);
+    gfxfb::gfxfb_output_info info = read_output(m_display->fd(), m.output);
 
     dm_mode_request request;
     request.client = m.client;
@@ -203,7 +203,7 @@ void server::make_mode_request(dm_mode_request& request) {
     args.mode.height = request.mode.height;
     args.mode.refresh_millihertz = request.mode.refresh_millihertz;
 
-    int fd = m_presenter->display_fd();
+    int fd = m_display->fd();
     request.result = ioctl(fd, gfxfb::GFXFB_SET_MODE, &args) < 0 ? -errno : 0;
 
     const char* client = request.client ? request.client->app_id : "nobody";
@@ -215,23 +215,24 @@ void server::make_mode_request(dm_mode_request& request) {
 
     /* The relight queues its output events before `GFXFB_SET_MODE` returns, so one read without waiting takes them all
      * and the caller follows them */
-    pollfd pfd = { m_presenter->event_fd(), POLLIN, 0 };
+    pollfd pfd = { m_display->fd(), POLLIN, 0 };
     if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN) != 0) {
-        m_presenter->take_events();
+        m_display->take_events();
     }
 }
 
-void server::finish_mode_request(presenter::output_state state) {
-    int fd = m_presenter->display_fd();
+void server::finish_mode_request() {
+    int fd = m_display->fd();
     const dm_mode_request& request = m_request;
 
     gfxfb::gfxfb_output_info info = read_output(fd, request.output);
     uint32_t lit_primary = gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY;
+    bool served = m_display->presenter_of(request.output) != nullptr;
     bool is_clients = request.outcome == SWP_MODE_SET || request.outcome == SWP_MODE_TRIAL;
-    bool lacks_buffers = state == presenter::output_state::DARK && (info.flags & lit_primary) == lit_primary;
+    bool lacks_buffers = request.result == 0 && !served && (info.flags & lit_primary) == lit_primary;
 
-    /* Only a client's request gets the previous mode after stlxdm cannot make buffers at the new one (`DARK` with the
-     * output lit and primary), so a lack of buffers costs one more request at most */
+    /* Only a client's request gets the previous mode after stlxdm cannot make buffers at the new one (the mode was set
+     * and the output reads lit, primary and not served), so a lack of buffers costs one more request at most */
     if (is_clients && lacks_buffers) {
         m_next_request = request;
         m_next_request.outcome = SWP_MODE_NO_BUFFERS;
@@ -276,7 +277,7 @@ void server::answer_mode(dm_client* c, uint32_t output, int32_t result, uint32_t
     msg.output = output;
     msg.result = result;
     msg.outcome = outcome;
-    msg.mode = to_swp_mode(read_output(m_presenter->display_fd(), output).current);
+    msg.mode = to_swp_mode(read_output(m_display->fd(), output).current);
     send_to(*c, SWP_MSG_MODE_RESULT, &msg, sizeof(msg));
 }
 
@@ -294,7 +295,7 @@ void server::end_trial_with_set_back(dm_client* answer_to) {
 void server::outputs_changed(uint32_t outputs) {
     bool is_trial_output = m_trial.running && (outputs & (1u << m_trial.output)) != 0;
     if (is_trial_output) {
-        gfxfb::gfxfb_output_info info = read_output(m_presenter->display_fd(), m_trial.output);
+        gfxfb::gfxfb_output_info info = read_output(m_display->fd(), m_trial.output);
         if (!modes_equal(to_swp_mode(info.current), m_trial.mode)) {
             m_trial.running = false;
             printf("stlxdm: output %u's trial ended, the display changed the output\r\n", m_trial.output);

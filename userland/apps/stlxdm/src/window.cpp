@@ -1043,6 +1043,11 @@ void server::compose_rect(stlxgfx_surface_t* back,
 }
 
 void server::compose_tick() {
+    presenter* pres = main_presenter();
+    if (!pres) {
+        return;
+    }
+
     uint64_t now = now_ns();
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
@@ -1079,10 +1084,10 @@ void server::compose_tick() {
     /* Collapse frames fade the cached backdrop under the contracting
      * light, skipping scene composition entirely */
     if (m_power->collapsing()) {
-        presenter::target t = m_presenter->acquire();
+        presenter::target t = pres->acquire();
         stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
-            reinterpret_cast<uint8_t*>(t.pixels), m_presenter->width(),
-            m_presenter->height(), t.stride, 32, 16, 8, 0);
+            reinterpret_cast<uint8_t*>(t.pixels), pres->width(),
+            pres->height(), t.stride, 32, 16, 8, 0);
         if (back) {
             damage_list::rect whole = { 0, 0, static_cast<int32_t>(back->width),
                                         static_cast<int32_t>(back->height) };
@@ -1095,7 +1100,7 @@ void server::compose_tick() {
 
             damage_list full;
             full.add_full();
-            m_presenter->present(full);
+            pres->present(full);
             m_history[m_history_head] = full;
             m_history_head = (m_history_head + 1) % DAMAGE_HISTORY;
         }
@@ -1108,9 +1113,9 @@ void server::compose_tick() {
         return;
     }
 
-    presenter::target t = m_presenter->acquire();
-    uint32_t sw = m_presenter->width();
-    uint32_t sh = m_presenter->height();
+    presenter::target t = pres->acquire();
+    uint32_t sw = pres->width();
+    uint32_t sh = pres->height();
 
     /* A target older than one present is missing frames of content,
      * so their damage is unioned back in. Unknown age repaints fully. */
@@ -1154,7 +1159,7 @@ void server::compose_tick() {
         }
     }
 
-    m_presenter->present(effective);
+    pres->present(effective);
     stlxgfx_destroy_surface(back);
     m_perf.note_present(now_ns());
 

@@ -1,3 +1,4 @@
+#include "display.hpp"
 #include "input.hpp"
 #include "presenter.hpp"
 #include "server.hpp"
@@ -26,8 +27,8 @@ constexpr uint64_t DEFAULT_REFRESH_MILLIHERTZ = 60000;
  * another program controls the display's buffers */
 constexpr long DISPLAY_BUSY_RETRY_NS = 100000000;
 
-/* The screen stlxdm serves: whether frames reach it, false from `update_output()`'s `DARK` until its next `CHANGED`,
- * and the time between compositions */
+/* The main output, which stlxdm composes for: whether it is served, and the time between compositions, 0 until it is
+ * first paced and while it is not served */
 struct screen_state {
     bool     showing = true;
     uint64_t compose_interval_ns = 0;
@@ -74,19 +75,18 @@ static void load_config(stlxconf_t& config) {
     }
 }
 
-/* The flip presenter, waited for while another program controls the display's buffers since a
- * frame drawn into the framebuffer would not show, else the memcpy presenter, else null */
-static presenter* open_presenter(flip_presenter& flip, memcpy_presenter& fallback) {
+/* Opens `disp`, waiting while another program controls the display's buffers since a frame drawn into the framebuffer
+ * would not show, and returns whether it opened */
+static bool open_display(display& disp) {
     bool reported_busy = false;
     while (true) {
-        int rc = flip.init();
+        int rc = disp.init();
         if (rc == 0) {
-            printf("stlxdm: presenting through display buffers\r\n");
-            return &flip;
+            break;
         }
 
         if (rc != -EBUSY) {
-            break;
+            return false;
         }
 
         if (!reported_busy) {
@@ -98,25 +98,22 @@ static presenter* open_presenter(flip_presenter& flip, memcpy_presenter& fallbac
         nanosleep(&retry, nullptr);
     }
 
-    if (fallback.init() != 0) {
-        return nullptr;
-    }
+    printf("stlxdm: %s\r\n", disp.falls_back() ? "drawing into the framebuffer" : "presenting through display buffers");
 
-    printf("stlxdm: drawing into the framebuffer\r\n");
-
-    return &fallback;
+    return true;
 }
 
-/* Prints the screen's size and rate and returns the time between compositions: a refresh
- * at the screen's rate, or at the default rate when it is unknown */
+/* Prints an output's size and rate and returns the time between its compositions: a refresh at its rate, or at the
+ * default rate when it is unknown */
 static uint64_t start_serving(const presenter& pres) {
     uint64_t reported_millihertz = pres.refresh_millihertz();
     if (reported_millihertz != 0) {
-        printf("stlxdm: serving %ux%u at %llu.%03llu Hz\r\n", pres.width(), pres.height(),
+        printf("stlxdm: serving %ux%u at %llu.%03llu Hz on output %u\r\n", pres.width(), pres.height(),
                static_cast<unsigned long long>(reported_millihertz / MILLIHERTZ_PER_HERTZ),
-               static_cast<unsigned long long>(reported_millihertz % MILLIHERTZ_PER_HERTZ));
+               static_cast<unsigned long long>(reported_millihertz % MILLIHERTZ_PER_HERTZ), pres.output());
     } else {
-        printf("stlxdm: serving %ux%u, refresh rate unknown\r\n", pres.width(), pres.height());
+        printf("stlxdm: serving %ux%u, refresh rate unknown, on output %u\r\n", pres.width(), pres.height(),
+               pres.output());
     }
 
     uint64_t compose_millihertz = reported_millihertz != 0 ? reported_millihertz : DEFAULT_REFRESH_MILLIHERTZ;
@@ -124,51 +121,64 @@ static uint64_t start_serving(const presenter& pres) {
     return refresh_interval_ns(compose_millihertz);
 }
 
-/* Calls `update_output()` after output events, tells the server the outputs they named and redraws on `CHANGED`. After
- * a `DARK`, which a failure on a lit output also returns, nothing composes until a later `CHANGED` */
-static presenter::output_state follow_output(presenter& pres, server& srv, input& inp, screen_state& screen) {
-    presenter::output_state state = pres.update_output();
-    srv.outputs_changed(pres.take_event_outputs());
+/* Paces the main output at its presenter's refresh when the `outputs` bits name it or nothing paces it, printing its
+ * mode, and stops while it is not served, printing so when it stops */
+static void pace_main_output(const server& srv, uint32_t outputs, screen_state& screen) {
+    const presenter* pres = srv.main_presenter();
+    bool showing = pres != nullptr;
+    if (!showing) {
+        screen.compose_interval_ns = 0;
+    } else if ((outputs & (1u << pres->output())) != 0 || screen.compose_interval_ns == 0) {
+        screen.compose_interval_ns = start_serving(*pres);
+    }
 
-    if (state == presenter::output_state::DARK) {
-        if (screen.showing) {
-            printf("stlxdm: drawing nothing until the display changes an output\r\n");
-            screen.showing = false;
+    if (!showing && screen.showing) {
+        printf("stlxdm: drawing nothing until the display changes an output\r\n");
+    }
+
+    screen.showing = showing;
+}
+
+/* Reads every output that output events named since the last call and has `disp` follow it, an output whose read
+ * fails counting as dark, then has the server follow the outputs and moves the pointer where the server put it */
+static void follow_outputs(display& disp, server& srv, input& inp, screen_state& screen) {
+    uint32_t changed = disp.take_changed_outputs();
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        if ((changed & (1u << output)) == 0) {
+            continue;
         }
 
-        return state;
+        gfxfb::gfxfb_output_info info;
+        if (disp.read_output(output, info) != 0) {
+            info = {};
+            info.output = output;
+        }
+
+        disp.follow_output(output, info);
     }
 
-    if (state == presenter::output_state::CHANGED) {
-        inp.set_screen_size(pres.width(), pres.height());
-        srv.screen_changed(inp.ptr_x(), inp.ptr_y(), inp.buttons());
-        screen.compose_interval_ns = start_serving(pres);
-        screen.showing = true;
-    }
-
-    return state;
+    srv.outputs_changed(changed);
+    inp.set_pointer(srv.follow_outputs(inp.pointer(), inp.buttons()));
+    pace_main_output(srv, changed, screen);
 }
 
 /* Makes the waiting mode requests one at a time and follows each one's output events before the server answers it, so
  * a client hears an answer only once the desktop has followed the relight */
-static void run_mode_requests(presenter& pres, server& srv, input& inp, screen_state& screen) {
+static void run_mode_requests(display& disp, server& srv, input& inp, screen_state& screen) {
     while (srv.start_mode_request()) {
-        presenter::output_state state = presenter::output_state::UNCHANGED;
-        if (pres.output_changed()) {
-            state = follow_output(pres, srv, inp, screen);
+        if (disp.output_changed()) {
+            follow_outputs(disp, srv, inp, screen);
         }
 
-        srv.finish_mode_request(state);
+        srv.finish_mode_request();
     }
 }
 
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
-    flip_presenter flip;
-    memcpy_presenter fallback;
-    presenter* pres = open_presenter(flip, fallback);
-    if (!pres) {
+    display disp;
+    if (!open_display(disp)) {
         printf("stlxdm: no framebuffer, exiting\r\n");
         return 1;
     }
@@ -181,27 +191,27 @@ int main() {
         return 1;
     }
 
-    /* Display state builds first, so the wallpaper decode and the
+    /* The desktop's state builds first, so the wallpaper decode and the
      * font opens are already paid when the splash asks for Enter */
     server srv;
-    if (srv.init(pres, &config) != 0) {
-        printf("stlxdm: display init failed\r\n");
-        pres->shutdown();
+    if (srv.init(&disp, &config) != 0) {
+        printf("stlxdm: desktop init failed\r\n");
+        disp.shutdown();
         return 1;
     }
 
-    /* The splash owns the screen until Enter, before any client can
+    /* The splash owns the main output until Enter, before any client can
      * connect and before autostart spawns */
-    splash_run(*pres);
+    splash_run(*srv.main_presenter());
 
     if (srv.serve() != 0) {
         printf("stlxdm: failed to bind %s\r\n", SWP_SOCKET_PATH);
-        pres->shutdown();
+        disp.shutdown();
         return 1;
     }
 
     input inp;
-    if (inp.init(pres->width(), pres->height(),
+    if (inp.init(&srv.desktop(),
                  static_cast<uint64_t>(config.key_repeat_delay_ms) * 1000000ull,
                  static_cast<uint64_t>(config.key_repeat_interval_ms) * 1000000ull) != 0) {
         printf("stlxdm: no input devices, serving without input\r\n");
@@ -210,10 +220,9 @@ int main() {
     signal(SIGHUP, on_sighup);
     write_pidfile();
 
-    /* Composition waits for the last present to end and for a screen to show on, and runs at
-     * most once per refresh, at the default rate when the screen's rate is unknown */
+    /* Composition waits for the last present to end and for the main output to be served, and runs at most once per
+     * refresh, at the default rate when the output's rate is unknown */
     screen_state screen;
-    screen.compose_interval_ns = refresh_interval_ns(DEFAULT_REFRESH_MILLIHERTZ);
     uint64_t last_compose_ns = 0;
 
     /* A pointer move waiting for the hardware cursor is sent at most once
@@ -221,13 +230,10 @@ int main() {
     uint64_t last_cursor_move_ns = 0;
 
     /* An output event the splash's presents read is followed before `start_serving()` first runs */
-    presenter::output_state state = presenter::output_state::UNCHANGED;
-    if (pres->output_changed()) {
-        state = follow_output(*pres, srv, inp, screen);
-    }
-
-    if (state == presenter::output_state::UNCHANGED) {
-        screen.compose_interval_ns = start_serving(*pres);
+    if (disp.output_changed()) {
+        follow_outputs(disp, srv, inp, screen);
+    } else {
+        pace_main_output(srv, ~0u, screen);
         srv.show_cursor();
     }
 
@@ -245,13 +251,10 @@ int main() {
             fds.push_back({ inp.mouse_fd(), POLLIN, 0 });
         }
 
-        int event_fd = pres->event_fd();
         size_t event_slot = fds.size();
-        if (event_fd >= 0) {
-            fds.push_back({ event_fd, POLLIN, 0 });
-        }
+        fds.push_back({ disp.fd(), POLLIN, 0 });
 
-        /* Key repeat and, with damage pending, frames reaching the screen and no present waiting,
+        /* Key repeat and, with damage pending, the main output served and no present waiting,
          * the compose deadline cap the wait. Idle blocks forever. */
         uint64_t now = now_ns();
         int64_t next_ns = inp.repeat_timeout_ns(now);
@@ -280,7 +283,8 @@ int main() {
             next_ns = latch_ns;
         }
 
-        bool may_compose = screen.showing && !pres->present_pending();
+        presenter* pres = srv.main_presenter();
+        bool may_compose = pres && !pres->present_pending();
         if (srv.compose_pending() && may_compose) {
             uint64_t deadline = last_compose_ns + screen.compose_interval_ns;
             int64_t compose_ns = deadline > now
@@ -291,8 +295,8 @@ int main() {
         }
 
         /* A waiting pointer move bounds the sleep at a refresh after the
-         * last one flushed, damage or not, if frames reach the screen */
-        if (srv.cursor_move_pending() && screen.showing) {
+         * last one flushed, damage or not, if the main output is served */
+        if (srv.cursor_move_pending() && pres) {
             uint64_t deadline = last_cursor_move_ns + screen.compose_interval_ns;
             int64_t move_ns = deadline > now
                             ? static_cast<int64_t>(deadline - now) : 0;
@@ -301,10 +305,10 @@ int main() {
             }
         }
 
-        /* While frames reach no screen, a power overlay phase or hold in
-         * flight bounds the sleep at a refresh, since nothing composes */
-        if (!screen.showing && srv.power_animating()) {
-            int64_t power_ns = static_cast<int64_t>(screen.compose_interval_ns);
+        /* With the main output unserved nothing composes, so a power overlay phase or hold in flight bounds the sleep
+         * at a refresh of the default rate */
+        if (!pres && srv.power_animating()) {
+            int64_t power_ns = static_cast<int64_t>(refresh_interval_ns(DEFAULT_REFRESH_MILLIHERTZ));
             if (next_ns < 0 || power_ns < next_ns) {
                 next_ns = power_ns;
             }
@@ -345,36 +349,37 @@ int main() {
 
         srv.pump(fds);
 
-        if (event_fd >= 0 && (fds[event_slot].revents & POLLIN)) {
-            pres->take_events();
+        if (fds[event_slot].revents & POLLIN) {
+            disp.take_events();
         }
 
-        if (pres->output_changed()) {
-            follow_output(*pres, srv, inp, screen);
+        if (disp.output_changed()) {
+            follow_outputs(disp, srv, inp, screen);
         }
 
         srv.mode_tick(now);
-        run_mode_requests(*pres, srv, inp, screen);
+        run_mode_requests(disp, srv, inp, screen);
 
         now = now_ns();
         srv.perf_tick(now);
 
-        bool move_due = screen.showing && now >= last_cursor_move_ns + screen.compose_interval_ns;
+        pres = srv.main_presenter();
+        bool move_due = pres && now >= last_cursor_move_ns + screen.compose_interval_ns;
         if (srv.cursor_move_pending() && move_due) {
             srv.flush_cursor();
             last_cursor_move_ns = now;
         }
 
-        bool present_waiting = pres->present_pending();
+        may_compose = pres && !pres->present_pending();
         bool period_passed = now >= last_compose_ns + screen.compose_interval_ns;
-        if (srv.compose_pending() && screen.showing && !present_waiting && period_passed) {
+        if (srv.compose_pending() && may_compose && period_passed) {
             srv.compose_tick();
             last_compose_ns = now;
         }
 
-        /* Nothing composes while frames reach no screen, so the power
-         * overlay ticks here and a confirmed action still runs */
-        if (!screen.showing) {
+        /* Nothing composes while the main output is not served, so the
+         * power overlay ticks here and a confirmed action still runs */
+        if (!pres) {
             srv.power_tick();
         }
 

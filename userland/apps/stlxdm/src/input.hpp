@@ -1,6 +1,8 @@
 #ifndef STLXDM_INPUT_HPP
 #define STLXDM_INPUT_HPP
 
+#include "layout.hpp"
+
 #include <cstdint>
 
 class server;
@@ -10,15 +12,15 @@ class server;
  * delivery. The server shows the pointer. */
 class input {
 public:
-    /* Opens /dev/input/kbd and /dev/input/mouse. Missing devices are
-     * tolerated, the desktop just runs without that input kind. A
-     * repeat delay of zero disables key repeat. */
-    int init(uint32_t screen_w, uint32_t screen_h,
-             uint64_t repeat_delay_ns, uint64_t repeat_interval_ns);
+    /* Opens /dev/input/kbd and /dev/input/mouse. The pointer starts at
+     * the main output's center and moves over the places of `desktop`,
+     * which must hold a member and outlive the input. Missing devices are
+     * tolerated, the desktop just runs without that input kind. A repeat
+     * delay of zero disables key repeat. */
+    int init(const layout* desktop, uint64_t repeat_delay_ns, uint64_t repeat_interval_ns);
 
-    /* Bounds the pointer by a screen of `screen_w` by `screen_h`,
-     * moving it inside when it lies past the screen's edges. */
-    void set_screen_size(uint32_t screen_w, uint32_t screen_h);
+    /* Puts the pointer at `point`, which must lie on a place. */
+    void set_pointer(desktop_point point) { m_pointer = point; }
 
     void shutdown();
 
@@ -41,18 +43,15 @@ public:
     /* Emits repeat events whose deadline has passed. */
     void pump_repeat(server& srv, uint64_t now_ns);
 
-    int32_t ptr_x() const { return m_ptr_x; }
-    int32_t ptr_y() const { return m_ptr_y; }
+    desktop_point pointer() const { return m_pointer; }
     uint16_t buttons() const { return m_buttons; }
 
 private:
     int m_kbd_fd = -1;
     int m_mouse_fd = -1;
 
-    int32_t m_ptr_x = 0;
-    int32_t m_ptr_y = 0;
-    int32_t m_max_x = 0;
-    int32_t m_max_y = 0;
+    const layout* m_desktop = nullptr;
+    desktop_point m_pointer;
     uint16_t m_buttons = 0;
 
     /* Held key state driving DM-side repeat, rates from the config */
