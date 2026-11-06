@@ -1,12 +1,14 @@
 /* stlxsettings: the desktop configuration editor. A navigation rail
- * selects a page of grouped cards, edits land in the config struct
- * as they happen, and saving writes the file back and signals the
- * display manager to re-read it live.
+ * selects a page of grouped cards. Edits but the Display page's land
+ * in the config struct, and saving writes the file and signals the
+ * display manager to re-read it live. That page's Apply sends its own.
  */
 #include <stlxconf/conf.h>
+#include <stlxwin/stlxwin.h>
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -16,6 +18,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSocketNotifier>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -25,6 +28,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iterator>
 
 constexpr const char* DM_PID_PATH = "/tmp/stlxdm.pid";
 
@@ -48,21 +52,33 @@ constexpr int SWATCH_PX = 28;
 constexpr int MENU_BUTTON_W = 36;
 constexpr int BRAND_PX = 14;
 constexpr int TITLE_PX = 16;
+constexpr int ARRANGEMENT_H = 220;
+constexpr int ARRANGEMENT_MARGIN = 16;
+constexpr int OUTPUT_RADIUS = 6;
+constexpr int MAIN_STRIP_PX = 4;
+constexpr int MAIN_STRIP_INSET = 3;
+constexpr int SNAP_PX = 24;
 
 constexpr uint32_t REPEAT_DELAY_MS = 400;
 constexpr uint32_t REPEAT_INTERVAL_MS = 40;
 
-constexpr uint32_t PAGE_COUNT = 4;
+enum page_index : uint32_t { APPEARANCE_PAGE, DOCK_PAGE, DISPLAY_PAGE, INPUT_PAGE, STARTUP_PAGE };
 
-static const char* const PAGE_NAMES[PAGE_COUNT] = {
-    "Appearance", "Dock", "Input", "Startup"
+constexpr uint32_t PAGE_COUNT = STARTUP_PAGE + 1;
+
+static const char* const PAGE_NAMES[] = {
+    "Appearance", "Dock", "Display", "Input", "Startup"
 };
-static const char* const PAGE_BLURBS[PAGE_COUNT] = {
+static_assert(std::size(PAGE_NAMES) == PAGE_COUNT);
+
+static const char* const PAGE_BLURBS[] = {
     "Wallpaper and the desktop's colors",
     "Pinned launchers and dock geometry",
+    "Each output's place on the desktop",
     "Keyboard repeat behavior",
     "Programs and shortcuts at session start",
 };
+static_assert(std::size(PAGE_BLURBS) == PAGE_COUNT);
 
 namespace {
 
@@ -157,7 +173,231 @@ private:
     const uint32_t* m_value;
 };
 
-/* Everything the pages edit, shared by the builders and the footer */
+/* The Display page's arrangement and its own connection to the display
+ * manager, since libstlxqpa drops the layout results on Qt's connection */
+struct display_state {
+    stlxwin_conn* conn = nullptr;
+    QSocketNotifier* notifier = nullptr;
+    uint32_t generation = 0;
+    uint32_t count = 0;
+    stlxwin_output outputs[STLXWIN_OUTPUTS_MAX] = {};
+    QPoint top_lefts[STLXWIN_OUTPUTS_MAX];
+    uint32_t main_output = 0;
+};
+
+/* The outputs to scale, the main one under an accent strip. A dragged
+ * one snaps to edges of the others within `SNAP_PX` page pixels */
+class arrangement_view : public QWidget {
+public:
+    explicit arrangement_view(display_state* display) : m_display(display) {
+        setFixedHeight(ARRANGEMENT_H);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        /* A drag holds the scale, so the pointer moves only the dragged output */
+        if (m_dragged < 0) {
+            scale_to_view();
+        }
+
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        for (uint32_t i = 0; i < m_display->count; i++) {
+            if (static_cast<int>(i) != m_dragged) {
+                paint_output(p, i);
+            }
+        }
+
+        if (m_dragged >= 0) {
+            paint_output(p, static_cast<uint32_t>(m_dragged));
+        }
+    }
+
+    void mousePressEvent(QMouseEvent* event) override {
+        m_dragged = output_at(event->position());
+        if (m_dragged < 0) {
+            return;
+        }
+
+        m_grab_top_left = m_display->top_lefts[m_dragged];
+        m_grab_pointer = event->position();
+        update();
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (m_dragged < 0) {
+            return;
+        }
+
+        QPoint moved = ((event->position() - m_grab_pointer) / m_scale).toPoint();
+        m_display->top_lefts[m_dragged] = snapped(static_cast<uint32_t>(m_dragged), m_grab_top_left + moved);
+        update();
+    }
+
+    void mouseReleaseEvent(QMouseEvent*) override {
+        m_dragged = -1;
+        update();
+    }
+
+private:
+    QRect place_rect(uint32_t i) const {
+        const stlxwin_output& output = m_display->outputs[i];
+        return QRect(m_display->top_lefts[i], QSize(static_cast<int>(output.width), static_cast<int>(output.height)));
+    }
+
+    QRectF page_rect(uint32_t i) const {
+        QRectF place(place_rect(i));
+        return QRectF(m_origin + place.topLeft() * m_scale, place.size() * m_scale);
+    }
+
+    int output_at(QPointF position) const {
+        for (uint32_t i = 0; i < m_display->count; i++) {
+            if (page_rect(i).contains(position)) {
+                return static_cast<int>(i);
+            }
+        }
+
+        return -1;
+    }
+
+    void scale_to_view() {
+        QRect bounds;
+        for (uint32_t i = 0; i < m_display->count; i++) {
+            bounds |= place_rect(i);
+        }
+
+        const QMarginsF margins(ARRANGEMENT_MARGIN, ARRANGEMENT_MARGIN, ARRANGEMENT_MARGIN, ARRANGEMENT_MARGIN);
+        QRectF room = QRectF(rect()).marginsRemoved(margins);
+        if (bounds.isEmpty() || room.isEmpty()) {
+            return;
+        }
+
+        m_scale = qMin(room.width() / bounds.width(), room.height() / bounds.height());
+        m_origin = room.center() - QRectF(bounds).center() * m_scale;
+    }
+
+    /* The shortest of `shift` and the four shifts that put an end of the
+     * span on an end of the other */
+    static int nearest_snap(int start, int length, int other_start, int other_length, int shift) {
+        int end = start + length;
+        int other_end = other_start + other_length;
+        const int candidates[] = { other_end - start, other_start - start, other_start - end, other_end - end };
+        for (int candidate : candidates) {
+            if (std::abs(candidate) < std::abs(shift)) {
+                shift = candidate;
+            }
+        }
+
+        return shift;
+    }
+
+    /* Whether `a` and `b` touch along an edge at least one pixel long */
+    static bool share_edge(QRect a, QRect b) {
+        bool rows_meet = qMin(a.y() + a.height(), b.y() + b.height()) > qMax(a.y(), b.y());
+        bool columns_meet = qMin(a.x() + a.width(), b.x() + b.width()) > qMax(a.x(), b.x());
+        bool side_by_side = a.x() + a.width() == b.x() || b.x() + b.width() == a.x();
+        bool stacked = a.y() + a.height() == b.y() || b.y() + b.height() == a.y();
+
+        return (side_by_side && rows_meet) || (stacked && columns_meet);
+    }
+
+    /* Whether `moving` overlaps no other output and, with `dragged` there,
+     * every output reaches the others through shared edges */
+    bool fits(QRect moving, uint32_t dragged) const {
+        QRect places[STLXWIN_OUTPUTS_MAX];
+        for (uint32_t i = 0; i < m_display->count; i++) {
+            places[i] = i == dragged ? moving : place_rect(i);
+            if (i != dragged && moving.intersects(places[i])) {
+                return false;
+            }
+        }
+
+        bool reached[STLXWIN_OUTPUTS_MAX] = {};
+        reached[0] = true;
+        uint32_t joined = 1;
+        for (bool spread = true; spread;) {
+            spread = false;
+            for (uint32_t i = 0; i < m_display->count; i++) {
+                if (!reached[i]) {
+                    continue;
+                }
+
+                for (uint32_t j = 0; j < m_display->count; j++) {
+                    if (!reached[j] && share_edge(places[i], places[j])) {
+                        reached[j] = true;
+                        joined++;
+                        spread = true;
+                    }
+                }
+            }
+        }
+
+        return joined == m_display->count;
+    }
+
+    QPoint snapped(uint32_t dragged, QPoint top_left) const {
+        int reach = static_cast<int>(SNAP_PX / m_scale);
+        int shift_x = reach + 1;
+        int shift_y = reach + 1;
+        QRect moving(top_left, place_rect(dragged).size());
+        for (uint32_t i = 0; i < m_display->count; i++) {
+            if (i == dragged) {
+                continue;
+            }
+
+            QRect other = place_rect(i);
+            shift_x = nearest_snap(moving.x(), moving.width(), other.x(), other.width(), shift_x);
+            shift_y = nearest_snap(moving.y(), moving.height(), other.y(), other.height(), shift_y);
+        }
+
+        int dx = std::abs(shift_x) <= reach ? shift_x : 0;
+        int dy = std::abs(shift_y) <= reach ? shift_y : 0;
+        bool x_shorter = std::abs(dx) < std::abs(dy);
+        QPoint both(dx, dy);
+        QPoint shorter = x_shorter ? QPoint(dx, 0) : QPoint(0, dy);
+        QPoint longer = x_shorter ? QPoint(0, dy) : QPoint(dx, 0);
+
+        /* Both snaps can leave two outputs meeting only at a corner, which
+         * does not join them, so the first of these that fits applies */
+        for (QPoint shift : { both, shorter, longer }) {
+            if (fits(moving.translated(shift), dragged)) {
+                return top_left + shift;
+            }
+        }
+
+        return top_left + both;
+    }
+
+    void paint_output(QPainter& p, uint32_t i) const {
+        const stlxwin_output& output = m_display->outputs[i];
+        QRectF box = page_rect(i).adjusted(1, 1, -1, -1);
+        bool is_dragged = static_cast<int>(i) == m_dragged;
+
+        p.setPen(palette().color(is_dragged ? QPalette::Highlight : QPalette::Midlight));
+        p.setBrush(palette().color(QPalette::Button));
+        p.drawRoundedRect(box, OUTPUT_RADIUS, OUTPUT_RADIUS);
+
+        if (output.output == m_display->main_output) {
+            QRectF strip = box.adjusted(OUTPUT_RADIUS, MAIN_STRIP_INSET, -OUTPUT_RADIUS, 0);
+            strip.setHeight(MAIN_STRIP_PX);
+            p.fillRect(strip, palette().color(QPalette::Highlight));
+        }
+
+        QString label = QString::asprintf("Output %u\n%ux%u", output.output, output.width, output.height);
+        p.setPen(palette().color(QPalette::WindowText));
+        p.drawText(box, Qt::AlignCenter, label);
+    }
+
+    display_state* m_display;
+    qreal m_scale = 1;
+    QPointF m_origin;
+    int m_dragged = -1;
+    QPoint m_grab_top_left;
+    QPointF m_grab_pointer;
+};
+
+/* Everything the pages edit but the Display page's arrangement, shared
+ * by the builders and the footer */
 struct app_state {
     stlxconf_t conf;
     QWidget* page_slot = nullptr;
@@ -173,6 +413,7 @@ struct app_state {
 } // namespace
 
 static app_state g_st;
+static display_state g_display;
 
 static void build_page(uint32_t index);
 
@@ -509,6 +750,171 @@ static void build_dock(QWidget* page) {
     });
 }
 
+static const char* layout_outcome_text(uint32_t outcome) {
+    switch (outcome) {
+    case STLXWIN_LAYOUT_APPLIED:
+        return "layout applied";
+    case STLXWIN_LAYOUT_UNSAVED:
+        return "layout applied but not stored, so it is lost when the display manager exits";
+    case STLXWIN_LAYOUT_STALE:
+        return "refused, the outputs changed meanwhile, arrange them again";
+    case STLXWIN_LAYOUT_INVALID:
+        return "refused as invalid";
+    case STLXWIN_LAYOUT_OVERLAP:
+        return "refused, two outputs overlap";
+    case STLXWIN_LAYOUT_APART:
+        return "refused, an output does not connect to the main output";
+    default:
+        return "refused";
+    }
+}
+
+static void close_display_connection() {
+    g_display.notifier->setEnabled(false);
+    g_display.notifier->deleteLater();
+    g_display.notifier = nullptr;
+
+    stlxwin_disconnect(g_display.conn);
+    g_display.conn = nullptr;
+}
+
+/* While the Display page shows, each `STLXWIN_EVT_OUTPUTS` or a lost
+ * connection rebuilds it. A layout request's outcome shows in the footer */
+static void read_display_events() {
+    bool alive = stlxwin_dispatch(g_display.conn) >= 0;
+    bool outputs_changed = false;
+
+    stlxwin_event event;
+    while (alive && stlxwin_next_event(g_display.conn, &event)) {
+        if (event.type == STLXWIN_EVT_DISCONNECTED) {
+            alive = false;
+        } else if (event.type == STLXWIN_EVT_OUTPUTS) {
+            outputs_changed = true;
+        } else if (event.type == STLXWIN_EVT_LAYOUT_RESULT) {
+            set_status(layout_outcome_text(event.layout_result.outcome));
+        }
+    }
+
+    if (!alive) {
+        close_display_connection();
+    }
+
+    bool page_stale = outputs_changed || !alive;
+    bool page_shown = g_st.active_page == DISPLAY_PAGE;
+    if (page_stale && page_shown) {
+        rebuild_page_later();
+    }
+}
+
+static bool open_display_connection() {
+    if (g_display.conn) {
+        return true;
+    }
+
+    g_display.conn = stlxwin_connect("stlxsettings");
+    if (!g_display.conn) {
+        return false;
+    }
+
+    g_display.notifier = new QSocketNotifier(stlxwin_conn_fd(g_display.conn), QSocketNotifier::Read);
+    QObject::connect(g_display.notifier, &QSocketNotifier::activated, read_display_events);
+
+    return true;
+}
+
+static QString output_name(const stlxwin_output& output) {
+    QString name = QStringLiteral("Output %1").arg(output.output);
+    size_t monitor_len = strnlen(output.monitor, sizeof(output.monitor));
+    if (monitor_len > 0) {
+        name += QStringLiteral(" (%1)").arg(QString::fromUtf8(output.monitor, static_cast<qsizetype>(monitor_len)));
+    }
+
+    return name;
+}
+
+/* The places and main output the display manager lists, the first output by default */
+static void read_arrangement(uint32_t generation) {
+    g_display.generation = generation;
+    g_display.main_output = g_display.outputs[0].output;
+    for (uint32_t i = 0; i < g_display.count; i++) {
+        const stlxwin_output& output = g_display.outputs[i];
+        g_display.top_lefts[i] = QPoint(output.x, output.y);
+        if (output.flags & STLXWIN_DESKTOP_MAIN) {
+            g_display.main_output = output.output;
+        }
+    }
+}
+
+/* A sent request's outcome arrives as `STLXWIN_EVT_LAYOUT_RESULT`,
+ * which `read_display_events` shows in the footer */
+static void apply_layout() {
+    stlxwin_layout_entry entries[STLXWIN_OUTPUTS_MAX];
+    for (uint32_t i = 0; i < g_display.count; i++) {
+        entries[i] = { g_display.outputs[i].output, g_display.top_lefts[i].x(), g_display.top_lefts[i].y() };
+    }
+
+    int rc = stlxwin_layout_set(
+        g_display.conn,
+        g_display.generation,
+        g_display.main_output,
+        entries,
+        g_display.count
+    );
+    if (rc != 0) {
+        set_status("the layout could not be sent to the display manager");
+    }
+}
+
+static void build_display(QWidget* page) {
+    card* arrangement = make_card(page, "ARRANGEMENT");
+
+    bool fresh_connection = !g_display.conn;
+    uint32_t generation = 0;
+    long listed = -1;
+    if (open_display_connection()) {
+        listed = stlxwin_outputs_get(g_display.conn, &generation, g_display.outputs, STLXWIN_OUTPUTS_MAX);
+    }
+
+    g_display.count = static_cast<uint32_t>(qBound(0L, listed, static_cast<long>(STLXWIN_OUTPUTS_MAX)));
+    if (g_display.count == 0) {
+        auto* none = new QLabel(listed < 0 ? QStringLiteral("The display manager could not be reached")
+                                           : QStringLiteral("The display manager lists no outputs to arrange"));
+        none->setContentsMargins(4, 0, 0, 0);
+        set_dim(none);
+        layout_of(arrangement)->addWidget(none);
+        return;
+    }
+
+    /* Moves not applied last until the list or the connection changes,
+     * so the rebuilds of Save, Revert and a page switch keep them */
+    if (fresh_connection || generation != g_display.generation) {
+        read_arrangement(generation);
+    }
+
+    auto* view = new arrangement_view(&g_display);
+    layout_of(arrangement)->addWidget(view);
+
+    auto* main_choice = new QComboBox;
+    for (uint32_t i = 0; i < g_display.count; i++) {
+        main_choice->addItem(output_name(g_display.outputs[i]));
+        if (g_display.outputs[i].output == g_display.main_output) {
+            main_choice->setCurrentIndex(static_cast<int>(i));
+        }
+    }
+
+    QHBoxLayout* row = make_row(arrangement, "Main output");
+    row->addWidget(main_choice);
+    row->addStretch(1);
+    QObject::connect(main_choice, &QComboBox::currentIndexChanged, [view](int index) {
+        if (index >= 0) {
+            g_display.main_output = g_display.outputs[index].output;
+            view->update();
+        }
+    });
+
+    add_list_button(arrangement, "Apply", apply_layout);
+}
+
 static void build_input(QWidget* page) {
     card* repeat = make_card(page, "KEYBOARD REPEAT");
 
@@ -617,11 +1023,12 @@ static void build_page(uint32_t index) {
     page_layout->setContentsMargins(0, 0, 0, 0);
     page_layout->setSpacing(14);
 
-    switch (index) {
-    case 0: build_appearance(g_st.page); break;
-    case 1: build_dock(g_st.page); break;
-    case 2: build_input(g_st.page); break;
-    default: build_startup(g_st.page); break;
+    switch (static_cast<page_index>(index)) {
+    case APPEARANCE_PAGE: build_appearance(g_st.page); break;
+    case DOCK_PAGE: build_dock(g_st.page); break;
+    case DISPLAY_PAGE: build_display(g_st.page); break;
+    case INPUT_PAGE: build_input(g_st.page); break;
+    case STARTUP_PAGE: build_startup(g_st.page); break;
     }
 
     page_layout->addStretch(1);
@@ -802,7 +1209,7 @@ int main(int argc, char** argv) {
     content->addWidget(make_footer());
     root->addLayout(content, 1);
 
-    build_page(0);
+    build_page(APPEARANCE_PAGE);
     window.show();
 
     return app.exec();
