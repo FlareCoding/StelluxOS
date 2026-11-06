@@ -75,6 +75,10 @@ public:
     void draw_overlay(stlxgfx_surface_t* back,
                       const damage_list::rect& clip);
 
+    /* The dim alone, for an output other than the one the overlay plays
+     * on, clipped to `clip`, which must lie inside `back`. */
+    void draw_dim(stlxgfx_surface_t* back, const damage_list::rect& clip);
+
     /* The dock's power star, drawn only while the overlay is closed */
     void draw_star(stlxgfx_surface_t* back,
                    const damage_list::rect& clip);

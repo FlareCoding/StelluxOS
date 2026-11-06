@@ -20,18 +20,24 @@ constexpr const char* DM_PID_PATH = "/tmp/stlxdm.pid";
 constexpr uint64_t NS_PER_SECOND = 1000000000ull;
 constexpr uint64_t MILLIHERTZ_PER_HERTZ = 1000;
 
-/* The rate stlxdm composes at when the screen's rate is unknown */
+/* The rate stlxdm composes an output at when its rate is unknown */
 constexpr uint64_t DEFAULT_REFRESH_MILLIHERTZ = 60000;
 
 /* How long stlxdm waits before asking again for display buffers while
  * another program controls the display's buffers */
 constexpr long DISPLAY_BUSY_RETRY_NS = 100000000;
 
-/* The main output, which stlxdm composes for: whether it is served, and the time between compositions, 0 until it is
- * first paced and while it is not served */
-struct screen_state {
-    bool     showing = true;
+/* One output's pace, all zero until it is first paced and while it is not served */
+struct output_pace {
     uint64_t compose_interval_ns = 0;
+    uint64_t last_compose_ns = 0;
+    uint64_t last_cursor_move_ns = 0;
+};
+
+/* The pacing state the main loop keeps across wakeups */
+struct pacing {
+    output_pace outputs[gfxfb::GFXFB_OUTPUTS_MAX];
+    bool        showing = true;  /* an output was served at the last pacing, true before the first */
 };
 
 /* SIGHUP asks for a config reload, applied on the next wakeup */
@@ -121,27 +127,36 @@ static uint64_t start_serving(const presenter& pres) {
     return refresh_interval_ns(compose_millihertz);
 }
 
-/* Paces the main output at its presenter's refresh when the `outputs` bits name it or nothing paces it, printing its
- * mode, and stops while it is not served, printing so when it stops */
-static void pace_main_output(const server& srv, uint32_t outputs, screen_state& screen) {
-    const presenter* pres = srv.main_presenter();
-    bool showing = pres != nullptr;
-    if (!showing) {
-        screen.compose_interval_ns = 0;
-    } else if ((outputs & (1u << pres->output())) != 0 || screen.compose_interval_ns == 0) {
-        screen.compose_interval_ns = start_serving(*pres);
+/* Paces each served output from its presenter's refresh when the `outputs` bits name it or nothing paces it yet,
+ * printing each, and says once when no output is served */
+static void pace_outputs(const display& disp, uint32_t outputs, pacing& pace) {
+    bool showing = false;
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        const presenter* pres = disp.presenter_of(output);
+        output_pace& out = pace.outputs[output];
+        if (!pres) {
+            out = {};
+            continue;
+        }
+
+        bool named = (outputs & (1u << output)) != 0;
+        if (named || out.compose_interval_ns == 0) {
+            out.compose_interval_ns = start_serving(*pres);
+        }
+
+        showing = true;
     }
 
-    if (!showing && screen.showing) {
+    if (!showing && pace.showing) {
         printf("stlxdm: drawing nothing until the display changes an output\r\n");
     }
 
-    screen.showing = showing;
+    pace.showing = showing;
 }
 
 /* Reads every output that output events named since the last call and has `disp` follow it, an output whose read
  * fails counting as dark, then has the server follow the outputs and moves the pointer where the server put it */
-static void follow_outputs(display& disp, server& srv, input& inp, screen_state& screen) {
+static void follow_outputs(display& disp, server& srv, input& inp, pacing& pace) {
     uint32_t changed = disp.take_changed_outputs();
     for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
         if ((changed & (1u << output)) == 0) {
@@ -159,19 +174,31 @@ static void follow_outputs(display& disp, server& srv, input& inp, screen_state&
 
     srv.outputs_changed(changed);
     inp.set_pointer(srv.follow_outputs(inp.pointer(), inp.buttons()));
-    pace_main_output(srv, changed, screen);
+    pace_outputs(disp, changed, pace);
 }
 
-/* Makes the waiting mode requests one at a time and follows each one's output events before the server answers it, so
- * a client hears an answer only once the desktop has followed the relight */
-static void run_mode_requests(display& disp, server& srv, input& inp, screen_state& screen) {
+/* Makes the waiting mode requests one at a time, following their output events before each answer and the outputs
+ * again after it, since `keeps_place_for_mode_request()` can turn false at an answer */
+static void run_mode_requests(display& disp, server& srv, input& inp, pacing& pace) {
     while (srv.start_mode_request()) {
         if (disp.output_changed()) {
-            follow_outputs(disp, srv, inp, screen);
+            follow_outputs(disp, srv, inp, pace);
         }
 
         srv.finish_mode_request();
+        inp.set_pointer(srv.follow_outputs(inp.pointer(), inp.buttons()));
     }
+}
+
+/* Lowers `next_ns`, -1 while nothing bounds the wait, to `bound_ns` when that comes sooner */
+static void bound_wait(int64_t& next_ns, int64_t bound_ns) {
+    if (bound_ns >= 0 && (next_ns < 0 || bound_ns < next_ns)) {
+        next_ns = bound_ns;
+    }
+}
+
+static int64_t until(uint64_t deadline, uint64_t now) {
+    return deadline > now ? static_cast<int64_t>(deadline - now) : 0;
 }
 
 int main() {
@@ -220,20 +247,15 @@ int main() {
     signal(SIGHUP, on_sighup);
     write_pidfile();
 
-    /* Composition waits for the last present to end and for the main output to be served, and runs at most once per
-     * refresh, at the default rate when the output's rate is unknown */
-    screen_state screen;
-    uint64_t last_compose_ns = 0;
+    /* stlxdm composes each output after its last present ended, at most once per its refresh, at the default rate when
+     * its rate is unknown, and sends its waiting cursor move at most once per refresh, even while a present waits */
+    pacing pace;
 
-    /* A pointer move waiting for the hardware cursor is sent at most once
-     * a refresh too, whether or not a present waits */
-    uint64_t last_cursor_move_ns = 0;
-
-    /* An output event the splash's presents read is followed before `start_serving()` first runs */
+    /* An output event the splash's presents read is followed before the outputs are first paced */
     if (disp.output_changed()) {
-        follow_outputs(disp, srv, inp, screen);
+        follow_outputs(disp, srv, inp, pace);
     } else {
-        pace_main_output(srv, ~0u, screen);
+        pace_outputs(disp, ~0u, pace);
         srv.show_cursor();
     }
 
@@ -254,64 +276,37 @@ int main() {
         size_t event_slot = fds.size();
         fds.push_back({ disp.fd(), POLLIN, 0 });
 
-        /* Key repeat and, with damage pending, the main output served and no present waiting,
-         * the compose deadline cap the wait. Idle blocks forever. */
+        /* Key repeat, the clock, the readouts, a trial, a GPU commit's query and each output's compose and cursor move
+         * deadlines cap the wait, and idle blocks forever */
         uint64_t now = now_ns();
         int64_t next_ns = inp.repeat_timeout_ns(now);
+        bound_wait(next_ns, srv.clock_timeout_ns(now));
+        bound_wait(next_ns, srv.perf_timeout_ns(now));
+        bound_wait(next_ns, srv.mode_timeout_ns(now));
+        bound_wait(next_ns, srv.latch_timeout_ns(now));
 
-        /* The clock bounds every sleep at the next second rollover,
-         * except behind the overlay where the bar is frozen */
-        int64_t clock_ns = srv.clock_timeout_ns(now);
-        if (clock_ns >= 0 && (next_ns < 0 || clock_ns < next_ns)) {
-            next_ns = clock_ns;
-        }
+        srv.spread_damage();
+        for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+            const presenter* pres = disp.presenter_of(output);
+            if (!pres) {
+                continue;
+            }
 
-        /* The latency and missed frames readouts refresh on their own
-         * cadence and ask for nothing once quiet */
-        int64_t perf_ns = srv.perf_timeout_ns(now);
-        if (perf_ns >= 0 && (next_ns < 0 || perf_ns < next_ns)) {
-            next_ns = perf_ns;
-        }
+            const output_pace& out = pace.outputs[output];
+            if (srv.compose_pending(output) && !pres->present_pending()) {
+                bound_wait(next_ns, until(out.last_compose_ns + out.compose_interval_ns, now));
+            }
 
-        int64_t trial_ns = srv.mode_timeout_ns(now);
-        if (trial_ns >= 0 && (next_ns < 0 || trial_ns < next_ns)) {
-            next_ns = trial_ns;
-        }
-
-        int64_t latch_ns = srv.latch_timeout_ns(now);
-        if (latch_ns >= 0 && (next_ns < 0 || latch_ns < next_ns)) {
-            next_ns = latch_ns;
-        }
-
-        presenter* pres = srv.main_presenter();
-        bool may_compose = pres && !pres->present_pending();
-        if (srv.compose_pending() && may_compose) {
-            uint64_t deadline = last_compose_ns + screen.compose_interval_ns;
-            int64_t compose_ns = deadline > now
-                               ? static_cast<int64_t>(deadline - now) : 0;
-            if (next_ns < 0 || compose_ns < next_ns) {
-                next_ns = compose_ns;
+            if (srv.cursor_move_pending(output)) {
+                bound_wait(next_ns, until(out.last_cursor_move_ns + out.compose_interval_ns, now));
             }
         }
 
-        /* A waiting pointer move bounds the sleep at a refresh after the
-         * last one flushed, damage or not, if the main output is served */
-        if (srv.cursor_move_pending() && pres) {
-            uint64_t deadline = last_cursor_move_ns + screen.compose_interval_ns;
-            int64_t move_ns = deadline > now
-                            ? static_cast<int64_t>(deadline - now) : 0;
-            if (next_ns < 0 || move_ns < next_ns) {
-                next_ns = move_ns;
-            }
-        }
-
-        /* With the main output unserved nothing composes, so a power overlay phase or hold in flight bounds the sleep
-         * at a refresh of the default rate */
-        if (!pres && srv.power_animating()) {
-            int64_t power_ns = static_cast<int64_t>(refresh_interval_ns(DEFAULT_REFRESH_MILLIHERTZ));
-            if (next_ns < 0 || power_ns < next_ns) {
-                next_ns = power_ns;
-            }
+        /* While the main output is not served, a power overlay phase or hold in flight bounds the sleep at a refresh
+         * of the default rate, since no compose advances the overlay then */
+        bool main_served = srv.main_presenter() != nullptr;
+        if (!main_served && srv.power_animating()) {
+            bound_wait(next_ns, static_cast<int64_t>(refresh_interval_ns(DEFAULT_REFRESH_MILLIHERTZ)));
         }
 
         int timeout_ms = next_ns < 0 ? -1 : static_cast<int>(next_ns / 1000000);
@@ -354,32 +349,38 @@ int main() {
         }
 
         if (disp.output_changed()) {
-            follow_outputs(disp, srv, inp, screen);
+            follow_outputs(disp, srv, inp, pace);
         }
 
         srv.mode_tick(now);
-        run_mode_requests(disp, srv, inp, screen);
+        run_mode_requests(disp, srv, inp, pace);
 
         now = now_ns();
         srv.perf_tick(now);
 
-        pres = srv.main_presenter();
-        bool move_due = pres && now >= last_cursor_move_ns + screen.compose_interval_ns;
-        if (srv.cursor_move_pending() && move_due) {
-            srv.flush_cursor();
-            last_cursor_move_ns = now;
+        for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+            output_pace& out = pace.outputs[output];
+            bool move_due = now >= out.last_cursor_move_ns + out.compose_interval_ns;
+            if (disp.presenter_of(output) && srv.cursor_move_pending(output) && move_due) {
+                srv.flush_cursor(output);
+                out.last_cursor_move_ns = now;
+            }
         }
 
-        may_compose = pres && !pres->present_pending();
-        bool period_passed = now >= last_compose_ns + screen.compose_interval_ns;
-        if (srv.compose_pending() && may_compose && period_passed) {
-            srv.compose_tick();
-            last_compose_ns = now;
+        srv.spread_damage();
+        for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+            const presenter* pres = disp.presenter_of(output);
+            output_pace& out = pace.outputs[output];
+            bool period_passed = now >= out.last_compose_ns + out.compose_interval_ns;
+            if (pres && !pres->present_pending() && period_passed && srv.compose_pending(output)) {
+                srv.compose_tick(output);
+                out.last_compose_ns = now;
+            }
         }
 
-        /* Nothing composes while the main output is not served, so the
+        /* Nothing composes the main output while it is not served, so the
          * power overlay ticks here and a confirmed action still runs */
-        if (!pres) {
+        if (!srv.main_presenter()) {
             srv.power_tick();
         }
 

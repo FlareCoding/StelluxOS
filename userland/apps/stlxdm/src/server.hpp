@@ -23,6 +23,9 @@
  * wakeup. A full batch flushes early. */
 constexpr uint32_t DM_EV_BATCH_MAX = 16;
 
+/* Frames of damage an output keeps for targets older than one present */
+constexpr uint32_t DM_DAMAGE_HISTORY = 3;
+
 /* One parsed exec shortcut: required modifier bits and the usage
  * that fires it while they are held */
 struct dm_hotkey {
@@ -39,6 +42,48 @@ struct dm_conf_state {
     std::unique_ptr<dm_power> power;
     stlxgfx_surface_t* backdrop = nullptr;
     std::vector<dm_hotkey> hotkeys;
+};
+
+/* One output as the compositor sees it, kept by its index and cleared
+ * while the output is not served. */
+struct dm_output {
+    presenter*         pres = nullptr;    /* the display's, null while not served */
+    damage_list::rect  place;             /* desktop coordinates */
+
+    /* Damage in the output's own pixels since its last compose, and that
+     * of its recent frames for targets older than one present */
+    damage_list        damage;
+    damage_list        history[DM_DAMAGE_HISTORY];
+    uint32_t           history_head = 0;
+
+    /* The wallpaper or flat color at the output's size, null on the main
+     * output and when it could not be built */
+    stlxgfx_surface_t* backdrop = nullptr;
+    bool               backdrop_failed = false;       /* its last build failed */
+
+    bool               cursor_overlaps = false;       /* the pointer's picture overlaps the output */
+    const uint32_t*    cursor_picture = nullptr;      /* the picture its hardware cursor shows */
+    bool               cursor_in_frames = false;      /* drawn into frames since its cursor could not show it */
+    bool               cursor_move_pending = false;   /* a move waits for the flush */
+};
+
+/* The wallpaper for one refresh of the backdrops, decoded at its first
+ * use and freed with this, so a refresh decodes it at most once. */
+class dm_wallpaper {
+public:
+    explicit dm_wallpaper(const stlxconf_t& conf) : m_conf(conf) {}
+    ~dm_wallpaper();
+    dm_wallpaper(const dm_wallpaper&) = delete;
+    dm_wallpaper& operator=(const dm_wallpaper&) = delete;
+
+    /* The decoded image, null when none is configured or it fails to
+     * load. */
+    const stlxgfx_surface_t* image();
+
+private:
+    const stlxconf_t&  m_conf;
+    stlxgfx_surface_t* m_image = nullptr;
+    bool               m_decoded = false;
 };
 
 /* One attached buffer. A GPU buffer holds its timelines and its newest
@@ -78,6 +123,7 @@ struct dm_window {
     uint32_t win_id = 0;
     uint32_t parent_id = 0;
     int32_t  x = 0, y = 0;
+    uint32_t output = 0;        /* a toplevel's: the member holding the largest part of its frame */
     uint32_t flags = 0;
     uint32_t popup_flags = 0;
     char     title[SWP_TITLE_MAX] = {};
@@ -215,22 +261,22 @@ public:
     const layout& desktop() const { return m_layout; }
 
     /* The main output's presenter, null while it is not served. */
-    presenter* main_presenter() const { return m_display->presenter_of(m_layout.main_output()); }
+    presenter* main_presenter() const { return m_outputs[m_layout.main_output()].pres; }
 
-    /* Shows the pointer on the main output's hardware cursor when it
-     * can show the shape, else in the frames, printing which while the
-     * main output is served. Runs after the splash, which has no pointer,
-     * and after output events. */
+    /* Shows the pointer on the hardware cursor of every served output
+     * its picture overlaps, where that output can show the shape, else in
+     * its frames, printing which, and hides it on the other served
+     * outputs. Runs after the splash, which has no pointer, and from
+     * `follow_outputs()`. */
     void show_cursor();
 
-    /* Whether a pointer move waits for the hardware cursor. */
-    bool cursor_move_pending() const { return m_cursor_move_pending; }
+    /* Whether a pointer move waits for `output`'s hardware cursor. */
+    bool cursor_move_pending(uint32_t output) const { return m_outputs[output].cursor_move_pending; }
 
-    /* Sends the hardware cursor the waiting move, at the pointer's
+    /* Sends `output`'s hardware cursor the waiting move, at the pointer's
      * latest position: one call however many motions came. A refused
-     * move puts the pointer back into the frames. The main output must
-     * be served. */
-    void flush_cursor();
+     * move puts the pointer into that output's frames. */
+    void flush_cursor(uint32_t output);
 
     void shutdown();
 
@@ -239,14 +285,14 @@ public:
      * Autostart entries do not respawn. */
     void reload_config();
 
-    /* Once `display` followed output events, places the served outputs
-     * again, rebuilding the panels, power and backdrop when the main
-     * output changed or its size differs from the backdrop's, or keeping
-     * the running ones when that fails, and repaints the whole desktop. A
-     * change of places or a rebuild keeps windows in reach. Returns the
-     * pointer, moved with its output on a change of places or to the main
-     * output's center once its output left, shown again and routed as a
-     * device's motion with `buttons` held, less its latency stamp. */
+    /* Places the members again after output events or a mode request's
+     * answer, rebuilding the panels, power and backdrop when the main
+     * output changed or its size differs from the backdrop's (keeping the
+     * running ones on failure), and repaints every served output whole. A
+     * change of places moves windows and popups with their outputs, and
+     * it or a rebuild keeps them in reach. Returns the pointer, moved
+     * with its output or, once that left, to the main output's center,
+     * shown and routed as an untimed motion with `buttons` held. */
     desktop_point follow_outputs(desktop_point pointer, uint16_t buttons);
 
     /* Fills fds for one poll cycle: listen socket plus every client. */
@@ -256,13 +302,14 @@ public:
      * dead ones. Call after every poll wakeup. */
     void pump(const std::vector<struct pollfd>& fds);
 
-    /* Whether damage, latches, configures, panel repaints, or a
-     * running overlay animation wait for the paced tick. */
-    bool compose_pending() const {
-        return !m_damage.empty() || has_latch_work() ||
-               has_configure_work() || m_panels->dirty() ||
-               m_power->animating();
-    }
+    /* Moves the desktop's damage into the damage of every served output
+     * it overlaps, in that output's pixels. */
+    void spread_damage();
+
+    /* Whether damage, latches or configures wait for `output`'s paced
+     * tick, as of the last `spread_damage()`. On the main output, panel
+     * repaints and a running overlay animation wait for it too. */
+    bool compose_pending(uint32_t output) const;
 
     /* The poll bound until the next query of a pending GPU commit older
      * than a second, which the tick no longer runs for, or -1 if none. */
@@ -284,16 +331,14 @@ public:
     bool power_animating() const { return m_power->animating(); }
 
     /* Advances the power overlay and, once its collapse ends, runs a
-     * confirmed action, as `compose_tick()` does while frames show. */
-    void power_tick() {
-        m_power->update();
-        m_power->run_action();
-    }
+     * confirmed action, as the main output's `compose_tick()` does while
+     * it is served. */
+    void power_tick();
 
-    /* Latches pending commits into scene damage, composes exactly the
-     * damaged regions into the presenter's target, and presents them.
-     * Runs at the paced tick. */
-    void compose_tick();
+    /* Latches the pending commits `output`'s composes take, composes
+     * exactly its damaged regions into its presenter's target, and
+     * presents them. Runs at the output's paced tick. */
+    void compose_tick(uint32_t output);
 
     /* Flushes every window's staged event batch. Call once per poll
      * wakeup after input, protocol, and compose work. */
@@ -327,7 +372,7 @@ public:
      * the timestamp it already took for the wakeup, the routers stamp
      * the inputs that may paint, settle judges the desktop's own
      * reaction once routing is done, and the tick, run once the loop has
-     * read any present end the wakeup delivered, takes the presenter's
+     * read any present end the wakeup delivered, takes every output's
      * missed frames and runs the refresh. */
     void perf_wake(uint64_t now_ns);
     void perf_settle();
@@ -363,13 +408,22 @@ private:
     bool is_acquire_reached(dm_client& c, dm_window& w, uint64_t now);
     void latch_window(dm_client& c, dm_window& w);
     void flush_configures();
-    void compose_rect(stlxgfx_surface_t* back, const damage_list::rect& r);
+    void compose_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
+    void compose_collapse(dm_output& out);
+    void advance_power();
+    const dm_window& toplevel_of(const dm_client& c, const dm_window& w) const;
+    uint32_t latch_output(const dm_client& c, const dm_window& w) const;
+    void update_window_output(dm_window& w);
 
     void drop_client(dm_client& c);
     void spawn_shortcut(const char* path);
-    int build_conf_state(dm_conf_state& out);
-    uint32_t gather_members(layout::member* members) const;
+    int build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper);
     void adopt_conf_state(dm_conf_state&& next);
+    void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);
+    uint32_t gather_members(layout::member* members) const;
+    void sync_outputs();
+    void move_window_tree(dm_client& c, dm_window* w, int32_t dx, int32_t dy);
+    void move_windows_with_outputs(const layout& before);
     void keep_windows_in_reach();
     bool send_to(dm_client& c, uint16_t type,
                  const void* payload, uint32_t length,
@@ -395,6 +449,7 @@ private:
     void scene_damage_window(dm_window* w);
 
     /* modes.cpp */
+    bool keeps_place_for_mode_request(uint32_t output) const;
     void handle_get_modes(dm_client& c, const uint8_t* payload);
     void queue_mode_message(dm_client& c, uint16_t type, const uint8_t* payload);
     void take_mode_message(const dm_mode_message& m);
@@ -404,15 +459,21 @@ private:
     void end_trial_with_set_back(dm_client* answer_to);
     void forget_mode_client(dm_client& c);
 
-    bool has_latch_work() const;
+    bool has_latch_work(uint32_t output) const;
     bool has_configure_work() const;
 
     int m_listen_fd = -1;
     display* m_display = nullptr;
     const stlxconf_t* m_conf = nullptr;
     std::vector<std::unique_ptr<dm_client>> m_clients;
+
+    /* The outputs' places, each output's record by its index, and the
+     * count of windows opened on each output, which sets their cascade */
     layout m_layout;
-    uint32_t m_window_count = 0;
+    dm_output m_outputs[gfxfb::GFXFB_OUTPUTS_MAX];
+    uint32_t m_window_count[gfxfb::GFXFB_OUTPUTS_MAX] = {};
+
+    /* Desktop damage not yet spread to the outputs */
     damage_list m_damage;
 
     /* The GPU whose buffers clients may attach, -1 without one, and the
@@ -420,8 +481,8 @@ private:
     int m_gpu_fd = -1;
     swp_gpu_info m_gpu_info = {};
 
-    /* The desktop's backdrop: wallpaper or flat color, with the panels
-     * painted into their rows. Exposed pixels blit from here. */
+    /* The main output's backdrop: wallpaper or flat color with the
+     * panels painted in */
     stlxgfx_surface_t* m_backdrop = nullptr;
 
     /* The desktop's own input to paint latency and missed frames meter,
@@ -442,12 +503,6 @@ private:
      * parent and travel with it on raise. */
     std::vector<dm_window*> m_zorder;
 
-    /* Damage from recent frames, unioned in when the acquired target
-     * is older than one present */
-    static constexpr uint32_t DAMAGE_HISTORY = 3;
-    damage_list m_history[DAMAGE_HISTORY];
-    uint32_t m_history_head = 0;
-
     /* Input routing state, cleared by forget_window on death */
     dm_window* m_focus = nullptr;
     dm_window* m_hover = nullptr;
@@ -465,21 +520,16 @@ private:
     std::unique_ptr<dm_power> m_power;
     bool m_power_was_active = false;
 
-    /* The pointer sprite: position, active shape, and whether the
-     * hardware cursor shows it, in which case a move repaints nothing */
+    /* The pointer sprite, its position in desktop coordinates and its
+     * active shape, shown on each output as its `dm_output` says */
     cursor m_cursor;
     int32_t m_cursor_x = 0;
     int32_t m_cursor_y = 0;
     uint32_t m_cursor_shape = SWP_CURSOR_ARROW;
-    bool m_cursor_on_hardware = false;
-
-    /* The pixels the hardware cursor shows while it shows the pointer,
-     * else null, and whether a move waits for `flush_cursor()` */
-    const uint32_t* m_cursor_picture = nullptr;
-    bool m_cursor_move_pending = false;
 
     void move_cursor(int32_t x, int32_t y, uint32_t shape);
-    bool show_hardware_cursor();
+    bool show_hardware_cursor(dm_output& out);
+    damage_list::rect cursor_bounds() const;
     void damage_cursor();
 
     /* Title drag and close-control hover, decoration hit zones */
@@ -515,6 +565,7 @@ private:
     bool m_next_request_waiting = false;
 
     dm_mode_request m_request;  /* the one being followed */
+    bool m_request_following = false;  /* from making `m_request` until finishing it */
     dm_trial m_trial;
 };
 

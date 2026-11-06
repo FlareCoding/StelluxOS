@@ -247,97 +247,131 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
     send_event(m_focus, rec);
 }
 
-void server::show_cursor() {
-    m_cursor_picture = nullptr;
-    m_cursor_on_hardware = show_hardware_cursor();
-    m_cursor_move_pending = false;
-
-    damage_cursor();
-
-    presenter* pres = main_presenter();
-    if (pres) {
-        printf("stlxdm: pointer %s of output %u\r\n",
-               m_cursor_on_hardware ? "on the display's hardware cursor" : "drawn into frames", pres->output());
-    }
+static bool rects_overlap(const damage_list::rect& a, const damage_list::rect& b) {
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-void server::flush_cursor() {
-    if (!m_cursor_move_pending) {
+void server::show_cursor() {
+    damage_list::rect bounds = cursor_bounds();
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        dm_output& out = m_outputs[output];
+        if (!out.pres) {
+            continue;
+        }
+
+        out.cursor_picture = nullptr;
+        out.cursor_move_pending = false;
+        out.cursor_overlaps = rects_overlap(bounds, out.place);
+        if (!out.cursor_overlaps) {
+            out.pres->hide_cursor();
+            out.cursor_in_frames = false;
+            continue;
+        }
+
+        out.cursor_in_frames = !show_hardware_cursor(out);
+        printf("stlxdm: pointer %s of output %u\r\n",
+               out.cursor_in_frames ? "drawn into frames" : "on the display's hardware cursor", output);
+    }
+
+    damage_cursor();
+}
+
+void server::flush_cursor(uint32_t output) {
+    dm_output& out = m_outputs[output];
+    if (!out.cursor_move_pending) {
         return;
     }
 
-    m_cursor_move_pending = false;
+    out.cursor_move_pending = false;
 
-    presenter* pres = main_presenter();
-    if (!pres->move_cursor(m_cursor_x, m_cursor_y)) {
-        pres->hide_cursor();
-        m_cursor_on_hardware = false;
-        m_cursor_picture = nullptr;
+    if (!out.pres->move_cursor(m_cursor_x - out.place.x, m_cursor_y - out.place.y)) {
+        out.pres->hide_cursor();
+        out.cursor_picture = nullptr;
+        out.cursor_in_frames = true;
         damage_cursor();
     }
 }
 
-/* After a failed cursor call the frames draw the pointer until a shape
- * change or an output event tries the hardware cursor */
+/* An output whose cursor call failed draws the pointer into its frames
+ * until a shape change or `follow_outputs()` tries the hardware cursor */
 void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
     if (x == m_cursor_x && y == m_cursor_y && shape == m_cursor_shape) {
         return;
     }
 
     bool reshaped = shape != m_cursor_shape;
-    if (!m_cursor_on_hardware) {
-        damage_cursor();
-    }
+    damage_cursor();
 
     m_cursor_x = x;
     m_cursor_y = y;
     m_cursor_shape = shape;
 
-    if (reshaped) {
-        m_cursor_on_hardware = show_hardware_cursor();
-        m_cursor_move_pending = false;
-    } else if (m_cursor_on_hardware) {
-        m_cursor_move_pending = true;
+    damage_list::rect bounds = cursor_bounds();
+    for (dm_output& out : m_outputs) {
+        if (!out.pres) {
+            continue;
+        }
+
+        bool overlaps = rects_overlap(bounds, out.place);
+        bool entered = overlaps && !out.cursor_overlaps;
+        bool left = !overlaps && out.cursor_overlaps;
+        out.cursor_overlaps = overlaps;
+
+        if (left) {
+            if (out.cursor_picture) {
+                out.pres->hide_cursor();
+            }
+
+            out.cursor_picture = nullptr;
+            out.cursor_move_pending = false;
+        } else if (overlaps && (reshaped || (entered && !out.cursor_in_frames))) {
+            out.cursor_in_frames = !show_hardware_cursor(out);
+            out.cursor_move_pending = false;
+        } else if (overlaps && out.cursor_picture) {
+            out.cursor_move_pending = true;
+        }
     }
 
-    if (!m_cursor_on_hardware) {
-        damage_cursor();
-    }
+    damage_cursor();
 }
 
-/* Shows the pointer's shape on the hardware cursor, sending its picture
- * unless it shows already, or hides the cursor and returns false */
-bool server::show_hardware_cursor() {
-    presenter* pres = main_presenter();
-    if (!pres) {
-        return false;
-    }
-
+/* Shows the pointer's shape on `out`'s hardware cursor, sending its
+ * picture unless it shows already, or hides the cursor and returns false */
+bool server::show_hardware_cursor(dm_output& out) {
     presenter::cursor_picture picture;
     bool has_picture = m_cursor.picture(m_cursor_shape, picture);
-    bool showing = has_picture && picture.pixels == m_cursor_picture;
+    bool showing = has_picture && picture.pixels == out.cursor_picture;
 
-    bool shown = has_picture && pres->move_cursor(m_cursor_x, m_cursor_y);
+    bool shown = has_picture && out.pres->move_cursor(m_cursor_x - out.place.x, m_cursor_y - out.place.y);
     if (shown && !showing) {
-        shown = pres->set_cursor(picture);
+        shown = out.pres->set_cursor(picture);
     }
 
     if (!shown) {
-        pres->hide_cursor();
+        out.pres->hide_cursor();
     }
 
-    m_cursor_picture = shown ? picture.pixels : nullptr;
+    out.cursor_picture = shown ? picture.pixels : nullptr;
 
     return shown;
 }
 
+damage_list::rect server::cursor_bounds() const {
+    damage_list::rect r;
+    m_cursor.bounds(m_cursor_shape, m_cursor_x, m_cursor_y, &r.x, &r.y, &r.w, &r.h);
+    return r;
+}
+
 /* Marks the sprite's bounds at the pointer's position and shape for the
- * next frame to repaint */
+ * next frame of each output drawing it to repaint */
 void server::damage_cursor() {
-    int32_t bx, by, bw, bh;
-    m_cursor.bounds(m_cursor_shape, m_cursor_x, m_cursor_y,
-                    &bx, &by, &bw, &bh);
-    m_damage.add(bx, by, bw, bh);
+    damage_list::rect r = cursor_bounds();
+    for (const dm_output& out : m_outputs) {
+        if (out.pres && out.cursor_in_frames && rects_overlap(r, out.place)) {
+            m_damage.add(r.x, r.y, r.w, r.h);
+            return;
+        }
+    }
 }
 
 void server::damage_outline() {
@@ -359,6 +393,7 @@ void server::move_window(dm_window* w, int32_t dx, int32_t dy) {
     w->x += dx;
     w->y += dy;
     scene_damage_window(w);
+    update_window_output(*w);
 
     for (uint32_t i = 0; i < w->sent_conf_count; i++) {
         w->sent_confs[i].x += dx;
@@ -489,7 +524,8 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
     bool star_was = m_power->star_hover();
     m_power->on_motion(x, y);
     if (m_power->star_hover() != star_was) {
-        m_damage.add_full();
+        const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
+        m_damage.add(main.x, main.y, main.w, main.h);
     }
 
     /* A press on the star opens the overlay above everything */
@@ -512,12 +548,15 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
-    /* An active title drag owns the pointer until every button lifts,
-     * keeping the title bar's rows inside the main output's work area. */
+    /* An active title drag owns the pointer until every button lifts, keeping
+     * the title bar's rows inside the work area of the pointer's output. */
     if (m_drag) {
         move_cursor(x, y, m_cursor_shape);
 
-        damage_list::rect work = m_layout.work_area(m_layout.main_output());
+        int32_t under_pointer = m_layout.output_at(x, y);
+        uint32_t output = under_pointer >= 0 ? static_cast<uint32_t>(under_pointer) : m_layout.main_output();
+        damage_list::rect work = m_layout.work_area(output);
+
         int32_t want_y = y - m_drag_dy;
         int32_t min_y = work.y + decor::TITLE_H;
         if (want_y < min_y) {

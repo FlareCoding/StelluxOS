@@ -658,6 +658,24 @@ void dm_power::draw_orbs(stlxgfx_surface_t* s, int32_t ox, int32_t oy) {
     }
 }
 
+void dm_power::draw_dim(stlxgfx_surface_t* back, const damage_list::rect& clip) {
+    if (m_state == state::closed || clip.w <= 0 || clip.h <= 0) {
+        return;
+    }
+
+    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(
+        back->pixels + static_cast<uint32_t>(clip.y) * back->pitch
+            + static_cast<uint32_t>(clip.x) * 4,
+        static_cast<uint32_t>(clip.w), static_cast<uint32_t>(clip.h),
+        back->pitch, 32, 16, 8, 0);
+    if (!view) {
+        return;
+    }
+
+    pw_dim(view, PW_DIM_COLOR);
+    stlxgfx_destroy_surface(view);
+}
+
 void dm_power::draw_overlay(stlxgfx_surface_t* back,
                             const damage_list::rect& clip) {
     if (m_state == state::closed || clip.w <= 0 || clip.h <= 0) {

@@ -56,9 +56,11 @@ public:
     /* A frame was presented */
     void note_present(uint64_t now_ns);
 
-    /* Takes the presenter's missed frames since init, -1 if it cannot
-     * count. Each increase after the first total is stamped `now_ns` and
-     * counts in each refresh up to `PERF_WINDOW_MS` later. */
+    /* Takes the missed frames summed over the served outputs that count
+     * them, each since its presenter's init, -1 if none does. Each
+     * increase after the first total is stamped `now_ns` and counts in
+     * each refresh up to `PERF_WINDOW_MS` later, and a fall only lowers
+     * the base. */
     void note_missed_frames(uint64_t now_ns, int64_t total);
 
     /* Nanoseconds until the next refresh, -1 when nothing will change */

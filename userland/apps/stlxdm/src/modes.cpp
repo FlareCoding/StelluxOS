@@ -147,6 +147,7 @@ bool server::start_mode_request() {
 
     m_request = m_next_request;
     m_next_request_waiting = false;
+    m_request_following = true;
     make_mode_request(m_request);
 
     return true;
@@ -224,15 +225,15 @@ void server::make_mode_request(dm_mode_request& request) {
 void server::finish_mode_request() {
     int fd = m_display->fd();
     const dm_mode_request& request = m_request;
+    m_request_following = false;
 
     gfxfb::gfxfb_output_info info = read_output(fd, request.output);
-    uint32_t lit_primary = gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY;
     bool served = m_display->presenter_of(request.output) != nullptr;
     bool is_clients = request.outcome == SWP_MODE_SET || request.outcome == SWP_MODE_TRIAL;
-    bool lacks_buffers = request.result == 0 && !served && (info.flags & lit_primary) == lit_primary;
+    bool lacks_buffers = request.result == 0 && !served && (info.flags & gfxfb::GFXFB_OUTPUT_LIT) != 0;
 
     /* Only a client's request gets the previous mode after stlxdm cannot make buffers at the new one (the mode was set
-     * and the output reads lit, primary and not served), so a lack of buffers costs one more request at most */
+     * and the output reads lit and not served), so a lack of buffers costs one more request at most */
     if (is_clients && lacks_buffers) {
         m_next_request = request;
         m_next_request.outcome = SWP_MODE_NO_BUFFERS;
@@ -266,6 +267,17 @@ void server::finish_mode_request() {
 
         printf("stlxdm: output %u on trial, set back in 15 seconds unless kept\r\n", request.output);
     }
+}
+
+/* Whether `output` keeps its place for a client's mode request: while the request is followed, and while the request
+ * for the previous mode, made when the client's mode left the output unserved, waits or is followed */
+bool server::keeps_place_for_mode_request(uint32_t output) const {
+    bool is_clients = m_request.outcome == SWP_MODE_SET || m_request.outcome == SWP_MODE_TRIAL ||
+                      m_request.outcome == SWP_MODE_NO_BUFFERS;
+    bool following = m_request_following && is_clients && m_request.output == output;
+    bool waiting = m_next_request_waiting && m_next_request.outcome == SWP_MODE_NO_BUFFERS &&
+                   m_next_request.output == output;
+    return following || waiting;
 }
 
 void server::answer_mode(dm_client* c, uint32_t output, int32_t result, uint32_t outcome) {

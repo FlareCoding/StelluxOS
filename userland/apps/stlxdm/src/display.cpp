@@ -75,7 +75,7 @@ int display::init() {
     }
 }
 
-/* Serves the lit primary output, through the memcpy presenter when the output's buffers fail for any reason but -EBUSY.
+/* Serves every lit output whose buffers can be made, else the memcpy presenter when none can for a reason but -EBUSY.
  * Returns -EAGAIN in the cases `init()` names for its wait, else as `init()` does */
 int display::serve_outputs() {
     gfxfb::gfxfb_output_info info;
@@ -104,7 +104,7 @@ int display::serve_outputs() {
     int failure = 0;
     bool served = false;
     for (uint32_t output = 0; output < m_output_count && output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
-        if (read_output(output, info) != 0 || !is_lit_primary(info)) {
+        if (read_output(output, info) != 0 || !is_lit(info)) {
             continue;
         }
 
@@ -248,6 +248,13 @@ void display::note_state(uint32_t output, const gfxfb::gfxfb_output_info& info) 
     if ((info.flags & gfxfb::GFXFB_OUTPUT_PRIMARY) != 0) {
         m_primary = output;
     }
+
+    bool relighting = !is_lit(info) && (info.flags & gfxfb::GFXFB_OUTPUT_RELIGHTING) != 0;
+    if (relighting) {
+        m_relighting |= 1u << output;
+    } else {
+        m_relighting &= ~(1u << output);
+    }
 }
 
 void display::follow_output(uint32_t output, const gfxfb::gfxfb_output_info& info) {
@@ -265,7 +272,7 @@ void display::follow_output(uint32_t output, const gfxfb::gfxfb_output_info& inf
     /* A presenter's buffers keep the size they were made at, so an output at another size gets a new one */
     std::unique_ptr<flip_presenter>& served = m_presenters[output];
     bool same_size = served && served->width() == info.current.width && served->height() == info.current.height;
-    if (is_lit_primary(info) && same_size) {
+    if (is_lit(info) && same_size) {
         served->relit(info);
         return;
     }
@@ -275,7 +282,7 @@ void display::follow_output(uint32_t output, const gfxfb::gfxfb_output_info& inf
         served.reset();
     }
 
-    if (!is_lit_primary(info)) {
+    if (!is_lit(info)) {
         return;
     }
 

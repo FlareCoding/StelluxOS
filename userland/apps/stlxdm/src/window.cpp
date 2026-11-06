@@ -14,7 +14,7 @@
 #include <unistd.h>
 
 /* Toplevels cascade from here, expressed as the content origin: the
- * frame's outer corner lands at (60, 48) */
+ * frame's outer corner is at (60, 48) from its output's top-left */
 constexpr int32_t CASCADE_X = 60 + decor::BORDER;
 constexpr int32_t CASCADE_Y = 48 + decor::TITLE_H;
 constexpr int32_t CASCADE_STEP = 32;
@@ -297,14 +297,19 @@ void server::handle_create_window(dm_client& c, const uint8_t* payload) {
 
         w->x = parent->x + m->rel_x;
         w->y = parent->y + m->rel_y;
+        w->output = toplevel_of(c, *parent).output;
     } else {
+        int32_t under_pointer = m_layout.output_at(m_cursor_x, m_cursor_y);
+        w->output = under_pointer >= 0 ? static_cast<uint32_t>(under_pointer) : m_layout.main_output();
+
+        const damage_list::rect& place = m_layout.find(w->output)->rect;
         int32_t step = CASCADE_STEP
-                     * static_cast<int32_t>(m_window_count % CASCADE_WRAP);
-        w->x = CASCADE_X + step;
-        w->y = CASCADE_Y + step;
+                     * static_cast<int32_t>(m_window_count[w->output] % CASCADE_WRAP);
+        w->x = place.x + CASCADE_X + step;
+        w->y = place.y + CASCADE_Y + step;
     }
 
-    m_window_count++;
+    m_window_count[w->output]++;
     c.windows.push_back(std::move(w));
 }
 
@@ -718,17 +723,76 @@ void server::replace_pending(dm_client& c, dm_window& w, int32_t index) {
     w.pending = index;
 }
 
-bool server::has_latch_work() const {
+bool server::has_latch_work(uint32_t output) const {
     uint64_t now = now_ns();
     for (const auto& c : m_clients) {
         for (const auto& w : c->windows) {
-            if (w->pending >= 0 && is_latch_due(*w, now)) {
+            if (w->pending >= 0 && is_latch_due(*w, now) && latch_output(*c, *w) == output) {
                 return true;
             }
         }
     }
 
     return false;
+}
+
+/* The toplevel whose tree holds `w`, `w` itself when it is one */
+const dm_window& server::toplevel_of(const dm_client& c, const dm_window& w) const {
+    const dm_window* top = &w;
+    for (size_t depth = 0; top->parent_id != 0 && depth < c.windows.size(); depth++) {
+        const dm_window* parent = nullptr;
+        for (const auto& win : c.windows) {
+            if (win->win_id == top->parent_id) {
+                parent = win.get();
+                break;
+            }
+        }
+
+        if (!parent) {
+            break;
+        }
+
+        top = parent;
+    }
+
+    return *top;
+}
+
+/* The output whose composes latch `w`'s commits: the first served of its
+ * toplevel's output, the main one and the lowest served one, else the main one */
+uint32_t server::latch_output(const dm_client& c, const dm_window& w) const {
+    const dm_window& top = toplevel_of(c, w);
+    if (m_outputs[top.output].pres) {
+        return top.output;
+    }
+
+    uint32_t main = m_layout.main_output();
+    if (m_outputs[main].pres) {
+        return main;
+    }
+
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        if (m_outputs[output].pres) {
+            return output;
+        }
+    }
+
+    return main;
+}
+
+/* A frame on no member keeps the output it had */
+void server::update_window_output(dm_window& w) {
+    if (w.parent_id != 0 || w.current < 0) {
+        return;
+    }
+
+    const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
+    damage_list::rect frame = decor::frame_rect(w, w.x, w.y, static_cast<int32_t>(b.width),
+                                                static_cast<int32_t>(b.height));
+    int32_t output = m_layout.output_holding(frame, nullptr);
+    if (output >= 0) {
+        w.output = static_cast<uint32_t>(output);
+    }
 }
 
 int64_t server::latch_timeout_ns(uint64_t now) const {
@@ -830,8 +894,8 @@ void server::flush_configures() {
     }
 }
 
-/* Latch a window's pending commit and translate its damage to screen
- * space: the whole window on map or resize, the commit rects otherwise. */
+/* Latch a window's pending commit and translate its damage to desktop
+ * coordinates: the whole window on map or resize, the commit rects otherwise. */
 void server::latch_window(dm_client& c, dm_window& w) {
     const dm_buffer& nb = w.buffers[static_cast<size_t>(w.pending)];
     bool first_map = !w.mapped;
@@ -906,6 +970,10 @@ void server::latch_window(dm_client& c, dm_window& w) {
     int32_t replaced = w.current;
     w.current = w.pending;
     w.pending = -1;
+    if (first_map || resized) {
+        update_window_output(w);
+    }
+
     if (replaced >= 0 && w.buffers[static_cast<size_t>(replaced)].is_detached) {
         drop_buffer(c, w, static_cast<size_t>(replaced));
     }
@@ -962,10 +1030,9 @@ static bool subtract_hole(std::vector<damage_list::rect>& pieces,
     return true;
 }
 
-/* Compose one screen-space rect bottom-up, each layer clipped to the
- * damage minus the opaque content of every window above it, so
- * covered background and window pixels are never painted at all. */
-void server::compose_rect(stlxgfx_surface_t* back,
+/* Compose one rect of `out` in desktop coordinates, bottom-up, each layer
+ * clipped to the damage minus the opaque content of every window above it */
+void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
                           const damage_list::rect& r) {
     /* Walk top-down recording what each window may paint, then
      * subtract its opaque content from everything beneath */
@@ -1000,12 +1067,24 @@ void server::compose_rect(stlxgfx_surface_t* back,
         }
     }
 
-    /* The backdrop, panels included, fills only what stayed exposed */
+    /* The backdrop, the main output's panels included, fills only what
+     * stayed exposed */
+    bool is_main = &out == &m_outputs[m_layout.main_output()];
+    const stlxgfx_surface_t* backdrop = is_main ? m_backdrop : out.backdrop;
+    int32_t ox = out.place.x;
+    int32_t oy = out.place.y;
     for (const damage_list::rect& p : pieces) {
-        stlxgfx_blit(back, p.x, p.y, m_backdrop, p.x, p.y,
-                     static_cast<uint32_t>(p.w),
-                     static_cast<uint32_t>(p.h));
+        if (backdrop) {
+            stlxgfx_blit(back, p.x - ox, p.y - oy, backdrop, p.x - ox, p.y - oy,
+                         static_cast<uint32_t>(p.w),
+                         static_cast<uint32_t>(p.h));
+        } else {
+            stlxgfx_fill_rect(back, p.x - ox, p.y - oy, static_cast<uint32_t>(p.w),
+                              static_cast<uint32_t>(p.h), m_conf->bg_color);
+        }
     }
+
+    decor::canvas canvas = { back, ox, oy };
 
     for (size_t i = 0; i < m_zorder.size(); i++) {
         dm_window* w = m_zorder[i];
@@ -1022,36 +1101,92 @@ void server::compose_rect(stlxgfx_surface_t* back,
         /* The frame first, then the content with the frame's rounding
          * applied at its bottom corners */
         for (const damage_list::rect& p : visible[i]) {
-            decor::draw(back, *w, st, p);
-            decor::blit_content(back, *w, p);
+            decor::draw(canvas, *w, st, p);
+            decor::blit_content(canvas, *w, p);
         }
     }
 
     if (m_resize) {
-        decor::draw_outline(back, m_outline, r);
+        decor::draw_outline(canvas, m_outline, r);
     }
 
-    /* Floating chrome above the windows: the dock tooltip and the power
-     * star, then the overlay, then the pointer while the frames draw it */
-    m_panels->compose_top(back, r);
-    m_power->draw_star(back, r);
-    m_power->draw_overlay(back, r);
+    /* Above the windows: the tooltip, star and overlay on the main output,
+     * the overlay's dim on the others, then the pointer the frames draw */
+    damage_list::rect local = { r.x - ox, r.y - oy, r.w, r.h };
+    if (is_main) {
+        m_panels->compose_top(back, local);
+        m_power->draw_star(back, local);
+        m_power->draw_overlay(back, local);
+    } else {
+        m_power->draw_dim(back, local);
+    }
 
-    if (!m_cursor_on_hardware) {
-        m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y, r);
+    if (out.cursor_in_frames) {
+        m_cursor.draw(back, m_cursor_shape, m_cursor_x - ox, m_cursor_y - oy, local);
     }
 }
 
-void server::compose_tick() {
-    presenter* pres = main_presenter();
-    if (!pres) {
+/* One collapse frame on the main output, from the overlay's cached backdrop */
+void server::compose_collapse(dm_output& out) {
+    presenter::target t = out.pres->acquire();
+    stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
+        reinterpret_cast<uint8_t*>(t.pixels), out.pres->width(),
+        out.pres->height(), t.stride, 32, 16, 8, 0);
+    if (back) {
+        damage_list::rect whole = { 0, 0, static_cast<int32_t>(back->width),
+                                    static_cast<int32_t>(back->height) };
+        m_power->draw_collapse(back);
+        if (out.cursor_in_frames) {
+            m_cursor.draw(back, m_cursor_shape, m_cursor_x - out.place.x, m_cursor_y - out.place.y, whole);
+        }
+
+        stlxgfx_destroy_surface(back);
+
+        damage_list full;
+        full.add_full();
+        out.pres->present(full);
+        out.history[out.history_head] = full;
+        out.history_head = (out.history_head + 1) % DM_DAMAGE_HISTORY;
+    }
+
+    out.damage.clear();
+}
+
+/* Overlay phases: an activation edge repaints every output, as the others draw its dim, a transition the main output
+ * and a winding hold the orb boxes */
+void server::advance_power() {
+    m_power->update();
+
+    bool power_active = m_power->active();
+    const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
+    if (power_active != m_power_was_active) {
+        m_damage.add_full();
+        m_power_was_active = power_active;
+    } else if (m_power->transitioning()) {
+        m_damage.add(main.x, main.y, main.w, main.h);
+    } else if (m_power->animating()) {
+        for (int32_t i = 0; i < 2; i++) {
+            damage_list::rect ob = m_power->orb_box(i);
+            m_damage.add(ob.x, ob.y, ob.w, ob.h);
+        }
+    }
+}
+
+void server::power_tick() {
+    advance_power();
+    m_power->run_action();
+}
+
+void server::compose_tick(uint32_t output) {
+    dm_output& out = m_outputs[output];
+    if (!out.pres) {
         return;
     }
 
     uint64_t now = now_ns();
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
-            if (w->pending < 0 || !is_latch_due(*w, now)) {
+            if (w->pending < 0 || !is_latch_due(*w, now) || latch_output(*c, *w) != output) {
                 continue;
             }
 
@@ -1063,70 +1198,40 @@ void server::compose_tick() {
     }
 
     flush_configures();
-    m_panels->flush(m_damage);
 
-    /* Overlay phases: activation edges and transitions repaint the
-     * whole screen, a winding hold repaints the orb boxes */
-    m_power->update();
-    bool power_active = m_power->active();
-    if (power_active != m_power_was_active) {
-        m_damage.add_full();
-        m_power_was_active = power_active;
-    } else if (m_power->transitioning()) {
-        m_damage.add_full();
-    } else if (m_power->animating()) {
-        for (int32_t i = 0; i < 2; i++) {
-            damage_list::rect ob = m_power->orb_box(i);
-            m_damage.add(ob.x, ob.y, ob.w, ob.h);
-        }
+    bool is_main = output == m_layout.main_output();
+    if (is_main) {
+        m_panels->flush(m_damage);
+        advance_power();
     }
+
+    spread_damage();
 
     /* Collapse frames fade the cached backdrop under the contracting
      * light, skipping scene composition entirely */
-    if (m_power->collapsing()) {
-        presenter::target t = pres->acquire();
-        stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
-            reinterpret_cast<uint8_t*>(t.pixels), pres->width(),
-            pres->height(), t.stride, 32, 16, 8, 0);
-        if (back) {
-            damage_list::rect whole = { 0, 0, static_cast<int32_t>(back->width),
-                                        static_cast<int32_t>(back->height) };
-            m_power->draw_collapse(back);
-            if (!m_cursor_on_hardware) {
-                m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y, whole);
-            }
-
-            stlxgfx_destroy_surface(back);
-
-            damage_list full;
-            full.add_full();
-            pres->present(full);
-            m_history[m_history_head] = full;
-            m_history_head = (m_history_head + 1) % DAMAGE_HISTORY;
-        }
-
-        m_damage.clear();
+    if (is_main && m_power->collapsing()) {
+        compose_collapse(out);
         return;
     }
 
-    if (m_damage.empty()) {
+    if (out.damage.empty()) {
         return;
     }
 
-    presenter::target t = pres->acquire();
-    uint32_t sw = pres->width();
-    uint32_t sh = pres->height();
+    presenter::target t = out.pres->acquire();
+    uint32_t sw = out.pres->width();
+    uint32_t sh = out.pres->height();
 
     /* A target older than one present is missing frames of content,
      * so their damage is unioned back in. Unknown age repaints fully. */
-    damage_list effective = m_damage;
-    if (t.age == 0 || t.age > DAMAGE_HISTORY + 1) {
+    damage_list effective = out.damage;
+    if (t.age == 0 || t.age > DM_DAMAGE_HISTORY + 1) {
         effective.add_full();
     } else {
         for (uint32_t back = 1; back < t.age; back++) {
-            uint32_t idx = (m_history_head + DAMAGE_HISTORY - back)
-                         % DAMAGE_HISTORY;
-            const damage_list& h = m_history[idx];
+            uint32_t idx = (out.history_head + DM_DAMAGE_HISTORY - back)
+                         % DM_DAMAGE_HISTORY;
+            const damage_list& h = out.history[idx];
             if (h.full()) {
                 effective.add_full();
                 break;
@@ -1143,31 +1248,33 @@ void server::compose_tick() {
         reinterpret_cast<uint8_t*>(t.pixels), sw, sh, t.stride, 32,
         16, 8, 0);
     if (!back) {
-        m_damage.clear();
+        out.damage.clear();
         return;
     }
 
     if (effective.full()) {
-        damage_list::rect whole = { 0, 0, static_cast<int32_t>(sw), static_cast<int32_t>(sh) };
-        compose_rect(back, whole);
+        damage_list::rect whole = { out.place.x, out.place.y, static_cast<int32_t>(sw), static_cast<int32_t>(sh) };
+        compose_rect(out, back, whole);
     } else {
         for (uint32_t i = 0; i < effective.count(); i++) {
             damage_list::rect r = effective.at(i);
             if (damage_list::clip(r, static_cast<int32_t>(sw), static_cast<int32_t>(sh))) {
-                compose_rect(back, r);
+                compose_rect(out, back, { r.x + out.place.x, r.y + out.place.y, r.w, r.h });
             }
         }
     }
 
-    pres->present(effective);
+    out.pres->present(effective);
     stlxgfx_destroy_surface(back);
     m_perf.note_present(now_ns());
 
     /* This frame's new damage joins the history for older targets */
-    m_history[m_history_head] = m_damage;
-    m_history_head = (m_history_head + 1) % DAMAGE_HISTORY;
-    m_damage.clear();
+    out.history[out.history_head] = out.damage;
+    out.history_head = (out.history_head + 1) % DM_DAMAGE_HISTORY;
+    out.damage.clear();
 
     /* Runs only after the collapse's final dark frame is on screen */
-    m_power->run_action();
+    if (is_main) {
+        m_power->run_action();
+    }
 }
