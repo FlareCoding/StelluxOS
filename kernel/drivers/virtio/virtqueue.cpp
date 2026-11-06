@@ -141,30 +141,25 @@ int32_t virtqueue::add_buf(uint64_t phys_addr, uint32_t len, uint16_t flags) {
     return static_cast<int32_t>(idx);
 }
 
-int32_t virtqueue::add_buf_chain(uint64_t hdr_phys, uint32_t hdr_len,
-                                  uint64_t data_phys, uint32_t data_len,
-                                  uint16_t hdr_flags, uint16_t data_flags) {
-    if (m_free_count < 2) {
+int32_t virtqueue::add_buf_chain(const chain_buffer* buffers, uint16_t count) {
+    if (count == 0 || count > m_free_count) {
         return -1;
     }
 
     uint16_t head = alloc_desc();
-    uint16_t tail = alloc_desc();
-    if (head == 0xFFFF || tail == 0xFFFF) {
-        if (head != 0xFFFF) free_desc(head);
-        if (tail != 0xFFFF) free_desc(tail);
-        return -1;
+    uint16_t current = head;
+    for (uint16_t i = 0; i < count; i++) {
+        bool is_last = i + 1 == count;
+        uint16_t next = is_last ? 0 : alloc_desc();
+        uint16_t flags = is_last ? buffers[i].flags : buffers[i].flags | VRING_DESC_F_NEXT;
+
+        m_desc[current].addr = buffers[i].phys;
+        m_desc[current].len = buffers[i].len;
+        m_desc[current].flags = flags;
+        m_desc[current].next = next;
+
+        current = next;
     }
-
-    m_desc[head].addr = hdr_phys;
-    m_desc[head].len = hdr_len;
-    m_desc[head].flags = hdr_flags | VRING_DESC_F_NEXT;
-    m_desc[head].next = tail;
-
-    m_desc[tail].addr = data_phys;
-    m_desc[tail].len = data_len;
-    m_desc[tail].flags = data_flags;
-    m_desc[tail].next = 0;
 
     uint16_t avail_idx = m_avail->idx;
     m_avail->ring[avail_idx % m_size] = head;

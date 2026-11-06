@@ -41,6 +41,13 @@ struct vring_used {
 
 constexpr uint16_t VIRTQ_MAX_SIZE = 256;
 
+// One buffer of a descriptor chain
+struct chain_buffer {
+    uint64_t phys;
+    uint32_t len;
+    uint16_t flags; // VRING_DESC_F_WRITE for a device-writable buffer
+};
+
 /**
  * Split virtqueue implementation.
  * Allocates descriptor table, available ring, and used ring in one
@@ -69,12 +76,11 @@ public:
     int32_t add_buf(uint64_t phys_addr, uint32_t len, uint16_t flags);
 
     /**
-     * Add a chained two-descriptor buffer (header + data).
-     * @return First descriptor index, or -1 on failure.
+     * Add a chain of `count` descriptors, one per buffer of `buffers` in order.
+     * @return First descriptor index, or -1 when `count` is 0 or more than
+     * `free_count()`.
      */
-    int32_t add_buf_chain(uint64_t hdr_phys, uint32_t hdr_len,
-                          uint64_t data_phys, uint32_t data_len,
-                          uint16_t hdr_flags, uint16_t data_flags);
+    int32_t add_buf_chain(const chain_buffer* buffers, uint16_t count);
 
     /**
      * Get the next used buffer.
@@ -95,7 +101,8 @@ public:
     bool has_used() const;
 
     /**
-     * Number of free descriptors. `add_buf()` uses one and `add_buf_chain()` uses two.
+     * Number of free descriptors. `add_buf()` uses one and `add_buf_chain()`
+     * one per buffer.
      */
     uint16_t free_count() const { return m_free_count; }
 
@@ -112,6 +119,8 @@ public:
     pmm::phys_addr_t used_phys() const { return m_used_phys; }
 
 private:
+    friend struct virtqueue_test_access;
+
     uint16_t alloc_desc();
 
     uint16_t          m_size = 0;
