@@ -8,6 +8,7 @@
 #include "boot/boot_services.h"
 #include "common/string.h"
 #include "common/logging.h"
+#include "tests/memory/page_quarantine_test_access.h"
 
 TEST_SUITE(vmm_test);
 
@@ -321,8 +322,8 @@ TEST(vmm_test, freed_range_waits_in_quarantine_until_drained) {
     EXPECT_EQ(pmm::free_page_count(), before);
 }
 
-// A freer that can wait drains the quarantine itself once the backlog is
-// large, so held memory stays bounded even if vmreclaimd never ran.
+// A free with interrupts enabled drains a large backlog when no drain is
+// in progress, so held memory stays bounded even without vmreclaimd.
 TEST(vmm_test, large_backlog_drains_without_the_drainer) {
     constexpr size_t CHUNK_PAGES = 64;
     constexpr size_t CHUNKS = (page_quarantine::DRAIN_THRESHOLD_PAGES / CHUNK_PAGES) * 3 / 2;
@@ -338,6 +339,10 @@ TEST(vmm_test, large_backlog_drains_without_the_drainer) {
     for (size_t i = 0; i < CHUNKS; i++) {
         EXPECT_EQ(vmm::free(chunks[i]), vmm::OK);
     }
+
+    // These frees skip draining while another CPU drains, so wait for that drain to return the frames it took
+    page_quarantine::drain_claim_test_access::hold();
+    page_quarantine::drain_claim_test_access::release();
 
     EXPECT_GE(pmm::free_page_count() + page_quarantine::DRAIN_THRESHOLD_PAGES, before);
 

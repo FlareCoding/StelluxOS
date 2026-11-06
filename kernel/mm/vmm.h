@@ -23,9 +23,10 @@ constexpr uint32_t ALLOC_ALLOW_1GB = (1 << 2); // alloc_contiguous only
 /**
  * Freed memory passes through the page quarantine and becomes reusable only
  * after a drain has flushed every CPU. An allocation that runs out of address
- * space or frames while memory waits there drains the quarantine and retries
- * once when interrupts are enabled; with interrupts disabled it cannot wait
- * and reports the exhaustion, as any atomic allocation may.
+ * space or frames while memory waits there drains the quarantine (first
+ * waiting out any drain in progress) and retries once when interrupts are
+ * enabled. With interrupts disabled it cannot wait and reports the
+ * exhaustion, as any atomic allocation may.
  */
 
 /**
