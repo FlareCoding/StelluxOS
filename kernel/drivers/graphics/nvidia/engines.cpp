@@ -777,6 +777,11 @@ void engines::report_failure() {
 
 void engines::report_failure_on_task(operation& op) {
     engines& gpu_engines = *static_cast<failure_operation&>(op).owner;
+    gpu_engines.free_user_channels();
+
+    if (gpu_engines.m_is_copy_vector_on.exchange_acq_rel(false)) {
+        mask_vector(gpu_engines.m_bar0, gpu_engines.m_copy_vector);
+    }
 
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(gpu_engines.m_queues_lock);
@@ -788,6 +793,28 @@ void engines::report_failure_on_task(operation& op) {
     });
 
     RUN_ELEVATED(gpu::device_failed(gpu_engines.m_device));
+}
+
+void engines::free_user_channels() {
+    uint32_t freed = 0;
+    for (backend_queue& queue : m_queues) {
+        // A failed GPU's firmware is sent no further request, so its user channels run on
+        if (m_failed.is_set()) {
+            break;
+        }
+
+        if (queue.user_channel.destroy_keeping_memory() == OK) {
+            freed++;
+        }
+    }
+
+    if (freed != 0) {
+        log::info(
+            "nvidia: the firmware freed %u user %s once the GPU core's device failed",
+            freed,
+            freed == 1 ? "channel" : "channels"
+        );
+    }
 }
 
 int32_t engines::refused_creation() {
