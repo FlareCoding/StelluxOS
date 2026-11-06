@@ -120,6 +120,9 @@ struct engine_head {
     bool              is_lit;                  // set by the light under the engine's output lock
     bool              is_closing;              // set while its output is taken down, cleared only once marked dark
 
+    // The monitor `lit_edid` names, written with `mode` before the light and read under the output lock while lit
+    gfxfb::monitor_identity lit_monitor;
+
     // The window's notifier, its page allocated and its context DMA bound to the window's channel before the light
     window_notifier notifier;
     rm::handle      notifier_context_dma; // 0 until bound before its head's light, then read under the output lock

@@ -292,6 +292,7 @@ int32_t boot_display::read_output(uint32_t output, output_state& out) {
     out.boot_output = true;
     out.cursor_max_width = 0;
     out.cursor_max_height = 0;
+    out.monitor = {};
 
     // The boot framebuffer carries no refresh rate
     out.current = {
@@ -705,6 +706,16 @@ int32_t gfxfb_node::get_output(uint64_t info_addr) {
     info.current = state.lit ? state.current : gfxfb_mode{};
     info.cursor_max_width = bounded_cursor_max(state.cursor_max_width);
     info.cursor_max_height = bounded_cursor_max(state.cursor_max_height);
+
+    monitor_identity monitor = state.lit ? state.monitor : monitor_identity{};
+    string::memcpy(info.maker, monitor.maker, sizeof(info.maker));
+    string::memcpy(info.name, monitor.name, sizeof(info.name));
+    info.maker[sizeof(info.maker) - 1] = '\0';
+    info.name[sizeof(info.name) - 1] = '\0';
+
+    info.product = monitor.product;
+    info.serial = monitor.serial;
+    info.reserved2 = 0;
 
     rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(info_addr), &info, sizeof(info));

@@ -1561,6 +1561,9 @@ int32_t virtio_gpu_driver::read_output(uint32_t output, gfxfb::output_state& out
     out.cursor_max_width = CURSOR_DIMENSION;
     out.cursor_max_height = CURSOR_DIMENSION;
 
+    // QEMU gives every scanout the same EDID, which tells no two monitors apart
+    out.monitor = {};
+
     if (out.lit) {
         out.current = {
             .width              = width,

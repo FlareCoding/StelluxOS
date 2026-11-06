@@ -37,6 +37,7 @@ static constexpr edid::timing AOC_1440_BY_900  = {88750, 1440, 48, 32, 80, 900, 
 static constexpr edid::timing AOC_1280_BY_1440 = {156000, 1280, 96, 136, 232, 1440, 3, 10, 40, false, true};
 
 static constexpr size_t MAKER_OFFSET           = 8;
+static constexpr size_t SERIAL_OFFSET          = 12;
 static constexpr size_t VERSION_OFFSET         = 18;
 static constexpr size_t REVISION_OFFSET        = 19;
 static constexpr size_t FEATURES_OFFSET        = 24;
@@ -379,25 +380,33 @@ TEST(edid, reads_the_aoc_ag241qg4_edid) {
 
     EXPECT_STREQ(g_monitor.maker, "AOC");
     EXPECT_STREQ(g_monitor.name, "AG241QG4");
+    EXPECT_EQ(g_monitor.product, 0x2410u);
+    EXPECT_EQ(g_monitor.serial, 0u);
+
     ASSERT_EQ(g_monitor.timing_count, 7u);
     expect_timing(g_monitor.timings[0], AOC_60_HZ);
     expect_timing(g_monitor.timings[1], AOC_144_HZ);
     expect_timing(g_monitor.timings[2], AOC_120_HZ);
     expect_timing(g_monitor.timings[3], AOC_100_HZ);
+
     expect_timing(g_monitor.timings[4], FULL_HD_TIMING);
     expect_timing(g_monitor.timings[5], AOC_1440_BY_900);
     expect_timing(g_monitor.timings[6], AOC_1280_BY_1440);
+
     EXPECT_EQ(g_monitor.timings[0].h_total(), 2720u);
     EXPECT_EQ(g_monitor.timings[0].v_total(), 1481u);
     EXPECT_EQ(g_monitor.timings[1].h_total(), 2666u);
     EXPECT_EQ(g_monitor.timings[1].v_total(), 1543u);
+
     EXPECT_EQ(g_monitor.timings[0].refresh_millihertz(), 59950ull);
     EXPECT_EQ(g_monitor.timings[1].refresh_millihertz(), 143911ull);
     EXPECT_EQ(g_monitor.timings[2].refresh_millihertz(), 119998ull);
     EXPECT_EQ(g_monitor.timings[3].refresh_millihertz(), 99998ull);
+
     EXPECT_EQ(g_monitor.timings[4].refresh_millihertz(), 60000ull);
     EXPECT_EQ(g_monitor.timings[5].refresh_millihertz(), 59901ull);
     EXPECT_EQ(g_monitor.timings[6].refresh_millihertz(), 59912ull);
+
     EXPECT_TRUE(g_monitor.first_timing_is_preferred);
     EXPECT_EQ(g_monitor.dropped_timings, 0u);
     EXPECT_EQ(g_monitor.skipped_extensions, 0u);
@@ -406,6 +415,21 @@ TEST(edid, reads_the_aoc_ag241qg4_edid) {
     ASSERT_EQ(edid::parse(AOC_AG241QG4_EDID, edid::BLOCK_BYTES, g_monitor), edid::OK);
     EXPECT_EQ(g_monitor.timing_count, 2u);
     EXPECT_EQ(g_monitor.skipped_extensions, 1u);
+}
+
+// The serial number is bytes 12 to 15 read little-endian, so 78 56 34 12 written there in the AOC's base block reads
+// 0x12345678, its product code still 0x2410
+TEST(edid, reads_the_serial_number_little_endian) {
+    make_base_block(AOC_FEATURES);
+    g_block[SERIAL_OFFSET] = 0x78;
+    g_block[SERIAL_OFFSET + 1] = 0x56;
+    g_block[SERIAL_OFFSET + 2] = 0x34;
+    g_block[SERIAL_OFFSET + 3] = 0x12;
+    seal_block();
+
+    ASSERT_EQ(edid::parse(g_block, sizeof(g_block), g_monitor), edid::OK);
+    EXPECT_EQ(g_monitor.serial, 0x12345678u);
+    EXPECT_EQ(g_monitor.product, 0x2410u);
 }
 
 TEST(edid, refuses_fewer_bytes_than_one_block) {

@@ -6,6 +6,10 @@ namespace edid {
 static constexpr uint8_t HEADER_PATTERN[] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
 
 static constexpr size_t  MAKER_OFFSET            = 8;
+static constexpr size_t  PRODUCT_OFFSET          = 10;
+static constexpr size_t  PRODUCT_BYTES           = 2;
+static constexpr size_t  SERIAL_OFFSET           = 12;
+static constexpr size_t  SERIAL_BYTES            = 4;
 static constexpr size_t  VERSION_OFFSET          = 18;
 static constexpr uint8_t BASE_BLOCK_VERSION      = 1;
 static constexpr size_t  FEATURES_OFFSET         = 24;
@@ -589,6 +593,8 @@ int32_t parse(const uint8_t* bytes, size_t size, monitor& out) {
     }
 
     read_maker(bytes, out.maker);
+    out.product = static_cast<uint16_t>(read_little_endian(bytes + PRODUCT_OFFSET, PRODUCT_BYTES));
+    out.serial = read_little_endian(bytes + SERIAL_OFFSET, SERIAL_BYTES);
     read_descriptors(bytes, out);
     read_extensions(bytes, size, out);
 
