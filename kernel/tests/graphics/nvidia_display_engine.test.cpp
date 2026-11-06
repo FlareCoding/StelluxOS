@@ -1300,14 +1300,19 @@ public:
     }
 
     // Backs `bytes` of scanout memory and `SCANOUT_GUARD_BYTES` after them, all filled with `SCANOUT_FILL`, or gives
-    // false when the unprivileged heap cannot hold them
+    // false when the unprivileged heap cannot hold them. `bytes` must be a multiple of 8
     bool give_scanout(uint64_t bytes) {
         scanout = static_cast<uint8_t*>(heap::ualloc(bytes + SCANOUT_GUARD_BYTES));
         if (scanout == nullptr) {
             return false;
         }
 
-        string::memset(scanout, SCANOUT_FILL, bytes + SCANOUT_GUARD_BYTES);
+        // A word at a time, an eighth of the stores `string::memset` makes byte by byte
+        uint64_t* words = reinterpret_cast<uint64_t*>(scanout);
+        for (uint64_t index = 0; index < (bytes + SCANOUT_GUARD_BYTES) / sizeof(uint64_t); index++) {
+            words[index] = SCANOUT_FILL_WORD;
+        }
+
         scanout_bytes = bytes;
 
         return true;
@@ -1408,11 +1413,9 @@ public:
         if (is_scanout(range)) {
             scanout_unmaps++;
             scanout_fill_words = 0;
-            uint8_t* view = scanout + (range.offset - SCANOUT_OFFSET);
-            for (uint64_t offset = 0; offset < range.size; offset += sizeof(uint64_t)) {
-                uint64_t word = 0;
-                string::memcpy(&word, view + offset, sizeof(word));
-                if (word == SCANOUT_FILL_WORD) {
+            const uint64_t* words = reinterpret_cast<const uint64_t*>(scanout + (range.offset - SCANOUT_OFFSET));
+            for (uint64_t index = 0; index < range.size / sizeof(uint64_t); index++) {
+                if (words[index] == SCANOUT_FILL_WORD) {
                     scanout_fill_words++;
                 }
             }
