@@ -14,15 +14,46 @@ using namespace virtio;
 constexpr uint8_t PCI_CAP_VENDOR = 0x09;
 
 // Offsets of the virtio fields inside a vendor capability
+constexpr uint8_t CAP_LEN = 2;
 constexpr uint8_t CAP_CFG_TYPE = 3;
 constexpr uint8_t CAP_BAR = 4;
+constexpr uint8_t CAP_ID = 5;
 constexpr uint8_t CAP_OFFSET = 8;
 constexpr uint8_t CAP_LENGTH = 12;
+
+// Fields past the common ones: a notify capability's multiplier, a shared memory capability's upper words
 constexpr uint8_t CAP_NOTIFY_MULTIPLIER = 16;
+constexpr uint8_t CAP_OFFSET_HIGH = 16;
+constexpr uint8_t CAP_LENGTH_HIGH = 20;
+static_assert(CAP_OFFSET_HIGH == __builtin_offsetof(virtio_pci_cap64, offset_hi), "virtio_pci_cap64 layout");
+static_assert(CAP_LENGTH_HIGH == __builtin_offsetof(virtio_pci_cap64, length_hi), "virtio_pci_cap64 layout");
 
 // Bounds the capability walk against a malformed, looping list
 constexpr uint32_t MAX_CAPS = 48;
 constexpr uint8_t CAP_PTR_MASK = 0xFC;
+
+// Calls `visit` with the config space offset of each vendor capability. The device must list capabilities.
+template <typename Visit>
+static void for_each_vendor_cap(pci::device* dev, Visit visit) {
+    uint8_t cap_ptr = 0;
+    RUN_ELEVATED(cap_ptr = dev->config_read8(pci::CFG_CAP_PTR));
+    cap_ptr &= CAP_PTR_MASK;
+
+    uint32_t visited = 0;
+    while (cap_ptr != 0 && visited < MAX_CAPS) {
+        uint8_t cap_id = 0;
+        RUN_ELEVATED(cap_id = dev->config_read8(cap_ptr));
+
+        if (cap_id == PCI_CAP_VENDOR) {
+            visit(cap_ptr);
+        }
+
+        uint8_t next = 0;
+        RUN_ELEVATED(next = dev->config_read8(cap_ptr + 1));
+        cap_ptr = next & CAP_PTR_MASK;
+        visited++;
+    }
+}
 
 int32_t virtio_pci_driver::parse_caps() {
     string::memset(&m_pci_cfg, 0, sizeof(m_pci_cfg));
@@ -34,62 +65,47 @@ int32_t virtio_pci_driver::parse_caps() {
         return -1;
     }
 
-    uint8_t cap_ptr = 0;
-    RUN_ELEVATED(cap_ptr = m_dev->config_read8(pci::CFG_CAP_PTR));
-    cap_ptr &= CAP_PTR_MASK;
+    for_each_vendor_cap(m_dev, [this](uint8_t cap_ptr) {
+        uint8_t cfg_type = 0;
+        uint8_t bar = 0;
+        uint32_t offset = 0;
+        uint32_t length = 0;
+        RUN_ELEVATED({
+            cfg_type = m_dev->config_read8(cap_ptr + CAP_CFG_TYPE);
+            bar = m_dev->config_read8(cap_ptr + CAP_BAR);
+            offset = m_dev->config_read32(cap_ptr + CAP_OFFSET);
+            length = m_dev->config_read32(cap_ptr + CAP_LENGTH);
+        });
 
-    uint32_t visited = 0;
-    while (cap_ptr != 0 && visited < MAX_CAPS) {
-        uint8_t cap_id = 0;
-        RUN_ELEVATED(cap_id = m_dev->config_read8(cap_ptr));
-
-        if (cap_id == PCI_CAP_VENDOR) {
-            uint8_t cfg_type = 0;
-            uint8_t bar = 0;
-            uint32_t offset = 0;
-            uint32_t length = 0;
-            RUN_ELEVATED({
-                cfg_type = m_dev->config_read8(cap_ptr + CAP_CFG_TYPE);
-                bar = m_dev->config_read8(cap_ptr + CAP_BAR);
-                offset = m_dev->config_read32(cap_ptr + CAP_OFFSET);
-                length = m_dev->config_read32(cap_ptr + CAP_LENGTH);
-            });
-
-            switch (cfg_type) {
-            case VIRTIO_PCI_CAP_COMMON_CFG:
-                m_pci_cfg.common_bar = bar;
-                m_pci_cfg.common_offset = offset;
-                m_pci_cfg.common_length = length;
-                m_pci_cfg.has_common = true;
-                break;
-            case VIRTIO_PCI_CAP_NOTIFY_CFG:
-                m_pci_cfg.notify_bar = bar;
-                m_pci_cfg.notify_offset = offset;
-                m_pci_cfg.notify_length = length;
-                m_pci_cfg.has_notify = true;
-                RUN_ELEVATED(
-                    m_pci_cfg.notify_off_multiplier = m_dev->config_read32(cap_ptr + CAP_NOTIFY_MULTIPLIER)
-                );
-                break;
-            case VIRTIO_PCI_CAP_ISR_CFG:
-                m_pci_cfg.isr_bar = bar;
-                m_pci_cfg.isr_offset = offset;
-                m_pci_cfg.has_isr = true;
-                break;
-            case VIRTIO_PCI_CAP_DEVICE_CFG:
-                m_pci_cfg.device_bar = bar;
-                m_pci_cfg.device_offset = offset;
-                m_pci_cfg.device_length = length;
-                m_pci_cfg.has_device = true;
-                break;
-            }
+        switch (cfg_type) {
+        case VIRTIO_PCI_CAP_COMMON_CFG:
+            m_pci_cfg.common_bar = bar;
+            m_pci_cfg.common_offset = offset;
+            m_pci_cfg.common_length = length;
+            m_pci_cfg.has_common = true;
+            break;
+        case VIRTIO_PCI_CAP_NOTIFY_CFG:
+            m_pci_cfg.notify_bar = bar;
+            m_pci_cfg.notify_offset = offset;
+            m_pci_cfg.notify_length = length;
+            m_pci_cfg.has_notify = true;
+            RUN_ELEVATED(
+                m_pci_cfg.notify_off_multiplier = m_dev->config_read32(cap_ptr + CAP_NOTIFY_MULTIPLIER)
+            );
+            break;
+        case VIRTIO_PCI_CAP_ISR_CFG:
+            m_pci_cfg.isr_bar = bar;
+            m_pci_cfg.isr_offset = offset;
+            m_pci_cfg.has_isr = true;
+            break;
+        case VIRTIO_PCI_CAP_DEVICE_CFG:
+            m_pci_cfg.device_bar = bar;
+            m_pci_cfg.device_offset = offset;
+            m_pci_cfg.device_length = length;
+            m_pci_cfg.has_device = true;
+            break;
         }
-
-        uint8_t next = 0;
-        RUN_ELEVATED(next = m_dev->config_read8(cap_ptr + 1));
-        cap_ptr = next & CAP_PTR_MASK;
-        visited++;
-    }
+    });
 
     if (!m_pci_cfg.has_common) {
         log::error("%s: missing common config capability", m_log_name);
@@ -308,6 +324,92 @@ void virtio_pci_driver::reset_device() {
 
 uint8_t virtio_pci_driver::ack_interrupt() {
     return m_isr_addr ? mmio::read8(m_isr_addr) : 0;
+}
+
+bool virtio::shared_memory_fits_bar(const pci::bar& bar, uint64_t offset, uint64_t length) {
+    bool is_memory = bar.type == pci::BAR_MMIO32 || bar.type == pci::BAR_MMIO64;
+    if (!is_memory || bar.phys == 0) {
+        return false;
+    }
+
+    return offset <= bar.size && length <= bar.size - offset;
+}
+
+bool virtio::decode_shared_memory_cap(const virtio_pci_cap64& cap, uint64_t* out_offset, uint64_t* out_length) {
+    if (cap.cap.cap_len < sizeof(virtio_pci_cap64)) {
+        return false;
+    }
+
+    *out_offset = cap.cap.offset | static_cast<uint64_t>(cap.offset_hi) << 32;
+    *out_length = cap.cap.length | static_cast<uint64_t>(cap.length_hi) << 32;
+
+    return true;
+}
+
+bool virtio_pci_driver::find_shared_memory(uint8_t id, pmm::phys_addr_t* out_phys, uint64_t* out_size) {
+    bool is_listed = false;
+    virtio_pci_cap64 cap = {};
+
+    for_each_vendor_cap(m_dev, [&](uint8_t cap_ptr) {
+        uint8_t cfg_type = 0;
+        uint8_t region_id = 0;
+        RUN_ELEVATED({
+            cfg_type = m_dev->config_read8(cap_ptr + CAP_CFG_TYPE);
+            region_id = m_dev->config_read8(cap_ptr + CAP_ID);
+        });
+
+        bool lists_region = cfg_type == VIRTIO_PCI_CAP_SHARED_MEMORY_CFG && region_id == id;
+        if (is_listed || !lists_region) {
+            return;
+        }
+
+        RUN_ELEVATED({
+            cap.cap.cap_len = m_dev->config_read8(cap_ptr + CAP_LEN);
+            cap.cap.bar = m_dev->config_read8(cap_ptr + CAP_BAR);
+            cap.cap.offset = m_dev->config_read32(cap_ptr + CAP_OFFSET);
+            cap.cap.length = m_dev->config_read32(cap_ptr + CAP_LENGTH);
+            cap.offset_hi = m_dev->config_read32(cap_ptr + CAP_OFFSET_HIGH);
+            cap.length_hi = m_dev->config_read32(cap_ptr + CAP_LENGTH_HIGH);
+        });
+
+        is_listed = true;
+    });
+
+    if (!is_listed) {
+        return false;
+    }
+
+    uint8_t bar = cap.cap.bar;
+    uint64_t offset = 0;
+    uint64_t length = 0;
+    if (!decode_shared_memory_cap(cap, &offset, &length)) {
+        log::error(
+            "%s: shared memory region %u's capability length is %u, too short for a 64-bit range",
+            m_log_name,
+            id,
+            cap.cap.cap_len
+        );
+        return false;
+    }
+
+    pci::bar region_bar = {};
+    RUN_ELEVATED(region_bar = m_dev->get_bar(bar));
+    if (!shared_memory_fits_bar(region_bar, offset, length)) {
+        log::error(
+            "%s: shared memory region %u (BAR %u, offset 0x%lx, length 0x%lx) is not inside an assigned memory BAR",
+            m_log_name,
+            id,
+            bar,
+            offset,
+            length
+        );
+        return false;
+    }
+
+    *out_phys = region_bar.phys + offset;
+    *out_size = length;
+
+    return true;
 }
 
 } // namespace drivers

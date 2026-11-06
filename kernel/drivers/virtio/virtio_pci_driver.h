@@ -65,6 +65,18 @@ protected:
         return reinterpret_cast<volatile T*>(m_device_cfg);
     }
 
+    /**
+     * @brief Find shared memory region `id`, numbered by the device type: a
+     * range of one of the device's BARs that the device and the driver both
+     * reach. `start_transport()` must have succeeded. The transport never
+     * maps it.
+     * @return true with the region's physical address and length in bytes,
+     * false when the device lists no region `id`. A first listing too short
+     * for a 64-bit range, or not inside an assigned memory BAR, is logged and
+     * returns false too.
+     */
+    bool find_shared_memory(uint8_t id, pmm::phys_addr_t* out_phys, uint64_t* out_size);
+
 private:
     int32_t parse_caps();
     int32_t map_regions();
