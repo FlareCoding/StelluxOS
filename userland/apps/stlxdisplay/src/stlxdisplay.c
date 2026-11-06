@@ -21,7 +21,11 @@ static const char USAGE[] =
     "usage: stlxdisplay                                   list each output's modes\n"
     "       stlxdisplay <output> <width>x<height>@<hertz> [--keep]\n"
     "                                                     light the output at a listed mode,\n"
-    "                                                     as a 15 second trial unless --keep\n";
+    "                                                     as a 15 second trial unless --keep\n"
+    "       stlxdisplay layout                            list each output's place on the desktop\n"
+    "       stlxdisplay layout <output>@<x>,<y>... [main=<output>]\n"
+    "                                                     place every output by its top-left,\n"
+    "                                                     main carrying the bar and the dock\n";
 
 static const char* const OUTCOME_TEXT[] = {
     [STLXWIN_MODE_SET]        = "set",
@@ -42,6 +46,14 @@ static const char* const FAILED_TEXT[] = {
     [STLXWIN_MODE_SET_BACK]   = "not set back",
     [STLXWIN_MODE_DEFAULT]    = "not set back, nor set to its default",
     [STLXWIN_MODE_NO_BUFFERS] = "the desktop has no buffers at that size, and setting it back failed",
+};
+
+/* Why the display manager refused a layout */
+static const char* const REFUSED_TEXT[] = {
+    [STLXWIN_LAYOUT_STALE]   = "refused, the outputs changed meanwhile, run it again",
+    [STLXWIN_LAYOUT_INVALID] = "refused as invalid, name each listed output once and main as one of them",
+    [STLXWIN_LAYOUT_OVERLAP] = "refused, two outputs overlap",
+    [STLXWIN_LAYOUT_APART]   = "refused, an output does not connect to the main output",
 };
 
 static bool modes_equal(const stlxwin_mode* a, const stlxwin_mode* b) {
@@ -317,10 +329,178 @@ static int request_mode(stlxwin_conn* conn, const char* output_text, const char*
     return ask_keep(conn, (uint32_t)output);
 }
 
+static void print_place(const stlxwin_output* output) {
+    char at[32];
+    snprintf(at, sizeof(at), "%d,%d", output->x, output->y);
+    printf("output %u  %ux%u at %-8s ", output->output, output->width, output->height, at);
+
+    if (output->refresh_millihertz != 0) {
+        printf("%llu.%03llu Hz", (unsigned long long)(output->refresh_millihertz / MILLIHERTZ_PER_HERTZ),
+               (unsigned long long)(output->refresh_millihertz % MILLIHERTZ_PER_HERTZ));
+    } else {
+        printf("refresh unknown");
+    }
+
+    printf("%s\n", (output->flags & STLXWIN_DESKTOP_MAIN) != 0 ? "  main" : "");
+}
+
+static int list_layout(stlxwin_conn* conn) {
+    uint32_t generation;
+    stlxwin_output outputs[STLXWIN_OUTPUTS_MAX];
+    long count = stlxwin_outputs_get(conn, &generation, outputs, STLXWIN_OUTPUTS_MAX);
+    if (generation == 0) {
+        fprintf(stderr, "stlxdisplay: the display manager reports no layout\n");
+        return 1;
+    }
+
+    printf("generation %u\n", generation);
+    for (long i = 0; i < count; i++) {
+        print_place(&outputs[i]);
+    }
+
+    if (count == 0) {
+        printf("no outputs\n");
+    }
+
+    return 0;
+}
+
+/* Reads "<output>@<x>,<y>". Returns 0, or -1 when malformed */
+static int parse_place(const char* text, stlxwin_layout_entry* out) {
+    char* end;
+    unsigned long output = strtoul(text, &end, 10);
+    if (end == text || *end != '@' || output >= STLXWIN_OUTPUTS_MAX) {
+        return -1;
+    }
+
+    const char* x_text = end + 1;
+    long x = strtol(x_text, &end, 10);
+    if (end == x_text || *end != ',') {
+        return -1;
+    }
+
+    const char* y_text = end + 1;
+    long y = strtol(y_text, &end, 10);
+    bool is_placed = x >= INT32_MIN && x <= INT32_MAX && y >= INT32_MIN && y <= INT32_MAX;
+    if (end == y_text || *end != '\0' || !is_placed) {
+        return -1;
+    }
+
+    out->output = (uint32_t)output;
+    out->x = (int32_t)x;
+    out->y = (int32_t)y;
+
+    return 0;
+}
+
+/* Reads "main=<output>". Returns 0, or -1 when malformed */
+static int parse_main(const char* text, uint32_t* out) {
+    static const char PREFIX[] = "main=";
+    if (strncmp(text, PREFIX, sizeof(PREFIX) - 1) != 0) {
+        return -1;
+    }
+
+    const char* output_text = text + sizeof(PREFIX) - 1;
+    char* end;
+    unsigned long output = strtoul(output_text, &end, 10);
+    if (end == output_text || *end != '\0' || output >= STLXWIN_OUTPUTS_MAX) {
+        return -1;
+    }
+
+    *out = (uint32_t)output;
+
+    return 0;
+}
+
+/* Waits for the layout result, dropping other events. Returns 0, or -1 once the display manager is gone */
+static int wait_layout_result(stlxwin_conn* conn, stlxwin_event* ev) {
+    while (1) {
+        while (stlxwin_next_event(conn, ev)) {
+            if (ev->type == STLXWIN_EVT_LAYOUT_RESULT) {
+                return 0;
+            }
+        }
+
+        if (stlxwin_wait(conn, -1) < 0) {
+            return -1;
+        }
+    }
+}
+
+/* Prints a layout result. Returns whether the display manager applied the layout */
+static bool print_layout_result(const stlxwin_event* ev) {
+    uint32_t outcome = ev->layout_result.outcome;
+    if (outcome != STLXWIN_LAYOUT_APPLIED && outcome != STLXWIN_LAYOUT_UNSAVED) {
+        bool is_named = outcome < sizeof(REFUSED_TEXT) / sizeof(REFUSED_TEXT[0]) && REFUSED_TEXT[outcome];
+        printf("%s\n", is_named ? REFUSED_TEXT[outcome] : "refused");
+        return false;
+    }
+
+    printf("applied, generation %u", ev->layout_result.generation);
+    if (outcome == STLXWIN_LAYOUT_UNSAVED) {
+        printf(", not stored, so the display manager forgets it when it exits");
+    }
+
+    printf("\n");
+
+    return true;
+}
+
+/* Asks for every output's place from "<output>@<x>,<y>" arguments and an optional "main=<output>", the main output
+ * staying when none is named */
+static int request_layout(stlxwin_conn* conn, int argc, char** argv) {
+    stlxwin_layout_entry entries[STLXWIN_OUTPUTS_MAX];
+    uint32_t count = 0;
+    uint32_t main_output = 0;
+    bool has_main = false;
+    for (int i = 0; i < argc; i++) {
+        if (!has_main && parse_main(argv[i], &main_output) == 0) {
+            has_main = true;
+            continue;
+        }
+
+        if (count == STLXWIN_OUTPUTS_MAX || parse_place(argv[i], &entries[count]) < 0) {
+            fputs(USAGE, stderr);
+            return 2;
+        }
+
+        count++;
+    }
+
+    if (count == 0) {
+        fputs(USAGE, stderr);
+        return 2;
+    }
+
+    uint32_t generation;
+    stlxwin_output outputs[STLXWIN_OUTPUTS_MAX];
+    long listed = stlxwin_outputs_get(conn, &generation, outputs, STLXWIN_OUTPUTS_MAX);
+    if (generation == 0) {
+        fprintf(stderr, "stlxdisplay: the display manager reports no layout\n");
+        return 1;
+    }
+
+    for (long i = 0; i < listed && !has_main; i++) {
+        if ((outputs[i].flags & STLXWIN_DESKTOP_MAIN) != 0) {
+            main_output = outputs[i].output;
+            has_main = true;
+        }
+    }
+
+    stlxwin_event ev;
+    if (stlxwin_layout_set(conn, generation, main_output, entries, count) < 0 || wait_layout_result(conn, &ev) < 0) {
+        fprintf(stderr, "stlxdisplay: the display manager went away\n");
+        return 1;
+    }
+
+    return print_layout_result(&ev) ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
+    bool is_layout = argc >= 2 && strcmp(argv[1], "layout") == 0;
     bool is_listing = argc == 1;
-    bool is_request = argc == 3 || (argc == 4 && strcmp(argv[3], "--keep") == 0);
-    if (!is_listing && !is_request) {
+    bool is_request = !is_layout && (argc == 3 || (argc == 4 && strcmp(argv[3], "--keep") == 0));
+    if (!is_layout && !is_listing && !is_request) {
         fputs(USAGE, stderr);
         return 2;
     }
@@ -334,7 +514,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int status = is_listing ? list_outputs(conn) : request_mode(conn, argv[1], argv[2], argc == 4);
+    int status;
+    if (is_layout) {
+        status = argc == 2 ? list_layout(conn) : request_layout(conn, argc - 2, argv + 2);
+    } else {
+        status = is_listing ? list_outputs(conn) : request_mode(conn, argv[1], argv[2], argc == 4);
+    }
+
     stlxwin_disconnect(conn);
 
     return status;
