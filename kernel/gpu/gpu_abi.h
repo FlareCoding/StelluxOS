@@ -110,7 +110,7 @@ struct gpu_nvidia_info {
 // virtio-gpu facts venus needs, zero on other backends
 struct gpu_virtio_info {
     uint64_t capsets;           // a bit per capset id the device offers
-    uint64_t host_visible_size; // bytes of the device's host-visible memory region, 0 without one
+    uint64_t host_visible_size; // bytes of the whole pages of the device's host-visible memory region, 0 without one
 };
 
 // GPU_GET_INFO argument, out: what the GPU is, which never changes while it is registered

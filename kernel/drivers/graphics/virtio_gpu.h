@@ -3,6 +3,7 @@
 
 #include "drivers/virtio/virtio_pci_driver.h"
 #include "drivers/graphics/gfxfb.h"
+#include "drivers/graphics/virtio_gpu_backend.h"
 #include "common/list.h"
 #include "dma/dma.h"
 #include "sync/mutex.h"
@@ -25,6 +26,14 @@ constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_FLUSH          = 0x0104;
 constexpr uint32_t VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D     = 0x0105;
 constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING = 0x0106;
 constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING = 0x0107;
+constexpr uint32_t VIRTIO_GPU_CMD_GET_CAPSET_INFO         = 0x0108;
+constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB    = 0x010C;
+
+constexpr uint32_t VIRTIO_GPU_CMD_CTX_CREATE          = 0x0200;
+constexpr uint32_t VIRTIO_GPU_CMD_CTX_DESTROY         = 0x0201;
+constexpr uint32_t VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE = 0x0202;
+constexpr uint32_t VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE = 0x0203;
+constexpr uint32_t VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB   = 0x0208;
 
 constexpr uint32_t VIRTIO_GPU_CMD_UPDATE_CURSOR = 0x0300;
 constexpr uint32_t VIRTIO_GPU_CMD_MOVE_CURSOR   = 0x0301;
@@ -33,6 +42,28 @@ constexpr uint32_t VIRTIO_GPU_RESP_OK_NODATA         = 0x1100;
 constexpr uint32_t VIRTIO_GPU_RESP_OK_DISPLAY_INFO   = 0x1101;
 constexpr uint32_t VIRTIO_GPU_RESP_ERR_UNSPEC        = 0x1200;
 constexpr uint32_t VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY = 0x1201;
+
+// The features of the 3D path: 3D commands, blob resources and contexts initialized with a capset
+constexpr uint64_t VIRTIO_GPU_F_VIRGL         = 1ULL << 0;
+constexpr uint64_t VIRTIO_GPU_F_RESOURCE_BLOB = 1ULL << 3;
+constexpr uint64_t VIRTIO_GPU_F_CONTEXT_INIT  = 1ULL << 4;
+
+// The capset id a context's initialization names to make it a venus context
+constexpr uint32_t VIRTIO_GPU_CAPSET_VENUS = 4;
+
+// Where a blob's memory lies: in the guest's pages, or in memory the host allocated for a context
+constexpr uint32_t VIRTIO_GPU_BLOB_MEM_GUEST  = 1;
+constexpr uint32_t VIRTIO_GPU_BLOB_MEM_HOST3D = 2;
+
+// A blob the host may map into the host-visible region
+constexpr uint32_t VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE = 1;
+
+// The caching of a mapped blob, in the low bits of its map answer's `map_info`
+constexpr uint32_t VIRTIO_GPU_MAP_CACHE_MASK   = 0x0F;
+constexpr uint32_t VIRTIO_GPU_MAP_CACHE_CACHED = 0x01;
+
+// The shared memory region the host maps blobs into for the guest
+constexpr uint8_t VIRTIO_GPU_SHM_ID_HOST_VISIBLE = 1;
 
 constexpr uint32_t VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM = 1;
 constexpr uint32_t VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2;
@@ -151,6 +182,60 @@ struct virtio_gpu_update_cursor {
     uint32_t              hot_x;
     uint32_t              hot_y;
     uint32_t              padding;
+} __attribute__((packed));
+
+struct virtio_gpu_get_capset_info {
+    virtio_gpu_ctrl_hdr hdr;
+    uint32_t capset_index;
+    uint32_t padding;
+} __attribute__((packed));
+
+struct virtio_gpu_resp_capset_info {
+    virtio_gpu_ctrl_hdr hdr;
+    uint32_t capset_id;
+    uint32_t capset_max_version;
+    uint32_t capset_max_size;
+    uint32_t padding;
+} __attribute__((packed));
+
+// Followed by `nr_entries` page list entries for a guest blob, which the driver chains as a buffer of their own
+struct virtio_gpu_resource_create_blob {
+    virtio_gpu_ctrl_hdr hdr;
+    uint32_t resource_id;
+    uint32_t blob_mem;
+    uint32_t blob_flags;
+    uint32_t nr_entries;
+    uint64_t blob_id;
+    uint64_t size;
+} __attribute__((packed));
+
+// Maps a blob at `offset` bytes into the host-visible region
+struct virtio_gpu_resource_map_blob {
+    virtio_gpu_ctrl_hdr hdr;
+    uint32_t resource_id;
+    uint32_t padding;
+    uint64_t offset;
+} __attribute__((packed));
+
+struct virtio_gpu_resp_map_info {
+    virtio_gpu_ctrl_hdr hdr;
+    uint32_t map_info;
+    uint32_t padding;
+} __attribute__((packed));
+
+// Creates the context the header names, of the capset id in the low byte of `context_init`
+struct virtio_gpu_ctx_create {
+    virtio_gpu_ctrl_hdr hdr;
+    uint32_t nlen;
+    uint32_t context_init;
+    char     debug_name[64];
+} __attribute__((packed));
+
+// Attaches a resource to the context the header names, or detaches it
+struct virtio_gpu_ctx_resource {
+    virtio_gpu_ctrl_hdr hdr;
+    uint32_t resource_id;
+    uint32_t padding;
 } __attribute__((packed));
 
 } // namespace drivers::virtio
@@ -292,11 +377,16 @@ struct virtio_gpu_scanout {
  * last submission when its task waited for the CPU. Either way
  * `move_cursor()`, whose one submission follows the lock, returns within
  * GFXFB_PRESENT_TIMEOUT_NS of handing the device its command.
+ *
+ * Before any other work, the task registers the device's 3D path with the GPU
+ * core when the device offers what venus needs (`virtio_gpu_backend`). The 3D
+ * path's commands share the control queue and the batch lock, and the task
+ * serves the path's releases and destroys after the display's work.
  */
 class virtio_gpu_driver : public virtio_pci_driver, public gfxfb::display {
 public:
     virtio_gpu_driver(pci::device* dev)
-        : virtio_pci_driver("virtio_gpu", "virtio-gpu", dev) {
+        : virtio_pci_driver("virtio_gpu", "virtio-gpu", dev), m_backend(*this) {
         m_batch_lock.init();
         m_scanout_lock = sync::SPINLOCK_INIT;
         m_work_lock = sync::SPINLOCK_INIT;
@@ -340,7 +430,11 @@ public:
     __PRIVILEGED_CODE bool on_interrupt(uint32_t vector) override;
 
 private:
-    static constexpr uint32_t MAX_BATCH_COMMANDS = 64;
+    friend class virtio_gpu_backend;
+
+    // A batch closes at this many descriptors, each command taking at least two
+    static constexpr uint32_t MAX_BATCH_DESCRIPTORS = 128;
+    static constexpr uint32_t MAX_BATCH_COMMANDS = MAX_BATCH_DESCRIPTORS / 2;
 
     // The boot thread cannot sleep, so attach polls for completions
     enum class wait_mode : uint8_t { poll, sleep };
@@ -367,11 +461,15 @@ private:
     };
 
     int32_t allocate_command_page();
-    bool batch_has_room(uint32_t bytes, uint32_t commands) const;
+    bool batch_has_room(uint32_t bytes, uint32_t descriptors) const;
+
+    // Queues a command, with `list` chained between its request and response when not null
     int32_t queue_command(const void* request, uint32_t request_size,
-                          uint32_t response_size, uint32_t* out_response_offset);
+                          uint32_t response_size, uint32_t* out_response_offset,
+                          const virtio::chain_buffer* list = nullptr);
     int32_t run_batch(wait_mode mode);
-    int32_t run_batch_until(wait_mode mode, uint64_t deadline_ns);
+    int32_t run_batch_until(wait_mode mode, uint64_t deadline_ns, bool logs_refusals = true);
+    int32_t run_unlogged_batch();
     int32_t wait_for_used(virtio::virtqueue& queue, uint32_t count, wait_mode mode, uint64_t deadline_ns);
 
     // For commands whose response is only a header
@@ -433,7 +531,11 @@ private:
     dma::buffer m_command_page = {};
     uint32_t m_batch_bytes = 0;
     uint32_t m_batch_commands = 0;
+    uint32_t m_batch_descriptors = 0;
     uint32_t m_response_offsets[MAX_BATCH_COMMANDS] = {};
+
+    // The features negotiated at attach
+    uint64_t m_features = 0;
 
     // Fixed at attach, so the display calls read it with no lock
     uint32_t m_scanout_count = 0;
@@ -467,6 +569,9 @@ private:
     release_list     m_releases;
     sync::wait_queue m_work_wq;
     sync::wait_queue m_request_wq; // where `set_mode()` waits for the task to finish its request
+
+    // The 3D path, which the GPU core keeps for good once the task registers it
+    virtio_gpu_backend m_backend;
 };
 
 } // namespace drivers

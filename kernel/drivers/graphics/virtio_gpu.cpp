@@ -56,8 +56,9 @@ constexpr uint64_t PRESENT_BATCH_TIMEOUT_NS = gfxfb::GFXFB_PRESENT_TIMEOUT_NS - 
 // deadline, so a task that waited for the CPU before submitting fails no device that answers within this long
 constexpr uint64_t MIN_ANSWER_WAIT_NS = REFRESH_PERIOD_NS;
 
-// A request chained to a response
+// A request chained to a response, with a page list between them for a guest blob's create
 constexpr uint32_t DESCRIPTORS_PER_COMMAND = 2;
+constexpr uint32_t DESCRIPTORS_PER_LISTED_COMMAND = 3;
 
 // A transfer and a flush
 constexpr uint32_t COMMANDS_PER_RECT = 2;
@@ -220,19 +221,21 @@ int32_t virtio_gpu_driver::allocate_command_page() {
     return OK;
 }
 
-bool virtio_gpu_driver::batch_has_room(uint32_t bytes, uint32_t commands) const {
+bool virtio_gpu_driver::batch_has_room(uint32_t bytes, uint32_t descriptors) const {
     return m_batch_bytes + bytes <= pmm::PAGE_SIZE &&
-           m_batch_commands + commands <= MAX_BATCH_COMMANDS &&
-           m_control_queue.free_count() >= commands * DESCRIPTORS_PER_COMMAND;
+           m_batch_descriptors + descriptors <= MAX_BATCH_DESCRIPTORS &&
+           m_control_queue.free_count() >= descriptors;
 }
 
 int32_t virtio_gpu_driver::queue_command(const void* request, uint32_t request_size,
-                                         uint32_t response_size, uint32_t* out_response_offset) {
+                                         uint32_t response_size, uint32_t* out_response_offset,
+                                         const chain_buffer* list) {
     if (m_is_broken) {
         return ERR_IO;
     }
 
-    if (!batch_has_room(command_footprint(request_size, response_size), 1)) {
+    uint32_t descriptors = list ? DESCRIPTORS_PER_LISTED_COMMAND : DESCRIPTORS_PER_COMMAND;
+    if (!batch_has_room(command_footprint(request_size, response_size), descriptors)) {
         return ERR_BATCH_FULL;
     }
 
@@ -242,17 +245,21 @@ int32_t virtio_gpu_driver::queue_command(const void* request, uint32_t request_s
     string::memcpy(page + request_offset, request, request_size);
     string::memset(page + response_offset, 0, response_size);
 
-    chain_buffer chain[DESCRIPTORS_PER_COMMAND] = {
-        {m_command_page.phys + request_offset, request_size, 0},
-        {m_command_page.phys + response_offset, response_size, VRING_DESC_F_WRITE},
-    };
+    chain_buffer request_buffer = {m_command_page.phys + request_offset, request_size, 0};
+    chain_buffer response_buffer = {m_command_page.phys + response_offset, response_size, VRING_DESC_F_WRITE};
+    chain_buffer chain[DESCRIPTORS_PER_LISTED_COMMAND] = {request_buffer, response_buffer};
+    if (list) {
+        chain[1] = *list;
+        chain[2] = response_buffer;
+    }
 
-    int32_t head = m_control_queue.add_buf_chain(chain, DESCRIPTORS_PER_COMMAND);
+    int32_t head = m_control_queue.add_buf_chain(chain, static_cast<uint16_t>(descriptors));
     if (head < 0) {
         return ERR_BATCH_FULL;
     }
 
     m_response_offsets[m_batch_commands++] = response_offset;
+    m_batch_descriptors += descriptors;
     m_batch_bytes = response_offset + align_command_bytes(response_size);
 
     if (out_response_offset) {
@@ -296,7 +303,12 @@ int32_t virtio_gpu_driver::run_batch(wait_mode mode) {
     return run_batch_until(mode, clock::now_ns() + BATCH_TIMEOUT_NS);
 }
 
-int32_t virtio_gpu_driver::run_batch_until(wait_mode mode, uint64_t deadline_ns) {
+// Runs the batch as `run_batch()` does but logs no refusal, for the 3D path, whose refusals userland can cause
+int32_t virtio_gpu_driver::run_unlogged_batch() {
+    return run_batch_until(wait_mode::sleep, clock::now_ns() + BATCH_TIMEOUT_NS, false);
+}
+
+int32_t virtio_gpu_driver::run_batch_until(wait_mode mode, uint64_t deadline_ns, bool logs_refusals) {
     if (m_is_broken) {
         return ERR_IO;
     }
@@ -322,12 +334,16 @@ int32_t virtio_gpu_driver::run_batch_until(wait_mode mode, uint64_t deadline_ns)
         if (response->type == VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY) {
             rc = ERR_OUT_OF_DEVICE_MEMORY;
         } else if (!is_ok_response(response->type)) {
-            log::error("virtio-gpu: command failed with response 0x%x", response->type);
+            if (logs_refusals) {
+                log::error("virtio-gpu: command failed with response 0x%x", response->type);
+            }
+
             rc = ERR_IO;
         }
     }
 
     m_batch_commands = 0;
+    m_batch_descriptors = 0;
     m_batch_bytes = 0;
 
     return rc;
@@ -827,7 +843,8 @@ int32_t virtio_gpu_driver::queue_rect_update(
     uint32_t bytes = command_footprint(sizeof(transfer), sizeof(virtio_gpu_ctrl_hdr)) +
                      command_footprint(sizeof(show), sizeof(virtio_gpu_ctrl_hdr));
 
-    if (!batch_has_room(bytes, COMMANDS_PER_RECT) && run_batch_until(wait_mode::sleep, deadline_ns) != OK) {
+    bool has_room = batch_has_room(bytes, COMMANDS_PER_RECT * DESCRIPTORS_PER_COMMAND);
+    if (!has_room && run_batch_until(wait_mode::sleep, deadline_ns) != OK) {
         return ERR_IO;
     }
 
@@ -842,8 +859,9 @@ int32_t virtio_gpu_driver::attach() {
     log::info("virtio-gpu: attaching to %02x:%02x.%x",
               m_dev->bus(), m_dev->slot(), m_dev->func());
 
-    uint64_t features = 0;
-    int32_t rc = start_transport(VIRTIO_F_VERSION_1, 0, &features);
+    // The display needs none of the 3D path's features
+    uint64_t features_3d = VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_RESOURCE_BLOB | VIRTIO_GPU_F_CONTEXT_INIT;
+    int32_t rc = start_transport(VIRTIO_F_VERSION_1, features_3d, &m_features);
     if (rc != OK) {
         return rc;
     }
@@ -931,7 +949,8 @@ int32_t virtio_gpu_driver::detach() {
 
 // Runs under `m_work_lock`
 bool virtio_gpu_driver::has_task_work() const {
-    return m_has_restore || m_request || m_has_config_change || !m_releases.empty();
+    bool has_display_work = m_has_restore || m_request || m_has_config_change || !m_releases.empty();
+    return has_display_work || m_backend.has_task_work();
 }
 
 virtio_gpu_driver::task_work virtio_gpu_driver::wait_for_work() {
@@ -1217,9 +1236,11 @@ void virtio_gpu_driver::finish_request(mode_request& request, int32_t result) {
     });
 }
 
-// Serves the close's restores, mode requests, configuration changes and released buffers, since only this task writes a
-// scanout's base once the driver is attached and neither the interrupt handler nor the reaper may wait for the device
+// Registers the 3D path, then serves the display's work and the 3D path's, since only this task writes a scanout's base
+// once the driver is attached and neither the interrupt handler nor the reaper may wait for the device
 void virtio_gpu_driver::run() {
+    m_backend.register_with_core();
+
     while (true) {
         task_work work = wait_for_work();
 
@@ -1239,6 +1260,8 @@ void virtio_gpu_driver::run() {
         if (work.released) {
             drop_buffer(work.released);
         }
+
+        m_backend.serve_task_work();
     }
 }
 
