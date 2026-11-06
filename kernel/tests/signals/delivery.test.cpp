@@ -244,7 +244,7 @@ TEST(signal_delivery, x86_sanitizes_restored_mxcsr) {
         mxcsr = *reinterpret_cast<uint32_t*>(&fp.fxsave_area[fpu::MXCSR_OFFSET]);
     });
 
-    EXPECT_EQ(mxcsr >> 16, 0U); // reserved bits never reach FXRSTOR
+    EXPECT_EQ(mxcsr & ~0x2FFFFU, 0U); // bits every CPU reserves never reach FXRSTOR
     EXPECT_EQ(mxcsr & 0x1F80U, 0x1F80U); // supported control bits survive
 }
 
