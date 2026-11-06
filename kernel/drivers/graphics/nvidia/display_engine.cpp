@@ -249,8 +249,18 @@ static void keep_output_modes(
     );
 }
 
-// Reads and logs connected output `index`'s EDID into `monitor`, DPCD capabilities and mode, keeping its modes and
-// EDID bytes in `modes`, and lowers its rate in `power_down` to its monitor's and sets its D3 bit for DPCD 1.1 or later
+static gfxfb::monitor_identity identity_of(const edid::monitor& monitor) {
+    gfxfb::monitor_identity identity = {};
+    string::memcpy(identity.maker, monitor.maker, sizeof(monitor.maker));
+    string::memcpy(identity.name, monitor.name, sizeof(monitor.name));
+    identity.product = monitor.product;
+    identity.serial = monitor.serial;
+
+    return identity;
+}
+
+// Reads and logs output `index`'s EDID into `monitor`, DPCD capabilities and mode, keeping its modes, EDID bytes and
+// identity in `modes`, and lowers its rate in `power_down` to its monitor's and sets its D3 bit for DPCD 1.1 or later
 static int32_t read_connected_monitor(
     firmware& fw,
     rm::handle display_common,
@@ -269,6 +279,7 @@ static int32_t read_connected_monitor(
 
     if (is_parsed) {
         log_monitor(index, monitor);
+        modes.monitor = identity_of(monitor);
     }
 
     dpcd_capabilities dpcd = {};
@@ -363,11 +374,12 @@ static void free_output_modes(output_modes*& modes) {
     modes = nullptr;
 }
 
-// Keeps in `head` the EDID bytes and DPCD capabilities its output lights with, which a later plug of that output
-// compares and reads its link status by
+// Keeps in `head` the EDID bytes, monitor and DPCD capabilities its output lights with: a later plug of that output
+// compares the bytes and reads its link status by the capabilities, and gfxfb reads the monitor while the head is lit
 static void keep_lit_monitor(engine_head& head, const output_modes& modes) {
     string::memcpy(&head.lit_edid, &modes.edid, sizeof(head.lit_edid));
     string::memcpy(&head.lit_dpcd, &modes.dpcd, sizeof(head.lit_dpcd));
+    head.lit_monitor = modes.monitor;
 }
 
 // Whether `a` and `b` hold the same EDID bytes
@@ -4217,6 +4229,7 @@ int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
     bool is_relighting = false;
     bool has_cursor = false;
     gfxfb::gfxfb_mode mode = {};
+    gfxfb::monitor_identity monitor = {};
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
         const engine_head* head = find_lit_head(output);
@@ -4224,6 +4237,7 @@ int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
         if (is_lit) {
             mode = head->mode;
             has_cursor = head->has_cursor;
+            monitor = head->lit_monitor;
         }
 
         is_relighting = !is_lit && (m_relighting_outputs & (1u << output)) != 0;
@@ -4236,6 +4250,7 @@ int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
     out.boot_output = (m_boot_outputs & (1u << output)) != 0;
     if (is_lit) {
         out.current = mode;
+        out.monitor = monitor;
     }
 
     uint32_t cursor_max = is_lit && !has_cursor ? 0 : CURSOR_DIMENSION;

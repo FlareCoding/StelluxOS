@@ -24,9 +24,10 @@
  *   byte 127   checksum, making the block's 128 bytes sum to 0 modulo 256
  *
  * The parser checks the block's size, header, checksum and version, then reads
- * the maker, the features byte, the descriptors and byte 126. A signal named
- * by a bit or a code must be looked up in a table or computed, so it is not a
- * timing and the parser leaves it out.
+ * the maker, the product code, the serial number, the features byte, the
+ * descriptors and byte 126. A signal named by a bit or a code must be looked
+ * up in a table or computed, so it is not a timing and the parser leaves it
+ * out.
  *
  * Extension blocks follow the base block, as many as its byte 126 says, each
  * 128 bytes with the same checksum rule. An extension block's first byte, its
@@ -47,12 +48,12 @@
  * is not given whole.
  *
  * A display driver hands the bytes it read to `edid::parse`, which returns the
- * maker, the product name, the timings, the number of timings that did not fit
- * and the number of skipped extension blocks in an `edid::monitor`. The driver
- * chooses the timing it sends and must translate it into its own mode type
- * once, so no code past the driver uses the parser's types. The parser keeps
- * no state and never logs, allocates, blocks or touches hardware, so any
- * kernel thread may call it at any privilege.
+ * maker, name, product code, serial number and timings, the number of timings
+ * that did not fit and the number of skipped extension blocks in an
+ * `edid::monitor`. The driver chooses the timing it sends and must translate
+ * it into its own mode type once, so no code past the driver uses the
+ * parser's types. The parser keeps no state and never logs, allocates, blocks
+ * or touches hardware, so any kernel thread may call it at any privilege.
  */
 
 namespace edid {
@@ -97,14 +98,16 @@ struct timing {
 };
 
 /**
- * The maker, name and timings `parse` reads from a monitor's EDID, how many
- * timings did not fit and how many extension blocks `parse` skipped. A
- * `monitor` takes about 1.3 KiB, so a caller keeps it in its own state rather
- * than on the stack.
+ * The maker, name, product code, serial number and timings `parse` reads from
+ * a monitor's EDID, how many timings did not fit and how many extension blocks
+ * `parse` skipped. A `monitor` takes about 1.3 KiB, so a caller keeps it in
+ * its own state rather than on the stack.
  */
 struct monitor {
     char     maker[4];                  // the maker's three-letter Plug and Play id, such as "AOC"
     char     name[14];                  // the product name as `parse` reads it, empty when the block gives none
+    uint16_t product;                   // the product code, bytes 10 and 11, little-endian
+    uint32_t serial;                    // the serial number, bytes 12 to 15, little-endian, 0 when unset
     timing   timings[TIMINGS_MAX];      // distinct timings in the order the EDID lists them
     uint32_t timing_count;              // entries of `timings` in use
     bool     first_timing_is_preferred; // `timings[0]` is the timing the monitor's maker recommends
@@ -114,8 +117,9 @@ struct monitor {
 };
 
 /**
- * @brief Read a monitor's maker, name and timings from its EDID, and count the
- * timings that did not fit and the skipped extension blocks.
+ * @brief Read a monitor's maker, name, product code, serial number and timings
+ * from its EDID, and count the timings that did not fit and the skipped
+ * extension blocks.
  * The timings come from the base block's timing descriptors in descriptor
  * order, then from the extension blocks in block order, and one equal in every
  * field to a listed timing is not listed again. When `timings` is full, a

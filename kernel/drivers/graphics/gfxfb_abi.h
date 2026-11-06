@@ -56,7 +56,9 @@
  * moves or the primary output relights, the primary output may have other
  * pixels at another size, so a program reads `GFXFB_GET_INFO` and maps offset
  * 0 again after an output event, while its earlier mapping keeps the pixels it
- * mapped, which no output shows any more.
+ * mapped, which no output shows any more. `GFXFB_GET_OUTPUT` also names the
+ * monitor on a lit output by the maker, product name, product code and serial
+ * number the monitor reports, each empty or 0 where the device knows none.
  *
  * `GFXFB_GET_MODES` copies an output's mode list, the modes the output can
  * light at in the device's order of preference. Each mode appears once, the
@@ -304,6 +306,11 @@ struct gfxfb_output_info {
     gfxfb_mode current;           // out: the mode while lit, zero while dark
     uint32_t   cursor_max_width;  // out: the widest cursor picture the output shows, 0 without a hardware cursor
     uint32_t   cursor_max_height; // out: the tallest, 0 without a hardware cursor
+    char       maker[4];          // out: the monitor's maker id such as "AOC", empty when unknown or dark
+    char       name[16];          // out: its product name, NUL-terminated, empty when unknown or dark
+    uint32_t   product;           // out: the product code the monitor reports, 0 when unknown or dark
+    uint32_t   serial;            // out: the serial number it reports, 0 when unset, unknown or dark
+    uint32_t   reserved2;         // out: zero
 };
 
 // GFXFB_GET_MODES argument, filled with an output's mode list
@@ -378,7 +385,7 @@ static_assert(sizeof(gfxfb_info) == 40, "gfxfb_info layout");
 static_assert(sizeof(gfxfb_rect) == 16, "gfxfb_rect layout");
 static_assert(sizeof(gfxfb_flush_args) == 16, "gfxfb_flush_args layout");
 static_assert(sizeof(gfxfb_mode) == 16, "gfxfb_mode layout");
-static_assert(sizeof(gfxfb_output_info) == 40, "gfxfb_output_info layout");
+static_assert(sizeof(gfxfb_output_info) == 72, "gfxfb_output_info layout");
 static_assert(sizeof(gfxfb_mode_list) == 24, "gfxfb_mode_list layout");
 static_assert(sizeof(gfxfb_mode_request) == 24, "gfxfb_mode_request layout");
 static_assert(sizeof(gfxfb_buffer_args) == 40, "gfxfb_buffer_args layout");

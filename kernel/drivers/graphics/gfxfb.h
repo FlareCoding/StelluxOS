@@ -83,18 +83,27 @@ constexpr int32_t ERR_REFUSED     = -7; // the hardware refused the call and sta
 // The widest and tallest cursor picture a display may report for an output, which bounds the pictures gfxfb copies
 constexpr uint32_t CURSOR_DIMENSION_MAX = 256;
 
+// The monitor a lit output drives, as its EDID names it, each field empty or 0 where the display knows none
+struct monitor_identity {
+    char     maker[4]; // the maker's three-letter id such as "AOC", NUL-terminated
+    char     name[16]; // the product name, NUL-terminated
+    uint32_t product;  // the product code
+    uint32_t serial;   // the serial number
+};
+
 /**
  * One output's state as its display reports it. Its cursor maximum is the
  * largest picture its hardware cursor shows, at most CURSOR_DIMENSION_MAX in
  * each dimension, or 0 by 0 for an output without a hardware cursor.
  */
 struct output_state {
-    bool       lit;
-    bool       relighting;        // its display is lighting it again, meaningful while dark
-    bool       boot_output;       // the boot firmware lit this output
-    gfxfb_mode current;           // the mode it is lit at, meaningful while lit
-    uint32_t   cursor_max_width;  // the widest cursor picture it shows
-    uint32_t   cursor_max_height; // the tallest
+    bool             lit;
+    bool             relighting;        // its display is lighting it again, meaningful while dark
+    bool             boot_output;       // the boot firmware lit this output
+    gfxfb_mode       current;           // the mode it is lit at, meaningful while lit
+    uint32_t         cursor_max_width;  // the widest cursor picture it shows
+    uint32_t         cursor_max_height; // the tallest
+    monitor_identity monitor;           // the monitor it drives, meaningful while lit
 };
 
 /**

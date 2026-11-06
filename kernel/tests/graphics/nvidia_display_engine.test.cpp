@@ -7283,13 +7283,14 @@ TEST(nvidia_display_engine, set_up_unmaps_and_releases_a_base_buffer_mapped_at_n
     EXPECT_EQ(engine.release(), OK);
 }
 
-// An output state relighting at 1 by 1 with a cursor, as a reused one may hold, for `read_output` to clear
+// An output state relighting at 1 by 1 with a cursor and monitor, as a reused one may hold, for `read_output` to clear
 static gfxfb::output_state stale_output_state() {
     gfxfb::output_state state = {};
     state.relighting = true;
     state.current = {.width = 1, .height = 1, .refresh_millihertz = 1};
     state.cursor_max_width = 0xFFFF;
     state.cursor_max_height = 0xFFFF;
+    state.monitor = {"XYZ", "Stale", 1, 1};
 
     return state;
 }
@@ -7300,8 +7301,8 @@ static void fail_the_light(engine_firmware& fw) {
     fw.get_at_stream = LIGHT_TAKE_DOWN_END;
 }
 
-// After a failed light, gfxfb reads the chosen output 0 as dark with no mode, relight or base buffer, a cursor maximum
-// of 256 by 256, its `boot_output` set since the boot head showed it, and a flush of it returns `gfxfb::ERR_DARK`
+// After a failed light, gfxfb reads the chosen output 0 as dark with no mode, monitor, relight or base buffer, a cursor
+// maximum of 256 by 256, `boot_output` set since the boot head showed it, and its flush returns `gfxfb::ERR_DARK`
 TEST(nvidia_display_engine, gfxfb_reads_the_chosen_output_dark_after_a_failed_light) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -7322,14 +7323,19 @@ TEST(nvidia_display_engine, gfxfb_reads_the_chosen_output_dark_after_a_failed_li
     EXPECT_EQ(state.cursor_max_width, 256u);
     EXPECT_EQ(state.cursor_max_height, 256u);
 
+    EXPECT_STREQ(state.monitor.maker, "");
+    EXPECT_STREQ(state.monitor.name, "");
+    EXPECT_EQ(state.monitor.product, 0u);
+    EXPECT_EQ(state.monitor.serial, 0u);
+
     EXPECT_FALSE(engine.has_lit_output());
     EXPECT_NULL(engine.base_buffer(0));
     EXPECT_EQ(engine.flush(0, nullptr, 0), gfxfb::ERR_DARK);
     EXPECT_EQ(engine.release(), OK);
 }
 
-// Once lit without a cursor, output 0 reads as lit at its 1366 by 768 timing with `boot_output` set and no relight or
-// cursor, its base buffer the mapping for userland, write-combining, and a flush of it returns `gfxfb::OK`
+// Once lit without a cursor, output 0 reads as lit at its 1366 by 768 timing with the AOC its EDID names, `boot_output`
+// set and no relight or cursor, its base buffer the mapping for userland, write-combining, and a flush returns OK
 TEST(nvidia_display_engine, gfxfb_reads_the_lit_output_at_its_mode_with_its_base_buffer) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -7352,6 +7358,11 @@ TEST(nvidia_display_engine, gfxfb_reads_the_lit_output_at_its_mode_with_its_base
     EXPECT_EQ(state.current.refresh_millihertz, 59789u);
     EXPECT_EQ(state.cursor_max_width, 0u);
     EXPECT_EQ(state.cursor_max_height, 0u);
+
+    EXPECT_STREQ(state.monitor.maker, "AOC");
+    EXPECT_STREQ(state.monitor.name, "AG241QG4");
+    EXPECT_EQ(state.monitor.product, 0x2410u);
+    EXPECT_EQ(state.monitor.serial, 0u);
 
     gfxfb::buffer* base = engine.base_buffer(0);
     ASSERT_NOT_NULL(base);
@@ -7405,7 +7416,7 @@ TEST(nvidia_display_engine, gfxfb_reads_a_base_buffer_of_the_whole_pages_its_ran
 }
 
 // With output 1 lit and output 0, which head 1 showed, dark, gfxfb reads `boot_output` set only on output 0 and only
-// output 1 as lit with a base buffer, and the engine refuses output 2 with `gfxfb::ERR_INVALID_ARG`
+// output 1 as lit with its monitor and a base buffer, and the engine refuses output 2 with `gfxfb::ERR_INVALID_ARG`
 TEST(nvidia_display_engine, gfxfb_reads_boot_output_only_on_an_output_an_active_head_showed) {
     engine_firmware fw;
     connect_output_1_alone(fw);
@@ -7424,6 +7435,11 @@ TEST(nvidia_display_engine, gfxfb_reads_boot_output_only_on_an_output_an_active_
     EXPECT_TRUE(lit.lit);
     EXPECT_FALSE(lit.boot_output);
     EXPECT_EQ(lit.current.width, 1366u);
+
+    EXPECT_STREQ(lit.monitor.maker, "AOC");
+    EXPECT_STREQ(lit.monitor.name, "AG241QG4");
+    EXPECT_EQ(lit.monitor.product, 0x2410u);
+    EXPECT_EQ(lit.monitor.serial, 0u);
 
     EXPECT_NOT_NULL(engine.base_buffer(1));
     EXPECT_EQ(engine.flush(1, nullptr, 0), gfxfb::OK);
@@ -11867,6 +11883,14 @@ TEST(nvidia_display_engine, a_plugged_lit_output_with_another_edid_is_relit) {
     EXPECT_TRUE(g_relight_reports[0].relighting);
     EXPECT_TRUE(g_relight_reports[1].lit);
     EXPECT_FALSE(g_relight_reports[1].relighting);
+
+    EXPECT_STREQ(g_relight_reports[1].monitor.maker, "AOC");
+    EXPECT_STREQ(g_relight_reports[1].monitor.name, "AG241QG4");
+    EXPECT_EQ(g_relight_reports[1].monitor.serial, 1u);
+
+    gfxfb::output_state output_0 = {};
+    ASSERT_EQ(engine.read_output(0, output_0), gfxfb::OK);
+    EXPECT_EQ(output_0.monitor.serial, 0u);
 
     EXPECT_TRUE(reads_lit(engine, 0));
     EXPECT_TRUE(reads_lit(engine, 1));

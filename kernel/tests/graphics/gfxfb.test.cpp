@@ -53,6 +53,10 @@ static constexpr uint64_t OUTPUT_1_SIZE = OUTPUT_1_PITCH * OUTPUT_1_HEIGHT;
 static constexpr uint64_t OUTPUT_0_REFRESH_MILLIHERTZ = 144000;
 static constexpr uint64_t OUTPUT_1_REFRESH_MILLIHERTZ = 75000;
 
+// The monitors on outputs 0 and 1 while lit, unlike each other in every field so a reply shows whose monitor it names
+static constexpr gfxfb::monitor_identity OUTPUT_0_MONITOR = {"AOC", "AG241QG4", 0x2410, 0};
+static constexpr gfxfb::monitor_identity OUTPUT_1_MONITOR = {"XYZ", "Test monitor", 0x1234, 0x12345678};
+
 // A mode whose width and height are above 0xFFFF and unlike any base buffer's size, so a reply narrowing either
 // dimension or reporting the base buffer's size fails
 static constexpr uint32_t WIDE_MODE_WIDTH = 70000;
@@ -85,8 +89,8 @@ static constexpr size_t MANY_REGIONS_PAGES =
 // refusal test
 static constexpr uint32_t WIDE_REGION_COUNT = 0x10001;
 
-// What `get_output` fills the GFXFB_GET_OUTPUT reply's 32-bit fields and its refresh rate with first, as a test does an
-// output state's cursor maximum before `read_output()`, so a field left unwritten fails its check
+// What `get_output` fills the GFXFB_GET_OUTPUT reply's 32-bit fields and its refresh rate with first, and its text with
+// `~`, as a test does an output state's cursor maximum before `read_output()`, so an unwritten field fails its check
 static constexpr uint32_t UNWRITTEN_FIELD = 0xFFFFFFFF;
 static constexpr uint64_t UNWRITTEN_RATE = 0xFFFFFFFFFFFFFFFF;
 
@@ -324,8 +328,8 @@ public:
     }
 };
 
-// A display that accepts every present, with GFXFB_OUTPUTS_MAX outputs each lit at output 1's size once a test gives it
-// a base buffer, unless the test marks it dark, so one file can hold an event of each kind for every output
+// A display that accepts every present, with GFXFB_OUTPUTS_MAX outputs each lit at output 1's size and monitor once
+// given a base buffer, unless the test marks it dark, so one file can hold an event of each kind for every output
 class every_output_display : public gfxfb::display {
 public:
     gfxfb::buffer bases[gfxfb::GFXFB_OUTPUTS_MAX] = {};
@@ -350,6 +354,7 @@ public:
             },
             .cursor_max_width  = 0,
             .cursor_max_height = 0,
+            .monitor           = OUTPUT_1_MONITOR,
         };
 
         return gfxfb::OK;
@@ -604,6 +609,7 @@ static void light_output(recording_display& fake, uint32_t output, bool is_boot_
         },
         .cursor_max_width  = 0,
         .cursor_max_height = 0,
+        .monitor           = is_first ? OUTPUT_0_MONITOR : OUTPUT_1_MONITOR,
     };
 }
 
@@ -1151,9 +1157,34 @@ static int32_t get_output(const char* path, user_page& page, uint32_t output) {
         },
         .cursor_max_width  = UNWRITTEN_FIELD,
         .cursor_max_height = UNWRITTEN_FIELD,
+        .maker             = "~~~",
+        .name              = "~~~~~~~~~~~~~~~",
+        .product           = UNWRITTEN_FIELD,
+        .serial            = UNWRITTEN_FIELD,
+        .reserved2         = UNWRITTEN_FIELD,
     };
 
     return call_gfxfb_ioctl(path, page, gfxfb::GFXFB_GET_OUTPUT, page.addr);
+}
+
+// Expects `info` to name `monitor`, with `reserved2` zero
+static void expect_monitor(const gfxfb::gfxfb_output_info& info, const gfxfb::monitor_identity& monitor) {
+    EXPECT_STREQ(info.maker, monitor.maker);
+    EXPECT_STREQ(info.name, monitor.name);
+    EXPECT_EQ(info.product, monitor.product);
+    EXPECT_EQ(info.serial, monitor.serial);
+    EXPECT_EQ(info.reserved2, static_cast<uint32_t>(0));
+}
+
+// Expects `info` to name no monitor: every byte of its maker and name zero, and its product, serial and `reserved2`
+static void expect_no_monitor(const gfxfb::gfxfb_output_info& info) {
+    static constexpr char NO_TEXT[sizeof(info.name)] = {};
+
+    EXPECT_EQ(string::memcmp(info.maker, NO_TEXT, sizeof(info.maker)), 0);
+    EXPECT_EQ(string::memcmp(info.name, NO_TEXT, sizeof(info.name)), 0);
+    EXPECT_EQ(info.product, static_cast<uint32_t>(0));
+    EXPECT_EQ(info.serial, static_cast<uint32_t>(0));
+    EXPECT_EQ(info.reserved2, static_cast<uint32_t>(0));
 }
 
 // The mode at `index` of `output`'s list in the GET_MODES tests, unlike every other listed mode in each field, so a
@@ -1529,17 +1560,20 @@ TEST(gfxfb, boot_display_lists_its_one_mode) {
 
 static recording_display g_outputs_display;
 
-// GFXFB_GET_OUTPUT writes every reply field, an output's mode only while it is lit, and refuses an index of the output
-// count or more, a null or unreadable argument, and with no field written, a request ending on an unmapped page
+// GFXFB_GET_OUTPUT writes every reply field, an output's mode and monitor only while it is lit, and refuses an index
+// past the last output, a null or unreadable argument, and with no field written, a request ending on an unmapped page
 TEST(gfxfb, get_output_reports_each_output) {
     light_output(g_outputs_display, 0, false);
     g_outputs_display.states[0].current.width = WIDE_MODE_WIDTH;
     g_outputs_display.states[0].current.height = WIDE_MODE_HEIGHT;
     g_outputs_display.states[0].cursor_max_width = WIDE_CURSOR_MAX_WIDTH;
     g_outputs_display.states[0].cursor_max_height = WIDE_CURSOR_MAX_HEIGHT;
+
     g_outputs_display.states[1].current = {.width = 1, .height = 1, .refresh_millihertz = 1}; // stale while dark
+    g_outputs_display.states[1].monitor = OUTPUT_1_MONITOR; // stale while dark
     g_outputs_display.states[1].cursor_max_width = CURSOR_MAX_WIDTH;
     g_outputs_display.states[1].cursor_max_height = CURSOR_MAX_HEIGHT;
+
     gfxfb_test_node test = publish_driver_node(&g_outputs_display);
     ASSERT_NOT_NULL(test.node);
 
@@ -1553,22 +1587,28 @@ TEST(gfxfb, get_output_reports_each_output) {
     EXPECT_EQ(info->output_count, recording_display::OUTPUTS);
     EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
     EXPECT_EQ(info->reserved, static_cast<uint32_t>(0));
+
     EXPECT_EQ(info->current.width, WIDE_MODE_WIDTH);
     EXPECT_EQ(info->current.height, WIDE_MODE_HEIGHT);
     EXPECT_EQ(info->current.refresh_millihertz, OUTPUT_0_REFRESH_MILLIHERTZ);
+
     EXPECT_EQ(info->cursor_max_width, gfxfb::CURSOR_DIMENSION_MAX);
     EXPECT_EQ(info->cursor_max_height, gfxfb::CURSOR_DIMENSION_MAX);
+    expect_monitor(*info, OUTPUT_0_MONITOR);
 
     ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
     EXPECT_EQ(info->output, static_cast<uint32_t>(1));
     EXPECT_EQ(info->output_count, recording_display::OUTPUTS);
     EXPECT_EQ(info->flags, static_cast<uint32_t>(0));
     EXPECT_EQ(info->reserved, static_cast<uint32_t>(0));
+
     EXPECT_EQ(info->current.width, static_cast<uint32_t>(0));
     EXPECT_EQ(info->current.height, static_cast<uint32_t>(0));
     EXPECT_EQ(info->current.refresh_millihertz, static_cast<uint64_t>(0));
+
     EXPECT_EQ(info->cursor_max_width, CURSOR_MAX_WIDTH);
     EXPECT_EQ(info->cursor_max_height, CURSOR_MAX_HEIGHT);
+    expect_no_monitor(*info);
 
     EXPECT_EQ(get_output(test.path, page, recording_display::OUTPUTS), fs::ERR_INVAL);
     EXPECT_EQ(get_output(test.path, page, WIDE_OUTPUT_INDEX), fs::ERR_INVAL);
@@ -1590,8 +1630,8 @@ TEST(gfxfb, get_output_reports_each_output) {
     EXPECT_EQ(crossing_request->reserved, UNWRITTEN_FIELD);
 }
 
-// The boot display's one output is primary and lit at the boot framebuffer's size, with an unknown refresh rate and no
-// hardware cursor
+// The boot display's one output is primary and lit at the boot framebuffer's size, with an unknown refresh rate, no
+// hardware cursor and no monitor named
 TEST(gfxfb, get_output_reports_the_boot_display) {
     gfxfb_test_node test = publish_boot_node();
     ASSERT_NOT_NULL(test.node);
@@ -1604,18 +1644,43 @@ TEST(gfxfb, get_output_reports_the_boot_display) {
     ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
     EXPECT_EQ(info->output_count, static_cast<uint32_t>(1));
     EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+
     EXPECT_EQ(info->current.width, BOOT_WIDTH);
     EXPECT_EQ(info->current.height, BOOT_HEIGHT);
     EXPECT_EQ(info->current.refresh_millihertz, static_cast<uint64_t>(0));
+
     EXPECT_EQ(info->cursor_max_width, static_cast<uint32_t>(0));
     EXPECT_EQ(info->cursor_max_height, static_cast<uint32_t>(0));
+    expect_no_monitor(*info);
 
     EXPECT_EQ(get_output(test.path, page, 1), fs::ERR_INVAL);
 }
 
+static recording_display g_full_text_display;
+
+// GFXFB_GET_OUTPUT ends the monitor's maker and name with a NUL even when the display fills every byte of both
+TEST(gfxfb, get_output_ends_the_monitor_text_the_display_fills) {
+    light_output(g_full_text_display, 0, false);
+    gfxfb::monitor_identity& monitor = g_full_text_display.states[0].monitor;
+    string::memset(monitor.maker, 'M', sizeof(monitor.maker));
+    string::memset(monitor.name, 'N', sizeof(monitor.name));
+    gfxfb_test_node test = publish_driver_node(&g_full_text_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    auto* info = page.at<gfxfb::gfxfb_output_info>(0);
+
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_STREQ(info->maker, "MMM");
+    EXPECT_STREQ(info->name, "NNNNNNNNNNNNNNN");
+}
+
 static recording_display g_primary_flag_display;
 
-// Only the primary output carries the primary flag: the lit boot output 1, with output 0 also lit
+// Only the primary output carries the primary flag: the lit boot output 1, with output 0 also lit, and each output
+// names its own monitor
 TEST(gfxfb, get_output_flags_the_primary_output) {
     light_output(g_primary_flag_display, 0, false);
     light_output(g_primary_flag_display, 1, true);
@@ -1630,12 +1695,14 @@ TEST(gfxfb, get_output_flags_the_primary_output) {
     ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
     EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT);
     EXPECT_EQ(info->current.refresh_millihertz, OUTPUT_0_REFRESH_MILLIHERTZ);
+    expect_monitor(*info, OUTPUT_0_MONITOR);
 
     ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
     EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
     EXPECT_EQ(info->current.width, OUTPUT_1_WIDTH);
     EXPECT_EQ(info->current.height, OUTPUT_1_HEIGHT);
     EXPECT_EQ(info->current.refresh_millihertz, OUTPUT_1_REFRESH_MILLIHERTZ);
+    expect_monitor(*info, OUTPUT_1_MONITOR);
 }
 
 static recording_display g_relighting_flag_display;
