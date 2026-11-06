@@ -1638,6 +1638,39 @@ TEST(gfxfb, get_output_flags_the_primary_output) {
     EXPECT_EQ(info->current.refresh_millihertz, OUTPUT_1_REFRESH_MILLIHERTZ);
 }
 
+static recording_display g_relighting_flag_display;
+static gfxfb::buffer g_relighting_flag_base;
+
+// Only an output the display reports dark and relighting reads GFXFB_OUTPUT_RELIGHTING: not a lit output whose stale
+// `relighting` is set, nor the output once lit again or dark without a relight
+TEST(gfxfb, get_output_flags_an_output_that_relights) {
+    light_output(g_relighting_flag_display, 0, false);
+    light_output(g_relighting_flag_display, 1, false);
+    g_relighting_flag_display.states[0].relighting = true;
+    gfxfb_test_node test = publish_driver_node(&g_relighting_flag_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    auto* info = page.at<gfxfb::gfxfb_output_info>(0);
+
+    darken_output(test, g_relighting_flag_display, 1, true);
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_RELIGHTING);
+    ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT | gfxfb::GFXFB_OUTPUT_PRIMARY);
+
+    relight_output(g_relighting_flag_display, 1, g_relighting_flag_base);
+    report_change(test, 1);
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(info->flags, gfxfb::GFXFB_OUTPUT_LIT);
+
+    darken_output(test, g_relighting_flag_display, 1, false);
+    ASSERT_EQ(get_output(test.path, page, 1), fs::OK);
+    EXPECT_EQ(info->flags, static_cast<uint32_t>(0));
+}
+
 static recording_display g_baseless_display;
 
 // A display giving no base buffer for its lit output 0, against `base_buffer()`'s contract, leaves no primary output:
@@ -5972,8 +6005,8 @@ TEST(gfxfb, a_replaced_output_event_keeps_a_wrapped_queue_in_order) {
 static recording_display g_relit_primary_display;
 static gfxfb::buffer g_relit_primary_base;
 
-// A primary output relighting at another size stays primary, read as primary but not lit while GET_INFO, FLUSH, mmap at
-// offset 0 and its base buffer's present fail, then serves its new base buffer, its old one released once unmapped
+// A primary output relighting at another size reads primary and relighting while GET_INFO, FLUSH, mmap at offset 0 and
+// its base buffer's present fail, then serves its new base buffer, its old one released once unmapped
 TEST(gfxfb, the_primary_output_stays_on_an_output_that_relights) {
     light_output(g_relit_primary_display, 0, false);
     light_output(g_relit_primary_display, 1, false);
@@ -5991,7 +6024,11 @@ TEST(gfxfb, the_primary_output_stays_on_an_output_that_relights) {
 
     darken_output(test, g_relit_primary_display, 0, true);
     ASSERT_EQ(get_output(test.path, page, 0), fs::OK);
-    EXPECT_EQ(page.at<gfxfb::gfxfb_output_info>(0)->flags, gfxfb::GFXFB_OUTPUT_PRIMARY);
+    EXPECT_EQ(
+        page.at<gfxfb::gfxfb_output_info>(0)->flags,
+        gfxfb::GFXFB_OUTPUT_PRIMARY | gfxfb::GFXFB_OUTPUT_RELIGHTING
+    );
+
     EXPECT_EQ(call_gfxfb_ioctl(test.path, page, gfxfb::GFXFB_GET_INFO, page.addr), fs::ERR_AGAIN);
     EXPECT_EQ(flush_one_rect(test.path, page), fs::ERR_AGAIN);
     EXPECT_EQ(map_file(file, ctx, 0, pmm::PAGE_SIZE), static_cast<uintptr_t>(0));

@@ -38,7 +38,9 @@
  * `GFXFB_GET_INFO` describes, offset 0 maps and `GFXFB_FLUSH` shows. The
  * device may light an output, take it dark, or relight it at any of its modes
  * by taking it dark and lighting it again, and each change reaches every open
- * file as an output event, as described below. The primary stays on an output
+ * file as an output event, as described below. While the device relights an
+ * output, the output reads relighting but not lit, so a program tells it from
+ * an output that went dark without a relight. The primary stays on an output
  * that relights, which reads primary but not lit meanwhile. A primary output
  * that goes dark otherwise hands the primary to the lit output with the lowest
  * number, and with no primary output the first output to light takes it. An
@@ -238,8 +240,9 @@ constexpr uint32_t GFXFB_OUTPUTS_MAX = 16; // the most outputs a device drives
 
 constexpr uint32_t GFXFB_MODES_MAX = 32; // the most modes an output lists
 
-constexpr uint32_t GFXFB_OUTPUT_LIT     = 0x1; // the output shows a picture
-constexpr uint32_t GFXFB_OUTPUT_PRIMARY = 0x2; // offset 0 maps its pixels while lit, set without LIT as it relights
+constexpr uint32_t GFXFB_OUTPUT_LIT        = 0x1; // the output shows a picture
+constexpr uint32_t GFXFB_OUTPUT_PRIMARY    = 0x2; // offset 0 maps its pixels while lit, set without LIT as it relights
+constexpr uint32_t GFXFB_OUTPUT_RELIGHTING = 0x4; // set without LIT while the device lights the output again
 
 // How a present the device accepted ended
 constexpr uint32_t GFXFB_PRESENT_LATCHED = 0; // the present latched, so the output shows its buffer

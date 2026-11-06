@@ -696,9 +696,11 @@ int32_t gfxfb_node::get_output(uint64_t info_addr) {
     }
 
     bool is_primary = info.output == primary_output();
+    bool is_relighting = !state.lit && state.relighting;
 
     info.output_count = m_display->output_count();
-    info.flags = (state.lit ? GFXFB_OUTPUT_LIT : 0) | (is_primary ? GFXFB_OUTPUT_PRIMARY : 0);
+    info.flags = (state.lit ? GFXFB_OUTPUT_LIT : 0) | (is_primary ? GFXFB_OUTPUT_PRIMARY : 0) |
+                 (is_relighting ? GFXFB_OUTPUT_RELIGHTING : 0);
     info.reserved = 0;
     info.current = state.lit ? state.current : gfxfb_mode{};
     info.cursor_max_width = bounded_cursor_max(state.cursor_max_width);
