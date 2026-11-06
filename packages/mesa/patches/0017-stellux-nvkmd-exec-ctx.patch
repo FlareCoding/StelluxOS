@@ -1,0 +1,670 @@
+Adds the Stellux nvkmd's exec ctx over one queue of the dev's context. A
+batch of waits, pushes and signals goes to the kernel in one GPU_SUBMIT,
+or past the call's limits of 32 points and 4096 command ranges in a chain
+of them. Each submission signals the ctx's private timeline and each later
+part of a chain waits on the point before it, so a failed part fails the
+rest. The device check reads each ctx's private timeline, so failed work
+loses the device, since Vulkan reports failed work only as device loss. A
+full queue makes the submit wait for its oldest submission and retry once.
+
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -162,6 +162,7 @@ if with_nouveau_stellux
+   nvk_flags += '-DNVK_STELLUX'
+   nvk_files += files(
+     'nvkmd/stellux/nvkmd_stellux.h',
++    'nvkmd/stellux/nvkmd_stellux_ctx.c',
+     'nvkmd/stellux/nvkmd_stellux_dev.c',
+     'nvkmd/stellux/nvkmd_stellux_mem.c',
+     'nvkmd/stellux/nvkmd_stellux_pdev.c',
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux.h
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux.h
+@@ -5,6 +5,8 @@
+ #define NVKMD_STELLUX_H 1
+ 
+ #include "nvkmd/nvkmd.h"
++#include "util/list.h"
++#include "util/u_dynarray.h"
+ #include "util/vma.h"
+ #include "vk_sync.h"
+ #include "vk_sync_binary.h"
+@@ -15,7 +17,8 @@
+ /* The nvkmd over Stellux's /dev/gpuN files, whose calls <stlx/gpu_abi.h>
+  * defines. A pdev owns its GPU's open file, a dev one GPU context, a mem
+  * one buffer with its whole-buffer GPU mapping, a va one range of GPU
+- * addresses from its dev's heaps, and a sync one timeline.
++ * addresses from its dev's heaps, a ctx one queue of its dev's context and
++ * a private timeline, and a sync one timeline.
+  */
+ 
+ /* A dev's heaps: ordinary addresses below 2^38, capture-replay ones above */
+@@ -27,6 +30,8 @@
+ /* The calls whose errors nvkmd_stellux_error() turns into VkResults */
+ enum nvkmd_stellux_call {
+    NVKMD_STELLUX_CALL_CONTEXT_CREATE,
++   NVKMD_STELLUX_CALL_QUEUE_CREATE,
++   NVKMD_STELLUX_CALL_SUBMIT,
+    NVKMD_STELLUX_CALL_BUFFER_CREATE,
+    NVKMD_STELLUX_CALL_BUFFER_IMPORT,
+    NVKMD_STELLUX_CALL_MAP,
+@@ -75,6 +80,9 @@ struct nvkmd_stellux_dev {
+    /* When the kernel last reported the context live, accessed atomically */
+    uint64_t live_ns;
+ 
++   /* Changed only while NVK makes or destroys the device, so read unlocked */
++   struct list_head ctxs;
++
+    simple_mtx_t heap_mutex;
+    struct util_vma_heap heap;
+    struct util_vma_heap replay_heap;
+@@ -87,19 +95,23 @@ VkResult nvkmd_stellux_create_dev(struct nvkmd_pdev *pdev,
+                                   struct nvkmd_dev **dev_out);
+ 
+ /* Returns VK_ERROR_DEVICE_LOST, having lost device, once GPU_CONTEXT_QUERY
+- * fails or reports the dev's context lost. Unless fresh, a check less than
++ * fails or reports the dev's context lost, or a query of a ctx's private
++ * timeline fails or finds its failed mark. Unless fresh, a check less than
+  * a millisecond after the kernel's last live answer returns VK_SUCCESS
+- * without asking it. A caller must first test device's lost state, as
+- * vk_device_check_status() does before calling vk_device::check_status,
+- * since a live answer racing a loss can be recorded after it.
++ * without asking it. A caller acting on VK_SUCCESS must first test device's
++ * lost state, as vk_device_check_status() does before calling
++ * vk_device::check_status, since a live answer racing a loss can be
++ * recorded after it.
+  */
+ VkResult nvkmd_stellux_dev_check(struct nvkmd_stellux_dev *dev,
+                                  struct vk_device *device, bool fresh);
+ 
+ /* Logs errno err of call on log_obj and returns a VkResult the Vulkan
+- * command making the call lists. EIO from a buffer create, an import or a
+- * GPU_MAP also loses log_obj's device, if it has one, since Vulkan lists no
+- * device loss for making or binding memory.
++ * command making the call lists, but for GPU_SUBMIT's VK_ERROR_DEVICE_LOST,
++ * which NVK's upload queue passes up to any command that flushes it, even
++ * one listing no device loss, such as vkCreateGraphicsPipelines(). EIO from
++ * a buffer create, an import or a GPU_MAP also loses log_obj's device, if it
++ * has one, since Vulkan lists no device loss for making or binding memory.
+  */
+ VkResult nvkmd_stellux_error(struct vk_object_base *log_obj,
+                              enum nvkmd_stellux_call call, int err);
+@@ -143,6 +155,35 @@ VkResult nvkmd_stellux_alloc_va(struct nvkmd_dev *dev,
+                                 uint64_t size_B, uint64_t align_B,
+                                 uint64_t fixed_addr, struct nvkmd_va **va_out);
+ 
++/* A batch past GPU_SUBMIT's limits goes in a chain of submissions, each
++ * later part waiting on the private point of the one before, so a failed
++ * part fails the rest.
++ */
++struct nvkmd_stellux_ctx {
++   struct nvkmd_ctx base;
++
++   /* Link in nvkmd_stellux_dev::ctxs */
++   struct list_head link;
++
++   uint32_t queue;
++
++   /* The private timeline and the point of the last submission taken */
++   int timeline;
++   uint64_t last_point;
++
++   /* The batch gathered since the last submission */
++   struct gpu_point waits[GPU_POINTS_MAX];
++   uint32_t wait_count;
++   struct util_dynarray ranges;
++};
++
++NVKMD_DECL_SUBCLASS(ctx, stellux);
++
++VkResult nvkmd_stellux_create_ctx(struct nvkmd_dev *dev,
++                                  struct vk_object_base *log_obj,
++                                  enum nvkmd_engines engines,
++                                  struct nvkmd_ctx **ctx_out);
++
+ struct nvkmd_stellux_sync {
+    struct vk_sync base;
+ 
+@@ -153,4 +194,15 @@ struct nvkmd_stellux_sync {
+ /* The template of each pdev's sync type */
+ extern const struct vk_sync_type nvkmd_stellux_sync_type;
+ 
++/* Waits for all of points or any one in slices of at most 100 ms that each
++ * end with the device check. Returns VK_TIMEOUT once abs_timeout_ns passes,
++ * and VK_ERROR_DEVICE_LOST, with device lost, once the check finds a loss or
++ * a point's timeline has its failed mark when queried, as every point's is
++ * once the wait succeeds. A failed GPU_TIMELINE_WAIT or query of a point
++ * returns the result nvkmd_stellux_error() gives it.
++ */
++VkResult nvkmd_stellux_wait(struct vk_device *device, int fd,
++                            const struct gpu_point *points, uint32_t count,
++                            bool all, uint64_t abs_timeout_ns);
++
+ #endif /* NVKMD_STELLUX_H */
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_ctx.c
+@@ -0,0 +1,335 @@
++/*
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_stellux.h"
++
++#include "util/u_memory.h"
++#include "vk_log.h"
++
++#include <errno.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++/* The command ranges one GPU_SUBMIT takes */
++#define NVKMD_STELLUX_RANGES_MAX \
++   ((uint32_t)(GPU_COMMANDS_BYTES_MAX / sizeof(struct gpu_nvidia_range)))
++
++static int
++sync_timeline(struct vk_sync *sync)
++{
++   return container_of(sync, struct nvkmd_stellux_sync, base)->timeline;
++}
++
++static uint32_t
++range_count(const struct nvkmd_stellux_ctx *ctx)
++{
++   return util_dynarray_num_elements(&ctx->ranges, struct gpu_nvidia_range);
++}
++
++static void
++drop_batch(struct nvkmd_stellux_ctx *ctx)
++{
++   util_dynarray_clear(&ctx->ranges);
++   ctx->wait_count = 0;
++}
++
++static void
++destroy_queue(struct nvkmd_stellux_dev *dev, uint32_t queue)
++{
++   struct gpu_queue_args args = {
++      .context = dev->context,
++      .queue = queue,
++   };
++
++   /* Succeeds for any queue the context holds, lost or not */
++   ioctl(dev->fd, GPU_QUEUE_DESTROY, &args);
++}
++
++static int
++submit_ioctl(struct nvkmd_stellux_dev *dev, struct gpu_submit_args *args)
++{
++   return ioctl(dev->fd, GPU_SUBMIT, args) == 0 ? 0 : errno;
++}
++
++/* Drops the batch whether or not it is taken. A chained part leaves the next
++ * batch waiting on its private point, so the parts after a failed one fail.
++ */
++static VkResult
++submit_batch(struct nvkmd_stellux_ctx *ctx, struct vk_object_base *log_obj,
++             uint32_t signal_count, const struct vk_sync_signal *signals,
++             bool chained)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(ctx->base.dev);
++
++   assert(signal_count < GPU_POINTS_MAX);
++   struct gpu_point points[GPU_POINTS_MAX];
++   for (uint32_t i = 0; i < signal_count; i++) {
++      points[i] = (struct gpu_point) {
++         .timeline = sync_timeline(signals[i].sync),
++         .value = signals[i].signal_value,
++      };
++   }
++
++   const struct gpu_point private_point = {
++      .timeline = ctx->timeline,
++      .value = ctx->last_point + 1,
++   };
++   points[signal_count] = private_point;
++
++   struct gpu_submit_args args = {
++      .context = dev->context,
++      .queue = ctx->queue,
++      .commands = (uintptr_t)util_dynarray_begin(&ctx->ranges),
++      .waits = (uintptr_t)ctx->waits,
++      .signals = (uintptr_t)points,
++      .commands_size = ctx->ranges.size,
++      .wait_count = ctx->wait_count,
++      .signal_count = signal_count + 1,
++   };
++   int err = submit_ioctl(dev, &args);
++
++   /* A full queue holds the last GPU_QUEUE_PENDING_MAX submissions, and the
++    * kernel takes another once the oldest has reached its private point
++    */
++   if (err == EBUSY) {
++      const struct gpu_point oldest = {
++         .timeline = ctx->timeline,
++         .value = private_point.value - GPU_QUEUE_PENDING_MAX,
++      };
++      VkResult result = nvkmd_stellux_wait(log_obj->device, dev->fd, &oldest,
++                                           1, true, UINT64_MAX);
++      if (result != VK_SUCCESS) {
++         drop_batch(ctx);
++         return result;
++      }
++
++      err = submit_ioctl(dev, &args);
++   }
++
++   drop_batch(ctx);
++
++   if (err != 0) {
++      /* Loses the device with the kernel's reason for the lost context */
++      if (err == EIO)
++         nvkmd_stellux_dev_check(dev, log_obj->device, true);
++
++      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_SUBMIT, err);
++   }
++
++   ctx->last_point = private_point.value;
++   if (chained) {
++      ctx->waits[0] = private_point;
++      ctx->wait_count = 1;
++   }
++
++   return VK_SUCCESS;
++}
++
++static void
++nvkmd_stellux_ctx_destroy(struct nvkmd_ctx *_ctx)
++{
++   struct nvkmd_stellux_ctx *ctx = nvkmd_stellux_ctx(_ctx);
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(ctx->base.dev);
++
++   list_del(&ctx->link);
++
++   destroy_queue(dev, ctx->queue);
++   close(ctx->timeline);
++
++   util_dynarray_fini(&ctx->ranges);
++   FREE(ctx);
++}
++
++static VkResult
++nvkmd_stellux_ctx_wait(struct nvkmd_ctx *_ctx,
++                       struct vk_object_base *log_obj,
++                       uint32_t wait_count,
++                       const struct vk_sync_wait *waits)
++{
++   struct nvkmd_stellux_ctx *ctx = nvkmd_stellux_ctx(_ctx);
++
++   for (uint32_t i = 0; i < wait_count; i++) {
++      if (ctx->wait_count == GPU_POINTS_MAX) {
++         VkResult result = submit_batch(ctx, log_obj, 0, NULL, true);
++         if (result != VK_SUCCESS)
++            return result;
++      }
++
++      ctx->waits[ctx->wait_count++] = (struct gpu_point) {
++         .timeline = sync_timeline(waits[i].sync),
++         .value = waits[i].wait_value,
++      };
++   }
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_stellux_ctx_exec(struct nvkmd_ctx *_ctx,
++                       struct vk_object_base *log_obj,
++                       uint32_t exec_count,
++                       const struct nvkmd_ctx_exec *execs)
++{
++   struct nvkmd_stellux_ctx *ctx = nvkmd_stellux_ctx(_ctx);
++
++   uint32_t run_start = 0;
++   while (run_start < exec_count) {
++      /* An incomplete push goes in one submission with the push after it */
++      uint32_t run_end = run_start + 1;
++      while (run_end < exec_count && execs[run_end - 1].incomplete)
++         run_end++;
++
++      const uint32_t run_count = run_end - run_start;
++      if (run_count > NVKMD_STELLUX_RANGES_MAX) {
++         drop_batch(ctx);
++         return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                          "%u pushes that must go in one GPU_SUBMIT pass "
++                          "its limit of %u command ranges", run_count,
++                          NVKMD_STELLUX_RANGES_MAX);
++      }
++
++      if (range_count(ctx) + run_count > NVKMD_STELLUX_RANGES_MAX) {
++         VkResult result = submit_batch(ctx, log_obj, 0, NULL, true);
++         if (result != VK_SUCCESS)
++            return result;
++      }
++
++      struct gpu_nvidia_range *ranges =
++         util_dynarray_grow(&ctx->ranges, struct gpu_nvidia_range, run_count);
++      if (ranges == NULL) {
++         drop_batch(ctx);
++         return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++      }
++
++      for (uint32_t i = 0; i < run_count; i++) {
++         const struct nvkmd_ctx_exec *exec = &execs[run_start + i];
++         ranges[i] = (struct gpu_nvidia_range) {
++            .va = exec->addr,
++            .size = exec->size_B,
++            .flags = exec->no_prefetch ? GPU_COMMANDS_GPU_WRITTEN : 0,
++         };
++      }
++
++      run_start = run_end;
++   }
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_stellux_ctx_flush(struct nvkmd_ctx *_ctx,
++                        struct vk_object_base *log_obj)
++{
++   struct nvkmd_stellux_ctx *ctx = nvkmd_stellux_ctx(_ctx);
++
++   if (range_count(ctx) == 0 && ctx->wait_count == 0)
++      return VK_SUCCESS;
++
++   return submit_batch(ctx, log_obj, 0, NULL, false);
++}
++
++static VkResult
++nvkmd_stellux_ctx_signal(struct nvkmd_ctx *_ctx,
++                         struct vk_object_base *log_obj,
++                         uint32_t signal_count,
++                         const struct vk_sync_signal *signals)
++{
++   struct nvkmd_stellux_ctx *ctx = nvkmd_stellux_ctx(_ctx);
++
++   if (signal_count == 0)
++      return nvkmd_stellux_ctx_flush(&ctx->base, log_obj);
++
++   /* Each part keeps one signal for the private point, and the parts after
++    * the one with the work carry the rest
++    */
++   for (uint32_t start = 0; start < signal_count;
++        start += GPU_POINTS_MAX - 1) {
++      const uint32_t count = MIN2(signal_count - start, GPU_POINTS_MAX - 1);
++      VkResult result = submit_batch(ctx, log_obj, count, &signals[start],
++                                     start + count < signal_count);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_stellux_ctx_sync(struct nvkmd_ctx *_ctx,
++                       struct vk_object_base *log_obj)
++{
++   struct nvkmd_stellux_ctx *ctx = nvkmd_stellux_ctx(_ctx);
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(ctx->base.dev);
++
++   VkResult result = nvkmd_stellux_ctx_flush(&ctx->base, log_obj);
++   if (result != VK_SUCCESS)
++      return result;
++
++   const struct gpu_point last = {
++      .timeline = ctx->timeline,
++      .value = ctx->last_point,
++   };
++   return nvkmd_stellux_wait(log_obj->device, dev->fd, &last, 1, true,
++                             UINT64_MAX);
++}
++
++const struct nvkmd_ctx_ops nvkmd_stellux_ctx_ops = {
++   .destroy = nvkmd_stellux_ctx_destroy,
++   .wait = nvkmd_stellux_ctx_wait,
++   .exec = nvkmd_stellux_ctx_exec,
++   .signal = nvkmd_stellux_ctx_signal,
++   .flush = nvkmd_stellux_ctx_flush,
++   .sync = nvkmd_stellux_ctx_sync,
++};
++
++VkResult
++nvkmd_stellux_create_ctx(struct nvkmd_dev *_dev,
++                         struct vk_object_base *log_obj,
++                         enum nvkmd_engines engines,
++                         struct nvkmd_ctx **ctx_out)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_dev);
++
++   /* Only sparse binding needs a bind ctx, and the pdev reports no sparse */
++   assert(!(engines & NVKMD_ENGINE_BIND));
++
++   struct nvkmd_stellux_ctx *ctx = CALLOC_STRUCT(nvkmd_stellux_ctx);
++   if (ctx == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   const bool graphics = engines & (NVKMD_ENGINE_3D | NVKMD_ENGINE_COMPUTE);
++   struct gpu_queue_args queue_args = {
++      .context = dev->context,
++      .kind = graphics ? GPU_QUEUE_GRAPHICS : GPU_QUEUE_COPY,
++   };
++   if (ioctl(dev->fd, GPU_QUEUE_CREATE, &queue_args) != 0) {
++      VkResult result = nvkmd_stellux_error(log_obj,
++                                            NVKMD_STELLUX_CALL_QUEUE_CREATE,
++                                            errno);
++      FREE(ctx);
++      return result;
++   }
++
++   struct gpu_timeline_args timeline_args = { 0 };
++   if (ioctl(dev->fd, GPU_TIMELINE_CREATE, &timeline_args) != 0) {
++      VkResult result =
++         nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_TIMELINE_CREATE,
++                             errno);
++      destroy_queue(dev, queue_args.queue);
++      FREE(ctx);
++      return result;
++   }
++
++   ctx->base.ops = &nvkmd_stellux_ctx_ops;
++   ctx->base.dev = &dev->base;
++   ctx->queue = queue_args.queue;
++   ctx->timeline = timeline_args.timeline;
++   ctx->ranges = UTIL_DYNARRAY_INIT;
++
++   list_addtail(&ctx->link, &dev->ctxs);
++
++   *ctx_out = &ctx->base;
++
++   return VK_SUCCESS;
++}
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_dev.c
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_dev.c
+@@ -21,6 +21,8 @@
+ 
+ static const char *const nvkmd_stellux_call_names[] = {
+    [NVKMD_STELLUX_CALL_CONTEXT_CREATE] = "GPU_CONTEXT_CREATE",
++   [NVKMD_STELLUX_CALL_QUEUE_CREATE] = "GPU_QUEUE_CREATE",
++   [NVKMD_STELLUX_CALL_SUBMIT] = "GPU_SUBMIT",
+    [NVKMD_STELLUX_CALL_BUFFER_CREATE] = "GPU_BUFFER_CREATE",
+    [NVKMD_STELLUX_CALL_BUFFER_IMPORT] = "GPU_BUFFER_IMPORT",
+    [NVKMD_STELLUX_CALL_MAP] = "GPU_MAP",
+@@ -46,12 +48,22 @@ nvkmd_stellux_error(struct vk_object_base *log_obj,
+ 
+    switch (call) {
+    case NVKMD_STELLUX_CALL_CONTEXT_CREATE:
+-      if (err == EIO)
++   case NVKMD_STELLUX_CALL_QUEUE_CREATE:
++      if (err == EBUSY)
++         result = VK_ERROR_TOO_MANY_OBJECTS;
++      else if (err == EIO)
+          result = VK_ERROR_DEVICE_LOST;
+       else if (err == ENOMEM)
+          result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+       break;
+ 
++   case NVKMD_STELLUX_CALL_SUBMIT:
++      if (err == EIO)
++         result = VK_ERROR_DEVICE_LOST;
++      else if (err == ENOMEM)
++         result = VK_ERROR_OUT_OF_HOST_MEMORY;
++      break;
++
+    case NVKMD_STELLUX_CALL_BUFFER_CREATE:
+    case NVKMD_STELLUX_CALL_BUFFER_IMPORT:
+    case NVKMD_STELLUX_CALL_MAP:
+@@ -169,6 +181,24 @@ nvkmd_stellux_dev_check(struct nvkmd_stellux_dev *dev,
+                                 nvkmd_stellux_lost_reason(args.lost));
+    }
+ 
++   /* A ctx's submission that ended failed leaves its timeline marked */
++   list_for_each_entry(struct nvkmd_stellux_ctx, ctx, &dev->ctxs, link) {
++      struct gpu_timeline_args timeline_args = {
++         .timeline = ctx->timeline,
++      };
++      if (ioctl(dev->fd, GPU_TIMELINE_QUERY, &timeline_args) != 0) {
++         return vk_device_set_lost(device, "GPU_TIMELINE_QUERY of a queue's "
++                                   "private timeline failed: %s",
++                                   strerror(errno));
++      }
++
++      if (timeline_args.flags & GPU_TIMELINE_FAILED) {
++         return vk_device_set_lost(device, "A submission to a queue of the "
++                                   "device failed, or waited on a timeline "
++                                   "that failed work had marked");
++      }
++   }
++
+    p_atomic_set(&dev->live_ns, now_ns);
+ 
+    return VK_SUCCESS;
+@@ -204,6 +234,7 @@ nvkmd_stellux_create_dev(struct nvkmd_pdev *_pdev,
+ 
+    dev->fd = pdev->fd;
+    dev->context = args.context;
++   list_inithead(&dev->ctxs);
+ 
+    simple_mtx_init(&dev->heap_mutex, mtx_plain);
+    util_vma_heap_init(&dev->heap, NVKMD_STELLUX_HEAP_START,
+@@ -249,16 +280,6 @@ nvkmd_stellux_dev_check_status(struct nvkmd_dev *dev,
+                                   false);
+ }
+ 
+-static VkResult
+-nvkmd_stellux_dev_create_ctx(struct nvkmd_dev *dev,
+-                             struct vk_object_base *log_obj,
+-                             enum nvkmd_engines engines,
+-                             struct nvkmd_ctx **ctx_out)
+-{
+-   return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+-                    "The Stellux nvkmd cannot create a queue");
+-}
+-
+ const struct nvkmd_dev_ops nvkmd_stellux_dev_ops = {
+    .destroy = nvkmd_stellux_dev_destroy,
+    .get_gpu_timestamp = nvkmd_stellux_dev_get_gpu_timestamp,
+@@ -266,5 +287,5 @@ const struct nvkmd_dev_ops nvkmd_stellux_dev_ops = {
+    .alloc_mem = nvkmd_stellux_alloc_mem,
+    .import_dma_buf = nvkmd_stellux_import_dma_buf,
+    .alloc_va = nvkmd_stellux_alloc_va,
+-   .create_ctx = nvkmd_stellux_dev_create_ctx,
++   .create_ctx = nvkmd_stellux_create_ctx,
+ };
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_sync.c
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_sync.c
+@@ -38,7 +38,8 @@ sync_gpu_fd(const struct vk_sync *sync)
+ }
+ 
+ /* The device check: the runtime's lost state, then the kernel's state of the
+- * device's context, which a device made with no queues lacks
++ * device's context and of each ctx's private timeline, which a device made
++ * with no queues lacks
+  */
+ static VkResult
+ check_device(struct vk_device *device, bool fresh)
+@@ -140,6 +141,37 @@ wait_points(struct vk_device *device, int fd,
+    }
+ }
+ 
++VkResult
++nvkmd_stellux_wait(struct vk_device *device, int fd,
++                   const struct gpu_point *points, uint32_t count, bool all,
++                   uint64_t abs_timeout_ns)
++{
++   if (vk_device_is_lost_no_report(device))
++      return VK_ERROR_DEVICE_LOST;
++
++   VkResult result = VK_SUCCESS;
++   if (!all) {
++      result = wait_points(device, fd, points, count, false, abs_timeout_ns);
++   } else {
++      for (uint32_t start = 0; start < count && result == VK_SUCCESS;
++           start += GPU_POINTS_MAX) {
++         result = wait_points(device, fd, &points[start],
++                              MIN2(count - start, GPU_POINTS_MAX), true,
++                              abs_timeout_ns);
++         if (result == VK_SUCCESS && start + GPU_POINTS_MAX < count)
++            result = check_device(device, false);
++      }
++   }
++
++   for (uint32_t i = 0; i < count && result == VK_SUCCESS; i++)
++      result = query_timeline(device, fd, points[i].timeline, NULL);
++
++   if (result != VK_SUCCESS)
++      return result;
++
++   return check_device(device, true);
++}
++
+ static VkResult
+ nvkmd_stellux_sync_init(struct vk_device *device, struct vk_sync *_sync,
+                         uint64_t initial_value)
+@@ -208,9 +240,6 @@ nvkmd_stellux_sync_wait_many(struct vk_device *device, uint32_t wait_count,
+                              enum vk_sync_wait_flags wait_flags,
+                              uint64_t abs_timeout_ns)
+ {
+-   if (vk_device_is_lost_no_report(device))
+-      return VK_ERROR_DEVICE_LOST;
+-
+    STACK_ARRAY(struct gpu_point, points, wait_count);
+    if (points == NULL)
+       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+@@ -222,32 +251,14 @@ nvkmd_stellux_sync_wait_many(struct vk_device *device, uint32_t wait_count,
+       };
+    }
+ 
+-   const int fd = sync_gpu_fd(waits[0].sync);
+-
+-   VkResult result = VK_SUCCESS;
+-   if (wait_flags & VK_SYNC_WAIT_ANY) {
+-      result = wait_points(device, fd, points, wait_count, false,
+-                           abs_timeout_ns);
+-   } else {
+-      for (uint32_t start = 0; start < wait_count && result == VK_SUCCESS;
+-           start += GPU_POINTS_MAX) {
+-         result = wait_points(device, fd, &points[start],
+-                              MIN2(wait_count - start, GPU_POINTS_MAX), true,
+-                              abs_timeout_ns);
+-         if (result == VK_SUCCESS && start + GPU_POINTS_MAX < wait_count)
+-            result = check_device(device, false);
+-      }
+-   }
+-
+-   for (uint32_t i = 0; i < wait_count && result == VK_SUCCESS; i++)
+-      result = query_timeline(device, fd, points[i].timeline, NULL);
++   VkResult result = nvkmd_stellux_wait(device, sync_gpu_fd(waits[0].sync),
++                                        points, wait_count,
++                                        !(wait_flags & VK_SYNC_WAIT_ANY),
++                                        abs_timeout_ns);
+ 
+    STACK_ARRAY_FINISH(points);
+ 
+-   if (result != VK_SUCCESS)
+-      return result;
+-
+-   return check_device(device, true);
++   return result;
+ }
+ 
+ /* Restricts handle to both rights, or to GPU_RIGHT_READ alone when it lacks
