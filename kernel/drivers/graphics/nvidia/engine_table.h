@@ -9,8 +9,9 @@ namespace drivers::nvidia {
 
 // An engine (a unit of the GPU that runs the work channels give it) as the firmware's device info table lists it
 struct engine_info {
-    uint32_t type;    // NVIDIA's engine type, by which a channel's allocation names its engine
-    uint32_t runlist; // the runlist (the list of channels the engine's scheduler runs) its channels go on
+    uint32_t type;        // NVIDIA's engine type, by which a channel's allocation names its engine
+    uint32_t runlist;     // the runlist (the list of channels the engine's scheduler runs) its channels go on
+    uint32_t channel_ram; // the BAR0 offset of the runlist's channel RAM, the scheduler's word for each channel id
 };
 
 /**

@@ -24,6 +24,8 @@ using drivers::nvidia::backend_memory;
 using drivers::nvidia::backend_queue;
 using drivers::nvidia::backend_space;
 using drivers::nvidia::card_identity;
+using drivers::nvidia::channel;
+using drivers::nvidia::CHANNEL_IDS;
 using drivers::nvidia::channel_test_access;
 using drivers::nvidia::chip_info;
 using drivers::nvidia::context_tlbs;
@@ -59,6 +61,7 @@ static constexpr size_t   DEVICE_INFO_ENTRY_BYTES      = 100;
 static constexpr size_t   DEVICE_INFO_FIRST_ENTRY      = 12;
 static constexpr uint32_t ENGINE_TYPE_WORD             = 2;
 static constexpr uint32_t RUNLIST_WORD                 = 3;
+static constexpr uint32_t CHANNEL_RAM_WORD             = 14;
 static constexpr uint32_t GR0                          = 0x1;
 static constexpr uint32_t CE0                          = 0x9;
 static constexpr uint32_t CE1                          = 0xA;
@@ -69,6 +72,13 @@ static constexpr uint32_t CPU_INTR_LEAF_EN_SET         = 0xB81200;
 static constexpr uint32_t CPU_INTR_LEAF_EN_CLEAR       = 0xB81400;
 static constexpr uint32_t VIRTUAL_FUNCTION_DOORBELL    = 0xBB0090;
 static constexpr uint32_t USERD_GP_PUT                 = 0x8C;
+
+// NVIDIA's NV_CHRAM_CHANNEL(i), 4 bytes per channel id, with its PBDMA_FAULTED and ENG_FAULTED bits, and the copy
+// engine's channel RAM in the tests, placed in the double's BAR0 clear of the registers the engines use
+static constexpr uint32_t CHANNEL_RAM_ENTRY_BYTES   = 4;
+static constexpr uint32_t CHANNEL_RAM_PBDMA_FAULTED = 1u << 4;
+static constexpr uint32_t CHANNEL_RAM_ENG_FAULTED   = 1u << 5;
+static constexpr uint32_t TEST_CHANNEL_RAM          = 0xB90000;
 
 // The methods the GPU's double runs, from NVIDIA's clc56f.h for the channel and clc7b5.h for the copy engine, each sent
 // with DMA_SEC_OP INC_METHOD
@@ -106,17 +116,17 @@ static constexpr uint32_t COPY_CHANNEL_OBJECTS = 4;
 
 // Copy engines only on the graphics engine's runlist, which run only inside a graphics context
 static constexpr engine_info SHARED_COPY_ENGINES[] = {
-    {.type = GR0, .runlist = 0},
-    {.type = CE0, .runlist = 0},
-    {.type = CE1, .runlist = 0},
+    {.type = GR0, .runlist = 0, .channel_ram = 0},
+    {.type = CE0, .runlist = 0, .channel_ram = 0},
+    {.type = CE1, .runlist = 0, .channel_ram = 0},
 };
 
 // The RTX 3080's first engines, with copy engine 2 on a runlist of its own
 static constexpr engine_info RTX_3080_FIRST_ENGINES[] = {
-    {.type = GR0, .runlist = 0},
-    {.type = CE0, .runlist = 0},
-    {.type = CE1, .runlist = 0},
-    {.type = CE2, .runlist = 1},
+    {.type = GR0, .runlist = 0, .channel_ram = 0},
+    {.type = CE0, .runlist = 0, .channel_ram = 0},
+    {.type = CE1, .runlist = 0, .channel_ram = 0},
+    {.type = CE2, .runlist = 1, .channel_ram = TEST_CHANNEL_RAM},
 };
 
 namespace drivers::nvidia {
@@ -262,6 +272,7 @@ private:
             uint8_t* entry = bytes + DEVICE_INFO_FIRST_ENTRY + i * DEVICE_INFO_ENTRY_BYTES;
             string::memcpy(entry + ENGINE_TYPE_WORD * 4, &engines[i].type, 4);
             string::memcpy(entry + RUNLIST_WORD * 4, &engines[i].runlist, 4);
+            string::memcpy(entry + CHANNEL_RAM_WORD * 4, &engines[i].channel_ram, 4);
         }
 
         string::memcpy(bytes + 4, &engine_count, sizeof(engine_count));
@@ -463,6 +474,9 @@ alignas(gpu::device) static uint8_t s_core_device_bytes[sizeof(gpu::device)];
 static constexpr uint32_t BAR0_WORDS = (VIRTUAL_FUNCTION_DOORBELL - CPU_INTR_LEAF) / sizeof(uint32_t) + 1;
 static uint32_t s_bar0[BAR0_WORDS];
 
+// The BAR0 bytes bring-up is told are mapped, up to the end of the double's last register
+static constexpr uint64_t TEST_BAR0_BYTES = VIRTUAL_FUNCTION_DOORBELL + sizeof(uint32_t);
+
 // A view of BAR0 over `s_bar0`, every word seeded with `STALE_WORD`
 static registers fresh_bar0() {
     for (uint32_t i = 0; i < BAR0_WORDS; i++) {
@@ -587,7 +601,7 @@ struct engines_fixture {
         }
     }
 
-    int32_t bring_up() { return gpu_engines.bring_up(bar0, card, chip); }
+    int32_t bring_up() { return gpu_engines.bring_up(bar0, TEST_BAR0_BYTES, card, chip); }
 
     int32_t create() {
         return gpu_engines.create_memory(create_size, create_placement, create_flags, nullptr, 0, &created, &device_id);
@@ -820,6 +834,45 @@ TEST(nvidia_engines, bring_up_refuses_a_table_without_an_asynchronous_copy_engin
     EXPECT_EQ(fixture.fw.allocations, 0u);
     EXPECT_EQ(fixture.memory.allocations, 0u);
     EXPECT_TRUE(is_bar0_untouched());
+}
+
+// Channel RAM off a word boundary, or whose last word lies past BAR0's mapping, is refused by a line naming its cause
+// before anything is asked for or created, and channel RAM ending at the mapping's end passes to the vector's read
+TEST(nvidia_engines, bring_up_refuses_channel_ram_that_is_unaligned_or_past_bar0) {
+    uint32_t at_bar0_end = static_cast<uint32_t>(TEST_BAR0_BYTES) - CHANNEL_IDS * CHANNEL_RAM_ENTRY_BYTES;
+    uint32_t past_bar0_end = at_bar0_end + CHANNEL_RAM_ENTRY_BYTES;
+    const char* unaligned_line = "type 0xB's channel RAM at BAR0 offset 0xB90002 is not 4-byte aligned";
+    const char* past_end_line =
+        "type 0xB's channel RAM of 0x4000 bytes at BAR0 offset 0xBAC098 ends past BAR0's 0xBB0094 bytes";
+    struct {
+        uint32_t    channel_ram;
+        int32_t     result;       // with the vector's read refused, as only a channel RAM passing the check reaches it
+        uint32_t    vector_reads;
+        const char* line;         // the refusal's line, if any
+    } placements[] = {
+        {.channel_ram = TEST_CHANNEL_RAM + 2, .result = ERR_BAD_STATE, .vector_reads = 0, .line = unaligned_line},
+        {.channel_ram = past_bar0_end, .result = ERR_BAD_STATE, .vector_reads = 0, .line = past_end_line},
+        {.channel_ram = at_bar0_end, .result = ERR_FIRMWARE, .vector_reads = 1, .line = nullptr},
+    };
+
+    for (const auto& placement : placements) {
+        engines_fixture fixture;
+        engine_info engines[] = {RTX_3080_FIRST_ENGINES[0], RTX_3080_FIRST_ENGINES[3]};
+        engines[1].channel_ram = placement.channel_ram;
+        fixture.fw.engines = engines;
+        fixture.fw.engine_count = 2;
+        fixture.fw.kernel_table_result = ERR_FIRMWARE;
+
+        start_keeping_log();
+        EXPECT_EQ(fixture.bring_up(), placement.result);
+        log::set_backend(nullptr);
+
+        EXPECT_EQ(fixture.fw.internal_controls, placement.vector_reads);
+        EXPECT_EQ(fixture.fw.allocations, 0u);
+        EXPECT_TRUE(is_bar0_untouched());
+        EXPECT_EQ(engines_log_contains("'s channel RAM"), placement.line != nullptr);
+        EXPECT_TRUE(placement.line == nullptr || engines_log_contains(placement.line));
+    }
 }
 
 // The vector is read through the internal client before anything is created, so its error leaves nothing behind
@@ -1978,6 +2031,47 @@ TEST(nvidia_engines, a_second_queue_takes_the_next_id_window_and_semaphore) {
 
     tear_down_queue(fixture, fixture.queue);
     tear_down_queue(fixture, first);
+    tear_down_space(fixture);
+}
+
+// A queue's channel reads as faulted while either fault bit of its own word in its runlist's channel RAM is set, even
+// one bit short of all ones, and not while the word reads all ones, as on a card that stopped responding
+TEST(nvidia_engines, a_queues_channel_reads_its_fault_bits_from_its_runlists_channel_ram) {
+    engines_fixture fixture;
+    ASSERT_TRUE(sets_up_system_memory_and_a_space(fixture));
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    const channel& user = backend_of(fixture.queue).user_channel;
+    ASSERT_EQ(channel_test_access::channel_ram_entry(user), TEST_CHANNEL_RAM + user.id() * CHANNEL_RAM_ENTRY_BYTES);
+
+    uint32_t& word = bar0_word(TEST_CHANNEL_RAM + user.id() * CHANNEL_RAM_ENTRY_BYTES);
+    uint32_t& next_word = bar0_word(TEST_CHANNEL_RAM + (user.id() + 1) * CHANNEL_RAM_ENTRY_BYTES);
+    word = ~(CHANNEL_RAM_PBDMA_FAULTED | CHANNEL_RAM_ENG_FAULTED);
+    next_word = CHANNEL_RAM_PBDMA_FAULTED | CHANNEL_RAM_ENG_FAULTED;
+    bool is_faulted_by_other_bits = user.has_faulted();
+
+    word = CHANNEL_RAM_PBDMA_FAULTED;
+    bool is_faulted_fetching = user.has_faulted();
+
+    word = CHANNEL_RAM_ENG_FAULTED;
+    bool is_faulted_running = user.has_faulted();
+
+    word = 0xFFFFFFFF;
+    bool is_faulted_on_a_card_gone = user.has_faulted();
+
+    word = 0xFFFFFFFE;
+    bool is_faulted_without_bit_0 = user.has_faulted();
+
+    word = 0x7FFFFFFF;
+    bool is_faulted_without_bit_31 = user.has_faulted();
+
+    EXPECT_FALSE(is_faulted_by_other_bits);
+    EXPECT_TRUE(is_faulted_fetching);
+    EXPECT_TRUE(is_faulted_running);
+    EXPECT_FALSE(is_faulted_on_a_card_gone);
+    EXPECT_TRUE(is_faulted_without_bit_0);
+    EXPECT_TRUE(is_faulted_without_bit_31);
+
+    tear_down_queue(fixture, fixture.queue);
     tear_down_space(fixture);
 }
 

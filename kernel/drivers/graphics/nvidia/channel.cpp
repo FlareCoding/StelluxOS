@@ -24,6 +24,14 @@ constexpr uint32_t USERD_GP_PUT = 0x8C;
 // NVIDIA's NV_VIRTUAL_FUNCTION_DOORBELL, in the block at 0xB80000
 constexpr uint32_t DOORBELL = 0xBB0090;
 
+// The PBDMA_FAULTED and ENG_FAULTED bits of NVIDIA's NV_CHRAM_CHANNEL(i), set at a fault in fetching the channel's
+// methods or in running them
+constexpr uint32_t CHANNEL_RAM_PBDMA_FAULTED = 1u << 4;
+constexpr uint32_t CHANNEL_RAM_ENG_FAULTED   = 1u << 5;
+
+// What the word reads on a card that stopped responding, both fault bits set though nothing faulted
+constexpr uint32_t CHANNEL_RAM_CARD_GONE = 0xFFFFFFFF;
+
 // NVIDIA's NVB0B5_ALLOCATION_PARAMETERS_VERSION_1, the version of the copy class's parameters naming an engine type
 constexpr uint32_t COPY_OBJECT_VERSION = 1;
 
@@ -95,6 +103,7 @@ int32_t channel::create(
 
     m_id = setup.id;
     m_doorbell_token = doorbell_token(setup.engine.runlist, setup.id);
+    m_channel_ram_entry = setup.engine.channel_ram + setup.id * CHANNEL_RAM_ENTRY_BYTES;
     m_put = 0;
 
     return OK;
@@ -140,6 +149,12 @@ void channel::kick() {
 
 uint32_t channel::id() const {
     return m_id;
+}
+
+bool channel::has_faulted() const {
+    uint32_t entry = m_bar0.read(m_channel_ram_entry);
+    bool is_card_gone = entry == CHANNEL_RAM_CARD_GONE;
+    return !is_card_gone && (entry & (CHANNEL_RAM_PBDMA_FAULTED | CHANNEL_RAM_ENG_FAULTED)) != 0;
 }
 
 bool channel::keeps_memory() const {

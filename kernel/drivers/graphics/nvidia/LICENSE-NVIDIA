@@ -1909,7 +1909,8 @@ src/nvidia/generated/g_kernel_fifo_nvoc.h
     KERNEL_PID, NVIDIA's process number for the kernel, in rm.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that the data words of
     a device info table entry hold the engine's ENGINE_INFO_TYPE_RM_ENGINE_TYPE
-    at index 2 and its ENGINE_INFO_TYPE_RUNLIST at index 3, in rm.h,
+    at index 2, its ENGINE_INFO_TYPE_RUNLIST at index 3 and its
+    ENGINE_INFO_TYPE_CHRAM_PRI_BASE at index 14, in rm.h,
     kernel/tests/graphics/nvidia_engine_table.test.cpp and
     kernel/tests/graphics/nvidia_engines.test.cpp, and the 2 runqueues a channel
     group's channels can be fetched on, in channel.h
@@ -4134,6 +4135,13 @@ src/common/inc/swref/published/ampere/ga100/dev_ram.h
     kernel/tests/graphics/nvidia_copy_channel.test.cpp and
     kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2021 NVIDIA CORPORATION & AFFILIATES
+
+src/common/inc/swref/published/ampere/ga100/dev_runlist.h
+    NV_CHRAM_CHANNEL(i), a channel's word in its runlist's channel RAM at 4
+    bytes per channel id, in channel.h, with its PBDMA_FAULTED bit 4 and
+    ENG_FAULTED bit 5, in channel.cpp, and both in
+    kernel/tests/graphics/nvidia_engines.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/fifo/arch/volta/kernel_channel_group_gv100.c
     that NVIDIA's CPU side allocates a channel group's fault method buffers in
