@@ -732,9 +732,15 @@ int32_t engines::create_video_memory(uint64_t size, uint32_t flags, backend_memo
             m_memory.unmap_for_cpu(mem.range);
         }
 
-        fail_device("the kernel's copy channel hung zeroing video memory");
+        // The GPU's failure may have ended the zeroing, and its cause is logged where it happened
+        if (has_failed()) {
+            report_failure();
+        } else {
+            fail_device("the kernel's copy channel hung zeroing video memory");
+        }
+
         log::error(
-            "nvidia: video memory at 0x%lX stays allocated for good, since the hung copy may still write it",
+            "nvidia: video memory at 0x%lX stays allocated for good, since its zeroing may still write it",
             mem.range.offset
         );
         return gpu::ERR_DEVICE;
@@ -770,9 +776,15 @@ void engines::fail_device(const char* reason) {
 }
 
 void engines::report_failure() {
-    if (!m_is_failure_reported.exchange_acq_rel(true)) {
-        RUN_ELEVATED(m_operations.post_to_task(m_failure_report));
+    if (m_is_failure_reported.exchange_acq_rel(true)) {
+        return;
     }
+
+    if (m_copy_channel != nullptr) {
+        m_copy_channel->mark_hung();
+    }
+
+    RUN_ELEVATED(m_operations.post_to_task(m_failure_report));
 }
 
 void engines::report_failure_on_task(operation& op) {

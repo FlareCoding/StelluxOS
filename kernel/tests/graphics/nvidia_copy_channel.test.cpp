@@ -475,6 +475,39 @@ TEST(nvidia_copy_channel, fill_after_the_oldest_passes_the_deadline_submits_noth
     EXPECT_EQ(fixture.put(), 0u);
 }
 
+// Marking the channel hung ends at once both a fill waiting for its copy and one waiting for a slot, and the next fill
+// submits nothing
+TEST(nvidia_copy_channel, marking_the_channel_hung_ends_its_waiting_fills_at_once) {
+    copy_fixture fixture;
+    ASSERT_EQ(fixture.create(), OK);
+    uint64_t start_ns = clock::now_ns();
+    copy_channel_test_access::set_submitted(fixture.copier, COPY_SLOTS - 2);
+
+    fill_task_state copying;
+    sched::task* copying_fill = start_fill_task(copying, fixture.copier);
+    ASSERT_NOT_NULL(copying_fill);
+    ASSERT_TRUE(fixture.reaches_put(1));
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(copying_fill));
+
+    fill_task_state queued;
+    sched::task* queued_fill = start_fill_task(queued, fixture.copier);
+    ASSERT_NOT_NULL(queued_fill);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(queued_fill));
+
+    fixture.copier.mark_hung();
+    EXPECT_TRUE(test_helpers::spin_wait(copying.is_done));
+    EXPECT_TRUE(test_helpers::spin_wait(queued.is_done));
+    uint64_t took_ns = clock::now_ns() - start_ns;
+    test_helpers::unpin(copying_fill);
+    test_helpers::unpin(queued_fill);
+
+    EXPECT_EQ(copying.result, ERR_TIMEOUT);
+    EXPECT_EQ(queued.result, ERR_TIMEOUT);
+    EXPECT_LT(took_ns, GPU_SUBMIT_TIMEOUT_NS);
+    EXPECT_EQ(fill_in_task(fixture.copier), ERR_TIMEOUT);
+    EXPECT_EQ(fixture.put(), 1u);
+}
+
 // Progress a fill reads restarts the deadline for the next running fill, so the fill runs though the old one passed,
 // and the release of an earlier fill wakes it only to wait again
 TEST(nvidia_copy_channel, progress_restarts_the_deadline_for_the_next_fill) {

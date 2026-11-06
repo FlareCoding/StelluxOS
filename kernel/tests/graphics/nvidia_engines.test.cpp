@@ -620,7 +620,7 @@ struct engines_fixture {
     void run_entry(copy_channel& copier, uint32_t index) {
         uint32_t fill_number = index + 1;
         if (fault == copy_fault::hangs && fill_number == faulty_fill) {
-            copy_channel_test_access::hang(copier);
+            copier.mark_hung();
             return;
         }
 
@@ -1217,6 +1217,59 @@ TEST(nvidia_engines, a_hung_zeroing_fails_the_device_and_keeps_its_range) {
     engines_operations().serve();
     EXPECT_EQ(fixture.memory.created_releases, 0u);
     EXPECT_TRUE(has_device_failed(fixture));
+}
+
+// Whether the copy channel publishes its GPFIFO entries up to `count` within the spin timeout
+static bool publishes_entries(const copy_channel& copier, uint32_t count) {
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (put_of(copier) != count) {
+        if (clock::now_ns() > deadline) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// A create whose zeroing still runs when another call finds the GPU failed returns at once, keeping its range
+// unmapped from BAR1 since the copy may still write it, and logs the kept range but no hang
+TEST(nvidia_engines, a_create_whose_zeroing_runs_when_the_gpu_fails_returns_at_once) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    const copy_channel& copier = *engines_test_access::copy_channel_of(fixture.gpu_engines);
+    uint32_t zeroing_entries = fixture.next_entry + 1;
+    fixture.create_flags = GPU_BUFFER_MAPPABLE;
+    gpu::queue* refused = nullptr;
+
+    engines_task_state state;
+    uint64_t start_ns = clock::now_ns();
+    sched::task* task = start_step(fixture, state, [](engines_fixture& f) { return f.create(); });
+    ASSERT_NOT_NULL(task);
+    bool has_submitted = publishes_entries(copier, zeroing_entries);
+    bool waits_for_its_zeroing = has_submitted && test_helpers::blocks_before_deadline(task);
+
+    fixture.failed.set();
+    start_keeping_log();
+    int32_t queue_rc = fixture.gpu_engines.create_queue(nullptr, GPU_QUEUE_COPY, nullptr, &refused);
+    EXPECT_TRUE(test_helpers::spin_wait(state.is_done));
+    uint64_t took_ns = clock::now_ns() - start_ns;
+    log::set_backend(nullptr);
+
+    test_helpers::unpin(task);
+    engines_operations().serve();
+
+    EXPECT_TRUE(waits_for_its_zeroing);
+    EXPECT_EQ(queue_rc, gpu::ERR_DEVICE);
+    EXPECT_EQ(state.result, gpu::ERR_DEVICE);
+    EXPECT_LT(took_ns, GPU_SUBMIT_TIMEOUT_NS);
+
+    EXPECT_EQ(fixture.memory.created_unmaps, 1u);
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+    EXPECT_TRUE(fixture.created == nullptr);
+    EXPECT_TRUE(has_device_failed(fixture));
+
+    EXPECT_TRUE(engines_log_contains("stays allocated for good, since its zeroing may still write it"));
+    EXPECT_FALSE(engines_log_contains("hung zeroing video memory"));
 }
 
 // Once the GPU failed, the CPU's view refuses and a release keeps the memory, which the GPU may still reach
