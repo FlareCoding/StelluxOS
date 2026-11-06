@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "common/logging.h"
 #include "common/string.h"
 #include "dma/dma.h"
 #include "drivers/device_driver.h"
@@ -182,6 +183,8 @@ public:
     int32_t            allocation_result = OK; // what every allocation answers
     uint32_t           refused_class = ~0u;    // a class whose allocations the firmware refuses
     int32_t            release_result = OK;    // what every release answers
+    uint32_t           missed_release = 0;     // the release, counted from 1, whose reply misses its deadline
+    failed_mark*       gpu_failed = nullptr;   // marked by that release, as a missed reply marks the GPU failed
     uint32_t           table_reads = 0;
     uint32_t           other_controls = 0;
     uint32_t           allocations = 0;
@@ -223,6 +226,11 @@ public:
 
     int32_t release(rm::handle) override {
         releases++;
+        if (releases == missed_release) {
+            gpu_failed->set();
+            return ERR_TIMEOUT;
+        }
+
         return release_result;
     }
 
@@ -274,6 +282,37 @@ static constexpr uint64_t TABLE_WORDS     = 512;
 static constexpr uint64_t IMAGE_WORDS     = 8 * TABLE_WORDS;
 static constexpr uint64_t UNWRITTEN_ENTRY = 0xA5A5A5A5A5A5A5A5;
 static uint64_t           s_tables_image[IMAGE_WORDS];
+
+// The text logged while `ENGINES_LOG_BACKEND` is set
+static char     s_engines_log[2048] = {};
+static uint32_t s_engines_log_bytes = 0;
+
+// Keeps each logged line's text, up to the buffer's end
+static void keep_engines_log(const char* data, size_t len) {
+    for (size_t i = 0; i < len && s_engines_log_bytes < sizeof(s_engines_log); i++) {
+        s_engines_log[s_engines_log_bytes++] = data[i];
+    }
+}
+
+static constexpr log::backend ENGINES_LOG_BACKEND = {.write = keep_engines_log};
+
+// Keeps the text logged from here until the backend is reset
+static void start_keeping_log() {
+    s_engines_log_bytes = 0;
+    log::set_backend(&ENGINES_LOG_BACKEND);
+}
+
+// Whether the kept text holds `text` anywhere
+static bool engines_log_contains(const char* text) {
+    size_t text_bytes = string::strlen(text);
+    for (uint32_t start = 0; start + text_bytes <= s_engines_log_bytes; start++) {
+        if (string::memcmp(s_engines_log + start, text, text_bytes) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 // Hands out video memory from 4 MiB on, maps the check's range onto `s_check_memory`, an instance block onto
 // `s_engines_instance_block` and a created range at `BAR1_PHYS` past its offset, counting maps, unmaps and releases
@@ -2231,8 +2270,8 @@ TEST(nvidia_engines, a_destroy_gives_back_the_queues_window_and_channel_id) {
     tear_down_space(fixture);
 }
 
-// Once the GPU failed, a stop frees nothing and has the driver task report the failure, which takes every queue off the
-// handler's list and ends each, and a destroy then keeps the queue's memory
+// Once the GPU failed, a stop frees nothing and has the driver task report the failure, which frees no channel, masks
+// the copy engine's vector, takes every queue off the handler's list and ends each, and a destroy keeps their memory
 TEST(nvidia_engines, once_the_gpu_failed_a_stop_frees_nothing_and_the_failures_report_ends_the_queue) {
     engines_fixture fixture;
     progress_core& core = build_progress_core(fixture);
@@ -2248,6 +2287,7 @@ TEST(nvidia_engines, once_the_gpu_failed_a_stop_frees_nothing_and_the_failures_r
     EXPECT_FALSE(engines_test_access::is_listed(fixture.gpu_engines, queue));
     EXPECT_TRUE(core.first.stopped);
     EXPECT_TRUE(has_device_failed(fixture));
+    EXPECT_EQ(bar0_word(CPU_INTR_LEAF_EN_CLEAR), COPY_VECTOR_BIT);
 
     fixture.gpu_engines.destroy_queue(fixture.queue);
     tear_down_space(fixture);
@@ -2353,4 +2393,95 @@ TEST(nvidia_engines, a_space_destroy_that_fails_the_gpu_reports_it_to_the_core) 
 
     EXPECT_TRUE(fixture.failed.is_set());
     EXPECT_TRUE(has_device_failed(fixture));
+}
+
+// Whether the engines came up with a space over system memory and a queue for each of `core`'s queues, both tracked by
+// `core`, the first returned in `first`
+static bool sets_up_two_tracked_queues(engines_fixture& fixture, progress_core& core, gpu::queue*& first) {
+    if (!sets_up_a_tracked_queue(fixture, core)) {
+        return false;
+    }
+
+    first = fixture.queue;
+    fixture.core_queue = &core.second;
+
+    return create_queue_on_gpu(fixture) == gpu::OK && track_on_core(core.second);
+}
+
+// Fails the GPU core's device alone with a video memory create whose zeroing hangs the copy channel, keeping the
+// fixture's created memory
+static int32_t hang_a_zeroing(engines_fixture& fixture) {
+    gpu::memory* created = fixture.created;
+    fixture.create_placement = GPU_PLACEMENT_VIDEO;
+    fixture.fault = copy_fault::hangs;
+    fixture.faulty_fill = 3;
+
+    int32_t rc = create_on_gpu(fixture);
+    fixture.created = created;
+
+    return rc;
+}
+
+// A hung zeroing fails the GPU core's device alone, so the failure's report has the firmware free each queue's channel,
+// keeping its memory, with its GPFIFO and USERD still mapped, logs how many it freed and masks the copy engine's vector
+TEST(nvidia_engines, a_hung_zeroing_has_the_firmware_free_every_queues_channel) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    gpu::queue* first = nullptr;
+    ASSERT_TRUE(sets_up_two_tracked_queues(fixture, core, first));
+    uint32_t releases = fixture.fw.releases;
+
+    // The report may run before `hang_a_zeroing` returns, since `act_as_gpu` serves operations while the create waits
+    start_keeping_log();
+    int32_t rc = hang_a_zeroing(fixture);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+    ASSERT_EQ(rc, gpu::ERR_DEVICE);
+
+    EXPECT_EQ(fixture.fw.releases, releases + 2 * QUEUE_CHANNEL_OBJECTS);
+    EXPECT_TRUE(engines_log_contains("the firmware freed 2 user channels once the GPU core's device failed"));
+    EXPECT_TRUE(backend_of(first).user_channel.keeps_memory());
+    EXPECT_TRUE(backend_of(fixture.queue).user_channel.keeps_memory());
+
+    uint64_t read_only_system = PAGE_READ_ONLY | PAGE_SYSTEM_BITS | PAGE_VALID;
+    EXPECT_TRUE(channel_test_access::are_gpfifo_and_userd_mapped(backend_of(first).user_channel));
+    EXPECT_TRUE(channel_test_access::are_gpfifo_and_userd_mapped(backend_of(fixture.queue).user_channel));
+    EXPECT_EQ(page_entry_at(FIRST_GPFIFO_VA) & read_only_system, read_only_system);
+
+    EXPECT_EQ(bar0_word(CPU_INTR_LEAF_EN_CLEAR), COPY_VECTOR_BIT);
+    EXPECT_TRUE(core.first.stopped);
+    EXPECT_TRUE(core.second.stopped);
+    EXPECT_TRUE(has_device_failed(fixture));
+    EXPECT_FALSE(fixture.failed.is_set());
+
+    fixture.gpu_engines.destroy_queue(fixture.queue);
+    fixture.gpu_engines.destroy_queue(first);
+    tear_down_space(fixture);
+}
+
+// A free whose reply misses its deadline marks the GPU failed, after which the failure's report frees no further
+// channel, so the other queue's channel runs on
+TEST(nvidia_engines, the_failures_report_frees_no_channel_once_a_free_failed_the_gpu) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    gpu::queue* first = nullptr;
+    ASSERT_TRUE(sets_up_two_tracked_queues(fixture, core, first));
+
+    uint32_t releases = fixture.fw.releases;
+    fixture.fw.gpu_failed = &fixture.failed;
+    fixture.fw.missed_release = releases + 1;
+
+    ASSERT_EQ(hang_a_zeroing(fixture), gpu::ERR_DEVICE);
+    engines_operations().serve();
+
+    EXPECT_TRUE(fixture.failed.is_set());
+    EXPECT_EQ(fixture.fw.releases, releases + QUEUE_CHANNEL_OBJECTS);
+    EXPECT_TRUE(backend_of(first).user_channel.keeps_memory());
+    EXPECT_FALSE(backend_of(fixture.queue).user_channel.keeps_memory());
+    EXPECT_EQ(bar0_word(CPU_INTR_LEAF_EN_CLEAR), COPY_VECTOR_BIT);
+    EXPECT_TRUE(has_device_failed(fixture));
+
+    fixture.gpu_engines.destroy_queue(fixture.queue);
+    fixture.gpu_engines.destroy_queue(first);
+    tear_down_space(fixture);
 }

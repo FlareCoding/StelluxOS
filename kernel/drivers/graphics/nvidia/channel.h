@@ -87,6 +87,17 @@ public:
      */
     int32_t destroy();
 
+    /**
+     * @brief Release the copy object, the channel and the group as `destroy`
+     * does, so the GPU runs none of the channel's work once they are released,
+     * and keep the memory for good. The object must not be created again.
+     * @return `OK`, `ERR_BAD_STATE` before `create`, or the first error of a
+     * release, logged. The GPFIFO and USERD stay mapped, since a `write_entry`
+     * or `kick` already under way may still write them. Such a `kick` rings the
+     * freed channel's doorbell, so its id must go to no other channel.
+     */
+    int32_t destroy_keeping_memory();
+
     // Writes `entry` into the ring's next slot, which must hold no entry the GPU still has to fetch
     void write_entry(const gpfifo_entry& entry);
 
@@ -96,7 +107,7 @@ public:
     // The channel's id in its runlist, valid while the channel exists
     uint32_t id() const;
 
-    // Whether a failed `create` or the last `destroy` left the channel's memory allocated for good, as the class says
+    // Whether a failed `create`, the last `destroy` or `destroy_keeping_memory` left the memory allocated for good
     bool keeps_memory() const;
 
 private:

@@ -111,6 +111,17 @@ int32_t channel::destroy() {
     return objects_rc != OK ? objects_rc : memory_rc;
 }
 
+int32_t channel::destroy_keeping_memory() {
+    if (m_group == 0) {
+        return ERR_BAD_STATE;
+    }
+
+    m_keeps_memory = true;
+    int32_t rc = release_objects();
+
+    return rc;
+}
+
 void channel::write_entry(const gpfifo_entry& entry) {
     uintptr_t slot = m_gpfifo.virt + static_cast<uintptr_t>(m_put) * GPFIFO_ENTRY_BYTES;
     mmio::write32(slot, entry.words[0]);

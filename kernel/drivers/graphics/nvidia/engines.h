@@ -220,8 +220,8 @@ public:
      * @brief When the copy engine's nonstall vector is pending, clear it, have
      * the copy channel read its semaphore, and report to the GPU core each
      * listed queue's last finished submission, from the card's interrupt
-     * handler. Does nothing before `bring_up` creates the copy channel or after
-     * it masks the vector. Takes the copy channel's and the queue list's
+     * handler. Does nothing before `bring_up` creates the copy channel or once
+     * the vector is masked. Takes the copy channel's and the queue list's
      * spinlocks, calls `gpu::progress` under the list's, and never sleeps.
      * @note Privilege: **required**
      */
@@ -251,8 +251,12 @@ private:
     // Has the driver task report the failed GPU to the core, once, from any thread
     void report_failure();
 
-    // The driver task's half of `report_failure()`, which empties the handler's list before `gpu::device_failed`
+    // The driver task's half of `report_failure()`: has the firmware free the user channels unless the GPU failed,
+    // masks the copy engine's vector, then empties the handler's list before `gpu::device_failed`
     static void report_failure_on_task(operation& op);
+
+    // Has the firmware free each listed queue's channel, keeping its memory, until the GPU failed
+    void free_user_channels();
 
     // A creation's error once the driver task refused it: `gpu::ERR_DEVICE`, reported, once the GPU failed, else
     // `gpu::ERR_NO_MEMORY`
@@ -315,8 +319,8 @@ private:
     // A bit per channel id held on the copy engine's runlist, which only the driver task touches
     uint64_t m_channel_ids[CHANNEL_IDS / CHANNEL_IDS_PER_WORD] = {};
 
-    // The queues whose semaphores the handler reads, from their creation until their stop or the failure's report,
-    // under the spinlock taken with interrupts off
+    // The queues whose semaphores the handler reads, from their creation until their stop or the failure's report. Only
+    // the driver task changes the list, under the spinlock taken with interrupts off, so the task reads it unlocked
     sync::spinlock     m_queues_lock = sync::SPINLOCK_INIT;
     backend_queue_list m_queues;
 };
