@@ -878,6 +878,8 @@ void server::flush_outputs() {
         }
     }
 
+    flush_window_outputs();
+
     for (dm_answer& answer : m_answers) {
         if (answer.type == SWP_MSG_LAYOUT_RESULT) {
             answer.layout.generation = m_desktop.generation;
@@ -888,6 +890,31 @@ void server::flush_outputs() {
     }
 
     m_answers.clear();
+}
+
+void server::flush_window_outputs() {
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            if (w->parent_id != 0 || !w->mapped) {
+                continue;
+            }
+
+            bool output_changed = !w->output_sent || w->sent_output != w->output;
+            bool moved = w->sent_x != w->x || w->sent_y != w->y;
+            bool held = w.get() == m_drag || w.get() == m_resize;
+            if (!output_changed && (!moved || held)) {
+                continue;
+            }
+
+            swp_window_output msg = { w->win_id, w->output, w->x, w->y };
+            send_to(*c, SWP_MSG_WINDOW_OUTPUT, &msg, sizeof(msg));
+
+            w->output_sent = true;
+            w->sent_output = w->output;
+            w->sent_x = w->x;
+            w->sent_y = w->y;
+        }
+    }
 }
 
 void server::shutdown() {
