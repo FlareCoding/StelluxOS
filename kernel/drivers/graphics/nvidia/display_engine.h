@@ -515,6 +515,9 @@ private:
     display_channel*                 m_core_queue = nullptr;
     alignas(display_channel) uint8_t m_core_queue_bytes[sizeof(display_channel)];
 
+    // How long the core channel may take to read its initial methods and `take_down`'s update, 0 in tests that skip it
+    uint64_t m_core_queue_wait_ns = IDLE_TIMEOUT_NS;
+
     // What gfxfb and `has_lit_output()` read beside each head's output: `set_up` records the output count and boot
     // outputs before registration, never to change, and the light and `release` write the flags under `m_output_lock`
     uint8_t        m_output_count = 0;    // at most `gfxfb::GFXFB_OUTPUTS_MAX`

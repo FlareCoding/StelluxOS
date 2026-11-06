@@ -74,6 +74,7 @@ using drivers::nvidia::firmware_event_sink;
 using drivers::nvidia::first_second_statistics;
 using drivers::nvidia::gpu_objects;
 using drivers::nvidia::HEAD_LIGHT_FIXED_METHODS;
+using drivers::nvidia::IDLE_TIMEOUT_NS;
 using drivers::nvidia::INSTANCE_MEMORY_BYTES;
 using drivers::nvidia::LOOK_UP_TABLE_SURFACE_BYTES;
 using drivers::nvidia::look_up_table_word;
@@ -1701,6 +1702,14 @@ struct display_engine_test_access {
         return engine.m_take_down_wait_ns;
     }
 
+    static void set_core_queue_wait(display_engine& engine, uint64_t wait_ns) {
+        engine.m_core_queue_wait_ns = wait_ns;
+    }
+
+    static uint64_t core_queue_wait_ns(const display_engine& engine) {
+        return engine.m_core_queue_wait_ns;
+    }
+
     // Wakes the take-down's wait with its present still queued, as a spurious wake does
     static void wake_take_down(display_engine& engine) {
         RUN_ELEVATED(sync::wake_all(engine.m_take_down_queue));
@@ -1785,6 +1794,7 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
     display_engine_test_access::set_notifier_wait(engine, 0);
     display_engine_test_access::set_cursor_wait(engine, 0);
     display_engine_test_access::set_take_down_wait(engine, 0);
+    display_engine_test_access::set_core_queue_wait(engine, 0);
 
     g_output_change_count = 0;
     display_engine_test_access::set_output_changed(engine, record_output_change);
@@ -5079,9 +5089,9 @@ TEST(nvidia_display_engine, set_up_waits_for_the_notifier_for_the_engines_time) 
     EXPECT_EQ(engine.release(), OK);
 }
 
-// A constructed engine gives the completion notifier NVIDIA's wait and a take-down the present timeout and 10 ms,
-// both of which `new_engine` skips for the other tests
-TEST(nvidia_display_engine, constructed_engine_waits_for_the_notifier_for_nvidias_time) {
+// A constructed engine gives the completion notifier NVIDIA's wait, a take-down the present timeout and 10 ms, and the
+// core channel 5 s to read its queued methods, all of which `new_engine` skips for the other tests
+TEST(nvidia_display_engine, constructed_engine_gives_the_notifier_take_down_and_core_channel_their_full_waits) {
     engine_firmware fw;
     engine_video_memory memory;
     g_engine_operations = nullptr;
@@ -5090,6 +5100,7 @@ TEST(nvidia_display_engine, constructed_engine_waits_for_the_notifier_for_nvidia
 
     EXPECT_EQ(display_engine_test_access::notifier_wait_ns(engine), COMPLETION_NOTIFIER_WAIT_NS);
     EXPECT_EQ(display_engine_test_access::take_down_wait_ns(engine), gfxfb::GFXFB_PRESENT_TIMEOUT_NS + 10 * NS_PER_MS);
+    EXPECT_EQ(display_engine_test_access::core_queue_wait_ns(engine), IDLE_TIMEOUT_NS);
 }
 
 // After the shutdown update and the notifier's stop, a set-up asks for output 0's resource facts a third time, then for
@@ -11431,6 +11442,59 @@ TEST(nvidia_display_engine, a_failed_bring_up_take_down_fails_the_display_so_a_p
     EXPECT_EQ(fw.mode_set_requests, 0u);
     EXPECT_FALSE(reads_lit(engine, 1));
     EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The wait for the core channel one test gives an engine, long enough to measure and well below the driver's 5 s
+static constexpr uint64_t TEST_CORE_QUEUE_WAIT_NS = 20 * NS_PER_MS;
+
+// When the lines logged right before and right after bring-up's take-down ended, 0 until each ends
+static uint64_t g_take_down_start_ns = 0;
+static uint64_t g_take_down_end_ns = 0;
+
+// Keeps each logged line's text as `ENGINE_LOG_BACKEND` does, and stamps the lines around bring-up's take-down
+static void keep_take_down_log(const char* data, size_t len) {
+    keep_engine_log(data, len);
+
+    bool ends_line = len > 0 && data[len - 1] == '\n';
+    if (!ends_line) {
+        return;
+    }
+
+    if (g_take_down_start_ns == 0 && engine_log_contains("so bring-up takes the display engine down")) {
+        g_take_down_start_ns = clock::now_ns();
+    }
+
+    if (g_take_down_end_ns == 0 && engine_log_contains("taking the display engine down failed")) {
+        g_take_down_end_ns = clock::now_ns();
+    }
+}
+
+static constexpr log::backend TAKE_DOWN_LOG_BACKEND = {.write = keep_take_down_log};
+
+// A bring-up's take-down whose update the core channel never reads fails once the wait the engine gives it runs out
+TEST(nvidia_display_engine, a_failed_bring_up_take_down_waits_for_the_core_channel_for_the_engines_time) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    display_engine_test_access::set_update_seam(engine, nullptr);
+    display_engine_test_access::set_core_queue_wait(engine, TEST_CORE_QUEUE_WAIT_NS);
+
+    s_engine_log_bytes = 0;
+    g_take_down_start_ns = 0;
+    g_take_down_end_ns = 0;
+    log::set_backend(&TAKE_DOWN_LOG_BACKEND);
+    int32_t rc = set_up(engine);
+    log::set_backend(nullptr);
+
+    ASSERT_EQ(rc, OK);
+    ASSERT_NE(g_take_down_start_ns, 0u);
+    ASSERT_NE(g_take_down_end_ns, 0u);
+    uint64_t take_down_ns = g_take_down_end_ns - g_take_down_start_ns;
+    EXPECT_GE(take_down_ns, TEST_CORE_QUEUE_WAIT_NS);
+    EXPECT_LT(take_down_ns, IDLE_TIMEOUT_NS);
+
     EXPECT_EQ(engine.release(), OK);
 }
 

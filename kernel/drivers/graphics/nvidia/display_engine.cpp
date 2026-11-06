@@ -1581,7 +1581,7 @@ int32_t display_engine::set_up(
     }
 
     m_core_queue->kick();
-    rc = m_core_queue->wait_idle(clock::now_ns() + IDLE_TIMEOUT_NS);
+    rc = m_core_queue->wait_idle(clock::now_ns() + m_core_queue_wait_ns);
     if (rc != OK) {
         log::error(
             "nvidia: the core channel's GET did not reach PUT once its %u initial methods were kicked: %d",
@@ -2820,7 +2820,7 @@ int32_t display_engine::take_down(
     }
 
     m_has_sent_update = true;
-    rc = m_core_queue->wait_idle(clock::now_ns() + IDLE_TIMEOUT_NS);
+    rc = m_core_queue->wait_idle(clock::now_ns() + m_core_queue_wait_ns);
     if (rc != OK) {
         return rc;
     }
