@@ -1,0 +1,26 @@
+Gives the Vulkan runtime the DRM sync provider and the syncobj payload copy
+only when the nvkmd has a DRM descriptor, since an nvkmd without DRM has no
+syncobjs. Without the copy, the WSI's empty submits go to the queue.
+
+--- a/src/nouveau/vulkan/nvk_device.c
++++ b/src/nouveau/vulkan/nvk_device.c
+@@ -257,11 +257,17 @@ nvk_CreateDevice(VkPhysicalDevice physicalDevice,
+       if (result != VK_SUCCESS)
+          goto fail_init;
+ 
+-      vk_device_set_drm_fd(&dev->vk, nvkmd_dev_get_drm_fd(dev->nvkmd));
++      /* Without a DRM descriptor there are no syncobjs to copy, so the WSI's
++       * empty submits go to the queue
++       */
++      const int drm_fd = nvkmd_dev_get_drm_fd(dev->nvkmd);
++      if (drm_fd >= 0)
++         vk_device_set_drm_fd(&dev->vk, drm_fd);
+       dev->vk.command_buffer_ops = &nvk_cmd_buffer_ops;
+ 
+       dev->vk.get_timestamp = nvk_device_get_timestamp;
+-      dev->vk.copy_sync_payloads = vk_drm_syncobj_copy_payloads;
++      if (drm_fd >= 0)
++         dev->vk.copy_sync_payloads = vk_drm_syncobj_copy_payloads;
+ 
+       result = nvk_upload_queue_init(dev, &dev->upload);
+       if (result != VK_SUCCESS)

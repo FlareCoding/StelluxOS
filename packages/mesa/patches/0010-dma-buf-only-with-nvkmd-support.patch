@@ -1,0 +1,128 @@
+Offers VK_EXT_external_memory_dma_buf and the dma-buf handle type only where
+nvkmd_info.has_dma_buf is set, true on nouveau. Elsewhere buffers and images
+answer the opaque type alone and memory imports opaque descriptors alone.
+When the program picks a host-visible type for an import that lacks
+NVKMD_MEM_CAN_MAP, as one of a Stellux descriptor without write rights does,
+the import fails with VK_ERROR_INVALID_EXTERNAL_HANDLE where NVK asserted.
+
+--- a/src/nouveau/vulkan/nvk_buffer.c
++++ b/src/nouveau/vulkan/nvk_buffer.c
+@@ -216,6 +216,8 @@ nvk_GetPhysicalDeviceExternalBufferProperties(
+    const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
+    VkExternalBufferProperties *pExternalBufferProperties)
+ {
++   VK_FROM_HANDLE(nvk_physical_device, pdev, physicalDevice);
++
+    /* The Vulkan 1.3.256 spec says:
+     *
+     *    VUID-VkPhysicalDeviceExternalBufferInfo-handleType-parameter
+@@ -234,9 +236,16 @@ nvk_GetPhysicalDeviceExternalBufferProperties(
+    if (pExternalBufferInfo->flags)
+       goto unsupported;
+ 
++   const bool has_dma_buf = pdev->nvkmd->kmd_info.has_dma_buf;
+    switch (pExternalBufferInfo->handleType) {
+    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
++      pExternalBufferProperties->externalMemoryProperties =
++         has_dma_buf ? nvk_dma_buf_mem_props : nvk_opaque_fd_mem_props;
++      return;
+    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
++      if (!has_dma_buf)
++         goto unsupported;
++
+       pExternalBufferProperties->externalMemoryProperties =
+          nvk_dma_buf_mem_props;
+       return;
+--- a/src/nouveau/vulkan/nvk_device_memory.c
++++ b/src/nouveau/vulkan/nvk_device_memory.c
+@@ -78,6 +78,9 @@ nvk_GetMemoryFdPropertiesKHR(VkDevice device,
+ 
+    switch (handleType) {
+    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
++      if (!pdev->nvkmd->kmd_info.has_dma_buf)
++         return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
+       result = nvkmd_dev_import_dma_buf(dev->nvkmd, &dev->vk.base, fd, &mem);
+       if (result != VK_SUCCESS)
+          return result;
+@@ -216,11 +219,28 @@ nvk_AllocateMemory(VkDevice device,
+              fd_info->handleType ==
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+ 
++      if (fd_info->handleType ==
++            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
++          !pdev->nvkmd->kmd_info.has_dma_buf) {
++         result = vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++         goto fail_alloc;
++      }
++
+       result = nvkmd_dev_import_dma_buf(dev->nvkmd, &dev->vk.base,
+                                         fd_info->fd, &mem->mem);
+       if (result != VK_SUCCESS)
+          goto fail_alloc;
+ 
++      /* The program picks the type, so a host-visible one can meet an import
++       * NVK cannot map, such as a descriptor without write rights
++       */
++      if (flags & NVKMD_MEM_CAN_MAP & ~mem->mem->flags) {
++         result = vk_errorf(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE,
++                            "Imported memory cannot be mapped, but its type "
++                            "is host-visible");
++         goto fail_mem;
++      }
++
+       /* We can't really assert anything for dma-bufs because they could come
+        * in from some other device.
+        */
+--- a/src/nouveau/vulkan/nvk_image.c
++++ b/src/nouveau/vulkan/nvk_image.c
+@@ -558,10 +558,11 @@ nvk_GetPhysicalDeviceImageFormatProperties2(
+          UNREACHABLE("Unsupported VkImageTiling");
+       }
+ 
++      const bool has_dma_buf = pdev->nvkmd->kmd_info.has_dma_buf;
+       switch (external_info->handleType) {
+       case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
+          /* No special restrictions */
+-         if (tiling_has_explicit_layout) {
++         if (tiling_has_explicit_layout && has_dma_buf) {
+             /* With an explicit memory layout, we don't care which type of
+              * fd the image belongs too. Both OPAQUE_FD and DMA_BUF are
+              * interchangeable here.
+@@ -573,6 +574,9 @@ nvk_GetPhysicalDeviceImageFormatProperties2(
+          break;
+ 
+       case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
++         if (!has_dma_buf)
++            return VK_ERROR_FORMAT_NOT_SUPPORTED;
++
+          /* VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT requires
+           * VK_IMAGE_TILING_LINEAR or VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT
+           */
+--- a/src/nouveau/vulkan/nvk_physical_device.c
++++ b/src/nouveau/vulkan/nvk_physical_device.c
+@@ -112,6 +112,7 @@ static void
+ nvk_get_device_extensions(const struct nvk_instance *instance,
+                           const struct nv_device_info *info,
+                           bool has_tiled_bos,
++                          bool has_dma_buf,
+                           struct vk_device_extension_table *ext)
+ {
+    *ext = (struct vk_device_extension_table) {
+@@ -242,7 +243,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
+       .EXT_extended_dynamic_state = true,
+       .EXT_extended_dynamic_state2 = true,
+       .EXT_extended_dynamic_state3 = true,
+-      .EXT_external_memory_dma_buf = true,
++      .EXT_external_memory_dma_buf = has_dma_buf,
+       .EXT_global_priority = true,
+       .EXT_global_priority_query = true,
+       .EXT_graphics_pipeline_library = true,
+@@ -1536,6 +1537,7 @@ nvk_create_physical_device(struct nvk_instance *instance,
+    struct vk_device_extension_table supported_extensions;
+    nvk_get_device_extensions(instance, &nvkmd->dev_info,
+                              nvkmd->kmd_info.has_alloc_tiled,
++                             nvkmd->kmd_info.has_dma_buf,
+                              &supported_extensions);
+ 
+    struct vk_features supported_features;

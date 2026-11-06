@@ -1,0 +1,229 @@
+Returns VK_ERROR_OUT_OF_DEVICE_MEMORY from vkAllocateMemory where the fill of
+new memory (zeros or a debug pattern) fails with VK_ERROR_DEVICE_LOST or
+VK_ERROR_MEMORY_MAP_FAILED, which the command does not list. A failed fill on
+the upload queue, where NVK records its own writes, or a failed sync of it can
+leave the fill's commands in the queue's push buffer for a later flush or
+still running, so the upload queue keeps the memory until a sync finds every
+flush done or the queue ends. The sync frees it after unlocking the queue,
+since a free waits for the memory's GPU unmap.
+
+--- a/src/nouveau/vulkan/nvk_device_memory.c
++++ b/src/nouveau/vulkan/nvk_device_memory.c
+@@ -300,12 +300,12 @@ nvk_AllocateMemory(VkDevice device,
+                                         use_zero ? 0 : 0xCAFEF00D,
+                                         mem->mem->size_B);
+          if (result != VK_SUCCESS)
+-            goto fail_mem;
++            goto fail_upload;
+ 
+          /* Since we don't know when the memory will be freed, sync now */
+          result = nvk_upload_queue_sync(dev, &dev->upload);
+          if (result != VK_SUCCESS)
+-            goto fail_mem;
++            goto fail_upload;
+       }
+    }
+ 
+@@ -329,7 +329,13 @@ nvk_AllocateMemory(VkDevice device,
+ 
+    return VK_SUCCESS;
+ 
++fail_upload:
++   /* A failed fill or sync can leave the fill's commands to run later */
++   nvk_upload_queue_hold_mem(dev, &dev->upload, mem->mem);
+ fail_mem:
++   /* vkAllocateMemory lists neither of these fill results */
++   if (result == VK_ERROR_DEVICE_LOST || result == VK_ERROR_MEMORY_MAP_FAILED)
++      result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    nvkmd_mem_unref(mem->mem);
+ fail_alloc:
+    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
+--- a/src/nouveau/vulkan/nvk_upload_queue.c
++++ b/src/nouveau/vulkan/nvk_upload_queue.c
+@@ -13,6 +13,28 @@
+ #include "nv_push.h"
+ #include "nv_push_cl90b5.h"
+ 
++struct nvk_upload_held_mem {
++   struct nvkmd_mem *mem;
++
++   /** Link in nvk_upload_queue::held_mems */
++   struct list_head link;
++
++   /** Point after which nothing writes the mem, UINT64_MAX before a flush */
++   uint64_t idle_time_point;
++};
++
++static void
++nvk_upload_queue_drop_held_mems(struct nvk_device *dev,
++                                struct list_head *held_mems)
++{
++   list_for_each_entry_safe(struct nvk_upload_held_mem, held,
++                            held_mems, link) {
++      list_del(&held->link);
++      nvkmd_mem_unref(held->mem);
++      vk_free(&dev->vk.alloc, held);
++   }
++}
++
+ VkResult
+ nvk_upload_queue_init(struct nvk_device *dev,
+                       struct nvk_upload_queue *queue)
+@@ -22,6 +44,7 @@ nvk_upload_queue_init(struct nvk_device *dev,
+    memset(queue, 0, sizeof(*queue));
+ 
+    simple_mtx_init(&queue->mutex, mtx_plain);
++   list_inithead(&queue->held_mems);
+ 
+    result = nvkmd_dev_create_ctx(dev->nvkmd, &dev->vk.base,
+                                  NVKMD_ENGINE_COPY, &queue->ctx);
+@@ -51,6 +74,7 @@ nvk_upload_queue_finish(struct nvk_device *dev,
+ {
+    nvk_mem_stream_finish(dev, &queue->stream);
+    nvkmd_ctx_destroy(queue->ctx);
++   nvk_upload_queue_drop_held_mems(dev, &queue->held_mems);
+    simple_mtx_destroy(&queue->mutex);
+ }
+ 
+@@ -81,6 +105,12 @@ nvk_upload_queue_flush_locked(struct nvk_device *dev,
+    nv_push_init(&queue->push, queue->push_data, ARRAY_SIZE(queue->push_data),
+                 nvk_queue_subchannels_from_engines(NVKMD_ENGINE_COPY));
+ 
++   list_for_each_entry(struct nvk_upload_held_mem, held,
++                       &queue->held_mems, link) {
++      if (held->idle_time_point == UINT64_MAX)
++         held->idle_time_point = queue->last_time_point;
++   }
++
+    if (time_point_out != NULL)
+       *time_point_out = queue->last_time_point;
+ 
+@@ -103,7 +133,8 @@ nvk_upload_queue_flush(struct nvk_device *dev,
+ 
+ static VkResult
+ nvk_upload_queue_sync_locked(struct nvk_device *dev,
+-                             struct nvk_upload_queue *queue)
++                             struct nvk_upload_queue *queue,
++                             struct list_head *idle_mems)
+ {
+    VkResult result;
+ 
+@@ -111,11 +142,23 @@ nvk_upload_queue_sync_locked(struct nvk_device *dev,
+    if (result != VK_SUCCESS)
+       return result;
+ 
+-   if (queue->last_time_point == 0)
+-      return VK_SUCCESS;
++   if (queue->last_time_point > 0) {
++      result = vk_sync_wait(&dev->vk, queue->stream.sync,
++                            queue->last_time_point,
++                            VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   list_for_each_entry_safe(struct nvk_upload_held_mem, held,
++                            &queue->held_mems, link) {
++      if (held->idle_time_point <= queue->last_time_point) {
++         list_del(&held->link);
++         list_addtail(&held->link, idle_mems);
++      }
++   }
+ 
+-   return vk_sync_wait(&dev->vk, queue->stream.sync, queue->last_time_point,
+-                       VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
++   return VK_SUCCESS;
+ }
+ 
+ VkResult
+@@ -124,10 +167,16 @@ nvk_upload_queue_sync(struct nvk_device *dev,
+ {
+    VkResult result;
+ 
++   struct list_head idle_mems;
++   list_inithead(&idle_mems);
++
+    simple_mtx_lock(&queue->mutex);
+-   result = nvk_upload_queue_sync_locked(dev, queue);
++   result = nvk_upload_queue_sync_locked(dev, queue, &idle_mems);
+    simple_mtx_unlock(&queue->mutex);
+ 
++   /* After the unlock, since freeing a mem waits for its GPU unmap */
++   nvk_upload_queue_drop_held_mems(dev, &idle_mems);
++
+    return result;
+ }
+ 
+@@ -283,3 +332,35 @@ nvk_upload_queue_fill(struct nvk_device *dev,
+ 
+    return result;
+ }
++
++void
++nvk_upload_queue_hold_mem(struct nvk_device *dev,
++                          struct nvk_upload_queue *queue,
++                          struct nvkmd_mem *mem)
++{
++   nvkmd_mem_ref(mem);
++
++   /* Without memory for the entry the reference is never dropped, so the
++    * mem leaks rather than being freed under the commands
++    */
++   struct nvk_upload_held_mem *held =
++      vk_zalloc(&dev->vk.alloc, sizeof(*held), 8,
++                VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (held == NULL)
++      return;
++
++   held->mem = mem;
++
++   simple_mtx_lock(&queue->mutex);
++
++   /* Commands still in the push run with the next flush, the others with the
++    * flushes already made
++    */
++   if (nv_push_dw_count(&queue->push) > 0)
++      held->idle_time_point = UINT64_MAX;
++   else
++      held->idle_time_point = queue->last_time_point;
++   list_addtail(&held->link, &queue->held_mems);
++
++   simple_mtx_unlock(&queue->mutex);
++}
+--- a/src/nouveau/vulkan/nvk_upload_queue.h
++++ b/src/nouveau/vulkan/nvk_upload_queue.h
+@@ -8,10 +8,12 @@
+ #include "nvk_mem_stream.h"
+ 
+ #include "nv_push.h"
++#include "util/list.h"
+ #include "util/simple_mtx.h"
+ 
+ struct nvk_device;
+ struct nvkmd_ctx;
++struct nvkmd_mem;
+ 
+ struct nvk_upload_queue {
+    simple_mtx_t mutex;
+@@ -20,6 +22,9 @@ struct nvk_upload_queue {
+    struct nvk_mem_stream stream;
+    uint64_t last_time_point;
+ 
++   /* Mems kept by nvk_upload_queue_hold_mem */
++   struct list_head held_mems;
++
+    uint32_t push_data[4096];
+    struct nv_push push;
+ };
+@@ -46,4 +51,11 @@ VkResult nvk_upload_queue_fill(struct nvk_device *dev,
+                                struct nvk_upload_queue *queue,
+                                uint64_t dst_addr, uint32_t data, size_t size);
+ 
++/* Keeps a reference to a mem that a failed fill or sync may leave commands
++ * writing, until a sync finds every flushed point reached or the queue ends
++ */
++void nvk_upload_queue_hold_mem(struct nvk_device *dev,
++                               struct nvk_upload_queue *queue,
++                               struct nvkmd_mem *mem);
++
+ #endif /* NVK_UPLOAD_QUEUE_H */

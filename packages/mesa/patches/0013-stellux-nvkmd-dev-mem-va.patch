@@ -1,0 +1,877 @@
+Adds the Stellux nvkmd's dev, mem and va over /dev/gpuN. A dev is one GPU
+context with two address heaps that split the GPU's user range at 2^38, a mem
+is one buffer mapped whole on the GPU at a range of its own, and a va is a
+range whose binds map buffers into the context. The pdev creates devs,
+refuses a GPU whose user range is not [4 KiB, 2^39) and offers fixed maps
+and overmaps. A dev creates no ctx (an nvkmd's object that submits work), so
+vkCreateDevice fails at NVK's upload queue for any device with queues.
+
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -162,7 +162,10 @@ if with_nouveau_stellux
+   nvk_flags += '-DNVK_STELLUX'
+   nvk_files += files(
+     'nvkmd/stellux/nvkmd_stellux.h',
++    'nvkmd/stellux/nvkmd_stellux_dev.c',
++    'nvkmd/stellux/nvkmd_stellux_mem.c',
+     'nvkmd/stellux/nvkmd_stellux_pdev.c',
++    'nvkmd/stellux/nvkmd_stellux_va.c',
+   )
+ endif
+ 
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -390,9 +390,9 @@ nvkmd_try_create_pdev_for_drm(struct _drmDevice *drm_device,
+  * NULL when that file does not exist: Stellux numbers its GPUs from 0 with no
+  * gaps, so the first missing file ends them.  Returns
+  * VK_ERROR_INITIALIZATION_FAILED when the file exists but cannot be opened,
+- * VK_ERROR_INCOMPATIBLE_DRIVER when its GPU_GET_INFO fails or names a backend
+- * other than NVIDIA's, and VK_ERROR_OUT_OF_HOST_MEMORY when the pdev cannot be
+- * allocated.
++ * VK_ERROR_INCOMPATIBLE_DRIVER when its GPU_GET_INFO fails, names a backend
++ * other than NVIDIA's or reports GPU addresses other than [4 KiB, 2^39), and
++ * VK_ERROR_OUT_OF_HOST_MEMORY when the pdev cannot be allocated.
+  */
+ VkResult MUST_CHECK
+ nvkmd_try_create_pdev_for_stellux(uint32_t gpu_index,
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux.h
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux.h
+@@ -5,14 +5,39 @@
+ #define NVKMD_STELLUX_H 1
+ 
+ #include "nvkmd/nvkmd.h"
++#include "util/vma.h"
+ 
+ #include <stdint.h>
+ #include <stlx/gpu_abi.h>
+ 
+ /* The nvkmd over Stellux's /dev/gpuN files, whose calls <stlx/gpu_abi.h>
+- * defines. A pdev owns its GPU's open file.
++ * defines. A pdev owns its GPU's open file, a dev one GPU context, a mem
++ * one buffer with its whole-buffer GPU mapping, and a va one range of GPU
++ * addresses from its dev's heaps.
+  */
+ 
++/* A dev's heaps: ordinary addresses below 2^38, capture-replay ones above */
++#define NVKMD_STELLUX_HEAP_START ((uint64_t)4096)
++#define NVKMD_STELLUX_HEAP_END ((uint64_t)1 << 38)
++#define NVKMD_STELLUX_REPLAY_HEAP_START NVKMD_STELLUX_HEAP_END
++#define NVKMD_STELLUX_REPLAY_HEAP_END ((uint64_t)1 << 39)
++
++/* The calls whose errors nvkmd_stellux_error() turns into VkResults */
++enum nvkmd_stellux_call {
++   NVKMD_STELLUX_CALL_CONTEXT_CREATE,
++   NVKMD_STELLUX_CALL_BUFFER_CREATE,
++   NVKMD_STELLUX_CALL_BUFFER_IMPORT,
++   NVKMD_STELLUX_CALL_MAP,
++   /* GPU_HANDLE_RESTRICT of a descriptor the program passed */
++   NVKMD_STELLUX_CALL_PROBE,
++   /* GPU_HANDLE_RESTRICT of the nvkmd's own handle */
++   NVKMD_STELLUX_CALL_RESTRICT,
++   /* mmap for a client map, the one vkMapMemory gives the program */
++   NVKMD_STELLUX_CALL_MMAP,
++   /* mmap for an internal map, which NVK makes within other commands */
++   NVKMD_STELLUX_CALL_INTERNAL_MMAP,
++};
++
+ struct nvkmd_stellux_pdev {
+    struct nvkmd_pdev base;
+ 
+@@ -26,4 +51,64 @@ VkResult nvkmd_stellux_try_create_pdev(uint32_t gpu_index,
+                                        enum nvk_debug debug_flags,
+                                        struct nvkmd_pdev **pdev_out);
+ 
++struct nvkmd_stellux_dev {
++   struct nvkmd_dev base;
++
++   /* The pdev's file */
++   int fd;
++
++   int context;
++
++   simple_mtx_t heap_mutex;
++   struct util_vma_heap heap;
++   struct util_vma_heap replay_heap;
++};
++
++NVKMD_DECL_SUBCLASS(dev, stellux);
++
++VkResult nvkmd_stellux_create_dev(struct nvkmd_pdev *pdev,
++                                  struct vk_object_base *log_obj,
++                                  struct nvkmd_dev **dev_out);
++
++/* Logs errno err of call on log_obj and returns a VkResult the Vulkan
++ * command making the call lists. EIO from a buffer create, an import or a
++ * GPU_MAP also loses log_obj's device, if it has one, since Vulkan lists no
++ * device loss for making or binding memory.
++ */
++VkResult nvkmd_stellux_error(struct vk_object_base *log_obj,
++                             enum nvkmd_stellux_call call, int err);
++
++struct nvkmd_stellux_mem {
++   struct nvkmd_mem base;
++
++   int buffer;
++
++   /* Imported without GPU_RIGHT_WRITE, so the GPU maps it read-only */
++   bool read_only;
++};
++
++NVKMD_DECL_SUBCLASS(mem, stellux);
++
++VkResult nvkmd_stellux_alloc_mem(struct nvkmd_dev *dev,
++                                 struct vk_object_base *log_obj,
++                                 uint64_t size_B, uint64_t align_B,
++                                 enum nvkmd_mem_flags flags,
++                                 struct nvkmd_mem **mem_out);
++
++VkResult nvkmd_stellux_import_dma_buf(struct nvkmd_dev *dev,
++                                      struct vk_object_base *log_obj,
++                                      int fd, struct nvkmd_mem **mem_out);
++
++struct nvkmd_stellux_va {
++   struct nvkmd_va base;
++};
++
++NVKMD_DECL_SUBCLASS(va, stellux);
++
++VkResult nvkmd_stellux_alloc_va(struct nvkmd_dev *dev,
++                                struct vk_object_base *log_obj,
++                                enum nvkmd_va_flags flags, uint8_t pte_kind,
++                                uint64_t size_B, uint64_t align_B,
++                                uint64_t fixed_addr, struct nvkmd_va **va_out);
++
+ #endif /* NVKMD_STELLUX_H */
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_dev.c
+@@ -0,0 +1,173 @@
++/*
++ * Copyright (c) 2024 Collabora Ltd. and Red Hat Inc.
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_stellux.h"
++
++#include "util/u_memory.h"
++#include "vk_device.h"
++#include "vk_log.h"
++
++#include <errno.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++static const char *const nvkmd_stellux_call_names[] = {
++   [NVKMD_STELLUX_CALL_CONTEXT_CREATE] = "GPU_CONTEXT_CREATE",
++   [NVKMD_STELLUX_CALL_BUFFER_CREATE] = "GPU_BUFFER_CREATE",
++   [NVKMD_STELLUX_CALL_BUFFER_IMPORT] = "GPU_BUFFER_IMPORT",
++   [NVKMD_STELLUX_CALL_MAP] = "GPU_MAP",
++   [NVKMD_STELLUX_CALL_PROBE] =
++      "GPU_HANDLE_RESTRICT of the imported descriptor",
++   [NVKMD_STELLUX_CALL_RESTRICT] = "GPU_HANDLE_RESTRICT",
++   [NVKMD_STELLUX_CALL_MMAP] = "mmap",
++   [NVKMD_STELLUX_CALL_INTERNAL_MMAP] = "mmap of an internal map",
++};
++
++VkResult
++nvkmd_stellux_error(struct vk_object_base *log_obj,
++                    enum nvkmd_stellux_call call, int err)
++{
++   const char *name = nvkmd_stellux_call_names[call];
++   VkResult result = VK_ERROR_UNKNOWN;
++
++   switch (call) {
++   case NVKMD_STELLUX_CALL_CONTEXT_CREATE:
++      if (err == EIO)
++         result = VK_ERROR_DEVICE_LOST;
++      else if (err == ENOMEM)
++         result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      break;
++
++   case NVKMD_STELLUX_CALL_BUFFER_CREATE:
++   case NVKMD_STELLUX_CALL_BUFFER_IMPORT:
++   case NVKMD_STELLUX_CALL_MAP:
++      /* A map's EBUSY means a range whose unmap met ENOMEM */
++      if (call == NVKMD_STELLUX_CALL_BUFFER_IMPORT &&
++          (err == EBADF || err == EINVAL))
++         result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++      else if (err == EIO || err == ENOMEM || err == EBUSY)
++         result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++
++      if (err == EIO && log_obj != NULL && log_obj->device != NULL) {
++         vk_device_set_lost(log_obj->device, "%s failed: %s", name,
++                            call == NVKMD_STELLUX_CALL_MAP ?
++                            "the context is lost or the GPU failed" :
++                            "the GPU failed");
++      }
++      break;
++
++   case NVKMD_STELLUX_CALL_PROBE:
++      if (err == EBADF || err == EINVAL)
++         result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++      else if (err == ENOMEM)
++         result = VK_ERROR_OUT_OF_HOST_MEMORY;
++      break;
++
++   case NVKMD_STELLUX_CALL_RESTRICT:
++      /* Restricting a handle the nvkmd holds to rights the handle has fails
++       * only on a full table
++       */
++      result = VK_ERROR_OUT_OF_HOST_MEMORY;
++      break;
++
++   case NVKMD_STELLUX_CALL_MMAP:
++      result = VK_ERROR_MEMORY_MAP_FAILED;
++      break;
++
++   case NVKMD_STELLUX_CALL_INTERNAL_MMAP:
++      /* Most commands making an internal map list no map failure */
++      result = VK_ERROR_OUT_OF_HOST_MEMORY;
++      break;
++   }
++
++   return vk_errorf(log_obj, result, "%s failed: %s", name, strerror(err));
++}
++
++VkResult
++nvkmd_stellux_create_dev(struct nvkmd_pdev *_pdev,
++                         struct vk_object_base *log_obj,
++                         struct nvkmd_dev **dev_out)
++{
++   struct nvkmd_stellux_pdev *pdev = nvkmd_stellux_pdev(_pdev);
++
++   struct nvkmd_stellux_dev *dev = CALLOC_STRUCT(nvkmd_stellux_dev);
++   if (dev == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   struct gpu_context_args args = { 0 };
++   if (ioctl(pdev->fd, GPU_CONTEXT_CREATE, &args) != 0) {
++      VkResult result = nvkmd_stellux_error(log_obj,
++                                            NVKMD_STELLUX_CALL_CONTEXT_CREATE,
++                                            errno);
++      FREE(dev);
++      return result;
++   }
++
++   dev->base.ops = &nvkmd_stellux_dev_ops;
++   dev->base.pdev = &pdev->base;
++   dev->base.va_start = NVKMD_STELLUX_HEAP_START;
++   dev->base.va_end = NVKMD_STELLUX_REPLAY_HEAP_END;
++
++   list_inithead(&dev->base.mems);
++   simple_mtx_init(&dev->base.mems_mutex, mtx_plain);
++
++   dev->fd = pdev->fd;
++   dev->context = args.context;
++
++   simple_mtx_init(&dev->heap_mutex, mtx_plain);
++   util_vma_heap_init(&dev->heap, NVKMD_STELLUX_HEAP_START,
++                      NVKMD_STELLUX_HEAP_END - NVKMD_STELLUX_HEAP_START);
++   util_vma_heap_init(&dev->replay_heap, NVKMD_STELLUX_REPLAY_HEAP_START,
++                      NVKMD_STELLUX_REPLAY_HEAP_END -
++                      NVKMD_STELLUX_REPLAY_HEAP_START);
++
++   *dev_out = &dev->base;
++
++   return VK_SUCCESS;
++}
++
++static void
++nvkmd_stellux_dev_destroy(struct nvkmd_dev *_dev)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_dev);
++
++   util_vma_heap_finish(&dev->heap);
++   util_vma_heap_finish(&dev->replay_heap);
++
++   close(dev->context);
++   FREE(dev);
++}
++
++static uint64_t
++nvkmd_stellux_dev_get_gpu_timestamp(struct nvkmd_dev *_dev)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_dev);
++
++   struct gpu_timestamp timestamp = { 0 };
++   if (ioctl(dev->fd, GPU_READ_TIMESTAMP, &timestamp) != 0)
++      return 0;
++
++   return timestamp.gpu_ns;
++}
++
++static VkResult
++nvkmd_stellux_dev_create_ctx(struct nvkmd_dev *dev,
++                             struct vk_object_base *log_obj,
++                             enum nvkmd_engines engines,
++                             struct nvkmd_ctx **ctx_out)
++{
++   return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
++                    "The Stellux nvkmd cannot create a queue");
++}
++
++const struct nvkmd_dev_ops nvkmd_stellux_dev_ops = {
++   .destroy = nvkmd_stellux_dev_destroy,
++   .get_gpu_timestamp = nvkmd_stellux_dev_get_gpu_timestamp,
++   .alloc_mem = nvkmd_stellux_alloc_mem,
++   .import_dma_buf = nvkmd_stellux_import_dma_buf,
++   .alloc_va = nvkmd_stellux_alloc_va,
++   .create_ctx = nvkmd_stellux_dev_create_ctx,
++};
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_mem.c
+@@ -0,0 +1,293 @@
++/*
++ * Copyright (c) 2024 Collabora Ltd. and Red Hat Inc.
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_stellux.h"
++
++#include "util/bitscan.h"
++#include "util/u_math.h"
++#include "util/u_memory.h"
++#include "vk_log.h"
++
++#include <errno.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++static int
++restrict_handle(int fd, int handle, uint32_t rights, int *restricted_out)
++{
++   struct gpu_restrict_args args = {
++      .handle = handle,
++      .rights = rights,
++   };
++   if (ioctl(fd, GPU_HANDLE_RESTRICT, &args) != 0)
++      return errno;
++
++   *restricted_out = args.restricted;
++
++   return 0;
++}
++
++/* Only LOCAL falls back to system memory, since nvkmd lets LOCAL memory be
++ * paged out to GART and keeps VRAM memory in video memory
++ */
++static VkResult
++create_buffer(struct nvkmd_stellux_dev *dev,
++              struct vk_object_base *log_obj,
++              uint64_t size_B, enum nvkmd_mem_flags flags,
++              int *buffer_out)
++{
++   struct gpu_buffer_args args = {
++      .size = size_B,
++      .placement = (flags & NVKMD_MEM_GART) ? GPU_PLACEMENT_SYSTEM
++                                            : GPU_PLACEMENT_VIDEO,
++      .flags = (flags & NVKMD_MEM_CAN_MAP) ? GPU_BUFFER_MAPPABLE : 0,
++   };
++
++   int err = ioctl(dev->fd, GPU_BUFFER_CREATE, &args) != 0 ? errno : 0;
++   if (err == ENOMEM && (flags & NVKMD_MEM_LOCAL)) {
++      args.placement = GPU_PLACEMENT_SYSTEM;
++      err = ioctl(dev->fd, GPU_BUFFER_CREATE, &args) != 0 ? errno : 0;
++   }
++
++   if (err != 0) {
++      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_BUFFER_CREATE,
++                                 err);
++   }
++
++   *buffer_out = args.buffer;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++create_mem_or_close_buffer(struct nvkmd_stellux_dev *dev,
++                           struct vk_object_base *log_obj,
++                           enum nvkmd_mem_flags flags,
++                           int buffer, bool read_only,
++                           uint64_t size_B, uint64_t align_B,
++                           struct nvkmd_mem **mem_out)
++{
++   VkResult result;
++
++   struct nvkmd_stellux_mem *mem = CALLOC_STRUCT(nvkmd_stellux_mem);
++   if (mem == NULL) {
++      result = vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++      goto fail_buffer;
++   }
++
++   align_B = MAX2(dev->base.pdev->bind_align_B, align_B);
++
++   /* Every mapping the kernel gives is coherent */
++   nvkmd_mem_init(&dev->base, &mem->base, &nvkmd_stellux_mem_ops,
++                  flags | NVKMD_MEM_COHERENT, size_B, align_B);
++   mem->buffer = buffer;
++   mem->read_only = read_only;
++
++   result = nvkmd_dev_alloc_va(&dev->base, log_obj,
++                               0 /* flags */, 0 /* pte_kind */,
++                               size_B, align_B, 0 /* fixed_addr */,
++                               &mem->base.va);
++   if (result != VK_SUCCESS)
++      goto fail_mem;
++
++   result = nvkmd_va_bind_mem(mem->base.va, log_obj, 0 /* va_offset_B */,
++                              &mem->base, 0 /* mem_offset_B */, size_B);
++   if (result != VK_SUCCESS)
++      goto fail_va;
++
++   *mem_out = &mem->base;
++
++   return VK_SUCCESS;
++
++fail_va:
++   nvkmd_va_free(mem->base.va);
++fail_mem:
++   FREE(mem);
++fail_buffer:
++   close(buffer);
++
++   return result;
++}
++
++VkResult
++nvkmd_stellux_alloc_mem(struct nvkmd_dev *_dev,
++                        struct vk_object_base *log_obj,
++                        uint64_t size_B, uint64_t align_B,
++                        enum nvkmd_mem_flags flags,
++                        struct nvkmd_mem **mem_out)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_dev);
++
++   /* Only one placement flag may be specified */
++   assert(util_bitcount(flags & NVKMD_MEM_PLACEMENT_FLAGS) == 1);
++   assert(util_is_power_of_two_or_zero64(align_B));
++
++   align_B = MAX2(align_B, dev->base.pdev->bind_align_B);
++   size_B = align64(size_B, align_B);
++
++   int buffer;
++   VkResult result = create_buffer(dev, log_obj, size_B, flags, &buffer);
++   if (result != VK_SUCCESS)
++      return result;
++
++   return create_mem_or_close_buffer(dev, log_obj, flags, buffer,
++                                     false /* read_only */,
++                                     size_B, align_B, mem_out);
++}
++
++VkResult
++nvkmd_stellux_import_dma_buf(struct nvkmd_dev *_dev,
++                             struct vk_object_base *log_obj,
++                             int fd, struct nvkmd_mem **mem_out)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_dev);
++
++   /* GPU_BUFFER_IMPORT also takes shared memory, which no handle type here
++    * names and which the restriction refuses
++    */
++   int probe;
++   int err = restrict_handle(dev->fd, fd, GPU_RIGHT_READ, &probe);
++   if (err != 0)
++      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_PROBE, err);
++   close(probe);
++
++   struct gpu_buffer_args args = {
++      .source = fd,
++   };
++   if (ioctl(dev->fd, GPU_BUFFER_IMPORT, &args) != 0) {
++      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_BUFFER_IMPORT,
++                                 errno);
++   }
++
++   /* Only a handle with GPU_RIGHT_WRITE restricts to both rights */
++   int writable = -1;
++   err = restrict_handle(dev->fd, args.buffer,
++                         GPU_RIGHT_READ | GPU_RIGHT_WRITE, &writable);
++   if (err != 0 && err != EINVAL) {
++      close(args.buffer);
++      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_RESTRICT, err);
++   }
++
++   const bool read_only = err == EINVAL;
++   if (!read_only)
++      close(writable);
++
++   enum nvkmd_mem_flags flags = NVKMD_MEM_SHARED;
++   if (args.placement == GPU_PLACEMENT_VIDEO)
++      flags |= NVKMD_MEM_LOCAL;
++   else
++      flags |= NVKMD_MEM_GART;
++
++   if ((args.flags & GPU_BUFFER_MAPPABLE) && !read_only)
++      flags |= NVKMD_MEM_CAN_MAP;
++
++   return create_mem_or_close_buffer(dev, log_obj, flags, args.buffer,
++                                     read_only, args.size,
++                                     0 /* align_B */, mem_out);
++}
++
++static void
++nvkmd_stellux_mem_free(struct nvkmd_mem *_mem)
++{
++   struct nvkmd_stellux_mem *mem = nvkmd_stellux_mem(_mem);
++
++   nvkmd_va_free(mem->base.va);
++   close(mem->buffer);
++   FREE(mem);
++}
++
++static VkResult
++nvkmd_stellux_mem_map(struct nvkmd_mem *_mem,
++                      struct vk_object_base *log_obj,
++                      enum nvkmd_mem_map_flags map_flags,
++                      void *fixed_addr,
++                      void **map_out)
++{
++   struct nvkmd_stellux_mem *mem = nvkmd_stellux_mem(_mem);
++
++   int prot = 0;
++   if (map_flags & NVKMD_MEM_MAP_RD)
++      prot |= PROT_READ;
++   if (map_flags & NVKMD_MEM_MAP_WR)
++      prot |= PROT_WRITE;
++
++   int flags = MAP_SHARED;
++   if (map_flags & NVKMD_MEM_MAP_FIXED)
++      flags |= MAP_FIXED;
++
++   void *map = mmap(fixed_addr, mem->base.size_B, prot, flags,
++                    mem->buffer, 0);
++   if (map == MAP_FAILED) {
++      const enum nvkmd_stellux_call call =
++         (map_flags & NVKMD_MEM_MAP_CLIENT) ? NVKMD_STELLUX_CALL_MMAP
++                                            : NVKMD_STELLUX_CALL_INTERNAL_MMAP;
++      return nvkmd_stellux_error(log_obj, call, errno);
++   }
++
++   *map_out = map;
++
++   return VK_SUCCESS;
++}
++
++static void
++nvkmd_stellux_mem_unmap(struct nvkmd_mem *_mem,
++                        enum nvkmd_mem_map_flags flags,
++                        void *map)
++{
++   struct nvkmd_stellux_mem *mem = nvkmd_stellux_mem(_mem);
++
++   munmap(map, mem->base.size_B);
++}
++
++static VkResult
++nvkmd_stellux_mem_overmap(struct nvkmd_mem *_mem,
++                          struct vk_object_base *log_obj,
++                          enum nvkmd_mem_map_flags flags,
++                          void *map)
++{
++   struct nvkmd_stellux_mem *mem = nvkmd_stellux_mem(_mem);
++
++   void *new_map = mmap(map, mem->base.size_B, PROT_NONE,
++                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
++   if (new_map == MAP_FAILED)
++      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_MMAP, errno);
++
++   assert(new_map == map);
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_stellux_mem_export_dma_buf(struct nvkmd_mem *_mem,
++                                 struct vk_object_base *log_obj,
++                                 int *fd_out)
++{
++   struct nvkmd_stellux_mem *mem = nvkmd_stellux_mem(_mem);
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_mem->dev);
++
++   const uint32_t rights = mem->read_only ? GPU_RIGHT_READ
++                                          : GPU_RIGHT_READ | GPU_RIGHT_WRITE;
++   int err = restrict_handle(dev->fd, mem->buffer, rights, fd_out);
++   if (err != 0)
++      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_RESTRICT, err);
++
++   return VK_SUCCESS;
++}
++
++static uint32_t
++nvkmd_stellux_mem_log_handle(struct nvkmd_mem *_mem)
++{
++   return nvkmd_stellux_mem(_mem)->buffer;
++}
++
++const struct nvkmd_mem_ops nvkmd_stellux_mem_ops = {
++   .free = nvkmd_stellux_mem_free,
++   .map = nvkmd_stellux_mem_map,
++   .unmap = nvkmd_stellux_mem_unmap,
++   .overmap = nvkmd_stellux_mem_overmap,
++   .export_dma_buf = nvkmd_stellux_mem_export_dma_buf,
++   .log_handle = nvkmd_stellux_mem_log_handle,
++};
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_pdev.c
+@@ -10,12 +10,13 @@
+ 
+ #include <errno.h>
+ #include <fcntl.h>
++#include <inttypes.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+ 
+-/* A pdev offers no sync type, since it creates no dev */
++/* A pdev offers no sync type, since its devs create no ctx */
+ static const struct vk_sync_type *const nvkmd_stellux_sync_types[] = {
+    NULL,
+ };
+@@ -104,6 +105,19 @@ nvkmd_stellux_try_create_pdev(uint32_t gpu_index,
+       return VK_ERROR_INCOMPATIBLE_DRIVER;
+    }
+ 
++   if (info.va_start != NVKMD_STELLUX_HEAP_START ||
++       info.va_end != NVKMD_STELLUX_REPLAY_HEAP_END) {
++      VkResult result = vk_errorf(log_obj, VK_ERROR_INCOMPATIBLE_DRIVER,
++                                  "%s offers GPU addresses [0x%" PRIx64
++                                  ", 0x%" PRIx64 "), not [0x%" PRIx64
++                                  ", 0x%" PRIx64 ")", path,
++                                  info.va_start, info.va_end,
++                                  NVKMD_STELLUX_HEAP_START,
++                                  NVKMD_STELLUX_REPLAY_HEAP_END);
++      close(fd);
++      return result;
++   }
++
+    struct nvkmd_stellux_pdev *pdev = CALLOC_STRUCT(nvkmd_stellux_pdev);
+    if (pdev == NULL) {
+       close(fd);
+@@ -115,6 +129,8 @@ nvkmd_stellux_try_create_pdev(uint32_t gpu_index,
+    nvkmd_stellux_fill_dev_info(&info, &pdev->base.dev_info);
+    pdev->base.kmd_info = (struct nvkmd_info) {
+       .has_get_vram_used = true,
++      .has_map_fixed = true,
++      .has_overmap = true,
+    };
+    pdev->base.bind_align_B = info.page_size;
+    pdev->base.sync_types = nvkmd_stellux_sync_types;
+@@ -147,15 +163,6 @@ nvkmd_stellux_pdev_get_vram_used(struct nvkmd_pdev *_pdev)
+    return vram_size_B - memory.video_free;
+ }
+ 
+-static VkResult
+-nvkmd_stellux_create_dev(struct nvkmd_pdev *pdev,
+-                         struct vk_object_base *log_obj,
+-                         struct nvkmd_dev **dev_out)
+-{
+-   return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+-                    "The Stellux nvkmd cannot create a device");
+-}
+-
+ const struct nvkmd_pdev_ops nvkmd_stellux_pdev_ops = {
+    .destroy = nvkmd_stellux_pdev_destroy,
+    .get_vram_used = nvkmd_stellux_pdev_get_vram_used,
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_va.c
+@@ -0,0 +1,196 @@
++/*
++ * Copyright (c) 2024 Collabora Ltd. and Red Hat Inc.
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_stellux.h"
++
++#include "util/bitscan.h"
++#include "util/u_math.h"
++#include "util/u_memory.h"
++#include "vk_log.h"
++
++#include <errno.h>
++#include <inttypes.h>
++#include <sys/ioctl.h>
++
++static VkResult MUST_CHECK
++alloc_heap_addr_locked(struct nvkmd_stellux_dev *dev,
++                       struct vk_object_base *log_obj,
++                       enum nvkmd_va_flags flags,
++                       uint64_t size_B, uint64_t align_B,
++                       uint64_t fixed_addr, uint64_t *addr_out)
++{
++   if (flags & NVKMD_VA_ALLOC_FIXED) {
++      assert(flags & NVKMD_VA_REPLAY);
++      if (fixed_addr < NVKMD_STELLUX_REPLAY_HEAP_START ||
++          fixed_addr >= NVKMD_STELLUX_REPLAY_HEAP_END) {
++         return vk_errorf(log_obj, VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS,
++                          "Capture address 0x%" PRIx64 " not in the replay "
++                          "heap address range [0x%" PRIx64 ", 0x%" PRIx64 ")",
++                          fixed_addr, NVKMD_STELLUX_REPLAY_HEAP_START,
++                          NVKMD_STELLUX_REPLAY_HEAP_END);
++      }
++
++      if (fixed_addr & (align_B - 1)) {
++         return vk_errorf(log_obj, VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS,
++                          "Unaligned capture address: 0x%" PRIx64, fixed_addr);
++      }
++
++      if (!util_vma_heap_alloc_addr(&dev->replay_heap, fixed_addr, size_B)) {
++         return vk_errorf(log_obj, VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS,
++                          "Replay address collision: 0x%" PRIx64, fixed_addr);
++      }
++
++      *addr_out = fixed_addr;
++
++      return VK_SUCCESS;
++   }
++
++   struct util_vma_heap *heap =
++      (flags & NVKMD_VA_REPLAY) ? &dev->replay_heap : &dev->heap;
++
++   *addr_out = util_vma_heap_alloc(heap, size_B, align_B);
++   if (*addr_out == 0) {
++      return vk_errorf(log_obj, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                       "Failed to allocate virtual address range");
++   }
++
++   return VK_SUCCESS;
++}
++
++static void
++free_heap_addr(struct nvkmd_stellux_dev *dev,
++               enum nvkmd_va_flags flags,
++               uint64_t addr, uint64_t size_B)
++{
++   simple_mtx_lock(&dev->heap_mutex);
++   if (flags & NVKMD_VA_REPLAY)
++      util_vma_heap_free(&dev->replay_heap, addr, size_B);
++   else
++      util_vma_heap_free(&dev->heap, addr, size_B);
++   simple_mtx_unlock(&dev->heap_mutex);
++}
++
++/* Returns the errno of GPU_UNMAP, which removes the range on EIO too */
++static int
++unmap_range(struct nvkmd_stellux_dev *dev, uint64_t addr, uint64_t size_B)
++{
++   struct gpu_map_args args = {
++      .context = dev->context,
++      .va = addr,
++      .size = size_B,
++   };
++   if (ioctl(dev->fd, GPU_UNMAP, &args) != 0)
++      return errno;
++
++   return 0;
++}
++
++VkResult
++nvkmd_stellux_alloc_va(struct nvkmd_dev *_dev,
++                       struct vk_object_base *log_obj,
++                       enum nvkmd_va_flags flags, uint8_t pte_kind,
++                       uint64_t size_B, uint64_t align_B,
++                       uint64_t fixed_addr, struct nvkmd_va **va_out)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_dev);
++
++   if (flags & NVKMD_VA_SPARSE) {
++      return vk_errorf(log_obj, VK_ERROR_UNKNOWN,
++                       "The Stellux nvkmd has no sparse address ranges");
++   }
++
++   struct nvkmd_stellux_va *va = CALLOC_STRUCT(nvkmd_stellux_va);
++   if (va == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   assert(util_is_power_of_two_or_zero64(align_B));
++   align_B = MAX2(align_B, _dev->pdev->bind_align_B);
++   size_B = align64(size_B, align_B);
++
++   assert((fixed_addr == 0) == !(flags & NVKMD_VA_ALLOC_FIXED));
++
++   simple_mtx_lock(&dev->heap_mutex);
++   VkResult result = alloc_heap_addr_locked(dev, log_obj, flags,
++                                            size_B, align_B,
++                                            fixed_addr, &va->base.addr);
++   simple_mtx_unlock(&dev->heap_mutex);
++   if (result != VK_SUCCESS) {
++      FREE(va);
++      return result;
++   }
++
++   va->base.ops = &nvkmd_stellux_va_ops;
++   va->base.dev = &dev->base;
++   va->base.flags = flags;
++   va->base.pte_kind = pte_kind;
++   va->base.size_B = size_B;
++
++   *va_out = &va->base;
++
++   return VK_SUCCESS;
++}
++
++static void
++nvkmd_stellux_va_free(struct nvkmd_va *_va)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_va->dev);
++   struct nvkmd_stellux_va *va = nvkmd_stellux_va(_va);
++
++   /* A mapping an unmap could not remove keeps its range out of the heap
++    * until the context ends
++    */
++   if (unmap_range(dev, va->base.addr, va->base.size_B) != ENOMEM)
++      free_heap_addr(dev, va->base.flags, va->base.addr, va->base.size_B);
++
++   FREE(va);
++}
++
++static VkResult
++nvkmd_stellux_va_bind_mem(struct nvkmd_va *_va,
++                          struct vk_object_base *log_obj,
++                          uint64_t va_offset_B,
++                          struct nvkmd_mem *_mem,
++                          uint64_t mem_offset_B,
++                          uint64_t range_B)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_va->dev);
++   struct nvkmd_stellux_mem *mem = nvkmd_stellux_mem(_mem);
++
++   assert(_mem->dev == _va->dev);
++
++   struct gpu_map_args args = {
++      .context = dev->context,
++      .buffer = mem->buffer,
++      .va = _va->addr + va_offset_B,
++      .offset = mem_offset_B,
++      .size = range_B,
++      .kind = _va->pte_kind,
++      .flags = mem->read_only ? GPU_MAP_READ_ONLY : 0,
++   };
++   if (ioctl(dev->fd, GPU_MAP, &args) != 0)
++      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_MAP, errno);
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_stellux_va_unbind(struct nvkmd_va *_va,
++                        struct vk_object_base *log_obj,
++                        uint64_t va_offset_B,
++                        uint64_t range_B)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(_va->dev);
++
++   /* The va's free removes or keeps a mapping an unmap's ENOMEM left */
++   unmap_range(dev, _va->addr + va_offset_B, range_B);
++
++   return VK_SUCCESS;
++}
++
++const struct nvkmd_va_ops nvkmd_stellux_va_ops = {
++   .free = nvkmd_stellux_va_free,
++   .bind_mem = nvkmd_stellux_va_bind_mem,
++   .unbind = nvkmd_stellux_va_unbind,
++};
