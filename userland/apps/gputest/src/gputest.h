@@ -60,6 +60,19 @@ void run_window_checks(int gpu);
 // card job drags at that place. Once its prompt prints, it waits two minutes for the job to drag its right edge
 void run_resize_check(int gpu);
 
+// Presents on gfxfb's output 0 in stlxdm's place, from a thread of its own, until stop_presenting() or until a present
+// call or the read of its end fails. Returns false when it cannot start, such as while stlxdm holds gfxfb's buffers
+bool start_presenting(void);
+
+// Whether start_presenting() succeeded and stop_presenting() has not run since
+bool is_presenting(void);
+
+// How many presents ended so far, on time or not
+uint64_t presents_ended(void);
+
+// Stops presenting. Returns whether presents ended, each latching within GFXFB_PRESENT_TIMEOUT_NS of its call's return
+bool stop_presenting(void);
+
 #define HELD_CHILD_ARG "held-child"
 
 // The child a window check kills, run as `gputest held-child`: it shows a GPU picture, leaves another pending, writes a

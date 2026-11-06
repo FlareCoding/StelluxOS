@@ -1,8 +1,8 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under
 // kernel/drivers/graphics/nvidia/LICENSE-NVIDIA
 
-// Checks /dev/gpu0 on an NVIDIA card or on virtio-gpu with venus, then the window protocol and its GPU buffers, or
-// with `proto` only the protocol checks, which need no GPU, or with `resize` only the resize check. Exits 1 on failure
+// Checks /dev/gpu0 on an NVIDIA card or on virtio-gpu with venus, then the window protocol and its GPU buffers. Exits 1
+// on failure. `proto`, `resize` or `gpu` runs only its own checks, and `display` runs the GPU checks while presenting
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -1040,8 +1040,10 @@ int main(int argc, char** argv) {
 
     bool proto_only = argc == 2 && strcmp(argv[1], "proto") == 0;
     bool resize_only = argc == 2 && strcmp(argv[1], "resize") == 0;
-    if (argc > 1 && !proto_only && !resize_only) {
-        printf("usage: gputest [proto | resize]\n");
+    bool gpu_only = argc == 2 && strcmp(argv[1], "gpu") == 0;
+    bool display_only = argc == 2 && strcmp(argv[1], "display") == 0;
+    if (argc > 1 && !proto_only && !resize_only && !gpu_only && !display_only) {
+        printf("usage: gputest [proto | resize | gpu | display]\n");
         return 1;
     }
 
@@ -1070,10 +1072,25 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    bool presents = display_only && start_presenting();
+    if (display_only) {
+        check("gputest holds gfxfb's buffers in stlxdm's place and presents on output 0", presents);
+    }
+
     if (info.backend == GPU_BACKEND_VIRTIO) {
         test_virtio_gpu(fd, &info);
     } else {
         test_nvidia(fd, &info);
+    }
+
+    if (display_only) {
+        bool presents_on_time = presents && stop_presenting();
+        check("every present on output 0 latched within its deadline while the GPU checks ran", presents_on_time);
+    }
+
+    if (gpu_only || display_only) {
+        close(fd);
+        return report();
     }
 
     run_proto_checks();
