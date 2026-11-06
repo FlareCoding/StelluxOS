@@ -46,6 +46,9 @@
 #define SYSTEM_VA    (VIDEO_VA + BUFFER_BYTES)
 #define SHARED_VA    (SYSTEM_VA + BUFFER_BYTES)
 
+// The copy part maps no buffer here, so a fill of it faults its channel
+#define UNMAPPED_VA (SHARED_VA + BUFFER_BYTES)
+
 // NVIDIA's NVC56F_DMA_SEC_OP_INC_METHOD, a push buffer header whose values go to consecutive methods, with the value
 // count from bit 16, here on subchannel 0
 #define PUSH_HEADER_INCREASING  (1u << 29)
@@ -935,6 +938,102 @@ static void test_physical_copy(int fd, struct copy_session* live) {
     check("closing the lost context gives its memory back", memory_returns_to(fd, before));
 }
 
+// A fill of unmapped memory faults its channel, and the firmware's report of the fault loses the context before the
+// queue's deadline, while the GPU runs on for other contexts
+static void test_faulting_fill(int fd, struct copy_session* live) {
+    struct gpu_memory before = read_memory(fd);
+    struct copy_session faulting = {0};
+    faulting.fd = fd;
+    faulting.copy_class = live->copy_class;
+
+    struct copy_queue* q = &faulting.queues[0];
+    struct command_list unmapped_fill = fill_commands(faulting.copy_class, UNMAPPED_VA, FILL_WORD);
+
+    bool opened = open_copy_session(&faulting);
+    bool submitted = opened && submit(&faulting, q, &unmapped_fill, NULL) == 0;
+    uint64_t start_ns = monotonic_ns();
+    bool ended = submitted && wait_for(&faulting, q, LOST_WAIT_NS) == 0;
+    uint64_t elapsed_ns = monotonic_ns() - start_ns;
+
+    struct gpu_context_args query = {0};
+    query.context = faulting.context;
+    bool queried = gpu_call(fd, GPU_CONTEXT_QUERY, &query) == 0;
+    printf(
+        "gputest: the faulting fill's context reads lost %u at address 0x%llx after %llu ms\n",
+        query.lost,
+        (unsigned long long)query.fault_va,
+        (unsigned long long)(elapsed_ns / NS_PER_MS)
+    );
+
+    bool ended_in_time = ended && elapsed_ns < GPU_SUBMIT_TIMEOUT_NS && ended_failed(&faulting, q);
+    bool lost_to_fault = queried && query.lost == GPU_LOST_FAULT && query.fault_va == 0;
+    check(
+        "a fill of unmapped memory ends failed before its deadline, its context lost to a fault whose address reads 0",
+        ended_in_time && lost_to_fault
+    );
+
+    struct command_list system_fill = fill_commands(faulting.copy_class, SYSTEM_VA, FILL_WORD);
+    bool refuses_submission = opened && submit(&faulting, &faulting.queues[1], &system_fill, NULL) == EIO;
+    bool refuses_mapping = opened && map(fd, faulting.context, faulting.system, SHARED_VA, 0) == EIO;
+    check("the faulted context refuses later submissions and mappings with EIO", refuses_submission && refuses_mapping);
+
+    struct command_list live_fill = fill_commands(live->copy_class, SYSTEM_VA, ~FILL_WORD);
+    bool filled = run(live, &live->queues[0], &live_fill) == 0 && reads_as(live->system_words, ~FILL_WORD);
+    check(
+        "another context's queue still fills memory once the faulting fill's context is lost",
+        filled && lost_to_fault && lost_reason(live) == 0
+    );
+
+    close_copy_session(&faulting);
+    check("closing the faulted context gives its memory back", memory_returns_to(fd, before));
+}
+
+// A queue taking the faulting fill's channel id runs a fill, then an acquire of a word nobody writes holds it until the
+// deadline loses the context and stops the queues, so writing the word later runs nothing, and other contexts run on
+static void test_hung_acquire(int fd, struct copy_session* live) {
+    struct gpu_memory before = read_memory(fd);
+    struct copy_session hung = {0};
+    hung.fd = fd;
+    hung.copy_class = live->copy_class;
+
+    struct copy_queue* q = &hung.queues[0];
+    struct command_list reused_fill = fill_commands(hung.copy_class, SYSTEM_VA, ~FILL_WORD);
+    struct command_list list = {0};
+    push_acquire(&list, SEMAPHORE_VA, 1);
+    push_fill(&list, hung.copy_class, SYSTEM_VA, FILL_WORD);
+
+    // The first queue takes the lowest free channel id, the one the faulting fill's queue gave back
+    bool opened = open_copy_session(&hung);
+    bool reused = opened && run(&hung, q, &reused_fill) == 0 && reads_as(hung.system_words, ~FILL_WORD);
+    check("a queue taking the faulting fill's channel id runs a fill", reused);
+
+    bool submitted = opened && submit(&hung, q, &list, NULL) == 0;
+    bool lost = stalls_until_lost(&hung, q, submitted, "the hung acquire");
+    check("a submission held by an acquire of a word nobody writes stalls until its deadline loses the context", lost);
+
+    if (lost) {
+        volatile uint32_t* semaphore = hung.command_words + QUEUE_COUNT * PAGE_WORDS;
+        *semaphore = 1;
+        __sync_synchronize();
+        usleep(HOLD_US);
+    }
+
+    check(
+        "the lost context's stopped queue runs nothing once the word its acquire waits for is written",
+        lost && reads_as(hung.system_words, ~FILL_WORD)
+    );
+
+    struct command_list live_fill = fill_commands(live->copy_class, SYSTEM_VA, FILL_WORD);
+    bool filled = run(live, &live->queues[0], &live_fill) == 0 && reads_as(live->system_words, FILL_WORD);
+    check(
+        "another context's queue still fills memory once the hung acquire's context is lost",
+        filled && lost && lost_reason(live) == 0
+    );
+
+    close_copy_session(&hung);
+    check("closing the hung acquire's context gives its memory back", memory_returns_to(fd, before));
+}
+
 // The NON_STALL_INTERRUPT methods raise the copy vector, those raised while one is pending merging into it, and no
 // handler pass they cost reports the queue's progress, so the wait ends only once the fill after them has run
 static void test_interrupt_storm(struct copy_session* s) {
@@ -1002,9 +1101,12 @@ static void test_copy_queues(int fd, const struct gpu_info* info) {
 
     test_host_methods(&s);
     test_acquire(&s);
+    test_interrupt_storm(&s);
+
     test_tlb_invalidate(fd, &s);
     test_physical_copy(fd, &s);
-    test_interrupt_storm(&s);
+    test_faulting_fill(fd, &s);
+    test_hung_acquire(fd, &s);
 
     test_session_end(&s, before);
 }
