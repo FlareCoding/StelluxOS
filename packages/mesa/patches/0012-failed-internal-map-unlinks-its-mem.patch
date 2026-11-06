@@ -1,0 +1,26 @@
+Where the internal map in nvkmd_dev_alloc_mapped_mem fails, drops the mem (an
+nvkmd's memory object) with nvkmd_mem_unref, which unlinks it from its
+device's list of mems. A failed internal map, NVK's own reference-counted CPU
+mapping, also lowers the map count again, so the mem's next internal unmap
+releases its mapping.
+
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.c
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.c
+@@ -158,7 +158,7 @@ nvkmd_dev_alloc_mapped_mem(struct nvkmd_dev *dev,
+    assert(!(map_flags & NVKMD_MEM_MAP_FIXED));
+    result = nvkmd_mem_map(mem, log_obj, map_flags, NULL, NULL);
+    if (result != VK_SUCCESS) {
+-      mem->ops->free(mem);
++      nvkmd_mem_unref(mem);
+       return result;
+    }
+ 
+@@ -431,6 +431,8 @@ nvkmd_mem_map(struct nvkmd_mem *mem, struct vk_object_base *log_obj,
+          result = mem->ops->map(mem, log_obj, NVKMD_MEM_MAP_RDWR, NULL, &map);
+          if (result == VK_SUCCESS)
+             mem->map = map;
++         else
++            mem->map_cnt--;
+       } else {
+          map = mem->map;
+       }
