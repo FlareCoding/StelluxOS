@@ -242,11 +242,12 @@ int32_t virtio_gpu_driver::queue_command(const void* request, uint32_t request_s
     string::memcpy(page + request_offset, request, request_size);
     string::memset(page + response_offset, 0, response_size);
 
-    int32_t head = m_control_queue.add_buf_chain(
-        m_command_page.phys + request_offset, request_size,
-        m_command_page.phys + response_offset, response_size,
-        0, VRING_DESC_F_WRITE);
+    chain_buffer chain[DESCRIPTORS_PER_COMMAND] = {
+        {m_command_page.phys + request_offset, request_size, 0},
+        {m_command_page.phys + response_offset, response_size, VRING_DESC_F_WRITE},
+    };
 
+    int32_t head = m_control_queue.add_buf_chain(chain, DESCRIPTORS_PER_COMMAND);
     if (head < 0) {
         return ERR_BATCH_FULL;
     }
