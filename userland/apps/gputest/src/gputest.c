@@ -4,6 +4,9 @@
 // Checks /dev/gpu0 on an NVIDIA card or on virtio-gpu with venus, then the window protocol and its GPU buffers. Exits 1
 // on failure. `proto`, `resize` or `gpu` runs only its own checks, and `display` runs the GPU checks while presenting
 
+// Started as /bin/stlxdm with no argument, it runs only the remap check: two contexts remap buffers while gfxfb's are
+// created and destroyed. A round is one remap, fill and copy on one context
+
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -36,6 +39,10 @@
 #define HOLD_US         (20 * 1000)
 #define LOST_WAIT_NS    (GPU_SUBMIT_TIMEOUT_NS + 2 * NS_PER_SEC)
 #define STORM_METHODS   250000u
+#define REMAP_CONTEXTS  2
+#define REMAP_NS        (10 * NS_PER_SEC)
+#define DEVICE_WAIT_NS  (30 * NS_PER_SEC)
+#define STLXDM_PATH     "/bin/stlxdm" // where init starts the display manager
 
 // The copy part's buffers in its context: the first holds a page of command words per queue, the word a semaphore
 // acquire reads and an interrupt storm's words, and the next three the memory they fill and copy
@@ -48,6 +55,10 @@
 
 // The copy part maps no buffer here, so a fill of it faults its channel
 #define UNMAPPED_VA (SHARED_VA + BUFFER_BYTES)
+
+// The remap check's second video buffer in each context, and where each round maps one of the context's two in turn
+#define OTHER_VIDEO_VA (UNMAPPED_VA + BUFFER_BYTES)
+#define REMAP_VA       (OTHER_VIDEO_VA + BUFFER_BYTES)
 
 // NVIDIA's NVC56F_DMA_SEC_OP_INC_METHOD, a push buffer header whose values go to consecutive methods, with the value
 // count from bit 16, here on subchannel 0
@@ -1128,6 +1139,216 @@ static void test_nvidia(int fd, const struct gpu_info* info) {
     test_copy_queues(fd, info);
 }
 
+// The GPU core publishes /dev/gpu0 once the driver's task registers the GPU after bring-up, so init can start stlxdm
+// before the device exists
+static int open_device_once_registered(void) {
+    uint64_t deadline = monotonic_ns() + DEVICE_WAIT_NS;
+    int fd = open("/dev/gpu0", O_RDWR);
+    while (fd < 0 && monotonic_ns() < deadline) {
+        usleep(POLL_US);
+        fd = open("/dev/gpu0", O_RDWR);
+    }
+
+    return fd;
+}
+
+// The word a round fills, unique to the round and the context
+static uint32_t round_word(uint32_t round, uint32_t context_index) {
+    return FILL_WORD + round * REMAP_CONTEXTS + context_index;
+}
+
+// Returns the index of the first word unlike `value`, or BUFFER_WORDS when every word is `value`
+static size_t first_unlike(const volatile uint32_t* words, uint32_t value) {
+    size_t i = 0;
+    while (i < BUFFER_WORDS && words[i] == value) {
+        i++;
+    }
+
+    return i;
+}
+
+// Maps `s`'s own video buffer on even rounds and `other` on odd ones at REMAP_VA, fills it through its fixed address
+// and copies REMAP_VA to system memory, so a stale mapping copies an older word. Returns the failed step or null
+static const char* remap_fill_and_copy(
+    struct copy_session* s,
+    int32_t other,
+    uint32_t round,
+    uint32_t word,
+    int* error
+) {
+    bool is_odd = round % 2 != 0;
+    int32_t video = is_odd ? other : s->video;
+    uint64_t video_va = is_odd ? OTHER_VIDEO_VA : VIDEO_VA;
+
+    struct copy_queue* q = &s->queues[0];
+    struct command_list buffer_fill = fill_commands(s->copy_class, video_va, word);
+    struct command_list remapped_copy = copy_commands(s->copy_class, REMAP_VA, SYSTEM_VA, BUFFER_BYTES);
+
+    *error = unmap(s->fd, s->context, REMAP_VA);
+    if (*error != 0) {
+        return "the unmap";
+    }
+
+    *error = map(s->fd, s->context, video, REMAP_VA, 0);
+    if (*error != 0) {
+        return "the map";
+    }
+
+    *error = run(s, q, &buffer_fill);
+    if (*error != 0) {
+        return "the fill";
+    }
+
+    *error = run(s, q, &remapped_copy);
+    if (*error != 0) {
+        return "the copy";
+    }
+
+    return NULL;
+}
+
+// Runs one round on `s`. A failure prints the failed step and its errno, or the first word read back unlike the fill
+static bool round_passes(struct copy_session* s, int32_t other, uint32_t round, uint32_t context_index) {
+    uint32_t word = round_word(round, context_index);
+    int error = 0;
+    const char* failed_step = remap_fill_and_copy(s, other, round, word, &error);
+    if (failed_step != NULL) {
+        printf(
+            "gputest: the remap check's round %u failed on context %u: %s failed: %s\n",
+            round,
+            context_index,
+            failed_step,
+            strerror(error)
+        );
+        return false;
+    }
+
+    size_t unlike = first_unlike(s->system_words, word);
+    if (unlike < BUFFER_WORDS) {
+        printf(
+            "gputest: the remap check's round %u failed on context %u: word %zu read back 0x%x where the fill wrote "
+            "0x%x, and the context reads lost %u\n",
+            round,
+            context_index,
+            unlike,
+            s->system_words[unlike],
+            word,
+            lost_reason(s)
+        );
+        return false;
+    }
+
+    return true;
+}
+
+// Runs rounds on each context in turn until REMAP_NS passed or one fails. Returns whether none failed, with how many
+// rounds passed on every context in `rounds`
+static bool remap_until_deadline(struct copy_session* sessions, const int32_t* others, uint32_t* rounds) {
+    uint64_t deadline = monotonic_ns() + REMAP_NS;
+    *rounds = 0;
+    while (monotonic_ns() < deadline) {
+        for (uint32_t i = 0; i < REMAP_CONTEXTS; i++) {
+            if (!round_passes(&sessions[i], others[i], *rounds, i)) {
+                return false;
+            }
+        }
+
+        (*rounds)++;
+    }
+
+    return true;
+}
+
+// Whether each context's own video buffer, which even rounds fill, still reads its last fill through its CPU mapping
+// after the display mapped and unmapped gfxfb's buffers for the CPU while the rounds ran
+static bool cpu_mappings_read_last_fills(struct copy_session* sessions, uint32_t rounds) {
+    uint32_t last_even_round = (rounds - 1) & ~1u;
+    for (uint32_t i = 0; i < REMAP_CONTEXTS; i++) {
+        if (!reads_as(sessions[i].video_words, round_word(last_even_round, i))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Two contexts remap their video buffers while gfxfb's buffers are created and destroyed, so the display's scanout
+// memory, its mappings for the CPU and its window bindings change while the contexts' mappings do
+static void test_remaps(int fd, const struct gpu_info* info) {
+    struct gpu_memory before = read_memory(fd);
+    struct copy_session sessions[REMAP_CONTEXTS] = {0};
+    int32_t others[REMAP_CONTEXTS];
+
+    bool opened = true;
+    for (uint32_t i = 0; i < REMAP_CONTEXTS; i++) {
+        sessions[i].fd = fd;
+        sessions[i].copy_class = info->nvidia.class_copy;
+        bool opens = open_copy_session(&sessions[i]);
+
+        create_buffer(fd, BUFFER_BYTES, GPU_PLACEMENT_VIDEO, 0, &others[i]);
+        opened = opened && opens && map(fd, sessions[i].context, others[i], OTHER_VIDEO_VA, 0) == 0;
+    }
+
+    check("two contexts open copy queues, each with a second video buffer mapped", opened);
+    bool cycling = opened && start_cycling_buffers();
+    check("gputest in stlxdm's place starts creating gfxfb's buffers", cycling);
+
+    uint64_t start_ns = monotonic_ns();
+    uint64_t cycled_before = cycled_buffers();
+    uint32_t rounds = 0;
+    bool copied = cycling && remap_until_deadline(sessions, others, &rounds);
+    uint64_t cycled = cycled_buffers() - cycled_before;
+    uint64_t elapsed_ms = (monotonic_ns() - start_ns) / NS_PER_MS;
+
+    bool stopped_cleanly = cycling && stop_cycling_buffers();
+    bool cpu_reads_fills = copied && cpu_mappings_read_last_fills(sessions, rounds);
+    for (uint32_t i = 0; i < REMAP_CONTEXTS; i++) {
+        close_copy_session(&sessions[i]);
+        release(others[i], NULL);
+    }
+
+    // Printed after the wait for the display's last release, so a release that ends in time logs before these
+    bool returned = memory_returns_to(fd, before);
+    printf(
+        "gputest: %u %s on each context took %llu ms, while gfxfb created and destroyed %llu %s\n",
+        rounds,
+        rounds == 1 ? "round" : "rounds",
+        (unsigned long long)elapsed_ms,
+        (unsigned long long)cycled,
+        cycled == 1 ? "buffer" : "buffers"
+    );
+
+    check("every copy from a context's remapped address reads back the fill of the buffer mapped there", copied);
+    check("each context's own video buffer reads its last fill through its CPU mapping", cpu_reads_fills);
+    check("gfxfb created and destroyed buffers while the rounds ran, no call failing", cycled > 0 && stopped_cleanly);
+    check("closing the contexts and /dev/gfxfb gives their memory back", returned);
+}
+
+// Run by gputest in stlxdm's place, since gfxfb fails any other open file's creations with EBUSY while stlxdm controls
+// gfxfb's buffers
+static void run_remap_check(void) {
+    int fd = open_device_once_registered();
+    if (fd < 0) {
+        printf("gputest: /dev/gpu0 cannot be opened: %s\n", strerror(errno));
+    }
+
+    struct gpu_info info = {0};
+    int error = fd >= 0 ? gpu_call(fd, GPU_GET_INFO, &info) : 0;
+    if (error != 0) {
+        printf("gputest: GPU_GET_INFO failed: %s\n", strerror(error));
+    }
+
+    bool is_nvidia = fd >= 0 && error == 0 && info.backend == GPU_BACKEND_NVIDIA;
+    check("gputest in stlxdm's place opens /dev/gpu0 on an NVIDIA GPU once its driver registers it", is_nvidia);
+    if (is_nvidia) {
+        test_remaps(fd, &info);
+    }
+
+    if (fd >= 0) {
+        close(fd);
+    }
+}
+
 static int report(void) {
     printf("gputest: %d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;
@@ -1138,6 +1359,12 @@ int main(int argc, char** argv) {
 
     if (argc == 2 && strcmp(argv[1], HELD_CHILD_ARG) == 0) {
         return run_held_child();
+    }
+
+    // init starts stlxdm by this path with no argument, so gputest started that way stands in stlxdm's place
+    if (argc == 1 && strcmp(argv[0], STLXDM_PATH) == 0) {
+        run_remap_check();
+        return report();
     }
 
     bool proto_only = argc == 2 && strcmp(argv[1], "proto") == 0;

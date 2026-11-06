@@ -73,6 +73,17 @@ uint64_t presents_ended(void);
 // Stops presenting. Returns whether presents ended, each latching within GFXFB_PRESENT_TIMEOUT_NS of its call's return
 bool stop_presenting(void);
 
+// Creates and destroys gfxfb's buffers of the primary output's size in stlxdm's place, from a thread of its own, until
+// stop_cycling_buffers() or until a call fails, which it prints. Returns false, printing why, when it cannot start
+bool start_cycling_buffers(void);
+
+// How many buffers the cycling has created and destroyed so far
+uint64_t cycled_buffers(void);
+
+// Stops the cycling and closes /dev/gfxfb once its thread finishes the buffer in progress. Must follow a start that
+// returned true. Returns false when a failed call ended the cycling early
+bool stop_cycling_buffers(void);
+
 #define HELD_CHILD_ARG "held-child"
 
 // The child a window check kills, run as `gputest held-child`: it shows a GPU picture, leaves another pending, writes a
