@@ -325,6 +325,20 @@ static constexpr uint8_t  ONE_LANE_TRAINED[]          = {0x07, 0x00, 0x01};
 // The sink's own link status field, NVIDIA's NV_DPCD_LANE0_1_STATUS, read when either end lacks DisplayPort 1.2
 static constexpr uint32_t DPCD_SINK_LINK_STATUS = 0x00202;
 
+// The link status bytes of a lost link: lane 0's clock recovered, its equalization not done, its symbols not locked,
+// lanes not aligned
+static constexpr uint8_t LOST_LINK_STATUS[] = {0x01, 0x00, 0x00};
+
+// The link status bytes of a link of 2 lanes whose lane 1 lost only its equalization, its clock recovered and symbols
+// locked, with lane 0 trained and lanes aligned
+static constexpr uint8_t EQUALIZATION_LOST_STATUS[] = {0x57, 0x00, 0x01};
+
+// A monitor's link service interrupt byte, NVIDIA's NV_DPCD_LINK_SERVICE_IRQ_VECTOR_ESI0, and its RX_CAP_CHANGED and
+// LINK_STATUS_CHANGED bits
+static constexpr uint32_t DPCD_LINK_SERVICE_INTERRUPTS = 0x02005;
+static constexpr uint8_t  RX_CAP_CHANGED               = 0x01;
+static constexpr uint8_t  LINK_STATUS_CHANGED          = 0x02;
+
 // A firmware that records each request in order, its status reads and trainings at one or more lanes with the last's
 // data, answers one a refusal matches with its result, the replies its fields describe from them, and others as sent
 class engine_firmware : public firmware {
@@ -394,6 +408,19 @@ public:
     bool       refuses_link_status = false;   // whether reads of them are refused with `ERR_FIRMWARE`
     int32_t    link_status_error = OK;        // an error every read of them fails with, OK for none
     uint32_t   refused_aux_display_id = 0;    // a display id whose AUX requests fail with `ERR_FIRMWARE`, 0 for none
+    uint32_t   lost_link_ids = 0;             // display ids whose next link status read gives `lost_link_status`
+    const uint8_t* lost_link_status = LOST_LINK_STATUS; // the link status bytes those reads give
+    bool       fails_gpu_at_status_read = false; // whether the next link status read sets the GPU's failed mark
+    uint8_t    link_service_interrupts = 0;   // the byte every connected monitor gives at 0x02005
+    uint32_t   interrupt_reads = 0;           // the AUX reads at 0x02005, refused ones included
+    uint32_t   interrupt_writes = 0;          // the AUX writes there, refused ones included
+    uint8_t    written_interrupts = 0;        // the byte the last write there carried
+    uint32_t   refused_interrupt_command = 0; // an AUX command at 0x02005 refused with `ERR_FIRMWARE`, 0 for none
+    uint32_t   failing_interrupt_command = 0; // an AUX command at 0x02005 failing with `interrupt_error`, 0 for none
+    int32_t    interrupt_error = OK;          // the error it fails with
+    uint32_t   deferred_interrupt_reads = 0;  // how many reads at 0x02005 the monitor defers before acknowledging
+    uint32_t   deferred_interrupt_writes = 0; // how many writes at 0x02005 the monitor defers before acknowledging
+    uint32_t   interrupt_write_size = 0;      // the reply size acknowledging a write there, 0 for its byte's
     const uint8_t* phy_repeater_capabilities = nullptr; // the PHY repeater bytes every connected monitor gives, if any
     uint32_t   repeater_status_reads = 0;     // the DPCD reads past those bytes, where the repeaters' status lies
     uint32_t   displayport_max_rate = 4;      // the highest rate code the DisplayPort facts give, the RTX 3080's HBR3
@@ -406,6 +433,7 @@ public:
     uint32_t   streamed_heads = 0;            // a bit for each head a stream request named, bit 0 head 0's
     power_down power_downs[4] = {};           // the first trainings to zero lanes and AUX writes of D3, in order
     uint32_t   power_down_count = 0;          // how many came, the 4 kept and any past them
+    uint32_t   check_requests = 0;            // the bandwidth check requests, counted past the calls `calls` holds
     uint32_t   refused_modes = 0;             // how many of the first bandwidth check requests the check refuses
     uint32_t   accepted_modes = 0xFFFFFFFF;   // how many after those it accepts before refusing every later one
     uint32_t   refused_checks = 0;            // a bit for each other request it refuses, bit 0 the first request's
@@ -477,6 +505,7 @@ public:
     int32_t control(rm::handle object, uint32_t command, void* params, size_t) override {
         keep_power_down(command, params);
         count_link_request(command, params);
+        count_interrupt_request(command, params);
 
         bool is_first_active_read = command == rm::CONTROL_GET_ACTIVE_DISPLAY && control_count(command) == 0;
         if (is_first_active_read) {
@@ -518,7 +547,7 @@ public:
             return rc;
         }
 
-        bool is_failing_check = command == rm::CONTROL_IS_MODE_POSSIBLE && control_count(command) == failing_check;
+        bool is_failing_check = command == rm::CONTROL_IS_MODE_POSSIBLE && check_requests == failing_check;
         if (is_failing_check) {
             return check_result;
         }
@@ -526,6 +555,16 @@ public:
         bool is_failing_status_read = link_status_error != OK && reads_link_status(command, params);
         if (is_failing_status_read) {
             return link_status_error;
+        }
+
+        bool is_failing_command = is_interrupt_request(command, params, failing_interrupt_command);
+        if (is_failing_command && failing_interrupt_command != 0) {
+            return interrupt_error;
+        }
+
+        bool is_refused_command = is_interrupt_request(command, params, refused_interrupt_command);
+        if (is_refused_command && refused_interrupt_command != 0) {
+            return ERR_FIRMWARE;
         }
 
         bool is_refused_read =
@@ -582,6 +621,9 @@ public:
         fill_check_reply(command, params);
         fill_state_reply(command, params);
         fill_link_reply(command, params);
+
+        give_lost_link_status(command, params);
+        answer_interrupt_request(command, params);
 
         keep_training(command, params);
         keep_stream(command, params);
@@ -872,6 +914,59 @@ private:
         return is_aux && static_cast<const rm::aux_params*>(params)->address == link_status_address;
     }
 
+    // Whether `command` is an AUX request at 0x02005 sending `aux_command`
+    static bool is_interrupt_request(uint32_t command, const void* params, uint32_t aux_command) {
+        if (command != rm::CONTROL_DP_AUX) {
+            return false;
+        }
+
+        const rm::aux_params* aux = static_cast<const rm::aux_params*>(params);
+        return aux->address == DPCD_LINK_SERVICE_INTERRUPTS && aux->command == aux_command;
+    }
+
+    // Counts an AUX read or write at 0x02005 and keeps a write's byte, each before its answer
+    void count_interrupt_request(uint32_t command, const void* params) {
+        if (params == nullptr) {
+            return;
+        }
+
+        if (is_interrupt_request(command, params, rm::AUX_COMMAND_DPCD_READ)) {
+            interrupt_reads++;
+        } else if (is_interrupt_request(command, params, rm::AUX_COMMAND_DPCD_WRITE)) {
+            interrupt_writes++;
+            written_interrupts = static_cast<const rm::aux_params*>(params)->data[0];
+        }
+    }
+
+    // Gives `lost_link_status` to a link status read of a display id in `lost_link_ids`, clearing its bit
+    void give_lost_link_status(uint32_t command, void* params) {
+        if (!reads_link_status(command, params)) {
+            return;
+        }
+
+        rm::aux_params* aux = static_cast<rm::aux_params*>(params);
+        if ((aux->display_id & lost_link_ids) != 0) {
+            string::memcpy(aux->data, lost_link_status, sizeof(LOST_LINK_STATUS));
+            lost_link_ids &= ~aux->display_id;
+        }
+    }
+
+    // Defers each read at 0x02005 up to the `deferred_interrupt_reads`th and each write there up to the
+    // `deferred_interrupt_writes`th, and acknowledges a later write with `interrupt_write_size` bytes unless it is 0
+    void answer_interrupt_request(uint32_t command, void* params) const {
+        bool reads_interrupts = is_interrupt_request(command, params, rm::AUX_COMMAND_DPCD_READ);
+        bool writes_interrupts = is_interrupt_request(command, params, rm::AUX_COMMAND_DPCD_WRITE);
+        bool defers_read = reads_interrupts && interrupt_reads <= deferred_interrupt_reads;
+        bool defers_write = writes_interrupts && interrupt_writes <= deferred_interrupt_writes;
+        rm::aux_params* aux = static_cast<rm::aux_params*>(params);
+        if (defers_read || defers_write) {
+            aux->reply = rm::AUX_REPLY_DEFER;
+            aux->size = 0;
+        } else if (writes_interrupts && interrupt_write_size != 0) {
+            aux->size = interrupt_write_size;
+        }
+    }
+
     // Whether `command` is an AUX request naming `refused_aux_display_id`, which no request names while it is 0
     bool names_refused_aux_display_id(uint32_t command, const void* params) const {
         bool is_aux = command == rm::CONTROL_DP_AUX;
@@ -942,7 +1037,8 @@ private:
         return (data & NVIDIA_DP_DATA_LANE_COUNT_MASK) != 0;
     }
 
-    // Counts a training at one or more lanes and a read of the link status bytes, each before its answer
+    // Counts a training at one or more lanes, a read of the link status bytes and a bandwidth check request, each
+    // before its answer, and sets the GPU's failed mark at the next status read when `fails_gpu_at_status_read` is set
     void count_link_request(uint32_t command, const void* params) {
         if (params == nullptr) {
             return;
@@ -955,6 +1051,15 @@ private:
 
         if (reads_link_status(command, params)) {
             link_status_reads++;
+        }
+
+        if (reads_link_status(command, params) && fails_gpu_at_status_read) {
+            g_failed_mark->set();
+            fails_gpu_at_status_read = false;
+        }
+
+        if (command == rm::CONTROL_IS_MODE_POSSIBLE) {
+            check_requests++;
         }
     }
 
@@ -980,8 +1085,8 @@ private:
         }
     }
 
-    // Acknowledges a DPCD read with its monitor's receiver capability bytes from its address, `link_status`'s from
-    // `link_status_address` and `phy_repeater_capabilities`'s from theirs, every other byte reading 0
+    // Acknowledges a DPCD read or write, giving a read its monitor's receiver capability bytes, `link_status`,
+    // `phy_repeater_capabilities` and `link_service_interrupts` from their addresses, every other byte reading 0
     void fill_aux_reply(rm::aux_params& reply) const {
         const uint8_t* receiver = dpcd_receiver;
         if (reply.display_id == OUTPUT_1_ID && output_1_dpcd_receiver != nullptr) {
@@ -1001,6 +1106,8 @@ private:
                 reply.data[i] = link_status[status_byte];
             } else if (phy_repeater_capabilities != nullptr && is_repeater_byte) {
                 reply.data[i] = phy_repeater_capabilities[repeater_byte];
+            } else if (address == DPCD_LINK_SERVICE_INTERRUPTS) {
+                reply.data[i] = link_service_interrupts;
             }
         }
 
@@ -1086,7 +1193,7 @@ private:
 
     // Keeps the heads a bandwidth check request names and each one's pixel clock
     void keep_check(uint32_t command, const void* params) {
-        uint32_t request = control_count(rm::CONTROL_IS_MODE_POSSIBLE);
+        uint32_t request = check_requests;
         if (command != rm::CONTROL_IS_MODE_POSSIBLE || request > sizeof(check_heads) / sizeof(check_heads[0])) {
             return;
         }
@@ -1102,7 +1209,7 @@ private:
     // them and those of `refused_checks`
     void fill_check_reply(uint32_t command, void* params) const {
         if (command == rm::CONTROL_IS_MODE_POSSIBLE) {
-            uint32_t request = control_count(rm::CONTROL_IS_MODE_POSSIBLE);
+            uint32_t request = check_requests;
             bool is_listed = request <= 32 && (refused_checks & (1u << (request - 1))) != 0;
             bool is_refused = is_listed || request <= refused_modes || request - refused_modes > accepted_modes;
             static_cast<rm::mode_possible_params*>(params)->is_possible = is_refused ? 0 : 1;
@@ -10067,7 +10174,10 @@ TEST(nvidia_display_engine, firmware_events_queue_their_records_once) {
     serve_logged();
 
     EXPECT_EQ(fw.control_count(NVIDIA_GET_HOTPLUG_UNPLUG_STATE), 1u);
-    EXPECT_EQ(engine_log_count("nvidia: a DisplayPort short pulse event arrived, which is only logged"), 1u);
+    EXPECT_EQ(
+        engine_log_count("nvidia: a DisplayPort short pulse event arrived, so each lit output's link status is read"),
+        1u
+    );
     EXPECT_EQ(engine.release(), OK);
 }
 
@@ -12128,4 +12238,474 @@ TEST(nvidia_display_engine, a_failed_displays_release_frees_a_buffer_bound_to_no
     EXPECT_EQ(memory.scanout_releases, releases + 1);
     EXPECT_EQ(engine.release(), OK);
     free_taken_down_base_buffer(base);
+}
+
+// Sends the short pulse's event and serves the driver task's queue with the log kept, clearing the recorded mode set
+// requests first, as `plug_output_1` does
+static void send_short_pulse(engine_firmware& fw, display_engine& engine) {
+    fw.mode_set_requests = 0;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[1], NVIDIA_NOTIFIERS_DP_IRQ)));
+    serve_logged();
+}
+
+// `TIMING_1366_BY_767` at an 85.49 MHz pixel clock, so a bandwidth check request tells it from `TIMING_1366_BY_768`
+static constexpr uint8_t TIMING_1366_BY_767_AT_85_49_MHZ[] = {
+    0x65, 0x21, 0x56, 0xAA, 0x51, 0xFF, 0x1E, 0x20, 0x46, 0x8F, 0x33, 0x00, 0x0F, 0x8C, 0x21, 0x00, 0x00, 0x1E,
+};
+
+// Sets up an engine over `fw` and `memory` lighting outputs 0 and 1 as `set_up_two_lit_outputs` does, with output 1 at
+// its EDID's timing 1, 1366 by 767, as the bandwidth check refuses its timing 0 beside output 0
+static display_engine& set_up_output_1_at_timing_1(engine_firmware& fw, engine_video_memory& memory) {
+    EXPECT_TRUE(connect_two_outputs(fw, memory));
+    put_timing(1, TIMING_1366_BY_767_AT_85_49_MHZ);
+    fw.refused_checks = 1u << 1;
+
+    display_engine& engine = new_engine(fw, memory);
+    EXPECT_EQ(set_up(engine), OK);
+    EXPECT_EQ(head_of_output(engine, 1), 1u);
+    EXPECT_EQ(fw.check_requests, 3u);
+
+    record_relight_reports(engine);
+
+    return engine;
+}
+
+// A short pulse finding lit output 1's link lost clears its link status changed bit and then relights it at the timing
+// it had, beside output 0's in one check request, reported dark with `relighting` and then lit, while output 0 is left
+TEST(nvidia_display_engine, a_short_pulse_relights_an_output_whose_link_is_lost_at_the_timing_it_had) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory);
+    gfxfb::buffer* base = engine.base_buffer(0);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+
+    fw.lost_link_ids = OUTPUT_1_ID;
+    fw.link_service_interrupts = LINK_STATUS_CHANGED;
+    send_short_pulse(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: a DisplayPort short pulse event arrived, so each lit output's link status is read"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x100's link status reads 0x07 0x00 0x01, so its link is still trained at 1 lane"
+    ));
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x200's link status reads 0x01 0x00 0x00, so its link is no longer trained at 1 lane"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is taken down to be relit"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is chosen to light at its EDID's timing 1, 1366 by 767 at "));
+    EXPECT_FALSE(engine_log_contains("output 1's timing 0"));
+
+    uint32_t cleared_1 = engine_log_offset("nvidia: display id 0x200's link status changed bit is cleared");
+    uint32_t relit_1 = engine_log_offset("nvidia: output 1 is taken down to be relit");
+    EXPECT_LT(cleared_1, relit_1);
+    EXPECT_LT(relit_1, s_engine_log_bytes);
+
+    ASSERT_EQ(fw.check_requests, 4u);
+    EXPECT_EQ(fw.check_heads[3], (1u << 0) | (1u << 1));
+    EXPECT_EQ(fw.check_clocks[3][0], fw.check_clocks[0][0]);
+    EXPECT_EQ(fw.check_clocks[3][1], fw.check_clocks[2][1]);
+    EXPECT_NE(fw.check_clocks[3][1], fw.check_clocks[1][1]);
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_EQ(g_output_change_output, 1u);
+    EXPECT_FALSE(g_relight_reports[0].lit);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_TRUE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(head_of_output(engine, 1), 1u);
+    EXPECT_EQ(engine.base_buffer(0), base);
+    EXPECT_NE(engine.base_buffer(1), taken_down);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A short pulse relights lit output 1, trained at 2 lanes on its RBR monitor, when lane 1 lost only its equalization,
+// as `displayport::is_trained` asks each trained lane for clock recovery, equalization and lock
+TEST(nvidia_display_engine, a_short_pulse_relights_an_output_whose_lane_lost_only_its_equalization) {
+    engine_firmware fw;
+    fw.output_1_dpcd_receiver = DPCD_RECEIVER_RBR;
+    fw.link_status = TWO_LANES_TRAINED;
+
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    fw.lost_link_ids = OUTPUT_1_ID;
+    fw.lost_link_status = EQUALIZATION_LOST_STATUS;
+
+    send_short_pulse(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: display id 0x200's link status reads 0x57 0x00 0x01, so its link is no longer trained at 2 lanes"
+    ));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is taken down to be relit"));
+    EXPECT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(fw.training_data, 0x0602u);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A short pulse's relight of lit output 1 that the bandwidth check refuses at the timing it had asks about no other
+// timing and leaves the output dark, reported dark again without `relighting`
+TEST(nvidia_display_engine, a_short_pulses_relight_refused_at_the_lit_timing_leaves_the_output_dark) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    fw.lost_link_ids = OUTPUT_1_ID;
+    fw.refused_checks |= 1u << 3;
+
+    send_short_pulse(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the bandwidth check refuses output 1's timing 1, 1366 by 767 at "));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 stays dark, as every one of its modes is refused"));
+    EXPECT_EQ(fw.check_requests, 4u);
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_FALSE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// An output whose monitor is plugged again after a short pulse relit the output is left, as the relight kept the EDID
+// bytes the output was lit with
+TEST(nvidia_display_engine, an_output_relit_by_a_short_pulse_and_plugged_again_is_left) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    fw.lost_link_ids = OUTPUT_1_ID;
+
+    send_short_pulse(fw, engine);
+    ASSERT_TRUE(reads_lit(engine, 1));
+    gfxfb::buffer* base = engine.base_buffer(1);
+
+    plug_output_1(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 stays lit, as its EDID is the one it was lit with and its link is trained"
+    ));
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 2u);
+    EXPECT_EQ(engine.base_buffer(1), base);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A short pulse reads output 0's link status and then its link service interrupt byte before output 1's, and with both
+// links trained and both bytes reading 0 leaves the outputs as they are, writing, taking down and reporting nothing
+TEST(nvidia_display_engine, a_short_pulse_leaves_lit_outputs_whose_links_are_trained) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* base_0 = engine.base_buffer(0);
+    gfxfb::buffer* base_1 = engine.base_buffer(1);
+    uint32_t status_reads = fw.link_status_reads;
+
+    send_short_pulse(fw, engine);
+
+    EXPECT_EQ(fw.link_status_reads, status_reads + 2);
+    EXPECT_EQ(fw.interrupt_reads, 2u);
+    EXPECT_EQ(fw.interrupt_writes, 0u);
+
+    uint32_t status_0 = engine_log_offset("nvidia: display id 0x100's link status reads 0x07 0x00 0x01");
+    uint32_t interrupts_0 = engine_log_offset("nvidia: display id 0x100's link service interrupt byte reads 0x00");
+    uint32_t status_1 = engine_log_offset("nvidia: display id 0x200's link status reads 0x07 0x00 0x01");
+    uint32_t interrupts_1 = engine_log_offset("nvidia: display id 0x200's link service interrupt byte reads 0x00");
+
+    EXPECT_LT(status_0, interrupts_0);
+    EXPECT_LT(interrupts_0, status_1);
+    EXPECT_LT(status_1, interrupts_1);
+    EXPECT_LT(interrupts_1, s_engine_log_bytes);
+
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(engine.base_buffer(0), base_0);
+    EXPECT_EQ(engine.base_buffer(1), base_1);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A short pulse reads nothing of dark output 1, only lit output 0's link status and link service interrupt byte
+TEST(nvidia_display_engine, a_short_pulse_reads_nothing_of_a_dark_output) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    ASSERT_FALSE(reads_lit(engine, 1));
+    record_relight_reports(engine);
+    uint32_t status_reads = fw.link_status_reads;
+
+    send_short_pulse(fw, engine);
+
+    EXPECT_EQ(fw.link_status_reads, status_reads + 1);
+    EXPECT_EQ(fw.interrupt_reads, 1u);
+    EXPECT_FALSE(engine_log_contains("display id 0x200"));
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A short pulse with no output lit, both connected but given no scanout memory, reads nothing
+TEST(nvidia_display_engine, a_short_pulse_with_no_output_lit_reads_nothing) {
+    engine_firmware fw;
+    fw.supported_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    fw.connected_ids = OUTPUT_0_ID | OUTPUT_1_ID;
+    copy_aoc_edid(true);
+
+    engine_video_memory memory;
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_FALSE(reads_lit(engine, 0));
+    ASSERT_FALSE(reads_lit(engine, 1));
+    uint32_t status_reads = fw.link_status_reads;
+
+    send_short_pulse(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: a DisplayPort short pulse event arrived, so each lit output's link status is read"
+    ));
+    EXPECT_EQ(fw.link_status_reads, status_reads);
+    EXPECT_EQ(fw.interrupt_reads, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// Receiver capability fields of revisions 1.1 and 1.2 at HBR over four lanes with enhanced framing, the second the
+// first revision holding the link service interrupt byte
+static constexpr uint8_t DPCD_RECEIVER_1_1[DPCD_RECEIVER_CAPABILITY_BYTES] = {0x11, 0x0A, 0x84};
+static constexpr uint8_t DPCD_RECEIVER_1_2[DPCD_RECEIVER_CAPABILITY_BYTES] = {0x12, 0x0A, 0x84};
+
+// A short pulse clears lit output 0's DPCD 1.2 monitor's link status changed bit by writing that bit alone back, writes
+// nothing while the bit is clear, and reads no link service interrupt byte of a DPCD 1.1 monitor
+TEST(nvidia_display_engine, a_short_pulse_clears_the_link_status_changed_bit_of_a_dpcd_1_2_monitor_alone) {
+    struct revision_case {
+        const uint8_t* receiver;
+        uint32_t       link_status_address;
+        uint8_t        interrupts;
+        uint32_t       reads;
+        uint32_t       writes;
+        const char*    read_line;
+    };
+
+    static constexpr revision_case cases[] = {
+        {DPCD_RECEIVER_1_2, DPCD_LINK_STATUS_INDICATORS, RX_CAP_CHANGED | LINK_STATUS_CHANGED, 1, 1,
+         "nvidia: display id 0x100's link service interrupt byte reads 0x03"},
+        {DPCD_RECEIVER_1_2, DPCD_LINK_STATUS_INDICATORS, RX_CAP_CHANGED, 1, 0,
+         "nvidia: display id 0x100's link service interrupt byte reads 0x01"},
+        {DPCD_RECEIVER_1_2, DPCD_LINK_STATUS_INDICATORS, 0xFD, 1, 0,
+         "nvidia: display id 0x100's link service interrupt byte reads 0xFD"},
+        {DPCD_RECEIVER_1_2, DPCD_LINK_STATUS_INDICATORS, 0xFF, 1, 1,
+         "nvidia: display id 0x100's link service interrupt byte reads 0xFF"},
+        {DPCD_RECEIVER_1_1, DPCD_SINK_LINK_STATUS, LINK_STATUS_CHANGED, 0, 0, nullptr},
+    };
+
+    for (const revision_case& tested : cases) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+        fw.dpcd_receiver = tested.receiver;
+        fw.link_status_address = tested.link_status_address;
+        fw.link_service_interrupts = tested.interrupts;
+
+        display_engine& engine = new_engine(fw, memory);
+        ASSERT_EQ(set_up(engine), OK);
+        ASSERT_TRUE(reads_lit(engine, 0));
+        uint32_t status_reads = fw.link_status_reads;
+
+        send_short_pulse(fw, engine);
+
+        EXPECT_EQ(fw.link_status_reads, status_reads + 1);
+        EXPECT_EQ(fw.interrupt_reads, tested.reads);
+        EXPECT_EQ(fw.interrupt_writes, tested.writes);
+        if (tested.read_line != nullptr) {
+            EXPECT_TRUE(engine_log_contains(tested.read_line));
+        }
+
+        if (tested.writes != 0) {
+            EXPECT_EQ(fw.written_interrupts, LINK_STATUS_CHANGED);
+            EXPECT_TRUE(engine_log_contains("nvidia: display id 0x100's link status changed bit is cleared"));
+        }
+
+        EXPECT_TRUE(reads_lit(engine, 0));
+        EXPECT_EQ(fw.mode_set_requests, 0u);
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// A refused link status read at a short pulse is logged and leaves each lit output, with no link service interrupt byte
+// read, nothing taken down and the display not failed
+TEST(nvidia_display_engine, a_short_pulse_with_a_refused_link_status_read_leaves_the_outputs_lit) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    fw.refuses_link_status = true;
+
+    send_short_pulse(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 0 stays lit, as its link status is not read"));
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 stays lit, as its link status is not read"));
+    EXPECT_EQ(fw.interrupt_reads, 0u);
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// A link status read, link service interrupt byte read or link status changed bit's write failing other than by
+// `ERR_FIRMWARE` at a short pulse fails the display at output 0, reading nothing of output 1 and taking nothing down
+TEST(nvidia_display_engine, a_short_pulses_failing_request_fails_the_display) {
+    struct failing_request {
+        int32_t     link_status_error;
+        uint32_t    failing_command;
+        const char* failure;
+    };
+
+    static constexpr failing_request requests[] = {
+        {ERR_TIMEOUT, 0, "nvidia: reading output 0's link status failed: -4, so the display failed"},
+        {OK, rm::AUX_COMMAND_DPCD_READ,
+         "nvidia: clearing output 0's link status changed bit failed: -4, so the display failed"},
+        {OK, rm::AUX_COMMAND_DPCD_WRITE,
+         "nvidia: clearing output 0's link status changed bit failed: -4, so the display failed"},
+    };
+
+    for (const failing_request& tested : requests) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        display_engine& engine = set_up_two_lit_outputs(fw, memory);
+
+        fw.link_status_error = tested.link_status_error;
+        fw.failing_interrupt_command = tested.failing_command;
+        fw.interrupt_error = ERR_TIMEOUT;
+        fw.link_service_interrupts = LINK_STATUS_CHANGED;
+        uint32_t status_reads = fw.link_status_reads;
+
+        send_short_pulse(fw, engine);
+
+        EXPECT_TRUE(engine_log_contains(tested.failure));
+        EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+        EXPECT_EQ(fw.link_status_reads, status_reads + 1);
+        EXPECT_FALSE(engine_log_contains("display id 0x200"));
+
+        EXPECT_EQ(fw.mode_set_requests, 0u);
+        EXPECT_EQ(g_output_change_count, 0u);
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// Link service interrupt byte reads and writes clearing its link status changed bit that are refused, deferred or
+// acknowledged with 2 bytes are logged and fail nothing, 6 deferrals ending in an answer and 7 in giving up
+TEST(nvidia_display_engine, a_short_pulses_refused_deferred_or_wrongly_acknowledged_interrupt_requests_are_logged) {
+    struct interrupt_case {
+        uint32_t    refused_command;
+        uint32_t    deferred_reads;
+        uint32_t    deferred_writes;
+        uint32_t    write_size;
+        uint32_t    reads;
+        uint32_t    writes;
+        const char* line;
+    };
+
+    static constexpr interrupt_case cases[] = {
+        {rm::AUX_COMMAND_DPCD_READ, 0, 0, 0, 1, 0,
+         "nvidia: display common refused display id 0x100's 1-byte AUX read at 0x02005, so its link status changed "
+         "bit is not cleared"},
+        {rm::AUX_COMMAND_DPCD_WRITE, 0, 0, 0, 1, 1,
+         "nvidia: display common refused display id 0x100's AUX write clearing its link status changed bit at "
+         "0x02005"},
+        {0, 6, 0, 0, 7, 1, "nvidia: display id 0x100's link status changed bit is cleared"},
+        {0, 7, 0, 0, 7, 0,
+         "nvidia: display id 0x100's 1-byte AUX read at 0x02005 ended with a request to ask again later from its "
+         "monitor (reply type 2) after 7 requests, so its link status changed bit is not cleared"},
+        {0, 0, 6, 0, 1, 7, "nvidia: display id 0x100's link status changed bit is cleared"},
+        {0, 0, 7, 0, 1, 7,
+         "nvidia: display id 0x100's AUX write clearing its link status changed bit at 0x02005 ended with a request "
+         "to ask again later from its monitor (reply type 2) after 7 requests"},
+        {0, 0, 0, 2, 1, 1,
+         "nvidia: display id 0x100's monitor acknowledged the AUX write clearing its link status changed bit at "
+         "0x02005 with a reply size of 2 bytes after 1 request"},
+    };
+
+    for (const interrupt_case& tested : cases) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(connect_output_0_of_two(fw, memory));
+        fw.link_service_interrupts = LINK_STATUS_CHANGED;
+        display_engine& engine = new_engine(fw, memory);
+        ASSERT_EQ(set_up(engine), OK);
+
+        fw.refused_interrupt_command = tested.refused_command;
+        fw.deferred_interrupt_reads = tested.deferred_reads;
+        fw.deferred_interrupt_writes = tested.deferred_writes;
+        fw.interrupt_write_size = tested.write_size;
+
+        send_short_pulse(fw, engine);
+
+        EXPECT_TRUE(engine_log_contains(tested.line));
+        EXPECT_EQ(fw.interrupt_reads, tested.reads);
+        EXPECT_EQ(fw.interrupt_writes, tested.writes);
+        EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+        EXPECT_TRUE(reads_lit(engine, 0));
+        EXPECT_EQ(engine.release(), OK);
+    }
+}
+
+// A short pulse once the GPU failed, and one once the display failed too, read nothing, logging the GPU's failure and
+// then the display's, which `serves_event` checks first
+TEST(nvidia_display_engine, a_short_pulse_after_a_failure_reads_nothing) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    uint32_t status_reads = fw.link_status_reads;
+
+    g_failed_mark->set();
+    send_short_pulse(fw, engine);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: a DisplayPort short pulse event arrived once the GPU failed, so nothing is read"
+    ));
+
+    display_engine_test_access::mark_display_failed(engine);
+    send_short_pulse(fw, engine);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: a DisplayPort short pulse event arrived once the display failed, so nothing is read"
+    ));
+
+    EXPECT_EQ(fw.link_status_reads, status_reads);
+    EXPECT_EQ(fw.interrupt_reads, 0u);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The GPU failing during a short pulse's read of output 0's link status stops the pulse before output 1, reading
+// nothing of it and leaving the display unfailed
+TEST(nvidia_display_engine, a_gpu_failure_during_a_short_pulse_stops_its_reads) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    uint32_t status_reads = fw.link_status_reads;
+    fw.fails_gpu_at_status_read = true;
+
+    send_short_pulse(fw, engine);
+
+    EXPECT_EQ(fw.link_status_reads, status_reads + 1);
+    EXPECT_FALSE(engine_log_contains("display id 0x200"));
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(engine.release(), OK);
 }

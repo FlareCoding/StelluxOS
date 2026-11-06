@@ -96,9 +96,10 @@ struct power_down_facts {
  * its cursor channel, kept from their allocation by a light until `release`,
  * the output it lights with that output's base buffer and cursor memory, and
  * that output's cursor and presents, guarded by the engine's output lock once
- * the head is lit. The light's `display_id`, `training`, `lit_edid` and
- * `lit_dpcd` are written before the head lights, by `set_up` or the driver
- * task, and only the driver task reads them, so it may read them bare.
+ * the head is lit. The light's `display_id`, `training`, `timing`,
+ * `timing_index`, `lit_edid` and `lit_dpcd` are written before the head lights,
+ * by `set_up` or the driver task, and only the driver task reads them, so it
+ * may read them bare.
  */
 struct engine_head {
     display_engine*   engine;                  // set by the engine's constructor, so timer callbacks read it bare
@@ -112,6 +113,7 @@ struct engine_head {
     link_training     training;                // what that link trained at, which a later status read takes
     gfxfb::gfxfb_mode mode;
     edid::timing      timing;                  // the timing behind `mode`, which a later light's bandwidth check names
+    uint8_t           timing_index;            // `timing`'s index in the EDID, which a relight at that timing logs
     edid_copy         lit_edid;                // the EDID's bytes its output was lit with, which a later plug compares
     dpcd_capabilities lit_dpcd;                // its monitor's DPCD capabilities then, which a later status read takes
     scanout_buffer*   base_buffer;             // null while none is allocated and once the head is marked dark
@@ -195,7 +197,8 @@ struct engine_head {
  * differ from those it was lit with or whose link status reads untrained, or
  * takes it down when its monitor gives no mode. Once gfxfb shows the engine, it
  * also lights each plugged dark output on a head of its own while the others
- * stay lit. A short pulse is only logged.
+ * stay lit. A short pulse, unless the display or the GPU failed, relights each
+ * lit output whose link status reads untrained, at the timing it was lit at.
  */
 class display_engine : public gfxfb::display, public firmware_event_sink {
 public:
@@ -354,9 +357,28 @@ private:
     static void serve_hotplug_record(operation& op);
     static void serve_short_pulse_record(operation& op);
 
+    // Whether the driver task serves `event`'s record, logging that nothing is read once the display was released or
+    // failed or the GPU failed
+    bool serves_event(const char* event);
+
     // Unless the display is released or failed or the GPU failed, reads the hotplug state's masks, the connect state
     // when both read 0, and updates the connected records, a failed read logged and failing the display unless refused
     void serve_hotplug();
+
+    // Unless the display is released or failed or the GPU failed, checks each lit output's link in index order
+    void serve_short_pulse();
+
+    /**
+     * @brief Unless the display or the GPU failed, read `output`'s link status
+     * when it is lit, try to clear its monitor's link status changed bit and,
+     * when the link reads untrained, relight the output at the timing it had. A
+     * status that is not read leaves the output lit, and a request failing
+     * other than by a refusal fails the display, each logged.
+     */
+    void check_lit_link(uint8_t output);
+
+    // Relights lit `output` at the timing `head` lit it at, leaving it lit when that timing's list cannot be allocated
+    void relight_at_lit_timing(uint8_t output, const engine_head& head);
 
     // Clears the connected record of each output unplugged and not plugged in, taking it down when lit, then sets that
     // of each plugged in and serves its plug, logging each

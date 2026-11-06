@@ -50,9 +50,15 @@ static constexpr uint32_t SINK_LINK_STATUS_INDICATORS = 0x0200C; // NV_DPCD_LANE
 static constexpr uint32_t REPEATER_LINK_STATUS        = 0xF0030; // NV_DPCD14_PHY_REPEATER_START(0) + 0x20
 static constexpr uint32_t REPEATER_LINK_STATUS_STRIDE = 0x50;
 
-// NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer) and for each later read, and its passes,
-// the first and the 3 more (faultyRetries) it makes while the field cannot be read
-static constexpr uint32_t INTERVAL_REQUESTS   = 7;
+// NVIDIA's NV_DPCD_LINK_SERVICE_IRQ_VECTOR_ESI0 with its LINK_STATUS_CHANGED bit
+static constexpr uint32_t LINK_SERVICE_INTERRUPTS = 0x02005;
+static constexpr uint8_t  LINK_STATUS_CHANGED     = 0x02;
+
+// NVIDIA's library's requests for a read or write of one byte while the monitor defers it (minimumRetriesOnDefer)
+static constexpr uint32_t DEFERRED_REQUESTS = 7;
+
+// NVIDIA's library's requests for each read after the byte at 0x0000E, and its passes, the first and the 3 more
+// (faultyRetries) it makes while the field cannot be read
 static constexpr uint32_t CAPABILITY_REQUESTS = 16;
 static constexpr uint32_t PASSES              = 4;
 
@@ -61,6 +67,7 @@ static constexpr const char* FIELD_FROM_BASE = ", so its receiver capability fie
 static constexpr const char* READ_AGAIN      = ", so its DPCD is read again";
 static constexpr const char* NO_MORE_READ    = ", so no more of its DPCD is read";
 static constexpr const char* NO_PHY_REPEATER = ", so its link is taken to have no PHY repeater";
+static constexpr const char* BIT_NOT_CLEARED = ", so its link status changed bit is not cleared";
 
 namespace {
 
@@ -204,6 +211,11 @@ static int32_t request_dpcd_write(
     return OK;
 }
 
+// Whether the monitor deferred the request `answer` tells of
+static bool is_deferred(const aux_answer& answer) {
+    return !answer.is_refused && (answer.reply == rm::AUX_REPLY_DEFER || answer.reply == rm::AUX_REPLY_I2C_DEFER);
+}
+
 // Whether a read is asked again after `answer`: a deferred reply, or an acknowledgment moving some but not all of the
 // bytes asked for or more than those, which NVIDIA's library asks again on
 static bool is_asked_again(const aux_answer& answer, uint32_t bytes) {
@@ -211,10 +223,9 @@ static bool is_asked_again(const aux_answer& answer, uint32_t bytes) {
         return false;
     }
 
-    bool is_deferred = answer.reply == rm::AUX_REPLY_DEFER || answer.reply == rm::AUX_REPLY_I2C_DEFER;
     bool is_acknowledged = answer.reply == rm::AUX_REPLY_ACK;
     bool moved_other_bytes = answer.size != 0 && answer.size != bytes;
-    return is_deferred || (is_acknowledged && moved_other_bytes);
+    return is_deferred(answer) || (is_acknowledged && moved_other_bytes);
 }
 
 // Logs why a read of `bytes` bytes at `address` gave none after `requests` requests, the line ending with `outcome`
@@ -304,6 +315,46 @@ static void log_unwritten_power_state(uint32_t display_id, const aux_answer& ans
     );
 }
 
+// Logs why the write clearing a monitor's link status changed bit is not taken as done after `requests` requests
+static void log_uncleared(uint32_t display_id, const aux_answer& answer, uint32_t requests) {
+    if (answer.is_refused) {
+        log::error(
+            "nvidia: display common refused display id 0x%X's AUX write clearing its link status changed bit at "
+            "0x%05X",
+            display_id,
+            LINK_SERVICE_INTERRUPTS
+        );
+        return;
+    }
+
+    const char* request_word = requests == 1 ? "request" : "requests";
+    if (answer.reply != rm::AUX_REPLY_ACK) {
+        log::error(
+            "nvidia: display id 0x%X's AUX write clearing its link status changed bit at 0x%05X ended with %s from its "
+            "monitor (reply type %u) after %u %s",
+            display_id,
+            LINK_SERVICE_INTERRUPTS,
+            reply_meaning(answer.reply),
+            answer.reply,
+            requests,
+            request_word
+        );
+        return;
+    }
+
+    const char* size_word = answer.size == 1 ? "byte" : "bytes";
+    log::error(
+        "nvidia: display id 0x%X's monitor acknowledged the AUX write clearing its link status changed bit at 0x%05X "
+        "with a reply size of %u %s after %u %s",
+        display_id,
+        LINK_SERVICE_INTERRUPTS,
+        answer.size,
+        size_word,
+        requests,
+        request_word
+    );
+}
+
 // Reads `bytes` bytes of the DPCD from `address` into `out`, asking again while `is_asked_again` holds until `requests`
 // deferred or short replies or as many longer ones have come, and logs a failed read in a line ending with `outcome`
 static int32_t read_dpcd(
@@ -371,7 +422,7 @@ static int32_t read_capabilities(
         display_id,
         DPCD_TRAINING_AUX_READ_INTERVAL,
         1,
-        INTERVAL_REQUESTS,
+        DEFERRED_REQUESTS,
         FIELD_FROM_BASE,
         &interval,
         is_interval_read
@@ -624,6 +675,62 @@ int32_t read_link_status(
     };
 
     is_read = true;
+
+    return OK;
+}
+
+int32_t clear_link_status_changed(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t display_id,
+    const dpcd_capabilities& dpcd
+) {
+    if (dpcd.receiver[RECEIVER_REVISION] < RECEIVER_REVISION_1_2) {
+        return OK;
+    }
+
+    uint8_t interrupts = 0;
+    bool is_read = false;
+    int32_t rc = read_dpcd(
+        fw,
+        display_common,
+        display_id,
+        LINK_SERVICE_INTERRUPTS,
+        sizeof(interrupts),
+        DEFERRED_REQUESTS,
+        BIT_NOT_CLEARED,
+        &interrupts,
+        is_read
+    );
+    if (rc != OK || !is_read) {
+        return rc;
+    }
+
+    log::info("nvidia: display id 0x%X's link service interrupt byte reads 0x%02X", display_id, interrupts);
+    if ((interrupts & LINK_STATUS_CHANGED) == 0) {
+        return OK;
+    }
+
+    aux_answer answer = {};
+    uint32_t made = 0;
+    while (made < DEFERRED_REQUESTS) {
+        rc = request_dpcd_write(fw, display_common, display_id, LINK_SERVICE_INTERRUPTS, LINK_STATUS_CHANGED, answer);
+        if (rc != OK) {
+            return rc;
+        }
+
+        made++;
+        if (!is_deferred(answer)) {
+            break;
+        }
+    }
+
+    if (!is_acknowledged_exactly(answer, sizeof(LINK_STATUS_CHANGED))) {
+        log_uncleared(display_id, answer, made);
+        return OK;
+    }
+
+    log::info("nvidia: display id 0x%X's link status changed bit is cleared", display_id);
 
     return OK;
 }

@@ -2110,9 +2110,10 @@ src/nvidia-modeset/src/nvkms-event.c
     that the firmware can post a hotplug event while both of the state's masks
     read 0, the module then asking for the connect state and taking the display
     ids connected and not recorded as plugged in and those recorded and not
-    connected as unplugged, and that it serves the unplugged display ids before
-    the plugged ones, in display_engine.h, display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    connected as unplugged, that it serves the unplugged display ids before the
+    plugged ones, and that it hands a DisplayPort short pulse, which names no
+    display id, to every DisplayPort connector, in display_engine.h,
+    display_engine.cpp and kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2008-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/rmapi/rmapi.h
@@ -2618,11 +2619,17 @@ src/common/inc/displayport/dpcd.h
     the link status's address and its copy's among the event status indicators,
     in display_dpcd.h, display_dpcd.cpp,
     kernel/tests/graphics/nvidia_display_engine.test.cpp and
-    kernel/tests/graphics/nvidia_display_link.test.cpp, and NV_DPCD_SET_POWER
-    and NV_DPCD_SET_POWER_VAL_D3_PWRDWN, 0x00600 and 2, the byte holding a
-    monitor's power state and the value setting it to D3, in display_dpcd.h,
+    kernel/tests/graphics/nvidia_display_link.test.cpp, NV_DPCD_SET_POWER and
+    NV_DPCD_SET_POWER_VAL_D3_PWRDWN, 0x00600 and 2, the byte holding a monitor's
+    power state and the value setting it to D3, in display_dpcd.h,
     display_dpcd.cpp, kernel/tests/graphics/nvidia_display_dpcd.test.cpp,
     kernel/tests/graphics/nvidia_display_link.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp,
+    NV_DPCD_LINK_SERVICE_IRQ_VECTOR_ESI0 and its LINK_STATUS_CHANGED bit,
+    0x02005 and bit 1, a monitor's link service interrupt byte and the bit
+    saying its link status changed, in display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the byte's
+    RX_CAP_CHANGED bit, bit 0, in
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -2670,11 +2677,14 @@ src/common/displayport/src/dp_connectorimpl.cpp
     does, since the monitor must see FEC stop as the link goes down, in
     display_link.h, display_link.cpp, display_engine.cpp,
     kernel/tests/graphics/nvidia_display_link.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the training to
-    zero lanes naming the rate of the link's highest configuration, the lower of
-    the monitor's highest rate and the main link's, or the main link's when the
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, the training to zero
+    lanes naming the rate of the link's highest configuration, the lower of the
+    monitor's highest rate and the main link's, or the main link's when the
     monitor gives none, in display_engine.h, display_engine.cpp, display_link.h,
     display_link.cpp, kernel/tests/graphics/nvidia_display_link.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and a short pulse
+    bringing back a link it finds lost unless the monitor's DPCD cannot be read,
+    in display_engine.h, display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -2723,14 +2733,20 @@ src/common/displayport/src/dp_configcaps.cpp
     sink, in display_dpcd.h, display_dpcd.cpp and
     kernel/tests/graphics/nvidia_display_link.test.cpp, that it reads the sink's
     own field when either end lacks DisplayPort 1.2, in
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it sets a
-    power state only on a monitor whose DPCD gives revision 1.1 or later,
-    writing it again until the write is acknowledged while fewer than 40 tries
-    or 2 milliseconds have passed, in display_dpcd.h, display_dpcd.cpp,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that it sets a power
+    state only on a monitor whose DPCD gives revision 1.1 or later, writing it
+    again until the write is acknowledged while fewer than 40 tries or 2
+    milliseconds have passed, in display_dpcd.h, display_dpcd.cpp,
     display_engine.h, display_engine.cpp, display_link.h,
     kernel/tests/graphics/nvidia_display_dpcd.test.cpp,
     kernel/tests/graphics/nvidia_display_engine.test.cpp and
-    kernel/tests/graphics/nvidia_display_link.test.cpp
+    kernel/tests/graphics/nvidia_display_link.test.cpp, and that at each short
+    pulse it reads the link service interrupt byte when the monitor's DPCD gives
+    revision 1.2 or later and the GPU supports DisplayPort 1.2, unless its
+    workaround lowers the monitor's revision to 1.1, and, when the byte's link
+    status changed bit is set, writes that bit alone back to clear it, in
+    display_dpcd.h, display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_configcaps.h
@@ -3728,16 +3744,22 @@ src/common/displayport/src/dp_auxretry.cpp
     display_dpcd.cpp and kernel/tests/graphics/nvidia_display_dpcd.test.cpp,
     that it asks again for the longer acknowledgment without counting it, in
     display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that it takes an AUX
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it takes an AUX
     write as done only when the monitor acknowledges it with every byte moved,
     in display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that it asks again
+    for an AUX read or write the monitor defers, up to the retry count its
+    caller names, in display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_auxretry.h
     minimumRetriesOnDefer, 7, the retry count of an AUX read whose caller names
-    none, in display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_dpcd.test.cpp
+    none, in display_dpcd.h, display_dpcd.cpp,
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and of an AUX write
+    whose caller names none, in display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-modepool.c

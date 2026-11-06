@@ -1934,6 +1934,7 @@ int32_t display_engine::prepare_light(
     };
 
     head.timing = light.timing;
+    head.timing_index = light.timing_index;
 
     // The first light sets up the one look-up table surface, which every later light binds to its own window's channel
     if (m_look_up_table.size == 0) {
@@ -2998,11 +2999,11 @@ void display_engine::serve_hotplug_record(operation& op) {
     static_cast<event_record&>(op).engine->serve_hotplug();
 }
 
-void display_engine::serve_short_pulse_record(operation&) {
-    log::info("nvidia: a DisplayPort short pulse event arrived, which is only logged");
+void display_engine::serve_short_pulse_record(operation& op) {
+    static_cast<event_record&>(op).engine->serve_short_pulse();
 }
 
-void display_engine::serve_hotplug() {
+bool display_engine::serves_event(const char* event) {
     bool is_released = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
@@ -3011,17 +3012,25 @@ void display_engine::serve_hotplug() {
     });
 
     if (is_released) {
-        log::info("nvidia: a hotplug event arrived once the display was released, so nothing is read");
-        return;
+        log::info("nvidia: %s arrived once the display was released, so nothing is read", event);
+        return false;
     }
 
     if (m_is_display_failed.load_acquire()) {
-        log::info("nvidia: a hotplug event arrived once the display failed, so nothing is read");
-        return;
+        log::info("nvidia: %s arrived once the display failed, so nothing is read", event);
+        return false;
     }
 
     if (m_failed.is_set()) {
-        log::info("nvidia: a hotplug event arrived once the GPU failed, so nothing is read");
+        log::info("nvidia: %s arrived once the GPU failed, so nothing is read", event);
+        return false;
+    }
+
+    return true;
+}
+
+void display_engine::serve_hotplug() {
+    if (!serves_event("a hotplug event")) {
         return;
     }
 
@@ -3071,6 +3080,90 @@ void display_engine::serve_hotplug() {
 
     log::info("nvidia: the connect state reports display ids 0x%X connected", connected_ids);
     update_connected_records(connected_ids & ~recorded_ids, recorded_ids & ~connected_ids);
+}
+
+void display_engine::serve_short_pulse() {
+    if (!serves_event("a DisplayPort short pulse event")) {
+        return;
+    }
+
+    log::info("nvidia: a DisplayPort short pulse event arrived, so each lit output's link status is read");
+    for (uint8_t output = 0; output < m_outputs.count; output++) {
+        check_lit_link(output);
+    }
+}
+
+void display_engine::check_lit_link(uint8_t output) {
+    if (m_is_display_failed.load_acquire() || m_failed.is_set()) {
+        return;
+    }
+
+    const engine_head* head = nullptr;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        head = find_lit_head(output);
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (head == nullptr) {
+        return;
+    }
+
+    bool is_read = false;
+    bool is_trained = false;
+    rm::handle display_common = m_objects.display_common;
+    int32_t rc = check_link_training(
+        m_firmware,
+        display_common,
+        head->display_id,
+        head->training,
+        head->lit_dpcd,
+        is_read,
+        is_trained
+    );
+    if (rc != OK) {
+        log::error("nvidia: reading output %u's link status failed: %d, so the display failed", output, rc);
+        fail_display();
+        return;
+    }
+
+    if (!is_read) {
+        log::info("nvidia: output %u stays lit, as its link status is not read", output);
+        return;
+    }
+
+    rc = clear_link_status_changed(m_firmware, display_common, head->display_id, head->lit_dpcd);
+    if (rc != OK) {
+        log::error(
+            "nvidia: clearing output %u's link status changed bit failed: %d, so the display failed",
+            output,
+            rc
+        );
+        fail_display();
+        return;
+    }
+
+    if (!is_trained) {
+        relight_at_lit_timing(output, *head);
+    }
+}
+
+void display_engine::relight_at_lit_timing(uint8_t output, const engine_head& head) {
+    uint32_t modes_bytes = sizeof(output_modes);
+    auto* modes = static_cast<output_modes*>(heap::uzalloc(modes_bytes));
+    if (modes == nullptr) {
+        log::error("nvidia: output %u stays lit, as allocating %u bytes for its timing failed", output, modes_bytes);
+        return;
+    }
+
+    modes->count = 1;
+    modes->indices[0] = head.timing_index;
+    modes->timings[0] = head.timing;
+    string::memcpy(&modes->dpcd, &head.lit_dpcd, sizeof(modes->dpcd));
+    string::memcpy(&modes->edid, &head.lit_edid, sizeof(modes->edid));
+
+    relight_output(output, *modes);
+    heap::ufree(modes);
 }
 
 void display_engine::update_connected_records(uint32_t plugged_ids, uint32_t unplugged_ids) {
