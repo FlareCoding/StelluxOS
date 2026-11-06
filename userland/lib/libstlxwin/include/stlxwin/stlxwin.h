@@ -96,6 +96,7 @@ typedef enum {
     STLXWIN_EVT_GPU_INFO,        /* which GPU buffers the display manager takes changed, see stlxwin_gpu_info_get */
     STLXWIN_EVT_OUTPUTS,         /* what stlxwin_outputs_get gives changed, read it again */
     STLXWIN_EVT_LAYOUT_RESULT,   /* the display manager's answer to a layout request */
+    STLXWIN_EVT_WINDOW_OUTPUT,   /* a toplevel's output or position changed, see stlxwin_window_get_output */
 } stlxwin_event_type;
 
 #define STLXWIN_MODES_MAX   32u  /* the most modes an output lists */
@@ -354,6 +355,16 @@ void stlxwin_window_set_cursor(stlxwin_window* win, stlxwin_cursor cursor);
  */
 void stlxwin_window_get_size(const stlxwin_window* win,
                              uint32_t* w, uint32_t* h);
+
+/**
+ * @brief A toplevel's output and its content's top-left in desktop
+ * coordinates, as of the newest STLXWIN_EVT_WINDOW_OUTPUT for it. The
+ * display manager places windows itself and first reports a window once
+ * its first commit is shown. Each of output, x and y may be NULL.
+ * @return 0, or -1 for a popup and before any such event arrived.
+ */
+int stlxwin_window_get_output(const stlxwin_window* win, uint32_t* output,
+                              int32_t* x, int32_t* y);
 
 /**
  * @brief The size and serial of the newest configure, or the created

@@ -211,6 +211,27 @@ void stlxwin_window_get_size(const stlxwin_window* win,
     }
 }
 
+int stlxwin_window_get_output(const stlxwin_window* win, uint32_t* output,
+                              int32_t* x, int32_t* y) {
+    if (!win || !win->has_output) {
+        return -1;
+    }
+
+    if (output) {
+        *output = win->output;
+    }
+
+    if (x) {
+        *x = win->desktop_x;
+    }
+
+    if (y) {
+        *y = win->desktop_y;
+    }
+
+    return 0;
+}
+
 void stlxwin_window_configured(stlxwin_window* win, uint32_t* width,
                                uint32_t* height, uint32_t* serial) {
     uint32_t conf_w = 0;

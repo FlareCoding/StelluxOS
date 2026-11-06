@@ -490,6 +490,28 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
         ev.type = STLXWIN_EVT_OUTPUTS;
         stlxwin_evq_push(conn, &ev);
         return;
+    case SWP_MSG_WINDOW_OUTPUT: {
+        swp_window_output m;
+        if (hdr->length != sizeof(m)) {
+            return;
+        }
+
+        memcpy(&m, payload, sizeof(m));
+        struct stlxwin_window* w = stlxwin_find_window(conn, m.win_id);
+        if (!w || w->parent_id != 0) {
+            return;
+        }
+
+        w->has_output = 1;
+        w->output = m.output;
+        w->desktop_x = m.x;
+        w->desktop_y = m.y;
+
+        ev.type = STLXWIN_EVT_WINDOW_OUTPUT;
+        ev.window = w;
+        stlxwin_evq_push(conn, &ev);
+        return;
+    }
     case SWP_MSG_LAYOUT_RESULT: {
         swp_layout_result m;
         if (hdr->length != sizeof(m)) {
