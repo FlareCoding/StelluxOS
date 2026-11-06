@@ -74,14 +74,15 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            clang lld llvm \
-            libclang-rt-dev \
-            gcc-aarch64-linux-gnu \
-            linux-libc-dev-arm64-cross \
-            cmake ninja-build \
-            mtools gdisk xorriso
+          for attempt in 1 2 3; do
+            sudo timeout 60 apt-get update -qq && sudo timeout 300 apt-get install -y -qq \
+              clang lld llvm \
+              libclang-rt-dev \
+              gcc-aarch64-linux-gnu \
+              linux-libc-dev-arm64-cross \
+              cmake ninja-build \
+              mtools gdisk xorriso && break
+          done
 
       - name: Fetch Limine EFI binaries
         run: make limine
@@ -290,10 +291,11 @@ jobs:
 
       - name: Install QEMU
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            qemu-system-x86 qemu-system-arm \
-            ovmf qemu-efi-aarch64
+          for attempt in 1 2 3; do
+            sudo timeout 60 apt-get update -qq && sudo timeout 300 apt-get install -y -qq \
+              qemu-system-x86 qemu-system-arm \
+              ovmf qemu-efi-aarch64 && break
+          done
 
       - name: Download unit test image
         uses: actions/download-artifact@v4
