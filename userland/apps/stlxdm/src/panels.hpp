@@ -70,7 +70,7 @@ public:
             return false;
         }
 
-        return (y >= 0 && y <= BAR_H) || y >= m_dock_y;
+        return (y >= 0 && y <= BAR_H) || (y >= m_dock_y && y < static_cast<int32_t>(m_height));
     }
 
     void pointer_move(int32_t x, int32_t y);

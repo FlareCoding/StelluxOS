@@ -13,10 +13,10 @@ struct desktop_point {
     int32_t y = 0;
 };
 
-/* The desktop's layout. Its members are the outputs stlxdm serves, or
- * the ones it last served while it serves none, and each member's place
- * is the rectangle it shows in desktop coordinates, at its mode's size.
- * One member is the main output.
+/* The desktop's layout: a place in desktop coordinates for each member,
+ * and which member is the main output. The members are the outputs stlxdm
+ * serves and, at their last size, those kept through a relight or a
+ * client's mode request. While there are none, the layout stays as it was.
  *
  * A layout is valid when no two places overlap, every place connects to
  * the main output's through edges shared over at least one pixel, the
@@ -33,7 +33,8 @@ public:
     static constexpr uint32_t MEMBERS_MAX = 16;
     static constexpr int32_t DESKTOP_LIMIT = 1 << 20;
 
-    /* An output to place and its mode's size. */
+    /* An output to place and its size: its mode's while it is served,
+     * else its last place's. */
     struct member {
         uint32_t output = 0;
         int32_t  width = 0;

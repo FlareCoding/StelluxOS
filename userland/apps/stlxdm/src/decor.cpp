@@ -59,17 +59,17 @@ static uint32_t border_color(const decor::chrome_state& st) {
 
 /* A writable view over the clip rect, so every primitive clips for
  * free. Coordinates shift into view space at the call sites. */
-static stlxgfx_surface_t* clip_view(stlxgfx_surface_t* back,
+static stlxgfx_surface_t* clip_view(const decor::canvas& back,
                                     const damage_list::rect& clip) {
     if (clip.w <= 0 || clip.h <= 0) {
         return nullptr;
     }
 
     return stlxgfx_surface_from_buffer(
-        back->pixels + static_cast<uint32_t>(clip.y) * back->pitch
-            + static_cast<uint32_t>(clip.x) * 4,
+        back.surface->pixels + static_cast<uint32_t>(clip.y - back.y) * back.surface->pitch
+            + static_cast<uint32_t>(clip.x - back.x) * 4,
         static_cast<uint32_t>(clip.w), static_cast<uint32_t>(clip.h),
-        back->pitch, 32, 16, 8, 0);
+        back.surface->pitch, 32, 16, 8, 0);
 }
 
 static void sdf_table_init() {
@@ -239,7 +239,7 @@ zone hit(const dm_window& w, int32_t x, int32_t y) {
     return zone::title;
 }
 
-void draw(stlxgfx_surface_t* back, const dm_window& w,
+void draw(const canvas& back, const dm_window& w,
           const chrome_state& st, const damage_list::rect& clip) {
     const dm_buffer* b = current_buffer(w);
     if (!b || !decorated(w)) {
@@ -337,7 +337,7 @@ void draw(stlxgfx_surface_t* back, const dm_window& w,
     stlxgfx_destroy_surface(view);
 }
 
-void blit_content(stlxgfx_surface_t* back, const dm_window& w,
+void blit_content(const canvas& back, const dm_window& w,
                   const damage_list::rect& clip) {
     const dm_buffer* b = current_buffer(w);
     if (!b) {
@@ -367,7 +367,7 @@ void blit_content(stlxgfx_surface_t* back, const dm_window& w,
     int32_t zone_top = w.y + bh - inner_r;
     int32_t plain_end = iy1 < zone_top ? iy1 : zone_top;
     if (iy0 < plain_end) {
-        stlxgfx_blit(back, ix0, iy0, src, ix0 - w.x, iy0 - w.y,
+        stlxgfx_blit(back.surface, ix0 - back.x, iy0 - back.y, src, ix0 - w.x, iy0 - w.y,
                      static_cast<uint32_t>(ix1 - ix0),
                      static_cast<uint32_t>(plain_end - iy0));
     }
@@ -381,11 +381,11 @@ void blit_content(stlxgfx_surface_t* back, const dm_window& w,
         int32_t m0 = ix0 > mid0 ? ix0 : mid0;
         int32_t m1 = ix1 < mid1 ? ix1 : mid1;
         if (m0 < m1) {
-            stlxgfx_blit(back, m0, y, src, m0 - w.x, y - w.y,
+            stlxgfx_blit(back.surface, m0 - back.x, y - back.y, src, m0 - w.x, y - w.y,
                          static_cast<uint32_t>(m1 - m0), 1);
         }
 
-        uint32_t* dst_row = back_row(back, y);
+        uint32_t* dst_row = back_row(back.surface, y - back.y);
         const uint32_t* src_row = reinterpret_cast<const uint32_t*>(
             reinterpret_cast<const uint8_t*>(b->pixels) + static_cast<uint32_t>(y - w.y) * b->pitch);
         for (int32_t x = ix0; x < ix1; x++) {
@@ -398,14 +398,15 @@ void blit_content(stlxgfx_surface_t* back, const dm_window& w,
             if (a == 0) {
                 continue;
             }
-            dst_row[x] = blend_px(dst_row[x], src_row[x - w.x], a);
+
+            dst_row[x - back.x] = blend_px(dst_row[x - back.x], src_row[x - w.x], a);
         }
     }
 
     stlxgfx_destroy_surface(src);
 }
 
-void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r,
+void draw_outline(const canvas& back, const damage_list::rect& r,
                   const damage_list::rect& clip) {
     /* A fill outside the composed rect would cover the pointer that an
      * earlier frame or rect drew over the outline there */

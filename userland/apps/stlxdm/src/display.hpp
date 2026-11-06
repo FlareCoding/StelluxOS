@@ -15,23 +15,22 @@
  * output events named, and reads any output's state for the main loop
  * to follow.
  *
- * An output is served while it is lit and primary and its presenter
- * holds buffers at its mode. When those buffers cannot be made at start
- * for any reason but -EBUSY, as on the boot display, one memcpy presenter
- * serves whichever output is primary instead, until stlxdm restarts. If
- * that presenter finds no lit primary or `GFXFB_GET_INFO` fails with
- * EAGAIN, `init()` waits for the next output event and tries the buffers
- * again. */
+ * An output is served while it is lit and its presenter holds buffers at
+ * its mode. When no lit output's buffers can be made at start for any
+ * reason but -EBUSY, as on the boot display, one memcpy presenter serves
+ * whichever output is primary instead, until stlxdm restarts. If that
+ * presenter finds no lit primary or `GFXFB_GET_INFO` fails with EAGAIN,
+ * `init()` waits for the next output event and tries the buffers again. */
 class display {
 public:
-    /* Opens /dev/gfxfb and serves the primary output, first waiting for
-     * output events while no lit primary output fits the desktop's limit
-     * or `GFXFB_GET_INFO` fails with EAGAIN for the memcpy presenter, a
-     * wait that never ends on a display lighting no output. Returns 0,
-     * -EBUSY while another program's file controls the buffers or
-     * reserves control, -1 when the memcpy presenter cannot serve the
-     * primary output, or else the errno of the step that failed, printing
-     * why. */
+    /* Opens /dev/gfxfb and serves every lit output whose buffers can be
+     * made, first waiting for output events while no output is lit and
+     * primary, none lit fits the desktop's limit or `GFXFB_GET_INFO` fails
+     * with EAGAIN for the memcpy presenter, a wait that never ends on a
+     * display lighting no output. Returns 0, -EBUSY while another
+     * program's file controls the buffers or reserves control, -1 when the
+     * memcpy presenter cannot serve the primary output, or else the errno
+     * of the step that failed, printing why. */
     int init();
     void shutdown();
 
@@ -60,12 +59,12 @@ public:
 
     /* Follows `output`'s state as read after its output event: keeps its
      * presenter, refreshed by `flip_presenter::relit()`, while it stays
-     * lit and primary at its size, and otherwise drops any presenter and
-     * makes one at its size while the output reads lit and primary. A
-     * lit primary whose buffers cannot be made or whose mode passes the
-     * desktop's limit stays unserved, printing why. The memcpy fallback
-     * maps the primary again instead, serving nothing while that fails or
-     * the primary passes the limit. */
+     * lit at its size, and otherwise drops any presenter and makes one at
+     * its size while the output reads lit. A lit output whose buffers
+     * cannot be made or whose mode passes the desktop's limit stays
+     * unserved, printing why. The memcpy fallback maps the primary again
+     * instead, serving nothing while that fails or the primary passes the
+     * limit. */
     void follow_output(uint32_t output, const gfxfb::gfxfb_output_info& info);
 
     /* `output`'s presenter, or null while it is not served. */
@@ -73,6 +72,12 @@ public:
 
     /* The output last read as gfxfb's primary. */
     uint32_t primary() const { return m_primary; }
+
+    /* Whether `output` was last read dark while its driver lights it
+     * again. */
+    bool is_relighting(uint32_t output) const {
+        return output < gfxfb::GFXFB_OUTPUTS_MAX && (m_relighting & (1u << output)) != 0;
+    }
 
     /* Whether init fell back to the memcpy presenter. It stays until
      * `shutdown()`, and `presenter_of()` gives it only while it serves. */
@@ -88,6 +93,7 @@ private:
     uint32_t m_output_count = 0;
     uint32_t m_changed_outputs = 0;
     uint32_t m_primary = 0;
+    uint32_t m_relighting = 0;
 
     /* Whether the fallback's last update succeeded within the limit. */
     bool     m_fallback_served = false;

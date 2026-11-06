@@ -285,8 +285,10 @@ typedef struct {
 } swp_release;
 _Static_assert(sizeof(swp_release) == 8, "wire layout");
 
-/* Sent once per presentation of the window, never per commit, so a
- * superseded commit produces no frame event. */
+/* Sent once per presentation of the window on its toplevel's output,
+ * the one holding the largest part of the toplevel and its decorations,
+ * or on another while the DM cannot draw there. Never sent per commit,
+ * so a superseded commit produces no frame event. */
 typedef struct {
     uint32_t win_id;
     uint32_t reserved;      /* keeps time_ns aligned, must be 0 */

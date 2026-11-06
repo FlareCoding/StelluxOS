@@ -109,50 +109,70 @@ static bool may_begin_gpu_attach(const dm_client& c) {
     return type == SWP_MSG_ATTACH_GPU_BUFFER;
 }
 
-/* Builds the screen-sized backdrop: the configured wallpaper center
- * cropped and scaled to cover the screen, or the flat background
- * color when there is none or it fails to load. Compose only ever
- * pays for a plain blit out of it. */
-static stlxgfx_surface_t* build_backdrop(const stlxconf_t& conf,
-                                         uint32_t screen_w,
-                                         uint32_t screen_h) {
-    stlxgfx_surface_t* backdrop =
-        stlxgfx_create_surface(screen_w, screen_h, 32, 16, 8, 0);
-    if (!backdrop) {
-        return nullptr;
-    }
-    stlxgfx_clear(backdrop, conf.bg_color);
-
+/* The configured wallpaper decoded, or null when there is none or it
+ * fails to load */
+static stlxgfx_surface_t* load_wallpaper(const stlxconf_t& conf) {
     if (!conf.wallpaper[0]) {
-        return backdrop;
+        return nullptr;
     }
 
     stlxgfx_surface_t* image = stlxgfx_load_image(conf.wallpaper);
     if (!image) {
         printf("stlxdm: failed to load wallpaper %s\r\n", conf.wallpaper);
+    }
+
+    return image;
+}
+
+dm_wallpaper::~dm_wallpaper() {
+    stlxgfx_destroy_surface(m_image);
+}
+
+const stlxgfx_surface_t* dm_wallpaper::image() {
+    if (!m_decoded) {
+        m_image = load_wallpaper(m_conf);
+        m_decoded = true;
+    }
+
+    return m_image;
+}
+
+/* Builds an output-sized backdrop: the wallpaper `image` center cropped
+ * and scaled to cover the output, or the flat background color without one */
+static stlxgfx_surface_t* build_backdrop(const stlxconf_t& conf,
+                                         const stlxgfx_surface_t* image,
+                                         uint32_t width,
+                                         uint32_t height) {
+    stlxgfx_surface_t* backdrop =
+        stlxgfx_create_surface(width, height, 32, 16, 8, 0);
+    if (!backdrop) {
+        return nullptr;
+    }
+    stlxgfx_clear(backdrop, conf.bg_color);
+
+    if (!image) {
         return backdrop;
     }
 
-    /* Center-crop the source to the screen's aspect ratio, then scale */
+    /* Center-crop the source to the output's aspect ratio, then scale */
     uint64_t img_w = image->width;
     uint64_t img_h = image->height;
     uint32_t crop_w;
     uint32_t crop_h;
-    if (img_w * screen_h > img_h * screen_w) {
+    if (img_w * height > img_h * width) {
         crop_h = static_cast<uint32_t>(img_h);
-        crop_w = static_cast<uint32_t>(img_h * screen_w / screen_h);
+        crop_w = static_cast<uint32_t>(img_h * width / height);
     } else {
         crop_w = static_cast<uint32_t>(img_w);
-        crop_h = static_cast<uint32_t>(img_w * screen_h / screen_w);
+        crop_h = static_cast<uint32_t>(img_w * height / width);
     }
     if (crop_w == 0) crop_w = 1;
     if (crop_h == 0) crop_h = 1;
 
     int32_t crop_x = static_cast<int32_t>((img_w - crop_w) / 2);
     int32_t crop_y = static_cast<int32_t>((img_h - crop_h) / 2);
-    stlxgfx_blit_scaled(backdrop, 0, 0, screen_w, screen_h,
+    stlxgfx_blit_scaled(backdrop, 0, 0, width, height,
                         image, crop_x, crop_y, crop_w, crop_h);
-    stlxgfx_destroy_surface(image);
 
     return backdrop;
 }
@@ -228,16 +248,20 @@ int server::init(display* disp, const stlxconf_t* conf) {
         return -1;
     }
 
+    sync_outputs();
+
     if (m_cursor.init() != 0) {
         return -1;
     }
 
+    dm_wallpaper wallpaper(*conf);
     dm_conf_state state;
-    if (build_conf_state(state) != 0) {
+    if (build_conf_state(state, wallpaper) != 0) {
         return -1;
     }
     adopt_conf_state(std::move(state));
     m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
+    refresh_backdrops(false, wallpaper);
 
     const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
     m_cursor_x = main.x + main.w / 2;
@@ -294,12 +318,12 @@ int server::serve() {
 
 /* Builds every config-derived piece at the main output's size into fresh
  * objects, touching nothing running, so a failure leaves no trace */
-int server::build_conf_state(dm_conf_state& out) {
+int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
     const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
     uint32_t width = static_cast<uint32_t>(main.w);
     uint32_t height = static_cast<uint32_t>(main.h);
 
-    out.backdrop = build_backdrop(*m_conf, width, height);
+    out.backdrop = build_backdrop(*m_conf, wallpaper.image(), width, height);
     if (!out.backdrop) {
         return -1;
     }
@@ -356,17 +380,120 @@ void server::adopt_conf_state(dm_conf_state&& next) {
     next.backdrop = nullptr;
 }
 
-/* The outputs the layout places: every served output at its mode's size */
+/* Gives each served output but the main one a backdrop at its size, building a failed one again only at a new
+ * presenter or size or with `rebuild_all` */
+void server::refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper) {
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        dm_output& out = m_outputs[output];
+        bool needs_own = out.pres && output != m_layout.main_output();
+        bool fits = out.backdrop &&
+                    static_cast<int32_t>(out.backdrop->width) == out.place.w &&
+                    static_cast<int32_t>(out.backdrop->height) == out.place.h;
+        if (needs_own && (fits || out.backdrop_failed) && !rebuild_all) {
+            continue;
+        }
+
+        stlxgfx_destroy_surface(out.backdrop);
+        out.backdrop = nullptr;
+        out.backdrop_failed = false;
+        if (!needs_own) {
+            continue;
+        }
+
+        out.backdrop = build_backdrop(*m_conf, wallpaper.image(), static_cast<uint32_t>(out.place.w),
+                                      static_cast<uint32_t>(out.place.h));
+        if (!out.backdrop) {
+            out.backdrop_failed = true;
+            printf("stlxdm: output %u's backdrop could not be built, showing the background color\r\n", output);
+        }
+    }
+}
+
+/* The outputs the layout places: every served output at its mode's size,
+ * and at its last size every member relighting or kept for a mode request */
 uint32_t server::gather_members(layout::member* members) const {
     uint32_t count = 0;
     for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
         const presenter* pres = m_display->presenter_of(output);
+        const layout::place* place = m_layout.find(output);
+        bool keeps_place = m_display->is_relighting(output) || keeps_place_for_mode_request(output);
         if (pres) {
             members[count++] = { output, static_cast<int32_t>(pres->width()), static_cast<int32_t>(pres->height()) };
+        } else if (keeps_place && place) {
+            members[count++] = { output, place->rect.w, place->rect.h };
         }
     }
 
     return count;
+}
+
+/* Takes each output's presenter and place, clearing the record of an output no longer served and all but the backdrop
+ * of one with a new presenter or size, and restarting the cascade of an output that left the layout */
+void server::sync_outputs() {
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        dm_output& out = m_outputs[output];
+        presenter* pres = m_display->presenter_of(output);
+        const layout::place* place = m_layout.find(output);
+        if (!place) {
+            m_window_count[output] = 0;
+        }
+
+        if (!pres || !place) {
+            stlxgfx_destroy_surface(out.backdrop);
+            out = {};
+            continue;
+        }
+
+        /* A presenter made at another size can take the address of the one it replaced */
+        bool resized = out.place.w != place->rect.w || out.place.h != place->rect.h;
+        if (out.pres != pres || resized) {
+            stlxgfx_surface_t* backdrop = out.backdrop;
+            out = {};
+            out.backdrop = backdrop;
+        }
+
+        out.pres = pres;
+        out.place = place->rect;
+    }
+}
+
+void server::spread_damage() {
+    if (m_damage.empty()) {
+        return;
+    }
+
+    for (dm_output& out : m_outputs) {
+        if (!out.pres) {
+            continue;
+        }
+
+        if (m_damage.full()) {
+            out.damage.add_full();
+            continue;
+        }
+
+        for (uint32_t i = 0; i < m_damage.count(); i++) {
+            damage_list::rect r = m_damage.at(i);
+            r.x -= out.place.x;
+            r.y -= out.place.y;
+            if (damage_list::clip(r, out.place.w, out.place.h)) {
+                out.damage.add(r.x, r.y, r.w, r.h);
+            }
+        }
+    }
+
+    m_damage.clear();
+}
+
+bool server::compose_pending(uint32_t output) const {
+    const dm_output& out = m_outputs[output];
+    if (!out.pres) {
+        return false;
+    }
+
+    bool is_main = output == m_layout.main_output();
+    bool shell_pending = is_main && (m_panels->dirty() || m_power->animating());
+    return !out.damage.empty() || has_latch_work(output) || has_configure_work() || shell_pending;
 }
 
 void server::perf_wake(uint64_t now_ns) {
@@ -387,8 +514,15 @@ void server::perf_settle() {
 }
 
 void server::perf_tick(uint64_t now_ns) {
-    const presenter* pres = main_presenter();
-    m_perf.note_missed_frames(now_ns, pres ? pres->missed_frames() : -1);
+    int64_t missed = -1;
+    for (const dm_output& out : m_outputs) {
+        int64_t output_missed = out.pres ? out.pres->missed_frames() : -1;
+        if (output_missed >= 0) {
+            missed = (missed < 0 ? 0 : missed) + output_missed;
+        }
+    }
+
+    m_perf.note_missed_frames(now_ns, missed);
 
     perf_snapshot snap;
     if (m_perf.tick(now_ns, snap)) {
@@ -398,14 +532,16 @@ void server::perf_tick(uint64_t now_ns) {
 }
 
 void server::reload_config() {
+    dm_wallpaper wallpaper(*m_conf);
     dm_conf_state state;
-    if (build_conf_state(state) != 0) {
+    if (build_conf_state(state, wallpaper) != 0) {
         printf("stlxdm: config reload failed, keeping the running desktop\r\n");
         return;
     }
 
     adopt_conf_state(std::move(state));
     m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
+    refresh_backdrops(true, wallpaper);
 
     /* The new bar shows the last readout at once, since a quiescent perf
      * monitor refreshes nothing until the next input or missed frame */
@@ -415,10 +551,56 @@ void server::reload_config() {
     printf("stlxdm: config reloaded\r\n");
 }
 
-/* Moves each toplevel whose grip the work areas leave uncovered, at its
- * position or one it was promised, into the main output's work area */
-void server::keep_windows_in_reach() {
+/* Moves `w` and every popup under it, since a popup's position is absolute */
+void server::move_window_tree(dm_client& c, dm_window* w, int32_t dx, int32_t dy) {
+    move_window(w, dx, dy);
+
+    for (auto& child : c.windows) {
+        if (child->parent_id == w->win_id) {
+            move_window_tree(c, child.get(), dx, dy);
+        }
+    }
+}
+
+/* Keeps each toplevel's offset from its output's top-left. One whose output left moves to
+ * the member holding the largest part of its frame, else to the main one. */
+void server::move_windows_with_outputs(const layout& before) {
     uint32_t main = m_layout.main_output();
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            if (w->parent_id != 0) {
+                continue;
+            }
+
+            const layout::place* was = before.find(w->output);
+            const layout::place* now = m_layout.find(w->output);
+            if (!now && was && w->current >= 0) {
+                const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
+                damage_list::rect frame = decor::frame_rect(*w, w->x, w->y, static_cast<int32_t>(b.width),
+                                                            static_cast<int32_t>(b.height));
+                int32_t other = before.output_holding(frame, &m_layout);
+                if (other >= 0) {
+                    w->output = static_cast<uint32_t>(other);
+                    was = before.find(w->output);
+                    now = m_layout.find(w->output);
+                }
+            }
+
+            if (!now) {
+                w->output = main;
+                now = m_layout.find(main);
+            }
+
+            int32_t dx = was ? now->rect.x - was->rect.x : 0;
+            int32_t dy = was ? now->rect.y - was->rect.y : 0;
+            move_window_tree(*c, w.get(), dx, dy);
+        }
+    }
+}
+
+/* Moves each toplevel whose grip the work areas leave uncovered, at its
+ * position or one it was promised, into its output's work area */
+void server::keep_windows_in_reach() {
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
             if (w->parent_id != 0) {
@@ -436,9 +618,13 @@ void server::keep_windows_in_reach() {
                 corners[count++] = { w->target_x, w->target_y };
             }
 
-            desktop_point move = m_layout.reach_move(main, corners, count, decor::TITLE_H);
+            if (!m_layout.find(w->output)) {
+                w->output = m_layout.main_output();
+            }
+
+            desktop_point move = m_layout.reach_move(w->output, corners, count, decor::TITLE_H);
             if (move.x != 0 || move.y != 0) {
-                move_window(w.get(), move.x, move.y);
+                move_window_tree(*c, w.get(), move.x, move.y);
             }
         }
     }
@@ -450,6 +636,9 @@ desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
     layout::member members[layout::MEMBERS_MAX];
     uint32_t count = gather_members(members);
     m_layout.rebuild(members, count, m_display->primary());
+    sync_outputs();
+
+    dm_wallpaper wallpaper(*m_conf);
 
     /* The backdrop's size, not the last layout's, tells a failed rebuild apart, so the next event retries it */
     const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
@@ -458,7 +647,7 @@ desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
     bool rebuilt = false;
     if (m_layout.main_output() != before.main_output() || backdrop_stale) {
         dm_conf_state state;
-        if (build_conf_state(state) == 0) {
+        if (build_conf_state(state, wallpaper) == 0) {
             adopt_conf_state(std::move(state));
             m_panels->set_perf(m_perf_readout);
             rebuilt = true;
@@ -468,10 +657,12 @@ desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
     }
 
     m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
+    refresh_backdrops(false, wallpaper);
 
     desktop_point moved = pointer;
     bool places_changed = !same_layout(before, m_layout);
     if (places_changed) {
+        move_windows_with_outputs(before);
         moved = m_layout.follow_point(pointer, before);
     }
 
@@ -504,6 +695,12 @@ void server::shutdown() {
     }
     stlxgfx_destroy_surface(m_backdrop);
     m_backdrop = nullptr;
+
+    for (dm_output& out : m_outputs) {
+        stlxgfx_destroy_surface(out.backdrop);
+        out = {};
+    }
+
     if (m_power) {
         m_power->shutdown();
     }

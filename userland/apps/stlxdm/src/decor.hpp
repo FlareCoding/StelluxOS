@@ -43,6 +43,14 @@ enum class zone {
     resize_br,
 };
 
+/* The surface a compose draws into, and the desktop point its top-left
+ * pixel shows. */
+struct canvas {
+    stlxgfx_surface_t* surface = nullptr;
+    int32_t            x = 0;
+    int32_t            y = 0;
+};
+
 /* Interaction state the chrome renders: the drag glow, the focus
  * palette, and the close control's hover and press shades */
 struct chrome_state {
@@ -65,23 +73,25 @@ damage_list::rect frame_rect(const dm_window& w, int32_t x, int32_t y,
  * the content rect when borderless. Zero without a displayed buffer. */
 damage_list::rect bounds(const dm_window& w);
 
-/* Zone under a screen point, none when outside the window. Resize
+/* Zone under a desktop point, none when outside the window. Resize
  * zones exist only for resizable decorated windows. */
 zone hit(const dm_window& w, int32_t x, int32_t y);
 
 /* Draws the rounded chrome around the content area, clipped to one
- * compose rect so lower chrome never overpaints higher windows. */
-void draw(stlxgfx_surface_t* back, const dm_window& w,
+ * compose rect so lower chrome never overpaints higher windows. The
+ * rect is in desktop coordinates and must lie inside `back`. */
+void draw(const canvas& back, const dm_window& w,
           const chrome_state& st, const damage_list::rect& clip);
 
 /* Blits the displayed buffer into place with the frame's rounded
- * bottom corners applied, clipped to one compose rect. */
-void blit_content(stlxgfx_surface_t* back, const dm_window& w,
+ * bottom corners applied, clipped to one compose rect, which is in
+ * desktop coordinates and must lie inside `back`. */
+void blit_content(const canvas& back, const dm_window& w,
                   const damage_list::rect& clip);
 
-/* Draws the interactive-resize rubber band, inside `clip` only, which
- * must lie inside `back`. */
-void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r,
+/* Draws the interactive-resize rubber band `r`, inside `clip` only,
+ * both in desktop coordinates, and `clip` must lie inside `back`. */
+void draw_outline(const canvas& back, const damage_list::rect& r,
                   const damage_list::rect& clip);
 
 } // namespace decor

@@ -264,7 +264,7 @@ int flip_presenter::create_buffers() {
     m_composed = static_cast<uint8_t*>(
         malloc(static_cast<size_t>(m_width) * m_height * BYTES_PER_PIXEL));
     if (!m_composed) {
-        printf("stlxdm: no memory for the composed frame\r\n");
+        printf("stlxdm: no memory for the composed frame of output %u\r\n", m_output);
         return -ENOMEM;
     }
 
@@ -278,7 +278,7 @@ int flip_presenter::create_buffers() {
     return 0;
 }
 
-/* Creates one buffer at the primary output's mode and maps it. Returns 0 or a negative errno,
+/* Creates one buffer at its output's mode and maps it. Returns 0 or a negative errno,
  * printing why for all but `-EBUSY`. A buffer that cannot be mapped is dropped */
 int flip_presenter::create_buffer(display_buffer& buffer) {
     gfxfb::gfxfb_buffer_args args = {};
@@ -290,7 +290,7 @@ int flip_presenter::create_buffer(display_buffer& buffer) {
         if (error == ENOTTY) {
             printf("stlxdm: the display cannot create buffers\r\n");
         } else if (error != EBUSY) {
-            printf("stlxdm: display buffer creation failed: %s\r\n", strerror(error));
+            printf("stlxdm: display buffer creation failed on output %u: %s\r\n", m_output, strerror(error));
         }
 
         return -error;
@@ -300,7 +300,7 @@ int flip_presenter::create_buffer(display_buffer& buffer) {
                      MAP_SHARED, m_fd, static_cast<off_t>(args.map_offset));
     if (mem == MAP_FAILED) {
         int error = errno;
-        printf("stlxdm: display buffer mapping failed: %s\r\n", strerror(error));
+        printf("stlxdm: display buffer mapping failed on output %u: %s\r\n", m_output, strerror(error));
         ioctl(m_fd, gfxfb::GFXFB_DESTROY_BUFFER, static_cast<unsigned long>(args.handle));
         return -error;
     }
@@ -427,7 +427,7 @@ bool flip_presenter::present_buffer(const display_buffer& buffer, const damage_l
     bool size_changed = failed && error == EINVAL && !still_lit_at(m_fd, m_output, m_width, m_height);
     bool refused_by_change = output_dark || size_changed;
     if (failed && !refused_by_change && !m_last_present_failed) {
-        printf("stlxdm: display present failed: %s\r\n", strerror(error));
+        printf("stlxdm: display present failed on output %u: %s\r\n", m_output, strerror(error));
     }
 
     m_last_present_failed = failed && !refused_by_change;
@@ -442,7 +442,7 @@ void flip_presenter::end_present(uint32_t status, uint64_t frame, uint64_t latch
 
     if (status != gfxfb::GFXFB_PRESENT_LATCHED) {
         if (status == gfxfb::GFXFB_PRESENT_FAILED) {
-            printf("stlxdm: a present ended without latching: the display failed\r\n");
+            printf("stlxdm: a present ended without latching on output %u: the display failed\r\n", m_output);
         }
 
         /* An output that went dark counts its vertical blanks from 0 once lit again, so the next
@@ -544,8 +544,8 @@ bool flip_presenter::cursor_call(uint32_t request, void* args, const char* call)
     bool failed = ioctl(m_fd, request, args) < 0;
     bool output_dark = failed && errno == EAGAIN;
     if (failed && !output_dark && !m_cursor_failing) {
-        printf("stlxdm: display cursor %s failed: %s, pointer drawn into frames\r\n",
-               call, strerror(errno));
+        printf("stlxdm: display cursor %s failed on output %u: %s\r\n",
+               call, m_output, strerror(errno));
         m_cursor_failing = true;
     }
 
