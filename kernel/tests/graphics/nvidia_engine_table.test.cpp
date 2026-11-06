@@ -27,6 +27,7 @@ static constexpr size_t   NVIDIA_ENTRY_BYTES           = 100;
 static constexpr size_t   NVIDIA_FIRST_ENTRY_OFFSET    = 12;
 static constexpr uint32_t NVIDIA_ENGINE_TYPE_WORD      = 2;
 static constexpr uint32_t NVIDIA_RUNLIST_WORD          = 3;
+static constexpr uint32_t NVIDIA_CHANNEL_RAM_WORD      = 14;
 static constexpr uint32_t GR0                          = 0x1;
 static constexpr uint32_t CE0                          = 0x9;
 static constexpr uint32_t CE1                          = 0xA;
@@ -40,13 +41,13 @@ static constexpr rm::handle TEST_SUBDEVICE = 0x00050002;
 // Seven engines in the shape of an RTX 3080's table, of which the card logs only CE2 on runlist 1: the graphics engine
 // and two copy engines on runlist 0, then copy engines and a video decoder on runlists of their own
 static constexpr engine_info RTX_3080_ENGINES[] = {
-    {.type = GR0, .runlist = 0},
-    {.type = CE0, .runlist = 0},
-    {.type = CE1, .runlist = 0},
-    {.type = CE2, .runlist = 1},
-    {.type = CE3, .runlist = 2},
-    {.type = CE4, .runlist = 8},
-    {.type = NVDEC0, .runlist = 3},
+    {.type = GR0, .runlist = 0, .channel_ram = 0},
+    {.type = CE0, .runlist = 0, .channel_ram = 0},
+    {.type = CE1, .runlist = 0, .channel_ram = 0},
+    {.type = CE2, .runlist = 1, .channel_ram = 0},
+    {.type = CE3, .runlist = 2, .channel_ram = 0},
+    {.type = CE4, .runlist = 8, .channel_ram = 0},
+    {.type = NVDEC0, .runlist = 3, .channel_ram = 0},
 };
 
 // A firmware answering the device info table control from `engines`, a page of 32 per call, and recording each call's
@@ -91,6 +92,7 @@ public:
             uint8_t* entry = bytes + NVIDIA_FIRST_ENTRY_OFFSET + count * NVIDIA_ENTRY_BYTES;
             string::memcpy(entry + NVIDIA_ENGINE_TYPE_WORD * 4, &engines[i].type, 4);
             string::memcpy(entry + NVIDIA_RUNLIST_WORD * 4, &engines[i].runlist, 4);
+            string::memcpy(entry + NVIDIA_CHANNEL_RAM_WORD * 4, &engines[i].channel_ram, 4);
             count++;
         }
 
@@ -148,16 +150,35 @@ TEST(nvidia_engine_table, rtx_3080_table_gives_ce2) {
     EXPECT_EQ(copy->runlist, 1u);
 }
 
+// An engine keeps its runlist's channel RAM offset from word 14 of its entry
+TEST(nvidia_engine_table, an_engine_keeps_its_runlists_channel_ram_from_word_14) {
+    static constexpr engine_info engines[] = {
+        {.type = GR0, .runlist = 0, .channel_ram = 0x412000},
+        {.type = CE2, .runlist = 1, .channel_ram = 0x416000},
+    };
+
+    table_firmware fw;
+    fw.engines = engines;
+    fw.engine_count = 2;
+    engine_table table;
+
+    ASSERT_EQ(table.read(fw, TEST_SUBDEVICE), OK);
+
+    const engine_info* copy = table.first_async_copy_engine();
+    ASSERT_NE(copy, nullptr);
+    EXPECT_EQ(copy->channel_ram, 0x416000u);
+}
+
 // A table of 40 engines takes two pages, the second asked from entry 32, and keeps all 40, the last of them from the
 // second page
 TEST(nvidia_engine_table, second_page_starts_at_entry_32) {
     static engine_info engines[40] = {};
     for (uint32_t i = 0; i < 40; i++) {
-        engines[i] = {.type = NVDEC0, .runlist = 3};
+        engines[i] = {.type = NVDEC0, .runlist = 3, .channel_ram = 0};
     }
 
-    engines[0] = {.type = GR0, .runlist = 0};
-    engines[39] = {.type = CE3, .runlist = 2};
+    engines[0] = {.type = GR0, .runlist = 0, .channel_ram = 0};
+    engines[39] = {.type = CE3, .runlist = 2, .channel_ram = 0};
 
     table_firmware fw;
     fw.engines = engines;
@@ -178,9 +199,9 @@ TEST(nvidia_engine_table, second_page_starts_at_entry_32) {
 // The lowest asynchronous copy engine type wins, even when a higher one comes first
 TEST(nvidia_engine_table, lowest_async_copy_engine_wins) {
     static constexpr engine_info engines[] = {
-        {.type = CE4, .runlist = 8},
-        {.type = GR0, .runlist = 0},
-        {.type = CE3, .runlist = 2},
+        {.type = CE4, .runlist = 8, .channel_ram = 0},
+        {.type = GR0, .runlist = 0, .channel_ram = 0},
+        {.type = CE3, .runlist = 2, .channel_ram = 0},
     };
 
     table_firmware fw;
@@ -199,9 +220,9 @@ TEST(nvidia_engine_table, lowest_async_copy_engine_wins) {
 // ends: missing GR0 would make CE0 asynchronous and lower, and missing CE2 would leave none
 TEST(nvidia_engine_table, walks_read_the_first_and_last_entries) {
     static constexpr engine_info engines[] = {
-        {.type = CE2, .runlist = 1},
-        {.type = CE0, .runlist = 0},
-        {.type = GR0, .runlist = 0},
+        {.type = CE2, .runlist = 1, .channel_ram = 0},
+        {.type = CE0, .runlist = 0, .channel_ram = 0},
+        {.type = GR0, .runlist = 0, .channel_ram = 0},
     };
 
     table_firmware fw;
@@ -219,10 +240,10 @@ TEST(nvidia_engine_table, walks_read_the_first_and_last_entries) {
 // Copy engines that all share the graphics engine's runlist leave no asynchronous copy engine
 TEST(nvidia_engine_table, copy_engines_on_the_graphics_runlist_give_none) {
     static constexpr engine_info engines[] = {
-        {.type = GR0, .runlist = 0},
-        {.type = CE0, .runlist = 0},
-        {.type = CE1, .runlist = 0},
-        {.type = NVDEC0, .runlist = 3},
+        {.type = GR0, .runlist = 0, .channel_ram = 0},
+        {.type = CE0, .runlist = 0, .channel_ram = 0},
+        {.type = CE1, .runlist = 0, .channel_ram = 0},
+        {.type = NVDEC0, .runlist = 3, .channel_ram = 0},
     };
 
     table_firmware fw;

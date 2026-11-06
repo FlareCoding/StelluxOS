@@ -606,16 +606,17 @@ int32_t nvidia_gpu_driver::attach() {
     // The PCI layer's devices and `g_boot_info`'s record of the boot framebuffer sit in privileged memory
     nvidia::card_placement card = {};
     nvidia::boot_framebuffer framebuffer = {};
-    uint64_t registers_bytes = 0;
     uint64_t bar1_bytes = 0;
     RUN_ELEVATED({
         card.registers_address = m_dev->get_bar(REGISTERS_BAR).phys;
-        registers_bytes = m_dev->get_bar(REGISTERS_BAR).size;
+        m_registers_bytes = m_dev->get_bar(REGISTERS_BAR).size;
         card.bar1_address = m_dev->get_bar(VIDEO_MEMORY_BAR).phys;
         bar1_bytes = m_dev->get_bar(VIDEO_MEMORY_BAR).size;
         card.bar3_address = m_dev->get_bar(INSTANCE_MEMORY_BAR).phys;
+
         card.bus = m_dev->bus();
         card.device = m_dev->slot();
+
         framebuffer.address = g_boot_info.framebuffer.fb_phys;
         framebuffer.height = g_boot_info.framebuffer.height;
         framebuffer.pitch = g_boot_info.framebuffer.pitch;
@@ -624,7 +625,7 @@ int32_t nvidia_gpu_driver::attach() {
     uint64_t console_bytes = nvidia::boot_console_bytes(card, framebuffer, frts.has_display);
 
     nvidia::cpu_sequencer_context sequencer = {
-        .register_bytes          = registers_bytes,
+        .register_bytes          = m_registers_bytes,
         .boot0                   = boot0,
         .libos_arguments_address = m_boot_memory.libos_arguments_address(),
         .app_version             = bootloader_parts.app_version,
@@ -1203,7 +1204,7 @@ void nvidia_gpu_driver::run() {
     m_gsp.set_failed_mark(m_failed);
 
     // Every failure is logged, and the display runs on without the engines or the GPU core's device
-    if (m_engines.bring_up(regs, card_profile, *m_chip) == nvidia::OK) {
+    if (m_engines.bring_up(regs, m_registers_bytes, card_profile, *m_chip) == nvidia::OK) {
         m_engines.register_gpu(m_card_identity);
     }
 

@@ -24,6 +24,9 @@ constexpr uint64_t GPFIFO_BYTES   = static_cast<uint64_t>(GPFIFO_ENTRIES) * GPFI
 // The ids a channel's allocation can give a channel in its runlist
 constexpr uint32_t CHANNEL_IDS = 4096;
 
+// NVIDIA's NV_CHRAM_CHANNEL(i), a channel's word in its runlist's channel RAM, 4 bytes per id
+constexpr uint32_t CHANNEL_RAM_ENTRY_BYTES = 4;
+
 // The queues a group's channels can be fetched on, each with a buffer of the group's for a faulting channel's methods
 constexpr uint32_t CHANNEL_GROUP_RUNQUEUES = 2;
 
@@ -107,6 +110,10 @@ public:
     // The channel's id in its runlist, valid while the channel exists
     uint32_t id() const;
 
+    // Whether its runlist's channel RAM marks the channel faulted in fetching or running its work, valid while the
+    // channel exists. A word of all ones, as a card that stopped responding reads, marks no fault
+    bool has_faulted() const;
+
     // Whether a failed `create`, the last `destroy` or `destroy_keeping_memory` left the memory allocated for good
     bool keeps_memory() const;
 
@@ -146,7 +153,8 @@ private:
 
     uint32_t m_id = 0;
     uint32_t m_doorbell_token = 0;
-    uint32_t m_put = 0; // the slot the next entry goes in
+    uint32_t m_channel_ram_entry = 0; // the BAR0 offset of the channel's word in its runlist's channel RAM
+    uint32_t m_put = 0;               // the slot the next entry goes in
 };
 
 } // namespace drivers::nvidia

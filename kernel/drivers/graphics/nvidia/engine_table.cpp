@@ -27,6 +27,7 @@ static int32_t keep_page(const rm::device_info_table_params& page, engine_info* 
         const rm::device_info_entry& entry = page.entries[i];
         engines[count].type = entry.data[rm::DEVICE_INFO_ENGINE_TYPE];
         engines[count].runlist = entry.data[rm::DEVICE_INFO_RUNLIST];
+        engines[count].channel_ram = entry.data[rm::DEVICE_INFO_CHANNEL_RAM];
         count++;
     }
 

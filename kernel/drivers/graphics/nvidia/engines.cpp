@@ -148,7 +148,12 @@ engines::engines(
     m_queues.init();
 }
 
-int32_t engines::bring_up(registers& bar0, const dma::device_profile& card, const chip_info& chip) {
+int32_t engines::bring_up(
+    registers& bar0,
+    uint64_t bar0_bytes,
+    const dma::device_profile& card,
+    const chip_info& chip
+) {
     m_bar0 = bar0;
     m_chip = &chip;
     m_card = card;
@@ -164,6 +169,31 @@ int32_t engines::bring_up(registers& bar0, const dma::device_profile& card, cons
             "nvidia: the device info table lists %u engines and no asynchronous copy engine, so the kernel has no "
             "copy channel",
             m_table.count()
+        );
+        return ERR_BAD_STATE;
+    }
+
+    // The engine's channels read their fault bits there, and a read past the mapping faults the CPU, as an unaligned
+    // one does on aarch64
+    if (copy_engine->channel_ram % CHANNEL_RAM_ENTRY_BYTES != 0) {
+        log::error(
+            "nvidia: copy engine type 0x%X's channel RAM at BAR0 offset 0x%X is not 4-byte aligned, so the kernel has "
+            "no copy channel",
+            copy_engine->type,
+            copy_engine->channel_ram
+        );
+        return ERR_BAD_STATE;
+    }
+
+    uint64_t channel_ram_bytes = static_cast<uint64_t>(CHANNEL_IDS) * CHANNEL_RAM_ENTRY_BYTES;
+    if (!lies_inside(copy_engine->channel_ram, channel_ram_bytes, bar0_bytes)) {
+        log::error(
+            "nvidia: copy engine type 0x%X's channel RAM of 0x%lX bytes at BAR0 offset 0x%X ends past BAR0's 0x%lX "
+            "bytes, so the kernel has no copy channel",
+            copy_engine->type,
+            channel_ram_bytes,
+            copy_engine->channel_ram,
+            bar0_bytes
         );
         return ERR_BAD_STATE;
     }

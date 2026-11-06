@@ -77,7 +77,7 @@ static constexpr uint32_t ENTRY_WORDS         = 35;
 
 static constexpr gpu_objects TEST_OBJECTS    = {.device = 0xC0C00001, .subdevice = 0xC0C00002};
 static constexpr rm::handle  FIRST_HANDLE    = 0xC0C00010;
-static constexpr engine_info COPY2_ENGINE    = {.type = 0xB, .runlist = 3};
+static constexpr engine_info COPY2_ENGINE    = {.type = 0xB, .runlist = 3, .channel_ram = 0};
 static constexpr uint32_t    TEST_CHANNEL_ID = 0;
 static constexpr uint64_t    FILL_OFFSET     = 0x200000;
 static constexpr uint64_t    FILL_BYTES      = 0x10000;

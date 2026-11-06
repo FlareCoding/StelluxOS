@@ -157,12 +157,13 @@ public:
      * engine's nonstall vector in `chip`'s leaves, and check the channel by
      * having it zero and then fill video memory, each read back through BAR1.
      * The engines keep `chip`, which must outlive them.
-     * @return `OK`, `ERR_BAD_STATE` when no asynchronous copy engine exists or
-     * a word reads back wrong, `ERR_TIMEOUT` when a copy hangs the channel, or
-     * the failing step's error. Every error is logged and leaves the vector
-     * masked.
+     * @param bar0_bytes How many bytes of BAR0 `bar0` maps.
+     * @return `OK`, `ERR_BAD_STATE` when no asynchronous copy engine exists,
+     * its channel RAM is unaligned or ends past `bar0_bytes`, or a word reads
+     * back wrong, `ERR_TIMEOUT` when a copy hangs the channel, or the failing
+     * step's error. Every error is logged and leaves the vector masked.
      */
-    int32_t bring_up(registers& bar0, const dma::device_profile& card, const chip_info& chip);
+    int32_t bring_up(registers& bar0, uint64_t bar0_bytes, const dma::device_profile& card, const chip_info& chip);
 
     /**
      * @brief Register the engines with the GPU core as the next /dev/gpuN,

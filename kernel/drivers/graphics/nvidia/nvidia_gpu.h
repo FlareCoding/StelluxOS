@@ -127,6 +127,7 @@ private:
     nvidia::booter_layout         m_booter_unload_parts = {};
     const nvidia::chip_info*      m_chip = nullptr;
     uint32_t                      m_boot0 = 0;
+    uint64_t                      m_registers_bytes = 0; // BAR0's mapped size, read by `attach()`
     uint32_t                      m_bar1_block = 0;
     nvidia::interrupt_vectors     m_interrupt_vectors = {};
     uint64_t                      m_last_interrupt_ns = 0;    // when the handler last set `m_must_service_gsp`

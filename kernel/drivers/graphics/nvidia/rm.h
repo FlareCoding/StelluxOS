@@ -1095,10 +1095,11 @@ struct device_info_entry {
     char     name[16];
 };
 
-// NVIDIA's ENGINE_INFO_TYPE_RM_ENGINE_TYPE and ENGINE_INFO_TYPE_RUNLIST, the `data` words holding the engine's type and
-// its runlist
+// NVIDIA's ENGINE_INFO_TYPE_RM_ENGINE_TYPE, ENGINE_INFO_TYPE_RUNLIST and ENGINE_INFO_TYPE_CHRAM_PRI_BASE, the `data`
+// words holding the engine's type, its runlist and the BAR0 offset of that runlist's channel RAM
 constexpr uint32_t DEVICE_INFO_ENGINE_TYPE = 2;
 constexpr uint32_t DEVICE_INFO_RUNLIST     = 3;
+constexpr uint32_t DEVICE_INFO_CHANNEL_RAM = 14;
 
 // NVIDIA's NV2080_CTRL_FIFO_GET_DEVICE_INFO_TABLE_PARAMS. A page starts at a multiple of `DEVICE_INFO_PAGE_ENTRIES`
 struct device_info_table_params {

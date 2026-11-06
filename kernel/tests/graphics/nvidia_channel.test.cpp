@@ -239,7 +239,7 @@ static registers doorbell_registers() {
 
 static channel_setup copy2_setup(bool is_privileged) {
     return {
-        .engine = {.type = COPY2_ENGINE_TYPE, .runlist = COPY2_RUNLIST},
+        .engine = {.type = COPY2_ENGINE_TYPE, .runlist = COPY2_RUNLIST, .channel_ram = 0},
         .id = TEST_CHANNEL_ID,
         .gpfifo_address = TEST_GPFIFO_ADDRESS,
         .is_privileged = is_privileged,
