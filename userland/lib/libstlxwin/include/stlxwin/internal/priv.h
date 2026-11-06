@@ -102,6 +102,8 @@ struct stlxwin_conn {
     /* Last MODES of each output, allocated at the first watch */
     swp_modes* modes;
     uint32_t   modes_kept;      /* one bit per output whose MODES arrived */
+
+    swp_outputs outputs;        /* the newest OUTPUTS, zero from a DM that sends none */
 };
 
 /* conn.c */

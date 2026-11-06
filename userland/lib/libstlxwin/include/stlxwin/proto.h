@@ -27,6 +27,7 @@
 #define SWP_CLIPBOARD_MAX    4096u
 #define SWP_MODES_MAX        32u  /* the most modes an output lists */
 #define SWP_OUTPUTS_MAX      16u  /* the most outputs a display drives */
+#define SWP_DESKTOP_LIMIT    (1 << 20)  /* every corner of every place lies within this of the origin on both axes */
 
 #define SWP_GPU_HANDLES       3u      /* handles one ATTACH_GPU_BUFFER carries */
 #define SWP_GPU_BUFFERS_MAX   16u     /* GPU buffers one connection holds at once, shown detached ones included */
@@ -51,6 +52,8 @@ enum {
     SWP_MSG_ATTACH_GPU_BUFFER = 0x010E,
     SWP_MSG_COMMIT_GPU        = 0x010F,
 
+    SWP_MSG_SET_LAYOUT     = 0x0110,
+
     SWP_MSG_HELLO_REPLY    = 0x0201,
     SWP_MSG_CONFIGURE      = 0x0202,
     SWP_MSG_RELEASE        = 0x0203,
@@ -60,6 +63,8 @@ enum {
     SWP_MSG_MODES          = 0x0207,
     SWP_MSG_MODE_RESULT    = 0x0208,
     SWP_MSG_GPU_INFO       = 0x0209,
+    SWP_MSG_OUTPUTS        = 0x020A,
+    SWP_MSG_LAYOUT_RESULT  = 0x020C,
 };
 
 typedef struct {
@@ -245,6 +250,22 @@ typedef struct {
 } swp_commit_gpu;
 _Static_assert(sizeof(swp_commit_gpu) == 176, "wire layout");
 
+typedef struct {
+    uint32_t output;
+    int32_t  x, y;          /* the place's top-left */
+} swp_layout_entry;
+_Static_assert(sizeof(swp_layout_entry) == 12, "wire layout");
+
+/* Places each output OUTPUTS lists at a top-left, at its mode's size,
+ * and names the main output. Answered by one LAYOUT_RESULT. */
+typedef struct {
+    uint32_t         generation;               /* the generation of the OUTPUTS this was built from */
+    uint32_t         main;                     /* the main output's index */
+    uint32_t         count;                    /* entries, one per output OUTPUTS lists */
+    swp_layout_entry entries[SWP_OUTPUTS_MAX]; /* `count` used */
+} swp_set_layout;
+_Static_assert(sizeof(swp_set_layout) == 204, "wire layout");
+
 /* ---- DM to client ---- */
 
 enum {
@@ -254,6 +275,7 @@ enum {
 /* HELLO_REPLY's header flags */
 enum {
     SWP_HELLO_GPU_INFO = 1u << 0,  /* a GPU_INFO follows the reply */
+    SWP_HELLO_OUTPUTS  = 1u << 1,  /* an OUTPUTS follows the reply, after any GPU_INFO */
 };
 
 typedef struct {
@@ -340,7 +362,7 @@ _Static_assert(sizeof(swp_clipboard_data) == 4, "wire layout");
 
 enum {
     SWP_OUTPUT_LIT     = 1u << 0,  /* the output shows a picture */
-    SWP_OUTPUT_PRIMARY = 1u << 1,  /* the desktop's output */
+    SWP_OUTPUT_PRIMARY = 1u << 1,  /* gfxfb's primary output */
 };
 
 /* An output's state and modes, the default first. An output of
@@ -391,6 +413,49 @@ typedef struct {
     uint32_t device;        /* N of /dev/gpuN, 0 without SWP_GPU_ACCEPTS */
 } swp_gpu_info;
 _Static_assert(sizeof(swp_gpu_info) == 8, "wire layout");
+
+enum {
+    SWP_DESKTOP_MAIN = 1u << 0,  /* the main output, carrying the bar and the dock, its top-left at (0, 0) */
+};
+
+/* An output's place, in desktop coordinates, which count monitor pixels
+ * right and down from the main output's top-left */
+typedef struct {
+    uint32_t output;             /* gfxfb's output index */
+    uint32_t flags;              /* SWP_DESKTOP_* */
+    int32_t  x, y;               /* the place's top-left */
+    uint32_t width, height;      /* the mode's size, the last one while the output relights */
+    uint64_t refresh_millihertz; /* the mode's refresh, 0 when unknown */
+    swp_rect work;               /* the work area: the main output's place less the bar and the dock, else the place */
+    char     monitor[32];        /* "maker name", NUL-terminated, empty when the output reports no identity */
+} swp_desktop_output;
+_Static_assert(sizeof(swp_desktop_output) == 80, "wire layout");
+
+/* The desktop's layout, sent after HELLO_REPLY and at the end of each
+ * DM wakeup to every client holding an older generation */
+typedef struct {
+    uint32_t           generation;               /* raised by one at every change of what OUTPUTS carries, from 1 */
+    uint32_t           count;                    /* members, the outputs holding a place, at least 1 */
+    swp_desktop_output outputs[SWP_OUTPUTS_MAX]; /* ascending output index, `count` used, the rest zero */
+} swp_outputs;
+_Static_assert(sizeof(swp_outputs) == 1288, "wire layout");
+
+/* What the DM did with a SET_LAYOUT: a refused request changes nothing
+ * and gets the first refusal below that applies */
+enum {
+    SWP_LAYOUT_APPLIED = 1,  /* applied and stored */
+    SWP_LAYOUT_UNSAVED = 2,  /* applied but not stored, so kept for its monitors until the DM exits */
+    SWP_LAYOUT_STALE   = 3,  /* the generation is not the current one: nothing changed */
+    SWP_LAYOUT_INVALID = 4,  /* entries not exactly the members with one as main, or a corner past the limit */
+    SWP_LAYOUT_OVERLAP = 5,  /* two places overlap */
+    SWP_LAYOUT_APART   = 6,  /* an output does not connect to the main output */
+};
+
+typedef struct {
+    uint32_t outcome;       /* SWP_LAYOUT_* */
+    uint32_t generation;    /* the current one as it is sent: the last OUTPUTS' */
+} swp_layout_result;
+_Static_assert(sizeof(swp_layout_result) == 8, "wire layout");
 
 /* Read buffer bound for either side of the socket */
 #define SWP_MAX_MSG_SIZE \
