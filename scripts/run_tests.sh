@@ -78,6 +78,10 @@ if [[ "$ARCH" == "x86_64" ]]; then
         QEMU_X86_64_CPUS=(-cpu qemu64,+fsgsbase,+rdrand -smp 4)
     fi
 
+    if [[ "${QEMU_X86_64_ACCEL:-}" == "kvm" && -r /dev/kvm && -w /dev/kvm ]]; then
+        QEMU_X86_64_CPUS=(-accel kvm "${QEMU_X86_64_CPUS[@]}")
+    fi
+
     qemu-system-x86_64 \
         -machine q35 \
         "${QEMU_X86_64_CPUS[@]}" \
