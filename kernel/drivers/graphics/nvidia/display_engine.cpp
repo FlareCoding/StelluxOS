@@ -3173,6 +3173,7 @@ void display_engine::relight_at_lit_timing(uint8_t output, const engine_head& he
     modes->timings[0] = head.timing;
     string::memcpy(&modes->dpcd, &head.lit_dpcd, sizeof(modes->dpcd));
     string::memcpy(&modes->edid, &head.lit_edid, sizeof(modes->edid));
+    modes->monitor = head.lit_monitor;
 
     relight_output(output, *modes);
     heap::ufree(modes);

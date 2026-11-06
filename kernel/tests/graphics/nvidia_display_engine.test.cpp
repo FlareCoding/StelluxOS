@@ -12407,6 +12407,9 @@ TEST(nvidia_display_engine, a_short_pulse_relights_an_output_whose_link_is_lost_
     EXPECT_TRUE(g_relight_reports[1].lit);
     EXPECT_FALSE(g_relight_reports[1].relighting);
 
+    EXPECT_STREQ(g_relight_reports[1].monitor.maker, "AOC");
+    EXPECT_STREQ(g_relight_reports[1].monitor.name, "AG241QG4");
+
     EXPECT_TRUE(reads_lit(engine, 0));
     EXPECT_TRUE(reads_lit(engine, 1));
     EXPECT_EQ(head_of_output(engine, 1), 1u);
