@@ -2,6 +2,7 @@
 #define STLXQPA_INTEGRATION_H
 
 #include <QHash>
+#include <QList>
 #include <memory>
 #include <qpa/qplatformclipboard.h>
 #include <qpa/qplatformcursor.h>
@@ -20,19 +21,30 @@ public:
     void changeCursor(QCursor* cursor, QWindow* window) override;
 };
 
-// The one screen stlxdm reports. Positions are kept relative to each toplevel,
-// which is all stlxdm needs to place a popup.
+// Qt's screen for one output that stlxdm's OUTPUTS lists, or one screen at the
+// size the handshake reported from a display manager that lists none. Every
+// screen is a virtual sibling of every other, so Qt moves a removed screen's
+// windows to its primary screen still shown, rather than making them again.
 class QStelluxScreen : public QPlatformScreen {
 public:
-    explicit QStelluxScreen(const QSize& size);
+    QStelluxScreen(uint32_t output, const QRect& geometry, const QRect& available_geometry, qreal refresh_rate);
+
+    uint32_t output() const;
+    void update(const QRect& geometry, const QRect& available_geometry, qreal refresh_rate);
 
     QRect geometry() const override;
+    QRect availableGeometry() const override;
     int depth() const override;
     QImage::Format format() const override;
+    qreal refreshRate() const override;
+    QList<QPlatformScreen*> virtualSiblings() const override;
     QPlatformCursor* cursor() const override;
 
 private:
+    uint32_t m_output;
     QRect m_geometry;
+    QRect m_available_geometry;
+    qreal m_refresh_rate;
     std::unique_ptr<QStelluxCursor> m_cursor;
 };
 
@@ -53,6 +65,8 @@ public:
     void add_window(stlxwin_window* handle, QStelluxWindow* window);
     void remove_window(stlxwin_window* handle);
     QList<QStelluxWindow*> windows() const;
+    QList<QPlatformScreen*> screens() const;
+    QStelluxScreen* screen_of(uint32_t output) const;
     void schedule_queued_events();
 
     void initialize() override;
@@ -69,9 +83,10 @@ public:
 private:
     void read_connection();
     void dispatch_queued_events();
+    void update_screens();
 
     stlxwin_conn* m_connection = nullptr;
-    QStelluxScreen* m_screen = nullptr;
+    QList<QStelluxScreen*> m_screens;
     QSocketNotifier* m_notifier = nullptr;
     QHash<stlxwin_window*, QStelluxWindow*> m_windows;
     mutable std::unique_ptr<QPlatformFontDatabase> m_font_database;
