@@ -125,6 +125,12 @@ struct dm_window {
     uint32_t parent_id = 0;
     int32_t  x = 0, y = 0;
     uint32_t output = 0;        /* a toplevel's: the member holding the largest part of its frame */
+
+    /* The output and position a toplevel's last WINDOW_OUTPUT named */
+    bool     output_sent = false;
+    uint32_t sent_output = 0;
+    int32_t  sent_x = 0, sent_y = 0;
+
     uint32_t flags = 0;
     uint32_t popup_flags = 0;
     char     title[SWP_TITLE_MAX] = {};
@@ -320,8 +326,10 @@ public:
     desktop_point apply_layout_requests(desktop_point pointer, uint16_t buttons);
 
     /* Sends the current OUTPUTS to each client past its handshake that
-     * holds an older one, then the wakeup's layout and mode results in the
-     * order their requests were handled. */
+     * holds an older one, a WINDOW_OUTPUT for each mapped toplevel whose
+     * output or position changed since its last one, the position only
+     * once a drag or resize of the window ends, then the wakeup's layout
+     * and mode results in the order their requests were handled. */
     void flush_outputs();
 
     /* Fills fds for one poll cycle: listen socket plus every client. */
@@ -455,6 +463,7 @@ private:
     desktop_point adopt_layout(const layout& before, desktop_point pointer, uint16_t buttons);
     void describe_outputs(swp_outputs& out) const;
     void update_generation();
+    void flush_window_outputs();
     void sync_outputs();
     void move_window_tree(dm_client& c, dm_window* w, int32_t dx, int32_t dy);
     void move_windows_with_outputs(const layout& before);
