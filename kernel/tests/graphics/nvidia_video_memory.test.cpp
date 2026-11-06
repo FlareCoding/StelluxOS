@@ -3,6 +3,7 @@
 #define STLX_TEST_TIER TIER_MM_ALLOC
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/page_tables.h"
 #include "drivers/graphics/nvidia/registers.h"
@@ -73,15 +74,18 @@ static uint64_t bar1_pages[(CONSOLE_BYTES + PAGE_BYTES) / sizeof(uint64_t)];
 // A mapping no call hands out, filling `out` before a call so the test sees whether the call wrote it
 static constexpr cpu_mapping UNTOUCHED = {.virt = 1, .phys = 1};
 
+// The buffer a `mapping_bar0` takes while no other one holds it, freed after the suite's last test
+static test_helpers::shared_zeroed_buffer g_bar0_buffer;
+
 // A zeroed fake of BAR0 whose registers and window into video memory are plain memory, so an invalidate's trigger bit
 // never clears
 struct mapping_bar0 {
     static constexpr size_t BYTES = 0x1000000;
 
-    uint8_t*  bytes = static_cast<uint8_t*>(heap::uzalloc(BYTES));
+    uint8_t*  bytes = g_bar0_buffer.take(BYTES);
     registers regs{reinterpret_cast<uintptr_t>(bytes)};
 
-    ~mapping_bar0() { heap::ufree(bytes); }
+    ~mapping_bar0() { g_bar0_buffer.give_back(bytes); }
 
     uint32_t read(uint32_t offset) const { return *reinterpret_cast<volatile uint32_t*>(bytes + offset); }
 
@@ -175,6 +179,13 @@ struct video_memory_test_access {
 } // namespace drivers::nvidia
 
 using drivers::nvidia::video_memory_test_access;
+
+static int32_t free_bar0_buffer() {
+    g_bar0_buffer.free();
+    return 0;
+}
+
+AFTER_ALL(nvidia_video_memory, free_bar0_buffer);
 
 // A usable region of `size` bytes at `offset`
 static video_memory_region usable_region(uint64_t offset, uint64_t size) {

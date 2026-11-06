@@ -1,11 +1,11 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under drivers/graphics/nvidia/LICENSE-NVIDIA
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "drivers/graphics/nvidia/display_vertical_blank.h"
 #include "drivers/graphics/nvidia/interrupts.h"
 #include "drivers/graphics/nvidia/nvidia_gpu.h"
 #include "dynpriv/dynpriv.h"
-#include "mm/heap.h"
 
 TEST_SUITE(nvidia_gpu_interrupt);
 
@@ -38,13 +38,16 @@ static constexpr uint32_t ALL_BITS_SET = 0xFFFFFFFF;
 // A register's seed, which shows whether the handler wrote the register
 static constexpr uint32_t STALE_WORD = 0xA5A5A5A5;
 
+// The buffer a `handler_test_bar0` takes while no other one holds it, freed after the suite's last test
+static test_helpers::shared_zeroed_buffer g_bar0_buffer;
+
 // The BAR0 the driver under test maps, zeroed
 struct handler_test_bar0 {
     static constexpr uint32_t BYTES = 0x1000000;
 
-    uint8_t* bytes = static_cast<uint8_t*>(heap::uzalloc(BYTES));
+    uint8_t* bytes = g_bar0_buffer.take(BYTES);
 
-    ~handler_test_bar0() { heap::ufree(bytes); }
+    ~handler_test_bar0() { g_bar0_buffer.give_back(bytes); }
 
     uint32_t read(uint32_t offset) const { return *reinterpret_cast<uint32_t*>(bytes + offset); }
     void write(uint32_t offset, uint32_t value) { *reinterpret_cast<uint32_t*>(bytes + offset) = value; }
@@ -83,6 +86,13 @@ struct nvidia_gpu_test_access {
 } // namespace drivers
 
 using drivers::nvidia_gpu_test_access;
+
+static int32_t free_bar0_buffer() {
+    g_bar0_buffer.free();
+    return 0;
+}
+
+AFTER_ALL(nvidia_gpu_interrupt, free_bar0_buffer);
 
 // Runs the handler elevated, as the card's interrupt entry does
 static bool run_handler(nvidia_gpu_driver& driver) {
