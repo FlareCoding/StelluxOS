@@ -1,0 +1,52 @@
+Adds check_status, an optional op of the nvkmd dev (nvkmd's object for
+one Vulkan device), which nvk_device_check_status calls when the device
+has an nvkmd dev and the shader printf check has not lost it, passing the
+device as the object to log against. Without it NVK's status check never
+asks the kernel, so on a lost context NVK's wait for query results loses
+the device only at its two-second timeout. Nouveau leaves the op NULL, so
+its path is unchanged.
+
+--- a/src/nouveau/vulkan/nvk_device.c
++++ b/src/nouveau/vulkan/nvk_device.c
+@@ -162,6 +162,9 @@ nvk_device_check_status(struct vk_device *vk_dev)
+    if (NAK_CAN_PRINTF)
+       status = vk_check_printf_status(&dev->vk, &dev->printf);
+ 
++   if (status == VK_SUCCESS && dev->nvkmd != NULL)
++      status = nvkmd_dev_check_status(dev->nvkmd, &dev->vk.base);
++
+    return status;
+ }
+ 
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -166,6 +166,13 @@ struct nvkmd_dev_ops {
+ 
+    int (*get_drm_fd)(struct nvkmd_dev *dev);
+ 
++   /* Optional.  Returns VK_ERROR_DEVICE_LOST, having lost log_obj's device,
++    * once the dev can run no more work, else VK_SUCCESS.  May be called
++    * from any thread at any time, as vk_device::check_status may.
++    */
++   VkResult (*check_status)(struct nvkmd_dev *dev,
++                            struct vk_object_base *log_obj);
++
+    VkResult (*alloc_mem)(struct nvkmd_dev *dev,
+                          struct vk_object_base *log_obj,
+                          uint64_t size_B, uint64_t align_B,
+@@ -451,6 +458,15 @@ nvkmd_dev_get_drm_fd(struct nvkmd_dev *dev)
+    return dev->ops->get_drm_fd(dev);
+ }
+ 
++static inline VkResult
++nvkmd_dev_check_status(struct nvkmd_dev *dev, struct vk_object_base *log_obj)
++{
++   if (dev->ops->check_status == NULL)
++      return VK_SUCCESS;
++
++   return dev->ops->check_status(dev, log_obj);
++}
++
+ VkResult MUST_CHECK
+ nvkmd_dev_alloc_mem(struct nvkmd_dev *dev,
+                     struct vk_object_base *log_obj,

@@ -1,0 +1,705 @@
+Adds the Stellux nvkmd's sync type over the kernel's timelines, with binary
+semaphores and fences emulated over it, and the device check, which reads
+the runtime's lost state and then the kernel's state of the dev's context.
+A wait wakes at least every 100 ms for the device check, so it ends soon
+after its device is lost instead of at its timeout, and a wait or a read of
+a timeline's value that finds its GPU_TIMELINE_FAILED mark, left by failed
+work, loses the device, since Vulkan reports failed work only as device
+loss. For up to a millisecond the dev reuses the kernel's last answer that
+its context is live, except at the end of a wait that succeeds, so frequent
+status checks stay cheap.
+
+--- a/src/nouveau/vulkan/meson.build
++++ b/src/nouveau/vulkan/meson.build
+@@ -165,6 +165,7 @@ if with_nouveau_stellux
+     'nvkmd/stellux/nvkmd_stellux_dev.c',
+     'nvkmd/stellux/nvkmd_stellux_mem.c',
+     'nvkmd/stellux/nvkmd_stellux_pdev.c',
++    'nvkmd/stellux/nvkmd_stellux_sync.c',
+     'nvkmd/stellux/nvkmd_stellux_va.c',
+   )
+ endif
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux.h
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux.h
+@@ -6,14 +6,16 @@
+ 
+ #include "nvkmd/nvkmd.h"
+ #include "util/vma.h"
++#include "vk_sync.h"
++#include "vk_sync_binary.h"
+ 
+ #include <stdint.h>
+ #include <stlx/gpu_abi.h>
+ 
+ /* The nvkmd over Stellux's /dev/gpuN files, whose calls <stlx/gpu_abi.h>
+  * defines. A pdev owns its GPU's open file, a dev one GPU context, a mem
+- * one buffer with its whole-buffer GPU mapping, and a va one range of GPU
+- * addresses from its dev's heaps.
++ * one buffer with its whole-buffer GPU mapping, a va one range of GPU
++ * addresses from its dev's heaps, and a sync one timeline.
+  */
+ 
+ /* A dev's heaps: ordinary addresses below 2^38, capture-replay ones above */
+@@ -36,12 +38,23 @@ enum nvkmd_stellux_call {
+    NVKMD_STELLUX_CALL_MMAP,
+    /* mmap for an internal map, which NVK makes within other commands */
+    NVKMD_STELLUX_CALL_INTERNAL_MMAP,
++   NVKMD_STELLUX_CALL_TIMELINE_CREATE,
++   NVKMD_STELLUX_CALL_TIMELINE_SIGNAL,
++   NVKMD_STELLUX_CALL_TIMELINE_QUERY,
++   /* GPU_TIMELINE_QUERY of a passed descriptor, which may name no timeline */
++   NVKMD_STELLUX_CALL_TIMELINE_PROBE,
++   NVKMD_STELLUX_CALL_TIMELINE_WAIT,
+ };
+ 
+ struct nvkmd_stellux_pdev {
+    struct nvkmd_pdev base;
+ 
+    int fd;
++
++   /* Each sync reaches the pdev's file through its type */
++   struct vk_sync_type sync_type;
++   struct vk_sync_binary_type binary_sync_type;
++   const struct vk_sync_type *sync_types[3];
+ };
+ 
+ NVKMD_DECL_SUBCLASS(pdev, stellux);
+@@ -59,6 +72,9 @@ struct nvkmd_stellux_dev {
+ 
+    int context;
+ 
++   /* When the kernel last reported the context live, accessed atomically */
++   uint64_t live_ns;
++
+    simple_mtx_t heap_mutex;
+    struct util_vma_heap heap;
+    struct util_vma_heap replay_heap;
+@@ -70,6 +86,16 @@ VkResult nvkmd_stellux_create_dev(struct nvkmd_pdev *pdev,
+                                   struct vk_object_base *log_obj,
+                                   struct nvkmd_dev **dev_out);
+ 
++/* Returns VK_ERROR_DEVICE_LOST, having lost device, once GPU_CONTEXT_QUERY
++ * fails or reports the dev's context lost. Unless fresh, a check less than
++ * a millisecond after the kernel's last live answer returns VK_SUCCESS
++ * without asking it. A caller must first test device's lost state, as
++ * vk_device_check_status() does before calling vk_device::check_status,
++ * since a live answer racing a loss can be recorded after it.
++ */
++VkResult nvkmd_stellux_dev_check(struct nvkmd_stellux_dev *dev,
++                                 struct vk_device *device, bool fresh);
++
+ /* Logs errno err of call on log_obj and returns a VkResult the Vulkan
+  * command making the call lists. EIO from a buffer create, an import or a
+  * GPU_MAP also loses log_obj's device, if it has one, since Vulkan lists no
+@@ -78,6 +104,12 @@ VkResult nvkmd_stellux_create_dev(struct nvkmd_pdev *pdev,
+ VkResult nvkmd_stellux_error(struct vk_object_base *log_obj,
+                              enum nvkmd_stellux_call call, int err);
+ 
++/* GPU_HANDLE_RESTRICT: returns 0 with the restricted handle in
++ * restricted_out, else the errno
++ */
++int nvkmd_stellux_restrict_handle(int fd, int handle, uint32_t rights,
++                                  int *restricted_out);
++
+ struct nvkmd_stellux_mem {
+    struct nvkmd_mem base;
+ 
+@@ -111,4 +143,14 @@ VkResult nvkmd_stellux_alloc_va(struct nvkmd_dev *dev,
+                                 uint64_t size_B, uint64_t align_B,
+                                 uint64_t fixed_addr, struct nvkmd_va **va_out);
+ 
++struct nvkmd_stellux_sync {
++   struct vk_sync base;
++
++   /* Signals fail without GPU_RIGHT_WRITE, as after a read-only import */
++   int timeline;
++};
++
++/* The template of each pdev's sync type */
++extern const struct vk_sync_type nvkmd_stellux_sync_type;
++
+ #endif /* NVKMD_STELLUX_H */
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_dev.c
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_dev.c
+@@ -5,15 +5,20 @@
+ 
+ #include "nvkmd_stellux.h"
+ 
++#include "util/os_time.h"
++#include "util/u_atomic.h"
+ #include "util/u_memory.h"
+ #include "vk_device.h"
+ #include "vk_log.h"
+ 
+ #include <errno.h>
++#include <inttypes.h>
+ #include <string.h>
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+ 
++#define NVKMD_STELLUX_LIVE_MAX_AGE_NS (1000ull * 1000)
++
+ static const char *const nvkmd_stellux_call_names[] = {
+    [NVKMD_STELLUX_CALL_CONTEXT_CREATE] = "GPU_CONTEXT_CREATE",
+    [NVKMD_STELLUX_CALL_BUFFER_CREATE] = "GPU_BUFFER_CREATE",
+@@ -24,6 +29,12 @@ static const char *const nvkmd_stellux_call_names[] = {
+    [NVKMD_STELLUX_CALL_RESTRICT] = "GPU_HANDLE_RESTRICT",
+    [NVKMD_STELLUX_CALL_MMAP] = "mmap",
+    [NVKMD_STELLUX_CALL_INTERNAL_MMAP] = "mmap of an internal map",
++   [NVKMD_STELLUX_CALL_TIMELINE_CREATE] = "GPU_TIMELINE_CREATE",
++   [NVKMD_STELLUX_CALL_TIMELINE_SIGNAL] = "GPU_TIMELINE_SIGNAL",
++   [NVKMD_STELLUX_CALL_TIMELINE_QUERY] = "GPU_TIMELINE_QUERY",
++   [NVKMD_STELLUX_CALL_TIMELINE_PROBE] =
++      "GPU_TIMELINE_QUERY of the imported descriptor",
++   [NVKMD_STELLUX_CALL_TIMELINE_WAIT] = "GPU_TIMELINE_WAIT",
+ };
+ 
+ VkResult
+@@ -60,6 +71,7 @@ nvkmd_stellux_error(struct vk_object_base *log_obj,
+       break;
+ 
+    case NVKMD_STELLUX_CALL_PROBE:
++   case NVKMD_STELLUX_CALL_TIMELINE_PROBE:
+       if (err == EBADF || err == EINVAL)
+          result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+       else if (err == ENOMEM)
+@@ -81,11 +93,87 @@ nvkmd_stellux_error(struct vk_object_base *log_obj,
+       /* Most commands making an internal map list no map failure */
+       result = VK_ERROR_OUT_OF_HOST_MEMORY;
+       break;
++
++   case NVKMD_STELLUX_CALL_TIMELINE_CREATE:
++   case NVKMD_STELLUX_CALL_TIMELINE_WAIT:
++      if (err == ENOMEM)
++         result = VK_ERROR_OUT_OF_HOST_MEMORY;
++      break;
++
++   case NVKMD_STELLUX_CALL_TIMELINE_SIGNAL:
++   case NVKMD_STELLUX_CALL_TIMELINE_QUERY:
++      break;
+    }
+ 
+    return vk_errorf(log_obj, result, "%s failed: %s", name, strerror(err));
+ }
+ 
++int
++nvkmd_stellux_restrict_handle(int fd, int handle, uint32_t rights,
++                              int *restricted_out)
++{
++   struct gpu_restrict_args args = {
++      .handle = handle,
++      .rights = rights,
++   };
++   if (ioctl(fd, GPU_HANDLE_RESTRICT, &args) != 0)
++      return errno;
++
++   *restricted_out = args.restricted;
++
++   return 0;
++}
++
++static const char *
++nvkmd_stellux_lost_reason(uint32_t lost)
++{
++   switch (lost) {
++   case GPU_LOST_FAULT:
++      return "its work reached memory not mapped for it";
++   case GPU_LOST_ENGINE:
++      return "an engine reported an error in its work";
++   case GPU_LOST_HUNG:
++      return "a submission ran longer than the kernel allows";
++   case GPU_LOST_DEVICE:
++      return "the GPU failed";
++   default:
++      return "the kernel gave an unknown reason";
++   }
++}
++
++VkResult
++nvkmd_stellux_dev_check(struct nvkmd_stellux_dev *dev,
++                        struct vk_device *device, bool fresh)
++{
++   const uint64_t now_ns = os_time_get_nano();
++   if (!fresh &&
++       now_ns - p_atomic_read(&dev->live_ns) < NVKMD_STELLUX_LIVE_MAX_AGE_NS)
++      return VK_SUCCESS;
++
++   struct gpu_context_args args = {
++      .context = dev->context,
++   };
++   if (ioctl(dev->fd, GPU_CONTEXT_QUERY, &args) != 0) {
++      return vk_device_set_lost(device, "GPU_CONTEXT_QUERY failed: %s",
++                                strerror(errno));
++   }
++
++   if (args.lost == GPU_LOST_FAULT && args.fault_va != 0) {
++      return vk_device_set_lost(device, "The GPU context was lost: its work "
++                                "reached 0x%" PRIx64 ", which is not mapped "
++                                "for it", args.fault_va);
++   }
++
++   if (args.lost != 0) {
++      return vk_device_set_lost(device, "The GPU context was lost: %s",
++                                nvkmd_stellux_lost_reason(args.lost));
++   }
++
++   p_atomic_set(&dev->live_ns, now_ns);
++
++   return VK_SUCCESS;
++}
++
+ VkResult
+ nvkmd_stellux_create_dev(struct nvkmd_pdev *_pdev,
+                          struct vk_object_base *log_obj,
+@@ -153,6 +241,14 @@ nvkmd_stellux_dev_get_gpu_timestamp(struct nvkmd_dev *_dev)
+    return timestamp.gpu_ns;
+ }
+ 
++static VkResult
++nvkmd_stellux_dev_check_status(struct nvkmd_dev *dev,
++                               struct vk_object_base *log_obj)
++{
++   return nvkmd_stellux_dev_check(nvkmd_stellux_dev(dev), log_obj->device,
++                                  false);
++}
++
+ static VkResult
+ nvkmd_stellux_dev_create_ctx(struct nvkmd_dev *dev,
+                              struct vk_object_base *log_obj,
+@@ -166,6 +262,7 @@ nvkmd_stellux_dev_create_ctx(struct nvkmd_dev *dev,
+ const struct nvkmd_dev_ops nvkmd_stellux_dev_ops = {
+    .destroy = nvkmd_stellux_dev_destroy,
+    .get_gpu_timestamp = nvkmd_stellux_dev_get_gpu_timestamp,
++   .check_status = nvkmd_stellux_dev_check_status,
+    .alloc_mem = nvkmd_stellux_alloc_mem,
+    .import_dma_buf = nvkmd_stellux_import_dma_buf,
+    .alloc_va = nvkmd_stellux_alloc_va,
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_mem.c
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_mem.c
+@@ -15,21 +15,6 @@
+ #include <sys/mman.h>
+ #include <unistd.h>
+ 
+-static int
+-restrict_handle(int fd, int handle, uint32_t rights, int *restricted_out)
+-{
+-   struct gpu_restrict_args args = {
+-      .handle = handle,
+-      .rights = rights,
+-   };
+-   if (ioctl(fd, GPU_HANDLE_RESTRICT, &args) != 0)
+-      return errno;
+-
+-   *restricted_out = args.restricted;
+-
+-   return 0;
+-}
+-
+ /* Only LOCAL falls back to system memory, since nvkmd lets LOCAL memory be
+  * paged out to GART and keeps VRAM memory in video memory
+  */
+@@ -149,7 +134,8 @@ nvkmd_stellux_import_dma_buf(struct nvkmd_dev *_dev,
+     * names and which the restriction refuses
+     */
+    int probe;
+-   int err = restrict_handle(dev->fd, fd, GPU_RIGHT_READ, &probe);
++   int err = nvkmd_stellux_restrict_handle(dev->fd, fd, GPU_RIGHT_READ,
++                                           &probe);
+    if (err != 0)
+       return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_PROBE, err);
+    close(probe);
+@@ -164,8 +150,9 @@ nvkmd_stellux_import_dma_buf(struct nvkmd_dev *_dev,
+ 
+    /* Only a handle with GPU_RIGHT_WRITE restricts to both rights */
+    int writable = -1;
+-   err = restrict_handle(dev->fd, args.buffer,
+-                         GPU_RIGHT_READ | GPU_RIGHT_WRITE, &writable);
++   err = nvkmd_stellux_restrict_handle(dev->fd, args.buffer,
++                                       GPU_RIGHT_READ | GPU_RIGHT_WRITE,
++                                       &writable);
+    if (err != 0 && err != EINVAL) {
+       close(args.buffer);
+       return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_RESTRICT, err);
+@@ -270,7 +257,8 @@ nvkmd_stellux_mem_export_dma_buf(struct nvkmd_mem *_mem,
+ 
+    const uint32_t rights = mem->read_only ? GPU_RIGHT_READ
+                                           : GPU_RIGHT_READ | GPU_RIGHT_WRITE;
+-   int err = restrict_handle(dev->fd, mem->buffer, rights, fd_out);
++   int err = nvkmd_stellux_restrict_handle(dev->fd, mem->buffer, rights,
++                                           fd_out);
+    if (err != 0)
+       return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_RESTRICT, err);
+ 
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_pdev.c
+@@ -16,11 +16,6 @@
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+ 
+-/* A pdev offers no sync type, since its devs create no ctx */
+-static const struct vk_sync_type *const nvkmd_stellux_sync_types[] = {
+-   NULL,
+-};
+-
+ static void
+ nvkmd_stellux_fill_dev_info(const struct gpu_info *info,
+                             struct nv_device_info *dev_info)
+@@ -133,9 +128,22 @@ nvkmd_stellux_try_create_pdev(uint32_t gpu_index,
+       .has_overmap = true,
+    };
+    pdev->base.bind_align_B = info.page_size;
+-   pdev->base.sync_types = nvkmd_stellux_sync_types;
+    pdev->fd = fd;
+ 
++   pdev->sync_type = nvkmd_stellux_sync_type;
++   pdev->binary_sync_type = vk_sync_binary_get_type(&pdev->sync_type);
++
++   /* Stellux has no sync files, so binary semaphores and fences offer no
++    * sync-file handles
++    */
++   pdev->binary_sync_type.sync.import_sync_file = NULL;
++   pdev->binary_sync_type.sync.export_sync_file = NULL;
++
++   pdev->sync_types[0] = &pdev->sync_type;
++   pdev->sync_types[1] = &pdev->binary_sync_type.sync;
++   pdev->sync_types[2] = NULL;
++   pdev->base.sync_types = pdev->sync_types;
++
+    *pdev_out = &pdev->base;
+ 
+    return VK_SUCCESS;
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_sync.c
+@@ -0,0 +1,332 @@
++/*
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "nvkmd_stellux.h"
++
++#include "nvk_device.h"
++
++#include "util/os_time.h"
++#include "util/stack_array.h"
++#include "vk_device.h"
++#include "vk_log.h"
++
++#include <errno.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++/* The longest a wait sleeps in the kernel before a device check */
++#define NVKMD_STELLUX_WAIT_SLICE_NS (100ull * 1000 * 1000)
++
++/* How often a wait for any of over GPU_POINTS_MAX points polls the rest */
++#define NVKMD_STELLUX_WAIT_ANY_SLICE_NS (1000ull * 1000)
++
++static struct nvkmd_stellux_sync *
++to_stellux_sync(struct vk_sync *sync)
++{
++   return container_of(sync, struct nvkmd_stellux_sync, base);
++}
++
++/* A timeline belongs to no GPU, so every GPU's file takes its calls */
++static int
++sync_gpu_fd(const struct vk_sync *sync)
++{
++   const struct nvkmd_stellux_pdev *pdev =
++      container_of(sync->type, struct nvkmd_stellux_pdev, sync_type);
++
++   return pdev->fd;
++}
++
++/* The device check: the runtime's lost state, then the kernel's state of the
++ * device's context, which a device made with no queues lacks
++ */
++static VkResult
++check_device(struct vk_device *device, bool fresh)
++{
++   if (vk_device_is_lost_no_report(device))
++      return VK_ERROR_DEVICE_LOST;
++
++   struct nvkmd_dev *dev = container_of(device, struct nvk_device, vk)->nvkmd;
++   if (dev == NULL)
++      return VK_SUCCESS;
++
++   return nvkmd_stellux_dev_check(nvkmd_stellux_dev(dev), device, fresh);
++}
++
++/* A timeline's failed mark loses the device that reads it, since a reader
++ * cannot tell which of its points the failed work would have reached
++ */
++static VkResult
++query_timeline(struct vk_device *device, int fd, int timeline,
++               uint64_t *value_out)
++{
++   struct gpu_timeline_args args = {
++      .timeline = timeline,
++   };
++   if (ioctl(fd, GPU_TIMELINE_QUERY, &args) != 0) {
++      return nvkmd_stellux_error(&device->base,
++                                 NVKMD_STELLUX_CALL_TIMELINE_QUERY, errno);
++   }
++
++   if (args.flags & GPU_TIMELINE_FAILED) {
++      return vk_device_set_lost(device, "Work that would reach a timeline "
++                                "point failed");
++   }
++
++   if (value_out != NULL)
++      *value_out = args.value;
++
++   return VK_SUCCESS;
++}
++
++/* A wait for all must name at most GPU_POINTS_MAX points, the most the
++ * kernel takes, or it can end before the rest are reached
++ */
++static VkResult
++wait_points(struct vk_device *device, int fd,
++            const struct gpu_point *points, uint32_t count, bool all,
++            uint64_t abs_timeout_ns)
++{
++   const uint32_t kernel_count = MIN2(count, GPU_POINTS_MAX);
++   const uint64_t slice_ns = count > GPU_POINTS_MAX
++                             ? NVKMD_STELLUX_WAIT_ANY_SLICE_NS
++                             : NVKMD_STELLUX_WAIT_SLICE_NS;
++
++   while (true) {
++      const uint64_t slice_end_ns =
++         MIN2(abs_timeout_ns,
++              (uint64_t)os_time_get_absolute_timeout(slice_ns));
++
++      struct gpu_wait_args args = {
++         .points = (uintptr_t)points,
++         .deadline_ns = slice_end_ns,
++         .count = kernel_count,
++         .flags = all ? GPU_WAIT_ALL : 0,
++      };
++
++      /* A retry keeps the slice's deadline, so signal handlers cannot put
++       * off the device check
++       */
++      int ret;
++      do {
++         ret = ioctl(fd, GPU_TIMELINE_WAIT, &args);
++      } while (ret != 0 && errno == EINTR);
++
++      if (ret == 0)
++         return VK_SUCCESS;
++
++      if (errno != ETIMEDOUT) {
++         return nvkmd_stellux_error(&device->base,
++                                    NVKMD_STELLUX_CALL_TIMELINE_WAIT, errno);
++      }
++
++      for (uint32_t i = kernel_count; i < count; i++) {
++         uint64_t value;
++         VkResult result = query_timeline(device, fd, points[i].timeline,
++                                          &value);
++         if (result != VK_SUCCESS)
++            return result;
++
++         if (value >= points[i].value)
++            return VK_SUCCESS;
++      }
++
++      VkResult result = check_device(device, false);
++      if (result != VK_SUCCESS)
++         return result;
++
++      if (slice_end_ns == abs_timeout_ns)
++         return VK_TIMEOUT;
++   }
++}
++
++static VkResult
++nvkmd_stellux_sync_init(struct vk_device *device, struct vk_sync *_sync,
++                        uint64_t initial_value)
++{
++   struct nvkmd_stellux_sync *sync = to_stellux_sync(_sync);
++
++   struct gpu_timeline_args args = {
++      .value = initial_value,
++   };
++   if (ioctl(sync_gpu_fd(_sync), GPU_TIMELINE_CREATE, &args) != 0) {
++      return nvkmd_stellux_error(&device->base,
++                                 NVKMD_STELLUX_CALL_TIMELINE_CREATE, errno);
++   }
++
++   sync->timeline = args.timeline;
++
++   return VK_SUCCESS;
++}
++
++static void
++nvkmd_stellux_sync_finish(struct vk_device *device, struct vk_sync *_sync)
++{
++   close(to_stellux_sync(_sync)->timeline);
++}
++
++static VkResult
++nvkmd_stellux_sync_signal(struct vk_device *device, struct vk_sync *_sync,
++                          uint64_t value)
++{
++   struct nvkmd_stellux_sync *sync = to_stellux_sync(_sync);
++
++   struct gpu_timeline_args args = {
++      .timeline = sync->timeline,
++      .value = value,
++   };
++   if (ioctl(sync_gpu_fd(_sync), GPU_TIMELINE_SIGNAL, &args) == 0)
++      return VK_SUCCESS;
++
++   /* The point is reached already, as when failed work raised the timeline,
++    * whose mark a later read of its value or successful wait finds
++    */
++   if (errno == EINVAL)
++      return VK_SUCCESS;
++
++   return nvkmd_stellux_error(&device->base,
++                              NVKMD_STELLUX_CALL_TIMELINE_SIGNAL, errno);
++}
++
++static VkResult
++nvkmd_stellux_sync_get_value(struct vk_device *device, struct vk_sync *_sync,
++                             uint64_t *value)
++{
++   struct nvkmd_stellux_sync *sync = to_stellux_sync(_sync);
++
++   VkResult result = query_timeline(device, sync_gpu_fd(_sync),
++                                    sync->timeline, value);
++   if (result != VK_SUCCESS)
++      return result;
++
++   return check_device(device, false);
++}
++
++static VkResult
++nvkmd_stellux_sync_wait_many(struct vk_device *device, uint32_t wait_count,
++                             const struct vk_sync_wait *waits,
++                             enum vk_sync_wait_flags wait_flags,
++                             uint64_t abs_timeout_ns)
++{
++   if (vk_device_is_lost_no_report(device))
++      return VK_ERROR_DEVICE_LOST;
++
++   STACK_ARRAY(struct gpu_point, points, wait_count);
++   if (points == NULL)
++      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   for (uint32_t i = 0; i < wait_count; i++) {
++      points[i] = (struct gpu_point) {
++         .timeline = to_stellux_sync(waits[i].sync)->timeline,
++         .value = waits[i].wait_value,
++      };
++   }
++
++   const int fd = sync_gpu_fd(waits[0].sync);
++
++   VkResult result = VK_SUCCESS;
++   if (wait_flags & VK_SYNC_WAIT_ANY) {
++      result = wait_points(device, fd, points, wait_count, false,
++                           abs_timeout_ns);
++   } else {
++      for (uint32_t start = 0; start < wait_count && result == VK_SUCCESS;
++           start += GPU_POINTS_MAX) {
++         result = wait_points(device, fd, &points[start],
++                              MIN2(wait_count - start, GPU_POINTS_MAX), true,
++                              abs_timeout_ns);
++         if (result == VK_SUCCESS && start + GPU_POINTS_MAX < wait_count)
++            result = check_device(device, false);
++      }
++   }
++
++   for (uint32_t i = 0; i < wait_count && result == VK_SUCCESS; i++)
++      result = query_timeline(device, fd, points[i].timeline, NULL);
++
++   STACK_ARRAY_FINISH(points);
++
++   if (result != VK_SUCCESS)
++      return result;
++
++   return check_device(device, true);
++}
++
++/* Restricts handle to both rights, or to GPU_RIGHT_READ alone when it lacks
++ * GPU_RIGHT_WRITE, so the result keeps the source's rights
++ */
++static int
++restrict_timeline(int fd, int handle, int *timeline_out)
++{
++   int err = nvkmd_stellux_restrict_handle(fd, handle,
++                                           GPU_RIGHT_READ | GPU_RIGHT_WRITE,
++                                           timeline_out);
++   if (err == EINVAL) {
++      err = nvkmd_stellux_restrict_handle(fd, handle, GPU_RIGHT_READ,
++                                          timeline_out);
++   }
++
++   return err;
++}
++
++static VkResult
++nvkmd_stellux_sync_import_opaque_fd(struct vk_device *device,
++                                    struct vk_sync *_sync, int fd)
++{
++   struct nvkmd_stellux_sync *sync = to_stellux_sync(_sync);
++   const int gpu_fd = sync_gpu_fd(_sync);
++
++   int timeline;
++   int err = restrict_timeline(gpu_fd, fd, &timeline);
++   if (err != 0)
++      return nvkmd_stellux_error(&device->base, NVKMD_STELLUX_CALL_PROBE, err);
++
++   /* A handle of this GPU's context or buffer restricts too, but only a
++    * timeline's answers a query
++    */
++   struct gpu_timeline_args args = {
++      .timeline = timeline,
++   };
++   if (ioctl(gpu_fd, GPU_TIMELINE_QUERY, &args) != 0) {
++      VkResult result = nvkmd_stellux_error(&device->base,
++                                            NVKMD_STELLUX_CALL_TIMELINE_PROBE,
++                                            errno);
++      close(timeline);
++      return result;
++   }
++
++   close(sync->timeline);
++   sync->timeline = timeline;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++nvkmd_stellux_sync_export_opaque_fd(struct vk_device *device,
++                                    struct vk_sync *_sync, int *fd_out)
++{
++   struct nvkmd_stellux_sync *sync = to_stellux_sync(_sync);
++
++   int err = restrict_timeline(sync_gpu_fd(_sync), sync->timeline, fd_out);
++   if (err != 0) {
++      return nvkmd_stellux_error(&device->base, NVKMD_STELLUX_CALL_RESTRICT,
++                                 err);
++   }
++
++   return VK_SUCCESS;
++}
++
++const struct vk_sync_type nvkmd_stellux_sync_type = {
++   .size = sizeof(struct nvkmd_stellux_sync),
++   .features = VK_SYNC_FEATURE_TIMELINE |
++               VK_SYNC_FEATURE_GPU_WAIT |
++               VK_SYNC_FEATURE_CPU_WAIT |
++               VK_SYNC_FEATURE_CPU_SIGNAL |
++               VK_SYNC_FEATURE_WAIT_ANY |
++               VK_SYNC_FEATURE_WAIT_BEFORE_SIGNAL,
++   .init = nvkmd_stellux_sync_init,
++   .finish = nvkmd_stellux_sync_finish,
++   .signal = nvkmd_stellux_sync_signal,
++   .get_value = nvkmd_stellux_sync_get_value,
++   .wait_many = nvkmd_stellux_sync_wait_many,
++   .import_opaque_fd = nvkmd_stellux_sync_import_opaque_fd,
++   .export_opaque_fd = nvkmd_stellux_sync_export_opaque_fd,
++};
