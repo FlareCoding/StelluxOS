@@ -7,10 +7,35 @@
 
 #define PROTO_WINDOW_ID 1u  // the window id proto_create_window sends
 
+#define NS_PER_SEC   1000000000ULL
+#define MIB          (1024ULL * 1024ULL)
+#define PAGE_BYTES   4096ULL
+#define BUFFER_BYTES MIB
+#define POLL_US      1000
+#define FILL_WORD    0xA5C3E10Fu
+
 // Prints a PASS or FAIL line for one check and counts it
 void check(const char* name, bool cond);
 
 uint64_t monotonic_ns(void);
+
+// Returns 0 or the call's errno
+int gpu_call(int fd, uint32_t cmd, void* arg);
+
+// Maps a buffer's first BUFFER_BYTES for the CPU, or returns null
+volatile uint32_t* map_for_cpu(int32_t buffer);
+
+// Whether every word of a buffer's first BUFFER_BYTES reads as `value`
+bool reads_as(const volatile uint32_t* words, uint32_t value);
+
+// Writes `value` to every word of a buffer's first BUFFER_BYTES
+void fill(volatile uint32_t* words, uint32_t value);
+
+// Unmaps the CPU's words when given and closes the handle when it is one
+void release(int32_t buffer, volatile uint32_t* words);
+
+// Returns a new context's handle, or -1
+int32_t create_context(int fd);
 
 // The window protocol spoken without libstlxwin, to break rules the library keeps or cannot check. Connects and runs
 // the handshake, filling `gpu_info` from the GPU_INFO the reply announces. Returns the socket or -1

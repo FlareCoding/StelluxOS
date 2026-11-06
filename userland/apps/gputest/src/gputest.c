@@ -1,8 +1,8 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under
 // kernel/drivers/graphics/nvidia/LICENSE-NVIDIA
 
-// Checks /dev/gpu0 on an NVIDIA card, then the window protocol and its GPU buffers, or with `proto` only the protocol
-// checks, which need no GPU, or with `resize` only the resize check. Exits nonzero when any check failed
+// Checks /dev/gpu0 on an NVIDIA card or on virtio-gpu with venus, then the window protocol and its GPU buffers, or
+// with `proto` only the protocol checks, which need no GPU, or with `resize` only the resize check. Exits 1 on failure
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -18,22 +18,17 @@
 #include <stlx/gpu_abi.h>
 
 #include "gputest.h"
+#include "virtio_gpu.h"
 
-#define NS_PER_SEC      1000000000ULL
 #define NS_PER_MS       1000000ULL
 #define NS_PER_US       1000ULL
-#define MIB             (1024ULL * 1024ULL)
-#define PAGE_BYTES      4096ULL
 #define PAGE_WORDS      (PAGE_BYTES / sizeof(uint32_t))
 #define USER_VA_START   PAGE_BYTES
 #define USER_VA_END     (1ULL << 39)
-#define BUFFER_BYTES    MIB
 #define BUFFER_WORDS    (BUFFER_BYTES / sizeof(uint32_t))
 #define CLOCK_SLEEP_US  (100 * 1000)
 #define RELEASE_WAIT_NS (2 * NS_PER_SEC)
-#define POLL_US         1000
 #define CONTEXT_COUNT   16
-#define FILL_WORD       0xA5C3E10Fu
 #define QUEUE_COUNT     2
 #define LIST_WORDS_MAX  32
 #define WAIT_NS         (100 * NS_PER_MS)
@@ -151,8 +146,7 @@ uint64_t monotonic_ns(void) {
     return (uint64_t)ts.tv_sec * NS_PER_SEC + (uint64_t)ts.tv_nsec;
 }
 
-// Returns 0 or the call's errno
-static int gpu_call(int fd, uint32_t cmd, void* arg) {
+int gpu_call(int fd, uint32_t cmd, void* arg) {
     return ioctl(fd, cmd, arg) == 0 ? 0 : errno;
 }
 
@@ -193,12 +187,12 @@ static int create_buffer(int fd, uint64_t size, uint32_t placement, uint32_t fla
     return error;
 }
 
-static volatile uint32_t* map_for_cpu(int32_t buffer) {
+volatile uint32_t* map_for_cpu(int32_t buffer) {
     void* words = mmap(NULL, BUFFER_BYTES, PROT_READ | PROT_WRITE, MAP_SHARED, buffer, 0);
     return words == MAP_FAILED ? NULL : words;
 }
 
-static bool reads_as(const volatile uint32_t* words, uint32_t value) {
+bool reads_as(const volatile uint32_t* words, uint32_t value) {
     for (size_t i = 0; i < BUFFER_WORDS; i++) {
         if (words[i] != value) {
             return false;
@@ -209,7 +203,7 @@ static bool reads_as(const volatile uint32_t* words, uint32_t value) {
 }
 
 // On x86_64 the fence drains the CPU's write-combining buffers, so a later read sees memory
-static void fill(volatile uint32_t* words, uint32_t value) {
+void fill(volatile uint32_t* words, uint32_t value) {
     for (size_t i = 0; i < BUFFER_WORDS; i++) {
         words[i] = value;
     }
@@ -233,7 +227,7 @@ static bool holds_indices(const volatile uint32_t* words) {
     return true;
 }
 
-static void release(int32_t buffer, volatile uint32_t* words) {
+void release(int32_t buffer, volatile uint32_t* words) {
     if (words) {
         munmap((void*)words, BUFFER_BYTES);
     }
@@ -243,7 +237,7 @@ static void release(int32_t buffer, volatile uint32_t* words) {
     }
 }
 
-static int32_t create_context(int fd) {
+int32_t create_context(int fd) {
     struct gpu_context_args args = {0};
     return gpu_call(fd, GPU_CONTEXT_CREATE, &args) == 0 ? args.context : -1;
 }
@@ -1015,6 +1009,23 @@ static void test_copy_queues(int fd, const struct gpu_info* info) {
     test_session_end(&s, before);
 }
 
+static void test_nvidia(int fd, const struct gpu_info* info) {
+    print_facts(info);
+    test_facts(info);
+    test_free_memory(info, read_memory(fd));
+    test_clock(fd);
+
+    test_video_buffer(fd);
+    test_system_buffer(fd);
+    test_scanout_buffer(fd);
+    test_window_refusal(fd);
+
+    test_context_mappings(fd);
+    test_shared_memory_import(fd);
+    test_many_contexts(fd);
+    test_copy_queues(fd, info);
+}
+
 static int report(void) {
     printf("gputest: %d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;
@@ -1059,20 +1070,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    print_facts(&info);
-    test_facts(&info);
-    test_free_memory(&info, read_memory(fd));
-    test_clock(fd);
-
-    test_video_buffer(fd);
-    test_system_buffer(fd);
-    test_scanout_buffer(fd);
-    test_window_refusal(fd);
-
-    test_context_mappings(fd);
-    test_shared_memory_import(fd);
-    test_many_contexts(fd);
-    test_copy_queues(fd, &info);
+    if (info.backend == GPU_BACKEND_VIRTIO) {
+        test_virtio_gpu(fd, &info);
+    } else {
+        test_nvidia(fd, &info);
+    }
 
     run_proto_checks();
     run_window_checks(fd);
