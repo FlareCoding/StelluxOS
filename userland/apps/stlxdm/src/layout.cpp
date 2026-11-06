@@ -58,34 +58,263 @@ static int64_t offset_at_crossing(int64_t room, int64_t length, int64_t other_le
     return (2 * gone + span - 1) / (2 * span);
 }
 
-bool layout::rebuild(const member* members, uint32_t count, uint32_t primary) {
-    if (count == 0) {
-        return false;
+static int32_t index_of(const layout::place* places, uint32_t count, uint32_t output) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (places[i].output == output) {
+            return static_cast<int32_t>(i);
+        }
     }
 
-    m_main = choose_main(members, count, primary);
-    m_count = count;
+    return -1;
+}
 
+static int32_t index_of_entry(const layout::arrangement& arrangement, uint32_t output) {
+    for (uint32_t i = 0; i < arrangement.count; i++) {
+        if (arrangement.entries[i].output == output) {
+            return static_cast<int32_t>(i);
+        }
+    }
+
+    return -1;
+}
+
+static bool is_member(const layout::member* members, uint32_t count, uint32_t output) {
+    return std::any_of(members, members + count, [output](const layout::member& m) { return m.output == output; });
+}
+
+static void place_default(const layout::member* members, uint32_t count, uint32_t main, layout::place* places) {
     int32_t next_x = 0;
     for (uint32_t i = 0; i < count; i++) {
-        if (members[i].output == m_main) {
+        if (members[i].output == main) {
             next_x = members[i].width;
         }
     }
 
     for (uint32_t i = 0; i < count; i++) {
-        const member& m = members[i];
-        m_places[i].output = m.output;
-        m_places[i].rect = { 0, 0, m.width, m.height };
-        if (m.output == m_main) {
+        const layout::member& m = members[i];
+        places[i].output = m.output;
+        places[i].rect = { 0, 0, m.width, m.height };
+        if (m.output == main) {
             continue;
         }
 
-        m_places[i].rect.x = next_x;
+        places[i].rect.x = next_x;
         next_x += m.width;
+    }
+}
+
+/* The shift rule: `places[index]` takes `width` by `height` at its top-left, moving every place right of its old right
+ * edge sharing a row with it by the change in width, and every one below it sharing a column by the change in height */
+static void shift(layout::place* places, uint32_t count, uint32_t index, int32_t width, int32_t height) {
+    damage_list::rect old = places[index].rect;
+    for (uint32_t i = 0; i < count; i++) {
+        if (i == index) {
+            continue;
+        }
+
+        damage_list::rect& r = places[i].rect;
+        bool shares_row = std::min(r.y + r.h, old.y + old.h) > std::max(r.y, old.y);
+        bool shares_column = std::min(r.x + r.w, old.x + old.w) > std::max(r.x, old.x);
+        if (r.x >= old.x + old.w && shares_row) {
+            r.x += width - old.w;
+        }
+
+        if (r.y >= old.y + old.h && shares_column) {
+            r.y += height - old.h;
+        }
+    }
+
+    places[index].rect.w = width;
+    places[index].rect.h = height;
+}
+
+static bool any_overlap(const layout::place* places, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        for (uint32_t j = 0; j < i; j++) {
+            if (rect_area(intersect(places[i].rect, places[j].rect)) != 0) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+static bool all_connected(const layout::place* places, uint32_t count, uint32_t first) {
+    bool reached[layout::MEMBERS_MAX] = {};
+    reached[first] = true;
+    for (bool spread = true; spread;) {
+        spread = false;
+        for (uint32_t i = 0; i < count; i++) {
+            for (uint32_t j = 0; j < count; j++) {
+                if (reached[i] && !reached[j] && share_edge(places[i].rect, places[j].rect)) {
+                    reached[j] = true;
+                    spread = true;
+                }
+            }
+        }
+    }
+
+    return std::all_of(reached, reached + count, [](bool r) { return r; });
+}
+
+static bool all_within_limit(const layout::place* places, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        const damage_list::rect& r = places[i].rect;
+        int64_t right = static_cast<int64_t>(r.x) + r.w;
+        int64_t bottom = static_cast<int64_t>(r.y) + r.h;
+        if (!within_limit(r.x) || !within_limit(r.y) || !within_limit(right) || !within_limit(bottom)) {
+            return false;
+        }
     }
 
     return true;
+}
+
+/* Drops `places[index]`, first shifting the others as if it shrank to nothing when they would overlap or fall apart
+ * without it */
+static void drop(layout::place* places, uint32_t& count, uint32_t index) {
+    layout::place rest[layout::MEMBERS_MAX];
+    uint32_t rest_count = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (i != index) {
+            rest[rest_count++] = places[i];
+        }
+    }
+
+    if (rest_count != 0 && (any_overlap(rest, rest_count) || !all_connected(rest, rest_count, 0))) {
+        shift(places, count, index, 0, 0);
+    }
+
+    for (uint32_t i = index; i + 1 < count; i++) {
+        places[i] = places[i + 1];
+    }
+
+    count--;
+}
+
+/* The append rule: `output` goes right of the place with the furthest right edge, the lowest output's on a tie, its
+ * top at that place's top, or at (0, 0) when there is none */
+static void append(layout::place* places, uint32_t& count, uint32_t output, int32_t width, int32_t height) {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t furthest = -1;
+    for (uint32_t i = 0; i < count; i++) {
+        const damage_list::rect& r = places[i].rect;
+        bool wins_tie = r.x + r.w == x && furthest >= 0 && places[i].output < places[furthest].output;
+        bool is_further = furthest < 0 || r.x + r.w > x || wins_tie;
+        if (is_further) {
+            furthest = static_cast<int32_t>(i);
+            x = r.x + r.w;
+            y = r.y;
+        }
+    }
+
+    places[count++] = { output, { x, y, width, height } };
+}
+
+layout::outcome layout::rebuild(const member* members, uint32_t count, uint32_t primary, const arrangement* stored) {
+    if (count == 0) {
+        return outcome::kept;
+    }
+
+    place work[MEMBERS_MAX];
+    uint32_t work_count = 0;
+    uint32_t main = choose_main(members, count, primary);
+    if (stored) {
+        main = stored->main;
+        for (uint32_t i = 0; i < stored->count; i++) {
+            const entry& e = stored->entries[i];
+            work[work_count++] = { e.output, { e.x, e.y, e.width, e.height } };
+        }
+    } else if (is_default()) {
+        place_default(members, count, main, work);
+        work_count = count;
+    } else {
+        work_count = m_count;
+        std::copy(m_places, m_places + m_count, work);
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        const member& m = members[i];
+        int32_t index = index_of(work, work_count, m.output);
+        if (index < 0) {
+            continue;
+        }
+
+        if (work[index].rect.w != m.width || work[index].rect.h != m.height) {
+            shift(work, work_count, static_cast<uint32_t>(index), m.width, m.height);
+        }
+    }
+
+    for (uint32_t i = 0; i < work_count;) {
+        if (is_member(members, count, work[i].output)) {
+            i++;
+            continue;
+        }
+
+        drop(work, work_count, i);
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (index_of(work, work_count, members[i].output) < 0) {
+            append(work, work_count, members[i].output, members[i].width, members[i].height);
+        }
+    }
+
+    const damage_list::rect origin = work[index_of(work, work_count, main)].rect;
+    for (uint32_t i = 0; i < count; i++) {
+        m_places[i] = work[index_of(work, work_count, members[i].output)];
+        m_places[i].rect.x -= origin.x;
+        m_places[i].rect.y -= origin.y;
+    }
+
+    m_count = count;
+    m_main = main;
+    if (is_valid()) {
+        return outcome::placed;
+    }
+
+    place_default(members, count, main, m_places);
+
+    return outcome::defaulted;
+}
+
+layout::fault layout::apply(const arrangement& request) {
+    bool names_members = request.count == m_count && find(request.main) != nullptr;
+    for (uint32_t i = 0; i < request.count && names_members; i++) {
+        const entry& e = request.entries[i];
+        bool repeats = index_of_entry(request, e.output) != static_cast<int32_t>(i);
+        names_members = find(e.output) != nullptr && !repeats && within_limit(e.x) && within_limit(e.y);
+    }
+
+    if (!names_members) {
+        return fault::invalid;
+    }
+
+    const entry& main = request.entries[index_of_entry(request, request.main)];
+    place next[MEMBERS_MAX];
+    for (uint32_t i = 0; i < m_count; i++) {
+        const entry& e = request.entries[index_of_entry(request, m_places[i].output)];
+        next[i] = { e.output, { e.x - main.x, e.y - main.y, m_places[i].rect.w, m_places[i].rect.h } };
+    }
+
+    if (!all_within_limit(next, m_count)) {
+        return fault::invalid;
+    }
+
+    if (any_overlap(next, m_count)) {
+        return fault::overlap;
+    }
+
+    if (!all_connected(next, m_count, static_cast<uint32_t>(index_of(next, m_count, request.main)))) {
+        return fault::apart;
+    }
+
+    std::copy(next, next + m_count, m_places);
+    m_main = request.main;
+
+    return fault::none;
 }
 
 uint32_t layout::choose_main(const member* members, uint32_t count, uint32_t primary) const {
@@ -134,36 +363,28 @@ bool layout::is_valid() const {
         return false;
     }
 
+    uint32_t main_index = static_cast<uint32_t>(main - m_places);
+    return all_within_limit(m_places, m_count) && !any_overlap(m_places, m_count)
+        && all_connected(m_places, m_count, main_index);
+}
+
+bool layout::is_default() const {
+    member members[MEMBERS_MAX];
     for (uint32_t i = 0; i < m_count; i++) {
-        const damage_list::rect& r = m_places[i].rect;
-        int64_t right = static_cast<int64_t>(r.x) + r.w;
-        int64_t bottom = static_cast<int64_t>(r.y) + r.h;
-        if (!within_limit(r.x) || !within_limit(r.y) || !within_limit(right) || !within_limit(bottom)) {
+        members[i] = { m_places[i].output, m_places[i].rect.w, m_places[i].rect.h };
+    }
+
+    place expected[MEMBERS_MAX];
+    place_default(members, m_count, m_main, expected);
+    for (uint32_t i = 0; i < m_count; i++) {
+        const damage_list::rect& a = expected[i].rect;
+        const damage_list::rect& b = m_places[i].rect;
+        if (a.x != b.x || a.y != b.y || a.w != b.w || a.h != b.h) {
             return false;
         }
-
-        for (uint32_t j = 0; j < i; j++) {
-            if (rect_area(intersect(r, m_places[j].rect)) != 0) {
-                return false;
-            }
-        }
     }
 
-    bool reached[MEMBERS_MAX] = {};
-    reached[main - m_places] = true;
-    for (bool spread = true; spread;) {
-        spread = false;
-        for (uint32_t i = 0; i < m_count; i++) {
-            for (uint32_t j = 0; j < m_count; j++) {
-                if (reached[i] && !reached[j] && share_edge(m_places[i].rect, m_places[j].rect)) {
-                    reached[j] = true;
-                    spread = true;
-                }
-            }
-        }
-    }
-
-    return std::all_of(reached, reached + m_count, [](bool r) { return r; });
+    return true;
 }
 
 void layout::set_shell_rows(int32_t top_rows, int32_t bottom_y) {

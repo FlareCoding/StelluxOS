@@ -28,6 +28,20 @@ static void report_past_limit(uint32_t output, uint32_t width, uint32_t height) 
     printf("stlxdm: output %u's %ux%u passes the desktop's limit, leaving it unserved\r\n", output, width, height);
 }
 
+static void report_output(uint32_t output, const gfxfb::gfxfb_output_info& info) {
+    if (!is_lit(info)) {
+        bool relighting = (info.flags & gfxfb::GFXFB_OUTPUT_RELIGHTING) != 0;
+        printf("stlxdm: output %u %s\r\n", output, relighting ? "relighting" : "dark");
+        return;
+    }
+
+    unsigned long long millihertz = info.current.refresh_millihertz;
+    const char* maker = info.maker[0] ? info.maker : "no monitor named";
+    const char* space = info.name[0] ? " " : "";
+    printf("stlxdm: output %u lit at %ux%u %llu.%03llu Hz, %s%s%s\r\n", output, info.current.width, info.current.height,
+           millihertz / 1000, millihertz % 1000, maker, space, info.name);
+}
+
 /* Reads the events `fd` holds into `events`, which must hold `EVENTS_PER_READ` records, waiting for one when none is
  * queued. Returns how many it read, 0 after a signal, or -1 after printing why the read failed */
 static int read_events(int fd, gfxfb::gfxfb_event* events) {
@@ -255,6 +269,18 @@ void display::note_state(uint32_t output, const gfxfb::gfxfb_output_info& info) 
     } else {
         m_relighting &= ~(1u << output);
     }
+
+    layout_store::identity& monitor = m_monitors[output];
+    if (is_lit(info)) {
+        /* Zeroed past each NUL, as the store compares whole fields */
+        monitor = {};
+        strncpy(monitor.maker, info.maker, sizeof(monitor.maker) - 1);
+        strncpy(monitor.name, info.name, sizeof(monitor.name) - 1);
+        monitor.product = info.product;
+        monitor.serial = info.serial;
+    } else if (!relighting) {
+        monitor = {};
+    }
 }
 
 void display::follow_output(uint32_t output, const gfxfb::gfxfb_output_info& info) {
@@ -263,6 +289,7 @@ void display::follow_output(uint32_t output, const gfxfb::gfxfb_output_info& inf
     }
 
     note_state(output, info);
+    report_output(output, info);
 
     if (m_fallback) {
         m_fallback_served = m_fallback->update_output() == 0 && fallback_fits();

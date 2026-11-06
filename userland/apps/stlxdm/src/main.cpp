@@ -343,6 +343,7 @@ int main() {
         srv.clock_tick();
 
         srv.pump(fds);
+        inp.set_pointer(srv.apply_layout_requests(inp.pointer(), inp.buttons()));
 
         if (fds[event_slot].revents & POLLIN) {
             disp.take_events();
@@ -386,5 +387,6 @@ int main() {
 
         /* Everything this wakeup staged leaves before the next sleep */
         srv.flush_events();
+        srv.flush_outputs();
     }
 }

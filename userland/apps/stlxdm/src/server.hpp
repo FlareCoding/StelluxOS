@@ -6,6 +6,7 @@
 #include "decor.hpp"
 #include "display.hpp"
 #include "layout.hpp"
+#include "layout_store.hpp"
 #include "panels.hpp"
 #include "perf.hpp"
 #include "power.hpp"
@@ -207,6 +208,8 @@ struct dm_client {
     /* One bit per output whose MODES the client asked for */
     uint32_t mode_watches = 0;
 
+    uint32_t outputs_generation = 0;  /* the generation of the last OUTPUTS it was sent */
+
     explicit dm_client(int sock) : fd(sock) {}
 };
 
@@ -240,6 +243,21 @@ struct dm_trial {
     swp_mode   mode = {};
     swp_mode   previous = {};
     uint64_t   deadline_ns = 0;
+};
+
+/* A client's SET_LAYOUT, applied once the wakeup's messages are read */
+struct dm_layout_request {
+    dm_client*     client = nullptr;
+    swp_set_layout request = {};
+};
+
+/* A LAYOUT_RESULT or MODE_RESULT built when its request was handled and
+ * sent at the end of the wakeup, after any OUTPUTS */
+struct dm_answer {
+    dm_client*        client = nullptr;
+    uint16_t          type = 0;      /* SWP_MSG_LAYOUT_RESULT or SWP_MSG_MODE_RESULT */
+    swp_layout_result layout = {};   /* its generation filled as it is sent */
+    swp_mode_result   mode = {};
 };
 
 /* The protocol server: listens, accepts, pumps client sockets, routes
@@ -294,6 +312,17 @@ public:
      * with its output or, once that left, to the main output's center,
      * shown and routed as an untimed motion with `buttons` held. */
     desktop_point follow_outputs(desktop_point pointer, uint16_t buttons);
+
+    /* Decides the wakeup's layout requests in arrival order, applying and
+     * storing each that holds and staging its answer, and returns the
+     * pointer, which a change of places moves with windows and popups as
+     * `follow_outputs()` does. */
+    desktop_point apply_layout_requests(desktop_point pointer, uint16_t buttons);
+
+    /* Sends the current OUTPUTS to each client past its handshake that
+     * holds an older one, then the wakeup's layout and mode results in the
+     * order their requests were handled. */
+    void flush_outputs();
 
     /* Fills fds for one poll cycle: listen socket plus every client. */
     void collect_fds(std::vector<struct pollfd>& fds) const;
@@ -421,6 +450,11 @@ private:
     void adopt_conf_state(dm_conf_state&& next);
     void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);
     uint32_t gather_members(layout::member* members) const;
+    const layout::arrangement* stored_layout(const layout::member* members, uint32_t count, layout::arrangement& out);
+    uint32_t apply_layout_request(const swp_set_layout& request);
+    desktop_point adopt_layout(const layout& before, desktop_point pointer, uint16_t buttons);
+    void describe_outputs(swp_outputs& out) const;
+    void update_generation();
     void sync_outputs();
     void move_window_tree(dm_client& c, dm_window* w, int32_t dx, int32_t dy);
     void move_windows_with_outputs(const layout& before);
@@ -472,6 +506,17 @@ private:
     layout m_layout;
     dm_output m_outputs[gfxfb::GFXFB_OUTPUTS_MAX];
     uint32_t m_window_count[gfxfb::GFXFB_OUTPUTS_MAX] = {};
+
+    /* The stored layouts, and the monitors the layout was last built for */
+    layout_store         m_store;
+    layout_store::member m_monitors[layout::MEMBERS_MAX];
+    uint32_t             m_monitor_count = 0;
+
+    /* The newest OUTPUTS, its generation raised from 1 at every change, and
+     * the wakeup's layout requests and the answers staged for its end */
+    swp_outputs                    m_desktop = {};
+    std::vector<dm_layout_request> m_layout_requests;
+    std::vector<dm_answer>         m_answers;
 
     /* Desktop damage not yet spread to the outputs */
     damage_list m_damage;

@@ -2,6 +2,7 @@
 #define STLXDM_DISPLAY_HPP
 
 #include "layout.hpp"
+#include "layout_store.hpp"
 #include "presenter.hpp"
 
 #include <stlx/gfxfb_abi.h>
@@ -73,6 +74,9 @@ public:
     /* The output last read as gfxfb's primary. */
     uint32_t primary() const { return m_primary; }
 
+    /* The monitor `output` last named while lit, kept while it relights. */
+    const layout_store::identity& monitor(uint32_t output) const { return m_monitors[output]; }
+
     /* Whether `output` was last read dark while its driver lights it
      * again. */
     bool is_relighting(uint32_t output) const {
@@ -100,6 +104,8 @@ private:
 
     std::unique_ptr<flip_presenter>   m_presenters[gfxfb::GFXFB_OUTPUTS_MAX];
     std::unique_ptr<memcpy_presenter> m_fallback;
+
+    layout_store::identity m_monitors[gfxfb::GFXFB_OUTPUTS_MAX];
 };
 
 #endif

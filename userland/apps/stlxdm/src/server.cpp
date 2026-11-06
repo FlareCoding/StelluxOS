@@ -15,6 +15,10 @@
 #include <unistd.h>
 
 constexpr const char* GPU_DEVICE_PATH = "/dev/gpu0";
+constexpr const char* LAYOUTS_PATH = "/etc/stlxdm/layouts.conf";
+
+static_assert(layout::MEMBERS_MAX == SWP_OUTPUTS_MAX, "a layout places every output the protocol lists");
+static_assert(layout::DESKTOP_LIMIT == SWP_DESKTOP_LIMIT, "the layout keeps the protocol's limit");
 
 /* Each attached GPU buffer holds two of stlxdm's handles, and 16 on
  * each of many clients pass the default limit */
@@ -238,15 +242,27 @@ static bool parse_hotkey(const char* chord, uint8_t* out_mods,
     return true;
 }
 
+static void report_default(layout::outcome placed) {
+    if (placed == layout::outcome::defaulted) {
+        printf("stlxdm: the layout left outputs overlapping, apart or past the desktop's limit, using the default\r\n");
+    }
+}
+
 int server::init(display* disp, const stlxconf_t* conf) {
     m_display = disp;
     m_conf = conf;
 
+    m_store.read(LAYOUTS_PATH);
+
     layout::member members[layout::MEMBERS_MAX];
+    layout::arrangement stored;
     uint32_t count = gather_members(members);
-    if (!m_layout.rebuild(members, count, disp->primary())) {
+    layout::outcome placed = m_layout.rebuild(members, count, disp->primary(), stored_layout(members, count, stored));
+    if (placed == layout::outcome::kept) {
         return -1;
     }
+
+    report_default(placed);
 
     sync_outputs();
 
@@ -266,6 +282,7 @@ int server::init(display* disp, const stlxconf_t* conf) {
     const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
     m_cursor_x = main.x + main.w / 2;
     m_cursor_y = main.y + main.h / 2;
+    update_generation();
 
     /* The first tick paints the whole desktop over the boot contents */
     m_damage.add_full();
@@ -427,6 +444,27 @@ uint32_t server::gather_members(layout::member* members) const {
     return count;
 }
 
+/* The stored layout for `members`' monitors when they differ from the last ones the layout was built for, keeping
+ * them as the last unless there are none, which leaves the layout as it was */
+const layout::arrangement* server::stored_layout(const layout::member* members, uint32_t count,
+                                                 layout::arrangement& out) {
+    if (count == 0) {
+        return nullptr;
+    }
+
+    layout_store::member monitors[layout::MEMBERS_MAX];
+    bool differs = count != m_monitor_count;
+    for (uint32_t i = 0; i < count; i++) {
+        monitors[i] = { members[i].output, m_display->monitor(members[i].output) };
+        bool same = monitors[i].output == m_monitors[i].output && monitors[i].monitor == m_monitors[i].monitor;
+        differs = differs || !same;
+    }
+
+    std::copy(monitors, monitors + count, m_monitors);
+    m_monitor_count = count;
+    return differs && m_store.match(monitors, count, out) ? &out : nullptr;
+}
+
 /* Takes each output's presenter and place, clearing the record of an output no longer served and all but the backdrop
  * of one with a new presenter or size, and restarting the cascade of an output that left the layout */
 void server::sync_outputs() {
@@ -546,6 +584,7 @@ void server::reload_config() {
     /* The new bar shows the last readout at once, since a quiescent perf
      * monitor refreshes nothing until the next input or missed frame */
     m_panels->set_perf(m_perf_readout);
+    update_generation();
 
     m_damage.add_full();
     printf("stlxdm: config reloaded\r\n");
@@ -635,7 +674,15 @@ desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
 
     layout::member members[layout::MEMBERS_MAX];
     uint32_t count = gather_members(members);
-    m_layout.rebuild(members, count, m_display->primary());
+    layout::arrangement stored;
+    report_default(m_layout.rebuild(members, count, m_display->primary(), stored_layout(members, count, stored)));
+
+    return adopt_layout(before, pointer, buttons);
+}
+
+/* Moves the outputs' records, the shell, windows and the pointer from `before` onto the layout, as
+ * `follow_outputs()` describes */
+desktop_point server::adopt_layout(const layout& before, desktop_point pointer, uint16_t buttons) {
     sync_outputs();
 
     dm_wallpaper wallpaper(*m_conf);
@@ -675,12 +722,172 @@ desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
     m_cursor_y = moved.y;
     show_cursor();
     m_damage.add_full();
+    update_generation();
 
     /* A clamp, a rebuild or a window's move comes from no device, so the
      * pointer routes as a motion for hover, its shape and the clients */
     route_untimed_pointer(moved.x, moved.y, buttons, 0, 0);
 
     return moved;
+}
+
+static const char* layout_outcome_text(uint32_t outcome) {
+    switch (outcome) {
+    case SWP_LAYOUT_APPLIED:
+        return "applied";
+    case SWP_LAYOUT_UNSAVED:
+        return "applied, not stored";
+    case SWP_LAYOUT_STALE:
+        return "refused, built from another generation";
+    case SWP_LAYOUT_INVALID:
+        return "refused as invalid";
+    case SWP_LAYOUT_OVERLAP:
+        return "refused, two outputs overlap";
+    default:
+        return "refused, an output does not connect to the main output";
+    }
+}
+
+desktop_point server::apply_layout_requests(desktop_point pointer, uint16_t buttons) {
+    for (const dm_layout_request& queued : m_layout_requests) {
+        layout before = m_layout;
+        uint32_t outcome = apply_layout_request(queued.request);
+        printf("stlxdm: layout asked by %s: %s\r\n", queued.client->app_id, layout_outcome_text(outcome));
+        if (!same_layout(before, m_layout)) {
+            pointer = adopt_layout(before, pointer, buttons);
+        }
+
+        dm_answer answer;
+        answer.client = queued.client;
+        answer.type = SWP_MSG_LAYOUT_RESULT;
+        answer.layout.outcome = outcome;
+        m_answers.push_back(answer);
+    }
+
+    m_layout_requests.clear();
+
+    return pointer;
+}
+
+/* Checks `request` in the protocol's order against the members and, when it holds, applies it and stores it for
+ * their monitors. Returns its SWP_LAYOUT_* outcome */
+uint32_t server::apply_layout_request(const swp_set_layout& request) {
+    if (request.generation != m_desktop.generation) {
+        return SWP_LAYOUT_STALE;
+    }
+
+    /* While the layout has no members, it keeps places no request may name */
+    layout::member members[layout::MEMBERS_MAX];
+    if (gather_members(members) == 0 || request.count > SWP_OUTPUTS_MAX) {
+        return SWP_LAYOUT_INVALID;
+    }
+
+    layout::arrangement asked;
+    asked.main = request.main;
+    asked.count = request.count;
+    for (uint32_t i = 0; i < request.count; i++) {
+        asked.entries[i] = { request.entries[i].output, request.entries[i].x, request.entries[i].y };
+    }
+
+    switch (m_layout.apply(asked)) {
+    case layout::fault::invalid:
+        return SWP_LAYOUT_INVALID;
+    case layout::fault::overlap:
+        return SWP_LAYOUT_OVERLAP;
+    case layout::fault::apart:
+        return SWP_LAYOUT_APART;
+    case layout::fault::none:
+        break;
+    }
+
+    m_store.remember(m_monitors, m_monitor_count, m_layout);
+    int error = m_store.write(LAYOUTS_PATH);
+    if (error != 0) {
+        printf("stlxdm: %s could not be written (%s), keeping the layout for its monitors only until stlxdm exits\r\n",
+               LAYOUTS_PATH, strerror(error));
+        return SWP_LAYOUT_UNSAVED;
+    }
+
+    return SWP_LAYOUT_APPLIED;
+}
+
+static uint64_t sent_refresh(const swp_outputs& sent, uint32_t output) {
+    for (uint32_t i = 0; i < sent.count; i++) {
+        if (sent.outputs[i].output == output) {
+            return sent.outputs[i].refresh_millihertz;
+        }
+    }
+
+    return 0;
+}
+
+static const layout_store::identity* monitor_of(const layout_store::member* monitors, uint32_t count,
+                                                uint32_t output) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (monitors[i].output == output) {
+            return &monitors[i].monitor;
+        }
+    }
+
+    return nullptr;
+}
+
+/* Fills `out`'s members from the layout and the monitors it was last built for, which no output going dark changes,
+ * an output that is not served keeping the refresh it was last sent with */
+void server::describe_outputs(swp_outputs& out) const {
+    out.count = m_layout.count();
+    for (uint32_t i = 0; i < m_layout.count(); i++) {
+        const layout::place& place = m_layout.at(i);
+        const presenter* pres = m_display->presenter_of(place.output);
+        const layout_store::identity* monitor = monitor_of(m_monitors, m_monitor_count, place.output);
+        damage_list::rect work = m_layout.work_area(place.output);
+        swp_desktop_output& entry = out.outputs[i];
+
+        entry.output = place.output;
+        entry.flags = place.output == m_layout.main_output() ? SWP_DESKTOP_MAIN : 0;
+        entry.x = place.rect.x;
+        entry.y = place.rect.y;
+        entry.width = static_cast<uint32_t>(place.rect.w);
+        entry.height = static_cast<uint32_t>(place.rect.h);
+
+        entry.refresh_millihertz = pres ? pres->refresh_millihertz() : sent_refresh(m_desktop, place.output);
+        entry.work = { work.x, work.y, work.w, work.h };
+
+        if (monitor) {
+            const char* gap = monitor->maker[0] != '\0' && monitor->name[0] != '\0' ? " " : "";
+            snprintf(entry.monitor, sizeof(entry.monitor), "%.3s%s%.15s", monitor->maker, gap, monitor->name);
+        }
+    }
+}
+
+void server::update_generation() {
+    swp_outputs next = {};
+    next.generation = m_desktop.generation;
+    describe_outputs(next);
+    if (memcmp(&next, &m_desktop, sizeof(next)) != 0) {
+        next.generation++;
+        m_desktop = next;
+    }
+}
+
+void server::flush_outputs() {
+    for (auto& c : m_clients) {
+        if (c->hello_done && c->outputs_generation < m_desktop.generation) {
+            send_to(*c, SWP_MSG_OUTPUTS, &m_desktop, sizeof(m_desktop));
+            c->outputs_generation = m_desktop.generation;
+        }
+    }
+
+    for (dm_answer& answer : m_answers) {
+        if (answer.type == SWP_MSG_LAYOUT_RESULT) {
+            answer.layout.generation = m_desktop.generation;
+            send_to(*answer.client, answer.type, &answer.layout, sizeof(answer.layout));
+        } else {
+            send_to(*answer.client, answer.type, &answer.mode, sizeof(answer.mode));
+        }
+    }
+
+    m_answers.clear();
 }
 
 void server::shutdown() {
@@ -850,10 +1057,14 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
         swp_hello_reply reply = { SWP_VERSION, SWP_FMT_XRGB8888,
                                   static_cast<uint32_t>(main.w),
                                   static_cast<uint32_t>(main.h) };
-        if (!send_to(c, SWP_MSG_HELLO_REPLY, &reply, sizeof(reply), SWP_HELLO_GPU_INFO) ||
-            !send_to(c, SWP_MSG_GPU_INFO, &m_gpu_info, sizeof(m_gpu_info))) {
+        uint16_t flags = SWP_HELLO_GPU_INFO | SWP_HELLO_OUTPUTS;
+        if (!send_to(c, SWP_MSG_HELLO_REPLY, &reply, sizeof(reply), flags) ||
+            !send_to(c, SWP_MSG_GPU_INFO, &m_gpu_info, sizeof(m_gpu_info)) ||
+            !send_to(c, SWP_MSG_OUTPUTS, &m_desktop, sizeof(m_desktop))) {
             c.dead = true;
         }
+
+        c.outputs_generation = m_desktop.generation;
         return;
     }
 
@@ -961,6 +1172,17 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
 
         handle_commit_gpu(c, payload);
         return;
+    case SWP_MSG_SET_LAYOUT: {
+        if (hdr.length != sizeof(swp_set_layout)) {
+            break;
+        }
+
+        dm_layout_request queued;
+        queued.client = &c;
+        memcpy(&queued.request, payload, sizeof(queued.request));
+        m_layout_requests.push_back(queued);
+        return;
+    }
     default:
         break;
     }
@@ -970,6 +1192,11 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
 
 void server::drop_client(dm_client& c) {
     forget_mode_client(c);
+
+    /* The client is freed once this returns, so no queued request or staged answer may name it */
+    auto names_client = [&c](const auto& entry) { return entry.client == &c; };
+    std::erase_if(m_layout_requests, names_client);
+    std::erase_if(m_answers, names_client);
 
     while (!c.windows.empty()) {
         destroy_window_tree(c, c.windows.back()->win_id);
