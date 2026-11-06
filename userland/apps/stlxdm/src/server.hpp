@@ -4,6 +4,8 @@
 #include "cursor.hpp"
 #include "damage.hpp"
 #include "decor.hpp"
+#include "display.hpp"
+#include "layout.hpp"
 #include "panels.hpp"
 #include "perf.hpp"
 #include "power.hpp"
@@ -31,7 +33,7 @@ struct dm_hotkey {
 
 /* Config-derived state built as a unit and adopted only when every
  * piece came up, so a failed reload keeps the running desktop. The
- * backdrop is the screen-sized wallpaper with the panels painted in. */
+ * backdrop is the main output's wallpaper with the panels painted in. */
 struct dm_conf_state {
     std::unique_ptr<dm_panels> panels;
     std::unique_ptr<dm_power> power;
@@ -195,24 +197,30 @@ struct dm_trial {
 };
 
 /* The protocol server: listens, accepts, pumps client sockets, routes
- * complete messages, and owns the scene, panels, and power overlay. */
+ * complete messages, and owns the layout, the scene, panels, and power
+ * overlay. */
 class server {
 public:
-    /* Builds the display state: cursor, panels, power, wallpaper,
-     * and hotkeys. Runs before the splash so its cost, dominated by
-     * the wallpaper decode, never sits between Enter and the
-     * desktop. Returns 0 or -1. */
-    int init(presenter* pres, const stlxconf_t* conf);
+    /* Builds the desktop's state over the outputs `disp` serves: the
+     * layout, cursor, panels, power, wallpaper, and hotkeys. Runs before
+     * the splash so its cost, dominated by the wallpaper decode, never
+     * sits between Enter and the desktop. Returns 0 or -1. */
+    int init(display* disp, const stlxconf_t* conf);
 
     /* Raises the handle limit, tries to open the GPU device, binds the
      * protocol socket and spawns the config's autostart entries, the
      * moment clients may exist. Returns 0 or -1. */
     int serve();
 
-    /* Shows the pointer on the primary output's hardware cursor when it
-     * can show the shape, else in the frames, and prints which. Runs
-     * after the splash, which has no pointer, and after each change of
-     * the primary output. */
+    const layout& desktop() const { return m_layout; }
+
+    /* The main output's presenter, null while it is not served. */
+    presenter* main_presenter() const { return m_display->presenter_of(m_layout.main_output()); }
+
+    /* Shows the pointer on the main output's hardware cursor when it
+     * can show the shape, else in the frames, printing which while the
+     * main output is served. Runs after the splash, which has no pointer,
+     * and after output events. */
     void show_cursor();
 
     /* Whether a pointer move waits for the hardware cursor. */
@@ -220,7 +228,8 @@ public:
 
     /* Sends the hardware cursor the waiting move, at the pointer's
      * latest position: one call however many motions came. A refused
-     * move puts the pointer back into the frames. */
+     * move puts the pointer back into the frames. The main output must
+     * be served. */
     void flush_cursor();
 
     void shutdown();
@@ -230,17 +239,15 @@ public:
      * Autostart entries do not respawn. */
     void reload_config();
 
-    /* Redraws the desktop after the presenter's `update_output()`
-     * returns `CHANGED`, since the primary output may show none of the
-     * earlier frames. At a size other than the desktop's the backdrop,
-     * panels and power build again, or the running ones stay when the
-     * build fails, and toplevel windows move back within the pointer's
-     * reach. The pointer then shows again at (`pointer_x`,
-     * `pointer_y`), which must lie on the screen, and routes there as
-     * a motion with `buttons` held, through the steps a device's
-     * motion takes except its latency stamp. The whole desktop
-     * repaints. */
-    void screen_changed(int32_t pointer_x, int32_t pointer_y, uint16_t buttons);
+    /* Once `display` followed output events, places the served outputs
+     * again, rebuilding the panels, power and backdrop when the main
+     * output changed or its size differs from the backdrop's, or keeping
+     * the running ones when that fails, and repaints the whole desktop. A
+     * change of places or a rebuild keeps windows in reach. Returns the
+     * pointer, moved with its output on a change of places or to the main
+     * output's center once its output left, shown again and routed as a
+     * device's motion with `buttons` held, less its latency stamp. */
+    desktop_point follow_outputs(desktop_point pointer, uint16_t buttons);
 
     /* Fills fds for one poll cycle: listen socket plus every client. */
     void collect_fds(std::vector<struct pollfd>& fds) const;
@@ -297,8 +304,9 @@ public:
     bool start_mode_request();
 
     /* Answers the started request, starting a lit trial's timer, or
-     * leaves the previous mode or the default as the next request. */
-    void finish_mode_request(presenter::output_state state);
+     * leaves the previous mode or the default as the next request. The
+     * started request's output events must be followed first. */
+    void finish_mode_request();
 
     /* Sends the watchers of `outputs`, one bit each, their MODES, and
      * ends a trial whose output went dark or to another mode. */
@@ -360,6 +368,7 @@ private:
     void drop_client(dm_client& c);
     void spawn_shortcut(const char* path);
     int build_conf_state(dm_conf_state& out);
+    uint32_t gather_members(layout::member* members) const;
     void adopt_conf_state(dm_conf_state&& next);
     void keep_windows_in_reach();
     bool send_to(dm_client& c, uint16_t type,
@@ -399,9 +408,10 @@ private:
     bool has_configure_work() const;
 
     int m_listen_fd = -1;
-    presenter* m_presenter = nullptr;
+    display* m_display = nullptr;
     const stlxconf_t* m_conf = nullptr;
     std::vector<std::unique_ptr<dm_client>> m_clients;
+    layout m_layout;
     uint32_t m_window_count = 0;
     damage_list m_damage;
 

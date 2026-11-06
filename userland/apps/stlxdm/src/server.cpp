@@ -3,7 +3,6 @@
 #include <stlx/proc.h>
 #include <stlxgfx/image.h>
 
-#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -158,6 +157,23 @@ static stlxgfx_surface_t* build_backdrop(const stlxconf_t& conf,
     return backdrop;
 }
 
+static bool same_layout(const layout& a, const layout& b) {
+    if (a.count() != b.count() || a.main_output() != b.main_output()) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < a.count(); i++) {
+        const damage_list::rect& ra = a.at(i).rect;
+        const damage_list::rect& rb = b.at(i).rect;
+        bool same_place = ra.x == rb.x && ra.y == rb.y && ra.w == rb.w && ra.h == rb.h;
+        if (a.at(i).output != b.at(i).output || !same_place) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 /* Parses a plus-separated chord such as ctrl+alt+t into modifier
  * bits and a usage. Returns false for keys outside the letter and
  * digit rows. */
@@ -202,28 +218,15 @@ static bool parse_hotkey(const char* chord, uint8_t* out_mods,
     return true;
 }
 
-/* Finds the largest x and y among a window's position and those its
- * unacked configures and unsent target hold */
-static void find_furthest_position(const dm_window& w, int32_t* out_x, int32_t* out_y) {
-    int32_t far_x = w.x;
-    int32_t far_y = w.y;
-    for (uint32_t i = 0; i < w.sent_conf_count; i++) {
-        far_x = std::max(far_x, w.sent_confs[i].x);
-        far_y = std::max(far_y, w.sent_confs[i].y);
-    }
-
-    if (w.target_w != 0) {
-        far_x = std::max(far_x, w.target_x);
-        far_y = std::max(far_y, w.target_y);
-    }
-
-    *out_x = far_x;
-    *out_y = far_y;
-}
-
-int server::init(presenter* pres, const stlxconf_t* conf) {
-    m_presenter = pres;
+int server::init(display* disp, const stlxconf_t* conf) {
+    m_display = disp;
     m_conf = conf;
+
+    layout::member members[layout::MEMBERS_MAX];
+    uint32_t count = gather_members(members);
+    if (!m_layout.rebuild(members, count, disp->primary())) {
+        return -1;
+    }
 
     if (m_cursor.init() != 0) {
         return -1;
@@ -234,9 +237,11 @@ int server::init(presenter* pres, const stlxconf_t* conf) {
         return -1;
     }
     adopt_conf_state(std::move(state));
+    m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
 
-    m_cursor_x = static_cast<int32_t>(pres->width()) / 2;
-    m_cursor_y = static_cast<int32_t>(pres->height()) / 2;
+    const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
+    m_cursor_x = main.x + main.w / 2;
+    m_cursor_y = main.y + main.h / 2;
 
     /* The first tick paints the whole desktop over the boot contents */
     m_damage.add_full();
@@ -287,12 +292,14 @@ int server::serve() {
     return 0;
 }
 
-/* Builds every config-derived piece into fresh objects: the backdrop,
- * the panels painted into it, power, and the hotkey table. Nothing
- * running is touched, so a failure leaves no trace. */
+/* Builds every config-derived piece at the main output's size into fresh
+ * objects, touching nothing running, so a failure leaves no trace */
 int server::build_conf_state(dm_conf_state& out) {
-    out.backdrop = build_backdrop(*m_conf, m_presenter->width(),
-                                  m_presenter->height());
+    const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
+    uint32_t width = static_cast<uint32_t>(main.w);
+    uint32_t height = static_cast<uint32_t>(main.h);
+
+    out.backdrop = build_backdrop(*m_conf, width, height);
     if (!out.backdrop) {
         return -1;
     }
@@ -300,10 +307,8 @@ int server::build_conf_state(dm_conf_state& out) {
     out.panels = std::make_unique<dm_panels>();
     out.power = std::make_unique<dm_power>();
 
-    if (out.panels->init(m_presenter->width(), m_presenter->height(),
-                         *m_conf, out.backdrop) != 0 ||
-        out.power->init(m_presenter->width(), m_presenter->height(),
-                        m_conf->taskbar_height) != 0) {
+    if (out.panels->init(width, height, *m_conf, out.backdrop) != 0 ||
+        out.power->init(width, height, m_conf->taskbar_height) != 0) {
         out.panels->shutdown();
         out.power->shutdown();
         stlxgfx_destroy_surface(out.backdrop);
@@ -351,6 +356,19 @@ void server::adopt_conf_state(dm_conf_state&& next) {
     next.backdrop = nullptr;
 }
 
+/* The outputs the layout places: every served output at its mode's size */
+uint32_t server::gather_members(layout::member* members) const {
+    uint32_t count = 0;
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        const presenter* pres = m_display->presenter_of(output);
+        if (pres) {
+            members[count++] = { output, static_cast<int32_t>(pres->width()), static_cast<int32_t>(pres->height()) };
+        }
+    }
+
+    return count;
+}
+
 void server::perf_wake(uint64_t now_ns) {
     m_wake_ns = now_ns;
     m_wake_damage = m_damage.count();
@@ -369,7 +387,8 @@ void server::perf_settle() {
 }
 
 void server::perf_tick(uint64_t now_ns) {
-    m_perf.note_missed_frames(now_ns, m_presenter->missed_frames());
+    const presenter* pres = main_presenter();
+    m_perf.note_missed_frames(now_ns, pres ? pres->missed_frames() : -1);
 
     perf_snapshot snap;
     if (m_perf.tick(now_ns, snap)) {
@@ -386,6 +405,7 @@ void server::reload_config() {
     }
 
     adopt_conf_state(std::move(state));
+    m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
 
     /* The new bar shows the last readout at once, since a quiescent perf
      * monitor refreshes nothing until the next input or missed frame */
@@ -395,53 +415,81 @@ void server::reload_config() {
     printf("stlxdm: config reloaded\r\n");
 }
 
-/* Moves each toplevel by the least that puts the left end of its title
- * bar clear of the right edge, dock and bottom edge wherever it lands */
+/* Moves each toplevel whose grip the work areas leave uncovered, at its
+ * position or one it was promised, into the main output's work area */
 void server::keep_windows_in_reach() {
-    /* The bottom edge bounds too, since after a failed rebuild the
-     * running dock can lie below it */
-    int32_t max_x = static_cast<int32_t>(m_presenter->width()) - decor::TITLE_H;
-    int32_t max_y = std::min(m_panels->dock_y(), static_cast<int32_t>(m_presenter->height()));
+    uint32_t main = m_layout.main_output();
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
             if (w->parent_id != 0) {
                 continue;
             }
 
-            int32_t far_x = 0;
-            int32_t far_y = 0;
-            find_furthest_position(*w, &far_x, &far_y);
-            int32_t dx = std::min(far_x, max_x) - far_x;
-            int32_t dy = std::min(far_y, max_y) - far_y;
+            desktop_point corners[dm_window::SENT_CONF_MAX + 2];
+            uint32_t count = 0;
+            corners[count++] = { w->x, w->y };
+            for (uint32_t i = 0; i < w->sent_conf_count; i++) {
+                corners[count++] = { w->sent_confs[i].x, w->sent_confs[i].y };
+            }
 
-            move_window(w.get(), dx, dy);
+            if (w->target_w != 0) {
+                corners[count++] = { w->target_x, w->target_y };
+            }
+
+            desktop_point move = m_layout.reach_move(main, corners, count, decor::TITLE_H);
+            if (move.x != 0 || move.y != 0) {
+                move_window(w.get(), move.x, move.y);
+            }
         }
     }
 }
 
-void server::screen_changed(int32_t pointer_x, int32_t pointer_y, uint16_t buttons) {
-    bool resized = m_backdrop->width != m_presenter->width() || m_backdrop->height != m_presenter->height();
-    if (resized) {
+desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
+    layout before = m_layout;
+
+    layout::member members[layout::MEMBERS_MAX];
+    uint32_t count = gather_members(members);
+    m_layout.rebuild(members, count, m_display->primary());
+
+    /* The backdrop's size, not the last layout's, tells a failed rebuild apart, so the next event retries it */
+    const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
+    bool backdrop_stale = static_cast<int32_t>(m_backdrop->width) != main.w ||
+                          static_cast<int32_t>(m_backdrop->height) != main.h;
+    bool rebuilt = false;
+    if (m_layout.main_output() != before.main_output() || backdrop_stale) {
         dm_conf_state state;
         if (build_conf_state(state) == 0) {
             adopt_conf_state(std::move(state));
             m_panels->set_perf(m_perf_readout);
+            rebuilt = true;
         } else {
-            printf("stlxdm: desktop rebuild at %ux%u failed, keeping the running desktop\r\n",
-                   m_presenter->width(), m_presenter->height());
+            printf("stlxdm: desktop rebuild at %dx%d failed, keeping the running desktop\r\n", main.w, main.h);
         }
+    }
 
+    m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
+
+    desktop_point moved = pointer;
+    bool places_changed = !same_layout(before, m_layout);
+    if (places_changed) {
+        moved = m_layout.follow_point(pointer, before);
+    }
+
+    /* A rebuild can move the dock's rows, which bound the main output's work area */
+    if (places_changed || rebuilt) {
         keep_windows_in_reach();
     }
 
-    m_cursor_x = pointer_x;
-    m_cursor_y = pointer_y;
+    m_cursor_x = moved.x;
+    m_cursor_y = moved.y;
     show_cursor();
     m_damage.add_full();
 
     /* A clamp, a rebuild or a window's move comes from no device, so the
      * pointer routes as a motion for hover, its shape and the clients */
-    route_untimed_pointer(pointer_x, pointer_y, buttons, 0, 0);
+    route_untimed_pointer(moved.x, moved.y, buttons, 0, 0);
+
+    return moved;
 }
 
 void server::shutdown() {
@@ -601,9 +649,10 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
         c.hello_done = true;
         c.may_attach_gpu = (m_gpu_info.flags & SWP_GPU_ACCEPTS) != 0;
 
+        const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
         swp_hello_reply reply = { SWP_VERSION, SWP_FMT_XRGB8888,
-                                  m_presenter->width(),
-                                  m_presenter->height() };
+                                  static_cast<uint32_t>(main.w),
+                                  static_cast<uint32_t>(main.h) };
         if (!send_to(c, SWP_MSG_HELLO_REPLY, &reply, sizeof(reply), SWP_HELLO_GPU_INFO) ||
             !send_to(c, SWP_MSG_GPU_INFO, &m_gpu_info, sizeof(m_gpu_info))) {
             c.dead = true;

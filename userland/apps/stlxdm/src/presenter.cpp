@@ -1,5 +1,7 @@
 #include "presenter.hpp"
 
+#include "display.hpp"
+
 #include <stlx/gfxfb_abi.h>
 
 #include <cerrno>
@@ -13,9 +15,6 @@
 #include <unistd.h>
 
 constexpr uint32_t BYTES_PER_PIXEL = 4;
-
-/* A file holds at most one present event and one output event per output, so one read takes them all */
-constexpr uint32_t EVENTS_PER_READ = 2 * gfxfb::GFXFB_OUTPUTS_MAX;
 
 static uint64_t now_ns() {
     timespec ts;
@@ -62,17 +61,6 @@ static int read_lit_primary(int fd, gfxfb::gfxfb_output_info& primary) {
     return -EAGAIN;
 }
 
-/* The primary output's refresh rate, or 0 when it is unknown, no output is primary
- * and lit or `GFXFB_GET_OUTPUT` fails, with a line printed for the last */
-static uint64_t read_primary_refresh(int fd) {
-    gfxfb::gfxfb_output_info primary;
-    if (read_lit_primary(fd, primary) != 0) {
-        return 0;
-    }
-
-    return primary.current.refresh_millihertz;
-}
-
 /* Whether `output` reads lit at `width` by `height`, or reading it fails */
 static bool still_lit_at(int fd, uint32_t output, uint32_t width, uint32_t height) {
     gfxfb::gfxfb_output_info info = {};
@@ -87,79 +75,9 @@ static bool still_lit_at(int fd, uint32_t output, uint32_t width, uint32_t heigh
     return lit && same_size;
 }
 
-/* Reads the events `fd` holds into `events`, which must hold `EVENTS_PER_READ` records, waiting for one when none is
- * queued. Returns how many it read, 0 after a signal, or -1 after printing why the read failed */
-static int read_events(int fd, gfxfb::gfxfb_event* events) {
-    ssize_t bytes = read(fd, events, EVENTS_PER_READ * sizeof(gfxfb::gfxfb_event));
-    if (bytes >= 0) {
-        return static_cast<int>(static_cast<size_t>(bytes) / sizeof(gfxfb::gfxfb_event));
-    }
-
-    if (errno == EINTR) {
-        return 0;
-    }
-
-    printf("stlxdm: display event read failed: %s\r\n", strerror(errno));
-
-    return -1;
-}
-
-/* Waits for the next output event or a signal on `fd`, which must have no present pending, since a present's end
- * would be read and lost here. Prints a line on the first wait */
-static void wait_for_output_event(int fd, bool& reported) {
-    if (!reported) {
-        printf("stlxdm: waiting for the display to light an output\r\n");
-        reported = true;
-    }
-
-    gfxfb::gfxfb_event events[EVENTS_PER_READ];
-    read_events(fd, events);
-}
-
-int memcpy_presenter::init() {
-    m_fd = open("/dev/gfxfb", O_RDWR);
-    if (m_fd < 0) {
-        return -1;
-    }
-
-    gfxfb::gfxfb_info info;
-    bool reported_wait = false;
-    while (ioctl(m_fd, gfxfb::GFXFB_GET_INFO, &info) < 0) {
-        if (errno != EAGAIN) {
-            close(m_fd);
-            m_fd = -1;
-            return -1;
-        }
-
-        wait_for_output_event(m_fd, reported_wait);
-    }
-
-    /* The scanout mapping may be write-combining, where reads are
-     * pathologically slow, so composition targets m_back instead */
-    void* mem = mmap(nullptr, info.size, PROT_READ | PROT_WRITE,
-                     MAP_SHARED, m_fd, 0);
-    if (mem == MAP_FAILED) {
-        close(m_fd);
-        m_fd = -1;
-        return -1;
-    }
-
-    m_width = static_cast<uint32_t>(info.width);
-    m_height = static_cast<uint32_t>(info.height);
-    m_pitch = static_cast<uint32_t>(info.pitch);
-    m_size = info.size;
-    m_scanout = static_cast<uint8_t*>(mem);
-    m_needs_flush = (info.flags & gfxfb::GFXFB_INFO_NEEDS_FLUSH) != 0;
-    m_refresh_millihertz = read_primary_refresh(m_fd);
-
-    m_back = static_cast<uint8_t*>(
-        malloc(static_cast<size_t>(m_width) * m_height * 4));
-    if (!m_back) {
-        shutdown();
-        return -1;
-    }
-
-    return 0;
+int memcpy_presenter::init(int fd) {
+    m_fd = fd;
+    return update_output();
 }
 
 void memcpy_presenter::shutdown() {
@@ -170,10 +88,8 @@ void memcpy_presenter::shutdown() {
         munmap(m_scanout, m_size);
         m_scanout = nullptr;
     }
-    if (m_fd >= 0) {
-        close(m_fd);
-        m_fd = -1;
-    }
+
+    m_fd = -1;
 }
 
 presenter::target memcpy_presenter::acquire() {
@@ -248,48 +164,31 @@ void memcpy_presenter::present(const damage_list& damage) {
     flush_display(copied, count);
 }
 
-void memcpy_presenter::take_events() {
-    gfxfb::gfxfb_event events[EVENTS_PER_READ];
-    int count = read_events(m_fd, events);
-    for (int i = 0; i < count; i++) {
-        if (events[i].type != gfxfb::GFXFB_EVENT_OUTPUT) {
-            continue;
-        }
-
-        m_output_changed = true;
-
-        /* No device drives output `GFXFB_OUTPUTS_MAX` or above, and leaving an event naming one out of the bits keeps
-         * the shift defined */
-        if (events[i].output < gfxfb::GFXFB_OUTPUTS_MAX) {
-            m_event_outputs |= 1u << events[i].output;
-        }
-    }
-}
-
-uint32_t memcpy_presenter::take_event_outputs() {
-    uint32_t outputs = m_event_outputs;
-    m_event_outputs = 0;
-
-    return outputs;
-}
-
 /* Maps the pixels again before unmapping the earlier mapping, so a failure leaves the presenter as it was */
-presenter::output_state memcpy_presenter::update_output() {
+int memcpy_presenter::update_output() {
     m_output_changed = false;
+
+    gfxfb::gfxfb_output_info primary;
+    int rc = read_lit_primary(m_fd, primary);
+    if (rc != 0) {
+        return rc == -EAGAIN ? rc : -1;
+    }
 
     gfxfb::gfxfb_info info;
     if (ioctl(m_fd, gfxfb::GFXFB_GET_INFO, &info) < 0) {
-        if (errno != EAGAIN) {
-            printf("stlxdm: framebuffer layout read failed: %s\r\n", strerror(errno));
+        if (errno == EAGAIN) {
+            return -EAGAIN;
         }
 
-        return output_state::DARK;
+        printf("stlxdm: framebuffer layout read failed: %s\r\n", strerror(errno));
+
+        return -1;
     }
 
     void* mem = mmap(nullptr, info.size, PROT_READ | PROT_WRITE, MAP_SHARED, m_fd, 0);
     if (mem == MAP_FAILED) {
         printf("stlxdm: framebuffer mapping failed: %s\r\n", strerror(errno));
-        return output_state::DARK;
+        return -1;
     }
 
     uint32_t width = static_cast<uint32_t>(info.width);
@@ -303,62 +202,51 @@ presenter::output_state memcpy_presenter::update_output() {
     if (!back) {
         printf("stlxdm: no memory for the composed frame\r\n");
         munmap(mem, info.size);
-        return output_state::DARK;
+        return -1;
     }
 
     if (back != m_back) {
         free(m_back);
     }
 
-    munmap(m_scanout, m_size);
+    if (m_scanout) {
+        munmap(m_scanout, m_size);
+    }
 
     m_scanout = static_cast<uint8_t*>(mem);
+    m_size = info.size;
+    m_pitch = static_cast<uint32_t>(info.pitch);
+    m_needs_flush = (info.flags & gfxfb::GFXFB_INFO_NEEDS_FLUSH) != 0;
     m_back = back;
+
+    m_output = primary.output;
     m_width = width;
     m_height = height;
-    m_pitch = static_cast<uint32_t>(info.pitch);
-    m_size = info.size;
-    m_needs_flush = (info.flags & gfxfb::GFXFB_INFO_NEEDS_FLUSH) != 0;
-    m_refresh_millihertz = read_primary_refresh(m_fd);
+    m_refresh_millihertz = primary.current.refresh_millihertz;
+
     m_first_acquire = true;
     m_last_flush_failed = false;
 
-    return output_state::CHANGED;
+    return 0;
 }
 
-int flip_presenter::init() {
-    m_fd = open("/dev/gfxfb", O_RDWR);
-    if (m_fd < 0) {
-        int error = errno;
-        printf("stlxdm: display open failed: %s\r\n", strerror(error));
-        return -error;
-    }
+int flip_presenter::init(display& owner, const gfxfb::gfxfb_output_info& info) {
+    m_display = &owner;
+    m_fd = owner.fd();
 
-    gfxfb::gfxfb_output_info primary;
-    bool reported_wait = false;
-    int rc = read_lit_primary(m_fd, primary);
-    while (rc == -EAGAIN) {
-        wait_for_output_event(m_fd, reported_wait);
-        rc = read_lit_primary(m_fd, primary);
-    }
+    m_output = info.output;
+    m_width = info.current.width;
+    m_height = info.current.height;
+    m_refresh_millihertz = info.current.refresh_millihertz;
 
+    int rc = create_buffers();
     if (rc != 0) {
-        shutdown();
+        release_buffers();
         return rc;
     }
 
-    m_output = primary.output;
-    m_width = primary.current.width;
-    m_height = primary.current.height;
-    m_refresh_millihertz = primary.current.refresh_millihertz;
-    m_cursor_max_width = primary.cursor_max_width;
-    m_cursor_max_height = primary.cursor_max_height;
-
-    rc = create_buffers();
-    if (rc != 0) {
-        shutdown();
-        return rc;
-    }
+    m_cursor_max_width = info.cursor_max_width;
+    m_cursor_max_height = info.cursor_max_height;
 
     return 0;
 }
@@ -444,14 +332,14 @@ void flip_presenter::release_buffers() {
     }
 }
 
+/* Hides the cursor before dropping its limits, since a picture set after a relight would otherwise stay */
 void flip_presenter::shutdown() {
     release_buffers();
 
-    /* Closing a file in control presents the outputs' base buffers again */
-    if (m_fd >= 0) {
-        close(m_fd);
-        m_fd = -1;
-    }
+    hide_cursor();
+    m_cursor_max_width = 0;
+    m_cursor_max_height = 0;
+    m_fd = -1;
 }
 
 presenter::target flip_presenter::acquire() {
@@ -471,7 +359,7 @@ presenter::target flip_presenter::acquire() {
 
 void flip_presenter::present(const damage_list& damage) {
     while (m_present_pending) {
-        take_events();
+        m_display->take_events();
     }
 
     for (damage_list& unpresented : m_unpresented) {
@@ -547,36 +435,6 @@ bool flip_presenter::present_buffer(const display_buffer& buffer, const damage_l
     return !failed;
 }
 
-/* A read failing for any reason but a signal ends the wait for the pending present rather than retrying */
-void flip_presenter::take_events() {
-    gfxfb::gfxfb_event events[EVENTS_PER_READ];
-    int count = read_events(m_fd, events);
-    if (count < 0) {
-        m_present_pending = false;
-        m_has_latch = false;
-        return;
-    }
-
-    /* No device drives output `GFXFB_OUTPUTS_MAX` or above, and dropping an event naming one keeps the shift defined */
-    for (int i = 0; i < count; i++) {
-        const gfxfb::gfxfb_event& event = events[i];
-        if (event.type == gfxfb::GFXFB_EVENT_PRESENT) {
-            end_present(event.status, event.frame, event.timestamp_ns);
-        } else if (event.type == gfxfb::GFXFB_EVENT_OUTPUT && event.output < gfxfb::GFXFB_OUTPUTS_MAX) {
-            m_output_changed = true;
-            m_changed_outputs |= 1u << event.output;
-            m_event_outputs |= 1u << event.output;
-        }
-    }
-}
-
-uint32_t flip_presenter::take_event_outputs() {
-    uint32_t outputs = m_event_outputs;
-    m_event_outputs = 0;
-
-    return outputs;
-}
-
 /* A latched present put the back buffer on screen, so the other one becomes the back buffer. A present that
  * ended dark prints nothing, since its output's change also queues an output event the caller follows */
 void flip_presenter::end_present(uint32_t status, uint64_t frame, uint64_t latch_ns) {
@@ -597,68 +455,23 @@ void flip_presenter::end_present(uint32_t status, uint64_t frame, uint64_t latch
     m_back_index = (m_back_index + 1) % BUFFER_COUNT;
 }
 
-/* The buffers serve any output of their size, so only a resize or an earlier `DARK` creates them again. A relit
- * output counts vertical blanks from 0 and shows its base buffer until a present latches */
-presenter::output_state flip_presenter::update_output() {
-    while (m_present_pending) {
-        take_events();
-    }
+void flip_presenter::abandon_present() {
+    m_present_pending = false;
+    m_has_latch = false;
+}
 
-    uint32_t changed_outputs = m_changed_outputs;
-    m_output_changed = false;
-    m_changed_outputs = 0;
-
-    gfxfb::gfxfb_output_info primary;
-    if (read_lit_primary(m_fd, primary) != 0) {
-        return go_dark();
-    }
-
-    bool moved = primary.output != m_output;
-    bool relit = (changed_outputs & (1u << m_output)) != 0;
-    bool resized = primary.current.width != m_width || primary.current.height != m_height;
-    bool has_buffers = m_composed != nullptr;
-    if (!moved && !relit && !resized && has_buffers) {
-        return output_state::UNCHANGED;
-    }
-
-    /* The output that lost the primary went dark, but may show a picture `set_cursor()` gave it once it lit again */
-    if (moved) {
-        hide_cursor();
-    }
-
-    m_output = primary.output;
-    m_width = primary.current.width;
-    m_height = primary.current.height;
-    m_refresh_millihertz = primary.current.refresh_millihertz;
-    m_cursor_max_width = primary.cursor_max_width;
-    m_cursor_max_height = primary.cursor_max_height;
+/* A relit output counts vertical blanks from 0 and shows its base buffer until a present latches */
+void flip_presenter::relit(const gfxfb::gfxfb_output_info& info) {
+    m_refresh_millihertz = info.current.refresh_millihertz;
+    m_cursor_max_width = info.cursor_max_width;
+    m_cursor_max_height = info.cursor_max_height;
     m_has_latch = false;
     m_last_present_failed = false;
-
-    if (resized || !has_buffers) {
-        release_buffers();
-        if (create_buffers() != 0) {
-            return go_dark();
-        }
-    }
+    m_output_changed = false;
 
     for (damage_list& unpresented : m_unpresented) {
         unpresented.add_full();
     }
-
-    return output_state::CHANGED;
-}
-
-/* Drops the buffers and hides the cursor, which may show a picture set after the output relit, before dropping its
- * limits, so cursor calls fail without a line and the next `update_output()` finding a lit primary creates buffers */
-presenter::output_state flip_presenter::go_dark() {
-    release_buffers();
-
-    hide_cursor();
-    m_cursor_max_width = 0;
-    m_cursor_max_height = 0;
-
-    return output_state::DARK;
 }
 
 /* Adds the vertical blanks the latched present missed and keeps its latch for the next, taking those

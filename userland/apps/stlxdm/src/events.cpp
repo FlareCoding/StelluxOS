@@ -253,8 +253,12 @@ void server::show_cursor() {
     m_cursor_move_pending = false;
 
     damage_cursor();
-    printf("stlxdm: pointer %s\r\n",
-           m_cursor_on_hardware ? "on the display's hardware cursor" : "drawn into frames");
+
+    presenter* pres = main_presenter();
+    if (pres) {
+        printf("stlxdm: pointer %s of output %u\r\n",
+               m_cursor_on_hardware ? "on the display's hardware cursor" : "drawn into frames", pres->output());
+    }
 }
 
 void server::flush_cursor() {
@@ -264,8 +268,9 @@ void server::flush_cursor() {
 
     m_cursor_move_pending = false;
 
-    if (!m_presenter->move_cursor(m_cursor_x, m_cursor_y)) {
-        m_presenter->hide_cursor();
+    presenter* pres = main_presenter();
+    if (!pres->move_cursor(m_cursor_x, m_cursor_y)) {
+        pres->hide_cursor();
         m_cursor_on_hardware = false;
         m_cursor_picture = nullptr;
         damage_cursor();
@@ -273,7 +278,7 @@ void server::flush_cursor() {
 }
 
 /* After a failed cursor call the frames draw the pointer until a shape
- * change or a change of the primary output tries the hardware cursor */
+ * change or an output event tries the hardware cursor */
 void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
     if (x == m_cursor_x && y == m_cursor_y && shape == m_cursor_shape) {
         return;
@@ -303,17 +308,22 @@ void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
 /* Shows the pointer's shape on the hardware cursor, sending its picture
  * unless it shows already, or hides the cursor and returns false */
 bool server::show_hardware_cursor() {
+    presenter* pres = main_presenter();
+    if (!pres) {
+        return false;
+    }
+
     presenter::cursor_picture picture;
     bool has_picture = m_cursor.picture(m_cursor_shape, picture);
     bool showing = has_picture && picture.pixels == m_cursor_picture;
 
-    bool shown = has_picture && m_presenter->move_cursor(m_cursor_x, m_cursor_y);
+    bool shown = has_picture && pres->move_cursor(m_cursor_x, m_cursor_y);
     if (shown && !showing) {
-        shown = m_presenter->set_cursor(picture);
+        shown = pres->set_cursor(picture);
     }
 
     if (!shown) {
-        m_presenter->hide_cursor();
+        pres->hide_cursor();
     }
 
     m_cursor_picture = shown ? picture.pixels : nullptr;
@@ -502,18 +512,20 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
-    /* An active title drag owns the pointer until every button lifts.
-     * The title bar stays reachable between the bar and the dock. */
+    /* An active title drag owns the pointer until every button lifts,
+     * keeping the title bar's rows inside the main output's work area. */
     if (m_drag) {
         move_cursor(x, y, m_cursor_shape);
 
+        damage_list::rect work = m_layout.work_area(m_layout.main_output());
         int32_t want_y = y - m_drag_dy;
-        int32_t min_y = dm_panels::BAR_H + decor::TITLE_H;
+        int32_t min_y = work.y + decor::TITLE_H;
         if (want_y < min_y) {
             want_y = min_y;
         }
-        if (want_y > m_panels->dock_y()) {
-            want_y = m_panels->dock_y();
+
+        if (want_y > work.y + work.h) {
+            want_y = work.y + work.h;
         }
 
         int32_t dx = x - m_drag_dx - m_drag->x;
