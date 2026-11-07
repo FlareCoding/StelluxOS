@@ -1481,9 +1481,11 @@ src/common/sdk/nvidia/inc/nvtypes.h
     kernel/tests/graphics/nvidia_core_channel.test.cpp, the 64 bits of NVIDIA's
     pointers (NvP64), which those parameters' pControl takes, in rm.h and
     kernel/tests/graphics/nvidia_core_channel.test.cpp, and which an event
-    object's allocation parameters' data takes, in rm.h, and that NV_TRUE,
-    NVIDIA's value for true, is 1, in
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    object's allocation parameters' data takes, in rm.h, that NV_TRUE, NVIDIA's
+    value for true, is 1, in
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and NV_U32_MAX,
+    0xFFFFFFFF, in graphics_context.cpp and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/common/inc/gsp/gsp_error.h
@@ -2150,10 +2152,18 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER, a control of a
     subdevice, and the layout of its parameters, in rm.h, core_channel.cpp,
     cursor_channel.cpp, kernel/tests/graphics/nvidia_core_channel.test.cpp and
-    kernel/tests/graphics/nvidia_cursor_channel.test.cpp, and the command
+    kernel/tests/graphics/nvidia_cursor_channel.test.cpp, the command
     NV2080_CTRL_CMD_INTERNAL_INTR_GET_KERNEL_TABLE in
     kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp and
-    kernel/tests/graphics/nvidia_engines.test.cpp
+    kernel/tests/graphics/nvidia_engines.test.cpp, and the commands
+    NV2080_CTRL_CMD_INTERNAL_STATIC_KGR_GET_INFO, 0x20800A2A, and
+    NV2080_CTRL_CMD_INTERNAL_STATIC_KGR_GET_CONTEXT_BUFFERS_INFO, 0x20800A32,
+    controls of a subdevice, the layouts of their parameters, 3392 and 1600
+    bytes, and of their rows, NV2080_CTRL_INTERNAL_GR_MAX_ENGINES, 8, the rows
+    they hold, GR0's first, and
+    NV2080_CTRL_INTERNAL_ENGINE_CONTEXT_PROPERTIES_ENGINE_ID_COUNT, 0x19, the
+    buffers a row sizes, in rm.h, graphics_context.cpp and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/intr/engine_idx.h
@@ -2514,8 +2524,59 @@ src/nvidia/src/kernel/gpu/mem_mgr/arch/maxwell/mem_mgr_gm107.c
 src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080gr.h
     the size of the graphics capabilities table, which the static configuration
     holds ahead of its table of video memory regions, in gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    NV0080_CTRL_GR_INFO_MAX_SIZE, 0x35, the facts in a graphics engine's list,
+    and NV0080_CTRL_GR_INFO_INDEX_MAX_SUBCONTEXT_COUNT, 0x2C, the fact giving
+    the most subcontexts a channel group can hold, in rm.h and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2004-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080fifo.h
+    the positions of a graphics engine's context buffers in a row of their
+    sizes, NV0080_CTRL_FIFO_GET_ENGINE_CONTEXT_PROPERTIES_ENGINE_ID_GRAPHICS,
+    0x0, for its main buffer, and its suffixes _PATCH to _RTV_CB_GLOBAL, 0x10 to
+    0x14, _FECS_EVENT, 0x17, and _PRIV_ACCESS_MAP, 0x18, in rm.h and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2006-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gr/kernel_graphics.c
+    that a graphics engine's facts lie at the positions their indexes name, in
+    rm.h, graphics_context.cpp and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp, that a context
+    buffer sized NV_U32_MAX is one the chip lacks, in graphics_context.h,
+    graphics_context.cpp and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp, and that a main
+    buffer grows to a multiple of 4 KiB and then by a header of 4 KiB for each
+    subcontext, in graphics_context.h, graphics_context.cpp and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gr/kernel_graphics_context.c
+    that each graphics channel has a main and a patch buffer of its own and maps
+    the graphics engine's other context buffers into its address space, in
+    graphics_context.h
+    SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gr/arch/maxwell/kgraphics_gm200.c
+    that the graphics engine's bundle, page pool and attribute buffers and its
+    two register access maps are allocated once for every channel, both maps of
+    the size the register access map's row gives, in graphics_context.h
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gr/arch/pascal/kgraphics_gp100.c
+    that the FECS event buffer is allocated once for every channel, in
+    graphics_context.h
+    SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gr/arch/turing/kgraphics_tu102.c
+    that the RTV buffer is allocated once for every channel, in
+    graphics_context.h
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_kernel_graphics_nvoc.c
+    that GA102's graphics engine keeps a context header for each subcontext, in
+    graphics_context.h, graphics_context.cpp and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gpu.h
     the sizes of the GPU's ID, GPC, TPC and ZCULL information, which the static
@@ -4178,8 +4239,9 @@ kernel-open/nvidia-uvm/uvm_ampere_ce.c
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c,
-g_disp_inst_mem_nvoc.c, g_disp_objs_nvoc.c, rpc_global_enums.h, g_rpc_private.h
-and nvUnixVersion.h the package's COPYING, carries this permission notice:
+g_disp_inst_mem_nvoc.c, g_disp_objs_nvoc.c, g_kernel_graphics_nvoc.c,
+rpc_global_enums.h, g_rpc_private.h and nvUnixVersion.h the package's COPYING,
+carries this permission notice:
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),
