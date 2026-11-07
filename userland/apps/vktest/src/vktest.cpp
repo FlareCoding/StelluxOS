@@ -1,6 +1,8 @@
 // Tests the Vulkan library a Stellux program links, one stage per part of the driver. Every
 // check prints a PASS or FAIL line, and the program exits with 1 when any check failed.
 
+#include "vktest.h"
+
 #include <algorithm>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -23,7 +25,7 @@ struct gpu_node {
 static int g_checks = 0;
 static int g_failed_checks = 0;
 
-static void check(const char* name, bool passed) {
+void check(const char* name, bool passed) {
     printf("  %s: %s\n", passed ? "PASS" : "FAIL", name);
     g_checks++;
 
@@ -32,7 +34,7 @@ static void check(const char* name, bool passed) {
     }
 }
 
-static bool has_extension(const std::vector<VkExtensionProperties>& extensions, const char* name) {
+bool has_extension(const std::vector<VkExtensionProperties>& extensions, const char* name) {
     for (const VkExtensionProperties& extension : extensions) {
         if (strcmp(extension.extensionName, name) == 0) {
             return true;
@@ -40,12 +42,6 @@ static bool has_extension(const std::vector<VkExtensionProperties>& extensions, 
     }
 
     return false;
-}
-
-// The library exports only the global commands, so every other command comes from `vkGetInstanceProcAddr`
-template <typename Command>
-static Command find_command(VkInstance instance, const char* name) {
-    return reinterpret_cast<Command>(vkGetInstanceProcAddr(instance, name));
 }
 
 template <typename Command>
@@ -155,6 +151,47 @@ static VkPhysicalDevicePCIBusInfoPropertiesEXT read_pci_bus(
     get_properties(physical_device, &properties);
 
     return pci_bus;
+}
+
+// Opens the /dev/gpuN at `physical_device`'s PCI address, or returns -1
+static int open_gpu_file_of(VkInstance instance, VkPhysicalDevice physical_device) {
+    auto get_properties = find_command<PFN_vkGetPhysicalDeviceProperties2>(instance, "vkGetPhysicalDeviceProperties2");
+    if (!get_properties) {
+        return -1;
+    }
+
+    VkPhysicalDevicePCIBusInfoPropertiesEXT pci_bus = read_pci_bus(get_properties, physical_device);
+    for (uint32_t index = 0;; index++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/gpu%u", index);
+
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+            return -1;
+        }
+
+        gpu_info info = {};
+        if (ioctl(fd, GPU_GET_INFO, &info) == 0 && is_at_address(info, pci_bus)) {
+            return fd;
+        }
+
+        close(fd);
+    }
+}
+
+int restrict_to_read(VkInstance instance, VkPhysicalDevice physical_device, int descriptor) {
+    int gpu_fd = open_gpu_file_of(instance, physical_device);
+    if (gpu_fd < 0) {
+        return -1;
+    }
+
+    gpu_restrict_args restriction = {};
+    restriction.handle = descriptor;
+    restriction.rights = GPU_RIGHT_READ;
+    int result = ioctl(gpu_fd, GPU_HANDLE_RESTRICT, &restriction);
+    close(gpu_fd);
+
+    return result == 0 ? restriction.restricted : -1;
 }
 
 // NVK accepts every chip the kernel drives, so its physical devices are the NVIDIA GPUs with a 3D class
@@ -453,6 +490,15 @@ static void check_instance() {
     for (VkPhysicalDevice physical_device : physical_devices) {
         printf("vktest: physical device\n");
         check_physical_device(instance, physical_device, nodes);
+
+        printf("vktest: device\n");
+        check_device(instance, physical_device);
+
+        printf("vktest: memory\n");
+        check_memory(instance, physical_device);
+
+        printf("vktest: timeline\n");
+        check_timeline(instance, physical_device);
     }
 
     destroy_instance(instance, nullptr);
