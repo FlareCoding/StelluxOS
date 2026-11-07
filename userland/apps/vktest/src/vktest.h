@@ -136,4 +136,7 @@ void check_timeline(VkInstance instance, VkPhysicalDevice physical_device);
 // buffer of 1 MiB plus 4 KiB, the CPU reading each fill back
 void check_transfer(VkInstance instance, VkPhysicalDevice physical_device);
 
+// Dispatches a compute pipeline on `physical_device`'s general queue, the CPU reading the words it writes
+void check_compute(VkInstance instance, VkPhysicalDevice physical_device);
+
 #endif // VKTEST_H
