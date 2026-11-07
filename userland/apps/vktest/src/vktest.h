@@ -132,4 +132,8 @@ void check_memory(VkInstance instance, VkPhysicalDevice physical_device);
 // Signals, waits on and shares timeline semaphores on `physical_device`, from the CPU and from submissions
 void check_timeline(VkInstance instance, VkPhysicalDevice physical_device);
 
+// Fills buffers on `physical_device`'s transfer queue, whole ones on memory of every type, a range of one and a
+// buffer of 1 MiB plus 4 KiB, the CPU reading each fill back
+void check_transfer(VkInstance instance, VkPhysicalDevice physical_device);
+
 #endif // VKTEST_H

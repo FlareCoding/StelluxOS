@@ -499,6 +499,9 @@ static void check_instance() {
 
         printf("vktest: timeline\n");
         check_timeline(instance, physical_device);
+
+        printf("vktest: transfer\n");
+        check_transfer(instance, physical_device);
     }
 
     destroy_instance(instance, nullptr);
