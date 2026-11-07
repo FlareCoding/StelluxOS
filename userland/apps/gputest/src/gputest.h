@@ -70,6 +70,9 @@ bool is_presenting(void);
 // How many presents ended so far, on time or not
 uint64_t presents_ended(void);
 
+// While presenting, output 0's refresh period as start_presenting() read it, 0 when gfxfb reported no refresh rate
+uint64_t refresh_period_ns(void);
+
 // Stops presenting. Returns whether presents ended, each latching within GFXFB_PRESENT_TIMEOUT_NS of its call's return
 bool stop_presenting(void);
 

@@ -18,7 +18,8 @@ constexpr uint32_t BUFFER_COUNT   = 2;
 // Each present names one small region, so a device that copies what changed copies little
 constexpr uint32_t REGION_PIXELS = 64;
 
-constexpr uint64_t NS_PER_US = 1000;
+constexpr uint64_t NS_PER_US            = 1000;
+constexpr uint64_t MILLIHERTZ_PER_HERTZ = 1000;
 
 static int       gfxfb_fd = -1;
 static pthread_t presenter;
@@ -27,6 +28,7 @@ static bool      is_stopping = false;
 static uint64_t  ended = 0;
 static uint64_t  missed = 0;          // presents not seen to latch within their deadline, refused ones included
 static uint64_t  longest_call_ns = 0; // the longest GFXFB_PRESENT call, which can wait for the driver's batch lock
+static uint64_t  period_ns = 0;
 static uint32_t  handles[BUFFER_COUNT];
 
 // Reads events until a present's end, past any output event. Returns false when a read fails
@@ -86,6 +88,9 @@ bool start_presenting(void) {
     bool has_output = gfxfb_fd >= 0 && ioctl(gfxfb_fd, gfxfb::GFXFB_GET_OUTPUT, &output) == 0;
     bool is_lit = has_output && (output.flags & gfxfb::GFXFB_OUTPUT_LIT) != 0;
 
+    uint64_t refresh_millihertz = output.current.refresh_millihertz;
+    period_ns = refresh_millihertz != 0 ? NS_PER_SEC * MILLIHERTZ_PER_HERTZ / refresh_millihertz : 0;
+
     bool has_buffers = is_lit;
     for (uint32_t i = 0; i < BUFFER_COUNT && has_buffers; i++) {
         gfxfb::gfxfb_buffer_args args = {};
@@ -112,6 +117,10 @@ bool is_presenting(void) {
 
 uint64_t presents_ended(void) {
     return __atomic_load_n(&ended, __ATOMIC_ACQUIRE);
+}
+
+uint64_t refresh_period_ns(void) {
+    return period_ns;
 }
 
 bool stop_presenting(void) {
