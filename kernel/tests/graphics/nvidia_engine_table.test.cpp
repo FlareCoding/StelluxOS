@@ -171,6 +171,42 @@ TEST(nvidia_engine_table, an_engine_keeps_its_runlists_channel_ram_from_word_14)
     EXPECT_EQ(copy->channel_ram, 0x416000u);
 }
 
+// The 3080's graphics engine runs on runlist 0
+TEST(nvidia_engine_table, rtx_3080_table_gives_gr0_to_graphics_channels) {
+    table_firmware fw;
+    fw.engines = RTX_3080_ENGINES;
+    fw.engine_count = sizeof(RTX_3080_ENGINES) / sizeof(RTX_3080_ENGINES[0]);
+    engine_table table;
+
+    ASSERT_EQ(table.read(fw, TEST_SUBDEVICE), OK);
+
+    const engine_info* graphics = table.graphics_engine();
+    ASSERT_NE(graphics, nullptr);
+    EXPECT_EQ(graphics->type, GR0);
+    EXPECT_EQ(graphics->runlist, 0u);
+}
+
+// A table without the graphics engine gives graphics channels no engine, and every copy engine counts as asynchronous
+TEST(nvidia_engine_table, table_without_gr0_gives_graphics_channels_nothing) {
+    static constexpr engine_info engines[] = {
+        {.type = CE0, .runlist = 0, .channel_ram = 0},
+        {.type = CE2, .runlist = 1, .channel_ram = 0},
+    };
+
+    table_firmware fw;
+    fw.engines = engines;
+    fw.engine_count = 2;
+    engine_table table;
+
+    ASSERT_EQ(table.read(fw, TEST_SUBDEVICE), OK);
+
+    EXPECT_EQ(table.graphics_engine(), nullptr);
+
+    const engine_info* async_copy = table.first_async_copy_engine();
+    ASSERT_NE(async_copy, nullptr);
+    EXPECT_EQ(async_copy->type, CE0);
+}
+
 // A table of 40 engines takes two pages, the second asked from entry 32, and keeps all 40, the last of them from the
 // second page
 TEST(nvidia_engine_table, second_page_starts_at_entry_32) {
@@ -301,4 +337,5 @@ TEST(nvidia_engine_table, failed_control_leaves_the_table_empty) {
 
     EXPECT_EQ(table.count(), 0u);
     EXPECT_EQ(table.first_async_copy_engine(), nullptr);
+    EXPECT_EQ(table.graphics_engine(), nullptr);
 }

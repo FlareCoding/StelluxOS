@@ -30,6 +30,9 @@ constexpr chip_info CHIP_TABLE[] = {
         .interrupt_leaf_count = 8,
         .channel_class = 0xC56F,
         .copy_class = 0xC7B5,
+        .graphics = {
+            .three_d_class = 0xC797,
+        },
         .display = {
             .head_count = 4,
             .window_count = 8,

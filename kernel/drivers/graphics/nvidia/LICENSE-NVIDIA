@@ -3986,6 +3986,16 @@ src/common/sdk/nvidia/inc/class/clc7b5.h
     userland/apps/gputest/src/gputest.c
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
+src/common/sdk/nvidia/inc/class/clc797.h
+    the class number AMPERE_B, 0xC797, which chip.cpp gives GA102's 3D objects,
+    in chip.cpp and kernel/tests/graphics/nvidia.test.cpp
+    Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+
+src/nvidia/generated/g_gpu_class_list.c
+    that GA102's class list places AMPERE_B on the graphics engine GR0, in
+    kernel/tests/graphics/nvidia.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/inc/kernel/gpu/mem_mgr/channel_utils.h
     RM_SUBCHANNEL, 0, the subchannel NVIDIA's own copy channel sends its methods
     on, in channel_methods.cpp
