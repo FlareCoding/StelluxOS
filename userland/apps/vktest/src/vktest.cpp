@@ -12,6 +12,7 @@
 #include <stlx/gpu_abi.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <thread>
 #include <time.h>
 #include <unistd.h>
@@ -250,6 +251,41 @@ int restrict_to_read(VkInstance instance, VkPhysicalDevice physical_device, int 
     close(gpu_fd);
 
     return result == 0 ? restriction.restricted : -1;
+}
+
+// The `GPU_TIMELINE_QUERY` reports of the timelines reading `value` among the descriptors below the soft
+// `RLIMIT_NOFILE` limit, each query made through `gpu_fd`
+static std::vector<gpu_timeline_args> query_timelines_at(int gpu_fd, uint64_t value) {
+    std::vector<gpu_timeline_args> found;
+    rlimit descriptor_limit = {};
+    if (getrlimit(RLIMIT_NOFILE, &descriptor_limit) != 0) {
+        return found;
+    }
+
+    for (rlim_t descriptor = 0; descriptor < descriptor_limit.rlim_cur; descriptor++) {
+        gpu_timeline_args query = {};
+        query.timeline = static_cast<int32_t>(descriptor);
+        if (ioctl(gpu_fd, GPU_TIMELINE_QUERY, &query) == 0 && query.value == value) {
+            found.push_back(query);
+        }
+    }
+
+    return found;
+}
+
+bool replace_timeline_descriptor(VkInstance instance, VkPhysicalDevice physical_device, uint64_t value) {
+    int gpu_fd = open_gpu_file_of(instance, physical_device);
+    if (gpu_fd < 0) {
+        return false;
+    }
+
+    std::vector<gpu_timeline_args> found = query_timelines_at(gpu_fd, value);
+
+    // Closing the descriptor instead would free its number for a later one, which the semaphore's destroy would close
+    bool is_replaced = !found.empty() && dup2(gpu_fd, found[0].timeline) == found[0].timeline;
+    close(gpu_fd);
+
+    return is_replaced;
 }
 
 // NVK accepts every chip the kernel drives, so its physical devices are the NVIDIA GPUs with a 3D class
@@ -569,6 +605,9 @@ static void check_instance() {
 
         printf("vktest: queue\n");
         check_queue(instance, physical_device);
+
+        printf("vktest: loss\n");
+        check_loss(instance, physical_device);
     }
 
     destroy_instance(instance, nullptr);
