@@ -616,7 +616,7 @@ void check_timeline(VkInstance instance, VkPhysicalDevice physical_device) {
         VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
     };
 
-    stage.device = create_device(instance, physical_device, extensions, &features);
+    stage.device = create_device(instance, physical_device, {GENERAL_FAMILY}, extensions, &features);
     check("a device with timeline semaphores and their descriptors is created", stage.device != VK_NULL_HANDLE);
     if (stage.device == VK_NULL_HANDLE) {
         return;
