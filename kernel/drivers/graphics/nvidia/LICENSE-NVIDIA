@@ -1,12 +1,15 @@
 Some definitions in this directory, in the driver's tests in
 kernel/tests/graphics and in the card test program userland/apps/gputest are
 re-declared from NVIDIA's open GPU kernel modules at release 535.183.01
-(https://github.com/NVIDIA/open-gpu-kernel-modules), and each file holding one
-says so in its first line. The EDID parser (kernel/drivers/graphics/edid.h and
-edid.cpp), its tests (kernel/tests/graphics/edid.test.cpp) and the GPU core's
-ABI header (kernel/gpu/gpu_abi.h) restate rules and layouts from them too. Below
-are the files of the open kernel modules these definitions, rules and layouts
-come from, what each gives, and its copyright line.
+(https://github.com/NVIDIA/open-gpu-kernel-modules), and some of the card test
+program's from NVIDIA's open GPU documentation at commit
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880
+(https://github.com/NVIDIA/open-gpu-doc). Each file holding one says so in its
+first line. The EDID parser (kernel/drivers/graphics/edid.h and edid.cpp), its
+tests (kernel/tests/graphics/edid.test.cpp) and the GPU core's ABI header
+(kernel/gpu/gpu_abi.h) restate rules and layouts from them too. Below are the
+files of the open kernel modules and of the documentation these definitions,
+rules and layouts come from, what each gives, and its copyright line.
 
 src/common/modeset/timing/nvt_edid.c
     the polarities a timing descriptor's sync kind does not give (horizontal
@@ -2182,8 +2185,11 @@ src/nvidia/inc/kernel/gpu/intr/engine_idx.h
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that its engines are
     those NVIDIA's interrupt code serves, in rm.h, the first copy engine's
     number MC_ENGINE_IDX_CE0, 15, copy engine n taking 15 plus n, in rm.h and
-    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp, and
-    MC_ENGINE_IDX_CE2, 17, in kernel/tests/graphics/nvidia_engines.test.cpp
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp,
+    MC_ENGINE_IDX_CE2, 17, in kernel/tests/graphics/nvidia_engines.test.cpp, and
+    the graphics engine's number MC_ENGINE_IDX_GR0, 82, in rm.h,
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/intr/intr.c
@@ -2587,8 +2593,9 @@ src/nvidia/src/kernel/gpu/gr/kernel_graphics_object.c
     client and handle, and its main and patch buffers with the bundle, page
     pool, attribute, RTV, FECS event and register access map buffers, and that
     the golden context's promotion initializes the FECS event buffer and both
-    register access maps too, in rm.h, graphics_context.h, graphics_context.cpp
-    and kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    register access maps too, in rm.h, graphics_context.h, graphics_context.cpp,
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gr/arch/maxwell/kgraphics_gm200.c
@@ -2612,8 +2619,8 @@ src/nvidia/generated/g_kernel_graphics_nvoc.c
     graphics_context.h, graphics_context.cpp and
     kernel/tests/graphics/nvidia_graphics_context.test.cpp, and that it makes
     its context buffers GPU-privileged, in graphics_context.h,
-    graphics_context.cpp and
-    kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    graphics_context.cpp, kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    and kernel/tests/graphics/nvidia_engines.test.cpp
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gpu.h
     the sizes of the GPU's ID, GPC, TPC and ZCULL information, which the static
@@ -2662,12 +2669,13 @@ src/nvidia/inc/kernel/gpu/gpu_engine_type.h
     memory regions, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the engine types
     RM_ENGINE_TYPE_GR0, 0x1, and RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY9,
-    0x9 to 0x12, in rm.h, RM_ENGINE_TYPE_GR0 and RM_ENGINE_TYPE_COPY2 in
+    0x9 to 0x12, in rm.h, RM_ENGINE_TYPE_GR0, RM_ENGINE_TYPE_COPY2 and
+    RM_ENGINE_TYPE_NVDEC0, 0x1D, in
     kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp,
     RM_ENGINE_TYPE_GR0 and RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY2 in
     kernel/tests/graphics/nvidia_engines.test.cpp, RM_ENGINE_TYPE_GR0,
-    RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY4 and RM_ENGINE_TYPE_NVDEC0,
-    0x1D, in kernel/tests/graphics/nvidia_engine_table.test.cpp, and
+    RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY4 and RM_ENGINE_TYPE_NVDEC0 in
+    kernel/tests/graphics/nvidia_engine_table.test.cpp, and
     RM_ENGINE_TYPE_GR0 in kernel/tests/graphics/nvidia_graphics_context.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -4036,7 +4044,8 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     with MEM_OP_C's SYS_MEMBAR type 0 and MEM_OP_D's OPERATION MEMBAR, 5, in
     bits 31:27, SEM_ADDR_LO to SEM_EXECUTE from 0x5C, with SEM_EXECUTE's
     OPERATION RELEASE, 1, RELEASE_WFI DIS and PAYLOAD_SIZE 32BIT, and WFI, 0x78,
-    in channel_methods.h, channel_methods.cpp and
+    with SCOPE in bit 0, CURRENT_SCG_TYPE 0 and ALL 1, in channel_methods.h,
+    channel_methods.cpp and
     kernel/tests/graphics/nvidia_channel_methods.test.cpp, that an entry's FETCH
     UNCONDITIONAL, LEVEL MAIN and SYNC PROCEED are each 0, in
     kernel/tests/graphics/nvidia_channel_methods.test.cpp, the class number
@@ -4047,16 +4056,17 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     SEM_ADDR_LO's header for its five values, in
     kernel/tests/graphics/nvidia_copy_channel.test.cpp, a GPFIFO entry's fields,
     a push buffer header's fields, the methods NON_STALL_INTERRUPT,
-    SEM_PAYLOAD_LO, 0x64, and SEM_EXECUTE, and the words of a release holding
-    the values of SEM_ADDR_LO, SEM_ADDR_HI and SEM_PAYLOAD_LO, in
+    SEM_PAYLOAD_LO, 0x64, and SEM_EXECUTE, WFI's SCOPE CURRENT_SCG_TYPE and ALL,
+    and the words of a release holding the values of WFI, SEM_ADDR_LO,
+    SEM_ADDR_HI and SEM_PAYLOAD_LO, in
     kernel/tests/graphics/nvidia_engines.test.cpp, and a push buffer header's
-    fields, DMA_SEC_OP IMMD_DATA_METHOD, 4, whose word holds its method's value
-    in bits 28:16, SET_OBJECT, SEMAPHOREA to SEMAPHORED from 0x10 (SEMAPHORED's
-    OPERATION ACQUIRE, 1, in bits 4:0 and ACQUIRE_SWITCH ENABLED in bit 12),
-    NON_STALL_INTERRUPT, MEM_OP_A to MEM_OP_D (MEM_OP_C's MEMBAR_TYPE
-    SYS_MEMBAR, 0, and TLB_INVALIDATE_PDB ALL, 1, in bit 0, and MEM_OP_D's
-    OPERATION MEMBAR, 5, MMU_TLB_INVALIDATE, 9, and L2_SYSMEM_INVALIDATE, 0xE,
-    in bits 31:27) and SET_REFERENCE, 0x50, in
+    fields, DMA_SEC_OP INC_METHOD, NON_INC_METHOD, 3, and IMMD_DATA_METHOD, 4,
+    whose word holds its method's value in bits 28:16, SET_OBJECT, SEMAPHOREA to
+    SEMAPHORED from 0x10 (SEMAPHORED's OPERATION ACQUIRE, 1, in bits 4:0 and
+    ACQUIRE_SWITCH ENABLED in bit 12), NON_STALL_INTERRUPT, MEM_OP_A to MEM_OP_D
+    (MEM_OP_C's MEMBAR_TYPE SYS_MEMBAR, 0, and TLB_INVALIDATE_PDB ALL, 1, in bit
+    0, and MEM_OP_D's OPERATION MEMBAR, 5, MMU_TLB_INVALIDATE, 9, and
+    L2_SYSMEM_INVALIDATE, 0xE, in bits 31:27) and SET_REFERENCE, 0x50, in
     userland/apps/gputest/src/gputest.c
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -4072,8 +4082,9 @@ src/common/sdk/nvidia/inc/class/clc7b5.h
     the class number AMPERE_DMA_COPY_B, 0xC7B5, which chip.cpp gives GA102's
     copy objects, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
     kernel/tests/graphics/nvidia_channel_methods.test.cpp,
-    kernel/tests/graphics/nvidia_channel.test.cpp and
-    kernel/tests/graphics/nvidia_copy_channel.test.cpp, its methods
+    kernel/tests/graphics/nvidia_channel.test.cpp,
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp, its methods
     SET_DST_PHYS_MODE, 0x264, with TARGET LOCAL_FB, 0, LAUNCH_DMA, 0x300, with
     DATA_TRANSFER_TYPE NON_PIPELINED, 2, in bits 1:0, FLUSH_ENABLE in bit 2,
     SRC_MEMORY_LAYOUT and DST_MEMORY_LAYOUT PITCH in bits 7 and 8, REMAP_ENABLE
@@ -4100,16 +4111,52 @@ src/common/sdk/nvidia/inc/class/clc797.h
     the class number AMPERE_B, 0xC797, which chip.cpp gives GA102's 3D objects,
     in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
     kernel/tests/graphics/nvidia_channel.test.cpp and
-    kernel/tests/graphics/nvidia_engines.test.cpp
+    kernel/tests/graphics/nvidia_engines.test.cpp, and the methods
+    SET_COLOR_TARGET_A, 0x800, with the eight after it for color target 0,
+    SET_CLEAR_RECT_HORIZONTAL, 0xD6C, and _VERTICAL, SET_COLOR_CLEAR_VALUE,
+    0xD80, with the three after it, SET_WINDOW_OFFSET_X, 0xDF8, and _Y,
+    SET_SURFACE_CLIP_HORIZONTAL, 0xFF4, and _VERTICAL,
+    SET_CLEAR_SURFACE_CONTROL, 0x10F8, with USE_CLEAR_RECT in bit 4,
+    SET_CT_SELECT, 0x121C, with TARGET_COUNT in bits 3:0, SET_ZT_SELECT, 0x1538,
+    SET_RENDER_ENABLE_C, 0x1558, with MODE TRUE, 1, CLEAR_SURFACE, 0x19D0, with
+    R, G, B and A enabled in bits 2 to 5, SET_COLOR_COMPRESSION, 0x19E0,
+    SET_CT_WRITE, 0x1A00, with R, G, B and A enabled in bits 0, 4, 8 and 12,
+    SET_COLOR_TARGET_FORMAT A8B8G8R8, 0xD5, and SET_COLOR_TARGET_MEMORY
+    LAYOUT_PITCH in bit 12, in userland/apps/gputest/src/gputest.c
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc7c0.h
-    the class number AMPERE_COMPUTE_B, 0xC7C0, in
-    kernel/tests/graphics/nvidia_channel.test.cpp
+    the class number AMPERE_COMPUTE_B, 0xC7C0, which chip.cpp gives GA102's
+    compute objects, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp, and the methods
+    SET_SHADER_SHARED_MEMORY_WINDOW_A, 0x2A0, and _B, SEND_PCAS_A, 0x2B4,
+    holding a QMD's address shifted right by 8, SEND_SIGNALING_PCAS2_B, 0x2C0,
+    with PCAS_ACTION INVALIDATE_COPY_SCHEDULE, 3, and
+    SET_SHADER_LOCAL_MEMORY_WINDOW_A, 0x7B0, and _B, in
+    userland/apps/gputest/src/gputest.c
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/common/sdk/nvidia/inc/class/cl902d.h
+    the class number FERMI_TWOD_A, 0x902D, of GA102's 2D objects, in chip.cpp
+    and kernel/tests/graphics/nvidia.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cla140.h
+    the class number KEPLER_INLINE_TO_MEMORY_B, 0xA140, of GA102's
+    inline-to-memory objects, in chip.cpp and
+    kernel/tests/graphics/nvidia.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cla06fsubch.h
+    NVA06F_SUBCHANNEL_3D, 0, NVA06F_SUBCHANNEL_COMPUTE, 1, and
+    NVA06F_SUBCHANNEL_COPY_ENGINE, 4, the subchannels of a graphics channel's
+    3D, compute and copy objects, in userland/apps/gputest/src/gputest.c
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/generated/g_gpu_class_list.c
-    that GA102's class list places AMPERE_B on the graphics engine GR0, in
+    that GA102's class list places AMPERE_B, AMPERE_COMPUTE_B, FERMI_TWOD_A and
+    KEPLER_INLINE_TO_MEMORY_B on the graphics engine GR0, in
     kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -4231,8 +4278,9 @@ src/common/sdk/nvidia/inc/class/cla06c.h
 src/common/sdk/nvidia/inc/ctrl/ctrla06f/ctrla06fgpfifo.h
     the commands NVA06F_CTRL_CMD_BIND and NVA06F_CTRL_CMD_GPFIFO_SCHEDULE,
     controls of a channel, and the layouts of their parameters, in rm.h, and the
-    commands in kernel/tests/graphics/nvidia_channel.test.cpp and
-    kernel/tests/graphics/nvidia_copy_channel.test.cpp
+    commands in kernel/tests/graphics/nvidia_channel.test.cpp,
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2007-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080ce.h
@@ -4317,6 +4365,18 @@ kernel-open/nvidia-uvm/uvm_ampere_ce.c
     that copies and fills on AMPERE_DMA_COPY_B launch with DISABLE_PLC TRUE, in
     userland/apps/gputest/src/gputest.c
     Copyright (c) 2018-2022 NVIDIA Corporation
+
+classes/compute/clc6c0qmd.h (NVIDIA's open GPU documentation)
+    the fields of QMD version 3.0, NVC6C0_QMDV03_00, by the bits they take:
+    SM_GLOBAL_CACHING_ENABLE, API_VISIBLE_CALL_LIMIT with NO_CHECK, 1,
+    CTA_RASTER_WIDTH, _HEIGHT and _DEPTH, MIN_SM_CONFIG_SHARED_MEM_SIZE,
+    MAX_SM_CONFIG_SHARED_MEM_SIZE, QMD_MAJOR_VERSION, CTA_THREAD_DIMENSION0 to
+    CTA_THREAD_DIMENSION2, REGISTER_COUNT_V, TARGET_SM_CONFIG_SHARED_MEM_SIZE,
+    RELEASE0_ADDRESS_LOWER and _UPPER, RELEASE0_MEMBAR_TYPE with FE_SYSMEMBAR,
+    1, RELEASE0_ENABLE, RELEASE0_STRUCTURE_SIZE with SEMAPHORE_ONE_WORD, 1,
+    RELEASE0_PAYLOAD_LOWER, and PROGRAM_ADDRESS_LOWER and _UPPER, in
+    userland/apps/gputest/src/gputest.c
+    Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 Each of these files, or for g_kernel_gsp_nvoc.c, g_kernel_bif_nvoc.c,
 g_kernel_falcon_nvoc.c, g_gpu_nvoc.c, g_kern_gmmu_nvoc.c,

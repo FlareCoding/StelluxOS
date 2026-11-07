@@ -43,6 +43,13 @@ enum class gpfifo_fetch : uint8_t {
     after_earlier, // once the host processed the entries before it
 };
 
+// Which pipes of the engine (a graphics engine has a 3D and a compute pipe) a release's wait for idle covers, as
+// NVIDIA's NVC56F_WFI_SCOPE values say
+enum class idle_scope : uint32_t {
+    current_pipe = 0, // NVC56F_WFI_SCOPE_CURRENT_SCG_TYPE, the work of the type the engine runs now
+    every_pipe = 1,   // NVC56F_WFI_SCOPE_ALL, a graphics engine's 3D and compute work alike
+};
+
 /**
  * @brief The GPFIFO entry running the `word_count` method words at
  * `gpu_address` in the channel's address space, fetched as `fetch` says.
@@ -64,14 +71,14 @@ void write_fill(uint32_t* words, uint32_t copy_class, uint64_t offset, uint64_t 
 
 /**
  * @brief Write to `words` the `RELEASE_WORDS` method words of a release
- * sequence: wait for the engine to idle, make earlier writes visible, write
- * `payload` to the 4-byte semaphore at `semaphore_address` in the channel's
- * address space, make it visible, then raise the channel's nonstall
- * interrupt.
+ * sequence: wait for the engine to idle over `scope`, make earlier writes
+ * visible, write `payload` to the 4-byte semaphore at `semaphore_address` in
+ * the channel's address space, make it visible, then raise the channel's
+ * nonstall interrupt.
  * @note `semaphore_address` must be 4-byte aligned and below 2^40, since the
  * method has no bits for more.
  */
-void write_release(uint32_t* words, uint64_t semaphore_address, uint32_t payload);
+void write_release(uint32_t* words, uint64_t semaphore_address, uint32_t payload, idle_scope scope);
 
 // The token whose write to the doorbell register has the GPU fetch new entries of channel `channel_id` on `runlist`
 uint32_t doorbell_token(uint32_t runlist, uint32_t channel_id);

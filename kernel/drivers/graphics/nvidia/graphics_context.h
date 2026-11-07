@@ -78,10 +78,17 @@ int32_t read_graphics_buffer_layouts(firmware& fw, graphics_buffer_layouts& layo
 uint64_t place_global_buffers(const graphics_buffer_layouts& layouts, uint64_t base, global_context_buffers& global);
 
 /**
- * @brief Give `own` its addresses from `start` on, the main buffer first, each
- * at a multiple of its layout's alignment and of 4 KiB.
+ * @brief Give `own` the addresses of queue slot `slot`'s own buffers, the main
+ * buffer first. The slots' buffers follow one another from `start`, each slot
+ * taking the same span, so every buffer lies at a multiple of its alignment and
+ * of 4 KiB.
  */
-void place_own_buffers(const graphics_buffer_layouts& layouts, uint64_t start, channel_context_buffers& own);
+void place_own_buffers(
+    const graphics_buffer_layouts& layouts,
+    uint64_t start,
+    uint32_t slot,
+    channel_context_buffers& own
+);
 
 /**
  * @brief Map every buffer of `global` but the unrestricted map into `tables`
@@ -102,9 +109,9 @@ int32_t map_own_buffers(context_page_tables& tables, const channel_context_buffe
 /**
  * @brief Hand the firmware, through `fw`'s control on `subdevice`, the context
  * buffers of graphics channel `channel` as `map_global_buffers` and
- * `map_own_buffers` map them, `own`, the FECS event buffer and both register
- * access maps initialized, as the GPU's first promotion must. Every
- * initialized buffer must be zero.
+ * `map_own_buffers` map them: `own` initialized, and with `initializes_global`
+ * the FECS event buffer and both register access maps too, as the GPU's first
+ * promotion must. Every initialized buffer must be zero.
  * @return `OK`, or the firmware's error, logged.
  */
 int32_t promote_graphics_context(
@@ -112,7 +119,8 @@ int32_t promote_graphics_context(
     rm::handle subdevice,
     rm::handle channel,
     const global_context_buffers& global,
-    const channel_context_buffers& own
+    const channel_context_buffers& own,
+    bool initializes_global
 );
 
 } // namespace drivers::nvidia

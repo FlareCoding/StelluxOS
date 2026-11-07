@@ -84,6 +84,8 @@ struct backend_space : gpu::space {
     dma::buffer     semaphores = {};     // a progress semaphore per queue slot, allocated for the first queue
     uint32_t        queue_slots = 0;     // a bit per slot a queue holds, each a semaphore and a window for its rings
     space_operation task_operation = {}; // the creation, then the destroy
+
+    bool are_global_buffers_mapped = false; // by the first graphics queue to map them
 };
 
 // A queue's work on the driver task, kept in the queue so its stop and destroy allocate nothing
@@ -111,11 +113,14 @@ struct backend_queue : gpu::queue {
 
     channel         user_channel;
     backend_space*  space = nullptr;
+    uint32_t        kind = GPU_QUEUE_COPY;
     dma::buffer     push_buffer = {};       // a release sequence per submission the queue may hold, and one more
-    uint32_t        slot = 0;               // its semaphore and window in the space
-    uint32_t        channel_id = 0;         // on the copy engine's runlist
+    uint32_t        slot = 0;               // its semaphore, its window and a graphics queue's own buffers in the space
+    uint32_t        channel_id = 0;         // on its engine's runlist
     queue_operation task_operation = {};    // the creation, then the stop
     queue_operation destroy_operation = {}; // the destroy, kept apart from the stop's, which may still be queued
+
+    channel_context_buffers own_buffers = {}; // a graphics queue's, each range empty until allocated
 
     gpu::core_queue*       core = nullptr;
     list::node             link;              // on the handler's list until its stop or the failure's report
@@ -128,10 +133,10 @@ using backend_queue_list = list::head<backend_queue, &backend_queue::link>;
 /**
  * The GPU's engines as the driver task brings them up once `attach()` has
  * returned `OK`: the engine table, the kernel's copy channel on the first
- * asynchronous copy engine, that engine's nonstall vector, and the graphics
- * engine's global context buffers and golden context (the state every graphics
- * channel starts from). The driver object holds one for its life, and once
- * `register_gpu` succeeds the GPU core drives the engines as the card's
+ * asynchronous copy engine, the graphics engine's global context buffers and
+ * golden context (the state every graphics channel starts from), and both
+ * engines' nonstall vectors. The driver object holds one for its life, and
+ * once `register_gpu` succeeds the GPU core drives the engines as the card's
  * `gpu::backend`.
  *
  * `bring_up` waits for the firmware and for video memory, so the driver task
@@ -176,14 +181,14 @@ public:
     int32_t bring_up(registers& bar0, uint64_t bar0_bytes, const dma::device_profile& card, const chip_info& chip);
 
     /**
-     * @brief Allocate the graphics engine's global context buffers and capture
-     * its golden context. The driver task must call it once, after `bring_up`
-     * returned `OK` and before `register_gpu`.
-     * @return `OK`, `ERR_BAD_STATE` when the engine table lists no graphics
-     * engine or no channel id is free, or the failing step's error, each
-     * logged. An error leaves `bring_up`'s engines up and gives back the
-     * context buffers but those the firmware or the GPU may still reach, kept
-     * for good.
+     * @brief Allocate the graphics engine's global context buffers, capture its
+     * golden context and enable its nonstall vector. The driver task must call
+     * it once, after `bring_up` returned `OK` and before `register_gpu`.
+     * @return `OK`, `ERR_BAD_STATE` without a graphics engine, a copy engine on
+     * its runlist, the graphics engine's channel RAM aligned inside BAR0 or a
+     * free channel id, or the failing step's error, each logged. An error
+     * leaves `bring_up`'s engines up and gives back the context buffers but
+     * those the firmware or the GPU may still reach, kept for good.
      */
     int32_t bring_up_graphics();
 
@@ -250,12 +255,13 @@ public:
     void run(gpu::queue* q, uint64_t sequence, const void* commands, size_t size) override;
 
     /**
-     * @brief When the copy engine's nonstall vector is pending, clear it, have
-     * the copy channel read its semaphore, and report to the GPU core each
+     * @brief Clear each enabled nonstall vector that is pending, the copy
+     * engine's and the graphics engine's, then have the copy channel read its
+     * semaphore when the copy engine's was, and report to the GPU core each
      * listed queue's last finished submission, from the card's interrupt
-     * handler. Does nothing before `bring_up` creates the copy channel or once
-     * the vector is masked. Takes the copy channel's and the queue list's
-     * spinlocks, calls `gpu::progress` under the list's, and never sleeps.
+     * handler. Does nothing while neither vector is enabled and pending. Takes
+     * the copy channel's and the queue list's spinlocks, calls `gpu::progress`
+     * under the list's, and never sleeps.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void service_interrupt(registers& bar0);
@@ -289,8 +295,12 @@ private:
     // Has the copy channel zero `range`, in as few fills as their size limit allows
     int32_t zero_video_memory(const vram_range& range);
 
-    // Allocates and zeroes `buffer`'s video memory as `layout` sizes it, keeping the memory for good after a timeout
+    // Allocates and zeroes `buffer`'s video memory as `layout` sizes it, setting its range only on success and keeping
+    // the memory for good after a timeout
     int32_t allocate_context_buffer(const context_buffer_layout& layout, context_buffer& buffer);
+
+    // Allocates `buffer` for bring-up as `allocate_context_buffer` does, logging every failure
+    int32_t allocate_bring_up_buffer(const context_buffer_layout& layout, context_buffer& buffer);
 
     // Captures the golden context on a channel of `graphics`'s runlist in an address space of its own, setting
     // `is_reachable` when an error leaves the firmware or the GPU able to reach the global buffers
@@ -304,7 +314,7 @@ private:
     void report_failure();
 
     // The driver task's half of `report_failure()`: has the firmware free the user channels unless the GPU failed,
-    // masks the copy engine's vector, then empties the handler's list before `gpu::device_failed`
+    // masks both engines' vectors, then empties the handler's list before `gpu::device_failed`
     static void report_failure_on_task(operation& op);
 
     // Has the firmware free each listed queue's channel, keeping its memory, until the GPU failed
@@ -333,14 +343,26 @@ private:
     static void stop_queue_on_task(operation& op);
     static void destroy_queue_on_task(operation& op);
 
-    // Creates `queue`'s channel and push buffer in its space, on the driver task
+    // Creates `queue`'s channel and push buffer in its space on the driver task, giving back what it holds on a failure
+    // unless the firmware or the GPU may still reach it
     int32_t start_queue(backend_queue& queue);
+
+    // Maps the queue's own context buffers in its slot, after the global ones unless its space maps them already, then
+    // creates its channel on the graphics engine's runlist, promoted, with its 3D, compute and copy objects
+    int32_t start_graphics_channel(backend_queue& queue);
+
+    // Allocates and zeroes a graphics queue's own context buffers, failing the device when a zeroing hangs and giving
+    // back a zeroed main buffer on a failure
+    int32_t allocate_own_buffers(backend_queue& queue);
+
+    // Unmaps and gives back a queue's own context buffers, returning false when the GPU may still reach them
+    bool release_own_buffers(backend_queue& queue);
 
     // Maps `space`'s semaphores writable, allocating their page for the space's first queue
     int32_t map_semaphores(backend_space& space);
 
-    // Gives back the push buffer, slot and id of a queue whose channel was not created or was destroyed, unmapping the
-    // push buffer first when `is_mapped`, unless the firmware or the GPU may still reach them
+    // Gives back the push buffer, own context buffers, slot and id of a queue left without a channel, unmapping the
+    // push buffer first when `is_mapped`, unless the GPU failed or the firmware or the GPU may still reach them
     void release_queue(backend_queue& queue, bool is_mapped);
 
     // Takes the lowest id free above the kernel's copy channel's in the id space all runlists share, or returns false
@@ -355,6 +377,7 @@ private:
     engine_table       m_table;
 
     registers           m_bar0{0};                          // the card's registers, set by `bring_up`
+    uint64_t            m_bar0_bytes = 0;                   // how many bytes of BAR0 `m_bar0` maps, set by `bring_up`
     const chip_info*    m_chip = nullptr;                   // set by `bring_up`
     dma::device_profile m_card = dma::uncached_profile(32); // replaced by the card's in `bring_up`
     card_identity       m_identity = {};                    // set by `register_gpu`
@@ -375,8 +398,11 @@ private:
     uint32_t           m_copy_vector = 0;
     sync::atomic<bool> m_is_copy_vector_on{false}; // stored with release once the channel exists, loaded with acquire
 
+    uint32_t           m_graphics_vector = 0;
+    sync::atomic<bool> m_is_graphics_vector_on{false}; // stored with release after the capture, loaded with acquire
+
     // The graphics engine's context buffer layouts, its global buffers, kept for good once the golden context is
-    // captured, and where the golden channel's own buffers map, all set by `bring_up_graphics`
+    // captured, and where queue slot 0's own buffers map, all set by `bring_up_graphics`
     graphics_buffer_layouts m_graphics_layouts = {};
     global_context_buffers  m_global_buffers = {};
     uint64_t                m_own_buffers_start = 0;

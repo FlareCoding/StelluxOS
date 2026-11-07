@@ -204,8 +204,22 @@ uint64_t place_global_buffers(const graphics_buffer_layouts& layouts, uint64_t b
     return next;
 }
 
-void place_own_buffers(const graphics_buffer_layouts& layouts, uint64_t start, channel_context_buffers& own) {
-    uint64_t next = place(start, layouts.main.bytes, layouts.main.alignment, own.main);
+void place_own_buffers(
+    const graphics_buffer_layouts& layouts,
+    uint64_t start,
+    uint32_t slot,
+    channel_context_buffers& own
+) {
+    uint64_t alignment = layouts.main.alignment > SMALL_PAGE_BYTES ? layouts.main.alignment : SMALL_PAGE_BYTES;
+    alignment = layouts.patch.alignment > alignment ? layouts.patch.alignment : alignment;
+
+    // Slot 0's span from a multiple of both alignments, rounded up to one, keeps every later slot aligned like slot 0
+    uint64_t first = round_up(start, alignment);
+    uint64_t past_main = place(first, layouts.main.bytes, layouts.main.alignment, own.main);
+    uint64_t span = place(past_main, layouts.patch.bytes, layouts.patch.alignment, own.patch) - first;
+
+    uint64_t slot_start = first + slot * round_up(span, alignment);
+    uint64_t next = place(slot_start, layouts.main.bytes, layouts.main.alignment, own.main);
     place(next, layouts.patch.bytes, layouts.patch.alignment, own.patch);
 }
 
@@ -242,7 +256,8 @@ int32_t promote_graphics_context(
     rm::handle subdevice,
     rm::handle channel,
     const global_context_buffers& global,
-    const channel_context_buffers& own
+    const channel_context_buffers& own,
+    bool initializes_global
 ) {
     rm::promote_context_params params = {};
     params.engine_type = rm::ENGINE_TYPE_GRAPHICS;
@@ -257,9 +272,11 @@ int32_t promote_graphics_context(
     add_entry(params, rm::PROMOTED_ATTRIBUTE, global.attribute, false, true);
     add_entry(params, rm::PROMOTED_RTV, global.rtv, false, true);
 
-    add_entry(params, rm::PROMOTED_FECS_EVENT, global.fecs_event, true, true);
-    add_entry(params, rm::PROMOTED_PRIV_ACCESS_MAP, global.priv_access_map, true, true);
-    add_entry(params, rm::PROMOTED_UNRESTRICTED_PRIV_ACCESS_MAP, global.unrestricted_priv_access_map, true, false);
+    add_entry(params, rm::PROMOTED_FECS_EVENT, global.fecs_event, initializes_global, true);
+    add_entry(params, rm::PROMOTED_PRIV_ACCESS_MAP, global.priv_access_map, initializes_global, true);
+    if (initializes_global) {
+        add_entry(params, rm::PROMOTED_UNRESTRICTED_PRIV_ACCESS_MAP, global.unrestricted_priv_access_map, true, false);
+    }
 
     int32_t rc = fw.control(subdevice, rm::CONTROL_PROMOTE_CONTEXT, &params, sizeof(params));
     if (rc != OK) {

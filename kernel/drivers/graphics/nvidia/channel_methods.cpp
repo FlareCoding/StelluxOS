@@ -122,8 +122,8 @@ void write_fill(uint32_t* words, uint32_t copy_class, uint64_t offset, uint64_t 
     write_method(words, LAUNCH_DMA, LAUNCH_FILL);
 }
 
-void write_release(uint32_t* words, uint64_t semaphore_address, uint32_t payload) {
-    words = write_method(words, WAIT_FOR_IDLE, 0);
+void write_release(uint32_t* words, uint64_t semaphore_address, uint32_t payload, idle_scope scope) {
+    words = write_method(words, WAIT_FOR_IDLE, static_cast<uint32_t>(scope));
     words = write_memory_barrier(words);
 
     words[0] = method_header(SEM_ADDR_LO, 5);

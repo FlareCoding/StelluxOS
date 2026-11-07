@@ -67,8 +67,12 @@ static constexpr uint8_t GA102_INTERRUPT_LEAF_COUNT = 8;
 static constexpr uint32_t GA102_CHANNEL_CLASS = 0xC56F;
 static constexpr uint32_t GA102_COPY_CLASS    = 0xC7B5;
 
-// NVIDIA's class of GA102's 3D object, AMPERE_B, on GR0 in NVIDIA's class list for GA102
-static constexpr uint32_t GA102_THREE_D_CLASS = 0xC797;
+// NVIDIA's classes of GA102's graphics objects, AMPERE_B, AMPERE_COMPUTE_B, FERMI_TWOD_A and KEPLER_INLINE_TO_MEMORY_B,
+// each on GR0 in NVIDIA's class list for GA102
+static constexpr uint32_t GA102_THREE_D_CLASS          = 0xC797;
+static constexpr uint32_t GA102_COMPUTE_CLASS          = 0xC7C0;
+static constexpr uint32_t GA102_TWO_D_CLASS            = 0x902D;
+static constexpr uint32_t GA102_INLINE_TO_MEMORY_CLASS = 0xA140;
 
 // GA102's heads, as many as the RTX 3080's firmware reports usable, and NVIDIA's classes of its display object, core
 // channel and window channels, NVC670_DISPLAY, NVC67D_CORE_CHANNEL_DMA and NVC67E_WINDOW_CHANNEL_DMA
@@ -115,6 +119,9 @@ TEST(nvidia, rtx_3080_decodes_as_ga102) {
     EXPECT_EQ(chip->copy_class, GA102_COPY_CLASS);
 
     EXPECT_EQ(chip->graphics.three_d_class, GA102_THREE_D_CLASS);
+    EXPECT_EQ(chip->graphics.compute_class, GA102_COMPUTE_CLASS);
+    EXPECT_EQ(chip->graphics.two_d_class, GA102_TWO_D_CLASS);
+    EXPECT_EQ(chip->graphics.inline_to_memory_class, GA102_INLINE_TO_MEMORY_CLASS);
 
     EXPECT_EQ(chip->display.head_count, GA102_HEAD_COUNT);
     EXPECT_EQ(chip->display.display_class, GA102_DISPLAY_CLASS);

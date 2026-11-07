@@ -32,6 +32,9 @@ constexpr chip_info CHIP_TABLE[] = {
         .copy_class = 0xC7B5,
         .graphics = {
             .three_d_class = 0xC797,
+            .compute_class = 0xC7C0,
+            .two_d_class = 0x902D,
+            .inline_to_memory_class = 0xA140,
         },
         .display = {
             .head_count = 4,

@@ -76,8 +76,7 @@ int32_t channel::create(
         return rc;
     }
 
-    rm::copy_object_params copy_params = {.version = COPY_OBJECT_VERSION, .engine_type = setup.engine.type};
-    rc = add_object(chip.copy_class, &copy_params, sizeof(copy_params));
+    rc = add_copy_object(chip, setup.engine.type);
     if (rc == OK) {
         rc = schedule();
     }
@@ -151,6 +150,11 @@ int32_t channel::add_object(uint32_t object_class, void* params, size_t bytes) {
     m_object_count++;
 
     return OK;
+}
+
+int32_t channel::add_copy_object(const chip_info& chip, uint32_t engine_type) {
+    rm::copy_object_params params = {.version = COPY_OBJECT_VERSION, .engine_type = engine_type};
+    return add_object(chip.copy_class, &params, sizeof(params));
 }
 
 int32_t channel::schedule() {

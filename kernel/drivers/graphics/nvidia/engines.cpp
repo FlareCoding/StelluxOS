@@ -181,6 +181,43 @@ engines::engines(
     m_engine_error_attribution.reason = GPU_LOST_ENGINE;
 }
 
+// Refuses `engine`'s channel RAM unless it is 4-byte aligned inside BAR0, logging `name` and `outcome`: its channels
+// read their fault bits there, and a read past the mapping faults the CPU, as an unaligned one does on aarch64
+static int32_t check_channel_ram(
+    const engine_info& engine,
+    uint64_t bar0_bytes,
+    const char* name,
+    const char* outcome
+) {
+    if (engine.channel_ram % CHANNEL_RAM_ENTRY_BYTES != 0) {
+        log::error(
+            "nvidia: %s type 0x%X's channel RAM at BAR0 offset 0x%X is not 4-byte aligned, so %s",
+            name,
+            engine.type,
+            engine.channel_ram,
+            outcome
+        );
+        return ERR_BAD_STATE;
+    }
+
+    uint64_t channel_ram_bytes = static_cast<uint64_t>(CHANNEL_IDS) * CHANNEL_RAM_ENTRY_BYTES;
+    if (!lies_inside(engine.channel_ram, channel_ram_bytes, bar0_bytes)) {
+        log::error(
+            "nvidia: %s type 0x%X's channel RAM of 0x%lX bytes at BAR0 offset 0x%X ends past BAR0's 0x%lX bytes, "
+            "so %s",
+            name,
+            engine.type,
+            channel_ram_bytes,
+            engine.channel_ram,
+            bar0_bytes,
+            outcome
+        );
+        return ERR_BAD_STATE;
+    }
+
+    return OK;
+}
+
 int32_t engines::bring_up(
     registers& bar0,
     uint64_t bar0_bytes,
@@ -188,6 +225,7 @@ int32_t engines::bring_up(
     const chip_info& chip
 ) {
     m_bar0 = bar0;
+    m_bar0_bytes = bar0_bytes;
     m_chip = &chip;
     m_card = card;
 
@@ -206,33 +244,13 @@ int32_t engines::bring_up(
         return ERR_BAD_STATE;
     }
 
-    // The engine's channels read their fault bits there, and a read past the mapping faults the CPU, as an unaligned
-    // one does on aarch64
-    if (copy_engine->channel_ram % CHANNEL_RAM_ENTRY_BYTES != 0) {
-        log::error(
-            "nvidia: copy engine type 0x%X's channel RAM at BAR0 offset 0x%X is not 4-byte aligned, so the kernel has "
-            "no copy channel",
-            copy_engine->type,
-            copy_engine->channel_ram
-        );
-        return ERR_BAD_STATE;
-    }
-
-    uint64_t channel_ram_bytes = static_cast<uint64_t>(CHANNEL_IDS) * CHANNEL_RAM_ENTRY_BYTES;
-    if (!lies_inside(copy_engine->channel_ram, channel_ram_bytes, bar0_bytes)) {
-        log::error(
-            "nvidia: copy engine type 0x%X's channel RAM of 0x%lX bytes at BAR0 offset 0x%X ends past BAR0's 0x%lX "
-            "bytes, so the kernel has no copy channel",
-            copy_engine->type,
-            channel_ram_bytes,
-            copy_engine->channel_ram,
-            bar0_bytes
-        );
-        return ERR_BAD_STATE;
+    rc = check_channel_ram(*copy_engine, bar0_bytes, "copy engine", "the kernel has no copy channel");
+    if (rc != OK) {
+        return rc;
     }
 
     uint32_t vector = 0;
-    rc = read_copy_vector(m_firmware, copy_engine->type, chip.interrupt_leaf_count, vector);
+    rc = read_nonstall_vector(m_firmware, copy_engine->type, chip.interrupt_leaf_count, vector);
     if (rc != OK) {
         return rc;
     }
@@ -307,7 +325,7 @@ void engines::read_facts(gpu::device_facts& out) {
     m_memory.report(memory);
 
     out.info.backend = GPU_BACKEND_NVIDIA;
-    out.info.queue_kinds = 1u << GPU_QUEUE_COPY;
+    out.info.queue_kinds = (1u << GPU_QUEUE_GRAPHICS) | (1u << GPU_QUEUE_COPY);
     string::memcpy(out.info.name, m_identity.name, sizeof(out.info.name));
 
     out.info.vendor_id = m_identity.vendor_id;
@@ -327,6 +345,12 @@ void engines::read_facts(gpu::device_facts& out) {
     out.info.nvidia.chipset = m_chip->id;
     out.info.nvidia.class_gpfifo = static_cast<uint16_t>(m_chip->channel_class);
     out.info.nvidia.class_copy = static_cast<uint16_t>(m_chip->copy_class);
+
+    out.info.nvidia.class_2d = static_cast<uint16_t>(m_chip->graphics.two_d_class);
+    out.info.nvidia.class_3d = static_cast<uint16_t>(m_chip->graphics.three_d_class);
+    out.info.nvidia.class_m2mf = static_cast<uint16_t>(m_chip->graphics.inline_to_memory_class);
+    out.info.nvidia.class_compute = static_cast<uint16_t>(m_chip->graphics.compute_class);
+
     out.info.nvidia.gpc_count = static_cast<uint16_t>(m_identity.gpc_count);
     out.info.nvidia.tpc_count = static_cast<uint16_t>(m_identity.tpc_count);
 
@@ -572,7 +596,7 @@ int32_t engines::unmap(gpu::space* s, uint64_t va, uint64_t size) {
     return gpu::ERR_DEVICE;
 }
 
-int32_t engines::create_queue(gpu::space* s, uint32_t, gpu::core_queue* core, gpu::queue** out) {
+int32_t engines::create_queue(gpu::space* s, uint32_t kind, gpu::core_queue* core, gpu::queue** out) {
     if (has_failed()) {
         report_failure();
         return gpu::ERR_DEVICE;
@@ -584,13 +608,18 @@ int32_t engines::create_queue(gpu::space* s, uint32_t, gpu::core_queue* core, gp
     }
 
     queue->space = static_cast<backend_space*>(s);
+    queue->kind = kind;
     queue->core = core;
     queue->task_operation.work = create_queue_on_task;
     queue->task_operation.owner = this;
     queue->task_operation.queue = queue;
 
-    int32_t rc = OK;
-    RUN_ELEVATED(rc = m_operations.run_on_task(queue->task_operation));
+    // Zeroed before the driver task's part, as created memory is, so the task never waits for a copy
+    int32_t rc = kind == GPU_QUEUE_GRAPHICS ? allocate_own_buffers(*queue) : OK;
+    if (rc == OK) {
+        RUN_ELEVATED(rc = m_operations.run_on_task(queue->task_operation));
+    }
+
     if (rc != OK) {
         heap::ufree_delete(queue);
         return refused_creation();
@@ -647,10 +676,12 @@ void engines::run(gpu::queue* q, uint64_t sequence, const void* commands, size_t
         queue->user_channel.write_entry(make_gpfifo_entry(range.va, range.size / sizeof(uint32_t), fetch));
     }
 
+    // A graphics queue's commands may leave 3D and compute work running at once, and its release must follow both
+    idle_scope scope = queue->kind == GPU_QUEUE_GRAPHICS ? idle_scope::every_pipe : idle_scope::current_pipe;
     uint64_t slot_offset = (sequence % RELEASE_SLOTS) * RELEASE_SLOT_BYTES;
     uint64_t slot_address = slot_push_buffer_address(queue->slot) + slot_offset;
     uint32_t* words = reinterpret_cast<uint32_t*>(queue->push_buffer.virt + slot_offset);
-    write_release(words, slot_semaphore_address(queue->slot), static_cast<uint32_t>(sequence));
+    write_release(words, slot_semaphore_address(queue->slot), static_cast<uint32_t>(sequence), scope);
 
     queue->user_channel.write_entry(make_gpfifo_entry(slot_address, RELEASE_WORDS, gpfifo_fetch::ahead));
 
@@ -663,15 +694,17 @@ void engines::run(gpu::queue* q, uint64_t sequence, const void* commands, size_t
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void engines::service_interrupt(registers& bar0) {
-    if (!m_is_copy_vector_on.load_acquire()) {
+    // Both vectors are cleared before any semaphore is read, so a release landing after a read raises its vector again
+    bool is_copy_pending = m_is_copy_vector_on.load_acquire() && acknowledge_nonstall_interrupt(bar0, m_copy_vector);
+    bool is_graphics_pending =
+        m_is_graphics_vector_on.load_acquire() && acknowledge_nonstall_interrupt(bar0, m_graphics_vector);
+    if (!is_copy_pending && !is_graphics_pending) {
         return;
     }
 
-    if (!acknowledge_nonstall_interrupt(bar0, m_copy_vector)) {
-        return;
+    if (is_copy_pending) {
+        m_copy_channel->service();
     }
-
-    m_copy_channel->service();
 
     sync::irq_state irq = sync::spin_lock_irqsave(m_queues_lock);
     for (backend_queue& queue : m_queues) {
@@ -849,7 +882,28 @@ int32_t engines::bring_up_graphics() {
         return ERR_BAD_STATE;
     }
 
-    int32_t rc = read_graphics_buffer_layouts(m_firmware, m_graphics_layouts);
+    if (m_table.graphics_copy_engine() == nullptr) {
+        log::error(
+            "nvidia: the device info table lists no copy engine on the graphics engine's runlist %u, so the GPU core "
+            "gets no device",
+            graphics->runlist
+        );
+        return ERR_BAD_STATE;
+    }
+
+    int32_t rc = check_channel_ram(*graphics, m_bar0_bytes, "graphics engine", "the GPU core gets no device");
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint32_t vector = 0;
+    rc = read_nonstall_vector(m_firmware, graphics->type, m_chip->interrupt_leaf_count, vector);
+    if (rc != OK) {
+        log::error("nvidia: reading the graphics engine's nonstall vector failed: %d", rc);
+        return rc;
+    }
+
+    rc = read_graphics_buffer_layouts(m_firmware, m_graphics_layouts);
     if (rc != OK) {
         log::error("nvidia: reading the graphics engine's context buffer layouts failed: %d", rc);
         return rc;
@@ -859,7 +913,7 @@ int32_t engines::bring_up_graphics() {
 
     size_t allocated = 0;
     for (const global_buffer& global : GLOBAL_BUFFERS) {
-        rc = allocate_context_buffer(m_graphics_layouts.*global.layout, m_global_buffers.*global.buffer);
+        rc = allocate_bring_up_buffer(m_graphics_layouts.*global.layout, m_global_buffers.*global.buffer);
         if (rc != OK) {
             break;
         }
@@ -880,9 +934,21 @@ int32_t engines::bring_up_graphics() {
 
     if (rc != OK) {
         log::error("nvidia: bringing up the graphics engine failed: %d, so the GPU core gets no device", rc);
+        return rc;
     }
 
-    return rc;
+    // Published before the enable, since a release pending already raises the interrupt at once
+    m_graphics_vector = vector;
+    m_is_graphics_vector_on.store_release(true);
+    enable_vector(m_bar0, vector);
+
+    log::info(
+        "nvidia: graphics channels' releases raise GPU interrupt vector %u, bit %u of the CPU interrupt tree's leaf %u",
+        vector,
+        vector % VECTORS_PER_LEAF,
+        vector / VECTORS_PER_LEAF
+    );
+    return OK;
 }
 
 int32_t engines::allocate_context_buffer(const context_buffer_layout& layout, context_buffer& buffer) {
@@ -890,11 +956,6 @@ int32_t engines::allocate_context_buffer(const context_buffer_layout& layout, co
     vram_range range = {};
     int32_t rc = m_memory.allocate(layout.bytes, alignment, vram_use::general, range);
     if (rc != OK) {
-        log::error(
-            "nvidia: allocating 0x%lX bytes of video memory for a graphics context buffer failed: %d",
-            layout.bytes,
-            rc
-        );
         return rc;
     }
 
@@ -916,16 +977,29 @@ int32_t engines::allocate_context_buffer(const context_buffer_layout& layout, co
     return OK;
 }
 
+int32_t engines::allocate_bring_up_buffer(const context_buffer_layout& layout, context_buffer& buffer) {
+    int32_t rc = allocate_context_buffer(layout, buffer);
+    if (rc != OK && rc != ERR_TIMEOUT) {
+        log::error(
+            "nvidia: allocating 0x%lX bytes of video memory for a graphics context buffer failed: %d",
+            layout.bytes,
+            rc
+        );
+    }
+
+    return rc;
+}
+
 int32_t engines::capture_golden_context(const engine_info& graphics, bool& is_reachable) {
     channel_context_buffers golden = {};
-    place_own_buffers(m_graphics_layouts, m_own_buffers_start, golden);
+    place_own_buffers(m_graphics_layouts, m_own_buffers_start, 0, golden);
 
-    int32_t rc = allocate_context_buffer(m_graphics_layouts.main, golden.main);
+    int32_t rc = allocate_bring_up_buffer(m_graphics_layouts.main, golden.main);
     if (rc != OK) {
         return rc;
     }
 
-    rc = allocate_context_buffer(m_graphics_layouts.patch, golden.patch);
+    rc = allocate_bring_up_buffer(m_graphics_layouts.patch, golden.patch);
     if (rc != OK) {
         m_memory.release(golden.main.range);
         return rc;
@@ -969,7 +1043,8 @@ int32_t engines::capture_golden_context(const engine_info& graphics, bool& is_re
             m_objects.subdevice,
             golden_channel.handle(),
             m_global_buffers,
-            golden
+            golden,
+            true
         );
     }
 
@@ -1039,6 +1114,10 @@ void engines::report_failure_on_task(operation& op) {
 
     if (gpu_engines.m_is_copy_vector_on.exchange_acq_rel(false)) {
         mask_vector(gpu_engines.m_bar0, gpu_engines.m_copy_vector);
+    }
+
+    if (gpu_engines.m_is_graphics_vector_on.exchange_acq_rel(false)) {
+        mask_vector(gpu_engines.m_bar0, gpu_engines.m_graphics_vector);
     }
 
     RUN_ELEVATED({
@@ -1195,8 +1274,10 @@ void engines::create_queue_on_task(operation& op) {
     auto& creation = static_cast<queue_operation&>(op);
     engines& gpu_engines = *creation.owner;
 
-    // A queue listed after the failure's report would stay on the handler's list for good
+    // A queue listed after the failure's report would stay on the handler's list for good, and its own buffers were
+    // never mapped
     if (gpu_engines.has_failed()) {
+        gpu_engines.release_own_buffers(*creation.queue);
         op.result = ERR_BAD_STATE;
         return;
     }
@@ -1266,11 +1347,13 @@ int32_t engines::start_queue(backend_queue& queue) {
     backend_space& space = *queue.space;
     int32_t rc = map_semaphores(space);
     if (rc != OK) {
+        release_own_buffers(queue);
         return rc;
     }
 
     uint32_t free_slots = ~space.queue_slots & ((1u << GPU_QUEUES_MAX) - 1);
     if (free_slots == 0 || !take_channel_id(queue.channel_id)) {
+        release_own_buffers(queue);
         return ERR_NO_MEMORY;
     }
 
@@ -1296,7 +1379,9 @@ int32_t engines::start_queue(backend_queue& queue) {
         is_mapped = rc == OK;
     }
 
-    if (rc == OK) {
+    if (rc == OK && queue.kind == GPU_QUEUE_GRAPHICS) {
+        rc = start_graphics_channel(queue);
+    } else if (rc == OK) {
         channel_setup setup = {
             .engine = *m_table.first_async_copy_engine(),
             .id = queue.channel_id,
@@ -1309,6 +1394,68 @@ int32_t engines::start_queue(backend_queue& queue) {
 
     if (rc != OK) {
         release_queue(queue, is_mapped);
+    }
+
+    return rc;
+}
+
+int32_t engines::start_graphics_channel(backend_queue& queue) {
+    backend_space& space = *queue.space;
+    context_page_tables& tables = space.addresses.page_tables();
+    if (!space.are_global_buffers_mapped) {
+        int32_t rc = map_global_buffers(tables, m_global_buffers);
+        if (rc != OK) {
+            return rc;
+        }
+
+        space.are_global_buffers_mapped = true;
+    }
+
+    place_own_buffers(m_graphics_layouts, m_own_buffers_start, queue.slot, queue.own_buffers);
+    int32_t rc = map_own_buffers(tables, queue.own_buffers);
+
+    channel_setup setup = {
+        .engine = *m_table.graphics_engine(),
+        .id = queue.channel_id,
+        .gpfifo_address = slot_gpfifo_address(queue.slot),
+        .is_privileged = false,
+    };
+
+    bool is_allocated = false;
+    if (rc == OK) {
+        rc = queue.user_channel.allocate(m_card, *m_chip, space.addresses, setup);
+        is_allocated = rc == OK;
+    }
+
+    if (rc == OK) {
+        rc = promote_graphics_context(
+            m_firmware,
+            m_objects.subdevice,
+            queue.user_channel.handle(),
+            m_global_buffers,
+            queue.own_buffers,
+            false
+        );
+    }
+
+    if (rc == OK) {
+        rc = queue.user_channel.add_object(m_chip->graphics.three_d_class, nullptr, 0);
+    }
+
+    if (rc == OK) {
+        rc = queue.user_channel.add_object(m_chip->graphics.compute_class, nullptr, 0);
+    }
+
+    if (rc == OK) {
+        rc = queue.user_channel.add_copy_object(*m_chip, m_table.graphics_copy_engine()->type);
+    }
+
+    if (rc == OK) {
+        rc = queue.user_channel.schedule();
+    }
+
+    if (rc != OK && is_allocated) {
+        queue.user_channel.destroy();
     }
 
     return rc;
@@ -1348,6 +1495,10 @@ void engines::release_queue(backend_queue& queue, bool is_mapped) {
         gpu_may_reach = queue.space->addresses.page_tables().unmap(address, bytes) != OK;
     }
 
+    if (!gpu_may_reach) {
+        gpu_may_reach = !release_own_buffers(queue);
+    }
+
     if (gpu_may_reach) {
         return;
     }
@@ -1355,6 +1506,49 @@ void engines::release_queue(backend_queue& queue, bool is_mapped) {
     RUN_ELEVATED(dma::free_pages(queue.push_buffer));
     queue.space->queue_slots &= ~(1u << queue.slot);
     give_back_channel_id(queue.channel_id);
+}
+
+int32_t engines::allocate_own_buffers(backend_queue& queue) {
+    int32_t rc = allocate_context_buffer(m_graphics_layouts.main, queue.own_buffers.main);
+    if (rc == OK) {
+        rc = allocate_context_buffer(m_graphics_layouts.patch, queue.own_buffers.patch);
+    }
+
+    // The GPU's failure may have ended the zeroing, and its cause is logged where it happened
+    if (rc == ERR_TIMEOUT && has_failed()) {
+        report_failure();
+    } else if (rc == ERR_TIMEOUT) {
+        fail_device("the kernel's copy channel hung zeroing a graphics context buffer");
+    }
+
+    // A main buffer whose zeroing ended is reached by no copy, even when the patch buffer's hung
+    if (rc != OK && queue.own_buffers.main.range.size != 0) {
+        m_memory.release(queue.own_buffers.main.range);
+        queue.own_buffers.main.range = {};
+    }
+
+    return rc;
+}
+
+bool engines::release_own_buffers(backend_queue& queue) {
+    context_buffer* own[] = {&queue.own_buffers.main, &queue.own_buffers.patch};
+    for (context_buffer* buffer : own) {
+        if (buffer->range.size == 0) {
+            continue;
+        }
+
+        // A buffer is placed only once its queue holds a slot, so one at address 0 was never mapped
+        bool is_unmapped = buffer->gpu_address == 0
+            || queue.space->addresses.page_tables().unmap(buffer->gpu_address, buffer->range.size) == OK;
+        if (!is_unmapped) {
+            return false;
+        }
+
+        m_memory.release(buffer->range);
+        buffer->range = {};
+    }
+
+    return true;
 }
 
 bool engines::take_channel_id(uint32_t& out) {
