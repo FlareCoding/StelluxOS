@@ -1,0 +1,195 @@
+Moves the creation and export of an image's two explicit sync timelines
+out of wsi_common_drm.c, built only with libdrm, into wsi_common.c for
+every platform but Windows, and converts them to syncobj handles only for
+DRM images. A WSI platform whose display server takes the exported
+descriptors themselves, as stlxdm does, then gets explicit sync without
+syncobjs, and a build with libdrm, which defines HAVE_LIBDRM whatever
+platforms it builds, sends only DRM images to the syncobj conversion.
+
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -874,6 +874,76 @@ wsi_destroy_image_info(const struct wsi_swapchain *chain,
+    }
+ }
+ 
++#ifndef _WIN32
++static VkResult
++wsi_create_image_explicit_sync(const struct wsi_swapchain *chain,
++                               struct wsi_image *image)
++{
++   /* Cleanup of any failures is handled by the caller in wsi_create_image
++    * calling wsi_destroy_image -> wsi_destroy_image_explicit_sync. */
++
++   const struct wsi_device *wsi = chain->wsi;
++   VkResult result = VK_SUCCESS;
++
++   const VkExportSemaphoreCreateInfo semaphore_export_info = {
++      .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
++      /* This is a syncobj fd for any drivers using syncobj. */
++      .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
++   };
++
++   const VkSemaphoreTypeCreateInfo semaphore_type_info = {
++      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
++      .pNext = &semaphore_export_info,
++      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
++   };
++
++   const VkSemaphoreCreateInfo semaphore_info = {
++      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
++      .pNext = &semaphore_type_info,
++   };
++
++   for (uint32_t i = 0; i < WSI_ES_COUNT; i++) {
++      result = wsi->CreateSemaphore(chain->device,
++                                    &semaphore_info,
++                                    &chain->alloc,
++                                    &image->explicit_sync[i].semaphore);
++      if (result != VK_SUCCESS)
++         return result;
++
++      const VkSemaphoreGetFdInfoKHR semaphore_get_info = {
++         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
++         .semaphore = image->explicit_sync[i].semaphore,
++         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
++      };
++
++      result = wsi->GetSemaphoreFdKHR(chain->device, &semaphore_get_info, &image->explicit_sync[i].fd);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   return VK_SUCCESS;
++}
++
++static void
++wsi_destroy_image_explicit_sync(const struct wsi_swapchain *chain,
++                                struct wsi_image *image)
++{
++   const struct wsi_device *wsi = chain->wsi;
++
++   for (uint32_t i = 0; i < WSI_ES_COUNT; i++) {
++      if (image->explicit_sync[i].fd >= 0) {
++         close(image->explicit_sync[i].fd);
++         image->explicit_sync[i].fd = -1;
++      }
++
++      if (image->explicit_sync[i].semaphore != VK_NULL_HANDLE) {
++         wsi->DestroySemaphore(chain->device, image->explicit_sync[i].semaphore, &chain->alloc);
++         image->explicit_sync[i].semaphore = VK_NULL_HANDLE;
++      }
++   }
++}
++#endif
++
+ VkResult
+ wsi_create_image(const struct wsi_swapchain *chain,
+                  const struct wsi_image_info *info,
+@@ -911,14 +981,22 @@ wsi_create_image(const struct wsi_swapchain *chain,
+    }
+ 
+    if (info->explicit_sync) {
+-#if HAVE_LIBDRM
+-      result = wsi_create_image_explicit_sync_drm(chain, image);
++#ifndef _WIN32
++      result = wsi_create_image_explicit_sync(chain, image);
+       if (result != VK_SUCCESS)
+          goto fail;
+ #else
+       result = VK_ERROR_FEATURE_NOT_PRESENT;
+       goto fail;
+ #endif
++
++#if HAVE_LIBDRM
++      if (info->image_type == WSI_IMAGE_TYPE_DRM) {
++         result = wsi_create_image_explicit_sync_drm(chain, image);
++         if (result != VK_SUCCESS)
++            goto fail;
++      }
++#endif
+    }
+ 
+    return VK_SUCCESS;
+@@ -1029,6 +1107,9 @@ wsi_destroy_image(const struct wsi_swapchain *chain,
+    if (image->explicit_sync[WSI_ES_ACQUIRE].semaphore) {
+ #if HAVE_LIBDRM
+       wsi_destroy_image_explicit_sync_drm(chain, image);
++#endif
++#ifndef _WIN32
++      wsi_destroy_image_explicit_sync(chain, image);
+ #endif
+    }
+ 
+--- a/src/vulkan/wsi/wsi_common_drm.c
++++ b/src/vulkan/wsi/wsi_common_drm.c
+@@ -286,46 +286,8 @@ wsi_create_image_explicit_sync_drm(const struct wsi_swapchain *chain,
+     * calling wsi_destroy_image -> wsi_destroy_image_explicit_sync_drm. */
+ 
+    VK_FROM_HANDLE(vk_device, device, chain->device);
+-   const struct wsi_device *wsi = chain->wsi;
+-   VkResult result = VK_SUCCESS;
+    int ret = 0;
+ 
+-   const VkExportSemaphoreCreateInfo semaphore_export_info = {
+-      .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+-      /* This is a syncobj fd for any drivers using syncobj. */
+-      .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
+-   };
+-
+-   const VkSemaphoreTypeCreateInfo semaphore_type_info = {
+-      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+-      .pNext = &semaphore_export_info,
+-      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+-   };
+-
+-   const VkSemaphoreCreateInfo semaphore_info = {
+-      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+-      .pNext = &semaphore_type_info,
+-   };
+-
+-   for (uint32_t i = 0; i < WSI_ES_COUNT; i++) {
+-      result = wsi->CreateSemaphore(chain->device,
+-                                    &semaphore_info,
+-                                    &chain->alloc,
+-                                    &image->explicit_sync[i].semaphore);
+-      if (result != VK_SUCCESS)
+-         return result;
+-
+-      const VkSemaphoreGetFdInfoKHR semaphore_get_info = {
+-         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+-         .semaphore = image->explicit_sync[i].semaphore,
+-         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
+-      };
+-
+-      result = wsi->GetSemaphoreFdKHR(chain->device, &semaphore_get_info, &image->explicit_sync[i].fd);
+-      if (result != VK_SUCCESS)
+-         return result;
+-   }
+-
+    for (uint32_t i = 0; i < WSI_ES_COUNT; i++) {
+       ret = device->sync->fd_to_handle(device->sync, image->explicit_sync[i].fd, &image->explicit_sync[i].handle);
+       if (ret != 0)
+@@ -340,23 +302,12 @@ wsi_destroy_image_explicit_sync_drm(const struct wsi_swapchain *chain,
+                                     struct wsi_image *image)
+ {
+    VK_FROM_HANDLE(vk_device, device, chain->device);
+-   const struct wsi_device *wsi = chain->wsi;
+ 
+    for (uint32_t i = 0; i < WSI_ES_COUNT; i++) {
+       if (image->explicit_sync[i].handle != 0) {
+          device->sync->destroy(device->sync, image->explicit_sync[i].handle);
+          image->explicit_sync[i].handle = 0;
+       }
+-
+-      if (image->explicit_sync[i].fd >= 0) {
+-         close(image->explicit_sync[i].fd);
+-         image->explicit_sync[i].fd = -1;
+-      }
+-
+-      if (image->explicit_sync[i].semaphore != VK_NULL_HANDLE) {
+-         wsi->DestroySemaphore(chain->device, image->explicit_sync[i].semaphore, &chain->alloc);
+-         image->explicit_sync[i].semaphore = VK_NULL_HANDLE;
+-      }
+    }
+ }
+ 
