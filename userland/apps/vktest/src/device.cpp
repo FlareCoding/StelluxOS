@@ -15,6 +15,22 @@ struct device_commands {
     PFN_vkDeviceWaitIdle                         device_wait_idle;
 };
 
+constexpr float QUEUE_PRIORITY = 1.0f;
+
+static std::vector<VkDeviceQueueCreateInfo> one_queue_each(const std::vector<uint32_t>& families) {
+    std::vector<VkDeviceQueueCreateInfo> queue_infos;
+    for (uint32_t family : families) {
+        VkDeviceQueueCreateInfo queue_info = {};
+        queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queue_info.queueFamilyIndex = family;
+        queue_info.queueCount = 1;
+        queue_info.pQueuePriorities = &QUEUE_PRIORITY;
+        queue_infos.push_back(queue_info);
+    }
+
+    return queue_infos;
+}
+
 // Whether a device with one queue of each family in `families` is created, its queues each wait idle, and the device
 // waits idle, the device destroyed again either way
 static bool runs_device(
@@ -22,16 +38,7 @@ static bool runs_device(
     VkPhysicalDevice physical_device,
     const std::vector<uint32_t>& families
 ) {
-    float priority = 1.0f;
-    std::vector<VkDeviceQueueCreateInfo> queue_infos;
-    for (uint32_t family : families) {
-        VkDeviceQueueCreateInfo queue_info = {};
-        queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_info.queueFamilyIndex = family;
-        queue_info.queueCount = 1;
-        queue_info.pQueuePriorities = &priority;
-        queue_infos.push_back(queue_info);
-    }
+    std::vector<VkDeviceQueueCreateInfo> queue_infos = one_queue_each(families);
 
     VkDeviceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -56,9 +63,35 @@ static bool runs_device(
     return queues_idle && device_idle;
 }
 
+uint32_t find_transfer_family(VkInstance instance, VkPhysicalDevice physical_device) {
+    auto get_families = find_command<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+        instance,
+        "vkGetPhysicalDeviceQueueFamilyProperties"
+    );
+    if (!get_families) {
+        return UINT32_MAX;
+    }
+
+    uint32_t family_count = 0;
+    get_families(physical_device, &family_count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(family_count);
+    get_families(physical_device, &family_count, families.data());
+
+    VkQueueFlags other_work = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    for (uint32_t family = 0; family < family_count; family++) {
+        VkQueueFlags flags = families[family].queueFlags;
+        if ((flags & VK_QUEUE_TRANSFER_BIT) != 0 && (flags & other_work) == 0) {
+            return family;
+        }
+    }
+
+    return UINT32_MAX;
+}
+
 VkDevice create_device(
     VkInstance instance,
     VkPhysicalDevice physical_device,
+    const std::vector<uint32_t>& families,
     const std::vector<const char*>& extensions,
     const void* features
 ) {
@@ -67,18 +100,13 @@ VkDevice create_device(
         return VK_NULL_HANDLE;
     }
 
-    float priority = 1.0f;
-    VkDeviceQueueCreateInfo queue_info = {};
-    queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue_info.queueFamilyIndex = 0;
-    queue_info.queueCount = 1;
-    queue_info.pQueuePriorities = &priority;
+    std::vector<VkDeviceQueueCreateInfo> queue_infos = one_queue_each(families);
 
     VkDeviceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     create_info.pNext = features;
-    create_info.queueCreateInfoCount = 1;
-    create_info.pQueueCreateInfos = &queue_info;
+    create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_infos.size());
+    create_info.pQueueCreateInfos = queue_infos.data();
 
     create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     create_info.ppEnabledExtensionNames = extensions.data();
