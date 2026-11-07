@@ -183,6 +183,8 @@ void server::set_focus(dm_window* w) {
 }
 
 void server::forget_window(dm_window* w) {
+    bool was_focused_grab = m_grab_popup == w && m_focus == w;
+
     if (m_focus == w) m_focus = nullptr;
     if (m_hover == w) m_hover = nullptr;
     if (m_grab == w) m_grab = nullptr;
@@ -201,6 +203,10 @@ void server::forget_window(dm_window* w) {
             m_zorder.erase(m_zorder.begin() + static_cast<long>(i));
             break;
         }
+    }
+
+    if (was_focused_grab) {
+        set_focus(m_focus_restore);
     }
 }
 
@@ -581,17 +587,14 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
-    /* A press outside a grabbing popup dismisses it, restores the
-     * focus it displaced, and swallows the press */
+    /* A press outside a grabbing popup dismisses it and swallows the press.
+     * `forget_window()` gives the focus back if the popup still holds it. */
     if (m_grab_popup && press) {
         dm_window* hit = window_at(x, y, nullptr);
         if (hit != m_grab_popup) {
             dm_window* popup = m_grab_popup;
-            dm_window* restore = m_focus_restore;
             dm_client* owner = window_owner(popup);
             uint32_t parent_id = popup->parent_id;
-            m_grab_popup = nullptr;
-            m_focus_restore = nullptr;
 
             if (owner) {
                 dm_window* parent = nullptr;
@@ -611,7 +614,6 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
                 dismiss_window_tree(*owner, popup->win_id);
             }
 
-            set_focus(restore);
             return;
         }
     }
