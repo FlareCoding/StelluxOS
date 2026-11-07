@@ -527,6 +527,7 @@ void stlxgfx_draw_text(stlxgfx_surface_t* s, const stlxgfx_font* font,
     uint8_t bb = s->blue_shift  / 8;
     uint8_t ab = stlxgfx_alpha_byte_index(s);
     int has_alpha = bytes_pp == 4;
+    int keeps_straight_alpha = (s->flags & STLXGFX_SURFACE_STRAIGHT_ALPHA) != 0;
     uint32_t src_r = (color >> 16) & 0xFF;
     uint32_t src_g = (color >>  8) & 0xFF;
     uint32_t src_b =  color        & 0xFF;
@@ -581,6 +582,11 @@ void stlxgfx_draw_text(stlxgfx_surface_t* s, const stlxgfx_font* font,
             for (uint16_t c = 0; c < slot_copy.w; c++) {
                 int32_t sx = gx + c;
                 if (sx < 0 || sx >= (int32_t)s->width) {
+                    continue;
+                }
+
+                if (keeps_straight_alpha) {
+                    stlxgfx_blend_coverage(s, sx, sy, color, cov[c]);
                     continue;
                 }
 

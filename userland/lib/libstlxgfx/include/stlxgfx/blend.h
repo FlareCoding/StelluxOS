@@ -16,4 +16,33 @@ static inline uint8_t stlxgfx_blend_channel(uint8_t dst, uint32_t src_premul,
     return (uint8_t)stlxgfx_div255(src_premul + dst * inv_alpha);
 }
 
+/* Source-over of `src` onto `dst` in straight alpha, where color is
+ * not multiplied by alpha. Both are ARGB, and `dst` alpha must be
+ * below 255, since opaque pixels blend by `stlxgfx_blend_channel`.
+ * Onto alpha 0 the result is `src`. Otherwise the alpha is the
+ * coverage of both pixels together, rounded up, and each channel the
+ * mean of both colors weighted by the coverage each shows, rounded,
+ * so it lies between them. */
+static inline uint32_t stlxgfx_blend_straight(uint32_t dst, uint32_t src) {
+    uint32_t src_alpha = src >> 24;
+    uint32_t dst_alpha = dst >> 24;
+    if (dst_alpha == 0) {
+        return src;
+    }
+
+    uint32_t src_weight = src_alpha * 255;
+    uint32_t dst_weight = dst_alpha * (255 - src_alpha);
+    uint32_t weight = src_weight + dst_weight;
+    uint32_t blended = (src_alpha + (dst_weight + 254) / 255) << 24;
+
+    for (uint32_t shift = 0; shift < 24; shift += 8) {
+        uint32_t src_channel = (src >> shift) & 0xFF;
+        uint32_t dst_channel = (dst >> shift) & 0xFF;
+        uint32_t sum = src_channel * src_weight + dst_channel * dst_weight;
+        blended |= ((sum + weight / 2) / weight) << shift;
+    }
+
+    return blended;
+}
+
 #endif /* STLXGFX_BLEND_H */

@@ -142,7 +142,7 @@ endif
 # Primary Targets
 # ============================================================================
 
-.PHONY: all kernel userland image run run-headless clean test test-image \
+.PHONY: all kernel userland image run run-headless clean test test-image host-test \
         image-x86_64 image-aarch64 \
         run-qemu-x86_64 run-qemu-aarch64 \
         run-qemu-x86_64-headless run-qemu-aarch64-headless \
@@ -185,6 +185,10 @@ test-image:
 test: test-image
 	@echo ""
 	$(Q)QEMU_X2APIC=$(QEMU_X2APIC) ./scripts/run_tests.sh $(ARCH)
+
+# Builds and runs the userland libraries' tests on the build machine, needing no image
+host-test:
+	$(Q)$(MAKE) --no-print-directory -C userland/lib/libstlxgfx/tests
 
 # ============================================================================
 # Disk Image Creation
