@@ -128,6 +128,35 @@ and relink them. A run takes about 2 minutes per architecture on 8 cores, plus
 about 2 minutes for the sysroot and the build-time tools on the first run, both
 kept in the `stellux-mesa-kit-work` volume. `JOBS` caps its parallel jobs.
 
+## The vk-gl-cts recipe
+
+`vk-gl-cts` is an `extra` package: dEQP-VK, the Vulkan conformance tests of
+Khronos's VK-GL-CTS, as `/usr/bin/deqp-vk` with the data it reads under
+`/usr/share/vk-gl-cts`. The recipe applies the commits Mesa's CI backports onto
+the VK-GL-CTS release `versions.sh` pins and cross-builds the tests with the
+tree's own compiler, C++ runtime and musl, linked against the mesa kit the tree
+resolves: an unpublished local build of the version `packages/mesa` names when
+the cache holds one, the pinned release otherwise. An archive keeps the kit it
+linked, which `/usr/share/doc/vk-gl-cts/BUILDINFO` names, and the cache's copy
+is used as is when the kit changes. `make packages-build` rebuilds it only while
+`packages.lock` does not pin its version, so once it is published and while
+VK-GL-CTS keeps its version, a kit built locally or pinned later reaches the
+tests only with `VK_GL_CTS_PKG_REL` bumped. `/usr/share/vk-gl-cts/caselists/`
+holds a list for each test group covering what a compositor and toolkits draw
+with, at most 500 of the group's cases spread over the whole group. Every case
+comes from VK-GL-CTS's mustpass, the cases a conformant driver must run without
+a failure. Each list is one `deqp-vk` run, which ends by counting the results of
+the cases it ran, unless the process dies first:
+
+    deqp-vk --deqp-archive-dir=/usr/share/vk-gl-cts --deqp-caselist-file=/usr/share/vk-gl-cts/caselists/api.txt --deqp-log-images=disable --deqp-log-shader-sources=disable
+
+The run writes each case's result to `TestResults.qpa` in the working directory,
+leaving out the images and shader sources it would also log. The license texts
+of VK-GL-CTS, of the sources it builds from, of musl and of the kit's projects
+are under `/usr/share/licenses/vk-gl-cts`. A build takes about 8 minutes per
+architecture on 8 cores, plus the sysroot on the first build, kept in the
+`stellux-vk-gl-cts-work` volume. `JOBS` caps its parallel jobs.
+
 ## The nvidia-firmware recipe
 
 `nvidia-firmware` is a `default` package holding NVIDIA's firmware for the
