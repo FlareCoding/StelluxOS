@@ -42,8 +42,8 @@ public:
     nvidia_gpu_driver(pci::device* dev)
         : pci_driver("nvidia_gpu", dev)
         , m_operations(*this)
-        , m_display_engine(m_gsp, m_video_memory, m_operations, m_failed)
-        , m_engines(m_gsp, m_gpu_objects, m_video_memory, m_operations, m_failed) {}
+        , m_engines(m_gsp, m_gpu_objects, m_video_memory, m_operations, m_failed)
+        , m_display_engine(m_gsp, m_video_memory, m_operations, m_failed, m_engines) {}
 
     /**
      * @brief Boot the GSP's firmware and, unless the chip's fuses disable its
@@ -118,8 +118,8 @@ private:
     nvidia::bar1_video_memory     m_video_memory;
     nvidia::operation_queue       m_operations;
     nvidia::failed_mark           m_failed;
-    nvidia::display_engine        m_display_engine;
     nvidia::engines               m_engines;
+    nvidia::display_engine        m_display_engine;
     nvidia::card_identity         m_card_identity = {}; // filled by `attach()` for the engines' registration
     nvidia::fwsec_layout          m_fwsec = {};
     nvidia::fwsec_signature       m_fwsec_signature = {};

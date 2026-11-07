@@ -2095,7 +2095,8 @@ src/nvidia-modeset/src/nvkms-rm.c
     mask at the reply's index, past the mask's end, in display_active_heads.h,
     that it refuses to register a surface laid out as rows of pixels in order
     unless its pitch is a multiple of 256 bytes, in display_light.h,
-    display_light.cpp, kernel/tests/graphics/nvidia_display_engine.test.cpp and
+    display_light.cpp, display_engine.h, display_engine.cpp,
+    kernel/tests/graphics/nvidia_display_engine.test.cpp and
     kernel/tests/graphics/nvidia_display_light.test.cpp, that it binds each
     surface's context DMA to the core channel first and then to every window's
     channel, in display_engine.cpp and
@@ -3648,9 +3649,12 @@ src/common/sdk/nvidia/inc/class/clc67e.h
     controls SET_CSC00CONTROL, SET_CSC0LUT_CONTROL, SET_CSC01CONTROL,
     SET_CSC10CONTROL and SET_CSC1LUT_CONTROL and their ENABLE, which the light
     reads back with SET_SIZE, in rm.h, display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the 16 bits of
-    SET_SIZE's WIDTH and HEIGHT, which bound the buffers create_buffer makes,
-    in rm.h, display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, the 16 bits of
+    SET_SIZE's WIDTH and HEIGHT, which bound the buffers create_buffer makes and
+    import_buffer wraps, in rm.h, display_engine.h, display_engine.cpp and
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and the 13 bits of
+    SET_PLANAR_STORAGE's PITCH, which bound the pitch of the pictures
+    import_buffer wraps, in rm.h, display_engine.h, display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
@@ -3684,7 +3688,7 @@ src/nvidia-modeset/include/nvkms-types.h
     kernel/tests/graphics/nvidia_display_light.test.cpp and
     kernel/tests/graphics/nvidia_core_methods.test.cpp,
     NV_EVO_SURFACE_ALIGNMENT, 4 KiB, the alignment of the surfaces the
-    modesetting module scans out, in display_engine.cpp and
+    modesetting module scans out, in display_engine.h, display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp,
     NV_LUT_VSS_HEADER_SIZE, 4, the entries before a look-up table's, where a
     table of segments keeps their sizes, NV_NUM_EVO_LUT_ENTRIES, 1025, a look-up

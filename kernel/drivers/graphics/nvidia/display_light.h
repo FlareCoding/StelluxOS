@@ -36,6 +36,9 @@ constexpr uint32_t SCALE_FACTOR_ONE = 1024;
 // module takes on every chip, (((width + 14) * 1024 + 1023) >> 10) + 8
 constexpr uint32_t PIXELS_FETCHED_BEYOND_WIDTH = 22;
 
+// The multiple NVIDIA's modesetting module requires of the pitch of a surface laid out as rows of pixels in order
+constexpr uint32_t SURFACE_PITCH_ALIGNMENT = 256;
+
 /**
  * A connected output's modes, the timings of its EDID that may be its mode in
  * the order `find_mode_candidates` ranks them, the DPCD capabilities they

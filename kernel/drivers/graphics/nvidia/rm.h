@@ -877,6 +877,7 @@ constexpr uint32_t WINDOW_SET_STORAGE       = 0x228;
 constexpr uint32_t WINDOW_SET_PLANE_STORAGE = 0x230;
 constexpr uint32_t STORAGE_ROWS_OF_PIXELS   = 0;
 constexpr uint32_t PLANE_PITCH_UNIT_BYTES   = 64;
+constexpr uint32_t PLANE_PITCH_FIELD_MAX    = 0x1FFF;
 
 // NVIDIA's NVC67E_SET_UPDATE_TIMESTAMP_LO, then _HI 4 bytes on, a time not to show the image before, 0 for none
 constexpr uint32_t WINDOW_SET_UPDATE_TIMESTAMP = 0x348;

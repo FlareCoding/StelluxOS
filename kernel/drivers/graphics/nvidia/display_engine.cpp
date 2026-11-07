@@ -17,12 +17,14 @@
 #include "drivers/graphics/nvidia/display_vertical_blank.h"
 #include "drivers/graphics/nvidia/display_window_owners.h"
 #include "drivers/graphics/nvidia/displayport.h"
+#include "drivers/graphics/nvidia/engines.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "drivers/graphics/nvidia/window_methods.h"
 #include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
+#include "gpu/gpu.h"
 #include "hw/barrier.h"
 #include "hw/mmio.h"
 #include "mm/heap.h"
@@ -1417,13 +1419,15 @@ display_engine::display_engine(
     firmware& fw,
     video_memory& memory,
     operation_queue& operations,
-    const failed_mark& failed
+    const failed_mark& failed,
+    const engines& gpu_engines
 )
     : m_firmware(fw)
     , m_memory(memory)
     , m_instance_memory(memory, fw)
     , m_operations(operations)
-    , m_failed(failed) {
+    , m_failed(failed)
+    , m_gpu_engines(gpu_engines) {
     for (uint8_t& output : m_head_outputs) {
         output = NO_OUTPUT;
     }
@@ -1776,12 +1780,12 @@ int32_t display_engine::prepare_lights(
     return OK;
 }
 
-// The memory `buffer` lies in, as a context DMA names it
-static context_dma_memory base_buffer_memory(const scanout_buffer& buffer) {
+// The memory `buffer`'s context DMA names, from where its picture starts to the end of its range
+static context_dma_memory picture_memory(const scanout_buffer& buffer) {
     return {
         .in_video_memory = true,
-        .address = buffer.range.offset,
-        .bytes = buffer.range.size,
+        .address = buffer.range.offset + buffer.picture_offset,
+        .bytes = buffer.range.size - buffer.picture_offset,
     };
 }
 
@@ -1997,7 +2001,7 @@ int32_t display_engine::prepare_light(
             m_output_lock,
             m_instance_memory,
             base->context_dma,
-            base_buffer_memory(*base),
+            picture_memory(*base),
             other.window,
             &base->bound_windows,
             made
@@ -2010,7 +2014,7 @@ int32_t display_engine::prepare_light(
                 m_output_lock,
                 m_instance_memory,
                 other_base.context_dma,
-                base_buffer_memory(other_base),
+                picture_memory(other_base),
                 light.window,
                 &other_base.bound_windows,
                 made
@@ -2053,17 +2057,11 @@ int32_t display_engine::bind_created_buffers(uint8_t window) {
         }
 
         rm::handle context_dma = buffer.context_dma != 0 ? buffer.context_dma : m_firmware.new_handle();
-        context_dma_memory buffer_memory = {
-            .in_video_memory = true,
-            .address = buffer.range.offset,
-            .bytes = buffer.range.size,
-        };
-
-        int32_t rc = m_instance_memory.bind(context_dma, window_channel_number(window), buffer_memory);
+        int32_t rc = m_instance_memory.bind(context_dma, window_channel_number(window), picture_memory(buffer));
         if (rc != OK) {
             log::error(
                 "nvidia: binding the display buffer at 0x%lX in video memory to window %u's channel failed: %d",
-                buffer.range.offset,
+                picture_memory(buffer).address,
                 window,
                 rc
             );
@@ -2082,7 +2080,7 @@ int32_t display_engine::bind_created_buffers(uint8_t window) {
             "context DMA 0x%X",
             buffer.width,
             buffer.height,
-            buffer.range.offset,
+            picture_memory(buffer).address,
             window,
             context_dma
         );
@@ -4342,7 +4340,7 @@ __PRIVILEGED_CODE int32_t display_engine::queue_present(
         return gfxfb::ERR_INVALID_ARG;
     }
 
-    // gfxfb presents only buffers `base_buffer()` and `create_buffer()` handed out, each a `scanout_buffer`
+    // gfxfb presents only the `scanout_buffer`s that `base_buffer()`, `create_buffer()` and `import_buffer()` hand out
     const auto& source = static_cast<const scanout_buffer&>(buf);
     if ((source.bound_windows & (1u << head->window)) == 0) {
         return gfxfb::ERR_REFUSED;
@@ -4422,12 +4420,14 @@ static void undo_bindings(instance_memory& memory, scanout_buffer& buffer) {
         uint8_t window = static_cast<uint8_t>(__builtin_ctz(buffer.bound_windows));
         int32_t rc = memory.unbind(buffer.context_dma, window_channel_number(window));
         if (rc != OK) {
+            bool is_import = buffer.source != nullptr;
             log::error(
                 "nvidia: unbinding the display buffer at 0x%lX in video memory from window %u's channel failed: %d, "
-                "so the buffer is kept for good",
-                buffer.range.offset,
+                "so %s",
+                picture_memory(buffer).address,
                 window,
-                rc
+                rc,
+                is_import ? "that binding and those to higher windows stay" : "the buffer is kept for good"
             );
             return;
         }
@@ -4436,7 +4436,7 @@ static void undo_bindings(instance_memory& memory, scanout_buffer& buffer) {
     }
 }
 
-int32_t display_engine::create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) {
+int32_t display_engine::new_buffer_refusal() {
     if (!are_presents_supported()) {
         return gfxfb::ERR_UNSUPPORTED;
     }
@@ -4452,6 +4452,26 @@ int32_t display_engine::create_buffer(uint32_t width, uint32_t height, uint32_t 
         return gfxfb::ERR_DEVICE;
     }
 
+    return gfxfb::OK;
+}
+
+int32_t display_engine::bind_on_task(scanout_buffer& buffer) {
+    buffer.task_operation.work = bind_buffer;
+    buffer.task_operation.engine = this;
+    buffer.task_operation.buffer = &buffer;
+
+    int32_t rc = gfxfb::OK;
+    RUN_ELEVATED(rc = m_operations.run_on_task(buffer.task_operation));
+
+    return rc;
+}
+
+int32_t display_engine::create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) {
+    int32_t rc = new_buffer_refusal();
+    if (rc != gfxfb::OK) {
+        return rc;
+    }
+
     bool fits_the_window = width <= rm::SIZE_FIELD_MAX && height <= rm::SIZE_FIELD_MAX;
     if (format != gfxfb::GFXFB_FORMAT_XRGB8888 || !fits_the_window) {
         return gfxfb::ERR_INVALID_ARG;
@@ -4462,16 +4482,13 @@ int32_t display_engine::create_buffer(uint32_t width, uint32_t height, uint32_t 
         return gfxfb::ERR_NO_MEMORY;
     }
 
-    int32_t rc = set_up_scanout_buffer(m_memory, width, height, *buffer);
+    rc = set_up_scanout_buffer(m_memory, width, height, *buffer);
     if (rc != gfxfb::OK) {
         heap::ufree_delete(buffer);
         return rc;
     }
 
-    buffer->task_operation.work = bind_buffer;
-    buffer->task_operation.engine = this;
-    buffer->task_operation.buffer = buffer;
-    RUN_ELEVATED(rc = m_operations.run_on_task(buffer->task_operation));
+    rc = bind_on_task(*buffer);
     if (rc != gfxfb::OK) {
         // A buffer whose bindings could not all be undone stays named by a channel, so it is kept for good
         if (buffer->bound_windows == 0) {
@@ -4480,6 +4497,57 @@ int32_t display_engine::create_buffer(uint32_t width, uint32_t height, uint32_t 
             heap::ufree_delete(buffer);
         }
 
+        return rc;
+    }
+
+    *out = buffer;
+
+    return gfxfb::OK;
+}
+
+int32_t display_engine::import_buffer(
+    gpu::buffer* source,
+    const gpu::memory_view& view,
+    const gfxfb::import_layout& layout,
+    gfxfb::buffer** out
+) {
+    int32_t rc = new_buffer_refusal();
+    if (rc != gfxfb::OK) {
+        return rc;
+    }
+
+    vram_range memory = {};
+    if (source == nullptr || !m_gpu_engines.find_scanout_range(view, memory)) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    bool fits_the_window = layout.width <= rm::SIZE_FIELD_MAX && layout.height <= rm::SIZE_FIELD_MAX;
+    bool fits_the_pitch_field = layout.pitch / rm::PLANE_PITCH_UNIT_BYTES <= rm::PLANE_PITCH_FIELD_MAX;
+    bool is_picture_aligned = (memory.offset + layout.offset) % SURFACE_ALIGNMENT == 0;
+    bool is_pitch_aligned = layout.pitch % SURFACE_PITCH_ALIGNMENT == 0;
+    bool is_xrgb = layout.format == gfxfb::GFXFB_FORMAT_XRGB8888;
+    if (!is_xrgb || !fits_the_window || !fits_the_pitch_field || !is_picture_aligned || !is_pitch_aligned) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    auto* buffer = heap::ualloc_new<scanout_buffer>();
+    if (buffer == nullptr) {
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    buffer->width = layout.width;
+    buffer->height = layout.height;
+    buffer->pitch = layout.pitch;
+
+    buffer->range = memory;
+    buffer->picture_offset = layout.offset;
+    buffer->source = source;
+
+    rc = bind_on_task(*buffer);
+    if (rc != gfxfb::OK) {
+        // Freed even when an undo failed, since no present has named its context DMA, so no head reads through a
+        // binding left behind
+        heap::ufree_delete(buffer);
         return rc;
     }
 
@@ -4519,11 +4587,7 @@ void display_engine::bind_buffer(operation& op) {
     }
 
     buffer.context_dma = engine.m_firmware.new_handle();
-    context_dma_memory buffer_memory = {
-        .in_video_memory = true,
-        .address = buffer.range.offset,
-        .bytes = buffer.range.size,
-    };
+    context_dma_memory buffer_memory = picture_memory(buffer);
 
     while (buffer.bound_windows != lit_windows) {
         uint8_t window = static_cast<uint8_t>(__builtin_ctz(lit_windows & ~buffer.bound_windows));
@@ -4540,7 +4604,7 @@ void display_engine::bind_buffer(operation& op) {
             "context DMA 0x%X",
             buffer.width,
             buffer.height,
-            buffer.range.offset,
+            buffer_memory.address,
             window,
             buffer.context_dma
         );
@@ -4554,6 +4618,19 @@ void display_engine::release_buffer(gfxfb::buffer* buf) {
     auto* buffer = static_cast<scanout_buffer*>(buf);
     buffer->task_operation.work = release_scanout_buffer;
     RUN_ELEVATED(m_operations.post_to_task(buffer->task_operation));
+}
+
+// Frees `buffer`, which no channel names, after dropping an import's reference on its GPU buffer or unmapping and
+// releasing any other buffer's memory
+static void free_scanout_buffer(video_memory& memory, scanout_buffer* buffer) {
+    if (buffer->source != nullptr) {
+        RUN_ELEVATED(gpu::release_buffer(buffer->source));
+    } else {
+        memory.unmap_for_cpu(buffer->range);
+        memory.release(buffer->range);
+    }
+
+    heap::ufree_delete(buffer);
 }
 
 void display_engine::release_scanout_buffer(operation& op) {
@@ -4574,7 +4651,7 @@ void display_engine::release_scanout_buffer(operation& op) {
     if (is_released) {
         log::warn(
             "nvidia: the display buffer at 0x%lX in video memory is kept for good, as the engine was released",
-            buffer->range.offset
+            picture_memory(*buffer).address
         );
         return;
     }
@@ -4583,20 +4660,18 @@ void display_engine::release_scanout_buffer(operation& op) {
     bool is_display_failed = engine.m_is_display_failed.load_acquire();
     if (is_display_failed && buffer->bound_windows == 0) {
         log::info(
-            "nvidia: the display buffer at 0x%lX in video memory is freed though the display failed, as no channel "
-            "names it",
-            buffer->range.offset
+            "nvidia: the display buffer at 0x%lX in video memory %s though the display failed, as no channel names it",
+            picture_memory(*buffer).address,
+            buffer->source != nullptr ? "drops its reference on its GPU buffer" : "is freed"
         );
-        engine.m_memory.unmap_for_cpu(buffer->range);
-        engine.m_memory.release(buffer->range);
-        heap::ufree_delete(buffer);
+        free_scanout_buffer(engine.m_memory, buffer);
         return;
     }
 
     if (is_display_failed) {
         log::warn(
             "nvidia: the display buffer at 0x%lX in video memory is kept for good, as the display failed",
-            buffer->range.offset
+            picture_memory(*buffer).address
         );
         return;
     }
@@ -4627,7 +4702,7 @@ void display_engine::release_scanout_buffer(operation& op) {
             log::error(
                 "nvidia: unbinding the display buffer at 0x%lX in video memory from window %u's channel failed: %d, "
                 "so the buffer is kept for good",
-                buffer->range.offset,
+                picture_memory(*buffer).address,
                 window,
                 rc
             );
@@ -4639,7 +4714,7 @@ void display_engine::release_scanout_buffer(operation& op) {
             log::info(
                 "nvidia: the display buffer at 0x%lX in video memory is unbound from window %u's channel, whose head "
                 "is dark",
-                buffer->range.offset,
+                picture_memory(*buffer).address,
                 window
             );
             continue;
@@ -4648,7 +4723,7 @@ void display_engine::release_scanout_buffer(operation& op) {
         log::info(
             "nvidia: the display buffer at 0x%lX in video memory is unbound from window %u's channel, once the handler "
             "serviced head %u's vertical blanks 1 to %lu since the light while the head's own frame count advanced %u",
-            buffer->range.offset,
+            picture_memory(*buffer).address,
             window,
             head,
             serviced,
@@ -4656,9 +4731,7 @@ void display_engine::release_scanout_buffer(operation& op) {
         );
     }
 
-    engine.m_memory.unmap_for_cpu(buffer->range);
-    engine.m_memory.release(buffer->range);
-    heap::ufree_delete(buffer);
+    free_scanout_buffer(engine.m_memory, buffer);
 }
 
 int32_t display_engine::set_cursor(uint32_t output, const gfxfb::cursor_image& image) {
