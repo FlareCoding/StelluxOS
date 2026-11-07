@@ -1,0 +1,46 @@
+; vktest's compute shader: invocation i of a dispatch writes the push constant's word plus i at element i of the
+; storage buffer at set 0, binding 0
+
+                     OpCapability Shader
+                     OpMemoryModel Logical GLSL450
+                     OpEntryPoint GLCompute %main "main" %invocation_id %words %push
+                     OpExecutionMode %main LocalSize 64 1 1
+
+                     OpDecorate %invocation_id BuiltIn GlobalInvocationId
+                     OpDecorate %word_array ArrayStride 4
+                     OpMemberDecorate %words_block 0 Offset 0
+                     OpDecorate %words_block Block
+                     OpDecorate %words DescriptorSet 0
+                     OpDecorate %words Binding 0
+                     OpMemberDecorate %push_block 0 Offset 0
+                     OpDecorate %push_block Block
+
+              %void = OpTypeVoid
+         %main_type = OpTypeFunction %void
+              %uint = OpTypeInt 32 0
+             %uint3 = OpTypeVector %uint 3
+            %uint_0 = OpConstant %uint 0
+        %word_array = OpTypeRuntimeArray %uint
+       %words_block = OpTypeStruct %word_array
+        %push_block = OpTypeStruct %uint
+        %id_pointer = OpTypePointer Input %uint3
+     %words_pointer = OpTypePointer StorageBuffer %words_block
+      %word_pointer = OpTypePointer StorageBuffer %uint
+      %push_pointer = OpTypePointer PushConstant %push_block
+ %push_word_pointer = OpTypePointer PushConstant %uint
+
+     %invocation_id = OpVariable %id_pointer Input
+             %words = OpVariable %words_pointer StorageBuffer
+              %push = OpVariable %push_pointer PushConstant
+
+              %main = OpFunction %void None %main_type
+             %entry = OpLabel
+                %id = OpLoad %uint3 %invocation_id
+             %index = OpCompositeExtract %uint %id 0
+     %first_pointer = OpAccessChain %push_word_pointer %push %uint_0
+             %first = OpLoad %uint %first_pointer
+              %word = OpIAdd %uint %first %index
+           %element = OpAccessChain %word_pointer %words %uint_0 %index
+                     OpStore %element %word
+                     OpReturn
+                     OpFunctionEnd
