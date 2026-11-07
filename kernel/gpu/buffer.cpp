@@ -361,4 +361,31 @@ __PRIVILEGED_CODE int32_t import_buffer(device& dev, uint64_t arg) {
     return rc;
 }
 
+__PRIVILEGED_CODE int32_t lookup_buffer(int32_t handle, uint32_t rights, buffer** out, memory_view& view) {
+    resource::resource_object* obj = nullptr;
+    int32_t rc = lookup_object(handle, resource::resource_type::GPU_BUFFER, rights, &obj);
+    if (rc != fs::OK) {
+        return rc;
+    }
+
+    auto* buf = static_cast<buffer*>(obj->impl);
+    buf->add_ref();
+    resource::resource_release(obj);
+
+    *out = buf;
+    view = {
+        .owner     = &buf->owner().get_backend(),
+        .mem       = buf->backend_memory(),
+        .size      = buf->size(),
+        .placement = buf->placement(),
+        .flags     = buf->flags(),
+    };
+
+    return fs::OK;
+}
+
+__PRIVILEGED_CODE void release_buffer(buffer* buf) {
+    drop_buffer(buf);
+}
+
 } // namespace gpu

@@ -2,12 +2,14 @@
 
 #include "stlx_unit_test.h"
 #include "fake_backend.h"
+#include "fs/fs.h"
 #include "mm/paging.h"
 #include "syscall/handlers/sys_mmap.h"
 
 TEST_SUITE(gpu_buffer);
 
 using gpu_test::close_handle;
+using gpu_test::drain_reaper;
 using gpu_test::session;
 using test_helpers::spin_wait_ge;
 using test_helpers::user_space_scope;
@@ -33,17 +35,6 @@ static int64_t unmap(session& s, int64_t addr, uint64_t length) {
 
 static pmm::phys_addr_t phys_at(session& s, int64_t addr) {
     return paging::get_physical(static_cast<uintptr_t>(addr), s.page.ctx->pt_root);
-}
-
-// Creates and closes a spare buffer and waits for the reaper to return its memory, which comes after every release
-// queued earlier, so it returns true only when exactly `released` releases came before the spare's
-static bool drain_reaper(session& s, gpu_test::fake_backend& fake, uint32_t released) {
-    int32_t spare = s.new_buffer(PAGE, GPU_PLACEMENT_VIDEO, 0);
-    gpu::memory* spare_memory = fake.last_created;
-    close_handle(spare);
-
-    bool returned = spin_wait_ge(fake.released_count, released + 1);
-    return returned && fake.released_count.load_acquire() == released + 1 && fake.last_released == spare_memory;
 }
 
 static gpu_test::fake_backend g_created_fake;
@@ -254,4 +245,74 @@ TEST(gpu_buffer, mmap_refuses_what_it_cannot_map_and_never_maps_writable_without
     close_handle(reader);
     close_handle(mappable);
     close_handle(unmappable);
+}
+
+// Returns `gpu::lookup_buffer()`'s code for `handle` and `rights`, dropping the reference a lookup that succeeds takes
+static int32_t look_up_and_release(int32_t handle, uint32_t rights) {
+    gpu::buffer* found = nullptr;
+    gpu::memory_view view = {};
+    int32_t rc = fs::ERR_IO;
+    RUN_ELEVATED(rc = gpu::lookup_buffer(handle, rights, &found, view));
+    if (rc == fs::OK) {
+        RUN_ELEVATED(gpu::release_buffer(found));
+    }
+
+    return rc;
+}
+
+static gpu_test::fake_backend g_looked_up_fake;
+
+// `lookup_buffer()` describes a buffer's memory and holds the buffer past its handle's close until `release_buffer()`
+TEST(gpu_buffer, lookup_holds_the_buffer_until_its_release) {
+    session s(g_looked_up_fake);
+    ASSERT_TRUE(s.ready());
+
+    int32_t handle = s.new_buffer(2 * PAGE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(handle >= 0);
+    gpu::memory* memory = g_looked_up_fake.last_created;
+
+    gpu::buffer* found = nullptr;
+    gpu::memory_view view = {};
+    int32_t rc = fs::ERR_IO;
+    RUN_ELEVATED(rc = gpu::lookup_buffer(handle, GPU_RIGHT_READ, &found, view));
+    ASSERT_EQ(rc, fs::OK);
+    EXPECT_NOT_NULL(found);
+
+    EXPECT_EQ(view.owner, static_cast<gpu::backend*>(&g_looked_up_fake));
+    EXPECT_EQ(view.mem, memory);
+    EXPECT_EQ(view.size, 2 * PAGE);
+    EXPECT_EQ(view.placement, static_cast<uint32_t>(GPU_PLACEMENT_VIDEO));
+    EXPECT_EQ(view.flags, static_cast<uint32_t>(GPU_BUFFER_SCANOUT));
+
+    close_handle(handle);
+    EXPECT_TRUE(drain_reaper(s, g_looked_up_fake, 0));
+
+    RUN_ELEVATED(gpu::release_buffer(found));
+    ASSERT_TRUE(spin_wait_ge(g_looked_up_fake.released_count, 2));
+    EXPECT_EQ(g_looked_up_fake.last_released, memory);
+}
+
+static gpu_test::fake_backend g_refused_lookup_fake;
+
+// `lookup_buffer()` refuses a handle naming no buffer and one lacking the rights asked, holding no reference
+TEST(gpu_buffer, lookup_refuses_a_handle_naming_no_buffer_or_lacking_the_rights) {
+    session s(g_refused_lookup_fake);
+    ASSERT_TRUE(s.ready());
+
+    int32_t handle = s.new_buffer(PAGE, GPU_PLACEMENT_VIDEO, 0);
+    ASSERT_TRUE(handle >= 0);
+    int32_t writer = s.restrict_to(handle, GPU_RIGHT_WRITE);
+    int32_t timeline = s.new_timeline(0);
+    ASSERT_TRUE(writer >= 0);
+    ASSERT_TRUE(timeline >= 0);
+
+    EXPECT_EQ(look_up_and_release(writer, GPU_RIGHT_READ), fs::ERR_BADF);
+    EXPECT_EQ(look_up_and_release(timeline, GPU_RIGHT_READ), fs::ERR_BADF);
+    EXPECT_EQ(look_up_and_release(-1, GPU_RIGHT_READ), fs::ERR_BADF);
+    EXPECT_EQ(look_up_and_release(writer, GPU_RIGHT_WRITE), fs::OK);
+
+    close_handle(timeline);
+    close_handle(writer);
+    close_handle(handle);
+    EXPECT_TRUE(drain_reaper(s, g_refused_lookup_fake, 1));
 }

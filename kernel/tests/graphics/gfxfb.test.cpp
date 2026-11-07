@@ -18,6 +18,7 @@
 #include "mm/vmm.h"
 #include "sched/sched.h"
 #include "sync/poll.h"
+#include "tests/gpu/fake_backend.h"
 
 using test_helpers::spin_wait;
 using test_helpers::spin_wait_ge;
@@ -115,6 +116,13 @@ static constexpr uint32_t SMALL_BUFFER_PITCH = SMALL_BUFFER_WIDTH * (DRIVER_BPP 
 static constexpr uint32_t WIDE_BUFFER_WIDTH = 0x10000 + SMALL_BUFFER_WIDTH;
 static constexpr uint32_t WIDE_FORMAT = 0x10000 + gfxfb::GFXFB_FORMAT_XRGB8888;
 
+// The import tests' GPU buffer and picture, output 0's size with rows padded so a pitch derived from the width fails,
+// at IMPORT_OFFSET or at IMPORT_LAST_OFFSET, where the picture ends exactly at the buffer's end
+static constexpr uint64_t IMPORT_GPU_SIZE = 4 * pmm::PAGE_SIZE;
+static constexpr uint32_t IMPORT_PITCH = static_cast<uint32_t>(OUTPUT_0_PITCH) + CREATED_ROW_PADDING;
+static constexpr uint64_t IMPORT_OFFSET = pmm::PAGE_SIZE;
+static constexpr uint64_t IMPORT_LAST_OFFSET = IMPORT_GPU_SIZE - IMPORT_PITCH * OUTPUT_0_HEIGHT;
+
 // A node's number and its path under /dev/gfxfb_test, each with room for its terminator
 static constexpr size_t NODE_NAME_BYTES = 24;
 static constexpr size_t NODE_PATH_BYTES = 48;
@@ -168,6 +176,11 @@ static constexpr size_t TASK_REQUEST_OFFSET = 2048;
 // asked mode or at its previous mode, or the output left dark after its relight's darkening
 enum class mode_relight { none, asked_mode, previous_mode, dark };
 
+// A buffer the recording display imported, which holds gfxfb's reference on its GPU buffer until its release
+struct recorded_import : gfxfb::buffer {
+    gpu::buffer* source;
+};
+
 // A display with two outputs, dark until a test lights them, that records cursor and mode calls, the first MAX_RECORDED
 // rects of its flushes and regions of its last accepted present, creates write-combining buffers and counts releases
 class recording_display : public gfxfb::display {
@@ -177,6 +190,7 @@ public:
     static constexpr uint32_t MAX_CREATED = gfxfb::GFXFB_CLIENT_BUFFERS_MAX + 2; // a full file, then two refills
     static constexpr uint32_t MAX_CURSOR_PIXELS = 8;
     static constexpr uint32_t MAX_MODE_LIGHTS = 4;
+    static constexpr uint32_t MAX_IMPORTED = gfxfb::GFXFB_CLIENT_BUFFERS_MAX;
 
     gfxfb::output_state states[OUTPUTS] = {};
     gfxfb::buffer       bases[OUTPUTS] = {};
@@ -199,6 +213,14 @@ public:
     uint32_t               created_count = 0;
     gfxfb::buffer*         last_released = nullptr;
     sync::atomic<uint32_t> released_count{0}; // counted in the reaper's task, after `last_released` is written
+
+    int32_t              import_answer = gfxfb::OK; // when not OK, what `import_buffer()` returns without importing
+    gpu::backend*        scanout_backend = nullptr; // the backend whose scanout memory `import_buffer()` takes
+    uint32_t             import_calls = 0; // refused calls included
+    gpu::memory_view     import_view = {}; // the memory the last `import_buffer()` got
+    gfxfb::import_layout import_picture = {}; // the picture it got
+    recorded_import      imported[MAX_IMPORTED] = {};
+    uint32_t             imported_count = 0;
 
     uint32_t       present_calls = 0; // refused calls included
     gfxfb::buffer* presented = nullptr; // the buffer of the last present accepted
@@ -291,6 +313,12 @@ public:
     }
 
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
+    int32_t import_buffer(
+        gpu::buffer* source,
+        const gpu::memory_view& view,
+        const gfxfb::import_layout& layout,
+        gfxfb::buffer** out
+    ) override;
     int32_t present(
         uint32_t output,
         gfxfb::buffer* buf,
@@ -323,6 +351,12 @@ public:
     }
 
     void release_buffer(gfxfb::buffer* buf) override {
+        for (uint32_t i = 0; i < imported_count; i++) {
+            if (buf == &imported[i]) {
+                RUN_ELEVATED(gpu::release_buffer(imported[i].source));
+            }
+        }
+
         last_released = buf;
         released_count.fetch_add_release(1);
     }
@@ -372,6 +406,15 @@ public:
 
     int32_t flush(uint32_t, const gfxfb::gfxfb_rect*, uint32_t) override { return gfxfb::OK; }
     int32_t create_buffer(uint32_t, uint32_t, uint32_t, gfxfb::buffer**) override { return gfxfb::ERR_UNSUPPORTED; }
+    int32_t import_buffer(
+        gpu::buffer*,
+        const gpu::memory_view&,
+        const gfxfb::import_layout&,
+        gfxfb::buffer**
+    ) override {
+        return gfxfb::ERR_UNSUPPORTED;
+    }
+
     int32_t present(uint32_t, gfxfb::buffer*, const gfxfb::gfxfb_rect*, uint32_t) override { return gfxfb::OK; }
     int32_t set_cursor(uint32_t, const gfxfb::cursor_image&) override { return gfxfb::ERR_UNSUPPORTED; }
     int32_t move_cursor(uint32_t, int32_t, int32_t) override { return gfxfb::ERR_UNSUPPORTED; }
@@ -511,6 +554,46 @@ int32_t recording_display::create_buffer(uint32_t width, uint32_t height, uint32
     };
 
     created_count++;
+    *out = &buf;
+
+    return gfxfb::OK;
+}
+
+int32_t recording_display::import_buffer(
+    gpu::buffer* source,
+    const gpu::memory_view& view,
+    const gfxfb::import_layout& layout,
+    gfxfb::buffer** out
+) {
+    import_calls++;
+    import_view = view;
+    import_picture = layout;
+
+    if (import_answer != gfxfb::OK) {
+        return import_answer;
+    }
+
+    bool is_scanout_memory = view.owner == scanout_backend && (view.flags & GPU_BUFFER_SCANOUT) != 0;
+    if (!is_scanout_memory || layout.format != gfxfb::GFXFB_FORMAT_XRGB8888) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    if (imported_count == MAX_IMPORTED) {
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    recorded_import& buf = imported[imported_count];
+    buf.width = layout.width;
+    buf.height = layout.height;
+    buf.pitch = layout.pitch;
+
+    // Mappable memory, so only gfxfb's mark of the import keeps mmap from mapping it
+    buf.size = pmm::PAGE_SIZE;
+    buf.phys = g_buffer_phys;
+    buf.cacheable = false;
+    buf.source = source;
+
+    imported_count++;
     *out = &buf;
 
     return gfxfb::OK;
@@ -775,6 +858,34 @@ static uint32_t create_output_0_buffer(fs::file* file, user_page& page) {
     }
 
     return page.at<gfxfb::gfxfb_buffer_args>(0)->handle;
+}
+
+// A GFXFB_IMPORT_BUFFER request for output 0's picture in `gpu_buffer` at `offset`, with IMPORT_PITCH bytes a row
+static gfxfb::gfxfb_import_args output_0_import(int32_t gpu_buffer, uint64_t offset) {
+    return {
+        .gpu_buffer = gpu_buffer,
+        .handle     = 0,
+        .width      = static_cast<uint32_t>(OUTPUT_0_WIDTH),
+        .height     = static_cast<uint32_t>(OUTPUT_0_HEIGHT),
+        .pitch      = IMPORT_PITCH,
+        .format     = gfxfb::GFXFB_FORMAT_XRGB8888,
+        .offset     = offset,
+    };
+}
+
+// Sends `args` through GFXFB_IMPORT_BUFFER on `file` from the page's start, where the reply lands
+static int32_t send_import(fs::file* file, user_page& page, const gfxfb::gfxfb_import_args& args) {
+    *page.at<gfxfb::gfxfb_import_args>(0) = args;
+    return file_ioctl(file, page, gfxfb::GFXFB_IMPORT_BUFFER, page.addr);
+}
+
+// Imports output 0's picture in `gpu_buffer` at IMPORT_OFFSET and returns its handle, or 0 when the import failed
+static uint32_t import_output_0_picture(fs::file* file, user_page& page, int32_t gpu_buffer) {
+    if (send_import(file, page, output_0_import(gpu_buffer, IMPORT_OFFSET)) != fs::OK) {
+        return 0;
+    }
+
+    return page.at<gfxfb::gfxfb_import_args>(0)->handle;
 }
 
 // Presents `handle` on `output` through GFXFB_PRESENT on `file` with the `region_count` regions at user address
@@ -6587,6 +6698,371 @@ TEST(gfxfb, present_done_drops_a_second_end_of_a_failed_present) {
 
     end_present(test, 0, gfxfb::GFXFB_PRESENT_FAILED);
     EXPECT_TRUE(reads_before_deadline(file, sizeof(gfxfb::gfxfb_event), fs::O_NONBLOCK, fs::ERR_AGAIN));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static gpu_test::fake_backend g_import_gpu;
+static recording_display g_import_display;
+
+// GFXFB_IMPORT_BUFFER hands the display the GPU buffer's memory and the picture and replies with a fresh handle. mmap
+// refuses the handle's buffer, which holds the GPU buffer past the GPU handle's close until the gfxfb handle goes
+TEST(gfxfb, import_buffer_holds_the_gpu_buffer_until_its_handle_is_destroyed) {
+    gpu_test::session gpu(g_import_gpu);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(IMPORT_GPU_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+    gpu::memory* memory = g_import_gpu.last_created;
+
+    g_import_display.scanout_backend = &g_import_gpu;
+    light_output(g_import_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_import_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    gfxfb::gfxfb_buffer_args created = request_small_buffer(file, page);
+    ASSERT_NE(created.handle, static_cast<uint32_t>(0));
+    uint32_t handle = import_output_0_picture(file, page, gpu_buffer);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+    EXPECT_NE(handle, created.handle);
+
+    ASSERT_EQ(g_import_display.imported_count, static_cast<uint32_t>(1));
+    const gpu::memory_view& view = g_import_display.import_view;
+    EXPECT_EQ(view.owner, static_cast<gpu::backend*>(&g_import_gpu));
+    EXPECT_EQ(view.mem, memory);
+    EXPECT_EQ(view.size, IMPORT_GPU_SIZE);
+    EXPECT_EQ(view.flags, static_cast<uint32_t>(GPU_BUFFER_SCANOUT));
+
+    const gfxfb::import_layout& picture = g_import_display.import_picture;
+    EXPECT_EQ(picture.width, static_cast<uint32_t>(OUTPUT_0_WIDTH));
+    EXPECT_EQ(picture.height, static_cast<uint32_t>(OUTPUT_0_HEIGHT));
+    EXPECT_EQ(picture.pitch, IMPORT_PITCH);
+    EXPECT_EQ(picture.format, gfxfb::GFXFB_FORMAT_XRGB8888);
+    EXPECT_EQ(picture.offset, IMPORT_OFFSET);
+
+    // Buffers map at a stride per handle, which the created buffer's offset gives
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uint64_t import_offset = created.map_offset / created.handle * handle;
+    EXPECT_EQ(map_file(file, ctx, import_offset, pmm::PAGE_SIZE), static_cast<uintptr_t>(0));
+
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_import_gpu, 0));
+
+    ASSERT_EQ(destroy_buffer(file, page, handle), fs::OK);
+    ASSERT_TRUE(spin_wait_ge(g_import_display.released_count, 1));
+    EXPECT_EQ(g_import_display.last_released, static_cast<gfxfb::buffer*>(&g_import_display.imported[0]));
+    ASSERT_TRUE(spin_wait_ge(g_import_gpu.released_count, 2));
+    EXPECT_EQ(g_import_gpu.last_released, memory);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+    mm::mm_context_release(ctx);
+}
+
+static gpu_test::fake_backend g_import_present_gpu;
+static recording_display g_import_present_display;
+
+// An imported buffer presents as a created one, and the output showing it keeps the GPU buffer once its handle is gone
+TEST(gfxfb, an_imported_buffer_presents_as_a_created_one) {
+    gpu_test::session gpu(g_import_present_gpu);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(IMPORT_GPU_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+
+    g_import_present_display.scanout_backend = &g_import_present_gpu;
+    light_output(g_import_present_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_import_present_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    uint32_t handle = import_output_0_picture(file, page, gpu_buffer);
+    ASSERT_NE(handle, static_cast<uint32_t>(0));
+    ASSERT_EQ(present_buffer(file, page, 0, handle), fs::OK);
+    EXPECT_EQ(g_import_present_display.presented, static_cast<gfxfb::buffer*>(&g_import_present_display.imported[0]));
+    end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
+
+    gpu_test::close_handle(gpu_buffer);
+    ASSERT_EQ(destroy_buffer(file, page, handle), fs::OK);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_import_present_gpu, 0));
+    EXPECT_EQ(g_import_present_display.released_count.load_acquire(), static_cast<uint32_t>(0));
+
+    ASSERT_TRUE(closes_giving_output_back(test, g_import_present_display, file, 0));
+    ASSERT_TRUE(spin_wait_ge(g_import_present_display.released_count, 1));
+    ASSERT_TRUE(spin_wait_ge(g_import_present_gpu.released_count, 2));
+}
+
+static gpu_test::fake_backend g_import_refusal_gpu;
+static recording_display g_import_refusal_display;
+
+// gfxfb refuses an unreadable request, a zero width or height and a short pitch, then a handle naming no GPU buffer or
+// lacking read rights, then a picture past the GPU buffer, without asking the display or keeping a reference
+TEST(gfxfb, import_buffer_refuses_bad_requests_before_the_display) {
+    gpu_test::session gpu(g_import_refusal_gpu);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(IMPORT_GPU_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+
+    int32_t reader = gpu.restrict_to(gpu_buffer, GPU_RIGHT_READ);
+    int32_t writer = gpu.restrict_to(gpu_buffer, GPU_RIGHT_WRITE);
+    int32_t timeline = gpu.new_timeline(0);
+    ASSERT_TRUE(reader >= 0);
+    ASSERT_TRUE(writer >= 0);
+    ASSERT_TRUE(timeline >= 0);
+
+    g_import_refusal_display.scanout_backend = &g_import_refusal_gpu;
+    light_output(g_import_refusal_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_import_refusal_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_IMPORT_BUFFER, 0), fs::ERR_INVAL);
+
+    // The request's own checks come before the lookup, so a handle naming no GPU buffer does not change their answer
+    gfxfb::gfxfb_import_args no_width = output_0_import(timeline, IMPORT_OFFSET);
+    no_width.width = 0;
+    EXPECT_EQ(send_import(file, page, no_width), fs::ERR_INVAL);
+
+    gfxfb::gfxfb_import_args no_height = output_0_import(timeline, IMPORT_OFFSET);
+    no_height.height = 0;
+    EXPECT_EQ(send_import(file, page, no_height), fs::ERR_INVAL);
+
+    gfxfb::gfxfb_import_args short_pitch = output_0_import(timeline, IMPORT_OFFSET);
+    short_pitch.pitch = static_cast<uint32_t>(OUTPUT_0_PITCH) - 1;
+    EXPECT_EQ(send_import(file, page, short_pitch), fs::ERR_INVAL);
+
+    // A row whose bytes overflow 32 bits, which would otherwise fit any pitch
+    gfxfb::gfxfb_import_args wide_row = output_0_import(timeline, IMPORT_OFFSET);
+    wide_row.width = 0x40000001;
+    EXPECT_EQ(send_import(file, page, wide_row), fs::ERR_INVAL);
+
+    EXPECT_EQ(send_import(file, page, output_0_import(writer, IMPORT_OFFSET)), fs::ERR_BADF);
+    EXPECT_EQ(send_import(file, page, output_0_import(timeline, IMPORT_OFFSET)), fs::ERR_BADF);
+    EXPECT_EQ(send_import(file, page, output_0_import(-1, IMPORT_OFFSET)), fs::ERR_BADF);
+
+    // An offset past the buffer's end, one wrapping the picture's end past 64 bits, and a picture ending a byte late
+    EXPECT_EQ(send_import(file, page, output_0_import(gpu_buffer, IMPORT_GPU_SIZE + 1)), fs::ERR_INVAL);
+    EXPECT_EQ(send_import(file, page, output_0_import(gpu_buffer, ~0ULL - IMPORT_OFFSET)), fs::ERR_INVAL);
+    EXPECT_EQ(send_import(file, page, output_0_import(gpu_buffer, IMPORT_LAST_OFFSET + 1)), fs::ERR_INVAL);
+
+    // A picture whose bytes overflow 32 bits, which would otherwise fit at any offset
+    gfxfb::gfxfb_import_args tall_picture = output_0_import(gpu_buffer, 0);
+    tall_picture.pitch = 0x10000;
+    tall_picture.height = 0x10000;
+    EXPECT_EQ(send_import(file, page, tall_picture), fs::ERR_INVAL);
+    EXPECT_EQ(g_import_refusal_display.import_calls, static_cast<uint32_t>(0));
+
+    // A pitch of exactly a row through a handle with only read rights and a picture ending at the buffer's end pass
+    gfxfb::gfxfb_import_args tight_rows = output_0_import(reader, 0);
+    tight_rows.pitch = static_cast<uint32_t>(OUTPUT_0_PITCH);
+    EXPECT_EQ(send_import(file, page, tight_rows), fs::OK);
+    EXPECT_EQ(send_import(file, page, output_0_import(gpu_buffer, IMPORT_LAST_OFFSET)), fs::OK);
+    EXPECT_EQ(g_import_refusal_display.import_calls, static_cast<uint32_t>(2));
+
+    gpu_test::close_handle(timeline);
+    gpu_test::close_handle(writer);
+    gpu_test::close_handle(reader);
+    gpu_test::close_handle(gpu_buffer);
+
+    ASSERT_TRUE(closes_before_deadline(file));
+    ASSERT_TRUE(spin_wait_ge(g_import_refusal_display.released_count, 2));
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_import_refusal_gpu, 1));
+}
+
+static gpu_test::fake_backend g_import_answer_gpu;
+static gpu_test::fake_backend g_import_foreign_gpu;
+static recording_display g_import_answer_display;
+
+// The display, not gfxfb, refuses another backend's memory, memory not made for scanout and another format. gfxfb
+// returns each as a file code, drops the GPU buffer's reference and marks the display failed only on ERR_DEVICE
+TEST(gfxfb, import_buffer_returns_the_display_refusals_as_file_errors) {
+    gpu_test::session gpu(g_import_answer_gpu);
+    gpu_test::session foreign_gpu(g_import_foreign_gpu);
+    ASSERT_TRUE(gpu.ready());
+    ASSERT_TRUE(foreign_gpu.ready());
+
+    int32_t gpu_buffer = gpu.new_buffer(IMPORT_GPU_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    int32_t unscannable = gpu.new_buffer(IMPORT_GPU_SIZE, GPU_PLACEMENT_VIDEO, 0);
+    int32_t foreign = foreign_gpu.new_buffer(IMPORT_GPU_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+    ASSERT_TRUE(unscannable >= 0);
+    ASSERT_TRUE(foreign >= 0);
+
+    g_import_answer_display.scanout_backend = &g_import_answer_gpu;
+    light_output(g_import_answer_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_import_answer_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    gfxfb::gfxfb_import_args wide_format = output_0_import(gpu_buffer, IMPORT_OFFSET);
+    wide_format.format = WIDE_FORMAT;
+    EXPECT_EQ(send_import(file, page, output_0_import(foreign, IMPORT_OFFSET)), fs::ERR_INVAL);
+    EXPECT_EQ(send_import(file, page, output_0_import(unscannable, IMPORT_OFFSET)), fs::ERR_INVAL);
+    EXPECT_EQ(send_import(file, page, wide_format), fs::ERR_INVAL);
+    EXPECT_EQ(g_import_answer_display.import_calls, static_cast<uint32_t>(3));
+
+    g_import_answer_display.import_answer = gfxfb::ERR_UNSUPPORTED;
+    EXPECT_EQ(send_import(file, page, output_0_import(gpu_buffer, IMPORT_OFFSET)), fs::ERR_NOSYS);
+    g_import_answer_display.import_answer = gfxfb::ERR_NO_MEMORY;
+    EXPECT_EQ(send_import(file, page, output_0_import(gpu_buffer, IMPORT_OFFSET)), fs::ERR_NOMEM);
+
+    g_import_answer_display.import_answer = gfxfb::ERR_REFUSED;
+    EXPECT_EQ(send_import(file, page, output_0_import(gpu_buffer, IMPORT_OFFSET)), fs::ERR_IO);
+    EXPECT_EQ(flush_one_rect(test.path, page), fs::OK);
+
+    g_import_answer_display.import_answer = gfxfb::ERR_DEVICE;
+    EXPECT_EQ(send_import(file, page, output_0_import(gpu_buffer, IMPORT_OFFSET)), fs::ERR_IO);
+    EXPECT_EQ(flush_one_rect(test.path, page), fs::ERR_IO);
+    EXPECT_EQ(g_import_answer_display.imported_count, static_cast<uint32_t>(0));
+
+    gpu_test::close_handle(gpu_buffer);
+    gpu_test::close_handle(unscannable);
+    gpu_test::close_handle(foreign);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_import_answer_gpu, 2));
+    EXPECT_TRUE(gpu_test::drain_reaper(foreign_gpu, g_import_foreign_gpu, 1));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static gpu_test::fake_backend g_import_control_gpu;
+static recording_display g_import_control_display;
+
+// An import takes control and one of its file's handles only when it succeeds, after its own checks, dropping the GPU
+// buffer's reference when another file controls the buffers or its own holds every handle
+TEST(gfxfb, import_buffer_takes_control_and_a_handle) {
+    gpu_test::session gpu(g_import_control_gpu);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(IMPORT_GPU_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+
+    g_import_control_display.scanout_backend = &g_import_control_gpu;
+    light_output(g_import_control_display, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_import_control_display);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* controller = fs::open(test.path, fs::O_RDWR);
+    fs::file* rival = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(controller);
+    ASSERT_NOT_NULL(rival);
+
+    g_import_control_display.import_answer = gfxfb::ERR_REFUSED;
+    EXPECT_EQ(send_import(rival, page, output_0_import(gpu_buffer, IMPORT_OFFSET)), fs::ERR_IO);
+    g_import_control_display.import_answer = gfxfb::OK;
+
+    EXPECT_EQ(import_output_0_picture(controller, page, gpu_buffer), static_cast<uint32_t>(1));
+    EXPECT_EQ(send_import(rival, page, output_0_import(gpu_buffer, IMPORT_OFFSET)), fs::ERR_BUSY);
+    EXPECT_EQ(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
+
+    gfxfb::gfxfb_import_args no_width = output_0_import(gpu_buffer, IMPORT_OFFSET);
+    no_width.width = 0;
+    EXPECT_EQ(send_import(rival, page, no_width), fs::ERR_INVAL);
+    EXPECT_EQ(send_import(rival, page, output_0_import(-1, IMPORT_OFFSET)), fs::ERR_BADF);
+    EXPECT_EQ(send_import(rival, page, output_0_import(gpu_buffer, IMPORT_LAST_OFFSET + 1)), fs::ERR_INVAL);
+
+    for (uint32_t i = 2; i <= gfxfb::GFXFB_CLIENT_BUFFERS_MAX; i++) {
+        ASSERT_EQ(import_output_0_picture(controller, page, gpu_buffer), i);
+    }
+
+    // Every import the display saw, the rival's refused one included
+    EXPECT_EQ(send_import(controller, page, output_0_import(gpu_buffer, IMPORT_OFFSET)), fs::ERR_NOMEM);
+    EXPECT_EQ(g_import_control_display.import_calls, gfxfb::GFXFB_CLIENT_BUFFERS_MAX + 1);
+
+    gpu_test::close_handle(gpu_buffer);
+    ASSERT_TRUE(closes_before_deadline(rival));
+    ASSERT_TRUE(closes_before_deadline(controller));
+    ASSERT_TRUE(spin_wait_ge(g_import_control_display.released_count, gfxfb::GFXFB_CLIENT_BUFFERS_MAX));
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_import_control_gpu, 1));
+}
+
+static gpu_test::fake_backend g_unreplied_import_gpu;
+static recording_display g_unreplied_import;
+
+// An import whose reply cannot be written hands its buffer back to the display, which drops the GPU buffer's reference
+// once, and leaves its handle free
+TEST(gfxfb, an_import_that_cannot_reply_hands_its_buffer_back) {
+    gpu_test::session gpu(g_unreplied_import_gpu);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(IMPORT_GPU_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+
+    // The test's own reference keeps the buffer readable even after an import that drops one too many
+    gpu::buffer* held = nullptr;
+    gpu::memory_view view = {};
+    int32_t found = fs::ERR_IO;
+    RUN_ELEVATED(found = gpu::lookup_buffer(gpu_buffer, GPU_RIGHT_READ, &held, view));
+    ASSERT_EQ(found, fs::OK);
+    uint32_t references_before = held->ref_count();
+
+    g_unreplied_import.scanout_backend = &g_unreplied_import_gpu;
+    light_output(g_unreplied_import, 0, false);
+    gfxfb_test_node test = publish_driver_node(&g_unreplied_import);
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    // A read-only page lets gfxfb read the request but not write the reply
+    *page.at<gfxfb::gfxfb_import_args>(0) = output_0_import(gpu_buffer, IMPORT_OFFSET);
+    ASSERT_EQ(mm::mm_context_mprotect(page.ctx, page.addr, pmm::PAGE_SIZE, mm::MM_PROT_READ), mm::MM_CTX_OK);
+    EXPECT_EQ(file_ioctl(file, page, gfxfb::GFXFB_IMPORT_BUFFER, page.addr), fs::ERR_INVAL);
+    ASSERT_TRUE(spin_wait_ge(g_unreplied_import.released_count, 1));
+    EXPECT_EQ(g_unreplied_import.last_released, static_cast<gfxfb::buffer*>(&g_unreplied_import.imported[0]));
+    ASSERT_EQ(held->ref_count(), references_before);
+
+    RUN_ELEVATED(gpu::release_buffer(held));
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_unreplied_import_gpu, 0));
+
+    uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
+    ASSERT_EQ(mm::mm_context_mprotect(page.ctx, page.addr, pmm::PAGE_SIZE, prot), mm::MM_CTX_OK);
+    EXPECT_EQ(request_small_buffer(file, page).handle, static_cast<uint32_t>(1));
+
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_unreplied_import_gpu, 2));
+
+    ASSERT_TRUE(closes_before_deadline(file));
+}
+
+static gpu_test::fake_backend g_boot_import_gpu;
+
+// The boot display imports no buffers, so GFXFB_IMPORT_BUFFER fails with ERR_NOSYS on a boot node and keeps no
+// reference on the GPU buffer
+TEST(gfxfb, boot_display_imports_no_buffers) {
+    gpu_test::session gpu(g_boot_import_gpu);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(IMPORT_GPU_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+
+    gfxfb_test_node test = publish_boot_node();
+    ASSERT_NOT_NULL(test.node);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    fs::file* file = fs::open(test.path, fs::O_RDWR);
+    ASSERT_NOT_NULL(file);
+
+    EXPECT_EQ(send_import(file, page, output_0_import(gpu_buffer, IMPORT_OFFSET)), fs::ERR_NOSYS);
+
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_boot_import_gpu, 1));
 
     ASSERT_TRUE(closes_before_deadline(file));
 }

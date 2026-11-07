@@ -55,6 +55,7 @@ struct fake_memory : gpu::memory {
     uint64_t          size;
     uint32_t          placement;
     uint32_t          flags;
+    uint32_t          device_id;
     mm::shmem_mapping pin;
 };
 
@@ -147,6 +148,7 @@ public:
     sync::atomic<uint32_t> released_count{0}; // counted on the reaper, after `last_released` is written
     sync::atomic<uint32_t> freed_count{0}; // releases that freed their memory, counted before `released_count`
     gpu::memory*           last_released = nullptr;
+    uint32_t               last_released_device_id = 0; // unlike `last_released`, never shared with a later memory
     fake_space             spaces[FAKE_SPACES_MAX] = {};
     uint32_t               space_count = 0;
     sync::atomic<uint32_t> spaces_destroyed{0};
@@ -242,9 +244,11 @@ public:
         mem->size = size;
         mem->placement = placement;
         mem->flags = flags;
+        mem->device_id = create_calls + wrap_calls;
+
         last_created = mem;
         *out = mem;
-        *out_device_id = create_calls + wrap_calls;
+        *out_device_id = mem->device_id;
 
         return gpu::OK;
     }
@@ -283,9 +287,11 @@ public:
         mem->phys = last_wrap_pages[0];
         mem->size = count * pmm::PAGE_SIZE;
         mem->placement = GPU_PLACEMENT_SYSTEM;
+        mem->device_id = create_calls + wrap_calls;
+
         last_wrapped = mem;
         *out = mem;
-        *out_device_id = create_calls + wrap_calls;
+        *out_device_id = mem->device_id;
 
         return gpu::OK;
     }
@@ -301,8 +307,10 @@ public:
     // A failed fake keeps the memory, a wrap's pin included, as a failed backend keeps what the GPU may still reach,
     // and a live one frees it here on the reaper, releasing any pin
     void release_memory(gpu::memory* mem) override {
+        auto* fake = static_cast<fake_memory*>(mem);
+        uint32_t device_id = fake->device_id;
+
         if (!failed) {
-            auto* fake = static_cast<fake_memory*>(mem);
             if (fake->kernel_va != 0) {
                 (void)vmm::free(fake->kernel_va);
             }
@@ -312,6 +320,7 @@ public:
         }
 
         last_released = mem;
+        last_released_device_id = device_id;
         released_count.fetch_add_release(1);
     }
 
@@ -783,6 +792,21 @@ inline gpu_wait_args* write_wait(
              .padding = 0};
 
     return args;
+}
+
+// Creates and closes a spare buffer and waits for the reaper to return its memory, which comes after every release
+// queued earlier, so it returns true only when exactly `released` releases came before the spare's
+inline bool drain_reaper(session& s, fake_backend& fake, uint32_t released) {
+    int32_t spare = s.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, 0);
+    if (spare < 0) {
+        return false;
+    }
+
+    uint32_t spare_id = fake.last_created->device_id;
+    close_handle(spare);
+
+    bool returned = test_helpers::spin_wait_ge(fake.released_count, released + 1);
+    return returned && fake.released_count.load_acquire() == released + 1 && fake.last_released_device_id == spare_id;
 }
 
 } // namespace gpu_test
