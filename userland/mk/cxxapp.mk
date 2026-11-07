@@ -44,12 +44,12 @@ LIB_ARCHIVES += $(SYSROOT)/lib/libstlxqpa.a $(SYSROOT)/lib/libstlxwin.a $(SYSROO
 endif
 
 # A Vulkan app's C++ sources compile against the kit's headers, and the app
-# links the Vulkan library
+# links the Vulkan library and libstlxwin, which the library calls
 ifdef APP_VULKAN
 include $(USERLAND_ROOT)/mk/vulkan.mk
 APP_CXXFLAGS += $(VULKAN_CPPFLAGS)
-APP_LDLIBS   += $(VULKAN_LIBS)
-LIB_ARCHIVES += $(VULKAN_LIBRARY)
+APP_LDLIBS   += $(VULKAN_LIBS) -lstlxwin
+LIB_ARCHIVES += $(VULKAN_LIBRARY) $(SYSROOT)/lib/libstlxwin.a
 endif
 
 all: $(TARGET)

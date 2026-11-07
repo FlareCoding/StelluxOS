@@ -1,0 +1,544 @@
+Adds the stellux WSI platform, whose surfaces wrap stlxwin windows, and
+offers VK_STLX_surface from NVK. Only the GPU whose buffers stlxdm takes
+can present, from every queue family, so the Stellux nvkmd records the N of
+the /dev/gpuN it opened and NVK hands it to the WSI device. The window's
+configured size is the only extent, and a dead connection or stlxdm taking
+no GPU buffers loses the surface. The platform creates no swapchain:
+creation fails with VK_ERROR_INITIALIZATION_FAILED.
+
+--- a/meson.build
++++ b/meson.build
+@@ -488,6 +488,7 @@ with_platform_wayland = _platforms.contains('wayland')
+ with_platform_haiku = _platforms.contains('haiku')
+ with_platform_windows = _platforms.contains('windows')
+ with_platform_macos = _platforms.contains('macos')
++with_platform_stellux = _platforms.contains('stellux')
+ 
+ with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
+ if with_gfxstream_emulated_android
+--- a/src/nouveau/vulkan/nvk_instance.c
++++ b/src/nouveau/vulkan/nvk_instance.c
+@@ -55,6 +55,9 @@ static const struct vk_instance_extension_table instance_extensions = {
+    .EXT_display_surface_counter = true,
+    .EXT_acquire_drm_display = true,
+ #endif
++#ifdef VK_USE_PLATFORM_STELLUX_STLX
++   .STLX_surface = true,
++#endif
+ #if !defined(VK_USE_PLATFORM_WIN32_KHR) && !defined(NVK_STELLUX)
+    .EXT_headless_surface = true,
+ #endif
+--- a/src/nouveau/vulkan/nvk_physical_device.h
++++ b/src/nouveau/vulkan/nvk_physical_device.h
+@@ -97,7 +97,8 @@ VkExtent2D nvk_max_shading_rate(const struct nvk_physical_device *pdev,
+ #if defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
+     defined(VK_USE_PLATFORM_XCB_KHR) || \
+     defined(VK_USE_PLATFORM_XLIB_KHR) || \
+-    defined(VK_USE_PLATFORM_DISPLAY_KHR)
++    defined(VK_USE_PLATFORM_DISPLAY_KHR) || \
++    defined(VK_USE_PLATFORM_STELLUX_STLX)
+ #define NVK_USE_WSI_PLATFORM
+ #endif
+ 
+--- a/src/nouveau/vulkan/nvk_wsi.c
++++ b/src/nouveau/vulkan/nvk_wsi.c
+@@ -34,6 +34,7 @@ nvk_init_wsi(struct nvk_physical_device *pdev)
+    pdev->wsi_device.supports_scanout = false;
+    pdev->wsi_device.supports_modifiers =
+       pdev->vk.supported_extensions.table.EXT_image_drm_format_modifier;
++   pdev->wsi_device.stellux.gpu_index = pdev->nvkmd->stellux.gpu_index;
+ 
+    pdev->vk.wsi_device = &pdev->wsi_device;
+ 
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -156,6 +156,11 @@ struct nvkmd_pdev {
+       dev_t primary_dev;
+    } drm;
+ 
++   struct {
++      /* N of the /dev/gpuN the pdev opened */
++      uint32_t gpu_index;
++   } stellux;
++
+    const struct vk_sync_type *const *sync_types;
+ };
+ 
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_pdev.c
+@@ -128,6 +128,7 @@ nvkmd_stellux_try_create_pdev(uint32_t gpu_index,
+       .has_overmap = true,
+    };
+    pdev->base.bind_align_B = info.page_size;
++   pdev->base.stellux.gpu_index = gpu_index;
+    pdev->fd = fd;
+ 
+    pdev->sync_type = nvkmd_stellux_sync_type;
+--- a/src/vulkan/meson.build
++++ b/src/vulkan/meson.build
+@@ -76,6 +76,9 @@ if with_platform_macos
+     modules : ['QuartzCore', 'Metal']
+   )
+ endif
++if with_platform_stellux
++  vulkan_wsi_list += '-DVK_USE_PLATFORM_STELLUX_STLX'
++endif
+ 
+ idep_vulkan_wsi_defines = declare_dependency(
+   compile_args : vulkan_wsi_list,
+--- a/src/vulkan/wsi/meson.build
++++ b/src/vulkan/wsi/meson.build
+@@ -38,6 +38,10 @@ if with_platform_macos
+   files_vulkan_wsi += files('wsi_common_metal.c', 'wsi_common_metal_layer.m')
+ endif
+ 
++if with_platform_stellux
++  files_vulkan_wsi += files('wsi_common_stellux.c')
++endif
++
+ if system_has_kms_drm and not with_platform_android and not with_nouveau_stellux
+   files_vulkan_wsi += files('wsi_common_display.c')
+ endif
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -269,6 +269,12 @@ wsi_device_init(struct wsi_device *wsi,
+       goto fail;
+ #endif
+ 
++#ifdef VK_USE_PLATFORM_STELLUX_STLX
++   result = wsi_stellux_init_wsi(wsi, alloc);
++   if (result != VK_SUCCESS)
++      goto fail;
++#endif
++
+ #ifndef VK_USE_PLATFORM_WIN32_KHR
+    result = wsi_headless_init_wsi(wsi, alloc, pdevice);
+    if (result != VK_SUCCESS)
+@@ -358,6 +364,9 @@ wsi_device_finish(struct wsi_device *wsi,
+ #if defined(VK_USE_PLATFORM_METAL_EXT)
+    wsi_metal_finish_wsi(wsi, alloc);
+ #endif
++#if defined(VK_USE_PLATFORM_STELLUX_STLX)
++   wsi_stellux_finish_wsi(wsi, alloc);
++#endif
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -52,7 +52,7 @@ struct vk_queue;
+ 
+ struct driOptionCache;
+ 
+-#define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_METAL + 1)
++#define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_STELLUX + 1)
+ 
+ struct wsi_device {
+    /* Allocator for the instance */
+@@ -154,6 +154,12 @@ struct wsi_device {
+       void (*encode_drawable_present)(VkCommandBuffer cmd, void *drawable);
+    } metal;
+ 
++   struct {
++      /* N of the device's /dev/gpuN, which stlxdm names when it takes that
++       * GPU's buffers */
++      uint32_t gpu_index;
++   } stellux;
++
+ 
+    bool sw;
+ 
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -560,6 +560,10 @@ VkResult wsi_metal_init_wsi(struct wsi_device *wsi_device,
+                            VkPhysicalDevice physical_device);
+ void wsi_metal_finish_wsi(struct wsi_device *wsi_device,
+                           const VkAllocationCallbacks *alloc);
++VkResult wsi_stellux_init_wsi(struct wsi_device *wsi_device,
++                              const VkAllocationCallbacks *alloc);
++void wsi_stellux_finish_wsi(struct wsi_device *wsi_device,
++                            const VkAllocationCallbacks *alloc);
+ 
+ 
+ VkResult
+--- /dev/null
++++ b/src/vulkan/wsi/wsi_common_stellux.c
+@@ -0,0 +1,378 @@
++/*
++ * SPDX-License-Identifier: MIT
++ */
++
++/** VK_STLX_surface */
++
++#include "util/macros.h"
++#include "vk_instance.h"
++#include "vk_physical_device.h"
++#include "vk_util.h"
++#include "wsi_common_entrypoints.h"
++#include "wsi_common_private.h"
++
++#include <stlxwin/stlxwin.h>
++
++/* stlxdm holds two pictures of a window, so a MAILBOX swapchain needs a
++ * third to render into */
++#define STELLUX_MAILBOX_MIN_IMAGES 3
++
++struct wsi_stellux {
++   struct wsi_interface base;
++};
++
++struct wsi_stellux_surface {
++   VkIcdSurfaceBase base;
++   stlxwin_conn *conn;
++   stlxwin_window *window;
++};
++
++/* Both lay out their bytes as STLXWIN_FMT_XRGB8888, the one format of
++ * libstlxwin's GPU buffers */
++static const VkFormat formats[] = {
++   VK_FORMAT_B8G8R8A8_UNORM,
++   VK_FORMAT_B8G8R8A8_SRGB,
++};
++
++static const VkPresentModeKHR present_modes[] = {
++   VK_PRESENT_MODE_FIFO_KHR,
++   VK_PRESENT_MODE_MAILBOX_KHR,
++};
++
++static struct wsi_stellux_surface *
++wsi_stellux_surface(VkIcdSurfaceBase *icd_surface)
++{
++   return container_of(icd_surface, struct wsi_stellux_surface, base);
++}
++
++/* A dead connection, or stlxdm taking no GPU buffers, loses the surface */
++static VkResult
++wsi_stellux_surface_get_gpu_info(VkIcdSurfaceBase *icd_surface,
++                                 stlxwin_gpu_info *info)
++{
++   struct wsi_stellux_surface *surface = wsi_stellux_surface(icd_surface);
++
++   if (stlxwin_gpu_check(surface->conn) < 0)
++      return VK_ERROR_SURFACE_LOST_KHR;
++
++   *info = stlxwin_gpu_info_get(surface->conn);
++   if (!(info->flags & STLXWIN_GPU_ACCEPTS))
++      return VK_ERROR_SURFACE_LOST_KHR;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_stellux_surface_get_support(VkIcdSurfaceBase *icd_surface,
++                                struct wsi_device *wsi_device,
++                                uint32_t queueFamilyIndex,
++                                VkBool32 *pSupported)
++{
++   stlxwin_gpu_info info;
++   VkResult result = wsi_stellux_surface_get_gpu_info(icd_surface, &info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   /* Only one GPU can present: the one whose buffers stlxdm takes */
++   *pSupported = info.device == wsi_device->stellux.gpu_index;
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_stellux_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
++                                     struct wsi_device *wsi_device,
++                                     const VkSurfacePresentModeKHR *present_mode,
++                                     VkSurfaceCapabilities2KHR *caps)
++{
++   struct wsi_stellux_surface *surface = wsi_stellux_surface(icd_surface);
++
++   stlxwin_gpu_info info;
++   VkResult result = wsi_stellux_surface_get_gpu_info(icd_surface, &info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   bool mailbox = present_mode &&
++                  present_mode->presentMode == VK_PRESENT_MODE_MAILBOX_KHR;
++   caps->surfaceCapabilities.minImageCount =
++      mailbox ? STELLUX_MAILBOX_MIN_IMAGES : 2;
++   caps->surfaceCapabilities.maxImageCount = 4;
++
++   uint32_t width, height;
++   stlxwin_window_configured(surface->window, &width, &height, NULL);
++   caps->surfaceCapabilities.currentExtent = (VkExtent2D) { width, height };
++   caps->surfaceCapabilities.minImageExtent = (VkExtent2D) { width, height };
++   caps->surfaceCapabilities.maxImageExtent = (VkExtent2D) { width, height };
++
++   caps->surfaceCapabilities.supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++   caps->surfaceCapabilities.currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++   caps->surfaceCapabilities.maxImageArrayLayers = 1;
++
++   /* stlxdm ignores the top byte of XRGB8888, where both formats keep alpha */
++   caps->surfaceCapabilities.supportedCompositeAlpha =
++      VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
++
++   VkImageUsageFlags image_usage = wsi_caps_get_image_usage();
++
++   VK_FROM_HANDLE(vk_physical_device, pdevice, wsi_device->pdevice);
++   if (pdevice->supported_extensions.EXT_attachment_feedback_loop_layout)
++      image_usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
++
++   VkSwapchainFlagsSurfaceCapabilitiesEXT *surface_caps =
++      vk_find_struct(caps, SWAPCHAIN_FLAGS_SURFACE_CAPABILITIES_EXT);
++   if (surface_caps && pdevice->supported_extensions.EXT_multisampled_render_to_swapchain)
++      surface_caps->swapchainSupportedFlags |= VK_SWAPCHAIN_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT;
++
++   VkImageUsageFlags2CreateInfoKHR *usage2 =
++      vk_find_struct(caps->pNext, IMAGE_USAGE_FLAGS_2_CREATE_INFO_KHR);
++   if (usage2) {
++      usage2->usage = image_usage;
++   } else {
++      caps->surfaceCapabilities.supportedUsageFlags = image_usage;
++   }
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_stellux_surface_get_capabilities2(VkIcdSurfaceBase *icd_surface,
++                                      struct wsi_device *wsi_device,
++                                      const void *info_next,
++                                      VkSurfaceCapabilities2KHR *caps)
++{
++   assert(caps->sType == VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR);
++
++   const VkSurfacePresentModeKHR *present_mode =
++      vk_find_struct_const(info_next, SURFACE_PRESENT_MODE_KHR);
++
++   VkResult result =
++      wsi_stellux_surface_get_capabilities(icd_surface, wsi_device,
++                                           present_mode, caps);
++   if (result != VK_SUCCESS)
++      return result;
++
++   vk_foreach_struct(ext, caps->pNext) {
++      switch (ext->sType) {
++      case VK_STRUCTURE_TYPE_SURFACE_PROTECTED_CAPABILITIES_KHR: {
++         VkSurfaceProtectedCapabilitiesKHR *protected = (void *)ext;
++         protected->supportsProtected = VK_FALSE;
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_KHR: {
++         /* Unsupported */
++         VkSurfacePresentScalingCapabilitiesKHR *scaling = (void *)ext;
++         scaling->supportedPresentScaling = 0;
++         scaling->supportedPresentGravityX = 0;
++         scaling->supportedPresentGravityY = 0;
++         scaling->minScaledImageExtent = caps->surfaceCapabilities.minImageExtent;
++         scaling->maxScaledImageExtent = caps->surfaceCapabilities.maxImageExtent;
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_KHR: {
++         /* Unsupported */
++         VkSurfacePresentModeCompatibilityKHR *compat = (void *)ext;
++         if (compat->pPresentModes == NULL) {
++            if (!present_mode) {
++               wsi_common_vk_warn_once("Use of VkSurfacePresentModeCompatibilityKHR "
++                                       "without a VkSurfacePresentModeKHR set. This is an "
++                                       "application bug.\n");
++            }
++            compat->presentModeCount = 1;
++         } else if (compat->presentModeCount) {
++            assert(present_mode);
++            compat->presentModeCount = 1;
++            compat->pPresentModes[0] = present_mode->presentMode;
++         }
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT: {
++         VkPresentTimingSurfaceCapabilitiesEXT *timing = (void *)ext;
++         timing->presentStageQueries = 0;
++         timing->presentTimingSupported = VK_FALSE;
++         timing->presentAtAbsoluteTimeSupported = VK_FALSE;
++         timing->presentAtRelativeTimeSupported = VK_FALSE;
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR: {
++         VkSurfaceCapabilitiesPresentId2KHR *pid2 = (void *)ext;
++         pid2->presentId2Supported = VK_FALSE;
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR: {
++         VkSurfaceCapabilitiesPresentWait2KHR *pwait2 = (void *)ext;
++         pwait2->presentWait2Supported = VK_FALSE;
++         break;
++      }
++
++      default:
++         /* Ignored */
++         break;
++      }
++   }
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_stellux_surface_get_formats(VkIcdSurfaceBase *icd_surface,
++                                struct wsi_device *wsi_device,
++                                uint32_t *pSurfaceFormatCount,
++                                VkSurfaceFormatKHR *pSurfaceFormats)
++{
++   stlxwin_gpu_info info;
++   VkResult result = wsi_stellux_surface_get_gpu_info(icd_surface, &info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormatKHR, out, pSurfaceFormats, pSurfaceFormatCount);
++
++   for (unsigned i = 0; i < ARRAY_SIZE(formats); i++) {
++      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, out_fmt) {
++         out_fmt->format = formats[i];
++         out_fmt->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++      }
++   }
++
++   return vk_outarray_status(&out);
++}
++
++static VkResult
++wsi_stellux_surface_get_formats2(VkIcdSurfaceBase *icd_surface,
++                                 struct wsi_device *wsi_device,
++                                 const void *info_next,
++                                 uint32_t *pSurfaceFormatCount,
++                                 VkSurfaceFormat2KHR *pSurfaceFormats)
++{
++   stlxwin_gpu_info info;
++   VkResult result = wsi_stellux_surface_get_gpu_info(icd_surface, &info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormat2KHR, out, pSurfaceFormats, pSurfaceFormatCount);
++
++   for (unsigned i = 0; i < ARRAY_SIZE(formats); i++) {
++      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, out_fmt) {
++         out_fmt->surfaceFormat.format = formats[i];
++         out_fmt->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++      }
++   }
++
++   return vk_outarray_status(&out);
++}
++
++static VkResult
++wsi_stellux_surface_get_present_modes(VkIcdSurfaceBase *icd_surface,
++                                      struct wsi_device *wsi_device,
++                                      uint32_t *pPresentModeCount,
++                                      VkPresentModeKHR *pPresentModes)
++{
++   stlxwin_gpu_info info;
++   VkResult result = wsi_stellux_surface_get_gpu_info(icd_surface, &info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   VK_OUTARRAY_MAKE_TYPED(VkPresentModeKHR, out, pPresentModes, pPresentModeCount);
++
++   for (unsigned i = 0; i < ARRAY_SIZE(present_modes); i++) {
++      vk_outarray_append_typed(VkPresentModeKHR, &out, mode) {
++         *mode = present_modes[i];
++      }
++   }
++
++   return vk_outarray_status(&out);
++}
++
++static VkResult
++wsi_stellux_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
++                                           struct wsi_device *wsi_device,
++                                           uint32_t *pRectCount,
++                                           VkRect2D *pRects)
++{
++   struct wsi_stellux_surface *surface = wsi_stellux_surface(icd_surface);
++   VK_OUTARRAY_MAKE_TYPED(VkRect2D, out, pRects, pRectCount);
++
++   vk_outarray_append_typed(VkRect2D, &out, rect) {
++      uint32_t width, height;
++      stlxwin_window_configured(surface->window, &width, &height, NULL);
++      *rect = (VkRect2D) {
++         .offset = { 0, 0 },
++         .extent = { width, height },
++      };
++   }
++
++   return vk_outarray_status(&out);
++}
++
++/* The platform has no swapchain to create */
++static VkResult
++wsi_stellux_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
++                                     VkDevice device,
++                                     struct wsi_device *wsi_device,
++                                     const VkSwapchainCreateInfoKHR *pCreateInfo,
++                                     const VkAllocationCallbacks *pAllocator,
++                                     struct wsi_swapchain **swapchain_out)
++{
++   return VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VkResult
++wsi_stellux_init_wsi(struct wsi_device *wsi_device,
++                     const VkAllocationCallbacks *alloc)
++{
++   struct wsi_stellux *wsi = vk_alloc(alloc, sizeof(*wsi), 8,
++                                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
++   if (!wsi)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   wsi->base.get_support = wsi_stellux_surface_get_support;
++   wsi->base.get_capabilities2 = wsi_stellux_surface_get_capabilities2;
++   wsi->base.get_formats = wsi_stellux_surface_get_formats;
++   wsi->base.get_formats2 = wsi_stellux_surface_get_formats2;
++   wsi->base.get_present_modes = wsi_stellux_surface_get_present_modes;
++   wsi->base.get_present_rectangles = wsi_stellux_surface_get_present_rectangles;
++   wsi->base.create_swapchain = wsi_stellux_surface_create_swapchain;
++
++   wsi_device->wsi[VK_ICD_WSI_PLATFORM_STELLUX] = &wsi->base;
++
++   return VK_SUCCESS;
++}
++
++void
++wsi_stellux_finish_wsi(struct wsi_device *wsi_device,
++                       const VkAllocationCallbacks *alloc)
++{
++   struct wsi_stellux *wsi =
++      (struct wsi_stellux *)wsi_device->wsi[VK_ICD_WSI_PLATFORM_STELLUX];
++   if (!wsi)
++      return;
++
++   vk_free(alloc, wsi);
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++wsi_CreateStelluxSurfaceSTLX(VkInstance _instance,
++                             const VkStelluxSurfaceCreateInfoSTLX *pCreateInfo,
++                             const VkAllocationCallbacks *pAllocator,
++                             VkSurfaceKHR *pSurface)
++{
++   VK_FROM_HANDLE(vk_instance, instance, _instance);
++
++   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_STELLUX_SURFACE_CREATE_INFO_STLX);
++
++   struct wsi_stellux_surface *surface =
++      vk_alloc2(&instance->alloc, pAllocator, sizeof(*surface), 8,
++                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (surface == NULL)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   surface->base.platform = VK_ICD_WSI_PLATFORM_STELLUX;
++   surface->conn = pCreateInfo->connection;
++   surface->window = pCreateInfo->window;
++
++   *pSurface = VkIcdSurfaceBase_to_handle(&surface->base);
++   return VK_SUCCESS;
++}

@@ -212,11 +212,10 @@ static VkPhysicalDevicePCIBusInfoPropertiesEXT read_pci_bus(
     return pci_bus;
 }
 
-// Opens the /dev/gpuN at `physical_device`'s PCI address, or returns -1
-static int open_gpu_file_of(VkInstance instance, VkPhysicalDevice physical_device) {
+uint32_t find_gpu_index(VkInstance instance, VkPhysicalDevice physical_device) {
     auto get_properties = find_command<PFN_vkGetPhysicalDeviceProperties2>(instance, "vkGetPhysicalDeviceProperties2");
     if (!get_properties) {
-        return -1;
+        return UINT32_MAX;
     }
 
     VkPhysicalDevicePCIBusInfoPropertiesEXT pci_bus = read_pci_bus(get_properties, physical_device);
@@ -226,16 +225,30 @@ static int open_gpu_file_of(VkInstance instance, VkPhysicalDevice physical_devic
 
         int fd = open(path, O_RDWR | O_CLOEXEC);
         if (fd < 0) {
-            return -1;
+            return UINT32_MAX;
         }
 
         gpu_info info = {};
-        if (ioctl(fd, GPU_GET_INFO, &info) == 0 && is_at_address(info, pci_bus)) {
-            return fd;
-        }
-
+        bool is_at_pci_address = ioctl(fd, GPU_GET_INFO, &info) == 0 && is_at_address(info, pci_bus);
         close(fd);
+
+        if (is_at_pci_address) {
+            return index;
+        }
     }
+}
+
+// Opens the /dev/gpuN at `physical_device`'s PCI address, or returns -1
+static int open_gpu_file_of(VkInstance instance, VkPhysicalDevice physical_device) {
+    uint32_t index = find_gpu_index(instance, physical_device);
+    if (index == UINT32_MAX) {
+        return -1;
+    }
+
+    char path[32];
+    snprintf(path, sizeof(path), "/dev/gpu%u", index);
+
+    return open(path, O_RDWR | O_CLOEXEC);
 }
 
 int restrict_to_read(VkInstance instance, VkPhysicalDevice physical_device, int descriptor) {
@@ -654,6 +667,9 @@ int main() {
     check_loading_by_name();
     check_global_commands();
     check_instance();
+
+    printf("vktest: window\n");
+    check_window();
 
     print_summary();
 

@@ -170,6 +170,9 @@ enum {
     STLXWIN_LAYOUT_APART   = 6,  /* an output does not connect to the main output */
 };
 
+/* Raised when a change to the GPU calls, stlxwin_window_configured or their types breaks the mesa kit's library */
+#define STLXWIN_GPU_ABI_VERSION 1u
+
 enum {
     STLXWIN_GPU_ACCEPTS   = 1u << 0,  /* the display manager takes buffers from /dev/gpuN, N being the device field */
     STLXWIN_GPU_CPU_READS = 1u << 1,  /* buffers must be mappable, and system memory reads fastest */
