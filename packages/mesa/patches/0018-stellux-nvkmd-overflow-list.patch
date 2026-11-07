@@ -1,0 +1,466 @@
+Gives each exec ctx of the Stellux nvkmd an overflow list, so a submit
+never waits for room in a full queue. Such a wait would hang a program
+whose queued work depends on a point its own thread signals after the
+submit. The list takes the submission the full queue refuses and every
+later one while the list holds any, and the ctx's thread submits them in
+order as the queue drains, waking at least every 100 ms for the device
+check. A submit fails with VK_ERROR_OUT_OF_HOST_MEMORY when its submission
+cannot be copied onto the list or the thread cannot start. A loss drops
+the list, whose submissions never reach the kernel. A ctx's sync waits for
+the list to empty, and its destroy stops its thread. Making or destroying
+a ctx waits for the dev's other threads to leave their lists before it
+changes the dev's list of ctxs, which their device checks walk.
+
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux.h
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux.h
+@@ -4,6 +4,7 @@
+ #ifndef NVKMD_STELLUX_H
+ #define NVKMD_STELLUX_H 1
+ 
++#include "c11/threads.h"
+ #include "nvkmd/nvkmd.h"
+ #include "util/list.h"
+ #include "util/u_dynarray.h"
+@@ -17,8 +18,9 @@
+ /* The nvkmd over Stellux's /dev/gpuN files, whose calls <stlx/gpu_abi.h>
+  * defines. A pdev owns its GPU's open file, a dev one GPU context, a mem
+  * one buffer with its whole-buffer GPU mapping, a va one range of GPU
+- * addresses from its dev's heaps, a ctx one queue of its dev's context and
+- * a private timeline, and a sync one timeline.
++ * addresses from its dev's heaps and a sync one timeline. A ctx owns one
++ * queue of its dev's context, a private timeline and the submissions
++ * waiting for room in that queue.
+  */
+ 
+ /* A dev's heaps: ordinary addresses below 2^38, capture-replay ones above */
+@@ -27,6 +29,9 @@
+ #define NVKMD_STELLUX_REPLAY_HEAP_START NVKMD_STELLUX_HEAP_END
+ #define NVKMD_STELLUX_REPLAY_HEAP_END ((uint64_t)1 << 39)
+ 
++/* The longest a wait sleeps in the kernel before a device check */
++#define NVKMD_STELLUX_WAIT_SLICE_NS (100ull * 1000 * 1000)
++
+ /* The calls whose errors nvkmd_stellux_error() turns into VkResults */
+ enum nvkmd_stellux_call {
+    NVKMD_STELLUX_CALL_CONTEXT_CREATE,
+@@ -80,7 +85,7 @@ struct nvkmd_stellux_dev {
+    /* When the kernel last reported the context live, accessed atomically */
+    uint64_t live_ns;
+ 
+-   /* Changed only while NVK makes or destroys the device, so read unlocked */
++   /* Changed only in device setup and teardown, once no ctx's thread runs */
+    struct list_head ctxs;
+ 
+    simple_mtx_t heap_mutex;
+@@ -158,6 +163,13 @@ VkResult nvkmd_stellux_alloc_va(struct nvkmd_dev *dev,
+ /* A batch past GPU_SUBMIT's limits goes in a chain of submissions, each
+  * later part waiting on the private point of the one before, so a failed
+  * part fails the rest.
++ *
++ * A submission the full queue refuses goes on the overflow list, as does
++ * every later one while the list holds any, so a submit never waits for
++ * room. The ctx's thread submits the list in order as the queue drains,
++ * and a loss drops the list, whose submissions never reach the kernel. A
++ * submit fails with VK_ERROR_OUT_OF_HOST_MEMORY when its submission cannot
++ * be copied onto the list or the thread cannot start.
+  */
+ struct nvkmd_stellux_ctx {
+    struct nvkmd_ctx base;
+@@ -165,9 +177,12 @@ struct nvkmd_stellux_ctx {
+    /* Link in nvkmd_stellux_dev::ctxs */
+    struct list_head link;
+ 
++   /* The device the thread loses when its wait or submit fails */
++   struct vk_device *device;
++
+    uint32_t queue;
+ 
+-   /* The private timeline and the point of the last submission taken */
++   /* The private timeline and the point of the last submit that succeeded */
+    int timeline;
+    uint64_t last_point;
+ 
+@@ -175,6 +190,17 @@ struct nvkmd_stellux_ctx {
+    struct gpu_point waits[GPU_POINTS_MAX];
+    uint32_t wait_count;
+    struct util_dynarray ranges;
++
++   /* Guards the list and the two flags after it, never held across an ioctl */
++   mtx_t overflow_mutex;
++   cnd_t thread_ended;
++   struct list_head overflow;
++   bool thread_runs;
++   bool stopping;
++
++   /* The thread last started, which only the program's thread joins */
++   thrd_t thread;
++   bool thread_joinable;
+ };
+ 
+ NVKMD_DECL_SUBCLASS(ctx, stellux);
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_ctx.c
+@@ -4,10 +4,14 @@
+ 
+ #include "nvkmd_stellux.h"
+ 
++#include "util/os_time.h"
+ #include "util/u_memory.h"
++#include "util/u_thread.h"
++#include "vk_device.h"
+ #include "vk_log.h"
+ 
+ #include <errno.h>
++#include <string.h>
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+ 
+@@ -15,6 +19,18 @@
+ #define NVKMD_STELLUX_RANGES_MAX \
+    ((uint32_t)(GPU_COMMANDS_BYTES_MAX / sizeof(struct gpu_nvidia_range)))
+ 
++/* A submission on the overflow list, whose args point at its own copies */
++struct overflow_entry {
++   struct list_head link;
++
++   struct gpu_submit_args args;
++   uint64_t private_point;
++
++   struct gpu_point waits[GPU_POINTS_MAX];
++   struct gpu_point signals[GPU_POINTS_MAX];
++   struct gpu_nvidia_range commands[];
++};
++
+ static int
+ sync_timeline(struct vk_sync *sync)
+ {
+@@ -47,11 +63,213 @@ destroy_queue(struct nvkmd_stellux_dev *dev, uint32_t queue)
+ }
+ 
+ static int
+-submit_ioctl(struct nvkmd_stellux_dev *dev, struct gpu_submit_args *args)
++submit_ioctl(struct nvkmd_stellux_dev *dev,
++             const struct gpu_submit_args *args)
+ {
+    return ioctl(dev->fd, GPU_SUBMIT, args) == 0 ? 0 : errno;
+ }
+ 
++static void
++free_entries(struct list_head *entries)
++{
++   list_for_each_entry_safe(struct overflow_entry, entry, entries, link)
++      FREE(entry);
++}
++
++/* Waits for the ctx's thread to leave its list, which the GPU drains on a
++ * live device and a loss drops, or to see the ctx stopping, and joins it
++ */
++static void
++join_overflow_thread(struct nvkmd_stellux_ctx *ctx)
++{
++   mtx_lock(&ctx->overflow_mutex);
++   while (ctx->thread_runs)
++      cnd_wait(&ctx->thread_ended, &ctx->overflow_mutex);
++   mtx_unlock(&ctx->overflow_mutex);
++
++   if (ctx->thread_joinable) {
++      thrd_join(ctx->thread, NULL);
++      ctx->thread_joinable = false;
++   }
++}
++
++/* Threads walk the dev's ctxs in device checks and the runtime's queues on a
++ * loss, so neither list may change while one runs
++ */
++static void
++join_overflow_threads(struct nvkmd_stellux_dev *dev)
++{
++   list_for_each_entry(struct nvkmd_stellux_ctx, ctx, &dev->ctxs, link)
++      join_overflow_thread(ctx);
++}
++
++/* Waits one slice for room, which the queue has once the submission
++ * GPU_QUEUE_PENDING_MAX before entry has reached its private point
++ */
++static VkResult
++wait_for_room(struct nvkmd_stellux_ctx *ctx, struct nvkmd_stellux_dev *dev,
++              const struct overflow_entry *entry)
++{
++   assert(entry->private_point > GPU_QUEUE_PENDING_MAX);
++   const struct gpu_point oldest = {
++      .timeline = ctx->timeline,
++      .value = entry->private_point - GPU_QUEUE_PENDING_MAX,
++   };
++   const uint64_t slice_end_ns =
++      os_time_get_absolute_timeout(NVKMD_STELLUX_WAIT_SLICE_NS);
++
++   VkResult result = nvkmd_stellux_wait(ctx->device, dev->fd, &oldest, 1, true,
++                                        slice_end_ns);
++   if (result == VK_SUCCESS || result == VK_TIMEOUT)
++      return result;
++
++   return vk_device_set_lost(ctx->device, "A wait for room in a full GPU "
++                             "queue failed");
++}
++
++/* The submit that put entry on the list returns success, so any error here
++ * loses the device
++ */
++static VkResult
++submit_entry(struct nvkmd_stellux_ctx *ctx, struct nvkmd_stellux_dev *dev,
++             const struct overflow_entry *entry)
++{
++   const int err = submit_ioctl(dev, &entry->args);
++   if (err == 0)
++      return VK_SUCCESS;
++
++   /* Loses the device with the kernel's reason for the lost context */
++   if (err == EIO)
++      nvkmd_stellux_dev_check(dev, ctx->device, true);
++
++   return vk_device_set_lost(ctx->device, "GPU_SUBMIT of a submission that "
++                             "a full GPU queue delayed failed: %s",
++                             strerror(err));
++}
++
++/* The head stays on the list while its wait and GPU_SUBMIT run, so the
++ * program's thread never submits past it
++ */
++static int
++serve_overflow(void *data)
++{
++   struct nvkmd_stellux_ctx *ctx = data;
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(ctx->base.dev);
++
++   mtx_lock(&ctx->overflow_mutex);
++   while (!ctx->stopping && !list_is_empty(&ctx->overflow)) {
++      struct overflow_entry *head =
++         list_first_entry(&ctx->overflow, struct overflow_entry, link);
++      mtx_unlock(&ctx->overflow_mutex);
++
++      VkResult result = wait_for_room(ctx, dev, head);
++      if (result == VK_SUCCESS)
++         result = submit_entry(ctx, dev, head);
++
++      struct list_head done;
++      list_inithead(&done);
++
++      mtx_lock(&ctx->overflow_mutex);
++      if (result == VK_SUCCESS) {
++         list_move_to(&head->link, &done);
++      } else if (result != VK_TIMEOUT) {
++         list_replace(&ctx->overflow, &done);
++         list_inithead(&ctx->overflow);
++      }
++      mtx_unlock(&ctx->overflow_mutex);
++
++      free_entries(&done);
++      mtx_lock(&ctx->overflow_mutex);
++   }
++
++   ctx->thread_runs = false;
++   cnd_broadcast(&ctx->thread_ended);
++   mtx_unlock(&ctx->overflow_mutex);
++
++   return 0;
++}
++
++static VkResult
++add_overflow_entry(struct nvkmd_stellux_ctx *ctx,
++                   struct vk_object_base *log_obj,
++                   const struct gpu_submit_args *args, uint64_t private_point)
++{
++   struct overflow_entry *entry = MALLOC(sizeof(*entry) + args->commands_size);
++   if (entry == NULL)
++      return vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   entry->args = *args;
++   entry->args.waits = (uintptr_t)entry->waits;
++   entry->args.signals = (uintptr_t)entry->signals;
++   entry->args.commands = (uintptr_t)entry->commands;
++   entry->private_point = private_point;
++
++   memcpy(entry->waits, (const void *)(uintptr_t)args->waits,
++          args->wait_count * sizeof(struct gpu_point));
++   memcpy(entry->signals, (const void *)(uintptr_t)args->signals,
++          args->signal_count * sizeof(struct gpu_point));
++   if (args->commands_size != 0) {
++      memcpy(entry->commands, (const void *)(uintptr_t)args->commands,
++             args->commands_size);
++   }
++
++   mtx_lock(&ctx->overflow_mutex);
++   list_addtail(&entry->link, &ctx->overflow);
++   const bool start = !ctx->thread_runs;
++   ctx->thread_runs = true;
++   mtx_unlock(&ctx->overflow_mutex);
++
++   if (!start)
++      return VK_SUCCESS;
++
++   /* A thread that cleared thread_runs has left the list and is exiting */
++   if (ctx->thread_joinable)
++      thrd_join(ctx->thread, NULL);
++
++   ctx->thread_joinable =
++      u_thread_create(&ctx->thread, serve_overflow, ctx) == thrd_success;
++   if (ctx->thread_joinable)
++      return VK_SUCCESS;
++
++   mtx_lock(&ctx->overflow_mutex);
++   list_del(&entry->link);
++   ctx->thread_runs = false;
++   mtx_unlock(&ctx->overflow_mutex);
++
++   FREE(entry);
++
++   return vk_errorf(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY,
++                    "Could not start a thread for the submissions that a "
++                    "full GPU queue delayed");
++}
++
++/* Nothing passes a submission on the overflow list */
++static VkResult
++submit_or_overflow(struct nvkmd_stellux_ctx *ctx,
++                   struct vk_object_base *log_obj,
++                   const struct gpu_submit_args *args, uint64_t private_point)
++{
++   struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(ctx->base.dev);
++
++   mtx_lock(&ctx->overflow_mutex);
++   const bool has_overflow = !list_is_empty(&ctx->overflow);
++   mtx_unlock(&ctx->overflow_mutex);
++
++   const int err = has_overflow ? EBUSY : submit_ioctl(dev, args);
++   if (err == EBUSY)
++      return add_overflow_entry(ctx, log_obj, args, private_point);
++
++   if (err != 0) {
++      /* Loses the device with the kernel's reason for the lost context */
++      if (err == EIO)
++         nvkmd_stellux_dev_check(dev, log_obj->device, true);
++
++      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_SUBMIT, err);
++   }
++
++   return VK_SUCCESS;
++}
++
+ /* Drops the batch whether or not it is taken. A chained part leaves the next
+  * batch waiting on its private point, so the parts after a failed one fail.
+  */
+@@ -87,35 +305,13 @@ submit_batch(struct nvkmd_stellux_ctx *ctx, struct vk_object_base *log_obj,
+       .wait_count = ctx->wait_count,
+       .signal_count = signal_count + 1,
+    };
+-   int err = submit_ioctl(dev, &args);
+-
+-   /* A full queue holds the last GPU_QUEUE_PENDING_MAX submissions, and the
+-    * kernel takes another once the oldest has reached its private point
+-    */
+-   if (err == EBUSY) {
+-      const struct gpu_point oldest = {
+-         .timeline = ctx->timeline,
+-         .value = private_point.value - GPU_QUEUE_PENDING_MAX,
+-      };
+-      VkResult result = nvkmd_stellux_wait(log_obj->device, dev->fd, &oldest,
+-                                           1, true, UINT64_MAX);
+-      if (result != VK_SUCCESS) {
+-         drop_batch(ctx);
+-         return result;
+-      }
+-
+-      err = submit_ioctl(dev, &args);
+-   }
++   VkResult result = submit_or_overflow(ctx, log_obj, &args,
++                                        private_point.value);
+ 
+    drop_batch(ctx);
+ 
+-   if (err != 0) {
+-      /* Loses the device with the kernel's reason for the lost context */
+-      if (err == EIO)
+-         nvkmd_stellux_dev_check(dev, log_obj->device, true);
+-
+-      return nvkmd_stellux_error(log_obj, NVKMD_STELLUX_CALL_SUBMIT, err);
+-   }
++   if (result != VK_SUCCESS)
++      return result;
+ 
+    ctx->last_point = private_point.value;
+    if (chained) {
+@@ -132,11 +328,22 @@ nvkmd_stellux_ctx_destroy(struct nvkmd_ctx *_ctx)
+    struct nvkmd_stellux_ctx *ctx = nvkmd_stellux_ctx(_ctx);
+    struct nvkmd_stellux_dev *dev = nvkmd_stellux_dev(ctx->base.dev);
+ 
++   /* The thread may be using the list's head, so it stops and is joined
++    * before the list is dropped
++    */
++   mtx_lock(&ctx->overflow_mutex);
++   ctx->stopping = true;
++   mtx_unlock(&ctx->overflow_mutex);
++
++   join_overflow_threads(dev);
++   free_entries(&ctx->overflow);
+    list_del(&ctx->link);
+ 
+    destroy_queue(dev, ctx->queue);
+    close(ctx->timeline);
+ 
++   cnd_destroy(&ctx->thread_ended);
++   mtx_destroy(&ctx->overflow_mutex);
+    util_dynarray_fini(&ctx->ranges);
+    FREE(ctx);
+ }
+@@ -266,6 +473,14 @@ nvkmd_stellux_ctx_sync(struct nvkmd_ctx *_ctx,
+    if (result != VK_SUCCESS)
+       return result;
+ 
++   /* Once the list is empty the kernel has taken last_point, unless a loss
++    * dropped the list
++    */
++   mtx_lock(&ctx->overflow_mutex);
++   while (!list_is_empty(&ctx->overflow))
++      cnd_wait(&ctx->thread_ended, &ctx->overflow_mutex);
++   mtx_unlock(&ctx->overflow_mutex);
++
+    const struct gpu_point last = {
+       .timeline = ctx->timeline,
+       .value = ctx->last_point,
+@@ -293,6 +508,7 @@ nvkmd_stellux_create_ctx(struct nvkmd_dev *_dev,
+ 
+    /* Only sparse binding needs a bind ctx, and the pdev reports no sparse */
+    assert(!(engines & NVKMD_ENGINE_BIND));
++   assert(log_obj->device != NULL);
+ 
+    struct nvkmd_stellux_ctx *ctx = CALLOC_STRUCT(nvkmd_stellux_ctx);
+    if (ctx == NULL)
+@@ -323,10 +539,16 @@ nvkmd_stellux_create_ctx(struct nvkmd_dev *_dev,
+ 
+    ctx->base.ops = &nvkmd_stellux_ctx_ops;
+    ctx->base.dev = &dev->base;
++   ctx->device = log_obj->device;
+    ctx->queue = queue_args.queue;
+    ctx->timeline = timeline_args.timeline;
+    ctx->ranges = UTIL_DYNARRAY_INIT;
+ 
++   mtx_init(&ctx->overflow_mutex, mtx_plain);
++   cnd_init(&ctx->thread_ended);
++   list_inithead(&ctx->overflow);
++
++   join_overflow_threads(dev);
+    list_addtail(&ctx->link, &dev->ctxs);
+ 
+    *ctx_out = &ctx->base;
+--- a/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_sync.c
++++ b/src/nouveau/vulkan/nvkmd/stellux/nvkmd_stellux_sync.c
+@@ -15,9 +15,6 @@
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+ 
+-/* The longest a wait sleeps in the kernel before a device check */
+-#define NVKMD_STELLUX_WAIT_SLICE_NS (100ull * 1000 * 1000)
+-
+ /* How often a wait for any of over GPU_POINTS_MAX points polls the rest */
+ #define NVKMD_STELLUX_WAIT_ANY_SLICE_NS (1000ull * 1000)
+ 
