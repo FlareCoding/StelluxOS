@@ -207,7 +207,9 @@ VkResult run_once(
     }
 
     if (result == VK_SUCCESS) {
+        start_hang_watch("vkQueueWaitIdle");
         result = commands.queue_wait_idle(queue);
+        end_hang_watch();
     }
 
     commands.destroy_command_pool(device, pool, nullptr);

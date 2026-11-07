@@ -182,7 +182,7 @@ void wait_for_transfer_writes(
 );
 
 // Records work through `record` into a one-time command buffer of `family` on `device`, submits it to the family's
-// first queue and waits for that queue to idle, returning the first failure
+// first queue and waits for that queue to idle, returning the first failure. The wait's watch ends any caller's watch
 VkResult run_once(
     const work_commands& commands,
     VkDevice device,
