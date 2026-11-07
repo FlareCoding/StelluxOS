@@ -25,6 +25,8 @@ public:
     void setWindowTitle(const QString& title) override;
     void propagateSizeHints() override;
     bool isExposed() const override;
+    void requestUpdate() override;
+    void deliverUpdateRequest() override;
 
 private:
     QWindow* popup_parent() const;
@@ -37,6 +39,8 @@ private:
     void handle_pointer(const stlxwin_event& event);
     void handle_configure(const stlxwin_event& event);
     void handle_window_output();
+    void end_frame_wait();
+    void post_update_request();
     QPointF global_position(const QPointF& local) const;
 
     stlxwin_window* m_handle = nullptr;
@@ -47,6 +51,11 @@ private:
     Qt::MouseButtons m_buttons = Qt::NoButton;
     Qt::KeyboardModifiers m_modifiers = Qt::NoModifier;
     bool m_visible = false;
+
+    // A commit made while an update request is delivered asks for a frame event, and the next delivery waits
+    // for it, so each stlxwin window takes at most one such commit per frame stlxdm presents
+    bool m_answering_update = false;
+    bool m_frame_pending = false;
 };
 
 #endif
