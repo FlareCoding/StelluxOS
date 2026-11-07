@@ -1,16 +1,19 @@
-// Tests the Vulkan library a Stellux program links, one stage per part of the driver. Every
-// check prints a PASS or FAIL line, and the program exits with 1 when any check failed.
+// Tests the Vulkan library a Stellux program links, one stage per part of the driver. Every check prints a PASS or FAIL
+// line, and the program exits with 1 when any check failed, at once when the watchdog fails a hung call.
 
 #include "vktest.h"
 
 #include <algorithm>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stlx/gpu_abi.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <thread>
+#include <time.h>
 #include <unistd.h>
 #include <vector>
 #include <vulkan/vulkan.h>
@@ -25,6 +28,14 @@ struct gpu_node {
 static int g_checks = 0;
 static int g_failed_checks = 0;
 
+// Never destroyed, since the detached watchdog may still take it while `exit` runs the static destructors
+static std::mutex& g_watch_lock = *new std::mutex;
+
+// The watched call, or null, and its deadline. Once the watchdog finds a hang, it holds `g_watch_lock` until it exits,
+// so the main thread, which must print nothing during a watch, can neither end that watch nor print past the summary.
+static const char* g_watched_call = nullptr;
+static uint64_t g_watch_deadline_ns = 0;
+
 void check(const char* name, bool passed) {
     printf("  %s: %s\n", passed ? "PASS" : "FAIL", name);
     g_checks++;
@@ -32,6 +43,10 @@ void check(const char* name, bool passed) {
     if (!passed) {
         g_failed_checks++;
     }
+}
+
+static void print_summary() {
+    printf("vktest: %d of %d checks failed\n", g_failed_checks, g_checks);
 }
 
 bool has_extension(const std::vector<VkExtensionProperties>& extensions, const char* name) {
@@ -42,6 +57,49 @@ bool has_extension(const std::vector<VkExtensionProperties>& extensions, const c
     }
 
     return false;
+}
+
+uint64_t monotonic_ns() {
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+}
+
+void start_hang_watch(const char* call) {
+    std::lock_guard<std::mutex> hold(g_watch_lock);
+    g_watch_deadline_ns = monotonic_ns() + HANG_LIMIT_NS;
+    g_watched_call = call;
+}
+
+void end_hang_watch() {
+    std::lock_guard<std::mutex> hold(g_watch_lock);
+    g_watched_call = nullptr;
+}
+
+// Fails a check naming the watched call at the first look that finds it past its deadline, then ends vktest with the
+// summary, since the call may never return
+static void watch_for_hangs() {
+    timespec poll = {0, static_cast<long>(WAIT_SLICE_NS)};
+    for (;;) {
+        nanosleep(&poll, nullptr);
+
+        g_watch_lock.lock();
+        if (g_watched_call != nullptr && monotonic_ns() >= g_watch_deadline_ns) {
+            break;
+        }
+
+        g_watch_lock.unlock();
+    }
+
+    char name[128];
+    unsigned long long limit_s = HANG_LIMIT_NS / 1000000000;
+    snprintf(name, sizeof(name), "%s returns within %llu s", g_watched_call, limit_s);
+    check(name, false);
+    print_summary();
+
+    // `exit` would run exit handlers and destructors while the hung call still runs, and `_exit` does not flush stdout
+    fflush(stdout);
+    _exit(1);
 }
 
 template <typename Command>
@@ -508,18 +566,24 @@ static void check_instance() {
 
         printf("vktest: triangle\n");
         check_triangle(instance, physical_device);
+
+        printf("vktest: queue\n");
+        check_queue(instance, physical_device);
     }
 
     destroy_instance(instance, nullptr);
 }
 
 int main() {
+    // The watchdog runs until vktest exits, so it is never joined
+    std::thread(watch_for_hangs).detach();
+
     printf("vktest: instance\n");
     check_loading_by_name();
     check_global_commands();
     check_instance();
 
-    printf("vktest: %d of %d checks failed\n", g_failed_checks, g_checks);
+    print_summary();
 
     return g_failed_checks == 0 ? 0 : 1;
 }

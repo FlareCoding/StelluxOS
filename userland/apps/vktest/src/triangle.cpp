@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <stlxwin/stlxwin.h>
 #include <string.h>
-#include <time.h>
 
 struct triangle_commands {
     PFN_vkGetPhysicalDeviceMemoryProperties get_memory_properties;
@@ -407,12 +406,6 @@ static bool holds_triangle(const uint32_t* pixels) {
     }
 
     return wrong_pixels == 0;
-}
-
-static uint64_t monotonic_ns() {
-    timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
 }
 
 // Whether `window` gets the FRAME event of its commit within `FRAME_WAIT_NS` and before the connection is dead

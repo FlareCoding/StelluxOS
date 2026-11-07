@@ -1,5 +1,5 @@
-// Buffers on memory of their own, one-time work on a device's queue and the barrier after transfer writes, shared by
-// the stages that run work on the GPU
+// Buffers on memory of their own, command pools, one-time work on a device's queue, timeline semaphores and the barrier
+// after transfer writes, shared by the stages that run work on the GPU
 
 #include "vktest.h"
 
@@ -26,13 +26,20 @@ bool find_work_commands(VkInstance instance, work_commands& commands) {
         .cmd_pipeline_barrier = find_command<PFN_vkCmdPipelineBarrier>(instance, "vkCmdPipelineBarrier"),
         .queue_submit = find_command<PFN_vkQueueSubmit>(instance, "vkQueueSubmit"),
         .queue_wait_idle = find_command<PFN_vkQueueWaitIdle>(instance, "vkQueueWaitIdle"),
+        .create_semaphore = find_command<PFN_vkCreateSemaphore>(instance, "vkCreateSemaphore"),
+        .destroy_semaphore = find_command<PFN_vkDestroySemaphore>(instance, "vkDestroySemaphore"),
+        .signal_semaphore = find_command<PFN_vkSignalSemaphore>(instance, "vkSignalSemaphore"),
+        .wait_semaphores = find_command<PFN_vkWaitSemaphores>(instance, "vkWaitSemaphores"),
+        .get_counter_value = find_command<PFN_vkGetSemaphoreCounterValue>(instance, "vkGetSemaphoreCounterValue"),
     };
 
     return commands.allocate_memory && commands.free_memory && commands.map_memory && commands.create_buffer &&
         commands.destroy_buffer && commands.get_buffer_memory_requirements && commands.bind_buffer_memory &&
         commands.get_device_queue && commands.create_command_pool && commands.destroy_command_pool &&
         commands.allocate_command_buffers && commands.begin_command_buffer && commands.end_command_buffer &&
-        commands.cmd_pipeline_barrier && commands.queue_submit && commands.queue_wait_idle;
+        commands.cmd_pipeline_barrier && commands.queue_submit && commands.queue_wait_idle &&
+        commands.create_semaphore && commands.destroy_semaphore && commands.signal_semaphore &&
+        commands.wait_semaphores && commands.get_counter_value;
 }
 
 static uint32_t find_staging_type(const VkPhysicalDeviceMemoryProperties& properties) {
@@ -206,4 +213,75 @@ VkResult run_once(
     commands.destroy_command_pool(device, pool, nullptr);
 
     return result;
+}
+
+VkCommandPool make_command_pool(const work_commands& commands, VkDevice device, uint32_t family) {
+    VkCommandPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.queueFamilyIndex = family;
+
+    VkCommandPool pool = VK_NULL_HANDLE;
+    if (commands.create_command_pool(device, &pool_info, nullptr, &pool) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+
+    return pool;
+}
+
+VkSemaphore create_timeline(
+    const work_commands& commands,
+    VkDevice device,
+    uint64_t initial_value,
+    bool is_exportable
+) {
+    VkExportSemaphoreCreateInfo export_info = {};
+    export_info.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+    export_info.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+    VkSemaphoreTypeCreateInfo type_info = {};
+    type_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    type_info.pNext = is_exportable ? &export_info : nullptr;
+    type_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    type_info.initialValue = initial_value;
+
+    VkSemaphoreCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    create_info.pNext = &type_info;
+
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    if (commands.create_semaphore(device, &create_info, nullptr, &semaphore) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+
+    return semaphore;
+}
+
+bool reads_value(const work_commands& commands, VkDevice device, VkSemaphore semaphore, uint64_t expected) {
+    uint64_t value = 0;
+    return commands.get_counter_value(device, semaphore, &value) == VK_SUCCESS && value == expected;
+}
+
+VkResult signal_timeline(const work_commands& commands, VkDevice device, VkSemaphore semaphore, uint64_t value) {
+    VkSemaphoreSignalInfo signal_info = {};
+    signal_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+    signal_info.semaphore = semaphore;
+    signal_info.value = value;
+
+    return commands.signal_semaphore(device, &signal_info);
+}
+
+VkResult wait_for_value(
+    const work_commands& commands,
+    VkDevice device,
+    VkSemaphore semaphore,
+    uint64_t value,
+    uint64_t timeout_ns
+) {
+    VkSemaphoreWaitInfo wait_info = {};
+    wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    wait_info.semaphoreCount = 1;
+    wait_info.pSemaphores = &semaphore;
+    wait_info.pValues = &value;
+
+    return commands.wait_semaphores(device, &wait_info, timeout_ns);
 }
