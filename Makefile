@@ -186,9 +186,10 @@ test: test-image
 	@echo ""
 	$(Q)QEMU_X2APIC=$(QEMU_X2APIC) ./scripts/run_tests.sh $(ARCH)
 
-# Builds and runs the userland libraries' tests on the build machine, needing no image
+# Builds and runs the userland libraries' tests and the disk image script's test on the build machine
 host-test:
 	$(Q)$(MAKE) --no-print-directory -C userland/lib/libstlxgfx/tests
+	$(Q)SGDISK=$(SGDISK) scripts/create-disk-image-test.sh
 
 # ============================================================================
 # Disk Image Creation
@@ -229,7 +230,6 @@ $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DI
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating x86_64 UEFI disk image..."
 	$(Q)SGDISK=$(SGDISK) scripts/create-disk-image.sh $@ $(INITRD_CPIO)
-	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT
 	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
@@ -242,7 +242,6 @@ $(IMAGE_DIR)/stellux-aarch64.img: $(BUILD_DIR)/kernel/aarch64/kernel.elf $(BOOT_
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating AArch64 UEFI disk image..."
 	$(Q)SGDISK=$(SGDISK) scripts/create-disk-image.sh $@ $(INITRD_CPIO)
-	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT
 	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/BOOTAA64.EFI ::/EFI/BOOT/BOOTAA64.EFI

@@ -2,7 +2,8 @@
 # Host Tests
 #
 # Builds the userland libraries' host tests with the runner's own compiler and
-# runs them, for library code that no unit test inside Stellux reaches.
+# runs them, for library code that no unit test inside Stellux reaches. Also
+# tests the disk image script that make image and the flash scripts share.
 #
 
 name: Host tests
@@ -26,13 +27,22 @@ jobs:
   host-tests:
     name: host tests
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Install mtools and sgdisk
+        run: |
+          for attempt in 1 2 3; do
+            sudo timeout 60 apt-get update -qq && sudo timeout 120 apt-get install -y -qq \
+              mtools gdisk && exit 0
+            grep -rls azure.archive.ubuntu.com /etc/apt | xargs -r sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' || true
+          done
+          exit 1
 
       - name: Run host tests
         run: make host-test
