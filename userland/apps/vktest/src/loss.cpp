@@ -59,6 +59,7 @@ static refusal_result run_refusal_on_general_queue(const loss_stage& stage, VkDe
             bursts,
             general_queue,
             VK_NULL_HANDLE,
+            VK_NULL_HANDLE,
             {refused_done, replaced},
             {1, REPLACED_VALUE + 1}
         );
@@ -103,6 +104,7 @@ static thread_refusal_result run_refusal_on_thread(const loss_stage& stage, VkDe
         VkResult result = submit_batch(
             bursts,
             burst.queue,
+            VK_NULL_HANDLE,
             VK_NULL_HANDLE,
             {burst.done, replaced},
             {BURST_SIZE + 1, REPLACED_VALUE + 1}

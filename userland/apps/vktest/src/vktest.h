@@ -49,12 +49,13 @@ struct burst_commands {
 };
 
 // A burst of `BURST_SIZE` submissions on `queue`: submission i signals `done` at i + 1, and the first also waits for
-// `gate` to reach 1
+// `gate` to reach 1 and runs `first_work`, if any
 struct held_burst {
-    VkDevice    device = VK_NULL_HANDLE;
-    VkQueue     queue = VK_NULL_HANDLE;
-    VkSemaphore gate = VK_NULL_HANDLE;
-    VkSemaphore done = VK_NULL_HANDLE;
+    VkDevice        device = VK_NULL_HANDLE;
+    VkQueue         queue = VK_NULL_HANDLE;
+    VkSemaphore     gate = VK_NULL_HANDLE;
+    VkSemaphore     done = VK_NULL_HANDLE;
+    VkCommandBuffer first_work = VK_NULL_HANDLE;
 };
 
 // NVK's first queue family, which takes every kind of work
@@ -117,6 +118,10 @@ int restrict_to_read(VkInstance instance, VkPhysicalDevice physical_device, int 
 // Puts a descriptor of the /dev/gpuN of `physical_device` in place of the descriptor of the timeline reading `value`,
 // outside Vulkan, so the kernel refuses submissions signalling it. Returns whether it replaced one.
 bool replace_timeline_descriptor(VkInstance instance, VkPhysicalDevice physical_device, uint64_t value);
+
+// The number of this process's descriptors of timelines reading `value` with the kernel's `GPU_TIMELINE_FAILED` mark,
+// each queried outside Vulkan through the /dev/gpuN of `physical_device`
+uint32_t count_failed_timelines(VkInstance instance, VkPhysicalDevice physical_device, uint64_t value);
 
 // The queue family with transfer work alone, which NVK runs on the GPU's copy engine, or `UINT32_MAX` if it finds none
 uint32_t find_transfer_family(VkInstance instance, VkPhysicalDevice physical_device);
@@ -220,11 +225,12 @@ void destroy_burst(const burst_commands& bursts, const held_burst& burst);
 // Whether `make_burst` found the burst's queue and made both its semaphores
 bool is_made(const held_burst& burst);
 
-// Submits to `queue` a batch that waits for `gate` to reach 1 unless it is null, then raises each semaphore of
-// `signals` to its value in `values`
+// Submits to `queue` a batch that waits for `gate` to reach 1 unless it is null, runs `command_buffer` unless it is
+// null, then raises each semaphore of `signals` to its value in `values`
 VkResult submit_batch(
     const burst_commands& bursts,
     VkQueue queue,
+    VkCommandBuffer command_buffer,
     VkSemaphore gate,
     const std::vector<VkSemaphore>& signals,
     const std::vector<uint64_t>& values
@@ -280,5 +286,9 @@ void check_queue(VkInstance instance, VkPhysicalDevice physical_device);
 // Loses devices on `physical_device` while bursts of 100 overflow their kernel queues, by a submit the kernel refuses
 // on another queue and by one it refuses from the overflow thread, timing the waits and destroy of each lost device
 void check_loss(VkInstance instance, VkPhysicalDevice physical_device);
+
+// Faults devices on `physical_device` with copies from freed memory: one while it and another device each overflow a
+// kernel queue with a burst of 100, and one with a query queued behind its copy, whose point two others wait on
+void check_fault(VkInstance instance, VkPhysicalDevice physical_device);
 
 #endif // VKTEST_H
