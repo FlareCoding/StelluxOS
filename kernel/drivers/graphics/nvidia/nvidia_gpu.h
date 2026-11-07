@@ -84,11 +84,11 @@ public:
 
     /**
      * @brief The handler of the card's one MSI vector, which the GSP's
-     * interrupt raises, as do the display's with flips on and the copy
-     * engine's once the engines are up. It takes the GSP's interrupt for the
+     * interrupt raises, as do the display's with flips on and the copy and
+     * graphics engines' once each is up. It takes the GSP's interrupt for the
      * driver task, leaving the GSP's falcon alone, services the heads'
      * vertical blanks as `nvidia::display_engine::service_vertical_blanks`
-     * describes and the copy engine's vector as
+     * describes and both engines' vectors as
      * `nvidia::engines::service_interrupt` does. It can run before `attach()`
      * returns, as soon as the GSP's interrupt is enabled, and once more after
      * `detach()` disables it.

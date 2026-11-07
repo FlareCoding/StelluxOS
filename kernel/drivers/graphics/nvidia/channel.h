@@ -30,8 +30,8 @@ constexpr uint32_t CHANNEL_RAM_ENTRY_BYTES = 4;
 // The queues a group's channels can be fetched on, each with a buffer of the group's for a faulting channel's methods
 constexpr uint32_t CHANNEL_GROUP_RUNQUEUES = 2;
 
-// The objects a channel holds at most, its copy or 3D object
-constexpr uint32_t CHANNEL_OBJECTS_MAX = 1;
+// The objects a channel holds at most, a graphics queue's 3D, compute and copy objects
+constexpr uint32_t CHANNEL_OBJECTS_MAX = 3;
 
 // Where a channel runs and how far the GPU trusts it
 struct channel_setup {
@@ -104,6 +104,9 @@ public:
      * `CHANNEL_OBJECTS_MAX` objects, or the firmware's error, logged.
      */
     int32_t add_object(uint32_t object_class, void* params, size_t bytes);
+
+    // Adds a copy object of `chip`'s class for the copy engine of type `engine_type`, as `add_object` does
+    int32_t add_copy_object(const chip_info& chip, uint32_t engine_type);
 
     /**
      * @brief Bind the channel to its engine, then schedule it, so the GPU

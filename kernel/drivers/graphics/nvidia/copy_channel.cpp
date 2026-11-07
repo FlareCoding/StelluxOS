@@ -215,7 +215,7 @@ void copy_channel::submit(uint64_t sequence, uint64_t offset, uint64_t bytes, ui
     uint64_t slot_address = PUSH_BUFFER_ADDRESS + slot_offset;
     uint32_t* words = reinterpret_cast<uint32_t*>(m_memory.virt + slot_offset);
     write_fill(words, m_copy_class, offset, bytes, value);
-    write_release(words + FILL_WORDS, SEMAPHORE_ADDRESS, static_cast<uint32_t>(sequence));
+    write_release(words + FILL_WORDS, SEMAPHORE_ADDRESS, static_cast<uint32_t>(sequence), idle_scope::current_pipe);
 
     m_channel.write_entry(make_gpfifo_entry(slot_address, FILL_WORDS + RELEASE_WORDS, gpfifo_fetch::ahead));
     m_channel.kick();

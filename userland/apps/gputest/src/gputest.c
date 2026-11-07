@@ -290,8 +290,8 @@ static void print_facts(const struct gpu_info* info) {
 
 static void test_facts(const struct gpu_info* info) {
     bool is_nvidia = info->backend == GPU_BACKEND_NVIDIA;
-    bool copy_queues_alone = info->queue_kinds == (1u << GPU_QUEUE_COPY);
-    check("the GPU is NVIDIA's and offers copy queues alone", is_nvidia && copy_queues_alone);
+    bool graphics_and_copy = info->queue_kinds == ((1u << GPU_QUEUE_GRAPHICS) | (1u << GPU_QUEUE_COPY));
+    check("the GPU is NVIDIA's and offers graphics and copy queues", is_nvidia && graphics_and_copy);
 
     uint32_t video_and_system = (1u << GPU_PLACEMENT_VIDEO) | (1u << GPU_PLACEMENT_SYSTEM);
     bool user_range = info->va_start == USER_VA_START && info->va_end == USER_VA_END;

@@ -49,6 +49,7 @@ static constexpr size_t   CHANNEL_PARAMS_BYTES          = 360;
 static constexpr uint32_t AMPERE_DMA_COPY_B             = 0xC7B5;
 static constexpr size_t   COPY_PARAMS_BYTES             = 8;
 static constexpr uint32_t AMPERE_B                      = 0xC797;
+static constexpr uint32_t AMPERE_COMPUTE_B              = 0xC7C0;
 static constexpr uint32_t GET_FAULT_METHOD_BUFFER_SIZE  = 0x20802A08;
 static constexpr uint32_t BIND                          = 0xA06F0104;
 static constexpr uint32_t GPFIFO_SCHEDULE               = 0xA06F0103;
@@ -561,28 +562,33 @@ TEST(nvidia_channel, allocate_stops_at_the_channel) {
     EXPECT_EQ(fixture.allocate(), ERR_BAD_STATE);
 }
 
-// An object is allocated on the channel from its parameters, and destroy releases it before the channel and the group
-TEST(nvidia_channel, added_object_is_released_before_the_channel) {
+// Objects are allocated on the channel from their parameters, and destroy releases them last first before the channel
+// and the group
+TEST(nvidia_channel, added_objects_are_released_last_first_before_the_channel) {
     channel_fixture fixture;
     ASSERT_EQ(fixture.allocate(), OK);
 
-    uint32_t params[2] = {0x12345678, 0x9ABCDEF0};
-    ASSERT_EQ(fixture.queue.add_object(AMPERE_B, params, sizeof(params)), OK);
+    ASSERT_EQ(fixture.queue.add_object(AMPERE_B, nullptr, 0), OK);
+    uint32_t compute_params[2] = {0x12345678, 0x9ABCDEF0};
+    ASSERT_EQ(fixture.queue.add_object(AMPERE_COMPUTE_B, compute_params, sizeof(compute_params)), OK);
 
     gpfifo_channel_firmware& fw = fixture.fw;
-    ASSERT_EQ(fw.call_count, 4u);
+    ASSERT_EQ(fw.call_count, 5u);
     EXPECT_TRUE(fw.calls[3].what == gpfifo_channel_firmware::kind::allocate);
     EXPECT_EQ(fw.calls[3].parent, FIRST_HANDLE + 1);
     EXPECT_EQ(fw.calls[3].number, AMPERE_B);
+    EXPECT_EQ(fw.calls[3].size, 0u);
 
-    EXPECT_EQ(fw.calls[3].size, sizeof(params));
-    EXPECT_EQ(fw.calls[3].words[1], 0x9ABCDEF0u);
+    EXPECT_EQ(fw.calls[4].number, AMPERE_COMPUTE_B);
+    EXPECT_EQ(fw.calls[4].size, sizeof(compute_params));
+    EXPECT_EQ(fw.calls[4].words[1], 0x9ABCDEF0u);
 
     EXPECT_EQ(fixture.queue.destroy(), OK);
-    ASSERT_EQ(fw.call_count, 7u);
-    EXPECT_EQ(fw.calls[4].object, FIRST_HANDLE + 2);
-    EXPECT_EQ(fw.calls[5].object, FIRST_HANDLE + 1);
-    EXPECT_EQ(fw.calls[6].object, FIRST_HANDLE);
+    ASSERT_EQ(fw.call_count, 9u);
+    EXPECT_EQ(fw.calls[5].object, FIRST_HANDLE + 3);
+    EXPECT_EQ(fw.calls[6].object, FIRST_HANDLE + 2);
+    EXPECT_EQ(fw.calls[7].object, FIRST_HANDLE + 1);
+    EXPECT_EQ(fw.calls[8].object, FIRST_HANDLE);
 }
 
 // An object is refused before allocate, past the objects a channel holds, and as the firmware refuses it, which leaves

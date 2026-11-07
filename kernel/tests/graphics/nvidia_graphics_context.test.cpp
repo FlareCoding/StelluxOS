@@ -428,31 +428,41 @@ TEST(nvidia_graphics_context, rtx_3080_global_buffers_follow_the_attribute_buffe
     EXPECT_EQ(global.unrestricted_priv_access_map.gpu_address, 0u);
 }
 
-// A channel's main buffer lies at the start and its patch buffer follows it
-TEST(nvidia_graphics_context, rtx_3080_patch_buffer_follows_the_main_buffer) {
+// Each queue slot's main buffer follows the slot before it by both buffers' bytes, and its patch buffer follows it
+TEST(nvidia_graphics_context, rtx_3080_slots_own_buffers_follow_one_another) {
     graphics_firmware fw;
     graphics_buffer_layouts layouts = {};
     ASSERT_EQ(read_graphics_buffer_layouts(fw, layouts), OK);
 
-    channel_context_buffers own = {};
-    place_own_buffers(layouts, (1ULL << 39) + 0x1000, own);
+    channel_context_buffers first = {};
+    channel_context_buffers third = {};
+    place_own_buffers(layouts, (1ULL << 39) + 0x1000, 0, first);
+    place_own_buffers(layouts, (1ULL << 39) + 0x1000, 2, third);
 
-    EXPECT_EQ(own.main.gpu_address, (1ULL << 39) + 0x1000);
-    EXPECT_EQ(own.patch.gpu_address, own.main.gpu_address + RTX_3080_MAIN_WITH_HEADERS);
+    uint64_t slot_bytes = RTX_3080_MAIN_WITH_HEADERS + RTX_3080_PATCH_BYTES;
+    EXPECT_EQ(first.main.gpu_address, (1ULL << 39) + 0x1000);
+    EXPECT_EQ(first.patch.gpu_address, first.main.gpu_address + RTX_3080_MAIN_WITH_HEADERS);
+    EXPECT_EQ(third.main.gpu_address, first.main.gpu_address + 2 * slot_bytes);
+    EXPECT_EQ(third.patch.gpu_address, third.main.gpu_address + RTX_3080_MAIN_WITH_HEADERS);
 }
 
-// A patch buffer aligned past 4 KiB starts at its alignment's next multiple
-TEST(nvidia_graphics_context, own_buffer_aligned_past_a_page_starts_at_its_alignment) {
+// A patch buffer aligned past 4 KiB starts at its alignment's next multiple, and each slot's span is a multiple of that
+// alignment, so the next slot's patch buffer stays aligned
+TEST(nvidia_graphics_context, own_buffer_aligned_past_a_page_stays_aligned_in_every_slot) {
     graphics_firmware fw;
     fw.set_buffer(ENGINE_ID_PATCH, RTX_3080_PATCH_BYTES, 0x100000);
     graphics_buffer_layouts layouts = {};
     ASSERT_EQ(read_graphics_buffer_layouts(fw, layouts), OK);
 
-    channel_context_buffers own = {};
-    place_own_buffers(layouts, (1ULL << 39) + 0x1000, own);
+    channel_context_buffers first = {};
+    channel_context_buffers second = {};
+    place_own_buffers(layouts, (1ULL << 39) + 0x1000, 0, first);
+    place_own_buffers(layouts, (1ULL << 39) + 0x1000, 1, second);
 
-    EXPECT_EQ(own.main.gpu_address, (1ULL << 39) + 0x1000);
-    EXPECT_EQ(own.patch.gpu_address, (1ULL << 39) + 0x200000);
+    EXPECT_EQ(first.main.gpu_address, (1ULL << 39) + 0x100000);
+    EXPECT_EQ(first.patch.gpu_address, first.main.gpu_address + 0x200000);
+    EXPECT_EQ(second.main.gpu_address, first.main.gpu_address + 0x300000);
+    EXPECT_EQ(second.patch.gpu_address, second.main.gpu_address + 0x200000);
 }
 
 // The golden context's promotion names the channel to the subdevice, initializes the channel's own buffers, the FECS
@@ -463,7 +473,7 @@ TEST(nvidia_graphics_context, golden_promotion_initializes_what_the_firmware_fil
     channel_context_buffers own = {};
     make_distinct(global, own);
 
-    ASSERT_EQ(promote_graphics_context(fw, TEST_SUBDEVICE, TEST_CHANNEL, global, own), OK);
+    ASSERT_EQ(promote_graphics_context(fw, TEST_SUBDEVICE, TEST_CHANNEL, global, own, true), OK);
 
     ASSERT_EQ(fw.promotions, 1u);
     EXPECT_EQ(fw.promoted_on, TEST_SUBDEVICE);
@@ -485,6 +495,22 @@ TEST(nvidia_graphics_context, golden_promotion_initializes_what_the_firmware_fil
     EXPECT_TRUE(is_entry(fw, 8, ID_UNRESTRICTED_MAP, global.unrestricted_priv_access_map, true, false));
 }
 
+// A later channel's promotion initializes only its own buffers and maps the global ones as the golden context left them
+TEST(nvidia_graphics_context, channel_promotion_only_maps_the_global_buffers) {
+    graphics_firmware fw;
+    global_context_buffers global = {};
+    channel_context_buffers own = {};
+    make_distinct(global, own);
+
+    ASSERT_EQ(promote_graphics_context(fw, TEST_SUBDEVICE, TEST_CHANNEL, global, own, false), OK);
+
+    ASSERT_EQ(promoted_field<uint32_t>(fw, ENTRY_COUNT_OFFSET), 8u);
+    EXPECT_TRUE(is_entry(fw, 0, ID_MAIN, own.main, true, true));
+    EXPECT_TRUE(is_entry(fw, 1, ID_PATCH, own.patch, true, true));
+    EXPECT_TRUE(is_entry(fw, 6, ID_FECS_EVENT, global.fecs_event, false, true));
+    EXPECT_TRUE(is_entry(fw, 7, ID_PRIV_ACCESS_MAP, global.priv_access_map, false, true));
+}
+
 // The firmware's refusal of a promotion comes back as it is
 TEST(nvidia_graphics_context, promotion_error_comes_back_as_it_is) {
     graphics_firmware fw;
@@ -493,6 +519,6 @@ TEST(nvidia_graphics_context, promotion_error_comes_back_as_it_is) {
     channel_context_buffers own = {};
     make_distinct(global, own);
 
-    EXPECT_EQ(promote_graphics_context(fw, TEST_SUBDEVICE, TEST_CHANNEL, global, own), ERR_FIRMWARE);
+    EXPECT_EQ(promote_graphics_context(fw, TEST_SUBDEVICE, TEST_CHANNEL, global, own, true), ERR_FIRMWARE);
     EXPECT_EQ(fw.promotions, 1u);
 }
