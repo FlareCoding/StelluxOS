@@ -48,7 +48,7 @@ MESON_VER="1.7.0"
 MESON_SHA256="ae3f12953045f3c7c60e27f2af1ad862f14dee125b4ed9bcb8a842a5080dbf85"
 
 # Package release number, bumped when the recipe or the tree's GPU_ABI_VERSION changes without Mesa changing
-MESA_PKG_REL="4"
+MESA_PKG_REL="5"
 
 # The version-release of each package this recipe emits, as the archive names it
 package_version() {
