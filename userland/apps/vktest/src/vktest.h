@@ -6,12 +6,13 @@
 #include <vector>
 #include <vulkan/vulkan.h>
 
-// The commands that make buffers on memory of their own, record one-time work and submit it to a device's queue, and
-// that make, signal, wait on and read timeline semaphores
+// The commands that make buffers on memory of their own, share memory through descriptors, record one-time work and
+// submit it to a device's queue, and that make, signal, wait on and read timeline semaphores
 struct work_commands {
     PFN_vkAllocateMemory              allocate_memory;
     PFN_vkFreeMemory                  free_memory;
     PFN_vkMapMemory                   map_memory;
+    PFN_vkGetMemoryFdKHR              get_memory_fd;
     PFN_vkCreateBuffer                create_buffer;
     PFN_vkDestroyBuffer               destroy_buffer;
     PFN_vkGetBufferMemoryRequirements get_buffer_memory_requirements;
@@ -39,6 +40,13 @@ struct bound_buffer {
     VkBuffer       buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     uint32_t*      words = nullptr;
+};
+
+// Which memory types a check covers
+enum class type_visibility {
+    any,
+    host_visible,
+    device_only,
 };
 
 // The commands and queue family that each stage losing devices holds
@@ -111,6 +119,26 @@ Command find_command(VkInstance instance, const char* name) {
     return reinterpret_cast<Command>(vkGetInstanceProcAddr(instance, name));
 }
 
+bool has_visibility(const VkMemoryType& type, type_visibility visibility);
+
+// Whether `holds` is true of every memory type of `visibility` in `stage.properties`, of which there must be at least
+// one. `holds` runs on every such type, even after it returns false for one.
+template <typename Stage, typename Predicate>
+bool holds_for_every_type(const Stage& stage, type_visibility visibility, Predicate holds) {
+    uint32_t covered_count = 0;
+    bool holds_for_all = true;
+    for (uint32_t type = 0; type < stage.properties.memoryTypeCount; type++) {
+        if (!has_visibility(stage.properties.memoryTypes[type], visibility)) {
+            continue;
+        }
+
+        covered_count++;
+        holds_for_all &= holds(stage, type);
+    }
+
+    return covered_count > 0 && holds_for_all;
+}
+
 // Makes a descriptor with `GPU_RIGHT_READ` alone for the object `descriptor` names, through the /dev/gpuN of
 // `physical_device` and outside Vulkan, or returns -1. The caller owns the new descriptor.
 int restrict_to_read(VkInstance instance, VkPhysicalDevice physical_device, int descriptor);
@@ -143,6 +171,57 @@ VkDevice create_device(
 // Finds every command of `commands` through `vkGetInstanceProcAddr`, returning whether all were found
 bool find_work_commands(VkInstance instance, work_commands& commands);
 
+// The first host-visible type of `properties` without `VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT`, NVK's system memory type
+// on a discrete GPU, or `UINT32_MAX`
+uint32_t find_system_type(const VkPhysicalDeviceMemoryProperties& properties);
+
+// Writes the words of the `size` bytes at `mapping`, counting up from `first_word`
+void write_words(void* mapping, VkDeviceSize size, uint32_t first_word);
+
+// Whether the words of the `size` bytes at `mapping` count up from `first_word`
+bool holds_words(const void* mapping, VkDeviceSize size, uint32_t first_word);
+
+// Allocates `size` bytes of memory of `type` on `device` into `memory`, `next` chained to the allocation, leaving
+// `memory` null after a failure
+VkResult allocate_memory(
+    const work_commands& commands,
+    VkDevice device,
+    uint32_t type,
+    VkDeviceSize size,
+    const void* next,
+    VkDeviceMemory& memory
+);
+
+// Allocates `size` bytes of exportable memory of `type` on `device` into `memory` and returns an opaque descriptor of
+// it, or -1. The caller owns the descriptor and frees `memory`, which stays allocated when only vkGetMemoryFdKHR fails.
+int export_memory(
+    const work_commands& commands,
+    VkDevice device,
+    uint32_t type,
+    VkDeviceSize size,
+    VkDeviceMemory& memory
+);
+
+// Imports the `size` bytes that `descriptor` names into `memory` on `device` as memory of `type`, leaving `memory` null
+// after a failure. The import owns the descriptor once it succeeds, and the caller still owns it after a failure.
+VkResult import_memory(
+    const work_commands& commands,
+    VkDevice device,
+    uint32_t type,
+    VkDeviceSize size,
+    int descriptor,
+    VkDeviceMemory& memory
+);
+
+// Writes `size` bytes of words from `first_word` into new shared memory, imports it as a GPU buffer and returns a
+// descriptor of that buffer with `GPU_RIGHT_READ` alone, or -1. The caller owns the descriptor.
+int make_read_only_shared_memory(
+    VkInstance instance,
+    VkPhysicalDevice physical_device,
+    VkDeviceSize size,
+    uint32_t first_word
+);
+
 // Creates a buffer of `size` bytes for `usage`, `next` chained to its creation, and binds it at the start of `memory`,
 // which must hold `size` bytes of `type`, or returns `VK_NULL_HANDLE` when a call fails or the buffer does not fit
 VkBuffer bind_new_buffer(
@@ -153,6 +232,17 @@ VkBuffer bind_new_buffer(
     VkDeviceSize size,
     VkBufferUsageFlags usage,
     const void* next
+);
+
+// Binds a new buffer of `size` bytes for `usage` at the start of `memory` of `type` on `device`, memory shared through
+// an opaque descriptor, or returns `VK_NULL_HANDLE`. A buffer on such memory must name that handle type.
+VkBuffer bind_shared_buffer(
+    const work_commands& commands,
+    VkDevice device,
+    VkDeviceMemory memory,
+    uint32_t type,
+    VkDeviceSize size,
+    VkBufferUsageFlags usage
 );
 
 // Allocates `size` bytes of memory of `type` on `device` with a buffer for `usage` bound at its start, the buffer left
@@ -276,7 +366,8 @@ void check_timeline(VkInstance instance, VkPhysicalDevice physical_device);
 // buffer of 1 MiB plus 4 KiB, the CPU reading each fill back
 void check_transfer(VkInstance instance, VkPhysicalDevice physical_device);
 
-// Dispatches a compute pipeline on `physical_device`'s general queue, the CPU reading the words it writes
+// Dispatches compute pipelines on `physical_device`'s general queue, one writing words and one copying read-only
+// imports of shared memory and of every host-visible type, the CPU reading the words each writes
 void check_compute(VkInstance instance, VkPhysicalDevice physical_device);
 
 // Draws a triangle on `physical_device`'s general queue, the CPU comparing its image pixel by pixel and showing it in a
