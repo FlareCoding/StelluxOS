@@ -139,6 +139,9 @@ bool holds_for_every_type(const Stage& stage, type_visibility visibility, Predic
     return covered_count > 0 && holds_for_all;
 }
 
+// The N of the /dev/gpuN at `physical_device`'s PCI address, or `UINT32_MAX`
+uint32_t find_gpu_index(VkInstance instance, VkPhysicalDevice physical_device);
+
 // Makes a descriptor with `GPU_RIGHT_READ` alone for the object `descriptor` names, through the /dev/gpuN of
 // `physical_device` and outside Vulkan, or returns -1. The caller owns the new descriptor.
 int restrict_to_read(VkInstance instance, VkPhysicalDevice physical_device, int descriptor);
@@ -385,5 +388,9 @@ void check_loss(VkInstance instance, VkPhysicalDevice physical_device);
 // Faults devices on `physical_device` with copies from freed memory: one while it and another device each overflow a
 // kernel queue with a burst of 100, and one with a query queued behind its copy, whose point two others wait on
 void check_fault(VkInstance instance, VkPhysicalDevice physical_device);
+
+// On an instance and a connection of its own, creates a stlxwin window and a surface on it, checking that only the
+// device on stlxdm's GPU can present to it, what it offers and a shut connection's lost surface, or prints why none
+void check_window();
 
 #endif // VKTEST_H

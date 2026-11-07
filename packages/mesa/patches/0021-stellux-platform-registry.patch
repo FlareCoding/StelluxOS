@@ -1,0 +1,197 @@
+Registers VK_STLX_surface, extension 1001 under the STLX tag, for the
+stellux platform that VK_USE_PLATFORM_STELLUX_STLX selects, and adds
+VK_ICD_WSI_PLATFORM_STELLUX and the stellux choice of the platforms option.
+The structure type joins VkStructureType in vulkan_core.h, as every
+supported Vulkan extension's does, platform ones included, and
+vulkan_stellux.h names libstlxwin's connection and window by their struct
+tags, so it includes no libstlxwin header.
+
+--- a/include/vulkan/vk_icd.h
++++ b/include/vulkan/vk_icd.h
+@@ -119,6 +119,7 @@ typedef enum {
+     VK_ICD_WSI_PLATFORM_GGP,
+     VK_ICD_WSI_PLATFORM_SCREEN,
+     VK_ICD_WSI_PLATFORM_FUCHSIA,
++    VK_ICD_WSI_PLATFORM_STELLUX,
+ } VkIcdWsiPlatform;
+ 
+ typedef struct {
+--- a/include/vulkan/vulkan.h
++++ b/include/vulkan/vulkan.h
+@@ -100,4 +100,9 @@
+ #include "vulkan_ohos.h"
+ #endif
+ 
++
++#ifdef VK_USE_PLATFORM_STELLUX_STLX
++#include "vulkan_stellux.h"
++#endif
++
+ #endif // VULKAN_H_
+--- a/include/vulkan/vulkan_core.h
++++ b/include/vulkan/vulkan_core.h
+@@ -1485,6 +1485,7 @@ typedef enum VkStructureType {
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DATA_GRAPH_NEURAL_ACCELERATOR_STATISTICS_FEATURES_ARM = 1000676002,
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_RESTART_INDEX_FEATURES_EXT = 1000678000,
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_DECODE_VECTOR_FEATURES_NV = 1000689000,
++    VK_STRUCTURE_TYPE_STELLUX_SURFACE_CREATE_INFO_STLX = 1001000000,
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTER_FEATURES = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES,
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETER_FEATURES = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES,
+   // VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT is a legacy alias
+--- /dev/null
++++ b/include/vulkan/vulkan_stellux.h
+@@ -0,0 +1,56 @@
++#ifndef VULKAN_STELLUX_H_
++#define VULKAN_STELLUX_H_ 1
++
++/*
++ * SPDX-License-Identifier: MIT
++ *
++ * VK_STLX_surface makes a VkSurfaceKHR of a stlxwin window.
++ *
++ * The program owns the connection and the window: the window must be one of
++ * the connection's, and both must outlive the surface and every swapchain
++ * made on it.
++ *
++ * Only the physical device on the /dev/gpuN whose buffers stlxdm takes can
++ * present to the surface. Its extent is the window's configured size. A
++ * dead connection, or stlxdm taking no GPU buffers, loses the surface. The
++ * size, and whether stlxdm takes GPU buffers, change only as the program
++ * dispatches the connection's events.
++ */
++
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++
++
++// VK_STLX_surface is a preprocessor guard. Do not pass it to API calls.
++#define VK_STLX_surface 1
++#define VK_STLX_SURFACE_SPEC_VERSION 1
++#define VK_STLX_SURFACE_EXTENSION_NAME "VK_STLX_surface"
++typedef VkFlags VkStelluxSurfaceCreateFlagsSTLX;
++typedef struct VkStelluxSurfaceCreateInfoSTLX {
++    VkStructureType                    sType;
++    const void*                        pNext;
++    VkStelluxSurfaceCreateFlagsSTLX    flags;
++    struct stlxwin_conn*               connection;
++    struct stlxwin_window*             window;
++} VkStelluxSurfaceCreateInfoSTLX;
++
++typedef VkResult (VKAPI_PTR *PFN_vkCreateStelluxSurfaceSTLX)(VkInstance instance, const VkStelluxSurfaceCreateInfoSTLX* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface);
++
++#ifndef VK_NO_PROTOTYPES
++#ifndef VK_ONLY_EXPORTED_PROTOTYPES
++VKAPI_ATTR VkResult VKAPI_CALL vkCreateStelluxSurfaceSTLX(
++    VkInstance                                  instance,
++    const VkStelluxSurfaceCreateInfoSTLX*       pCreateInfo,
++    const VkAllocationCallbacks*                pAllocator,
++    VkSurfaceKHR*                               pSurface);
++#endif
++#endif
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+--- a/meson.options
++++ b/meson.options
+@@ -13,6 +13,7 @@ option(
+   value : ['auto'],
+   choices : [
+     'auto', 'x11', 'wayland', 'haiku', 'android', 'windows', 'macos',
++    'stellux',
+   ],
+   description : 'window systems to support. If this is set to `auto`, all ' +
+                 'platforms applicable will be enabled.'
+--- a/src/vulkan/registry/vk.xml
++++ b/src/vulkan/registry/vk.xml
+@@ -36,6 +36,7 @@ branch of the member gitlab server.
+         <platform name="provisional" protect="VK_ENABLE_BETA_EXTENSIONS" comment="Enable declarations for beta/provisional extensions" />
+         <platform name="screen" protect="VK_USE_PLATFORM_SCREEN_QNX" comment="QNX Screen Graphics Subsystem" />
+         <platform name="ohos" protect="VK_USE_PLATFORM_OHOS" comment="Open Harmony OS" />
++        <platform name="stellux" protect="VK_USE_PLATFORM_STELLUX_STLX" comment="Stellux, windows of its display manager through libstlxwin" />
+     </platforms>
+ 
+     <tags comment="Vulkan vendor/author tags for extensions and layers">
+@@ -81,6 +82,7 @@ branch of the member gitlab server.
+         <tag name="SHADY" author="Saarland University" contact="Hugo Devillers @hugobros3" />
+         <tag name="FREDEMMOTT" author="Frederick Emmott" contact="Fred Emmott @fredemmott" />
+         <tag name="MTK" author="Mediatek, Inc." contact="Samuel Huang @shengwenhuang" />
++        <tag name="STLX" author="StelluxOS" contact="FlareCoding @FlareCoding" />
+         <tag name="OPENXR" author="OpenXR Working Group" contact="Ron Bessems @rbessems" />
+     </tags>
+ 
+@@ -102,6 +104,7 @@ branch of the member gitlab server.
+         <type category="include" name="screen/screen.h" />
+         <type category="include" name="nvscisync.h" />
+         <type category="include" name="nvscibuf.h" />
++        <type category="include" name="stlxwin/stlxwin.h" />
+             <comment>
+                 In the current header structure, each platform's interfaces
+                 are confined to a platform-specific header (vulkan_xlib.h,
+@@ -150,6 +153,8 @@ branch of the member gitlab server.
+         <type requires="nvscisync.h" name="NvSciSyncFence" />
+         <type requires="nvscibuf.h" name="NvSciBufAttrList" />
+         <type requires="nvscibuf.h" name="NvSciBufObj" />
++        <type requires="stlxwin/stlxwin.h" name="stlxwin_conn" />
++        <type requires="stlxwin/stlxwin.h" name="stlxwin_window" />
+ 
+         <type category="define">
+ #define <name>VK_MAKE_VERSION</name>(major, minor, patch) \
+@@ -459,6 +464,7 @@ typedef void* <name>MTLSharedEvent_id</name>;
+         <type category="bitmask">typedef <type>VkFlags</type> <name>VkStreamDescriptorSurfaceCreateFlagsGGP</name>;</type>
+         <type category="bitmask">typedef <type>VkFlags</type> <name>VkHeadlessSurfaceCreateFlagsEXT</name>;</type>
+         <type category="bitmask">typedef <type>VkFlags</type> <name>VkScreenSurfaceCreateFlagsQNX</name>;</type>
++        <type category="bitmask">typedef <type>VkFlags</type> <name>VkStelluxSurfaceCreateFlagsSTLX</name>;</type>
+         <type requires="VkPeerMemoryFeatureFlagBits" category="bitmask">typedef <type>VkFlags</type> <name>VkPeerMemoryFeatureFlags</name>;</type>
+         <type category="bitmask" name="VkPeerMemoryFeatureFlagsKHR" alias="VkPeerMemoryFeatureFlags" />
+         <type requires="VkMemoryAllocateFlagBits" category="bitmask">typedef <type>VkFlags</type> <name>VkMemoryAllocateFlags</name>;</type>
+@@ -12093,6 +12099,13 @@ typedef void* <name>MTLSharedEvent_id</name>;
+             <member optional="true"><type>VkDataGraphOpticalFlowExecuteFlagsARM</type>        <name>flags</name></member>
+             <member optional="true"><type>uint32_t</type>                           <name>meanFlowL1NormHint</name></member>
+         </type>
++        <type category="struct" name="VkStelluxSurfaceCreateInfoSTLX">
++            <member values="VK_STRUCTURE_TYPE_STELLUX_SURFACE_CREATE_INFO_STLX"><type>VkStructureType</type> <name>sType</name></member>
++            <member optional="true">const <type>void</type>*                      <name>pNext</name></member>
++            <member optional="true"><type>VkStelluxSurfaceCreateFlagsSTLX</type>  <name>flags</name></member>
++            <member noautovalidity="true">struct <type>stlxwin_conn</type>*             <name>connection</name></member>
++            <member noautovalidity="true">struct <type>stlxwin_window</type>*           <name>window</name></member>
++        </type>
+     </types>
+ 
+ 
+@@ -19612,6 +19625,13 @@ endif::VK_KHR_internally_synchronized_queues[]
+             <param optional="false,true"><type>uint32_t</type>*                 <name>pFormatCount</name></param>
+             <param optional="true" len="pFormatCount"><type>VkDataGraphOpticalFlowImageFormatPropertiesARM</type>* <name>pImageFormatProperties</name></param>
+         </command>
++        <command successcodes="VK_SUCCESS" errorcodes="VK_ERROR_OUT_OF_HOST_MEMORY,VK_ERROR_OUT_OF_DEVICE_MEMORY,VK_ERROR_UNKNOWN,VK_ERROR_VALIDATION_FAILED">
++            <proto><type>VkResult</type> <name>vkCreateStelluxSurfaceSTLX</name></proto>
++            <param><type>VkInstance</type> <name>instance</name></param>
++            <param>const <type>VkStelluxSurfaceCreateInfoSTLX</type>* <name>pCreateInfo</name></param>
++            <param optional="true">const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>
++            <param><type>VkSurfaceKHR</type>* <name>pSurface</name></param>
++        </command>
+     </commands>
+ 
+     <feature api="vulkan,vulkansc,vulkanbase" apitype="internal" name="VK_BASE_VERSION_1_0" number="1.0" comment="Vulkan base API interface definitions">
+@@ -32232,6 +32252,16 @@ endif::VK_KHR_internally_synchronized_queues[]
+                 <enum value="&quot;VK_QCOM_extension_695&quot;" name="VK_QCOM_EXTENSION_695_EXTENSION_NAME" />
+             </require>
+         </extension>
++        <extension name="VK_STLX_surface" number="1001" type="instance" depends="VK_KHR_surface" platform="stellux" author="STLX" contact="FlareCoding @FlareCoding" supported="vulkan" nofeatures="true">
++            <require>
++                <enum value="1" name="VK_STLX_SURFACE_SPEC_VERSION" />
++                <enum value="&quot;VK_STLX_surface&quot;" name="VK_STLX_SURFACE_EXTENSION_NAME" />
++                <enum offset="0" extends="VkStructureType" name="VK_STRUCTURE_TYPE_STELLUX_SURFACE_CREATE_INFO_STLX" />
++                <type name="VkStelluxSurfaceCreateFlagsSTLX" />
++                <type name="VkStelluxSurfaceCreateInfoSTLX" />
++                <command name="vkCreateStelluxSurfaceSTLX" />
++            </require>
++        </extension>
+     </extensions>
+     <formats>
+         <format name="VK_FORMAT_R4G4_UNORM_PACK8" class="8-bit" blockSize="1" texelsPerBlock="1" packed="8">
