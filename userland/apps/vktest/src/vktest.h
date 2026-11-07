@@ -139,4 +139,8 @@ void check_transfer(VkInstance instance, VkPhysicalDevice physical_device);
 // Dispatches a compute pipeline on `physical_device`'s general queue, the CPU reading the words it writes
 void check_compute(VkInstance instance, VkPhysicalDevice physical_device);
 
+// Draws a triangle on `physical_device`'s general queue, the CPU comparing its image pixel by pixel and showing it in a
+// stlxwin window
+void check_triangle(VkInstance instance, VkPhysicalDevice physical_device);
+
 #endif // VKTEST_H
