@@ -1,0 +1,62 @@
+; vktest's triangle shaders: the vertex entry point places corner `VertexIndex` of the triangle, and the fragment entry
+; point writes its one color, opaque red
+
+                     OpCapability Shader
+                     OpMemoryModel Logical GLSL450
+                     OpEntryPoint Vertex %vertex "vertex" %vertex_index %position %corners
+                     OpEntryPoint Fragment %fragment "fragment" %color
+                     OpExecutionMode %fragment OriginUpperLeft
+
+                     OpDecorate %vertex_index BuiltIn VertexIndex
+                     OpDecorate %position BuiltIn Position
+                     OpDecorate %color Location 0
+
+              %void = OpTypeVoid
+         %main_type = OpTypeFunction %void
+               %int = OpTypeInt 32 1
+              %uint = OpTypeInt 32 0
+             %float = OpTypeFloat 32
+            %float2 = OpTypeVector %float 2
+            %float4 = OpTypeVector %float 4
+            %uint_3 = OpConstant %uint 3
+      %corner_array = OpTypeArray %float2 %uint_3
+
+; The corners in normalized device coordinates, a quarter pixel off the grid of a 256x256 image: (128.25, 33.25),
+; (224.25, 224.25) and (33.25, 224.25) in pixels from its top-left
+            %middle = OpConstant %float 0.001953125
+               %low = OpConstant %float -0.740234375
+              %high = OpConstant %float 0.751953125
+          %corner_a = OpConstantComposite %float2 %middle %low
+          %corner_b = OpConstantComposite %float2 %high %high
+          %corner_c = OpConstantComposite %float2 %low %high
+       %corner_list = OpConstantComposite %corner_array %corner_a %corner_b %corner_c
+
+              %zero = OpConstant %float 0
+               %one = OpConstant %float 1
+               %red = OpConstantComposite %float4 %one %zero %zero %one
+
+     %index_pointer = OpTypePointer Input %int
+    %output_pointer = OpTypePointer Output %float4
+   %corners_pointer = OpTypePointer Private %corner_array
+    %corner_pointer = OpTypePointer Private %float2
+
+      %vertex_index = OpVariable %index_pointer Input
+          %position = OpVariable %output_pointer Output
+           %corners = OpVariable %corners_pointer Private %corner_list
+             %color = OpVariable %output_pointer Output
+
+            %vertex = OpFunction %void None %main_type
+      %vertex_entry = OpLabel
+             %index = OpLoad %int %vertex_index
+    %corner_element = OpAccessChain %corner_pointer %corners %index
+            %corner = OpLoad %float2 %corner_element
+             %place = OpCompositeConstruct %float4 %corner %zero %one
+                     OpStore %position %place
+                     OpReturn
+                     OpFunctionEnd
+
+          %fragment = OpFunction %void None %main_type
+    %fragment_entry = OpLabel
+                     OpStore %color %red
+                     OpReturn
+                     OpFunctionEnd
