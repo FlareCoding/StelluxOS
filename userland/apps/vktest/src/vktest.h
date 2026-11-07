@@ -115,6 +115,10 @@ Command find_command(VkInstance instance, const char* name) {
 // `physical_device` and outside Vulkan, or returns -1. The caller owns the new descriptor.
 int restrict_to_read(VkInstance instance, VkPhysicalDevice physical_device, int descriptor);
 
+// Imports `shared_memory`, a shared memory descriptor, as a GPU buffer through the /dev/gpuN of `physical_device` and
+// outside Vulkan, or returns -1. The caller owns the new descriptor, which has the shared memory descriptor's rights.
+int import_shared_memory(VkInstance instance, VkPhysicalDevice physical_device, int shared_memory);
+
 // Puts a descriptor of the /dev/gpuN of `physical_device` in place of the descriptor of the timeline reading `value`,
 // outside Vulkan, so the kernel refuses submissions signalling it. Returns whether it replaced one.
 bool replace_timeline_descriptor(VkInstance instance, VkPhysicalDevice physical_device, uint64_t value);
@@ -261,8 +265,8 @@ bool destroys_in_time(const burst_commands& bursts, VkDevice device);
 // waiting idle
 void check_device(VkInstance instance, VkPhysicalDevice physical_device);
 
-// Allocates memory of every type on `physical_device`, maps and shares the host-visible types and imports the others
-// read-only, binds a buffer at a destroyed buffer's address, and copies through every type and into read-only imports
+// Allocates memory of every type on `physical_device`, maps and shares the host-visible types, imports every type and
+// shared memory read-only, binds a buffer at a destroyed buffer's address, and copies through memory and its imports
 void check_memory(VkInstance instance, VkPhysicalDevice physical_device);
 
 // Signals, waits on and shares timeline semaphores on `physical_device`, from the CPU and from submissions

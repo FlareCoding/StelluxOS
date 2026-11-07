@@ -1,5 +1,5 @@
-// The memory stage: memory of every type, the host-visible types mapped and shared with a second device through opaque
-// descriptors and the others imported read-only, a buffer made again at a destroyed buffer's address, and GPU copies
+// The memory stage: memory of every type, the host-visible types mapped and shared with a second device, read-only
+// imports of every type and of a shared memory object, a buffer remade at a destroyed buffer's address, and GPU copies
 
 #include "vktest.h"
 
@@ -25,7 +25,8 @@ struct memory_commands {
     PFN_vkCmdCopyBuffer cmd_copy_buffer;
 };
 
-// Two devices on one GPU, the exporter allocating the memory the importer imports and copying on its transfer queue
+// Two devices on one GPU, each copying on its transfer queue, the importer importing shared memory and memory the
+// exporter allocates
 struct memory_stage {
     memory_commands                  commands;
     work_commands                    work;
@@ -52,9 +53,25 @@ constexpr uint32_t IMPORTER_WORDS_START = 0x30000000;
 constexpr uint32_t PLACED_WORDS_START = 0x40000000;
 constexpr uint32_t COPIED_WORDS_START = 0x50000000;
 constexpr uint32_t WRITER_WORDS_START = 0x60000000;
+constexpr uint32_t READ_ONLY_WORDS_START = 0x70000000;
+constexpr uint32_t SHARED_WORDS_START = 0x80000000;
 
 static bool is_host_visible(const VkMemoryType& type) {
     return (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+}
+
+// The first host-visible type without `VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT`, NVK's system memory type on a discrete
+// GPU, or `UINT32_MAX`
+static uint32_t find_system_type(const VkPhysicalDeviceMemoryProperties& properties) {
+    for (uint32_t type = 0; type < properties.memoryTypeCount; type++) {
+        const VkMemoryType& memory_type = properties.memoryTypes[type];
+        bool is_device_local = (memory_type.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+        if (is_host_visible(memory_type) && !is_device_local) {
+            return type;
+        }
+    }
+
+    return UINT32_MAX;
 }
 
 static bool has_visibility(const VkMemoryType& type, type_visibility visibility) {
@@ -288,8 +305,8 @@ static bool shares_through_descriptor(const memory_stage& stage, uint32_t type) 
     return shares;
 }
 
-// Whether importing memory of `type` through a descriptor with `GPU_RIGHT_READ` alone returns `expected`
-static bool imports_read_only_as(const memory_stage& stage, uint32_t type, VkResult expected) {
+// Whether memory of `type` imports through a descriptor with `GPU_RIGHT_READ` alone
+static bool takes_read_only_import(const memory_stage& stage, uint32_t type) {
     VkDeviceMemory exported = VK_NULL_HANDLE;
     int descriptor = export_memory(stage, type, exported);
     int read_only = descriptor >= 0 ? restrict_to_read(stage.instance, stage.physical_device, descriptor) : -1;
@@ -298,28 +315,15 @@ static bool imports_read_only_as(const memory_stage& stage, uint32_t type, VkRes
     }
 
     VkDeviceMemory imported = VK_NULL_HANDLE;
-    bool returns_expected = false;
-    if (read_only >= 0) {
-        VkResult result = import_memory(stage, stage.importer, type, read_only, imported);
-        returns_expected = result == expected;
-        if (result != VK_SUCCESS) {
-            close(read_only);
-        }
+    bool is_imported = read_only >= 0 && import_memory(stage, stage.importer, type, read_only, imported) == VK_SUCCESS;
+    if (read_only >= 0 && !is_imported) {
+        close(read_only);
     }
 
     stage.work.free_memory(stage.importer, imported, nullptr);
     stage.work.free_memory(stage.exporter, exported, nullptr);
 
-    return returns_expected;
-}
-
-// The CPU could write through a mapping of a host-visible import, so only types it cannot map take one
-static bool refuses_read_only_import(const memory_stage& stage, uint32_t type) {
-    return imports_read_only_as(stage, type, VK_ERROR_INVALID_EXTERNAL_HANDLE);
-}
-
-static bool takes_read_only_import(const memory_stage& stage, uint32_t type) {
-    return imports_read_only_as(stage, type, VK_SUCCESS);
+    return is_imported;
 }
 
 // A zero `address` lets the driver place the buffer
@@ -445,6 +449,93 @@ static bool carries_gpu_copies(const memory_stage& stage, uint32_t type) {
     destroy_bound_buffer(stage.work, stage.exporter, source);
 
     return carries;
+}
+
+static bool refuses_map(const memory_stage& stage, VkDevice device, VkDeviceMemory memory) {
+    void* mapping = nullptr;
+    return stage.work.map_memory(device, memory, 0, VK_WHOLE_SIZE, 0, &mapping) == VK_ERROR_MEMORY_MAP_FAILED;
+}
+
+// Whether read-only `descriptor`, holding words from `first_word`, imports as memory of `type` that vkMapMemory refuses
+// and a GPU copy reads. The import owns the descriptor once it succeeds, and this closes it otherwise.
+static bool reads_unmappable_import(const memory_stage& stage, uint32_t type, int descriptor, uint32_t first_word) {
+    bound_buffer imported;
+    bool is_imported = import_memory(stage, stage.importer, type, descriptor, imported.memory) == VK_SUCCESS;
+    if (!is_imported) {
+        close(descriptor);
+    }
+
+    bool refuses_cpu_map = is_imported && refuses_map(stage, stage.importer, imported.memory);
+
+    imported.buffer = is_imported ? bind_shared_buffer(stage, stage.importer, type, imported.memory) : VK_NULL_HANDLE;
+    bound_buffer target =
+        make_staging_buffer(stage.work, stage.importer, stage.properties, MEMORY_SIZE, TRANSFER_USAGE);
+
+    bool reads = false;
+    if (imported.buffer != VK_NULL_HANDLE && target.words != nullptr) {
+        VkResult result = copy_on_gpu(stage, stage.importer, {imported.buffer, target.buffer});
+        reads = result == VK_SUCCESS && holds_words(target.words, first_word);
+    }
+
+    destroy_bound_buffer(stage.work, stage.importer, target);
+    destroy_bound_buffer(stage.work, stage.importer, imported);
+
+    return refuses_cpu_map && reads;
+}
+
+// Whether memory of `type` the CPU wrote through the exporter's mapping, imported through a descriptor with
+// `GPU_RIGHT_READ` alone, is read by a GPU copy and refused by vkMapMemory
+static bool reads_read_only_import(const memory_stage& stage, uint32_t type) {
+    VkDeviceMemory exported = VK_NULL_HANDLE;
+    int descriptor = export_memory(stage, type, exported);
+    void* mapping = descriptor >= 0 ? map(stage, stage.exporter, exported) : nullptr;
+    if (mapping != nullptr) {
+        write_words(mapping, READ_ONLY_WORDS_START + type);
+    }
+
+    int read_only = mapping != nullptr ? restrict_to_read(stage.instance, stage.physical_device, descriptor) : -1;
+    if (descriptor >= 0) {
+        close(descriptor);
+    }
+
+    bool reads = read_only >= 0 && reads_unmappable_import(stage, type, read_only, READ_ONLY_WORDS_START + type);
+    stage.work.free_memory(stage.exporter, exported, nullptr);
+
+    return reads;
+}
+
+// Writes words from `first_word` into new shared memory, imports it as a GPU buffer and returns a descriptor of that
+// buffer with `GPU_RIGHT_READ` alone, or -1. The caller owns the descriptor.
+static int make_read_only_shared_memory(const memory_stage& stage, uint32_t first_word) {
+    int shared = memfd_create("vktest", MFD_CLOEXEC);
+    bool is_sized = shared >= 0 && ftruncate(shared, MEMORY_SIZE) == 0;
+    void* mapping = is_sized ? mmap(nullptr, MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shared, 0) : MAP_FAILED;
+    int buffer = -1;
+    if (mapping != MAP_FAILED) {
+        write_words(mapping, first_word);
+        munmap(mapping, MEMORY_SIZE);
+        buffer = import_shared_memory(stage.instance, stage.physical_device, shared);
+    }
+
+    int read_only = buffer >= 0 ? restrict_to_read(stage.instance, stage.physical_device, buffer) : -1;
+    if (buffer >= 0) {
+        close(buffer);
+    }
+
+    if (shared >= 0) {
+        close(shared);
+    }
+
+    return read_only;
+}
+
+// Whether shared memory the CPU wrote, imported through a descriptor with `GPU_RIGHT_READ` alone as memory of the
+// system memory type, is read by a GPU copy and refused by vkMapMemory
+static bool reads_read_only_shared_memory(const memory_stage& stage) {
+    uint32_t type = find_system_type(stage.properties);
+    int read_only = type != UINT32_MAX ? make_read_only_shared_memory(stage, SHARED_WORDS_START) : -1;
+
+    return read_only >= 0 && reads_unmappable_import(stage, type, read_only, SHARED_WORDS_START);
 }
 
 // Whether a new device's GPU copy into `descriptor`, imported as memory of `type`, loses that device. The import owns
@@ -604,12 +695,16 @@ static void check_memory_types(const memory_stage& stage) {
         holds_for_every_type(stage, type_visibility::host_visible, shares_through_descriptor)
     );
     check(
-        "a read-only descriptor is refused as memory of every host-visible type",
-        holds_for_every_type(stage, type_visibility::host_visible, refuses_read_only_import)
+        "memory of every host-visible type imported read-only is read by a GPU copy and refused by vkMapMemory",
+        holds_for_every_type(stage, type_visibility::host_visible, reads_read_only_import)
     );
     check(
         "a read-only descriptor imports as memory of every type the CPU cannot map",
         holds_for_every_type(stage, type_visibility::device_only, takes_read_only_import)
+    );
+    check(
+        "shared memory imported read-only as the system memory type is read by a GPU copy and refused by vkMapMemory",
+        reads_read_only_shared_memory(stage)
     );
 
     check("a buffer created at a destroyed buffer's address binds memory there", binds_at_released_address(stage));
@@ -619,8 +714,8 @@ static void check_memory_types(const memory_stage& stage) {
         holds_for_every_type(stage, type_visibility::any, carries_gpu_copies)
     );
     check(
-        "a GPU copy into a read-only import of every type the CPU cannot map loses its device alone, writing nothing",
-        holds_for_every_type(stage, type_visibility::device_only, refuses_gpu_writes_to_read_only_import)
+        "a GPU copy into a read-only import of every type loses its device alone, writing nothing",
+        holds_for_every_type(stage, type_visibility::any, refuses_gpu_writes_to_read_only_import)
     );
 }
 
@@ -694,16 +789,15 @@ void check_memory(VkInstance instance, VkPhysicalDevice physical_device) {
         VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME,
     };
 
-    std::vector<uint32_t> exporter_families = {GENERAL_FAMILY, stage.transfer_family};
-    std::vector<uint32_t> importer_families = {GENERAL_FAMILY};
+    std::vector<uint32_t> families = {GENERAL_FAMILY, stage.transfer_family};
     if (stage.transfer_family != UINT32_MAX) {
-        stage.exporter = create_device(instance, physical_device, exporter_families, extensions, &features);
-        stage.importer = create_device(instance, physical_device, importer_families, extensions, &features);
+        stage.exporter = create_device(instance, physical_device, families, extensions, &features);
+        stage.importer = create_device(instance, physical_device, families, extensions, &features);
     }
 
     bool has_devices = stage.exporter != VK_NULL_HANDLE && stage.importer != VK_NULL_HANDLE;
     check(
-        "two devices with memory descriptors, replayable addresses, placed maps and one transfer queue are created",
+        "two devices with memory descriptors, replayable addresses, placed maps and transfer queues are created",
         has_devices
     );
     if (has_devices) {

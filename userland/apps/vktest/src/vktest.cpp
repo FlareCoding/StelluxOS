@@ -253,6 +253,20 @@ int restrict_to_read(VkInstance instance, VkPhysicalDevice physical_device, int 
     return result == 0 ? restriction.restricted : -1;
 }
 
+int import_shared_memory(VkInstance instance, VkPhysicalDevice physical_device, int shared_memory) {
+    int gpu_fd = open_gpu_file_of(instance, physical_device);
+    if (gpu_fd < 0) {
+        return -1;
+    }
+
+    gpu_buffer_args import = {};
+    import.source = shared_memory;
+    int result = ioctl(gpu_fd, GPU_BUFFER_IMPORT, &import);
+    close(gpu_fd);
+
+    return result == 0 ? import.buffer : -1;
+}
+
 // The `GPU_TIMELINE_QUERY` reports of the timelines reading `value` among the descriptors below the soft
 // `RLIMIT_NOFILE` limit, each query made through `gpu_fd`
 static std::vector<gpu_timeline_args> query_timelines_at(int gpu_fd, uint64_t value) {
