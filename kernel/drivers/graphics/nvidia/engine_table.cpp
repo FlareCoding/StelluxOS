@@ -76,13 +76,7 @@ int32_t engine_table::read(firmware& fw, rm::handle subdevice) {
 }
 
 const engine_info* engine_table::first_async_copy_engine() const {
-    const engine_info* graphics = nullptr;
-    for (uint32_t i = 0; i < m_count; i++) {
-        if (m_engines[i].type == rm::ENGINE_TYPE_GRAPHICS) {
-            graphics = &m_engines[i];
-        }
-    }
-
+    const engine_info* graphics = graphics_engine();
     const engine_info* found = nullptr;
     for (uint32_t i = 0; i < m_count; i++) {
         const engine_info& engine = m_engines[i];
@@ -94,6 +88,16 @@ const engine_info* engine_table::first_async_copy_engine() const {
     }
 
     return found;
+}
+
+const engine_info* engine_table::graphics_engine() const {
+    for (uint32_t i = 0; i < m_count; i++) {
+        if (m_engines[i].type == rm::ENGINE_TYPE_GRAPHICS) {
+            return &m_engines[i];
+        }
+    }
+
+    return nullptr;
 }
 
 uint32_t engine_table::count() const {
