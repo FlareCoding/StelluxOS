@@ -1,4 +1,4 @@
-// Holds definitions re-declared from NVIDIA's open GPU kernel modules, under
+// Holds definitions re-declared from NVIDIA's open GPU kernel modules and open GPU documentation, under
 // kernel/drivers/graphics/nvidia/LICENSE-NVIDIA
 
 // Checks /dev/gpu0 on an NVIDIA card or on virtio-gpu with venus, then the window protocol and its GPU buffers. Exits 1
@@ -26,6 +26,7 @@
 #define NS_PER_MS       1000000ULL
 #define NS_PER_US       1000ULL
 #define PAGE_WORDS      (PAGE_BYTES / sizeof(uint32_t))
+#define WORD_COUNT(a)   ((uint32_t)(sizeof(a) / sizeof(uint32_t)))
 #define USER_VA_START   PAGE_BYTES
 #define USER_VA_END     (1ULL << 39)
 #define BUFFER_WORDS    (BUFFER_BYTES / sizeof(uint32_t))
@@ -33,7 +34,7 @@
 #define RELEASE_WAIT_NS (2 * NS_PER_SEC)
 #define CONTEXT_COUNT   16
 #define QUEUE_COUNT     2
-#define LIST_WORDS_MAX  32
+#define LIST_WORDS_MAX  256
 #define WAIT_NS         (100 * NS_PER_MS)
 #define WAITED_COPIES   1000000u
 #define HOLD_US         (20 * 1000)
@@ -60,15 +61,17 @@
 #define OTHER_VIDEO_VA (UNMAPPED_VA + BUFFER_BYTES)
 #define REMAP_VA       (OTHER_VIDEO_VA + BUFFER_BYTES)
 
-// NVIDIA's NVC56F_DMA_SEC_OP_INC_METHOD, a push buffer header whose values go to consecutive methods, with the value
-// count from bit 16, here on subchannel 0
-#define PUSH_HEADER_INCREASING  (1u << 29)
-#define PUSH_HEADER_COUNT_SHIFT 16
+// NVIDIA's NVC56F_DMA_SEC_OP_INC_METHOD and NON_INC_METHOD push buffer headers, whose values go to consecutive methods
+// or all to one, with the value count from bit 16 and the subchannel from bit 13
+#define PUSH_HEADER_INCREASING       (1u << 29)
+#define PUSH_HEADER_SAME_METHOD      (3u << 29)
+#define PUSH_HEADER_COUNT_SHIFT      16
+#define PUSH_HEADER_SUBCHANNEL_SHIFT 13
 
 // NVIDIA's NVC56F_DMA_SEC_OP_IMMD_DATA_METHOD, a push buffer word holding one method and its value from bit 16
 #define PUSH_IMMEDIATE (4u << 29)
 
-// NVIDIA's NVC56F host methods: SET_OBJECT (which binds the copy class to the subchannel), SEMAPHOREA to SEMAPHORED,
+// NVIDIA's NVC56F host methods: SET_OBJECT (which binds a class to the subchannel), SEMAPHOREA to SEMAPHORED,
 // NON_STALL_INTERRUPT, MEM_OP_A to MEM_OP_D (which run MEM_OP_D's operation) and SET_REFERENCE
 #define SET_OBJECT          0x0000u
 #define SEMAPHORE_A         0x0010u
@@ -109,14 +112,122 @@
 #define PHYS_MODE_VIDEO_MEMORY 0x0u
 #define LAUNCH_FROM_PHYSICAL   (LAUNCH_COPY | (1u << 12))
 
-// Method words for the copy engine, which a submission copies to its queue's command words
+// NVIDIA's NVA06F_SUBCHANNEL_3D, _COMPUTE and _COPY_ENGINE, the subchannels of a graphics channel's classes
+#define SUBCHANNEL_3D      0u
+#define SUBCHANNEL_COMPUTE 1u
+#define SUBCHANNEL_COPY    4u
+
+// NVIDIA's NVC797 3D methods: color target 0's nine from SET_COLOR_TARGET_A, the clear rectangle's, surface clip's and
+// window offset's two, the clear color's four, and CLEAR_SURFACE, which clears the rectangle of the selected targets
+#define SET_COLOR_TARGET_A          0x0800u
+#define SET_CLEAR_RECT_HORIZONTAL   0x0D6Cu
+#define SET_COLOR_CLEAR_VALUE       0x0D80u
+#define SET_WINDOW_OFFSET_X         0x0DF8u
+#define SET_SURFACE_CLIP_HORIZONTAL 0x0FF4u
+#define SET_CLEAR_SURFACE_CONTROL   0x10F8u
+#define SET_CT_SELECT               0x121Cu
+#define SET_ZT_SELECT               0x1538u
+#define SET_RENDER_ENABLE_C         0x1558u
+#define CLEAR_SURFACE               0x19D0u
+#define SET_COLOR_COMPRESSION       0x19E0u
+#define SET_CT_WRITE                0x1A00u
+
+// NVIDIA's NVC797 fields: SET_COLOR_TARGET_FORMAT A8B8G8R8, SET_COLOR_TARGET_MEMORY LAYOUT_PITCH, SET_CT_WRITE and
+// CLEAR_SURFACE with R, G, B and A enabled, SET_CLEAR_SURFACE_CONTROL USE_CLEAR_RECT and SET_RENDER_ENABLE_C MODE_TRUE
+#define COLOR_FORMAT_A8B8G8R8 0xD5u
+#define COLOR_LAYOUT_PITCH    (1u << 12)
+#define CT_WRITE_RGBA         0x1111u
+#define CLEAR_RGBA            (0xFu << 2)
+#define CLEAR_USE_RECT        (1u << 4)
+#define RENDER_ENABLE_TRUE    1u
+
+// NVIDIA's NVC7C0 compute methods: the shared and local memory windows, upper word first, SEND_PCAS_A, a QMD's address
+// shifted right by 8, and SEND_SIGNALING_PCAS2_B, whose PCAS_ACTION INVALIDATE_COPY_SCHEDULE launches the QMD's grid
+#define SET_SHADER_SHARED_MEMORY_WINDOW_A 0x02A0u
+#define SEND_PCAS_A                       0x02B4u
+#define SEND_SIGNALING_PCAS2_B            0x02C0u
+#define SET_SHADER_LOCAL_MEMORY_WINDOW_A  0x07B0u
+#define PCAS_INVALIDATE_COPY_SCHEDULE     0x3u
+
+// Where a compute grid's threads see shared and local memory, above every buffer the checks map
+#define SHARED_WINDOW_VA 0xFE000000ULL
+#define LOCAL_WINDOW_VA  0xFF000000ULL
+
+// Fields of NVIDIA's QMD version 3.0 (NVC6C0_QMDV03_00), the descriptor of a grid a compute class launches, each by the
+// bit it starts at, and every field the checks set lying within one 32-bit word
+#define QMD_WORDS                            64
+#define QMD_BYTES                            (QMD_WORDS * sizeof(uint32_t))
+#define QMD_SM_GLOBAL_CACHING_ENABLE         134
+#define QMD_API_VISIBLE_CALL_LIMIT           378
+#define QMD_CTA_RASTER_WIDTH                 384
+#define QMD_CTA_RASTER_HEIGHT                416
+#define QMD_CTA_RASTER_DEPTH                 448
+#define QMD_MIN_SM_CONFIG_SHARED_MEM_SIZE    562
+#define QMD_MAX_SM_CONFIG_SHARED_MEM_SIZE    569
+#define QMD_MAJOR_VERSION                    580
+#define QMD_CTA_THREAD_DIMENSION0            592
+#define QMD_CTA_THREAD_DIMENSION1            608
+#define QMD_CTA_THREAD_DIMENSION2            624
+#define QMD_REGISTER_COUNT_V                 648
+#define QMD_TARGET_SM_CONFIG_SHARED_MEM_SIZE 657
+#define QMD_RELEASE0_ADDRESS_LOWER           768
+#define QMD_RELEASE0_ADDRESS_UPPER           800
+#define QMD_RELEASE0_MEMBAR_TYPE             819
+#define QMD_RELEASE0_ENABLE                  823
+#define QMD_RELEASE0_STRUCTURE_SIZE          830
+#define QMD_RELEASE0_PAYLOAD_LOWER           832
+#define QMD_PROGRAM_ADDRESS_LOWER            1536
+#define QMD_PROGRAM_ADDRESS_UPPER            1568
+
+// NVIDIA's QMD values: major version 3, NO_CHECK, FE_SYSMEMBAR and SEMAPHORE_ONE_WORD. A shared memory configuration
+// of n KiB is n / 4 + 1, from none to the 100 KiB an Ampere GA10x SM offers at most
+#define QMD_VERSION_3        3u
+#define CALL_LIMIT_NO_CHECK  1u
+#define RELEASE_FE_SYSMEMBAR 1u
+#define RELEASE_ONE_WORD     1u
+#define SHARED_MEMORY_NONE   1u
+#define SHARED_MEMORY_MOST   26u
+
+// The registers a program's threads take: R0 to R3 and the two the hardware keeps for the program counter
+#define PROGRAM_REGISTERS 6u
+
+// The last word of an Ampere instruction: the cycles the warp stalls after it, yield, and no barrier set or waited for
+#define SCHEDULE(stall_cycles) (((stall_cycles) << 9) | (1u << 13) | (7u << 14) | (7u << 17))
+
+// The graphics part's video buffer holds its grids' QMDs, each program on a page of its own with zeros after it for
+// the SMs' instruction prefetch, and the words the grids write
+#define STORE_QMD_VA     VIDEO_VA
+#define EXIT_QMD_VA      (VIDEO_VA + QMD_BYTES)
+#define STORE_PROGRAM_VA (VIDEO_VA + PAGE_BYTES)
+#define EXIT_PROGRAM_VA  (VIDEO_VA + 2 * PAGE_BYTES)
+#define STORED_VA        (VIDEO_VA + 3 * PAGE_BYTES)
+#define GRID_RELEASE_VA  (STORED_VA + sizeof(uint32_t))
+
+// The clears' target, the system buffer as rows of 512 A8B8G8R8 pixels
+#define TARGET_WIDTH  512u
+#define TARGET_PITCH  (TARGET_WIDTH * (uint32_t)sizeof(uint32_t))
+#define TARGET_HEIGHT ((uint32_t)(BUFFER_BYTES / TARGET_PITCH))
+
+// The words the graphics checks wait for. The target is cleared to magenta many times and then green, keeping the
+// 3D pipe busy for milliseconds, and the exit grid's 2^26 CTAs (thread blocks) keep the compute pipe busy longer
+#define STORED_WORD       0x5CA1AB1Eu
+#define GRID_RELEASE_WORD 0x0DDBA11u
+#define LAST_CLEAR_WORD   0xFF00FF00u
+#define FLOAT_ONE         0x3F800000u
+#define CLEAR_REPEATS     64u
+#define GRID_CTAS         (1u << 26)
+#define GRID_THREADS      32u
+#define GRAPHICS_WAIT_NS  (2 * NS_PER_SEC)
+
+// Method words, each sent to the class bound to `subchannel`, which a submission copies to its queue's command words
 struct command_list {
     uint32_t count;
+    uint32_t subchannel;
     uint32_t words[LIST_WORDS_MAX];
 };
 
-// A copy queue with its timeline and its command words, a page of the session's command buffer
-struct copy_queue {
+// A queue with its timeline and its command words, a page of the session's command buffer
+struct queue {
     uint32_t           index;
     int32_t            timeline;
     uint64_t           point; // the value its last submission signals
@@ -124,13 +235,13 @@ struct copy_queue {
     volatile uint32_t* words;
 };
 
-// A context with copy queues and three buffers mapped for the CPU and the GPU: the queues' command words, read-only
-// to the GPU, then the video and system memory they fill and copy, each check starting from what the last one left
-struct copy_session {
+// A context with queues of one kind and three buffers mapped for the CPU and the GPU: the queues' command words,
+// read-only to the GPU, then video and system memory for their work, each check starting from what the last left
+struct session {
     int                fd;
     uint32_t           copy_class;
     int32_t            context;
-    struct copy_queue  queues[QUEUE_COUNT];
+    struct queue       queues[QUEUE_COUNT];
     uint32_t           queue_count; // the queues opened, from the first
 
     int32_t            commands;
@@ -143,6 +254,23 @@ struct copy_session {
 
 static int passed = 0;
 static int failed = 0;
+
+// The clear colors' red, green, blue and alpha as floats
+static const uint32_t FIRST_CLEAR_COLOR[] = {FLOAT_ONE, 0, FLOAT_ONE, FLOAT_ONE};
+static const uint32_t LAST_CLEAR_COLOR[] = {0, FLOAT_ONE, 0, FLOAT_ONE};
+
+// The store grid's program, Ampere instructions of four words each, run on predicate PT. A MOV stalls long enough for
+// the store to read the register it sets
+static const uint32_t STORE_PROGRAM[] = {
+    0x00007802u, STORED_WORD,                 0x00000F00u, SCHEDULE(15), // MOV R0, STORED_WORD
+    0x00027802u, (uint32_t)STORED_VA,         0x00000F00u, SCHEDULE(15), // MOV R2, STORED_VA's lower word
+    0x00037802u, (uint32_t)(STORED_VA >> 32), 0x00000F00u, SCHEDULE(15), // MOV R3, its upper word
+    0x02007986u, 0x00000000u,                 0x0C10093Fu, SCHEDULE(1),  // STG.E [R2.64], R0
+    0x0000794Du, 0x00000000u,                 0x03800000u, SCHEDULE(5),  // EXIT
+};
+
+// The exit grid's program, EXIT alone
+static const uint32_t EXIT_PROGRAM[] = {0x0000794Du, 0x00000000u, 0x03800000u, SCHEDULE(5)};
 
 void check(const char* name, bool cond) {
     if (cond) {
@@ -303,10 +431,12 @@ static void test_facts(const struct gpu_info* info) {
 
     bool named = info->name[0] != '\0';
     bool has_classes = info->nvidia.class_gpfifo != 0 && info->nvidia.class_copy != 0;
+    bool has_2d_and_3d = info->nvidia.class_2d != 0 && info->nvidia.class_3d != 0;
+    bool has_m2mf_and_compute = info->nvidia.class_m2mf != 0 && info->nvidia.class_compute != 0;
     bool counts_shaders = info->nvidia.gpc_count != 0 && info->nvidia.tpc_count >= info->nvidia.gpc_count;
     check(
-        "it names its product and its channel and copy classes, and counts its shader units",
-        named && has_classes && counts_shaders
+        "it names its product, its channel, copy and graphics engine classes, and counts its shader units",
+        named && has_classes && has_2d_and_3d && has_m2mf_and_compute && counts_shaders
     );
 
     bool has_window = info->mappable_video_size != 0 && info->mappable_video_size <= info->video_size;
@@ -499,19 +629,37 @@ static void test_many_contexts(int fd) {
     check("closing them and the buffer gives their memory back", memory_returns_to(fd, before));
 }
 
-// A push buffer header sending `count` values to consecutive methods from `method`
-static uint32_t method_header(uint32_t method, uint32_t count) {
-    return PUSH_HEADER_INCREASING | (count << PUSH_HEADER_COUNT_SHIFT) | (method >> 2);
+// A push buffer header sending `count` values to consecutive methods from `method`, on the list's subchannel
+static uint32_t method_header(const struct command_list* list, uint32_t method, uint32_t count) {
+    uint32_t subchannel = list->subchannel << PUSH_HEADER_SUBCHANNEL_SHIFT;
+    return PUSH_HEADER_INCREASING | (count << PUSH_HEADER_COUNT_SHIFT) | subchannel | (method >> 2);
 }
 
 static void push_method(struct command_list* list, uint32_t method, uint32_t value) {
-    list->words[list->count++] = method_header(method, 1);
+    list->words[list->count++] = method_header(list, method, 1);
     list->words[list->count++] = value;
+}
+
+static void push_values(struct command_list* list, uint32_t method, const uint32_t* values, uint32_t count) {
+    list->words[list->count++] = method_header(list, method, count);
+    for (uint32_t i = 0; i < count; i++) {
+        list->words[list->count++] = values[i];
+    }
+}
+
+// Sends `value` to `method` `count` times under one header
+static void push_repeated(struct command_list* list, uint32_t method, uint32_t value, uint32_t count) {
+    uint32_t subchannel = list->subchannel << PUSH_HEADER_SUBCHANNEL_SHIFT;
+    uint32_t header = PUSH_HEADER_SAME_METHOD | (count << PUSH_HEADER_COUNT_SHIFT) | subchannel | (method >> 2);
+    list->words[list->count++] = header;
+    for (uint32_t i = 0; i < count; i++) {
+        list->words[list->count++] = value;
+    }
 }
 
 // Sends the upper word of `va` to `upper_method` and its lower word to the method after it
 static void push_address(struct command_list* list, uint32_t upper_method, uint64_t va) {
-    list->words[list->count++] = method_header(upper_method, 2);
+    list->words[list->count++] = method_header(list, upper_method, 2);
     list->words[list->count++] = (uint32_t)(va >> 32);
     list->words[list->count++] = (uint32_t)va;
 }
@@ -535,7 +683,7 @@ static struct command_list fill_commands(uint32_t copy_class, uint64_t va, uint3
 
 // Runs MEM_OP_D's `operation` with MEM_OP_C's `fields`, MEM_OP_A and MEM_OP_B left 0
 static void push_memory_operation(struct command_list* list, uint32_t fields, uint32_t operation) {
-    list->words[list->count++] = method_header(MEM_OP_A, 4);
+    list->words[list->count++] = method_header(list, MEM_OP_A, 4);
     list->words[list->count++] = 0;
     list->words[list->count++] = 0;
     list->words[list->count++] = fields;
@@ -544,7 +692,7 @@ static void push_memory_operation(struct command_list* list, uint32_t fields, ui
 
 // Holds the methods after it until the word at `va` equals `value`
 static void push_acquire(struct command_list* list, uint64_t va, uint32_t value) {
-    list->words[list->count++] = method_header(SEMAPHORE_A, 4);
+    list->words[list->count++] = method_header(list, SEMAPHORE_A, 4);
     list->words[list->count++] = (uint32_t)(va >> 32);
     list->words[list->count++] = (uint32_t)va;
     list->words[list->count++] = value;
@@ -582,9 +730,106 @@ static struct command_list physical_copy_commands(uint32_t copy_class, uint64_t 
     return list;
 }
 
-// Opens the session's next queue with its timeline and its page of command words. Returns false, with neither left
-// open, when a call failed
-static bool open_queue(struct copy_session* s) {
+// Has the 3D class clear the target CLEAR_REPEATS times to the first color and then once to the last, so it reads
+// LAST_CLEAR_WORD only once every clear ran
+static void push_clears(struct command_list* list, uint32_t class_3d) {
+    // Color target 0's nine values from SET_COLOR_TARGET_A, the seventh giving it one layer
+    uint32_t target[] = {
+        (uint32_t)(SYSTEM_VA >> 32),
+        (uint32_t)SYSTEM_VA,
+        TARGET_PITCH,
+        TARGET_HEIGHT,
+        COLOR_FORMAT_A8B8G8R8,
+        COLOR_LAYOUT_PITCH,
+        1,
+        0,
+        0,
+    };
+
+    uint32_t whole_target[] = {TARGET_WIDTH << 16, TARGET_HEIGHT << 16}; // from 0, to the width and to the height
+    uint32_t origin[] = {0, 0};
+
+    list->subchannel = SUBCHANNEL_3D;
+    push_method(list, SET_OBJECT, class_3d);
+
+    push_values(list, SET_COLOR_TARGET_A, target, WORD_COUNT(target));
+    push_method(list, SET_COLOR_COMPRESSION, 0);
+    push_method(list, SET_CT_WRITE, CT_WRITE_RGBA);
+    push_method(list, SET_CT_SELECT, 1); // one target, color target 0
+    push_method(list, SET_ZT_SELECT, 0);
+
+    push_values(list, SET_SURFACE_CLIP_HORIZONTAL, whole_target, WORD_COUNT(whole_target));
+    push_values(list, SET_WINDOW_OFFSET_X, origin, WORD_COUNT(origin));
+    push_values(list, SET_CLEAR_RECT_HORIZONTAL, whole_target, WORD_COUNT(whole_target));
+    push_method(list, SET_CLEAR_SURFACE_CONTROL, CLEAR_USE_RECT);
+    push_method(list, SET_RENDER_ENABLE_C, RENDER_ENABLE_TRUE);
+
+    push_values(list, SET_COLOR_CLEAR_VALUE, FIRST_CLEAR_COLOR, WORD_COUNT(FIRST_CLEAR_COLOR));
+    push_repeated(list, CLEAR_SURFACE, CLEAR_RGBA, CLEAR_REPEATS);
+    push_values(list, SET_COLOR_CLEAR_VALUE, LAST_CLEAR_COLOR, WORD_COUNT(LAST_CLEAR_COLOR));
+    push_method(list, CLEAR_SURFACE, CLEAR_RGBA);
+}
+
+// Has the compute class launch the QMD at `qmd_va`
+static void push_grid(struct command_list* list, uint32_t class_compute, uint64_t qmd_va) {
+    list->subchannel = SUBCHANNEL_COMPUTE;
+    push_method(list, SET_OBJECT, class_compute);
+    push_address(list, SET_SHADER_SHARED_MEMORY_WINDOW_A, SHARED_WINDOW_VA);
+    push_address(list, SET_SHADER_LOCAL_MEMORY_WINDOW_A, LOCAL_WINDOW_VA);
+
+    push_method(list, SEND_PCAS_A, (uint32_t)(qmd_va >> 8));
+    push_method(list, SEND_SIGNALING_PCAS2_B, PCAS_INVALIDATE_COPY_SCHEDULE);
+}
+
+static void set_qmd_field(uint32_t* qmd, uint32_t bit, uint32_t value) {
+    qmd[bit / 32] |= value << (bit % 32);
+}
+
+// Writes to `to` a QMD launching `ctas` CTAs of `threads` threads each running the program at `program_va`, whose
+// release writes GRID_RELEASE_WORD to `release_va` once the grid ended, when `release_va` is not 0
+static void write_qmd(
+    volatile uint32_t* to,
+    uint64_t program_va,
+    uint32_t ctas,
+    uint32_t threads,
+    uint64_t release_va
+) {
+    uint32_t qmd[QMD_WORDS] = {0};
+    set_qmd_field(qmd, QMD_SM_GLOBAL_CACHING_ENABLE, 1);
+    set_qmd_field(qmd, QMD_API_VISIBLE_CALL_LIMIT, CALL_LIMIT_NO_CHECK);
+    set_qmd_field(qmd, QMD_MAJOR_VERSION, QMD_VERSION_3);
+
+    set_qmd_field(qmd, QMD_CTA_RASTER_WIDTH, ctas);
+    set_qmd_field(qmd, QMD_CTA_RASTER_HEIGHT, 1);
+    set_qmd_field(qmd, QMD_CTA_RASTER_DEPTH, 1);
+    set_qmd_field(qmd, QMD_CTA_THREAD_DIMENSION0, threads);
+    set_qmd_field(qmd, QMD_CTA_THREAD_DIMENSION1, 1);
+    set_qmd_field(qmd, QMD_CTA_THREAD_DIMENSION2, 1);
+
+    set_qmd_field(qmd, QMD_MIN_SM_CONFIG_SHARED_MEM_SIZE, SHARED_MEMORY_NONE);
+    set_qmd_field(qmd, QMD_TARGET_SM_CONFIG_SHARED_MEM_SIZE, SHARED_MEMORY_NONE);
+    set_qmd_field(qmd, QMD_MAX_SM_CONFIG_SHARED_MEM_SIZE, SHARED_MEMORY_MOST);
+    set_qmd_field(qmd, QMD_REGISTER_COUNT_V, PROGRAM_REGISTERS);
+    set_qmd_field(qmd, QMD_PROGRAM_ADDRESS_LOWER, (uint32_t)program_va);
+    set_qmd_field(qmd, QMD_PROGRAM_ADDRESS_UPPER, (uint32_t)(program_va >> 32));
+
+    if (release_va != 0) {
+        set_qmd_field(qmd, QMD_RELEASE0_ADDRESS_LOWER, (uint32_t)release_va);
+        set_qmd_field(qmd, QMD_RELEASE0_ADDRESS_UPPER, (uint32_t)(release_va >> 32));
+        set_qmd_field(qmd, QMD_RELEASE0_MEMBAR_TYPE, RELEASE_FE_SYSMEMBAR);
+        set_qmd_field(qmd, QMD_RELEASE0_ENABLE, 1);
+        set_qmd_field(qmd, QMD_RELEASE0_STRUCTURE_SIZE, RELEASE_ONE_WORD);
+        set_qmd_field(qmd, QMD_RELEASE0_PAYLOAD_LOWER, GRID_RELEASE_WORD);
+    }
+
+    for (uint32_t i = 0; i < QMD_WORDS; i++) {
+        to[i] = qmd[i];
+    }
+}
+
+// Opens the session's next queue, of `kind`, with its timeline and its page of command words. Returns false, with
+// neither left open, when a call failed
+static bool open_queue(struct session* s, uint32_t kind) {
     struct gpu_timeline_args timeline = {0};
     if (gpu_call(s->fd, GPU_TIMELINE_CREATE, &timeline) != 0) {
         return false;
@@ -592,13 +837,13 @@ static bool open_queue(struct copy_session* s) {
 
     struct gpu_queue_args queue = {0};
     queue.context = s->context;
-    queue.kind = GPU_QUEUE_COPY;
+    queue.kind = kind;
     if (gpu_call(s->fd, GPU_QUEUE_CREATE, &queue) != 0) {
         close(timeline.timeline);
         return false;
     }
 
-    struct copy_queue* q = &s->queues[s->queue_count];
+    struct queue* q = &s->queues[s->queue_count];
     q->index = queue.queue;
     q->timeline = timeline.timeline;
     q->words_va = COMMANDS_VA + s->queue_count * PAGE_BYTES;
@@ -608,9 +853,9 @@ static bool open_queue(struct copy_session* s) {
     return true;
 }
 
-// Creates the session's context, buffers and queues. Returns false when a step failed, leaving what it made for
-// close_copy_session()
-static bool open_copy_session(struct copy_session* s) {
+// Creates the session's context, buffers and `count` queues of `kind`. Returns false when a step failed, leaving what
+// it made for close_session()
+static bool open_session(struct session* s, uint32_t kind, uint32_t count) {
     s->context = create_context(s->fd);
     create_buffer(s->fd, BUFFER_BYTES, GPU_PLACEMENT_SYSTEM, GPU_BUFFER_MAPPABLE, &s->commands);
     create_buffer(s->fd, BUFFER_BYTES, GPU_PLACEMENT_VIDEO, GPU_BUFFER_MAPPABLE, &s->video);
@@ -628,8 +873,8 @@ static bool open_copy_session(struct copy_session* s) {
         return false;
     }
 
-    for (int i = 0; i < QUEUE_COUNT; i++) {
-        if (!open_queue(s)) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (!open_queue(s, kind)) {
             return false;
         }
     }
@@ -637,7 +882,7 @@ static bool open_copy_session(struct copy_session* s) {
     return true;
 }
 
-static void close_copy_session(struct copy_session* s) {
+static void close_session(struct session* s) {
     for (uint32_t i = 0; i < s->queue_count; i++) {
         close(s->queues[i].timeline);
     }
@@ -654,8 +899,8 @@ static void close_copy_session(struct copy_session* s) {
 // Submits the `count` command words at `va` on `q` to signal its next point, held until `wait` is reached when one is
 // given. Returns 0 or the call's errno
 static int submit_words(
-    struct copy_session* s,
-    struct copy_queue* q,
+    struct session* s,
+    struct queue* q,
     uint64_t va,
     uint32_t count,
     const struct gpu_point* wait
@@ -688,8 +933,8 @@ static int submit_words(
 
 // Copies `list` into `q`'s command words and submits them, as submit_words() does
 static int submit(
-    struct copy_session* s,
-    struct copy_queue* q,
+    struct session* s,
+    struct queue* q,
     const struct command_list* list,
     const struct gpu_point* wait
 ) {
@@ -701,7 +946,7 @@ static int submit(
 }
 
 // Waits for the last submission on `q` to end. Returns 0, or the wait's errno, ETIMEDOUT once `timeout_ns` passed
-static int wait_for(struct copy_session* s, const struct copy_queue* q, uint64_t timeout_ns) {
+static int wait_for(struct session* s, const struct queue* q, uint64_t timeout_ns) {
     struct gpu_point point = {0};
     point.timeline = q->timeline;
     point.value = q->point;
@@ -714,13 +959,13 @@ static int wait_for(struct copy_session* s, const struct copy_queue* q, uint64_t
     return gpu_call(s->fd, GPU_TIMELINE_WAIT, &args);
 }
 
-static int run(struct copy_session* s, struct copy_queue* q, const struct command_list* list) {
+static int run(struct session* s, struct queue* q, const struct command_list* list) {
     int error = submit(s, q, list, NULL);
     return error != 0 ? error : wait_for(s, q, WAIT_NS);
 }
 
 // Whether `q`'s timeline reached its last point with GPU_TIMELINE_FAILED, false when the query fails
-static bool ended_failed(struct copy_session* s, const struct copy_queue* q) {
+static bool ended_failed(struct session* s, const struct queue* q) {
     struct gpu_timeline_args query = {0};
     query.timeline = q->timeline;
     if (gpu_call(s->fd, GPU_TIMELINE_QUERY, &query) != 0) {
@@ -731,7 +976,7 @@ static bool ended_failed(struct copy_session* s, const struct copy_queue* q) {
 }
 
 // Returns the context's GPU_LOST_* reason, 0 while it is live, or UINT32_MAX when the query fails
-static uint32_t lost_reason(struct copy_session* s) {
+static uint32_t lost_reason(struct session* s) {
     struct gpu_context_args query = {0};
     query.context = s->context;
     return gpu_call(s->fd, GPU_CONTEXT_QUERY, &query) == 0 ? query.lost : UINT32_MAX;
@@ -739,7 +984,7 @@ static uint32_t lost_reason(struct copy_session* s) {
 
 // Whether `q`'s last submission, when `submitted`, stalls past WAIT_NS and then ends failed once its deadline loses the
 // context as GPU_LOST_HUNG, printing `what` with the context's GPU_LOST_* reason and the time waited
-static bool stalls_until_lost(struct copy_session* s, const struct copy_queue* q, bool submitted, const char* what) {
+static bool stalls_until_lost(struct session* s, const struct queue* q, bool submitted, const char* what) {
     uint64_t start_ns = monotonic_ns();
     bool stalled = submitted && wait_for(s, q, WAIT_NS) == ETIMEDOUT;
     bool ended = stalled && wait_for(s, q, LOST_WAIT_NS) == 0;
@@ -751,8 +996,8 @@ static bool stalls_until_lost(struct copy_session* s, const struct copy_queue* q
     return ended && ended_failed(s, q) && lost == GPU_LOST_HUNG;
 }
 
-static void test_fills(struct copy_session* s) {
-    struct copy_queue* q = &s->queues[0];
+static void test_fills(struct session* s) {
+    struct queue* q = &s->queues[0];
     struct command_list video_fill = fill_commands(s->copy_class, VIDEO_VA, FILL_WORD);
     bool fills_video = run(s, q, &video_fill) == 0 && reads_as(s->video_words, FILL_WORD);
     check("a copy queue fills video memory", fills_video);
@@ -763,7 +1008,7 @@ static void test_fills(struct copy_session* s) {
 }
 
 // The CPU reads the fill through the process's own mapping of the shared memory, so the GPU reached its pages
-static void test_shared_memory_fill(struct copy_session* s) {
+static void test_shared_memory_fill(struct session* s) {
     int shared = memfd_create("gputest", 0);
     bool sized = shared >= 0 && ftruncate(shared, BUFFER_BYTES) == 0;
     volatile uint32_t* words = sized ? map_for_cpu(shared) : NULL;
@@ -787,8 +1032,8 @@ static void test_shared_memory_fill(struct copy_session* s) {
     }
 }
 
-static void test_copies(struct copy_session* s) {
-    struct copy_queue* q = &s->queues[0];
+static void test_copies(struct session* s) {
+    struct queue* q = &s->queues[0];
     struct command_list to_system = copy_commands(s->copy_class, VIDEO_VA, SYSTEM_VA, BUFFER_BYTES);
     bool copies_out = run(s, q, &to_system) == 0 && reads_as(s->system_words, FILL_WORD);
     check("a copy queue copies video memory to system memory", copies_out);
@@ -801,9 +1046,9 @@ static void test_copies(struct copy_session* s) {
 
 // The copy goes in first, held for the other queue's fill of the memory it copies, so a copy run early would copy
 // the indices there before
-static void test_held_copy(struct copy_session* s) {
-    struct copy_queue* filler = &s->queues[0];
-    struct copy_queue* copier = &s->queues[1];
+static void test_held_copy(struct session* s) {
+    struct queue* filler = &s->queues[0];
+    struct queue* copier = &s->queues[1];
     struct gpu_point filled = {0};
     filled.timeline = filler->timeline;
     filled.value = filler->point + 1;
@@ -817,8 +1062,8 @@ static void test_held_copy(struct copy_session* s) {
 
 // Each copy is submitted only once the CPU saw the one before it end, so a completion the driver loses shows as a
 // wait past its deadline instead of hiding behind a later release
-static void test_waited_copies(struct copy_session* s) {
-    struct copy_queue* q = &s->queues[0];
+static void test_waited_copies(struct session* s) {
+    struct queue* q = &s->queues[0];
     struct command_list copy = copy_commands(s->copy_class, SYSTEM_VA, VIDEO_VA, sizeof(uint32_t));
     uint64_t start_ns = monotonic_ns();
     uint32_t copied = 0;
@@ -845,8 +1090,8 @@ static void test_waited_copies(struct copy_session* s) {
 }
 
 // The host methods a user queue may use, NVK's invalidate of the GPU's cache of system memory among them
-static void test_host_methods(struct copy_session* s) {
-    struct copy_queue* q = &s->queues[0];
+static void test_host_methods(struct session* s) {
+    struct queue* q = &s->queues[0];
     struct command_list list = {0};
     push_method(&list, SET_REFERENCE, 1);
     push_memory_operation(&list, 0, MEM_OP_L2_SYSMEM_INVALIDATE);
@@ -857,8 +1102,8 @@ static void test_host_methods(struct copy_session* s) {
     check("SET_REFERENCE, L2_SYSMEM_INVALIDATE and MEMBAR run on a user queue ahead of its fill", ran);
 }
 
-static void test_acquire(struct copy_session* s) {
-    struct copy_queue* q = &s->queues[0];
+static void test_acquire(struct session* s) {
+    struct queue* q = &s->queues[0];
     volatile uint32_t* semaphore = s->command_words + QUEUE_COUNT * PAGE_WORDS;
     struct command_list list = {0};
     push_acquire(&list, SEMAPHORE_VA, 1);
@@ -877,18 +1122,18 @@ static void test_acquire(struct copy_session* s) {
 
 // A user queue's TLB invalidate of every page directory lets the rest of its submission run, but the queue runs no
 // later submission, so the next one's deadline loses the context, and the GPU runs on for other contexts
-static void test_tlb_invalidate(int fd, struct copy_session* live) {
+static void test_tlb_invalidate(int fd, struct session* live) {
     struct gpu_memory before = read_memory(fd);
-    struct copy_session invalidating = {0};
+    struct session invalidating = {0};
     invalidating.fd = fd;
     invalidating.copy_class = live->copy_class;
 
-    struct copy_queue* q = &invalidating.queues[0];
+    struct queue* q = &invalidating.queues[0];
     struct command_list list = {0};
     push_memory_operation(&list, TLB_INVALIDATE_ALL_PDBS, MEM_OP_TLB_INVALIDATE);
     push_fill(&list, invalidating.copy_class, VIDEO_VA, FILL_WORD);
 
-    bool opened = open_copy_session(&invalidating);
+    bool opened = open_session(&invalidating, GPU_QUEUE_COPY, QUEUE_COUNT);
     bool ran = opened && run(&invalidating, q, &list) == 0 && reads_as(invalidating.video_words, FILL_WORD);
     check(
         "a user queue's submission runs on past an MMU_TLB_INVALIDATE to the fill after it, its context live",
@@ -910,24 +1155,24 @@ static void test_tlb_invalidate(int fd, struct copy_session* live) {
         filled && hung && lost_reason(live) == 0
     );
 
-    close_copy_session(&invalidating);
+    close_session(&invalidating);
     check("closing the TLB invalidate's context gives its memory back", memory_returns_to(fd, before));
 }
 
 // A user queue's channel is denied physical addresses, so the copy stalls its queue with nothing written until the
 // queue's deadline loses its context, and the GPU runs on for other contexts
-static void test_physical_copy(int fd, struct copy_session* live) {
+static void test_physical_copy(int fd, struct session* live) {
     struct gpu_memory before = read_memory(fd);
-    struct copy_session denied = {0};
+    struct session denied = {0};
     denied.fd = fd;
     denied.copy_class = live->copy_class;
 
-    bool opened = open_copy_session(&denied);
+    bool opened = open_session(&denied, GPU_QUEUE_COPY, QUEUE_COUNT);
     if (opened) {
         fill(denied.video_words, FILL_WORD);
     }
 
-    struct copy_queue* q = &denied.queues[0];
+    struct queue* q = &denied.queues[0];
     struct command_list copy = physical_copy_commands(denied.copy_class, VIDEO_VA, SYSTEM_VA);
 
     bool submitted = opened && submit(&denied, q, &copy, NULL) == 0;
@@ -945,22 +1190,22 @@ static void test_physical_copy(int fd, struct copy_session* live) {
         filled && hung && lost_reason(live) == 0
     );
 
-    close_copy_session(&denied);
+    close_session(&denied);
     check("closing the lost context gives its memory back", memory_returns_to(fd, before));
 }
 
 // A fill of unmapped memory faults its channel, and the firmware's report of the fault loses the context before the
 // queue's deadline, while the GPU runs on for other contexts
-static void test_faulting_fill(int fd, struct copy_session* live) {
+static void test_faulting_fill(int fd, struct session* live) {
     struct gpu_memory before = read_memory(fd);
-    struct copy_session faulting = {0};
+    struct session faulting = {0};
     faulting.fd = fd;
     faulting.copy_class = live->copy_class;
 
-    struct copy_queue* q = &faulting.queues[0];
+    struct queue* q = &faulting.queues[0];
     struct command_list unmapped_fill = fill_commands(faulting.copy_class, UNMAPPED_VA, FILL_WORD);
 
-    bool opened = open_copy_session(&faulting);
+    bool opened = open_session(&faulting, GPU_QUEUE_COPY, QUEUE_COUNT);
     bool submitted = opened && submit(&faulting, q, &unmapped_fill, NULL) == 0;
     uint64_t start_ns = monotonic_ns();
     bool ended = submitted && wait_for(&faulting, q, LOST_WAIT_NS) == 0;
@@ -995,26 +1240,26 @@ static void test_faulting_fill(int fd, struct copy_session* live) {
         filled && lost_to_fault && lost_reason(live) == 0
     );
 
-    close_copy_session(&faulting);
+    close_session(&faulting);
     check("closing the faulted context gives its memory back", memory_returns_to(fd, before));
 }
 
 // A queue taking the faulting fill's channel id runs a fill, then an acquire of a word nobody writes holds it until the
 // deadline loses the context and stops the queues, so writing the word later runs nothing, and other contexts run on
-static void test_hung_acquire(int fd, struct copy_session* live) {
+static void test_hung_acquire(int fd, struct session* live) {
     struct gpu_memory before = read_memory(fd);
-    struct copy_session hung = {0};
+    struct session hung = {0};
     hung.fd = fd;
     hung.copy_class = live->copy_class;
 
-    struct copy_queue* q = &hung.queues[0];
+    struct queue* q = &hung.queues[0];
     struct command_list reused_fill = fill_commands(hung.copy_class, SYSTEM_VA, ~FILL_WORD);
     struct command_list list = {0};
     push_acquire(&list, SEMAPHORE_VA, 1);
     push_fill(&list, hung.copy_class, SYSTEM_VA, FILL_WORD);
 
     // The first queue takes the lowest free channel id, the one the faulting fill's queue gave back
-    bool opened = open_copy_session(&hung);
+    bool opened = open_session(&hung, GPU_QUEUE_COPY, QUEUE_COUNT);
     bool reused = opened && run(&hung, q, &reused_fill) == 0 && reads_as(hung.system_words, ~FILL_WORD);
     check("a queue taking the faulting fill's channel id runs a fill", reused);
 
@@ -1041,14 +1286,14 @@ static void test_hung_acquire(int fd, struct copy_session* live) {
         filled && lost && lost_reason(live) == 0
     );
 
-    close_copy_session(&hung);
+    close_session(&hung);
     check("closing the hung acquire's context gives its memory back", memory_returns_to(fd, before));
 }
 
 // The NON_STALL_INTERRUPT methods raise the copy vector, those raised while one is pending merging into it, and no
 // handler pass they cost reports the queue's progress, so the wait ends only once the fill after them has run
-static void test_interrupt_storm(struct copy_session* s) {
-    struct copy_queue* q = &s->queues[0];
+static void test_interrupt_storm(struct session* s) {
+    struct queue* q = &s->queues[0];
     volatile uint32_t* storm = s->command_words + (STORM_VA - COMMANDS_VA) / sizeof(uint32_t);
     for (uint32_t i = 0; i < STORM_METHODS; i++) {
         storm[i] = PUSH_IMMEDIATE | (NON_STALL_INTERRUPT >> 2);
@@ -1078,7 +1323,7 @@ static void test_interrupt_storm(struct copy_session* s) {
     check("a user queue's wait for a storm of NON_STALL_INTERRUPT methods ends only after the fill behind it", filled);
 }
 
-static void test_session_end(struct copy_session* s, struct gpu_memory before) {
+static void test_session_end(struct session* s, struct gpu_memory before) {
     check("the context stays live through every check on its queues", lost_reason(s) == 0);
 
     struct gpu_queue_args second = {0};
@@ -1086,21 +1331,21 @@ static void test_session_end(struct copy_session* s, struct gpu_memory before) {
     second.queue = s->queues[1].index;
     bool destroyed = gpu_call(s->fd, GPU_QUEUE_DESTROY, &second) == 0;
 
-    close_copy_session(s);
+    close_session(s);
     bool returned = memory_returns_to(s->fd, before);
     check("destroying one queue and closing the context with the other gives their memory back", destroyed && returned);
 }
 
 static void test_copy_queues(int fd, const struct gpu_info* info) {
     struct gpu_memory before = read_memory(fd);
-    struct copy_session s = {0};
+    struct session s = {0};
     s.fd = fd;
     s.copy_class = info->nvidia.class_copy;
 
-    bool opened = open_copy_session(&s);
+    bool opened = open_session(&s, GPU_QUEUE_COPY, QUEUE_COUNT);
     check("a context with its buffers mapped opens two copy queues", opened);
     if (!opened) {
-        close_copy_session(&s);
+        close_session(&s);
         return;
     }
 
@@ -1122,6 +1367,161 @@ static void test_copy_queues(int fd, const struct gpu_info* info) {
     test_session_end(&s, before);
 }
 
+static volatile uint32_t* video_word(struct session* s, uint64_t va) {
+    return s->video_words + (va - VIDEO_VA) / sizeof(uint32_t);
+}
+
+static void write_words(volatile uint32_t* to, const uint32_t* words, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        to[i] = words[i];
+    }
+}
+
+// Writes the grids' QMDs and programs to the video buffer, zero until then
+static void write_grids(struct session* s) {
+    write_qmd(video_word(s, STORE_QMD_VA), STORE_PROGRAM_VA, 1, 1, 0);
+    write_qmd(video_word(s, EXIT_QMD_VA), EXIT_PROGRAM_VA, GRID_CTAS, GRID_THREADS, GRID_RELEASE_VA);
+    write_words(video_word(s, STORE_PROGRAM_VA), STORE_PROGRAM, WORD_COUNT(STORE_PROGRAM));
+    write_words(video_word(s, EXIT_PROGRAM_VA), EXIT_PROGRAM, WORD_COUNT(EXIT_PROGRAM));
+    __sync_synchronize();
+}
+
+// Runs `list` on the session's graphics queue, waiting up to GRAPHICS_WAIT_NS. Returns 0 or the errno, with the
+// microseconds until its point was reached in `elapsed_us`
+static int run_graphics(struct session* s, const struct command_list* list, uint64_t* elapsed_us) {
+    struct queue* q = &s->queues[0];
+    uint64_t start_ns = monotonic_ns();
+    int error = submit(s, q, list, NULL);
+    if (error == 0) {
+        error = wait_for(s, q, GRAPHICS_WAIT_NS);
+    }
+
+    *elapsed_us = (monotonic_ns() - start_ns) / NS_PER_US;
+    return error;
+}
+
+static void test_graphics_fill(struct session* s) {
+    struct command_list list = {0};
+    list.subchannel = SUBCHANNEL_COPY;
+    push_fill(&list, s->copy_class, SYSTEM_VA, FILL_WORD);
+
+    bool filled = run(s, &s->queues[0], &list) == 0 && reads_as(s->system_words, FILL_WORD);
+    check("a graphics queue fills memory with the copy class on its copy subchannel", filled);
+}
+
+// Returns the microseconds the clears took
+static uint64_t test_clears(struct session* s, uint32_t class_3d) {
+    struct command_list list = {0};
+    push_clears(&list, class_3d);
+
+    uint64_t elapsed_us = 0;
+    bool cleared = run_graphics(s, &list, &elapsed_us) == 0 && reads_as(s->system_words, LAST_CLEAR_WORD);
+    printf("gputest: %u clears of 1 MiB took %llu us\n", CLEAR_REPEATS + 1, (unsigned long long)elapsed_us);
+    check("a graphics queue's 3D clears cover their target by the time its point is reached", cleared);
+    return elapsed_us;
+}
+
+// Returns the microseconds the grid took
+static uint64_t test_store_grid(struct session* s, uint32_t class_compute) {
+    struct command_list list = {0};
+    push_grid(&list, class_compute, STORE_QMD_VA);
+
+    uint64_t elapsed_us = 0;
+    bool stored = run_graphics(s, &list, &elapsed_us) == 0 && *video_word(s, STORED_VA) == STORED_WORD;
+    printf("gputest: a one-thread grid took %llu us\n", (unsigned long long)elapsed_us);
+    check("a graphics queue's compute grid stores its word by the time its point is reached", stored);
+    return elapsed_us;
+}
+
+// Returns the microseconds the grid took
+static uint64_t test_exit_grid(struct session* s, uint32_t class_compute) {
+    struct command_list list = {0};
+    push_grid(&list, class_compute, EXIT_QMD_VA);
+
+    uint64_t elapsed_us = 0;
+    bool released = run_graphics(s, &list, &elapsed_us) == 0 && *video_word(s, GRID_RELEASE_VA) == GRID_RELEASE_WORD;
+    printf("gputest: a grid of 2^26 CTAs took %llu us\n", (unsigned long long)elapsed_us);
+    check("a graphics queue's grid of 2^26 CTAs has written its release by the time its point is reached", released);
+    return elapsed_us;
+}
+
+// Runs `list`, which clears the target and has a grid write `word` at `va`, printing its time as `what`'s. Returns
+// whether the target and `word` both read back once the queue's point is reached
+static bool ends_after_both(
+    struct session* s,
+    const struct command_list* list,
+    uint64_t va,
+    uint32_t word,
+    const char* what
+) {
+    fill(s->system_words, FILL_WORD);
+    *video_word(s, va) = 0;
+    __sync_synchronize();
+
+    uint64_t elapsed_us = 0;
+    bool reached = run_graphics(s, list, &elapsed_us) == 0;
+    printf("gputest: %s took %llu us\n", what, (unsigned long long)elapsed_us);
+
+    bool cleared = reached && reads_as(s->system_words, LAST_CLEAR_WORD);
+    return cleared && *video_word(s, va) == word;
+}
+
+// Each order sends first the work that outlasts the other alone, so where both pipes run at once a release waiting
+// only for the pipe last used would be reached before the work sent first ended
+static void test_both_orders(
+    struct session* s,
+    const struct gpu_info* info,
+    uint64_t clears_us,
+    uint64_t store_us,
+    uint64_t grid_us
+) {
+    struct command_list clears_first = {0};
+    push_clears(&clears_first, info->nvidia.class_3d);
+    push_grid(&clears_first, info->nvidia.class_compute, STORE_QMD_VA);
+
+    check("65 clears alone outlast a one-thread grid alone", clears_us > store_us);
+    check(
+        "a graphics queue's point after 3D clears and then a compute grid is reached once both ended",
+        ends_after_both(s, &clears_first, STORED_VA, STORED_WORD, "65 clears and then a one-thread grid")
+    );
+
+    struct command_list grid_first = {0};
+    push_grid(&grid_first, info->nvidia.class_compute, EXIT_QMD_VA);
+    push_clears(&grid_first, info->nvidia.class_3d);
+
+    check("a grid of 2^26 CTAs alone outlasts 65 clears alone", grid_us > clears_us);
+    check(
+        "a graphics queue's point after a compute grid and then 3D clears is reached once both ended",
+        ends_after_both(s, &grid_first, GRID_RELEASE_VA, GRID_RELEASE_WORD, "a grid of 2^26 CTAs and then 65 clears")
+    );
+}
+
+static void test_graphics_queue(int fd, const struct gpu_info* info) {
+    struct gpu_memory before = read_memory(fd);
+    struct session s = {0};
+    s.fd = fd;
+    s.copy_class = info->nvidia.class_copy;
+
+    bool opened = open_session(&s, GPU_QUEUE_GRAPHICS, 1);
+    check("a context with its buffers mapped opens a graphics queue", opened);
+    if (!opened) {
+        close_session(&s);
+        return;
+    }
+
+    write_grids(&s);
+    test_graphics_fill(&s);
+    uint64_t clears_us = test_clears(&s, info->nvidia.class_3d);
+    uint64_t store_us = test_store_grid(&s, info->nvidia.class_compute);
+    uint64_t grid_us = test_exit_grid(&s, info->nvidia.class_compute);
+    test_both_orders(&s, info, clears_us, store_us, grid_us);
+
+    check("the context stays live through every check on its graphics queue", lost_reason(&s) == 0);
+    close_session(&s);
+    bool returned = memory_returns_to(fd, before);
+    check("closing the graphics queue's context and its buffers gives their memory back", returned);
+}
+
 static void test_nvidia(int fd, const struct gpu_info* info) {
     print_facts(info);
     test_facts(info);
@@ -1137,6 +1537,7 @@ static void test_nvidia(int fd, const struct gpu_info* info) {
     test_shared_memory_import(fd);
     test_many_contexts(fd);
     test_copy_queues(fd, info);
+    test_graphics_queue(fd, info);
 }
 
 // The GPU core publishes /dev/gpu0 once the driver's task registers the GPU after bring-up, so init can start stlxdm
@@ -1170,7 +1571,7 @@ static size_t first_unlike(const volatile uint32_t* words, uint32_t value) {
 // Maps `s`'s own video buffer on even rounds and `other` on odd ones at REMAP_VA, fills it through its fixed address
 // and copies REMAP_VA to system memory, so a stale mapping copies an older word. Returns the failed step or null
 static const char* remap_fill_and_copy(
-    struct copy_session* s,
+    struct session* s,
     int32_t other,
     uint32_t round,
     uint32_t word,
@@ -1180,7 +1581,7 @@ static const char* remap_fill_and_copy(
     int32_t video = is_odd ? other : s->video;
     uint64_t video_va = is_odd ? OTHER_VIDEO_VA : VIDEO_VA;
 
-    struct copy_queue* q = &s->queues[0];
+    struct queue* q = &s->queues[0];
     struct command_list buffer_fill = fill_commands(s->copy_class, video_va, word);
     struct command_list remapped_copy = copy_commands(s->copy_class, REMAP_VA, SYSTEM_VA, BUFFER_BYTES);
 
@@ -1208,7 +1609,7 @@ static const char* remap_fill_and_copy(
 }
 
 // Runs one round on `s`. A failure prints the failed step and its errno, or the first word read back unlike the fill
-static bool round_passes(struct copy_session* s, int32_t other, uint32_t round, uint32_t context_index) {
+static bool round_passes(struct session* s, int32_t other, uint32_t round, uint32_t context_index) {
     uint32_t word = round_word(round, context_index);
     int error = 0;
     const char* failed_step = remap_fill_and_copy(s, other, round, word, &error);
@@ -1243,7 +1644,7 @@ static bool round_passes(struct copy_session* s, int32_t other, uint32_t round, 
 
 // Runs rounds on each context in turn until REMAP_NS passed or one fails. Returns whether none failed, with how many
 // rounds passed on every context in `rounds`
-static bool remap_until_deadline(struct copy_session* sessions, const int32_t* others, uint32_t* rounds) {
+static bool remap_until_deadline(struct session* sessions, const int32_t* others, uint32_t* rounds) {
     uint64_t deadline = monotonic_ns() + REMAP_NS;
     *rounds = 0;
     while (monotonic_ns() < deadline) {
@@ -1261,7 +1662,7 @@ static bool remap_until_deadline(struct copy_session* sessions, const int32_t* o
 
 // Whether each context's own video buffer, which even rounds fill, still reads its last fill through its CPU mapping
 // after the display mapped and unmapped gfxfb's buffers for the CPU while the rounds ran
-static bool cpu_mappings_read_last_fills(struct copy_session* sessions, uint32_t rounds) {
+static bool cpu_mappings_read_last_fills(struct session* sessions, uint32_t rounds) {
     uint32_t last_even_round = (rounds - 1) & ~1u;
     for (uint32_t i = 0; i < REMAP_CONTEXTS; i++) {
         if (!reads_as(sessions[i].video_words, round_word(last_even_round, i))) {
@@ -1276,14 +1677,14 @@ static bool cpu_mappings_read_last_fills(struct copy_session* sessions, uint32_t
 // memory, its mappings for the CPU and its window bindings change while the contexts' mappings do
 static void test_remaps(int fd, const struct gpu_info* info) {
     struct gpu_memory before = read_memory(fd);
-    struct copy_session sessions[REMAP_CONTEXTS] = {0};
+    struct session sessions[REMAP_CONTEXTS] = {0};
     int32_t others[REMAP_CONTEXTS];
 
     bool opened = true;
     for (uint32_t i = 0; i < REMAP_CONTEXTS; i++) {
         sessions[i].fd = fd;
         sessions[i].copy_class = info->nvidia.class_copy;
-        bool opens = open_copy_session(&sessions[i]);
+        bool opens = open_session(&sessions[i], GPU_QUEUE_COPY, QUEUE_COUNT);
 
         create_buffer(fd, BUFFER_BYTES, GPU_PLACEMENT_VIDEO, 0, &others[i]);
         opened = opened && opens && map(fd, sessions[i].context, others[i], OTHER_VIDEO_VA, 0) == 0;
@@ -1303,7 +1704,7 @@ static void test_remaps(int fd, const struct gpu_info* info) {
     bool stopped_cleanly = cycling && stop_cycling_buffers();
     bool cpu_reads_fills = copied && cpu_mappings_read_last_fills(sessions, rounds);
     for (uint32_t i = 0; i < REMAP_CONTEXTS; i++) {
-        close_copy_session(&sessions[i]);
+        close_session(&sessions[i]);
         release(others[i], NULL);
     }
 
