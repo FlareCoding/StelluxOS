@@ -114,7 +114,6 @@ INITRD_CPIO="$PROJECT_DIR/build/initrd/x86_64/initrd.cpio"
 make -C "$PROJECT_DIR" initrd ARCH=x86_64 RELEASE=1 PACKAGES="$PACKAGES"
 
 "$SCRIPT_DIR/create-disk-image.sh" "$IMG" "$INITRD_CPIO"
-mformat -i "$IMG"@@1M -F -v STELLUX ::
 
 mmd   -i "$IMG"@@1M ::/EFI
 mmd   -i "$IMG"@@1M ::/EFI/BOOT

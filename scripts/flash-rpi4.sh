@@ -116,7 +116,6 @@ INITRD_CPIO="$PROJECT_DIR/build/initrd/aarch64/initrd.cpio"
 make -C "$PROJECT_DIR" initrd ARCH=aarch64 RELEASE=1 PACKAGES="$PACKAGES"
 
 "$SCRIPT_DIR/create-disk-image.sh" "$IMG" "$INITRD_CPIO"
-mformat -i "$IMG"@@1M -F -v STELLUX ::
 
 mcopy -i "$IMG"@@1M "$UEFI_DIR/start4.elf" ::
 mcopy -i "$IMG"@@1M "$UEFI_DIR/fixup4.dat" ::
