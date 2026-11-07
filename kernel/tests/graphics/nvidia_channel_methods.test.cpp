@@ -12,6 +12,7 @@ using drivers::nvidia::doorbell_token;
 using drivers::nvidia::FILL_WORDS;
 using drivers::nvidia::gpfifo_entry;
 using drivers::nvidia::gpfifo_fetch;
+using drivers::nvidia::idle_scope;
 using drivers::nvidia::make_gpfifo_entry;
 using drivers::nvidia::RELEASE_WORDS;
 using drivers::nvidia::write_fill;
@@ -35,6 +36,7 @@ static constexpr uint32_t REMAP_CONST_A_FOUR_BYTES    = 0x00030004;
 static constexpr uint32_t LAUNCH_PHYSICAL_PITCH_REMAP = 0x04002586;
 static constexpr uint32_t MEM_OP_D_MEMBAR             = 0x28000000;
 static constexpr uint32_t SEM_EXECUTE_RELEASE_32BIT   = 0x00000001;
+static constexpr uint32_t WFI_SCOPE_ALL               = 0x00000001;
 
 // A fill of 64 KiB at a video memory offset above 4 GiB sets the copy class, a constant remapped into every 4-byte
 // element, the physical video memory target, the address, the element count and the launch
@@ -67,7 +69,7 @@ TEST(nvidia_channel_methods, release_orders_barriers_around_the_payload) {
     uint32_t words[RELEASE_WORDS + 1] = {};
     words[RELEASE_WORDS] = 0xDEADBEEF;
 
-    write_release(words, 0xF1'2345'6788ull, 0x8000'0001);
+    write_release(words, 0xF1'2345'6788ull, 0x8000'0001, idle_scope::current_pipe);
 
     static constexpr uint32_t expected[RELEASE_WORDS] = {
         HEADER_WFI, 0,
@@ -82,6 +84,21 @@ TEST(nvidia_channel_methods, release_orders_barriers_around_the_payload) {
     }
 
     EXPECT_EQ(words[RELEASE_WORDS], 0xDEADBEEFu);
+}
+
+// A release over every pipe waits for a graphics engine's 3D and compute work alike, and the rest stays the same
+TEST(nvidia_channel_methods, release_over_every_pipe_widens_only_its_wait_for_idle) {
+    uint32_t current[RELEASE_WORDS] = {};
+    uint32_t every[RELEASE_WORDS] = {};
+
+    write_release(current, 0xF1'2345'6788ull, 0x8000'0001, idle_scope::current_pipe);
+    write_release(every, 0xF1'2345'6788ull, 0x8000'0001, idle_scope::every_pipe);
+
+    EXPECT_EQ(every[0], HEADER_WFI);
+    EXPECT_EQ(every[1], WFI_SCOPE_ALL);
+    for (uint32_t i = 2; i < RELEASE_WORDS; i++) {
+        EXPECT_EQ(every[i], current[i]);
+    }
 }
 
 // A GPFIFO entry carries the address's bits 31:2 in its first word, and bits 39:32 and the word count from bit 10 in

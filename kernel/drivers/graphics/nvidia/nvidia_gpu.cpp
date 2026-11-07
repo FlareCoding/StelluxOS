@@ -1238,7 +1238,7 @@ void nvidia_gpu_driver::run() {
 }
 
 __PRIVILEGED_CODE bool nvidia_gpu_driver::on_interrupt(uint32_t vector) {
-    // The card's one MSI vector, which the GSP's, the display's and the copy engine's vectors raise
+    // The card's one MSI vector, which the GSP's and the display's vectors raise, as do the copy and graphics engines'
     (void)vector;
 
     nvidia::registers regs(m_bar_mappings[REGISTERS_BAR].va);

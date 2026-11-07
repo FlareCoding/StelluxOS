@@ -2184,8 +2184,9 @@ src/nvidia/inc/kernel/gpu/intr/engine_idx.h
     number MC_ENGINE_IDX_CE0, 15, copy engine n taking 15 plus n, in rm.h and
     kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp,
     MC_ENGINE_IDX_CE2, 17, in kernel/tests/graphics/nvidia_engines.test.cpp, and
-    the graphics engine's number MC_ENGINE_IDX_GR0, 82, in rm.h and
-    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp
+    the graphics engine's number MC_ENGINE_IDX_GR0, 82, in rm.h,
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/intr/intr.c
@@ -2589,8 +2590,9 @@ src/nvidia/src/kernel/gpu/gr/kernel_graphics_object.c
     client and handle, and its main and patch buffers with the bundle, page
     pool, attribute, RTV, FECS event and register access map buffers, and that
     the golden context's promotion initializes the FECS event buffer and both
-    register access maps too, in rm.h, graphics_context.h, graphics_context.cpp
-    and kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    register access maps too, in rm.h, graphics_context.h, graphics_context.cpp,
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gr/arch/maxwell/kgraphics_gm200.c
@@ -2614,8 +2616,8 @@ src/nvidia/generated/g_kernel_graphics_nvoc.c
     graphics_context.h, graphics_context.cpp and
     kernel/tests/graphics/nvidia_graphics_context.test.cpp, and that it makes
     its context buffers GPU-privileged, in graphics_context.h,
-    graphics_context.cpp and
-    kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    graphics_context.cpp, kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    and kernel/tests/graphics/nvidia_engines.test.cpp
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gpu.h
     the sizes of the GPU's ID, GPC, TPC and ZCULL information, which the static
@@ -4039,7 +4041,8 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     with MEM_OP_C's SYS_MEMBAR type 0 and MEM_OP_D's OPERATION MEMBAR, 5, in
     bits 31:27, SEM_ADDR_LO to SEM_EXECUTE from 0x5C, with SEM_EXECUTE's
     OPERATION RELEASE, 1, RELEASE_WFI DIS and PAYLOAD_SIZE 32BIT, and WFI, 0x78,
-    in channel_methods.h, channel_methods.cpp and
+    with SCOPE in bit 0, CURRENT_SCG_TYPE 0 and ALL 1, in channel_methods.h,
+    channel_methods.cpp and
     kernel/tests/graphics/nvidia_channel_methods.test.cpp, that an entry's FETCH
     UNCONDITIONAL, LEVEL MAIN and SYNC PROCEED are each 0, in
     kernel/tests/graphics/nvidia_channel_methods.test.cpp, the class number
@@ -4050,8 +4053,9 @@ src/common/sdk/nvidia/inc/class/clc56f.h
     SEM_ADDR_LO's header for its five values, in
     kernel/tests/graphics/nvidia_copy_channel.test.cpp, a GPFIFO entry's fields,
     a push buffer header's fields, the methods NON_STALL_INTERRUPT,
-    SEM_PAYLOAD_LO, 0x64, and SEM_EXECUTE, and the words of a release holding
-    the values of SEM_ADDR_LO, SEM_ADDR_HI and SEM_PAYLOAD_LO, in
+    SEM_PAYLOAD_LO, 0x64, and SEM_EXECUTE, WFI's SCOPE CURRENT_SCG_TYPE and ALL,
+    and the words of a release holding the values of WFI, SEM_ADDR_LO,
+    SEM_ADDR_HI and SEM_PAYLOAD_LO, in
     kernel/tests/graphics/nvidia_engines.test.cpp, and a push buffer header's
     fields, DMA_SEC_OP IMMD_DATA_METHOD, 4, whose word holds its method's value
     in bits 28:16, SET_OBJECT, SEMAPHOREA to SEMAPHORED from 0x10 (SEMAPHORED's
@@ -4075,8 +4079,9 @@ src/common/sdk/nvidia/inc/class/clc7b5.h
     the class number AMPERE_DMA_COPY_B, 0xC7B5, which chip.cpp gives GA102's
     copy objects, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
     kernel/tests/graphics/nvidia_channel_methods.test.cpp,
-    kernel/tests/graphics/nvidia_channel.test.cpp and
-    kernel/tests/graphics/nvidia_copy_channel.test.cpp, its methods
+    kernel/tests/graphics/nvidia_channel.test.cpp,
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp, its methods
     SET_DST_PHYS_MODE, 0x264, with TARGET LOCAL_FB, 0, LAUNCH_DMA, 0x300, with
     DATA_TRANSFER_TYPE NON_PIPELINED, 2, in bits 1:0, FLUSH_ENABLE in bit 2,
     SRC_MEMORY_LAYOUT and DST_MEMORY_LAYOUT PITCH in bits 7 and 8, REMAP_ENABLE
@@ -4108,8 +4113,9 @@ src/common/sdk/nvidia/inc/class/clc797.h
 
 src/common/sdk/nvidia/inc/class/clc7c0.h
     the class number AMPERE_COMPUTE_B, 0xC7C0, which chip.cpp gives GA102's
-    compute objects, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp and
-    kernel/tests/graphics/nvidia_channel.test.cpp
+    compute objects, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/cl902d.h
@@ -4247,8 +4253,9 @@ src/common/sdk/nvidia/inc/class/cla06c.h
 src/common/sdk/nvidia/inc/ctrl/ctrla06f/ctrla06fgpfifo.h
     the commands NVA06F_CTRL_CMD_BIND and NVA06F_CTRL_CMD_GPFIFO_SCHEDULE,
     controls of a channel, and the layouts of their parameters, in rm.h, and the
-    commands in kernel/tests/graphics/nvidia_channel.test.cpp and
-    kernel/tests/graphics/nvidia_copy_channel.test.cpp
+    commands in kernel/tests/graphics/nvidia_channel.test.cpp,
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2007-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080ce.h
