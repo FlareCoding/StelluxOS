@@ -57,9 +57,10 @@ enum class page_aperture : uint8_t {
 
 // How a page table entry maps its page, by default as BAR1 maps video memory
 struct page_mapping {
-    page_aperture aperture  = page_aperture::video_memory;
-    uint8_t       kind      = 0;
-    bool          read_only = false; // the GPU faults on a write through the entry
+    page_aperture aperture   = page_aperture::video_memory;
+    uint8_t       kind       = 0;
+    bool          read_only  = false; // the GPU faults on a write through the entry
+    bool          privileged = false; // only the GPU's privileged accesses, such as a context switch's, reach the page
 };
 
 // The bytes of addresses one entry of `level` covers

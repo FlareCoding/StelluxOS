@@ -54,6 +54,31 @@ static_assert(RELEASE_WORDS * sizeof(uint32_t) <= RELEASE_SLOT_BYTES, "a release
 static_assert(GPFIFO_BYTES + PUSH_BUFFER_PAGES * pmm::PAGE_SIZE <= QUEUE_WINDOW_BYTES, "the rings fit the window");
 static_assert(GPU_QUEUES_MAX < 32, "the shift building a space's slot mask stays defined");
 
+// Where an address space holding a graphics channel maps the graphics engine's context buffers, above the queue windows
+constexpr uint64_t GRAPHICS_BUFFERS_ADDRESS = USER_VA_END + (1ULL << 30);
+
+static_assert(
+    QUEUE_WINDOWS_ADDRESS + GPU_QUEUES_MAX * QUEUE_WINDOW_BYTES <= GRAPHICS_BUFFERS_ADDRESS,
+    "the context buffers lie above the queue windows"
+);
+static_assert(QUEUE_WINDOWS_ADDRESS >= 1ULL << 38, "a split space maps nothing below its directory 1's 256 GiB");
+
+// A global context buffer and the layout it is allocated by
+struct global_buffer {
+    context_buffer_layout graphics_buffer_layouts::* layout;
+    context_buffer global_context_buffers::*         buffer;
+};
+
+static const global_buffer GLOBAL_BUFFERS[] = {
+    {&graphics_buffer_layouts::bundle, &global_context_buffers::bundle},
+    {&graphics_buffer_layouts::page_pool, &global_context_buffers::page_pool},
+    {&graphics_buffer_layouts::attribute, &global_context_buffers::attribute},
+    {&graphics_buffer_layouts::rtv, &global_context_buffers::rtv},
+    {&graphics_buffer_layouts::fecs_event, &global_context_buffers::fecs_event},
+    {&graphics_buffer_layouts::priv_access_map, &global_context_buffers::priv_access_map},
+    {&graphics_buffer_layouts::priv_access_map, &global_context_buffers::unrestricted_priv_access_map},
+};
+
 // The GPU's nanosecond clock: NVIDIA's NV_VIRTUAL_FUNCTION_TIME_0 is its low word and TIME_1's bits 28:0 its high word
 constexpr uint32_t TIME_LOW       = 0xBB0080;
 constexpr uint32_t TIME_HIGH      = 0xBB0084;
@@ -809,6 +834,181 @@ int32_t engines::zero_video_memory(const vram_range& range) {
             return rc;
         }
     }
+
+    return OK;
+}
+
+int32_t engines::bring_up_graphics() {
+    const engine_info* graphics = m_table.graphics_engine();
+    if (graphics == nullptr) {
+        log::error(
+            "nvidia: the device info table lists %u %s and no graphics engine, so the GPU core gets no device",
+            m_table.count(),
+            m_table.count() == 1 ? "engine" : "engines"
+        );
+        return ERR_BAD_STATE;
+    }
+
+    int32_t rc = read_graphics_buffer_layouts(m_firmware, m_graphics_layouts);
+    if (rc != OK) {
+        log::error("nvidia: reading the graphics engine's context buffer layouts failed: %d", rc);
+        return rc;
+    }
+
+    m_own_buffers_start = place_global_buffers(m_graphics_layouts, GRAPHICS_BUFFERS_ADDRESS, m_global_buffers);
+
+    size_t allocated = 0;
+    for (const global_buffer& global : GLOBAL_BUFFERS) {
+        rc = allocate_context_buffer(m_graphics_layouts.*global.layout, m_global_buffers.*global.buffer);
+        if (rc != OK) {
+            break;
+        }
+
+        allocated++;
+    }
+
+    bool is_reachable = false;
+    if (rc == OK) {
+        rc = capture_golden_context(*graphics, is_reachable);
+    }
+
+    if (rc != OK && !is_reachable) {
+        for (size_t i = 0; i < allocated; i++) {
+            m_memory.release((m_global_buffers.*GLOBAL_BUFFERS[i].buffer).range);
+        }
+    }
+
+    if (rc != OK) {
+        log::error("nvidia: bringing up the graphics engine failed: %d, so the GPU core gets no device", rc);
+    }
+
+    return rc;
+}
+
+int32_t engines::allocate_context_buffer(const context_buffer_layout& layout, context_buffer& buffer) {
+    uint64_t alignment = layout.alignment > SMALL_PAGE_BYTES ? layout.alignment : SMALL_PAGE_BYTES;
+    vram_range range = {};
+    int32_t rc = m_memory.allocate(layout.bytes, alignment, vram_use::general, range);
+    if (rc != OK) {
+        log::error(
+            "nvidia: allocating 0x%lX bytes of video memory for a graphics context buffer failed: %d",
+            layout.bytes,
+            rc
+        );
+        return rc;
+    }
+
+    rc = zero_video_memory(range);
+    if (rc == ERR_TIMEOUT) {
+        log::error(
+            "nvidia: video memory at 0x%lX stays allocated for good, since the hung copy may still write it",
+            range.offset
+        );
+        return rc;
+    }
+
+    if (rc != OK) {
+        m_memory.release(range);
+        return rc;
+    }
+
+    buffer.range = range;
+    return OK;
+}
+
+int32_t engines::capture_golden_context(const engine_info& graphics, bool& is_reachable) {
+    channel_context_buffers golden = {};
+    place_own_buffers(m_graphics_layouts, m_own_buffers_start, golden);
+
+    int32_t rc = allocate_context_buffer(m_graphics_layouts.main, golden.main);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = allocate_context_buffer(m_graphics_layouts.patch, golden.patch);
+    if (rc != OK) {
+        m_memory.release(golden.main.range);
+        return rc;
+    }
+
+    // The firmware refuses the golden context's promotion in an externally owned space
+    address_space space(m_firmware, m_objects, m_memory, m_failed);
+    rc = space.create_split();
+    if (rc == OK) {
+        rc = map_global_buffers(space.page_tables(), m_global_buffers);
+    }
+
+    if (rc == OK) {
+        rc = map_own_buffers(space.page_tables(), golden);
+    }
+
+    // Channel ids are one space across runlists, so the golden channel's must differ from the copy channel's
+    uint32_t channel_id = 0;
+    bool has_id = take_channel_id(channel_id);
+    if (rc == OK && !has_id) {
+        rc = ERR_BAD_STATE;
+    }
+
+    channel golden_channel(m_firmware, m_objects, m_memory, m_bar0);
+    channel_setup setup = {
+        .engine = graphics,
+        .id = channel_id,
+        .gpfifo_address = slot_gpfifo_address(0),
+        .is_privileged = false,
+    };
+
+    bool is_allocated = false;
+    if (rc == OK) {
+        rc = golden_channel.allocate(m_card, *m_chip, space, setup);
+        is_allocated = rc == OK;
+    }
+
+    if (rc == OK) {
+        rc = promote_graphics_context(
+            m_firmware,
+            m_objects.subdevice,
+            golden_channel.handle(),
+            m_global_buffers,
+            golden
+        );
+    }
+
+    // The firmware captures the golden context when the channel's first 3D object is allocated
+    if (rc == OK) {
+        rc = golden_channel.add_object(m_chip->graphics.three_d_class, nullptr, 0);
+    }
+
+    int32_t release_rc = is_allocated ? golden_channel.destroy() : OK;
+    if (release_rc == OK && has_id) {
+        give_back_channel_id(channel_id);
+    }
+
+    // A split space whose release the firmware refused keeps tables that map every context buffer
+    if (release_rc == OK && space.handle() != 0) {
+        release_rc = space.destroy();
+    }
+
+    if (release_rc != OK) {
+        log::error(
+            "nvidia: the graphics engine's context buffers stay allocated for good, since the firmware may still reach "
+            "them"
+        );
+        is_reachable = true;
+        return rc != OK ? rc : release_rc;
+    }
+
+    m_memory.release(golden.patch.range);
+    m_memory.release(golden.main.range);
+    if (rc != OK) {
+        return rc;
+    }
+
+    log::info(
+        "nvidia: the graphics engine's golden context was captured on channel %u of runlist %u, main buffer %lu KiB",
+        channel_id,
+        graphics.runlist,
+        golden.main.range.size / BYTES_PER_KIB
+    );
 
     return OK;
 }

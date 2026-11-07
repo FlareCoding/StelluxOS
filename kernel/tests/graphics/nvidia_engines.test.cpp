@@ -29,6 +29,8 @@ using drivers::nvidia::channel_error;
 using drivers::nvidia::CHANNEL_IDS;
 using drivers::nvidia::channel_test_access;
 using drivers::nvidia::chip_info;
+using drivers::nvidia::context_buffer;
+using drivers::nvidia::context_buffer_layout;
 using drivers::nvidia::context_tlbs;
 using drivers::nvidia::copy_channel;
 using drivers::nvidia::copy_channel_test_access;
@@ -42,6 +44,7 @@ using drivers::nvidia::ERR_NO_MEMORY;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::failed_mark;
 using drivers::nvidia::firmware;
+using drivers::nvidia::global_context_buffers;
 using drivers::nvidia::gpu_objects;
 using drivers::nvidia::memory_report;
 using drivers::nvidia::OK;
@@ -81,6 +84,20 @@ static constexpr uint32_t CHANNEL_RAM_PBDMA_FAULTED = 1u << 4;
 static constexpr uint32_t CHANNEL_RAM_ENG_FAULTED   = 1u << 5;
 static constexpr uint32_t TEST_CHANNEL_RAM          = 0xB90000;
 
+// NVIDIA's controls reading the graphics engine's facts and context buffer sizes, the place of the subcontext count
+// and of each buffer the driver allocates, and the control promoting a channel's context buffers
+static constexpr uint32_t KGR_GET_INFO                 = 0x20800A2A;
+static constexpr size_t   KGR_GET_INFO_BYTES           = 3392;
+static constexpr uint32_t MAX_SUBCONTEXT_COUNT         = 0x2C;
+static constexpr uint32_t KGR_GET_CONTEXT_BUFFERS_INFO = 0x20800A32;
+static constexpr size_t   CONTEXT_BUFFERS_BYTES        = 1600;
+static constexpr uint32_t GRAPHICS_BUFFER_POSITIONS[]  = {0x00, 0x10, 0x11, 0x12, 0x13, 0x14, 0x17, 0x18};
+static constexpr uint32_t GPU_PROMOTE_CTX              = 0x2080012B;
+static constexpr uint32_t AMPERE_B                     = 0xC797;
+
+// NVIDIA's control handing the firmware a split address space's directories above the range the firmware maps alone
+static constexpr uint32_t COPY_SERVER_RESERVED_PDES = 0x90F10106;
+
 // The methods the GPU's double runs, from NVIDIA's clc56f.h for the channel and clc7b5.h for the copy engine, each sent
 // with DMA_SEC_OP INC_METHOD
 static constexpr uint32_t INC_METHOD          = 1;
@@ -115,6 +132,49 @@ static constexpr uint32_t OTHER_VECTOR_BIT = 1u << 0;
 // The firmware objects the copy channel's teardown releases: its copy object, channel, channel group and address space
 static constexpr uint32_t COPY_CHANNEL_OBJECTS = 4;
 
+// The layout the double gives each graphics context buffer at its position in `GRAPHICS_BUFFER_POSITIONS`, each size
+// its own and more than an instance block, the RTV buffer aligned past 4 KiB
+static constexpr context_buffer_layout MAIN_LAYOUT            = {.bytes = 0x2000, .alignment = 0x1000};
+static constexpr context_buffer_layout PATCH_LAYOUT           = {.bytes = 0x4000, .alignment = 0x1000};
+static constexpr context_buffer_layout BUNDLE_LAYOUT          = {.bytes = 0x5000, .alignment = 0x1000};
+static constexpr context_buffer_layout PAGE_POOL_LAYOUT       = {.bytes = 0x6000, .alignment = 0x1000};
+static constexpr context_buffer_layout ATTRIBUTE_LAYOUT       = {.bytes = 0x3000, .alignment = 0x1000};
+static constexpr context_buffer_layout RTV_LAYOUT             = {.bytes = 0x7000, .alignment = 0x10000};
+static constexpr context_buffer_layout FECS_EVENT_LAYOUT      = {.bytes = 0x8000, .alignment = 0x1000};
+static constexpr context_buffer_layout PRIV_ACCESS_MAP_LAYOUT = {.bytes = 0x9000, .alignment = 0x1000};
+
+static constexpr context_buffer_layout GRAPHICS_BUFFER_LAYOUTS[] = {
+    MAIN_LAYOUT,
+    PATCH_LAYOUT,
+    BUNDLE_LAYOUT,
+    PAGE_POOL_LAYOUT,
+    ATTRIBUTE_LAYOUT,
+    RTV_LAYOUT,
+    FECS_EVENT_LAYOUT,
+    PRIV_ACCESS_MAP_LAYOUT,
+};
+
+static constexpr size_t GRAPHICS_BUFFER_KINDS = sizeof(GRAPHICS_BUFFER_POSITIONS) / sizeof(uint32_t);
+
+static_assert(
+    sizeof(GRAPHICS_BUFFER_LAYOUTS) / sizeof(context_buffer_layout) == GRAPHICS_BUFFER_KINDS,
+    "a layout per position"
+);
+
+// The double's one subcontext, so the main buffer grows by one header. Seven global buffers, and the golden
+// channel's main and patch buffers
+static constexpr uint32_t GRAPHICS_SUBCONTEXTS    = 1;
+static constexpr uint64_t OWN_MAIN_BYTES          = MAIN_LAYOUT.bytes + 0x1000;
+static constexpr uint32_t GLOBAL_BUFFER_COUNT     = 7;
+static constexpr uint32_t GRAPHICS_BUFFER_COUNT   = GLOBAL_BUFFER_COUNT + 2;
+static constexpr uint32_t GOLDEN_CHANNEL_OBJECTS  = 4; // its 3D object, channel, channel group and address space
+
+// The bytes graphics bring-up zeroes: the global buffers, the register access map's layout twice, and the golden
+// channel's own two
+static constexpr uint64_t ZEROED_GRAPHICS_BYTES =
+    BUNDLE_LAYOUT.bytes + PAGE_POOL_LAYOUT.bytes + ATTRIBUTE_LAYOUT.bytes + RTV_LAYOUT.bytes + FECS_EVENT_LAYOUT.bytes +
+    2 * PRIV_ACCESS_MAP_LAYOUT.bytes + OWN_MAIN_BYTES + PATCH_LAYOUT.bytes;
+
 // Copy engines only on the graphics engine's runlist, which run only inside a graphics context
 static constexpr engine_info SHARED_COPY_ENGINES[] = {
     {.type = GR0, .runlist = 0, .channel_ram = 0},
@@ -139,6 +199,10 @@ struct engines_test_access {
     }
 
     static copy_channel* copy_channel_of(engines& gpu_engines) { return gpu_engines.m_copy_channel; }
+
+    static const global_context_buffers& global_buffers_of(engines& gpu_engines) {
+        return gpu_engines.m_global_buffers;
+    }
 
     // Gives `gpu_engines` the BAR0, chip and card that bring-up and registration would, without either
     static void describe(engines& gpu_engines, registers bar0, const chip_info& chip, const card_identity& identity) {
@@ -167,6 +231,10 @@ struct engines_test_access {
         for (uint64_t& word : gpu_engines.m_channel_ids) {
             word = ~0ULL;
         }
+    }
+
+    static bool holds_channel_id(engines& gpu_engines, uint32_t id) {
+        return (gpu_engines.m_channel_ids[id / 64] >> (id % 64) & 1) != 0;
     }
 
     // Takes `queue` off the list the handler reads unless the failure's report did, before a test frees it
@@ -199,37 +267,47 @@ struct engines_test_access {
 
 using drivers::nvidia::engines_test_access;
 
-// Acts as the GSP's firmware: answers the device info table from `engines`, the kernel interrupt table with copy engine
-// 2's row unless `kernel_table_result` is an error, the fault method buffer's size, and the rest with `OK`
+// Acts as the GSP's firmware: answers the engine table, buffer sizes and graphics facts, each control with `OK` but
+// `refused_command`, a promotion with `promote_result`, and the interrupt table unless `kernel_table_result` fails
 class engines_firmware : public firmware {
 public:
     const engine_info* engines = nullptr;
     uint32_t           engine_count = 0;
     int32_t            kernel_table_result = OK;
+    int32_t            graphics_info_result = OK; // what the graphics facts' read answers
+    int32_t            promote_result = OK;
+    uint32_t           promotions = 0;
+    rm::handle         promoted_on = 0;
+    rm::handle         promoted_channel = 0;
     int32_t            allocation_result = OK; // what every allocation answers
     uint32_t           refused_class = ~0u;    // a class whose allocations the firmware refuses
     int32_t            release_result = OK;    // what every release answers
+    uint32_t           refused_release = 0;    // the release, counted from 1, the firmware refuses
     uint32_t           missed_release = 0;     // the release, counted from 1, whose reply misses its deadline
+    uint32_t           refused_command = 0;    // a control the firmware refuses
     failed_mark*       gpu_failed = nullptr;   // marked by that release, as a missed reply marks the GPU failed
     uint32_t           table_reads = 0;
     uint32_t           other_controls = 0;
     uint32_t           allocations = 0;
     uint32_t           releases = 0;
+    uint32_t           reserved_handovers = 0; // one per split address space
     uint32_t           internal_controls = 0;
     uint32_t           internal_command = 0;
     uint32_t           last_class = 0;
     uint32_t           last_command = 0; // of the controls other than the table's read
     rm::channel_params last_channel = {};
+    rm::handle         last_channel_handle = 0;
     rm::handle         next_handle = FIRST_HANDLE;
 
     // The sink `set_error_sink` named last
     drivers::nvidia::firmware_error_sink* error_sink = nullptr;
 
-    int32_t allocate(rm::handle, rm::handle, uint32_t class_id, void* params, size_t size) override {
+    int32_t allocate(rm::handle, rm::handle object, uint32_t class_id, void* params, size_t size) override {
         allocations++;
         last_class = class_id;
         if (size == sizeof(rm::channel_params)) {
             string::memcpy(&last_channel, params, size);
+            last_channel_handle = object;
         }
 
         return class_id == refused_class ? ERR_FIRMWARE : allocation_result;
@@ -245,9 +323,24 @@ public:
 
         other_controls++;
         last_command = command;
+        if (command == COPY_SERVER_RESERVED_PDES) {
+            reserved_handovers++;
+        }
+
+        if (command == refused_command) {
+            return ERR_FIRMWARE;
+        }
+
         if (command == GET_FAULT_METHOD_BUFFER_SIZE && size == sizeof(uint32_t)) {
             uint32_t bytes = 20480;
             string::memcpy(params, &bytes, sizeof(bytes));
+        }
+
+        if (command == GPU_PROMOTE_CTX) {
+            promotions++;
+            promoted_on = object;
+            promoted_channel = static_cast<rm::promote_context_params*>(params)->channel;
+            return promote_result;
         }
 
         return OK;
@@ -260,6 +353,10 @@ public:
             return ERR_TIMEOUT;
         }
 
+        if (releases == refused_release) {
+            return ERR_FIRMWARE;
+        }
+
         return release_result;
     }
 
@@ -270,6 +367,24 @@ public:
     int32_t internal_control(uint32_t command, void* params, size_t size) override {
         internal_controls++;
         internal_command = command;
+
+        auto* words = static_cast<uint32_t*>(params);
+        if (command == KGR_GET_INFO && size == KGR_GET_INFO_BYTES) {
+            words[MAX_SUBCONTEXT_COUNT * 2] = MAX_SUBCONTEXT_COUNT;
+            words[MAX_SUBCONTEXT_COUNT * 2 + 1] = GRAPHICS_SUBCONTEXTS;
+            return graphics_info_result;
+        }
+
+        if (command == KGR_GET_CONTEXT_BUFFERS_INFO && size == CONTEXT_BUFFERS_BYTES) {
+            for (size_t i = 0; i < GRAPHICS_BUFFER_KINDS; i++) {
+                uint32_t position = GRAPHICS_BUFFER_POSITIONS[i];
+                words[position * 2] = static_cast<uint32_t>(GRAPHICS_BUFFER_LAYOUTS[i].bytes);
+                words[position * 2 + 1] = static_cast<uint32_t>(GRAPHICS_BUFFER_LAYOUTS[i].alignment);
+            }
+
+            return OK;
+        }
+
         if (kernel_table_result != OK || size != sizeof(rm::kernel_interrupt_table_params)) {
             return kernel_table_result;
         }
@@ -346,17 +461,22 @@ static bool engines_log_contains(const char* text) {
     return false;
 }
 
+// The allocations whose offsets and alignments the video memory's double keeps, from its first
+static constexpr uint32_t KEPT_ALLOCATIONS = 64;
+
 // Hands out video memory from 4 MiB on, maps the check's range onto `s_check_memory`, an instance block onto
 // `s_engines_instance_block` and a created range at `BAR1_PHYS` past its offset, counting maps, unmaps and releases
 class engines_video_memory : public video_memory {
 public:
     memory_report reported = {};
     bool          refuses_allocation = false;
+    uint32_t      refused_allocation = 0;    // the first allocation, counted from 1, it refuses with every later one
     bool          is_window_full = false;    // refuses to map a created range
     bool          maps_without_phys = false; // maps a created range with no physical address
     int32_t       update_result = OK;        // what table updates answer once they wrote `s_tables_image`
 
     uint64_t   next_offset = 0x400000;
+    uint64_t   created_offset = 0; // where ranges larger than an instance block go once a test sets it
     uint64_t   check_offset = 0;
     uint32_t   allocations = 0;
     vram_range last_allocated = {};
@@ -372,25 +492,48 @@ public:
     uint32_t table_releases = 0;        // of tables from `TABLES_OFFSET` on
     uint64_t invalidated_directory = 0; // the root directory of the last update that invalidated
 
+    uint64_t asked_offsets[KEPT_ALLOCATIONS] = {};    // each allocation's offset, in order
+    uint64_t asked_alignments[KEPT_ALLOCATIONS] = {}; // the alignment each was asked for
+
     void report(memory_report& out) override {
         out = reported;
     }
 
-    int32_t allocate(uint64_t size, uint64_t, vram_use use, vram_range& out) override {
-        if (refuses_allocation) {
+    int32_t allocate(uint64_t size, uint64_t alignment, vram_use use, vram_range& out) override {
+        bool is_refused = refused_allocation != 0 && allocations + 1 >= refused_allocation;
+        if (refuses_allocation || is_refused) {
             return ERR_NO_MEMORY;
         }
 
         allocations++;
-        out = {.offset = next_offset, .size = size};
+        bool is_apart = created_offset != 0 && size > sizeof(s_engines_instance_block);
+        uint64_t& next = is_apart ? created_offset : next_offset;
+        out = {.offset = next, .size = size};
         if (size == sizeof(s_check_memory)) {
-            check_offset = next_offset;
+            check_offset = next;
         }
 
-        next_offset += size;
+        if (allocations <= KEPT_ALLOCATIONS) {
+            asked_offsets[allocations - 1] = next;
+            asked_alignments[allocations - 1] = alignment;
+        }
+
+        next += size;
         last_allocated = out;
         last_use = use;
         return OK;
+    }
+
+    // The alignment the kept allocation at `offset` was asked for, or 0 when none lies there
+    uint64_t alignment_asked_at(uint64_t offset) const {
+        uint32_t kept = allocations < KEPT_ALLOCATIONS ? allocations : KEPT_ALLOCATIONS;
+        for (uint32_t i = 0; i < kept; i++) {
+            if (asked_offsets[i] == offset) {
+                return asked_alignments[i];
+            }
+        }
+
+        return 0;
     }
 
     void release(const vram_range& range) override {
@@ -525,6 +668,7 @@ static dma::device_profile engines_test_card() {
 static chip_info engines_test_chip() {
     chip_info chip = {};
     chip.interrupt_leaf_count = TEST_LEAF_COUNT;
+    chip.graphics.three_d_class = AMPERE_B;
     return chip;
 }
 
@@ -552,7 +696,7 @@ struct entry_methods {
     bool     raises_interrupt = false;
 };
 
-static constexpr uint32_t MAX_FILLS = 8;
+static constexpr uint32_t MAX_FILLS = 16;
 
 // The bytes a create asks for unless its test sets others, more than an instance block, so the double maps them at
 // `BAR1_PHYS`
@@ -990,6 +1134,198 @@ TEST(nvidia_engines, bring_up_keeps_the_checks_memory_when_a_copy_hangs) {
     EXPECT_EQ(fixture.memory.check_releases, 0u);
     EXPECT_EQ(fixture.fw.releases, 0u);
     EXPECT_EQ(bar0_word(CPU_INTR_LEAF_EN_CLEAR), COPY_VECTOR_BIT);
+}
+
+// Whether `buffer`'s video memory has `layout`'s size and was asked for at `layout`'s alignment
+static bool is_allocated_as(
+    const engines_video_memory& memory,
+    const context_buffer& buffer,
+    const context_buffer_layout& layout
+) {
+    return buffer.range.size == layout.bytes && memory.alignment_asked_at(buffer.range.offset) == layout.alignment;
+}
+
+// Brings the fixture's graphics engine up in a task while the test runner acts as the GPU, after bring-up
+static int32_t bring_up_graphics_on_gpu(engines_fixture& fixture) {
+    if (bring_up_on_gpu(fixture) != OK) {
+        return NOT_FINISHED;
+    }
+
+    return run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); });
+}
+
+// Graphics bring-up zeroes the seven global buffers and the golden channel's own two through the copy channel, promotes
+// them in a split space, captures the golden context with a 3D object, then frees the golden channel and its buffers
+TEST(nvidia_engines, bring_up_graphics_captures_the_golden_context_and_keeps_the_global_buffers) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_graphics_on_gpu(fixture), OK);
+    EXPECT_EQ(fixture.strays, 0u);
+
+    ASSERT_EQ(fixture.fill_count, 2 + GRAPHICS_BUFFER_COUNT);
+    uint64_t zeroed_bytes = 0;
+    for (uint32_t i = 2; i < fixture.fill_count; i++) {
+        EXPECT_EQ(fixture.fills[i].value, 0u);
+        zeroed_bytes += fixture.fills[i].words * sizeof(uint32_t);
+    }
+
+    EXPECT_EQ(zeroed_bytes, ZEROED_GRAPHICS_BYTES);
+
+    const global_context_buffers& global = engines_test_access::global_buffers_of(fixture.gpu_engines);
+    EXPECT_TRUE(is_allocated_as(fixture.memory, global.bundle, BUNDLE_LAYOUT));
+    EXPECT_TRUE(is_allocated_as(fixture.memory, global.page_pool, PAGE_POOL_LAYOUT));
+    EXPECT_TRUE(is_allocated_as(fixture.memory, global.attribute, ATTRIBUTE_LAYOUT));
+    EXPECT_TRUE(is_allocated_as(fixture.memory, global.rtv, RTV_LAYOUT));
+
+    EXPECT_TRUE(is_allocated_as(fixture.memory, global.fecs_event, FECS_EVENT_LAYOUT));
+    EXPECT_TRUE(is_allocated_as(fixture.memory, global.priv_access_map, PRIV_ACCESS_MAP_LAYOUT));
+    EXPECT_TRUE(is_allocated_as(fixture.memory, global.unrestricted_priv_access_map, PRIV_ACCESS_MAP_LAYOUT));
+
+    EXPECT_EQ(fixture.fw.reserved_handovers, 1u);
+    EXPECT_EQ(fixture.fw.promotions, 1u);
+    EXPECT_EQ(fixture.fw.promoted_on, TEST_OBJECTS.subdevice);
+    EXPECT_EQ(fixture.fw.promoted_channel, fixture.fw.last_channel_handle);
+    EXPECT_EQ(fixture.fw.last_class, AMPERE_B);
+
+    EXPECT_EQ(fixture.fw.releases, GOLDEN_CHANNEL_OBJECTS);
+    EXPECT_EQ(fixture.memory.created_releases, 2u);
+}
+
+// Without a graphics engine in the table, graphics bring-up allocates nothing
+TEST(nvidia_engines, bring_up_graphics_refuses_a_table_without_a_graphics_engine) {
+    static constexpr engine_info COPY_ENGINE_ONLY[] = {{.type = CE2, .runlist = 1, .channel_ram = TEST_CHANNEL_RAM}};
+    engines_fixture fixture;
+    fixture.fw.engines = COPY_ENGINE_ONLY;
+    fixture.fw.engine_count = 1;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    uint32_t allocations = fixture.memory.allocations;
+
+    EXPECT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), ERR_BAD_STATE);
+    EXPECT_EQ(fixture.memory.allocations, allocations);
+    EXPECT_EQ(fixture.fw.promotions, 0u);
+}
+
+// A refused read of the graphics engine's facts fails graphics bring-up with its error before any allocation
+TEST(nvidia_engines, refused_graphics_facts_read_fails_bring_up_before_allocating) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.fw.graphics_info_result = ERR_FIRMWARE;
+    uint32_t allocations = fixture.memory.allocations;
+
+    EXPECT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), ERR_FIRMWARE);
+    EXPECT_EQ(fixture.memory.allocations, allocations);
+    EXPECT_EQ(fixture.fw.reserved_handovers, 0u);
+    EXPECT_EQ(fixture.fw.promotions, 0u);
+}
+
+// A refused promotion frees the golden channel and gives back every context buffer, since the firmware holds none
+TEST(nvidia_engines, refused_promotion_gives_back_every_context_buffer) {
+    engines_fixture fixture;
+    fixture.fw.promote_result = ERR_FIRMWARE;
+
+    EXPECT_EQ(bring_up_graphics_on_gpu(fixture), ERR_FIRMWARE);
+    EXPECT_EQ(fixture.fw.releases, GOLDEN_CHANNEL_OBJECTS - 1);
+    EXPECT_EQ(fixture.memory.created_releases, GRAPHICS_BUFFER_COUNT);
+}
+
+// A refused release of the golden channel keeps every context buffer, since the firmware may still reach them
+TEST(nvidia_engines, refused_golden_channel_release_keeps_the_context_buffers) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.fw.release_result = ERR_FIRMWARE;
+
+    EXPECT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), ERR_FIRMWARE);
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+    EXPECT_TRUE(engines_test_access::holds_channel_id(fixture.gpu_engines, 1));
+    fixture.fw.release_result = OK;
+}
+
+// A golden channel release whose reply misses its deadline marks the GPU failed and keeps every context buffer, and
+// the golden channel's space stays unreleased
+TEST(nvidia_engines, missed_golden_channel_release_keeps_the_context_buffers) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    uint32_t releases = fixture.fw.releases;
+    fixture.fw.gpu_failed = &fixture.failed;
+    fixture.fw.missed_release = releases + 1;
+
+    EXPECT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), ERR_TIMEOUT);
+    EXPECT_TRUE(fixture.failed.is_set());
+    EXPECT_EQ(fixture.fw.releases, releases + GOLDEN_CHANNEL_OBJECTS - 1);
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+    EXPECT_TRUE(engines_test_access::holds_channel_id(fixture.gpu_engines, 1));
+}
+
+// A refused release of the golden channel's space keeps every context buffer, since the tables it keeps still map them
+TEST(nvidia_engines, refused_golden_channel_space_release_keeps_the_context_buffers) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    uint32_t releases = fixture.fw.releases;
+    fixture.fw.refused_release = releases + GOLDEN_CHANNEL_OBJECTS;
+
+    EXPECT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), ERR_FIRMWARE);
+    EXPECT_EQ(fixture.fw.releases, releases + GOLDEN_CHANNEL_OBJECTS);
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+}
+
+// A release of the golden channel's space whose reply misses its deadline marks the GPU failed and keeps every
+// context buffer
+TEST(nvidia_engines, missed_golden_channel_space_release_keeps_the_context_buffers) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.fw.gpu_failed = &fixture.failed;
+    fixture.fw.missed_release = fixture.fw.releases + GOLDEN_CHANNEL_OBJECTS;
+
+    EXPECT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), ERR_TIMEOUT);
+    EXPECT_TRUE(fixture.failed.is_set());
+    EXPECT_EQ(fixture.memory.created_releases, 0u);
+}
+
+// A golden buffer whose zeroing hangs stays allocated for good, since the hung copy may still write it, and the global
+// buffers are given back
+TEST(nvidia_engines, hung_golden_zeroing_keeps_its_buffer_and_gives_back_the_global_ones) {
+    engines_fixture fixture;
+    fixture.fault = copy_fault::hangs;
+    fixture.faulty_fill = 2 + GLOBAL_BUFFER_COUNT + 1;
+
+    EXPECT_EQ(bring_up_graphics_on_gpu(fixture), ERR_TIMEOUT);
+    EXPECT_EQ(fixture.memory.created_releases, GLOBAL_BUFFER_COUNT);
+    EXPECT_EQ(fixture.fw.reserved_handovers, 0u);
+}
+
+// A global buffer the video memory refuses gives back the global buffers allocated before it
+TEST(nvidia_engines, refused_global_buffer_gives_back_the_ones_before_it) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.memory.refused_allocation = fixture.memory.allocations + 4;
+
+    EXPECT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), ERR_NO_MEMORY);
+    EXPECT_EQ(fixture.memory.created_releases, 3u);
+}
+
+// A golden channel's space whose directories the firmware refuses gives back every context buffer and the channel id,
+// with no channel allocated
+TEST(nvidia_engines, refused_directory_handover_gives_back_every_context_buffer_and_the_id) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    uint32_t allocations = fixture.fw.allocations;
+    fixture.fw.refused_command = COPY_SERVER_RESERVED_PDES;
+
+    EXPECT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), ERR_FIRMWARE);
+    EXPECT_EQ(fixture.fw.allocations, allocations + 1);
+    EXPECT_EQ(fixture.memory.created_releases, GRAPHICS_BUFFER_COUNT);
+    EXPECT_FALSE(engines_test_access::holds_channel_id(fixture.gpu_engines, 1));
+}
+
+// A refused 3D object frees the golden channel and its space and gives back every context buffer
+TEST(nvidia_engines, refused_golden_3d_object_gives_back_every_context_buffer) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    uint32_t releases = fixture.fw.releases;
+    fixture.fw.refused_class = AMPERE_B;
+
+    EXPECT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), ERR_FIRMWARE);
+    EXPECT_EQ(fixture.fw.releases, releases + GOLDEN_CHANNEL_OBJECTS - 1);
+    EXPECT_EQ(fixture.memory.created_releases, GRAPHICS_BUFFER_COUNT);
 }
 
 // GA102's chip as the driver's chip table names it, set by each facts test
@@ -1984,6 +2320,25 @@ TEST(nvidia_engines, a_queue_is_an_unprivileged_channel_with_its_rings_above_the
     tear_down_space(fixture);
 }
 
+// The firmware's channel ids are one space across runlists, so the golden channel takes the lowest id above the
+// kernel's copy channel, and gives it back once freed for the first queue to take
+TEST(nvidia_engines, the_golden_channel_takes_the_lowest_free_channel_id_and_gives_it_back) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_graphics_on_gpu(fixture), OK);
+    EXPECT_EQ(fixture.fw.last_channel.flags, USER_CHANNEL_1_FLAGS);
+    EXPECT_EQ(fixture.fw.last_channel.engine_type, GR0);
+
+    fixture.create_placement = GPU_PLACEMENT_SYSTEM;
+    ASSERT_EQ(create_on_gpu(fixture), gpu::OK);
+    fixture.memory.next_offset = TABLES_OFFSET;
+    ASSERT_EQ(create_space_on_gpu(fixture), gpu::OK);
+    ASSERT_EQ(create_queue_on_gpu(fixture), gpu::OK);
+    EXPECT_EQ(fixture.fw.last_channel.flags, USER_CHANNEL_1_FLAGS);
+
+    tear_down_queue(fixture, fixture.queue);
+    tear_down_space(fixture);
+}
+
 // A run takes a GPFIFO entry per range, one flagged GPU written fetched only once the host processed the entries before
 // it, then an entry for its release in its sequence's push buffer slot, and rings the queue's doorbell
 TEST(nvidia_engines, run_writes_an_entry_per_range_then_its_release_and_rings_the_doorbell) {
@@ -2890,4 +3245,84 @@ TEST(nvidia_engines, the_failures_report_frees_no_channel_once_a_free_failed_the
     fixture.gpu_engines.destroy_queue(fixture.queue);
     fixture.gpu_engines.destroy_queue(first);
     tear_down_space(fixture);
+}
+
+// Where created ranges go in a graphics test, apart from the tables, which context buffers would otherwise split
+static constexpr uint64_t CREATED_APART_OFFSET = 0x20000000;
+
+// The six global buffers map from 1 GiB above the user range, the attribute buffer first and the RTV buffer at its
+// alignment's next multiple past the page pool, then the golden channel's own, its main buffer first
+static constexpr uint64_t GRAPHICS_BUFFERS_VA  = (1ULL << 39) + (1ULL << 30);
+static constexpr uint64_t RTV_VA               = GRAPHICS_BUFFERS_VA + RTV_LAYOUT.alignment;
+static constexpr uint64_t PRIV_ACCESS_MAP_VA   = RTV_VA + RTV_LAYOUT.bytes + FECS_EVENT_LAYOUT.bytes;
+static constexpr uint64_t FIRST_OWN_BUFFERS_VA = PRIV_ACCESS_MAP_VA + PRIV_ACCESS_MAP_LAYOUT.bytes;
+
+// A page table entry's privilege bit and its address field's bits 53:8
+static constexpr uint64_t PAGE_PRIVILEGED    = 1ULL << 5;
+static constexpr uint64_t PAGE_ADDRESS_FIELD = 0x003F'FFFF'FFFF'FF00;
+
+// The entry a map wrote for `va` into the page table the golden channel's space adds sixth, after its root, the two
+// directories it hands the firmware and the two directories above its buffers
+static uint64_t golden_page_entry_at(uint64_t va) {
+    return s_tables_image[5 * TABLE_WORDS + (va >> 12) % TABLE_WORDS];
+}
+
+// A writable entry for the GPU's privileged accesses to video memory at `offset`
+static uint64_t privileged_entry(uint64_t offset) {
+    return address_field(offset) | PAGE_PRIVILEGED | PAGE_VALID;
+}
+
+// Whether the golden channel's space maps `buffer`'s first page at its address for privileged accesses, read-only if
+// `read_only`
+static bool is_golden_mapped(const context_buffer& buffer, bool read_only) {
+    uint64_t entry = privileged_entry(buffer.range.offset) | (read_only ? PAGE_READ_ONLY : 0);
+    return golden_page_entry_at(buffer.gpu_address) == entry;
+}
+
+// Whether a table the double kept holds an entry naming video memory at `offset`
+static bool is_mapped_anywhere(uint64_t offset) {
+    for (uint64_t word : s_tables_image) {
+        if (word != UNWRITTEN_ENTRY && (word & PAGE_ADDRESS_FIELD) == address_field(offset)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The golden channel's space maps the global buffers and the golden channel's own for the GPU's privileged accesses
+// alone, the register access map read-only, and leaves the unrestricted map unmapped
+TEST(nvidia_engines, the_golden_channel_space_maps_the_context_buffers_privileged_and_the_access_map_read_only) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_on_gpu(fixture), OK);
+    fixture.memory.next_offset = TABLES_OFFSET;
+    fixture.memory.created_offset = CREATED_APART_OFFSET;
+    ASSERT_EQ(run_on_gpu(fixture, [](engines_fixture& f) { return f.gpu_engines.bring_up_graphics(); }), OK);
+
+    const global_context_buffers& global = engines_test_access::global_buffers_of(fixture.gpu_engines);
+    EXPECT_EQ(global.attribute.gpu_address, GRAPHICS_BUFFERS_VA);
+    EXPECT_EQ(global.rtv.gpu_address, RTV_VA);
+
+    EXPECT_TRUE(is_golden_mapped(global.attribute, false));
+    EXPECT_TRUE(is_golden_mapped(global.bundle, false));
+    EXPECT_TRUE(is_golden_mapped(global.page_pool, false));
+    EXPECT_TRUE(is_golden_mapped(global.rtv, false));
+
+    EXPECT_TRUE(is_golden_mapped(global.fecs_event, false));
+    EXPECT_TRUE(is_golden_mapped(global.priv_access_map, true));
+    EXPECT_FALSE(is_mapped_anywhere(global.unrestricted_priv_access_map.range.offset));
+
+    uint64_t main_offset = fixture.memory.last_released.offset;
+    uint64_t patch_va = FIRST_OWN_BUFFERS_VA + OWN_MAIN_BYTES;
+    EXPECT_EQ(golden_page_entry_at(FIRST_OWN_BUFFERS_VA), privileged_entry(main_offset));
+    EXPECT_EQ(golden_page_entry_at(patch_va), privileged_entry(main_offset + OWN_MAIN_BYTES));
+}
+
+// The golden channel's GPFIFO lies at the first queue slot's address, above the 256 GiB whose directory the split
+// space hands the firmware
+TEST(nvidia_engines, golden_channel_gpfifo_lies_at_the_first_queue_slots_address) {
+    engines_fixture fixture;
+    ASSERT_EQ(bring_up_graphics_on_gpu(fixture), OK);
+
+    EXPECT_EQ(fixture.fw.last_channel.gpfifo_address, FIRST_GPFIFO_VA);
 }

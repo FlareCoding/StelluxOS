@@ -13,6 +13,7 @@
 #include "drivers/graphics/nvidia/failed_mark.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/gpu_objects.h"
+#include "drivers/graphics/nvidia/graphics_context.h"
 #include "drivers/graphics/nvidia/gsp_info.h"
 #include "drivers/graphics/nvidia/operation_queue.h"
 #include "drivers/graphics/nvidia/registers.h"
@@ -127,9 +128,11 @@ using backend_queue_list = list::head<backend_queue, &backend_queue::link>;
 /**
  * The GPU's engines as the driver task brings them up once `attach()` has
  * returned `OK`: the engine table, the kernel's copy channel on the first
- * asynchronous copy engine, and that engine's nonstall vector. The driver
- * object holds one for its life, and once `register_gpu` succeeds the GPU core
- * drives the engines as the card's `gpu::backend`.
+ * asynchronous copy engine, that engine's nonstall vector, and the graphics
+ * engine's global context buffers and golden context (the state every graphics
+ * channel starts from). The driver object holds one for its life, and once
+ * `register_gpu` succeeds the GPU core drives the engines as the card's
+ * `gpu::backend`.
  *
  * `bring_up` waits for the firmware and for video memory, so the driver task
  * must call it, and only once.
@@ -171,6 +174,18 @@ public:
      * step's error. Every error is logged and leaves the vector masked.
      */
     int32_t bring_up(registers& bar0, uint64_t bar0_bytes, const dma::device_profile& card, const chip_info& chip);
+
+    /**
+     * @brief Allocate the graphics engine's global context buffers and capture
+     * its golden context. The driver task must call it once, after `bring_up`
+     * returned `OK` and before `register_gpu`.
+     * @return `OK`, `ERR_BAD_STATE` when the engine table lists no graphics
+     * engine or no channel id is free, or the failing step's error, each
+     * logged. An error leaves `bring_up`'s engines up and gives back the
+     * context buffers but those the firmware or the GPU may still reach, kept
+     * for good.
+     */
+    int32_t bring_up_graphics();
 
     /**
      * @brief Register the engines with the GPU core as the next /dev/gpuN,
@@ -274,6 +289,13 @@ private:
     // Has the copy channel zero `range`, in as few fills as their size limit allows
     int32_t zero_video_memory(const vram_range& range);
 
+    // Allocates and zeroes `buffer`'s video memory as `layout` sizes it, keeping the memory for good after a timeout
+    int32_t allocate_context_buffer(const context_buffer_layout& layout, context_buffer& buffer);
+
+    // Captures the golden context on a channel of `graphics`'s runlist in an address space of its own, setting
+    // `is_reachable` when an error leaves the firmware or the GPU able to reach the global buffers
+    int32_t capture_golden_context(const engine_info& graphics, bool& is_reachable);
+
     // Fails the GPU core's device, logging `reason` once, and has the driver task report it
     void fail_device(const char* reason);
 
@@ -321,7 +343,7 @@ private:
     // push buffer first when `is_mapped`, unless the firmware or the GPU may still reach them
     void release_queue(backend_queue& queue, bool is_mapped);
 
-    // Takes the lowest id free on the copy engine's runlist above the kernel's copy channel's, or returns false
+    // Takes the lowest id free above the kernel's copy channel's in the id space all runlists share, or returns false
     bool take_channel_id(uint32_t& out);
     void give_back_channel_id(uint32_t id);
 
@@ -353,7 +375,13 @@ private:
     uint32_t           m_copy_vector = 0;
     sync::atomic<bool> m_is_copy_vector_on{false}; // stored with release once the channel exists, loaded with acquire
 
-    // A bit per channel id held on the copy engine's runlist, which only the driver task touches
+    // The graphics engine's context buffer layouts, its global buffers, kept for good once the golden context is
+    // captured, and where the golden channel's own buffers map, all set by `bring_up_graphics`
+    graphics_buffer_layouts m_graphics_layouts = {};
+    global_context_buffers  m_global_buffers = {};
+    uint64_t                m_own_buffers_start = 0;
+
+    // A bit per channel id held in the id space all runlists share, which only the driver task touches
     uint64_t m_channel_ids[CHANNEL_IDS / CHANNEL_IDS_PER_WORD] = {};
 
     // The queues whose semaphores the handler reads, from their creation until their stop or the failure's report. Only
