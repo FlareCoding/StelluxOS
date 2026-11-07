@@ -1,0 +1,38 @@
+#
+# Host Tests
+#
+# Builds the userland libraries' host tests with the runner's own compiler and
+# runs them, for library code that no unit test inside Stellux reaches.
+#
+
+name: Host tests
+
+# Pull requests run every branch under review, so pushes run only for master
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer commit on a pull request cancels its older run, and each push keeps its own
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    name: host tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run host tests
+        run: make host-test
