@@ -6,18 +6,6 @@ static int64_t rect_area(const damage_list::rect& r) {
     return static_cast<int64_t>(r.w) * r.h;
 }
 
-static damage_list::rect intersect(const damage_list::rect& a, const damage_list::rect& b) {
-    int32_t left = std::max(a.x, b.x);
-    int32_t top = std::max(a.y, b.y);
-    int32_t right = std::min(a.x + a.w, b.x + b.w);
-    int32_t bottom = std::min(a.y + a.h, b.y + b.h);
-    if (right <= left || bottom <= top) {
-        return {};
-    }
-
-    return { left, top, right - left, bottom - top };
-}
-
 static bool holds(const damage_list::rect& r, int64_t x, int64_t y) {
     return x >= r.x && x < static_cast<int64_t>(r.x) + r.w && y >= r.y && y < static_cast<int64_t>(r.y) + r.h;
 }
@@ -131,7 +119,7 @@ static void shift(layout::place* places, uint32_t count, uint32_t index, int32_t
 static bool any_overlap(const layout::place* places, uint32_t count) {
     for (uint32_t i = 0; i < count; i++) {
         for (uint32_t j = 0; j < i; j++) {
-            if (rect_area(intersect(places[i].rect, places[j].rect)) != 0) {
+            if (rect_area(damage_list::intersect(places[i].rect, places[j].rect)) != 0) {
                 return true;
             }
         }
@@ -417,7 +405,7 @@ bool layout::covers(const damage_list::rect& r) const {
      * shares of `r` add up without counting a pixel twice */
     int64_t covered = 0;
     for (uint32_t i = 0; i < m_count; i++) {
-        covered += rect_area(intersect(r, work_area(m_places[i].output)));
+        covered += rect_area(damage_list::intersect(r, work_area(m_places[i].output)));
     }
 
     return covered == rect_area(r);
@@ -431,7 +419,7 @@ int32_t layout::output_holding(const damage_list::rect& frame, const layout* amo
             continue;
         }
 
-        int64_t area = rect_area(intersect(frame, m_places[i].rect));
+        int64_t area = rect_area(damage_list::intersect(frame, m_places[i].rect));
         if (area > best_area) {
             best = static_cast<int32_t>(m_places[i].output);
             best_area = area;
