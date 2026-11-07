@@ -246,14 +246,16 @@ void draw(const canvas& back, const dm_window& w,
         return;
     }
 
-    stlxgfx_surface_t* view = clip_view(back, clip);
+    /* The title has no width limit, so the view is cut to `bounds` too */
+    damage_list::rect area = damage_list::intersect(clip, bounds(w));
+    stlxgfx_surface_t* view = clip_view(back, area);
     if (!view) {
         return;
     }
 
     /* Outer geometry in view space, the border ring's own origin */
-    int32_t ox = w.x - BORDER - clip.x;
-    int32_t oy = w.y - TITLE_H - clip.y;
+    int32_t ox = w.x - BORDER - area.x;
+    int32_t oy = w.y - TITLE_H - area.y;
     uint32_t outer_w = b->width + 2 * BORDER;
     uint32_t outer_h = b->height + TITLE_H + BORDER;
     uint32_t border = border_color(st);
