@@ -7,8 +7,9 @@
 #
 # Handles both .c and .cpp sources. Links against libc++, libc++abi,
 # and libunwind in addition to musl libc. Requires 'make libcxx' to
-# have been run first. APP_QT := 1 builds the app on Qt, see qt.mk, and
-# APP_VULKAN := 1 links the app with the Vulkan library, see vulkan.mk.
+# have been run first. APP_QT := 1 builds the app on Qt, see qt.mk,
+# APP_QT_QUICK := 1 builds it on Qt Quick as well, and APP_VULKAN := 1 links
+# the app with the Vulkan library, see vulkan.mk.
 #
 
 USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)
@@ -33,14 +34,25 @@ CXX_OBJECTS := $(CXX_SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 OBJECTS     := $(C_OBJECTS) $(CXX_OBJECTS)
 TARGET      := $(BIN_DIR)/$(APP_NAME)
 
+ifdef APP_QT_QUICK
+APP_QT := 1
+endif
+
 # A Qt app compiles against the kit and links libstlxqpa whole, so the stellux
 # platform plugin registers
 ifdef APP_QT
 include $(USERLAND_ROOT)/mk/qt.mk
 APP_CXXFLAGS := $(QT_CPPFLAGS)
 APP_LDLIBS   := -Wl,--whole-archive -lstlxqpa -Wl,--no-whole-archive -lstlxwin -lstlxconf $(QT_LDLIBS)
-OBJECTS      += $(QT_MOC_OBJECTS)
+OBJECTS      += $(QT_MOC_OBJECTS) $(QT_RCC_OBJECTS)
 LIB_ARCHIVES += $(SYSROOT)/lib/libstlxqpa.a $(SYSROOT)/lib/libstlxwin.a $(SYSROOT)/lib/libstlxconf.a
+endif
+
+# A Qt Quick app also compiles against Qt Quick, and links it with every QML
+# module the qt recipe's probe program imports
+ifdef APP_QT_QUICK
+APP_CXXFLAGS += $(QT_QUICK_CPPFLAGS)
+APP_LDLIBS   += $(QT_QUICK_LDLIBS)
 endif
 
 # A Vulkan app's C++ sources compile against the kit's headers, and the app
@@ -81,9 +93,13 @@ ifdef APP_QT
 $(BUILD_DIR)/moc_%.o: $(BUILD_DIR)/moc_%.cpp
 	@echo "[CXX] $< ($(ARCH))"
 	$(UQ)$(CXX) $(CXXFLAGS_COMMON) $(APP_CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/qrc_%.o: $(BUILD_DIR)/qrc_%.cpp
+	@echo "[CXX] $< ($(ARCH))"
+	$(UQ)$(CXX) $(CXXFLAGS_COMMON) $(APP_CXXFLAGS) -c $< -o $@
 endif
 
--include $(OBJECTS:.o=.d)
+-include $(OBJECTS:.o=.d) $(QT_RCC_OBJECTS:.o=.cpp.d)
 
 clean:
 	$(UQ)rm -rf build
