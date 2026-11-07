@@ -71,6 +71,31 @@ int32_t channel::create(
     address_space& space,
     const channel_setup& setup
 ) {
+    int32_t rc = allocate(card, chip, space, setup);
+    if (rc != OK) {
+        return rc;
+    }
+
+    rm::copy_object_params copy_params = {.version = COPY_OBJECT_VERSION, .engine_type = setup.engine.type};
+    rc = add_object(chip.copy_class, &copy_params, sizeof(copy_params));
+    if (rc == OK) {
+        rc = schedule();
+    }
+
+    if (rc != OK) {
+        release_objects();
+        release_memory();
+    }
+
+    return rc;
+}
+
+int32_t channel::allocate(
+    const dma::device_profile& card,
+    const chip_info& chip,
+    address_space& space,
+    const channel_setup& setup
+) {
     if (m_group != 0) {
         return ERR_BAD_STATE;
     }
@@ -92,7 +117,7 @@ int32_t channel::create(
     }
 
     if (rc == OK) {
-        rc = allocate_objects(chip, space, setup);
+        rc = allocate_channel(chip, space, setup);
     }
 
     if (rc != OK) {
@@ -102,9 +127,50 @@ int32_t channel::create(
     }
 
     m_id = setup.id;
+    m_engine_type = setup.engine.type;
     m_doorbell_token = doorbell_token(setup.engine.runlist, setup.id);
     m_channel_ram_entry = setup.engine.channel_ram + setup.id * CHANNEL_RAM_ENTRY_BYTES;
     m_put = 0;
+
+    return OK;
+}
+
+int32_t channel::add_object(uint32_t object_class, void* params, size_t bytes) {
+    if (m_channel == 0 || m_object_count == CHANNEL_OBJECTS_MAX) {
+        return ERR_BAD_STATE;
+    }
+
+    rm::handle object = m_firmware.new_handle();
+    int32_t rc = m_firmware.allocate(m_channel, object, object_class, params, bytes);
+    if (rc != OK) {
+        log::error("nvidia: allocating channel %u's object of class 0x%X failed: %d", m_id, object_class, rc);
+        return rc;
+    }
+
+    m_objects_held[m_object_count] = object;
+    m_object_count++;
+
+    return OK;
+}
+
+int32_t channel::schedule() {
+    if (m_channel == 0) {
+        return ERR_BAD_STATE;
+    }
+
+    rm::bind_channel_params bind = {.engine_type = m_engine_type};
+    int32_t rc = m_firmware.control(m_channel, rm::CONTROL_BIND_CHANNEL, &bind, sizeof(bind));
+    if (rc != OK) {
+        log::error("nvidia: binding channel %u to its engine failed: %d", m_id, rc);
+        return rc;
+    }
+
+    rm::schedule_channel_params schedule = {.enable = 1, .skip_submit = 0};
+    rc = m_firmware.control(m_channel, rm::CONTROL_SCHEDULE_CHANNEL, &schedule, sizeof(schedule));
+    if (rc != OK) {
+        log::error("nvidia: scheduling channel %u failed: %d", m_id, rc);
+        return rc;
+    }
 
     return OK;
 }
@@ -149,6 +215,10 @@ void channel::kick() {
 
 uint32_t channel::id() const {
     return m_id;
+}
+
+rm::handle channel::handle() const {
+    return m_channel;
 }
 
 bool channel::has_faulted() const {
@@ -213,7 +283,7 @@ int32_t channel::allocate_memory(const dma::device_profile& card) {
     return OK;
 }
 
-int32_t channel::allocate_objects(const chip_info& chip, address_space& space, const channel_setup& setup) {
+int32_t channel::allocate_channel(const chip_info& chip, address_space& space, const channel_setup& setup) {
     rm::channel_group_params group_params = {};
     group_params.address_space = space.handle();
     group_params.engine_type = setup.engine.type;
@@ -254,56 +324,36 @@ int32_t channel::allocate_objects(const chip_info& chip, address_space& space, c
 
     m_channel = object;
 
-    object = m_firmware.new_handle();
-    rm::copy_object_params copy_params = {.version = COPY_OBJECT_VERSION, .engine_type = setup.engine.type};
-    rc = m_firmware.allocate(m_channel, object, chip.copy_class, &copy_params, sizeof(copy_params));
-    if (rc != OK) {
-        log::error("nvidia: allocating channel %u's copy object failed: %d", setup.id, rc);
-        return rc;
-    }
-
-    m_copy_object = object;
-
-    rm::bind_channel_params bind = {.engine_type = setup.engine.type};
-    rc = m_firmware.control(m_channel, rm::CONTROL_BIND_CHANNEL, &bind, sizeof(bind));
-    if (rc != OK) {
-        log::error("nvidia: binding channel %u to its engine failed: %d", setup.id, rc);
-        return rc;
-    }
-
-    rm::schedule_channel_params schedule = {.enable = 1, .skip_submit = 0};
-    rc = m_firmware.control(m_channel, rm::CONTROL_SCHEDULE_CHANNEL, &schedule, sizeof(schedule));
-    if (rc != OK) {
-        log::error("nvidia: scheduling channel %u failed: %d", setup.id, rc);
-        return rc;
-    }
-
     return OK;
 }
 
 int32_t channel::release_objects() {
-    rm::handle* objects[] = {&m_copy_object, &m_channel, &m_group};
-
     int32_t first_rc = OK;
-    for (rm::handle* object : objects) {
-        if (*object == 0) {
-            continue;
-        }
-
-        int32_t rc = m_firmware.release(*object);
-        if (rc != OK) {
-            log::error("nvidia: releasing channel object 0x%X failed: %d, so the channel's memory stays", *object, rc);
-            m_keeps_memory = true;
-        }
-
-        if (first_rc == OK) {
-            first_rc = rc;
-        }
-
-        *object = 0;
+    for (uint32_t i = m_object_count; i > 0; i--) {
+        first_rc = release_object(m_objects_held[i - 1], first_rc);
     }
 
+    m_object_count = 0;
+    first_rc = release_object(m_channel, first_rc);
+    first_rc = release_object(m_group, first_rc);
+
     return first_rc;
+}
+
+int32_t channel::release_object(rm::handle& object, int32_t first_rc) {
+    if (object == 0) {
+        return first_rc;
+    }
+
+    int32_t rc = m_firmware.release(object);
+    if (rc != OK) {
+        log::error("nvidia: releasing channel object 0x%X failed: %d, so the channel's memory stays", object, rc);
+        m_keeps_memory = true;
+    }
+
+    object = 0;
+
+    return first_rc != OK ? first_rc : rc;
 }
 
 int32_t channel::release_memory() {

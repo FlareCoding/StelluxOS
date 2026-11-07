@@ -396,11 +396,14 @@ src/common/inc/swref/published/pascal/gp100/dev_mmu.h
     field, in bar1_page_tables.h and page_tables.h, its read-only bit, in
     page_tables.h, the kind field's bits 63:56 and the read-only bit in bit 6,
     in page_tables.cpp, kernel/tests/graphics/nvidia_page_tables.test.cpp and
-    kernel/tests/graphics/nvidia_engines.test.cpp, and the address field of a
-    page table entry naming system memory in bits 53:8, counting 4 KiB units,
-    and its reach of 2^58, in page_tables.h, page_tables.cpp,
+    kernel/tests/graphics/nvidia_engines.test.cpp, the address field of a page
+    table entry naming system memory in bits 53:8, counting 4 KiB units, and its
+    reach of 2^58, in page_tables.h, page_tables.cpp,
     kernel/tests/graphics/nvidia_page_tables.test.cpp,
     kernel/tests/graphics/nvidia_context_page_tables.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp, a page table entry's
+    privilege bit, in page_tables.h, and that bit in bit 5, in page_tables.cpp,
+    kernel/tests/graphics/nvidia_page_tables.test.cpp and
     kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
 
@@ -593,11 +596,17 @@ src/nvidia/src/kernel/mem_mgr/gpu_vaspace.c
     NVIDIA's driver invalidates an address space's cached translations through
     the root page directory it holds for the space, in bar1.h, bar1.cpp,
     kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_video_memory.test.cpp, and that it gives the
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, that it gives the
     invalidate the scope of every TLB but those of NVLink for a space not marked
     to invalidate NVLink's TLBs alone, in bar1.cpp,
     kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_video_memory.test.cpp
+    kernel/tests/graphics/nvidia_video_memory.test.cpp, and that a split space
+    hands the firmware its root, directory 2 and directory 1 above the range the
+    firmware maps alone, each by its offset, size, aperture and page shift, the
+    firmware mapping that range through tables of its own below directory 1, in
+    address_space.h, address_space.cpp, context_page_tables.h,
+    kernel/tests/graphics/nvidia_address_space.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2013-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/mmu/gmmu_walk.c
@@ -2155,7 +2164,7 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     kernel/tests/graphics/nvidia_cursor_channel.test.cpp, the command
     NV2080_CTRL_CMD_INTERNAL_INTR_GET_KERNEL_TABLE in
     kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp and
-    kernel/tests/graphics/nvidia_engines.test.cpp, and the commands
+    kernel/tests/graphics/nvidia_engines.test.cpp, the commands
     NV2080_CTRL_CMD_INTERNAL_STATIC_KGR_GET_INFO, 0x20800A2A, and
     NV2080_CTRL_CMD_INTERNAL_STATIC_KGR_GET_CONTEXT_BUFFERS_INFO, 0x20800A32,
     controls of a subdevice, the layouts of their parameters, 3392 and 1600
@@ -2163,7 +2172,8 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080internal.h
     they hold, GR0's first, and
     NV2080_CTRL_INTERNAL_ENGINE_CONTEXT_PROPERTIES_ENGINE_ID_COUNT, 0x19, the
     buffers a row sizes, in rm.h, graphics_context.cpp and
-    kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp, and both commands
+    and GR0's row first in kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/intr/engine_idx.h
@@ -2524,19 +2534,22 @@ src/nvidia/src/kernel/gpu/mem_mgr/arch/maxwell/mem_mgr_gm107.c
 src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080gr.h
     the size of the graphics capabilities table, which the static configuration
     holds ahead of its table of video memory regions, in gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp,
     NV0080_CTRL_GR_INFO_MAX_SIZE, 0x35, the facts in a graphics engine's list,
     and NV0080_CTRL_GR_INFO_INDEX_MAX_SUBCONTEXT_COUNT, 0x2C, the fact giving
     the most subcontexts a channel group can hold, in rm.h and
-    kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp, and
+    NV0080_CTRL_GR_INFO_INDEX_MAX_SUBCONTEXT_COUNT in
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2004-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080fifo.h
     the positions of a graphics engine's context buffers in a row of their
     sizes, NV0080_CTRL_FIFO_GET_ENGINE_CONTEXT_PROPERTIES_ENGINE_ID_GRAPHICS,
     0x0, for its main buffer, and its suffixes _PATCH to _RTV_CB_GLOBAL, 0x10 to
-    0x14, _FECS_EVENT, 0x17, and _PRIV_ACCESS_MAP, 0x18, in rm.h and
-    kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    0x14, _FECS_EVENT, 0x17, and _PRIV_ACCESS_MAP, 0x18, in rm.h,
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2006-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gr/kernel_graphics.c
@@ -2545,17 +2558,38 @@ src/nvidia/src/kernel/gpu/gr/kernel_graphics.c
     kernel/tests/graphics/nvidia_graphics_context.test.cpp, that a context
     buffer sized NV_U32_MAX is one the chip lacks, in graphics_context.h,
     graphics_context.cpp and
-    kernel/tests/graphics/nvidia_graphics_context.test.cpp, and that a main
-    buffer grows to a multiple of 4 KiB and then by a header of 4 KiB for each
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp, that a main buffer
+    grows to a multiple of 4 KiB and then by a header of 4 KiB for each
     subcontext, in graphics_context.h, graphics_context.cpp and
-    kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp, and that the golden
+    context is captured on a channel of the graphics engine in an address space
+    of its own, when the channel's first 3D object is allocated, in engines.h,
+    engines.cpp and kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gr/kernel_graphics_context.c
     that each graphics channel has a main and a patch buffer of its own and maps
     the graphics engine's other context buffers into its address space, in
-    graphics_context.h
+    graphics_context.h, that a promotion names a buffer it initializes by its
+    physical address, size and attributes, marked unmapped unless it maps it
+    too, and a buffer it maps by its address in the channel's space, in rm.h,
+    graphics_context.cpp and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp, that a channel's
+    space maps the global buffers for privileged accesses, writable but for the
+    register access map, which is read-only, the attribute buffer at a multiple
+    of its size, in graphics_context.h, graphics_context.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp, and that the unrestricted
+    register access map is an administrator's channel's, in graphics_context.h
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/gr/kernel_graphics_object.c
+    that a 3D object's promotion names the engine type GR0, the channel by its
+    client and handle, and its main and patch buffers with the bundle, page
+    pool, attribute, RTV, FECS event and register access map buffers, and that
+    the golden context's promotion initializes the FECS event buffer and both
+    register access maps too, in rm.h, graphics_context.h, graphics_context.cpp
+    and kernel/tests/graphics/nvidia_graphics_context.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/gr/arch/maxwell/kgraphics_gm200.c
     that the graphics engine's bundle, page pool and attribute buffers and its
@@ -2576,6 +2610,9 @@ src/nvidia/src/kernel/gpu/gr/arch/turing/kgraphics_tu102.c
 src/nvidia/generated/g_kernel_graphics_nvoc.c
     that GA102's graphics engine keeps a context header for each subcontext, in
     graphics_context.h, graphics_context.cpp and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp, and that it makes
+    its context buffers GPU-privileged, in graphics_context.h,
+    graphics_context.cpp and
     kernel/tests/graphics/nvidia_graphics_context.test.cpp
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gpu.h
@@ -2586,7 +2623,18 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gpu.h
     one field gpcMask, the TPC information's fields gpcId and tpcMask, 4 bytes
     each, and NV2080_GPU_MAX_NAME_STRING_LENGTH, 0x40, the bytes of the product
     name, in gsp_info.h, gsp_info.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, the command
+    NV2080_CTRL_CMD_GPU_PROMOTE_CTX, 0x2080012B, a control of a subdevice, in
+    rm.h, kernel/tests/graphics/nvidia_graphics_context.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp, and
+    NV2080_CTRL_GPU_PROMOTE_CONTEXT_MAX_ENTRIES, 16, the buffers one control
+    names, the ids NV2080_CTRL_GPU_PROMOTE_CTX_BUFFER_ID_ of the buffers it
+    names, NV2080_CTRL_GPU_INITIALIZE_CTX_APERTURE_VIDMEM in bits 1:0 and
+    _GPU_CACHEABLE_NO in bit 2, the layout of its parameters, 560 bytes, with
+    entries of 32 bytes each, that its ChID is deprecated, and that a buffer it
+    initializes is zeroed first, in rm.h, graphics_context.h,
+    graphics_context.cpp and
+    kernel/tests/graphics/nvidia_graphics_context.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2006-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080bios.h
@@ -2617,9 +2665,10 @@ src/nvidia/inc/kernel/gpu/gpu_engine_type.h
     0x9 to 0x12, in rm.h, RM_ENGINE_TYPE_GR0 and RM_ENGINE_TYPE_COPY2 in
     kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp,
     RM_ENGINE_TYPE_GR0 and RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY2 in
-    kernel/tests/graphics/nvidia_engines.test.cpp, and RM_ENGINE_TYPE_GR0,
+    kernel/tests/graphics/nvidia_engines.test.cpp, RM_ENGINE_TYPE_GR0,
     RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY4 and RM_ENGINE_TYPE_NVDEC0,
-    0x1D, in kernel/tests/graphics/nvidia_engine_table.test.cpp
+    0x1D, in kernel/tests/graphics/nvidia_engine_table.test.cpp, and
+    RM_ENGINE_TYPE_GR0 in kernel/tests/graphics/nvidia_graphics_context.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/inc/kernel/gpu/nvbitmask.h
@@ -4049,8 +4098,15 @@ src/common/sdk/nvidia/inc/class/clc7b5.h
 
 src/common/sdk/nvidia/inc/class/clc797.h
     the class number AMPERE_B, 0xC797, which chip.cpp gives GA102's 3D objects,
-    in chip.cpp and kernel/tests/graphics/nvidia.test.cpp
+    in chip.cpp, kernel/tests/graphics/nvidia.test.cpp,
+    kernel/tests/graphics/nvidia_channel.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/clc7c0.h
+    the class number AMPERE_COMPUTE_B, 0xC7C0, in
+    kernel/tests/graphics/nvidia_channel.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_gpu_class_list.c
     that GA102's class list places AMPERE_B on the graphics engine GR0, in
@@ -4127,6 +4183,25 @@ src/common/sdk/nvidia/inc/class/cl90f1.h
     kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/common/sdk/nvidia/inc/ctrl/ctrl90f1.h
+    the command NV90F1_CTRL_CMD_VASPACE_COPY_SERVER_RESERVED_PDES, 0x90F10106, a
+    control of an address space, the layout of its parameters, 184 bytes, with
+    GMMU_FMT_MAX_LEVELS, 6, levels, and that an hSubDevice of 0 names the GPU by
+    subDeviceId, in rm.h, kernel/tests/graphics/nvidia_address_space.test.cpp
+    and kernel/tests/graphics/nvidia_engines.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2014-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/generated/g_gpu_vaspace_nvoc.h
+    SPLIT_VAS_SERVER_RM_MANAGED_VA_START, 4 GiB, and
+    SPLIT_VAS_SERVER_RM_MANAGED_VA_SIZE, 512 MiB, the range of a split address
+    space the firmware maps alone, in rm.h, address_space.h and
+    kernel/tests/graphics/nvidia_address_space.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2013-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/inc/libraries/mmu/gmmu_fmt.h
+    GMMU_APERTURE_VIDEO, 1, the aperture of a directory in video memory, in rm.h
+    SPDX-FileCopyrightText: Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080dma.h
     the commands NV0080_CTRL_CMD_DMA_SET_PAGE_DIRECTORY and
     NV0080_CTRL_CMD_DMA_UNSET_PAGE_DIRECTORY, controls of a device, the layouts
@@ -4200,6 +4275,12 @@ src/nvidia/src/kernel/gpu/fifo/arch/maxwell/kernel_fifo_gm107.c
     that an instance block is aligned to 1 << NV_RAMIN_BASE_SHIFT bytes, in
     channel.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/nvidia/src/kernel/gpu/fifo/kernel_fifo_init.c
+    that without SR-IOV the firmware keeps one channel id space for every
+    runlist, in engines.h, engines.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/ampere/ga100/dev_ram.h
     NV_RAMIN_ALLOC_SIZE, the 4096 bytes of an instance block, and the USERD's

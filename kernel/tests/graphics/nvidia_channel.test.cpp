@@ -48,6 +48,7 @@ static constexpr uint32_t AMPERE_CHANNEL_GPFIFO_A       = 0xC56F;
 static constexpr size_t   CHANNEL_PARAMS_BYTES          = 360;
 static constexpr uint32_t AMPERE_DMA_COPY_B             = 0xC7B5;
 static constexpr size_t   COPY_PARAMS_BYTES             = 8;
+static constexpr uint32_t AMPERE_B                      = 0xC797;
 static constexpr uint32_t GET_FAULT_METHOD_BUFFER_SIZE  = 0x20802A08;
 static constexpr uint32_t BIND                          = 0xA06F0104;
 static constexpr uint32_t GPFIFO_SCHEDULE               = 0xA06F0103;
@@ -292,6 +293,17 @@ struct channel_fixture {
         dma::device_profile card = test_card();
         return queue.create(card, channel_test_chip(), space, copy2_setup(is_privileged));
     }
+
+    // Allocates a user's channel without its objects, creating the address space first as `create` does
+    int32_t allocate() {
+        if (space.handle() == 0 && space.create() != OK) {
+            return ERR_BAD_STATE;
+        }
+
+        instance_block_offset = memory.next_offset;
+        dma::device_profile card = test_card();
+        return queue.allocate(card, channel_test_chip(), space, copy2_setup(false));
+    }
 };
 
 // Create asks the subdevice for the fault method buffer's size, then allocates the group in the address space, the
@@ -535,4 +547,78 @@ TEST(nvidia_channel, ring_wraps_after_its_last_slot) {
 
     EXPECT_EQ(channel_test_access::gpfifo_word(fixture.queue, GPFIFO_ENTRIES - 1, 0), 0x55555555u);
     EXPECT_EQ(channel_test_access::userd_word(fixture.queue, USERD_GP_PUT), 0u);
+}
+
+// Allocate stops at the channel, holding no object and neither bound nor scheduled, and gives the channel's handle
+TEST(nvidia_channel, allocate_stops_at_the_channel) {
+    channel_fixture fixture;
+    EXPECT_EQ(fixture.queue.handle(), 0u);
+    ASSERT_EQ(fixture.allocate(), OK);
+
+    ASSERT_EQ(fixture.fw.call_count, 3u);
+    EXPECT_EQ(fixture.fw.calls[2].number, AMPERE_CHANNEL_GPFIFO_A);
+    EXPECT_EQ(fixture.queue.handle(), FIRST_HANDLE + 1);
+    EXPECT_EQ(fixture.allocate(), ERR_BAD_STATE);
+}
+
+// An object is allocated on the channel from its parameters, and destroy releases it before the channel and the group
+TEST(nvidia_channel, added_object_is_released_before_the_channel) {
+    channel_fixture fixture;
+    ASSERT_EQ(fixture.allocate(), OK);
+
+    uint32_t params[2] = {0x12345678, 0x9ABCDEF0};
+    ASSERT_EQ(fixture.queue.add_object(AMPERE_B, params, sizeof(params)), OK);
+
+    gpfifo_channel_firmware& fw = fixture.fw;
+    ASSERT_EQ(fw.call_count, 4u);
+    EXPECT_TRUE(fw.calls[3].what == gpfifo_channel_firmware::kind::allocate);
+    EXPECT_EQ(fw.calls[3].parent, FIRST_HANDLE + 1);
+    EXPECT_EQ(fw.calls[3].number, AMPERE_B);
+
+    EXPECT_EQ(fw.calls[3].size, sizeof(params));
+    EXPECT_EQ(fw.calls[3].words[1], 0x9ABCDEF0u);
+
+    EXPECT_EQ(fixture.queue.destroy(), OK);
+    ASSERT_EQ(fw.call_count, 7u);
+    EXPECT_EQ(fw.calls[4].object, FIRST_HANDLE + 2);
+    EXPECT_EQ(fw.calls[5].object, FIRST_HANDLE + 1);
+    EXPECT_EQ(fw.calls[6].object, FIRST_HANDLE);
+}
+
+// An object is refused before allocate, past the objects a channel holds, and as the firmware refuses it, which leaves
+// the objects held as they were
+TEST(nvidia_channel, object_is_refused_without_a_channel_or_room) {
+    channel_fixture fixture;
+    EXPECT_EQ(fixture.queue.add_object(AMPERE_B, nullptr, 0), ERR_BAD_STATE);
+    EXPECT_EQ(fixture.fw.call_count, 0u);
+
+    ASSERT_EQ(fixture.allocate(), OK);
+    fixture.fw.results[3] = ERR_FIRMWARE;
+    EXPECT_EQ(fixture.queue.add_object(AMPERE_B, nullptr, 0), ERR_FIRMWARE);
+
+    for (uint32_t i = 0; i < drivers::nvidia::CHANNEL_OBJECTS_MAX; i++) {
+        EXPECT_EQ(fixture.queue.add_object(AMPERE_B, nullptr, 0), OK);
+    }
+
+    uint32_t calls = fixture.fw.call_count;
+    EXPECT_EQ(fixture.queue.add_object(AMPERE_B, nullptr, 0), ERR_BAD_STATE);
+    EXPECT_EQ(fixture.fw.call_count, calls);
+}
+
+// Schedule binds the channel to its engine and then schedules it, and is refused before allocate
+TEST(nvidia_channel, schedule_binds_then_schedules) {
+    channel_fixture fixture;
+    EXPECT_EQ(fixture.queue.schedule(), ERR_BAD_STATE);
+    ASSERT_EQ(fixture.allocate(), OK);
+
+    ASSERT_EQ(fixture.queue.schedule(), OK);
+
+    gpfifo_channel_firmware& fw = fixture.fw;
+    ASSERT_EQ(fw.call_count, 5u);
+    EXPECT_EQ(fw.calls[3].object, FIRST_HANDLE + 1);
+    EXPECT_EQ(fw.calls[3].number, BIND);
+    EXPECT_EQ(fw.calls[3].words[0], COPY2_ENGINE_TYPE);
+
+    EXPECT_EQ(fw.calls[4].number, GPFIFO_SCHEDULE);
+    EXPECT_EQ(fw.calls[4].words[0] & 0xFFFF, 1u);
 }

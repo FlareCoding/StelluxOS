@@ -1204,7 +1204,8 @@ void nvidia_gpu_driver::run() {
     m_gsp.set_failed_mark(m_failed);
 
     // Every failure is logged, and the display runs on without the engines or the GPU core's device
-    if (m_engines.bring_up(regs, m_registers_bytes, card_profile, *m_chip) == nvidia::OK) {
+    bool is_up = m_engines.bring_up(regs, m_registers_bytes, card_profile, *m_chip) == nvidia::OK;
+    if (is_up && m_engines.bring_up_graphics() == nvidia::OK) {
         m_engines.register_gpu(m_card_identity);
     }
 
