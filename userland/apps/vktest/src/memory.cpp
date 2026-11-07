@@ -475,7 +475,10 @@ static bool loses_writer(const memory_stage& stage, uint32_t type, int descripto
 
     destroy_bound_buffer(stage.work, writer, source);
     destroy_bound_buffer(stage.work, writer, imported);
+
+    start_hang_watch("vkDestroyDevice");
     stage.commands.destroy_device(writer, nullptr);
+    end_hang_watch();
 
     return is_lost;
 }
