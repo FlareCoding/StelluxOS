@@ -1276,6 +1276,63 @@ struct copy_object_params {
 
 static_assert(sizeof(copy_object_params) == 8, "NVIDIA's layout of the copy class's parameters");
 
+// NVIDIA's NV2080_CTRL_INTERNAL_GR_MAX_ENGINES, the graphics engines each reply of the two graphics controls below
+// holds a row for, GR0's first
+constexpr uint32_t GRAPHICS_ENGINES_MAX = 8;
+
+// NVIDIA's NV2080_CTRL_CMD_INTERNAL_STATIC_KGR_GET_INFO, the internal control that lists each graphics engine's facts
+constexpr uint32_t CONTROL_GET_GRAPHICS_INFO = 0x20800A2A;
+
+// NVIDIA's NV0080_CTRL_GR_INFO_MAX_SIZE, the facts in an engine's list, each at the position its index names
+constexpr uint32_t GRAPHICS_INFO_COUNT = 0x35;
+
+// NVIDIA's NV0080_CTRL_GR_INFO_INDEX_MAX_SUBCONTEXT_COUNT, the fact giving the most subcontexts a channel group holds
+constexpr uint32_t GRAPHICS_INFO_SUBCONTEXTS = 0x2C;
+
+// NVIDIA's NV2080_CTRL_INTERNAL_GR_INFO, a fact of an engine's list
+struct graphics_info {
+    uint32_t index;
+    uint32_t data;
+};
+
+// NVIDIA's NV2080_CTRL_INTERNAL_STATIC_GR_GET_INFO_PARAMS
+struct graphics_info_params {
+    graphics_info engines[GRAPHICS_ENGINES_MAX][GRAPHICS_INFO_COUNT];
+};
+
+static_assert(sizeof(graphics_info_params) == 3392, "NVIDIA's layout of KGR_GET_INFO's parameters");
+
+// NVIDIA's NV2080_CTRL_CMD_INTERNAL_STATIC_KGR_GET_CONTEXT_BUFFERS_INFO, the internal control that sizes each graphics
+// engine's context buffers
+constexpr uint32_t CONTROL_GET_CONTEXT_BUFFERS = 0x20800A32;
+
+// NVIDIA's NV2080_CTRL_INTERNAL_ENGINE_CONTEXT_PROPERTIES_ENGINE_ID_COUNT, the buffers an engine's row sizes
+constexpr uint32_t CONTEXT_BUFFER_COUNT = 0x19;
+
+// NVIDIA's NV0080_CTRL_FIFO_GET_ENGINE_CONTEXT_PROPERTIES_ENGINE_ID_GRAPHICS and the suffixes below, the positions in
+// an engine's row of the buffers the driver allocates
+constexpr uint32_t CONTEXT_BUFFER_MAIN            = 0x00;
+constexpr uint32_t CONTEXT_BUFFER_PATCH           = 0x10; // _PATCH
+constexpr uint32_t CONTEXT_BUFFER_BUNDLE          = 0x11; // _BUNDLE_CB
+constexpr uint32_t CONTEXT_BUFFER_PAGE_POOL       = 0x12; // _PAGEPOOL_GLOBAL
+constexpr uint32_t CONTEXT_BUFFER_ATTRIBUTE       = 0x13; // _ATTRIBUTE_CB
+constexpr uint32_t CONTEXT_BUFFER_RTV             = 0x14; // _RTV_CB_GLOBAL
+constexpr uint32_t CONTEXT_BUFFER_FECS_EVENT      = 0x17; // _FECS_EVENT
+constexpr uint32_t CONTEXT_BUFFER_PRIV_ACCESS_MAP = 0x18; // _PRIV_ACCESS_MAP
+
+// NVIDIA's NV2080_CTRL_INTERNAL_ENGINE_CONTEXT_BUFFER_INFO
+struct context_buffer_info {
+    uint32_t size;
+    uint32_t alignment;
+};
+
+// NVIDIA's NV2080_CTRL_INTERNAL_STATIC_GR_GET_CONTEXT_BUFFERS_INFO_PARAMS
+struct context_buffers_params {
+    context_buffer_info engines[GRAPHICS_ENGINES_MAX][CONTEXT_BUFFER_COUNT];
+};
+
+static_assert(sizeof(context_buffers_params) == 1600, "NVIDIA's layout of KGR_GET_CONTEXT_BUFFERS_INFO's parameters");
+
 } // namespace drivers::nvidia::rm
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_RM_H
