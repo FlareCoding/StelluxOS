@@ -2182,8 +2182,10 @@ src/nvidia/inc/kernel/gpu/intr/engine_idx.h
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that its engines are
     those NVIDIA's interrupt code serves, in rm.h, the first copy engine's
     number MC_ENGINE_IDX_CE0, 15, copy engine n taking 15 plus n, in rm.h and
-    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp, and
-    MC_ENGINE_IDX_CE2, 17, in kernel/tests/graphics/nvidia_engines.test.cpp
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp,
+    MC_ENGINE_IDX_CE2, 17, in kernel/tests/graphics/nvidia_engines.test.cpp, and
+    the graphics engine's number MC_ENGINE_IDX_GR0, 82, in rm.h and
+    kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/src/kernel/gpu/intr/intr.c
@@ -2662,12 +2664,13 @@ src/nvidia/inc/kernel/gpu/gpu_engine_type.h
     memory regions, in gsp_info.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the engine types
     RM_ENGINE_TYPE_GR0, 0x1, and RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY9,
-    0x9 to 0x12, in rm.h, RM_ENGINE_TYPE_GR0 and RM_ENGINE_TYPE_COPY2 in
+    0x9 to 0x12, in rm.h, RM_ENGINE_TYPE_GR0, RM_ENGINE_TYPE_COPY2 and
+    RM_ENGINE_TYPE_NVDEC0, 0x1D, in
     kernel/tests/graphics/nvidia_nonstall_interrupts.test.cpp,
     RM_ENGINE_TYPE_GR0 and RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY2 in
     kernel/tests/graphics/nvidia_engines.test.cpp, RM_ENGINE_TYPE_GR0,
-    RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY4 and RM_ENGINE_TYPE_NVDEC0,
-    0x1D, in kernel/tests/graphics/nvidia_engine_table.test.cpp, and
+    RM_ENGINE_TYPE_COPY0 to RM_ENGINE_TYPE_COPY4 and RM_ENGINE_TYPE_NVDEC0 in
+    kernel/tests/graphics/nvidia_engine_table.test.cpp, and
     RM_ENGINE_TYPE_GR0 in kernel/tests/graphics/nvidia_graphics_context.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -4104,12 +4107,25 @@ src/common/sdk/nvidia/inc/class/clc797.h
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
 src/common/sdk/nvidia/inc/class/clc7c0.h
-    the class number AMPERE_COMPUTE_B, 0xC7C0, in
+    the class number AMPERE_COMPUTE_B, 0xC7C0, which chip.cpp gives GA102's
+    compute objects, in chip.cpp, kernel/tests/graphics/nvidia.test.cpp and
     kernel/tests/graphics/nvidia_channel.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+src/common/sdk/nvidia/inc/class/cl902d.h
+    the class number FERMI_TWOD_A, 0x902D, of GA102's 2D objects, in chip.cpp
+    and kernel/tests/graphics/nvidia.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/class/cla140.h
+    the class number KEPLER_INLINE_TO_MEMORY_B, 0xA140, of GA102's
+    inline-to-memory objects, in chip.cpp and
+    kernel/tests/graphics/nvidia.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
 src/nvidia/generated/g_gpu_class_list.c
-    that GA102's class list places AMPERE_B on the graphics engine GR0, in
+    that GA102's class list places AMPERE_B, AMPERE_COMPUTE_B, FERMI_TWOD_A and
+    KEPLER_INLINE_TO_MEMORY_B on the graphics engine GR0, in
     kernel/tests/graphics/nvidia.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

@@ -41,6 +41,10 @@ public:
     // The graphics engine (NVIDIA's GR0), whose runlist holds every graphics channel, or null when the table lists none
     const engine_info* graphics_engine() const;
 
+    // The copy engine of the lowest type on the graphics engine's runlist, which a graphics channel's copy object
+    // names, or null when the table lists no graphics engine or no copy engine on its runlist
+    const engine_info* graphics_copy_engine() const;
+
     uint32_t count() const;
 
 private:

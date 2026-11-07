@@ -99,9 +99,17 @@ struct chip_display {
     chip_displayport displayport;
 };
 
-// The classes of the graphics engine's objects
+/**
+ * The classes of the graphics engine's objects, which a graphics queue's
+ * commands run through. A graphics queue's channel gets a 3D and a compute
+ * object, and the 2D and inline-to-memory classes are only reported to user
+ * space.
+ */
 struct chip_graphics {
-    uint32_t three_d_class; // NVIDIA's class of the 3D object, which draws
+    uint32_t three_d_class;          // NVIDIA's class of the 3D object, which draws
+    uint32_t compute_class;          // NVIDIA's class of the compute object, which dispatches
+    uint32_t two_d_class;            // NVIDIA's class of the 2D object, which blits
+    uint32_t inline_to_memory_class; // NVIDIA's class of the object writing the data its methods carry to memory
 };
 
 /**

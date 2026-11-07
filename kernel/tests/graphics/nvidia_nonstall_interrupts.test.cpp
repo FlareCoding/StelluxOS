@@ -1,6 +1,7 @@
 // Holds definitions re-declared from NVIDIA's open GPU kernel modules, under drivers/graphics/nvidia/LICENSE-NVIDIA
 
 #include "stlx_unit_test.h"
+#include "common/logging.h"
 #include "common/string.h"
 #include "drivers/graphics/nvidia/interrupts.h"
 #include "drivers/graphics/nvidia/nvidia.h"
@@ -15,16 +16,18 @@ using drivers::nvidia::ERR_INVALID_ARG;
 using drivers::nvidia::firmware;
 using drivers::nvidia::mask_vector;
 using drivers::nvidia::OK;
-using drivers::nvidia::read_copy_vector;
+using drivers::nvidia::read_nonstall_vector;
 using drivers::nvidia::registers;
 namespace rm = drivers::nvidia::rm;
 
-// NVIDIA's control returning the kernel interrupt table, the first copy engine's number, GR0's and COPY2's engine
-// types, and the CPU interrupt tree's registers, restated so the tests hold the driver to NVIDIA's values
+// NVIDIA's kernel interrupt table control, CE0's and GR0's engine numbers, the types of GR0, COPY2 and NVDEC0, and the
+// CPU interrupt tree's registers, restated so the tests hold the driver to NVIDIA's values
 static constexpr uint32_t GET_KERNEL_TABLE       = 0x20800A5C;
 static constexpr uint16_t MC_ENGINE_IDX_CE0      = 15;
+static constexpr uint16_t MC_ENGINE_IDX_GR0      = 82;
 static constexpr uint32_t RM_ENGINE_TYPE_GR0     = 0x1;
 static constexpr uint32_t RM_ENGINE_TYPE_COPY2   = 0xB;
+static constexpr uint32_t RM_ENGINE_TYPE_NVDEC0  = 0x1D;
 static constexpr uint32_t CPU_INTR_LEAF          = 0xB81000;
 static constexpr uint32_t CPU_INTR_LEAF_EN_SET   = 0xB81200;
 static constexpr uint32_t CPU_INTR_LEAF_EN_CLEAR = 0xB81400;
@@ -37,6 +40,9 @@ static constexpr uint16_t COPY2_ENGINE    = MC_ENGINE_IDX_CE0 + 2;
 static constexpr uint32_t COPY2_VECTOR    = 7;
 static constexpr uint32_t OUTSIDE_VECTOR  = TEST_LEAF_COUNT * 32;
 static constexpr uint32_t STALE_WORD      = 0xA5A5A5A5;
+
+// The RTX 3080's row for the graphics engine (NVIDIA's GR0) gives it nonstall vector 0, bit 0 of leaf 0
+static constexpr uint32_t GR0_VECTOR = 0;
 
 // A vector of leaf 2 and so of subtree 1, bit 6 of its leaf
 static constexpr uint32_t HIGH_VECTOR      = 70;
@@ -105,29 +111,41 @@ struct interrupt_tree_registers {
 };
 
 // The copy engine's first row gives its nonstall vector, read through the internal client
-TEST(nvidia_nonstall_interrupts, read_copy_vector_takes_the_engines_first_row) {
+TEST(nvidia_nonstall_interrupts, read_nonstall_vector_takes_the_engines_first_row) {
     interrupt_table_firmware fw;
     fw.add_row(MC_ENGINE_IDX_CE0, 0, 3);
     fw.add_row(COPY2_ENGINE, 0, COPY2_VECTOR);
     fw.add_row(COPY2_ENGINE, 0, COPY2_VECTOR + 1);
 
     uint32_t vector = 0;
-    ASSERT_EQ(read_copy_vector(fw, RM_ENGINE_TYPE_COPY2, TEST_LEAF_COUNT, vector), OK);
+    ASSERT_EQ(read_nonstall_vector(fw, RM_ENGINE_TYPE_COPY2, TEST_LEAF_COUNT, vector), OK);
     EXPECT_EQ(vector, COPY2_VECTOR);
     EXPECT_EQ(fw.internal_control_count, 1u);
     EXPECT_EQ(fw.internal_command, GET_KERNEL_TABLE);
     EXPECT_EQ(fw.control_count, 0u);
 }
 
+// The graphics engine's row gives its nonstall vector, and vector 0, the RTX 3080's, is read like any other
+TEST(nvidia_nonstall_interrupts, read_nonstall_vector_takes_the_graphics_engines_row) {
+    interrupt_table_firmware fw;
+    fw.add_row(COPY2_ENGINE, 0, COPY2_VECTOR);
+    fw.add_row(MC_ENGINE_IDX_GR0, 0, GR0_VECTOR);
+
+    uint32_t vector = STALE_WORD;
+    ASSERT_EQ(read_nonstall_vector(fw, RM_ENGINE_TYPE_GR0, TEST_LEAF_COUNT, vector), OK);
+    EXPECT_EQ(vector, GR0_VECTOR);
+    EXPECT_EQ(fw.internal_command, GET_KERNEL_TABLE);
+}
+
 static bool refuses_copy2(interrupt_table_firmware& fw) {
     uint32_t vector = STALE_WORD;
-    int32_t rc = read_copy_vector(fw, RM_ENGINE_TYPE_COPY2, TEST_LEAF_COUNT, vector);
+    int32_t rc = read_nonstall_vector(fw, RM_ENGINE_TYPE_COPY2, TEST_LEAF_COUNT, vector);
     return rc == ERR_BAD_MESSAGE && vector == STALE_WORD;
 }
 
 // A table without a usable row for the engine, or past `rm::KERNEL_INTERRUPT_ROWS_MAX` rows, is refused and leaves the
 // vector unwritten
-TEST(nvidia_nonstall_interrupts, read_copy_vector_refuses_tables_without_a_usable_row) {
+TEST(nvidia_nonstall_interrupts, read_nonstall_vector_refuses_tables_without_a_usable_row) {
     interrupt_table_firmware fw;
     fw.add_row(MC_ENGINE_IDX_CE0, 0, 3);
     EXPECT_TRUE(refuses_copy2(fw));
@@ -146,17 +164,49 @@ TEST(nvidia_nonstall_interrupts, read_copy_vector_refuses_tables_without_a_usabl
     EXPECT_TRUE(refuses_copy2(fw));
 }
 
-// A type of no copy engine is refused without a control, and the control's error comes back as it is
-TEST(nvidia_nonstall_interrupts, read_copy_vector_refuses_other_engines_and_returns_the_controls_error) {
+// The text logged while `INTERRUPTS_LOG_BACKEND` is set
+static char     s_interrupts_log[512] = {};
+static uint32_t s_interrupts_log_bytes = 0;
+
+// Keeps each logged line's text, up to the buffer's end
+static void keep_interrupts_log(const char* data, size_t len) {
+    for (size_t i = 0; i < len && s_interrupts_log_bytes < sizeof(s_interrupts_log); i++) {
+        s_interrupts_log[s_interrupts_log_bytes++] = data[i];
+    }
+}
+
+static constexpr log::backend INTERRUPTS_LOG_BACKEND = {.write = keep_interrupts_log};
+
+// Whether the kept text holds `text` anywhere
+static bool interrupts_log_contains(const char* text) {
+    size_t text_bytes = string::strlen(text);
+    for (uint32_t start = 0; start + text_bytes <= s_interrupts_log_bytes; start++) {
+        if (string::memcmp(s_interrupts_log + start, text, text_bytes) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// A type of neither the graphics engine nor a copy engine is refused by a line naming it, without a control, and the
+// control's error comes back as it is
+TEST(nvidia_nonstall_interrupts, read_nonstall_vector_refuses_other_engines_and_returns_the_controls_error) {
     interrupt_table_firmware fw;
     fw.add_row(COPY2_ENGINE, 0, COPY2_VECTOR);
 
     uint32_t vector = STALE_WORD;
-    EXPECT_EQ(read_copy_vector(fw, RM_ENGINE_TYPE_GR0, TEST_LEAF_COUNT, vector), ERR_INVALID_ARG);
+    s_interrupts_log_bytes = 0;
+    log::set_backend(&INTERRUPTS_LOG_BACKEND);
+    int32_t rc = read_nonstall_vector(fw, RM_ENGINE_TYPE_NVDEC0, TEST_LEAF_COUNT, vector);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, ERR_INVALID_ARG);
     EXPECT_EQ(fw.internal_control_count, 0u);
+    EXPECT_TRUE(interrupts_log_contains("engine type 0x1D names neither the graphics engine nor a copy engine"));
 
     fw.result = ERR_FIRMWARE;
-    EXPECT_EQ(read_copy_vector(fw, RM_ENGINE_TYPE_COPY2, TEST_LEAF_COUNT, vector), ERR_FIRMWARE);
+    EXPECT_EQ(read_nonstall_vector(fw, RM_ENGINE_TYPE_COPY2, TEST_LEAF_COUNT, vector), ERR_FIRMWARE);
     EXPECT_EQ(vector, STALE_WORD);
 }
 

@@ -58,16 +58,16 @@ int32_t read_interrupt_vectors(
 );
 
 /**
- * @brief Read into `vector` the nonstall vector of the copy engine of engine
- * type `engine_type`, from the engine's first row in the kernel interrupt table
- * asked for through `fw`'s internal client.
- * @return `OK`, `ERR_INVALID_ARG` for a type of no copy engine,
- * `ERR_NO_MEMORY`, the control's error, or `ERR_BAD_MESSAGE` for a table of too
- * many rows, no row for the engine, or a row with a PMC mask or a vector
- * outside the `leaf_count` leaves. Every error but the control's is logged
- * here, and `vector` changes only on `OK`.
+ * @brief Read into `vector` the nonstall vector of the engine of type
+ * `engine_type`, the graphics engine or a copy engine, from the engine's first
+ * row in the kernel interrupt table asked for through `fw`'s internal client.
+ * @return `OK`, `ERR_INVALID_ARG` for a type of neither, `ERR_NO_MEMORY`, the
+ * control's error, or `ERR_BAD_MESSAGE` for a table of too many rows, no row
+ * for the engine, or a row with a PMC mask or a vector outside the `leaf_count`
+ * leaves. Every error but the control's is logged here, and `vector` changes
+ * only on `OK`.
  */
-int32_t read_copy_vector(firmware& fw, uint32_t engine_type, uint32_t leaf_count, uint32_t& vector);
+int32_t read_nonstall_vector(firmware& fw, uint32_t engine_type, uint32_t leaf_count, uint32_t& vector);
 
 /**
  * @brief Let only the driver's vectors raise the card's interrupt: clear every
@@ -98,8 +98,8 @@ void disable_cpu_interrupt_tree(registers& regs, uint32_t leaf_count);
  * pending raises the interrupt at once. The call touches only BAR0 and takes
  * no lock.
  * @param regs A view of BAR0.
- * @param vector A vector inside the CPU interrupt tree, as `read_copy_vector`
- * gives it.
+ * @param vector A vector inside the CPU interrupt tree, as
+ * `read_nonstall_vector` gives it.
  */
 void enable_vector(registers& regs, uint32_t vector);
 
@@ -108,8 +108,8 @@ void enable_vector(registers& regs, uint32_t vector);
  * its leaf's enable and leaving the top level's, which the other vectors of
  * its subtree may need. The call touches only BAR0 and takes no lock.
  * @param regs A view of BAR0.
- * @param vector A vector inside the CPU interrupt tree, as `read_copy_vector`
- * gives it.
+ * @param vector A vector inside the CPU interrupt tree, as
+ * `read_nonstall_vector` gives it.
  */
 void mask_vector(registers& regs, uint32_t vector);
 
@@ -146,8 +146,8 @@ void service_gsp_interrupt(registers& regs, gsp& conversation, uint32_t vector);
 bool acknowledge_display_interrupt(registers& regs, uint32_t vector);
 
 /**
- * @brief Clear the nonstall `vector`, as `read_copy_vector` gives it, in its
- * leaf when it is pending, from the card's interrupt handler, then read the
+ * @brief Clear the nonstall `vector`, as `read_nonstall_vector` gives it, in
+ * its leaf when it is pending, from the card's interrupt handler, then read the
  * leaf back so the clear lands before the handler reads the semaphores, since a
  * release after the clear raises the vector again. The call touches only BAR0
  * and takes no lock.
