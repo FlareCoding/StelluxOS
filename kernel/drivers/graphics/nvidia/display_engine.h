@@ -52,6 +52,7 @@ struct first_second_statistics {
 };
 
 class display_engine;
+class engines;
 struct scanout_buffer;
 
 // A buffer's binding and later its release on the driver task, kept in the buffer so its release allocates nothing
@@ -69,17 +70,20 @@ struct event_record : operation {
 /**
  * A buffer `create_buffer()` made, or an output's base buffer the light made,
  * in `vram_use::scanout` video memory and mapped for userland at the buffer's
- * physical address. Once it is handed out, a light on the driver task binds it
- * to that light's window while presents read it, so `context_dma` and
- * `bound_windows` change only under the engine's output lock until nothing
- * refers to the buffer.
+ * physical address, or a GPU buffer's scanout memory `import_buffer()` wrapped,
+ * which gfxfb never maps for userland. Once it is handed out, a light on the
+ * driver task binds it to that light's window while presents read it, so from
+ * then until nothing refers to the buffer `context_dma` and `bound_windows`
+ * change only under the engine's output lock.
  */
 struct scanout_buffer : gfxfb::buffer {
     vram_range       range;
-    rm::handle       context_dma;    // the context DMA naming `range`, 0 until its first binding
+    uint64_t         picture_offset; // where an import's picture starts in `range`, else 0
+    gpu::buffer*     source;         // an import's GPU buffer, whose reference the release drops, else null
+    rm::handle       context_dma;    // the context DMA naming `range` from `picture_offset`, 0 until its first binding
     uint32_t         bound_windows;  // a bit for each window whose channel `context_dma` is bound to
-    buffer_operation task_operation; // a created buffer's binding, then any buffer's release
-    list::node       created_link;   // a created buffer's place among those each later light binds
+    buffer_operation task_operation; // a created or imported buffer's binding, then any buffer's release
+    list::node       created_link;   // a created or imported buffer's place among those each later light binds
 };
 
 /**
@@ -189,9 +193,9 @@ struct engine_head {
  * the engine refuses every mode request. One spinlock, the output lock, guards
  * every head's state and is never held across a wait. After `release`, every
  * output reads dark and lists no mode, and `flush()`, `present()`,
- * `create_buffer()` and the cursor calls fail, while gfxfb keeps the base
- * buffers, which BAR1 stops translating once `detach()` restores BAR1's block
- * register.
+ * `create_buffer()`, `import_buffer()` and the cursor calls fail, while gfxfb
+ * keeps the base buffers, which BAR1 stops translating once `detach()` restores
+ * BAR1's block register.
  *
  * From `set_up` until `release` it serves hotplug and short pulse events on the
  * driver task. A hotplug, unless the display or the GPU failed, updates the
@@ -212,8 +216,16 @@ public:
      * @param memory The driver's video memory, which must outlive the engine.
      * @param operations The driver task's queue, which must outlive the engine.
      * @param failed The GPU's failed mark, which must outlive the engine.
+     * @param gpu_engines The engines whose scanout memory `import_buffer()`
+     * takes, which must outlive the engine.
      */
-    display_engine(firmware& fw, video_memory& memory, operation_queue& operations, const failed_mark& failed);
+    display_engine(
+        firmware& fw,
+        video_memory& memory,
+        operation_queue& operations,
+        const failed_mark& failed,
+        const engines& gpu_engines
+    );
 
     display_engine(const display_engine&) = delete;
     display_engine& operator=(const display_engine&) = delete;
@@ -245,11 +257,12 @@ public:
      * channel, then each window channel, then the core channel, then the
      * event objects, then the display's objects, each whatever the releases
      * before it return, and a second call releases nothing. From the start,
-     * every output reads dark, `flush()`, `present()`, `create_buffer()` and
-     * the cursor calls fail, and each queued present ends failed, failing the
-     * display. While no update has been sent, the window and core channels
-     * are released with the hardware kept as it is, so the boot firmware's
-     * heads keep scanning out. Its requests spin on the calling CPU.
+     * every output reads dark, `flush()`, `present()`, `create_buffer()`,
+     * `import_buffer()` and the cursor calls fail, and each queued present ends
+     * failed, failing the display. While no update has been sent, the window
+     * and core channels are released with the hardware kept as it is, so the
+     * boot firmware's heads keep scanning out. Its requests spin on the calling
+     * CPU.
      * @return `OK`, else the logged error of the first release to fail.
      */
     int32_t release();
@@ -318,15 +331,22 @@ public:
      */
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
 
-    // Takes no GPU buffer, so userland shows its pictures through created buffers
+    /**
+     * @brief Wrap the picture `layout` places in `source`'s memory as a buffer
+     * holding gfxfb's reference on `source` and bind it on the driver task as
+     * `create_buffer()` does. A failed binding frees the buffer even when
+     * undoing the others fails, since no present named its context DMA.
+     * @return `create_buffer()`'s errors in its order, with `ERR_INVALID_ARG`
+     * also for a null `source`, memory the engines did not create for scanout,
+     * a picture not starting on a 4 KiB boundary, or a pitch not a multiple of
+     * 256 bytes or past the window's 13-bit pitch field.
+     */
     int32_t import_buffer(
-        gpu::buffer*,
-        const gpu::memory_view&,
-        const gfxfb::import_layout&,
-        gfxfb::buffer**
-    ) override {
-        return gfxfb::ERR_UNSUPPORTED;
-    }
+        gpu::buffer* source,
+        const gpu::memory_view& view,
+        const gfxfb::import_layout& layout,
+        gfxfb::buffer** out
+    ) override;
 
     /**
      * @brief Write an update showing `buf` into the window channel of the head
@@ -348,11 +368,14 @@ public:
 
     /**
      * @brief Queue the driver task's release of a buffer and return without
-     * waiting. The task unbinds, unmaps and frees it, or keeps it all for good
-     * once the display failed while a window's channel names it, the engine
-     * was released or unbinding it failed, since a head may still scan it.
+     * waiting. The task unbinds it and frees it, first dropping an import's
+     * reference on its GPU buffer, or unmapping and releasing the memory of any
+     * other buffer. It keeps all of it for good once the display failed while a
+     * window's channel names it, the engine was released or unbinding it
+     * failed, since a head may still scan it.
      * @param buf A buffer nothing refers to any longer, one `create_buffer()`
-     * made or the base buffer of an output read dark.
+     * made or `import_buffer()` wrapped, or the base buffer of an output read
+     * dark.
      */
     void release_buffer(gfxfb::buffer* buf) override;
 
@@ -441,8 +464,8 @@ private:
      */
     bool run_light(const output_light& light, const dpcd_capabilities& dpcd, const light_set& lit);
 
-    // Binds each created buffer not yet bound to `window`'s channel there, returning the first failed binding's error,
-    // logged, those bound before it staying bound
+    // Binds each buffer `create_buffer()` made or `import_buffer()` wrapped that is not yet bound to `window`'s channel
+    // there, returning the first failed binding's error, logged, those bound before it staying bound
     int32_t bind_created_buffers(uint8_t window);
 
     /**
@@ -470,10 +493,19 @@ private:
     // Fails the display and ends every queued present failed, taking `m_output_lock` itself
     void fail_display();
 
-    // Whether flips are on with a window's notifier bound, which `present()` and `create_buffer()` need first
+    // Whether flips are on with a window's notifier bound, which `present()`, `create_buffer()` and `import_buffer()`
+    // need first
     bool are_presents_supported() const;
 
-    // The driver task's halves of `create_buffer()` and `release_buffer()`, each given the buffer's `task_operation`
+    // The refusal `create_buffer()` and `import_buffer()` make before reading their arguments, in `present()`'s order,
+    // else `gfxfb::OK`
+    int32_t new_buffer_refusal();
+
+    // Runs `bind_buffer()` for `buffer` on the driver task and waits for it, giving the binding's result
+    int32_t bind_on_task(scanout_buffer& buffer);
+
+    // The driver task's halves of `create_buffer()` and `import_buffer()`, and of `release_buffer()`, each given the
+    // buffer's `task_operation`
     static void bind_buffer(operation& op);
     static void release_scanout_buffer(operation& op);
 
@@ -488,6 +520,7 @@ private:
 
     operation_queue&   m_operations;
     const failed_mark& m_failed;
+    const engines&     m_gpu_engines;
 
     // The event objects and their records, each object 0 while it is not allocated
     rm::handle   m_hotplug_event = 0;
@@ -519,7 +552,8 @@ private:
     // Set by `mark_registered()` before the driver task starts, so the task reads it bare
     bool m_is_registered = false;
 
-    // The buffers `create_buffer()` made, each from its binding operation until its release, walked by the task alone
+    // The buffers `create_buffer()` made and `import_buffer()` wrapped, each from its binding operation until its
+    // release, walked by the task alone
     list::head<scanout_buffer, &scanout_buffer::created_link> m_created_buffers;
 
     // Woken by each end of a closing head's present, for the take-down waiting on it at most `m_take_down_wait_ns`
@@ -644,9 +678,9 @@ private:
 
     /**
      * @brief Give `light` a base buffer and, unless the head kept one, a window
-     * channel, binding the look-up table surface, the created buffers and the
-     * base buffers of `prepared` to that channel and its own base buffer to
-     * theirs.
+     * channel, binding the look-up table surface, the created and imported
+     * buffers and the base buffers of `prepared` to that channel and its own
+     * base buffer to theirs.
      * @return `OK`, `is_prepared` set once the light is prepared and clear when
      * a step is refused or finds no room, else the failed step's error.
      */

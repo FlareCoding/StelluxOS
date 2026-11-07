@@ -488,6 +488,17 @@ int32_t engines::view_for_cpu(gpu::memory* mem, gpu::cpu_view& out) {
     return gpu::OK;
 }
 
+bool engines::find_scanout_range(const gpu::memory_view& view, vram_range& out) const {
+    bool is_created_here = view.owner == this;
+    bool is_scanout = view.placement == GPU_PLACEMENT_VIDEO && (view.flags & GPU_BUFFER_SCANOUT) != 0;
+    if (!is_created_here || !is_scanout) {
+        return false;
+    }
+
+    out = static_cast<const backend_memory*>(view.mem)->range;
+    return true;
+}
+
 void engines::release_memory(gpu::memory* mem) {
     auto* memory = static_cast<backend_memory*>(mem);
     RUN_ELEVATED(m_operations.post_to_task(memory->task_operation));

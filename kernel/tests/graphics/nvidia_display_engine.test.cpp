@@ -18,6 +18,7 @@
 #include "drivers/graphics/nvidia/display_light.h"
 #include "drivers/graphics/nvidia/display_registration.h"
 #include "drivers/graphics/nvidia/display_window_owners.h"
+#include "drivers/graphics/nvidia/engines.h"
 #include "drivers/graphics/nvidia/failed_mark.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/instance_memory.h"
@@ -28,15 +29,19 @@
 #include "drivers/graphics/nvidia/vram_allocator.h"
 #include "drivers/graphics/nvidia/window_methods.h"
 #include "dynpriv/dynpriv.h"
+#include "fs/fs.h"
+#include "gpu/gpu.h"
 #include "mm/heap.h"
 #include "mm/paging.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "tests/gpu/fake_backend.h"
 #include "tests/memory/dma_test_access.h"
 
 TEST_SUITE(nvidia_display_engine);
 
 using drivers::nvidia::active_heads;
+using drivers::nvidia::backend_memory;
 using drivers::nvidia::base_buffer_pitch;
 using drivers::nvidia::build_cursor_methods;
 using drivers::nvidia::build_window_usage_methods;
@@ -60,6 +65,7 @@ using drivers::nvidia::DISPLAY_HEADS_MAX;
 using drivers::nvidia::DPCD_PHY_REPEATER_CAPABILITIES;
 using drivers::nvidia::DPCD_PHY_REPEATER_CAPABILITY_BYTES;
 using drivers::nvidia::DPCD_RECEIVER_CAPABILITY_BYTES;
+using drivers::nvidia::engines;
 using drivers::nvidia::ERR_BAD_MESSAGE;
 using drivers::nvidia::ERR_BAD_STATE;
 using drivers::nvidia::ERR_FIRMWARE;
@@ -93,6 +99,7 @@ using drivers::nvidia::register_display_engine;
 using drivers::nvidia::registers;
 using drivers::nvidia::release_display_channel;
 using drivers::nvidia::scanout_buffer;
+using drivers::nvidia::SURFACE_PITCH_ALIGNMENT;
 using drivers::nvidia::table_writes;
 using drivers::nvidia::video_memory;
 using drivers::nvidia::vram_range;
@@ -245,6 +252,12 @@ static display_engine* g_built_engine = nullptr;
 // The GPU's failed mark the engine last built here takes, built clear in place with each engine
 alignas(failed_mark) static uint8_t g_failed_mark_bytes[sizeof(failed_mark)];
 static failed_mark* g_failed_mark = nullptr;
+
+// The GPU's engines the engine last built here takes, whose scanout memory its imports wrap, built afresh with each
+// engine over no firmware objects
+alignas(engines) static uint8_t g_gpu_engines_bytes[sizeof(engines)];
+static engines* g_gpu_engines = nullptr;
+static constexpr gpu_objects NO_GPU_OBJECTS = {};
 
 // The operation queue the engine last built here takes and its driver, built in place afresh with each engine
 alignas(engine_task_driver) static uint8_t g_task_driver_bytes[sizeof(engine_task_driver)];
@@ -1900,7 +1913,14 @@ static display_engine& new_engine(engine_firmware& fw, engine_video_memory& memo
 
     g_engine_operations = nullptr;
     g_failed_mark = new (g_failed_mark_bytes) failed_mark();
-    g_built_engine = new (g_engine_bytes) display_engine(fw, memory, engine_operations(), *g_failed_mark);
+    g_gpu_engines = new (g_gpu_engines_bytes) engines(fw, NO_GPU_OBJECTS, memory, engine_operations(), *g_failed_mark);
+    g_built_engine = new (g_engine_bytes) display_engine(
+        fw,
+        memory,
+        engine_operations(),
+        *g_failed_mark,
+        *g_gpu_engines
+    );
 
     display_engine& engine = *g_built_engine;
     display_engine_test_access::set_notifier_wait(engine, 0);
@@ -5208,7 +5228,14 @@ TEST(nvidia_display_engine, constructed_engine_gives_the_notifier_take_down_and_
     engine_video_memory memory;
     g_engine_operations = nullptr;
     g_failed_mark = new (g_failed_mark_bytes) failed_mark();
-    display_engine& engine = *new (g_engine_bytes) display_engine(fw, memory, engine_operations(), *g_failed_mark);
+    g_gpu_engines = new (g_gpu_engines_bytes) engines(fw, NO_GPU_OBJECTS, memory, engine_operations(), *g_failed_mark);
+    display_engine& engine = *new (g_engine_bytes) display_engine(
+        fw,
+        memory,
+        engine_operations(),
+        *g_failed_mark,
+        *g_gpu_engines
+    );
 
     EXPECT_EQ(display_engine_test_access::notifier_wait_ns(engine), COMPLETION_NOTIFIER_WAIT_NS);
     EXPECT_EQ(display_engine_test_access::take_down_wait_ns(engine), gfxfb::GFXFB_PRESENT_TIMEOUT_NS + 10 * NS_PER_MS);
@@ -11378,6 +11405,584 @@ TEST(nvidia_display_engine, a_light_binds_a_created_buffer_bound_only_to_a_highe
     heap::ufree_delete(static_cast<scanout_buffer*>(created));
 }
 
+// Where an imported picture starts in its GPU buffer's memory, and how many of the lowest records a check of its
+// binding reads, more than a set-up of two outputs binds
+static constexpr uint64_t IMPORT_PICTURE_OFFSET = 0x1000;
+static constexpr uint32_t IMPORT_RECORDS_READ = 32;
+
+static display_engine* g_importing_engine;
+static gpu::buffer* g_import_source;
+static gpu::memory_view g_import_view;
+static gfxfb::import_layout g_import_layout;
+static gfxfb::buffer* g_imported;
+static int32_t g_import_result;
+static sync::atomic<uint32_t> g_import_returned;
+
+// Imports `g_import_layout` of `g_import_view` as a caller of gfxfb does, then ends its task
+static void import_requested_buffer(void*) {
+    g_import_result = g_importing_engine->import_buffer(g_import_source, g_import_view, g_import_layout, &g_imported);
+    g_import_returned.store_release(1);
+    sched::exit(0);
+}
+
+// Imports `layout` of `view`, the memory of `source`, from a task of its own, then serves its binding as the driver
+// task would and gives `import_buffer`'s result. False when the task never waited or returned
+static bool import_served_buffer(
+    display_engine& engine,
+    gpu::buffer* source,
+    const gpu::memory_view& view,
+    const gfxfb::import_layout& layout,
+    gfxfb::buffer*& out,
+    int32_t& rc
+) {
+    g_importing_engine = &engine;
+    g_import_source = source;
+    g_import_view = view;
+    g_import_layout = layout;
+
+    g_imported = nullptr;
+    g_import_result = gfxfb::ERR_DEVICE;
+    g_import_returned.store_relaxed(0);
+
+    sched::task* caller = test_helpers::start_pinned_task(import_requested_buffer, nullptr, "import_buffer");
+    if (caller == nullptr) {
+        return false;
+    }
+
+    bool has_waited = test_helpers::blocks_before_deadline(caller);
+    engine_operations().serve();
+    bool has_returned = test_helpers::spin_wait(g_import_returned);
+    test_helpers::unpin(caller);
+
+    out = g_imported;
+    rc = g_import_result;
+
+    return has_waited && has_returned;
+}
+
+// The engines' record of a scanout GPU buffer of `bytes` in `memory`, or null when the heap or `memory` has no room
+static backend_memory* new_scanout_memory(engine_video_memory& memory, uint64_t bytes) {
+    auto* scanout = heap::ualloc_new<backend_memory>();
+    if (scanout == nullptr) {
+        return nullptr;
+    }
+
+    if (memory.allocate(bytes, NVIDIA_SURFACE_ALIGNMENT, vram_use::scanout, scanout->range) != OK) {
+        heap::ufree_delete(scanout);
+        return nullptr;
+    }
+
+    scanout->placement = GPU_PLACEMENT_VIDEO;
+    return scanout;
+}
+
+// Gives `scanout`'s memory back to `memory` and frees the record
+static void free_scanout_memory(engine_video_memory& memory, backend_memory* scanout) {
+    memory.release(scanout->range);
+    heap::ufree_delete(scanout);
+}
+
+// The view gfxfb's lookup gives of `scanout` when the engine's GPU engines created it with `flags`
+static gpu::memory_view scanout_view(backend_memory& scanout, uint32_t flags = GPU_BUFFER_SCANOUT) {
+    return {
+        .owner = g_gpu_engines,
+        .mem = &scanout,
+        .size = scanout.range.size,
+        .placement = GPU_PLACEMENT_VIDEO,
+        .flags = flags,
+    };
+}
+
+// A picture of `base`'s size and pitch from `IMPORT_PICTURE_OFFSET` on
+static gfxfb::import_layout picture_like(const gfxfb::buffer& base) {
+    return {
+        .width = base.width,
+        .height = base.height,
+        .pitch = base.pitch,
+        .format = gfxfb::GFXFB_FORMAT_XRGB8888,
+        .offset = IMPORT_PICTURE_OFFSET,
+    };
+}
+
+// A reference on the GPU buffer `handle` names, taken as gfxfb's lookup takes one, or null when the lookup fails
+static gpu::buffer* look_up_source(int32_t handle) {
+    gpu::buffer* source = nullptr;
+    gpu::memory_view unread = {};
+    int32_t found = fs::ERR_IO;
+    RUN_ELEVATED(found = gpu::lookup_buffer(handle, GPU_RIGHT_READ, &source, unread));
+
+    return found == fs::OK ? source : nullptr;
+}
+
+// Whether a record binds `object` to `hardware_channel` naming `scanout` from `IMPORT_PICTURE_OFFSET` to its end
+static bool binds_the_picture(rm::handle object, uint32_t hardware_channel, const backend_memory& scanout) {
+    uint64_t first_unit = (scanout.range.offset + IMPORT_PICTURE_OFFSET) / NVIDIA_RECORD_UNIT_BYTES;
+    uint64_t last_unit = (scanout.range.offset + scanout.range.size - 1) / NVIDIA_RECORD_UNIT_BYTES;
+    const uint32_t words[5] = {
+        NVIDIA_VIDEO_MEMORY_WORD_0,
+        static_cast<uint32_t>(first_unit),
+        static_cast<uint32_t>(first_unit >> 32),
+        static_cast<uint32_t>(last_unit),
+        static_cast<uint32_t>(last_unit >> 32),
+    };
+
+    for (uint32_t record = 0; record < IMPORT_RECORDS_READ; record++) {
+        if (binds(object, hardware_channel, record, words)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static gpu_test::fake_backend g_presented_import_fake;
+
+// An import binds its picture to the lit window's channel under a context DMA of its own, from the picture's offset to
+// the end of the GPU buffer's memory, which a present then names, and the binding's log line gives that start
+TEST(nvidia_display_engine, an_import_is_bound_from_its_picture_and_presented) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 2));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+
+    // A pitch wider than the one `create_buffer` derives from the width, which the import keeps
+    gfxfb::import_layout layout = picture_like(*base);
+    layout.pitch += SURFACE_PITCH_ALIGNMENT;
+    uint64_t picture_bytes = static_cast<uint64_t>(layout.pitch) * layout.height;
+    backend_memory* scanout = new_scanout_memory(memory, IMPORT_PICTURE_OFFSET + picture_bytes);
+    ASSERT_NOT_NULL(scanout);
+
+    gpu_test::session gpu(g_presented_import_fake);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+    gpu::buffer* source = look_up_source(gpu_buffer);
+    ASSERT_NOT_NULL(source);
+
+    gfxfb::buffer* imported = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    s_engine_log_bytes = 0;
+    log::set_backend(&ENGINE_LOG_BACKEND);
+    bool has_served = import_served_buffer(engine, source, scanout_view(*scanout), layout, imported, rc);
+    log::set_backend(nullptr);
+
+    ASSERT_TRUE(has_served);
+    ASSERT_EQ(rc, gfxfb::OK);
+    ASSERT_NOT_NULL(imported);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: a display buffer of 1366x768 pixels at 0x1421000 in video memory is bound to window 3's channel"
+    ));
+
+    EXPECT_EQ(imported->width, base->width);
+    EXPECT_EQ(imported->height, base->height);
+    EXPECT_EQ(imported->pitch, layout.pitch);
+
+    uint8_t window = display_engine_test_access::lit_window(engine);
+    rm::handle context_dma = static_cast<scanout_buffer*>(imported)->context_dma;
+    EXPECT_NE(context_dma, display_engine_test_access::base_buffer_context_dma(engine));
+    EXPECT_TRUE(binds_the_picture(context_dma, window_channel_number(window), *scanout));
+
+    rm::handle notifier = display_engine_test_access::window_notifier_context_dma(engine);
+    window_channel_word(window, CHANNEL_GET) = 0;
+    ASSERT_EQ(engine.present(0, imported, nullptr, 0), gfxfb::OK);
+
+    uint32_t end = 2 * WINDOW_IMAGE_BYTES;
+    EXPECT_EQ(window_channel_word(window, CHANNEL_PUT), end);
+    expect_present_image(fw, end, window, context_dma, notifier, 0);
+
+    EXPECT_EQ(engine.release(), OK);
+    heap::ufree_delete(static_cast<scanout_buffer*>(imported));
+    RUN_ELEVATED(gpu::release_buffer(source));
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_presented_import_fake, 1));
+    free_scanout_memory(memory, scanout);
+}
+
+static gpu_test::fake_backend g_released_import_fake;
+
+// An import's release on the driver task unbinds it and drops the GPU buffer's reference the import took, neither
+// unmapping nor releasing the memory, which the GPU core's buffer owns
+TEST(nvidia_display_engine, an_imports_release_unbinds_it_and_drops_its_gpu_buffers_reference) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 2));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.turn_on_flips();
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    backend_memory* scanout = new_scanout_memory(memory, base->size + IMPORT_PICTURE_OFFSET);
+    ASSERT_NOT_NULL(scanout);
+
+    gpu_test::session gpu(g_released_import_fake);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+
+    // The import takes one reference, and the test's own keeps the buffer readable once the release drops that one
+    gpu::buffer* handed = look_up_source(gpu_buffer);
+    ASSERT_NOT_NULL(handed);
+    gpu::buffer* held = look_up_source(gpu_buffer);
+    ASSERT_NOT_NULL(held);
+    uint32_t references = held->ref_count();
+
+    gfxfb::buffer* imported = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(import_served_buffer(engine, handed, scanout_view(*scanout), picture_like(*base), imported, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    rm::handle context_dma = static_cast<scanout_buffer*>(imported)->context_dma;
+    EXPECT_TRUE(has_entry_for(context_dma));
+
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    engine.release_buffer(imported);
+    EXPECT_TRUE(has_entry_for(context_dma));
+    EXPECT_EQ(held->ref_count(), references);
+
+    engine_operations().serve();
+    EXPECT_FALSE(has_entry_for(context_dma));
+    EXPECT_EQ(held->ref_count(), references - 1);
+    EXPECT_EQ(memory.scanout_unmaps, unmaps);
+    EXPECT_EQ(memory.scanout_releases, releases);
+
+    RUN_ELEVATED(gpu::release_buffer(held));
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_released_import_fake, 1));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_scanout_memory(memory, scanout);
+}
+
+static gpu_test::fake_backend g_foreign_import_fake;
+
+// `import_buffer` refuses flips off and a released engine before any argument, as `create_buffer` does, then a null GPU
+// buffer, another device's or system memory, memory not for scanout and each picture the window cannot scan
+TEST(nvidia_display_engine, import_buffer_refuses_in_create_buffers_order_binding_nothing) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 2));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    backend_memory* scanout = new_scanout_memory(memory, base->size + IMPORT_PICTURE_OFFSET);
+    ASSERT_NOT_NULL(scanout);
+
+    gpu_test::session gpu(g_foreign_import_fake);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+    gpu::buffer* source = look_up_source(gpu_buffer);
+    ASSERT_NOT_NULL(source);
+
+    gpu::memory_view view = scanout_view(*scanout);
+    gpu::memory_view foreign = view;
+    foreign.owner = &g_foreign_import_fake;
+    gpu::memory_view system = view;
+    system.placement = GPU_PLACEMENT_SYSTEM;
+    const gpu::memory_view refused_views[] = {foreign, system, scanout_view(*scanout, GPU_BUFFER_MAPPABLE)};
+
+    gfxfb::import_layout layout = picture_like(*base);
+    gfxfb::import_layout refused_layouts[8] = {layout, layout, layout, layout, layout, layout, layout, layout};
+    refused_layouts[0].format = gfxfb::GFXFB_FORMAT_XRGB8888 - 1;
+    refused_layouts[1].format = gfxfb::GFXFB_FORMAT_XRGB8888 + 1;
+    refused_layouts[2].width = rm::SIZE_FIELD_MAX + 1;
+    refused_layouts[3].height = rm::SIZE_FIELD_MAX + 1;
+
+    refused_layouts[4].offset = IMPORT_PICTURE_OFFSET + rm::PLANE_PITCH_UNIT_BYTES;
+    refused_layouts[5].offset = IMPORT_PICTURE_OFFSET / 2;
+    refused_layouts[6].pitch = base->pitch + rm::PLANE_PITCH_UNIT_BYTES;
+    refused_layouts[7].pitch = (rm::PLANE_PITCH_FIELD_MAX + 1) * rm::PLANE_PITCH_UNIT_BYTES;
+
+    uint32_t entries = used_entry_count();
+    gfxfb::buffer* imported = nullptr;
+    int32_t rc = gfxfb::OK;
+    EXPECT_EQ(engine.import_buffer(source, view, layout, &imported), gfxfb::ERR_UNSUPPORTED);
+    EXPECT_EQ(engine.import_buffer(nullptr, foreign, refused_layouts[4], &imported), gfxfb::ERR_UNSUPPORTED);
+
+    // The refusals run on a task of their own, so an import let through fails its check instead of blocking this one
+    engine.turn_on_flips();
+    EXPECT_FALSE(import_served_buffer(engine, nullptr, view, layout, imported, rc));
+    EXPECT_EQ(rc, gfxfb::ERR_INVALID_ARG);
+    for (const gpu::memory_view& refused : refused_views) {
+        EXPECT_FALSE(import_served_buffer(engine, source, refused, layout, imported, rc));
+        EXPECT_EQ(rc, gfxfb::ERR_INVALID_ARG);
+    }
+
+    for (const gfxfb::import_layout& refused : refused_layouts) {
+        EXPECT_FALSE(import_served_buffer(engine, source, view, refused, imported, rc));
+        EXPECT_EQ(rc, gfxfb::ERR_INVALID_ARG);
+    }
+
+    // A range starting 2 KiB into a page, so only the sum of its start and the picture's offset is off 4 KiB
+    vram_range whole = scanout->range;
+    scanout->range.offset += NVIDIA_SURFACE_ALIGNMENT / 2;
+    scanout->range.size -= NVIDIA_SURFACE_ALIGNMENT;
+    EXPECT_FALSE(import_served_buffer(engine, source, view, layout, imported, rc));
+    EXPECT_EQ(rc, gfxfb::ERR_INVALID_ARG);
+
+    scanout->range = whole;
+    EXPECT_EQ(used_entry_count(), entries);
+    EXPECT_EQ(engine.release(), OK);
+    EXPECT_EQ(engine.import_buffer(nullptr, foreign, refused_layouts[4], &imported), gfxfb::ERR_DEVICE);
+    EXPECT_NULL(imported);
+
+    RUN_ELEVATED(gpu::release_buffer(source));
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_foreign_import_fake, 1));
+    free_scanout_memory(memory, scanout);
+}
+
+static gpu_test::fake_backend g_refused_import_fake;
+
+// A binding the card refuses undoes the import's other bindings, leaving the GPU buffer's reference to gfxfb and the
+// memory to the GPU core
+TEST(nvidia_display_engine, a_refused_import_binding_undoes_its_bindings_and_drops_no_reference) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory, 2));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(reads_lit(engine, 1));
+
+    engine.turn_on_flips();
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    backend_memory* scanout = new_scanout_memory(memory, base->size + IMPORT_PICTURE_OFFSET);
+    ASSERT_NOT_NULL(scanout);
+
+    gpu_test::session gpu(g_refused_import_fake);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+    gpu::buffer* handed = look_up_source(gpu_buffer);
+    ASSERT_NOT_NULL(handed);
+
+    uint32_t references = handed->ref_count();
+    uint32_t entries = used_entry_count();
+    uint32_t maps = memory.general_maps;
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+
+    // Each binding maps the instance memory once, so the second window's binding makes the second mapping
+    memory.failing_general_map = maps + 2;
+    memory.general_map_result = ERR_TIMEOUT;
+
+    gfxfb::buffer* imported = nullptr;
+    int32_t rc = gfxfb::OK;
+    ASSERT_TRUE(import_served_buffer(engine, handed, scanout_view(*scanout), picture_like(*base), imported, rc));
+    EXPECT_EQ(rc, gfxfb::ERR_REFUSED);
+    EXPECT_NULL(imported);
+    EXPECT_EQ(memory.general_maps, maps + 3);
+
+    EXPECT_EQ(used_entry_count(), entries);
+    EXPECT_EQ(handed->ref_count(), references);
+    EXPECT_EQ(memory.scanout_unmaps, unmaps);
+    EXPECT_EQ(memory.scanout_releases, releases);
+
+    memory.general_map_result = OK;
+    RUN_ELEVATED(gpu::release_buffer(handed));
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_refused_import_fake, 1));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_scanout_memory(memory, scanout);
+}
+
+static gpu_test::fake_backend g_failed_undo_import_fake;
+
+// A binding finding no room whose undo fails too logs the import's bindings that stay, and leaves the GPU buffer's
+// reference to gfxfb and the memory to the GPU core
+TEST(nvidia_display_engine, a_failed_import_undo_logs_the_bindings_left_and_drops_no_reference) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory, 2));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    ASSERT_TRUE(reads_lit(engine, 1));
+
+    engine.turn_on_flips();
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    backend_memory* scanout = new_scanout_memory(memory, base->size + IMPORT_PICTURE_OFFSET);
+    ASSERT_NOT_NULL(scanout);
+
+    gpu_test::session gpu(g_failed_undo_import_fake);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+    gpu::buffer* handed = look_up_source(gpu_buffer);
+    ASSERT_NOT_NULL(handed);
+
+    uint32_t references = handed->ref_count();
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+
+    memory.failing_general_map = memory.general_maps + 2;
+    memory.general_map_result = ERR_NO_MEMORY;
+    memory.second_failing_map = memory.general_maps + 3;
+    memory.second_map_result = ERR_TIMEOUT;
+
+    gfxfb::buffer* imported = nullptr;
+    int32_t rc = gfxfb::OK;
+    s_engine_log_bytes = 0;
+    log::set_backend(&ENGINE_LOG_BACKEND);
+    bool has_served = import_served_buffer(engine, handed, scanout_view(*scanout), picture_like(*base), imported, rc);
+    log::set_backend(nullptr);
+
+    ASSERT_TRUE(has_served);
+    EXPECT_EQ(rc, gfxfb::ERR_NO_MEMORY);
+    EXPECT_NULL(imported);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: unbinding the display buffer at 0x1841000 in video memory from window 0's channel failed: -4, so that "
+        "binding and those to higher windows stay"
+    ));
+
+    EXPECT_TRUE(has_entry_for(FIRST_HANDLE + fw.handle_count - 1));
+    EXPECT_EQ(handed->ref_count(), references);
+    EXPECT_EQ(memory.scanout_unmaps, unmaps);
+    EXPECT_EQ(memory.scanout_releases, releases);
+
+    RUN_ELEVATED(gpu::release_buffer(handed));
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_failed_undo_import_fake, 1));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_scanout_memory(memory, scanout);
+}
+
+// Each makes the next release of a bound buffer keep it for good, giving the end of the line that logs why
+static const char* release_the_engine(display_engine& engine, engine_video_memory&) {
+    EXPECT_EQ(engine.release(), OK);
+    return "in video memory is kept for good, as the engine was released";
+}
+
+static const char* fail_the_display(display_engine& engine, engine_video_memory&) {
+    display_engine_test_access::mark_display_failed(engine);
+    return "in video memory is kept for good, as the display failed";
+}
+
+static const char* refuse_the_unbinding(display_engine&, engine_video_memory& memory) {
+    memory.failing_general_map = memory.general_maps + 1;
+    memory.general_map_result = ERR_TIMEOUT;
+    return "'s channel failed: -4, so the buffer is kept for good";
+}
+
+static gpu_test::fake_backend g_kept_import_fake;
+
+// A release keeping an import for good, once the engine was released, the display failed or the unbinding was refused,
+// keeps its GPU buffer's reference too, since a head may still scan the memory
+TEST(nvidia_display_engine, an_import_kept_for_good_keeps_its_gpu_buffers_reference) {
+    gpu_test::session gpu(g_kept_import_fake);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+
+    const char* (*const keepers[])(display_engine&, engine_video_memory&) = {
+        release_the_engine,
+        fail_the_display,
+        refuse_the_unbinding,
+    };
+
+    for (auto keep : keepers) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        ASSERT_TRUE(give_output_0_a_base_buffer(fw, memory, 2));
+        display_engine& engine = new_engine(fw, memory);
+        ASSERT_EQ(set_up(engine), OK);
+
+        engine.turn_on_flips();
+        gfxfb::buffer* base = engine.base_buffer(0);
+        ASSERT_NOT_NULL(base);
+        backend_memory* scanout = new_scanout_memory(memory, base->size + IMPORT_PICTURE_OFFSET);
+        ASSERT_NOT_NULL(scanout);
+
+        gpu::buffer* source = look_up_source(gpu_buffer);
+        ASSERT_NOT_NULL(source);
+        gfxfb::buffer* imported = nullptr;
+        int32_t rc = gfxfb::ERR_DEVICE;
+        ASSERT_TRUE(import_served_buffer(engine, source, scanout_view(*scanout), picture_like(*base), imported, rc));
+        ASSERT_EQ(rc, gfxfb::OK);
+
+        auto* kept = static_cast<scanout_buffer*>(imported);
+        const char* reason = keep(engine, memory);
+        uint32_t references = source->ref_count();
+        uint32_t unmaps = memory.scanout_unmaps;
+        uint32_t releases = memory.scanout_releases;
+
+        engine.release_buffer(imported);
+        serve_logged();
+
+        EXPECT_TRUE(engine_log_contains(reason));
+        EXPECT_NE(kept->bound_windows, 0u);
+        EXPECT_EQ(source->ref_count(), references);
+        EXPECT_EQ(memory.scanout_unmaps, unmaps);
+        EXPECT_EQ(memory.scanout_releases, releases);
+
+        EXPECT_EQ(engine.release(), OK);
+        heap::ufree_delete(kept);
+        RUN_ELEVATED(gpu::release_buffer(source));
+        free_scanout_memory(memory, scanout);
+    }
+
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_kept_import_fake, 1));
+}
+
+static gpu_test::fake_backend g_lit_import_fake;
+
+// An import made while output 1 is dark is bound to window 1's channel as it lights, naming the picture from its
+// offset there too, and output 1 presents it
+TEST(nvidia_display_engine, a_light_binds_an_import_from_its_picture) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory, 3));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    engine.mark_registered();
+    engine.turn_on_flips();
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    backend_memory* scanout = new_scanout_memory(memory, base->size + IMPORT_PICTURE_OFFSET);
+    ASSERT_NOT_NULL(scanout);
+
+    gpu_test::session gpu(g_lit_import_fake);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+    gpu::buffer* source = look_up_source(gpu_buffer);
+    ASSERT_NOT_NULL(source);
+
+    gfxfb::buffer* imported = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(import_served_buffer(engine, source, scanout_view(*scanout), picture_like(*base), imported, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    const auto* bound = static_cast<const scanout_buffer*>(imported);
+    EXPECT_EQ(bound->bound_windows, 0b01u);
+
+    plug_output_1(fw, engine);
+
+    ASSERT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(bound->bound_windows, 0b11u);
+    EXPECT_TRUE(binds_the_picture(bound->context_dma, window_channel_number(1), *scanout));
+    EXPECT_EQ(engine.present(1, imported, nullptr, 0), gfxfb::OK);
+
+    EXPECT_EQ(engine.release(), OK);
+    heap::ufree_delete(static_cast<scanout_buffer*>(imported));
+    RUN_ELEVATED(gpu::release_buffer(source));
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_lit_import_fake, 1));
+    free_scanout_memory(memory, scanout);
+}
+
 // While the engine is not registered, as when gfxfb keeps the boot framebuffer, the plugged output's connected
 // record is set, the log says why it stays dark, and nothing lights
 TEST(nvidia_display_engine, a_plugged_monitor_lights_nothing_while_the_engine_is_not_registered) {
@@ -12331,6 +12936,69 @@ TEST(nvidia_display_engine, a_failed_displays_release_frees_a_buffer_bound_to_no
     EXPECT_EQ(memory.scanout_releases, releases + 1);
     EXPECT_EQ(engine.release(), OK);
     free_taken_down_base_buffer(base);
+}
+
+static gpu_test::fake_backend g_unbound_import_fake;
+
+// On a failed display, the release of an import bound to no window's channel drops its GPU buffer's reference, as no
+// channel names it, and leaves the memory to the GPU core
+TEST(nvidia_display_engine, a_failed_displays_release_drops_an_import_bound_to_no_window) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_output_0_of_two(fw, memory, 2));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    engine.turn_on_flips();
+
+    gfxfb::buffer* base = engine.base_buffer(0);
+    ASSERT_NOT_NULL(base);
+    gfxfb::import_layout layout = picture_like(*base);
+    backend_memory* scanout = new_scanout_memory(memory, base->size + IMPORT_PICTURE_OFFSET);
+    ASSERT_NOT_NULL(scanout);
+
+    fw.unplugged_ids = OUTPUT_0_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+    ASSERT_FALSE(reads_lit(engine, 0));
+
+    gpu_test::session gpu(g_unbound_import_fake);
+    ASSERT_TRUE(gpu.ready());
+    int32_t gpu_buffer = gpu.new_buffer(pmm::PAGE_SIZE, GPU_PLACEMENT_VIDEO, GPU_BUFFER_SCANOUT);
+    ASSERT_TRUE(gpu_buffer >= 0);
+
+    // The import takes one reference, and the test's own keeps the buffer readable once the release drops that one
+    gpu::buffer* handed = look_up_source(gpu_buffer);
+    ASSERT_NOT_NULL(handed);
+    gpu::buffer* held = look_up_source(gpu_buffer);
+    ASSERT_NOT_NULL(held);
+    uint32_t references = held->ref_count();
+
+    gfxfb::buffer* imported = nullptr;
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(import_served_buffer(engine, handed, scanout_view(*scanout), layout, imported, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    EXPECT_EQ(static_cast<const scanout_buffer*>(imported)->bound_windows, 0u);
+
+    display_engine_test_access::mark_display_failed(engine);
+    uint32_t unmaps = memory.scanout_unmaps;
+    uint32_t releases = memory.scanout_releases;
+    engine.release_buffer(imported);
+    serve_logged();
+
+    EXPECT_TRUE(engine_log_contains(
+        "in video memory drops its reference on its GPU buffer though the display failed, as no channel names it"
+    ));
+    EXPECT_EQ(held->ref_count(), references - 1);
+    EXPECT_EQ(memory.scanout_unmaps, unmaps);
+    EXPECT_EQ(memory.scanout_releases, releases);
+
+    RUN_ELEVATED(gpu::release_buffer(held));
+    gpu_test::close_handle(gpu_buffer);
+    EXPECT_TRUE(gpu_test::drain_reaper(gpu, g_unbound_import_fake, 1));
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(base);
+    free_scanout_memory(memory, scanout);
 }
 
 // Sends the short pulse's event and serves the driver task's queue with the log kept, clearing the recorded mode set

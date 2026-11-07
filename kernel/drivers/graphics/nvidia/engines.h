@@ -212,6 +212,15 @@ public:
      */
     void report_marked_failure();
 
+    /**
+     * @brief Find the video memory `view` describes when these engines created
+     * it with `GPU_BUFFER_SCANOUT`. The display engine scans out no other GPU
+     * memory.
+     * @return Whether they did, `out` then holding the memory's whole range,
+     * which covers `view.size` bytes.
+     */
+    bool find_scanout_range(const gpu::memory_view& view, vram_range& out) const;
+
     void read_facts(gpu::device_facts& out) override;
     void read_memory(gpu_memory& out) override;
     int32_t read_timestamp(uint64_t& gpu_ns) override;

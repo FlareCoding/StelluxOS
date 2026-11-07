@@ -24,10 +24,8 @@ constexpr uint32_t RASTER_SIZE_MAX = rm::HEAD_PAIR_MASK;
 // module assumes
 constexpr uint8_t CURSOR_WIDTH_32 = 256 / 32;
 
-// The bytes of a pixel in the formats the bandwidth check is asked about, and the multiple NVIDIA's modesetting module
-// requires of the pitch of a surface laid out as rows of pixels in order
+// The bytes of a pixel in the formats the bandwidth check is asked about
 constexpr uint32_t BASE_BUFFER_BYTES_PER_PIXEL = 4;
-constexpr uint32_t BASE_BUFFER_PITCH_ALIGNMENT = 256;
 
 // The levels of a 10-bit color, the entries each of NVIDIA's identities gives before repeating its last, and what the
 // input identity divides each entry's place by
@@ -97,7 +95,7 @@ head_raster raster_of(const edid::timing& timing) {
 
 uint32_t base_buffer_pitch(uint32_t width) {
     uint32_t row_bytes = width * BASE_BUFFER_BYTES_PER_PIXEL;
-    return (row_bytes + BASE_BUFFER_PITCH_ALIGNMENT - 1) & ~(BASE_BUFFER_PITCH_ALIGNMENT - 1);
+    return (row_bytes + SURFACE_PITCH_ALIGNMENT - 1) & ~(SURFACE_PITCH_ALIGNMENT - 1);
 }
 
 // NVIDIA's nvUnorm10ToFp16: `level` / 1024 as a half-precision float, exact for every `level` below 1024, the only
