@@ -288,6 +288,22 @@ bool replace_timeline_descriptor(VkInstance instance, VkPhysicalDevice physical_
     return is_replaced;
 }
 
+uint32_t count_failed_timelines(VkInstance instance, VkPhysicalDevice physical_device, uint64_t value) {
+    int gpu_fd = open_gpu_file_of(instance, physical_device);
+    if (gpu_fd < 0) {
+        return 0;
+    }
+
+    std::vector<gpu_timeline_args> found = query_timelines_at(gpu_fd, value);
+    close(gpu_fd);
+
+    auto is_failed = [](const gpu_timeline_args& timeline) {
+        return (timeline.flags & GPU_TIMELINE_FAILED) != 0;
+    };
+
+    return static_cast<uint32_t>(std::count_if(found.begin(), found.end(), is_failed));
+}
+
 // NVK accepts every chip the kernel drives, so its physical devices are the NVIDIA GPUs with a 3D class
 static bool lists_exactly_the_nvidia_3d_gpus(
     VkInstance instance,
@@ -608,6 +624,9 @@ static void check_instance() {
 
         printf("vktest: loss\n");
         check_loss(instance, physical_device);
+
+        printf("vktest: fault\n");
+        check_fault(instance, physical_device);
     }
 
     destroy_instance(instance, nullptr);

@@ -35,6 +35,7 @@ bool is_made(const held_burst& burst) {
 VkResult submit_batch(
     const burst_commands& bursts,
     VkQueue queue,
+    VkCommandBuffer command_buffer,
     VkSemaphore gate,
     const std::vector<VkSemaphore>& signals,
     const std::vector<uint64_t>& values
@@ -57,6 +58,9 @@ VkResult submit_batch(
     submit_info.pWaitSemaphores = &gate;
     submit_info.pWaitDstStageMask = &gate_stage;
 
+    submit_info.commandBufferCount = command_buffer != VK_NULL_HANDLE ? 1 : 0;
+    submit_info.pCommandBuffers = &command_buffer;
+
     submit_info.signalSemaphoreCount = static_cast<uint32_t>(signals.size());
     submit_info.pSignalSemaphores = signals.data();
 
@@ -71,9 +75,10 @@ bool holds_burst(const burst_commands& bursts, const held_burst& burst) {
     bool submits_at_once = true;
     for (uint32_t i = 0; i < BURST_SIZE; i++) {
         VkSemaphore gate = i == 0 ? burst.gate : VK_NULL_HANDLE;
+        VkCommandBuffer work = i == 0 ? burst.first_work : VK_NULL_HANDLE;
 
         uint64_t start_ns = monotonic_ns();
-        VkResult result = submit_batch(bursts, burst.queue, gate, {burst.done}, {i + 1});
+        VkResult result = submit_batch(bursts, burst.queue, work, gate, {burst.done}, {i + 1});
         uint64_t took_ns = monotonic_ns() - start_ns;
 
         submits_at_once &= result == VK_SUCCESS && took_ns < SUBMIT_LIMIT_NS;
