@@ -1,5 +1,7 @@
 #include "damage.hpp"
 
+#include <algorithm>
+
 void damage_list::add(int32_t x, int32_t y, int32_t w, int32_t h) {
     if (m_full || w <= 0 || h <= 0) {
         return;
@@ -30,4 +32,16 @@ bool damage_list::clip(rect& r, int32_t screen_w, int32_t screen_h) {
     r.w = x1 - r.x;
     r.h = y1 - r.y;
     return r.w > 0 && r.h > 0;
+}
+
+damage_list::rect damage_list::intersect(const rect& a, const rect& b) {
+    int32_t left = std::max(a.x, b.x);
+    int32_t top = std::max(a.y, b.y);
+    int32_t right = std::min(a.x + a.w, b.x + b.w);
+    int32_t bottom = std::min(a.y + a.h, b.y + b.h);
+    if (right <= left || bottom <= top) {
+        return {};
+    }
+
+    return { left, top, right - left, bottom - top };
 }

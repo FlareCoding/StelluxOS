@@ -27,6 +27,9 @@ public:
     /* Clips r against screen bounds, false when nothing remains. */
     static bool clip(rect& r, int32_t screen_w, int32_t screen_h);
 
+    /* The part of `a` inside `b`, all zero when they do not overlap. */
+    static rect intersect(const rect& a, const rect& b);
+
 private:
     rect m_rects[MAX_RECTS];
     uint32_t m_count = 0;
