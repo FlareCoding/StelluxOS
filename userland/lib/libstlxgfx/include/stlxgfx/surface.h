@@ -8,6 +8,9 @@
 extern "C" {
 #endif
 
+/* `flags` bit: blends onto 32 bpp pixels below alpha 255 use `stlxgfx_blend_straight`. */
+#define STLXGFX_SURFACE_STRAIGHT_ALPHA (1u << 0)
+
 typedef struct {
     uint32_t width;
     uint32_t height;
@@ -18,6 +21,7 @@ typedef struct {
     uint8_t  blue_shift;
     uint8_t* pixels;
     int      owned;
+    uint32_t flags;
 } stlxgfx_surface_t;
 
 static inline uint8_t stlxgfx_alpha_byte_index(const stlxgfx_surface_t* s) {
