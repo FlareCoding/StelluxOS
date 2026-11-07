@@ -99,6 +99,11 @@ struct chip_display {
     chip_displayport displayport;
 };
 
+// The classes of the graphics engine's objects
+struct chip_graphics {
+    uint32_t three_d_class; // NVIDIA's class of the 3D object, which draws
+};
+
 /**
  * What the driver knows about one chip it supports, as an entry of the chip
  * table. The table is the only record of chip-specific values, so the rest of
@@ -113,6 +118,7 @@ struct chip_info {
     uint8_t              interrupt_leaf_count; // 32-bit leaf registers reporting the chip's interrupts to the CPU
     uint32_t             channel_class;        // NVIDIA's class of a channel on an engine's runlist
     uint32_t             copy_class;           // NVIDIA's class of the copy object a channel copies through
+    chip_graphics        graphics;
     chip_display         display;
 };
 

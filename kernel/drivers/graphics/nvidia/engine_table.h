@@ -38,6 +38,9 @@ public:
     // The asynchronous copy engine of the lowest type, or null when the table lists none
     const engine_info* first_async_copy_engine() const;
 
+    // The graphics engine (NVIDIA's GR0), whose runlist holds every graphics channel, or null when the table lists none
+    const engine_info* graphics_engine() const;
+
     uint32_t count() const;
 
 private:
