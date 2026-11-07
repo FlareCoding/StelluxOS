@@ -1,15 +1,18 @@
-// Buffers on memory of their own, command pools, one-time work on a device's queue, timeline semaphores and the barrier
-// after transfer writes, shared by the stages that run work on the GPU
+// Buffers on memory of their own, memory shared through descriptors, command pools, one-time work on a device's queue,
+// timeline semaphores and the barrier after transfer writes, used by the stages that run work on the GPU
 
 #include "vktest.h"
 
 #include <stdint.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 bool find_work_commands(VkInstance instance, work_commands& commands) {
     commands = {
         .allocate_memory = find_command<PFN_vkAllocateMemory>(instance, "vkAllocateMemory"),
         .free_memory = find_command<PFN_vkFreeMemory>(instance, "vkFreeMemory"),
         .map_memory = find_command<PFN_vkMapMemory>(instance, "vkMapMemory"),
+        .get_memory_fd = find_command<PFN_vkGetMemoryFdKHR>(instance, "vkGetMemoryFdKHR"),
         .create_buffer = find_command<PFN_vkCreateBuffer>(instance, "vkCreateBuffer"),
         .destroy_buffer = find_command<PFN_vkDestroyBuffer>(instance, "vkDestroyBuffer"),
         .get_buffer_memory_requirements = find_command<PFN_vkGetBufferMemoryRequirements>(
@@ -33,13 +36,13 @@ bool find_work_commands(VkInstance instance, work_commands& commands) {
         .get_counter_value = find_command<PFN_vkGetSemaphoreCounterValue>(instance, "vkGetSemaphoreCounterValue"),
     };
 
-    return commands.allocate_memory && commands.free_memory && commands.map_memory && commands.create_buffer &&
-        commands.destroy_buffer && commands.get_buffer_memory_requirements && commands.bind_buffer_memory &&
-        commands.get_device_queue && commands.create_command_pool && commands.destroy_command_pool &&
-        commands.allocate_command_buffers && commands.begin_command_buffer && commands.end_command_buffer &&
-        commands.cmd_pipeline_barrier && commands.queue_submit && commands.queue_wait_idle &&
-        commands.create_semaphore && commands.destroy_semaphore && commands.signal_semaphore &&
-        commands.wait_semaphores && commands.get_counter_value;
+    return commands.allocate_memory && commands.free_memory && commands.map_memory && commands.get_memory_fd &&
+        commands.create_buffer && commands.destroy_buffer && commands.get_buffer_memory_requirements &&
+        commands.bind_buffer_memory && commands.get_device_queue && commands.create_command_pool &&
+        commands.destroy_command_pool && commands.allocate_command_buffers && commands.begin_command_buffer &&
+        commands.end_command_buffer && commands.cmd_pipeline_barrier && commands.queue_submit &&
+        commands.queue_wait_idle && commands.create_semaphore && commands.destroy_semaphore &&
+        commands.signal_semaphore && commands.wait_semaphores && commands.get_counter_value;
 }
 
 static uint32_t find_staging_type(const VkPhysicalDeviceMemoryProperties& properties) {
@@ -51,6 +54,146 @@ static uint32_t find_staging_type(const VkPhysicalDeviceMemoryProperties& proper
     }
 
     return UINT32_MAX;
+}
+
+static bool is_host_visible(const VkMemoryType& type) {
+    return (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+}
+
+bool has_visibility(const VkMemoryType& type, type_visibility visibility) {
+    switch (visibility) {
+    case type_visibility::any:
+        return true;
+    case type_visibility::host_visible:
+        return is_host_visible(type);
+    case type_visibility::device_only:
+        return !is_host_visible(type);
+    }
+
+    return false;
+}
+
+uint32_t find_system_type(const VkPhysicalDeviceMemoryProperties& properties) {
+    for (uint32_t type = 0; type < properties.memoryTypeCount; type++) {
+        const VkMemoryType& memory_type = properties.memoryTypes[type];
+        bool is_device_local = (memory_type.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+        if (is_host_visible(memory_type) && !is_device_local) {
+            return type;
+        }
+    }
+
+    return UINT32_MAX;
+}
+
+void write_words(void* mapping, VkDeviceSize size, uint32_t first_word) {
+    uint32_t* words = static_cast<uint32_t*>(mapping);
+    for (uint32_t i = 0; i < size / sizeof(uint32_t); i++) {
+        words[i] = first_word + i;
+    }
+}
+
+bool holds_words(const void* mapping, VkDeviceSize size, uint32_t first_word) {
+    const uint32_t* words = static_cast<const uint32_t*>(mapping);
+    for (uint32_t i = 0; i < size / sizeof(uint32_t); i++) {
+        if (words[i] != first_word + i) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+VkResult allocate_memory(
+    const work_commands& commands,
+    VkDevice device,
+    uint32_t type,
+    VkDeviceSize size,
+    const void* next,
+    VkDeviceMemory& memory
+) {
+    VkMemoryAllocateInfo allocate_info = {};
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.pNext = next;
+    allocate_info.allocationSize = size;
+    allocate_info.memoryTypeIndex = type;
+
+    VkResult result = commands.allocate_memory(device, &allocate_info, nullptr, &memory);
+    if (result != VK_SUCCESS) {
+        memory = VK_NULL_HANDLE;
+    }
+
+    return result;
+}
+
+int export_memory(
+    const work_commands& commands,
+    VkDevice device,
+    uint32_t type,
+    VkDeviceSize size,
+    VkDeviceMemory& memory
+) {
+    VkExportMemoryAllocateInfo export_info = {};
+    export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+    export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    if (allocate_memory(commands, device, type, size, &export_info, memory) != VK_SUCCESS) {
+        return -1;
+    }
+
+    VkMemoryGetFdInfoKHR fd_info = {};
+    fd_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    fd_info.memory = memory;
+    fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+    int descriptor = -1;
+    if (commands.get_memory_fd(device, &fd_info, &descriptor) != VK_SUCCESS) {
+        return -1;
+    }
+
+    return descriptor;
+}
+
+VkResult import_memory(
+    const work_commands& commands,
+    VkDevice device,
+    uint32_t type,
+    VkDeviceSize size,
+    int descriptor,
+    VkDeviceMemory& memory
+) {
+    VkImportMemoryFdInfoKHR import_info = {};
+    import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    import_info.fd = descriptor;
+
+    return allocate_memory(commands, device, type, size, &import_info, memory);
+}
+
+int make_read_only_shared_memory(
+    VkInstance instance,
+    VkPhysicalDevice physical_device,
+    VkDeviceSize size,
+    uint32_t first_word
+) {
+    int shared = memfd_create("vktest", MFD_CLOEXEC);
+    bool is_sized = shared >= 0 && ftruncate(shared, size) == 0;
+    void* mapping = is_sized ? mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shared, 0) : MAP_FAILED;
+    int buffer = -1;
+    if (mapping != MAP_FAILED) {
+        write_words(mapping, size, first_word);
+        munmap(mapping, size);
+        buffer = import_shared_memory(instance, physical_device, shared);
+    }
+
+    int read_only = buffer >= 0 ? restrict_to_read(instance, physical_device, buffer) : -1;
+    if (buffer >= 0) {
+        close(buffer);
+    }
+
+    if (shared >= 0) {
+        close(shared);
+    }
+
+    return read_only;
 }
 
 VkBuffer bind_new_buffer(
@@ -84,6 +227,21 @@ VkBuffer bind_new_buffer(
     return buffer;
 }
 
+VkBuffer bind_shared_buffer(
+    const work_commands& commands,
+    VkDevice device,
+    VkDeviceMemory memory,
+    uint32_t type,
+    VkDeviceSize size,
+    VkBufferUsageFlags usage
+) {
+    VkExternalMemoryBufferCreateInfo external_info = {};
+    external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+    external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+    return bind_new_buffer(commands, device, memory, type, size, usage, &external_info);
+}
+
 bound_buffer make_bound_buffer(
     const work_commands& commands,
     VkDevice device,
@@ -91,14 +249,8 @@ bound_buffer make_bound_buffer(
     VkDeviceSize size,
     VkBufferUsageFlags usage
 ) {
-    VkMemoryAllocateInfo allocate_info = {};
-    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocate_info.allocationSize = size;
-    allocate_info.memoryTypeIndex = type;
-
     bound_buffer made;
-    if (commands.allocate_memory(device, &allocate_info, nullptr, &made.memory) != VK_SUCCESS) {
-        made.memory = VK_NULL_HANDLE;
+    if (allocate_memory(commands, device, type, size, nullptr, made.memory) != VK_SUCCESS) {
         return made;
     }
 

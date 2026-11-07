@@ -1,0 +1,47 @@
+; vktest's read shader: invocation i of a dispatch copies element i of the read-only storage buffer at set 0, binding 1
+; into element i of the storage buffer at set 0, binding 0
+
+                     OpCapability Shader
+                     OpMemoryModel Logical GLSL450
+                     OpEntryPoint GLCompute %main "main" %invocation_id %target %source
+                     OpExecutionMode %main LocalSize 64 1 1
+
+                     OpDecorate %invocation_id BuiltIn GlobalInvocationId
+                     OpDecorate %word_array ArrayStride 4
+                     OpMemberDecorate %target_block 0 Offset 0
+                     OpDecorate %target_block Block
+                     OpMemberDecorate %source_block 0 Offset 0
+                     OpMemberDecorate %source_block 0 NonWritable
+                     OpDecorate %source_block Block
+                     OpDecorate %target DescriptorSet 0
+                     OpDecorate %target Binding 0
+                     OpDecorate %source DescriptorSet 0
+                     OpDecorate %source Binding 1
+
+              %void = OpTypeVoid
+         %main_type = OpTypeFunction %void
+              %uint = OpTypeInt 32 0
+             %uint3 = OpTypeVector %uint 3
+            %uint_0 = OpConstant %uint 0
+        %word_array = OpTypeRuntimeArray %uint
+      %target_block = OpTypeStruct %word_array
+      %source_block = OpTypeStruct %word_array
+        %id_pointer = OpTypePointer Input %uint3
+    %target_pointer = OpTypePointer StorageBuffer %target_block
+    %source_pointer = OpTypePointer StorageBuffer %source_block
+      %word_pointer = OpTypePointer StorageBuffer %uint
+
+     %invocation_id = OpVariable %id_pointer Input
+            %target = OpVariable %target_pointer StorageBuffer
+            %source = OpVariable %source_pointer StorageBuffer
+
+              %main = OpFunction %void None %main_type
+             %entry = OpLabel
+                %id = OpLoad %uint3 %invocation_id
+             %index = OpCompositeExtract %uint %id 0
+    %source_element = OpAccessChain %word_pointer %source %uint_0 %index
+              %word = OpLoad %uint %source_element
+    %target_element = OpAccessChain %word_pointer %target %uint_0 %index
+                     OpStore %target_element %word
+                     OpReturn
+                     OpFunctionEnd

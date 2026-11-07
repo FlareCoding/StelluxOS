@@ -19,7 +19,6 @@ struct memory_commands {
     PFN_vkMapMemory2                    map_memory2;
     PFN_vkUnmapMemory                   unmap_memory;
     PFN_vkUnmapMemory2                  unmap_memory2;
-    PFN_vkGetMemoryFdKHR                get_memory_fd;
     PFN_vkGetBufferOpaqueCaptureAddress get_buffer_opaque_capture_address;
 
     PFN_vkCmdCopyBuffer cmd_copy_buffer;
@@ -38,15 +37,7 @@ struct memory_stage {
     VkDevice                         importer;
 };
 
-// Which memory types a check covers
-enum class type_visibility {
-    any,
-    host_visible,
-    device_only,
-};
-
 constexpr VkDeviceSize MEMORY_SIZE = 65536;
-constexpr uint32_t MEMORY_WORD_COUNT = MEMORY_SIZE / sizeof(uint32_t);
 constexpr uint32_t CPU_WORDS_START = 0x10000000;
 constexpr uint32_t EXPORTER_WORDS_START = 0x20000000;
 constexpr uint32_t IMPORTER_WORDS_START = 0x30000000;
@@ -55,75 +46,6 @@ constexpr uint32_t COPIED_WORDS_START = 0x50000000;
 constexpr uint32_t WRITER_WORDS_START = 0x60000000;
 constexpr uint32_t READ_ONLY_WORDS_START = 0x70000000;
 constexpr uint32_t SHARED_WORDS_START = 0x80000000;
-
-static bool is_host_visible(const VkMemoryType& type) {
-    return (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
-}
-
-// The first host-visible type without `VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT`, NVK's system memory type on a discrete
-// GPU, or `UINT32_MAX`
-static uint32_t find_system_type(const VkPhysicalDeviceMemoryProperties& properties) {
-    for (uint32_t type = 0; type < properties.memoryTypeCount; type++) {
-        const VkMemoryType& memory_type = properties.memoryTypes[type];
-        bool is_device_local = (memory_type.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
-        if (is_host_visible(memory_type) && !is_device_local) {
-            return type;
-        }
-    }
-
-    return UINT32_MAX;
-}
-
-static bool has_visibility(const VkMemoryType& type, type_visibility visibility) {
-    switch (visibility) {
-    case type_visibility::any:
-        return true;
-    case type_visibility::host_visible:
-        return is_host_visible(type);
-    case type_visibility::device_only:
-        return !is_host_visible(type);
-    }
-
-    return false;
-}
-
-// Whether `holds` is true of every memory type of `visibility`, of which there must be at least one
-template <typename Predicate>
-static bool holds_for_every_type(const memory_stage& stage, type_visibility visibility, Predicate holds) {
-    uint32_t covered_count = 0;
-    bool holds_for_all = true;
-    for (uint32_t type = 0; type < stage.properties.memoryTypeCount; type++) {
-        if (!has_visibility(stage.properties.memoryTypes[type], visibility)) {
-            continue;
-        }
-
-        covered_count++;
-        holds_for_all &= holds(stage, type);
-    }
-
-    return covered_count > 0 && holds_for_all;
-}
-
-static VkResult allocate(
-    const memory_stage& stage,
-    VkDevice device,
-    uint32_t type,
-    const void* next,
-    VkDeviceMemory& memory
-) {
-    VkMemoryAllocateInfo allocate_info = {};
-    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocate_info.pNext = next;
-    allocate_info.allocationSize = MEMORY_SIZE;
-    allocate_info.memoryTypeIndex = type;
-
-    VkResult result = stage.work.allocate_memory(device, &allocate_info, nullptr, &memory);
-    if (result != VK_SUCCESS) {
-        memory = VK_NULL_HANDLE;
-    }
-
-    return result;
-}
 
 static void* map(const memory_stage& stage, VkDevice device, VkDeviceMemory memory) {
     void* mapping = nullptr;
@@ -134,66 +56,9 @@ static void* map(const memory_stage& stage, VkDevice device, VkDeviceMemory memo
     return mapping;
 }
 
-static void write_words(void* mapping, uint32_t first_word) {
-    uint32_t* words = static_cast<uint32_t*>(mapping);
-    for (uint32_t i = 0; i < MEMORY_WORD_COUNT; i++) {
-        words[i] = first_word + i;
-    }
-}
-
-static bool holds_words(const void* mapping, uint32_t first_word) {
-    const uint32_t* words = static_cast<const uint32_t*>(mapping);
-    for (uint32_t i = 0; i < MEMORY_WORD_COUNT; i++) {
-        if (words[i] != first_word + i) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-// Allocates exportable memory of `type` on the exporter into `memory` and returns an opaque descriptor of it, or -1
-static int export_memory(const memory_stage& stage, uint32_t type, VkDeviceMemory& memory) {
-    VkExportMemoryAllocateInfo export_info = {};
-    export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
-    export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-    if (allocate(stage, stage.exporter, type, &export_info, memory) != VK_SUCCESS) {
-        return -1;
-    }
-
-    VkMemoryGetFdInfoKHR fd_info = {};
-    fd_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
-    fd_info.memory = memory;
-    fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-
-    int descriptor = -1;
-    if (stage.commands.get_memory_fd(stage.exporter, &fd_info, &descriptor) != VK_SUCCESS) {
-        return -1;
-    }
-
-    return descriptor;
-}
-
-// Imports `descriptor` into `memory` on `device` as memory of `type`. The import owns the descriptor once it succeeds,
-// and the caller still owns it after a failure.
-static VkResult import_memory(
-    const memory_stage& stage,
-    VkDevice device,
-    uint32_t type,
-    int descriptor,
-    VkDeviceMemory& memory
-) {
-    VkImportMemoryFdInfoKHR import_info = {};
-    import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-    import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-    import_info.fd = descriptor;
-
-    return allocate(stage, device, type, &import_info, memory);
-}
-
 static bool allocates(const memory_stage& stage, uint32_t type) {
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    bool is_allocated = allocate(stage, stage.exporter, type, nullptr, memory) == VK_SUCCESS;
+    bool is_allocated = allocate_memory(stage.work, stage.exporter, type, MEMORY_SIZE, nullptr, memory) == VK_SUCCESS;
     stage.work.free_memory(stage.exporter, memory, nullptr);
 
     return is_allocated;
@@ -202,18 +67,18 @@ static bool allocates(const memory_stage& stage, uint32_t type) {
 // Whether memory of `type` still holds what the CPU wrote through one mapping when mapped again
 static bool keeps_cpu_writes(const memory_stage& stage, uint32_t type) {
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    if (allocate(stage, stage.exporter, type, nullptr, memory) != VK_SUCCESS) {
+    if (allocate_memory(stage.work, stage.exporter, type, MEMORY_SIZE, nullptr, memory) != VK_SUCCESS) {
         return false;
     }
 
     bool keeps_writes = false;
     void* written = map(stage, stage.exporter, memory);
     if (written != nullptr) {
-        write_words(written, CPU_WORDS_START + type);
+        write_words(written, MEMORY_SIZE, CPU_WORDS_START + type);
         stage.commands.unmap_memory(stage.exporter, memory);
 
         void* reread = map(stage, stage.exporter, memory);
-        keeps_writes = reread != nullptr && holds_words(reread, CPU_WORDS_START + type);
+        keeps_writes = reread != nullptr && holds_words(reread, MEMORY_SIZE, CPU_WORDS_START + type);
     }
 
     stage.work.free_memory(stage.exporter, memory, nullptr);
@@ -230,7 +95,7 @@ static bool maps_at_reserved_range(const memory_stage& stage, uint32_t type) {
     }
 
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    bool is_allocated = allocate(stage, stage.exporter, type, nullptr, memory) == VK_SUCCESS;
+    bool is_allocated = allocate_memory(stage.work, stage.exporter, type, MEMORY_SIZE, nullptr, memory) == VK_SUCCESS;
 
     VkMemoryMapPlacedInfoEXT placed_info = {};
     placed_info.sType = VK_STRUCTURE_TYPE_MEMORY_MAP_PLACED_INFO_EXT;
@@ -247,7 +112,7 @@ static bool maps_at_reserved_range(const memory_stage& stage, uint32_t type) {
     bool is_placed = is_allocated && stage.commands.map_memory2(stage.exporter, &map_info, &placed) == VK_SUCCESS &&
         placed == range;
     if (is_placed) {
-        write_words(placed, PLACED_WORDS_START + type);
+        write_words(placed, MEMORY_SIZE, PLACED_WORDS_START + type);
     }
 
     VkMemoryUnmapInfo unmap_info = {};
@@ -264,10 +129,10 @@ static bool maps_at_reserved_range(const memory_stage& stage, uint32_t type) {
     }
 
     bool drops_memory = keeps_range && mprotect(range, MEMORY_SIZE, PROT_READ) == 0 &&
-        !holds_words(range, PLACED_WORDS_START + type);
+        !holds_words(range, MEMORY_SIZE, PLACED_WORDS_START + type);
 
     void* reread = keeps_range ? map(stage, stage.exporter, memory) : nullptr;
-    bool keeps_writes = reread != nullptr && holds_words(reread, PLACED_WORDS_START + type);
+    bool keeps_writes = reread != nullptr && holds_words(reread, MEMORY_SIZE, PLACED_WORDS_START + type);
 
     stage.work.free_memory(stage.exporter, memory, nullptr);
     munmap(range, MEMORY_SIZE);
@@ -279,11 +144,11 @@ static bool maps_at_reserved_range(const memory_stage& stage, uint32_t type) {
 // other device's mapping
 static bool shares_through_descriptor(const memory_stage& stage, uint32_t type) {
     VkDeviceMemory exported = VK_NULL_HANDLE;
-    int descriptor = export_memory(stage, type, exported);
+    int descriptor = export_memory(stage.work, stage.exporter, type, MEMORY_SIZE, exported);
 
     VkDeviceMemory imported = VK_NULL_HANDLE;
-    bool is_imported =
-        descriptor >= 0 && import_memory(stage, stage.importer, type, descriptor, imported) == VK_SUCCESS;
+    bool is_imported = descriptor >= 0 &&
+        import_memory(stage.work, stage.importer, type, MEMORY_SIZE, descriptor, imported) == VK_SUCCESS;
     if (descriptor >= 0 && !is_imported) {
         close(descriptor);
     }
@@ -292,11 +157,11 @@ static bool shares_through_descriptor(const memory_stage& stage, uint32_t type) 
     void* exported_mapping = is_imported ? map(stage, stage.exporter, exported) : nullptr;
     void* imported_mapping = is_imported ? map(stage, stage.importer, imported) : nullptr;
     if (exported_mapping != nullptr && imported_mapping != nullptr) {
-        write_words(exported_mapping, EXPORTER_WORDS_START);
-        bool shows_exporter_writes = holds_words(imported_mapping, EXPORTER_WORDS_START);
+        write_words(exported_mapping, MEMORY_SIZE, EXPORTER_WORDS_START);
+        bool shows_exporter_writes = holds_words(imported_mapping, MEMORY_SIZE, EXPORTER_WORDS_START);
 
-        write_words(imported_mapping, IMPORTER_WORDS_START);
-        shares = shows_exporter_writes && holds_words(exported_mapping, IMPORTER_WORDS_START);
+        write_words(imported_mapping, MEMORY_SIZE, IMPORTER_WORDS_START);
+        shares = shows_exporter_writes && holds_words(exported_mapping, MEMORY_SIZE, IMPORTER_WORDS_START);
     }
 
     stage.work.free_memory(stage.importer, imported, nullptr);
@@ -308,14 +173,15 @@ static bool shares_through_descriptor(const memory_stage& stage, uint32_t type) 
 // Whether memory of `type` imports through a descriptor with `GPU_RIGHT_READ` alone
 static bool takes_read_only_import(const memory_stage& stage, uint32_t type) {
     VkDeviceMemory exported = VK_NULL_HANDLE;
-    int descriptor = export_memory(stage, type, exported);
+    int descriptor = export_memory(stage.work, stage.exporter, type, MEMORY_SIZE, exported);
     int read_only = descriptor >= 0 ? restrict_to_read(stage.instance, stage.physical_device, descriptor) : -1;
     if (descriptor >= 0) {
         close(descriptor);
     }
 
     VkDeviceMemory imported = VK_NULL_HANDLE;
-    bool is_imported = read_only >= 0 && import_memory(stage, stage.importer, type, read_only, imported) == VK_SUCCESS;
+    bool is_imported = read_only >= 0 &&
+        import_memory(stage.work, stage.importer, type, MEMORY_SIZE, read_only, imported) == VK_SUCCESS;
     if (read_only >= 0 && !is_imported) {
         close(read_only);
     }
@@ -373,7 +239,8 @@ static bool binds_at_released_address(const memory_stage& stage) {
     uint32_t type = has_type ? __builtin_ctz(requirements.memoryTypeBits) : 0;
 
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    bool has_memory = has_type && allocate(stage, stage.exporter, type, &flags_info, memory) == VK_SUCCESS;
+    bool has_memory = has_type &&
+        allocate_memory(stage.work, stage.exporter, type, MEMORY_SIZE, &flags_info, memory) == VK_SUCCESS;
     bool first_binds = has_memory && stage.work.bind_buffer_memory(stage.exporter, first, memory, 0) == VK_SUCCESS;
     uint64_t address = first_binds ? read_capture_address(stage, first) : 0;
     stage.work.destroy_buffer(stage.exporter, first, nullptr);
@@ -386,16 +253,6 @@ static bool binds_at_released_address(const memory_stage& stage) {
     stage.work.free_memory(stage.exporter, memory, nullptr);
 
     return keeps_address;
-}
-
-// Binds a new buffer for GPU copies at the start of `memory` of `type` on `device`, memory shared through an opaque
-// descriptor, or returns `VK_NULL_HANDLE`. A buffer on such memory must name that handle type.
-static VkBuffer bind_shared_buffer(const memory_stage& stage, VkDevice device, uint32_t type, VkDeviceMemory memory) {
-    VkExternalMemoryBufferCreateInfo external_info = {};
-    external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
-    external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-
-    return bind_new_buffer(stage.work, device, memory, type, MEMORY_SIZE, TRANSFER_USAGE, &external_info);
 }
 
 // Records a copy of each buffer of `chain` into the next, each reading what the one before it wrote, the last one's
@@ -439,9 +296,9 @@ static bool carries_gpu_copies(const memory_stage& stage, uint32_t type) {
     bool carries = false;
     bool is_ready = source.words != nullptr && target.words != nullptr && middle.buffer != VK_NULL_HANDLE;
     if (is_ready) {
-        write_words(source.words, COPIED_WORDS_START + type);
+        write_words(source.words, MEMORY_SIZE, COPIED_WORDS_START + type);
         VkResult result = copy_on_gpu(stage, stage.exporter, {source.buffer, middle.buffer, target.buffer});
-        carries = result == VK_SUCCESS && holds_words(target.words, COPIED_WORDS_START + type);
+        carries = result == VK_SUCCESS && holds_words(target.words, MEMORY_SIZE, COPIED_WORDS_START + type);
     }
 
     destroy_bound_buffer(stage.work, stage.exporter, target);
@@ -460,21 +317,26 @@ static bool refuses_map(const memory_stage& stage, VkDevice device, VkDeviceMemo
 // and a GPU copy reads. The import owns the descriptor once it succeeds, and this closes it otherwise.
 static bool reads_unmappable_import(const memory_stage& stage, uint32_t type, int descriptor, uint32_t first_word) {
     bound_buffer imported;
-    bool is_imported = import_memory(stage, stage.importer, type, descriptor, imported.memory) == VK_SUCCESS;
+    bool is_imported =
+        import_memory(stage.work, stage.importer, type, MEMORY_SIZE, descriptor, imported.memory) == VK_SUCCESS;
     if (!is_imported) {
         close(descriptor);
     }
 
     bool refuses_cpu_map = is_imported && refuses_map(stage, stage.importer, imported.memory);
 
-    imported.buffer = is_imported ? bind_shared_buffer(stage, stage.importer, type, imported.memory) : VK_NULL_HANDLE;
+    if (is_imported) {
+        imported.buffer =
+            bind_shared_buffer(stage.work, stage.importer, imported.memory, type, MEMORY_SIZE, TRANSFER_USAGE);
+    }
+
     bound_buffer target =
         make_staging_buffer(stage.work, stage.importer, stage.properties, MEMORY_SIZE, TRANSFER_USAGE);
 
     bool reads = false;
     if (imported.buffer != VK_NULL_HANDLE && target.words != nullptr) {
         VkResult result = copy_on_gpu(stage, stage.importer, {imported.buffer, target.buffer});
-        reads = result == VK_SUCCESS && holds_words(target.words, first_word);
+        reads = result == VK_SUCCESS && holds_words(target.words, MEMORY_SIZE, first_word);
     }
 
     destroy_bound_buffer(stage.work, stage.importer, target);
@@ -487,10 +349,10 @@ static bool reads_unmappable_import(const memory_stage& stage, uint32_t type, in
 // `GPU_RIGHT_READ` alone, is read by a GPU copy and refused by vkMapMemory
 static bool reads_read_only_import(const memory_stage& stage, uint32_t type) {
     VkDeviceMemory exported = VK_NULL_HANDLE;
-    int descriptor = export_memory(stage, type, exported);
+    int descriptor = export_memory(stage.work, stage.exporter, type, MEMORY_SIZE, exported);
     void* mapping = descriptor >= 0 ? map(stage, stage.exporter, exported) : nullptr;
     if (mapping != nullptr) {
-        write_words(mapping, READ_ONLY_WORDS_START + type);
+        write_words(mapping, MEMORY_SIZE, READ_ONLY_WORDS_START + type);
     }
 
     int read_only = mapping != nullptr ? restrict_to_read(stage.instance, stage.physical_device, descriptor) : -1;
@@ -504,36 +366,16 @@ static bool reads_read_only_import(const memory_stage& stage, uint32_t type) {
     return reads;
 }
 
-// Writes words from `first_word` into new shared memory, imports it as a GPU buffer and returns a descriptor of that
-// buffer with `GPU_RIGHT_READ` alone, or -1. The caller owns the descriptor.
-static int make_read_only_shared_memory(const memory_stage& stage, uint32_t first_word) {
-    int shared = memfd_create("vktest", MFD_CLOEXEC);
-    bool is_sized = shared >= 0 && ftruncate(shared, MEMORY_SIZE) == 0;
-    void* mapping = is_sized ? mmap(nullptr, MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shared, 0) : MAP_FAILED;
-    int buffer = -1;
-    if (mapping != MAP_FAILED) {
-        write_words(mapping, first_word);
-        munmap(mapping, MEMORY_SIZE);
-        buffer = import_shared_memory(stage.instance, stage.physical_device, shared);
-    }
-
-    int read_only = buffer >= 0 ? restrict_to_read(stage.instance, stage.physical_device, buffer) : -1;
-    if (buffer >= 0) {
-        close(buffer);
-    }
-
-    if (shared >= 0) {
-        close(shared);
-    }
-
-    return read_only;
-}
-
 // Whether shared memory the CPU wrote, imported through a descriptor with `GPU_RIGHT_READ` alone as memory of the
 // system memory type, is read by a GPU copy and refused by vkMapMemory
 static bool reads_read_only_shared_memory(const memory_stage& stage) {
     uint32_t type = find_system_type(stage.properties);
-    int read_only = type != UINT32_MAX ? make_read_only_shared_memory(stage, SHARED_WORDS_START) : -1;
+    if (type == UINT32_MAX) {
+        return false;
+    }
+
+    int read_only =
+        make_read_only_shared_memory(stage.instance, stage.physical_device, MEMORY_SIZE, SHARED_WORDS_START);
 
     return read_only >= 0 && reads_unmappable_import(stage, type, read_only, SHARED_WORDS_START);
 }
@@ -550,17 +392,20 @@ static bool loses_writer(const memory_stage& stage, uint32_t type, int descripto
     }
 
     bound_buffer imported;
-    bool is_imported = import_memory(stage, writer, type, descriptor, imported.memory) == VK_SUCCESS;
+    bool is_imported = import_memory(stage.work, writer, type, MEMORY_SIZE, descriptor, imported.memory) == VK_SUCCESS;
     if (!is_imported) {
         close(descriptor);
     }
 
-    imported.buffer = is_imported ? bind_shared_buffer(stage, writer, type, imported.memory) : VK_NULL_HANDLE;
+    if (is_imported) {
+        imported.buffer = bind_shared_buffer(stage.work, writer, imported.memory, type, MEMORY_SIZE, TRANSFER_USAGE);
+    }
+
     bound_buffer source = make_staging_buffer(stage.work, writer, stage.properties, MEMORY_SIZE, TRANSFER_USAGE);
 
     bool is_lost = false;
     if (source.words != nullptr && imported.buffer != VK_NULL_HANDLE) {
-        write_words(source.words, WRITER_WORDS_START + type);
+        write_words(source.words, MEMORY_SIZE, WRITER_WORDS_START + type);
         is_lost = copy_on_gpu(stage, writer, {source.buffer, imported.buffer}) == VK_ERROR_DEVICE_LOST;
     }
 
@@ -583,15 +428,16 @@ static bool refuses_gpu_writes_to_read_only_import(const memory_stage& stage, ui
         make_staging_buffer(stage.work, stage.exporter, stage.properties, MEMORY_SIZE, TRANSFER_USAGE);
 
     bound_buffer exported;
-    int descriptor = export_memory(stage, type, exported.memory);
+    int descriptor = export_memory(stage.work, stage.exporter, type, MEMORY_SIZE, exported.memory);
     if (descriptor >= 0) {
-        exported.buffer = bind_shared_buffer(stage, stage.exporter, type, exported.memory);
+        exported.buffer =
+            bind_shared_buffer(stage.work, stage.exporter, exported.memory, type, MEMORY_SIZE, TRANSFER_USAGE);
     }
 
     bool is_written = false;
     bool is_ready = source.words != nullptr && target.words != nullptr && exported.buffer != VK_NULL_HANDLE;
     if (is_ready) {
-        write_words(source.words, EXPORTER_WORDS_START + type);
+        write_words(source.words, MEMORY_SIZE, EXPORTER_WORDS_START + type);
         is_written = copy_on_gpu(stage, stage.exporter, {source.buffer, exported.buffer}) == VK_SUCCESS;
     }
 
@@ -603,7 +449,7 @@ static bool refuses_gpu_writes_to_read_only_import(const memory_stage& stage, ui
     bool keeps_words = false;
     if (read_only >= 0 && loses_writer(stage, type, read_only)) {
         VkResult result = copy_on_gpu(stage, stage.exporter, {exported.buffer, target.buffer});
-        keeps_words = result == VK_SUCCESS && holds_words(target.words, EXPORTER_WORDS_START + type);
+        keeps_words = result == VK_SUCCESS && holds_words(target.words, MEMORY_SIZE, EXPORTER_WORDS_START + type);
     }
 
     destroy_bound_buffer(stage.work, stage.exporter, exported);
@@ -744,7 +590,6 @@ void check_memory(VkInstance instance, VkPhysicalDevice physical_device) {
         .map_memory2 = find_command<PFN_vkMapMemory2>(instance, "vkMapMemory2"),
         .unmap_memory = find_command<PFN_vkUnmapMemory>(instance, "vkUnmapMemory"),
         .unmap_memory2 = find_command<PFN_vkUnmapMemory2>(instance, "vkUnmapMemory2"),
-        .get_memory_fd = find_command<PFN_vkGetMemoryFdKHR>(instance, "vkGetMemoryFdKHR"),
         .get_buffer_opaque_capture_address = find_command<PFN_vkGetBufferOpaqueCaptureAddress>(
             instance,
             "vkGetBufferOpaqueCaptureAddress"
@@ -756,7 +601,7 @@ void check_memory(VkInstance instance, VkPhysicalDevice physical_device) {
     bool has_work_commands = find_work_commands(instance, stage.work);
     bool has_commands = commands.get_memory_properties && commands.enumerate_device_extensions &&
         commands.get_external_buffer_properties && commands.get_image_format_properties && commands.destroy_device &&
-        commands.map_memory2 && commands.unmap_memory && commands.unmap_memory2 && commands.get_memory_fd &&
+        commands.map_memory2 && commands.unmap_memory && commands.unmap_memory2 &&
         commands.get_buffer_opaque_capture_address && commands.cmd_copy_buffer && has_work_commands;
     check("vkGetInstanceProcAddr finds the memory commands vktest calls", has_commands);
     if (!has_commands) {
