@@ -12,9 +12,13 @@
 namespace drivers::nvidia {
 
 /**
- * A GPU address space: the firmware's address space object, allocated
- * externally owned under the device, whose page tables are the kernel's
- * `context_page_tables`, and whose translations only the kernel writes.
+ * A GPU address space: the firmware's address space object, allocated under
+ * the device, whose page tables are the kernel's `context_page_tables`. In an
+ * externally owned space only the kernel writes translations. A split space
+ * leaves the firmware the 512 MiB from `rm::FIRMWARE_RANGE_START`, which it
+ * maps through tables of its own below the kernel's directory 1 there, so in
+ * a split space the kernel must map nothing below 256 GiB, that directory's
+ * reach.
  */
 class address_space {
 public:
@@ -35,14 +39,26 @@ public:
     int32_t create();
 
     /**
-     * @brief Take the root page directory back from the firmware, release its
-     * object, then destroy the page tables. Every channel group in the
-     * address space must be released first.
-     * @return `OK`, `ERR_BAD_STATE` before `create`, the first error the
-     * firmware returns, which is logged, or an error of
+     * @brief Create the page tables with the directories above the firmware's
+     * range, allocate the firmware's object split, and hand it those
+     * directories.
+     * @return `OK`, `ERR_BAD_STATE` while the object exists, an error of
+     * `context_page_tables::create` or `add_directories`, or the error the
+     * firmware returns, after releasing what the call created but an object
+     * whose release the firmware refuses. Every firmware error is logged.
+     */
+    int32_t create_split();
+
+    /**
+     * @brief Take the root page directory back from the firmware unless the
+     * space is split, release its object, then destroy the page tables. Every
+     * channel group in the address space must be released first.
+     * @return `OK`, `ERR_BAD_STATE` before `create` or `create_split`, the
+     * first error the firmware returns, which is logged, or an error of
      * `context_page_tables::destroy`. After a refused take-back the object
      * and the tables stay until a later `destroy`, and after a refused
-     * release the object stays in the firmware for good.
+     * release the object stays in the firmware for good, with a split space's
+     * tables, which the firmware may still write.
      */
     int32_t destroy();
 
@@ -56,6 +72,7 @@ private:
     const gpu_objects&  m_objects;
     context_page_tables m_page_tables;
     rm::handle          m_handle = 0;
+    bool                m_is_split = false;
 };
 
 } // namespace drivers::nvidia

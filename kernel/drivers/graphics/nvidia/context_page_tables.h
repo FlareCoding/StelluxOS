@@ -15,6 +15,9 @@ struct memory_run {
     uint64_t bytes;   // a multiple of 4 KiB, not 0
 };
 
+// The directories from the root down to directory 1: the root, directory 2 and directory 1
+constexpr uint32_t DIRECTORIES_DOWN_TO_DIRECTORY_1 = 3;
+
 /**
  * A GPU context's page tables. A GPU context is one GPU address space and the
  * queues that run work in it, and the card translates its addresses through
@@ -57,6 +60,17 @@ public:
 
     // Where the root page directory lies in video memory, or 0 while the object holds none
     uint64_t directory_offset() const;
+
+    /**
+     * @brief Add and write the directories down to directory 1 translating
+     * `gpu_address`, with no invalidate, and give the video memory offsets of
+     * the root, directory 2 and directory 1, for a firmware that adds the
+     * tables below.
+     * @return `OK`, `ERR_BAD_STATE` before `create`, an error of adding a
+     * table, with none added, `ERR_GPU_FAILED` once the mark is set, or the
+     * update's error.
+     */
+    int32_t add_directories(uint64_t gpu_address, uint64_t (&offsets)[DIRECTORIES_DOWN_TO_DIRECTORY_1]);
 
     /**
      * @brief Map the context's addresses from `gpu_address` on onto `runs` in

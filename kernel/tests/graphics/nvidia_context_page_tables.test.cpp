@@ -250,6 +250,72 @@ TEST(nvidia_context_page_tables, a_first_mapping_writes_its_four_tables_before_t
     EXPECT_EQ(memory.entry(table_offset(4), 13), page_entry(MAPPED_VRAM + 3 * PAGE_BYTES, GENERIC_MEMORY));
 }
 
+// Directory 1, then directory 2, each written whole, then the root's entry naming directory 2, with no invalidate, and
+// a second call over the same address adds and writes nothing and gives the same offsets
+TEST(nvidia_context_page_tables, add_directories_writes_the_directories_above_an_address_once) {
+    table_video_memory memory;
+    ASSERT_NOT_NULL(memory.words);
+    failed_mark failed;
+    context_page_tables tables(memory, failed);
+
+    uint64_t offsets[3] = {};
+    EXPECT_EQ(tables.add_directories(INDEXED_ADDRESS, offsets), ERR_BAD_STATE);
+    ASSERT_EQ(tables.create(), OK);
+
+    ASSERT_EQ(tables.add_directories(INDEXED_ADDRESS, offsets), OK);
+    EXPECT_EQ(offsets[0], table_offset(0));
+    EXPECT_EQ(offsets[1], table_offset(1));
+    EXPECT_EQ(offsets[2], table_offset(2));
+    EXPECT_EQ(memory.allocations, 3u);
+    EXPECT_EQ(memory.invalidates, 0u);
+
+    ASSERT_EQ(memory.run_count, 3u);
+    EXPECT_EQ(memory.run_offsets[0], table_offset(2));
+    EXPECT_EQ(memory.run_offsets[1], table_offset(1));
+    EXPECT_EQ(memory.run_offsets[2], table_offset(0) + 8);
+
+    EXPECT_EQ(memory.entry(table_offset(0), 1), directory_entry(table_offset(1)));
+    EXPECT_EQ(memory.entry(table_offset(1), 3), directory_entry(table_offset(2)));
+    EXPECT_EQ(memory.words_holding(table_offset(1), 0), TABLE_WORDS - 1);
+    EXPECT_EQ(memory.words_holding(table_offset(2), 0), TABLE_WORDS);
+
+    uint64_t again[3] = {};
+    ASSERT_EQ(tables.add_directories(INDEXED_ADDRESS, again), OK);
+    EXPECT_EQ(memory.allocations, 3u);
+    EXPECT_EQ(memory.run_count, 0u);
+
+    EXPECT_EQ(again[0], offsets[0]);
+    EXPECT_EQ(again[1], offsets[1]);
+    EXPECT_EQ(again[2], offsets[2]);
+
+    EXPECT_EQ(tables.destroy(), OK);
+    EXPECT_EQ(memory.releases, 3u);
+    EXPECT_EQ(memory.refused_calls, 0u);
+}
+
+// No room for directory 1 releases the directory 2 added before it and writes nothing
+TEST(nvidia_context_page_tables, add_directories_without_room_adds_no_directory) {
+    table_video_memory memory;
+    ASSERT_NOT_NULL(memory.words);
+    memory.allocations_left = 2;
+    failed_mark failed;
+    context_page_tables tables(memory, failed);
+    ASSERT_EQ(tables.create(), OK);
+
+    uint64_t offsets[3] = {};
+    EXPECT_EQ(tables.add_directories(INDEXED_ADDRESS, offsets), ERR_NO_MEMORY);
+    EXPECT_EQ(memory.allocations, 2u);
+    EXPECT_EQ(memory.releases, 1u);
+    EXPECT_TRUE(memory.is_released[1]);
+
+    EXPECT_EQ(memory.updates, 1u);
+    EXPECT_FALSE(failed.is_set());
+
+    EXPECT_EQ(tables.destroy(), OK);
+    EXPECT_EQ(memory.releases, 2u);
+    EXPECT_EQ(memory.refused_calls, 0u);
+}
+
 TEST(nvidia_context_page_tables, a_mapping_and_an_unmap_across_2_mib_write_a_page_table_on_each_side) {
     table_video_memory memory;
     ASSERT_NOT_NULL(memory.words);

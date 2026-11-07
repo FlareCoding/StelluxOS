@@ -1169,6 +1169,36 @@ struct unset_page_directory_params {
 static_assert(sizeof(set_page_directory_params) == 32, "NVIDIA's layout of SET_PAGE_DIRECTORY's parameters");
 static_assert(sizeof(unset_page_directory_params) == 8, "NVIDIA's layout of UNSET_PAGE_DIRECTORY's parameters");
 
+// NVIDIA's NV90F1_CTRL_CMD_VASPACE_COPY_SERVER_RESERVED_PDES, the control to a split address space that hands the
+// firmware the directories above the range it maps alone
+constexpr uint32_t CONTROL_COPY_SERVER_RESERVED_PDES = 0x90F10106;
+
+// NVIDIA's SPLIT_VAS_SERVER_RM_MANAGED_VA_START and _SIZE, the range of a split address space the firmware maps alone
+constexpr uint64_t FIRMWARE_RANGE_START = 0x100000000;
+constexpr uint64_t FIRMWARE_RANGE_BYTES = 0x20000000;
+
+// NVIDIA's GMMU_APERTURE_VIDEO and GMMU_FMT_MAX_LEVELS
+constexpr uint32_t LEVEL_IN_VIDEO_MEMORY = 1;
+constexpr size_t   PAGE_LEVELS_MAX       = 6;
+
+// NVIDIA's NV90F1_CTRL_VASPACE_COPY_SERVER_RESERVED_PDES_PARAMS
+struct reserved_directories_params {
+    handle   subdevice;     // NVIDIA's hSubDevice, 0 to name the GPU by `subdevice_id`
+    uint32_t subdevice_id;  // NVIDIA's subDeviceId, 0 for the space's own GPU
+    uint64_t page_size;     // NVIDIA's pageSize, the reach of one entry of the last level handed over
+    uint64_t first_address; // NVIDIA's virtAddrLo
+    uint64_t last_address;  // NVIDIA's virtAddrHi
+    uint32_t level_count;   // NVIDIA's numLevelsToCopy
+    struct level {
+        uint64_t phys_address; // NVIDIA's physAddress, the directory's offset in its aperture
+        uint64_t size;         // the directory's bytes
+        uint32_t aperture;     // as `LEVEL_IN_VIDEO_MEMORY`
+        uint8_t  page_shift;   // NVIDIA's pageShift, the lowest address bit the directory's entries index
+    } levels[PAGE_LEVELS_MAX];
+};
+
+static_assert(sizeof(reserved_directories_params) == 184, "NVIDIA's layout of COPY_SERVER_RESERVED_PDES's parameters");
+
 // NVIDIA's KEPLER_CHANNEL_GROUP_A, the class of a channel group, allocated under the device
 constexpr uint32_t CLASS_CHANNEL_GROUP = 0xA06C;
 
@@ -1332,6 +1362,56 @@ struct context_buffers_params {
 };
 
 static_assert(sizeof(context_buffers_params) == 1600, "NVIDIA's layout of KGR_GET_CONTEXT_BUFFERS_INFO's parameters");
+
+// NVIDIA's NV2080_CTRL_CMD_GPU_PROMOTE_CTX, the subdevice's control that hands the firmware a graphics channel's
+// context buffers, and NV2080_CTRL_GPU_PROMOTE_CONTEXT_MAX_ENTRIES, the buffers one control names
+constexpr uint32_t CONTROL_PROMOTE_CONTEXT     = 0x2080012B;
+constexpr uint32_t PROMOTE_CONTEXT_ENTRIES_MAX = 16;
+
+// NVIDIA's NV2080_CTRL_GPU_PROMOTE_CTX_BUFFER_ID_ values, a promoted buffer's id
+constexpr uint16_t PROMOTED_MAIN                         = 0;
+constexpr uint16_t PROMOTED_PATCH                        = 2;
+constexpr uint16_t PROMOTED_BUNDLE                       = 3;  // _BUFFER_BUNDLE_CB
+constexpr uint16_t PROMOTED_PAGE_POOL                    = 4;  // _PAGEPOOL
+constexpr uint16_t PROMOTED_ATTRIBUTE                    = 5;  // _ATTRIBUTE_CB
+constexpr uint16_t PROMOTED_RTV                          = 6;  // _RTV_CB_GLOBAL
+constexpr uint16_t PROMOTED_FECS_EVENT                   = 9;
+constexpr uint16_t PROMOTED_PRIV_ACCESS_MAP              = 10;
+constexpr uint16_t PROMOTED_UNRESTRICTED_PRIV_ACCESS_MAP = 11;
+
+// NVIDIA's NV2080_CTRL_GPU_INITIALIZE_CTX_APERTURE_VIDMEM in bits 1:0 and _GPU_CACHEABLE_NO in bit 2, the physical
+// attributes of a buffer in video memory the GPU does not cache
+constexpr uint32_t INITIALIZED_IN_VIDEO_MEMORY = 0x4;
+
+// NVIDIA's NV2080_CTRL_GPU_PROMOTE_CTX_BUFFER_ENTRY. An initialized buffer, which the client must zero first, gives
+// its physical address, size and attributes, and a mapped one its address in the channel's address space
+struct promote_context_entry {
+    uint64_t phys_address;    // NVIDIA's gpuPhysAddr
+    uint64_t gpu_address;     // NVIDIA's gpuVirtAddr
+    uint64_t size;
+    uint32_t phys_attributes; // NVIDIA's physAttr
+    uint16_t buffer_id;       // NVIDIA's bufferId
+    uint8_t  initializes;     // NVIDIA's bInitialize
+    uint8_t  is_unmapped;     // NVIDIA's bNonmapped, set only with `initializes`
+};
+
+// NVIDIA's NV2080_CTRL_GPU_PROMOTE_CTX_PARAMS, naming the channel by its client and handle, `entries` its promoteEntry
+struct promote_context_params {
+    uint32_t              engine_type;     // NVIDIA's engineType
+    handle                client;          // NVIDIA's hClient, of `virtual_memory`
+    uint32_t              channel_id;      // NVIDIA's ChID, deprecated
+    handle                channel_client;  // NVIDIA's hChanClient
+    handle                channel;         // NVIDIA's hObject
+    handle                virtual_memory;  // NVIDIA's hVirtMemory, unused with entries
+    uint64_t              virtual_address; // NVIDIA's virtAddress, unused with entries
+    uint64_t              size;            // unused with entries
+    uint32_t              entry_count;     // NVIDIA's entryCount
+    uint32_t              padding;
+    promote_context_entry entries[PROMOTE_CONTEXT_ENTRIES_MAX];
+};
+
+static_assert(sizeof(promote_context_entry) == 32, "NVIDIA's layout of a promoted buffer's entry");
+static_assert(sizeof(promote_context_params) == 560, "NVIDIA's layout of PROMOTE_CTX's parameters");
 
 } // namespace drivers::nvidia::rm
 

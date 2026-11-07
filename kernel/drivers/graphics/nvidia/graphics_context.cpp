@@ -36,6 +36,66 @@ constexpr buffer_slot BUFFER_SLOTS[] = {
     {rm::CONTEXT_BUFFER_PRIV_ACCESS_MAP, &graphics_buffer_layouts::priv_access_map},
 };
 
+static uint64_t round_up(uint64_t value, uint64_t multiple) {
+    return (value + multiple - 1) / multiple * multiple;
+}
+
+static uint64_t power_of_two_at_least(uint64_t value) {
+    uint64_t power = 1;
+    while (power < value) {
+        power <<= 1;
+    }
+
+    return power;
+}
+
+// Places `buffer` at the first multiple of `alignment` and of 4 KiB from `address`, returning the address past it
+static uint64_t place(uint64_t address, uint64_t bytes, uint64_t alignment, context_buffer& buffer) {
+    uint64_t multiple = alignment > SMALL_PAGE_BYTES ? alignment : SMALL_PAGE_BYTES;
+    buffer.gpu_address = round_up(address, multiple);
+    return buffer.gpu_address + round_up(bytes, SMALL_PAGE_BYTES);
+}
+
+// Maps `buffer` at its address for the GPU's privileged accesses alone, writable unless `read_only`
+static int32_t map_privileged(context_page_tables& tables, const context_buffer& buffer, bool read_only) {
+    memory_run run = {.address = buffer.range.offset, .bytes = buffer.range.size};
+    page_mapping mapping = {
+        .aperture = page_aperture::video_memory,
+        .kind = 0,
+        .read_only = read_only,
+        .privileged = true,
+    };
+
+    return tables.map(buffer.gpu_address, &run, 1, mapping);
+}
+
+// Adds `buffer`'s entry, naming its video memory for the firmware to initialize if `initializes` and its address if
+// `is_mapped`
+static void add_entry(
+    rm::promote_context_params& params,
+    uint16_t id,
+    const context_buffer& buffer,
+    bool initializes,
+    bool is_mapped
+) {
+    rm::promote_context_entry& entry = params.entries[params.entry_count];
+    entry.buffer_id = id;
+
+    if (initializes) {
+        entry.phys_address = buffer.range.offset;
+        entry.size = buffer.range.size;
+        entry.phys_attributes = rm::INITIALIZED_IN_VIDEO_MEMORY;
+        entry.initializes = 1;
+        entry.is_unmapped = is_mapped ? 0 : 1;
+    }
+
+    if (is_mapped) {
+        entry.gpu_address = buffer.gpu_address;
+    }
+
+    params.entry_count++;
+}
+
 // Reads GR0's subcontext count from the facts the reply filled, refusing a fact out of place or a count of 0
 static int32_t find_subcontext_count(const rm::graphics_info_params& facts, uint32_t& count) {
     const rm::graphics_info& fact = facts.engines[GR0_ROW][rm::GRAPHICS_INFO_SUBCONTEXTS];
@@ -122,11 +182,91 @@ int32_t read_graphics_buffer_layouts(firmware& fw, graphics_buffer_layouts& layo
         return rc;
     }
 
-    uint64_t main_bytes = (found.main.bytes + SUBCONTEXT_HEADER_BYTES - 1) & ~(SUBCONTEXT_HEADER_BYTES - 1);
+    uint64_t main_bytes = round_up(found.main.bytes, SUBCONTEXT_HEADER_BYTES);
     found.main.bytes = main_bytes + subcontext_count * SUBCONTEXT_HEADER_BYTES;
     layouts = found;
 
     return OK;
+}
+
+uint64_t place_global_buffers(const graphics_buffer_layouts& layouts, uint64_t base, global_context_buffers& global) {
+    uint64_t attribute_alignment = power_of_two_at_least(layouts.attribute.bytes);
+    uint64_t next = place(base, layouts.attribute.bytes, attribute_alignment, global.attribute);
+
+    next = place(next, layouts.bundle.bytes, layouts.bundle.alignment, global.bundle);
+    next = place(next, layouts.page_pool.bytes, layouts.page_pool.alignment, global.page_pool);
+    next = place(next, layouts.rtv.bytes, layouts.rtv.alignment, global.rtv);
+    next = place(next, layouts.fecs_event.bytes, layouts.fecs_event.alignment, global.fecs_event);
+    next = place(next, layouts.priv_access_map.bytes, layouts.priv_access_map.alignment, global.priv_access_map);
+
+    global.unrestricted_priv_access_map.gpu_address = 0;
+
+    return next;
+}
+
+void place_own_buffers(const graphics_buffer_layouts& layouts, uint64_t start, channel_context_buffers& own) {
+    uint64_t next = place(start, layouts.main.bytes, layouts.main.alignment, own.main);
+    place(next, layouts.patch.bytes, layouts.patch.alignment, own.patch);
+}
+
+int32_t map_global_buffers(context_page_tables& tables, const global_context_buffers& global) {
+    const context_buffer* writable[] = {
+        &global.bundle,
+        &global.page_pool,
+        &global.attribute,
+        &global.rtv,
+        &global.fecs_event,
+    };
+
+    for (const context_buffer* buffer : writable) {
+        int32_t rc = map_privileged(tables, *buffer, false);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    return map_privileged(tables, global.priv_access_map, true);
+}
+
+int32_t map_own_buffers(context_page_tables& tables, const channel_context_buffers& own) {
+    int32_t rc = map_privileged(tables, own.main, false);
+    if (rc != OK) {
+        return rc;
+    }
+
+    return map_privileged(tables, own.patch, false);
+}
+
+int32_t promote_graphics_context(
+    firmware& fw,
+    rm::handle subdevice,
+    rm::handle channel,
+    const global_context_buffers& global,
+    const channel_context_buffers& own
+) {
+    rm::promote_context_params params = {};
+    params.engine_type = rm::ENGINE_TYPE_GRAPHICS;
+    params.channel_client = fw.client();
+    params.channel = channel;
+
+    add_entry(params, rm::PROMOTED_MAIN, own.main, true, true);
+    add_entry(params, rm::PROMOTED_PATCH, own.patch, true, true);
+
+    add_entry(params, rm::PROMOTED_BUNDLE, global.bundle, false, true);
+    add_entry(params, rm::PROMOTED_PAGE_POOL, global.page_pool, false, true);
+    add_entry(params, rm::PROMOTED_ATTRIBUTE, global.attribute, false, true);
+    add_entry(params, rm::PROMOTED_RTV, global.rtv, false, true);
+
+    add_entry(params, rm::PROMOTED_FECS_EVENT, global.fecs_event, true, true);
+    add_entry(params, rm::PROMOTED_PRIV_ACCESS_MAP, global.priv_access_map, true, true);
+    add_entry(params, rm::PROMOTED_UNRESTRICTED_PRIV_ACCESS_MAP, global.unrestricted_priv_access_map, true, false);
+
+    int32_t rc = fw.control(subdevice, rm::CONTROL_PROMOTE_CONTEXT, &params, sizeof(params));
+    if (rc != OK) {
+        log::error("nvidia: promoting the context buffers of graphics channel object 0x%X failed: %d", channel, rc);
+    }
+
+    return rc;
 }
 
 } // namespace drivers::nvidia

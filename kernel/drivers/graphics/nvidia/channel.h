@@ -30,6 +30,9 @@ constexpr uint32_t CHANNEL_RAM_ENTRY_BYTES = 4;
 // The queues a group's channels can be fetched on, each with a buffer of the group's for a faulting channel's methods
 constexpr uint32_t CHANNEL_GROUP_RUNQUEUES = 2;
 
+// The objects a channel holds at most, its copy or 3D object
+constexpr uint32_t CHANNEL_OBJECTS_MAX = 1;
+
 // Where a channel runs and how far the GPU trusts it
 struct channel_setup {
     engine_info engine;         // the engine running its work, on that engine's runlist
@@ -42,17 +45,17 @@ struct channel_setup {
  * A channel: a queue of work for one engine. Its GPFIFO is a ring of entries,
  * each pointing the GPU at method words in the channel's address space. The
  * object holds a channel group of its own (the channels the scheduler runs
- * together), the channel in it, the copy object the channel's methods address,
- * and the memory the driver allocates for them: the instance block (the GPU's
+ * together), the channel in it, the objects the channel's methods address, and
+ * the memory the driver allocates for them: the instance block (the GPU's
  * record of the channel, in video memory), and in system memory USERD (where
  * the driver publishes how far the ring is written), the GPFIFO and the group's
  * fault method buffers (where an engine saves a faulting channel's methods).
  *
- * `create` and `destroy` wait for the firmware and for video memory, so they
- * must not run in an interrupt handler or under a spinlock. Callers must not
- * overlap `write_entry` and `kick`. After a release or the GPFIFO's unmap
- * fails, the memory stays allocated for good, since the firmware or the GPU may
- * still reach it.
+ * Every call but `write_entry`, `kick` and the accessors waits for the firmware
+ * or for video memory, so none may run in an interrupt handler or under a
+ * spinlock. Callers must not overlap `write_entry` and `kick`. After a release
+ * or the GPFIFO's unmap fails, the memory stays allocated for good, since the
+ * firmware or the GPU may still reach it.
  */
 class channel {
 public:
@@ -63,16 +66,11 @@ public:
     channel& operator=(const channel&) = delete;
 
     /**
-     * @brief Allocate the channel's memory, its system memory through `card`,
-     * map the GPFIFO read-only into `space`, allocate the group, then the
-     * channel and its copy object from `chip`'s classes, then bind and schedule
-     * the channel as `setup` says.
-     * @return `OK`, `ERR_BAD_STATE` while the channel exists, `ERR_INVALID_ARG`
-     * for an id from `CHANNEL_IDS` on, `ERR_NO_MEMORY`, `ERR_BAD_MESSAGE` for a
-     * fault method buffer size of 0, or the error of video memory, the mapping
-     * or the firmware. Every error is logged but `ERR_BAD_STATE`, the id's
-     * `ERR_INVALID_ARG`, the mapping's `ERR_GPU_FAILED` and no room in video
-     * memory, system memory or BAR1's window, which the caller logs.
+     * @brief Create a copy channel: `allocate` the channel, add a copy object
+     * of `chip`'s class on `setup`'s engine, then `schedule` the channel.
+     * @return `OK`, or the first error of the three, after which the object
+     * holds nothing, as after `destroy`, unless `allocate` found the channel
+     * existing.
      */
     int32_t create(
         const dma::device_profile& card,
@@ -82,19 +80,55 @@ public:
     );
 
     /**
-     * @brief Release the copy object, the channel and the group, then unmap
-     * the GPFIFO and release the memory, as the class says.
-     * @return `OK`, `ERR_BAD_STATE` before `create`, or the first error of a
+     * @brief Allocate the channel's memory, map its GPFIFO read-only into
+     * `space` and allocate its group and channel as `setup` says, with no
+     * object, unbound and unscheduled.
+     * @return `OK`, `ERR_BAD_STATE` while the channel exists, `ERR_INVALID_ARG`
+     * for an id from `CHANNEL_IDS` on, or the failing step's error. The caller
+     * logs those two, the mapping's `ERR_GPU_FAILED` and no room in video
+     * memory, system memory or BAR1's window, and this logs the rest. On an
+     * error but `ERR_BAD_STATE` the object holds nothing.
+     */
+    int32_t allocate(
+        const dma::device_profile& card,
+        const chip_info& chip,
+        address_space& space,
+        const channel_setup& setup
+    );
+
+    /**
+     * @brief Allocate an object of `object_class` on the channel from `bytes`
+     * of `params`, which may be null when `bytes` is 0. `destroy` releases the
+     * objects before the channel, the last added first.
+     * @return `OK`, `ERR_BAD_STATE` before `allocate` or once the channel holds
+     * `CHANNEL_OBJECTS_MAX` objects, or the firmware's error, logged.
+     */
+    int32_t add_object(uint32_t object_class, void* params, size_t bytes);
+
+    /**
+     * @brief Bind the channel to its engine, then schedule it, so the GPU
+     * fetches the entries `kick` publishes.
+     * @return `OK`, `ERR_BAD_STATE` before `allocate`, or the firmware's error,
+     * logged. On an error the channel stays allocated, bound if only the
+     * schedule failed, for `destroy`.
+     */
+    int32_t schedule();
+
+    /**
+     * @brief Release the channel's objects, the channel and the group, then
+     * unmap the GPFIFO and release the memory, as the class says.
+     * @return `OK`, `ERR_BAD_STATE` before `allocate`, or the first error of a
      * release or of the unmap. Every error but `ERR_BAD_STATE` is logged. The
      * object then holds nothing either way.
      */
     int32_t destroy();
 
     /**
-     * @brief Release the copy object, the channel and the group as `destroy`
-     * does, so the GPU runs none of the channel's work once they are released,
-     * and keep the memory for good. The object must not be created again.
-     * @return `OK`, `ERR_BAD_STATE` before `create`, or the first error of a
+     * @brief Release the channel's objects, the channel and the group as
+     * `destroy` does, so the GPU runs none of the channel's work once they are
+     * released, and keep the memory for good. The object must not be created or
+     * allocated again.
+     * @return `OK`, `ERR_BAD_STATE` before `allocate`, or the first error of a
      * release, logged. The GPFIFO and USERD stay mapped, since a `write_entry`
      * or `kick` already under way may still write them. Such a `kick` rings the
      * freed channel's doorbell, so its id must go to no other channel.
@@ -110,11 +144,15 @@ public:
     // The channel's id in its runlist, valid while the channel exists
     uint32_t id() const;
 
+    // The firmware's handle of the channel, which a control naming the channel gives, or 0 while none is held
+    rm::handle handle() const;
+
     // Whether its runlist's channel RAM marks the channel faulted in fetching or running its work, valid while the
     // channel exists. A word of all ones, as a card that stopped responding reads, marks no fault
     bool has_faulted() const;
 
-    // Whether a failed `create`, the last `destroy` or `destroy_keeping_memory` left the memory allocated for good
+    // Whether a failed `create` or `allocate`, the last `destroy` or `destroy_keeping_memory` left the memory
+    // allocated for good
     bool keeps_memory() const;
 
 private:
@@ -123,11 +161,15 @@ private:
     // Allocates the instance block, cleared, then USERD, the GPFIFO and the fault method buffers
     int32_t allocate_memory(const dma::device_profile& card);
 
-    // Allocates the group, the channel and its copy object, then binds and schedules the channel
-    int32_t allocate_objects(const chip_info& chip, address_space& space, const channel_setup& setup);
+    // Allocates the group, then the channel in it
+    int32_t allocate_channel(const chip_info& chip, address_space& space, const channel_setup& setup);
 
-    // Releases the objects that exist, the last allocated first, returning the first error
+    // Releases the channel's objects, the last added first, then the channel and the group, returning the first error
     int32_t release_objects();
+
+    // Releases `object` unless it is 0, keeping the memory on a refusal, and sets it to 0. Returns `first_rc` unless
+    // it is `OK`, else the release's result
+    int32_t release_object(rm::handle& object, int32_t first_rc);
 
     // Unmaps the GPFIFO and releases the memory, or forgets the memory the firmware or the GPU may still reach,
     // returning the unmap's error
@@ -149,9 +191,11 @@ private:
 
     rm::handle m_group = 0;
     rm::handle m_channel = 0;
-    rm::handle m_copy_object = 0;
+    rm::handle m_objects_held[CHANNEL_OBJECTS_MAX] = {};
+    uint32_t   m_object_count = 0;
 
     uint32_t m_id = 0;
+    uint32_t m_engine_type = 0;
     uint32_t m_doorbell_token = 0;
     uint32_t m_channel_ram_entry = 0; // the BAR0 offset of the channel's word in its runlist's channel RAM
     uint32_t m_put = 0;               // the slot the next entry goes in

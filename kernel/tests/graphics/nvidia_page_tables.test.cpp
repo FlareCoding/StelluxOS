@@ -220,14 +220,17 @@ TEST(nvidia_page_tables, the_root_directorys_4_entries_cover_the_512_tib_of_a_co
     EXPECT_EQ(entry_bytes(page_level::page_table), static_cast<uint64_t>(8));
 }
 
-// Kind 6, NVIDIA's kind for generic memory, in bits 63:56, and the read-only bit, bit 6
+// Kind 6, NVIDIA's kind for generic memory, in bits 63:56, and the privilege and read-only bits, bits 5 and 6
 static constexpr uint8_t  GENERIC_MEMORY_KIND = 6;
 static constexpr uint64_t GENERIC_KIND_FIELD  = 6ULL << 56;
+static constexpr uint64_t PRIVILEGE_BIT       = 1ULL << 5;
 static constexpr uint64_t READ_ONLY_BIT       = 1ULL << 6;
 
-TEST(nvidia_page_tables, a_page_entry_takes_its_kind_and_read_only_bit_and_refuses_kinds_past_6) {
+TEST(nvidia_page_tables, a_page_entry_takes_its_kind_and_access_bits_and_refuses_kinds_past_6) {
     EXPECT_EQ(page_entry(0x1235000, {.kind = GENERIC_MEMORY_KIND}), 0x123501 | GENERIC_KIND_FIELD);
     EXPECT_EQ(page_entry(0x1235000, {.read_only = true}), 0x123501 | READ_ONLY_BIT);
+    EXPECT_EQ(page_entry(0x1235000, {.privileged = true}), 0x123501 | PRIVILEGE_BIT);
+    EXPECT_EQ(page_entry(0x1235000, {.read_only = true, .privileged = true}), 0x123501 | READ_ONLY_BIT | PRIVILEGE_BIT);
 
     // Kind 7, NVIDIA's invalid kind
     EXPECT_EQ(page_entry(0x1235000, {.kind = 7}), static_cast<uint64_t>(0));

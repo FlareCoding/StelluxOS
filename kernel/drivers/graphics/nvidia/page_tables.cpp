@@ -18,7 +18,8 @@ constexpr uint64_t PAGE_VALID                = 1;
 constexpr uint64_t PAGE_IN_SYSTEM_MEMORY = 2ULL << 1;
 constexpr uint64_t PAGE_VOLATILE         = 1ULL << 3;
 
-// A page table entry's read-only bit, and the first bit of its kind field
+// A page table entry's privilege and read-only bits, and the first bit of its kind field
+constexpr uint64_t PAGE_PRIVILEGED = 1ULL << 5;
 constexpr uint64_t PAGE_READ_ONLY  = 1ULL << 6;
 constexpr uint64_t PAGE_KIND_SHIFT = 56;
 
@@ -113,8 +114,10 @@ uint64_t page_entry(uint64_t address, const page_mapping& mapping) {
 
     uint64_t kind_field = static_cast<uint64_t>(mapping.kind) << PAGE_KIND_SHIFT;
     uint64_t read_only_bit = mapping.read_only ? PAGE_READ_ONLY : 0;
+    uint64_t privilege_bit = mapping.privileged ? PAGE_PRIVILEGED : 0;
+    uint64_t access_bits = read_only_bit | privilege_bit;
 
-    return address_field(address) | layout.page_bits | kind_field | read_only_bit | PAGE_VALID;
+    return address_field(address) | layout.page_bits | kind_field | access_bits | PAGE_VALID;
 }
 
 uint64_t sparse_page_entry() {

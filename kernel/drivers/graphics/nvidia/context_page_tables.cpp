@@ -68,6 +68,37 @@ uint64_t context_page_tables::directory_offset() const {
     return m_root != nullptr ? m_root->range.offset : 0;
 }
 
+int32_t context_page_tables::add_directories(
+    uint64_t gpu_address,
+    uint64_t (&offsets)[DIRECTORIES_DOWN_TO_DIRECTORY_1]
+) {
+    if (m_failed.is_set()) {
+        return ERR_GPU_FAILED;
+    }
+
+    if (m_root == nullptr) {
+        return ERR_BAD_STATE;
+    }
+
+    table* parent = m_root;
+    offsets[0] = m_root->range.offset;
+    for (size_t i = 1; i < DIRECTORIES_DOWN_TO_DIRECTORY_1; i++) {
+        table* child = parent->children[entry_word(parent->level, gpu_address)];
+        if (child == nullptr) {
+            int32_t rc = add_table(parent, level_below(parent->level), gpu_address, child);
+            if (rc != OK) {
+                remove_new_tables();
+                return rc;
+            }
+        }
+
+        offsets[i] = child->range.offset;
+        parent = child;
+    }
+
+    return write_dirty_tables(context_tlbs::kept);
+}
+
 int32_t context_page_tables::map(
     uint64_t gpu_address,
     const memory_run* runs,
