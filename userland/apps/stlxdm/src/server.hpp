@@ -562,8 +562,8 @@ private:
     dm_window* m_hover = nullptr;
     dm_window* m_grab = nullptr;
 
-    /* Active grabbing popup: it holds focus, and any press outside it
-     * dismisses it and restores the focus it displaced */
+    /* The active grabbing popup and the window it took the focus from,
+     * refocused if the popup dies while it holds the focus */
     dm_window* m_grab_popup = nullptr;
     dm_window* m_focus_restore = nullptr;
 
