@@ -426,6 +426,17 @@ public:
     gfxfb::buffer* base_buffer(uint32_t output) override;
     int32_t flush(uint32_t output, const gfxfb::gfxfb_rect* rects, uint32_t count) override;
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
+
+    // Takes no GPU buffer, so userland shows its pictures through created buffers
+    int32_t import_buffer(
+        gpu::buffer*,
+        const gpu::memory_view&,
+        const gfxfb::import_layout&,
+        gfxfb::buffer**
+    ) override {
+        return gfxfb::ERR_UNSUPPORTED;
+    }
+
     int32_t present(
         uint32_t output,
         gfxfb::buffer* buf,

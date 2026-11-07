@@ -36,14 +36,15 @@ struct boot_framebuffer {
 };
 
 /**
- * gfxfb's record of a buffer: a buffer an open file created, or a lit output's
- * base buffer. Each handle and each user mapping hold a reference, and each
- * output holds one for its base buffer, one for the buffer it shows and one
- * for the buffer it holds for a present. After the last reference goes, the
- * reaper hands the buffer back to its display, which must outlive the record.
- * The record copies the buffer's fields when it takes the buffer, so gfxfb
- * reads only the copy. It lives on the privileged heap, since mmap maps the
- * physical address it holds, so its callers must run elevated.
+ * gfxfb's record of a buffer: a buffer an open file created or imported, or a
+ * lit output's base buffer. Each handle and each user mapping hold a
+ * reference, and each output holds one for its base buffer, one for the buffer
+ * it shows and one for the buffer it holds for a present. After the last
+ * reference goes, the reaper hands the buffer back to its display, which must
+ * outlive the record. The record copies the buffer's fields when it takes the
+ * buffer, so gfxfb reads only the copy. It lives on the privileged heap, since
+ * mmap maps the physical address it holds unless it is an import, so its
+ * callers must run elevated.
  */
 class buffer_record final : public mm::device_backing {
 public:
@@ -52,7 +53,11 @@ public:
     // Takes `buf` from the record's display, to hand back once the last reference goes
     void take(buffer* buf);
 
+    // Takes `buf` as `take()` does and marks the record as an import, which mmap refuses
+    void take_import(buffer* buf);
+
     const buffer& layout() const { return m_layout; }
+    bool is_import() const { return m_is_import; }
 
     // The display's own object for the buffer, which gfxfb passes to the display's calls
     buffer* display_buffer() const { return m_buffer; }
@@ -66,21 +71,23 @@ private:
     display* m_display;
     buffer*  m_buffer = nullptr;
     buffer   m_layout = {};
+    bool     m_is_import = false;
 };
 
 /**
- * One open file of a gfxfb node: the buffers it created, each named by a
- * handle, the handles held for buffers that `GFXFB_CREATE_BUFFER` calls are
- * still creating, and the events it has not read, of its presents' ends and of
- * the outputs' changes. `events_lock` is taken with interrupts disabled, since
- * `gfxfb_node::present_done()` may queue an event from an interrupt handler.
- * It lives on the privileged heap, from `open()` until the file's last
- * reference goes and the display has ended each present of it, and sits on the
- * node's list of clients until just before it is freed.
+ * One open file of a gfxfb node: the buffers it created or imported, each
+ * named by a handle, the handles held for buffers that `GFXFB_CREATE_BUFFER`
+ * and `GFXFB_IMPORT_BUFFER` calls are still making, and the events it has not
+ * read, of its presents' ends and of the outputs' changes. `events_lock` is
+ * taken with interrupts disabled, since `gfxfb_node::present_done()` may queue
+ * an event from an interrupt handler. It lives on the privileged heap, from
+ * `open()` until the file's last reference goes and the display has ended each
+ * present of it, and sits on the node's list of clients until just before it
+ * is freed.
  */
 struct client {
     rc::strong_ref<buffer_record> buffers[GFXFB_CLIENT_BUFFERS_MAX];   // handle h at index h - 1
-    bool                          pending[GFXFB_CLIENT_BUFFERS_MAX] = {}; // true while a creation holds the handle
+    bool                          pending[GFXFB_CLIENT_BUFFERS_MAX] = {}; // true while a creation or import holds it
 
     sync::spinlock   events_lock;               // over the events, alone or inside the node's outputs lock
     gfxfb_event      events[CLIENT_EVENTS_MAX]; // `event_count` of them from `first_event` on, wrapping, oldest first
@@ -130,6 +137,10 @@ public:
     buffer* base_buffer(uint32_t output) override;
     int32_t flush(uint32_t output, const gfxfb_rect* rects, uint32_t count) override;
     int32_t create_buffer(uint32_t, uint32_t, uint32_t, buffer**) override { return ERR_UNSUPPORTED; }
+    int32_t import_buffer(gpu::buffer*, const gpu::memory_view&, const import_layout&, buffer**) override {
+        return ERR_UNSUPPORTED;
+    }
+
     int32_t present(uint32_t, buffer*, const gfxfb_rect*, uint32_t) override { return ERR_UNSUPPORTED; }
     int32_t set_cursor(uint32_t, const cursor_image&) override { return ERR_UNSUPPORTED; }
     int32_t move_cursor(uint32_t, int32_t, int32_t) override { return ERR_UNSUPPORTED; }
@@ -159,8 +170,8 @@ private:
  * offset 0 is refused, while `GFXFB_GET_OUTPUT` still reports every output.
  * Each open file is a client, whose buffers mmap maps at the offsets their
  * creation returned, above the primary output's base buffer at offset 0. A
- * client controls the buffers from its first creation, present, cursor or mode
- * request that succeeds until the client closes. Before control is checked, a
+ * client controls the buffers from its first creation, import, present, cursor
+ * or mode request that succeeds until it closes. Before control is checked, a
  * creation request fails with `fs::ERR_INVAL` when gfxfb cannot read it, when
  * its width or height is zero or when its reserved field is set, and a present
  * request fails with `fs::ERR_INVAL` when gfxfb cannot read it, when its
@@ -252,6 +263,14 @@ private:
  * controls the buffers calls the display's `restore_modes()` after its base
  * buffers' presents and its cursor hides, before its control ends, even once
  * the display has failed.
+ *
+ * An import request fails with `fs::ERR_INVAL` when gfxfb cannot read it, when
+ * its width or height is zero or its pitch is below 4 bytes times its width,
+ * then with `fs::ERR_BADF` for a handle that names no GPU buffer or lacks read
+ * rights, then with `fs::ERR_INVAL` when `pitch` times `height` bytes from
+ * `offset` end past the GPU buffer, and then reserves and takes control as a
+ * creation does. Its buffer counts as a created one, except that mmap refuses
+ * it.
  */
 class gfxfb_node : public fs::node {
 public:
@@ -344,6 +363,14 @@ private:
     int32_t flush(uint64_t args_addr);
     int32_t create_buffer(client& owner, uint64_t args_addr);
     int32_t create_buffer_under_handle(client& owner, gfxfb_buffer_args& args, uint64_t args_addr);
+    int32_t import_buffer(client& owner, uint64_t args_addr);
+    int32_t import_under_handle(
+        client& owner,
+        gfxfb_import_args& args,
+        uint64_t args_addr,
+        gpu::buffer* source,
+        const gpu::memory_view& view
+    );
     int32_t destroy_buffer(client& owner, uint64_t handle);
     int32_t present(client& owner, uint64_t args_addr);
     rc::strong_ref<buffer_record> find_buffer_to_present(client& owner, const gfxfb_present_args& args);

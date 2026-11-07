@@ -17,10 +17,10 @@
  *
  * A buffer is GPU memory the core counts as one object. Its backend allocates the memory in `create_memory()`, or makes
  * it of a shared memory object's pages in `wrap_pages()`, and gets it back in `release_memory()` once nothing refers to
- * it. A timeline is a 64-bit counter that only rises, which no backend sees. A context holds one of the backend's
- * address spaces and up to GPU_QUEUES_MAX of its hardware queues. The core holds each submission until its wait points
- * are reached, hands it to `run()` in order with the queue's next sequence number, and ends it once the backend reports
- * that number through `progress()`.
+ * it. gfxfb holds a buffer it scans out from `lookup_buffer()` until `release_buffer()`. A timeline is a 64-bit counter
+ * that only rises, which no backend sees. A context holds one of the backend's address spaces and up to GPU_QUEUES_MAX
+ * of its hardware queues. The core holds each submission until its wait points are reached, hands it to `run()` in
+ * order with the queue's next sequence number, and ends it once the backend reports that number through `progress()`.
  */
 
 namespace gpu {
@@ -31,9 +31,11 @@ constexpr int32_t ERR_UNSUPPORTED = -2; // the backend lacks what the call needs
 constexpr int32_t ERR_DEVICE      = -3; // the GPU failed for good
 constexpr int32_t ERR_REFUSED     = -4; // an argument only the backend can check, such as a mapping's kind, is wrong
 
+class buffer;
 class device;
 struct context;
 struct core_queue;
+class backend;
 
 // The base of a backend's memory object, which the core holds and hands back without reading it
 struct memory {};
@@ -56,6 +58,15 @@ struct cpu_view {
     pmm::phys_addr_t phys;
     uint64_t         size;
     bool             cacheable; // false maps it write-combining
+};
+
+// A buffer's memory as `lookup_buffer()` describes it
+struct memory_view {
+    backend* owner;     // the backend that created the memory
+    memory*  mem;
+    uint64_t size;
+    uint32_t placement; // GPU_PLACEMENT_*
+    uint32_t flags;     // GPU_BUFFER_*
 };
 
 /**
@@ -256,6 +267,22 @@ __PRIVILEGED_CODE void space_lost(context* c, uint32_t reason, uint64_t fault_va
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void device_failed(device* d);
+
+/**
+ * @brief Look `handle` up in the calling process as a buffer whose handle holds `rights`, take a reference on the
+ * buffer and describe its memory, which the reference keeps until `release_buffer()`.
+ * @return fs::OK with the buffer in `*out` and `view` filled, or fs::ERR_BADF for a handle naming no buffer or lacking
+ * `rights`.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t lookup_buffer(int32_t handle, uint32_t rights, buffer** out, memory_view& view);
+
+/**
+ * @brief Drop the reference `lookup_buffer()` took, from any context. Never waits, since the reaper hands the memory
+ * back to its backend once nothing else refers to the buffer.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void release_buffer(buffer* buf);
 
 } // namespace gpu
 

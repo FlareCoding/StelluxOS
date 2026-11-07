@@ -318,6 +318,16 @@ public:
      */
     int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, gfxfb::buffer** out) override;
 
+    // Takes no GPU buffer, so userland shows its pictures through created buffers
+    int32_t import_buffer(
+        gpu::buffer*,
+        const gpu::memory_view&,
+        const gfxfb::import_layout&,
+        gfxfb::buffer**
+    ) override {
+        return gfxfb::ERR_UNSUPPORTED;
+    }
+
     /**
      * @brief Write an update showing `buf` into the window channel of the head
      * lighting `output`, waiting only for the output lock. The present ends as

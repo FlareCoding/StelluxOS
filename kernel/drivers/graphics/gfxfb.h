@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "drivers/graphics/gfxfb_abi.h"
+#include "gpu/gpu.h"
 #include "mm/pmm_types.h"
 
 /*
@@ -51,22 +52,24 @@
  * same way, and gfxfb keeps the record of its unchanged base buffer.
  *
  * Userland also creates buffers, which the display allocates in
- * `create_buffer()`, and presents buffers on outputs, which gfxfb hands to the
+ * `create_buffer()`, imports GPU buffers, which the display wraps in
+ * `import_buffer()`, and presents buffers on outputs, which gfxfb hands to the
  * display's `present()`. The display reports to `present_done()` how each
  * present it accepted ended, and gfxfb queues the end as an event for the open
  * file that presented. Userland gives an output's hardware cursor a picture
  * and moves it, which gfxfb hands to the display's `set_cursor()` and
  * `move_cursor()`. Userland asks for one of an output's listed modes with
  * `GFXFB_SET_MODE`, which gfxfb hands to the display's `set_mode()`. One open
- * file at a time controls the buffers, from its first creation, present,
- * cursor call or mode request that succeeds until it closes, and its close
- * calls the display's `restore_modes()` before its control ends. gfxfb keeps a
- * reference-counted record of each buffer, every lit output's base buffer
- * included, and hands the buffer back to the display's `release_buffer()` once
- * no handle, output or mapping refers to it. Once a display call returns
- * ERR_DEVICE or a present ends with `GFXFB_PRESENT_FAILED`, gfxfb fails every
- * later `GFXFB_FLUSH`, `GFXFB_PRESENT`, `GFXFB_SET_CURSOR`,
- * `GFXFB_MOVE_CURSOR` and `GFXFB_SET_MODE` without handing it to the display.
+ * file at a time controls the buffers, from its first creation, import,
+ * present, cursor call or mode request that succeeds until it closes, and its
+ * close calls the display's `restore_modes()` before its control ends. gfxfb
+ * keeps a reference-counted record of each buffer, every lit output's base
+ * buffer included, and hands the buffer back to the display's
+ * `release_buffer()` once no handle, output or mapping refers to it. Once a
+ * display call returns ERR_DEVICE or a present ends with
+ * `GFXFB_PRESENT_FAILED`, gfxfb fails every later `GFXFB_FLUSH`,
+ * `GFXFB_PRESENT`, `GFXFB_SET_CURSOR`, `GFXFB_MOVE_CURSOR` and
+ * `GFXFB_SET_MODE` without handing it to the display.
  */
 
 namespace gfxfb {
@@ -109,7 +112,9 @@ struct output_state {
 /**
  * Pixel memory holding a picture: the boot framebuffer on the boot display,
  * memory the display's driver allocated on a driver display, as an output's
- * base buffer or from `create_buffer()`. A driver display's buffers hold
+ * base buffer or from `create_buffer()`, or a GPU buffer's memory from
+ * `import_buffer()`. gfxfb never reads an imported buffer's `size`, `phys` or
+ * `cacheable`, since userland never maps it. A driver display's buffers hold
  * 32-bit pixels with red in bits 23 to 16, green in bits 15 to 8 and blue in
  * bits 7 to 0. gfxfb copies the fields when it takes a buffer, and a driver
  * may derive from it to keep its own state.
@@ -153,28 +158,38 @@ struct cursor_image {
     uint32_t        hot_y;
 };
 
+// The picture an imported GPU buffer holds, as `GFXFB_IMPORT_BUFFER` names it
+struct import_layout {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;  // bytes per row
+    uint32_t format; // GFXFB_FORMAT_*, passed on unchecked
+    uint64_t offset; // where the picture starts in the GPU buffer's memory, in bytes
+};
+
 /**
  * A display behind /dev/gfxfb: one a device driver owns, or gfxfb's own boot
  * display. gfxfb calls `output_count()`, `read_output()` and `base_buffer()`
  * from `init()` and `register_display()`, on the boot thread, which cannot
  * sleep, so they must not wait, and from `output_changed()`, in the task that
  * reports the change. It calls `output_count()`, `read_output()`,
- * `read_modes()`, `needs_flush()`, `flush()`, `create_buffer()`, `present()`,
- * `set_cursor()`, `move_cursor()`, `set_mode()` and `restore_modes()` from the
- * tasks that use /dev/gfxfb, several tasks at once, and `flush()`,
- * `create_buffer()`, `present()`, the two cursor calls and `set_mode()` may
- * block the task that calls them. gfxfb never calls `present()` for one output
- * from two tasks at once, nor while a present the display accepted there has
- * not ended, and never makes two cursor calls for one output at once, though a
- * cursor call may run during a present for the same output. It never makes two
- * `set_mode()` calls at once, and flushes, creations, presents and cursor
- * calls may run during one. It calls `release_buffer()` from the reaper, the
- * kernel task that runs deferred cleanup, and `release_buffer()` must never
- * wait, since the reaper runs no other cleanup until it returns. A display
- * returns ERR_DEVICE only once its hardware has failed for good, and from then
- * on from every call that needs the hardware, so a refusal that leaves the
- * hardware usable is ERR_REFUSED, or ERR_NO_MEMORY when the hardware has no
- * memory left for a buffer. It likewise ends a present with
+ * `read_modes()`, `needs_flush()`, `flush()`, `create_buffer()`,
+ * `import_buffer()`, `present()`, `set_cursor()`, `move_cursor()`,
+ * `set_mode()` and `restore_modes()` from the tasks that use /dev/gfxfb,
+ * several tasks at once, and `flush()`, `create_buffer()`, `import_buffer()`,
+ * `present()`, the two cursor calls and `set_mode()` may block the task that
+ * calls them. gfxfb never calls `present()` for one output from two tasks at
+ * once, nor while a present the display accepted there has not ended, and
+ * never makes two cursor calls for one output at once, though a cursor call
+ * may run during a present for the same output. It never makes two
+ * `set_mode()` calls at once, and flushes, creations, imports, presents and
+ * cursor calls may run during one. It calls `release_buffer()` from the
+ * reaper, the kernel task that runs deferred cleanup, and `release_buffer()`
+ * must never wait, since the reaper runs no other cleanup until it returns. A
+ * display returns ERR_DEVICE only once its hardware has failed for good, and
+ * from then on from every call that needs the hardware, so a refusal that
+ * leaves the hardware usable is ERR_REFUSED, or ERR_NO_MEMORY when the
+ * hardware has no memory left for a buffer. It likewise ends a present with
  * `GFXFB_PRESENT_FAILED` only once its hardware has failed for good.
  */
 class display {
@@ -291,6 +306,28 @@ public:
     virtual int32_t create_buffer(uint32_t width, uint32_t height, uint32_t format, buffer** out) = 0;
 
     /**
+     * @brief Wrap `view`, the memory of the GPU buffer `source`, as a buffer
+     * showing the picture `layout` describes, which only the hardware reads.
+     * gfxfb has checked that the picture lies inside the memory.
+     * @param source A GPU buffer on which gfxfb holds a reference. On OK the
+     * buffer takes that reference, which the display drops through
+     * `gpu::release_buffer()` once no hardware reaches the memory. On any
+     * other result gfxfb drops it.
+     * @param out Set on OK to the buffer, which the display must keep until
+     * gfxfb hands it back through `release_buffer()`.
+     * @return OK, ERR_INVALID_ARG for memory, a size, a format, a pitch or an
+     * offset the hardware cannot scan out, ERR_NO_MEMORY, ERR_UNSUPPORTED on a
+     * display that imports no buffers, ERR_REFUSED when the hardware refused
+     * the buffer, or ERR_DEVICE once it has failed.
+     */
+    virtual int32_t import_buffer(
+        gpu::buffer* source,
+        const gpu::memory_view& view,
+        const import_layout& layout,
+        buffer** out
+    ) = 0;
+
+    /**
      * @brief Give `buf` to the hardware to replace what `output` shows from
      * the output's next vertical blank, without waiting for that blank. A
      * display whose hardware has no vertical blanks counts boundaries of its
@@ -307,7 +344,8 @@ public:
      * a task or a timer's callback. It may hold its own locks then, since
      * `present_done()` never sleeps or calls the display.
      * @param output Index of the output, below the count.
-     * @param buf A buffer from `create_buffer()` or `base_buffer()`.
+     * @param buf A buffer from `create_buffer()`, `import_buffer()` or
+     * `base_buffer()`.
      * @param regions The regions of `buf` that userland named as changed since
      * `buf` was created or last presented, each wholly inside `buf` and none
      * of them empty, or null when `region_count` is 0, as for a base buffer
@@ -366,10 +404,11 @@ public:
     virtual int32_t move_cursor(uint32_t output, int32_t x, int32_t y) = 0;
 
     /**
-     * @brief Take back a buffer from `create_buffer()` or `base_buffer()` once
-     * nothing refers to it, freeing it unless the display keeps it for good,
-     * as the boot display keeps the boot framebuffer. Runs once per buffer, in
-     * the reaper's task.
+     * @brief Take back a buffer from `create_buffer()`, `import_buffer()` or
+     * `base_buffer()` once nothing refers to it, freeing it unless the display
+     * keeps it for good, as the boot display keeps the boot framebuffer. An
+     * import's memory belongs to the GPU core, so the display never frees it.
+     * Runs once per buffer, in the reaper's task.
      * @param buf The buffer.
      */
     virtual void release_buffer(buffer* buf) = 0;
