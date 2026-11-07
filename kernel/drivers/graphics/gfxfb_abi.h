@@ -73,22 +73,39 @@
  * A program can also create buffers, each holding one picture of 32-bit
  * pixels. `GFXFB_CREATE_BUFFER` returns a new buffer's handle, its layout and
  * the mmap offset that maps it. An open file controls the buffers from its
- * first creation, present, cursor call or mode request that succeeds until it
- * closes. A creation fails with EINVAL when the kernel cannot read its
- * argument, when its width or height is zero or when its reserved field is
- * set. Any other creation, and any present, cursor call or mode request that
- * passes the checks below, fails with EBUSY while another open file controls
- * the buffers or reserves control, and otherwise reserves control for its file
- * until the call returns, so two files never control the buffers at once. A
- * creation that reserves control fails with ENOTTY on a device that cannot
- * create buffers, with ENOMEM when no memory is left or the file already holds
- * `GFXFB_CLIENT_BUFFERS_MAX` handles, with EIO when the device refuses the
- * buffer or has failed, and with EINVAL when the kernel cannot write its
- * argument after the device created the buffer. A handle names its buffer only
- * within the open file that created it. `GFXFB_DESTROY_BUFFER` drops a handle,
- * failing with EINVAL for one the file does not hold, and closing the file
- * drops all of them. A buffer stays allocated until its handle and its last
- * mapping are gone and no output shows it or holds it for a present.
+ * first creation, import, present, cursor call or mode request that succeeds
+ * until it closes. A creation fails with EINVAL when the kernel cannot read
+ * its argument, when its width or height is zero or when its reserved field is
+ * set. Any other creation, and any import, present, cursor call or mode
+ * request that passes the checks below, fails with EBUSY while another open
+ * file controls the buffers or reserves control, and otherwise reserves
+ * control for its file until the call returns, so two files never control the
+ * buffers at once. A creation that reserves control fails with ENOTTY on a
+ * device that cannot create buffers, with ENOMEM when no memory is left or the
+ * file already holds `GFXFB_CLIENT_BUFFERS_MAX` handles, with EIO when the
+ * device refuses the buffer or has failed, and with EINVAL when the kernel
+ * cannot write its argument after the device created the buffer. A handle
+ * names its buffer only within the open file that created or imported it.
+ * `GFXFB_DESTROY_BUFFER` drops a handle, failing with EINVAL for one the file
+ * does not hold, and closing the file drops all of them. A buffer stays
+ * allocated until its handle and its last mapping are gone and no output shows
+ * it or holds it for a present.
+ *
+ * `GFXFB_IMPORT_BUFFER` makes a buffer of a picture in a /dev/gpuN buffer and
+ * returns its handle, which works as a created buffer's except that mmap
+ * refuses it. The GPU buffer's memory stays allocated as long as the buffer
+ * does. An import fails with EINVAL when the kernel cannot read its argument,
+ * for a zero width or height and for a pitch below 4 bytes times the width,
+ * then with EBADF for a handle that names no GPU buffer or lacks read rights,
+ * and then with EINVAL when `pitch` times `height` bytes from `offset` end
+ * past the GPU buffer. Past those checks it reserves and takes control as a
+ * creation does, failing with EBUSY while another open file controls the
+ * buffers or reserves control, then fails with ENOMEM when the file already
+ * holds `GFXFB_CLIENT_BUFFERS_MAX` handles or no memory is left, then as the
+ * device answers, with ENOTTY on a device that cannot import buffers, EINVAL
+ * for memory, a size, a format, a pitch or an offset it cannot scan out,
+ * ENOMEM, and EIO when it refuses the buffer or has failed, and last with
+ * EINVAL when the kernel cannot write its argument after the import.
  *
  * `GFXFB_PRESENT` asks for a buffer to replace what an output shows from the
  * output's next vertical blank and returns without waiting for it. The present
@@ -233,6 +250,7 @@ constexpr uint32_t GFXFB_SET_CURSOR     = 0x4706;
 constexpr uint32_t GFXFB_MOVE_CURSOR    = 0x4707;
 constexpr uint32_t GFXFB_GET_MODES      = 0x4708;
 constexpr uint32_t GFXFB_SET_MODE       = 0x4709;
+constexpr uint32_t GFXFB_IMPORT_BUFFER  = 0x470A;
 
 constexpr uint8_t GFXFB_INFO_NEEDS_FLUSH = 0x01; // drawing reaches the screen only through GFXFB_FLUSH
 
@@ -341,6 +359,17 @@ struct gfxfb_buffer_args {
     uint64_t map_offset; // out: the mmap offset that maps this buffer
 };
 
+// GFXFB_IMPORT_BUFFER argument, naming a picture in a GPU buffer, filled with the new buffer's handle
+struct gfxfb_import_args {
+    int32_t  gpu_buffer; // in: a /dev/gpuN buffer handle with GPU_RIGHT_READ
+    uint32_t handle;     // out
+    uint32_t width;      // in: EINVAL when zero
+    uint32_t height;     // in: EINVAL when zero
+    uint32_t pitch;      // in: bytes per row, at least 4 times the width
+    uint32_t format;     // in: GFXFB_FORMAT_XRGB8888, EINVAL for any other
+    uint64_t offset;     // in: where the picture starts in the GPU buffer, in bytes
+};
+
 // GFXFB_PRESENT argument, naming an output, the buffer asked to replace what it shows from its next vertical blank and
 // the regions of that buffer that changed since it was created or last presented
 struct gfxfb_present_args {
@@ -389,6 +418,7 @@ static_assert(sizeof(gfxfb_output_info) == 72, "gfxfb_output_info layout");
 static_assert(sizeof(gfxfb_mode_list) == 24, "gfxfb_mode_list layout");
 static_assert(sizeof(gfxfb_mode_request) == 24, "gfxfb_mode_request layout");
 static_assert(sizeof(gfxfb_buffer_args) == 40, "gfxfb_buffer_args layout");
+static_assert(sizeof(gfxfb_import_args) == 32, "gfxfb_import_args layout");
 static_assert(sizeof(gfxfb_present_args) == 24, "gfxfb_present_args layout");
 static_assert(sizeof(gfxfb_cursor_args) == 32, "gfxfb_cursor_args layout");
 static_assert(sizeof(gfxfb_cursor_position) == 16, "gfxfb_cursor_position layout");

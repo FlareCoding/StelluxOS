@@ -14,6 +14,7 @@
 #include "mm/pmm_types.h"
 #include "mm/uaccess.h"
 #include "mm/vma.h"
+#include "resource/resource_types.h"
 #include "sched/sched.h"
 #include "signals/signal.h"
 #include "sync/poll.h"
@@ -272,6 +273,11 @@ static void queue_output_event(client& owner, uint32_t output) {
 void buffer_record::take(buffer* buf) {
     m_buffer = buf;
     m_layout = *buf;
+}
+
+void buffer_record::take_import(buffer* buf) {
+    take(buf);
+    m_is_import = true;
 }
 
 /**
@@ -593,6 +599,10 @@ int32_t gfxfb_node::ioctl(fs::file* f, uint32_t cmd, uint64_t arg) {
         return create_buffer(client_of(f), arg);
     }
 
+    if (cmd == GFXFB_IMPORT_BUFFER) {
+        return import_buffer(client_of(f), arg);
+    }
+
     if (cmd == GFXFB_DESTROY_BUFFER) {
         return destroy_buffer(client_of(f), arg);
     }
@@ -911,6 +921,106 @@ int32_t gfxfb_node::create_buffer_under_handle(client& owner, gfxfb_buffer_args&
     args.size = record->layout().size;
     args.map_offset = handle * BUFFER_MAP_STRIDE;
 
+    rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(args_addr), &args, sizeof(args));
+
+    if (rc != mm::uaccess::OK) {
+        end_creation(owner, handle, nullptr);
+        if (record->release()) {
+            mm::device_backing::ref_destroy(record);
+        }
+
+        return fs::ERR_INVAL;
+    }
+
+    end_creation(owner, handle, record);
+
+    return fs::OK;
+}
+
+int32_t gfxfb_node::import_buffer(client& owner, uint64_t args_addr) {
+    gfxfb_import_args args{};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &args, reinterpret_cast<const void*>(args_addr), sizeof(args));
+
+    if (rc != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    uint64_t row_bytes = static_cast<uint64_t>(args.width) * (DRIVER_BPP / 8);
+    if (args.width == 0 || args.height == 0 || args.pitch < row_bytes) {
+        return fs::ERR_INVAL;
+    }
+
+    gpu::buffer* source = nullptr;
+    gpu::memory_view view = {};
+    rc = gpu::lookup_buffer(args.gpu_buffer, resource::RIGHT_READ, &source, view);
+    if (rc != fs::OK) {
+        return rc;
+    }
+
+    // Subtracts rather than adds, since an offset near 2^64 would wrap the picture's end
+    uint64_t picture_bytes = static_cast<uint64_t>(args.pitch) * args.height;
+    bool fits = args.offset <= view.size && picture_bytes <= view.size - args.offset;
+    if (!fits) {
+        gpu::release_buffer(source);
+        return fs::ERR_INVAL;
+    }
+
+    if (!begin_controlled_call(owner)) {
+        gpu::release_buffer(source);
+        return fs::ERR_BUSY;
+    }
+
+    rc = import_under_handle(owner, args, args_addr, source, view);
+    end_controlled_call(rc == fs::OK);
+
+    return rc;
+}
+
+// Imports `source` under a free handle of `owner` and writes the reply to `args_addr`. The reference on `source` passes
+// to the display's buffer, or is dropped here when the display took none
+int32_t gfxfb_node::import_under_handle(
+    client& owner,
+    gfxfb_import_args& args,
+    uint64_t args_addr,
+    gpu::buffer* source,
+    const gpu::memory_view& view
+) {
+    uint32_t handle = take_handle(owner);
+    if (handle == NO_HANDLE) {
+        gpu::release_buffer(source);
+        return fs::ERR_NOMEM;
+    }
+
+    auto* record = heap::kalloc_new<buffer_record>(m_display);
+    if (!record) {
+        gpu::release_buffer(source);
+        end_creation(owner, handle, nullptr);
+        return fs::ERR_NOMEM;
+    }
+
+    const import_layout layout = {
+        .width  = args.width,
+        .height = args.height,
+        .pitch  = args.pitch,
+        .format = args.format,
+        .offset = args.offset,
+    };
+
+    buffer* imported = nullptr;
+    int32_t rc = m_display->import_buffer(source, view, layout, &imported);
+    if (rc != OK) {
+        gpu::release_buffer(source);
+        heap::kfree_delete(record);
+        end_creation(owner, handle, nullptr);
+        mark_failed_on_device_error(rc);
+        return to_fs_error(rc);
+    }
+
+    record->take_import(imported);
+
+    args.handle = handle;
     rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(args_addr), &args, sizeof(args));
 
@@ -1458,6 +1568,11 @@ int32_t gfxfb_node::mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
     rc::strong_ref<buffer_record> record = find_buffer_at(client_of(f), offset, offset_in_buffer);
     if (!record) {
         log::error("gfxfb: mmap: no buffer at offset 0x%lx", offset);
+        return mm::MM_CTX_ERR_INVALID_ARG;
+    }
+
+    if (record->is_import()) {
+        log::error("gfxfb: mmap: the buffer at offset 0x%lx is an import, which userland never maps", offset);
         return mm::MM_CTX_ERR_INVALID_ARG;
     }
 
