@@ -232,7 +232,7 @@ int32_t engines::bring_up(
     }
 
     uint32_t vector = 0;
-    rc = read_copy_vector(m_firmware, copy_engine->type, chip.interrupt_leaf_count, vector);
+    rc = read_nonstall_vector(m_firmware, copy_engine->type, chip.interrupt_leaf_count, vector);
     if (rc != OK) {
         return rc;
     }

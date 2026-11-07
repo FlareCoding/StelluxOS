@@ -10,6 +10,27 @@ static bool is_copy_engine(uint32_t type) {
     return type >= rm::ENGINE_TYPE_FIRST_COPY && type <= rm::ENGINE_TYPE_LAST_COPY;
 }
 
+// The copy engine of the lowest type among `engines`, on `graphics`'s runlist when `is_on_graphics_runlist` and off it
+// otherwise, or null when none is, every copy engine counting as off it for a null `graphics`
+static const engine_info* lowest_copy_engine(
+    const engine_info* engines,
+    uint32_t count,
+    const engine_info* graphics,
+    bool is_on_graphics_runlist
+) {
+    const engine_info* found = nullptr;
+    for (uint32_t i = 0; i < count; i++) {
+        const engine_info& engine = engines[i];
+        bool shares_graphics_runlist = graphics != nullptr && engine.runlist == graphics->runlist;
+        bool is_lower = found == nullptr || engine.type < found->type;
+        if (is_copy_engine(engine.type) && shares_graphics_runlist == is_on_graphics_runlist && is_lower) {
+            found = &engine;
+        }
+    }
+
+    return found;
+}
+
 // Appends a page's entries to the `count` engines `engines` holds
 static int32_t keep_page(const rm::device_info_table_params& page, engine_info* engines, uint32_t& count) {
     if (page.entry_count > rm::DEVICE_INFO_PAGE_ENTRIES) {
@@ -76,18 +97,8 @@ int32_t engine_table::read(firmware& fw, rm::handle subdevice) {
 }
 
 const engine_info* engine_table::first_async_copy_engine() const {
-    const engine_info* graphics = graphics_engine();
-    const engine_info* found = nullptr;
-    for (uint32_t i = 0; i < m_count; i++) {
-        const engine_info& engine = m_engines[i];
-        bool is_async = graphics == nullptr || engine.runlist != graphics->runlist;
-        bool is_lower = found == nullptr || engine.type < found->type;
-        if (is_copy_engine(engine.type) && is_async && is_lower) {
-            found = &engine;
-        }
-    }
-
-    return found;
+    bool is_on_graphics_runlist = false;
+    return lowest_copy_engine(m_engines, m_count, graphics_engine(), is_on_graphics_runlist);
 }
 
 const engine_info* engine_table::graphics_engine() const {
@@ -98,6 +109,11 @@ const engine_info* engine_table::graphics_engine() const {
     }
 
     return nullptr;
+}
+
+const engine_info* engine_table::graphics_copy_engine() const {
+    bool is_on_graphics_runlist = true;
+    return lowest_copy_engine(m_engines, m_count, graphics_engine(), is_on_graphics_runlist);
 }
 
 uint32_t engine_table::count() const {

@@ -127,20 +127,38 @@ static bool find_display_vector(const rm::kernel_interrupt_table_params& table, 
     return true;
 }
 
-// Finds a copy engine's nonstall vector in the table the reply filled, whose count must already be checked
-static int32_t find_copy_vector(
+// Sets `engine` to the number among the engines of the engine of type `engine_type`, returning false when that is
+// neither the graphics engine nor a copy engine
+static bool find_engine_number(uint32_t engine_type, uint16_t& engine) {
+    if (engine_type == rm::ENGINE_TYPE_GRAPHICS) {
+        engine = rm::ENGINE_GRAPHICS;
+        return true;
+    }
+
+    bool is_copy_engine = engine_type >= rm::ENGINE_TYPE_FIRST_COPY && engine_type <= rm::ENGINE_TYPE_LAST_COPY;
+    if (!is_copy_engine) {
+        return false;
+    }
+
+    engine = static_cast<uint16_t>(rm::ENGINE_FIRST_COPY + engine_type - rm::ENGINE_TYPE_FIRST_COPY);
+    return true;
+}
+
+// Finds the nonstall vector of the engine of type `engine_type`, numbered `engine`, in the table the reply filled,
+// whose count must already be checked
+static int32_t find_nonstall_vector(
     const rm::kernel_interrupt_table_params& table,
-    uint32_t copy_index,
+    uint32_t engine_type,
+    uint16_t engine,
     uint32_t leaf_count,
     uint32_t& vector
 ) {
-    uint16_t engine = static_cast<uint16_t>(rm::ENGINE_FIRST_COPY + copy_index);
     const rm::kernel_interrupt_row* row = find_first_row(table, engine);
     if (row == nullptr) {
         log::error(
-            "nvidia: the GSP firmware's kernel interrupt table counts %u rows, none for copy engine %u",
+            "nvidia: the GSP firmware's kernel interrupt table counts %u rows, none for engine type 0x%X",
             table.row_count,
-            copy_index
+            engine_type
         );
         return ERR_BAD_MESSAGE;
     }
@@ -148,9 +166,9 @@ static int32_t find_copy_vector(
     uint32_t vector_count = leaf_count * VECTORS_PER_LEAF;
     if (row->nonstall_vector >= vector_count) {
         log::error(
-            "nvidia: the GSP firmware's kernel interrupt table gives copy engine %u the nonstall vector %u, outside "
-            "the %u vectors of the CPU interrupt tree",
-            copy_index,
+            "nvidia: the GSP firmware's kernel interrupt table gives engine type 0x%X the nonstall vector %u, "
+            "outside the %u vectors of the CPU interrupt tree",
+            engine_type,
             row->nonstall_vector,
             vector_count
         );
@@ -159,9 +177,9 @@ static int32_t find_copy_vector(
 
     if (row->pmc_interrupt_mask != 0) {
         log::error(
-            "nvidia: the GSP firmware's kernel interrupt table gives copy engine %u's row the PMC mask 0x%X, and "
+            "nvidia: the GSP firmware's kernel interrupt table gives engine type 0x%X's row the PMC mask 0x%X, and "
             "NVIDIA's driver never enables the vector of a row with one",
-            copy_index,
+            engine_type,
             row->pmc_interrupt_mask
         );
         return ERR_BAD_MESSAGE;
@@ -269,10 +287,14 @@ int32_t read_interrupt_vectors(
     return rc;
 }
 
-int32_t read_copy_vector(firmware& fw, uint32_t engine_type, uint32_t leaf_count, uint32_t& vector) {
-    bool is_copy_engine = engine_type >= rm::ENGINE_TYPE_FIRST_COPY && engine_type <= rm::ENGINE_TYPE_LAST_COPY;
-    if (!is_copy_engine) {
-        log::error("nvidia: engine type 0x%X names no copy engine, so it has no copy engine's vector", engine_type);
+int32_t read_nonstall_vector(firmware& fw, uint32_t engine_type, uint32_t leaf_count, uint32_t& vector) {
+    uint16_t engine = 0;
+    if (!find_engine_number(engine_type, engine)) {
+        log::error(
+            "nvidia: engine type 0x%X names neither the graphics engine nor a copy engine, so no nonstall vector is "
+            "read for it",
+            engine_type
+        );
         return ERR_INVALID_ARG;
     }
 
@@ -289,7 +311,7 @@ int32_t read_copy_vector(firmware& fw, uint32_t engine_type, uint32_t leaf_count
     }
 
     if (rc == OK) {
-        rc = find_copy_vector(*table, engine_type - rm::ENGINE_TYPE_FIRST_COPY, leaf_count, vector);
+        rc = find_nonstall_vector(*table, engine_type, engine, leaf_count, vector);
     }
 
     heap::ufree(table);

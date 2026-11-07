@@ -112,6 +112,9 @@ constexpr uint16_t ENGINE_DISPLAY = 2;
 // NVIDIA's MC_ENGINE_IDX_CE0, copy engine 0's number among the engines, so copy engine `n` (COPYn) has this plus `n`
 constexpr uint16_t ENGINE_FIRST_COPY = 15;
 
+// NVIDIA's MC_ENGINE_IDX_GR0, the graphics engine's number among the engines, which its row gives
+constexpr uint16_t ENGINE_GRAPHICS = 82;
+
 // A row of the kernel interrupt table: an engine, its PMC mask (NVIDIA's pmcIntrMask) and two GPU interrupt vectors
 // (NVIDIA's numbers for the GPU's interrupts)
 struct kernel_interrupt_row {
