@@ -389,8 +389,8 @@ void check_loss(VkInstance instance, VkPhysicalDevice physical_device);
 // kernel queue with a burst of 100, and one with a query queued behind its copy, whose point two others wait on
 void check_fault(VkInstance instance, VkPhysicalDevice physical_device);
 
-// On an instance and a connection of its own, creates a stlxwin window and a surface on it, checking that only the
-// device on stlxdm's GPU can present to it, what it offers and a shut connection's lost surface, or prints why none
+// On instances and connections of its own, checks that only stlxdm's GPU can present to a stlxwin window's surface,
+// what it offers, a lost surface, FIFO and MAILBOX frames and a linear swapchain's refusal, or prints why none
 void check_window();
 
 #endif // VKTEST_H

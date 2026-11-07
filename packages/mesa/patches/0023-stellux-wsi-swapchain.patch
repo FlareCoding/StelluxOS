@@ -1,0 +1,684 @@
+Gives the stellux platform swapchains that present to stlxdm, which reads a
+picture with the CPU, so the swapchain blits each image to a linear buffer
+in host-visible system memory, exported with the image's acquire and
+release timelines. stlxdm waits on the acquire point and raises the release
+timeline to a latch point once the picture is no longer pending, whether it
+latched, was replaced or was released unshown, and to the release point
+once it stops reading it, so each commit advances the image's release
+point by two, one more than Mesa's common code. FIFO waits for the previous
+commit's latch point before committing, MAILBOX commits at once, and
+acquire waits until an image not acquired reaches its release point.
+Present wait waits for the latch point of the first commit with the present
+id asked for or a later one. Each wait on stlxdm sleeps in slices with a
+check of the connection between them.
+
+--- a/src/vulkan/wsi/wsi_common_stellux.c
++++ b/src/vulkan/wsi/wsi_common_stellux.c
+@@ -4,7 +4,10 @@
+ 
+ /** VK_STLX_surface */
+ 
++#include "util/cnd_monotonic.h"
+ #include "util/macros.h"
++#include "util/os_time.h"
++#include "util/timespec.h"
+ #include "vk_instance.h"
+ #include "vk_physical_device.h"
+ #include "vk_util.h"
+@@ -12,6 +15,15 @@
+ #include "wsi_common_private.h"
+ 
+ #include <stlxwin/stlxwin.h>
++#include <string.h>
++#include <unistd.h>
++
++/* The longest a wait sleeps before it checks for a dead connection */
++#define STELLUX_WAIT_SLICE_NS (100ull * 1000 * 1000)
++
++/* The most images a swapchain takes, which sizes acquire's per-image
++ * arrays and the present records */
++#define STELLUX_MAX_IMAGES 4
+ 
+ /* stlxdm holds two pictures of a window, so a MAILBOX swapchain needs a
+  * third to render into */
+@@ -27,6 +39,48 @@ struct wsi_stellux_surface {
+    stlxwin_window *window;
+ };
+ 
++struct wsi_stellux_image {
++   struct wsi_image base;
++   /* The exported descriptor of the blit buffer's memory, or -1 */
++   int buffer_fd;
++   /* The id stlxwin_gpu_attach gave the buffer, 0 once detached */
++   uint32_t buffer_id;
++};
++
++/* A commit's present id, and the release timeline and point stlxdm raises
++ * it to once the commit's picture is no longer pending */
++struct wsi_stellux_present_record {
++   uint64_t present_id;
++   VkSemaphore timeline;
++   uint64_t latch_point;
++};
++
++struct wsi_stellux_swapchain {
++   struct wsi_swapchain base;
++   struct wsi_stellux_surface *surface;
++   VkExtent2D extent;
++
++   /* The newest commit's release timeline and latch point, which FIFO
++    * waits for before the next commit */
++   VkSemaphore fifo_timeline;
++   uint64_t fifo_latch_point;
++
++   /* Guards the fields below against a present wait on another thread,
++    * never held across a semaphore wait */
++   mtx_t present_mutex;
++   /* Broadcast when a commit is recorded or the swapchain retires */
++   struct u_cnd_monotonic present_recorded;
++   bool retired;
++   /* Commits with present ids, oldest first, each dropped at a later commit
++    * once a newer one's latch point is reached */
++   uint32_t record_count;
++   struct wsi_stellux_present_record records[STELLUX_MAX_IMAGES + 1];
++
++   struct wsi_stellux_image images[0];
++};
++VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_stellux_swapchain, base.base, VkSwapchainKHR,
++                               VK_OBJECT_TYPE_SWAPCHAIN_KHR)
++
+ /* Both lay out their bytes as STLXWIN_FMT_XRGB8888, the one format of
+  * libstlxwin's GPU buffers */
+ static const VkFormat formats[] = {
+@@ -95,7 +149,7 @@ wsi_stellux_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
+                   present_mode->presentMode == VK_PRESENT_MODE_MAILBOX_KHR;
+    caps->surfaceCapabilities.minImageCount =
+       mailbox ? STELLUX_MAILBOX_MIN_IMAGES : 2;
+-   caps->surfaceCapabilities.maxImageCount = 4;
++   caps->surfaceCapabilities.maxImageCount = STELLUX_MAX_IMAGES;
+ 
+    uint32_t width, height;
+    stlxwin_window_configured(surface->window, &width, &height, NULL);
+@@ -198,13 +252,13 @@ wsi_stellux_surface_get_capabilities2(VkIcdSurfaceBase *icd_surface,
+ 
+       case VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR: {
+          VkSurfaceCapabilitiesPresentId2KHR *pid2 = (void *)ext;
+-         pid2->presentId2Supported = VK_FALSE;
++         pid2->presentId2Supported = VK_TRUE;
+          break;
+       }
+ 
+       case VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR: {
+          VkSurfaceCapabilitiesPresentWait2KHR *pwait2 = (void *)ext;
+-         pwait2->presentWait2Supported = VK_FALSE;
++         pwait2->presentWait2Supported = VK_TRUE;
+          break;
+       }
+ 
+@@ -307,7 +361,461 @@ wsi_stellux_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
+    return vk_outarray_status(&out);
+ }
+ 
+-/* The platform has no swapchain to create */
++/* Waits until an absolute deadline for any or all of the points, in slices
++ * with a check of the connection between them, since libstlxwin reaches
++ * every release point it holds once it finds the connection dead */
++static VkResult
++wsi_stellux_wait(const struct wsi_stellux_swapchain *chain, uint32_t count,
++                 const VkSemaphore *timelines, const uint64_t *points,
++                 bool any, uint64_t deadline)
++{
++   const struct wsi_device *wsi = chain->base.wsi;
++
++   const VkSemaphoreWaitInfo wait_info = {
++      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
++      .flags = any ? VK_SEMAPHORE_WAIT_ANY_BIT : 0,
++      .semaphoreCount = count,
++      .pSemaphores = timelines,
++      .pValues = points,
++   };
++
++   for (;;) {
++      uint64_t now = os_time_get_nano();
++      uint64_t slice = now < deadline ?
++                       MIN2(deadline - now, STELLUX_WAIT_SLICE_NS) : 0;
++
++      VkResult result = wsi->WaitSemaphores(chain->base.device, &wait_info,
++                                            slice);
++      if (result != VK_TIMEOUT)
++         return result;
++
++      if (stlxwin_gpu_check(chain->surface->conn) < 0)
++         return VK_ERROR_SURFACE_LOST_KHR;
++
++      if (slice == 0)
++         return VK_TIMEOUT;
++   }
++}
++
++static struct wsi_image *
++wsi_stellux_swapchain_get_wsi_image(struct wsi_swapchain *wsi_chain,
++                                    uint32_t image_index)
++{
++   struct wsi_stellux_swapchain *chain =
++      (struct wsi_stellux_swapchain *)wsi_chain;
++   return &chain->images[image_index].base;
++}
++
++/* Among the images not acquired whose release point is reached, the one
++ * presented longest ago, VK_TIMEOUT if none is, or a failed poll's error */
++static VkResult
++wsi_stellux_swapchain_find_free_image(struct wsi_stellux_swapchain *chain,
++                                      uint32_t *image_index)
++{
++   VkResult found = VK_TIMEOUT;
++   uint64_t present_serial = UINT64_MAX;
++
++   for (uint32_t i = 0; i < chain->base.image_count; i++) {
++      struct wsi_image *image = &chain->images[i].base;
++      if (image->acquired || image->present_serial >= present_serial)
++         continue;
++
++      struct wsi_image_explicit_sync_timeline *release =
++         &image->explicit_sync[WSI_ES_RELEASE];
++      VkResult result = wsi_stellux_wait(chain, 1, &release->semaphore,
++                                         &release->timeline, false, 0);
++      if (result == VK_TIMEOUT)
++         continue;
++
++      if (result != VK_SUCCESS)
++         return result;
++
++      *image_index = i;
++      present_serial = image->present_serial;
++      found = VK_SUCCESS;
++   }
++
++   return found;
++}
++
++static VkResult
++wsi_stellux_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
++                                         const VkAcquireNextImageInfoKHR *info,
++                                         uint32_t *image_index)
++{
++   struct wsi_stellux_swapchain *chain =
++      (struct wsi_stellux_swapchain *)wsi_chain;
++
++   if (chain->retired)
++      return VK_ERROR_OUT_OF_DATE_KHR;
++
++   stlxwin_gpu_info gpu_info;
++   VkResult result =
++      wsi_stellux_surface_get_gpu_info(&chain->surface->base, &gpu_info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   VkSemaphore timelines[STELLUX_MAX_IMAGES];
++   uint64_t points[STELLUX_MAX_IMAGES];
++   uint32_t count = 0;
++   for (uint32_t i = 0; i < chain->base.image_count; i++) {
++      struct wsi_image *image = &chain->images[i].base;
++      if (image->acquired)
++         continue;
++
++      timelines[count] = image->explicit_sync[WSI_ES_RELEASE].semaphore;
++      points[count] = image->explicit_sync[WSI_ES_RELEASE].timeline;
++      count++;
++   }
++
++   if (count > 0) {
++      result = wsi_stellux_wait(chain, count, timelines, points, true,
++                                os_time_get_absolute_timeout(info->timeout));
++      if (result == VK_SUCCESS)
++         result = wsi_stellux_swapchain_find_free_image(chain, image_index);
++
++      if (result != VK_TIMEOUT)
++         return result;
++   }
++
++   return info->timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
++}
++
++/* Does nothing: an image released unpresented keeps its reached release
++ * point, so it is free at once */
++static VkResult
++wsi_stellux_swapchain_release_images(struct wsi_swapchain *wsi_chain,
++                                     uint32_t count, const uint32_t *indices)
++{
++   return VK_SUCCESS;
++}
++
++/* Records a commit for present wait, dropping the records older than the
++ * newest whose latch point is reached, or returns the error of a poll that
++ * cannot tell */
++static VkResult
++wsi_stellux_swapchain_record_commit(struct wsi_stellux_swapchain *chain,
++                                    uint64_t present_id, VkSemaphore timeline,
++                                    uint64_t latch_point)
++{
++   /* Only presents change the records and the program serializes them, so
++    * the points are read without the mutex */
++   uint32_t first_kept = 0;
++   for (int i = chain->record_count - 1; i > 0; i--) {
++      const struct wsi_stellux_present_record *record = &chain->records[i];
++      VkResult result = wsi_stellux_wait(chain, 1, &record->timeline,
++                                         &record->latch_point, false, 0);
++      if (result == VK_SUCCESS) {
++         first_kept = i;
++         break;
++      }
++
++      /* A lost device or connection hides which latch points are reached */
++      if (result != VK_TIMEOUT)
++         return result;
++   }
++
++   mtx_lock(&chain->present_mutex);
++
++   chain->record_count -= first_kept;
++   memmove(chain->records, &chain->records[first_kept],
++           chain->record_count * sizeof(chain->records[0]));
++
++   /* A commit needs a free image, so each other image holds at most one
++    * record whose latch point is not reached */
++   assert(chain->record_count < ARRAY_SIZE(chain->records));
++   chain->records[chain->record_count++] = (struct wsi_stellux_present_record) {
++      .present_id = present_id,
++      .timeline = timeline,
++      .latch_point = latch_point,
++   };
++
++   u_cnd_monotonic_broadcast(&chain->present_recorded);
++   mtx_unlock(&chain->present_mutex);
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_stellux_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
++                                    uint32_t image_index,
++                                    uint64_t present_id,
++                                    const VkPresentRegionKHR *damage)
++{
++   struct wsi_stellux_swapchain *chain =
++      (struct wsi_stellux_swapchain *)wsi_chain;
++   struct wsi_stellux_image *image = &chain->images[image_index];
++   struct wsi_image_explicit_sync_timeline *release =
++      &image->base.explicit_sync[WSI_ES_RELEASE];
++
++   /* Retirement detached every buffer, and a present on a retired
++    * swapchain may answer VK_ERROR_OUT_OF_DATE_KHR */
++   if (chain->retired)
++      return VK_ERROR_OUT_OF_DATE_KHR;
++
++   stlxwin_gpu_info gpu_info;
++   VkResult result =
++      wsi_stellux_surface_get_gpu_info(&chain->surface->base, &gpu_info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   if (chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR &&
++       chain->fifo_timeline != VK_NULL_HANDLE) {
++      result = wsi_stellux_wait(chain, 1, &chain->fifo_timeline,
++                                &chain->fifo_latch_point, false,
++                                OS_TIMEOUT_INFINITE);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   /* Mesa raised the release point once for this present: that value is the
++    * latch point, and one more is the new release point */
++   uint64_t latch_point = release->timeline;
++   uint64_t release_point = ++release->timeline;
++   int committed =
++      stlxwin_gpu_commit(chain->surface->window, image->buffer_id,
++                         image->base.explicit_sync[WSI_ES_ACQUIRE].timeline,
++                         latch_point, release_point, NULL, 0, 0);
++   if (committed < 0)
++      return VK_ERROR_SURFACE_LOST_KHR;
++
++   chain->fifo_timeline = release->semaphore;
++   chain->fifo_latch_point = latch_point;
++
++   if (present_id != 0) {
++      result = wsi_stellux_swapchain_record_commit(chain, present_id,
++                                                   release->semaphore,
++                                                   latch_point);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   uint32_t width, height;
++   stlxwin_window_configured(chain->surface->window, &width, &height, NULL);
++   if (width != chain->extent.width || height != chain->extent.height)
++      return VK_SUBOPTIMAL_KHR;
++
++   return VK_SUCCESS;
++}
++
++/* The first record with the present id or a later one, or NULL */
++static const struct wsi_stellux_present_record *
++wsi_stellux_swapchain_find_record(const struct wsi_stellux_swapchain *chain,
++                                  uint64_t present_id)
++{
++   for (uint32_t i = 0; i < chain->record_count; i++) {
++      if (chain->records[i].present_id >= present_id)
++         return &chain->records[i];
++   }
++
++   return NULL;
++}
++
++/* Waits until an absolute deadline for the first record with the present
++ * id or a later one, checking for retirement and a loss between slices */
++static VkResult
++wsi_stellux_swapchain_wait_for_record(struct wsi_stellux_swapchain *chain,
++                                      uint64_t present_id, uint64_t deadline,
++                                      struct wsi_stellux_present_record *record)
++{
++   for (;;) {
++      mtx_lock(&chain->present_mutex);
++
++      const struct wsi_stellux_present_record *found =
++         wsi_stellux_swapchain_find_record(chain, present_id);
++      uint64_t now = os_time_get_nano();
++      if (found == NULL && !chain->retired && now < deadline) {
++         struct timespec slice_end;
++         timespec_from_nsec(&slice_end,
++                            now + MIN2(deadline - now, STELLUX_WAIT_SLICE_NS));
++         u_cnd_monotonic_timedwait(&chain->present_recorded,
++                                   &chain->present_mutex, &slice_end);
++         found = wsi_stellux_swapchain_find_record(chain, present_id);
++      }
++
++      bool retired = chain->retired;
++      if (found != NULL)
++         *record = *found;
++
++      mtx_unlock(&chain->present_mutex);
++
++      if (found != NULL)
++         return VK_SUCCESS;
++
++      /* A present refused for retirement or a lost surface ran its blit and
++       * recorded nothing */
++      if (retired)
++         return VK_ERROR_OUT_OF_DATE_KHR;
++
++      stlxwin_gpu_info gpu_info;
++      VkResult result =
++         wsi_stellux_surface_get_gpu_info(&chain->surface->base, &gpu_info);
++      if (result != VK_SUCCESS)
++         return result;
++
++      /* A present refused for a lost device recorded nothing either, and a
++       * wait on its reached present id reads the loss */
++      result =
++         wsi_swapchain_wait_for_present_semaphore(&chain->base, present_id, 0);
++      if (result != VK_SUCCESS)
++         return result;
++
++      if (os_time_get_nano() >= deadline)
++         return VK_TIMEOUT;
++   }
++}
++
++/* Waits for the present's blit, then for the latch point of the first commit
++ * with that present id or a later one */
++static VkResult
++wsi_stellux_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
++                                       uint64_t present_id,
++                                       uint64_t timeout)
++{
++   struct wsi_stellux_swapchain *chain =
++      (struct wsi_stellux_swapchain *)wsi_chain;
++   const uint64_t deadline = os_time_get_absolute_timeout(timeout);
++
++   VkResult result =
++      wsi_swapchain_wait_for_present_semaphore(wsi_chain, present_id, timeout);
++   if (result != VK_SUCCESS)
++      return result;
++
++   /* The blit can end before its present records the commit */
++   struct wsi_stellux_present_record record;
++   result = wsi_stellux_swapchain_wait_for_record(chain, present_id, deadline,
++                                                  &record);
++   if (result != VK_SUCCESS)
++      return result;
++
++   return wsi_stellux_wait(chain, 1, &record.timeline, &record.latch_point,
++                           false, deadline);
++}
++
++/* Detaches every image's buffer and wakes the present waits still waiting
++ * for a record. stlxdm may show a detached buffer, and counts it toward the
++ * connection's budget, until its last release point is reached */
++static void
++wsi_stellux_swapchain_retire(struct wsi_stellux_swapchain *chain)
++{
++   for (uint32_t i = 0; i < chain->base.image_count; i++) {
++      struct wsi_stellux_image *image = &chain->images[i];
++      if (image->buffer_id != 0) {
++         stlxwin_gpu_detach(chain->surface->window, image->buffer_id);
++         image->buffer_id = 0;
++      }
++   }
++
++   mtx_lock(&chain->present_mutex);
++   chain->retired = true;
++   u_cnd_monotonic_broadcast(&chain->present_recorded);
++   mtx_unlock(&chain->present_mutex);
++}
++
++static void
++wsi_stellux_image_finish(struct wsi_stellux_swapchain *chain,
++                         struct wsi_stellux_image *image)
++{
++   if (image->buffer_id != 0)
++      stlxwin_gpu_detach(chain->surface->window, image->buffer_id);
++
++   if (image->buffer_fd >= 0)
++      close(image->buffer_fd);
++
++   wsi_destroy_image(&chain->base, &image->base);
++}
++
++static VkResult
++wsi_stellux_swapchain_destroy(struct wsi_swapchain *wsi_chain,
++                              const VkAllocationCallbacks *pAllocator)
++{
++   struct wsi_stellux_swapchain *chain =
++      (struct wsi_stellux_swapchain *)wsi_chain;
++
++   for (uint32_t i = 0; i < chain->base.image_count; i++)
++      wsi_stellux_image_finish(chain, &chain->images[i]);
++
++   wsi_swapchain_finish(&chain->base);
++   u_cnd_monotonic_destroy(&chain->present_recorded);
++   mtx_destroy(&chain->present_mutex);
++   vk_free(pAllocator, chain);
++
++   return VK_SUCCESS;
++}
++
++/* Prefers a host-visible type outside video memory, since stlxdm reads the
++ * buffers with the CPU, which system memory serves fastest */
++static uint32_t
++wsi_stellux_select_buffer_memory_type(const struct wsi_device *wsi,
++                                      uint32_t type_bits)
++{
++   return wsi_select_memory_type(wsi, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
++                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
++                                 type_bits);
++}
++
++static VkResult
++wsi_stellux_create_buffer_mem(const struct wsi_swapchain *chain,
++                              const struct wsi_image_info *info,
++                              struct wsi_image *image)
++{
++   return wsi_create_buffer_blit_context(
++      chain, info, image, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
++}
++
++static VkResult
++wsi_stellux_image_init(struct wsi_stellux_swapchain *chain,
++                       struct wsi_stellux_image *image)
++{
++   const struct wsi_device *wsi = chain->base.wsi;
++
++   image->buffer_fd = -1;
++   image->buffer_id = 0;
++
++   VkResult result = wsi_create_image(&chain->base, &chain->base.image_info,
++                                      &image->base);
++   if (result != VK_SUCCESS)
++      return result;
++
++   const VkMemoryGetFdInfoKHR get_fd_info = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
++      .memory = image->base.blit.memory,
++      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++   };
++   result = wsi->GetMemoryFdKHR(chain->base.device, &get_fd_info,
++                                &image->buffer_fd);
++   if (result != VK_SUCCESS) {
++      wsi_stellux_image_finish(chain, image);
++      return result;
++   }
++
++   const stlxwin_gpu_buffer_desc desc = {
++      .buffer = image->buffer_fd,
++      .acquire = image->base.explicit_sync[WSI_ES_ACQUIRE].fd,
++      .release = image->base.explicit_sync[WSI_ES_RELEASE].fd,
++      .width = chain->extent.width,
++      .height = chain->extent.height,
++      .pitch = chain->base.image_info.linear_stride,
++      .format = STLXWIN_FMT_XRGB8888,
++      .offset = 0,
++   };
++   image->buffer_id = stlxwin_gpu_attach(chain->surface->window, &desc);
++   if (image->buffer_id == 0) {
++      /* get_gpu_info answers a loss, and of attach's other refusals only a
++       * full budget is the program's doing */
++      stlxwin_gpu_info gpu_info;
++      result = wsi_stellux_surface_get_gpu_info(&chain->surface->base,
++                                                &gpu_info);
++      if (result == VK_SUCCESS)
++         result = VK_ERROR_OUT_OF_HOST_MEMORY;
++
++      wsi_stellux_image_finish(chain, image);
++      return result;
++   }
++
++   return VK_SUCCESS;
++}
++
+ static VkResult
+ wsi_stellux_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+                                      VkDevice device,
+@@ -316,7 +824,102 @@ wsi_stellux_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+                                      const VkAllocationCallbacks *pAllocator,
+                                      struct wsi_swapchain **swapchain_out)
+ {
+-   return VK_ERROR_INITIALIZATION_FAILED;
++   struct wsi_stellux_surface *surface = wsi_stellux_surface(icd_surface);
++
++   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
++
++   /* Retired first, even if creation fails: an old buffer whose last release
++    * point is not reached stays in the budget beside any new ones until
++    * stlxdm handles its detach, and the shown one until a new latch */
++   VK_FROM_HANDLE(wsi_stellux_swapchain, old_chain, pCreateInfo->oldSwapchain);
++   if (old_chain != NULL)
++      wsi_stellux_swapchain_retire(old_chain);
++
++   stlxwin_gpu_info gpu_info;
++   VkResult result = wsi_stellux_surface_get_gpu_info(icd_surface, &gpu_info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   VkPresentModeKHR present_mode =
++      wsi_swapchain_get_present_mode(wsi_device, pCreateInfo);
++
++   uint32_t image_count = pCreateInfo->minImageCount;
++   if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR)
++      image_count = MAX2(image_count, STELLUX_MAILBOX_MIN_IMAGES);
++   assert(image_count <= STELLUX_MAX_IMAGES);
++
++   struct wsi_stellux_swapchain *chain;
++   size_t size = sizeof(*chain) + image_count * sizeof(chain->images[0]);
++   chain = vk_zalloc(pAllocator, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (chain == NULL)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   if (u_cnd_monotonic_init(&chain->present_recorded) != thrd_success) {
++      vk_free(pAllocator, chain);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++
++   mtx_init(&chain->present_mutex, mtx_plain);
++
++   const struct wsi_cpu_image_params cpu_params = {
++      .base.image_type = WSI_IMAGE_TYPE_CPU,
++   };
++   result = wsi_swapchain_init(wsi_device, &chain->base, device, pCreateInfo,
++                               &cpu_params.base, pAllocator);
++   if (result != VK_SUCCESS)
++      goto fail_destroy_present_locks;
++
++   /* stlxdm reads a linear buffer, which only the buffer blit makes, and
++    * MESA_VK_WSI_DEBUG=linear turns the blit off */
++   if (chain->base.blit.type != WSI_SWAPCHAIN_BUFFER_BLIT) {
++      result = VK_ERROR_INITIALIZATION_FAILED;
++      wsi_swapchain_finish(&chain->base);
++      goto fail_destroy_present_locks;
++   }
++
++   /* stlxdm reads an exported buffer, waits on the image's acquire
++    * timeline and raises its release timeline itself */
++   chain->base.image_info.explicit_sync = true;
++   chain->base.image_info.select_blit_dst_memory_type =
++      wsi_stellux_select_buffer_memory_type;
++   chain->base.image_info.create_mem = wsi_stellux_create_buffer_mem;
++
++   chain->base.destroy = wsi_stellux_swapchain_destroy;
++   chain->base.get_wsi_image = wsi_stellux_swapchain_get_wsi_image;
++   chain->base.acquire_next_image = wsi_stellux_swapchain_acquire_next_image;
++   chain->base.release_images = wsi_stellux_swapchain_release_images;
++   chain->base.queue_present = wsi_stellux_swapchain_queue_present;
++   chain->base.wait_for_present = wsi_stellux_swapchain_wait_for_present;
++   chain->base.wait_for_present2 = wsi_stellux_swapchain_wait_for_present;
++   chain->base.present_mode = present_mode;
++   chain->surface = surface;
++   chain->extent = pCreateInfo->imageExtent;
++
++   chain->base.image_count = image_count;
++
++   uint32_t image = 0;
++   for (; image < image_count; image++) {
++      result = wsi_stellux_image_init(chain, &chain->images[image]);
++      if (result != VK_SUCCESS)
++         goto fail_finish_images;
++   }
++
++   *swapchain_out = &chain->base;
++
++   return VK_SUCCESS;
++
++fail_finish_images:
++   while (image-- > 0)
++      wsi_stellux_image_finish(chain, &chain->images[image]);
++
++   wsi_swapchain_finish(&chain->base);
++
++fail_destroy_present_locks:
++   u_cnd_monotonic_destroy(&chain->present_recorded);
++   mtx_destroy(&chain->present_mutex);
++   vk_free(pAllocator, chain);
++
++   return result;
+ }
+ 
+ VkResult

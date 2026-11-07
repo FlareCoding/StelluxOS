@@ -1,11 +1,12 @@
-// The window stage: a surface on a stlxwin window, offering the window's configured size as its only extent. Only the
-// physical device on stlxdm's GPU, the GPU whose buffers stlxdm takes, can present to it.
+// The window stage: FIFO and MAILBOX swapchains on a surface on a stlxwin window, offering images of the window's
+// configured size. Only the physical device on stlxdm's GPU, the GPU whose buffers stlxdm takes, presents to it.
 
 #include "vktest.h"
 
 #include <iterator>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stlxwin/stlxwin.h>
 #include <sys/socket.h>
 #include <vector>
@@ -13,6 +14,7 @@
 
 constexpr uint32_t WINDOW_WIDTH = 320;
 constexpr uint32_t WINDOW_HEIGHT = 200;
+constexpr uint64_t PRESENT_FRAMES = 1000;
 
 struct window_commands {
     PFN_vkDestroyInstance                          destroy_instance;
@@ -29,11 +31,72 @@ struct window_commands {
     PFN_vkGetPhysicalDevicePresentRectanglesKHR    get_present_rectangles;
 };
 
+struct present_commands {
+    PFN_vkDestroyDevice         destroy_device;
+    PFN_vkDeviceWaitIdle        device_wait_idle;
+    PFN_vkCreateFence           create_fence;
+    PFN_vkDestroyFence          destroy_fence;
+    PFN_vkWaitForFences         wait_for_fences;
+    PFN_vkResetFences           reset_fences;
+    PFN_vkCmdClearColorImage    cmd_clear_color_image;
+    PFN_vkCreateSwapchainKHR    create_swapchain;
+    PFN_vkDestroySwapchainKHR   destroy_swapchain;
+    PFN_vkGetSwapchainImagesKHR get_swapchain_images;
+    PFN_vkAcquireNextImageKHR   acquire_next_image;
+    PFN_vkQueuePresentKHR       queue_present;
+    PFN_vkWaitForPresentKHR     wait_for_present;
+};
+
 // A surface on a window of a connection of the stage's own, and the physical device on stlxdm's GPU
 struct window_surface {
     stlxwin_window*  window;
     VkSurfaceKHR     surface;
     VkPhysicalDevice presenting_device;
+};
+
+// A device on the presenting physical device with swapchains, present ids and present waits, and its general queue
+struct present_stage {
+    work_commands    work;
+    present_commands presents;
+    VkDevice         device;
+    VkQueue          queue;
+};
+
+// A swapchain's present mode, the image count it asks for and the count it takes. FIFO asks for 3, so an image stays
+// free while stlxdm holds two pictures and only the present's own wait keeps a frame from replacing an unshown one.
+struct present_case {
+    const char*       name;
+    VkPresentModeKHR  mode;
+    uint32_t          requested_images;
+    uint32_t          image_count;
+    bool              checks_previous_shown;
+    VkClearColorValue color;
+    const char*       swapchain_check;
+    const char*       frames_check;
+};
+
+static const present_case PRESENT_CASES[] = {
+    {
+        "FIFO",
+        VK_PRESENT_MODE_FIFO_KHR,
+        3,
+        3,
+        true,
+        {{0.0f, 0.5f, 0.5f, 1.0f}},
+        "a FIFO swapchain asked for 3 images of the window's configured size has 3",
+        "1000 FIFO frames are acquired, cleared and presented, each present returning only after the frame before it "
+        "shows, and a wait for the last present returns VK_SUCCESS",
+    },
+    {
+        "MAILBOX",
+        VK_PRESENT_MODE_MAILBOX_KHR,
+        2,
+        3,
+        false,
+        {{0.5f, 0.25f, 0.0f, 1.0f}},
+        "a MAILBOX swapchain asked for 2 images has 3, since stlxdm holds two pictures of a window",
+        "1000 MAILBOX frames are acquired, cleared and presented, and a wait for the last present returns VK_SUCCESS",
+    },
 };
 
 // An instance with the surface extensions the stage uses, or `VK_NULL_HANDLE`
@@ -224,12 +287,10 @@ static void check_chained_capabilities(const window_commands& commands, const wi
 
     VkSurfaceCapabilitiesPresentWait2KHR present_wait2 = {};
     present_wait2.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR;
-    present_wait2.presentWait2Supported = VK_TRUE;
 
     VkSurfaceCapabilitiesPresentId2KHR present_id2 = {};
     present_id2.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR;
     present_id2.pNext = &present_wait2;
-    present_id2.presentId2Supported = VK_TRUE;
 
     VkPresentTimingSurfaceCapabilitiesEXT timing = {};
     timing.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT;
@@ -277,8 +338,8 @@ static void check_chained_capabilities(const window_commands& commands, const wi
     counted_capabilities2.pNext = &counted;
     VkResult count_result = commands.get_capabilities2(target.presenting_device, &surface_info, &counted_capabilities2);
 
-    bool has_no_present_id_or_wait =
-        present_id2.presentId2Supported == VK_FALSE && present_wait2.presentWait2Supported == VK_FALSE;
+    bool has_present_id_and_wait =
+        present_id2.presentId2Supported == VK_TRUE && present_wait2.presentWait2Supported == VK_TRUE;
     bool has_no_timing = timing.presentTimingSupported == VK_FALSE &&
         timing.presentAtAbsoluteTimeSupported == VK_FALSE && timing.presentAtRelativeTimeSupported == VK_FALSE &&
         timing.presentStageQueries == 0;
@@ -288,9 +349,9 @@ static void check_chained_capabilities(const window_commands& commands, const wi
     bool is_mailbox_alone = compatibility.presentModeCount == 1 && compatible_modes[0] == VK_PRESENT_MODE_MAILBOX_KHR &&
         count_result == VK_SUCCESS && counted.presentModeCount == 1;
     check(
-        "the surface offers MAILBOX compatible with MAILBOX alone and no present id 2, present wait 2, protected "
-        "presentation, scaling or present timing",
-        result == VK_SUCCESS && has_no_present_id_or_wait && has_no_timing && has_no_scaling && is_mailbox_alone &&
+        "the surface offers present id 2 and present wait 2 but no protected presentation, scaling or present timing, "
+        "and MAILBOX compatible with MAILBOX alone",
+        result == VK_SUCCESS && has_present_id_and_wait && has_no_timing && has_no_scaling && is_mailbox_alone &&
             protection.supportsProtected == VK_FALSE
     );
 }
@@ -479,6 +540,325 @@ static void check_lost_surface(
     }
 }
 
+// Finds the commands the swapchains need into `presents`, returning whether it found every one
+static bool find_present_commands(VkInstance instance, present_commands& presents) {
+    presents = {
+        .destroy_device = find_command<PFN_vkDestroyDevice>(instance, "vkDestroyDevice"),
+        .device_wait_idle = find_command<PFN_vkDeviceWaitIdle>(instance, "vkDeviceWaitIdle"),
+        .create_fence = find_command<PFN_vkCreateFence>(instance, "vkCreateFence"),
+        .destroy_fence = find_command<PFN_vkDestroyFence>(instance, "vkDestroyFence"),
+        .wait_for_fences = find_command<PFN_vkWaitForFences>(instance, "vkWaitForFences"),
+        .reset_fences = find_command<PFN_vkResetFences>(instance, "vkResetFences"),
+        .cmd_clear_color_image = find_command<PFN_vkCmdClearColorImage>(instance, "vkCmdClearColorImage"),
+        .create_swapchain = find_command<PFN_vkCreateSwapchainKHR>(instance, "vkCreateSwapchainKHR"),
+        .destroy_swapchain = find_command<PFN_vkDestroySwapchainKHR>(instance, "vkDestroySwapchainKHR"),
+        .get_swapchain_images = find_command<PFN_vkGetSwapchainImagesKHR>(instance, "vkGetSwapchainImagesKHR"),
+        .acquire_next_image = find_command<PFN_vkAcquireNextImageKHR>(instance, "vkAcquireNextImageKHR"),
+        .queue_present = find_command<PFN_vkQueuePresentKHR>(instance, "vkQueuePresentKHR"),
+        .wait_for_present = find_command<PFN_vkWaitForPresentKHR>(instance, "vkWaitForPresentKHR"),
+    };
+
+    return presents.destroy_device && presents.device_wait_idle && presents.create_fence && presents.destroy_fence &&
+        presents.wait_for_fences && presents.reset_fences && presents.cmd_clear_color_image &&
+        presents.create_swapchain && presents.destroy_swapchain && presents.get_swapchain_images &&
+        presents.acquire_next_image && presents.queue_present && presents.wait_for_present;
+}
+
+// A device on `physical_device` with the swapchain, present id and present wait extensions, or `VK_NULL_HANDLE`
+static VkDevice create_presenting_device(VkInstance instance, VkPhysicalDevice physical_device) {
+    VkPhysicalDevicePresentWaitFeaturesKHR present_wait = {};
+    present_wait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+    present_wait.presentWait = VK_TRUE;
+
+    VkPhysicalDevicePresentIdFeaturesKHR present_id = {};
+    present_id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+    present_id.pNext = &present_wait;
+    present_id.presentId = VK_TRUE;
+
+    return create_device(
+        instance,
+        physical_device,
+        {GENERAL_FAMILY},
+        {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PRESENT_ID_EXTENSION_NAME, VK_KHR_PRESENT_WAIT_EXTENSION_NAME},
+        &present_id
+    );
+}
+
+// Creates a swapchain in `mode` asking for `image_count` images of the window's configured size, into `swapchain`,
+// which a failure leaves null
+static VkResult create_swapchain(
+    const present_stage& stage,
+    const window_surface& target,
+    VkPresentModeKHR mode,
+    uint32_t image_count,
+    VkSwapchainKHR& swapchain
+) {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    stlxwin_window_configured(target.window, &width, &height, nullptr);
+
+    VkSwapchainCreateInfoKHR create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    create_info.surface = target.surface;
+    create_info.minImageCount = image_count;
+    create_info.presentMode = mode;
+    create_info.clipped = VK_TRUE;
+
+    create_info.imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
+    create_info.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    create_info.imageExtent = {width, height};
+    create_info.imageArrayLayers = 1;
+    create_info.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    create_info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+
+    start_hang_watch("vkCreateSwapchainKHR");
+    VkResult result = stage.presents.create_swapchain(stage.device, &create_info, nullptr, &swapchain);
+    end_hang_watch();
+
+    if (result != VK_SUCCESS) {
+        swapchain = VK_NULL_HANDLE;
+    }
+
+    return result;
+}
+
+// The images of `swapchain`, or none when listing them fails
+static std::vector<VkImage> list_swapchain_images(const present_stage& stage, VkSwapchainKHR swapchain) {
+    uint32_t count = 0;
+    if (stage.presents.get_swapchain_images(stage.device, swapchain, &count, nullptr) != VK_SUCCESS) {
+        return {};
+    }
+
+    std::vector<VkImage> images(count);
+    if (stage.presents.get_swapchain_images(stage.device, swapchain, &count, images.data()) != VK_SUCCESS) {
+        return {};
+    }
+
+    images.resize(count);
+    return images;
+}
+
+// Records a clear of `image` to `color` into `command_buffer`, leaving the image in the layout presents take
+static void record_clear(
+    const present_stage& stage,
+    VkImage image,
+    const VkClearColorValue& color,
+    VkCommandBuffer command_buffer
+) {
+    VkImageSubresourceRange range = {};
+    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.levelCount = 1;
+    range.layerCount = 1;
+
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = range;
+
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    stage.work.cmd_pipeline_barrier(
+        command_buffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &barrier
+    );
+
+    VkImageLayout layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    stage.presents.cmd_clear_color_image(command_buffer, image, layout, &color, 1, &range);
+
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = 0;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    stage.work.cmd_pipeline_barrier(
+        command_buffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &barrier
+    );
+}
+
+// Presents image `index` as `present_id`, waiting for the present when `is_waited`
+static VkResult present_image(
+    const present_stage& stage,
+    VkSwapchainKHR swapchain,
+    uint32_t index,
+    uint64_t present_id,
+    bool is_waited
+) {
+    VkPresentIdKHR id_info = {};
+    id_info.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+    id_info.swapchainCount = 1;
+    id_info.pPresentIds = &present_id;
+
+    VkPresentInfoKHR present_info = {};
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.pNext = &id_info;
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = &swapchain;
+    present_info.pImageIndices = &index;
+
+    start_hang_watch("vkQueuePresentKHR");
+    VkResult result = stage.presents.queue_present(stage.queue, &present_info);
+    end_hang_watch();
+
+    if (result == VK_SUCCESS && is_waited) {
+        start_hang_watch("vkWaitForPresentKHR");
+        result = stage.presents.wait_for_present(stage.device, swapchain, present_id, UINT64_MAX);
+        end_hang_watch();
+    }
+
+    return result;
+}
+
+// Acquires an image of `swapchain` into `index` through the fence `acquire_fence`, which it resets after each wait that
+// succeeds, and clears the image to `color`, returning the first result other than `VK_SUCCESS`
+static VkResult acquire_cleared_image(
+    const present_stage& stage,
+    VkSwapchainKHR swapchain,
+    const std::vector<VkImage>& images,
+    const VkClearColorValue& color,
+    VkFence acquire_fence,
+    uint32_t& index
+) {
+    start_hang_watch("vkAcquireNextImageKHR");
+    VkResult result =
+        stage.presents.acquire_next_image(stage.device, swapchain, UINT64_MAX, VK_NULL_HANDLE, acquire_fence, &index);
+    end_hang_watch();
+
+    if (result == VK_SUCCESS) {
+        start_hang_watch("vkWaitForFences");
+        result = stage.presents.wait_for_fences(stage.device, 1, &acquire_fence, VK_TRUE, UINT64_MAX);
+        end_hang_watch();
+    }
+
+    if (result == VK_SUCCESS) {
+        result = stage.presents.reset_fences(stage.device, 1, &acquire_fence);
+    }
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    auto record = [&](VkCommandBuffer command_buffer) {
+        record_clear(stage, images[index], color, command_buffer);
+    };
+
+    return run_once(stage.work, stage.device, GENERAL_FAMILY, record);
+}
+
+// Acquires, clears and presents `PRESENT_FRAMES` frames, waiting for the last and, when `checks_previous_shown`,
+// finding the frame before each present shown once it returns, returning the first result other than `VK_SUCCESS`
+static VkResult present_frames(
+    const present_stage& stage,
+    VkSwapchainKHR swapchain,
+    const std::vector<VkImage>& images,
+    const present_case& present
+) {
+    VkFenceCreateInfo fence_info = {};
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+    VkFence acquire_fence = VK_NULL_HANDLE;
+    VkResult result = stage.presents.create_fence(stage.device, &fence_info, nullptr, &acquire_fence);
+
+    for (uint64_t present_id = 1; result == VK_SUCCESS && present_id <= PRESENT_FRAMES; present_id++) {
+        uint32_t index = 0;
+        result = acquire_cleared_image(stage, swapchain, images, present.color, acquire_fence, index);
+        if (result == VK_SUCCESS) {
+            result = present_image(stage, swapchain, index, present_id, present_id == PRESENT_FRAMES);
+        }
+
+        if (result == VK_SUCCESS && present.checks_previous_shown && present_id > 1) {
+            start_hang_watch("vkWaitForPresentKHR");
+            result = stage.presents.wait_for_present(stage.device, swapchain, present_id - 1, 0);
+            end_hang_watch();
+        }
+    }
+
+    if (acquire_fence != VK_NULL_HANDLE) {
+        stage.presents.destroy_fence(stage.device, acquire_fence, nullptr);
+    }
+
+    return result;
+}
+
+// Presents `PRESENT_FRAMES` frames through a swapchain made for `present`, checking its image count and its frames
+static void check_presents(const present_stage& stage, const window_surface& target, const present_case& present) {
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    create_swapchain(stage, target, present.mode, present.requested_images, swapchain);
+    std::vector<VkImage> images;
+    if (swapchain != VK_NULL_HANDLE) {
+        images = list_swapchain_images(stage, swapchain);
+    }
+
+    check(present.swapchain_check, images.size() == present.image_count);
+    if (!images.empty()) {
+        uint64_t start_ns = monotonic_ns();
+        VkResult result = present_frames(stage, swapchain, images, present);
+        uint64_t elapsed_ms = (monotonic_ns() - start_ns) / 1000000;
+        printf(
+            "  %s's frames ended with VkResult %d after %llu ms\n",
+            present.name,
+            static_cast<int>(result),
+            static_cast<unsigned long long>(elapsed_ms)
+        );
+        check(present.frames_check, result == VK_SUCCESS);
+
+        start_hang_watch("vkDeviceWaitIdle");
+        stage.presents.device_wait_idle(stage.device);
+        end_hang_watch();
+    }
+
+    if (swapchain != VK_NULL_HANDLE) {
+        start_hang_watch("vkDestroySwapchainKHR");
+        stage.presents.destroy_swapchain(stage.device, swapchain, nullptr);
+        end_hang_watch();
+    }
+}
+
+// Checks FIFO and MAILBOX presents to `target` from a device of the stage's own
+static void check_swapchains(VkInstance instance, const window_surface& target) {
+    present_stage stage = {};
+    bool has_commands = find_work_commands(instance, stage.work) && find_present_commands(instance, stage.presents);
+    if (has_commands) {
+        stage.device = create_presenting_device(instance, target.presenting_device);
+    }
+
+    check(
+        "a device on stlxdm's GPU is created with VK_KHR_swapchain, VK_KHR_present_id and VK_KHR_present_wait",
+        stage.device != VK_NULL_HANDLE
+    );
+    if (stage.device == VK_NULL_HANDLE) {
+        return;
+    }
+
+    stage.work.get_device_queue(stage.device, GENERAL_FAMILY, 0, &stage.queue);
+    for (const present_case& present : PRESENT_CASES) {
+        check_presents(stage, target, present);
+    }
+
+    stage.presents.destroy_device(stage.device, nullptr);
+}
+
 // Checks a surface on a fresh window of a connection of the stage's own
 static void check_surface(VkInstance instance, const window_commands& commands) {
     std::vector<VkPhysicalDevice> physical_devices = list_physical_devices(instance, commands);
@@ -524,24 +904,16 @@ static void check_surface(VkInstance instance, const window_commands& commands) 
         check_capabilities(commands, target);
         check_formats_and_modes(commands, target);
         check_lost_surface(instance, commands, target.presenting_device);
+        check_swapchains(instance, target);
         commands.destroy_surface(instance, target.surface, nullptr);
     }
 
     stlxwin_disconnect(conn);
 }
 
-void check_window() {
-    VkInstance instance = create_window_instance();
-    check(
-        "vkCreateInstance succeeds with VK_KHR_surface, VK_STLX_surface, VK_KHR_get_surface_capabilities2, "
-        "VK_KHR_surface_maintenance1 and VK_KHR_surface_protected_capabilities",
-        instance != VK_NULL_HANDLE
-    );
-    if (instance == VK_NULL_HANDLE) {
-        return;
-    }
-
-    window_commands commands = {
+// Finds the window commands of `instance` into `commands`, returning whether it found every one
+static bool find_window_commands(VkInstance instance, window_commands& commands) {
+    commands = {
         .destroy_instance = find_command<PFN_vkDestroyInstance>(instance, "vkDestroyInstance"),
         .enumerate_physical_devices =
             find_command<PFN_vkEnumeratePhysicalDevices>(instance, "vkEnumeratePhysicalDevices"),
@@ -581,10 +953,103 @@ void check_window() {
         ),
     };
 
-    bool has_commands = commands.destroy_instance && commands.enumerate_physical_devices &&
-        commands.get_queue_families && commands.create_surface && commands.destroy_surface && commands.get_support &&
-        commands.get_capabilities && commands.get_capabilities2 && commands.get_formats && commands.get_formats2 &&
-        commands.get_present_modes && commands.get_present_rectangles;
+    return commands.destroy_instance && commands.enumerate_physical_devices && commands.get_queue_families &&
+        commands.create_surface && commands.destroy_surface && commands.get_support && commands.get_capabilities &&
+        commands.get_capabilities2 && commands.get_formats && commands.get_formats2 && commands.get_present_modes &&
+        commands.get_present_rectangles;
+}
+
+// Checks that an instance whose devices were enumerated with MESA_VK_WSI_DEBUG=linear, which turns off the buffer blit
+// stlxdm's buffers need, is refused a swapchain on a fresh window, though the variable is unset by then
+static void check_linear_refused() {
+    setenv("MESA_VK_WSI_DEBUG", "linear", 1);
+    VkInstance instance = create_window_instance();
+    window_commands commands = {};
+    bool has_commands = instance != VK_NULL_HANDLE && find_window_commands(instance, commands);
+    std::vector<VkPhysicalDevice> physical_devices;
+    if (has_commands) {
+        physical_devices = list_physical_devices(instance, commands);
+    }
+
+    unsetenv("MESA_VK_WSI_DEBUG");
+
+    stlxwin_conn* conn = nullptr;
+    if (!physical_devices.empty()) {
+        start_hang_watch("stlxwin_connect");
+        conn = stlxwin_connect("vktest");
+        end_hang_watch();
+    }
+
+    window_surface target = {};
+    if (conn != nullptr) {
+        start_hang_watch("stlxwin_window_create");
+        target.window = stlxwin_window_create(conn, WINDOW_WIDTH, WINDOW_HEIGHT, "vktest", 0);
+        end_hang_watch();
+    }
+
+    if (target.window != nullptr) {
+        target.presenting_device = find_presenting_device(instance, physical_devices, conn);
+    }
+
+    if (target.presenting_device != VK_NULL_HANDLE &&
+        create_window_surface(instance, commands, conn, target) != VK_SUCCESS) {
+        target.surface = VK_NULL_HANDLE;
+    }
+
+    present_stage stage = {};
+    if (target.surface != VK_NULL_HANDLE && find_work_commands(instance, stage.work) &&
+        find_present_commands(instance, stage.presents)) {
+        stage.device = create_presenting_device(instance, target.presenting_device);
+    }
+
+    VkResult result = VK_ERROR_UNKNOWN;
+    if (stage.device != VK_NULL_HANDLE) {
+        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+        result = create_swapchain(stage, target, VK_PRESENT_MODE_FIFO_KHR, 2, swapchain);
+        if (swapchain != VK_NULL_HANDLE) {
+            stage.presents.destroy_swapchain(stage.device, swapchain, nullptr);
+        }
+
+        stage.presents.destroy_device(stage.device, nullptr);
+    }
+
+    // Skips where check_surface skips, when no physical device can present
+    bool is_skipped = (has_commands && physical_devices.empty()) ||
+        (target.window != nullptr && target.presenting_device == VK_NULL_HANDLE);
+    if (!is_skipped) {
+        check(
+            "an instance whose devices were enumerated with MESA_VK_WSI_DEBUG=linear is refused a swapchain as "
+            "failing to initialize",
+            result == VK_ERROR_INITIALIZATION_FAILED
+        );
+    }
+
+    if (target.surface != VK_NULL_HANDLE) {
+        commands.destroy_surface(instance, target.surface, nullptr);
+    }
+
+    if (conn != nullptr) {
+        stlxwin_disconnect(conn);
+    }
+
+    if (instance != VK_NULL_HANDLE && commands.destroy_instance != nullptr) {
+        commands.destroy_instance(instance, nullptr);
+    }
+}
+
+void check_window() {
+    VkInstance instance = create_window_instance();
+    check(
+        "vkCreateInstance succeeds with VK_KHR_surface, VK_STLX_surface, VK_KHR_get_surface_capabilities2, "
+        "VK_KHR_surface_maintenance1 and VK_KHR_surface_protected_capabilities",
+        instance != VK_NULL_HANDLE
+    );
+    if (instance == VK_NULL_HANDLE) {
+        return;
+    }
+
+    window_commands commands = {};
+    bool has_commands = find_window_commands(instance, commands);
     check("vkGetInstanceProcAddr finds the window commands vktest calls", has_commands);
     if (!has_commands) {
         return;
@@ -592,4 +1057,5 @@ void check_window() {
 
     check_surface(instance, commands);
     commands.destroy_instance(instance, nullptr);
+    check_linear_refused();
 }
