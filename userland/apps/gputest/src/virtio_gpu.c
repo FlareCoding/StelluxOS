@@ -35,9 +35,13 @@
 // A new context ran no commands, so none of its venus memory has this id
 #define UNALLOCATED_MEMORY_ID 0xD0D0u
 
-// Each list waits this long for a fence nothing signals, holding the host's decoder. Two waits outlast two frames,
-// so a present comes while the flood's first chains are out and finds descriptors only if the chains left some
+// Each list waits this long for a fence nothing signals, holding the host's decoder. The flood then spans about 150
+// refresh periods, so the pace of presents during it shows whether chains left descriptors for presents
 #define HOLD_NS (20 * NS_PER_SEC / 1000)
+
+// The pace the flood's presents must keep, at least PACE_PRESENTS ending per PACE_PERIODS refresh periods
+#define PACE_PRESENTS 2
+#define PACE_PERIODS  3
 
 // Past GPU_SUBMIT_TIMEOUT_NS, so the core loses the list's context while its chain is out, and short of the stop
 // deadline the backend then sets, GPU_SUBMIT_TIMEOUT_NS after that loss
@@ -623,8 +627,9 @@ static void test_list_flood(int fd) {
     bool is_signaled = has_gate && gpu_call(fd, GPU_TIMELINE_SIGNAL, &signal) == 0;
     bool ended = is_signaled && wait_for_queues(&s, start_ns + GPU_SUBMIT_TIMEOUT_NS) == 0;
     uint64_t presents_during = presents_ended() - presents_before;
+    uint64_t elapsed_ns = monotonic_ns() - start_ns;
 
-    unsigned long long elapsed_ms = (monotonic_ns() - start_ns) / (NS_PER_SEC / 1000);
+    unsigned long long elapsed_ms = elapsed_ns / (NS_PER_SEC / 1000);
     if (ended) {
         printf(
             "gputest: %u venus lists ended %llu ms after the point their queues waited for\n",
@@ -641,7 +646,21 @@ static void test_list_flood(int fd) {
 
     check("128 lists across two queues each wait 20 ms on the host and all end with VK_TIMEOUT", all_timed_out);
     if (is_presenting()) {
-        check("presents on output 0 ended while the lists ran", presents_during > 0);
+        uint64_t period_ns = refresh_period_ns();
+        uint64_t periods = period_ns != 0 ? elapsed_ns / period_ns : 0;
+        bool keeps_pace = periods != 0 && presents_during * PACE_PERIODS >= periods * PACE_PRESENTS;
+
+        if (period_ns == 0) {
+            printf("gputest: output 0 reports no refresh rate, so the pace of its presents cannot be judged\n");
+        } else {
+            printf(
+                "gputest: %llu of the presents on output 0 ended during the %llu refresh periods the lists took\n",
+                (unsigned long long)presents_during,
+                (unsigned long long)periods
+            );
+        }
+
+        check("at least two presents on output 0 ended per three refresh periods while the lists ran", keeps_pace);
     }
 
     if (has_gate) {
