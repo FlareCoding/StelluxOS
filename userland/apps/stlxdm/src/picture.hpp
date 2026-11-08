@@ -40,6 +40,25 @@ private:
     size_t   m_bytes;
 };
 
+/* A client's window buffer the GPU compositor imported to read where it
+ * lies, never mapped through the import. Its maker frees the import when it
+ * drops, which must come before the maker is destroyed. */
+class window_import {
+public:
+    virtual ~window_import() = default;
+
+    window_import(const window_import&) = delete;
+    window_import& operator=(const window_import&) = delete;
+
+    uint64_t address() const { return m_address; }  /* the GPU's address of the buffer's first byte */
+
+protected:
+    explicit window_import(uint64_t address) : m_address(address) {}
+
+private:
+    uint64_t m_address;
+};
+
 /* Makes pictures in memory its GPU reads */
 class picture_maker {
 public:

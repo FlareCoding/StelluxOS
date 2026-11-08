@@ -105,8 +105,9 @@ private:
 
 /* One attached buffer. A GPU buffer holds its timelines and its newest
  * commit's points, except that a release-only one, whose commits are
- * released at once, holds no acquire timeline and no mapping.
- * Every other buffer is mapped until it is dropped. */
+ * released at once, holds only its release timeline. Every other buffer is
+ * mapped until it is dropped, keeping the handle or descriptor it was
+ * mapped through, and under the GPU compositor its imports. */
 struct dm_buffer {
     uint32_t  buf_id = 0;
     uint32_t  width = 0, height = 0;
@@ -115,6 +116,11 @@ struct dm_buffer {
     size_t    size = 0;             /* the mapping's bytes */
     uint32_t* pixels = nullptr;     /* the picture's first pixel */
     uint64_t  gpu_address = 0;      /* the GPU compositor's address of `pixels`, 0 without an import */
+    int       shm = -1;             /* a shared memory buffer's object, opened read-only */
+    int       gpu_buffer = -1;      /* the read-only handle that a GPU_BUFFER_IMPORT of the buffer gave */
+
+    /* The GPU compositor's import, which `gpu_address` lies in */
+    std::unique_ptr<window_import> import;
 
     bool      is_gpu = false;
     bool      is_release_only = false;
@@ -472,6 +478,8 @@ private:
     void signal_release(dm_client& c, const dm_buffer& b, uint64_t point);
     void release_picture(dm_client& c, uint32_t win_id, const dm_buffer& b);
     void stop_taking_gpu_buffers();
+    bool import_shared_memory(dm_buffer& b);
+    void stop_on_failed_gpu();
     bool is_acquire_reached(dm_client& c, dm_window& w, uint64_t now);
     void latch_window(dm_client& c, dm_window& w);
     void flush_configures();

@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <vector>
 
+class window_import;
+
 /* Per damaged rectangle of an output, the layers shaders/compose.comp walks
  * bottom to top for each pixel, every rectangle in the output's pixels */
 
@@ -52,11 +54,12 @@ struct layer_piece {
 struct layer_window {
     static constexpr uint32_t FRAME_STRIPS = 4;
 
-    damage_list::rect content;
-    uint32_t          radius = 0;
-    layer_piece       frame[FRAME_STRIPS];
-    bool              has_picture = false;
-    layer_picture     picture;
+    damage_list::rect    content;
+    uint32_t             radius = 0;
+    layer_piece          frame[FRAME_STRIPS];
+    bool                 has_picture = false;
+    layer_picture        picture;
+    const window_import* import = nullptr;  /* the window buffer `picture` lies in */
 };
 
 /* What one output shows, bottom to top, the dim only while the power

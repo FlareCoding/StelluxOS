@@ -36,6 +36,13 @@ enum class compose_result {
     unfinished,     /* it did not end within `COMPOSE_DEADLINE_NS`, or its wait failed, and may still run */
 };
 
+/* How a window buffer's import went */
+enum class window_import_result {
+    imported,
+    no_memory,  /* Vulkan, or the handle table for the import's copy of the handle, had no memory left */
+    refused,    /* a buffer the compositor cannot read */
+};
+
 /* The GPU compositor composes an output's frame on the GPU, in one compute
  * pass that reads each window's picture where it lies, through the Vulkan
  * library on the GPU of stlxdm's /dev/gpu0 file.
@@ -74,6 +81,20 @@ public:
         uint32_t height
     ) override;
 
+    /* Imports the buffer the /dev/gpu0 handle `gpu_buffer` names, `bytes`
+     * long in memory of `placement`, through a copy of the handle narrowed
+     * to reading. `gpu_buffer` must be able to read the buffer and stays
+     * the caller's. `imported` stays empty on failure. */
+    window_import_result import_window_buffer(
+        int gpu_buffer,
+        uint64_t bytes,
+        uint32_t placement,
+        std::unique_ptr<window_import>& imported
+    );
+
+    /* Whether the probe context reads lost with `GPU_LOST_DEVICE` */
+    bool has_gpu_failed() const;
+
     /* An output's command and layer buffers, or null when Vulkan has no
      * memory left */
     std::unique_ptr<compose_buffers> make_compose_buffers();
@@ -81,9 +102,9 @@ public:
     /* Composes `rects` of `scene`, in the output's pixels and clipped to
      * it, into `target` through `buffers`, after copying the rows the CPU
      * changed in `backdrop` into its twin, and waits at most
-     * `COMPOSE_DEADLINE_NS` for the compose to end. Every picture the scene
-     * and `backdrop` name must be this compositor's and stay until the
-     * compose ended. */
+     * `COMPOSE_DEADLINE_NS` for the compose to end. Every picture and
+     * import the scene and `backdrop` name must be this compositor's and
+     * stay until the compose ended. */
     compose_result compose(
         compose_buffers& buffers,
         const compose_target& target,
@@ -100,6 +121,7 @@ public:
 private:
     class owned_picture;
     class scanout_buffer;
+    class imported_window_buffer;
 
     /* The properties a memory type must have, and those it must lack */
     struct memory_kind {
@@ -110,6 +132,8 @@ private:
     static const memory_kind COHERENT_MEMORY;
     static const memory_kind PICTURE_MEMORY;
     static const memory_kind VIDEO_MEMORY;
+    static const memory_kind SYSTEM_WINDOW_MEMORY;
+    static const memory_kind VIDEO_WINDOW_MEMORY;
 
     /* The library exports only the global commands, so the others come
      * from `vkGetInstanceProcAddr` */
@@ -156,8 +180,8 @@ private:
         PFN_vkWaitSemaphores                            wait_semaphores;
     };
 
-    /* A buffer bound to memory of its own, with its GPU address and, in
-     * host-visible memory, its CPU mapping */
+    /* A buffer bound to memory of its own, with its GPU address and, when
+     * `create_buffer` made it in host-visible memory, its CPU mapping */
     struct device_buffer {
         VkBuffer        buffer = VK_NULL_HANDLE;
         VkDeviceMemory  memory = VK_NULL_HANDLE;
@@ -179,18 +203,26 @@ private:
     const char* upload_corner_distances();
     const char* probe_gpu_file(int gpu_fd, const gpu_info& info);
 
-    bool create_import_buffer(VkDeviceSize size, VkBuffer& created);
+    VkResult create_import_buffer(VkDeviceSize size, VkBuffer& created);
     bool import_into_gfxfb(scanout_buffer& buffer, int gpu_buffer, uint32_t output, uint32_t width, uint32_t height);
-    VkDeviceMemory import_memory(int gpu_buffer, uint64_t size, uint32_t type);
+    VkResult import_memory(int gpu_buffer, uint64_t size, uint32_t type, VkDeviceMemory& imported);
+    VkResult import_window_memory(int gpu_buffer, uint64_t bytes, uint32_t placement, device_buffer& import);
 
     bool list_layers(compose_buffers& buffers, const layer_scene& scene, const std::vector<damage_list::rect>& rects);
     bool record_compose(
         compose_buffers& buffers,
         const compose_target& target,
+        const layer_scene& scene,
         const backdrop_picture& backdrop
     );
     compose_result submit_and_wait(compose_buffers& buffers);
-    void transfer_scanout(VkCommandBuffer commands, const output_buffer& scanout, bool to_compose);
+    void transfer_buffers(
+        compose_buffers& buffers,
+        const compose_target& target,
+        const layer_scene& scene,
+        bool to_compose
+    );
+    VkBufferMemoryBarrier transfer_barrier(VkBuffer buffer, VkAccessFlags accesses, bool to_compose) const;
 
     uint32_t find_memory_type(uint32_t type_bits, const memory_kind& kind) const;
 
@@ -259,8 +291,9 @@ private:
     std::vector<damage_list::rect> m_list_rects;
     std::vector<uint32_t>          m_list_starts;
 
-    std::vector<picture_copy>      m_copies;
-    std::vector<VkBufferCopy>      m_copy_regions;
+    std::vector<picture_copy>          m_copies;
+    std::vector<VkBufferCopy>          m_copy_regions;
+    std::vector<VkBufferMemoryBarrier> m_transfers;
 };
 
 #endif

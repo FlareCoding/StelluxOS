@@ -66,6 +66,18 @@ const gpu_compositor::memory_kind gpu_compositor::VIDEO_MEMORY = {
     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
 };
 
+/* An opaque import must name the type its exporter allocated from, and a
+ * window buffer lies in system memory or in video memory its client maps */
+const gpu_compositor::memory_kind gpu_compositor::SYSTEM_WINDOW_MEMORY = {
+    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+};
+
+const gpu_compositor::memory_kind gpu_compositor::VIDEO_WINDOW_MEMORY = {
+    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+    0
+};
+
 /* A picture in a buffer of the compositor's own, freed with the picture */
 class gpu_compositor::owned_picture : public picture {
 public:
@@ -110,6 +122,23 @@ private:
     uint32_t        m_pitch;
     uint32_t        m_gfxfb_handle = 0;
     device_buffer   m_import;
+};
+
+/* A window buffer's memory, imported through a copy of its handle narrowed to reading and freed with the import */
+class gpu_compositor::imported_window_buffer : public window_import {
+public:
+    imported_window_buffer(gpu_compositor& owner, const device_buffer& buffer)
+        : window_import(buffer.address), m_owner(owner), m_buffer(buffer) {}
+
+    ~imported_window_buffer() override {
+        m_owner.destroy_buffer(m_buffer);
+    }
+
+    VkBuffer buffer() const { return m_buffer.buffer; }
+
+private:
+    gpu_compositor& m_owner;
+    device_buffer   m_buffer;
 };
 
 template <typename Command>
@@ -626,7 +655,7 @@ std::unique_ptr<output_buffer> gpu_compositor::make_output_buffer(
     std::unique_ptr<scanout_buffer> buffer(new scanout_buffer(*this, gfxfb_fd, pitch));
     device_buffer& import = buffer->m_import;
 
-    if (!create_import_buffer(static_cast<VkDeviceSize>(pitch) * height, import.buffer)) {
+    if (create_import_buffer(static_cast<VkDeviceSize>(pitch) * height, import.buffer) != VK_SUCCESS) {
         printf("stlxdm: no GPU output buffer for output %u, Vulkan refused its buffer\r\n", output);
         return nullptr;
     }
@@ -655,8 +684,7 @@ std::unique_ptr<output_buffer> gpu_compositor::make_output_buffer(
     }
 
     /* A failed import takes no handle, and a successful one closes it */
-    import.memory = import_memory(create.buffer, create.size, type);
-    if (import.memory == VK_NULL_HANDLE) {
+    if (import_memory(create.buffer, create.size, type, import.memory) != VK_SUCCESS) {
         close(create.buffer);
         printf("stlxdm: no GPU output buffer for output %u, Vulkan refused to import it\r\n", output);
         return nullptr;
@@ -675,7 +703,7 @@ std::unique_ptr<output_buffer> gpu_compositor::make_output_buffer(
     return buffer;
 }
 
-bool gpu_compositor::create_import_buffer(VkDeviceSize size, VkBuffer& created) {
+VkResult gpu_compositor::create_import_buffer(VkDeviceSize size, VkBuffer& created) {
     VkExternalMemoryBufferCreateInfo external_info = {};
     external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
     external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
@@ -687,12 +715,12 @@ bool gpu_compositor::create_import_buffer(VkDeviceSize size, VkBuffer& created) 
     buffer_info.usage = PICTURE_USAGE;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (m_vk.create_buffer(m_device, &buffer_info, nullptr, &created) != VK_SUCCESS) {
+    VkResult result = m_vk.create_buffer(m_device, &buffer_info, nullptr, &created);
+    if (result != VK_SUCCESS) {
         created = VK_NULL_HANDLE;
-        return false;
     }
 
-    return true;
+    return result;
 }
 
 /* gfxfb's import holds a reference of its own, so the copy narrowed to reading closes once the call returns */
@@ -733,7 +761,7 @@ bool gpu_compositor::import_into_gfxfb(
     return true;
 }
 
-VkDeviceMemory gpu_compositor::import_memory(int gpu_buffer, uint64_t size, uint32_t type) {
+VkResult gpu_compositor::import_memory(int gpu_buffer, uint64_t size, uint32_t type, VkDeviceMemory& imported) {
     VkMemoryAllocateFlagsInfo flags_info = {};
     flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
     flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
@@ -750,12 +778,94 @@ VkDeviceMemory gpu_compositor::import_memory(int gpu_buffer, uint64_t size, uint
     allocate_info.allocationSize = size;
     allocate_info.memoryTypeIndex = type;
 
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    if (m_vk.allocate_memory(m_device, &allocate_info, nullptr, &memory) != VK_SUCCESS) {
-        return VK_NULL_HANDLE;
+    VkResult result = m_vk.allocate_memory(m_device, &allocate_info, nullptr, &imported);
+    if (result != VK_SUCCESS) {
+        imported = VK_NULL_HANDLE;
     }
 
-    return memory;
+    return result;
+}
+
+window_import_result gpu_compositor::import_window_buffer(
+    int gpu_buffer,
+    uint64_t bytes,
+    uint32_t placement,
+    std::unique_ptr<window_import>& imported
+) {
+    device_buffer import;
+    VkResult result = import_window_memory(gpu_buffer, bytes, placement, import);
+    if (result != VK_SUCCESS) {
+        destroy_buffer(import);
+        bool is_out_of_memory = result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        return is_out_of_memory ? window_import_result::no_memory : window_import_result::refused;
+    }
+
+    imported = std::make_unique<imported_window_buffer>(*this, import);
+
+    return window_import_result::imported;
+}
+
+/* Leaves what it made in `import` when it fails, for `destroy_buffer`. A full handle table refusing the copy of the
+ * handle counts as Vulkan out of host memory */
+VkResult gpu_compositor::import_window_memory(
+    int gpu_buffer,
+    uint64_t bytes,
+    uint32_t placement,
+    device_buffer& import
+) {
+    const memory_kind* kind = nullptr;
+    if (placement == GPU_PLACEMENT_SYSTEM) {
+        kind = &SYSTEM_WINDOW_MEMORY;
+    } else if (placement == GPU_PLACEMENT_VIDEO) {
+        kind = &VIDEO_WINDOW_MEMORY;
+    } else {
+        return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+    }
+
+    VkResult result = create_import_buffer(bytes, import.buffer);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    VkMemoryRequirements requirements = {};
+    m_vk.get_buffer_memory_requirements(m_device, import.buffer, &requirements);
+
+    uint32_t type = find_memory_type(requirements.memoryTypeBits, *kind);
+    if (type == UINT32_MAX || requirements.size > bytes) {
+        return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+    }
+
+    gpu_restrict_args narrowed = {};
+    narrowed.handle = gpu_buffer;
+    narrowed.rights = GPU_RIGHT_READ;
+    if (ioctl(m_gpu_fd, GPU_HANDLE_RESTRICT, &narrowed) != 0) {
+        return errno == ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY : VK_ERROR_INVALID_EXTERNAL_HANDLE;
+    }
+
+    /* A failed import takes no handle, and a successful one closes it */
+    result = import_memory(narrowed.restricted, bytes, type, import.memory);
+    if (result != VK_SUCCESS) {
+        close(narrowed.restricted);
+        return result;
+    }
+
+    result = m_vk.bind_buffer_memory(m_device, import.buffer, import.memory, 0);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    VkBufferDeviceAddressInfo address_info = {};
+    address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    address_info.buffer = import.buffer;
+    import.address = m_vk.get_buffer_device_address(m_device, &address_info);
+
+    return VK_SUCCESS;
+}
+
+bool gpu_compositor::has_gpu_failed() const {
+    gpu_context_args query = {};
+    query.context = m_probe_context;
+    return ioctl(m_gpu_fd, GPU_CONTEXT_QUERY, &query) == 0 && query.lost == GPU_LOST_DEVICE;
 }
 
 std::unique_ptr<gpu_compositor::compose_buffers> gpu_compositor::make_compose_buffers() {
@@ -797,7 +907,7 @@ compose_result gpu_compositor::compose(
     buffers.m_copies.clear();
     backdrop.take_copies(buffers.m_copies);
 
-    if (!record_compose(buffers, target, backdrop)) {
+    if (!record_compose(buffers, target, scene, backdrop)) {
         return compose_result::not_submitted;
     }
 
@@ -850,6 +960,7 @@ bool gpu_compositor::list_layers(
 bool gpu_compositor::record_compose(
     compose_buffers& buffers,
     const compose_target& target,
+    const layer_scene& scene,
     const backdrop_picture& backdrop
 ) {
     VkCommandBuffer commands = buffers.m_commands;
@@ -861,9 +972,7 @@ bool gpu_compositor::record_compose(
         return false;
     }
 
-    if (target.scanout) {
-        transfer_scanout(commands, *target.scanout, true);
-    }
+    transfer_buffers(buffers, target, scene, true);
 
     if (!buffers.m_copies.empty()) {
         buffers.m_copy_regions.clear();
@@ -942,9 +1051,7 @@ bool gpu_compositor::record_compose(
         m_vk.cmd_dispatch(commands, workgroups(r.w), workgroups(r.h), 1);
     }
 
-    if (target.scanout) {
-        transfer_scanout(commands, *target.scanout, false);
-    }
+    transfer_buffers(buffers, target, scene, false);
 
     VkMemoryBarrier to_cpu = {};
     to_cpu.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -1019,32 +1126,62 @@ void gpu_compositor::finish() {
     m_vk.wait_semaphores(m_device, &wait_info, UINT64_MAX);
 }
 
-/* Hands an output buffer from the display, which scans it out outside Vulkan, to the compose's writes, or back */
-void gpu_compositor::transfer_scanout(VkCommandBuffer commands, const output_buffer& scanout, bool to_compose) {
-    VkBufferMemoryBarrier transfer = {};
-    transfer.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    transfer.srcAccessMask = to_compose ? 0 : VK_ACCESS_SHADER_WRITE_BIT;
-    transfer.dstAccessMask = to_compose ? VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT : 0;
+/* Hands the output buffer, which the display scans out outside Vulkan, and each window buffer the scene reads, which
+ * its client uses outside this device, to the compose's accesses, or back */
+void gpu_compositor::transfer_buffers(
+    compose_buffers& buffers,
+    const compose_target& target,
+    const layer_scene& scene,
+    bool to_compose
+) {
+    buffers.m_transfers.clear();
+    if (target.scanout) {
+        VkBuffer scanout = static_cast<const scanout_buffer&>(*target.scanout).m_import.buffer;
+        VkAccessFlags accesses = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        buffers.m_transfers.push_back(transfer_barrier(scanout, accesses, to_compose));
+    }
 
-    transfer.srcQueueFamilyIndex = to_compose ? VK_QUEUE_FAMILY_EXTERNAL : m_queue_family;
-    transfer.dstQueueFamilyIndex = to_compose ? m_queue_family : VK_QUEUE_FAMILY_EXTERNAL;
+    for (const layer_window& window : scene.windows) {
+        if (window.import) {
+            VkBuffer read = static_cast<const imported_window_buffer&>(*window.import).buffer();
+            buffers.m_transfers.push_back(transfer_barrier(read, VK_ACCESS_SHADER_READ_BIT, to_compose));
+        }
+    }
 
-    transfer.buffer = static_cast<const scanout_buffer&>(scanout).m_import.buffer;
-    transfer.offset = 0;
-    transfer.size = VK_WHOLE_SIZE;
+    if (buffers.m_transfers.empty()) {
+        return;
+    }
 
     m_vk.cmd_pipeline_barrier(
-        commands,
+        buffers.m_commands,
         to_compose ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         to_compose ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         0,
         0,
         nullptr,
-        1,
-        &transfer,
+        static_cast<uint32_t>(buffers.m_transfers.size()),
+        buffers.m_transfers.data(),
         0,
         nullptr
     );
+}
+
+/* Moves `buffer` between the queue families outside Vulkan and the compose's queue family, whose shaders make
+ * `accesses` to it */
+VkBufferMemoryBarrier gpu_compositor::transfer_barrier(VkBuffer buffer, VkAccessFlags accesses, bool to_compose) const {
+    VkBufferMemoryBarrier transfer = {};
+    transfer.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    transfer.srcAccessMask = to_compose ? 0 : accesses & VK_ACCESS_SHADER_WRITE_BIT;
+    transfer.dstAccessMask = to_compose ? accesses : 0;
+
+    transfer.srcQueueFamilyIndex = to_compose ? VK_QUEUE_FAMILY_EXTERNAL : m_queue_family;
+    transfer.dstQueueFamilyIndex = to_compose ? m_queue_family : VK_QUEUE_FAMILY_EXTERNAL;
+
+    transfer.buffer = buffer;
+    transfer.offset = 0;
+    transfer.size = VK_WHOLE_SIZE;
+
+    return transfer;
 }
 
 /* Freeing the memory also removes its mapping */

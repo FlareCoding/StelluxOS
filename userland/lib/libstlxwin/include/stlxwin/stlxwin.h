@@ -184,6 +184,7 @@ typedef struct {
     uint32_t device;  /* N of /dev/gpuN, 0 without STLXWIN_GPU_ACCEPTS */
 } stlxwin_gpu_info;
 
+#define STLXWIN_WINDOWS_MAX       32u     /* windows and popups a connection holds at once */
 #define STLXWIN_GPU_BUFFERS_MAX   16u     /* GPU buffers a connection holds, a detached one until released */
 #define STLXWIN_GPU_DIMENSION_MAX 16384u  /* largest width or height of a GPU buffer's picture */
 
@@ -324,7 +325,8 @@ int stlxwin_next_event(stlxwin_conn* conn, stlxwin_event* out);
 
 /**
  * @brief Create a toplevel window. It becomes visible on first commit.
- * @return Window, or NULL on protocol failure.
+ * @return Window, or NULL when it cannot be made, as when the connection
+ * holds STLXWIN_WINDOWS_MAX windows and popups.
  */
 stlxwin_window* stlxwin_window_create(stlxwin_conn* conn,
                                       uint32_t width, uint32_t height,
@@ -335,6 +337,8 @@ stlxwin_window* stlxwin_window_create(stlxwin_conn* conn,
  * Popups stack above their parent, are undecorated, and die with it.
  * With STLXWIN_PF_GRAB the popup takes keyboard input and outside
  * input dismisses it, delivering POPUP_DISMISSED to the parent.
+ * @return Popup, or NULL when it cannot be made, as for a dead parent or
+ * when the connection holds STLXWIN_WINDOWS_MAX windows and popups.
  */
 stlxwin_window* stlxwin_popup_create(stlxwin_window* parent,
                                      int32_t x, int32_t y,

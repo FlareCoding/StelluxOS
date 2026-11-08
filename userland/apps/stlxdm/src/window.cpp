@@ -37,6 +37,14 @@ enum class gpu_mapping {
     REFUSED,    /* a buffer the protocol does not take, or stlxdm out of memory */
 };
 
+/* How the GPU compositor's import of an attached window buffer went */
+enum class gpu_import {
+    IMPORTED,
+    GPU_FAILED, /* the import met no memory, and the probe context found the GPU failed */
+    NO_MEMORY,  /* the import met no memory on a live GPU */
+    REFUSED,    /* a buffer the GPU compositor cannot read */
+};
+
 static dm_window* find_window(dm_client& c, uint32_t win_id) {
     for (auto& w : c.windows) {
         if (w->win_id == win_id) {
@@ -88,23 +96,47 @@ static uint32_t count_gpu_buffers(const dm_client& c) {
     return count;
 }
 
+static uint32_t count_shm_buffers(const dm_client& c) {
+    uint32_t count = 0;
+    for (const auto& w : c.windows) {
+        for (const auto& b : w->buffers) {
+            count += b.is_gpu ? 0 : 1;
+        }
+    }
+
+    return count;
+}
+
 static bool is_held(const dm_window& w, size_t index) {
     int32_t i = static_cast<int32_t>(index);
     return i == w.current || i == w.pending;
 }
 
-static void close_buffer(dm_buffer& b) {
+/* Closes all the buffer holds but its release timeline, which a release-only record keeps. The import goes first, and
+ * the mapping before the handles it came from */
+static void close_reads(dm_buffer& b) {
+    b.import.reset();
+    b.gpu_address = 0;
+
     if (b.mapping) {
         munmap(b.mapping, b.size);
         b.mapping = nullptr;
         b.pixels = nullptr;
     }
 
-    for (int* handle : { &b.acquire, &b.release }) {
+    for (int* handle : { &b.shm, &b.gpu_buffer, &b.acquire }) {
         if (*handle >= 0) {
             close(*handle);
             *handle = -1;
         }
+    }
+}
+
+static void close_buffer(dm_buffer& b) {
+    close_reads(b);
+    if (b.release >= 0) {
+        close(b.release);
+        b.release = -1;
     }
 }
 
@@ -169,9 +201,15 @@ static bool is_valid_gpu_picture(const swp_attach_gpu_buffer& m) {
            m.offset % 4 == 0;
 }
 
-/* Consumes the buffer handle. The restrict comes before the import,
- * since an import would take a shared memory handle as a buffer */
-static gpu_mapping map_gpu_buffer(int gpu_fd, int handle, const swp_attach_gpu_buffer& m, dm_buffer& b) {
+/* Consumes the buffer handle, and keeps the import's handle in `b` with its placement in `placement`. The restrict
+ * comes before the import, since an import would take a shared memory handle as a buffer */
+static gpu_mapping map_gpu_buffer(
+    int gpu_fd,
+    int handle,
+    const swp_attach_gpu_buffer& m,
+    dm_buffer& b,
+    uint32_t& placement
+) {
     gpu_restrict_args narrowed = {};
     narrowed.handle = handle;
     narrowed.rights = GPU_RIGHT_READ;
@@ -198,17 +236,40 @@ static gpu_mapping map_gpu_buffer(int gpu_fd, int handle, const swp_attach_gpu_b
     }
 
     void* mapping = mmap(nullptr, import.size, PROT_READ, MAP_SHARED, import.buffer, 0);
-    int map_error = errno;
-    close(import.buffer);
     if (mapping == MAP_FAILED) {
+        int map_error = errno;
+        close(import.buffer);
         return map_error == ENOMEM ? gpu_mapping::NO_MEMORY : gpu_mapping::REFUSED;
     }
 
     b.mapping = mapping;
     b.size = import.size;
     b.pixels = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(mapping) + m.offset);
+    b.gpu_buffer = import.buffer;
+    placement = import.placement;
 
     return gpu_mapping::MAPPED;
+}
+
+/* Imports the buffer of `b`'s kept handle, `bytes` in `placement`, whose picture starts `offset` bytes in */
+static gpu_import import_for_gpu(
+    gpu_compositor& compositor,
+    dm_buffer& b,
+    uint64_t bytes,
+    uint32_t placement,
+    uint64_t offset
+) {
+    switch (compositor.import_window_buffer(b.gpu_buffer, bytes, placement, b.import)) {
+    case window_import_result::imported:
+        b.gpu_address = b.import->address() + offset;
+        return gpu_import::IMPORTED;
+    case window_import_result::no_memory:
+        return compositor.has_gpu_failed() ? gpu_import::GPU_FAILED : gpu_import::NO_MEMORY;
+    case window_import_result::refused:
+        break;
+    }
+
+    return gpu_import::REFUSED;
 }
 
 /* A commit must arrive at the displayed size or at the size of the
@@ -354,6 +415,48 @@ void server::stop_taking_gpu_buffers() {
     }
 }
 
+void server::stop_on_failed_gpu() {
+    stop_taking_gpu_buffers();
+    if (composes_on_gpu()) {
+        stop_gpu_composing("the GPU failed");
+    }
+}
+
+/* Imports a shared memory buffer for the GPU compositor. On a failed GPU it switches to the CPU, which reads the
+ * buffer's mapping. False when its client must go */
+bool server::import_shared_memory(dm_buffer& b) {
+    gpu_buffer_args buffer_args = {};
+    buffer_args.source = b.shm;
+    if (ioctl(m_gpu_fd, GPU_BUFFER_IMPORT, &buffer_args) != 0) {
+        if (errno != EIO) {
+            return false;
+        }
+
+        stop_on_failed_gpu();
+        return true;
+    }
+
+    b.gpu_buffer = buffer_args.buffer;
+
+    /* The object may have shrunk since the mapping, and a compose offsets rows in 32 bits */
+    if (buffer_args.size < b.size || b.size > UINT32_MAX) {
+        return false;
+    }
+
+    switch (import_for_gpu(*m_gpu_compositor, b, buffer_args.size, buffer_args.placement, 0)) {
+    case gpu_import::IMPORTED:
+        return true;
+    case gpu_import::GPU_FAILED:
+        stop_on_failed_gpu();
+        return true;
+    case gpu_import::NO_MEMORY:
+    case gpu_import::REFUSED:
+        break;
+    }
+
+    return false;
+}
+
 /* A GPU picture the buffer shows or holds pending is released before
  * the drop while its client stays connected, as it may still wait */
 void server::drop_buffer(dm_client& c, dm_window& w, size_t index) {
@@ -373,12 +476,9 @@ void server::keep_release_only_record(dm_client& c, dm_window& w, size_t index) 
         signal_release(c, b, b.release_point);
     }
 
-    dm_dismissed_buffer record = { w.win_id, b };
-    record.buffer.mapping = nullptr;
-    record.buffer.pixels = nullptr;
-    record.buffer.acquire = -1;
-    record.buffer.is_release_only = true;
-    c.dismissed_buffers.push_back(record);
+    close_reads(b);
+    b.is_release_only = true;
+    c.dismissed_buffers.push_back({ w.win_id, std::move(b) });
 
     b.release = -1;
     remove_buffer(w, index);
@@ -494,7 +594,7 @@ void server::handle_attach_buffer(dm_client& c, const uint8_t* payload) {
 
     if (m->width == 0 || m->height == 0 ||
         memchr(m->shm_name, '/', sizeof(m->shm_name)) ||
-        (w && find_buffer(*w, m->buf_id))) {
+        (w && (find_buffer(*w, m->buf_id) || count_shm_buffers(c) == SWP_SHM_BUFFERS_MAX))) {
         c.dead = true;
         return;
     }
@@ -513,7 +613,7 @@ void server::handle_attach_buffer(dm_client& c, const uint8_t* payload) {
         return;
     }
 
-    int fd = open(path, O_RDWR);
+    int fd = open(path, O_RDONLY);
     if (fd < 0) {
         c.dead = true;
         return;
@@ -521,12 +621,12 @@ void server::handle_attach_buffer(dm_client& c, const uint8_t* payload) {
 
     size_t size = static_cast<size_t>(m->width) * m->height * 4;
     void* pixels = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
-    close(fd);
 
     /* The registry entry is unlinked as soon as both sides hold their
      * mappings, otherwise a crashed client pins the pages forever */
     unlink(path);
     if (pixels == MAP_FAILED) {
+        close(fd);
         c.dead = true;
         return;
     }
@@ -540,7 +640,15 @@ void server::handle_attach_buffer(dm_client& c, const uint8_t* payload) {
     b.mapping = pixels;
     b.size = size;
     b.pixels = static_cast<uint32_t*>(pixels);
-    w->buffers.push_back(b);
+    b.shm = fd;
+
+    if (composes_on_gpu() && !import_shared_memory(b)) {
+        close_buffer(b);
+        c.dead = true;
+        return;
+    }
+
+    w->buffers.push_back(std::move(b));
 }
 
 void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
@@ -577,16 +685,17 @@ void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
         close(handles[0]);
         close(handles[1]);
         b.is_release_only = true;
-        c.dismissed_buffers.push_back({ m->win_id, b });
+        c.dismissed_buffers.push_back({ m->win_id, std::move(b) });
         return;
     }
 
     bool is_release_only = false;
-    switch (map_gpu_buffer(m_gpu_fd, handles[0], *m, b)) {
+    uint32_t placement = 0;
+    switch (map_gpu_buffer(m_gpu_fd, handles[0], *m, b, placement)) {
     case gpu_mapping::MAPPED:
         break;
     case gpu_mapping::GPU_FAILED:
-        stop_taking_gpu_buffers();
+        stop_on_failed_gpu();
         is_release_only = true;
         break;
     case gpu_mapping::NO_MEMORY:
@@ -600,10 +709,31 @@ void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
         return;
     }
 
+    if (!is_release_only && composes_on_gpu()) {
+        switch (import_for_gpu(*m_gpu_compositor, b, b.size, placement, m->offset)) {
+        case gpu_import::IMPORTED:
+            break;
+        case gpu_import::GPU_FAILED:
+            stop_on_failed_gpu();
+            is_release_only = true;
+            break;
+        case gpu_import::NO_MEMORY:
+            printf("stlxdm: no memory for a GPU buffer's import, its commits are released unshown\r\n");
+            is_release_only = true;
+            break;
+        case gpu_import::REFUSED:
+            close(handles[1]);
+            close_buffer(b);
+            c.dead = true;
+            return;
+        }
+    }
+
     if (is_release_only) {
         close(handles[1]);
+        close_reads(b);
         b.is_release_only = true;
-        w->buffers.push_back(b);
+        w->buffers.push_back(std::move(b));
         return;
     }
 
@@ -617,7 +747,7 @@ void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
     }
 
     b.acquire = handles[1];
-    w->buffers.push_back(b);
+    w->buffers.push_back(std::move(b));
 }
 
 void server::handle_detach_buffer(dm_client& c, const uint8_t* payload) {
@@ -1299,6 +1429,7 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
 
         shown.has_picture = b.gpu_address != 0;
         shown.picture = { b.gpu_address, b.pitch, shown.content.x, shown.content.y };
+        shown.import = b.import.get();
         scene.windows.push_back(shown);
     }
 

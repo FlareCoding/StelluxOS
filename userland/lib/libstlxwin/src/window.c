@@ -4,12 +4,27 @@
 #include <stdlib.h>
 #include <string.h>
 
+static uint32_t count_windows(const stlxwin_conn* conn) {
+    uint32_t count = 0;
+    for (const stlxwin_window* win = conn->windows; win; win = win->next) {
+        count++;
+    }
+
+    return count;
+}
+
 static stlxwin_window* window_new(stlxwin_conn* conn, uint32_t parent_id,
                                   int32_t rel_x, int32_t rel_y,
                                   uint32_t width, uint32_t height,
                                   const char* title,
                                   uint32_t flags, uint32_t popup_flags) {
     if (!conn || conn->dead || width == 0 || height == 0) {
+        return NULL;
+    }
+
+    /* Each window holds two shared memory buffers, and the display manager
+     * disconnects a connection whose attach would pass SWP_SHM_BUFFERS_MAX */
+    if (count_windows(conn) == STLXWIN_WINDOWS_MAX) {
         return NULL;
     }
 
