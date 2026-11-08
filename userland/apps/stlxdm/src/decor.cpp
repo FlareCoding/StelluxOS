@@ -146,6 +146,10 @@ int init() {
     return 0;
 }
 
+corner_table corner_distances() {
+    return { g_dist8, SDF_LUT_N, SDF_Q_MAX * 8 };
+}
+
 bool decorated(const dm_window& w) {
     return (w.flags & SWP_WF_BORDERLESS) == 0;
 }

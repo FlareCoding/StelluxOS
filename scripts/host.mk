@@ -44,7 +44,7 @@ define HOST_DEPS_INSTALL
 	@echo "Installing required packages (Homebrew)..."
 	@command -v brew > /dev/null 2>&1 || \
 		{ echo "ERROR: Homebrew not found. Install it from https://brew.sh first."; exit 1; }
-	brew install llvm lld cmake ninja qemu mtools gptfdisk coreutils bash gdb zstd
+	brew install llvm lld cmake ninja qemu mtools gptfdisk coreutils bash gdb zstd glslang
 endef
 
 # Extra CMake flags for cross-building the LLVM runtimes from a Darwin
@@ -121,7 +121,7 @@ define HOST_DEPS_INSTALL
 		qemu-system-x86 qemu-system-arm \
 		ovmf qemu-efi-aarch64 \
 		mtools gdisk xorriso zstd \
-		gdb-multiarch
+		gdb-multiarch glslang-tools
 endef
 
 # No extra CMake flags: the LLVM runtimes cross-build natively on Linux.
@@ -147,13 +147,16 @@ SGDISK := $(firstword $(shell command -v sgdisk 2>/dev/null) \
 # Debian ships aarch64 support in gdb-multiarch; Homebrew gdb is multi-target.
 GDB_MULTIARCH := $(if $(shell command -v gdb-multiarch 2>/dev/null),gdb-multiarch,gdb)
 
+# glslang's compiler turns an app's GLSL shaders into SPIR-V on both hosts.
+STLX_GLSLANG := glslangValidator
+
 # Logical CPU count for third-party builds (getconf works on both hosts).
 NPROC := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
 # Fail at parse time if the interface is incomplete for this host.
 # CMAKE_HOST_FLAGS is exempt: it is legitimately empty on Linux.
 $(foreach v,HOST_OS STLX_CC STLX_CXX STLX_LLD STLX_AR STLX_RANLIB STLX_OBJCOPY \
-	STLX_STRIP STLX_READELF \
+	STLX_STRIP STLX_READELF STLX_GLSLANG \
 	SGDISK GDB_MULTIARCH NPROC \
 	HOST_USB_INSTRUCTIONS HOST_SYSROOT_HEADERS_INSTALL HOST_DEPS_INSTALL,\
 	$(if $(value $(v)),,$(error scripts/host.mk: $(v) is undefined for host '$(HOST_OS)')))

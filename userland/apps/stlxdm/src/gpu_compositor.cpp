@@ -1,4 +1,5 @@
 #include "gpu_compositor.hpp"
+#include "decor.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -9,6 +10,23 @@
 #include <unistd.h>
 #include <vector>
 
+#include "compose_spirv.h"
+
+/* One dispatch's push constants, which compose.comp's `compose_args` must match */
+struct compose_args {
+    int32_t  x0, y0;
+    int32_t  x1, y1;
+    uint64_t target;
+    uint32_t target_pitch;
+    uint32_t layer_count;
+    uint64_t layers;
+    uint64_t corner_distances;
+    uint32_t corner_count;
+    int32_t  corner_far_distance;
+};
+
+static_assert(sizeof(compose_args) == 56);
+
 /* The version that makes timeline semaphores and buffer device addresses core */
 constexpr uint32_t VULKAN_API_VERSION = VK_API_VERSION_1_2;
 
@@ -18,6 +36,9 @@ constexpr float QUEUE_PRIORITY = 1.0f;
  * buffer named by its device address */
 constexpr VkBufferUsageFlags PICTURE_USAGE = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+constexpr VkMemoryPropertyFlags COHERENT_MEMORY = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
 template <typename Command>
 static bool find_command(VkInstance instance, const char* name, Command& command) {
@@ -47,6 +68,16 @@ std::unique_ptr<gpu_compositor> gpu_compositor::create(int gpu_fd) {
 gpu_compositor::~gpu_compositor() {
     if (m_probe_context >= 0) {
         close(m_probe_context);
+    }
+
+    destroy_buffer(m_corner_distances);
+
+    if (m_pipeline != VK_NULL_HANDLE) {
+        m_vk.destroy_pipeline(m_device, m_pipeline, nullptr);
+    }
+
+    if (m_pipeline_layout != VK_NULL_HANDLE) {
+        m_vk.destroy_pipeline_layout(m_device, m_pipeline_layout, nullptr);
     }
 
     if (m_timeline != VK_NULL_HANDLE) {
@@ -89,6 +120,16 @@ const char* gpu_compositor::start(int gpu_fd) {
         return refusal;
     }
 
+    refusal = create_pipeline();
+    if (refusal) {
+        return refusal;
+    }
+
+    refusal = upload_corner_distances();
+    if (refusal) {
+        return refusal;
+    }
+
     return probe_gpu_file(gpu_fd, info);
 }
 
@@ -98,6 +139,7 @@ bool gpu_compositor::find_commands() {
         find_command(m_instance, "vkEnumerateDeviceExtensionProperties", m_vk.enumerate_device_extensions) &&
         find_command(m_instance, "vkGetPhysicalDeviceProperties2", m_vk.get_physical_device_properties) &&
         find_command(m_instance, "vkGetPhysicalDeviceFeatures2", m_vk.get_physical_device_features) &&
+        find_command(m_instance, "vkGetPhysicalDeviceMemoryProperties", m_vk.get_memory_properties) &&
         find_command(m_instance, "vkGetPhysicalDeviceQueueFamilyProperties", m_vk.get_queue_families) &&
         find_command(
             m_instance,
@@ -108,7 +150,21 @@ bool gpu_compositor::find_commands() {
         find_command(m_instance, "vkDestroyDevice", m_vk.destroy_device) &&
         find_command(m_instance, "vkGetDeviceQueue", m_vk.get_device_queue) &&
         find_command(m_instance, "vkCreateSemaphore", m_vk.create_semaphore) &&
-        find_command(m_instance, "vkDestroySemaphore", m_vk.destroy_semaphore);
+        find_command(m_instance, "vkDestroySemaphore", m_vk.destroy_semaphore) &&
+        find_command(m_instance, "vkCreateBuffer", m_vk.create_buffer) &&
+        find_command(m_instance, "vkDestroyBuffer", m_vk.destroy_buffer) &&
+        find_command(m_instance, "vkGetBufferMemoryRequirements", m_vk.get_buffer_memory_requirements) &&
+        find_command(m_instance, "vkAllocateMemory", m_vk.allocate_memory) &&
+        find_command(m_instance, "vkFreeMemory", m_vk.free_memory) &&
+        find_command(m_instance, "vkBindBufferMemory", m_vk.bind_buffer_memory) &&
+        find_command(m_instance, "vkMapMemory", m_vk.map_memory) &&
+        find_command(m_instance, "vkGetBufferDeviceAddress", m_vk.get_buffer_device_address) &&
+        find_command(m_instance, "vkCreateShaderModule", m_vk.create_shader_module) &&
+        find_command(m_instance, "vkDestroyShaderModule", m_vk.destroy_shader_module) &&
+        find_command(m_instance, "vkCreatePipelineLayout", m_vk.create_pipeline_layout) &&
+        find_command(m_instance, "vkDestroyPipelineLayout", m_vk.destroy_pipeline_layout) &&
+        find_command(m_instance, "vkCreateComputePipelines", m_vk.create_compute_pipelines) &&
+        find_command(m_instance, "vkDestroyPipeline", m_vk.destroy_pipeline);
 }
 
 const char* gpu_compositor::create_instance() {
@@ -227,8 +283,10 @@ const char* gpu_compositor::check_physical_device() {
 
     VkExternalMemoryFeatureFlags memory_features = buffer_properties.externalMemoryProperties.externalMemoryFeatures;
     if ((memory_features & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) == 0) {
-        return "the Vulkan device cannot import memory descriptors";
+        return "the Vulkan device cannot import memory descriptors as storage buffers";
     }
+
+    m_vk.get_memory_properties(m_physical_device, &m_memory_properties);
 
     return nullptr;
 }
@@ -277,6 +335,156 @@ const char* gpu_compositor::create_device() {
     }
 
     return nullptr;
+}
+
+const char* gpu_compositor::create_pipeline() {
+    VkPushConstantRange push_range = {};
+    push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    push_range.size = sizeof(compose_args);
+
+    VkPipelineLayoutCreateInfo layout_info = {};
+    layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_info.pushConstantRangeCount = 1;
+    layout_info.pPushConstantRanges = &push_range;
+
+    if (m_vk.create_pipeline_layout(m_device, &layout_info, nullptr, &m_pipeline_layout) != VK_SUCCESS) {
+        m_pipeline_layout = VK_NULL_HANDLE;
+        return "Vulkan refused the compose pipeline's layout";
+    }
+
+    VkShaderModuleCreateInfo module_info = {};
+    module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    module_info.codeSize = sizeof(COMPOSE_SPIRV);
+    module_info.pCode = COMPOSE_SPIRV;
+
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (m_vk.create_shader_module(m_device, &module_info, nullptr, &module) != VK_SUCCESS) {
+        return "Vulkan refused the compose shader";
+    }
+
+    VkComputePipelineCreateInfo pipeline_info = {};
+    pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipeline_info.layout = m_pipeline_layout;
+
+    pipeline_info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipeline_info.stage.module = module;
+    pipeline_info.stage.pName = "main";
+
+    VkResult created = m_vk.create_compute_pipelines(m_device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &m_pipeline);
+    m_vk.destroy_shader_module(m_device, module, nullptr);
+
+    if (created != VK_SUCCESS) {
+        m_pipeline = VK_NULL_HANDLE;
+        return "Vulkan refused the compose pipeline";
+    }
+
+    return nullptr;
+}
+
+const char* gpu_compositor::upload_corner_distances() {
+    decor::corner_table corners = decor::corner_distances();
+    VkDeviceSize table_bytes = corners.count * sizeof(uint16_t);
+
+    /* The shader reads the table two entries a word */
+    VkDeviceSize buffer_bytes = (table_bytes + sizeof(uint32_t) - 1) / sizeof(uint32_t) * sizeof(uint32_t);
+
+    if (!create_buffer(buffer_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, COHERENT_MEMORY, m_corner_distances)) {
+        return "Vulkan refused memory for the corner distances";
+    }
+
+    memcpy(m_corner_distances.mapping, corners.distances, table_bytes);
+
+    m_corner_count = corners.count;
+    m_corner_far_distance = corners.far_distance;
+
+    return nullptr;
+}
+
+uint32_t gpu_compositor::find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags properties) const {
+    for (uint32_t type = 0; type < m_memory_properties.memoryTypeCount; type++) {
+        bool is_allowed = (type_bits & (1u << type)) != 0;
+        bool has_properties = (m_memory_properties.memoryTypes[type].propertyFlags & properties) == properties;
+        if (is_allowed && has_properties) {
+            return type;
+        }
+    }
+
+    return UINT32_MAX;
+}
+
+bool gpu_compositor::create_buffer(
+    VkDeviceSize size,
+    VkBufferUsageFlags usage,
+    VkMemoryPropertyFlags properties,
+    device_buffer& created
+) {
+    VkBufferCreateInfo buffer_info = {};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = size;
+    buffer_info.usage = usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (m_vk.create_buffer(m_device, &buffer_info, nullptr, &created.buffer) != VK_SUCCESS) {
+        created.buffer = VK_NULL_HANDLE;
+        return false;
+    }
+
+    VkMemoryRequirements requirements = {};
+    m_vk.get_buffer_memory_requirements(m_device, created.buffer, &requirements);
+
+    uint32_t type = find_memory_type(requirements.memoryTypeBits, properties);
+    if (type == UINT32_MAX) {
+        return false;
+    }
+
+    VkMemoryAllocateFlagsInfo flags_info = {};
+    flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
+    VkMemoryAllocateInfo allocate_info = {};
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.pNext = &flags_info;
+    allocate_info.allocationSize = requirements.size;
+    allocate_info.memoryTypeIndex = type;
+
+    if (m_vk.allocate_memory(m_device, &allocate_info, nullptr, &created.memory) != VK_SUCCESS) {
+        created.memory = VK_NULL_HANDLE;
+        return false;
+    }
+
+    if (m_vk.bind_buffer_memory(m_device, created.buffer, created.memory, 0) != VK_SUCCESS) {
+        return false;
+    }
+
+    bool is_host_visible = (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+    if (is_host_visible) {
+        VkResult mapped = m_vk.map_memory(m_device, created.memory, 0, VK_WHOLE_SIZE, 0, &created.mapping);
+        if (mapped != VK_SUCCESS) {
+            created.mapping = nullptr;
+            return false;
+        }
+    }
+
+    VkBufferDeviceAddressInfo address_info = {};
+    address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    address_info.buffer = created.buffer;
+    created.address = m_vk.get_buffer_device_address(m_device, &address_info);
+
+    return true;
+}
+
+/* Freeing the memory also removes its mapping */
+void gpu_compositor::destroy_buffer(device_buffer& buffer) {
+    if (buffer.buffer != VK_NULL_HANDLE) {
+        m_vk.destroy_buffer(m_device, buffer.buffer, nullptr);
+    }
+
+    if (buffer.memory != VK_NULL_HANDLE) {
+        m_vk.free_memory(m_device, buffer.memory, nullptr);
+    }
+
+    buffer = {};
 }
 
 /* Makes the probe context, and imports a page of shared memory of stlxdm's
