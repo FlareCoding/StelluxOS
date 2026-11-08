@@ -1,6 +1,7 @@
 #include "gpu_compositor.hpp"
 #include "decor.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -31,6 +32,9 @@ static_assert(sizeof(compose_args) == 56);
 constexpr uint32_t VULKAN_API_VERSION = VK_API_VERSION_1_2;
 
 constexpr float QUEUE_PRIORITY = 1.0f;
+
+/* The width and height of compose.comp's workgroups */
+constexpr uint32_t WORKGROUP_PIXELS = 16;
 
 /* Every picture and output buffer the compose reads or writes is a storage
  * buffer named by its device address */
@@ -66,6 +70,8 @@ public:
         m_owner.destroy_buffer(m_buffer);
     }
 
+    VkBuffer buffer() const { return m_buffer.buffer; }
+
 private:
     gpu_compositor& m_owner;
     device_buffer   m_buffer;
@@ -80,6 +86,10 @@ static bool find_command(VkInstance instance, const char* name, Command& command
 static bool is_at_address(const gpu_info& info, const VkPhysicalDevicePCIBusInfoPropertiesEXT& pci_bus) {
     return info.pci_segment == pci_bus.pciDomain && info.pci_bus == pci_bus.pciBus &&
         info.pci_slot == pci_bus.pciDevice && info.pci_function == pci_bus.pciFunction;
+}
+
+static uint32_t workgroups(int32_t pixels) {
+    return (static_cast<uint32_t>(pixels) + WORKGROUP_PIXELS - 1) / WORKGROUP_PIXELS;
 }
 
 std::unique_ptr<gpu_compositor> gpu_compositor::create(int gpu_fd) {
@@ -102,6 +112,10 @@ gpu_compositor::~gpu_compositor() {
     }
 
     destroy_buffer(m_corner_distances);
+
+    if (m_command_pool != VK_NULL_HANDLE) {
+        m_vk.destroy_command_pool(m_device, m_command_pool, nullptr);
+    }
 
     if (m_pipeline != VK_NULL_HANDLE) {
         m_vk.destroy_pipeline(m_device, m_pipeline, nullptr);
@@ -156,6 +170,11 @@ const char* gpu_compositor::start(int gpu_fd) {
         return refusal;
     }
 
+    refusal = create_command_pool();
+    if (refusal) {
+        return refusal;
+    }
+
     refusal = upload_corner_distances();
     if (refusal) {
         return refusal;
@@ -195,7 +214,20 @@ bool gpu_compositor::find_commands() {
         find_command(m_instance, "vkCreatePipelineLayout", m_vk.create_pipeline_layout) &&
         find_command(m_instance, "vkDestroyPipelineLayout", m_vk.destroy_pipeline_layout) &&
         find_command(m_instance, "vkCreateComputePipelines", m_vk.create_compute_pipelines) &&
-        find_command(m_instance, "vkDestroyPipeline", m_vk.destroy_pipeline);
+        find_command(m_instance, "vkDestroyPipeline", m_vk.destroy_pipeline) &&
+        find_command(m_instance, "vkCreateCommandPool", m_vk.create_command_pool) &&
+        find_command(m_instance, "vkDestroyCommandPool", m_vk.destroy_command_pool) &&
+        find_command(m_instance, "vkAllocateCommandBuffers", m_vk.allocate_command_buffers) &&
+        find_command(m_instance, "vkFreeCommandBuffers", m_vk.free_command_buffers) &&
+        find_command(m_instance, "vkBeginCommandBuffer", m_vk.begin_command_buffer) &&
+        find_command(m_instance, "vkEndCommandBuffer", m_vk.end_command_buffer) &&
+        find_command(m_instance, "vkCmdBindPipeline", m_vk.cmd_bind_pipeline) &&
+        find_command(m_instance, "vkCmdPushConstants", m_vk.cmd_push_constants) &&
+        find_command(m_instance, "vkCmdDispatch", m_vk.cmd_dispatch) &&
+        find_command(m_instance, "vkCmdPipelineBarrier", m_vk.cmd_pipeline_barrier) &&
+        find_command(m_instance, "vkCmdCopyBuffer", m_vk.cmd_copy_buffer) &&
+        find_command(m_instance, "vkQueueSubmit", m_vk.queue_submit) &&
+        find_command(m_instance, "vkWaitSemaphores", m_vk.wait_semaphores);
 }
 
 const char* gpu_compositor::create_instance() {
@@ -413,6 +445,21 @@ const char* gpu_compositor::create_pipeline() {
     return nullptr;
 }
 
+/* Each output's command buffer is recorded afresh at every compose */
+const char* gpu_compositor::create_command_pool() {
+    VkCommandPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pool_info.queueFamilyIndex = m_queue_family;
+
+    if (m_vk.create_command_pool(m_device, &pool_info, nullptr, &m_command_pool) != VK_SUCCESS) {
+        m_command_pool = VK_NULL_HANDLE;
+        return "Vulkan refused a command pool";
+    }
+
+    return nullptr;
+}
+
 const char* gpu_compositor::upload_corner_distances() {
     decor::corner_table corners = decor::corner_distances();
     VkDeviceSize table_bytes = corners.count * sizeof(uint16_t);
@@ -525,6 +572,249 @@ std::unique_ptr<picture> gpu_compositor::make_twin(size_t bytes) {
     }
 
     return std::make_unique<owned_picture>(*this, buffer, bytes);
+}
+
+std::unique_ptr<gpu_compositor::compose_buffers> gpu_compositor::make_compose_buffers() {
+    std::unique_ptr<compose_buffers> buffers(new compose_buffers(*this));
+
+    VkCommandBufferAllocateInfo allocate_info = {};
+    allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocate_info.commandPool = m_command_pool;
+    allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate_info.commandBufferCount = 1;
+
+    if (m_vk.allocate_command_buffers(m_device, &allocate_info, &buffers->m_commands) != VK_SUCCESS) {
+        buffers->m_commands = VK_NULL_HANDLE;
+        return nullptr;
+    }
+
+    return buffers;
+}
+
+gpu_compositor::compose_buffers::~compose_buffers() {
+    if (m_commands != VK_NULL_HANDLE) {
+        m_owner.m_vk.free_command_buffers(m_owner.m_device, m_owner.m_command_pool, 1, &m_commands);
+    }
+
+    m_owner.destroy_buffer(m_layer_buffer);
+}
+
+compose_result gpu_compositor::compose(
+    compose_buffers& buffers,
+    const compose_target& target,
+    const layer_scene& scene,
+    const std::vector<damage_list::rect>& rects,
+    backdrop_picture& backdrop
+) {
+    if (!list_layers(buffers, scene, rects)) {
+        return compose_result::not_submitted;
+    }
+
+    buffers.m_copies.clear();
+    backdrop.take_copies(buffers.m_copies);
+
+    if (!record_compose(buffers, target, backdrop)) {
+        return compose_result::not_submitted;
+    }
+
+    return submit_and_wait(buffers);
+}
+
+/* Lists the layers of each of `rects` inside the scene and copies the lists into the layer buffer, grown first to
+ * hold `damage_list::MAX_RECTS` lists of the scene's windows when they no longer fit. False when it cannot grow */
+bool gpu_compositor::list_layers(
+    compose_buffers& buffers,
+    const layer_scene& scene,
+    const std::vector<damage_list::rect>& rects
+) {
+    buffers.m_layers.clear();
+    buffers.m_list_rects.clear();
+    buffers.m_list_starts.clear();
+
+    for (damage_list::rect r : rects) {
+        if (!damage_list::clip(r, scene.width, scene.height)) {
+            continue;
+        }
+
+        buffers.m_list_rects.push_back(r);
+        buffers.m_list_starts.push_back(static_cast<uint32_t>(buffers.m_layers.size()));
+        append_layers(scene, r, buffers.m_layers);
+    }
+
+    VkDeviceSize bytes = buffers.m_layers.size() * sizeof(layer);
+    if (bytes > buffers.m_layer_buffer_bytes) {
+        destroy_buffer(buffers.m_layer_buffer);
+        buffers.m_layer_buffer_bytes = 0;
+
+        VkDeviceSize lists_bytes = damage_list::MAX_RECTS * max_layers(scene.windows.size()) * sizeof(layer);
+        VkDeviceSize grown = std::max(bytes, lists_bytes);
+        if (!create_buffer(grown, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, COHERENT_MEMORY, buffers.m_layer_buffer)) {
+            destroy_buffer(buffers.m_layer_buffer);
+            return false;
+        }
+
+        buffers.m_layer_buffer_bytes = grown;
+    }
+
+    if (bytes > 0) {
+        memcpy(buffers.m_layer_buffer.mapping, buffers.m_layers.data(), bytes);
+    }
+
+    return true;
+}
+
+bool gpu_compositor::record_compose(
+    compose_buffers& buffers,
+    const compose_target& target,
+    const backdrop_picture& backdrop
+) {
+    VkCommandBuffer commands = buffers.m_commands;
+
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (m_vk.begin_command_buffer(commands, &begin_info) != VK_SUCCESS) {
+        return false;
+    }
+
+    if (!buffers.m_copies.empty()) {
+        buffers.m_copy_regions.clear();
+        for (const picture_copy& copy : buffers.m_copies) {
+            buffers.m_copy_regions.push_back({ copy.offset, copy.offset, copy.bytes });
+        }
+
+        VkBuffer drawn = static_cast<const owned_picture&>(backdrop.memory()).buffer();
+        VkBuffer twin = static_cast<const owned_picture&>(backdrop.twin()).buffer();
+        uint32_t region_count = static_cast<uint32_t>(buffers.m_copy_regions.size());
+        m_vk.cmd_copy_buffer(commands, drawn, twin, region_count, buffers.m_copy_regions.data());
+
+        VkMemoryBarrier copied = {};
+        copied.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        copied.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        copied.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        m_vk.cmd_pipeline_barrier(
+            commands,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,
+            1,
+            &copied,
+            0,
+            nullptr,
+            0,
+            nullptr
+        );
+    }
+
+    m_vk.cmd_bind_pipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
+
+    VkMemoryBarrier between = {};
+    between.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    between.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    between.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+    size_t list_count = buffers.m_list_rects.size();
+    for (size_t i = 0; i < list_count; i++) {
+        const damage_list::rect& r = buffers.m_list_rects[i];
+        uint32_t first = buffers.m_list_starts[i];
+        size_t end = i + 1 < list_count ? buffers.m_list_starts[i + 1] : buffers.m_layers.size();
+
+        compose_args args = {};
+        args.x0 = r.x;
+        args.y0 = r.y;
+        args.x1 = r.x + r.w;
+        args.y1 = r.y + r.h;
+
+        args.target = target.address;
+        args.target_pitch = target.pitch;
+        args.layer_count = static_cast<uint32_t>(end - first);
+        args.layers = buffers.m_layer_buffer.address + first * sizeof(layer);
+
+        args.corner_distances = m_corner_distances.address;
+        args.corner_count = m_corner_count;
+        args.corner_far_distance = m_corner_far_distance;
+
+        /* Rectangles may overlap, so each dispatch waits for the writes of the one before */
+        if (i > 0) {
+            m_vk.cmd_pipeline_barrier(
+                commands,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0,
+                1,
+                &between,
+                0,
+                nullptr,
+                0,
+                nullptr
+            );
+        }
+
+        m_vk.cmd_push_constants(commands, m_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args);
+        m_vk.cmd_dispatch(commands, workgroups(r.w), workgroups(r.h), 1);
+    }
+
+    VkMemoryBarrier to_cpu = {};
+    to_cpu.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    to_cpu.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    to_cpu.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    m_vk.cmd_pipeline_barrier(
+        commands,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        0,
+        1,
+        &to_cpu,
+        0,
+        nullptr,
+        0,
+        nullptr
+    );
+
+    return m_vk.end_command_buffer(commands) == VK_SUCCESS;
+}
+
+/* Submits the recorded compose to raise stlxdm's timeline to the next compose point, then waits for that point */
+compose_result gpu_compositor::submit_and_wait(compose_buffers& buffers) {
+    uint64_t point = m_compose_point + 1;
+
+    VkTimelineSemaphoreSubmitInfo timeline_info = {};
+    timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    timeline_info.signalSemaphoreValueCount = 1;
+    timeline_info.pSignalSemaphoreValues = &point;
+
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.pNext = &timeline_info;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &buffers.m_commands;
+
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &m_timeline;
+
+    VkResult submitted = m_vk.queue_submit(m_queue, 1, &submit_info, VK_NULL_HANDLE);
+    if (submitted == VK_ERROR_DEVICE_LOST) {
+        return compose_result::lost;
+    }
+
+    if (submitted != VK_SUCCESS) {
+        return compose_result::not_submitted;
+    }
+
+    m_compose_point = point;
+
+    VkSemaphoreWaitInfo wait_info = {};
+    wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    wait_info.semaphoreCount = 1;
+    wait_info.pSemaphores = &m_timeline;
+    wait_info.pValues = &point;
+
+    VkResult waited = m_vk.wait_semaphores(m_device, &wait_info, COMPOSE_DEADLINE_NS);
+    if (waited == VK_SUCCESS) {
+        return compose_result::composed;
+    }
+
+    return waited == VK_ERROR_DEVICE_LOST ? compose_result::lost : compose_result::unfinished;
 }
 
 /* Freeing the memory also removes its mapping */
