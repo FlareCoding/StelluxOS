@@ -307,6 +307,55 @@ void server::choose_compositor() {
     m_gpu_compositor = gpu_compositor::create(m_gpu_fd);
 }
 
+void server::switch_to_gpu() {
+    if (!m_gpu_compositor) {
+        return;
+    }
+
+    const char* refusal = m_display->falls_back() ? "the display has no buffers" : nullptr;
+    if (!refusal) {
+        m_gpu_backdrop = copy_backdrop(m_backdrop, m_backdrop->width, m_backdrop->height);
+        bool made = m_gpu_backdrop != nullptr;
+        for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX && made; output++) {
+            made = !m_outputs[output].pres || make_output_pictures(output);
+        }
+
+        refusal = made ? nullptr : "a picture's memory ran out";
+    }
+
+    if (!refusal && m_display->present_through(m_gpu_compositor.get()) != 0) {
+        refusal = "an output has no GPU presenter";
+    }
+
+    if (refusal) {
+        m_gpu_backdrop.reset();
+        for (dm_output& out : m_outputs) {
+            out.pictures = {};
+        }
+
+        m_gpu_compositor.reset();
+        printf("stlxdm: composing on the CPU, %s\r\n", refusal);
+        return;
+    }
+
+    m_panels->rebind(m_gpu_backdrop->surface());
+    stlxgfx_destroy_surface(m_backdrop);
+    m_backdrop = nullptr;
+
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        dm_output& out = m_outputs[output];
+        stlxgfx_destroy_surface(out.backdrop);
+        out.backdrop = nullptr;
+        if (out.pres) {
+            out.pres = m_display->presenter_of(output);
+        }
+    }
+
+    m_gpu_composes = true;
+    m_damage.add_full();
+    printf("stlxdm: composing on the GPU\r\n");
+}
+
 int server::serve() {
     raise_handle_limit();
 
@@ -364,13 +413,25 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
     out.panels = std::make_unique<dm_panels>();
     out.power = std::make_unique<dm_power>();
 
-    if (out.panels->init(width, height, *m_conf, out.backdrop) != 0 ||
-        out.power->init(width, height, m_conf->taskbar_height) != 0) {
+    bool ready = out.panels->init(width, height, *m_conf, out.backdrop) == 0 &&
+                 out.power->init(width, height, m_conf->taskbar_height) == 0;
+    if (ready && m_gpu_composes) {
+        out.gpu_backdrop = copy_backdrop(out.backdrop, width, height);
+        ready = out.gpu_backdrop != nullptr;
+    }
+
+    if (!ready) {
         out.panels->shutdown();
         out.power->shutdown();
         stlxgfx_destroy_surface(out.backdrop);
         out.backdrop = nullptr;
         return -1;
+    }
+
+    if (out.gpu_backdrop) {
+        out.panels->rebind(out.gpu_backdrop->surface());
+        stlxgfx_destroy_surface(out.backdrop);
+        out.backdrop = nullptr;
     }
 
     out.panels->on_launch = [](const stlxconf_pin_t& pin) {
@@ -409,6 +470,7 @@ void server::adopt_conf_state(dm_conf_state&& next) {
     m_panels = std::move(next.panels);
     m_power = std::move(next.power);
     m_backdrop = next.backdrop;
+    m_gpu_backdrop = std::move(next.gpu_backdrop);
     m_hotkeys = std::move(next.hotkeys);
     next.backdrop = nullptr;
 }
@@ -419,25 +481,106 @@ void server::refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper) {
     for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
         dm_output& out = m_outputs[output];
         bool needs_own = out.pres && output != m_layout.main_output();
-        bool fits = out.backdrop &&
-                    static_cast<int32_t>(out.backdrop->width) == out.place.w &&
-                    static_cast<int32_t>(out.backdrop->height) == out.place.h;
+        const stlxgfx_surface_t* backdrop = out.pictures.backdrop ? out.pictures.backdrop->surface() : out.backdrop;
+        bool fits = backdrop &&
+                    static_cast<int32_t>(backdrop->width) == out.place.w &&
+                    static_cast<int32_t>(backdrop->height) == out.place.h;
         if (needs_own && (fits || out.backdrop_failed) && !rebuild_all) {
             continue;
         }
 
         stlxgfx_destroy_surface(out.backdrop);
         out.backdrop = nullptr;
+        out.pictures.backdrop.reset();
         out.backdrop_failed = false;
         if (!needs_own) {
             continue;
         }
 
-        out.backdrop = build_backdrop(*m_conf, wallpaper.image(), static_cast<uint32_t>(out.place.w),
-                                      static_cast<uint32_t>(out.place.h));
+        uint32_t width = static_cast<uint32_t>(out.place.w);
+        uint32_t height = static_cast<uint32_t>(out.place.h);
+        out.backdrop = build_backdrop(*m_conf, wallpaper.image(), width, height);
         if (!out.backdrop) {
             out.backdrop_failed = true;
             printf("stlxdm: output %u's backdrop could not be built, showing the background color\r\n", output);
+        }
+
+        if (m_gpu_composes) {
+            out.pictures.backdrop = copy_backdrop(out.backdrop, width, height);
+            if (out.pictures.backdrop) {
+                stlxgfx_destroy_surface(out.backdrop);
+                out.backdrop = nullptr;
+            }
+        }
+    }
+}
+
+/* A backdrop picture holding `backdrop`'s pixels, or the background color
+ * without one, null when memory ran out */
+std::unique_ptr<backdrop_picture> server::copy_backdrop(
+    const stlxgfx_surface_t* backdrop,
+    uint32_t width,
+    uint32_t height
+) {
+    std::unique_ptr<backdrop_picture> picture = backdrop_picture::make(*m_gpu_compositor, width, height);
+    if (!picture) {
+        return nullptr;
+    }
+
+    if (backdrop) {
+        stlxgfx_blit(picture->surface(), 0, 0, backdrop, 0, 0, width, height);
+    } else {
+        stlxgfx_clear(picture->surface(), m_conf->bg_color);
+    }
+
+    return picture;
+}
+
+/* Makes the pictures `output`'s record lacks under the GPU compositor, the backdrop of any output but the main one
+ * a copy of its own. False when memory ran out */
+bool server::make_output_pictures(uint32_t output) {
+    dm_output& out = m_outputs[output];
+    dm_output_pictures& pictures = out.pictures;
+    uint32_t width = out.pres->width();
+    uint32_t height = out.pres->height();
+
+    bool is_main = output == m_layout.main_output();
+    if (!is_main && !pictures.backdrop) {
+        pictures.backdrop = copy_backdrop(out.backdrop, width, height);
+    }
+
+    /* switch_to_gpu keeps the CPU backdrops until it commits */
+    bool drops_cpu_backdrop = m_gpu_composes && pictures.backdrop && out.backdrop;
+    if (drops_cpu_backdrop) {
+        stlxgfx_destroy_surface(out.backdrop);
+        out.backdrop = nullptr;
+    }
+
+    if (!pictures.lower_top) {
+        pictures.lower_top = top_picture::make(*m_gpu_compositor, width, height);
+    }
+
+    if (!pictures.upper_top) {
+        pictures.upper_top = top_picture::make(*m_gpu_compositor, width, height);
+    }
+
+    if (!pictures.compose) {
+        pictures.compose = m_gpu_compositor->make_compose_buffers();
+    }
+
+    return (is_main || pictures.backdrop) && pictures.lower_top && pictures.upper_top && pictures.compose;
+}
+
+/* Gives every served output the pictures it lacks while the GPU composes */
+void server::make_served_pictures() {
+    if (!composes_on_gpu()) {
+        return;
+    }
+
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        if (m_outputs[output].pres && !make_output_pictures(output)) {
+            stop_gpu_composing("a picture's memory ran out");
+            return;
         }
     }
 }
@@ -502,8 +645,10 @@ void server::sync_outputs() {
         bool resized = out.place.w != place->rect.w || out.place.h != place->rect.h;
         if (out.pres != pres || resized) {
             stlxgfx_surface_t* backdrop = out.backdrop;
+            std::unique_ptr<backdrop_picture> gpu_backdrop = std::move(out.pictures.backdrop);
             out = {};
             out.backdrop = backdrop;
+            out.pictures.backdrop = std::move(gpu_backdrop);
         }
 
         out.pres = pres;
@@ -596,6 +741,7 @@ void server::reload_config() {
     adopt_conf_state(std::move(state));
     m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
     refresh_backdrops(true, wallpaper);
+    make_served_pictures();
 
     /* The new bar shows the last readout at once, since a quiescent perf
      * monitor refreshes nothing until the next input or missed frame */
@@ -705,8 +851,9 @@ desktop_point server::adopt_layout(const layout& before, desktop_point pointer, 
 
     /* The backdrop's size, not the last layout's, tells a failed rebuild apart, so the next event retries it */
     const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
-    bool backdrop_stale = static_cast<int32_t>(m_backdrop->width) != main.w ||
-                          static_cast<int32_t>(m_backdrop->height) != main.h;
+    const stlxgfx_surface_t* backdrop = m_gpu_backdrop ? m_gpu_backdrop->surface() : m_backdrop;
+    bool backdrop_stale = static_cast<int32_t>(backdrop->width) != main.w ||
+                          static_cast<int32_t>(backdrop->height) != main.h;
     bool rebuilt = false;
     if (m_layout.main_output() != before.main_output() || backdrop_stale) {
         dm_conf_state state;
@@ -721,6 +868,7 @@ desktop_point server::adopt_layout(const layout& before, desktop_point pointer, 
 
     m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
     refresh_backdrops(false, wallpaper);
+    make_served_pictures();
 
     desktop_point moved = pointer;
     bool places_changed = !same_layout(before, m_layout);
@@ -945,6 +1093,7 @@ void server::shutdown() {
     }
     stlxgfx_destroy_surface(m_backdrop);
     m_backdrop = nullptr;
+    m_gpu_backdrop.reset();
 
     for (dm_output& out : m_outputs) {
         stlxgfx_destroy_surface(out.backdrop);

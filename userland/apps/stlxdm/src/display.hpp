@@ -68,6 +68,15 @@ public:
      * limit. */
     void follow_output(uint32_t output, const gfxfb::gfxfb_output_info& info);
 
+    /* Replaces every served output's presenter, and those `follow_output()`
+     * makes from here on, with one presenting the output buffers `maker`
+     * makes, or gfxfb's own buffers when null, first waiting for every
+     * pending present's end. `maker` must outlive them. Returns 0, or -1
+     * keeping the running presenters after printing why one could not be
+     * made, and for the memcpy fallback. Each dropped presenter hides its
+     * hardware cursor. */
+    int present_through(output_buffer_maker* maker);
+
     /* `output`'s presenter, or null while it is not served. */
     presenter* presenter_of(uint32_t output) const;
 
@@ -89,6 +98,8 @@ public:
 
 private:
     int serve_outputs();
+    std::unique_ptr<buffer_presenter> make_presenter(const gfxfb::gfxfb_output_info& info, output_buffer_maker* maker);
+    void wait_for_presents();
     bool fallback_fits() const;
     void note_output_event(uint32_t output);
     void note_state(uint32_t output, const gfxfb::gfxfb_output_info& info);
@@ -104,6 +115,10 @@ private:
 
     std::unique_ptr<buffer_presenter> m_presenters[gfxfb::GFXFB_OUTPUTS_MAX];
     std::unique_ptr<memcpy_presenter> m_fallback;
+
+    /* What makes the output buffers of the presenters made, null for
+     * gfxfb's own. */
+    output_buffer_maker* m_maker = nullptr;
 
     layout_store::identity m_monitors[gfxfb::GFXFB_OUTPUTS_MAX];
 };

@@ -47,6 +47,10 @@ public:
              stlxgfx_surface_t* backdrop);
     void shutdown();
 
+    /* Paints into `backdrop` from here on, which must have the size and
+     * hold the pixels of the backdrop the panels painted into until now */
+    void rebind(stlxgfx_surface_t* backdrop);
+
     /* Fired by a dock pin's release, the server spawns the app */
     std::function<void(const stlxconf_pin_t&)> on_launch;
 

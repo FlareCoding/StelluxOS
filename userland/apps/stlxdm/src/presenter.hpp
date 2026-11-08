@@ -9,6 +9,7 @@
 #include <memory>
 
 class display;
+class output_buffer;
 
 /* The presentation layer for one output. The compositor composes into
  * the target this interface hands out and presents damage through it,
@@ -28,10 +29,10 @@ class display;
 class presenter {
 public:
     struct target {
-        uint32_t* pixels = nullptr;  /* null for a target only the GPU writes */
-        uint32_t  stride = 0;        /* bytes per row */
-        uint32_t  age = 0;
-        uint64_t  gpu_address = 0;   /* the first pixel's GPU address, 0 for a target the CPU writes */
+        uint32_t*            pixels = nullptr;      /* null for a target only the GPU writes */
+        uint32_t             stride = 0;            /* bytes per row */
+        uint32_t             age = 0;
+        const output_buffer* gpu_buffer = nullptr;  /* null for a target the CPU writes */
     };
 
     /* A hardware cursor picture: `width` by `height` pixels in unpadded
