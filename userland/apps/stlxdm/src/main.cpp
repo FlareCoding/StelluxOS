@@ -230,6 +230,7 @@ int main() {
     /* The splash owns the main output until Enter, before any client can
      * connect and before autostart spawns */
     splash_run(*srv.main_presenter());
+    srv.switch_to_gpu();
 
     if (srv.serve() != 0) {
         printf("stlxdm: failed to bind %s\r\n", SWP_SOCKET_PATH);

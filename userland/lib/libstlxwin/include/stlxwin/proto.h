@@ -29,6 +29,7 @@
 #define SWP_OUTPUTS_MAX      16u  /* the most outputs a display drives */
 #define SWP_DESKTOP_LIMIT    (1 << 20)  /* every corner of every place lies within this of the origin on both axes */
 
+#define SWP_SHM_BUFFERS_MAX   64u     /* shared memory buffers one connection holds at once */
 #define SWP_GPU_HANDLES       3u      /* handles one ATTACH_GPU_BUFFER carries */
 #define SWP_GPU_BUFFERS_MAX   16u     /* GPU buffers one connection holds at once, shown detached ones included */
 #define SWP_GPU_DIMENSION_MAX 16384u  /* largest width or height of a GPU buffer's picture */

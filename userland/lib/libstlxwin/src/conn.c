@@ -30,6 +30,8 @@ _Static_assert(STLXWIN_MODE_NO_TRIAL == SWP_MODE_NO_TRIAL, "stlxwin.h names prot
 _Static_assert(STLXWIN_MODE_INVALID == SWP_MODE_INVALID, "stlxwin.h names proto.h's outcome");
 _Static_assert(STLXWIN_GPU_ACCEPTS == SWP_GPU_ACCEPTS, "stlxwin.h names proto.h's flag");
 _Static_assert(STLXWIN_GPU_CPU_READS == SWP_GPU_CPU_READS, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_WINDOWS_MAX * STLXWIN_BUFS_PER_WINDOW <= SWP_SHM_BUFFERS_MAX,
+               "a connection's windows hold no more shared memory buffers than proto.h's limit");
 _Static_assert(STLXWIN_GPU_BUFFERS_MAX == SWP_GPU_BUFFERS_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_GPU_DIMENSION_MAX == SWP_GPU_DIMENSION_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_FMT_XRGB8888 == SWP_FMT_XRGB8888, "stlxwin.h names proto.h's format");

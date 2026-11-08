@@ -360,8 +360,8 @@ int server::serve() {
     raise_handle_limit();
 
     if (m_gpu_fd >= 0) {
-        /* The CPU compositor maps every buffer, and reads system memory
-         * faster than video memory */
+        /* Both compositors take only buffers they can map, and the CPU
+         * compositor reads system memory faster than video memory */
         m_gpu_info.flags = SWP_GPU_ACCEPTS | SWP_GPU_CPU_READS;
     }
 
