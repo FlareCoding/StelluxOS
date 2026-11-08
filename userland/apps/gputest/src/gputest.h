@@ -7,6 +7,9 @@
 
 #define PROTO_WINDOW_ID 1u  // the window id proto_create_window sends
 
+// More cycles than stlxdm's 65,536 handles, so a handle it loses per cycle ends the connection before the last
+#define ATTACH_CYCLES 66000u
+
 #define NS_PER_SEC   1000000000ULL
 #define MIB          (1024ULL * 1024ULL)
 #define PAGE_BYTES   4096ULL
@@ -46,6 +49,9 @@ bool proto_send(int sock, uint16_t type, const void* payload, uint32_t length, c
 
 // Sends CREATE_WINDOW for a window of 64 by 64 pixels, with `count` handles
 bool proto_create_window(int sock, const int32_t* handles, uint32_t count);
+
+// Sends DETACH_BUFFER for buffer `buf_id` of the window proto_create_window made
+bool proto_detach(int sock, uint32_t buf_id);
 
 // Reads whatever stlxdm sends until it closes the socket. Returns false if it is still open after 2 seconds
 bool proto_closes(int sock);

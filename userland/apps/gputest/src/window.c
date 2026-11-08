@@ -34,9 +34,7 @@
 #define RENDER_FRAMES   10000u
 #define RENDER_PICTURES 12u
 
-// More cycles than stlxdm's 65,536 handles, so a handle it loses per cycle ends the connection before the last. A round
-// trip every ATTACH_SYNC_EVERY cycles bounds gputest's handles in flight at 600, under any limit it inherits
-#define ATTACH_CYCLES     66000u
+// A round trip every ATTACH_SYNC_EVERY cycles bounds gputest's handles in flight at 600, under any limit it inherits
 #define ATTACH_SYNC_EVERY 200u
 
 #define READY_SLOT   3
@@ -434,11 +432,6 @@ static bool raw_commit(int sock, uint32_t buf_id, uint64_t acquire, uint64_t lat
     return proto_send(sock, SWP_MSG_COMMIT_GPU, &commit, sizeof(commit), NULL, 0);
 }
 
-static bool raw_detach(int sock, uint32_t buf_id) {
-    swp_detach_buffer detach = { PROTO_WINDOW_ID, buf_id };
-    return proto_send(sock, SWP_MSG_DETACH_BUFFER, &detach, sizeof(detach), NULL, 0);
-}
-
 // Breaks `rule` on a raw connection, as libstlxwin keeps it or cannot check it, and checks stlxdm disconnects
 static void check_rule_break(int gpu, const char* name, rule_break rule) {
     swp_gpu_info gpu_info;
@@ -467,7 +460,7 @@ static void check_rule_break(int gpu, const char* name, rule_break rule) {
         break;
     case BREAK_RELEASE_RIGHTS:
         // Detaching the picture while its acquire point is unreached releases it at once
-        sent = sent && raw_commit(sock, 1, 1, 0, 1) && raw_detach(sock, 1);
+        sent = sent && raw_commit(sock, 1, 1, 0, 1) && proto_detach(sock, 1);
         break;
     }
 
@@ -667,7 +660,7 @@ static void check_attach_cycles(int gpu) {
 
     bool all_taken = cycles == ATTACH_CYCLES && synced == ATTACH_CYCLES / ATTACH_SYNC_EVERY;
     check(
-        "66000 attach and detach cycles on a new connection never run stlxdm out of handles",
+        "66000 GPU buffer attach and detach cycles on a new connection never run stlxdm out of handles",
         all_taken && stlxwin_gpu_check(s.conn) == 0
     );
 
