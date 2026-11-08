@@ -16,6 +16,21 @@ extern "C" {
 #define STLXCONF_MAX_AUTOSTART 8
 #define STLXCONF_MAX_URL_HANDLERS 8
 
+/* Which compositor composes the desktop: auto the GPU when stlxdm can make
+ * its compositor, cpu the CPU */
+typedef enum {
+    STLXCONF_COMPOSITOR_AUTO,
+    STLXCONF_COMPOSITOR_CPU,
+} stlxconf_compositor_t;
+
+/* A failure the GPU compositor makes in its next compose, for tests: a read
+ * of an address never mapped, or a spin past the compose's deadline */
+typedef enum {
+    STLXCONF_COMPOSE_FAULT_NONE,
+    STLXCONF_COMPOSE_FAULT_FAULT,
+    STLXCONF_COMPOSE_FAULT_HANG,
+} stlxconf_compose_fault_t;
+
 /* One pinned launcher in the dock, order preserved from the file, args space
  * separated. The name is the section suffix, kept for faithful re-serialization. */
 typedef struct {
@@ -64,6 +79,12 @@ typedef struct {
      * path falls back to the flat bg_color */
     uint32_t bg_color;
     char     wallpaper[256];
+
+    /* [desktop] the compositor, and for tests each GPU frame also composed
+     * on the CPU and compared, and a failure made in a GPU compose */
+    stlxconf_compositor_t    compositor;
+    bool                     compare_frames;
+    stlxconf_compose_fault_t compose_fault;
 
     /* [theme] bar colors and the bar text size */
     uint32_t bar_color;
