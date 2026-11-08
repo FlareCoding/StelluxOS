@@ -9,6 +9,7 @@
 #include <stlx/gpu_abi.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <vector>
 
@@ -41,6 +42,11 @@ constexpr uint32_t BYTES_PER_PIXEL = 4;
 
 /* NVIDIA's display scans out rows that start a multiple of 256 bytes apart */
 constexpr uint64_t SCANOUT_PITCH_ALIGNMENT = 256;
+
+/* The queries of the timestamp pool, written around each compose's dispatches */
+constexpr uint32_t BEFORE_DISPATCHES = 0;
+constexpr uint32_t AFTER_DISPATCHES = 1;
+constexpr uint32_t TIMESTAMP_COUNT = 2;
 
 /* Every picture and output buffer the compose reads or writes is a storage
  * buffer named by its device address */
@@ -160,6 +166,20 @@ static uint32_t workgroups(int32_t pixels) {
     return (static_cast<uint32_t>(pixels) + WORKGROUP_PIXELS - 1) / WORKGROUP_PIXELS;
 }
 
+/* The CPU time stlxdm's thread has run, which excludes the time it was preempted */
+static uint64_t thread_cpu_ns() {
+    struct timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+/* Only the low `valid_bits` of a timestamp are meaningful, so a later one may read below an earlier one past a wrap */
+static uint64_t timestamps_apart_ns(uint64_t first, uint64_t last, uint32_t valid_bits, float period_ns) {
+    uint64_t mask = valid_bits >= 64 ? ~0ull : (1ull << valid_bits) - 1;
+    uint64_t ticks = (last - first) & mask;
+    return static_cast<uint64_t>(static_cast<double>(ticks) * period_ns);
+}
+
 std::unique_ptr<gpu_compositor> gpu_compositor::create(int gpu_fd) {
     std::unique_ptr<gpu_compositor> compositor(new gpu_compositor());
 
@@ -181,6 +201,10 @@ gpu_compositor::~gpu_compositor() {
 
     end_retirement();
     free_buffer(m_corner_distances);
+
+    if (m_timestamps != VK_NULL_HANDLE) {
+        m_vk.destroy_query_pool(m_device, m_timestamps, nullptr);
+    }
 
     if (m_command_pool != VK_NULL_HANDLE) {
         m_vk.destroy_command_pool(m_device, m_command_pool, nullptr);
@@ -248,6 +272,11 @@ const char* gpu_compositor::start(int gpu_fd) {
         return refusal;
     }
 
+    refusal = create_timestamp_queries();
+    if (refusal) {
+        return refusal;
+    }
+
     refusal = upload_corner_distances();
     if (refusal) {
         return refusal;
@@ -299,6 +328,11 @@ bool gpu_compositor::find_commands() {
         find_command(m_instance, "vkCmdDispatch", m_vk.cmd_dispatch) &&
         find_command(m_instance, "vkCmdPipelineBarrier", m_vk.cmd_pipeline_barrier) &&
         find_command(m_instance, "vkCmdCopyBuffer", m_vk.cmd_copy_buffer) &&
+        find_command(m_instance, "vkCreateQueryPool", m_vk.create_query_pool) &&
+        find_command(m_instance, "vkDestroyQueryPool", m_vk.destroy_query_pool) &&
+        find_command(m_instance, "vkGetQueryPoolResults", m_vk.get_query_pool_results) &&
+        find_command(m_instance, "vkCmdResetQueryPool", m_vk.cmd_reset_query_pool) &&
+        find_command(m_instance, "vkCmdWriteTimestamp", m_vk.cmd_write_timestamp) &&
         find_command(m_instance, "vkQueueSubmit", m_vk.queue_submit) &&
         find_command(m_instance, "vkWaitSemaphores", m_vk.wait_semaphores) &&
         find_command(m_instance, "vkGetSemaphoreCounterValue", m_vk.get_semaphore_counter_value);
@@ -364,6 +398,7 @@ const char* gpu_compositor::find_physical_device(const gpu_info& info) {
         if (is_at_address(info, pci_bus)) {
             m_physical_device = physical_device;
             memcpy(m_device_name, properties.properties.deviceName, sizeof(m_device_name));
+            m_timestamp_period_ns = properties.properties.limits.timestampPeriod;
             return nullptr;
         }
     }
@@ -388,6 +423,8 @@ const char* gpu_compositor::check_physical_device() {
     if (m_queue_family == family_count) {
         return "the Vulkan device has no compute queue";
     }
+
+    m_timestamp_bits = families[m_queue_family].timestampValidBits;
 
     VkPhysicalDeviceVulkan12Features features_12 = {};
     features_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -529,6 +566,25 @@ const char* gpu_compositor::create_command_pool() {
     if (m_vk.create_command_pool(m_device, &pool_info, nullptr, &m_command_pool) != VK_SUCCESS) {
         m_command_pool = VK_NULL_HANDLE;
         return "Vulkan refused a command pool";
+    }
+
+    return nullptr;
+}
+
+/* Composes on a queue that writes no timestamps go without a GPU time */
+const char* gpu_compositor::create_timestamp_queries() {
+    if (m_timestamp_bits == 0) {
+        return nullptr;
+    }
+
+    VkQueryPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    pool_info.queryCount = TIMESTAMP_COUNT;
+
+    if (m_vk.create_query_pool(m_device, &pool_info, nullptr, &m_timestamps) != VK_SUCCESS) {
+        m_timestamps = VK_NULL_HANDLE;
+        return "Vulkan refused the timestamp queries";
     }
 
     return nullptr;
@@ -908,6 +964,8 @@ compose_result gpu_compositor::compose(
     const std::vector<damage_list::rect>& rects,
     backdrop_picture& backdrop
 ) {
+    uint64_t start_ns = thread_cpu_ns();
+
     if (!list_layers(buffers, scene, rects)) {
         return compose_result::not_submitted;
     }
@@ -919,7 +977,15 @@ compose_result gpu_compositor::compose(
         return compose_result::not_submitted;
     }
 
-    return submit_and_wait(buffers);
+    uint64_t submitted_ns = 0;
+    compose_result result = submit_and_wait(buffers, submitted_ns);
+    if (result == compose_result::composed) {
+        m_last_times = {};
+        m_last_times.cpu_ns = submitted_ns - start_ns;
+        m_last_times.has_gpu_time = read_gpu_time(m_last_times.gpu_ns);
+    }
+
+    return result;
 }
 
 /* Lists the layers of each of `rects` inside the scene and copies the lists into the layer buffer, grown first to
@@ -1010,6 +1076,10 @@ bool gpu_compositor::record_compose(
         return false;
     }
 
+    if (m_timestamps != VK_NULL_HANDLE) {
+        m_vk.cmd_reset_query_pool(commands, m_timestamps, 0, TIMESTAMP_COUNT);
+    }
+
     transfer_buffers(buffers, target, scene, true);
 
     if (!buffers.m_copies.empty()) {
@@ -1041,6 +1111,7 @@ bool gpu_compositor::record_compose(
         );
     }
 
+    write_timestamp(commands, BEFORE_DISPATCHES);
     m_vk.cmd_bind_pipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
 
     VkMemoryBarrier between = {};
@@ -1088,6 +1159,8 @@ bool gpu_compositor::record_compose(
         m_vk.cmd_push_constants(commands, m_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args);
         m_vk.cmd_dispatch(commands, workgroups(r.w), workgroups(r.h), 1);
     }
+
+    write_timestamp(commands, AFTER_DISPATCHES);
 
     if (target.readback) {
         record_readback(buffers, target);
@@ -1153,8 +1226,16 @@ void gpu_compositor::record_readback(compose_buffers& buffers, const compose_tar
     m_vk.cmd_copy_buffer(commands, scanout, readback, region_count, buffers.m_copy_regions.data());
 }
 
-/* Submits the recorded compose to raise stlxdm's timeline to the next compose point, then waits for that point */
-compose_result gpu_compositor::submit_and_wait(compose_buffers& buffers) {
+/* Written once every command recorded before it has ended, so the two around the dispatches time them alone */
+void gpu_compositor::write_timestamp(VkCommandBuffer commands, uint32_t query) {
+    if (m_timestamps != VK_NULL_HANDLE) {
+        m_vk.cmd_write_timestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_timestamps, query);
+    }
+}
+
+/* Submits the recorded compose to raise stlxdm's timeline to the next compose point and, once Vulkan accepts it,
+ * notes in `submitted_ns` the thread's CPU time at the submit's return and waits for that point */
+compose_result gpu_compositor::submit_and_wait(compose_buffers& buffers, uint64_t& submitted_ns) {
     uint64_t point = m_compose_point + 1;
 
     VkTimelineSemaphoreSubmitInfo timeline_info = {};
@@ -1180,6 +1261,7 @@ compose_result gpu_compositor::submit_and_wait(compose_buffers& buffers) {
         return compose_result::not_submitted;
     }
 
+    submitted_ns = thread_cpu_ns();
     m_compose_point = point;
 
     VkSemaphoreWaitInfo wait_info = {};
@@ -1194,6 +1276,34 @@ compose_result gpu_compositor::submit_and_wait(compose_buffers& buffers) {
     }
 
     return waited == VK_ERROR_DEVICE_LOST ? compose_result::lost : compose_result::unfinished;
+}
+
+/* The GPU time between the timestamps of a compose that ended. False without timestamps or when their read fails */
+bool gpu_compositor::read_gpu_time(uint64_t& gpu_ns) const {
+    if (m_timestamps == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    uint64_t ticks[TIMESTAMP_COUNT] = {};
+    VkResult read = m_vk.get_query_pool_results(
+        m_device,
+        m_timestamps,
+        0,
+        TIMESTAMP_COUNT,
+        sizeof(ticks),
+        ticks,
+        sizeof(ticks[0]),
+        VK_QUERY_RESULT_64_BIT
+    );
+    if (read != VK_SUCCESS) {
+        return false;
+    }
+
+    uint64_t first = ticks[BEFORE_DISPATCHES];
+    uint64_t last = ticks[AFTER_DISPATCHES];
+    gpu_ns = timestamps_apart_ns(first, last, m_timestamp_bits, m_timestamp_period_ns);
+
+    return true;
 }
 
 bool gpu_compositor::fail_next_compose(compose_failure failure) {

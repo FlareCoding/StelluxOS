@@ -59,6 +59,10 @@ struct dm_output_pictures {
     layer_scene                                      scene;
     std::vector<damage_list::rect>                   rects;
 
+    /* The GPU frames since the output's last frame statistics line or the
+     * last clearing of its pictures */
+    frame_stats                                      stats;
+
     /* In comparison mode: each GPU frame's rows read back at the output
      * buffer's pitch, the CPU compositor's frame, the regions where the two
      * may round apart, and how many frames were compared */
@@ -511,6 +515,7 @@ private:
     bool compose_capture(dm_output& out);
     bool switch_to_cpu_on_misfit_backdrop(dm_output& out);
     bool switch_to_cpu_on_failed_compose(compose_result result);
+    void note_gpu_frame(dm_output& out);
     void follow_compose_fault();
     void switch_to_cpu(const char* reason);
     gpu_compositor* retired_compositor() const;
