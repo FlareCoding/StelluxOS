@@ -264,6 +264,7 @@ static void report_default(layout::outcome placed) {
 int server::init(display* disp, const stlxconf_t* conf) {
     m_display = disp;
     m_conf = conf;
+    m_compose_fault = conf->compose_fault;
 
     m_store.read(LAYOUTS_PATH);
 
@@ -476,6 +477,41 @@ gpu_compositor* server::retired_compositor() const {
     }
 
     return m_gpu_stopped && m_gpu_compositor->is_retired() ? m_gpu_compositor.get() : nullptr;
+}
+
+/* Has the next GPU compose make the failure the config's `compose_fault` names, once each time a reload changes it
+ * from none, unless the GPU composes nothing or refuses the failure */
+void server::follow_compose_fault() {
+    bool changed_from_none = m_compose_fault == STLXCONF_COMPOSE_FAULT_NONE &&
+                             m_conf->compose_fault != STLXCONF_COMPOSE_FAULT_NONE;
+    m_compose_fault = m_conf->compose_fault;
+    if (!changed_from_none) {
+        return;
+    }
+
+    if (!composes_on_gpu()) {
+        printf("stlxdm: compose_fault is ignored, the GPU composes nothing\r\n");
+        return;
+    }
+
+    compose_failure failure = compose_failure::unmapped_read;
+    const char* effect = "reads an address no context maps";
+    switch (m_compose_fault) {
+    case STLXCONF_COMPOSE_FAULT_NONE:
+    case STLXCONF_COMPOSE_FAULT_FAULT:
+        break;
+    case STLXCONF_COMPOSE_FAULT_HANG:
+        failure = compose_failure::spin;
+        effect = "spins past its deadline";
+        break;
+    }
+
+    if (!m_gpu_compositor->fail_next_compose(failure)) {
+        printf("stlxdm: compose_fault=fault is ignored, this GPU's contexts may map address 0\r\n");
+        return;
+    }
+
+    printf("stlxdm: the next GPU compose %s, as compose_fault asks\r\n", effect);
 }
 
 int server::serve() {
@@ -860,6 +896,8 @@ void server::perf_tick(uint64_t now_ns) {
 }
 
 void server::reload_config() {
+    follow_compose_fault();
+
     dm_wallpaper wallpaper(*m_conf);
     dm_conf_state state;
     if (build_conf_state(state, wallpaper) != 0) {

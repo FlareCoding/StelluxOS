@@ -43,6 +43,15 @@ enum class compose_state {
     lost,     /* the device is lost, so none of the compositor's work runs any more */
 };
 
+/* A failure a test has the next compose make: a read of an address no
+ * context maps, which faults, or an endless spin, which runs past
+ * `COMPOSE_DEADLINE_NS`. Either loses the compositor's context once the
+ * kernel ends it, at the fault or at the GPU's hang deadline. */
+enum class compose_failure {
+    unmapped_read,
+    spin,
+};
+
 /* How a window buffer's import went */
 enum class window_import_result {
     imported,
@@ -119,6 +128,12 @@ public:
         const std::vector<damage_list::rect>& rects,
         backdrop_picture& backdrop
     );
+
+    /* Has the next compose that lists a rectangle make `failure` at one
+     * pixel of its last rectangle, after its layers. False for an unmapped
+     * read on a GPU whose contexts may map address 0, the address
+     * it reads. */
+    bool fail_next_compose(compose_failure failure);
 
     /* Keeps the memory and command buffers of everything dropped from here
      * on until `end_retirement` or the destructor, since a compose past
@@ -226,6 +241,7 @@ private:
     VkResult import_window_memory(int gpu_buffer, uint64_t bytes, uint32_t placement, device_buffer& import);
 
     bool list_layers(compose_buffers& buffers, const layer_scene& scene, const std::vector<damage_list::rect>& rects);
+    layer failure_layer(const damage_list::rect& r) const;
     bool record_compose(
         compose_buffers& buffers,
         const compose_target& target,
@@ -270,6 +286,7 @@ private:
     VkCommandPool    m_command_pool = VK_NULL_HANDLE;
     int              m_gpu_fd = -1;
     uint32_t         m_page_size = 0;
+    bool             m_contexts_may_map_zero = false;
     int              m_probe_context = -1;
 
     /* The timeline value the last submitted compose raises it to when
@@ -287,6 +304,10 @@ private:
     device_buffer m_corner_distances;
     uint32_t      m_corner_count = 0;
     int32_t       m_corner_far_distance = 0;
+
+    /* The failure the next compose that lists a rectangle makes */
+    bool            m_fails_next_compose = false;
+    compose_failure m_next_failure = compose_failure::unmapped_read;
 };
 
 /* One output's command buffer and the layer buffer its composes' dispatches

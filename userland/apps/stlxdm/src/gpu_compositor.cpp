@@ -216,6 +216,7 @@ const char* gpu_compositor::start(int gpu_fd) {
 
     m_gpu_fd = gpu_fd;
     m_page_size = info.page_size;
+    m_contexts_may_map_zero = info.va_start == 0;
 
     const char* refusal = create_instance();
     if (refusal) {
@@ -938,6 +939,11 @@ bool gpu_compositor::list_layers(
         append_layers(scene, r, buffers.m_layers);
     }
 
+    if (m_fails_next_compose && !buffers.m_list_rects.empty()) {
+        buffers.m_layers.push_back(failure_layer(buffers.m_list_rects.back()));
+        m_fails_next_compose = false;
+    }
+
     VkDeviceSize bytes = buffers.m_layers.size() * sizeof(layer);
     if (bytes > buffers.m_layer_buffer_bytes) {
         destroy_buffer(buffers.m_layer_buffer);
@@ -958,6 +964,31 @@ bool gpu_compositor::list_layers(
     }
 
     return true;
+}
+
+/* A layer over the first pixel of `r` that reads GPU address 0, below every address a context maps, or spins there */
+layer gpu_compositor::failure_layer(const damage_list::rect& r) const {
+    layer failing = {};
+    failing.x0 = r.x;
+    failing.y0 = r.y;
+    failing.x1 = r.x + 1;
+    failing.y1 = r.y + 1;
+
+    failing.address = 0;
+    failing.origin_x = r.x;
+    failing.origin_y = r.y;
+    failing.pitch = BYTES_PER_PIXEL;
+
+    switch (m_next_failure) {
+    case compose_failure::unmapped_read:
+        failing.op = layer_op::copy;
+        break;
+    case compose_failure::spin:
+        failing.op = layer_op::spin;
+        break;
+    }
+
+    return failing;
 }
 
 bool gpu_compositor::record_compose(
@@ -1117,6 +1148,17 @@ compose_result gpu_compositor::submit_and_wait(compose_buffers& buffers) {
     }
 
     return waited == VK_ERROR_DEVICE_LOST ? compose_result::lost : compose_result::unfinished;
+}
+
+bool gpu_compositor::fail_next_compose(compose_failure failure) {
+    if (failure == compose_failure::unmapped_read && m_contexts_may_map_zero) {
+        return false;
+    }
+
+    m_fails_next_compose = true;
+    m_next_failure = failure;
+
+    return true;
 }
 
 void gpu_compositor::retire() {

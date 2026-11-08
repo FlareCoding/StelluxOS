@@ -14,6 +14,7 @@ const uint LAYER_COPY  = 0u;
 const uint LAYER_BLEND = 1u;
 const uint LAYER_FILL  = 2u;
 const uint LAYER_DIM   = 3u;
+const uint LAYER_SPIN  = 4u;
 
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer pixels {
     uint words[];
@@ -144,6 +145,7 @@ void main() {
         return;
     }
 
+    uint target_index = uint(pixel.y) * (args.target_pitch >> 2) + uint(pixel.x);
     uint color = 0u;
     for (uint i = 0u; i < args.layer_count; i++) {
         layer l = args.layers.layers[i];
@@ -163,8 +165,13 @@ void main() {
             color = l.color;
         } else if (l.op == LAYER_DIM) {
             color = dim(color, l.color);
+        } else if (l.op == LAYER_SPIN) {
+            /* An atomic at every turn, since a compiler may drop an endless loop of plain stores */
+            for (;;) {
+                atomicAdd(args.target.words[target_index], 1u);
+            }
         }
     }
 
-    args.target.words[uint(pixel.y) * (args.target_pitch >> 2) + uint(pixel.x)] = color | 0xFF000000u;
+    args.target.words[target_index] = color | 0xFF000000u;
 }
