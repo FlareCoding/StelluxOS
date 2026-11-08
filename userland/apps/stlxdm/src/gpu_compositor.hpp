@@ -1,14 +1,36 @@
 #ifndef STLXDM_GPU_COMPOSITOR_HPP
 #define STLXDM_GPU_COMPOSITOR_HPP
 
+#include "damage.hpp"
+#include "layers.hpp"
 #include "picture.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include <vulkan/vulkan.h>
 
 struct gpu_info;
+
+/* How long stlxdm waits for a compose to end before it stops composing on
+ * the GPU */
+constexpr uint64_t COMPOSE_DEADLINE_NS = 100000000;
+
+/* Memory a compose writes: its first pixel's GPU address and the bytes from
+ * one row to the next */
+struct compose_target {
+    uint64_t address = 0;
+    uint32_t pitch = 0;
+};
+
+/* How a compose ended */
+enum class compose_result {
+    composed,       /* its target holds the frame */
+    not_submitted,  /* memory ran out before the GPU had any of it, and the twin may lack rows the CPU changed */
+    lost,           /* the device is lost, so none of the compositor's work runs any more */
+    unfinished,     /* it did not end within `COMPOSE_DEADLINE_NS`, or its wait failed, and may still run */
+};
 
 /* The GPU compositor composes an output's frame on the GPU, in one compute
  * pass that reads each window's picture where it lies, through the Vulkan
@@ -24,6 +46,8 @@ struct gpu_info;
  * stlxdm's one thread makes every call. */
 class gpu_compositor : public picture_maker {
 public:
+    class compose_buffers;
+
     /* Creates the compositor on the GPU of `gpu_fd`, which must outlive it,
      * or returns null after printing why stlxdm composes on the CPU */
     static std::unique_ptr<gpu_compositor> create(int gpu_fd);
@@ -35,6 +59,24 @@ public:
 
     std::unique_ptr<picture> make_picture(size_t bytes) override;
     std::unique_ptr<picture> make_twin(size_t bytes) override;
+
+    /* An output's command and layer buffers, or null when Vulkan has no
+     * memory left */
+    std::unique_ptr<compose_buffers> make_compose_buffers();
+
+    /* Composes `rects` of `scene`, in the output's pixels and clipped to
+     * it, into `target` through `buffers`, after copying the rows the CPU
+     * changed in `backdrop` into its twin, and waits at most
+     * `COMPOSE_DEADLINE_NS` for the compose to end. Every picture the scene
+     * and `backdrop` name must be this compositor's and stay until the
+     * compose ended. */
+    compose_result compose(
+        compose_buffers& buffers,
+        const compose_target& target,
+        const layer_scene& scene,
+        const std::vector<damage_list::rect>& rects,
+        backdrop_picture& backdrop
+    );
 
 private:
     class owned_picture;
@@ -79,6 +121,19 @@ private:
         PFN_vkDestroyPipelineLayout                     destroy_pipeline_layout;
         PFN_vkCreateComputePipelines                    create_compute_pipelines;
         PFN_vkDestroyPipeline                           destroy_pipeline;
+        PFN_vkCreateCommandPool                         create_command_pool;
+        PFN_vkDestroyCommandPool                        destroy_command_pool;
+        PFN_vkAllocateCommandBuffers                    allocate_command_buffers;
+        PFN_vkFreeCommandBuffers                        free_command_buffers;
+        PFN_vkBeginCommandBuffer                        begin_command_buffer;
+        PFN_vkEndCommandBuffer                          end_command_buffer;
+        PFN_vkCmdBindPipeline                           cmd_bind_pipeline;
+        PFN_vkCmdPushConstants                          cmd_push_constants;
+        PFN_vkCmdDispatch                               cmd_dispatch;
+        PFN_vkCmdPipelineBarrier                        cmd_pipeline_barrier;
+        PFN_vkCmdCopyBuffer                             cmd_copy_buffer;
+        PFN_vkQueueSubmit                               queue_submit;
+        PFN_vkWaitSemaphores                            wait_semaphores;
     };
 
     /* A buffer bound to memory of its own, with its GPU address and, in
@@ -100,8 +155,17 @@ private:
     const char* check_physical_device();
     const char* create_device();
     const char* create_pipeline();
+    const char* create_command_pool();
     const char* upload_corner_distances();
     const char* probe_gpu_file(int gpu_fd, const gpu_info& info);
+
+    bool list_layers(compose_buffers& buffers, const layer_scene& scene, const std::vector<damage_list::rect>& rects);
+    bool record_compose(
+        compose_buffers& buffers,
+        const compose_target& target,
+        const backdrop_picture& backdrop
+    );
+    compose_result submit_and_wait(compose_buffers& buffers);
 
     uint32_t find_memory_type(uint32_t type_bits, const memory_kind& kind) const;
 
@@ -128,13 +192,48 @@ private:
     VkSemaphore      m_timeline = VK_NULL_HANDLE;
     VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_pipeline = VK_NULL_HANDLE;
+    VkCommandPool    m_command_pool = VK_NULL_HANDLE;
     int              m_probe_context = -1;
+
+    /* The timeline value the last submitted compose raises it to when
+     * it ends */
+    uint64_t         m_compose_point = 0;
 
     /* decor's corner distance table in GPU memory, its entry count, and the
      * distance past its last entry */
     device_buffer m_corner_distances;
     uint32_t      m_corner_count = 0;
     int32_t       m_corner_far_distance = 0;
+};
+
+/* One output's command buffer and the layer buffer its composes' dispatches
+ * read, which grows with the z-order. It must drop before its compositor,
+ * and only once no compose recorded in it can run. */
+class gpu_compositor::compose_buffers {
+public:
+    ~compose_buffers();
+
+    compose_buffers(const compose_buffers&) = delete;
+    compose_buffers& operator=(const compose_buffers&) = delete;
+
+private:
+    friend class gpu_compositor;
+
+    explicit compose_buffers(gpu_compositor& owner) : m_owner(owner) {}
+
+    gpu_compositor&                m_owner;
+    VkCommandBuffer                m_commands = VK_NULL_HANDLE;
+    device_buffer                  m_layer_buffer;
+    VkDeviceSize                   m_layer_buffer_bytes = 0;
+
+    /* A compose's layer lists one after another, and the rectangle and
+     * first layer of each */
+    std::vector<layer>             m_layers;
+    std::vector<damage_list::rect> m_list_rects;
+    std::vector<uint32_t>          m_list_starts;
+
+    std::vector<picture_copy>      m_copies;
+    std::vector<VkBufferCopy>      m_copy_regions;
 };
 
 #endif
