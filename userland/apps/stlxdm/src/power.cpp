@@ -75,6 +75,20 @@ static uint32_t pw_with_alpha(uint32_t color, float scale) {
     return (color & 0x00FFFFFFu) | (static_cast<uint32_t>(scaled) << 24);
 }
 
+/* A view over `clip`, which must lie inside `back`, drawing as `back` draws */
+static stlxgfx_surface_t* pw_view(stlxgfx_surface_t* back, const damage_list::rect& clip) {
+    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(
+        back->pixels + static_cast<uint32_t>(clip.y) * back->pitch
+            + static_cast<uint32_t>(clip.x) * 4,
+        static_cast<uint32_t>(clip.w), static_cast<uint32_t>(clip.h),
+        back->pitch, 32, 16, 8, 0);
+    if (view) {
+        view->flags = back->flags;
+    }
+
+    return view;
+}
+
 /* Copies the source while fading it toward black in the same pass,
  * so a collapse frame walks every pixel exactly once */
 static void pw_blit_faded(stlxgfx_surface_t* dst, stlxgfx_surface_t* src,
@@ -541,17 +555,23 @@ bool dm_power::star_hit(int32_t x, int32_t y) const {
     return dx * dx + dy * dy <= r * r;
 }
 
+damage_list::rect dm_power::star_bounds() const {
+    if (m_state != state::closed) {
+        return {};
+    }
+
+    int32_t r = PW_STAR_GLOW + 4;
+
+    return { m_star_cx - r, m_star_cy - r, 2 * r, 2 * r };
+}
+
 void dm_power::draw_star(stlxgfx_surface_t* back,
                          const damage_list::rect& clip) {
     if (m_state != state::closed || clip.w <= 0 || clip.h <= 0) {
         return;
     }
 
-    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(
-        back->pixels + static_cast<uint32_t>(clip.y) * back->pitch
-            + static_cast<uint32_t>(clip.x) * 4,
-        static_cast<uint32_t>(clip.w), static_cast<uint32_t>(clip.h),
-        back->pitch, 32, 16, 8, 0);
+    stlxgfx_surface_t* view = pw_view(back, clip);
     if (!view) {
         return;
     }
@@ -663,11 +683,7 @@ void dm_power::draw_dim(stlxgfx_surface_t* back, const damage_list::rect& clip) 
         return;
     }
 
-    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(
-        back->pixels + static_cast<uint32_t>(clip.y) * back->pitch
-            + static_cast<uint32_t>(clip.x) * 4,
-        static_cast<uint32_t>(clip.w), static_cast<uint32_t>(clip.h),
-        back->pitch, 32, 16, 8, 0);
+    stlxgfx_surface_t* view = pw_view(back, clip);
     if (!view) {
         return;
     }
@@ -676,17 +692,51 @@ void dm_power::draw_dim(stlxgfx_surface_t* back, const damage_list::rect& clip) 
     stlxgfx_destroy_surface(view);
 }
 
+uint32_t dm_power::dim_color() const {
+    return PW_DIM_COLOR;
+}
+
+damage_list::rect dm_power::overlay_bounds() const {
+    if (m_state == state::closed) {
+        return {};
+    }
+
+    /* The blackout's fill may start at any draw of a commit */
+    if (m_state == state::committing) {
+        return { 0, 0, static_cast<int32_t>(m_width), static_cast<int32_t>(m_height) };
+    }
+
+    /* The hint lies within the orbs' span, so it only extends their boxes down */
+    damage_list::rect left = orb_box(PW_RESTART);
+    damage_list::rect right = orb_box(PW_SHUTDOWN);
+    int32_t hint_bottom = static_cast<int32_t>(hint_top()) + m_hint_fm.ascent + m_hint_fm.descent + 2;
+
+    return { left.x, left.y, right.x + right.w - left.x, hint_bottom - left.y };
+}
+
 void dm_power::draw_overlay(stlxgfx_surface_t* back,
                             const damage_list::rect& clip) {
+    draw_overlay_layers(back, clip, true);
+}
+
+void dm_power::draw_over_dim(stlxgfx_surface_t* top, const damage_list::rect& clip) {
+    draw_overlay_layers(top, clip, false);
+}
+
+float dm_power::hint_top() const {
+    return static_cast<float>(m_height) * 0.46f + static_cast<float>(PW_ORB_RADIUS) + 88.0f;
+}
+
+void dm_power::draw_overlay_layers(
+    stlxgfx_surface_t* back,
+    const damage_list::rect& clip,
+    bool draws_dim
+) {
     if (m_state == state::closed || clip.w <= 0 || clip.h <= 0) {
         return;
     }
 
-    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(
-        back->pixels + static_cast<uint32_t>(clip.y) * back->pitch
-            + static_cast<uint32_t>(clip.x) * 4,
-        static_cast<uint32_t>(clip.w), static_cast<uint32_t>(clip.h),
-        back->pitch, 32, 16, 8, 0);
+    stlxgfx_surface_t* view = pw_view(back, clip);
     if (!view) {
         return;
     }
@@ -706,15 +756,15 @@ void dm_power::draw_overlay(stlxgfx_surface_t* back,
     /* The dim lands at full strength immediately. Fading it would
      * blend the whole screen per frame, and the orbs carry the
      * motion. */
-    pw_dim(view, PW_DIM_COLOR);
+    if (draws_dim) {
+        pw_dim(view, PW_DIM_COLOR);
+    }
 
     const char* hint = "Hold to confirm     Esc to cancel";
-    float hy = static_cast<float>(m_height) * 0.46f
-             + static_cast<float>(PW_ORB_RADIUS) + 88.0f;
     pw_text_centered(view, m_hint_font, m_hint_fm,
                      static_cast<float>(m_width) * 0.5f
                          - static_cast<float>(clip.x),
-                     hy - static_cast<float>(clip.y), hint,
+                     hint_top() - static_cast<float>(clip.y), hint,
                      PW_HINT_COLOR);
 
     /* A full screen frame with the dim and hint in place is exactly
@@ -722,7 +772,7 @@ void dm_power::draw_overlay(stlxgfx_surface_t* back,
     bool full = clip.x == 0 && clip.y == 0 &&
                 clip.w == static_cast<int32_t>(m_width) &&
                 clip.h == static_cast<int32_t>(m_height);
-    if (full && !m_backdrop_valid && m_backdrop) {
+    if (draws_dim && full && !m_backdrop_valid && m_backdrop) {
         stlxgfx_blit(m_backdrop, 0, 0, back, 0, 0, m_width, m_height);
         m_backdrop_valid = true;
     }

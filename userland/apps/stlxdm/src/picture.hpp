@@ -110,6 +110,51 @@ private:
     std::vector<row_span>    m_changed;   /* sorted, no two touching */
 };
 
+/* One of an output's two top pictures: what stlxdm draws above the windows,
+ * in straight alpha over transparent pixels, which the compose reads only
+ * over the bounds of the draws made into it.
+ *
+ * A compose calls `begin`, records the bounds of each draw it will make,
+ * and in each damaged rectangle calls `clear` once before drawing there. A
+ * draw must stay inside its bounds, and the damage must cover a draw that
+ * moved or vanished, as on the CPU compositor, so that only this compose's
+ * draws hold pixels. Like its picture, it must drop before its maker. */
+class top_picture {
+public:
+    /* Makes a transparent picture at `width` by `height`, or returns null
+     * when memory runs out */
+    static std::unique_ptr<top_picture> make(picture_maker& maker, uint32_t width, uint32_t height);
+
+    ~top_picture();
+
+    top_picture(const top_picture&) = delete;
+    top_picture& operator=(const top_picture&) = delete;
+
+    /* A straight alpha surface over the picture, which the draws go into */
+    stlxgfx_surface_t* surface() const { return m_surface; }
+
+    /* Starts a compose, whose draws the next `add_bounds` calls record */
+    void begin();
+
+    /* Records that a draw of this compose lies inside `bounds` */
+    void add_bounds(const damage_list::rect& bounds);
+
+    /* Clears the last compose's and this compose's draws inside `r`
+     * to transparent */
+    void clear(const damage_list::rect& r);
+
+    /* The picture over the bounding box of this compose's draws */
+    layer_piece layer() const;
+
+private:
+    top_picture() = default;
+
+    std::unique_ptr<picture>       m_memory;
+    stlxgfx_surface_t*             m_surface = nullptr;
+    std::vector<damage_list::rect> m_drawn;
+    std::vector<damage_list::rect> m_last_drawn;
+};
+
 /* A decorated window's frame as four strips of one picture: the top with
  * the title bar, the two sides, and the bottom with the content's last
  * rows, whose rounded corners the content's copy leaves showing. Each strip

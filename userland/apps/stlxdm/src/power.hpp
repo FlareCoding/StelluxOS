@@ -75,13 +75,29 @@ public:
     void draw_overlay(stlxgfx_surface_t* back,
                       const damage_list::rect& clip);
 
+    /* What `draw_overlay` draws above its dim, without the capture, clipped
+     * to `clip` inside `top`, a picture blended over a dim
+     * of `dim_color()` */
+    void draw_over_dim(stlxgfx_surface_t* top, const damage_list::rect& clip);
+
+    /* The bounds `draw_over_dim` draws inside, empty while closed */
+    damage_list::rect overlay_bounds() const;
+
     /* The dim alone, for an output other than the one the overlay plays
      * on, clipped to `clip`, which must lie inside `back`. */
     void draw_dim(stlxgfx_surface_t* back, const damage_list::rect& clip);
 
+    /* The color, with its alpha, that the dim blends over the screen while
+     * the overlay is active */
+    uint32_t dim_color() const;
+
     /* The dock's power star, drawn only while the overlay is closed */
     void draw_star(stlxgfx_surface_t* back,
                    const damage_list::rect& clip);
+
+    /* The bounds `draw_star` draws inside, empty while the overlay
+     * is active */
+    damage_list::rect star_bounds() const;
 
     /* One collapse frame: the backdrop fading to black under the
      * contracting light. Covers the whole target. */
@@ -99,6 +115,8 @@ private:
     void orb_center(int32_t choice, float* cx, float* cy) const;
     int32_t choice_at(int32_t x, int32_t y) const;
     float phase(uint32_t duration_ms) const;
+    float hint_top() const;
+    void draw_overlay_layers(stlxgfx_surface_t* back, const damage_list::rect& clip, bool draws_dim);
     void draw_orbs(stlxgfx_surface_t* s, int32_t ox, int32_t oy);
     void draw_collapse_light(stlxgfx_surface_t* s, int32_t ox,
                              int32_t oy);

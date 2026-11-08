@@ -333,6 +333,8 @@ void cursor::draw(stlxgfx_surface_t* back, uint32_t shape,
         return;
     }
 
+    view->flags = back->flags;
+
     int32_t ox = bx - clip.x;
     int32_t oy = by - clip.y;
     if (s->shadow) {

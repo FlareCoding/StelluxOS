@@ -540,16 +540,15 @@ void dm_panels::flush(damage_list& damage) {
     }
 }
 
-void dm_panels::compose_top(stlxgfx_surface_t* back,
-                            const damage_list::rect& r) {
+bool dm_panels::find_tooltip(damage_list::rect& tip, const char*& label) const {
     if (m_hover_pin < 0 ||
         m_hover_pin >= static_cast<int32_t>(m_conf->pin_count)) {
-        return;
+        return false;
     }
 
     const stlxconf_pin_t& pin = m_conf->pins[m_hover_pin];
     if (!pin.label[0]) {
-        return;
+        return false;
     }
 
     int32_t tw = stlxgfx_text_width(m_tip_font, pin.label,
@@ -572,8 +571,32 @@ void dm_panels::compose_top(stlxgfx_surface_t* back,
         tip_y = 2;
     }
 
-    if (tip_x >= r.x + r.w || tip_x + tip_w <= r.x ||
-        tip_y >= r.y + r.h || tip_y + tip_h <= r.y) {
+    tip = { tip_x, tip_y, tip_w, tip_h };
+    label = pin.label;
+
+    return true;
+}
+
+damage_list::rect dm_panels::top_bounds() const {
+    damage_list::rect tip;
+    const char* label;
+    if (!find_tooltip(tip, label)) {
+        return {};
+    }
+
+    return tip;
+}
+
+void dm_panels::compose_top(stlxgfx_surface_t* back,
+                            const damage_list::rect& r) {
+    damage_list::rect tip;
+    const char* label;
+    if (!find_tooltip(tip, label)) {
+        return;
+    }
+
+    if (tip.x >= r.x + r.w || tip.x + tip.w <= r.x ||
+        tip.y >= r.y + r.h || tip.y + tip.h <= r.y) {
         return;
     }
 
@@ -587,13 +610,15 @@ void dm_panels::compose_top(stlxgfx_surface_t* back,
         return;
     }
 
-    stlxgfx_fill_rounded_rect(view, tip_x - r.x, tip_y - r.y,
-                              static_cast<uint32_t>(tip_w),
-                              static_cast<uint32_t>(tip_h),
+    view->flags = back->flags;
+
+    stlxgfx_fill_rounded_rect(view, tip.x - r.x, tip.y - r.y,
+                              static_cast<uint32_t>(tip.w),
+                              static_cast<uint32_t>(tip.h),
                               static_cast<uint32_t>(TIP_RADIUS), TIP_BG);
-    stlxgfx_draw_text(view, m_tip_font, tip_x - r.x + TIP_PAD_H,
-                      tip_y - r.y + TIP_PAD_V + m_tip_fm.ascent,
-                      pin.label, strlen(pin.label), TIP_FG);
+    stlxgfx_draw_text(view, m_tip_font, tip.x - r.x + TIP_PAD_H,
+                      tip.y - r.y + TIP_PAD_V + m_tip_fm.ascent,
+                      label, strlen(label), TIP_FG);
     stlxgfx_destroy_surface(view);
 }
 
