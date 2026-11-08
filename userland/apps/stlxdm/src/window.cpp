@@ -1030,6 +1030,16 @@ static bool subtract_hole(std::vector<damage_list::rect>& pieces,
     return true;
 }
 
+decor::chrome_state server::chrome_of(const dm_window& w) const {
+    decor::chrome_state st;
+    st.focused = &w == m_focus;
+    st.dragging = &w == m_drag;
+    st.close_hover = &w == m_close_hover;
+    st.close_pressed = &w == m_close_press;
+
+    return st;
+}
+
 /* Compose one rect of `out` in desktop coordinates, bottom-up, each layer
  * clipped to the damage minus the opaque content of every window above it */
 void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
@@ -1092,11 +1102,7 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
             continue;
         }
 
-        decor::chrome_state st;
-        st.focused = w == m_focus;
-        st.dragging = w == m_drag;
-        st.close_hover = w == m_close_hover;
-        st.close_pressed = w == m_close_press;
+        decor::chrome_state st = chrome_of(*w);
 
         /* The frame first, then the content with the frame's rounding
          * applied at its bottom corners */
@@ -1123,6 +1129,115 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
 
     if (out.cursor_in_frames) {
         m_cursor.draw(back, m_cursor_shape, m_cursor_x - ox, m_cursor_y - oy, local);
+    }
+}
+
+static bool touches_any(const damage_list::rect& bounds, const std::vector<damage_list::rect>& rects) {
+    for (const damage_list::rect& r : rects) {
+        damage_list::rect common = damage_list::intersect(bounds, r);
+        if (common.w > 0 && common.h > 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* Draws the frames and top pictures one GPU compose of `out` reads in `rects`, in its own pixels, and fills `scene`
+ * with what `out` shows. `out` must hold its pictures. False when a window's frame picture ran out of memory */
+bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, layer_scene& scene) {
+    int32_t ox = out.place.x;
+    int32_t oy = out.place.y;
+
+    scene.width = static_cast<int32_t>(out.pres->width());
+    scene.height = static_cast<int32_t>(out.pres->height());
+    scene.backdrop = out.pictures.backdrop->twin_layer();
+    scene.windows.clear();
+    scene.content_color = decor::CONTENT_BG;
+
+    for (dm_window* w : m_zorder) {
+        if (w->current < 0) {
+            continue;
+        }
+
+        damage_list::rect bounds = decor::bounds(*w);
+        if (!touches_any({ bounds.x - ox, bounds.y - oy, bounds.w, bounds.h }, rects)) {
+            continue;
+        }
+
+        const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
+        layer_window shown;
+        shown.content = { w->x - ox, w->y - oy, static_cast<int32_t>(b.width), static_cast<int32_t>(b.height) };
+        if (decor::decorated(*w)) {
+            if (!w->frame.update(*m_gpu_compositor, *w, chrome_of(*w))) {
+                return false;
+            }
+
+            shown.radius = decor::CONTENT_R;
+            w->frame.place(*w, ox, oy, shown);
+        }
+
+        shown.has_picture = b.gpu_address != 0;
+        shown.picture = { b.gpu_address, b.pitch, shown.content.x, shown.content.y };
+        scene.windows.push_back(shown);
+    }
+
+    draw_top_pictures(out, rects);
+
+    scene.lower_top = out.pictures.lower_top->layer();
+    scene.is_dimmed = m_power->active();
+    scene.dim_color = m_power->dim_color();
+    scene.upper_top = out.pictures.upper_top->layer();
+
+    return true;
+}
+
+/* compose_rect's draws above the windows, in its order, into the lower top
+ * picture before the power overlay's dim and into the upper one after it */
+void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects) {
+    top_picture& lower = *out.pictures.lower_top;
+    top_picture& upper = *out.pictures.upper_top;
+    int32_t ox = out.place.x;
+    int32_t oy = out.place.y;
+    bool is_main = &out == &m_outputs[m_layout.main_output()];
+
+    lower.begin();
+    upper.begin();
+    if (m_resize) {
+        lower.add_bounds({ m_outline.x - ox, m_outline.y - oy, m_outline.w, m_outline.h });
+    }
+
+    if (is_main) {
+        lower.add_bounds(m_panels->top_bounds());
+        lower.add_bounds(m_power->star_bounds());
+        upper.add_bounds(m_power->overlay_bounds());
+    }
+
+    if (out.cursor_in_frames) {
+        damage_list::rect pointer = cursor_bounds();
+        upper.add_bounds({ pointer.x - ox, pointer.y - oy, pointer.w, pointer.h });
+    }
+
+    decor::canvas lower_canvas = { lower.surface(), ox, oy };
+    for (const damage_list::rect& r : rects) {
+        lower.clear(r);
+        if (m_resize) {
+            decor::draw_outline(lower_canvas, m_outline, { r.x + ox, r.y + oy, r.w, r.h });
+        }
+
+        if (is_main) {
+            m_panels->compose_top(lower.surface(), r);
+            m_power->draw_star(lower.surface(), r);
+        }
+
+        upper.clear(r);
+        if (is_main) {
+            m_power->draw_over_dim(upper.surface(), r);
+        }
+
+        if (out.cursor_in_frames) {
+            m_cursor.draw(upper.surface(), m_cursor_shape, m_cursor_x - ox, m_cursor_y - oy, r);
+        }
     }
 }
 
