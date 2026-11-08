@@ -3,6 +3,7 @@
 #include "drivers/graphics/nvidia/channel.h"
 #include "drivers/graphics/nvidia/nvidia.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "dynpriv/dynpriv.h"
 #include "hw/barrier.h"
 #include "hw/mmio.h"
@@ -31,6 +32,9 @@ constexpr uint32_t CHANNEL_RAM_ENG_FAULTED   = 1u << 5;
 
 // What the word reads on a card that stopped responding, both fault bits set though nothing faulted
 constexpr uint32_t CHANNEL_RAM_CARD_GONE = 0xFFFFFFFF;
+
+// The type name of a fault record that names no fault. Its type reads 0, as a page directory fault's does
+constexpr char NO_MMU_FAULT[] = "NONE";
 
 // NVIDIA's NVB0B5_ALLOCATION_PARAMETERS_VERSION_1, the version of the copy class's parameters naming an engine type
 constexpr uint32_t COPY_OBJECT_VERSION = 1;
@@ -229,6 +233,30 @@ bool channel::has_faulted() const {
     uint32_t entry = m_bar0.read(m_channel_ram_entry);
     bool is_card_gone = entry == CHANNEL_RAM_CARD_GONE;
     return !is_card_gone && (entry & (CHANNEL_RAM_PBDMA_FAULTED | CHANNEL_RAM_ENG_FAULTED)) != 0;
+}
+
+bool channel::read_mmu_fault(uint64_t& address_out) {
+    rm::mmu_fault_info_params record = {};
+    int32_t rc = m_firmware.control(m_channel, rm::CONTROL_GET_MMU_FAULT_INFO, &record, sizeof(record));
+    if (rc != OK) {
+        log::error("nvidia: asking the GSP's firmware for channel %u's MMU fault record failed: %d", m_id, rc);
+        return false;
+    }
+
+    record.type_name[rm::MMU_FAULT_NAME_BYTES - 1] = '\0';
+    if (string::strcmp(record.type_name, NO_MMU_FAULT) == 0) {
+        return false;
+    }
+
+    address_out = static_cast<uint64_t>(record.address_high) << 32 | record.address_low;
+    log::info(
+        "nvidia: the GSP's firmware records an MMU fault of type %s at GPU address 0x%lX on channel %u",
+        record.type_name,
+        address_out,
+        m_id
+    );
+
+    return true;
 }
 
 bool channel::keeps_memory() const {

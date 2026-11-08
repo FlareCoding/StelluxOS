@@ -154,6 +154,17 @@ public:
     // channel exists. A word of all ones, as a card that stopped responding reads, marks no fault
     bool has_faulted() const;
 
+    /**
+     * @brief Ask the firmware whether the channel's MMU fault record names a
+     * fault, as it does for the graphics engine's, which channel RAM's fault
+     * bits miss. Later reads name the fault again. Valid while the channel
+     * exists. A named fault is logged.
+     * @param address_out Set to the faulting GPU address when one is named.
+     * @return Whether the record names a fault. A failed control names none
+     * and is logged.
+     */
+    bool read_mmu_fault(uint64_t& address_out);
+
     // Whether a failed `create` or `allocate`, the last `destroy` or `destroy_keeping_memory` left the memory
     // allocated for good
     bool keeps_memory() const;

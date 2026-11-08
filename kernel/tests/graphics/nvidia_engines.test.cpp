@@ -107,6 +107,16 @@ static constexpr uint32_t AMPERE_DMA_COPY_B = 0xC7B5;
 static constexpr uint32_t GPFIFO_BIND     = 0xA06F0104;
 static constexpr uint32_t GPFIFO_SCHEDULE = 0xA06F0103;
 
+// NVIDIA's control giving the firmware's MMU fault record of a channel, the bytes of its reply, and the offsets there
+// of the faulting address's high and low words and of the fault type's name, its bytes and the padding after them
+static constexpr uint32_t GET_MMU_FAULT_INFO      = 0xA06F0107;
+static constexpr size_t   MMU_FAULT_INFO_BYTES    = 104;
+static constexpr size_t   MMU_FAULT_ADDRESS_HIGH  = 0;
+static constexpr size_t   MMU_FAULT_ADDRESS_LOW   = 4;
+static constexpr size_t   MMU_FAULT_TYPE_NAME     = 12;
+static constexpr size_t   MMU_FAULT_NAME_BYTES    = 32;
+static constexpr size_t   MMU_FAULT_PADDING_BYTES = 4;
+
 // NVIDIA's control handing the firmware a split address space's directories above the range the firmware maps alone
 static constexpr uint32_t COPY_SERVER_RESERVED_PDES = 0x90F10106;
 
@@ -288,8 +298,8 @@ using drivers::nvidia::engines_test_access;
 // The allocations whose classes the firmware's double keeps, from its first
 static constexpr uint32_t KEPT_CLASSES = 64;
 
-// Acts as the GSP's firmware: answers the engine table, buffer sizes and graphics facts, each control with `OK` but
-// `refused_command`, a promotion with `promote_result`, and the interrupt table unless `kernel_table_result` fails
+// Acts as the GSP's firmware: answers the engine table, buffer sizes, graphics facts and MMU fault records, and each
+// control, promotion and interrupt table with `OK` unless the fields below say otherwise
 class engines_firmware : public firmware {
 public:
     const engine_info* engines = nullptr;
@@ -310,7 +320,8 @@ public:
     uint32_t           refused_release = 0;    // the release, counted from 1, the firmware refuses
     uint32_t           missed_release = 0;     // the release, counted from 1, whose reply misses its deadline
     uint32_t           refused_command = 0;    // a control the firmware refuses
-    failed_mark*       gpu_failed = nullptr;   // marked by that release, as a missed reply marks the GPU failed
+    uint32_t           missed_command = 0;     // a control whose reply misses its deadline
+    failed_mark*       gpu_failed = nullptr;   // marked by those missed replies, as a missed reply marks the GPU failed
     uint32_t           table_reads = 0;
     uint32_t           other_controls = 0;
     uint32_t           allocations = 0;
@@ -324,6 +335,12 @@ public:
     rm::handle         last_channel_handle = 0;
     uint32_t           last_copy_engine = 0; // the engine type of the last copy object
     rm::handle         next_handle = FIRST_HANDLE;
+
+    rm::handle  faulted_channel = 0;           // the channel whose MMU fault record names a fault
+    uint64_t    faulted_address = 0;           // the faulting address that record names
+    const char* faulted_name = "FAULT_PDE";    // that record's type name, as the RTX 3080's firmware gives one
+    bool        reports_during_record = false; // reports an MMU fault once, while answering that record
+    uint32_t    fault_records = 0;             // the MMU fault records asked for
 
     uint32_t classes[KEPT_CLASSES] = {}; // each allocation's class, in order
 
@@ -371,8 +388,26 @@ public:
             scheduled_after = allocations;
         }
 
+        if (command == GET_MMU_FAULT_INFO) {
+            fault_records++;
+        }
+
+        if (command == missed_command) {
+            gpu_failed->set();
+            return ERR_TIMEOUT;
+        }
+
         if (command == refused_command) {
             return ERR_FIRMWARE;
+        }
+
+        if (command == GET_MMU_FAULT_INFO && size == MMU_FAULT_INFO_BYTES) {
+            write_mmu_fault_record(object, static_cast<uint8_t*>(params));
+        }
+
+        if (command == GET_MMU_FAULT_INFO && object == faulted_channel && reports_during_record) {
+            reports_during_record = false;
+            error_sink->on_channel_error(channel_error::fault);
         }
 
         if (command == GET_FAULT_METHOD_BUFFER_SIZE && size == sizeof(uint32_t)) {
@@ -460,6 +495,24 @@ private:
         string::memcpy(bytes + 4, &engine_count, sizeof(engine_count));
         bytes[8] = 0;
     }
+
+    // Writes a channel's MMU fault record at NVIDIA's offsets: `faulted_name` at `faulted_address` for
+    // `faulted_channel` and NONE for any other channel, a name of 32 bytes or more unterminated, padding set after it
+    void write_mmu_fault_record(rm::handle object, uint8_t* bytes) const {
+        bool is_faulted = object == faulted_channel;
+        uint64_t address = is_faulted ? faulted_address : 0;
+        uint32_t high = static_cast<uint32_t>(address >> 32);
+        uint32_t low = static_cast<uint32_t>(address);
+
+        const char* name = is_faulted ? faulted_name : "NONE";
+        size_t name_bytes = string::strlen(name) + 1;
+        name_bytes = name_bytes < MMU_FAULT_NAME_BYTES ? name_bytes : MMU_FAULT_NAME_BYTES;
+
+        string::memcpy(bytes + MMU_FAULT_ADDRESS_HIGH, &high, sizeof(high));
+        string::memcpy(bytes + MMU_FAULT_ADDRESS_LOW, &low, sizeof(low));
+        string::memcpy(bytes + MMU_FAULT_TYPE_NAME, name, name_bytes);
+        string::memset(bytes + MMU_FAULT_TYPE_NAME + MMU_FAULT_NAME_BYTES, 0xFF, MMU_FAULT_PADDING_BYTES);
+    }
 };
 
 // The check's memory as BAR1 shows it to the CPU, which the copy engine's double fills
@@ -508,6 +561,19 @@ static bool engines_log_contains(const char* text) {
     }
 
     return false;
+}
+
+// How many times the kept text holds `text`
+static uint32_t engines_log_count(const char* text) {
+    size_t text_bytes = string::strlen(text);
+    uint32_t count = 0;
+    for (uint32_t start = 0; start + text_bytes <= s_engines_log_bytes; start++) {
+        if (string::memcmp(s_engines_log + start, text, text_bytes) == 0) {
+            count++;
+        }
+    }
+
+    return count;
 }
 
 // The allocations whose offsets and alignments the video memory's double keeps, from its first
@@ -3190,6 +3256,208 @@ TEST(nvidia_engines, faults_reported_before_a_serve_are_attributed_together) {
     tear_down_three_queues(fixture, queues);
 }
 
+// A faulting address that sets bits in both of the record's words, the high one past its 16th bit
+static constexpr uint64_t RECORDED_FAULT_VA = 0x1'2345'6789'A000;
+
+// Writes channel id `id`, which must be below 10, over each `#` in `line`
+static void write_channel_id(char* line, uint32_t id) {
+    for (char* c = line; *c != '\0'; c++) {
+        if (*c == '#') {
+            *c = static_cast<char>('0' + id);
+        }
+    }
+}
+
+// An MMU fault's report asks for each listed queue's fault record and loses the context of the queue whose record
+// names a fault, at the record's address, though channel RAM marks none, as after the graphics engine's fault
+TEST(nvidia_engines, a_fault_report_loses_a_queues_context_at_the_address_its_record_names) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    lone_core& lone = *new (s_lone_core_bytes) lone_core(fixture.core_device);
+    three_queues queues = {};
+    ASSERT_TRUE(sets_up_three_queues(fixture, core, lone, queues));
+
+    uint32_t middle_id = backend_of(queues.middle).user_channel.id();
+    ASSERT_TRUE(middle_id < 10);
+    fixture.fw.faulted_channel = backend_of(queues.middle).user_channel.handle();
+    fixture.fw.faulted_address = RECORDED_FAULT_VA;
+
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(fixture.fw.fault_records, 3u);
+    EXPECT_EQ(lone.ctx.lost_reason, GPU_LOST_FAULT);
+    EXPECT_EQ(lone.ctx.fault_va, RECORDED_FAULT_VA);
+    EXPECT_EQ(core.ctx.lost_reason, 0u);
+
+    char record_line[] =
+        "the GSP's firmware records an MMU fault of type FAULT_PDE at GPU address 0x123456789A000 on channel #";
+    write_channel_id(record_line, middle_id);
+    const char* loss_line = "reported an MMU fault, and the GPU core lost the context of each faulted queue, 1 in all";
+    EXPECT_TRUE(engines_log_contains(record_line));
+    EXPECT_TRUE(engines_log_contains(loss_line));
+    EXPECT_FALSE(engines_log_contains("of type NONE"));
+
+    tear_down_three_queues(fixture, queues);
+}
+
+// A queue that both its fault record and its channel RAM mark faulted loses its context once, at the record's address
+TEST(nvidia_engines, a_queue_both_sources_mark_faulted_loses_its_context_once_at_the_records_address) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    lone_core& lone = *new (s_lone_core_bytes) lone_core(fixture.core_device);
+    three_queues queues = {};
+    ASSERT_TRUE(sets_up_three_queues(fixture, core, lone, queues));
+
+    fixture.fw.faulted_channel = backend_of(queues.middle).user_channel.handle();
+    fixture.fw.faulted_address = RECORDED_FAULT_VA;
+    channel_ram_word(queues.middle) = CHANNEL_RAM_ENG_FAULTED;
+
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    const char* loss_line = "reported an MMU fault, and the GPU core lost the context of each faulted queue, 1 in all";
+    EXPECT_EQ(lone.ctx.lost_reason, GPU_LOST_FAULT);
+    EXPECT_EQ(lone.ctx.fault_va, RECORDED_FAULT_VA);
+    EXPECT_EQ(core.ctx.lost_reason, 0u);
+    EXPECT_TRUE(engines_log_contains(loss_line));
+
+    tear_down_three_queues(fixture, queues);
+}
+
+// A fault report the firmware sends during a record's read queues the attribution again, which skips the queue the
+// first lost, so the record and the loss are each logged once
+TEST(nvidia_engines, a_fault_report_during_a_records_read_logs_the_loss_once) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    lone_core& lone = *new (s_lone_core_bytes) lone_core(fixture.core_device);
+    three_queues queues = {};
+    ASSERT_TRUE(sets_up_three_queues(fixture, core, lone, queues));
+
+    fixture.fw.faulted_channel = backend_of(queues.middle).user_channel.handle();
+    fixture.fw.reports_during_record = true;
+
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(fixture.fw.fault_records, 5u);
+    EXPECT_EQ(lone.ctx.lost_reason, GPU_LOST_FAULT);
+    EXPECT_EQ(engines_log_count("records an MMU fault of type FAULT_PDE"), 1u);
+    EXPECT_EQ(engines_log_count("the GPU core lost the context of each faulted queue, 1 in all"), 1u);
+    EXPECT_FALSE(engines_log_contains("but no queue's channel reads faulted"));
+
+    tear_down_three_queues(fixture, queues);
+}
+
+// A record's type name that fills its 32 bytes unterminated is read to its 31st byte, so one that only begins with
+// NONE names a fault
+TEST(nvidia_engines, a_record_name_filling_its_bytes_is_read_to_its_31st_byte) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    lone_core& lone = *new (s_lone_core_bytes) lone_core(fixture.core_device);
+    three_queues queues = {};
+    ASSERT_TRUE(sets_up_three_queues(fixture, core, lone, queues));
+
+    fixture.fw.faulted_channel = backend_of(queues.middle).user_channel.handle();
+    fixture.fw.faulted_name = "NONEXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(lone.ctx.lost_reason, GPU_LOST_FAULT);
+    EXPECT_TRUE(engines_log_contains("of type NONEXXXXXXXXXXXXXXXXXXXXXXXXXXX at GPU address 0x0 on channel"));
+
+    tear_down_three_queues(fixture, queues);
+}
+
+// An engine error's report asks for no fault record, so a queue only its record names faulted keeps its context
+TEST(nvidia_engines, an_engine_error_report_asks_for_no_fault_record) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    lone_core& lone = *new (s_lone_core_bytes) lone_core(fixture.core_device);
+    three_queues queues = {};
+    ASSERT_TRUE(sets_up_three_queues(fixture, core, lone, queues));
+
+    fixture.fw.faulted_channel = backend_of(queues.middle).user_channel.handle();
+
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::engine);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(fixture.fw.fault_records, 0u);
+    EXPECT_EQ(lone.ctx.lost_reason, 0u);
+    EXPECT_TRUE(engines_log_contains("reported an engine error, but no queue's channel reads faulted"));
+
+    tear_down_three_queues(fixture, queues);
+}
+
+// A fault record the firmware refuses names no fault and is logged, and channel RAM still attributes the fault, at
+// address 0
+TEST(nvidia_engines, a_refused_fault_record_leaves_the_fault_to_channel_ram) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    lone_core& lone = *new (s_lone_core_bytes) lone_core(fixture.core_device);
+    three_queues queues = {};
+    ASSERT_TRUE(sets_up_three_queues(fixture, core, lone, queues));
+
+    uint32_t middle_id = backend_of(queues.middle).user_channel.id();
+    ASSERT_TRUE(middle_id < 10);
+    fixture.fw.refused_command = GET_MMU_FAULT_INFO;
+    fixture.fw.faulted_channel = backend_of(queues.middle).user_channel.handle();
+    fixture.fw.faulted_address = RECORDED_FAULT_VA;
+    channel_ram_word(queues.middle) = CHANNEL_RAM_ENG_FAULTED;
+
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(lone.ctx.lost_reason, GPU_LOST_FAULT);
+    EXPECT_EQ(lone.ctx.fault_va, 0u);
+    EXPECT_EQ(core.ctx.lost_reason, 0u);
+
+    char refused_line[] = "nvidia: asking the GSP's firmware for channel #'s MMU fault record failed: -12";
+    write_channel_id(refused_line, middle_id);
+    EXPECT_TRUE(engines_log_contains(refused_line));
+
+    tear_down_three_queues(fixture, queues);
+}
+
+// A fault record whose reply misses its deadline fails the GPU, so the attribution stops without losing the queue's
+// context, though channel RAM marks its channel faulted, and has the failure reported, which ends the queue
+TEST(nvidia_engines, a_fault_record_missing_its_deadline_has_the_failed_gpu_reported) {
+    engines_fixture fixture;
+    progress_core& core = build_progress_core(fixture);
+    ASSERT_TRUE(sets_up_a_tracked_queue(fixture, core));
+
+    fixture.fw.gpu_failed = &fixture.failed;
+    fixture.fw.missed_command = GET_MMU_FAULT_INFO;
+    channel_ram_word(fixture.queue) = CHANNEL_RAM_ENG_FAULTED;
+
+    start_keeping_log();
+    fixture.gpu_engines.on_channel_error(channel_error::fault);
+    engines_operations().serve();
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(fixture.fw.fault_records, 1u);
+    EXPECT_EQ(core.ctx.lost_reason, 0u);
+    EXPECT_TRUE(core.first.stopped);
+    EXPECT_TRUE(has_device_failed(fixture));
+    EXPECT_FALSE(engines_log_contains("nvidia: the firmware reported an MMU fault"));
+
+    fixture.gpu_engines.destroy_queue(fixture.queue);
+    tear_down_space(fixture);
+}
+
 // Once the GPU failed, a channel error loses no context, since the failure's report ends every queue
 TEST(nvidia_engines, once_the_gpu_failed_a_channel_error_loses_no_context) {
     engines_fixture fixture;
@@ -3201,6 +3469,7 @@ TEST(nvidia_engines, once_the_gpu_failed_a_channel_error_loses_no_context) {
     fixture.gpu_engines.on_channel_error(channel_error::fault);
     engines_operations().serve();
     EXPECT_EQ(core.ctx.lost_reason, 0u);
+    EXPECT_EQ(fixture.fw.fault_records, 0u);
 
     fixture.gpu_engines.stop_queue(fixture.queue);
     engines_operations().serve();
