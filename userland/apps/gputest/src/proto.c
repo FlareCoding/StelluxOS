@@ -1,5 +1,6 @@
-// The window protocol's checks over sockets of their own without libstlxwin: the handshake's GPU_INFO, then stlxdm's
-// handle rules, each check passing copies of a pipe's read end and ending in a disconnect that closes every copy
+// The window protocol's checks on raw sockets: the handshake's GPU_INFO, stlxdm's handle rules (each check passing
+// copies of a pipe's read end and ending in a disconnect that closes them all), then shared memory's attach cycles and
+// the bound on one connection's shared memory buffers
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -8,6 +9,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -21,6 +23,12 @@
 #define HANDLES_MAX   (SWP_GPU_HANDLES + 1)
 #define WINDOW_PIXELS 64u
 #define READ_CHUNK    512u
+#define SHM_DIR       "/dev/shm/"
+#define SHM_PATH_MAX  (sizeof(SHM_DIR) + SWP_SHM_NAME_MAX)
+
+// Cycles per round trip, few enough that their 7,200 bytes fit a socket's 8 KiB buffer and no send waits on stlxdm
+#define SHM_SYNC_EVERY 60u
+_Static_assert(ATTACH_CYCLES % SHM_SYNC_EVERY == 0, "a round trip follows the last cycle");
 
 typedef struct {
     swp_header            header;
@@ -38,9 +46,8 @@ typedef enum {
     SEND_SHORT_ATTACH,   // two with a whole attach and the first byte of another
 } handle_send;
 
-// Reads `length` bytes, failing when the socket closes or 2 seconds pass first
-static bool read_whole(int sock, void* bytes, size_t length) {
-    uint64_t deadline = monotonic_ns() + WAIT_NS;
+// Reads `length` bytes, failing when the socket closes or `deadline` passes first
+static bool read_by(int sock, void* bytes, size_t length, uint64_t deadline) {
     size_t have = 0;
 
     while (have < length && monotonic_ns() < deadline) {
@@ -60,6 +67,11 @@ static bool read_whole(int sock, void* bytes, size_t length) {
     }
 
     return have == length;
+}
+
+// Reads `length` bytes, failing when the socket closes or 2 seconds pass first
+static bool read_whole(int sock, void* bytes, size_t length) {
+    return read_by(sock, bytes, length, monotonic_ns() + WAIT_NS);
 }
 
 int proto_connect(swp_gpu_info* gpu_info) {
@@ -152,15 +164,24 @@ bool proto_send(int sock, uint16_t type, const void* payload, uint32_t length, c
     return send_bytes(sock, bytes, sizeof(header) + length, handles, count);
 }
 
-bool proto_create_window(int sock, const int32_t* handles, uint32_t count) {
+static bool create_window(int sock, uint32_t win_id, const int32_t* handles, uint32_t count) {
     swp_create_window create;
     memset(&create, 0, sizeof(create));
-    create.win_id = PROTO_WINDOW_ID;
+    create.win_id = win_id;
     create.width = WINDOW_PIXELS;
     create.height = WINDOW_PIXELS;
     strncpy(create.title, "gputest", sizeof(create.title) - 1);
 
     return proto_send(sock, SWP_MSG_CREATE_WINDOW, &create, sizeof(create), handles, count);
+}
+
+bool proto_create_window(int sock, const int32_t* handles, uint32_t count) {
+    return create_window(sock, PROTO_WINDOW_ID, handles, count);
+}
+
+bool proto_detach(int sock, uint32_t buf_id) {
+    swp_detach_buffer detach = { PROTO_WINDOW_ID, buf_id };
+    return proto_send(sock, SWP_MSG_DETACH_BUFFER, &detach, sizeof(detach), NULL, 0);
 }
 
 bool proto_closes(int sock) {
@@ -263,6 +284,148 @@ static void check_disconnect(const char* name, handle_send how) {
     }
 }
 
+// Reads and drops `length` bytes, failing when the socket closes or `deadline` passes first
+static bool skip_bytes(int sock, uint32_t length, uint64_t deadline) {
+    uint8_t bytes[READ_CHUNK];
+    while (length > 0) {
+        uint32_t chunk = length < READ_CHUNK ? length : READ_CHUNK;
+        if (!read_by(sock, bytes, chunk, deadline)) {
+            return false;
+        }
+
+        length -= chunk;
+    }
+
+    return true;
+}
+
+// Asks for the clipboard, whose answer stlxdm sends only after handling every message sent before the ask, and drops
+// what comes before the answer. Fails when the socket closes or 2 seconds pass first
+static bool round_trip(int sock) {
+    swp_header ask = { SWP_MSG_CLIPBOARD_GET, 0, 0 };
+    if (!send_bytes(sock, &ask, sizeof(ask), NULL, 0)) {
+        return false;
+    }
+
+    uint64_t deadline = monotonic_ns() + WAIT_NS;
+    while (true) {
+        swp_header header;
+        if (!read_by(sock, &header, sizeof(header), deadline) || !skip_bytes(sock, header.length, deadline)) {
+            return false;
+        }
+
+        if (header.type == SWP_MSG_CLIPBOARD_DATA) {
+            return true;
+        }
+    }
+}
+
+static void shm_path(uint32_t serial, char* path, size_t size) {
+    snprintf(path, size, SHM_DIR "gputest-%d-%u", (int)getpid(), serial);
+}
+
+// Unlinks the names of serials `first` to `last` that stlxdm never opened, which it leaves to gputest
+static void unlink_shm_names(uint32_t first, uint32_t last) {
+    for (uint32_t serial = first; serial <= last; serial++) {
+        char path[SHM_PATH_MAX];
+        shm_path(serial, path, sizeof(path));
+        unlink(path);
+    }
+}
+
+// Attaches a new shared memory object of one window's picture, named by `serial`, to window `win_id` as `buf_id`.
+// stlxdm unlinks the name once it opens the object
+static bool shm_attach(int sock, uint32_t win_id, uint32_t buf_id, uint32_t serial) {
+    char path[SHM_PATH_MAX];
+    shm_path(serial, path, sizeof(path));
+    int fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0);
+    if (fd < 0) {
+        return false;
+    }
+
+    bool sized = ftruncate(fd, WINDOW_PIXELS * WINDOW_PIXELS * sizeof(uint32_t)) == 0;
+    close(fd);
+
+    swp_attach_buffer attach = { win_id, buf_id, WINDOW_PIXELS, WINDOW_PIXELS, { 0 } };
+    strncpy(attach.shm_name, path + strlen(SHM_DIR), sizeof(attach.shm_name) - 1);
+
+    bool sent = sized && proto_send(sock, SWP_MSG_ATTACH_BUFFER, &attach, sizeof(attach), NULL, 0);
+    if (!sent) {
+        unlink(path);
+    }
+
+    return sent;
+}
+
+// Attaches and detaches a new shared memory object ATTACH_CYCLES times on the raw window
+static bool cycles_shm_buffers(int sock) {
+    uint32_t cycles = 0;
+    uint32_t synced = 0;
+    while (cycles < ATTACH_CYCLES && shm_attach(sock, PROTO_WINDOW_ID, 1, cycles) && proto_detach(sock, 1)) {
+        cycles++;
+
+        if (cycles % SHM_SYNC_EVERY == 0) {
+            if (!round_trip(sock)) {
+                break;
+            }
+
+            synced++;
+        }
+    }
+
+    bool completed = cycles == ATTACH_CYCLES && synced == ATTACH_CYCLES / SHM_SYNC_EVERY;
+    if (!completed) {
+        unlink_shm_names(synced * SHM_SYNC_EVERY, cycles);
+    }
+
+    return completed;
+}
+
+// Attaches SWP_SHM_BUFFERS_MAX shared memory buffers across two raw windows and finds the connection still answering,
+// then attaches one more, for which stlxdm must end the connection
+static bool ends_past_shm_bound(int sock) {
+    uint32_t attached = 0;
+    while (attached < SWP_SHM_BUFFERS_MAX) {
+        uint32_t win_id = PROTO_WINDOW_ID + attached % 2;
+        if (!shm_attach(sock, win_id, attached + 1, ATTACH_CYCLES + attached)) {
+            break;
+        }
+
+        attached++;
+    }
+
+    uint32_t past = ATTACH_CYCLES + SWP_SHM_BUFFERS_MAX;
+    bool at_bound = attached == SWP_SHM_BUFFERS_MAX && round_trip(sock);
+    bool ended = at_bound && shm_attach(sock, PROTO_WINDOW_ID, SWP_SHM_BUFFERS_MAX + 1, past) && proto_closes(sock);
+    unlink_shm_names(ATTACH_CYCLES, past);
+
+    return ended;
+}
+
+// Cycles shared memory buffers on one connection, then passes the bound on a second while the first stays open
+static void check_shm_buffers(void) {
+    swp_gpu_info gpu_info;
+    int kept = proto_connect(&gpu_info);
+    bool cycled = kept >= 0 && proto_create_window(kept, NULL, 0) && cycles_shm_buffers(kept);
+    check("66000 shared memory attach and detach cycles on a new connection never run stlxdm out of handles", cycled);
+
+    int full = proto_connect(&gpu_info);
+    bool two_windows = full >= 0 && proto_create_window(full, NULL, 0) &&
+                       create_window(full, PROTO_WINDOW_ID + 1, NULL, 0);
+    bool ended = two_windows && ends_past_shm_bound(full);
+    check(
+        "an attach past SWP_SHM_BUFFERS_MAX shared memory buffers disconnects that connection alone",
+        cycled && ended && round_trip(kept)
+    );
+
+    int socks[] = { kept, full };
+    for (uint32_t i = 0; i < sizeof(socks) / sizeof(socks[0]); i++) {
+        if (socks[i] >= 0) {
+            close(socks[i]);
+        }
+    }
+}
+
 void run_proto_checks(void) {
     // A write to a pipe with no reader would otherwise end gputest instead of failing with EPIPE
     signal(SIGPIPE, SIG_IGN);
@@ -299,4 +462,6 @@ void run_proto_checks(void) {
         SEND_THIRD_BATCH
     );
     check_disconnect("an attach with two handles disconnects and stlxdm closes them", SEND_SHORT_ATTACH);
+
+    check_shm_buffers();
 }

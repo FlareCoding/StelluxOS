@@ -2,7 +2,8 @@
 // kernel/drivers/graphics/nvidia/LICENSE-NVIDIA
 
 // Checks /dev/gpu0 on an NVIDIA card or on virtio-gpu with venus, then the window protocol and its GPU buffers. Exits 1
-// on failure. `proto`, `resize` or `gpu` runs only its own checks, and `display` runs the GPU checks while presenting
+// on failure. `proto`, `resize` or `gpu` runs only its own checks, `window` the protocol and window checks without the
+// GPU checks, and `display` runs the GPU checks while presenting
 
 // Started as /bin/stlxdm with no argument, it runs only the remap check: two contexts remap buffers while gfxfb's are
 // created and destroyed. A round is one remap, fill and copy on one context
@@ -1769,11 +1770,14 @@ int main(int argc, char** argv) {
     }
 
     bool proto_only = argc == 2 && strcmp(argv[1], "proto") == 0;
+    bool window_only = argc == 2 && strcmp(argv[1], "window") == 0;
     bool resize_only = argc == 2 && strcmp(argv[1], "resize") == 0;
     bool gpu_only = argc == 2 && strcmp(argv[1], "gpu") == 0;
     bool display_only = argc == 2 && strcmp(argv[1], "display") == 0;
-    if (argc > 1 && !proto_only && !resize_only && !gpu_only && !display_only) {
-        printf("usage: gputest [proto | resize | gpu | display]\n");
+
+    bool is_mode = proto_only || window_only || resize_only || gpu_only || display_only;
+    if (argc > 1 && !is_mode) {
+        printf("usage: gputest [proto | window | resize | gpu | display]\n");
         return 1;
     }
 
@@ -1790,6 +1794,14 @@ int main(int argc, char** argv) {
 
     if (resize_only) {
         run_resize_check(fd);
+        close(fd);
+        return report();
+    }
+
+    // The protocol and window checks alone, since the GPU checks' hangs could switch stlxdm to the CPU compositor
+    if (window_only) {
+        run_proto_checks();
+        run_window_checks(fd);
         close(fd);
         return report();
     }
