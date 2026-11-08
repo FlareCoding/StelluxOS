@@ -15,7 +15,6 @@ constexpr uint32_t TITLE_FG_UNFOCUSED = 0xFF585B70;
 constexpr uint32_t BORDER_FOCUSED     = 0xFF585B70;
 constexpr uint32_t BORDER_DRAGGING    = 0xFF89B4FA;
 constexpr uint32_t BORDER_UNFOCUSED   = 0xFF313244;
-constexpr uint32_t CONTENT_BG         = 0xFF2D2D30;
 constexpr uint32_t CLOSE_BG           = 0xFF45475A;
 constexpr uint32_t CLOSE_BG_HOVER     = 0xFFF38BA8;
 constexpr uint32_t CLOSE_BG_PRESS     = 0xFFD06080;

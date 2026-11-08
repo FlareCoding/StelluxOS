@@ -21,6 +21,10 @@ constexpr int32_t CONTENT_R = CORNER_R - BORDER;  /* content's bottom corners */
 constexpr int32_t CLOSE_R = 10;
 constexpr int32_t CLOSE_MARGIN = 8;
 
+/* What a window's content area shows where no picture of its own
+ * covers it */
+constexpr uint32_t CONTENT_BG = 0xFF2D2D30;
+
 /* The thin border is a hard target, so resize grips extend this far
  * beyond the visual frame, and this far along it at the corners */
 constexpr int32_t RESIZE_SLOP = 4;

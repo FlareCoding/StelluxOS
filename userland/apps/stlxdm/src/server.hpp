@@ -46,6 +46,14 @@ struct dm_conf_state {
     std::vector<dm_hotkey> hotkeys;
 };
 
+/* An output's own pictures under the GPU compositor: its backdrop, and the
+ * draws above the windows beneath the power overlay's dim and above it */
+struct dm_output_pictures {
+    std::unique_ptr<backdrop_picture> backdrop;
+    std::unique_ptr<top_picture>      lower_top;
+    std::unique_ptr<top_picture>      upper_top;
+};
+
 /* One output as the compositor sees it, kept by its index and cleared
  * while the output is not served. */
 struct dm_output {
@@ -67,6 +75,8 @@ struct dm_output {
     const uint32_t*    cursor_picture = nullptr;      /* the picture its hardware cursor shows */
     bool               cursor_in_frames = false;      /* drawn into frames since its cursor could not show it */
     bool               cursor_move_pending = false;   /* a move waits for the flush */
+
+    dm_output_pictures pictures;                      /* empty under the CPU compositor */
 };
 
 /* The wallpaper for one refresh of the backdrops, decoded at its first
@@ -99,6 +109,7 @@ struct dm_buffer {
     void*     mapping = nullptr;
     size_t    size = 0;             /* the mapping's bytes */
     uint32_t* pixels = nullptr;     /* the picture's first pixel */
+    uint64_t  gpu_address = 0;      /* the GPU compositor's address of `pixels`, 0 without an import */
 
     bool      is_gpu = false;
     bool      is_release_only = false;
@@ -171,6 +182,10 @@ struct dm_window {
      * next due a query once its first second of per-tick queries ends */
     uint64_t pending_since_ns = 0;
     uint64_t next_query_ns = 0;
+
+    /* Its decoration as the GPU compositor blends it, drawn while that
+     * compositor composes the window */
+    frame_picture frame;
 };
 
 /* A dismissed window's release-only record, kept until the client
@@ -448,7 +463,10 @@ private:
     bool is_acquire_reached(dm_client& c, dm_window& w, uint64_t now);
     void latch_window(dm_client& c, dm_window& w);
     void flush_configures();
+    decor::chrome_state chrome_of(const dm_window& w) const;
     void compose_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
+    bool draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, layer_scene& scene);
+    void draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects);
     void compose_collapse(dm_output& out);
     void advance_power();
     const dm_window& toplevel_of(const dm_client& c, const dm_window& w) const;
@@ -511,6 +529,11 @@ private:
     int m_listen_fd = -1;
     display* m_display = nullptr;
     const stlxconf_t* m_conf = nullptr;
+
+    /* The GPU compositor, null while the CPU composes, declared before the
+     * clients and outputs since their pictures must drop before it */
+    std::unique_ptr<gpu_compositor> m_gpu_compositor;
+
     std::vector<std::unique_ptr<dm_client>> m_clients;
 
     /* The outputs' places, each output's record by its index, and the
@@ -537,9 +560,6 @@ private:
      * GPU_INFO every client gets after HELLO_REPLY */
     int m_gpu_fd = -1;
     swp_gpu_info m_gpu_info = {};
-
-    /* The GPU compositor, null while the CPU composes */
-    std::unique_ptr<gpu_compositor> m_gpu_compositor;
 
     /* Makes the GPU compositor unless the config asks for the CPU or no
      * GPU device opened, printing why the CPU composes otherwise */
