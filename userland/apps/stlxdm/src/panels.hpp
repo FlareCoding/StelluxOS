@@ -65,6 +65,9 @@ public:
     /* Draws the hover tooltip above the dock, over the windows. */
     void compose_top(stlxgfx_surface_t* back, const damage_list::rect& r);
 
+    /* The bounds `compose_top` draws inside, empty without a tooltip */
+    damage_list::rect top_bounds() const;
+
     bool contains(int32_t x, int32_t y) const {
         if (x < 0 || x >= static_cast<int32_t>(m_width)) {
             return false;
@@ -89,6 +92,7 @@ public:
 private:
     void hover_pin(int32_t index, bool entered);
     damage_list::rect pin_icon_rect(int32_t index) const;
+    bool find_tooltip(damage_list::rect& tip, const char*& label) const;
 
     const stlxconf_t* m_conf = nullptr;
     direct_host m_host;
