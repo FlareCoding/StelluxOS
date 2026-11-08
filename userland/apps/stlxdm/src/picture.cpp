@@ -3,6 +3,7 @@
 
 #include <stlxgfx/surface.h>
 
+#include <algorithm>
 #include <cstring>
 
 static_assert(frame_picture::STRIPS == decor::FRAME_STRIPS);
@@ -107,4 +108,70 @@ void frame_picture::place(const dm_window& w, int32_t origin_x, int32_t origin_y
             y
         };
     }
+}
+
+std::unique_ptr<backdrop_picture> backdrop_picture::make(picture_maker& maker, uint32_t width, uint32_t height) {
+    uint32_t pitch = width * BYTES_PER_PIXEL;
+    size_t bytes = static_cast<size_t>(pitch) * height;
+
+    std::unique_ptr<backdrop_picture> made(new backdrop_picture());
+    made->m_memory = maker.make_picture(bytes);
+    if (!made->m_memory) {
+        return nullptr;
+    }
+
+    made->m_twin = maker.make_twin(bytes);
+    if (!made->m_twin) {
+        return nullptr;
+    }
+
+    made->m_surface = stlxgfx_surface_from_buffer(made->m_memory->pixels(), width, height, pitch, 32, 16, 8, 0);
+    if (!made->m_surface) {
+        return nullptr;
+    }
+
+    made->mark_rows(0, static_cast<int32_t>(height));
+
+    return made;
+}
+
+backdrop_picture::~backdrop_picture() {
+    stlxgfx_destroy_surface(m_surface);
+}
+
+layer_picture backdrop_picture::twin_layer() const {
+    return { m_twin->address(), m_surface->pitch, 0, 0 };
+}
+
+void backdrop_picture::mark_rows(int32_t y, int32_t count) {
+    int64_t end = static_cast<int64_t>(y) + count;
+    int32_t first_row = std::max(y, 0);
+    int32_t end_row = static_cast<int32_t>(std::min(end, static_cast<int64_t>(m_surface->height)));
+    if (first_row >= end_row) {
+        return;
+    }
+
+    /* Every span that overlaps or touches the added rows merges into them */
+    row_span added = { first_row, end_row };
+    auto first = std::find_if(m_changed.begin(), m_changed.end(), [&](const row_span& s) {
+        return s.end >= added.first;
+    });
+    auto last = first;
+    while (last != m_changed.end() && last->first <= added.end) {
+        added.first = std::min(added.first, last->first);
+        added.end = std::max(added.end, last->end);
+        last++;
+    }
+
+    first = m_changed.erase(first, last);
+    m_changed.insert(first, added);
+}
+
+void backdrop_picture::take_copies(std::vector<picture_copy>& copies) {
+    size_t pitch = m_surface->pitch;
+    for (const row_span& s : m_changed) {
+        copies.push_back({ static_cast<size_t>(s.first) * pitch, static_cast<size_t>(s.end - s.first) * pitch });
+    }
+
+    m_changed.clear();
 }

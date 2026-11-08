@@ -37,11 +37,24 @@ constexpr float QUEUE_PRIORITY = 1.0f;
 constexpr VkBufferUsageFlags PICTURE_USAGE = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-constexpr VkMemoryPropertyFlags COHERENT_MEMORY = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+constexpr VkMemoryPropertyFlags HOST_COHERENT = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
+/* Memory the CPU writes and the GPU reads coherently, which on NVK lies in the part of video memory the CPU can map,
+ * for the layer lists and the corner distances */
+const gpu_compositor::memory_kind gpu_compositor::COHERENT_MEMORY = { HOST_COHERENT, 0 };
+
 /* System memory the CPU caches and the GPU reads coherently */
-constexpr VkMemoryPropertyFlags PICTURE_MEMORY = COHERENT_MEMORY | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+const gpu_compositor::memory_kind gpu_compositor::PICTURE_MEMORY = {
+    HOST_COHERENT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+    0
+};
+
+/* Video memory the CPU cannot map, for twins */
+const gpu_compositor::memory_kind gpu_compositor::VIDEO_MEMORY = {
+    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+};
 
 /* A picture in a buffer of the compositor's own, freed with the picture */
 class gpu_compositor::owned_picture : public picture {
@@ -419,11 +432,13 @@ const char* gpu_compositor::upload_corner_distances() {
     return nullptr;
 }
 
-uint32_t gpu_compositor::find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags properties) const {
+uint32_t gpu_compositor::find_memory_type(uint32_t type_bits, const memory_kind& kind) const {
     for (uint32_t type = 0; type < m_memory_properties.memoryTypeCount; type++) {
+        VkMemoryPropertyFlags properties = m_memory_properties.memoryTypes[type].propertyFlags;
         bool is_allowed = (type_bits & (1u << type)) != 0;
-        bool has_properties = (m_memory_properties.memoryTypes[type].propertyFlags & properties) == properties;
-        if (is_allowed && has_properties) {
+        bool has_required = (properties & kind.required) == kind.required;
+        bool has_denied = (properties & kind.denied) != 0;
+        if (is_allowed && has_required && !has_denied) {
             return type;
         }
     }
@@ -434,7 +449,7 @@ uint32_t gpu_compositor::find_memory_type(uint32_t type_bits, VkMemoryPropertyFl
 bool gpu_compositor::create_buffer(
     VkDeviceSize size,
     VkBufferUsageFlags usage,
-    VkMemoryPropertyFlags properties,
+    const memory_kind& kind,
     device_buffer& created
 ) {
     VkBufferCreateInfo buffer_info = {};
@@ -451,7 +466,7 @@ bool gpu_compositor::create_buffer(
     VkMemoryRequirements requirements = {};
     m_vk.get_buffer_memory_requirements(m_device, created.buffer, &requirements);
 
-    uint32_t type = find_memory_type(requirements.memoryTypeBits, properties);
+    uint32_t type = find_memory_type(requirements.memoryTypeBits, kind);
     if (type == UINT32_MAX) {
         return false;
     }
@@ -475,7 +490,7 @@ bool gpu_compositor::create_buffer(
         return false;
     }
 
-    bool is_host_visible = (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+    bool is_host_visible = (kind.required & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
     if (is_host_visible) {
         VkResult mapped = m_vk.map_memory(m_device, created.memory, 0, VK_WHOLE_SIZE, 0, &created.mapping);
         if (mapped != VK_SUCCESS) {
@@ -495,6 +510,16 @@ bool gpu_compositor::create_buffer(
 std::unique_ptr<picture> gpu_compositor::make_picture(size_t bytes) {
     device_buffer buffer;
     if (!create_buffer(bytes, PICTURE_USAGE, PICTURE_MEMORY, buffer)) {
+        destroy_buffer(buffer);
+        return nullptr;
+    }
+
+    return std::make_unique<owned_picture>(*this, buffer, bytes);
+}
+
+std::unique_ptr<picture> gpu_compositor::make_twin(size_t bytes) {
+    device_buffer buffer;
+    if (!create_buffer(bytes, PICTURE_USAGE, VIDEO_MEMORY, buffer)) {
         destroy_buffer(buffer);
         return nullptr;
     }

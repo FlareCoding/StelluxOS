@@ -5,18 +5,21 @@
 #include "decor.hpp"
 #include "layers.hpp"
 
+#include <stlxgfx/surface.h>
 #include <stlxwin/proto.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 struct dm_window;
 
 /* Pixels stlxdm draws with the CPU through libstlxgfx and the GPU
  * compositor reads where they lie: system memory that the CPU keeps mapped
- * and the GPU reads coherently. Its maker frees the memory when the picture
- * drops, which must come before the maker is destroyed. */
+ * and the GPU reads coherently, or a twin's video memory, which has no
+ * `pixels()`. Its maker frees the memory when the picture drops, which must
+ * come before the maker is destroyed. */
 class picture {
 public:
     virtual ~picture() = default;
@@ -44,6 +47,67 @@ public:
 
     /* A picture of at least `bytes`, or null when no memory is left */
     virtual std::unique_ptr<picture> make_picture(size_t bytes) = 0;
+
+    /* A twin of at least `bytes`: a copy of a picture in video memory that
+     * the CPU cannot reach, read by the compose in its place. Null when no
+     * memory is left. */
+    virtual std::unique_ptr<picture> make_twin(size_t bytes) = 0;
+};
+
+/* Bytes at the same offset in a picture and in its twin */
+struct picture_copy {
+    size_t offset;
+    size_t bytes;
+};
+
+/* An output's backdrop under the GPU compositor: the wallpaper, and on the
+ * main output the panels, drawn by the CPU into a picture, and its twin,
+ * which the compose reads. Whoever draws into the surface must mark the
+ * rows it changed, which the next compose copies into the twin before
+ * reading it. Like its pictures, it must drop before its maker. */
+class backdrop_picture {
+public:
+    /* Makes the picture and its twin at `width` by `height`, every row
+     * marked changed, or returns null when memory runs out */
+    static std::unique_ptr<backdrop_picture> make(picture_maker& maker, uint32_t width, uint32_t height);
+
+    ~backdrop_picture();
+
+    backdrop_picture(const backdrop_picture&) = delete;
+    backdrop_picture& operator=(const backdrop_picture&) = delete;
+
+    /* An opaque surface over the picture, which the CPU draws the
+     * backdrop into */
+    stlxgfx_surface_t* surface() const { return m_surface; }
+
+    const picture& memory() const { return *m_memory; }
+    const picture& twin() const { return *m_twin; }
+
+    /* The twin as the compose reads it, its first pixel at the
+     * output's top-left */
+    layer_picture twin_layer() const;
+
+    /* Marks `count` rows from row `y` changed, ignoring those outside
+     * the picture */
+    void mark_rows(int32_t y, int32_t count);
+
+    /* Appends the copies that bring the twin up to date and forgets the
+     * changed rows */
+    void take_copies(std::vector<picture_copy>& copies);
+
+private:
+    /* The rows from `first` up to `end` */
+    struct row_span {
+        int32_t first;
+        int32_t end;
+    };
+
+    backdrop_picture() = default;
+
+    std::unique_ptr<picture> m_memory;
+    std::unique_ptr<picture> m_twin;
+    stlxgfx_surface_t*       m_surface = nullptr;
+    std::vector<row_span>    m_changed;   /* sorted, no two touching */
 };
 
 /* A decorated window's frame as four strips of one picture: the top with

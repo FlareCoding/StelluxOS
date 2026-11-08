@@ -34,9 +34,20 @@ public:
     gpu_compositor& operator=(const gpu_compositor&) = delete;
 
     std::unique_ptr<picture> make_picture(size_t bytes) override;
+    std::unique_ptr<picture> make_twin(size_t bytes) override;
 
 private:
     class owned_picture;
+
+    /* The properties a memory type must have, and those it must lack */
+    struct memory_kind {
+        VkMemoryPropertyFlags required;
+        VkMemoryPropertyFlags denied;
+    };
+
+    static const memory_kind COHERENT_MEMORY;
+    static const memory_kind PICTURE_MEMORY;
+    static const memory_kind VIDEO_MEMORY;
 
     /* The library exports only the global commands, so the others come
      * from `vkGetInstanceProcAddr` */
@@ -92,14 +103,14 @@ private:
     const char* upload_corner_distances();
     const char* probe_gpu_file(int gpu_fd, const gpu_info& info);
 
-    uint32_t find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags properties) const;
+    uint32_t find_memory_type(uint32_t type_bits, const memory_kind& kind) const;
 
     /* Leaves what it made in `created` when it fails,
      * for `destroy_buffer` */
     bool create_buffer(
         VkDeviceSize size,
         VkBufferUsageFlags usage,
-        VkMemoryPropertyFlags properties,
+        const memory_kind& kind,
         device_buffer& created
     );
 
