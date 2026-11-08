@@ -118,17 +118,19 @@ private:
 
 /* One attached buffer. A GPU buffer holds its timelines and its newest
  * commit's points, except that a release-only one, whose commits are
- * released at once, holds only its release timeline. Every other buffer is
- * mapped until it is dropped, keeping the handle or descriptor it was
- * mapped through, and under the GPU compositor its imports. */
+ * released at once, holds only its release timeline. Every other buffer
+ * keeps its read-only handle or descriptor, its mapping when it is
+ * mappable, and under the GPU compositor its imports, until it is
+ * dropped. A GPU buffer that is not mappable is release-only whenever
+ * the GPU compositor does not compose alone. */
 struct dm_buffer {
     uint32_t  buf_id = 0;
     uint32_t  width = 0, height = 0;
     uint32_t  pitch = 0;            /* bytes from one row to the next */
     void*     mapping = nullptr;
-    size_t    size = 0;             /* the mapping's bytes */
-    uint32_t* pixels = nullptr;     /* the picture's first pixel */
-    uint64_t  gpu_address = 0;      /* the GPU compositor's address of `pixels`, 0 without an import */
+    size_t    size = 0;             /* the buffer's bytes */
+    uint32_t* pixels = nullptr;     /* the picture's first pixel, null without a mapping */
+    uint64_t  gpu_address = 0;      /* the GPU compositor's address of the picture, 0 without an import */
     int       shm = -1;             /* a shared memory buffer's object, opened read-only */
     int       gpu_buffer = -1;      /* the read-only handle that a GPU_BUFFER_IMPORT of the buffer gave */
 
@@ -503,6 +505,11 @@ private:
     void signal_release(dm_client& c, const dm_buffer& b, uint64_t point);
     void release_picture(dm_client& c, uint32_t win_id, const dm_buffer& b);
     void stop_taking_gpu_buffers();
+    void send_gpu_info(uint32_t flags);
+    void follow_reader_in_gpu_info();
+    uint32_t accepting_gpu_flags() const;
+    bool gpu_reads_buffers() const { return composes_on_gpu() && !m_compares_frames; }
+    void release_unmappable_buffers();
     bool import_shared_memory(dm_buffer& b);
     void switch_to_cpu_on_failed_gpu();
     bool is_acquire_reached(dm_client& c, dm_window& w, uint64_t now);

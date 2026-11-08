@@ -160,8 +160,10 @@ typedef struct {
 } swp_attach_buffer;
 _Static_assert(sizeof(swp_attach_buffer) == 96, "wire layout");
 
-/* A GPU buffer detached while shown stays shown and keeps its buf_id,
- * counting toward SWP_GPU_BUFFERS_MAX, until the next picture latches */
+/* A GPU buffer detached while shown stays the window's picture, which
+ * the CPU compositor shows as the content color when the buffer is not
+ * mappable, and keeps its buf_id, counting toward SWP_GPU_BUFFERS_MAX,
+ * until the next picture latches */
 typedef struct {
     uint32_t win_id;
     uint32_t buf_id;
@@ -405,11 +407,13 @@ _Static_assert(sizeof(swp_mode_result) == 32, "wire layout");
 enum {
     SWP_GPU_ACCEPTS   = 1u << 0,  /* the DM takes GPU buffers from /dev/gpuN, N being the device field */
     SWP_GPU_CPU_READS = 1u << 1,  /* buffers must be mappable, and system memory reads fastest */
+    SWP_GPU_GPU_READS = 1u << 2,  /* the GPU reads buffers, mappable or not, and video memory reads fastest */
 };
 
-/* Sent after every HELLO_REPLY and again whenever it changes. A reader
- * must accept a longer payload and use its first sizeof(swp_gpu_info)
- * bytes, so fields can be appended. */
+/* Sent after every HELLO_REPLY and again whenever it changes. With
+ * SWP_GPU_ACCEPTS exactly one read flag is set. A reader must accept a
+ * longer payload and use its first sizeof(swp_gpu_info) bytes, so fields
+ * can be appended. */
 typedef struct {
     uint32_t flags;         /* SWP_GPU_* */
     uint32_t device;        /* N of /dev/gpuN, 0 without SWP_GPU_ACCEPTS */

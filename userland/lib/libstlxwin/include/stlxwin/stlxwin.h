@@ -176,6 +176,7 @@ enum {
 enum {
     STLXWIN_GPU_ACCEPTS   = 1u << 0,  /* the display manager takes buffers from /dev/gpuN, N being the device field */
     STLXWIN_GPU_CPU_READS = 1u << 1,  /* buffers must be mappable, and system memory reads fastest */
+    STLXWIN_GPU_GPU_READS = 1u << 2,  /* the GPU reads buffers, mappable or not, and video memory reads fastest */
 };
 
 /* Which GPU buffers the display manager takes */

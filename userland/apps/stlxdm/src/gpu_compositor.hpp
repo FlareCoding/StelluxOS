@@ -109,13 +109,15 @@ public:
     ) override;
 
     /* Imports the buffer the /dev/gpu0 handle `gpu_buffer` names, `bytes`
-     * long in memory of `placement`, through a copy of the handle narrowed
-     * to reading. `gpu_buffer` must be able to read the buffer and stays
-     * the caller's. `imported` stays empty on failure. */
+     * long in memory of `placement`, mappable when `is_mappable`, through a
+     * copy of the handle narrowed to reading. `gpu_buffer` must be able to
+     * read the buffer and stays the caller's. `imported` stays empty on
+     * failure. */
     window_import_result import_window_buffer(
         int gpu_buffer,
         uint64_t bytes,
         uint32_t placement,
+        bool is_mappable,
         std::unique_ptr<window_import>& imported
     );
 
@@ -258,7 +260,13 @@ private:
     VkResult create_import_buffer(VkDeviceSize size, VkBuffer& created);
     bool import_into_gfxfb(scanout_buffer& buffer, int gpu_buffer, uint32_t output, uint32_t width, uint32_t height);
     VkResult import_memory(int gpu_buffer, uint64_t size, uint32_t type, VkDeviceMemory& imported);
-    VkResult import_window_memory(int gpu_buffer, uint64_t bytes, uint32_t placement, device_buffer& import);
+    VkResult import_window_memory(
+        int gpu_buffer,
+        uint64_t bytes,
+        uint32_t placement,
+        bool is_mappable,
+        device_buffer& import
+    );
 
     bool list_layers(compose_buffers& buffers, const layer_scene& scene, const std::vector<damage_list::rect>& rects);
     layer failure_layer(const damage_list::rect& r) const;

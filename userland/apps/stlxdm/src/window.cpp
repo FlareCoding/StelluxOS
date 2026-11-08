@@ -33,6 +33,7 @@ constexpr uint64_t ACQUIRE_QUERY_INTERVAL_NS = 100000000ull;
 /* How importing and mapping an attached GPU buffer went */
 enum class gpu_mapping {
     MAPPED,     /* the whole buffer is mapped */
+    UNMAPPABLE, /* the buffer is not mappable, so only the GPU can read it */
     GPU_FAILED, /* the import found the GPU failed */
     NO_MEMORY,  /* the mapping met ENOMEM, no memory or a GPU that failed after the import */
     REFUSED,    /* a buffer the protocol does not take, or stlxdm out of memory */
@@ -202,8 +203,8 @@ static bool is_valid_gpu_picture(const swp_attach_gpu_buffer& m) {
            m.offset % 4 == 0;
 }
 
-/* Consumes the buffer handle, and keeps the import's handle in `b` with its placement in `placement`. The restrict
- * comes before the import, since an import would take a shared memory handle as a buffer */
+/* Consumes the buffer handle, keeping in `b` the import's handle and its mapping when mappable, and its placement in
+ * `placement`. The restrict comes before the import, since an import would take a shared memory handle as a buffer */
 static gpu_mapping map_gpu_buffer(
     int gpu_fd,
     int handle,
@@ -231,25 +232,29 @@ static gpu_mapping map_gpu_buffer(
 
     uint64_t picture_bytes = static_cast<uint64_t>(m.pitch) * m.height;
     bool picture_fits = m.offset <= import.size && picture_bytes <= import.size - m.offset;
-    if (!picture_fits || !(import.flags & GPU_BUFFER_MAPPABLE)) {
+    if (!picture_fits) {
         close(import.buffer);
         return gpu_mapping::REFUSED;
     }
 
-    void* mapping = mmap(nullptr, import.size, PROT_READ, MAP_SHARED, import.buffer, 0);
-    if (mapping == MAP_FAILED) {
-        int map_error = errno;
-        close(import.buffer);
-        return map_error == ENOMEM ? gpu_mapping::NO_MEMORY : gpu_mapping::REFUSED;
+    bool is_mappable = import.flags & GPU_BUFFER_MAPPABLE;
+    if (is_mappable) {
+        void* mapping = mmap(nullptr, import.size, PROT_READ, MAP_SHARED, import.buffer, 0);
+        if (mapping == MAP_FAILED) {
+            int map_error = errno;
+            close(import.buffer);
+            return map_error == ENOMEM ? gpu_mapping::NO_MEMORY : gpu_mapping::REFUSED;
+        }
+
+        b.mapping = mapping;
+        b.pixels = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(mapping) + m.offset);
     }
 
-    b.mapping = mapping;
     b.size = import.size;
-    b.pixels = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(mapping) + m.offset);
     b.gpu_buffer = import.buffer;
     placement = import.placement;
 
-    return gpu_mapping::MAPPED;
+    return is_mappable ? gpu_mapping::MAPPED : gpu_mapping::UNMAPPABLE;
 }
 
 /* Imports the buffer of `b`'s kept handle, `bytes` in `placement`, whose picture starts `offset` bytes in */
@@ -260,7 +265,8 @@ static gpu_import import_for_gpu(
     uint32_t placement,
     uint64_t offset
 ) {
-    switch (compositor.import_window_buffer(b.gpu_buffer, bytes, placement, b.import)) {
+    bool is_mappable = b.mapping != nullptr;
+    switch (compositor.import_window_buffer(b.gpu_buffer, bytes, placement, is_mappable, b.import)) {
     case window_import_result::imported:
         b.gpu_address = b.import->address() + offset;
         return gpu_import::IMPORTED;
@@ -408,10 +414,55 @@ void server::stop_taking_gpu_buffers() {
     }
 
     printf("stlxdm: the GPU failed, GPU buffers attached after it are released unshown\r\n");
-    m_gpu_info.flags = 0;
+    send_gpu_info(0);
+}
+
+void server::send_gpu_info(uint32_t flags) {
+    m_gpu_info.flags = flags;
     for (auto& c : m_clients) {
         if (c->hello_done) {
             send_to(*c, SWP_MSG_GPU_INFO, &m_gpu_info, sizeof(m_gpu_info));
+        }
+    }
+}
+
+/* Tells every client which compositor reads its buffers, unless stlxdm takes no GPU buffers */
+void server::follow_reader_in_gpu_info() {
+    bool takes_gpu_buffers = m_gpu_info.flags & SWP_GPU_ACCEPTS;
+    bool reader_changed = m_gpu_info.flags != accepting_gpu_flags();
+    if (takes_gpu_buffers && reader_changed) {
+        send_gpu_info(accepting_gpu_flags());
+    }
+}
+
+/* Comparison mode reads window buffers on the CPU too, so it asks for mappable ones */
+uint32_t server::accepting_gpu_flags() const {
+    return SWP_GPU_ACCEPTS | (gpu_reads_buffers() ? SWP_GPU_GPU_READS : SWP_GPU_CPU_READS);
+}
+
+/* Once the GPU reads no window buffer, each GPU buffer the CPU cannot map becomes a release-only record. Its pending
+ * commit is released, and as a window's picture it shows the content color until the next one latches */
+void server::release_unmappable_buffers() {
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            for (size_t i = 0; i < w->buffers.size(); i++) {
+                dm_buffer& b = w->buffers[i];
+                bool is_unmappable = b.is_gpu && !b.mapping;
+                if (!is_unmappable || b.is_release_only) {
+                    continue;
+                }
+
+                if (static_cast<int32_t>(i) == w->pending) {
+                    if (!c->dead) {
+                        release_picture(*c, w->win_id, b);
+                    }
+
+                    w->pending = -1;
+                }
+
+                close_reads(b);
+                b.is_release_only = true;
+            }
         }
     }
 }
@@ -701,6 +752,15 @@ void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
     uint32_t placement = 0;
     switch (map_gpu_buffer(m_gpu_fd, handles[0], *m, b, placement)) {
     case gpu_mapping::MAPPED:
+        break;
+    case gpu_mapping::UNMAPPABLE:
+        /* No protocol violation, since a client may have chosen it by a GPU_INFO a switch has since replaced */
+        if (!gpu_reads_buffers()) {
+            printf("stlxdm: a GPU buffer the CPU cannot map was attached while the GPU compositor does not compose "
+                   "alone, its commits are released unshown\r\n");
+            is_release_only = true;
+        }
+
         break;
     case gpu_mapping::GPU_FAILED:
         switch_to_cpu_on_failed_gpu();

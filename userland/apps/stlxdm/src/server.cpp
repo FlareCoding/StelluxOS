@@ -390,6 +390,9 @@ void server::switch_to_cpu(const char* reason) {
         stlxgfx_destroy_surface(backdrop);
         printf("stlxdm: composing stopped, %s, and the CPU cannot take over since %s\r\n", reason, refusal);
         m_gpu_stopped = true;
+
+        release_unmappable_buffers();
+        follow_reader_in_gpu_info();
         reap_retired_compositor();
         return;
     }
@@ -433,6 +436,8 @@ void server::switch_to_cpu(const char* reason) {
 
     m_gpu_composes = false;
     m_retired_compositor = std::move(m_gpu_compositor);
+    release_unmappable_buffers();
+    follow_reader_in_gpu_info();
     m_damage.add_full();
     printf("stlxdm: composing on the CPU, %s\r\n", reason);
 
@@ -519,9 +524,7 @@ int server::serve() {
     raise_handle_limit();
 
     if (m_gpu_fd >= 0) {
-        /* Both compositors take only buffers they can map, and the CPU
-         * compositor reads system memory faster than video memory */
-        m_gpu_info.flags = SWP_GPU_ACCEPTS | SWP_GPU_CPU_READS;
+        m_gpu_info.flags = accepting_gpu_flags();
     }
 
     m_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);

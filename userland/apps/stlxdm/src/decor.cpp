@@ -386,6 +386,18 @@ void blit_content(const canvas& back, const dm_window& w,
         return;
     }
 
+    /* A picture without a mapping shows the content color, which
+     * `draw` paints under a decorated window */
+    if (!b->pixels) {
+        if (!decorated(w)) {
+            stlxgfx_fill_rect(back.surface, ix0 - back.x, iy0 - back.y,
+                              static_cast<uint32_t>(ix1 - ix0),
+                              static_cast<uint32_t>(iy1 - iy0), CONTENT_BG);
+        }
+
+        return;
+    }
+
     stlxgfx_surface_t* src = stlxgfx_surface_from_buffer(
         reinterpret_cast<uint8_t*>(b->pixels), b->width, b->height,
         b->pitch, 32, 16, 8, 0);
