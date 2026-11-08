@@ -179,7 +179,8 @@ gpu_compositor::~gpu_compositor() {
         close(m_probe_context);
     }
 
-    destroy_buffer(m_corner_distances);
+    end_retirement();
+    free_buffer(m_corner_distances);
 
     if (m_command_pool != VK_NULL_HANDLE) {
         m_vk.destroy_command_pool(m_device, m_command_pool, nullptr);
@@ -298,7 +299,8 @@ bool gpu_compositor::find_commands() {
         find_command(m_instance, "vkCmdPipelineBarrier", m_vk.cmd_pipeline_barrier) &&
         find_command(m_instance, "vkCmdCopyBuffer", m_vk.cmd_copy_buffer) &&
         find_command(m_instance, "vkQueueSubmit", m_vk.queue_submit) &&
-        find_command(m_instance, "vkWaitSemaphores", m_vk.wait_semaphores);
+        find_command(m_instance, "vkWaitSemaphores", m_vk.wait_semaphores) &&
+        find_command(m_instance, "vkGetSemaphoreCounterValue", m_vk.get_semaphore_counter_value);
 }
 
 const char* gpu_compositor::create_instance() {
@@ -885,8 +887,9 @@ std::unique_ptr<gpu_compositor::compose_buffers> gpu_compositor::make_compose_bu
     return buffers;
 }
 
+/* A retired compositor's last compose may still run the command buffer, which the pool frees */
 gpu_compositor::compose_buffers::~compose_buffers() {
-    if (m_commands != VK_NULL_HANDLE) {
+    if (m_commands != VK_NULL_HANDLE && !m_owner.m_is_retired) {
         m_owner.m_vk.free_command_buffers(m_owner.m_device, m_owner.m_command_pool, 1, &m_commands);
     }
 
@@ -1116,14 +1119,31 @@ compose_result gpu_compositor::submit_and_wait(compose_buffers& buffers) {
     return waited == VK_ERROR_DEVICE_LOST ? compose_result::lost : compose_result::unfinished;
 }
 
-void gpu_compositor::finish() {
-    VkSemaphoreWaitInfo wait_info = {};
-    wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-    wait_info.semaphoreCount = 1;
-    wait_info.pSemaphores = &m_timeline;
-    wait_info.pValues = &m_compose_point;
+void gpu_compositor::retire() {
+    m_is_retired = true;
+}
 
-    m_vk.wait_semaphores(m_device, &wait_info, UINT64_MAX);
+void gpu_compositor::end_retirement() {
+    for (device_buffer& buffer : m_retired_buffers) {
+        free_buffer(buffer);
+    }
+
+    m_retired_buffers.clear();
+    m_is_retired = false;
+}
+
+bool gpu_compositor::is_retired() const {
+    return m_is_retired;
+}
+
+compose_state gpu_compositor::last_compose_state() const {
+    uint64_t value = 0;
+    VkResult read = m_vk.get_semaphore_counter_value(m_device, m_timeline, &value);
+    if (read == VK_ERROR_DEVICE_LOST) {
+        return compose_state::lost;
+    }
+
+    return read == VK_SUCCESS && value >= m_compose_point ? compose_state::ended : compose_state::running;
 }
 
 /* Hands the output buffer, which the display scans out outside Vulkan, and each window buffer the scene reads, which
@@ -1184,8 +1204,19 @@ VkBufferMemoryBarrier gpu_compositor::transfer_barrier(VkBuffer buffer, VkAccess
     return transfer;
 }
 
-/* Freeing the memory also removes its mapping */
 void gpu_compositor::destroy_buffer(device_buffer& buffer) {
+    bool is_made = buffer.buffer != VK_NULL_HANDLE || buffer.memory != VK_NULL_HANDLE;
+    if (m_is_retired && is_made) {
+        m_retired_buffers.push_back(buffer);
+        buffer = {};
+        return;
+    }
+
+    free_buffer(buffer);
+}
+
+/* Freeing the memory also removes its mapping */
+void gpu_compositor::free_buffer(device_buffer& buffer) {
     if (buffer.buffer != VK_NULL_HANDLE) {
         m_vk.destroy_buffer(m_device, buffer.buffer, nullptr);
     }

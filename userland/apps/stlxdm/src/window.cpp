@@ -415,10 +415,10 @@ void server::stop_taking_gpu_buffers() {
     }
 }
 
-void server::stop_on_failed_gpu() {
+void server::switch_to_cpu_on_failed_gpu() {
     stop_taking_gpu_buffers();
     if (composes_on_gpu()) {
-        stop_gpu_composing("the GPU failed");
+        switch_to_cpu("the GPU failed");
     }
 }
 
@@ -432,7 +432,7 @@ bool server::import_shared_memory(dm_buffer& b) {
             return false;
         }
 
-        stop_on_failed_gpu();
+        switch_to_cpu_on_failed_gpu();
         return true;
     }
 
@@ -447,7 +447,14 @@ bool server::import_shared_memory(dm_buffer& b) {
     case gpu_import::IMPORTED:
         return true;
     case gpu_import::GPU_FAILED:
-        stop_on_failed_gpu();
+        switch_to_cpu_on_failed_gpu();
+
+        /* The switch closed every recorded buffer's import, and `b` is not recorded yet */
+        if (!m_gpu_composes) {
+            close(b.gpu_buffer);
+            b.gpu_buffer = -1;
+        }
+
         return true;
     case gpu_import::NO_MEMORY:
     case gpu_import::REFUSED:
@@ -695,7 +702,7 @@ void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
     case gpu_mapping::MAPPED:
         break;
     case gpu_mapping::GPU_FAILED:
-        stop_on_failed_gpu();
+        switch_to_cpu_on_failed_gpu();
         is_release_only = true;
         break;
     case gpu_mapping::NO_MEMORY:
@@ -714,7 +721,7 @@ void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
         case gpu_import::IMPORTED:
             break;
         case gpu_import::GPU_FAILED:
-            stop_on_failed_gpu();
+            switch_to_cpu_on_failed_gpu();
             is_release_only = true;
             break;
         case gpu_import::NO_MEMORY:
@@ -1345,11 +1352,11 @@ bool server::compose_on_cpu(dm_output& out, const presenter::target& t, const da
 }
 
 /* Composes `effective` into the output buffer `t` names, after capturing the collapse backdrop at its capture frame.
- * False when the frame's pictures or a compose failed, which stops every output's composes */
+ * False when the frame's pictures or a compose failed, which takes every output's composes off the GPU */
 bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const damage_list& effective) {
     int32_t sw = static_cast<int32_t>(out.pres->width());
     int32_t sh = static_cast<int32_t>(out.pres->height());
-    if (stop_on_misfit_backdrop(out)) {
+    if (switch_to_cpu_on_misfit_backdrop(out)) {
         return false;
     }
 
@@ -1374,7 +1381,7 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
     }
 
     if (!draw_pictures(out, rects, false)) {
-        stop_gpu_composing("a window's frame picture ran out of memory");
+        switch_to_cpu("a window's frame picture ran out of memory");
         return false;
     }
 
@@ -1385,18 +1392,18 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
         rects,
         gpu_backdrop_of(out)
     );
-    return !stop_on_failed_compose(result);
+    return !switch_to_cpu_on_failed_compose(result);
 }
 
-/* Composes the main output's frame beneath the orbs, its upper top picture holding the hint alone, into the power
- * overlay's capture, which the collapse frames fade. False when it stopped every output's composes */
+/* Composes the main output's frame beneath the orbs, its upper top picture holding the hint alone, into the collapse
+ * backdrop, which the collapse frames fade. False when it took every output's composes off the GPU */
 bool server::compose_capture(dm_output& out) {
     int32_t sw = static_cast<int32_t>(out.pres->width());
     int32_t sh = static_cast<int32_t>(out.pres->height());
     std::vector<damage_list::rect> whole = { { 0, 0, sw, sh } };
     layer_scene& scene = out.pictures.scene;
     if (!draw_pictures(out, whole, true)) {
-        stop_gpu_composing("a window's frame picture ran out of memory");
+        switch_to_cpu("a window's frame picture ran out of memory");
         return false;
     }
 
@@ -1410,7 +1417,7 @@ bool server::compose_capture(dm_output& out) {
         whole,
         gpu_backdrop_of(out)
     );
-    if (stop_on_failed_compose(result)) {
+    if (switch_to_cpu_on_failed_compose(result)) {
         return false;
     }
 
@@ -1419,44 +1426,42 @@ bool server::compose_capture(dm_output& out) {
     return true;
 }
 
-/* Stops every output's composes when `out` is a main output whose failed desktop rebuild left a backdrop of another
- * size, which the shader would read past. True when it stopped them */
-bool server::stop_on_misfit_backdrop(dm_output& out) {
+/* Takes every output's composes off the GPU when `out` is a main output whose failed desktop rebuild left a backdrop
+ * of another size, which the shader would read past. True when it took them off */
+bool server::switch_to_cpu_on_misfit_backdrop(dm_output& out) {
     const stlxgfx_surface_t* backdrop = gpu_backdrop_of(out).surface();
     if (backdrop->width == out.pres->width() && backdrop->height == out.pres->height()) {
         return false;
     }
 
-    stop_gpu_composing("the main output's backdrop has another size");
+    switch_to_cpu("the main output's backdrop has another size");
 
     return true;
 }
 
-/* Stops every output's composes unless `result` composed. True when it
- * stopped them */
-bool server::stop_on_failed_compose(compose_result result) {
+/* Takes every output's composes off the GPU unless `result` composed, after `stop_taking_gpu_buffers` when the
+ * device was lost on a failed GPU. True when it took them off */
+bool server::switch_to_cpu_on_failed_compose(compose_result result) {
     switch (result) {
     case compose_result::composed:
         return false;
     case compose_result::not_submitted:
-        stop_gpu_composing("a compose could not be submitted");
+        switch_to_cpu("a compose could not be submitted");
         break;
     case compose_result::lost:
-        stop_gpu_composing("the GPU device was lost");
+        if (m_gpu_compositor->has_gpu_failed()) {
+            switch_to_cpu_on_failed_gpu();
+        } else {
+            switch_to_cpu("the compositor's GPU context was lost");
+        }
+
         break;
     case compose_result::unfinished:
-        m_gpu_compositor->finish();
-        stop_gpu_composing("a compose passed its deadline");
+        switch_to_cpu("a compose passed its deadline");
         break;
     }
 
     return true;
-}
-
-/* No output composes from here on */
-void server::stop_gpu_composing(const char* reason) {
-    printf("stlxdm: composing stopped, %s\r\n", reason);
-    m_gpu_stopped = true;
 }
 
 backdrop_picture& server::gpu_backdrop_of(dm_output& out) {
@@ -1605,9 +1610,9 @@ bool server::collapse_on_cpu(dm_output& out, const presenter::target& t) {
 }
 
 /* Composes a collapse frame into the output buffer `t` names, drawn into the upper top picture, which the faded
- * collapse backdrop covers opaquely. False when it stopped every output's composes */
+ * collapse backdrop covers opaquely. False when it took every output's composes off the GPU */
 bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
-    if (stop_on_misfit_backdrop(out)) {
+    if (switch_to_cpu_on_misfit_backdrop(out)) {
         return false;
     }
 
@@ -1643,7 +1648,7 @@ bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
         rects,
         gpu_backdrop_of(out)
     );
-    return !stop_on_failed_compose(result);
+    return !switch_to_cpu_on_failed_compose(result);
 }
 
 /* Overlay phases: an activation edge repaints every output, as the others draw its dim, a transition the main output

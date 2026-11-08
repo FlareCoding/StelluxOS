@@ -262,6 +262,8 @@ int main() {
 
     std::vector<pollfd> fds;
     while (true) {
+        srv.reap_retired_compositor();
+
         fds.clear();
         srv.collect_fds(fds);
 
@@ -277,14 +279,16 @@ int main() {
         size_t event_slot = fds.size();
         fds.push_back({ disp.fd(), POLLIN, 0 });
 
-        /* Key repeat, the clock, the readouts, a trial, a GPU commit's query and each output's compose and cursor move
-         * deadlines cap the wait, and idle blocks forever */
+        /* Key repeat, the clock, the readouts, a trial, a GPU commit's query, a retired compositor's next timeline
+         * read and each output's compose and cursor move deadlines cap the wait, and idle blocks forever */
         uint64_t now = now_ns();
         int64_t next_ns = inp.repeat_timeout_ns(now);
+
         bound_wait(next_ns, srv.clock_timeout_ns(now));
         bound_wait(next_ns, srv.perf_timeout_ns(now));
         bound_wait(next_ns, srv.mode_timeout_ns(now));
         bound_wait(next_ns, srv.latch_timeout_ns(now));
+        bound_wait(next_ns, srv.retired_timeout_ns());
 
         srv.spread_damage();
         for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {

@@ -313,6 +313,16 @@ public:
      * Runs after the splash and before `serve()`. */
     void switch_to_gpu();
 
+    /* Once the retired GPU compositor's last compose ended or its device is
+     * lost, destroys it, or ends its retirement when composing stopped
+     * instead, reading its timeline without waiting. Runs at the end of
+     * each switch to the CPU and at each turn of the loop. */
+    void reap_retired_compositor();
+
+    /* The poll bound while a GPU compositor is retired, so its timeline is
+     * read at least that often, or -1 while none is retired */
+    int64_t retired_timeout_ns() const;
+
     /* Raises the handle limit, binds the protocol socket and spawns the
      * config's autostart entries, the moment clients may exist. Returns 0
      * or -1. */
@@ -347,13 +357,15 @@ public:
     void reload_config();
 
     /* Places the members again after output events or a mode request's
-     * answer, rebuilding the panels, power and backdrop when the main
-     * output changed or its size differs from the backdrop's (keeping the
-     * running ones on failure), and repaints every served output whole. A
-     * change of places moves windows and popups with their outputs, and
-     * it or a rebuild keeps them in reach. Returns the pointer, moved
-     * with its output or, once that left, to the main output's center,
-     * shown and routed as an untimed motion with `buttons` held. */
+     * answer, first leaving the GPU compositor, as `switch_to_cpu` does,
+     * when an output's GPU presenter could not be made, rebuilding the
+     * panels, power and backdrop when the main output changed or its size
+     * differs from the backdrop's (keeping the running ones on failure),
+     * and repaints every served output whole. A change of places moves
+     * windows and popups with their outputs, and it or a rebuild keeps them
+     * in reach. Returns the pointer, moved with its output or, once that
+     * left, to the main output's center, shown and routed as an untimed
+     * motion with `buttons` held. */
     desktop_point follow_outputs(desktop_point pointer, uint16_t buttons);
 
     /* Decides the wakeup's layout requests in arrival order, applying and
@@ -480,7 +492,7 @@ private:
     void release_picture(dm_client& c, uint32_t win_id, const dm_buffer& b);
     void stop_taking_gpu_buffers();
     bool import_shared_memory(dm_buffer& b);
-    void stop_on_failed_gpu();
+    void switch_to_cpu_on_failed_gpu();
     bool is_acquire_reached(dm_client& c, dm_window& w, uint64_t now);
     void latch_window(dm_client& c, dm_window& w);
     void flush_configures();
@@ -489,9 +501,10 @@ private:
     bool compose_on_cpu(dm_output& out, const presenter::target& t, const damage_list& effective);
     bool compose_on_gpu(dm_output& out, const presenter::target& t, const damage_list& effective);
     bool compose_capture(dm_output& out);
-    bool stop_on_misfit_backdrop(dm_output& out);
-    bool stop_on_failed_compose(compose_result result);
-    void stop_gpu_composing(const char* reason);
+    bool switch_to_cpu_on_misfit_backdrop(dm_output& out);
+    bool switch_to_cpu_on_failed_compose(compose_result result);
+    void switch_to_cpu(const char* reason);
+    gpu_compositor* retired_compositor() const;
     void compose_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
     bool composes_on_gpu() const { return m_gpu_composes && !m_gpu_stopped; }
     backdrop_picture& gpu_backdrop_of(dm_output& out);
@@ -565,9 +578,11 @@ private:
     display* m_display = nullptr;
     const stlxconf_t* m_conf = nullptr;
 
-    /* The GPU compositor, null while the CPU composes, declared before the
-     * clients and outputs since their pictures must drop before it */
+    /* The GPU compositor, null while the CPU composes, and the one the CPU
+     * took over from until it is reaped, both before the clients and
+     * outputs since their pictures must drop first */
     std::unique_ptr<gpu_compositor> m_gpu_compositor;
+    std::unique_ptr<gpu_compositor> m_retired_compositor;
 
     std::vector<std::unique_ptr<dm_client>> m_clients;
 
@@ -610,8 +625,10 @@ private:
      * compose writes */
     std::unique_ptr<picture> m_gpu_capture;
 
-    /* Whether served outputs compose on the GPU, from the switch after the
-     * splash, and whether a failed GPU compose stopped every output's */
+    /* Whether the GPU compositor holds the served outputs' presenters and
+     * pictures, from the switch after the splash until a switch to the CPU,
+     * and whether every output's composes stopped since the CPU compositor
+     * could not take over from the GPU's */
     bool m_gpu_composes = false;
     bool m_gpu_stopped = false;
 

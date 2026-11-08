@@ -294,6 +294,7 @@ void display::follow_output(uint32_t output, const gfxfb::gfxfb_output_info& inf
 
     note_state(output, info);
     report_output(output, info);
+    m_refused_outputs &= ~(1u << output);
 
     if (m_fallback) {
         m_fallback_served = m_fallback->update_output() == 0 && fallback_fits();
@@ -323,6 +324,9 @@ void display::follow_output(uint32_t output, const gfxfb::gfxfb_output_info& inf
     }
 
     served = make_presenter(info, m_maker);
+    if (!served && m_maker) {
+        m_refused_outputs |= 1u << output;
+    }
 }
 
 /* A presenter for the lit output `info` describes, over output buffers
@@ -381,6 +385,19 @@ int display::present_through(output_buffer_maker* maker) {
         all_made = made[output] != nullptr;
     }
 
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX && all_made && !maker; output++) {
+        if ((m_refused_outputs & (1u << output)) == 0) {
+            continue;
+        }
+
+        gfxfb::gfxfb_output_info info;
+        bool is_read = read_output(output, info) == 0;
+        bool serves = is_read && is_lit(info) && fits_desktop(info.current.width, info.current.height);
+        if (serves) {
+            made[output] = make_presenter(info, nullptr);
+        }
+    }
+
     std::unique_ptr<buffer_presenter>* dropped = all_made ? m_presenters : made;
     for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
         if (dropped[output]) {
@@ -399,6 +416,7 @@ int display::present_through(output_buffer_maker* maker) {
     }
 
     m_maker = maker;
+    m_refused_outputs = 0;
 
     return 0;
 }
