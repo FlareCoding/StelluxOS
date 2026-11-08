@@ -1,5 +1,5 @@
-// The window stage: FIFO and MAILBOX swapchains on a surface on a stlxwin window, offering images of the window's
-// configured size. Only the physical device on stlxdm's GPU, the GPU whose buffers stlxdm takes, presents to it.
+// The window stage: swapchains on a surface on a stlxwin window, its resize, and a second connection's GPU buffer
+// budget and loss. Only the physical device on stlxdm's GPU, the GPU whose buffers stlxdm takes, presents to a surface.
 
 #include "vktest.h"
 
@@ -9,12 +9,21 @@
 #include <stdlib.h>
 #include <stlxwin/stlxwin.h>
 #include <sys/socket.h>
+#include <thread>
+#include <time.h>
 #include <vector>
 #include <vulkan/vulkan.h>
 
 constexpr uint32_t WINDOW_WIDTH = 320;
 constexpr uint32_t WINDOW_HEIGHT = 200;
 constexpr uint64_t PRESENT_FRAMES = 1000;
+constexpr uint32_t BUDGET_IMAGES = 4;
+
+// Swapchains of `BUDGET_IMAGES` images that hold a connection's whole GPU buffer budget
+constexpr uint32_t BUDGET_SWAPCHAINS = STLXWIN_GPU_BUFFERS_MAX / BUDGET_IMAGES;
+
+// How long the resize check presents while it waits for a drag of the window's edge
+constexpr uint64_t DRAG_WAIT_NS = 300 * WAIT_SLICE_NS;
 
 struct window_commands {
     PFN_vkDestroyInstance                          destroy_instance;
@@ -54,12 +63,22 @@ struct window_surface {
     VkPhysicalDevice presenting_device;
 };
 
-// A device on the presenting physical device with swapchains, present ids and present waits, and its general queue
+// A device on the presenting physical device with swapchains, present ids and present waits, its general queue, and a
+// fence each acquire signals, reset once waited
 struct present_stage {
     work_commands    work;
     present_commands presents;
     VkDevice         device;
     VkQueue          queue;
+    VkFence          acquire_fence;
+};
+
+// Fresh windows of a second connection, whose GPU buffers count toward its budget alone, with their surfaces and the
+// swapchains made on them
+struct budget_windows {
+    stlxwin_conn*               conn;
+    std::vector<window_surface> targets;
+    std::vector<VkSwapchainKHR> swapchains;
 };
 
 // A swapchain's present mode, the image count it asks for and the count it takes. FIFO asks for 3, so an image stays
@@ -98,6 +117,8 @@ static const present_case PRESENT_CASES[] = {
         "1000 MAILBOX frames are acquired, cleared and presented, and a wait for the last present returns VK_SUCCESS",
     },
 };
+
+static const VkClearColorValue FRAME_COLOR = {{0.25f, 0.0f, 0.5f, 1.0f}};
 
 // An instance with the surface extensions the stage uses, or `VK_NULL_HANDLE`
 static VkInstance create_window_instance() {
@@ -585,12 +606,13 @@ static VkDevice create_presenting_device(VkInstance instance, VkPhysicalDevice p
 }
 
 // Creates a swapchain in `mode` asking for `image_count` images of the window's configured size, into `swapchain`,
-// which a failure leaves null
+// which a failure leaves null, and retires `old_swapchain` unless it is null
 static VkResult create_swapchain(
     const present_stage& stage,
     const window_surface& target,
     VkPresentModeKHR mode,
     uint32_t image_count,
+    VkSwapchainKHR old_swapchain,
     VkSwapchainKHR& swapchain
 ) {
     uint32_t width = 0;
@@ -613,6 +635,7 @@ static VkResult create_swapchain(
 
     create_info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    create_info.oldSwapchain = old_swapchain;
 
     start_hang_watch("vkCreateSwapchainKHR");
     VkResult result = stage.presents.create_swapchain(stage.device, &create_info, nullptr, &swapchain);
@@ -730,29 +753,34 @@ static VkResult present_image(
     return result;
 }
 
-// Acquires an image of `swapchain` into `index` through the fence `acquire_fence`, which it resets after each wait that
-// succeeds, and clears the image to `color`, returning the first result other than `VK_SUCCESS`
+// Acquires an image of `swapchain` into `index` and clears it to `color`, returning the first result other than
+// `VK_SUCCESS`
 static VkResult acquire_cleared_image(
     const present_stage& stage,
     VkSwapchainKHR swapchain,
     const std::vector<VkImage>& images,
     const VkClearColorValue& color,
-    VkFence acquire_fence,
     uint32_t& index
 ) {
     start_hang_watch("vkAcquireNextImageKHR");
-    VkResult result =
-        stage.presents.acquire_next_image(stage.device, swapchain, UINT64_MAX, VK_NULL_HANDLE, acquire_fence, &index);
+    VkResult result = stage.presents.acquire_next_image(
+        stage.device,
+        swapchain,
+        UINT64_MAX,
+        VK_NULL_HANDLE,
+        stage.acquire_fence,
+        &index
+    );
     end_hang_watch();
 
     if (result == VK_SUCCESS) {
         start_hang_watch("vkWaitForFences");
-        result = stage.presents.wait_for_fences(stage.device, 1, &acquire_fence, VK_TRUE, UINT64_MAX);
+        result = stage.presents.wait_for_fences(stage.device, 1, &stage.acquire_fence, VK_TRUE, UINT64_MAX);
         end_hang_watch();
     }
 
     if (result == VK_SUCCESS) {
-        result = stage.presents.reset_fences(stage.device, 1, &acquire_fence);
+        result = stage.presents.reset_fences(stage.device, 1, &stage.acquire_fence);
     }
 
     if (result != VK_SUCCESS) {
@@ -774,15 +802,10 @@ static VkResult present_frames(
     const std::vector<VkImage>& images,
     const present_case& present
 ) {
-    VkFenceCreateInfo fence_info = {};
-    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-
-    VkFence acquire_fence = VK_NULL_HANDLE;
-    VkResult result = stage.presents.create_fence(stage.device, &fence_info, nullptr, &acquire_fence);
-
+    VkResult result = VK_SUCCESS;
     for (uint64_t present_id = 1; result == VK_SUCCESS && present_id <= PRESENT_FRAMES; present_id++) {
         uint32_t index = 0;
-        result = acquire_cleared_image(stage, swapchain, images, present.color, acquire_fence, index);
+        result = acquire_cleared_image(stage, swapchain, images, present.color, index);
         if (result == VK_SUCCESS) {
             result = present_image(stage, swapchain, index, present_id, present_id == PRESENT_FRAMES);
         }
@@ -794,17 +817,43 @@ static VkResult present_frames(
         }
     }
 
-    if (acquire_fence != VK_NULL_HANDLE) {
-        stage.presents.destroy_fence(stage.device, acquire_fence, nullptr);
+    return result;
+}
+
+// Acquires, clears and presents one frame of `swapchain` as `present_id`, waiting for the present
+static VkResult present_waited_frame(const present_stage& stage, VkSwapchainKHR swapchain, uint64_t present_id) {
+    std::vector<VkImage> images = list_swapchain_images(stage, swapchain);
+    if (images.empty()) {
+        return VK_ERROR_UNKNOWN;
     }
 
-    return result;
+    uint32_t index = 0;
+    VkResult result = acquire_cleared_image(stage, swapchain, images, FRAME_COLOR, index);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    return present_image(stage, swapchain, index, present_id, true);
+}
+
+// Destroys `swapchain` under the hang watch
+static void destroy_swapchain(const present_stage& stage, VkSwapchainKHR swapchain) {
+    start_hang_watch("vkDestroySwapchainKHR");
+    stage.presents.destroy_swapchain(stage.device, swapchain, nullptr);
+    end_hang_watch();
+}
+
+// Waits for the stage's device to idle under the hang watch
+static void wait_for_device_idle(const present_stage& stage) {
+    start_hang_watch("vkDeviceWaitIdle");
+    stage.presents.device_wait_idle(stage.device);
+    end_hang_watch();
 }
 
 // Presents `PRESENT_FRAMES` frames through a swapchain made for `present`, checking its image count and its frames
 static void check_presents(const present_stage& stage, const window_surface& target, const present_case& present) {
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-    create_swapchain(stage, target, present.mode, present.requested_images, swapchain);
+    create_swapchain(stage, target, present.mode, present.requested_images, VK_NULL_HANDLE, swapchain);
     std::vector<VkImage> images;
     if (swapchain != VK_NULL_HANDLE) {
         images = list_swapchain_images(stage, swapchain);
@@ -823,20 +872,434 @@ static void check_presents(const present_stage& stage, const window_surface& tar
         );
         check(present.frames_check, result == VK_SUCCESS);
 
-        start_hang_watch("vkDeviceWaitIdle");
-        stage.presents.device_wait_idle(stage.device);
-        end_hang_watch();
+        wait_for_device_idle(stage);
     }
 
     if (swapchain != VK_NULL_HANDLE) {
-        start_hang_watch("vkDestroySwapchainKHR");
-        stage.presents.destroy_swapchain(stage.device, swapchain, nullptr);
-        end_hang_watch();
+        destroy_swapchain(stage, swapchain);
     }
 }
 
-// Checks FIFO and MAILBOX presents to `target` from a device of the stage's own
-static void check_swapchains(VkInstance instance, const window_surface& target) {
+// Drops the events queued on `conn`, which the stage never acts on, so a wait on it blocks until new ones arrive
+static void drop_events(stlxwin_conn* conn) {
+    stlxwin_event event;
+    while (stlxwin_next_event(conn, &event)) {
+        continue;
+    }
+}
+
+// Whether stlxdm reports where `window` is within `WORK_WAIT_NS`, which it does once the window's first commit shows
+static bool position_arrives(stlxwin_conn* conn, const stlxwin_window* window) {
+    uint64_t deadline = monotonic_ns() + WORK_WAIT_NS;
+
+    while (stlxwin_window_get_output(window, nullptr, nullptr, nullptr) != 0) {
+        drop_events(conn);
+
+        uint64_t now = monotonic_ns();
+        if (now >= deadline || stlxwin_wait(conn, static_cast<int64_t>(deadline - now)) < 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Prints the point in desktop coordinates just right of the window's content, where a drag resizes its right edge
+static void print_drag_point(stlxwin_window* window) {
+    int32_t x = 0;
+    int32_t y = 0;
+    stlxwin_window_get_output(window, nullptr, &x, &y);
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    stlxwin_window_configured(window, &width, &height, nullptr);
+
+    printf(
+        "  waiting %llu s for a drag of the window's right edge from (%d, %d)\n",
+        static_cast<unsigned long long>(DRAG_WAIT_NS / 1000000000),
+        x + static_cast<int32_t>(width),
+        y + static_cast<int32_t>(height / 2)
+    );
+
+    // Whoever drags acts on the line while the stage waits, so the line cannot sit in stdout's buffer
+    fflush(stdout);
+}
+
+// Presents frames of `swapchain` with the ids after `present_id`, left as the last one presented, returning the first
+// result other than `VK_SUCCESS`, or `VK_TIMEOUT` once `DRAG_WAIT_NS` passes
+static VkResult present_until_resized(
+    const present_stage& stage,
+    stlxwin_conn* conn,
+    VkSwapchainKHR swapchain,
+    const std::vector<VkImage>& images,
+    uint64_t& present_id
+) {
+    uint64_t deadline = monotonic_ns() + DRAG_WAIT_NS;
+    while (monotonic_ns() < deadline) {
+        // A configure reaches the next present only once dispatched
+        stlxwin_dispatch(conn);
+        drop_events(conn);
+
+        uint32_t index = 0;
+        VkResult result = acquire_cleared_image(stage, swapchain, images, FRAME_COLOR, index);
+        if (result == VK_SUCCESS) {
+            present_id++;
+            result = present_image(stage, swapchain, index, present_id, false);
+        }
+
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+    }
+
+    return VK_TIMEOUT;
+}
+
+// Checks that a drag of the window's edge makes a present report the swapchain suboptimal, that retiring it makes a
+// present on it and a wait for that present begun earlier find it out of date, and that its successor presents
+static void check_resize(const present_stage& stage, stlxwin_conn* conn, const window_surface& target) {
+    VkSwapchainKHR old_swapchain = VK_NULL_HANDLE;
+    create_swapchain(stage, target, VK_PRESENT_MODE_FIFO_KHR, 2, VK_NULL_HANDLE, old_swapchain);
+
+    std::vector<VkImage> images;
+    if (old_swapchain != VK_NULL_HANDLE) {
+        images = list_swapchain_images(stage, old_swapchain);
+    }
+
+    uint64_t present_id = 1;
+    bool is_shown = !images.empty() && present_waited_frame(stage, old_swapchain, present_id) == VK_SUCCESS;
+    VkResult resized = VK_ERROR_UNKNOWN;
+    if (is_shown && position_arrives(conn, target.window)) {
+        print_drag_point(target.window);
+        resized = present_until_resized(stage, conn, old_swapchain, images, present_id);
+    }
+
+    check(
+        "a drag of the window's right edge while it presents makes a present report the swapchain suboptimal",
+        resized == VK_SUBOPTIMAL_KHR
+    );
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    stlxwin_window_configured(target.window, &width, &height, nullptr);
+    printf("  configured size at the recreation: %ux%u\n", width, height);
+
+    uint32_t held_index = 0;
+    VkResult held = VK_ERROR_UNKNOWN;
+    if (is_shown) {
+        held = acquire_cleared_image(stage, old_swapchain, images, FRAME_COLOR, held_index);
+    }
+
+    uint64_t held_id = present_id + 1;
+    VkResult waited = VK_ERROR_UNKNOWN;
+    std::thread waiter;
+    if (held == VK_SUCCESS) {
+        waiter = std::thread([&] {
+            waited = stage.presents.wait_for_present(stage.device, old_swapchain, held_id, UINT64_MAX);
+        });
+
+        // A slice lets the wait begin before the recreation retires the swapchain
+        timespec slice = {0, static_cast<long>(WAIT_SLICE_NS)};
+        nanosleep(&slice, nullptr);
+    }
+
+    VkSwapchainKHR new_swapchain = VK_NULL_HANDLE;
+    create_swapchain(stage, target, VK_PRESENT_MODE_FIFO_KHR, 2, old_swapchain, new_swapchain);
+
+    VkResult presented = held;
+    if (held == VK_SUCCESS) {
+        presented = present_image(stage, old_swapchain, held_index, held_id, false);
+    }
+
+    check(
+        "a present on a swapchain retired by its recreation with oldSwapchain finds it out of date",
+        presented == VK_ERROR_OUT_OF_DATE_KHR
+    );
+
+    if (waiter.joinable()) {
+        start_hang_watch("vkWaitForPresentKHR");
+        waiter.join();
+        end_hang_watch();
+    }
+
+    check(
+        "a wait with no timeout for that present, begun before the recreation, finds it out of date",
+        waited == VK_ERROR_OUT_OF_DATE_KHR
+    );
+
+    VkResult result = VK_ERROR_UNKNOWN;
+    if (new_swapchain != VK_NULL_HANDLE) {
+        result = present_waited_frame(stage, new_swapchain, 1);
+    }
+
+    check("the recreated swapchain presents a frame, and a wait for it returns VK_SUCCESS", result == VK_SUCCESS);
+
+    wait_for_device_idle(stage);
+    for (VkSwapchainKHR swapchain : {old_swapchain, new_swapchain}) {
+        if (swapchain != VK_NULL_HANDLE) {
+            destroy_swapchain(stage, swapchain);
+        }
+    }
+}
+
+// Creates a surface on a fresh window of `conn` into `target`, leaving the window or the surface null on failure
+static void create_budget_target(
+    VkInstance instance,
+    const window_commands& commands,
+    stlxwin_conn* conn,
+    window_surface& target
+) {
+    start_hang_watch("stlxwin_window_create");
+    target.window = stlxwin_window_create(conn, WINDOW_WIDTH, WINDOW_HEIGHT, "vktest", 0);
+    end_hang_watch();
+
+    if (target.window != nullptr && create_window_surface(instance, commands, conn, target) != VK_SUCCESS) {
+        target.surface = VK_NULL_HANDLE;
+    }
+}
+
+// Fills a second connection's GPU buffer budget with swapchains on fresh windows, checking that one more is refused
+// with `VK_ERROR_OUT_OF_HOST_MEMORY`, that one refused midway detaches its images, and that the first still presents
+static void check_budget(
+    VkInstance instance,
+    const window_commands& commands,
+    const present_stage& stage,
+    VkPhysicalDevice presenting_device,
+    budget_windows& budget
+) {
+    start_hang_watch("stlxwin_connect");
+    budget.conn = stlxwin_connect("vktest");
+    end_hang_watch();
+
+    budget.targets.resize(BUDGET_SWAPCHAINS + 1);
+    bool has_surfaces = budget.conn != nullptr;
+    for (window_surface& target : budget.targets) {
+        target.presenting_device = presenting_device;
+        if (has_surfaces) {
+            create_budget_target(instance, commands, budget.conn, target);
+            has_surfaces = target.surface != VK_NULL_HANDLE;
+        }
+    }
+
+    bool fills_budget = has_surfaces;
+    for (uint32_t i = 0; fills_budget && i < BUDGET_SWAPCHAINS; i++) {
+        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+        VkResult result = create_swapchain(
+            stage,
+            budget.targets[i],
+            VK_PRESENT_MODE_FIFO_KHR,
+            BUDGET_IMAGES,
+            VK_NULL_HANDLE,
+            swapchain
+        );
+        if (swapchain != VK_NULL_HANDLE) {
+            budget.swapchains.push_back(swapchain);
+        }
+
+        fills_budget = result == VK_SUCCESS && list_swapchain_images(stage, swapchain).size() == BUDGET_IMAGES;
+    }
+
+    check(
+        "4 swapchains of 4 images on fresh windows of a second connection fill its budget of 16 GPU buffers",
+        fills_budget
+    );
+
+    VkResult result = VK_ERROR_UNKNOWN;
+    if (fills_budget) {
+        VkSwapchainKHR refused = VK_NULL_HANDLE;
+        result = create_swapchain(stage, budget.targets.back(), VK_PRESENT_MODE_FIFO_KHR, 2, VK_NULL_HANDLE, refused);
+        if (refused != VK_NULL_HANDLE) {
+            budget.swapchains.push_back(refused);
+        }
+    }
+
+    check(
+        "a fifth swapchain on that connection is refused as out of host memory",
+        result == VK_ERROR_OUT_OF_HOST_MEMORY
+    );
+
+    // The last of the 4 swapchains remade at 2 images leaves 2 of the 16 buffers free, so a swapchain asking for 4
+    // images attaches 2 before it is refused
+    VkResult over_budget = VK_ERROR_UNKNOWN;
+    VkResult after_detach = VK_ERROR_UNKNOWN;
+    if (result == VK_ERROR_OUT_OF_HOST_MEMORY && budget.swapchains.size() == BUDGET_SWAPCHAINS) {
+        VkSwapchainKHR& last = budget.swapchains.back();
+        destroy_swapchain(stage, last);
+        VkResult remade = create_swapchain(
+            stage,
+            budget.targets[BUDGET_SWAPCHAINS - 1],
+            VK_PRESENT_MODE_FIFO_KHR,
+            2,
+            VK_NULL_HANDLE,
+            last
+        );
+
+        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+        if (remade == VK_SUCCESS) {
+            over_budget = create_swapchain(
+                stage,
+                budget.targets.back(),
+                VK_PRESENT_MODE_FIFO_KHR,
+                BUDGET_IMAGES,
+                VK_NULL_HANDLE,
+                swapchain
+            );
+        }
+
+        if (over_budget == VK_ERROR_OUT_OF_HOST_MEMORY) {
+            after_detach =
+                create_swapchain(stage, budget.targets.back(), VK_PRESENT_MODE_FIFO_KHR, 2, VK_NULL_HANDLE, swapchain);
+        }
+
+        // Destroyed at once, since check_connection_loss creates another on that window
+        if (swapchain != VK_NULL_HANDLE) {
+            destroy_swapchain(stage, swapchain);
+        }
+    }
+
+    check(
+        "a swapchain refused after 2 of its images attached detaches them, so a 2-image swapchain then fits in the "
+        "budget",
+        over_budget == VK_ERROR_OUT_OF_HOST_MEMORY && after_detach == VK_SUCCESS
+    );
+
+    result = VK_ERROR_UNKNOWN;
+    if (!budget.swapchains.empty()) {
+        result = present_waited_frame(stage, budget.swapchains[0], 1);
+    }
+
+    check(
+        "the first of the 4 swapchains then presents a frame, and a wait for it returns VK_SUCCESS",
+        result == VK_SUCCESS
+    );
+}
+
+// Shuts the second connection's socket, which ends it while stlxdm and the first connection run on, checking that its
+// surfaces are lost to presents, present waits, acquires, queries and new swapchains, which still retire old ones
+static void check_connection_loss(
+    const window_commands& commands,
+    const present_stage& stage,
+    const budget_windows& budget
+) {
+    bool has_swapchain = !budget.swapchains.empty();
+    uint32_t held_index = 0;
+    VkResult held = VK_ERROR_UNKNOWN;
+    if (has_swapchain) {
+        std::vector<VkImage> images = list_swapchain_images(stage, budget.swapchains[0]);
+        held = acquire_cleared_image(stage, budget.swapchains[0], images, FRAME_COLOR, held_index);
+    }
+
+    bool is_shut = budget.conn != nullptr && shutdown(stlxwin_conn_fd(budget.conn), SHUT_RDWR) == 0;
+
+    VkResult presented = VK_ERROR_UNKNOWN;
+    if (is_shut && held == VK_SUCCESS) {
+        presented = present_image(stage, budget.swapchains[0], held_index, 2, false);
+    }
+
+    check(
+        "once the second connection's socket is shut, a present on its first swapchain finds the surface lost",
+        presented == VK_ERROR_SURFACE_LOST_KHR
+    );
+
+    VkResult waited = VK_ERROR_UNKNOWN;
+    if (presented == VK_ERROR_SURFACE_LOST_KHR) {
+        start_hang_watch("vkWaitForPresentKHR");
+        waited = stage.presents.wait_for_present(stage.device, budget.swapchains[0], 2, UINT64_MAX);
+        end_hang_watch();
+    }
+
+    check("a wait with no timeout for that present finds the surface lost", waited == VK_ERROR_SURFACE_LOST_KHR);
+
+    bool is_lost = is_shut && has_swapchain;
+    if (is_lost) {
+        uint32_t index = 0;
+        start_hang_watch("vkAcquireNextImageKHR");
+        VkResult acquired = stage.presents.acquire_next_image(
+            stage.device,
+            budget.swapchains[0],
+            UINT64_MAX,
+            VK_NULL_HANDLE,
+            stage.acquire_fence,
+            &index
+        );
+        end_hang_watch();
+
+        VkSurfaceCapabilitiesKHR capabilities = {};
+        VkResult read = read_capabilities(commands, budget.targets[0], nullptr, capabilities);
+
+        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+        VkResult created =
+            create_swapchain(stage, budget.targets.back(), VK_PRESENT_MODE_FIFO_KHR, 2, VK_NULL_HANDLE, swapchain);
+        if (swapchain != VK_NULL_HANDLE) {
+            destroy_swapchain(stage, swapchain);
+        }
+
+        is_lost = acquired == VK_ERROR_SURFACE_LOST_KHR && read == VK_ERROR_SURFACE_LOST_KHR &&
+            created == VK_ERROR_SURFACE_LOST_KHR;
+    }
+
+    check("an acquire, a capabilities query and a new swapchain on that connection's surfaces find them lost", is_lost);
+
+    bool is_retired = false;
+    if (is_shut && budget.swapchains.size() > 1) {
+        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+        VkResult created =
+            create_swapchain(stage, budget.targets[1], VK_PRESENT_MODE_FIFO_KHR, 2, budget.swapchains[1], swapchain);
+        if (swapchain != VK_NULL_HANDLE) {
+            destroy_swapchain(stage, swapchain);
+        }
+
+        uint32_t index = 0;
+        start_hang_watch("vkAcquireNextImageKHR");
+        VkResult acquired = stage.presents.acquire_next_image(
+            stage.device,
+            budget.swapchains[1],
+            UINT64_MAX,
+            VK_NULL_HANDLE,
+            stage.acquire_fence,
+            &index
+        );
+        end_hang_watch();
+
+        is_retired = created == VK_ERROR_SURFACE_LOST_KHR && acquired == VK_ERROR_OUT_OF_DATE_KHR;
+    }
+
+    check(
+        "a creation on a lost surface still retires its oldSwapchain, so an acquire on it finds it out of date",
+        is_retired
+    );
+}
+
+// Destroys the budget's swapchains, surfaces and connection once the stage's device idles
+static void destroy_budget_windows(
+    VkInstance instance,
+    const window_commands& commands,
+    const present_stage& stage,
+    const budget_windows& budget
+) {
+    wait_for_device_idle(stage);
+    for (VkSwapchainKHR swapchain : budget.swapchains) {
+        destroy_swapchain(stage, swapchain);
+    }
+
+    for (const window_surface& target : budget.targets) {
+        if (target.surface != VK_NULL_HANDLE) {
+            commands.destroy_surface(instance, target.surface, nullptr);
+        }
+    }
+
+    if (budget.conn != nullptr) {
+        stlxwin_disconnect(budget.conn);
+    }
+}
+
+// Checks presents, a resize, a connection's budget and its loss with swapchains of a device of the stage's own
+static void check_swapchains(
+    VkInstance instance,
+    const window_commands& commands,
+    stlxwin_conn* conn,
+    const window_surface& target
+) {
     present_stage stage = {};
     bool has_commands = find_work_commands(instance, stage.work) && find_present_commands(instance, stage.presents);
     if (has_commands) {
@@ -852,8 +1315,25 @@ static void check_swapchains(VkInstance instance, const window_surface& target) 
     }
 
     stage.work.get_device_queue(stage.device, GENERAL_FAMILY, 0, &stage.queue);
-    for (const present_case& present : PRESENT_CASES) {
-        check_presents(stage, target, present);
+
+    VkFenceCreateInfo fence_info = {};
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkResult result = stage.presents.create_fence(stage.device, &fence_info, nullptr, &stage.acquire_fence);
+    check("a fence for acquires to signal is created on that device", result == VK_SUCCESS);
+
+    if (result == VK_SUCCESS) {
+        for (const present_case& present : PRESENT_CASES) {
+            check_presents(stage, target, present);
+        }
+
+        check_resize(stage, conn, target);
+
+        budget_windows budget = {};
+        check_budget(instance, commands, stage, target.presenting_device, budget);
+        check_connection_loss(commands, stage, budget);
+        destroy_budget_windows(instance, commands, stage, budget);
+
+        stage.presents.destroy_fence(stage.device, stage.acquire_fence, nullptr);
     }
 
     stage.presents.destroy_device(stage.device, nullptr);
@@ -874,7 +1354,7 @@ static void check_surface(VkInstance instance, const window_commands& commands) 
     window_surface target = {};
     if (conn != nullptr) {
         start_hang_watch("stlxwin_window_create");
-        target.window = stlxwin_window_create(conn, WINDOW_WIDTH, WINDOW_HEIGHT, "vktest", 0);
+        target.window = stlxwin_window_create(conn, WINDOW_WIDTH, WINDOW_HEIGHT, "vktest", STLXWIN_WF_RESIZABLE);
         end_hang_watch();
     }
 
@@ -904,7 +1384,7 @@ static void check_surface(VkInstance instance, const window_commands& commands) 
         check_capabilities(commands, target);
         check_formats_and_modes(commands, target);
         check_lost_surface(instance, commands, target.presenting_device);
-        check_swapchains(instance, target);
+        check_swapchains(instance, commands, conn, target);
         commands.destroy_surface(instance, target.surface, nullptr);
     }
 
@@ -1005,9 +1485,9 @@ static void check_linear_refused() {
     VkResult result = VK_ERROR_UNKNOWN;
     if (stage.device != VK_NULL_HANDLE) {
         VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-        result = create_swapchain(stage, target, VK_PRESENT_MODE_FIFO_KHR, 2, swapchain);
+        result = create_swapchain(stage, target, VK_PRESENT_MODE_FIFO_KHR, 2, VK_NULL_HANDLE, swapchain);
         if (swapchain != VK_NULL_HANDLE) {
-            stage.presents.destroy_swapchain(stage.device, swapchain, nullptr);
+            destroy_swapchain(stage, swapchain);
         }
 
         stage.presents.destroy_device(stage.device, nullptr);

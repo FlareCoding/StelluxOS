@@ -390,7 +390,7 @@ void check_loss(VkInstance instance, VkPhysicalDevice physical_device);
 void check_fault(VkInstance instance, VkPhysicalDevice physical_device);
 
 // On instances and connections of its own, checks that only stlxdm's GPU can present to a stlxwin window's surface,
-// what it offers, a lost surface, FIFO and MAILBOX frames and a linear swapchain's refusal, or prints why none
+// what it offers, lost surfaces, frames, a resize, a buffer budget and a linear swapchain's refusal, or prints why none
 void check_window();
 
 #endif // VKTEST_H
