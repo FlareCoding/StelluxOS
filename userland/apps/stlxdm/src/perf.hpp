@@ -10,6 +10,9 @@ constexpr uint32_t PERF_REFRESH_MS = 250;
 /* An input whose response never came is forgotten after this long */
 constexpr uint64_t PERF_INPUT_STALE_NS = 2000000000ull;
 
+/* The shortest time one output's frame statistics line covers */
+constexpr uint64_t FRAME_STATS_PERIOD_NS = 60000000000ull;
+
 /* What the bar shows after one refresh: the window's latency percentile
  * and newest sample, `valid` if it holds one, and its missed frames */
 struct perf_snapshot {
@@ -18,6 +21,15 @@ struct perf_snapshot {
     uint32_t last_us = 0;
     bool counts_missed_frames = false;
     uint32_t missed_frames = 0;
+};
+
+/* What one GPU compose cost: its thread's CPU time from its layer lists to
+ * its submit and, when its queue writes timestamps and their read succeeds,
+ * its GPU time between the timestamps around its dispatches */
+struct compose_times {
+    uint64_t cpu_ns = 0;
+    uint64_t gpu_ns = 0;
+    bool     has_gpu_time = false;
 };
 
 /* Measures the desktop's input to next paint latency and sums the
@@ -101,6 +113,34 @@ private:
     bool m_fresh = false;
     uint64_t m_next_refresh_ns = 0;
     bool m_quiescent = false;
+};
+
+/* One output's GPU frames since this record's last line or, before its
+ * first, since it was made. The line is logged at the first frame that ends
+ * `FRAME_STATS_PERIOD_NS` or more after the period's first, so no timer
+ * wakes for it. */
+class frame_stats {
+public:
+    /* Adds a frame whose compose ended at `now_ns`, `is_whole_output` when
+     * one of its rectangles is the whole output, then logs the line for
+     * `output` and starts over once the period is over */
+    void add(uint32_t output, uint64_t now_ns, bool is_whole_output, const compose_times& times);
+
+private:
+    void log(uint32_t output, uint64_t now_ns) const;
+
+    uint64_t m_start_ns = 0;
+    uint64_t m_frames = 0;
+    uint64_t m_cpu_total_ns = 0;
+    uint64_t m_cpu_longest_ns = 0;
+
+    /* Frames with a GPU time, and those of them that composed the
+     * whole output */
+    uint64_t m_gpu_frames = 0;
+    uint64_t m_gpu_total_ns = 0;
+    uint64_t m_gpu_longest_ns = 0;
+    uint64_t m_whole_frames = 0;
+    uint64_t m_whole_longest_ns = 0;
 };
 
 #endif

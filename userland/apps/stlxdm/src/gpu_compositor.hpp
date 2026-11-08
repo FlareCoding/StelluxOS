@@ -4,6 +4,7 @@
 #include "compare.hpp"
 #include "damage.hpp"
 #include "layers.hpp"
+#include "perf.hpp"
 #include "picture.hpp"
 #include "presenter.hpp"
 
@@ -121,8 +122,8 @@ public:
     /* Whether the probe context reads lost with `GPU_LOST_DEVICE` */
     bool has_gpu_failed() const;
 
-    /* An output's command and layer buffers, or null when Vulkan has no
-     * memory left */
+    /* An output's compose buffers, whose layer buffer its first compose
+     * makes, or null when Vulkan has no memory left */
     std::unique_ptr<compose_buffers> make_compose_buffers();
 
     /* Composes `rects` of `scene`, in the output's pixels and clipped to
@@ -158,6 +159,9 @@ public:
 
     bool is_retired() const;
     compose_state last_compose_state() const;
+
+    /* What the last compose that composed cost */
+    const compose_times& last_times() const { return m_last_times; }
 
 private:
     class owned_picture;
@@ -217,6 +221,11 @@ private:
         PFN_vkCmdDispatch                               cmd_dispatch;
         PFN_vkCmdPipelineBarrier                        cmd_pipeline_barrier;
         PFN_vkCmdCopyBuffer                             cmd_copy_buffer;
+        PFN_vkCreateQueryPool                           create_query_pool;
+        PFN_vkDestroyQueryPool                          destroy_query_pool;
+        PFN_vkGetQueryPoolResults                       get_query_pool_results;
+        PFN_vkCmdResetQueryPool                         cmd_reset_query_pool;
+        PFN_vkCmdWriteTimestamp                         cmd_write_timestamp;
         PFN_vkQueueSubmit                               queue_submit;
         PFN_vkWaitSemaphores                            wait_semaphores;
         PFN_vkGetSemaphoreCounterValue                  get_semaphore_counter_value;
@@ -242,6 +251,7 @@ private:
     const char* create_device();
     const char* create_pipeline();
     const char* create_command_pool();
+    const char* create_timestamp_queries();
     const char* upload_corner_distances();
     const char* probe_gpu_file(int gpu_fd, const gpu_info& info);
 
@@ -259,7 +269,9 @@ private:
         const backdrop_picture& backdrop
     );
     void record_readback(compose_buffers& buffers, const compose_target& target);
-    compose_result submit_and_wait(compose_buffers& buffers);
+    void write_timestamp(VkCommandBuffer commands, uint32_t query);
+    compose_result submit_and_wait(compose_buffers& buffers, uint64_t& submitted_ns);
+    bool read_gpu_time(uint64_t& gpu_ns) const;
     void transfer_buffers(
         compose_buffers& buffers,
         const compose_target& target,
@@ -289,12 +301,18 @@ private:
     VkPhysicalDeviceMemoryProperties m_memory_properties = {};
     uint32_t                         m_queue_family = 0;
 
+    /* How many low bits of the queue's timestamps count, 0 when it writes
+     * none, and the nanoseconds of a tick */
+    uint32_t                         m_timestamp_bits = 0;
+    float                            m_timestamp_period_ns = 0;
+
     VkDevice         m_device = VK_NULL_HANDLE;
     VkQueue          m_queue = VK_NULL_HANDLE;
     VkSemaphore      m_timeline = VK_NULL_HANDLE;
     VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_pipeline = VK_NULL_HANDLE;
     VkCommandPool    m_command_pool = VK_NULL_HANDLE;
+    VkQueryPool      m_timestamps = VK_NULL_HANDLE;
     int              m_gpu_fd = -1;
     uint32_t         m_page_size = 0;
     bool             m_contexts_may_map_zero = false;
@@ -303,6 +321,8 @@ private:
     /* The timeline value the last submitted compose raises it to when
      * it ends */
     uint64_t         m_compose_point = 0;
+
+    compose_times    m_last_times;
 
     /* Whether the compositor is retired, from `retire` to
      * `end_retirement`, and what `destroy_buffer` was handed meanwhile,
@@ -322,8 +342,9 @@ private:
 };
 
 /* One output's command buffer and the layer buffer its composes' dispatches
- * read, which grows with the z-order. It must drop before its compositor,
- * and only once no compose recorded in it can run or after `retire`. */
+ * read, which a compose replaces with a larger one when its lists outgrow
+ * it. It must drop before its compositor, and only once no compose recorded
+ * in it can run or after `retire`. */
 class gpu_compositor::compose_buffers {
 public:
     ~compose_buffers();

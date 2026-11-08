@@ -1404,6 +1404,7 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
         return false;
     }
 
+    note_gpu_frame(out);
     if (target.readback) {
         compare_with_cpu(out, t.stride, false);
     }
@@ -1478,6 +1479,16 @@ bool server::switch_to_cpu_on_failed_compose(compose_result result) {
     }
 
     return true;
+}
+
+/* Adds the frame the GPU just composed into `out`, over `out.pictures.rects`, to its frame statistics */
+void server::note_gpu_frame(dm_output& out) {
+    uint32_t output = static_cast<uint32_t>(&out - m_outputs);
+    int32_t width = static_cast<int32_t>(out.pres->width());
+    int32_t height = static_cast<int32_t>(out.pres->height());
+    bool is_whole_output = has_whole_output(out.pictures.rects, width, height);
+
+    out.pictures.stats.add(output, now_ns(), is_whole_output, m_gpu_compositor->last_times());
 }
 
 backdrop_picture& server::gpu_backdrop_of(dm_output& out) {
@@ -1671,6 +1682,7 @@ bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
         return false;
     }
 
+    note_gpu_frame(out);
     if (target.readback) {
         compare_with_cpu(out, t.stride, true);
     }
