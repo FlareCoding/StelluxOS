@@ -173,8 +173,8 @@ private:
 /* A GPU buffer an output scans out and the GPU compositor writes, imported
  * into gfxfb. Neither the CPU nor any client maps it. Dropping it destroys
  * its gfxfb handle, gfxfb keeping the buffer while an output shows it, and
- * then frees the GPU's import of it, so it must drop only once no compose
- * that writes it can run, and before its maker. */
+ * then frees the GPU's import, so it must drop only once no compose that
+ * writes it can run or the GPU compositor retired, and before its maker. */
 class output_buffer {
 public:
     virtual ~output_buffer() = default;

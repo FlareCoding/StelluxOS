@@ -36,6 +36,13 @@ enum class compose_result {
     unfinished,     /* it did not end within `COMPOSE_DEADLINE_NS`, or its wait failed, and may still run */
 };
 
+/* Where the last compose stands, read without waiting */
+enum class compose_state {
+    ended,    /* its target holds the frame, or no compose was submitted */
+    running,  /* it may still read and write the compositor's memory */
+    lost,     /* the device is lost, so none of the compositor's work runs any more */
+};
+
 /* How a window buffer's import went */
 enum class window_import_result {
     imported,
@@ -113,10 +120,19 @@ public:
         backdrop_picture& backdrop
     );
 
-    /* Waits with no deadline, which the kernel's hang deadline bounds, for
-     * the last compose to end, so nothing frees memory that a compose past
-     * `COMPOSE_DEADLINE_NS` still writes */
-    void finish();
+    /* Keeps the memory and command buffers of everything dropped from here
+     * on until `end_retirement` or the destructor, since a compose past
+     * `COMPOSE_DEADLINE_NS` may still use them */
+    void retire();
+
+    /* Frees the memory kept since `retire`, after which `destroy_buffer`
+     * frees at once again. The caller must call it only when no compose
+     * runs and none will follow. The command buffers kept stay with
+     * the pool. */
+    void end_retirement();
+
+    bool is_retired() const;
+    compose_state last_compose_state() const;
 
 private:
     class owned_picture;
@@ -178,6 +194,7 @@ private:
         PFN_vkCmdCopyBuffer                             cmd_copy_buffer;
         PFN_vkQueueSubmit                               queue_submit;
         PFN_vkWaitSemaphores                            wait_semaphores;
+        PFN_vkGetSemaphoreCounterValue                  get_semaphore_counter_value;
     };
 
     /* A buffer bound to memory of its own, with its GPU address and, when
@@ -236,6 +253,7 @@ private:
     );
 
     void destroy_buffer(device_buffer& buffer);
+    void free_buffer(device_buffer& buffer);
 
     commands                         m_vk = {};
     VkInstance                       m_instance = VK_NULL_HANDLE;
@@ -258,6 +276,12 @@ private:
      * it ends */
     uint64_t         m_compose_point = 0;
 
+    /* Whether the compositor is retired, from `retire` to
+     * `end_retirement`, and what `destroy_buffer` was handed meanwhile,
+     * which `end_retirement` frees */
+    bool                       m_is_retired = false;
+    std::vector<device_buffer> m_retired_buffers;
+
     /* decor's corner distance table in GPU memory, its entry count, and the
      * distance past its last entry */
     device_buffer m_corner_distances;
@@ -267,7 +291,7 @@ private:
 
 /* One output's command buffer and the layer buffer its composes' dispatches
  * read, which grows with the z-order. It must drop before its compositor,
- * and only once no compose recorded in it can run. */
+ * and only once no compose recorded in it can run or after `retire`. */
 class gpu_compositor::compose_buffers {
 public:
     ~compose_buffers();

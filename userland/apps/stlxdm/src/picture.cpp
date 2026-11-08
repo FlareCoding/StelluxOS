@@ -78,7 +78,7 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
         bytes += strip_bytes(strips[i]);
     }
 
-    /* No compose still reads the old memory, since stlxdm waits for each one */
+    /* No compose still reads the old memory, since frames are drawn only after the last compose ended */
     if (!m_memory || m_memory->bytes() < bytes) {
         m_memory.reset();
         m_memory = maker.make_picture(bytes);

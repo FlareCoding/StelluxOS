@@ -61,21 +61,27 @@ public:
     /* Follows `output`'s state as read after its output event: keeps its
      * presenter, refreshed by `buffer_presenter::relit()`, while it stays
      * lit at its size, and otherwise drops any presenter and makes one at
-     * its size while the output reads lit. A lit output whose buffers
-     * cannot be made or whose mode passes the desktop's limit stays
-     * unserved, printing why. The memcpy fallback maps the primary again
-     * instead, serving nothing while that fails or the primary passes the
-     * limit. */
+     * its size while the output reads lit. A lit output whose mode passes
+     * the desktop's limit or whose buffers cannot be made stays unserved,
+     * printing why, in `refused_outputs()` too when they are GPU buffers.
+     * The memcpy fallback maps the primary again instead, serving nothing
+     * while that fails or the primary passes the limit. */
     void follow_output(uint32_t output, const gfxfb::gfxfb_output_info& info);
 
     /* Replaces every served output's presenter, and those `follow_output()`
      * makes from here on, with one presenting the output buffers `maker`
-     * makes, or gfxfb's own buffers when null, first waiting for every
-     * pending present's end. `maker` must outlive them. Returns 0, or -1
-     * keeping the running presenters after printing why one could not be
-     * made, and for the memcpy fallback. Each dropped presenter hides its
-     * hardware cursor. */
+     * makes, or gfxfb's own buffers when null, which also serve each output
+     * `refused_outputs()` names that still reads lit within the desktop's
+     * limit, first waiting for every pending present's end. `maker` must
+     * outlive them. Returns 0, or -1 keeping the running presenters after
+     * printing why one could not be made, and for the memcpy fallback. Each
+     * dropped presenter hides its hardware cursor. */
     int present_through(output_buffer_maker* maker);
+
+    /* One bit per lit output left unserved since its GPU output buffers
+     * could not be made, cleared when `follow_output()` follows that output
+     * again or `present_through()` replaces the presenters. */
+    uint32_t refused_outputs() const { return m_refused_outputs; }
 
     /* `output`'s presenter, or null while it is not served. */
     presenter* presenter_of(uint32_t output) const;
@@ -109,6 +115,7 @@ private:
     uint32_t m_changed_outputs = 0;
     uint32_t m_primary = 0;
     uint32_t m_relighting = 0;
+    uint32_t m_refused_outputs = 0;
 
     /* Whether the fallback's last update succeeded within the limit. */
     bool     m_fallback_served = false;

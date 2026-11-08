@@ -28,6 +28,9 @@ constexpr rlim_t HANDLE_LIMIT = 65536;
  * sizeof(cmsghdr)) / 4, so CMSG_SPACE's padding would fit a fourth. */
 constexpr size_t HANDLE_CONTROL_BYTES = CMSG_LEN(SWP_GPU_HANDLES * sizeof(int));
 
+/* A retired GPU compositor's timeline is read at least this often */
+constexpr int64_t RETIRED_QUERY_INTERVAL_NS = 100000000;
+
 /* Spawns a detached app. args is an optional space-separated argument
  * string tokenized into a scratch copy, no quoting support. */
 static void spawn_app(const char* path, const char* args) {
@@ -179,6 +182,16 @@ static stlxgfx_surface_t* build_backdrop(const stlxconf_t& conf,
                         image, crop_x, crop_y, crop_w, crop_h);
 
     return backdrop;
+}
+
+/* A copy of `source` in memory of its own, null when memory ran out */
+static stlxgfx_surface_t* copy_surface(const stlxgfx_surface_t* source) {
+    stlxgfx_surface_t* copy = stlxgfx_create_surface(source->width, source->height, 32, 16, 8, 0);
+    if (copy) {
+        stlxgfx_blit(copy, 0, 0, source, 0, 0, source->width, source->height);
+    }
+
+    return copy;
 }
 
 static bool same_layout(const layout& a, const layout& b) {
@@ -357,6 +370,112 @@ void server::switch_to_gpu() {
     m_gpu_composes = true;
     m_damage.add_full();
     printf("stlxdm: composing on the GPU\r\n");
+}
+
+/* Retires the GPU compositor and moves every served output to the CPU compositor on a flip presenter, copying the
+ * backdrops into CPU memory. Composing stops instead when a flip presenter or the main backdrop's copy fails */
+void server::switch_to_cpu(const char* reason) {
+    m_gpu_compositor->retire();
+
+    stlxgfx_surface_t* backdrop = copy_surface(m_gpu_backdrop->surface());
+    const char* refusal = backdrop ? nullptr : "no memory was left for the main backdrop's copy";
+    if (!refusal && m_display->present_through(nullptr) != 0) {
+        refusal = "an output has no flip presenter";
+        show_cursor();
+    }
+
+    if (refusal) {
+        stlxgfx_destroy_surface(backdrop);
+        printf("stlxdm: composing stopped, %s, and the CPU cannot take over since %s\r\n", reason, refusal);
+        m_gpu_stopped = true;
+        reap_retired_compositor();
+        return;
+    }
+
+    m_panels->rebind(backdrop);
+    m_power->capture_into(nullptr);
+    m_backdrop = backdrop;
+    m_gpu_backdrop.reset();
+    m_gpu_capture.reset();
+
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        dm_output& out = m_outputs[output];
+        if (out.pictures.backdrop && !out.backdrop_failed) {
+            out.backdrop = copy_surface(out.pictures.backdrop->surface());
+            if (!out.backdrop) {
+                printf("stlxdm: output %u's backdrop could not be copied, showing the background color\r\n", output);
+            }
+        }
+
+        out.pictures = {};
+        if (out.pres) {
+            out.pres = m_display->presenter_of(output);
+        }
+    }
+
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            w->frame = frame_picture();
+            for (dm_buffer& b : w->buffers) {
+                b.import.reset();
+                b.gpu_address = 0;
+
+                bool holds_shared_import = !b.is_gpu && b.gpu_buffer >= 0;
+                if (holds_shared_import) {
+                    close(b.gpu_buffer);
+                    b.gpu_buffer = -1;
+                }
+            }
+        }
+    }
+
+    m_gpu_composes = false;
+    m_retired_compositor = std::move(m_gpu_compositor);
+    m_damage.add_full();
+    printf("stlxdm: composing on the CPU, %s\r\n", reason);
+
+    show_cursor();
+    reap_retired_compositor();
+}
+
+void server::reap_retired_compositor() {
+    gpu_compositor* retired = retired_compositor();
+    if (!retired) {
+        return;
+    }
+
+    const char* cause = nullptr;
+    switch (retired->last_compose_state()) {
+    case compose_state::ended:
+        cause = "its last compose ended";
+        break;
+    case compose_state::running:
+        return;
+    case compose_state::lost:
+        cause = "its device was lost";
+        break;
+    }
+
+    if (retired == m_gpu_compositor.get()) {
+        m_gpu_compositor->end_retirement();
+        printf("stlxdm: the stopped GPU compositor freed the memory it kept for its last compose, %s\r\n", cause);
+        return;
+    }
+
+    m_retired_compositor.reset();
+    printf("stlxdm: the retired GPU compositor is destroyed, %s\r\n", cause);
+}
+
+int64_t server::retired_timeout_ns() const {
+    return retired_compositor() ? RETIRED_QUERY_INTERVAL_NS : -1;
+}
+
+gpu_compositor* server::retired_compositor() const {
+    if (m_retired_compositor) {
+        return m_retired_compositor.get();
+    }
+
+    return m_gpu_stopped && m_gpu_compositor->is_retired() ? m_gpu_compositor.get() : nullptr;
 }
 
 int server::serve() {
@@ -589,7 +708,7 @@ void server::make_served_pictures() {
 
     for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
         if (m_outputs[output].pres && !make_output_pictures(output)) {
-            stop_gpu_composing("a picture's memory ran out");
+            switch_to_cpu("a picture's memory ran out");
             return;
         }
     }
@@ -842,6 +961,12 @@ void server::keep_windows_in_reach() {
 }
 
 desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
+    /* The switch shows the pointer on each recorded presenter, so first the records forget those the display dropped */
+    if (composes_on_gpu() && m_display->refused_outputs() != 0) {
+        sync_outputs();
+        switch_to_cpu("an output has no GPU presenter");
+    }
+
     layout before = m_layout;
 
     layout::member members[layout::MEMBERS_MAX];
