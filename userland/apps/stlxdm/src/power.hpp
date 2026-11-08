@@ -68,7 +68,8 @@ public:
     void open();
     void dismiss();
 
-    /* Advances phase timers and completes an elapsed hold */
+    /* Advances phase timers and completes an elapsed hold, reading the
+     * time that every draw shows until the next update */
     void update();
 
     /* Pointer input while the overlay is active, and star hover
@@ -145,6 +146,10 @@ private:
     uint32_t m_height = 0;
     state m_state = state::closed;
     uint64_t m_phase_start_ns = 0;
+
+    /* The time the last `update` read, so that every draw of one tick,
+     * on each output and in either compositor, shows one moment */
+    uint64_t m_update_ns = 0;
 
     int32_t m_star_cx = 0;
     int32_t m_star_cy = 0;

@@ -15,12 +15,12 @@
 
 struct dm_window;
 
-/* Pixels stlxdm draws with the CPU through libstlxgfx and the GPU
- * compositor reads where they lie, or the power overlay's capture the other
- * way round: system memory that the CPU keeps mapped and the GPU reaches
- * coherently, or a twin's video memory, which has no `pixels()`. Its maker
- * frees the memory when the picture drops, which must come before the maker
- * is destroyed. */
+/* Memory the CPU keeps mapped and the GPU reaches coherently, or a twin's
+ * video memory, which has no `pixels()`: pixels stlxdm draws with the CPU
+ * for the GPU compositor to read where they lie, pixels the GPU writes for
+ * the CPU to read (the collapse backdrop, comparison mode's readback), or
+ * comparison mode's CPU frame. Its maker frees the memory when the picture
+ * drops, which must come before the maker is destroyed. */
 class picture {
 public:
     virtual ~picture() = default;
@@ -158,6 +158,9 @@ public:
 
     /* Records that a draw of this compose lies inside `bounds` */
     void add_bounds(const damage_list::rect& bounds);
+
+    /* The bounds this compose's draws recorded, inside the picture */
+    const std::vector<damage_list::rect>& drawn() const { return m_drawn; }
 
     /* Clears the last compose's and this compose's draws inside `r`
      * to transparent */

@@ -58,6 +58,14 @@ struct dm_output_pictures {
     std::unique_ptr<gpu_compositor::compose_buffers> compose;
     layer_scene                                      scene;
     std::vector<damage_list::rect>                   rects;
+
+    /* In comparison mode: each GPU frame's rows read back at the output
+     * buffer's pitch, the CPU compositor's frame, the regions where the two
+     * may round apart, and how many frames were compared */
+    std::unique_ptr<picture>                         readback;
+    std::unique_ptr<picture>                         comparison;
+    std::vector<damage_list::rect>                   rounding;
+    uint64_t                                         compared = 0;
 };
 
 /* One output as the compositor sees it, kept by its index and cleared
@@ -352,8 +360,8 @@ public:
 
     /* Re-applies a freshly re-parsed config: panels, power, the
      * wallpaper, and the hotkeys rebuild, then the desktop repaints.
-     * Autostart entries do not respawn, and `compositor` takes effect at
-     * the next start. */
+     * Autostart entries do not respawn, and `compositor` and
+     * `compare_frames` take effect at the next start. */
     void reload_config();
 
     /* Places the members again after output events or a mode request's
@@ -512,8 +520,11 @@ private:
     bool draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture);
     void draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture);
     void compose_collapse(dm_output& out);
+    void draw_collapse_frame(dm_output& out, stlxgfx_surface_t* back);
     bool collapse_on_cpu(dm_output& out, const presenter::target& t);
     bool collapse_on_gpu(dm_output& out, const presenter::target& t);
+    void compare_with_cpu(dm_output& out, uint32_t pitch, bool is_collapse);
+    void rounding_regions(dm_output& out);
     void advance_power();
     const dm_window& toplevel_of(const dm_client& c, const dm_window& w) const;
     uint32_t latch_output(const dm_client& c, const dm_window& w) const;
@@ -632,6 +643,10 @@ private:
      * could not take over from the GPU's */
     bool m_gpu_composes = false;
     bool m_gpu_stopped = false;
+
+    /* Whether each GPU frame is compared with the CPU compositor's, from
+     * the config at the last switch to the GPU */
+    bool m_compares_frames = false;
 
     /* The config's last `compose_fault`, so only a reload that changes it
      * from none fails a GPU compose */

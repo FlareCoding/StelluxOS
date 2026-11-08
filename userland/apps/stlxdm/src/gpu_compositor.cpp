@@ -648,13 +648,17 @@ std::unique_ptr<picture> gpu_compositor::make_twin(size_t bytes) {
     return std::make_unique<owned_picture>(*this, buffer, bytes);
 }
 
+uint32_t gpu_compositor::output_pitch(uint32_t width) {
+    return static_cast<uint32_t>(align_up(width * BYTES_PER_PIXEL, SCANOUT_PITCH_ALIGNMENT));
+}
+
 std::unique_ptr<output_buffer> gpu_compositor::make_output_buffer(
     int gfxfb_fd,
     uint32_t output,
     uint32_t width,
     uint32_t height
 ) {
-    uint32_t pitch = static_cast<uint32_t>(align_up(width * BYTES_PER_PIXEL, SCANOUT_PITCH_ALIGNMENT));
+    uint32_t pitch = output_pitch(width);
     std::unique_ptr<scanout_buffer> buffer(new scanout_buffer(*this, gfxfb_fd, pitch));
     device_buffer& import = buffer->m_import;
 
@@ -1085,15 +1089,19 @@ bool gpu_compositor::record_compose(
         m_vk.cmd_dispatch(commands, workgroups(r.w), workgroups(r.h), 1);
     }
 
+    if (target.readback) {
+        record_readback(buffers, target);
+    }
+
     transfer_buffers(buffers, target, scene, false);
 
     VkMemoryBarrier to_cpu = {};
     to_cpu.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    to_cpu.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    to_cpu.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
     to_cpu.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     m_vk.cmd_pipeline_barrier(
         commands,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_HOST_BIT,
         0,
         1,
@@ -1105,6 +1113,44 @@ bool gpu_compositor::record_compose(
     );
 
     return m_vk.end_command_buffer(commands) == VK_SUCCESS;
+}
+
+void gpu_compositor::record_readback(compose_buffers& buffers, const compose_target& target) {
+    VkCommandBuffer commands = buffers.m_commands;
+
+    VkMemoryBarrier written = {};
+    written.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    written.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    written.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    m_vk.cmd_pipeline_barrier(
+        commands,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        1,
+        &written,
+        0,
+        nullptr,
+        0,
+        nullptr
+    );
+
+    covered_rows(buffers.m_list_rects, buffers.m_readback_rows);
+    buffers.m_copy_regions.clear();
+    for (const span& rows : buffers.m_readback_rows) {
+        VkDeviceSize offset = static_cast<VkDeviceSize>(rows.first) * target.pitch;
+        VkDeviceSize bytes = static_cast<VkDeviceSize>(rows.end - rows.first) * target.pitch;
+        buffers.m_copy_regions.push_back({ offset, offset, bytes });
+    }
+
+    if (buffers.m_copy_regions.empty()) {
+        return;
+    }
+
+    VkBuffer scanout = static_cast<const scanout_buffer&>(*target.scanout).m_import.buffer;
+    VkBuffer readback = static_cast<const owned_picture&>(*target.readback).buffer();
+    uint32_t region_count = static_cast<uint32_t>(buffers.m_copy_regions.size());
+    m_vk.cmd_copy_buffer(commands, scanout, readback, region_count, buffers.m_copy_regions.data());
 }
 
 /* Submits the recorded compose to raise stlxdm's timeline to the next compose point, then waits for that point */
@@ -1214,9 +1260,11 @@ void gpu_compositor::transfer_buffers(
         return;
     }
 
+    /* A readback's copy reads the output buffer after the dispatches, so its release waits for that copy too */
     m_vk.cmd_pipeline_barrier(
         buffers.m_commands,
-        to_compose ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        to_compose ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                   : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
         to_compose ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         0,
         0,

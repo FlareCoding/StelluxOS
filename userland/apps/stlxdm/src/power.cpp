@@ -422,7 +422,7 @@ float dm_power::phase(uint32_t duration_ms) const {
         return 1.0f;
     }
 
-    uint64_t elapsed = pw_now_ns() - m_phase_start_ns;
+    uint64_t elapsed = m_update_ns > m_phase_start_ns ? m_update_ns - m_phase_start_ns : 0;
     float t = static_cast<float>(elapsed)
             / (static_cast<float>(duration_ms) * 1000000.0f);
 
@@ -490,11 +490,13 @@ void dm_power::dismiss() {
 }
 
 void dm_power::update() {
+    m_update_ns = pw_now_ns();
+
     switch (m_state) {
     case state::opening:
         if (phase(PW_OPEN_MS) >= 1.0f) {
             m_state = state::open;
-            m_phase_start_ns = pw_now_ns();
+            m_phase_start_ns = m_update_ns;
         }
         break;
     case state::closing:
@@ -516,12 +518,12 @@ void dm_power::update() {
         return;
     }
 
-    uint64_t held = pw_now_ns() - m_hold_start_ns;
+    uint64_t held = m_update_ns - m_hold_start_ns;
     if (held >= static_cast<uint64_t>(PW_HOLD_MS) * 1000000ull) {
         m_commit = m_press;
         m_press = -1;
         m_state = state::committing;
-        m_phase_start_ns = pw_now_ns();
+        m_phase_start_ns = m_update_ns;
     }
 }
 
@@ -680,7 +682,7 @@ void dm_power::draw_orbs(stlxgfx_surface_t* s, int32_t ox, int32_t oy) {
 
         /* Hold progress winds around the orb and unwinds if released */
         if (holding) {
-            uint64_t held = pw_now_ns() - m_hold_start_ns;
+            uint64_t held = m_update_ns > m_hold_start_ns ? m_update_ns - m_hold_start_ns : 0;
             float p = static_cast<float>(held)
                     / (static_cast<float>(PW_HOLD_MS) * 1000000.0f);
             if (p > 1.0f) {

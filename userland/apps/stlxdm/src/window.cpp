@@ -1,3 +1,4 @@
+#include "compare.hpp"
 #include "decor.hpp"
 #include "server.hpp"
 
@@ -1218,6 +1219,11 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
      * stayed exposed */
     bool is_main = &out == &m_outputs[m_layout.main_output()];
     const stlxgfx_surface_t* backdrop = is_main ? m_backdrop : out.backdrop;
+    const backdrop_picture* gpu_backdrop = is_main ? m_gpu_backdrop.get() : out.pictures.backdrop.get();
+    if (gpu_backdrop) {
+        backdrop = gpu_backdrop->surface();
+    }
+
     int32_t ox = out.place.x;
     int32_t oy = out.place.y;
     for (const damage_list::rect& p : pieces) {
@@ -1385,14 +1391,24 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
         return false;
     }
 
+    compose_target target = output_target(t);
+    target.readback = pictures.readback.get();
     compose_result result = m_gpu_compositor->compose(
         *pictures.compose,
-        output_target(t),
+        target,
         pictures.scene,
         rects,
         gpu_backdrop_of(out)
     );
-    return !switch_to_cpu_on_failed_compose(result);
+    if (switch_to_cpu_on_failed_compose(result)) {
+        return false;
+    }
+
+    if (target.readback) {
+        compare_with_cpu(out, t.stride, false);
+    }
+
+    return true;
 }
 
 /* Composes the main output's frame beneath the orbs, its upper top picture holding the hint alone, into the collapse
@@ -1587,6 +1603,16 @@ void server::compose_collapse(dm_output& out) {
     out.damage.clear();
 }
 
+/* Draws a collapse frame into `back`, at the main output's size, and the pointer when the frames draw it */
+void server::draw_collapse_frame(dm_output& out, stlxgfx_surface_t* back) {
+    damage_list::rect whole = { 0, 0, static_cast<int32_t>(back->width),
+                                static_cast<int32_t>(back->height) };
+    m_power->draw_collapse(back);
+    if (out.cursor_in_frames) {
+        m_cursor.draw(back, m_cursor_shape, m_cursor_x - out.place.x, m_cursor_y - out.place.y, whole);
+    }
+}
+
 /* Draws a collapse frame into the target `t` the CPU writes. False when its
  * surface could not be made */
 bool server::collapse_on_cpu(dm_output& out, const presenter::target& t) {
@@ -1597,13 +1623,7 @@ bool server::collapse_on_cpu(dm_output& out, const presenter::target& t) {
         return false;
     }
 
-    damage_list::rect whole = { 0, 0, static_cast<int32_t>(back->width),
-                                static_cast<int32_t>(back->height) };
-    m_power->draw_collapse(back);
-    if (out.cursor_in_frames) {
-        m_cursor.draw(back, m_cursor_shape, m_cursor_x - out.place.x, m_cursor_y - out.place.y, whole);
-    }
-
+    draw_collapse_frame(out, back);
     stlxgfx_destroy_surface(back);
 
     return true;
@@ -1624,10 +1644,7 @@ bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
     top_picture& upper = *out.pictures.upper_top;
     upper.begin();
     upper.add_bounds(whole);
-    m_power->draw_collapse(upper.surface());
-    if (out.cursor_in_frames) {
-        m_cursor.draw(upper.surface(), m_cursor_shape, m_cursor_x - out.place.x, m_cursor_y - out.place.y, whole);
-    }
+    draw_collapse_frame(out, upper.surface());
 
     layer_scene& scene = out.pictures.scene;
     scene.width = sw;
@@ -1641,14 +1658,117 @@ bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
 
     std::vector<damage_list::rect>& rects = out.pictures.rects;
     rects.assign(1, whole);
+    compose_target target = output_target(t);
+    target.readback = out.pictures.readback.get();
     compose_result result = m_gpu_compositor->compose(
         *out.pictures.compose,
-        output_target(t),
+        target,
         scene,
         rects,
         gpu_backdrop_of(out)
     );
-    return !switch_to_cpu_on_failed_compose(result);
+    if (switch_to_cpu_on_failed_compose(result)) {
+        return false;
+    }
+
+    if (target.readback) {
+        compare_with_cpu(out, t.stride, true);
+    }
+
+    return true;
+}
+
+/* Draws the frame the GPU just composed into `out` again on the CPU, into its comparison frame, and logs where the
+ * frame read back at `pitch` differs from it */
+void server::compare_with_cpu(dm_output& out, uint32_t pitch, bool is_collapse) {
+    dm_output_pictures& pictures = out.pictures;
+    uint32_t width = out.pres->width();
+    uint32_t height = out.pres->height();
+    uint32_t frame_pitch = width * 4;
+    stlxgfx_surface_t* frame = stlxgfx_surface_from_buffer(
+        pictures.comparison->pixels(),
+        width,
+        height,
+        frame_pitch,
+        32,
+        16,
+        8,
+        0
+    );
+    if (!frame) {
+        return;
+    }
+
+    pictures.rounding.clear();
+    if (is_collapse) {
+        /* The faded collapse backdrop covers every pixel opaquely, so no pixel may round apart */
+        draw_collapse_frame(out, frame);
+    } else {
+        /* Any capture of this frame was composed on the GPU before it, so these composes write none */
+        for (const damage_list::rect& r : pictures.rects) {
+            compose_rect(out, frame, { r.x + out.place.x, r.y + out.place.y, r.w, r.h });
+        }
+
+        rounding_regions(out);
+    }
+
+    stlxgfx_destroy_surface(frame);
+
+    pictures.compared++;
+    frame_difference difference = compare_frames(
+        pictures.readback->pixels(),
+        pitch,
+        pictures.comparison->pixels(),
+        frame_pitch,
+        pictures.rects,
+        pictures.rounding
+    );
+    if (difference.outside_count == 0 && difference.inside_count == 0) {
+        return;
+    }
+
+    printf("stlxdm: GPU frame %llu of output %u differs from the CPU's in %u pixels outside the regions that may round "
+           "apart and %u inside, the first at (%d, %d) of the output\r\n",
+           static_cast<unsigned long long>(pictures.compared), static_cast<uint32_t>(&out - m_outputs),
+           difference.outside_count, difference.inside_count, difference.first_x, difference.first_y);
+}
+
+/* Adds where `out`'s GPU frame may round apart from the CPU's to its rounding regions, in its pixels: glow rings, the
+ * frames of windows whose content is no wider than two corner radii, and this compose's draws into both top pictures */
+void server::rounding_regions(dm_output& out) {
+    std::vector<damage_list::rect>& regions = out.pictures.rounding;
+    int32_t ox = out.place.x;
+    int32_t oy = out.place.y;
+    for (const dm_window* w : m_zorder) {
+        if (w->current < 0 || !decor::decorated(*w)) {
+            continue;
+        }
+
+        const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
+        if (static_cast<int32_t>(b.width) <= 2 * decor::CONTENT_R) {
+            damage_list::rect strips[decor::FRAME_STRIPS];
+            decor::frame_strips(*w, strips);
+            for (const damage_list::rect& strip : strips) {
+                regions.push_back({ strip.x - ox, strip.y - oy, strip.w, strip.h });
+            }
+
+            continue;
+        }
+
+        damage_list::rect ring = decor::bounds(*w);
+        ring.x -= ox;
+        ring.y -= oy;
+
+        regions.push_back({ ring.x, ring.y, ring.w, 1 });
+        regions.push_back({ ring.x, ring.y + ring.h - 1, ring.w, 1 });
+        regions.push_back({ ring.x, ring.y + 1, 1, ring.h - 2 });
+        regions.push_back({ ring.x + ring.w - 1, ring.y + 1, 1, ring.h - 2 });
+    }
+
+    const std::vector<damage_list::rect>& lower = out.pictures.lower_top->drawn();
+    const std::vector<damage_list::rect>& upper = out.pictures.upper_top->drawn();
+    regions.insert(regions.end(), lower.begin(), lower.end());
+    regions.insert(regions.end(), upper.begin(), upper.end());
 }
 
 /* Overlay phases: an activation edge repaints every output, as the others draw its dim, a transition the main output
