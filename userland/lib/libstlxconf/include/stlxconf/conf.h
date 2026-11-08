@@ -23,8 +23,9 @@ typedef enum {
     STLXCONF_COMPOSITOR_CPU,
 } stlxconf_compositor_t;
 
-/* A failure the GPU compositor makes in its next compose, for tests: a read
- * of an address never mapped, or a spin past the compose's deadline */
+/* For tests, a failure the next GPU compose makes after a reload changes
+ * this from none: a read of an address no context maps, or a spin past its
+ * deadline */
 typedef enum {
     STLXCONF_COMPOSE_FAULT_NONE,
     STLXCONF_COMPOSE_FAULT_FAULT,

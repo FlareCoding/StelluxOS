@@ -503,6 +503,7 @@ private:
     bool compose_capture(dm_output& out);
     bool switch_to_cpu_on_misfit_backdrop(dm_output& out);
     bool switch_to_cpu_on_failed_compose(compose_result result);
+    void follow_compose_fault();
     void switch_to_cpu(const char* reason);
     gpu_compositor* retired_compositor() const;
     void compose_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
@@ -631,6 +632,10 @@ private:
      * could not take over from the GPU's */
     bool m_gpu_composes = false;
     bool m_gpu_stopped = false;
+
+    /* The config's last `compose_fault`, so only a reload that changes it
+     * from none fails a GPU compose */
+    stlxconf_compose_fault_t m_compose_fault = STLXCONF_COMPOSE_FAULT_NONE;
 
     /* The desktop's own input to paint latency and missed frames meter,
      * the readout the bar last took, the arrival time of whatever input

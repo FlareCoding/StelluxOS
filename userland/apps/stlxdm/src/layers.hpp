@@ -17,6 +17,7 @@ enum class layer_op : uint32_t {
     blend,  /* the source's straight alpha pixels over what lies beneath */
     fill,   /* one color, leaving what lies beneath in the bottom corner squares when rounded */
     dim,    /* what lies beneath darkened by one color at its alpha */
+    spin,   /* 1 added to the pixel without end, which runs a test's compose past its deadline */
 };
 
 /* One layer as the compose shader reads it, which compose.comp's `layer`
