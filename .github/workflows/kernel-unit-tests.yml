@@ -81,7 +81,8 @@ jobs:
               gcc-aarch64-linux-gnu \
               linux-libc-dev-arm64-cross \
               cmake ninja-build \
-              mtools gdisk xorriso && exit 0
+              mtools gdisk xorriso \
+              glslang-tools && exit 0
             grep -rls azure.archive.ubuntu.com /etc/apt | xargs -r sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' || true
           done
           exit 1

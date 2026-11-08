@@ -1,0 +1,170 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+
+/* Composes one damaged rectangle of an output. Each invocation walks the
+ * rectangle's layer list bottom to top for its pixel, with the integer
+ * arithmetic of libstlxgfx, decor and power.cpp's dim, so a frame equals
+ * the CPU compositor's.
+ * layers.hpp defines the layers and gpu_compositor.cpp the arguments. */
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+const uint LAYER_COPY  = 0u;
+const uint LAYER_BLEND = 1u;
+const uint LAYER_FILL  = 2u;
+const uint LAYER_DIM   = 3u;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer pixels {
+    uint words[];
+};
+
+/* `source` is the address of a `pixels`, since MoltenVK (Vulkan on macOS)
+ * drops a reference loaded inside a struct */
+struct layer {
+    ivec2  start;
+    ivec2  end;
+    uvec2  source;
+    ivec2  origin;
+    uint   pitch;
+    uint   op;
+    uint   color;
+    uint   radius;
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer layer_list {
+    layer layers[];
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer corner_table {
+    uint pairs[];
+};
+
+layout(push_constant, std430) uniform compose_args {
+    ivec2          start;
+    ivec2          end;
+    pixels         target;
+    uint           target_pitch;
+    uint           layer_count;
+    layer_list     layers;
+    corner_table   corner_distances;
+    uint           corner_count;
+    int            corner_far_distance;
+} args;
+
+uint div255(uint x) {
+    return (x + 1u + (x >> 8)) >> 8;
+}
+
+uint channel(uint pixel, uint shift) {
+    return (pixel >> shift) & 0xFFu;
+}
+
+/* Source-over of `color` at `alpha` onto the opaque `below` */
+uint blend(uint below, uint color, uint alpha) {
+    if (alpha == 0u) {
+        return below;
+    }
+
+    if (alpha == 255u) {
+        return color;
+    }
+
+    uint inverse = 255u - alpha;
+    uint blended = 0u;
+    for (uint shift = 0u; shift < 24u; shift += 8u) {
+        blended |= div255(channel(color, shift) * alpha + channel(below, shift) * inverse) << shift;
+    }
+
+    return blended;
+}
+
+/* The power overlay's darkening, which shifts by 8 where a blend divides by 255 */
+uint dim(uint below, uint color) {
+    uint alpha = color >> 24;
+    if (alpha == 0u) {
+        return below;
+    }
+
+    uint inverse = 255u - alpha;
+    uint dimmed = 0u;
+    for (uint shift = 0u; shift < 24u; shift += 8u) {
+        dimmed |= ((channel(below, shift) * inverse + channel(color, shift) * alpha) >> 8) << shift;
+    }
+
+    return dimmed;
+}
+
+uint corner_distance(uint index) {
+    uint pair = args.corner_distances.pairs[index >> 1];
+    return (index & 1u) != 0u ? pair >> 16 : pair & 0xFFFFu;
+}
+
+/* Signed distance from the center of a pixel in a corner square to the
+ * layer's rounded rect, in eighth pixels, negative inside. Such a pixel lies
+ * past both straight edges, where decor's distance reads the table. */
+int rounded_distance(layer l, ivec2 pixel) {
+    ivec2 size = l.end - l.start;
+    int radius = int(l.radius);
+    ivec2 past = abs(2 * pixel + 1 - (2 * l.start + size)) - (size - 2 * radius);
+    int index = past.x * past.x + past.y * past.y;
+    if (index >= int(args.corner_count)) {
+        return args.corner_far_distance;
+    }
+
+    return int(corner_distance(uint(index))) - radius * 8;
+}
+
+uint coverage(int distance) {
+    if (distance <= -4) {
+        return 255u;
+    }
+
+    if (distance >= 4) {
+        return 0u;
+    }
+
+    return min(uint(4 - distance) * 32u, 255u);
+}
+
+bool in_bottom_corner_square(layer l, ivec2 pixel) {
+    int radius = int(l.radius);
+    bool in_bottom_rows = pixel.y >= l.end.y - radius;
+    return in_bottom_rows && (pixel.x < l.start.x + radius || pixel.x >= l.end.x - radius);
+}
+
+uint read_source(layer l, ivec2 pixel) {
+    ivec2 at = pixel - l.origin;
+    return pixels(l.source).words[uint(at.y) * (l.pitch >> 2) + uint(at.x)];
+}
+
+void main() {
+    ivec2 pixel = args.start + ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, args.end))) {
+        return;
+    }
+
+    uint color = 0u;
+    for (uint i = 0u; i < args.layer_count; i++) {
+        layer l = args.layers.layers[i];
+        if (any(lessThan(pixel, l.start)) || any(greaterThanEqual(pixel, l.end))) {
+            continue;
+        }
+
+        bool is_bottom_corner = l.radius != 0u && in_bottom_corner_square(l, pixel);
+        if (l.op == LAYER_COPY && is_bottom_corner) {
+            color = blend(color, read_source(l, pixel), coverage(rounded_distance(l, pixel)));
+        } else if (l.op == LAYER_COPY) {
+            color = read_source(l, pixel);
+        } else if (l.op == LAYER_BLEND) {
+            uint source = read_source(l, pixel);
+            color = blend(color, source, source >> 24);
+        } else if (l.op == LAYER_FILL && !is_bottom_corner) {
+            color = l.color;
+        } else if (l.op == LAYER_DIM) {
+            color = dim(color, l.color);
+        }
+    }
+
+    args.target.words[uint(pixel.y) * (args.target_pitch >> 2) + uint(pixel.x)] = color | 0xFF000000u;
+}

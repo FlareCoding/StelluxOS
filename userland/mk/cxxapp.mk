@@ -52,6 +52,14 @@ APP_LDLIBS   += $(VULKAN_LIBS) -lstlxwin
 LIB_ARCHIVES += $(VULKAN_LIBRARY) $(SYSROOT)/lib/libstlxwin.a
 endif
 
+# Each compute shader in shaders/ compiles to a header of SPIR-V words,
+# which a source includes as <name>_spirv.h and names as <NAME>_SPIRV
+SHADER_SOURCES := $(wildcard shaders/*.comp)
+SHADER_HEADERS := $(SHADER_SOURCES:shaders/%.comp=$(BUILD_DIR)/shaders/%_spirv.h)
+ifneq ($(SHADER_HEADERS),)
+APP_CXXFLAGS += -I$(BUILD_DIR)/shaders
+endif
+
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS) $(LIB_ARCHIVES)
@@ -82,6 +90,16 @@ $(BUILD_DIR)/moc_%.o: $(BUILD_DIR)/moc_%.cpp
 	@echo "[CXX] $< ($(ARCH))"
 	$(UQ)$(CXX) $(CXXFLAGS_COMMON) $(APP_CXXFLAGS) -c $< -o $@
 endif
+
+# The headers exist before the first compile, whose dependency files then
+# rebuild each source that includes one when its shader changes
+$(OBJECTS): | $(SHADER_HEADERS)
+
+$(BUILD_DIR)/shaders/%_spirv.h: shaders/%.comp
+	$(UQ)mkdir -p $(dir $@)
+	@echo "[GLSL] $< ($(ARCH))"
+	$(UQ)$(STLX_GLSLANG) --quiet -V --target-env vulkan1.2 \
+		--vn $$(echo $* | tr a-z A-Z)_SPIRV -o $@ $<
 
 -include $(OBJECTS:.o=.d)
 

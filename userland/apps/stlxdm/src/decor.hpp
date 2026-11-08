@@ -60,8 +60,19 @@ struct chrome_state {
     bool close_pressed = false;
 };
 
+/* The edge distances the content's rounded corners read, indexed by
+ * squared offset, and the distance of an offset past the table */
+struct corner_table {
+    const uint16_t* distances = nullptr;
+    uint32_t        count = 0;
+    int32_t         far_distance = 0;
+};
+
 /* Opens the chrome font. Returns 0, or -1 when the face is missing. */
 int init();
+
+/* The table `init` fills, which the GPU compositor reads too */
+corner_table corner_distances();
 
 bool decorated(const dm_window& w);
 
