@@ -38,7 +38,7 @@ LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_V
 LLVM_SHA512="f330e72e6a1da468569049437cc0ba7a41abb816ccece7367189344f7ebfef730f4788ac7af2bef0aa8a49341c15ab1d31e941ffa782f264d11fe0dc05470773"
 
 # Package release number, bumped when the recipe or the pinned mesa kit changes without VK-GL-CTS changing
-VK_GL_CTS_PKG_REL="1"
+VK_GL_CTS_PKG_REL="2"
 
 # The version-release of each package this recipe emits, as the archive names it
 package_version() {
