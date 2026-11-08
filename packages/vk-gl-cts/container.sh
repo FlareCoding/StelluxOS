@@ -58,23 +58,38 @@ build_sysroot() {
 }
 
 # The kit's library and its link flags, read through the tree's userland/mk/vulkan.mk, which
-# refuses a kit built against another GPU_ABI_VERSION
+# refuses a kit built against another GPU_ABI_VERSION or STLXWIN_GPU_ABI_VERSION
 kit_link_flags() {
     rm -rf "$KIT" "$TREE_FILES"
     mkdir -p "$KIT" "$TREE_FILES"
     zstd -dc /in/mesa.tar.zst | tar -C "$KIT" -xf -
-    tar -C "$TREE_FILES" -xf /in/tree.tar userland/mk/vulkan.mk kernel/gpu/gpu_abi.h
+    tar -C "$TREE_FILES" -xf /in/tree.tar userland/mk/vulkan.mk kernel/gpu/gpu_abi.h userland/lib/libstlxwin
 
     # shellcheck disable=SC2016
     make -s -f "$TREE_FILES/userland/mk/vulkan.mk" USERLAND_ROOT="$TREE_FILES/userland" VULKAN_DIR="$KIT/mesa" \
         ARCH="$ARCH" --eval 'vulkan-libs: ; @echo $(VULKAN_LIBS)' vulkan-libs
 }
 
+# libstlxwin, which the kit's library calls, compiled from the tree's sources with the -std, -O2
+# and stack flags its Makefile passes
+build_stlxwin() {
+    stlxwin="$TREE_FILES/userland/lib/libstlxwin"
+    mkdir -p "$TREE_FILES/include/stlx"
+    cp "$TREE_FILES/kernel/gpu/gpu_abi.h" "$TREE_FILES/include/stlx/"
+    for source in "$stlxwin"/src/*.c; do
+        run_logged "$TREE_FILES/stlxwin.log" clang --target="$ARCH-linux-musl" --sysroot="$SYSROOT" -nostdlibinc \
+            -isystem "$SYSROOT/include" -std=c11 -O2 -fno-stack-protector -I"$stlxwin/include" \
+            -I"$TREE_FILES/include" -c "$source" -o "${source%.c}.o"
+    done
+    llvm-ar crs "$TREE_FILES/libstlxwin.a" "$stlxwin"/src/*.o
+}
+
 # Compiles for Stellux the way userland/mk/toolchain.mk does and links the way
-# userland/mk/cxxapp.mk does, with the kit in every C++ link
+# userland/mk/cxxapp.mk does, with the kit and libstlxwin in every C++ link
 write_toolchain() {
     builtins="$SYSROOT/lib/libclang_rt.builtins-$ARCH.a"
     vulkan_libs="$(kit_link_flags)"
+    build_stlxwin
     cat > "$TOOLCHAIN" << EOF
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR $ARCH)
@@ -89,7 +104,8 @@ set(CMAKE_C_FLAGS_INIT "-nostdlibinc -isystem $SYSROOT/include")
 set(CMAKE_CXX_FLAGS_INIT "-nostdlibinc -isystem $SYSROOT/include/c++/v1 -isystem $SYSROOT/include")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "-nostdlib -fuse-ld=lld -static $SYSROOT/lib/crt1.o $SYSROOT/lib/crti.o -L$SYSROOT/lib")
 set(CMAKE_C_STANDARD_LIBRARIES "-Wl,--start-group -lc -lm $builtins -Wl,--end-group $SYSROOT/lib/crtn.o")
-set(CMAKE_CXX_STANDARD_LIBRARIES "$vulkan_libs -Wl,--start-group -lc++ -lc++abi -lunwind -lc -lm $builtins -Wl,--end-group $SYSROOT/lib/crtn.o")
+set(CMAKE_CXX_STANDARD_LIBRARIES "$vulkan_libs $TREE_FILES/libstlxwin.a \
+-Wl,--start-group -lc++ -lc++abi -lunwind -lc -lm $builtins -Wl,--end-group $SYSROOT/lib/crtn.o")
 set(CMAKE_FIND_ROOT_PATH $SYSROOT)
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
