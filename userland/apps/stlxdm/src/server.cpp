@@ -315,7 +315,8 @@ void server::switch_to_gpu() {
     const char* refusal = m_display->falls_back() ? "the display has no buffers" : nullptr;
     if (!refusal) {
         m_gpu_backdrop = copy_backdrop(m_backdrop, m_backdrop->width, m_backdrop->height);
-        bool made = m_gpu_backdrop != nullptr;
+        m_gpu_capture = m_gpu_compositor->make_picture(static_cast<size_t>(m_backdrop->width) * m_backdrop->height * 4);
+        bool made = m_gpu_backdrop != nullptr && m_gpu_capture != nullptr;
         for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX && made; output++) {
             made = !m_outputs[output].pres || make_output_pictures(output);
         }
@@ -329,6 +330,7 @@ void server::switch_to_gpu() {
 
     if (refusal) {
         m_gpu_backdrop.reset();
+        m_gpu_capture.reset();
         for (dm_output& out : m_outputs) {
             out.pictures = {};
         }
@@ -339,6 +341,7 @@ void server::switch_to_gpu() {
     }
 
     m_panels->rebind(m_gpu_backdrop->surface());
+    m_power->capture_into(m_gpu_capture->pixels());
     stlxgfx_destroy_surface(m_backdrop);
     m_backdrop = nullptr;
 
@@ -412,9 +415,14 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
 
     out.panels = std::make_unique<dm_panels>();
     out.power = std::make_unique<dm_power>();
+    if (m_gpu_composes) {
+        out.gpu_capture = m_gpu_compositor->make_picture(static_cast<size_t>(width) * height * 4);
+    }
 
-    bool ready = out.panels->init(width, height, *m_conf, out.backdrop) == 0 &&
-                 out.power->init(width, height, m_conf->taskbar_height) == 0;
+    uint8_t* capture = out.gpu_capture ? out.gpu_capture->pixels() : nullptr;
+    bool ready = (!m_gpu_composes || capture) &&
+                 out.panels->init(width, height, *m_conf, out.backdrop) == 0 &&
+                 out.power->init(width, height, m_conf->taskbar_height, capture) == 0;
     if (ready && m_gpu_composes) {
         out.gpu_backdrop = copy_backdrop(out.backdrop, width, height);
         ready = out.gpu_backdrop != nullptr;
@@ -469,6 +477,8 @@ void server::adopt_conf_state(dm_conf_state&& next) {
 
     m_panels = std::move(next.panels);
     m_power = std::move(next.power);
+    m_gpu_capture = std::move(next.gpu_capture);
+
     m_backdrop = next.backdrop;
     m_gpu_backdrop = std::move(next.gpu_backdrop);
     m_hotkeys = std::move(next.hotkeys);
@@ -1103,6 +1113,8 @@ void server::shutdown() {
     if (m_power) {
         m_power->shutdown();
     }
+
+    m_gpu_capture.reset();
 
     if (m_listen_fd >= 0) {
         close(m_listen_fd);

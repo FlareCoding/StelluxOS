@@ -24,11 +24,25 @@ public:
         committing,
     };
 
-    /* Opens the label faces and reserves the collapse backdrop.
-     * Returns 0, or -1 when a face is missing. */
+    /* Opens the label faces and keeps the collapse backdrop as
+     * `capture_into` does. Returns 0, or -1 when a face is missing. */
     int init(uint32_t screen_w, uint32_t screen_h,
-             uint32_t taskbar_height);
+             uint32_t taskbar_height, uint8_t* capture);
     void shutdown();
+
+    /* Keeps the collapse backdrop, stale, in `capture`, which must hold
+     * unpadded screen rows until `shutdown` or the next call, or in its own
+     * memory if null */
+    void capture_into(uint8_t* capture);
+
+    /* True while the overlay is drawn short of the blackout and its
+     * collapse backdrop is stale, so a full screen frame captures it */
+    bool wants_capture() const;
+
+    /* Marks the collapse backdrop captured, once a compose wrote the full
+     * screen frame beneath the orbs into the memory that `capture_into`
+     * took */
+    void mark_captured();
 
     /* True while the overlay owns every input source */
     bool active() const { return m_state != state::closed; }
@@ -48,7 +62,7 @@ public:
     }
 
     /* True while the collapse repaints the whole screen from the
-     * cached backdrop instead of composing the scene */
+     * collapse backdrop instead of the desktop's scene */
     bool collapsing() const;
 
     void open();
@@ -79,6 +93,10 @@ public:
      * to `clip` inside `top`, a picture blended over a dim
      * of `dim_color()` */
     void draw_over_dim(stlxgfx_surface_t* top, const damage_list::rect& clip);
+
+    /* What `draw_over_dim` draws beneath the orbs, the hint, clipped to
+     * `clip` inside `top`, for the frame the collapse backdrop holds */
+    void draw_hint(stlxgfx_surface_t* top, const damage_list::rect& clip);
 
     /* The bounds `draw_over_dim` draws inside, empty while closed */
     damage_list::rect overlay_bounds() const;
@@ -116,7 +134,9 @@ private:
     int32_t choice_at(int32_t x, int32_t y) const;
     float phase(uint32_t duration_ms) const;
     float hint_top() const;
+    bool blacked_out() const;
     void draw_overlay_layers(stlxgfx_surface_t* back, const damage_list::rect& clip, bool draws_dim);
+    void draw_hint_text(stlxgfx_surface_t* view, const damage_list::rect& clip);
     void draw_orbs(stlxgfx_surface_t* s, int32_t ox, int32_t oy);
     void draw_collapse_light(stlxgfx_surface_t* s, int32_t ox,
                              int32_t oy);

@@ -44,6 +44,7 @@ struct dm_conf_state {
     std::unique_ptr<dm_power> power;
     stlxgfx_surface_t* backdrop = nullptr;
     std::unique_ptr<backdrop_picture> gpu_backdrop;  /* the backdrop under the GPU compositor, `backdrop` then null */
+    std::unique_ptr<picture> gpu_capture;            /* the overlay's collapse backdrop under the GPU compositor */
     std::vector<dm_hotkey> hotkeys;
 };
 
@@ -487,13 +488,18 @@ private:
     void flush_panels();
     bool compose_on_cpu(dm_output& out, const presenter::target& t, const damage_list& effective);
     bool compose_on_gpu(dm_output& out, const presenter::target& t, const damage_list& effective);
+    bool compose_capture(dm_output& out);
+    bool stop_on_misfit_backdrop(dm_output& out);
+    bool stop_on_failed_compose(compose_result result);
     void stop_gpu_composing(const char* reason);
     void compose_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
     bool composes_on_gpu() const { return m_gpu_composes && !m_gpu_stopped; }
     backdrop_picture& gpu_backdrop_of(dm_output& out);
-    bool draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects);
-    void draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects);
+    bool draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture);
+    void draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture);
     void compose_collapse(dm_output& out);
+    bool collapse_on_cpu(dm_output& out, const presenter::target& t);
+    bool collapse_on_gpu(dm_output& out, const presenter::target& t);
     void advance_power();
     const dm_window& toplevel_of(const dm_client& c, const dm_window& w) const;
     uint32_t latch_output(const dm_client& c, const dm_window& w) const;
@@ -598,6 +604,11 @@ private:
      * panels painted in, in `m_gpu_backdrop` under the GPU compositor */
     stlxgfx_surface_t* m_backdrop = nullptr;
     std::unique_ptr<backdrop_picture> m_gpu_backdrop;
+
+    /* The power overlay's collapse backdrop under the GPU compositor, at
+     * the main backdrop's size, which the overlay views and a
+     * compose writes */
+    std::unique_ptr<picture> m_gpu_capture;
 
     /* Whether served outputs compose on the GPU, from the switch after the
      * splash, and whether a failed GPU compose stopped every output's */

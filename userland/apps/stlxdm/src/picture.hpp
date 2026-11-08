@@ -16,10 +16,11 @@
 struct dm_window;
 
 /* Pixels stlxdm draws with the CPU through libstlxgfx and the GPU
- * compositor reads where they lie: system memory that the CPU keeps mapped
- * and the GPU reads coherently, or a twin's video memory, which has no
- * `pixels()`. Its maker frees the memory when the picture drops, which must
- * come before the maker is destroyed. */
+ * compositor reads where they lie, or the power overlay's capture the other
+ * way round: system memory that the CPU keeps mapped and the GPU reaches
+ * coherently, or a twin's video memory, which has no `pixels()`. Its maker
+ * frees the memory when the picture drops, which must come before the maker
+ * is destroyed. */
 class picture {
 public:
     virtual ~picture() = default;
