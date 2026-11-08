@@ -119,6 +119,7 @@ struct backend_queue : gpu::queue {
     uint32_t        channel_id = 0;         // on its engine's runlist
     queue_operation task_operation = {};    // the creation, then the stop
     queue_operation destroy_operation = {}; // the destroy, kept apart from the stop's, which may still be queued
+    bool            is_attributed = false;  // an error's attribution lost its context, so later ones skip the queue
 
     channel_context_buffers own_buffers = {}; // a graphics queue's, each range empty until allocated
 
@@ -276,12 +277,14 @@ public:
     __PRIVILEGED_CODE void service_interrupt(registers& bar0);
 
     /**
-     * @brief Once `bring_up` succeeds, have the driver task read each listed
-     * queue's channel RAM and lose the GPU core's context of each one marked
-     * faulted, for `GPU_LOST_FAULT` after an MMU fault or `GPU_LOST_ENGINE`
-     * after an engine error, with no fault address, unless the GPU or the GPU
-     * core's device failed. An error reported while an attribution of its kind
-     * is still queued is attributed with it.
+     * @brief Once `bring_up` succeeds, have the driver task lose the GPU
+     * core's context of each listed queue whose channel faulted, unless the
+     * GPU or the GPU core's device failed. After an MMU fault, the context of
+     * a queue whose channel's fault record names a fault is lost for
+     * `GPU_LOST_FAULT` at the record's address, and that of a queue only
+     * channel RAM marks at address 0. After an engine error, that of a queue
+     * that channel RAM marks is lost for `GPU_LOST_ENGINE`. An error reported
+     * while an attribution of its kind is still queued is attributed with it.
      * @param error The channel error the firmware reported.
      */
     void on_channel_error(channel_error error) override;

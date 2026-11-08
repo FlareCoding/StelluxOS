@@ -1188,15 +1188,38 @@ void engines::attribute_error_on_task(operation& op) {
         return;
     }
 
+    bool is_mmu_fault = attribution.reason == GPU_LOST_FAULT;
     uint32_t faulted = 0;
+    uint32_t attributed_before = 0;
     for (backend_queue& queue : gpu_engines.m_queues) {
-        if (queue.user_channel.has_faulted()) {
-            RUN_ELEVATED(gpu::space_lost(queue.space->core, attribution.reason, 0));
+        // A report the firmware sends during a record's read queues this attribution again before the stops it asks
+        // for, and the lost queue's record and channel RAM still read faulted until its stop
+        if (queue.is_attributed) {
+            attributed_before++;
+            continue;
+        }
+
+        // Only the fault record names the graphics engine's MMU fault, which sets neither fault bit in channel RAM. A
+        // record's reply missing its deadline fails the GPU, and the failure's report ends every queue
+        uint64_t fault_va = 0;
+        bool is_recorded = is_mmu_fault && queue.user_channel.read_mmu_fault(fault_va);
+        if (gpu_engines.has_failed()) {
+            gpu_engines.report_failure();
+            return;
+        }
+
+        if (is_recorded || queue.user_channel.has_faulted()) {
+            RUN_ELEVATED(gpu::space_lost(queue.space->core, attribution.reason, fault_va));
+            queue.is_attributed = true;
             faulted++;
         }
     }
 
-    const char* reported = attribution.reason == GPU_LOST_FAULT ? "an MMU fault" : "an engine error";
+    const char* reported = is_mmu_fault ? "an MMU fault" : "an engine error";
+    if (faulted == 0 && attributed_before > 0) {
+        return;
+    }
+
     if (faulted == 0) {
         log::warn(
             "nvidia: the firmware reported %s, but no queue's channel reads faulted, so the GPU core lost no context",

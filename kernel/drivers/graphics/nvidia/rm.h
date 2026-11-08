@@ -1292,6 +1292,24 @@ struct schedule_channel_params {
 static_assert(sizeof(bind_channel_params) == 4, "NVIDIA's layout of BIND's parameters");
 static_assert(sizeof(schedule_channel_params) == 2, "NVIDIA's layout of GPFIFO_SCHEDULE's parameters");
 
+// NVIDIA's NVA06F_CTRL_CMD_GET_MMU_FAULT_INFO, the control to a channel that gives the firmware's record of its fault
+constexpr uint32_t CONTROL_GET_MMU_FAULT_INFO = 0xA06F0107;
+
+// NVIDIA's NV906F_CTRL_MMU_FAULT_STRING_LEN and _SHADER_TYPES, a record's type name bytes and shader types
+constexpr uint32_t MMU_FAULT_NAME_BYTES   = 32;
+constexpr uint32_t MMU_FAULT_SHADER_TYPES = 7;
+
+// NVIDIA's NV906F_CTRL_GET_MMU_FAULT_INFO_PARAMS, which the reply fills
+struct mmu_fault_info_params {
+    uint32_t address_high;                            // NVIDIA's addrHi
+    uint32_t address_low;                             // NVIDIA's addrLo
+    uint32_t type;                                    // NVIDIA's faultType
+    char     type_name[MMU_FAULT_NAME_BYTES];         // NVIDIA's faultString
+    uint64_t shader_programs[MMU_FAULT_SHADER_TYPES]; // NVIDIA's shaderProgramVA
+};
+
+static_assert(sizeof(mmu_fault_info_params) == 104, "NVIDIA's layout of GET_MMU_FAULT_INFO's reply");
+
 // NVIDIA's NV2080_CTRL_CMD_CE_GET_FAULT_METHOD_BUFFER_SIZE, the control that gives a fault method buffer's bytes
 constexpr uint32_t CONTROL_GET_FAULT_METHOD_BUFFER_SIZE = 0x20802A08;
 

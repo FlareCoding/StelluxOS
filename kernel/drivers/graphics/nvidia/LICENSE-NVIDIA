@@ -4281,9 +4281,19 @@ src/common/sdk/nvidia/inc/class/cla06c.h
 
 src/common/sdk/nvidia/inc/ctrl/ctrla06f/ctrla06fgpfifo.h
     the commands NVA06F_CTRL_CMD_BIND and NVA06F_CTRL_CMD_GPFIFO_SCHEDULE,
-    controls of a channel, and the layouts of their parameters, in rm.h, and the
+    controls of a channel, and the layouts of their parameters, in rm.h, the
     commands in kernel/tests/graphics/nvidia_channel.test.cpp,
     kernel/tests/graphics/nvidia_copy_channel.test.cpp and
+    kernel/tests/graphics/nvidia_engines.test.cpp, and the command
+    NVA06F_CTRL_CMD_GET_MMU_FAULT_INFO, a control of a channel whose parameters
+    are NV906F_CTRL_GET_MMU_FAULT_INFO_PARAMS, in rm.h and
+    kernel/tests/graphics/nvidia_engines.test.cpp
+    SPDX-FileCopyrightText: Copyright (c) 2007-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/sdk/nvidia/inc/ctrl/ctrl906f.h
+    the layout of NV906F_CTRL_GET_MMU_FAULT_INFO_PARAMS, with its string length
+    NV906F_CTRL_MMU_FAULT_STRING_LEN and its count of shader types
+    NV906F_CTRL_MMU_FAULT_SHADER_TYPES, in rm.h, and its size and offsets in
     kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2007-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

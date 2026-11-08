@@ -1223,9 +1223,9 @@ static void test_faulting_fill(int fd, struct session* live) {
     );
 
     bool ended_in_time = ended && elapsed_ns < GPU_SUBMIT_TIMEOUT_NS && ended_failed(&faulting, q);
-    bool lost_to_fault = queried && query.lost == GPU_LOST_FAULT && query.fault_va == 0;
+    bool lost_to_fault = queried && query.lost == GPU_LOST_FAULT && query.fault_va == UNMAPPED_VA;
     check(
-        "a fill of unmapped memory ends failed before its deadline, its context lost to a fault whose address reads 0",
+        "a fill of unmapped memory ends failed before its deadline, its context lost to a fault at the fill's address",
         ended_in_time && lost_to_fault
     );
 
