@@ -1,6 +1,7 @@
 #ifndef STLXDM_GPU_COMPOSITOR_HPP
 #define STLXDM_GPU_COMPOSITOR_HPP
 
+#include "compare.hpp"
 #include "damage.hpp"
 #include "layers.hpp"
 #include "picture.hpp"
@@ -26,6 +27,11 @@ struct compose_target {
     uint64_t             address = 0;
     uint32_t             pitch = 0;
     const output_buffer* scanout = nullptr;
+
+    /* With `scanout`, a picture of the same compositor as large as
+     * `scanout`, which takes a copy of each row the compose wrote at the
+     * same offset so the CPU can compare the frame */
+    const picture*       readback = nullptr;
 };
 
 /* How a compose ended */
@@ -86,6 +92,10 @@ public:
 
     std::unique_ptr<picture> make_picture(size_t bytes) override;
     std::unique_ptr<picture> make_twin(size_t bytes) override;
+
+    /* The bytes from one row to the next of every output buffer `width`
+     * pixels wide this compositor makes */
+    static uint32_t output_pitch(uint32_t width);
 
     /* A scanout buffer in video memory, which gfxfb imports through a copy
      * of its handle that can only read it and Vulkan through the handle
@@ -248,6 +258,7 @@ private:
         const layer_scene& scene,
         const backdrop_picture& backdrop
     );
+    void record_readback(compose_buffers& buffers, const compose_target& target);
     compose_result submit_and_wait(compose_buffers& buffers);
     void transfer_buffers(
         compose_buffers& buffers,
@@ -338,6 +349,7 @@ private:
 
     std::vector<picture_copy>          m_copies;
     std::vector<VkBufferCopy>          m_copy_regions;
+    std::vector<span>                  m_readback_rows;
     std::vector<VkBufferMemoryBarrier> m_transfers;
 };
 

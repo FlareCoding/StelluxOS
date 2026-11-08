@@ -326,6 +326,7 @@ void server::switch_to_gpu() {
         return;
     }
 
+    m_compares_frames = m_conf->compare_frames;
     const char* refusal = m_display->falls_back() ? "the display has no buffers" : nullptr;
     if (!refusal) {
         m_gpu_backdrop = copy_backdrop(m_backdrop, m_backdrop->width, m_backdrop->height);
@@ -370,7 +371,7 @@ void server::switch_to_gpu() {
 
     m_gpu_composes = true;
     m_damage.add_full();
-    printf("stlxdm: composing on the GPU\r\n");
+    printf("stlxdm: composing on the GPU%s\r\n", m_compares_frames ? ", comparing each frame with the CPU's" : "");
 }
 
 /* Retires the GPU compositor and moves every served output to the CPU compositor on a flip presenter, copying the
@@ -733,7 +734,18 @@ bool server::make_output_pictures(uint32_t output) {
         pictures.compose = m_gpu_compositor->make_compose_buffers();
     }
 
-    return (is_main || pictures.backdrop) && pictures.lower_top && pictures.upper_top && pictures.compose;
+    if (m_compares_frames && !pictures.readback) {
+        pictures.readback = m_gpu_compositor->make_picture(
+            static_cast<size_t>(gpu_compositor::output_pitch(width)) * height
+        );
+    }
+
+    if (m_compares_frames && !pictures.comparison) {
+        pictures.comparison = m_gpu_compositor->make_picture(static_cast<size_t>(width) * height * 4);
+    }
+
+    bool compares = !m_compares_frames || (pictures.readback && pictures.comparison);
+    return (is_main || pictures.backdrop) && pictures.lower_top && pictures.upper_top && pictures.compose && compares;
 }
 
 /* Gives every served output the pictures it lacks while the GPU composes */
