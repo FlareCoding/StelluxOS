@@ -48,7 +48,7 @@ MESON_VER="1.7.0"
 MESON_SHA256="ae3f12953045f3c7c60e27f2af1ad862f14dee125b4ed9bcb8a842a5080dbf85"
 
 # Package release number, bumped when the recipe, GPU_ABI_VERSION or STLXWIN_GPU_ABI_VERSION changes but Mesa does not
-MESA_PKG_REL="7"
+MESA_PKG_REL="8"
 
 # The version-release of each package this recipe emits, as the archive names it
 package_version() {

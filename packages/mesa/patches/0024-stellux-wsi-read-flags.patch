@@ -1,0 +1,164 @@
+Places a stellux swapchain's buffers by the read flag of the GPU_INFO it is
+created under: in host-visible system memory while stlxdm reads them with
+the CPU, and in video memory the CPU cannot map while stlxdm reads them with
+the GPU, which reads video memory fastest, or in system memory on a device
+without such a type. A GPU_INFO that changes the read flags makes the
+swapchain out of date: its acquires and presents, and present waits for a
+present it refused, return VK_ERROR_OUT_OF_DATE_KHR, so the program
+recreates it in the placement now asked.
+
+--- a/src/vulkan/wsi/wsi_common_stellux.c
++++ b/src/vulkan/wsi/wsi_common_stellux.c
+@@ -4,6 +4,7 @@
+ 
+ /** VK_STLX_surface */
+ 
++#include "util/bitscan.h"
+ #include "util/cnd_monotonic.h"
+ #include "util/macros.h"
+ #include "util/os_time.h"
+@@ -29,6 +30,10 @@
+  * third to render into */
+ #define STELLUX_MAILBOX_MIN_IMAGES 3
+ 
++/* The GPU_INFO flags that say whether stlxdm reads buffers with the CPU or
++ * with the GPU, which decides where a swapchain places its buffers */
++#define STELLUX_READ_FLAGS (STLXWIN_GPU_CPU_READS | STLXWIN_GPU_GPU_READS)
++
+ struct wsi_stellux {
+    struct wsi_interface base;
+ };
+@@ -59,6 +64,8 @@
+    struct wsi_swapchain base;
+    struct wsi_stellux_surface *surface;
+    VkExtent2D extent;
++   /* The read flags of the GPU_INFO the buffers were placed by */
++   uint32_t read_flags;
+ 
+    /* The newest commit's release timeline and latch point, which FIFO
+     * waits for before the next commit */
+@@ -436,6 +443,23 @@
+    }
+ 
+    return found;
++}
++
++/* Finds a lost surface, and a swapchain out of date once a GPU_INFO changed
++ * the read flags its buffers were placed by */
++static VkResult
++wsi_stellux_swapchain_check_gpu_info(struct wsi_stellux_swapchain *chain)
++{
++   stlxwin_gpu_info gpu_info;
++   VkResult result =
++      wsi_stellux_surface_get_gpu_info(&chain->surface->base, &gpu_info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   if ((gpu_info.flags & STELLUX_READ_FLAGS) != chain->read_flags)
++      return VK_ERROR_OUT_OF_DATE_KHR;
++
++   return VK_SUCCESS;
+ }
+ 
+ static VkResult
+@@ -449,9 +473,7 @@
+    if (chain->retired)
+       return VK_ERROR_OUT_OF_DATE_KHR;
+ 
+-   stlxwin_gpu_info gpu_info;
+-   VkResult result =
+-      wsi_stellux_surface_get_gpu_info(&chain->surface->base, &gpu_info);
++   VkResult result = wsi_stellux_swapchain_check_gpu_info(chain);
+    if (result != VK_SUCCESS)
+       return result;
+ 
+@@ -553,9 +575,7 @@
+    if (chain->retired)
+       return VK_ERROR_OUT_OF_DATE_KHR;
+ 
+-   stlxwin_gpu_info gpu_info;
+-   VkResult result =
+-      wsi_stellux_surface_get_gpu_info(&chain->surface->base, &gpu_info);
++   VkResult result = wsi_stellux_swapchain_check_gpu_info(chain);
+    if (result != VK_SUCCESS)
+       return result;
+ 
+@@ -642,14 +662,12 @@
+       if (found != NULL)
+          return VK_SUCCESS;
+ 
+-      /* A present refused for retirement or a lost surface ran its blit and
+-       * recorded nothing */
++      /* A present refused for retirement, a lost surface or a swapchain out
++       * of date ran its blit and recorded nothing */
+       if (retired)
+          return VK_ERROR_OUT_OF_DATE_KHR;
+ 
+-      stlxwin_gpu_info gpu_info;
+-      VkResult result =
+-         wsi_stellux_surface_get_gpu_info(&chain->surface->base, &gpu_info);
++      VkResult result = wsi_stellux_swapchain_check_gpu_info(chain);
+       if (result != VK_SUCCESS)
+          return result;
+ 
+@@ -743,15 +761,33 @@
+    return VK_SUCCESS;
+ }
+ 
+-/* Prefers a host-visible type outside video memory, since stlxdm reads the
+- * buffers with the CPU, which system memory serves fastest */
++/* Prefers a host-visible type outside video memory, which the CPU reads
++ * fastest */
+ static uint32_t
+-wsi_stellux_select_buffer_memory_type(const struct wsi_device *wsi,
++wsi_stellux_select_system_memory_type(const struct wsi_device *wsi,
+                                       uint32_t type_bits)
+ {
+    return wsi_select_memory_type(wsi, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                  type_bits);
++}
++
++/* Prefers video memory the CPU cannot map, which the GPU reads fastest, and
++ * takes system memory on a device without such a type */
++static uint32_t
++wsi_stellux_select_video_memory_type(const struct wsi_device *wsi,
++                                     uint32_t type_bits)
++{
++   u_foreach_bit(t, type_bits) {
++      VkMemoryPropertyFlags flags =
++         wsi->memory_props.memoryTypes[t].propertyFlags;
++      bool is_device_local = flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++      bool is_host_visible = flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
++      if (is_device_local && !is_host_visible)
++         return t;
++   }
++
++   return wsi_stellux_select_system_memory_type(wsi, type_bits);
+ }
+ 
+ static VkResult
+@@ -877,11 +913,14 @@
+       goto fail_destroy_present_locks;
+    }
+ 
++   bool gpu_reads = gpu_info.flags & STLXWIN_GPU_GPU_READS;
++
+    /* stlxdm reads an exported buffer, waits on the image's acquire
+     * timeline and raises its release timeline itself */
+    chain->base.image_info.explicit_sync = true;
+    chain->base.image_info.select_blit_dst_memory_type =
+-      wsi_stellux_select_buffer_memory_type;
++      gpu_reads ? wsi_stellux_select_video_memory_type
++                : wsi_stellux_select_system_memory_type;
+    chain->base.image_info.create_mem = wsi_stellux_create_buffer_mem;
+ 
+    chain->base.destroy = wsi_stellux_swapchain_destroy;
+@@ -894,6 +933,7 @@
+    chain->base.present_mode = present_mode;
+    chain->surface = surface;
+    chain->extent = pCreateInfo->imageExtent;
++   chain->read_flags = gpu_info.flags & STELLUX_READ_FLAGS;
+ 
+    chain->base.image_count = image_count;
+ 
