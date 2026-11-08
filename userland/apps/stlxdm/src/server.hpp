@@ -5,6 +5,7 @@
 #include "damage.hpp"
 #include "decor.hpp"
 #include "display.hpp"
+#include "gpu_compositor.hpp"
 #include "layout.hpp"
 #include "layout_store.hpp"
 #include "panels.hpp"
@@ -272,14 +273,15 @@ struct dm_answer {
 class server {
 public:
     /* Builds the desktop's state over the outputs `disp` serves: the
-     * layout, cursor, panels, power, wallpaper, and hotkeys. Runs before
-     * the splash so its cost, dominated by the wallpaper decode, never
-     * sits between Enter and the desktop. Returns 0 or -1. */
+     * layout, cursor, panels, power, wallpaper, hotkeys, GPU device, and
+     * the GPU compositor unless the config asks for the CPU or it cannot be
+     * made. Runs before the splash so its cost, dominated by the wallpaper
+     * decode, never sits between Enter and the desktop. Returns 0 or -1. */
     int init(display* disp, const stlxconf_t* conf);
 
-    /* Raises the handle limit, tries to open the GPU device, binds the
-     * protocol socket and spawns the config's autostart entries, the
-     * moment clients may exist. Returns 0 or -1. */
+    /* Raises the handle limit, binds the protocol socket and spawns the
+     * config's autostart entries, the moment clients may exist. Returns 0
+     * or -1. */
     int serve();
 
     const layout& desktop() const { return m_layout; }
@@ -306,7 +308,8 @@ public:
 
     /* Re-applies a freshly re-parsed config: panels, power, the
      * wallpaper, and the hotkeys rebuild, then the desktop repaints.
-     * Autostart entries do not respawn. */
+     * Autostart entries do not respawn, and `compositor` takes effect at
+     * the next start. */
     void reload_config();
 
     /* Places the members again after output events or a mode request's
@@ -534,6 +537,13 @@ private:
      * GPU_INFO every client gets after HELLO_REPLY */
     int m_gpu_fd = -1;
     swp_gpu_info m_gpu_info = {};
+
+    /* The GPU compositor, null while the CPU composes */
+    std::unique_ptr<gpu_compositor> m_gpu_compositor;
+
+    /* Makes the GPU compositor unless the config asks for the CPU or no
+     * GPU device opened, printing why the CPU composes otherwise */
+    void choose_compositor();
 
     /* The main output's backdrop: wallpaper or flat color with the
      * panels painted in */

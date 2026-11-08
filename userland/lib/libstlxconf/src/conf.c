@@ -26,6 +26,21 @@ typedef enum {
     SEC_URL_HANDLER,
 } conf_section_t;
 
+static const char* const COMPOSITOR_NAMES[] = {
+    [STLXCONF_COMPOSITOR_AUTO] = "auto",
+    [STLXCONF_COMPOSITOR_CPU]  = "cpu",
+};
+
+static const char* const COMPOSE_FAULT_NAMES[] = {
+    [STLXCONF_COMPOSE_FAULT_NONE]  = "none",
+    [STLXCONF_COMPOSE_FAULT_FAULT] = "fault",
+    [STLXCONF_COMPOSE_FAULT_HANG]  = "hang",
+};
+
+static const char* const SWITCH_NAMES[] = { "off", "on" };
+
+#define NAME_COUNT(names) ((int)(sizeof(names) / sizeof((names)[0])))
+
 void stlxconf_defaults(stlxconf_t* conf) {
     memset(conf, 0, sizeof(*conf));
 
@@ -56,6 +71,17 @@ static char* trim(char* s) {
     *end = '\0';
 
     return s;
+}
+
+/* The index of `val` in `names`, or -1 when it is none of them */
+static int find_name(const char* const* names, int count, const char* val) {
+    for (int i = 0; i < count; i++) {
+        if (strcmp(names[i], val) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
 }
 
 static void copy_bounded(char* dst, const char* src, size_t cap) {
@@ -134,6 +160,21 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
             conf->bg_color = (uint32_t)strtoul(val, NULL, 16);
         } else if (strcmp(key, "wallpaper") == 0) {
             copy_bounded(conf->wallpaper, val, sizeof(conf->wallpaper));
+        } else if (strcmp(key, "compositor") == 0) {
+            int found = find_name(COMPOSITOR_NAMES, NAME_COUNT(COMPOSITOR_NAMES), val);
+            if (found >= 0) {
+                conf->compositor = (stlxconf_compositor_t)found;
+            }
+        } else if (strcmp(key, "compare_frames") == 0) {
+            int found = find_name(SWITCH_NAMES, NAME_COUNT(SWITCH_NAMES), val);
+            if (found >= 0) {
+                conf->compare_frames = found == 1;
+            }
+        } else if (strcmp(key, "compose_fault") == 0) {
+            int found = find_name(COMPOSE_FAULT_NAMES, NAME_COUNT(COMPOSE_FAULT_NAMES), val);
+            if (found >= 0) {
+                conf->compose_fault = (stlxconf_compose_fault_t)found;
+            }
         }
         return;
     case SEC_THEME:
@@ -356,6 +397,9 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
     fprintf(f, "[desktop]\n");
     fprintf(f, "bg_color=0x%08X\n", conf->bg_color);
     fprintf(f, "wallpaper=%s\n", conf->wallpaper);
+    fprintf(f, "compositor=%s\n", COMPOSITOR_NAMES[conf->compositor]);
+    fprintf(f, "compare_frames=%s\n", SWITCH_NAMES[conf->compare_frames ? 1 : 0]);
+    fprintf(f, "compose_fault=%s\n", COMPOSE_FAULT_NAMES[conf->compose_fault]);
 
     fprintf(f, "\n[theme]\n");
     fprintf(f, "bar_color=0x%08X\n", conf->bar_color);

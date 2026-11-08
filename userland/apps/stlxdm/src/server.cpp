@@ -270,6 +270,9 @@ int server::init(display* disp, const stlxconf_t* conf) {
         return -1;
     }
 
+    m_gpu_fd = open_gpu_device();
+    choose_compositor();
+
     dm_wallpaper wallpaper(*conf);
     dm_conf_state state;
     if (build_conf_state(state, wallpaper) != 0) {
@@ -290,10 +293,23 @@ int server::init(display* disp, const stlxconf_t* conf) {
     return 0;
 }
 
+void server::choose_compositor() {
+    if (m_conf->compositor == STLXCONF_COMPOSITOR_CPU) {
+        printf("stlxdm: composing on the CPU, the config's compositor is cpu\r\n");
+        return;
+    }
+
+    if (m_gpu_fd < 0) {
+        printf("stlxdm: composing on the CPU, no %s\r\n", GPU_DEVICE_PATH);
+        return;
+    }
+
+    m_gpu_compositor = gpu_compositor::create(m_gpu_fd);
+}
+
 int server::serve() {
     raise_handle_limit();
 
-    m_gpu_fd = open_gpu_device();
     if (m_gpu_fd >= 0) {
         /* The CPU compositor maps every buffer, and reads system memory
          * faster than video memory */
