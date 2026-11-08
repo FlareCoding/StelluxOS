@@ -59,7 +59,7 @@ public:
     uint32_t take_changed_outputs();
 
     /* Follows `output`'s state as read after its output event: keeps its
-     * presenter, refreshed by `flip_presenter::relit()`, while it stays
+     * presenter, refreshed by `buffer_presenter::relit()`, while it stays
      * lit at its size, and otherwise drops any presenter and makes one at
      * its size while the output reads lit. A lit output whose buffers
      * cannot be made or whose mode passes the desktop's limit stays
@@ -102,7 +102,7 @@ private:
     /* Whether the fallback's last update succeeded within the limit. */
     bool     m_fallback_served = false;
 
-    std::unique_ptr<flip_presenter>   m_presenters[gfxfb::GFXFB_OUTPUTS_MAX];
+    std::unique_ptr<buffer_presenter> m_presenters[gfxfb::GFXFB_OUTPUTS_MAX];
     std::unique_ptr<memcpy_presenter> m_fallback;
 
     layout_store::identity m_monitors[gfxfb::GFXFB_OUTPUTS_MAX];

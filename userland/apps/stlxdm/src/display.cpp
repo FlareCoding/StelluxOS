@@ -297,7 +297,7 @@ void display::follow_output(uint32_t output, const gfxfb::gfxfb_output_info& inf
     }
 
     /* A presenter's buffers keep the size they were made at, so an output at another size gets a new one */
-    std::unique_ptr<flip_presenter>& served = m_presenters[output];
+    std::unique_ptr<buffer_presenter>& served = m_presenters[output];
     bool same_size = served && served->width() == info.current.width && served->height() == info.current.height;
     if (is_lit(info) && same_size) {
         served->relit(info);
