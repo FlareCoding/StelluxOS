@@ -66,14 +66,14 @@ const gpu_compositor::memory_kind gpu_compositor::PICTURE_MEMORY = {
     0
 };
 
-/* Video memory the CPU cannot map, for twins and output buffers, which no CPU reads */
+/* Video memory the CPU cannot map, for twins, output buffers and window buffers that are not mappable */
 const gpu_compositor::memory_kind gpu_compositor::VIDEO_MEMORY = {
     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
 };
 
-/* An opaque import must name the type its exporter allocated from, and a
- * window buffer lies in system memory or in video memory its client maps */
+/* An opaque import must name the type its exporter allocated from, and a window buffer lies in system memory, in video
+ * memory its client maps, or in video memory that is not mappable, which is VIDEO_MEMORY's */
 const gpu_compositor::memory_kind gpu_compositor::SYSTEM_WINDOW_MEMORY = {
     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
@@ -853,10 +853,11 @@ window_import_result gpu_compositor::import_window_buffer(
     int gpu_buffer,
     uint64_t bytes,
     uint32_t placement,
+    bool is_mappable,
     std::unique_ptr<window_import>& imported
 ) {
     device_buffer import;
-    VkResult result = import_window_memory(gpu_buffer, bytes, placement, import);
+    VkResult result = import_window_memory(gpu_buffer, bytes, placement, is_mappable, import);
     if (result != VK_SUCCESS) {
         destroy_buffer(import);
         bool is_out_of_memory = result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -874,13 +875,14 @@ VkResult gpu_compositor::import_window_memory(
     int gpu_buffer,
     uint64_t bytes,
     uint32_t placement,
+    bool is_mappable,
     device_buffer& import
 ) {
     const memory_kind* kind = nullptr;
     if (placement == GPU_PLACEMENT_SYSTEM) {
         kind = &SYSTEM_WINDOW_MEMORY;
     } else if (placement == GPU_PLACEMENT_VIDEO) {
-        kind = &VIDEO_WINDOW_MEMORY;
+        kind = is_mappable ? &VIDEO_WINDOW_MEMORY : &VIDEO_MEMORY;
     } else {
         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
     }

@@ -110,7 +110,8 @@ void draw(const canvas& back, const dm_window& w,
 
 /* Blits the displayed buffer into place with the frame's rounded
  * bottom corners applied, clipped to one compose rect, which is in
- * desktop coordinates and must lie inside `back`. */
+ * desktop coordinates and must lie inside `back`. A buffer without a
+ * mapping shows `CONTENT_BG` instead. */
 void blit_content(const canvas& back, const dm_window& w,
                   const damage_list::rect& clip);
 

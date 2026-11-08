@@ -431,15 +431,19 @@ void run_proto_checks(void) {
     signal(SIGPIPE, SIG_IGN);
 
     int gpu = open("/dev/gpu0", O_RDWR);
-    uint32_t expected_flags = gpu >= 0 ? SWP_GPU_ACCEPTS | SWP_GPU_CPU_READS : 0;
-    if (gpu >= 0) {
+    bool has_gpu = gpu >= 0;
+    if (has_gpu) {
         close(gpu);
     }
 
     swp_gpu_info gpu_info = { ~0u, ~0u };
     int sock = proto_connect(&gpu_info);
-    bool as_expected = gpu_info.flags == expected_flags && gpu_info.device == 0;
-    check("the handshake's GPU_INFO offers GPU buffers exactly when /dev/gpu0 opens", sock >= 0 && as_expected);
+    uint32_t reader = gpu_info.flags & ~(uint32_t)SWP_GPU_ACCEPTS;
+    bool names_one_reader = (gpu_info.flags & SWP_GPU_ACCEPTS) &&
+                            (reader == SWP_GPU_CPU_READS || reader == SWP_GPU_GPU_READS);
+    bool as_expected = (has_gpu ? names_one_reader : gpu_info.flags == 0) && gpu_info.device == 0;
+    check("the handshake's GPU_INFO offers GPU buffers, naming one reader, exactly when /dev/gpu0 opens",
+          sock >= 0 && as_expected);
 
     if (sock >= 0) {
         close(sock);
