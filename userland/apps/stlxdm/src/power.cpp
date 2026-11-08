@@ -355,7 +355,7 @@ static void pw_text_centered(stlxgfx_surface_t* s, stlxgfx_font* font,
 }
 
 int dm_power::init(uint32_t screen_w, uint32_t screen_h,
-                   uint32_t taskbar_height) {
+                   uint32_t taskbar_height, uint8_t* capture) {
     m_width = screen_w;
     m_height = screen_h;
 
@@ -372,14 +372,33 @@ int dm_power::init(uint32_t screen_w, uint32_t screen_h,
     stlxgfx_font_metrics_get(m_label_font, &m_label_fm);
     stlxgfx_font_metrics_get(m_hint_font, &m_hint_fm);
 
+    capture_into(capture);
+
+    return 0;
+}
+
+void dm_power::capture_into(uint8_t* capture) {
+    stlxgfx_destroy_surface(m_backdrop);
+    m_backdrop_valid = false;
+    if (capture) {
+        m_backdrop = stlxgfx_surface_from_buffer(capture, m_width, m_height, m_width * 4, 32, 16, 8, 0);
+        return;
+    }
+
     /* Reserved and touched up front, so the first collapse pays for
      * neither the allocation nor faulting a screen of pages in */
-    m_backdrop = stlxgfx_create_surface(screen_w, screen_h, 32, 16, 8, 0);
+    m_backdrop = stlxgfx_create_surface(m_width, m_height, 32, 16, 8, 0);
     if (m_backdrop) {
         stlxgfx_clear(m_backdrop, 0xFF000000u);
     }
+}
 
-    return 0;
+bool dm_power::wants_capture() const {
+    return m_state != state::closed && !blacked_out() && !m_backdrop_valid && m_backdrop;
+}
+
+void dm_power::mark_captured() {
+    m_backdrop_valid = true;
 }
 
 void dm_power::shutdown() {
@@ -723,8 +742,26 @@ void dm_power::draw_over_dim(stlxgfx_surface_t* top, const damage_list::rect& cl
     draw_overlay_layers(top, clip, false);
 }
 
+void dm_power::draw_hint(stlxgfx_surface_t* top, const damage_list::rect& clip) {
+    if (m_state == state::closed || clip.w <= 0 || clip.h <= 0) {
+        return;
+    }
+
+    stlxgfx_surface_t* view = pw_view(top, clip);
+    if (!view) {
+        return;
+    }
+
+    draw_hint_text(view, clip);
+    stlxgfx_destroy_surface(view);
+}
+
 float dm_power::hint_top() const {
     return static_cast<float>(m_height) * 0.46f + static_cast<float>(PW_ORB_RADIUS) + 88.0f;
+}
+
+bool dm_power::blacked_out() const {
+    return m_state == state::committing && phase(PW_COMMIT_MS) >= PW_BLACKOUT_AT;
 }
 
 void dm_power::draw_overlay_layers(
@@ -743,8 +780,7 @@ void dm_power::draw_overlay_layers(
 
     /* Past the blackout point the screen is going black anyway, so it
      * is filled opaquely and only the light finishes on top */
-    if (m_state == state::committing &&
-        phase(PW_COMMIT_MS) >= PW_BLACKOUT_AT) {
+    if (blacked_out()) {
         stlxgfx_fill_rect(view, 0, 0,
                           static_cast<uint32_t>(clip.w),
                           static_cast<uint32_t>(clip.h), 0xFF000000u);
@@ -760,12 +796,7 @@ void dm_power::draw_overlay_layers(
         pw_dim(view, PW_DIM_COLOR);
     }
 
-    const char* hint = "Hold to confirm     Esc to cancel";
-    pw_text_centered(view, m_hint_font, m_hint_fm,
-                     static_cast<float>(m_width) * 0.5f
-                         - static_cast<float>(clip.x),
-                     hint_top() - static_cast<float>(clip.y), hint,
-                     PW_HINT_COLOR);
+    draw_hint_text(view, clip);
 
     /* A full screen frame with the dim and hint in place is exactly
      * the collapse backdrop, captured before the orbs go on top */
@@ -779,6 +810,16 @@ void dm_power::draw_overlay_layers(
 
     draw_orbs(view, clip.x, clip.y);
     stlxgfx_destroy_surface(view);
+}
+
+/* The hint line in `view`, a view over `clip` of the screen */
+void dm_power::draw_hint_text(stlxgfx_surface_t* view, const damage_list::rect& clip) {
+    const char* hint = "Hold to confirm     Esc to cancel";
+    pw_text_centered(view, m_hint_font, m_hint_fm,
+                     static_cast<float>(m_width) * 0.5f
+                         - static_cast<float>(clip.x),
+                     hint_top() - static_cast<float>(clip.y), hint,
+                     PW_HINT_COLOR);
 }
 
 /* The chosen light flares, then contracts to a point and winks out,

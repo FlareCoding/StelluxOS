@@ -1273,6 +1273,25 @@ static bool touches_any(const damage_list::rect& bounds, const std::vector<damag
     return false;
 }
 
+static bool has_whole_output(const std::vector<damage_list::rect>& rects, int32_t width, int32_t height) {
+    for (const damage_list::rect& r : rects) {
+        if (r.x == 0 && r.y == 0 && r.w == width && r.h == height) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static compose_target output_target(const presenter::target& t) {
+    compose_target target;
+    target.address = t.gpu_buffer->gpu_address();
+    target.pitch = t.stride;
+    target.scanout = t.gpu_buffer;
+
+    return target;
+}
+
 /* Paints the panels' changes into the main output's backdrop and adds them
  * to the damage, noting the rows a GPU compose copies into its twin */
 void server::flush_panels() {
@@ -1325,18 +1344,12 @@ bool server::compose_on_cpu(dm_output& out, const presenter::target& t, const da
     return true;
 }
 
-/* Composes `effective` into the output buffer `t` names. False when the frame's pictures or the compose failed,
- * which stops every output's composes */
+/* Composes `effective` into the output buffer `t` names, after capturing the collapse backdrop at its capture frame.
+ * False when the frame's pictures or a compose failed, which stops every output's composes */
 bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const damage_list& effective) {
     int32_t sw = static_cast<int32_t>(out.pres->width());
     int32_t sh = static_cast<int32_t>(out.pres->height());
-
-    /* A main output whose desktop rebuild failed keeps a backdrop of another size, which the shader would read past */
-    backdrop_picture& backdrop = gpu_backdrop_of(out);
-    bool fits = static_cast<int32_t>(backdrop.surface()->width) == sw &&
-                static_cast<int32_t>(backdrop.surface()->height) == sh;
-    if (!fits) {
-        stop_gpu_composing("the main output's backdrop has another size");
+    if (stop_on_misfit_backdrop(out)) {
         return false;
     }
 
@@ -1354,31 +1367,90 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
         }
     }
 
-    if (!draw_pictures(out, rects)) {
+    bool is_main = &out == &m_outputs[m_layout.main_output()];
+    bool captures_now = is_main && m_power->wants_capture() && has_whole_output(rects, sw, sh);
+    if (captures_now && !compose_capture(out)) {
+        return false;
+    }
+
+    if (!draw_pictures(out, rects, false)) {
+        stop_gpu_composing("a window's frame picture ran out of memory");
+        return false;
+    }
+
+    compose_result result = m_gpu_compositor->compose(
+        *pictures.compose,
+        output_target(t),
+        pictures.scene,
+        rects,
+        gpu_backdrop_of(out)
+    );
+    return !stop_on_failed_compose(result);
+}
+
+/* Composes the main output's frame beneath the orbs, its upper top picture holding the hint alone, into the power
+ * overlay's capture, which the collapse frames fade. False when it stopped every output's composes */
+bool server::compose_capture(dm_output& out) {
+    int32_t sw = static_cast<int32_t>(out.pres->width());
+    int32_t sh = static_cast<int32_t>(out.pres->height());
+    std::vector<damage_list::rect> whole = { { 0, 0, sw, sh } };
+    layer_scene& scene = out.pictures.scene;
+    if (!draw_pictures(out, whole, true)) {
         stop_gpu_composing("a window's frame picture ran out of memory");
         return false;
     }
 
     compose_target target;
-    target.address = t.gpu_buffer->gpu_address();
-    target.pitch = t.stride;
-    target.scanout = t.gpu_buffer;
-
-    compose_result result = m_gpu_compositor->compose(*pictures.compose, target, pictures.scene, rects, backdrop);
-    if (result == compose_result::composed) {
-        return true;
+    target.address = m_gpu_capture->address();
+    target.pitch = static_cast<uint32_t>(sw) * 4;
+    compose_result result = m_gpu_compositor->compose(
+        *out.pictures.compose,
+        target,
+        scene,
+        whole,
+        gpu_backdrop_of(out)
+    );
+    if (stop_on_failed_compose(result)) {
+        return false;
     }
 
-    if (result == compose_result::lost) {
+    m_power->mark_captured();
+
+    return true;
+}
+
+/* Stops every output's composes when `out` is a main output whose failed desktop rebuild left a backdrop of another
+ * size, which the shader would read past. True when it stopped them */
+bool server::stop_on_misfit_backdrop(dm_output& out) {
+    const stlxgfx_surface_t* backdrop = gpu_backdrop_of(out).surface();
+    if (backdrop->width == out.pres->width() && backdrop->height == out.pres->height()) {
+        return false;
+    }
+
+    stop_gpu_composing("the main output's backdrop has another size");
+
+    return true;
+}
+
+/* Stops every output's composes unless `result` composed. True when it
+ * stopped them */
+bool server::stop_on_failed_compose(compose_result result) {
+    switch (result) {
+    case compose_result::composed:
+        return false;
+    case compose_result::not_submitted:
+        stop_gpu_composing("a compose could not be submitted");
+        break;
+    case compose_result::lost:
         stop_gpu_composing("the GPU device was lost");
-    } else if (result == compose_result::unfinished) {
+        break;
+    case compose_result::unfinished:
         m_gpu_compositor->finish();
         stop_gpu_composing("a compose passed its deadline");
-    } else {
-        stop_gpu_composing("a compose could not be submitted");
+        break;
     }
 
-    return false;
+    return true;
 }
 
 /* No output composes from here on */
@@ -1392,9 +1464,9 @@ backdrop_picture& server::gpu_backdrop_of(dm_output& out) {
     return is_main ? *m_gpu_backdrop : *out.pictures.backdrop;
 }
 
-/* Draws the frames and top pictures one GPU compose of `out` reads in `rects`, in its own pixels, and fills its scene
- * with what `out` shows. `out` must hold its pictures. False when a window's frame picture ran out of memory */
-bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects) {
+/* Draws the frames and top pictures a GPU compose of `out` reads in `rects`, in its pixels, and fills its scene with
+ * what it shows, or what the collapse backdrop holds when `is_capture`. Needs `out`'s pictures. False without memory */
+bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture) {
     layer_scene& scene = out.pictures.scene;
     int32_t ox = out.place.x;
     int32_t oy = out.place.y;
@@ -1433,7 +1505,7 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
         scene.windows.push_back(shown);
     }
 
-    draw_top_pictures(out, rects);
+    draw_top_pictures(out, rects, is_capture);
 
     scene.lower_top = out.pictures.lower_top->layer();
     scene.is_dimmed = m_power->active();
@@ -1443,9 +1515,9 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
     return true;
 }
 
-/* compose_rect's draws above the windows, in its order, into the lower top
- * picture before the power overlay's dim and into the upper one after it */
-void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects) {
+/* Draws `compose_rect`'s draws above the windows, in its order, into the lower top picture before the power overlay's
+ * dim and into the upper one after it, which for a capture holds only the hint drawn beneath the orbs */
+void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture) {
     top_picture& lower = *out.pictures.lower_top;
     top_picture& upper = *out.pictures.upper_top;
     int32_t ox = out.place.x;
@@ -1464,7 +1536,8 @@ void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::re
         upper.add_bounds(m_power->overlay_bounds());
     }
 
-    if (out.cursor_in_frames) {
+    bool draws_pointer = out.cursor_in_frames && !is_capture;
+    if (draws_pointer) {
         damage_list::rect pointer = cursor_bounds();
         upper.add_bounds({ pointer.x - ox, pointer.y - oy, pointer.w, pointer.h });
     }
@@ -1482,11 +1555,13 @@ void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::re
         }
 
         upper.clear(r);
-        if (is_main) {
+        if (is_main && is_capture) {
+            m_power->draw_hint(upper.surface(), r);
+        } else if (is_main) {
             m_power->draw_over_dim(upper.surface(), r);
         }
 
-        if (out.cursor_in_frames) {
+        if (draws_pointer) {
             m_cursor.draw(upper.surface(), m_cursor_shape, m_cursor_x - ox, m_cursor_y - oy, r);
         }
     }
@@ -1495,19 +1570,8 @@ void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::re
 /* One collapse frame on the main output, from the overlay's cached backdrop */
 void server::compose_collapse(dm_output& out) {
     presenter::target t = out.pres->acquire();
-    stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
-        reinterpret_cast<uint8_t*>(t.pixels), out.pres->width(),
-        out.pres->height(), t.stride, 32, 16, 8, 0);
-    if (back) {
-        damage_list::rect whole = { 0, 0, static_cast<int32_t>(back->width),
-                                    static_cast<int32_t>(back->height) };
-        m_power->draw_collapse(back);
-        if (out.cursor_in_frames) {
-            m_cursor.draw(back, m_cursor_shape, m_cursor_x - out.place.x, m_cursor_y - out.place.y, whole);
-        }
-
-        stlxgfx_destroy_surface(back);
-
+    bool composed = t.gpu_buffer ? collapse_on_gpu(out, t) : collapse_on_cpu(out, t);
+    if (composed) {
         damage_list full;
         full.add_full();
         out.pres->present(full);
@@ -1516,6 +1580,70 @@ void server::compose_collapse(dm_output& out) {
     }
 
     out.damage.clear();
+}
+
+/* Draws a collapse frame into the target `t` the CPU writes. False when its
+ * surface could not be made */
+bool server::collapse_on_cpu(dm_output& out, const presenter::target& t) {
+    stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
+        reinterpret_cast<uint8_t*>(t.pixels), out.pres->width(),
+        out.pres->height(), t.stride, 32, 16, 8, 0);
+    if (!back) {
+        return false;
+    }
+
+    damage_list::rect whole = { 0, 0, static_cast<int32_t>(back->width),
+                                static_cast<int32_t>(back->height) };
+    m_power->draw_collapse(back);
+    if (out.cursor_in_frames) {
+        m_cursor.draw(back, m_cursor_shape, m_cursor_x - out.place.x, m_cursor_y - out.place.y, whole);
+    }
+
+    stlxgfx_destroy_surface(back);
+
+    return true;
+}
+
+/* Composes a collapse frame into the output buffer `t` names, drawn into the upper top picture, which the faded
+ * collapse backdrop covers opaquely. False when it stopped every output's composes */
+bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
+    if (stop_on_misfit_backdrop(out)) {
+        return false;
+    }
+
+    int32_t sw = static_cast<int32_t>(out.pres->width());
+    int32_t sh = static_cast<int32_t>(out.pres->height());
+    damage_list::rect whole = { 0, 0, sw, sh };
+
+    /* The faded collapse backdrop overwrites every pixel of the picture, so nothing is cleared beneath it */
+    top_picture& upper = *out.pictures.upper_top;
+    upper.begin();
+    upper.add_bounds(whole);
+    m_power->draw_collapse(upper.surface());
+    if (out.cursor_in_frames) {
+        m_cursor.draw(upper.surface(), m_cursor_shape, m_cursor_x - out.place.x, m_cursor_y - out.place.y, whole);
+    }
+
+    layer_scene& scene = out.pictures.scene;
+    scene.width = sw;
+    scene.height = sh;
+    scene.backdrop = gpu_backdrop_of(out).twin_layer();
+    scene.windows.clear();
+
+    scene.lower_top = {};
+    scene.is_dimmed = false;
+    scene.upper_top = upper.layer();
+
+    std::vector<damage_list::rect>& rects = out.pictures.rects;
+    rects.assign(1, whole);
+    compose_result result = m_gpu_compositor->compose(
+        *out.pictures.compose,
+        output_target(t),
+        scene,
+        rects,
+        gpu_backdrop_of(out)
+    );
+    return !stop_on_failed_compose(result);
 }
 
 /* Overlay phases: an activation edge repaints every output, as the others draw its dim, a transition the main output
@@ -1573,17 +1701,6 @@ void server::compose_tick(uint32_t output) {
 
     spread_damage();
 
-    /* Collapse frames fade the cached backdrop under the contracting
-     * light, skipping scene composition entirely */
-    if (is_main && m_power->collapsing()) {
-        compose_collapse(out);
-        return;
-    }
-
-    if (out.damage.empty()) {
-        return;
-    }
-
     /* Windows still latch and release their buffers and the power action still runs, so clients and the loop settle */
     if (m_gpu_stopped) {
         out.damage.clear();
@@ -1591,6 +1708,17 @@ void server::compose_tick(uint32_t output) {
             m_power->run_action();
         }
 
+        return;
+    }
+
+    /* Collapse frames fade the collapse backdrop under the contracting
+     * light in place of the desktop's scene */
+    if (is_main && m_power->collapsing()) {
+        compose_collapse(out);
+        return;
+    }
+
+    if (out.damage.empty()) {
         return;
     }
 

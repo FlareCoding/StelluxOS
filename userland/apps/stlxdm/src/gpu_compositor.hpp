@@ -20,8 +20,8 @@ constexpr uint64_t COMPOSE_DEADLINE_NS = 100000000;
 
 /* Memory a compose writes: its first pixel's GPU address, the bytes from
  * one row to the next, and the output buffer it lies in when the display
- * scans it out, made by the same compositor, null for memory only the
- * compositor uses */
+ * scans it out, made by the same compositor, null for a picture such as
+ * the collapse backdrop */
 struct compose_target {
     uint64_t             address = 0;
     uint32_t             pitch = 0;
