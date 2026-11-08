@@ -861,6 +861,10 @@ bool gpu_compositor::record_compose(
         return false;
     }
 
+    if (target.scanout) {
+        transfer_scanout(commands, *target.scanout, true);
+    }
+
     if (!buffers.m_copies.empty()) {
         buffers.m_copy_regions.clear();
         for (const picture_copy& copy : buffers.m_copies) {
@@ -938,6 +942,10 @@ bool gpu_compositor::record_compose(
         m_vk.cmd_dispatch(commands, workgroups(r.w), workgroups(r.h), 1);
     }
 
+    if (target.scanout) {
+        transfer_scanout(commands, *target.scanout, false);
+    }
+
     VkMemoryBarrier to_cpu = {};
     to_cpu.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     to_cpu.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -999,6 +1007,44 @@ compose_result gpu_compositor::submit_and_wait(compose_buffers& buffers) {
     }
 
     return waited == VK_ERROR_DEVICE_LOST ? compose_result::lost : compose_result::unfinished;
+}
+
+void gpu_compositor::finish() {
+    VkSemaphoreWaitInfo wait_info = {};
+    wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    wait_info.semaphoreCount = 1;
+    wait_info.pSemaphores = &m_timeline;
+    wait_info.pValues = &m_compose_point;
+
+    m_vk.wait_semaphores(m_device, &wait_info, UINT64_MAX);
+}
+
+/* Hands an output buffer from the display, which scans it out outside Vulkan, to the compose's writes, or back */
+void gpu_compositor::transfer_scanout(VkCommandBuffer commands, const output_buffer& scanout, bool to_compose) {
+    VkBufferMemoryBarrier transfer = {};
+    transfer.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    transfer.srcAccessMask = to_compose ? 0 : VK_ACCESS_SHADER_WRITE_BIT;
+    transfer.dstAccessMask = to_compose ? VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT : 0;
+
+    transfer.srcQueueFamilyIndex = to_compose ? VK_QUEUE_FAMILY_EXTERNAL : m_queue_family;
+    transfer.dstQueueFamilyIndex = to_compose ? m_queue_family : VK_QUEUE_FAMILY_EXTERNAL;
+
+    transfer.buffer = static_cast<const scanout_buffer&>(scanout).m_import.buffer;
+    transfer.offset = 0;
+    transfer.size = VK_WHOLE_SIZE;
+
+    m_vk.cmd_pipeline_barrier(
+        commands,
+        to_compose ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        to_compose ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0,
+        nullptr,
+        1,
+        &transfer,
+        0,
+        nullptr
+    );
 }
 
 /* Freeing the memory also removes its mapping */

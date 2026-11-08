@@ -625,7 +625,7 @@ presenter::target gpu_presenter::acquire() {
     target t;
     t.stride = back.pitch();
     t.age = last_frame == 0 ? 0 : static_cast<uint32_t>(m_frames - last_frame);
-    t.gpu_address = back.gpu_address();
+    t.gpu_buffer = &back;
 
     return t;
 }

@@ -451,6 +451,14 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
     return 0;
 }
 
+/* The views keep their rows and only follow the pixels, so a rebind cannot fail */
+void dm_panels::rebind(stlxgfx_surface_t* backdrop) {
+    m_band->pixels = backdrop->pixels;
+    m_band->pitch = backdrop->pitch;
+    m_dock->pixels = backdrop->pixels + static_cast<uint32_t>(m_dock_y) * backdrop->pitch;
+    m_dock->pitch = backdrop->pitch;
+}
+
 void dm_panels::shutdown() {
     /* Roots go first, dock buttons reference the icon surfaces */
     m_host.set_root(nullptr);

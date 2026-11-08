@@ -246,16 +246,20 @@ void display::note_output_event(uint32_t output) {
 }
 
 uint32_t display::take_changed_outputs() {
-    for (auto& presenter : m_presenters) {
-        while (presenter && presenter->present_pending()) {
-            take_events();
-        }
-    }
+    wait_for_presents();
 
     uint32_t outputs = m_changed_outputs;
     m_changed_outputs = 0;
 
     return outputs;
+}
+
+void display::wait_for_presents() {
+    for (auto& presenter : m_presenters) {
+        while (presenter && presenter->present_pending()) {
+            take_events();
+        }
+    }
 }
 
 void display::note_state(uint32_t output, const gfxfb::gfxfb_output_info& info) {
@@ -318,10 +322,85 @@ void display::follow_output(uint32_t output, const gfxfb::gfxfb_output_info& inf
         return;
     }
 
-    auto presenter = std::make_unique<flip_presenter>();
-    if (presenter->init(*this, info) == 0) {
-        served = std::move(presenter);
+    served = make_presenter(info, m_maker);
+}
+
+/* A presenter for the lit output `info` describes, over output buffers
+ * `maker` makes or gfxfb's own when null, or null after printing why */
+std::unique_ptr<buffer_presenter> display::make_presenter(
+    const gfxfb::gfxfb_output_info& info,
+    output_buffer_maker* maker
+) {
+    if (maker) {
+        auto presenter = std::make_unique<gpu_presenter>();
+        if (presenter->init(*this, info, *maker) != 0) {
+            return nullptr;
+        }
+
+        return presenter;
     }
+
+    auto presenter = std::make_unique<flip_presenter>();
+    if (presenter->init(*this, info) != 0) {
+        return nullptr;
+    }
+
+    return presenter;
+}
+
+/* gfxfb keeps a dropped presenter's buffer on screen until the new one's first present replaces it */
+int display::present_through(output_buffer_maker* maker) {
+    if (m_fallback) {
+        return -1;
+    }
+
+    wait_for_presents();
+
+    std::unique_ptr<buffer_presenter> made[gfxfb::GFXFB_OUTPUTS_MAX];
+    bool all_made = true;
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX && all_made; output++) {
+        const std::unique_ptr<buffer_presenter>& served = m_presenters[output];
+        if (!served) {
+            continue;
+        }
+
+        gfxfb::gfxfb_output_info info;
+        if (read_output(output, info) != 0) {
+            all_made = false;
+            break;
+        }
+
+        bool unchanged = is_lit(info) && info.current.width == served->width() &&
+                         info.current.height == served->height();
+        if (unchanged) {
+            made[output] = make_presenter(info, maker);
+        } else {
+            printf("stlxdm: output %u changed before its presenter was replaced\r\n", output);
+        }
+
+        all_made = made[output] != nullptr;
+    }
+
+    std::unique_ptr<buffer_presenter>* dropped = all_made ? m_presenters : made;
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        if (dropped[output]) {
+            dropped[output]->shutdown();
+        }
+    }
+
+    if (!all_made) {
+        return -1;
+    }
+
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        if (made[output]) {
+            m_presenters[output] = std::move(made[output]);
+        }
+    }
+
+    m_maker = maker;
+
+    return 0;
 }
 
 presenter* display::presenter_of(uint32_t output) const {

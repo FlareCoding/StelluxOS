@@ -18,11 +18,14 @@ struct gpu_info;
  * the GPU */
 constexpr uint64_t COMPOSE_DEADLINE_NS = 100000000;
 
-/* Memory a compose writes: its first pixel's GPU address and the bytes from
- * one row to the next */
+/* Memory a compose writes: its first pixel's GPU address, the bytes from
+ * one row to the next, and the output buffer it lies in when the display
+ * scans it out, made by the same compositor, null for memory only the
+ * compositor uses */
 struct compose_target {
-    uint64_t address = 0;
-    uint32_t pitch = 0;
+    uint64_t             address = 0;
+    uint32_t             pitch = 0;
+    const output_buffer* scanout = nullptr;
 };
 
 /* How a compose ended */
@@ -88,6 +91,11 @@ public:
         const std::vector<damage_list::rect>& rects,
         backdrop_picture& backdrop
     );
+
+    /* Waits with no deadline, which the kernel's hang deadline bounds, for
+     * the last compose to end, so nothing frees memory that a compose past
+     * `COMPOSE_DEADLINE_NS` still writes */
+    void finish();
 
 private:
     class owned_picture;
@@ -182,6 +190,7 @@ private:
         const backdrop_picture& backdrop
     );
     compose_result submit_and_wait(compose_buffers& buffers);
+    void transfer_scanout(VkCommandBuffer commands, const output_buffer& scanout, bool to_compose);
 
     uint32_t find_memory_type(uint32_t type_bits, const memory_kind& kind) const;
 

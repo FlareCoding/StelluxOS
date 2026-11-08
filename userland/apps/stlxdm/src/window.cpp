@@ -1143,15 +1143,135 @@ static bool touches_any(const damage_list::rect& bounds, const std::vector<damag
     return false;
 }
 
-/* Draws the frames and top pictures one GPU compose of `out` reads in `rects`, in its own pixels, and fills `scene`
+/* Paints the panels' changes into the main output's backdrop and adds them
+ * to the damage, noting the rows a GPU compose copies into its twin */
+void server::flush_panels() {
+    if (!m_gpu_backdrop) {
+        m_panels->flush(m_damage);
+        return;
+    }
+
+    damage_list painted;
+    m_panels->flush(painted);
+    if (painted.full()) {
+        m_gpu_backdrop->mark_rows(0, static_cast<int32_t>(m_gpu_backdrop->surface()->height));
+        m_damage.add_full();
+        return;
+    }
+
+    for (uint32_t i = 0; i < painted.count(); i++) {
+        const damage_list::rect& r = painted.at(i);
+        m_gpu_backdrop->mark_rows(r.y, r.h);
+        m_damage.add(r.x, r.y, r.w, r.h);
+    }
+}
+
+/* Composes `effective` into the target `t` the CPU writes. False when its
+ * surface could not be made */
+bool server::compose_on_cpu(dm_output& out, const presenter::target& t, const damage_list& effective) {
+    uint32_t sw = out.pres->width();
+    uint32_t sh = out.pres->height();
+    stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
+        reinterpret_cast<uint8_t*>(t.pixels), sw, sh, t.stride, 32,
+        16, 8, 0);
+    if (!back) {
+        return false;
+    }
+
+    if (effective.full()) {
+        damage_list::rect whole = { out.place.x, out.place.y, static_cast<int32_t>(sw), static_cast<int32_t>(sh) };
+        compose_rect(out, back, whole);
+    } else {
+        for (uint32_t i = 0; i < effective.count(); i++) {
+            damage_list::rect r = effective.at(i);
+            if (damage_list::clip(r, static_cast<int32_t>(sw), static_cast<int32_t>(sh))) {
+                compose_rect(out, back, { r.x + out.place.x, r.y + out.place.y, r.w, r.h });
+            }
+        }
+    }
+
+    stlxgfx_destroy_surface(back);
+
+    return true;
+}
+
+/* Composes `effective` into the output buffer `t` names. False when the frame's pictures or the compose failed,
+ * which stops every output's composes */
+bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const damage_list& effective) {
+    int32_t sw = static_cast<int32_t>(out.pres->width());
+    int32_t sh = static_cast<int32_t>(out.pres->height());
+
+    /* A main output whose desktop rebuild failed keeps a backdrop of another size, which the shader would read past */
+    backdrop_picture& backdrop = gpu_backdrop_of(out);
+    bool fits = static_cast<int32_t>(backdrop.surface()->width) == sw &&
+                static_cast<int32_t>(backdrop.surface()->height) == sh;
+    if (!fits) {
+        stop_gpu_composing("the main output's backdrop has another size");
+        return false;
+    }
+
+    dm_output_pictures& pictures = out.pictures;
+    std::vector<damage_list::rect>& rects = pictures.rects;
+    rects.clear();
+    if (effective.full()) {
+        rects.push_back({ 0, 0, sw, sh });
+    } else {
+        for (uint32_t i = 0; i < effective.count(); i++) {
+            damage_list::rect r = effective.at(i);
+            if (damage_list::clip(r, sw, sh)) {
+                rects.push_back(r);
+            }
+        }
+    }
+
+    if (!draw_pictures(out, rects)) {
+        stop_gpu_composing("a window's frame picture ran out of memory");
+        return false;
+    }
+
+    compose_target target;
+    target.address = t.gpu_buffer->gpu_address();
+    target.pitch = t.stride;
+    target.scanout = t.gpu_buffer;
+
+    compose_result result = m_gpu_compositor->compose(*pictures.compose, target, pictures.scene, rects, backdrop);
+    if (result == compose_result::composed) {
+        return true;
+    }
+
+    if (result == compose_result::lost) {
+        stop_gpu_composing("the GPU device was lost");
+    } else if (result == compose_result::unfinished) {
+        m_gpu_compositor->finish();
+        stop_gpu_composing("a compose passed its deadline");
+    } else {
+        stop_gpu_composing("a compose could not be submitted");
+    }
+
+    return false;
+}
+
+/* No output composes from here on */
+void server::stop_gpu_composing(const char* reason) {
+    printf("stlxdm: composing stopped, %s\r\n", reason);
+    m_gpu_stopped = true;
+}
+
+backdrop_picture& server::gpu_backdrop_of(dm_output& out) {
+    bool is_main = &out == &m_outputs[m_layout.main_output()];
+    return is_main ? *m_gpu_backdrop : *out.pictures.backdrop;
+}
+
+/* Draws the frames and top pictures one GPU compose of `out` reads in `rects`, in its own pixels, and fills its scene
  * with what `out` shows. `out` must hold its pictures. False when a window's frame picture ran out of memory */
-bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, layer_scene& scene) {
+bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects) {
+    layer_scene& scene = out.pictures.scene;
     int32_t ox = out.place.x;
     int32_t oy = out.place.y;
 
     scene.width = static_cast<int32_t>(out.pres->width());
     scene.height = static_cast<int32_t>(out.pres->height());
-    scene.backdrop = out.pictures.backdrop->twin_layer();
+    scene.backdrop = gpu_backdrop_of(out).twin_layer();
     scene.windows.clear();
     scene.content_color = decor::CONTENT_BG;
 
@@ -1316,7 +1436,7 @@ void server::compose_tick(uint32_t output) {
 
     bool is_main = output == m_layout.main_output();
     if (is_main) {
-        m_panels->flush(m_damage);
+        flush_panels();
         advance_power();
     }
 
@@ -1333,9 +1453,17 @@ void server::compose_tick(uint32_t output) {
         return;
     }
 
+    /* Windows still latch and release their buffers and the power action still runs, so clients and the loop settle */
+    if (m_gpu_stopped) {
+        out.damage.clear();
+        if (is_main) {
+            m_power->run_action();
+        }
+
+        return;
+    }
+
     presenter::target t = out.pres->acquire();
-    uint32_t sw = out.pres->width();
-    uint32_t sh = out.pres->height();
 
     /* A target older than one present is missing frames of content,
      * so their damage is unioned back in. Unknown age repaints fully. */
@@ -1359,28 +1487,13 @@ void server::compose_tick(uint32_t output) {
         }
     }
 
-    stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
-        reinterpret_cast<uint8_t*>(t.pixels), sw, sh, t.stride, 32,
-        16, 8, 0);
-    if (!back) {
+    bool composed = t.gpu_buffer ? compose_on_gpu(out, t, effective) : compose_on_cpu(out, t, effective);
+    if (!composed) {
         out.damage.clear();
         return;
     }
 
-    if (effective.full()) {
-        damage_list::rect whole = { out.place.x, out.place.y, static_cast<int32_t>(sw), static_cast<int32_t>(sh) };
-        compose_rect(out, back, whole);
-    } else {
-        for (uint32_t i = 0; i < effective.count(); i++) {
-            damage_list::rect r = effective.at(i);
-            if (damage_list::clip(r, static_cast<int32_t>(sw), static_cast<int32_t>(sh))) {
-                compose_rect(out, back, { r.x + out.place.x, r.y + out.place.y, r.w, r.h });
-            }
-        }
-    }
-
     out.pres->present(effective);
-    stlxgfx_destroy_surface(back);
     m_perf.note_present(now_ns());
 
     /* This frame's new damage joins the history for older targets */

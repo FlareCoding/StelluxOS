@@ -43,15 +43,20 @@ struct dm_conf_state {
     std::unique_ptr<dm_panels> panels;
     std::unique_ptr<dm_power> power;
     stlxgfx_surface_t* backdrop = nullptr;
+    std::unique_ptr<backdrop_picture> gpu_backdrop;  /* the backdrop under the GPU compositor, `backdrop` then null */
     std::vector<dm_hotkey> hotkeys;
 };
 
-/* An output's own pictures under the GPU compositor: its backdrop, and the
- * draws above the windows beneath the power overlay's dim and above it */
+/* An output's own pictures under the GPU compositor: its backdrop on any
+ * output but the main one, the draws above the windows beneath the power
+ * overlay's dim and above it, and what each of its composes reuses */
 struct dm_output_pictures {
-    std::unique_ptr<backdrop_picture> backdrop;
-    std::unique_ptr<top_picture>      lower_top;
-    std::unique_ptr<top_picture>      upper_top;
+    std::unique_ptr<backdrop_picture>                backdrop;
+    std::unique_ptr<top_picture>                     lower_top;
+    std::unique_ptr<top_picture>                     upper_top;
+    std::unique_ptr<gpu_compositor::compose_buffers> compose;
+    layer_scene                                      scene;
+    std::vector<damage_list::rect>                   rects;
 };
 
 /* One output as the compositor sees it, kept by its index and cleared
@@ -67,7 +72,7 @@ struct dm_output {
     uint32_t           history_head = 0;
 
     /* The wallpaper or flat color at the output's size, null on the main
-     * output and when it could not be built */
+     * output, when it could not be built and under the GPU compositor */
     stlxgfx_surface_t* backdrop = nullptr;
     bool               backdrop_failed = false;       /* its last build failed */
 
@@ -294,6 +299,13 @@ public:
      * decode, never sits between Enter and the desktop. Returns 0 or -1. */
     int init(display* disp, const stlxconf_t* conf);
 
+    /* Moves every served output to the GPU compositor made at init, with a
+     * GPU presenter and its pictures holding the backdrops, or composes on
+     * the CPU, dropping the GPU compositor and printing why, when any of
+     * them cannot be made. Does nothing when init made no GPU compositor.
+     * Runs after the splash and before `serve()`. */
+    void switch_to_gpu();
+
     /* Raises the handle limit, binds the protocol socket and spawns the
      * config's autostart entries, the moment clients may exist. Returns 0
      * or -1. */
@@ -464,8 +476,14 @@ private:
     void latch_window(dm_client& c, dm_window& w);
     void flush_configures();
     decor::chrome_state chrome_of(const dm_window& w) const;
+    void flush_panels();
+    bool compose_on_cpu(dm_output& out, const presenter::target& t, const damage_list& effective);
+    bool compose_on_gpu(dm_output& out, const presenter::target& t, const damage_list& effective);
+    void stop_gpu_composing(const char* reason);
     void compose_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
-    bool draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, layer_scene& scene);
+    bool composes_on_gpu() const { return m_gpu_composes && !m_gpu_stopped; }
+    backdrop_picture& gpu_backdrop_of(dm_output& out);
+    bool draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects);
     void draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects);
     void compose_collapse(dm_output& out);
     void advance_power();
@@ -478,6 +496,9 @@ private:
     int build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper);
     void adopt_conf_state(dm_conf_state&& next);
     void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);
+    std::unique_ptr<backdrop_picture> copy_backdrop(const stlxgfx_surface_t* backdrop, uint32_t width, uint32_t height);
+    bool make_output_pictures(uint32_t output);
+    void make_served_pictures();
     uint32_t gather_members(layout::member* members) const;
     const layout::arrangement* stored_layout(const layout::member* members, uint32_t count, layout::arrangement& out);
     uint32_t apply_layout_request(const swp_set_layout& request);
@@ -566,8 +587,14 @@ private:
     void choose_compositor();
 
     /* The main output's backdrop: wallpaper or flat color with the
-     * panels painted in */
+     * panels painted in, in `m_gpu_backdrop` under the GPU compositor */
     stlxgfx_surface_t* m_backdrop = nullptr;
+    std::unique_ptr<backdrop_picture> m_gpu_backdrop;
+
+    /* Whether served outputs compose on the GPU, from the switch after the
+     * splash, and whether a failed GPU compose stopped every output's */
+    bool m_gpu_composes = false;
+    bool m_gpu_stopped = false;
 
     /* The desktop's own input to paint latency and missed frames meter,
      * the readout the bar last took, the arrival time of whatever input
