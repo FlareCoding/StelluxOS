@@ -238,6 +238,7 @@ void QStelluxWindow::create_native_window() {
 }
 
 void QStelluxWindow::destroy_native_window() {
+    end_frame_wait();
     if (!m_handle) {
         return;
     }
@@ -256,6 +257,7 @@ void QStelluxWindow::drop_child_popups() {
         }
 
         popup->drop_child_popups();
+        popup->end_frame_wait();
         QStelluxIntegration::instance()->remove_window(popup->m_handle);
         popup->m_handle = nullptr;
         QWindowSystemInterface::handleCloseEvent(popup->window());
@@ -316,6 +318,44 @@ bool QStelluxWindow::isExposed() const {
     return m_visible && m_handle;
 }
 
+// Qt's own timer would keep firing while a request waits for a frame event
+void QStelluxWindow::requestUpdate() {
+    if (!m_frame_pending) {
+        post_update_request();
+    }
+}
+
+void QStelluxWindow::deliverUpdateRequest() {
+    m_answering_update = true;
+    QPlatformWindow::deliverUpdateRequest();
+    m_answering_update = false;
+}
+
+// Also run when the stlxwin window goes: no frame event follows, and a request left
+// pending would keep Qt from asking for any later one
+void QStelluxWindow::end_frame_wait() {
+    m_frame_pending = false;
+    if (hasPendingUpdateRequest()) {
+        post_update_request();
+    }
+}
+
+// Qt Quick can ask for an update while one is delivered, so a delivery runs from the event loop, on whichever
+// platform window the QWindow has by then
+void QStelluxWindow::post_update_request() {
+    QWindow* qt_window = window();
+    QMetaObject::invokeMethod(
+        qt_window,
+        [qt_window] {
+            auto* platform_window = static_cast<QStelluxWindow*>(qt_window->handle());
+            if (platform_window && !platform_window->m_frame_pending && platform_window->hasPendingUpdateRequest()) {
+                platform_window->deliverUpdateRequest();
+            }
+        },
+        Qt::QueuedConnection
+    );
+}
+
 void QStelluxWindow::present(const QImage& image, const QRegion& region) {
     if (!m_handle) {
         return;
@@ -341,7 +381,11 @@ void QStelluxWindow::present(const QImage& image, const QRegion& region) {
         damage.append({rect.x(), rect.y(), rect.width(), rect.height()});
     }
 
-    stlxwin_commit(m_handle, buffer, damage.constData(), static_cast<uint32_t>(damage.size()), 0);
+    uint32_t flags = m_answering_update ? STLXWIN_COMMIT_WANT_FRAME : 0;
+    int rc = stlxwin_commit(m_handle, buffer, damage.constData(), static_cast<uint32_t>(damage.size()), flags);
+    if (rc == 0 && m_answering_update) {
+        m_frame_pending = true;
+    }
 }
 
 QPointF QStelluxWindow::global_position(const QPointF& local) const {
@@ -383,6 +427,9 @@ void QStelluxWindow::handle_event(const stlxwin_event& event) {
             break;
         case STLXWIN_EVT_WINDOW_OUTPUT:
             handle_window_output();
+            break;
+        case STLXWIN_EVT_FRAME:
+            end_frame_wait();
             break;
         default:
             break;

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Prints the third-party code bundled in the Qt sources under a directory, from
 the qt_attribution.json file Qt keeps beside each bundled component. Tests and
-examples are skipped, since nothing of theirs is in the kit.
+examples are skipped, since the kit holds no test and its one example, the
+Controls gallery, bundles no third-party code.
 
 Usage: attributions.py <source dir>
 """

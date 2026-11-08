@@ -1,6 +1,7 @@
 #!/bin/sh
 # The qt recipe: a static Qt kit for one architecture, cross-built in a container against
-# the Stellux sysroot and left in the cache as qt-<version>-<arch>.tar.zst.
+# the Stellux sysroot and left in the cache as qt-<version>-<arch>.tar.zst. JOBS caps the
+# container's parallel jobs.
 #
 # Usage: packages/qt/build.sh <x86_64|aarch64> [qt]
 set -eu
@@ -59,6 +60,8 @@ fetch_source() {
 mkdir -p "$TOP" "$SOURCES_CACHE"
 fetch_source "$QT_URL/qtbase-everywhere-src-$QT_VER.tar.xz" "$QTBASE_SHA256"
 fetch_source "$QT_URL/qtsvg-everywhere-src-$QT_VER.tar.xz" "$QTSVG_SHA256"
+fetch_source "$QT_URL/qtshadertools-everywhere-src-$QT_VER.tar.xz" "$QTSHADERTOOLS_SHA256"
+fetch_source "$QT_URL/qtdeclarative-everywhere-src-$QT_VER.tar.xz" "$QTDECLARATIVE_SHA256"
 fetch_source "$MUSL_URL" "$MUSL_SHA256"
 fetch_source "$LLVM_URL" "$LLVM_SHA256"
 
@@ -88,6 +91,7 @@ docker run --rm --platform "$PLATFORM" \
     -e "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     -e "SYSROOT_KEY=$SYSROOT_KEY" \
     -e "OUT_OWNER=$(id -u):$(id -g)" \
+    -e JOBS \
     "$IMAGE_TAG" "$arch"
 
 archive="$TOP/qt-$(package_version qt)-$arch.tar.zst"

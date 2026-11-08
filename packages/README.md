@@ -95,15 +95,20 @@ the aports commit that packages the same release.
 ## The qt recipe
 
 `qt` is a `build` package: static QtCore, QtGui, QtWidgets and QtSvg
-libraries cross-built with the tree's own compiler, C++ runtime and musl,
-which the recipe builds in its container from the committed tree. The kit
-carries `share/stellux/qt.mk`, the flags a program compiles and links with,
-measured on the recipe's probe programs, and Qt's license texts under
-`qt/LICENSES`. Qt is LGPLv3: the recipe pins the exact upstream sources, and
-the programs linked against the kit are built from this tree, so anyone can
-relink them against a modified Qt. A run takes about 10 minutes per
-architecture on 16 cores, plus the sysroot and the host Qt on the first run,
-both kept in the `stellux-qt-work` volume.
+libraries and qtdeclarative's QML and Qt Quick modules with Qt Quick
+Controls and its styles, cross-built with the tree's own compiler, C++
+runtime and musl, which the recipe builds in its container from the
+committed tree. The cross build runs its code generators from a host Qt of
+qtbase, qtdeclarative for the QML tools, and qtshadertools for the shader
+baker that compiles Qt Quick's shaders. The kit carries
+`share/stellux/qt.mk` (the flags a program compiles and links with, measured
+on the recipe's probe programs), Qt's Controls gallery under
+`share/stellux/examples` and Qt's license texts under `qt/LICENSES`. Qt is
+LGPLv3: the recipe pins the exact upstream sources, and the programs linked
+against the kit are built from this tree, so anyone can relink them against
+a modified Qt. A run takes about 17 minutes per architecture on 8 cores,
+plus the sysroot and the host Qt on the first run, both kept in the
+`stellux-qt-work` volume. `JOBS` caps its parallel jobs.
 
 ## The mesa recipe
 
