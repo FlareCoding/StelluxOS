@@ -5,7 +5,7 @@
 /* Composes one damaged rectangle of an output. Each invocation walks the
  * rectangle's layer list bottom to top for its pixel, with the integer
  * arithmetic of libstlxgfx, decor and power.cpp's dim, so a frame equals
- * the CPU compositor's.
+ * the CPU compositor's but for rounding where two translucent draws stack.
  * layers.hpp defines the layers and gpu_compositor.cpp the arguments. */
 
 layout(local_size_x = 16, local_size_y = 16) in;

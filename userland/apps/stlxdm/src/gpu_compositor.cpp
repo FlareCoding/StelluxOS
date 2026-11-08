@@ -40,6 +40,24 @@ constexpr VkBufferUsageFlags PICTURE_USAGE = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT 
 constexpr VkMemoryPropertyFlags COHERENT_MEMORY = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
+/* System memory the CPU caches and the GPU reads coherently */
+constexpr VkMemoryPropertyFlags PICTURE_MEMORY = COHERENT_MEMORY | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+
+/* A picture in a buffer of the compositor's own, freed with the picture */
+class gpu_compositor::owned_picture : public picture {
+public:
+    owned_picture(gpu_compositor& owner, const device_buffer& buffer, size_t bytes)
+        : picture(static_cast<uint8_t*>(buffer.mapping), buffer.address, bytes), m_owner(owner), m_buffer(buffer) {}
+
+    ~owned_picture() override {
+        m_owner.destroy_buffer(m_buffer);
+    }
+
+private:
+    gpu_compositor& m_owner;
+    device_buffer   m_buffer;
+};
+
 template <typename Command>
 static bool find_command(VkInstance instance, const char* name, Command& command) {
     command = reinterpret_cast<Command>(vkGetInstanceProcAddr(instance, name));
@@ -472,6 +490,16 @@ bool gpu_compositor::create_buffer(
     created.address = m_vk.get_buffer_device_address(m_device, &address_info);
 
     return true;
+}
+
+std::unique_ptr<picture> gpu_compositor::make_picture(size_t bytes) {
+    device_buffer buffer;
+    if (!create_buffer(bytes, PICTURE_USAGE, PICTURE_MEMORY, buffer)) {
+        destroy_buffer(buffer);
+        return nullptr;
+    }
+
+    return std::make_unique<owned_picture>(*this, buffer, bytes);
 }
 
 /* Freeing the memory also removes its mapping */

@@ -58,6 +58,8 @@ struct chrome_state {
     bool dragging = false;
     bool close_hover = false;
     bool close_pressed = false;
+
+    bool operator==(const chrome_state&) const = default;
 };
 
 /* The edge distances the content's rounded corners read, indexed by
@@ -83,6 +85,14 @@ damage_list::rect frame_rect(const dm_window& w, int32_t x, int32_t y,
 /* The full on-screen rect including chrome and the drag glow ring,
  * the content rect when borderless. Zero without a displayed buffer. */
 damage_list::rect bounds(const dm_window& w);
+
+constexpr uint32_t FRAME_STRIPS = 4;
+
+/* `bounds` of a decorated window less the content above its last CONTENT_R
+ * rows, as the top with the title bar, the left and right sides and the
+ * bottom, each in desktop coordinates and empty where nothing lies. All
+ * zero when borderless or without a displayed buffer. */
+void frame_strips(const dm_window& w, damage_list::rect (&strips)[FRAME_STRIPS]);
 
 /* Zone under a desktop point, none when outside the window. Resize
  * zones exist only for resizable decorated windows. */

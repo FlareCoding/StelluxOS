@@ -1,6 +1,9 @@
 #ifndef STLXDM_GPU_COMPOSITOR_HPP
 #define STLXDM_GPU_COMPOSITOR_HPP
 
+#include "picture.hpp"
+
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vulkan/vulkan.h>
@@ -19,18 +22,22 @@ struct gpu_info;
  * of the compositor's own context.
  *
  * stlxdm's one thread makes every call. */
-class gpu_compositor {
+class gpu_compositor : public picture_maker {
 public:
     /* Creates the compositor on the GPU of `gpu_fd`, which must outlive it,
      * or returns null after printing why stlxdm composes on the CPU */
     static std::unique_ptr<gpu_compositor> create(int gpu_fd);
 
-    ~gpu_compositor();
+    ~gpu_compositor() override;
 
     gpu_compositor(const gpu_compositor&) = delete;
     gpu_compositor& operator=(const gpu_compositor&) = delete;
 
+    std::unique_ptr<picture> make_picture(size_t bytes) override;
+
 private:
+    class owned_picture;
+
     /* The library exports only the global commands, so the others come
      * from `vkGetInstanceProcAddr` */
     struct commands {
