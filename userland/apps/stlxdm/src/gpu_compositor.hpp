@@ -4,6 +4,7 @@
 #include "damage.hpp"
 #include "layers.hpp"
 #include "picture.hpp"
+#include "presenter.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -44,7 +45,7 @@ enum class compose_result {
  * of the compositor's own context.
  *
  * stlxdm's one thread makes every call. */
-class gpu_compositor : public picture_maker {
+class gpu_compositor : public picture_maker, public output_buffer_maker {
 public:
     class compose_buffers;
 
@@ -59,6 +60,16 @@ public:
 
     std::unique_ptr<picture> make_picture(size_t bytes) override;
     std::unique_ptr<picture> make_twin(size_t bytes) override;
+
+    /* A scanout buffer in video memory, which gfxfb imports through a copy
+     * of its handle that can only read it and Vulkan through the handle
+     * that created it */
+    std::unique_ptr<output_buffer> make_output_buffer(
+        int gfxfb_fd,
+        uint32_t output,
+        uint32_t width,
+        uint32_t height
+    ) override;
 
     /* An output's command and layer buffers, or null when Vulkan has no
      * memory left */
@@ -80,6 +91,7 @@ public:
 
 private:
     class owned_picture;
+    class scanout_buffer;
 
     /* The properties a memory type must have, and those it must lack */
     struct memory_kind {
@@ -159,6 +171,10 @@ private:
     const char* upload_corner_distances();
     const char* probe_gpu_file(int gpu_fd, const gpu_info& info);
 
+    bool create_import_buffer(VkDeviceSize size, VkBuffer& created);
+    bool import_into_gfxfb(scanout_buffer& buffer, int gpu_buffer, uint32_t output, uint32_t width, uint32_t height);
+    VkDeviceMemory import_memory(int gpu_buffer, uint64_t size, uint32_t type);
+
     bool list_layers(compose_buffers& buffers, const layer_scene& scene, const std::vector<damage_list::rect>& rects);
     bool record_compose(
         compose_buffers& buffers,
@@ -193,6 +209,8 @@ private:
     VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_pipeline = VK_NULL_HANDLE;
     VkCommandPool    m_command_pool = VK_NULL_HANDLE;
+    int              m_gpu_fd = -1;
+    uint32_t         m_page_size = 0;
     int              m_probe_context = -1;
 
     /* The timeline value the last submitted compose raises it to when

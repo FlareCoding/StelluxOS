@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <stlx/gfxfb_abi.h>
 #include <stlx/gpu_abi.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -36,6 +37,11 @@ constexpr float QUEUE_PRIORITY = 1.0f;
 /* The width and height of compose.comp's workgroups */
 constexpr uint32_t WORKGROUP_PIXELS = 16;
 
+constexpr uint32_t BYTES_PER_PIXEL = 4;
+
+/* NVIDIA's display scans out rows that start a multiple of 256 bytes apart */
+constexpr uint64_t SCANOUT_PITCH_ALIGNMENT = 256;
+
 /* Every picture and output buffer the compose reads or writes is a storage
  * buffer named by its device address */
 constexpr VkBufferUsageFlags PICTURE_USAGE = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -54,7 +60,7 @@ const gpu_compositor::memory_kind gpu_compositor::PICTURE_MEMORY = {
     0
 };
 
-/* Video memory the CPU cannot map, for twins */
+/* Video memory the CPU cannot map, for twins and output buffers, which no CPU reads */
 const gpu_compositor::memory_kind gpu_compositor::VIDEO_MEMORY = {
     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
@@ -77,6 +83,35 @@ private:
     device_buffer   m_buffer;
 };
 
+/* An output buffer's memory, imported into gfxfb and bound to a buffer the compose writes */
+class gpu_compositor::scanout_buffer : public output_buffer {
+public:
+    scanout_buffer(gpu_compositor& owner, int gfxfb_fd, uint32_t pitch)
+        : m_owner(owner), m_gfxfb_fd(gfxfb_fd), m_pitch(pitch) {}
+
+    /* gfxfb keeps the memory while an output shows it */
+    ~scanout_buffer() override {
+        if (m_gfxfb_handle != 0) {
+            ioctl(m_gfxfb_fd, gfxfb::GFXFB_DESTROY_BUFFER, static_cast<unsigned long>(m_gfxfb_handle));
+        }
+
+        m_owner.destroy_buffer(m_import);
+    }
+
+    uint32_t gfxfb_handle() const override { return m_gfxfb_handle; }
+    uint64_t gpu_address() const override { return m_import.address; }
+    uint32_t pitch() const override { return m_pitch; }
+
+private:
+    friend class gpu_compositor;
+
+    gpu_compositor& m_owner;
+    int             m_gfxfb_fd;
+    uint32_t        m_pitch;
+    uint32_t        m_gfxfb_handle = 0;
+    device_buffer   m_import;
+};
+
 template <typename Command>
 static bool find_command(VkInstance instance, const char* name, Command& command) {
     command = reinterpret_cast<Command>(vkGetInstanceProcAddr(instance, name));
@@ -86,6 +121,10 @@ static bool find_command(VkInstance instance, const char* name, Command& command
 static bool is_at_address(const gpu_info& info, const VkPhysicalDevicePCIBusInfoPropertiesEXT& pci_bus) {
     return info.pci_segment == pci_bus.pciDomain && info.pci_bus == pci_bus.pciBus &&
         info.pci_slot == pci_bus.pciDevice && info.pci_function == pci_bus.pciFunction;
+}
+
+static uint64_t align_up(uint64_t value, uint64_t alignment) {
+    return (value + alignment - 1) / alignment * alignment;
 }
 
 static uint32_t workgroups(int32_t pixels) {
@@ -144,6 +183,9 @@ const char* gpu_compositor::start(int gpu_fd) {
     if (ioctl(gpu_fd, GPU_GET_INFO, &info) != 0) {
         return "GPU_GET_INFO failed on /dev/gpu0";
     }
+
+    m_gpu_fd = gpu_fd;
+    m_page_size = info.page_size;
 
     const char* refusal = create_instance();
     if (refusal) {
@@ -572,6 +614,148 @@ std::unique_ptr<picture> gpu_compositor::make_twin(size_t bytes) {
     }
 
     return std::make_unique<owned_picture>(*this, buffer, bytes);
+}
+
+std::unique_ptr<output_buffer> gpu_compositor::make_output_buffer(
+    int gfxfb_fd,
+    uint32_t output,
+    uint32_t width,
+    uint32_t height
+) {
+    uint32_t pitch = static_cast<uint32_t>(align_up(width * BYTES_PER_PIXEL, SCANOUT_PITCH_ALIGNMENT));
+    std::unique_ptr<scanout_buffer> buffer(new scanout_buffer(*this, gfxfb_fd, pitch));
+    device_buffer& import = buffer->m_import;
+
+    if (!create_import_buffer(static_cast<VkDeviceSize>(pitch) * height, import.buffer)) {
+        printf("stlxdm: no GPU output buffer for output %u, Vulkan refused its buffer\r\n", output);
+        return nullptr;
+    }
+
+    VkMemoryRequirements requirements = {};
+    m_vk.get_buffer_memory_requirements(m_device, import.buffer, &requirements);
+
+    uint32_t type = find_memory_type(requirements.memoryTypeBits, VIDEO_MEMORY);
+    if (type == UINT32_MAX) {
+        printf("stlxdm: no GPU output buffer for output %u, Vulkan offers no video memory for it\r\n", output);
+        return nullptr;
+    }
+
+    gpu_buffer_args create = {};
+    create.size = align_up(requirements.size, m_page_size);
+    create.placement = GPU_PLACEMENT_VIDEO;
+    create.flags = GPU_BUFFER_SCANOUT;
+    if (ioctl(m_gpu_fd, GPU_BUFFER_CREATE, &create) != 0) {
+        printf("stlxdm: no GPU output buffer for output %u, GPU_BUFFER_CREATE failed: %s\r\n", output, strerror(errno));
+        return nullptr;
+    }
+
+    if (!import_into_gfxfb(*buffer, create.buffer, output, width, height)) {
+        close(create.buffer);
+        return nullptr;
+    }
+
+    /* A failed import takes no handle, and a successful one closes it */
+    import.memory = import_memory(create.buffer, create.size, type);
+    if (import.memory == VK_NULL_HANDLE) {
+        close(create.buffer);
+        printf("stlxdm: no GPU output buffer for output %u, Vulkan refused to import it\r\n", output);
+        return nullptr;
+    }
+
+    if (m_vk.bind_buffer_memory(m_device, import.buffer, import.memory, 0) != VK_SUCCESS) {
+        printf("stlxdm: no GPU output buffer for output %u, Vulkan refused to bind it\r\n", output);
+        return nullptr;
+    }
+
+    VkBufferDeviceAddressInfo address_info = {};
+    address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    address_info.buffer = import.buffer;
+    import.address = m_vk.get_buffer_device_address(m_device, &address_info);
+
+    return buffer;
+}
+
+bool gpu_compositor::create_import_buffer(VkDeviceSize size, VkBuffer& created) {
+    VkExternalMemoryBufferCreateInfo external_info = {};
+    external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+    external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+    VkBufferCreateInfo buffer_info = {};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.pNext = &external_info;
+    buffer_info.size = size;
+    buffer_info.usage = PICTURE_USAGE;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (m_vk.create_buffer(m_device, &buffer_info, nullptr, &created) != VK_SUCCESS) {
+        created = VK_NULL_HANDLE;
+        return false;
+    }
+
+    return true;
+}
+
+/* gfxfb's import holds a reference of its own, so the copy narrowed to reading closes once the call returns */
+bool gpu_compositor::import_into_gfxfb(
+    scanout_buffer& buffer,
+    int gpu_buffer,
+    uint32_t output,
+    uint32_t width,
+    uint32_t height
+) {
+    gpu_restrict_args narrowed = {};
+    narrowed.handle = gpu_buffer;
+    narrowed.rights = GPU_RIGHT_READ;
+    if (ioctl(m_gpu_fd, GPU_HANDLE_RESTRICT, &narrowed) != 0) {
+        printf("stlxdm: no GPU output buffer for output %u, GPU_HANDLE_RESTRICT failed: %s\r\n", output,
+               strerror(errno));
+        return false;
+    }
+
+    gfxfb::gfxfb_import_args import = {};
+    import.gpu_buffer = narrowed.restricted;
+    import.width = width;
+    import.height = height;
+    import.pitch = buffer.m_pitch;
+    import.format = gfxfb::GFXFB_FORMAT_XRGB8888;
+
+    int import_error = ioctl(buffer.m_gfxfb_fd, gfxfb::GFXFB_IMPORT_BUFFER, &import) == 0 ? 0 : errno;
+    close(narrowed.restricted);
+
+    if (import_error != 0) {
+        printf("stlxdm: no GPU output buffer for output %u, GFXFB_IMPORT_BUFFER failed: %s\r\n", output,
+               strerror(import_error));
+        return false;
+    }
+
+    buffer.m_gfxfb_handle = import.handle;
+
+    return true;
+}
+
+VkDeviceMemory gpu_compositor::import_memory(int gpu_buffer, uint64_t size, uint32_t type) {
+    VkMemoryAllocateFlagsInfo flags_info = {};
+    flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
+    VkImportMemoryFdInfoKHR import_info = {};
+    import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    import_info.pNext = &flags_info;
+    import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    import_info.fd = gpu_buffer;
+
+    VkMemoryAllocateInfo allocate_info = {};
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.pNext = &import_info;
+    allocate_info.allocationSize = size;
+    allocate_info.memoryTypeIndex = type;
+
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (m_vk.allocate_memory(m_device, &allocate_info, nullptr, &memory) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+
+    return memory;
 }
 
 std::unique_ptr<gpu_compositor::compose_buffers> gpu_compositor::make_compose_buffers() {

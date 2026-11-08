@@ -230,7 +230,7 @@ int memcpy_presenter::update_output() {
     return 0;
 }
 
-int flip_presenter::init(display& owner, const gfxfb::gfxfb_output_info& info) {
+void buffer_presenter::take_mode(display& owner, const gfxfb::gfxfb_output_info& info) {
     m_display = &owner;
     m_fd = owner.fd();
 
@@ -238,6 +238,53 @@ int flip_presenter::init(display& owner, const gfxfb::gfxfb_output_info& info) {
     m_width = info.current.width;
     m_height = info.current.height;
     m_refresh_millihertz = info.current.refresh_millihertz;
+}
+
+void buffer_presenter::take_cursor_limits(const gfxfb::gfxfb_output_info& info) {
+    m_cursor_max_width = info.cursor_max_width;
+    m_cursor_max_height = info.cursor_max_height;
+}
+
+void buffer_presenter::stop_cursor() {
+    hide_cursor();
+    m_cursor_max_width = 0;
+    m_cursor_max_height = 0;
+}
+
+void buffer_presenter::wait_for_present() {
+    while (m_present_pending) {
+        m_display->take_events();
+    }
+}
+
+void buffer_presenter::note_changed(uint32_t index, const damage_list& damage) {
+    damage_list& unpresented = m_unpresented[index];
+    if (damage.full()) {
+        unpresented.add_full();
+        return;
+    }
+
+    for (uint32_t i = 0; i < damage.count(); i++) {
+        damage_list::rect r = damage.at(i);
+        if (damage_list::clip(r, static_cast<int32_t>(m_width), static_cast<int32_t>(m_height))) {
+            unpresented.add(r.x, r.y, r.w, r.h);
+        }
+    }
+}
+
+void buffer_presenter::present_back(uint32_t handle) {
+    damage_list& changed = m_unpresented[m_back_index];
+    if (!present_buffer(handle, changed)) {
+        return;
+    }
+
+    changed.clear();
+    m_present_pending = true;
+    m_pending_frame_start_ns = m_frame_start_ns;
+}
+
+int flip_presenter::init(display& owner, const gfxfb::gfxfb_output_info& info) {
+    take_mode(owner, info);
 
     int rc = create_buffers();
     if (rc != 0) {
@@ -245,8 +292,7 @@ int flip_presenter::init(display& owner, const gfxfb::gfxfb_output_info& info) {
         return rc;
     }
 
-    m_cursor_max_width = info.cursor_max_width;
-    m_cursor_max_height = info.cursor_max_height;
+    take_cursor_limits(info);
 
     return 0;
 }
@@ -332,13 +378,9 @@ void flip_presenter::release_buffers() {
     }
 }
 
-/* Hides the cursor before dropping its limits, since a picture set after a relight would otherwise stay */
 void flip_presenter::shutdown() {
     release_buffers();
-
-    hide_cursor();
-    m_cursor_max_width = 0;
-    m_cursor_max_height = 0;
+    stop_cursor();
     m_fd = -1;
 }
 
@@ -358,22 +400,10 @@ presenter::target flip_presenter::acquire() {
 }
 
 void flip_presenter::present(const damage_list& damage) {
-    while (m_present_pending) {
-        m_display->take_events();
-    }
+    wait_for_present();
 
-    for (damage_list& unpresented : m_unpresented) {
-        if (damage.full()) {
-            unpresented.add_full();
-            continue;
-        }
-
-        for (uint32_t i = 0; i < damage.count(); i++) {
-            damage_list::rect r = damage.at(i);
-            if (damage_list::clip(r, static_cast<int32_t>(m_width), static_cast<int32_t>(m_height))) {
-                unpresented.add(r.x, r.y, r.w, r.h);
-            }
-        }
+    for (uint32_t i = 0; i < BUFFER_COUNT; i++) {
+        note_changed(i, damage);
     }
 
     display_buffer& back = m_buffers[m_back_index];
@@ -392,18 +422,12 @@ void flip_presenter::present(const damage_list& damage) {
         }
     }
 
-    if (!present_buffer(back, changed)) {
-        return;
-    }
-
-    changed.clear();
-    m_present_pending = true;
-    m_pending_frame_start_ns = m_frame_start_ns;
+    present_back(back.handle);
 }
 
-/* Presents `buffer` with the regions in `changed`, all of it when `changed` is full. Returns whether the display
+/* Presents the buffer `handle` names with `changed`'s regions, all of it when it is full. Returns whether the display
  * accepted it, printing a line when presents start failing but not for an output gone dark or relit at another size */
-bool flip_presenter::present_buffer(const display_buffer& buffer, const damage_list& changed) {
+bool buffer_presenter::present_buffer(uint32_t handle, const damage_list& changed) {
     gfxfb::gfxfb_rect regions[damage_list::MAX_RECTS];
     uint32_t region_count = 0;
     if (!changed.full()) {
@@ -414,7 +438,7 @@ bool flip_presenter::present_buffer(const display_buffer& buffer, const damage_l
 
     gfxfb::gfxfb_present_args args = {};
     args.output = m_output;
-    args.handle = buffer.handle;
+    args.handle = handle;
     args.regions = reinterpret_cast<uint64_t>(regions);
     args.region_count = region_count;
 
@@ -437,7 +461,7 @@ bool flip_presenter::present_buffer(const display_buffer& buffer, const damage_l
 
 /* A latched present put the back buffer on screen, so the other one becomes the back buffer. A present that
  * ended dark prints nothing, since its output's change also queues an output event the caller follows */
-void flip_presenter::end_present(uint32_t status, uint64_t frame, uint64_t latch_ns) {
+void buffer_presenter::end_present(uint32_t status, uint64_t frame, uint64_t latch_ns) {
     m_present_pending = false;
 
     if (status != gfxfb::GFXFB_PRESENT_LATCHED) {
@@ -455,13 +479,13 @@ void flip_presenter::end_present(uint32_t status, uint64_t frame, uint64_t latch
     m_back_index = (m_back_index + 1) % BUFFER_COUNT;
 }
 
-void flip_presenter::abandon_present() {
+void buffer_presenter::abandon_present() {
     m_present_pending = false;
     m_has_latch = false;
 }
 
 /* A relit output counts vertical blanks from 0 and shows its base buffer until a present latches */
-void flip_presenter::relit(const gfxfb::gfxfb_output_info& info) {
+void buffer_presenter::relit(const gfxfb::gfxfb_output_info& info) {
     m_refresh_millihertz = info.current.refresh_millihertz;
     m_cursor_max_width = info.cursor_max_width;
     m_cursor_max_height = info.cursor_max_height;
@@ -476,7 +500,7 @@ void flip_presenter::relit(const gfxfb::gfxfb_output_info& info) {
 
 /* Adds the vertical blanks the latched present missed and keeps its latch for the next, taking those
  * between two latches as evenly spaced. Event times and acquire()'s stamps share the monotonic clock */
-void flip_presenter::count_missed_frames(uint64_t frame, uint64_t latch_ns) {
+void buffer_presenter::count_missed_frames(uint64_t frame, uint64_t latch_ns) {
     bool has_earlier_latch = m_has_latch && frame > m_latch_frame && latch_ns > m_latch_ns;
     uint64_t period_ns = has_earlier_latch ? (latch_ns - m_latch_ns) / (frame - m_latch_frame) : 0;
     if (period_ns != 0) {
@@ -492,7 +516,7 @@ void flip_presenter::count_missed_frames(uint64_t frame, uint64_t latch_ns) {
     m_latch_ns = latch_ns;
 }
 
-bool flip_presenter::set_cursor(const cursor_picture& picture) {
+bool buffer_presenter::set_cursor(const cursor_picture& picture) {
     bool fits = picture.width <= m_cursor_max_width && picture.height <= m_cursor_max_height;
     if (!has_cursor() || !fits) {
         return false;
@@ -514,7 +538,7 @@ bool flip_presenter::set_cursor(const cursor_picture& picture) {
     return taken;
 }
 
-void flip_presenter::hide_cursor() {
+void buffer_presenter::hide_cursor() {
     if (!has_cursor()) {
         return;
     }
@@ -525,7 +549,7 @@ void flip_presenter::hide_cursor() {
     cursor_call(gfxfb::GFXFB_SET_CURSOR, &args, "hide");
 }
 
-bool flip_presenter::move_cursor(int32_t x, int32_t y) {
+bool buffer_presenter::move_cursor(int32_t x, int32_t y) {
     if (!has_cursor()) {
         return false;
     }
@@ -540,7 +564,7 @@ bool flip_presenter::move_cursor(int32_t x, int32_t y) {
 
 /* Makes the cursor ioctl `request` and returns whether the display took it, naming `call` in a line at a failure while
  * `m_cursor_failing` is clear, but not for a dark output, which an output event reports */
-bool flip_presenter::cursor_call(uint32_t request, void* args, const char* call) {
+bool buffer_presenter::cursor_call(uint32_t request, void* args, const char* call) {
     bool failed = ioctl(m_fd, request, args) < 0;
     bool output_dark = failed && errno == EAGAIN;
     if (failed && !output_dark && !m_cursor_failing) {
@@ -550,4 +574,69 @@ bool flip_presenter::cursor_call(uint32_t request, void* args, const char* call)
     }
 
     return !failed;
+}
+
+int gpu_presenter::init(display& owner, const gfxfb::gfxfb_output_info& info, output_buffer_maker& maker) {
+    take_mode(owner, info);
+
+    for (std::unique_ptr<output_buffer>& buffer : m_buffers) {
+        buffer = maker.make_output_buffer(m_fd, m_output, m_width, m_height);
+        if (!buffer) {
+            shutdown();
+            return -1;
+        }
+    }
+
+    for (damage_list& unpresented : m_unpresented) {
+        unpresented.add_full();
+    }
+
+    take_cursor_limits(info);
+
+    return 0;
+}
+
+/* A buffer still on screen stays allocated until the output shows another buffer or goes dark */
+void gpu_presenter::shutdown() {
+    for (std::unique_ptr<output_buffer>& buffer : m_buffers) {
+        buffer.reset();
+    }
+
+    stop_cursor();
+    m_fd = -1;
+}
+
+void gpu_presenter::relit(const gfxfb::gfxfb_output_info& info) {
+    buffer_presenter::relit(info);
+
+    for (uint64_t& frame : m_buffer_frames) {
+        frame = 0;
+    }
+}
+
+presenter::target gpu_presenter::acquire() {
+    m_frame_start_ns = now_ns();
+    m_frames++;
+
+    const output_buffer& back = *m_buffers[m_back_index];
+    uint64_t last_frame = m_buffer_frames[m_back_index];
+    m_buffer_frames[m_back_index] = m_frames;
+
+    target t;
+    t.stride = back.pitch();
+    t.age = last_frame == 0 ? 0 : static_cast<uint32_t>(m_frames - last_frame);
+    t.gpu_address = back.gpu_address();
+
+    return t;
+}
+
+void gpu_presenter::present(const damage_list& damage) {
+    wait_for_present();
+    note_changed(m_back_index, damage);
+
+    if (m_unpresented[m_back_index].empty() || m_output_changed) {
+        return;
+    }
+
+    present_back(m_buffers[m_back_index]->gfxfb_handle());
 }
