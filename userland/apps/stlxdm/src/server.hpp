@@ -130,9 +130,11 @@ struct dm_buffer {
     void*     mapping = nullptr;
     size_t    size = 0;             /* the buffer's bytes */
     uint32_t* pixels = nullptr;     /* the picture's first pixel, null without a mapping */
+    uint64_t  offset = 0;           /* bytes from the buffer's start to the picture */
     uint64_t  gpu_address = 0;      /* the GPU compositor's address of the picture, 0 without an import */
     int       shm = -1;             /* a shared memory buffer's object, opened read-only */
     int       gpu_buffer = -1;      /* the read-only handle that a GPU_BUFFER_IMPORT of the buffer gave */
+    uint32_t  placement = 0;        /* the GPU_PLACEMENT_* that import gave */
 
     /* The GPU compositor's import, which `gpu_address` lies in */
     std::unique_ptr<window_import> import;
@@ -320,17 +322,19 @@ public:
      * decode, never sits between Enter and the desktop. Returns 0 or -1. */
     int init(display* disp, const stlxconf_t* conf);
 
-    /* Moves every served output to the GPU compositor made at init, with a
-     * GPU presenter and its pictures holding the backdrops, or composes on
-     * the CPU, dropping the GPU compositor and printing why, when any of
-     * them cannot be made. Does nothing when init made no GPU compositor.
-     * Runs after the splash and before `serve()`. */
+    /* Moves every served output to the GPU compositor `choose_compositor()`
+     * made, with a GPU presenter and its pictures holding the backdrops, or
+     * composes on the CPU, dropping the GPU compositor with the window
+     * imports and printing why, when any of them cannot be made. Does
+     * nothing without a GPU compositor. Runs after the splash and before
+     * `serve()`, and at a reload's switch to the GPU. */
     void switch_to_gpu();
 
     /* Once the retired GPU compositor's last compose ended or its device is
-     * lost, destroys it, or ends its retirement when composing stopped
-     * instead, reading its timeline without waiting. Runs at the end of
-     * each switch to the CPU and at each turn of the loop. */
+     * lost, destroys it and takes a reload's switch to the GPU that waited
+     * for it, or ends its retirement when composing stopped instead,
+     * reading its timeline without waiting. Runs at the end of each switch
+     * to the CPU and at each turn of the loop. */
     void reap_retired_compositor();
 
     /* The poll bound while a GPU compositor is retired, so its timeline is
@@ -350,8 +354,8 @@ public:
     /* Shows the pointer on the hardware cursor of every served output
      * its picture overlaps, where that output can show the shape, else in
      * its frames, printing which, and hides it on the other served
-     * outputs. Runs after the splash, which has no pointer, and from
-     * `follow_outputs()`. */
+     * outputs. Runs after the splash, which has no pointer, after each
+     * switch of compositors, and from `follow_outputs()`. */
     void show_cursor();
 
     /* Whether a pointer move waits for `output`'s hardware cursor. */
@@ -364,10 +368,11 @@ public:
 
     void shutdown();
 
-    /* Re-applies a freshly re-parsed config: panels, power, the
-     * wallpaper, and the hotkeys rebuild, then the desktop repaints.
-     * Autostart entries do not respawn, and `compositor` and
-     * `compare_frames` take effect at the next start. */
+    /* Re-applies a freshly re-parsed config: unless composing stopped, a
+     * change of `compositor` to cpu leaves the GPU compositor and one to
+     * auto tries it, then panels, power, the wallpaper, and the hotkeys
+     * rebuild, and the desktop repaints. Autostart entries do not respawn,
+     * and `compare_frames` takes effect at the next switch to the GPU. */
     void reload_config();
 
     /* Places the members again after output events or a mode request's
@@ -511,6 +516,8 @@ private:
     bool gpu_reads_buffers() const { return composes_on_gpu() && !m_compares_frames; }
     void release_unmappable_buffers();
     bool import_shared_memory(dm_buffer& b);
+    bool import_attached_buffers();
+    void drop_window_imports();
     void switch_to_cpu_on_failed_gpu();
     bool is_acquire_reached(dm_client& c, dm_window& w, uint64_t now);
     void latch_window(dm_client& c, dm_window& w);
@@ -524,6 +531,8 @@ private:
     bool switch_to_cpu_on_failed_compose(compose_result result);
     void note_gpu_frame(dm_output& out);
     void follow_compose_fault();
+    void follow_compositor();
+    void switch_to_gpu_at_reload();
     void switch_to_cpu(const char* reason);
     gpu_compositor* retired_compositor() const;
     void compose_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
@@ -650,9 +659,7 @@ private:
     std::unique_ptr<picture> m_gpu_capture;
 
     /* Whether the GPU compositor holds the served outputs' presenters and
-     * pictures, from the switch after the splash until a switch to the CPU,
-     * and whether every output's composes stopped since the CPU compositor
-     * could not take over from the GPU's */
+     * pictures, and whether its composes stopped with no CPU takeover */
     bool m_gpu_composes = false;
     bool m_gpu_stopped = false;
 
@@ -663,6 +670,11 @@ private:
     /* The config's last `compose_fault`, so only a reload that changes it
      * from none fails a GPU compose */
     stlxconf_compose_fault_t m_compose_fault = STLXCONF_COMPOSE_FAULT_NONE;
+
+    /* The config's last `compositor`, so only a reload that changes it
+     * switches, and whether a switch to the GPU waits for a retired one */
+    stlxconf_compositor_t m_compositor = STLXCONF_COMPOSITOR_AUTO;
+    bool                  m_gpu_switch_waits = false;
 
     /* The desktop's own input to paint latency and missed frames meter,
      * the readout the bar last took, the arrival time of whatever input

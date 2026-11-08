@@ -39,12 +39,12 @@ enum class gpu_mapping {
     REFUSED,    /* a buffer the protocol does not take, or stlxdm out of memory */
 };
 
-/* How the GPU compositor's import of an attached window buffer went */
+/* How importing an attached window buffer for the GPU compositor went */
 enum class gpu_import {
     IMPORTED,
-    GPU_FAILED, /* the import met no memory, and the probe context found the GPU failed */
-    NO_MEMORY,  /* the import met no memory on a live GPU */
-    REFUSED,    /* a buffer the GPU compositor cannot read */
+    GPU_FAILED, /* a GPU_BUFFER_IMPORT met EIO, or the compositor's import met no memory on a failed GPU */
+    NO_MEMORY,  /* the compositor's import met no memory on a live GPU */
+    REFUSED,    /* a GPU_BUFFER_IMPORT met another error, or a buffer the GPU compositor cannot read */
 };
 
 static dm_window* find_window(dm_client& c, uint32_t win_id) {
@@ -203,15 +203,9 @@ static bool is_valid_gpu_picture(const swp_attach_gpu_buffer& m) {
            m.offset % 4 == 0;
 }
 
-/* Consumes the buffer handle, keeping in `b` the import's handle and its mapping when mappable, and its placement in
- * `placement`. The restrict comes before the import, since an import would take a shared memory handle as a buffer */
-static gpu_mapping map_gpu_buffer(
-    int gpu_fd,
-    int handle,
-    const swp_attach_gpu_buffer& m,
-    dm_buffer& b,
-    uint32_t& placement
-) {
+/* Consumes the buffer handle, keeping in `b` the import's handle and placement, and its mapping when mappable. The
+ * restrict comes before the import, since an import would take a shared memory handle as a buffer */
+static gpu_mapping map_gpu_buffer(int gpu_fd, int handle, const swp_attach_gpu_buffer& m, dm_buffer& b) {
     gpu_restrict_args narrowed = {};
     narrowed.handle = handle;
     narrowed.rights = GPU_RIGHT_READ;
@@ -251,24 +245,19 @@ static gpu_mapping map_gpu_buffer(
     }
 
     b.size = import.size;
+    b.offset = m.offset;
     b.gpu_buffer = import.buffer;
-    placement = import.placement;
+    b.placement = import.placement;
 
     return is_mappable ? gpu_mapping::MAPPED : gpu_mapping::UNMAPPABLE;
 }
 
-/* Imports the buffer of `b`'s kept handle, `bytes` in `placement`, whose picture starts `offset` bytes in */
-static gpu_import import_for_gpu(
-    gpu_compositor& compositor,
-    dm_buffer& b,
-    uint64_t bytes,
-    uint32_t placement,
-    uint64_t offset
-) {
+/* Imports the buffer of `b`'s kept handle, `bytes` long */
+static gpu_import import_for_gpu(gpu_compositor& compositor, dm_buffer& b, uint64_t bytes) {
     bool is_mappable = b.mapping != nullptr;
-    switch (compositor.import_window_buffer(b.gpu_buffer, bytes, placement, is_mappable, b.import)) {
+    switch (compositor.import_window_buffer(b.gpu_buffer, bytes, b.placement, is_mappable, b.import)) {
     case window_import_result::imported:
-        b.gpu_address = b.import->address() + offset;
+        b.gpu_address = b.import->address() + b.offset;
         return gpu_import::IMPORTED;
     case window_import_result::no_memory:
         return compositor.has_gpu_failed() ? gpu_import::GPU_FAILED : gpu_import::NO_MEMORY;
@@ -277,6 +266,25 @@ static gpu_import import_for_gpu(
     }
 
     return gpu_import::REFUSED;
+}
+
+/* Imports a shared memory buffer through a GPU_BUFFER_IMPORT of its descriptor, whose handle `b` keeps */
+static gpu_import import_shared_memory_for_gpu(int gpu_fd, gpu_compositor& compositor, dm_buffer& b) {
+    gpu_buffer_args buffer_args = {};
+    buffer_args.source = b.shm;
+    if (ioctl(gpu_fd, GPU_BUFFER_IMPORT, &buffer_args) != 0) {
+        return errno == EIO ? gpu_import::GPU_FAILED : gpu_import::REFUSED;
+    }
+
+    b.gpu_buffer = buffer_args.buffer;
+    b.placement = buffer_args.placement;
+
+    /* The object may have shrunk since the mapping, and a compose offsets rows in 32 bits */
+    if (buffer_args.size < b.size || b.size > UINT32_MAX) {
+        return gpu_import::REFUSED;
+    }
+
+    return import_for_gpu(compositor, b, buffer_args.size);
 }
 
 /* A commit must arrive at the displayed size or at the size of the
@@ -477,32 +485,14 @@ void server::switch_to_cpu_on_failed_gpu() {
 /* Imports a shared memory buffer for the GPU compositor. On a failed GPU it switches to the CPU, which reads the
  * buffer's mapping. False when its client must go */
 bool server::import_shared_memory(dm_buffer& b) {
-    gpu_buffer_args buffer_args = {};
-    buffer_args.source = b.shm;
-    if (ioctl(m_gpu_fd, GPU_BUFFER_IMPORT, &buffer_args) != 0) {
-        if (errno != EIO) {
-            return false;
-        }
-
-        switch_to_cpu_on_failed_gpu();
-        return true;
-    }
-
-    b.gpu_buffer = buffer_args.buffer;
-
-    /* The object may have shrunk since the mapping, and a compose offsets rows in 32 bits */
-    if (buffer_args.size < b.size || b.size > UINT32_MAX) {
-        return false;
-    }
-
-    switch (import_for_gpu(*m_gpu_compositor, b, buffer_args.size, buffer_args.placement, 0)) {
+    switch (import_shared_memory_for_gpu(m_gpu_fd, *m_gpu_compositor, b)) {
     case gpu_import::IMPORTED:
         return true;
     case gpu_import::GPU_FAILED:
         switch_to_cpu_on_failed_gpu();
 
         /* The switch closed every recorded buffer's import, and `b` is not recorded yet */
-        if (!m_gpu_composes) {
+        if (!m_gpu_composes && b.gpu_buffer >= 0) {
             close(b.gpu_buffer);
             b.gpu_buffer = -1;
         }
@@ -514,6 +504,66 @@ bool server::import_shared_memory(dm_buffer& b) {
     }
 
     return false;
+}
+
+/* Imports every attached buffer but release-only records for a reload's GPU compositor. A failure logs the buffer,
+ * drops the compositor and every import made with it, and on a failed GPU ends taking GPU buffers. False then */
+bool server::import_attached_buffers() {
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            for (dm_buffer& b : w->buffers) {
+                if (b.is_release_only) {
+                    continue;
+                }
+
+                gpu_import result = b.is_gpu ? import_for_gpu(*m_gpu_compositor, b, b.size)
+                                             : import_shared_memory_for_gpu(m_gpu_fd, *m_gpu_compositor, b);
+                bool met_failed_gpu = false;
+                switch (result) {
+                case gpu_import::IMPORTED:
+                    continue;
+                case gpu_import::GPU_FAILED:
+                    met_failed_gpu = true;
+                    break;
+                case gpu_import::NO_MEMORY:
+                case gpu_import::REFUSED:
+                    break;
+                }
+
+                printf("stlxdm: composing on the CPU, buffer %u of window %u could not be imported for the GPU\r\n",
+                       b.buf_id, w->win_id);
+                drop_window_imports();
+                m_gpu_compositor.reset();
+                if (met_failed_gpu) {
+                    stop_taking_gpu_buffers();
+                }
+
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+/* Drops what composing on the GPU made for windows: each frame picture and Vulkan import, and each shared memory
+ * buffer's GPU_BUFFER_IMPORT handle */
+void server::drop_window_imports() {
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            w->frame = frame_picture();
+            for (dm_buffer& b : w->buffers) {
+                b.import.reset();
+                b.gpu_address = 0;
+
+                bool holds_shared_import = !b.is_gpu && b.gpu_buffer >= 0;
+                if (holds_shared_import) {
+                    close(b.gpu_buffer);
+                    b.gpu_buffer = -1;
+                }
+            }
+        }
+    }
 }
 
 /* A GPU picture the buffer shows or holds pending is released before
@@ -749,8 +799,7 @@ void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
     }
 
     bool is_release_only = false;
-    uint32_t placement = 0;
-    switch (map_gpu_buffer(m_gpu_fd, handles[0], *m, b, placement)) {
+    switch (map_gpu_buffer(m_gpu_fd, handles[0], *m, b)) {
     case gpu_mapping::MAPPED:
         break;
     case gpu_mapping::UNMAPPABLE:
@@ -778,7 +827,7 @@ void server::handle_attach_gpu_buffer(dm_client& c, const uint8_t* payload) {
     }
 
     if (!is_release_only && composes_on_gpu()) {
-        switch (import_for_gpu(*m_gpu_compositor, b, b.size, placement, m->offset)) {
+        switch (import_for_gpu(*m_gpu_compositor, b, b.size)) {
         case gpu_import::IMPORTED:
             break;
         case gpu_import::GPU_FAILED:
