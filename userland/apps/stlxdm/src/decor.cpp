@@ -65,11 +65,16 @@ static stlxgfx_surface_t* clip_view(const decor::canvas& back,
         return nullptr;
     }
 
-    return stlxgfx_surface_from_buffer(
+    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(
         back.surface->pixels + static_cast<uint32_t>(clip.y - back.y) * back.surface->pitch
             + static_cast<uint32_t>(clip.x - back.x) * 4,
         static_cast<uint32_t>(clip.w), static_cast<uint32_t>(clip.h),
         back.surface->pitch, 32, 16, 8, 0);
+    if (view) {
+        view->flags = back.surface->flags;
+    }
+
+    return view;
 }
 
 static void sdf_table_init() {
@@ -180,6 +185,28 @@ damage_list::rect bounds(const dm_window& w) {
     }
 
     return r;
+}
+
+void frame_strips(const dm_window& w, damage_list::rect (&strips)[FRAME_STRIPS]) {
+    const dm_buffer* b = current_buffer(w);
+    if (!b || !decorated(w)) {
+        for (damage_list::rect& strip : strips) {
+            strip = {};
+        }
+
+        return;
+    }
+
+    damage_list::rect outer = bounds(w);
+    int32_t bw = static_cast<int32_t>(b->width);
+    int32_t bh = static_cast<int32_t>(b->height);
+    int32_t corner_y = w.y + (bh > CONTENT_R ? bh - CONTENT_R : 0);
+    int32_t right_x = w.x + bw;
+
+    strips[0] = { outer.x, outer.y, outer.w, w.y - outer.y };
+    strips[1] = { outer.x, w.y, w.x - outer.x, corner_y - w.y };
+    strips[2] = { right_x, w.y, outer.x + outer.w - right_x, corner_y - w.y };
+    strips[3] = { outer.x, corner_y, outer.w, outer.y + outer.h - corner_y };
 }
 
 zone hit(const dm_window& w, int32_t x, int32_t y) {
