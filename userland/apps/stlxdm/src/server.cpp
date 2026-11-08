@@ -1,5 +1,6 @@
 #include "server.hpp"
 
+#include <stlx/gpu_abi.h>
 #include <stlx/proc.h>
 #include <stlxgfx/image.h>
 
@@ -9,6 +10,7 @@
 #include <ctime>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -70,6 +72,17 @@ static int open_gpu_device() {
     printf("stlxdm: taking GPU buffers of %s\r\n", GPU_DEVICE_PATH);
 
     return fd;
+}
+
+/* A context create meets EIO once the GPU failed */
+static bool is_gpu_failed(int gpu_fd) {
+    gpu_context_args context = {};
+    if (ioctl(gpu_fd, GPU_CONTEXT_CREATE, &context) == 0) {
+        close(context.context);
+        return false;
+    }
+
+    return errno == EIO;
 }
 
 /* Queues the handles of a read's one SCM_RIGHTS message, closing any
@@ -265,6 +278,7 @@ int server::init(display* disp, const stlxconf_t* conf) {
     m_display = disp;
     m_conf = conf;
     m_compose_fault = conf->compose_fault;
+    m_compositor = conf->compositor;
 
     m_store.read(LAYOUTS_PATH);
 
@@ -350,6 +364,7 @@ void server::switch_to_gpu() {
             out.pictures = {};
         }
 
+        drop_window_imports();
         m_gpu_compositor.reset();
         printf("stlxdm: composing on the CPU, %s\r\n", refusal);
         return;
@@ -418,24 +433,10 @@ void server::switch_to_cpu(const char* reason) {
         }
     }
 
-    for (auto& c : m_clients) {
-        for (auto& w : c->windows) {
-            w->frame = frame_picture();
-            for (dm_buffer& b : w->buffers) {
-                b.import.reset();
-                b.gpu_address = 0;
-
-                bool holds_shared_import = !b.is_gpu && b.gpu_buffer >= 0;
-                if (holds_shared_import) {
-                    close(b.gpu_buffer);
-                    b.gpu_buffer = -1;
-                }
-            }
-        }
-    }
-
+    drop_window_imports();
     m_gpu_composes = false;
     m_retired_compositor = std::move(m_gpu_compositor);
+
     release_unmappable_buffers();
     follow_reader_in_gpu_info();
     m_damage.add_full();
@@ -471,6 +472,11 @@ void server::reap_retired_compositor() {
 
     m_retired_compositor.reset();
     printf("stlxdm: the retired GPU compositor is destroyed, %s\r\n", cause);
+
+    if (m_gpu_switch_waits) {
+        m_gpu_switch_waits = false;
+        switch_to_gpu_at_reload();
+    }
 }
 
 int64_t server::retired_timeout_ns() const {
@@ -518,6 +524,68 @@ void server::follow_compose_fault() {
     }
 
     printf("stlxdm: the next GPU compose %s, as compose_fault asks\r\n", effect);
+}
+
+/* Switches compositors when a reload changes the config's `compositor`, unless composing stopped: to cpu while the GPU
+ * composes, or to auto once no GPU compositor is retired, so two devices' output buffers are never held at once */
+void server::follow_compositor() {
+    bool changed = m_compositor != m_conf->compositor;
+    m_compositor = m_conf->compositor;
+    if (!changed) {
+        return;
+    }
+
+    if (m_gpu_stopped) {
+        printf("stlxdm: composing stopped, a change of compositor takes effect at the next start\r\n");
+        return;
+    }
+
+    m_gpu_switch_waits = false;
+    switch (m_compositor) {
+    case STLXCONF_COMPOSITOR_CPU:
+        if (composes_on_gpu()) {
+            switch_to_cpu("the config's compositor is cpu");
+        }
+
+        return;
+    case STLXCONF_COMPOSITOR_AUTO:
+        break;
+    }
+
+    if (retired_compositor()) {
+        printf("stlxdm: the switch to the GPU waits for the retired GPU compositor\r\n");
+        m_gpu_switch_waits = true;
+        return;
+    }
+
+    switch_to_gpu_at_reload();
+}
+
+/* With clients connected, a reload's GPU compositor imports every attached buffer but release-only records first. A
+ * creation or a switch refused on a failed GPU ends taking GPU buffers, as an import that finds it failed does */
+void server::switch_to_gpu_at_reload() {
+    choose_compositor();
+    if (!m_gpu_compositor) {
+        if (m_gpu_fd >= 0 && is_gpu_failed(m_gpu_fd)) {
+            stop_taking_gpu_buffers();
+        }
+
+        return;
+    }
+
+    if (!import_attached_buffers()) {
+        return;
+    }
+
+    switch_to_gpu();
+    if (composes_on_gpu()) {
+        follow_reader_in_gpu_info();
+    } else if (is_gpu_failed(m_gpu_fd)) {
+        stop_taking_gpu_buffers();
+    }
+
+    /* Dropping a presenter hides its cursor: a switch drops the flip presenters, a refused one the GPU ones it made */
+    show_cursor();
 }
 
 int server::serve() {
@@ -911,6 +979,7 @@ void server::perf_tick(uint64_t now_ns) {
 }
 
 void server::reload_config() {
+    follow_compositor();
     follow_compose_fault();
 
     dm_wallpaper wallpaper(*m_conf);
