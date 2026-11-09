@@ -2,10 +2,8 @@
 
 #include "drivers/graphics/nvidia/display_link.h"
 #include "drivers/graphics/nvidia/nvidia.h"
-#include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
-#include "hw/cpu.h"
 
 namespace drivers::nvidia {
 
@@ -205,14 +203,6 @@ int32_t read_link_capabilities(
     );
 
     return OK;
-}
-
-// Spins on the calling CPU for `ms` milliseconds, since `display_engine::set_up` may run on a thread that cannot sleep
-static void spin_for_ms(uint64_t ms) {
-    uint64_t end = clock::now_ns() + ms * NS_PER_MS;
-    while (clock::now_ns() < end) {
-        cpu::relax();
-    }
 }
 
 // Sends one training request and, after an accepted reply asking for a wait, spins for that wait, as NVIDIA's library

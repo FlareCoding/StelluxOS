@@ -99,6 +99,12 @@ inline uint64_t time_left_until(uint64_t deadline_ns) {
     return deadline_ns > now ? deadline_ns - now : 0;
 }
 
+/**
+ * @brief Spin on the calling CPU for `ms` milliseconds, as the display's waits
+ * do, since `display_engine::set_up` may run on a thread that cannot sleep.
+ */
+void spin_for_ms(uint64_t ms);
+
 } // namespace drivers::nvidia
 
 #endif // STELLUX_DRIVERS_GRAPHICS_NVIDIA_NVIDIA_H

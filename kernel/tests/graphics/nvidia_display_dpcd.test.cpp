@@ -13,6 +13,7 @@
 
 TEST_SUITE(nvidia_display_dpcd);
 
+using drivers::nvidia::clear_link_status_changed;
 using drivers::nvidia::DPCD_EXTENDED_COPY_PRESENT;
 using drivers::nvidia::DPCD_EXTENDED_RECEIVER_CAPABILITIES;
 using drivers::nvidia::DPCD_PHY_REPEATER_CAPABILITIES;
@@ -28,6 +29,7 @@ using drivers::nvidia::ERR_QUEUE_FULL;
 using drivers::nvidia::ERR_TIMEOUT;
 using drivers::nvidia::ERR_TOO_LARGE;
 using drivers::nvidia::firmware;
+using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::OK;
 using drivers::nvidia::read_output_dpcd;
 using drivers::nvidia::set_monitor_to_d3;
@@ -45,6 +47,7 @@ static constexpr uint32_t DATA_OFFSET                = 20;
 static constexpr uint32_t DATA_BYTES                 = 16;
 static constexpr uint32_t SIZE_OFFSET                = 36;
 static constexpr uint32_t REPLY_OFFSET               = 40;
+static constexpr uint32_t RETRY_TIME_OFFSET          = 44;
 static constexpr uint32_t NVIDIA_NATIVE_READ         = 0x9;
 static constexpr uint32_t NVIDIA_REPLY_ACK           = 0;
 static constexpr uint32_t NVIDIA_REPLY_NACK          = 1;
@@ -52,6 +55,13 @@ static constexpr uint32_t NVIDIA_REPLY_DEFER         = 2;
 static constexpr uint32_t NVIDIA_REPLY_TIMEOUT       = 3;
 static constexpr uint32_t NVIDIA_REPLY_I2CNACK       = 4;
 static constexpr uint32_t NVIDIA_REPLY_I2CDEFER      = 8;
+
+// NVIDIA's NV_ERR_TIMEOUT, which its library takes as a deferral, and NV_ERR_GENERIC, which it takes as a refusal
+static constexpr uint32_t NVIDIA_ERR_TIMEOUT = 0x65;
+static constexpr uint32_t NVIDIA_ERR_GENERIC = 0xFFFF;
+
+// NVIDIA's library's sends of one request while the firmware fails it naming a time to retry after
+static constexpr uint32_t NVIDIA_AUX_SENDS = 3;
 
 // NVIDIA's DP_SET_MANUAL_DISPLAYPORT and its parameters' size, restated to hold its request to NVIDIA's layout
 static constexpr uint32_t NVIDIA_DP_SET_MANUAL_DISPLAYPORT       = 0x731365;
@@ -64,6 +74,12 @@ static constexpr uint32_t NVIDIA_DPCD_SET_POWER          = 0x00600;
 static constexpr uint8_t  NVIDIA_SET_POWER_VAL_D3_PWRDWN = 2;
 static constexpr uint32_t NVIDIA_POWER_STATE_TRIES       = 40;
 static constexpr uint64_t NVIDIA_POWER_STATE_NS          = 2000000;
+
+// NVIDIA's NV_DPCD_LINK_SERVICE_IRQ_VECTOR_ESI0 with its LINK_STATUS_CHANGED bit, and the requests NVIDIA's library
+// makes of the write clearing that bit while the monitor defers it (minimumRetriesOnDefer)
+static constexpr uint32_t NVIDIA_LINK_SERVICE_IRQ_VECTOR_ESI0 = 0x02005;
+static constexpr uint8_t  NVIDIA_LINK_STATUS_CHANGED          = 0x02;
+static constexpr uint32_t NVIDIA_CLEAR_REQUESTS               = 7;
 
 // NVIDIA's library's requests for the byte at 0x0000E (minimumRetriesOnDefer), for the field and for the PHY
 // repeaters' bytes, and its passes, the first and the 3 more (faultyRetries) it makes while the field cannot be read
@@ -120,8 +136,8 @@ static constexpr uint32_t READ_ADDRESS_COUNT = sizeof(READ_ADDRESSES) / sizeof(R
 // A `scripted_requests` that scripts every request at its address
 static constexpr uint32_t EVERY_REQUEST = 0xFFFFFFFF;
 
-// A firmware that answers DP_AUXCH_CTRL's native reads from a DPCD holding `receiver`, `extended_receiver` and
-// `phy_repeaters` at their addresses and 0 elsewhere, counts its requests and records the first `MAX_CALLS` controls
+// A firmware that answers DP_AUXCH_CTRL's native reads from its DPCD fields at their addresses and 0 elsewhere, counts
+// its requests and records the first `MAX_CALLS` controls
 class dpcd_firmware : public firmware {
 public:
     static constexpr uint32_t MAX_CALLS = 4;
@@ -137,6 +153,7 @@ public:
         uint8_t    first_data_byte;
         bool       is_zero_but_sent;    // every byte but the display id's, command's, address's and size's is 0
         bool       is_zero_but_written; // the same, the first data byte also sent
+        bool       has_status;          // sent through `control_with_status`
     };
 
     call     calls[MAX_CALLS] = {};
@@ -146,21 +163,34 @@ public:
     const uint8_t* receiver = MONITOR_RECEIVER_CAPABILITIES;
     const uint8_t* extended_receiver = MONITOR_EXTENDED_RECEIVER_CAPABILITIES;
     const uint8_t* phy_repeaters = PHY_REPEATER_CAPABILITIES;
+    uint8_t        link_service_interrupts = 0;
 
-    // The requests made at each of `READ_ADDRESSES`
+    // The controls sent at each of `READ_ADDRESSES`, each send of a request counted
     uint32_t requests[READ_ADDRESS_COUNT] = {};
 
     // Returned with no reply from call `failing_call` on, unless `OK`
     int32_t  result = OK;
     uint32_t failing_call = 1;
 
-    // The first `scripted_requests` requests at `scripted_address` return `scripted_result` with no reply, or when it
-    // is `OK`, end with `scripted_reply` and the reply size `scripted_size`
+    // The first `scripted_requests` controls sent at `scripted_address` return `scripted_result`, with no reply but the
+    // one `give_failure` gives, or when it is `OK`, end with `scripted_reply` and the reply size `scripted_size`
     uint32_t scripted_address = 0;
     uint32_t scripted_requests = 0;
     int32_t  scripted_result = OK;
     uint32_t scripted_reply = NVIDIA_REPLY_ACK;
     uint32_t scripted_size = 0;
+
+    // A control sent through `control_with_status` and scripted to fail with `ERR_FIRMWARE` gets `scripted_status`
+    // and its parameters back, dirtied but for the scripted reply, size and retry time `scripted_retry_time_ms`
+    uint32_t scripted_status = NVIDIA_ERR_GENERIC;
+    uint32_t scripted_retry_time_ms = 0;
+
+    // Set to leave reads at `scripted_address` unscripted, though they still count among the first `scripted_requests`,
+    // so the script applies to its native writes alone
+    bool scripts_only_writes = false;
+
+    // The time to retry after that each control the firmware answers names, 0 for none
+    uint32_t answered_retry_time_ms = 0;
 
     // The `later_requests` requests there after those end with `later_reply` and the reply size `later_size`
     uint32_t later_requests = 0;
@@ -175,7 +205,22 @@ public:
     uint32_t manual_subdevice = 0xFFFFFFFF;
 
     int32_t control(rm::handle object, uint32_t command, void* params, size_t size) override {
-        record(object, command, params, size);
+        return answer(object, command, params, size, nullptr);
+    }
+
+    int32_t control_with_status(
+        rm::handle object,
+        uint32_t command,
+        void* params,
+        size_t size,
+        uint32_t& status
+    ) override {
+        return answer(object, command, params, size, &status);
+    }
+
+    // Answers a control, `status` null for one sent through `control`
+    int32_t answer(rm::handle object, uint32_t command, void* params, size_t size, uint32_t* status) {
+        record(object, command, params, size, status != nullptr);
 
         bool is_manual_control = command == NVIDIA_DP_SET_MANUAL_DISPLAYPORT;
         bool has_manual_params = params != nullptr && size == NVIDIA_DP_SET_MANUAL_DISPLAYPORT_BYTES;
@@ -200,9 +245,12 @@ public:
         uint8_t* bytes = static_cast<uint8_t*>(params);
         uint32_t address = field_at(bytes, ADDRESS_OFFSET);
         uint32_t requests_at_address = count_request(address);
-        bool is_at_script = address == scripted_address;
+
+        bool is_scripted_command = !scripts_only_writes || field_at(bytes, COMMAND_OFFSET) == NVIDIA_NATIVE_WRITE;
+        bool is_at_script = address == scripted_address && is_scripted_command;
         bool is_scripted = is_at_script && requests_at_address <= scripted_requests;
         if (is_scripted && scripted_result != OK) {
+            give_failure(bytes, status);
             return scripted_result;
         }
 
@@ -225,12 +273,9 @@ public:
 
         string::memcpy(bytes + SIZE_OFFSET, &reply_size, sizeof(uint32_t));
         string::memcpy(bytes + REPLY_OFFSET, &reply, sizeof(uint32_t));
+        string::memcpy(bytes + RETRY_TIME_OFFSET, &answered_retry_time_ms, sizeof(uint32_t));
 
         return OK;
-    }
-
-    int32_t control_with_status(rm::handle object, uint32_t command, void* params, size_t size, uint32_t&) override {
-        return control(object, command, params, size);
     }
 
     // No function under test allocates, releases, sends an internal control or takes a handle, so each is a stray
@@ -262,7 +307,7 @@ public:
         return 0;
     }
 
-    // The requests made at `address`, 0 for an address no read uses
+    // The controls sent at `address`, each send of a request counted, 0 for an address no read uses
     uint32_t requests_at(uint32_t address) const {
         for (uint32_t slot = 0; slot < READ_ADDRESS_COUNT; slot++) {
             if (READ_ADDRESSES[slot] == address) {
@@ -274,6 +319,20 @@ public:
     }
 
 private:
+    // Gives a control sent through `control_with_status` and scripted to fail with `ERR_FIRMWARE` its status and
+    // parameters
+    void give_failure(uint8_t* bytes, uint32_t* status) const {
+        if (status == nullptr || scripted_result != ERR_FIRMWARE) {
+            return;
+        }
+
+        *status = scripted_status;
+        string::memset(bytes, 0xA5, NVIDIA_DP_AUXCH_CTRL_BYTES);
+        string::memcpy(bytes + SIZE_OFFSET, &scripted_size, sizeof(uint32_t));
+        string::memcpy(bytes + REPLY_OFFSET, &scripted_reply, sizeof(uint32_t));
+        string::memcpy(bytes + RETRY_TIME_OFFSET, &scripted_retry_time_ms, sizeof(uint32_t));
+    }
+
     // The 32-bit field at `offset` of the parameters
     static uint32_t field_at(const uint8_t* bytes, uint32_t offset) {
         uint32_t value = 0;
@@ -297,6 +356,10 @@ private:
             return phy_repeaters[address - NVIDIA_LT_TUNABLE_PHY_REPEATER_REV];
         }
 
+        if (address == NVIDIA_LINK_SERVICE_IRQ_VECTOR_ESI0) {
+            return link_service_interrupts;
+        }
+
         return 0;
     }
 
@@ -316,7 +379,7 @@ private:
     }
 
     // Counts a control and keeps the first `MAX_CALLS` with the fields an AUX request sends
-    void record(rm::handle object, uint32_t command, void* params, size_t size) {
+    void record(rm::handle object, uint32_t command, void* params, size_t size, bool has_status) {
         call_count++;
         if (call_count > MAX_CALLS) {
             return;
@@ -326,6 +389,7 @@ private:
         recorded.object = object;
         recorded.command = command;
         recorded.size = size;
+        recorded.has_status = has_status;
         if (params == nullptr || size != NVIDIA_DP_AUXCH_CTRL_BYTES) {
             return;
         }
@@ -376,11 +440,12 @@ static constexpr expected_read EXTENDED_READS[] = {
 
 // An answer every request at one address gets, whether the read is asked again on it, and how the log names it
 struct failing_answer {
-    int32_t     result; // `OK`, or `ERR_FIRMWARE` for the firmware's refusal
+    int32_t     result; // `OK`, or `ERR_FIRMWARE` for the firmware's failure with `status`
     uint32_t    reply;
     uint32_t    reply_size;
     bool        is_asked_again;
     const char* logged;
+    uint32_t    status = NVIDIA_ERR_GENERIC;
 };
 
 // A read at `address`, the requests bounding it, and the reply type and reply size its first requests all get
@@ -482,6 +547,19 @@ static void set_d3_logged(dpcd_firmware& fw) {
     log::set_backend(nullptr);
 }
 
+// Clears the link status changed bit of the test display id's monitor, revision 1.2, with the log kept
+static int32_t clear_logged(dpcd_firmware& fw) {
+    dpcd_capabilities dpcd = {};
+    string::memcpy(dpcd.receiver, MONITOR_RECEIVER_CAPABILITIES, DATA_BYTES);
+
+    s_dpcd_log_bytes = 0;
+    log::set_backend(&DPCD_LOG_BACKEND);
+    int32_t rc = clear_link_status_changed(fw, TEST_DISPLAY_COMMON, TEST_DISPLAY_ID, dpcd);
+    log::set_backend(nullptr);
+
+    return rc;
+}
+
 // Has every request at `address` get `answer`
 static void script_every_request(dpcd_firmware& fw, uint32_t address, const failing_answer& answer) {
     fw.scripted_address = address;
@@ -489,10 +567,11 @@ static void script_every_request(dpcd_firmware& fw, uint32_t address, const fail
     fw.scripted_result = answer.result;
     fw.scripted_reply = answer.reply;
     fw.scripted_size = answer.reply_size;
+    fw.scripted_status = answer.status;
 }
 
-// The reads go to display common in NVIDIA's command and size as native reads of the byte at 0x0000E, then the extended
-// copy's 16 bytes, then the PHY repeaters' 8 bytes, each zeroed but for the fields it sends
+// Native reads of the byte at 0x0000E, then the extended copy's 16 bytes, then the PHY repeaters' 8 bytes go to display
+// common through `control_with_status` in NVIDIA's command and size, each zeroed but for the fields it sends
 TEST(nvidia_display_dpcd, reads_go_to_display_common_in_nvidias_layout_and_order) {
     dpcd_firmware earlier;
     dpcd_capabilities earlier_out = {};
@@ -518,6 +597,7 @@ TEST(nvidia_display_dpcd, reads_go_to_display_common_in_nvidias_layout_and_order
         EXPECT_EQ(fw.calls[index].address, EXTENDED_READS[index].address);
         EXPECT_EQ(fw.calls[index].size_field, EXTENDED_READS[index].size_field);
         EXPECT_TRUE(fw.calls[index].is_zero_but_sent);
+        EXPECT_TRUE(fw.calls[index].has_status);
     }
 }
 
@@ -727,7 +807,8 @@ TEST(nvidia_display_dpcd, deferrals_and_acknowledgments_of_some_of_the_bytes_sha
 }
 
 static constexpr failing_answer INTERVAL_FAILURES[] = {
-    {ERR_FIRMWARE, 0, 0, false, "display common refused display id 0x100's 1-byte AUX read at 0x0000E,"},
+    {ERR_FIRMWARE, 0, 1, false, "refused display id 0x100's 1-byte AUX read at 0x0000E (status 0xFFFF),"},
+    {ERR_FIRMWARE, 0, 1, true, "with the firmware's timeout (status 0x65) after 7 requests,", NVIDIA_ERR_TIMEOUT},
     {OK, NVIDIA_REPLY_NACK, 0, false, "a refusal from its monitor (reply type 1) after 1 request,"},
     {OK, NVIDIA_REPLY_DEFER, 0, true, "ask again later from its monitor (reply type 2) after 7 requests,"},
     {OK, NVIDIA_REPLY_TIMEOUT, 0, false, "no answer in time from its monitor (reply type 3) after 1 request,"},
@@ -769,7 +850,8 @@ TEST(nvidia_display_dpcd, the_field_is_read_from_0_when_the_byte_at_0x0000e_cann
 }
 
 static constexpr failing_answer FIELD_FAILURES[] = {
-    {ERR_FIRMWARE, 0, 0, false, "display common refused display id 0x100's 16-byte AUX read at 0x02200,"},
+    {ERR_FIRMWARE, 0, 16, false, "refused display id 0x100's 16-byte AUX read at 0x02200 (status 0xFFFF),"},
+    {ERR_FIRMWARE, 0, 16, true, "with the firmware's timeout (status 0x65) after 16 requests,", NVIDIA_ERR_TIMEOUT},
     {OK, NVIDIA_REPLY_NACK, 0, false, "a refusal from its monitor (reply type 1) after 1 request,"},
     {OK, NVIDIA_REPLY_DEFER, 0, true, "ask again later from its monitor (reply type 2) after 16 requests,"},
     {OK, NVIDIA_REPLY_TIMEOUT, 0, false, "no answer in time from its monitor (reply type 3) after 1 request,"},
@@ -837,8 +919,151 @@ TEST(nvidia_display_dpcd, a_field_read_in_a_later_pass_is_kept) {
     EXPECT_EQ(dpcd_log_count(NO_MORE_READ), 0u);
 }
 
+// The time to retry after that the firmware names when the tests have it fail a request
+static constexpr uint32_t RETRY_TIME_MS = 1;
+
+// A request the firmware fails naming a time to retry after is sent 3 times, NVIDIA's count, zeroed but for the fields
+// it sends, the read taking at least the 3 times named, and a refusal of the last is not asked again
+TEST(nvidia_display_dpcd, a_request_failed_with_a_retry_time_is_sent_3_times) {
+    dpcd_firmware fw;
+    fw.scripted_address = NVIDIA_TRAINING_AUX_RD_INTERVAL;
+    fw.scripted_requests = EVERY_REQUEST;
+    fw.scripted_result = ERR_FIRMWARE;
+    fw.scripted_retry_time_ms = RETRY_TIME_MS;
+
+    dpcd_capabilities out = {};
+    bool is_read = false;
+
+    uint64_t start_ns = clock::now_ns();
+    ASSERT_EQ(read_logged(fw, out, is_read), OK);
+    uint64_t elapsed_ns = clock::now_ns() - start_ns;
+
+    EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), NVIDIA_AUX_SENDS);
+    EXPECT_GE(elapsed_ns, NVIDIA_AUX_SENDS * RETRY_TIME_MS * NS_PER_MS);
+    for (uint32_t index = 0; index < NVIDIA_AUX_SENDS; index++) {
+        EXPECT_EQ(fw.calls[index].address, NVIDIA_TRAINING_AUX_RD_INTERVAL);
+        EXPECT_TRUE(fw.calls[index].is_zero_but_sent);
+        EXPECT_TRUE(fw.calls[index].has_status);
+    }
+
+    EXPECT_TRUE(is_read);
+    EXPECT_FALSE(out.is_extended);
+    EXPECT_TRUE(dpcd_log_contains("refused display id 0x100's 1-byte AUX read at 0x0000E (status 0xFFFF),"));
+}
+
+// A request the firmware answers after failing it naming a time to retry after is sent no more, its reply kept
+TEST(nvidia_display_dpcd, a_request_answered_after_a_retry_time_is_sent_no_more) {
+    dpcd_firmware fw;
+    fw.scripted_address = NVIDIA_EXTENDED_REV;
+    fw.scripted_requests = 1;
+    fw.scripted_result = ERR_FIRMWARE;
+    fw.scripted_retry_time_ms = RETRY_TIME_MS;
+
+    dpcd_capabilities out = {};
+    bool is_read = false;
+
+    ASSERT_EQ(read_logged(fw, out, is_read), OK);
+
+    EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), 1u);
+    EXPECT_EQ(fw.requests_at(NVIDIA_EXTENDED_REV), 2u);
+    EXPECT_TRUE(is_read);
+    EXPECT_EQ(s_dpcd_log_bytes, 0u);
+    EXPECT_EQ(string::memcmp(out.receiver, MONITOR_EXTENDED_RECEIVER_CAPABILITIES, DATA_BYTES), 0);
+}
+
+// A request the firmware answers naming a time to retry after is sent once and still spun through that time
+TEST(nvidia_display_dpcd, a_request_answered_with_a_retry_time_is_sent_once) {
+    dpcd_firmware fw;
+    fw.answered_retry_time_ms = RETRY_TIME_MS;
+
+    dpcd_capabilities out = {};
+    bool is_read = false;
+
+    uint64_t start_ns = clock::now_ns();
+    ASSERT_EQ(read_logged(fw, out, is_read), OK);
+    uint64_t elapsed_ns = clock::now_ns() - start_ns;
+
+    ASSERT_EQ(fw.call_count, 3u);
+    EXPECT_GE(elapsed_ns, fw.call_count * RETRY_TIME_MS * NS_PER_MS);
+    for (const expected_read& expected : EXTENDED_READS) {
+        EXPECT_EQ(fw.requests_at(expected.address), 1u);
+    }
+
+    EXPECT_TRUE(is_read);
+    EXPECT_EQ(s_dpcd_log_bytes, 0u);
+}
+
+// A request the firmware times out naming a time to retry after and then fails giving no status is taken as refused,
+// not timed out, so its read is logged as refused and not asked again
+TEST(nvidia_display_dpcd, a_request_failed_without_a_status_after_a_timeout_is_refused) {
+    dpcd_firmware fw;
+    fw.scripted_address = NVIDIA_TRAINING_AUX_RD_INTERVAL;
+    fw.scripted_requests = 1;
+    fw.scripted_result = ERR_FIRMWARE;
+    fw.scripted_status = NVIDIA_ERR_TIMEOUT;
+    fw.scripted_retry_time_ms = RETRY_TIME_MS;
+
+    fw.result = ERR_FIRMWARE;
+    fw.failing_call = 2;
+
+    dpcd_capabilities out = {};
+    bool is_read = false;
+
+    ASSERT_EQ(read_logged(fw, out, is_read), OK);
+
+    EXPECT_EQ(fw.calls[0].address, NVIDIA_TRAINING_AUX_RD_INTERVAL);
+    EXPECT_EQ(fw.calls[1].address, NVIDIA_TRAINING_AUX_RD_INTERVAL);
+    EXPECT_EQ(fw.calls[2].address, NVIDIA_DPCD_REV);
+    EXPECT_TRUE(dpcd_log_contains("display common refused display id 0x100's 1-byte AUX read at 0x0000E,"));
+    EXPECT_FALSE(dpcd_log_contains("firmware's timeout"));
+}
+
+// Timeouts share NVIDIA's count with deferrals whatever the firmware's copy holds, so a byte at 0x0000E timed out 3
+// times with copies acknowledging 2 bytes and then deferred ends its read at its 7th request
+TEST(nvidia_display_dpcd, timeouts_and_deferrals_share_a_count) {
+    dpcd_firmware fw;
+    fw.scripted_address = NVIDIA_TRAINING_AUX_RD_INTERVAL;
+    fw.scripted_requests = 3;
+    fw.scripted_result = ERR_FIRMWARE;
+    fw.scripted_status = NVIDIA_ERR_TIMEOUT;
+    fw.scripted_size = 2;
+
+    fw.later_requests = EVERY_REQUEST;
+    fw.later_reply = NVIDIA_REPLY_DEFER;
+
+    dpcd_capabilities out = {};
+    bool is_read = false;
+
+    ASSERT_EQ(read_logged(fw, out, is_read), OK);
+
+    EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), NVIDIA_INTERVAL_REQUESTS);
+    EXPECT_EQ(fw.requests_at(NVIDIA_DPCD_REV), 1u);
+    EXPECT_TRUE(is_read);
+    EXPECT_TRUE(dpcd_log_contains("ask again later from its monitor (reply type 2) after 7 requests,"));
+}
+
+// A request the firmware times out naming a time to retry after is sent 3 times for each of the 7 deferrals counted
+TEST(nvidia_display_dpcd, a_request_timed_out_with_a_retry_time_is_sent_3_times_for_each_deferral) {
+    dpcd_firmware fw;
+    fw.scripted_address = NVIDIA_TRAINING_AUX_RD_INTERVAL;
+    fw.scripted_requests = EVERY_REQUEST;
+    fw.scripted_result = ERR_FIRMWARE;
+    fw.scripted_status = NVIDIA_ERR_TIMEOUT;
+    fw.scripted_retry_time_ms = RETRY_TIME_MS;
+
+    dpcd_capabilities out = {};
+    bool is_read = false;
+
+    ASSERT_EQ(read_logged(fw, out, is_read), OK);
+
+    EXPECT_EQ(fw.requests_at(NVIDIA_TRAINING_AUX_RD_INTERVAL), NVIDIA_INTERVAL_REQUESTS * NVIDIA_AUX_SENDS);
+    EXPECT_TRUE(is_read);
+    EXPECT_TRUE(dpcd_log_contains("with the firmware's timeout (status 0x65) after 7 requests,"));
+}
+
 static constexpr failing_answer REPEATER_FAILURES[] = {
-    {ERR_FIRMWARE, 0, 0, false, "display common refused display id 0x100's 8-byte AUX read at 0xF0000,"},
+    {ERR_FIRMWARE, 0, 8, false, "refused display id 0x100's 8-byte AUX read at 0xF0000 (status 0xFFFF),"},
+    {ERR_FIRMWARE, 0, 8, true, "with the firmware's timeout (status 0x65) after 16 requests,", NVIDIA_ERR_TIMEOUT},
     {OK, NVIDIA_REPLY_NACK, 0, false, "a refusal from its monitor (reply type 1) after 1 request,"},
     {OK, NVIDIA_REPLY_DEFER, 0, true, "ask again later from its monitor (reply type 2) after 16 requests,"},
     {OK, NVIDIA_REPLY_I2CNACK, 0, false, I2C_REFUSAL_LOGGED},
@@ -947,10 +1172,11 @@ TEST(nvidia_display_dpcd, d3_is_one_native_write_of_2_at_0x00600_in_nvidias_layo
 }
 
 // A write with no acknowledgment of its one byte is sent, one request a try, until at least 40 tries and 2 ms have
-// passed, and the last answer is logged: the firmware's refusal, the monitor's reply or the reply size
+// passed, and the last answer is logged: the firmware's refusal or timeout, the monitor's reply or the reply size
 TEST(nvidia_display_dpcd, an_unacknowledged_d3_write_is_sent_for_40_tries_and_2_ms_then_logged) {
-    const failing_answer answers[] = {
-        {ERR_FIRMWARE, NVIDIA_REPLY_ACK, 0, true, "refused display id 0x100's AUX write of D3 at 0x00600 "},
+    static constexpr failing_answer answers[] = {
+        {ERR_FIRMWARE, NVIDIA_REPLY_ACK, 1, true, "display id 0x100's AUX write of D3 at 0x00600 (status 0xFFFF) on "},
+        {ERR_FIRMWARE, 0, 1, true, "0x00600 ended with the firmware's timeout (status 0x65) after", NVIDIA_ERR_TIMEOUT},
         {OK, NVIDIA_REPLY_NACK, 0, true, "0x00600 ended with a refusal from its monitor (reply type 1) after "},
         {OK, NVIDIA_REPLY_DEFER, 0, true, "ended with a request to ask again later from its monitor (reply type 2)"},
         {OK, NVIDIA_REPLY_ACK, 0, true, "acknowledged the AUX write of D3 at 0x00600 with a reply size of 0 bytes"},
@@ -1036,6 +1262,78 @@ TEST(nvidia_display_dpcd, other_errors_of_a_d3_write_end_its_tries_and_are_logge
         EXPECT_TRUE(dpcd_log_contains("nvidia: display id 0x100's AUX write of D3 at 0x00600 failed: "));
         EXPECT_FALSE(dpcd_log_contains("took D3"));
     }
+}
+
+static constexpr failing_answer CLEAR_FAILURES[] = {
+    {ERR_FIRMWARE, 0, 1, false, "clearing its link status changed bit at 0x02005 (status 0xFFFF)"},
+    {ERR_FIRMWARE, 0, 1, true, "the firmware's timeout (status 0x65) after 7 requests", NVIDIA_ERR_TIMEOUT},
+};
+
+// A write clearing the link status changed bit that the firmware refuses is sent once and one it times out 7 times,
+// NVIDIA's count of a deferred write, each logged with the firmware's status and leaving the bit
+TEST(nvidia_display_dpcd, an_uncleared_link_status_changed_bit_is_logged_with_the_firmwares_status) {
+    for (const failing_answer& answer : CLEAR_FAILURES) {
+        dpcd_firmware fw;
+        fw.link_service_interrupts = NVIDIA_LINK_STATUS_CHANGED;
+        fw.scripts_only_writes = true;
+        script_every_request(fw, NVIDIA_LINK_SERVICE_IRQ_VECTOR_ESI0, answer);
+
+        ASSERT_EQ(clear_logged(fw), OK);
+
+        uint32_t writes = answer.is_asked_again ? NVIDIA_CLEAR_REQUESTS : 1;
+        EXPECT_EQ(fw.call_count, 1 + writes);
+        EXPECT_TRUE(dpcd_log_contains(answer.logged));
+        EXPECT_FALSE(dpcd_log_contains("is cleared"));
+    }
+}
+
+// A write clearing the link status changed bit that the firmware times out twice and the monitor then acknowledges
+// clears the bit, the read of the byte and the 3 writes all at 0x02005
+TEST(nvidia_display_dpcd, a_clear_write_acknowledged_after_timeouts_clears_the_bit) {
+    dpcd_firmware fw;
+    fw.link_service_interrupts = NVIDIA_LINK_STATUS_CHANGED;
+    fw.scripts_only_writes = true;
+
+    fw.scripted_address = NVIDIA_LINK_SERVICE_IRQ_VECTOR_ESI0;
+    fw.scripted_requests = 3;
+    fw.scripted_result = ERR_FIRMWARE;
+    fw.scripted_status = NVIDIA_ERR_TIMEOUT;
+
+    ASSERT_EQ(clear_logged(fw), OK);
+
+    ASSERT_EQ(fw.call_count, 4u);
+    for (uint32_t index = 0; index < fw.call_count; index++) {
+        uint32_t command = index == 0 ? NVIDIA_NATIVE_READ : NVIDIA_NATIVE_WRITE;
+        EXPECT_EQ(fw.calls[index].aux_command, command);
+        EXPECT_EQ(fw.calls[index].address, NVIDIA_LINK_SERVICE_IRQ_VECTOR_ESI0);
+    }
+
+    EXPECT_TRUE(dpcd_log_contains("nvidia: display id 0x100's link status changed bit is cleared"));
+}
+
+// A D3 write the firmware refuses giving no status is logged as refused with no status
+TEST(nvidia_display_dpcd, a_d3_write_refused_without_a_status_is_logged_without_one) {
+    dpcd_firmware fw;
+    fw.result = ERR_FIRMWARE;
+
+    set_d3_logged(fw);
+
+    EXPECT_TRUE(dpcd_log_contains("refused display id 0x100's AUX write of D3 at 0x00600 on the last of "));
+    EXPECT_FALSE(dpcd_log_contains("(status"));
+}
+
+// A clear write the firmware refuses giving no status is logged as refused with no status
+TEST(nvidia_display_dpcd, a_clear_write_refused_without_a_status_is_logged_without_one) {
+    dpcd_firmware fw;
+    fw.link_service_interrupts = NVIDIA_LINK_STATUS_CHANGED;
+    fw.result = ERR_FIRMWARE;
+    fw.failing_call = 2;
+
+    ASSERT_EQ(clear_logged(fw), OK);
+
+    EXPECT_EQ(fw.call_count, 2u);
+    EXPECT_TRUE(dpcd_log_contains("refused display id 0x100's AUX write clearing its link status changed bit at "));
+    EXPECT_FALSE(dpcd_log_contains("(status"));
 }
 
 // The AUX control, its parameters' size, the most bytes a transaction carries, the read and write commands, the reply

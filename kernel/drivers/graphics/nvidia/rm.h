@@ -424,7 +424,7 @@ constexpr uint32_t CONTROL_DP_AUX = 0x731341;
 // NVIDIA's NV0073_CTRL_DP_AUXCH_MAX_DATA_SIZE, the most bytes one AUX transaction carries
 constexpr uint32_t AUX_DATA_MAX_BYTES = 16;
 
-// The parameters of `CONTROL_DP_AUX`, whose reply fills `data`, `size` and `reply`
+// The parameters of `CONTROL_DP_AUX`, whose reply fills `data`, `size`, `reply` and `retry_time_ms`
 struct aux_params {
     uint32_t subdevice_index; // NVIDIA's subDeviceInstance, as in `head_count_params`
     uint32_t display_id;      // a single bit
@@ -434,7 +434,7 @@ struct aux_params {
     uint8_t  data[AUX_DATA_MAX_BYTES];
     uint32_t size;            // sent as the bytes asked for less 1, and given back as the bytes the transaction moved
     uint32_t reply;           // NVIDIA's replyType, how the transaction ended
-    uint32_t retry_time_ms;   // NVIDIA's retryTimeMs
+    uint32_t retry_time_ms;   // NVIDIA's retryTimeMs, the wait before the request is sent again, 0 for none
 };
 
 // `aux_params::command` for a DPCD read, NVIDIA's AUXCH_CMD_TYPE_AUX (bit 3) with AUXCH_CMD_REQ_TYPE_READ (bits 1 to 0)

@@ -68,25 +68,25 @@ int32_t take_displayport_from_firmware(firmware& fw, rm::handle display_common);
  * capabilities, when `trains_phy_repeaters` is set, a failed read of which
  * means no PHY repeater. Each read sends display common's AUX channel control
  * a request, its parameters zeroed but for the display id, the command, the
- * address and the size, and sends a fresh one while the monitor defers it or
- * acknowledges it with some but not all of the bytes or with more than those.
- * A read stops at its 7th deferral or acknowledgment of too few bytes for the
- * first byte and its 16th for each of the others, NVIDIA's counts, or at as
- * many acknowledgments of too many bytes, and the reads are made again up to 3
- * more times while the field cannot be read. A read gives no bytes, and is
- * logged, when the firmware refuses a request with `ERR_FIRMWARE`, when the
- * monitor answers with anything but an acknowledgment of exactly the bytes
- * asked for or an answer it is asked again on, or when it stops at a count.
- * NVIDIA's library counts no acknowledgment of too many bytes, asking again
- * for as long as the monitor sends them, and asks again when the firmware's
- * status for a request is its timeout, which `firmware::control` gives as
- * `ERR_FIRMWARE`. It also reads the PHY repeaters' capabilities unless display
- * common reports that the GPU does not train PHY repeaters, sends each request
- * up to 3 times, sleeping as long as the firmware says after each, while the
- * firmware fails it and names a time to retry after, and before its first read
- * asks display common for the GPU's DisplayPort capabilities. The counts here
- * are the only retries of a deferred reply once
- * `take_displayport_from_firmware` has turned off the firmware's own.
+ * address and the size, and sends a fresh one while the firmware fails it with
+ * its timeout or the monitor defers it or acknowledges it with some but not
+ * all of the bytes or with more than those. A request the firmware fails
+ * naming a time to retry after is sent again once that time has passed, up to
+ * 3 sends in all, and the calling CPU spins through each time the firmware
+ * names. A read stops at its 7th firmware timeout, deferral or acknowledgment
+ * of too few bytes for the first byte and its 16th for each of the others,
+ * NVIDIA's counts, or at as many acknowledgments of too many bytes, and the
+ * reads are made again up to 3 more times while the field cannot be read. A
+ * read gives no bytes, and is logged, when the firmware fails a request with a
+ * status other than its timeout, when the monitor answers with anything but an
+ * acknowledgment of exactly the bytes asked for or an answer it is asked again
+ * on, or when it stops at a count. NVIDIA's library counts no acknowledgment
+ * of too many bytes, asking again for as long as the monitor sends them. It
+ * also reads the PHY repeaters' capabilities unless display common reports
+ * that the GPU does not train PHY repeaters, and before its first read asks
+ * display common for the GPU's DisplayPort capabilities. The counts here are
+ * the only retries of a deferred reply once `take_displayport_from_firmware`
+ * has turned off the firmware's own.
  * @param fw The driver's firmware.
  * @param display_common The handle `allocate_display_objects` gave display
  * common.
@@ -98,8 +98,8 @@ int32_t take_displayport_from_firmware(firmware& fw, rm::handle display_common);
  * otherwise, and left unchanged otherwise.
  * @param is_read Set when `out` holds the monitor's capabilities, and cleared
  * otherwise.
- * @return `OK`, or what `firmware::control` returns, logged as its doc
- * describes, for a request the firmware does not refuse with `ERR_FIRMWARE`.
+ * @return `OK`, or what `firmware::control_with_status` returns, logged as its
+ * doc describes, for a request the firmware does not fail with `ERR_FIRMWARE`.
  */
 int32_t read_output_dpcd(
     firmware& fw,
@@ -165,9 +165,10 @@ bool is_at_least_revision_1_1(const dpcd_capabilities& dpcd);
 /**
  * @brief Set a monitor to D3, the DPCD power state in which its receiver
  * sleeps, by an AUX write of 2 at 0x00600, sent again after any answer but an
- * acknowledgment of its byte until at least 2 ms and 40 tries have passed.
- * The outcome is logged, and a request failing other than with `ERR_FIRMWARE`
- * ends the tries.
+ * acknowledgment of its byte until at least 2 ms and 40 tries have passed. A
+ * try's request that the firmware fails naming a time to retry after is sent
+ * again as `read_output_dpcd` sends such a request again. The outcome is
+ * logged, and a request failing other than with `ERR_FIRMWARE` ends the tries.
  * @param display_id The monitor's display id, a single bit.
  * @return `OK`, also when no try is acknowledged, else the error of the
  * request that ended the tries.
@@ -207,9 +208,9 @@ uint8_t phy_repeater_count(const dpcd_capabilities& dpcd);
  * @param out Set to the status, its in-sync byte 0, when every read succeeds,
  * and left unchanged otherwise.
  * @param is_read Set to whether every read succeeded.
- * @return `OK`, including when a read fails, or what `firmware::control`
- * returns, logged as its doc describes, for an error other than
- * `ERR_FIRMWARE`.
+ * @return `OK`, including when a read fails, or what
+ * `firmware::control_with_status` returns, logged as its doc describes, for an
+ * error other than `ERR_FIRMWARE`.
  */
 int32_t read_link_status(
     firmware& fw,
@@ -226,10 +227,13 @@ int32_t read_link_status(
  * later says its link status changed, so it can pulse again for its next
  * change: read its link service interrupt byte at 0x02005, logged, and write
  * bit 1 back when it is set. A read or write left without an acknowledgment of
- * its byte, a refused one included, is logged and leaves the bit.
+ * its byte, a refused one included, is logged and leaves the bit. A request
+ * the firmware fails naming a time to retry after is sent again as
+ * `read_output_dpcd` sends such a request again.
  * @param dpcd The capabilities `read_output_dpcd` read.
  * @return `OK`, also after such a read or write, else the logged error of a
- * request that `firmware::control` fails other than with `ERR_FIRMWARE`.
+ * request that `firmware::control_with_status` fails other than with
+ * `ERR_FIRMWARE`.
  */
 int32_t clear_link_status_changed(
     firmware& fw,
