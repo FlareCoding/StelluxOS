@@ -46,7 +46,7 @@ _Static_assert(FILLED_PIXELS * FILLED_PIXELS * 4u == BUFFER_BYTES, "the fill wri
 
 typedef struct {
     int32_t   buffer;   // with both rights
-    int32_t   acquire;  // its point is reached once the picture is drawn
+    int32_t   acquire;  // its point is reached once the picture is drawn, or with GPU_TIMELINE_FAILED by a failed fill
     int32_t   release;  // stlxdm signals it once it no longer reads the picture
     uint32_t  id;       // stlxwin_gpu_attach's, 0 until attached
     uint32_t  width;
@@ -294,6 +294,49 @@ static void check_latch_waits_for_fill(int gpu, const struct gpu_info* info) {
 
     close_session(&s);
     free_picture(&pic);
+    if (fill_context >= 0) {
+        close(fill_context);
+    }
+
+    if (fill_start >= 0) {
+        close(fill_start);
+    }
+}
+
+// The fill waits for a point gputest reaches once it has waited up to three ticks for a release, so a release within
+// them comes before the fault and fails the check
+static void check_failed_fill_keeps_shown_picture(int gpu, const struct gpu_info* info) {
+    session s = NO_SESSION;
+    picture shown = NO_PICTURE;
+    picture faulted = NO_PICTURE;
+    int32_t fill_start = create_timeline(gpu);
+    bool ready = fill_start >= 0 && open_session(&s, 0) && make_picture(gpu, RED, &shown) &&
+                 make_picture(gpu, GREEN, &faulted) && attach(s.win, &shown) && attach(s.win, &faulted);
+
+    struct gpu_point start_point = { fill_start, 0, 1 };
+    struct gpu_point acquire_point = { faulted.acquire, 0, 1 };
+    bool was_shown = ready && show(gpu, &s, s.win, &shown, 1);
+    int32_t fill_context = was_shown ? submit_faulting_fill(gpu, info, &start_point, &acquire_point) : -1;
+    bool committed = fill_context >= 0 && commit(s.win, &faulted, 1, 0, 1);
+
+    bool released_early = committed && reaches(gpu, faulted.release, 1, THREE_TICKS_NS);
+
+    bool started = committed && signal_point(gpu, fill_start, 1);
+    bool fill_ended = started && reaches(gpu, faulted.acquire, 1, LOST_WAIT_NS);
+    bool released = fill_ended && reaches(gpu, faulted.release, 1, EVENT_WAIT_NS);
+    bool unframed = released && !frame_arrives(s.conn, s.win, THREE_TICKS_NS, NULL);
+
+    bool recommitted = unframed && commit(s.win, &faulted, 1, 0, 2);
+    bool released_again = recommitted && reaches(gpu, faulted.release, 2, EVENT_WAIT_NS);
+    bool kept = released_again && timeline_value(gpu, shown.release) == 0;
+    check(
+        "a GPU picture whose acquire point a faulting fill fails is released unshown, the window keeping its picture",
+        kept && !released_early
+    );
+
+    close_session(&s);
+    free_picture(&shown);
+    free_picture(&faulted);
     if (fill_context >= 0) {
         close(fill_context);
     }
@@ -829,6 +872,7 @@ void run_window_checks(int gpu, const struct gpu_info* info) {
 
     if (info->backend == GPU_BACKEND_NVIDIA) {
         check_latch_waits_for_fill(gpu, info);
+        check_failed_fill_keeps_shown_picture(gpu, info);
     }
 
     check_rule_break(gpu, "an attach of a buffer without GPU_RIGHT_READ disconnects", BREAK_BUFFER_RIGHTS);

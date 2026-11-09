@@ -39,7 +39,6 @@
 #define WAIT_NS         (100 * NS_PER_MS)
 #define WAITED_COPIES   1000000u
 #define HOLD_US         (20 * 1000)
-#define LOST_WAIT_NS    (GPU_SUBMIT_TIMEOUT_NS + 2 * NS_PER_SEC)
 #define STORM_METHODS   250000u
 #define REMAP_CONTEXTS  2
 #define REMAP_NS        (10 * NS_PER_SEC)
@@ -965,10 +964,12 @@ static int run(struct session* s, struct queue* q, const struct command_list* li
     return error != 0 ? error : wait_for(s, q, WAIT_NS);
 }
 
-int32_t submit_fill(
+// Submits `submit_fill`'s fill, but at `va`, first mapping `buffer` there unless it is -1
+static int32_t submit_fill_at(
     int fd,
     const struct gpu_info* info,
     int32_t buffer,
+    uint64_t va,
     uint32_t value,
     const struct gpu_point* wait,
     const struct gpu_point* signal
@@ -983,14 +984,14 @@ int32_t submit_fill(
 
     volatile uint32_t* command_words = map_for_cpu(commands);
     bool maps_commands = map(fd, context, commands, COMMANDS_VA, GPU_MAP_READ_ONLY) == 0;
-    bool maps_buffer = map(fd, context, buffer, SYSTEM_VA, 0) == 0;
+    bool buffer_ready = buffer < 0 || map(fd, context, buffer, va, 0) == 0;
 
     struct gpu_queue_args queue = {0};
     queue.context = context;
     queue.kind = GPU_QUEUE_COPY;
-    bool ready = command_words && maps_commands && maps_buffer && gpu_call(fd, GPU_QUEUE_CREATE, &queue) == 0;
+    bool ready = command_words && maps_commands && buffer_ready && gpu_call(fd, GPU_QUEUE_CREATE, &queue) == 0;
 
-    struct command_list list = fill_commands(info->nvidia.class_copy, SYSTEM_VA, value);
+    struct command_list list = fill_commands(info->nvidia.class_copy, va, value);
     for (uint32_t i = 0; ready && i < list.count; i++) {
         command_words[i] = list.words[i];
     }
@@ -1019,6 +1020,26 @@ int32_t submit_fill(
     }
 
     return context;
+}
+
+int32_t submit_fill(
+    int fd,
+    const struct gpu_info* info,
+    int32_t buffer,
+    uint32_t value,
+    const struct gpu_point* wait,
+    const struct gpu_point* signal
+) {
+    return submit_fill_at(fd, info, buffer, SYSTEM_VA, value, wait, signal);
+}
+
+int32_t submit_faulting_fill(
+    int fd,
+    const struct gpu_info* info,
+    const struct gpu_point* wait,
+    const struct gpu_point* signal
+) {
+    return submit_fill_at(fd, info, -1, UNMAPPED_VA, FILL_WORD, wait, signal);
 }
 
 // Whether `q`'s timeline reached its last point with GPU_TIMELINE_FAILED, false when the query fails

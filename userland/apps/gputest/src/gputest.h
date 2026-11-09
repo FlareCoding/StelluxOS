@@ -17,6 +17,7 @@
 #define BUFFER_BYTES MIB
 #define POLL_US      1000
 #define FILL_WORD    0xA5C3E10Fu
+#define LOST_WAIT_NS (GPU_SUBMIT_TIMEOUT_NS + 2 * NS_PER_SEC)
 
 // Prints a PASS or FAIL line for one check and counts it
 void check(const char* name, bool cond);
@@ -48,6 +49,15 @@ int32_t submit_fill(
     const struct gpu_info* info,
     int32_t buffer,
     uint32_t value,
+    const struct gpu_point* wait,
+    const struct gpu_point* signal
+);
+
+// Submits `submit_fill`'s fill, but at an address the fill's context never mapped, so the fill faults, its context is
+// lost and its end reaches `signal` with GPU_TIMELINE_FAILED. Returns the fill's context, or -1 when a call failed
+int32_t submit_faulting_fill(
+    int fd,
+    const struct gpu_info* info,
     const struct gpu_point* wait,
     const struct gpu_point* signal
 );
