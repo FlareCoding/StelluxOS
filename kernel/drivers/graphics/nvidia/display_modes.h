@@ -25,10 +25,12 @@ struct mode_candidates {
     uint8_t timings[edid::TIMINGS_MAX]; // distinct indices below the EDID's `timing_count`, the first `count` entries
 };
 
-// The modes an output lists while lit, in the order `list_modes` gives them
+// The modes an output lists while lit, in the order `list_modes` gives them, each with the first timing giving it
 struct mode_list {
     uint8_t           count;
-    gfxfb::gfxfb_mode modes[edid::TIMINGS_MAX]; // distinct modes, the first `count` entries
+    gfxfb::gfxfb_mode modes[edid::TIMINGS_MAX];          // distinct modes, the first `count` entries
+    uint8_t           timing_indices[edid::TIMINGS_MAX]; // each mode's timing's index in the EDID
+    edid::timing      timings[edid::TIMINGS_MAX];        // each mode's timing, at which its request lights the output
 };
 
 /**
@@ -60,14 +62,21 @@ gfxfb::gfxfb_mode mode_of(const edid::timing& timing);
 
 /**
  * @brief Give the modes of `count` timings in their order, each as `mode_of`
- * gives it, leaving out a mode an earlier timing gave, as for two timings
- * whose sync polarities alone differ.
+ * gives it with the timing and EDID index it came from, leaving out a mode an
+ * earlier timing gave, as for two timings whose sync polarities alone differ.
+ * @param indices Each timing's index in the EDID.
  * @param timings The timings to list.
  * @param count How many timings to list, which must be at most
  * `edid::TIMINGS_MAX`.
  * @param out Rewritten whole.
  */
-void list_modes(const edid::timing* timings, uint8_t count, mode_list& out);
+void list_modes(const uint8_t* indices, const edid::timing* timings, uint8_t count, mode_list& out);
+
+// Whether two modes have the same width, height and refresh
+bool is_same_mode(const gfxfb::gfxfb_mode& a, const gfxfb::gfxfb_mode& b);
+
+// Whether `list` holds `mode`, setting `rank` to its place when it does
+bool find_listed_mode(const mode_list& list, const gfxfb::gfxfb_mode& mode, uint8_t& rank);
 
 } // namespace drivers::nvidia
 

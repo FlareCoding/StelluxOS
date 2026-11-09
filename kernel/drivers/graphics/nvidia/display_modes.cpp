@@ -25,12 +25,15 @@ static bool may_be_mode(const edid::timing& timing, const displayport::link_fact
     return displayport::find_lowest_configuration(facts, timing, config);
 }
 
-// Whether `list` holds a mode of `mode`'s width, height and refresh
-static bool lists_mode(const mode_list& list, const gfxfb::gfxfb_mode& mode) {
+bool is_same_mode(const gfxfb::gfxfb_mode& a, const gfxfb::gfxfb_mode& b) {
+    bool is_same_size = a.width == b.width && a.height == b.height;
+    return is_same_size && a.refresh_millihertz == b.refresh_millihertz;
+}
+
+bool find_listed_mode(const mode_list& list, const gfxfb::gfxfb_mode& mode, uint8_t& rank) {
     for (uint8_t index = 0; index < list.count; index++) {
-        const gfxfb::gfxfb_mode& listed = list.modes[index];
-        bool is_same_size = listed.width == mode.width && listed.height == mode.height;
-        if (is_same_size && listed.refresh_millihertz == mode.refresh_millihertz) {
+        if (is_same_mode(list.modes[index], mode)) {
+            rank = index;
             return true;
         }
     }
@@ -80,15 +83,20 @@ gfxfb::gfxfb_mode mode_of(const edid::timing& timing) {
     };
 }
 
-void list_modes(const edid::timing* timings, uint8_t count, mode_list& out) {
+void list_modes(const uint8_t* indices, const edid::timing* timings, uint8_t count, mode_list& out) {
     string::memset(&out, 0, sizeof(out));
 
     for (uint8_t index = 0; index < count; index++) {
         gfxfb::gfxfb_mode mode = mode_of(timings[index]);
-        if (!lists_mode(out, mode)) {
-            out.modes[out.count] = mode;
-            out.count++;
+        uint8_t rank = 0;
+        if (find_listed_mode(out, mode, rank)) {
+            continue;
         }
+
+        out.modes[out.count] = mode;
+        out.timing_indices[out.count] = indices[index];
+        out.timings[out.count] = timings[index];
+        out.count++;
     }
 }
 
