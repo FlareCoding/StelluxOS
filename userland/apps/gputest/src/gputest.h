@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stlx/gpu_abi.h>
 #include <stlxwin/proto.h>
 
 #define PROTO_WINDOW_ID 1u  // the window id proto_create_window sends
@@ -40,6 +41,17 @@ void release(int32_t buffer, volatile uint32_t* words);
 // Returns a new context's handle, or -1
 int32_t create_context(int fd);
 
+// Fills a buffer's first BUFFER_BYTES with `value` from an NVIDIA copy queue once `wait` is reached, the fill's end
+// reaching `signal`. Returns the fill's context, or -1 when a call failed. Closing it before `signal` fails the fill
+int32_t submit_fill(
+    int fd,
+    const struct gpu_info* info,
+    int32_t buffer,
+    uint32_t value,
+    const struct gpu_point* wait,
+    const struct gpu_point* signal
+);
+
 // The window protocol spoken without libstlxwin, to break rules the library keeps or cannot check. Connects and runs
 // the handshake, filling `gpu_info` from the GPU_INFO the reply announces. Returns the socket or -1
 int proto_connect(swp_gpu_info* gpu_info);
@@ -59,8 +71,8 @@ bool proto_closes(int sock);
 // The window protocol's checks, which speak it over sockets of their own and need no GPU
 void run_proto_checks(void);
 
-// The window checks, which commit GPU buffers of the device `gpu`
-void run_window_checks(int gpu);
+// The window checks, which commit GPU buffers of the device `gpu`, with `info` filled by its GPU_GET_INFO
+void run_window_checks(int gpu, const struct gpu_info* info);
 
 // The resize check, run alone as `gputest resize`, since stlxdm cascades each window by how many it made before and the
 // card job drags at that place. Once its prompt prints, it waits two minutes for the job to drag its right edge

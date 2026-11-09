@@ -1,5 +1,5 @@
-// The window checks, each on a connection of its own, with pictures in mappable system memory the CPU draws and
-// signals. They speak through libstlxwin except to break a rule of stlxdm's, which the library keeps or cannot check
+// The window checks, each on a connection of its own, with pictures in mappable system memory whose acquire points
+// the CPU or a GPU fill reaches. They speak through libstlxwin except to break a rule the library keeps or cannot check
 
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -30,6 +30,10 @@
 #define GREEN          0x0040C040u
 #define BLUE           0x004060E0u
 
+// A square picture of this side holds BUFFER_BYTES, the bytes the copy engine's fill writes
+#define FILLED_PIXELS 512u
+_Static_assert(FILLED_PIXELS * FILLED_PIXELS * 4u == BUFFER_BYTES, "the fill writes exactly the picture's bytes");
+
 // Only the picture on screen waits for a tick to be released, so with more pictures the render thread waits less
 #define RENDER_FRAMES   10000u
 #define RENDER_PICTURES 12u
@@ -42,7 +46,7 @@
 
 typedef struct {
     int32_t   buffer;   // with both rights
-    int32_t   acquire;  // gputest signals it once the picture is drawn
+    int32_t   acquire;  // its point is reached once the picture is drawn
     int32_t   release;  // stlxdm signals it once it no longer reads the picture
     uint32_t  id;       // stlxwin_gpu_attach's, 0 until attached
     uint32_t  width;
@@ -219,13 +223,17 @@ static bool show(int gpu, session* s, stlxwin_window* win, picture* pic, uint64_
     return committed && frame_arrives(s->conn, win, EVENT_WAIT_NS, NULL);
 }
 
-static bool open_session(session* s, uint32_t window_flags) {
+static bool open_sized_session(session* s, uint32_t side, uint32_t window_flags) {
     s->conn = stlxwin_connect("gputest");
     if (s->conn) {
-        s->win = stlxwin_window_create(s->conn, PICTURE_PIXELS, PICTURE_PIXELS, "gputest", window_flags);
+        s->win = stlxwin_window_create(s->conn, side, side, "gputest", window_flags);
     }
 
     return s->win != NULL;
+}
+
+static bool open_session(session* s, uint32_t window_flags) {
+    return open_sized_session(s, PICTURE_PIXELS, window_flags);
 }
 
 // The library raises every release point it holds as it disconnects
@@ -255,6 +263,44 @@ static void check_latch_waits_for_acquire(int gpu) {
 
     close_session(&s);
     free_picture(&pic);
+}
+
+// The fill waits for a point gputest reaches once it has looked for a latch, so an early latch fails the check
+static void check_latch_waits_for_fill(int gpu, const struct gpu_info* info) {
+    session s = NO_SESSION;
+    picture pic = NO_PICTURE;
+    int32_t fill_start = create_timeline(gpu);
+    bool opened = fill_start >= 0 && open_sized_session(&s, FILLED_PIXELS, 0);
+    bool ready = opened && make_sized_picture(gpu, RED, FILLED_PIXELS, FILLED_PIXELS, &pic) && attach(s.win, &pic);
+
+    struct gpu_point start_point = { fill_start, 0, 1 };
+    struct gpu_point acquire_point = { pic.acquire, 0, 1 };
+    int32_t fill_context = ready ? submit_fill(gpu, info, pic.buffer, GREEN, &start_point, &acquire_point) : -1;
+    bool committed = fill_context >= 0 && commit(s.win, &pic, 1, 2, 3);
+
+    bool framed_early = committed && frame_arrives(s.conn, s.win, THREE_TICKS_NS, NULL);
+    bool latched_early = timeline_value(gpu, pic.release) != 0;
+    bool unfilled = committed && reads_as(pic.pixels, RED);
+
+    bool started = unfilled && signal_point(gpu, fill_start, 1);
+    bool framed = started && frame_arrives(s.conn, s.win, EVENT_WAIT_NS, NULL);
+    bool latched = timeline_value(gpu, pic.release) == 2;
+    bool filled = framed && reads_as(pic.pixels, GREEN);
+    check(
+        "a GPU picture latches only once its acquire point is reached by a copy engine's fill of it, "
+        "its latch point reached by its FRAME_DONE",
+        framed && !framed_early && !latched_early && latched && filled
+    );
+
+    close_session(&s);
+    free_picture(&pic);
+    if (fill_context >= 0) {
+        close(fill_context);
+    }
+
+    if (fill_start >= 0) {
+        close(fill_start);
+    }
 }
 
 static void check_next_picture_releases(int gpu) {
@@ -774,12 +820,16 @@ void run_resize_check(int gpu) {
     free_picture(&resized);
 }
 
-void run_window_checks(int gpu) {
+void run_window_checks(int gpu, const struct gpu_info* info) {
     check_latch_waits_for_acquire(gpu);
     check_next_picture_releases(gpu);
     check_replaced_picture_releases(gpu);
     check_unsignaled_picture_waits(gpu);
     check_detached_picture_stays(gpu);
+
+    if (info->backend == GPU_BACKEND_NVIDIA) {
+        check_latch_waits_for_fill(gpu, info);
+    }
 
     check_rule_break(gpu, "an attach of a buffer without GPU_RIGHT_READ disconnects", BREAK_BUFFER_RIGHTS);
     check_rule_break(gpu, "an attach with a timeline in the buffer's place disconnects", BREAK_BUFFER_TYPE);
