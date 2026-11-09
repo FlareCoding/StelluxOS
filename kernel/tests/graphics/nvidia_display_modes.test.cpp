@@ -297,7 +297,7 @@ static void list_candidates(const mode_candidates& candidates, mode_list& out) {
         ranked[rank] = s_monitor.timings[candidates.timings[rank]];
     }
 
-    list_modes(ranked, candidates.count, out);
+    list_modes(candidates.timings, ranked, candidates.count, out);
 }
 
 static void expect_mode(const gfxfb::gfxfb_mode& actual, uint32_t width, uint32_t height, uint64_t refresh_millihertz) {
@@ -349,13 +349,35 @@ TEST(nvidia_display_modes, lists_once_the_mode_of_timings_whose_sync_alone_diffe
     EXPECT_EQ(list.modes[3].width, 0u);
 }
 
+// Each listed mode keeps the first ranked timing giving it and that timing's EDID index, so the twin whose sync alone
+// differs, ranked after it, is never the timing a request for that mode lights its output at
+TEST(nvidia_display_modes, keeps_each_listed_modes_first_timing_and_its_edid_index) {
+    set_timings(TIED_TIMINGS, 4, false);
+    mode_candidates candidates = {};
+    find_mode_candidates(s_monitor, RTX_3080_TO_IOC_25G2S, false, candidates);
+
+    mode_list list = {};
+    list_candidates(candidates, list);
+
+    ASSERT_EQ(list.count, 3u);
+    for (uint8_t index = 0; index < list.count; index++) {
+        EXPECT_EQ(list.timing_indices[index], candidates.timings[index]);
+        EXPECT_TRUE(list.timings[index] == s_monitor.timings[candidates.timings[index]]);
+    }
+
+    EXPECT_FALSE(list.timings[0] == TIED_TIMINGS[3]);
+}
+
 TEST(nvidia_display_modes, lists_no_mode_for_no_timing) {
+    static constexpr uint8_t INDICES[] = {0};
     mode_list list = {};
     list.count = 1;
     list.modes[0] = mode_of(IOC_25G2S_TIMINGS[0]);
+    list.timings[0] = IOC_25G2S_TIMINGS[0];
 
-    list_modes(IOC_25G2S_TIMINGS, 0, list);
+    list_modes(INDICES, IOC_25G2S_TIMINGS, 0, list);
 
     EXPECT_EQ(list.count, 0u);
     EXPECT_EQ(list.modes[0].width, 0u);
+    EXPECT_EQ(list.timings[0].width, 0u);
 }

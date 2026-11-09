@@ -226,7 +226,7 @@ static void keep_output_modes(
         modes.timings[rank] = monitor.timings[candidates.timings[rank]];
     }
 
-    list_modes(modes.timings, modes.count, modes.listed);
+    list_modes(modes.indices, modes.timings, modes.count, modes.listed);
 
     // A candidate's timing always has a configuration, as `find_mode_candidates` keeps only those
     uint8_t timing_index = candidates.timings[0];
@@ -1837,17 +1837,18 @@ static int32_t bind_for_light(
     return OK;
 }
 
-// Takes down the userland mapping of `head`'s base buffer and undoes `made`'s bindings, last first, then releases its
-// memory and frees its record unless an undoing fails, as the display engine may read the memory through a binding left
+// Unmaps `head`'s base buffer from userland and undoes `made`'s bindings, last first, then releases and frees it unless
+// an undo fails, as a binding left may still be read. A mode request's lent buffer keeps all but those bindings
 static void drop_base_buffer(
     sync::spinlock& lock,
     instance_memory& instances,
     video_memory& memory,
     engine_head& head,
-    const light_bindings& made
+    const light_bindings& made,
+    bool is_lent
 ) {
     scanout_buffer& base = *head.base_buffer;
-    if (base.size != 0) {
+    if (!is_lent && base.size != 0) {
         memory.unmap_for_cpu(base.range);
         static_cast<gfxfb::buffer&>(base) = {};
     }
@@ -1871,9 +1872,17 @@ static void drop_base_buffer(
         mark_window_bound(lock, *made.masks[index - 1], window, false);
     }
 
-    memory.release(base.range);
-    heap::ufree_delete(head.base_buffer);
     head.base_buffer = nullptr;
+    if (is_lent) {
+        log::info(
+            "nvidia: output %u gives back the base buffer its request lent, the light's bindings of it undone",
+            head.output
+        );
+        return;
+    }
+
+    memory.release(base.range);
+    heap::ufree_delete(&base);
     log::info("nvidia: output %u's base buffer is unbound and released", head.output);
 }
 
@@ -1913,37 +1922,67 @@ int32_t display_engine::prepare_light(
         head.window_queue = new (head.window_queue_bytes) display_channel(window_push_buffer, window_area);
     }
 
-    auto* base = heap::ualloc_new<scanout_buffer>();
-    if (base == nullptr) {
-        log::error(
-            "nvidia: output %u has no base buffer, as the unprivileged heap has no room for its record",
-            light.output
-        );
-        return OK;
-    }
-
-    int32_t rc = set_up_base_buffer(m_memory, light, base->range);
-    if (rc == OK && base->range.size != 0) {
-        rc = bind_base_buffer(m_firmware, m_instance_memory, m_memory, light, base->range, base->context_dma);
-    }
-
-    if (rc != OK || base->range.size == 0) {
-        heap::ufree_delete(base);
-        return rc;
-    }
-
-    base->task_operation.engine = this;
-    base->task_operation.buffer = base;
-    head.base_buffer = base;
-
     light_bindings made = {};
-    base->bound_windows |= 1u << light.window;
-    record_binding(made, base->context_dma, light.window, &base->bound_windows);
+    bool is_lent = m_lent_base != nullptr;
+    scanout_buffer* base = m_lent_base;
+    int32_t rc = OK;
+    if (is_lent) {
+        head.base_buffer = base;
+        bool lacks_binding = (base->bound_windows & (1u << light.window)) == 0;
+        if (lacks_binding) {
+            rc = bind_for_light(
+                m_output_lock,
+                m_instance_memory,
+                base->context_dma,
+                picture_memory(*base),
+                light.window,
+                &base->bound_windows,
+                made
+            );
+        }
 
-    rc = map_base_buffer_for_userland(m_memory, light, base->range, *base);
-    if (rc != OK || base->size == 0) {
-        drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made);
-        return rc;
+        if (rc != OK) {
+            log::error(
+                "nvidia: binding the base buffer output %u's request lent to window %u's channel failed: %d",
+                light.output,
+                light.window,
+                rc
+            );
+            drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made, true);
+            return rc == ERR_NO_MEMORY ? OK : rc;
+        }
+    } else {
+        base = heap::ualloc_new<scanout_buffer>();
+        if (base == nullptr) {
+            log::error(
+                "nvidia: output %u has no base buffer, as the unprivileged heap has no room for its record",
+                light.output
+            );
+            return OK;
+        }
+
+        rc = set_up_base_buffer(m_memory, light, base->range);
+        if (rc == OK && base->range.size != 0) {
+            rc = bind_base_buffer(m_firmware, m_instance_memory, m_memory, light, base->range, base->context_dma);
+        }
+
+        if (rc != OK || base->range.size == 0) {
+            heap::ufree_delete(base);
+            return rc;
+        }
+
+        base->task_operation.engine = this;
+        base->task_operation.buffer = base;
+        head.base_buffer = base;
+
+        base->bound_windows |= 1u << light.window;
+        record_binding(made, base->context_dma, light.window, &base->bound_windows);
+
+        rc = map_base_buffer_for_userland(m_memory, light, base->range, *base);
+        if (rc != OK || base->size == 0) {
+            drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made, false);
+            return rc;
+        }
     }
 
     head.mode = mode_of(light.timing);
@@ -1965,7 +2004,7 @@ int32_t display_engine::prepare_light(
         }
 
         if (rc != OK || m_look_up_table.size == 0) {
-            drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made);
+            drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made, is_lent);
             return rc;
         }
 
@@ -1995,15 +2034,18 @@ int32_t display_engine::prepare_light(
     // channel once, a binding made for a head's earlier light staying until a failed light of that head undoes it
     for (uint8_t index = 0; rc == OK && index < prepared.count; index++) {
         engine_head& other = m_heads[prepared.lights[index].head];
-        rc = bind_for_light(
-            m_output_lock,
-            m_instance_memory,
-            base->context_dma,
-            picture_memory(*base),
-            other.window,
-            &base->bound_windows,
-            made
-        );
+        bool lacks_own_binding = (base->bound_windows & (1u << other.window)) == 0;
+        if (lacks_own_binding) {
+            rc = bind_for_light(
+                m_output_lock,
+                m_instance_memory,
+                base->context_dma,
+                picture_memory(*base),
+                other.window,
+                &base->bound_windows,
+                made
+            );
+        }
 
         scanout_buffer& other_base = *other.base_buffer;
         bool lacks_binding = (other_base.bound_windows & window_bit) == 0;
@@ -2040,7 +2082,7 @@ int32_t display_engine::prepare_light(
     }
 
     if (rc != OK) {
-        drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made);
+        drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made, is_lent);
         return rc == ERR_NO_MEMORY ? OK : rc;
     }
 
@@ -2388,13 +2430,19 @@ void display_engine::drop_prepared_light(const output_light& dropped) {
     scanout_buffer& base = *head.base_buffer;
     light_bindings made = {};
     uint32_t window_bit = 1u << dropped.window;
-    record_binding(made, base.context_dma, dropped.window, &base.bound_windows);
+
+    bool is_lent = &base == m_lent_base;
+    uint32_t dropped_windows = is_lent ? base.bound_windows & ~m_lent_windows : base.bound_windows;
+    if ((dropped_windows & window_bit) != 0) {
+        record_binding(made, base.context_dma, dropped.window, &base.bound_windows);
+    }
+
     if ((m_look_up_table_windows & window_bit) != 0) {
         record_binding(made, m_look_up_table_context_dma, dropped.window, &m_look_up_table_windows);
     }
 
     for (uint8_t window = 0; window < DISPLAY_WINDOWS_MAX; window++) {
-        bool binds_other_window = window != dropped.window && (base.bound_windows & (1u << window)) != 0;
+        bool binds_other_window = window != dropped.window && (dropped_windows & (1u << window)) != 0;
         if (binds_other_window) {
             record_binding(made, base.context_dma, window, &base.bound_windows);
         }
@@ -2408,7 +2456,7 @@ void display_engine::drop_prepared_light(const output_light& dropped) {
         }
     }
 
-    drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made);
+    drop_base_buffer(m_output_lock, m_instance_memory, m_memory, head, made, is_lent);
 }
 
 int32_t display_engine::send_notified_update(uint32_t window_interlocks, uint32_t& status_word) {
@@ -3156,17 +3204,16 @@ void display_engine::check_lit_link(uint8_t output) {
     }
 }
 
-void display_engine::relight_at_lit_timing(uint8_t output, const engine_head& head) {
-    uint32_t modes_bytes = sizeof(output_modes);
-    auto* modes = static_cast<output_modes*>(heap::uzalloc(modes_bytes));
+// A one-timing `output_modes` on the unprivileged heap for relighting lit `head` at `timing`, or null for no room
+static output_modes* new_timing_modes(const engine_head& head, uint8_t timing_index, const edid::timing& timing) {
+    auto* modes = static_cast<output_modes*>(heap::uzalloc(sizeof(output_modes)));
     if (modes == nullptr) {
-        log::error("nvidia: output %u stays lit, as allocating %u bytes for its timing failed", output, modes_bytes);
-        return;
+        return nullptr;
     }
 
     modes->count = 1;
-    modes->indices[0] = head.timing_index;
-    modes->timings[0] = head.timing;
+    modes->indices[0] = timing_index;
+    modes->timings[0] = timing;
 
     // The list stays whole, not shrunk to the one timing tried, as the light reuses the EDID and DPCD capabilities the
     // output was lit with
@@ -3174,6 +3221,17 @@ void display_engine::relight_at_lit_timing(uint8_t output, const engine_head& he
     string::memcpy(&modes->dpcd, &head.lit_dpcd, sizeof(modes->dpcd));
     string::memcpy(&modes->edid, &head.lit_edid, sizeof(modes->edid));
     modes->monitor = head.lit_monitor;
+
+    return modes;
+}
+
+void display_engine::relight_at_lit_timing(uint8_t output, const engine_head& head) {
+    output_modes* modes = new_timing_modes(head, head.timing_index, head.timing);
+    if (modes == nullptr) {
+        uint32_t modes_bytes = sizeof(output_modes);
+        log::error("nvidia: output %u stays lit, as allocating %u bytes for its timing failed", output, modes_bytes);
+        return;
+    }
 
     relight_output(output, *modes);
     heap::ufree(modes);
@@ -3607,7 +3665,7 @@ bool display_engine::light_output(uint8_t output, const output_modes& modes) {
     });
 
     if (head == NO_HEAD) {
-        log::info("nvidia: output %u stays dark, as no head is left for it", output);
+        log::info("nvidia: output %u's light fails, as no head is left for it", output);
         return false;
     }
 
@@ -3618,7 +3676,7 @@ bool display_engine::light_output(uint8_t output, const output_modes& modes) {
     int32_t rc =
         choose_light(m_firmware, m_objects.bandwidth_check, output, modes, lit, head, window, light, is_chosen);
     if (rc == ERR_NO_MEMORY) {
-        log::error("nvidia: output %u stays dark, as the bandwidth check's request cannot be allocated", output);
+        log::error("nvidia: output %u's light fails, as the bandwidth check's request cannot be allocated", output);
         return false;
     }
 
@@ -3629,7 +3687,7 @@ bool display_engine::light_output(uint8_t output, const output_modes& modes) {
     }
 
     if (!is_chosen) {
-        log::info("nvidia: output %u stays dark, as every one of its modes is refused", output);
+        log::info("nvidia: output %u's light fails, as every one of its modes is refused", output);
         return false;
     }
 
@@ -3681,7 +3739,7 @@ bool display_engine::light_output(uint8_t output, const output_modes& modes) {
 
     if (!is_prepared) {
         log::error(
-            "nvidia: output %u stays dark, as its window channel or a surface it scans out is not set up",
+            "nvidia: output %u's light fails, as its window channel or a surface it scans out is not set up",
             output
         );
         return false;
@@ -3757,7 +3815,7 @@ bool display_engine::run_light(const output_light& light, const dpcd_capabilitie
     int32_t rc = send_display_change(m_firmware, display_common, started_ids, rm::DISPLAY_CHANGE_START);
     if (rc == ERR_FIRMWARE) {
         log::error(
-            "nvidia: display common refused the start of output %u's light naming %s 0x%X, so the output stays dark",
+            "nvidia: display common refused the start of output %u's light naming %s 0x%X, so the light fails",
             light.output,
             display_ids_noun(started_ids),
             started_ids
@@ -3841,7 +3899,7 @@ bool display_engine::run_light(const output_light& light, const dpcd_capabilitie
 
     if (!is_set_up) {
         log::error(
-            "nvidia: display id 0x%X's link is not set up, so output %u stays dark",
+            "nvidia: display id 0x%X's link is not set up, so output %u's light fails",
             output.display_id,
             light.output
         );
@@ -4743,6 +4801,325 @@ void display_engine::release_scanout_buffer(operation& op) {
     }
 
     free_scanout_buffer(engine.m_memory, buffer);
+}
+
+int32_t display_engine::set_mode(uint32_t output, const gfxfb::gfxfb_mode& mode) {
+    auto* request = heap::ualloc_new<mode_operation>();
+    if (request == nullptr) {
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    // A released engine's task may no longer serve, so nothing is queued once it is
+    bool is_released = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        is_released = m_is_released;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (is_released || m_is_display_failed.load_acquire()) {
+        heap::ufree_delete(request);
+        return gfxfb::ERR_DEVICE;
+    }
+
+    request->work = serve_mode_request;
+    request->engine = this;
+    request->output = static_cast<uint8_t>(output);
+    request->mode = mode;
+
+    int32_t rc = gfxfb::OK;
+    RUN_ELEVATED(rc = m_operations.run_on_task(*request));
+    heap::ufree_delete(request);
+
+    return rc;
+}
+
+void display_engine::serve_mode_request(operation& op) {
+    auto& request = static_cast<mode_operation&>(op);
+    op.result = request.engine->request_mode(request.output, request.mode);
+}
+
+int32_t display_engine::request_mode(uint8_t output, const gfxfb::gfxfb_mode& mode) {
+    bool is_released = false;
+    engine_head* head = nullptr;
+    bool is_closing = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        is_released = m_is_released;
+        head = find_lit_head(output);
+        is_closing = head != nullptr && head->is_closing;
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (is_released || m_is_display_failed.load_acquire() || m_failed.is_set()) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    if (head == nullptr || is_closing) {
+        return gfxfb::ERR_DARK;
+    }
+
+    uint8_t rank = 0;
+    if (!find_listed_mode(head->listed, mode, rank)) {
+        return gfxfb::ERR_INVALID_ARG;
+    }
+
+    if (is_same_mode(head->mode, mode)) {
+        return gfxfb::OK;
+    }
+
+    uint8_t timing_index = head->listed.timing_indices[rank];
+    uint64_t millihertz = mode.refresh_millihertz;
+    log::info(
+        "nvidia: output %u is asked for %u by %u at %lu.%03lu Hz, its EDID's timing %u",
+        output,
+        mode.width,
+        mode.height,
+        millihertz / 1000,
+        millihertz % 1000,
+        timing_index
+    );
+
+    output_modes* modes = new_timing_modes(*head, timing_index, head->listed.timings[rank]);
+    if (modes == nullptr) {
+        uint32_t modes_bytes = sizeof(output_modes);
+        log::error(
+            "nvidia: output %u stays at its mode, as allocating %u bytes for the requested timing failed",
+            output,
+            modes_bytes
+        );
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    uint8_t previous_index = head->timing_index;
+    edid::timing previous = head->timing;
+    scanout_buffer* base = nullptr;
+    int32_t rc = check_requested_timing(output, *modes);
+    if (rc == gfxfb::OK) {
+        rc = make_requested_base_buffer(output, modes->timings[0], base);
+    }
+
+    if (rc == gfxfb::OK) {
+        rc = relight_at_requested_timing(output, *modes, base, previous_index, previous);
+    }
+
+    heap::ufree(modes);
+
+    return rc;
+}
+
+int32_t display_engine::check_requested_timing(uint8_t output, const output_modes& modes) {
+    light_set others = {};
+    uint8_t head = NO_HEAD;
+    uint8_t window = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        for (uint8_t index = 0; index < m_display_heads.count; index++) {
+            const engine_head& state = m_heads[index];
+            bool is_requested = state.is_lit && state.output == output;
+            if (is_requested) {
+                head = index;
+                window = state.window;
+            } else if (state.is_lit) {
+                output_light& other = others.lights[others.count++];
+                other.output = state.output;
+                other.timing = state.timing;
+                other.head = index;
+                other.window = state.window;
+            }
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    output_light light = {};
+    bool is_chosen = false;
+    int32_t rc =
+        choose_light(m_firmware, m_objects.bandwidth_check, output, modes, others, head, window, light, is_chosen);
+    if (rc == ERR_NO_MEMORY) {
+        log::error("nvidia: output %u stays at its mode, as the bandwidth check's request cannot be allocated", output);
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    if (rc != OK) {
+        log::error(
+            "nvidia: asking the bandwidth check about output %u's requested mode failed: %d, so the display failed",
+            output,
+            rc
+        );
+        fail_display();
+        return gfxfb::ERR_DEVICE;
+    }
+
+    if (!is_chosen) {
+        log::info("nvidia: output %u stays at its mode, as the bandwidth check refuses the requested one", output);
+        return gfxfb::ERR_REFUSED;
+    }
+
+    return gfxfb::OK;
+}
+
+int32_t display_engine::make_requested_base_buffer(uint8_t output, const edid::timing& timing, scanout_buffer*& out) {
+    auto* base = heap::ualloc_new<scanout_buffer>();
+    if (base == nullptr) {
+        log::error(
+            "nvidia: output %u stays at its mode, as the unprivileged heap has no room for a new base buffer's record",
+            output
+        );
+        return gfxfb::ERR_NO_MEMORY;
+    }
+
+    int32_t rc = set_up_scanout_buffer(m_memory, timing.width, timing.height, *base);
+    if (rc == gfxfb::ERR_NO_MEMORY) {
+        log::error(
+            "nvidia: output %u stays at its mode, as no room is left to allocate or map its new base buffer",
+            output
+        );
+    } else if (rc != gfxfb::OK) {
+        log::error(
+            "nvidia: output %u stays at its mode, as allocating or mapping its new base buffer was refused",
+            output
+        );
+    }
+
+    if (rc != gfxfb::OK) {
+        heap::ufree_delete(base);
+        return rc;
+    }
+
+    base->task_operation.engine = this;
+    base->task_operation.buffer = base;
+
+    uint32_t lit_windows = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        for (const engine_head& head : m_heads) {
+            if (head.is_lit) {
+                lit_windows |= 1u << head.window;
+            }
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    base->context_dma = m_firmware.new_handle();
+    context_dma_memory memory = picture_memory(*base);
+    while (base->bound_windows != lit_windows) {
+        uint8_t window = static_cast<uint8_t>(__builtin_ctz(lit_windows & ~base->bound_windows));
+        rc = m_instance_memory.bind(base->context_dma, window_channel_number(window), memory);
+        if (rc != OK) {
+            log::error(
+                "nvidia: output %u stays at its mode, as binding its new base buffer to window %u's channel failed: %d",
+                output,
+                window,
+                rc
+            );
+            break;
+        }
+
+        base->bound_windows |= 1u << window;
+    }
+
+    if (rc == OK) {
+        log::info(
+            "nvidia: output %u's new base buffer of %ux%u pixels at 0x%lX in video memory is bound as context DMA 0x%X "
+            "to the channels of lit windows 0x%X",
+            output,
+            base->width,
+            base->height,
+            memory.address,
+            base->context_dma,
+            lit_windows
+        );
+        out = base;
+        return gfxfb::OK;
+    }
+
+    if (m_failed.is_set()) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    // A buffer whose bindings could not all be undone stays named by a channel, so it is kept for good
+    undo_bindings(m_instance_memory, *base);
+    if (base->bound_windows == 0) {
+        m_memory.unmap_for_cpu(base->range);
+        m_memory.release(base->range);
+        heap::ufree_delete(base);
+    }
+
+    return rc == ERR_NO_MEMORY ? gfxfb::ERR_NO_MEMORY : gfxfb::ERR_REFUSED;
+}
+
+int32_t display_engine::relight_at_requested_timing(
+    uint8_t output,
+    output_modes& modes,
+    scanout_buffer* base,
+    uint8_t previous_index,
+    const edid::timing& previous
+) {
+    log::info("nvidia: output %u is taken down to be relit at its requested mode", output);
+    take_down_output(output, true);
+    bool is_taken_down = !m_is_display_failed.load_acquire();
+    bool is_lit = is_taken_down && light_at(output, modes, base);
+
+    // Once the display or the GPU failed, a head may still scan `base`, so it is kept for good
+    bool has_failed = m_is_display_failed.load_acquire() || m_failed.is_set();
+    bool falls_back = is_taken_down && !is_lit && !has_failed;
+    if (falls_back) {
+        release_unheld_base_buffer(base);
+        modes.indices[0] = previous_index;
+        modes.timings[0] = previous;
+        log::info(
+            "nvidia: output %u falls back to its EDID's timing %u, the one it had, as its requested mode did not light",
+            output,
+            previous_index
+        );
+        is_lit = light_output(output, modes);
+    }
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        m_relighting_outputs &= ~(1u << output);
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    // A take-down failing the display reports nothing, and gfxfb never reads an output past its count
+    bool is_reported_dark = is_taken_down && !is_lit && output < m_output_count;
+    if (is_reported_dark) {
+        RUN_ELEVATED(m_output_changed(this, output));
+    }
+
+    if (m_is_display_failed.load_acquire() || m_failed.is_set()) {
+        return gfxfb::ERR_DEVICE;
+    }
+
+    return falls_back ? gfxfb::ERR_REFUSED : gfxfb::OK;
+}
+
+bool display_engine::light_at(uint8_t output, const output_modes& modes, scanout_buffer* base) {
+    m_lent_base = base;
+    m_lent_windows = base->bound_windows;
+    bool is_lit = light_output(output, modes);
+    m_lent_base = nullptr;
+    m_lent_windows = 0;
+
+    return is_lit;
+}
+
+void display_engine::release_unheld_base_buffer(scanout_buffer* base) {
+    bool is_held = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        for (const engine_head& head : m_heads) {
+            is_held = is_held || head.base_buffer == base;
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    if (!is_held) {
+        release_scanout_buffer(base->task_operation);
+    }
 }
 
 int32_t display_engine::set_cursor(uint32_t output, const gfxfb::cursor_image& image) {

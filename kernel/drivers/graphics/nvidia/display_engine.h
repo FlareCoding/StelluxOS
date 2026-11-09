@@ -67,6 +67,13 @@ struct event_record : operation {
     display_engine* engine;
 };
 
+// A mode request, on the unprivileged heap while `set_mode` waits for the driver task to serve it
+struct mode_operation : operation {
+    display_engine*   engine;
+    uint8_t           output;
+    gfxfb::gfxfb_mode mode;
+};
+
 /**
  * A buffer `create_buffer()` made, or an output's base buffer the light made,
  * in `vram_use::scanout` video memory and mapped for userland at the buffer's
@@ -193,12 +200,13 @@ struct engine_head {
  * and a cursor of up to 256 by 256 pixels, 0 by 0 when its light found none,
  * and every other output reads dark. A lit output lists the modes of the
  * timings `find_mode_candidates` ranks from the EDID and DPCD capabilities it
- * was lit with, each mode once, and the engine refuses every mode request. One
- * spinlock, the output lock, guards every head's state and is never held
- * across a wait. After `release`, every output reads dark and lists no mode,
- * and `flush()`, `present()`, `create_buffer()`, `import_buffer()` and the
- * cursor calls fail, while gfxfb keeps the base buffers, which BAR1 stops
- * translating once `detach()` restores BAR1's block register.
+ * was lit with, each mode once, and a request for one of them relights it at
+ * the first of those timings giving that mode. One spinlock, the output lock,
+ * guards every head's state and is never held across a wait. After `release`,
+ * every output reads dark and lists no mode, and `flush()`, `present()`,
+ * `create_buffer()`, `import_buffer()`, `set_mode()` and the cursor calls
+ * fail, while gfxfb keeps the base buffers, which BAR1 stops translating once
+ * `detach()` restores BAR1's block register.
  *
  * From `set_up` until `release` it serves hotplug and short pulse events on the
  * driver task. A hotplug, unless the display or the GPU failed, updates the
@@ -257,15 +265,15 @@ public:
 
     /**
      * @brief Stop taking the firmware's events, then release each cursor
-     * channel, then each window channel, then the core channel, then the
-     * event objects, then the display's objects, each whatever the releases
-     * before it return, and a second call releases nothing. From the start,
-     * every output reads dark, `flush()`, `present()`, `create_buffer()`,
-     * `import_buffer()` and the cursor calls fail, and each queued present ends
-     * failed, failing the display. While no update has been sent, the window
-     * and core channels are released with the hardware kept as it is, so the
-     * boot firmware's heads keep scanning out. Its requests spin on the calling
-     * CPU.
+     * channel, then each window channel, then the core channel, then the event
+     * objects, then the display's objects, each whatever the releases before
+     * it return, and a second call releases nothing. From the start, every
+     * output reads dark, `flush()`, `present()`, `create_buffer()`,
+     * `import_buffer()`, `set_mode()` and the cursor calls fail, and each
+     * queued present ends failed, failing the display. While no update has
+     * been sent, the window and core channels are released with the hardware
+     * kept as it is, so the boot firmware's heads keep scanning out. Its
+     * requests spin on the calling CPU.
      * @return `OK`, else the logged error of the first release to fail.
      */
     int32_t release();
@@ -366,7 +374,19 @@ public:
 
     int32_t set_cursor(uint32_t output, const gfxfb::cursor_image& image) override;
     int32_t move_cursor(uint32_t output, int32_t x, int32_t y) override;
-    int32_t set_mode(uint32_t, const gfxfb::gfxfb_mode&) override { return gfxfb::ERR_UNSUPPORTED; }
+
+    /**
+     * @brief Relight `output` at `mode` on the driver task, waiting until it
+     * is lit or the engine gave up, a failed light falling back to the
+     * previous timing unless the display or the GPU failed.
+     * @return gfxfb's results in its order: `ERR_NO_MEMORY` short of memory
+     * before the light, `ERR_DEVICE` once released or failed, `ERR_DARK` off a
+     * lit output or on one being taken down, `ERR_INVALID_ARG` off its list,
+     * `OK` at once for its mode, `ERR_REFUSED` for a refused bandwidth check
+     * or base buffer and for a failed light, and `OK` once lit at `mode`.
+     */
+    int32_t set_mode(uint32_t output, const gfxfb::gfxfb_mode& mode) override;
+
     void restore_modes() override {}
 
     /**
@@ -392,9 +412,10 @@ private:
     // that event off, and `event` left 0 when the object is refused
     int32_t subscribe_to_event(rm::handle subdevice, uint32_t notifier, const char* name, rm::handle& event);
 
-    // The driver task's services of the hotplug and short pulse records, each given its record
+    // The driver task's services of the hotplug and short pulse records and of a mode request, each given its record
     static void serve_hotplug_record(operation& op);
     static void serve_short_pulse_record(operation& op);
+    static void serve_mode_request(operation& op);
 
     // Whether the driver task serves `event`'s record, logging that nothing is read once the display was released or
     // failed or the GPU failed
@@ -419,6 +440,40 @@ private:
     // Relights lit `output` at the timing `head` lit it at, keeping its mode list, or leaves it lit when allocating
     // that light's `output_modes` fails
     void relight_at_lit_timing(uint8_t output, const engine_head& head);
+
+    /**
+     * @brief Run `set_mode`'s request on the driver task: once `output` is lit
+     * and lists `mode`, check its timing beside the other lit outputs, make
+     * its base buffer, then take the output down with `relighting` set and
+     * relight it, each refusal before the take-down leaving it as it was.
+     * @return `set_mode`'s result.
+     */
+    int32_t request_mode(uint8_t output, const gfxfb::gfxfb_mode& mode);
+
+    // Asks the bandwidth check about lit `output` at the one timing of `modes` on its head beside the other lit outputs
+    // and gives `set_mode`'s result for its answer. A request failing other than for room fails the display
+    int32_t check_requested_timing(uint8_t output, const output_modes& modes);
+
+    // Makes a base buffer for `timing` bound to every lit window's channel, else gives `ERR_REFUSED` or `ERR_NO_MEMORY`
+    // with it unbound and freed unless an undo fails, or `ERR_DEVICE` with it kept once the GPU failed
+    int32_t make_requested_base_buffer(uint8_t output, const edid::timing& timing, scanout_buffer*& out);
+
+    /**
+     * @brief Take lit `output` down with `relighting` set and, unless that
+     * fails the display, light it at the one timing of `modes` showing `base`.
+     * When that light fails and neither the display nor the GPU failed,
+     * release `base` unless a head holds it and light the output at
+     * `previous`. Report it dark without `relighting` when it ends dark,
+     * unless the take-down failed the display.
+     * @return `set_mode`'s result for the request.
+     */
+    int32_t relight_at_requested_timing(
+        uint8_t output,
+        output_modes& modes,
+        scanout_buffer* base,
+        uint8_t previous_index,
+        const edid::timing& previous
+    );
 
     // Clears the connected record of each output unplugged and not plugged in, taking it down when lit, then sets that
     // of each plugged in and serves its plug, logging each
@@ -456,6 +511,14 @@ private:
     // Chooses `output`'s mode beside the lit outputs on the lowest free head, prepares that head and lights it,
     // reporting the output to gfxfb once lit unless it lies past gfxfb's count, and returns whether it lit
     bool light_output(uint8_t output, const output_modes& modes);
+
+    // Lights `output` as `light_output` does but with `base` as its base buffer, which must be bound to every lit
+    // window's channel. A failed light undoes only the bindings it made of `base`, leaving the rest of it to the caller
+    bool light_at(uint8_t output, const output_modes& modes, scanout_buffer* base);
+
+    // Releases `base` as `release_buffer` does, on the driver task, unless a head holds it after undoing a binding of
+    // it failed, which keeps it for good
+    void release_unheld_base_buffer(scanout_buffer* base);
 
     /**
      * @brief Run the prepared `light`'s mode set beside `lit`'s outputs: the
@@ -603,6 +666,11 @@ private:
     // the relight's take-down and cleared as the relight ends, both under `m_output_lock`
     uint32_t m_relighting_outputs = 0;
 
+    // The base buffer a mode request lends the light it runs, and the windows the request bound it to, which the
+    // light's failure leaves bound, null and 0 outside that light, so the driver task alone reads them bare
+    scanout_buffer* m_lent_base = nullptr;
+    uint32_t        m_lent_windows = 0;
+
     // Run between a cursor call's locked steps, after each row of a picture and each yield, null outside tests, which
     // set it before their calls, so the calls read it bare
     void (*m_cursor_step_seam)(display_engine& engine) = nullptr;
@@ -726,8 +794,8 @@ private:
         uint8_t& ready_count
     );
 
-    // Undoes the bindings of `dropped`'s base buffer, the table's to its window and each other base buffer's there, as
-    // the base buffers' masks record them, then frees that buffer and its record unless an undoing fails
+    // Undoes the bindings of `dropped`'s base buffer, the table's to its window and each other base buffer's there,
+    // then frees it and its record unless an undo fails. A lent buffer keeps those in `m_lent_windows` and is not freed
     void drop_prepared_light(const output_light& dropped);
 
     // Writes an update naming the cleared notifier, interlocked with the window channels of `window_interlocks`, then
