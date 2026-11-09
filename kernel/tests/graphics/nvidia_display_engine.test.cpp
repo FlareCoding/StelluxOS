@@ -7515,9 +7515,37 @@ TEST(nvidia_display_engine, gfxfb_reads_boot_output_on_every_output_an_active_he
     EXPECT_EQ(engine.release(), OK);
 }
 
-// Lit after head 0 showed it, output 1 lists its 1366 by 768 mode alone, copied only at a capacity above 0. The dark
-// output 0 and output 1 after `release` list none and write no entry, and output 2 gets `gfxfb::ERR_INVALID_ARG`
-TEST(nvidia_display_engine, gfxfb_reads_the_lit_outputs_mode_as_its_only_listed_mode) {
+// The modes of `TIMING_1366_BY_768`, of the AOC's 143.911 Hz and 59.950 Hz timings and of `TIMING_1080_AT_60_HZ`
+static constexpr gfxfb::gfxfb_mode MODE_1366_BY_768        = {1366, 768, 59789};
+static constexpr gfxfb::gfxfb_mode MODE_1440_AT_143_911_HZ = {2560, 1440, 143911};
+static constexpr gfxfb::gfxfb_mode MODE_1440_AT_59_950_HZ  = {2560, 1440, 59950};
+static constexpr gfxfb::gfxfb_mode MODE_1080_AT_60_HZ      = {1920, 1080, 60000};
+
+// A mode no output lists, left in an entry `read_modes` must not write
+static constexpr gfxfb::gfxfb_mode UNWRITTEN_MODE = {1, 1, 1};
+
+// Expects `actual` to hold `expected`'s width, height and refresh
+static void expect_mode(const gfxfb::gfxfb_mode& actual, const gfxfb::gfxfb_mode& expected) {
+    EXPECT_EQ(actual.width, expected.width);
+    EXPECT_EQ(actual.height, expected.height);
+    EXPECT_EQ(actual.refresh_millihertz, expected.refresh_millihertz);
+}
+
+// Expects `output`'s list, read as gfxfb reads it, to hold exactly the modes `expected`, in their order
+template <uint32_t COUNT>
+static void expect_listed_modes(display_engine& engine, uint32_t output, const gfxfb::gfxfb_mode (&expected)[COUNT]) {
+    gfxfb::gfxfb_mode modes[gfxfb::GFXFB_MODES_MAX] = {};
+    uint32_t count = 0;
+    ASSERT_EQ(engine.read_modes(output, modes, gfxfb::GFXFB_MODES_MAX, count), gfxfb::OK);
+    ASSERT_EQ(count, COUNT);
+    for (uint32_t index = 0; index < COUNT; index++) {
+        expect_mode(modes[index], expected[index]);
+    }
+}
+
+// Output 1 lists its 1366 by 768 mode and then the 2560 by 1440 mode at 143.911 Hz, counted whole and copied up to the
+// capacity or the list's end, while the dark output 0 and output 1 after `release` list none and output 2 is refused
+TEST(nvidia_display_engine, gfxfb_reads_the_lit_outputs_modes_up_to_its_capacity) {
     engine_firmware fw;
     connect_output_1_alone(fw);
     fw.boot_display_id = OUTPUT_1_ID;
@@ -7527,29 +7555,96 @@ TEST(nvidia_display_engine, gfxfb_reads_the_lit_outputs_mode_as_its_only_listed_
     display_engine& engine = new_engine(fw, memory);
     ASSERT_EQ(set_up(engine), OK);
 
-    gfxfb::gfxfb_mode modes[2] = {};
+    gfxfb::gfxfb_mode modes[3] = {};
     uint32_t count = 0;
     ASSERT_EQ(engine.read_modes(1, modes, 0, count), gfxfb::OK);
-    EXPECT_EQ(count, 1u);
+    EXPECT_EQ(count, 2u);
     EXPECT_EQ(modes[0].width, 0u);
 
-    ASSERT_EQ(engine.read_modes(1, modes, 2, count), gfxfb::OK);
-    EXPECT_EQ(count, 1u);
-    EXPECT_EQ(modes[0].width, 1366u);
-    EXPECT_EQ(modes[0].height, 768u);
-    EXPECT_EQ(modes[0].refresh_millihertz, 59789u);
+    ASSERT_EQ(engine.read_modes(1, modes, 1, count), gfxfb::OK);
+    EXPECT_EQ(count, 2u);
+    expect_mode(modes[0], MODE_1366_BY_768);
     EXPECT_EQ(modes[1].width, 0u);
 
-    ASSERT_EQ(engine.read_modes(0, modes, 2, count), gfxfb::OK);
+    modes[2] = UNWRITTEN_MODE;
+    ASSERT_EQ(engine.read_modes(1, modes, 3, count), gfxfb::OK);
+    EXPECT_EQ(count, 2u);
+    expect_mode(modes[0], MODE_1366_BY_768);
+    expect_mode(modes[1], MODE_1440_AT_143_911_HZ);
+    expect_mode(modes[2], UNWRITTEN_MODE);
+
+    ASSERT_EQ(engine.read_modes(0, modes, 3, count), gfxfb::OK);
     EXPECT_EQ(count, 0u);
     EXPECT_EQ(modes[0].width, 1366u);
-    EXPECT_EQ(engine.read_modes(2, modes, 2, count), gfxfb::ERR_INVALID_ARG);
+    EXPECT_EQ(engine.read_modes(2, modes, 3, count), gfxfb::ERR_INVALID_ARG);
 
     EXPECT_EQ(engine.release(), OK);
     count = 1;
-    ASSERT_EQ(engine.read_modes(1, modes, 2, count), gfxfb::OK);
+    ASSERT_EQ(engine.read_modes(1, modes, 3, count), gfxfb::OK);
     EXPECT_EQ(count, 0u);
     EXPECT_EQ(modes[0].width, 1366u);
+}
+
+// An output limited to 60 Hz on the AOC with no timing preferred lists the modes of its 59.950 Hz timing and its 1920
+// by 1080 one in that order, leaving out the mode of the 143.911 Hz timing, which would rank first
+TEST(nvidia_display_engine, a_limited_output_lists_only_modes_below_60_600_hz) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.digital_facts = DISPLAYPORT_FACTS | rm::DIGITAL_LIMITED_TO_60_HZ;
+    copy_aoc_edid_with_a_third_timing();
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    const gfxfb::gfxfb_mode expected[] = {MODE_1440_AT_59_950_HZ, MODE_1080_AT_60_HZ};
+    expect_listed_modes(engine, 0, expected);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The receiver capability field of a monitor taking two lanes at HBR3, too few for the AOC's 143.911 Hz timing
+static constexpr uint8_t DPCD_RECEIVER_TWO_HBR3_LANES[DPCD_RECEIVER_CAPABILITY_BYTES] = {0x14, 0x1E, 0x82};
+
+// Over two lanes at HBR3 an output on the AOC with no timing preferred lists the modes of its 59.950 Hz timing and its
+// 1920 by 1080 one in that order, as its link does not carry the 143.911 Hz timing, which would rank first
+TEST(nvidia_display_engine, an_output_lists_only_modes_its_link_carries) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    fw.dpcd_receiver = DPCD_RECEIVER_TWO_HBR3_LANES;
+    copy_aoc_edid_with_a_third_timing();
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+
+    const gfxfb::gfxfb_mode expected[] = {MODE_1440_AT_59_950_HZ, MODE_1080_AT_60_HZ};
+    expect_listed_modes(engine, 0, expected);
+    EXPECT_EQ(engine.release(), OK);
+}
+
+// The AOC's preferred timing with its horizontal sync negative, a twin: a separate timing giving the same mode
+static constexpr uint8_t TIMING_1440_AT_59_950_HZ_NEGATIVE_HSYNC[] = {
+    0x56, 0x5E, 0x00, 0xA0, 0xA0, 0xA0, 0x29, 0x50, 0x30, 0x20, 0x35, 0x00, 0x0F, 0x8C, 0x21, 0x00, 0x00, 0x1C,
+};
+
+// An output on an AOC whose range limits descriptor holds a twin of its preferred timing lists that timing's mode once,
+// before the mode of the 143.911 Hz timing, which ranks between the two
+TEST(nvidia_display_engine, an_output_lists_once_the_mode_two_timings_give) {
+    engine_firmware fw;
+    show_output_0_on_head_1(fw);
+    put_timing(2, TIMING_1440_AT_59_950_HZ_NEGATIVE_HSYNC);
+
+    engine_video_memory memory;
+    ASSERT_TRUE(memory.give_scanout(AOC_BASE_BUFFER_BYTES));
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up_logged(engine), OK);
+    ASSERT_TRUE(engine_log_contains("its EDID giving 3 timings, the first preferred"));
+
+    const gfxfb::gfxfb_mode expected[] = {MODE_1440_AT_59_950_HZ, MODE_1440_AT_143_911_HZ};
+    expect_listed_modes(engine, 0, expected);
+    EXPECT_EQ(engine.release(), OK);
 }
 
 // Of 17 outputs set up, gfxfb reads the first `gfxfb::GFXFB_OUTPUTS_MAX` and the engine refuses the 17th with
@@ -7565,6 +7660,11 @@ TEST(nvidia_display_engine, gfxfb_reads_at_most_gfxfb_outputs_max_outputs) {
     gfxfb::output_state state = {};
     EXPECT_EQ(engine.read_output(gfxfb::GFXFB_OUTPUTS_MAX - 1, state), gfxfb::OK);
     EXPECT_EQ(engine.read_output(gfxfb::GFXFB_OUTPUTS_MAX, state), gfxfb::ERR_INVALID_ARG);
+
+    gfxfb::gfxfb_mode mode = {};
+    uint32_t count = 0;
+    EXPECT_EQ(engine.read_modes(gfxfb::GFXFB_OUTPUTS_MAX - 1, &mode, 1, count), gfxfb::OK);
+    EXPECT_EQ(engine.read_modes(gfxfb::GFXFB_OUTPUTS_MAX, &mode, 1, count), gfxfb::ERR_INVALID_ARG);
     EXPECT_EQ(engine.release(), OK);
 }
 
@@ -10540,8 +10640,8 @@ static void free_taken_down_base_buffer(gfxfb::buffer* base) {
     heap::ufree_delete(static_cast<scanout_buffer*>(base));
 }
 
-// Unplugging lit output 0, on head 0 and then on head 1, disables that head's vertical blank, stops it in a mode set
-// naming output 1, powers its link down without D3 and reports it dark with no base buffer, output 1 taking that buffer
+// Unplugging lit output 0 on either head disables that head's vertical blank, stops it in a mode set naming output 1,
+// powers its link down without D3 and reports it dark with no base buffer or listed mode, output 1 taking that buffer
 TEST(nvidia_display_engine, an_unplugged_lit_output_is_taken_down_while_the_other_stays_lit) {
     struct layout {
         uint8_t     head;
@@ -10624,6 +10724,14 @@ TEST(nvidia_display_engine, an_unplugged_lit_output_is_taken_down_while_the_othe
         EXPECT_EQ(g_output_change_output, 0u);
         EXPECT_FALSE(reads_lit(engine, 0));
         EXPECT_TRUE(reads_lit(engine, 1));
+
+        gfxfb::gfxfb_mode mode = {};
+        uint32_t list_count = 1;
+        EXPECT_EQ(engine.read_modes(0, &mode, 1, list_count), gfxfb::OK);
+        EXPECT_EQ(list_count, 0u);
+
+        const gfxfb::gfxfb_mode output_1_modes[] = {MODE_1366_BY_768, MODE_1440_AT_143_911_HZ};
+        expect_listed_modes(engine, 1, output_1_modes);
 
         EXPECT_EQ(display_engine_test_access::head_output(engine, lit.head), NO_OUTPUT);
         EXPECT_EQ(display_engine_test_access::head_output(engine, other_head), 1u);
@@ -12466,6 +12574,23 @@ TEST(nvidia_display_engine, a_plugged_lit_output_with_its_edid_and_a_trained_lin
     EXPECT_EQ(engine.release(), OK);
 }
 
+// A monitor plugged again into lit output 1 with the EDID it was lit with, its link trained and receiver capabilities
+// of two lanes at HBR3, too few for the 143.911 Hz timing, leaves the output listing that timing's mode still
+TEST(nvidia_display_engine, a_plugged_lit_output_left_lit_keeps_its_list) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    fw.dpcd_receiver = DPCD_RECEIVER_TWO_HBR3_LANES;
+
+    plug_output_1(fw, engine);
+
+    ASSERT_TRUE(engine_log_contains(
+        "nvidia: output 1 stays lit, as its EDID is the one it was lit with and its link is trained"));
+    const gfxfb::gfxfb_mode expected[] = {MODE_1366_BY_768, MODE_1440_AT_143_911_HZ};
+    expect_listed_modes(engine, 1, expected);
+    EXPECT_EQ(engine.release(), OK);
+}
+
 // The first byte of the EDID's serial number, which `AOC_BASE_BLOCK` zeroes
 static constexpr uint32_t SERIAL_NUMBER_BYTE = 12;
 
@@ -12527,6 +12652,32 @@ TEST(nvidia_display_engine, a_plugged_lit_output_with_another_edid_is_relit) {
     EXPECT_EQ(engine.release(), OK);
     free_taken_down_base_buffer(taken_down);
     free_taken_down_base_buffer(relit);
+}
+
+// The mode of `TIMING_1366_BY_767`
+static constexpr gfxfb::gfxfb_mode MODE_1366_BY_767 = {1366, 767, 59864};
+
+// Plugging a monitor whose second timing is 1366 by 767 into lit output 1 relights the output, which then lists that
+// timing's mode in place of the 143.911 Hz one, while output 0 keeps its list
+TEST(nvidia_display_engine, a_relit_output_lists_the_modes_of_its_new_monitor) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_two_lit_outputs(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+    put_timing(1, TIMING_1366_BY_767);
+
+    plug_output_1(fw, engine);
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(g_relight_reports[1].lit);
+
+    const gfxfb::gfxfb_mode output_0_modes[] = {MODE_1366_BY_768, MODE_1440_AT_143_911_HZ};
+    const gfxfb::gfxfb_mode output_1_modes[] = {MODE_1366_BY_768, MODE_1366_BY_767};
+    expect_listed_modes(engine, 0, output_0_modes);
+    expect_listed_modes(engine, 1, output_1_modes);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
 }
 
 // An extension block of a kind `edid::parse` reads nothing from
@@ -13083,6 +13234,32 @@ TEST(nvidia_display_engine, a_short_pulse_relights_an_output_whose_link_is_lost_
     EXPECT_EQ(head_of_output(engine, 1), 1u);
     EXPECT_EQ(engine.base_buffer(0), base);
     EXPECT_NE(engine.base_buffer(1), taken_down);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// The mode of `TIMING_1366_BY_767_AT_85_49_MHZ`
+static constexpr gfxfb::gfxfb_mode MODE_1366_BY_767_AT_59_857_HZ = {1366, 767, 59857};
+
+// Lit at its EDID's timing 1, output 1 lists its timing 0's mode first and its own second, and lists both still after a
+// short pulse relights it at the timing it had, though that light tries the one timing
+TEST(nvidia_display_engine, a_short_pulse_relit_output_lists_the_modes_it_listed) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+
+    const gfxfb::gfxfb_mode expected[] = {MODE_1366_BY_768, MODE_1366_BY_767_AT_59_857_HZ};
+    expect_listed_modes(engine, 1, expected);
+
+    fw.lost_link_ids = OUTPUT_1_ID;
+    fw.link_service_interrupts = LINK_STATUS_CHANGED;
+    send_short_pulse(fw, engine);
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(g_relight_reports[1].lit);
+    expect_listed_modes(engine, 1, expected);
 
     EXPECT_EQ(engine.release(), OK);
     free_taken_down_base_buffer(taken_down);
