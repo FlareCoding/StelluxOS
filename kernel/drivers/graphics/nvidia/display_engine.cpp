@@ -1443,10 +1443,13 @@ display_engine::display_engine(
 
     m_take_down_queue.init();
     m_created_buffers.init();
+
     m_hotplug_record.work = serve_hotplug_record;
     m_hotplug_record.engine = this;
     m_short_pulse_record.work = serve_short_pulse_record;
     m_short_pulse_record.engine = this;
+    m_restore_record.work = serve_restore_record;
+    m_restore_record.engine = this;
 }
 
 int32_t display_engine::set_up(
@@ -3059,7 +3062,11 @@ void display_engine::serve_short_pulse_record(operation& op) {
     static_cast<event_record&>(op).engine->serve_short_pulse();
 }
 
-bool display_engine::serves_event(const char* event) {
+void display_engine::serve_restore_record(operation& op) {
+    static_cast<event_record&>(op).engine->serve_restore();
+}
+
+bool display_engine::serves_record(const char* record, const char* skipped) {
     bool is_released = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
@@ -3068,17 +3075,17 @@ bool display_engine::serves_event(const char* event) {
     });
 
     if (is_released) {
-        log::info("nvidia: %s arrived once the display was released, so nothing is read", event);
+        log::info("nvidia: %s arrived once the display was released, so %s", record, skipped);
         return false;
     }
 
     if (m_is_display_failed.load_acquire()) {
-        log::info("nvidia: %s arrived once the display failed, so nothing is read", event);
+        log::info("nvidia: %s arrived once the display failed, so %s", record, skipped);
         return false;
     }
 
     if (m_failed.is_set()) {
-        log::info("nvidia: %s arrived once the GPU failed, so nothing is read", event);
+        log::info("nvidia: %s arrived once the GPU failed, so %s", record, skipped);
         return false;
     }
 
@@ -3086,7 +3093,7 @@ bool display_engine::serves_event(const char* event) {
 }
 
 void display_engine::serve_hotplug() {
-    if (!serves_event("a hotplug event")) {
+    if (!serves_record("a hotplug event", "nothing is read")) {
         return;
     }
 
@@ -3139,7 +3146,7 @@ void display_engine::serve_hotplug() {
 }
 
 void display_engine::serve_short_pulse() {
-    if (!serves_event("a DisplayPort short pulse event")) {
+    if (!serves_record("a DisplayPort short pulse event", "nothing is read")) {
         return;
     }
 
@@ -3225,6 +3232,29 @@ static output_modes* new_timing_modes(const engine_head& head, uint8_t timing_in
     return modes;
 }
 
+// Ranks the timings of the EDID and DPCD capabilities `modes` holds into it again, as the light of the driver's own
+// choice tries them, returning false when allocating the parsed monitor fails
+static bool rank_timings_again(
+    uint8_t output_index,
+    const display_output& output,
+    const chip_displayport& gpu,
+    output_modes& modes
+) {
+    auto* monitor = static_cast<edid::monitor*>(heap::uzalloc(sizeof(edid::monitor)));
+    if (monitor == nullptr) {
+        return false;
+    }
+
+    // The bytes parsed when the output lit, so they parse the same way again
+    edid::parse(modes.edid.data, modes.edid.bytes, *monitor);
+    dpcd_capabilities dpcd = modes.dpcd;
+    modes.count = 0;
+    keep_output_modes(output_index, output, *monitor, dpcd, gpu, modes);
+    heap::ufree(monitor);
+
+    return true;
+}
+
 void display_engine::relight_at_lit_timing(uint8_t output, const engine_head& head) {
     output_modes* modes = new_timing_modes(head, head.timing_index, head.timing);
     if (modes == nullptr) {
@@ -3233,7 +3263,31 @@ void display_engine::relight_at_lit_timing(uint8_t output, const engine_head& he
         return;
     }
 
-    relight_output(output, *modes);
+    log::info("nvidia: output %u is taken down to be relit", output);
+    take_down_output(output, true);
+    bool is_taken_down = !m_is_display_failed.load_acquire();
+    bool is_lit = is_taken_down && light_output(output, *modes);
+
+    // An output without the requested flag is at the driver's own choice already, so only a requested one falls back
+    bool is_requested = (m_requested_outputs & (1u << output)) != 0;
+    bool has_failed = m_is_display_failed.load_acquire() || m_failed.is_set();
+    if (is_taken_down && !is_lit && is_requested && !has_failed) {
+        log::info(
+            "nvidia: output %u falls back to the driver's own choice, as its requested timing did not light",
+            output
+        );
+        m_requested_outputs &= ~(1u << output);
+
+        const display_output& entry = m_outputs.outputs[output];
+        bool is_ranked = rank_timings_again(output, entry, m_display.displayport, *modes);
+        if (!is_ranked) {
+            log::error("nvidia: output %u stays dark, as ranking its timings found no room", output);
+        }
+
+        is_lit = is_ranked && light_output(output, *modes);
+    }
+
+    end_relight(output, is_taken_down, is_lit);
     heap::ufree(modes);
 }
 
@@ -3276,6 +3330,10 @@ void display_engine::mark_registered() {
 }
 
 void display_engine::take_down_output(uint8_t output, bool relighting) {
+    if (!relighting) {
+        m_requested_outputs &= ~(1u << output);
+    }
+
     uint32_t staying_ids = 0;
     scanout_buffer* base = nullptr;
     engine_head* head = nullptr;
@@ -3622,19 +3680,30 @@ void display_engine::relight_output(uint8_t output, const output_modes& modes) {
         return;
     }
 
+    m_requested_outputs &= ~(1u << output);
     log::info("nvidia: output %u is taken down to be relit", output);
     take_down_output(output, true);
     bool is_taken_down = !m_is_display_failed.load_acquire();
     bool is_lit = is_taken_down && light_output(output, modes);
+    end_relight(output, is_taken_down, is_lit);
+}
+
+void display_engine::end_relight(uint8_t output, bool is_taken_down, bool is_lit) {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
         m_relighting_outputs &= ~(1u << output);
         sync::spin_unlock_irqrestore(m_output_lock, irq);
     });
 
-    // A take-down failing the display reports nothing, and gfxfb never reads an output past its count
-    bool is_reported_dark = is_taken_down && !is_lit && output < m_output_count;
-    if (is_reported_dark) {
+    // A take-down failing the display reports nothing
+    if (!is_taken_down || is_lit) {
+        return;
+    }
+
+    m_requested_outputs &= ~(1u << output);
+
+    // gfxfb never reads an output past its count
+    if (output < m_output_count) {
         RUN_ELEVATED(m_output_changed(this, output));
     }
 }
@@ -5061,6 +5130,9 @@ int32_t display_engine::relight_at_requested_timing(
     take_down_output(output, true);
     bool is_taken_down = !m_is_display_failed.load_acquire();
     bool is_lit = is_taken_down && light_at(output, modes, base);
+    if (is_lit) {
+        m_requested_outputs |= 1u << output;
+    }
 
     // Once the display or the GPU failed, a head may still scan `base`, so it is kept for good
     bool has_failed = m_is_display_failed.load_acquire() || m_failed.is_set();
@@ -5077,17 +5149,7 @@ int32_t display_engine::relight_at_requested_timing(
         is_lit = light_output(output, modes);
     }
 
-    RUN_ELEVATED({
-        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
-        m_relighting_outputs &= ~(1u << output);
-        sync::spin_unlock_irqrestore(m_output_lock, irq);
-    });
-
-    // A take-down failing the display reports nothing, and gfxfb never reads an output past its count
-    bool is_reported_dark = is_taken_down && !is_lit && output < m_output_count;
-    if (is_reported_dark) {
-        RUN_ELEVATED(m_output_changed(this, output));
-    }
+    end_relight(output, is_taken_down, is_lit);
 
     if (m_is_display_failed.load_acquire() || m_failed.is_set()) {
         return gfxfb::ERR_DEVICE;
@@ -5119,6 +5181,90 @@ void display_engine::release_unheld_base_buffer(scanout_buffer* base) {
 
     if (!is_held) {
         release_scanout_buffer(base->task_operation);
+    }
+}
+
+void display_engine::restore_modes() {
+    RUN_ELEVATED(m_operations.post_unless_queued(m_restore_record));
+}
+
+void display_engine::serve_restore() {
+    if (!serves_record("the close's restore", "no output is relit")) {
+        return;
+    }
+
+    if (m_requested_outputs == 0) {
+        log::info("nvidia: the close's restore finds no output at a requested mode");
+        return;
+    }
+
+    const engine_head* heads[gfxfb::GFXFB_OUTPUTS_MAX] = {};
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        for (const engine_head& head : m_heads) {
+            bool is_requested = head.is_lit && (m_requested_outputs & (1u << head.output)) != 0;
+            if (is_requested) {
+                heads[head.output] = &head;
+            }
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    // Every output is ranked before any take-down, so no room leaves it lit and no light has yet taken the head it left
+    output_modes* modes[gfxfb::GFXFB_OUTPUTS_MAX] = {};
+    uint32_t restored = 0;
+    for (uint8_t output = 0; output < m_output_count; output++) {
+        const engine_head* head = heads[output];
+        if (head == nullptr) {
+            continue;
+        }
+
+        modes[output] = new_timing_modes(*head, head->timing_index, head->timing);
+        const display_output& entry = m_outputs.outputs[output];
+        bool is_ranked =
+            modes[output] != nullptr && rank_timings_again(output, entry, m_display.displayport, *modes[output]);
+        if (!is_ranked) {
+            log::error(
+                "nvidia: the close's restore leaves output %u at its mode, as ranking its timings found no room",
+                output
+            );
+            heap::ufree(modes[output]);
+            modes[output] = nullptr;
+            continue;
+        }
+
+        restored |= 1u << output;
+    }
+
+    m_requested_outputs &= ~restored;
+    uint32_t taken_down = 0;
+    for (uint8_t output = 0; output < m_output_count; output++) {
+        if ((restored & (1u << output)) == 0) {
+            continue;
+        }
+
+        log::info("nvidia: the close's restore takes output %u down to relight it at the driver's own choice", output);
+        take_down_output(output, true);
+        if (m_is_display_failed.load_acquire()) {
+            break;
+        }
+
+        taken_down |= 1u << output;
+    }
+
+    const uint32_t lighting_order[] = {restored & m_boot_outputs, restored & ~m_boot_outputs};
+    for (uint32_t outputs : lighting_order) {
+        while (outputs != 0) {
+            uint8_t output = static_cast<uint8_t>(__builtin_ctz(outputs));
+            outputs &= outputs - 1;
+
+            bool is_taken_down = (taken_down & (1u << output)) != 0;
+            bool may_light = is_taken_down && !m_is_display_failed.load_acquire();
+            bool is_lit = may_light && light_output(output, *modes[output]);
+            end_relight(output, is_taken_down, is_lit);
+            heap::ufree(modes[output]);
+        }
     }
 }
 

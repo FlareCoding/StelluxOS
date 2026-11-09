@@ -1515,6 +1515,10 @@ struct display_engine_test_access {
         return engine.m_is_display_failed.load_acquire();
     }
 
+    static uint32_t requested_outputs(const display_engine& engine) {
+        return engine.m_requested_outputs;
+    }
+
     // Whether `output`'s connected record says a monitor is connected
     static bool is_connected(const display_engine& engine, uint8_t output) {
         return engine.m_outputs.outputs[output].is_connected;
@@ -13312,6 +13316,7 @@ TEST(nvidia_display_engine, a_short_pulses_relight_refused_at_the_lit_timing_lea
 
     EXPECT_TRUE(engine_log_contains("nvidia: the bandwidth check refuses output 1's timing 1, 1366 by 767 at "));
     EXPECT_TRUE(engine_log_contains("nvidia: output 1's light fails, as every one of its modes is refused"));
+    EXPECT_FALSE(engine_log_contains("falls back to the driver's own choice"));
     EXPECT_EQ(fw.check_requests, 4u);
 
     ASSERT_EQ(g_output_change_count, 2u);
@@ -13615,7 +13620,7 @@ TEST(nvidia_display_engine, a_short_pulses_refused_deferred_or_wrongly_acknowled
 }
 
 // A short pulse once the GPU failed, and one once the display failed too, read nothing, logging the GPU's failure and
-// then the display's, which `serves_event` checks first
+// then the display's, which `serves_record` checks first
 TEST(nvidia_display_engine, a_short_pulse_after_a_failure_reads_nothing) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -14256,6 +14261,8 @@ TEST(nvidia_display_engine, a_mode_request_whose_training_is_refused_relights_th
     ASSERT_NE(fallback, nullptr);
     EXPECT_NE(fallback, taken_down);
     EXPECT_EQ(fallback->height, 767u);
+
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
     EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
 
     EXPECT_EQ(engine.release(), OK);
@@ -14525,7 +14532,7 @@ static void read_update_and_queue_a_hotplug(display_engine& engine) {
 }
 
 // A hotplug event arriving while a request takes output 1 down is served once the request ends, finding the output lit
-// at the requested mode with the EDID it was lit with
+// at the requested mode with the EDID it was lit with, so it keeps its requested flag
 TEST(nvidia_display_engine, a_hotplug_during_a_mode_request_is_served_after_it) {
     engine_firmware fw;
     engine_video_memory memory;
@@ -14551,6 +14558,556 @@ TEST(nvidia_display_engine, a_hotplug_during_a_mode_request_is_served_after_it) 
 
     EXPECT_EQ(g_output_change_count, 2u);
     expect_lit_at(engine, 1, MODE_1366_BY_768);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 1u << 1);
     EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(taken_down);
+}
+
+// A request for the mode output 0 is lit at sets no flag, one lighting it at its second mode sets its flag, and one
+// lighting output 1 at its default mode sets that output's too
+TEST(nvidia_display_engine, a_mode_request_that_relights_its_output_sets_its_requested_flag_even_at_its_default) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 2);
+    gfxfb::buffer* set_up_bases[] = {engine.base_buffer(0), engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 0, MODE_1366_BY_768, rc));
+    EXPECT_EQ(rc, gfxfb::OK);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
+
+    ASSERT_TRUE(request_served_mode(engine, 0, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    EXPECT_EQ(rc, gfxfb::OK);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 1u << 0);
+
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    EXPECT_EQ(rc, gfxfb::OK);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0b11u);
+
+    expect_lit_at(engine, 0, MODE_1366_BY_767_AT_59_857_HZ);
+    expect_lit_at(engine, 1, MODE_1366_BY_768);
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(set_up_bases[0]);
+    free_taken_down_base_buffer(set_up_bases[1]);
+}
+
+// A request whose light finds output 1's training refused relights it at its previous timing, the one an earlier
+// request lit, keeping the flag that request set
+TEST(nvidia_display_engine, a_failed_mode_requests_fallback_to_a_requested_timing_keeps_the_requested_flag) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 3);
+    gfxfb::buffer* set_up_base = engine.base_buffer(1);
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    gfxfb::buffer* requested_base = engine.base_buffer(1);
+
+    fw.untrained_ids = OUTPUT_1_ID;
+    fw.untrained_through = fw.trainings + 1;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    EXPECT_EQ(rc, gfxfb::ERR_REFUSED);
+
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: output 1 falls back to its EDID's timing 0, the one it had, as its requested mode did not light"));
+    expect_lit_at(engine, 1, MODE_1366_BY_768);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 1u << 1);
+
+    EXPECT_EQ(engine.release(), OK);
+    free_taken_down_base_buffer(set_up_base);
+    free_taken_down_base_buffer(requested_base);
+}
+
+// A request whose light and fallback both find requested output 1's training refused reports it dark without
+// `relighting`, clearing the flag an earlier request set
+TEST(nvidia_display_engine, a_mode_request_leaving_a_requested_output_dark_clears_its_flag) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 3);
+    gfxfb::buffer* taken_down[2] = {engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    ASSERT_EQ(display_engine_test_access::requested_outputs(engine), 1u << 1);
+    taken_down[1] = engine.base_buffer(1);
+
+    g_output_change_count = 0;
+    fw.untrained_ids = OUTPUT_1_ID;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    EXPECT_EQ(rc, gfxfb::ERR_REFUSED);
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_FALSE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// A plug finding requested output 1's link lost relights it at the driver's own choice, clearing its flag, and an
+// unplug clears the flag a second request set
+TEST(nvidia_display_engine, a_plugs_relight_and_an_unplug_clear_the_requested_flag) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 3);
+    gfxfb::buffer* taken_down[3] = {engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    taken_down[1] = engine.base_buffer(1);
+
+    fw.lost_link_ids = OUTPUT_1_ID;
+    plug_output_1(fw, engine);
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is taken down to be relit"));
+    EXPECT_TRUE(reads_lit(engine, 1));
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
+
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    ASSERT_EQ(display_engine_test_access::requested_outputs(engine), 1u << 1);
+    taken_down[2] = engine.base_buffer(1);
+
+    fw.connected_ids = OUTPUT_0_ID;
+    fw.plugged_ids = 0;
+    fw.unplugged_ids = OUTPUT_1_ID;
+    EXPECT_TRUE(engine.on_firmware_event(event_for(fw.event_objects[0], NVIDIA_NOTIFIERS_HOTPLUG)));
+    serve_logged();
+
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// A short pulse finding requested output 1's link lost relights it at its requested timing, keeping its flag
+TEST(nvidia_display_engine, a_short_pulse_relights_a_requested_output_at_its_requested_timing) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 2);
+    gfxfb::buffer* taken_down[2] = {engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    taken_down[1] = engine.base_buffer(1);
+
+    g_output_change_count = 0;
+    fw.lost_link_ids = OUTPUT_1_ID;
+    send_short_pulse(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 is taken down to be relit"));
+    EXPECT_FALSE(engine_log_contains("falls back to the driver's own choice"));
+    EXPECT_EQ(g_output_change_count, 2u);
+    expect_lit_at(engine, 1, MODE_1366_BY_768);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 1u << 1);
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// A short pulse's relight of requested output 1 whose training fails relights it at the driver's own choice, clearing
+// its flag, the check refusing its timing 0 beside output 0 so that light takes timing 1
+TEST(nvidia_display_engine, a_short_pulses_failed_relight_of_a_requested_output_falls_back_to_the_drivers_own_choice) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 3);
+    gfxfb::buffer* taken_down[2] = {engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    taken_down[1] = engine.base_buffer(1);
+
+    g_output_change_count = 0;
+    fw.lost_link_ids = OUTPUT_1_ID;
+    fw.untrained_ids = OUTPUT_1_ID;
+    fw.untrained_through = fw.trainings + 1;
+    fw.refused_checks |= 1u << 6;
+    send_short_pulse(fw, engine);
+
+    uint32_t taken = engine_log_offset("nvidia: output 1 is taken down to be relit");
+    uint32_t fallback = engine_log_offset(
+        "nvidia: output 1 falls back to the driver's own choice, as its requested timing did not light");
+    uint32_t chosen = engine_log_offset("nvidia: output 1 is chosen to light at its EDID's timing 1, 1366 by 767 at ");
+
+    EXPECT_LT(taken, fallback);
+    EXPECT_LT(fallback, chosen);
+    EXPECT_LT(chosen, s_engine_log_bytes);
+    EXPECT_EQ(fw.check_requests, 8u);
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_TRUE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+    expect_lit_at(engine, 1, MODE_1366_BY_767_AT_59_857_HZ);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// A short pulse's relight of requested output 1 whose fallback fails training too reports it dark without `relighting`,
+// clearing its flag, with output 0 lit and the display answering
+TEST(nvidia_display_engine, a_short_pulses_failed_relight_and_fallback_leave_a_requested_output_dark) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 4);
+    gfxfb::buffer* taken_down[2] = {engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    taken_down[1] = engine.base_buffer(1);
+
+    g_output_change_count = 0;
+    fw.lost_link_ids = OUTPUT_1_ID;
+    fw.untrained_ids = OUTPUT_1_ID;
+    send_short_pulse(fw, engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: output 1 falls back to the driver's own choice"));
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_FALSE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+
+    EXPECT_TRUE(reads_lit(engine, 0));
+    EXPECT_FALSE(reads_lit(engine, 1));
+    EXPECT_FALSE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// A short pulse's relight of requested output 1 whose light fails the display in its update, or finds the training
+// refused once the GPU failed, tries no fallback and reports the output dark
+TEST(nvidia_display_engine, a_short_pulses_relight_that_fails_the_display_or_the_gpu_does_not_fall_back) {
+    struct failure {
+        uint32_t updates_read;  // the kicked updates read before one fails the display
+        uint32_t untrained_ids; // the outputs whose training the relight finds refused
+        bool     fails_gpu;     // whether the GPU fails in the pulse's first general mapping
+    };
+
+    const failure failures[] = {
+        {1, 0, false},
+        {0xFFFFFFFF, OUTPUT_1_ID, true},
+    };
+
+    for (const failure& failed : failures) {
+        engine_firmware fw;
+        engine_video_memory memory;
+        display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 3);
+        gfxfb::buffer* taken_down[2] = {engine.base_buffer(1)};
+
+        int32_t rc = gfxfb::ERR_DEVICE;
+        ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+        ASSERT_EQ(rc, gfxfb::OK);
+        taken_down[1] = engine.base_buffer(1);
+
+        g_output_change_count = 0;
+        fw.lost_link_ids = OUTPUT_1_ID;
+        fw.untrained_ids = failed.untrained_ids;
+        fw.untrained_through = fw.trainings + 1;
+        memory.hooked_general_map = failed.fails_gpu ? memory.general_maps + 1 : 0;
+        memory.during_map = fail_the_gpu;
+
+        g_updates_read = 0;
+        g_updates_to_read = failed.updates_read;
+        display_engine_test_access::set_update_seam(engine, read_first_kicked_updates);
+        send_short_pulse(fw, engine);
+        display_engine_test_access::set_update_seam(engine, read_kicked_update);
+
+        EXPECT_FALSE(engine_log_contains("falls back to the driver's own choice"));
+        EXPECT_LE(engine_log_count("is chosen to light"), 1u);
+        EXPECT_EQ(display_engine_test_access::is_display_failed(engine), !failed.fails_gpu);
+
+        ASSERT_EQ(g_output_change_count, 2u);
+        EXPECT_FALSE(g_relight_reports[1].lit);
+        EXPECT_FALSE(g_relight_reports[1].relighting);
+
+        EXPECT_EQ(engine.release(), OK);
+        for (gfxfb::buffer* base : taken_down) {
+            free_taken_down_base_buffer(base);
+        }
+    }
+}
+
+// Asks for the close's restore and serves the driver task's queue with the log kept, clearing the recorded reports
+static void serve_restore(display_engine& engine) {
+    g_output_change_count = 0;
+    string::memset(g_relight_reports, 0, sizeof(g_relight_reports));
+    engine.restore_modes();
+    serve_logged();
+}
+
+// The close's restore takes requested outputs 0 and 1 down in index order before lighting either, then lights each in
+// index order at the driver's own choice, its timing 0, clearing both flags
+TEST(nvidia_display_engine, the_closes_restore_takes_down_then_lights_each_requested_output_at_the_drivers_own_choice) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 4);
+    gfxfb::buffer* taken_down[4] = {engine.base_buffer(0), engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 0, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(display_engine_test_access::requested_outputs(engine), 0b11u);
+    taken_down[2] = engine.base_buffer(0);
+    taken_down[3] = engine.base_buffer(1);
+
+    serve_restore(engine);
+
+    uint32_t down_0 = engine_log_offset(
+        "nvidia: the close's restore takes output 0 down to relight it at the driver's own choice");
+    uint32_t down_1 = engine_log_offset(
+        "nvidia: the close's restore takes output 1 down to relight it at the driver's own choice");
+    uint32_t lit_0 = engine_log_offset("nvidia: output 0 is chosen to light at its EDID's timing 0, 1366 by 768 at ");
+    uint32_t lit_1 = engine_log_offset("nvidia: output 1 is chosen to light at its EDID's timing 0, 1366 by 768 at ");
+
+    EXPECT_LT(down_0, down_1);
+    EXPECT_LT(down_1, lit_0);
+    EXPECT_LT(lit_0, lit_1);
+    EXPECT_LT(lit_1, s_engine_log_bytes);
+
+    ASSERT_EQ(g_output_change_count, 4u);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_TRUE(g_relight_reports[1].relighting);
+    EXPECT_TRUE(g_relight_reports[2].lit);
+    EXPECT_FALSE(g_relight_reports[2].relighting);
+
+    expect_lit_at(engine, 0, MODE_1366_BY_768);
+    expect_lit_at(engine, 1, MODE_1366_BY_768);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// With output 1 shown by the boot head, the close's restore takes outputs 0 and 1 down in index order, then lights
+// output 1 before output 0, as set-up's lighting order does
+TEST(nvidia_display_engine, the_closes_restore_lights_the_boot_output_first) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    ASSERT_TRUE(connect_two_outputs(fw, memory, 4));
+    put_timing(1, TIMING_1366_BY_767_AT_85_49_MHZ);
+    fw.boot_display_id = OUTPUT_1_ID;
+
+    display_engine& engine = new_engine(fw, memory);
+    ASSERT_EQ(set_up(engine), OK);
+    record_relight_reports(engine);
+    gfxfb::buffer* taken_down[4] = {engine.base_buffer(0), engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 0, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    ASSERT_EQ(display_engine_test_access::requested_outputs(engine), 0b11u);
+    taken_down[2] = engine.base_buffer(0);
+    taken_down[3] = engine.base_buffer(1);
+
+    serve_restore(engine);
+
+    uint32_t down_0 = engine_log_offset("nvidia: the close's restore takes output 0 down");
+    uint32_t down_1 = engine_log_offset("nvidia: the close's restore takes output 1 down");
+    uint32_t lit_1 = engine_log_offset("nvidia: output 1 is chosen to light at its EDID's timing 0, 1366 by 768 at ");
+    uint32_t lit_0 = engine_log_offset("nvidia: output 0 is chosen to light at its EDID's timing 0, 1366 by 768 at ");
+
+    EXPECT_LT(down_0, down_1);
+    EXPECT_LT(down_1, lit_1);
+    EXPECT_LT(lit_1, lit_0);
+    EXPECT_LT(lit_0, s_engine_log_bytes);
+
+    expect_lit_at(engine, 0, MODE_1366_BY_768);
+    expect_lit_at(engine, 1, MODE_1366_BY_768);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// The close's restore, asked for twice before the driver task serves it, relights requested output 1 once and leaves
+// output 0, at the driver's own choice, lit with its base buffer
+TEST(nvidia_display_engine, the_closes_restore_relights_only_requested_outputs_once) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 2);
+    gfxfb::buffer* taken_down[2] = {engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    gfxfb::buffer* base_0 = engine.base_buffer(0);
+    taken_down[1] = engine.base_buffer(1);
+
+    g_output_change_count = 0;
+    engine.restore_modes();
+    engine.restore_modes();
+    serve_logged();
+
+    EXPECT_EQ(engine_log_count("nvidia: the close's restore takes output 1 down"), 1u);
+    EXPECT_FALSE(engine_log_contains("output 0 is marked dark"));
+    EXPECT_EQ(g_output_change_count, 2u);
+    EXPECT_EQ(engine.base_buffer(0), base_0);
+    expect_lit_at(engine, 1, MODE_1366_BY_768);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 0u);
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// The close's restore queued before a request for output 0 is served first, relighting requested output 1 alone, so
+// only output 0 is left at a requested mode
+TEST(nvidia_display_engine, the_closes_restore_is_served_before_a_mode_request_queued_after_it) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 3);
+    gfxfb::buffer* taken_down[3] = {engine.base_buffer(0), engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    taken_down[2] = engine.base_buffer(1);
+
+    engine.restore_modes();
+    ASSERT_TRUE(request_served_mode(engine, 0, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    EXPECT_EQ(rc, gfxfb::OK);
+
+    uint32_t restored = engine_log_offset("nvidia: the close's restore takes output 1 down");
+    uint32_t asked = engine_log_offset("nvidia: output 0 is asked for 1366 by 767 at 59.857 Hz");
+    EXPECT_LT(restored, asked);
+    EXPECT_LT(asked, s_engine_log_bytes);
+
+    expect_lit_at(engine, 0, MODE_1366_BY_767_AT_59_857_HZ);
+    expect_lit_at(engine, 1, MODE_1366_BY_768);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 1u << 0);
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// The close's restore whose take-down of requested output 0 fails the display stops there, neither taking down nor
+// lighting requested output 1, and reports neither output
+TEST(nvidia_display_engine, the_closes_restore_stops_at_a_take_down_that_fails_the_display) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 2);
+    gfxfb::buffer* taken_down[3] = {engine.base_buffer(0), engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 0, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(display_engine_test_access::requested_outputs(engine), 0b11u);
+    taken_down[2] = engine.base_buffer(0);
+
+    display_engine_test_access::set_update_seam(engine, nullptr);
+    serve_restore(engine);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the close's restore takes output 0 down"));
+    EXPECT_TRUE(engine_log_contains("nvidia: the update taking head 0 down failed: -4, so the display failed"));
+    EXPECT_FALSE(engine_log_contains("the close's restore takes output 1 down"));
+    EXPECT_FALSE(engine_log_contains("is chosen to light"));
+
+    EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(display_engine_test_access::head_output(engine, 1), 1u);
+
+    display_engine_test_access::set_update_seam(engine, read_kicked_update);
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// The close's restore whose take-down of requested output 1 fails the display, after output 0's take-down, lights
+// neither output and reports output 0 dark without `relighting`
+TEST(nvidia_display_engine, the_closes_restore_reports_dark_an_output_it_took_down_before_the_display_failed) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory, 2);
+    gfxfb::buffer* taken_down[4] = {engine.base_buffer(0), engine.base_buffer(1)};
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 0, MODE_1366_BY_767_AT_59_857_HZ, rc));
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(display_engine_test_access::requested_outputs(engine), 0b11u);
+    taken_down[2] = engine.base_buffer(0);
+    taken_down[3] = engine.base_buffer(1);
+
+    g_updates_read = 0;
+    g_updates_to_read = 1;
+    display_engine_test_access::set_update_seam(engine, read_first_kicked_updates);
+    serve_restore(engine);
+    display_engine_test_access::set_update_seam(engine, read_kicked_update);
+
+    EXPECT_TRUE(engine_log_contains("nvidia: the close's restore takes output 1 down"));
+    EXPECT_TRUE(engine_log_contains("nvidia: the update taking head 1 down failed: -4, so the display failed"));
+    EXPECT_FALSE(engine_log_contains("is chosen to light"));
+    EXPECT_TRUE(display_engine_test_access::is_display_failed(engine));
+
+    ASSERT_EQ(g_output_change_count, 2u);
+    EXPECT_TRUE(g_relight_reports[0].relighting);
+    EXPECT_FALSE(g_relight_reports[1].lit);
+    EXPECT_FALSE(g_relight_reports[1].relighting);
+    EXPECT_FALSE(reads_lit(engine, 0));
+
+    EXPECT_EQ(engine.release(), OK);
+    for (gfxfb::buffer* base : taken_down) {
+        free_taken_down_base_buffer(base);
+    }
+}
+
+// The close's restore finding no requested output logs that alone, and one once the GPU failed or the display was
+// released logs that, taking nothing down and keeping output 1's flag
+TEST(nvidia_display_engine, the_closes_restore_with_no_requested_output_or_once_released_or_failed_takes_nothing_down) {
+    engine_firmware fw;
+    engine_video_memory memory;
+    display_engine& engine = set_up_output_1_at_timing_1(fw, memory);
+    gfxfb::buffer* taken_down = engine.base_buffer(1);
+
+    serve_restore(engine);
+    EXPECT_TRUE(engine_log_contains("nvidia: the close's restore finds no output at a requested mode"));
+    EXPECT_EQ(g_output_change_count, 0u);
+
+    int32_t rc = gfxfb::ERR_DEVICE;
+    ASSERT_TRUE(request_served_mode(engine, 1, MODE_1366_BY_768, rc));
+    ASSERT_EQ(rc, gfxfb::OK);
+    fw.mode_set_requests = 0;
+    g_failed_mark->set();
+
+    serve_restore(engine);
+    EXPECT_TRUE(engine_log_contains("nvidia: the close's restore arrived once the GPU failed, so no output is relit"));
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(fw.mode_set_requests, 0u);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 1u << 1);
+
+    EXPECT_EQ(engine.release(), OK);
+    serve_restore(engine);
+    EXPECT_TRUE(engine_log_contains(
+        "nvidia: the close's restore arrived once the display was released, so no output is relit"));
+    EXPECT_EQ(g_output_change_count, 0u);
+    EXPECT_EQ(display_engine_test_access::requested_outputs(engine), 1u << 1);
     free_taken_down_base_buffer(taken_down);
 }
