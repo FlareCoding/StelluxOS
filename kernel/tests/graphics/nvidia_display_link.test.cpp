@@ -27,6 +27,7 @@ using drivers::nvidia::phy_repeater_count;
 using drivers::nvidia::power_down_link;
 using drivers::nvidia::read_link_capabilities;
 using drivers::nvidia::read_link_status;
+using drivers::nvidia::send_displayport_request;
 using drivers::nvidia::set_stream_attributes;
 using drivers::nvidia::NS_PER_MS;
 using drivers::nvidia::train_link;
@@ -176,7 +177,7 @@ struct status_bytes {
     uint8_t  bytes[3];
 };
 
-// A firmware that records each control as sent, refuses the first `refusals` requests of `refused_command`, and answers
+// A firmware that records each control as sent, refuses the first `refusals` sends of `refused_command`, and answers
 // the assignment, output resource facts, capabilities, training and AUX reads from its fields
 class link_firmware : public firmware {
 public:
@@ -196,6 +197,11 @@ public:
     uint32_t refusals = EVERY_REQUEST;
     int32_t  refusal = ERR_FIRMWARE;
     uint32_t trained_retry_time_ms = 0; // the wait an accepted training's reply asks for
+
+    // An `ERR_FIRMWARE` refusal through `control_with_status` gives `refused_status`, 0 for none, and with a status
+    // gives the parameters back, a training's dirtied but for the time to retry after, `refused_retry_time_ms`
+    uint32_t refused_status = 0;
+    uint32_t refused_retry_time_ms = 0;
 
     uint32_t assigned_masks[4] = {TEST_DISPLAY_ID, 0, 0, 0};
     uint32_t assigned_types[4] = {NVIDIA_SOR_TYPE_SINGLE, 0, 0, 0};
@@ -241,8 +247,30 @@ public:
         return OK;
     }
 
-    int32_t control_with_status(rm::handle object, uint32_t command, void* params, size_t size, uint32_t&) override {
-        return control(object, command, params, size);
+    int32_t control_with_status(
+        rm::handle object,
+        uint32_t command,
+        void* params,
+        size_t size,
+        uint32_t& status
+    ) override {
+        int32_t rc = control(object, command, params, size);
+        if (rc == OK) {
+            status = 0;
+        }
+
+        if (rc != ERR_FIRMWARE || refused_status == 0) {
+            return rc;
+        }
+
+        status = refused_status;
+        if (command == NVIDIA_DP_CTRL) {
+            uint8_t* bytes = static_cast<uint8_t*>(params);
+            string::memset(bytes, STALE_BYTE, size);
+            write_u32(bytes, CTRL_RETRY_TIME_OFFSET, refused_retry_time_ms);
+        }
+
+        return rc;
     }
 
     int32_t release(rm::handle) override {
@@ -796,22 +824,32 @@ TEST(nvidia_display_link, trains_each_lane_count_in_the_datas_low_bits) {
     }
 }
 
+// The stack bytes `dirty_stack` fills, more than the frames of `train_link` and the call building its requests take
+static constexpr size_t DIRTIED_STACK_BYTES = 512;
+
+// Fills the stack below the caller with `STALE_BYTE`, so a request that the caller's next call builds there without
+// zeroing it carries that byte
+static __attribute__((noinline)) void dirty_stack() {
+    volatile uint8_t bytes[DIRTIED_STACK_BYTES];
+    for (size_t i = 0; i < DIRTIED_STACK_BYTES; i++) {
+        bytes[i] = STALE_BYTE;
+    }
+}
+
 TEST(nvidia_display_link, trains_each_phy_repeater_from_the_gpu_before_the_sink) {
     link_firmware fw;
     display_output output = CARD_OUTPUT;
     output.phy_repeaters = 2;
 
     bool is_trained = false;
-    ASSERT_EQ(
-        train_link(fw, TEST_DISPLAY_COMMON, output, hbr3_dpcd_behind(2), true, ONE_HBR3_LANE, false, is_trained),
-        OK
-    );
+    dpcd_capabilities dpcd = hbr3_dpcd_behind(2);
+    dirty_stack();
+    ASSERT_EQ(train_link(fw, TEST_DISPLAY_COMMON, output, dpcd, true, ONE_HBR3_LANE, false, is_trained), OK);
 
     EXPECT_TRUE(is_trained);
     ASSERT_EQ(fw.call_count, 3u);
 
-    // Each request after the first takes the frame the one before left holding its dirtied reply, nothing running
-    // between them, so a request not zeroed carries that reply
+    // The training starts on a dirtied stack, so the first request carries `STALE_BYTE` in any byte it leaves unzeroed
     for (uint32_t i = 0; i < 3; i++) {
         uint32_t target = 2 - i;
         const uint8_t* params = fw.calls[i].params;
@@ -869,22 +907,29 @@ TEST(nvidia_display_link, trains_only_the_sink_unless_the_firmware_counts_the_dp
     EXPECT_EQ(read_u32(untrained_repeaters.calls[0].params, CTRL_CMD_OFFSET), 0x83u);
 }
 
-// A refused training is sent once and leaves the link untrained
-TEST(nvidia_display_link, stops_at_a_refused_training_sending_it_once) {
-    link_firmware refusing;
-    refusing.refused_command = NVIDIA_DP_CTRL;
+// The status the tests have display common refuse a training with, a value no request field holds
+static constexpr uint32_t REFUSAL_STATUS = 0x4B;
 
-    bool is_trained = true;
-    ASSERT_EQ(
-        train_link(refusing, TEST_DISPLAY_COMMON, CARD_OUTPUT, hbr3_dpcd(), true, ONE_HBR3_LANE, true, is_trained),
-        OK
-    );
-    EXPECT_FALSE(is_trained);
-    EXPECT_EQ(refusing.call_count, 1u);
+// A training refused naming no time to retry after, with a status or none, is sent once and leaves the link untrained
+TEST(nvidia_display_link, stops_at_a_training_refused_naming_no_retry_time_sending_it_once) {
+    const uint32_t statuses[] = {0, REFUSAL_STATUS};
+    for (uint32_t status : statuses) {
+        link_firmware refusing;
+        refusing.refused_command = NVIDIA_DP_CTRL;
+        refusing.refused_status = status;
+
+        bool is_trained = true;
+        ASSERT_EQ(
+            train_link(refusing, TEST_DISPLAY_COMMON, CARD_OUTPUT, hbr3_dpcd(), true, ONE_HBR3_LANE, true, is_trained),
+            OK
+        );
+        EXPECT_FALSE(is_trained);
+        EXPECT_EQ(refusing.call_count, 1u);
+    }
 }
 
-// A refused training's line gives the refused request's lanes, rate, command and data, each a value no other field
-// holds: the PHY repeater's request at 2 lanes at HBR2 without enhanced framing, its data naming the repeater
+// For a PHY repeater's request at 2 lanes at HBR2 without enhanced framing, a refused training's line gives the
+// request's lanes, rate, command and data (values no other field holds) and no status where the firmware gives none
 TEST(nvidia_display_link, logs_the_lanes_rate_command_and_data_of_a_refused_training) {
     link_firmware refusing;
     refusing.refused_command = NVIDIA_DP_CTRL;
@@ -913,10 +958,11 @@ TEST(nvidia_display_link, logs_the_lanes_rate_command_and_data_of_a_refused_trai
         "nvidia: display common refused to train display id 0x100's link at 2 lanes at DisplayPort rate 0x14 (command "
         "0x2003, data 0x81402), so "
     ));
+    EXPECT_FALSE(link_log_contains("status"));
 }
 
-// The wait an accepted training's reply asks for, long enough for the clock to tell it from none and short enough for
-// an emulator without acceleration
+// The wait a training's reply asks for, accepted or refused, long enough for the clock to tell it from none and short
+// enough for an emulator without acceleration
 static constexpr uint32_t TRAIN_WAIT_MS = 5;
 
 // An accepted reply asking for a wait is waited out before the training goes on
@@ -934,6 +980,109 @@ TEST(nvidia_display_link, waits_out_the_wait_an_accepted_training_reply_asks_for
     EXPECT_TRUE(is_trained);
     EXPECT_EQ(accepted.call_count, 1u);
     EXPECT_GE(elapsed, TRAIN_WAIT_MS * NS_PER_MS);
+}
+
+// NVIDIA's library's sends of one training while the firmware refuses it naming a time to retry after
+static constexpr uint32_t NVIDIA_TRAINING_SENDS = 3;
+
+// A training refused naming a time to retry after is sent 3 times, each send zeroed but for its fields though the stack
+// and the replies before it are dirtied, each time named spun through, and the refusal logged with its status
+TEST(nvidia_display_link, sends_a_training_refused_naming_a_retry_time_3_times) {
+    dpcd_capabilities dpcd = hbr3_dpcd();
+    link_firmware refusing;
+    refusing.refused_command = NVIDIA_DP_CTRL;
+    refusing.refused_status = REFUSAL_STATUS;
+    refusing.refused_retry_time_ms = TRAIN_WAIT_MS;
+    bool is_trained = true;
+
+    s_link_log_bytes = 0;
+    log::set_backend(&LINK_LOG_BACKEND);
+    uint64_t start = clock::now_ns();
+
+    dirty_stack();
+    int32_t rc = train_link(refusing, TEST_DISPLAY_COMMON, CARD_OUTPUT, dpcd, true, ONE_HBR3_LANE, true, is_trained);
+    uint64_t elapsed = clock::now_ns() - start;
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_FALSE(is_trained);
+    ASSERT_EQ(refusing.call_count, NVIDIA_TRAINING_SENDS);
+    EXPECT_GE(elapsed, NVIDIA_TRAINING_SENDS * TRAIN_WAIT_MS * NS_PER_MS);
+    for (uint32_t i = 0; i < NVIDIA_TRAINING_SENDS; i++) {
+        const uint8_t* params = refusing.calls[i].params;
+        EXPECT_EQ(read_u32(params, 0), 0u);
+        EXPECT_EQ(read_u32(params, CTRL_DISPLAY_ID_OFFSET), TEST_DISPLAY_ID);
+        EXPECT_EQ(read_u32(params, CTRL_CMD_OFFSET), NVIDIA_CARD_COMMAND);
+        EXPECT_EQ(read_u32(params, CTRL_DATA_OFFSET), ONE_HBR3_LANE_DATA);
+        for (uint32_t offset = CTRL_DATA_OFFSET + 4; offset < NVIDIA_DP_CTRL_BYTES; offset++) {
+            EXPECT_EQ(params[offset], 0u);
+        }
+    }
+
+    EXPECT_TRUE(link_log_contains(
+        "nvidia: display common refused to train display id 0x100's link at 1 lane at DisplayPort rate 0x1E (command "
+        "0x2083, data 0x1E01, status 0x4B), so "
+    ));
+}
+
+// A request built naming a time to retry after is sent naming none, so a refusal that leaves the parameters as sent
+// ends the sends at one
+TEST(nvidia_display_link, zeroes_the_retry_time_of_each_send) {
+    link_firmware refusing;
+    refusing.refused_command = NVIDIA_DP_CTRL;
+
+    rm::train_link_params request = {};
+    request.retry_time_ms = TRAIN_WAIT_MS;
+
+    rm::train_link_params reply = {};
+    uint32_t status = 0;
+    int32_t rc = send_displayport_request(refusing, TEST_DISPLAY_COMMON, NVIDIA_DP_CTRL, request, reply, status);
+
+    EXPECT_EQ(rc, ERR_FIRMWARE);
+    ASSERT_EQ(refusing.call_count, 1u);
+    EXPECT_EQ(read_u32(refusing.calls[0].params, CTRL_RETRY_TIME_OFFSET), 0u);
+}
+
+// A PHY repeater's training accepted on its third send, after two refusals naming a time to retry after, is followed by
+// the sink's, and the link is trained with no refusal logged
+TEST(nvidia_display_link, trains_the_next_target_once_a_training_refused_naming_a_retry_time_is_accepted) {
+    link_firmware refusing;
+    refusing.refused_command = NVIDIA_DP_CTRL;
+    refusing.refusals = NVIDIA_TRAINING_SENDS - 1;
+    refusing.refused_status = REFUSAL_STATUS;
+    refusing.refused_retry_time_ms = TRAIN_WAIT_MS;
+
+    display_output output = CARD_OUTPUT;
+    output.phy_repeaters = 1;
+
+    bool is_trained = false;
+    s_link_log_bytes = 0;
+    log::set_backend(&LINK_LOG_BACKEND);
+    int32_t rc = train_link(
+        refusing,
+        TEST_DISPLAY_COMMON,
+        output,
+        hbr3_dpcd_behind(1),
+        true,
+        ONE_HBR3_LANE,
+        true,
+        is_trained
+    );
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, OK);
+    EXPECT_TRUE(is_trained);
+    ASSERT_EQ(refusing.call_count, NVIDIA_TRAINING_SENDS + 1);
+    for (uint32_t i = 0; i < NVIDIA_TRAINING_SENDS; i++) {
+        EXPECT_EQ(read_u32(refusing.calls[i].params, CTRL_DATA_OFFSET), ONE_HBR3_LANE_DATA | (1u << 19));
+    }
+
+    EXPECT_EQ(read_u32(refusing.calls[NVIDIA_TRAINING_SENDS].params, CTRL_DATA_OFFSET), ONE_HBR3_LANE_DATA);
+    EXPECT_FALSE(link_log_contains("refused"));
+    EXPECT_TRUE(link_log_contains(
+        "nvidia: display common trained display id 0x100's link at 1 lane at DisplayPort rate 0x1E (command 0x2083, 1 "
+        "PHY repeater trained first)"
+    ));
 }
 
 TEST(nvidia_display_link, configures_the_stream_in_nvidias_layout) {
@@ -1340,6 +1489,7 @@ TEST(nvidia_display_link, logs_a_refused_or_failed_power_down_step_and_takes_the
         "nvidia: display common refused to train display id 0x100's link to zero lanes at DisplayPort rate 0x14"
     ));
     EXPECT_FALSE(link_log_contains("nvidia: display common trained display id 0x100's link to zero lanes"));
+    EXPECT_FALSE(link_log_contains("(status"));
 
     link_firmware failed_training;
     failed_training.refused_command = NVIDIA_DP_CTRL;
@@ -1381,4 +1531,25 @@ TEST(nvidia_display_link, logs_a_refused_or_failed_power_down_step_and_takes_the
     EXPECT_GT(refused_write.call_count, 40u);
     EXPECT_TRUE(link_log_contains("nvidia: display common refused display id 0x100's AUX write of D3 at 0x00600 "));
     EXPECT_TRUE(link_log_contains("nvidia: display common trained display id 0x100's link to zero lanes"));
+}
+
+// A training to zero lanes refused naming a time to retry after is sent 3 times and its refusal logged with its status,
+// and D3 still follows it
+TEST(nvidia_display_link, sends_a_zero_lane_training_refused_naming_a_retry_time_3_times) {
+    link_firmware refusing;
+    refusing.refused_command = NVIDIA_DP_CTRL;
+    refusing.refused_status = REFUSAL_STATUS;
+    refusing.refused_retry_time_ms = TRAIN_WAIT_MS;
+    EXPECT_EQ(power_down_logged(refusing, true, true), OK);
+
+    ASSERT_EQ(refusing.call_count, NVIDIA_TRAINING_SENDS + 1);
+    for (uint32_t i = 0; i < NVIDIA_TRAINING_SENDS; i++) {
+        EXPECT_TRUE(is_zero_lane_training(refusing.calls[i]));
+    }
+
+    EXPECT_TRUE(is_d3_write(refusing.calls[NVIDIA_TRAINING_SENDS]));
+    EXPECT_TRUE(link_log_contains(
+        "nvidia: display common refused to train display id 0x100's link to zero lanes at DisplayPort rate 0x14 "
+        "(status 0x4B)"
+    ));
 }

@@ -3842,20 +3842,23 @@ src/common/displayport/src/dp_evoadapter.cpp
     closest to the GPU, which it numbers highest, and then the sink, training
     the repeaters only when the GPU trains them and the firmware counts as many
     as the DPCD does, setting the lane count, the rate and enhanced framing when
-    the link runs it, sends each request up to 3 times while the firmware
-    refuses it and names a wait, waits as long after any reply naming one, and
-    judges the training by the requests' status alone, that it trains a link to
-    zero lanes with its requests aimed at the sink and naming the
-    configuration's rate, that it sets a single stream with the firmware's
-    override on, its head, output resource, link, blanking symbols, RGB,
-    enhanced framing, transfer unit size and watermark, ignoring the request's
-    status, that it overrides the main stream attributes' stereo bits with their
-    value 0, keeping the override for the next mode and ignoring a NOT_SUPPORTED
-    refusal, in rm.h, display_link.h, display_link.cpp and
-    kernel/tests/graphics/nvidia_display_link.test.cpp, and that it takes a
-    highest rate code outside 1 to 4 in an output resource's DisplayPort facts
-    as RBR, in display_link.h, display_outputs.h, display_outputs.cpp and
-    kernel/tests/graphics/nvidia_display_link.test.cpp
+    the link runs it, and judges the training by the requests' status alone,
+    that it trains a link to zero lanes with its requests aimed at the sink and
+    naming the configuration's rate, that it sets a single stream with the
+    firmware's override on, its head, output resource, link, blanking symbols,
+    RGB, enhanced framing, transfer unit size and watermark, ignoring the
+    request's status, that it overrides the main stream attributes' stereo bits
+    with their value 0, keeping the override for the next mode and ignoring a
+    NOT_SUPPORTED refusal, in rm.h, display_link.h, display_link.cpp and
+    kernel/tests/graphics/nvidia_display_link.test.cpp, that it builds each
+    training request anew for each send, its parameters zeroed but for the
+    subdevice, the display id, the command and the data, sends it up to 3 times
+    in all while the firmware fails it and names a time to retry after, and
+    waits as long after any reply naming one, in display_dpcd.h,
+    display_link.cpp and kernel/tests/graphics/nvidia_display_link.test.cpp,
+    and that it takes a highest rate code outside 1 to 4 in an output
+    resource's DisplayPort facts as RBR, in display_link.h, display_outputs.h,
+    display_outputs.cpp and kernel/tests/graphics/nvidia_display_link.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-dpy.c
