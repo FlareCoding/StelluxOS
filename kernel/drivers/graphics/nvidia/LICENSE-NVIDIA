@@ -1738,7 +1738,10 @@ src/common/sdk/nvidia/inc/nvstatus.h
 src/common/sdk/nvidia/inc/nvstatuscodes.h
     that NV_OK, the status for success, is 0, in falcon.h, falcon.cpp, nvidia.h,
     gsp.h, gsp.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that NV_ERR_TIMEOUT is
+    0x65, in display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that NV_ERR_GENERIC
+    is 0xFFFF, in kernel/tests/graphics/nvidia_display_dpcd.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2014-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/unix/src/registry.c
@@ -1973,11 +1976,14 @@ src/common/sdk/nvidia/inc/nvos.h
     word and the flag, in kernel/tests/graphics/nvidia_address_space.test.cpp,
     the layout of NV_CHANNEL_GROUP_ALLOCATION_PARAMETERS, a channel group's
     allocation parameters, in rm.h, its size in
-    kernel/tests/graphics/nvidia_channel.test.cpp, and
+    kernel/tests/graphics/nvidia_channel.test.cpp,
     NV01_EVENT_KERNEL_CALLBACK_EX, the class of an event object, and
     NV01_EVENT_CLIENT_RM, the flag asking the firmware to post its events back
     to the driver, in rm.h and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that
+    NVOS_STATUS_ERROR_TIMEOUT, the status NVIDIA's DisplayPort library takes as
+    a deferral, is NV_ERR_TIMEOUT, in display_dpcd.cpp and
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia-modeset/src/nvkms-rm.c
@@ -2756,7 +2762,8 @@ src/common/inc/displayport/dpcd.h
     kernel/tests/graphics/nvidia_display_engine.test.cpp,
     NV_DPCD_LINK_SERVICE_IRQ_VECTOR_ESI0 and its LINK_STATUS_CHANGED bit,
     0x02005 and bit 1, a monitor's link service interrupt byte and the bit
-    saying its link status changed, in display_dpcd.h, display_dpcd.cpp and
+    saying its link status changed, in display_dpcd.h, display_dpcd.cpp,
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, and the byte's
     RX_CAP_CHANGED bit, bit 0, in
     kernel/tests/graphics/nvidia_display_engine.test.cpp
@@ -2869,13 +2876,15 @@ src/common/displayport/src/dp_configcaps.cpp
     display_engine.h, display_engine.cpp, display_link.h,
     kernel/tests/graphics/nvidia_display_dpcd.test.cpp,
     kernel/tests/graphics/nvidia_display_engine.test.cpp and
-    kernel/tests/graphics/nvidia_display_link.test.cpp, and that at each short
-    pulse it reads the link service interrupt byte when the monitor's DPCD gives
+    kernel/tests/graphics/nvidia_display_link.test.cpp, that at each short pulse
+    it reads the link service interrupt byte when the monitor's DPCD gives
     revision 1.2 or later and the GPU supports DisplayPort 1.2, unless its
     workaround lowers the monitor's revision to 1.1, and, when the byte's link
     status changed bit is set, writes that bit alone back to clear it, in
     display_dpcd.h, display_dpcd.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that it writes
+    that bit back when a read of the byte finds it set, in
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/displayport/inc/dp_configcaps.h
@@ -2933,7 +2942,10 @@ src/common/sdk/nvidia/inc/ctrl/ctrl0073/ctrl0073dp.h
     sent as the bytes asked for less 1 and given back as the bytes the
     transaction moved, in rm.h, display_dpcd.h, display_dpcd.cpp,
     kernel/tests/graphics/nvidia_display_dpcd.test.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, that control, its
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that control's reply's
+    wait before its request is sent again, in rm.h, display_dpcd.h,
+    display_dpcd.cpp, kernel/tests/graphics/nvidia_display_dpcd.test.cpp and
+    kernel/tests/graphics/nvidia_display_link.test.cpp, that control, its
     parameters' layout, the most bytes one transaction carries, the command of a
     native write, the reply type of an acknowledged transaction and the size
     sent as the bytes asked for less 1 and given back as the bytes the
@@ -3809,12 +3821,18 @@ src/common/displayport/src/dp_evoadapter.cpp
     it makes a connector's main link, in display_engine.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, that it sends each AUX
     transaction up to 3 times, sleeping as long as the firmware says after each,
-    while the firmware fails it and names a time to retry after, takes the
-    firmware's timeout as a deferred reply and takes the GPU as training PHY
-    repeaters unless display common reports that it does not, in display_dpcd.h,
-    that it asks display common for the GPU's DisplayPort facts naming one link,
-    in chip.h, that it takes a DP_LINK_BW value it does not know as RBR, in
-    display_outputs.h, display_outputs.cpp and
+    while the firmware fails it and names a time to retry after, and takes the
+    firmware's timeout as a deferred reply, in display_dpcd.h, display_dpcd.cpp
+    and kernel/tests/graphics/nvidia_display_dpcd.test.cpp, that it sends such a
+    transaction again with the parameters the firmware gave back, in
+    display_dpcd.cpp, that it takes a transaction the firmware fails with a
+    status other than its timeout as refused, in display_dpcd.h,
+    display_dpcd.cpp and kernel/tests/graphics/nvidia_display_dpcd.test.cpp,
+    that it takes the GPU as training PHY repeaters unless display common
+    reports that it does not, in display_dpcd.h, that it asks display common for
+    the GPU's DisplayPort facts naming one link, in chip.h, that it takes a
+    DP_LINK_BW value it does not know as RBR, in display_outputs.h,
+    display_outputs.cpp and
     kernel/tests/graphics/nvidia_display_link_limits.test.cpp, that it asks
     display common for the DisplayPort facts of the output resource it was
     assigned, counts FEC support, the increased watermark limits and PHY
@@ -3881,7 +3899,8 @@ src/common/displayport/src/dp_auxretry.cpp
     in display_dpcd.h, display_dpcd.cpp and
     kernel/tests/graphics/nvidia_display_dpcd.test.cpp, and that it asks again
     for an AUX read or write the monitor defers, up to the retry count its
-    caller names, in display_dpcd.cpp and
+    caller names, in display_dpcd.cpp,
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -3890,7 +3909,8 @@ src/common/displayport/inc/dp_auxretry.h
     none, in display_dpcd.h, display_dpcd.cpp,
     kernel/tests/graphics/nvidia_display_dpcd.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp, and of an AUX write
-    whose caller names none, in display_dpcd.cpp and
+    whose caller names none, in display_dpcd.cpp,
+    kernel/tests/graphics/nvidia_display_dpcd.test.cpp and
     kernel/tests/graphics/nvidia_display_engine.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 1993-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

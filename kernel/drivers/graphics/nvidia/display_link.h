@@ -105,7 +105,8 @@ int32_t read_link_capabilities(
  * calling CPU spins for that wait, as NVIDIA's library does after any reply
  * naming one. A refused request is logged and leaves the link untrained,
  * where NVIDIA's library sends a refused request naming a wait again, up to 3
- * times in all, since `firmware::control` gives no refused request's reply.
+ * times in all, since each request goes through `firmware::control`, which
+ * gives no refused request's reply.
  * @param fw The bound firmware.
  * @param display_common The display common object.
  * @param output The output the link drives.

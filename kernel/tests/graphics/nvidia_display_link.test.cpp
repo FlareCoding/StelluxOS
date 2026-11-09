@@ -108,6 +108,7 @@ static constexpr uint32_t AUX_ADDRESS_OFFSET    = 16;
 static constexpr uint32_t AUX_DATA_OFFSET       = 20;
 static constexpr uint32_t AUX_SIZE_OFFSET       = 36;
 static constexpr uint32_t AUX_REPLY_OFFSET      = 40;
+static constexpr uint32_t AUX_RETRY_TIME_OFFSET = 44;
 static constexpr size_t   AUX_DATA_BYTES        = 16;
 
 // NVIDIA's DP_CTRL command bits setting the lane count and the link rate, alone, and its native write of
@@ -304,7 +305,8 @@ private:
         }
     }
 
-    // Takes the address and size before the dirtying, then acknowledges the read with the status bytes there, or 0s
+    // Takes the address and size before the dirtying, then acknowledges the read with the status bytes there, or 0s,
+    // naming no time to retry after
     void answer_aux(uint8_t* bytes, size_t size) const {
         uint32_t address = read_u32(bytes, AUX_ADDRESS_OFFSET);
         uint32_t asked = read_u32(bytes, AUX_SIZE_OFFSET) + 1;
@@ -319,6 +321,7 @@ private:
 
         write_u32(bytes, AUX_SIZE_OFFSET, asked);
         write_u32(bytes, AUX_REPLY_OFFSET, 0);
+        write_u32(bytes, AUX_RETRY_TIME_OFFSET, 0);
     }
 };
 

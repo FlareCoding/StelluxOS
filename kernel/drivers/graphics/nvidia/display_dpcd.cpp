@@ -57,6 +57,13 @@ static constexpr uint8_t  LINK_STATUS_CHANGED     = 0x02;
 // NVIDIA's library's requests for a read or write of one byte while the monitor defers it (minimumRetriesOnDefer)
 static constexpr uint32_t DEFERRED_REQUESTS = 7;
 
+// NVIDIA's NV_ERR_TIMEOUT, the firmware's status for an AUX request it timed out, which NVIDIA's library takes as a
+// deferral
+static constexpr uint32_t FIRMWARE_STATUS_TIMEOUT = 0x65;
+
+// NVIDIA's library's sends of one AUX request while the firmware fails it and names a time to retry after
+static constexpr uint32_t AUX_SENDS = 3;
+
 // NVIDIA's library's requests for each read after the byte at 0x0000E, and its passes, the first and the 3 more
 // (faultyRetries) it makes while the field cannot be read
 static constexpr uint32_t CAPABILITY_REQUESTS = 16;
@@ -73,9 +80,11 @@ namespace {
 
 // How one AUX request of a DPCD read or write ended
 struct aux_answer {
-    bool     is_refused; // the firmware refused the request with `ERR_FIRMWARE`
-    uint32_t reply;      // NVIDIA's replyType, when not refused
-    uint32_t size;       // the bytes the transaction moved, when not refused
+    bool     is_refused;   // the firmware failed the request with a status other than its timeout
+    bool     is_timed_out; // the firmware failed the request with `FIRMWARE_STATUS_TIMEOUT`
+    uint32_t status;       // NVIDIA's status for a failed request, 0 when the firmware refused the message carrying it
+    uint32_t reply;        // NVIDIA's replyType, when the firmware did not fail the request
+    uint32_t size;         // the bytes the transaction moved, when the firmware did not fail the request
 };
 
 } // namespace
@@ -136,14 +145,51 @@ static uint8_t trained_lanes(uint8_t count) {
 
 // Whether `answer` is the monitor's acknowledgment moving exactly the `bytes` bytes asked for
 static bool is_acknowledged_exactly(const aux_answer& answer, uint32_t bytes) {
-    bool is_acknowledged = !answer.is_refused && answer.reply == rm::AUX_REPLY_ACK;
+    bool is_acknowledged = !answer.is_refused && !answer.is_timed_out && answer.reply == rm::AUX_REPLY_ACK;
     return is_acknowledged && answer.size == bytes;
 }
 
 // Whether `answer` is the monitor's acknowledgment moving more than the `bytes` bytes asked for
 static bool is_acknowledged_with_more(const aux_answer& answer, uint32_t bytes) {
-    bool is_acknowledged = !answer.is_refused && answer.reply == rm::AUX_REPLY_ACK;
+    bool is_acknowledged = !answer.is_refused && !answer.is_timed_out && answer.reply == rm::AUX_REPLY_ACK;
     return is_acknowledged && answer.size > bytes;
+}
+
+// Sends the AUX request `params` holds, again while the firmware fails it naming a time to retry after, up to
+// `AUX_SENDS` sends, spinning for each time named, and gives how the last send ended in `answer` and `params`
+static int32_t send_aux_request(firmware& fw, rm::handle display_common, rm::aux_params& params, aux_answer& answer) {
+    rm::aux_params request = params;
+    int32_t rc = OK;
+    uint32_t status = 0;
+    for (uint32_t sends = 0; sends < AUX_SENDS; sends++) {
+        // Each send carries the request as built, since the firmware's copy that NVIDIA's library resends can hold the
+        // reply's size in place of the size asked
+        params = request;
+        status = 0;
+        rc = fw.control_with_status(display_common, rm::CONTROL_DP_AUX, &params, sizeof(params), status);
+        if (rc != OK && rc != ERR_FIRMWARE) {
+            return rc;
+        }
+
+        if (params.retry_time_ms > 0) {
+            spin_for_ms(params.retry_time_ms);
+        }
+
+        if (rc == OK || params.retry_time_ms == 0) {
+            break;
+        }
+    }
+
+    bool is_failed = rc == ERR_FIRMWARE;
+    answer = {
+        .is_refused   = is_failed && status != FIRMWARE_STATUS_TIMEOUT,
+        .is_timed_out = is_failed && status == FIRMWARE_STATUS_TIMEOUT,
+        .status       = status,
+        .reply        = params.reply,
+        .size         = params.size,
+    };
+
+    return OK;
 }
 
 // Sends one request reading `bytes` bytes of the DPCD from `address`, gives how it ended in `answer` and copies the
@@ -163,16 +209,10 @@ static int32_t request_dpcd_read(
     params.address = address;
     params.size = bytes - 1;
 
-    int32_t rc = fw.control(display_common, rm::CONTROL_DP_AUX, &params, sizeof(params));
-    if (rc != OK && rc != ERR_FIRMWARE) {
+    int32_t rc = send_aux_request(fw, display_common, params, answer);
+    if (rc != OK) {
         return rc;
     }
-
-    answer = {
-        .is_refused = rc == ERR_FIRMWARE,
-        .reply      = params.reply,
-        .size       = params.size,
-    };
 
     if (is_acknowledged_exactly(answer, bytes)) {
         string::memcpy(out, params.data, bytes);
@@ -197,27 +237,17 @@ static int32_t request_dpcd_write(
     params.data[0] = value;
     params.size = sizeof(value) - 1;
 
-    int32_t rc = fw.control(display_common, rm::CONTROL_DP_AUX, &params, sizeof(params));
-    if (rc != OK && rc != ERR_FIRMWARE) {
-        return rc;
-    }
-
-    answer = {
-        .is_refused = rc == ERR_FIRMWARE,
-        .reply      = params.reply,
-        .size       = params.size,
-    };
-
-    return OK;
+    return send_aux_request(fw, display_common, params, answer);
 }
 
-// Whether the monitor deferred the request `answer` tells of
+// Whether the firmware timed out the request `answer` tells of or the monitor deferred it
 static bool is_deferred(const aux_answer& answer) {
-    return !answer.is_refused && (answer.reply == rm::AUX_REPLY_DEFER || answer.reply == rm::AUX_REPLY_I2C_DEFER);
+    bool is_deferred_reply = answer.reply == rm::AUX_REPLY_DEFER || answer.reply == rm::AUX_REPLY_I2C_DEFER;
+    return answer.is_timed_out || (!answer.is_refused && is_deferred_reply);
 }
 
-// Whether a read is asked again after `answer`: a deferred reply, or an acknowledgment moving some but not all of the
-// bytes asked for or more than those, which NVIDIA's library asks again on
+// Whether a read is asked again after `answer`: the firmware's timeout, a deferred reply, or an acknowledgment moving
+// some but not all of the bytes asked for or more than those, which NVIDIA's library asks again on
 static bool is_asked_again(const aux_answer& answer, uint32_t bytes) {
     if (answer.is_refused) {
         return false;
@@ -237,6 +267,18 @@ static void log_unread(
     uint32_t requests,
     const char* outcome
 ) {
+    if (answer.is_refused && answer.status != 0) {
+        log::error(
+            "nvidia: display common refused display id 0x%X's %u-byte AUX read at 0x%05X (status 0x%X)%s",
+            display_id,
+            bytes,
+            address,
+            answer.status,
+            outcome
+        );
+        return;
+    }
+
     if (answer.is_refused) {
         log::error(
             "nvidia: display common refused display id 0x%X's %u-byte AUX read at 0x%05X%s",
@@ -249,6 +291,21 @@ static void log_unread(
     }
 
     const char* request_word = requests == 1 ? "request" : "requests";
+    if (answer.is_timed_out) {
+        log::error(
+            "nvidia: display id 0x%X's %u-byte AUX read at 0x%05X ended with the firmware's timeout (status 0x%X) "
+            "after %u %s%s",
+            display_id,
+            bytes,
+            address,
+            answer.status,
+            requests,
+            request_word,
+            outcome
+        );
+        return;
+    }
+
     if (answer.reply != rm::AUX_REPLY_ACK) {
         log::error(
             "nvidia: display id 0x%X's %u-byte AUX read at 0x%05X ended with %s from its monitor (reply type %u) after "
@@ -282,11 +339,35 @@ static void log_unread(
 
 // Logs why a monitor took no D3 after `tries` writes, from how the last ended
 static void log_unwritten_power_state(uint32_t display_id, const aux_answer& answer, uint32_t tries) {
+    if (answer.is_refused && answer.status != 0) {
+        log::error(
+            "nvidia: display common refused display id 0x%X's AUX write of D3 at 0x%05X (status 0x%X) on the last of "
+            "%u tries",
+            display_id,
+            DPCD_SET_POWER,
+            answer.status,
+            tries
+        );
+        return;
+    }
+
     if (answer.is_refused) {
         log::error(
             "nvidia: display common refused display id 0x%X's AUX write of D3 at 0x%05X on the last of %u tries",
             display_id,
             DPCD_SET_POWER,
+            tries
+        );
+        return;
+    }
+
+    if (answer.is_timed_out) {
+        log::error(
+            "nvidia: display id 0x%X's AUX write of D3 at 0x%05X ended with the firmware's timeout (status 0x%X) after "
+            "%u tries",
+            display_id,
+            DPCD_SET_POWER,
+            answer.status,
             tries
         );
         return;
@@ -317,6 +398,17 @@ static void log_unwritten_power_state(uint32_t display_id, const aux_answer& ans
 
 // Logs why the write clearing a monitor's link status changed bit is not taken as done after `requests` requests
 static void log_uncleared(uint32_t display_id, const aux_answer& answer, uint32_t requests) {
+    if (answer.is_refused && answer.status != 0) {
+        log::error(
+            "nvidia: display common refused display id 0x%X's AUX write clearing its link status changed bit at "
+            "0x%05X (status 0x%X)",
+            display_id,
+            LINK_SERVICE_INTERRUPTS,
+            answer.status
+        );
+        return;
+    }
+
     if (answer.is_refused) {
         log::error(
             "nvidia: display common refused display id 0x%X's AUX write clearing its link status changed bit at "
@@ -328,6 +420,19 @@ static void log_uncleared(uint32_t display_id, const aux_answer& answer, uint32_
     }
 
     const char* request_word = requests == 1 ? "request" : "requests";
+    if (answer.is_timed_out) {
+        log::error(
+            "nvidia: display id 0x%X's AUX write clearing its link status changed bit at 0x%05X ended with the "
+            "firmware's timeout (status 0x%X) after %u %s",
+            display_id,
+            LINK_SERVICE_INTERRUPTS,
+            answer.status,
+            requests,
+            request_word
+        );
+        return;
+    }
+
     if (answer.reply != rm::AUX_REPLY_ACK) {
         log::error(
             "nvidia: display id 0x%X's AUX write clearing its link status changed bit at 0x%05X ended with %s from its "
