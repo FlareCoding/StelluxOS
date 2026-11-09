@@ -10,6 +10,7 @@
 #include "drivers/graphics/nvidia/display_dpcd.h"
 #include "drivers/graphics/nvidia/display_edid.h"
 #include "drivers/graphics/nvidia/display_heads.h"
+#include "drivers/graphics/nvidia/display_modes.h"
 #include "drivers/graphics/nvidia/display_outputs.h"
 #include "drivers/graphics/nvidia/firmware.h"
 #include "drivers/graphics/nvidia/rm.h"
@@ -48,6 +49,7 @@ struct output_modes {
     uint8_t           count;
     uint8_t           indices[edid::TIMINGS_MAX]; // each mode's index in the EDID, the first `count` entries
     edid::timing      timings[edid::TIMINGS_MAX]; // each mode's timing, the first `count` entries
+    mode_list         listed;                     // the modes the output lists once lit
     dpcd_capabilities dpcd;
     edid_copy         edid;
 

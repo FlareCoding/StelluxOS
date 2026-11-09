@@ -226,6 +226,8 @@ static void keep_output_modes(
         modes.timings[rank] = monitor.timings[candidates.timings[rank]];
     }
 
+    list_modes(modes.timings, modes.count, modes.listed);
+
     // A candidate's timing always has a configuration, as `find_mode_candidates` keeps only those
     uint8_t timing_index = candidates.timings[0];
     const edid::timing& timing = monitor.timings[timing_index];
@@ -376,11 +378,12 @@ static void free_output_modes(output_modes*& modes) {
     modes = nullptr;
 }
 
-// Keeps in `head` the EDID bytes, monitor and DPCD capabilities its output lights with: a later plug of that output
-// compares the bytes and reads its link status by the capabilities, and gfxfb reads the monitor while the head is lit
+// Keeps in `head` the EDID bytes, monitor, DPCD capabilities and mode list its output lights with: a later plug
+// compares the bytes and reads its link status by the capabilities, and gfxfb reads the rest while the head is lit
 static void keep_lit_monitor(engine_head& head, const output_modes& modes) {
     string::memcpy(&head.lit_edid, &modes.edid, sizeof(head.lit_edid));
     string::memcpy(&head.lit_dpcd, &modes.dpcd, sizeof(head.lit_dpcd));
+    string::memcpy(&head.listed, &modes.listed, sizeof(head.listed));
     head.lit_monitor = modes.monitor;
 }
 
@@ -1943,12 +1946,7 @@ int32_t display_engine::prepare_light(
         return rc;
     }
 
-    head.mode = {
-        .width              = light.timing.width,
-        .height             = light.timing.height,
-        .refresh_millihertz = light.timing.refresh_millihertz(),
-    };
-
+    head.mode = mode_of(light.timing);
     head.timing = light.timing;
     head.timing_index = light.timing_index;
 
@@ -3169,6 +3167,10 @@ void display_engine::relight_at_lit_timing(uint8_t output, const engine_head& he
     modes->count = 1;
     modes->indices[0] = head.timing_index;
     modes->timings[0] = head.timing;
+
+    // The list stays whole, not shrunk to the one timing tried, as the light reuses the EDID and DPCD capabilities the
+    // output was lit with
+    string::memcpy(&modes->listed, &head.listed, sizeof(modes->listed));
     string::memcpy(&modes->dpcd, &head.lit_dpcd, sizeof(modes->dpcd));
     string::memcpy(&modes->edid, &head.lit_edid, sizeof(modes->edid));
     modes->monitor = head.lit_monitor;
@@ -4260,16 +4262,25 @@ int32_t display_engine::read_output(uint32_t output, gfxfb::output_state& out) {
 }
 
 int32_t display_engine::read_modes(uint32_t output, gfxfb::gfxfb_mode* out, uint32_t capacity, uint32_t& count) {
-    gfxfb::output_state state = {};
-    int32_t rc = read_output(output, state);
-    if (rc != gfxfb::OK) {
-        return rc;
+    if (output >= m_output_count) {
+        return gfxfb::ERR_INVALID_ARG;
     }
 
-    count = state.lit ? 1 : 0;
-    if (count > 0 && capacity > 0) {
-        out[0] = state.current;
-    }
+    uint32_t list_count = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_output_lock);
+        const engine_head* head = find_lit_head(output);
+        if (head != nullptr) {
+            list_count = head->listed.count;
+            for (uint32_t index = 0; index < list_count && index < capacity; index++) {
+                out[index] = head->listed.modes[index];
+            }
+        }
+
+        sync::spin_unlock_irqrestore(m_output_lock, irq);
+    });
+
+    count = list_count;
 
     return gfxfb::OK;
 }

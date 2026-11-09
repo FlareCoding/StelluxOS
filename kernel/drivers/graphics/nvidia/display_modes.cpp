@@ -1,4 +1,5 @@
 #include "drivers/graphics/nvidia/display_modes.h"
+#include "common/string.h"
 
 namespace drivers::nvidia {
 
@@ -22,6 +23,19 @@ static bool may_be_mode(const edid::timing& timing, const displayport::link_fact
 
     displayport::link_configuration config = {};
     return displayport::find_lowest_configuration(facts, timing, config);
+}
+
+// Whether `list` holds a mode of `mode`'s width, height and refresh
+static bool lists_mode(const mode_list& list, const gfxfb::gfxfb_mode& mode) {
+    for (uint8_t index = 0; index < list.count; index++) {
+        const gfxfb::gfxfb_mode& listed = list.modes[index];
+        bool is_same_size = listed.width == mode.width && listed.height == mode.height;
+        if (is_same_size && listed.refresh_millihertz == mode.refresh_millihertz) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void find_mode_candidates(
@@ -55,6 +69,26 @@ void find_mode_candidates(
 
         out.timings[slot] = static_cast<uint8_t>(index);
         out.count++;
+    }
+}
+
+gfxfb::gfxfb_mode mode_of(const edid::timing& timing) {
+    return {
+        .width              = timing.width,
+        .height             = timing.height,
+        .refresh_millihertz = timing.refresh_millihertz(),
+    };
+}
+
+void list_modes(const edid::timing* timings, uint8_t count, mode_list& out) {
+    string::memset(&out, 0, sizeof(out));
+
+    for (uint8_t index = 0; index < count; index++) {
+        gfxfb::gfxfb_mode mode = mode_of(timings[index]);
+        if (!lists_mode(out, mode)) {
+            out.modes[out.count] = mode;
+            out.count++;
+        }
     }
 }
 

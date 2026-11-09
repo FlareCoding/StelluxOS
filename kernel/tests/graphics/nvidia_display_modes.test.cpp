@@ -10,7 +10,10 @@ TEST_SUITE(nvidia_display_modes);
 
 using drivers::nvidia::find_mode_candidates;
 using drivers::nvidia::LIMITED_REFRESH_BOUND_MILLIHERTZ;
+using drivers::nvidia::list_modes;
 using drivers::nvidia::mode_candidates;
+using drivers::nvidia::mode_list;
+using drivers::nvidia::mode_of;
 using drivers::nvidia::displayport::link_facts;
 using drivers::nvidia::displayport::link_rate;
 
@@ -285,4 +288,74 @@ TEST(nvidia_display_modes, gives_no_timing_without_lanes_or_timings) {
 
     EXPECT_EQ(no_timings.count, 0u);
     EXPECT_EQ(no_timings.timings[0], 0u);
+}
+
+// Lists the modes of the timings `candidates` holds in rank order, from `s_monitor`, as the engine lists a lit output's
+static void list_candidates(const mode_candidates& candidates, mode_list& out) {
+    edid::timing ranked[edid::TIMINGS_MAX] = {};
+    for (uint8_t rank = 0; rank < candidates.count; rank++) {
+        ranked[rank] = s_monitor.timings[candidates.timings[rank]];
+    }
+
+    list_modes(ranked, candidates.count, out);
+}
+
+static void expect_mode(const gfxfb::gfxfb_mode& actual, uint32_t width, uint32_t height, uint64_t refresh_millihertz) {
+    EXPECT_EQ(actual.width, width);
+    EXPECT_EQ(actual.height, height);
+    EXPECT_EQ(actual.refresh_millihertz, refresh_millihertz);
+}
+
+TEST(nvidia_display_modes, gives_a_timings_visible_size_and_refresh_as_its_mode) {
+    gfxfb::gfxfb_mode mode = mode_of(AOC_AG241QG4_TIMINGS[1]);
+
+    expect_mode(mode, 2560, 1440, AOC_AG241QG4_TIMINGS[1].refresh_millihertz());
+    EXPECT_EQ(mode.refresh_millihertz, 143911u);
+}
+
+// The IOC 25G2S's modes, five refreshes at 2560 by 1440 and 1920 by 1080 at the first's 60 Hz, so a list telling modes
+// apart by size alone or by refresh alone would drop some
+TEST(nvidia_display_modes, lists_the_ioc_25g2s_modes_in_rank_order) {
+    set_timings(IOC_25G2S_TIMINGS, 6, true);
+    mode_candidates candidates = {};
+    find_mode_candidates(s_monitor, RTX_3080_TO_IOC_25G2S, false, candidates);
+
+    mode_list list = {};
+    list_candidates(candidates, list);
+
+    ASSERT_EQ(list.count, 6u);
+
+    expect_mode(list.modes[0], 2560, 1440, 60000);
+    expect_mode(list.modes[1], 2560, 1440, 240000);
+    expect_mode(list.modes[2], 2560, 1440, 164999);
+    expect_mode(list.modes[3], 2560, 1440, 143999);
+    expect_mode(list.modes[4], 2560, 1440, 120000);
+    expect_mode(list.modes[5], 1920, 1080, 60000);
+}
+
+// `TIED_TIMINGS`' fourth timing differs from the first in horizontal sync polarity alone, so the list drops its mode
+TEST(nvidia_display_modes, lists_once_the_mode_of_timings_whose_sync_alone_differs) {
+    set_timings(TIED_TIMINGS, 4, false);
+    mode_candidates candidates = {};
+    find_mode_candidates(s_monitor, RTX_3080_TO_IOC_25G2S, false, candidates);
+
+    mode_list list = {};
+    list_candidates(candidates, list);
+
+    ASSERT_EQ(list.count, 3u);
+    expect_mode(list.modes[0], 2560, 1440, 59950);
+    expect_mode(list.modes[1], 1920, 1080, 120000);
+    expect_mode(list.modes[2], 1920, 1080, 60000);
+    EXPECT_EQ(list.modes[3].width, 0u);
+}
+
+TEST(nvidia_display_modes, lists_no_mode_for_no_timing) {
+    mode_list list = {};
+    list.count = 1;
+    list.modes[0] = mode_of(IOC_25G2S_TIMINGS[0]);
+
+    list_modes(IOC_25G2S_TIMINGS, 0, list);
+
+    EXPECT_EQ(list.count, 0u);
+    EXPECT_EQ(list.modes[0].width, 0u);
 }

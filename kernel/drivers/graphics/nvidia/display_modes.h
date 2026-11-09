@@ -5,6 +5,7 @@
 
 #include "common/types.h"
 #include "drivers/graphics/edid.h"
+#include "drivers/graphics/gfxfb.h"
 #include "drivers/graphics/nvidia/displayport.h"
 
 namespace drivers::nvidia {
@@ -13,6 +14,8 @@ namespace drivers::nvidia {
 // allows a refresh less than 1% above the top of a range of refresh rates
 constexpr uint64_t LIMITED_REFRESH_BOUND_MILLIHERTZ = 60600;
 
+static_assert(edid::TIMINGS_MAX <= gfxfb::GFXFB_MODES_MAX, "an output lists at most GFXFB_MODES_MAX modes");
+
 /**
  * The timings of an output's EDID that may be its mode, in the order
  * `find_mode_candidates` ranks them, the first being the mode.
@@ -20,6 +23,12 @@ constexpr uint64_t LIMITED_REFRESH_BOUND_MILLIHERTZ = 60600;
 struct mode_candidates {
     uint8_t count;
     uint8_t timings[edid::TIMINGS_MAX]; // distinct indices below the EDID's `timing_count`, the first `count` entries
+};
+
+// The modes an output lists while lit, in the order `list_modes` gives them
+struct mode_list {
+    uint8_t           count;
+    gfxfb::gfxfb_mode modes[edid::TIMINGS_MAX]; // distinct modes, the first `count` entries
 };
 
 /**
@@ -45,6 +54,20 @@ void find_mode_candidates(
     bool is_limited_to_60_hz,
     mode_candidates& out
 );
+
+// The mode an output lit at `timing` reads at: the timing's visible width, height and refresh
+gfxfb::gfxfb_mode mode_of(const edid::timing& timing);
+
+/**
+ * @brief Give the modes of `count` timings in their order, each as `mode_of`
+ * gives it, leaving out a mode an earlier timing gave, as for two timings
+ * whose sync polarities alone differ.
+ * @param timings The timings to list.
+ * @param count How many timings to list, which must be at most
+ * `edid::TIMINGS_MAX`.
+ * @param out Rewritten whole.
+ */
+void list_modes(const edid::timing* timings, uint8_t count, mode_list& out);
 
 } // namespace drivers::nvidia
 

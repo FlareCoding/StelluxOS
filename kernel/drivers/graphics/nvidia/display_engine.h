@@ -124,8 +124,10 @@ struct engine_head {
     bool              is_lit;                  // set by the light under the engine's output lock
     bool              is_closing;              // set while its output is taken down, cleared only once marked dark
 
-    // The monitor `lit_edid` names, written before the light by `set_up` or the driver task, which alone reads it bare
+    // The monitor `lit_edid` names and the modes its output lists, written before the light by `set_up` or the driver
+    // task, which alone reads them bare
     gfxfb::monitor_identity lit_monitor;
+    mode_list               listed;
 
     // The window's notifier, its page allocated and its context DMA bound to the window's channel before the light
     window_notifier notifier;
@@ -189,13 +191,14 @@ struct engine_head {
  *
  * A lit output reads at its mode with its base buffer, mapped write-combining,
  * and a cursor of up to 256 by 256 pixels, 0 by 0 when its light found none,
- * and every other output reads dark. A lit output lists its mode alone, and
- * the engine refuses every mode request. One spinlock, the output lock, guards
- * every head's state and is never held across a wait. After `release`, every
- * output reads dark and lists no mode, and `flush()`, `present()`,
- * `create_buffer()`, `import_buffer()` and the cursor calls fail, while gfxfb
- * keeps the base buffers, which BAR1 stops translating once `detach()` restores
- * BAR1's block register.
+ * and every other output reads dark. A lit output lists the modes of the
+ * timings `find_mode_candidates` ranks from the EDID and DPCD capabilities it
+ * was lit with, each mode once, and the engine refuses every mode request. One
+ * spinlock, the output lock, guards every head's state and is never held
+ * across a wait. After `release`, every output reads dark and lists no mode,
+ * and `flush()`, `present()`, `create_buffer()`, `import_buffer()` and the
+ * cursor calls fail, while gfxfb keeps the base buffers, which BAR1 stops
+ * translating once `detach()` restores BAR1's block register.
  *
  * From `set_up` until `release` it serves hotplug and short pulse events on the
  * driver task. A hotplug, unless the display or the GPU failed, updates the
@@ -413,7 +416,8 @@ private:
      */
     void check_lit_link(uint8_t output);
 
-    // Relights lit `output` at the timing `head` lit it at, leaving it lit when that timing's list cannot be allocated
+    // Relights lit `output` at the timing `head` lit it at, keeping its mode list, or leaves it lit when allocating
+    // that light's `output_modes` fails
     void relight_at_lit_timing(uint8_t output, const engine_head& head);
 
     // Clears the connected record of each output unplugged and not plugged in, taking it down when lit, then sets that
