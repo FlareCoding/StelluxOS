@@ -45,8 +45,8 @@ using drivers::nvidia::vram_range;
 using drivers::nvidia::vram_use;
 namespace rm = drivers::nvidia::rm;
 
-// NVIDIA's classes, controls, privilege, USERD offset, doorbell and channel parameter offsets, restated here so the
-// tests hold the copy channel to NVIDIA's layout rather than to the driver's
+// NVIDIA's classes, controls, privilege, error notifier types, USERD offset, doorbell and channel parameter offsets,
+// restated here so the tests hold the copy channel to NVIDIA's layout rather than to the driver's
 static constexpr uint32_t FERMI_VASPACE_A              = 0x90F1;
 static constexpr uint32_t SET_PAGE_DIRECTORY           = 0x801813;
 static constexpr uint32_t UNSET_PAGE_DIRECTORY         = 0x801814;
@@ -58,6 +58,7 @@ static constexpr uint32_t AMPERE_DMA_COPY_B            = 0xC7B5;
 static constexpr uint32_t BIND                         = 0xA06F0104;
 static constexpr uint32_t GPFIFO_SCHEDULE              = 0xA06F0103;
 static constexpr uint32_t PRIVILEGE_KERNEL             = 0x2;
+static constexpr uint32_t NO_ERROR_NOTIFIERS           = 0x14;
 static constexpr uint32_t USERD_GP_PUT                 = 0x8C;
 static constexpr uint32_t VIRTUAL_FUNCTION_DOORBELL    = 0xBB0090;
 static constexpr size_t   GPFIFO_OFFSET_AT             = 8;
@@ -344,7 +345,7 @@ TEST(nvidia_copy_channel, create_runs_a_privileged_channel_in_its_own_space) {
     EXPECT_EQ(fw.calls[0].parent, TEST_OBJECTS.device);
     EXPECT_EQ(fw.channel_doubleword(GPFIFO_OFFSET_AT), GPFIFO_ADDRESS);
     EXPECT_EQ(fw.channel_word(FLAGS_AT), channel_allocation_flags(TEST_CHANNEL_ID, true));
-    EXPECT_EQ(fw.channel_word(INTERNAL_FLAGS_AT), PRIVILEGE_KERNEL);
+    EXPECT_EQ(fw.channel_word(INTERNAL_FLAGS_AT), PRIVILEGE_KERNEL | NO_ERROR_NOTIFIERS);
     EXPECT_EQ(fixture.copier.create(copy_test_card(), copy_test_chip(), COPY2_ENGINE, TEST_CHANNEL_ID), ERR_BAD_STATE);
 }
 

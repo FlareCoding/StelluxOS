@@ -1269,6 +1269,9 @@ struct channel_params {
 constexpr uint32_t CHANNEL_PRIVILEGE_USER   = 0x0;
 constexpr uint32_t CHANNEL_PRIVILEGE_KERNEL = 0x2;
 
+// NVIDIA's ERROR_NOTIFIER_TYPE_NONE for both error notifiers, in bits 3:2 and 5:4, since the firmware asserts on 0
+constexpr uint32_t CHANNEL_NO_ERROR_NOTIFIERS = 0x14;
+
 static_assert(sizeof(memory_desc_params) == 24, "NVIDIA's layout of NV_MEMORY_DESC_PARAMS");
 static_assert(sizeof(channel_params) == 360, "NVIDIA's layout of NV_CHANNEL_ALLOC_PARAMS");
 

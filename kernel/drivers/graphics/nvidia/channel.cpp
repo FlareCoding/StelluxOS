@@ -340,7 +340,9 @@ int32_t channel::allocate_channel(const chip_info& chip, address_space& space, c
     params.gpfifo_entries = GPFIFO_ENTRIES;
     params.flags = channel_allocation_flags(setup.id, setup.is_privileged);
     params.engine_type = setup.engine.type;
+
     params.internal_flags = setup.is_privileged ? rm::CHANNEL_PRIVILEGE_KERNEL : rm::CHANNEL_PRIVILEGE_USER;
+    params.internal_flags |= rm::CHANNEL_NO_ERROR_NOTIFIERS;
 
     params.instance_block = video_memory_desc(m_instance_block.offset, INSTANCE_BLOCK_BYTES);
     params.userd = system_memory_desc(m_userd, USERD_BYTES);
