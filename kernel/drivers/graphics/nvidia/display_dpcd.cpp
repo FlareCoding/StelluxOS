@@ -61,9 +61,6 @@ static constexpr uint32_t DEFERRED_REQUESTS = 7;
 // deferral
 static constexpr uint32_t FIRMWARE_STATUS_TIMEOUT = 0x65;
 
-// NVIDIA's library's sends of one AUX request while the firmware fails it and names a time to retry after
-static constexpr uint32_t AUX_SENDS = 3;
-
 // NVIDIA's library's requests for each read after the byte at 0x0000E, and its passes, the first and the 3 more
 // (faultyRetries) it makes while the field cannot be read
 static constexpr uint32_t CAPABILITY_REQUESTS = 16;
@@ -155,29 +152,16 @@ static bool is_acknowledged_with_more(const aux_answer& answer, uint32_t bytes) 
     return is_acknowledged && answer.size > bytes;
 }
 
-// Sends the AUX request `params` holds, again while the firmware fails it naming a time to retry after, up to
-// `AUX_SENDS` sends, spinning for each time named, and gives how the last send ended in `answer` and `params`
+// Sends the AUX request `params` holds through `send_displayport_request` and gives how the last send ended in `answer`
+// and `params`
 static int32_t send_aux_request(firmware& fw, rm::handle display_common, rm::aux_params& params, aux_answer& answer) {
+    // Each send carries the request as built, since the firmware's copy that NVIDIA's library resends can hold the
+    // reply's size in place of the size asked
     rm::aux_params request = params;
-    int32_t rc = OK;
     uint32_t status = 0;
-    for (uint32_t sends = 0; sends < AUX_SENDS; sends++) {
-        // Each send carries the request as built, since the firmware's copy that NVIDIA's library resends can hold the
-        // reply's size in place of the size asked
-        params = request;
-        status = 0;
-        rc = fw.control_with_status(display_common, rm::CONTROL_DP_AUX, &params, sizeof(params), status);
-        if (rc != OK && rc != ERR_FIRMWARE) {
-            return rc;
-        }
-
-        if (params.retry_time_ms > 0) {
-            spin_for_ms(params.retry_time_ms);
-        }
-
-        if (rc == OK || params.retry_time_ms == 0) {
-            break;
-        }
+    int32_t rc = send_displayport_request(fw, display_common, rm::CONTROL_DP_AUX, request, params, status);
+    if (rc != OK && rc != ERR_FIRMWARE) {
+        return rc;
     }
 
     bool is_failed = rc == ERR_FIRMWARE;

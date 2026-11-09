@@ -205,25 +205,61 @@ int32_t read_link_capabilities(
     return OK;
 }
 
-// Sends one training request and, after an accepted reply asking for a wait, spins for that wait, as NVIDIA's library
-// does after any reply asking for one
+// Sends one training request through `send_displayport_request`, giving the last send's NVIDIA status in `status`
 static int32_t request_training(
     firmware& fw,
     rm::handle display_common,
     uint32_t display_id,
     uint32_t command,
-    uint32_t data
+    uint32_t data,
+    uint32_t& status
 ) {
-    rm::train_link_params params = {};
-    params.display_id = display_id;
-    params.command = command;
-    params.data = data;
-    int32_t rc = fw.control(display_common, rm::CONTROL_TRAIN_LINK, &params, sizeof(params));
-    if (rc == OK && params.retry_time_ms > 0) {
-        spin_for_ms(params.retry_time_ms);
+    rm::train_link_params request = {};
+    request.display_id = display_id;
+    request.command = command;
+    request.data = data;
+
+    rm::train_link_params reply = {};
+
+    return send_displayport_request(fw, display_common, rm::CONTROL_TRAIN_LINK, request, reply, status);
+}
+
+// Logs a training request that display common refused, with NVIDIA's status when the firmware gave one
+static void log_refused_training(
+    uint32_t display_id,
+    const displayport::link_configuration& config,
+    uint32_t command,
+    uint32_t data,
+    uint32_t status
+) {
+    const char* lane_word = config.lanes == 1 ? "lane" : "lanes";
+    if (status != 0) {
+        log::error(
+            "nvidia: display common refused to train display id 0x%X's link at %u %s at DisplayPort rate 0x%02X "
+            "(command 0x%X, data 0x%X, status 0x%X)%s",
+            display_id,
+            config.lanes,
+            lane_word,
+            static_cast<uint32_t>(config.rate),
+            command,
+            data,
+            status,
+            LINK_UNCHECKED
+        );
+        return;
     }
 
-    return rc;
+    log::error(
+        "nvidia: display common refused to train display id 0x%X's link at %u %s at DisplayPort rate 0x%02X "
+        "(command 0x%X, data 0x%X)%s",
+        display_id,
+        config.lanes,
+        lane_word,
+        static_cast<uint32_t>(config.rate),
+        command,
+        data,
+        LINK_UNCHECKED
+    );
 }
 
 int32_t train_link(
@@ -256,19 +292,10 @@ int32_t train_link(
             | config.lanes
             | (static_cast<uint32_t>(target) << rm::TRAIN_DATA_TARGET_SHIFT);
 
-        int32_t rc = request_training(fw, display_common, output.display_id, command, data);
+        uint32_t status = 0;
+        int32_t rc = request_training(fw, display_common, output.display_id, command, data, status);
         if (rc == ERR_FIRMWARE) {
-            log::error(
-                "nvidia: display common refused to train display id 0x%X's link at %u %s at DisplayPort rate 0x%02X "
-                "(command 0x%X, data 0x%X)%s",
-                output.display_id,
-                config.lanes,
-                config.lanes == 1 ? "lane" : "lanes",
-                static_cast<uint32_t>(config.rate),
-                command,
-                data,
-                LINK_UNCHECKED
-            );
+            log_refused_training(output.display_id, config, command, data, status);
             return OK;
         }
 
@@ -306,7 +333,19 @@ static int32_t train_to_zero_lanes(
     uint32_t rate_code = static_cast<uint32_t>(rate);
     uint32_t data = rate_code << rm::TRAIN_DATA_RATE_SHIFT;
 
-    int32_t rc = request_training(fw, display_common, display_id, command, data);
+    uint32_t status = 0;
+    int32_t rc = request_training(fw, display_common, display_id, command, data, status);
+    if (rc == ERR_FIRMWARE && status != 0) {
+        log::error(
+            "nvidia: display common refused to train display id 0x%X's link to zero lanes at DisplayPort rate 0x%02X "
+            "(status 0x%X)",
+            display_id,
+            rate_code,
+            status
+        );
+        return OK;
+    }
+
     if (rc == ERR_FIRMWARE) {
         log::error(
             "nvidia: display common refused to train display id 0x%X's link to zero lanes at DisplayPort rate 0x%02X",

@@ -101,12 +101,9 @@ int32_t read_link_capabilities(
  * rate, turning on enhanced framing when the link runs it and training the
  * PHY repeaters when the GPU trains them and the firmware counts as many as
  * the DPCD does, one request for each repeater from the one closest to the
- * GPU, then one for the sink. After an accepted reply naming a wait, the
- * calling CPU spins for that wait, as NVIDIA's library does after any reply
- * naming one. A refused request is logged and leaves the link untrained,
- * where NVIDIA's library sends a refused request naming a wait again, up to 3
- * times in all, since each request goes through `firmware::control`, which
- * gives no refused request's reply.
+ * GPU, then one for the sink, each sent by `send_displayport_request`. A
+ * request still refused after its last send is logged and leaves the link
+ * untrained.
  * @param fw The bound firmware.
  * @param display_common The display common object.
  * @param output The output the link drives.
@@ -118,8 +115,8 @@ int32_t read_link_capabilities(
  * @param enhanced_framing Whether the link runs enhanced framing.
  * @param is_trained Set to whether every request succeeded.
  * @return `OK`, including when the link is untrained, or what
- * `firmware::control` returns, logged as its doc describes, for an error
- * other than `ERR_FIRMWARE`.
+ * `firmware::control_with_status` returns, logged as its doc describes, for an
+ * error other than `ERR_FIRMWARE`.
  */
 int32_t train_link(
     firmware& fw,
@@ -177,9 +174,10 @@ int32_t set_stream_attributes(firmware& fw, rm::handle display_common, uint32_t 
 /**
  * @brief Power down a DisplayPort link no head drives: set its monitor to D3
  * when `sets_monitor_to_d3` (plugged in, its DPCD giving revision 1.1 or
- * later), then train the link to zero lanes at `rate`, its highest, since
- * display common refuses zero lanes at a rate of 0. When `may_run_fec`, D3
- * follows the training, as the monitor must see FEC stop as the link goes down.
+ * later), then train the link through `send_displayport_request` to zero lanes
+ * at `rate`, its highest, since display common refuses zero lanes at a rate of
+ * 0. When `may_run_fec`, D3 follows the training, as the monitor must see FEC
+ * stop as the link goes down.
  * @param display_id The link's display id, a single bit.
  * @return `OK` once every step ran or was refused, else the error of the first
  * request failing otherwise, with no later step sent, each step logged.

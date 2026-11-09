@@ -6,6 +6,7 @@
 #include "common/types.h"
 #include "drivers/graphics/nvidia/displayport.h"
 #include "drivers/graphics/nvidia/firmware.h"
+#include "drivers/graphics/nvidia/nvidia.h"
 
 namespace drivers::nvidia {
 
@@ -33,6 +34,10 @@ constexpr uint32_t DPCD_PHY_REPEATER_CAPABILITY_BYTES = 8;
 // How the line logged for a refused training or a failed status read ends, naming the steps it leaves undone
 constexpr const char* LINK_UNCHECKED = ", so its link is neither checked nor given a stream";
 
+// NVIDIA's DisplayPort library's sends of one AUX or training request while the firmware fails it naming a time to
+// retry after
+constexpr uint32_t DISPLAYPORT_REQUEST_SENDS = 3;
+
 // The bytes a monitor's DPCD reports of its capabilities and of any PHY repeater's, as read
 struct dpcd_capabilities {
     bool    is_extended;                                       // `receiver` holds the extended copy
@@ -40,6 +45,48 @@ struct dpcd_capabilities {
     uint8_t receiver[DPCD_RECEIVER_CAPABILITY_BYTES];          // from the revision, highest rate and most lanes on
     uint8_t phy_repeaters[DPCD_PHY_REPEATER_CAPABILITY_BYTES]; // from the repeaters' revision, rate and count on
 };
+
+/**
+ * @brief Send display common `request`, again while the firmware fails it
+ * naming a time to retry after, up to `DISPLAYPORT_REQUEST_SENDS` sends in
+ * all, spinning the calling CPU through the time each reply names, accepted or
+ * not. `command` must take `params_t`, whose `retry_time_ms` holds NVIDIA's
+ * retryTimeMs.
+ * @param reply Takes the last send's parameters.
+ * @param status Takes the last send's NVIDIA status, or 0 when it gives none.
+ * @return What the last send's `firmware::control_with_status` returns, logged
+ * as its doc describes.
+ */
+template <typename params_t>
+int32_t send_displayport_request(
+    firmware& fw,
+    rm::handle display_common,
+    uint32_t command,
+    const params_t& request,
+    params_t& reply,
+    uint32_t& status
+) {
+    int32_t rc = OK;
+    for (uint32_t sends = 0; sends < DISPLAYPORT_REQUEST_SENDS; sends++) {
+        reply = request;
+        reply.retry_time_ms = 0;
+        status = 0;
+        rc = fw.control_with_status(display_common, command, &reply, sizeof(reply), status);
+        if (rc != OK && rc != ERR_FIRMWARE) {
+            return rc;
+        }
+
+        if (reply.retry_time_ms > 0) {
+            spin_for_ms(reply.retry_time_ms);
+        }
+
+        if (rc == OK || reply.retry_time_ms == 0) {
+            break;
+        }
+    }
+
+    return rc;
+}
 
 /**
  * @brief Tell the GSP's firmware to leave the DisplayPort hardware to the
