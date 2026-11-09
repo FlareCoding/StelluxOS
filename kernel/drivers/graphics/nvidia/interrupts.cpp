@@ -387,7 +387,7 @@ void service_gsp_interrupt(registers& regs, gsp& conversation, uint32_t vector) 
 
         // A CPU sequencer the drain reads must run before any log line
         rc = conversation.drain();
-        conversation.check_health();
+        (void)conversation.check_health();
         if (!conversation.is_in_lockdown()) {
             regs.write(GSP_INTERRUPT_RETRIGGER, TRIGGER_BIT);
         }

@@ -882,10 +882,13 @@ src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
     with bNotifyList set goes to every event object on its parent's list with
     the event's notifier and any other to the event object it names, in
     firmware.h, display_engine.cpp and
-    kernel/tests/graphics/nvidia_display_engine.test.cpp, and that NVIDIA's
-    handling of the GSP's failure halts every user channel and notifies it of
-    the error and that the log NVIDIA's driver then writes holds the most recent
-    messages it sent and the firmware's most recent unasked messages, in gsp.h
+    kernel/tests/graphics/nvidia_display_engine.test.cpp, that NVIDIA's handling
+    of the GSP's failure halts every user channel and notifies it of the error
+    and that the log NVIDIA's driver then writes holds the most recent messages
+    it sent and the firmware's most recent unasked messages, in gsp.h, a last
+    health check after the GSP fails to start, its result ignored, in
+    nvidia_gpu.cpp, and that NVIDIA's driver reads the GSP's log while the GSP
+    starts, in gsp.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_kernel_gsp_nvoc.h
@@ -1602,9 +1605,9 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     checksum and its last element copied whole, in message_queues.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, the status queue
     linked once the firmware has written its header and retried within a
-    deadline, in message_queues.h, message_queues.cpp, gsp.h, nvidia_gpu.cpp and
-    kernel/tests/graphics/nvidia_message_queues.test.cpp, that deadline of 4 s,
-    in message_queues.h and
+    deadline, in message_queues.h, message_queues.cpp, gsp.h, gsp.cpp,
+    nvidia_gpu.cpp and kernel/tests/graphics/nvidia_message_queues.test.cpp,
+    that deadline of 4 s, in message_queues.h and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, a received message
     read up to 3 times in a row while it is not wholly written or fails its
     checksum or sequence number check, in message_queues.h, message_queues.cpp
@@ -1621,9 +1624,10 @@ src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
     falcon.cpp, kernel/tests/graphics/nvidia_falcon.test.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that a message waits
     up to 1 s for room for each of its elements in the command queue, in gsp.h,
-    and that NVIDIA's driver reads the GSP's log and checks the GSP's health
-    after each try that fails before the link's timeout passes, failing the link
-    when the check finds a failure, in message_queues.h
+    and the GSP's health checked after each try that fails before the link's
+    timeout passes, failing the link when the check finds a failure, where
+    NVIDIA's driver also reads the GSP's log, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/generated/g_rpc-message-header.h
@@ -2390,9 +2394,15 @@ src/nvidia/arch/nvalloc/unix/src/osinit.c
     that NVIDIA's driver keeps no console mapped there on a host of virtual GPUs
     or in a guest given one, in boot_messages.h, that it keeps one for a console
     whose size its OS layer reports as 0 only when that layer reports its base,
-    in boot_messages.h, and that NVIDIA's driver re-arms MSI once after
-    initializing the GPU's state, in nvidia_gpu.cpp
+    in boot_messages.h, that NVIDIA's driver re-arms MSI once after initializing
+    the GPU's state, in nvidia_gpu.cpp, and that it loads the GSP log's decoding
+    file only behind its enable_firmware_logs option, in gsp.cpp
     SPDX-FileCopyrightText: Copyright (c) 1999-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+src/common/uproc/os/libos-v3.1.0/lib/liblogdecode.c
+    that without a decoding file the GSP's log records are only copied into
+    NvLog's buffers, in gsp.cpp
+    Copyright (c) 2019-2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/nvidia/arch/nvalloc/unix/src/unix_intr.c
     the rules that NVIDIA's driver re-arms MSI at the end of each run of its

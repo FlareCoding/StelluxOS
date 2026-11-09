@@ -47,7 +47,6 @@ using drivers::nvidia::failed_mark;
 using drivers::nvidia::gsp;
 using drivers::nvidia::gsp_vector_reading;
 using drivers::nvidia::interrupt_vectors;
-using drivers::nvidia::link_status_queue_within;
 using drivers::nvidia::message_queues;
 using drivers::nvidia::read_interrupt_vectors;
 using drivers::nvidia::read_static_configuration;
@@ -1038,24 +1037,6 @@ TEST(nvidia_message_queues, waits_are_nvidias) {
 static constexpr uint64_t SHORT_TIMEOUT_NS   = 1000000;
 static constexpr uint64_t LONG_TIMEOUT_NS    = 1000000000;
 static constexpr uint64_t WAIT_TIME_LIMIT_NS = 100000000;
-
-// The link waits out its timeout while the firmware has written no header, and since it is tried at least once, a
-// header already written links with no time to wait
-TEST(nvidia_message_queues, status_queue_link_waits_out_its_timeout) {
-    fake_queue_memory memory;
-    ASSERT_NOT_NULL(memory.bytes);
-    message_queues queues(memory.bytes, DMA_ADDRESS);
-
-    uint64_t start = clock::now_ns();
-    EXPECT_EQ(link_status_queue_within(queues, SHORT_TIMEOUT_NS), ERR_TIMEOUT);
-    uint64_t elapsed = clock::now_ns() - start;
-
-    EXPECT_GE(elapsed, SHORT_TIMEOUT_NS);
-    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
-
-    status_queue_test_header{}.write_to(memory);
-    EXPECT_EQ(link_status_queue_within(queues, 0), OK);
-}
 
 // Room for the payload `receive_waits_out_its_timeout_only_on_an_empty_queue` receives
 static constexpr uint32_t WAIT_BUFFER_BYTES = 64;
@@ -4168,20 +4149,22 @@ static void gather_report_bits_as_logged(const char* data, size_t len) {
 static constexpr log::backend REPORT_BITS_GATHERING_BACKEND = {.write = gather_report_bits_as_logged};
 
 // Writes `report` into the first mailbox register and checks the GSP's health, gathering the register's bits at each
-// line logged
-static void check_health_with_report(gsp& conversation, request_test_bar0& bar0, uint32_t report) {
+// line logged, and returns the check's result
+static bool check_health_with_report(gsp& conversation, request_test_bar0& bar0, uint32_t report) {
     bar0.write(NVIDIA_GSP_MAILBOX_0, report);
 
     s_dropping_registers = &bar0.regs;
     s_logged_bytes = 0;
     s_report_bits_as_logged = 0;
     log::set_backend(&REPORT_BITS_GATHERING_BACKEND);
-    conversation.check_health();
+    bool is_healthy = conversation.check_health();
     log::set_backend(nullptr);
+
+    return is_healthy;
 }
 
-// A report is cleared before any of its lines is logged, each at error level, the second mailbox register stays as it
-// was, and the count of errors skipped is logged only when it is not 0
+// A report makes the check return false and is cleared before any of its lines is logged, each at error level, the
+// second mailbox register stays as it was, and the count of errors skipped is logged only when it is not 0
 TEST(nvidia_message_queues, health_check_clears_a_report_then_logs_it) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
@@ -4191,7 +4174,7 @@ TEST(nvidia_message_queues, health_check_clears_a_report_then_logs_it) {
     ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
     bar0.write(NVIDIA_GSP_MAILBOX_1, 0xDEADBEEF);
 
-    check_health_with_report(conversation, bar0, REPORT_WITH_8_SKIPPED);
+    EXPECT_FALSE(check_health_with_report(conversation, bar0, REPORT_WITH_8_SKIPPED));
 
     EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), 0u);
     EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_1), 0xDEADBEEFu);
@@ -4201,14 +4184,14 @@ TEST(nvidia_message_queues, health_check_clears_a_report_then_logs_it) {
     EXPECT_TRUE(logged_text_contains("reports error code 0xA5 for reason 0x1A in its task 146, with 0xDEADBEEF in"));
     EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the GSP's firmware skipped reporting more errors, 8 of them"));
 
-    check_health_with_report(conversation, bar0, REPORT_WITH_1_SKIPPED);
+    EXPECT_FALSE(check_health_with_report(conversation, bar0, REPORT_WITH_1_SKIPPED));
 
     EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), 0u);
     EXPECT_EQ(s_report_bits_as_logged, 0u);
     EXPECT_EQ(logged_line_count(), 2u);
     EXPECT_TRUE(logged_text_contains("skipped reporting more errors, 1 of them"));
 
-    check_health_with_report(conversation, bar0, REPORT_WITH_0_SKIPPED);
+    EXPECT_FALSE(check_health_with_report(conversation, bar0, REPORT_WITH_0_SKIPPED));
 
     EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), 0u);
     EXPECT_EQ(s_report_bits_as_logged, 0u);
@@ -4221,7 +4204,8 @@ TEST(nvidia_message_queues, health_check_clears_a_report_then_logs_it) {
 static constexpr uint32_t UNTAGGED_WORDS[]    = {0xFB921AA5, 0x6B921AA5, 0x0E000000, 0};
 static constexpr size_t   UNTAGGED_WORD_COUNT = sizeof(UNTAGGED_WORDS) / sizeof(UNTAGGED_WORDS[0]);
 
-// A word without the error tag is no report, so it stays in the first mailbox register and nothing is logged
+// A word without the error tag is no report, so the check returns true, the word stays in the first mailbox register
+// and nothing is logged
 TEST(nvidia_message_queues, health_check_leaves_a_word_without_the_error_tag) {
     fake_queue_memory memory;
     ASSERT_NOT_NULL(memory.bytes);
@@ -4229,6 +4213,8 @@ TEST(nvidia_message_queues, health_check_leaves_a_word_without_the_error_tag) {
     gsp conversation;
     ASSERT_NOT_NULL(bar0.bytes);
     ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    bool is_healthy_after_check[UNTAGGED_WORD_COUNT] = {};
     uint32_t words_after_check[UNTAGGED_WORD_COUNT] = {};
 
     s_dropping_registers = &bar0.regs;
@@ -4236,17 +4222,63 @@ TEST(nvidia_message_queues, health_check_leaves_a_word_without_the_error_tag) {
     log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
     for (size_t i = 0; i < UNTAGGED_WORD_COUNT; i++) {
         bar0.write(NVIDIA_GSP_MAILBOX_0, UNTAGGED_WORDS[i]);
-        conversation.check_health();
+        is_healthy_after_check[i] = conversation.check_health();
         words_after_check[i] = bar0.read(NVIDIA_GSP_MAILBOX_0);
     }
 
     log::set_backend(nullptr);
 
     for (size_t i = 0; i < UNTAGGED_WORD_COUNT; i++) {
+        EXPECT_TRUE(is_healthy_after_check[i]);
         EXPECT_EQ(words_after_check[i], UNTAGGED_WORDS[i]);
     }
 
     EXPECT_EQ(s_logged_bytes, 0u);
+}
+
+// A report found after a failed try ends the link at once, far short of its timeout, the report cleared and both its
+// line and the link's own logged
+TEST(nvidia_message_queues, status_queue_link_ends_at_a_failure_report) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    bar0.write(NVIDIA_GSP_MAILBOX_0, REPORT_WITH_0_SKIPPED);
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+
+    uint64_t start = clock::now_ns();
+    int32_t rc = conversation.link_status_queue(LONG_TIMEOUT_NS);
+    uint64_t elapsed = clock::now_ns() - start;
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(rc, ERR_FIRMWARE);
+    EXPECT_LT(elapsed, WAIT_TIME_LIMIT_NS);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), 0u);
+    EXPECT_EQ(logged_line_count(), 2u);
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the GSP's firmware reports error code 0xA5 for reason 0x1A"));
+    EXPECT_TRUE(logged_text_contains("[ERROR] nvidia: the driver stops linking the status queue, as the GSP's"));
+}
+
+// A try that links is followed by no health check, so a report stays in its register, and with no time to wait the link
+// is still tried once
+TEST(nvidia_message_queues, status_queue_link_checks_health_only_after_a_failed_try) {
+    fake_queue_memory memory;
+    ASSERT_NOT_NULL(memory.bytes);
+    request_test_bar0 bar0;
+    gsp conversation;
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    bar0.write(NVIDIA_GSP_MAILBOX_0, REPORT_WITH_0_SKIPPED);
+    MOVED_HEADER.write_to(memory);
+
+    EXPECT_EQ(conversation.link_status_queue(0), OK);
+    EXPECT_EQ(bar0.read(NVIDIA_GSP_MAILBOX_0), REPORT_WITH_0_SKIPPED);
 }
 
 // Starts a conversation whose moved status queue holds lockdown notices with these first payload bytes, of which the

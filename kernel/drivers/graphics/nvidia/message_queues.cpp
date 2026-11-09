@@ -453,26 +453,6 @@ int32_t message_queues::receive(received_message& out, void* payload, uint32_t p
     return OK;
 }
 
-int32_t link_status_queue_within(message_queues& queues, uint64_t timeout_ns) {
-    uint64_t deadline = clock::now_ns() + timeout_ns;
-
-    while (true) {
-        if (queues.link_status_queue() == OK) {
-            return OK;
-        }
-
-        if (clock::now_ns() > deadline) {
-            log::error(
-                "nvidia: the GSP's firmware did not write a status queue header the link accepts within %lu ms",
-                timeout_ns / NS_PER_MS
-            );
-            return ERR_TIMEOUT;
-        }
-
-        cpu::relax();
-    }
-}
-
 // Rereads at once a message failing a check, up to `RECEIVE_TRIES` reads in all, before the poll gives up on it
 static int32_t receive_with_tries(
     message_queues& queues,
