@@ -7,6 +7,7 @@
 #include "drivers/graphics/nvidia/display_engine.h"
 #include "drivers/graphics/nvidia/engines.h"
 #include "drivers/graphics/nvidia/failed_mark.h"
+#include "drivers/graphics/nvidia/falcon.h"
 #include "drivers/graphics/nvidia/fwsec.h"
 #include "drivers/graphics/nvidia/gpu_objects.h"
 #include "drivers/graphics/nvidia/gsp.h"
@@ -99,6 +100,12 @@ public:
     __PRIVILEGED_CODE bool on_interrupt(uint32_t vector) override;
 
 private:
+    int32_t start_firmware(
+        nvidia::registers& regs,
+        const nvidia::falcon_program& booter_load,
+        uint64_t metadata_address,
+        uint32_t app_version
+    );
     int32_t bring_up_bar1(
         nvidia::registers& regs,
         const nvidia::static_configuration& configuration,

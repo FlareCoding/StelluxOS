@@ -37,9 +37,7 @@ constexpr int32_t ERR_BAD_MESSAGE    = -11; // a message from the GSP's firmware
                                             // several display ids reported for one head, no link for a head's display
                                             // id while display common reports no crossbar, or a head's link that is not
                                             // one of the chip's serial links
-constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a failure through a ready message's or reply's
-                                            // result or a control's status, or does not take the driver's VGX version,
-                                            // as a reply shows by a private result other than 0 or another version
+constexpr int32_t ERR_FIRMWARE       = -12; // the GSP's firmware reports a failure or refuses the driver's VGX version
 constexpr int32_t ERR_INVALID_ARG    = -13; // an argument lies outside what the call takes
 constexpr int32_t ERR_NOT_REGISTERED = -14; // gfxfb refuses the display engine as its display, as when it cannot
                                             // create or publish its node or no memory is left for its records of the

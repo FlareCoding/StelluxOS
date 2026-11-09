@@ -6,6 +6,7 @@
 #include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "hw/cpu.h"
 #include "mm/heap.h"
 
 namespace drivers::nvidia {
@@ -118,7 +119,30 @@ int32_t gsp::send(uint32_t function, const void* payload, uint32_t payload_bytes
 }
 
 int32_t gsp::link_status_queue(uint64_t timeout_ns) {
-    return link_status_queue_within(m_queues, timeout_ns);
+    uint64_t deadline = clock::now_ns() + timeout_ns;
+
+    while (true) {
+        if (m_queues.link_status_queue() == OK) {
+            return OK;
+        }
+
+        if (clock::now_ns() > deadline) {
+            log::error(
+                "nvidia: the GSP's firmware did not write a status queue header the link accepts within %lu ms",
+                timeout_ns / NS_PER_MS
+            );
+            return ERR_TIMEOUT;
+        }
+
+        // NVIDIA's driver also reads the GSP's log here, but unless its optional decoding file is loaded it only
+        // copies the log into a buffer of its own, which this driver does not keep
+        if (!check_health()) {
+            log::error("nvidia: the driver stops linking the status queue, as the GSP's firmware reports a failure");
+            return ERR_FIRMWARE;
+        }
+
+        cpu::relax();
+    }
 }
 
 int32_t gsp::await(uint32_t function, received_message& out, uint64_t timeout_ns) {
@@ -143,10 +167,10 @@ bool gsp::is_in_lockdown() const {
     return m_is_in_lockdown;
 }
 
-void gsp::check_health() {
+bool gsp::check_health() {
     uint32_t report = m_regs.read(REPORT_MAILBOX);
     if (report >> REPORT_TAG_SHIFT != ERROR_TAG) {
-        return;
+        return true;
     }
 
     uint32_t detail = m_regs.read(REPORT_DETAIL_MAILBOX);
@@ -169,6 +193,8 @@ void gsp::check_health() {
     if (skipped != 0) {
         log::error("nvidia: the GSP's firmware skipped reporting more errors, %u of them", skipped);
     }
+
+    return false;
 }
 
 int32_t gsp::request(

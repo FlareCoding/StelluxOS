@@ -119,11 +119,14 @@ public:
 
     /**
      * @brief Link the status queue once the firmware has written its header,
-     * as `link_status_queue_within` does.
+     * retrying `message_queues::link_status_queue` and, after each try that
+     * fails before `timeout_ns` passes, checking health with `check_health`.
+     * The call tries at least once and spins on the calling CPU for up to
+     * `timeout_ns` and then until its last try or check returns.
      * @param timeout_ns How long to retry, `STATUS_QUEUE_LINK_TIMEOUT_NS` at
      * bring-up.
-     * @return `OK`, or the `ERR_TIMEOUT` `link_status_queue_within` logs and
-     * returns.
+     * @return `OK`, `ERR_TIMEOUT` when no try links within `timeout_ns`, or
+     * `ERR_FIRMWARE` once a check finds a failure report, each error logged.
      */
     int32_t link_status_queue(uint64_t timeout_ns);
 
@@ -186,12 +189,12 @@ public:
      * and on its first failure halts every user channel (a stream of work the
      * GPU runs for a program) with an error notice. On every failure it checks
      * the GPU's counts of ECC errors (memory errors its error-correcting code
-     * finds). This driver leaves all of that out: it sends no request once its
-     * task runs, keeps no record of the messages it exchanges, runs no channel
-     * and reads no ECC count. The check returns nothing, since no caller acts
-     * on a failure, and a later check does not find a report this one cleared.
+     * finds). The check itself only clears and logs a report, leaving any
+     * other step to its caller, and a later check does not find a report this
+     * one cleared.
+     * @return False when the check finds a report, true when it finds none.
      */
-    void check_health();
+    bool check_health();
 
     /**
      * @brief Send the firmware a request and wait for its reply: queue the

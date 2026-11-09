@@ -727,46 +727,12 @@ int32_t nvidia_gpu_driver::attach() {
     // Read before the GSP's firmware can run, for `detach()` to write back once the GSP reads as stopped
     m_bar1_block = nvidia::read_bar1_block(regs);
 
-    rc = nvidia::run_booter_load(regs, booter_load, metadata_address, nvidia::FALCON_TIMEOUT_NS);
+    rc = start_firmware(regs, booter_load, metadata_address, bootloader_parts.app_version);
     if (rc != nvidia::OK) {
+        // As NVIDIA's driver checks after its GSP fails to start, for a report the start's own checks may have missed
+        (void)m_gsp.check_health();
         return rc;
     }
-
-    nvidia::write_gsp_app_version(regs, bootloader_parts.app_version);
-
-    if (!nvidia::is_gsp_riscv_running(regs)) {
-        log::error("nvidia: the GSP's RISC-V core does not read as running after booter load");
-        return nvidia::ERR_BAD_STATE;
-    }
-
-    log::info(
-        "nvidia: booter load ran on SEC2 with protected memory's metadata at 0x%lX, and the GSP's RISC-V core reads "
-        "as running",
-        metadata_address
-    );
-
-    rc = m_gsp.link_status_queue(nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS);
-    if (rc != nvidia::OK) {
-        return rc;
-    }
-
-    nvidia::received_message ready = {};
-    rc = m_gsp.await(nvidia::FUNCTION_GSP_INIT_DONE, ready, nvidia::RECEIVE_TIMEOUT_NS);
-    if (rc != nvidia::OK) {
-        return rc;
-    }
-
-    // From the ready message on, whatever its result, `detach()` asks the firmware to unload. NVIDIA's driver asks
-    // without that message too, but a firmware that never reported itself ready is not known to answer
-    m_must_unload = true;
-
-    rc = nvidia::gsp::to_error(ready.result);
-    if (rc != nvidia::OK) {
-        log::error("nvidia: the GSP's firmware reports that its initialization failed, with status 0x%X", ready.result);
-        return rc;
-    }
-
-    log::info("nvidia: the GSP's firmware sent its ready message with %u payload bytes", ready.payload_bytes);
 
     rc = nvidia::confirm_message_version(m_gsp, nvidia::RECEIVE_TIMEOUT_NS);
     if (rc != nvidia::OK) {
@@ -968,6 +934,57 @@ int32_t nvidia_gpu_driver::attach() {
     );
 
     return OK;
+}
+
+// Runs booter load, which starts the GSP's firmware, then links the status queue and waits for the ready message
+int32_t nvidia_gpu_driver::start_firmware(
+    nvidia::registers& regs,
+    const nvidia::falcon_program& booter_load,
+    uint64_t metadata_address,
+    uint32_t app_version
+) {
+    int32_t rc = nvidia::run_booter_load(regs, booter_load, metadata_address, nvidia::FALCON_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    nvidia::write_gsp_app_version(regs, app_version);
+
+    if (!nvidia::is_gsp_riscv_running(regs)) {
+        log::error("nvidia: the GSP's RISC-V core does not read as running after booter load");
+        return nvidia::ERR_BAD_STATE;
+    }
+
+    log::info(
+        "nvidia: booter load ran on SEC2 with protected memory's metadata at 0x%lX, and the GSP's RISC-V core reads "
+        "as running",
+        metadata_address
+    );
+
+    rc = m_gsp.link_status_queue(nvidia::STATUS_QUEUE_LINK_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    nvidia::received_message ready = {};
+    rc = m_gsp.await(nvidia::FUNCTION_GSP_INIT_DONE, ready, nvidia::RECEIVE_TIMEOUT_NS);
+    if (rc != nvidia::OK) {
+        return rc;
+    }
+
+    // From the ready message on, whatever its result, `detach()` asks the firmware to unload. NVIDIA's driver asks
+    // without that message too, but a firmware that never reported itself ready is not known to answer
+    m_must_unload = true;
+
+    rc = nvidia::gsp::to_error(ready.result);
+    if (rc != nvidia::OK) {
+        log::error("nvidia: the GSP's firmware reports that its initialization failed, with status 0x%X", ready.result);
+        return rc;
+    }
+
+    log::info("nvidia: the GSP's firmware sent its ready message with %u payload bytes", ready.payload_bytes);
+
+    return nvidia::OK;
 }
 
 // Sets up BAR1's window, then maps BAR1 write-combining for the driver's life and checks a kept console and a mapping

@@ -180,7 +180,7 @@ public:
      * retry returns `OK` once the firmware has written a header that passes,
      * which a firmware that stops first or lays the queue out otherwise never
      * does, so the caller must bound its retries with a deadline, as
-     * `link_status_queue_within` does.
+     * `gsp::link_status_queue` does.
      */
     int32_t link_status_queue();
 
@@ -234,23 +234,6 @@ private:
     uint32_t  m_status_read_pointer = 0;
     uint32_t  m_status_sequence_number = 0;
 };
-
-/**
- * @brief Link the status queue once the GSP's firmware has written its header,
- * calling `queues.link_status_queue()` until it returns `OK` or `timeout_ns`
- * passes, as NVIDIA's driver retries its link once the GSP's RISC-V core runs.
- * After each try that fails before the link's timeout passes, NVIDIA's driver
- * also reads the GSP's log and checks the GSP's health, failing the link when
- * the check finds a failure, where this link only retries. The call spins on
- * the calling CPU without sleeping, holding it for up to `timeout_ns` and then
- * until its last try returns.
- * @param timeout_ns How long to retry, `STATUS_QUEUE_LINK_TIMEOUT_NS` at
- * bring-up. The link is tried at least once.
- * @return `OK`, or `ERR_TIMEOUT`, which is logged, when no try returned `OK`
- * within `timeout_ns`, as when the firmware stops before writing the header or
- * lays the queue out otherwise.
- */
-int32_t link_status_queue_within(message_queues& queues, uint64_t timeout_ns);
 
 /**
  * @brief Receive the next message in the status queue as
