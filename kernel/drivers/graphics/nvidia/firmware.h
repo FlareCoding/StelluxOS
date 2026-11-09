@@ -59,13 +59,13 @@ public:
  * for the controls NVIDIA's driver sends on its own behalf. `gsp` implements
  * it, and tests replace it with a double. It also hands each event the
  * firmware posts to the sink `set_event_sink` names, and each channel error to
- * the sink `set_error_sink` names. `allocate`, `control`, `release` and
- * `internal_control` each spin on the calling CPU, once their request is sent,
- * until the firmware's reply arrives or `RECEIVE_TIMEOUT_NS` passes, and only
- * one thread may make the calls at a time, as only one may use a `gsp`.
+ * the sink `set_error_sink` names. `allocate`, `release` and the three control
+ * calls each spin on the calling CPU, once their request is sent, until the
+ * firmware's reply arrives or `RECEIVE_TIMEOUT_NS` passes, and only one thread
+ * may make the calls at a time, as only one may use a `gsp`.
  *
  * From the driver task's start, a reply missing at its deadline marks the GPU
- * failed, and once the GPU is marked failed each of those four calls returns
+ * failed, and once the GPU is marked failed each of those five calls returns
  * `ERR_GPU_FAILED` in place of sending its request.
  */
 class firmware {
@@ -116,6 +116,26 @@ public:
      * returns `ERR_GPU_FAILED` in place of sending its request.
      */
     virtual int32_t control(rm::handle object, uint32_t command, void* params, size_t size) = 0;
+
+    /**
+     * @brief Send a control as `control` does, also asking the firmware to
+     * give the parameters back when it refuses the control.
+     * @param params As for `control`, also taking the reply's copy when the
+     * firmware refuses the control but gives the parameters back, which the
+     * call does not tell apart from parameters left unchanged.
+     * @param status Takes the control's NVIDIA status, 0 for success, on `OK`
+     * and on a refused control, and is left unchanged otherwise, so a caller
+     * sets it before the call.
+     * @return What `control` returns, logged as its doc describes but for a
+     * refused control, which the caller logs or sends again.
+     */
+    virtual int32_t control_with_status(
+        rm::handle object,
+        uint32_t command,
+        void* params,
+        size_t size,
+        uint32_t& status
+    ) = 0;
 
     /**
      * @brief Release an object under the driver's client.

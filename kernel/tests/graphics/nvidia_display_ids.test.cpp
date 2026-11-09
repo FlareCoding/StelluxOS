@@ -122,6 +122,10 @@ public:
         return reply(bytes, size, KIND_OFFSET, kind, result);
     }
 
+    int32_t control_with_status(rm::handle object, uint32_t command, void* params, size_t size, uint32_t&) override {
+        return control(object, command, params, size);
+    }
+
     // No function under test allocates, releases, sends an internal control or takes a handle, so each is a stray
     int32_t allocate(rm::handle, rm::handle, uint32_t, void*, size_t) override {
         stray_count++;

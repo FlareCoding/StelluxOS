@@ -360,12 +360,26 @@ public:
     int32_t allocate(rm::handle parent, rm::handle object, uint32_t class_id, void* params, size_t size) override;
 
     /**
-     * @brief Send a control to an object under the driver's client through the
-     * six-parameter `control`, with `RECEIVE_TIMEOUT_NS` for the reply. A size
-     * above what one message carries is refused before it is narrowed to the
-     * 32 bits that overload takes.
+     * @brief Send a control to an object under the driver's client as the
+     * six-parameter `control` does, with `RECEIVE_TIMEOUT_NS` for the reply. A
+     * size above what one message carries is refused before it is narrowed to
+     * the 32 bits that overload takes.
      */
     int32_t control(rm::handle object, uint32_t command, void* params, size_t size) override;
+
+    /**
+     * @brief Send a control as the four-parameter `control` does, with the
+     * header's flags asking for the parameters back if the firmware refuses
+     * the control, and log no refused control. A refused control's parameters
+     * are copied back only when the reply's flags keep that ask.
+     */
+    int32_t control_with_status(
+        rm::handle object,
+        uint32_t command,
+        void* params,
+        size_t size,
+        uint32_t& status
+    ) override;
 
     /**
      * @brief Release an object under the driver's client with NVIDIA's release
@@ -398,7 +412,7 @@ public:
 
     /**
      * @brief Send a control to the internal client's subdevice that
-     * `set_internal_client` named, through the six-parameter `control` with
+     * `set_internal_client` named, as the six-parameter `control` does with
      * `RECEIVE_TIMEOUT_NS` for the reply. A size above what one message
      * carries is refused before it is narrowed to the 32 bits that overload
      * takes. It must follow `set_internal_client`, since both handles are 0
@@ -437,7 +451,25 @@ private:
         size_t params_bytes
     );
     int32_t request_release(rm::handle client, rm::handle object);
-    int32_t request_control(rm::handle client, rm::handle object, uint32_t command, void* params, size_t size);
+    int32_t request_control(
+        rm::handle client,
+        rm::handle object,
+        uint32_t command,
+        void* params,
+        size_t size,
+        uint32_t* status
+    );
+
+    // Sends a control as the six-parameter `control` does or, with `status` not null, as `control_with_status` does
+    int32_t send_control(
+        rm::handle client,
+        rm::handle object,
+        uint32_t command,
+        void* params,
+        uint32_t params_bytes,
+        uint64_t timeout_ns,
+        uint32_t* status
+    );
 
     message_queues        m_queues;
     registers             m_regs{0};

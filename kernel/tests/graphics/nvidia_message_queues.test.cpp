@@ -3114,6 +3114,19 @@ TEST(nvidia_message_queues, internal_controls_reach_the_named_subdevice_until_st
     EXPECT_EQ(conversation.internal_control(TEST_COMMAND, largest_params.bytes, largest_params.count), ERR_BAD_MESSAGE);
     EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 1u + MESSAGE_ELEMENTS);
 
+    // A refusal whose reply sets every flag leaves the parameters, since only `control_with_status` asks for them
+    uint8_t refusal[CONTROL_REPLY_BYTES] = {};
+    fill_control_reply(refusal, CONTROL_FAILURE);
+    put_word(refusal, CONTROL_FLAGS_FIELD, 0xFFFFFFFF);
+    store_function_message(memory, message, 2, NVIDIA_GSP_RM_CONTROL, refusal, sizeof(refusal));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+
+    EXPECT_EQ(conversation.internal_control(TEST_COMMAND, params, PARAMS_BYTES), ERR_FIRMWARE);
+    EXPECT_EQ(field_at(memory.element(1 + MESSAGE_ELEMENTS), MESSAGE_PAYLOAD + CONTROL_FLAGS_FIELD), 0u);
+    for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
+        EXPECT_EQ(params[i], SENT_PARAMS[i]);
+    }
+
     conversation.stop();
     ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
     MOVED_HEADER.write_to(memory);
@@ -3126,8 +3139,8 @@ TEST(nvidia_message_queues, internal_controls_reach_the_named_subdevice_until_st
     EXPECT_EQ(field_at(memory.element(0), MESSAGE_PAYLOAD + CONTROL_OBJECT_FIELD), 0u);
 }
 
-// A control to an object goes to the driver's client, not the internal one, and takes the reply's parameters, and a
-// size wider than 32 bits queues nothing
+// A control to an object goes to the driver's client, not the internal one, and takes the reply's parameters, a size
+// wider than 32 bits queues nothing, and a refused control asks for no parameters back and keeps them
 TEST(nvidia_message_queues, controls_reach_the_object_under_the_drivers_client) {
     fake_queue_memory memory;
     request_test_bar0 bar0;
@@ -3181,6 +3194,135 @@ TEST(nvidia_message_queues, controls_reach_the_object_under_the_drivers_client) 
     EXPECT_EQ(memory.read(COMMAND_QUEUE_OFFSET + HEADER_WRITE_POINTER), 2u);
     for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
         EXPECT_EQ(params[i], SENT_PARAMS[i]);
+    }
+
+    // A refusal whose reply sets every flag leaves the parameters, since only `control_with_status` asks for them
+    uint8_t refusal[CONTROL_REPLY_BYTES] = {};
+    fill_control_reply(refusal, CONTROL_FAILURE);
+    put_word(refusal, CONTROL_FLAGS_FIELD, 0xFFFFFFFF);
+    store_function_message(memory, message, 2, NVIDIA_GSP_RM_CONTROL, refusal, sizeof(refusal));
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 3);
+
+    EXPECT_EQ(conversation.control(TEST_OBJECT, TEST_COMMAND, params, PARAMS_BYTES), ERR_FIRMWARE);
+    EXPECT_EQ(field_at(memory.element(2), MESSAGE_PAYLOAD + CONTROL_FLAGS_FIELD), 0u);
+    for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
+        EXPECT_EQ(params[i], SENT_PARAMS[i]);
+    }
+}
+
+// NVIDIA's RMAPI_RPC_FLAGS_COPYOUT_ON_ERROR, the header's flag asking for a refused control's parameters back
+static constexpr uint32_t NVIDIA_COPYOUT_ON_ERROR = 1;
+
+// `control_with_status` sends NVIDIA's flag, copies a refused control's parameters back only when the reply keeps it,
+// logs no refused control, and sets the status on all but a refused request, a short reply and a refused size
+TEST(nvidia_message_queues, control_with_status_gives_a_refused_controls_parameters_when_the_reply_keeps_the_flag) {
+    fake_queue_memory memory;
+    request_test_bar0 bar0;
+    status_test_message message(1);
+    ASSERT_NOT_NULL(memory.bytes);
+    ASSERT_NOT_NULL(bar0.bytes);
+    ASSERT_NOT_NULL(message.bytes);
+
+    gsp conversation;
+    ASSERT_EQ(start_conversation(conversation, memory, bar0), OK);
+
+    // The client, then a refused control whose reply keeps the flag among every other, one whose reply drops it from
+    // every other, a success, a refused request whose payload holds a success, and a reply a byte short
+    uint8_t client_reply[CLIENT_REPLY_BYTES] = {};
+    uint8_t reply[CONTROL_REPLY_BYTES] = {};
+    MOVED_HEADER.write_to(memory);
+    store_function_message(memory, message, 0, NVIDIA_GSP_RM_ALLOC, client_reply, sizeof(client_reply));
+
+    fill_control_reply(reply, CONTROL_FAILURE);
+    put_word(reply, CONTROL_FLAGS_FIELD, 0xFFFFFFFF);
+    store_function_message(memory, message, 1, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply));
+
+    fill_control_reply(reply, CONTROL_HIGH_FAILURE);
+    put_word(reply, CONTROL_FLAGS_FIELD, 0xFFFFFFFE);
+    store_function_message(memory, message, 2, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply));
+
+    fill_control_reply(reply, 0);
+    store_function_message(memory, message, 3, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply));
+
+    put_word(reply, CONTROL_FLAGS_FIELD, 0xFFFFFFFF);
+    store_reply_with_result(memory, message, 4, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply), CONTROL_FAILURE);
+
+    fill_control_reply(reply, CONTROL_FAILURE);
+    put_word(reply, CONTROL_FLAGS_FIELD, NVIDIA_COPYOUT_ON_ERROR);
+    store_function_message(memory, message, 5, NVIDIA_GSP_RM_CONTROL, reply, sizeof(reply) - 1);
+    memory.write(STATUS_QUEUE_OFFSET + HEADER_WRITE_POINTER, 6);
+    ASSERT_EQ(conversation.link_status_queue(SHORT_TIMEOUT_NS), OK);
+
+    ASSERT_EQ(conversation.allocate_client(), OK);
+    conversation.set_internal_client(INTERNAL_CLIENT, INTERNAL_SUBDEVICE);
+
+    uint32_t copied[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+    uint32_t kept[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+    uint32_t answered[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+    uint32_t refused[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+    uint32_t shortened[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+    uint32_t oversized[PARAMS_WORDS] = {SENT_PARAMS[0], SENT_PARAMS[1], SENT_PARAMS[2]};
+
+    uint32_t copied_status = 0;
+    uint32_t kept_status = 0;
+    uint32_t answered_status = STALE_WORD;
+    uint32_t refused_status = STALE_WORD;
+    uint32_t shortened_status = STALE_WORD;
+    uint32_t oversized_status = STALE_WORD;
+
+    s_dropping_registers = &bar0.regs;
+    s_logged_bytes = 0;
+    log::set_backend(&POLLED_BIT_DROPPING_BACKEND);
+    int32_t copied_rc =
+        conversation.control_with_status(TEST_OBJECT, TEST_COMMAND, copied, PARAMS_BYTES, copied_status);
+    log::set_backend(nullptr);
+
+    EXPECT_EQ(copied_rc, ERR_FIRMWARE);
+    EXPECT_FALSE(logged_text_contains("failed, with status"));
+
+    EXPECT_EQ(
+        conversation.control_with_status(TEST_OBJECT, TEST_COMMAND, kept, PARAMS_BYTES, kept_status),
+        ERR_FIRMWARE
+    );
+    EXPECT_EQ(
+        conversation.control_with_status(TEST_OBJECT, TEST_COMMAND, answered, PARAMS_BYTES, answered_status),
+        OK
+    );
+    EXPECT_EQ(
+        conversation.control_with_status(TEST_OBJECT, TEST_COMMAND, refused, PARAMS_BYTES, refused_status),
+        ERR_FIRMWARE
+    );
+    EXPECT_EQ(
+        conversation.control_with_status(TEST_OBJECT, TEST_COMMAND, shortened, PARAMS_BYTES, shortened_status),
+        ERR_BAD_MESSAGE
+    );
+    EXPECT_EQ(
+        conversation.control_with_status(TEST_OBJECT, TEST_COMMAND, oversized, HUGE_PARAMS_BYTES, oversized_status),
+        ERR_TOO_LARGE
+    );
+
+    for (uint32_t element = 1; element < 6; element++) {
+        const uint8_t* request = memory.element(element);
+        EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_CLIENT_FIELD), NVIDIA_FIRST_CLIENT);
+        EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_OBJECT_FIELD), TEST_OBJECT);
+        EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_COMMAND_FIELD), TEST_COMMAND);
+        EXPECT_EQ(field_at(request, MESSAGE_PAYLOAD + CONTROL_FLAGS_FIELD), NVIDIA_COPYOUT_ON_ERROR);
+    }
+
+    EXPECT_EQ(copied_status, CONTROL_FAILURE);
+    EXPECT_EQ(kept_status, CONTROL_HIGH_FAILURE);
+    EXPECT_EQ(answered_status, 0u);
+    EXPECT_EQ(refused_status, STALE_WORD);
+    EXPECT_EQ(shortened_status, STALE_WORD);
+    EXPECT_EQ(oversized_status, STALE_WORD);
+
+    for (uint32_t i = 0; i < PARAMS_WORDS; i++) {
+        EXPECT_EQ(copied[i], REPLY_PARAMS[i]);
+        EXPECT_EQ(kept[i], SENT_PARAMS[i]);
+        EXPECT_EQ(answered[i], REPLY_PARAMS[i]);
+        EXPECT_EQ(refused[i], SENT_PARAMS[i]);
+        EXPECT_EQ(shortened[i], SENT_PARAMS[i]);
+        EXPECT_EQ(oversized[i], SENT_PARAMS[i]);
     }
 }
 
