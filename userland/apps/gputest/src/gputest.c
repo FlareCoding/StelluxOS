@@ -965,6 +965,62 @@ static int run(struct session* s, struct queue* q, const struct command_list* li
     return error != 0 ? error : wait_for(s, q, WAIT_NS);
 }
 
+int32_t submit_fill(
+    int fd,
+    const struct gpu_info* info,
+    int32_t buffer,
+    uint32_t value,
+    const struct gpu_point* wait,
+    const struct gpu_point* signal
+) {
+    int32_t context = create_context(fd);
+    if (context < 0) {
+        return -1;
+    }
+
+    int32_t commands = -1;
+    create_buffer(fd, BUFFER_BYTES, GPU_PLACEMENT_SYSTEM, GPU_BUFFER_MAPPABLE, &commands);
+
+    volatile uint32_t* command_words = map_for_cpu(commands);
+    bool maps_commands = map(fd, context, commands, COMMANDS_VA, GPU_MAP_READ_ONLY) == 0;
+    bool maps_buffer = map(fd, context, buffer, SYSTEM_VA, 0) == 0;
+
+    struct gpu_queue_args queue = {0};
+    queue.context = context;
+    queue.kind = GPU_QUEUE_COPY;
+    bool ready = command_words && maps_commands && maps_buffer && gpu_call(fd, GPU_QUEUE_CREATE, &queue) == 0;
+
+    struct command_list list = fill_commands(info->nvidia.class_copy, SYSTEM_VA, value);
+    for (uint32_t i = 0; ready && i < list.count; i++) {
+        command_words[i] = list.words[i];
+    }
+
+    struct gpu_nvidia_range range = {0};
+    range.va = COMMANDS_VA;
+    range.size = list.count * sizeof(uint32_t);
+
+    struct gpu_submit_args args = {0};
+    args.context = context;
+    args.queue = queue.queue;
+    args.commands = (uint64_t)(uintptr_t)&range;
+    args.commands_size = sizeof(range);
+
+    args.waits = (uint64_t)(uintptr_t)wait;
+    args.wait_count = 1;
+    args.signals = (uint64_t)(uintptr_t)signal;
+    args.signal_count = 1;
+    bool submitted = ready && gpu_call(fd, GPU_SUBMIT, &args) == 0;
+
+    // The context's mapping keeps the command buffer until the context closes
+    release(commands, command_words);
+    if (!submitted) {
+        close(context);
+        return -1;
+    }
+
+    return context;
+}
+
 // Whether `q`'s timeline reached its last point with GPU_TIMELINE_FAILED, false when the query fails
 static bool ended_failed(struct session* s, const struct queue* q) {
     struct gpu_timeline_args query = {0};
@@ -1798,20 +1854,20 @@ int main(int argc, char** argv) {
         return report();
     }
 
-    // The protocol and window checks alone, since the GPU checks' hangs could switch stlxdm to the CPU compositor
-    if (window_only) {
-        run_proto_checks();
-        run_window_checks(fd);
-        close(fd);
-        return report();
-    }
-
     struct gpu_info info = {0};
     int error = gpu_call(fd, GPU_GET_INFO, &info);
     if (error != 0) {
         printf("gputest: GPU_GET_INFO failed: %s\n", strerror(error));
         close(fd);
         return 1;
+    }
+
+    // The protocol and window checks alone, since the GPU checks' hangs could switch stlxdm to the CPU compositor
+    if (window_only) {
+        run_proto_checks();
+        run_window_checks(fd, &info);
+        close(fd);
+        return report();
     }
 
     bool presents = display_only && start_presenting();
@@ -1836,7 +1892,7 @@ int main(int argc, char** argv) {
     }
 
     run_proto_checks();
-    run_window_checks(fd);
+    run_window_checks(fd, &info);
     close(fd);
 
     return report();
