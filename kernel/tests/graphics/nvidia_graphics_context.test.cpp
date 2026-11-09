@@ -170,6 +170,10 @@ public:
         return promote_result;
     }
 
+    int32_t control_with_status(rm::handle object, uint32_t command, void* params, size_t size, uint32_t&) override {
+        return control(object, command, params, size);
+    }
+
     // No function under test sends these, so a stray one shows as a failed call
     int32_t allocate(rm::handle, rm::handle, uint32_t, void*, size_t) override { return ERR_FIRMWARE; }
 

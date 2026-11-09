@@ -13,6 +13,9 @@ namespace drivers::nvidia {
 // NVIDIA's NV_OK, the status the firmware reports for what succeeded
 constexpr uint32_t FIRMWARE_STATUS_OK = 0;
 
+// NVIDIA's RMAPI_RPC_FLAGS_COPYOUT_ON_ERROR, a control header's flag asking for a refused control's parameters back
+constexpr uint32_t CONTROL_FLAG_COPYOUT_ON_ERROR = 1u << 0;
+
 // NVIDIA's numbers for a control request and for the requests allocating and releasing an object, which the reply
 // carries too
 constexpr uint32_t FUNCTION_GSP_RM_CONTROL = 0x4C;
@@ -239,6 +242,18 @@ int32_t gsp::control(
     uint32_t params_bytes,
     uint64_t timeout_ns
 ) {
+    return send_control(client, object, command, params, params_bytes, timeout_ns, nullptr);
+}
+
+int32_t gsp::send_control(
+    rm::handle client,
+    rm::handle object,
+    uint32_t command,
+    void* params,
+    uint32_t params_bytes,
+    uint64_t timeout_ns,
+    uint32_t* status
+) {
     if (params_bytes > CONTROL_PARAMS_MAX_BYTES) {
         log::error(
             "nvidia: the parameters of control 0x%X take %u bytes, more than the %u one message carries after the "
@@ -263,7 +278,7 @@ int32_t gsp::control(
         .command      = command,
         .status       = 0,
         .params_bytes = params_bytes,
-        .flags        = 0,
+        .flags        = status != nullptr ? CONTROL_FLAG_COPYOUT_ON_ERROR : 0,
     };
 
     string::memcpy(message, &header, sizeof(header));
@@ -282,10 +297,18 @@ int32_t gsp::control(
         rc = ERR_BAD_MESSAGE;
     }
 
+    bool is_copied_back = false;
     if (rc == OK) {
         string::memcpy(&header, message, sizeof(header));
+        bool keeps_copyout = (header.flags & CONTROL_FLAG_COPYOUT_ON_ERROR) != 0;
+        is_copied_back = header.status == FIRMWARE_STATUS_OK || (status != nullptr && keeps_copyout);
+        if (status != nullptr) {
+            *status = header.status;
+        }
+
+        // A caller of `control_with_status` logs a refused control or sends it again, as it may expect the refusal
         rc = to_error(header.status);
-        if (rc != OK) {
+        if (rc != OK && status == nullptr) {
             log::error(
                 "nvidia: the GSP's firmware reports that control 0x%X on object 0x%X failed, with status 0x%X",
                 command,
@@ -295,7 +318,7 @@ int32_t gsp::control(
         }
     }
 
-    if (rc == OK) {
+    if (is_copied_back) {
         string::memcpy(params, message + sizeof(header), params_bytes);
     }
 
@@ -360,7 +383,11 @@ int32_t gsp::allocate(rm::handle parent, rm::handle object, uint32_t class_id, v
 }
 
 int32_t gsp::control(rm::handle object, uint32_t command, void* params, size_t size) {
-    return request_control(m_client, object, command, params, size);
+    return request_control(m_client, object, command, params, size, nullptr);
+}
+
+int32_t gsp::control_with_status(rm::handle object, uint32_t command, void* params, size_t size, uint32_t& status) {
+    return request_control(m_client, object, command, params, size, &status);
 }
 
 int32_t gsp::release(rm::handle object) {
@@ -381,7 +408,7 @@ void gsp::set_internal_client(rm::handle client, rm::handle subdevice) {
 }
 
 int32_t gsp::internal_control(uint32_t command, void* params, size_t size) {
-    return request_control(m_internal_client, m_internal_subdevice, command, params, size);
+    return request_control(m_internal_client, m_internal_subdevice, command, params, size, nullptr);
 }
 
 void gsp::set_event_sink(firmware_event_sink* sink) {
@@ -396,7 +423,14 @@ void gsp::set_failed_mark(failed_mark& failed) {
     m_failed = &failed;
 }
 
-int32_t gsp::request_control(rm::handle client, rm::handle object, uint32_t command, void* params, size_t size) {
+int32_t gsp::request_control(
+    rm::handle client,
+    rm::handle object,
+    uint32_t command,
+    void* params,
+    size_t size,
+    uint32_t* status
+) {
     if (size > CONTROL_PARAMS_MAX_BYTES) {
         log::error(
             "nvidia: the parameters of control 0x%X take %lu bytes, more than the %u one message carries after the "
@@ -408,7 +442,7 @@ int32_t gsp::request_control(rm::handle client, rm::handle object, uint32_t comm
         return ERR_TOO_LARGE;
     }
 
-    return control(client, object, command, params, static_cast<uint32_t>(size), RECEIVE_TIMEOUT_NS);
+    return send_control(client, object, command, params, static_cast<uint32_t>(size), RECEIVE_TIMEOUT_NS, status);
 }
 
 int32_t gsp::request_allocation(

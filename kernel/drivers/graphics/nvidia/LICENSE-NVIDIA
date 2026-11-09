@@ -1788,6 +1788,10 @@ src/nvidia/kernel/vgpu/nv/rpc.c
     marked to copy its parameters out on an error) with the parameters after it,
     and that the control's own failing status skips the copy of the parameters
     back, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, that a control marked
+    to copy its parameters out on an error asks for it in its header's flags and
+    has a failed control's parameters copied back when the reply's flags keep
+    that ask, in firmware.h, gsp.h, gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp, that a failed
     control's status is handed up whatever its value, the reply's flags can ask
     for a failed control's parameters to be copied out, a control marked
@@ -2137,6 +2141,9 @@ src/nvidia-modeset/src/nvkms-event.c
 src/nvidia/inc/kernel/rmapi/rmapi.h
     that RMAPI_RPC_FLAGS_NONE, the flags of a control neither serialized nor
     marked to copy its parameters out on an error, is 0, in gsp.h, gsp.cpp and
+    kernel/tests/graphics/nvidia_message_queues.test.cpp, and that
+    RMAPI_RPC_FLAGS_COPYOUT_ON_ERROR, the flag asking for a failed control's
+    parameters back, is bit 0, in gsp.cpp and
     kernel/tests/graphics/nvidia_message_queues.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2018-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

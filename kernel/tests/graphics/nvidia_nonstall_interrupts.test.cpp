@@ -65,6 +65,10 @@ public:
         return ERR_FIRMWARE;
     }
 
+    int32_t control_with_status(rm::handle object, uint32_t command, void* params, size_t size, uint32_t&) override {
+        return control(object, command, params, size);
+    }
+
     int32_t release(rm::handle) override { return ERR_FIRMWARE; }
 
     rm::handle new_handle() override { return 0; }
