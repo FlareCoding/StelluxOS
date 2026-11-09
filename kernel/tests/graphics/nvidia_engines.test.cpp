@@ -2448,10 +2448,12 @@ TEST(nvidia_engines, spaces_stay_once_a_hung_zeroing_failed_the_device) {
 static constexpr uint32_t QUEUE_CHANNEL_OBJECTS = 3;
 
 // NVIDIA's allocation flags for unprivileged channels 1 and 2, with physical copies and privileged MEM_OPs denied,
-// scheduling delayed and the id's USERD slot on page 0 fixed, and NVIDIA's internal privilege of a user's channel
+// scheduling delayed and the id's USERD slot on page 0 fixed
 static constexpr uint32_t USER_CHANNEL_1_FLAGS = 0x0060'01C0;
 static constexpr uint32_t USER_CHANNEL_2_FLAGS = 0x0060'02C0;
-static constexpr uint32_t PRIVILEGE_USER       = 0x0;
+
+// NVIDIA's internal flags of a user's channel naming no error notifiers: user privilege and both notifier types NONE
+static constexpr uint32_t USER_INTERNAL_FLAGS = 0x14;
 
 // A context's part above its user range: its semaphores, then a 256 KiB window per queue holding the queue's 128 KiB
 // GPFIFO and then its push buffer, three pages of 128-byte release sequences
@@ -2542,7 +2544,7 @@ TEST(nvidia_engines, a_queue_is_an_unprivileged_channel_with_its_rings_above_the
 
     const rm::channel_params& params = fixture.fw.last_channel;
     EXPECT_EQ(params.flags, USER_CHANNEL_1_FLAGS);
-    EXPECT_EQ(params.internal_flags, PRIVILEGE_USER);
+    EXPECT_EQ(params.internal_flags, USER_INTERNAL_FLAGS);
     EXPECT_EQ(params.engine_type, CE2);
     EXPECT_EQ(params.gpfifo_address, FIRST_GPFIFO_VA);
 
@@ -3821,7 +3823,7 @@ TEST(nvidia_engines, a_graphics_queue_is_promoted_then_given_3d_compute_and_copy
 
     const rm::channel_params& params = fixture.fw.last_channel;
     EXPECT_EQ(params.flags, USER_CHANNEL_1_FLAGS);
-    EXPECT_EQ(params.internal_flags, PRIVILEGE_USER);
+    EXPECT_EQ(params.internal_flags, USER_INTERNAL_FLAGS);
     EXPECT_EQ(params.engine_type, GR0);
     EXPECT_EQ(params.gpfifo_address, FIRST_GPFIFO_VA);
 

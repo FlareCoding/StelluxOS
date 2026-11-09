@@ -4184,7 +4184,7 @@ src/common/sdk/nvidia/inc/alloc/alloc_channel.h
     kernel/tests/graphics/nvidia_channel_methods.test.cpp, and the layouts of
     NV_CHANNEL_ALLOC_PARAMS, a channel's allocation parameters, and of
     NV_MEMORY_DESC_PARAMS, memory a CPU side allocated, in rm.h, the parameters'
-    size and the offsets of the fields a kernel channel sets, in
+    size and the offsets of the fields the tests check, in
     kernel/tests/graphics/nvidia_channel.test.cpp, the parameters' size and the
     offsets of gpFifoOffset, the flags and internalFlags, in
     kernel/tests/graphics/nvidia_copy_channel.test.cpp, the flags of
@@ -4201,9 +4201,11 @@ src/nvidia/src/kernel/gpu/fifo/kernel_channel.c
     kernel/tests/graphics/nvidia_channel_methods.test.cpp, the id's page and
     index alone in kernel/tests/graphics/nvidia_engines.test.cpp, that it
     passes a channel's privilege in its internal flags, trusted by the
-    firmware, in rm.h, and that it passes the group's fault method buffer of
-    the runqueue in the flags' GROUP_CHANNEL_RUNQUEUE field, 0 in flags leaving
-    the field clear, in channel.cpp
+    firmware, in rm.h, that it passes both error notifier types NONE in the
+    internal flags of a channel that, like its group, names no error notifier,
+    in rm.h and channel.cpp, and that it passes the group's fault method buffer
+    of the runqueue in the flags' GROUP_CHANNEL_RUNQUEUE field, 0 in flags
+    leaving the field clear, in channel.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 src/common/inc/swref/published/ampere/ga100/dev_ctrl.h
@@ -4322,8 +4324,13 @@ src/nvidia/generated/g_kernel_channel_nvoc.h
     NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_KERNEL, 2, of a channel's
     internal flags, in rm.h and kernel/tests/graphics/nvidia_channel.test.cpp,
     NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_KERNEL in
-    kernel/tests/graphics/nvidia_copy_channel.test.cpp, and
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp,
     NV_KERNELCHANNEL_ALLOC_INTERNALFLAGS_PRIVILEGE_USER in
+    kernel/tests/graphics/nvidia_engines.test.cpp, and ERROR_NOTIFIER_TYPE_NONE,
+    1, in the internal flags' fields _ERROR_NOTIFIER_TYPE, bits 3:2, and
+    _ECC_ERROR_NOTIFIER_TYPE, bits 5:4, in rm.h,
+    kernel/tests/graphics/nvidia_channel.test.cpp,
+    kernel/tests/graphics/nvidia_copy_channel.test.cpp and
     kernel/tests/graphics/nvidia_engines.test.cpp
     SPDX-FileCopyrightText: Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 

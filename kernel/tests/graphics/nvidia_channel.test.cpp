@@ -59,22 +59,25 @@ static constexpr uint32_t NV_MEMORY_CACHED              = 0;
 static constexpr uint32_t NV_MEMORY_UNCACHED            = 1;
 static constexpr uint32_t PRIVILEGE_USER                = 0x0;
 static constexpr uint32_t PRIVILEGE_KERNEL              = 0x2;
+static constexpr uint32_t NO_ERROR_NOTIFIERS            = 0x14;
 static constexpr uint32_t USERD_GP_PUT                  = 0x8C;
 static constexpr uint32_t VIRTUAL_FUNCTION_DOORBELL     = 0xBB0090;
 
 // Byte offsets into NV_CHANNEL_ALLOC_PARAMS
-static constexpr size_t GPFIFO_OFFSET_AT  = 8;
-static constexpr size_t GPFIFO_ENTRIES_AT = 16;
-static constexpr size_t FLAGS_AT          = 20;
-static constexpr size_t CONTEXT_SHARE_AT  = 24;
-static constexpr size_t VASPACE_AT        = 28;
-static constexpr size_t ENGINE_TYPE_AT    = 128;
-static constexpr size_t SUBDEVICE_ID_AT   = 136;
-static constexpr size_t INSTANCE_MEM_AT   = 144;
-static constexpr size_t USERD_MEM_AT      = 168;
-static constexpr size_t RAMFC_MEM_AT      = 192;
-static constexpr size_t METHOD_BUFFER_AT  = 216;
-static constexpr size_t INTERNAL_FLAGS_AT = 244;
+static constexpr size_t ERROR_NOTIFIER_AT     = 0;
+static constexpr size_t GPFIFO_OFFSET_AT      = 8;
+static constexpr size_t GPFIFO_ENTRIES_AT     = 16;
+static constexpr size_t FLAGS_AT              = 20;
+static constexpr size_t CONTEXT_SHARE_AT      = 24;
+static constexpr size_t VASPACE_AT            = 28;
+static constexpr size_t ENGINE_TYPE_AT        = 128;
+static constexpr size_t SUBDEVICE_ID_AT       = 136;
+static constexpr size_t ECC_ERROR_NOTIFIER_AT = 140;
+static constexpr size_t INSTANCE_MEM_AT       = 144;
+static constexpr size_t USERD_MEM_AT          = 168;
+static constexpr size_t RAMFC_MEM_AT          = 192;
+static constexpr size_t METHOD_BUFFER_AT      = 216;
+static constexpr size_t INTERNAL_FLAGS_AT     = 244;
 
 static constexpr gpu_objects TEST_OBJECTS        = {.device = 0xC1D00001, .subdevice = 0xC1D00002};
 static constexpr rm::handle  SPACE_HANDLE        = 0xC1D00010;
@@ -307,8 +310,8 @@ struct channel_fixture {
     }
 };
 
-// Create asks the subdevice for the fault method buffer's size, then allocates the group in the address space, the
-// channel in the group with the memory the CPU side gives it, and the copy object, then binds and schedules it
+// Create asks the subdevice for the fault method buffer's size, then allocates the group in the address space with no
+// error notifiers, the channel in it with the CPU side's memory, and the copy object, then binds and schedules it
 TEST(nvidia_channel, create_allocates_the_group_the_channel_and_its_copy_object) {
     channel_fixture fixture;
     ASSERT_EQ(fixture.create(true), OK);
@@ -327,6 +330,8 @@ TEST(nvidia_channel, create_allocates_the_group_the_channel_and_its_copy_object)
     EXPECT_EQ(group.number, KEPLER_CHANNEL_GROUP_A);
     EXPECT_EQ(group.size, CHANNEL_GROUP_PARAMS_BYTES);
 
+    EXPECT_EQ(group.words[0], 0u);
+    EXPECT_EQ(group.words[1], 0u);
     EXPECT_EQ(group.words[2], SPACE_HANDLE);
     EXPECT_EQ(group.words[3], COPY2_ENGINE_TYPE);
 
@@ -364,8 +369,8 @@ TEST(nvidia_channel, create_allocates_the_group_the_channel_and_its_copy_object)
     EXPECT_EQ(fixture.queue.create(test_card(), channel_test_chip(), fixture.space, copy2_setup(true)), ERR_BAD_STATE);
 }
 
-// The kernel's channel names no address space or context share of its own, and takes the cleared instance block and
-// RAMFC uncached in video memory and USERD and a fault method buffer cached in system memory
+// The kernel's channel names no address space, context share or error notifiers of its own, and takes the cleared
+// instance block and RAMFC uncached in video memory and USERD and a fault method buffer cached in system memory
 TEST(nvidia_channel, channel_takes_its_memory_from_the_cpu_side) {
     channel_fixture fixture;
     ASSERT_EQ(fixture.create(true), OK);
@@ -374,8 +379,10 @@ TEST(nvidia_channel, channel_takes_its_memory_from_the_cpu_side) {
     EXPECT_EQ(fw.channel_doubleword(GPFIFO_OFFSET_AT), TEST_GPFIFO_ADDRESS);
     EXPECT_EQ(fw.channel_word(GPFIFO_ENTRIES_AT), GPFIFO_ENTRIES);
     EXPECT_EQ(fw.channel_word(FLAGS_AT), channel_allocation_flags(TEST_CHANNEL_ID, true));
-    EXPECT_EQ(fw.channel_word(INTERNAL_FLAGS_AT), PRIVILEGE_KERNEL);
+    EXPECT_EQ(fw.channel_word(INTERNAL_FLAGS_AT), PRIVILEGE_KERNEL | NO_ERROR_NOTIFIERS);
 
+    EXPECT_EQ(fw.channel_word(ERROR_NOTIFIER_AT), 0u);
+    EXPECT_EQ(fw.channel_word(ECC_ERROR_NOTIFIER_AT), 0u);
     EXPECT_EQ(fw.channel_word(CONTEXT_SHARE_AT), 0u);
     EXPECT_EQ(fw.channel_word(VASPACE_AT), 0u);
     EXPECT_EQ(fw.channel_word(ENGINE_TYPE_AT), COPY2_ENGINE_TYPE);
@@ -416,7 +423,7 @@ TEST(nvidia_channel, user_channel_runs_with_user_privilege) {
     ASSERT_EQ(fixture.create(false), OK);
 
     EXPECT_EQ(fixture.fw.channel_word(FLAGS_AT), channel_allocation_flags(TEST_CHANNEL_ID, false));
-    EXPECT_EQ(fixture.fw.channel_word(INTERNAL_FLAGS_AT), PRIVILEGE_USER);
+    EXPECT_EQ(fixture.fw.channel_word(INTERNAL_FLAGS_AT), PRIVILEGE_USER | NO_ERROR_NOTIFIERS);
 }
 
 // An id from `CHANNEL_IDS` on is refused before anything is allocated
