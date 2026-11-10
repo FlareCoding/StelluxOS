@@ -143,7 +143,8 @@ static void append_scaled(std::vector<layer>& list, const damage_list::rect& r, 
         scaled.origin_y = piece.source.height;
         scaled.pitch = piece.source.pitch;
 
-        scaled.color = piece.opacity << decor::PIXEL_ALPHA_SHIFT | (piece.is_content ? SCALE_CONTENT : 0);
+        uint32_t kind = (piece.is_content ? SCALE_CONTENT : 0) | (piece.is_premultiplied ? SCALE_PREMULTIPLIED : 0);
+        scaled.color = piece.opacity << decor::PIXEL_ALPHA_SHIFT | kind;
         scaled.radius = piece.radius;
         list.push_back(scaled);
     }

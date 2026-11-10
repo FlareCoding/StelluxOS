@@ -20,9 +20,12 @@ const uint LAYER_GLASS               = 5u;
 const uint LAYER_BLEND_PREMULTIPLIED = 6u;
 const uint LAYER_SCALE               = 7u;
 
-/* A `scale` layer's `color` bit for a window's content, whose alpha byte means nothing. A step counts 65536ths of a
- * source pixel per output pixel, a position 256ths of one, and an output pixel's four bilinear weights sum to 65536. */
+/* `scale` layer `color` bits for a window's content, whose alpha means nothing unless its pixels are premultiplied */
 const uint SCALE_CONTENT = 1u;
+const uint SCALE_PREMULTIPLIED = 2u;
+
+/* A step counts 65536ths of a source pixel per output pixel, a position 256ths of one, and an output pixel's four
+ * bilinear weights sum to 65536 */
 const uint STEP_BITS = 16u;
 const uint POSITION_BITS = 8u;
 const int POSITION_ONE = 256;
@@ -192,13 +195,40 @@ int scale_position(int offset, int length, int source_length) {
     return clamp(int(center) - POSITION_ONE / 2, 0, (source_length - 1) * POSITION_ONE);
 }
 
-/* Adds a `scale` layer's source pixel at `at` by its bilinear weight: its weighted alpha and weighted alpha times
- * each channel, or for a window's content its weight and weighted channels */
+/* Adds a `scale` layer's source pixel at `at` by its bilinear weight. Its channels are weighted by its alpha as well
+ * unless it is a window's content, and its alpha is summed unless it is opaque content, which sums the weight alone. */
 void add_tap(layer l, ivec2 at, uint weight, inout uint alpha_sum, inout uvec3 channel_sums) {
     uint pixel = pixels(l.source).words[uint(at.y) * (l.pitch >> 2) + uint(at.x)];
-    uint weighted = (l.color & SCALE_CONTENT) != 0u ? weight : weight * (pixel >> 24);
-    alpha_sum += weighted;
-    channel_sums += weighted * uvec3(channel(pixel, 16u), channel(pixel, 8u), channel(pixel, 0u));
+    bool is_content = (l.color & SCALE_CONTENT) != 0u;
+    bool is_premultiplied = (l.color & SCALE_PREMULTIPLIED) != 0u;
+    uint weighted_alpha = weight * (pixel >> 24);
+    alpha_sum += is_content && !is_premultiplied ? weight : weighted_alpha;
+    channel_sums += (is_content ? weight : weighted_alpha) * uvec3(channel(pixel, 16u), channel(pixel, 8u),
+                                                                  channel(pixel, 0u));
+}
+
+/* Premultiplied content resampled as `alpha_sum` and `channel_sums`, faded by the layer's opacity in `color`'s alpha
+ * byte, then blended over `below` by the premultiplied rule, as `blend_premultiplied` layers blend at the corners */
+uint scale_premultiplied(
+    uint below,
+    layer l,
+    ivec2 pixel,
+    bool is_bottom_corner,
+    uint alpha_sum,
+    uvec3 channel_sums
+) {
+    uint opacity = l.color >> 24;
+    uvec3 resampled = (channel_sums + WEIGHT_HALF) >> WEIGHT_BITS;
+    uint alpha = (alpha_sum + WEIGHT_HALF) >> WEIGHT_BITS;
+    uint source = (div255(alpha * opacity) << 24) | (div255(resampled.x * opacity) << 16) |
+                  (div255(resampled.y * opacity) << 8) | div255(resampled.z * opacity);
+
+    uint blended = blend_premultiplied(below, source);
+    if (is_bottom_corner) {
+        return blend(below, blended, coverage(rounded_distance(l, pixel)));
+    }
+
+    return blended;
 }
 
 /* A `scale` layer's source region, `origin` pixels large, resampled bilinearly into its rectangle as `add_tap` weighs
@@ -218,6 +248,10 @@ uint scale(uint below, layer l, ivec2 pixel, bool is_bottom_corner) {
     add_tap(l, ivec2(second.x, first.y), weight.x * rest.y, alpha_sum, channel_sums);
     add_tap(l, ivec2(first.x, second.y), rest.x * weight.y, alpha_sum, channel_sums);
     add_tap(l, second, weight.x * weight.y, alpha_sum, channel_sums);
+    if ((l.color & SCALE_PREMULTIPLIED) != 0u) {
+        return scale_premultiplied(below, l, pixel, is_bottom_corner, alpha_sum, channel_sums);
+    }
+
     if (alpha_sum == 0u) {
         return below;
     }

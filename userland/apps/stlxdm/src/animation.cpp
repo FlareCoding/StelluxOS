@@ -26,10 +26,8 @@ constexpr uint32_t CHANNEL_SHIFTS[] = { 16, 8, 0 };
 constexpr uint32_t CHANNELS = sizeof(CHANNEL_SHIFTS) / sizeof(CHANNEL_SHIFTS[0]);
 constexpr uint32_t BYTES_PER_PIXEL = 4;
 
-/* A row mix holds red and blue in the two 16 bit lanes of one word, which a weighted sum of two pixels' channels
- * never carries across */
-constexpr uint32_t RED_BLUE_MASK = 0x00FF00FF;
-constexpr uint32_t GREEN_SHIFT = 8;
+/* A row mix holds red and blue in the two 16 bit lanes of one word and alpha and green in those of another, as
+ * `decor::LANE_CHANNELS` masks them, since a weighted sum of two pixels' channels never carries across */
 constexpr uint32_t LANE_BITS = 16;
 constexpr uint32_t LANE_MASK = 0xFFFF;
 
@@ -53,7 +51,7 @@ struct sample_sums {
 struct row_mix {
     int32_t               row = -1;
     std::vector<uint32_t> red_blue;
-    std::vector<uint32_t> green;
+    std::vector<uint32_t> alpha_green;
 };
 
 /* How one axis of a window's frame maps into its animated rect, the shadow beyond it included: alike along the
@@ -126,6 +124,38 @@ static uint32_t shown_alpha(const layer_scaled& piece, uint32_t alpha, int32_t x
     return alpha;
 }
 
+/* The premultiplied `pixel` at `opacity`, its alpha and each channel faded alike */
+static uint32_t fade_premultiplied(uint32_t pixel, uint32_t opacity) {
+    uint32_t faded = stlxgfx_div255((pixel >> decor::PIXEL_ALPHA_SHIFT) * opacity) << decor::PIXEL_ALPHA_SHIFT;
+    for (uint32_t shift : CHANNEL_SHIFTS) {
+        faded |= stlxgfx_div255(((pixel >> shift) & decor::CHANNEL_MAX) * opacity) << shift;
+    }
+
+    return faded;
+}
+
+static uint32_t blend_faded(uint32_t below, uint32_t source, uint32_t opacity) {
+    uint32_t faded = opacity == decor::CHANNEL_MAX ? source : fade_premultiplied(source, opacity);
+    return decor::blend_premultiplied(below, faded);
+}
+
+/* compose.comp's `scale_premultiplied` of the resampled premultiplied `source` at (x, y) over `below` */
+static uint32_t blend_premultiplied_content(
+    uint32_t below,
+    const layer_scaled& piece,
+    uint32_t source,
+    int32_t x,
+    int32_t y
+) {
+    uint32_t blended = blend_faded(below, source, piece.opacity);
+    int32_t radius = static_cast<int32_t>(piece.radius);
+    if (radius != 0 && is_in_bottom_corner(piece.bounds, radius, x, y)) {
+        return decor::blend_over(below, blended, decor::rounded_coverage(piece.bounds, radius, x, y));
+    }
+
+    return blended;
+}
+
 /* compose.comp's `scale` of a frame piece for the output pixel at (x, y) over `below` */
 static uint32_t scale_pixel(
     uint32_t below,
@@ -182,18 +212,18 @@ static void mix_row(const layer_scaled& piece, const std::vector<axis_sample>& c
     const uint32_t* source = reinterpret_cast<const uint32_t*>(line);
     mix.row = row;
     mix.red_blue.resize(columns.size());
-    mix.green.resize(columns.size());
+    mix.alpha_green.resize(columns.size());
 
     for (size_t i = 0; i < columns.size(); i++) {
         const axis_sample& column = columns[i];
         uint32_t first = source[column.first];
         uint32_t second = source[column.second];
         uint32_t rest = POSITION_ONE - column.weight;
-        uint32_t first_green = (first >> GREEN_SHIFT) & decor::CHANNEL_MAX;
-        uint32_t second_green = (second >> GREEN_SHIFT) & decor::CHANNEL_MAX;
+        uint32_t first_alpha_green = (first >> decor::CHANNEL_BITS) & decor::LANE_CHANNELS;
+        uint32_t second_alpha_green = (second >> decor::CHANNEL_BITS) & decor::LANE_CHANNELS;
 
-        mix.red_blue[i] = (first & RED_BLUE_MASK) * rest + (second & RED_BLUE_MASK) * column.weight;
-        mix.green[i] = first_green * rest + second_green * column.weight;
+        mix.red_blue[i] = (first & decor::LANE_CHANNELS) * rest + (second & decor::LANE_CHANNELS) * column.weight;
+        mix.alpha_green[i] = first_alpha_green * rest + second_alpha_green * column.weight;
     }
 }
 
@@ -222,6 +252,56 @@ static uint32_t mix_vertically(uint32_t top, uint32_t bottom, const axis_sample&
     return ((top * (POSITION_ONE - row.weight) + bottom * row.weight) + WEIGHT_HALF) >> WEIGHT_BITS;
 }
 
+static uint32_t mix_color(const row_mix& top, const row_mix& bottom, size_t i, const axis_sample& row) {
+    uint32_t upper = top.red_blue[i];
+    uint32_t lower = bottom.red_blue[i];
+    uint32_t red = mix_vertically(upper >> LANE_BITS, lower >> LANE_BITS, row);
+    uint32_t green = mix_vertically(top.alpha_green[i] & LANE_MASK, bottom.alpha_green[i] & LANE_MASK, row);
+    uint32_t blue = mix_vertically(upper & LANE_MASK, lower & LANE_MASK, row);
+
+    return red << CHANNEL_SHIFTS[0] | green << CHANNEL_SHIFTS[1] | blue << CHANNEL_SHIFTS[2];
+}
+
+static uint32_t mix_alpha(const row_mix& top, const row_mix& bottom, size_t i, const axis_sample& row) {
+    return mix_vertically(top.alpha_green[i] >> LANE_BITS, bottom.alpha_green[i] >> LANE_BITS, row);
+}
+
+static void blend_opaque_row(
+    uint32_t* pixels,
+    const layer_scaled& piece,
+    const row_mix& top,
+    const row_mix& bottom,
+    const axis_sample& row,
+    int32_t x,
+    int32_t y,
+    bool is_corner_row
+) {
+    for (size_t i = 0; i < top.red_blue.size(); i++) {
+        int32_t column_x = x + static_cast<int32_t>(i);
+        uint32_t alpha = is_corner_row ? shown_alpha(piece, decor::CHANNEL_MAX, column_x, y) : piece.opacity;
+        pixels[i] = decor::blend_over(pixels[i], mix_color(top, bottom, i, row), alpha);
+    }
+}
+
+static void blend_premultiplied_row(
+    uint32_t* pixels,
+    const layer_scaled& piece,
+    const row_mix& top,
+    const row_mix& bottom,
+    const axis_sample& row,
+    int32_t x,
+    int32_t y,
+    bool is_corner_row
+) {
+    uint32_t opacity = piece.opacity;
+    for (size_t i = 0; i < top.red_blue.size(); i++) {
+        uint32_t source = mix_alpha(top, bottom, i, row) << decor::PIXEL_ALPHA_SHIFT | mix_color(top, bottom, i, row);
+        int32_t column_x = x + static_cast<int32_t>(i);
+        pixels[i] = is_corner_row ? blend_premultiplied_content(pixels[i], piece, source, column_x, y)
+                                  : blend_faded(pixels[i], source, opacity);
+    }
+}
+
 /* compose.comp's `scale` of a window's content over the rows of `area`, its four taps summed as a mix along each row
  * and one down the column, which sum to the same and round once */
 static void draw_content(
@@ -241,18 +321,10 @@ static void draw_content(
         uint8_t* line = target.surface->pixels + static_cast<size_t>(y - target.y) * target.surface->pitch;
         uint32_t* pixels = reinterpret_cast<uint32_t*>(line) + (area.x - target.x);
         bool is_corner_row = piece.radius != 0 && y >= corner_y;
-        for (size_t i = 0; i < columns.size(); i++) {
-            uint32_t upper = top.red_blue[i];
-            uint32_t lower = bottom.red_blue[i];
-            uint32_t red = mix_vertically(upper >> LANE_BITS, lower >> LANE_BITS, row);
-            uint32_t green = mix_vertically(top.green[i], bottom.green[i], row);
-            uint32_t blue = mix_vertically(upper & LANE_MASK, lower & LANE_MASK, row);
-            uint32_t color = red << CHANNEL_SHIFTS[0] | green << CHANNEL_SHIFTS[1] | blue << CHANNEL_SHIFTS[2];
-
-            /* Opaque content shows at the piece's opacity outside the corner squares */
-            int32_t x = area.x + static_cast<int32_t>(i);
-            uint32_t alpha = is_corner_row ? shown_alpha(piece, decor::CHANNEL_MAX, x, y) : piece.opacity;
-            pixels[i] = decor::blend_over(pixels[i], color, alpha);
+        if (piece.is_premultiplied) {
+            blend_premultiplied_row(pixels, piece, top, bottom, row, area.x, y, is_corner_row);
+        } else {
+            blend_opaque_row(pixels, piece, top, bottom, row, area.x, y, is_corner_row);
         }
     }
 }
@@ -453,6 +525,7 @@ void animation_pieces(
     append_piece(pieces, pixels, placed, a.opacity);
     if (pieces.size() > first) {
         pieces.back().is_content = true;
+        pieces.back().is_premultiplied = b.is_premultiplied;
         pieces.back().radius = static_cast<uint32_t>(radius);
     }
 }
