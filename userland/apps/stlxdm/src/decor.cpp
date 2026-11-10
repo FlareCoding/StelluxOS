@@ -11,8 +11,7 @@
 #include <iterator>
 #include <vector>
 
-constexpr int32_t  TITLE_INSET        = 14;  /* from the frame's left edge */
-constexpr uint32_t OUTLINE_COLOR      = 0xFF89B4FA;
+constexpr int32_t TITLE_INSET = 14;  /* from the frame's left edge */
 
 /* Shapes without a distance table, the focus rule's inner edge and the
  * control glyphs, are measured from a grid of samples in every pixel */
@@ -1038,13 +1037,14 @@ void draw_outline(const canvas& back, const damage_list::rect& r,
     int32_t x = r.x - clip.x;
     int32_t y = r.y - clip.y;
     stlxgfx_fill_rect(view, x, y,
-                      static_cast<uint32_t>(r.w), static_cast<uint32_t>(OUTLINE_T), OUTLINE_COLOR);
+                      static_cast<uint32_t>(r.w), static_cast<uint32_t>(OUTLINE_T), STLXTHEME_ACCENT);
     stlxgfx_fill_rect(view, x, y + r.h - OUTLINE_T,
-                      static_cast<uint32_t>(r.w), static_cast<uint32_t>(OUTLINE_T), OUTLINE_COLOR);
+                      static_cast<uint32_t>(r.w), static_cast<uint32_t>(OUTLINE_T), STLXTHEME_ACCENT);
     stlxgfx_fill_rect(view, x, y,
-                      static_cast<uint32_t>(OUTLINE_T), static_cast<uint32_t>(r.h), OUTLINE_COLOR);
+                      static_cast<uint32_t>(OUTLINE_T), static_cast<uint32_t>(r.h), STLXTHEME_ACCENT);
     stlxgfx_fill_rect(view, x + r.w - OUTLINE_T, y,
-                      static_cast<uint32_t>(OUTLINE_T), static_cast<uint32_t>(r.h), OUTLINE_COLOR);
+                      static_cast<uint32_t>(OUTLINE_T), static_cast<uint32_t>(r.h), STLXTHEME_ACCENT);
+
     stlxgfx_destroy_surface(view);
 }
 
