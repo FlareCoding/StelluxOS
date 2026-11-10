@@ -350,7 +350,10 @@ static bool is_latch_due(const dm_window& w, uint64_t now) {
 
 void server::handle_create_window(dm_client& c, const uint8_t* payload) {
     const auto* m = reinterpret_cast<const swp_create_window*>(payload);
-    if (m->width == 0 || m->height == 0 || find_window(c, m->win_id)) {
+    bool is_empty = m->width == 0 || m->height == 0;
+    bool is_premultiplied = (m->flags & SWP_WF_PREMULTIPLIED) != 0;
+    bool lacks_glass = is_premultiplied && (m->flags & SWP_WF_GLASS) == 0;
+    if (is_empty || find_window(c, m->win_id) || lacks_glass) {
         c.dead = true;
         return;
     }
@@ -745,6 +748,7 @@ void server::handle_attach_buffer(dm_client& c, const uint8_t* payload) {
     b.width = m->width;
     b.height = m->height;
     b.pitch = m->width * 4;
+    b.is_premultiplied = (w->flags & SWP_WF_PREMULTIPLIED) != 0;
 
     b.mapping = pixels;
     b.size = size;
@@ -1287,22 +1291,23 @@ static bool subtract_content(std::vector<damage_list::rect>& pieces, const dm_wi
 }
 
 /* The glass beneath `w`, which must have a current buffer, in the pixels of an output whose top-left pixel lies at
- * (`origin_x`, `origin_y`) on the desktop: its decorated rect, or empty bounds for a borderless window */
+ * (`origin_x`, `origin_y`) on the desktop: its decorated rect, the content of a borderless glass window, else none */
 static material::surface glass_under(const dm_window& w, int32_t origin_x, int32_t origin_y) {
-    if (!decor::decorated(w)) {
-        return {};
-    }
-
     const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
     int32_t bw = static_cast<int32_t>(b.width);
     int32_t bh = static_cast<int32_t>(b.height);
+    if (!decor::decorated(w)) {
+        bool is_glass = (w.flags & SWP_WF_GLASS) != 0;
+        return is_glass ? material::surface{ { w.x - origin_x, w.y - origin_y, bw, bh } } : material::surface{};
+    }
+
     damage_list::rect frame = decor::frame_rect(w, w.x - origin_x, w.y - origin_y, bw, bh);
 
     return { frame, decor::CORNER_R, material::WINDOW_RIM_FADE };
 }
 
-/* Draws `glass`, in the output's pixels, from `frost` into the output's `back` within `piece`, in desktop
- * coordinates, but for what `subtract_content` takes out, or in all of `piece` when that fails */
+/* Draws `glass`, in the output's pixels, from `frost` into the output's `back` within `piece`, in desktop coordinates,
+ * but for what `subtract_content` takes out for opaque content, or in all of `piece` when that fails */
 static void draw_glass_beside_content(
     stlxgfx_surface_t* back,
     const stlxgfx_surface_t* frost,
@@ -1317,7 +1322,8 @@ static void draw_glass_beside_content(
     }
 
     std::vector<damage_list::rect> pieces = { piece };
-    if (!subtract_content(pieces, w)) {
+    bool is_opaque = !w.buffers[static_cast<size_t>(w.current)].is_premultiplied;
+    if (is_opaque && !subtract_content(pieces, w)) {
         pieces = { piece };
     }
 
@@ -1346,14 +1352,15 @@ picture_maker& server::frame_maker() {
 }
 
 /* Compose one rect of `out` in desktop coordinates, bottom-up, each layer
- * clipped to the damage minus the opaque content of every window above it */
+ * clipped to the damage minus what every window above it hides */
 void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
                           const damage_list::rect& r) {
     /* Walk top-down recording what each window may paint, then
-     * subtract its opaque content from everything beneath */
+     * subtract what it hides from everything beneath */
     std::vector<damage_list::rect> pieces = { r };
     std::vector<std::vector<damage_list::rect>> visible(m_zorder.size());
     bool subtracting = true;
+    const stlxgfx_surface_t* frost = frost_of(out);
 
     for (size_t i = m_zorder.size(); i-- > 0;) {
         dm_window* w = m_zorder[i];
@@ -1362,7 +1369,10 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         }
 
         visible[i] = pieces;
-        if (subtracting) {
+
+        /* Premultiplied content hides what lies below only through the glass beneath it, absent without frost */
+        bool shows_below = w->buffers[static_cast<size_t>(w->current)].is_premultiplied && !frost;
+        if (subtracting && !shows_below) {
             subtracting = subtract_content(pieces, *w);
         }
     }
@@ -1390,7 +1400,6 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
     }
 
     decor::canvas canvas = { back, ox, oy };
-    const stlxgfx_surface_t* frost = frost_of(out);
 
     for (size_t i = 0; i < m_zorder.size(); i++) {
         dm_window* w = m_zorder[i];
@@ -1717,6 +1726,7 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
         }
 
         shown.has_picture = b.gpu_address != 0;
+        shown.is_premultiplied = b.is_premultiplied;
         shown.picture = { b.gpu_address, b.pitch, shown.content.x, shown.content.y };
         shown.import = b.import.get();
         scene.windows.push_back(shown);

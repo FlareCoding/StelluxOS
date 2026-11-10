@@ -151,10 +151,11 @@ damage_list::rect controls_rect(const dm_window& w);
 void draw(const canvas& back, const dm_window& w,
           const chrome_state& st, const damage_list::rect& clip);
 
-/* Blits the displayed buffer into place with the frame's rounded
- * bottom corners applied, clipped to one compose rect, which is in
- * desktop coordinates and must lie inside `back`. A buffer without a
- * mapping shows `CONTENT_BG` instead. */
+/* Draws the displayed buffer into `back` within one compose rect, which
+ * is in desktop coordinates and must lie inside `back`: copied, or
+ * blended over what `back` holds when premultiplied, with the frame's
+ * rounded bottom corners applied. A buffer without a mapping shows
+ * `CONTENT_BG` instead. */
 void blit_content(const canvas& back, const dm_window& w,
                   const damage_list::rect& clip);
 

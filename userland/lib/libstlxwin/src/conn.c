@@ -36,6 +36,11 @@ _Static_assert(STLXWIN_WINDOWS_MAX * STLXWIN_BUFS_PER_WINDOW <= SWP_SHM_BUFFERS_
 _Static_assert(STLXWIN_GPU_BUFFERS_MAX == SWP_GPU_BUFFERS_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_GPU_DIMENSION_MAX == SWP_GPU_DIMENSION_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_FMT_XRGB8888 == SWP_FMT_XRGB8888, "stlxwin.h names proto.h's format");
+_Static_assert(STLXWIN_WF_RESIZABLE == SWP_WF_RESIZABLE, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_WF_BORDERLESS == SWP_WF_BORDERLESS, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_WF_GLASS == SWP_WF_GLASS, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_WF_PREMULTIPLIED == SWP_WF_PREMULTIPLIED, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_PF_GRAB == SWP_PF_GRAB, "stlxwin.h names proto.h's flag");
 _Static_assert(STLXWIN_DESKTOP_MAIN == SWP_DESKTOP_MAIN, "stlxwin.h names proto.h's flag");
 _Static_assert(STLXWIN_LAYOUT_APPLIED == SWP_LAYOUT_APPLIED, "stlxwin.h names proto.h's outcome");
 _Static_assert(STLXWIN_LAYOUT_UNSAVED == SWP_LAYOUT_UNSAVED, "stlxwin.h names proto.h's outcome");

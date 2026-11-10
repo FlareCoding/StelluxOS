@@ -330,8 +330,58 @@ static inline uint32_t blend_px(uint32_t dst, uint32_t color, uint32_t a) {
     return 0xFF000000u | (r << 16) | (g << 8) | b;
 }
 
+/* Source-over of the premultiplied `source` onto the opaque `below`, clamping each channel at 255 since a client
+ * may send a color above its alpha */
+static inline uint32_t blend_premultiplied_px(uint32_t below, uint32_t source) {
+    uint32_t inverse = 255 - (source >> 24);
+    uint32_t blended = 0xFF000000u;
+    for (uint32_t shift = 0; shift < 24; shift += 8) {
+        uint32_t channel = ((source >> shift) & 0xFF) + stlxgfx_div255(((below >> shift) & 0xFF) * inverse);
+        blended |= (channel < 255 ? channel : 255) << shift;
+    }
+
+    return blended;
+}
+
 static inline uint32_t* back_row(stlxgfx_surface_t* back, int32_t y) {
     return reinterpret_cast<uint32_t*>(back->pixels + static_cast<uint32_t>(y) * back->pitch);
+}
+
+static inline const uint32_t* picture_row(const dm_buffer& b, int32_t y) {
+    const uint8_t* first = reinterpret_cast<const uint8_t*>(b.pixels);
+    return reinterpret_cast<const uint32_t*>(first + static_cast<uint32_t>(y) * b.pitch);
+}
+
+/* Copies the pixels of `b` within `area` into `back`, or blends them over what `back` holds when premultiplied.
+ * `area` is in desktop coordinates and must lie inside both. */
+static void put_picture(
+    const decor::canvas& back,
+    const dm_window& w,
+    const dm_buffer& b,
+    const stlxgfx_surface_t* src,
+    const damage_list::rect& area
+) {
+    if (!b.is_premultiplied) {
+        stlxgfx_blit(
+            back.surface,
+            area.x - back.x,
+            area.y - back.y,
+            src,
+            area.x - w.x,
+            area.y - w.y,
+            static_cast<uint32_t>(area.w),
+            static_cast<uint32_t>(area.h)
+        );
+        return;
+    }
+
+    for (int32_t y = area.y; y < area.y + area.h; y++) {
+        uint32_t* target = back_row(back.surface, y - back.y) + (area.x - back.x);
+        const uint32_t* source = picture_row(b, y - w.y) + (area.x - w.x);
+        for (int32_t i = 0; i < area.w; i++) {
+            target[i] = blend_premultiplied_px(target[i], source[i]);
+        }
+    }
 }
 
 /* Fills the part of `r` inside `clip`, both in desktop coordinates */
@@ -1023,16 +1073,14 @@ void blit_content(const canvas& back, const dm_window& w,
     }
 
     /* Rows above the corner zone, and undecorated windows entirely,
-     * are a plain copy */
+     * draw whole */
     int32_t zone_top = w.y + bh - inner_r;
     int32_t plain_end = iy1 < zone_top ? iy1 : zone_top;
     if (iy0 < plain_end) {
-        stlxgfx_blit(back.surface, ix0 - back.x, iy0 - back.y, src, ix0 - w.x, iy0 - w.y,
-                     static_cast<uint32_t>(ix1 - ix0),
-                     static_cast<uint32_t>(plain_end - iy0));
+        put_picture(back, w, *b, src, { ix0, iy0, ix1 - ix0, plain_end - iy0 });
     }
 
-    /* The bottom rows copy their middle span and blend the corner
+    /* The bottom rows draw their middle span whole and blend the corner
      * squares by arc coverage, so the frame's rounding shows through */
     ring_geom content = { w.x, w.y, bw, bh, inner_r };
     int32_t mid0 = w.x + inner_r;
@@ -1041,13 +1089,11 @@ void blit_content(const canvas& back, const dm_window& w,
         int32_t m0 = ix0 > mid0 ? ix0 : mid0;
         int32_t m1 = ix1 < mid1 ? ix1 : mid1;
         if (m0 < m1) {
-            stlxgfx_blit(back.surface, m0 - back.x, y - back.y, src, m0 - w.x, y - w.y,
-                         static_cast<uint32_t>(m1 - m0), 1);
+            put_picture(back, w, *b, src, { m0, y, m1 - m0, 1 });
         }
 
         uint32_t* dst_row = back_row(back.surface, y - back.y);
-        const uint32_t* src_row = reinterpret_cast<const uint32_t*>(
-            reinterpret_cast<const uint8_t*>(b->pixels) + static_cast<uint32_t>(y - w.y) * b->pitch);
+        const uint32_t* src_row = picture_row(*b, y - w.y);
         for (int32_t x = ix0; x < ix1; x++) {
             if (x >= mid0 && x < mid1) {
                 x = mid1 - 1;
@@ -1059,7 +1105,10 @@ void blit_content(const canvas& back, const dm_window& w,
                 continue;
             }
 
-            dst_row[x - back.x] = blend_px(dst_row[x - back.x], src_row[x - w.x], a);
+            uint32_t below = dst_row[x - back.x];
+            uint32_t picture = src_row[x - w.x];
+            uint32_t shown = b->is_premultiplied ? blend_premultiplied_px(below, picture) : picture;
+            dst_row[x - back.x] = blend_px(below, shown, a);
         }
     }
 
