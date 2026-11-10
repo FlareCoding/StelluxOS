@@ -8,7 +8,7 @@
 #include "panels.hpp"
 
 #include <stlx/net.h>
-#include <stlxgfx/bmp.h>
+#include <stlxgfx/image.h>
 #include <stlxtheme/theme.h>
 
 #include <cstdio>
@@ -418,10 +418,10 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
 
         stlxgfx_surface_t* icon = nullptr;
         if (pin.icon_path[0]) {
-            icon = stlxgfx_load_bmp(pin.icon_path);
+            icon = stlxgfx_load_image(pin.icon_path);
         }
         if (!icon) {
-            icon = stlxgfx_load_bmp(STLXCONF_DEFAULT_ICON);
+            icon = stlxgfx_load_image(STLXCONF_DEFAULT_ICON);
         }
         if (icon) {
             m_icons.push_back(icon);

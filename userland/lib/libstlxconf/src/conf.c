@@ -3,6 +3,7 @@
  * sections, named prefix:name such as taskbar:files, append to arrays.
  */
 #include <stlxconf/conf.h>
+#include <stlxtheme/theme.h>
 
 #include <dirent.h>
 #include <errno.h>
@@ -44,7 +45,7 @@ static const char* const SWITCH_NAMES[] = { "off", "on" };
 void stlxconf_defaults(stlxconf_t* conf) {
     memset(conf, 0, sizeof(*conf));
 
-    conf->bg_color      = 0xFF2D2D30;
+    conf->bg_color      = STLXTHEME_WINDOW_BG;
     conf->bar_color     = 0xFF1E1E1E;
     conf->bar_font_size = 14;
     conf->accent_color  = 0xFF888888;

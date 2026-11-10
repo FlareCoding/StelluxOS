@@ -23,14 +23,12 @@ static const QColor TEXT_DIM = QColor::fromRgba(STLXTHEME_TEXT_DIM);
 
 static const qreal POINTS_PER_INCH = 72;
 
-static const char* FOLDER_ICON = "/etc/res/icons/icon_fm_folder_16x16.bmp";
-static const char* PROGRAM_ICON = "/etc/res/icons/icon_fm_exec_16x16.bmp";
-static const char* IMAGE_ICON = "/etc/res/icons/icon_fm_image_16x16.bmp";
-static const char* TEXT_ICON = "/etc/res/icons/icon_fm_text_16x16.bmp";
-static const char* FILE_ICON = "/etc/res/icons/icon_fm_file_16x16.bmp";
+static const char* FOLDER_ICON = "/etc/res/icons/folder-32.png";
+static const char* PROGRAM_ICON = "/etc/res/icons/doc-exec-32.png";
+static const char* IMAGE_ICON = "/etc/res/icons/doc-image-32.png";
+static const char* FILE_ICON = "/etc/res/icons/doc-text-32.png";
 
 static const char* IMAGE_MIME_PREFIX = "image/";
-static const char* TEXT_MIME_TYPE = "text/plain";
 
 static const QFile::Permissions EXECUTE_PERMISSIONS = QFile::ExeOwner | QFile::ExeGroup | QFile::ExeOther;
 
@@ -90,7 +88,6 @@ QStelluxTheme::QStelluxTheme()
     , m_folder_icon(QString::fromLatin1(FOLDER_ICON))
     , m_program_icon(QString::fromLatin1(PROGRAM_ICON))
     , m_image_icon(QString::fromLatin1(IMAGE_ICON))
-    , m_text_icon(QString::fromLatin1(TEXT_ICON))
     , m_file_icon(QString::fromLatin1(FILE_ICON)) {
 }
 
@@ -130,10 +127,6 @@ QIcon QStelluxTheme::fileIcon(const QFileInfo& info, IconOptions) const {
     QMimeType type = m_mime_database.mimeTypeForFile(info, QMimeDatabase::MatchExtension);
     if (type.name().startsWith(QLatin1String(IMAGE_MIME_PREFIX))) {
         return m_image_icon;
-    }
-
-    if (type.inherits(QLatin1String(TEXT_MIME_TYPE))) {
-        return m_text_icon;
     }
 
     return m_file_icon;

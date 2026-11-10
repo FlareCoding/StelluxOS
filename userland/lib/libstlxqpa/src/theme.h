@@ -31,7 +31,6 @@ private:
     QIcon m_folder_icon;
     QIcon m_program_icon;
     QIcon m_image_icon;
-    QIcon m_text_icon;
     QIcon m_file_icon;
 };
 
