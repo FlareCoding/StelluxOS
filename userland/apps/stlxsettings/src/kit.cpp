@@ -65,6 +65,12 @@ constexpr int LIST_SEPARATOR_INSET = 8;
 constexpr int LIST_FOOTER_H = 44;
 constexpr int LIST_FOOTER_PADDING_X = 10;
 
+constexpr int KEYCAPS_W = 150;
+constexpr int KEYCAP_H = 22;
+constexpr int KEYCAP_PADDING_X = 6;
+constexpr int KEYCAP_GAP = 4;
+constexpr int KEYCAP_SHADOW = 1;
+
 constexpr int VALUE_LABEL_W = 64;
 constexpr int VALUE_UNIT_GAP = 4;
 constexpr qreal DISABLED_OPACITY = 0.38;
@@ -839,6 +845,11 @@ void list_row::add_trailing(QWidget* widget) {
     m_layout->addWidget(widget, 0, Qt::AlignVCenter);
 }
 
+void list_row::set_leading(QWidget* widget) {
+    m_leading = widget;
+    m_layout->insertWidget(0, widget, 0, Qt::AlignVCenter);
+}
+
 void list_row::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -851,7 +862,9 @@ void list_row::paintEvent(QPaintEvent*) {
     }
 
     QRectF icon(LIST_ROW_PADDING_LEFT, center_y - LIST_ICON_SIZE / 2.0, LIST_ICON_SIZE, LIST_ICON_SIZE);
-    if (!m_icon.isNull()) {
+    if (m_leading) {
+        icon = QRectF(m_leading->geometry());
+    } else if (!m_icon.isNull()) {
         painter.drawPixmap(icon.topLeft(), m_icon);
     } else {
         qreal radius = STLXTHEME_CONTROL_RADIUS - 0.5;
@@ -864,10 +877,13 @@ void list_row::paintEvent(QPaintEvent*) {
         paint_glyph(painter, glyph::PROGRAM, glyph_box, theme_color(STLXTHEME_TEXT_SECONDARY));
     }
 
-    /* The text runs up to the first trailing widget */
+    /* The text runs up to the first trailing widget, which follows the stretch */
+    int stretch_index = m_leading ? 1 : 0;
     qreal text_left = icon.right() + LIST_ROW_GAP;
-    qreal text_right = m_layout->count() > 1 ? m_layout->itemAt(1)->geometry().left() - LIST_ROW_GAP : width();
+    bool has_trailing = m_layout->count() > stretch_index + 1;
+    qreal text_right = has_trailing ? m_layout->itemAt(stretch_index + 1)->geometry().left() - LIST_ROW_GAP : width();
     qreal text_width = qMax(0.0, text_right - text_left);
+
     QFont name_font = ui_font(STLXTHEME_BODY_SIZE, QFont::Medium);
     QFont path_font = mono_font(STLXTHEME_CAPTION_SIZE);
 
@@ -904,6 +920,60 @@ void list_row::enterEvent(QEnterEvent*) {
 
 void list_row::leaveEvent(QEvent*) {
     parentWidget()->update();
+}
+
+static qreal keycap_width(const QFontMetricsF& metrics, const QString& key) {
+    return qMax<qreal>(KEYCAP_H, qCeil(metrics.horizontalAdvance(key)) + 2 * KEYCAP_PADDING_X);
+}
+
+keycaps::keycaps(const QString& chord) {
+    setFixedHeight(KEYCAP_H + KEYCAP_SHADOW);
+    set_chord(chord);
+}
+
+/* Keys read as printed on a keyboard: ctrl+alt+t shows Ctrl, Alt and T */
+void keycaps::set_chord(const QString& chord) {
+    m_keys.clear();
+    for (const QString& key : chord.split(QLatin1Char('+'), Qt::SkipEmptyParts)) {
+        QString trimmed = key.trimmed();
+        m_keys.append(trimmed.left(1).toUpper() + trimmed.mid(1).toLower());
+    }
+
+    QFontMetricsF metrics(mono_font(STLXTHEME_CAPTION_SIZE));
+    qreal caps_width = 0;
+    for (const QString& key : m_keys) {
+        caps_width += keycap_width(metrics, key) + KEYCAP_GAP;
+    }
+
+    /* Chords that fit `KEYCAPS_W` share that width, so the names after them line up */
+    setFixedWidth(qMax(KEYCAPS_W, qCeil(caps_width - KEYCAP_GAP)));
+    update();
+}
+
+void keycaps::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QFont font = mono_font(STLXTHEME_CAPTION_SIZE);
+    QFontMetricsF metrics(font);
+    painter.setFont(font);
+    qreal left = 0;
+
+    for (const QString& key : m_keys) {
+        qreal cap_width = keycap_width(metrics, key);
+        QRectF cap(left + 0.5, 0.5, cap_width - 1, KEYCAP_H - 1);
+
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(theme_color(STLXTHEME_KEYCAP_SHADOW));
+        painter.drawRoundedRect(cap.translated(0, KEYCAP_SHADOW), STLXTHEME_CHIP_RADIUS, STLXTHEME_CHIP_RADIUS);
+
+        painter.setPen(QPen(theme_color(STLXTHEME_LINE), CARD_BORDER));
+        painter.setBrush(theme_color(STLXTHEME_KEYCAP_FACE));
+        painter.drawRoundedRect(cap, STLXTHEME_CHIP_RADIUS - 0.5, STLXTHEME_CHIP_RADIUS - 0.5);
+
+        painter.setPen(theme_color(STLXTHEME_TEXT));
+        painter.drawText(cap, Qt::AlignCenter, key);
+        left += cap_width + KEYCAP_GAP;
+    }
 }
 
 list_box::list_box() : m_entries(new QVBoxLayout) {

@@ -27,8 +27,9 @@ static void add_pin() {
         return;
     }
 
+    const stlxconf_t& saved = saved_conf();
     uint32_t owned = owned_count(g_conf.pins, g_conf.pin_count);
-    QString name = unused_entry_name(PIN_NAME_PREFIX, g_conf.pins, g_conf.pin_count);
+    QString name = unused_entry_name(PIN_NAME_PREFIX, saved.pins, saved.pin_count, g_conf.pins, g_conf.pin_count);
     stlxconf_pin_t* pin = insert_entry(g_conf.pins, g_conf.pin_count, owned);
     copy_string(pin->name, sizeof(pin->name), name);
     copy_string(pin->label, sizeof(pin->label), QStringLiteral("New app"));

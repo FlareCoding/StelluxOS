@@ -85,6 +85,10 @@
 #define STLXTHEME_KNOB_SHADOW        0x8C060402 /* under an off switch's knob and a slider's */
 #define STLXTHEME_KNOB_HALO          0x14FFF0D7 /* around the knob of a hovered or dragged slider */
 
+/* Shortcut keycaps in Settings */
+#define STLXTHEME_KEYCAP_FACE   0x0FFFF0D7
+#define STLXTHEME_KEYCAP_SHADOW 0x99060402 /* under a keycap, offset below its face */
+
 /* Corner radii */
 #define STLXTHEME_WINDOW_RADIUS    10
 #define STLXTHEME_CARD_RADIUS      8

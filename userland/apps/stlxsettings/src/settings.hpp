@@ -19,6 +19,9 @@ class QWidget;
 
 extern stlxconf_t g_conf;
 
+/* The configuration as last loaded or saved, which the pending changes count against */
+const stlxconf_t& saved_conf();
+
 /* Recounts the unsaved changes and shows their count in the footer, naming the change when there is only one. A page
  * must call it after each edit of `g_conf`. */
 void show_pending_changes();
@@ -72,6 +75,10 @@ QWidget* make_editor();
 /* A launcher's icon, or the default icon when it names none or its icon file does not load, as the dock shows it */
 QPixmap launcher_icon(const stlxconf_pin_t& pin);
 
+/* A program's name on screen: its launcher's label if set, else the file it runs, which is its first argument
+ * when that is a path, or "New program" while it has no path */
+QString program_name(const char* path, const char* args);
+
 /* How many of the user's own entries lead a list. Drop-in entries follow them in every list, so edits,
  * moves and additions stay among these */
 template <typename item_t>
@@ -120,13 +127,22 @@ int find_entry(const item_t* items, uint32_t count, const char* name) {
     return -1;
 }
 
-/* The first section name `<prefix><n>` that no entry of the list has, so an added entry shares no other's name */
+/* The first section name `<prefix><n>` that neither the saved nor the edited list has, so an added entry never
+ * reuses the name of an entry removed since the last save */
 template <typename item_t>
-QString unused_entry_name(const char* prefix, const item_t* items, uint32_t count) {
+QString unused_entry_name(
+    const char* prefix,
+    const item_t* saved,
+    uint32_t saved_count,
+    const item_t* edited,
+    uint32_t edited_count
+) {
     uint32_t n = 0;
     while (true) {
         QByteArray name = QStringLiteral("%1%2").arg(QLatin1String(prefix)).arg(n).toUtf8();
-        if (find_entry(items, count, name.constData()) < 0) {
+        bool is_saved = find_entry(saved, saved_count, name.constData()) >= 0;
+        bool is_edited = find_entry(edited, edited_count, name.constData()) >= 0;
+        if (!is_saved && !is_edited) {
             return QString::fromUtf8(name);
         }
 
@@ -137,5 +153,6 @@ QString unused_entry_name(const char* prefix, const item_t* items, uint32_t coun
 void build_appearance_page(QWidget* page);
 void build_dock_page(QWidget* page);
 void build_input_page(QWidget* page);
+void build_startup_page(QWidget* page);
 
 #endif /* STLXSETTINGS_SETTINGS_HPP */
