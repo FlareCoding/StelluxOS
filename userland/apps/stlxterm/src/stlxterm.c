@@ -33,6 +33,7 @@
 #define PADDING_Y         10
 #define BLINK_MS          500
 #define PTY_DRAIN_MAX     16
+#define SHELL_PATH        "/bin/shell"
 
 static const uint32_t FG_PALETTE[17] = {
     STLXTHEME_TERMINAL_TEXT, // 0: default foreground
@@ -383,9 +384,12 @@ static void handle_key(int master_fd, uint32_t ch, uint16_t usage,
     write_all(master_fd, &byte, 1);
 }
 
-static int spawn_shell(int* out_master) {
+/* Runs `program` with `args` on a fresh pty, whose master end goes to
+ * `out_master`. Logs the cause when it fails. */
+static int spawn_program(const char* program, const char* args[], int* out_master) {
     int master_fd, slave_fd;
     if (pty_create(&master_fd, &slave_fd) < 0) {
+        printf("stlxterm: no pty for %s\r\n", program);
         return -1;
     }
 
@@ -399,18 +403,20 @@ static int spawn_shell(int* out_master) {
     /* Declare the escape dialect this terminal implements */
     setenv("TERM", "xterm", 1);
 
-    int shell = proc_create("/bin/shell", NULL);
-    if (shell < 0) {
+    int child = proc_create(program, args);
+    if (child < 0) {
+        printf("stlxterm: cannot create a process for %s: %s\r\n", program, strerror(errno));
         close(master_fd);
         close(slave_fd);
         return -1;
     }
 
-    proc_set_handle(shell, 0, slave_fd);
-    proc_set_handle(shell, 1, slave_fd);
-    proc_set_handle(shell, 2, slave_fd);
-    if (proc_start(shell) < 0) {
-        close(shell);
+    proc_set_handle(child, 0, slave_fd);
+    proc_set_handle(child, 1, slave_fd);
+    proc_set_handle(child, 2, slave_fd);
+    if (proc_start(child) < 0) {
+        printf("stlxterm: cannot start %s: %s\r\n", program, strerror(errno));
+        close(child);
         close(master_fd);
         close(slave_fd);
         return -1;
@@ -422,7 +428,8 @@ static int spawn_shell(int* out_master) {
     return 0;
 }
 
-int main(void) {
+/* `stlxterm <program> [args]` runs the program in place of the shell */
+int main(int argc, char* argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
     stlxwin_conn* conn = stlxwin_connect("stlxterm");
@@ -464,9 +471,10 @@ int main(void) {
     int rows = (int)((INITIAL_HEIGHT - 2 * PADDING_Y) / g_cell_h);
     term_init(&g_term, rows, cols);
 
+    const char* program = argc > 1 ? argv[1] : SHELL_PATH;
+    const char** args = argc > 2 ? (const char**)&argv[2] : NULL;
     int master_fd = -1;
-    if (spawn_shell(&master_fd) < 0) {
-        printf("stlxterm: failed to start the shell\r\n");
+    if (spawn_program(program, args, &master_fd) < 0) {
         stlxwin_window_destroy(win);
         stlxwin_disconnect(conn);
         return 1;
