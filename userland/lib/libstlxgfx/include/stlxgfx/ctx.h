@@ -47,6 +47,12 @@ void stlxgfx_ctx_fill_circle(stlxgfx_ctx_t *ctx, int32_t cx, int32_t cy,
 void stlxgfx_ctx_fill_rounded_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
                                     uint32_t w, uint32_t h, uint32_t radius,
                                     uint32_t color);
+
+/* Draws the 1 px anti-aliased outline of the rounded rect
+ * `stlxgfx_ctx_fill_rounded_rect` fills, nothing when a side is under 2 px */
+void stlxgfx_ctx_draw_rounded_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
+                                    uint32_t w, uint32_t h, uint32_t radius,
+                                    uint32_t color);
 void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
                             int32_t x1, int32_t y1, uint32_t color);
 

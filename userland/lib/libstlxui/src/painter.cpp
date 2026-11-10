@@ -17,6 +17,9 @@ struct font_entry {
     stlxgfx_font* font = nullptr;
 };
 
+/* A ctx call drawing a rounded shape into its rect: position, size, radius and color */
+using rounded_draw = void (*)(stlxgfx_ctx_t*, int32_t, int32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+
 static std::vector<font_entry> g_fonts;
 
 static const char* face_path(weight w) {
@@ -109,8 +112,8 @@ void painter::fill(const rect& r, color c) {
 void painter::stroke(const rect& r, color c) {
     fill({ r.x, r.y, r.w, 1 }, c);
     fill({ r.x, r.y + r.h - 1, r.w, 1 }, c);
-    fill({ r.x, r.y, 1, r.h }, c);
-    fill({ r.x + r.w - 1, r.y, 1, r.h }, c);
+    fill({ r.x, r.y + 1, 1, r.h - 2 }, c);
+    fill({ r.x + r.w - 1, r.y + 1, 1, r.h - 2 }, c);
 }
 
 /* Lines clip coarsely by bounding box, which covers every separator
@@ -262,33 +265,43 @@ void painter::circle(point center, int32_t radius, color c) {
     stlxgfx_destroy_surface(view);
 }
 
-void painter::rounded_rect(const rect& r, int32_t radius, color c) {
-    if (!m_target || m_clips.empty() || r.w <= 0 || r.h <= 0) {
-        return;
-    }
-
-    rect surf = { r.x + m_origin.x, r.y + m_origin.y, r.w, r.h };
-    rect clipped = intersect(surf, m_clips.back());
+/* Draws through a clip view, so one child's repaint redraws its slice
+ * of a rounded panel, and the ctx path anti-aliases and honors alpha */
+static void draw_rounded(void* target, const rect& clip, const rect& surf, int32_t radius, color c,
+                         rounded_draw draw) {
+    rect clipped = intersect(surf, clip);
     if (clipped.w <= 0 || clipped.h <= 0) {
         return;
     }
 
-    /* The view keeps rounded fills correct under partial damage, a
-     * repaint of one child re-fills exactly its slice of the panel.
-     * The ctx path anti-aliases the corners and honors alpha. */
-    stlxgfx_surface_t* view = clip_view(m_target, clipped);
+    stlxgfx_surface_t* view = clip_view(target, clipped);
     if (!view) {
         return;
     }
 
     stlxgfx_ctx_t ctx;
     stlxgfx_ctx_init(&ctx, view);
-    stlxgfx_ctx_fill_rounded_rect(&ctx, surf.x - clipped.x,
-                                  surf.y - clipped.y,
-                                  static_cast<uint32_t>(surf.w),
-                                  static_cast<uint32_t>(surf.h),
-                                  static_cast<uint32_t>(radius), c);
+    draw(&ctx, surf.x - clipped.x, surf.y - clipped.y, static_cast<uint32_t>(surf.w),
+         static_cast<uint32_t>(surf.h), static_cast<uint32_t>(radius), c);
     stlxgfx_destroy_surface(view);
+}
+
+void painter::rounded_rect(const rect& r, int32_t radius, color c) {
+    if (!m_target || m_clips.empty() || r.w <= 0 || r.h <= 0) {
+        return;
+    }
+
+    rect surf = { r.x + m_origin.x, r.y + m_origin.y, r.w, r.h };
+    draw_rounded(m_target, m_clips.back(), surf, radius, c, stlxgfx_ctx_fill_rounded_rect);
+}
+
+void painter::rounded_stroke(const rect& r, int32_t radius, color c) {
+    if (!m_target || m_clips.empty() || r.w <= 0 || r.h <= 0) {
+        return;
+    }
+
+    rect surf = { r.x + m_origin.x, r.y + m_origin.y, r.w, r.h };
+    draw_rounded(m_target, m_clips.back(), surf, radius, c, stlxgfx_ctx_draw_rounded_rect);
 }
 
 void painter::push_clip(const rect& r) {

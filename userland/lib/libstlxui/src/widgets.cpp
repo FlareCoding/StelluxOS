@@ -88,40 +88,40 @@ void button::set_accent(bool accent) {
     }
 
     m_accent = accent;
-    invalidate();
+    invalidate_layout();
 }
 
 size button::measure(size) {
     size text = text_metrics(m_text, 0, weight::medium);
-    return { text.w + 2 * STLXTHEME_BUTTON_PADDING_X, theme::active().control_h };
+    int32_t padding = m_accent ? STLXTHEME_ACCENT_BUTTON_PADDING_X : STLXTHEME_BUTTON_PADDING_X;
+
+    return { text.w + 2 * padding, theme::active().control_h };
 }
 
 void button::paint(painter& p) {
     const theme& t = theme::active();
-    color bg = m_accent
-             ? (m_pressed ? t.accent_press
-                : m_hover ? t.accent_hover : t.accent)
-             : (m_pressed ? t.surface_press
-                : m_hover ? t.surface_hover : t.surface);
+    rect frame = { 0, 0, m_frame.w, m_frame.h };
 
-    /* A focus ring wraps the rounded surface, painted as two fills */
-    if (focused()) {
-        p.rounded_rect({ 0, 0, m_frame.w, m_frame.h },
-                       STLXTHEME_CONTROL_RADIUS + 1, m_accent ? t.text : t.accent);
-        p.rounded_rect({ 1, 1, m_frame.w - 2, m_frame.h - 2 },
-                       STLXTHEME_CONTROL_RADIUS, bg);
+    if (m_accent) {
+        color bg = m_pressed ? t.accent_press : m_hover ? t.accent_hover : t.accent;
+
+        p.rounded_rect(frame, STLXTHEME_CONTROL_RADIUS, bg);
+        if (focused()) {
+            p.rounded_stroke(frame, STLXTHEME_CONTROL_RADIUS, t.text);
+        }
     } else {
-        p.rounded_rect({ 0, 0, m_frame.w, m_frame.h },
-                       STLXTHEME_CONTROL_RADIUS, bg);
+        color bg = m_pressed ? t.surface_press : m_hover ? t.surface_hover : t.surface;
+        bool is_lit = !m_pressed && (m_hover || focused());
+
+        p.rounded_rect({ 1, 1, m_frame.w - 2, m_frame.h - 2 }, STLXTHEME_CONTROL_RADIUS - 1, bg);
+        p.rounded_stroke(frame, STLXTHEME_CONTROL_RADIUS, is_lit ? t.line_strong : t.line);
     }
 
     size text = p.measure_text(m_text, 0, weight::medium);
-    int32_t baseline = (m_frame.h - text.h) / 2
-                     + p.font_ascent(0, weight::medium);
-    color fg = m_accent ? t.window_bg : t.text;
+    int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(0, weight::medium);
+    color fg = m_accent ? t.accent_text : t.text;
 
-    p.text({ (m_frame.w - text.w) / 2, baseline }, m_text, 0, fg,
-           weight::medium);
+    p.text({ (m_frame.w - text.w) / 2, baseline }, m_text, 0, fg, weight::medium);
 }
 
 bool button::on_pointer_down(const pointer_event&) {
@@ -189,17 +189,13 @@ void checkbox::paint(painter& p) {
     const theme& t = theme::active();
     int32_t gy = (m_frame.h - STLXTHEME_CHECK_SIZE) / 2;
     rect glyph = { 0, gy, STLXTHEME_CHECK_SIZE, STLXTHEME_CHECK_SIZE };
+    color lit_edge = m_checked ? t.text : t.line_strong;
+    color rest_edge = m_checked ? t.text_secondary : t.line;
+    color edge = m_hover || focused() ? lit_edge : rest_edge;
 
-    if (m_hover || focused()) {
-        p.rounded_rect(glyph, STLXTHEME_CHECK_RADIUS,
-                       focused() ? t.accent : t.surface_hover);
-        p.rounded_rect({ glyph.x + 1, glyph.y + 1,
-                         glyph.w - 2, glyph.h - 2 },
-                       STLXTHEME_CHECK_RADIUS, m_checked ? t.accent : t.surface);
-    } else {
-        p.rounded_rect(glyph, STLXTHEME_CHECK_RADIUS,
-                       m_checked ? t.accent : t.surface);
-    }
+    p.rounded_rect({ glyph.x + 1, glyph.y + 1, glyph.w - 2, glyph.h - 2 }, STLXTHEME_CHECK_RADIUS - 1,
+                   m_checked ? t.text_secondary : t.recess);
+    p.rounded_stroke(glyph, STLXTHEME_CHECK_RADIUS, edge);
 
     if (m_checked) {
         p.line({ 4, gy + 8 }, { 7, gy + 11 }, t.window_bg);
@@ -228,6 +224,16 @@ bool checkbox::on_pointer_up(const pointer_event& e) {
     }
 
     return true;
+}
+
+void checkbox::on_pointer_enter() {
+    m_hover = true;
+    invalidate();
+}
+
+void checkbox::on_pointer_leave() {
+    m_hover = false;
+    invalidate();
 }
 
 bool checkbox::on_key_down(const key_event& e) {
@@ -279,11 +285,13 @@ size text_input::measure(size) {
 void text_input::paint(painter& p) {
     const theme& t = theme::active();
 
-    /* A rounded field with its border as the outer fill */
-    p.rounded_rect({ 0, 0, m_frame.w, m_frame.h }, STLXTHEME_CONTROL_RADIUS,
-                   focused() ? t.accent : t.surface_hover);
-    p.rounded_rect({ 1, 1, m_frame.w - 2, m_frame.h - 2 },
-                   STLXTHEME_CONTROL_RADIUS, t.surface);
+    p.rounded_rect({ 1, 1, m_frame.w - 2, m_frame.h - 2 }, STLXTHEME_CONTROL_RADIUS - 1, t.recess);
+    p.rounded_stroke({ 0, 0, m_frame.w, m_frame.h }, STLXTHEME_CONTROL_RADIUS,
+                     focused() ? t.line_strong : t.line);
+    if (focused()) {
+        p.fill({ STLXTHEME_CONTROL_RADIUS, m_frame.h - 1 - STLXTHEME_FOCUS_RULE_WIDTH,
+                 m_frame.w - 2 * STLXTHEME_CONTROL_RADIUS, STLXTHEME_FOCUS_RULE_WIDTH }, t.accent);
+    }
 
     bool empty = m_text.empty();
     const std::string& shown = empty ? m_placeholder : m_text;
@@ -427,7 +435,7 @@ void scroll_view::paint(painter& p) {
                     ? (track - thumb_h) * m_scroll.y / range : 0;
 
     p.rounded_rect({ m_frame.w - STLXTHEME_SCROLL_THUMB_WIDTH, thumb_y, STLXTHEME_SCROLL_THUMB_WIDTH, thumb_h },
-                   STLXTHEME_SCROLL_THUMB_RADIUS, t.surface_hover);
+                   STLXTHEME_SCROLL_THUMB_RADIUS, t.line_strong);
 }
 
 bool scroll_view::on_scroll(const pointer_event& e) {
