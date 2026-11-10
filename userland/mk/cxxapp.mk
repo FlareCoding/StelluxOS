@@ -9,6 +9,7 @@
 # and libunwind in addition to musl libc. Requires 'make libcxx' to
 # have been run first. APP_QT := 1 builds the app on Qt, see qt.mk, and
 # APP_VULKAN := 1 links the app with the Vulkan library, see vulkan.mk.
+# APP_SOURCE_DIRS names subdirectories of src/ holding more C++ sources.
 #
 
 USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)
@@ -27,7 +28,7 @@ APP_LIBS ?=
 LIB_ARCHIVES := $(patsubst %,$(SYSROOT)/lib/lib%.a,stlx $(APP_LIBS))
 
 C_SOURCES   := $(wildcard $(SRC_DIR)/*.c)
-CXX_SOURCES := $(wildcard $(SRC_DIR)/*.cpp)
+CXX_SOURCES := $(wildcard $(SRC_DIR)/*.cpp $(APP_SOURCE_DIRS:%=$(SRC_DIR)/%/*.cpp))
 C_OBJECTS   := $(C_SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 CXX_OBJECTS := $(CXX_SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 OBJECTS     := $(C_OBJECTS) $(CXX_OBJECTS)

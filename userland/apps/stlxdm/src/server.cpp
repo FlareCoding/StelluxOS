@@ -314,6 +314,10 @@ int server::init(display* disp, const stlxconf_t* conf) {
     m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
     refresh_backdrops(false, wallpaper);
 
+    /* The load needs two samples, so the first is taken before the splash
+     * for the bar's first frame after the splash to show a load */
+    m_panels->clock_tick();
+
     const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
     m_cursor_x = main.x + main.w / 2;
     m_cursor_y = main.y + main.h / 2;
@@ -678,7 +682,7 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
     out.frost = material::build_frost(out.backdrop, m_glass_tint);
     uint8_t* capture = out.gpu_capture ? out.gpu_capture->pixels() : nullptr;
     bool ready = out.frost && (!m_gpu_composes || capture) &&
-                 out.panels->init(width, height, *m_conf, out.backdrop, out.frost) == 0 &&
+                 out.panels->init(width, height, *m_conf, out.backdrop, out.frost, m_stats) == 0 &&
                  out.power->init(width, height, m_conf->taskbar_height, capture) == 0;
     if (ready && m_gpu_composes) {
         out.gpu_backdrop = copy_backdrop(out.backdrop, width, height);
@@ -1023,6 +1027,11 @@ bool server::compose_pending(uint32_t output) const {
     bool is_main = output == m_layout.main_output();
     bool shell_pending = is_main && (m_panels->dirty() || m_power->animating());
     return !out.damage.empty() || has_latch_work(output) || has_configure_work() || shell_pending;
+}
+
+void server::sync_shell() {
+    dm_client* owner = m_focus ? window_owner(m_focus) : nullptr;
+    m_panels->show_focused_app(owner ? owner->app_id : nullptr);
 }
 
 void server::reload_config() {

@@ -355,6 +355,7 @@ int main() {
 
         srv.mode_tick(now);
         run_mode_requests(disp, srv, inp, pace);
+        srv.sync_shell();
 
         now = now_ns();
 

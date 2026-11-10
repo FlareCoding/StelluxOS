@@ -1,9 +1,5 @@
-/* The compositor's panels on its own toolkit hosts. Each tree paints
- * straight into the backdrop rows it owns, so the toolkit repaints
- * only dirty widgets and compose needs no separate panel step. The
- * dock launches the config's pinned apps, and the top bar shows
- * system stats, the clock, and network state.
- */
+/* The compositor's panels on its own toolkit hosts. Each tree paints straight
+ * into the backdrop rows it owns, so compose needs no separate panel step. */
 #include "panels.hpp"
 #include "material.hpp"
 
@@ -12,11 +8,8 @@
 #include <stlxtheme/theme.h>
 
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <fcntl.h>
-#include <unistd.h>
 
 constexpr uint32_t PIN_BG = 0xFF313244;
 constexpr uint32_t PIN_BG_HOVER = 0xFF45475A;
@@ -37,10 +30,7 @@ constexpr int32_t TIP_GAP = 6;
  * far beyond the band */
 constexpr int32_t TIP_REACH = 48;
 
-/* Refresh cadences. The tick runs on every wakeup, so the queries
- * gate themselves by elapsed time, stats each second and the rarely
- * changing network answer every third. */
-constexpr uint64_t STATS_POLL_NS = 1000000000ull;
+/* The tick runs on every wakeup, so it asks for the rarely changing network state only this often */
 constexpr uint64_t NET_POLL_NS = 3000000000ull;
 
 /* Letter-glyph fallback colors for pins without an icon file */
@@ -50,11 +40,6 @@ static const uint32_t PIN_ACCENTS[] = {
     0xFF74C7EC, 0xFFB4BEFE, 0xFFF2CDCD, 0xFFF5C2E7,
     0xFF89DCEB, 0xFFBAC2DE, 0xFFCDD6F4, 0xFFFAB387
 };
-
-/* Live top bar strings, refreshed on the clock tick */
-static char g_stats_str[64] = "";
-static uint64_t g_stats_prev_busy = 0;
-static uint64_t g_stats_prev_total = 0;
 
 namespace {
 
@@ -206,18 +191,6 @@ static uint64_t monotonic_ns() {
          + static_cast<uint64_t>(ts.tv_nsec);
 }
 
-/* Weekday, date, and time for the bar's center */
-static void format_clock(char* out, size_t cap) {
-    time_t t = time(nullptr);
-    struct tm* tm = gmtime(&t);
-    if (!tm) {
-        out[0] = '\0';
-        return;
-    }
-
-    strftime(out, cap, "%a %b %e  %H:%M:%S", tm);
-}
-
 /* The default interface summarized as a short bar string */
 static void format_net(char* out, size_t cap) {
     struct stlx_net_status st;
@@ -247,104 +220,28 @@ static void format_net(char* out, size_t cap) {
              (ip >> 8) & 0xFF, ip & 0xFF);
 }
 
-/* Reads a small /dev/sysinfo file into buf, NUL terminated */
-static ssize_t read_stats_file(const char* path, char* buf, size_t cap) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        return -1;
-    }
-
-    size_t total = 0;
-    while (total < cap - 1) {
-        ssize_t rd = read(fd, buf + total, cap - 1 - total);
-        if (rd <= 0) {
-            break;
-        }
-        total += static_cast<size_t>(rd);
-    }
-    close(fd);
-    buf[total] = '\0';
-
-    return static_cast<ssize_t>(total);
+/* The file name of a launcher's program, which by convention is the id the program gives when it connects */
+static const char* launcher_app_id(const stlxconf_pin_t& pin) {
+    const char* slash = strrchr(pin.path, '/');
+    return slash ? slash + 1 : pin.path;
 }
 
-/* Value of a "<label> <number>" line in a stats text snapshot */
-static uint64_t stats_field(const char* text, const char* label) {
-    const char* p = strstr(text, label);
-    if (!p) {
-        return 0;
-    }
-
-    return strtoull(p + strlen(label), nullptr, 10);
-}
-
-/* Overall CPU utilization from busy and idle tick deltas, plus
- * memory consumption from page counters */
-static void update_sys_stats() {
-    char buf[512];
-    if (read_stats_file("/dev/sysinfo/cpu", buf, sizeof(buf)) <= 0) {
-        g_stats_str[0] = '\0';
-        return;
-    }
-
-    uint64_t busy = 0;
-    uint64_t idle = 0;
-    const char* p = buf;
-    while (*p) {
-        if (strncmp(p, "cpu", 3) == 0) {
-            char* end = nullptr;
-            strtoull(p + 3, &end, 10);
-            busy += strtoull(end, &end, 10);
-            idle += strtoull(end, &end, 10);
-        }
-        while (*p && *p != '\n') {
-            p++;
-        }
-        if (*p) {
-            p++;
-        }
-    }
-
-    uint64_t total = busy + idle;
-    unsigned cpu_pct = 0;
-    if (g_stats_prev_total != 0 && total > g_stats_prev_total) {
-        uint64_t d_busy = busy - g_stats_prev_busy;
-        uint64_t d_total = total - g_stats_prev_total;
-        cpu_pct = static_cast<unsigned>((d_busy * 100 + d_total / 2)
-                                        / d_total);
-    }
-    g_stats_prev_busy = busy;
-    g_stats_prev_total = total;
-
-    if (read_stats_file("/dev/sysinfo/mem", buf, sizeof(buf)) <= 0) {
-        g_stats_str[0] = '\0';
-        return;
-    }
-
-    uint64_t page_size = stats_field(buf, "page_size ");
-    uint64_t total_pages = stats_field(buf, "total_pages ");
-    uint64_t used_pages = stats_field(buf, "used_pages ");
-    uint64_t used_mb = used_pages * page_size / (1024 * 1024);
-    uint64_t total_mb = total_pages * page_size / (1024 * 1024);
-
-    snprintf(g_stats_str, sizeof(g_stats_str),
-             "CPU %u%%  MEM %llu/%llu MB", cpu_pct,
-             static_cast<unsigned long long>(used_mb),
-             static_cast<unsigned long long>(total_mb));
-}
-
-int dm_panels::init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf,
-                    stlxgfx_surface_t* backdrop, const stlxgfx_surface_t* frost) {
+int dm_panels::init(
+    uint32_t screen_w,
+    uint32_t screen_h,
+    const stlxconf_t& conf,
+    stlxgfx_surface_t* backdrop,
+    const stlxgfx_surface_t* frost,
+    stats_sampler& stats
+) {
     m_conf = &conf;
+    m_stats = &stats;
     m_width = screen_w;
     m_height = screen_h;
     m_dock_h = static_cast<int32_t>(conf.taskbar_height);
     m_dock_y = static_cast<int32_t>(screen_h) - m_dock_h;
 
-    /* One row below the bar carries its accent underline, outside the
-     * toolkit's layout so it never repaints. The dock's accent top
-     * edge is inside its layout and is restored after each repaint. */
-    m_band = row_view(backdrop, 0, BAR_H + 1);
+    m_band = row_view(backdrop, 0, BAR_H);
     m_dock = row_view(backdrop, m_dock_y, m_dock_h);
     if (!m_band || !m_dock) {
         return -1;
@@ -357,7 +254,8 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf
         return -1;
     }
 
-    stlxgfx_fill_rect(m_band, 0, BAR_H, screen_w, 1, conf.accent_color);
+    /* The dock's accent top edge is inside its layout and is restored
+     * after each repaint */
     stlxgfx_fill_rect(m_dock, 0, 0, screen_w, 1, conf.accent_color);
 
     m_tip_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_CAPTION_SIZE);
@@ -366,46 +264,13 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf
     }
     stlxgfx_font_metrics_get(m_tip_font, &m_tip_fm);
 
-    /* The bar: name and stats left, the clock truly centered between
-     * two equal flex halves, network state right */
-    auto bar = std::make_unique<glass_row>(m_bar_glass);
-    bar->s().padding = ui::edge_insets::xy(10, 0);
-    bar->s().align_items = ui::align::center;
-
-    ui::box* left = bar->add<ui::box>(ui::axis::row);
-    left->s().main = ui::length::flex();
-    left->s().align_items = ui::align::center;
-    left->s().gap = 24;
-
-    ui::label* name = left->add<ui::label>("Stellux");
-    name->s().main = ui::length::content();
-    name->set_color(conf.text_color);
-
-    update_sys_stats();
-    m_stats_query_ns = monotonic_ns();
-    m_stats = left->add<ui::label>(g_stats_str);
-    m_stats->s().main = ui::length::content();
-    m_stats->set_color(conf.accent_color);
-
-    char text[64];
-    format_clock(text, sizeof(text));
-    m_clock = bar->add<ui::label>(text);
-    m_clock->s().main = ui::length::content();
-    m_clock->set_color(conf.text_color);
-
-    ui::box* right = bar->add<ui::box>(ui::axis::row);
-    right->s().main = ui::length::flex();
-    right->s().align_items = ui::align::center;
-    right->s().justify = ui::align::end;
+    m_host.set_root(m_bar.build(m_bar_glass));
+    m_bar.readouts()->show_stats(*m_stats);
 
     char net[32];
     format_net(net, sizeof(net));
     m_net_query_ns = monotonic_ns();
-    m_net = right->add<ui::label>(net);
-    m_net->s().main = ui::length::content();
-    m_net->set_color(conf.text_color);
-
-    m_host.set_root(std::move(bar));
+    m_bar.readouts()->show_network(net);
 
     /* The dock: the config's pins centered between flex spacers */
     auto dock = std::make_unique<glass_row>(m_dock_glass);
@@ -470,9 +335,7 @@ void dm_panels::shutdown() {
     /* Roots go first, dock buttons reference the icon surfaces */
     m_host.set_root(nullptr);
     m_dock_host.set_root(nullptr);
-    m_clock = nullptr;
-    m_stats = nullptr;
-    m_net = nullptr;
+    m_bar = top_bar();
     m_hover_pin = -1;
     m_drawn_hover_pin = -1;
 
@@ -483,12 +346,12 @@ void dm_panels::shutdown() {
 
     stlxgfx_destroy_surface(m_band);
     stlxgfx_destroy_surface(m_dock);
+    stlxgfx_destroy_surface(m_bar_glass);
     m_band = nullptr;
     m_dock = nullptr;
-
-    stlxgfx_destroy_surface(m_bar_glass);
-    stlxgfx_destroy_surface(m_dock_glass);
     m_bar_glass = nullptr;
+
+    stlxgfx_destroy_surface(m_dock_glass);
     m_dock_glass = nullptr;
 
     stlxgfx_font_close(m_tip_font);
@@ -661,35 +524,43 @@ void dm_panels::pointer_button(int32_t x, int32_t y, uint8_t btn,
 }
 
 int64_t dm_panels::clock_timeout_ns(uint64_t now_ns) const {
-    uint64_t into_second = now_ns % 1000000000ull;
-
-    return static_cast<int64_t>(1000000000ull - into_second);
+    uint64_t into_period = now_ns % STATS_SAMPLE_PERIOD_NS;
+    return static_cast<int64_t>(STATS_SAMPLE_PERIOD_NS - into_period);
 }
 
 void dm_panels::clock_tick() {
-    if (!m_clock) {
+    if (!m_bar.readouts()) {
         return;
     }
 
-    char text[64];
-    format_clock(text, sizeof(text));
-    m_clock->set_text(text);
-
-    /* Stats sample busy and idle deltas, so calls faster than the
-     * cadence would shrink the window to noise and repaint per wake */
     uint64_t now = monotonic_ns();
-    if (m_stats && now - m_stats_query_ns >= STATS_POLL_NS) {
-        m_stats_query_ns = now;
-
-        update_sys_stats();
-        m_stats->set_text(g_stats_str);
+    if (m_stats->sample(now)) {
+        m_bar.show_clock();
+        m_bar.readouts()->show_stats(*m_stats);
     }
 
-    if (m_net && now - m_net_query_ns >= NET_POLL_NS) {
+    if (now - m_net_query_ns >= NET_POLL_NS) {
         m_net_query_ns = now;
 
         char net[32];
         format_net(net, sizeof(net));
-        m_net->set_text(net);
+        m_bar.readouts()->show_network(net);
     }
+}
+
+void dm_panels::show_focused_app(const char* app_id) {
+    if (!app_id || !app_id[0]) {
+        m_bar.show_app_name("");
+        return;
+    }
+
+    for (uint32_t i = 0; i < m_conf->pin_count; i++) {
+        const stlxconf_pin_t& pin = m_conf->pins[i];
+        if (strcmp(launcher_app_id(pin), app_id) == 0 && pin.label[0]) {
+            m_bar.show_app_name(pin.label);
+            return;
+        }
+    }
+
+    m_bar.show_app_name(app_id);
 }
