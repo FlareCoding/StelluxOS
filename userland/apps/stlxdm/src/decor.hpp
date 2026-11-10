@@ -68,6 +68,12 @@ constexpr uint32_t CHANNEL_MAX = 0xFF;
 constexpr uint32_t PIXEL_ALPHA_SHIFT = 24;
 constexpr uint32_t OPAQUE_PIXEL = 0xFF000000u;
 
+/* Two channels sit in the 16 bit lanes of one word, where a channel times an alpha, or two channels summed, never
+ * carries into the other lane */
+constexpr uint32_t LANE_CHANNELS = 0x00FF00FF;
+constexpr uint32_t LANE_ONES = 0x00010001;
+constexpr uint32_t LANE_CARRIES = 0x01000100;
+
 /* Pointer zones inside a window's decorated bounds */
 enum class zone {
     none,
@@ -204,6 +210,29 @@ inline uint32_t blend_over(uint32_t below, uint32_t color, uint32_t alpha) {
     }
 
     return blended;
+}
+
+/* `stlxgfx_div255` of both lanes of `products` */
+inline uint32_t divide_lanes_by_255(uint32_t products) {
+    return ((products + LANE_ONES + ((products >> CHANNEL_BITS) & LANE_CHANNELS)) >> CHANNEL_BITS) & LANE_CHANNELS;
+}
+
+/* Both lanes of `sums`, each at most 510, clamped to 255 */
+inline uint32_t saturate_lanes(uint32_t sums) {
+    return (sums | ((sums & LANE_CARRIES) >> CHANNEL_BITS) * CHANNEL_MAX) & LANE_CHANNELS;
+}
+
+/* Source-over of the premultiplied `source` onto the opaque `below`, clamping each channel at 255 since a client
+ * may send a color above its alpha */
+inline uint32_t blend_premultiplied(uint32_t below, uint32_t source) {
+    uint32_t inverse = CHANNEL_MAX - (source >> PIXEL_ALPHA_SHIFT);
+    uint32_t red_blue = (source & LANE_CHANNELS) + divide_lanes_by_255((below & LANE_CHANNELS) * inverse);
+    uint32_t source_alpha_green = (source >> CHANNEL_BITS) & LANE_CHANNELS;
+    uint32_t below_alpha_green = (below >> CHANNEL_BITS) & LANE_CHANNELS;
+    uint32_t alpha_green = source_alpha_green + divide_lanes_by_255(below_alpha_green * inverse);
+    uint32_t green = saturate_lanes(alpha_green) & CHANNEL_MAX;
+
+    return OPAQUE_PIXEL | green << CHANNEL_BITS | saturate_lanes(red_blue);
 }
 
 /* Draws the interactive-resize rubber band `r`, inside `clip` only,
