@@ -267,6 +267,9 @@ public:
     void set_open(bool is_open);
     void add_trailing(QWidget* widget);
 
+    /* Puts a widget, such as a shortcut's keycaps, where the icon would be */
+    void set_leading(QWidget* widget);
+
     bool is_lit() const { return m_is_open || (!m_is_locked && underMouse()); }
 
 protected:
@@ -282,7 +285,22 @@ private:
     QPixmap m_icon;
     bool m_is_locked = false;
     bool m_is_open = false;
+    QWidget* m_leading = nullptr;
     QHBoxLayout* m_layout;
+};
+
+/* A key chord such as ctrl+alt+t drawn as one keycap per key */
+class keycaps : public QWidget {
+public:
+    explicit keycaps(const QString& chord);
+
+    void set_chord(const QString& chord);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QStringList m_keys;
 };
 
 /* A list editor's rows and the editors open under them, a hairline between two neighboring rows when neither

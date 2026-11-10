@@ -25,7 +25,6 @@
 #include <QSignalBlocker>
 #include <QSocketNotifier>
 #include <QTimer>
-#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <sys/utsname.h>
@@ -71,7 +70,6 @@ constexpr int FOOTER_GAP = 8;
 constexpr int LIST_ROW_H = 44;
 constexpr int LIST_ROW_PADDING_X = 12;
 constexpr int EDITOR_FIELD_W = 360;
-constexpr int MENU_BUTTON_W = 36;
 constexpr int ARRANGEMENT_H = 220;
 constexpr int ARRANGEMENT_MARGIN = 16;
 constexpr int OUTPUT_RADIUS = 6;
@@ -636,8 +634,7 @@ static QString entry_title(const stlxconf_shortcut_t& shortcut) {
 }
 
 static QString entry_title(const stlxconf_autostart_t& autostart) {
-    QString path = QString::fromUtf8(autostart.path);
-    return path.isEmpty() ? QStringLiteral("A program") : path.section(QLatin1Char('/'), -1);
+    return program_name(autostart.path, autostart.args);
 }
 
 /* Entries match by section name, which must be unique in a list, so a changed name reads as removed and added,
@@ -716,6 +713,10 @@ static QStringList pending_changes() {
     );
 
     return changes;
+}
+
+const stlxconf_t& saved_conf() {
+    return g_st.saved;
 }
 
 void show_pending_changes() {
@@ -876,10 +877,6 @@ static QVBoxLayout* layout_of(QWidget* widget) {
     return static_cast<QVBoxLayout*>(widget->layout());
 }
 
-static QLabel* make_caption(const QString& text) {
-    return make_text(text, mono_font(STLXTHEME_CAPTION_SIZE), STLXTHEME_TEXT_DIM);
-}
-
 card* add_section(QWidget* page, const QString& title, const QString& config_section) {
     auto* section = new card;
     layout_of(page)->addWidget(new section_head(title, config_section));
@@ -893,7 +890,7 @@ static QHBoxLayout* make_row(card* parent, const char* label, const char* key) {
     return row->controls();
 }
 
-/* A bare row for list entries, no label column */
+/* A bare card row with no label column, for a button or a note */
 static QHBoxLayout* make_list_row(card* parent) {
     auto* row = new QWidget;
     row->setMinimumHeight(LIST_ROW_H);
@@ -904,104 +901,6 @@ static QHBoxLayout* make_list_row(card* parent) {
     layout->setSpacing(FOOTER_GAP);
 
     return layout;
-}
-
-/* Paths and commands read from the left, so a field opens on the start of its text */
-static QLineEdit* make_field(const QString& text) {
-    auto* field = new QLineEdit(text);
-    field->setCursorPosition(0);
-    return field;
-}
-
-/* A text field of fixed width, or one sharing the row's spare width when `width` is 0 */
-static QLineEdit* add_field(QHBoxLayout* row, const char* text, int width) {
-    QLineEdit* field = make_field(QString::fromUtf8(text));
-    if (width > 0) {
-        field->setFixedWidth(width);
-        row->addWidget(field);
-    } else {
-        row->addWidget(field, 1);
-    }
-
-    return field;
-}
-
-/* One column of a row the user cannot edit */
-static void add_value(QHBoxLayout* row, const char* text, int width) {
-    auto* value = new QLabel(QString::fromUtf8(text));
-    value->setContentsMargins(4, 0, 0, 0);
-    if (width > 0) {
-        value->setFixedWidth(width);
-        row->addWidget(value);
-    } else {
-        row->addWidget(value, 1);
-    }
-}
-
-/* One dim column caption inside a list header row */
-static void add_caption(QHBoxLayout* header, const char* text, int width) {
-    QLabel* caption = make_caption(QString::fromUtf8(text));
-    if (width > 0) {
-        caption->setFixedWidth(width);
-        header->addWidget(caption);
-    } else {
-        header->addWidget(caption, 1);
-    }
-}
-
-/* Takes the menu slot of a row that a drop-in file owns */
-static void mark_drop_in_row(QHBoxLayout* row) {
-    QLabel* caption = make_caption(QStringLiteral("drop-in"));
-    caption->setFixedWidth(MENU_BUTTON_W + 20);
-    row->addWidget(caption);
-}
-
-/* A field writing through to a char array */
-static QLineEdit* add_text_field(QHBoxLayout* row, char* dst, size_t cap, int width) {
-    QLineEdit* field = add_field(row, dst, width);
-    QObject::connect(field, &QLineEdit::textEdited, [dst, cap](const QString& s) {
-        copy_string(dst, cap, s);
-        show_pending_changes();
-    });
-
-    return field;
-}
-
-/* A "..." button opening the row actions for one list entry. The
- * mutation runs once the menu returns, then the page rebuilds. */
-template <typename move_fn, typename remove_fn>
-static void make_row_menu(QHBoxLayout* row, uint32_t index, uint32_t count, move_fn mover,
-                          remove_fn remover) {
-    auto* more = new QToolButton;
-    more->setText(QStringLiteral("..."));
-    more->setFixedWidth(MENU_BUTTON_W);
-    row->addWidget(more);
-
-    QObject::connect(more, &QToolButton::clicked, [more, index, count, mover, remover]() {
-        QMenu menu(more);
-        QAction* up = menu.addAction(QStringLiteral("Move up"));
-        up->setEnabled(index > 0);
-        QAction* down = menu.addAction(QStringLiteral("Move down"));
-        down->setEnabled(index + 1 < count);
-        menu.addSeparator();
-        QAction* remove = menu.addAction(QStringLiteral("Remove"));
-
-        QAction* chosen = menu.exec(more->mapToGlobal(QPoint(0, more->height())));
-        if (!chosen) {
-            return;
-        }
-
-        if (chosen == up) {
-            mover(index, index - 1);
-        } else if (chosen == down) {
-            mover(index, index + 1);
-        } else if (chosen == remove) {
-            remover(index);
-        }
-
-        show_pending_changes();
-        rebuild_page_later();
-    });
 }
 
 static push_button* add_list_button(card* parent, const char* text, std::function<void()> on_click) {
@@ -1533,81 +1432,6 @@ static void build_display(QWidget* page) {
     }
 }
 
-static void build_startup(QWidget* page) {
-    card* autos = add_section(page, "Autostart", "[autostart:<id>]  path  args");
-
-    auto move_auto = [](uint32_t from, uint32_t to) {
-        stlxconf_autostart_t tmp = g_conf.autostart[from];
-        g_conf.autostart[from] = g_conf.autostart[to];
-        g_conf.autostart[to] = tmp;
-    };
-    auto remove_auto = [](uint32_t at) {
-        for (uint32_t i = at; i + 1 < g_conf.autostart_count; i++) {
-            g_conf.autostart[i] = g_conf.autostart[i + 1];
-        }
-
-        g_conf.autostart_count--;
-    };
-
-    QHBoxLayout* header = make_list_row(autos);
-    add_caption(header, "PROGRAM", 0);
-    add_caption(header, "ARGUMENTS", 130);
-    header->addSpacing(MENU_BUTTON_W + 20);
-
-    for (uint32_t i = 0; i < g_conf.autostart_count; i++) {
-        stlxconf_autostart_t* as = &g_conf.autostart[i];
-
-        QHBoxLayout* row = make_list_row(autos);
-        if (as->from_drop_in) {
-            add_value(row, as->path, 0);
-            add_value(row, as->args, 130);
-            mark_drop_in_row(row);
-            continue;
-        }
-
-        add_text_field(row, as->path, sizeof(as->path), 0);
-        add_text_field(row, as->args, sizeof(as->args), 130);
-        make_row_menu(row, i, owned_count(g_conf.autostart, g_conf.autostart_count), move_auto,
-                      remove_auto);
-    }
-
-    add_list_button(autos, "Add program", [] {
-        if (g_conf.autostart_count >= STLXCONF_MAX_AUTOSTART) {
-            set_status("autostart table is full");
-            return;
-        }
-
-        uint32_t owned = owned_count(g_conf.autostart, g_conf.autostart_count);
-        QString name = unused_entry_name("entry", g_conf.autostart, g_conf.autostart_count);
-        stlxconf_autostart_t* as = insert_entry(g_conf.autostart, g_conf.autostart_count, owned);
-        copy_string(as->name, sizeof(as->name), name);
-
-        show_pending_changes();
-        rebuild_page_later();
-    });
-
-    card* keys = add_section(page, "Shortcuts", "[shortcut:<id>]  key  action  path  args");
-
-    QHBoxLayout* kh = make_list_row(keys);
-    add_caption(kh, "CHORD", 130);
-    add_caption(kh, "PROGRAM", 0);
-
-    for (uint32_t i = 0; i < g_conf.shortcut_count; i++) {
-        stlxconf_shortcut_t* sc = &g_conf.shortcuts[i];
-
-        QHBoxLayout* row = make_list_row(keys);
-        if (sc->from_drop_in) {
-            add_value(row, sc->key, 130);
-            add_value(row, sc->path, 0);
-            mark_drop_in_row(row);
-            continue;
-        }
-
-        add_text_field(row, sc->key, sizeof(sc->key), 130);
-        add_text_field(row, sc->path, sizeof(sc->path), 0);
-    }
-}
-
 /* Swaps the page under the fixed chrome */
 static void build_page(uint32_t index) {
     if (index != g_st.active_page) {
@@ -1637,7 +1461,7 @@ static void build_page(uint32_t index) {
     case DOCK_PAGE: build_dock_page(g_st.page); break;
     case DISPLAY_PAGE: build_display(g_st.page); break;
     case INPUT_PAGE: build_input_page(g_st.page); break;
-    case STARTUP_PAGE: build_startup(g_st.page); break;
+    case STARTUP_PAGE: build_startup_page(g_st.page); break;
     }
 
     page_layout->addStretch(1);
