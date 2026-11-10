@@ -3,6 +3,7 @@
 #include "bar.hpp"
 #include "chord.hpp"
 #include "draw.hpp"
+#include "programs.hpp"
 
 #include <stlxtheme/theme.h>
 
@@ -33,16 +34,9 @@ constexpr int32_t KEYCAP_PADDING_X = 5;
 constexpr int32_t KEYCAP_GAP = 3;
 constexpr float KEYCAP_TEXT_SIZE = 11.0f;
 
-/* A menu row's label and the program it spawns, by its path and its space separated args */
-struct menu_program {
-    const char* label;
-    const char* path;
-    const char* args;
-};
-
-static const menu_program MENU_PROGRAMS[] = {
-    { "Settings", "/bin/stlxsettings", "" },
-    { "Task monitor", "/bin/stlxterm", "/bin/stlxtop" },
+static const shell_program MENU_PROGRAMS[] = {
+    SETTINGS_PROGRAM,
+    TASK_MONITOR_PROGRAM,
 };
 
 /* Leads to the power overlay, which asks whether to restart or shut down */
@@ -218,7 +212,7 @@ static std::string uptime_text(const stats_sampler& stats) {
 
 /* The keys of the first live hotkey that runs the same program, none when no hotkey does. A hotkey is live
  * when it is an exec shortcut with a path and a chord that parses, as the server binds them. */
-static std::vector<std::string> shortcut_keys(const stlxconf_t& conf, const menu_program& program) {
+static std::vector<std::string> shortcut_keys(const stlxconf_t& conf, const shell_program& program) {
     for (uint32_t i = 0; i < conf.shortcut_count; i++) {
         const stlxconf_shortcut_t& shortcut = conf.shortcuts[i];
         bool runs_program = strcmp(shortcut.action, "exec") == 0;
@@ -241,7 +235,7 @@ int32_t system_menu::width() const {
     return MENU_WIDTH;
 }
 
-int32_t system_menu::left() const {
+int32_t system_menu::left(int32_t) const {
     return MENU_LEFT;
 }
 
@@ -261,7 +255,7 @@ std::unique_ptr<ui::widget> system_menu::build() {
     m_uptime = header->add<mono_label>(uptime_text(m_stats), STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM);
 
     root->add<menu_divider>();
-    for (const menu_program& program : MENU_PROGRAMS) {
+    for (const shell_program& program : MENU_PROGRAMS) {
         menu_row* row = root->add<menu_row>(program.label, shortcut_keys(m_conf, program));
         row->on_choose = [this, &program]() {
             on_spawn(program.path, program.args);

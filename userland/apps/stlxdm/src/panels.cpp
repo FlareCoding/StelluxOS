@@ -191,33 +191,32 @@ static uint64_t monotonic_ns() {
          + static_cast<uint64_t>(ts.tv_nsec);
 }
 
-/* The default interface summarized as a short bar string */
-static void format_net(char* out, size_t cap) {
+/* The default interface summarized as a short bar string, and its name, empty without an interface */
+static network_summary read_network() {
     struct stlx_net_status st;
     if (stlx_net_get_status(&st) != 0 || st.if_count == 0) {
-        snprintf(out, cap, "no network");
-        return;
+        return { "no network", "" };
     }
 
     const struct stlx_ifinfo* def = stlx_net_default_if(&st);
     if (!def) {
-        snprintf(out, cap, "no network");
-        return;
+        return { "no network", "" };
     }
 
     if (!(def->flags & STLX_IFF_UP)) {
-        snprintf(out, cap, "disconnected");
-        return;
+        return { "disconnected", def->name };
     }
     if (!(def->flags & STLX_IFF_CONFIGURED)) {
-        snprintf(out, cap, "unconfigured");
-        return;
+        return { "unconfigured", def->name };
     }
 
+    char address[32];
     uint32_t ip = def->ipv4_addr;
-    snprintf(out, cap, "%u.%u.%u.%u",
+    snprintf(address, sizeof(address), "%u.%u.%u.%u",
              (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
              (ip >> 8) & 0xFF, ip & 0xFF);
+
+    return { address, def->name };
 }
 
 /* `widget`'s frame in the coordinates of its tree's root */
@@ -280,7 +279,9 @@ int dm_panels::init(
     m_host.set_root(m_bar.build(m_bar_glass));
     m_bar.readouts()->show_stats(*m_stats);
 
+    m_popover.set_output_width(static_cast<int32_t>(screen_w));
     m_menu = std::make_unique<system_menu>(conf, *m_stats);
+    m_stats_panel = std::make_unique<stats_panel>(*m_stats, m_network);
 
     m_menu->on_spawn = [this](const char* path, const char* args) {
         m_popover.close();
@@ -296,14 +297,35 @@ int dm_panels::init(
         }
     };
 
+    m_stats_panel->on_spawn = [this](const char* path, const char* args) {
+        if (!m_stats_panel->pinned()) {
+            m_popover.close();
+        }
+
+        if (on_spawn) {
+            on_spawn(path, args);
+        }
+    };
+
     m_bar.mark()->on_press = [this]() {
         toggle_popover(*m_menu);
     };
 
-    char net[32];
-    format_net(net, sizeof(net));
+    m_bar.mark()->on_enter = [this]() {
+        switch_popover(*m_menu);
+    };
+
+    m_bar.readouts()->on_press = [this]() {
+        toggle_popover(*m_stats_panel);
+    };
+
+    m_bar.readouts()->on_enter = [this]() {
+        switch_popover(*m_stats_panel);
+    };
+
+    m_network = read_network();
     m_net_query_ns = monotonic_ns();
-    m_bar.readouts()->show_network(net);
+    m_bar.readouts()->show_network(m_network.address.c_str());
 
     /* The dock: the config's pins centered between flex spacers */
     auto dock = std::make_unique<glass_row>(m_dock_glass);
@@ -469,19 +491,36 @@ void dm_panels::toggle_popover(popover_panel& panel) {
     m_popover.open(panel, m_frost);
 }
 
+/* While an unpinned panel is open, the pointer entering another panel's target opens that panel in its place */
+void dm_panels::switch_popover(popover_panel& panel) {
+    popover_panel* open = m_popover.panel();
+    bool is_other_open = open && open != &panel;
+    if (is_other_open && !open->pinned()) {
+        m_popover.open(panel, m_frost);
+    }
+}
+
 void dm_panels::sync_bar_targets() {
     popover_panel* open = m_popover.panel();
     m_bar.mark()->set_open(open == m_menu.get());
+    m_bar.readouts()->set_open(open == m_stats_panel.get());
 }
 
 bool dm_panels::dismisses_popover(int32_t x, int32_t y) const {
     popover_panel* open = m_popover.panel();
-    if (!open || m_popover.contains(x, y)) {
+    if (!open) {
+        return false;
+    }
+
+    bool keeps_open = open->pinned() || m_popover.contains(x, y);
+    if (keeps_open) {
         return false;
     }
 
     ui::point at = { x, y };
-    return !frame_on_tree(m_bar.mark()).contains(at);
+    bool on_target = frame_on_tree(m_bar.mark()).contains(at) || frame_on_tree(m_bar.readouts()).contains(at);
+
+    return !on_target;
 }
 
 bool dm_panels::find_tooltip(damage_list::rect& tip, const char*& label) const {
@@ -619,10 +658,8 @@ void dm_panels::clock_tick() {
 
     if (now - m_net_query_ns >= NET_POLL_NS) {
         m_net_query_ns = now;
-
-        char net[32];
-        format_net(net, sizeof(net));
-        m_bar.readouts()->show_network(net);
+        m_network = read_network();
+        m_bar.readouts()->show_network(m_network.address.c_str());
     }
 }
 

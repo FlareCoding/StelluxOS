@@ -122,7 +122,7 @@ void popover_host::open(popover_panel& panel, const stlxgfx_surface_t* frost) {
     std::unique_ptr<ui::widget> content = panel.build();
     int32_t width = panel.width();
     int32_t height = content->measure({ width, PANEL_HEIGHT_MAX }).h;
-    int32_t left = panel.left();
+    int32_t left = panel.left(m_output_w);
     if (!m_picture.make(m_maker, POPOVER_STYLE, width, height, left, PANEL_TOP, frost)) {
         printf("stlxdm: the popover's picture could not be made, memory ran out\r\n");
         content.reset();
