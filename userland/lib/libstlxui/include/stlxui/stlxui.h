@@ -201,6 +201,10 @@ private:
 
 /* Events, delivered widget local */
 
+/* Presses this close in time and on each axis chain into a double click */
+constexpr uint64_t DOUBLE_CLICK_NS = 400000000ull;
+constexpr int32_t DOUBLE_CLICK_SLOP = 4;
+
 struct pointer_event {
     point pos;
     uint8_t button = 0;

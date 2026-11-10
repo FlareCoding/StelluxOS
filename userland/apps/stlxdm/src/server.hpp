@@ -10,6 +10,7 @@
 #include "layout.hpp"
 #include "layout_store.hpp"
 #include "panels.hpp"
+#include "placement.hpp"
 #include "power.hpp"
 #include "presenter.hpp"
 
@@ -178,6 +179,8 @@ struct dm_window {
     bool     output_sent = false;
     uint32_t sent_output = 0;
     int32_t  sent_x = 0, sent_y = 0;
+
+    window_placement placement;  /* a toplevel's, at its defaults on popups */
 
     uint32_t flags = 0;
     uint32_t popup_flags = 0;
@@ -599,6 +602,15 @@ private:
     void scene_raise(dm_window* w);
     void scene_damage_window(dm_window* w);
 
+    /* placement.cpp */
+    void place_window(dm_window* w, const damage_list::rect& content);
+    damage_list::rect state_rect(const dm_window& w) const;
+    void set_window_state(dm_window* w, window_state state);
+    void toggle_maximized(dm_window* w);
+    bool record_title_press(dm_window* w, int32_t x, int32_t y);
+    bool restore_dragged_window(int32_t x, int32_t y);
+    void refit_placed_windows();
+
     /* modes.cpp */
     bool keeps_place_for_mode_request(uint32_t output) const;
     void handle_get_modes(dm_client& c, const uint8_t* payload);
@@ -743,9 +755,17 @@ private:
     dm_control m_control_hover;
     dm_control m_control_press;
 
+    /* The last press on a title bar, where a title drag starts, and its
+     * window until a second press near it soon after makes a double click */
+    dm_window* m_title_press = nullptr;
+    uint64_t   m_title_press_ns = 0;
+    int32_t    m_title_press_x = 0;
+    int32_t    m_title_press_y = 0;
+
     void move_window(dm_window* w, int32_t dx, int32_t dy);
     void damage_controls(const dm_control& control);
     void release_control_press();
+    void act_on_control(dm_window* w, decor::zone control);
 
     /* Interactive resize: the grabbed window, which content edges the
      * pointer moves, the fixed opposite content corner, the rubber

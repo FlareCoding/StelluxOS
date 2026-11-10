@@ -217,6 +217,10 @@ void server::forget_window(dm_window* w) {
         m_control_press = {};
     }
 
+    if (m_title_press == w) {
+        m_title_press = nullptr;
+    }
+
     if (m_resize == w) {
         damage_outline();
         m_resize = nullptr;
@@ -433,6 +437,34 @@ void server::release_control_press() {
     m_control_press = {};
 }
 
+void server::act_on_control(dm_window* w, decor::zone control) {
+    switch (control) {
+    case decor::zone::maximize:
+        toggle_maximized(w);
+        break;
+    case decor::zone::close: {
+        swp_event_rec rec;
+        memset(&rec, 0, sizeof(rec));
+        rec.kind = SWP_EV_CLOSE;
+        send_event(w, rec);
+        break;
+    }
+    case decor::zone::none:
+    case decor::zone::content:
+    case decor::zone::title:
+    case decor::zone::minimize:
+    case decor::zone::resize_l:
+    case decor::zone::resize_r:
+    case decor::zone::resize_t:
+    case decor::zone::resize_b:
+    case decor::zone::resize_tl:
+    case decor::zone::resize_tr:
+    case decor::zone::resize_bl:
+    case decor::zone::resize_br:
+        break;
+    }
+}
+
 /* Promised positions and a held resize's anchors move with the window, or
  * a late resize ack or the resize's next motion would snap it back */
 void server::move_window(dm_window* w, int32_t dx, int32_t dy) {
@@ -579,6 +611,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
      * the title bar's rows inside the work area of the pointer's output. */
     if (m_drag) {
         move_cursor(x, y, m_cursor_shape);
+        bool moves = restore_dragged_window(x, y);
 
         int32_t under_pointer = m_layout.output_at(x, y);
         uint32_t output = under_pointer >= 0 ? static_cast<uint32_t>(under_pointer) : m_layout.main_output();
@@ -597,7 +630,9 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         int32_t dx = x - m_drag_dx - m_drag->x;
         int32_t dy = want_y - m_drag->y;
 
-        move_window(m_drag, dx, dy);
+        if (moves) {
+            move_window(m_drag, dx, dy);
+        }
 
         if (all_released) {
             m_drag = nullptr;
@@ -695,23 +730,23 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
             if (is_resize_band) {
                 begin_resize(struck, zone, shape);
             } else if (is_title) {
-                m_drag = struck;
-                m_drag_dx = x - struck->x;
-                m_drag_dy = y - struck->y;
+                bool is_double_click = record_title_press(struck, x, y);
+                if (is_double_click) {
+                    toggle_maximized(struck);
+                } else {
+                    m_drag = struck;
+                    m_drag_dx = x - struck->x;
+                    m_drag_dy = y - struck->y;
+                }
             } else {
                 m_control_press = hovered;
                 damage_controls(m_control_press);
             }
         } else if (changed != 0 && is_on_pressed_control) {
-            /* Close acts on its release, and minimize and maximize have no action */
-            if (zone == decor::zone::close) {
-                swp_event_rec rec;
-                memset(&rec, 0, sizeof(rec));
-                rec.kind = SWP_EV_CLOSE;
-                send_event(struck, rec);
-            }
-
             release_control_press();
+
+            /* A control acts on its release, so a person can cancel a press by releasing elsewhere */
+            act_on_control(struck, zone);
         }
 
         /* A press that ended anywhere else sheds the pressed shade */
