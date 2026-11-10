@@ -4,9 +4,12 @@
 #include <stlxtheme/theme.h>
 #include <stlxwin/stlxwin.h>
 
+#include <QClipboard>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QGuiApplication>
+#include <QHBoxLayout>
 #include <QPainter>
 #include <QRegularExpression>
 #include <QTimer>
@@ -23,6 +26,7 @@ constexpr const char* LICENSE_PREFIX = "LICENSE-";
 constexpr int IDENTITY_GAP_ABOVE = 16;
 constexpr int IDENTITY_PADDING_Y = 16;
 constexpr int IDENTITY_PADDING_LEFT = 20;
+constexpr int IDENTITY_PADDING_RIGHT = 16;
 constexpr int IDENTITY_GAP = 18;
 constexpr int IDENTITY_LOGO_SIZE = 44;
 constexpr float NAME_SIZE = 22.0f;
@@ -66,11 +70,15 @@ struct license {
     QString id;
 };
 
-/* The system's logo, its name and release, and the kernel build under them */
+/* The system's logo, its name and release, and the kernel build under them, with an action at the right */
 class identity_view : public QWidget {
 public:
-    identity_view(const QString& name, const QString& build) : m_name(name), m_build(build) {
+    identity_view(const QString& name, const QString& build, QWidget* action) : m_name(name), m_build(build) {
         setFixedHeight(2 * IDENTITY_PADDING_Y + IDENTITY_LOGO_SIZE);
+        auto* layout = new QHBoxLayout(this);
+        layout->setContentsMargins(0, 0, IDENTITY_PADDING_RIGHT, 0);
+        layout->addStretch(1);
+        layout->addWidget(action);
     }
 
 protected:
@@ -293,6 +301,19 @@ static QList<fact> machine_facts(const QList<fact>& displays) {
     return facts;
 }
 
+/* The facts as plain text, one to a line, for pasting into a bug report */
+static QString details_text(const QString& name, const QString& build, const QList<fact>& facts) {
+    QStringList lines { name, build };
+    QString key;
+    for (const fact& shown : facts) {
+        key = shown.key.isEmpty() ? key : shown.key;
+        QString text = shown.detail.isEmpty() ? shown.value : QStringLiteral("%1, %2").arg(shown.value, shown.detail);
+        lines.append(QStringLiteral("%1: %2").arg(key, text));
+    }
+
+    return lines.join(QLatin1Char('\n'));
+}
+
 /* IBMPlexSans of LICENSE-IBMPlexSans.txt reads IBM Plex Sans */
 static QString spaced_words(QString name) {
     name.replace(QRegularExpression(QStringLiteral("([a-z])([A-Z])")), QStringLiteral("\\1 \\2"));
@@ -329,14 +350,21 @@ void build_about_page(QWidget* page) {
                         .arg(MIDDLE_DOT)
                         .arg(QString::fromUtf8(system.version));
 
+    QList<fact> displays = display_facts();
+    auto* copy = new push_button(QStringLiteral("Copy details"));
+    copy->set_glyph(glyph::COPY);
+    copy->on_click = [name, build, displays]() {
+        QGuiApplication::clipboard()->setText(details_text(name, build, machine_facts(displays)));
+        set_status(QStringLiteral("Copied the details to the clipboard"));
+    };
+
     auto* layout = static_cast<QVBoxLayout*>(page->layout());
     auto* identity = new card;
-    identity->add_row(new identity_view(name, build));
+    identity->add_row(new identity_view(name, build, copy));
     layout->addSpacing(IDENTITY_GAP_ABOVE);
     layout->addWidget(identity);
 
     /* Memory in use and uptime change while the page shows, the displays only when it rebuilds */
-    QList<fact> displays = display_facts();
     auto* facts = new fact_list;
     facts->set_facts(machine_facts(displays));
     auto* refresh = new QTimer(facts);

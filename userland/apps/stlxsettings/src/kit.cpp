@@ -314,6 +314,10 @@ static QPainterPath build_glyph_path(glyph shape) {
         });
         return rounded_rect(1, 2, 14, 12, 1.5).subtracted(prompt).subtracted(rect_path(8.5, 10, 4, 1.4));
     }
+    case glyph::COPY: {
+        QPainterPath back = rounded_rect(4, 1, 10, 10.5, 1.5).subtracted(rect_path(6, 3, 6, 6.5));
+        return back.subtracted(rect_path(4, 4, 7, 7.5)).united(rounded_rect(1, 5, 9.5, 10, 1.5));
+    }
     case glyph::LOGO:
         return quarter_disc(7, 7, 7, 90).united(quarter_disc(9, 9, 7, 270));
     }

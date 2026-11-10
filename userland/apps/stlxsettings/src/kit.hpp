@@ -33,6 +33,7 @@ enum class glyph {
     CLOSE,
     DOCUMENT,
     PROGRAM,
+    COPY,
     LOGO,
 };
 
