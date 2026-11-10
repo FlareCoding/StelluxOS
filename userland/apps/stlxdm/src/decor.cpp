@@ -2,33 +2,34 @@
 #include "server.hpp"
 
 #include <stlxgfx/blend.h>
-#include <stlxgfx/ctx.h>
 #include <stlxgfx/font.h>
 #include <stlxtheme/theme.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
-constexpr uint32_t TITLE_BG_FOCUSED   = 0xFF313244;
-constexpr uint32_t TITLE_BG_UNFOCUSED = 0xFF1E1E2E;
-constexpr uint32_t TITLE_FG_FOCUSED   = 0xFFBAC2DE;
-constexpr uint32_t TITLE_FG_UNFOCUSED = 0xFF585B70;
-constexpr uint32_t BORDER_FOCUSED     = 0xFF585B70;
-constexpr uint32_t BORDER_DRAGGING    = 0xFF89B4FA;
-constexpr uint32_t BORDER_UNFOCUSED   = 0xFF313244;
 constexpr uint32_t CLOSE_BG           = 0xFF45475A;
 constexpr uint32_t CLOSE_BG_HOVER     = 0xFFF38BA8;
 constexpr uint32_t CLOSE_BG_PRESS     = 0xFFD06080;
 constexpr uint32_t CLOSE_FG           = 0xFFBAC2DE;
 constexpr uint32_t CLOSE_FG_HOVER     = 0xFFFFFFFF;
+constexpr int32_t  TITLE_INSET        = 14;  /* from the frame's left edge */
 constexpr uint32_t OUTLINE_COLOR      = 0xFF89B4FA;
+
+/* The focus rule is the top border of a box with the window's radius, so its inner
+ * edge is a quarter ellipse, which each pixel measures from a grid of samples */
+constexpr int32_t RULE_W = STLXTHEME_FOCUS_RULE_WIDTH;
+constexpr int32_t RULE_SAMPLES = 16;                               /* per side of a pixel */
+constexpr int32_t RULE_SAMPLE_COUNT = RULE_SAMPLES * RULE_SAMPLES;
+constexpr int32_t RULE_SAMPLE_UNITS_PER_PIXEL = 2 * RULE_SAMPLES;  /* sample centers lie on the odd units */
 
 /* Corner distances run through a table of squared half pixel offsets,
  * so the content arcs never need a square root per pixel */
 constexpr int32_t SDF_Q_MAX = 2 * decor::CORNER_R;
 constexpr int32_t SDF_LUT_N = 2 * SDF_Q_MAX * SDF_Q_MAX + 1;
 
-/* A rounded rect in pixels, the shape the content corners follow */
+/* A rounded rect in pixels */
 struct ring_geom {
     int32_t x = 0, y = 0;
     int32_t w = 0, h = 0;
@@ -40,20 +41,16 @@ static stlxgfx_font* g_font = nullptr;
 static stlxgfx_font_metrics g_fm = {};
 static uint16_t g_dist8[SDF_LUT_N];
 
+/* Coverage of the box beneath the focus rule over the frame's top-left
+ * corner square, by row then column */
+static uint8_t g_below_rule[decor::CORNER_R][decor::CORNER_R];
+
 static const dm_buffer* current_buffer(const dm_window& w) {
     if (w.current < 0) {
         return nullptr;
     }
 
     return &w.buffers[static_cast<size_t>(w.current)];
-}
-
-static uint32_t border_color(const decor::chrome_state& st) {
-    if (st.dragging) {
-        return BORDER_DRAGGING;
-    }
-
-    return st.focused ? BORDER_FOCUSED : BORDER_UNFOCUSED;
 }
 
 /* A writable view over the clip rect, so every primitive clips for
@@ -79,6 +76,37 @@ static stlxgfx_surface_t* clip_view(const decor::canvas& back,
 static void sdf_table_init() {
     for (int32_t k = 0; k < SDF_LUT_N; k++) {
         g_dist8[k] = static_cast<uint16_t>(sqrtf(static_cast<float>(k)) * 4.0f + 0.5f);
+    }
+}
+
+/* Whether a point of the frame's top-left corner square, in sample units
+ * from the square's top-left, lies in the box beneath the focus rule */
+static bool is_below_rule(int64_t x, int64_t y) {
+    int64_t radius_x = decor::CORNER_R;
+    int64_t radius_y = decor::CORNER_R - RULE_W;
+    int64_t dx = decor::CORNER_R * RULE_SAMPLE_UNITS_PER_PIXEL - x;
+    int64_t dy = decor::CORNER_R * RULE_SAMPLE_UNITS_PER_PIXEL - y;
+    int64_t extent = radius_x * radius_y * RULE_SAMPLE_UNITS_PER_PIXEL;
+
+    return dx * dx * radius_y * radius_y + dy * dy * radius_x * radius_x <= extent * extent;
+}
+
+static uint8_t measure_below_rule(int32_t row, int32_t column) {
+    int32_t inside = 0;
+    for (int32_t sample = 0; sample < RULE_SAMPLE_COUNT; sample++) {
+        int64_t x = column * RULE_SAMPLE_UNITS_PER_PIXEL + 2 * (sample % RULE_SAMPLES) + 1;
+        int64_t y = row * RULE_SAMPLE_UNITS_PER_PIXEL + 2 * (sample / RULE_SAMPLES) + 1;
+        inside += is_below_rule(x, y) ? 1 : 0;
+    }
+
+    return static_cast<uint8_t>((inside * 255 + RULE_SAMPLE_COUNT / 2) / RULE_SAMPLE_COUNT);
+}
+
+static void below_rule_table_init() {
+    for (int32_t row = 0; row < decor::CORNER_R; row++) {
+        for (int32_t column = 0; column < decor::CORNER_R; column++) {
+            g_below_rule[row][column] = measure_below_rule(row, column);
+        }
     }
 }
 
@@ -149,6 +177,63 @@ static void fill_inside(const decor::canvas& back, const damage_list::rect& clip
                       static_cast<uint32_t>(inside.w), static_cast<uint32_t>(inside.h), color);
 }
 
+static uint32_t coverage_of(const ring_geom& g, int32_t x, int32_t y) {
+    return dist8_coverage(rrect_dist8(g, x, y));
+}
+
+/* Coverage of the focus rule at a pixel of the frame `outer`, which the
+ * frame itself covers by `frame_coverage` there */
+static uint32_t rule_coverage(const ring_geom& outer, uint32_t frame_coverage, int32_t x, int32_t y) {
+    int32_t row = y - outer.y;
+    if (row >= decor::CORNER_R) {
+        return 0;
+    }
+
+    int32_t column = std::min(x - outer.x, outer.x + outer.w - 1 - x);
+    uint32_t below = row < RULE_W ? 0 : 255;
+    if (column < decor::CORNER_R) {
+        below = g_below_rule[row][column];
+    }
+
+    return frame_coverage > below ? frame_coverage - below : 0;
+}
+
+/* Blends the frame's material, title separator, edge and, on the focused
+ * window, the focus rule over what `view` holds, each by its coverage */
+static void draw_body(stlxgfx_surface_t* view, const damage_list::rect& area, const ring_geom& outer,
+                      int32_t separator_y, const decor::chrome_state& st) {
+    ring_geom inner = { outer.x + decor::BORDER, outer.y + decor::BORDER, outer.w - 2 * decor::BORDER,
+                        outer.h - 2 * decor::BORDER, decor::CONTENT_R };
+    uint32_t edge = st.focused ? STLXTHEME_RIM : STLXTHEME_RIM_DIM;
+    damage_list::rect painted = damage_list::intersect(area, { outer.x, outer.y, outer.w, outer.h });
+
+    for (int32_t y = painted.y; y < painted.y + painted.h; y++) {
+        for (int32_t x = painted.x; x < painted.x + painted.w; x++) {
+            uint32_t frame_coverage = coverage_of(outer, x, y);
+            if (frame_coverage == 0) {
+                continue;
+            }
+
+            int32_t vx = x - area.x;
+            int32_t vy = y - area.y;
+            stlxgfx_blend_coverage(view, vx, vy, decor::CONTENT_BG, static_cast<uint8_t>(frame_coverage));
+            if (y == separator_y) {
+                stlxgfx_blend_coverage(view, vx, vy, STLXTHEME_LINE_SUBTLE, static_cast<uint8_t>(frame_coverage));
+            }
+
+            uint32_t inner_coverage = coverage_of(inner, x, y);
+            if (frame_coverage > inner_coverage) {
+                stlxgfx_blend_coverage(view, vx, vy, edge, static_cast<uint8_t>(frame_coverage - inner_coverage));
+            }
+
+            uint32_t rule = st.focused ? rule_coverage(outer, frame_coverage, x, y) : 0;
+            if (rule != 0) {
+                stlxgfx_blend_coverage(view, vx, vy, STLXTHEME_ACCENT, static_cast<uint8_t>(rule));
+            }
+        }
+    }
+}
+
 namespace decor {
 
 int init() {
@@ -159,6 +244,8 @@ int init() {
 
     stlxgfx_font_metrics_get(g_font, &g_fm);
     sdf_table_init();
+    below_rule_table_init();
+
     return 0;
 }
 
@@ -186,16 +273,7 @@ damage_list::rect bounds(const dm_window& w) {
         return {};
     }
 
-    damage_list::rect r = frame_rect(w, w.x, w.y,
-                                     static_cast<int32_t>(b->width),
-                                     static_cast<int32_t>(b->height));
-
-    /* One extra pixel on each side covers the drag glow ring */
-    if (decorated(w)) {
-        r = { r.x - 1, r.y - 1, r.w + 2, r.h + 2 };
-    }
-
-    return r;
+    return frame_rect(w, w.x, w.y, static_cast<int32_t>(b->width), static_cast<int32_t>(b->height));
 }
 
 void frame_strips(const dm_window& w, damage_list::rect (&strips)[FRAME_STRIPS]) {
@@ -295,75 +373,20 @@ void draw(const canvas& back, const dm_window& w,
         return;
     }
 
-    /* Outer geometry in view space, the border ring's own origin */
-    int32_t ox = w.x - BORDER - area.x;
-    int32_t oy = w.y - TITLE_H - area.y;
-    uint32_t outer_w = b->width + 2 * BORDER;
-    uint32_t outer_h = b->height + TITLE_H + BORDER;
-    uint32_t border = border_color(st);
-    uint32_t title_bg = st.focused ? TITLE_BG_FOCUSED : TITLE_BG_UNFOCUSED;
-
-    stlxgfx_ctx_t ctx;
-    stlxgfx_ctx_init(&ctx, view);
-
-    /* The drag glow is a one pixel halo behind the rounded border */
-    if (st.dragging) {
-        stlxgfx_ctx_fill_rounded_rect(&ctx, ox - 1, oy - 1,
-                                      outer_w + 2, outer_h + 2,
-                                      CORNER_R + 1, BORDER_DRAGGING);
-    }
-
-    stlxgfx_ctx_fill_rounded_rect(&ctx, ox, oy, outer_w, outer_h,
-                                  CORNER_R, border);
-
-    uint32_t inner_r = CORNER_R - BORDER;
-
-    /* Title bar: rounded top corners, squared off at its bottom */
-    stlxgfx_ctx_fill_rounded_rect(&ctx, ox + BORDER, oy + BORDER,
-                                  outer_w - 2 * BORDER,
-                                  TITLE_H - BORDER, inner_r, title_bg);
-    stlxgfx_ctx_fill_rect(&ctx, ox + BORDER,
-                          oy + TITLE_H - static_cast<int32_t>(inner_r),
-                          outer_w - 2 * BORDER, inner_r, title_bg);
-
-    /* Content backdrop under the client blit: flat top, rounded
-     * bottom corners */
-    uint32_t content_w = outer_w - 2 * BORDER;
-    uint32_t content_h = outer_h - TITLE_H - BORDER;
-    int32_t cx = ox + BORDER;
-    int32_t cy = oy + TITLE_H;
-
-    if (content_h > inner_r) {
-        int32_t cb = cy + static_cast<int32_t>(content_h);
-        int32_t cr = cx + static_cast<int32_t>(content_w);
-        stlxgfx_ctx_fill_rect(&ctx, cx, cy, content_w,
-                              content_h - inner_r, CONTENT_BG);
-        stlxgfx_ctx_fill_rect(&ctx, cx + static_cast<int32_t>(inner_r),
-                              cb - static_cast<int32_t>(inner_r),
-                              content_w - 2 * inner_r, inner_r, CONTENT_BG);
-        stlxgfx_ctx_fill_arc_corner(&ctx, cx, cb, inner_r, 0,
-                                    1, -1, 0, CONTENT_BG);
-        stlxgfx_ctx_fill_arc_corner(&ctx, cr, cb, inner_r, 0,
-                                    -1, -1, 0, CONTENT_BG);
-    } else {
-        stlxgfx_ctx_fill_rect(&ctx, cx, cy, content_w, content_h,
-                              CONTENT_BG);
-    }
-
-    /* Title and content separator line */
-    stlxgfx_ctx_fill_rect(&ctx, ox + BORDER, oy + TITLE_H - 1,
-                          outer_w - 2 * BORDER, 1, border);
+    damage_list::rect frame = frame_rect(w, w.x, w.y, static_cast<int32_t>(b->width), static_cast<int32_t>(b->height));
+    draw_body(view, area, { frame.x, frame.y, frame.w, frame.h, CORNER_R }, w.y - 1, st);
 
     /* Title text, vertically centered in the bar */
-    uint32_t title_fg = st.focused ? TITLE_FG_FOCUSED : TITLE_FG_UNFOCUSED;
+    int32_t ox = frame.x - area.x;
+    int32_t oy = frame.y - area.y;
+    uint32_t title_fg = st.focused ? STLXTHEME_TEXT : STLXTHEME_TEXT_DIM;
     int32_t cell_h = g_fm.ascent + g_fm.descent;
     int32_t baseline = oy + (TITLE_H - cell_h) / 2 + g_fm.ascent;
-    stlxgfx_draw_text(view, g_font, ox + 12, baseline,
+    stlxgfx_draw_text(view, g_font, ox + TITLE_INSET, baseline,
                       w.title, strlen(w.title), title_fg);
 
     if (st.focused) {
-        int32_t ccx = ox + static_cast<int32_t>(outer_w)
-                    - CLOSE_MARGIN - CLOSE_R - BORDER;
+        int32_t ccx = ox + frame.w - CLOSE_MARGIN - CLOSE_R - BORDER;
         int32_t ccy = oy + TITLE_H / 2;
         uint32_t cb_bg = st.close_pressed ? CLOSE_BG_PRESS
                        : st.close_hover   ? CLOSE_BG_HOVER

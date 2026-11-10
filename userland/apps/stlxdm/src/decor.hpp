@@ -4,6 +4,7 @@
 #include "damage.hpp"
 
 #include <stlxgfx/surface.h>
+#include <stlxtheme/theme.h>
 
 #include <cstdint>
 
@@ -14,16 +15,16 @@ struct dm_window;
  * have none. */
 namespace decor {
 
-constexpr int32_t TITLE_H = 32;
-constexpr int32_t BORDER = 2;
-constexpr int32_t CORNER_R = 8;
+constexpr int32_t TITLE_H = STLXTHEME_TITLE_BAR_HEIGHT;
+constexpr int32_t BORDER = 1;
+constexpr int32_t CORNER_R = STLXTHEME_WINDOW_RADIUS;
 constexpr int32_t CONTENT_R = CORNER_R - BORDER;  /* content's bottom corners */
 constexpr int32_t CLOSE_R = 10;
 constexpr int32_t CLOSE_MARGIN = 8;
 
-/* What a window's content area shows where no picture of its own
- * covers it */
-constexpr uint32_t CONTENT_BG = 0xFF2D2D30;
+/* The solid material of a frame, which a window's content area shows
+ * where no picture of its own covers it */
+constexpr uint32_t CONTENT_BG = STLXTHEME_GLASS_TINT_WARM;
 
 /* The thin border is a hard target, so resize grips extend this far
  * beyond the visual frame, and this far along it at the corners */
@@ -55,11 +56,10 @@ struct canvas {
     int32_t            y = 0;
 };
 
-/* Interaction state the chrome renders: the drag glow, the focus
- * palette, and the close control's hover and press shades */
+/* Interaction state the chrome renders: the focus palette and rule, and
+ * the close control's hover and press shades */
 struct chrome_state {
     bool focused = false;
-    bool dragging = false;
     bool close_hover = false;
     bool close_pressed = false;
 
@@ -86,8 +86,8 @@ bool decorated(const dm_window& w);
 damage_list::rect frame_rect(const dm_window& w, int32_t x, int32_t y,
                              int32_t cw, int32_t ch);
 
-/* The full on-screen rect including chrome and the drag glow ring,
- * the content rect when borderless. Zero without a displayed buffer. */
+/* The full on-screen rect including chrome, the content rect when
+ * borderless. Zero without a displayed buffer. */
 damage_list::rect bounds(const dm_window& w);
 
 constexpr uint32_t FRAME_STRIPS = 4;
