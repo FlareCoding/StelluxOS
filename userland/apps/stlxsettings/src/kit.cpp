@@ -1,0 +1,351 @@
+#include "kit.hpp"
+
+#include <stlxtheme/theme.h>
+
+#include <QGuiApplication>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPainter>
+#include <QPainterPath>
+#include <QVBoxLayout>
+#include <QtMath>
+
+constexpr qreal CAPS_TRACKING_EM = 0.06;
+constexpr qreal GLYPH_DESIGN_SIZE = 16;
+constexpr qreal GLYPH_STROKE_WIDTH = 2;
+
+constexpr int SECTION_GAP_ABOVE = 20;
+constexpr int SECTION_GAP_BELOW = 8;
+
+constexpr int CARD_BORDER = 1;
+constexpr int SEPARATOR_INSET = 12;
+constexpr int ROW_PADDING_LEFT = 14;
+constexpr int ROW_PADDING_RIGHT = 12;
+constexpr int ROW_SPACING = 16;
+
+constexpr int SMALL_BUTTON_PADDING_X = 10;
+
+static QPainterPath g_glyph_paths[GLYPH_COUNT];
+
+namespace {
+
+struct button_colors {
+    QColor fill;
+    QColor line;
+    QColor text;
+};
+
+class separator : public QWidget {
+public:
+    separator() {
+        setFixedHeight(1);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.fillRect(
+            rect().adjusted(SEPARATOR_INSET, 0, -SEPARATOR_INSET, 0),
+            QColor::fromRgba(STLXTHEME_LINE_SUBTLE)
+        );
+    }
+};
+
+} // namespace
+
+QColor theme_color(uint32_t argb) {
+    return QColor::fromRgba(argb);
+}
+
+/* Scaled from the desktop's body font, so libstlxqpa's theme stays the one owner of the pixel to point conversion */
+static QFont font_at_em(const char* family, float em_px) {
+    QFont font = QGuiApplication::font();
+    font.setFamily(QString::fromLatin1(family));
+    font.setPointSizeF(font.pointSizeF() * em_px / STLXTHEME_BODY_SIZE);
+    return font;
+}
+
+QFont ui_font(float em_px, QFont::Weight weight) {
+    QFont font = font_at_em(STLXTHEME_UI_FONT_FAMILY, em_px);
+    font.setWeight(weight);
+    return font;
+}
+
+QFont mono_font(float em_px) {
+    QFont font = font_at_em(STLXTHEME_MONO_FONT_FAMILY, em_px);
+    font.setStyleHint(QFont::Monospace);
+    return font;
+}
+
+QFont caps_font() {
+    QFont font = ui_font(STLXTHEME_CAPTION_SIZE, QFont::DemiBold);
+    font.setLetterSpacing(QFont::AbsoluteSpacing, CAPS_TRACKING_EM * STLXTHEME_CAPTION_SIZE);
+    return font;
+}
+
+QLabel* make_text(const QString& text, const QFont& font, uint32_t color) {
+    auto* label = new QLabel(text);
+    label->setFont(font);
+
+    QPalette palette = label->palette();
+    palette.setColor(QPalette::WindowText, theme_color(color));
+    label->setPalette(palette);
+
+    return label;
+}
+
+static QPainterPath rounded_rect(qreal x, qreal y, qreal width, qreal height, qreal radius) {
+    QPainterPath path;
+    path.addRoundedRect(QRectF(x, y, width, height), radius, radius);
+    return path;
+}
+
+static QPainterPath rect_path(qreal x, qreal y, qreal width, qreal height) {
+    QPainterPath path;
+    path.addRect(QRectF(x, y, width, height));
+    return path;
+}
+
+static QPainterPath polygon_path(std::initializer_list<QPointF> points) {
+    QPainterPath path;
+    path.addPolygon(QPolygonF(QList<QPointF>(points)));
+    path.closeSubpath();
+    return path;
+}
+
+/* Glyphs drawn as lines become filled outlines, so every glyph paints with one fill */
+static QPainterPath stroked(const QPainterPath& line) {
+    QPainterPathStroker stroker;
+    stroker.setWidth(GLYPH_STROKE_WIDTH);
+    stroker.setCapStyle(Qt::RoundCap);
+    return stroker.createStroke(line);
+}
+
+/* A quarter disc whose corner sits at the center, swept from `start_degrees` */
+static QPainterPath quarter_disc(qreal center_x, qreal center_y, qreal radius, qreal start_degrees) {
+    QPainterPath path(QPointF(center_x, center_y));
+    path.arcTo(QRectF(center_x - radius, center_y - radius, 2 * radius, 2 * radius), start_degrees, 90);
+    path.closeSubpath();
+    return path;
+}
+
+static QPainterPath power_path() {
+    QPainterPath arc;
+    QRectF circle(3, 3.27, 10, 10);
+    arc.arcMoveTo(circle, 132.85);
+    arc.arcTo(circle, 132.85, 274.3);
+
+    QPainterPath stem(QPointF(8, 1.8));
+    stem.lineTo(8, 6.8);
+
+    return stroked(arc).united(stroked(stem));
+}
+
+static QPainterPath keyboard_path() {
+    const QRectF keys[] = {
+        { 2, 6, 2, 1 }, { 5, 6, 2, 1 }, { 8, 6, 2, 1 }, { 11, 6, 2, 1 }, { 12, 6, 2, 3 }, { 2, 8, 2, 1 },
+        { 5, 8, 2, 1 }, { 8, 8, 2, 1 }, { 11, 8, 2, 1 }, { 2, 10, 2, 1 }, { 5, 10, 6, 1 }, { 12, 10, 2, 1 },
+    };
+
+    QPainterPath holes;
+    for (const QRectF& key : keys) {
+        holes.addRect(key);
+    }
+
+    return rounded_rect(0, 4, 16, 9, 2).subtracted(holes.simplified());
+}
+
+static QPainterPath build_glyph_path(glyph shape) {
+    switch (shape) {
+    case glyph::WALLPAPER: {
+        QPainterPath star = polygon_path({
+            { 7, 4.5 }, { 7.9, 7.6 }, { 11, 8.5 }, { 7.9, 9.4 }, { 7, 12.5 }, { 6.1, 9.4 }, { 3, 8.5 }, { 6.1, 7.6 }
+        });
+        return rounded_rect(1, 2, 14, 12, 2).subtracted(star).subtracted(rect_path(11, 4, 2, 2));
+    }
+    case glyph::DOCK:
+        return rounded_rect(1, 2, 14, 12, 2.5).subtracted(rect_path(5, 10, 6, 2));
+    case glyph::DISPLAY:
+        return rounded_rect(1, 2, 14, 9, 1.5).united(rect_path(7, 11, 2, 2)).united(rounded_rect(4, 13, 8, 2, 1));
+    case glyph::KEYBOARD:
+        return keyboard_path();
+    case glyph::POWER:
+        return power_path();
+    case glyph::LOGO:
+        return quarter_disc(7, 7, 7, 90).united(quarter_disc(9, 9, 7, 270));
+    }
+
+    return QPainterPath();
+}
+
+void paint_glyph(QPainter& painter, glyph shape, const QRectF& box, const QColor& color) {
+    QPainterPath& path = g_glyph_paths[static_cast<int>(shape)];
+    if (path.isEmpty()) {
+        path = build_glyph_path(shape);
+    }
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.translate(box.topLeft());
+    painter.scale(box.width() / GLYPH_DESIGN_SIZE, box.height() / GLYPH_DESIGN_SIZE);
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(color);
+    painter.drawPath(path);
+    painter.restore();
+}
+
+section_head::section_head(const QString& title, const QString& config_section)
+    : m_title(title.toUpper()), m_config_section(config_section) {
+    setFixedHeight(SECTION_GAP_ABOVE + CAPTION_LINE_HEIGHT + SECTION_GAP_BELOW);
+}
+
+void section_head::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    QFont title_font = caps_font();
+    QFont section_font = mono_font(STLXTHEME_CAPTION_SIZE);
+    QFontMetricsF title_metrics(title_font);
+    qreal baseline = SECTION_GAP_ABOVE + (CAPTION_LINE_HEIGHT - title_metrics.height()) / 2 + title_metrics.ascent();
+
+    painter.setFont(title_font);
+    painter.setPen(theme_color(STLXTHEME_TEXT_SECONDARY));
+    painter.drawText(QPointF(0, baseline), m_title);
+
+    qreal section_width = QFontMetricsF(section_font).horizontalAdvance(m_config_section);
+    painter.setFont(section_font);
+    painter.setPen(theme_color(STLXTHEME_TEXT_DIM));
+    painter.drawText(QPointF(width() - section_width, baseline), m_config_section);
+}
+
+card::card() : m_layout(new QVBoxLayout(this)) {
+    m_layout->setContentsMargins(CARD_BORDER, CARD_BORDER, CARD_BORDER, CARD_BORDER);
+    m_layout->setSpacing(0);
+}
+
+void card::add_row(QWidget* row) {
+    if (m_layout->count() > 0) {
+        m_layout->addWidget(new separator);
+    }
+
+    m_layout->addWidget(row);
+}
+
+/* The border is drawn over a fill covering the whole card, and its 1 px line sits on the pixel grid */
+void card::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(theme_color(STLXTHEME_CARD));
+    painter.drawRoundedRect(QRectF(rect()), STLXTHEME_CARD_RADIUS, STLXTHEME_CARD_RADIUS);
+
+    qreal inset = CARD_BORDER / 2.0;
+    qreal radius = STLXTHEME_CARD_RADIUS - inset;
+    painter.setPen(QPen(theme_color(STLXTHEME_CARD_LINE), CARD_BORDER));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRoundedRect(QRectF(rect()).adjusted(inset, inset, -inset, -inset), radius, radius);
+}
+
+setting_label::setting_label(const QString& label, const QString& key)
+    : m_key(make_text(key, mono_font(STLXTHEME_CAPTION_SIZE), STLXTHEME_TEXT_DIM)) {
+    QLabel* name = make_text(label, ui_font(STLXTHEME_BODY_SIZE, QFont::Medium), STLXTHEME_TEXT);
+    name->setFixedHeight(BODY_LINE_HEIGHT);
+    m_key->setFixedHeight(CAPTION_LINE_HEIGHT);
+    m_key->setVisible(!key.isEmpty());
+
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(name);
+    layout->addWidget(m_key);
+}
+
+setting_row::setting_row(const QString& label, const QString& key)
+    : m_label(new setting_label(label, key)), m_layout(new QHBoxLayout(this)) {
+    setFixedHeight(STLXTHEME_SETTING_ROW_HEIGHT);
+    m_layout->setContentsMargins(ROW_PADDING_LEFT, 0, ROW_PADDING_RIGHT, 0);
+    m_layout->setSpacing(ROW_SPACING);
+    m_layout->addWidget(m_label, 1, Qt::AlignVCenter);
+}
+
+/* A plain button's hover and press never take amber, which marks state only. Disabled buttons drop the fill */
+static button_colors colors_of_button(
+    bool is_enabled,
+    bool is_accent,
+    bool is_hovered,
+    bool is_pressed,
+    bool has_keyboard_focus
+) {
+    if (!is_enabled) {
+        return { Qt::transparent, theme_color(STLXTHEME_LINE_SUBTLE), theme_color(STLXTHEME_TEXT_DISABLED) };
+    }
+
+    if (is_accent) {
+        uint32_t fill = is_pressed ? STLXTHEME_ACCENT_PRESS : is_hovered ? STLXTHEME_ACCENT_HOVER : STLXTHEME_ACCENT;
+        QColor line = has_keyboard_focus ? theme_color(STLXTHEME_TEXT) : QColor(Qt::transparent);
+        return { theme_color(fill), line, theme_color(STLXTHEME_ACCENT_TEXT) };
+    }
+
+    uint32_t fill = is_pressed ? STLXTHEME_SURFACE_PRESS : is_hovered ? STLXTHEME_SURFACE_HOVER : STLXTHEME_SURFACE;
+    bool is_lit = !is_pressed && (is_hovered || has_keyboard_focus);
+    uint32_t line = is_lit ? STLXTHEME_LINE_STRONG : STLXTHEME_LINE;
+
+    return { theme_color(fill), theme_color(line), theme_color(STLXTHEME_TEXT) };
+}
+
+push_button::push_button(const QString& text) {
+    setText(text);
+    setAttribute(Qt::WA_Hover);
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+    connect(this, &QAbstractButton::clicked, this, [this] {
+        if (on_click) {
+            on_click();
+        }
+    });
+}
+
+void push_button::set_primary(bool is_primary) {
+    m_is_primary = is_primary;
+    updateGeometry();
+    update();
+}
+
+void push_button::set_small(bool is_small) {
+    m_is_small = is_small;
+    updateGeometry();
+}
+
+static QFont button_font(bool is_accent) {
+    return ui_font(STLXTHEME_BODY_SIZE, is_accent ? QFont::DemiBold : QFont::Medium);
+}
+
+QSize push_button::sizeHint() const {
+    int full_padding = m_is_primary ? STLXTHEME_ACCENT_BUTTON_PADDING_X : STLXTHEME_BUTTON_PADDING_X;
+    int padding = m_is_small ? SMALL_BUTTON_PADDING_X : full_padding;
+    int text_width = qCeil(QFontMetricsF(button_font(m_is_primary)).horizontalAdvance(text()));
+    int height = m_is_small ? STLXTHEME_TOOLBAR_CONTROL_HEIGHT : STLXTHEME_CONTROL_HEIGHT;
+
+    return QSize(2 * padding + text_width, height);
+}
+
+void push_button::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    bool is_accent = m_is_primary && isEnabled();
+    bool has_keyboard_focus = hasFocus() && window()->testAttribute(Qt::WA_KeyboardFocusChange);
+    button_colors colors = colors_of_button(isEnabled(), is_accent, underMouse(), isDown(), has_keyboard_focus);
+
+    qreal inset = CARD_BORDER / 2.0;
+    qreal radius = STLXTHEME_CONTROL_RADIUS - inset;
+    painter.setPen(QPen(colors.line, CARD_BORDER));
+    painter.setBrush(colors.fill);
+    painter.drawRoundedRect(QRectF(rect()).adjusted(inset, inset, -inset, -inset), radius, radius);
+
+    QFont font = button_font(is_accent);
+    qreal text_width = QFontMetricsF(font).horizontalAdvance(text());
+    qreal left = (width() - text_width) / 2;
+
+    painter.setFont(font);
+    painter.setPen(colors.text);
+    painter.drawText(QRectF(left, 0, text_width, height()), Qt::AlignVCenter, text());
+}
