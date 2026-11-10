@@ -7,7 +7,7 @@ alwaysApply: true
 
 ## Commit style
 
-- Google style with domain scopes from repo history: `feat(sched):`, `feat(sysstat):`, `feat(client):`, `feat(userland):`, `feat(syscall):`, `fix(signals):`. Client = userland graphics/desktop.
+- Google style with domain scopes from repo history: `feat(sched):`, `feat(sysstat):`, `feat(userland):`, `feat(syscall):`, `fix(signals):`.
 - Subject verbs in past tense: "added", "implemented", "rendered", "accounted".
 - Body: 2-4 sentences on WHY (the problem that existed, why this approach). No implementation play-by-play. Timeless wording, no "this PR/commit", no Linux mentions.
 - Work lands as a stack of small self-contained commits, each independently buildable and testable. Lib primitives may land with their first consumer.
