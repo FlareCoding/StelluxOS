@@ -67,8 +67,9 @@ enum class window_import_result {
 };
 
 /* The GPU compositor composes an output's frame on the GPU, in one compute
- * pass that reads each window's picture where it lies, through the Vulkan
- * library on the GPU of stlxdm's /dev/gpu0 file.
+ * pass that reads each window's picture where it lies, or from its twin in
+ * video memory for a buffer in system memory, through the Vulkan library on
+ * the GPU of stlxdm's /dev/gpu0 file.
  *
  * It owns a Vulkan device with one queue, the compose pipeline and
  * stlxdm's timeline, which each compose's submission raises and stlxdm
@@ -130,12 +131,12 @@ public:
     std::unique_ptr<compose_buffers> make_compose_buffers();
 
     /* Composes `rects` of `scene`, in the output's pixels and clipped to
-     * it, into `target` through `buffers`, after copying into their twins
-     * the bytes marked changed in the scene's twinned pictures, and waits
-     * at most `COMPOSE_DEADLINE_NS` for the compose to end. Every picture
-     * and import the scene names must be this compositor's and stay until
-     * the compose ended. The rects must not overlap, since their dispatches
-     * may run at the same time. */
+     * it, into `target` through `buffers`, once each twin the scene names
+     * holds a copy of the bytes marked changed in its twinned picture or
+     * window buffer, and waits at most `COMPOSE_DEADLINE_NS` for the
+     * compose to end. Every picture, twin and import the scene names must
+     * be this compositor's and stay until the compose ended. The rects must
+     * not overlap, since their dispatches may run at the same time. */
     compose_result compose(
         compose_buffers& buffers,
         const compose_target& target,
@@ -275,6 +276,7 @@ private:
     layer failure_layer(const damage_list::rect& r) const;
     bool record_compose(compose_buffers& buffers, const compose_target& target, const layer_scene& scene);
     bool record_copies(compose_buffers& buffers, twinned_picture& picture);
+    bool record_window_copies(compose_buffers& buffers, const layer_window& window);
     void record_readback(compose_buffers& buffers, const compose_target& target);
     void write_timestamp(VkCommandBuffer commands, uint32_t query);
     compose_result submit_and_wait(compose_buffers& buffers, uint64_t& submitted_ns);

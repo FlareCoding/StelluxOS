@@ -421,13 +421,22 @@ bool server::add_animations(dm_output& out) {
             return false;
         }
 
+        const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
+        window_twin* twin = twin_of(*w, b);
+
         layer_window shown;
         shown.glass = animation_glass(a, out.place.x, out.place.y);
-        shown.import = w->buffers[static_cast<size_t>(w->current)].import.get();
+        shown.import = b.import.get();
+        shown.twin = twin;
+        shown.picture_offset = b.offset;
+
         animation_pieces(a, *w, frame, shown.scaled);
         for (layer_scaled& piece : shown.scaled) {
             piece.bounds.x -= out.place.x;
             piece.bounds.y -= out.place.y;
+            if (twin && piece.is_content) {
+                piece.source.address = twin->address();
+            }
         }
 
         out.pictures.scene.windows.push_back(std::move(shown));
