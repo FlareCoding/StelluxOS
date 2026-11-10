@@ -47,6 +47,7 @@
 #define STLXTHEME_CONTROL_HEIGHT         32
 #define STLXTHEME_LIST_ROW_HEIGHT        30
 #define STLXTHEME_FOCUS_RULE_WIDTH       2
+#define STLXTHEME_TERMINAL_LINE_HEIGHT   22
 
 /* Control metrics */
 #define STLXTHEME_BUTTON_PADDING_X        14
