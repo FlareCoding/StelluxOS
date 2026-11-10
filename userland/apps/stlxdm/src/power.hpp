@@ -78,7 +78,7 @@ public:
 
     int32_t hover_choice() const { return m_hover; }
 
-    /* Bounding box of one orb including glow, hold ring, and label */
+    /* Bounding box of one orb including its hold ring and label */
     damage_list::rect orb_box(int32_t choice) const;
 
     /* The dim, the hint line, and the orbs, clipped to one compose

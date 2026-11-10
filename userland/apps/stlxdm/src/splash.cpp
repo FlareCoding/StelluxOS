@@ -21,10 +21,10 @@ constexpr uint64_t SPLASH_FRAME_NS = 1000000000ull / SPLASH_FPS;
 constexpr uint32_t SPLASH_STAR_COUNT = 800;
 constexpr float SPLASH_TITLE_SIZE = 38.0f;
 
-/* Text breathes between a dim and a bright shade of starlight */
-constexpr uint32_t SPLASH_TEXT_BRIGHT = 0xFFE9EDF8;
-constexpr uint32_t SPLASH_TEXT_MID = 0xFFB7C0D8;
-constexpr uint32_t SPLASH_TEXT_DIM = 0xFF7F8AA6;
+/* Text breathes between the desktop's dim and bright shades of cream */
+constexpr uint32_t SPLASH_TEXT_BRIGHT = STLXTHEME_TEXT;
+constexpr uint32_t SPLASH_TEXT_MID = STLXTHEME_TEXT_SECONDARY;
+constexpr uint32_t SPLASH_TEXT_DIM = STLXTHEME_TEXT_DIM;
 
 /* The warp-in: stars start fast and settle to cruise while the title
  * fades up, then the hint follows */
@@ -36,13 +36,13 @@ constexpr float SPLASH_TITLE_FADE_S = 1.3f;
 constexpr float SPLASH_HINT_IN_S = 1.7f;
 constexpr float SPLASH_HINT_FADE_S = 0.8f;
 
-/* The nebula's two lobes, violet and a fainter ion cyan */
-constexpr float SPLASH_NEBULA_R = 26.0f;
-constexpr float SPLASH_NEBULA_G = 18.0f;
-constexpr float SPLASH_NEBULA_B = 52.0f;
-constexpr float SPLASH_ION_R = 6.0f;
-constexpr float SPLASH_ION_G = 26.0f;
-constexpr float SPLASH_ION_B = 34.0f;
+/* The nebula's two lobes in the default wallpaper's palette: an ember body and a fainter amber cast */
+constexpr float SPLASH_BODY_R = 54.0f;
+constexpr float SPLASH_BODY_G = 22.0f;
+constexpr float SPLASH_BODY_B = 8.0f;
+constexpr float SPLASH_CAST_R = 34.0f;
+constexpr float SPLASH_CAST_G = 22.0f;
+constexpr float SPLASH_CAST_B = 6.0f;
 
 /* The nebula is evaluated per block of this many pixels, in fixed
  * point with this many fraction bits. Every float op is a helper
@@ -138,10 +138,8 @@ static void nebula_init(uint32_t w, uint32_t h) {
     }
 }
 
-/* Two lobes of drifting light: the violet body is sin(a + t) times
- * cos(b - 0.7t) plus sin(a' + b' + 0.5t), the cyan cast is one more
- * product, and every term factors by axis. The per frame tables hold
- * the axis factors, and each block multiplies them. */
+/* Two lobes of drifting light: the ember body is sin(a + t) times cos(b - 0.7t) plus sin(a' + b' + 0.5t), the amber
+ * cast is one more product, and each term factors into the per frame axis tables */
 static void splash_draw_nebula(stlxgfx_surface_t* buf, uint32_t w,
                                uint32_t h, uint32_t frame) {
     nebula_field& n = g_nebula;
@@ -168,12 +166,12 @@ static void splash_draw_nebula(stlxgfx_surface_t* buf, uint32_t w,
 
     /* Channel weights as integers, applied to Q values and shifted
      * back, matching the float truncation to within one step */
-    const int32_t body_r = static_cast<int32_t>(SPLASH_NEBULA_R);
-    const int32_t body_g = static_cast<int32_t>(SPLASH_NEBULA_G);
-    const int32_t body_b = static_cast<int32_t>(SPLASH_NEBULA_B);
-    const int32_t ion_r = static_cast<int32_t>(SPLASH_ION_R);
-    const int32_t ion_g = static_cast<int32_t>(SPLASH_ION_G);
-    const int32_t ion_b = static_cast<int32_t>(SPLASH_ION_B);
+    const int32_t body_r = static_cast<int32_t>(SPLASH_BODY_R);
+    const int32_t body_g = static_cast<int32_t>(SPLASH_BODY_G);
+    const int32_t body_b = static_cast<int32_t>(SPLASH_BODY_B);
+    const int32_t cast_r = static_cast<int32_t>(SPLASH_CAST_R);
+    const int32_t cast_g = static_cast<int32_t>(SPLASH_CAST_G);
+    const int32_t cast_b = static_cast<int32_t>(SPLASH_CAST_B);
 
     for (int32_t by = 0; by < n.rows; by++) {
         const int16_t* fall = n.falloff.data() + static_cast<size_t>(by) * static_cast<size_t>(n.cols);
@@ -199,9 +197,9 @@ static void splash_draw_nebula(stlxgfx_surface_t* buf, uint32_t w,
             }
             c >>= 1;
 
-            uint32_t r = static_cast<uint32_t>((v * body_r + c * ion_r) >> NEBULA_Q);
-            uint32_t g = static_cast<uint32_t>((v * body_g + c * ion_g) >> NEBULA_Q);
-            uint32_t b = static_cast<uint32_t>((v * body_b + c * ion_b) >> NEBULA_Q);
+            uint32_t r = static_cast<uint32_t>((v * body_r + c * cast_r) >> NEBULA_Q);
+            uint32_t g = static_cast<uint32_t>((v * body_g + c * cast_g) >> NEBULA_Q);
+            uint32_t b = static_cast<uint32_t>((v * body_b + c * cast_b) >> NEBULA_Q);
             n.row_colors[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
         }
 
@@ -257,23 +255,23 @@ static void splash_draw_stars(stlxgfx_surface_t* buf, uint32_t w,
         switch (s.tint) {
         case 0:
             r = static_cast<uint8_t>(brightness * 255.0f);
-            g = static_cast<uint8_t>(brightness * 240.0f);
-            b = static_cast<uint8_t>(brightness * 255.0f);
+            g = static_cast<uint8_t>(brightness * 244.0f);
+            b = static_cast<uint8_t>(brightness * 228.0f);
             break;
         case 1:
-            r = static_cast<uint8_t>(brightness * 200.0f);
-            g = static_cast<uint8_t>(brightness * 220.0f);
-            b = static_cast<uint8_t>(brightness * 255.0f);
+            r = static_cast<uint8_t>(brightness * 246.0f);
+            g = static_cast<uint8_t>(brightness * 238.0f);
+            b = static_cast<uint8_t>(brightness * 225.0f);
             break;
         case 2:
             r = static_cast<uint8_t>(brightness * 255.0f);
-            g = static_cast<uint8_t>(brightness * 200.0f);
-            b = static_cast<uint8_t>(brightness * 180.0f);
+            g = static_cast<uint8_t>(brightness * 210.0f);
+            b = static_cast<uint8_t>(brightness * 150.0f);
             break;
         default:
             r = static_cast<uint8_t>(brightness * 255.0f);
-            g = static_cast<uint8_t>(brightness * 255.0f);
-            b = static_cast<uint8_t>(brightness * 255.0f);
+            g = static_cast<uint8_t>(brightness * 250.0f);
+            b = static_cast<uint8_t>(brightness * 240.0f);
             break;
         }
 
