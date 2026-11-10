@@ -25,6 +25,9 @@ public:
     void pointer_button(int32_t x, int32_t y, uint8_t btn, bool down) {
         dispatch_pointer_button({ x, y }, btn, down);
     }
+
+    /* Whether a widget that took a press owns the pointer until its release */
+    bool holds_pointer() const { return m_pointer_grab != nullptr; }
 };
 
 #endif

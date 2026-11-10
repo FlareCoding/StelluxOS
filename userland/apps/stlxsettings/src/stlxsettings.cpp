@@ -82,7 +82,7 @@ static_assert(std::size(PAGE_NAMES) == PAGE_COUNT);
 
 static const char* const PAGE_BLURBS[] = {
     "Wallpaper and the desktop's colors",
-    "Pinned launchers and dock geometry",
+    "Pinned launchers",
     "Each output's resolution, refresh rate and place on the desktop",
     "Keyboard repeat behavior",
     "Programs and shortcuts at session start",
@@ -719,17 +719,11 @@ static void build_appearance(QWidget* page) {
 
     card* colors = make_card(page, "BAR COLORS");
     make_color_row(colors, "Bar", &g_st.conf.bar_color);
-    make_color_row(colors, "Accent", &g_st.conf.accent_color);
     make_color_row(colors, "Text", &g_st.conf.text_color);
     make_number_row(colors, "Bar font size", &g_st.conf.bar_font_size);
 }
 
 static void build_dock(QWidget* page) {
-    card* geo = make_card(page, "GEOMETRY");
-    make_number_row(geo, "Height", &g_st.conf.taskbar_height);
-    make_number_row(geo, "Icon size", &g_st.conf.taskbar_icon_size);
-    make_number_row(geo, "Spacing", &g_st.conf.taskbar_spacing);
-
     card* pins = make_card(page, "PINNED LAUNCHERS");
 
     auto move_pin = [](uint32_t from, uint32_t to) {
@@ -1432,11 +1426,6 @@ static void sanitize_conf() {
 
     if (c.bar_font_size < 8) c.bar_font_size = 8;
     if (c.bar_font_size > 48) c.bar_font_size = 48;
-    if (c.taskbar_height < 24) c.taskbar_height = 24;
-    if (c.taskbar_height > 128) c.taskbar_height = 128;
-    if (c.taskbar_icon_size < 16) c.taskbar_icon_size = 16;
-    if (c.taskbar_icon_size > 96) c.taskbar_icon_size = 96;
-    if (c.taskbar_spacing > 64) c.taskbar_spacing = 64;
     if (c.key_repeat_delay_ms != 0 && c.key_repeat_interval_ms == 0) {
         c.key_repeat_interval_ms = REPEAT_INTERVAL_MS;
     }

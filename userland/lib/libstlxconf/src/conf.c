@@ -19,7 +19,6 @@ typedef enum {
     SEC_NONE,
     SEC_DESKTOP,
     SEC_THEME,
-    SEC_TASKBAR,
     SEC_INPUT,
     SEC_PIN,
     SEC_SHORTCUT,
@@ -60,15 +59,10 @@ void stlxconf_defaults(stlxconf_t* conf) {
     conf->bg_color      = STLXTHEME_WINDOW_BG;
     conf->bar_color     = 0xFF1E1E1E;
     conf->bar_font_size = 14;
-    conf->accent_color  = 0xFF888888;
     conf->text_color    = 0xFFCCCCCC;
 
     conf->glass_level = STLXCONF_GLASS_LEVEL_GLASS;
     conf->glass_tint  = STLXCONF_GLASS_TINT_WARM;
-
-    conf->taskbar_height    = 48;
-    conf->taskbar_icon_size = 32;
-    conf->taskbar_spacing   = 8;
 
     conf->key_repeat_delay_ms    = 400;
     conf->key_repeat_interval_ms = 40;
@@ -122,8 +116,6 @@ static void enter_section(stlxconf_t* conf, char* name,
         *sec = SEC_DESKTOP;
     } else if (strcmp(name, "theme") == 0) {
         *sec = SEC_THEME;
-    } else if (strcmp(name, "taskbar") == 0) {
-        *sec = SEC_TASKBAR;
     } else if (strcmp(name, "input") == 0) {
         *sec = SEC_INPUT;
     } else if (strncmp(name, "taskbar:", 8) == 0) {
@@ -198,8 +190,6 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
             conf->bar_color = (uint32_t)strtoul(val, NULL, 16);
         } else if (strcmp(key, "bar_font_size") == 0) {
             conf->bar_font_size = (uint32_t)strtoul(val, NULL, 10);
-        } else if (strcmp(key, "accent_color") == 0) {
-            conf->accent_color = (uint32_t)strtoul(val, NULL, 16);
         } else if (strcmp(key, "text_color") == 0) {
             conf->text_color = (uint32_t)strtoul(val, NULL, 16);
         } else if (strcmp(key, "glass_level") == 0) {
@@ -212,15 +202,6 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
             if (found >= 0) {
                 conf->glass_tint = (stlxconf_glass_tint_t)found;
             }
-        }
-        return;
-    case SEC_TASKBAR:
-        if (strcmp(key, "height") == 0) {
-            conf->taskbar_height = (uint32_t)strtoul(val, NULL, 10);
-        } else if (strcmp(key, "icon_size") == 0) {
-            conf->taskbar_icon_size = (uint32_t)strtoul(val, NULL, 10);
-        } else if (strcmp(key, "spacing") == 0) {
-            conf->taskbar_spacing = (uint32_t)strtoul(val, NULL, 10);
         }
         return;
     case SEC_INPUT:
@@ -432,16 +413,10 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
     fprintf(f, "\n[theme]\n");
     fprintf(f, "bar_color=0x%08X\n", conf->bar_color);
     fprintf(f, "bar_font_size=%u\n", conf->bar_font_size);
-    fprintf(f, "accent_color=0x%08X\n", conf->accent_color);
     fprintf(f, "text_color=0x%08X\n", conf->text_color);
 
     fprintf(f, "glass_level=%s\n", GLASS_LEVEL_NAMES[conf->glass_level]);
     fprintf(f, "glass_tint=%s\n", GLASS_TINT_NAMES[conf->glass_tint]);
-
-    fprintf(f, "\n[taskbar]\n");
-    fprintf(f, "height=%u\n", conf->taskbar_height);
-    fprintf(f, "icon_size=%u\n", conf->taskbar_icon_size);
-    fprintf(f, "spacing=%u\n", conf->taskbar_spacing);
 
     fprintf(f, "\n[input]\n");
     fprintf(f, "key_repeat_delay_ms=%u\n", conf->key_repeat_delay_ms);
