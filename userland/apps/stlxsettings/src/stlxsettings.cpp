@@ -1,5 +1,5 @@
-/* stlxsettings: the desktop configuration editor. Setting rows show the config key each writes. Save writes the
- * file and signals the display manager to re-read it, while the Displays page's Apply sends its own requests. */
+/* stlxsettings: the desktop configuration editor. Setting rows show the config key each writes. Save writes the file,
+ * signals the display manager to re-read it and sends it any changed display layout. `--page <name>` opens one page. */
 #include "kit.hpp"
 #include "settings.hpp"
 
@@ -7,7 +7,6 @@
 #include <stlxtheme/theme.h>
 
 #include <QApplication>
-#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -61,8 +60,6 @@ constexpr int TITLE_LINE_HEIGHT = 36;
 constexpr qreal TITLE_TRACKING_EM = -0.02;
 constexpr int FOOTER_GAP = 8;
 
-constexpr int LIST_ROW_H = 44;
-constexpr int LIST_ROW_PADDING_X = 12;
 constexpr int EDITOR_FIELD_W = 360;
 
 stlxconf_t g_conf;
@@ -85,7 +82,7 @@ static_assert(std::size(PAGE_SLUGS) == PAGE_COUNT);
 static const char* const PAGE_BLURBS[] = {
     "Wallpaper and glass.",
     "The apps pinned to the dock.",
-    "Where each output sits, which one is main, and each one's mode.",
+    "Where each display sits, which one is main, and each one's mode.",
     "How held keys repeat.",
     "Programs that start with the desktop, and the shortcuts that launch programs.",
 };
@@ -363,7 +360,8 @@ bool is_key_repeat_on(const stlxconf_t& conf) {
     return conf.key_repeat_delay_ms != 0 && conf.key_repeat_interval_ms != 0;
 }
 
-/* What Save would write: one description for each changed setting, list entry and list order */
+/* What Save would write, one description for each changed setting, list entry and list order, then the layout
+ * changes it would send */
 static QStringList pending_changes() {
     const stlxconf_t& saved = g_st.saved;
     const stlxconf_t& edited = g_conf;
@@ -400,6 +398,7 @@ static QStringList pending_changes() {
         QStringLiteral("Shortcut"),
         changes
     );
+    note_layout_changes(changes);
 
     return changes;
 }
@@ -568,51 +567,19 @@ QPixmap launcher_icon(const stlxconf_pin_t& pin) {
     return icon;
 }
 
-QVBoxLayout* layout_of(QWidget* widget) {
+static QVBoxLayout* layout_of(QWidget* widget) {
     return static_cast<QVBoxLayout*>(widget->layout());
 }
 
-card* add_section(QWidget* page, const QString& title, const QString& config_section) {
+card* add_section(QWidget* page, section_head* head) {
     auto* section = new card;
-    layout_of(page)->addWidget(new section_head(title, config_section));
+    layout_of(page)->addWidget(head);
     layout_of(page)->addWidget(section);
     return section;
 }
 
-static QHBoxLayout* make_row(card* parent, const char* label, const char* key) {
-    auto* row = new setting_row(QString::fromUtf8(label), QString::fromLatin1(key));
-    parent->add_row(row);
-    return row->controls();
-}
-
-QHBoxLayout* make_list_row(card* parent) {
-    auto* row = new QWidget;
-    row->setMinimumHeight(LIST_ROW_H);
-    parent->add_row(row);
-
-    auto* layout = new QHBoxLayout(row);
-    layout->setContentsMargins(LIST_ROW_PADDING_X, 0, LIST_ROW_PADDING_X, 0);
-    layout->setSpacing(FOOTER_GAP);
-
-    return layout;
-}
-
-push_button* add_list_button(card* parent, const char* text, std::function<void()> on_click) {
-    auto* button = new push_button(QString::fromUtf8(text));
-    button->set_small(true);
-    button->on_click = std::move(on_click);
-
-    QHBoxLayout* row = make_list_row(parent);
-    row->addWidget(button);
-    row->addStretch(1);
-
-    return button;
-}
-
-void add_choice_row(card* parent, const char* label, const char* key, QComboBox* choice) {
-    QHBoxLayout* row = make_row(parent, label, key);
-    row->addWidget(choice);
-    row->addStretch(1);
+card* add_section(QWidget* page, const QString& title, const QString& config_section) {
+    return add_section(page, new section_head(title, config_section));
 }
 
 /* Swaps the page under the fixed chrome */
@@ -698,10 +665,14 @@ static void save_conf() {
     build_page(g_st.active_page);
     show_pending_changes();
     set_status(QStringLiteral("Saved, the desktop updated"));
+
+    /* The layout is sent last, once the file is written, so the message above never hides a failure to send it */
+    save_layout();
 }
 
 static void revert_conf() {
     load_conf();
+    revert_layout();
     build_page(g_st.active_page);
     show_pending_changes();
     set_status(QStringLiteral("Reverted to the file on disk"));

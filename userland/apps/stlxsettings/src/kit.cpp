@@ -281,15 +281,25 @@ void paint_glyph(QPainter& painter, glyph shape, const QRectF& box, const QColor
     painter.restore();
 }
 
-section_head::section_head(const QString& title, const QString& config_section)
-    : m_title(title.toUpper()), m_config_section(config_section) {
+section_head::section_head(const QString& title, const QString& caption)
+    : m_title(title.toUpper()), m_caption(caption) {
     setFixedHeight(SECTION_GAP_ABOVE + CAPTION_LINE_HEIGHT + SECTION_GAP_BELOW);
+}
+
+void section_head::set_title(const QString& title) {
+    m_title = title.toUpper();
+    update();
+}
+
+void section_head::set_caption(const QString& caption) {
+    m_caption = caption;
+    update();
 }
 
 void section_head::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     QFont title_font = caps_font();
-    QFont section_font = mono_font(STLXTHEME_CAPTION_SIZE);
+    QFont caption_font = mono_font(STLXTHEME_CAPTION_SIZE);
     QFontMetricsF title_metrics(title_font);
     qreal baseline = SECTION_GAP_ABOVE + (CAPTION_LINE_HEIGHT - title_metrics.height()) / 2 + title_metrics.ascent();
 
@@ -297,10 +307,10 @@ void section_head::paintEvent(QPaintEvent*) {
     painter.setPen(theme_color(STLXTHEME_TEXT_SECONDARY));
     painter.drawText(QPointF(0, baseline), m_title);
 
-    qreal section_width = QFontMetricsF(section_font).horizontalAdvance(m_config_section);
-    painter.setFont(section_font);
+    qreal caption_width = QFontMetricsF(caption_font).horizontalAdvance(m_caption);
+    painter.setFont(caption_font);
     painter.setPen(theme_color(STLXTHEME_TEXT_DIM));
-    painter.drawText(QPointF(width() - section_width, baseline), m_config_section);
+    painter.drawText(QPointF(width() - caption_width, baseline), m_caption);
 }
 
 card::card() : m_layout(new QVBoxLayout(this)) {
@@ -582,6 +592,11 @@ void segmented::leaveEvent(QEvent*) {
 toggle::toggle(bool is_on) : m_is_on(is_on) {
     setFixedSize(TOGGLE_W, TOGGLE_H);
     setAttribute(Qt::WA_Hover);
+}
+
+void toggle::set_on(bool is_on) {
+    m_is_on = is_on;
+    update();
 }
 
 void toggle::paintEvent(QPaintEvent*) {

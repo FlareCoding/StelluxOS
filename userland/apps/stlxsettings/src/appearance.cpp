@@ -39,8 +39,6 @@ constexpr int CHOICE_NAME_GAP = 6;
 constexpr int CHOICE_SPACING = 6;
 constexpr int CHOICES_PADDING_X = 10;
 constexpr int CHOICES_PADDING_Y = 8;
-constexpr qreal SELECTION_RING_WIDTH = 1.5;
-constexpr qreal SELECTION_RING_OFFSET = 2;
 
 /* With the card's 1 px border the preview sits 4 px inside the card's edge, the card's radius less the thumbnail's, so
  * their corners are concentric. */
@@ -68,9 +66,6 @@ static const stlxconf_glass_tint_t TINT_VALUES[] = { STLXCONF_GLASS_TINT_NEUTRAL
 static const uint32_t TINT_MARK_COLORS[] = { STLXTHEME_TINT_SWATCH_NEUTRAL, STLXTHEME_TINT_SWATCH_WARM };
 static_assert(std::size(TINT_VALUES) == std::size(TINT_NAMES));
 static_assert(std::size(TINT_MARK_COLORS) == std::size(TINT_NAMES));
-
-static const QChar TIMES_SIGN(0x00D7);
-static const QChar MIDDLE_DOT(0x00B7);
 
 static QHash<QString, QImage> g_decoded_wallpapers;
 
@@ -319,6 +314,10 @@ static QImage cover_image(const QString& path, const QSize& size) {
     QPoint corner((covering.width() - size.width()) / 2, (covering.height() - size.height()) / 2);
 
     return covering.copy(QRect(corner, size));
+}
+
+QImage wallpaper_picture(const QSize& size) {
+    return cover_image(QString::fromUtf8(g_conf.wallpaper), size);
 }
 
 static QImage compose_preview(const QString& path) {
