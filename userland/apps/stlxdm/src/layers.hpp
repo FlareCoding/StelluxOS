@@ -92,7 +92,7 @@ uint32_t max_layers(size_t windows);
 /* Appends `r`'s layers to `list` and returns their count, leaving out
  * those outside `r` and those beneath the topmost window covering `r`:
  * by opaque content, whose window's glass and frame go too, or on an output
- * with frost by premultiplied content over its glass */
+ * with frost by the glass under premultiplied content */
 uint32_t append_layers(const layer_scene& scene, const damage_list::rect& r, std::vector<layer>& list);
 
 #endif

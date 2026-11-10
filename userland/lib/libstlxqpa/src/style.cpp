@@ -30,7 +30,7 @@ static const QColor CHECKED = QColor::fromRgba(STLXTHEME_TEXT_SECONDARY);
 static const QColor CHECK_MARK = QColor::fromRgba(STLXTHEME_WINDOW_BG);
 static const QColor LINE_STRONG = QColor::fromRgba(STLXTHEME_LINE_STRONG);
 static const QColor MENU_TEXT = QColor::fromRgba(STLXTHEME_TEXT_SECONDARY);
-static const QColor MENU_BG = QColor::fromRgba(STLXTHEME_MENU_BG);
+static const QColor MENU_EDGE = QColor::fromRgba(STLXTHEME_RIM);
 static const QColor ROW_HOVER = QColor::fromRgba(STLXTHEME_ROW_HOVER);
 static const QColor SELECTED_RING = QColor::fromRgba(STLXTHEME_SELECTED_RING);
 
@@ -61,10 +61,8 @@ static void fill_rounded(QPainter* painter, const QRect& rect, int radius, const
     painter->restore();
 }
 
-// The face sits inside the edge, not under it, so translucent colors never stack
-static void draw_framed(QPainter* painter, const QRect& rect, int radius, const QColor& face, const QColor& edge) {
-    fill_rounded(painter, rect.adjusted(1, 1, -1, -1), radius - 1, face);
-
+// A 1 px antialiased edge along the inside of `rect`, its outer side on the rounded rect of `radius`
+static void draw_rounded_edge(QPainter* painter, const QRect& rect, int radius, const QColor& edge) {
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
     painter->setPen(QPen(edge, 1));
@@ -73,6 +71,12 @@ static void draw_framed(QPainter* painter, const QRect& rect, int radius, const 
     QRectF outline = QRectF(rect).adjusted(HALF_PIXEL, HALF_PIXEL, -HALF_PIXEL, -HALF_PIXEL);
     painter->drawRoundedRect(outline, radius - HALF_PIXEL, radius - HALF_PIXEL);
     painter->restore();
+}
+
+// The face sits inside the edge, not under it, so translucent colors never stack
+static void draw_framed(QPainter* painter, const QRect& rect, int radius, const QColor& face, const QColor& edge) {
+    fill_rounded(painter, rect.adjusted(1, 1, -1, -1), radius - 1, face);
+    draw_rounded_edge(painter, rect, radius, edge);
 }
 
 static void draw_focus_rule(QPainter* painter, const QRect& rect, const QColor& accent) {
@@ -454,13 +458,11 @@ void QStelluxStyle::drawPrimitive(PrimitiveElement element, const QStyleOption* 
             break;
         }
         case PE_PanelMenu:
-            painter->fillRect(option->rect, MENU_BG);
+            // A menu is a glass panel, which stlxdm rounds beneath it by the same radius
+            draw_rounded_edge(painter, option->rect, STLXTHEME_MENU_RADIUS, MENU_EDGE);
             return;
         case PE_FrameMenu:
-            painter->save();
-            painter->setPen(option->palette.color(QPalette::Mid));
-            painter->drawRect(option->rect.adjusted(0, 0, -1, -1));
-            painter->restore();
+            // The panel draws its rounded edge whole, which this frame, clipped to its border, would cut at the corners
             return;
         case PE_FrameFocusRect:
             // Buttons and check boxes ring their own surface on keyboard focus

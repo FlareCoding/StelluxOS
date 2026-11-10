@@ -69,6 +69,7 @@ enum {
     STLXWIN_PF_GRAB          = 1u << 0,  /* outside input dismisses the popup */
     STLXWIN_PF_GLASS         = 1u << 1,  /* as STLXWIN_WF_GLASS */
     STLXWIN_PF_PREMULTIPLIED = 1u << 2,  /* as STLXWIN_WF_PREMULTIPLIED */
+    STLXWIN_PF_ROUNDED       = 1u << 3,  /* glass rounded by STLXTHEME_MENU_RADIUS to match the popup's panel */
 };
 
 typedef enum {

@@ -230,9 +230,15 @@ void QStelluxWindow::create_native_window() {
     if (is_popup()) {
         auto* parent_window = static_cast<QStelluxWindow*>(m_parent->handle());
         QPoint offset = geometry().topLeft() - m_parent->geometry().topLeft();
-        uint32_t flags = window()->type() == Qt::Popup ? STLXWIN_PF_GRAB : 0;
+        bool grabs = window()->type() == Qt::Popup;
+        uint32_t flags = grabs ? STLXWIN_PF_GRAB : 0;
         if (m_shows_glass) {
             flags |= STLXWIN_PF_GLASS | STLXWIN_PF_PREMULTIPLIED;
+        }
+
+        // Grabbing popups get rounded glass to match the style's rounded menus and combo lists, tooltips stay square
+        if (m_shows_glass && grabs) {
+            flags |= STLXWIN_PF_ROUNDED;
         }
 
         m_handle = stlxwin_popup_create(parent_window->handle(), offset.x(), offset.y(),
