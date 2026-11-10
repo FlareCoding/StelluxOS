@@ -43,6 +43,13 @@ damage_list::rect shown_frame(const dm_window& w);
 /* What an animation of `w` paints with its frame at `frame`: the frame and the farthest its shadow reaches past it */
 damage_list::rect painted_rect(const dm_window& w, const damage_list::rect& frame);
 
+/* The glass of a decorated window whose frame lies at `frame` */
+material::surface frame_glass(const damage_list::rect& frame);
+
+/* The glass under `a`'s frame in the pixels of an output whose top-left pixel lies at (`origin_x`, `origin_y`) on the
+ * desktop, empty unless `a` is a resize at full opacity */
+material::surface animation_glass(const window_animation& a, int32_t origin_x, int32_t origin_y);
+
 /* Appends to `pieces` the strips of `frame`, unless it is null, and `w`'s displayed buffer, which may differ from the
  * frame in size, resampled into the animation's rect and the shadow around it, in desktop coordinates */
 void animation_pieces(const window_animation& a, const dm_window& w, const frame_picture* frame,

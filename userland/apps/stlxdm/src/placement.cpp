@@ -411,25 +411,6 @@ void server::damage_painted(const dm_window& w, const damage_list::rect& frame) 
     m_damage.add(painted.x, painted.y, painted.w, painted.h);
 }
 
-/* Draws the animations above the windows of a CPU compose of `r`, from the
- * frame pictures a GPU compose resamples */
-void server::compose_animations(const decor::canvas& canvas, const damage_list::rect& r) {
-    std::vector<layer_scaled> pieces;
-    for (window_animation& a : m_animations) {
-        dm_window* w = a.window;
-        damage_list::rect area = damage_list::intersect(painted_rect(*w, a.rect), r);
-        if (area.w <= 0 || area.h <= 0) {
-            continue;
-        }
-
-        pieces.clear();
-        animation_pieces(a, *w, animation_frame(a, frame_maker()), pieces);
-        for (const layer_scaled& piece : pieces) {
-            draw_scaled(canvas, piece, r);
-        }
-    }
-}
-
 /* Adds every animation to `out`'s scene above its windows, in its pixels.
  * False when a frame picture's memory ran out. */
 bool server::add_animations(dm_output& out) {
@@ -441,6 +422,7 @@ bool server::add_animations(dm_output& out) {
         }
 
         layer_window shown;
+        shown.glass = animation_glass(a, out.place.x, out.place.y);
         shown.import = w->buffers[static_cast<size_t>(w->current)].import.get();
         animation_pieces(a, *w, frame, shown.scaled);
         for (layer_scaled& piece : shown.scaled) {
