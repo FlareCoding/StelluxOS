@@ -40,12 +40,11 @@ typedef struct {
     uint64_t page_evictions;
 } stlxgfx_text_stats;
 
-/* A typeface bound to one pixel size. The rasterizer state, the
+/* A typeface bound to one size. The rasterizer state, the
  * per-face tables, and the codepoint map into the atlas live here. */
 struct stlxgfx_font {
     uint8_t* file_data;
     stbtt_fontinfo info;
-    uint32_t px_size;
     float scale;
     stlxgfx_font_metrics metrics;
 

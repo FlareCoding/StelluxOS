@@ -30,7 +30,6 @@
 #define MIN_COLS          20
 #define MIN_ROWS          5
 #define CURSOR_COLOR      0xFFF5E0DC
-#define FONT_SIZE         16
 #define PADDING           4
 #define BLINK_MS          500
 #define PTY_DRAIN_MAX     16
@@ -439,7 +438,7 @@ int main(void) {
         return 1;
     }
 
-    g_font = stlxgfx_font_open(STLXTHEME_MONO_FONT_PATH, FONT_SIZE);
+    g_font = stlxgfx_font_open(STLXTHEME_MONO_FONT_PATH, STLXTHEME_TERMINAL_SIZE);
     if (!g_font) {
         printf("stlxterm: font load failed\r\n");
         stlxwin_window_destroy(win);

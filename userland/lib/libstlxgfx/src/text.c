@@ -135,8 +135,8 @@ static int32_t detect_mono_advance(const stlxgfx_font* font) {
     return first;
 }
 
-stlxgfx_font* stlxgfx_font_open(const char* path, uint32_t px_size) {
-    if (!path || px_size == 0) {
+stlxgfx_font* stlxgfx_font_open(const char* path, float em_px) {
+    if (!path || !(em_px > 0.0f)) {
         return NULL;
     }
 
@@ -160,8 +160,7 @@ stlxgfx_font* stlxgfx_font_open(const char* path, uint32_t px_size) {
         return NULL;
     }
 
-    font->px_size = px_size;
-    font->scale = stbtt_ScaleForPixelHeight(&font->info, (float)px_size);
+    font->scale = stbtt_ScaleForMappingEmToPixels(&font->info, em_px);
 
     int ascent = 0;
     int descent = 0;

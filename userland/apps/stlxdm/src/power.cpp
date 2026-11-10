@@ -43,8 +43,6 @@ constexpr uint32_t PW_HINT_COLOR = 0xFF7F8AA6;
 constexpr uint32_t PW_RESTART_ACCENT = 0xFF5FD7FF;
 constexpr uint32_t PW_SHUTDOWN_ACCENT = 0xFFFF5C8A;
 constexpr uint32_t PW_STAR_COLOR = 0xFFB7C0D8;
-constexpr uint32_t PW_LABEL_FONT = 15;
-constexpr uint32_t PW_HINT_FONT = 12;
 
 static const char* const g_choice_label[2] = { "Restart", "Shut Down" };
 
@@ -365,8 +363,8 @@ int dm_power::init(uint32_t screen_w, uint32_t screen_h,
     m_star_cx = static_cast<int32_t>(screen_w) - PW_STAR_MARGIN;
     m_star_cy = bar_y + static_cast<int32_t>(taskbar_height) / 2;
 
-    m_label_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, PW_LABEL_FONT);
-    m_hint_font = stlxgfx_font_open(STLXTHEME_UI_FONT_PATH, PW_HINT_FONT);
+    m_label_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE);
+    m_hint_font = stlxgfx_font_open(STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE);
     if (!m_label_font || !m_hint_font) {
         return -1;
     }

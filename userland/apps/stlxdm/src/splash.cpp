@@ -19,8 +19,7 @@
 constexpr uint32_t SPLASH_FPS = 60;
 constexpr uint64_t SPLASH_FRAME_NS = 1000000000ull / SPLASH_FPS;
 constexpr uint32_t SPLASH_STAR_COUNT = 800;
-constexpr uint32_t SPLASH_TITLE_PX = 46;
-constexpr uint32_t SPLASH_HINT_PX = 15;
+constexpr float SPLASH_TITLE_SIZE = 38.0f;
 
 /* Text breathes between a dim and a bright shade of starlight */
 constexpr uint32_t SPLASH_TEXT_BRIGHT = 0xFFE9EDF8;
@@ -385,8 +384,8 @@ static uint64_t splash_clock_ns() {
 }
 
 void splash_run(presenter& pres) {
-    stlxgfx_font* title_font = stlxgfx_font_open(STLXTHEME_UI_FONT_SEMIBOLD_PATH, SPLASH_TITLE_PX);
-    stlxgfx_font* hint_font = stlxgfx_font_open(STLXTHEME_UI_FONT_PATH, SPLASH_HINT_PX);
+    stlxgfx_font* title_font = stlxgfx_font_open(STLXTHEME_UI_FONT_SEMIBOLD_PATH, SPLASH_TITLE_SIZE);
+    stlxgfx_font* hint_font = stlxgfx_font_open(STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE);
     if (!title_font || !hint_font) {
         stlxgfx_font_close(title_font);
         stlxgfx_font_close(hint_font);

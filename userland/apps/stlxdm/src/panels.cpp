@@ -32,7 +32,6 @@ constexpr int32_t TIP_RADIUS = 4;
 constexpr int32_t TIP_PAD_H = 8;
 constexpr int32_t TIP_PAD_V = 4;
 constexpr int32_t TIP_GAP = 6;
-constexpr uint32_t TIP_FONT_PX = 12;
 
 /* The tooltip pops above the dock, so hover transitions damage this
  * far beyond the band */
@@ -334,7 +333,7 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
     stlxgfx_fill_rect(m_band, 0, BAR_H, screen_w, 1, conf.accent_color);
     stlxgfx_fill_rect(m_dock, 0, 0, screen_w, 1, conf.accent_color);
 
-    m_tip_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, TIP_FONT_PX);
+    m_tip_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_CAPTION_SIZE);
     if (!m_tip_font) {
         return -1;
     }

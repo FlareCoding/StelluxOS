@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 /**
- * A typeface bound to one pixel size. Metrics, kerning, and rendered
+ * A typeface bound to one size. Metrics, kerning, and rendered
  * glyph coverage are cached inside the object, so opening a font is
  * the expensive step and everything after it is cheap.
  */
@@ -31,12 +31,14 @@ typedef struct {
 } stlxgfx_font_metrics;
 
 /**
- * @brief Opens a TrueType face at one pixel size.
+ * @brief Opens a TrueType face at one size.
  * @param path Font file path, for example `STLXTHEME_MONO_FONT_PATH`.
- * @param px_size Nominal line height in pixels the face is scaled to.
- * @return Font object, or NULL when the file is missing or invalid.
+ * @param em_px Height of the face's em square in pixels, the size
+ * CSS and Qt give a font.
+ * @return Font object, or NULL when `path` is NULL, `em_px` is not
+ * above 0, the file is missing or invalid, or memory runs out.
  */
-stlxgfx_font* stlxgfx_font_open(const char* path, uint32_t px_size);
+stlxgfx_font* stlxgfx_font_open(const char* path, float em_px);
 
 /**
  * @brief Releases a font and every cached glyph it holds.

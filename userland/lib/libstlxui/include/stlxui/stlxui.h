@@ -113,7 +113,7 @@ struct theme {
     color danger = STLXTHEME_DANGER;
     color text = STLXTHEME_TEXT;
     color text_dim = STLXTHEME_TEXT_DIM;
-    uint32_t font_size = 14;
+    float font_size = STLXTHEME_BODY_SIZE;
     int32_t control_h = STLXTHEME_CONTROL_HEIGHT; /* default height of one line controls */
 
     /* Face files per weight, opened lazily and kept for the process */
@@ -142,25 +142,25 @@ public:
      * @brief Draws UTF-8 text with the pen on the baseline.
      * @param baseline_origin Pen start, y is the baseline.
      * @param utf8 Text to draw.
-     * @param font_size Face pixel size, 0 uses the theme size.
+     * @param font_size Face em size in pixels, 0 uses the theme size.
      * @param c Text color.
      * @param w Face weight.
      */
     void text(point baseline_origin, std::string_view utf8,
-              uint32_t font_size, color c, weight w = weight::regular);
+              float font_size, color c, weight w = weight::regular);
 
     /**
      * @brief Measures UTF-8 text: advance width and line height.
      * @param utf8 Text to measure.
-     * @param font_size Face pixel size, 0 uses the theme size.
+     * @param font_size Face em size in pixels, 0 uses the theme size.
      * @param w Face weight.
      * @return Width and height in pixels.
      */
-    size measure_text(std::string_view utf8, uint32_t font_size,
+    size measure_text(std::string_view utf8, float font_size,
                       weight w = weight::regular) const;
 
     /** @brief Font ascent in pixels, for baseline placement. */
-    int32_t font_ascent(uint32_t font_size,
+    int32_t font_ascent(float font_size,
                         weight w = weight::regular) const;
 
     /**
@@ -311,7 +311,7 @@ public:
     void set_text(std::string text);
     const std::string& text() const { return m_text; }
     void set_color(color c);
-    void set_font_size(uint32_t px);
+    void set_font_size(float em_px);
     void set_weight(weight w);
 
     size measure(size avail) override;
@@ -320,7 +320,7 @@ public:
 private:
     std::string m_text;
     color m_color = 0;          /* 0 uses the theme text color */
-    uint32_t m_font_size = 0;   /* 0 uses the theme font size */
+    float m_font_size = 0;      /* 0 uses the theme font size */
     weight m_weight = weight::regular;
 };
 
@@ -390,7 +390,7 @@ public:
     const std::string& text() const { return m_text; }
     void set_text(std::string text);
     void set_placeholder(std::string text);
-    void set_font_size(uint32_t px);
+    void set_font_size(float em_px);
 
     bool focusable() const override { return true; }
     size measure(size avail) override;
@@ -402,7 +402,7 @@ private:
     std::string m_text;
     std::string m_placeholder;
     size_t m_cursor = 0;
-    uint32_t m_font_size = 0;   /* 0 uses the theme font size */
+    float m_font_size = 0; /* 0 uses the theme font size */
 };
 
 /**
