@@ -768,6 +768,18 @@ corner_table corner_distances() {
     return { g_dist8, SDF_LUT_N, SDF_Q_MAX * 8 };
 }
 
+int32_t rounded_rect_distance(const damage_list::rect& bounds, int32_t radius, int32_t x, int32_t y) {
+    return rrect_dist8({ bounds.x, bounds.y, bounds.w, bounds.h, radius }, x, y);
+}
+
+uint32_t distance_coverage(int32_t distance) {
+    return dist8_coverage(distance);
+}
+
+uint32_t blend_over(uint32_t below, uint32_t color, uint32_t alpha) {
+    return blend_px(below, color, alpha);
+}
+
 bool decorated(const dm_window& w) {
     return (w.flags & SWP_WF_BORDERLESS) == 0;
 }
