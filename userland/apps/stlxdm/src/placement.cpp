@@ -359,8 +359,7 @@ void server::advance_animations() {
         uint32_t was_opacity = a.opacity;
         bool has_eased = step_animation(a, now);
         if (!is_same_rect(was, a.rect) || was_opacity != a.opacity) {
-            damage_painted(*w, was);
-            damage_painted(*w, a.rect);
+            damage_painted(*w, damage_list::union_of(was, a.rect));
         }
 
         bool is_minimizing = a.transition == window_transition::minimize;

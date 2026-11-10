@@ -15,6 +15,8 @@ public:
         int32_t w = 0, h = 0;
     };
 
+    /* Adds a rect unless another one holds it, and drops the rects it
+     * holds, since each rect is composed on its own. */
     void add(int32_t x, int32_t y, int32_t w, int32_t h);
     void add_full() { m_full = true; }
     void clear();
@@ -29,6 +31,9 @@ public:
 
     /* The part of `a` inside `b`, all zero when they do not overlap. */
     static rect intersect(const rect& a, const rect& b);
+
+    /* Whether `inner` lies inside `outer`. */
+    static bool contains(const rect& outer, const rect& inner);
 
     /* The smallest rect holding `a` and `b`, ignoring one that is empty. */
     static rect union_of(const rect& a, const rect& b);

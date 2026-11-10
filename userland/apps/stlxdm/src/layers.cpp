@@ -11,12 +11,6 @@ static bool overlaps(const damage_list::rect& a, const damage_list::rect& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-static bool contains(const damage_list::rect& outer, const damage_list::rect& inner) {
-    bool holds_columns = inner.x >= outer.x && inner.x + inner.w <= outer.x + outer.w;
-    bool holds_rows = inner.y >= outer.y && inner.y + inner.h <= outer.y + outer.h;
-    return holds_columns && holds_rows;
-}
-
 /* Whether `r`, which lies inside `bounds`, stays clear of the corner squares of `bounds`, which round by `radius` */
 static bool avoids_corners(const damage_list::rect& bounds, int32_t radius, const damage_list::rect& r) {
     bool is_between_columns = r.x >= bounds.x + radius && r.x + r.w <= bounds.x + bounds.w - radius;
@@ -29,10 +23,10 @@ static bool avoids_corners(const damage_list::rect& bounds, int32_t radius, cons
  * glass's rounded corners */
 static bool covers(const layer_window& w, const damage_list::rect& r) {
     if (w.is_premultiplied) {
-        return contains(w.glass.bounds, r) && avoids_corners(w.glass.bounds, w.glass.radius, r);
+        return damage_list::contains(w.glass.bounds, r) && avoids_corners(w.glass.bounds, w.glass.radius, r);
     }
 
-    if (!contains(w.content, r)) {
+    if (!damage_list::contains(w.content, r)) {
         return false;
     }
 
