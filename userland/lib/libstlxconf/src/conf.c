@@ -38,6 +38,18 @@ static const char* const COMPOSE_FAULT_NAMES[] = {
     [STLXCONF_COMPOSE_FAULT_HANG]  = "hang",
 };
 
+static const char* const GLASS_LEVEL_NAMES[] = {
+    [STLXCONF_GLASS_LEVEL_SOLID]  = "solid",
+    [STLXCONF_GLASS_LEVEL_SUBTLE] = "subtle",
+    [STLXCONF_GLASS_LEVEL_GLASS]  = "glass",
+    [STLXCONF_GLASS_LEVEL_CLEAR]  = "clear",
+};
+
+static const char* const GLASS_TINT_NAMES[] = {
+    [STLXCONF_GLASS_TINT_WARM]    = "warm",
+    [STLXCONF_GLASS_TINT_NEUTRAL] = "neutral",
+};
+
 static const char* const SWITCH_NAMES[] = { "off", "on" };
 
 #define NAME_COUNT(names) ((int)(sizeof(names) / sizeof((names)[0])))
@@ -50,6 +62,9 @@ void stlxconf_defaults(stlxconf_t* conf) {
     conf->bar_font_size = 14;
     conf->accent_color  = 0xFF888888;
     conf->text_color    = 0xFFCCCCCC;
+
+    conf->glass_level = STLXCONF_GLASS_LEVEL_GLASS;
+    conf->glass_tint  = STLXCONF_GLASS_TINT_WARM;
 
     conf->taskbar_height    = 48;
     conf->taskbar_icon_size = 32;
@@ -187,6 +202,16 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
             conf->accent_color = (uint32_t)strtoul(val, NULL, 16);
         } else if (strcmp(key, "text_color") == 0) {
             conf->text_color = (uint32_t)strtoul(val, NULL, 16);
+        } else if (strcmp(key, "glass_level") == 0) {
+            int found = find_name(GLASS_LEVEL_NAMES, NAME_COUNT(GLASS_LEVEL_NAMES), val);
+            if (found >= 0) {
+                conf->glass_level = (stlxconf_glass_level_t)found;
+            }
+        } else if (strcmp(key, "glass_tint") == 0) {
+            int found = find_name(GLASS_TINT_NAMES, NAME_COUNT(GLASS_TINT_NAMES), val);
+            if (found >= 0) {
+                conf->glass_tint = (stlxconf_glass_tint_t)found;
+            }
         }
         return;
     case SEC_TASKBAR:
@@ -407,6 +432,9 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
     fprintf(f, "bar_font_size=%u\n", conf->bar_font_size);
     fprintf(f, "accent_color=0x%08X\n", conf->accent_color);
     fprintf(f, "text_color=0x%08X\n", conf->text_color);
+
+    fprintf(f, "glass_level=%s\n", GLASS_LEVEL_NAMES[conf->glass_level]);
+    fprintf(f, "glass_tint=%s\n", GLASS_TINT_NAMES[conf->glass_tint]);
 
     fprintf(f, "\n[taskbar]\n");
     fprintf(f, "height=%u\n", conf->taskbar_height);
