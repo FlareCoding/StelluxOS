@@ -20,6 +20,7 @@
 #include <QPointer>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QShortcut>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -55,6 +56,9 @@ constexpr int SIDEBAR_FOOT_H = 48;
 constexpr int SIDEBAR_FOOT_PADDING_X = 18;
 constexpr int SIDEBAR_FOOT_GAP = 8;
 constexpr int LOGO_SIZE = 12;
+constexpr int SEARCH_INSET_X = 4;
+constexpr int SEARCH_MARGIN_TOP = 12;
+constexpr int SEARCH_MARGIN_BOTTOM = 4;
 
 constexpr int TITLE_LINE_HEIGHT = 36;
 constexpr qreal TITLE_TRACKING_EM = -0.02;
@@ -62,9 +66,12 @@ constexpr int FOOTER_GAP = 8;
 
 constexpr int EDITOR_FIELD_W = 360;
 
-stlxconf_t g_conf;
+constexpr int HINT_KEY_GAP = 4;
+constexpr int HINT_GROUP_GAP = 12;
+constexpr int REVEAL_MS = 1600;
+constexpr int REVEAL_MARGIN = 48;
 
-enum page_index : uint32_t { APPEARANCE_PAGE, DOCK_PAGE, DISPLAY_PAGE, INPUT_PAGE, STARTUP_PAGE, ABOUT_PAGE };
+stlxconf_t g_conf;
 
 constexpr uint32_t PAGE_COUNT = ABOUT_PAGE + 1;
 
@@ -106,6 +113,13 @@ static const char* const GROUP_TITLES[] = { "Personalize", "Hardware", "System" 
 static const uint32_t GROUP_FIRST_PAGES[] = { APPEARANCE_PAGE, DISPLAY_PAGE, STARTUP_PAGE };
 static_assert(std::size(GROUP_FIRST_PAGES) == std::size(GROUP_TITLES));
 
+/* The search footer's hints: Up and Down choose a result, Enter opens it, Esc clears the search */
+static const char* const HINT_KEYS[] = { "Up", "Down", "Enter", "Esc" };
+static const char* const HINT_ACTIONS[] = { "", "choose", "open", "clear" };
+static_assert(std::size(HINT_ACTIONS) == std::size(HINT_KEYS));
+
+static const QChar CRUMB_SEPARATOR(0x203A);
+
 namespace {
 
 class nav_row : public QWidget {
@@ -122,12 +136,19 @@ public:
         update();
     }
 
+    /* -1 outside a search. During one, the count of the page's matches shows at the right, and 0 dims the row */
+    void set_match_count(int count) {
+        m_match_count = count;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.setPen(Qt::NoPen);
         bool is_lit = m_is_current || underMouse();
+        bool is_dimmed = m_match_count == 0 && !is_lit;
 
         if (is_lit) {
             painter.setBrush(theme_color(m_is_current ? STLXTHEME_SURFACE_SELECTED : STLXTHEME_SURFACE_HOVER));
@@ -150,12 +171,21 @@ protected:
             STLXTHEME_GLYPH_SIZE,
             STLXTHEME_GLYPH_SIZE
         );
-        paint_glyph(painter, m_icon, glyph_box, theme_color(is_lit ? STLXTHEME_TEXT : STLXTHEME_TEXT_DIM));
+        uint32_t glyph_color = is_lit ? STLXTHEME_TEXT : is_dimmed ? STLXTHEME_TEXT_DISABLED : STLXTHEME_TEXT_DIM;
+        paint_glyph(painter, m_icon, glyph_box, theme_color(glyph_color));
 
         int text_left = NAV_ROW_PADDING_X + STLXTHEME_GLYPH_SIZE + NAV_ROW_GLYPH_GAP;
+        uint32_t text_color = is_lit ? STLXTHEME_TEXT : is_dimmed ? STLXTHEME_TEXT_DIM : STLXTHEME_TEXT_SECONDARY;
         painter.setFont(ui_font(STLXTHEME_BODY_SIZE, QFont::Medium));
-        painter.setPen(theme_color(is_lit ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY));
+        painter.setPen(theme_color(text_color));
         painter.drawText(rect().adjusted(text_left, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, m_name);
+
+        if (m_match_count > 0) {
+            painter.setFont(mono_font(STLXTHEME_CAPTION_SIZE));
+            painter.setPen(theme_color(STLXTHEME_TEXT_SECONDARY));
+            painter.drawText(rect().adjusted(0, 0, -NAV_ROW_PADDING_X, 0), Qt::AlignVCenter | Qt::AlignRight,
+                             QString::number(m_match_count));
+        }
     }
 
     void mouseReleaseEvent(QMouseEvent* event) override {
@@ -168,6 +198,7 @@ private:
     glyph m_icon;
     QString m_name;
     bool m_is_current = false;
+    int m_match_count = -1;
 };
 
 class sidebar : public QWidget {
@@ -213,7 +244,17 @@ public:
     void set_page(const QString& title, const QString& blurb, const QString& file) {
         m_title = title;
         m_blurb = blurb;
+        m_emphasis.clear();
+        m_blurb_end.clear();
         m_file = file;
+        update();
+    }
+
+    /* A blurb that sets one phrase apart, such as the query in the search's blurb */
+    void set_emphasized_blurb(const QString& start, const QString& emphasis, const QString& end) {
+        m_blurb = start;
+        m_emphasis = emphasis;
+        m_blurb_end = end;
         update();
     }
 
@@ -229,15 +270,31 @@ protected:
         painter.setPen(theme_color(STLXTHEME_TEXT));
         painter.drawText(QPointF(PANE_MARGIN_X, baseline), m_title);
 
-        QRect blurb_line(
+        QRectF blurb_line(
             PANE_MARGIN_X,
             PANE_MARGIN_TOP + TITLE_LINE_HEIGHT,
             width() - 2 * PANE_MARGIN_X,
             BODY_LINE_HEIGHT
         );
-        painter.setFont(ui_font(STLXTHEME_BODY_SIZE, QFont::Normal));
+        QFont blurb_font = ui_font(STLXTHEME_BODY_SIZE, QFont::Normal);
+        QFont emphasis_font = ui_font(STLXTHEME_BODY_SIZE, QFont::Medium);
+        QFontMetricsF blurb_metrics(blurb_font);
+        QFontMetricsF emphasis_metrics(emphasis_font);
+
+        /* A long emphasis, such as a pasted query, shortens so the blurb keeps to its line */
+        qreal emphasis_offset = blurb_metrics.horizontalAdvance(m_blurb);
+        qreal emphasis_room = blurb_line.width() - emphasis_offset - blurb_metrics.horizontalAdvance(m_blurb_end);
+        QString emphasis = emphasis_metrics.elidedText(m_emphasis, Qt::ElideRight, emphasis_room);
+        qreal end_offset = emphasis_offset + emphasis_metrics.horizontalAdvance(emphasis);
+
+        painter.setFont(blurb_font);
         painter.setPen(theme_color(STLXTHEME_TEXT_SECONDARY));
         painter.drawText(blurb_line, Qt::AlignVCenter | Qt::AlignLeft, m_blurb);
+        painter.drawText(blurb_line.adjusted(end_offset, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, m_blurb_end);
+
+        painter.setFont(emphasis_font);
+        painter.setPen(theme_color(STLXTHEME_TEXT));
+        painter.drawText(blurb_line.adjusted(emphasis_offset, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, emphasis);
 
         QFont file_font = mono_font(STLXTHEME_CAPTION_SIZE);
         qreal file_width = QFontMetricsF(file_font).horizontalAdvance(m_file);
@@ -249,6 +306,8 @@ protected:
 private:
     QString m_title;
     QString m_blurb;
+    QString m_emphasis;
+    QString m_blurb_end;
     QString m_file;
 };
 
@@ -265,6 +324,52 @@ protected:
     }
 };
 
+/* The keys the search answers to, each group followed by what its keys do, in place of the footer's status */
+class key_hints : public QWidget {
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        QFont action_font = ui_font(STLXTHEME_CAPTION_SIZE, QFont::Normal);
+        QFontMetricsF action_metrics(action_font);
+        qreal hint_top = (height() - KEY_HINT_H) / 2.0;
+        qreal left = 0;
+
+        for (size_t i = 0; i < std::size(HINT_KEYS); i++) {
+            QString key = QLatin1String(HINT_KEYS[i]);
+            paint_key_hint(painter, QPointF(left, hint_top), key);
+            left += key_hint_width(key) + HINT_KEY_GAP;
+
+            QString action = QLatin1String(HINT_ACTIONS[i]);
+            if (action.isEmpty()) {
+                continue;
+            }
+
+            painter.setFont(action_font);
+            painter.setPen(theme_color(STLXTHEME_TEXT_DIM));
+            painter.drawText(QRectF(left, 0, width() - left, height()), Qt::AlignVCenter | Qt::AlignLeft, action);
+            left += action_metrics.horizontalAdvance(action) + HINT_GROUP_GAP;
+        }
+    }
+};
+
+/* Lights the row a search result opened, over the row and its controls */
+class row_light : public QWidget {
+public:
+    explicit row_light(QWidget* row) : QWidget(row) {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setGeometry(row->rect());
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(theme_color(STLXTHEME_SURFACE_SELECTED));
+        painter.drawRoundedRect(QRectF(rect()), STLXTHEME_CONTROL_RADIUS, STLXTHEME_CONTROL_RADIUS);
+    }
+};
+
 /* The state of the window around the pages. `saved` holds the config as loaded, drop-ins included, so the footer
  * counts the changes Save would write. */
 struct app_state {
@@ -274,21 +379,31 @@ struct app_state {
     QWidget* page = nullptr;
     page_head* head = nullptr;
     QLabel* status = nullptr;
+    key_hints* hints = nullptr;
     push_button* revert = nullptr;
     push_button* save = nullptr;
     nav_row* nav[PAGE_COUNT] = {};
     uint32_t active_page = 0;
     int chosen_scroll = 0; /* where the person last scrolled the page to */
+
+    /* While a search runs the pane lists its results, and `active_page` is the page it returns to */
+    search_field* search = nullptr;
+    bool is_searching = false;
+    QList<search_entry> matches;
+    QList<result_row*> results;
+    int chosen = 0;
 };
 
 } // namespace
 
 static app_state g_st;
 
-static void build_page(uint32_t index);
+static void rebuild_view();
 
 void set_status(const QString& text) {
     g_st.status->setText(text.left(1).toUpper() + text.mid(1));
+    g_st.status->show();
+    g_st.hints->hide();
 }
 
 static void note_change(bool is_changed, const QString& description, QStringList& changes) {
@@ -415,8 +530,8 @@ void show_pending_changes() {
     g_st.revert->setEnabled(is_pending);
     g_st.save->setEnabled(is_pending);
 
-    /* About writes nothing, so its footer shows the buttons only for changes made on other pages */
-    bool is_nothing_to_save = !is_pending && g_st.active_page == ABOUT_PAGE;
+    /* About and the search results write nothing, so they show the buttons only for changes made on pages */
+    bool is_nothing_to_save = !is_pending && (g_st.is_searching || g_st.active_page == ABOUT_PAGE);
     g_st.revert->setVisible(!is_nothing_to_save);
     g_st.save->setVisible(!is_nothing_to_save);
 
@@ -429,15 +544,19 @@ void show_pending_changes() {
     } else {
         set_status(QStringLiteral("No unsaved changes"));
     }
+
+    /* While a search runs, its key hints replace the recount */
+    g_st.status->setVisible(!g_st.is_searching);
+    g_st.hints->setVisible(g_st.is_searching);
 }
 
 void rebuild_page_later() {
     g_st.page->setEnabled(false);
-    QTimer::singleShot(0, [] { build_page(g_st.active_page); });
+    QTimer::singleShot(0, [] { rebuild_view(); });
 }
 
 void rebuild_displays_page_later() {
-    if (g_st.active_page == DISPLAY_PAGE) {
+    if (g_st.is_searching || g_st.active_page == DISPLAY_PAGE) {
         rebuild_page_later();
     }
 }
@@ -544,8 +663,7 @@ static QString drop_in_file_of(const QString& section) {
     return QStringLiteral("conf.d");
 }
 
-void lock_drop_in_row(list_row* row, const char* prefix, const char* name) {
-    QString section = QStringLiteral("%1:%2").arg(QString::fromLatin1(prefix), QString::fromUtf8(name));
+void lock_drop_in_row(list_row* row, const QString& section) {
     row->set_locked(true);
     row->add_trailing(new chip(drop_in_file_of(section)));
 }
@@ -591,14 +709,23 @@ card* add_section(QWidget* page, const QString& title, const QString& caption) {
     return add_section(page, new section_head(title, caption));
 }
 
-/* Swaps the page under the fixed chrome */
-static void build_page(uint32_t index) {
-    bool is_other_page = index != g_st.active_page;
-    if (is_other_page) {
-        g_st.chosen_scroll = 0;
-        g_st.scroll->verticalScrollBar()->setValue(0);
-    }
+/* Swaps an empty page in under the fixed chrome */
+static QWidget* replace_page() {
+    delete g_st.page;
+    g_st.page = new QWidget;
+    auto* page_layout = new QVBoxLayout(g_st.page);
+    page_layout->setContentsMargins(PANE_MARGIN_X, 0, PANE_MARGIN_X, PANE_MARGIN_BOTTOM);
+    page_layout->setSpacing(0);
 
+    return g_st.page;
+}
+
+static void show_filled_page() {
+    layout_of(g_st.page)->addStretch(1);
+    layout_of(g_st.page_slot)->addWidget(g_st.page);
+}
+
+static void build_page(uint32_t index) {
     g_st.active_page = index;
     for (uint32_t i = 0; i < PAGE_COUNT; i++) {
         g_st.nav[i]->set_current(i == index);
@@ -610,28 +737,17 @@ static void build_page(uint32_t index) {
         QString::fromLatin1(PAGE_FILES[index])
     );
 
-    delete g_st.page;
-    g_st.page = new QWidget;
-    auto* page_layout = new QVBoxLayout(g_st.page);
-    page_layout->setContentsMargins(PANE_MARGIN_X, 0, PANE_MARGIN_X, PANE_MARGIN_BOTTOM);
-    page_layout->setSpacing(0);
-
+    QWidget* page = replace_page();
     switch (static_cast<page_index>(index)) {
-    case APPEARANCE_PAGE: build_appearance_page(g_st.page); break;
-    case DOCK_PAGE: build_dock_page(g_st.page); break;
-    case DISPLAY_PAGE: build_displays_page(g_st.page); break;
-    case INPUT_PAGE: build_input_page(g_st.page); break;
-    case STARTUP_PAGE: build_startup_page(g_st.page); break;
-    case ABOUT_PAGE: build_about_page(g_st.page); break;
+    case APPEARANCE_PAGE: build_appearance_page(page); break;
+    case DOCK_PAGE: build_dock_page(page); break;
+    case DISPLAY_PAGE: build_displays_page(page); break;
+    case INPUT_PAGE: build_input_page(page); break;
+    case STARTUP_PAGE: build_startup_page(page); break;
+    case ABOUT_PAGE: build_about_page(page); break;
     }
 
-    page_layout->addStretch(1);
-    layout_of(g_st.page_slot)->addWidget(g_st.page);
-
-    /* A rebuild after an edit keeps the footer's message */
-    if (is_other_page) {
-        show_pending_changes();
-    }
+    show_filled_page();
 }
 
 /* A rebuild can empty the scroll bar's range for a moment, which puts the
@@ -644,6 +760,184 @@ static void track_page_scroll(QScrollBar* page_scroll_bar) {
     QObject::connect(page_scroll_bar, &QAbstractSlider::rangeChanged, [page_scroll_bar] {
         page_scroll_bar->setValue(g_st.chosen_scroll);
     });
+}
+
+/* Takes a scroll the pane made for the person, to a result or to the top, as their own, so rebuilds keep it */
+static void keep_page_scroll() {
+    g_st.chosen_scroll = g_st.scroll->verticalScrollBar()->value();
+}
+
+/* The settings whose label or key holds the query, page by page in sidebar order */
+static QList<search_entry> matching_entries(const QString& query) {
+    QList<search_entry> entries;
+    add_appearance_entries(entries);
+    add_dock_entries(entries);
+    add_displays_entries(entries);
+    add_input_entries(entries);
+    add_startup_entries(entries);
+
+    QList<search_entry> matches;
+    for (const search_entry& entry : entries) {
+        if (entry.label.contains(query, Qt::CaseInsensitive) || entry.key.contains(query, Qt::CaseInsensitive)) {
+            matches.append(entry);
+        }
+    }
+
+    return matches;
+}
+
+/* While searching no page is current: each shows its count of matches, or dims for none */
+static void show_match_counts() {
+    int counts[PAGE_COUNT] = {};
+    for (const search_entry& entry : g_st.matches) {
+        counts[entry.page]++;
+    }
+
+    for (uint32_t i = 0; i < PAGE_COUNT; i++) {
+        g_st.nav[i]->set_current(!g_st.is_searching && i == g_st.active_page);
+        g_st.nav[i]->set_match_count(g_st.is_searching ? counts[i] : -1);
+    }
+}
+
+static void choose_result(int index) {
+    if (g_st.results.isEmpty()) {
+        return;
+    }
+
+    g_st.chosen = qBound(0, index, static_cast<int>(g_st.results.size()) - 1);
+    for (int i = 0; i < g_st.results.size(); i++) {
+        g_st.results[i]->set_chosen(i == g_st.chosen);
+    }
+
+    g_st.scroll->ensureWidgetVisible(g_st.results[g_st.chosen]);
+    keep_page_scroll();
+}
+
+/* Scrolls the row named `name` into view once the page is laid out, and lights it for a moment.
+ * An empty name, for a setting without a row of its own, leaves the page at its top */
+static void reveal_row(const QString& name) {
+    if (name.isEmpty()) {
+        return;
+    }
+
+    auto* row = g_st.page->findChild<QWidget*>(name);
+    if (!row) {
+        return;
+    }
+
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    g_st.scroll->ensureWidgetVisible(row, 0, REVEAL_MARGIN);
+    keep_page_scroll();
+
+    auto* light = new row_light(row);
+    light->show();
+    QTimer::singleShot(REVEAL_MS, light, &QObject::deleteLater);
+}
+
+/* Shows a page from its top, ending the search if one runs */
+static void open_page(uint32_t index) {
+    g_st.is_searching = false;
+    g_st.matches.clear();
+    g_st.results.clear();
+    g_st.search->clear_query();
+    show_match_counts();
+
+    build_page(index);
+    g_st.scroll->verticalScrollBar()->setValue(0);
+    keep_page_scroll();
+    show_pending_changes();
+}
+
+/* Opens the result's page once the event that chose it is done, since the result row goes away with the list */
+static void open_result(int index) {
+    if (index < 0 || index >= g_st.matches.size()) {
+        return;
+    }
+
+    search_entry entry = g_st.matches[index];
+    QTimer::singleShot(0, [entry]() {
+        open_page(entry.page);
+        QTimer::singleShot(0, [row = entry.row]() { reveal_row(row); });
+    });
+}
+
+/* Lists the settings that match the query under a head for each page that holds some */
+static void show_search_results(const QString& query) {
+    g_st.is_searching = true;
+    g_st.matches = matching_entries(query);
+    g_st.results.clear();
+    show_match_counts();
+
+    qsizetype count = g_st.matches.size();
+    QString start = count == 1 ? QStringLiteral("1 setting matches ") : QStringLiteral("%1 settings match ").arg(count);
+    QString config_dir = QFileInfo(QString::fromLatin1(STLXCONF_PATH)).path();
+    g_st.head->set_page(QStringLiteral("Search"), QString(), config_dir);
+    g_st.head->set_emphasized_blurb(start, query, QStringLiteral(" by name or config key."));
+
+    QWidget* page = replace_page();
+    card* group = nullptr;
+    for (int i = 0; i < count; i++) {
+        const search_entry& entry = g_st.matches[i];
+        QString page_name = QString::fromUtf8(PAGE_NAMES[entry.page]);
+        if (i == 0 || entry.page != g_st.matches[i - 1].page) {
+            QString file = QFileInfo(QString::fromLatin1(PAGE_FILES[entry.page])).fileName();
+            group = add_section(page, page_name, file);
+        }
+
+        QString place = QStringLiteral("%1 %2 %3").arg(page_name).arg(CRUMB_SEPARATOR).arg(entry.card);
+        auto* row = new result_row(entry.label, place, entry.key, entry.value, query);
+        row->on_click = [i]() { open_result(i); };
+        group->add_row(row);
+        g_st.results.append(row);
+    }
+
+    show_filled_page();
+    g_st.scroll->verticalScrollBar()->setValue(0);
+    keep_page_scroll();
+    choose_result(0);
+}
+
+/* Rebuilds what the pane shows, the results while a search runs */
+static void rebuild_view() {
+    if (g_st.is_searching) {
+        show_search_results(g_st.search->query());
+        return;
+    }
+
+    build_page(g_st.active_page);
+}
+
+static void search_settings(const QString& query) {
+    if (!query.isEmpty()) {
+        show_search_results(query);
+        show_pending_changes();
+    } else if (g_st.is_searching) {
+        open_page(g_st.active_page);
+    }
+}
+
+/* Up and Down choose a result and Enter opens it. Escape clears the query, and on an empty one gives up the focus */
+static void answer_search_key(int key) {
+    if (key == Qt::Key_Escape) {
+        bool was_empty = g_st.search->query().isEmpty();
+        g_st.search->clear_query();
+        if (was_empty && QApplication::focusWidget()) {
+            QApplication::focusWidget()->clearFocus();
+        }
+
+        return;
+    }
+
+    if (!g_st.is_searching) {
+        return;
+    }
+
+    if (key == Qt::Key_Up || key == Qt::Key_Down) {
+        choose_result(g_st.chosen + (key == Qt::Key_Down ? 1 : -1));
+        return;
+    }
+
+    open_result(g_st.chosen);
 }
 
 /* Delivers the reload signal to the display manager's pidfile */
@@ -678,7 +972,7 @@ static void save_conf() {
 
     /* Reloading shows the entries in the order the desktop loaded them, drop-ins last */
     load_conf();
-    build_page(g_st.active_page);
+    rebuild_view();
     show_pending_changes();
     set_status(QStringLiteral("Saved, the desktop updated"));
 
@@ -689,7 +983,7 @@ static void save_conf() {
 static void revert_conf() {
     load_conf();
     revert_layout();
-    build_page(g_st.active_page);
+    rebuild_view();
     show_pending_changes();
     set_status(QStringLiteral("Reverted to the file on disk"));
 }
@@ -714,12 +1008,26 @@ static QWidget* make_group(size_t group) {
     uint32_t end = is_last ? PAGE_COUNT : GROUP_FIRST_PAGES[group + 1];
     for (uint32_t i = GROUP_FIRST_PAGES[group]; i < end; i++) {
         auto* row = new nav_row(PAGE_GLYPHS[i], QString::fromUtf8(PAGE_NAMES[i]));
-        row->on_select = [i]() { build_page(i); };
+        row->on_select = [i]() { open_page(i); };
         g_st.nav[i] = row;
         layout->addWidget(row);
     }
 
     return box;
+}
+
+/* The search field sits inset a step further than the rows under it */
+static QWidget* make_search_slot() {
+    g_st.search = new search_field;
+    g_st.search->on_edit = search_settings;
+    g_st.search->on_navigation_key = answer_search_key;
+
+    auto* slot = new QWidget;
+    auto* layout = new QVBoxLayout(slot);
+    layout->setContentsMargins(SEARCH_INSET_X, SEARCH_MARGIN_TOP, SEARCH_INSET_X, SEARCH_MARGIN_BOTTOM);
+    layout->addWidget(g_st.search);
+
+    return slot;
 }
 
 static QWidget* make_sidebar() {
@@ -728,9 +1036,11 @@ static QWidget* make_sidebar() {
 
     auto* sidebar_widget = new sidebar(system_title(system), QString::fromUtf8(system.machine));
     sidebar_widget->setFixedWidth(SIDEBAR_W);
+
     auto* layout = new QVBoxLayout(sidebar_widget);
     layout->setContentsMargins(SIDEBAR_PADDING_X, 0, SIDEBAR_PADDING_X, SIDEBAR_FOOT_H);
     layout->setSpacing(0);
+    layout->addWidget(make_search_slot());
 
     for (size_t group = 0; group < std::size(GROUP_TITLES); group++) {
         layout->addWidget(make_group(group));
@@ -749,6 +1059,9 @@ static QWidget* make_footer() {
 
     g_st.status = make_text(QString(), ui_font(STLXTHEME_CAPTION_SIZE, QFont::Normal), STLXTHEME_TEXT_DIM);
     layout->addWidget(g_st.status, 1);
+    g_st.hints = new key_hints;
+    g_st.hints->setVisible(false);
+    layout->addWidget(g_st.hints, 1);
 
     g_st.revert = new push_button(QStringLiteral("Revert"));
     g_st.revert->on_click = revert_conf;
@@ -838,7 +1151,13 @@ int main(int argc, char** argv) {
 
     build_page(static_cast<uint32_t>(first_page));
     show_pending_changes();
+
+    auto* find = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_F), &window);
+    QObject::connect(find, &QShortcut::activated, [] { g_st.search->focus_query(); });
     window.show();
+
+    /* The window holds the focus as it opens, so the search field stays unfocused until Ctrl F or a click */
+    window.setFocus();
 
     return app.exec();
 }

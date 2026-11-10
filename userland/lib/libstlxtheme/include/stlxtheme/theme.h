@@ -34,7 +34,7 @@
 #define STLXTHEME_LINE_STRONG 0x52E2C496 /* hover and focus borders and scroll thumbs */
 #define STLXTHEME_LINE_ON     0x3DE2C496 /* the ring of an open bar target, of a set pin and of the chosen segment */
 #define STLXTHEME_CARD_LINE   0x2BE2C496
-#define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window, the dock, a popover panel and a Qt menu */
+#define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window, dock, popovers, menus and search matches */
 #define STLXTHEME_RIM_DIM     0x26E2C496
 #define STLXTHEME_BEZEL       0x42E2C496 /* the ring of a window control */
 #define STLXTHEME_BEZEL_DIM   0x1CE2C496 /* on an unfocused window */
@@ -88,6 +88,11 @@
 /* Shortcut keycaps in Settings */
 #define STLXTHEME_KEYCAP_FACE   0x0FFFF0D7
 #define STLXTHEME_KEYCAP_SHADOW 0x99060402 /* under a keycap, offset below its face */
+
+/* Search in Settings */
+#define STLXTHEME_KEY_HINT_FACE     0x08FFF0D7 /* a key hint, such as the search field's Ctrl F */
+#define STLXTHEME_SEARCH_CLEAR_FACE 0x12FFF0D7 /* the search field's clear button */
+#define STLXTHEME_MATCH_MARK        0x21FFF0D7 /* behind the letters of a result that match the query */
 
 /* Corner radii */
 #define STLXTHEME_WINDOW_RADIUS    10

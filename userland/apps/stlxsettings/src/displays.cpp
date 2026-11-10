@@ -63,6 +63,13 @@ constexpr int RING_STROKE = 2;
 constexpr int FULL_TURN = 360 * 16; /* `QPainter` arcs count sixteenths of a degree */
 constexpr int RING_START = 90 * 16; /* the ring empties from its top */
 
+constexpr const char* ARRANGEMENT_CARD = "Arrangement";
+constexpr const char* LAYOUT_SECTION = "layout";
+constexpr const char* RESOLUTION_LABEL = "Resolution";
+constexpr const char* REFRESH_RATE_LABEL = "Refresh rate";
+constexpr const char* MAIN_DISPLAY_LABEL = "Main display";
+constexpr const char* MAIN_KEY = "main";
+
 constexpr uint32_t CANVAS_FILL = 0x4D080502;      /* the recess at .30 */
 constexpr uint32_t CANVAS_DOT = 0x21E2C496;       /* brass at .13 */
 constexpr uint32_t TILE_SMOKE = 0x80100D0A;       /* the wallpaper under half smoke */
@@ -576,10 +583,14 @@ static display_card g_card;
 static trial_state g_trial;
 static mode_rows g_unplaced_modes[STLXWIN_OUTPUTS_MAX]; /* the choices of lit outputs the desktop does not place */
 
+static QString numbered_display_name(uint32_t index) {
+    return QStringLiteral("Display %1").arg(index + 1);
+}
+
 QString display_name(const stlxwin_output& output, uint32_t index) {
     size_t length = strnlen(output.monitor, sizeof(output.monitor));
     if (length == 0) {
-        return QStringLiteral("Display %1").arg(index + 1);
+        return numbered_display_name(index);
     }
 
     return QString::fromUtf8(output.monitor, static_cast<qsizetype>(length));
@@ -623,8 +634,12 @@ static bool modes_equal(const stlxwin_mode& a, const stlxwin_mode& b) {
     return sizes_equal(a, b) && a.refresh_millihertz == b.refresh_millihertz;
 }
 
+static QString size_text(QSize size) {
+    return QStringLiteral("%1 %2 %3").arg(size.width()).arg(TIMES_SIGN).arg(size.height());
+}
+
 static QString size_text(const stlxwin_mode& mode) {
-    return QStringLiteral("%1 %2 %3").arg(mode.width).arg(TIMES_SIGN).arg(mode.height);
+    return size_text(QSize(static_cast<int>(mode.width), static_cast<int>(mode.height)));
 }
 
 /* A rate to the millihertz, so two rates that round to the same hertz stay apart */
@@ -811,8 +826,8 @@ static void close_display_connection() {
     }
 }
 
-/* While the Displays page shows, each `STLXWIN_EVT_OUTPUTS`, mode event or lost connection rebuilds it. The
- * footer shows layout and mode results */
+/* While the Displays page or search results show, each `STLXWIN_EVT_OUTPUTS`, mode event or lost connection rebuilds
+ * them. The footer shows layout and mode results */
 static void read_display_events() {
     bool is_alive = stlxwin_dispatch(g_display.conn) >= 0;
     bool are_outputs_changed = false;
@@ -972,15 +987,19 @@ void revert_layout() {
     read_arrangement(g_display.generation);
 }
 
-/* The desktop's size, the box around every display */
-static QString arrangement_section() {
+/* The box around every display, the desktop's size */
+static QRect desktop_bounds() {
     QRect bounds;
     for (uint32_t i = 0; i < g_display.count; i++) {
         const stlxwin_output& output = g_display.outputs[i];
         bounds |= QRect(g_display.top_lefts[i], QSize(static_cast<int>(output.width), static_cast<int>(output.height)));
     }
 
-    return QStringLiteral("[layout]  %1 %2 %3").arg(bounds.width()).arg(TIMES_SIGN).arg(bounds.height());
+    return bounds;
+}
+
+static QString arrangement_section() {
+    return QStringLiteral("[%1]  %2").arg(QLatin1String(LAYOUT_SECTION), size_text(desktop_bounds().size()));
 }
 
 /* The output's `display_name` when the desktop places it, or "Output" and its output number */
@@ -1132,13 +1151,13 @@ static void show_modes(mode_rows& rows, uint32_t output) {
  * handlers read `rows`, so it must outlive them */
 static void add_mode_rows(card* details, mode_rows& rows) {
     rows.resolution = new QComboBox;
-    rows.resolution_row = new setting_row(QStringLiteral("Resolution"), QString());
+    rows.resolution_row = new setting_row(QLatin1String(RESOLUTION_LABEL), QString());
     rows.resolution_row->add_control(rows.resolution);
     details->add_row(rows.resolution_row);
 
     rows.refresh = new QComboBox;
     rows.apply = new push_button(QStringLiteral("Apply"));
-    rows.refresh_row = new setting_row(QStringLiteral("Refresh rate"), QString());
+    rows.refresh_row = new setting_row(QLatin1String(REFRESH_RATE_LABEL), QString());
     rows.refresh_row->add_control(rows.refresh);
     rows.refresh_row->add_control(rows.apply);
     details->add_row(rows.refresh_row);
@@ -1174,7 +1193,7 @@ static void show_selected_display() {
     uint32_t selected = g_display.selected;
     const stlxwin_output& output = g_display.outputs[selected];
     QPoint place = place_relative_to_main(selected);
-    QString title = QStringLiteral("Display %1").arg(selected + 1);
+    QString title = numbered_display_name(selected);
     if (output.monitor[0] != '\0') {
         title += QStringLiteral(" %1 %2").arg(MIDDLE_DOT).arg(display_name(output, selected));
     }
@@ -1182,7 +1201,7 @@ static void show_selected_display() {
     g_card.arrangement_head->set_caption(arrangement_section());
     g_card.head->set_title(title);
     g_card.head->set_caption(QStringLiteral("x = %1   y = %2").arg(place.x()).arg(place.y()));
-    g_card.main_row->set_key(QStringLiteral("main = %1").arg(g_display.main_output));
+    g_card.main_row->set_key(QStringLiteral("%1 = %2").arg(QLatin1String(MAIN_KEY)).arg(g_display.main_output));
     g_card.main_switch->set_on(output.output == g_display.main_output);
     show_modes(g_card.modes, output.output);
 }
@@ -1198,7 +1217,7 @@ static QWidget* make_note_row(const QString& text) {
 
 /* Only another display can take over as main, so switching the main one off leaves it on */
 static void add_main_display_row(card* details, arrangement_view* view) {
-    g_card.main_row = new setting_row(QStringLiteral("Main display"), QString());
+    g_card.main_row = new setting_row(QLatin1String(MAIN_DISPLAY_LABEL), QString());
     g_card.main_switch = new toggle(false);
     QLabel* hint = make_text(
         QStringLiteral("Bar and dock live here"),
@@ -1248,7 +1267,8 @@ static void add_unplaced_outputs(QWidget* page) {
 void build_displays_page(QWidget* page) {
     long listed = list_displays();
 
-    g_card.arrangement_head = new section_head(QStringLiteral("Arrangement"), QStringLiteral("[layout]"));
+    QString layout_caption = QStringLiteral("[%1]").arg(QLatin1String(LAYOUT_SECTION));
+    g_card.arrangement_head = new section_head(QLatin1String(ARRANGEMENT_CARD), layout_caption);
     card* arrangement = add_section(page, g_card.arrangement_head);
     if (g_display.count == 0) {
         arrangement->add_row(make_note_row(listed < 0 ? QStringLiteral("The display manager could not be reached")
@@ -1346,4 +1366,45 @@ QWidget* make_keep_prompt() {
     prompt->hide();
 
     return prompt;
+}
+
+/* The arrangement has no row of its own, so opening it shows the page from its top. A search before the page's
+ * first build opens the connection itself, and the mode rows join the results once their modes arrive */
+void add_displays_entries(QList<search_entry>& entries) {
+    if (!g_display.conn) {
+        list_displays();
+    }
+
+    QString arrangement = QLatin1String(ARRANGEMENT_CARD);
+    QString desktop_size = g_display.count > 0 ? size_text(desktop_bounds().size()) : QString();
+    entries.append({ DISPLAY_PAGE, arrangement, arrangement, QLatin1String(LAYOUT_SECTION), desktop_size, QString() });
+
+    if (g_display.count == 0) {
+        return;
+    }
+
+    QString main_display;
+    for (uint32_t i = 0; i < g_display.count; i++) {
+        if (g_display.outputs[i].output == g_display.main_output) {
+            main_display = numbered_display_name(i);
+        }
+    }
+
+    /* The selected display's mode rows show only while it is lit with modes to choose from. Each row takes its
+     * label as its object name, and the selected display's card comes before any other */
+    QString selected = numbered_display_name(g_display.selected);
+    stlxwin_modes_info info;
+    stlxwin_mode modes[STLXWIN_MODES_MAX];
+    bool has_modes = g_display.conn && read_lit_modes(g_display.outputs[g_display.selected].output, info, modes) > 0;
+    if (has_modes) {
+        QString resolution_label = QLatin1String(RESOLUTION_LABEL);
+        QString rate_label = QLatin1String(REFRESH_RATE_LABEL);
+        QString rate = rate_text(info.current.refresh_millihertz);
+        entries.append({ DISPLAY_PAGE, selected, resolution_label, QString(), size_text(info.current),
+                         resolution_label });
+        entries.append({ DISPLAY_PAGE, selected, rate_label, QString(), rate, rate_label });
+    }
+
+    QString main_label = QLatin1String(MAIN_DISPLAY_LABEL);
+    entries.append({ DISPLAY_PAGE, selected, main_label, QLatin1String(MAIN_KEY), main_display, main_label });
 }

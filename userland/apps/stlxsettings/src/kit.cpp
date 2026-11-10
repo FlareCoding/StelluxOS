@@ -4,7 +4,9 @@
 
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -74,6 +76,21 @@ constexpr int KEYCAP_SHADOW = 1;
 constexpr int VALUE_LABEL_W = 64;
 constexpr int VALUE_UNIT_GAP = 4;
 constexpr qreal DISABLED_OPACITY = 0.38;
+
+constexpr int KEY_HINT_PADDING_X = 5;
+constexpr const char* FIND_HINT = "Ctrl F";
+constexpr int SEARCH_PADDING_LEFT = 9;
+constexpr int SEARCH_PADDING_RIGHT = 5;
+constexpr int SEARCH_GAP = 8;
+constexpr int SEARCH_CLEAR_SIZE = 20;
+constexpr int SEARCH_CLEAR_GLYPH_SIZE = 12;
+
+constexpr int RESULT_PADDING_LEFT = 14;
+constexpr int RESULT_PADDING_RIGHT = 12;
+constexpr int RESULT_GAP = 16;
+constexpr int RESULT_VALUE_W = 72;
+constexpr qreal RESULT_MARK_PADDING = 1;
+constexpr qreal RESULT_MARK_RADIUS = 2;
 
 static QPainterPath g_glyph_paths[GLYPH_COUNT];
 
@@ -209,6 +226,16 @@ static QPainterPath power_path() {
     return stroked(arc).united(stroked(stem));
 }
 
+static QPainterPath search_path() {
+    QPainterPath lens;
+    lens.addEllipse(QPointF(6.8, 6.8), 4.6, 4.6);
+
+    QPainterPath handle(QPointF(10.3, 10.3));
+    handle.lineTo(14, 14);
+
+    return stroked(lens).united(stroked(handle));
+}
+
 static QPainterPath keyboard_path() {
     const QRectF keys[] = {
         { 2, 6, 2, 1 }, { 5, 6, 2, 1 }, { 8, 6, 2, 1 }, { 11, 6, 2, 1 }, { 12, 6, 2, 3 }, { 2, 8, 2, 1 },
@@ -264,12 +291,21 @@ static QPainterPath build_glyph_path(glyph shape) {
         return power_path();
     case glyph::INFO:
         return circle_path(8, 8, 7).subtracted(rect_path(7, 7, 2, 5)).subtracted(rect_path(7, 3.5, 2, 2));
+    case glyph::SEARCH:
+        return search_path();
     case glyph::LOCK:
         return lock_path();
     case glyph::MORE:
         return circle_path(3, 8, 1.5).united(circle_path(8, 8, 1.5)).united(circle_path(13, 8, 1.5));
     case glyph::PLUS:
         return rect_path(7, 2.5, 2, 11).united(rect_path(2.5, 7, 11, 2));
+    case glyph::CHEVRON:
+        return polygon_path({ { 6, 3.2 }, { 10.8, 8 }, { 6, 12.8 }, { 4.8, 11.6 }, { 8.4, 8 }, { 4.8, 4.4 } });
+    case glyph::CLOSE:
+        return polygon_path({
+            { 4.2, 2.8 }, { 8, 6.6 }, { 11.8, 2.8 }, { 13.2, 4.2 }, { 9.4, 8 }, { 13.2, 11.8 },
+            { 11.8, 13.2 }, { 8, 9.4 }, { 4.2, 13.2 }, { 2.8, 11.8 }, { 6.6, 8 }, { 2.8, 4.2 }
+        });
     case glyph::DOCUMENT:
         return document_path();
     case glyph::PROGRAM: {
@@ -383,6 +419,7 @@ void setting_label::set_key(const QString& key) {
 
 setting_row::setting_row(const QString& label, const QString& key)
     : m_label(new setting_label(label, key)), m_layout(new QHBoxLayout(this)) {
+    setObjectName(label);
     setFixedHeight(STLXTHEME_SETTING_ROW_HEIGHT);
     m_layout->setContentsMargins(ROW_PADDING_LEFT, 0, ROW_PADDING_RIGHT, 0);
     m_layout->setSpacing(ROW_SPACING);
@@ -1067,5 +1104,232 @@ void list_box::paintEvent(QPaintEvent*) {
 
     if (m_footer) {
         painter.fillRect(QRect(0, m_footer->y(), width(), 1), line);
+    }
+}
+
+qreal key_hint_width(const QString& key) {
+    qreal text_width = QFontMetricsF(mono_font(STLXTHEME_CAPTION_SIZE)).horizontalAdvance(key);
+    return qCeil(text_width) + 2 * (KEY_HINT_PADDING_X + CARD_BORDER);
+}
+
+void paint_key_hint(QPainter& painter, const QPointF& top_left, const QString& key) {
+    QRectF box(top_left, QSizeF(key_hint_width(key), KEY_HINT_H));
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    painter.setPen(QPen(theme_color(STLXTHEME_LINE), CARD_BORDER));
+    painter.setBrush(theme_color(STLXTHEME_KEY_HINT_FACE));
+    painter.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), STLXTHEME_CHIP_RADIUS - 0.5,
+                            STLXTHEME_CHIP_RADIUS - 0.5);
+
+    painter.setFont(mono_font(STLXTHEME_CAPTION_SIZE));
+    painter.setPen(theme_color(STLXTHEME_TEXT_DIM));
+    painter.drawText(box, Qt::AlignCenter, key);
+    painter.restore();
+}
+
+/* The line edit paints only the text, and the field paints its frame, lens, hint and clear button around it */
+search_field::search_field() : m_line(new QLineEdit) {
+    setFixedHeight(STLXTHEME_CONTROL_HEIGHT);
+    m_line->setFrame(false);
+    m_line->setFont(ui_font(STLXTHEME_BODY_SIZE, QFont::Normal));
+    m_line->setPlaceholderText(QStringLiteral("Search settings"));
+    m_line->installEventFilter(this);
+
+    QPalette palette = m_line->palette();
+    palette.setColor(QPalette::Base, Qt::transparent);
+    palette.setColor(QPalette::Text, theme_color(STLXTHEME_TEXT));
+    palette.setColor(QPalette::PlaceholderText, theme_color(STLXTHEME_TEXT_DIM));
+    m_line->setPalette(palette);
+
+    auto* layout = new QHBoxLayout(this);
+    layout->setContentsMargins(SEARCH_PADDING_LEFT + STLXTHEME_GLYPH_SIZE + SEARCH_GAP, 0,
+                               SEARCH_PADDING_RIGHT + SEARCH_CLEAR_SIZE + SEARCH_GAP, 0);
+    layout->addWidget(m_line);
+
+    QObject::connect(m_line, &QLineEdit::textChanged, [this](const QString& text) {
+        update();
+
+        if (on_edit) {
+            on_edit(text.simplified());
+        }
+    });
+}
+
+QString search_field::query() const {
+    return m_line->text().simplified();
+}
+
+void search_field::focus_query() {
+    m_line->setFocus(Qt::ShortcutFocusReason);
+    m_line->selectAll();
+}
+
+void search_field::clear_query() {
+    m_line->clear();
+}
+
+QRectF search_field::clear_rect() const {
+    return QRectF(width() - SEARCH_PADDING_RIGHT - SEARCH_CLEAR_SIZE, (height() - SEARCH_CLEAR_SIZE) / 2.0,
+                  SEARCH_CLEAR_SIZE, SEARCH_CLEAR_SIZE);
+}
+
+void search_field::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    bool is_focused = m_line->hasFocus();
+    qreal inset = CARD_BORDER / 2.0;
+
+    painter.setPen(QPen(theme_color(is_focused ? STLXTHEME_LINE_STRONG : STLXTHEME_LINE), CARD_BORDER));
+    painter.setBrush(theme_color(STLXTHEME_RECESS));
+    painter.drawRoundedRect(QRectF(rect()).adjusted(inset, inset, -inset, -inset), STLXTHEME_CONTROL_RADIUS - inset,
+                            STLXTHEME_CONTROL_RADIUS - inset);
+
+    if (is_focused) {
+        QPainterPath outline;
+        outline.addRoundedRect(QRectF(rect()), STLXTHEME_CONTROL_RADIUS, STLXTHEME_CONTROL_RADIUS);
+        painter.setClipPath(outline);
+        painter.fillRect(QRectF(0, height() - STLXTHEME_FOCUS_RULE_WIDTH, width(), STLXTHEME_FOCUS_RULE_WIDTH),
+                         theme_color(STLXTHEME_ACCENT));
+        painter.setClipping(false);
+    }
+
+    QRectF lens(SEARCH_PADDING_LEFT, (height() - STLXTHEME_GLYPH_SIZE) / 2.0, STLXTHEME_GLYPH_SIZE,
+                STLXTHEME_GLYPH_SIZE);
+    paint_glyph(painter, glyph::SEARCH, lens, theme_color(STLXTHEME_TEXT_DIM));
+
+    if (m_line->text().isEmpty()) {
+        QString hint = QLatin1String(FIND_HINT);
+        QPointF hint_corner(width() - SEARCH_PADDING_RIGHT - key_hint_width(hint), (height() - KEY_HINT_H) / 2.0);
+        paint_key_hint(painter, hint_corner, hint);
+        return;
+    }
+
+    QRectF clear = clear_rect();
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(theme_color(STLXTHEME_SEARCH_CLEAR_FACE));
+    painter.drawRoundedRect(clear, STLXTHEME_INNER_RADIUS, STLXTHEME_INNER_RADIUS);
+
+    QRectF cross(clear.center().x() - SEARCH_CLEAR_GLYPH_SIZE / 2.0, clear.center().y() - SEARCH_CLEAR_GLYPH_SIZE / 2.0,
+                 SEARCH_CLEAR_GLYPH_SIZE, SEARCH_CLEAR_GLYPH_SIZE);
+    paint_glyph(painter, glyph::CLOSE, cross, theme_color(STLXTHEME_TEXT_SECONDARY));
+}
+
+void search_field::mouseReleaseEvent(QMouseEvent* event) {
+    if (!m_line->text().isEmpty() && clear_rect().contains(event->position())) {
+        m_line->clear();
+    }
+
+    m_line->setFocus(Qt::MouseFocusReason);
+}
+
+bool search_field::eventFilter(QObject*, QEvent* event) {
+    if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) {
+        update();
+        return false;
+    }
+
+    if (event->type() != QEvent::KeyPress || !on_navigation_key) {
+        return false;
+    }
+
+    int key = static_cast<QKeyEvent*>(event)->key();
+    bool is_navigation = key == Qt::Key_Up || key == Qt::Key_Down || key == Qt::Key_Return || key == Qt::Key_Enter ||
+                         key == Qt::Key_Escape;
+    if (is_navigation) {
+        on_navigation_key(key);
+    }
+
+    return is_navigation;
+}
+
+result_row::result_row(const QString& label, const QString& place, const QString& key, const QString& value,
+                       const QString& query)
+    : m_label(label), m_place(place), m_key(key), m_value(value), m_query(query) {
+    setFixedHeight(STLXTHEME_SETTING_ROW_HEIGHT);
+    setAttribute(Qt::WA_Hover);
+}
+
+void result_row::set_chosen(bool is_chosen) {
+    m_is_chosen = is_chosen;
+    update();
+}
+
+/* Draws `text` from the line's left, the first match of the query marked behind it */
+void result_row::paint_marked_text(QPainter& painter, const QRectF& line, const QString& text, const QFont& font,
+                                   uint32_t color) const {
+    QFontMetricsF metrics(font);
+    QString shown = metrics.elidedText(text, Qt::ElideRight, line.width());
+    qsizetype match = shown.indexOf(m_query, 0, Qt::CaseInsensitive);
+
+    if (match >= 0 && !m_query.isEmpty()) {
+        qreal mark_left = line.left() + metrics.horizontalAdvance(shown.left(match)) - RESULT_MARK_PADDING;
+        qreal mark_width = metrics.horizontalAdvance(shown.mid(match, m_query.size())) + 2 * RESULT_MARK_PADDING;
+        qreal mark_height = metrics.ascent() + metrics.descent();
+        QRectF mark(mark_left, line.center().y() - mark_height / 2, mark_width, mark_height);
+
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(theme_color(STLXTHEME_MATCH_MARK));
+        painter.drawRoundedRect(mark, RESULT_MARK_RADIUS, RESULT_MARK_RADIUS);
+        painter.setPen(QPen(theme_color(STLXTHEME_RIM), CARD_BORDER));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(mark.adjusted(-0.5, -0.5, 0.5, 0.5), RESULT_MARK_RADIUS + 0.5,
+                                RESULT_MARK_RADIUS + 0.5);
+    }
+
+    painter.setFont(font);
+    painter.setPen(theme_color(color));
+    painter.drawText(line, Qt::AlignVCenter | Qt::AlignLeft, shown);
+}
+
+void result_row::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    bool is_lit = m_is_chosen || underMouse();
+
+    /* The fill keeps within the card's rounded inside, so a lit first or last row leaves its corners round */
+    if (is_lit) {
+        QRectF inside = QRectF(parentWidget()->rect()).adjusted(CARD_BORDER, CARD_BORDER, -CARD_BORDER, -CARD_BORDER);
+        QPainterPath card_inside;
+        card_inside.addRoundedRect(inside.translated(-QPointF(pos())), STLXTHEME_CARD_RADIUS - CARD_BORDER,
+                                   STLXTHEME_CARD_RADIUS - CARD_BORDER);
+        painter.fillPath(card_inside, theme_color(STLXTHEME_SURFACE_HOVER));
+    }
+
+    QRectF chevron(width() - RESULT_PADDING_RIGHT - STLXTHEME_GLYPH_SIZE, (height() - STLXTHEME_GLYPH_SIZE) / 2.0,
+                   STLXTHEME_GLYPH_SIZE, STLXTHEME_GLYPH_SIZE);
+    paint_glyph(painter, glyph::CHEVRON, chevron, theme_color(m_is_chosen ? STLXTHEME_TEXT : STLXTHEME_TEXT_DIM));
+
+    QFont value_font = mono_font(STLXTHEME_BODY_SIZE);
+    qreal value_advance = QFontMetricsF(value_font).horizontalAdvance(m_value);
+    qreal value_width = m_value.isEmpty() ? 0 : qMax<qreal>(RESULT_VALUE_W, value_advance);
+    qreal value_left = chevron.left() - RESULT_GAP - value_width;
+
+    painter.setFont(value_font);
+    painter.setPen(theme_color(STLXTHEME_TEXT));
+    painter.drawText(QRectF(value_left, 0, value_width, height()), Qt::AlignVCenter | Qt::AlignRight, m_value);
+
+    QFont key_font = mono_font(STLXTHEME_CAPTION_SIZE);
+    qreal key_right = m_value.isEmpty() ? chevron.left() - RESULT_GAP : value_left - RESULT_GAP;
+    qreal key_width = qMin(QFontMetricsF(key_font).horizontalAdvance(m_key), key_right / 2);
+    QRectF key_line(key_right - key_width, 0, key_width, height());
+    paint_marked_text(painter, key_line, m_key, key_font, STLXTHEME_TEXT_DIM);
+
+    qreal label_width = key_right - key_width - RESULT_GAP - RESULT_PADDING_LEFT;
+    qreal label_top = (height() - BODY_LINE_HEIGHT - CAPTION_LINE_HEIGHT) / 2.0;
+    QRectF label_line(RESULT_PADDING_LEFT, label_top, label_width, BODY_LINE_HEIGHT);
+    paint_marked_text(painter, label_line, m_label, ui_font(STLXTHEME_BODY_SIZE, QFont::Medium), STLXTHEME_TEXT);
+
+    QFont place_font = ui_font(STLXTHEME_CAPTION_SIZE, QFont::Normal);
+    QString place = QFontMetricsF(place_font).elidedText(m_place, Qt::ElideRight, label_width);
+    painter.setFont(place_font);
+    painter.setPen(theme_color(STLXTHEME_TEXT_SECONDARY));
+    painter.drawText(QRectF(RESULT_PADDING_LEFT, label_line.bottom(), label_width, CAPTION_LINE_HEIGHT),
+                     Qt::AlignVCenter | Qt::AlignLeft, place);
+}
+
+void result_row::mouseReleaseEvent(QMouseEvent* event) {
+    if (rect().contains(event->position().toPoint()) && on_click) {
+        on_click();
     }
 }

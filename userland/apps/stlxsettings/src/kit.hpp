@@ -13,6 +13,7 @@
 
 class QHBoxLayout;
 class QLabel;
+class QLineEdit;
 class QPainter;
 class QVBoxLayout;
 
@@ -24,9 +25,12 @@ enum class glyph {
     KEYBOARD,
     POWER,
     INFO,
+    SEARCH,
     LOCK,
     MORE,
     PLUS,
+    CHEVRON,
+    CLOSE,
     DOCUMENT,
     PROGRAM,
     LOGO,
@@ -50,6 +54,9 @@ constexpr int PANE_MARGIN_BOTTOM = 24;
 constexpr int BODY_LINE_HEIGHT = 20;
 constexpr int CAPTION_LINE_HEIGHT = 16;
 
+/* The height of a key hint, such as the search field's Ctrl F */
+constexpr int KEY_HINT_H = 20;
+
 QColor theme_color(uint32_t argb);
 
 /* Plex Sans (`ui_font`) or Plex Mono (`mono_font`) at an em size in pixels, half pixels included */
@@ -66,6 +73,10 @@ QLabel* make_text(const QString& text, const QFont& font, uint32_t color);
 
 /* Rich text that sets a path or key apart in Plex Mono, for hints that name one */
 QString code_text(const QString& text);
+
+/* A key named in a hint, such as the search field's Ctrl F: a small ringed label in Plex Mono */
+qreal key_hint_width(const QString& key);
+void paint_key_hint(QPainter& painter, const QPointF& top_left, const QString& key);
 
 /* A section's caps title above its card, with a caption at the right, such as the config section its settings
  * write */
@@ -109,7 +120,8 @@ private:
     QLabel* m_key;
 };
 
-/* A card row: a setting's label and key, its controls at the right */
+/* A card row: a setting's label and key, its controls at the right. The row takes the label as its object
+ * name, so search can find it */
 class setting_row : public QWidget {
 public:
     setting_row(const QString& label, const QString& key);
@@ -269,7 +281,8 @@ protected:
 };
 
 /* One entry of a list editor: an icon (the program glyph for a null one), the name over its path and arguments,
- * then trailing widgets. A locked (drop-in) entry shows its name in secondary text and does not light on hover */
+ * then trailing widgets. A locked (drop-in) entry shows its name in secondary text and does not light on hover.
+ * The page must name the row for its config section, since search finds it by that name */
 class list_row : public QWidget {
 public:
     list_row(const QString& name, const QString& path, const QString& args);
@@ -335,6 +348,61 @@ private:
     QVBoxLayout* m_entries;
     QList<list_row*> m_rows;
     QWidget* m_footer = nullptr;
+};
+
+/* The search field: a lens, the query or its placeholder, then the Ctrl F hint while empty or a clear
+ * button once typed in. Focus draws the amber focus rule along its bottom edge */
+class search_field : public QWidget {
+public:
+    search_field();
+
+    /* Fired on every change of the text, `clear_query` included, with the query trimmed and its runs of
+     * whitespace and line breaks made single spaces */
+    std::function<void(const QString&)> on_edit;
+
+    /* Up, Down, Enter and Escape typed in the field go here instead of into the text */
+    std::function<void(int)> on_navigation_key;
+
+    QString query() const;
+    void focus_query();
+    void clear_query();
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
+private:
+    QRectF clear_rect() const;
+
+    QLineEdit* m_line;
+};
+
+/* A search result: the label over its page and card, then the key, value and chevron, the query marked in the
+ * label and key. The chosen result is lit as a hovered row is, within its card's corners */
+class result_row : public QWidget {
+public:
+    result_row(const QString& label, const QString& place, const QString& key, const QString& value,
+               const QString& query);
+
+    std::function<void()> on_click;
+
+    void set_chosen(bool is_chosen);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+
+private:
+    void paint_marked_text(QPainter& painter, const QRectF& line, const QString& text, const QFont& font,
+                           uint32_t color) const;
+
+    QString m_label;
+    QString m_place;
+    QString m_key;
+    QString m_value;
+    QString m_query;
+    bool m_is_chosen = false;
 };
 
 #endif /* STLXSETTINGS_KIT_HPP */

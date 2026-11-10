@@ -9,6 +9,8 @@
 constexpr const char* AUTOSTART_NAME_PREFIX = "program";
 constexpr const char* SHORTCUT_NAME_PREFIX = "shortcut";
 constexpr const char* EXEC_ACTION = "exec";
+constexpr const char* AUTOSTART_CARD = "Autostart";
+constexpr const char* SHORTCUTS_CARD = "Shortcuts";
 
 /* The indexes of the entries whose editors show under their rows, or -1 for none */
 static int g_open_autostart_index = -1;
@@ -51,6 +53,15 @@ static QString shortcut_name(const stlxconf_shortcut_t& shortcut) {
     }
 
     return QStringLiteral("Open %1").arg(program_name(shortcut.path, shortcut.args));
+}
+
+/* The config section an entry is written under, which also names its row for search */
+static QString autostart_section(const stlxconf_autostart_t& entry) {
+    return QStringLiteral("autostart:%1").arg(QString::fromUtf8(entry.name));
+}
+
+static QString shortcut_section(const stlxconf_shortcut_t& entry) {
+    return QStringLiteral("shortcut:%1").arg(QString::fromUtf8(entry.name));
 }
 
 static void show_program_icon(list_row* row, const char* path, const char* args) {
@@ -185,7 +196,7 @@ static QWidget* make_shortcut_editor(stlxconf_shortcut_t* entry, list_row* row, 
 }
 
 static void add_autostart_list(QWidget* page) {
-    card* section = add_section(page, QStringLiteral("Autostart"), QStringLiteral("[autostart:<id>]  path  args"));
+    card* section = add_section(page, QLatin1String(AUTOSTART_CARD), QStringLiteral("[autostart:<id>]  path  args"));
     auto* list = new list_box;
     uint32_t owned = owned_count(g_conf.autostart, g_conf.autostart_count);
 
@@ -193,11 +204,12 @@ static void add_autostart_list(QWidget* page) {
         stlxconf_autostart_t* entry = &g_conf.autostart[i];
         QString path = QString::fromUtf8(entry->path);
         auto* row = new list_row(program_name(entry->path, entry->args), path, QString::fromUtf8(entry->args));
+        row->setObjectName(autostart_section(*entry));
         show_program_icon(row, entry->path, entry->args);
         list->add_row(row);
 
         if (entry->from_drop_in) {
-            lock_drop_in_row(row, "autostart", entry->name);
+            lock_drop_in_row(row, autostart_section(*entry));
             continue;
         }
 
@@ -216,7 +228,7 @@ static void add_autostart_list(QWidget* page) {
 
 static void add_shortcut_list(QWidget* page) {
     QString columns = QStringLiteral("[shortcut:<id>]  key  action  path  args");
-    card* section = add_section(page, QStringLiteral("Shortcuts"), columns);
+    card* section = add_section(page, QLatin1String(SHORTCUTS_CARD), columns);
     auto* list = new list_box;
     uint32_t owned = owned_count(g_conf.shortcuts, g_conf.shortcut_count);
 
@@ -224,12 +236,14 @@ static void add_shortcut_list(QWidget* page) {
         stlxconf_shortcut_t* entry = &g_conf.shortcuts[i];
         QString path = QString::fromUtf8(entry->path);
         auto* row = new list_row(shortcut_name(*entry), path, QString::fromUtf8(entry->args));
+        row->setObjectName(shortcut_section(*entry));
+
         auto* chord = new keycaps(QString::fromUtf8(entry->key));
         row->set_leading(chord);
         list->add_row(row);
 
         if (entry->from_drop_in) {
-            lock_drop_in_row(row, "shortcut", entry->name);
+            lock_drop_in_row(row, shortcut_section(*entry));
             continue;
         }
 
@@ -250,4 +264,19 @@ static void add_shortcut_list(QWidget* page) {
 void build_startup_page(QWidget* page) {
     add_autostart_list(page);
     add_shortcut_list(page);
+}
+
+/* A program shows its path, and a shortcut its chord, where a setting shows its key */
+void add_startup_entries(QList<search_entry>& entries) {
+    for (uint32_t i = 0; i < g_conf.autostart_count; i++) {
+        const stlxconf_autostart_t& entry = g_conf.autostart[i];
+        entries.append({ STARTUP_PAGE, QLatin1String(AUTOSTART_CARD), program_name(entry.path, entry.args),
+                         QString::fromUtf8(entry.path), QString(), autostart_section(entry) });
+    }
+
+    for (uint32_t i = 0; i < g_conf.shortcut_count; i++) {
+        const stlxconf_shortcut_t& entry = g_conf.shortcuts[i];
+        entries.append({ STARTUP_PAGE, QLatin1String(SHORTCUTS_CARD), shortcut_name(entry),
+                         QString::fromUtf8(entry.key), QString(), shortcut_section(entry) });
+    }
 }
