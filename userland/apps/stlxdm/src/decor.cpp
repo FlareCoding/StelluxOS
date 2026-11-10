@@ -367,8 +367,15 @@ static uint32_t rule_coverage(const ring_geom& outer, uint32_t frame_coverage, i
     return frame_coverage > below ? frame_coverage - below : 0;
 }
 
-/* Blends the frame's material, title separator, edge and, on the focused
- * window, the focus rule over what `view` holds, each by its coverage */
+/* Takes `coverage` of a straight alpha pixel's opacity away, as a shape covering that share of the pixel erases it */
+static void erase_coverage(stlxgfx_surface_t* view, int32_t x, int32_t y, uint32_t coverage) {
+    uint32_t* pixel = back_row(view, y) + x;
+    uint32_t alpha = stlxgfx_div255((*pixel >> 24) * (255 - coverage));
+    *pixel = (alpha << 24) | (*pixel & 0x00FFFFFFu);
+}
+
+/* Clears the frame's inside of what `view` holds, so what is composed beneath the window shows, then blends the
+ * title separator, the edge and, on the focused window, the focus rule, each by its coverage */
 static void draw_body(stlxgfx_surface_t* view, const damage_list::rect& area, const ring_geom& outer,
                       int32_t separator_y, const decor::chrome_state& st) {
     ring_geom inner = { outer.x + decor::BORDER, outer.y + decor::BORDER, outer.w - 2 * decor::BORDER,
@@ -385,7 +392,7 @@ static void draw_body(stlxgfx_surface_t* view, const damage_list::rect& area, co
 
             int32_t vx = x - area.x;
             int32_t vy = y - area.y;
-            stlxgfx_blend_coverage(view, vx, vy, decor::CONTENT_BG, static_cast<uint8_t>(frame_coverage));
+            erase_coverage(view, vx, vy, frame_coverage);
             if (y == separator_y) {
                 stlxgfx_blend_coverage(view, vx, vy, STLXTHEME_LINE_SUBTLE, static_cast<uint8_t>(frame_coverage));
             }
@@ -976,13 +983,35 @@ void blit_content(const canvas& back, const dm_window& w,
         return;
     }
 
-    /* A picture without a mapping shows the content color, leaving the
-     * bottom corner squares to the frame as the compose shader's fill does */
+    /* A picture without a mapping shows the content color, rounded at the
+     * bottom corners as the compose shader's fill rounds it */
     int32_t inner_r = decorated(w) ? CONTENT_R : 0;
     if (!b->pixels) {
         int32_t corner_h = bh < inner_r ? bh : inner_r;
         fill_inside(back, clip, { w.x, w.y, bw, bh - corner_h }, CONTENT_BG);
         fill_inside(back, clip, { w.x + inner_r, w.y + bh - corner_h, bw - 2 * inner_r, corner_h }, CONTENT_BG);
+
+        ring_geom content = { w.x, w.y, bw, bh, inner_r };
+        int32_t zone_top = w.y + bh - inner_r;
+        int32_t mid0 = w.x + inner_r;
+        int32_t mid1 = w.x + bw - inner_r;
+        for (int32_t y = iy0 > zone_top ? iy0 : zone_top; y < iy1; y++) {
+            uint32_t* dst_row = back_row(back.surface, y - back.y);
+            for (int32_t x = ix0; x < ix1; x++) {
+                if (x >= mid0 && x < mid1) {
+                    x = mid1 - 1;
+                    continue;
+                }
+
+                uint32_t a = dist8_coverage(rrect_dist8(content, x, y));
+                if (a == 0) {
+                    continue;
+                }
+
+                dst_row[x - back.x] = blend_over(dst_row[x - back.x], CONTENT_BG, a);
+            }
+        }
+
         return;
     }
 
