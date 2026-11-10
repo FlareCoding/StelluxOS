@@ -55,7 +55,7 @@ static const uint32_t FG_PALETTE[17] = {
 };
 
 static const uint32_t BG_PALETTE[17] = {
-    STLXTHEME_WINDOW_BG, // 0: default background
+    STLXTHEME_SHADE, // 0: default background
     0xFF3A342C, // 1: black (40)
     0xFFE0705F, // 2: red (41)
     0xFFA9C27A, // 3: green (42)
@@ -249,6 +249,8 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
         return -1;
     }
 
+    s->flags |= STLXGFX_SURFACE_PREMULTIPLIED;
+
     int drawn_cursor = cursor_on && g_term.cursor_visible;
 
     stlxwin_rect rects[SWP_COMMIT_MAX_RECTS];
@@ -256,7 +258,7 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
     int overflow = 0;
 
     if (full) {
-        stlxgfx_clear(s, STLXTHEME_WINDOW_BG);
+        stlxgfx_clear(s, STLXTHEME_SHADE);
         for (int r = 0; r < g_term.rows; r++) {
             render_span(s, r, 0, g_term.cols - 1, drawn_cursor);
         }
@@ -431,7 +433,7 @@ int main(void) {
 
     stlxwin_window* win = stlxwin_window_create(
         conn, INITIAL_WIDTH, INITIAL_HEIGHT, "stlxterm",
-        STLXWIN_WF_RESIZABLE);
+        STLXWIN_WF_RESIZABLE | STLXWIN_WF_GLASS | STLXWIN_WF_PREMULTIPLIED);
     if (!win) {
         printf("stlxterm: window creation failed\r\n");
         stlxwin_disconnect(conn);

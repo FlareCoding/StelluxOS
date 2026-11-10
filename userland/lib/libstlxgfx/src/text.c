@@ -527,6 +527,7 @@ void stlxgfx_draw_text(stlxgfx_surface_t* s, const stlxgfx_font* font,
     uint8_t ab = stlxgfx_alpha_byte_index(s);
     int has_alpha = bytes_pp == 4;
     int keeps_straight_alpha = (s->flags & STLXGFX_SURFACE_STRAIGHT_ALPHA) != 0;
+    int keeps_premultiplied_alpha = (s->flags & STLXGFX_SURFACE_PREMULTIPLIED) != 0;
     uint32_t src_r = (color >> 16) & 0xFF;
     uint32_t src_g = (color >>  8) & 0xFF;
     uint32_t src_b =  color        & 0xFF;
@@ -611,7 +612,7 @@ void stlxgfx_draw_text(stlxgfx_surface_t* s, const stlxgfx_font* font,
                 pixel[gb] = stlxgfx_blend_channel(pixel[gb], src_g * a, inv);
                 pixel[bb] = stlxgfx_blend_channel(pixel[bb], src_b * a, inv);
                 if (has_alpha) {
-                    pixel[ab] = 0xFF;
+                    pixel[ab] = keeps_premultiplied_alpha ? stlxgfx_blend_alpha(pixel[ab], a) : 0xFF;
                 }
             }
         }

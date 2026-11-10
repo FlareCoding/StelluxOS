@@ -26,6 +26,30 @@ static inline void write_pixel(uint8_t* pixel, const stlxgfx_surface_t* s, uint3
         pixel[stlxgfx_alpha_byte_index(s)] = (color >> 24) & 0xFF;
 }
 
+/* The pixel a fill of `color` stores on `s`, each channel times alpha and rounded on a premultiplied surface */
+static uint32_t stored_color(const stlxgfx_surface_t* s, uint32_t color) {
+    if ((s->flags & STLXGFX_SURFACE_PREMULTIPLIED) == 0 || s->bpp != 32) {
+        return color;
+    }
+
+    uint32_t alpha = color >> 24;
+    uint32_t stored = alpha << 24;
+    for (uint32_t shift = 0; shift < 24; shift += 8) {
+        stored |= ((((color >> shift) & 0xFF) * alpha + 127) / 255) << shift;
+    }
+
+    return stored;
+}
+
+/* The alpha a blend at `alpha` leaves on a pixel of `s` whose alpha is `below` */
+static inline uint8_t blended_alpha(const stlxgfx_surface_t* s, uint32_t below, uint32_t alpha) {
+    if ((s->flags & STLXGFX_SURFACE_PREMULTIPLIED) == 0) {
+        return 0xFF;
+    }
+
+    return stlxgfx_blend_alpha(below, alpha);
+}
+
 stlxgfx_surface_t* stlxgfx_create_surface(uint32_t width, uint32_t height,
                                            uint32_t bpp, uint8_t red_shift,
                                            uint8_t green_shift, uint8_t blue_shift) {
@@ -133,12 +157,14 @@ int stlxgfx_fill_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
 
     /* Fast path for 32bpp: single uint32_t write per pixel */
     if (bytes_pp == 4) {
+        uint32_t stored = stored_color(s, color);
+
         uint32_t native_pixel;
         uint8_t* np = (uint8_t*)&native_pixel;
-        np[s->red_shift   / 8] = (color >> 16) & 0xFF;
-        np[s->green_shift / 8] = (color >>  8) & 0xFF;
-        np[s->blue_shift  / 8] =  color        & 0xFF;
-        np[stlxgfx_alpha_byte_index(s)] = (color >> 24) & 0xFF;
+        np[s->red_shift   / 8] = (stored >> 16) & 0xFF;
+        np[s->green_shift / 8] = (stored >>  8) & 0xFF;
+        np[s->blue_shift  / 8] =  stored        & 0xFF;
+        np[stlxgfx_alpha_byte_index(s)] = (stored >> 24) & 0xFF;
 
         uint32_t count = (uint32_t)(x1 - x0);
         for (int32_t row = y0; row < y1; row++) {
@@ -363,8 +389,10 @@ static inline void blend_pixel(uint8_t* dst_px, const stlxgfx_surface_t* dst,
     dst_px[rb] = stlxgfx_blend_channel(dst_px[rb], sr * sa, inv);
     dst_px[gb] = stlxgfx_blend_channel(dst_px[gb], sg * sa, inv);
     dst_px[bb] = stlxgfx_blend_channel(dst_px[bb], sb * sa, inv);
-    if (dst->bpp == 32)
-        dst_px[stlxgfx_alpha_byte_index(dst)] = 0xFF;
+    if (dst->bpp == 32) {
+        uint8_t ab = stlxgfx_alpha_byte_index(dst);
+        dst_px[ab] = blended_alpha(dst, dst_px[ab], sa);
+    }
 }
 
 int stlxgfx_fill_rect_blend(stlxgfx_surface_t* s, int32_t x, int32_t y,
@@ -431,7 +459,8 @@ int stlxgfx_fill_rect_blend(stlxgfx_surface_t* s, int32_t x, int32_t y,
                 uint32_t r = stlxgfx_div255(spr + ((d >> rs) & 0xFF) * inv);
                 uint32_t g = stlxgfx_div255(spg + ((d >> gs) & 0xFF) * inv);
                 uint32_t b = stlxgfx_div255(spb + ((d >> bs) & 0xFF) * inv);
-                *px = (r << rs) | (g << gs) | (b << bs) | (0xFFu << as);
+                uint32_t a = blended_alpha(s, (d >> as) & 0xFF, sa);
+                *px = (r << rs) | (g << gs) | (b << bs) | (a << as);
             }
         }
 
@@ -553,7 +582,7 @@ int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
                 dp[d_bb] = stlxgfx_blend_channel(dp[d_bb], sp[s_bb] * sa, inv);
             }
             if (dst_bpp == 4) {
-                dp[d_ab] = 0xFF;
+                dp[d_ab] = blended_alpha(dst, dp[d_ab], sa);
             }
         }
     }
@@ -816,6 +845,7 @@ int stlxgfx_draw_line(stlxgfx_surface_t* s, int32_t x0, int32_t y0,
     int32_t sy = dy < 0 ? -1 : 1;
 
     uint32_t bytes_pp = s->bpp / 8;
+    uint32_t stored = stored_color(s, color);
 
     if (abs_dx >= abs_dy) {
         int32_t err = abs_dx / 2;
@@ -823,7 +853,7 @@ int stlxgfx_draw_line(stlxgfx_surface_t* s, int32_t x0, int32_t y0,
         for (int32_t x = x0; x != x1 + sx; x += sx) {
             if (x >= 0 && x < (int32_t)s->width && y >= 0 && y < (int32_t)s->height) {
                 uint8_t* px = s->pixels + (uint32_t)y * s->pitch + (uint32_t)x * bytes_pp;
-                write_pixel(px, s, color);
+                write_pixel(px, s, stored);
             }
             err -= abs_dy;
             if (err < 0) {
@@ -837,7 +867,7 @@ int stlxgfx_draw_line(stlxgfx_surface_t* s, int32_t x0, int32_t y0,
         for (int32_t y = y0; y != y1 + sy; y += sy) {
             if (x >= 0 && x < (int32_t)s->width && y >= 0 && y < (int32_t)s->height) {
                 uint8_t* px = s->pixels + (uint32_t)y * s->pitch + (uint32_t)x * bytes_pp;
-                write_pixel(px, s, color);
+                write_pixel(px, s, stored);
             }
             err -= abs_dx;
             if (err < 0) {

@@ -11,6 +11,11 @@ extern "C" {
 /* `flags` bit: blends onto 32 bpp pixels below alpha 255 use `stlxgfx_blend_straight`. */
 #define STLXGFX_SURFACE_STRAIGHT_ALPHA (1u << 0)
 
+/* `flags` bit: 32 bpp pixels hold premultiplied alpha. Fills and lines store their color premultiplied, and blends
+ * onto the surface keep the coverage of everything drawn as the alpha. As a blend's source the surface still reads
+ * as straight alpha. It must not be combined with `STLXGFX_SURFACE_STRAIGHT_ALPHA`. */
+#define STLXGFX_SURFACE_PREMULTIPLIED (1u << 1)
+
 typedef struct {
     uint32_t width;
     uint32_t height;

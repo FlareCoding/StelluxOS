@@ -16,6 +16,13 @@ static inline uint8_t stlxgfx_blend_channel(uint8_t dst, uint32_t src_premul,
     return (uint8_t)stlxgfx_div255(src_premul + dst * inv_alpha);
 }
 
+/* The alpha of a premultiplied pixel of alpha `below` after a
+ * source-over at `alpha`, truncated as `stlxgfx_blend_channel`
+ * truncates the color, so no channel exceeds it */
+static inline uint8_t stlxgfx_blend_alpha(uint32_t below, uint32_t alpha) {
+    return (uint8_t)(alpha + stlxgfx_div255(below * (255 - alpha)));
+}
+
 /* Source-over of `src` onto `dst` in straight alpha, where color is
  * not multiplied by alpha. Both are ARGB, and `dst` alpha must be
  * below 255, since opaque pixels blend by `stlxgfx_blend_channel`.

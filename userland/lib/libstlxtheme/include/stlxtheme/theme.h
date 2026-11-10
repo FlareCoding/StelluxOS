@@ -49,7 +49,7 @@
 /* Dark overlays and solid fills */
 #define STLXTHEME_WINDOW_BG 0xFF12100D /* an opaque window's background, also the default desktop color */
 #define STLXTHEME_CARD      0x24080502 /* fills a step darker than the window background, such as alternate rows */
-#define STLXTHEME_SHADE     0x42080502 /* darker panels, such as sidebars */
+#define STLXTHEME_SHADE     0x42080502 /* darker panels, such as sidebars, and the terminal body */
 #define STLXTHEME_RECESS    0x80080502 /* the recessed parts of controls, such as fields and unchecked check boxes */
 #define STLXTHEME_INK       0xFF060402 /* the shadow color */
 
