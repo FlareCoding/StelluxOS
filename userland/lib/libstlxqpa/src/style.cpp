@@ -8,24 +8,11 @@
 #include <QStyleOption>
 #include <QTreeView>
 
+#include <stlxtheme/theme.h>
+
 static const char* BASE_STYLE = "Fusion";
 
-// stlxui's control metrics
-static const int CONTROL_HEIGHT = 28;
-static const int CONTROL_RADIUS = 6;
-static const int BUTTON_PADDING = 12;
-static const int FIELD_PADDING = 8;
-static const int CHECK_SIZE = 16;
-static const int CHECK_RADIUS = 4;
-static const int CHECK_SPACING = 8;
-static const int MENU_PADDING = 4;
-static const int MENU_ROW_HEIGHT = 24;
-static const int MENU_ROW_PADDING = 12;
-static const int MENU_SEPARATOR_HEIGHT = 5;
 static const int SCROLL_BAR_EXTENT = 8;
-static const int SCROLL_THUMB_WIDTH = 4;
-static const int SCROLL_THUMB_RADIUS = 2;
-static const int SCROLL_THUMB_MIN = 16;
 static const int ROW_HEIGHT = 26;
 static const int ROW_RADIUS = 4;
 static const int ROW_CONTENT_INSET = 8;
@@ -95,11 +82,11 @@ static void draw_button_surface(const QStyleOption* option, QPainter* painter, b
 
     if (has_keyboard_focus(option)) {
         QColor ring = palette.color(is_accent ? QPalette::ButtonText : QPalette::Highlight);
-        fill_ringed(painter, option->rect, CONTROL_RADIUS, ring, fill);
+        fill_ringed(painter, option->rect, STLXTHEME_CONTROL_RADIUS, ring, fill);
         return;
     }
 
-    fill_rounded(painter, option->rect, CONTROL_RADIUS, fill);
+    fill_rounded(painter, option->rect, STLXTHEME_CONTROL_RADIUS, fill);
 }
 
 static bool is_default_button(const QStyleOption* option) {
@@ -109,17 +96,17 @@ static bool is_default_button(const QStyleOption* option) {
 
 static void draw_check_box(const QStyleOption* option, QPainter* painter) {
     const QPalette& palette = option->palette;
-    QRect box(option->rect.topLeft(), QSize(CHECK_SIZE, CHECK_SIZE));
+    QRect box(option->rect.topLeft(), QSize(STLXTHEME_CHECK_SIZE, STLXTHEME_CHECK_SIZE));
     box.moveCenter(option->rect.center());
 
     bool is_checked = option->state & (QStyle::State_On | QStyle::State_NoChange);
     QColor fill = palette.color(is_checked ? QPalette::Highlight : QPalette::Button);
     if (has_keyboard_focus(option)) {
-        fill_ringed(painter, box, CHECK_RADIUS, palette.color(QPalette::Highlight), fill);
+        fill_ringed(painter, box, STLXTHEME_CHECK_RADIUS, palette.color(QPalette::Highlight), fill);
     } else if (is_hovered(option)) {
-        fill_ringed(painter, box, CHECK_RADIUS, palette.color(QPalette::Midlight), fill);
+        fill_ringed(painter, box, STLXTHEME_CHECK_RADIUS, palette.color(QPalette::Midlight), fill);
     } else {
-        fill_rounded(painter, box, CHECK_RADIUS, fill);
+        fill_rounded(painter, box, STLXTHEME_CHECK_RADIUS, fill);
     }
 
     if (!is_checked) {
@@ -250,7 +237,7 @@ static QRect scroll_bar_slider(const QStyleOptionSlider& bar) {
     int thumb = length;
     if (range > 0) {
         thumb = static_cast<int>(static_cast<qint64>(length) * bar.pageStep / (range + bar.pageStep));
-        thumb = qBound(SCROLL_THUMB_MIN, thumb, length);
+        thumb = qBound(STLXTHEME_SCROLL_THUMB_MIN_LENGTH, thumb, length);
     }
 
     int start = QStyle::sliderPositionFromValue(bar.minimum, bar.maximum, bar.sliderPosition, length - thumb,
@@ -303,18 +290,18 @@ int QStelluxStyle::pixelMetric(PixelMetric metric, const QStyleOption* option, c
             return 0;
         case PM_IndicatorWidth:
         case PM_IndicatorHeight:
-            return CHECK_SIZE;
+            return STLXTHEME_CHECK_SIZE;
         case PM_CheckBoxLabelSpacing:
-            return CHECK_SPACING;
+            return STLXTHEME_CHECK_LABEL_SPACING;
         case PM_MenuPanelWidth:
             return 1;
         case PM_MenuHMargin:
         case PM_MenuVMargin:
-            return MENU_PADDING - 1;
+            return STLXTHEME_MENU_PADDING - 1;
         case PM_ScrollBarExtent:
             return SCROLL_BAR_EXTENT;
         case PM_ScrollBarSliderMin:
-            return SCROLL_THUMB_MIN;
+            return STLXTHEME_SCROLL_THUMB_MIN_LENGTH;
         default:
             return QProxyStyle::pixelMetric(metric, option, widget);
     }
@@ -325,29 +312,30 @@ QSize QStelluxStyle::sizeFromContents(ContentsType type, const QStyleOption* opt
     switch (type) {
         case CT_PushButton:
         case CT_ToolButton:
-            return QSize(contents.width() + 2 * BUTTON_PADDING, qMax(contents.height(), CONTROL_HEIGHT));
+            return QSize(contents.width() + 2 * STLXTHEME_BUTTON_PADDING_X,
+                         qMax(contents.height(), STLXTHEME_CONTROL_HEIGHT));
         case CT_LineEdit:
             if (has_frame(option)) {
-                int inset = FIELD_PADDING - LINE_EDIT_MARGIN;
-                return QSize(contents.width() + 2 * inset, qMax(contents.height(), CONTROL_HEIGHT));
+                int inset = STLXTHEME_FIELD_PADDING_X - LINE_EDIT_MARGIN;
+                return QSize(contents.width() + 2 * inset, qMax(contents.height(), STLXTHEME_CONTROL_HEIGHT));
             }
 
             break;
         case CT_MenuItem: {
             const auto* item = qstyleoption_cast<const QStyleOptionMenuItem*>(option);
             if (item && item->menuItemType == QStyleOptionMenuItem::Separator) {
-                return QSize(contents.width(), MENU_SEPARATOR_HEIGHT);
+                return QSize(contents.width(), STLXTHEME_MENU_SEPARATOR_HEIGHT);
             }
 
             if (item && is_plain_menu_item(*item)) {
                 QFontMetrics metrics(item->font);
-                int width = metrics.horizontalAdvance(menu_label(*item)) + 2 * MENU_ROW_PADDING;
+                int width = metrics.horizontalAdvance(menu_label(*item)) + 2 * STLXTHEME_MENU_ROW_PADDING_X;
                 QString shortcut = menu_shortcut(*item);
                 if (!shortcut.isEmpty()) {
-                    width += metrics.horizontalAdvance(shortcut) + MENU_ROW_PADDING;
+                    width += metrics.horizontalAdvance(shortcut) + STLXTHEME_MENU_ROW_PADDING_X;
                 }
 
-                return QSize(width, MENU_ROW_HEIGHT);
+                return QSize(width, STLXTHEME_MENU_ROW_HEIGHT);
             }
 
             break;
@@ -369,7 +357,7 @@ QSize QStelluxStyle::sizeFromContents(ContentsType type, const QStyleOption* opt
 
 QRect QStelluxStyle::subElementRect(SubElement element, const QStyleOption* option, const QWidget* widget) const {
     if (element == SE_LineEditContents && has_frame(option)) {
-        int inset = FIELD_PADDING - LINE_EDIT_MARGIN;
+        int inset = STLXTHEME_FIELD_PADDING_X - LINE_EDIT_MARGIN;
         return option->rect.adjusted(inset, 1, -inset, -1);
     }
 
@@ -428,7 +416,7 @@ void QStelluxStyle::drawPrimitive(PrimitiveElement element, const QStyleOption* 
                 break;
             }
 
-            fill_ringed(painter, option->rect, CONTROL_RADIUS,
+            fill_ringed(painter, option->rect, STLXTHEME_CONTROL_RADIUS,
                         option->palette.color((option->state & State_HasFocus) ? QPalette::Highlight
                                                                                 : QPalette::Midlight),
                         option->palette.color(QPalette::Base));
@@ -534,7 +522,7 @@ void QStelluxStyle::drawControl(ControlElement element, const QStyleOption* opti
         painter->fillRect(item->rect, item->palette.color(QPalette::Midlight));
     }
 
-    QRect text = item->rect.adjusted(MENU_ROW_PADDING, 0, -MENU_ROW_PADDING, 0);
+    QRect text = item->rect.adjusted(STLXTHEME_MENU_ROW_PADDING_X, 0, -STLXTHEME_MENU_ROW_PADDING_X, 0);
     int flags = Qt::AlignVCenter | Qt::TextSingleLine | Qt::TextHideMnemonic;
     proxy()->drawItemText(painter, text, flags | Qt::AlignLeft, item->palette, is_enabled, menu_label(*item),
                           QPalette::Text);
@@ -560,9 +548,11 @@ void QStelluxStyle::drawComplexControl(ComplexControl control, const QStyleOptio
 
     QRect slider = scroll_bar_slider(*bar);
     QRect thumb = bar->orientation == Qt::Horizontal
-                ? QRect(slider.left(), slider.bottom() - SCROLL_THUMB_WIDTH + 1, slider.width(), SCROLL_THUMB_WIDTH)
-                : QRect(slider.right() - SCROLL_THUMB_WIDTH + 1, slider.top(), SCROLL_THUMB_WIDTH, slider.height());
+                ? QRect(slider.left(), slider.bottom() - STLXTHEME_SCROLL_THUMB_WIDTH + 1,
+                        slider.width(), STLXTHEME_SCROLL_THUMB_WIDTH)
+                : QRect(slider.right() - STLXTHEME_SCROLL_THUMB_WIDTH + 1, slider.top(),
+                        STLXTHEME_SCROLL_THUMB_WIDTH, slider.height());
     bool is_dragged = (bar->state & State_Sunken) && (bar->activeSubControls & SC_ScrollBarSlider);
-    fill_rounded(painter, thumb, SCROLL_THUMB_RADIUS,
+    fill_rounded(painter, thumb, STLXTHEME_SCROLL_THUMB_RADIUS,
                  bar->palette.color(is_dragged ? QPalette::Light : QPalette::Midlight));
 }

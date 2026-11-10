@@ -4,6 +4,7 @@
 #include <stlxgfx/blend.h>
 #include <stlxgfx/ctx.h>
 #include <stlxgfx/font.h>
+#include <stlxtheme/theme.h>
 
 #include <cmath>
 #include <cstring>
@@ -140,7 +141,7 @@ static inline uint32_t* back_row(stlxgfx_surface_t* back, int32_t y) {
 namespace decor {
 
 int init() {
-    g_font = stlxgfx_font_open(STLXGFX_UI_FONT_MEDIUM_PATH, TITLE_FONT_SIZE);
+    g_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, TITLE_FONT_SIZE);
     if (!g_font) {
         return -1;
     }

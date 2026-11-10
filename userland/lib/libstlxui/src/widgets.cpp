@@ -6,18 +6,8 @@
 
 namespace ui {
 
-/* Buttons pad their text, checkboxes draw a rounded glyph beside it,
- * text fields inset their content, scrolling steps per wheel notch */
-constexpr int32_t BUTTON_PAD_X = 12;
-constexpr int32_t BUTTON_RADIUS = 6;
-constexpr int32_t CHECK_GLYPH = 16;
-constexpr int32_t CHECK_RADIUS = 4;
-constexpr int32_t CHECK_GAP = 8;
-constexpr int32_t INPUT_PAD_X = 8;
-constexpr int32_t INPUT_RADIUS = 6;
+/* Scrolling moves this far per wheel notch */
 constexpr int32_t SCROLL_STEP = 24;
-constexpr int32_t SCROLL_BAR_W = 4;
-constexpr int32_t SCROLL_THUMB_MIN = 16;
 
 /* Measurement runs outside a paint pass, and text metrics come from
  * process global state, so a transient painter serves them */
@@ -103,8 +93,7 @@ void button::set_accent(bool accent) {
 
 size button::measure(size) {
     size text = text_metrics(m_text, 0, weight::medium);
-
-    return { text.w + 2 * BUTTON_PAD_X, theme::active().control_h };
+    return { text.w + 2 * STLXTHEME_BUTTON_PADDING_X, theme::active().control_h };
 }
 
 void button::paint(painter& p) {
@@ -118,12 +107,12 @@ void button::paint(painter& p) {
     /* A focus ring wraps the rounded surface, painted as two fills */
     if (focused()) {
         p.rounded_rect({ 0, 0, m_frame.w, m_frame.h },
-                       BUTTON_RADIUS + 1, m_accent ? t.text : t.accent);
+                       STLXTHEME_CONTROL_RADIUS + 1, m_accent ? t.text : t.accent);
         p.rounded_rect({ 1, 1, m_frame.w - 2, m_frame.h - 2 },
-                       BUTTON_RADIUS, bg);
+                       STLXTHEME_CONTROL_RADIUS, bg);
     } else {
         p.rounded_rect({ 0, 0, m_frame.w, m_frame.h },
-                       BUTTON_RADIUS, bg);
+                       STLXTHEME_CONTROL_RADIUS, bg);
     }
 
     size text = p.measure_text(m_text, 0, weight::medium);
@@ -191,24 +180,24 @@ void checkbox::set_checked(bool v) {
 
 size checkbox::measure(size) {
     size text = text_metrics(m_text, 0);
-    int32_t h = text.h > CHECK_GLYPH ? text.h : CHECK_GLYPH;
+    int32_t h = text.h > STLXTHEME_CHECK_SIZE ? text.h : STLXTHEME_CHECK_SIZE;
 
-    return { CHECK_GLYPH + CHECK_GAP + text.w, h };
+    return { STLXTHEME_CHECK_SIZE + STLXTHEME_CHECK_LABEL_SPACING + text.w, h };
 }
 
 void checkbox::paint(painter& p) {
     const theme& t = theme::active();
-    int32_t gy = (m_frame.h - CHECK_GLYPH) / 2;
-    rect glyph = { 0, gy, CHECK_GLYPH, CHECK_GLYPH };
+    int32_t gy = (m_frame.h - STLXTHEME_CHECK_SIZE) / 2;
+    rect glyph = { 0, gy, STLXTHEME_CHECK_SIZE, STLXTHEME_CHECK_SIZE };
 
     if (m_hover || focused()) {
-        p.rounded_rect(glyph, CHECK_RADIUS,
+        p.rounded_rect(glyph, STLXTHEME_CHECK_RADIUS,
                        focused() ? t.accent : t.surface_hover);
         p.rounded_rect({ glyph.x + 1, glyph.y + 1,
                          glyph.w - 2, glyph.h - 2 },
-                       CHECK_RADIUS, m_checked ? t.accent : t.surface);
+                       STLXTHEME_CHECK_RADIUS, m_checked ? t.accent : t.surface);
     } else {
-        p.rounded_rect(glyph, CHECK_RADIUS,
+        p.rounded_rect(glyph, STLXTHEME_CHECK_RADIUS,
                        m_checked ? t.accent : t.surface);
     }
 
@@ -220,7 +209,7 @@ void checkbox::paint(painter& p) {
     size text = p.measure_text(m_text, 0);
     int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(0);
 
-    p.text({ CHECK_GLYPH + CHECK_GAP, baseline }, m_text, 0, t.text);
+    p.text({ STLXTHEME_CHECK_SIZE + STLXTHEME_CHECK_LABEL_SPACING, baseline }, m_text, 0, t.text);
 }
 
 bool checkbox::on_pointer_up(const pointer_event& e) {
@@ -284,17 +273,17 @@ size text_input::measure(size) {
     size text = text_metrics(!m_text.empty() ? m_text : m_placeholder,
                              m_font_size);
 
-    return { text.w + 2 * INPUT_PAD_X, theme::active().control_h };
+    return { text.w + 2 * STLXTHEME_FIELD_PADDING_X, theme::active().control_h };
 }
 
 void text_input::paint(painter& p) {
     const theme& t = theme::active();
 
     /* A rounded field with its border as the outer fill */
-    p.rounded_rect({ 0, 0, m_frame.w, m_frame.h }, INPUT_RADIUS,
+    p.rounded_rect({ 0, 0, m_frame.w, m_frame.h }, STLXTHEME_CONTROL_RADIUS,
                    focused() ? t.accent : t.surface_hover);
     p.rounded_rect({ 1, 1, m_frame.w - 2, m_frame.h - 2 },
-                   INPUT_RADIUS, t.surface);
+                   STLXTHEME_CONTROL_RADIUS, t.surface);
 
     bool empty = m_text.empty();
     const std::string& shown = empty ? m_placeholder : m_text;
@@ -302,13 +291,13 @@ void text_input::paint(painter& p) {
     int32_t baseline = (m_frame.h - text.h) / 2
                      + p.font_ascent(m_font_size);
 
-    p.text({ INPUT_PAD_X, baseline }, shown, m_font_size,
+    p.text({ STLXTHEME_FIELD_PADDING_X, baseline }, shown, m_font_size,
            empty ? t.text_dim : t.text);
 
     if (focused()) {
         size before = p.measure_text(
             std::string_view(m_text).substr(0, m_cursor), m_font_size);
-        int32_t cx = INPUT_PAD_X + before.w;
+        int32_t cx = STLXTHEME_FIELD_PADDING_X + before.w;
 
         p.fill({ cx, (m_frame.h - text.h) / 2, 1, text.h }, t.text);
     }
@@ -323,7 +312,7 @@ bool text_input::on_pointer_down(const pointer_event& e) {
     for (size_t i = 0; i <= m_text.size(); i++) {
         size w = p.measure_text(std::string_view(m_text).substr(0, i),
                                 m_font_size);
-        if (INPUT_PAD_X + w.w >= e.pos.x) {
+        if (STLXTHEME_FIELD_PADDING_X + w.w >= e.pos.x) {
             best = i;
             break;
         }
@@ -429,16 +418,16 @@ void scroll_view::paint(painter& p) {
     const theme& t = theme::active();
     int32_t track = m_frame.h;
     int32_t thumb_h = track * m_frame.h / content_h;
-    if (thumb_h < SCROLL_THUMB_MIN) {
-        thumb_h = SCROLL_THUMB_MIN;
+    if (thumb_h < STLXTHEME_SCROLL_THUMB_MIN_LENGTH) {
+        thumb_h = STLXTHEME_SCROLL_THUMB_MIN_LENGTH;
     }
 
     int32_t range = content_h - m_frame.h;
     int32_t thumb_y = range > 0
                     ? (track - thumb_h) * m_scroll.y / range : 0;
 
-    p.rounded_rect({ m_frame.w - SCROLL_BAR_W, thumb_y,
-                     SCROLL_BAR_W, thumb_h }, 2, t.surface_hover);
+    p.rounded_rect({ m_frame.w - STLXTHEME_SCROLL_THUMB_WIDTH, thumb_y, STLXTHEME_SCROLL_THUMB_WIDTH, thumb_h },
+                   STLXTHEME_SCROLL_THUMB_RADIUS, t.surface_hover);
 }
 
 bool scroll_view::on_scroll(const pointer_event& e) {
