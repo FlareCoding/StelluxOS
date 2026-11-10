@@ -33,6 +33,7 @@
 #define STLXTHEME_LINE        0x36E2C496 /* control borders */
 #define STLXTHEME_LINE_STRONG 0x52E2C496 /* hover and focus borders and scroll thumbs */
 #define STLXTHEME_LINE_ON     0x3DE2C496 /* the ring of an open bar target and of a set pin */
+#define STLXTHEME_CARD_LINE   0x2BE2C496
 #define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window, the dock, a popover panel and a Qt menu */
 #define STLXTHEME_RIM_DIM     0x26E2C496
 #define STLXTHEME_BEZEL       0x42E2C496 /* the ring of a window control */
@@ -71,6 +72,7 @@
 
 /* Corner radii */
 #define STLXTHEME_WINDOW_RADIUS    10
+#define STLXTHEME_CARD_RADIUS      8
 #define STLXTHEME_CONTROL_RADIUS   6
 #define STLXTHEME_MENU_RADIUS      8
 #define STLXTHEME_MENU_ITEM_RADIUS 4
@@ -82,7 +84,10 @@
 #define STLXTHEME_TOP_BAR_HEIGHT         32
 #define STLXTHEME_TITLE_BAR_HEIGHT       32
 #define STLXTHEME_CONTROL_HEIGHT         32
+#define STLXTHEME_TOOLBAR_CONTROL_HEIGHT 28
 #define STLXTHEME_LIST_ROW_HEIGHT        30
+#define STLXTHEME_SETTING_ROW_HEIGHT     52
+#define STLXTHEME_FOOTER_HEIGHT          56
 #define STLXTHEME_DOCK_HEIGHT            48
 #define STLXTHEME_DOCK_TILE_SIZE         40
 #define STLXTHEME_DOCK_ICON_SIZE         32
@@ -90,6 +95,8 @@
 #define STLXTHEME_WINDOW_CONTROL_SIZE    16
 #define STLXTHEME_WINDOW_CONTROL_GAP     8
 #define STLXTHEME_FOCUS_RULE_WIDTH       2
+#define STLXTHEME_MARKER_WIDTH           2
+#define STLXTHEME_MARKER_HEIGHT          16
 #define STLXTHEME_TERMINAL_LINE_HEIGHT   22
 
 /* Control metrics */

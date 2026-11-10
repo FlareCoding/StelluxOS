@@ -36,6 +36,7 @@ constexpr float KEYCAP_TEXT_SIZE = 11.0f;
 
 static const shell_program MENU_PROGRAMS[] = {
     SETTINGS_PROGRAM,
+    { "Displays", "/bin/stlxsettings", "--page displays" },
     TASK_MONITOR_PROGRAM,
 };
 
