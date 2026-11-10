@@ -58,12 +58,14 @@ typedef struct {
 } stlxconf_pin_t;
 
 /* One global key binding. The key string is a plus-separated chord
- * such as ctrl+alt+t, and exec is the only action. */
+ * such as ctrl+alt+t, exec is the only action, and args are space
+ * separated. */
 typedef struct {
     char name[64];
     char key[64];
     char action[32];
     char path[256];
+    char args[256];
     bool from_drop_in;
 } stlxconf_shortcut_t;
 
