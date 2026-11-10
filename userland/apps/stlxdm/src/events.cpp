@@ -1,5 +1,6 @@
 #include "decor.hpp"
 #include "server.hpp"
+#include "shell/chord.hpp"
 
 #include <stlx/input.h>
 
@@ -35,10 +36,22 @@ constexpr uint8_t EDGE_B = 1u << 3;
 /* Wire modifier bits from the raw HID modifier byte */
 static uint8_t cook_modifiers(uint8_t hid) {
     uint8_t out = 0;
-    if (hid & HID_SHIFT) out |= 1u << 0;
-    if (hid & HID_CTRL)  out |= 1u << 1;
-    if (hid & HID_ALT)   out |= 1u << 2;
-    if (hid & HID_GUI)   out |= 1u << 3;
+    if (hid & HID_SHIFT) {
+        out |= CHORD_MOD_SHIFT;
+    }
+
+    if (hid & HID_CTRL) {
+        out |= CHORD_MOD_CTRL;
+    }
+
+    if (hid & HID_ALT) {
+        out |= CHORD_MOD_ALT;
+    }
+
+    if (hid & HID_GUI) {
+        out |= CHORD_MOD_SUPER;
+    }
+
     return out;
 }
 

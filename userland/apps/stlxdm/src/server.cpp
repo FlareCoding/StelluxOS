@@ -1,6 +1,8 @@
 #include "server.hpp"
 #include "material.hpp"
 
+#include "shell/chord.hpp"
+
 #include <stlx/gpu_abi.h>
 #include <stlx/proc.h>
 #include <stlxgfx/image.h>
@@ -222,50 +224,6 @@ static bool same_layout(const layout& a, const layout& b) {
         }
     }
 
-    return true;
-}
-
-/* Parses a plus-separated chord such as ctrl+alt+t into modifier
- * bits and a usage. Returns false for keys outside the letter and
- * digit rows. */
-static bool parse_hotkey(const char* chord, uint8_t* out_mods,
-                         uint16_t* out_usage) {
-    uint8_t mods = 0;
-    uint16_t usage = 0;
-
-    const char* p = chord;
-    while (*p) {
-        const char* end = strchr(p, '+');
-        size_t len = end ? static_cast<size_t>(end - p) : strlen(p);
-
-        if (len == 4 && strncmp(p, "ctrl", 4) == 0) {
-            mods |= 1u << 1;
-        } else if (len == 3 && strncmp(p, "alt", 3) == 0) {
-            mods |= 1u << 2;
-        } else if (len == 5 && strncmp(p, "shift", 5) == 0) {
-            mods |= 1u << 0;
-        } else if ((len == 3 && strncmp(p, "gui", 3) == 0) ||
-                   (len == 5 && strncmp(p, "super", 5) == 0)) {
-            mods |= 1u << 3;
-        } else if (len == 1 && *p >= 'a' && *p <= 'z') {
-            usage = static_cast<uint16_t>(0x04 + (*p - 'a'));
-        } else if (len == 1 && *p >= '1' && *p <= '9') {
-            usage = static_cast<uint16_t>(0x1E + (*p - '1'));
-        } else if (len == 1 && *p == '0') {
-            usage = 0x27;
-        } else {
-            return false;
-        }
-
-        p = end ? end + 1 : p + len;
-    }
-
-    if (usage == 0) {
-        return false;
-    }
-
-    *out_mods = mods;
-    *out_usage = usage;
     return true;
 }
 
@@ -735,7 +693,7 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         }
 
         dm_hotkey hk;
-        if (parse_hotkey(sc.key, &hk.mods, &hk.usage)) {
+        if (parse_chord(sc.key, &hk.mods, &hk.usage)) {
             hk.path = sc.path;
             out.hotkeys.push_back(hk);
         }
