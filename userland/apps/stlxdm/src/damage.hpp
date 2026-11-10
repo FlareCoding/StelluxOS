@@ -3,20 +3,23 @@
 
 #include <cstdint>
 
-/* Screen-space damage accumulated between compose ticks. Overflow
- * collapses to a full-screen repaint rather than dropping rects, so
- * damage is never lost, only coarsened. */
+/* Screen-space damage accumulated between compose ticks, as rects that
+ * never overlap, since each is composed on its own. Overflow collapses to
+ * a full-screen repaint, so damage is never lost, only coarsened. */
 class damage_list {
 public:
     static constexpr uint32_t MAX_RECTS = 32;
+
+    /* The most rects `subtract` writes */
+    static constexpr uint32_t PARTS_OUTSIDE_MAX = 4;
 
     struct rect {
         int32_t x = 0, y = 0;
         int32_t w = 0, h = 0;
     };
 
-    /* Adds a rect unless another one holds it, and drops the rects it
-     * holds, since each rect is composed on its own. */
+    /* Adds the parts of a rect that the other rects do not cover, split
+     * around the rects it overlaps, and drops the rects it holds. */
     void add(int32_t x, int32_t y, int32_t w, int32_t h);
     void add_full() { m_full = true; }
     void clear();
@@ -37,6 +40,10 @@ public:
 
     /* The smallest rect holding `a` and `b`, ignoring one that is empty. */
     static rect union_of(const rect& a, const rect& b);
+
+    /* Writes to `parts` the at most `PARTS_OUTSIDE_MAX` rects that cover
+     * the part of `piece` outside `hole`, and returns their count */
+    static uint32_t subtract(const rect& piece, const rect& hole, rect* parts);
 
 private:
     rect m_rects[MAX_RECTS];

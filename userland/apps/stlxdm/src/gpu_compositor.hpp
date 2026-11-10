@@ -133,7 +133,8 @@ public:
      * the rows the CPU changed in `backdrop` and in `frost` (null without
      * one), and waits at most `COMPOSE_DEADLINE_NS` for the compose to end.
      * Every picture and import the scene, `backdrop` and `frost` name must
-     * be this compositor's and stay until the compose ended. */
+     * be this compositor's and stay until the compose ended. The rects must
+     * not overlap, since their dispatches may run at the same time. */
     compose_result compose(
         compose_buffers& buffers,
         const compose_target& target,
