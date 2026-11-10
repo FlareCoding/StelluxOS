@@ -1277,19 +1277,20 @@ static bool subtract_hole(std::vector<damage_list::rect>& pieces,
     return true;
 }
 
-/* Takes the content of `w` out of every piece but for its bottom corner squares, which the rounded content blit
+/* Takes `content` out of every piece but for its bottom corner squares of `radius`, which a rounded content blit
  * blends over whatever lies beneath. Returns false like `subtract_hole`. */
-static bool subtract_content(std::vector<damage_list::rect>& pieces, const dm_window& w) {
-    const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
-    int32_t bw = static_cast<int32_t>(b.width);
-    int32_t bh = static_cast<int32_t>(b.height);
-    int32_t r = decor::decorated(w) ? decor::CONTENT_R : 0;
-    if (r > 0 && bh > r && bw > 2 * r) {
-        return subtract_hole(pieces, { w.x, w.y, bw, bh - r }) &&
-               subtract_hole(pieces, { w.x + r, w.y + bh - r, bw - 2 * r, r });
+static bool subtract_rounded(
+    std::vector<damage_list::rect>& pieces,
+    const damage_list::rect& content,
+    int32_t radius
+) {
+    if (radius > 0 && content.h > radius && content.w > 2 * radius) {
+        return subtract_hole(pieces, { content.x, content.y, content.w, content.h - radius }) &&
+               subtract_hole(pieces, { content.x + radius, content.y + content.h - radius,
+                                       content.w - 2 * radius, radius });
     }
 
-    return subtract_hole(pieces, { w.x, w.y, bw, bh });
+    return subtract_hole(pieces, content);
 }
 
 /* Takes `glass` out of every piece but for the squares at its rounded corners, where what lies beneath shows through,
@@ -1307,6 +1308,15 @@ static bool subtract_glass(std::vector<damage_list::rect>& pieces, const materia
 
     return subtract_hole(pieces, { b.x, b.y + r, b.w, b.h - 2 * r }) &&
            subtract_hole(pieces, { b.x + r, b.y, b.w - 2 * r, b.h });
+}
+
+static damage_list::rect content_rect(const dm_window& w) {
+    const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
+    return { w.x, w.y, static_cast<int32_t>(b.width), static_cast<int32_t>(b.height) };
+}
+
+static int32_t content_radius(const dm_window& w) {
+    return decor::decorated(w) ? decor::CONTENT_R : 0;
 }
 
 /* The glass of a borderless window over its `content`, which a rounded popup rounds like the panel it draws */
@@ -1334,16 +1344,17 @@ static material::surface glass_under(const dm_window& w, int32_t origin_x, int32
 
     damage_list::rect frame = decor::frame_rect(w, w.x - origin_x, w.y - origin_y, bw, bh);
 
-    return { frame, decor::CORNER_R, material::WINDOW_RIM_FADE };
+    return frame_glass(frame);
 }
 
-/* Draws `glass`, in the output's pixels, from `frost` into the output's `back` within `piece`, in desktop coordinates,
- * but for what `subtract_content` takes out for opaque content, or in all of `piece` when that fails */
+/* Draws `glass` from `frost` into an output's `back` within `piece`, but for where opaque `content` with bottom
+ * corners of `radius` covers it. `glass` is in the output's pixels, `piece` and `content` in desktop coordinates. */
 static void draw_glass_beside_content(
     stlxgfx_surface_t* back,
     const stlxgfx_surface_t* frost,
     const material::surface& glass,
-    const dm_window& w,
+    const damage_list::rect& content,
+    int32_t radius,
     const damage_list::rect& piece,
     int32_t origin_x,
     int32_t origin_y
@@ -1353,8 +1364,7 @@ static void draw_glass_beside_content(
     }
 
     std::vector<damage_list::rect> pieces = { piece };
-    bool is_opaque = !w.buffers[static_cast<size_t>(w.current)].is_premultiplied;
-    if (is_opaque && !subtract_content(pieces, w)) {
+    if (!subtract_rounded(pieces, content, radius)) {
         pieces = { piece };
     }
 
@@ -1406,7 +1416,7 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         if (subtracting && is_premultiplied && frost) {
             subtracting = subtract_glass(pieces, glass_under(*w, 0, 0));
         } else if (subtracting && !is_premultiplied) {
-            subtracting = subtract_content(pieces, *w);
+            subtracting = subtract_rounded(pieces, content_rect(*w), content_radius(*w));
         }
     }
 
@@ -1440,14 +1450,18 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
             continue;
         }
 
+        /* Premultiplied content shows the glass through it, so only opaque content covers the glass */
         material::surface glass = glass_under(*w, ox, oy);
+        bool is_premultiplied = w->buffers[static_cast<size_t>(w->current)].is_premultiplied;
+        damage_list::rect opaque = is_premultiplied ? damage_list::rect{} : content_rect(*w);
+        int32_t radius = content_radius(*w);
 
         /* The glass when the output has frost, then the frame, then the
          * content with the frame's rounding applied at its bottom corners */
         bool has_frame = decor::decorated(*w) && w->frame.update(frame_maker(), *w, chrome_of(*w));
         for (const damage_list::rect& p : visible[i]) {
             if (frost) {
-                draw_glass_beside_content(back, frost, glass, *w, p, ox, oy);
+                draw_glass_beside_content(back, frost, glass, opaque, radius, p, ox, oy);
             }
 
             if (has_frame) {
@@ -1458,7 +1472,7 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         }
     }
 
-    compose_animations(canvas, r);
+    compose_animations(canvas, r, frost);
 
     damage_list::rect local = { r.x - ox, r.y - oy, r.w, r.h };
     if (is_main) {
@@ -1480,6 +1494,45 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
 
     if (out.cursor_in_frames) {
         m_cursor.draw(back, m_cursor_shape, m_cursor_x - ox, m_cursor_y - oy, local);
+    }
+}
+
+/* Draws the animations above the windows of a CPU compose of `r`, from the frame pictures a GPU compose resamples,
+ * each over the glass its GPU layers put beneath it */
+void server::compose_animations(
+    const decor::canvas& canvas,
+    const damage_list::rect& r,
+    const stlxgfx_surface_t* frost
+) {
+    std::vector<layer_scaled> pieces;
+    for (window_animation& a : m_animations) {
+        dm_window* w = a.window;
+        damage_list::rect area = damage_list::intersect(painted_rect(*w, a.rect), r);
+        if (area.w <= 0 || area.h <= 0) {
+            continue;
+        }
+
+        pieces.clear();
+        animation_pieces(a, *w, animation_frame(a, frame_maker()), pieces);
+
+        /* Only content the CPU draws covers the glass */
+        material::surface glass = animation_glass(a, canvas.x, canvas.y);
+        const layer_scaled* content = pieces.empty() ? nullptr : &pieces.back();
+        bool covers_glass = content && content->is_content && content->source.pixels;
+        damage_list::rect opaque = {};
+        int32_t radius = 0;
+        if (covers_glass) {
+            opaque = content->bounds;
+            radius = static_cast<int32_t>(content->radius);
+        }
+
+        if (frost) {
+            draw_glass_beside_content(canvas.surface, frost, glass, opaque, radius, area, canvas.x, canvas.y);
+        }
+
+        for (const layer_scaled& piece : pieces) {
+            draw_scaled(canvas, piece, r);
+        }
     }
 }
 

@@ -395,6 +395,23 @@ damage_list::rect painted_rect(const dm_window& w, const damage_list::rect& fram
     return { frame.x - left, frame.y - top, frame.w + painted.w - at_rest.w, frame.h + painted.h - at_rest.h };
 }
 
+material::surface frame_glass(const damage_list::rect& frame) {
+    return { frame, decor::CORNER_R, material::WINDOW_RIM_FADE };
+}
+
+/* Glass draws at full strength, so only a resize at full opacity shows it beneath the window */
+material::surface animation_glass(const window_animation& a, int32_t origin_x, int32_t origin_y) {
+    bool is_resize = a.transition == window_transition::resize;
+    bool is_full_opacity = a.opacity == decor::CHANNEL_MAX;
+    if (!is_resize || !is_full_opacity || !decor::decorated(*a.window)) {
+        return {};
+    }
+
+    damage_list::rect frame = { a.rect.x - origin_x, a.rect.y - origin_y, a.rect.w, a.rect.h };
+
+    return frame_glass(frame);
+}
+
 /* A resize keeps the frame strips' thickness, the shadow's included, and their halves at their size, and a move to
  * or from the dock scales the whole window alike, its content's corners with it */
 void animation_pieces(

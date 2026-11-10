@@ -82,7 +82,8 @@ struct layer_scaled {
 };
 
 /* A window as its layers show it: no frame strips when borderless, the content color without a picture the GPU
- * reads, no glass when its bounds are empty, and only `scaled` pieces, covering nothing, while it animates */
+ * reads, no glass when its bounds are empty, and while it animates `scaled` pieces in place of its frame strips and
+ * content. An animating window covers no rect. */
 struct layer_window {
     static constexpr uint32_t FRAME_STRIPS = 4;
     static constexpr uint32_t SCALED_MAX = FRAME_STRIPS * 3 + 1;  /* up to three pieces per strip, and the content */

@@ -1,11 +1,11 @@
 #include "layers.hpp"
 #include "decor.hpp"
 
-/* The backdrop, each window's glass, frame strips and content or an animating window's more numerous scaled
- * pieces, and above them the shell's popover and the two top pictures with the dim between */
-constexpr uint32_t LAYERS_PER_WINDOW = layer_window::SCALED_MAX;
+/* The backdrop, each window's glass under its frame strips and content or under an animating window's more
+ * numerous scaled pieces, and above them the shell's popover and the two top pictures with the dim between */
+constexpr uint32_t LAYERS_PER_WINDOW = layer_window::SCALED_MAX + 1;  /* the scaled pieces and the glass */
 constexpr uint32_t LAYERS_AROUND_WINDOWS = 5;
-static_assert(LAYERS_PER_WINDOW >= layer_window::FRAME_STRIPS + 2);
+static_assert(layer_window::SCALED_MAX >= layer_window::FRAME_STRIPS + 1);
 
 static bool overlaps(const damage_list::rect& a, const damage_list::rect& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;

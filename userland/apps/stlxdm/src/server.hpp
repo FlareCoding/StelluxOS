@@ -627,7 +627,7 @@ private:
     void forget_animation(const dm_window* w);
     const frame_picture* animation_frame(window_animation& a, picture_maker& maker);
     void damage_painted(const dm_window& w, const damage_list::rect& frame);
-    void compose_animations(const decor::canvas& canvas, const damage_list::rect& r);
+    void compose_animations(const decor::canvas& canvas, const damage_list::rect& r, const stlxgfx_surface_t* frost);
     bool add_animations(dm_output& out);
 
     /* modes.cpp */
