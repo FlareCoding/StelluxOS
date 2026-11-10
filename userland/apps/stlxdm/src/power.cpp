@@ -30,15 +30,17 @@ constexpr int32_t PW_ORB_RADIUS = 58;
 constexpr int32_t PW_ORB_GAP = 216;
 constexpr float PW_BLACKOUT_AT = 0.82f;
 
-constexpr uint32_t PW_DIM_COLOR = 0xE6080B14;
-constexpr uint32_t PW_ORB_FILL = 0xFF151B2C;
-constexpr uint32_t PW_ORB_FILL_HOVER = 0xFF1D2438;
-constexpr uint32_t PW_ORB_EDGE = 0xFF283048;
-constexpr uint32_t PW_LABEL_DIM = 0xFFB7C0D8;
-constexpr uint32_t PW_LABEL_BRIGHT = 0xFFE9EDF8;
-constexpr uint32_t PW_HINT_COLOR = 0xFF7F8AA6;
-constexpr uint32_t PW_RESTART_ACCENT = 0xFF5FD7FF;
-constexpr uint32_t PW_SHUTDOWN_ACCENT = 0xFFFF5C8A;
+/* The warm glass tint dims the desktop at .90, and each orb is that tint lifted by cream, with a brass edge.
+ * Amber marks only the orb under the pointer or held, the one about to act. */
+constexpr uint32_t PW_DIM_ALPHA = 0xE6;
+constexpr uint32_t PW_DIM_COLOR = (PW_DIM_ALPHA << 24) | (STLXTHEME_GLASS_TINT_WARM & 0x00FFFFFFu);
+constexpr uint32_t PW_ORB_FILL = 0xFF1A1712;
+constexpr uint32_t PW_ORB_FILL_HOVER = 0xFF221E19;
+constexpr uint32_t PW_ORB_EDGE = 0xFF564A39;
+constexpr uint32_t PW_LABEL_DIM = STLXTHEME_TEXT_SECONDARY;
+constexpr uint32_t PW_LABEL_BRIGHT = STLXTHEME_TEXT;
+constexpr uint32_t PW_HINT_COLOR = STLXTHEME_TEXT_DIM;
+constexpr uint32_t PW_CHOICE_ACCENT = STLXTHEME_ACCENT;
 
 static const char* const g_choice_label[2] = { "Restart", "Shut Down" };
 
@@ -595,22 +597,15 @@ void dm_power::draw_orbs(stlxgfx_surface_t* s, int32_t ox, int32_t oy) {
 
         bool hovered = m_hover == i;
         bool holding = m_press == i;
-        uint32_t accent = i == PW_SHUTDOWN ? PW_SHUTDOWN_ACCENT
-                                           : PW_RESTART_ACCENT;
-
-        if (hovered || holding) {
-            pw_glow(s, cx, cy, r, r + 26.0f,
-                    pw_with_alpha(accent, 0.20f * local));
-        }
 
         pw_disc(s, cx, cy, r,
                 pw_with_alpha(hovered ? PW_ORB_FILL_HOVER : PW_ORB_FILL,
                               local));
         pw_arc(s, cx, cy, r - 1.0f, 1.6f, 0.0f, 1.0f,
-               pw_with_alpha(hovered ? accent : PW_ORB_EDGE, local));
+               pw_with_alpha(hovered ? PW_CHOICE_ACCENT : PW_ORB_EDGE, local));
 
         uint32_t glyph = pw_with_alpha(
-            hovered ? accent : PW_LABEL_BRIGHT, local);
+            hovered ? PW_CHOICE_ACCENT : PW_LABEL_BRIGHT, local);
         if (i == PW_SHUTDOWN) {
             pw_power_icon(s, cx, cy, r * 0.42f, 3.4f, glyph);
         } else {
@@ -626,7 +621,7 @@ void dm_power::draw_orbs(stlxgfx_surface_t* s, int32_t ox, int32_t oy) {
                 p = 1.0f;
             }
             pw_arc(s, cx, cy, r + 9.0f, 3.2f, 0.0f, p,
-                   pw_with_alpha(accent, 0.95f));
+                   pw_with_alpha(PW_CHOICE_ACCENT, 0.95f));
         }
 
         pw_text_centered(s, m_label_font, m_label_fm, cx, cy + r + 24.0f,
@@ -771,8 +766,6 @@ void dm_power::draw_collapse_light(stlxgfx_surface_t* s, int32_t ox,
     cx -= static_cast<float>(ox);
     cy -= static_cast<float>(oy);
 
-    uint32_t accent = m_commit == PW_SHUTDOWN ? PW_SHUTDOWN_ACCENT
-                                              : PW_RESTART_ACCENT;
     float flare = t < 0.18f ? (t / 0.18f) : 1.0f;
     float shrink = t < 0.18f ? 1.0f : (1.0f - (t - 0.18f) / 0.82f);
     if (shrink < 0.0f) {
@@ -782,10 +775,10 @@ void dm_power::draw_collapse_light(stlxgfx_surface_t* s, int32_t ox,
     float core = (4.0f + 10.0f * flare) * shrink;
     float halo = static_cast<float>(PW_ORB_RADIUS) * 0.92f * shrink;
     if (halo > 0.5f) {
-        pw_glow(s, cx, cy, core, halo, pw_with_alpha(accent, 0.55f));
+        pw_glow(s, cx, cy, core, halo, pw_with_alpha(PW_CHOICE_ACCENT, 0.55f));
     }
     if (core > 0.4f) {
-        pw_disc(s, cx, cy, core, pw_with_alpha(0xFFFFFFFFu, 0.95f));
+        pw_disc(s, cx, cy, core, pw_with_alpha(STLXTHEME_TEXT, 0.95f));
     }
 }
 
