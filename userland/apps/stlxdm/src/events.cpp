@@ -578,11 +578,8 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
 
         move_window(m_drag, dx, dy);
 
-        /* Dropping the window sheds the drag glow */
         if (all_released) {
-            dm_window* dropped = m_drag;
             m_drag = nullptr;
-            scene_damage_window(dropped);
         }
         return;
     }
@@ -665,9 +662,6 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
                 m_drag = struck;
                 m_drag_dx = x - struck->x;
                 m_drag_dy = y - struck->y;
-
-                /* The drag glow appears on grab */
-                scene_damage_window(struck);
             } else {
                 m_close_press = struck;
                 scene_damage_window(struck);

@@ -4,6 +4,9 @@
 /* The desktop's palette, control metrics and typefaces. Colors are 0xAARRGGBB
  * with straight alpha, and lengths are pixels. */
 
+/* Tints, the solid material of a window frame */
+#define STLXTHEME_GLASS_TINT_WARM    0xFF12100D
+
 /* Text */
 #define STLXTHEME_TEXT           0xFFF6EEE1 /* titles, values and body text */
 #define STLXTHEME_TEXT_SECONDARY 0xFFC4BAAB /* quieter text and marks, such as menu items at rest and a checked box */
@@ -22,6 +25,8 @@
 #define STLXTHEME_LINE_SUBTLE 0x1FE2C496 /* the faintest lines, such as a disabled control's border */
 #define STLXTHEME_LINE        0x36E2C496 /* control borders */
 #define STLXTHEME_LINE_STRONG 0x52E2C496 /* hover and focus borders and scroll thumbs */
+#define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window */
+#define STLXTHEME_RIM_DIM     0x26E2C496
 
 /* Overlays laid over a window's background, and the menu panel */
 #define STLXTHEME_SURFACE          0x0DFFF0D7 /* button faces */
@@ -40,10 +45,12 @@
 #define STLXTHEME_INK       0xFF060402 /* the shadow color */
 
 /* Corner radii */
+#define STLXTHEME_WINDOW_RADIUS    10
 #define STLXTHEME_CONTROL_RADIUS   6
 #define STLXTHEME_MENU_ITEM_RADIUS 4
 
 /* Sizes */
+#define STLXTHEME_TITLE_BAR_HEIGHT       32
 #define STLXTHEME_CONTROL_HEIGHT         32
 #define STLXTHEME_LIST_ROW_HEIGHT        30
 #define STLXTHEME_FOCUS_RULE_WIDTH       2

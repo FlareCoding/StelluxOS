@@ -1193,14 +1193,8 @@ void server::latch_window(dm_client& c, dm_window& w) {
     w.sent_conf_count = keep;
 
     if (first_map || resized) {
-        damage_list::rect nr = { w.x - decor::BORDER - 1,
-                                 w.y - decor::TITLE_H - 1,
-                                 static_cast<int32_t>(nb.width) + 2 * decor::BORDER + 2,
-                                 static_cast<int32_t>(nb.height) + decor::TITLE_H
-                                     + decor::BORDER + 2 };
-        if (w.flags & SWP_WF_BORDERLESS) {
-            nr = { w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height) };
-        }
+        damage_list::rect nr = decor::frame_rect(w, w.x, w.y, static_cast<int32_t>(nb.width),
+                                                 static_cast<int32_t>(nb.height));
         m_damage.add(nr.x, nr.y, nr.w, nr.h);
     } else if (w.pending_damage_whole || w.pending_damage_count == 0) {
         m_damage.add(w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height));
@@ -1280,7 +1274,6 @@ static bool subtract_hole(std::vector<damage_list::rect>& pieces,
 decor::chrome_state server::chrome_of(const dm_window& w) const {
     decor::chrome_state st;
     st.focused = &w == m_focus;
-    st.dragging = &w == m_drag;
     st.close_hover = &w == m_close_hover;
     st.close_pressed = &w == m_close_press;
 
