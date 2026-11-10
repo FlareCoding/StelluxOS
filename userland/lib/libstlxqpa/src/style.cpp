@@ -13,24 +13,25 @@
 static const char* BASE_STYLE = "Fusion";
 
 static const int SCROLL_BAR_EXTENT = 8;
-static const int ROW_HEIGHT = 26;
-static const int ROW_RADIUS = 4;
 static const int ROW_CONTENT_INSET = 8;
-static const int ROW_MARKER_WIDTH = 3;
-static const int ROW_MARKER_INSET = 5;
-static const int ROW_MARKER_RADIUS = 2;
-
-// How far a hovered row's fill moves from the window color toward the surface color
-static const float ROW_HOVER_TINT = 0.25f;
 
 // QLineEdit insets its text by this much inside the contents rect on its own
 static const int LINE_EDIT_MARGIN = 2;
 
-// The accent's hover and press shades, as factors of QColor::lighter and darker
-static const int ACCENT_HOVER_FACTOR = 112;
-static const int ACCENT_PRESS_FACTOR = 108;
-
 static const qreal CHECK_MARK_WIDTH = 1.5;
+
+// Centers a 1 px anti-aliased line on the pixels it covers
+static const qreal HALF_PIXEL = 0.5;
+
+static const QColor ACCENT_HOVER = QColor::fromRgba(STLXTHEME_ACCENT_HOVER);
+static const QColor ACCENT_PRESS = QColor::fromRgba(STLXTHEME_ACCENT_PRESS);
+static const QColor ACCENT_TEXT = QColor::fromRgba(STLXTHEME_ACCENT_TEXT);
+static const QColor CHECKED = QColor::fromRgba(STLXTHEME_TEXT_SECONDARY);
+static const QColor LINE_STRONG = QColor::fromRgba(STLXTHEME_LINE_STRONG);
+static const QColor MENU_TEXT = QColor::fromRgba(STLXTHEME_TEXT_SECONDARY);
+static const QColor MENU_BG = QColor::fromRgba(STLXTHEME_MENU_BG);
+static const QColor ROW_HOVER = QColor::fromRgba(STLXTHEME_ROW_HOVER);
+static const QColor SELECTED_RING = QColor::fromRgba(STLXTHEME_SELECTED_RING);
 
 static bool is_hovered(const QStyleOption* option) {
     return (option->state & QStyle::State_MouseOver) && (option->state & QStyle::State_Enabled);
@@ -59,39 +60,60 @@ static void fill_rounded(QPainter* painter, const QRect& rect, int radius, const
     painter->restore();
 }
 
-// stlxui draws a border or a focus ring as an outer fill under the control's own
-static void fill_ringed(QPainter* painter, const QRect& rect, int radius, const QColor& ring,
-                        const QColor& fill) {
-    fill_rounded(painter, rect, radius, ring);
-    fill_rounded(painter, rect.adjusted(1, 1, -1, -1), radius, fill);
+// The face sits inside the edge, not under it, so translucent colors never stack
+static void draw_framed(QPainter* painter, const QRect& rect, int radius, const QColor& face, const QColor& edge) {
+    fill_rounded(painter, rect.adjusted(1, 1, -1, -1), radius - 1, face);
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+    painter->setPen(QPen(edge, 1));
+    painter->setBrush(Qt::NoBrush);
+
+    QRectF outline = QRectF(rect).adjusted(HALF_PIXEL, HALF_PIXEL, -HALF_PIXEL, -HALF_PIXEL);
+    painter->drawRoundedRect(outline, radius - HALF_PIXEL, radius - HALF_PIXEL);
+    painter->restore();
+}
+
+static void draw_focus_rule(QPainter* painter, const QRect& rect, const QColor& accent) {
+    painter->fillRect(QRect(rect.left() + STLXTHEME_CONTROL_RADIUS, rect.bottom() - STLXTHEME_FOCUS_RULE_WIDTH,
+                            rect.width() - 2 * STLXTHEME_CONTROL_RADIUS, STLXTHEME_FOCUS_RULE_WIDTH),
+                      accent);
 }
 
 static void draw_button_surface(const QStyleOption* option, QPainter* painter, bool is_accent) {
     const QPalette& palette = option->palette;
-    QColor fill;
     if (is_accent) {
-        QColor accent = palette.color(QPalette::Highlight);
-        fill = is_pressed(option) ? accent.darker(ACCENT_PRESS_FACTOR)
-             : is_hovered(option) ? accent.lighter(ACCENT_HOVER_FACTOR)
-                                  : accent;
-    } else {
-        fill = is_pressed(option) ? palette.color(QPalette::Light)
-             : is_hovered(option) ? palette.color(QPalette::Midlight)
-                                  : palette.color(QPalette::Button);
-    }
+        QColor fill = is_pressed(option) ? ACCENT_PRESS
+                    : is_hovered(option) ? ACCENT_HOVER
+                                         : palette.color(QPalette::Accent);
 
-    if (has_keyboard_focus(option)) {
-        QColor ring = palette.color(is_accent ? QPalette::ButtonText : QPalette::Highlight);
-        fill_ringed(painter, option->rect, STLXTHEME_CONTROL_RADIUS, ring, fill);
+        if (has_keyboard_focus(option)) {
+            draw_framed(painter, option->rect, STLXTHEME_CONTROL_RADIUS, fill, palette.color(QPalette::ButtonText));
+            return;
+        }
+
+        fill_rounded(painter, option->rect, STLXTHEME_CONTROL_RADIUS, fill);
         return;
     }
 
-    fill_rounded(painter, option->rect, STLXTHEME_CONTROL_RADIUS, fill);
+    QColor face = is_pressed(option) ? palette.color(QPalette::Light)
+                : is_hovered(option) ? palette.color(QPalette::Midlight)
+                                     : palette.color(QPalette::Button);
+    bool is_lit = !is_pressed(option) && (is_hovered(option) || has_keyboard_focus(option));
+
+    draw_framed(painter, option->rect, STLXTHEME_CONTROL_RADIUS, face,
+                is_lit ? LINE_STRONG : palette.color(QPalette::Mid));
 }
 
 static bool is_default_button(const QStyleOption* option) {
     const auto* button = qstyleoption_cast<const QStyleOptionButton*>(option);
     return button && (button->features & QStyleOptionButton::DefaultButton);
+}
+
+// QPushButton keeps its size hint when it becomes the default, so a button that may become one measures as one
+static bool may_be_default(const QStyleOption* option) {
+    const auto* button = qstyleoption_cast<const QStyleOptionButton*>(option);
+    return button && (button->features & (QStyleOptionButton::DefaultButton | QStyleOptionButton::AutoDefaultButton));
 }
 
 static void draw_check_box(const QStyleOption* option, QPainter* painter) {
@@ -100,14 +122,13 @@ static void draw_check_box(const QStyleOption* option, QPainter* painter) {
     box.moveCenter(option->rect.center());
 
     bool is_checked = option->state & (QStyle::State_On | QStyle::State_NoChange);
-    QColor fill = palette.color(is_checked ? QPalette::Highlight : QPalette::Button);
-    if (has_keyboard_focus(option)) {
-        fill_ringed(painter, box, STLXTHEME_CHECK_RADIUS, palette.color(QPalette::Highlight), fill);
-    } else if (is_hovered(option)) {
-        fill_ringed(painter, box, STLXTHEME_CHECK_RADIUS, palette.color(QPalette::Midlight), fill);
-    } else {
-        fill_rounded(painter, box, STLXTHEME_CHECK_RADIUS, fill);
-    }
+    bool is_lit = is_hovered(option) || has_keyboard_focus(option);
+    QColor face = is_checked ? CHECKED : palette.color(QPalette::Base);
+    QColor lit_edge = is_checked ? palette.color(QPalette::Text) : LINE_STRONG;
+    QColor rest_edge = is_checked ? CHECKED : palette.color(QPalette::Mid);
+    QColor edge = is_lit ? lit_edge : rest_edge;
+
+    draw_framed(painter, box, STLXTHEME_CHECK_RADIUS, face, edge);
 
     if (!is_checked) {
         return;
@@ -115,7 +136,7 @@ static void draw_check_box(const QStyleOption* option, QPainter* painter) {
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
-    painter->setPen(QPen(palette.color(QPalette::HighlightedText), CHECK_MARK_WIDTH, Qt::SolidLine, Qt::RoundCap,
+    painter->setPen(QPen(palette.color(QPalette::Window), CHECK_MARK_WIDTH, Qt::SolidLine, Qt::RoundCap,
                          Qt::RoundJoin));
     painter->translate(box.topLeft());
     if (option->state & QStyle::State_NoChange) {
@@ -142,19 +163,6 @@ static QString menu_shortcut(const QStyleOptionMenuItem& item) {
     return item.text.section(QLatin1Char('\t'), 1);
 }
 
-static QStyleOptionMenuItem with_desktop_highlight(const QStyleOptionMenuItem& item) {
-    QStyleOptionMenuItem copy = item;
-    copy.palette.setColor(QPalette::Highlight, item.palette.color(QPalette::Midlight));
-    copy.palette.setColor(QPalette::HighlightedText, item.palette.color(QPalette::Text));
-    return copy;
-}
-
-static QColor blend_colors(const QColor& from, const QColor& to, float amount) {
-    return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * amount,
-                            from.greenF() + (to.greenF() - from.greenF()) * amount,
-                            from.blueF() + (to.blueF() - from.blueF()) * amount);
-}
-
 // The cells of a row share one panel, rounded only where the row starts and ends
 static bool is_row_start(const QStyleOptionViewItem& item) {
     return item.viewItemPosition != QStyleOptionViewItem::Middle && item.viewItemPosition != QStyleOptionViewItem::End;
@@ -165,43 +173,34 @@ static bool is_row_end(const QStyleOptionViewItem& item) {
         && item.viewItemPosition != QStyleOptionViewItem::Middle;
 }
 
-// stlxui marks a selected row with the surface and an accent bar, and tints a hovered one
 static void draw_row_panel(const QStyleOptionViewItem& item, QPainter* painter) {
     bool is_selected = item.state & QStyle::State_Selected;
     if (!is_selected && !is_hovered(&item)) {
         return;
     }
 
-    const QPalette& palette = item.palette;
-    QColor fill = is_selected ? palette.color(QPalette::Button)
-                              : blend_colors(palette.color(QPalette::Window), palette.color(QPalette::Button),
-                                             ROW_HOVER_TINT);
-
     // Rounded past the cell's inner edges, which the clip then cuts straight
     QRect panel = item.rect;
     if (!is_row_start(item)) {
-        panel.setLeft(panel.left() - ROW_RADIUS);
+        panel.setLeft(panel.left() - STLXTHEME_CONTROL_RADIUS);
     }
 
     if (!is_row_end(item)) {
-        panel.setRight(panel.right() + ROW_RADIUS);
+        panel.setRight(panel.right() + STLXTHEME_CONTROL_RADIUS);
     }
 
     painter->save();
     painter->setClipRect(item.rect, Qt::IntersectClip);
-    fill_rounded(painter, panel, ROW_RADIUS, fill);
-    painter->restore();
-
-    if (!is_selected || !is_row_start(item)) {
-        return;
+    if (is_selected) {
+        draw_framed(painter, panel, STLXTHEME_CONTROL_RADIUS, item.palette.color(QPalette::Highlight), SELECTED_RING);
+    } else {
+        fill_rounded(painter, panel, STLXTHEME_CONTROL_RADIUS, ROW_HOVER);
     }
 
-    QRect marker(item.rect.left(), item.rect.top() + ROW_MARKER_INSET, ROW_MARKER_WIDTH,
-                 item.rect.height() - 2 * ROW_MARKER_INSET);
-    fill_rounded(painter, marker, ROW_MARKER_RADIUS, palette.color(QPalette::Highlight));
+    painter->restore();
 }
 
-// Every cell insets its content alike, which keeps it clear of the selection marker and
+// Every cell insets its content alike, which keeps it clear of the selected row's ring and
 // lets a size hint, measured without the cell's place in the row, match the painted width
 static QStyleOptionViewItem inset_cell_content(const QStyleOptionViewItem& item) {
     QStyleOptionViewItem inset = item;
@@ -311,9 +310,10 @@ QSize QStelluxStyle::sizeFromContents(ContentsType type, const QStyleOption* opt
                                       const QWidget* widget) const {
     switch (type) {
         case CT_PushButton:
-        case CT_ToolButton:
-            return QSize(contents.width() + 2 * STLXTHEME_BUTTON_PADDING_X,
-                         qMax(contents.height(), STLXTHEME_CONTROL_HEIGHT));
+        case CT_ToolButton: {
+            int padding = may_be_default(option) ? STLXTHEME_ACCENT_BUTTON_PADDING_X : STLXTHEME_BUTTON_PADDING_X;
+            return QSize(contents.width() + 2 * padding, qMax(contents.height(), STLXTHEME_CONTROL_HEIGHT));
+        }
         case CT_LineEdit:
             if (has_frame(option)) {
                 int inset = STLXTHEME_FIELD_PADDING_X - LINE_EDIT_MARGIN;
@@ -346,7 +346,7 @@ QSize QStelluxStyle::sizeFromContents(ContentsType type, const QStyleOption* opt
             }
 
             QSize size = QProxyStyle::sizeFromContents(type, option, contents, widget);
-            return QSize(size.width() + 2 * ROW_CONTENT_INSET, qMax(size.height(), ROW_HEIGHT));
+            return QSize(size.width() + 2 * ROW_CONTENT_INSET, qMax(size.height(), STLXTHEME_LIST_ROW_HEIGHT));
         }
         default:
             break;
@@ -411,16 +411,20 @@ void QStelluxStyle::drawPrimitive(PrimitiveElement element, const QStyleOption* 
 
             draw_button_surface(option, painter, false);
             return;
-        case PE_PanelLineEdit:
+        case PE_PanelLineEdit: {
             if (!has_frame(option)) {
                 break;
             }
 
-            fill_ringed(painter, option->rect, STLXTHEME_CONTROL_RADIUS,
-                        option->palette.color((option->state & State_HasFocus) ? QPalette::Highlight
-                                                                                : QPalette::Midlight),
-                        option->palette.color(QPalette::Base));
+            bool is_focused = option->state & State_HasFocus;
+            draw_framed(painter, option->rect, STLXTHEME_CONTROL_RADIUS, option->palette.color(QPalette::Base),
+                        is_focused ? LINE_STRONG : option->palette.color(QPalette::Mid));
+            if (is_focused) {
+                draw_focus_rule(painter, option->rect, option->palette.color(QPalette::Accent));
+            }
+
             return;
+        }
         case PE_IndicatorCheckBox:
             draw_check_box(option, painter);
             return;
@@ -450,11 +454,11 @@ void QStelluxStyle::drawPrimitive(PrimitiveElement element, const QStyleOption* 
             break;
         }
         case PE_PanelMenu:
-            painter->fillRect(option->rect, option->palette.color(QPalette::Button));
+            painter->fillRect(option->rect, MENU_BG);
             return;
         case PE_FrameMenu:
             painter->save();
-            painter->setPen(option->palette.color(QPalette::Midlight));
+            painter->setPen(option->palette.color(QPalette::Mid));
             painter->drawRect(option->rect.adjusted(0, 0, -1, -1));
             painter->restore();
             return;
@@ -495,7 +499,7 @@ void QStelluxStyle::drawControl(ControlElement element, const QStyleOption* opti
 
     if (element == CE_PushButtonLabel && is_default_button(option)) {
         QStyleOptionButton accented = *qstyleoption_cast<const QStyleOptionButton*>(option);
-        accented.palette.setColor(QPalette::ButtonText, option->palette.color(QPalette::HighlightedText));
+        accented.palette.setColor(QPalette::ButtonText, ACCENT_TEXT);
         QProxyStyle::drawControl(element, &accented, painter, widget);
         return;
     }
@@ -512,19 +516,24 @@ void QStelluxStyle::drawControl(ControlElement element, const QStyleOption* opti
     }
 
     if (!is_plain_menu_item(*item)) {
-        QStyleOptionMenuItem highlighted = with_desktop_highlight(*item);
-        QProxyStyle::drawControl(element, &highlighted, painter, widget);
+        QProxyStyle::drawControl(element, option, painter, widget);
         return;
     }
 
     bool is_enabled = item->state & State_Enabled;
-    if ((item->state & State_Selected) && is_enabled) {
-        painter->fillRect(item->rect, item->palette.color(QPalette::Midlight));
+    bool is_lit = (item->state & State_Selected) && is_enabled;
+    if (is_lit) {
+        fill_rounded(painter, item->rect, STLXTHEME_MENU_ITEM_RADIUS, item->palette.color(QPalette::Highlight));
+    }
+
+    QPalette palette = item->palette;
+    if (is_enabled && !is_lit) {
+        palette.setColor(QPalette::Text, MENU_TEXT);
     }
 
     QRect text = item->rect.adjusted(STLXTHEME_MENU_ROW_PADDING_X, 0, -STLXTHEME_MENU_ROW_PADDING_X, 0);
     int flags = Qt::AlignVCenter | Qt::TextSingleLine | Qt::TextHideMnemonic;
-    proxy()->drawItemText(painter, text, flags | Qt::AlignLeft, item->palette, is_enabled, menu_label(*item),
+    proxy()->drawItemText(painter, text, flags | Qt::AlignLeft, palette, is_enabled, menu_label(*item),
                           QPalette::Text);
 
     QString shortcut = menu_shortcut(*item);
@@ -554,5 +563,5 @@ void QStelluxStyle::drawComplexControl(ComplexControl control, const QStyleOptio
                         STLXTHEME_SCROLL_THUMB_WIDTH, slider.height());
     bool is_dragged = (bar->state & State_Sunken) && (bar->activeSubControls & SC_ScrollBarSlider);
     fill_rounded(painter, thumb, STLXTHEME_SCROLL_THUMB_RADIUS,
-                 bar->palette.color(is_dragged ? QPalette::Light : QPalette::Midlight));
+                 is_dragged ? bar->palette.color(QPalette::PlaceholderText) : LINE_STRONG);
 }

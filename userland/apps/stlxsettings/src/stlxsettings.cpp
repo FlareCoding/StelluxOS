@@ -119,7 +119,7 @@ protected:
         if (m_selected) {
             p.setBrush(palette().color(QPalette::Button));
             p.drawRoundedRect(rect(), NAV_RADIUS, NAV_RADIUS);
-            p.setBrush(palette().color(QPalette::Highlight));
+            p.setBrush(palette().color(QPalette::Accent));
             p.drawRoundedRect(QRect(0, 8, 3, height() - 16), 2, 2);
         } else if (underMouse()) {
             p.setBrush(RAIL_HOVER);
@@ -385,14 +385,14 @@ private:
         QRectF box = page_rect(i).adjusted(1, 1, -1, -1);
         bool is_dragged = static_cast<int>(i) == m_dragged;
 
-        p.setPen(palette().color(is_dragged ? QPalette::Highlight : QPalette::Midlight));
+        p.setPen(palette().color(is_dragged ? QPalette::Accent : QPalette::Midlight));
         p.setBrush(palette().color(QPalette::Button));
         p.drawRoundedRect(box, OUTPUT_RADIUS, OUTPUT_RADIUS);
 
         if (output.output == m_display->main_output) {
             QRectF strip = box.adjusted(OUTPUT_RADIUS, MAIN_STRIP_INSET, -OUTPUT_RADIUS, 0);
             strip.setHeight(MAIN_STRIP_PX);
-            p.fillRect(strip, palette().color(QPalette::Highlight));
+            p.fillRect(strip, palette().color(QPalette::Accent));
         }
 
         QString label = QString::asprintf("Output %u\n%ux%u", output.output, output.width, output.height);
