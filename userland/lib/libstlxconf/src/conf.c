@@ -483,6 +483,14 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
     return 0;
 }
 
+const char* stlxconf_glass_level_name(stlxconf_glass_level_t level) {
+    return GLASS_LEVEL_NAMES[level];
+}
+
+const char* stlxconf_glass_tint_name(stlxconf_glass_tint_t tint) {
+    return GLASS_TINT_NAMES[tint];
+}
+
 const stlxconf_url_handler_t* stlxconf_find_url_handler(const stlxconf_t* conf,
                                                         const char* scheme) {
     for (uint32_t i = 0; i < conf->url_handler_count; i++) {

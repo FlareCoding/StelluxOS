@@ -5,6 +5,7 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QVBoxLayout>
@@ -24,6 +25,12 @@ constexpr int ROW_PADDING_RIGHT = 12;
 constexpr int ROW_SPACING = 16;
 
 constexpr int SMALL_BUTTON_PADDING_X = 10;
+
+constexpr int SEGMENT_TRACK_INSET = 2;
+constexpr int SEGMENT_GAP = 2;
+constexpr int SEGMENT_PADDING_X = 11;
+constexpr int SEGMENT_MARK_SIZE = 10;
+constexpr int SEGMENT_MARK_GAP = 7;
 
 static QPainterPath g_glyph_paths[GLYPH_COUNT];
 
@@ -259,12 +266,21 @@ setting_label::setting_label(const QString& label, const QString& key)
     layout->addWidget(m_key);
 }
 
+void setting_label::set_key(const QString& key) {
+    m_key->setText(key);
+    m_key->setVisible(!key.isEmpty());
+}
+
 setting_row::setting_row(const QString& label, const QString& key)
     : m_label(new setting_label(label, key)), m_layout(new QHBoxLayout(this)) {
     setFixedHeight(STLXTHEME_SETTING_ROW_HEIGHT);
     m_layout->setContentsMargins(ROW_PADDING_LEFT, 0, ROW_PADDING_RIGHT, 0);
     m_layout->setSpacing(ROW_SPACING);
     m_layout->addWidget(m_label, 1, Qt::AlignVCenter);
+}
+
+void setting_row::add_control(QWidget* control) {
+    m_layout->addWidget(control, 0, Qt::AlignVCenter);
 }
 
 /* A plain button's hover and press never take amber, which marks state only. Disabled buttons drop the fill */
@@ -348,4 +364,112 @@ void push_button::paintEvent(QPaintEvent*) {
     painter.setFont(font);
     painter.setPen(colors.text);
     painter.drawText(QRectF(left, 0, text_width, height()), Qt::AlignVCenter, text());
+}
+
+segmented::segmented(const QStringList& labels, int chosen, mark_painter paint_mark)
+    : m_labels(labels), m_paint_mark(std::move(paint_mark)), m_chosen(chosen) {
+    setMouseTracking(true);
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+}
+
+qreal segmented::segment_width(int index) const {
+    qreal text_width = QFontMetricsF(ui_font(STLXTHEME_BODY_SIZE, QFont::Medium)).horizontalAdvance(m_labels[index]);
+    return 2 * SEGMENT_PADDING_X + SEGMENT_MARK_SIZE + SEGMENT_MARK_GAP + qCeil(text_width);
+}
+
+QRectF segmented::segment_rect(int index) const {
+    qreal left = SEGMENT_TRACK_INSET;
+    for (int i = 0; i < index; i++) {
+        left += segment_width(i) + SEGMENT_GAP;
+    }
+
+    return QRectF(left, SEGMENT_TRACK_INSET, segment_width(index), height() - 2 * SEGMENT_TRACK_INSET);
+}
+
+int segmented::segment_at(const QPointF& position) const {
+    for (int i = 0; i < m_labels.size(); i++) {
+        if (segment_rect(i).contains(position)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+QSize segmented::sizeHint() const {
+    qreal width = 2 * SEGMENT_TRACK_INSET + SEGMENT_GAP * (m_labels.size() - 1);
+    for (int i = 0; i < m_labels.size(); i++) {
+        width += segment_width(i);
+    }
+
+    return QSize(qCeil(width), STLXTHEME_CONTROL_HEIGHT);
+}
+
+void segmented::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    qreal inset = CARD_BORDER / 2.0;
+    qreal track_radius = STLXTHEME_CONTROL_RADIUS - inset;
+    qreal segment_radius = STLXTHEME_INNER_RADIUS - inset;
+
+    painter.setPen(QPen(theme_color(STLXTHEME_LINE), CARD_BORDER));
+    painter.setBrush(theme_color(STLXTHEME_RECESS));
+    painter.drawRoundedRect(QRectF(rect()).adjusted(inset, inset, -inset, -inset), track_radius, track_radius);
+
+    painter.setFont(ui_font(STLXTHEME_BODY_SIZE, QFont::Medium));
+    for (int i = 0; i < m_labels.size(); i++) {
+        QRectF segment = segment_rect(i);
+        bool is_chosen = i == m_chosen;
+        bool is_lit = is_chosen || i == m_hovered;
+
+        if (is_lit) {
+            QPen ring = is_chosen ? QPen(theme_color(STLXTHEME_LINE_ON), CARD_BORDER) : QPen(Qt::NoPen);
+            painter.setPen(ring);
+            painter.setBrush(theme_color(is_chosen ? STLXTHEME_SURFACE_ON : STLXTHEME_SURFACE_HOVER));
+            painter.drawRoundedRect(segment.adjusted(inset, inset, -inset, -inset), segment_radius, segment_radius);
+        }
+
+        QColor text = theme_color(is_lit ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY);
+        qreal mark_left = segment.left() + SEGMENT_PADDING_X;
+        qreal text_left = mark_left + SEGMENT_MARK_SIZE + SEGMENT_MARK_GAP;
+        QRectF mark(mark_left, segment.center().y() - SEGMENT_MARK_SIZE / 2.0, SEGMENT_MARK_SIZE, SEGMENT_MARK_SIZE);
+
+        m_paint_mark(painter, mark, i, text);
+
+        painter.setPen(text);
+        painter.drawText(
+            QRectF(text_left, segment.top(), segment.right() - text_left, segment.height()),
+            Qt::AlignVCenter | Qt::AlignLeft,
+            m_labels[i]
+        );
+    }
+}
+
+void segmented::mouseMoveEvent(QMouseEvent* event) {
+    int hovered = segment_at(event->position());
+    if (hovered != m_hovered) {
+        m_hovered = hovered;
+        update();
+    }
+}
+
+void segmented::mousePressEvent(QMouseEvent* event) {
+    int pressed = segment_at(event->position());
+    bool is_left_press = event->button() == Qt::LeftButton;
+    bool is_new_choice = pressed >= 0 && pressed != m_chosen;
+    if (!is_left_press || !is_new_choice) {
+        return;
+    }
+
+    m_chosen = pressed;
+    update();
+
+    if (on_choose) {
+        on_choose(pressed);
+    }
+}
+
+void segmented::leaveEvent(QEvent*) {
+    m_hovered = -1;
+    update();
 }

@@ -1,6 +1,7 @@
 /* stlxsettings: the desktop configuration editor. Setting rows show the config key each writes. Save writes the
  * file and signals the display manager to re-read it, while the Displays page's Apply sends its own requests. */
 #include "kit.hpp"
+#include "settings.hpp"
 
 #include <stlxconf/conf.h>
 #include <stlxtheme/theme.h>
@@ -65,7 +66,6 @@ constexpr int FOOTER_GAP = 8;
 
 constexpr int LIST_ROW_H = 44;
 constexpr int LIST_ROW_PADDING_X = 12;
-constexpr int SWATCH_PX = 28;
 constexpr int MENU_BUTTON_W = 36;
 constexpr int ARRANGEMENT_H = 220;
 constexpr int ARRANGEMENT_MARGIN = 16;
@@ -92,6 +92,8 @@ constexpr int RING_STROKE = 2;
 constexpr int FULL_TURN = 360 * 16; /* QPainter arcs count sixteenths of a degree */
 constexpr int RING_START = 90 * 16; /* the ring empties from its top */
 
+stlxconf_t g_conf;
+
 enum page_index : uint32_t { APPEARANCE_PAGE, DOCK_PAGE, DISPLAY_PAGE, INPUT_PAGE, STARTUP_PAGE };
 
 constexpr uint32_t PAGE_COUNT = STARTUP_PAGE + 1;
@@ -108,7 +110,7 @@ static const char* const PAGE_SLUGS[] = {
 static_assert(std::size(PAGE_SLUGS) == PAGE_COUNT);
 
 static const char* const PAGE_BLURBS[] = {
-    "Wallpaper and the bar's colors.",
+    "Wallpaper and glass.",
     "The apps pinned to the dock.",
     "Where each output sits, which one is main, and each one's mode.",
     "How held keys repeat.",
@@ -320,28 +322,6 @@ protected:
 
 private:
     uint32_t m_seconds_left = 0;
-};
-
-/* A live preview of a color field's value */
-class swatch : public QWidget {
-public:
-    explicit swatch(const uint32_t* value) : m_value(value) {
-        setFixedSize(SWATCH_PX, SWATCH_PX);
-    }
-
-protected:
-    void paintEvent(QPaintEvent*) override {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing);
-        p.setPen(Qt::NoPen);
-        p.setBrush(palette().color(QPalette::Midlight));
-        p.drawRoundedRect(rect(), 6, 6);
-        p.setBrush(QColor(*m_value & 0xFFFFFFu));
-        p.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 6, 6);
-    }
-
-private:
-    const uint32_t* m_value;
 };
 
 /* The Displays page's arrangement, mode choices and own connection to the
@@ -570,10 +550,9 @@ private:
     QPointF m_grab_pointer;
 };
 
-/* Everything the pages edit but the Displays page's arrangement and mode choices. `saved` holds the config as
- * loaded, drop-ins included, so the footer counts the changes Save would write. */
+/* The state of the window around the pages. `saved` holds the config as loaded, drop-ins included, so the footer
+ * counts the changes Save would write. */
 struct app_state {
-    stlxconf_t conf;
     stlxconf_t saved;
     QScrollArea* scroll = nullptr;
     QWidget* page_slot = nullptr;
@@ -703,21 +682,15 @@ static void note_list_changes(
     note_change(is_reordered, list_name + QStringLiteral(" order changed"), changes);
 }
 
-/* What Save would write: one description for each changed setting, list entry and list order, the bar colors
- * taking one together */
+/* What Save would write: one description for each changed setting, list entry and list order */
 static QStringList pending_changes() {
     const stlxconf_t& saved = g_st.saved;
-    const stlxconf_t& edited = g_st.conf;
+    const stlxconf_t& edited = g_conf;
     QStringList changes;
 
     note_change(strcmp(saved.wallpaper, edited.wallpaper) != 0, QStringLiteral("Wallpaper changed"), changes);
-    note_change(saved.bg_color != edited.bg_color, QStringLiteral("Fallback color changed"), changes);
     note_change(saved.glass_level != edited.glass_level, QStringLiteral("Glass changed"), changes);
     note_change(saved.glass_tint != edited.glass_tint, QStringLiteral("Tint changed"), changes);
-
-    bool are_bar_colors_changed = saved.bar_color != edited.bar_color || saved.text_color != edited.text_color;
-    note_change(are_bar_colors_changed, QStringLiteral("Bar colors changed"), changes);
-    note_change(saved.bar_font_size != edited.bar_font_size, QStringLiteral("Bar font size changed"), changes);
 
     bool is_delay_changed = saved.key_repeat_delay_ms != edited.key_repeat_delay_ms;
     bool is_interval_changed = saved.key_repeat_interval_ms != edited.key_repeat_interval_ms;
@@ -745,7 +718,7 @@ static QStringList pending_changes() {
     return changes;
 }
 
-static void show_pending_changes() {
+void show_pending_changes() {
     QStringList changes = pending_changes();
     bool is_pending = !changes.isEmpty();
     g_st.revert->setEnabled(is_pending);
@@ -765,16 +738,11 @@ static void rebuild_page_later() {
     QTimer::singleShot(0, [] { build_page(g_st.active_page); });
 }
 
-static QString format_hex(uint32_t value) {
-    return QString::asprintf("0x%08X", value);
-}
-
-/* Bounded copy for the conf's fixed char arrays */
-static void put_str(char* dst, size_t cap, const QString& src) {
-    QByteArray utf8 = src.toUtf8();
-    size_t len = static_cast<size_t>(utf8.size()) < cap - 1 ? static_cast<size_t>(utf8.size()) : cap - 1;
-    memcpy(dst, utf8.constData(), len);
-    dst[len] = '\0';
+void copy_string(char* destination, size_t capacity, const QString& text) {
+    QByteArray utf8 = text.toUtf8();
+    size_t length = qMin(static_cast<size_t>(utf8.size()), capacity - 1);
+    memcpy(destination, utf8.constData(), length);
+    destination[length] = '\0';
 }
 
 /* Drop-in entries follow the user's own in every list, so edits, moves and
@@ -826,9 +794,9 @@ static QLabel* make_caption(const QString& text) {
     return make_text(text, mono_font(STLXTHEME_CAPTION_SIZE), STLXTHEME_TEXT_DIM);
 }
 
-static card* make_card(QWidget* page, const char* title, const char* config_section) {
+card* add_section(QWidget* page, const QString& title, const QString& config_section) {
     auto* section = new card;
-    layout_of(page)->addWidget(new section_head(QString::fromUtf8(title), QString::fromLatin1(config_section)));
+    layout_of(page)->addWidget(new section_head(title, config_section));
     layout_of(page)->addWidget(section);
     return section;
 }
@@ -906,29 +874,11 @@ static void mark_drop_in_row(QHBoxLayout* row) {
 static QLineEdit* add_text_field(QHBoxLayout* row, char* dst, size_t cap, int width) {
     QLineEdit* field = add_field(row, dst, width);
     QObject::connect(field, &QLineEdit::textEdited, [dst, cap](const QString& s) {
-        put_str(dst, cap, s);
+        copy_string(dst, cap, s);
         show_pending_changes();
     });
 
     return field;
-}
-
-/* A color field: hex input plus a live swatch previewing the value */
-static void make_color_row(card* parent, const char* label, const char* key, uint32_t* value) {
-    QHBoxLayout* row = make_row(parent, label, key);
-
-    QLineEdit* field = make_field(format_hex(*value));
-    field->setFixedWidth(130);
-    row->addWidget(field);
-
-    auto* preview = new swatch(value);
-    row->addWidget(preview);
-
-    QObject::connect(field, &QLineEdit::textEdited, [value, preview](const QString& s) {
-        *value = parse_u32(s, 16);
-        preview->update();
-        show_pending_changes();
-    });
 }
 
 /* A short numeric field writing through to a config integer */
@@ -943,11 +893,6 @@ static void make_number_row(card* parent, const char* label, const char* key, ui
         *value = parse_u32(s, 10);
         show_pending_changes();
     });
-}
-
-/* A full width path or text field writing through to a char array */
-static void make_text_row(card* parent, const char* label, const char* key, char* dst, size_t cap) {
-    add_text_field(make_row(parent, label, key), dst, cap, 0);
 }
 
 /* A "..." button opening the row actions for one list entry. The
@@ -1005,30 +950,20 @@ static void add_choice_row(card* parent, const char* label, const char* key, QCo
     row->addStretch(1);
 }
 
-static void build_appearance(QWidget* page) {
-    card* wall = make_card(page, "Wallpaper", "[desktop]");
-    make_text_row(wall, "Image path", "wallpaper", g_st.conf.wallpaper, sizeof(g_st.conf.wallpaper));
-    make_color_row(wall, "Fallback color", "bg_color", &g_st.conf.bg_color);
-
-    card* colors = make_card(page, "Bar colors", "[theme]");
-    make_color_row(colors, "Bar", "bar_color", &g_st.conf.bar_color);
-    make_color_row(colors, "Text", "text_color", &g_st.conf.text_color);
-    make_number_row(colors, "Bar font size", "bar_font_size", &g_st.conf.bar_font_size);
-}
-
 static void build_dock(QWidget* page) {
-    card* pins = make_card(page, "Pinned apps", "[taskbar:<id>]  label  path  args  icon");
+    card* pins = add_section(page, "Pinned apps", "[taskbar:<id>]  label  path  args  icon");
 
     auto move_pin = [](uint32_t from, uint32_t to) {
-        stlxconf_pin_t tmp = g_st.conf.pins[from];
-        g_st.conf.pins[from] = g_st.conf.pins[to];
-        g_st.conf.pins[to] = tmp;
+        stlxconf_pin_t tmp = g_conf.pins[from];
+        g_conf.pins[from] = g_conf.pins[to];
+        g_conf.pins[to] = tmp;
     };
     auto remove_pin = [](uint32_t at) {
-        for (uint32_t i = at; i + 1 < g_st.conf.pin_count; i++) {
-            g_st.conf.pins[i] = g_st.conf.pins[i + 1];
+        for (uint32_t i = at; i + 1 < g_conf.pin_count; i++) {
+            g_conf.pins[i] = g_conf.pins[i + 1];
         }
-        g_st.conf.pin_count--;
+
+        g_conf.pin_count--;
     };
 
     QHBoxLayout* header = make_list_row(pins);
@@ -1038,8 +973,8 @@ static void build_dock(QWidget* page) {
     add_caption(header, "ICON", 0);
     header->addSpacing(MENU_BUTTON_W + 20);
 
-    for (uint32_t i = 0; i < g_st.conf.pin_count; i++) {
-        stlxconf_pin_t* pin = &g_st.conf.pins[i];
+    for (uint32_t i = 0; i < g_conf.pin_count; i++) {
+        stlxconf_pin_t* pin = &g_conf.pins[i];
 
         QHBoxLayout* row = make_list_row(pins);
         if (pin->from_drop_in) {
@@ -1055,21 +990,21 @@ static void build_dock(QWidget* page) {
         add_text_field(row, pin->path, sizeof(pin->path), 0);
         add_text_field(row, pin->args, sizeof(pin->args), 130);
         add_text_field(row, pin->icon_path, sizeof(pin->icon_path), 0);
-        make_row_menu(row, i, owned_count(g_st.conf.pins, g_st.conf.pin_count), move_pin, remove_pin);
+        make_row_menu(row, i, owned_count(g_conf.pins, g_conf.pin_count), move_pin, remove_pin);
     }
 
     add_list_button(pins, "Add app", [] {
-        if (g_st.conf.pin_count >= STLXCONF_MAX_TASKBAR) {
+        if (g_conf.pin_count >= STLXCONF_MAX_TASKBAR) {
             set_status("the dock is full");
             return;
         }
 
-        uint32_t owned = owned_count(g_st.conf.pins, g_st.conf.pin_count);
-        QString name = unused_entry_name("pin", g_st.conf.pins, g_st.conf.pin_count);
-        stlxconf_pin_t* pin = insert_slot(g_st.conf.pins, g_st.conf.pin_count, owned);
-        put_str(pin->name, sizeof(pin->name), name);
-        put_str(pin->label, sizeof(pin->label), QStringLiteral("New app"));
-        g_st.conf.pin_count++;
+        uint32_t owned = owned_count(g_conf.pins, g_conf.pin_count);
+        QString name = unused_entry_name("pin", g_conf.pins, g_conf.pin_count);
+        stlxconf_pin_t* pin = insert_slot(g_conf.pins, g_conf.pin_count, owned);
+        copy_string(pin->name, sizeof(pin->name), name);
+        copy_string(pin->label, sizeof(pin->label), QStringLiteral("New app"));
+        g_conf.pin_count++;
 
         show_pending_changes();
         rebuild_page_later();
@@ -1518,7 +1453,7 @@ static void build_mode_card(QWidget* page, uint32_t output) {
     resolution->setEnabled(!is_greyed);
     refresh->setEnabled(!is_greyed);
 
-    card* choices = make_card(page, output_title(output).toUtf8().constData(), "");
+    card* choices = add_section(page, output_title(output), QString());
     add_choice_row(choices, "Resolution", "", resolution);
     add_choice_row(choices, "Refresh rate", "", refresh);
     push_button* apply = add_list_button(choices, "Apply", [output] { apply_mode(output); });
@@ -1537,7 +1472,7 @@ static void build_mode_card(QWidget* page, uint32_t output) {
 }
 
 static void build_display(QWidget* page) {
-    card* arrangement = make_card(page, "Arrangement", "[layout]");
+    card* arrangement = add_section(page, "Arrangement", "[layout]");
 
     bool fresh_connection = !g_display.conn;
     uint32_t generation = 0;
@@ -1588,36 +1523,37 @@ static void build_display(QWidget* page) {
 }
 
 static void build_input(QWidget* page) {
-    card* repeat = make_card(page, "Keyboard", "[input]");
+    card* repeat = add_section(page, "Keyboard", "[input]");
 
     auto* enabled = new QCheckBox;
-    enabled->setChecked(g_st.conf.key_repeat_delay_ms != 0);
+    enabled->setChecked(g_conf.key_repeat_delay_ms != 0);
     make_row(repeat, "Repeat held keys", "key_repeat_delay_ms > 0")->addWidget(enabled);
     QObject::connect(enabled, &QCheckBox::toggled, [](bool on) {
-        g_st.conf.key_repeat_delay_ms = on ? REPEAT_DELAY_MS : 0;
+        g_conf.key_repeat_delay_ms = on ? REPEAT_DELAY_MS : 0;
         show_pending_changes();
         rebuild_page_later();
     });
 
-    if (g_st.conf.key_repeat_delay_ms != 0) {
-        make_number_row(repeat, "Delay (ms)", "key_repeat_delay_ms", &g_st.conf.key_repeat_delay_ms);
-        make_number_row(repeat, "Interval (ms)", "key_repeat_interval_ms", &g_st.conf.key_repeat_interval_ms);
+    if (g_conf.key_repeat_delay_ms != 0) {
+        make_number_row(repeat, "Delay (ms)", "key_repeat_delay_ms", &g_conf.key_repeat_delay_ms);
+        make_number_row(repeat, "Interval (ms)", "key_repeat_interval_ms", &g_conf.key_repeat_interval_ms);
     }
 }
 
 static void build_startup(QWidget* page) {
-    card* autos = make_card(page, "Autostart", "[autostart:<id>]  path  args");
+    card* autos = add_section(page, "Autostart", "[autostart:<id>]  path  args");
 
     auto move_auto = [](uint32_t from, uint32_t to) {
-        stlxconf_autostart_t tmp = g_st.conf.autostart[from];
-        g_st.conf.autostart[from] = g_st.conf.autostart[to];
-        g_st.conf.autostart[to] = tmp;
+        stlxconf_autostart_t tmp = g_conf.autostart[from];
+        g_conf.autostart[from] = g_conf.autostart[to];
+        g_conf.autostart[to] = tmp;
     };
     auto remove_auto = [](uint32_t at) {
-        for (uint32_t i = at; i + 1 < g_st.conf.autostart_count; i++) {
-            g_st.conf.autostart[i] = g_st.conf.autostart[i + 1];
+        for (uint32_t i = at; i + 1 < g_conf.autostart_count; i++) {
+            g_conf.autostart[i] = g_conf.autostart[i + 1];
         }
-        g_st.conf.autostart_count--;
+
+        g_conf.autostart_count--;
     };
 
     QHBoxLayout* header = make_list_row(autos);
@@ -1625,8 +1561,8 @@ static void build_startup(QWidget* page) {
     add_caption(header, "ARGUMENTS", 130);
     header->addSpacing(MENU_BUTTON_W + 20);
 
-    for (uint32_t i = 0; i < g_st.conf.autostart_count; i++) {
-        stlxconf_autostart_t* as = &g_st.conf.autostart[i];
+    for (uint32_t i = 0; i < g_conf.autostart_count; i++) {
+        stlxconf_autostart_t* as = &g_conf.autostart[i];
 
         QHBoxLayout* row = make_list_row(autos);
         if (as->from_drop_in) {
@@ -1638,34 +1574,34 @@ static void build_startup(QWidget* page) {
 
         add_text_field(row, as->path, sizeof(as->path), 0);
         add_text_field(row, as->args, sizeof(as->args), 130);
-        make_row_menu(row, i, owned_count(g_st.conf.autostart, g_st.conf.autostart_count), move_auto,
+        make_row_menu(row, i, owned_count(g_conf.autostart, g_conf.autostart_count), move_auto,
                       remove_auto);
     }
 
     add_list_button(autos, "Add program", [] {
-        if (g_st.conf.autostart_count >= STLXCONF_MAX_AUTOSTART) {
+        if (g_conf.autostart_count >= STLXCONF_MAX_AUTOSTART) {
             set_status("autostart table is full");
             return;
         }
 
-        uint32_t owned = owned_count(g_st.conf.autostart, g_st.conf.autostart_count);
-        QString name = unused_entry_name("entry", g_st.conf.autostart, g_st.conf.autostart_count);
-        stlxconf_autostart_t* as = insert_slot(g_st.conf.autostart, g_st.conf.autostart_count, owned);
-        put_str(as->name, sizeof(as->name), name);
-        g_st.conf.autostart_count++;
+        uint32_t owned = owned_count(g_conf.autostart, g_conf.autostart_count);
+        QString name = unused_entry_name("entry", g_conf.autostart, g_conf.autostart_count);
+        stlxconf_autostart_t* as = insert_slot(g_conf.autostart, g_conf.autostart_count, owned);
+        copy_string(as->name, sizeof(as->name), name);
+        g_conf.autostart_count++;
 
         show_pending_changes();
         rebuild_page_later();
     });
 
-    card* keys = make_card(page, "Shortcuts", "[shortcut:<id>]  key  action  path  args");
+    card* keys = add_section(page, "Shortcuts", "[shortcut:<id>]  key  action  path  args");
 
     QHBoxLayout* kh = make_list_row(keys);
     add_caption(kh, "CHORD", 130);
     add_caption(kh, "PROGRAM", 0);
 
-    for (uint32_t i = 0; i < g_st.conf.shortcut_count; i++) {
-        stlxconf_shortcut_t* sc = &g_st.conf.shortcuts[i];
+    for (uint32_t i = 0; i < g_conf.shortcut_count; i++) {
+        stlxconf_shortcut_t* sc = &g_conf.shortcuts[i];
 
         QHBoxLayout* row = make_list_row(keys);
         if (sc->from_drop_in) {
@@ -1705,7 +1641,7 @@ static void build_page(uint32_t index) {
     page_layout->setSpacing(0);
 
     switch (static_cast<page_index>(index)) {
-    case APPEARANCE_PAGE: build_appearance(g_st.page); break;
+    case APPEARANCE_PAGE: build_appearance_page(g_st.page); break;
     case DOCK_PAGE: build_dock(g_st.page); break;
     case DISPLAY_PAGE: build_display(g_st.page); break;
     case INPUT_PAGE: build_input(g_st.page); break;
@@ -1730,10 +1666,8 @@ static void track_page_scroll(QScrollBar* page_scroll_bar) {
 
 /* Clamp the fields a broken save could take the desktop down with */
 static void sanitize_conf() {
-    stlxconf_t& c = g_st.conf;
+    stlxconf_t& c = g_conf;
 
-    if (c.bar_font_size < 8) c.bar_font_size = 8;
-    if (c.bar_font_size > 48) c.bar_font_size = 48;
     if (c.key_repeat_delay_ms != 0 && c.key_repeat_interval_ms == 0) {
         c.key_repeat_interval_ms = REPEAT_INTERVAL_MS;
     }
@@ -1756,15 +1690,15 @@ static void notify_dm() {
 }
 
 static void load_conf() {
-    stlxconf_load(&g_st.conf, STLXCONF_PATH);
-    stlxconf_load_drop_ins(&g_st.conf, STLXCONF_DROP_IN_DIR);
-    g_st.saved = g_st.conf;
+    stlxconf_load(&g_conf, STLXCONF_PATH);
+    stlxconf_load_drop_ins(&g_conf, STLXCONF_DROP_IN_DIR);
+    g_st.saved = g_conf;
 }
 
 static void save_conf() {
     sanitize_conf();
 
-    if (stlxconf_save(&g_st.conf, STLXCONF_PATH) != 0) {
+    if (stlxconf_save(&g_conf, STLXCONF_PATH) != 0) {
         set_status(QStringLiteral("Could not write the config file"));
         return;
     }

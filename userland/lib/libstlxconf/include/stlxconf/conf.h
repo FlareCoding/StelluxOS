@@ -159,6 +159,18 @@ int stlxconf_load_drop_ins(stlxconf_t* conf, const char* dir);
 int stlxconf_save(const stlxconf_t* conf, const char* path);
 
 /**
+ * @brief Names a glass level as the file writes it.
+ * @return the `glass_level` value for `level`, such as "solid".
+ */
+const char* stlxconf_glass_level_name(stlxconf_glass_level_t level);
+
+/**
+ * @brief Names a glass tint as the file writes it.
+ * @return the `glass_tint` value for `tint`, such as "warm".
+ */
+const char* stlxconf_glass_tint_name(stlxconf_glass_tint_t tint);
+
+/**
  * @brief Finds the handler for URLs of `scheme`, compared without case.
  *
  * The main file's handlers come before the drop-in files', so a handler
