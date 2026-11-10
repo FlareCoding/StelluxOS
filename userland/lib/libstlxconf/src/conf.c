@@ -259,6 +259,8 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
             copy_bounded(sc->action, val, sizeof(sc->action));
         } else if (strcmp(key, "path") == 0) {
             copy_bounded(sc->path, val, sizeof(sc->path));
+        } else if (strcmp(key, "args") == 0) {
+            copy_bounded(sc->args, val, sizeof(sc->args));
         }
         return;
     }
@@ -455,6 +457,9 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
         fprintf(f, "key=%s\n", sc->key);
         fprintf(f, "action=%s\n", sc->action);
         fprintf(f, "path=%s\n", sc->path);
+        if (sc->args[0]) {
+            fprintf(f, "args=%s\n", sc->args);
+        }
     }
 
     for (uint32_t i = 0; i < conf->pin_count; i++) {

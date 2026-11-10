@@ -695,6 +695,7 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         dm_hotkey hk;
         if (parse_chord(sc.key, &hk.mods, &hk.usage)) {
             hk.path = sc.path;
+            hk.args = sc.args;
             out.hotkeys.push_back(hk);
         }
     }
@@ -1707,8 +1708,8 @@ void server::drop_client(dm_client& c) {
     c.fd = -1;
 }
 
-void server::spawn_shortcut(const char* path) {
-    spawn_app(path, nullptr);
+void server::spawn_shortcut(const dm_hotkey& hotkey) {
+    spawn_app(hotkey.path, hotkey.args);
 }
 
 constexpr size_t OUT_Q_LIMIT = 64 * 1024;

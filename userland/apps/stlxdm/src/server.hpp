@@ -28,12 +28,13 @@ constexpr uint32_t DM_EV_BATCH_MAX = 16;
 /* Frames of damage an output keeps for targets older than one present */
 constexpr uint32_t DM_DAMAGE_HISTORY = 3;
 
-/* One parsed exec shortcut: required modifier bits and the usage
- * that fires it while they are held */
+/* One parsed exec shortcut: the program and args it spawns, and the modifier bits and usage that fire it
+ * while they are held */
 struct dm_hotkey {
     uint8_t mods = 0;
     uint16_t usage = 0;
     const char* path = nullptr;
+    const char* args = nullptr;
 };
 
 /* Config-derived state built as a unit and adopted only when every
@@ -560,7 +561,7 @@ private:
     void update_window_output(dm_window& w);
 
     void drop_client(dm_client& c);
-    void spawn_shortcut(const char* path);
+    void spawn_shortcut(const dm_hotkey& hotkey);
     int build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper);
     void adopt_conf_state(dm_conf_state&& next);
     void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);
