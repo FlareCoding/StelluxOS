@@ -41,10 +41,11 @@ class dm_panels {
 public:
     static constexpr int32_t BAR_H = 28;
 
-    /* Builds both panels over the backdrop, which must already hold
-     * the wallpaper. The panels own no pixels of their own. */
+    /* Builds both panels over the backdrop, which must already hold the
+     * wallpaper, each painting its widgets over a picture of its glass
+     * drawn from `frost`, the frost of that wallpaper */
     int init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf,
-             stlxgfx_surface_t* backdrop);
+             stlxgfx_surface_t* backdrop, const stlxgfx_surface_t* frost);
     void shutdown();
 
     /* Paints into `backdrop` from here on, which must have the size and
@@ -102,9 +103,12 @@ private:
     direct_host m_host;
     direct_host m_dock_host;
 
-    /* Views into the backdrop rows each tree paints */
+    /* Views into the backdrop rows each tree paints, and the glass
+     * each tree paints beneath its widgets */
     stlxgfx_surface_t* m_band = nullptr;
     stlxgfx_surface_t* m_dock = nullptr;
+    stlxgfx_surface_t* m_bar_glass = nullptr;
+    stlxgfx_surface_t* m_dock_glass = nullptr;
     std::vector<stlxgfx_surface_t*> m_icons;
     stlxgfx_font* m_tip_font = nullptr;
     stlxgfx_font_metrics m_tip_fm = {};

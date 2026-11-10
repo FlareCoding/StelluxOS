@@ -1,4 +1,5 @@
 #include "server.hpp"
+#include "material.hpp"
 
 #include <stlx/gpu_abi.h>
 #include <stlx/proc.h>
@@ -300,6 +301,7 @@ int server::init(display* disp, const stlxconf_t* conf) {
 
     m_gpu_fd = open_gpu_device();
     choose_compositor();
+    material::configure(conf->glass_level, conf->glass_tint);
 
     dm_wallpaper wallpaper(*conf);
     dm_conf_state state;
@@ -646,10 +648,13 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         out.gpu_capture = m_gpu_compositor->make_picture(static_cast<size_t>(width) * height * 4);
     }
 
+    /* Built before the panels paint into the backdrop, so the frost is of the wallpaper alone */
+    stlxgfx_surface_t* frost = material::build_frost(out.backdrop, m_conf->glass_tint);
     uint8_t* capture = out.gpu_capture ? out.gpu_capture->pixels() : nullptr;
-    bool ready = (!m_gpu_composes || capture) &&
-                 out.panels->init(width, height, *m_conf, out.backdrop) == 0 &&
+    bool ready = frost && (!m_gpu_composes || capture) &&
+                 out.panels->init(width, height, *m_conf, out.backdrop, frost) == 0 &&
                  out.power->init(width, height, m_conf->taskbar_height, capture) == 0;
+    stlxgfx_destroy_surface(frost);
     if (ready && m_gpu_composes) {
         out.gpu_backdrop = copy_backdrop(out.backdrop, width, height);
         ready = out.gpu_backdrop != nullptr;
@@ -981,6 +986,7 @@ void server::perf_tick(uint64_t now_ns) {
 void server::reload_config() {
     follow_compositor();
     follow_compose_fault();
+    material::configure(m_conf->glass_level, m_conf->glass_tint);
 
     dm_wallpaper wallpaper(*m_conf);
     dm_conf_state state;

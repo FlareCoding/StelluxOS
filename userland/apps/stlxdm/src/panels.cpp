@@ -6,6 +6,7 @@
  * network state.
  */
 #include "panels.hpp"
+#include "material.hpp"
 
 #include <stlx/net.h>
 #include <stlxgfx/image.h>
@@ -65,6 +66,20 @@ static uint64_t g_stats_prev_busy = 0;
 static uint64_t g_stats_prev_total = 0;
 
 namespace {
+
+/* A row on a picture of the glass beneath it, so repainting a child
+ * repaints the glass under it first */
+class glass_row : public ui::box {
+public:
+    explicit glass_row(const stlxgfx_surface_t* glass) : ui::box(ui::axis::row), m_glass(glass) {}
+
+    void paint(ui::painter& p) override {
+        p.image({ 0, 0 }, m_glass);
+    }
+
+private:
+    const stlxgfx_surface_t* m_glass;
+};
 
 /* One pinned launcher: an icon tile on a rounded hover surface,
  * firing its launch callback on release inside */
@@ -174,6 +189,20 @@ static stlxgfx_surface_t* row_view(stlxgfx_surface_t* backdrop,
         backdrop->pixels + static_cast<uint32_t>(y) * backdrop->pitch,
         backdrop->width, static_cast<uint32_t>(h), backdrop->pitch,
         32, 16, 8, 0);
+}
+
+/* A picture of `glass` at its size, or null when memory runs out */
+static stlxgfx_surface_t* paint_glass(const stlxgfx_surface_t* frost, const material::surface& glass) {
+    uint32_t width = static_cast<uint32_t>(glass.bounds.w);
+    uint32_t height = static_cast<uint32_t>(glass.bounds.h);
+    stlxgfx_surface_t* picture = stlxgfx_create_surface(width, height, 32, 16, 8, 0);
+    if (!picture) {
+        return nullptr;
+    }
+
+    material::draw(picture, glass.bounds.x, glass.bounds.y, frost, glass, glass.bounds);
+
+    return picture;
 }
 
 static uint64_t monotonic_ns() {
@@ -313,8 +342,8 @@ static void update_sys_stats() {
              static_cast<unsigned long long>(total_mb));
 }
 
-int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
-                    const stlxconf_t& conf, stlxgfx_surface_t* backdrop) {
+int dm_panels::init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf,
+                    stlxgfx_surface_t* backdrop, const stlxgfx_surface_t* frost) {
     m_conf = &conf;
     m_width = screen_w;
     m_height = screen_h;
@@ -330,6 +359,13 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
         return -1;
     }
 
+    int32_t width = static_cast<int32_t>(screen_w);
+    m_bar_glass = paint_glass(frost, { { 0, 0, width, BAR_H } });
+    m_dock_glass = paint_glass(frost, { { 0, m_dock_y, width, m_dock_h }, 0, material::DOCK_RIM_FADE });
+    if (!m_bar_glass || !m_dock_glass) {
+        return -1;
+    }
+
     stlxgfx_fill_rect(m_band, 0, BAR_H, screen_w, 1, conf.accent_color);
     stlxgfx_fill_rect(m_dock, 0, 0, screen_w, 1, conf.accent_color);
 
@@ -340,11 +376,8 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
     stlxgfx_font_metrics_get(m_tip_font, &m_tip_fm);
 
     /* The bar: name and stats left, the clock truly centered between
-     * two equal flex halves, network state right. Panel fills are
-     * forced opaque, they paint into the backdrop in place. */
-    uint32_t panel_bg = conf.bar_color | 0xFF000000u;
-    auto bar = std::make_unique<ui::box>(ui::axis::row);
-    bar->s().background = panel_bg;
+     * two equal flex halves, network state right */
+    auto bar = std::make_unique<glass_row>(m_bar_glass);
     bar->s().padding = ui::edge_insets::xy(10, 0);
     bar->s().align_items = ui::align::center;
 
@@ -400,8 +433,7 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
     m_host.set_root(std::move(bar));
 
     /* The dock: the config's pins centered between flex spacers */
-    auto dock = std::make_unique<ui::box>(ui::axis::row);
-    dock->s().background = panel_bg;
+    auto dock = std::make_unique<glass_row>(m_dock_glass);
     dock->s().align_items = ui::align::center;
 
     /* Tiles are one pixel wider than their icons on each side, so the
@@ -481,6 +513,11 @@ void dm_panels::shutdown() {
     stlxgfx_destroy_surface(m_dock);
     m_band = nullptr;
     m_dock = nullptr;
+
+    stlxgfx_destroy_surface(m_bar_glass);
+    stlxgfx_destroy_surface(m_dock_glass);
+    m_bar_glass = nullptr;
+    m_dock_glass = nullptr;
 
     stlxgfx_font_close(m_tip_font);
     m_tip_font = nullptr;

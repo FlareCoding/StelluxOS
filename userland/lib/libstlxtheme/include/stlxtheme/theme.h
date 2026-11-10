@@ -2,10 +2,15 @@
 #define STLXTHEME_THEME_H
 
 /* The desktop's palette, control metrics and typefaces. Colors are 0xAARRGGBB
- * with straight alpha, and lengths are pixels. */
+ * with straight alpha, and lengths are pixels. Glass is a surface that shows
+ * the frosted wallpaper behind it through a tint, which the solid glass level
+ * makes opaque. */
 
-/* Tints, the solid material of a window frame */
+/* Glass colors: the smoke tints every glass surface is made of, its veil and its light */
 #define STLXTHEME_GLASS_TINT_WARM    0xFF12100D
+#define STLXTHEME_GLASS_TINT_NEUTRAL 0xFF0F0F11
+#define STLXTHEME_GLASS_VEIL         0xFF404040 /* the grey veil over glass, most opaque at a surface's top edge */
+#define STLXTHEME_GLASS_LIGHT        0xFFFFF0D7 /* the rim light and grain on glass */
 
 /* Text */
 #define STLXTHEME_TEXT           0xFFF6EEE1 /* titles, values and body text */

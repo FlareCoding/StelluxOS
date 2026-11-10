@@ -93,6 +93,20 @@ int init();
 /* The table `init` fills, which the GPU compositor reads too */
 corner_table corner_distances();
 
+/* Signed distance from the center of the pixel (`x`, `y`) to the edge
+ * of `bounds` rounded by `radius`, in eighth pixels and negative inside,
+ * read from the table `init` fills, so `radius` must be at most
+ * `CORNER_R`. Far outside it saturates. */
+int32_t rounded_rect_distance(const damage_list::rect& bounds, int32_t radius, int32_t x, int32_t y);
+
+/* The coverage, 0 to 255, of a pixel whose center lies `distance`
+ * eighth pixels outside an edge, negative inside */
+uint32_t distance_coverage(int32_t distance);
+
+/* Source-over of `color` at `alpha`, 0 to 255, onto the opaque `below`,
+ * giving an opaque pixel */
+uint32_t blend_over(uint32_t below, uint32_t color, uint32_t alpha);
+
 bool decorated(const dm_window& w);
 
 /* The decorated rect for an explicit content geometry. */
