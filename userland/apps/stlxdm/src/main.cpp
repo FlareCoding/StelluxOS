@@ -279,13 +279,12 @@ int main() {
         size_t event_slot = fds.size();
         fds.push_back({ disp.fd(), POLLIN, 0 });
 
-        /* Key repeat, the clock, the readouts, a trial, a GPU commit's query, a retired compositor's next timeline
-         * read and each output's compose and cursor move deadlines cap the wait, and idle blocks forever */
+        /* Key repeat, the clock, a trial, a GPU commit's query, a retired compositor's next timeline read and each
+         * output's compose and cursor move deadlines cap the wait */
         uint64_t now = now_ns();
         int64_t next_ns = inp.repeat_timeout_ns(now);
 
         bound_wait(next_ns, srv.clock_timeout_ns(now));
-        bound_wait(next_ns, srv.perf_timeout_ns(now));
         bound_wait(next_ns, srv.mode_timeout_ns(now));
         bound_wait(next_ns, srv.latch_timeout_ns(now));
         bound_wait(next_ns, srv.retired_timeout_ns());
@@ -332,10 +331,7 @@ int main() {
             continue;
         }
 
-        /* One timestamp serves the repeat timer and marks the arrival
-         * of any input this wakeup delivered */
         now = now_ns();
-        srv.perf_wake(now);
 
         if (inp.kbd_fd() >= 0 && (fds[kbd_slot].revents & POLLIN)) {
             inp.pump_kbd(srv);
@@ -344,7 +340,6 @@ int main() {
             inp.pump_mouse(srv);
         }
         inp.pump_repeat(srv, now);
-        srv.perf_settle();
         srv.clock_tick();
 
         srv.pump(fds);
@@ -362,7 +357,6 @@ int main() {
         run_mode_requests(disp, srv, inp, pace);
 
         now = now_ns();
-        srv.perf_tick(now);
 
         for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
             output_pace& out = pace.outputs[output];

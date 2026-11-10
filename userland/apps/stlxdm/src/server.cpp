@@ -1025,41 +1025,6 @@ bool server::compose_pending(uint32_t output) const {
     return !out.damage.empty() || has_latch_work(output) || has_configure_work() || shell_pending;
 }
 
-void server::perf_wake(uint64_t now_ns) {
-    m_wake_ns = now_ns;
-    m_wake_damage = m_damage.count();
-    m_wake_damage_full = m_damage.full();
-    m_wake_panels_dirty = m_panels->dirty();
-}
-
-/* Runs right after routing, before the clock or client messages can
- * dirty anything, so only the desktop's own reaction to this wakeup's
- * input counts */
-void server::perf_settle() {
-    bool reacted = (m_damage.full() && !m_wake_damage_full) ||
-                   m_damage.count() > m_wake_damage ||
-                   (m_panels->dirty() && !m_wake_panels_dirty);
-    m_perf.settle(reacted);
-}
-
-void server::perf_tick(uint64_t now_ns) {
-    int64_t missed = -1;
-    for (const dm_output& out : m_outputs) {
-        int64_t output_missed = out.pres ? out.pres->missed_frames() : -1;
-        if (output_missed >= 0) {
-            missed = (missed < 0 ? 0 : missed) + output_missed;
-        }
-    }
-
-    m_perf.note_missed_frames(now_ns, missed);
-
-    perf_snapshot snap;
-    if (m_perf.tick(now_ns, snap)) {
-        m_panels->set_perf(snap);
-        m_perf_readout = snap;
-    }
-}
-
 void server::reload_config() {
     follow_compositor();
     follow_compose_fault();
@@ -1081,13 +1046,10 @@ void server::reload_config() {
     }
 
     adopt_conf_state(std::move(state));
+
     m_layout.set_shell_rows(dm_panels::BAR_H, m_panels->dock_y());
     refresh_backdrops(true, wallpaper);
     make_served_pictures();
-
-    /* The new bar shows the last readout at once, since a quiescent perf
-     * monitor refreshes nothing until the next input or missed frame */
-    m_panels->set_perf(m_perf_readout);
     update_generation();
 
     m_damage.add_full();
@@ -1207,7 +1169,6 @@ desktop_point server::adopt_layout(const layout& before, desktop_point pointer, 
         dm_conf_state state;
         if (build_conf_state(state, wallpaper) == 0) {
             adopt_conf_state(std::move(state));
-            m_panels->set_perf(m_perf_readout);
             rebuilt = true;
         } else {
             printf("stlxdm: desktop rebuild at %dx%d failed, keeping the running desktop\r\n", main.w, main.h);
@@ -1238,7 +1199,7 @@ desktop_point server::adopt_layout(const layout& before, desktop_point pointer, 
 
     /* A clamp, a rebuild or a window's move comes from no device, so the
      * pointer routes as a motion for hover, its shape and the clients */
-    route_untimed_pointer(moved.x, moved.y, buttons, 0, 0);
+    route_pointer(moved.x, moved.y, buttons, 0, 0);
 
     return moved;
 }
